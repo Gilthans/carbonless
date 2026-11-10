@@ -418,31 +418,60 @@ export function UnplacedRow(props: {
 	handle?: ReactNode;
 }) {
 	const { thread } = props;
-	const [open, setOpen] = useState(false);
-	// A resolved thread is one quiet line until expanded; resolving one
-	// collapses it again (owner, 2026-11-08).
+	return (
+		<UnplacedShell
+			thread={thread}
+			who={thread.author}
+			fate={props.fate}
+			path={props.path}
+			movedTo={props.movedTo}
+			link={props.link}
+			handle={props.handle}
+		>
+			<Opener thread={thread} />
+			<UnplacedReplies thread={thread} readId={props.readId} />
+		</UnplacedShell>
+	);
+}
+
+/**
+ * The frame of a thread the tracer couldn't place, the same for a review
+ * thread and an agent thread (only the body differs): its fate in a
+ * sentence on the top line, the code it was written on in the "Original
+ * Reviewed Change" box, then `children`. Resolved, one quiet line (the
+ * resolved icon, the fate shortened, `who`) until expanded; resolving it
+ * collapses it again (owner, 2026-11-08).
+ */
+export function UnplacedShell(props: {
+	thread: Pick<ReviewThread, "id" | "resolved" | "code" | "path" | "createdAt">;
+	/** Who opened it, for the quiet line ("you" for an agent thread). */
+	who: string;
+	/** Its fate; null: unknown (the placements couldn't be computed). */
+	fate: Fate | null;
+	path?: string;
+	movedTo?: string;
+	link?: ReactNode;
+	handle?: ReactNode;
+	testId?: string;
+	children: ReactNode;
+}) {
+	const { thread } = props;
+	const testId = props.testId ?? "unplaced-thread";
 	const [expanded, setExpanded] = useState(false);
 	const [wasResolved, setWasResolved] = useState(thread.resolved);
 	if (wasResolved !== thread.resolved) {
 		setWasResolved(thread.resolved);
-		if (thread.resolved) {
-			setExpanded(false);
-			setOpen(false);
-		}
+		if (thread.resolved) setExpanded(false);
 	}
-	const repliesId = useId();
 	const fate = props.fate ? FATES[props.fate] : UNKNOWN_FATE;
 	const sentence =
 		props.fate === "moved" && props.movedTo
 			? `${fate.sentence} to ${props.movedTo}`
 			: fate.sentence;
-	const replies = useReplyCount(thread, props.readId);
-	const canAct = useCanAct(thread);
-	const readable = thread.unavailable === undefined && thread.id !== "";
 	if (thread.resolved && !expanded) {
 		return (
 			<li
-				data-testid="unplaced-thread"
+				data-testid={testId}
 				data-fate={props.fate ?? "unknown"}
 				data-thread={thread.id}
 				data-resolved="true"
@@ -451,7 +480,7 @@ export function UnplacedRow(props: {
 				<button
 					type="button"
 					aria-expanded={false}
-					aria-label={`Resolved thread by ${thread.author}: ${fate.short}${props.path ? ` · ${props.path}` : ""}. Expand`}
+					aria-label={`Resolved thread by ${props.who}: ${fate.short}${props.path ? ` · ${props.path}` : ""}. Expand`}
 					data-testid="unplaced-collapsed"
 					onClick={() => setExpanded(true)}
 					className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
@@ -466,7 +495,7 @@ export function UnplacedRow(props: {
 							</>
 						)}
 						{" · "}
-						{thread.author}
+						{props.who}
 					</span>
 				</button>
 			</li>
@@ -474,7 +503,7 @@ export function UnplacedRow(props: {
 	}
 	return (
 		<li
-			data-testid="unplaced-thread"
+			data-testid={testId}
 			data-fate={props.fate ?? "unknown"}
 			data-thread={thread.id}
 			data-resolved={thread.resolved || undefined}
@@ -525,7 +554,26 @@ export function UnplacedRow(props: {
 				)}
 			</div>
 			<OriginalCode thread={thread} />
-			<Opener thread={thread} />
+			{props.children}
+		</li>
+	);
+}
+
+/** An unplaced review thread's replies and actions, behind Show more. */
+function UnplacedReplies({
+	thread,
+	readId,
+}: {
+	thread: ReviewThread;
+	readId: string;
+}) {
+	const [open, setOpen] = useState(false);
+	const repliesId = useId();
+	const replies = useReplyCount(thread, readId);
+	const canAct = useCanAct(thread);
+	const readable = thread.unavailable === undefined && thread.id !== "";
+	return (
+		<>
 			{open && readable && (
 				<div id={repliesId} className="space-y-2">
 					{replies.n > 0 && (
@@ -533,7 +581,7 @@ export function UnplacedRow(props: {
 							data-testid="thread-replies"
 							className="ml-2 border-l-2 border-line pl-3"
 						>
-							<ThreadComments readId={props.readId} thread={thread} skipFirst />
+							<ThreadComments readId={readId} thread={thread} skipFirst />
 						</div>
 					)}
 					<ThreadActions thread={thread} />
@@ -550,7 +598,7 @@ export function UnplacedRow(props: {
 					/>
 				</div>
 			)}
-		</li>
+		</>
 	);
 }
 

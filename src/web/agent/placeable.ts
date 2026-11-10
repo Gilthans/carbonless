@@ -98,6 +98,11 @@ export interface AgentPlacing {
 	 * (a spinner shows, AgentNotInComparison), never shown outdated first.
 	 */
 	pending?: boolean;
+	/**
+	 * They couldn't be computed: one asked on another head is listed in the
+	 * failure group with an unknown fate (as review threads), never in a lead.
+	 */
+	failed?: boolean;
 }
 
 const AgentPlacingContext = createContext<AgentPlacing>({
@@ -127,9 +132,10 @@ export function shownAgentPlaceables(
 					// One asked on this very head stays where it was asked.
 					(t) => t.anchor.commit === snapshotHead || Date.parse(t.at) < until,
 				);
-	const placed = placing.pending
-		? kept.filter((t) => t.anchor.commit === snapshotHead)
-		: kept;
+	const placed =
+		placing.pending || placing.failed
+			? kept.filter((t) => t.anchor.commit === snapshotHead)
+			: kept;
 	const shown = tracedAgentPlaceables(placed, snapshotHead, placing.placements);
 	return [
 		...shown.filter((p) => !p.thread.resolved),
@@ -151,4 +157,20 @@ export function agentOutside(
 	return shown.filter(
 		(p) => placements?.get(p.id)?.kind === "outside" || !paths.has(p.path),
 	);
+}
+
+/**
+ * The agent threads that wait for the placements (asked on another head,
+ * shown on this view once placed): what the spinners and, on a failure,
+ * the unknown-fate rows are for; resolved ones last.
+ */
+export function agentWaiting(
+	threads: readonly AgentThread[],
+	snapshotHead: string,
+	placing: Pick<AgentPlacing, "until">,
+): AgentPlaceable[] {
+	return shownAgentPlaceables(threads, snapshotHead, {
+		placements: null,
+		until: placing.until,
+	}).filter((p) => p.commit !== snapshotHead);
 }

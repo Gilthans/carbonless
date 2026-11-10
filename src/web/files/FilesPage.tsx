@@ -23,6 +23,7 @@ import {
 import {
 	AgentPlacingProvider,
 	agentOutside,
+	agentWaiting,
 	shownAgentPlaceables,
 } from "../agent/placeable";
 import {
@@ -898,7 +899,12 @@ export function FilesPage() {
 		data !== undefined && (allThreads !== undefined || threadsFailed !== null);
 	// A Refresh shows the new head before its diff: drafts move only once
 	// the diff shown is that head's.
-	const headSure = useHeadSure(threads?.snapshotHead, data?.revision);
+	// The viewed head, whether or not GitHub's threads are in (Comment and
+	// Ask agent wait on it, never on GitHub).
+	const headSure = useHeadSure(
+		viewedHeadOf(comparison, session) ?? session?.snapshotHead,
+		data?.revision,
+	);
 	const queryClient = useQueryClient();
 	const prefetch = useMemo(
 		() =>
@@ -957,8 +963,9 @@ export function FilesPage() {
 			placements: agentPlacements,
 			until: threadsCutoff,
 			pending: agentPending,
+			failed: agentPlacingState.error !== null,
 		}),
-		[agentPlacements, threadsCutoff, agentPending],
+		[agentPlacements, threadsCutoff, agentPending, agentPlacingState.error],
 	);
 	const agentHead =
 		threads?.snapshotHead ??
@@ -969,17 +976,22 @@ export function FilesPage() {
 		() => shownAgentPlaceables(agentThreads ?? [], agentHead, agentPlacing),
 		[agentThreads, agentHead, agentPlacing],
 	);
-	// How many wait for their place (the spinner is for them).
-	const agentWaiting = useMemo(
+	// The threads that wait for their place: the spinners are for them,
+	// and on a failure they are the unknown-fate rows.
+	const agentWaitingList = useMemo(
 		() =>
-			agentPending
-				? shownAgentPlaceables(agentThreads ?? [], agentHead, {
-						...agentPlacing,
-						pending: false,
-					}).filter((p) => p.commit !== agentHead).length
-				: 0,
-		[agentPending, agentThreads, agentHead, agentPlacing],
+			agentPending || agentPlacingState.error
+				? agentWaiting(agentThreads ?? [], agentHead, agentPlacing)
+				: [],
+		[
+			agentPending,
+			agentPlacingState.error,
+			agentThreads,
+			agentHead,
+			agentPlacing,
+		],
 	);
+	const agentWaitingCount = agentPending ? agentWaitingList.length : 0;
 	// The tree's dot: each on the path it shows under now.
 	const agentThreadsByPath = useMemo(() => {
 		const byPath = new Map<string, AgentThread[]>();
@@ -1021,6 +1033,7 @@ export function FilesPage() {
 			threadsOf={(f) => threadsByPath.get(f.path) ?? NO_THREADS}
 			agentThreadsOf={(f) => agentThreadsByPath.get(f.path) ?? NO_AGENT_THREADS}
 			threadsLoading={threadsLoading}
+			agentLoading={agentWaitingCount > 0}
 			foldKey={pr ? foldsKey(pr) : null}
 			revealSeq={reveal}
 			opened={openedIndex}
@@ -1129,12 +1142,13 @@ export function FilesPage() {
 				snapshotHead={agentHead}
 				placements={agentPlacements}
 				pending={agentPending}
-				waiting={agentWaiting}
+				waiting={agentWaitingCount}
 				failed={
 					agentPlacingState.error && {
 						error: agentPlacingState.error,
 						retry: agentPlacingState.retry,
 						retrying: agentPlacingState.retrying,
+						threads: agentWaitingList,
 					}
 				}
 			/>

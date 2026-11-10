@@ -5,6 +5,7 @@ import { placeThreads } from "../files/threadPlacement";
 import {
 	agentOutside,
 	agentPlaceable,
+	agentWaiting,
 	shownAgentPlaceables,
 	tracedAgentPlaceables,
 } from "./placeable";
@@ -231,16 +232,17 @@ describe("shownAgentPlaceables while the placements load", () => {
 				pending: true,
 			}).map((p) => p.id),
 		).toEqual(["H"]);
-		// Failed (not pending): where it was asked, outdated.
+		// Failed: listed in the failure group with an unknown fate (as
+		// review threads), never outdated in a file's lead.
 		expect(
 			shownAgentPlaceables([earlier, here], H2, {
 				placements: null,
 				until: null,
-				pending: false,
-			}).map((p) => [p.id, p.commit]),
-		).toEqual([
-			["E", H1],
-			["H", H2],
-		]);
+				failed: true,
+			}).map((p) => p.id),
+		).toEqual(["H"]);
+		expect(
+			agentWaiting([earlier, here], H2, { until: null }).map((p) => p.id),
+		).toEqual(["E"]);
 	});
 });

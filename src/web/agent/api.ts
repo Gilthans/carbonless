@@ -4,7 +4,7 @@
  * The config routes are machine-wide, not the review's.
  */
 import { queryOptions, useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
 	AGENT_POLL_MS,
 	type AgentCheck,
@@ -164,13 +164,31 @@ export function useAgentPlacementsFor(args: {
 				: null,
 		[on, data, revision],
 	);
-	const failed = on && placements === null && error !== null;
+	// An answer for another snapshot (the base moved under the session):
+	// asked once more, then a failure, never an endless spinner.
+	const key = JSON.stringify(query.data ? [revision, data?.revision] : null);
+	const mismatch =
+		on && data !== undefined && data.revision !== revision && error === null;
+	const [askedAgain, setAskedAgain] = useState<string | null>(null);
+	useEffect(() => {
+		if (!mismatch || isFetching || askedAgain === key) return;
+		setAskedAgain(key);
+		void refetch();
+	}, [mismatch, isFetching, askedAgain, key, refetch]);
+	const stale =
+		mismatch && askedAgain === key && !isFetching
+			? new Error("The placements came for another snapshot of this head")
+			: null;
+	const failure = on && placements === null ? (error ?? stale) : null;
 	return {
 		placements,
-		pending: on && placements === null && !failed,
-		error: failed ? error : null,
-		retry: () => void refetch(),
-		retrying: failed && isFetching,
+		pending: on && placements === null && failure === null,
+		error: failure,
+		retry: () => {
+			setAskedAgain(null);
+			void refetch();
+		},
+		retrying: failure !== null && isFetching,
 	};
 }
 

@@ -68,6 +68,32 @@ const files = [
 describe("FileTree", () => {
 	afterEach(cleanup);
 
+	it("a spinner over the tree while agent threads wait for their place, as while comments load", () => {
+		const { rerender } = render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				agentLoading
+			/>,
+		);
+		const tree = screen.getByTestId("file-tree");
+		expect(tree).toHaveAttribute("aria-busy", "true");
+		expect(
+			within(tree).getByRole("status", { name: "Placing agent threads" }),
+		).toBeTruthy();
+		rerender(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		expect(screen.getByTestId("file-tree")).not.toHaveAttribute("aria-busy");
+	});
+
 	it("tints finished rows green, crossed off ones too, and no others", () => {
 		render(
 			<FileTree

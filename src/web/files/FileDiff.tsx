@@ -27,7 +27,11 @@ import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer } from "../agent/AgentComposer";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
-import { shownAgentPlaceables, useAgentPlacing } from "../agent/placeable";
+import {
+	agentWaiting,
+	shownAgentPlaceables,
+	useAgentPlacing,
+} from "../agent/placeable";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
@@ -837,6 +841,18 @@ export function FileDiff(props: {
 		{ reason: "outdated" as const, threads: agentOutdated },
 	].filter((g) => g.threads.length > 0);
 	const agentLead = agentGroups.flatMap((g) => g.threads);
+	// While the placements load: this file's agent threads asked on
+	// another head wait, and its agent bubble spins where they will show.
+	const agentWaitingHere = useMemo(
+		() =>
+			agentPlacing.pending && snapshotHead
+				? agentWaiting(agentAll ?? [], snapshotHead, agentPlacing).filter(
+						(p) => p.path === file.path || p.path === file.oldPath,
+					)
+				: [],
+		[agentPlacing, agentAll, snapshotHead, file.path, file.oldPath],
+	);
+	const agentLoading = agentWaitingHere.length > 0;
 	const [agentOpen, setAgentOpen] = useState(false);
 	const agentThreadsId = useId();
 	const agentFileItems = useAgentComposers().filter(
@@ -882,7 +898,7 @@ export function FileDiff(props: {
 	 * file; with none it is an outline that starts a comment at once.
 	 */
 	const lead: FileLead = {
-		count: agentLead.length > 0 ? 2 : 1,
+		count: agentLead.length > 0 || agentLoading ? 2 : 1,
 		bubble: (
 			<>
 				<ThreadBubble
@@ -908,10 +924,11 @@ export function FileDiff(props: {
 						setFileOpen(!fileOpen);
 					}}
 				/>
-				{agentLead.length > 0 && (
+				{(agentLead.length > 0 || agentLoading) && (
 					<AgentBubble
 						inline
 						threads={agentLead}
+						loading={agentLoading && agentLead.length === 0}
 						where="on this file"
 						open={agentOpen}
 						controls={agentOpen ? agentThreadsId : undefined}
@@ -1071,9 +1088,10 @@ export function FileDiff(props: {
 								<StatusIcon file={file} hover={summaryTrigger} />
 							</span>
 							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
-								{!expanded && agentMine.length > 0 && (
+								{!expanded && (agentMine.length > 0 || agentLoading) && (
 									<AgentBubble
 										threads={agentMine}
+										loading={agentLoading && agentMine.length === 0}
 										where="in this file"
 										open={false}
 										onToggle={() => {

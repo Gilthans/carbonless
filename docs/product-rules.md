@@ -553,10 +553,14 @@ question would be on someone else's behalf, or about a past moment.
   resolved ones after the rest, muted, counted nowhere. It keeps its agent
   bubble and card, and never counts as a GitHub thread; otherwise it shows
   as a review thread does (owner, 2026-11-10): a rewritten line's "changed
-  since" chip and old lines, an unplaced one's "near N". While the
-  placements load, one asked on another head waits behind a spinner
-  (never outdated first); if they fail, it shows where it was asked, in its
-  file's lead, outdated, with the failure and a Retry. One the tracer puts outside the comparison, or on
+  since" chip and old lines, an unplaced one in the review threads' own
+  unplaced row (fate, "near N", Original Reviewed Change, the quiet
+  resolved line). While the placements load, one asked on another head
+  waits: its file's agent bubble and the tree spin, as for comments (never
+  outdated first); an answer for another snapshot is asked once more. If
+  they fail, the failure shows with a Retry and those threads as
+  unknown-fate rows, as review threads. Comment and Ask agent never wait
+  on GitHub's threads. One the tracer puts outside the comparison, or on
   a path the diff doesn't have (a file renamed since, still tracing or
   failed), is listed after the files in its own "Not in this comparison"
   group as its agent card (with its fate when known): never gone. An

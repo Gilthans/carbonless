@@ -522,6 +522,8 @@ export function FileTree(props: {
 	agentThreadsOf?: (file: FileView) => AgentThread[];
 	/** The threads are still on their way: no file's dot means none yet. */
 	threadsLoading?: boolean;
+	/** Agent threads wait for their place (their dots come once placed). */
+	agentLoading?: boolean;
 	/** Where this PR's fold state is kept (foldsKey); null: in memory only. */
 	foldKey?: string | null;
 	/**
@@ -597,15 +599,19 @@ export function FileTree(props: {
 			)}
 			<nav
 				aria-label="Files"
-				aria-busy={props.threadsLoading || undefined}
+				aria-busy={props.threadsLoading || props.agentLoading || undefined}
 				data-testid="file-tree"
 				className="relative"
 			>
-				{props.threadsLoading && (
+				{(props.threadsLoading || props.agentLoading) && (
 					// Laid over the first row's end, so the tree doesn't move when
 					// it goes; taps go through to the row under it.
 					<Spinner
-						label="Loading comments"
+						label={
+							props.threadsLoading
+								? "Loading comments"
+								: "Placing agent threads"
+						}
 						className="pointer-events-none absolute top-0 right-0 z-[5] h-6 rounded-full border border-line bg-raised px-1 shadow-control"
 					/>
 				)}

@@ -499,6 +499,7 @@ test("agent threads follow a push: a spinner while they are traced, then on the 
 	page,
 	pr,
 	agentCrb,
+	isMobile,
 }) => {
 	// Three asks, an answer each, a push, a Refresh and the files again.
 	test.slow();
@@ -561,6 +562,18 @@ test("agent threads follow a push: a spinner while they are traced, then on the 
 		name: /^1 agent thread on this file/,
 	});
 	await expect(lead).toHaveCount(0);
+	// Where calc's will show: its agent bubble spins (and the tree, beside
+	// the diff, as while comments load).
+	await expect(
+		again.getByRole("button", { name: "Placing agent threads on this file" }),
+	).toHaveAttribute("aria-busy", "true");
+	if (!isMobile) {
+		await expect(
+			page
+				.getByTestId("file-tree")
+				.getByRole("status", { name: "Placing agent threads" }),
+		).toBeVisible();
+	}
 	await expect(page.getByTestId("agent-outdated")).toHaveCount(0);
 	const outside = page.getByTestId("agent-not-in-comparison");
 	const outsideRow = (text: string) =>
@@ -568,6 +581,9 @@ test("agent threads follow a push: a spinner while they are traced, then on the 
 	await expect(outside).toHaveCount(0);
 	held.release();
 	await expect(loading).toHaveCount(0);
+	await expect(
+		again.getByRole("button", { name: "Placing agent threads on this file" }),
+	).toHaveCount(0);
 	// Answered: calc's on line 5 with the agent's bubble, gone from the lead.
 	const bubble = row(again, 5).getByTestId("agent-bubble");
 	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
@@ -721,6 +737,8 @@ test("right after a Refresh, until the new head's diff shows, Comment and Ask ag
 	pr,
 	agentCrb,
 }) => {
+	// A Refresh held, then a second page load of the file.
+	test.slow();
 	const p = await pr(fixture);
 	const s = await agentCrb();
 	const section = await openFile(page, s.url, CALC);
@@ -771,6 +789,50 @@ test("right after a Refresh, until the new head's diff shows, Comment and Ask ag
 	await expect(
 		bar(page).getByRole("button", { name: "Comment" }),
 	).not.toHaveAttribute("aria-disabled");
+});
+
+test("Comment and Ask agent don't wait on GitHub's threads: on while their read is held, and after it failed", async ({
+	page,
+	pr,
+	agentCrb,
+	expectConsoleError,
+}) => {
+	// The failed read's own 502.
+	expectConsoleError(/502/);
+	// Two page loads, each opening the file and picking a line.
+	test.slow();
+	await pr(fixture);
+	const s = await agentCrb();
+	const actionsOn = async () => {
+		const section = await openFile(page, s.url, CALC);
+		const number = row(section, 3).getByTestId("new");
+		if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+			await number.tap();
+		} else await number.click();
+		for (const name of ["Comment", "Ask agent"]) {
+			await expect(
+				bar(page).getByRole("button", { name }),
+				name,
+			).not.toHaveAttribute("aria-disabled");
+		}
+	};
+	// Held: the thread read never answers while the actions are checked.
+	let held = 0;
+	await page.route("**/api/r/*/threads?*", async () => {
+		held++;
+		await new Promise(() => {});
+	});
+	await actionsOn();
+	expect(held).toBeGreaterThan(0);
+	// Failed: the read answers an error.
+	await page.unroute("**/api/r/*/threads?*");
+	let failed = 0;
+	await page.route("**/api/r/*/threads?*", (route) => {
+		failed++;
+		return route.fulfill({ status: 502, body: '{"error":"GitHub is down"}' });
+	});
+	await actionsOn();
+	expect(failed).toBeGreaterThan(0);
 });
 
 /** The review threads the fake gh holds, with each one's first comment's commit. */

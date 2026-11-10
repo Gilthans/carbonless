@@ -84,13 +84,26 @@ describe("useAgentPlacementsFor", () => {
 		);
 	});
 
-	it("an answer for another snapshot than the viewed one is dropped", async () => {
+	it("an answer for another snapshot than the viewed one is dropped: asked once more, then a failure (never an endless spinner)", async () => {
 		const { hook, fetchMock } = mount(() => json(answer("other", 5)), {
 			revision: "r1",
 		});
-		await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => expect(hook.result.current.error).not.toBeNull());
+		expect(hook.result.current.pending).toBe(false);
 		expect(hook.result.current.placements).toBeNull();
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("a second ask that answers the viewed snapshot is used", async () => {
+		const { hook, fetchMock } = mount(
+			(n) => json(answer(n === 1 ? "other" : "r1", 5)),
+			{ revision: "r1" },
+		);
+		await waitFor(() =>
+			expect(hook.result.current.placements?.get("A1")).toEqual(placed(5)),
+		);
+		expect(hook.result.current.error).toBeNull();
+		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
 	it("a transient failure is retried, not left outdated until a reload", async () => {

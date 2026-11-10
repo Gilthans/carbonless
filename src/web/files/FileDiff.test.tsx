@@ -130,6 +130,8 @@ type Extra = {
 	agentPlacements?: Placements;
 	/** In a router (pieces that link: an unplaced row's "near N"). */
 	router?: boolean;
+	/** The agent placements are on their way. */
+	agentPending?: boolean;
 };
 
 function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
@@ -139,7 +141,11 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 		<>
 			{shown && (
 				<AgentPlacingProvider
-					value={{ placements: extra.agentPlacements ?? null, until: null }}
+					value={{
+						placements: extra.agentPlacements ?? null,
+						until: null,
+						pending: extra.agentPending,
+					}}
 				>
 					<FileDiff
 						file={shown}
@@ -2048,12 +2054,62 @@ describe("FileDiff: agent threads traced into the viewed head", () => {
 		const card = within(open).getByTestId("agent-thread");
 		expect(card).toHaveClass("border-agent-edge");
 		expect(within(card).queryByTestId("agent-outdated")).toBeNull();
-		// Resolved: after the rest, its fate shortened, no code box.
+		// In its bordered row box, as a review thread's.
+		expect(open).toHaveClass("rounded-md", "border", "border-line");
+		// Resolved: after the rest, one quiet line (the fate shortened) that
+		// expands to the full row and collapses again, as a review thread's.
 		expect(quiet).toHaveAttribute("data-resolved", "true");
-		expect(within(quiet).getByTestId("unplaced-fate")).toHaveTextContent(
-			"Line deleted",
+		const collapsed = within(quiet).getByTestId("unplaced-collapsed");
+		expect(collapsed).toHaveAccessibleName(
+			"Resolved thread by you: Line deleted. Expand",
 		);
-		expect(within(quiet).queryByTestId("original-code")).toBeNull();
+		expect(within(quiet).queryByTestId("agent-thread")).toBeNull();
+		await user.click(collapsed);
+		const full = screen
+			.getAllByTestId("agent-unplaced")
+			.find((r) => r.dataset.thread === "R") as HTMLElement;
+		expect(within(full).getByTestId("unplaced-fate")).toHaveTextContent(
+			"Commented line has been deleted since the review",
+		);
+		expect(within(full).getByTestId("agent-thread")).toBeTruthy();
+		await user.click(within(full).getByRole("button", { name: "Collapse" }));
+		expect(
+			within(
+				screen
+					.getAllByTestId("agent-unplaced")
+					.find((r) => r.dataset.thread === "R") as HTMLElement,
+			).getByTestId("unplaced-collapsed"),
+		).toBeTruthy();
+		expect(screen.queryByTestId("agent-outdated")).toBeNull();
+	});
+
+	it("while their placements load, a file whose agent threads wait shows a spinner in its agent bubble (closed and open), never an outdated thread", async () => {
+		const user = userEvent.setup();
+		const { queryClient } = setup(
+			file([cluster("k1")]),
+			undefined,
+			hunks,
+			"clusters",
+			{ agentPending: true },
+		);
+		await act(async () => {
+			queryClient.setQueryData(sessionQuery.queryKey, {
+				snapshotHead: NOW,
+			} as SessionInfo);
+			queryClient.setQueryData(agentThreadsQuery.queryKey, {
+				threads: [asked("W", 5)],
+			});
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		const closed = await screen.findByTestId("agent-bubble");
+		expect(closed).toHaveAccessibleName("Placing agent threads in this file");
+		expect(closed).toHaveAttribute("aria-busy", "true");
+		await user.click(closed);
+		const open = await screen.findByRole("button", {
+			name: "Placing agent threads on this file",
+		});
+		expect(open).toHaveAttribute("aria-busy", "true");
+		expect(screen.queryByTestId("agent-thread")).toBeNull();
 		expect(screen.queryByTestId("agent-outdated")).toBeNull();
 	});
 

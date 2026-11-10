@@ -26,6 +26,19 @@ const asked = (id: string, path: string): AgentThread => ({
 	openedBy: "human",
 	at: "2026-11-07T10:00:00Z",
 	messages: [{ id: "m", by: "human", at: "2026-11-07T10:00:00Z", text: "Q?" }],
+	code: {
+		anchor: {
+			path,
+			commit: H1,
+			side: "RIGHT",
+			line: 3,
+			startSide: "RIGHT",
+			startLine: 3,
+			at: "2026-11-07T10:00:00Z",
+		},
+		source: "clone",
+		rows: [{ kind: "add", oldNo: null, newNo: 3, text: "three", marked: true }],
+	},
 	resolved: false,
 	waiting: false,
 });
@@ -54,14 +67,18 @@ describe("AgentNotInComparison", () => {
 			HTMLElement,
 		];
 		expect(rev).toHaveAttribute("data-fate", "reverted");
-		expect(within(rev).getByTestId("agent-outside-fate")).toHaveTextContent(
+		expect(within(rev).getByTestId("unplaced-fate")).toHaveTextContent(
 			"The commented change has been reverted since the review",
+		);
+		// The code it was asked on, as a review thread's row has it.
+		expect(within(rev).getByTestId("original-code-title")).toHaveTextContent(
+			"Original Reviewed Change",
 		);
 		expect(rev).toHaveTextContent("rev.ts");
 		expect(within(rev).getByTestId("agent-thread")).toHaveClass(
 			"border-agent-edge",
 		);
-		expect(within(ren).queryByTestId("agent-outside-fate")).toBeNull();
+		expect(ren).toHaveAttribute("data-fate", "unknown");
 		expect(ren).toHaveTextContent("old.ts");
 		expect(
 			within(ren).getByRole("img", {
@@ -99,14 +116,26 @@ describe("AgentNotInComparison while the agent placements load or fail", () => {
 		expect(screen.queryByTestId("agent-placements-loading")).toBeNull();
 	});
 
-	it("a failure says so, with a retry (the threads show where asked meanwhile)", async () => {
+	it("a failure says so, with a retry, and lists the threads that wait as unknown-fate rows (as review threads)", async () => {
 		const retry = vi.fn();
-		mount({ failed: { error: new Error("boom"), retry } });
+		mount({
+			failed: {
+				error: new Error("boom"),
+				retry,
+				threads: [agentPlaceable(asked("W", "calc.ts"))],
+			},
+		});
 		const failed = screen.getByTestId("agent-placements-failed");
 		expect(failed).toHaveTextContent(
 			"Agent thread places couldn't be computed",
 		);
 		expect(failed).toHaveTextContent("boom");
+		const row = within(failed).getByTestId("agent-unplaced");
+		expect(row).toHaveAttribute("data-fate", "unknown");
+		expect(within(row).getByTestId("unplaced-fate")).toHaveTextContent(
+			"Couldn't work out where this thread is now",
+		);
+		expect(within(row).getByTestId("agent-thread")).toBeTruthy();
 		await userEvent.click(
 			within(failed).getByRole("button", { name: "Retry" }),
 		);
