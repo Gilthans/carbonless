@@ -620,6 +620,17 @@ export class HomeService {
 		return (await this.#viewerOrBlank()).viewer.login;
 	}
 
+	/** The viewer's login if already read, else null (never reads GitHub). */
+	knownViewer(): string | null {
+		return this.#viewer?.login || null;
+	}
+
+	/** Home's cached facts of one PR, in the view or not; never reads GitHub. */
+	cachedPr(owner: string, repo: string, number: number): PrFacts | undefined {
+		return this.#repos.get(`${owner}/${repo}`.toLowerCase())?.facts.get(number)
+			?.facts;
+	}
+
 	/** Every PR Home knows of the view's repos, for search. */
 	knownPrs(): PrFacts[] {
 		return [...this.#repos]

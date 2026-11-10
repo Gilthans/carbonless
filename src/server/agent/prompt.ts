@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 import { type AgentAnchor, PREAMBLE } from "../../shared/agent.js";
+import type { RunnerFacts } from "./runner.js";
+import type { AgentThreadFold } from "./store.js";
 
 /**
  * What every prompt tells the agent: the fixed PREAMBLE, then the thread as
@@ -15,7 +17,8 @@ export interface PromptReview {
 	base: { ref: string; commit: string };
 	head: { ref: string; commit: string };
 	mergeBase: string;
-	tree: string;
+	/** The ACP buddy's checkout; none for a joined session (it has its own copy, if any). */
+	tree?: string;
 }
 
 export interface PromptMessage {
@@ -30,7 +33,7 @@ export interface PromptMessage {
 export interface PromptEnvelope {
 	kind: "agent_thread";
 	review: PromptReview;
-	thread: { id: string; anchor: AgentAnchor & { file: string } };
+	thread: { id: string; anchor: AgentAnchor & { file?: string } };
 	messages: PromptMessage[];
 	notice?: string;
 	pr?: { title: string; body: string; files: string[] };
@@ -56,9 +59,8 @@ export function anchorFor(
 	anchor: AgentAnchor,
 	review: PromptReview,
 ): AgentAnchor & { file: string } {
-	const file = isSafePath(anchor.path)
-		? join(review.tree, anchor.path)
-		: review.tree;
+	const tree = review.tree ?? "";
+	const file = isSafePath(anchor.path) ? join(tree, anchor.path) : tree;
 	const left = anchor.subject === "line" && anchor.side === "LEFT";
 	return { ...anchor, ...(left ? { commit: review.mergeBase } : {}), file };
 }
@@ -175,7 +177,9 @@ export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 			anchor: {
 				...thread.anchor,
 				path: s(thread.anchor.path),
-				file: s(thread.anchor.file),
+				...(thread.anchor.file === undefined
+					? {}
+					: { file: s(thread.anchor.file) }),
 			},
 		},
 		...(pr
@@ -212,7 +216,7 @@ export function buildPrompt(
 	anchored: { uri: string; mimeType: string; text: string } | null,
 	hunk: string | null,
 ): ContentBlock[] {
-	const preamble = PREAMBLE.replace("<tree>", env.review.tree);
+	const preamble = PREAMBLE.replace("<tree>", env.review.tree ?? "");
 	const blocks: ContentBlock[] = [
 		{ type: "text", text: `${preamble}\n\n${JSON.stringify(env)}` },
 	];
@@ -224,4 +228,49 @@ export function buildPrompt(
 		});
 	}
 	return blocks;
+}
+
+/**
+ * A thread as the agent gets it, sanitised (sanitizeEnvelope): the review,
+ * the anchor, the messages (the reviewer named by `viewer`), a `notice`,
+ * and the PR's title, body and files when `withPr`. `tree: false` (a
+ * joined session): no checkout path, in the review or on the anchor.
+ */
+export async function threadEnvelope(
+	facts: Pick<RunnerFacts, "review" | "prFacts" | "authorOf">,
+	thread: AgentThreadFold,
+	opts: { viewer?: string; withPr: boolean; notice?: string; tree: boolean },
+): Promise<PromptEnvelope> {
+	const full = facts.review();
+	const { tree: _, ...bare } = full;
+	const review: PromptReview = opts.tree ? full : bare;
+	const anchored = anchorFor(thread.anchor, full);
+	const { file: __, ...noFile } = anchored;
+	let pr: PromptEnvelope["pr"];
+	if (opts.withPr) {
+		pr = await facts.prFacts().then(
+			(p) => ({ title: p.title, body: p.body, files: p.files }),
+			() => undefined,
+		);
+	}
+	const { viewer, notice } = opts;
+	return sanitizeEnvelope({
+		kind: "agent_thread",
+		review,
+		thread: { id: thread.id, anchor: opts.tree ? anchored : noFile },
+		messages: thread.messages.map(
+			(m): PromptMessage =>
+				m.by === "ai"
+					? { author: { role: "agent" }, at: m.at, text: m.text }
+					: {
+							author: viewer
+								? { login: viewer, role: facts.authorOf(viewer) }
+								: { role: "reviewer" },
+							at: m.at,
+							text: m.text,
+						},
+		),
+		...(notice ? { notice } : {}),
+		...(pr ? { pr } : {}),
+	});
 }

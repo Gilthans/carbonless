@@ -194,6 +194,13 @@ export class SessionRegistry {
 		return run;
 	}
 
+	/** The reviews open now, with when each was last used (ms); none is touched. */
+	list(): { session: Session; lastUsed: number }[] {
+		return [...this.#open.values()]
+			.filter((e) => !e.session.closed)
+			.map((e) => ({ session: e.session, lastUsed: e.lastUsed }));
+	}
+
 	/** Closes the sessions idle for longer than idleMs (not one a session is joined to). */
 	async sweep(): Promise<void> {
 		const now = this.#now();

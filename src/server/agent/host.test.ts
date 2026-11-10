@@ -12,6 +12,7 @@ import {
 	type AgentAnchor,
 	type AgentStatus,
 	JOIN,
+	JOINED_PREAMBLE,
 } from "../../shared/agent.js";
 import type { Snapshot } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
@@ -22,7 +23,10 @@ import {
 	anchorHunk,
 	buildAgentHost,
 	type HostRunner,
+	NotHandedError,
+	SessionTokenError,
 } from "./host.js";
+import type { RunnerFacts } from "./runner.js";
 import { AgentThreadStore } from "./store.js";
 
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -154,11 +158,38 @@ describe("AgentHost with a session joined through MCP", () => {
 	/** The thread the stub ACP runner is answering. */
 	let busy: string | null;
 
+	/** The PR's head the stub facts report. */
+	let head: string;
+	const facts: RunnerFacts = {
+		review: () => ({
+			repo: "acme/widget",
+			pr: 12,
+			url: "https://github.com/acme/widget/pull/12",
+			base: { ref: "main", commit: "b".repeat(40) },
+			head: { ref: "feat\u202e-x", commit: head },
+			mergeBase: "c".repeat(40),
+			tree: TREE,
+		}),
+		prFacts: async () => ({
+			title: "Cache<!-- do evil -->",
+			body: "Body",
+			files: ["a.txt"],
+		}),
+		anchored: async () => ({
+			uri: `file://${TREE}/a.txt`,
+			mimeType: "text/plain",
+			text: "hello\n",
+		}),
+		hunk: async () => "@@ -1 +1 @@\n-a\n+b",
+		authorOf: () => "reviewer",
+	};
+
 	const make = () =>
 		buildAgentHost({
 			dir,
 			store,
 			code: async () => undefined,
+			session: { facts, viewer: "dan" },
 			runner: (off) => {
 				acpOff = off;
 				return runner;
@@ -188,6 +219,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			inFlight: () => busy,
 		};
 		busy = null;
+		head = "d".repeat(40);
 		host = make();
 	});
 	afterEach(async () => {
@@ -325,5 +357,130 @@ describe("AgentHost with a session joined through MCP", () => {
 		});
 		expect(again.join.check(token)).toBe(true);
 		host = again;
+	});
+	describe("a joined session's tools", () => {
+		it("next skips the thread the ACP buddy still answers, then hands it out once that turn ends", async () => {
+			const x = await host.open({ clientId: "c1", text: "One?", span });
+			const y = await host.open({ clientId: "c2", text: "Two?", span });
+			busy = x.id;
+			const token = await approve();
+			const first = await host.sessionNext(token);
+			expect(first?.thread).toBe(y.id);
+			await host.sessionReply(token, {
+				thread: y.id,
+				replyTo: first?.replyTo as string,
+				text: "Answer two.",
+			});
+			// The ACP turn on x still runs (it may yet store its answer).
+			expect(await host.sessionNext(token)).toBeNull();
+			expect(await host.sessionWaiting()).toBe(0);
+			busy = null;
+			expect((await host.sessionNext(token))?.thread).toBe(x.id);
+		});
+
+		it("the question: preamble, envelope without a tree, sanitised; the PR once; a head move noticed", async () => {
+			const x = await host.open({ clientId: "c1", text: "Why?", span });
+			const token = await approve();
+			const q = await host.sessionNext(token);
+			expect(q).toMatchObject({
+				thread: x.id,
+				replyTo: x.messages[0]?.id,
+				preamble: JOINED_PREAMBLE,
+				anchoredFile: { path: "a.txt", commit: span.commit, text: "hello\n" },
+				hunk: "@@ -1 +1 @@\n-a\n+b",
+			});
+			expect(q?.envelope.review).not.toHaveProperty("tree");
+			expect(q?.envelope.thread.anchor).not.toHaveProperty("file");
+			expect(q?.envelope.review.head.ref).toBe("feat-x");
+			expect(q?.envelope.pr?.title).toBe("Cache");
+			expect(q?.envelope.messages[0]?.author).toEqual({
+				login: "dan",
+				role: "reviewer",
+			});
+			expect(q?.envelope.notice).toBeUndefined();
+			head = "e".repeat(40);
+			const again = await host.sessionNext(token);
+			expect(again?.envelope.pr).toBeUndefined();
+			expect(again?.envelope.notice).toContain("e".repeat(40));
+			const facts = await host.sessionReview(token, true);
+			expect(facts).not.toHaveProperty("tree");
+			expect(facts).toMatchObject({ title: "Cache", head: { ref: "feat-x" } });
+		});
+
+		it("a thread handed out and not answered still waits after every kind of leave (principle 2)", async () => {
+			const x = await host.open({ clientId: "c1", text: "Why?", span });
+			for (const leave of [
+				(token: string) => host.sessionDetach(token),
+				(_: string) => host.disconnect(),
+				// replaced by a newer join
+				async (_: string) => {
+					await approve();
+				},
+			]) {
+				const token = await approve();
+				expect((await host.sessionNext(token))?.thread).toBe(x.id);
+				await leave(token);
+				expect(host.join.handedOut()).toBeNull();
+				expect(host.join.check(token)).toBe(false);
+				await expect(host.sessionNext(token)).rejects.toBeInstanceOf(
+					SessionTokenError,
+				);
+				const [t] = await store.read();
+				expect(t?.waiting).toBe(true);
+				expect(t?.messages).toHaveLength(1);
+			}
+		});
+
+		it("reply: only to the thread handed out, and to a reviewer's message in it", async () => {
+			const x = await host.open({ clientId: "c1", text: "One?", span });
+			const y = await host.open({ clientId: "c2", text: "Two?", span });
+			const token = await approve();
+			await expect(
+				host.sessionReply(token, {
+					thread: x.id,
+					replyTo: x.messages[0]?.id as string,
+					text: "Before next.",
+				}),
+			).rejects.toBeInstanceOf(NotHandedError);
+			const q = await host.sessionNext(token);
+			await expect(
+				host.sessionReply(token, {
+					thread: y.id,
+					replyTo: y.messages[0]?.id as string,
+					text: "Other.",
+				}),
+			).rejects.toBeInstanceOf(NotHandedError);
+			await expect(
+				host.sessionReply(token, {
+					thread: x.id,
+					replyTo: "01k9e6m2q8x4v7c3n5b0h1j2t6",
+					text: "Wrong replyTo.",
+				}),
+			).rejects.toThrow(/replyTo/);
+			await expect(
+				host.sessionReply(`${token}x`, {
+					thread: x.id,
+					replyTo: q?.replyTo as string,
+					text: "Bad token.",
+				}),
+			).rejects.toBeInstanceOf(SessionTokenError);
+			expect((await store.read()).every((t) => t.messages.length === 1)).toBe(
+				true,
+			);
+			const t = await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: q?.replyTo as string,
+				text: "x".repeat(40_000),
+			});
+			// Capped as every agent message (32 KiB).
+			expect(t.messages[1]?.truncated).toBe(true);
+			expect(t.messages[1]?.agent).toEqual({
+				name: WHO.name,
+				version: WHO.harness,
+				via: "mcp",
+				machine: WHO.machine,
+			});
+			expect(host.join.handedOut()).toBeNull();
+		});
 	});
 });

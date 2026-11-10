@@ -20,14 +20,7 @@ import { AcpAgent, AgentStartError, agentEnv } from "./acp.js";
 import { agentsDir, type Checkout, createCheckout } from "./checkout.js";
 import { type ReviewClaim, takeClaim } from "./claim.js";
 import { decidePermission } from "./policy.js";
-import {
-	anchorFor,
-	buildPrompt,
-	type PromptEnvelope,
-	type PromptMessage,
-	type PromptReview,
-	sanitizeEnvelope,
-} from "./prompt.js";
+import { buildPrompt, type PromptReview, threadEnvelope } from "./prompt.js";
 import type { AgentThreadFold, AgentThreadStore } from "./store.js";
 
 /** What the runner asks of the review it serves. */
@@ -571,32 +564,11 @@ export class AgentRunner {
 			]
 				.filter(Boolean)
 				.join("\n") || undefined;
-		const viewer = this.#deps.viewer;
-		let pr: PromptEnvelope["pr"];
-		if (!this.#prompted) {
-			pr = await facts.prFacts().then(
-				(p) => ({ title: p.title, body: p.body, files: p.files }),
-				() => undefined,
-			);
-		}
-		const env: PromptEnvelope = sanitizeEnvelope({
-			kind: "agent_thread",
-			review,
-			thread: { id: thread.id, anchor: anchorFor(thread.anchor, review) },
-			messages: thread.messages.map(
-				(m): PromptMessage =>
-					m.by === "ai"
-						? { author: { role: "agent" }, at: m.at, text: m.text }
-						: {
-								author: viewer
-									? { login: viewer, role: facts.authorOf(viewer) }
-									: { role: "reviewer" },
-								at: m.at,
-								text: m.text,
-							},
-			),
+		const env = await threadEnvelope(facts, thread, {
+			...(this.#deps.viewer ? { viewer: this.#deps.viewer } : {}),
+			withPr: !this.#prompted,
 			...(notice ? { notice } : {}),
-			...(pr ? { pr } : {}),
+			tree: true,
 		});
 		const [anchored, hunk] = await Promise.all([
 			facts.anchored(thread.anchor).catch(() => null),

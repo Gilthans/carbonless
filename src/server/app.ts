@@ -42,6 +42,7 @@ import type { HomeService } from "./home/homeService.js";
 import { registerHomeRoutes } from "./home/routes.js";
 import { HomeSearch } from "./home/search.js";
 import { MARKER_ID } from "./marker.js";
+import { joinableDeps, listJoinable, registerMcp } from "./mcp/routes.js";
 import { newThreadProblem } from "./newThreads.js";
 import { type HeadSpec, parseHead } from "./pinnedHead.js";
 import {
@@ -96,6 +97,8 @@ export interface AppOptions {
 	progress?: (message: string) => void;
 	/** Home (`/api/home/*`); omit for a server without it (tests). */
 	home?: HomeService;
+	/** The MCP watcher's keep-alive period (tests; default JOIN.keepAliveMs). */
+	mcpKeepAliveMs?: number;
 }
 
 /** A malformed request (HTTP 400). */
@@ -647,6 +650,17 @@ export async function buildApp(
 			if (error instanceof GitError) throw error;
 			return notFoundPage(reply, (error as Error).message);
 		}
+	});
+
+	// A session joining a review as its buddy (MCP), and its watcher.
+	const joinable = joinableDeps(registry, options.home);
+	registerMcp(app, {
+		registry,
+		reviews: (origin, query) => listJoinable(joinable, origin, query),
+		accessKey: options.accessKey,
+		...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
+		baseUrl: () => options.baseUrl?.() ?? "http://localhost",
+		...(options.mcpKeepAliveMs ? { keepAliveMs: options.mcpKeepAliveMs } : {}),
 	});
 
 	if (options.home) {

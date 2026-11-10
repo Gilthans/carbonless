@@ -7,6 +7,7 @@ import {
 	type AgentStatus,
 	type AgentThread,
 	JOIN,
+	JOINED_PREAMBLE,
 	type OpenAgentThreadRequest,
 } from "../../shared/agent.js";
 import type {
@@ -22,10 +23,20 @@ import { runGitBuffer } from "../git.js";
 import { RefStore } from "../review/refStore.js";
 import { agentsDir } from "./checkout.js";
 import { ReviewClaim } from "./claim.js";
-import { JoinBroker } from "./join.js";
-import { isSafePath, mimeTypeOf } from "./prompt.js";
+import { JoinBroker, type WatchLease } from "./join.js";
+import {
+	isSafePath,
+	mimeTypeOf,
+	type PromptEnvelope,
+	sanitizeThirdParty,
+	threadEnvelope,
+} from "./prompt.js";
 import { AgentRunner, type RunnerFacts } from "./runner.js";
-import { type AgentThreadFold, AgentThreadStore } from "./store.js";
+import {
+	type AgentThreadFold,
+	AgentThreadStore,
+	UnknownAgentThreadError,
+} from "./store.js";
 
 /** The port this server listens on (serve.ts sets it): the claim names it. */
 let listeningPort = 0;
@@ -39,6 +50,57 @@ export type HostRunner = Pick<
 	AgentRunner,
 	"status" | "asked" | "poke" | "stop" | "cancel" | "close" | "inFlight"
 >;
+
+/** A joined session's token isn't (or is no longer) this review's (code unknown-token). */
+export class SessionTokenError extends Error {
+	constructor() {
+		super(
+			"This token isn't joined to the review (it left, was disconnected or replaced): call attach again",
+		);
+	}
+}
+
+/** A joined session's reply to a thread `next` didn't hand it (code not-handed). */
+export class NotHandedError extends Error {
+	constructor(readonly thread: string) {
+		super(
+			`Thread ${thread} isn't the one handed to you: call next and reply to the thread it gives`,
+		);
+	}
+}
+
+/** A joined session's reply that can't be stored as asked (code invalid). */
+export class BadReplyError extends Error {}
+
+/** What `next` hands a joined session. */
+export interface SessionQuestion {
+	thread: string;
+	/** The last human message: the reply's `replyTo`. */
+	replyTo: string | undefined;
+	preamble: string;
+	envelope: PromptEnvelope;
+	anchoredFile: { path: string; commit: string; text: string } | null;
+	hunk: string | null;
+}
+
+/** The review as a joined session sees it (`review`, an approved `attach`). */
+export interface SessionReviewFacts {
+	repo: string;
+	pr: number;
+	url: string;
+	base: { ref: string; commit: string };
+	head: { ref: string; commit: string };
+	mergeBase: string;
+	title?: string;
+	body?: string;
+	files?: string[];
+}
+
+/** What a joined session's tools read of the review (reviewAgentHost's facts). */
+export interface SessionFacts {
+	facts: RunnerFacts;
+	viewer?: string;
+}
 
 /**
  * A review's agent as its Session owns it: the ACP runner, the join broker
@@ -57,9 +119,13 @@ export class AgentHost {
 			at: string,
 		) => Promise<CodeWindow | undefined>,
 		readonly join: JoinBroker,
+		private readonly session?: SessionFacts,
 	) {
 		this.#restored = join.restore().catch(() => {});
 	}
+
+	/** The joined session (by `since`) and the head its last `next` saw. */
+	#seen: { since: string; head: string } | null = null;
 
 	/** The runner's status, with a joined session (or a request to join) laid over it. */
 	async status(): Promise<AgentStatus> {
@@ -180,6 +246,173 @@ export class AgentHost {
 		await this.runner.close();
 	}
 
+	/** Who answers here besides ACP: a joined session, or one asking to join. */
+	buddy(): "joined" | "pending" | null {
+		const v = this.join.view();
+		return v.joined ? "joined" : v.joinRequest ? "pending" : null;
+	}
+
+	/** Whether `secret` is the joined session's token (after a restart's restore). */
+	async sessionAllowed(secret: string): Promise<boolean> {
+		await this.#restored;
+		return this.join.check(secret);
+	}
+
+	/** The watcher's lease for `secret`; null for a token not joined here. */
+	async sessionWatch(secret: string): Promise<WatchLease | null> {
+		await this.#restored;
+		return this.join.watcher(secret);
+	}
+
+	async #token(secret: string): Promise<void> {
+		await this.#restored;
+		if (!this.join.check(secret)) throw new SessionTokenError();
+	}
+
+	#facts(): SessionFacts {
+		if (!this.session)
+			throw new Error("This review has no facts for a joined session");
+		return this.session;
+	}
+
+	/** Waiting questions a joined session can take (not the one the ACP buddy still answers). */
+	async sessionWaiting(): Promise<number> {
+		const busy = this.busyThread();
+		return (await this.store.read()).filter(
+			(t) => t.waiting && !t.resolved && t.id !== busy,
+		).length;
+	}
+
+	/** The review's facts for a joined session, sanitised; `withPr` adds the PR's title, body and files. */
+	async sessionReview(
+		secret: string,
+		withPr: boolean,
+	): Promise<SessionReviewFacts> {
+		await this.#token(secret);
+		const { facts } = this.#facts();
+		const { tree: _, ...r } = facts.review();
+		const s = sanitizeThirdParty;
+		const out: SessionReviewFacts = {
+			...r,
+			base: { ...r.base, ref: s(r.base.ref) },
+			head: { ...r.head, ref: s(r.head.ref) },
+		};
+		if (!withPr) return out;
+		const pr = await facts.prFacts().catch(() => null);
+		return pr
+			? { ...out, title: s(pr.title), body: s(pr.body), files: pr.files.map(s) }
+			: out;
+	}
+
+	/**
+	 * The question for a joined session: the thread handed to it and not
+	 * yet answered (again, with what was added since), else the oldest
+	 * waiting one (not the ACP buddy's last turn), handed to it; null when
+	 * none waits.
+	 */
+	async sessionNext(secret: string): Promise<SessionQuestion | null> {
+		await this.#token(secret);
+		const { facts, viewer } = this.#facts();
+		const threads = await this.store.read();
+		const handed = this.join.handedOut();
+		const busy = this.busyThread();
+		const thread =
+			(handed && threads.find((t) => t.id === handed.thread && !t.resolved)) ||
+			threads.find((t) => t.waiting && !t.resolved && t.id !== busy);
+		if (!thread) return null;
+		// The read took a while: the session may have left meanwhile.
+		if (!this.join.check(secret)) throw new SessionTokenError();
+		const joined = this.join.view().joined;
+		if (!joined) throw new SessionTokenError();
+		const asked = thread.messages.findLast((m) => m.by === "human")?.id;
+		this.join.handOut(thread.id, asked);
+		const head = facts.review().head.commit;
+		const seen = this.#seen?.since === joined.since ? this.#seen : null;
+		this.#seen = { since: joined.since, head };
+		const notice =
+			seen && seen.head !== head
+				? `The PR's head moved from ${seen.head} to ${head} since your last question.`
+				: undefined;
+		const envelope = await threadEnvelope(facts, thread, {
+			...(viewer ? { viewer } : {}),
+			withPr: !seen,
+			...(notice ? { notice } : {}),
+			tree: false,
+		});
+		const [anchored, hunk] = await Promise.all([
+			facts.anchored(thread.anchor).catch(() => null),
+			facts.hunk(thread.anchor).catch(() => null),
+		]);
+		return {
+			thread: thread.id,
+			replyTo: asked,
+			preamble: JOINED_PREAMBLE,
+			envelope,
+			anchoredFile: anchored
+				? {
+						path: envelope.thread.anchor.path,
+						commit: envelope.thread.anchor.commit,
+						text: anchored.text,
+					}
+				: null,
+			hunk,
+		};
+	}
+
+	/**
+	 * A joined session's answer to the thread `next` handed it, answering
+	 * human message `replyTo` (a newer one still waits: the fold).
+	 */
+	async sessionReply(
+		secret: string,
+		r: { thread: string; replyTo: string; text: string },
+	): Promise<AgentThread> {
+		await this.#token(secret);
+		const handed = this.join.handedOut();
+		if (handed?.thread !== r.thread) throw new NotHandedError(r.thread);
+		if (!r.text.trim()) throw new BadReplyError("The reply's text is empty");
+		const thread = (await this.store.read()).find((t) => t.id === r.thread);
+		if (!thread) throw new UnknownAgentThreadError(r.thread);
+		if (!thread.messages.some((m) => m.by === "human" && m.id === r.replyTo)) {
+			throw new BadReplyError(
+				`replyTo ${r.replyTo} isn't a reviewer's message in thread ${r.thread}: pass the replyTo next gave`,
+			);
+		}
+		// Checked again after the read: a leave meanwhile stores nothing.
+		const joined = this.join.view().joined;
+		if (!joined || !this.join.check(secret)) throw new SessionTokenError();
+		if (this.join.handedOut()?.thread !== r.thread) {
+			throw new NotHandedError(r.thread);
+		}
+		const stored = await this.store.message(r.thread, {
+			by: "ai",
+			text: r.text,
+			agent: {
+				name: joined.name,
+				version: joined.harness ?? "",
+				via: "mcp",
+				machine: joined.machine,
+			},
+			stop: "end_turn",
+			activity: [],
+			replyTo: r.replyTo,
+		});
+		this.join.replied(r.thread);
+		return this.#view(stored);
+	}
+
+	/** Every thread, for a joined session. */
+	async sessionThreads(secret: string): Promise<AgentThread[]> {
+		await this.#token(secret);
+		return this.threads();
+	}
+
+	/** The session's own detach. */
+	async sessionDetach(secret: string): Promise<void> {
+		await this.#token(secret);
+		this.join.leave("detached");
+	}
+
 	/** A human asked: a joined session's watcher wakes, else the ACP runner. */
 	async #asked(): Promise<void> {
 		await this.#restored;
@@ -209,6 +442,8 @@ export function buildAgentHost(o: {
 	/** The review's agent claim, shared by the runner and the joined session. */
 	claim?: ReviewClaim;
 	now?: () => number;
+	/** What a joined session's tools read (none: those tools fail). */
+	session?: SessionFacts;
 }): AgentHost {
 	let runner: HostRunner | undefined;
 	const join: JoinBroker = new JoinBroker({
@@ -230,7 +465,7 @@ export function buildAgentHost(o: {
 	});
 	// A joined session keeps the ACP buddy off even without the file.
 	runner = o.runner(() => join.acpOff() || join.isJoined(), o.claim);
-	return new AgentHost(runner, o.store, o.code, join);
+	return new AgentHost(runner, o.store, o.code, join, o.session);
 }
 
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
@@ -321,6 +556,7 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		dir,
 		store,
 		code,
+		session: { facts, viewer: src.viewer },
 		claim: new ReviewClaim(dir, () => ({
 			pid: process.pid,
 			port: serverPort(),
