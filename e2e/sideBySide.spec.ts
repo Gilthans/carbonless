@@ -1417,3 +1417,197 @@ test("side by side, a focused bubble or number keeps focus as the window crosses
 	await page.setViewportSize(desktop);
 	await expect(number).toBeFocused();
 });
+
+/**
+ * Every kind of bubble on src/greet.ts: resolved on new line 5, two threads
+ * on new line 6, an open one on old line 5, an outdated one and a file
+ * comment (both on the file's bubble).
+ */
+async function bubblyPr(pr: (opts?: PrOptions) => Promise<Pr>) {
+	const p = await pr(fixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	const comment = (text: string) =>
+		threadComment({ login: "rev1", text, commit: head, diffHunk: "" });
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread(
+				{ path: GREET, line: 5, subjectType: "LINE", isResolved: true },
+				[comment("Resolved five"), comment("Done")],
+			),
+			reviewThread({ path: GREET, line: 6, subjectType: "LINE" }, [
+				comment("Six a"),
+			]),
+			reviewThread({ path: GREET, line: 6, subjectType: "LINE" }, [
+				comment("Six b"),
+				comment("Six b again"),
+				comment("Six b thrice"),
+			]),
+			reviewThread(
+				{ path: GREET, line: 5, diffSide: "LEFT", subjectType: "LINE" },
+				[comment("Old five")],
+			),
+			reviewThread(
+				{
+					path: GREET,
+					line: null,
+					originalLine: 2,
+					isOutdated: true,
+					subjectType: "LINE",
+				},
+				[comment("Outdated")],
+			),
+			reviewThread({ path: GREET, line: null, subjectType: "FILE" }, [
+				comment("File"),
+			]),
+		];
+	});
+	return p;
+}
+
+/**
+ * Selects from the start of `from`'s code to the end of `to`'s: a mouse drag
+ * on a desktop, a Range on a phone (a native touch selection isn't
+ * scriptable), then copies. Side by side, `side` is the side the selection
+ * keeps to: the copy waits for the table to say so.
+ */
+async function selectAndCopy(
+	page: Page,
+	from: Locator,
+	to: Locator,
+	isMobile: boolean,
+	side?: "old" | "new",
+) {
+	if (isMobile) {
+		const start = await from.elementHandle();
+		const end = await to.elementHandle();
+		await page.evaluate(
+			([a, b]) => {
+				const range = document.createRange();
+				range.setStart(a as Node, 0);
+				range.setEnd(b as Node, (b as Node).childNodes.length);
+				const selection = getSelection();
+				selection?.removeAllRanges();
+				selection?.addRange(range);
+			},
+			[start, end],
+		);
+	} else {
+		const a = await from.boundingBox();
+		const b = await to.boundingBox();
+		if (!a || !b) throw new Error("a cell has no box");
+		await page.mouse.move(a.x + 4, a.y + Math.min(a.height / 2, 8));
+		await page.mouse.down();
+		await page.evaluate(
+			() =>
+				new Promise((done) =>
+					requestAnimationFrame(() => requestAnimationFrame(done)),
+				),
+		);
+		// Short of the cell's end on a line wider than the window (unified
+		// doesn't wrap): the selection ends inside it.
+		const right = Math.min(b.x + b.width, page.viewportSize()?.width ?? 0);
+		await page.mouse.move(right - 60, b.y + b.height - 4, { steps: 12 });
+		await page.mouse.up();
+	}
+	if (side)
+		await expect(page.locator("table[data-selecting]")).toHaveAttribute(
+			"data-selecting",
+			side,
+		);
+	const selected = await page.evaluate(() => getSelection()?.toString() ?? "");
+	await page.keyboard.press("Control+C");
+	const copied = await page.evaluate(() => navigator.clipboard.readText());
+	const lines = (text: string) => text.replace(/\n$/, "").split("\n");
+	return { selected: lines(selected), copied: lines(copied) };
+}
+
+test("selecting code across rows with bubbles (resolved, several threads, outdated, the file's) gives that code only, either view", async ({
+	page,
+	context,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+	await bubblyPr(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	const cluster = pairs(section);
+	await expect(cluster).toHaveCount(3);
+	const cell = (i: number, side: "LEFT" | "RIGHT") =>
+		codeCells(cluster.nth(i)).nth(side === "LEFT" ? 0 : 1);
+	const bubbles = section.getByTestId("thread-bubble");
+	// Each kind: the file's, the outdated one (on line 2 by its original
+	// line), an open one on the old side, a resolved one, two threads on one line.
+	for (const name of [
+		"1 comment on this file",
+		"1 comment on line 2",
+		"1 comment on old line 5",
+		"2 comments on line 5, resolved",
+		"4 comments on line 6",
+	])
+		await expect(
+			bubbles
+				.filter({ has: page.locator(`[aria-label="${name}"]`) })
+				.or(section.getByRole("button", { name, exact: true })),
+		).toHaveCount(1);
+	const table0 = section.locator("table");
+
+	// The new side, from the hunk's first line (the outdated thread's) across
+	// the resolved line 5 and line 6's two threads to the wide line 7.
+	const two = codeCells(
+		section.locator('tr[data-testid="diff-line"][data-new-no="2"]'),
+	).nth(1);
+	const right = await selectAndCopy(
+		page,
+		two,
+		cell(2, "RIGHT"),
+		isMobile,
+		"new",
+	);
+	const newLines = ["greet 5 changed", "greet 6 changed", WIDE];
+	const before = ["greet 2", "greet 3", "greet 4"];
+	expect(right.copied).toEqual([...before, ...newLines]);
+	expect(right.selected).toEqual([...before, ...newLines]);
+
+	// The old side, across old line 5's bubble.
+	await page.evaluate(() => getSelection()?.removeAllRanges());
+	await expect(table0).not.toHaveAttribute("data-selecting");
+	const left = await selectAndCopy(
+		page,
+		cell(0, "LEFT"),
+		cell(1, "LEFT"),
+		isMobile,
+		"old",
+	);
+	expect(left.copied).toEqual(["greet 5", "greet 6"]);
+	expect(left.selected).toEqual(["greet 5", "greet 6"]);
+
+	// The bubbles still work: the resolved one opens its thread.
+	await page.evaluate(() => getSelection()?.removeAllRanges());
+	const resolved = section.getByRole("button", { name: /resolved/i }).first();
+	await resolved.click();
+	await expect(resolved).toHaveAttribute("aria-expanded", "true");
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Resolved five" }),
+	).toBeVisible();
+	await resolved.click();
+
+	// Unified: the changed lines, old then new, no counts.
+	await sideBySide(page, false);
+	await expect(table(section, "unified")).toBeVisible();
+	const code = codeCells(rows(section));
+	const first = code.filter({ hasText: /greet 5$/ });
+	const last = code.filter({ hasText: /w{300}$/ });
+	const unified = await selectAndCopy(page, first, last, isMobile);
+	const all = ["greet 5", "greet 6", ...newLines.slice(0, 2)];
+	for (const got of [unified.copied, unified.selected]) {
+		expect(got.slice(0, -1)).toEqual(all);
+		expect(got.at(-1)).toMatch(/^w+$/);
+	}
+});

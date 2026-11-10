@@ -777,6 +777,12 @@ test("a closed file counts its threads; a binary file's line thread is flagged b
 		await expect(page.locator('[role="tooltip"]:not([hidden])')).toContainText(
 			"9 comments in this file, your turn",
 		);
+		const shots = process.env.DESIGN_SHOTS;
+		if (shots && !isMobile) {
+			await page.screenshot({
+				path: `${shots}/tree-tooltip-busy-desktop.png`,
+			});
+		}
 	});
 	// No file's hunks are read until it opens.
 	expect(hunkReads).toEqual([]);

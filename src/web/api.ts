@@ -5,6 +5,7 @@ import {
 	type DiffLine,
 	type EditRequest,
 	type FileHunks,
+	type HunksBatch,
 	type NewThreadAnswer,
 	type NewThreadRequest,
 	type PrOverview,
@@ -202,6 +203,13 @@ export const fetchRereview = (from: number, to: RereviewTo) =>
 	);
 
 export type RereviewTo = { patchset: number } | { head: string };
+export const fetchHunksBatch = (revision: string, indexes: readonly number[]) =>
+	request<HunksBatch>(
+		`/api/files/hunks?${new URLSearchParams({ revision, indexes: indexes.join(",") })}`,
+	);
+
+/** A revision's hunks and context never change; kept this long unobserved, so a search's prefetch outlives the bar. */
+export const HUNKS_KEPT_MS = 60 * 60_000;
 
 export const fetchContext = (
 	revision: string,
@@ -717,6 +725,7 @@ export const hunksQuery = (revision: string, index: number, from?: number) =>
 		queryFn: () => fetchHunks(revision, index, from),
 		// A revision's hunks never change.
 		staleTime: Number.POSITIVE_INFINITY,
+		gcTime: HUNKS_KEPT_MS,
 	});
 
 /** How often the page asks again while the engine is still computing. */
@@ -752,4 +761,5 @@ export const contextQuery = (
 		queryKey: ["context", revision, index, from, to],
 		queryFn: () => fetchContext(revision, index, from, to),
 		staleTime: Number.POSITIVE_INFINITY,
+		gcTime: HUNKS_KEPT_MS,
 	});

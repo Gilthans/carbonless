@@ -5,9 +5,21 @@ import threadsFixture from "../fixtures/gh/review-threads.json" with {
 	type: "json",
 };
 import { writeFileAtomic } from "./atomic.mjs";
+import { fakeGhServer } from "./server.mjs";
 
-/** Directory holding the fake `gh`; put it first on PATH. */
+/** Directory holding the fake `gh`; put it first on PATH (fakeGhEnv). */
 export const FAKE_GH_DIR = resolve(import.meta.dirname);
+
+/**
+ * The environment that puts the fake gh first on PATH, served by this
+ * process's fake gh server (server.mjs) rather than a Node process per call.
+ */
+export function fakeGhEnv(): { PATH: string; CRB_FAKE_GH_SERVER: string } {
+	return {
+		PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
+		CRB_FAKE_GH_SERVER: fakeGhServer(),
+	};
+}
 
 /** What the fake `gh` (test/fake-gh/gh) answers, read from `$CRB_FAKE_GH`. */
 export interface Scenario {

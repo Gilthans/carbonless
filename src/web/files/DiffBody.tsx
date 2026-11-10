@@ -43,6 +43,7 @@ import { type AgentPlaceable, agentPlaceable } from "../agent/placeable";
 import { contextQuery, hunksQuery, overviewQuery, sessionQuery } from "../api";
 import {
 	CodeLine,
+	type FindMark,
 	type Mark,
 	useShowInvisibles,
 	type Words,
@@ -71,7 +72,10 @@ import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
+import { contextRanges } from "./contextRanges";
+import { findBarElement } from "./find/hitSeen";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
+import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
 import { KindChip } from "./KindChip";
@@ -114,6 +118,25 @@ export interface DiffThreads {
 	threads: ReviewThread[];
 }
 
+/** The find's view of this file (FilesPage): marks per line, the current hit, and steps onto it. */
+export interface DiffFind {
+	/**
+	 * The hits on the line a cell shows (codeCellOf's side and number).
+	 * Called for every cell on every render: an O(1) lookup (a Map keyed by
+	 * side and line), never a scan of the hits.
+	 */
+	marksOf: (side: DiffSide, line: number) => readonly FindMark[];
+	/** The current hit's line, when it is in this file (painted current). */
+	current: LineRef | null;
+	/**
+	 * A step has shown the current hit (Caret.shown): only then does it keep
+	 * a collapsed whitespace-only cluster open (typing never moves the layout).
+	 */
+	shown: boolean;
+	/** Bumped by each step onto a hit in this file: its row scrolls under the sticky stack. */
+	stepSeq: number;
+}
+
 /**
  * The file's own bubble and its threads' row (FileDiff): on the diff's
  * first row, whatever kind it is (side by side, in a pair row's right cell),
@@ -140,7 +163,7 @@ export function FileBubbleSlot(props: { children: ReactNode; count?: number }) {
 	return (
 		<span
 			data-testid="file-bubble-slot"
-			className={`sticky z-[4] float-left flex justify-center ${
+			className={`sticky z-[4] float-left flex justify-center select-none ${
 				(props.count ?? 1) > 1
 					? "left-[calc(50%-2.5rem)] -mr-20 w-20"
 					: "left-[calc(50%-1.25rem)] -mr-10 w-10"
@@ -729,12 +752,15 @@ function CodeCell(props: {
 	marks: readonly Mark[];
 	/** A pair's changed tokens on the line, tinted (wordBlocks.ts). */
 	words?: Words;
-	/** Side by side only: the cell's own paint, kind, landing, mark and pick. */
+	/** The find's hits on the line's characters. */
+	finds?: readonly FindMark[];
+	/** Side by side only: the cell's own paint, kind, landing, mark, pick and find. */
 	cell?: {
 		paint: string;
 		landed: boolean;
 		commented: boolean;
 		picked: boolean;
+		current: boolean;
 	};
 }) {
 	const { line, cell, bubble, lead, agentBubble } = props;
@@ -754,6 +780,7 @@ function CodeCell(props: {
 			data-landed={cell?.landed || undefined}
 			data-commented={cell?.commented ? "" : undefined}
 			data-picked={cell?.picked || undefined}
+			data-find-current={cell?.current || undefined}
 			// Top-aligned next to its number, however tall the other side makes the row.
 			className={`${cell ? "align-top whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${bubblePad(bubbles)} ${cell?.paint ?? ""}`}
 		>
@@ -775,6 +802,7 @@ function CodeCell(props: {
 				tabWidth={props.tabWidth}
 				newline={!line.noNewline}
 				marks={props.marks}
+				finds={props.finds}
 				words={props.words}
 			/>
 		</td>
@@ -814,6 +842,7 @@ interface RowProps {
 	orderOf?: (line: DiffLine) => number | undefined;
 	picker?: Picker;
 	composers?: RowComposers;
+	find?: DiffFind;
 	agent?: AgentRows;
 	/** The hunk's paired lines' word marks (hunkWordMarks), by line. */
 	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
@@ -973,7 +1002,8 @@ function NewThreadRow(props: {
 /**
  * git's "No newline at end of file" under a line: unified, one note across
  * the row; side by side, the note in the cell of each side whose line lacks
- * it (a context line lacking it shows it on both).
+ * it (a context line lacking it shows it on both). Not code, so not part of
+ * a text selection.
  */
 function NoNewlineRow(props: {
 	shape: Shape;
@@ -984,7 +1014,7 @@ function NoNewlineRow(props: {
 	const columns = columnsOf(props.shape.view);
 	if (props.shape.view === "unified") {
 		return (
-			<tr data-testid="no-newline">
+			<tr data-testid="no-newline" className="select-none">
 				<Rail state={props.state} />
 				<td colSpan={columns - 1} className="px-2 text-muted italic">
 					{NO_NEWLINE}
@@ -993,7 +1023,7 @@ function NoNewlineRow(props: {
 		);
 	}
 	return (
-		<tr data-testid="no-newline" className="text-muted italic">
+		<tr data-testid="no-newline" className="text-muted italic select-none">
 			<Rail state={props.state} />
 			<ControlsCell />
 			<td />
@@ -1015,6 +1045,9 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 	// old one: threads ending on either share its bubble.
 	const { commented, ending, endKey, open } = cellThreads(keys, threads);
 	const landed = landedPhase(props.landed, line);
+	// The find's current hit: on either of the row's numbers (a ws row's
+	// other line lands here too), its wash over the row.
+	const current = landingOn(props.find?.current ?? null, line);
 	const rowBg = (reviewed ? REVIEWED_ROW_BG : ROW_BG)[line.kind];
 	const numberBg = (reviewed ? REVIEWED_NUMBER_BG : NUMBER_BG)[line.kind];
 	// A pair row has both numbers: a thread on its old side is named by it.
@@ -1047,7 +1080,8 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-landed={landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
-				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""}`}
+				data-find-current={current || undefined}
+				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""} ${current ? "mark-tint" : ""}`}
 			>
 				<Rail state={state} gone={props.gone} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
@@ -1073,6 +1107,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					hunk={props.hunk}
 					order={props.order}
 					marks={marksOf(keys, threads)}
+					finds={props.find?.marksOf(cell.side, cell.line)}
 					words={wordsOf(line, props, reviewed)}
 					bubble={
 						endKey &&
@@ -1134,6 +1169,9 @@ interface Cell {
 	landed?: Landed["phase"];
 	where: string;
 	marks: Mark[];
+	/** The find's hits on the cell's line, and whether the current hit is on it. */
+	finds?: readonly FindMark[];
+	current: boolean;
 	words?: Words;
 	order?: number;
 	pick: NumberPick;
@@ -1177,6 +1215,7 @@ function PairRow(
 		keys: LineKey[],
 		where: string,
 	): Cell => {
+		const code = codeCellOf(line);
 		return {
 			line,
 			keys,
@@ -1184,9 +1223,11 @@ function PairRow(
 			landed: landedPhase(props.landed, line),
 			where,
 			marks: marksOf(keys, threads),
+			finds: props.find?.marksOf(code.side, code.line),
+			current: landingOn(props.find?.current ?? null, line),
 			words: wordsOf(line, props, reviewed),
 			order: props.orderOf?.(source),
-			pick: pickOf(codeCellOf(line), true, picker),
+			pick: pickOf(code, true, picker),
 			agentKeys: agent ? rowKeys(line) : [],
 		};
 	};
@@ -1307,10 +1348,10 @@ function PairRow(
 		if (!cell) return <BlankCells side={side} />;
 		const { line } = cell;
 		const bubbles: Bubbles = own ? {} : bubblesOf(side, cell);
-		// The landing's tint, else the commented range's stripe and numbers;
-		// a pick's wash over either.
+		// The landing's tint (or the find's current hit's), else the
+		// commented range's stripe and numbers; a pick's wash over either.
 		const mark = `${
-			cell.landed === "on"
+			cell.landed === "on" || cell.current
 				? "mark-tint-cell"
 				: cell.commented
 					? "thread-mark-cell"
@@ -1335,6 +1376,7 @@ function PairRow(
 					hunk={props.hunk}
 					order={cell.order}
 					marks={cell.marks}
+					finds={cell.finds}
 					words={cell.words}
 					lead={bubbles.lead}
 					leadCount={lead?.count}
@@ -1344,6 +1386,7 @@ function PairRow(
 						landed: cell.landed === "on",
 						commented: cell.commented,
 						picked: cell.pick.picked,
+						current: cell.current,
 					}}
 					bubble={bubbles.bubble}
 				/>
@@ -1420,7 +1463,8 @@ function PairRow(
  * bubbles sit at the left, a right cell's at the right; the cluster's rail
  * carries on beside them. Not a line (no `diff-line`, numbers or code
  * cells) and not a thread row: the scroll anchor, the line picks and the
- * floating cluster controls pass it by. None when neither cell has any.
+ * floating cluster controls pass it by, and so does a text selection
+ * (select-none). None when neither cell has any.
  */
 function BubbleRow(props: {
 	left: Bubbles;
@@ -1441,7 +1485,7 @@ function BubbleRow(props: {
 		</div>
 	);
 	return (
-		<tr data-testid="bubble-row">
+		<tr data-testid="bubble-row" className="select-none">
 			<Rail state={props.state} />
 			<td colSpan={columnsOf("side-by-side") - 1} className="px-2 py-0">
 				<div className="grid grid-cols-2">
@@ -1631,7 +1675,7 @@ function expansions(gap: Gap, top: number, bottom: number, remaining: number) {
 	if (gap.above && gap.below && remaining <= EXPAND_STEP) {
 		return [
 			{
-				glyph: "↕",
+				glyph: "↕" as const,
 				label: `Load all ${plural(remaining)}`,
 				from: start,
 				to: end,
@@ -1642,7 +1686,7 @@ function expansions(gap: Gap, top: number, bottom: number, remaining: number) {
 	const result = [];
 	if (gap.above) {
 		result.push({
-			glyph: "↓",
+			glyph: "↓" as const,
 			label: `Load ${plural(step)} below`,
 			from: start,
 			to: start + step - 1,
@@ -1650,13 +1694,120 @@ function expansions(gap: Gap, top: number, bottom: number, remaining: number) {
 	}
 	if (gap.below) {
 		result.push({
-			glyph: "↑",
+			glyph: "↑" as const,
 			label: `Load ${plural(step)} above`,
 			from: end - step + 1,
 			to: end,
 		});
 	}
 	return result;
+}
+
+/**
+ * Each arrow's name on its gap row while the pointer is where a click would
+ * press it (`data-hot`), and how the arrow lights up then: as when hovered.
+ */
+const HOT = {
+	"↓": {
+		name: "down",
+		lit: "group-data-[hot=down]/gap:bg-pressed group-data-[hot=down]/gap:text-ink",
+	},
+	"↑": {
+		name: "up",
+		lit: "group-data-[hot=up]/gap:bg-pressed group-data-[hot=up]/gap:text-ink",
+	},
+	"↕": {
+		name: "all",
+		lit: "group-data-[hot=all]/gap:bg-pressed group-data-[hot=all]/gap:text-ink",
+	},
+} as const;
+
+type Glyph = keyof typeof HOT;
+
+/**
+ * A hidden-lines row that is its arrows' pointer target (gapRowTarget): a
+ * click anywhere presses the arrow under the pointer, which is lit while
+ * the pointer is there (`data-hot`, set on the element: no re-render per
+ * move). When the arrows change under a still pointer (↑ turned ↓ ↑ into
+ * ↕), the light follows at once. A pointer convenience only: the
+ * keyboard has the buttons, and the row is never focusable.
+ */
+function GapRowTr(props: {
+	glyphs: Glyph[];
+	onPress: (index: number) => void;
+	className: string;
+	children: ReactNode;
+}) {
+	const row = useRef<HTMLTableRowElement>(null);
+	const pointer = useRef<{ target: EventTarget | null; clientY: number }>(null);
+	const glyphs = props.glyphs.join("");
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the arrows, by their glyphs.
+	const light = useCallback(() => {
+		const el = row.current;
+		if (!el) return;
+		const at = pointer.current;
+		if (!at || props.glyphs.length === 0) {
+			delete el.dataset.hot;
+			return;
+		}
+		const index = gapRowTarget(
+			{ ...at, currentTarget: el },
+			props.glyphs.length,
+		);
+		const glyph = index === null ? undefined : props.glyphs[index];
+		el.dataset.hot = glyph ? HOT[glyph].name : "";
+	}, [glyphs]);
+	useLayoutEffect(light, [light]);
+	const reactive = props.glyphs.length > 0;
+	return (
+		<tr
+			ref={row}
+			data-testid="gap-row"
+			onPointerMove={(e) => {
+				pointer.current = { target: e.target, clientY: e.clientY };
+				light();
+			}}
+			onPointerLeave={() => {
+				pointer.current = null;
+				light();
+			}}
+			onClick={
+				reactive
+					? (e) => {
+							const index = gapRowTarget(e, props.glyphs.length);
+							if (index !== null) props.onPress(index);
+						}
+					: undefined
+			}
+			className={`${props.className} ${reactive ? "cursor-pointer" : ""}`}
+		>
+			{props.children}
+		</tr>
+	);
+}
+
+/** What a pointer on a gap row can't press through: its own controls. */
+const OWN_CONTROLS = "button, a, input, textarea, select, [role=button]";
+
+/**
+ * Which of a gap row's `count` arrows a pointer event at this point presses:
+ * the one arrow anywhere on the row; with two (↓ above ↑, like GitHub's), ↓
+ * on the row's top half and ↑ on its bottom half. None over the row's other
+ * controls (a bubble, Retry), which keep their own clicks.
+ */
+export function gapRowTarget(
+	e: { target: EventTarget | null; currentTarget: Element; clientY: number },
+	count: number,
+): number | null {
+	if (count === 0) return null;
+	const own =
+		e.target instanceof Element ? e.target.closest(OWN_CONTROLS) : null;
+	if (own && e.currentTarget.contains(own) && !own.hasAttribute("data-glyph")) {
+		return null;
+	}
+	if (count === 1) return 0;
+	const box = e.currentTarget.getBoundingClientRect();
+	return e.clientY < box.top + box.height / 2 ? 0 : 1;
 }
 
 const hunkHeader = (h: DisplayHunk) =>
@@ -1684,8 +1835,10 @@ export function DiffBody(props: {
 	kinds?: Map<string, KindEntry>;
 	/** An earlier patch set, as reviewed: the marks are locked. */
 	readOnly?: boolean;
+	/** The find's hits in this file and its current one (FilesPage). */
+	find?: DiffFind;
 }) {
-	const { file, revision } = props;
+	const { file, revision, find } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index, props.from));
 	// The since view: unreviewed clusters the engine lists as reworked or
 	// new whose lines these hunks don't show (gap 5: unreviewed on the
@@ -1718,7 +1871,7 @@ export function DiffBody(props: {
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
 	const centred = view === "unified";
-	const [ranges, setRanges] = useState<[number, number][]>([]);
+	const ranges = contextRanges.use(revision, file.index);
 	const contexts = useQueries({
 		queries: ranges.map(([from, to]) =>
 			contextQuery(revision, file.index, from, to),
@@ -1744,10 +1897,11 @@ export function DiffBody(props: {
 		props.landing,
 		hunks.isSuccess,
 	);
+	useFindStep(root, find, hunks.isSuccess);
 	// The line a thread link is about to land on (so a collapsed cluster
 	// holding it is open by the time the landing looks); once it has
 	// landed, `landed` keeps the cluster open while the highlight lasts.
-	const landingLine: LandingLine | null =
+	const landingLine: LineRef | null =
 		pending && props.landing?.line !== undefined && !props.landing.moved
 			? { old: props.landing.side === "LEFT", line: props.landing.line }
 			: null;
@@ -1778,9 +1932,7 @@ export function DiffBody(props: {
 		? fileGaps(hunks.data.hunks, hunks.data.newLineCount)
 		: [];
 	const addRange = (from: number, to: number) =>
-		setRanges((r) =>
-			r.some(([f, t]) => f === from && t === to) ? r : [...r, [from, to]],
-		);
+		contextRanges.add(revision, file.index, from, to);
 
 	// New threads being written on this file's lines, on the viewed head;
 	// those on another head are orphans (their lines are gone).
@@ -2059,6 +2211,7 @@ export function DiffBody(props: {
 					hunk: hunkOf(n),
 					picker,
 					composers,
+					find,
 					agent: agentRows,
 				};
 				rows.push(
@@ -2083,6 +2236,9 @@ export function DiffBody(props: {
 	 * them (its ↑/↓ buttons, "N hidden lines", loading or Retry, and a bubble
 	 * for the threads whose line is in it).
 	 */
+	const hunkAt = (index: number) => hunks.data?.hunks[index];
+	/** Hunks whose heading went on the hidden-lines row above them, this render. */
+	const headedOnGap = new Set<number>();
 	const gapRows = (gap: Gap | undefined, lead?: () => FileLead | undefined) => {
 		if (!gap) return null;
 		const gapThreads = placement?.gaps.get(gap.index) ?? [];
@@ -2197,14 +2353,32 @@ export function DiffBody(props: {
 				run.from === run.to
 					? `on hidden line ${run.from}`
 					: `on hidden lines ${run.from}–${run.to}`;
+			// The heading of the hunk below, once per hunk: here when this row
+			// sits right above the hunk (its run ends at the gap's end, so no
+			// loaded line comes between) and shows its count or its loading;
+			// else on the hunk's @@ row (headedOnGap).
+			const heading =
+				run.to === gap.to && failed.length === 0 && (pending || remaining > 0)
+					? hunkAt(gap.index)?.heading
+					: undefined;
+			if (heading) headedOnGap.add(gap.index);
+			const bubbles =
+				(runThreads.length > 0 ? 1 : 0) + (runAgent.length > 0 ? 1 : 0);
 			rows.push(
-				<tr
+				<GapRowTr
 					key={`gap${gap.index}:${run.from}`}
-					data-testid="gap-row"
-					className="bg-hunk text-hunk-ink"
+					glyphs={buttons.map((b) => b.glyph)}
+					onPress={(at) => {
+						const b = buttons[at];
+						if (b) addRange(b.from, b.to);
+					}}
+					// Not code: a selection across it leaves it out.
+					className="group/gap bg-hunk text-hunk-ink select-none [--ctl-w:3rem] pointer-coarse:[--ctl-w:5.25rem]"
 				>
 					<td colSpan={2} className="px-1">
-						<div className="flex">
+						<div
+							className={`flex ${buttons.length > 1 ? "flex-col items-start" : ""}`}
+						>
 							{buttons.map((b) => (
 								<Tooltip key={b.glyph} content={b.label} describe={false}>
 									{(trigger) => (
@@ -2212,8 +2386,13 @@ export function DiffBody(props: {
 											type="button"
 											{...trigger}
 											aria-label={b.label}
-											onClick={() => addRange(b.from, b.to)}
-											className="rounded px-1 hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+											data-glyph={b.glyph}
+											onClick={(e) => {
+												// The row's own click would load it again.
+												e.stopPropagation();
+												addRange(b.from, b.to);
+											}}
+											className={`rounded px-1 hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:min-h-10 pointer-coarse:min-w-10 ${HOT[b.glyph].lit}`}
 										>
 											{b.glyph}
 										</button>
@@ -2224,7 +2403,7 @@ export function DiffBody(props: {
 					</td>
 					<td
 						colSpan={columns - 2}
-						className={`font-sans ${leadText(runLead, centred, (runThreads.length > 0 ? 1 : 0) + (runAgent.length > 0 ? 1 : 0))}`}
+						className={`font-sans ${leadText(runLead, centred, bubbles)}`}
 					>
 						{runLead && centred && (
 							<FileBubbleSlot count={runLead.count}>
@@ -2269,13 +2448,27 @@ export function DiffBody(props: {
 									Retry
 								</button>
 							</span>
-						) : pending ? (
-							<Spinner label="Loading lines" size={14} />
-						) : remaining > 0 ? (
-							`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
+						) : pending || remaining > 0 ? (
+							<Labelled
+								label={
+									pending ? (
+										<Spinner label="Loading lines" size={14} />
+									) : (
+										`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
+									)
+								}
+								heading={heading}
+								reserve={labelReserve(
+									"var(--ctl-w) + 0.5rem",
+									bubbles + (runLead && !centred ? (runLead.count ?? 1) : 0),
+									runLead && centred
+										? { count: runLead.count ?? 1 }
+										: undefined,
+								)}
+							/>
 						) : null}
 					</td>
-				</tr>,
+				</GapRowTr>,
 			);
 			if (runLead) {
 				rows.push(
@@ -2324,6 +2517,8 @@ export function DiffBody(props: {
 			{gapRows(gapAt(index), takeLead)}
 			<HunkRows
 				hunk={hunk}
+				// Once per hunk: not here when its hidden-lines row has it.
+				heading={headedOnGap.has(index) ? undefined : hunk.heading}
 				clusters={clusters}
 				kinds={props.kinds}
 				lang={lang}
@@ -2332,6 +2527,7 @@ export function DiffBody(props: {
 				noteId={noteId}
 				landed={landed}
 				landingLine={landingLine}
+				find={find}
 				threads={rowThreads}
 				ignoreWhitespace={ignoreWs}
 				shape={shape}
@@ -2674,19 +2870,70 @@ const landedPhase = (landed: Landed | null, line: RowLine) =>
 		? landed.phase
 		: undefined;
 
-/** A line a thread link is landing on, by its number on one side. */
-interface LandingLine {
+/** A line by its number on one side (a landing's or the find's). */
+export interface LineRef {
 	old: boolean;
 	line: number;
 }
 
-const landingOn = (target: LandingLine | null, line: RowLine) =>
+const landingOn = (target: LineRef | null, line: RowLine) =>
 	target !== null && (target.old ? line.oldNo : line.newNo) === target.line;
 
 /** Why a landing found no line: the text and its tooltip. */
 interface Hint {
 	text: string;
 	tip: string;
+}
+
+/**
+ * Scrolls the page so `target` sits `margin` px below the sticky stack over
+ * the diff in `root` (the find bar and the app header's row: `--app-header`;
+ * the files bar and the file's section header), and below the find bar
+ * itself should it reach lower.
+ */
+function scrollUnderStack(root: HTMLElement, target: Element, margin: number) {
+	const header = root.closest("section")?.querySelector("header");
+	const vars = getComputedStyle(root);
+	const stack =
+		(Number.parseFloat(vars.getPropertyValue("--app-header")) || 0) +
+		(Number.parseFloat(vars.getPropertyValue("--files-bar")) || 0) +
+		(header?.offsetHeight ?? 0);
+	const sticky = Math.max(
+		stack,
+		findBarElement()?.getBoundingClientRect().bottom ?? 0,
+	);
+	window.scrollTo({
+		top: target.getBoundingClientRect().top + window.scrollY - sticky - margin,
+	});
+}
+
+/**
+ * Follows the find's steps onto a hit in this file once the hunks are in:
+ * scrolls the current hit's row under the sticky stack with a few lines of
+ * context above, as a landing does. Each step (`stepSeq`) is taken once,
+ * found or not: a step with no current hit or no row is spent, so the
+ * current hit moving later without a step (typing) never scrolls. The row
+ * is there to find, as a collapsed cluster holding it is kept open.
+ */
+function useFindStep(
+	root: RefObject<HTMLDivElement | null>,
+	find: DiffFind | undefined,
+	ready: boolean,
+) {
+	const done = useRef(0);
+	const seq = find?.stepSeq ?? 0;
+	const old = find?.current?.old;
+	const line = find?.current?.line;
+	useEffect(() => {
+		const el = root.current;
+		if (!el || !ready || seq === 0 || done.current === seq) return;
+		done.current = seq;
+		if (line === undefined) return;
+		const row = el.querySelector(
+			`tr[data-${old ? "old" : "new"}-no="${line}"]`,
+		);
+		if (row) scrollUnderStack(el, row, 60);
+	}, [root, seq, ready, old, line]);
 }
 
 /**
@@ -2711,17 +2958,8 @@ function useLanding(
 		if (!landing || !ready || !el || done.current === landing.seq) return;
 		done.current = landing.seq;
 		const section = el.closest("section");
-		const header = section?.querySelector("header");
-		const vars = getComputedStyle(el);
-		const sticky =
-			(Number.parseFloat(vars.getPropertyValue("--app-header")) || 0) +
-			(Number.parseFloat(vars.getPropertyValue("--files-bar")) || 0) +
-			(header?.offsetHeight ?? 0);
 		const scrollTo = (target: Element, margin: number) =>
-			window.scrollTo({
-				top:
-					target.getBoundingClientRect().top + window.scrollY - sticky - margin,
-			});
+			scrollUnderStack(el, target, margin);
 		const old = landing.side === "LEFT";
 		const where = `${old ? "Old line" : "Line"} ${landing.line}`;
 		const row =
@@ -2789,6 +3027,8 @@ function LandingHint({ hint }: { hint: Hint }) {
 /** A hunk's header and lines: context runs, and each cluster's run with its rail. */
 function HunkRows(props: {
 	hunk: DisplayHunk;
+	/** The heading on its @@ row (none when the row above has it). */
+	heading?: string;
 	clusters: Map<string, ClusterView>;
 	/** The since view: what happened to each cluster (DiffBody `kinds`). */
 	kinds?: Map<string, KindEntry>;
@@ -2797,7 +3037,8 @@ function HunkRows(props: {
 	checkbox: (cluster: ClusterView) => ReactNode;
 	noteId: (cluster: ClusterView) => string | undefined;
 	landed: Landed | null;
-	landingLine: LandingLine | null;
+	landingLine: LineRef | null;
+	find?: DiffFind;
 	threads?: RowThreads;
 	/** Settings' "Ignore whitespace": pair whitespace-only lines (whitespace.ts). */
 	ignoreWhitespace: boolean;
@@ -2853,10 +3094,22 @@ function HunkRows(props: {
 	return (
 		<>
 			<tbody>
-				<tr className="bg-hunk text-hunk-ink">
+				{/* Not code: a selection across hunks leaves the header out. */}
+				<tr
+					data-testid="hunk-header"
+					className="bg-hunk text-hunk-ink select-none"
+				>
 					<td colSpan={columns} className={`${leadText(lead, centred)} py-0.5`}>
 						{lead && <LeadSlot lead={lead} centred={centred} />}
-						{hunkHeader(hunk)}
+						<Labelled
+							label={hunkHeader(hunk)}
+							heading={props.heading}
+							reserve={labelReserve(
+								"0.5rem",
+								lead && !centred ? (lead.count ?? 1) : 0,
+								lead && centred ? { count: lead.count ?? 1 } : undefined,
+							)}
+						/>
 					</td>
 				</tr>
 				{lead?.row(columns)}
@@ -2899,6 +3152,7 @@ function HunkRows(props: {
 					orderOf,
 					picker: props.picker,
 					composers: props.composers,
+					find: props.find,
 					agent: props.agent,
 					words,
 					hidden,
@@ -2941,9 +3195,11 @@ function HunkRows(props: {
 					);
 				}
 				if (state && ignoreWhitespace && whitespaceOnly(rows)) {
-					// A bubble, a pick or a landed-on line must never be hidden by
-					// the setting: the cluster stays open while it has one. (Keys
-					// are pick keys too: side by side, either side's cell picks.)
+					// A bubble, a pick, a landed-on line or the find's current hit
+					// (once a step showed it: typing never changes the layout)
+					// must never be hidden by the setting: the cluster stays open
+					// while it has one. (Keys are pick keys too: side by side,
+					// either side's cell picks.)
 					const pinned = rows.some((r) => {
 						const line = rowLine(r);
 						const keys = rowKeys(line);
@@ -2957,7 +3213,9 @@ function HunkRows(props: {
 									props.picker?.keys.has(k),
 							) ||
 							landedPhase(props.landed, line) !== undefined ||
-							landingOn(props.landingLine, line)
+							landingOn(props.landingLine, line) ||
+							(props.find?.shown === true &&
+								landingOn(props.find.current, line))
 						);
 					});
 					return (
