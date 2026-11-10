@@ -159,6 +159,10 @@ export function useCurrentFile(
 	// What the observer was last made for: a new one made for a new `top`
 	// only takes its first report as the files in the band, not as a move.
 	const last = useRef({ sections, top, pan, active });
+	// Held since the settling report, at this scroll: the next scroll
+	// (another scrollY) picks the file afresh, crossing or not. A file set
+	// from outside (a pick, a Find step) ends the hold.
+	const heldAt = useRef<number | null>(null);
 	// `sections` changes when the rendered file sections do: observe the new ones.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: see above.
 	useEffect(() => {
@@ -180,12 +184,10 @@ export function useCurrentFile(
 			[...root.querySelectorAll<HTMLElement>("[data-file-index]")]
 				.map((el) => Number(el.dataset.fileIndex))
 				.find((index) => visible.has(index));
-		// Held since the settling report, at this scroll: the next scroll
-		// (another scrollY) picks the file afresh, crossing or not.
-		let heldAt: number | null = null;
+		heldAt.current = null;
 		const onScroll = () => {
-			if (heldAt === null || window.scrollY === heldAt) return;
-			heldAt = null;
+			if (heldAt.current === null || window.scrollY === heldAt.current) return;
+			heldAt.current = null;
 			const first = firstVisible();
 			if (first !== undefined) setCurrent(first);
 		};
@@ -202,7 +204,7 @@ export function useCurrentFile(
 				// layout change keeps the file in view; later ones follow moves.
 				const settling = settle;
 				settle = false;
-				heldAt = settling ? window.scrollY : null;
+				heldAt.current = settling ? window.scrollY : null;
 				if (first === undefined) return;
 				if (settling) setCurrent((now) => now ?? first);
 				else setCurrent(first);
@@ -215,9 +217,14 @@ export function useCurrentFile(
 		return () => {
 			observer.disconnect();
 			window.removeEventListener("scroll", onScroll);
+			heldAt.current = null;
 		};
 	}, [container, sections, band, active]);
-	return [current, setCurrent] as const;
+	const set = useCallback((index: number | null) => {
+		heldAt.current = null;
+		setCurrent(index);
+	}, []);
+	return [current, set] as const;
 }
 
 /**

@@ -66,10 +66,12 @@ class FakeObserver {
 const live = () => FakeObserver.all.filter((o) => o.connected);
 
 let shown: number | null = null;
+let setShown: (index: number | null) => void = () => {};
 function Files({ active, top = 100 }: { active: boolean; top?: number }) {
 	const box = useRef<HTMLDivElement>(null);
-	const [current] = useCurrentFile(box, "r1:3", top, active);
+	const [current, setCurrent] = useCurrentFile(box, "r1:3", top, active);
 	shown = current;
+	setShown = setCurrent;
 	return (
 		<div ref={box}>
 			{[0, 1, 2].map((i) => (
@@ -193,5 +195,34 @@ describe("useCurrentFile", () => {
 		// picks file 0.
 		scroll(-5);
 		expect(shown).toBe(0);
+	});
+
+	it("a file set from outside (a Find step) ends the hold: the scroll that follows doesn't take it back", () => {
+		let scrollY = 0;
+		vi.spyOn(window, "scrollY", "get").mockImplementation(() => scrollY);
+		const { rerender } = render(<Files active />);
+		const boxes = [
+			{ top: -500, bottom: 150 },
+			{ top: 150, bottom: 2900 },
+			{ top: 2900, bottom: 3500 },
+		];
+		for (const i of boxes.keys()) {
+			const el = document.querySelector(`[data-file-index="${i}"]`);
+			if (el) el.getBoundingClientRect = () => boxes[i] as DOMRect;
+		}
+		live()[0]?.measure();
+		expect(shown).toBe(0);
+		// The bar opens: file 0 is held, file 1 alone in the band.
+		rerender(<Files active top={160} />);
+		live()[0]?.measure();
+		expect(shown).toBe(0);
+		// A Find step opens file 2 and scrolls to its hit: its scroll event
+		// comes before the observer's report, and leaves file 2 current.
+		act(() => setShown(2));
+		scrollY = 2800;
+		act(() => {
+			window.dispatchEvent(new Event("scroll"));
+		});
+		expect(shown).toBe(2);
 	});
 });

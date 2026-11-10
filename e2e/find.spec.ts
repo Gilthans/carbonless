@@ -474,9 +474,14 @@ test("opening and closing the bar never changes the current file, though the sti
 	expect(await barBottom(page)).toBeGreaterThan(stackBefore + 4);
 	await frames();
 	expect(await seenCurrent(page)).toEqual(["a.ts"]);
-	// A small scroll within src/b.ts, crossing nothing, picks it.
-	await scrollBy(10);
-	await expect.poll(() => currentFile(page)).toBe("b.ts");
+	// A small scroll within src/b.ts, crossing nothing, picks it. Scrolled
+	// in the poll: a late re-measure of the bar would hold the file again.
+	await expect
+		.poll(async () => {
+			await scrollBy(2);
+			return currentFile(page);
+		})
+		.toBe("b.ts");
 
 	// The other way: with the bar open, src/a.ts ends just above the stack,
 	// so src/b.ts is current; closing shortens the stack, which uncovers
@@ -493,8 +498,12 @@ test("opening and closing the bar never changes the current file, though the sti
 	expect(await seenCurrent(page)).toEqual(["b.ts"]);
 	// A small scroll up, crossing nothing (src/a.ts's end stays in the
 	// band), picks src/a.ts.
-	await scrollBy(-10);
-	await expect.poll(() => currentFile(page)).toBe("a.ts");
+	await expect
+		.poll(async () => {
+			await scrollBy(-2);
+			return currentFile(page);
+		})
+		.toBe("a.ts");
 });
 
 test("a path hit opens the file at its header with the path marked, and the tree shows counts", async ({
