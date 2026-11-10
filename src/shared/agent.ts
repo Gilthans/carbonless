@@ -11,12 +11,27 @@ export type AgentState =
 	| "ready"
 	| "busy"
 	| "error"
-	| "elsewhere";
+	| "elsewhere"
+	| "reconnecting";
 
 export interface AgentIdentity {
 	name: string;
 	version: string;
+	/** How the agent reached the review: spawned over ACP, or a joined session over MCP. */
+	via?: "acp" | "mcp";
+	/** A joined session's machine, as it named itself. */
+	machine?: string;
 }
+
+/** A session that asked to join, or joined, a review (sanitised, 80 chars each). */
+export interface JoinIdentity {
+	name: string;
+	machine: string;
+	harness?: string;
+}
+
+/** Why a joined session left: its detach, the reviewer's Disconnect, its watcher gone, a newer join. */
+export type JoinLeave = "detached" | "disconnected" | "lost" | "replaced";
 
 export type ActivityKind =
 	| "read"
@@ -106,6 +121,16 @@ export interface AgentStatus {
 	elsewhere?: number;
 	/** threads whose last message is a human's */
 	waiting: number;
+	/** Who answers: the ACP buddy, or a session joined through MCP. */
+	via?: "acp" | "mcp";
+	/** The session joined through MCP. */
+	joined?: JoinIdentity & { since: string };
+	/** A session asking to join, until Approve, Deny or expiry. */
+	joinRequest?: JoinIdentity & { id: string; at: string };
+	/** The latest joined session to leave (in server memory). */
+	left?: JoinIdentity & { why: JoinLeave; at: string };
+	/** The ACP buddy stays off (a join was approved) until Start. */
+	acpOff?: boolean;
 }
 
 export interface OpenAgentThreadRequest {
@@ -144,6 +169,22 @@ export const MAX_ACTIVITY_ENTRIES = 50;
 export const MAX_ACTIVITY_BYTES = 4096;
 export const AGENT_POLL_MS = 5000;
 export const AGENT_TURN_MS = 30 * 60_000;
+
+/** Join through MCP: the timers (spec 2026-11-10, "Global constraints"). */
+export const JOIN = {
+	/** A request no one answers is expired. */
+	expiryMs: 600_000,
+	/** `attach` with `request` waits this long for an answer. */
+	attachWaitMs: 20_000,
+	/** The watcher's keep-alive byte. */
+	keepAliveMs: 15_000,
+	/** No watcher this long (and nothing handed out): the session is lost. */
+	graceMs: 60_000,
+	/** A thread handed out (or a question delivered) with no reply and no watcher this long: lost. */
+	busyMs: 600_000,
+	/** An ACP turn running at Approve gets this long, then is cancelled. */
+	acpStopMs: 30_000,
+} as const;
 
 /** Opens every prompt; the runner replaces `<tree>` with the checkout's path. */
 export const PREAMBLE =

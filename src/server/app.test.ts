@@ -1254,6 +1254,61 @@ describe("API", () => {
 			expect(res.statusCode).toBe(404);
 		});
 
+		it("join: Approve and Deny race, the second is 409; disconnect; start", async () => {
+			const { session } = await registry.open({ pr: pr.arg });
+			const host = session.agent;
+			if (!host) throw new Error("no agent");
+			const who = { name: "carbonless · main", machine: "devbox" };
+			const { request } = host.join.request(who);
+			const pending: AgentStatus = await get("/api/agent");
+			expect(pending.joinRequest).toMatchObject({ id: request, ...who });
+			const [a, b] = await Promise.all([
+				post(`/api/agent/join/${request}`, { approve: true }),
+				post(`/api/agent/join/${request}`, { approve: false }),
+			]);
+			expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409]);
+			const loser = a.statusCode === 409 ? a : b;
+			expect(loser.json()).toMatchObject({ code: "stale-join" });
+			// Whichever came first: Approve gives one token, Deny none.
+			const outcome = await host.join.outcome(request, 0);
+			if (a.statusCode === 409) {
+				expect(outcome.state).toBe("denied");
+				return;
+			}
+			expect(outcome.state).toBe("approved");
+			const joined: AgentStatus = await get("/api/agent");
+			expect(joined).toMatchObject({
+				via: "mcp",
+				joined: who,
+				acpOff: true,
+				agent: { name: who.name, via: "mcp", machine: who.machine },
+			});
+			expect(joined.joinRequest).toBeUndefined();
+			const off = await post("/api/agent/disconnect");
+			expect(off.statusCode, off.body).toBe(200);
+			const left: AgentStatus = await get("/api/agent");
+			expect(left.left).toMatchObject({ ...who, why: "disconnected" });
+			expect(left).toMatchObject({ state: "off", acpOff: true });
+			const start = await post("/api/agent/start");
+			expect(start.statusCode, start.body).toBe(200);
+			expect((await get("/api/agent")).acpOff).toBeUndefined();
+		});
+
+		it("join answers: 400 on a bad body or id", async () => {
+			for (const [url, body] of [
+				["/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6", {}],
+				["/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6", { approve: "yes" }],
+				["/api/agent/join/not-an-id", { approve: true }],
+			] as const) {
+				const res = await post(url, body);
+				expect(res.statusCode, url).toBe(400);
+			}
+			const stale = await post("/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6", {
+				approve: true,
+			});
+			expect(stale.statusCode).toBe(409);
+		});
+
 		it("a viewer session has no agent: 404 no-agent", async () => {
 			const viewer = await registry.open({
 				pr: pr.arg,
@@ -1263,6 +1318,8 @@ describe("API", () => {
 				["GET", "/api/agent"],
 				["GET", "/api/agent/threads"],
 				["POST", "/api/agent/cancel"],
+				["POST", "/api/agent/disconnect"],
+				["POST", "/api/agent/start"],
 			] as const) {
 				const res = await inject(r(url, viewer.id), { method });
 				expect(res.statusCode).toBe(404);
@@ -1277,6 +1334,13 @@ describe("API", () => {
 					"/api/agent/threads",
 					{ clientId: "q", text: "x", span: span() },
 				],
+				[
+					"POST",
+					"/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6",
+					{ approve: true },
+				],
+				["POST", "/api/agent/disconnect", {}],
+				["POST", "/api/agent/start", {}],
 				["PUT", "/api/config/agent", null],
 				["POST", "/api/config/agent/check", { command: "x" }],
 			] as const) {

@@ -1,12 +1,13 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type {
-	AgentAnchor,
-	AgentConfig,
-	AgentMessageRequest,
-	AgentStatus,
-	AgentThread,
-	OpenAgentThreadRequest,
+import {
+	type AgentAnchor,
+	type AgentConfig,
+	type AgentMessageRequest,
+	type AgentStatus,
+	type AgentThread,
+	JOIN,
+	type OpenAgentThreadRequest,
 } from "../../shared/agent.js";
 import type {
 	CodeAnchor,
@@ -20,6 +21,7 @@ import type { PrMeta } from "../gh.js";
 import { runGitBuffer } from "../git.js";
 import { RefStore } from "../review/refStore.js";
 import { agentsDir } from "./checkout.js";
+import { JoinBroker } from "./join.js";
 import { isSafePath, mimeTypeOf } from "./prompt.js";
 import { AgentRunner, type RunnerFacts } from "./runner.js";
 import { type AgentThreadFold, AgentThreadStore } from "./store.js";
@@ -31,23 +33,73 @@ export const setServerPort = (port: number): void => {
 };
 export const serverPort = (): number => listeningPort;
 
+/** What the host asks of its ACP runner (an AgentRunner; a stub in tests). */
+export type HostRunner = Pick<
+	AgentRunner,
+	"status" | "asked" | "poke" | "stop" | "cancel" | "close"
+>;
+
 /**
- * A review's agent as its Session owns it: the runner, and the one store
- * of the reviewer's agent threads every route goes through (its dedupe of
- * clientIds holds within one store).
+ * A review's agent as its Session owns it: the ACP runner, the join broker
+ * (a session joined through MCP answers instead while it is joined), and
+ * the one store of the reviewer's agent threads every route goes through
+ * (its dedupe of clientIds holds within one store).
  */
 export class AgentHost {
+	readonly #restored: Promise<void>;
+
 	constructor(
-		private readonly runner: AgentRunner,
+		private readonly runner: HostRunner,
 		private readonly store: AgentThreadStore,
 		private readonly code: (
 			anchor: AgentAnchor,
 			at: string,
 		) => Promise<CodeWindow | undefined>,
-	) {}
+		readonly join: JoinBroker,
+	) {
+		this.#restored = join.restore().catch(() => {});
+	}
 
-	status(): Promise<AgentStatus> {
-		return this.runner.status();
+	/** The runner's status, with a joined session (or a request to join) laid over it. */
+	async status(): Promise<AgentStatus> {
+		await this.#restored;
+		const base = await this.runner.status();
+		const { presence, ...view } = this.join.view();
+		const out: AgentStatus = {
+			...base,
+			...view,
+			...(this.join.acpOff() ? { acpOff: true } : {}),
+		};
+		const joined = view.joined;
+		if (!joined) return out;
+		const handed = this.join.handedOut();
+		const { answering: _, error: __, elsewhere: ___, ...rest } = out;
+		return {
+			...rest,
+			state:
+				presence === "listening"
+					? "ready"
+					: presence === "busy"
+						? "busy"
+						: "reconnecting",
+			agent: {
+				name: joined.name,
+				version: joined.harness ?? "",
+				via: "mcp",
+				machine: joined.machine,
+			},
+			since: joined.since,
+			...(handed
+				? {
+						answering: {
+							thread: handed.thread,
+							text: "",
+							activity: [],
+							...(handed.asked ? { asked: handed.asked } : {}),
+						},
+					}
+				: {}),
+		};
 	}
 
 	/** The threads in opened order; a line anchor's carries its code window. */
@@ -63,7 +115,7 @@ export class AgentHost {
 			by: "human",
 			clientId: req.clientId,
 		});
-		this.runner.asked();
+		await this.#asked();
 		return this.#view(t);
 	}
 
@@ -76,7 +128,7 @@ export class AgentHost {
 			text: req.text,
 			clientId: req.clientId,
 		});
-		this.runner.asked();
+		await this.#asked();
 		return this.#view(t);
 	}
 
@@ -93,8 +145,31 @@ export class AgentHost {
 		this.runner.poke();
 	}
 
-	close(): Promise<void> {
-		return this.runner.close();
+	/** The reviewer's Start: the ACP buddy on again (a joined session leaves first). */
+	async startAcp(): Promise<void> {
+		await this.#restored;
+		this.join.leave("disconnected");
+		await this.join.setAcpOff(false);
+		this.runner.asked();
+	}
+
+	/** The reviewer's Disconnect of a joined session; the ACP buddy stays as it is (off). */
+	async disconnect(): Promise<void> {
+		await this.#restored;
+		this.join.leave("disconnected");
+	}
+
+	async close(): Promise<void> {
+		await this.#restored;
+		this.join.close();
+		await this.runner.close();
+	}
+
+	/** A human asked: a joined session's watcher wakes, else the ACP runner. */
+	async #asked(): Promise<void> {
+		await this.#restored;
+		if (this.join.view().joined) this.join.wake();
+		else this.runner.asked();
 	}
 
 	async #view(t: AgentThreadFold): Promise<AgentThread> {
@@ -103,6 +178,35 @@ export class AgentHost {
 		const code = await this.code(t.anchor, t.at).catch(() => undefined);
 		return code ? { ...thread, code } : thread;
 	}
+}
+
+/**
+ * The host with its join broker on `dir` (`<agentsDir()>/<review-id>`):
+ * the runner is made with the broker's ACP-off flag, and approving a join
+ * turns ACP off and stops the runner (its running turn gets
+ * JOIN.acpStopMs, then is cancelled).
+ */
+export function buildAgentHost(o: {
+	dir: string;
+	store: AgentThreadStore;
+	code: (anchor: AgentAnchor, at: string) => Promise<CodeWindow | undefined>;
+	runner: (acpOff: () => boolean) => HostRunner;
+	now?: () => number;
+}): AgentHost {
+	let runner: HostRunner | undefined;
+	const join: JoinBroker = new JoinBroker({
+		dir: o.dir,
+		...(o.now ? { now: o.now } : {}),
+		onApproved: async () => {
+			await join.setAcpOff(true);
+			void runner?.stop(JOIN.acpStopMs).catch(() => {});
+		},
+		onLeft: () => {},
+		waiting: async () =>
+			(await o.store.read()).some((t) => t.waiting && !t.resolved),
+	});
+	runner = o.runner(() => join.acpOff());
+	return new AgentHost(runner, o.store, o.code, join);
 }
 
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
@@ -173,20 +277,7 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		hunk: (anchor) => anchorHunk(src, anchor),
 		authorOf: (login) => (login === src.viewer ? "reviewer" : "other"),
 	};
-	const runner = new AgentRunner({
-		reviewId: src.reviewId,
-		config: async () => ({
-			...(await agentConfig()),
-			saves: agentConfigSaveCount(),
-		}),
-		store,
-		cacheClone: src.repo,
-		head: src.snapshot().head,
-		port: serverPort(),
-		viewer: src.viewer,
-		facts,
-	});
-	return new AgentHost(runner, store, async (anchor, at) => {
+	const code = async (anchor: AgentAnchor, at: string) => {
 		if (anchor.subject !== "line") return undefined;
 		const window = await src.code({
 			path: anchor.path,
@@ -200,6 +291,26 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 			endCol: anchor.endCol ?? null,
 		});
 		return window ?? undefined;
+	};
+	return buildAgentHost({
+		dir: join(agentsDir(), src.reviewId),
+		store,
+		code,
+		runner: (acpOff) =>
+			new AgentRunner({
+				reviewId: src.reviewId,
+				config: async () => ({
+					...(await agentConfig()),
+					saves: agentConfigSaveCount(),
+				}),
+				store,
+				cacheClone: src.repo,
+				head: src.snapshot().head,
+				port: serverPort(),
+				viewer: src.viewer,
+				facts,
+				acpOff,
+			}),
 	});
 }
 

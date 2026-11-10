@@ -505,9 +505,15 @@ function parseAnchor(raw: unknown): AgentAnchor | null {
 
 function parseIdentity(raw: unknown): AgentIdentity | null {
 	if (!isObj(raw)) return null;
-	const { name, version } = raw;
+	const { name, version, via, machine } = raw;
 	if (!isStr(name) || typeof version !== "string") return null;
-	return { name, version };
+	// Optional, informational: a bad value is dropped, the event kept.
+	return {
+		name,
+		version,
+		...(via === "acp" || via === "mcp" ? { via } : {}),
+		...(typeof machine === "string" && machine ? { machine } : {}),
+	};
 }
 
 function parseActivity(raw: unknown): AgentActivity[] | null {

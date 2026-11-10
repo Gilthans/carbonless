@@ -1,13 +1,29 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	createBareRepo,
 	createGitFixture,
 	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 } from "../../../test/git-fixture.js";
-import type { AgentAnchor } from "../../shared/agent.js";
+import {
+	type AgentAnchor,
+	type AgentStatus,
+	JOIN,
+} from "../../shared/agent.js";
 import type { Snapshot } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
-import { anchoredFile, anchorHunk } from "./host.js";
+import { RefStore } from "../review/refStore.js";
+import {
+	type AgentHost,
+	anchoredFile,
+	anchorHunk,
+	buildAgentHost,
+	type HostRunner,
+} from "./host.js";
+import { AgentThreadStore } from "./store.js";
 
 vi.setConfig(GIT_TEST_TIMEOUTS);
 
@@ -116,5 +132,150 @@ describe("anchorHunk", () => {
 			}),
 		).toBeNull();
 		expect(await anchorHunk(src, anchor({ path: "other.ts" }))).toBeNull();
+	});
+});
+
+describe("AgentHost with a session joined through MCP", () => {
+	const WHO = {
+		name: "carbonless · main",
+		machine: "devbox",
+		harness: "cc 2.1",
+	};
+	const REVIEW = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+	let dir: string;
+	let bare: { path: string; cleanup: () => void };
+	let store: AgentThreadStore;
+	let runner: HostRunner & {
+		asked: ReturnType<typeof vi.fn<() => void>>;
+		stop: ReturnType<typeof vi.fn<(ms: number) => Promise<void>>>;
+	};
+	let acpOff: () => boolean;
+	let host: AgentHost;
+
+	const make = () =>
+		buildAgentHost({
+			dir,
+			store,
+			code: async () => undefined,
+			runner: (off) => {
+				acpOff = off;
+				return runner;
+			},
+		});
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "crb-host-join-"));
+		bare = createBareRepo();
+		store = new AgentThreadStore(new RefStore(bare.path), REVIEW, "dan");
+		runner = {
+			status: async (): Promise<AgentStatus> => ({
+				state: acpOff() ? "off" : "ready",
+				configured: true,
+				...(acpOff() ? {} : { agent: { name: "fake-acp", version: "1.0.0" } }),
+				since: new Date(0).toISOString(),
+				waiting: 0,
+			}),
+			asked: vi.fn<() => void>(),
+			poke: vi.fn(),
+			stop: vi.fn(async (_ms: number) => {}),
+			cancel: async () => {},
+			close: async () => {},
+		};
+		host = make();
+	});
+	afterEach(async () => {
+		await host.close();
+		bare.cleanup();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	async function approve(h = host): Promise<string> {
+		const { request } = h.join.request(WHO);
+		await h.join.answer(request, true);
+		const o = await h.join.outcome(request, 0);
+		return (o as { token: string }).token;
+	}
+	const span: AgentAnchor = {
+		subject: "file",
+		path: "a.txt",
+		commit: "a".repeat(40),
+	};
+
+	it("approving stops the ACP buddy and turns it off; status shows the joined session", async () => {
+		expect((await host.status()).via).toBeUndefined();
+		const token = await approve();
+		expect(runner.stop).toHaveBeenCalledWith(JOIN.acpStopMs);
+		host.join.watcher(token);
+		const s = await host.status();
+		expect(s).toMatchObject({
+			state: "ready",
+			via: "mcp",
+			joined: WHO,
+			acpOff: true,
+			agent: {
+				name: WHO.name,
+				version: WHO.harness,
+				via: "mcp",
+				machine: WHO.machine,
+			},
+		});
+	});
+
+	it("no watcher: reconnecting; a thread handed out: busy, answering it", async () => {
+		await approve();
+		expect((await host.status()).state).toBe("reconnecting");
+		host.join.handOut("t1", "m1");
+		expect(await host.status()).toMatchObject({
+			state: "busy",
+			answering: { thread: "t1", asked: "m1", text: "", activity: [] },
+		});
+	});
+
+	it("a question while joined wakes the watcher, not the ACP runner", async () => {
+		const token = await approve();
+		const lease = host.join.watcher(token);
+		let woken = false;
+		void lease?.deliver.then(() => {
+			woken = true;
+		});
+		await host.open({ clientId: "c1", text: "Why?", span });
+		await vi.waitFor(() => expect(woken).toBe(true));
+		expect(runner.asked).not.toHaveBeenCalled();
+	});
+
+	it("disconnect: left in the status, the ACP buddy stays off", async () => {
+		await approve();
+		await host.disconnect();
+		const s = await host.status();
+		expect(s.via).toBeUndefined();
+		expect(s.joined).toBeUndefined();
+		expect(s.left).toMatchObject({ ...WHO, why: "disconnected" });
+		expect(s).toMatchObject({ state: "off", acpOff: true });
+		expect(runner.asked).not.toHaveBeenCalled();
+	});
+
+	it("startAcp clears ACP off, pokes the runner and ends a joined session", async () => {
+		await approve();
+		await host.startAcp();
+		expect(acpOff()).toBe(false);
+		expect(runner.asked).toHaveBeenCalled();
+		const s = await host.status();
+		expect(s.left?.why).toBe("disconnected");
+		expect(s.acpOff).toBeUndefined();
+		expect(s.state).toBe("ready");
+	});
+
+	it("a new host on the same dir restores the joined session as reconnecting", async () => {
+		const token = await approve();
+		await host.close();
+		const again = make();
+		expect(await again.status()).toMatchObject({
+			state: "reconnecting",
+			via: "mcp",
+			joined: WHO,
+			acpOff: true,
+		});
+		expect(again.join.check(token)).toBe(true);
+		host = again;
 	});
 });

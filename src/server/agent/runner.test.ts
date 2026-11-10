@@ -24,6 +24,7 @@ import type {
 } from "../../shared/agent.js";
 import { RefStore } from "../review/refStore.js";
 import { agentsDir } from "./checkout.js";
+import { JoinBroker } from "./join.js";
 import type { PromptEnvelope } from "./prompt.js";
 import { AgentRunner, type RunnerDeps } from "./runner.js";
 import { AgentThreadStore } from "./store.js";
@@ -777,5 +778,105 @@ describe("AgentRunner", () => {
 		await answered(2);
 		expect(treeHead()).toBe(old);
 		expect(prompts()[1]?.notice).toContain(`The PR's head is now ${prHead}`);
+	});
+
+	describe("ACP off (a session joined through MCP)", () => {
+		const broker = () =>
+			new JoinBroker({
+				dir: join(agentsDir(), REVIEW),
+				onApproved: async () => {},
+				onLeft: () => {},
+			});
+
+		it("never spawns while ACP is off: status poll, new question, config save, a new runner on the same dir", async () => {
+			const b = broker();
+			await b.setAcpOff(true);
+			let saves = 0;
+			await ask("why?");
+			const r = makeRunner({
+				acpOff: () => b.acpOff(),
+				config: async () => ({ ...config, saves }),
+			});
+			r.poke();
+			await r.settled();
+			expect((await r.status()).state).toBe("off");
+			await ask("and?", 2);
+			r.asked();
+			await r.settled();
+			saves++;
+			await r.status();
+			await r.settled();
+			// The config changed: still off.
+			config = { agent: { ...AGENT, args: ["--x"] }, problems: [] };
+			await r.status();
+			await r.settled();
+			expect(spawns()).toHaveLength(0);
+			const status = await r.status();
+			expect(status).toMatchObject({
+				state: "off",
+				configured: true,
+				waiting: 2,
+			});
+			await r.close();
+			// A crb restart: a new broker and runner on the same dir.
+			const again = broker();
+			const r2 = makeRunner({ acpOff: () => again.acpOff() });
+			r2.poke();
+			await r2.status();
+			await r2.settled();
+			expect(spawns()).toHaveLength(0);
+			// Start: on again, the backlog is answered.
+			await again.setAcpOff(false);
+			r2.asked();
+			await answered(2);
+			expect(spawns()).toHaveLength(1);
+		});
+
+		it("stop() lets the running turn finish, then closes the agent and stays off", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			await ask("second?", 2);
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			off = true;
+			let stopped = false;
+			const stop = r.stop(60 * 60_000).then(() => {
+				stopped = true;
+			});
+			// Held: the stop waits for the turn.
+			await r.status();
+			expect(stopped).toBe(false);
+			releaseAcp(scenarioPath, "prompt");
+			await stop;
+			const [first, second] = await threads();
+			expect(first?.messages[1]).toMatchObject({
+				text: "a b",
+				stop: "end_turn",
+			});
+			// The next question isn't taken: ACP is off.
+			expect(second?.waiting).toBe(true);
+			const status = await r.status();
+			expect(status.state).toBe("off");
+			expect(status.agent).toBeUndefined();
+			await r.settled();
+			expect(spawns()).toHaveLength(1);
+		});
+
+		it("stop() cancels a turn that runs past its time", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			off = true;
+			await r.stop(50);
+			expect((await threads())[0]?.messages[1]).toMatchObject({
+				stop: "cancelled",
+			});
+			expect((await r.status()).state).toBe("off");
+		});
 	});
 });

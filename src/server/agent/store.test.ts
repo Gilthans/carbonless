@@ -335,6 +335,38 @@ describe("AgentThreadStore", () => {
 		expect(fine?.error).toBeUndefined();
 	});
 
+	it("a joined session's reply keeps agent.via and machine through a fresh store's fold", async () => {
+		const t = await ask("Why?", "c1");
+		const joined = {
+			name: "carbonless · main",
+			version: "claude-code 2.1",
+			via: "mcp" as const,
+			machine: "devbox",
+		};
+		await store.message(t.id, {
+			by: "ai",
+			text: "Because.",
+			agent: joined,
+			stop: "end_turn",
+			activity: [],
+		});
+		const [folded] = await new AgentThreadStore(refs, REVIEW, "dan").read();
+		expect(folded?.messages[1]?.agent).toEqual(joined);
+	});
+
+	it("a bad via or machine is dropped, the message kept", async () => {
+		const t = await ask("Why?", "c1");
+		await store.message(t.id, {
+			by: "ai",
+			text: "Because.",
+			agent: { ...agent, via: "carrier-pigeon", machine: 7 } as never,
+			stop: "end_turn",
+			activity: [],
+		});
+		const [folded] = await store.read();
+		expect(folded?.messages[1]?.agent).toEqual(agent);
+	});
+
 	it("events of unknown thread ids are dropped by the fold", async () => {
 		const t = await ask("Why?", "c1");
 		const ghost = "0".repeat(26);

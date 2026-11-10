@@ -30,6 +30,7 @@ import {
 	agentConfig,
 	noteAgentConfigSaved,
 } from "./agent/host.js";
+import { StaleJoinRequestError } from "./agent/join.js";
 import { isSafePath } from "./agent/prompt.js";
 import { UnknownAgentThreadError } from "./agent/store.js";
 import { parseAsOf } from "./asOf.js";
@@ -226,6 +227,11 @@ export async function buildApp(
 		if (error instanceof BadRequestError) return send(400, error.message);
 		if (error instanceof NoAgentError) {
 			return reply.status(404).send({ error: error.message, code: "no-agent" });
+		}
+		if (error instanceof StaleJoinRequestError) {
+			return reply
+				.status(409)
+				.send({ error: error.message, code: "stale-join" });
 		}
 		if (error instanceof UnknownAgentThreadError) {
 			return send(404, error.message);
@@ -561,6 +567,32 @@ export async function buildApp(
 				await agentOf(request).cancel();
 				return { ok: true };
 			});
+			// A session joining through MCP: the reviewer's Approve or Deny.
+			review.post<{ Params: { request: string } }>(
+				"/agent/join/:request",
+				async (request) => {
+					const approve = (request.body as { approve?: unknown } | null)
+						?.approve;
+					if (typeof approve !== "boolean") {
+						throw new BadRequestError("approve must be true or false");
+					}
+					await agentOf(request).join.answer(
+						joinRequestParam(request.params.request),
+						approve,
+					);
+					return { ok: true };
+				},
+			);
+			// The reviewer's Disconnect of a joined session.
+			review.post("/agent/disconnect", async (request) => {
+				await agentOf(request).disconnect();
+				return { ok: true };
+			});
+			// The reviewer's Start: the ACP buddy on again.
+			review.post("/agent/start", async (request) => {
+				await agentOf(request).startAcp();
+				return { ok: true };
+			});
 			review.post("/refresh", (request) => sessionOf(request).refresh());
 			review.get("/head", (request) => sessionOf(request).checkHead());
 		},
@@ -777,6 +809,14 @@ function agentOf(request: FastifyRequest): AgentHost {
 }
 
 const AGENT_THREAD_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
+
+/** A join request id (a lowercase ULID); 400 otherwise. */
+function joinRequestParam(raw: string): string {
+	if (!AGENT_THREAD_ID.test(raw)) {
+		throw new BadRequestError("Not a join request id");
+	}
+	return raw;
+}
 
 function agentThreadParam(raw: string): string {
 	if (!AGENT_THREAD_ID.test(raw)) {
