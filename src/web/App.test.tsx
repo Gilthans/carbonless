@@ -4,6 +4,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import {
 	act,
 	cleanup,
+	fireEvent,
 	render,
 	screen,
 	waitFor,
@@ -2267,6 +2268,88 @@ describe("App header", () => {
 		for (const id of ["agent-chip-slot", "agent-chip-row-slot"]) {
 			const slot = screen.getByTestId(id);
 			expect(slot.querySelector("button, [data-chip-space]")).toBeNull();
+		}
+	});
+
+	it("mounts no chip, and reads no agent, without a PR (session failed)", async () => {
+		renderApp({
+			"/api/session": { status: 502, body: { error: "gh is not logged in" } },
+			"/api/agent": ok({
+				state: "ready",
+				configured: true,
+				agent: { name: "Claude Agent", version: "0.100.0" },
+				since: "2026-11-07T10:00:00Z",
+				waiting: 0,
+			}),
+		});
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"gh is not logged in",
+		);
+		// The overview (writes on) is in: a mounted chip would read now.
+		await screen.findByRole("region", { name: "What it does" });
+		await act(async () => {});
+		expect(calls("/api/agent")).toBe(0);
+		expect(screen.queryByTestId("agent-chip")).toBeNull();
+	});
+
+	it("closes the chip's tooltip when the chip moves into the sticky row", async () => {
+		const rect = vi
+			.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+			.mockImplementation(function (this: HTMLElement) {
+				const by = this.dataset.testid === "agent-chip-slot";
+				const top = by && window.scrollY > 0 ? -10 : 20;
+				return {
+					top,
+					bottom: top + 24,
+					left: 0,
+					right: by ? 46 : 0,
+					width: by ? 46 : 0,
+					height: by ? 24 : 0,
+					x: 0,
+					y: top,
+					toJSON: () => ({}),
+				} as DOMRect;
+			});
+		try {
+			renderApp({
+				"/api/agent": ok({
+					state: "ready",
+					configured: true,
+					agent: { name: "Claude Agent", version: "0.100.0" },
+					since: "2026-11-07T10:00:00Z",
+					waiting: 0,
+				}),
+			});
+			const chip = await screen.findByRole("button", {
+				name: "Your agent: Claude Agent 0.100.0",
+			});
+			// Its tooltip (always there, hidden while closed), opened by a hover.
+			const tip = () =>
+				[...document.querySelectorAll("[role=tooltip]")].find(
+					(t) => t.textContent === "Claude Agent 0.100.0",
+				);
+			expect(tip()).toHaveAttribute("hidden");
+			fireEvent.mouseEnter(chip);
+			await waitFor(() => expect(tip()).not.toHaveAttribute("hidden"));
+			act(() => {
+				Object.defineProperty(window, "scrollY", {
+					value: 100,
+					configurable: true,
+				});
+				window.dispatchEvent(new Event("scroll"));
+			});
+			await waitFor(() =>
+				expect(screen.getByTestId("agent-chip-row-slot")).toContainElement(
+					chip,
+				),
+			);
+			await waitFor(() => expect(tip()).toHaveAttribute("hidden"));
+		} finally {
+			rect.mockRestore();
+			Object.defineProperty(window, "scrollY", {
+				value: 0,
+				configurable: true,
+			});
 		}
 	});
 

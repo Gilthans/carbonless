@@ -85,7 +85,12 @@ export function useAgentSync(
  * spinner in the dot's place; a routine poll changes nothing unless the
  * answer does. None where the review has no agent (--viewer, --as-of).
  */
-export function AgentChip() {
+export function AgentChip({
+	dismissKey,
+}: {
+	/** Closes the tooltip whenever it changes (the chip moved). */
+	dismissKey?: unknown;
+} = {}) {
 	const client = useQueryClient();
 	const on = useAgentOn();
 	const status = useQuery({ ...agentStatusQuery, enabled: on });
@@ -105,7 +110,7 @@ export function AgentChip() {
 	const off = !data || data.state === "off" || data.state === "elsewhere";
 	const name = data?.agent?.name;
 	return (
-		<Tooltip content={tip} describe={false}>
+		<Tooltip content={tip} describe={false} dismissKey={dismissKey}>
 			{(trigger) => (
 				<button
 					type="button"

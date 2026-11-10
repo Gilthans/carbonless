@@ -277,7 +277,8 @@ function useChipDock(hidden: boolean, above: number) {
 		size,
 		/** Whether there is a chip to show (none without an agent). */
 		shown: size.width > 0,
-		chip: createPortal(<AgentChip />, host),
+		// A move closes its tooltip, which would stay at the old place.
+		chip: createPortal(<AgentChip dismissKey={docked} />, host),
 	};
 }
 
@@ -518,8 +519,8 @@ export function App() {
 								</div>
 							</div>
 						)}
-						{/* The one agent chip, placed by useChipDock. */}
-						{chip.chip}
+						{/* The one agent chip, placed by useChipDock; none without a PR. */}
+						{pr && chip.chip}
 						{pr && (
 							<p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
 								<span className="break-all">
