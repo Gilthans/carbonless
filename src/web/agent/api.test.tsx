@@ -268,17 +268,17 @@ describe("answering a join request", () => {
 describe("the join lines", () => {
 	it("the setup line quotes the URL for the shell (zsh globs an unquoted ?)", () => {
 		expect(mcpAddLine("http://100.1.2.3:4747", "k3y")).toBe(
-			'claude mcp add --transport http crb "http://100.1.2.3:4747/mcp?key=k3y"',
+			'claude mcp add --scope user --transport http crb "http://100.1.2.3:4747/mcp?key=k3y"',
 		);
 		expect(mcpAddLine("http://127.0.0.1:4747", null)).toBe(
-			'claude mcp add --transport http crb "http://127.0.0.1:4747/mcp"',
+			'claude mcp add --scope user --transport http crb "http://127.0.0.1:4747/mcp"',
 		);
 	});
 
 	it("a key with shell characters is encoded in the URL and can't break out", () => {
 		const line = mcpAddLine("http://h:1", `a"$(rm -rf ~)\`'b`);
 		expect(line).toBe(
-			`claude mcp add --transport http crb "http://h:1/mcp?key=a%22%24%28rm+-rf+%7E%29%60%27b"`,
+			`claude mcp add --scope user --transport http crb "http://h:1/mcp?key=a%22%24%28rm+-rf+%7E%29%60%27b"`,
 		);
 	});
 

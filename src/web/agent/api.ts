@@ -200,7 +200,7 @@ export function shellWord(word: string): string {
 /** The one-time setup line: adds this crb's /mcp to Claude Code. */
 export function mcpAddLine(origin: string, key: string | null): string {
 	const url = `${origin}/mcp${key ? `?${new URLSearchParams({ key })}` : ""}`;
-	return `claude mcp add --transport http crb ${shellWord(url)}`;
+	return `claude mcp add --scope user --transport http crb ${shellWord(url)}`;
 }
 
 /** The sentence a session is told to join this review. */

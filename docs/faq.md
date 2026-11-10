@@ -250,12 +250,14 @@ access key. The setup modal's "Join from a session" tab shows the line
 for this instance's address and key, with a copy button:
 
 ```sh
-claude mcp add --transport http crb "http://<host>:4747/mcp?key=<key>"
+claude mcp add --scope user --transport http crb "http://<host>:4747/mcp?key=<key>"
 ```
 
-`claude mcp add` writes to the *local* scope by default: only sessions
-started in the directory you ran it in see the server. Add `--scope user`
-to have it in every directory.
+`--scope user` makes it available to sessions in every directory: without
+it, `claude mcp add` writes to the *local* scope, seen only by sessions
+started in the directory it ran in. A session that's already running
+picks it up with `/reload-plugins` (below); the info icon next to the line
+says so.
 
 **Then, in the session:** "join the carbonless review at
 `http://<host>:4747/r/<id>`" (the tab shows that line too), or "join my

@@ -1,6 +1,7 @@
 import {
 	CheckIcon,
 	CopyIcon,
+	InfoIcon,
 	PlugIcon,
 	SparkleFillIcon,
 	XIcon,
@@ -108,8 +109,19 @@ function Field(props: { label: string; children: ReactNode }) {
 	);
 }
 
-/** One line to copy: read-only, selected on focus, with an icon Copy button. */
-function CopyRow(props: { label: string; value: string; testId: string }) {
+/** What a session that's already running does to pick up a line just added. */
+export const RELOAD_HINT = "Session already running? /reload-plugins";
+
+/**
+ * One line to copy: read-only, selected on focus, with an icon Copy button
+ * and, with `hint`, an info icon whose tooltip (and name) is the hint.
+ */
+function CopyRow(props: {
+	label: string;
+	value: string;
+	testId: string;
+	hint?: string;
+}) {
 	const [copied, setCopied] = useState(false);
 	return (
 		<div className="flex min-w-0 gap-1.5">
@@ -142,6 +154,24 @@ function CopyRow(props: { label: string; value: string; testId: string }) {
 					</button>
 				)}
 			</Tooltip>
+			{props.hint && (
+				<Tooltip content={props.hint} describe={false}>
+					{(trigger) => (
+						<span
+							{...trigger}
+							role="img"
+							aria-label={props.hint}
+							data-testid={`${props.testId}-hint`}
+							// Focusable so keyboard and touch users get the tip.
+							// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+							tabIndex={0}
+							className="flex size-10 shrink-0 items-center justify-center rounded-md text-muted focus-visible:outline-2 focus-visible:outline-accent"
+						>
+							<InfoIcon size={16} aria-hidden />
+						</span>
+					)}
+				</Tooltip>
+			)}
 		</div>
 	);
 }
@@ -170,6 +200,7 @@ function JoinTab(props: { open: boolean; id: string; labelledBy: string }) {
 						label="Setup line"
 						testId="join-setup-line"
 						value={mcpAddLine(origin, setup.data.key)}
+						hint={RELOAD_HINT}
 					/>
 				) : setup.isError ? (
 					<p role="alert" className="text-sm text-bad">

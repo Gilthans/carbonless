@@ -12,7 +12,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { AgentCheck, AgentConfig, AgentStatus } from "../../shared/agent";
-import { AgentSetup } from "./AgentSetup";
+import { AgentSetup, RELOAD_HINT } from "./AgentSetup";
 import { agentStatusQuery } from "./api";
 import type { SetupTab } from "./setupStore";
 
@@ -496,8 +496,19 @@ describe("AgentSetup's Join from a session tab", () => {
 			result: () => within(dialog).queryByTestId("join-setup-line"),
 		});
 		expect(within(dialog).getByTestId("join-setup-line")).toHaveValue(
-			`claude mcp add --transport http crb "${window.location.origin}/mcp?key=k3y"`,
+			`claude mcp add --scope user --transport http crb "${window.location.origin}/mcp?key=k3y"`,
 		);
+		// A session already running picks the server up with /reload-plugins:
+		// an icon, named by the hint, with it as its tooltip.
+		const hint = within(dialog).getByRole("img", { name: RELOAD_HINT });
+		expect(RELOAD_HINT).toContain("/reload-plugins");
+		await user.hover(hint);
+		await waitFor(() =>
+			expect(
+				screen.getByText(RELOAD_HINT, { selector: "[role=tooltip]" }),
+			).toBeVisible(),
+		);
+		await user.unhover(hint);
 		// Unbound in a component test: no review, so no join line.
 		expect(within(dialog).queryByTestId("join-line")).toBeNull();
 		await user.click(

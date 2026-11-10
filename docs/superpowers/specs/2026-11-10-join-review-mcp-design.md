@@ -112,8 +112,10 @@ before starting long-lived sessions.
 
 `/mcp` sits behind the access key like every other route (owner,
 2026-11-10: "Yes it should include the access key"). The one-time setup
-line carries it: `claude mcp add --transport http crb
-"http://<host>:4747/mcp?key=<key>"`, as the setup modal shows it; the
+line carries it: `claude mcp add --scope user --transport http crb
+"http://<host>:4747/mcp?key=<key>"`, as the setup modal shows it (user
+scope, so sessions in every directory see it; its info icon names
+`/reload-plugins` for a session already running); the
 link `crb <pr>` prints carries it too. On loopback with no key, the Host
 check applies as for the API. The Origin and Sec-Fetch-Site checks apply,
 so a web page can't drive `/mcp` from a browser.
