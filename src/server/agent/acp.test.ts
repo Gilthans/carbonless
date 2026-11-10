@@ -22,6 +22,19 @@ import {
 	checkAgent,
 } from "./acp.js";
 
+// spawn as it is, watched: a start stopped in time spawns nothing.
+const spawned = vi.hoisted(() => ({ count: 0 }));
+vi.mock("node:child_process", async (original) => {
+	const actual = await original<typeof import("node:child_process")>();
+	return {
+		...actual,
+		spawn: ((...args: Parameters<typeof actual.spawn>) => {
+			spawned.count++;
+			return actual.spawn(...args);
+		}) as typeof actual.spawn,
+	};
+});
+
 // Real agent processes (node + the SDK): see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
 
@@ -320,5 +333,21 @@ describe("checkAgent", () => {
 			ok: false,
 			error: "crb-no-such was not found on PATH",
 		});
+	});
+});
+
+describe("a start stopped before it spawns", () => {
+	it("spawns no process (the SDK loads first, CAR-105)", async () => {
+		scenario();
+		const controller = new AbortController();
+		controller.abort();
+		const before = spawned.count;
+		const error = await AcpAgent.spawn(
+			options({ signal: controller.signal }),
+		).catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(AgentStartError);
+		expect((error as AgentStartError).reason).toBe("exited");
+		expect((error as AgentStartError).message).toBe("Stopped while starting");
+		expect(spawned.count).toBe(before);
 	});
 });

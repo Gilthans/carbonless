@@ -2,16 +2,13 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Readable, Writable } from "node:stream";
-import {
-	type ActiveSession,
-	type ClientConnection,
-	type ContentBlock,
-	client,
-	methods,
-	ndJsonStream,
-	type RequestPermissionRequest,
-	type RequestPermissionResponse,
-	type SessionUpdate,
+import type {
+	ActiveSession,
+	ClientConnection,
+	ContentBlock,
+	RequestPermissionRequest,
+	RequestPermissionResponse,
+	SessionUpdate,
 } from "@agentclientprotocol/sdk";
 import type {
 	AgentCheck,
@@ -21,6 +18,17 @@ import type {
 } from "../../shared/agent.js";
 import { inheritedEnv } from "../git.js";
 import { BUILD } from "../version.js";
+
+type Sdk = typeof import("@agentclientprotocol/sdk");
+let sdk: Promise<Sdk> | undefined;
+/**
+ * The ACP SDK, loaded on first use (an agent started or checked): it costs
+ * ~140 ms of CPU, which every crb serve start would pay (CAR-105).
+ */
+const loadSdk = (): Promise<Sdk> => {
+	sdk ??= import("@agentclientprotocol/sdk");
+	return sdk;
+};
 
 /** How long spawn + initialize + session/new may take. */
 export const AGENT_START_MS = 60_000;
@@ -123,6 +131,7 @@ function checkCommand(command: string, args: string[]): void {
 }
 
 interface Started {
+	methods: Sdk["methods"];
 	child: ChildProcess;
 	conn: ClientConnection;
 	info: AgentIdentity;
@@ -141,6 +150,11 @@ async function start(
 	then: (s: Started) => Promise<void>,
 ): Promise<Started> {
 	checkCommand(opts.command, opts.args);
+	const { client, methods, ndJsonStream } = await loadSdk();
+	// Stopped (the session closing, crb exiting) while the SDK loaded: no
+	// process to start, and none to kill.
+	if (opts.signal?.aborted)
+		throw new AgentStartError("Stopped while starting", "exited", "");
 	let file: WriteStream | null = null;
 	if (opts.stderrFile) {
 		mkdirSync(dirname(opts.stderrFile), { recursive: true });
@@ -254,7 +268,14 @@ async function start(
 						: basename(opts.command) || opts.command,
 				version: String(init.agentInfo?.version ?? ""),
 			};
-			const started: Started = { child, conn, info, exited, stderr };
+			const started: Started = {
+				methods,
+				child,
+				conn,
+				info,
+				exited,
+				stderr,
+			};
 			await then(started);
 			return started;
 		})();
@@ -397,7 +418,8 @@ export class AcpAgent {
 
 	/** Asks the agent to stop the current turn (session/cancel). */
 	async cancel(): Promise<void> {
-		await this.started.conn.agent
+		const { conn, methods } = this.started;
+		await conn.agent
 			.notify(methods.agent.session.cancel, {
 				sessionId: this.session.sessionId,
 			})
@@ -407,7 +429,7 @@ export class AcpAgent {
 	/** session/close (errors ignored), then SIGTERM, then SIGKILL after 5 s. */
 	close(): Promise<void> {
 		this.#closing ??= (async () => {
-			const { child, conn, exited } = this.started;
+			const { child, conn, exited, methods } = this.started;
 			const gone = exited.then(() => true);
 			if (child.exitCode === null && child.signalCode === null) {
 				await Promise.race([
