@@ -27,14 +27,28 @@ export function parseSessionToken(
 	return m ? { id: m[1] as string, secret: m[2] as string } : null;
 }
 
-/** Failed connects in a row (5 s apart) before the loop gives up (exit 4). */
+/** Connects refused or timed out in a row (5 s apart) before the loop gives up (exit 4). */
 export const WATCH_TRIES = 60;
 
+/** Thrown for a server access key a shell line can't carry (code bad-key). */
+export class UnsafeKeyError extends Error {
+	constructor() {
+		super(
+			"This carbonless server's access key has characters a shell command can't carry safely, so no watcher can be made. Ask the reviewer to replace it: crb serve --new-key",
+		);
+	}
+}
+
 /**
- * The background command: exits 0 when crb writes its line (a question
- * waits, or the session left), 3 on any 4xx (detached: token gone), 4
- * after WATCH_TRIES dropped connections; otherwise reconnects every 5 s.
- * Throws if any part isn't in its alphabet.
+ * The background command (POSIX sh). curl's output is filtered inside a
+ * command substitution, so the keep-alive newlines never reach the
+ * harness; curl's status comes through as a `crb-exit <n>` line (no
+ * pipefail needed). Ends 0 printing crb's one `carbonless:` line (a
+ * question waits, or the session left), 3 on an HTTP 4xx (curl 22:
+ * detached, token gone), 4 after WATCH_TRIES refused or timed-out
+ * connects in a row; any other end (a dropped stream: crb restarting)
+ * resets that count and reconnects after 5 s. Throws if any part isn't
+ * in its alphabet.
  */
 export function watchCommand(
 	origin: string,
@@ -46,15 +60,17 @@ export function watchCommand(
 	if (!REVIEW_ID.test(id)) throw new Error("Unsafe review id for the watcher");
 	if (!SESSION_TOKEN.test(token))
 		throw new Error("Unsafe token for the watcher");
-	if (key !== null && !KEY.test(key)) {
-		throw new Error("Unsafe access key for the watcher");
-	}
+	if (key !== null && !KEY.test(key)) throw new UnsafeKeyError();
 	const url = `${origin}/mcp/watch/${id}${key === null ? "" : `?key=${key}`}`;
 	return [
-		"n=0;",
-		`until curl -sfN -H 'Authorization: Bearer ${token}' '${url}'; do`,
-		'[ "$?" -eq 22 ] && exit 3;',
-		"n=$((n+1));",
+		"n=0; while :; do",
+		`r=$({ curl -sfN -H 'Authorization: Bearer ${token}' '${url}'; echo "crb-exit $?"; } | grep -m1 -E '^(carbonless:|crb-exit )');`,
+		"case $r in",
+		`carbonless:*) printf '%s\\n' "$r"; exit 0;;`,
+		"'crb-exit 22') exit 3;;",
+		"'crb-exit 7'|'crb-exit 28') n=$((n+1));;",
+		"*) n=0;;",
+		"esac;",
 		`[ "$n" -ge ${WATCH_TRIES} ] && exit 4;`,
 		"sleep 5;",
 		"done",

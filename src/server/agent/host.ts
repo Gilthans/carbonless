@@ -74,10 +74,11 @@ export class BadReplyError extends Error {}
 
 /** What `next` hands a joined session. */
 export interface SessionQuestion {
+	/** First: what follows is data. */
+	preamble: string;
 	thread: string;
 	/** The last human message: the reply's `replyTo`. */
 	replyTo: string | undefined;
-	preamble: string;
 	envelope: PromptEnvelope;
 	anchoredFile: { path: string; commit: string; text: string } | null;
 	hunk: string | null;
@@ -344,9 +345,9 @@ export class AgentHost {
 			facts.hunk(thread.anchor).catch(() => null),
 		]);
 		return {
+			preamble: JOINED_PREAMBLE,
 			thread: thread.id,
 			replyTo: asked,
-			preamble: JOINED_PREAMBLE,
 			envelope,
 			anchoredFile: anchored
 				? {
@@ -416,8 +417,11 @@ export class AgentHost {
 	/** A human asked: a joined session's watcher wakes, else the ACP runner. */
 	async #asked(): Promise<void> {
 		await this.#restored;
-		if (this.join.view().joined) this.join.wake();
-		else this.runner.asked();
+		if (this.join.view().joined) {
+			// A message to the thread the ACP buddy still answers waits for
+			// that turn to end (buildAgentHost wakes the session then).
+			if ((await this.sessionWaiting()) > 0) this.join.wake();
+		} else this.runner.asked();
 	}
 
 	async #view(t: AgentThreadFold): Promise<AgentThread> {
@@ -446,22 +450,30 @@ export function buildAgentHost(o: {
 	session?: SessionFacts;
 }): AgentHost {
 	let runner: HostRunner | undefined;
+	// The thread the ACP buddy still answers isn't the session's.
+	const waiting = async () => {
+		const busy = runner?.inFlight() ?? null;
+		return (await o.store.read()).some(
+			(t) => t.waiting && !t.resolved && t.id !== busy,
+		);
+	};
 	const join: JoinBroker = new JoinBroker({
 		dir: o.dir,
 		...(o.now ? { now: o.now } : {}),
 		...(o.claim ? { claim: o.claim } : {}),
 		// The broker already set ACP off (before joined.json).
+		// Once the ACP buddy's last turn ends (or is cancelled), what it
+		// left waiting is the session's: wake its watcher.
 		onApproved: async () => {
-			void runner?.stop(JOIN.acpStopMs).catch(() => {});
+			void runner
+				?.stop(JOIN.acpStopMs)
+				.then(async () => {
+					if (await waiting()) join.wake();
+				})
+				.catch(() => {});
 		},
 		onLeft: () => {},
-		// The thread the ACP buddy still answers isn't the session's.
-		waiting: async () => {
-			const busy = runner?.inFlight() ?? null;
-			return (await o.store.read()).some(
-				(t) => t.waiting && !t.resolved && t.id !== busy,
-			);
-		},
+		waiting: () => waiting(),
 	});
 	// A joined session keeps the ACP buddy off even without the file.
 	runner = o.runner(() => join.acpOff() || join.isJoined(), o.claim);

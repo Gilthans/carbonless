@@ -323,7 +323,10 @@ describe("/mcp", () => {
 		const all = await call(client, "threads", { token: a.token });
 		expect(all.value.threads).toHaveLength(1);
 		const facts = await call(client, "review", { token: a.token });
-		expect(facts.value).toMatchObject({ repo: "acme/widget", link: link() });
+		expect(facts.value.review).toMatchObject({
+			repo: "acme/widget",
+			link: link(),
+		});
 	});
 
 	it("a reviewer's message while the session answers still waits after its reply (Review focus 4)", async () => {
@@ -397,6 +400,64 @@ describe("/mcp", () => {
 		expect((await threads()).every((t) => t.messages.length === 1)).toBe(true);
 		// The thread handed out goes back to waiting for whoever answers next.
 		expect((await threads()).every((t) => t.waiting)).toBe(true);
+	});
+
+	it("the preamble comes first in next, the approved attach and review; PR facts sit under it", async () => {
+		await ask();
+		const client = await connect();
+		const a = await join(client);
+		expect(Object.keys(a)[0]).toBe("state");
+		expect(Object.keys(a)[1]).toBe("preamble");
+		expect((a as unknown as { preamble: string }).preamble).toBe(
+			JOINED_PREAMBLE,
+		);
+		expect(Object.keys(a).indexOf("review")).toBe(Object.keys(a).length - 1);
+		const n = await call(client, "next", { token: a.token });
+		expect(Object.keys(n.value)[0]).toBe("preamble");
+		const r = await call(client, "review", { token: a.token });
+		expect(Object.keys(r.value)).toEqual(["preamble", "review"]);
+		expect(r.value.review).toMatchObject({ repo: "acme/widget" });
+	});
+
+	it("approved attach keeps the token when the facts can't be read (N1)", async () => {
+		const { session } = await registry.open({ pr: pr.arg });
+		const agent = session.agent;
+		if (!agent) throw new Error("no agent");
+		vi.spyOn(agent, "sessionReview").mockRejectedValueOnce(
+			new Error("git is busy"),
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const client = await connect();
+		const asked = await call(client, "attach", { review: link(), name: "s" });
+		await api(`/agent/join/${asked.value.request}`, "POST", { approve: true });
+		const a = await call(client, "attach", {
+			review: link(),
+			name: "s",
+			request: asked.value.request,
+		});
+		warn.mockRestore();
+		expect(a.value).toMatchObject({ state: "approved", review: null });
+		expect(a.value.token).toEqual(expect.any(String));
+		expect(a.value.instructions).toMatch(/call review/);
+		const facts = await call(client, "review", {
+			token: a.value.token as string,
+		});
+		expect(facts.error).toBe(false);
+	});
+
+	it("a token for a review that isn't open (and has no join on disk) opens nothing (N2)", async () => {
+		const client = await connect();
+		const other = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		const get = vi.spyOn(registry, "get");
+		const r = await call(client, "next", {
+			token: `${other}.${"A".repeat(43)}`,
+		});
+		expect(r.value.error).toBe("unknown-token");
+		expect(
+			(await watcher(`${other}.${"A".repeat(43)}`, other)).res.status,
+		).toBe(410);
+		expect(get).not.toHaveBeenCalledWith(other);
+		get.mockRestore();
 	});
 
 	describe("the watcher", () => {
@@ -496,6 +557,17 @@ describe("/mcp", () => {
 			expect((await watcher(elsewhere)).res.status).toBe(401);
 		});
 
+		it("a review that can't open right now drops the connection (curl retries), no HTTP status (S1)", async () => {
+			const client = await connect();
+			const a = await join(client);
+			vi.spyOn(registry, "get").mockRejectedValueOnce(new Error("gh is down"));
+			await expect(watcher(a.token)).rejects.toThrow();
+			// The next try gets through.
+			const w = await watcher(a.token);
+			expect(w.res.status).toBe(200);
+			w.ac.abort();
+		});
+
 		it("a dropped watcher (not delivering) makes the session reconnecting", async () => {
 			const client = await connect();
 			const a = await join(client);
@@ -551,6 +623,48 @@ describe("/mcp", () => {
 			});
 			expect(res.status).toBe(403);
 		});
+	});
+});
+
+describe("/mcp on a server whose access key a shell line can't carry", () => {
+	let pr: PrFixture;
+	let registry: SessionRegistry;
+	let app: FastifyInstance;
+	beforeEach(async () => {
+		pr = createPrFixture();
+		registry = new SessionRegistry();
+		await registry.open({ pr: pr.arg });
+		app = await buildApp(registry, { accessKey: "k3y.with.dots" });
+		await app.listen({ port: 0, host: "127.0.0.1" });
+	});
+	afterEach(async () => {
+		await app.close();
+		await registry.closeAll();
+		await pr.cleanup();
+	});
+
+	it("attach says so (bad-key, rotate the key) before any join is asked (N3)", async () => {
+		const address = app.server.address();
+		if (!address || typeof address === "string") throw new Error("no port");
+		const host = `127.0.0.1:${address.port}`;
+		const client = new Client({ name: "t", version: "1" });
+		await client.connect(
+			new StreamableHTTPClientTransport(
+				new URL(`http://${host}/mcp?key=k3y.with.dots`),
+			),
+		);
+		const [{ session }] = [await registry.open({ pr: pr.arg })];
+		const r = await client.callTool({
+			name: "attach",
+			arguments: { review: `http://${host}/r/${session.id}`, name: "s" },
+		});
+		const [first] = r.content as { text: string }[];
+		const body = JSON.parse(first?.text ?? "");
+		expect(r.isError).toBe(true);
+		expect(body.error).toBe("bad-key");
+		expect(body.message).toMatch(/--new-key/);
+		expect(session.agent?.join.view().joinRequest).toBeUndefined();
+		await client.close();
 	});
 });
 

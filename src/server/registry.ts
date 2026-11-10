@@ -194,6 +194,14 @@ export class SessionRegistry {
 		return run;
 	}
 
+	/** Review `id` if it is open now (counts as a use); never opens one. */
+	peek(id: string): Session | undefined {
+		const entry = this.#open.get(id);
+		if (!entry || entry.session.closed) return undefined;
+		entry.lastUsed = this.#now();
+		return entry.session;
+	}
+
 	/** The reviews open now, with when each was last used (ms); none is touched. */
 	list(): { session: Session; lastUsed: number }[] {
 		return [...this.#open.values()]

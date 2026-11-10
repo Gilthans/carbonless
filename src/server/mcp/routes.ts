@@ -34,6 +34,8 @@ export interface McpRouteDeps {
 	publicUrl?: string;
 	/** This server's address, when the request's Host can't be used. */
 	baseUrl(): string;
+	/** Whether review `id` has a joined session on disk (joined.json). */
+	joinedOnDisk(id: string): boolean;
 	/** The watcher's keep-alive period (tests). */
 	keepAliveMs?: number;
 }
@@ -119,6 +121,13 @@ export function registerMcp(app: FastifyInstance, deps: McpRouteDeps): void {
 					.code(401)
 					.send({ error: "Expected Authorization: Bearer <token>" });
 			}
+			// Only attach opens a review: a token opens one only when a
+			// session is joined to it on disk (a crb restart since the join).
+			if (!deps.registry.peek(id) && !deps.joinedOnDisk(id)) {
+				return reply
+					.code(410)
+					.send({ error: "Not joined to this review: call attach again" });
+			}
 			let session: Session;
 			try {
 				session = await deps.registry.get(id);
@@ -126,8 +135,12 @@ export function registerMcp(app: FastifyInstance, deps: McpRouteDeps): void {
 				if (error instanceof UnknownReviewError) {
 					return reply.code(410).send({ error: "No such review" });
 				}
-				// The review can't open right now: the watcher retries.
-				return reply.code(503).send({ error: (error as Error).message });
+				// The review can't open right now (gh, git, a restart): no
+				// status at all, so curl sees a dropped connection and the
+				// watcher retries (any 4xx or 5xx would end it as detached).
+				reply.hijack();
+				request.raw.socket.destroy();
+				return;
 			}
 			const host = session.agent;
 			const lease = host ? await host.sessionWatch(token.secret) : null;

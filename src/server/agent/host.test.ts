@@ -358,6 +358,33 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(again.join.check(token)).toBe(true);
 		host = again;
 	});
+	it("the session isn't woken for the ACP buddy's running turn, and is woken once that turn is stopped", async () => {
+		const x = await host.open({ clientId: "c1", text: "Why?", span });
+		busy = x.id;
+		let releaseStop!: () => void;
+		runner.stop.mockImplementationOnce(
+			() =>
+				new Promise<void>((r) => {
+					releaseStop = r;
+				}),
+		);
+		const token = await approve();
+		const lease = host.join.watcher(token);
+		let delivered = false;
+		void lease?.deliver.then(() => {
+			delivered = true;
+		});
+		// A follow-up to the thread the ACP turn still answers: no wake.
+		await host.message(x.id, { clientId: "m2", text: "And?" });
+		for (let i = 0; i < 3; i++) await host.sessionWaiting();
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		expect(delivered).toBe(false);
+		// The turn is stopped (cancelled): what it left waits for the session.
+		busy = null;
+		releaseStop();
+		await vi.waitFor(() => expect(delivered).toBe(true));
+	});
+
 	describe("a joined session's tools", () => {
 		it("next skips the thread the ACP buddy still answers, then hands it out once that turn ends", async () => {
 			const x = await host.open({ clientId: "c1", text: "One?", span });

@@ -1,3 +1,4 @@
+import { oneLine } from "../agent/prompt.js";
 import type { StartedReview } from "../home/facts.js";
 
 /**
@@ -71,6 +72,8 @@ export interface JoinableDeps {
 }
 
 export const MAX_JOINABLE = 50;
+/** A title, author or branch name, in code points. */
+const MAX_TEXT = 300;
 
 const stateOf = (
 	state: "OPEN" | "CLOSED" | "MERGED",
@@ -153,6 +156,17 @@ export async function listJoinable(
 			joinable: !noAgent,
 			...(noAgent ? { reason } : {}),
 		});
+	}
+	// PR text is anyone's: one sanitised line each before a session reads it.
+	for (const r of rows.values()) {
+		if (r.title !== undefined) r.title = oneLine(r.title, MAX_TEXT);
+		if (r.author !== undefined) r.author = oneLine(r.author, MAX_TEXT);
+		if (r.branch) {
+			r.branch = {
+				head: oneLine(r.branch.head, MAX_TEXT),
+				base: oneLine(r.branch.base, MAX_TEXT),
+			};
+		}
 	}
 	const q = query?.trim().toLowerCase();
 	const matches = (r: JoinableReview) =>

@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { JOIN } from "../../shared/agent.js";
+import { JOIN, JOINED_PREAMBLE } from "../../shared/agent.js";
 import {
 	type AgentHost,
 	BadReplyError,
@@ -20,6 +20,7 @@ import {
 	parseSessionToken,
 	REVIEW_ID,
 	sessionToken,
+	UnsafeKeyError,
 	watchCommand,
 } from "./watch.js";
 
@@ -42,7 +43,12 @@ export interface McpRequestContext {
 }
 
 export interface McpDeps {
-	registry: Pick<SessionRegistry, "get">;
+	registry: Pick<SessionRegistry, "get" | "peek">;
+	/**
+	 * Whether review `id` may have a joined session (its joined.json): a
+	 * token for a review that isn't open opens it only then.
+	 */
+	joinedOnDisk(id: string): boolean;
 	reviews(origin: string, query?: string): Promise<JoinableReview[]>;
 }
 
@@ -57,7 +63,8 @@ export class ToolError extends Error {
 			| "elsewhere"
 			| "unknown-token"
 			| "not-handed"
-			| "unknown-thread",
+			| "unknown-thread"
+			| "bad-key",
 		message: string,
 	) {
 		super(message);
@@ -143,6 +150,11 @@ export function createMcpServer(
 	): Promise<{ host: AgentHost; secret: string; id: string }> => {
 		const parsed = parseSessionToken(token);
 		if (!parsed) throw new SessionTokenError();
+		// Only attach opens a review: a token opens one only if a session
+		// is joined to it on disk (a crb restart since the join).
+		if (!deps.registry.peek(parsed.id) && !deps.joinedOnDisk(parsed.id)) {
+			throw new SessionTokenError();
+		}
 		let host: AgentHost;
 		try {
 			host = await hostOf(parsed.id);
@@ -210,23 +222,26 @@ export function createMcpServer(
 						"review must be a review's link (…/r/<id>): call reviews to find it",
 					);
 				}
+				// The token goes out once: the watcher's line must be
+				// buildable before a join is even asked for.
+				try {
+					watchCommand(
+						ctx.origin,
+						id,
+						sessionToken(id, "A".repeat(43)),
+						ctx.key,
+					);
+				} catch (error) {
+					throw new ToolError(
+						error instanceof UnsafeKeyError ? "bad-key" : "invalid",
+						(error as Error).message,
+					);
+				}
 				const host = await hostOf(id);
 				const where = link(id);
 				if (args.request !== undefined) {
 					if (!JOIN_REQUEST.test(args.request)) {
 						throw new ToolError("invalid", "Not a join request id");
-					}
-					// The token goes out once: the watcher's line must be
-					// buildable before it is collected.
-					try {
-						watchCommand(
-							ctx.origin,
-							id,
-							sessionToken(id, "A".repeat(43)),
-							ctx.key,
-						);
-					} catch (error) {
-						throw new ToolError("invalid", (error as Error).message);
 					}
 					const o = await host.join.outcome(args.request, JOIN.attachWaitMs);
 					if (o.state === "pending") {
@@ -252,16 +267,26 @@ export function createMcpServer(
 					}
 					const token = sessionToken(id, o.token);
 					const watch = watchCommand(ctx.origin, id, token, ctx.key);
-					return {
-						state: "approved",
-						token,
-						review: {
+					// The token is collected: nothing after this may lose it.
+					let review: Record<string, unknown> | null = null;
+					let waiting: number | null = null;
+					try {
+						review = {
 							link: where,
 							...(await host.sessionReview(o.token, true)),
-						},
-						waiting: await host.sessionWaiting(),
+						};
+						waiting = await host.sessionWaiting();
+					} catch (error) {
+						console.warn(`crb: attach: ${(error as Error).message}`);
+					}
+					return {
+						state: "approved",
+						preamble: JOINED_PREAMBLE,
+						instructions: `You are this review's buddy now. 1) Run \`watch\` as a background shell command (it exits when a question waits for you, or when you are detached). 2) Call next; answer the question it gives with reply (thread, replyTo, your answer in Markdown); call next again until it says none waits. 3) When watch exits, read its line, then repeat from 2 and run watch again. Call detach when you stop. Keep the token to yourself: it is this review's only.${review ? "" : " The review's facts couldn't be read just now: call review for them."}`,
+						token,
 						watch,
-						instructions: `You are this review's buddy now. 1) Run \`watch\` as a background shell command (it exits when a question waits for you, or when you are detached). 2) Call next; answer the question it gives with reply (thread, replyTo, your answer in Markdown); call next again until it says none waits. 3) When watch exits, read its line, then repeat from 2 and run watch again. Call detach when you stop. Keep the token to yourself: it is this review's only.`,
+						waiting,
+						review,
 					};
 				}
 				const claim = await host.join.claimCheck();
@@ -343,7 +368,13 @@ export function createMcpServer(
 		({ token }) =>
 			run(async () => {
 				const { host, secret, id } = await tokenHost(token);
-				return { link: link(id), ...(await host.sessionReview(secret, true)) };
+				return {
+					preamble: JOINED_PREAMBLE,
+					review: {
+						link: link(id),
+						...(await host.sessionReview(secret, true)),
+					},
+				};
 			}),
 	);
 

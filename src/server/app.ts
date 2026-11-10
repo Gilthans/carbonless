@@ -658,6 +658,7 @@ export async function buildApp(
 		registry,
 		reviews: (origin, query) => listJoinable(joinable, origin, query),
 		accessKey: options.accessKey,
+		joinedOnDisk: (id) => existsSync(join(agentsDir(), id, "joined.json")),
 		...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
 		baseUrl: () => options.baseUrl?.() ?? "http://localhost",
 		...(options.mcpKeepAliveMs ? { keepAliveMs: options.mcpKeepAliveMs } : {}),

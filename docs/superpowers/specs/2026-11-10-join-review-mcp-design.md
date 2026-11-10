@@ -203,17 +203,26 @@ title, etc") lists the reviewer's started reviews, newest activity first
 The `watch` command `attach` returns is a one-line shell command the
 session runs in the background (Claude Code: `run_in_background`; its exit
 wakes the session). It is plain `curl` in a retry loop, so the session's
-machine needs nothing of crb's:
+machine needs nothing of crb's (POSIX `sh`, one line in practice):
 
 ```sh
-until curl -sfN -H 'Authorization: Bearer <token>' 'http://<host>:4747/mcp/watch/<review-id>?key=<key>'; do
-  [ $? -eq 22 ] && exit 3   # HTTP 4xx: detached, token revoked
-  sleep 5                   # connection dropped: retry (crb restart, network)
+n=0; while :; do
+  r=$({ curl -sfN -H 'Authorization: Bearer <token>' 'http://<host>:4747/mcp/watch/<review-id>?key=<key>'; echo "crb-exit $?"; } | grep -m1 -E '^(carbonless:|crb-exit )')
+  case $r in
+    carbonless:*) printf '%s\n' "$r"; exit 0;;     # crb's line: a question, or you left
+    'crb-exit 22') exit 3;;                         # HTTP 4xx: detached, token revoked
+    'crb-exit 7'|'crb-exit 28') n=$((n+1));;       # refused / timed out: count it
+    *) n=0;;                                        # dropped stream (crb restart): retry
+  esac
+  [ "$n" -ge 60 ] && exit 4; sleep 5                # 60 refused connects in a row: give up
 done
 ```
 
-(The builder settles the exact loop and its give-up time; the shape is
-what matters.)
+The keep-alive newlines stay inside the command substitution, so the
+harness sees only crb's one line; curl's status travels as the
+`crb-exit` line, so no `pipefail` is needed. A failure the watcher should
+retry (the review can't open right now) gets no HTTP status: crb drops
+the connection, since curl turns any 4xx or 5xx into 22.
 
 - `GET /mcp/watch/:review` holds the connection open. It writes a
   keep-alive byte every 15 s (so a dead peer is noticed on write), and
@@ -280,7 +289,9 @@ session itself. It is revocable (Disconnect) and dies with the attachment
 - **Detach** (the `detach` tool), **disconnect** (the reviewer presses
   Disconnect in the chip's popover), **lost** (the watcher grace window
   passed), or **replaced** (a new join approved) all end the attachment:
-  the token is revoked, any open watcher closes with 410 (the loop exits),
+  the token is revoked, an open watcher gets crb's final line ("you are
+  no longer joined…") and ends (curl exits 0, so the loop does; its 200
+  was sent when it connected), a later reconnect gets 410 (exit 3),
   a thread handed out but not answered goes back to waiting.
 - **A toast** on every open tab of the review, in the agent tint with the
   plug icon: "carbonless · devbox left" or "… disconnected", 6 s, with the
@@ -374,7 +385,7 @@ Unit (Vitest):
 - Approve, Deny, expiry, replace; `attach` with `request` waits ≤ 20 s for
   the answer (hold, not a time bound: resolved while held).
 - Watcher: delivers at once when a question waits; delivers when one
-  arrives; keep-alive bytes; 410 on revoke; presence moves listening →
+  arrives; keep-alive bytes; a final line on revoke, 410 on reconnect; presence moves listening →
   busy → listening; drop → reconnecting → lost after the grace window
   (fake clock, not wall time).
 - `next`/`reply`: oldest first; same thread until replied; `replyTo`
