@@ -130,6 +130,10 @@ Only what the diff can show is searched: file paths, changed lines and the
 context lines around them, plus any context you expanded. A line far from
 every change isn't shown, so it isn't searched. Expand the gap that holds
 it and the hit appears. Comments, threads and the overview aren't searched.
+In the since view (base on a patch set) the diff shown is the interdiff, so
+that is what is searched: a line changed before that patch set and left
+alone since is no changed line there. Move the base to the branch to search
+the whole PR.
 
 ## Why does Home show coverage in lines, when the Files page shows files?
 

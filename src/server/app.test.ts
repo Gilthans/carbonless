@@ -2182,6 +2182,42 @@ describe("API", () => {
 					)
 				).statusCode,
 			).toBe(404);
+			// files/hunks?from= (the search's prefetch) batches the since
+			// view's hunks: a.txt is untouched since PS1 (one gap, no lines),
+			// later.txt is new. Without from, the full diff's, as before.
+			const batch = (from: string) =>
+				get(
+					`/api/files/hunks?revision=${view.revision}&indexes=0,${later.index}${from}`,
+				);
+			const sinceBatch = await batch("&from=1");
+			expect(sinceBatch.files.map((f: { index: number }) => f.index)).toEqual([
+				0,
+				later.index,
+			]);
+			expect(sinceBatch.files[0].hunks).toMatchObject({
+				hunks: [],
+				wholeGap: true,
+			});
+			expect(sinceBatch.files[1].hunks).toEqual(since);
+			const fullBatch = await batch("");
+			expect(fullBatch.files[0].hunks).toEqual(
+				await get(`/api/files/0/hunks?revision=${view.revision}`),
+			);
+			expect(fullBatch.files[0].hunks.hunks.length).toBeGreaterThan(0);
+			expect(
+				(
+					await inject(
+						`/api/files/hunks?revision=${view.revision}&indexes=0&from=x`,
+					)
+				).statusCode,
+			).toBe(400);
+			expect(
+				(
+					await inject(
+						`/api/files/hunks?revision=${view.revision}&indexes=0&from=9`,
+					)
+				).statusCode,
+			).toBe(404);
 			// Nothing written by viewing.
 			expect((await get("/api/session")).patchsets).toHaveLength(1);
 			// The first mark on the viewed head starts PS2 with the carry.

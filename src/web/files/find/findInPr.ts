@@ -60,8 +60,9 @@ export interface SourceLine {
 }
 
 /**
- * A file's lines in the order the diff shows them. Without hunks: each
- * cluster's removed lines (LEFT, oldStart + i) then added lines (RIGHT,
+ * A file's lines in the order the diff shows them. Without hunks: none
+ * when `clusters` is false (the since view: its lines are only its
+ * hunks'), else each cluster's removed lines (LEFT, oldStart + i) then added lines (RIGHT,
  * newStart + i), clusters in file order (a "file" cluster has none).
  * With hunks: for each hunk, first the expanded `context` lines whose newNo
  * lies before it and after the previous hunk (sorted by newNo, first of a
@@ -73,8 +74,10 @@ export function fileLines(
 	file: FileView,
 	hunks: FileHunks | undefined,
 	context: readonly DiffLine[],
+	clusters = true,
 ): SourceLine[] {
 	if (!hunks) {
+		if (!clusters) return [];
 		return file.clusters.flatMap((c) => [
 			...c.removed.map((text, i) => ({
 				side: "LEFT" as const,
@@ -132,6 +135,8 @@ export function findInPr(
 	hunksOf: (file: FileView) => FileHunks | undefined,
 	contextOf: (file: FileView) => readonly DiffLine[],
 	matchCase: boolean,
+	/** A file without hunks yet is searched in its clusters (fileLines). */
+	clusters = true,
 ): Hit[] {
 	const hits: Hit[] = [];
 	const re = pattern(term, matchCase);
@@ -150,7 +155,7 @@ export function findInPr(
 		push("path", 0, file.path);
 		if (file.oldPath) push("oldPath", 0, file.oldPath);
 		if (file.binary || file.submodule) continue;
-		for (const l of fileLines(file, hunksOf(file), contextOf(file)))
+		for (const l of fileLines(file, hunksOf(file), contextOf(file), clusters))
 			push(l.side, l.line, l.text);
 	}
 	return hits;

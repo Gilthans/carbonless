@@ -21,7 +21,7 @@ import type {
 import { contextQuery, hunksQuery } from "../../api";
 import type { FindMark } from "../../code/Invisibles";
 import { matchCase as matchCaseSetting } from "../../viewSettings";
-import { contextRanges } from "../contextRanges";
+import { contextRanges, rangesKeyOf } from "../contextRanges";
 import type { DiffFind } from "../DiffBody";
 import type { TreeFind } from "../FileTree";
 import {
@@ -105,6 +105,12 @@ export function useFind(opts: {
 	/** The page shows (a hidden page runs no prefetch). */
 	active: boolean;
 	/**
+	 * The since view's patch set: the search reads the interdiff from it
+	 * (its hunks and context, numbered as the since view shows them), never
+	 * the full diff's.
+	 */
+	from?: number;
+	/**
 	 * A hunks request answered 409 (the revision is gone: another tab or
 	 * device refreshed): read the review again, so the page moves to the new
 	 * revision and the prefetch starts over for it. Resolves with the
@@ -113,7 +119,7 @@ export function useFind(opts: {
 	 */
 	onStale?: () => Promise<string | undefined>;
 }): Find {
-	const { revision, files, openIndex, active } = opts;
+	const { revision, files, openIndex, active, from } = opts;
 	const onStale = useRef(opts.onStale);
 	onStale.current = opts.onStale;
 	const state = findState.use();
@@ -131,11 +137,14 @@ export function useFind(opts: {
 	// below.
 	const hunks = useQueries({
 		queries: searchOn
-			? files.map((f) => ({ ...hunksQuery(revision, f.index), enabled: false }))
+			? files.map((f) => ({
+					...hunksQuery(revision, f.index, from),
+					enabled: false,
+				}))
 			: [],
 		combine: hunksData,
 	});
-	const allRanges = contextRanges.useAll(revision ?? "");
+	const allRanges = contextRanges.useAll(rangesKeyOf(revision ?? "", from));
 	const ranges = useMemo(
 		() =>
 			searchOn
@@ -151,7 +160,7 @@ export function useFind(opts: {
 	);
 	const context = useQueries({
 		queries: ranges.map((r) => ({
-			...contextQuery(revision ?? "", r.index, r.from, r.to),
+			...contextQuery(revision ?? "", r.index, r.from, r.to, from),
 			enabled: false,
 		})),
 		combine: contextData,
@@ -180,14 +189,17 @@ export function useFind(opts: {
 						(f) => hunksBy.get(f.index),
 						(f) => contextBy.get(f.index) ?? NO_LINES,
 						matchCase,
+						// The since view's lines are its hunks': the clusters
+						// (the full diff's) never stand in for them.
+						from === undefined,
 					);
-	}, [searchOn, matchCase, files, hunks, ranges, context]);
+	}, [searchOn, matchCase, files, hunks, ranges, context, from]);
 	const hits = useMemo(() => searchFor(term), [searchFor, term]);
 
 	// The caret. Typing (a new term, match case, a reopen, a new revision)
 	// starts over from the file open at that moment: a pick in the tree
 	// later doesn't move it. A step's caret holds until the next typing.
-	const typingKey = `${open}\0${term}\0${matchCase}\0${revision}`;
+	const typingKey = `${open}\0${term}\0${matchCase}\0${revision}\0${from}`;
 	const [typed, setTyped] = useState({ key: typingKey, openIndex });
 	if (typed.key !== typingKey) setTyped({ key: typingKey, openIndex });
 	const typedOpen = typed.key === typingKey ? typed.openIndex : openIndex;
@@ -208,7 +220,7 @@ export function useFind(opts: {
 	// Steps read the latest, also two in one frame. While the deferred
 	// search trails the typed term, a step searches the typed term itself
 	// (Enter right after typing goes to the typed term's hit).
-	const typedKey = `${open}\0${typedTerm}\0${matchCase}\0${revision}`;
+	const typedKey = `${open}\0${typedTerm}\0${matchCase}\0${revision}\0${from}`;
 	const latest = useRef({ hits, caret, typingKey });
 	latest.current = { hits, caret, typingKey };
 	const typedNow = useRef({ typedKey, typedTerm, searchFor, order, stepped });
@@ -274,22 +286,31 @@ export function useFind(opts: {
 	const [started, setStarted] = useState<{
 		p: HunksPrefetcher;
 		revision: string;
+		from: number | undefined;
 	} | null>(null);
 	const prefetcher =
-		started && started.revision === revision ? started.p : null;
+		started && started.revision === revision && started.from === from
+			? started.p
+			: null;
 	useEffect(() => {
 		if (!open || revision === undefined || !active) return;
-		const p = new HunksPrefetcher(client, revision, undefined, async () => {
-			const read = await onStale.current?.();
-			return read !== undefined && read !== revision;
-		});
-		setStarted({ p, revision });
+		const p = new HunksPrefetcher(
+			client,
+			revision,
+			undefined,
+			async () => {
+				const read = await onStale.current?.();
+				return read !== undefined && read !== revision;
+			},
+			from,
+		);
+		setStarted({ p, revision, from });
 		p.queue(prefetchOrder(filesRef.current, openRef.current));
 		return () => {
 			p.stop();
 			setStarted(null);
 		};
-	}, [open, revision, active, client]);
+	}, [open, revision, active, client, from]);
 	const subscribe = useMemo(
 		() =>
 			prefetcher ? (f: () => void) => prefetcher.subscribe(f) : noSubscribe,
@@ -319,12 +340,12 @@ export function useFind(opts: {
 		if (!active || revision === undefined) return;
 		ranges.forEach((r, i) => {
 			if (!context.waiting[i]) return;
-			const query = contextQuery(revision, r.index, r.from, r.to);
+			const query = contextQuery(revision, r.index, r.from, r.to, from);
 			if (client.getQueryState(query.queryKey)?.fetchStatus === "fetching")
 				return;
 			void client.prefetchQuery(query);
 		});
-	}, [active, revision, ranges, context, client]);
+	}, [active, revision, ranges, context, client, from]);
 	const retry = useCallback(() => {
 		if (!prefetcher) return;
 		prefetcher.retry();
@@ -336,10 +357,19 @@ export function useFind(opts: {
 		ranges.forEach((r, i) => {
 			if (context.failed[i])
 				void client.prefetchQuery(
-					contextQuery(revision, r.index, r.from, r.to),
+					contextQuery(revision, r.index, r.from, r.to, from),
 				);
 		});
-	}, [prefetcher, files, hunks.failed, revision, ranges, context, client]);
+	}, [
+		prefetcher,
+		files,
+		hunks.failed,
+		revision,
+		ranges,
+		context,
+		client,
+		from,
+	]);
 
 	const marking = searchOn && typedTerm !== "";
 	// Not final while the prefetch has files out, a file's own request is out,

@@ -83,6 +83,8 @@ const hunksOf = (f: FileView, before: string): FileHunks => {
 
 interface Batch {
 	revision: string;
+	/** The since view's patch set (`from`), null for the full diff. */
+	from: string | null;
 	indexes: number[];
 	held: ReturnType<typeof heldJson>;
 }
@@ -92,7 +94,11 @@ let batches: Batch[];
 /** Held per-file hunks requests, in order (`/api/files/<n>/hunks`). */
 let singles: { index: number; held: ReturnType<typeof heldJson> }[];
 /** Held expanded-context requests, in order (`/api/files/<n>/context`). */
-let contexts: { index: number; held: ReturnType<typeof heldJson> }[];
+let contexts: {
+	index: number;
+	from: string | null;
+	held: ReturnType<typeof heldJson>;
+}[];
 
 beforeEach(() => {
 	findState.reset();
@@ -109,6 +115,7 @@ beforeEach(() => {
 				const held = heldJson();
 				batches.push({
 					revision: url.searchParams.get("revision") ?? "",
+					from: url.searchParams.get("from"),
 					indexes: (url.searchParams.get("indexes") ?? "")
 						.split(",")
 						.map(Number),
@@ -125,7 +132,11 @@ beforeEach(() => {
 			const ctx = /^\/api\/files\/(\d+)\/context$/.exec(url.pathname);
 			if (ctx) {
 				const held = heldJson();
-				contexts.push({ index: Number(ctx[1]), held });
+				contexts.push({
+					index: Number(ctx[1]),
+					from: url.searchParams.get("from"),
+					held,
+				});
 				return held.response;
 			}
 			return new Response("{}", { status: 404 });
@@ -142,6 +153,7 @@ function renderFind(props: {
 	files: FileView[];
 	openIndex: number | null;
 	onStale?: () => Promise<string | undefined>;
+	from?: number;
 }) {
 	const wrapper = ({ children }: { children: ReactNode }) => (
 		<QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -177,6 +189,85 @@ describe("useFind", () => {
 		await waitFor(() => expect(result.current.count?.of).toBe(2));
 		expect(result.current.searching).toBe(false);
 		expect(result.current.failed).toBe(0);
+	});
+
+	it("the since view searches the interdiff: no hit in lines changed before it, its own lines at its numbers, its own context", async () => {
+		// The full diff changed line 2 to "early term"; since PS1 only line
+		// 7 changed ("was later" in PS1 to "later term").
+		const files = [file(0, ["old"], ["early term"])];
+		const interdiff: FileHunks = {
+			newLineCount: 9,
+			hunks: [
+				{
+					oldStart: 6,
+					oldCount: 2,
+					newStart: 6,
+					newCount: 2,
+					lines: [
+						{ kind: "context", oldNo: 6, newNo: 6, text: "ctx" },
+						{ kind: "del", oldNo: 7, text: "was later" },
+						{ kind: "add", newNo: 7, text: "later term" },
+					],
+				},
+			],
+		};
+		// Expanded context: the full diff's and the since view's are apart.
+		contextRanges.add("r1", 0, 20, 21);
+		contextRanges.add("r1@since1", 0, 8, 9);
+		const { result, rerender } = renderFind({
+			revision: "r1",
+			files,
+			openIndex: null,
+			from: 1,
+		});
+		search("early");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		expect(batches[0]?.from).toBe("1");
+		// While the interdiff loads, the full diff's clusters give no hit.
+		expect(result.current.searching).toBe(true);
+		expect(result.current.hits).toEqual([]);
+		await waitFor(() => expect(contexts).toHaveLength(1));
+		expect(contexts[0]?.from).toBe("1");
+		await act(async () => {
+			batches[0]?.held.release({ files: [{ index: 0, hunks: interdiff }] });
+			contexts[0]?.held.release([
+				{ kind: "context", oldNo: 8, newNo: 8, text: "later ctx" },
+			]);
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		expect(result.current.count?.of).toBe(0);
+		expect(client.getQueryData(hunksQuery("r1", 0, 1).queryKey)).toEqual(
+			interdiff,
+		);
+		expect(client.getQueryData(hunksQuery("r1", 0).queryKey)).toBeUndefined();
+		search("later");
+		await waitFor(() => expect(result.current.count?.of).toBe(3));
+		expect(result.current.hits.map((h) => [h.side, h.line, h.col])).toEqual([
+			["LEFT", 7, 4],
+			["RIGHT", 7, 0],
+			["RIGHT", 8, 0],
+		]);
+		const current = result.current.diffOf(0)?.current;
+		expect(current).toEqual({ old: true, line: 7 });
+		// The full diff: its own hunks, asked without from, find "early".
+		rerender({ revision: "r1", files, openIndex: null, from: undefined });
+		search("early");
+		await waitFor(() => expect(batches).toHaveLength(2));
+		expect(batches[1]?.from).toBeNull();
+		// And its own expanded range, not the since view's.
+		await waitFor(() => expect(contexts).toHaveLength(2));
+		expect(contexts[1]?.from).toBeNull();
+		await act(async () => {
+			batches[1]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "z") }],
+			});
+			contexts[1]?.held.release([
+				{ kind: "context", oldNo: 20, newNo: 20, text: "z" },
+			]);
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		await waitFor(() => expect(result.current.count?.of).toBe(1));
+		expect(result.current.hits[0]).toMatchObject({ side: "RIGHT", line: 2 });
 	});
 
 	it("the caret after typing is the open file's first hit, unshown; a step shows it, the next moves", async () => {
