@@ -5,12 +5,15 @@ import {
 	type CSSProperties,
 	type ReactNode,
 	type RefObject,
+	useCallback,
+	useContext,
 	useEffect,
 	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
 } from "react";
+import { createPortal, flushSync } from "react-dom";
 import type { AgentThread } from "../../shared/agent";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { ReviewThread, SessionInfo } from "../../shared/types";
@@ -37,7 +40,8 @@ import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useReviewId } from "../reviewId";
 import { SkeletonBar, Spinner } from "../Spinner";
-import { useAppHeaderHeight, useHeight } from "../sticky";
+import { useShortcut } from "../shortcuts";
+import { FindSlot, useAppHeaderHeight, useHeight, visualTop } from "../sticky";
 import { Tooltip } from "../Tooltip";
 import { PeopleProvider } from "../threads/people";
 import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
@@ -54,6 +58,10 @@ import { FileTree } from "./FileTree";
 import { nextFile } from "./fileFinish";
 import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
+import { FindBar } from "./find/FindBar";
+import { findState, useFindFloatShown } from "./find/findState";
+import { hitSeen } from "./find/hitSeen";
+import { useFind } from "./find/useFind";
 import { foldsKey } from "./folderFold";
 import { useHeadSure } from "./headSure";
 import {
@@ -170,7 +178,8 @@ function FilesSheet(props: {
 
 /**
  * Tracks the file in view: the first file section (in page order) crossing the band just
- * below the sticky app header and progress bar (`top` px tall together).
+ * below the sticky app header and progress bar (`top` px tall together),
+ * lower by the visual viewport's pan (visualTop).
  * Not while the page is hidden (`active` false): nothing is in view then,
  * and the file in view when it shows again is the one it was left on.
  */
@@ -181,6 +190,8 @@ export function useCurrentFile(
 	active: boolean,
 ) {
 	const [current, setCurrent] = useState<number | null>(null);
+	// The visual viewport's pan (iOS's keyboard): the stack sits that lower.
+	const band = top + visualTop.use();
 	// `sections` changes when the rendered file sections do: observe the new ones.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: see above.
 	useEffect(() => {
@@ -208,8 +219,8 @@ export function useCurrentFile(
 				// The top 40% of what is left under the sticky stack: a taller
 				// header above the bar (the patch set graph at the top of the
 				// page) never leaves the first file out of the band on load.
-				rootMargin: `-${Math.round(top) + 1}px 0px -${Math.round(
-					(window.innerHeight - top) * 0.6,
+				rootMargin: `-${Math.round(band) + 1}px 0px -${Math.round(
+					(window.innerHeight - band) * 0.6,
 				)}px 0px`,
 			},
 		);
@@ -217,7 +228,7 @@ export function useCurrentFile(
 			observer.observe(section);
 		}
 		return () => observer.disconnect();
-	}, [container, sections, top, active]);
+	}, [container, sections, band, active]);
 	return [current, setCurrent] as const;
 }
 
@@ -574,14 +585,19 @@ export function FilesPage() {
 	useViewShortcuts();
 	const diffs = useRef<HTMLDivElement>(null);
 	const bar = useRef<HTMLDivElement>(null);
-	// The sticky stack, top down: the app header's compact row, the progress
-	// bar, then the open file's header.
-	const appHeader = useAppHeaderHeight();
+	// The sticky stack, top down: the open find bar and the app header's
+	// compact row (App: AppHeaderHeight, a phone's header out of the layout
+	// while the bar shows), the progress bar, then the open file's header.
+	// Plus the visual viewport's pan (iOS's keyboard, the bar open): the
+	// stack sits that much lower on the page's top, as `--app-header` does
+	// (useCurrentFile adds it itself).
+	const stackTop = useAppHeaderHeight();
+	const appHeader = stackTop + visualTop.use();
 	const barHeight = useHeight(() => bar.current, data !== undefined, !active);
 	const [current, setCurrent] = useCurrentFile(
 		diffs,
 		data ? `${data.revision}:${data.files.length}` : "",
-		appHeader + barHeight,
+		stackTop + barHeight,
 		active,
 	);
 
@@ -589,6 +605,12 @@ export function FilesPage() {
 	// tab or device) show. Unchanged data keeps its identity: nothing moves.
 	const wasActive = useRef(active);
 	const { refetch } = review;
+	// Find in PR's stale answer: the revision read again (a failed read throws).
+	const refetchReview = useCallback(async () => {
+		const read = await refetch();
+		if (read.isError) throw read.error;
+		return read.data?.revision;
+	}, [refetch]);
 	useEffect(() => {
 		if (active && !wasActive.current) void refetch();
 		wasActive.current = active;
@@ -746,14 +768,21 @@ export function FilesPage() {
 		window.scrollTo({ top: top - appHeader - barHeight + 1 });
 	};
 	/**
-	 * Opens the file alone and brings its header to the top, once the other
-	 * files have closed; `focus`: its toggle takes the focus.
+	 * Opens the file alone, as a pick does, without scrolling: the tree marks
+	 * and reveals it (a find's step scrolls to its hit itself).
 	 */
-	const openAlone = (index: number, focus: boolean, shown?: () => void) => {
+	const openOnly = (index: number) => {
 		setCurrent(index);
 		openInTree(index);
 		anchor.current = null;
 		setOpen(keyOf(index));
+	};
+	/**
+	 * Opens the file alone and brings its header to the top, once the other
+	 * files have closed; `focus`: its toggle takes the focus.
+	 */
+	const openAlone = (index: number, focus: boolean, shown?: () => void) => {
+		openOnly(index);
 		requestAnimationFrame(() => {
 			if (focus) {
 				headerOf(index)
@@ -872,6 +901,72 @@ export function FilesPage() {
 		return () => window.clearTimeout(timer);
 	}, [landing, active]);
 
+	// Find in PR: the bar, its search, and stepping through the hits. Typing
+	// only marks and counts; a step opens a closed file and scrolls.
+	const find = useFind({
+		revision: data?.revision,
+		files,
+		openIndex,
+		active,
+		onStale: refetchReview,
+	});
+	// The first step after typing passes over a hit the reviewer already
+	// sees (painted current where they look, in the open file): on to the
+	// next. One in a closed file is gone to: its step opens the file.
+	const stepFind = (dir: 1 | -1) => {
+		const hit = find.step(
+			dir,
+			(h) => h.index === openIndex && hitSeen(h, appHeader + barHeight),
+		);
+		if (!hit) return;
+		const isOpen = openIndex === hit.index;
+		if (hit.side === "path" || hit.side === "oldPath") {
+			if (isOpen) scrollTo(hit.index);
+			else select(hit.index);
+			return;
+		}
+		if (!isOpen) {
+			// As a pick: no move-on's file any more, the phone's sheet closes.
+			setMovedOn(null);
+			openOnly(hit.index);
+			if (sheetOpen) setSheetOpen(false);
+		}
+		find.stepInto(hit.index);
+	};
+	// On a phone the header is hidden while the bar is open: it shows
+	// again in this commit, so its button can take focus.
+	const closeFind = () => {
+		flushSync(() => findState.close());
+		document.querySelector<HTMLElement>("[data-find-button]")?.focus();
+	};
+	useShortcut({
+		keys: "Mod+f",
+		label: "Find in PR",
+		group: "Files changed",
+		run: () => findState.open(),
+	});
+	useShortcut({
+		keys: "Mod+g",
+		label: "Next match",
+		group: "Files changed",
+		when: () => findState.get().open,
+		run: () => stepFind(1),
+	});
+	useShortcut({
+		keys: "Shift+Mod+g",
+		label: "Previous match",
+		group: "Files changed",
+		when: () => findState.get().open,
+		run: () => stepFind(-1),
+	});
+	// The box takes focus for an open request made while the page shows, or
+	// once it shows (the header's button opens the bar before navigating
+	// here). Showing the page again with the bar open doesn't take focus.
+	const [focusSeq, setFocusSeq] = useState(0);
+	if (active && find.state.focusSeq !== focusSeq)
+		setFocusSeq(find.state.focusSeq);
+	const findMarks = find.state.open && find.state.term !== "";
+
 	// What the threads (GitHub's and the agent's) are placed into.
 	const placingTo = useStableTo(placementsTo(comparison, session));
 	// On an earlier patch set: threads published before the next one started.
@@ -898,9 +993,9 @@ export function FilesPage() {
 	const firstOpenSettled =
 		data !== undefined && (allThreads !== undefined || threadsFailed !== null);
 	// A Refresh shows the new head before its diff: drafts move only once
-	// the diff shown is that head's.
-	// The viewed head, whether or not GitHub's threads are in (Comment and
-	// Ask agent wait on it, never on GitHub).
+	// the diff shown is that head's. The viewed head, whether or not
+	// GitHub's threads are in (Comment and Ask agent wait on it, never on
+	// GitHub).
 	const headSure = useHeadSure(
 		viewedHeadOf(comparison, session) ?? session?.snapshotHead,
 		data?.revision,
@@ -1039,6 +1134,7 @@ export function FilesPage() {
 			opened={openedIndex}
 			eyesOf={byFile ? (f) => eyesOf(f, byFile.get(f.index)) : undefined}
 			filter={byFile ? { on: eyesOnly, onChange: setEyesOnly } : undefined}
+			find={findMarks ? find.tree : undefined}
 		/>
 	);
 	// "5 to read": the comparison's unreviewed reworked and new clusters,
@@ -1176,6 +1272,30 @@ export function FilesPage() {
 						{review.isError && <ErrorMessage error={review.error} />}
 						{data && (
 							<>
+								{/* Only while this page shows: kept but hidden, it must not
+						    put the bar in App's slot over another page. */}
+								{find.state.open && active && (
+									// At the very top of the page, above the app header (App's
+									// FindSlot), pushing it down by its own height; sticks there
+									// (typing and stepping never move it), the stack under it.
+									// A phone's takes the header's place.
+									<FindFloat>
+										<FindBar
+											term={find.state.term}
+											onTerm={findState.setTerm}
+											count={find.count}
+											searching={find.searching}
+											failed={find.failed}
+											onRetry={find.retry}
+											onNext={() => stepFind(1)}
+											onPrevious={() => stepFind(-1)}
+											onClose={closeFind}
+											focusSeq={focusSeq}
+											matchCase={find.matchCase}
+											onMatchCase={find.setMatchCase}
+										/>
+									</FindFloat>
+								)}
 								<ProgressBar
 									ref={bar}
 									progress={viewProgress ?? data.progress}
@@ -1353,6 +1473,8 @@ export function FilesPage() {
 															: undefined
 													}
 													readOnly={readOnly}
+													pathFind={find.pathOf(file.index)}
+													find={find.diffOf(file.index)}
 												/>
 											))}
 											{/* Files only the compared patch set had something reviewed in: their gone clusters. */}
@@ -1413,4 +1535,26 @@ export function FilesPage() {
 			</PlacementProvider>
 		</PeopleProvider>
 	);
+}
+
+/**
+ * The find bar's frame (`data-find-float`): a strip across the top of the
+ * page, in App's slot (FindSlot; in place without one), the controls at its
+ * right on a wide screen. While it is mounted, a phone's app header leaves
+ * the layout for it (findFloat).
+ */
+function FindFloat({ children }: { children: ReactNode }) {
+	useFindFloatShown();
+	const slot = useContext(FindSlot);
+	const strip = (
+		<div
+			data-find-float
+			className="border-b border-line bg-surface shadow-header"
+		>
+			<div className="mx-auto flex max-w-screen-2xl justify-end sm:px-6">
+				<div className="w-full sm:w-[28rem] sm:max-w-full">{children}</div>
+			</div>
+		</div>
+	);
+	return slot ? createPortal(strip, slot) : strip;
 }

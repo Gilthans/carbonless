@@ -67,7 +67,7 @@ export function AgentBubble(props: {
 					aria-expanded={props.open}
 					aria-controls={props.controls}
 					onClick={props.onToggle}
-					className={`group/bubble z-[4] flex min-w-10 shrink-0 items-center justify-center rounded-md font-sans focus-visible:outline-2 focus-visible:outline-accent ${
+					className={`group/bubble z-[4] flex select-none min-w-10 shrink-0 items-center justify-center rounded-md font-sans focus-visible:outline-2 focus-visible:outline-accent ${
 						props.inline ? "h-5 pointer-coarse:h-10" : "h-10"
 					}`}
 				>

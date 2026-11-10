@@ -14,6 +14,7 @@ import {
 	type ClusterState,
 	COMMENTS_BATCH,
 	type EditRequest,
+	HUNKS_BATCH,
 	type NewThreadRequest,
 	type ReplyRequest,
 	type SinceMark,
@@ -63,6 +64,7 @@ import {
 	UnknownReadError,
 } from "./session.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
+import { type Span, tracer } from "./trace.js";
 import { verdictProblem } from "./verdict.js";
 import {
 	BUILD,
@@ -143,6 +145,35 @@ const NO_FILE = /^No file \d+ in this snapshot$/;
 /** Session.reviewAt/rereview's error for a patch set the reviewer hasn't. */
 const NO_PATCHSET = /^No patch set \d+$/;
 
+/**
+ * A span per request when tracing ($CRB_TRACE_DIR), current for its handler
+ * so the git and gh it runs nest under it. A callback hook, first: what
+ * follows runs in the context it enters.
+ */
+function traceRequests(app: FastifyInstance): void {
+	const traced = tracer();
+	if (!traced.enabled) return;
+	const spans = new WeakMap<object, Span>();
+	app.addHook("onRequest", (request, _reply, done) => {
+		const span = traced.start(
+			`${request.method} ${request.routeOptions.url ?? "(no route)"}`,
+			undefined,
+			{ kind: "server" },
+		);
+		spans.set(request, span);
+		traced.enter(span);
+		done();
+	});
+	app.addHook("onResponse", (request, reply, done) => {
+		spans.get(request)?.end({ status: reply.statusCode });
+		done();
+	});
+	app.addHook("onRequestAbort", (request, done) => {
+		spans.get(request)?.end({ status: "aborted" });
+		done();
+	});
+}
+
 export async function buildApp(
 	registry: SessionRegistry,
 	options: AppOptions,
@@ -156,6 +187,7 @@ export async function buildApp(
 		// so there's nothing to drain.
 		forceCloseConnections: true,
 	});
+	traceRequests(app);
 	// First hook, so even the access checks' 401/403 replies carry them.
 	app.addHook("onRequest", async (_request, reply) => {
 		reply.headers(SECURITY_HEADERS);
@@ -250,6 +282,28 @@ export async function buildApp(
 	});
 
 	app.get("/api/version", async () => BUILD);
+	// The page strips ?key= from its address, so a home-screen install would
+	// save a keyless URL and a shortcut with its own cookie jar would get 401.
+	app.get("/manifest.webmanifest", async (_request, reply) => {
+		const key = options.accessKey
+			? `?${new URLSearchParams({ key: options.accessKey })}`
+			: "";
+		return reply
+			.type("application/manifest+json")
+			.header("cache-control", "no-store")
+			.send({
+				name: "carbonless",
+				short_name: "carbonless",
+				start_url: `/${key}`,
+				scope: "/",
+				display: "standalone",
+				background_color: "#12141f",
+				theme_color: "#12141f",
+				icons: [
+					{ src: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+				],
+			});
+	});
 	// Opens (or finds) the review of a PR: crb <pr>.
 	app.post("/api/reviews", async (request) => {
 		const req = parseOpenBody(request.body);
@@ -380,6 +434,22 @@ export async function buildApp(
 					read,
 				);
 			});
+			// Several files' hunks at once (the search's prefetch).
+			review.get<{ Querystring: { revision?: unknown; indexes?: unknown } }>(
+				"/files/hunks",
+				(request) => {
+					const revision = revisionParam(request.query.revision);
+					const { indexes: raw } = request.query;
+					if (typeof raw !== "string" || !raw) {
+						throw new BadRequestError("indexes is required");
+					}
+					const indexes = [...new Set(raw.split(",").map(fileIndex))];
+					if (indexes.length > HUNKS_BATCH) {
+						throw new BadRequestError(`At most ${HUNKS_BATCH} files a request`);
+					}
+					return sessionOf(request).fileHunksBatch(revision, indexes);
+				},
+			);
 			// A file's hunks; with `from=<n>`, the since view's: the interdiff
 			// from patch set n to the snapshot (Session.interdiffHunks).
 			review.get<{

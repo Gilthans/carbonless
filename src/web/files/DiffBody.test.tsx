@@ -12,6 +12,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../test/in-router";
+import { heldJson } from "../../../test/loading";
 import type { AgentThread } from "../../shared/agent";
 import type {
 	ClusterView,
@@ -29,10 +30,13 @@ import {
 } from "../agent/askAgentAction";
 import { AgentPlacingProvider } from "../agent/placeable";
 import { hunksQuery, reviewQuery, sessionQuery } from "../api";
+import { rangeText } from "../code/Invisibles";
 import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
+import { contextRanges } from "./contextRanges";
 import {
 	DiffBody,
+	type DiffFind,
 	type DiffThreads,
 	type FileLead,
 	LANDED_MS,
@@ -209,6 +213,12 @@ function setup(
 		lead?: FileLead;
 		/** Two files' tables in one tree (the same file twice). */
 		twice?: boolean;
+		/** The page's query client, kept when a file closes and opens again. */
+		queryClient?: QueryClient;
+		/** The find's view of the file. */
+		find?: DiffFind;
+		/** The hunks' answer, when the test holds it. */
+		hunksResponse?: Promise<Response>;
 		/** The reviewer's agent threads, as FilesPage's read left them. */
 		agentThreads?: AgentThread[];
 		/** The session's head is known (before GitHub's threads are in). */
@@ -221,6 +231,9 @@ function setup(
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 		const url = new URL(String(input), "http://test");
+		if (url.pathname === "/api/files/0/hunks" && opts.hunksResponse) {
+			return opts.hunksResponse;
+		}
 		const body =
 			url.pathname === "/api/files/0/hunks"
 				? (opts.hunks ?? hunks)
@@ -245,9 +258,11 @@ function setup(
 		return new Response(JSON.stringify(body), { status: 200 });
 	});
 	vi.stubGlobal("fetch", fetchMock);
-	const queryClient = new QueryClient({
-		defaultOptions: { queries: { retry: false } },
-	});
+	const queryClient =
+		opts.queryClient ??
+		new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
 	if (opts.sessionHead) {
 		queryClient.setQueryData(sessionQuery.queryKey, {
 			snapshotHead: opts.sessionHead,
@@ -269,34 +284,47 @@ function setup(
 	const threads: DiffThreads | undefined = opts.threads
 		? { readId: "r", snapshotHead: HEAD, threads: opts.threads }
 		: undefined;
-	const bodyOf = (cs: ClusterView[]) => (
+	/** One file view per clusters list: a rerender with another find keeps it. */
+	const files = new Map<ClusterView[], FileView>();
+	const fileOf = (cs: ClusterView[]) => {
+		const view = files.get(cs) ?? file(cs);
+		files.set(cs, view);
+		return view;
+	};
+	const bodyOf = (cs: ClusterView[], find: DiffFind | undefined) => (
 		<DiffBody
-			file={file(cs)}
+			file={fileOf(cs)}
 			revision="r1"
 			onToggle={onToggle}
 			onCrossOff={onCrossOff}
 			threads={threads}
 			landing={opts.landing}
 			lead={opts.lead}
+			find={find}
 		/>
 	);
-	const tree = (cs: ClusterView[]) => (
+	const tree = (cs: ClusterView[], find: DiffFind | undefined) => (
 		<QueryClientProvider client={queryClient}>
 			<AgentPlacingProvider
 				value={{ placements: opts.agentPlacements ?? null, until: null }}
 			>
-				{bodyOf(cs)}
-				{opts.twice && bodyOf(cs)}
+				{bodyOf(cs, find)}
+				{opts.twice && bodyOf(cs, find)}
 			</AgentPlacingProvider>
 		</QueryClientProvider>
 	);
-	const { rerender } = render(
+	/** What the tree shows now: a restate keeps the find, a refind the clusters. */
+	const shown = { cs: opts.clusters ?? clusters, find: opts.find };
+	const { container, rerender } = render(
 		opts.router
-			? inRouter(() => tree(opts.clusters ?? clusters))
-			: tree(opts.clusters ?? clusters),
+			? inRouter(() => tree(shown.cs, shown.find))
+			: tree(shown.cs, shown.find),
 	);
 	/** The same tree with the clusters' new states (no remount). */
-	const restate = (cs: ClusterView[]) => rerender(tree(cs));
+	const restate = (cs: ClusterView[]) => {
+		shown.cs = cs;
+		rerender(tree(cs, shown.find));
+	};
 	const rows = () =>
 		Array.from(
 			document.querySelectorAll<HTMLElement>('[data-testid="diff-line"]'),
@@ -322,6 +350,13 @@ function setup(
 		calls,
 		restate,
 		user: userEvent.setup(),
+		/** DiffBody's own root element. */
+		root: container.firstElementChild as HTMLElement,
+		/** The same DiffBody with another find. */
+		refind: (find: DiffFind | undefined) => {
+			shown.find = find;
+			rerender(tree(shown.cs, find));
+		},
 	};
 }
 
@@ -333,6 +368,7 @@ describe("DiffBody with Ignore whitespace", () => {
 	});
 	afterEach(() => {
 		cleanup();
+		contextRanges.reset();
 		vi.unstubAllGlobals();
 		localStorage.clear();
 		showInvisibles.reset();
@@ -773,6 +809,7 @@ describe("DiffBody side by side", () => {
 	});
 	afterEach(() => {
 		cleanup();
+		contextRanges.reset();
 		vi.unstubAllGlobals();
 		localStorage.clear();
 		showInvisibles.reset();
@@ -1195,6 +1232,68 @@ describe("DiffBody side by side", () => {
 		expect(tail(row)).toEqual({ spans: [6], card: 0, blank: -1 });
 		expect(within(row).getAllByTestId("new-thread")).toHaveLength(2);
 	});
+
+	it.each([
+		["a desktop", false],
+		["a phone", true],
+	])(
+		"on %s, a selection over the table leaves every bubble's count out",
+		async (_, onPhone) => {
+			if (onPhone)
+				vi.stubGlobal(
+					"matchMedia",
+					(query: string) =>
+						({
+							matches: false,
+							media: query,
+							addEventListener: () => {},
+							removeEventListener: () => {},
+						}) as unknown as MediaQueryList,
+				);
+			const resolved = {
+				...thread("RIGHT", 5),
+				resolved: true,
+				commentCount: 2,
+			};
+			const many = { ...thread("RIGHT", 6), commentCount: 3 };
+			setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [resolved, many, thread("RIGHT", 6), thread("LEFT", 5)],
+				lead: {
+					bubble: (
+						<ThreadBubble
+							file
+							threads={[thread("RIGHT", 1)]}
+							open={false}
+							onToggle={() => {}}
+						/>
+					),
+					row: () => null,
+				},
+			});
+			await screen.findByText("new seven");
+			const bubbles = screen.getAllByTestId("thread-bubble");
+			expect(bubbles.length).toBeGreaterThanOrEqual(3);
+			for (const bubble of bubbles) expect(bubble).toHaveClass("select-none");
+			// From the table's start (the gap and the hunk header, with the
+			// file's bubble)
+			// over the pair rows (and, on a phone, the bubble rows under them).
+			const row = (n: number) =>
+				document.querySelector(
+					`[data-testid="diff-line"][data-new-no="${n}"]`,
+				) as HTMLElement;
+			const range = document.createRange();
+			range.setStartBefore(
+				row(5).closest("table")?.firstElementChild ?? row(5),
+			);
+			range.setEndAfter(row(7).nextElementSibling ?? row(7));
+			// No count, line number, sign, gap or header: the code only.
+			expect(rangeText(range)).toBe(
+				"line 4\tline 4\nold five\tnew five\nold six\tnew six\nnew seven",
+			);
+		},
+	);
 
 	describe("bubbles on a phone", () => {
 		const phone = () =>
@@ -1717,6 +1816,33 @@ describe("DiffBody side by side", () => {
 		act(() => sideBySide.set(true));
 		expect(collapsed()[0]).toHaveAttribute("data-expanded");
 		expect(lineRows()).toHaveLength(12);
+	});
+
+	it("keeps expanded context when the file closes and opens again", async () => {
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const open = () =>
+			setup({ hunks: { ...hunks, newLineCount: 20 }, queryClient });
+		const first = open();
+		const gap = (await screen.findAllByTestId("gap-row"))[0] as HTMLElement;
+		await first.user.click(
+			within(gap).getAllByRole("button", { name: /below/ })[0] as HTMLElement,
+		);
+		await waitFor(() =>
+			expect(document.querySelector('tr[data-new-no="13"]')).not.toBeNull(),
+		);
+		const loads = (calls: string[]) =>
+			calls.filter((url) => url.includes("/context")).length;
+		expect(loads(first.calls())).toBe(1);
+
+		// The file closes (DiffBody unmounts) and opens again.
+		cleanup();
+		const again = open();
+		await waitFor(() =>
+			expect(document.querySelector('tr[data-new-no="13"]')).not.toBeNull(),
+		);
+		expect(loads(again.calls())).toBe(0);
 	});
 
 	it("spans every table-wide row over six columns, five in unified", async () => {
@@ -2271,6 +2397,217 @@ describe("DiffBody: the agent's threads", () => {
 	});
 });
 
+describe("DiffBody find", () => {
+	beforeEach(() => {
+		// The describe above leaves its last table mounted.
+		cleanup();
+		showInvisibles.set(false);
+		window.scrollTo = vi.fn();
+	});
+	afterEach(() => {
+		cleanup();
+		contextRanges.reset();
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+		localStorage.clear();
+		showInvisibles.reset();
+		ignoreWhitespace.reset();
+		sideBySide.reset();
+	});
+
+	/** A find whose current hit is `current`, with no marks. */
+	const findAt = (
+		current: DiffFind["current"],
+		stepSeq = 0,
+		marksOf: DiffFind["marksOf"] = () => [],
+		shown = true,
+	): DiffFind => ({ marksOf, current, stepSeq, shown });
+
+	it("paints the find's marks on each line's cell and the current hit's row", async () => {
+		setup({
+			find: findAt({ old: false, line: 8 }, 0, (side, line) =>
+				side === "RIGHT" && line === 8
+					? [{ from: 6, to: 7, current: true }]
+					: side === "LEFT" && line === 8
+						? [{ from: 6, to: 7, current: false }]
+						: [],
+			),
+		});
+		await screen.findByText("line 12");
+		const added = document.querySelector('tr[data-new-no="8"]') as HTMLElement;
+		expect(added).toHaveAttribute("data-find-current");
+		expect(added).toHaveClass("mark-tint");
+		expect(added.querySelector("[data-find-current]")?.textContent).toBe("x");
+		const deleted = document.querySelector(
+			'tr[data-old-no="8"]:not([data-new-no])',
+		) as HTMLElement;
+		expect(deleted.querySelector("[data-find-mark]")?.textContent).toBe("x");
+		expect(deleted).not.toHaveAttribute("data-find-current");
+		expect(deleted.querySelector("[data-find-current]")).toBeNull();
+		expect(deleted).not.toHaveClass("mark-tint");
+		// No other row is current.
+		expect(document.querySelectorAll("tr[data-find-current]")).toHaveLength(1);
+	});
+
+	it("side by side, the current hit paints its side's cell; a context line both cells", async () => {
+		sideBySide.set(true);
+		const code = (row: Element, side: "LEFT" | "RIGHT") =>
+			row.querySelector(`td[data-testid="code"][data-side="${side}"]`);
+		const { refind } = setup({ find: findAt({ old: true, line: 8 }) });
+		// A context line shows on both sides.
+		await screen.findAllByText("line 12");
+		const pair = document.querySelector('tr[data-old-no="8"]') as HTMLElement;
+		expect(pair).toHaveAttribute("data-new-no", "8");
+		expect(code(pair, "LEFT")).toHaveAttribute("data-find-current");
+		expect(code(pair, "LEFT")).toHaveClass("mark-tint-cell");
+		expect(code(pair, "RIGHT")).not.toHaveAttribute("data-find-current");
+		expect(code(pair, "RIGHT")).not.toHaveClass("mark-tint-cell");
+		expect(document.querySelectorAll("td[data-find-current]")).toHaveLength(1);
+		refind(findAt({ old: false, line: 5 }));
+		const row5 = document.querySelector('tr[data-new-no="5"]') as HTMLElement;
+		expect(row5.dataset.kind).toBe("context");
+		expect(code(row5, "LEFT")).toHaveAttribute("data-find-current");
+		expect(code(row5, "RIGHT")).toHaveAttribute("data-find-current");
+		expect(code(row5, "LEFT")).toHaveClass("mark-tint-cell");
+		expect(code(row5, "RIGHT")).toHaveClass("mark-tint-cell");
+		expect(code(pair, "LEFT")).not.toHaveAttribute("data-find-current");
+	});
+
+	it("a step scrolls the current hit's row under the sticky stack once the hunks are in", async () => {
+		const held = heldJson();
+		const current = { old: false, line: 8 };
+		const { root, refind } = setup({
+			find: findAt(current, 1),
+			hunksResponse: held.response,
+		});
+		// The sticky stack: the app header and the files bar.
+		root.style.setProperty("--app-header", "48px");
+		root.style.setProperty("--files-bar", "40px");
+		vi.spyOn(
+			HTMLTableRowElement.prototype,
+			"getBoundingClientRect",
+		).mockImplementation(function (this: HTMLTableRowElement) {
+			return {
+				top: this.dataset.newNo === "8" && !this.dataset.oldNo ? 500 : 0,
+			} as DOMRect;
+		});
+		await waitFor(() =>
+			expect(screen.queryByText("line 12")).not.toBeInTheDocument(),
+		);
+		expect(window.scrollTo).not.toHaveBeenCalled();
+		await act(async () => held.release(hunks));
+		await screen.findByText("line 12");
+		await waitFor(() => expect(window.scrollTo).toHaveBeenCalledTimes(1));
+		// A few lines of context above it stay in view (useLanding's 60).
+		expect(window.scrollTo).toHaveBeenCalledWith({ top: 500 - 48 - 40 - 60 });
+		// The same step again (any re-render) doesn't scroll.
+		refind(findAt({ ...current }, 1));
+		expect(window.scrollTo).toHaveBeenCalledTimes(1);
+		// The next step does.
+		refind(findAt(current, 2));
+		expect(window.scrollTo).toHaveBeenCalledTimes(2);
+	});
+
+	it("a step lands the row below the floating find bar when it reaches lower than the sticky stack", async () => {
+		const { root } = setup({ find: findAt({ old: false, line: 8 }, 1) });
+		root.style.setProperty("--app-header", "48px");
+		root.style.setProperty("--files-bar", "40px");
+		const bar = document.createElement("div");
+		bar.dataset.testid = "find-bar";
+		bar.getBoundingClientRect = () => ({ bottom: 130 }) as DOMRect;
+		document.body.append(bar);
+		vi.spyOn(
+			HTMLTableRowElement.prototype,
+			"getBoundingClientRect",
+		).mockImplementation(function (this: HTMLTableRowElement) {
+			return {
+				top: this.dataset.newNo === "8" && !this.dataset.oldNo ? 500 : 0,
+			} as DOMRect;
+		});
+		try {
+			await screen.findByText("line 12");
+			await waitFor(() => expect(window.scrollTo).toHaveBeenCalledTimes(1));
+			// The bar's bottom (130) is below the stack (48 + 40).
+			expect(window.scrollTo).toHaveBeenCalledWith({ top: 500 - 130 - 60 });
+		} finally {
+			bar.remove();
+		}
+	});
+
+	it("a step it couldn't take never scrolls later, when the current hit moves without a step", async () => {
+		const { refind } = setup({ find: findAt(null, 1) });
+		await screen.findByText("line 12");
+		expect(window.scrollTo).not.toHaveBeenCalled();
+		// Typing moves the current hit; the step count stays.
+		refind(findAt({ old: false, line: 8 }, 1));
+		refind(findAt({ old: false, line: 5 }, 1));
+		expect(window.scrollTo).not.toHaveBeenCalled();
+		// A line with no row takes its step too.
+		refind(findAt({ old: false, line: 99 }, 2));
+		refind(findAt({ old: false, line: 8 }, 2));
+		expect(window.scrollTo).not.toHaveBeenCalled();
+	});
+
+	it("paints a hit on a context line a gap's expansion shows", async () => {
+		// Lines 13–20 are a gap after the hunk; 13–14 shown.
+		contextRanges.add("r1", 0, 13, 14);
+		setup({
+			hunks: { ...hunks, newLineCount: 20 },
+			find: findAt(null, 0, (side, line) =>
+				side === "RIGHT" && line === 13
+					? [{ from: 0, to: 4, current: false }]
+					: [],
+			),
+		});
+		// Line 13's text is split by its mark.
+		await screen.findByText("line 14");
+		const row = document.querySelector('tr[data-new-no="13"]') as HTMLElement;
+		expect(row.querySelector("[data-find-mark]")?.textContent).toBe("line");
+		expect(
+			document.querySelector('tr[data-new-no="14"] [data-find-mark]'),
+		).toBeNull();
+	});
+
+	it("typing never opens a collapsed whitespace-only cluster: only a step onto its hit does", async () => {
+		ignoreWhitespace.set(true);
+		const { collapsed, refind } = setup({
+			find: findAt({ old: false, line: 3 }, 0, () => [], false),
+		});
+		await screen.findByText("Whitespace only · 6 lines");
+		expect(collapsed()[0]).not.toHaveAttribute("data-expanded");
+		refind(findAt({ old: false, line: 3 }, 1, () => [], true));
+		await waitFor(() =>
+			expect(collapsed()[0]).toHaveAttribute("data-expanded"),
+		);
+	});
+
+	it("a cluster a step opened stays open when typing makes the caret unshown or moves it", async () => {
+		ignoreWhitespace.set(true);
+		const { collapsed, refind } = setup({
+			find: findAt({ old: false, line: 3 }, 1),
+		});
+		await screen.findByText("Whitespace only · 6 lines");
+		expect(collapsed()[0]).toHaveAttribute("data-expanded");
+		// Typing another character: the caret starts over, unshown, elsewhere or nowhere.
+		refind(findAt({ old: false, line: 3 }, 1, () => [], false));
+		refind(findAt({ old: false, line: 99 }, 1, () => [], false));
+		refind(findAt(null, 1, () => [], false));
+		// Give a collapse that shouldn't come every chance to.
+		await act(() => new Promise((r) => setTimeout(r, 20)));
+		expect(collapsed()[0]).toHaveAttribute("data-expanded");
+	});
+
+	it("a collapsed whitespace-only cluster holding the current hit opens", async () => {
+		ignoreWhitespace.set(true);
+		const { collapsed } = setup({ find: findAt({ old: false, line: 3 }) });
+		await screen.findByText("Whitespace only · 6 lines");
+		expect(collapsed()[0]).toHaveAttribute("data-expanded");
+		const row = document.querySelector('tr[data-new-no="3"]') as HTMLElement;
+		expect(row).not.toBeNull();
+		expect(row).toHaveAttribute("data-find-current");
+	});
+});
+
 describe("DiffBody word marks", () => {
 	beforeEach(() => {
 		// The describe above leaves its last table mounted.
@@ -2614,4 +2951,312 @@ describe("DiffBody word marks", () => {
 			await waitFor(() => expect(words()).toHaveLength(11));
 		});
 	}
+});
+
+describe("DiffBody: hunk headings and the clickable gap row", () => {
+	beforeEach(() => {
+		window.scrollTo = vi.fn();
+	});
+	afterEach(() => {
+		cleanup();
+		// Expanded context is kept for the page (contextRanges): each test starts with none.
+		contextRanges.reset();
+		vi.unstubAllGlobals();
+		localStorage.clear();
+	});
+
+	/** Lines 1–70: a change on line 8 and on line 63, 48 unchanged lines between. */
+	const hunkAround = (n: number, key: string, heading?: string) => ({
+		oldStart: n - 3,
+		oldCount: 7,
+		newStart: n - 3,
+		newCount: 7,
+		...(heading === undefined ? {} : { heading }),
+		lines: [
+			ctx(n - 3, n - 3),
+			ctx(n - 2, n - 2),
+			ctx(n - 1, n - 1),
+			del(n, `old ${n}`, key),
+			add(n, `new ${n}`, key),
+			ctx(n + 1, n + 1),
+			ctx(n + 2, n + 2),
+			ctx(n + 3, n + 3),
+		],
+	});
+	const twoHunks = (heading = "def second(self):"): FileHunks => ({
+		newLineCount: 70,
+		hunks: [hunkAround(8, "a", "class First:"), hunkAround(63, "b", heading)],
+	});
+	const twoClusters = [
+		cluster("a", { oldStart: 8, newStart: 8 }),
+		cluster("b", { oldStart: 63, newStart: 63 }),
+	];
+	const gapRows = () => screen.getAllByTestId("gap-row");
+	const contextCalls = (calls: () => string[]) =>
+		calls().filter((c) => c.includes("/context"));
+
+	/** Where each heading shows: the row's test id and the text, in page order. */
+	const headingRows = () =>
+		screen
+			.getAllByTestId("hunk-heading")
+			.map((h) => [h.closest("tr")?.dataset.testid, h.textContent]);
+
+	it("shows each hunk's heading once: on the hidden-lines row right above it", async () => {
+		setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		// Gap 0 (lines 1–4) sits above the first hunk; gap 1 between them;
+		// the file's tail has no hunk below it.
+		expect(headingRows()).toEqual([
+			["gap-row", "class First:"],
+			["gap-row", "def second(self):"],
+		]);
+		const headers = screen.getAllByTestId("hunk-header");
+		expect(headers[0]).toHaveTextContent(/^@@ -5,7 \+5,7 @@$/);
+		expect(headers[1]).toHaveTextContent(/^@@ -60,7 \+60,7 @@$/);
+		expect(
+			within(gapRows()[2] as HTMLElement).queryByTestId("hunk-heading"),
+		).toBeNull();
+		expect(screen.getAllByTestId("hunk-heading")[0]).toHaveClass(
+			"truncate",
+			"font-mono",
+			"text-muted",
+		);
+	});
+
+	it("the heading moves to the @@ row when the hidden lines right above the hunk are shown", async () => {
+		setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		// The whole of gap 0: its row goes, the first hunk's @@ has it.
+		fireEvent.click(screen.getByRole("button", { name: "Load 4 lines above" }));
+		await screen.findAllByText("line 1");
+		expect(headingRows()).toEqual([
+			["hunk-header", "class First:"],
+			["gap-row", "def second(self):"],
+		]);
+		// ↓ under the first hunk: the rest still ends right above the second.
+		fireEvent.click(
+			screen.getByRole("button", { name: "Load 20 lines below" }),
+		);
+		await screen.findByText("line 31");
+		expect(headingRows()).toEqual([
+			["hunk-header", "class First:"],
+			["gap-row", "def second(self):"],
+		]);
+		// ↑ over the second: loaded lines come between, so its @@ has it.
+		fireEvent.click(
+			screen.getByRole("button", { name: "Load 20 lines above" }),
+		);
+		await screen.findByText("line 40");
+		expect(headingRows()).toEqual([
+			["hunk-header", "class First:"],
+			["hunk-header", "def second(self):"],
+		]);
+		// The rest: no gap row left, still once each.
+		fireEvent.click(screen.getByRole("button", { name: "Load all 8 lines" }));
+		await screen.findByText("line 35");
+		expect(screen.queryAllByTestId("gap-row")).toHaveLength(1);
+		expect(headingRows()).toEqual([
+			["hunk-header", "class First:"],
+			["hunk-header", "def second(self):"],
+		]);
+	});
+
+	it("keeps the heading on its row while that row's lines load", async () => {
+		setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise<Response>(() => {})),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Load 4 lines above" }));
+		const row = gapRows()[0] as HTMLElement;
+		await within(row).findByRole("status");
+		expect(headingRows()).toEqual([
+			["gap-row", "class First:"],
+			["gap-row", "def second(self):"],
+		]);
+	});
+
+	it("a hunk at the top of the file has its heading on its @@ row", async () => {
+		const top = hunkAround(4, "a", "class First:");
+		setup({
+			hunks: {
+				newLineCount: 70,
+				hunks: [top, hunkAround(63, "b", "def b():")],
+			},
+			clusters: [
+				cluster("a", { oldStart: 4, newStart: 4 }),
+				cluster("b", { oldStart: 63, newStart: 63 }),
+			],
+		});
+		await screen.findAllByTestId("hunk-header");
+		expect(headingRows()).toEqual([
+			["hunk-header", "class First:"],
+			["gap-row", "def b():"],
+		]);
+	});
+
+	it("a hunk without a heading shows its @@ alone", async () => {
+		setup();
+		await screen.findAllByText(/^line 1$/);
+		expect(screen.getByTestId("hunk-header")).toHaveTextContent(
+			/^@@ -1,12 \+1,12 @@$/,
+		);
+		expect(screen.queryByTestId("hunk-heading")).toBeNull();
+	});
+
+	it("shows a heading as text, never markup", async () => {
+		const evil = '<img src=x onerror="window.pwned=1"><b>bold</b>';
+		setup({ hunks: twoHunks(evil), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		expect(screen.getAllByTestId("hunk-heading")[1]?.textContent).toBe(evil);
+		expect(document.querySelector("img")).toBeNull();
+		expect(document.querySelector("b")).toBeNull();
+	});
+
+	it("a click on the row's blank area presses its one arrow", async () => {
+		const { calls, user } = setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		const tail = gapRows()[2] as HTMLElement;
+		expect(tail).toHaveClass("cursor-pointer");
+		await user.click(within(tail).getByText("4 hidden lines"));
+		await screen.findByText("line 67");
+		expect(contextCalls(calls)).toEqual([
+			expect.stringContaining("newFrom=67&newTo=70"),
+		]);
+	});
+
+	it("with two arrows stacked, the top half presses ↓ and the bottom half ↑", async () => {
+		const { calls } = setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		const between = gapRows()[1] as HTMLElement;
+		const [down, up] = within(between).getAllByRole("button");
+		expect(down).toHaveAccessibleName("Load 20 lines below");
+		expect(up).toHaveAccessibleName("Load 20 lines above");
+		expect(down?.parentElement).toHaveClass("flex-col");
+		between.getBoundingClientRect = () =>
+			({
+				top: 100,
+				height: 40,
+				bottom: 140,
+				left: 0,
+				right: 300,
+				width: 300,
+			}) as DOMRect;
+		const cell = between.lastElementChild as HTMLElement;
+		// Hovering a half lights its arrow.
+		fireEvent.pointerMove(cell, { clientY: 110 });
+		expect(between.dataset.hot).toBe("down");
+		expect(down).toHaveClass("group-data-[hot=down]/gap:bg-pressed");
+		fireEvent.pointerMove(cell, { clientY: 130 });
+		expect(between.dataset.hot).toBe("up");
+		fireEvent.pointerLeave(between);
+		expect(between.dataset.hot).toBeUndefined();
+
+		fireEvent.click(cell, { clientY: 110 });
+		await screen.findByText("line 31");
+		expect(contextCalls(calls)).toEqual([
+			expect.stringContaining("newFrom=12&newTo=31"),
+		]);
+		const rest = gapRows()[1] as HTMLElement;
+		rest.getBoundingClientRect = between.getBoundingClientRect;
+		fireEvent.click(rest.lastElementChild as HTMLElement, { clientY: 130 });
+		await screen.findByText("line 40");
+		expect(contextCalls(calls)).toEqual([
+			expect.stringContaining("newFrom=12&newTo=31"),
+			expect.stringContaining("newFrom=40&newTo=59"),
+		]);
+	});
+
+	it("when a click turns ↓ ↑ into ↕, the light follows without a pointer move", async () => {
+		// Hunks around 8 and 45: lines 12–41 hidden (30: ↓ and ↑).
+		setup({
+			hunks: {
+				newLineCount: 60,
+				hunks: [hunkAround(8, "a"), hunkAround(45, "b")],
+			},
+			clusters: [
+				cluster("a", { oldStart: 8, newStart: 8 }),
+				cluster("b", { oldStart: 45, newStart: 45 }),
+			],
+		});
+		await screen.findAllByTestId("hunk-header");
+		const between = gapRows()[1] as HTMLElement;
+		between.getBoundingClientRect = () =>
+			({
+				top: 100,
+				height: 40,
+				bottom: 140,
+				left: 0,
+				right: 300,
+				width: 300,
+			}) as DOMRect;
+		const cell = between.lastElementChild as HTMLElement;
+		fireEvent.pointerMove(cell, { clientY: 130 });
+		expect(between.dataset.hot).toBe("up");
+		// ↑ loads 22–41: 10 left, one ↕, the pointer still on the row.
+		fireEvent.click(cell, { clientY: 130 });
+		await screen.findByText("line 22");
+		const row = gapRows()[1] as HTMLElement;
+		expect(row).toBe(between);
+		expect(within(row).getAllByRole("button")).toHaveLength(1);
+		expect(row.dataset.hot).toBe("all");
+		fireEvent.pointerLeave(row);
+		expect(row.dataset.hot).toBeUndefined();
+	});
+
+	it("an arrow's own click loads once, and the keyboard keeps one stop per arrow", async () => {
+		const { calls, user } = setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		const between = gapRows()[1] as HTMLElement;
+		const buttons = within(between).getAllByRole("button");
+		expect(between).not.toHaveAttribute("tabindex");
+		expect(buttons).toHaveLength(2);
+		await user.click(buttons[1] as HTMLElement);
+		await screen.findByText("line 59");
+		expect(contextCalls(calls)).toHaveLength(1);
+	});
+
+	it("a thread bubble on the row opens its thread and loads only around it, never the arrow's lines", async () => {
+		const { calls, user } = setup({
+			hunks: twoHunks(),
+			clusters: twoClusters,
+			threads: [thread("RIGHT", 35)],
+		});
+		await screen.findAllByTestId("hunk-header");
+		const between = gapRows()[1] as HTMLElement;
+		const bubble = within(between).getByRole("button", {
+			name: /comment on hidden lines/,
+		});
+		fireEvent.pointerMove(bubble);
+		expect(between.dataset.hot).toBe("");
+		await user.click(bubble);
+		await screen.findByText("line 35");
+		// Only the thread's window: not lines 12–31 (↓) nor 40–59 (↑) whole.
+		const loads = contextCalls(calls);
+		expect(loads).toHaveLength(1);
+		expect(loads[0]).not.toContain("newFrom=12&newTo=31");
+		expect(loads[0]).not.toContain("newFrom=40&newTo=59");
+	});
+
+	it("a row with no arrow (its lines loading) doesn't react", async () => {
+		setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		// The lines' answer never comes: the row keeps its spinner, no arrow.
+		const held = vi.fn(() => new Promise<Response>(() => {}));
+		vi.stubGlobal("fetch", held);
+		const above = gapRows()[0] as HTMLElement;
+		fireEvent.click(
+			within(above).getByRole("button", { name: "Load 4 lines above" }),
+		);
+		const row = gapRows()[0] as HTMLElement;
+		await within(row).findByRole("status");
+		expect(within(row).queryAllByRole("button")).toHaveLength(0);
+		expect(held).toHaveBeenCalledTimes(1);
+		expect(row).not.toHaveClass("cursor-pointer");
+		fireEvent.pointerMove(row.lastElementChild as HTMLElement);
+		expect(row.dataset.hot).toBeUndefined();
+		fireEvent.click(row.lastElementChild as HTMLElement);
+		expect(held).toHaveBeenCalledTimes(1);
+	});
 });

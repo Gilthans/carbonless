@@ -24,8 +24,13 @@ import type {
 import { agentThreadsQuery } from "../agent/api";
 import { AgentPlacingProvider } from "../agent/placeable";
 import { reviewQuery, sessionQuery } from "../api";
-import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
+import {
+	type FindMark,
+	resetShowInvisibles,
+	setShowInvisibles,
+} from "../code/Invisibles";
 import { ignoreWhitespace } from "../viewSettings";
+import { contextRanges } from "./contextRanges";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import { SyncNotices } from "./SyncNotices";
 import { unitsFile } from "./since";
@@ -132,6 +137,8 @@ type Extra = {
 	router?: boolean;
 	/** The agent placements are on their way. */
 	agentPending?: boolean;
+	/** The find's hits on the header's path. */
+	pathFind?: readonly FindMark[];
 };
 
 function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
@@ -154,6 +161,7 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 						onFinished={extra.onFinished}
 						ignoreMarksUntil={extra.ignoreMarksUntil}
 						counted={extra.counted}
+						pathFind={extra.pathFind}
 					/>
 				</AgentPlacingProvider>
 			)}
@@ -274,9 +282,23 @@ describe("FileDiff", () => {
 		vi.restoreAllMocks();
 		localStorage.clear();
 		resetShowInvisibles();
+		contextRanges.reset();
 		ignoreWhitespace.reset();
 		cleanup();
 		vi.unstubAllGlobals();
+	});
+
+	it("paints find marks on the header's path", () => {
+		setup(
+			file([cluster("k1")], { path: "src/save.ts" }),
+			undefined,
+			undefined,
+			"clusters",
+			{ pathFind: [{ from: 4, to: 8, current: true }] },
+		);
+		const path = screen.getByTestId("file-path");
+		expect(path.querySelector("[data-find-current]")).toHaveTextContent("save");
+		expect(path).toHaveTextContent("src/save.ts");
 	});
 
 	it("starts collapsed and fetches hunks only on expand", async () => {

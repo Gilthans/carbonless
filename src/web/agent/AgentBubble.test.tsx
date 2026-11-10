@@ -49,6 +49,22 @@ describe("a resolved agent bubble", () => {
 		expect(comment.querySelector(".octicon-sparkle-fill")).toBeNull();
 		expect(comment.innerHTML).not.toContain("bg-agent");
 	});
+
+	it("is never part of a text selection, like a comment bubble", () => {
+		render(
+			<AgentBubble
+				threads={[agentThread(false)]}
+				open={false}
+				onToggle={() => {}}
+				where="on line 3"
+			/>,
+		);
+		const agent = screen.getByTestId("agent-bubble");
+		const button = agent.matches("button")
+			? agent
+			: (agent.querySelector("button") as HTMLElement);
+		expect(button).toHaveClass("select-none");
+	});
 });
 
 describe("an agent bubble's count", () => {

@@ -256,7 +256,9 @@ export async function anchorHunk(
 		(f) => f.path === anchor.path || f.oldPath === anchor.path,
 	);
 	if (!file) return null;
-	const { hunks } = await loadFileHunks(src.repo, snapshot, file.index);
+	const { hunks } = await loadFileHunks(src.repo, snapshot, file.index, {
+		headings: false,
+	});
 	const numberOf = (l: DiffLine, side: "LEFT" | "RIGHT") =>
 		side === "LEFT" ? l.oldNo : l.newNo;
 	const touches = (l: DiffLine) => {

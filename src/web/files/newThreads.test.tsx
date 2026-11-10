@@ -32,6 +32,7 @@ import {
 import type { SpanRange } from "../threads/spanMarks";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { CODE_CELL, cellLine, spanOfRange } from "./codeSpan";
+import { contextRanges } from "./contextRanges";
 import { codeCellOf, DiffBody, type DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { getPicks, pickKey, setPicks } from "./linePicks";
@@ -328,6 +329,7 @@ beforeEach(() => {
 afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
+	contextRanges.reset();
 	localStorage.clear();
 	showInvisibles.reset();
 	ignoreWhitespace.reset();

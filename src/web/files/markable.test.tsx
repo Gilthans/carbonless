@@ -22,6 +22,7 @@ import { MarkableDiff, type MarkStore } from "../../../test/markable-harness";
 import { sincePieces } from "../../shared/pieces";
 import type { ClusterView, DiffLine, FileHunks } from "../../shared/types";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
+import { contextRanges } from "./contextRanges";
 import { READ_ONLY_TIP, UNTICK_TO_CROSS } from "./DiffBody";
 import { GoneFile } from "./FileDiff";
 import type { KindEntry } from "./since";
@@ -583,6 +584,8 @@ afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
 	localStorage.clear();
+	// Expanded context is kept for the page (contextRanges): each test starts with none.
+	contextRanges.reset();
 	ignoreWhitespace.reset();
 	sideBySide.reset();
 	showInvisibles.reset();

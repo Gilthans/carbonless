@@ -241,3 +241,63 @@ describe("Tooltip dismissal and clicks", () => {
 		expect(screen.queryByRole("tooltip")).toBeNull();
 	});
 });
+
+describe("Tooltip placement", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	it("is placed again when its size changes while open", () => {
+		// A stand-in observer: the test says when the tip has resized.
+		const observers: { cb: () => void; el?: Element; off: boolean }[] = [];
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				o: { cb: () => void; el?: Element; off: boolean };
+				constructor(cb: () => void) {
+					this.o = { cb, off: false };
+					observers.push(this.o);
+				}
+				observe(el: Element) {
+					this.o.el = el;
+				}
+				disconnect() {
+					this.o.off = true;
+				}
+			},
+		);
+		const { button } = setup();
+		button.getBoundingClientRect = () =>
+			({
+				top: 600,
+				left: 100,
+				bottom: 620,
+				right: 200,
+				width: 100,
+				height: 20,
+			}) as DOMRect;
+		const tip = document.querySelector('[role="tooltip"]') as HTMLElement;
+		let height = 20;
+		tip.getBoundingClientRect = () =>
+			({
+				width: 80,
+				height,
+				top: 0,
+				left: 0,
+				bottom: height,
+				right: 80,
+			}) as DOMRect;
+		act(() => button.focus());
+		expect(tip.style.top).toBe("626px");
+		const live = observers.filter((o) => !o.off);
+		expect(live).toHaveLength(1);
+		expect(live[0]?.el).toBe(tip);
+		// Threads arrive: it no longer fits below, so it goes above its trigger.
+		height = 200;
+		act(() => live[0]?.cb());
+		expect(tip.style.top).toBe(`${600 - 6 - 200}px`);
+		act(() => button.blur());
+		expect(observers.every((o) => o.off)).toBe(true);
+	});
+});
