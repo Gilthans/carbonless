@@ -63,6 +63,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The shard count (4) is also in the job name, `--shard=…/4` and
+        # the merged run.json's "shards" in `e2e`: change them together.
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
@@ -115,6 +117,7 @@ jobs:
       - run: |
           run="$RUNNER_TEMP/test-traces/e2e-ci-$GITHUB_RUN_ID"
           mkdir -p "$run"
+          # "shards": the matrix's count (see e2e-shard).
           printf '{"id":"e2e-ci-%s","kind":"e2e","shards":4}\n' "$GITHUB_RUN_ID" > "$run/run.json"
           for shard in "$RUNNER_TEMP"/shards/test-traces-e2e-*; do
             [ -d "$shard" ] || continue
