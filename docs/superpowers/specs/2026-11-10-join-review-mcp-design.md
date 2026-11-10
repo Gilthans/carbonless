@@ -43,9 +43,14 @@ context are ones the reviewer already has:
   configured, "join the carbonless review at <link>" is enough: the tools
   and their replies tell the agent every step, including asking the
   reviewer to approve.
-- **The reviewer approves every join.** An attach is a request; the review
+- **The reviewer approves every join.** An attach is a request; every crb
   page shows it with the session's machine and name, Approve and Deny.
-  Nothing about the review reaches the session before Approve.
+  Before Approve the session sees only the review list (`reviews()`, below),
+  which any access-key holder can see on Home anyway; nothing from inside a
+  review (threads, code, PR body) reaches it.
+- **Find the review by name.** "Join my review of the MCP PR" works without
+  a link: the session lists the reviews and picks one (owner, comment on
+  the spec, 2026-11-10).
 - **It answers what waits, then keeps listening**, while the session stays
   free for other work: a background watcher wakes it when a question
   arrives.
@@ -121,14 +126,33 @@ On top of the key, every join still needs the reviewer's Approve:
 - Approval issues a token for this review only (256-bit random, stored
   hashed). Every other tool, and the watcher, needs it.
 
+### Finding the review
+
+`reviews()` (owner, 2026-11-10: "add an endpoint that lists reviews, so the
+agent can easily find a review I'm asking for. It should list reviews by
+last activity, with the repo they're in, the branch, the PR number and
+title, etc") lists the reviewer's started reviews, newest activity first
+(the order of Home's `RowReview`s), each with:
+
+`{ link, repo: "owner/name", pr, title, author, branch: { head, base }, state: "open" | "draft" | "merged" | "closed", lastActivity, progress: { reviewed, total }, buddy: "none" | "acp" | "joined" | "pending", joinable }`
+
+- It works with the access key alone, before any approval **(call: a key
+  holder already sees all of this on Home)**.
+- `joinable` is false for `--viewer` and `--as-of` reviews, with a reason.
+- Read from crb's local data (the cache and review refs), never a fresh
+  `gh` call, so it answers at once **(call)**.
+- Builder picks a cap (50 suggested) and an optional `query` filter on
+  repo, title and branch.
+
 ### Attaching
 
 `attach({ review, name, machine?, harness? })`:
 
 - `review` is the review's link (`http://<host>:4747/r/<id>`, as `crb
-  <pr>` prints it or the browser shows it; a `?key=` on it is ignored). Only
-  a review crb already has open matches: attach never opens, clones or
-  calls `gh` **(call)**.
+  <pr>` prints it, the browser shows it, or `reviews()` lists it; a
+  `?key=` on it is ignored). Any review `reviews()` lists can be attached;
+  if its session isn't open in the registry, the attach opens it as the
+  page would **(call: behind the access key this is no new power)**.
 - `name` is how the session names itself (for Claude Code, e.g. its
   working directory and branch); `machine` its hostname; `harness` its
   name and version. All shown to the reviewer as given, sanitised, capped
@@ -340,8 +364,10 @@ chip while listening and its popover, the "left" toast, the setup modal's
 ## Tests
 
 Unit (Vitest):
-- `/mcp` before approval: tools other than `attach` refuse without a
-  token; an unopened review never opens (no clone, no `gh`).
+- `/mcp` before approval: tools other than `reviews` and `attach` refuse
+  without a token.
+- `reviews()`: newest activity first; fields as listed; `--viewer`/`--as-of`
+  reviews not joinable; no `gh` call (the fake gh sees none).
 - Approve, Deny, expiry, replace; `attach` with `request` waits ≤ 20 s for
   the answer (hold, not a time bound: resolved while held).
 - Watcher: delivers at once when a question waits; delivers when one
@@ -390,7 +416,9 @@ Run `pnpm flake-check` on the watcher and gate tests.
   may get a PowerShell variant later.
 - Icons (an octicon plug suggested) and the toast's look, from the tokens.
 
-## Owner answers after the builder check (2026-11-10)
+## Owner answers (2026-11-10)
 
 1. `/mcp` is behind the access key: "Yes it should include the access key".
 2. A pending join shows on every page: "On any page. It's a push alert".
+3. A `reviews()` tool lists reviews so the agent can find the one asked
+   for (comment on the spec).
