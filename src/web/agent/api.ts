@@ -4,6 +4,7 @@
  * The config routes are machine-wide, not the review's.
  */
 import { queryOptions, useQuery } from "@tanstack/react-query";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
 	AGENT_POLL_MS,
 	type AgentCheck,
@@ -41,29 +42,16 @@ export const fetchAgentStatus = () => review<AgentStatus>("agent");
 export const AGENT_BUSY_POLL_MS = 1000;
 
 /**
- * A hidden tab's poll: slow, but kept, so a join request reaches a tab in
- * the background (its title says so) and a joined session's leave is
- * toasted when the tab comes back.
- */
-export const AGENT_HIDDEN_POLL_MS = 15_000;
-
-const tabHidden = () =>
-	typeof document !== "undefined" && document.visibilityState === "hidden";
-
-/**
  * How often the status is read: every AGENT_POLL_MS, every
  * AGENT_BUSY_POLL_MS while the ACP agent starts or answers (its text
- * streams through the status; a joined session's doesn't), every
- * AGENT_HIDDEN_POLL_MS while the tab is hidden, and not at all on a review
- * with no agent (404).
+ * streams through the status; a joined session's doesn't), and not at all
+ * on a review with no agent (404).
  */
 export function agentPollMs(
 	status: AgentStatus | undefined,
 	error: unknown,
-	hidden = false,
 ): number | false {
 	if (error instanceof ApiError && error.status === 404) return false;
-	if (hidden) return AGENT_HIDDEN_POLL_MS;
 	return status?.via !== "mcp" &&
 		(status?.state === "busy" || status?.state === "starting")
 		? AGENT_BUSY_POLL_MS
@@ -71,20 +59,69 @@ export function agentPollMs(
 }
 
 /**
- * The agent's status, polled (agentPollMs) and read again when the page
- * comes back. A routine poll shows no spinner anywhere: only a changed
- * answer moves the chip's dot.
+ * The agent's status, polled (agentPollMs) while the page is visible and
+ * read again when it comes back. A routine poll shows no spinner anywhere:
+ * only a changed answer moves the chip's dot. Hidden tabs skip the ticks
+ * (refetchIntervalInBackground), never the interval itself: an answer
+ * landing while hidden must not stop the poll. A hidden tab polls only
+ * useHiddenJoinPoll's light route.
  */
 export const agentStatusQuery = queryOptions({
 	queryKey: ["agent"],
 	queryFn: fetchAgentStatus,
-	refetchInterval: (query) =>
-		agentPollMs(query.state.data, query.state.error, tabHidden()),
-	refetchIntervalInBackground: true,
+	refetchInterval: (query) => agentPollMs(query.state.data, query.state.error),
+	refetchIntervalInBackground: false,
 	refetchOnWindowFocus: true,
 	retry: false,
 	staleTime: AGENT_BUSY_POLL_MS,
 });
+
+/** A hidden tab's join poll. */
+export const AGENT_HIDDEN_POLL_MS = 15_000;
+
+/** What the hidden tab's poll answers: a pending request, the last leave. */
+export type JoinPoll = Pick<AgentStatus, "joinRequest" | "left">;
+
+/**
+ * `GET /api/r/<id>/agent/join`: a pure lookup on the server (it never
+ * opens the review, counts as a use, or wakes its agent).
+ */
+export const joinPollQuery = queryOptions({
+	queryKey: ["agent-join"],
+	queryFn: () => review<JoinPoll>("agent/join"),
+	refetchInterval: AGENT_HIDDEN_POLL_MS,
+	refetchIntervalInBackground: true,
+	refetchOnWindowFocus: false,
+	retry: false,
+	staleTime: 0,
+});
+
+const subscribeVisibility = (onChange: () => void) => {
+	document.addEventListener("visibilitychange", onChange);
+	return () => document.removeEventListener("visibilitychange", onChange);
+};
+const hiddenNow = () => document.visibilityState === "hidden";
+
+/** Whether the tab is hidden, kept current. */
+export function useTabHidden(): boolean {
+	return useSyncExternalStore(subscribeVisibility, hiddenNow, () => false);
+}
+
+/**
+ * While the tab is hidden (and the review has an agent): whether a session
+ * asks to join, read every AGENT_HIDDEN_POLL_MS from the light route.
+ * `undefined` while visible, or before its first answer since hidden.
+ */
+export function useHiddenJoinPoll(on: boolean): JoinPoll | undefined {
+	const hidden = useTabHidden();
+	const poll = useQuery({ ...joinPollQuery, enabled: on && hidden });
+	// An answer from an earlier hidden spell is stale once visible again.
+	const [since, setSince] = useState(0);
+	useEffect(() => {
+		if (hidden) setSince(Date.now());
+	}, [hidden]);
+	return on && hidden && poll.dataUpdatedAt >= since ? poll.data : undefined;
+}
 
 /** What an Approve or Deny of a join request came to. */
 export type JoinAnswer =

@@ -505,4 +505,53 @@ describe("AgentSetup's Join from a session tab", () => {
 		);
 		await within(dialog).findByRole("radiogroup", { name: "Harness" });
 	});
+
+	it("tabs: wired to their panels, arrow keys move between them, each with a tooltip", async () => {
+		fetchMock.mockImplementation(async (url: string) =>
+			url === "/api/mcp/setup" ? json(200, { key: null }) : json(200, stored),
+		);
+		render(
+			<QueryClientProvider
+				client={
+					new QueryClient({ defaultOptions: { queries: { retry: false } } })
+				}
+			>
+				<JoinHarness />
+			</QueryClientProvider>,
+		);
+		const user = userEvent.setup();
+		const dialog = screen.getByTestId("agent-setup");
+		const launch = within(dialog).getByRole("tab", { name: "Launch an agent" });
+		const join = within(dialog).getByRole("tab", {
+			name: "Join from a session",
+		});
+		const panelOf = (tab: HTMLElement) =>
+			document.getElementById(tab.getAttribute("aria-controls") ?? "");
+		expect(panelOf(launch)).toHaveAttribute("role", "tabpanel");
+		expect(panelOf(launch)).toHaveAccessibleName("Launch an agent");
+		expect(launch).toHaveAttribute("tabindex", "0");
+		expect(join).toHaveAttribute("tabindex", "-1");
+		// The icon-only tab (a phone's) has its name as a tooltip.
+		await user.hover(launch);
+		// aria-hidden: it repeats the tab's name.
+		await waitFor(() =>
+			expect(
+				screen.getByText("Launch an agent", { selector: "[role=tooltip]" }),
+			).toBeVisible(),
+		);
+		await user.unhover(launch);
+		launch.focus();
+		await user.keyboard("{ArrowRight}");
+		expect(join).toHaveAttribute("aria-selected", "true");
+		expect(join).toHaveFocus();
+		expect(panelOf(join)).toHaveAttribute("role", "tabpanel");
+		expect(panelOf(join)).toHaveAccessibleName("Join from a session");
+		await user.keyboard("{ArrowRight}");
+		expect(launch).toHaveAttribute("aria-selected", "true");
+		expect(launch).toHaveFocus();
+		await user.keyboard("{End}");
+		expect(join).toHaveFocus();
+		await user.keyboard("{ArrowLeft}");
+		expect(launch).toHaveFocus();
+	});
 });

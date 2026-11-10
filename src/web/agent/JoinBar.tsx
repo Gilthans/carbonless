@@ -1,6 +1,6 @@
 import { CheckIcon, PlugIcon, XIcon } from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentStatus } from "../../shared/agent";
 import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
@@ -9,6 +9,7 @@ import {
 	answerJoin,
 	type JoinAnswer,
 	useAgentOn,
+	useHiddenJoinPoll,
 } from "./api";
 
 /** The hidden tab's title prefix while a session asks to join. */
@@ -81,6 +82,7 @@ export function JoinBar() {
 		request: NonNullable<AgentStatus["joinRequest"]>;
 		error: string;
 	} | null>(null);
+	const inFlight = useRef(false);
 	const answer = useMutation({
 		mutationFn: (v: {
 			id: string;
@@ -103,7 +105,10 @@ export function JoinBar() {
 		refused && (!live || live.id === refused.request.id)
 			? refused.request
 			: live;
-	useJoinTitle(Boolean(live && live.id !== done));
+	// Hidden, the status isn't polled: the light join poll says.
+	const hiddenPoll = useHiddenJoinPoll(on);
+	const asking = hiddenPoll ? hiddenPoll.joinRequest : live;
+	useJoinTitle(Boolean(asking && asking.id !== done));
 	if (!request || request.id === done || !status.data) return null;
 	const who = request.harness
 		? `${request.name} · ${request.machine} · ${request.harness}`
@@ -111,8 +116,17 @@ export function JoinBar() {
 	const stopped = refused?.request.id === request.id ? refused.error : null;
 	const busy = answer.isPending;
 	const press = (approve: boolean) => {
-		if (busy) return;
-		answer.mutate({ id: request.id, approve, request });
+		// Set at once: a second press before the re-render posts nothing.
+		if (inFlight.current) return;
+		inFlight.current = true;
+		answer.mutate(
+			{ id: request.id, approve, request },
+			{
+				onSettled: () => {
+					inFlight.current = false;
+				},
+			},
+		);
 	};
 	const tip = approveTip(status.data);
 	return (

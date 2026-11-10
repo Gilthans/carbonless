@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	act,
 	cleanup,
+	fireEvent,
 	render,
 	screen,
 	waitFor,
@@ -17,7 +18,6 @@ import { ApiError, overviewQuery } from "../api";
 import { AgentChip, agentDot, agentTip, chipPopover } from "./AgentChip";
 import {
 	AGENT_BUSY_POLL_MS,
-	AGENT_HIDDEN_POLL_MS,
 	agentPollMs,
 	agentStatusQuery,
 	agentThreadsQuery,
@@ -192,6 +192,38 @@ describe("the chip with the ACP buddy off", () => {
 			),
 		);
 		expect(screen.getByTestId("setup")).toHaveTextContent("join");
+	});
+
+	it("Start and Disconnect: two presses before a re-render post once", async () => {
+		const releases: Array<() => void> = [];
+		const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
+			init?.method === "POST"
+				? new Promise<Response>((done) => {
+						releases.push(() =>
+							done(new Response(JSON.stringify({ ok: true }))),
+						);
+					})
+				: Promise.resolve(new Response(JSON.stringify(status()))),
+		);
+		for (const [s, button] of [
+			[status({ state: "off", acpOff: true, agent: undefined }), "agent-start"],
+			[status(joined()), "agent-disconnect"],
+		] as const) {
+			fetchMock.mockClear();
+			const { user } = chipOver(s, fetchMock);
+			await user.click(screen.getByTestId("agent-chip"));
+			const press = within(screen.getByTestId("agent-popover")).getByTestId(
+				button,
+			);
+			act(() => {
+				fireEvent.click(press);
+				fireEvent.click(press);
+			});
+			await waitFor(() => expect(posts(fetchMock).length).toBeGreaterThan(0));
+			expect(posts(fetchMock)).toHaveLength(1);
+			await act(async () => releases.shift()?.());
+			cleanup();
+		}
 	});
 
 	it("no Start without a config", async () => {
@@ -411,11 +443,6 @@ describe("the status poll", () => {
 		expect(agentPollMs(undefined, new ApiError(404, "no agent"))).toBe(false);
 		// Another failure (the server restarting) keeps polling.
 		expect(agentPollMs(undefined, new ApiError(0, "gone"))).toBe(AGENT_POLL_MS);
-		// A hidden tab: slowly, so a join request still reaches it.
-		expect(agentPollMs(s("busy"), null, true)).toBe(AGENT_HIDDEN_POLL_MS);
-		expect(agentPollMs(undefined, new ApiError(404, "no agent"), true)).toBe(
-			false,
-		);
 		// A joined session's answer doesn't stream: no fast poll.
 		expect(agentPollMs(status({ state: "busy", via: "mcp" }), null)).toBe(
 			AGENT_POLL_MS,

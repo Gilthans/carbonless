@@ -92,13 +92,17 @@ describe("the toast", () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		const { set } = show(status());
 		expect(screen.queryByTestId("join-toast")).toBeNull();
+		const region = screen.getByTestId("join-toast-region");
+		expect(region).toHaveAttribute("aria-live", "polite");
+		expect(region).toBeEmptyDOMElement();
 		const left = { why: "disconnected" as const, at: "2026-11-10T10:05:00Z" };
 		await set(status(left));
 		const toast = await screen.findByTestId("join-toast");
 		expect(toast).toHaveTextContent("carbonless · main left");
 		expect(toast.querySelector("time")).toHaveAttribute("datetime", left.at);
-		// Inside the polite live region.
-		expect(screen.getByRole("status")).toContainElement(toast);
+		// Inside the polite live region that was there before it.
+		expect(region).toContainElement(toast);
+		expect(screen.getByTestId("join-toast-region")).toBe(region);
 		await act(async () => vi.advanceTimersByTimeAsync(TOAST_MS));
 		await waitFor(() => expect(screen.queryByTestId("join-toast")).toBeNull());
 		// The same leave on the next poll: no second toast.

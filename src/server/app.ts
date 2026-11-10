@@ -309,9 +309,17 @@ export async function buildApp(
 	});
 	// The setup modal's "Join from a session" line carries the key (the
 	// page's own cookie is HttpOnly). Behind the key, as the manifest.
-	app.get("/api/mcp/setup", async (_request, reply) =>
-		reply.header("cache-control", "no-store").send({ key: options.accessKey }),
-	);
+	// Same origin only: another port on this host (same-site) can't ask.
+	app.get("/api/mcp/setup", async (request, reply) => {
+		const site = request.headers["sec-fetch-site"];
+		if (site !== undefined && site !== "same-origin" && site !== "none") {
+			return reply.status(403).send({ error: "Same origin only" });
+		}
+		return reply
+			.header("cache-control", "no-store")
+			.header("cross-origin-resource-policy", "same-origin")
+			.send({ key: options.accessKey });
+	});
 	// Opens (or finds) the review of a PR: crb <pr>.
 	app.post("/api/reviews", async (request) => {
 		const req = parseOpenBody(request.body);
@@ -321,6 +329,25 @@ export async function buildApp(
 	});
 	const baseUrl = (request: FastifyRequest) =>
 		options.baseUrl?.() ?? `http://${request.headers.host ?? "localhost"}`;
+
+	// A hidden tab's poll: whether a session asks to join this review, or
+	// left it. A pure lookup (registry.peek), outside the review routes'
+	// preHandler: it never opens a review, never counts as a use (the idle
+	// sweep still closes a forgotten one), and never reads or wakes its
+	// agent. A review with a pending request is never idle-closed (the
+	// broker is active), so a closed one has none: {}.
+	app.get<{ Params: { id: string } }>(
+		"/api/r/:id/agent/join",
+		async (request) => {
+			const agent = registry.peek(request.params.id)?.agent;
+			if (!agent) return {};
+			const { joinRequest, left } = agent.join.view();
+			return {
+				...(joinRequest ? { joinRequest } : {}),
+				...(left ? { left } : {}),
+			};
+		},
+	);
 
 	// A review's routes, by its id: /api/r/<id>/session, ...
 	await app.register(

@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	act,
 	cleanup,
+	fireEvent,
 	render,
 	screen,
 	waitFor,
@@ -163,6 +164,23 @@ describe("the join request bar", () => {
 		expect(posts.posts()).toHaveLength(1);
 	});
 
+	it("two presses before a re-render (a fast double tap) still post once", async () => {
+		const posts = heldPosts();
+		show(status());
+		const approve = screen.getByRole("button", { name: "Approve" });
+		const deny = screen.getByRole("button", { name: "Deny" });
+		act(() => {
+			fireEvent.click(approve);
+			fireEvent.click(approve);
+			fireEvent.click(deny);
+		});
+		await waitFor(() => expect(posts.posts().length).toBeGreaterThan(0));
+		expect(posts.posts()).toHaveLength(1);
+		await posts.release(200, { ok: true });
+		await waitFor(() => expect(screen.queryByTestId("join-bar")).toBeNull());
+		expect(posts.posts()).toHaveLength(1);
+	});
+
 	it("Deny answered first in another tab (409): the bar goes", async () => {
 		const posts = heldPosts();
 		const { user } = show(status());
@@ -258,33 +276,43 @@ describe("the title prefix", () => {
 		expect(withJoinPrefix("T", false)).toBe("T");
 	});
 
-	it("shows while a request waits and the tab is hidden", async () => {
-		const { client } = show(status());
+	/** The hidden tab's light poll answers `poll()`; the status is never read. */
+	const joinPoll = (poll: () => unknown) => {
+		const fetchMock = vi.fn(async (url: string) => {
+			if (url !== "/api/agent/join") throw new Error(`unexpected ${url}`);
+			return new Response(JSON.stringify(poll()));
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		return fetchMock;
+	};
+
+	it("shows while a request waits and the tab is hidden; goes once the light poll says it was answered", async () => {
+		const request = status().joinRequest;
+		let answer: unknown = { joinRequest: request };
+		const fetchMock = joinPoll(() => answer);
+		show(status());
 		expect(document.title).toBe("Fix it #7 · carbonless");
 		act(() => setVisibility("hidden"));
 		expect(document.title).toBe("⏚ Fix it #7 · carbonless");
+		await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 		act(() => setVisibility("visible"));
 		expect(document.title).toBe("Fix it #7 · carbonless");
+		// Answered in another tab while this one is hidden.
+		answer = {};
 		act(() => setVisibility("hidden"));
-		// Answered (in another tab): off, though still hidden.
-		await act(async () =>
-			client.setQueryData(
-				agentStatusQuery.queryKey,
-				status({ joinRequest: undefined }),
-			),
-		);
+		await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 		await waitFor(() => expect(document.title).toBe("Fix it #7 · carbonless"));
 	});
 
-	it("shows when a request reaches a tab already hidden", async () => {
+	it("shows when a request reaches a tab already hidden (the light poll, not the status)", async () => {
 		act(() => setVisibility("hidden"));
-		const { client } = show(status({ joinRequest: undefined }));
-		expect(document.title).toBe("Fix it #7 · carbonless");
-		await act(async () =>
-			client.setQueryData(agentStatusQuery.queryKey, status()),
-		);
+		const fetchMock = joinPoll(() => ({ joinRequest: status().joinRequest }));
+		show(status({ joinRequest: undefined }));
 		await waitFor(() =>
 			expect(document.title).toBe("⏚ Fix it #7 · carbonless"),
 		);
+		expect(fetchMock).toHaveBeenCalledWith("/api/agent/join", undefined);
+		// The bar itself waits for the tab (and the status) to come back.
+		expect(screen.queryByTestId("join-bar")).toBeNull();
 	});
 });

@@ -140,6 +140,17 @@ function ChipPanel(props: { status: AgentStatus; onDone(): void }) {
 		},
 	});
 	const error = disconnect.error ?? start.error;
+	// One write per press: set at once, before any re-render.
+	const inFlight = useRef(false);
+	const once = (run: (opts: { onSettled(): void }) => void) => () => {
+		if (inFlight.current) return;
+		inFlight.current = true;
+		run({
+			onSettled: () => {
+				inFlight.current = false;
+			},
+		});
+	};
 	const joined = status.joined;
 	return (
 		<div className="grid min-w-0 gap-2 text-sm">
@@ -175,7 +186,7 @@ function ChipPanel(props: { status: AgentStatus; onDone(): void }) {
 						type="button"
 						data-testid="agent-disconnect"
 						disabled={disconnect.isPending}
-						onClick={() => disconnect.mutate()}
+						onClick={once((o) => disconnect.mutate(undefined, o))}
 						className={`${POP_BUTTON} border border-bad text-bad hover:bg-bad/10`}
 					>
 						{disconnect.isPending ? (
@@ -207,7 +218,7 @@ function ChipPanel(props: { status: AgentStatus; onDone(): void }) {
 							type="button"
 							data-testid="agent-start"
 							disabled={start.isPending}
-							onClick={() => start.mutate()}
+							onClick={once((o) => start.mutate(undefined, o))}
 							className={`${POP_BUTTON} border border-agent-edge bg-agent text-agent-ink hover:text-ink`}
 						>
 							{start.isPending ? (

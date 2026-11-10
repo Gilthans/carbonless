@@ -11,9 +11,11 @@ import {
 	AGENT_HIDDEN_POLL_MS,
 	agentStatusQuery,
 	answerJoin,
+	type JoinPoll,
 	joinLine,
 	mcpAddLine,
 	shellWord,
+	useHiddenJoinPoll,
 } from "./api";
 
 const status: AgentStatus = {
@@ -76,22 +78,89 @@ describe("the status poll", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 		act(() => setVisibility("hidden"));
 		await act(async () => hold?.());
-		// Hidden: the slow poll only (a join request still reaches the tab).
-		// Its interval runs from the answer read while hidden.
+		// Hidden: no poll.
 		await act(async () =>
-			vi.advanceTimersByTimeAsync(AGENT_HIDDEN_POLL_MS - 1),
+			vi.advanceTimersByTimeAsync(4 * AGENT_HIDDEN_POLL_MS),
 		);
-		expect(fetchMock).toHaveBeenCalledTimes(2);
-		await act(async () => vi.advanceTimersByTimeAsync(1));
-		expect(fetchMock).toHaveBeenCalledTimes(3);
-		await act(async () => hold?.());
 		const hiddenCalls = fetchMock.mock.calls.length;
+		expect(hiddenCalls).toBe(2);
 		// Back: polling again.
 		act(() => setVisibility("visible"));
 		await act(async () => hold?.());
 		await act(async () => vi.advanceTimersByTimeAsync(2 * AGENT_POLL_MS));
 		await act(async () => hold?.());
 		expect(fetchMock.mock.calls.length).toBeGreaterThan(hiddenCalls);
+	});
+});
+
+describe("the hidden tab's join poll", () => {
+	it("reads only the light route, every 15 s while hidden, never while visible", async () => {
+		const client = new QueryClient({
+			defaultOptions: {
+				queries: { retry: false, refetchOnWindowFocus: false },
+			},
+		});
+		const request = {
+			id: "01req",
+			name: "s",
+			machine: "m",
+			at: "2026-11-10T10:00:00Z",
+		};
+		const fetchMock = vi.fn(
+			async (_url: string) =>
+				new Response(JSON.stringify({ joinRequest: request })),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		let seen: JoinPoll | undefined;
+		function Hidden() {
+			seen = useHiddenJoinPoll(true);
+			return null;
+		}
+		render(
+			<QueryClientProvider client={client}>
+				<Hidden />
+			</QueryClientProvider>,
+		);
+		await act(async () =>
+			vi.advanceTimersByTimeAsync(2 * AGENT_HIDDEN_POLL_MS),
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(seen).toBeUndefined();
+		act(() => setVisibility("hidden"));
+		await act(async () => vi.advanceTimersByTimeAsync(0));
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(seen).toEqual({ joinRequest: request });
+		await act(async () => vi.advanceTimersByTimeAsync(AGENT_HIDDEN_POLL_MS));
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(
+			fetchMock.mock.calls.every(([url]) => url === "/api/agent/join"),
+		).toBe(true);
+		// Visible: stops, and its answer no longer counts.
+		act(() => setVisibility("visible"));
+		await act(async () =>
+			vi.advanceTimersByTimeAsync(3 * AGENT_HIDDEN_POLL_MS),
+		);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(seen).toBeUndefined();
+	});
+
+	it("isn't read on a review with no agent", async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		function Off() {
+			useHiddenJoinPoll(false);
+			return null;
+		}
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				<Off />
+			</QueryClientProvider>,
+		);
+		act(() => setVisibility("hidden"));
+		await act(async () =>
+			vi.advanceTimersByTimeAsync(2 * AGENT_HIDDEN_POLL_MS),
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });
 

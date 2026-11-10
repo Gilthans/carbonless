@@ -100,15 +100,16 @@ export function JoinToast() {
 		timer.current = setTimeout(() => setShown(null), TOAST_MS);
 		return () => clearTimeout(timer.current);
 	}, [shown]);
-	if (!shown) return null;
+	// Always there (empty until a leave), so screen readers announce what
+	// lands in it (a live region inserted already filled often isn't read).
 	return (
 		<div
-			role="status"
 			aria-live="polite"
+			data-testid="join-toast-region"
 			className="pointer-events-none fixed inset-x-3 z-40 flex justify-end sm:left-auto"
 			style={{ top: "calc(var(--app-header, 0px) + 0.5rem)" }}
 		>
-			{
+			{shown && (
 				<div
 					data-testid="join-toast"
 					data-why={shown.why}
@@ -134,7 +135,7 @@ export function JoinToast() {
 						)}
 					</Tooltip>
 				</div>
-			}
+			)}
 		</div>
 	);
 }
