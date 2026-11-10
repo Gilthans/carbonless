@@ -11,13 +11,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Session } from "../src/server/session";
 import {
-	FAKE_GH_DIR,
+	fakeGhEnv,
 	prView,
 	type Scenario,
 	writeScenario,
 } from "./fake-gh/scenario";
 import { createGitFixture, type GitFixture, testGitEnv } from "./git-fixture";
 import { settleGh } from "./settle-gh";
+import { fixtureGit } from "./trace-run";
 
 export interface PrFixture {
 	/** What to pass to Session.open / crb. */
@@ -62,11 +63,13 @@ export function createPrFixture(): PrFixture {
 		},
 	]);
 	const git = (...args: string[]) =>
-		execFileSync("git", args, {
-			cwd: repo.path,
-			encoding: "utf8",
-			env: testGitEnv(),
-		}).trim();
+		fixtureGit(args, () =>
+			execFileSync("git", args, {
+				cwd: repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim(),
+		);
 	const [mergeBase = "", first = ""] = repo.shas;
 	// The PR head lives only under refs/pull/<n>/head, like on GitHub.
 	git("update-ref", `refs/pull/${NUMBER}/head`, first);
@@ -95,7 +98,7 @@ export function createPrFixture(): PrFixture {
 		setEnv({ CRB_FAKE_GH: path });
 	};
 	setEnv({
-		PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
+		...fakeGhEnv(),
 		XDG_CACHE_HOME: join(tmp, "cache"),
 		CRB_FAKE_GH_LOG: join(tmp, "gh.log"),
 	});

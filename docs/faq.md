@@ -124,6 +124,13 @@ the `if`, its `}` and the `log` line that crossed the loop's closing brace;
 the rest of the body goes quiet). It can show a little more as changed
 than `git diff -w` would, never less.
 
+## Why doesn't Find in PR find a line I know is in the file?
+
+Only what the diff can show is searched: file paths, changed lines and the
+context lines around them, plus any context you expanded. A line far from
+every change isn't shown, so it isn't searched. Expand the gap that holds
+it and the hit appears. Comments, threads and the overview aren't searched.
+
 ## Why does Home show coverage in lines, when the Files page shows files?
 
 Home counts a started review's coverage in changed lines, the finest unit,
