@@ -191,7 +191,7 @@ describe("/mcp", () => {
 		const client = await connect();
 		const r = await call(client, "attach", {
 			review: `${link()}/files?key=ignored`,
-			name: "carbonless‮ · main\n",
+			name: "carbonless\u202E · main\n",
 		});
 		expect(r.value).toMatchObject({ state: "pending" });
 		expect(r.value.message).toContain(link());
