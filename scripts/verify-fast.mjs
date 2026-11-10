@@ -145,6 +145,8 @@ const E2E_MAP = [
 	[/^src\/web\/pageActive\.ts$/, ["keepalive"]],
 	[/^src\/server\/access\.ts$|^src\/web\/accessKey\.ts$/, ["cli", "keepalive"]],
 	[/^test\/methodology-fixture\.ts$/, ["methodology"]],
+	// Only src/cli.test.ts preloads it.
+	[/^test\/module-log\.mjs$/, []],
 	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
 	[
 		/^src\/(cli|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
@@ -202,6 +204,15 @@ const steps = [
 	["pnpm", ["typecheck"]],
 	["pnpm", ["exec", "vitest", "run", "--changed", base, "--passWithNoTests"]],
 ];
+// src/cli.test.ts only spawns the CLI, so --changed never finds it through
+// imports: it runs whenever the CLI's module graph may have changed.
+const cliGraph = changed.filter((f) =>
+	/^src\/(cli|client)\.ts$|^src\/server\/|^test\/module-log\.mjs$/.test(f),
+);
+if (cliGraph.length && !changed.includes("src/cli.test.ts")) {
+	console.log(`  unit: src/cli.test.ts (${cliGraph[0]} changed)`);
+	steps.push(["pnpm", ["exec", "vitest", "run", "src/cli.test.ts"]]);
+}
 if (allE2e || e2e.size) {
 	steps.push(["pnpm", ["build"]]);
 	const files = allE2e ? [] : [...e2e].map((s) => `e2e/${s}.spec.ts`);
