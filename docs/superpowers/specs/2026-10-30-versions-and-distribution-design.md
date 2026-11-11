@@ -88,8 +88,8 @@ refuses a client whose version or commit differs.
    to approve with 2FA (`pnpm release publish`), all through npm Trusted
    Publishing in a master-only `npm` environment, with no npm token;
    `release-finish` tags and opens a "next" PR with the changelog; `pnpm
-   release next` sets another next version. The repo is private, so no
-   provenance. License: MIT.
+   release next` sets another next version. The repo is public, so npm
+   adds provenance. License: MIT.
 3. **M3, co-worker polish, on demand.** `crb doctor` (git, gh login, Node,
    cache dir), issues on the repo, the update notice, maybe `crb
    self-update`.

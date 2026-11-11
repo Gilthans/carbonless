@@ -297,11 +297,10 @@ reach master only as PRs ("How we work"). After one merges:
    release.yml`) publishes `X.Y.Z-rc.N` to npm's `rc` (trusted publishing,
    no token) and tags `vX.Y.Z-rc.N`; until the first release it only tags. A run that says
    "master moved on" skipped a commit a newer merge holds.
-2. Within ~5 minutes the follow timer moves 4747 to the new build
-   (`origin/master`'s, or npm's `rc` once the owner has switched it after
-   the first publish; `crb --version` shows the commit). If `journalctl
-   --user -u crb-follow` shows a failure, tell the owner what it says;
-   don't install by hand.
+2. The owner's main follows npm `rc` (machine-specific steps:
+   CLAUDE.local.md): check it moved to the new build (`crb --version`
+   shows the commit). If it didn't, tell the owner; don't install by
+   hand.
 3. Send the owner the link and what is new since the last RC.
 4. Stop the instances of branches that just merged.
 
@@ -330,9 +329,8 @@ installs the global `crb`; then `systemctl --user restart crb`.
 3. The owner merges the "next" PR like any other. For another next
    version (a fix release): `pnpm release next <patch|minor|major|X.Y.Z>`
    opens that PR.
-After the first release (0.1.0) the owner adds the trusted publisher and
-switches the devbox's follow to npm (`docs/releasing.md`, "Setup and
-flipping the switch").
+After the first release (0.1.0) the owner adds the trusted publisher
+(`docs/releasing.md`, "Setup").
 
 ## How we work
 
