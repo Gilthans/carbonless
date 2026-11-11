@@ -91,6 +91,13 @@ still builds clusters exactly as today. A binary image has one file-level
 cluster ("Binary file changed"). An SVG is text and keeps its line clusters.
 Re-review carries work as they do today on the same clusters.
 
+The owner, 2026-11-11: an image "should act precisely as a renamed file
+does today". For a binary image that holds with no new code: its one
+file-level cluster is ticked, shown in the since view and carried exactly
+like a renamed file's or a mode change's (`src/server/rereview/engine.ts`,
+file-level since clusters). The rest of this section matters only for an
+SVG, which has line clusters.
+
 The image renderer's review box ticks **exactly the units the current view
 shows for this file**, through the same write path today's view uses for
 them. In the full diff, those are the file's clusters (`/review/states`).
