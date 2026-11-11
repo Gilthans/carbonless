@@ -81,3 +81,50 @@ cache, which the warm-up fills. Without it each test's own
 `XDG_CACHE_HOME` would leave crb's default cache
 (`$XDG_CACHE_HOME/carbonless/compile-cache`) empty at every start;
 `e2e/fixtures.spec.ts` checks both paths.
+
+## One server for many tests (CAR-106)
+
+Pieces for sharing one `crb serve` between a Playwright worker's tests.
+The harness doesn't use them yet.
+
+**Fake gh router.** `$CRB_FAKE_GH` may name a router file
+(`test/fake-gh/route.mjs`, `writeRouter` in `test/fake-gh/scenario.ts`)
+instead of a scenario: `{ router: 1, current: { test, scenario, log,
+repos }, finished: { "<owner/repo>": "<test title>" }, strays? }`. The
+fake gh finds each call's repo (`-R`/`--repo`, `repo clone <o/r>`,
+`repos/<o>/<r>/…` paths, GraphQL `owner`/`name` variables and inline
+`repository(owner: "…", name: "…")`):
+
+- a current test's repo (the router's `repos`, its scenario's
+  `nameWithOwner`, `repos` and `viewerRepos`), or no repo (`auth status`,
+  `api user`, `repo view`, nodes by id, the viewer's queries): the current
+  scenario and log;
+- a finished test's repo, any other repo, any call with no test running,
+  and a form the router doesn't know: a stray. It exits 1, naming the repo
+  and its test, and adds a line to the stray log (`strays`, else
+  `$CRB_FAKE_GH_LOG`). Nothing answers it from another test's scenario.
+
+The fake gh server asks the shim to log a call with `log <path>`, so each
+test's gh log stays its own. Gates, `failNext` and writes act on the
+test's own scenario file. `src/server/fake-gh-route.test.ts` has a sample
+of every form gh.mjs answers, and reads gh.mjs's recognizers to fail when
+a new form has none.
+
+**Test hooks.** Off unless `crb serve` starts with `$CRB_TEST_HOOKS` set
+to a 32-hex token; without it the routes don't exist (404). Each request
+needs the header `x-crb-test-hook: <token>` (else 403), and passes the
+host and key checks like any other (`src/server/testHooks.ts`):
+
+- `POST /api/_test/reset` closes every session (`SessionRegistry.reset()`:
+  no gh or git of theirs runs after, the registry stays open), waits up to
+  5 s for every gh call, gh process and git process to end, then drops
+  Home's caches. It answers `{ closed, ghInFlight, ghChildren,
+  gitChildren, leftovers }`; `leftovers` names what still ran.
+- `GET /api/_test/state`: open sessions, Home's cached repos, RSS, and the
+  gh and git running.
+
+**Traces.** `crb <pr>` sends its `$TRACEPARENT` as a `traceparent` header.
+A request whose `traceparent` is of another trace than the server's own
+goes under that span, so on a shared server each test's requests nest
+under that test, not under the test that started the server. A request in
+the server's own trace stays under `crb serve`, as before.

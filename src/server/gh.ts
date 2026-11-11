@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import type { PrOverview } from "../shared/types.js";
 import { headAsOf } from "./asOf.js";
 import { GhError, WriteRefusedError } from "./errors.js";
@@ -130,6 +130,9 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 			env,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
+		children.set(child, args);
+		child.on("close", () => children.delete(child));
+		child.on("error", () => children.delete(child));
 		// Nothing to read but a write's body: gh sees its end at once.
 		child.stdin.on("error", () => {});
 		child.stdin.end(run.input ?? "");
@@ -194,6 +197,22 @@ function problemLine(text: string): string {
 	const lines = text.split("\n").map((line) => line.trim());
 	const fatal = lines.filter((line) => /^(fatal|error):/.test(line)).at(-1);
 	return fatal ?? lines[0] ?? "";
+}
+
+/** gh processes started and not yet exited (a killed one until it is gone). */
+const children = new Map<ChildProcess, readonly string[]>();
+
+/**
+ * gh calls still running and gh processes not yet exited (the test hook's
+ * leak check), each as `gh <args>`.
+ */
+export function ghRunning(): { calls: string[]; children: string[] } {
+	const show = (args: readonly string[]) =>
+		`gh ${args.join(" ")}`.slice(0, 160);
+	return {
+		calls: [...inFlight].map((c) => show(c.args)),
+		children: [...children.values()].map(show),
+	};
 }
 
 /** gh calls (runGh, runWrite) started and not yet finished: their args. */

@@ -330,6 +330,35 @@ export function writeScenario(dir: string, s: Scenario): string {
 	return path;
 }
 
+/**
+ * A router file for `$CRB_FAKE_GH` (route.mjs): one server's gh calls, of
+ * many tests in turn, each to its own test's scenario and log by repo.
+ * Paths relative to the router's directory.
+ */
+export interface FakeGhRouter {
+	router: 1;
+	/** The test running now; absent between tests (every call a stray). */
+	current?: {
+		test: string;
+		/** Its scenario file (writeScenario's path). */
+		scenario: string;
+		/** Its gh log (what `$CRB_FAKE_GH_LOG` is to a plain scenario). */
+		log?: string;
+		/** Its repos (owner/repo), besides its scenario's own names. */
+		repos?: string[];
+	};
+	/** Repos of tests that ended, with their titles: a call for one is a stray. */
+	finished?: Record<string, string>;
+	/** Where strays are logged; `$CRB_FAKE_GH_LOG` by default. */
+	strays?: string;
+}
+
+/** Writes a router file to `path`, atomically, as gh calls read it at any moment. */
+export function writeRouter(path: string, router: FakeGhRouter): string {
+	writeFileAtomic(path, JSON.stringify(router, null, "\t"));
+	return path;
+}
+
 /** A `gh pr view` object: the synthetic fixture plus what fetchPrMeta reads. */
 export function prView(
 	partial: Record<string, unknown> = {},

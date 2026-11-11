@@ -7,8 +7,9 @@
 // $CRB_FAKE_GH_SERVER; any other closes the connection), its pid, cwd, "1" when stdin
 // follows, argc, the args, NAME=value per environment variable, an empty
 // field, then stdin when it follows. Answer: "<code> <stderr bytes> <stdout
-// bytes>\n", stderr, stdout; before it, with $CRB_FAKE_GH_LOG set, "log\n",
-// which the shim answers "k" once it has appended the call to the log. The
+// bytes>\n", stderr, stdout; before it, with a log to write ($CRB_FAKE_GH_LOG,
+// or a router's test log: route.mjs), "log <path>\n", which the shim answers
+// "k" once it has appended the call to that file. The
 // shim closing first means it was killed: the call ends at its next wait
 // (sleep, log) and nothing is answered.
 import { createServer } from "node:net";
@@ -58,9 +59,11 @@ class Conn {
 	 * line is written only by a gh still alive, as with a process (a test
 	 * reads the log after killing gh, and nothing may appear in it later).
 	 */
-	log() {
+	log(path) {
 		if (this.gone) return false;
-		this.socket.write("log\n");
+		// The path is the rest of the line: one with a newline can't go.
+		if (path.includes("\n")) return false;
+		this.socket.write(`log ${path}\n`);
 		return new Promise((resolve) => this.acks.push(resolve));
 	}
 }
@@ -90,7 +93,7 @@ async function answer(conn, req, start) {
 		stdin: () => req.stdin,
 		out: (text) => out.push(text),
 		err: (text) => err.push(text),
-		log: () => conn.log(),
+		log: (path) => conn.log(path),
 		killed: () => conn.gone,
 	});
 	// A killed gh process writes no span either.

@@ -1,6 +1,7 @@
 // The fake `gh` for tests. It answers exactly the calls src/server/gh.ts and
 // src/server/clone.ts make, from the scenario JSON at $CRB_FAKE_GH (see
-// scenario.ts). Every call is appended to $CRB_FAKE_GH_LOG when set.
+// scenario.ts), or from the scenario a router file there picks (route.mjs).
+// Every call is appended to $CRB_FAKE_GH_LOG when set (a router's test log).
 //
 // One call is one run of fakeGh(io), with the semantics of a gh process:
 // the scenario is read at its start, a write saves what it read (see the
@@ -13,6 +14,7 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { writeFileAtomic } from "./atomic.mjs";
 import { KEPT_TAGS as GITHUB_KEPT_TAGS } from "./keptTags.mjs";
+import { routeCall } from "./route.mjs";
 
 const run = promisify(execFile);
 
@@ -52,13 +54,19 @@ async function call(io) {
 	};
 	// Relative paths against the call's cwd, as a process of its own would.
 	const at = (path) => resolve(io.cwd, path);
-	const scenarioPath = at(env.CRB_FAKE_GH);
-	const s = JSON.parse(readFileSync(scenarioPath, "utf8"));
+	// $CRB_FAKE_GH is the scenario, or a router naming each test's (route.mjs).
+	const routed = routeCall(at(env.CRB_FAKE_GH), args, env);
+	if (routed.stray) {
+		writeErr(`${routed.stray}\n`);
+		exit(1);
+	}
+	const { scenarioPath, logPath } = routed;
+	const s = JSON.parse(routed.text);
 	// Logged after reading the scenario: once a call shows in the log, a test may
 	// rewrite the scenario without affecting that call.
 	// io.log writes it (the shim, in the server: only a gh still alive logs,
 	// as a process does), or says the gh was killed meanwhile.
-	if (env.CRB_FAKE_GH_LOG && !(await io.log(env.CRB_FAKE_GH_LOG, `${args.join(" ")}\n`))) {
+	if (logPath && !(await io.log(logPath, `${args.join(" ")}\n`))) {
 		exit(137);
 	}
 

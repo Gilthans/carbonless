@@ -105,6 +105,16 @@ export class HomeSearch {
 		home.onRefresh(() => {
 			this.#viewerRepos();
 		});
+		// Home's reset (the test hook): as a fresh process.
+		home.onReset(() => {
+			this.#searches.clear();
+			this.#repos = {
+				names: null,
+				at: Number.NEGATIVE_INFINITY,
+				loading: false,
+			};
+			this.#loggedCut = false;
+		});
 	}
 
 	/**

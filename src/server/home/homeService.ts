@@ -131,6 +131,8 @@ interface StartedSource {
 		withCoverage?: ReadonlySet<string>,
 		only?: string,
 	): Promise<StartedReview[]>;
+	/** Forgets what it cached (the test hook's reset). */
+	reset?(): void;
 }
 
 /** What Home knows of one repo (`owner/repo`, lowercased). */
@@ -176,6 +178,7 @@ export class HomeService {
 	/** The last read's cost, for the report and the log. */
 	lastCost: RefreshCost = newCost();
 	readonly #onRefresh: (() => void)[] = [];
+	readonly #onReset: (() => void)[] = [];
 
 	constructor(options: HomeServiceOptions) {
 		this.#config = options.config;
@@ -202,6 +205,39 @@ export class HomeService {
 				error: refreshReason(error),
 			};
 		}
+	}
+
+	/** Calls `listener` on reset(): search and people drop their caches too. */
+	onReset(listener: () => void): void {
+		this.#onReset.push(listener);
+	}
+
+	/**
+	 * Forgets everything read or cached since the server started, as a fresh
+	 * process would have nothing (the test hook's reset, testHooks.ts): the
+	 * viewer, teams, every repo's facts, the started list, the inbox and
+	 * refs caches, and search's and people's (onReset). A read still under
+	 * way finishes into state no longer kept.
+	 */
+	reset(): void {
+		this.#viewer = null;
+		this.#teams = null;
+		this.#teamsAt = Number.NEGATIVE_INFINITY;
+		this.#teamsReading = null;
+		this.#repos.clear();
+		this.#inView = new Set();
+		this.#startedList = [];
+		this.#problems = [];
+		this.#viewerError = null;
+		this.lastCost = newCost();
+		this.#started.reset?.();
+		this.#inbox.reset();
+		for (const listener of this.#onReset) listener();
+	}
+
+	/** The repos it keeps facts for (the test hook's state). */
+	cachedRepos(): string[] {
+		return [...this.#repos.keys()];
 	}
 
 	/** Calls `listener` as each repo read begins (search warms its repo list). */

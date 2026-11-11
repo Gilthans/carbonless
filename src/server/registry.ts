@@ -197,6 +197,30 @@ export class SessionRegistry {
 		await Promise.all(idle.map(([, e]) => e.session.close()));
 	}
 
+	/**
+	 * Closes every session, as closeAll does (so no gh or git of theirs runs
+	 * after), and forgets which request opened which review, but stays open:
+	 * the next open of any PR is a new session, as in a fresh process (the
+	 * test hook's reset, testHooks.ts). Opens under way are waited for and
+	 * closed too. Resolves to how many sessions it closed.
+	 */
+	async reset(): Promise<number> {
+		const opening = [...this.#opening.values(), ...this.#reopening.values()];
+		await Promise.allSettled(opening);
+		const all = [...this.#open.values()];
+		this.#open.clear();
+		this.#idOf.clear();
+		this.#opening.clear();
+		this.#reopening.clear();
+		await Promise.all(all.map((e) => e.session.close()));
+		return all.length;
+	}
+
+	/** Ids of the sessions open now (the test hook's state). */
+	openIds(): string[] {
+		return [...this.#open.keys()];
+	}
+
 	/** Closes every session (shutdown); opens under way close as they finish. */
 	async closeAll(): Promise<void> {
 		this.#closed = true;

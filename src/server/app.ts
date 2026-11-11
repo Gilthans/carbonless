@@ -60,8 +60,9 @@ import {
 	SessionClosedError,
 	UnknownReadError,
 } from "./session.js";
+import { registerTestHooks } from "./testHooks.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
-import { type Span, tracer } from "./trace.js";
+import { parseTraceparent, type Span, type Tracer, tracer } from "./trace.js";
 import { verdictProblem } from "./verdict.js";
 import {
 	BUILD,
@@ -95,6 +96,13 @@ export interface AppOptions {
 	progress?: (message: string) => void;
 	/** Home (`/api/home/*`); omit for a server without it (tests). */
 	home?: HomeService;
+	/**
+	 * The test hooks' token ($CRB_TEST_HOOKS, testHooks.ts): with one, the
+	 * `/api/_test/*` routes exist; without, they don't (404).
+	 */
+	testHooks?: string | null;
+	/** Request spans go here; this process's tracer by default (tests). */
+	tracer?: Tracer;
 }
 
 /** A malformed request (HTTP 400). */
@@ -140,18 +148,29 @@ const NO_FILE = /^No file \d+ in this snapshot$/;
 
 /**
  * A span per request when tracing ($CRB_TRACE_DIR), current for its handler
- * so the git and gh it runs nest under it. A callback hook, first: what
- * follows runs in the context it enters.
+ * so the git and gh it runs nest under it. A request with a W3C
+ * `traceparent` header of another trace than the server's (crb's client
+ * sends its $TRACEPARENT: a later test on a server another test started)
+ * is a child of that span; any other, of the server's own span, as a
+ * request in the trace the server already belongs to. A callback hook,
+ * first: what follows runs in the context it enters.
  */
-function traceRequests(app: FastifyInstance): void {
-	const traced = tracer();
+function traceRequests(app: FastifyInstance, traced: Tracer): void {
 	if (!traced.enabled) return;
 	const spans = new WeakMap<object, Span>();
 	app.addHook("onRequest", (request, _reply, done) => {
+		const header = request.headers.traceparent;
+		const incoming = parseTraceparent(
+			typeof header === "string" ? header : undefined,
+		);
+		const parent =
+			incoming && incoming.traceId !== traced.current()?.traceId
+				? incoming
+				: null;
 		const span = traced.start(
 			`${request.method} ${request.routeOptions.url ?? "(no route)"}`,
 			undefined,
-			{ kind: "server" },
+			parent ? { kind: "server", parent } : { kind: "server" },
 		);
 		spans.set(request, span);
 		traced.enter(span);
@@ -180,7 +199,7 @@ export async function buildApp(
 		// so there's nothing to drain.
 		forceCloseConnections: true,
 	});
-	traceRequests(app);
+	traceRequests(app, options.tracer ?? tracer());
 	// First hook, so even the access checks' 401/403 replies carry them.
 	app.addHook("onRequest", async (_request, reply) => {
 		reply.headers(SECURITY_HEADERS);
@@ -612,6 +631,13 @@ export async function buildApp(
 
 	if (options.home) {
 		await registerHomeRoutes(app, options.home, new HomeSearch(options.home));
+	}
+	if (options.testHooks) {
+		await registerTestHooks(app, {
+			token: options.testHooks,
+			registry,
+			home: options.home,
+		});
 	}
 
 	const isApi = (url: string) => /^\/api(\/|\?|$)/.test(url);
