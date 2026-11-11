@@ -208,8 +208,9 @@ any version and any tag, `latest` included. So:
 and none of it reaches a credential.
 - A PR runs only CI (`pull_request`, never `pull_request_target`): a
   read-only `GITHUB_TOKEN`, no secrets (no workflow uses any), no
-  environment, no OIDC. With approval required for outside contributors'
-  workflows (setup, step 5), a fork's first runs wait for the owner.
+  environment, no OIDC. With approval required for all external
+  contributors (setup, step 5), a fork's runs wait for the owner unless
+  its author is a collaborator.
 - A fork's CI completing also starts `release.yml` (`workflow_run` fires
   for any CI on a branch called `master`, a fork's too). Both RC jobs
   check in their own `if` that CI ran for a push of this repository
@@ -288,8 +289,9 @@ machine.
    what it needs.
 5. **Approval for fork PRs' workflows**, Settings → Actions → General →
    Approval for running fork pull request workflows from contributors:
-   require approval for first-time contributors (or, stricter, for all
-   outside contributors).
+   require approval for all external contributors. Only people the owner
+   has vetted (added as collaborators) run CI without the owner's
+   approval; everyone else's runs wait for it, every time.
 6. **Merge the PR that brings these workflows.** Its CI run makes
    `release.yml` tag `v0.1.0-rc.N` (N after the interim RCs) without
    publishing (the package isn't on npm yet); the summary says to promote
