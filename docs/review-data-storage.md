@@ -556,9 +556,10 @@ for `origin` on a human opening (or one over 200 characters), `head` and
   only on its own thread. The dedupe and the timestamp order hold within
   one store, so the server keeps one store per review and reviewer.
 - **Caps:** the writer cuts a text at 32 KiB of UTF-8 (`MAX_AGENT_TEXT`, on
-  a code point), an `origin.request` at 200 characters (the writer cuts it;
-  a reader drops an event over 200) and flags it `truncated`, and keeps an activity list's
-  first 50 entries, fewer if its JSON passes 4 KiB. Readers skip an event
+  a code point) and flags it `truncated`, cuts an `origin.request` to 200
+  characters (`MAX_ORIGIN_REQUEST`; a reader drops an event whose request
+  is over 200), and keeps an activity list's first 50 entries, fewer if
+  its JSON passes 4 KiB. Readers skip an event
   whose text is over 32 KiB or whose activity has more than 50 entries; the
   4 KiB byte cap is the writer's alone. The anchor's code is computed from the clone on read, never stored.
 - **Privacy:** the threads are the reviewer's own (not secret, only
@@ -583,8 +584,8 @@ for `origin` on a human opening (or one over 200 characters), `head` and
   Well inside the bounds set for it (an append under 100 ms of CPU, a cold
   fold under 200 ms, under 300 KiB packed), so texts stay in commit
   messages; moving long ones to tree blobs (GitDB 6) is the fallback. No
-  compaction, as for review refs. The seen events add 300 commits' worth of
-  git objects (loose size) but little packed.
+  compaction, as for review refs. The 100 seen events add 100 commits' worth
+  of git objects (loose size) but little packed.
 
 ## Reading
 
