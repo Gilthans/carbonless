@@ -1,4 +1,4 @@
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo } from "../../shared/types";
 import type { ReviewTarget } from "../api";
@@ -310,18 +310,31 @@ export function useComparison(session: SessionInfo | undefined): Comparison {
 		},
 		[navigate, id],
 	);
+	// An effect's write, made against the address as it is when the effect
+	// runs, not as its render read it: a move made in between (a key
+	// pressed, a dot tapped, before the commit's passive effects ran)
+	// already names the comparison, and stays. Nothing is written once the
+	// page is left (a tab pressed in between), or when nothing changes.
+	const router = useRouter();
+	const rewrite = useCallback(
+		(update: (now: ComparisonSearch) => ComparisonSearch | null) => {
+			const at = router.latestLocation;
+			if (at.pathname.replace(/\/$/, "") !== `/r/${id}/files`) return;
+			const now = pick(parseFilesSearch(at.search as Record<string, unknown>));
+			const next = update(now);
+			if (next && !sameSearch(next, now)) go(next);
+		},
+		[router, id, go],
+	);
 	// Back on the page from another tab: its address names the kept view again.
 	useEffect(() => {
 		if (!active || hasComparison(inAddress) || !hasComparison(kept)) return;
-		go(kept);
-	}, [active, kept, go, inAddress]);
+		rewrite((now) => (hasComparison(now) ? null : kept));
+	}, [active, kept, rewrite, inAddress]);
 	const { viewing, base } = parsed;
 	// A viewed head that became a patch set (the first mark started it):
 	// the address names the patch set from now on. Keyed by the head, so
-	// the one navigation it makes doesn't run it again. It rewrites the
-	// address as it is when it navigates, not as this render read it: a
-	// move made since (a key pressed as the session's answer landed, before
-	// this effect ran) already names the comparison, and stays.
+	// the one navigation it makes doesn't run it again.
 	const startedHead =
 		inAddress.head !== undefined && viewing?.kind === "patchset"
 			? inAddress.head
@@ -330,27 +343,18 @@ export function useComparison(session: SessionInfo | undefined): Comparison {
 	sessionNow.current = session;
 	useEffect(() => {
 		if (!active || startedHead === null) return;
-		void navigate({
-			to: "/r/$id/files",
-			params: { id },
-			search: (prev: Record<string, unknown>) => {
-				const now = pick(parseFilesSearch(prev));
-				if (now.head !== startedHead) return prev;
-				const s = sessionNow.current;
-				const { viewing, base } = parseComparison(now, s);
-				if (!s || viewing?.kind !== "patchset") return prev;
-				const next = comparisonSearch(
-					viewing,
-					base,
-					s.patchsets.map((p) => p.number),
-				);
-				setKept(next);
-				return { ...withoutComparison(prev), ...next };
-			},
-			replace: true,
-			resetScroll: false,
+		rewrite((now) => {
+			if (now.head !== startedHead) return null;
+			const s = sessionNow.current;
+			const { viewing, base } = parseComparison(now, s);
+			if (!s || viewing?.kind !== "patchset") return null;
+			return comparisonSearch(
+				viewing,
+				base,
+				s.patchsets.map((p) => p.number),
+			);
 		});
-	}, [active, startedHead, navigate, id]);
+	}, [active, startedHead, rewrite]);
 	return {
 		viewing,
 		base,
