@@ -1,6 +1,6 @@
 # Thread agent: an agent conversation per GitHub thread
 
-Status: draft, 2026-11-09, updated 2026-11-11. Built on master after the
+Status: approved by the owner 2026-11-11 (draft 2026-11-09). Built on master after the
 re-review stack merged (design in Linear, CAR-5; agent threads traced in
 #48) and uses its patch sets, comparisons and thread placement. Builds on review buddy
 (`docs/superpowers/specs/2026-11-04-review-buddy-design.md`, merged as PR
@@ -89,7 +89,8 @@ instead of a span:
 type AgentAnchor =
   | { subject: "line"; … }   // unchanged
   | { subject: "file"; … }   // unchanged
-  | { subject: "thread"; thread: string; path: string; commit: string };
+  | { subject: "thread"; thread: string; path: string; commit: string;
+      side?: DiffSide; line?: number; startSide?: DiffSide; startLine?: number };
 ```
 
 - `thread`: the GitHub thread's id (`ReviewThread.id`). A thread whose id
@@ -98,6 +99,9 @@ type AgentAnchor =
   was made on (`ReviewThread.commit`, possibly `""`), recorded when the
   conversation opens. They're for display and for the prompt, never for
   placement: the conversation is placed with its thread.
+- `side`/`line`/`startSide`/`startLine`: the thread's range when the
+  conversation opened (absent for a file-level thread). Used only if the
+  thread is orphaned (below).
 - **At most one conversation per GitHub thread.** The fold keeps the first
   `agent-thread-opened` for a given `thread` id and folds the messages of
   any later one into it, so two devices opening the same conversation at
@@ -114,10 +118,18 @@ type AgentAnchor =
 - A question already waiting when the thread gets resolved is still
   answered (it was asked); no new one can be sent until it's unresolved
   (my call).
-- **Orphans:** a conversation whose GitHub thread is gone (deleted, no
-  longer listed) stays readable. It shows in the Overview's agent row as
-  its own entry with the thread's `path` and a muted "thread gone" icon,
-  composer hidden (my call). Its messages are never dropped from view.
+- **Orphans** (owner, 2026-11-11: "If orphaned it should fall back to a
+  regular agent conversation"): a conversation whose GitHub thread is gone
+  (deleted, no longer listed) becomes a regular agent conversation. The
+  fold reads its anchor as a span anchor on the recorded lines at
+  `commit` (a file anchor when no lines were recorded or `commit` is
+  `""`, my call), so `placeAgentThreads` traces it like any span thread:
+  an agent card and bubble in Files changed, counted in the file tree and
+  the Overview's agent row. The composer stays; it resolves with its own
+  `agent-thread-resolved` like a span thread; "Resolve By Agent
+  Suggestion" doesn't show (nothing on GitHub to resolve). Its prompt has
+  no `github` block and says the thread is gone. Its messages are never
+  dropped from view.
 
 ### Opening one
 
@@ -172,7 +184,7 @@ waiting dot, the 32 KiB cap. Additions:
   human click. It shows only on the latest suggesting message while the
   thread is unresolved, and not in `--viewer`/`--as-of` reviews or on
   orphaned conversations. The composer's Resolve also gets an `ok` ring
-  (my call, pending the owner's answer in the spec comments). Nothing else
+  (my call; the owner didn't object). Nothing else
   happens: the agent never resolves. So a hostile PR text that tricks the agent into suggesting
   it costs nothing. (Marker format is my call; the builder may pick
   another, as long as it is stripped and stored as data.)
@@ -243,10 +255,11 @@ interface PromptEnvelope {
     there's none). (Owner, 2026-11-11.)
   - `current`: GitHub's newest head (`SessionInfo.currentHead`). Before a
     thread turn the runner runs `checkHead`, which fetches a new head into
-    the cache clone once per head (`session.ts:1960`, `src/server/clone.ts`). The
-    agent's checkout moves to that head for the turn (not to the snapshot
-    head, as span threads do), since "is this resolved?" is often answered
-    by a push the reviewer hasn't viewed yet. The envelope also lists the
+    the cache clone once per head (`session.ts:1960`, `src/server/clone.ts`),
+    so `current`'s objects are always present. The agent's checkout for
+    the turn starts at the viewed patch set (`view.right`), and the agent
+    may switch it to `current` (owner, 2026-11-11: "Should be current
+    patchset, but the agent can switch"), typically for step 2 below. The envelope also lists the
     patch sets (number, head, merge base, started) so the agent can say
     "fixed in PS 4".
   - The thread's **placement** on the viewed comparison (`placeThread`,
@@ -262,9 +275,9 @@ interface PromptEnvelope {
      plainly and up front ("not in PS 3; fixed later, in PS 4"), because
      the reviewer hasn't seen that code yet and it warrants attention.
 
-  The checkout stays at `current` for the turn and the agent diffs against
-  `view.right` and `openedOn` by commit, so one checkout serves both steps
-  (my call). Every commit's objects reach the
+  The checkout starts at `view.right`; the agent may check out `current`
+  or diff by commit (the agent's choice). Each agent message stores the
+  `head` its checkout was on when the answer was written. Every commit's objects reach the
   checkout through alternates (`checkout.ts:26`); the cache clone keeps
   fetched objects (`gc.auto=0`, `clone.ts:311`). A commit the clone never
   fetched (a comment made on a head that was force-pushed away before
@@ -366,7 +379,8 @@ much space").
   threads into the viewed snapshot. A thread conversation is never traced
   on its own: it goes where its GitHub thread goes (placed, unplaced row,
   not in comparison, resolved). `placeAgentThreads` skips the `thread`
-  subject, and it never shows as an agent card or bubble of its own, nor in
+  subject while its GitHub thread exists (an orphan is traced as a span
+  thread, above), and it never shows as an agent card or bubble of its own, nor in
   the "Not in this comparison" agent group. Agent bubbles keep counting
   span threads only; a thread conversation's count is on its thread's
   agent button.
@@ -407,7 +421,9 @@ conversations) with `unread: boolean`, and thread conversations with
 
 ## Tests (beyond what review buddy has)
 
-- Fold: one conversation per GitHub thread despite two opens; resolved
+- Fold: an orphaned conversation (its GitHub thread gone) reads as a span
+  thread on its recorded lines (a file anchor without them) and resolves
+  with `agent-thread-resolved`; one conversation per GitHub thread despite two opens; resolved
   follows the GitHub thread, not `agent-thread-resolved`; unread follows
   `agent-thread-seen`; ai-opened thread with `origin`; `ai`-by seen event
   dropped; malformed new fields dropped.
@@ -418,9 +434,10 @@ conversations) with `unread: boolean`, and thread conversations with
   agent-started one; the preamble states the two-step check (viewed
   first, then `view.right..current`) and that a fix only in a later commit
   is called out and never suggests resolving.
-- Runner: a thread turn runs `checkHead` and checks out GitHub's current
-  head (fake gh moves the head; the envelope's `current` and the checkout
-  follow, while the snapshot stays); `[suggest-resolve]` stripped and stored; a reply text that
+- Runner: a thread turn runs `checkHead` (fake gh moves the head; the
+  envelope's `current` follows while the snapshot stays) and checks out
+  `view.right`; `current`'s objects are reachable from that checkout; the
+  stored `head` is the checkout's commit at answer time; `[suggest-resolve]` stripped and stored; a reply text that
   *contains* it mid-message isn't a suggestion; no runner path calls the
   GitHub resolve or reply writers.
 - Web: links in answers land on the line, non-PR paths stay text, a
@@ -466,7 +483,7 @@ on close).
 - Unread markers on span agent threads too. **Owner: yes, if cheap (it is: UI only).**
 - `[suggest-resolve]` line as the suggestion marker. **Owner: fine, and it shows a "Resolve By Agent Suggestion" button.**
 - A question waiting when the thread is resolved is still answered. **Owner: yes.**
-- Orphaned conversations live in the Overview's agent row.
-- Code links open the head the answer was written on (`?ps=` / `?head=`).
-- The agent's checkout for a thread turn is GitHub's current head, not the
-  snapshot.
+- Orphaned conversations fall back to regular agent conversations on the thread's last known lines. **Owner: yes (fall back); the last-known-lines anchor is my call.**
+- Code links open the head the answer was written on (`?ps=` / `?head=`). **Owner: nice to have, not a must if it adds complexity.** Fallback: links open at the reviewer's current view; a path not in that view stays plain text.
+- The agent's checkout for a thread turn starts at the viewed patch set; the agent may switch to `current`. **Owner: so decided.**
+- Agent-started conversations use the latest patch set as their view; a fix only in a later commit never suggests resolving; the composer's Resolve keeps its `ok` ring next to the new button. (My calls; the owner approved the spec without objecting.)
