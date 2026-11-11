@@ -194,6 +194,7 @@ describe("sanitizeEnvelope", () => {
 			head: { ...review.head, ref: dirty },
 		},
 		pr: { title: dirty, body: dirty, files: [dirty] },
+		notice: `The GitHub thread (${dirty}) is gone`,
 	};
 	env.thread.anchor = {
 		...env.thread.anchor,
@@ -209,6 +210,8 @@ describe("sanitizeEnvelope", () => {
 	});
 	it("cleans the PR's title, body and files", () =>
 		expect(clean.pr).toEqual({ title: "xy", body: "xy", files: ["xy"] }));
+	it("cleans the notice (it may name a path from GitHub)", () =>
+		expect(clean.notice).toBe("The GitHub thread (xy) is gone"));
 	it("leaves the messages as written", () =>
 		expect(clean.messages).toEqual(env.messages));
 });

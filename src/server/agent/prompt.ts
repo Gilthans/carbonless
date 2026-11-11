@@ -324,13 +324,13 @@ export function sanitizeThirdParty(text: string): string {
 /**
  * `env` with every text from the PR sanitised (sanitizeThirdParty): the
  * base and head ref names, the anchor's path (and so its file), the PR's
- * title, body and file paths, and the GitHub thread's url, path, comment
- * logins and bodies and the placement's paths. The reviewer's and the
- * agent's messages stay.
+ * title, body and file paths, the GitHub thread's url, path, comment
+ * logins and bodies, the placement's paths, and the notice (it may name a
+ * path or an error from GitHub). The reviewer's and the agent's messages stay.
  */
 export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 	const s = sanitizeThirdParty;
-	const { review, thread, pr, github, placement } = env;
+	const { review, thread, pr, github, placement, notice } = env;
 	return {
 		...env,
 		review: {
@@ -370,6 +370,7 @@ export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 				}
 			: {}),
 		...(placement ? { placement: sanitizePlacement(placement) } : {}),
+		...(notice !== undefined ? { notice: s(notice) } : {}),
 	};
 }
 

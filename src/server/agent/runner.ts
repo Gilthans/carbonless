@@ -709,7 +709,7 @@ export class AgentRunner {
 		};
 	}
 
-	/** Moves the checkout to `commit`: null when it is there, else why not (one line). */
+	/** Moves the checkout to `commit`: undefined when it is there, else why not (one line). */
 	async #moveTo(commit: string): Promise<string | undefined> {
 		const stuck = await this.#checkout
 			?.moveTo(commit)
