@@ -100,7 +100,9 @@ that fires fails the test, and the server is replaced:
 - `stray gh call: …`, one per call: a gh call for a finished test's repo
   (a late read of an earlier test), named in the line. A stray that lands
   between tests, or after a worker's last, fails the run at the worker's
-  teardown instead of an innocent test;
+  teardown instead of an innocent test: it shows as a worker-teardown
+  error, possibly minutes after its cause, tagged with the test that began
+  next;
 - `crb serve's config dir changed`: the test writes config;
 - `the shared crb serve died`: its last output follows;
 - `could not delete the clones`: something still writes in them.

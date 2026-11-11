@@ -43,6 +43,11 @@ const RECYCLE_GROWTH = 256 * 1024 * 1024;
 const GH_SETTLE_MS = 3000;
 /** The reset's own bound (RESET_SETTLE_MS) plus room for a loaded machine. */
 const RESET_TIMEOUT_MS = 20_000;
+/**
+ * The most finish() takes on a hung server: one hook call (a failed reset
+ * skips the state call), the fake gh's settling, and slack for the rest.
+ */
+export const FINISH_BOUND_MS = RESET_TIMEOUT_MS + GH_SETTLE_MS + 5_000;
 
 /** A sha256 over the files under `dir` (paths and contents); "" when none. */
 export function dirHash(dir: string): string {
@@ -237,6 +242,16 @@ export class SharedServer {
 		});
 		if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}`);
 		return res.json();
+	}
+
+	/**
+	 * The server's POST /api/_test/reset: every session closed, nothing of
+	 * theirs left running, the buffered spans written. finish() resets too.
+	 */
+	async reset(): Promise<{ leftovers: string[] }> {
+		return (await this.#hook("/api/_test/reset", "POST")) as {
+			leftovers: string[];
+		};
 	}
 
 	/** The server's GET /api/_test/state (which also writes its buffered spans). */

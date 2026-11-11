@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
 	test as base,
 	expect,
@@ -27,7 +27,11 @@ import {
 	type Pr,
 	type PrOptions,
 } from "./pr-setup";
-import { SharedServer, type SharedTest } from "./shared-server";
+import {
+	FINISH_BOUND_MS,
+	SharedServer,
+	type SharedTest,
+} from "./shared-server";
 
 export { type CrbClient, clientRequest, NeedsCliError } from "./crb-open";
 export {
@@ -183,7 +187,7 @@ export const test = base.extend<
 	expectCrbLeak: async ({ _leaks }, use, info) =>
 		use((pattern) => {
 			// The harness's own canaries only: no test declares a leak away.
-			if (!info.file.endsWith("fixtures.spec.ts")) {
+			if (basename(info.file) !== "fixtures.spec.ts") {
 				throw new Error("expectCrbLeak is for e2e/fixtures.spec.ts's canaries");
 			}
 			_leaks.push(pattern);
@@ -304,21 +308,30 @@ export const test = base.extend<
 					server = await own(serve);
 				}
 				const from = server.output().length;
-				const run = await base.step(
-					"setup: crb open",
-					() =>
-						crbClient === "cli"
-							? runCli(
-									workdir,
-									[arg, ...client],
-									onShared
-										? { ...server.env, TRACEPARENT: process.env.TRACEPARENT }
-										: undefined,
-								)
-							: openOverHttp(server, arg, client),
-					{ box: true },
-				);
-				if (onShared && crbClient === "cli") strangerServer(server);
+				let run: { code: number | null; stdout: string; output: string };
+				try {
+					run = await base.step(
+						"setup: crb open",
+						() =>
+							crbClient === "cli"
+								? runCli(
+										workdir,
+										[arg, ...client],
+										onShared
+											? { ...server.env, TRACEPARENT: process.env.TRACEPARENT }
+											: undefined,
+									)
+								: openOverHttp(server, arg, client),
+						{ box: true },
+					);
+				} catch (error) {
+					// A client killed at its timeout may have started one too.
+					if (onShared && crbClient === "cli") {
+						strangerServer(server, (error as Error).message);
+					}
+					throw error;
+				}
+				if (onShared && crbClient === "cli") strangerServer(server, run.output);
 				const output = () => `${server.output().slice(from)}${run.output}`;
 				const url = run.stdout.trim().split("\n").at(-1) ?? "";
 				if (run.code !== 0 || !/^http:\/\//.test(url)) {
@@ -343,21 +356,22 @@ export const test = base.extend<
 		);
 		await Promise.all(
 			pages.map(async (p) => {
-				await p.goto("about:blank").catch(() => {});
+				// Bounded: a beforeunload prompt, dismissed, cancels the navigation.
+				await p.goto("about:blank", { timeout: 5_000 }).catch(() => {});
 				if (p.url() !== "about:blank") await p.close().catch(() => {});
 			}),
 		);
 		let problems: string[] = [];
 		try {
 			if (usedShared) {
-				// Its own time: a hung reset still reports the leak (bounded in
-				// shared-server.ts), not the test's timeout.
-				problems = await untimed(info, () =>
-					base.step(
-						"teardown: crb reset",
-						() => sharedCrb.finish(shared, _leaks),
-						{ box: true },
-					),
+				// Teardown runs on a slot of the test's timeout of its own; it
+				// grows by the reset's bound first, so a hung reset still
+				// reports the leak, not "Tearing down … exceeded the timeout".
+				if (info.timeout > 0) info.setTimeout(info.timeout + FINISH_BOUND_MS);
+				problems = await base.step(
+					"teardown: crb reset",
+					() => sharedCrb.finish(shared, _leaks),
+					{ box: true },
 				);
 			} else if (crbServer === "shared") {
 				sharedCrb.end(shared);
@@ -398,7 +412,7 @@ export const test = base.extend<
  * that server's. A client that found none (the server died meanwhile)
  * starts one of its own, detached: it is killed, and the test fails.
  */
-function strangerServer(server: Served): void {
+function strangerServer(server: Served, clientOutput: string): void {
 	const file = join(
 		server.env.XDG_STATE_HOME as string,
 		"carbonless",
@@ -415,7 +429,7 @@ function strangerServer(server: Served): void {
 		process.kill(pid, "SIGKILL");
 	} catch {}
 	throw new Error(
-		`crb <pr> started a crb serve of its own (pid ${pid}, killed) instead of the shared one (pid ${server.child.pid})`,
+		`crb <pr> started a crb serve of its own (pid ${pid}, killed) instead of the shared one (pid ${server.child.pid}); the client said:\n${clientOutput}`,
 	);
 }
 

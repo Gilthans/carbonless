@@ -345,8 +345,11 @@ test.describe("the shared crb serve", () => {
 			await expect(page.getByRole("heading", { level: 1 })).toHaveText(
 				"Add widget cache",
 			);
-			// The state route writes the server's buffered spans.
-			await sharedCrb.state();
+			// Every request and read of this test ends (a reset closes the
+			// sessions and waits for their gh and git), and the server writes
+			// its spans: none is left open to break a chain.
+			await page.goto("about:blank");
+			expect((await sharedCrb.reset()).leftovers).toEqual([]);
 			tracer().flush();
 
 			const spans = spansOf(readRequests(dir as string, ctx.traceId));
@@ -376,11 +379,9 @@ test.describe("the shared crb serve", () => {
 			);
 			expect(gits.length).toBeGreaterThan(0);
 			for (const git of gits) expect(under(git, ctx.spanId)).toBe(true);
-			// A gh call still under way (the page's reads) has no span of crb's
-			// yet: the fake's of it can't be placed.
-			const fakes = spans.filter(
-				(s) => s.service === "fake-gh" && byId.has(s.parent ?? ""),
-			);
+			// A gh killed by the reset writes no fake span, its crb span all
+			// the same: every fake span has its gh's.
+			const fakes = spans.filter((s) => s.service === "fake-gh");
 			expect(fakes.length).toBeGreaterThan(0);
 			for (const fake of fakes) {
 				expect(byId.get(fake.parent ?? "")?.name).toMatch(/^gh /);
@@ -428,7 +429,6 @@ test.describe("the shared crb serve", () => {
 		startCrb,
 		request,
 	}) => {
-		test.fail(true, "writes config on the shared server: a leak");
 		await pr();
 		const crb = await startCrb();
 		const res = await request.put(
@@ -436,6 +436,11 @@ test.describe("the shared crb serve", () => {
 			{ data: { command: "true" } },
 		);
 		expect(res.status()).toBe(200);
+		// Only now, with the leak in place: a failure before this is a real one.
+		test.fail(
+			true,
+			"wrote config on the shared server: its teardown must fail it",
+		);
 	});
 
 	test.describe("a server that dies", () => {
