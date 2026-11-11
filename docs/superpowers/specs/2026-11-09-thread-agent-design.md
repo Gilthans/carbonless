@@ -165,7 +165,9 @@ waiting dot, the 32 KiB cap. Additions:
   never `href` text the agent wrote verbatim (sanitisation checklist).
 - **Suggest resolving.** The preamble for thread conversations tells the
   agent to end with a line holding exactly `[suggest-resolve]` when it
-  judges the thread resolved. The runner strips that line and stores
+  judges the thread resolved **in the viewed patch set** (`view.right`). A
+  fix that exists only in a later commit (step 2 above) never earns the
+  marker: the reviewer hasn't seen that code. The runner strips that line and stores
   `suggests: "resolve"` on the message. The message shows a small "✓
   suggests resolving" chip in `ok` and the thread's Resolve button gets an
   `ok` ring. Nothing else happens. The marker is just a hint, the human
@@ -250,7 +252,17 @@ interface PromptEnvelope {
     and new text, unplaced with its fate, outside) goes in too, so the
     agent starts from what re-review already knows.
 - The preamble for this kind says what each commit is, and that "since the
-  comment" means `openedOn..current`. Every commit's objects reach the
+  comment" is checked in two steps (owner, 2026-11-11):
+  1. `openedOn..view.right` first: the patch set the reviewer is looking
+     at. "Is this resolved?" is answered against it.
+  2. Only if the answer isn't there and `current` differs from
+     `view.right`: `view.right..current`. A fix found only there is said
+     plainly and up front ("not in PS 3; fixed later, in PS 4"), because
+     the reviewer hasn't seen that code yet and it warrants attention.
+
+  The checkout stays at `current` for the turn and the agent diffs against
+  `view.right` and `openedOn` by commit, so one checkout serves both steps
+  (my call). Every commit's objects reach the
   checkout through alternates (`checkout.ts:26`); the cache clone keeps
   fetched objects (`gc.auto=0`, `clone.ts:311`). A commit the clone never
   fetched (a comment made on a head that was force-pushed away before
@@ -392,7 +404,11 @@ Reuses review buddy's routes (`/api/r/:id/agent/threads…`). Additions:
   dropped; malformed new fields dropped.
 - Prompt: the envelope names the three commits, carries the comments
   sanitised, the `notice` for a missing commit, and the rebuilt head on a
-  follow-up after a push (fake gh scenario that moves the head).
+  follow-up after a push (fake gh scenario that moves the head); `view`
+  is the patch set sent with the turn, the latest patch set on an
+  agent-started one; the preamble states the two-step check (viewed
+  first, then `view.right..current`) and that a fix only in a later commit
+  is called out and never suggests resolving.
 - Runner: a thread turn runs `checkHead` and checks out GitHub's current
   head (fake gh moves the head; the envelope's `current` and the checkout
   follow, while the snapshot stays); `[suggest-resolve]` stripped and stored; a reply text that
