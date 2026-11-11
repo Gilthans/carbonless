@@ -48,7 +48,12 @@ jobs:
         timeout-minutes: 25
         env:
           CRB_TEST_TRACE_ROOT: ${{ runner.temp }}/test-traces
-      - run: pnpm test:pack
+      # The pack smoke test as promote runs it, on a tarball packed first
+      # (pnpm test:pack, in pnpm verify, packs its own).
+      - name: Pack smoke test, on a packed tarball
+        run: |
+          pnpm pack --pack-destination "$RUNNER_TEMP/pack"
+          node scripts/pack-smoke.mjs "$RUNNER_TEMP"/pack/carbonless-review-*.tgz
       - if: always()
         uses: actions/upload-artifact@v4
         with:
