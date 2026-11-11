@@ -78,6 +78,9 @@ const session = {
 	patchset: null,
 	asOf: null,
 	pinnedHead: null,
+	patchsets: [],
+	lastSeen: null,
+	head: null,
 };
 
 const otherFile: FileView = { ...oneFile, index: 1, path: "b.txt" };

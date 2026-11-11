@@ -347,6 +347,32 @@ export class ThreadCodeSource {
 	}
 
 	/**
+	 * A comment's own snapshot: its commit and the base its diff is taken
+	 * against (#left, as for its code, else the plain merge base with the
+	 * snapshot's base). Null when the commit can't be had or has no merge
+	 * base with it.
+	 */
+	async endpoints(
+		anchor: CodeAnchor,
+		base: DiffBase,
+	): Promise<{ base: string; head: string } | null> {
+		try {
+			if (!OID.test(anchor.commit)) return null;
+			if (!(await this.#commit(anchor.commit))) return null;
+			// The code pane's base when it is certain; else the merge base
+			// itself (an old-side range whose base branch at the comment's
+			// time can't be told): the tracer then follows the base's own
+			// changes from there, and a line the base changed says so.
+			const left =
+				(await this.#left(anchor, base, true)) ??
+				(await this.#mergeBase(anchor.commit, base.snapshot));
+			return left ? { base: left, head: anchor.commit } : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
 	 * The rows of `anchor`'s window in the PR's diff at its commit. Null,
 	 * never a guess, when the commit can't be had, the old side isn't
 	 * certain (see #left), the file's diff can't be had (#fileLines) or

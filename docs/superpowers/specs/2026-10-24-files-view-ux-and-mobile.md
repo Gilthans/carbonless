@@ -2,7 +2,7 @@
 
 Status: approved in chat · 2026-10-24 · round 3 approved 2026-10-25
 
-Follow-up to `2026-10-21-pr-review-parity-design.md` after the reviewer used the
+Follow-up to the PR review parity spec (Linear, M2 project documents) after the reviewer used the
 tool on a real PR. Everything not mentioned here stays as it is.
 
 ## Progress: one bar, selectable unit

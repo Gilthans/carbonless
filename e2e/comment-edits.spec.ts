@@ -463,7 +463,11 @@ test("edit and delete a reply from Files changed", async ({
 	await mine.getByRole("button", { name: "Edit" }).click();
 	const box = thread.getByRole("textbox", { name: "Edit comment" });
 	await box.fill("Because of the cache");
-	await thread.getByRole("button", { name: "Save" }).click();
+	// Mid-window: the floating Files button comes back where the box loses
+	// focus, and must not be under the pointer when Save is pressed.
+	const save = thread.getByRole("button", { name: "Save" });
+	await save.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	await save.click();
 	const edited = thread
 		.getByTestId("thread-comment")
 		.filter({ hasText: "Because of the cache" });

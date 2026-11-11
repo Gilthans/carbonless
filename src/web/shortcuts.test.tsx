@@ -71,6 +71,38 @@ describe("matchesKeys", () => {
 		expect(matchesKeys("c", ev("j", { code: "KeyC" }))).toBe(false);
 		expect(matchesKeys("Shift+c", ev("C", { shiftKey: true }))).toBe(true);
 	});
+	it("matches a bracket with Ctrl, and with Shift by its physical key (a US layout prints {)", () => {
+		const left = { code: "BracketLeft" };
+		expect(matchesKeys("Ctrl+[", ev("[", { ctrlKey: true, ...left }))).toBe(
+			true,
+		);
+		expect(
+			matchesKeys(
+				"Ctrl+Shift+[",
+				ev("{", { ctrlKey: true, shiftKey: true, ...left }),
+			),
+		).toBe(true);
+		expect(
+			matchesKeys(
+				"Ctrl+Shift+[",
+				ev("[", { ctrlKey: true, shiftKey: true, ...left }),
+			),
+		).toBe(true);
+		// Shift held: never the unshifted shortcut, and the other way round.
+		expect(
+			matchesKeys(
+				"Ctrl+[",
+				ev("{", { ctrlKey: true, shiftKey: true, ...left }),
+			),
+		).toBe(false);
+		expect(
+			matchesKeys("Ctrl+Shift+[", ev("[", { ctrlKey: true, ...left })),
+		).toBe(false);
+		// The bare bracket never moves anything: Ctrl is required.
+		expect(matchesKeys("Ctrl+]", ev("]", { code: "BracketRight" }))).toBe(
+			false,
+		);
+	});
 	it("matches named keys with exactly their modifiers", () => {
 		expect(matchesKeys("Ctrl+Enter", ev("Enter", { ctrlKey: true }))).toBe(
 			true,

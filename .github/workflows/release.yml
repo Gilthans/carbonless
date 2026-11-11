@@ -1,0 +1,563 @@
+# carbonless-review on npm (docs/releasing.md). One workflow, so npm has one
+# trusted publisher to register (and every RC keeps it in use):
+#   - CI green on a push to master (workflow_run): an RC. X.Y.Z-rc.N on npm's
+#     `rc` dist-tag and the git tag vX.Y.Z-rc.N, where X.Y.Z is master's
+#     package.json version (the next release), set only in the runner.
+#   - mode=promote (`pnpm release promote`, on the owner's word): a tried RC
+#     (its tag must be on master) checked in full, packed as X.Y.Z, and
+#     staged on npm with the dist-tag `latest`, hidden until the owner
+#     approves it with their two-factor (`pnpm release publish`). The run's
+#     artifact `release` holds the tarball and its manifest. Before the
+#     package's first publish nothing is staged: the owner publishes that one.
+#   - mode=fixup (release-finish): `rc` up to a new release, when behind.
+#
+# npm: Trusted Publishing (OIDC), no token; npm adds provenance (the repo is
+# public). Only the jobs in the GitHub environment `npm` (master only) get
+# `id-token: write`, and they run no dependency code (no pnpm install; node,
+# npm and git only). Registered on npmjs.com: workflow release.yml,
+# environment npm, publish and dist-tag allowed (staging always is).
+#
+# Public repository: a fork's PR runs CI (pull_request: read-only token, no
+# secrets), and its completion reaches this workflow too. Every job checks
+# in its own `if` that it runs for a push to master of this repository, or
+# for a dispatch (write access) of master.
+name: Release
+run-name: >-
+  ${{ github.event_name == 'workflow_run' && 'Publish RC' ||
+  inputs.mode == 'promote' && format('Promote {0} (next {1})', inputs.rc || 'the newest RC', inputs.next) ||
+  format('rc up to {0}', inputs.version) }}
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: promote (an RC to a staged release) or fixup (rc up to a release)
+        type: choice
+        options: [promote, fixup]
+        default: promote
+      rc:
+        description: "promote: the RC tag (vX.Y.Z-rc.N; empty = the newest)"
+        required: false
+        default: ""
+      next:
+        description: "promote: the next release after it"
+        type: choice
+        options: [minor, patch, major]
+        default: minor
+      version:
+        description: "fixup: the release just published (X.Y.Z)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  # Whole runs, one at a time per kind: RCs (so two never pick the same N),
+  # promotes, rc fix-ups. Kinds never cancel one another's pending runs.
+  # A completed CI that makes no RC (failed, a dispatch, a fork's "master")
+  # gets a group of its own, so it never replaces a pending RC run.
+  group: >-
+    ${{ github.event_name == 'workflow_run' &&
+    (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && 'rc' || github.run_id) ||
+    format('release-{0}', inputs.mode) }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # -eo pipefail: `cmd | tee` fails when cmd does
+
+jobs:
+  rc-build:
+    # A push to master of this repository (not a PR whose branch is called
+    # master, not a fork), CI green.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    outputs:
+      tip: ${{ steps.tip.outputs.publish }}
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+      first_publish: ${{ steps.version.outputs.first_publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0 # every tag, for the RC number
+          persist-credentials: false
+      - name: Still master's tip?
+        id: tip
+        # CI runs can finish out of order: only the newest push is published
+        # (it holds the older ones), so `rc` never moves back.
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          tip="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git ls-remote origin refs/heads/master | cut -f1)"
+          if [[ "$tip" == "$SHA" ]]; then
+            echo "publish=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::notice::master moved on to $tip: skipping $SHA"
+            echo "publish=false" >>"$GITHUB_OUTPUT"
+          fi
+      - if: steps.tip.outputs.publish == 'true'
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 12.14.0
+      - if: steps.tip.outputs.publish == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - if: steps.tip.outputs.publish == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Version
+        id: version
+        if: steps.tip.outputs.publish == 'true'
+        run: pnpm exec tsx scripts/release.ts ci:rc-version | tee -a "$GITHUB_OUTPUT"
+      - name: Released already?
+        if: steps.version.outputs.publish == 'false'
+        env:
+          REASON: ${{ steps.version.outputs.blocked }}
+        run: |
+          echo "::warning::$REASON"
+          echo "No RC: $REASON" >>"$GITHUB_STEP_SUMMARY"
+      - name: Set the version and gitHead (the tree stays clean)
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: pnpm exec tsx scripts/release.ts ci:set-version "$VERSION"
+      - name: Pack
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          pnpm pack --pack-destination "$RUNNER_TEMP/pack"
+          tgz="$RUNNER_TEMP/pack/carbonless-review-$VERSION.tgz"
+          # The build must say what it is: this version, this commit, not -dirty.
+          tar -xzOf "$tgz" package/dist/build-info.json | tee "$RUNNER_TEMP/build-info.json"
+          node -e '
+            const b = require(process.argv[1]);
+            if (b.version !== process.argv[2] || b.commit !== process.argv[3]) {
+              console.error(`build-info is ${b.version} ${b.commit}`);
+              process.exit(1);
+            }' "$RUNNER_TEMP/build-info.json" "$VERSION" "$SHA"
+          pnpm exec tsx scripts/release.ts ci:check-publish rc "$VERSION"
+      - if: steps.version.outputs.publish == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rc
+          path: ${{ runner.temp }}/pack/carbonless-review-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  rc-publish:
+    needs: rc-build
+    # This run's RC (or, before the first release, only its tag); and the
+    # rc fix-up, even when nothing is published (any merge heals rc). The
+    # push-of-this-repository check again, not only through needs: this job
+    # gets npm's credential.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      needs.rc-build.outputs.tip == 'true' &&
+      (needs.rc-build.outputs.publish == 'true' || needs.rc-build.outputs.first_publish == 'false')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: write # the vX.Y.Z-rc.N tag
+      id-token: write # npm Trusted Publishing
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      VERSION: ${{ needs.rc-build.outputs.version }}
+      PUBLISH: ${{ needs.rc-build.outputs.publish }}
+      FIRST: ${{ needs.rc-build.outputs.first_publish }}
+    steps:
+      # node, npm and git only: no dependency code runs while the OIDC token
+      # can be had.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: npm with trusted publishing and dist-tag (>= 12.2)
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        run: npm install -g npm@12.2.1
+      - if: env.PUBLISH == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rc
+          path: ${{ runner.temp }}/pack
+      - name: Only an X.Y.Z-rc.N, only to rc
+        # A guard against our own bugs, right before publishing.
+        if: env.PUBLISH == 'true'
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || {
+            echo "::error::refusing to publish $VERSION to rc: not X.Y.Z-rc.N"
+            exit 1
+          }
+          tgz="$RUNNER_TEMP/pack/carbonless-review-$VERSION.tgz"
+          [[ -f "$tgz" ]] || { echo "::error::no $tgz"; exit 1; }
+          # What npm publishes is the tarball's own package.json: it must be
+          # carbonless-review at exactly this version, with no publishConfig
+          # (the build job runs dependency code; it could have rewritten it).
+          tar -xzOf "$tgz" package/package.json | node -e '
+            let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+              const p = JSON.parse(s);
+              const bad = [
+                p.name === "carbonless-review" ? "" : `name ${p.name}`,
+                p.version === process.argv[1] ? "" : `version ${p.version}`,
+                p.publishConfig === undefined ? "" : "a publishConfig",
+              ].filter(Boolean);
+              if (bad.length) {
+                console.error(`refusing: the tarball says ${bad.join(", ")}`);
+                process.exit(1);
+              }
+            });' "$VERSION"
+          echo "TGZ=$tgz" >>"$GITHUB_ENV"
+      - name: Publish to npm (rc)
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        # Before the package's first publish, npm would make whatever is
+        # published first `latest`: the first version must be a release
+        # (the owner's), so this only tags the RC in git.
+        if: env.PUBLISH == 'true' && env.FIRST == 'false'
+        # npm adds provenance itself (trusted publishing, public repo).
+        run: npm publish "$TGZ" --tag rc --access public
+      - name: Tag
+        if: env.PUBLISH == 'true'
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          tag="v$VERSION"
+          git tag "$tag" "$SHA"
+          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git push origin "refs/tags/$tag"
+          if [[ "$FIRST" == true ]]; then
+            echo "::warning::carbonless-review is not on npm yet: $tag is tagged, not published. Its first version must be a release: pnpm release promote $tag"
+            echo "First publish: $tag is tagged only. Run \`pnpm release promote $tag\`." >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "Published carbonless-review@$VERSION on \`rc\`, tagged $tag." >>"$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Is rc behind latest?
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        # A release may have been published meanwhile: whichever finishes
+        # last puts rc on the newer. This run's RC, if it published one, is
+        # the floor: a stale read can't move rc below it.
+        id: fixup
+        if: env.FIRST == 'false'
+        run: |
+          published=""
+          [[ "$PUBLISH" != true ]] || published="$VERSION"
+          node "$GITHUB_WORKSPACE/scripts/rc-fixup.mjs" ${published:+"$published"} | tee -a "$GITHUB_OUTPUT"
+      - name: Move rc up
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        if: steps.fixup.outputs.move_rc_to != ''
+        env:
+          MOVE_TO: ${{ steps.fixup.outputs.move_rc_to }}
+        run: npm dist-tag add "carbonless-review@$MOVE_TO" rc
+      - name: Provenance on npm?
+        # npm skips provenance silently when it can't tell the package is
+        # public: fail the run instead. Last, so the tag and rc are done.
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        if: env.PUBLISH == 'true' && env.FIRST == 'false'
+        env:
+          TRIES: 10 # the registry can lag: up to ~2.5 minutes
+          WAIT: 15
+        run: |
+          for ((i = 1; i <= TRIES; i++)); do
+            out="$(npm view "carbonless-review@$VERSION" dist.attestations --json --prefer-online 2>/dev/null || true)"
+            if [[ "$out" == *'"provenance"'* ]]; then
+              echo "carbonless-review@$VERSION has provenance: $out"
+              exit 0
+            fi
+            ((i == TRIES)) || sleep "$WAIT"
+          done
+          echo "::error::carbonless-review@$VERSION has no provenance on npm (dist.attestations: ${out:-none})"
+          exit 1
+
+  promote-check:
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'promote' &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      # Inputs reach the shell as variables, never pasted into scripts.
+      RC_INPUT: ${{ inputs.rc }}
+      NEXT_INPUT: ${{ inputs.next }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: master
+          fetch-depth: 0 # every tag; the RC must be in master's history
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Plan
+        id: plan
+        run: pnpm exec tsx scripts/release.ts ci:promote-plan "$RC_INPUT" | tee -a "$GITHUB_OUTPUT"
+      - name: Check out the RC
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          echo "RC_DIR=$RUNNER_TEMP/rc" >>"$GITHUB_ENV"
+          RC_DIR="$RUNNER_TEMP/rc"
+          git worktree add --detach "$RC_DIR" "refs/tags/$TAG"
+          echo "RC_SHA=$(git rev-parse "refs/tags/$TAG^{commit}")" >>"$GITHUB_ENV"
+      - name: Install the RC
+        working-directory: ${{ runner.temp }}/rc
+        run: pnpm install --frozen-lockfile
+      - name: Set the version and gitHead (the tree stays clean)
+        # master's release.ts: the RC's commit may predate it.
+        env:
+          RELEASE: ${{ steps.plan.outputs.release }}
+        run: pnpm exec tsx scripts/release.ts ci:set-version "$RELEASE" "$RC_DIR"
+      - name: Checks
+        working-directory: ${{ runner.temp }}/rc
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+      - name: Playwright
+        working-directory: ${{ runner.temp }}/rc
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:e2e
+      - name: Pack smoke test
+        working-directory: ${{ runner.temp }}/rc
+        run: pnpm test:pack
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report
+          path: |
+            ${{ runner.temp }}/rc/playwright-report/
+            ${{ runner.temp }}/rc/test-results/
+          retention-days: 14
+      - name: Pack, and the manifest
+        env:
+          RELEASE: ${{ steps.plan.outputs.release }}
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out"
+          (cd "$RC_DIR" && pnpm pack --pack-destination "$out")
+          tgz="$out/carbonless-review-$RELEASE.tgz"
+          tar -xzOf "$tgz" package/dist/build-info.json >"$RUNNER_TEMP/build-info.json"
+          node -e '
+            const b = require(process.argv[1]);
+            if (b.version !== process.argv[2] || b.commit !== process.argv[3]) {
+              console.error(`build-info is ${b.version} ${b.commit}`);
+              process.exit(1);
+            }' "$RUNNER_TEMP/build-info.json" "$RELEASE" "$RC_SHA"
+          pnpm exec tsx scripts/release.ts ci:manifest "$tgz" "$RELEASE" "$TAG" "$RC_SHA" "$NEXT_INPUT" >"$out/manifest.json"
+          {
+            echo "### Ready to publish carbonless-review@$RELEASE from $TAG"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            node -e '
+              const m = require(process.argv[1]);
+              for (const k of ["version", "tag", "sha", "sha256", "integrity", "next", "tarball"])
+                console.log(`| ${k} | \`${m[k]}\` |`);' "$out/manifest.json"
+            echo
+            echo "Checked; the stage job stages it on npm for the owner's approval."
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: checked
+          path: |
+            ${{ runner.temp }}/release/*.tgz
+            ${{ runner.temp }}/release/manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  promote-stage:
+    needs: promote-check
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'promote' &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm Trusted Publishing (stage only)
+    steps:
+      # node and npm only: no dependency code runs while the OIDC token can
+      # be had. The tarball is the one the check job tested, by its sha256.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: npm with staged publishing (>= 12.2)
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        run: npm install -g npm@12.2.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: checked
+          path: ${{ runner.temp }}/release
+      - name: The tarball the check job tested
+        run: |
+          cd "$RUNNER_TEMP/release"
+          node -e '
+            const fs = require("node:fs");
+            const crypto = require("node:crypto");
+            const m = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+            if (!/^\d+\.\d+\.\d+$/.test(m.version) || m.tarball !== `carbonless-review-${m.version}.tgz`) {
+              console.error(`not a release manifest: ${JSON.stringify(m)}`);
+              process.exit(1);
+            }
+            const sha256 = crypto.createHash("sha256").update(fs.readFileSync(m.tarball)).digest("hex");
+            if (sha256 !== m.sha256) {
+              console.error(`${m.tarball} is ${sha256}, the manifest says ${m.sha256}`);
+              process.exit(1);
+            }
+            // What npm stages is the package.json inside the tarball: exactly
+            // carbonless-review at this version, with no publishConfig.
+            const p = JSON.parse(
+              require("node:child_process").execFileSync("tar", ["-xzOf", m.tarball, "package/package.json"], { encoding: "utf8" }),
+            );
+            if (p.name !== "carbonless-review" || p.version !== m.version || p.publishConfig !== undefined) {
+              console.error(`refusing: the tarball says ${p.name}@${p.version}${p.publishConfig ? " with a publishConfig" : ""}`);
+              process.exit(1);
+            }
+            console.log(`VERSION=${m.version}`);
+            console.log(`TGZ=${process.env.RUNNER_TEMP}/release/${m.tarball}`);' >>"$GITHUB_ENV"
+      - name: On npm yet?
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        id: npm
+        run: |
+          if out="$(npm view carbonless-review version --prefer-online 2>&1)"; then
+            echo "exists=true" >>"$GITHUB_OUTPUT"
+          elif [[ "$out" == *E404* ]]; then
+            echo "exists=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "$out" >&2
+            exit 1
+          fi
+      - name: Stage on npm (latest, hidden until the owner approves)
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        if: steps.npm.outputs.exists == 'true'
+        # The tag is fixed at stage time (npm stage: "The tag is an immutable
+        # property of the staged package"). npm adds provenance to a staged
+        # version too (trusted publishing, public repo).
+        run: |
+          # (npm stage list needs the owner's interactive login, not OIDC:
+          # a second staged entry for this version is caught by the owner's
+          # pnpm release publish, which refuses until it is rejected.)
+          out="$(npm stage publish "$TGZ" --tag latest --access public --json)"
+          echo "$out"
+          # --json prints { "carbonless-review": { ..., "stageId": "<uuid>" } }.
+          id="$(node -e '
+            const o = JSON.parse(process.argv[1]);
+            const id = (o["carbonless-review"] ?? o).stageId ?? "";
+            if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) console.log(id);' "$out")"
+          [[ -n "$id" ]] || { echo "::error::npm stage publish printed no stage id"; exit 1; }
+          # The id first, in case a later step fails: the staged entry stays.
+          echo "Staged carbonless-review@$VERSION: stage id \`$id\`" >>"$GITHUB_STEP_SUMMARY"
+          node -e '
+            const fs = require("node:fs");
+            const file = `${process.env.RUNNER_TEMP}/release/manifest.json`;
+            const m = JSON.parse(fs.readFileSync(file, "utf8"));
+            m.stageId = process.argv[1];
+            fs.writeFileSync(file, `${JSON.stringify(m, null, "\t")}\n`);' "$id"
+          {
+            echo "### Staged carbonless-review@$VERSION on npm (stage id \`$id\`)"
+            echo
+            echo "Hidden until the owner approves it with their two-factor:"
+            echo "\`pnpm release publish $GITHUB_RUN_ID\` (checks it, then \`npm stage approve\`),"
+            echo "or npmjs.com → carbonless-review → Staged Packages; then start release-finish."
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: The first publish is the owner's
+        if: steps.npm.outputs.exists == 'false'
+        run: |
+          {
+            echo "### Ready for the first publish of carbonless-review@$VERSION"
+            echo
+            echo "carbonless-review isn't on npm yet, so nothing is staged: the owner publishes it"
+            echo "with their OTP: \`pnpm release publish $GITHUB_RUN_ID\`."
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release
+          path: |
+            ${{ runner.temp }}/release/*.tgz
+            ${{ runner.temp }}/release/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+  fixup:
+    # Started by release-finish after a release: rc up to it, when behind.
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'fixup' &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm Trusted Publishing (dist-tag)
+    env:
+      RELEASE: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: npm with trusted dist-tag (>= 12.2)
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        run: npm install -g npm@12.2.1
+      - name: Is rc behind the release?
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        id: fixup
+        run: |
+          [[ "$RELEASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::not X.Y.Z: $RELEASE"; exit 1; }
+          node "$GITHUB_WORKSPACE/scripts/rc-fixup.mjs" "$RELEASE" | tee -a "$GITHUB_OUTPUT"
+      - name: Move rc up
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        if: steps.fixup.outputs.move_rc_to != ''
+        env:
+          MOVE_TO: ${{ steps.fixup.outputs.move_rc_to }}
+        run: npm dist-tag add "carbonless-review@$MOVE_TO" rc

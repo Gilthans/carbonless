@@ -57,6 +57,21 @@ describe("parseFilesSearch", () => {
 		).toEqual({});
 		expect(parseFilesSearch({ line: 1.5 })).toEqual({});
 	});
+
+	it("reads the comparison: a patch set, a head commit id, a from patch set or the branch", () => {
+		const oid = "a".repeat(40);
+		expect(parseFilesSearch({ ps: "2", from: "1" })).toEqual({
+			ps: 2,
+			from: 1,
+		});
+		expect(parseFilesSearch({ head: oid, from: "branch" })).toEqual({
+			head: oid,
+			from: "branch",
+		});
+		// Not a commit id, not a patch set number, not the branch: dropped.
+		expect(parseFilesSearch({ ps: "0", head: "main", from: "0" })).toEqual({});
+		expect(parseFilesSearch({ head: `${oid}1`, from: "base" })).toEqual({});
+	});
 });
 
 describe("threadTarget", () => {

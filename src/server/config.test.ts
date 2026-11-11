@@ -48,14 +48,14 @@ describe("config", () => {
 	it("reads a valid file, repos lowercased", async () => {
 		write(
 			JSON.stringify({
-				serve: { host: "100.78.32.127", port: 4800 },
+				serve: { host: "100.64.0.7", port: 4800 },
 				views: [{ name: "My PRs", repos: ["Acme/API", "acme/console"] }],
 				refresh: { minutes: 5 },
 			}),
 		);
 		expect(await readConfig()).toEqual({
 			config: {
-				serve: { host: "100.78.32.127", port: 4800 },
+				serve: { host: "100.64.0.7", port: 4800 },
 				views: [{ name: "My PRs", repos: ["acme/api", "acme/console"] }],
 				refresh: { minutes: 5 },
 				agent: null,
