@@ -35,8 +35,10 @@ export function ThreadBlock(props: {
 	thread: ReviewThread;
 	/** Its line isn't in this diff: shown in the file's header instead. */
 	unplaced?: boolean;
+	/** Resolve was pressed on it (not Unresolve), from the button `from`. */
+	onResolved?: (thread: ReviewThread, from: Element) => void;
 }) {
-	const { thread } = props;
+	const { thread, onResolved } = props;
 	const placement = usePlacementInfo().placements?.get(thread.id);
 	return (
 		<article
@@ -81,7 +83,16 @@ export function ThreadBlock(props: {
 				{placement?.kind === "changed" && (
 					<ChangedSince thread={thread} placement={placement} />
 				)}
-				<Conversation readId={props.readId} thread={thread} />
+				<Conversation
+					readId={props.readId}
+					thread={thread}
+					onToggle={
+						onResolved &&
+						((resolved, from) => {
+							if (resolved) onResolved(thread, from);
+						})
+					}
+				/>
 			</div>
 		</article>
 	);
@@ -162,6 +173,8 @@ export function ThreadRow(props: {
 	id?: string;
 	place: CardPlace;
 	rail?: string;
+	/** Resolve was pressed on one of them (resolveCollapse.ts). */
+	onResolved?: (thread: ReviewThread, from: Element) => void;
 }) {
 	return (
 		<TailRow
@@ -171,7 +184,12 @@ export function ThreadRow(props: {
 			rail={props.rail}
 		>
 			{props.threads.map((t, i) => (
-				<ThreadBlock key={t.id || `#${i}`} readId={props.readId} thread={t} />
+				<ThreadBlock
+					key={t.id || `#${i}`}
+					readId={props.readId}
+					thread={t}
+					onResolved={props.onResolved}
+				/>
 			))}
 		</TailRow>
 	);

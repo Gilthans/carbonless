@@ -60,6 +60,7 @@ import { displayPath } from "./find/pathMarks";
 import { KindChip } from "./KindChip";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
+import { useResolveCollapse } from "./resolveCollapse";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
 import { type FileSince, goneFileView } from "./since";
 import { isStale } from "./stateSync";
@@ -765,6 +766,14 @@ export function FileDiff(props: {
 	const unplaced =
 		header.some((h) => h.reason === "unplaced" && !h.thread.resolved) ||
 		fates.some((f) => !f.thread.resolved);
+	// Resolve closes a file thread to the file bubble (resolveCollapse.ts).
+	const collapse = useResolveCollapse<"file">(props.threads?.threads, {
+		open: () => setFileOpen(true),
+		close: () => setFileOpen(false),
+		focus: () => setFocusFile(true),
+		element: () =>
+			document.querySelector(`[aria-controls="${CSS.escape(fileThreadsId)}"]`),
+	});
 	// New comments on the whole file, open or closed: under the header,
 	// where file threads show; on another head (gone): kept as orphans.
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;
@@ -908,6 +917,7 @@ export function FileDiff(props: {
 	 * diff can't show. Opened, its row has their threads and Comment on
 	 * file; with none it is an outline that starts a comment at once.
 	 */
+	const fileShown = header.filter((h) => collapse.shows(h.thread));
 	const lead: FileLead = {
 		count: agentLead.length > 0 || agentLoading ? 2 : 1,
 		bubble: (
@@ -932,6 +942,7 @@ export function FileDiff(props: {
 						if (!fileOpen && header.length === 0 && fileComment.ok === true) {
 							openComposer(fileComment.span);
 						}
+						collapse.toggled("file");
 						setFileOpen(!fileOpen);
 					}}
 				/>
@@ -960,12 +971,20 @@ export function FileDiff(props: {
 						rail={rail}
 						threads={
 							fileOpen && props.threads
-								? header.map((h, i) => (
+								? fileShown.map((h, i) => (
 										<ThreadBlock
 											key={h.thread.id || `#${i}`}
 											readId={props.threads?.readId ?? ""}
 											thread={h.thread}
 											unplaced={h.reason === "unplaced"}
+											onResolved={(t, from) =>
+												collapse.resolved({
+													key: "file",
+													thread: t,
+													shown: fileShown.map((s) => s.thread),
+													from,
+												})
+											}
 										/>
 									))
 								: null
