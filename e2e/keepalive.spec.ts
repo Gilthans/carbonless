@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { fileSection, openFiles, progress, tapHeight } from "./files-ui";
-import { expect, type PrOptions, test } from "./fixtures";
+import { expect, PR_NUMBER, type Pr, type PrOptions, test } from "./fixtures";
 
 /**
  * Switching pages and back (tabs, browser back/forward) finds each page as
@@ -20,21 +20,6 @@ const fixture: PrOptions = {
 		{ length: 60 },
 		(_, i) => `<p dir="auto">Paragraph ${i + 1} of the description.</p>`,
 	).join("\n"),
-	threads: [
-		reviewThread({ path: "b/long.ts", line: 3 }, [
-			threadComment({
-				login: "lint-bot",
-				bot: true,
-				text: "Unused import of fs in this module",
-				// Long enough to be clipped, with a toggle to show it all.
-				html: Array.from(
-					{ length: 12 },
-					(_, i) =>
-						`<p dir="auto">Unused import ${i + 1} of <code class="notranslate">fs</code></p>`,
-				).join("\n"),
-			}),
-		]),
-	],
 	base: {
 		"a/one.ts": text(short),
 		"b/long.ts": text(long),
@@ -55,6 +40,40 @@ const fixture: PrOptions = {
 		},
 	],
 };
+
+/**
+ * The bot's thread on b/long.ts line 3, written on the PR's head: placed on
+ * its line from the start. (Without a commit it can't be traced, and the
+ * placements' late answer moves it into the file's header list: 654 px above
+ * the reader, which scroll anchoring makes a change of scrollY.)
+ */
+const botThread = (commit: string) =>
+	reviewThread({ path: "b/long.ts", line: 3 }, [
+		threadComment({
+			login: "lint-bot",
+			bot: true,
+			text: "Unused import of fs in this module",
+			// Long enough to be clipped, with a toggle to show it all.
+			html: Array.from(
+				{ length: 12 },
+				(_, i) =>
+					`<p dir="auto">Unused import ${i + 1} of <code class="notranslate">fs</code></p>`,
+			).join("\n"),
+			commit,
+		}),
+	]);
+
+/** The PR of `fixture`, with the bot's thread on its head. */
+async function openPr(pr: (o: PrOptions) => Promise<Pr>) {
+	const p = await pr(fixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[PR_NUMBER]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [botThread(head)];
+	});
+	return p;
+}
 
 const shot = async (page: Page, name: string, project: string) => {
 	const dir = process.env.UX_SHOTS;
@@ -163,7 +182,7 @@ test("switching pages and back puts each one exactly where it was left", async (
 	test.slow();
 	const project = isMobile ? "phone" : "desktop";
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
-	await pr(fixture);
+	await openPr(pr);
 	const s = await startCrb();
 	await openFiles(page, s.url, "Files");
 
@@ -261,7 +280,7 @@ test("leaving the files page with the tree sheet open closes it", async ({
 	isMobile,
 }) => {
 	test.skip(!isMobile, "the sheet is the phone's tree");
-	await pr(fixture);
+	await openPr(pr);
 	const s = await startCrb();
 	await page.goto(s.url);
 	await tab(page, "Files changed").click();
@@ -279,7 +298,7 @@ test("leaving the files page with the tree sheet open closes it", async ({
 	).resolves.toBe("");
 });
 
-test("the compact title is centered between the tabs and Refresh, on a pill", async ({
+test("the compact title is centered between the tabs and the header's next button (Find in PR, before Refresh), on a pill", async ({
 	page,
 	pr,
 	startCrb,
@@ -287,7 +306,7 @@ test("the compact title is centered between the tabs and Refresh, on a pill", as
 }) => {
 	const project = isMobile ? "phone" : "desktop";
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
-	await pr(fixture);
+	await openPr(pr);
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	await fileSection(page, "b/long.ts")
@@ -305,12 +324,17 @@ test("the compact title is centered between the tabs and Refresh, on a pill", as
 		return b;
 	};
 	const nav = await box(page.getByRole("navigation", { name: "PR pages" }));
+	// The title's gap ends at the first button after it: Find in PR, then Refresh.
+	const find = await box(
+		page.getByRole("button", { name: "Find in PR", exact: true }),
+	);
 	const refresh = await box(page.getByRole("button", { name: "Refresh" }));
+	expect(find.x + find.width).toBeLessThanOrEqual(refresh.x);
 	const pill = await box(page.getByTestId("compact-title-pill"));
-	const gapCenter = (nav.x + nav.width + refresh.x) / 2;
+	const gapCenter = (nav.x + nav.width + find.x) / 2;
 	expect(Math.abs(pill.x + pill.width / 2 - gapCenter)).toBeLessThanOrEqual(4);
 	expect(pill.x).toBeGreaterThanOrEqual(nav.x + nav.width);
-	expect(pill.x + pill.width).toBeLessThanOrEqual(refresh.x);
+	expect(pill.x + pill.width).toBeLessThanOrEqual(find.x);
 	expect(await tapHeight(title)).toBeGreaterThanOrEqual(40);
 	const bg = await page
 		.getByTestId("compact-title-pill")

@@ -1,0 +1,140 @@
+# Finishes a release the owner published or approved (`pnpm release
+# publish` starts this; after approving on npmjs.com, start it by hand with
+# the same inputs): checks npm has X.Y.Z with the promote run's tarball,
+# tags vX.Y.Z on the RC's commit, starts release.yml's fixup (rc up to the
+# release; npm's trusted publisher is release.yml, not this file), and opens
+# the "next" PR with docs/changelog.md. Every step skips what is already
+# done, so it can run again after a failure. No npm credentials at all.
+# docs/releasing.md.
+name: Release finish
+run-name: Finish release ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The published release (X.Y.Z)
+        required: true
+      run:
+        description: The promote run that built it (its id)
+        required: true
+
+permissions:
+  contents: write # the vX.Y.Z tag and the next/* branch
+  pull-requests: write # the "next" PR
+  actions: write # the promote run's artifact; starting release.yml's fixup
+
+concurrency:
+  group: release-finish
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # -eo pipefail: `cmd | tee` fails when cmd does
+
+jobs:
+  finish:
+    # Only a dispatch of master, as release.yml's dispatched jobs.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Inputs reach the shell as variables, never pasted into scripts.
+      VERSION: ${{ inputs.version }}
+      RUN: ${{ inputs.run }}
+    steps:
+      - name: Inputs
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::not X.Y.Z: $VERSION"; exit 1; }
+          [[ "$RUN" =~ ^[0-9]+$ ]] || { echo "::error::not a run id: $RUN"; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: master
+          fetch-depth: 0 # every tag, and history for the changelog
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Only a successful promote of master
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pnpm exec tsx scripts/release.ts ci:check-run "$RUN"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release
+          run-id: ${{ inputs.run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/release
+      - name: Plan
+        # Fails unless the manifest's tag is at its commit on master and npm
+        # has VERSION with its tarball (waiting up to 5 min for the registry).
+        id: plan
+        run: pnpm exec tsx scripts/release.ts ci:finish-plan "$VERSION" "$RUNNER_TEMP/release/manifest.json" | tee -a "$GITHUB_OUTPUT"
+      - name: Tag
+        if: steps.plan.outputs.push_tag == 'true'
+        env:
+          TOKEN: ${{ github.token }}
+          SHA: ${{ steps.plan.outputs.sha }}
+        run: |
+          git tag "v$VERSION" "$SHA"
+          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git push origin "refs/tags/v$VERSION"
+      - name: rc up to the release (release.yml's fixup)
+        # A workflow_dispatch made with GITHUB_TOKEN does start a run. That
+        # run moves rc only when it is behind, so starting it again is safe.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref master -f mode=fixup -f version="$VERSION"
+      - name: Next version and changelog PR
+        if: steps.plan.outputs.next_pr == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.plan.outputs.sha }}
+          RC_TAG: ${{ steps.plan.outputs.rc_tag }}
+          NEXT_KIND: ${{ steps.plan.outputs.next }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          next="$(pnpm exec tsx scripts/release.ts ci:bump "$VERSION" "$NEXT_KIND" | sed -n 's/^next=//p')"
+          branch="next/$next"
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          # A rerun leaves an existing next branch alone (someone may have
+          # pushed to it, e.g. to get CI checks): it only opens the PR.
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "$branch is already on origin: not pushed again"
+          else
+            git switch -c "$branch"
+            pnpm exec tsx scripts/release.ts ci:write-version "$next"
+            pnpm exec tsx scripts/release.ts ci:changelog "$VERSION" "$SHA"
+            git add package.json docs/changelog.md
+            git commit -m "next: $next" -m "Released $VERSION ($RC_TAG); merges to master now publish $next-rc.N."
+            git push origin "$branch"
+          fi
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          open="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // ""')"
+          if [[ -z "$open" ]]; then
+            gh pr create --base master --head "$branch" --title "next: $next" \
+              --body "Released **$VERSION** from $RC_TAG (npm \`latest\`). This sets master's next release to $next and adds $VERSION to docs/changelog.md."
+          fi
+      - name: Summary
+        env:
+          TAG_DONE: ${{ steps.plan.outputs.push_tag == 'true' && 'pushed' || 'already there' }}
+          PR_DONE: ${{ steps.plan.outputs.next_pr == 'true' && 'opened or updated' || 'not needed (master moved on)' }}
+        run: |
+          {
+            echo "Released carbonless-review@$VERSION on \`latest\` (promote run $RUN)."
+            echo "Tag v$VERSION: $TAG_DONE."
+            echo "Next PR: $PR_DONE."
+          } >>"$GITHUB_STEP_SUMMARY"

@@ -56,6 +56,15 @@ export class AgentHost {
 		return Promise.all(folds.map((t) => this.#view(t)));
 	}
 
+	/** Each thread's id, anchor and when it was asked (what placement reads). */
+	async asked(): Promise<{ id: string; anchor: AgentAnchor; at: string }[]> {
+		return (await this.store.read()).map(({ id, anchor, at }) => ({
+			id,
+			anchor,
+			at,
+		}));
+	}
+
 	async open(req: OpenAgentThreadRequest): Promise<AgentThread> {
 		const t = await this.store.open({
 			anchor: req.span,
@@ -247,7 +256,9 @@ export async function anchorHunk(
 		(f) => f.path === anchor.path || f.oldPath === anchor.path,
 	);
 	if (!file) return null;
-	const { hunks } = await loadFileHunks(src.repo, snapshot, file.index);
+	const { hunks } = await loadFileHunks(src.repo, snapshot, file.index, {
+		headings: false,
+	});
 	const numberOf = (l: DiffLine, side: "LEFT" | "RIGHT") =>
 		side === "LEFT" ? l.oldNo : l.newNo;
 	const touches = (l: DiffLine) => {

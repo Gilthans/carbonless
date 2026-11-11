@@ -13,7 +13,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	FAKE_GH_DIR,
+	fakeGhEnv,
 	type Scenario,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
@@ -117,7 +117,7 @@ describe("private clone", () => {
 		git(fixture.path, "commit", "--quiet", "-m", "c3");
 		shas = { branchPoint, head, base: git(fixture.path, "rev-parse", "HEAD") };
 		setEnv({
-			PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
+			...fakeGhEnv(),
 			XDG_CACHE_HOME: join(tmp, "cache"),
 			CRB_FAKE_GH_LOG: join(tmp, "gh.log"),
 		});

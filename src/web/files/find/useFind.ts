@@ -1,0 +1,544 @@
+import {
+	type QueryObserverResult,
+	useQueries,
+	useQueryClient,
+} from "@tanstack/react-query";
+import {
+	useCallback,
+	useDeferredValue,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
+import type {
+	DiffLine,
+	DiffSide,
+	FileHunks,
+	FileView,
+} from "../../../shared/types";
+import { contextQuery, hunksQuery } from "../../api";
+import type { FindMark } from "../../code/Invisibles";
+import {
+	ignoreWhitespace as ignoreWhitespaceSetting,
+	matchCase as matchCaseSetting,
+	sideBySide as sideBySideSetting,
+} from "../../viewSettings";
+import { contextRanges, rangesKeyOf } from "../contextRanges";
+import type { DiffFind } from "../DiffBody";
+import type { TreeFind } from "../FileTree";
+import {
+	type Caret,
+	caretAfterTyping,
+	caretMove,
+	countsByFile,
+	findInPr,
+	type Hit,
+	hitIndex,
+	keptCaret,
+	samePos,
+	shownHits,
+	stepCaret,
+} from "./findInPr";
+import { type FindState, findState } from "./findState";
+import {
+	HunksPrefetcher,
+	type PrefetchSnapshot,
+	prefetchOrder,
+} from "./hunksPrefetch";
+import { headerPathMarks, nameMarks, oldNameMarks } from "./pathMarks";
+
+/** What Files changed needs from the search, for the files of `revision` in tree order. */
+export interface Find {
+	state: FindState;
+	/** The hits the view shows (shownHits): what "n of N" counts and steps through. */
+	hits: Hit[];
+	/** The caret: a step's, while its hit still exists (keptCaret: moved when only hidden), else caretAfterTyping's (unshown). Null with no hits. */
+	caret: Caret | null;
+	count: { at: number; of: number } | null;
+	searching: boolean;
+	failed: number;
+	retry: () => void;
+	/**
+	 * Moves the caret (stepCaret) and returns the hit stepped to, or null.
+	 * `seen`: whether the reviewer already sees a hit (asked only about an
+	 * unshown caret's): a seen one is passed over, as if a step showed it.
+	 */
+	step: (dir: 1 | -1, seen?: (hit: Hit) => boolean) => Hit | null;
+	matchCase: boolean;
+	setMatchCase: (on: boolean) => void;
+	/** Per-file views, built once per hits/caret change. */
+	tree: TreeFind;
+	diffOf: (index: number) => DiffFind | undefined;
+	pathOf: (index: number) => readonly FindMark[];
+	/** Bumps a file's DiffFind.stepSeq (a line hit stepped to). */
+	stepInto: (index: number) => void;
+}
+
+const NO_HITS: Hit[] = [];
+const NO_SEARCH = { all: NO_HITS, hits: NO_HITS };
+const NO_MARKS: readonly FindMark[] = [];
+const NO_LINES: readonly DiffLine[] = [];
+const IDLE: PrefetchSnapshot = { pending: 0, failed: [] };
+const noSubscribe = () => () => {};
+
+/** Stable across renders while the results are (useQueries runs a stable combine only on change). */
+const hunksData = (results: QueryObserverResult<FileHunks>[]) => ({
+	data: results.map((r) => r.data),
+	/** Some file's own request is out (the open file's diff asked): the prefetch skips it. */
+	fetching: results.some((r) => r.fetchStatus === "fetching"),
+	/** Per file: its request failed and nothing came. */
+	failed: results.map((r) => r.status === "error" && r.data === undefined),
+});
+const contextData = (results: QueryObserverResult<DiffLine[]>[]) => ({
+	data: results.map((r) => r.data),
+	/** Per range: not answered yet (never asked, dropped, or on its way). */
+	waiting: results.map((r) => r.status === "pending"),
+	/** Per range: its request failed and nothing came. */
+	failed: results.map((r) => r.status === "error" && r.data === undefined),
+});
+
+/**
+ * The Find in PR search over Files changed: the hits (paths and changed
+ * lines at once, context lines as each file's hunks arrive), the caret, the
+ * hunk prefetch while the bar is open, and the per-file views the tree,
+ * headers and diffs paint. Typing never moves anything: only `step` (and
+ * the page acting on what it returns) does.
+ */
+export function useFind(opts: {
+	revision: string | undefined;
+	/** The page's files in tree order. */
+	files: readonly FileView[];
+	openIndex: number | null;
+	/** The page shows (a hidden page runs no prefetch). */
+	active: boolean;
+	/**
+	 * The since view's patch set: the search reads the interdiff from it
+	 * (its hunks and context, numbered as the since view shows them), never
+	 * the full diff's.
+	 */
+	from?: number;
+	/**
+	 * A hunks request answered 409 (the revision is gone: another tab or
+	 * device refreshed): read the review again, so the page moves to the new
+	 * revision and the prefetch starts over for it. Resolves with the
+	 * revision read; a failed read or the same revision fails the files
+	 * held (Retry asks again).
+	 */
+	onStale?: () => Promise<string | undefined>;
+}): Find {
+	const { revision, files, openIndex, active, from } = opts;
+	const onStale = useRef(opts.onStale);
+	onStale.current = opts.onStale;
+	const state = findState.use();
+	const matchCase = matchCaseSetting.use();
+	// Unified with Ignore whitespace, a whitespace-only pair is one `~` row
+	// showing its new text: its old side's hits aren't counted (shownHits).
+	const ignoreWs = ignoreWhitespaceSetting.use();
+	const unified = !sideBySideSetting.use();
+	const client = useQueryClient();
+	const { open, term: typedTerm } = state;
+	// The search runs on the term deferred: a keystroke paints at once, the
+	// (possibly long) search after it; `searching` holds while it trails.
+	const term = useDeferredValue(typedTerm);
+	const searchOn = open && revision !== undefined;
+
+	// Every file's hunks and expanded context, observed while the bar is open.
+	// Hunks are fetched by the prefetch and the open file's diff; an expanded
+	// range that isn't loaded (dropped while the bar was closed) is fetched
+	// below.
+	const hunks = useQueries({
+		queries: searchOn
+			? files.map((f) => ({
+					...hunksQuery(revision, f.index, from),
+					enabled: false,
+				}))
+			: [],
+		combine: hunksData,
+	});
+	const allRanges = contextRanges.useAll(rangesKeyOf(revision ?? "", from));
+	const ranges = useMemo(
+		() =>
+			searchOn
+				? files.flatMap((f) =>
+						(allRanges.get(f.index) ?? []).map(([from, to]) => ({
+							index: f.index,
+							from,
+							to,
+						})),
+					)
+				: [],
+		[searchOn, files, allRanges],
+	);
+	const context = useQueries({
+		queries: ranges.map((r) => ({
+			...contextQuery(revision ?? "", r.index, r.from, r.to, from),
+			enabled: false,
+		})),
+		combine: contextData,
+	});
+
+	// The search over what is loaded, for a term (the deferred one, or the
+	// typed one when a step comes before the deferred search caught up):
+	// every hit of both sides, and the ones the view shows.
+	const searchFor = useMemo(() => {
+		if (!searchOn) return (_: string) => NO_SEARCH;
+		const hunksBy = new Map<number, FileHunks | undefined>();
+		files.forEach((f, i) => {
+			hunksBy.set(f.index, hunks.data[i]);
+		});
+		const contextBy = new Map<number, DiffLine[]>();
+		ranges.forEach((r, i) => {
+			const lines = context.data[i];
+			if (!lines) return;
+			contextBy.set(r.index, [...(contextBy.get(r.index) ?? []), ...lines]);
+		});
+		return (t: string) => {
+			if (t === "") return NO_SEARCH;
+			const all = findInPr(
+				t,
+				files,
+				(f) => hunksBy.get(f.index),
+				(f) => contextBy.get(f.index) ?? NO_LINES,
+				matchCase,
+				// Only unified shows a pair as one row: side by side, or with
+				// Ignore whitespace off, nothing is paired (no O(n·m) matching).
+				ignoreWs && unified,
+				// The since view's lines are its hunks': the clusters (the
+				// full diff's) never stand in for them.
+				from === undefined,
+			);
+			return { all, hits: shownHits(all, unified) };
+		};
+	}, [
+		searchOn,
+		matchCase,
+		ignoreWs,
+		unified,
+		files,
+		hunks,
+		ranges,
+		context,
+		from,
+	]);
+	const { all, hits } = useMemo(() => searchFor(term), [searchFor, term]);
+
+	// The caret. Typing (a new term, match case, a reopen, a new revision)
+	// starts over from the file open at that moment: a pick in the tree
+	// later doesn't move it. A step's caret holds until the next typing.
+	const typingKey = `${open}\0${term}\0${matchCase}\0${revision}\0${from}`;
+	const [typed, setTyped] = useState({ key: typingKey, openIndex });
+	if (typed.key !== typingKey) setTyped({ key: typingKey, openIndex });
+	const typedOpen = typed.key === typingKey ? typed.openIndex : openIndex;
+	const [stepped, setStepped] = useState<{
+		key: string;
+		caret: Caret | null;
+	} | null>(null);
+	const order = useMemo(() => files.map((f) => f.index), [files]);
+	// A step's caret whose hit the view stopped showing (a switch to unified
+	// with Ignore whitespace on) moves to the same row's shown hit, never back
+	// to the top (keptCaret).
+	const { caret, sticks } = useMemo(() => {
+		const kept =
+			stepped?.key === typingKey && stepped.caret
+				? caretMove(all, hits, stepped.caret)
+				: null;
+		return {
+			caret: kept?.caret ?? caretAfterTyping(hits, order, typedOpen),
+			sticks: kept?.sticks === true,
+		};
+	}, [stepped, typingKey, all, hits, order, typedOpen]);
+	// A move onto the same row sticks (owner, 2026-11-10): back in side by
+	// side, or with Ignore whitespace off, the caret stays on that row's hit.
+	if (sticks && stepped) setStepped({ key: stepped.key, caret });
+	// Steps read the latest, also two in one frame. While the deferred
+	// search trails the typed term, a step searches the typed term itself
+	// (Enter right after typing goes to the typed term's hit).
+	const typedKey = `${open}\0${typedTerm}\0${matchCase}\0${revision}\0${from}`;
+	const latest = useRef({ hits, caret, typingKey });
+	latest.current = { hits, caret, typingKey };
+	const typedNow = useRef({ typedKey, typedTerm, searchFor, order, stepped });
+	typedNow.current = { typedKey, typedTerm, searchFor, order, stepped };
+	const openNow = useRef(openIndex);
+	openNow.current = openIndex;
+	const step = useCallback(
+		(dir: 1 | -1, seen?: (hit: Hit) => boolean): Hit | null => {
+			let now = latest.current;
+			const t = typedNow.current;
+			if (now.typingKey !== t.typedKey) {
+				const { all, hits } = t.searchFor(t.typedTerm);
+				const kept = t.stepped;
+				const caret =
+					(kept?.key === t.typedKey && kept.caret
+						? keptCaret(all, hits, kept.caret)
+						: null) ?? caretAfterTyping(hits, t.order, openNow.current);
+				// (A moved caret sticks once this step sets it.)
+				now = { hits, caret, typingKey: t.typedKey };
+			}
+			const caret = now.caret;
+			const at =
+				caret && !caret.shown && seen
+					? now.hits.find((h) => samePos(h, caret.pos))
+					: undefined;
+			const next = stepCaret(
+				now.hits,
+				caret,
+				dir,
+				at !== undefined && seen?.(at) === true,
+			);
+			if (!next) return null;
+			latest.current = { ...now, caret: next };
+			setStepped({ key: now.typingKey, caret: next });
+			return now.hits.find((h) => samePos(h, next.pos)) ?? null;
+		},
+		[],
+	);
+
+	// The step into a file's lines: a value never used before, and only for
+	// the file it was taken in while that file stays open, so a file opened
+	// again later (its diff mounted anew) never takes an old step again.
+	const stepCount = useRef(0);
+	const [lastStep, setLastStep] = useState<{
+		index: number;
+		seq: number;
+	} | null>(null);
+	if (lastStep && lastStep.index !== openIndex) setLastStep(null);
+	const stepInto = useCallback((index: number) => {
+		stepCount.current += 1;
+		setLastStep({ index, seq: stepCount.current });
+	}, []);
+
+	// The prefetch: while the bar is open on a page that shows, for its revision.
+	const filesRef = useRef(files);
+	filesRef.current = files;
+	const openRef = useRef(openIndex);
+	openRef.current = openIndex;
+	// Kept with its revision: on the render where the revision changes, the
+	// old one (done) is still in state until the effect runs, and must count
+	// as not started yet, never as a final answer.
+	const [started, setStarted] = useState<{
+		p: HunksPrefetcher;
+		revision: string;
+		from: number | undefined;
+	} | null>(null);
+	const prefetcher =
+		started && started.revision === revision && started.from === from
+			? started.p
+			: null;
+	useEffect(() => {
+		if (!open || revision === undefined || !active) return;
+		const p = new HunksPrefetcher(
+			client,
+			revision,
+			undefined,
+			async () => {
+				const read = await onStale.current?.();
+				return read !== undefined && read !== revision;
+			},
+			from,
+		);
+		setStarted({ p, revision, from });
+		p.queue(prefetchOrder(filesRef.current, openRef.current));
+		return () => {
+			p.stop();
+			setStarted(null);
+		};
+	}, [open, revision, active, client, from]);
+	const subscribe = useMemo(
+		() =>
+			prefetcher ? (f: () => void) => prefetcher.subscribe(f) : noSubscribe,
+		[prefetcher],
+	);
+	const snapshot = useSyncExternalStore(subscribe, () =>
+		prefetcher ? prefetcher.snapshot() : IDLE,
+	);
+	// Files that couldn't be searched: the prefetch's, and those whose own
+	// request (the open file's diff) failed while the prefetch left them to it;
+	// never a file whose hunks came since (opened: its diff asked again).
+	const failedFiles = useMemo(() => {
+		const all = new Set(snapshot.failed);
+		files.forEach((f, i) => {
+			if (hunks.failed[i]) all.add(f.index);
+			if (hunks.data[i] !== undefined) all.delete(f.index);
+		});
+		// And a file with an expanded range that couldn't be read.
+		ranges.forEach((r, i) => {
+			if (context.failed[i]) all.add(r.index);
+		});
+		return [...all];
+	}, [snapshot.failed, files, hunks.failed, hunks.data, ranges, context]);
+	// Expanded ranges not loaded: fetched while the bar is open on a page
+	// that shows (a failed one waits for Retry).
+	useEffect(() => {
+		if (!active || revision === undefined) return;
+		ranges.forEach((r, i) => {
+			if (!context.waiting[i]) return;
+			const query = contextQuery(revision, r.index, r.from, r.to, from);
+			if (client.getQueryState(query.queryKey)?.fetchStatus === "fetching")
+				return;
+			void client.prefetchQuery(query);
+		});
+	}, [active, revision, ranges, context, client, from]);
+	const retry = useCallback(() => {
+		if (!prefetcher) return;
+		prefetcher.retry();
+		// A file whose own request failed isn't the prefetch's yet: ask for it.
+		prefetcher.queue(
+			files.filter((_, i) => hunks.failed[i]).map((f) => f.index),
+		);
+		if (revision === undefined) return;
+		ranges.forEach((r, i) => {
+			if (context.failed[i])
+				void client.prefetchQuery(
+					contextQuery(revision, r.index, r.from, r.to, from),
+				);
+		});
+	}, [
+		prefetcher,
+		files,
+		hunks.failed,
+		revision,
+		ranges,
+		context,
+		client,
+		from,
+	]);
+
+	const marking = searchOn && typedTerm !== "";
+	// Not final while the prefetch has files out, a file's own request is out,
+	// an expanded range isn't loaded yet, or (the first render of an open bar
+	// on a page that shows, or of a new revision) the prefetch hasn't started.
+	const searching =
+		marking &&
+		(term !== typedTerm ||
+			snapshot.pending > 0 ||
+			hunks.fetching ||
+			context.waiting.some(Boolean) ||
+			(active && prefetcher === null));
+	const count = marking
+		? { at: caret ? hitIndex(hits, caret.pos) + 1 : 0, of: hits.length }
+		: null;
+
+	// The per-file views.
+	const views = useMemo(() => {
+		const byFile = new Map<number, Hit[]>();
+		for (const h of hits) {
+			const list = byFile.get(h.index);
+			if (list) list.push(h);
+			else byFile.set(h.index, [h]);
+		}
+		const fileBy = new Map(files.map((f) => [f.index, f]));
+		const pos = caret?.pos ?? null;
+		const of = (index: number) => byFile.get(index) ?? NO_HITS;
+		const marksBy = (
+			index: number,
+			mark: (f: FileView, h: Hit[], p: typeof pos) => FindMark[],
+		) => {
+			const f = fileBy.get(index);
+			const h = of(index);
+			return f && h.length > 0 ? mark(f, h, pos) : NO_MARKS;
+		};
+		const tree: TreeFind = {
+			term,
+			counts: countsByFile(hits),
+			nameMarks: (index) => marksBy(index, nameMarks),
+			oldNameMarks: (index) => marksBy(index, oldNameMarks),
+		};
+		const paths = new Map<number, readonly FindMark[]>();
+		const pathOf = (index: number) => {
+			let marks = paths.get(index);
+			if (!marks) {
+				marks = marksBy(index, headerPathMarks);
+				paths.set(index, marks);
+			}
+			return marks;
+		};
+		// Each file's line marks, keyed `${side}:${line}`: an O(1) lookup per cell.
+		const lineMarks = new Map<number, Map<string, FindMark[]>>();
+		const linesOf = (index: number) => {
+			let byLine = lineMarks.get(index);
+			if (!byLine) {
+				byLine = new Map();
+				for (const h of of(index)) {
+					if (h.side !== "LEFT" && h.side !== "RIGHT") continue;
+					const key = `${h.side}:${h.line}`;
+					const mark = {
+						from: h.col,
+						to: h.col + h.len,
+						current: pos !== null && samePos(h, pos),
+					};
+					const list = byLine.get(key);
+					if (list) list.push(mark);
+					else byLine.set(key, [mark]);
+				}
+				lineMarks.set(index, byLine);
+			}
+			return byLine;
+		};
+		return { tree, pathOf, linesOf, pos, shown: caret?.shown === true };
+	}, [hits, files, caret, term]);
+
+	// A file's DiffFind keeps its identity while its marks, current line and
+	// step don't change (hits landing in other files don't touch it).
+	const keptDiffs = useRef(new Map<number, { sig: string; diff: DiffFind }>());
+	const diffs = useMemo(() => {
+		const built = new Map<number, DiffFind>();
+		return (index: number): DiffFind | undefined => {
+			if (!marking) return undefined;
+			let diff = built.get(index);
+			if (!diff) {
+				const byLine = views.linesOf(index);
+				const pos = views.pos;
+				const current =
+					pos &&
+					pos.index === index &&
+					(pos.side === "LEFT" || pos.side === "RIGHT")
+						? { old: pos.side === "LEFT", line: pos.line }
+						: null;
+				const stepSeq = lastStep?.index === index ? lastStep.seq : 0;
+				const shown = current !== null && views.shown;
+				let sig = `${stepSeq}|${shown}|${current ? `${current.old}:${current.line}` : ""}`;
+				for (const [key, marks] of byLine)
+					for (const m of marks)
+						sig += `|${key}:${m.from}-${m.to}${m.current ? "*" : ""}`;
+				const kept = keptDiffs.current.get(index);
+				if (kept?.sig === sig) diff = kept.diff;
+				else {
+					diff = {
+						marksOf: (side: DiffSide, line: number) =>
+							byLine.get(`${side}:${line}`) ?? NO_MARKS,
+						current,
+						stepSeq,
+						shown,
+					};
+					keptDiffs.current.set(index, { sig, diff });
+				}
+				built.set(index, diff);
+			}
+			return diff;
+		};
+	}, [marking, views, lastStep]);
+
+	const pathOf = useCallback(
+		(index: number) => (marking ? views.pathOf(index) : NO_MARKS),
+		[marking, views],
+	);
+
+	return {
+		state,
+		hits,
+		caret,
+		count,
+		searching,
+		failed: marking ? failedFiles.length : 0,
+		retry,
+		step,
+		matchCase,
+		setMatchCase: matchCaseSetting.set,
+		tree: views.tree,
+		diffOf: diffs,
+		pathOf,
+		stepInto,
+	};
+}

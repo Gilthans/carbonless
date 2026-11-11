@@ -1,14 +1,24 @@
 import { CheckIcon, SparkleFillIcon } from "@primer/octicons-react";
 import type { AgentThread } from "../../shared/agent";
 import { plural } from "../overview/parts";
+import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
+
+/**
+ * The threads a bubble counts: the unresolved ones (a resolved one is
+ * counted nowhere); all resolved, all of them, beside the check.
+ */
+export function agentBubbleCount(threads: readonly AgentThread[]): number {
+	const open = threads.filter((t) => !t.resolved).length;
+	return open > 0 ? open : threads.length;
+}
 
 /** "2 agent threads on line 16, 1 waiting". */
 export function agentBubbleLabel(
 	threads: AgentThread[],
 	where?: string,
 ): string {
-	const n = threads.length;
+	const n = agentBubbleCount(threads);
 	const head = `${plural(n, "agent thread")}${where ? ` ${where}` : ""}`;
 	const waiting = threads.filter((t) => t.waiting && !t.resolved).length;
 	const parts = [head];
@@ -32,9 +42,17 @@ export function AgentBubble(props: {
 	/** Where, for its name: "on line 16", "in this file". */
 	where?: string;
 	inline?: boolean;
+	/**
+	 * Its threads wait for their place (the agent placements are on their
+	 * way): a spinner for the count, never a count or nothing.
+	 */
+	loading?: boolean;
 }) {
 	const { threads } = props;
-	const label = agentBubbleLabel(threads, props.where);
+	const loading = props.loading === true;
+	const label = loading
+		? `Placing agent threads${props.where ? ` ${props.where}` : ""}`
+		: agentBubbleLabel(threads, props.where);
 	const resolved = threads.length > 0 && threads.every((t) => t.resolved);
 	const waiting = threads.some((t) => t.waiting && !t.resolved);
 	return (
@@ -45,10 +63,11 @@ export function AgentBubble(props: {
 					{...trigger}
 					data-testid="agent-bubble"
 					aria-label={label}
+					aria-busy={loading || undefined}
 					aria-expanded={props.open}
 					aria-controls={props.controls}
 					onClick={props.onToggle}
-					className={`group/bubble z-[4] flex min-w-10 shrink-0 items-center justify-center rounded-md font-sans focus-visible:outline-2 focus-visible:outline-accent ${
+					className={`group/bubble z-[4] flex select-none min-w-10 shrink-0 items-center justify-center rounded-md font-sans focus-visible:outline-2 focus-visible:outline-accent ${
 						props.inline ? "h-5 pointer-coarse:h-10" : "h-10"
 					}`}
 				>
@@ -65,7 +84,7 @@ export function AgentBubble(props: {
 					>
 						{/* The sparkle always: resolved, it is still the agent's. */}
 						<SparkleFillIcon size={12} className="text-agent-ink" />
-						{threads.length}
+						{loading ? <SpinnerIcon size={12} /> : agentBubbleCount(threads)}
 						{resolved && <CheckIcon size={12} className="text-ok" />}
 						{waiting && (
 							<span

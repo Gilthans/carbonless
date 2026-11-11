@@ -9,14 +9,17 @@ import {
 	type Page,
 	type TestInfo,
 } from "@playwright/test";
+import { traceparent, tracer } from "../src/server/trace";
 import type { GitFixture } from "../test/git-fixture";
 import {
 	collectUnits,
 	isolationProblems,
 	statesOf,
+	type UnitReport,
 	type UnitState,
 	unitProblems,
 } from "../test/markable";
+import { testSpanContext } from "../test/trace-run";
 import {
 	CLI,
 	crbEnv,
@@ -236,6 +239,7 @@ export function stopChild(child: ChildProcess): Promise<CrbExit | null> {
 }
 
 export const test = base.extend<{
+	_trace: undefined;
 	workdir: string;
 	pr: (opts?: PrOptions) => Promise<Pr>;
 	startCrb: (arg?: string, extraArgs?: string[]) => Promise<Crb>;
@@ -254,10 +258,38 @@ export const test = base.extend<{
 		rmSync(dir, { recursive: true, force: true });
 	},
 
+	_trace: [
+		// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
+		async ({}, use, info) => {
+			// The test's span (e2e/trace-reporter.ts writes it, with these ids)
+			// parents what it runs: fixture gits here, crb and the fake gh below.
+			const traced = tracer("playwright-worker");
+			const run = process.env.CRB_TRACE_RUN;
+			if (!traced.enabled || !run) return use(undefined);
+			const context = testSpanContext(
+				run,
+				info.testId,
+				info.retry,
+				info.repeatEachIndex,
+			);
+			traced.setDefaultParent(context);
+			process.env.TRACEPARENT = traceparent(context);
+			await use(undefined);
+			delete process.env.TRACEPARENT;
+			traced.setDefaultParent(null);
+			traced.flush();
+		},
+		{ auto: true, box: true },
+	],
+
 	pr: async ({ workdir }, use, info) => {
 		const repos: GitFixture[] = [];
 		await use(async (opts = {}) => {
-			const pr = await untimed(info, () => createPr(workdir, opts));
+			const pr = await untimed(info, () =>
+				base.step("setup: fixture repo", () => createPr(workdir, opts), {
+					box: true,
+				}),
+			);
 			repos.push(pr.repo);
 			return pr;
 		});
@@ -278,7 +310,11 @@ export const test = base.extend<{
 					current.child.exitCode === null &&
 					current.child.signalCode === null;
 				if (!current || !live) {
-					current = await startServe(workdir, serve);
+					current = await base.step(
+						"setup: crb serve",
+						() => startServe(workdir, serve),
+						{ box: true },
+					);
 					currentFlags = serve.join(" ");
 					servers.push(current);
 				} else if (serve.length > 0 && serve.join(" ") !== currentFlags) {
@@ -288,7 +324,11 @@ export const test = base.extend<{
 				}
 				const server = current;
 				const from = server.output().length;
-				const run = await runCli(workdir, [arg, ...client]);
+				const run = await base.step(
+					"setup: crb open",
+					() => runCli(workdir, [arg, ...client]),
+					{ box: true },
+				);
 				const output = () => `${server.output().slice(from)}${run.output}`;
 				const url = run.stdout.trim().split("\n").at(-1) ?? "";
 				if (run.code !== 0 || !/^http:\/\//.test(url)) {
@@ -301,7 +341,11 @@ export const test = base.extend<{
 		await Promise.all(
 			context.pages().map((p) => p.goto("about:blank").catch(() => {})),
 		);
-		await Promise.all(servers.map((s) => stopChild(s.child)));
+		await base.step(
+			"teardown: crb stop",
+			() => Promise.all(servers.map((s) => stopChild(s.child))),
+			{ box: true },
+		);
 	},
 
 	expectConsoleError: [
@@ -395,21 +439,23 @@ export async function expectEveryUnitMarkable(
 	}
 	const states = async () => statesOf(await scope.evaluate(collectUnits));
 	const use = async (i: number, control: "box" | "cross", want: UnitState) => {
-		const before = await states();
-		await scope
+		const now = await scope.evaluate(collectUnits);
+		const before = statesOf(now);
+		const unit = now[i];
+		if (!unit) throw new Error(`no unit ${i}`);
+		await unitBody(scope, unit)
 			.locator(
-				`[data-markable-unit="${i}"] ${
-					control === "box"
-						? 'input[type="checkbox"]'
-						: 'button[aria-label="Cross off cluster"]'
-				}`,
+				control === "box"
+					? 'input[type="checkbox"]'
+					: 'button[aria-label="Cross off cluster"]',
 			)
+			.first()
 			.click();
 		// A mark that finished the file closed it (the page moved on): open
 		// it again to read its units.
 		const expandFile = scope.getByRole("button", { name: "Expand file" });
 		if (await expandFile.isVisible()) {
-			// Its rows are new: collectUnits numbers them again (states()).
+			// Its rows are new: collectUnits finds them again (states()).
 			// The move-on may still be landing: open it until it stays open.
 			await expect(async () => {
 				if (await expandFile.isVisible()) await expandFile.click();
@@ -463,31 +509,41 @@ export async function expectEveryUnitMarkable(
 }
 
 /**
+ * A unit's `<tbody>` as a locator, by its place among `scope`'s tbodies
+ * (collectUnits only reads the page: there is no attribute to select it
+ * by, since a write per poll wakes every MutationObserver). A locator,
+ * not a handle: it finds the tbody again when React remounts it.
+ */
+const unitBody = (scope: Locator, unit: UnitReport): Locator =>
+	scope.locator("tbody").nth(unit.body);
+
+/**
  * Every disabled cluster control in `scope` (or in its unit `only`) gives
  * its reason: an accessible description, else a tooltip on hover (its
  * wrapper takes the hover: a disabled control gets none).
  */
 async function expectDisabledSayWhy(scope: Locator, only?: number) {
-	const unit =
-		only === undefined
-			? "[data-markable-unit]"
-			: `[data-markable-unit="${only}"]`;
-	const disabled = scope.locator(
-		`${unit} input[type="checkbox"]:disabled, ${unit} button[aria-label="Cross off cluster"]:disabled`,
+	const units = (await scope.evaluate(collectUnits)).filter(
+		(u) => only === undefined || u.index === only,
 	);
-	for (const control of await disabled.all()) {
-		const described = await control.evaluate((el) =>
-			(el.getAttribute("aria-describedby") ?? "")
-				.split(/\s+/)
-				.some((id) => id && document.getElementById(id)?.textContent?.trim()),
+	for (const unit of units) {
+		const disabled = unitBody(scope, unit).locator(
+			'input[type="checkbox"]:disabled, button[aria-label="Cross off cluster"]:disabled',
 		);
-		if (described) continue;
-		await control.locator("xpath=..").hover();
-		await expect(
-			scope.page().locator('[role="tooltip"]:not([hidden])'),
-			"a disabled control with no reason",
-		).toHaveText(/\S/);
-		await scope.page().mouse.move(0, 0);
+		for (const control of await disabled.all()) {
+			const described = await control.evaluate((el) =>
+				(el.getAttribute("aria-describedby") ?? "")
+					.split(/\s+/)
+					.some((id) => id && document.getElementById(id)?.textContent?.trim()),
+			);
+			if (described) continue;
+			await control.locator("xpath=..").hover();
+			await expect(
+				scope.page().locator('[role="tooltip"]:not([hidden])'),
+				"a disabled control with no reason",
+			).toHaveText(/\S/);
+			await scope.page().mouse.move(0, 0);
+		}
 	}
 }
 

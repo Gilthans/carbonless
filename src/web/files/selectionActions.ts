@@ -30,7 +30,17 @@ export interface SelectionContext {
 	 * not expanded context). Undefined: unknown, taken as yes.
 	 */
 	inDiff?: boolean;
+	/**
+	 * The diff on screen is not yet the viewed head's (a Refresh moved the
+	 * head first): its lines would be named on the wrong commit.
+	 */
+	headUnsure?: boolean;
+	/** An earlier patch set (read-only): GitHub's comments go on the latest. */
+	readOnly?: boolean;
 }
+
+/** Why nothing can start on a span while the diff shown isn't the head's. */
+export const HEAD_UNSURE = "The new head's diff is loading";
 
 /** One thing a selection can start: Comment now, more kinds later. */
 export interface SelectionAction {
@@ -63,6 +73,8 @@ export function commentAvailable(
 	ctx: SelectionContext,
 ): true | string {
 	if (ctx.writes === "as-of") return "Comments are off as of a cutoff";
+	if (ctx.readOnly) return "An earlier patch set: comment on the latest";
+	if (ctx.headUnsure && span.subject !== "file") return HEAD_UNSURE;
 	if (ctx.writes === "viewer") {
 		return "Comments are off when viewing as someone else";
 	}

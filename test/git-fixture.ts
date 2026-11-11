@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fixtureGit } from "./trace-run";
 
 /**
  * Test and hook timeouts for test files that run git and the fake gh. Each
@@ -64,11 +65,13 @@ export function testGitEnv(
 export function createGitFixture(commits: FixtureCommit[]): GitFixture {
 	const path = mkdtempSync(join(tmpdir(), "carbonless-fixture-"));
 	const git = (...args: string[]) =>
-		execFileSync("git", args, {
-			cwd: path,
-			encoding: "utf8",
-			env: testGitEnv(),
-		}).trim();
+		fixtureGit(args, () =>
+			execFileSync("git", args, {
+				cwd: path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim(),
+		);
 
 	git("init", "--quiet", "--initial-branch=main");
 	git("config", "user.name", "Fixture Author");
@@ -101,17 +104,22 @@ export function createGitFixture(commits: FixtureCommit[]): GitFixture {
 		for (const [name, sha] of Object.entries(commit.submodule ?? {})) {
 			git("update-index", "--add", "--cacheinfo", `160000,${sha},${name}`);
 		}
-		execFileSync(
-			"git",
-			["commit", "--quiet", "--allow-empty", "-m", commit.message],
-			{
+		const commitArgs = [
+			"commit",
+			"--quiet",
+			"--allow-empty",
+			"-m",
+			commit.message,
+		];
+		fixtureGit(commitArgs, () =>
+			execFileSync("git", commitArgs, {
 				cwd: path,
 				env: testGitEnv(
 					commit.date
 						? { GIT_AUTHOR_DATE: commit.date, GIT_COMMITTER_DATE: commit.date }
 						: {},
 				),
-			},
+			}),
 		);
 		return git("rev-parse", "HEAD");
 	});

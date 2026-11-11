@@ -7,13 +7,22 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { AgentThread } from "../../shared/agent";
+import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { DiffSide, ReviewThread } from "../../shared/types";
 import { AgentThreadCard } from "../agent/AgentThreadCard";
+import { AgentUnplaced } from "../agent/AgentUnplaced";
 import { agentStatusQuery } from "../agent/api";
+import { useAgentPlacing } from "../agent/placeable";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
 import { ThreadStatus } from "../threads/ThreadStatus";
-import { ChangedSince, PlacementChip, usePlacementInfo } from "./ThreadFate";
+import {
+	ChangedChip,
+	ChangedSince,
+	NearLink,
+	PlacementChip,
+	usePlacementInfo,
+} from "./ThreadFate";
 
 /**
  * One thread opened in Files changed: a header with its state (resolved in
@@ -26,8 +35,10 @@ export function ThreadBlock(props: {
 	thread: ReviewThread;
 	/** Its line isn't in this diff: shown in the file's header instead. */
 	unplaced?: boolean;
+	/** Resolve was pressed on it (not Unresolve), from the button `from`. */
+	onResolved?: (thread: ReviewThread, from: Element) => void;
 }) {
-	const { thread } = props;
+	const { thread, onResolved } = props;
 	const placement = usePlacementInfo().placements?.get(thread.id);
 	return (
 		<article
@@ -72,7 +83,16 @@ export function ThreadBlock(props: {
 				{placement?.kind === "changed" && (
 					<ChangedSince thread={thread} placement={placement} />
 				)}
-				<Conversation readId={props.readId} thread={thread} />
+				<Conversation
+					readId={props.readId}
+					thread={thread}
+					onToggle={
+						onResolved &&
+						((resolved, from) => {
+							if (resolved) onResolved(thread, from);
+						})
+					}
+				/>
 			</div>
 		</article>
 	);
@@ -153,6 +173,8 @@ export function ThreadRow(props: {
 	id?: string;
 	place: CardPlace;
 	rail?: string;
+	/** Resolve was pressed on one of them (resolveCollapse.ts). */
+	onResolved?: (thread: ReviewThread, from: Element) => void;
 }) {
 	return (
 		<TailRow
@@ -162,7 +184,12 @@ export function ThreadRow(props: {
 			rail={props.rail}
 		>
 			{props.threads.map((t, i) => (
-				<ThreadBlock key={t.id || `#${i}`} readId={props.readId} thread={t} />
+				<ThreadBlock
+					key={t.id || `#${i}`}
+					readId={props.readId}
+					thread={t}
+					onResolved={props.onResolved}
+				/>
 			))}
 		</TailRow>
 	);
@@ -181,8 +208,11 @@ export function AgentThreadRow(props: {
 	unplaced?: boolean;
 	/** Asked on an earlier head (the file's header): each card says on which. */
 	outdated?: boolean;
+	/** Traced and not placed in this file: each with its fate. */
+	fates?: ReadonlyMap<AgentThread, UnplacedPlacement>;
 }) {
 	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
+	const { placements } = useAgentPlacing();
 	return (
 		<TailRow
 			testId="agent-thread-row"
@@ -190,15 +220,86 @@ export function AgentThreadRow(props: {
 			place={props.place}
 			rail={props.rail}
 		>
-			{props.threads.map((t) => (
-				<AgentThreadCard
-					key={t.id}
-					thread={t}
-					status={status}
-					unplaced={props.unplaced}
-					outdated={props.outdated ? t.anchor.commit : undefined}
-				/>
-			))}
+			{props.fates ? (
+				<ul className="space-y-1.5">
+					{props.threads.map((t) => {
+						const fate = props.fates?.get(t);
+						return (
+							<AgentUnplaced
+								key={t.id}
+								thread={t}
+								fate={fate?.fate ?? null}
+								movedTo={fate?.movedTo}
+								link={
+									fate?.nearest && (
+										<NearLink
+											path={fate.path}
+											line={fate.nearest.line}
+											side={fate.nearest.side}
+										/>
+									)
+								}
+							/>
+						);
+					})}
+				</ul>
+			) : (
+				props.threads.map((t) => {
+					const card = (
+						<AgentThreadCard
+							key={t.id}
+							thread={t}
+							status={status}
+							unplaced={props.unplaced}
+							outdated={props.outdated ? t.anchor.commit : undefined}
+						/>
+					);
+					const traced = placements?.get(t.id);
+					return traced?.kind === "changed" ? (
+						<AgentChanged key={t.id} thread={t} placement={traced}>
+							{card}
+						</AgentChanged>
+					) : (
+						card
+					);
+				})
+			)}
 		</TailRow>
+	);
+}
+
+type UnplacedPlacement = Extract<ThreadPlacement, { kind: "unplaced" }>;
+
+/** An agent thread as the placement pieces read it (a review thread's fields). */
+const asThread = (t: AgentThread) => ({
+	createdAt: t.at,
+	path: t.anchor.path,
+	code: t.code ?? null,
+	resolved: t.resolved,
+});
+
+/**
+ * An agent thread on the lines that replaced the ones it was asked on, as
+ * a review thread's card has it: the "changed since" chip, its old lines
+ * above the new ones and the fate line; then its own card.
+ */
+function AgentChanged(props: {
+	thread: AgentThread;
+	placement: Extract<ThreadPlacement, { kind: "changed" }>;
+	children: ReactNode;
+}) {
+	const thread = asThread(props.thread);
+	return (
+		<div
+			data-testid="agent-changed"
+			data-thread={props.thread.id}
+			className="min-w-0 space-y-1.5"
+		>
+			<p className="flex min-h-10 items-center">
+				<ChangedChip thread={thread} />
+			</p>
+			<ChangedSince thread={thread} placement={props.placement} />
+			{props.children}
+		</div>
 	);
 }

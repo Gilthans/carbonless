@@ -1,11 +1,14 @@
+import { spawn } from "node:child_process";
 import {
 	copyFileSync,
 	mkdirSync,
+	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
 } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 // `pnpm release local`: build and pack the checkout it runs in, whatever its
@@ -147,4 +150,64 @@ export async function releaseLocal(
 		);
 	}
 	return tarball;
+}
+
+/** Runs a command, showing its output on stderr as it comes. */
+const streaming: Runner = (cmd, args, opts) =>
+	new Promise((resolve, reject) => {
+		const child = spawn(cmd, args, {
+			cwd: opts?.cwd,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (d) => {
+			stdout += d;
+			if (cmd !== "tar") process.stderr.write(d);
+		});
+		child.stderr.on("data", (d) => {
+			stderr += d;
+			process.stderr.write(d);
+		});
+		child.on("error", reject);
+		child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+	});
+
+const defaultOut = () =>
+	join(
+		process.env.XDG_DATA_HOME || join(homedir(), ".local/share"),
+		"carbonless/releases",
+	);
+
+/**
+ * `pnpm release local [--out <dir>] [--no-install]`: prints the tarball's
+ * path as the last stdout line; everything else goes to stderr.
+ */
+export async function localCommand(
+	rest: readonly string[],
+	usage: () => never,
+): Promise<void> {
+	let out = defaultOut();
+	let install = true;
+	for (let i = 0; i < rest.length; i++) {
+		const a = rest[i] ?? "";
+		if (a === "--out") out = rest[++i] ?? usage();
+		else if (a.startsWith("--out=")) out = a.slice(6);
+		else if (a === "--no-install") install = false;
+		else usage();
+	}
+	if (!out) usage();
+	// pnpm runs scripts from the package root; a relative --out is the
+	// caller's, as INIT_CWD keeps it.
+	out = resolve(process.env.INIT_CWD || process.cwd(), out);
+	const scratch = mkdtempSync(join(tmpdir(), "crb-release-"));
+	try {
+		const tarball = await releaseLocal(
+			{ run: streaming, log: (line) => console.error(line) },
+			{ root: process.cwd(), out, install, scratch },
+		);
+		console.log(tarball);
+	} finally {
+		rmSync(scratch, { recursive: true, force: true });
+	}
 }

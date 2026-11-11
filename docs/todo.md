@@ -1,5 +1,9 @@
 # To do
 
+Moved to Linear on 2026-11-09 (workspace `carbonless`, team `CAR`; see
+"Tickets" in `CLAUDE.md`). Add nothing here: this file is kept only until
+the owner retires it.
+
 In priority order.
 
 ## Milestones
@@ -21,7 +25,7 @@ Foundation for everything below.
 
 - **PR review view (done):** open a PR, see the overview, review it cluster by cluster
   with progress tracking. Design:
-  `docs/superpowers/specs/2026-10-21-pr-review-parity-design.md`.
+  the PR review parity spec (Linear, M2 project documents).
 - **Commenting** from carbonless.
 - **LEFT-side thread placement (discuss with the owner right after the
   threads stage):** GitHub records no commit for a comment's LEFT side
@@ -38,8 +42,8 @@ Foundation for everything below.
 - **Re-review after new pushes (done 2026-11-08):** one of GitHub's
   weakest spots. Patch sets, the patch set graph and the toast, the since
   view with carried marks, thread placement with fates, "since your
-  verdict" on the Final Verdict tab. Design:
-  `docs/superpowers/specs/2026-11-04-re-review-design.md`; demo: the
+  verdict" on the Final Verdict tab. Design: the
+  document on Linear CAR-5; demo: the
   gallery's re-review showcase. Still open:
   - Show a thread's code as the commenter saw it: diff its commit against
     the base of the view the comment was made in ("changes since your last
@@ -146,8 +150,8 @@ agent threads on Home.
   cache clone, config and state. Drop the checkout's `alternates` link to
   the cache clone, so it becomes a standalone clone. If the sandbox can't
   start, the agent doesn't start, and the status chip says why. Test that
-  a `git update-ref` from the agent fails. On the devbox `bwrap` is
-  installed, but `kernel.apparmor_restrict_unprivileged_userns = 1` may
+  a `git update-ref` from the agent fails. Where `bwrap` is
+  installed, `kernel.apparmor_restrict_unprivileged_userns = 1` may still
   block it; test that first.
 
 Follow-ups from the first slice's final review (2026-11-07):
@@ -159,7 +163,6 @@ Follow-ups from the first slice's final review (2026-11-07):
   `allow_always` (M3).
 - A tab hidden 30 min or more mid-turn idles the session out, and the
   question is asked again (M7).
-- The hunk's fence in the prompt isn't escaped (M8).
 - An agent that ignores a cancel blocks the queue: SIGTERM it after a
   grace period (11a).
 - `authorOf` never returns `pr_author` (11c).
@@ -167,6 +170,15 @@ Follow-ups from the first slice's final review (2026-11-07):
 - An empty `claim.lock` races (13).
 - A leash value from a later version is rewritten to `open` on Save.
 - `snapshotHead` is read cache-only in `AgentOverviewRow`.
+- Edit the agent's env in the setup modal (owner, 2026-11-09). The Env box
+  is a read-only hint: `agent.env` can be set only by editing
+  `config.json` by hand, and the hint's `$(which claude)` is shell syntax
+  that is never expanded. Make it an editable `NAME=value` per line field
+  that shows what `config.json` has. A preset's `envHint` pre-fills it,
+  with the path resolved where the server can find it (e.g.
+  `CLAUDE_CODE_EXECUTABLE=/home/you/.local/bin/claude`). Check and Save
+  use the edited env. A `…TOKEN` value is masked when shown, since GET
+  `/api/config/agent` returning env values is follow-up 11d above.
 
 ## Future plans
 
@@ -187,10 +199,10 @@ Not scheduled yet; after everything above.
   along the lines of git-appraise (owner, 2026-10-28). Until then a span rides
   in a hidden marker in the GitHub comment
   (`docs/superpowers/specs/2026-10-27-new-threads-design.md`).
-- **Search across the PR:** Files changed shows one file at a time, so the
-  browser's find can't reach the others; add a search over every changed
-  file (and threads) that jumps to each match (owner, 2026-11-01; not for
-  milestone 2).
+- **Search across the PR:** done 2026-11 as Find in PR (Cmd+F / Ctrl+F on
+  Files changed; paths, changed lines and shown context;
+  `docs/superpowers/specs/2026-11-05-find-in-pr-design.md`).
+  - **Follow-up:** search threads too (owner, 2026-11-01).
 - **Install as a web app:** a PWA (manifest, icons, a service worker that
   only caches the app shell) so carbonless can be added to the phone's home
   screen and the desktop's app list (owner, 2026-11-01).
@@ -199,7 +211,7 @@ Not scheduled yet; after everything above.
 - **Bots in human threads:** decide how bot comments (review bots, CI
   bots replying in a human thread) should count in a thread's attention set.
   For now (2026-10-26) bots never join it and a bot's comment never counts as
-  the latest one (`docs/superpowers/specs/2026-10-26-pr-threads-design.md`).
+  the latest one (the PR threads spec, Linear, M2 project documents).
 - **Attention set:** like Gerrit's, but computed automatically as far as
   possible (whose turn it is on each PR), plus a view of pending review work
   across PRs.
@@ -272,6 +284,9 @@ Not scheduled yet; after everything above.
 - Phone: the floating Files button can cover a reply box, and stays aside
   while refusals are listed.
 - On a merged PR, a LEFT thread's code shows GitHub's hunk.
+- File tree: a crossed-off file's reason chips sit inside the name's
+  truncating span, so a long name cuts them off (seen in the Find in PR
+  review, pre-existing).
 
 - Big changed files are slow (measured 2026-11-02 on master, not caused by
   word marks): a 2,000-line changed file takes 3–7 s to open and 8–30 s of
@@ -297,7 +312,7 @@ Not scheduled yet; after everything above.
   a known language" (10/10), and `wordDiff.test.ts`'s 100 ms CPU budget for
   similar pairs (5/5; isolated runs take 51–89 ms, so little headroom).
 - Old agent worktrees under `.worktrees/` and stray processes (e.g. old
-  `threads-c` instances on test-automation#99) pile up; prune them.
+  `threads-c` instances on the real-PR check) pile up; prune them.
 
 ## Final Verdict and Home
 

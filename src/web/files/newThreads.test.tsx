@@ -20,6 +20,7 @@ import type {
 	ReviewThread,
 	SessionInfo,
 } from "../../shared/types";
+import { ASK_AGENT_ACTION } from "../agent/askAgentAction";
 import { ShortcutsProvider } from "../shortcuts";
 import { type LineTexts, spanTexts } from "../threads/draftMove";
 import { draftsFor, newThreadKey } from "../threads/drafts";
@@ -31,6 +32,7 @@ import {
 import type { SpanRange } from "../threads/spanMarks";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { CODE_CELL, cellLine, spanOfRange } from "./codeSpan";
+import { contextRanges } from "./contextRanges";
 import { codeCellOf, DiffBody, type DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { getPicks, pickKey, setPicks } from "./linePicks";
@@ -203,6 +205,8 @@ function setup(
 		children?: ReactNode;
 		/** The diff shown is the viewed head's (default yes). */
 		headSure?: boolean;
+		/** The selection bar's own view facts (FilesPage's). */
+		bar?: { headSure?: boolean; readOnly?: boolean };
 	} = {},
 ) {
 	vi.stubGlobal(
@@ -250,7 +254,7 @@ function setup(
 					/>
 				</section>
 				{opts.children}
-				<SelectionBar files={[file()]} />
+				<SelectionBar files={[file()]} {...opts.bar} />
 			</ShortcutsProvider>
 		</QueryClientProvider>
 	);
@@ -325,6 +329,7 @@ beforeEach(() => {
 afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
+	contextRanges.reset();
 	localStorage.clear();
 	showInvisibles.reset();
 	ignoreWhitespace.reset();
@@ -886,6 +891,49 @@ describe("the selection bar", () => {
 				})),
 			}),
 		);
+
+	it("on a read-only earlier patch set: Comment off with why, Ask agent on", async () => {
+		const remove = registerSelectionAction(ASK_AGENT_ACTION);
+		try {
+			const { user } = setup({ bar: { readOnly: true } });
+			await loaded();
+			pick([6]);
+			const bar = within(await screen.findByTestId("selection-bar"));
+			const comment = bar.getByRole("button", { name: "Comment" });
+			expect(comment).toHaveAttribute("aria-disabled", "true");
+			expect(comment).toHaveAccessibleDescription(
+				"An earlier patch set: comment on the latest",
+			);
+			await user.click(comment);
+			expect(getComposers()).toEqual([]);
+			expect(
+				bar.getByRole("button", { name: "Ask agent" }),
+			).not.toHaveAttribute("aria-disabled");
+		} finally {
+			remove();
+		}
+	});
+
+	it("while the diff shown is not yet the viewed head's (a Refresh): Comment and Ask agent off with why", async () => {
+		const remove = registerSelectionAction(ASK_AGENT_ACTION);
+		try {
+			const { user } = setup({ bar: { headSure: false } });
+			await loaded();
+			pick([6]);
+			const bar = within(await screen.findByTestId("selection-bar"));
+			for (const name of ["Comment", "Ask agent"]) {
+				const button = bar.getByRole("button", { name });
+				expect(button, name).toHaveAttribute("aria-disabled", "true");
+				expect(button, name).toHaveAccessibleDescription(
+					"The new head's diff is loading",
+				);
+			}
+			await user.click(bar.getByRole("button", { name: "Comment" }));
+			expect(getComposers()).toEqual([]);
+		} finally {
+			remove();
+		}
+	});
 
 	it("keeps Comment visible but off, with the reason, where writing is off", async () => {
 		const { user } = setup({ overview: { writes: "as-of" } });

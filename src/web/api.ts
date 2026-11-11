@@ -5,6 +5,7 @@ import {
 	type DiffLine,
 	type EditRequest,
 	type FileHunks,
+	type HunksBatch,
 	type NewThreadAnswer,
 	type NewThreadRequest,
 	type PlacementsAnswer,
@@ -204,6 +205,22 @@ export const fetchRereview = (from: number, to: RereviewTo) =>
 	);
 
 export type RereviewTo = { patchset: number } | { head: string };
+/** Several files' hunks (the search's prefetch); with `from`, the since view's. */
+export const fetchHunksBatch = (
+	revision: string,
+	indexes: readonly number[],
+	from?: number,
+) =>
+	request<HunksBatch>(
+		`/api/files/hunks?${new URLSearchParams({
+			revision,
+			indexes: indexes.join(","),
+			...(from === undefined ? {} : { from: String(from) }),
+		})}`,
+	);
+
+/** A revision's hunks and context never change; kept this long unobserved, so a search's prefetch outlives the bar. */
+export const HUNKS_KEPT_MS = 60 * 60_000;
 
 /** Every unresolved thread of read `readId` placed into a patch set or a head. */
 export const fetchPlacements = (readId: string, to: RereviewTo) =>
@@ -225,17 +242,23 @@ export const postPlacement = (
 		{ patchset, anchor },
 	);
 
+/**
+ * Unchanged lines `from..to` of a file; with `since`, the since view's (the
+ * interdiff's from that patch set, numbered as its hunks are).
+ */
 export const fetchContext = (
 	revision: string,
 	index: number,
 	from: number,
 	to: number,
+	since?: number,
 ) =>
 	request<DiffLine[]>(
 		`/api/files/${index}/context?${new URLSearchParams({
 			revision,
 			newFrom: String(from),
 			newTo: String(to),
+			...(since === undefined ? {} : { from: String(since) }),
 		})}`,
 	);
 
@@ -773,6 +796,7 @@ export const hunksQuery = (revision: string, index: number, from?: number) =>
 		queryFn: () => fetchHunks(revision, index, from),
 		// A revision's hunks never change.
 		staleTime: Number.POSITIVE_INFINITY,
+		gcTime: HUNKS_KEPT_MS,
 	});
 
 /** How often the page asks again while the engine is still computing. */
@@ -839,9 +863,12 @@ export const contextQuery = (
 	index: number,
 	from: number,
 	to: number,
+	/** The since view's patch set (hunksQuery's `from`): its own lines. */
+	since?: number,
 ) =>
 	queryOptions({
-		queryKey: ["context", revision, index, from, to],
-		queryFn: () => fetchContext(revision, index, from, to),
+		queryKey: ["context", revision, index, from, to, since ?? null],
+		queryFn: () => fetchContext(revision, index, from, to, since),
 		staleTime: Number.POSITIVE_INFINITY,
+		gcTime: HUNKS_KEPT_MS,
 	});

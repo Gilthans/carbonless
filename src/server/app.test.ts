@@ -23,6 +23,8 @@ import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { AgentStatus, AgentThread } from "../shared/agent";
 import type {
 	CommentsView,
+	DiffLine,
+	HunksBatch,
 	ReviewThread,
 	ReviewView,
 	SessionInfo,
@@ -590,6 +592,73 @@ describe("API", () => {
 			{ kind: "context", oldNo: 10, newNo: 10, text: "line 10" },
 			{ kind: "context", oldNo: 11, newNo: 11, text: "line 11" },
 		]);
+	});
+
+	it("serves several files' hunks in one request, each equal to the single-file route's", async () => {
+		pr.moveHead({ "bin.dat": "a\0b\n" });
+		await post("/api/refresh");
+		const view: ReviewView = await get("/api/review");
+		const rev = view.revision;
+		const indexes = ["new.txt", "bin.dat", "a.txt"].map((path) => {
+			const file = view.files.find((f) => f.path === path);
+			if (!file) throw new Error(`no ${path}`);
+			return file.index;
+		});
+		const batch: HunksBatch = await get(
+			`/api/files/hunks?revision=${rev}&indexes=${indexes.join(",")}`,
+		);
+		expect(batch.files.map((f) => f.index)).toEqual(indexes);
+		for (const file of batch.files) {
+			expect(file.hunks).toEqual(
+				await get(`/api/files/${file.index}/hunks?revision=${rev}`),
+			);
+		}
+		const binary = view.files.find((f) => f.path === "bin.dat")?.index;
+		expect(batch.files.find((f) => f.index === binary)?.hunks).toEqual({
+			hunks: [],
+			newLineCount: 0,
+		});
+	});
+
+	it("answers a duplicate index once", async () => {
+		const batch: HunksBatch = await get(
+			`/api/files/hunks?revision=${await revision()}&indexes=0,0`,
+		);
+		expect(batch.files.map((f) => f.index)).toEqual([0]);
+	});
+
+	it("answers a batch of another revision with 409", async () => {
+		const old = await revision();
+		pr.moveHead({ "later.txt": "later\n" });
+		await post("/api/refresh");
+		const res = await inject(`/api/files/hunks?revision=${old}&indexes=0`);
+		expect(res.statusCode).toBe(409);
+		expect(res.json()).toEqual({ error: "stale" });
+	});
+
+	it.each([
+		["/api/files/hunks?revision=R", 400, "indexes is required"],
+		["/api/files/hunks?revision=R&indexes=", 400, "indexes is required"],
+		["/api/files/hunks?revision=R&indexes=1,x", 400, "Invalid file index"],
+		["/api/files/hunks?revision=R&indexes=1.5", 400, "Invalid file index"],
+		["/api/files/hunks?revision=R&indexes=-1", 400, "Invalid file index"],
+		["/api/files/hunks?revision=R&indexes=,", 400, "Invalid file index"],
+		[
+			"/api/files/hunks?revision=R&indexes=1&indexes=2",
+			400,
+			"indexes is required",
+		],
+		[
+			`/api/files/hunks?revision=R&indexes=${Array.from({ length: 26 }, (_, i) => i).join(",")}`,
+			400,
+			"At most 25 files a request",
+		],
+		["/api/files/hunks?indexes=0", 400, "revision is required"],
+		["/api/files/hunks?revision=R&indexes=0,99", 404, "No file 99"],
+	])("answers a batch %s with %i", async (url, status, message) => {
+		const res = await inject(url.replace("R", await revision()));
+		expect(res.statusCode).toBe(status);
+		expect(res.json().error).toContain(message);
 	});
 
 	it("answers hunks and context of another revision with 409", async () => {
@@ -1298,6 +1367,46 @@ describe("API", () => {
 			expect(res.statusCode).toBe(404);
 		});
 
+		it("GET agent/placements: by head or patch set; 400 for both, neither or a bad oid; 404 for an unknown patch set", async () => {
+			expect((await ask()).statusCode).toBe(200);
+			const h1 = pr.head();
+			const byHead = await get(`/api/agent/placements?head=${h1}`);
+			expect(byHead).toMatchObject({
+				revision: await revision(),
+				threads: [
+					{
+						placement: {
+							kind: "placed",
+							anchor: { path: "a.txt", line: 2 },
+						},
+					},
+				],
+			});
+			const ps1: ReviewView = await get("/api/review");
+			const [key = ""] = keys(ps1);
+			await post("/api/review/states", {
+				revision: ps1.revision,
+				changes: [{ key, state: "reviewed" }],
+			});
+			expect(await get("/api/agent/placements?ps=1")).toMatchObject({
+				revision: ps1.revision,
+				threads: [{ placement: { kind: "placed" } }],
+			});
+			for (const bad of [
+				"",
+				`ps=1&head=${h1}`,
+				"head=main",
+				"head=abc",
+				"ps=0",
+			]) {
+				expect(
+					(await inject(`/api/agent/placements?${bad}`)).statusCode,
+					bad,
+				).toBe(400);
+			}
+			expect((await inject("/api/agent/placements?ps=9")).statusCode).toBe(404);
+		});
+
 		it("a viewer session has no agent: 404 no-agent", async () => {
 			const viewer = await registry.open({
 				pr: pr.arg,
@@ -1306,6 +1415,7 @@ describe("API", () => {
 			for (const [method, url] of [
 				["GET", "/api/agent"],
 				["GET", "/api/agent/threads"],
+				["GET", `/api/agent/placements?head=${pr.head()}`],
 				["POST", "/api/agent/cancel"],
 			] as const) {
 				const res = await inject(r(url, viewer.id), { method });
@@ -1702,6 +1812,28 @@ describe("API", () => {
 			}
 		});
 
+		it("GET /manifest.webmanifest starts a home-screen install with the key", async () => {
+			const keyed = await buildApp(registry, { accessKey: "k3y" });
+			try {
+				expect((await keyed.inject("/manifest.webmanifest")).statusCode).toBe(
+					401,
+				);
+				const res = await keyed.inject({
+					url: "/manifest.webmanifest",
+					cookies: { crb_key: "k3y" },
+				});
+				expect(res.headers["content-type"]).toContain(
+					"application/manifest+json",
+				);
+				expect(res.headers["cache-control"]).toBe("no-store");
+				expect(res.json().start_url).toBe("/?key=k3y");
+			} finally {
+				await keyed.close();
+			}
+			const open = await inject("/manifest.webmanifest");
+			expect(open.json().start_url).toBe("/");
+		});
+
 		it("POST /api/reviews refuses a bad body (400) and an unreviewable PR (409)", async () => {
 			for (const body of [
 				undefined,
@@ -2025,6 +2157,66 @@ describe("API", () => {
 			expect(
 				(await inject(`/api/files/0/hunks?revision=${view.revision}&from=9`))
 					.statusCode,
+			).toBe(404);
+			// context?from= is the since view's: a.txt is untouched since PS1,
+			// so line 2 (the PR's own, unchanged) loads; the full diff skips it.
+			const context = (from: string) =>
+				get(
+					`/api/files/0/context?revision=${view.revision}&newFrom=1&newTo=3${from}`,
+				);
+			expect((await context("&from=1")).map((l: DiffLine) => l.newNo)).toEqual([
+				1, 2, 3,
+			]);
+			expect((await context("")).map((l: DiffLine) => l.newNo)).toEqual([1, 3]);
+			expect(
+				(
+					await inject(
+						`/api/files/0/context?revision=${view.revision}&newFrom=1&newTo=3&from=x`,
+					)
+				).statusCode,
+			).toBe(400);
+			expect(
+				(
+					await inject(
+						`/api/files/0/context?revision=${view.revision}&newFrom=1&newTo=3&from=9`,
+					)
+				).statusCode,
+			).toBe(404);
+			// files/hunks?from= (the search's prefetch) batches the since
+			// view's hunks: a.txt is untouched since PS1 (one gap, no lines),
+			// later.txt is new. Without from, the full diff's, as before.
+			const batch = (from: string) =>
+				get(
+					`/api/files/hunks?revision=${view.revision}&indexes=0,${later.index}${from}`,
+				);
+			const sinceBatch = await batch("&from=1");
+			expect(sinceBatch.files.map((f: { index: number }) => f.index)).toEqual([
+				0,
+				later.index,
+			]);
+			expect(sinceBatch.files[0].hunks).toMatchObject({
+				hunks: [],
+				wholeGap: true,
+			});
+			expect(sinceBatch.files[1].hunks).toEqual(since);
+			const fullBatch = await batch("");
+			expect(fullBatch.files[0].hunks).toEqual(
+				await get(`/api/files/0/hunks?revision=${view.revision}`),
+			);
+			expect(fullBatch.files[0].hunks.hunks.length).toBeGreaterThan(0);
+			expect(
+				(
+					await inject(
+						`/api/files/hunks?revision=${view.revision}&indexes=0&from=x`,
+					)
+				).statusCode,
+			).toBe(400);
+			expect(
+				(
+					await inject(
+						`/api/files/hunks?revision=${view.revision}&indexes=0&from=9`,
+					)
+				).statusCode,
 			).toBe(404);
 			// Nothing written by viewing.
 			expect((await get("/api/session")).patchsets).toHaveLength(1);
