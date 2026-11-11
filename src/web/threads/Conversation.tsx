@@ -64,8 +64,8 @@ export function Conversation(props: {
 	thread: ReviewThread;
 	/** Leave out the opening comment (shown above it already). */
 	skipFirst?: boolean;
-	/** Told after a resolve or unresolve (the Overview's fade). */
-	onToggle?: (resolved: boolean) => void;
+	/** Told after a resolve or unresolve, with the button pressed (the Overview's fade, Files changed's close). */
+	onToggle?: (resolved: boolean, from: Element) => void;
 }) {
 	const { thread } = props;
 	if (thread.unavailable !== undefined || thread.id === "")
@@ -96,7 +96,7 @@ export function useCanAct(thread: ReviewThread): boolean {
  */
 export function ThreadActions(props: {
 	thread: ReviewThread;
-	onToggle?: (resolved: boolean) => void;
+	onToggle?: (resolved: boolean, from: Element) => void;
 }) {
 	const { thread } = props;
 	const on = useWritesOn();

@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import fastifyStatic from "@fastify/static";
+// Its types (reply.sendFile); the plugin itself loads only with a web root.
+import type {} from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import {
 	type AgentConfig,
@@ -733,6 +734,8 @@ export async function buildApp(
 			.send(withPrTitle(html, title));
 	};
 	if (webRoot) {
+		// Loaded here: crb serve --api-only (the dev server) never needs it.
+		const { default: fastifyStatic } = await import("@fastify/static");
 		await app.register(fastifyStatic, { root: webRoot });
 		// Client routes (TanStack Router) all load the single page.
 		app.setNotFoundHandler((request, reply) => {
