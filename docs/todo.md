@@ -42,8 +42,8 @@ Foundation for everything below.
 - **Re-review after new pushes (done 2026-11-08):** one of GitHub's
   weakest spots. Patch sets, the patch set graph and the toast, the since
   view with carried marks, thread placement with fates, "since your
-  verdict" on the Final Verdict tab. Design:
-  `docs/superpowers/specs/2026-11-04-re-review-design.md`; demo: the
+  verdict" on the Final Verdict tab. Design: the
+  document on Linear CAR-5; demo: the
   gallery's re-review showcase. Still open:
   - Show a thread's code as the commenter saw it: diff its commit against
     the base of the view the comment was made in ("changes since your last

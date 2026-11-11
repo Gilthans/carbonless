@@ -5,7 +5,7 @@ import { createGitFixture, testGitEnv } from "./git-fixture";
 
 /**
  * One PR history with every shape the re-review engine tells apart
- * (docs/superpowers/specs/2026-11-02-re-review-scenarios-and-prior-art.md,
+ * (Linear CAR-5, document "Re-review after new pushes: scenarios and prior art",
  * S1–S9 and I1–I10): the PR (two commits on `b0`: a.txt lines 2 and 30,
  * plus new.txt), the base moving on (`b1`: line 15), with and without
  * touching a line the PR changed (`b1c`: line 30), and each way the author

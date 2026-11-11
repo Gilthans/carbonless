@@ -24,8 +24,8 @@ The general principles behind this design, with their reasoning, are in
 `docs/gitdb-design-principles.md`. The numbers in brackets below, like
 "(GitDB 19)", point to them.
 
-**Re-review after new pushes** (design:
-`docs/superpowers/specs/2026-11-04-re-review-design.md`) adds to this format
+**Re-review after new pushes** (design: the
+document "Re-review after new pushes: design" on Linear CAR-5) adds to this format
 the events, refs and folding that let a reviewer move to a new push and keep
 every mark it can carry: `carried` and `thread-placed` events, the `-base` pin
 ref, per-patch-set folding. The engine that computes carries and the UI
