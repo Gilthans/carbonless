@@ -78,7 +78,7 @@ export class SessionRegistry {
 	/** Resets under way: opens and gets are refused meanwhile (a straggler's). */
 	#resetting = 0;
 	/** Closes under way of sessions already out of #open (reset waits for them). */
-	readonly #closing = new Set<Promise<void>>();
+	readonly #closing = new Map<Promise<void>, string>();
 
 	constructor(options: { idleMs?: number; now?: () => number } = {}) {
 		this.#idleMs = options.idleMs ?? IDLE_MS;
@@ -152,7 +152,7 @@ export class SessionRegistry {
 	/** Closes `session`, out of #open already, tracked until it has closed. */
 	#closeLater(session: Session): Promise<void> {
 		const closing = session.close();
-		this.#closing.add(closing);
+		this.#closing.set(closing, session.id);
 		const done = () => this.#closing.delete(closing);
 		closing.then(done, done);
 		return closing;
@@ -279,7 +279,7 @@ export class SessionRegistry {
 		// Opens that land close their session (#closeLater): wait for those
 		// closes too, as they come.
 		for (;;) {
-			const waiting = [...opens.keys(), ...this.#closing];
+			const waiting = [...opens.keys(), ...this.#closing.keys()];
 			const left = deadline - Date.now();
 			if (waiting.length === 0 || left <= 0) break;
 			let timer: NodeJS.Timeout | undefined;
@@ -292,8 +292,8 @@ export class SessionRegistry {
 			clearTimeout(timer);
 		}
 		const pending = [...opens.values()].map((o) => `${o} (pending)`);
-		if (this.#closing.size > 0) {
-			pending.push(`${this.#closing.size} session(s) still closing`);
+		for (const id of this.#closing.values()) {
+			pending.push(`session ${id} (still closing)`);
 		}
 		return { closed: all.length, pending };
 	}
@@ -312,6 +312,6 @@ export class SessionRegistry {
 		const all = [...this.#open.values()];
 		this.#open.clear();
 		await Promise.all(all.map((e) => e.session.close()));
-		await Promise.allSettled([...this.#closing]);
+		await Promise.allSettled([...this.#closing.keys()]);
 	}
 }

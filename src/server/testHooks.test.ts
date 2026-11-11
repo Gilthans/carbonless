@@ -14,8 +14,9 @@ import { fakeGhServerCalls } from "../../test/fake-gh/server.mjs";
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { buildApp } from "./app";
-import { ghRunning } from "./gh";
+import { ghRunning, runGh } from "./gh";
 import { gitChildren } from "./git";
+import { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
 import { startServer } from "./serve";
 import { Session } from "./session";
@@ -167,9 +168,14 @@ describe("test hooks", () => {
 	});
 
 	/** A bare server with the hooks and a short wait (no host check). */
-	const quickHooks = async (settleMs: number) => {
+	const quickHooks = async (settleMs: number, home?: HomeService) => {
 		const quick = Fastify();
-		await registerTestHooks(quick, { token: TOKEN, registry, settleMs });
+		await registerTestHooks(quick, {
+			token: TOKEN,
+			registry,
+			settleMs,
+			...(home ? { home } : {}),
+		});
 		return {
 			reset: async (): Promise<ResetAnswer> => {
 				const res = await quick.inject({
@@ -220,6 +226,56 @@ describe("test hooks", () => {
 			expect(again).toMatchObject({ closed: 0, leftovers: [] });
 		} finally {
 			closed.restore();
+			await hooks.close();
+		}
+	});
+
+	it("a Home read that lands while the reset waits leaves nothing cached", async () => {
+		// Home's config read answers only when the test says so.
+		let answer: (() => void) | undefined;
+		const config = {
+			views: [{ name: "My PRs", repos: ["acme/api"] }],
+			refresh: { minutes: 5 },
+		};
+		const home = new HomeService({
+			config: {
+				read: () =>
+					new Promise((resolve) => {
+						answer = () => resolve({ config, problems: [] });
+					}),
+				update: async () => config,
+			},
+		});
+		const hooks = await quickHooks(20_000, home);
+		const homeResets = vi.spyOn(home, "reset");
+		try {
+			const reading = home.repo("acme", "api");
+			reading.catch(() => {});
+			await vi.waitFor(() => expect(answer).toBeDefined());
+			// A gh call the reset waits for (no session's: it stops for none).
+			pr.scenario({ hold: ["prView"] });
+			const view = runGh([
+				"pr",
+				"view",
+				"12",
+				"-R",
+				"acme/widget",
+				"--json",
+				"title",
+			]);
+			view.catch(() => {});
+			await vi.waitFor(() => expect(ghRunning().calls).not.toHaveLength(0));
+			const resetting = hooks.reset();
+			// Home was cleared; its read, past that await, writes meanwhile.
+			await vi.waitFor(() => expect(homeResets).toHaveBeenCalledTimes(1));
+			answer?.();
+			await vi.waitFor(() => expect(home.cachedRepos()).toEqual(["acme/api"]));
+			release(process.env.CRB_FAKE_GH ?? "", "prView");
+			expect((await resetting).leftovers).toEqual([]);
+			expect(home.cachedRepos()).toEqual([]);
+			await reading;
+		} finally {
+			homeResets.mockRestore();
 			await hooks.close();
 		}
 	});

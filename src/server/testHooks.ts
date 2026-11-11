@@ -111,6 +111,10 @@ export async function registerTestHooks(
 			// Per snapshot, not content alone: a fresh process has none.
 			clearSnapshotCaches();
 			const left = await settle(deadline);
+			// Again: a read that was past an await when they were cleared
+			// (Home's config read, a blob's cat-file) may have written since.
+			options.home?.reset();
+			clearSnapshotCaches();
 			return {
 				closed,
 				ghInFlight: left.calls.length,
