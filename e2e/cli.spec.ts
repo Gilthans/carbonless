@@ -1,6 +1,9 @@
 import { connect } from "node:net";
 import { CrbExitError, expect, reviewPage, test } from "./fixtures";
 
+// `crb <pr>` itself: its output, exit codes and checks.
+test.use({ crbClient: "cli" });
+
 async function exitOf(promise: Promise<unknown>): Promise<CrbExitError> {
 	const error = await promise.then(
 		() => {

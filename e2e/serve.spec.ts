@@ -14,6 +14,9 @@ import {
 	test,
 } from "./fixtures";
 
+// How `crb <pr>` and crb serve find each other.
+test.use({ crbClient: "cli" });
+
 /** A free port, let go of. */
 function freePort(): Promise<number> {
 	return new Promise((done) => {

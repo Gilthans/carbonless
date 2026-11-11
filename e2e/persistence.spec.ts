@@ -58,18 +58,23 @@ async function checkFirstCluster(page: Page) {
 
 const banner = (page: Page) => page.getByText("New commits were pushed");
 
-test("progress survives a restart", async ({ page, pr, startCrb }) => {
-	await pr(fixture);
-	const first = await startCrb();
-	await openFiles(page, first.url);
-	await checkFirstCluster(page);
-	// Leave first: its page would poll the stopped server.
-	await page.goto("about:blank");
-	await first.stop();
+test.describe("a restarted server", () => {
+	// The client finds the new server through server.json.
+	test.use({ crbClient: "cli" });
 
-	const second = await startCrb();
-	await openFiles(page, second.url);
-	await expect(clusters(page)).toHaveAttribute("aria-valuenow", "25");
+	test("progress survives a restart", async ({ page, pr, startCrb }) => {
+		await pr(fixture);
+		const first = await startCrb();
+		await openFiles(page, first.url);
+		await checkFirstCluster(page);
+		// Leave first: its page would poll the stopped server.
+		await page.goto("about:blank");
+		await first.stop();
+
+		const second = await startCrb();
+		await openFiles(page, second.url);
+		await expect(clusters(page)).toHaveAttribute("aria-valuenow", "25");
+	});
 });
 
 test("a started review stays on its snapshot after a push", async ({

@@ -4,8 +4,13 @@ import { readRequests, type Span, spansOf } from "../scripts/test-profile/load";
 import { tracer } from "../src/server/trace";
 import { testSpanContext } from "../test/trace-run";
 import {
+	CrbExitError,
 	CrbStartTimeout,
 	expect,
+	NeedsCliError,
+	OWNER_REPO,
+	PR_NUMBER,
+	runCli,
 	startServe,
 	stopChild,
 	test,
@@ -44,57 +49,139 @@ test("an undeclared console error is reported", async ({ context }) => {
 // span, whose ids the reporter derives the same way. The reporter's own
 // spans (the test, its setup phases) come after the test: see
 // scripts/test-profile/test-profile.test.ts.
-test("a test's crb, fake gh and fixture gits trace under its span", async ({
+test.describe("the client", () => {
+	// The client process traces under the test too.
+	test.use({ crbClient: "cli" });
+
+	test("a test's crb, fake gh and fixture gits trace under its span", async ({
+		pr,
+		startCrb,
+	}, info) => {
+		const dir = process.env.CRB_TRACE_DIR;
+		const run = process.env.CRB_TRACE_RUN;
+		test.skip(!dir || !run, "test traces are off (CRB_TEST_TRACES=0)");
+		const ctx = testSpanContext(
+			run as string,
+			info.testId,
+			info.retry,
+			info.repeatEachIndex,
+		);
+		await pr();
+		const crb = await startCrb();
+		// Its file is written as it exits; the worker's on flush.
+		await crb.stop();
+		tracer().flush();
+
+		const spans = spansOf(readRequests(dir as string, ctx.traceId));
+		const byId = new Map(spans.map((s) => [s.spanId, s]));
+		const under = (s: Span, ancestor: string): boolean => {
+			for (let p = s.parent; p; p = byId.get(p)?.parent ?? null) {
+				if (p === ancestor) return true;
+			}
+			return false;
+		};
+		const serve = spans.find(
+			(s) => s.service === "crb" && s.name === "crb serve",
+		);
+		expect(serve?.parent).toBe(ctx.spanId);
+		expect(
+			spans.find((s) => s.service === "crb-client" && s.name === "crb <pr>")
+				?.parent,
+		).toBe(ctx.spanId);
+		const gits = spans.filter(
+			(s) => s.service === "crb" && s.name.startsWith("git "),
+		);
+		expect(gits.length).toBeGreaterThan(0);
+		for (const git of gits) expect(under(git, serve?.spanId ?? "")).toBe(true);
+		const fakes = spans.filter((s) => s.service === "fake-gh");
+		expect(fakes.length).toBeGreaterThan(0);
+		for (const fake of fakes) {
+			expect(byId.get(fake.parent ?? "")?.name).toMatch(/^gh /);
+			expect(under(fake, serve?.spanId ?? "")).toBe(true);
+		}
+		const fixtureGits = spans.filter(
+			(s) => s.service === "playwright-worker" && s.attrs["crb.fixture"],
+		);
+		expect(fixtureGits.map((s) => s.name)).toContain("git init");
+		for (const git of fixtureGits) expect(git.parent).toBe(ctx.spanId);
+	});
+});
+
+// startCrb opens over HTTP unless a test asks for the CLI (e2e/crb-open.ts):
+// it must open what `crb <pr>` would, and fail as it would.
+
+test("startCrb over HTTP opens the review crb <pr> opens, flags and all", async ({
 	pr,
 	startCrb,
-}, info) => {
-	const dir = process.env.CRB_TRACE_DIR;
-	const run = process.env.CRB_TRACE_RUN;
-	test.skip(!dir || !run, "test traces are off (CRB_TEST_TRACES=0)");
-	const ctx = testSpanContext(
-		run as string,
-		info.testId,
-		info.retry,
-		info.repeatEachIndex,
-	);
-	await pr();
-	const crb = await startCrb();
-	// Its file is written as it exits; the worker's on flush.
-	await crb.stop();
-	tracer().flush();
-
-	const spans = spansOf(readRequests(dir as string, ctx.traceId));
-	const byId = new Map(spans.map((s) => [s.spanId, s]));
-	const under = (s: Span, ancestor: string): boolean => {
-		for (let p = s.parent; p; p = byId.get(p)?.parent ?? null) {
-			if (p === ancestor) return true;
-		}
-		return false;
-	};
-	const serve = spans.find(
-		(s) => s.service === "crb" && s.name === "crb serve",
-	);
-	expect(serve?.parent).toBe(ctx.spanId);
-	expect(
-		spans.find((s) => s.service === "crb-client" && s.name === "crb <pr>")
-			?.parent,
-	).toBe(ctx.spanId);
-	const gits = spans.filter(
-		(s) => s.service === "crb" && s.name.startsWith("git "),
-	);
-	expect(gits.length).toBeGreaterThan(0);
-	for (const git of gits) expect(under(git, serve?.spanId ?? "")).toBe(true);
-	const fakes = spans.filter((s) => s.service === "fake-gh");
-	expect(fakes.length).toBeGreaterThan(0);
-	for (const fake of fakes) {
-		expect(byId.get(fake.parent ?? "")?.name).toMatch(/^gh /);
-		expect(under(fake, serve?.spanId ?? "")).toBe(true);
+	workdir,
+}) => {
+	// Dated before the cutoff (as in comment-edits.spec.ts).
+	const p = await pr({
+		baseDate: "2026-01-01T00:00:00Z",
+		files: [
+			{
+				message: "PR change",
+				files: { "new.txt": "new\n" },
+				date: "2026-01-02T00:00:00Z",
+			},
+		],
+	});
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graphql = sc.prs[p.number]?.graphql;
+		if (!graphql) throw new Error("no graphql");
+		graphql.commits = [
+			{ commit: { oid: head, committedDate: "2026-01-02T00:00:00Z" } },
+		];
+		sc.commits = { [head]: { contexts: null } };
+	});
+	const flags = ["--as-of", "2026-01-05T00:00:00Z", "--viewer", "someone-else"];
+	for (const args of [[], flags]) {
+		const http = await startCrb(undefined, args);
+		// The CLI against the same server (it finds it through server.json).
+		const cli = await runCli(workdir, [`${OWNER_REPO}#${PR_NUMBER}`, ...args]);
+		expect(cli.code).toBe(0);
+		expect(cli.stdout).toBe(`${http.url}\n`);
 	}
-	const fixtureGits = spans.filter(
-		(s) => s.service === "playwright-worker" && s.attrs["crb.fixture"],
+	// The flags reached the server: another review.
+	expect((await startCrb()).url).not.toBe(
+		(await startCrb(undefined, flags)).url,
 	);
-	expect(fixtureGits.map((s) => s.name)).toContain("git init");
-	for (const git of fixtureGits) expect(git.parent).toBe(ctx.spanId);
+});
+
+test("a failed open over HTTP carries the server's error, in the client's words", async ({
+	pr,
+	startCrb,
+	workdir,
+}) => {
+	await pr();
+	const error = await startCrb(`${OWNER_REPO}#99`).catch((e: unknown) => e);
+	expect(error).toBeInstanceOf(CrbExitError);
+	const exit = error as CrbExitError;
+	expect(exit.code).toBe(1);
+	const cli = await runCli(workdir, [`${OWNER_REPO}#99`]);
+	expect(cli.code).toBe(1);
+	expect(cli.output).toMatch(/^crb: .*not found/);
+	// The server's log of this open, then what the client would print.
+	expect(exit.output.endsWith(cli.output)).toBe(true);
+});
+
+test("startCrb over HTTP refuses what only the CLI does, naming crbClient", async ({
+	pr,
+	startCrb,
+}) => {
+	await pr();
+	for (const [arg, args] of [
+		[`${PR_NUMBER}`, []],
+		[`https://github.com/${OWNER_REPO}/pull/${PR_NUMBER}`, []],
+		[undefined, ["--open"]],
+		[undefined, ["--head", "tip"]],
+		[undefined, ["--head", "reviewed", "--as-of", "2026-01-01T00:00Z"]],
+	] as const) {
+		const error = await startCrb(arg, [...args]).catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(NeedsCliError);
+		expect((error as Error).message).toContain('crbClient: "cli"');
+	}
 });
 
 const alive = (pid: number) => {

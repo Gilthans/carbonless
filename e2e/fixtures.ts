@@ -11,6 +11,7 @@ import {
 import { traceparent, tracer } from "../src/server/trace";
 import type { GitFixture } from "../test/git-fixture";
 import { testSpanContext } from "../test/trace-run";
+import { type CrbClient, openOverHttp } from "./crb-open";
 import {
 	type CrbExit,
 	CrbExitError,
@@ -27,6 +28,7 @@ import {
 	type PrOptions,
 } from "./pr-setup";
 
+export { type CrbClient, NeedsCliError } from "./crb-open";
 export {
 	type CrbExit,
 	CrbExitError,
@@ -101,6 +103,13 @@ function splitArgs(args: string[]): { serve: string[]; client: string[] } {
 }
 
 export const test = base.extend<{
+	/**
+	 * How startCrb opens a review: "http" POSTs /api/reviews itself, as the
+	 * client would (e2e/crb-open.ts), sparing the client process; "cli" runs
+	 * the built `crb <pr>`, for tests of the client: its output and exit
+	 * codes, PR resolution, flag checks, --open, finding or starting a server.
+	 */
+	crbClient: CrbClient;
 	_trace: undefined;
 	workdir: string;
 	pr: (opts?: PrOptions) => Promise<Pr>;
@@ -113,6 +122,8 @@ export const test = base.extend<{
 	 */
 	expectConsoleError: (pattern: RegExp) => void;
 }>({
+	crbClient: ["http", { option: true }],
+
 	// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
 	workdir: async ({}, use) => {
 		const dir = mkdtempSync(join(tmpdir(), "crb-e2e-"));
@@ -158,7 +169,7 @@ export const test = base.extend<{
 		for (const repo of repos) repo.cleanup();
 	},
 
-	startCrb: async ({ workdir, context }, use, info) => {
+	startCrb: async ({ workdir, context, crbClient }, use, info) => {
 		// One crb serve per test, started by the first crb <pr> (and again
 		// after a stop), as the CLI's auto-start would.
 		const servers: Served[] = [];
@@ -188,7 +199,10 @@ export const test = base.extend<{
 				const from = server.output().length;
 				const run = await base.step(
 					"setup: crb open",
-					() => runCli(workdir, [arg, ...client]),
+					() =>
+						crbClient === "cli"
+							? runCli(workdir, [arg, ...client])
+							: openOverHttp(server, workdir, arg, client),
 					{ box: true },
 				);
 				const output = () => `${server.output().slice(from)}${run.output}`;
