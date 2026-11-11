@@ -248,11 +248,10 @@ if (cliGraph.length && !changed.includes("src/cli.test.ts")) {
 	steps.push(queued("pnpm", "exec", "vitest", "run", "src/cli.test.ts"));
 }
 if (allE2e || e2e.size) {
-	steps.push(["pnpm", ["build"]]);
+	// Builds, then runs in its turn on a dist no other build in this tree
+	// changes while it runs (scripts/e2e.mjs).
 	const files = allE2e ? [] : [...e2e].map((s) => `e2e/${s}.spec.ts`);
-	steps.push(
-		queued("pnpm", "exec", "playwright", "test", ...files, ...passthrough),
-	);
+	steps.push(["node", ["scripts/e2e.mjs", ...files, ...passthrough]]);
 }
 
 for (const [cmd, a] of steps) {

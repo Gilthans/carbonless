@@ -109,8 +109,8 @@ loading never looking empty, checking against a real PR):
   spec files, `verify:fast`'s test steps, `pnpm verify`, `pnpm flake-check`)
   waits for one of `slots` (default 1) machine-wide locks
   (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock*`),
-  printing whose runs it waits for, so runs never overload the machine (or
-  share a tree's `dist`) together, and `vitest.config.ts`/`playwright.config.ts`
+  printing whose runs it waits for, so runs never overload the machine
+  together, and `vitest.config.ts`/`playwright.config.ts`
   refuse a run outside it (`scripts/queue-guard.mjs`): use the package
   scripts, or wrap a direct call as `node scripts/queue.mjs pnpm exec
   playwright test ...`. The file is read on every run and while waiting: a
@@ -120,6 +120,12 @@ loading never looking empty, checking against a real PR):
   a slot gets the cores divided by `slots` as workers. `CRB_NO_QUEUE=1`
   skips the queue for one command. No file (CI, a machine of one's own):
   nothing queues.
+- A tree's `dist` lock (`scripts/dist-lock.mjs`, `flock` on
+  `node_modules/.crb-dist.lock`) keeps any build (`pnpm build`, so prepack,
+  `test:pack`) from changing a `dist` that a Playwright run in the same tree
+  is serving: a build waits for those runs, printing so. An e2e run
+  (`scripts/e2e.mjs`: `test:e2e`, `verify:fast`, `flake-check`) builds before
+  its turn in the queue, then holds the lock shared from its turn to its end.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
