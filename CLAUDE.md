@@ -103,16 +103,23 @@ loading never looking empty, checking against a real PR):
   Otherwise set `CRB_NO_PHONE=1`, which drops the phone project from any
   Playwright run (`verify:fast`, `test:e2e`, `flake-check`). When unsure,
   include the phone.
-- Full test runs take turns: `pnpm verify`'s unit and e2e stages, `pnpm
-  test:e2e` without spec files, `-g` or `--last-failed`, an all-specs
-  `verify:fast` and `pnpm flake-check` wait for a machine-wide lock
-  (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock`),
-  printing whose run they wait for, so they never overload the machine (or
-  share a tree's `dist`) together. Waiting can take longer than a foreground
-  command may: run `pnpm verify` and an all-specs `verify:fast` in the
-  background (`run_in_background`); a signal ends the wait. A queued run
-  takes turns with the other full runs, so Playwright takes a worker per
-  core. `CRB_NO_QUEUE=1` skips the queue.
+- Test queue (for a machine shared by several agents): when
+  `~/.config/carbonless/queue.json` exists (`{"slots": 2}`), every Vitest and
+  Playwright run (`pnpm test`, `test:changed`, `test:e2e` with or without
+  spec files, `verify:fast`'s test steps, `pnpm verify`, `pnpm flake-check`)
+  waits for one of `slots` (default 1) machine-wide locks
+  (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock*`),
+  printing whose runs it waits for, so runs never overload the machine (or
+  share a tree's `dist`) together, and `vitest.config.ts`/`playwright.config.ts`
+  refuse a run outside it (`scripts/queue-guard.mjs`): use the package
+  scripts, or wrap a direct call as `node scripts/queue.mjs pnpm exec
+  playwright test ...`. The file is read on every run and while waiting: a
+  change applies at once, no restart. Interactive `pnpm test:watch` never
+  queues. Waiting can take longer than a foreground command may: run tests
+  in the background (`run_in_background`); a signal ends the wait. A run in
+  a slot gets the cores divided by `slots` as workers. `CRB_NO_QUEUE=1`
+  skips the queue for one command. No file (CI, a machine of one's own):
+  nothing queues.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
