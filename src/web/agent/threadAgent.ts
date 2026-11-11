@@ -21,7 +21,7 @@ import {
 } from "react";
 import type { AgentMessage, AgentThread, AgentView } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
-import { sessionQuery } from "../api";
+import { ApiError, sessionQuery } from "../api";
 import type { ComparisonBase, Viewing } from "../files/comparison";
 import {
 	agentThreadsQuery,
@@ -58,6 +58,26 @@ export function useAgentThreadsLoading(): boolean {
 	const on = useAgentOn();
 	const query = useQuery({ ...agentThreadsQuery, enabled: on });
 	return on && query.isPending && !query.isError;
+}
+
+/**
+ * The agent threads couldn't be read (not a 404, which is "no agent"):
+ * a conversation may exist, so never "Ask agent". `retry` reads them again.
+ */
+export function useAgentThreadsFailed(): {
+	failed: boolean;
+	retry: () => void;
+} {
+	const on = useAgentOn();
+	const query = useQuery({ ...agentThreadsQuery, enabled: on });
+	const failed =
+		on &&
+		query.isError &&
+		query.data === undefined &&
+		!(query.error instanceof ApiError && query.error.status === 404);
+	const { refetch } = query;
+	const retry = useCallback(() => void refetch(), [refetch]);
+	return { failed, retry };
 }
 
 /**
@@ -203,9 +223,10 @@ const seenPosted = new Set<string>();
 
 /**
  * Marks the conversation seen up to its last agent message once that has
- * been in view (`el` on screen, the page visible) for SEEN_AFTER_MS while
- * `open`. Nothing is written while nothing is unseen, so there is at most
- * one mark per agent message (principle 3).
+ * been in view (`el` on screen by its IntersectionObserver, the page
+ * visible) for SEEN_AFTER_MS while `open`. Nothing is written while
+ * nothing is unseen, so there is at most one mark per agent message
+ * (principle 3).
  */
 export function useSeenWriter(
 	conversation: AgentThread | undefined,
@@ -217,7 +238,9 @@ export function useSeenWriter(
 		? [...conversation.messages].reverse().find((m) => m.by === "ai")?.id
 		: undefined;
 	const id = conversation?.id;
-	const [inView, setInView] = useState(true);
+	// Out of view until the observer says otherwise: a panel opened (or
+	// reopened) off-screen never counts as seen before it reports.
+	const [inView, setInView] = useState(false);
 	useEffect(() => {
 		const node = el.current;
 		if (!open || !node || typeof IntersectionObserver === "undefined") return;
@@ -225,7 +248,10 @@ export function useSeenWriter(
 			setInView(entries.some((e) => e.isIntersecting));
 		});
 		observer.observe(node);
-		return () => observer.disconnect();
+		return () => {
+			observer.disconnect();
+			setInView(false);
+		};
 	}, [open, el]);
 	useEffect(() => {
 		if (!open || !inView || !id || !last) return;

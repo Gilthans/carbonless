@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentThread } from "../../shared/agent";
 import type { PrOverview, ReviewThread } from "../../shared/types";
@@ -20,12 +20,14 @@ function show(
 		conversation?: AgentThread;
 		open?: boolean;
 	},
-	opts: { writes?: PrOverview["writes"]; threads?: AgentThread[] | null } = {},
+	opts: {
+		writes?: PrOverview["writes"];
+		threads?: AgentThread[] | null;
+		fetch?: () => Promise<Response>;
+	} = {},
 ) {
-	vi.stubGlobal(
-		"fetch",
-		vi.fn(() => new Promise(() => {})),
-	);
+	const fetchMock = vi.fn(opts.fetch ?? (() => new Promise(() => {})));
+	vi.stubGlobal("fetch", fetchMock);
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false, staleTime: Infinity } },
 	});
@@ -48,7 +50,7 @@ function show(
 			/>
 		</QueryClientProvider>,
 	);
-	return onToggle;
+	return Object.assign(onToggle, { fetchMock });
 }
 
 describe("ThreadAgentButton", () => {
@@ -110,6 +112,45 @@ describe("ThreadAgentButton", () => {
 		expect(screen.queryByRole("button", { name: "Ask agent" })).toBeNull();
 		expect(
 			screen.getByRole("status", { name: "Loading agent messages" }),
+		).toBeInTheDocument();
+	});
+
+	it("an alert, not Ask agent, when the agent threads couldn't be read; pressing opens and reads them again", async () => {
+		const onToggle = show(
+			{},
+			{
+				threads: null,
+				fetch: async () =>
+					new Response(JSON.stringify({ error: "broke" }), { status: 502 }),
+			},
+		);
+		const button = await screen.findByRole("button", {
+			name: "Agent messages couldn't load",
+		});
+		expect(screen.queryByRole("button", { name: "Ask agent" })).toBeNull();
+		expect(screen.queryByRole("status")).toBeNull();
+		expect(button.className).toContain("text-bad");
+		const reads = onToggle.fetchMock.mock.calls.length;
+		button.click();
+		expect(onToggle).toHaveBeenCalledOnce();
+		await waitFor(() =>
+			expect(onToggle.fetchMock.mock.calls.length).toBeGreaterThan(reads),
+		);
+	});
+
+	it("Ask agent when the review has no agent threads to read (404)", async () => {
+		show(
+			{},
+			{
+				threads: null,
+				fetch: async () =>
+					new Response(JSON.stringify({ error: "no agent" }), {
+						status: 404,
+					}),
+			},
+		);
+		expect(
+			await screen.findByRole("button", { name: "Ask agent" }),
 		).toBeInTheDocument();
 	});
 });

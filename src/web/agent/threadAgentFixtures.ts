@@ -1,6 +1,33 @@
 /** Test data for the thread agent's component tests. */
+import { vi } from "vitest";
 import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
+
+/**
+ * An IntersectionObserver (jsdom has none) that reports each observed
+ * element in view (`true`), out of view (`false`), or never (`null`).
+ * Undone by vi.unstubAllGlobals.
+ */
+export function stubIntersection(inView: boolean | null) {
+	vi.stubGlobal(
+		"IntersectionObserver",
+		class {
+			constructor(readonly callback: IntersectionObserverCallback) {}
+			observe(target: Element) {
+				if (inView === null) return;
+				this.callback(
+					[{ target, isIntersecting: inView }] as IntersectionObserverEntry[],
+					this as unknown as IntersectionObserver,
+				);
+			}
+			unobserve() {}
+			disconnect() {}
+			takeRecords() {
+				return [];
+			}
+		},
+	);
+}
 
 export const reviewThread = (
 	more: Partial<ReviewThread> = {},

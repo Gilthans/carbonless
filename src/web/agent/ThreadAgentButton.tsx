@@ -1,4 +1,4 @@
-import { SparkleFillIcon } from "@primer/octicons-react";
+import { AlertIcon, SparkleFillIcon } from "@primer/octicons-react";
 import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import { Spinner } from "../Spinner";
@@ -7,6 +7,7 @@ import { useAgentOn } from "./api";
 import {
 	agentButtonName,
 	agentFor,
+	useAgentThreadsFailed,
 	useAgentThreadsLoading,
 	useThreadAgentContext,
 } from "./threadAgent";
@@ -20,7 +21,9 @@ const PILL = "h-7 max-sm:h-10 pointer-coarse:h-10";
  * conversation, an `accent` dot while one of the agent's is unseen; a
  * dashed sparkle ("Ask agent") before there is one. Pressed while the
  * conversation is open. A spinner in its place while the agent threads
- * load (never "Ask agent" that would then turn into a count). Absent on a
+ * load (never "Ask agent" that would then turn into a count); an alert in
+ * `bad` when they couldn't be read, still pressable (it opens the panel
+ * and reads them again). Absent on a
  * thread with no id, a deleted one, and where the session doesn't write.
  */
 export function ThreadAgentButton(props: {
@@ -32,6 +35,7 @@ export function ThreadAgentButton(props: {
 	const { conversation, open } = props;
 	const on = useAgentOn();
 	const loading = useAgentThreadsLoading();
+	const { failed, retry } = useAgentThreadsFailed();
 	const ref = useThreadAgentContext()?.buttonRef;
 	if (!agentFor(props.thread, on)) return null;
 	if (loading && !conversation) {
@@ -43,6 +47,34 @@ export function ThreadAgentButton(props: {
 			>
 				<Spinner label="Loading agent messages" size={14} />
 			</span>
+		);
+	}
+	if (failed && !conversation) {
+		const failedName = "Agent messages couldn't load";
+		return (
+			<Tooltip content={failedName} describe={false}>
+				{(trigger) => (
+					<button
+						{...trigger}
+						ref={(el) => {
+							trigger.ref(el);
+							if (ref) ref.current = el;
+						}}
+						type="button"
+						data-testid="thread-agent-button"
+						data-failed="true"
+						aria-label={failedName}
+						aria-pressed={open}
+						onClick={() => {
+							retry();
+							props.onToggle();
+						}}
+						className={`inline-flex min-w-10 shrink-0 items-center justify-center rounded-full border border-dashed border-bad px-2 text-bad hover:bg-agent focus-visible:outline-2 focus-visible:outline-accent ${PILL}`}
+					>
+						<AlertIcon size={14} aria-hidden />
+					</button>
+				)}
+			</Tooltip>
 		);
 	}
 	const name = agentButtonName(conversation, open);

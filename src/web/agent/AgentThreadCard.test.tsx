@@ -21,6 +21,7 @@ import { resetAgentWrites } from "./agentWrites";
 import { agentThreadsQuery } from "./api";
 import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
 import { SEEN_AFTER_MS } from "./threadAgent";
+import { stubIntersection } from "./threadAgentFixtures";
 
 const status = (more: Partial<AgentStatus> = {}): AgentStatus => ({
 	state: "ready",
@@ -433,6 +434,7 @@ describe("activitySummary", () => {
 
 	it("a span agent card shows the unread dot and writes seen when viewed", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		stubIntersection(true);
 		try {
 			const unread = answered({ unread: true, seenUpTo: "m1" });
 			show(unread, status());

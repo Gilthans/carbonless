@@ -28,7 +28,11 @@ import {
 	ThreadAgentContext,
 	useThreadAgent,
 } from "./threadAgent";
-import { conversation, reviewThread } from "./threadAgentFixtures";
+import {
+	conversation,
+	reviewThread,
+	stubIntersection,
+} from "./threadAgentFixtures";
 
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), { status });
@@ -224,6 +228,7 @@ describe("ThreadAgentPanel", () => {
 
 	it("writes one seen when an unseen agent message is visible, none when nothing is unseen", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		stubIntersection(true);
 		answer = async (path) =>
 			path.endsWith("/seen")
 				? json(conversation({ unread: false, seenUpTo: "m4" }))
@@ -315,6 +320,20 @@ describe("ThreadAgentPanel", () => {
 		expect(screen.getByRole("button", { name: "Resolve" }).className).toContain(
 			"ring-ok",
 		);
+	});
+
+	it.each([
+		["before its observer reports", null],
+		["while its observer says it is off-screen", false],
+	] as const)("writes no seen for an open panel %s", async (_, inView) => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		stubIntersection(inView);
+		show(reviewThread(), [conversation({ unread: true, seenUpTo: "m2" })]);
+		fireEvent.click(agentButton());
+		await act(async () => {
+			vi.advanceTimersByTime(SEEN_AFTER_MS * 3);
+		});
+		expect(calls.filter((c) => c.path.endsWith("/seen"))).toEqual([]);
 	});
 
 	it("a later answer that doesn't suggest resolving retracts the suggestion: no button, no ring; a failed or stopped one, or a question, doesn't", async () => {
