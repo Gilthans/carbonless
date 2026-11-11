@@ -447,7 +447,7 @@ jobs:
               console.error(`${m.tarball} is ${sha256}, the manifest says ${m.sha256}`);
               process.exit(1);
             }
-            // What npm stages is the tarball's own package.json: exactly
+            // What npm stages is the package.json inside the tarball: exactly
             // carbonless-review at this version, with no publishConfig.
             const p = JSON.parse(
               require("node:child_process").execFileSync("tar", ["-xzOf", m.tarball, "package/package.json"], { encoding: "utf8" }),
