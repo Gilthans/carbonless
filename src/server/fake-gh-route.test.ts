@@ -626,6 +626,19 @@ describe("the fake gh's router", () => {
 		expect(readFileSync(routerPath, "utf8")).toBe(before);
 	});
 
+	it.each([
+		["through its server", true],
+		["in a process of its own", false],
+	])(
+		"a log path with a newline fails the call, saying so, %s",
+		(_n, server) => {
+			route({ current: current("widget-1-3", { log: "a\nb.log" }) });
+			const r = gh(["api", "user"], server);
+			expect(r.code).toBe(1);
+			expect(r.err).toContain("fake gh: a log path with a newline");
+		},
+	);
+
 	it("a plain scenario file works as before, logging to $CRB_FAKE_GH_LOG", () => {
 		const r = spawnSync("gh", ["api", "user"], {
 			env: { ...env(), CRB_FAKE_GH: join(tmp, "widget-1-3.json") },

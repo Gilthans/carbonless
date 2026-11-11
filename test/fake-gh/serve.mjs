@@ -62,7 +62,11 @@ class Conn {
 	log(path) {
 		if (this.gone) return false;
 		// The path is the rest of the line: one with a newline can't go.
-		if (path.includes("\n")) return false;
+		if (path.includes("\n")) {
+			throw new Error(
+				`fake gh: a log path with a newline: ${JSON.stringify(path)}`,
+			);
+		}
 		this.socket.write(`log ${path}\n`);
 		return new Promise((resolve) => this.acks.push(resolve));
 	}

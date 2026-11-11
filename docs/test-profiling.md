@@ -116,10 +116,13 @@ needs the header `x-crb-test-hook: <token>` (else 403), and passes the
 host and key checks like any other (`src/server/testHooks.ts`):
 
 - `POST /api/_test/reset` closes every session (`SessionRegistry.reset()`:
-  no gh or git of theirs runs after, the registry stays open), waits up to
-  5 s for every gh call, gh process and git process to end, then drops
-  Home's caches. It answers `{ closed, ghInFlight, ghChildren,
-  gitChildren, leftovers }`; `leftovers` names what still ran.
+  no gh or git of theirs runs after, the registry stays open). An open
+  under way closes the session it lands with, and opens are refused while
+  the reset runs. It drops Home's caches and the snapshot caches, and waits
+  up to 5 s in all for opens, closes, gh calls and processes, and git
+  processes to end. It answers `{ closed, ghInFlight, ghChildren,
+  gitChildren, leftovers }`; `leftovers` names what still ran (an open
+  GitHub holds: `open <pr> (pending)`).
 - `GET /api/_test/state`: open sessions, Home's cached repos, RSS, and the
   gh and git running.
 

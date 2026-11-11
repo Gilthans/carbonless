@@ -2,8 +2,14 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
+import Fastify from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { prView, release, reviewThread } from "../../test/fake-gh/scenario";
+import {
+	letThrough,
+	prView,
+	release,
+	reviewThread,
+} from "../../test/fake-gh/scenario";
 import { fakeGhServerCalls } from "../../test/fake-gh/server.mjs";
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
@@ -12,8 +18,10 @@ import { ghRunning } from "./gh";
 import { gitChildren } from "./git";
 import { SessionRegistry } from "./registry";
 import { startServer } from "./serve";
+import { Session } from "./session";
 import {
 	type ResetAnswer,
+	registerTestHooks,
 	TEST_HOOK_HEADER,
 	type TestState,
 	testHookToken,
@@ -158,6 +166,119 @@ describe("test hooks", () => {
 		expect((await again.session.overview()).title).toBe("Add widget cache");
 	});
 
+	/** A bare server with the hooks and a short wait (no host check). */
+	const quickHooks = async (settleMs: number) => {
+		const quick = Fastify();
+		await registerTestHooks(quick, { token: TOKEN, registry, settleMs });
+		return {
+			reset: async (): Promise<ResetAnswer> => {
+				const res = await quick.inject({
+					method: "POST",
+					url: "/api/_test/reset",
+					headers: { [TEST_HOOK_HEADER]: TOKEN },
+				});
+				expect(res.statusCode, res.body).toBe(200);
+				return res.json();
+			},
+			close: () => quick.close(),
+		};
+	};
+	/** Sessions closed so far (close() calls, by session). */
+	const closes = () => {
+		const spy = vi.spyOn(Session.prototype, "close");
+		return {
+			sessions: () => spy.mock.contexts as Session[],
+			restore: () => spy.mockRestore(),
+		};
+	};
+	const views = () => (pr.ghLog().match(/^pr view /gm) ?? []).length;
+
+	it("a reset doesn't wait past its deadline for an open GitHub holds: it names it, and the open closes what it lands with", async () => {
+		const hooks = await quickHooks(300);
+		const closed = closes();
+		try {
+			pr.scenario({ hold: ["prView"] });
+			const before = views();
+			const opening = registry.open({ pr: pr.arg });
+			opening.catch(() => {});
+			await vi.waitFor(() => expect(views()).toBeGreaterThan(before), {
+				timeout: 10_000,
+			});
+			const answer = await hooks.reset();
+			expect(answer.closed).toBe(0);
+			expect(answer.leftovers).toContain(`open ${pr.arg} (pending)`);
+			expect(answer.ghInFlight).toBeGreaterThan(0);
+
+			release(process.env.CRB_FAKE_GH ?? "", "prView");
+			await expect(opening).rejects.toThrow("The server was reset");
+			expect(registry.openIds()).toEqual([]);
+			const late = closed.sessions();
+			expect(late).toHaveLength(1);
+			await vi.waitFor(() => expect(late[0]?.closed).toBe(true));
+			// The next reset finds nothing left.
+			const again = await hooks.reset();
+			expect(again).toMatchObject({ closed: 0, leftovers: [] });
+		} finally {
+			closed.restore();
+			await hooks.close();
+		}
+	});
+
+	it("an open or reopen while a reset runs is refused; the reset leaves nothing open", async () => {
+		const { id } = await registry.open({ pr: pr.arg });
+		// The reset is held up by an open GitHub holds.
+		pr.scenario({ hold: ["prView"] });
+		const before = views();
+		const held = registry.open({ pr: pr.arg, viewer: "someone" });
+		held.catch(() => {});
+		await vi.waitFor(() => expect(views()).toBeGreaterThan(before), {
+			timeout: 10_000,
+		});
+		const resetting = registry.reset(20_000);
+		// A straggler of the test that ended: a reopen by id, another form of
+		// the open. GitHub would answer them (letThrough).
+		letThrough(process.env.CRB_FAKE_GH ?? "", "prView");
+		await expect(registry.get(id)).rejects.toThrow("The server is resetting");
+		await expect(
+			registry.open({ pr: "https://github.com/acme/widget/pull/12" }),
+		).rejects.toThrow("The server is resetting");
+		release(process.env.CRB_FAKE_GH ?? "", "prView");
+		expect(await resetting).toEqual({ closed: 1, pending: [] });
+		await expect(held).rejects.toThrow("The server was reset");
+		expect(registry.openIds()).toEqual([]);
+		// After it, opens work again.
+		expect((await registry.open({ pr: pr.arg })).id).toBe(id);
+	});
+
+	it("a reopen by id begun before a reset opens nothing after it", async () => {
+		const { id } = await registry.open({ pr: pr.arg });
+		await registry.reset();
+		// Reopened by id (a bookmark): its pr view is held.
+		pr.scenario({ hold: ["prView"] });
+		const before = views();
+		const reopening = registry.get(id);
+		reopening.catch(() => {});
+		await vi.waitFor(() => expect(views()).toBeGreaterThan(before), {
+			timeout: 10_000,
+		});
+		const resetting = registry.reset(20_000);
+		release(process.env.CRB_FAKE_GH ?? "", "prView");
+		expect(await resetting).toEqual({ closed: 0, pending: [] });
+		await expect(reopening).rejects.toThrow("The server was reset");
+		expect(registry.openIds()).toEqual([]);
+	});
+
+	it("after a reset, a request form opened before reads GitHub again, as in a fresh process", async () => {
+		await registry.open({ pr: pr.arg });
+		await registry.reset();
+		// Another form of the same PR opens the review again.
+		await registry.open({ pr: "https://github.com/acme/widget/pull/12" });
+		const before = views();
+		// The first form: no memory of it, so a fresh open (its pr view).
+		await registry.open({ pr: pr.arg });
+		expect(views()).toBeGreaterThan(before);
+	});
+
 	it("after a reset, the same PR opened again is a new session; state shows it", async () => {
 		await serve(TOKEN);
 		const first = await registry.open({ pr: pr.arg });
@@ -208,6 +329,8 @@ describe("crb serve's test hooks", () => {
 		else process.env.CRB_TEST_HOOKS = env;
 		const log: string[] = [];
 		const s = await startServer({ port: 0, log: (m) => log.push(m) });
+		// Read once, then gone: no gh, git or agent child inherits it.
+		expect(process.env.CRB_TEST_HOOKS).toBeUndefined();
 		try {
 			const res = await fetch(`${s.url}/api/_test/reset`, {
 				method: "POST",

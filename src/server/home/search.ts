@@ -173,6 +173,8 @@ export class HomeSearch {
 			r.loading = true;
 			fetchViewerRepos({ maxPages: this.#maxRepoPages }).then(
 				({ names, truncated }) => {
+					// Home's reset meanwhile replaced `r`: this answer is dropped.
+					if (this.#repos !== r) return;
 					this.#repos = { names, at: this.#now(), loading: false };
 					if (truncated && !this.#loggedCut) {
 						this.#loggedCut = true;

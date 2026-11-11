@@ -172,13 +172,14 @@ export class HomeService {
 	#inView = new Set<string>();
 	/** Every started review, as the last view() listed them (search's recent repos). */
 	#startedList: StartedReview[] = [];
-	#problems: string[] = [];
 	/** Why the viewer's login couldn't be read, as of the last view(). */
 	#viewerError: string | null = null;
 	/** The last read's cost, for the report and the log. */
 	lastCost: RefreshCost = newCost();
 	readonly #onRefresh: (() => void)[] = [];
 	readonly #onReset: (() => void)[] = [];
+	/** Bumped by reset(): a read begun before it keeps none of its answers. */
+	#generation = 0;
 
 	constructor(options: HomeServiceOptions) {
 		this.#config = options.config;
@@ -188,8 +189,11 @@ export class HomeService {
 	}
 
 	async #ensureViewer(): Promise<Person> {
-		this.#viewer ??= await fetchViewer();
-		return this.#viewer;
+		if (this.#viewer) return this.#viewer;
+		const generation = this.#generation;
+		const viewer = await fetchViewer();
+		if (generation === this.#generation) this.#viewer ??= viewer;
+		return viewer;
 	}
 
 	/**
@@ -220,6 +224,7 @@ export class HomeService {
 	 * way finishes into state no longer kept.
 	 */
 	reset(): void {
+		this.#generation++;
 		this.#viewer = null;
 		this.#teams = null;
 		this.#teamsAt = Number.NEGATIVE_INFINITY;
@@ -227,7 +232,6 @@ export class HomeService {
 		this.#repos.clear();
 		this.#inView = new Set();
 		this.#startedList = [];
-		this.#problems = [];
 		this.#viewerError = null;
 		this.lastCost = newCost();
 		this.#started.reset?.();
@@ -249,15 +253,21 @@ export class HomeService {
 	async #ensureTeams(login: string, at: number): Promise<string | null> {
 		if (at - this.#teamsAt < TEAMS_MAX_AGE_MS) return null;
 		let failed: string | null = null;
-		this.#teamsReading ??= fetchViewerTeams(login)
-			.then((teams) => {
-				this.#teams = teams;
-				this.#teamsAt = at;
-			})
-			.finally(() => {
-				this.#teamsReading = null;
-			});
-		await this.#teamsReading.catch((error) => {
+		const generation = this.#generation;
+		if (!this.#teamsReading) {
+			const reading: Promise<void> = fetchViewerTeams(login)
+				.then((teams) => {
+					if (generation !== this.#generation) return;
+					this.#teams = teams;
+					this.#teamsAt = at;
+				})
+				.finally(() => {
+					if (this.#teamsReading === reading) this.#teamsReading = null;
+				});
+			this.#teamsReading = reading;
+		}
+		const reading = this.#teamsReading;
+		await reading.catch((error) => {
 			failed = `teams: ${refreshReason(error)}`;
 		});
 		return failed;
@@ -325,6 +335,7 @@ export class HomeService {
 
 	async #read(name: string, state: RepoState): Promise<void> {
 		const begun = this.#now();
+		const generation = this.#generation;
 		for (const listener of this.#onRefresh) listener();
 		const [owner = "", repo = ""] = name.split("/");
 		const cost = newCost();
@@ -363,7 +374,7 @@ export class HomeService {
 			state.error = refreshReason(error);
 		} finally {
 			state.checkedAt = begun;
-			this.lastCost = cost;
+			if (generation === this.#generation) this.lastCost = cost;
 		}
 	}
 
@@ -419,14 +430,13 @@ export class HomeService {
 	 * request), only the viewer's login the first time.
 	 */
 	async view(): Promise<HomeView> {
+		const generation = this.#generation;
 		const { viewer, error } = await this.#viewerOrBlank();
-		this.#viewerError = error;
+		if (generation === this.#generation) this.#viewerError = error;
 		if (viewer.login) {
 			try {
-				this.#startedList = await this.#started.list(
-					slugify(viewer.login),
-					new Set(),
-				);
+				const list = await this.#started.list(slugify(viewer.login), new Set());
+				if (generation === this.#generation) this.#startedList = list;
 			} catch {
 				// Keep the last list.
 			}
@@ -436,13 +446,12 @@ export class HomeService {
 
 	async #homeView(viewer: Person, viewerError: string | null) {
 		const { config, problems } = await this.#config.read();
-		this.#problems = problems;
 		const repos = viewReposOf(config);
 		this.#inView = new Set(repos);
 		return {
 			viewer,
 			view: { name: config.views[0]?.name ?? DEFAULT_VIEW, repos },
-			configProblems: [...new Set(this.#problems)],
+			configProblems: [...new Set(problems)],
 			viewerError,
 			refreshMinutes: Math.max(1, config.refresh.minutes),
 			startedRepos: [

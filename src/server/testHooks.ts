@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { clearSnapshotCaches } from "./diff/snapshot.js";
 import { ghRunning } from "./gh.js";
 import { gitChildren } from "./git.js";
 import type { HomeService } from "./home/homeService.js";
@@ -14,10 +15,12 @@ import type { SessionRegistry } from "./registry.js";
  * access-key checks like any other.
  *
  * POST /api/_test/reset: puts the server's memory back as a fresh process
- *   has it: every session closed (no gh or git of theirs runs after), the
- *   registry's request map forgotten, Home's caches dropped. Waits (bounded)
- *   until no gh call, gh process or git process is left, and answers
- *   `{ closed, ghInFlight, ghChildren, gitChildren, leftovers }`.
+ *   has it: every session closed (no gh or git of theirs runs after; an
+ *   open under way closes what it lands with), the registry's request map
+ *   forgotten, Home's caches and the snapshot caches dropped. Waits, all of
+ *   it within one bounded wait, until no open, close, gh call, gh process
+ *   or git process is left, and answers `{ closed, ghInFlight, ghChildren,
+ *   gitChildren, leftovers }` (leftovers: what still ran at the deadline).
  * GET /api/_test/state: open sessions, Home's cached repos, RSS, and what
  *   gh and git run now.
  */
@@ -60,8 +63,7 @@ export interface TestState {
  * Waits until no gh call, gh process or git process runs (and none starts
  * within a tick after), at most `timeoutMs`; returns what still runs.
  */
-async function settle(timeoutMs: number) {
-	const deadline = Date.now() + timeoutMs;
+async function settle(deadline: number) {
 	const now = () => ({ ...ghRunning(), git: gitChildren() });
 	const idle = (r: ReturnType<typeof now>) =>
 		r.calls.length + r.children.length + r.git.length === 0;
@@ -100,16 +102,22 @@ export async function registerTestHooks(
 			}
 		});
 		scope.post("/api/_test/reset", async (): Promise<ResetAnswer> => {
-			const closed = await options.registry.reset();
-			const left = await settle(options.settleMs ?? RESET_SETTLE_MS);
-			// After the wait: a Home read under way has landed by now.
+			const settleMs = options.settleMs ?? RESET_SETTLE_MS;
+			const deadline = Date.now() + settleMs;
+			// One deadline for it all: a held open or close is a leftover, never a hang.
+			const { closed, pending } = await options.registry.reset(settleMs);
+			// Home's reads started before this drop their answers (its generation).
 			options.home?.reset();
+			// Per snapshot, not content alone: a fresh process has none.
+			clearSnapshotCaches();
+			const left = await settle(deadline);
 			return {
 				closed,
 				ghInFlight: left.calls.length,
 				ghChildren: left.children.length,
 				gitChildren: left.git.length,
 				leftovers: [
+					...pending,
 					...left.calls,
 					...left.children.map((c) => `${c} (process)`),
 					...left.git,

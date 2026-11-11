@@ -93,6 +93,8 @@ export class HomePeople {
 			m.loading = true;
 			fetchOrgMembers({ maxPages: this.#maxPages }).then(
 				({ people, truncated, skipped, failed }) => {
+					// Home's reset meanwhile replaced `m`: this answer is dropped.
+					if (this.#members !== m) return;
 					this.#members = {
 						people,
 						at: this.#now(),

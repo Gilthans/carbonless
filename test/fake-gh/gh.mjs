@@ -66,6 +66,10 @@ async function call(io) {
 	// rewrite the scenario without affecting that call.
 	// io.log writes it (the shim, in the server: only a gh still alive logs,
 	// as a process does), or says the gh was killed meanwhile.
+	if (logPath?.includes("\n")) {
+		writeErr(`fake gh: a log path with a newline: ${JSON.stringify(logPath)}\n`);
+		exit(1);
+	}
 	if (logPath && !(await io.log(logPath, `${args.join(" ")}\n`))) {
 		exit(137);
 	}

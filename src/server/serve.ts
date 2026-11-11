@@ -67,6 +67,8 @@ export async function startServer(opts: {
 	await sweepStaleCheckouts(new Set()).catch(() => {});
 	// Test-only routes, only with the harness's token (testHooks.ts).
 	const hooksEnv = process.env[TEST_HOOKS_ENV];
+	// Not passed on: no gh, git or agent this server runs may call them.
+	delete process.env[TEST_HOOKS_ENV];
 	const testHooks = testHookToken(hooksEnv);
 	if (hooksEnv && !testHooks) {
 		log(`${TEST_HOOKS_ENV} is not a 32-hex token: test hooks off`);
