@@ -145,6 +145,18 @@ export function UpdateToast() {
 		}
 	}, [data, phase.kind]);
 
+	// crb now runs the version that was on offer (another tab's update this
+	// page didn't see start): this page's code is the old one, reload.
+	const offered = useRef<string | null>(null);
+	useEffect(() => {
+		if (!data) return;
+		if (offered.current !== null && data.current === offered.current) {
+			window.location.reload();
+			return;
+		}
+		if (data.available) offered.current = data.available;
+	}, [data]);
+
 	// Updating: wait for crb to answer with the new version, then reload.
 	const target = phase.kind === "updating" ? phase.version : null;
 	const since = phase.kind === "updating" ? phase.since : 0;

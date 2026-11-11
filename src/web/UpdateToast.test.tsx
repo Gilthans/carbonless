@@ -66,8 +66,9 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+let client: QueryClient;
 function show() {
-	const client = new QueryClient({
+	client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
 	return render(
@@ -170,6 +171,22 @@ describe("UpdateToast", () => {
 		await waitFor(async () =>
 			expect((await toast()).dataset.state).toBe("updating"),
 		);
+	});
+
+	it("crb now runs the version on offer (an update this page missed): reloads", async () => {
+		let info = OFFER;
+		serve({ info: () => info });
+		show();
+		await toast();
+		info = {
+			...OFFER,
+			current: "0.3.0",
+			available: null,
+			releaseUrl: null,
+			command: null,
+		};
+		await client.refetchQueries({ queryKey: ["update"] });
+		await waitFor(() => expect(reload).toHaveBeenCalled());
 	});
 
 	it("crb back on the old version with the install's failure: the output and the command", async () => {
