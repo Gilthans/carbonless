@@ -237,12 +237,20 @@ function OriginChip(props: { request: string }) {
 			? `${props.request.slice(0, MAX_ORIGIN - 1)}…`
 			: props.request;
 	return (
-		<span
-			data-testid="agent-origin-chip"
-			className="inline-flex max-w-full self-start rounded-full border border-agent-edge bg-agent px-2 py-0.5 text-xs break-words text-agent-ink"
-		>
-			↳ {text}
-		</span>
+		<Tooltip content={props.request} describe={false}>
+			{(trigger) => (
+				<span
+					{...trigger}
+					data-testid="agent-origin-chip"
+					// Focusable so keyboard and touch users get the full request.
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					className="inline-flex max-w-full self-start rounded-full border border-agent-edge bg-agent px-2 py-0.5 text-xs break-words text-agent-ink focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					↳ {text}
+				</span>
+			)}
+		</Tooltip>
 	);
 }
 

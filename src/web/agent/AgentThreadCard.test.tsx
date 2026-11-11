@@ -463,6 +463,26 @@ describe("activitySummary", () => {
 		}
 	});
 
+	it("the origin chip's tooltip holds the whole request", async () => {
+		const request = `${"r".repeat(190)}ABCDEFGHIJ`;
+		show(
+			thread({
+				openedBy: "ai",
+				origin: { request },
+				waiting: false,
+				messages: [
+					{ id: "m1", by: "ai", at: "2026-11-07T10:00:00Z", text: "Found." },
+				],
+			}),
+			status(),
+		);
+		act(() => screen.getByTestId("agent-origin-chip").focus());
+		// Its text shows on the chip too (cut only past 200): the tooltip is the
+		// second place the whole request appears, in a tooltip element.
+		const tips = await screen.findAllByText(`${request}`, { exact: true });
+		expect(tips.some((t) => t.getAttribute("role") === "tooltip")).toBe(true);
+	});
+
 	it("the view chip shows PS 3 on a human message; the origin chip shows over an ai-opened first message, cut to 200", () => {
 		const view = (target: AgentView["target"]): AgentView => ({
 			target,

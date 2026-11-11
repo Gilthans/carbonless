@@ -8,7 +8,14 @@ import {
 	Outlet,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ReviewView, SessionInfo } from "../../shared/types";
@@ -61,7 +68,7 @@ describe("codeLinkTarget", () => {
 	});
 });
 
-function show(text: string, head?: string, withRouter = true) {
+function show(text: string, head?: string) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false, enabled: false } },
 	});
@@ -96,13 +103,12 @@ function show(text: string, head?: string, withRouter = true) {
 		parseSearch,
 		stringifySearch,
 	});
-	void withRouter;
 	render(
 		<QueryClientProvider client={client}>
 			<RouterProvider router={router} />
 		</QueryClientProvider>,
 	);
-	return router;
+	return Object.assign(router, { client });
 }
 
 describe("code links in an agent's answer", () => {
@@ -139,7 +145,7 @@ describe("code links in an agent's answer", () => {
 		expect(screen.queryAllByTestId("agent-code-link")).toHaveLength(0);
 	});
 
-	it("a javascript: link written by the agent is dropped", async () => {
+	it("no href is built from the agent's text: a javascript: link is dropped and every link is the router's", async () => {
 		show(
 			'[src/a.ts:12](javascript:alert(1)) and <a href="javascript:alert(2)">src/a.ts:5</a>',
 			H3,
@@ -152,6 +158,35 @@ describe("code links in an agent's answer", () => {
 		for (const a of screen.queryAllByTestId("agent-code-link")) {
 			expect(a.getAttribute("href")).toMatch(/^\/r\/RV1\/files\?/);
 		}
+	});
+
+	it("a link still navigates through the router after the PR's files or patch sets are refetched", async () => {
+		const router = show("See `src/a.ts:12`.", H3);
+		await screen.findByTestId("agent-code-link");
+		// New identities (a refetch after a push): the prose is linked again.
+		act(() => {
+			router.client.setQueryData(reviewQuery().queryKey, {
+				files: [
+					{ path: "src/a.ts" },
+					{ path: "docs/b.md" },
+					{ path: "src/new.ts" },
+				],
+			} as unknown as ReviewView);
+			router.client.setQueryData(sessionQuery.queryKey, {
+				patchsets: [...patchsets, { number: 4, head: H9 }],
+			} as unknown as SessionInfo);
+		});
+		const link = await screen.findByTestId("agent-code-link");
+		// fireEvent returns false when the click's default was prevented.
+		expect(fireEvent.click(link)).toBe(false);
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe("/r/RV1/files"),
+		);
+		expect(router.state.location.search).toMatchObject({
+			path: "src/a.ts",
+			line: "12",
+			ps: "3",
+		});
 	});
 
 	it("no links without a router or without the PR's files", async () => {

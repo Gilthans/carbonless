@@ -734,6 +734,9 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	const ps1 = fileSection(page, CALC);
 	await ps1.getByRole("button", { name: "Expand file" }).click();
 	await expect(row(ps1, 3)).toBeVisible();
+	// Hold the seen marks: the open card counts as seen after a second, and
+	// the name below is about the answer being new (no timer race).
+	await page.route(/\/api\/agent\/threads\/[^/]+\/seen$/, () => {});
 	const late = await ask(page, ps1, 3, "Asked on PS1 after PS2");
 	await expect(late).toHaveAttribute("aria-label", "Agent thread, answered");
 	await expect(row(ps1, 3).getByTestId("agent-bubble")).toHaveAccessibleName(

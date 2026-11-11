@@ -15,7 +15,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import type { HunkLine } from "../../shared/diffHunk";
 import { reviewQuery, sessionQuery } from "../api";
 import { languageFor } from "../files/highlight";
-import type { FilesSearch } from "../files/landing";
+import { type FilesSearch, parseFilesSearch } from "../files/landing";
 import { GithubHtml } from "../GithubHtml";
 import { CodeRows } from "../threads/CommentBody";
 import { codeLinkSearch, linkCodeRefs } from "./codeLinks";
@@ -104,7 +104,6 @@ function useCodeLinks(
 			.map((m) => (m.params as { id?: string }).id)
 			.find((x) => x);
 		if (!id) return;
-		const targets = new WeakMap<HTMLElement, FilesSearch>();
 		for (const prose of el.querySelectorAll<HTMLElement>(".markdown-body")) {
 			linkCodeRefs(prose, (ref) => {
 				const search = codeLinkSearch(ref, head, files, patchsets ?? []);
@@ -117,16 +116,27 @@ function useCodeLinks(
 					params: { id },
 					search,
 				} as never).href;
-				targets.set(link, search);
+				// The target travels on the link itself, so a run that re-renders
+				// (new files, patch sets) never leaves a link the click can't read.
+				link.dataset.search = JSON.stringify(search);
 				return link;
 			});
 		}
 		const onClick = (e: MouseEvent) => {
 			const link = (e.target as Element | null)?.closest<HTMLElement>("a");
-			const search = link && targets.get(link);
-			if (!search || e.button !== 0) return;
+			if (!link || link.dataset.testid !== "agent-code-link") return;
+			if (e.button !== 0) return;
 			if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
 			e.preventDefault();
+			let raw: unknown;
+			try {
+				raw = JSON.parse(link.dataset.search ?? "");
+			} catch {
+				return;
+			}
+			const search: FilesSearch = parseFilesSearch(
+				raw as Record<string, unknown>,
+			);
 			void router.navigate({
 				to: "/r/$id/files",
 				params: { id },
