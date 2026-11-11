@@ -78,6 +78,12 @@ export interface Crb {
 	 * 0. On a shared server it rejects at once: the test needs its own.
 	 */
 	stop(): Promise<CrbExit | null>;
+	/**
+	 * Where this crb serve keeps its clone of `ownerRepo` (its
+	 * `XDG_CACHE_HOME`; a shared server's, not `workdir`'s): a test that
+	 * reads the review's refs reads them there.
+	 */
+	cloneOf(ownerRepo: string): string;
 }
 
 /**
@@ -353,7 +359,17 @@ export const test = base.extend<
 								),
 							)
 					: () => stopChild(server.child);
-				return { url, output, stop };
+				const cloneOf = (ownerRepo: string) => {
+					const [owner = "", repo = ""] = ownerRepo.toLowerCase().split("/");
+					return join(
+						server.env.XDG_CACHE_HOME as string,
+						"carbonless",
+						"repos",
+						owner,
+						`${repo}.git`,
+					);
+				};
+				return { url, output, stop, cloneOf };
 			}),
 		);
 		// Pages would keep polling the stopped server and log connection errors
