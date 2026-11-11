@@ -13,6 +13,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
 	headQuery,
 	overviewQuery,
@@ -22,7 +23,7 @@ import {
 	verdictQuery,
 } from "./api";
 import "./agent";
-import { AgentChip } from "./agent/AgentChip";
+import { AgentChip, CHIP_BOX, useAgentChipPlace } from "./agent/AgentChip";
 import { AgentSetupHost } from "./agent/AgentSetup";
 import { JoinBar } from "./agent/JoinBar";
 import { JoinToast } from "./agent/JoinToast";
@@ -62,7 +63,8 @@ const activeTabClass =
 const compactTapClass =
 	"relative before:absolute before:inset-x-0 before:top-1/2 before:h-10 before:-translate-y-1/2 before:content-['']";
 // The number keeps its width beside the clamped title, and goes when the
-// pill's column (a phone's narrowest) has no room for both.
+// pill's column (a phone's narrowest) has no room for both. (Beside the
+// agent chip the whole pill may go: compactPillYieldClass.)
 const compactNumberClass = "shrink-0 rounded-full font-medium text-muted";
 // Below which column width the number hides, by its digits: the pill's
 // padding and gap (1.5rem), the number (~0.45rem a character at text-xs)
@@ -191,6 +193,105 @@ function useStickyHeader(
 }
 
 /**
+ * Where the agent chip shows: beside the full logo at the top, and in the
+ * sticky row beside the compact mark (`docked`) once its place by the logo
+ * starts to leave the screen (under `above`, the find bar), so it never
+ * scrolls out of sight. One chip, rendered once into `host` (`chip`) and
+ * moved between the two places: it never remounts (no refetch, and what
+ * holds on to it, like the agent setup giving focus back, still finds it).
+ * The chip has one size (CHIP_BOX), kept for it in the other place, and
+ * in both from the first paint while it may come (`place`, not as of a
+ * cutoff): neither the title nor the tabs move when it loads or moves.
+ */
+function useChipDock(hidden: boolean, above: number, asOf: boolean) {
+	const [title, setTitle] = useState<HTMLElement | null>(null);
+	const [row, setRow] = useState<HTMLElement | null>(null);
+	const [docked, setDocked] = useState(false);
+	const place = useAgentChipPlace(asOf);
+	const [host] = useState(() => {
+		const el = document.createElement("span");
+		el.style.display = "contents";
+		return el;
+	});
+	const dockedNow = useRef(docked);
+	// The chip into its place, keeping focus if it had it.
+	useLayoutEffect(() => {
+		const at = docked ? row : title;
+		if (!at || host.parentNode === at) return;
+		const focused = host.contains(document.activeElement)
+			? (document.activeElement as HTMLElement)
+			: null;
+		const move = (at as { moveBefore?: (n: Node, c: Node | null) => void })
+			.moveBefore;
+		if (move && host.isConnected) {
+			try {
+				move.call(at, host, null);
+			} catch {
+				at.appendChild(host);
+			}
+		} else at.appendChild(host);
+		if (focused && document.activeElement !== focused)
+			focused.focus({ preventScroll: true });
+	}, [docked, row, title, host]);
+	useEffect(() => {
+		if (!title || hidden) return;
+		let frame = 0;
+		const update = () => {
+			frame = 0;
+			const box = title.getBoundingClientRect();
+			const next = box.width > 0 && box.top < above;
+			if (next === dockedNow.current) return;
+			dockedNow.current = next;
+			setDocked(next);
+		};
+		const schedule = () => {
+			if (!frame) frame = requestAnimationFrame(update);
+		};
+		update();
+		window.addEventListener("scroll", schedule, { passive: true });
+		window.addEventListener("resize", schedule);
+		return () => {
+			cancelAnimationFrame(frame);
+			window.removeEventListener("scroll", schedule);
+			window.removeEventListener("resize", schedule);
+		};
+	}, [title, hidden, above]);
+	return {
+		setTitle,
+		setRow,
+		docked,
+		/** Whether the header keeps a place for a chip. */
+		place,
+		// A move closes its tooltip, which would stay at the old place.
+		chip: createPortal(<AgentChip dismissKey={docked} asOf={asOf} />, host),
+	};
+}
+
+/** The chip's space where it isn't, so nothing beside it moves. */
+function ChipSpace({ shown }: { shown: boolean }) {
+	return shown ? (
+		<span aria-hidden data-chip-space className={CHIP_BOX} />
+	) : null;
+}
+
+/**
+ * A chip place: out of the layout (and its gap) when it holds neither the
+ * chip nor its kept space, as without an agent.
+ */
+const chipSlotClass =
+	"flex shrink-0 items-center [&:not(:has(button,[data-chip-space]))]:hidden";
+
+/**
+ * Whether the compact title's pill gives way to the agent chip: beside it,
+ * a phone's narrowest row (360px) has no room for the pill, which then goes
+ * below 3.75rem (its padding and a tap-wide title) rather than cover the
+ * buttons; it shows from ~420px. Without a chip the pill shows at any
+ * width, as it always did. Decided: the owner, 2026-11-11.
+ */
+const compactPillYieldClass = (chipShown: boolean) =>
+	chipShown ? "@max-[3.75rem]:hidden" : "";
+
+/**
  * The open find bar takes the top of Files changed, above the app header,
  * once it shows (findFloat: Files changed renders it when its data is in,
  * so while the review is read or failed the header and its button stay):
@@ -310,6 +411,7 @@ export function App() {
 		stick: compact,
 		stuck,
 	} = useStickyHeader(header, row, yieldToFind, above);
+	const chip = useChipDock(yieldToFind, above, !!session.data?.asOf);
 	// The sticky stack's top: the find bar, then the header's stuck row.
 	const stackTop = above + (yieldToFind ? 0 : compact);
 	useStackTop(stackTop, swapped);
@@ -331,9 +433,8 @@ export function App() {
 				 * down; the header sticks under them (`above`).
 				 */}
 				<div className="sticky z-[35]" style={{ top: "var(--vv-top, 0px)" }}>
-					<div ref={setJoinSlot}>
-						<JoinBar />
-					</div>
+					{/* Like the chip, none without a PR: nothing to join. */}
+					<div ref={setJoinSlot}>{pr && <JoinBar />}</div>
 					<div ref={setSlot} data-find-slot />
 				</div>
 				<header
@@ -380,6 +481,14 @@ export function App() {
 										</Link>
 									)}
 								</Tooltip>
+								{/* The agent chip by the logo, until it docks in the row below. */}
+								<span
+									ref={chip.setTitle}
+									data-testid="agent-chip-slot"
+									className={chipSlotClass}
+								>
+									{chip.docked && <ChipSpace shown={chip.place} />}
+								</span>
 								<div
 									data-testid="header-title"
 									className="flex min-w-0 flex-wrap items-baseline gap-x-2"
@@ -409,12 +518,13 @@ export function App() {
 								</div>
 							</div>
 						)}
+						{/* The one agent chip, placed by useChipDock; none without a PR. */}
+						{pr && chip.chip}
 						{pr && (
 							<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
 								<span className="break-all">
 									{pr.owner}/{pr.repo}
 								</span>
-								<AgentChip />
 								{session.data?.asOf && <AsOf iso={session.data.asOf} />}
 							</div>
 						)}
@@ -458,6 +568,18 @@ export function App() {
 										</Link>
 									)}
 								</Tooltip>
+							</span>
+							{/*
+							 * The agent chip once its place by the logo has scrolled
+							 * away; until then its size, so the tabs never move.
+							 * Positioned, over the mark's overflowing tap target.
+							 */}
+							<span
+								ref={chip.setRow}
+								data-testid="agent-chip-row-slot"
+								className={`relative ${chipSlotClass}`}
+							>
+								{!chip.docked && <ChipSpace shown={chip.place} />}
 							</span>
 							<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
 								<Link
@@ -512,7 +634,7 @@ export function App() {
 										transform:
 											"translateY(calc((1 - var(--compact, 0)) * 0.375rem))",
 									}}
-									className="flex max-w-full min-w-0 items-center gap-x-1 rounded-full bg-raised px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line hover:bg-overlay hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5"
+									className={`flex max-w-full min-w-0 items-center gap-x-1 rounded-full bg-raised px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line hover:bg-overlay hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5 ${compactPillYieldClass(chip.place)}`}
 								>
 									<Tooltip content={pr.title} describe={false}>
 										{(trigger) => (
@@ -609,7 +731,7 @@ export function App() {
 					<Wordmark className="text-sm" />
 				</footer>
 				<SyncNotices />
-				<JoinToast />
+				{pr && <JoinToast />}
 				{/* New commits: a toast, never a banner (nothing above the page moves). */}
 				{session.data?.head && (
 					<HeadToast

@@ -15,7 +15,13 @@ import { expectLoadingThen, heldJson } from "../../../test/loading";
 import { AGENT_POLL_MS, type AgentStatus } from "../../shared/agent";
 import type { PrOverview } from "../../shared/types";
 import { ApiError, overviewQuery } from "../api";
-import { AgentChip, agentDot, agentTip, chipPopover } from "./AgentChip";
+import {
+	AgentChip,
+	agentDot,
+	agentInk,
+	agentTip,
+	chipPopover,
+} from "./AgentChip";
 import {
 	AGENT_BUSY_POLL_MS,
 	agentPollMs,
@@ -121,7 +127,6 @@ describe("the chip with a joined session", () => {
 		const chip = screen.getByTestId("agent-chip");
 		expect(chip).toHaveAttribute("data-via", "mcp");
 		expect(screen.getByTestId("agent-chip-plug")).toBeInTheDocument();
-		expect(chip).toHaveTextContent("carbonless · main");
 		expect(chip).toHaveAccessibleName(
 			"Your agent: carbonless · main · listening",
 		);
@@ -164,7 +169,8 @@ describe("the chip with a joined session", () => {
 		);
 		const chip = screen.getByTestId("agent-chip");
 		expect(chip.querySelector("img")).toBeNull();
-		expect(chip).toHaveTextContent(name);
+		// The name is in the tooltip and the accessible name, as text.
+		expect(chip).toHaveAccessibleName(`Your agent: ${name} · listening`);
 	});
 });
 
@@ -325,6 +331,8 @@ describe("the agent chip", () => {
 		],
 	])("%s", (_name, more, dot, tip) => {
 		expect(agentDot(status(more))).toBe(dot);
+		// The chip's icon takes the dot's colour, as text.
+		expect(agentInk(status(more))).toBe(dot.replace("bg-", "text-"));
 		expect(agentTip(status(more))).toBe(tip);
 	});
 
@@ -344,7 +352,7 @@ describe("the agent chip", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
-	it("its first read shows a spinner, never a dot; then the status's dot", async () => {
+	it("its first read shows a spinner in the icon's place, never the icon; then the icon in the status's colour", async () => {
 		const held = heldJson();
 		vi.stubGlobal(
 			"fetch",
@@ -366,12 +374,41 @@ describe("the agent chip", () => {
 		);
 		await expectLoadingThen({
 			loading: () => screen.queryByTestId("agent-chip-loading"),
-			empty: [() => screen.queryByTestId("agent-chip-dot")],
+			empty: [() => screen.queryByTestId("agent-chip-icon")],
 			release: () => held.release(status()),
-			result: () => screen.queryByTestId("agent-chip-dot"),
+			result: () => screen.queryByTestId("agent-chip-icon"),
 		});
-		expect(screen.getByTestId("agent-chip-dot").className).toContain("bg-ok");
+		expect(screen.getByTestId("agent-chip-icon").className).toContain(
+			"text-ok",
+		);
+		// The icon alone: the name only in the tooltip and the name.
+		expect(screen.getByTestId("agent-chip")).not.toHaveTextContent(
+			"Claude Agent",
+		);
 		expect(screen.getByTestId("agent-chip")).not.toHaveAttribute("aria-busy");
+	});
+
+	it("keeps its place, spinning, until the overview says whether there is an agent; none as of a cutoff", () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		const client = new QueryClient();
+		const view = render(
+			<QueryClientProvider client={client}>
+				<AgentChip />
+			</QueryClientProvider>,
+		);
+		const pending = screen.getByTestId("agent-chip-pending");
+		expect(pending).toHaveAttribute("aria-hidden", "true");
+		expect(pending).toHaveAttribute("data-chip-space");
+		expect(screen.queryByTestId("agent-chip")).toBeNull();
+		expect(fetchMock).not.toHaveBeenCalled();
+		view.rerender(
+			<QueryClientProvider client={client}>
+				<AgentChip asOf />
+			</QueryClientProvider>,
+		);
+		expect(screen.queryByTestId("agent-chip-pending")).toBeNull();
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it("reads the threads again when the status moves, not on a routine poll", async () => {
