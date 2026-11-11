@@ -110,8 +110,9 @@ function pairedHunk(lines: DiffLine[]): PairedHunk {
 }
 
 /**
- * A file's lines in the order the diff shows them. Without hunks: each
- * cluster's removed lines (LEFT, oldStart + i) then added lines (RIGHT,
+ * A file's lines in the order the diff shows them. Without hunks: none
+ * when `clusters` is false (the since view: its lines are only its
+ * hunks'), else each cluster's removed lines (LEFT, oldStart + i) then added lines (RIGHT,
  * newStart + i), clusters in file order (a "file" cluster has none).
  * With hunks: for each hunk, first the expanded `context` lines whose newNo
  * lies before it and after the previous hunk (sorted by newNo, first of a
@@ -125,8 +126,10 @@ export function fileLines(
 	hunks: FileHunks | undefined,
 	context: readonly DiffLine[],
 	pairs = false,
+	clusters = true,
 ): SourceLine[] {
 	if (!hunks) {
+		if (!clusters) return [];
 		return file.clusters.flatMap((c) => [
 			...c.removed.map((text, i) => ({
 				side: "LEFT" as const,
@@ -199,6 +202,8 @@ export function findInPr(
 	contextOf: (file: FileView) => readonly DiffLine[],
 	matchCase: boolean,
 	pairs = false,
+	/** A file without hunks yet is searched in its clusters (fileLines). */
+	clusters = true,
 ): Hit[] {
 	const hits: Hit[] = [];
 	const re = pattern(term, matchCase);
@@ -233,7 +238,13 @@ export function findInPr(
 			emitHunk(hits, seen, byLine, delHit ? pairedHunk(hunk) : null);
 			byLine = null;
 		};
-		for (const l of fileLines(file, hunksOf(file), contextOf(file), pairs)) {
+		for (const l of fileLines(
+			file,
+			hunksOf(file),
+			contextOf(file),
+			pairs,
+			clusters,
+		)) {
 			if (l.hunk !== hunk) {
 				flush();
 				hunk = l.hunk;

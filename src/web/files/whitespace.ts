@@ -1,3 +1,4 @@
+import { lineRuns } from "../../shared/pieces";
 import type { DiffLine } from "../../shared/types";
 
 /**
@@ -54,13 +55,10 @@ export const whitespaceOnly = (rows: DiffRow[]): boolean =>
 
 /** Splits a hunk into runs of context lines and runs of one cluster's lines. */
 export function runs(lines: DiffLine[]): { key?: string; lines: DiffLine[] }[] {
-	const result: { key?: string; lines: DiffLine[] }[] = [];
-	for (const line of lines) {
-		const last = result[result.length - 1];
-		if (last && last.key === line.clusterKey) last.lines.push(line);
-		else result.push({ key: line.clusterKey, lines: [line] });
-	}
-	return result;
+	// A changed run without a key stays apart from context (pieces.ts).
+	return lineRuns(lines).map(({ key, lines }) =>
+		key === undefined ? { lines } : { key, lines },
+	);
 }
 
 /** One side of a line as the matching sees it. */

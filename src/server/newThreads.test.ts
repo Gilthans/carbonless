@@ -482,13 +482,19 @@ describe("new threads", () => {
 		if (!pr12) throw new Error("no PR 12");
 		pr12.view = prView({ headRefOid: now, baseRefName: "main" });
 		tweak({ prs });
+		// The thread started PS1 on the old head before it posted: the review
+		// stays pinned there, the retry finds the thread.
 		const restarted = await Session.open(pr.arg, process.cwd());
-		expect(restarted.info().snapshotHead).toBe(now);
+		expect(restarted.info()).toMatchObject({
+			snapshotHead: req.commit,
+			currentHead: now,
+			patchset: 1,
+		});
 		const again = await restarted.startThread({ ...req, retry: true });
 		expect(again.thread.id).toBe("T12-1");
-		// A fresh one on the old head is stale, as before.
+		// A fresh one on the new head, not viewed, is stale.
 		const stale = await refused(
-			restarted.startThread(request({ commit: req.commit })),
+			restarted.startThread(request({ commit: now })),
 		);
 		expect(stale.code).toBe("stale");
 		expect(posts()).toHaveLength(1);

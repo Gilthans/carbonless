@@ -8,12 +8,15 @@ import {
 	type HunksBatch,
 	type NewThreadAnswer,
 	type NewThreadRequest,
+	type PlacementsAnswer,
 	type PrOverview,
 	type ReplyRequest,
+	type RereviewAnswer,
 	type ResolveRequest,
 	type ReviewView,
 	type SessionInfo,
 	type StateChange,
+	type ThreadAnchorRef,
 	type ThreadComment,
 	type ThreadComments,
 	type ThreadGone,
@@ -159,32 +162,103 @@ export const fetchOverview = (maxAge?: number, signal?: AbortSignal) =>
 			: `/api/overview?${new URLSearchParams({ maxAge: String(maxAge) })}`,
 		{ signal },
 	);
-export const fetchReview = () => request<ReviewView>("/api/review");
+/**
+ * Which review to read: the session's own (the latest patch set, or the
+ * snapshot before any), an earlier patch set's as reviewed (read-only), or
+ * the snapshot of a head viewed before it is a patch set (files/comparison.ts).
+ */
+export type ReviewTarget =
+	| { kind: "current" }
+	| { kind: "patchset"; number: number }
+	| { kind: "head"; oid: string };
 
-export const fetchHunks = (revision: string, index: number) =>
+export const CURRENT_REVIEW: ReviewTarget = { kind: "current" };
+
+const reviewPath = (target: ReviewTarget) =>
+	target.kind === "current"
+		? "/api/review"
+		: `/api/review?${new URLSearchParams(
+				target.kind === "patchset"
+					? { patchset: String(target.number) }
+					: { head: target.oid },
+			)}`;
+
+export const fetchReview = (target: ReviewTarget = CURRENT_REVIEW) =>
+	request<ReviewView>(reviewPath(target));
+
+/** With `from`, the since view's hunks: the interdiff from patch set `from`. */
+export const fetchHunks = (revision: string, index: number, from?: number) =>
 	request<FileHunks>(
-		`/api/files/${index}/hunks?${new URLSearchParams({ revision })}`,
+		`/api/files/${index}/hunks?${new URLSearchParams({
+			revision,
+			...(from === undefined ? {} : { from: String(from) }),
+		})}`,
 	);
 
-export const fetchHunksBatch = (revision: string, indexes: readonly number[]) =>
+/** The engine's answer for patch set `from` to a patch set or a head (RereviewAnswer). */
+export const fetchRereview = (from: number, to: RereviewTo) =>
+	request<RereviewAnswer | { pending: true }>(
+		`/api/rereview?${new URLSearchParams({
+			from: String(from),
+			...("patchset" in to ? { to: String(to.patchset) } : { head: to.head }),
+		})}`,
+	);
+
+export type RereviewTo = { patchset: number } | { head: string };
+/** Several files' hunks (the search's prefetch); with `from`, the since view's. */
+export const fetchHunksBatch = (
+	revision: string,
+	indexes: readonly number[],
+	from?: number,
+) =>
 	request<HunksBatch>(
-		`/api/files/hunks?${new URLSearchParams({ revision, indexes: indexes.join(",") })}`,
+		`/api/files/hunks?${new URLSearchParams({
+			revision,
+			indexes: indexes.join(","),
+			...(from === undefined ? {} : { from: String(from) }),
+		})}`,
 	);
 
 /** A revision's hunks and context never change; kept this long unobserved, so a search's prefetch outlives the bar. */
 export const HUNKS_KEPT_MS = 60 * 60_000;
 
+/** Every unresolved thread of read `readId` placed into a patch set or a head. */
+export const fetchPlacements = (readId: string, to: RereviewTo) =>
+	request<PlacementsAnswer | { pending: true }>(
+		`/api/placements?${new URLSearchParams({
+			read: readId,
+			...("patchset" in to ? { ps: String(to.patchset) } : { head: to.head }),
+		})}`,
+	);
+
+/** The reviewer places a thread on lines of their latest patch set. */
+export const postPlacement = (
+	threadId: string,
+	patchset: number,
+	anchor: ThreadAnchorRef,
+) =>
+	post<PlacementsAnswer["threads"][number]>(
+		`/api/threads/${encodeURIComponent(threadId)}/placement`,
+		{ patchset, anchor },
+	);
+
+/**
+ * Unchanged lines `from..to` of a file; with `since`, the since view's (the
+ * interdiff's from that patch set, numbered as its hunks are).
+ */
 export const fetchContext = (
 	revision: string,
 	index: number,
 	from: number,
 	to: number,
+	since?: number,
 ) =>
 	request<DiffLine[]>(
 		`/api/files/${index}/context?${new URLSearchParams({
 			revision,
 			newFrom: String(from),
 			newTo: String(to),
+			...(since === undefined ? {} : { from: String(since) }),
 		})}`,
 	);
 
@@ -256,6 +330,34 @@ export const sessionQuery = queryOptions({
 	queryFn: fetchSession,
 	staleTime: Number.POSITIVE_INFINITY,
 });
+
+/**
+ * The patch sets' commit counts (`SessionInfo.patchsets[].commits`), which
+ * the server counts in the background: the session read again every
+ * REREVIEW_POLL_MS until every count is in, under its own key, so the
+ * polls never touch the session the page runs on (the graph merges them).
+ */
+export const patchsetCommitsQuery = (missing: string[]) =>
+	queryOptions({
+		// By the counts still missing: a newly started patch set asks anew.
+		queryKey: ["patchset-commits", ...missing],
+		queryFn: async () => {
+			const info = await fetchSession();
+			return Object.fromEntries(
+				info.patchsets.map((p) => [`${p.number} ${p.head}`, p.commits]),
+			) as Record<string, SessionInfo["patchsets"][number]["commits"]>;
+		},
+		staleTime: Number.POSITIVE_INFINITY,
+		refetchInterval: (query) => {
+			const data = query.state.data;
+			// Asked again only while a count is still being made: one that
+			// failed for good, or a patch set no longer there, stops it.
+			if (query.state.status === "error") return false;
+			return !data || missing.some((k) => data[k] === null)
+				? REREVIEW_POLL_MS
+				: false;
+		},
+	});
 
 /**
  * The head check: polled every 5 minutes and on window focus, and each answer
@@ -662,20 +764,98 @@ export const verdictQuery = queryOptions({
 	queryKey: ["verdict"],
 	queryFn: fetchVerdict,
 	staleTime: Number.POSITIVE_INFINITY,
+	// What changed since the reviewer's verdict comes from the engine:
+	// asked again while it computes (the server keeps its GitHub read).
+	refetchInterval: (query) =>
+		query.state.data?.since?.changes.status === "pending"
+			? REREVIEW_POLL_MS
+			: false,
 });
 
-export const reviewQuery = queryOptions({
-	queryKey: ["review"],
-	queryFn: fetchReview,
-});
+/** Every review query's key starts with this (invalidate them all at once). */
+export const REVIEW_KEY = ["review"] as const;
 
-export const hunksQuery = (revision: string, index: number) =>
+/**
+ * The review to show: the session's own (key `["review"]`, which a stored
+ * write replaces at once), an earlier patch set's, or a viewed head's.
+ */
+export const reviewQuery = (target: ReviewTarget = CURRENT_REVIEW) =>
 	queryOptions({
-		queryKey: ["hunks", revision, index],
-		queryFn: () => fetchHunks(revision, index),
+		queryKey:
+			target.kind === "current"
+				? [...REVIEW_KEY]
+				: target.kind === "patchset"
+					? [...REVIEW_KEY, "ps", target.number]
+					: [...REVIEW_KEY, "head", target.oid],
+		queryFn: () => fetchReview(target),
+	});
+
+export const hunksQuery = (revision: string, index: number, from?: number) =>
+	queryOptions({
+		queryKey: ["hunks", revision, index, from ?? null],
+		queryFn: () => fetchHunks(revision, index, from),
 		// A revision's hunks never change.
 		staleTime: Number.POSITIVE_INFINITY,
 		gcTime: HUNKS_KEPT_MS,
+	});
+
+/** How often the page asks again while the engine is still computing. */
+export const REREVIEW_POLL_MS = 2000;
+
+/**
+ * The engine's answer for patch set `from` to `to`: polled every
+ * REREVIEW_POLL_MS while `pending`, then kept (a mark on the compared
+ * patch set invalidates it: the carries follow the marks).
+ */
+export const rereviewQuery = (from: number, to: RereviewTo) =>
+	queryOptions({
+		queryKey: [
+			"rereview",
+			from,
+			...("patchset" in to ? ["ps", to.patchset] : ["head", to.head]),
+		],
+		queryFn: () => fetchRereview(from, to),
+		staleTime: Number.POSITIVE_INFINITY,
+		refetchInterval: (query) =>
+			query.state.data && "pending" in query.state.data
+				? REREVIEW_POLL_MS
+				: false,
+	});
+
+/**
+ * The threads' placements in a snapshot for one read: polled every
+ * REREVIEW_POLL_MS while `pending`, then kept (a placement write updates
+ * it; a new read is another key).
+ */
+export const placementsQuery = (readId: string, to: RereviewTo) =>
+	queryOptions({
+		queryKey: [
+			"placements",
+			readId,
+			...("patchset" in to ? ["ps", to.patchset] : ["head", to.head]),
+		],
+		queryFn: async ({ client, queryKey }) => {
+			const next = await fetchPlacements(readId, to);
+			// Placements once shown never go back to spinners (a job the
+			// server started again answers pending for a while).
+			if ("pending" in next) {
+				const shown = client.getQueryData<PlacementsAnswer | { pending: true }>(
+					queryKey,
+				);
+				if (shown && !("pending" in shown)) return shown;
+			}
+			return next;
+		},
+		staleTime: Number.POSITIVE_INFINITY,
+		// Asked again while pending, and while the resolved threads are
+		// still joining (the unresolved ones are in already).
+		// Never after an error: the last data would keep it going.
+		refetchInterval: (query) =>
+			query.state.status !== "error" &&
+			query.state.data &&
+			("pending" in query.state.data || query.state.data.complete === false)
+				? REREVIEW_POLL_MS
+				: false,
 	});
 
 export const contextQuery = (
@@ -683,10 +863,12 @@ export const contextQuery = (
 	index: number,
 	from: number,
 	to: number,
+	/** The since view's patch set (hunksQuery's `from`): its own lines. */
+	since?: number,
 ) =>
 	queryOptions({
-		queryKey: ["context", revision, index, from, to],
-		queryFn: () => fetchContext(revision, index, from, to),
+		queryKey: ["context", revision, index, from, to, since ?? null],
+		queryFn: () => fetchContext(revision, index, from, to, since),
 		staleTime: Number.POSITIVE_INFINITY,
 		gcTime: HUNKS_KEPT_MS,
 	});

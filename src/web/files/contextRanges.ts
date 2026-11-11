@@ -13,6 +13,14 @@ const byRevision = new Map<
 >();
 const listeners = new Set<() => void>();
 
+/**
+ * The store's key for a comparison: the full diff's ranges by revision, the
+ * since view's (the interdiff's gaps, numbered as its hunks) apart, by
+ * revision and its patch set.
+ */
+export const rangesKeyOf = (revision: string, since?: number): string =>
+	since === undefined ? revision : `${revision}@since${since}`;
+
 const keyOf = (revision: string, index: number) => `${revision}:${index}`;
 const subscribe = (onChange: () => void) => {
 	listeners.add(onChange);

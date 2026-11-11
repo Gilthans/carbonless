@@ -10,14 +10,31 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { ClusterView, FileView, StateChange } from "../../shared/types";
+import type { LineRanges } from "../../shared/lineRanges";
+import {
+	crossOffChange,
+	type SincePiece,
+	sinceToggleChange,
+	toggleChange,
+} from "../../shared/pieces";
+import type {
+	ClusterView,
+	FileView,
+	SinceMark,
+	StateChange,
+} from "../../shared/types";
 import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer } from "../agent/AgentComposer";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
-import { agentPlaceable } from "../agent/placeable";
+import {
+	agentWaiting,
+	shownAgentPlaceables,
+	useAgentPlacing,
+} from "../agent/placeable";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import type { FindMark } from "../code/Invisibles";
+import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
 import { newThreadKey, useDrafts } from "../threads/drafts";
 import { NewThread } from "../threads/NewThread";
@@ -35,14 +52,17 @@ import {
 	type DiffFind,
 	type DiffThreads,
 	type FileLead,
+	READ_ONLY_TIP,
 } from "./DiffBody";
 import { finishes, resetChanges } from "./fileFinish";
 import { MarkedText } from "./find/MarkedText";
 import { displayPath } from "./find/pathMarks";
+import { KindChip } from "./KindChip";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
 import { useResolveCollapse } from "./resolveCollapse";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
+import { type FileSince, goneFileView } from "./since";
 import { isStale } from "./stateSync";
 import {
 	ChangeCount,
@@ -52,8 +72,9 @@ import {
 	StatusIcon,
 } from "./status";
 import { ThreadBubble } from "./ThreadBubble";
+import { UnplacedThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
-import { fileThreads, placeThreads } from "./threadPlacement";
+import { fileThreads, placeThreads, sinceLeftToNew } from "./threadPlacement";
 import {
 	describeFileProgress,
 	fileUnitProgress,
@@ -223,7 +244,7 @@ function HeaderIconButton(props: {
  * Whether this session can start a comment on the whole file: true, or why
  * not.
  */
-function useFileComment(file: FileView, commit: string) {
+function useFileComment(file: FileView, commit: string, readOnly = false) {
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
 	const span: CodeSpan = { path: file.path, commit, subject: "file" };
 	const ok = overview
@@ -231,6 +252,7 @@ function useFileComment(file: FileView, commit: string) {
 				writes: overview.writes,
 				commentLeft: overview.commentLeft !== false,
 				file,
+				readOnly,
 			})
 		: "Comment on file";
 	return { span, ok };
@@ -241,8 +263,12 @@ function useFileComment(file: FileView, commit: string) {
  * file), in the composer of the file bubble's row; disabled with the
  * reason when this session can't comment.
  */
-function FileCommentButton(props: { file: FileView; commit: string }) {
-	const { span, ok } = useFileComment(props.file, props.commit);
+function FileCommentButton(props: {
+	file: FileView;
+	commit: string;
+	readOnly?: boolean;
+}) {
+	const { span, ok } = useFileComment(props.file, props.commit, props.readOnly);
 	return (
 		<Tooltip content={ok === true ? "Comment on file" : ok}>
 			{(trigger) => (
@@ -378,6 +404,39 @@ function PathScroller({
 }
 
 /**
+ * The header's chips for a comparison: "1 reworked · 1 new · 4 carried",
+ * "gone" and "conflict" when any (KindChip, each with its tooltip).
+ */
+function SinceChips(props: { info?: FileSince; since?: number }) {
+	const { info } = props;
+	if (!info) return null;
+	const { counts } = info;
+	return (
+		<>
+			{info.conflict && <KindChip kind="conflict" />}
+			{counts.reworked > 0 && (
+				<KindChip kind="reworked" count={counts.reworked} from={props.since} />
+			)}
+			{counts.new > 0 && (
+				<KindChip kind="new" count={counts.new} from={props.since} />
+			)}
+			{counts.gone > 0 && (
+				<KindChip kind="gone" count={counts.gone} from={props.since} />
+			)}
+			{counts.reverted > 0 && (
+				<KindChip kind="reverted" count={counts.reverted} from={props.since} />
+			)}
+			{counts.removed > 0 && (
+				<KindChip kind="removed" count={counts.removed} from={props.since} />
+			)}
+			{counts.carried > 0 && (
+				<KindChip kind="carried" count={counts.carried} from={props.since} />
+			)}
+		</>
+	);
+}
+
+/**
  * The file's progress in the unit: fixed size, pinned right, so headers line
  * up. It is the header's one focusable summary (status, count and progress in
  * one tooltip sentence), so keyboard and tap users get it in a single stop.
@@ -391,6 +450,24 @@ function FileProgress(props: {
 	const { file, unit, summary, trigger } = props;
 	const p = fileUnitProgress(file, unit);
 	const { counts } = p;
+	// The since view's count of a file it has nothing of (all carried):
+	// its own state, never the snapshot's numbers.
+	if (file.clusters.length === 0) {
+		return (
+			<div
+				{...trigger}
+				role="progressbar"
+				aria-label="File progress"
+				aria-valuetext="Nothing to read"
+				data-state="empty"
+				// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+				tabIndex={0}
+				className="flex h-9 w-28 shrink-0 items-center justify-end rounded-sm text-xs text-muted focus-visible:outline-2 focus-visible:outline-accent @lg:order-6 @2xl:w-48"
+			>
+				Nothing to read
+			</div>
+		);
+	}
 	return (
 		<div
 			{...trigger}
@@ -476,6 +553,24 @@ export function FileDiff(props: {
 	/** The find's view of this file's diff (DiffBody). */
 	find?: DiffFind;
 	/**
+	 * A comparison the engine answers (since.ts): what happened to the
+	 * file's clusters, for the header's chips; with `since`, the since
+	 * view: the interdiff from that patch set is what the body shows.
+	 */
+	since?: number;
+	sinceInfo?: FileSince;
+	/** The patch set's marks on since-only pieces (ReviewView.sinceMarks). */
+	sinceMarks?: SinceMark[];
+	/**
+	 * The since view: the file as its units count it (since.ts unitsFile),
+	 * for the header's meter and sentence; the full diff counts clusters.
+	 */
+	counted?: FileView;
+	/** The engine is still computing: the chips' slot spins. */
+	sincePending?: boolean;
+	/** An earlier patch set, as reviewed: the marks are locked. */
+	readOnly?: boolean;
+	/**
 	 * The reviewer's own mark just finished this open file (nothing left
 	 * unreviewed): the owner closes it and moves on (FilesPage opens the
 	 * next file). Without it, the file just closes.
@@ -490,7 +585,7 @@ export function FileDiff(props: {
 	 */
 	ignoreMarksUntil?: number;
 }) {
-	const { file, revision } = props;
+	const { file, revision, readOnly } = props;
 	const [ownExpanded, setOwnExpanded] = useState(false);
 	const expanded = props.expanded ?? ownExpanded;
 	const setExpanded = (next: boolean, auto = false) => {
@@ -506,7 +601,7 @@ export function FileDiff(props: {
 	const otherOpenNow = useRef(props.otherOpen ?? false);
 	otherOpenNow.current = props.otherOpen ?? false;
 	const hunks = useQuery({
-		...hunksQuery(revision, file.index),
+		...hunksQuery(revision, file.index, props.since),
 		enabled: expanded,
 	});
 	// Opened by a move-on, its lines (or what shows instead) arrive under the
@@ -540,7 +635,8 @@ export function FileDiff(props: {
 	 */
 	const marksIgnored = () => performance.now() < (ignoreMarksUntil ?? 0);
 	const mark = (changes: StateChange[]) => {
-		if (marksIgnored()) return;
+		// An earlier patch set, as reviewed, takes no marks.
+		if (readOnly || marksIgnored()) return;
 		const closing = expanded && finishes(file.clusters, changes);
 		if (closing) {
 			// The clicked control is gone or swaps; keep focus in the header.
@@ -562,22 +658,25 @@ export function FileDiff(props: {
 	};
 	// Only an unreviewed cluster's box marks it reviewed: unchecking a reviewed
 	// one or undoing a cross-off makes it unreviewed (R21).
-	const toggle = (cluster: ClusterView) => {
-		mark([
-			{
-				key: cluster.key,
-				state: cluster.state === "unreviewed" ? "reviewed" : "unreviewed",
-			},
-		]);
+	// The whole cluster (mixed or unreviewed → reviewed, reviewed →
+	// unreviewed), or in the since view one piece of it (pieces.ts). A
+	// piece's change keeps the cluster unreviewed until every line is
+	// marked, so only the last piece finishes the file (fileFinish.ts).
+	const toggle = (cluster: ClusterView, piece?: LineRanges) => {
+		mark([toggleChange(cluster, piece)]);
 	};
-	// Crossing off a cluster, or undoing it to unreviewed (never reviewed).
-	const crossOff = (cluster: ClusterView) => {
-		mark([
-			{
-				key: cluster.key,
-				state: cluster.state === "crossed-off" ? "unreviewed" : "crossed-off",
-			},
-		]);
+	// Crossing off a cluster (or a piece of it), or undoing it to
+	// unreviewed (never reviewed).
+	const crossOff = (cluster: ClusterView, piece?: LineRanges) => {
+		mark([crossOffChange(cluster, piece)]);
+	};
+	// A since-view piece that owns no line of this snapshot: its own mark,
+	// never a cluster's, so it never finishes the file; guarded like one.
+	const sinceMark = (piece: SincePiece, cross: boolean) => {
+		if (props.since === undefined || readOnly || marksIgnored()) return;
+		save([
+			sinceToggleChange(props.sinceMarks, props.since, file.path, piece, cross),
+		]).catch(() => {});
 	};
 	const unreviewed = file.clusters.filter((c) => c.state === "unreviewed");
 	// Each action is a toggle: it marks what's unreviewed; once nothing is
@@ -596,13 +695,14 @@ export function FileDiff(props: {
 	};
 	// A reset is never a finish: it only adds unreviewed clusters.
 	const reset = (changes: StateChange[]) => {
+		if (readOnly) return;
 		save(changes).catch(() => {});
 	};
 	const path = displayPath(file);
 	// One sentence for the header's status, counts and progress. The counts
 	// are the same in every unit; only the progress follows it.
 	const status = fileStatus(file);
-	const sentence = describeFileProgress(file, props.unit);
+	const sentence = describeFileProgress(props.counted ?? file, props.unit);
 	const summary = [
 		sentence.startsWith(status) ? null : status,
 		lineCount(file),
@@ -625,7 +725,7 @@ export function FileDiff(props: {
 	// never dropped. A closed file's hunks aren't read (first open stays
 	// light): a binary or submodule file's line threads are flagged from the
 	// file alone; a line past the end shows once the file is opened.
-	const header = props.threads
+	const filePlacement = props.threads
 		? placeThreads({
 				threads: props.threads.threads,
 				path: file.path,
@@ -633,8 +733,17 @@ export function FileDiff(props: {
 				hunks: hunks.data ?? null,
 				loadedContext: [],
 				noLines: file.binary || file.submodule,
-			}).header
-		: [];
+				placements: props.threads.placements,
+				// The since view: as its DiffBody places them (LEFT through
+				// the full diff), so the header holds what no row can.
+				...(props.since === undefined
+					? {}
+					: { leftToNew: sinceLeftToNew(file.clusters) }),
+			})
+		: null;
+	const header = filePlacement?.header ?? [];
+	// The threads the tracer couldn't place here: listed under the header.
+	const fates = filePlacement?.fates ?? [];
 	// The file bubble's row is open (its threads and Comment on file).
 	const [fileOpen, setFileOpen] = useState(false);
 	// The closed header's count was used: once the file's hunks are in (and
@@ -649,6 +758,14 @@ export function FileDiff(props: {
 		if (header.length > 0) setFileOpen(true);
 	}, [fromHeader, expanded, hunksSettled, header.length]);
 	const fileThreadsId = useId();
+	// The file bubble flags a line it holds that the diff can't show; the
+	// closed header, any thread of the file that isn't on a line.
+	const headerFlag = header.some((h) => h.reason === "unplaced");
+	// A resolved thread asks for nothing (a quiet line): the closed header
+	// flags unresolved ones only, wherever they ended up.
+	const unplaced =
+		header.some((h) => h.reason === "unplaced" && !h.thread.resolved) ||
+		fates.some((f) => !f.thread.resolved);
 	// Resolve closes a file thread to the file bubble (resolveCollapse.ts).
 	const collapse = useResolveCollapse<"file">(props.threads?.threads, {
 		open: () => setFileOpen(true),
@@ -657,7 +774,6 @@ export function FileDiff(props: {
 		element: () =>
 			document.querySelector(`[aria-controls="${CSS.escape(fileThreadsId)}"]`),
 	});
-	const unplaced = header.some((h) => h.reason === "unplaced");
 	// New comments on the whole file, open or closed: under the header,
 	// where file threads show; on another head (gone): kept as orphans.
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;
@@ -685,26 +801,35 @@ export function FileDiff(props: {
 		}
 	}, [fileItems, snapshotHead, writer]);
 
-	const fileComment = useFileComment(file, snapshotHead);
+	const fileComment = useFileComment(file, snapshotHead, readOnly);
 
 	// The reviewer's agent threads on the file (FilesPage reads them): those
 	// on the whole file, and lines the diff can't show, beside the file's
 	// comment threads with their own bubble; and Ask agent on the file.
 	const agentAll = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
+	// Each where the tracer put it in the viewed head (as GitHub's threads
+	// are), else where it was asked.
+	const agentPlacing = useAgentPlacing();
+	const agentPlacements = agentPlacing.placements;
 	const agentPlaceables = useMemo(
-		() => (agentAll ?? []).map(agentPlaceable),
-		[agentAll],
+		() => shownAgentPlaceables(agentAll ?? [], snapshotHead, agentPlacing),
+		[agentAll, snapshotHead, agentPlacing],
 	);
-	// Every agent thread on the file, on this head or an earlier one: those
-	// asked on an earlier head show in the lead row, marked outdated.
-	const agentMine = agentPlaceables
-		.filter((p) => p.path === file.path)
-		.map((p) => p.thread);
+	// Every agent thread on the file: those the tracer couldn't place in
+	// it listed with their fate; those it has no place for (not in yet,
+	// failed) and asked on an earlier head in the lead row, outdated.
+	// One the tracer put outside the comparison is listed after the files
+	// (AgentNotInComparison), never here.
+	const agentMineP = agentPlaceables.filter(
+		(p) =>
+			p.path === file.path && agentPlacements?.get(p.id)?.kind !== "outside",
+	);
+	const agentMine = agentMineP.map((p) => p.thread);
 	const agentOutdated = snapshotHead
-		? agentMine.filter((t) => t.anchor.commit !== snapshotHead)
+		? agentMineP.filter((p) => p.commit !== snapshotHead).map((p) => p.thread)
 		: [];
-	const agentHeader = snapshotHead
+	const agentPlaced = snapshotHead
 		? placeThreads({
 				threads: agentPlaceables,
 				path: file.path,
@@ -712,9 +837,21 @@ export function FileDiff(props: {
 				hunks: hunks.data ?? null,
 				loadedContext: [],
 				noLines: file.binary || file.submodule,
-			}).header
-		: [];
+				placements: agentPlacements,
+				...(props.since === undefined
+					? {}
+					: { leftToNew: sinceLeftToNew(file.clusters) }),
+			})
+		: null;
+	const agentHeader = agentPlaced?.header ?? [];
+	// Resolved ones after the rest (shownAgentPlaceables' order), muted.
+	const agentFates = new Map(
+		(agentPlaced?.fates ?? []).map(
+			(f) => [f.thread.thread, f.placement] as const,
+		),
+	);
 	const agentGroups = [
+		{ reason: "fate" as const, threads: [...agentFates.keys()] },
 		...(["file", "unplaced"] as const).map((reason) => ({
 			reason,
 			threads: agentHeader
@@ -724,6 +861,18 @@ export function FileDiff(props: {
 		{ reason: "outdated" as const, threads: agentOutdated },
 	].filter((g) => g.threads.length > 0);
 	const agentLead = agentGroups.flatMap((g) => g.threads);
+	// While the placements load: this file's agent threads asked on
+	// another head wait, and its agent bubble spins where they will show.
+	const agentWaitingHere = useMemo(
+		() =>
+			agentPlacing.pending && snapshotHead
+				? agentWaiting(agentAll ?? [], snapshotHead, agentPlacing).filter(
+						(p) => p.path === file.path || p.path === file.oldPath,
+					)
+				: [],
+		[agentPlacing, agentAll, snapshotHead, file.path, file.oldPath],
+	);
+	const agentLoading = agentWaitingHere.length > 0;
 	const [agentOpen, setAgentOpen] = useState(false);
 	const agentThreadsId = useId();
 	const agentFileItems = useAgentComposers().filter(
@@ -770,7 +919,7 @@ export function FileDiff(props: {
 	 */
 	const fileShown = header.filter((h) => collapse.shows(h.thread));
 	const lead: FileLead = {
-		count: agentLead.length > 0 ? 2 : 1,
+		count: agentLead.length > 0 || agentLoading ? 2 : 1,
 		bubble: (
 			<>
 				<ThreadBubble
@@ -784,7 +933,7 @@ export function FileDiff(props: {
 							? "Comment on file"
 							: `Comment on file — ${fileComment.ok}`
 					}
-					flagged={unplaced}
+					flagged={headerFlag}
 					focus={focusFile}
 					onFocused={() => setFocusFile(false)}
 					open={fileOpen}
@@ -797,10 +946,11 @@ export function FileDiff(props: {
 						setFileOpen(!fileOpen);
 					}}
 				/>
-				{agentLead.length > 0 && (
+				{(agentLead.length > 0 || agentLoading) && (
 					<AgentBubble
 						inline
 						threads={agentLead}
+						loading={agentLoading && agentLead.length === 0}
 						where="on this file"
 						open={agentOpen}
 						controls={agentOpen ? agentThreadsId : undefined}
@@ -842,7 +992,11 @@ export function FileDiff(props: {
 						composers={fileItems.length > 0 ? newItems : null}
 						comment={
 							fileOpen && fileItems.length === 0 ? (
-								<FileCommentButton file={file} commit={snapshotHead} />
+								<FileCommentButton
+									file={file}
+									commit={snapshotHead}
+									readOnly={readOnly}
+								/>
 							) : null
 						}
 					/>
@@ -857,6 +1011,7 @@ export function FileDiff(props: {
 							rail={rail}
 							unplaced={g.reason === "unplaced"}
 							outdated={g.reason === "outdated"}
+							fates={g.reason === "fate" ? agentFates : undefined}
 						/>
 					))}
 				{agentComposers && (
@@ -928,6 +1083,23 @@ export function FileDiff(props: {
 								{/* Beside the path, so a phone's second row keeps its room. */}
 								<ChangeCount file={file} hover={summaryTrigger} />
 							</div>
+							{/* What happened since the compared patch set; a spinner
+							    while the engine computes (never no chips that read as
+							    nothing changed). A row of its own below @lg, so the path
+							    keeps its width on a phone (principle 5). */}
+							{(props.sinceInfo || props.sincePending) && (
+								<span
+									data-testid="since-chips"
+									aria-busy={props.sincePending || undefined}
+									className="flex min-h-5 basis-full flex-wrap items-center gap-1 @lg:order-4 @lg:basis-auto"
+								>
+									{props.sincePending && !props.sinceInfo ? (
+										<Spinner label="Computing what changed" size={12} />
+									) : (
+										<SinceChips info={props.sinceInfo} since={props.since} />
+									)}
+								</span>
+							)}
 							<button
 								ref={toggleButton}
 								type="button"
@@ -947,9 +1119,10 @@ export function FileDiff(props: {
 								<StatusIcon file={file} hover={summaryTrigger} />
 							</span>
 							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
-								{!expanded && agentMine.length > 0 && (
+								{!expanded && (agentMine.length > 0 || agentLoading) && (
 									<AgentBubble
 										threads={agentMine}
+										loading={agentLoading && agentMine.length === 0}
 										where="in this file"
 										open={false}
 										onToggle={() => {
@@ -977,12 +1150,16 @@ export function FileDiff(props: {
 									<HeaderIconButton
 										ignoreClicksUntil={ignoreMarksUntil}
 										label="Undo cross-off"
-										tooltip="Set crossed-off clusters back to unreviewed"
+										tooltip={
+											readOnly
+												? READ_ONLY_TIP
+												: "Set crossed-off clusters back to unreviewed"
+										}
 										confirm="Remove all crossed-off markings from this file?"
 										icon="⊘"
 										tone="purple"
 										pressed
-										disabled={false}
+										disabled={readOnly === true}
 										// Back to unreviewed, never reviewed (R21).
 										onClick={() => reset(unCross)}
 									/>
@@ -991,14 +1168,16 @@ export function FileDiff(props: {
 										ignoreClicksUntil={ignoreMarksUntil}
 										label="Cross off file"
 										tooltip={
-											crossToggle.none
-												? idle
-												: "Mark all unreviewed clusters as not needing review"
+											readOnly
+												? READ_ONLY_TIP
+												: crossToggle.none
+													? idle
+													: "Mark all unreviewed clusters as not needing review"
 										}
 										icon="⊘"
 										tone="purple"
 										pressed={false}
-										disabled={crossToggle.none}
+										disabled={readOnly || crossToggle.none}
 										onClick={() => {
 											// What the reviewer already read stays reviewed (R21).
 											mark(
@@ -1014,12 +1193,16 @@ export function FileDiff(props: {
 									<HeaderIconButton
 										ignoreClicksUntil={ignoreMarksUntil}
 										label="Unmark reviewed"
-										tooltip="Set reviewed clusters back to unreviewed"
+										tooltip={
+											readOnly
+												? READ_ONLY_TIP
+												: "Set reviewed clusters back to unreviewed"
+										}
 										confirm="Remove all reviewed markings from this file?"
 										icon="✓"
 										tone="green"
 										pressed
-										disabled={false}
+										disabled={readOnly === true}
 										onClick={() => reset(unReview)}
 									/>
 								) : (
@@ -1027,14 +1210,16 @@ export function FileDiff(props: {
 										ignoreClicksUntil={ignoreMarksUntil}
 										label="Mark remaining reviewed"
 										tooltip={
-											reviewToggle.none
-												? idle
-												: "Mark all unreviewed clusters as reviewed"
+											readOnly
+												? READ_ONLY_TIP
+												: reviewToggle.none
+													? idle
+													: "Mark all unreviewed clusters as reviewed"
 										}
 										icon="✓"
 										tone="green"
 										pressed={false}
-										disabled={reviewToggle.none}
+										disabled={readOnly || reviewToggle.none}
 										onClick={() => {
 											mark(
 												unreviewed.map((c) => ({
@@ -1047,7 +1232,7 @@ export function FileDiff(props: {
 								)}
 							</div>
 							<FileProgress
-								file={file}
+								file={props.counted ?? file}
 								unit={props.unit}
 								summary={summary}
 								trigger={summaryTrigger}
@@ -1059,6 +1244,14 @@ export function FileDiff(props: {
 			{!expanded && fileItems.length > 0 && (
 				// Closed: a file comment being written stays in sight.
 				<div className="border-b border-line bg-canvas p-2">{newItems}</div>
+			)}
+			{expanded && props.threads && (
+				<UnplacedThreads
+					fates={fates}
+					readId={props.threads.readId}
+					path={file.path}
+					fileIndex={file.index}
+				/>
 			)}
 			{!expanded && agentComposers && (
 				<div className="border-b border-line bg-canvas p-2">
@@ -1075,6 +1268,100 @@ export function FileDiff(props: {
 					landing={props.landing}
 					threads={props.threads}
 					headSure={props.headSure}
+					find={props.find}
+					from={props.since}
+					kinds={props.sinceInfo?.kinds}
+					onSinceMark={sinceMark}
+					sinceMarks={props.sinceMarks}
+					readOnly={readOnly}
+				/>
+			)}
+		</section>
+	);
+}
+
+/**
+ * A file of the since view that the viewed snapshot no longer changes:
+ * everything the reviewer saw of it on the compared patch set was undone,
+ * so its clusters are gone. Its header names it; its body is the interdiff,
+ * each piece marked on its own (since marks: pieces.ts).
+ */
+export function GoneFile(props: {
+	index: number;
+	path: string;
+	revision: string;
+	since: number;
+	info?: FileSince;
+	sinceMarks?: SinceMark[];
+	/** An earlier patch set, as reviewed: the marks are locked. */
+	readOnly?: boolean;
+	/** Controlled open state (the page's open file: a find's step opens it). */
+	expanded?: boolean;
+	onExpandedChange?: (expanded: boolean) => void;
+	/** The find's hits on the path, and in the lines (FilesPage). */
+	pathFind?: readonly FindMark[];
+	find?: DiffFind;
+}) {
+	const [ownExpanded, setOwnExpanded] = useState(false);
+	const expanded = props.expanded ?? ownExpanded;
+	const setExpanded = (next: boolean) => {
+		if (props.expanded === undefined) setOwnExpanded(next);
+		props.onExpandedChange?.(next);
+	};
+	const { save } = useSetStates();
+	const sinceMark = (piece: SincePiece, cross: boolean) => {
+		save(props.revision, props.path, [
+			sinceToggleChange(
+				props.sinceMarks,
+				props.since,
+				props.path,
+				piece,
+				cross,
+			),
+		]).catch(() => {});
+	};
+	const file = goneFileView(props);
+	return (
+		<section
+			id={`file-${props.index}`}
+			data-gone-file={props.path}
+			aria-label={props.path}
+			className="overflow-clip rounded-lg border border-bad/40 bg-surface"
+		>
+			<header className="flex min-h-11 flex-wrap items-center gap-1.5 border-b border-line bg-raised px-1.5">
+				<button
+					type="button"
+					aria-expanded={expanded}
+					aria-label={expanded ? "Collapse file" : "Expand file"}
+					onClick={() => setExpanded(!expanded)}
+					className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					{expanded ? "▾" : "▸"}
+				</button>
+				<PathScroller
+					text={props.path}
+					marks={props.pathFind}
+					kind="Reviewed work gone"
+				/>
+				<span data-testid="since-chips" className="flex items-center gap-1">
+					<KindChip
+						kind="gone"
+						count={props.info?.counts.gone}
+						from={props.since}
+					/>
+				</span>
+			</header>
+			{expanded && (
+				<DiffBody
+					file={file}
+					revision={props.revision}
+					onToggle={() => {}}
+					onCrossOff={() => {}}
+					from={props.since}
+					kinds={props.info?.kinds}
+					onSinceMark={sinceMark}
+					sinceMarks={props.sinceMarks}
+					readOnly={props.readOnly}
 					find={props.find}
 				/>
 			)}

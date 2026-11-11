@@ -2,6 +2,7 @@ import type { Locator, Page, Route } from "@playwright/test";
 import {
 	barBottom,
 	expectNoPageOverflow,
+	fileAction,
 	fileSection,
 	ignoreWhitespace,
 	openFiles,
@@ -940,6 +941,20 @@ const filesBarBox = (page: Page) =>
 			?.getBoundingClientRect();
 		return r ? { y: r.y, bottom: r.bottom } : null;
 	});
+/**
+ * The first thing under the app header on Files changed: the patch set
+ * graph when it shows, else the files bar.
+ */
+const firstBelowBox = (page: Page) =>
+	page.evaluate(() => {
+		const el =
+			document.querySelector('[aria-label="Patch sets"]') ??
+			document
+				.querySelector('[role="progressbar"][aria-label="Review progress"]')
+				?.closest(".sticky");
+		const r = el?.getBoundingClientRect();
+		return r ? { y: r.y, bottom: r.bottom } : null;
+	});
 /** The find float's box on screen. */
 const floatBox = (page: Page) =>
 	page.locator("[data-find-float]").evaluate((el) => {
@@ -978,15 +993,20 @@ test("on a phone the open bar takes the header's place in the page, pushing it d
 			.evaluate((el) => getComputedStyle(el).minHeight),
 	).toMatch(/^(0px|auto)$/);
 	expect(opened.height).toBeLessThan(120);
-	// The files bar follows right under it: no gap, no overlap.
+	// The page follows right under it (the patch set graph, else the
+	// files bar): no gap, no overlap.
 	await expect
-		.poll(async () => ((await filesBarBox(page))?.y ?? 0) - opened.height)
+		.poll(async () => ((await firstBelowBox(page))?.y ?? 0) - opened.height)
 		.toBeGreaterThanOrEqual(-0.5);
-	expect(((await filesBarBox(page))?.y ?? 0) - opened.height).toBeLessThan(1);
-	// Focus scrolling clears the bar and the files bar under it (the box,
-	// focused, has none: index.css).
+	expect(((await firstBelowBox(page))?.y ?? 0) - opened.height).toBeLessThan(1);
+	// Focus scrolling clears the bar and the files bar stuck under it (the
+	// box, focused, has none: index.css). At the top the patch set graph
+	// can sit between them: the files bar's own height counts.
 	await box(page).evaluate((el) => (el as HTMLElement).blur());
-	const files2 = await filesBarBox(page);
+	const filesNow = await filesBarBox(page);
+	const files2 = {
+		bottom: opened.height + (filesNow?.bottom ?? 0) - (filesNow?.y ?? 0),
+	};
 	await expect
 		.poll(() =>
 			page.evaluate(() =>
@@ -995,7 +1015,7 @@ test("on a phone the open bar takes the header's place in the page, pushing it d
 				),
 			),
 		)
-		.toBeGreaterThanOrEqual((files2?.bottom ?? 0) - 1);
+		.toBeGreaterThanOrEqual(files2.bottom - 1);
 	// The box takes the first row, full width; the buttons the second.
 	const boxAt = await box(page).boundingBox();
 	const nextAt = await bar(page)
@@ -1643,4 +1663,156 @@ test("on desktop the open bar pushes the app header down: nothing covered at the
 	await expect
 		.poll(async () => (await appHeader(page).boundingBox())?.y)
 		.toBe(0);
+});
+
+/** The since view's git steps (the head check's fetch, the engine): rereview.spec's GIT_WAIT. */
+const GIT_WAIT = { timeout: 30_000 };
+const core = numbered("core", 40);
+const util = numbered("util", 10);
+const goneBase = numbered("gone", 10);
+/** PS1: five lines on top of core.ts, line 20 "earlyTerm"; util.ts line 3. */
+const ps1Core = [
+	...numbered("top", 5),
+	...core.map((l, i) => (i === 19 ? "earlyTerm 20" : l)),
+];
+
+test("the since view searches the interdiff: nothing changed only before it, its own lines at its numbers; the full diff finds the earlier change again", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: {
+			"src/core.ts": text(core),
+			"src/gone.ts": text(goneBase),
+			"src/util.ts": text(util),
+		},
+		files: [
+			{
+				message: "PS1",
+				files: {
+					"src/core.ts": text(ps1Core),
+					"src/gone.ts": text(
+						goneBase.map((l, i) => (i === 3 ? "goneTerm 4" : l)),
+					),
+					"src/util.ts": text(util.map((l, i) => (i === 2 ? "util 3 v1" : l))),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await phone(page, isMobile);
+	// PS1, fully reviewed.
+	for (const path of ["src/core.ts", "src/gone.ts", "src/util.ts"]) {
+		await fileAction(fileSection(page, path), "Mark remaining reviewed");
+		await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	}
+	// PS2: core.ts's line 30 (PS1's 35) rewritten, gone.ts back to the
+	// base (gone from the PR: its reviewed work shown as gone), util.ts's line 8.
+	p.moveHead({
+		message: "PS2",
+		files: {
+			"src/gone.ts": text(goneBase),
+			"src/core.ts": text(
+				ps1Core.map((l) => (l === "core 30" ? "laterTerm 30" : l)),
+			),
+			"src/util.ts": text(
+				util.map((l, i) => (i === 2 ? "util 3 v1" : i === 7 ? "util 8 v2" : l)),
+			),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	// A mark on the head starts PS2; then the since view PS1 → PS2.
+	const util2 = fileSection(page, "src/util.ts");
+	await expect(
+		util2
+			.locator('[data-testid="since-chips"] [data-testid="kind-chip"]')
+			.first(),
+	).toBeVisible(GIT_WAIT);
+	await fileAction(util2, "Mark remaining reviewed");
+	await expect(page).toHaveURL(/ps=2/);
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	const since = new URL(page.url());
+	since.searchParams.set("from", "1");
+	await page.goto(since.toString());
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const coreS = fileSection(page, "src/core.ts");
+	await expect(
+		coreS
+			.locator('[data-testid="since-chips"] [data-testid="kind-chip"]')
+			.first(),
+	).toBeVisible(GIT_WAIT);
+
+	// Changed before PS1 only: no hit in the interdiff.
+	await openBar(page, isMobile);
+	await search(page, "earlyTerm");
+	await expect(count(page)).toHaveText(counted(0, 0), VISIBLE);
+	// Changed in PS2: its old line at PS1's number, its new one at PS2's;
+	// a step opens core.ts and scrolls to each row.
+	await search(page, "core 30");
+	await expect(count(page)).toHaveText(counted(1, 1), VISIBLE);
+	await box(page).press("Enter");
+	await expect(expandToggle(coreS)).toHaveAttribute("aria-expanded", "true");
+	await expect(currentRow(page)).toHaveAttribute("data-old-no", "35");
+	await expect(currentRow(page)).toHaveAttribute("data-kind", "del");
+	await expect(currentRow(page)).toBeInViewport();
+	await search(page, "laterTerm");
+	await expect(count(page)).toHaveText(counted(1, 1), VISIBLE);
+	await box(page).press("Enter");
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "35");
+	await expect(currentRow(page)).toHaveAttribute("data-kind", "add");
+	await expect(currentRow(page)).toBeInViewport();
+	// Context the since view loads is searched: core.ts's gap above.
+	await search(page, "core 25");
+	await expect(count(page)).toHaveText(counted(0, 0), VISIBLE);
+	await coreS
+		.getByRole("button", { name: /^Load \d+ lines? above$/ })
+		.first()
+		.click();
+	await expect(count(page)).toHaveText(counted(1, 1), VISIBLE);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "30");
+	// A gone file's removed lines are searched: Enter opens it on the row.
+	const goneS = page.locator('[data-gone-file="src/gone.ts"]');
+	await expect(goneS).toBeVisible();
+	await search(page, "goneTerm");
+	await expect(count(page)).toHaveText(counted(1, 1), VISIBLE);
+	await box(page).press("Enter");
+	await expect(
+		goneS.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(currentRow(page)).toHaveAttribute("data-old-no", "4");
+	await expect(currentRow(page)).toHaveAttribute("data-kind", "del");
+	await expect(currentRow(page)).toBeInViewport();
+	await expectNoPageOverflow(page);
+
+	// The full diff (base on the branch): the earlier change is found again.
+	const full = new URL(page.url());
+	full.searchParams.set("from", "branch");
+	await page.goto(full.toString());
+	await expect(
+		page
+			.getByTestId("ps-node-branch")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await openBar(page, isMobile);
+	await search(page, "earlyTerm");
+	await expect(count(page)).toHaveText(counted(1, 1), VISIBLE);
+	await box(page).press("Enter");
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "25");
+	await expect(currentRow(page)).toBeInViewport();
 });

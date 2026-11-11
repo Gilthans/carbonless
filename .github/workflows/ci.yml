@@ -26,7 +26,7 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -39,8 +39,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      # A wall-clock limit per test step, the net for a hung test: no Vitest
+      # timeout can end a microtask loop (e.g. a waitFor callback that writes
+      # the DOM wakes its own MutationObserver, so timers never fire). The
+      # step takes 9-13 min (Nov 2026) and grows: keep headroom.
       # Test traces (docs/test-profiling.md) go to a directory uploaded below.
       - run: pnpm test
+        timeout-minutes: 25
         env:
           CRB_TEST_TRACE_ROOT: ${{ runner.temp }}/test-traces
       - run: pnpm test:pack

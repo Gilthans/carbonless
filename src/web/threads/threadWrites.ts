@@ -30,6 +30,7 @@ import {
 	postResolved,
 	postThread,
 	postVerdict,
+	REVIEW_KEY,
 	sessionQuery,
 	verdictQuery,
 } from "../api";
@@ -40,6 +41,7 @@ import {
 	STALL_ATTEMPTS,
 } from "../files/stateSync";
 import { useReviewId } from "../reviewId";
+import { verdictCommitOf } from "../verdict/verdictCommit";
 import {
 	dropPrWideVerdict,
 	type VerdictSending,
@@ -283,7 +285,7 @@ export interface ThreadWritesDeps {
 	verdictLanded?: (answer: VerdictAnswer, event: VerdictEvent) => void;
 	/** The verdict's message and the verdict on its way, kept across reloads. */
 	verdictDraft?: VerdictStore;
-	/** The head a verdict goes on now (the session's snapshot head). */
+	/** The head a verdict goes on now (verdictCommitOf: what the buttons name). */
 	verdictCommit?: () => string;
 }
 
@@ -1649,7 +1651,8 @@ export function applyThreadUpdate(
 
 /**
  * A new thread GitHub took, into the page: listed first in every read's
- * thread lists (no one else has it twice), its comments in.
+ * thread lists (no one else has it twice), its comments in; then the
+ * session and the review read again (it may have started a patch set).
  */
 export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
 	const { thread } = answer;
@@ -1663,6 +1666,13 @@ export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
 	if (readId) {
 		client.setQueryData(commentsQuery(readId, thread.id).queryKey, comments);
 	}
+	// A new thread on a head that was no patch set yet started one (as a
+	// first mark or a verdict does): the graph's new dot, its carries, and
+	// the comparisons and since line that follow it.
+	void client.invalidateQueries({ queryKey: sessionQuery.queryKey });
+	void client.invalidateQueries({ queryKey: REVIEW_KEY });
+	void client.invalidateQueries({ queryKey: ["rereview"] });
+	void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
 }
 
 /** A thread's opener text fields, from its first comment. */
@@ -1738,6 +1748,22 @@ export function applyVerdict(client: QueryClient, answer: VerdictAnswer): void {
 		if (answer.stillStands) return facts;
 		return {
 			...facts,
+			// A verdict on the head a verdict goes on: nothing since it
+			// (the re-read says what the server works out).
+			since:
+				facts.since && review.commitId === facts.since.to.head
+					? null
+					: facts.since,
+			// A Comment always has a message: every verdict sent here is one.
+			yourVerdict: {
+				author: viewer,
+				state: review.state,
+				submittedAt: review.submittedAt,
+				commitId: review.commitId,
+				...(review.url ? { url: review.url } : {}),
+				you: true,
+				bot: false,
+			},
 			reviews: [
 				{
 					author: viewer,
@@ -1781,6 +1807,10 @@ export function applyVerdict(client: QueryClient, answer: VerdictAnswer): void {
 	void client.invalidateQueries({ queryKey: overviewQuery.queryKey });
 	void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
 	void client.invalidateQueries({ queryKey: ["timeline"] });
+	// A verdict on a head that was no patch set yet started one (the
+	// graph's new dot, its carried marks).
+	void client.invalidateQueries({ queryKey: sessionQuery.queryKey });
+	void client.invalidateQueries({ queryKey: REVIEW_KEY });
 }
 
 /** The page's one ThreadWrites (and its drafts), per query client. */
@@ -1802,7 +1832,10 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			verdict: postVerdict,
 			verdictDraft: verdictDraftFor(client),
 			verdictCommit: () =>
-				client.getQueryData(sessionQuery.queryKey)?.snapshotHead ?? "",
+				verdictCommitOf(
+					client.getQueryData(verdictQuery.queryKey),
+					client.getQueryData(sessionQuery.queryKey),
+				),
 			verdictLanded: (answer) => applyVerdict(client, answer),
 			confirmedResolved: (threadId) => {
 				const lists = client.getQueriesData<ThreadsView>({
