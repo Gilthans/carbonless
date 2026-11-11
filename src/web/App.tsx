@@ -232,9 +232,12 @@ function useChipDock(hidden: boolean, above: number) {
 			focused.focus({ preventScroll: true });
 	}, [docked, row, title, host]);
 	// The chip's size, read from the place that holds it (0 with none).
+	// While the header is out of the layout (a phone's find bar in its
+	// place) it keeps the last: a 0 then would drop the kept space, reflow
+	// the title and move the page when the header shows again.
 	useLayoutEffect(() => {
 		const holder = docked ? row : title;
-		if (!holder) return;
+		if (!holder || hidden) return;
 		const measure = () => {
 			const { width, height } = holder.getBoundingClientRect();
 			setSize((old) =>
@@ -246,7 +249,7 @@ function useChipDock(hidden: boolean, above: number) {
 		const observer = new ResizeObserver(measure);
 		observer.observe(holder);
 		return () => observer.disconnect();
-	}, [docked, row, title]);
+	}, [docked, row, title, hidden]);
 	useEffect(() => {
 		if (!title || hidden) return;
 		let frame = 0;
