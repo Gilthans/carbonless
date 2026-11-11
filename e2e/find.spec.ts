@@ -373,6 +373,139 @@ test("the header button opens and closes the bar", async ({
 	expect(size?.height).toBeGreaterThanOrEqual(40);
 });
 
+/** The file the page treats as current (the tree's mark, in the sheet on a phone). */
+const currentFile = (page: Page) =>
+	page.evaluate(
+		() =>
+			document.querySelector(
+				'[data-testid=file-tree] [aria-current="true"] [data-testid=tree-name]',
+			)?.textContent ?? null,
+	);
+
+/**
+ * Records every file the tree marks current from now on (each change, even
+ * one render's), read by `seenCurrent`.
+ */
+const watchCurrent = (page: Page) =>
+	page.evaluate(() => {
+		const read = () =>
+			document.querySelector(
+				'[data-testid=file-tree] [aria-current="true"] [data-testid=tree-name]',
+			)?.textContent ?? null;
+		const seen = [read()];
+		(window as unknown as { seenCurrent: unknown[] }).seenCurrent = seen;
+		new MutationObserver(() => {
+			const now = read();
+			if (seen[seen.length - 1] !== now) seen.push(now);
+		}).observe(document.body, {
+			attributes: true,
+			attributeFilter: ["aria-current"],
+			subtree: true,
+			childList: true,
+		});
+	});
+const seenCurrent = (page: Page) =>
+	page.evaluate(
+		() => (window as unknown as { seenCurrent: unknown[] }).seenCurrent,
+	);
+
+/** Scrolls so `section`'s bottom sits `by` px below the sticky stack's bottom. */
+const bottomBelowStack = (page: Page, section: Locator, by: number) =>
+	expect
+		.poll(async () => {
+			const band = await barBottom(page);
+			return section.evaluate(
+				(el, { band, by }) => {
+					const delta = el.getBoundingClientRect().bottom - band - by;
+					if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
+					return Math.abs(delta);
+				},
+				{ band, by },
+			);
+		})
+		.toBeLessThan(1);
+
+test("opening and closing the bar never changes the current file, though the sticky stack's height does; the next scroll picks it afresh", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await phone(page, isMobile);
+	// A short first file, closed, then a long one, open: scrolling a little
+	// within it moves no file's edge across the band.
+	await pr({
+		base: { [A]: text(numbered("a", 3)), [B]: text(numbered("b", 200)) },
+		files: [
+			{
+				message: "Short and long",
+				files: {
+					[A]: text(numbered("a", 3).map((l) => `${l}!`)),
+					[B]: text(numbered("b", 200).map((l) => `${l}!`)),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await expand(page, B);
+	const a = fileSection(page, A);
+	const close = () =>
+		bar(page).getByRole("button", { name: "Close (Esc)" }).click();
+	const frames = () =>
+		page.evaluate(
+			() =>
+				new Promise((r) =>
+					requestAnimationFrame(() => requestAnimationFrame(r)),
+				),
+		);
+	const scrollBy = (by: number) =>
+		page.evaluate((by) => window.scrollBy(0, by), by);
+
+	// src/a.ts ends just under the stack: the file in view. The open bar
+	// makes the stack taller (on a phone, taller than the header it
+	// replaces), over src/a.ts's end, but the page keeps the line being
+	// read in place and src/a.ts stays current.
+	await bottomBelowStack(page, a, 4);
+	await expect.poll(() => currentFile(page)).toBe("a.ts");
+	await watchCurrent(page);
+	const stackBefore = await barBottom(page);
+	await openBar(page, isMobile);
+	expect(await barBottom(page)).toBeGreaterThan(stackBefore + 4);
+	await frames();
+	expect(await seenCurrent(page)).toEqual(["a.ts"]);
+	// A small scroll within src/b.ts, crossing nothing, picks it. Scrolled
+	// in the poll: a late re-measure of the bar would hold the file again.
+	await expect
+		.poll(async () => {
+			await scrollBy(2);
+			return currentFile(page);
+		})
+		.toBe("b.ts");
+
+	// The other way: with the bar open, src/a.ts ends just above the stack,
+	// so src/b.ts is current; closing shortens the stack, which uncovers
+	// src/a.ts's end, and src/b.ts stays current.
+	await bottomBelowStack(page, a, -4);
+	await expect.poll(() => currentFile(page)).toBe("b.ts");
+	await watchCurrent(page);
+	await close();
+	await expect(bar(page)).toHaveCount(0);
+	expect(await barBottom(page)).toBeLessThan(
+		(await a.evaluate((el) => el.getBoundingClientRect().bottom)) - 4,
+	);
+	await frames();
+	expect(await seenCurrent(page)).toEqual(["b.ts"]);
+	// A small scroll up, crossing nothing (src/a.ts's end stays in the
+	// band), picks src/a.ts.
+	await expect
+		.poll(async () => {
+			await scrollBy(-2);
+			return currentFile(page);
+		})
+		.toBe("a.ts");
+});
+
 test("a path hit opens the file at its header with the path marked, and the tree shows counts", async ({
 	page,
 	pr,
@@ -519,7 +652,7 @@ test("a line the diff doesn't show is found once its context is expanded", async
 	await expect(count(page)).toHaveText(counted(1, 1), VISIBLE);
 });
 
-test("side by side and ignore whitespace keep the count and the current hit (a phone: ignore whitespace)", async ({
+test("unified with ignore whitespace counts a whitespace-only pair once, every step painting a mark; side by side counts both and keeps the current hit (a phone: unified only)", async ({
 	page,
 	pr,
 	startCrb,
@@ -533,34 +666,106 @@ test("side by side and ignore whitespace keep the count and the current hit (a p
 	await openBar(page, isMobile);
 	await search(page, "saveDraft");
 	const next = bar(page).getByRole("button", { name: /^Next/ });
-	// src/ws.ts's line 4, removed then added: the last two hits.
-	await expect(count(page)).toHaveText(counted(1, ALL), VISIBLE);
-	for (let at = 1; at <= ALL - 1; at++) {
+	// src/ws.ts's line 4 is one `~` row showing its new text: counted once.
+	const UNIFIED = ALL - 1;
+	await expect(count(page)).toHaveText(counted(1, UNIFIED), VISIBLE);
+	for (let at = 1; at <= UNIFIED; at++) {
 		await next.click();
-		await expect(count(page)).toHaveText(counted(at, ALL), VISIBLE);
+		await expect(count(page)).toHaveText(counted(at, UNIFIED), VISIBLE);
+		// Every step paints its hit's characters: one current mark on a line
+		// hit (a path hit's shows in the tree and the header both).
+		const current = page.locator(".find-current:visible");
+		if (at > DOC_HIT) await expect(current).toHaveCount(1);
+		else await expect(current.first()).toBeVisible();
+		await expect(current.first()).toHaveText(/savedraft/i);
 	}
 	const ws = fileSection(page, WS);
 	await expect(currentSection(page)).toHaveAttribute("aria-label", WS);
-	// The whitespace-only cluster opens to show it: line 4's row, washed
-	// (its old side's hit lands on the one row a ws line has).
+	// The whitespace-only cluster opens to show it: line 4's pair row.
 	await expect(currentRow(page)).toBeVisible();
 	await expect(currentRow(page)).toHaveAttribute("data-new-no", "4");
-	await next.click();
-	await expect(count(page)).toHaveText(counted(ALL, ALL), VISIBLE);
-	await expect(currentRow(page)).toHaveAttribute("data-new-no", "4");
-	await expect(ws.locator(".find-current")).toBeVisible();
+	await expect(currentRow(page)).toHaveAttribute("data-ws", "pair");
 	await expect(ws.locator(".find-current")).toHaveText("saveDraft");
-	const before = await count(page).innerText();
-	expect(before).toMatch(counted("\\d+", "\\d+"));
+	await expect(ws.locator(".find-mark")).toHaveCount(0);
+	// The next step wraps to the first hit, never onto the hidden old side.
+	await next.click();
+	await expect(count(page)).toHaveText(counted(1, UNIFIED), VISIBLE);
+	await expect(currentSection(page)).not.toHaveAttribute("aria-label", WS);
+	const back = bar(page).getByRole("button", { name: /^Previous/ });
+	await back.click();
+	await expect(count(page)).toHaveText(counted(UNIFIED, UNIFIED), VISIBLE);
+	await expect(ws.locator(".find-current")).toHaveText("saveDraft");
 	// A phone's Settings are in the header, hidden while the bar is open.
 	if (isMobile) return;
 
+	// Side by side shows both texts: N grows, the current hit (the new side's) stays.
 	await setSwitch(page, "Side by side", true);
 	await expect(ws.locator('table[data-view="side-by-side"]')).toBeVisible();
-	await expect(count(page)).toHaveText(before, VISIBLE);
-	await expect(ws.locator(".find-current")).toBeVisible();
+	await expect(count(page)).toHaveText(counted(ALL, ALL), VISIBLE);
+	const cell = ws.locator('td[data-testid="code"][data-find-current]');
+	await expect(cell).toHaveAttribute("data-side", "RIGHT");
+	await expect(cell.locator(".find-current")).toHaveText("saveDraft");
+	await expect(ws.locator(".find-mark")).toHaveText("saveDraft");
+	// The old side's hit is a step back.
+	await back.click();
+	await expect(count(page)).toHaveText(counted(ALL - 1, ALL), VISIBLE);
+	await expect(cell).toHaveAttribute("data-side", "LEFT");
+	// Back to unified on it: the pair's row, the same place, not the top.
+	await setSwitch(page, "Side by side", false);
+	await expect(count(page)).toHaveText(counted(UNIFIED, UNIFIED), VISIBLE);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "4");
 	await expect(ws.locator(".find-current")).toHaveText("saveDraft");
-	await expect(ws.locator("[data-find-current]").first()).toBeVisible();
+});
+
+test("unified with ignore whitespace steps down the screen across a `~` row between two removed lines' hits", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await phone(page, isMobile);
+	const ORDER = "src/order.ts";
+	// Removed A, B, C; added B' (B re-indented), D: unified shows A, B~B', C, D.
+	await pr({
+		base: {
+			[ORDER]: text([
+				"x 1",
+				"saveDraft(a)",
+				"  saveDraft(b)",
+				"saveDraft(c)",
+				"x 5",
+			]),
+		},
+		files: [
+			{
+				message: "Order",
+				files: {
+					[ORDER]: text(["x 1", "saveDraft(b)", "saveDraft(d)", "x 5"]),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await ignoreWhitespace(page, true);
+	await openBar(page, isMobile);
+	await search(page, "saveDraft");
+	await expect(count(page)).toHaveText(counted(1, 4), VISIBLE);
+	const next = bar(page).getByRole("button", { name: /^Next/ });
+	const rows = [
+		{ kind: "del", attr: "data-old-no", no: "2" },
+		{ kind: "ws", attr: "data-new-no", no: "2" },
+		{ kind: "del", attr: "data-old-no", no: "4" },
+		{ kind: "add", attr: "data-new-no", no: "3" },
+	];
+	for (const [i, row] of rows.entries()) {
+		await next.click();
+		await expect(count(page)).toHaveText(counted(i + 1, 4), VISIBLE);
+		await expect(currentRow(page)).toHaveAttribute("data-kind", row.kind);
+		await expect(currentRow(page)).toHaveAttribute(row.attr, row.no);
+		await expect(page.locator(".find-current:visible")).toHaveCount(1);
+		await expect(page.locator(".find-current:visible")).toHaveText("saveDraft");
+	}
 });
 
 test("Match case changes the count and survives a reload", async ({
