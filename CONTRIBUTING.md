@@ -38,5 +38,5 @@ Every merge to master publishes a release candidate to npm through trusted
 publishing (no npm token anywhere); `pnpm release promote` stages one as a
 release, and the owner approves it with npm two-factor (`pnpm release
 publish`). The release workflows on master can publish without that
-approval, so master's ruleset (only the owner merges) is the real gate:
+approval, so master's ruleset (merges only on the owner's approval) is the real gate:
 `docs/releasing.md` (and the npm and GitHub setup).
