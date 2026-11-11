@@ -57,6 +57,9 @@ async function setup(pr: (opts?: PrOptions) => Promise<Pr>, thread = false) {
 	return p;
 }
 
+/** A heading that will resolve `settled` when its scroll ends. */
+type Settling = HTMLElement & { settled?: Promise<void> };
+
 async function open(page: Page, url: string) {
 	await openFiles(page, url);
 	const section = fileSection(page, APP);
@@ -275,12 +278,19 @@ test("on a phone a cut heading scrolls sideways in place, and only a tap loads",
 				type,
 				touchPoints: type === "touchEnd" ? [] : [{ x: at, y }],
 			});
+		// The drag ends in a fling: the heading coasts on after the finger
+		// lifts, and a tap during it only stops it (Chrome, as on a phone):
+		// no click. Wait for the scroll to end, by its event.
+		await heading.evaluate((el) => {
+			(el as Settling).settled = new Promise((done) =>
+				el.addEventListener("scrollend", () => done(), { once: true }),
+			);
+		});
 		await touch("touchStart", x);
 		for (let dx = 10; dx <= 150; dx += 10) await touch("touchMove", x - dx);
 		await touch("touchEnd", x - 150);
-		await expect
-			.poll(() => heading.evaluate((el) => el.scrollLeft))
-			.toBeGreaterThan(0);
+		await heading.evaluate((el) => (el as Settling).settled);
+		expect(await heading.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
 		expect(await lines.count()).toBe(before);
 		// A load would come later: the hidden rows still count their lines,
 		// none loading.
@@ -297,6 +307,10 @@ test("on a phone a cut heading scrolls sideways in place, and only a tap loads",
 		"hunk-heading",
 	);
 	await gapHeading.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	const row = await gapRow(section, "49 hidden lines").boundingBox();
+	const at = await gapHeading.boundingBox();
+	if (!row || !at) throw new Error("no gap row");
+	expect(at.y + 2).toBeLessThan(row.y + row.height / 2);
 	await gapHeading.tap({ position: { x: 20, y: 2 } });
 	await expect(line(section, 14)).toBeVisible();
 	await expect(line(section, 33)).toBeVisible();
