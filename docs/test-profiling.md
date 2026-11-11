@@ -62,6 +62,7 @@ the harness's `POST /api/reviews`, or `crb <pr>` in a test with
 `crbClient: "cli"`),
 `setup.browser` (browser, context, page fixtures), `setup.first_load` (the
 first navigation), `setup.other` (other before-hooks), `body`,
+`teardown.crb_reset` (a shared server's reset and leak checks, below),
 `teardown.crb_stop`, `teardown.other`.
 
 Cold start (CAR-102): before the workers start, `e2e/global-setup.ts`
@@ -84,8 +85,43 @@ cache, which the warm-up fills. Without it each test's own
 
 ## One server for many tests (CAR-106)
 
-Pieces for sharing one `crb serve` between a Playwright worker's tests.
-The harness doesn't use them yet.
+A Playwright worker's tests share one `crb serve` (`e2e/shared-server.ts`),
+started by its first test (that test's `setup.crb_serve`). Each test gets
+a repo and PR number of its own (`acme/widget-<worker>-<seq>#<100+seq>`:
+the `ownerRepo` and `prNumber` fixtures, `p.ownerRepo`/`p.number`; never
+hard-code `acme/widget#7`). After it, `teardown.crb_reset`: pages go blank,
+the server is reset (below), its clones deleted, and these checks run. Any
+that fires fails the test, and the server is replaced:
+
+- `the reset left these running: …`: an open, gh or git call outlived the
+  test (often a `hold` never released, or an open GitHub still holds);
+- `the fake gh still runs N call(s)`: the same, seen from the fake gh;
+- `sessions open after the reset`: the reset missed one;
+- `stray gh calls: …`: a gh call for a finished test's repo, or with no
+  test running (a late read of an earlier test), named in the line;
+- `crb serve's config dir changed`: the test writes config;
+- `the shared crb serve died`: its output follows.
+
+`e2e/fixtures.spec.ts` has a canary for the first, the stray and the
+config checks (`expectCrbLeak`).
+
+**`test.use({ crbServer: "own" })`** gives a test its own `crb serve`, as
+before; serve flags (`--host`, `--port`, `--new-key`) always do. Use it
+when a test stops or restarts crb (`stop()` on a shared server throws),
+writes config (Home views, agent setup), reads the server's files under
+`workdir` (its cache, `server.json`, `serve.log`), runs the CLI with
+`runCli(workdir, …)` against the server, or uses fixed names across tests
+(Home's `acme/api`). Home, home-api, methodology and the agent specs are
+own throughout.
+
+The server's own span (`e2e: shared crb serve`) is a trace of its own, so
+every test's requests nest under that test (its `traceparent`: the HTTP
+open's and the page's). The test hooks write the server's buffered spans
+at each reset. Per test, a `crb shared state` span records the server's
+RSS and open sessions; a server whose RSS grows 256 MiB past its first
+test's is restarted.
+
+The pieces:
 
 **Fake gh router.** `$CRB_FAKE_GH` may name a router file
 (`test/fake-gh/route.mjs`, `writeRouter` in `test/fake-gh/scenario.ts`)

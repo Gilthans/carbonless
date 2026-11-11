@@ -18,9 +18,6 @@ import {
 } from "./files-ui";
 import { expect, type PrOptions, reviewPage, test } from "./fixtures";
 
-// CAR-106 pilot: one crb serve per worker.
-test.use({ crbServer: "shared" });
-
 const core = Array.from({ length: 78 }, (_, i) => `core ${i + 1}`);
 const util = Array.from({ length: 10 }, (_, i) => `util ${i + 1}`);
 const text = (lines: string[]) => `${lines.join("\n")}\n`;

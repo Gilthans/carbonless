@@ -156,7 +156,7 @@ export const test = base.extend<
 	}
 >({
 	crbClient: ["http", { option: true }],
-	crbServer: ["own", { option: true }],
+	crbServer: ["shared", { option: true }],
 
 	sharedCrb: [
 		// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.

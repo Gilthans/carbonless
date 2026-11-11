@@ -19,6 +19,9 @@ import {
 import { expectNoPageOverflow } from "./files-ui";
 import { OWNER_REPO } from "./fixtures";
 
+// Its own crb serve: the agent config, its fake ACP env and checkouts.
+test.use({ crbServer: "own" });
+
 /**
  * The reviewer's own agent (review buddy) against the fake ACP agent: ask
  * from a selection, the answer streaming in, the card's states, the chip,

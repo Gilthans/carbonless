@@ -376,7 +376,7 @@ test("a pending review on GitHub refuses the verdict with the pending-review not
 	expectConsoleError,
 }) => {
 	expectConsoleError(/409/);
-	await setup(pr, {}, { reviews: [PENDING] });
+	const p = await setup(pr, {}, { reviews: [PENDING] });
 	const s = await startCrb();
 	await page.goto(reviewPage(s.url, "verdict"));
 	const card = tabCard(page);
@@ -388,7 +388,10 @@ test("a pending review on GitHub refuses the verdict with the pending-review not
 	);
 	await expect(
 		item(page).getByRole("link", { name: "Open on GitHub" }),
-	).toHaveAttribute("href", /\/pull\/7\/files$/);
+	).toHaveAttribute(
+		"href",
+		`https://github.com/${p.ownerRepo}/pull/${p.number}/files`,
+	);
 });
 
 test("the Files changed end card: the verdict, its blockers' count, clear of the Files button", async ({

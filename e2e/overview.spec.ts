@@ -7,9 +7,6 @@ import {
 } from "../test/fake-gh/scenario";
 import { expect, test } from "./fixtures";
 
-// CAR-106 pilot: one crb serve per worker.
-test.use({ crbServer: "shared" });
-
 const botThreadNoReply = reviewThread({ path: "src/bot.ts", line: 3 }, [
 	threadComment({
 		login: "lint-bot",

@@ -52,8 +52,8 @@ test("an undeclared console error is reported", async ({ context }) => {
 // spans (the test, its setup phases) come after the test: see
 // scripts/test-profile/test-profile.test.ts.
 test.describe("the client", () => {
-	// The client process traces under the test too.
-	test.use({ crbClient: "cli" });
+	// The client process traces under the test too; its own server, to stop.
+	test.use({ crbClient: "cli", crbServer: "own" });
 
 	test("a test's crb, fake gh and fixture gits trace under its span", async ({
 		pr,
@@ -110,114 +110,113 @@ test.describe("the client", () => {
 });
 
 // startCrb opens over HTTP unless a test asks for the CLI (e2e/crb-open.ts):
-// it must open what `crb <pr>` would, and fail as it would.
+// it must open what `crb <pr>` would, and fail as it would. The CLI beside
+// it (runCli(workdir, …)) finds the test's own server.
+const ownTest = test.extend({ crbServer: "own" as const });
 
-test("startCrb over HTTP opens the review crb <pr> opens, flags and all", async ({
-	pr,
-	request,
-	startCrb,
-	workdir,
-}) => {
-	// Dated before the cutoff (as in comment-edits.spec.ts).
-	const p = await pr({
-		baseDate: "2026-01-01T00:00:00Z",
-		files: [
-			{
-				message: "PR change",
-				files: { "new.txt": "new\n" },
-				date: "2026-01-02T00:00:00Z",
-			},
-		],
-	});
-	const head = p.repo.shas.at(-1) ?? "";
-	p.editScenario((sc) => {
-		const graphql = sc.prs[p.number]?.graphql;
-		if (!graphql) throw new Error("no graphql");
-		graphql.commits = [
-			{ commit: { oid: head, committedDate: "2026-01-02T00:00:00Z" } },
-		];
-		sc.commits = { [head]: { contexts: null } };
-	});
-	const pr7 = `${OWNER_REPO}#${PR_NUMBER}`;
-	// What reached the server: the session's cutoff and pinned head, and
-	// whether it has an agent (none as of a cutoff or as --viewer someone
-	// else; the viewer is in neither the review's id nor the session's info).
-	const plain = { asOf: null, pinnedHead: null, agent: 200 };
-	const cases = [
-		{ arg: pr7, args: [], seen: plain },
-		{
-			arg: pr7,
-			args: ["--viewer", "someone-else"],
-			body: { pr: pr7, viewer: "someone-else" },
-			seen: { ...plain, agent: 404 },
-		},
-		{
-			arg: pr7,
-			args: [
-				"--as-of",
-				"2026-01-05T00:00:00+00:00",
-				"--viewer",
-				"someone-else",
+ownTest(
+	"startCrb over HTTP opens the review crb <pr> opens, flags and all",
+	async ({ pr, request, startCrb, workdir }) => {
+		// Dated before the cutoff (as in comment-edits.spec.ts).
+		const p = await pr({
+			baseDate: "2026-01-01T00:00:00Z",
+			files: [
+				{
+					message: "PR change",
+					files: { "new.txt": "new\n" },
+					date: "2026-01-02T00:00:00Z",
+				},
 			],
-			// The client sends the cutoff normalized.
-			body: { pr: pr7, asOf: "2026-01-05T00:00:00Z", viewer: "someone-else" },
-			seen: { asOf: "2026-01-05T00:00:00Z", pinnedHead: null, agent: 404 },
-		},
-		{
-			arg: pr7,
-			args: ["--head", head.slice(0, 7)],
-			body: { pr: pr7, head: head.slice(0, 7) },
-			seen: { asOf: null, pinnedHead: head, agent: 200 },
-		},
-		// A URL goes to the server as given, as the client sends it.
-		{
-			arg: `https://github.com/${OWNER_REPO}/pull/${PR_NUMBER}`,
-			args: [],
-			seen: plain,
-		},
-	];
-	const urls: string[] = [];
-	for (const c of cases) {
-		if (c.body) expect(clientRequest(c.arg, c.args)).toEqual(c.body);
-		const http = await startCrb(c.arg, c.args);
-		const api = `${new URL(http.url).origin}/api/r/${new URL(http.url).pathname.split("/").at(-1)}`;
-		const session = await (await request.get(`${api}/session`)).json();
-		const agent = (await request.get(`${api}/agent`)).status();
-		expect({
-			asOf: session.asOf,
-			pinnedHead: session.pinnedHead,
-			agent,
-		}).toEqual(c.seen);
-		// The CLI against the same server (it finds it through server.json).
-		const cli = await runCli(workdir, [c.arg, ...c.args]);
-		expect(cli.code).toBe(0);
-		expect(cli.stdout).toBe(`${http.url}\n`);
-		urls.push(http.url);
-	}
-	// The cutoff and the head make reviews of their own; the viewer and the
-	// URL form are #7's.
-	const [first, viewer, asOf, pinned, url] = urls;
-	expect(new Set([first, asOf, pinned]).size).toBe(3);
-	expect(viewer).toBe(first);
-	expect(url).toBe(first);
-});
+		});
+		const head = p.repo.shas.at(-1) ?? "";
+		p.editScenario((sc) => {
+			const graphql = sc.prs[p.number]?.graphql;
+			if (!graphql) throw new Error("no graphql");
+			graphql.commits = [
+				{ commit: { oid: head, committedDate: "2026-01-02T00:00:00Z" } },
+			];
+			sc.commits = { [head]: { contexts: null } };
+		});
+		const pr7 = `${OWNER_REPO}#${PR_NUMBER}`;
+		// What reached the server: the session's cutoff and pinned head, and
+		// whether it has an agent (none as of a cutoff or as --viewer someone
+		// else; the viewer is in neither the review's id nor the session's info).
+		const plain = { asOf: null, pinnedHead: null, agent: 200 };
+		const cases = [
+			{ arg: pr7, args: [], seen: plain },
+			{
+				arg: pr7,
+				args: ["--viewer", "someone-else"],
+				body: { pr: pr7, viewer: "someone-else" },
+				seen: { ...plain, agent: 404 },
+			},
+			{
+				arg: pr7,
+				args: [
+					"--as-of",
+					"2026-01-05T00:00:00+00:00",
+					"--viewer",
+					"someone-else",
+				],
+				// The client sends the cutoff normalized.
+				body: { pr: pr7, asOf: "2026-01-05T00:00:00Z", viewer: "someone-else" },
+				seen: { asOf: "2026-01-05T00:00:00Z", pinnedHead: null, agent: 404 },
+			},
+			{
+				arg: pr7,
+				args: ["--head", head.slice(0, 7)],
+				body: { pr: pr7, head: head.slice(0, 7) },
+				seen: { asOf: null, pinnedHead: head, agent: 200 },
+			},
+			// A URL goes to the server as given, as the client sends it.
+			{
+				arg: `https://github.com/${OWNER_REPO}/pull/${PR_NUMBER}`,
+				args: [],
+				seen: plain,
+			},
+		];
+		const urls: string[] = [];
+		for (const c of cases) {
+			if (c.body) expect(clientRequest(c.arg, c.args)).toEqual(c.body);
+			const http = await startCrb(c.arg, c.args);
+			const api = `${new URL(http.url).origin}/api/r/${new URL(http.url).pathname.split("/").at(-1)}`;
+			const session = await (await request.get(`${api}/session`)).json();
+			const agent = (await request.get(`${api}/agent`)).status();
+			expect({
+				asOf: session.asOf,
+				pinnedHead: session.pinnedHead,
+				agent,
+			}).toEqual(c.seen);
+			// The CLI against the same server (it finds it through server.json).
+			const cli = await runCli(workdir, [c.arg, ...c.args]);
+			expect(cli.code).toBe(0);
+			expect(cli.stdout).toBe(`${http.url}\n`);
+			urls.push(http.url);
+		}
+		// The cutoff and the head make reviews of their own; the viewer and the
+		// URL form are #7's.
+		const [first, viewer, asOf, pinned, url] = urls;
+		expect(new Set([first, asOf, pinned]).size).toBe(3);
+		expect(viewer).toBe(first);
+		expect(url).toBe(first);
+	},
+);
 
-test("a failed open over HTTP carries the server's error, in the client's words", async ({
-	pr,
-	startCrb,
-	workdir,
-}) => {
-	await pr();
-	const error = await startCrb(`${OWNER_REPO}#99`).catch((e: unknown) => e);
-	expect(error).toBeInstanceOf(CrbExitError);
-	const exit = error as CrbExitError;
-	expect(exit.code).toBe(1);
-	const cli = await runCli(workdir, [`${OWNER_REPO}#99`]);
-	expect(cli.code).toBe(1);
-	expect(cli.output).toMatch(/^crb: .*not found/);
-	// The server's log of this open, then what the client would print.
-	expect(exit.output.endsWith(cli.output)).toBe(true);
-});
+ownTest(
+	"a failed open over HTTP carries the server's error, in the client's words",
+	async ({ pr, startCrb, workdir }) => {
+		await pr();
+		const error = await startCrb(`${OWNER_REPO}#99`).catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(CrbExitError);
+		const exit = error as CrbExitError;
+		expect(exit.code).toBe(1);
+		const cli = await runCli(workdir, [`${OWNER_REPO}#99`]);
+		expect(cli.code).toBe(1);
+		expect(cli.output).toMatch(/^crb: .*not found/);
+		// The server's log of this open, then what the client would print.
+		expect(exit.output.endsWith(cli.output)).toBe(true);
+	},
+);
 
 test("startCrb over HTTP refuses what only the CLI does, naming crbClient", async ({
 	pr,

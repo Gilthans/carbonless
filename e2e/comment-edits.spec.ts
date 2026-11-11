@@ -496,7 +496,11 @@ test("changed on GitHub meanwhile: refused with the draft kept, then Save anyway
 	await openCard(c);
 	await c.getByRole("button", { name: "Edit" }).click();
 	await c.getByRole("textbox", { name: "Edit comment" }).fill("Mine");
-	editElsewhere(p.scenarioPath, { pr: 7, thread: 0, comment: 0 }, "Theirs");
+	editElsewhere(
+		p.scenarioPath,
+		{ pr: p.number, thread: 0, comment: 0 },
+		"Theirs",
+	);
 	await c.getByRole("button", { name: "Save" }).click();
 	const notice = page.getByTestId("refused-write");
 	await expect(notice).toContainText("Changed on GitHub since you opened it");

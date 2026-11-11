@@ -59,8 +59,8 @@ async function checkFirstCluster(page: Page) {
 const banner = (page: Page) => page.getByText("New commits were pushed");
 
 test.describe("a restarted server", () => {
-	// The client finds the new server through server.json.
-	test.use({ crbClient: "cli" });
+	// The client finds the new server through server.json; its own, to stop.
+	test.use({ crbClient: "cli", crbServer: "own" });
 
 	test("progress survives a restart", async ({ page, pr, startCrb }) => {
 		await pr(fixture);
@@ -110,7 +110,10 @@ test("a started review stays on its snapshot after a push", async ({
 	await expect(clusters(page)).toHaveAttribute("aria-valuenow", "25");
 	await expect(
 		page.getByRole("link", { name: "Open the PR on GitHub" }),
-	).toHaveAttribute("href", `https://github.com/${OWNER_REPO}/pull/7`);
+	).toHaveAttribute(
+		"href",
+		`https://github.com/${p.ownerRepo}/pull/${p.number}`,
+	);
 	const utilFile = page.getByRole("region", { name: "src/util.ts" });
 	await utilFile.getByRole("button", { name: "Expand file" }).click();
 	await expect(
@@ -118,39 +121,40 @@ test("a started review stays on its snapshot after a push", async ({
 	).toBeChecked();
 });
 
-test("opening without checking anything off creates no snapshot", async ({
-	page,
-	pr,
-	startCrb,
-	workdir,
-}) => {
-	const p = await pr(fixture);
-	const s = await startCrb();
-	await openFiles(page, s.url);
-	await expect(clusters(page)).toContainText("0 / 4 clusters reviewed");
+// Its own crb serve: it reads the server's clone under workdir.
+const ownTest = test.extend({ crbServer: "own" as const });
 
-	p.moveHead({
-		message: "later push",
-		files: { "src/extra.ts": "export const extra = 1;\n" },
-	});
-	await page.getByRole("button", { name: "Refresh" }).click();
-	// The unpinned review follows the new head: five clusters, no banner.
-	await expect(clusters(page)).toContainText("0 / 5 clusters reviewed");
-	await expect(banner(page)).toBeHidden();
-	await expect(
-		page.getByRole("region", { name: "src/extra.ts" }),
-	).toBeVisible();
+ownTest(
+	"opening without checking anything off creates no snapshot",
+	async ({ page, pr, startCrb, workdir }) => {
+		const p = await pr(fixture);
+		const s = await startCrb();
+		await openFiles(page, s.url);
+		await expect(clusters(page)).toContainText("0 / 4 clusters reviewed");
 
-	const [owner, repo] = OWNER_REPO.split("/") as [string, string];
-	const refs = execFileSync("git", ["for-each-ref", "refs/crb/reviews/"], {
-		cwd: join(workdir, "cache", "carbonless", "repos", owner, `${repo}.git`),
-		encoding: "utf8",
-		env: testGitEnv(),
-	});
-	// Positive control: the review exists, it just has no reviewer refs.
-	expect(refs).toMatch(/refs\/crb\/reviews\/[^/\s]+\/meta/);
-	expect(refs).not.toContain("/reviewers/");
-});
+		p.moveHead({
+			message: "later push",
+			files: { "src/extra.ts": "export const extra = 1;\n" },
+		});
+		await page.getByRole("button", { name: "Refresh" }).click();
+		// The unpinned review follows the new head: five clusters, no banner.
+		await expect(clusters(page)).toContainText("0 / 5 clusters reviewed");
+		await expect(banner(page)).toBeHidden();
+		await expect(
+			page.getByRole("region", { name: "src/extra.ts" }),
+		).toBeVisible();
+
+		const [owner, repo] = OWNER_REPO.split("/") as [string, string];
+		const refs = execFileSync("git", ["for-each-ref", "refs/crb/reviews/"], {
+			cwd: join(workdir, "cache", "carbonless", "repos", owner, `${repo}.git`),
+			encoding: "utf8",
+			env: testGitEnv(),
+		});
+		// Positive control: the review exists, it just has no reviewer refs.
+		expect(refs).toMatch(/refs\/crb\/reviews\/[^/\s]+\/meta/);
+		expect(refs).not.toContain("/reviewers/");
+	},
+);
 
 test("a push found by the head poll on an unstarted review asks for a Refresh", async ({
 	page,
