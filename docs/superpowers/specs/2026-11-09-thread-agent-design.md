@@ -200,7 +200,10 @@ interface PromptEnvelope {
   github?: {                            // kind "github_thread_conversation" only
     url: string;                        // the thread's first comment on GitHub
     path: string;
+    startLine: number | null;           // ReviewThread.startLine (= line for one line)
     line: number | null;                // ReviewThread.line
+    startCol?: number;                  // the span inside the lines, from the crb marker,
+    endCol?: number;                    //   both or neither (whole lines without one)
     openedOn: string;                   // ReviewThread.commit ("" = unknown)
     outdated: boolean;
     resolved: boolean;
@@ -215,6 +218,15 @@ interface PromptEnvelope {
 }
 ```
 
+- **The commented span:** a thread opened from carbonless carries its
+  columns in the crb marker on its first comment (`span=<startLine>:
+  <startCol>-<line>:<endCol>`, `src/server/marker.ts`). The overview
+  already turns it into `CodeAnchor.startCol`/`endCol` (`spanCols`, which
+  drops it when the thread's lines no longer match the marker's), and the
+  envelope passes those through, so the agent knows which part of the line
+  the question is about. A thread opened on GitHub, or one whose marker
+  doesn't match, has whole lines only. The marker itself never reaches the
+  agent: bodies arrive stripped, as everywhere else. (Owner, 2026-11-11.)
 - **Three commits, named:**
   - `github.openedOn`: `ReviewThread.commit`, plus the patch set it falls
     in (`openedOn(createdAt, patchsets)`, `src/shared/rereview/openedOn.ts`),
