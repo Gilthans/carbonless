@@ -47,12 +47,14 @@ function updater(over: Partial<UpdaterOptions> = {}) {
 	const exits: number[] = [];
 	const helpers: HelperConfig[] = [];
 	const checks: string[] = [];
+	const channels: string[] = [];
 	const u = new Updater({
 		build: BUILD,
 		enabled: true,
 		install: NPM,
-		check: async (current) => {
+		check: async (current, channel) => {
 			checks.push(current);
+			channels.push(channel);
 			return "0.3.0";
 		},
 		service: async () => null,
@@ -65,12 +67,13 @@ function updater(over: Partial<UpdaterOptions> = {}) {
 			helpers.push(c);
 		},
 		resultFile: join(dir, "result.json"),
+		channelFile: join(dir, "channel"),
 		logFile: join(dir, "update.log"),
 		platform: "linux",
 		graceMs: 10,
 		...over,
 	});
-	return { u, exits, helpers, checks };
+	return { u, exits, helpers, checks, channels };
 }
 
 const settle = async (u: Updater) => {
@@ -106,6 +109,44 @@ describe("Updater", () => {
 			failed: null,
 		});
 		u.stop();
+	});
+
+	it("the channel: rc once a prerelease ran here, kept after rc moves onto a release", async () => {
+		const release = updater();
+		await release.u.start();
+		await settle(release.u);
+		expect(release.channels[0]).toBe("latest");
+		release.u.stop();
+		const rc = updater({
+			build: { version: "0.3.0-rc.2", commit: "a".repeat(40) },
+		});
+		await rc.u.start();
+		await settle(rc.u);
+		expect(rc.channels[0]).toBe("rc");
+		expect(readFileSync(join(dir, "channel"), "utf8").trim()).toBe("rc");
+		rc.u.stop();
+		// Updated to the release rc moved onto: still rc.
+		const after = updater({
+			build: { version: "0.3.0", commit: "a".repeat(40) },
+		});
+		await after.u.start();
+		await settle(after.u);
+		expect(after.channels[0]).toBe("rc");
+		after.u.stop();
+	});
+
+	it("config's updates.channel wins: rc for an @rc install first run on a release; latest over a remembered rc", async () => {
+		const first = updater({ channel: "rc" });
+		await first.u.start();
+		await settle(first.u);
+		expect(first.channels[0]).toBe("rc");
+		first.u.stop();
+		writeFileSync(join(dir, "channel"), "rc\n");
+		const back = updater({ channel: "latest" });
+		await back.u.start();
+		await settle(back.u);
+		expect(back.channels[0]).toBe("latest");
+		back.u.stop();
 	});
 
 	it("checks again every few hours; a failed check keeps what was found", async () => {

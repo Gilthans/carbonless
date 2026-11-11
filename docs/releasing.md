@@ -272,11 +272,21 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
 
 - **Check.** At start and every 6 hours, crb asks the registry
   (`$CRB_NPM_REGISTRY`, default `https://registry.npmjs.org`) for
-  `carbonless-review`'s dist-tags and takes the tag of its own channel:
-  `rc` when it runs a prerelease, else `latest` (so an RC follows `rc`
-  onto the release `rc` moves to, and from there `latest`). Only a version
-  strictly newer by semver counts. Any failure (offline, a 404 before the
-  first publish, a bad answer) is silent.
+  `carbonless-review`'s dist-tags and takes its channel's tag. Only a
+  version strictly newer by semver counts. Any failure (offline, a 404
+  before the first publish, a bad answer) is silent.
+- **Channel**, durable: an RC install stays on `rc` for good.
+  - The first time crb runs a prerelease, it writes `rc` to
+    `update-channel` in its state dir. From then on it follows `rc`, also
+    once `rc` has moved onto a release `X.Y.Z` and it runs that release:
+    it is offered `X.Y.Z+1-rc.N` as they come out, never pushed onto
+    `latest`.
+  - A crb that never ran a prerelease follows `latest`.
+  - `"updates": { "channel": "rc" | "latest" }` in config.json wins over
+    both. Set `"rc"` for an install made from `@rc` while `rc` pointed at
+    a release (it never ran a prerelease, so nothing is remembered). Set
+    `"latest"` to leave `rc`; deleting `update-channel` does too.
+  - A restart keeps the channel: the file and the config outlive it.
 - **Only builds npm served.** The check runs only when the package crb runs
   from (in some `node_modules`) has a `package.json` whose `gitHead` is the
   build's own clean commit, at the build's version: CI writes `gitHead` into
@@ -319,7 +329,9 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
   the command is shown instead); pm2; and anything that sets
   `CRB_SERVICE=1` in crb's environment (launchd, a Windows service wrapper
   such as NSSM or WinSW, a container's restart policy). A failed install
-  leaves crb running and shows the output.
+  leaves crb running and shows the output. A systemd unit's `PATH` must
+  reach the package manager (and, for pnpm, its global bin dir: pnpm
+  refuses `add -g` otherwise).
 
 ## Setup (the owner)
 

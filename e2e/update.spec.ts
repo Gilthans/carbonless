@@ -121,13 +121,15 @@ console.log("changed 1 package in 1s");
 	return { pkg, cli: join(pkg, "dist", "cli.js"), npmLog, failFile, env };
 }
 
-/** A registry whose `latest` is NEWER. */
-async function fakeRegistry(): Promise<{ url: string; server: Server }> {
+/** A registry answering `tags` (the test may change them as it goes). */
+async function fakeRegistry(
+	tags: Record<string, string>,
+): Promise<{ url: string; server: Server }> {
 	const server = createServer((req, res) => {
 		if (req.url === "/-/package/carbonless-review/dist-tags") {
 			res
 				.writeHead(200, { "content-type": "application/json" })
-				.end(JSON.stringify({ latest: NEWER, rc: NEWER }));
+				.end(JSON.stringify(tags));
 		} else res.writeHead(404).end("{}");
 	});
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -145,22 +147,40 @@ function serverPid(workdir: string): number | null {
 }
 
 const it = test.extend<{
-	installed: Installed & { start: () => Promise<{ url: string }> };
+	installed: Installed & {
+		/** The registry's dist-tags (`latest` and `rc` NEWER until changed). */
+		tags: Record<string, string>;
+		/** Sets the installed copy's version before it starts. */
+		setCurrent: (version: string) => void;
+		/** Starts it (`args` after `serve --port 0`, `env` over its own). */
+		start: (
+			args?: string[],
+			env?: NodeJS.ProcessEnv,
+		) => Promise<{ url: string; child: ChildProcess }>;
+	};
 }>({
 	installed: async ({ workdir, page }, use) => {
-		const registry = await fakeRegistry();
+		const tags: Record<string, string> = { latest: NEWER, rc: NEWER };
+		const registry = await fakeRegistry(tags);
 		const inst = install(workdir, registry.url);
-		let first: ChildProcess | null = null;
+		const children: ChildProcess[] = [];
 		await use({
 			...inst,
-			start: async () => {
-				const served = await startServe(workdir, [], inst.env, inst.cli);
-				first = served.child;
-				return { url: served.url.replace(/\/$/, "") };
+			tags,
+			setCurrent: (version) => setVersion(inst.pkg, version),
+			start: async (args = [], env = {}) => {
+				const served = await startServe(
+					workdir,
+					args,
+					{ ...inst.env, ...env },
+					inst.cli,
+				);
+				children.push(served.child);
+				return { url: served.url.replace(/\/$/, ""), child: served.child };
 			},
 		});
 		await page.goto("about:blank").catch(() => {});
-		if (first) await stopChild(first).catch(() => {});
+		for (const child of children) await stopChild(child).catch(() => {});
 		// One the helper started (after an update, or a failed one).
 		const pid = serverPid(workdir);
 		if (pid !== null) {
@@ -173,6 +193,15 @@ const it = test.extend<{
 		await new Promise((r) => registry.server.close(r));
 	},
 });
+
+/** A port free right now (a service restarts crb on its configured port). */
+async function freePort(): Promise<number> {
+	const server = createServer();
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const { port } = server.address() as AddressInfo;
+	await new Promise((r) => server.close(r));
+	return port;
+}
 
 const toast = (page: Page) => page.getByTestId("update-toast");
 
@@ -381,4 +410,65 @@ it("unsaved work: Update asks first, and the reload doesn't ask again", async ({
 		timeout: 20_000,
 	});
 	expect(asked).toEqual(["confirm", "confirm"]);
+});
+
+it("an rc install under a service manager: stays on rc past a release; installs while serving, exits 75, the manager starts the new one", async ({
+	page,
+	workdir,
+	pr,
+	installed,
+	isMobile,
+	expectConsoleError,
+}) => {
+	test.skip(isMobile, "no layout of its own");
+	expectConsoleError(/ERR_CONNECTION_REFUSED/);
+	await pr();
+	// An RC user; rc has just moved onto the release.
+	installed.setCurrent("0.3.0-rc.1");
+	installed.tags.latest = "0.2.0";
+	installed.tags.rc = NEWER;
+	const port = String(await freePort());
+	// crb.service: Restart=on-failure, or any manager CRB_SERVICE names.
+	const service = { CRB_SERVICE: "1" };
+	const first = await installed.start(["--port", port], service);
+	const exited = new Promise<number | null>((r) =>
+		first.child.once("exit", (code) => r(code)),
+	);
+	await page.goto(`${first.url}/`);
+	await expect(
+		toast(page).getByRole("link", { name: `v${NEWER}` }),
+	).toBeVisible();
+	await page.evaluate(() => {
+		(window as unknown as { beforeUpdate: boolean }).beforeUpdate = true;
+	});
+	await toast(page).getByRole("button", { name: "Update" }).click();
+	await expect(toast(page)).toHaveAttribute("data-state", "updating");
+	// Installed while it still served, then exited for the manager.
+	expect(await exited).toBe(75);
+	expect(readFileSync(installed.npmLog, "utf8").trim().split("\n")).toEqual([
+		JSON.stringify(["install", "-g", `carbonless-review@${NEWER}`]),
+	]);
+	// No helper started one: the manager does, on its port.
+	expect(serverPid(workdir)).toBeNull();
+	installed.tags.latest = NEWER;
+	installed.tags.rc = "0.4.0-rc.1";
+	const second = await installed.start(["--port", port], service);
+	expect(second.url).toBe(first.url);
+	await expect
+		.poll(
+			() =>
+				page
+					.evaluate(
+						() =>
+							(window as unknown as { beforeUpdate?: boolean }).beforeUpdate ??
+							false,
+					)
+					.catch(() => true),
+			{ timeout: 60_000 },
+		)
+		.toBe(false);
+	// A release now, still on rc: the next RC is offered, never latest's.
+	await expect(
+		toast(page).getByRole("link", { name: "v0.4.0-rc.1" }),
+	).toBeVisible();
 });

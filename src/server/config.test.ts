@@ -208,7 +208,7 @@ describe("config", () => {
 		]);
 	});
 
-	it("updates.check: a boolean, true by default; kept by updateConfig", async () => {
+	it("updates: check a boolean, true by default; channel rc or latest; kept by updateConfig", async () => {
 		write(JSON.stringify({ updates: { check: false, other: 1 } }));
 		expect((await readConfig()).config.updates).toEqual({ check: false });
 		await updateConfig((c) => ({ ...c, refresh: { minutes: 3 } }));
@@ -217,6 +217,16 @@ describe("config", () => {
 		expect(await readConfig()).toMatchObject({
 			config: { updates: { check: true } },
 			problems: ["updates.check must be true or false; using true"],
+		});
+		write(JSON.stringify({ updates: { channel: "rc" } }));
+		expect((await readConfig()).config.updates).toEqual({
+			check: true,
+			channel: "rc",
+		});
+		write(JSON.stringify({ updates: { channel: "beta" } }));
+		expect(await readConfig()).toMatchObject({
+			config: { updates: { check: true } },
+			problems: ['updates.channel must be "rc" or "latest"; ignored'],
 		});
 		write(JSON.stringify({ updates: 3 }));
 		expect((await readConfig()).problems).toEqual([

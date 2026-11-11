@@ -23,8 +23,12 @@ export interface CrbConfig {
 	refresh: { minutes: number };
 	/** The reviewer's own ACP agent (review buddy); null: off. */
 	agent: AgentConfig | null;
-	/** `check: false`: never ask npm for a newer crb (no update toast). */
-	updates: { check: boolean };
+	/**
+	 * `check: false`: never ask npm for a newer crb (no update toast).
+	 * `channel`: the npm dist-tag to follow, over the one crb remembers
+	 * (src/server/update/updater.ts); unset: remembered, else by version.
+	 */
+	updates: { check: boolean; channel?: "rc" | "latest" };
 }
 
 /** The config as read, and what was bad in the file and replaced by a default. */
@@ -187,14 +191,24 @@ function validate(raw: Json | null): ConfigRead {
 		}
 	}
 	const agent = validateAgent(raw?.agent, problems);
-	const updates = { ...d.updates };
+	const updates: CrbConfig["updates"] = { ...d.updates };
 	if (raw?.updates !== undefined) {
 		const check = isObject(raw.updates) ? raw.updates.check : undefined;
+		const channel = isObject(raw.updates) ? raw.updates.channel : undefined;
 		if (!isObject(raw.updates)) {
 			problems.push("updates must be an object; using the defaults");
-		} else if (check !== undefined) {
-			if (typeof check === "boolean") updates.check = check;
-			else problems.push("updates.check must be true or false; using true");
+		} else {
+			if (check !== undefined) {
+				if (typeof check === "boolean") updates.check = check;
+				else problems.push("updates.check must be true or false; using true");
+			}
+			if (channel !== undefined) {
+				if (channel === "rc" || channel === "latest") {
+					updates.channel = channel;
+				} else {
+					problems.push('updates.channel must be "rc" or "latest"; ignored');
+				}
+			}
 		}
 	}
 	return { config: { serve, views, refresh, agent, updates }, problems };

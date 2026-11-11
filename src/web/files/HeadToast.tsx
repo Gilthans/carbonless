@@ -9,14 +9,6 @@ import { headIsNewer } from "./PatchsetGraph";
 export const TOAST_MS = 20_000;
 
 /**
- * Where the toast sits: fixed at the bottom of the window, left of the
- * save notices (SyncNotices' NOTICE_STACK sits right from md up), above
- * the floating Files button on a phone.
- */
-const TOAST_PLACE =
-	"pointer-events-none fixed inset-x-3 bottom-20 z-40 flex sm:inset-x-auto sm:left-4 sm:w-96 md:bottom-4";
-
-/**
  * The head the toast would be about: the PR's head when it is newer than
  * the newest patch set (or the snapshot before any) and not the head this
  * crb last opened the review on (the reviewer has seen that one); null

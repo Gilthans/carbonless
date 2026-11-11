@@ -9,7 +9,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	releaseUrl,
@@ -28,6 +28,7 @@ import {
 	showCommand,
 } from "./install.js";
 import { newerOnRegistry, registryUrl } from "./registry.js";
+import { channelOf } from "./semver.js";
 import { detectService, type Service } from "./service.js";
 import {
 	HELPER_DIR_PREFIX,
@@ -36,6 +37,8 @@ import {
 	tailOf,
 	type UpdateResult,
 } from "./updateHelper.js";
+
+export type Channel = "rc" | "latest";
 
 /** How often the registry is asked again after the check at start. */
 export const CHECK_EVERY_MS = 6 * 60 * 60_000;
@@ -70,7 +73,11 @@ export interface UpdaterOptions {
 	/** How crb was installed (null: unknown, the command instead). */
 	install: Install | null;
 	/** The registry's newer version, or null (newerOnRegistry). */
-	check?: (current: string) => Promise<string | null>;
+	check?: (current: string, channel: Channel) => Promise<string | null>;
+	/** config.json's `updates.channel`: over the remembered one. */
+	channel?: Channel;
+	/** Where the channel is remembered (`update-channel` in the state dir). */
+	channelFile?: string;
 	checkEveryMs?: number;
 	service?: () => Promise<Service | null>;
 	/** Stops the server and exits with `code` (crb serve's shutdown). */
@@ -106,6 +113,7 @@ export class Updater {
 	#service: Service | null = null;
 	#timer: NodeJS.Timeout | null = null;
 	#checking: Promise<void> | null = null;
+	#channel: Channel = "latest";
 	readonly #o: UpdaterOptions;
 
 	constructor(options: UpdaterOptions) {
@@ -124,6 +132,7 @@ export class Updater {
 	async start(): Promise<void> {
 		if (!this.#o.enabled) return;
 		await this.#readResult();
+		this.#channel = await this.#stickyChannel();
 		this.#service = await (this.#o.service ?? detectService)().catch(
 			() => null,
 		);
@@ -144,9 +153,14 @@ export class Updater {
 			try {
 				const check =
 					this.#o.check ??
-					((current: string) =>
-						newerOnRegistry(current, { registry: registryUrl(this.#o.env) }));
-				const newer = await check(this.#o.build.version).catch(() => null);
+					((current: string, channel: Channel) =>
+						newerOnRegistry(current, {
+							registry: registryUrl(this.#o.env),
+							channel,
+						}));
+				const newer = await check(this.#o.build.version, this.#channel).catch(
+					() => null,
+				);
 				// A failed check keeps what an earlier one found.
 				if (newer !== null) this.#available = newer;
 			} finally {
@@ -154,6 +168,26 @@ export class Updater {
 			}
 		})();
 		return this.#checking;
+	}
+
+	/**
+	 * The channel followed: `rc` once this machine's crb has run a
+	 * prerelease (remembered in the state dir), so an RC user stays on `rc`
+	 * after `rc` moves onto a release; else `latest`. config.json's
+	 * `updates.channel` wins over both (an install from `@rc` while `rc`
+	 * pointed at a release has never run a prerelease: `"rc"` there).
+	 */
+	async #stickyChannel(): Promise<Channel> {
+		if (this.#o.channel) return this.#o.channel;
+		const file = this.#o.channelFile ?? join(stateDir(), "update-channel");
+		if (channelOf(this.#o.build.version) === "rc") {
+			await mkdir(dirname(file), { recursive: true })
+				.then(() => writeFile(file, "rc\n"))
+				.catch(() => {});
+			return "rc";
+		}
+		const text = await readFile(file, "utf8").catch(() => "");
+		return text.trim() === "rc" ? "rc" : "latest";
 	}
 
 	/** An earlier update's outcome: a failure is shown, the file is consumed. */
@@ -353,6 +387,7 @@ export async function startHelper(config: HelperConfig): Promise<void> {
 export function updaterFor(opts: {
 	build: BuildInfo;
 	off: boolean;
+	channel?: Channel;
 	exit: (code: number) => void;
 	port: () => number;
 	env?: NodeJS.ProcessEnv;
@@ -365,6 +400,7 @@ export function updaterFor(opts: {
 		build: opts.build,
 		enabled,
 		install: enabled ? detectInstall(root) : null,
+		...(opts.channel ? { channel: opts.channel } : {}),
 		exit: opts.exit,
 		port: opts.port,
 		env,

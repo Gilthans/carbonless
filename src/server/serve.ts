@@ -80,6 +80,7 @@ export async function startServer(opts: {
 	const updater = updaterFor({
 		build: BUILD,
 		off: !opts.exit || !config.updates.check,
+		...(config.updates.channel ? { channel: config.updates.channel } : {}),
 		exit: (code) => opts.exit?.(code),
 		port: () => actualPort,
 	});

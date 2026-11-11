@@ -17,7 +17,13 @@ const TIMEOUT_MS = 10_000;
  */
 export async function newerOnRegistry(
 	current: string,
-	opts: { registry: string; fetch?: typeof fetch; timeoutMs?: number },
+	opts: {
+		registry: string;
+		/** The dist-tag to follow; default: the running version's (channelOf). */
+		channel?: "rc" | "latest";
+		fetch?: typeof fetch;
+		timeoutMs?: number;
+	},
 ): Promise<string | null> {
 	const get = opts.fetch ?? fetch;
 	try {
@@ -28,7 +34,9 @@ export async function newerOnRegistry(
 		if (!res.ok) return null;
 		const tags = (await res.json()) as unknown;
 		if (typeof tags !== "object" || tags === null) return null;
-		const offered = (tags as Record<string, unknown>)[channelOf(current)];
+		const offered = (tags as Record<string, unknown>)[
+			opts.channel ?? channelOf(current)
+		];
 		return typeof offered === "string" && isNewer(offered, current)
 			? offered
 			: null;

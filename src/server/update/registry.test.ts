@@ -64,6 +64,16 @@ describe("newerOnRegistry", () => {
 		).toBe("0.3.0");
 	});
 
+	it("an explicit channel: a release kept on rc", async () => {
+		const r = await fakeRegistry({
+			tags: { latest: "0.3.0", rc: "0.4.0-rc.1" },
+		});
+		servers.push(r.server);
+		expect(
+			await newerOnRegistry("0.3.0", { registry: r.url, channel: "rc" }),
+		).toBe("0.4.0-rc.1");
+	});
+
 	it("the same or an older version: nothing", async () => {
 		expect((await check("0.2.0", { tags: { latest: "0.2.0" } })).newer).toBe(
 			null,
