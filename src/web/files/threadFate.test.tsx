@@ -339,6 +339,8 @@ describe("UnplacedRow", () => {
 	it.each<[Fate | null, string]>([
 		["deleted", "Commented line has been deleted since the review"],
 		["rewritten", "Commented line has been rewritten since the review"],
+		["outdated", "GitHub marks the commented line outdated"],
+		["untraced", "Couldn't trace the commented line here"],
 		["reverted", "The commented change has been reverted since the review"],
 		[
 			"base-changed",

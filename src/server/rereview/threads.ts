@@ -50,6 +50,10 @@ export type TraceableThread = Pick<
 > & {
 	unavailable?: ReviewThread["unavailable"];
 	resolved?: boolean;
+	/** GitHub's line on the PR's head now (review threads only). */
+	currentLine?: ReviewThread["currentLine"];
+	/** GitHub marks it outdated (review threads only). */
+	outdated?: boolean;
 };
 
 /**
@@ -132,6 +136,47 @@ function anchorOf(t: TraceableThread): CodeAnchor {
 			at: t.createdAt,
 		}
 	);
+}
+
+/** What a thread is traced from: its own snapshot, or GitHub's line now. */
+interface Source {
+	/** The range traced; null for a file comment. */
+	anchor: CodeAnchor | null;
+	ends: { base: string; head: string };
+	source?: "github";
+}
+
+const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+/**
+ * Where GitHub puts a thread now, as an anchor on the PR's head `head`:
+ * its current line (one line: GitHub's current start line isn't kept, and
+ * on the old side isn't reliable, see overview.ts threadAnchor), on its
+ * side; a file comment's stand-in line, which only follows its file. Null
+ * when GitHub gives no line (outdated, or as of a cutoff) or no head.
+ * `at`: when GitHub said so (the base branch's tip then is its old side).
+ */
+export function githubAnchor(
+	t: TraceableThread,
+	head: string,
+	at: string,
+): CodeAnchor | null {
+	if (!OID.test(head)) return null;
+	if (!t.anchor) return { ...anchorOf(t), commit: head, at };
+	const line = t.currentLine;
+	if (typeof line !== "number" || !Number.isInteger(line) || line < 1) {
+		return null;
+	}
+	const { side } = t.anchor;
+	return {
+		path: t.path,
+		commit: head,
+		side,
+		line,
+		startSide: side,
+		startLine: line,
+		at,
+	};
 }
 
 /** The entry of a diff that a path at its old side became, and its new path. */
@@ -218,16 +263,31 @@ export class ThreadPlacer {
 	/**
 	 * Each placeable thread's input for `placeThread` into `target`, with
 	 * no stored placement yet: git's work, cached by OIDs. `base` is the
-	 * session's diff base (the code panes' own).
+	 * session's diff base (the code panes' own). `githubHead`: the PR's
+	 * head as GitHub last told it, where a thread's `currentLine` counts;
+	 * a thread with no own snapshot to trace from is traced from there
+	 * (githubAnchor), else left untraced.
 	 */
 	async inputs(
 		target: Snapshot,
 		threads: readonly TraceableThread[],
 		base: DiffBase,
+		githubHead?: string,
 	): Promise<ThreadInput[]> {
 		const list = placeable(threads);
+		const now = new Date().toISOString();
 		const own = await Promise.all(
-			list.map((t) => this.code.endpoints(anchorOf(t), base)),
+			list.map(async (t): Promise<Source | null> => {
+				const anchor = anchorOf(t);
+				const ends = await this.code.endpoints(anchor, base);
+				if (ends) return { anchor: t.anchor && anchor, ends };
+				const github = githubHead ? githubAnchor(t, githubHead, now) : null;
+				if (!github) return null;
+				const at = await this.code.endpoints(github, base);
+				return at
+					? { anchor: t.anchor && github, ends: at, source: "github" }
+					: null;
+			}),
 		);
 		const paths = new Set<string>();
 		for (const f of target.files) {
@@ -240,17 +300,20 @@ export class ThreadPlacer {
 			target.files.some((f) => f.path === p || f.oldPath === p);
 		return Promise.all(
 			list.map(async (t, i): Promise<ThreadInput> => {
-				const ends = own[i];
-				const anchor = t.anchor
+				const src = own[i];
+				const from = src ? src.anchor : t.anchor;
+				const anchor = from
 					? {
-							side: t.anchor.side,
-							line: t.anchor.line,
-							startSide: t.anchor.startSide,
-							startLine: t.anchor.startLine,
+							side: from.side,
+							line: from.line,
+							startSide: from.startSide,
+							startLine: from.startLine,
 						}
 					: null;
-				if (!ends) {
-					// Its own snapshot can't be had: never traced, never placed.
+				if (!src) {
+					// Nothing to trace from, its own snapshot nor GitHub's
+					// line: never traced, never placed (under its file, with
+					// GitHub's outdated flag when it gave one).
 					return {
 						id: t.id,
 						path: t.path,
@@ -258,8 +321,11 @@ export class ThreadPlacer {
 						diffs: null,
 						newPath: t.path,
 						inComparison: inTarget(t.path),
+						untraced: t.outdated ? "outdated" : "untraced",
 					};
 				}
+				const { ends } = src;
+				const source = src.source ? { source: src.source } : {};
 				const [ownDiff, bd] = await Promise.all([
 					this.#diff(ends.base, ends.head, threadPaths),
 					this.#diff(ends.head, target.head, paths),
@@ -284,6 +350,7 @@ export class ThreadPlacer {
 						diffs: null,
 						newPath: null,
 						inComparison,
+						...source,
 					};
 				}
 				const baseEntry = entryFrom(ac, basePath);
@@ -300,6 +367,7 @@ export class ThreadPlacer {
 					anchor,
 					newPath,
 					inComparison,
+					...source,
 					own: mapperOf(ownEntry),
 					newLineText: (pos) =>
 						(pos.side === "RIGHT" ? newRight : newLeft)?.[pos.line - 1] ?? null,

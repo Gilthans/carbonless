@@ -4,12 +4,14 @@ import {
 	CheckCircleIcon,
 	ChevronUpIcon,
 	CircleSlashIcon,
+	ClockIcon,
 	DiffRemovedIcon,
 	FileRemovedIcon,
 	GitCompareIcon,
 	GrabberIcon,
 	HistoryIcon,
 	type Icon,
+	QuestionIcon,
 	VersionsIcon,
 } from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -125,6 +127,22 @@ export const FATES: Record<
 		tip: "Rewritten beyond tracing: its lines can't be followed here",
 		sentence: "Commented line has been rewritten since the review",
 		short: "Line rewritten",
+	},
+	outdated: {
+		label: "outdated",
+		icon: ClockIcon,
+		tone: "yellow",
+		tip: "GitHub marks it outdated; its own commit can't be traced",
+		sentence: "GitHub marks the commented line outdated",
+		short: "Outdated",
+	},
+	untraced: {
+		label: "untraced",
+		icon: QuestionIcon,
+		tone: "yellow",
+		tip: "Its own commit can't be traced, and GitHub puts it on no line here",
+		sentence: "Couldn't trace the commented line here",
+		short: "Line untraced",
 	},
 	"file-gone": {
 		label: "file deleted",

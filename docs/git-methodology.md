@@ -84,6 +84,14 @@ history.
   pane, and any whose GitHub hunk isn't a run of the rebuilt diff, carries
   the "different snapshot" chip (`docs/faq.md`): the check compares diffs,
   never history.
+- **Thread placement** (`src/server/rereview/threads.ts`). A thread is
+  traced from that same snapshot (its commit, the merge base above) into
+  the viewed one. With none (no commit from GitHub, one no fetch brings
+  back, or no merge base), it is traced from GitHub's own fact instead:
+  its current line on the PR's head as GitHub reports the head, whatever
+  history led there; only the same text places it
+  (`docs/product-rules.md`, "A thread with nothing to trace from sits on
+  GitHub's line").
 
 ## Test matrix
 
