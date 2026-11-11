@@ -1,8 +1,8 @@
 # Thread agent: an agent conversation per GitHub thread
 
-Status: draft, 2026-11-09. Branches from the re-review stack (tip
-`rr-markable`, PR #34; spec `docs/superpowers/specs/2026-11-04-re-review-design.md`)
-and uses its patch sets, comparisons and thread placement. Builds on review buddy
+Status: draft, 2026-11-09, updated 2026-11-11. Built on master after the
+re-review stack merged (design in Linear, CAR-5; agent threads traced in
+#48) and uses its patch sets, comparisons and thread placement. Builds on review buddy
 (`docs/superpowers/specs/2026-11-04-review-buddy-design.md`, merged as PR
 #30). Mockups (desktop Overview, desktop Files changed, phone):
 https://claude.ai/artifact/CPYrFstrisfLeh5CE6vg74
@@ -126,7 +126,7 @@ type AgentAnchor =
   UI), beside its comment counter: the Overview's
   `ThreadItem` (`OverviewPage.tsx:1459`), Files changed's `ThreadBlock`
   (`ThreadRow.tsx`), and re-review's `UnplacedRow` and not-in-comparison
-  rows (`ThreadFate.tsx:391`, `NotInComparison.tsx`), so a thread whose
+  rows (`ThreadFate.tsx:407`, `NotInComparison.tsx`), so a thread whose
   line is gone can still be asked about. Before a conversation exists it is
   a dashed sparkle with the tooltip "Ask agent". It's absent in
   `--viewer` and `--as-of` reviews (review buddy does the same), on threads
@@ -177,7 +177,7 @@ waiting dot, the 32 KiB cap. Additions:
 - `agent-thread-opened` with `by: "ai"` and a thread anchor is valid. The
   parser already allows `ai` on this event, but only with an `agent`
   identity and a `text` (the first message): an event without them is
-  dropped (`src/server/review/events.ts:565`), so seeded test events carry
+  dropped (`src/server/review/events.ts:840`), so seeded test events carry
   both. It gains an optional
   `origin: { request: string }`: the reviewer's general request, cut to 200
   characters, which the conversation shows as a chip ("↳ Check every thread")
@@ -221,7 +221,7 @@ interface PromptEnvelope {
     `left`/`right` commits and patch set numbers,
   - `current`: GitHub's newest head (`SessionInfo.currentHead`). Before a
     thread turn the runner runs `checkHead`, which fetches a new head into
-    the cache clone once per head (`session.ts:1751`, `clone.ts:363`). The
+    the cache clone once per head (`session.ts:1960`, `src/server/clone.ts`). The
     agent's checkout moves to that head for the turn (not to the snapshot
     head, as span threads do), since "is this resolved?" is often answered
     by a push the reviewer hasn't viewed yet. The envelope also lists the
@@ -234,14 +234,14 @@ interface PromptEnvelope {
 - The preamble for this kind says what each commit is, and that "since the
   comment" means `openedOn..current`. Every commit's objects reach the
   checkout through alternates (`checkout.ts:26`); the cache clone keeps
-  fetched objects (`gc.auto=0`, `clone.ts:306`). A commit the clone never
+  fetched objects (`gc.auto=0`, `clone.ts:311`). A commit the clone never
   fetched (a comment made on a head that was force-pushed away before
   carbonless saw it) is named in `notice` as missing.
 - The GitHub comments go in as third-party data. `sanitizeEnvelope` cleans
-  only ref names, the anchor path and PR text today (`prompt.ts:147`), so
+  only ref names, the anchor path and PR text today (`prompt.ts:149`), so
   it is extended to the comment bodies, logins and the thread path, with a
   test. Comment roles need the PR author's login wired into `authorOf`
-  (`host.ts:173` never returns `pr_author`; this fixes CAR-58 on the way).
+  (`host.ts:183` never returns `pr_author`; this fixes CAR-58 on the way).
 - The code window at `openedOn` is attached as review buddy attaches the
   anchored hunk. The builder may reuse the thread's `code` window.
 - The envelope is rebuilt every turn, so a follow-up after a new push sees
@@ -282,9 +282,10 @@ much space").
   yellow and green are taken.)
 - **Opening.** Pressing the agent button slides the conversation in from
   the right over the thread's comments, animated (about 250 ms, none under
-  `prefers-reduced-motion`). It covers about 95% of the comment area. A
-  strip of the thread stays visible on the left, at least 40px so it
-  remains a tap target (my call). The composer's "Reply…" placeholder fades
+  `prefers-reduced-motion`). It covers about 95% of the comment area. The
+  strip left visible is exactly the comments' avatar column, so the
+  authors' avatars stay in sight (owner, 2026-11-11: "let's keep it that
+  way"); at least 40px, a tap target. The composer's "Reply…" placeholder fades
   out and "Ask agent…" fades in; the same input now sends to the agent.
   The agent button shows pressed.
 - **Closing.** Pressing the visible strip, the comment counter, or the
@@ -311,6 +312,24 @@ much space").
 - **The Overview's agent row** (`AgentOverviewRow`) counts thread
   conversations with span threads, and its unread count links to the first
   unread one.
+
+### Living with what master already does
+
+- **Agent placements (#48).** `GET /agent/placements` traces span agent
+  threads into the viewed snapshot. A thread conversation is never traced
+  on its own: it goes where its GitHub thread goes (placed, unplaced row,
+  not in comparison, resolved). `placeAgentThreads` skips the `thread`
+  subject, and it never shows as an agent card or bubble of its own, nor in
+  the "Not in this comparison" agent group. Agent bubbles keep counting
+  span threads only; a thread conversation's count is on its thread's
+  agent button.
+- **Resolve closes to the bubble** (Files changed, `resolveCollapse.ts`).
+  Unchanged, and the conversation folds with its thread. Text typed in the
+  "Ask agent…" composer counts as unsent text, so the thread stays open,
+  as it does for a reply (my call).
+- **Earlier patch sets.** A thread conversation shows wherever its GitHub
+  thread shows, including on an earlier patch set; it has no cutoff of its
+  own.
 
 ### Storage
 
@@ -386,7 +405,6 @@ on close).
   GitHub by someone else folds its conversation.
 - Unread uses `accent` (periwinkle), not yellow.
 - Seen marks live in the private ref, so phone and desktop agree.
-- The strip left showing is at least 40px wide (a tap target).
 - The card header and the composer row (with Resolve) are never covered.
 - Each card opens its conversation independently; the open state isn't stored.
 - Unread markers only on thread conversations this slice.
