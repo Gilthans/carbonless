@@ -270,10 +270,10 @@ for them.
 ## Versions and instances
 
 The owner's main is the globally installed package (`carbonless-review`),
-run as `crb serve` on port 4747 with a stable key, and it moves to
-`origin/master`'s newest build by itself within minutes of a merge. It
+run as `crb serve` on port 4747 with a stable key, and it moves to the
+newest RC by itself within minutes of a merge. It
 never runs a worktree's `dist`, and nothing else binds 4747. Setup:
-README, "Remote machine". The owner's machine-specific details (address,
+`docs/remote-machine.md`. The owner's machine-specific details (address,
 service and timer names, logs, how to pause it) live in the untracked
 `CLAUDE.local.md`; never write them into tracked files.
 
@@ -294,29 +294,48 @@ in the main checkout:
    refuses a `crb` whose build differs from the server's. Stop it, and say
    so, when the branch merges or is dropped.
 
-**RC: every merge to master is a new RC** (the owner: merging a PR to main
-implies a new RC version). Changes reach master only as PRs ("How we
-work"). After one merges:
-1. Within minutes main moves to the new `origin/master` build (`crb
-   --version` shows the commit). If it fails (logs: `CLAUDE.local.md`),
-   tell the owner what it says; don't install by hand.
-2. Send the owner the link and what is new since the last build.
-3. Stop the instances of branches that just merged.
+**RC: every merge to master is a new RC**, published by GitHub Actions,
+never from this machine (`docs/releasing.md`). master's `package.json`
+version is the next release `X.Y.Z`; nobody bumps it to an RC. Changes
+reach master only as PRs ("How we work"). After one merges:
+1. The `Publish RC` run on that merge (`gh run list --workflow
+   release.yml`) publishes `X.Y.Z-rc.N` to npm's `rc` (trusted publishing,
+   no token) and tags `vX.Y.Z-rc.N`; until the first release it only tags. A run that says
+   "master moved on" skipped a commit a newer merge holds.
+2. The owner's main follows npm `rc` (machine-specific steps:
+   CLAUDE.local.md): check it moved to the new build (`crb --version`
+   shows the commit). If it didn't, tell the owner; don't install by
+   hand.
+3. Send the owner the link and what is new since the last RC.
+4. Stop the instances of branches that just merged.
 
-There is no version-bump commit per PR: builds are told apart by commit
-(`0.1.0-rc.4 (b7f8508)`). The release-flip branch, once merged, makes CI
-publish `X.Y.Z-rc.N` to npm on every master push.
+`pnpm release status` shows master's next version, `rc` and `latest` on npm
+and in tags, and what the next merge publishes.
 
-**By hand** (another machine, or the timer paused): in a clean tree of the
+**By hand** (another machine, or main's follow paused): in a clean tree of the
 commit (`git worktree add --detach .worktrees/release <ref>`, `pnpm install
 --frozen-lockfile`), `pnpm release local` builds, packs into
 `~/.local/share/carbonless/releases` (its last line is the tarball) and
 installs the global `crb`; then `systemctl --user restart crb`.
 
-**Release:** only when the owner asks ("release", "promote"). Before the
-first npm publish, remind the owner of the license (MIT, chosen on the
-release-flip branch). Until release-flip merges nothing is published:
-co-workers get a tarball or run `pnpm release local` in a checkout.
+**Release:** only on the owner's word ("release", "promote"):
+1. `pnpm release promote [<rc tag>] [--next patch|minor|major]` (default:
+   the newest RC, then minor) starts the promote run of `release.yml` and
+   prints its link. It checks the RC in full, packs `X.Y.Z` and stages it
+   on npm: hidden until the owner approves it with their two-factor.
+2. When the run is green, send the owner its link and summary. **The owner**
+   runs `pnpm release publish` on their machine: it checks the staged
+   tarball is the one promote checked, approves it (`npm stage approve`;
+   npm asks for their OTP; the very first release, 0.1.0, is published
+   that way instead, as nothing could be staged yet) and starts
+   release-finish (the `vX.Y.Z` tag, `rc`, the "next: X.Y+1.0" PR with the
+   changelog). Agents never run `pnpm release publish`, never approve a
+   staged version, and never ask for, or handle, the OTP.
+3. The owner merges the "next" PR like any other. For another next
+   version (a fix release): `pnpm release next <patch|minor|major|X.Y.Z>`
+   opens that PR.
+After the first release (0.1.0) the owner adds the trusted publisher
+(`docs/releasing.md`, "Setup").
 
 ## How we work
 
@@ -357,6 +376,16 @@ co-workers get a tarball or run `pnpm release local` in a checkout.
   merge. A PR is merged only on the owner's explicit word for that PR (by
   the owner on GitHub, or by an agent with `gh pr merge`). Never push
   `master` or `v*` tags.
+- On the owner's word only: `pnpm release promote` (starts the promote run,
+  which checks, packs and stages; nothing goes live) and `pnpm release
+  next` (pushes a `next/*` branch, opens its PR) on Gilthans/carbonless.
+  `pnpm release status` only reads. `pnpm release publish` (approving a
+  staged release, or the first publish) is the owner's alone (their npm
+  OTP): agents never run it, never run `npm stage approve`, and never ask
+  for the OTP. Code in master's release workflows can publish to npm
+  without that 2FA (`docs/releasing.md`, "Trusted publishing"): a PR that
+  touches `.github/` or the release scripts (`.github/CODEOWNERS`) says so
+  in its body, for the owner's review.
 - Commits only via `git commit --only -- <paths>` in a shared tree; never a bare
   `git stash`. On Gilthans/carbonless, GitHub writes are limited to the
   above: pushing branches, opening, updating and merging PRs, and commenting
