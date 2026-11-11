@@ -2240,61 +2240,66 @@ describe("Session", () => {
 					"deleteThreadComment",
 				] as const
 			).map((m) => vi.spyOn(Session.prototype, m));
-			const s = await Session.open(pr.arg, process.cwd());
-			const host = s.agent;
-			if (!host) throw new Error("no agent");
-			const { readId } = await s.overview();
-			const [rt] = (await s.threads(readId, "summary")).threads;
-			if (!rt) throw new Error("no thread");
-			await host.open({
-				clientId: "q1",
-				text: "Is it fixed?",
-				thread: rt.id,
-				view: { target: { head }, from: { branch: true } },
-			});
-			await vi.waitFor(
-				async () => expect((await host.threads())[0]?.messages).toHaveLength(2),
-				{ timeout: 20_000, interval: 20 },
-			);
-			const [t] = await host.threads();
-			expect(t?.messages[1]).toMatchObject({
-				by: "ai",
-				text: "Fixed in the viewed head.",
-				suggests: "resolve",
-				head,
-			});
-			const sent = acpLog(fake.log).find((e) => e.method === "session/prompt")
-				?.params as { prompt: Array<{ text?: string }> };
-			const text = sent.prompt[0]?.text ?? "";
-			const env = JSON.parse(text.slice(text.indexOf("\n\n{") + 2));
-			expect(env).toMatchObject({
-				kind: "github_thread_conversation",
-				current: head,
-				view: { right: head, left: pr.mergeBase },
-				github: {
-					path: "a.txt",
-					openedOn: head,
-					resolved: false,
-					comments: [
-						{
-							author: { login: "octo-author", role: "pr_author" },
-							body: "Is line 2 right?",
-						},
-					],
-				},
-				placement: { kind: "placed" },
-			});
-			expect(env.messages[0].author).toEqual({
-				login: "octo-cat",
-				role: "reviewer",
-			});
-			// The suggestion is data: nothing wrote to GitHub's thread.
-			for (const w of writes) expect(w).not.toHaveBeenCalled();
-			expect(pr.ghLog()).not.toMatch(
-				/-X (POST|PATCH|PUT|DELETE)|--method|resolveReviewThread|unresolveReviewThread|addPullRequestReview|mutation/,
-			);
-			expect(t?.resolved).toBe(false);
-			await s.close();
+			try {
+				const s = await Session.open(pr.arg, process.cwd());
+				const host = s.agent;
+				if (!host) throw new Error("no agent");
+				const { readId } = await s.overview();
+				const [rt] = (await s.threads(readId, "summary")).threads;
+				if (!rt) throw new Error("no thread");
+				await host.open({
+					clientId: "q1",
+					text: "Is it fixed?",
+					thread: rt.id,
+					view: { target: { head }, from: { branch: true } },
+				});
+				await vi.waitFor(
+					async () =>
+						expect((await host.threads())[0]?.messages).toHaveLength(2),
+					{ timeout: 20_000, interval: 20 },
+				);
+				const [t] = await host.threads();
+				expect(t?.messages[1]).toMatchObject({
+					by: "ai",
+					text: "Fixed in the viewed head.",
+					suggests: "resolve",
+					head,
+				});
+				const sent = acpLog(fake.log).find((e) => e.method === "session/prompt")
+					?.params as { prompt: Array<{ text?: string }> };
+				const text = sent.prompt[0]?.text ?? "";
+				const env = JSON.parse(text.slice(text.indexOf("\n\n{") + 2));
+				expect(env).toMatchObject({
+					kind: "github_thread_conversation",
+					current: head,
+					view: { right: head, left: pr.mergeBase },
+					github: {
+						path: "a.txt",
+						openedOn: head,
+						resolved: false,
+						comments: [
+							{
+								author: { login: "octo-author", role: "pr_author" },
+								body: "Is line 2 right?",
+							},
+						],
+					},
+					placement: { kind: "placed" },
+				});
+				expect(env.messages[0].author).toEqual({
+					login: "octo-cat",
+					role: "reviewer",
+				});
+				// The suggestion is data: nothing wrote to GitHub's thread.
+				for (const w of writes) expect(w).not.toHaveBeenCalled();
+				expect(pr.ghLog()).not.toMatch(
+					/-X (POST|PATCH|PUT|DELETE)|--method|resolveReviewThread|unresolveReviewThread|addPullRequestReview|mutation/,
+				);
+				expect(t?.resolved).toBe(false);
+				await s.close();
+			} finally {
+				for (const w of writes) w.mockRestore();
+			}
 		});
 
 		it("close() closes the host (checkout removed)", async () => {

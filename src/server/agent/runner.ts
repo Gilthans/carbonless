@@ -766,9 +766,12 @@ export class AgentRunner {
 			(this.#proc?.agent !== agent && !this.#crashedLast(agent));
 		if (stoppedOnPurpose) return false;
 		// A suggestion is data on the message: only a human's press resolves.
-		const { text, suggests } = suggestions
+		// The marker is stripped on any stop; only a finished answer suggests.
+		const taken = suggestions
 			? takeSuggestion(reply.text)
 			: { text: reply.text, suggests: false };
+		const text = taken.text;
+		const suggests = taken.suggests && reply.stop === "end_turn";
 		const head = await this.#checkoutHead();
 		try {
 			await this.#deps.store.message(thread.id, {

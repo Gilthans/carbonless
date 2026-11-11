@@ -1086,6 +1086,29 @@ describe("AgentRunner: thread conversations", () => {
 		expect(prompts()[1]?.messages[1]?.text).toBe("Fixed in PS 1.");
 	});
 
+	it("a failed turn's answer ending in the marker is stripped but never suggests", async () => {
+		patchsets = [ps(1, origin.shas[1] as string)];
+		scenario({
+			answers: [
+				{
+					text: "Looks fixed.\n[suggest-resolve]",
+					stop: "error",
+					error: "upstream went away",
+				},
+			],
+		});
+		await askThread("fixed?");
+		makeRunner().poke();
+		await answered(1);
+		const [t] = await threads();
+		expect(t?.messages[1]).toMatchObject({
+			by: "ai",
+			stop: "error",
+			text: "Looks fixed.",
+		});
+		expect(t?.messages[1]?.suggests).toBeUndefined();
+	});
+
 	it("a span thread's answer keeps a final marker as text", async () => {
 		scenario({ answers: [{ text: "Sure.\n[suggest-resolve]" }] });
 		await ask("span?");
