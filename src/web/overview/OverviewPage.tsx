@@ -1649,6 +1649,27 @@ function ThreadItem({
 	) : (
 		comment
 	);
+	const repliesEl =
+		open && !thread.unavailable && replies.n > 0 ? (
+			<div
+				id={repliesId}
+				data-testid="thread-replies"
+				// The replies hang off the opener on a rail.
+				className="ml-2 border-l-2 border-line pl-3"
+			>
+				<ThreadComments readId={readId} thread={thread} skipFirst />
+			</div>
+		) : null;
+	// With an agent, its conversation slides over the comments alone (the
+	// opener and the replies, in the comment column), never the code pane.
+	const comments = agent ? (
+		<AgentCover>
+			{commentCell}
+			{repliesEl}
+		</AgentCover>
+	) : (
+		commentCell
+	);
 	const session = useQuery(sessionQuery);
 	const target = threadTarget(thread, session.data, line);
 	const status = thread.resolved ? "Resolved" : "Unresolved";
@@ -1771,49 +1792,39 @@ function ThreadItem({
 				<div className="space-y-2 px-3 pt-1 pb-3">
 					<ThreadPlace thread={thread} line={line} target={target} />
 					<ThreadFateLine thread={thread} />
-					<AgentCover>
-						{thread.code?.source === "pending" ? (
-							<div className="grid gap-3 md:grid-cols-2 md:items-start">
-								{/* The code is still being built: the pane's frame. */}
-								<div
-									data-testid="thread-code-loading"
-									aria-busy="true"
-									className="min-w-0 space-y-2 rounded-md border border-line bg-code px-3 py-3"
-								>
-									<span className="sr-only">Loading…</span>
-									{["w-3/5", "w-4/5", "w-full", "w-2/3", "w-3/4"].map((w) => (
-										<SkeletonBar key={w} className={w} />
-									))}
-								</div>
-								{commentCell}
-							</div>
-						) : thread.code && rows.length > 0 ? (
-							<div className="grid gap-3 md:grid-cols-2 md:items-start">
-								<ThreadCodePane
-									ref={setCodeBox}
-									id={codeId}
-									path={thread.path}
-									lines={rows}
-									source={thread.code.source}
-									open={open}
-									scrollable={open ? codeOverflowsOpen : codeMore}
-								/>
-								{commentCell}
-							</div>
-						) : (
-							commentCell
-						)}
-						{open && !thread.unavailable && replies.n > 0 && (
+					{thread.code?.source === "pending" ? (
+						<div className="grid gap-3 md:grid-cols-2 md:items-start">
+							{/* The code is still being built: the pane's frame. */}
 							<div
-								id={repliesId}
-								data-testid="thread-replies"
-								// The replies hang off the opener on a rail.
-								className="ml-2 border-l-2 border-line pl-3"
+								data-testid="thread-code-loading"
+								aria-busy="true"
+								className="min-w-0 space-y-2 rounded-md border border-line bg-code px-3 py-3"
 							>
-								<ThreadComments readId={readId} thread={thread} skipFirst />
+								<span className="sr-only">Loading…</span>
+								{["w-3/5", "w-4/5", "w-full", "w-2/3", "w-3/4"].map((w) => (
+									<SkeletonBar key={w} className={w} />
+								))}
 							</div>
-						)}
-					</AgentCover>
+							{comments}
+						</div>
+					) : thread.code && rows.length > 0 ? (
+						<div className="grid gap-3 md:grid-cols-2 md:items-start">
+							<ThreadCodePane
+								ref={setCodeBox}
+								id={codeId}
+								path={thread.path}
+								lines={rows}
+								source={thread.code.source}
+								open={open}
+								scrollable={open ? codeOverflowsOpen : codeMore}
+							/>
+							{comments}
+						</div>
+					) : (
+						comments
+					)}
+					{/* No agent: the replies under the whole card, as they were. */}
+					{!agent && repliesEl}
 					{/* The composer row: never under the agent's panel. */}
 					{(open || agent?.open) && !thread.unavailable && (
 						<ThreadActions thread={thread} onToggle={onToggle} />

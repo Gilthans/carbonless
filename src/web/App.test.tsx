@@ -2825,3 +2825,28 @@ describe("Timeline", () => {
 		expect(within(section).queryByTestId("timeline-loading")).toBeNull();
 	});
 });
+
+describe("the thread agent on the Overview", () => {
+	it("slides over the comments alone: the code pane stays outside the cover", async () => {
+		renderApp({ "/api/agent/threads": ok({ threads: [] }) });
+		const card = (
+			await screen.findAllByTestId("thread", {}, { timeout: 5000 })
+		).find((c) => c.id === "thread-T-cache") as HTMLElement;
+		expect(card).toBeTruthy();
+		await userEvent.click(
+			await within(card).findByRole("button", { name: "Ask agent" }),
+		);
+		const cover = within(card).getByTestId("agent-cover");
+		const panel = within(card).getByTestId("thread-agent-panel");
+		expect(panel).toHaveAttribute("data-open", "true");
+		expect(cover).toContainElement(panel);
+		expect(cover).toContainElement(within(card).getByTestId("thread-body"));
+		const code = within(card).getByTestId("thread-code");
+		expect(cover).not.toContainElement(code);
+		expect(code.contains(cover)).toBe(false);
+		// The composer row stays outside too.
+		expect(cover).not.toContainElement(
+			within(card).getByRole("textbox", { name: "Ask agent" }),
+		);
+	});
+});

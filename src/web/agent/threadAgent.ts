@@ -14,6 +14,7 @@ import {
 	useCallback,
 	useContext,
 	useEffect,
+	useMemo,
 	useRef,
 	useState,
 	useSyncExternalStore,
@@ -326,15 +327,39 @@ export function useThreadAgent(
 			return false;
 		});
 	}, []);
-	if (!agentFor(thread, on)) return null;
-	return {
-		thread,
-		conversation,
-		open,
-		toggle,
-		close,
-		buttonRef,
-		composerRef,
-		onToggle: options.onToggle,
-	};
+	// The caller's onToggle is usually a fresh closure: kept in a ref, so
+	// the context value changes only when what it says does.
+	const onToggleRef = useRef(options.onToggle);
+	onToggleRef.current = options.onToggle;
+	const hasOnToggle = options.onToggle !== undefined;
+	const onToggle = useCallback(
+		(resolved: boolean, from: Element) => onToggleRef.current?.(resolved, from),
+		[],
+	);
+	const available = agentFor(thread, on);
+	return useMemo(
+		() =>
+			available
+				? {
+						thread,
+						conversation,
+						open,
+						toggle,
+						close,
+						buttonRef,
+						composerRef,
+						onToggle: hasOnToggle ? onToggle : undefined,
+					}
+				: null,
+		[
+			available,
+			thread,
+			conversation,
+			open,
+			toggle,
+			close,
+			hasOnToggle,
+			onToggle,
+		],
+	);
 }

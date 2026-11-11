@@ -5,6 +5,7 @@ import {
 	cleanup,
 	fireEvent,
 	render,
+	renderHook,
 	screen,
 	within,
 } from "@testing-library/react";
@@ -410,5 +411,30 @@ describe("ThreadAgentPanel", () => {
 		).toBeInTheDocument();
 		expect(within(panel()).getByText("Still?")).toBeInTheDocument();
 		expect(calls).toHaveLength(1);
+	});
+
+	it("the card's context value is stable while nothing it holds changes", () => {
+		const client = new QueryClient();
+		clients.push(client);
+		client.setQueryData(overviewQuery.queryKey, { writes: "on" } as PrOverview);
+		client.setQueryData(agentThreadsQuery.queryKey, {
+			threads: [conversation()],
+		});
+		const t = reviewThread();
+		const { result, rerender } = renderHook(
+			() => useThreadAgent(t, { onToggle: () => {} }),
+			{
+				wrapper: ({ children }) => (
+					<QueryClientProvider client={client}>{children}</QueryClientProvider>
+				),
+			},
+		);
+		const first = result.current;
+		expect(first).not.toBeNull();
+		rerender();
+		expect(result.current).toBe(first);
+		act(() => first?.toggle());
+		expect(result.current).not.toBe(first);
+		expect(result.current?.open).toBe(true);
 	});
 });

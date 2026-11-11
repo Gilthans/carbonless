@@ -47,7 +47,7 @@ export function AgentCover(props: { children: ReactNode; className?: string }) {
 	return (
 		<div
 			data-testid="agent-cover"
-			className={`relative ${shown ? "min-h-64 overflow-hidden" : ""}`}
+			className={`relative min-w-0 ${shown ? "min-h-64 overflow-hidden" : ""}`}
 		>
 			<div inert={agent.open} className={props.className ?? "space-y-2"}>
 				{props.children}

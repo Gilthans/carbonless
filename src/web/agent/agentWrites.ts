@@ -126,7 +126,7 @@ function send(client: QueryClient, clientId: string): void {
 		},
 		(error: unknown) => {
 			if (state.pending.get(clientId) !== item) return;
-			if (isTransient(error) && !refusedByServer(error)) {
+			if (isTransient(error) && !githubUnread(client, item, error)) {
 				const n = attempts.get(clientId) ?? 0;
 				attempts.set(clientId, n + 1);
 				const wait = RETRY_DELAYS_MS[Math.min(n, RETRY_DELAYS_MS.length - 1)];
@@ -159,12 +159,24 @@ function conversationOf(error: unknown): string | null {
 }
 
 /**
- * A 502 the server wrote itself (GitHub couldn't be read, so it can't
- * tell whether the thread is open): shown with Retry, never sent again
- * silently.
+ * A 502 on a write to a GitHub thread's conversation: the server couldn't
+ * read GitHub, so it can't tell whether the thread is open. Shown with
+ * Retry, never sent again silently. Any other 502 (a proxy's, while crb
+ * restarts) is transient and resent as before.
  */
-const refusedByServer = (error: unknown) =>
-	error instanceof ApiError && error.status === 502;
+function githubUnread(
+	client: QueryClient,
+	item: AgentWrite,
+	error: unknown,
+): boolean {
+	if (!(error instanceof ApiError) || error.status !== 502) return false;
+	if (item.githubThread !== undefined) return true;
+	if (item.thread === undefined) return false;
+	const conversation = client
+		.getQueryData(agentThreadsQuery.queryKey)
+		?.threads.find((t) => t.id === item.thread);
+	return conversation?.anchor.subject === "thread";
+}
 
 function start(client: QueryClient, clientId: string, item: AgentWrite): void {
 	// One press, one write: a press while one is out sends nothing more.
