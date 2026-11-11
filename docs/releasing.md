@@ -184,7 +184,7 @@ the repository is public and the package is public (`npm stage publish`
 is `npm publish` with staging, the same path). But npm skips it silently
 when it can't tell the package is public, so the RC run's last step
 fails unless `npm view carbonless-review@X.Y.Z-rc.N dist.attestations`
-shows a provenance (retrying for up to ~2.5 minutes while the registry
+shows a provenance (retrying for up to ~10 minutes while the registry
 catches up). A staged release can't be checked that way: npm shows it
 only once approved, and `npm stage view` needs the owner's interactive
 login, not CI's OIDC; the owner checks it after approving (setup, step
