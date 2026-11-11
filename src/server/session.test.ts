@@ -1360,6 +1360,64 @@ describe("Session", () => {
 				]),
 			);
 
+		it("a thread with no commit sits on GitHub's line counted on the head of the same answer, never on a head checked later (CAR-116)", async () => {
+			const noCommit = () =>
+				reviewThread({ path: "a.txt", line: 20, diffSide: "RIGHT" }, [
+					threadComment({ login: "rev1", text: "No commit" }),
+				]);
+			const serve = (head: string) =>
+				pr.scenario({
+					prs: {
+						12: {
+							view: prView({ headRefOid: head, baseRefName: "main" }),
+							graphql: { reviewThreads: [noCommit()], reviews: [] },
+						},
+					},
+				});
+			const h2 = pr.head();
+			serve(h2);
+			const s = await Session.open(pr.arg, process.cwd());
+			const { readId } = await s.overview();
+			const [read] = (await s.threads(readId, "summary")).threads;
+			expect(read).toMatchObject({
+				commit: "",
+				currentLine: 20,
+				currentHead: h2,
+			});
+			const placed = async (head: string) => {
+				for (;;) {
+					const answer = await s.placements({ head }, readId);
+					if (!("pending" in answer)) return answer.threads[0]?.placement;
+					await new Promise((r) => setTimeout(r, 20));
+				}
+			};
+			const on = (line: number) => ({
+				kind: "placed",
+				anchor: {
+					path: "a.txt",
+					startSide: "RIGHT",
+					startLine: line,
+					side: "RIGHT",
+					line,
+				},
+				changed: false,
+				source: "github",
+			});
+			expect(await placed(h2)).toEqual(on(20));
+			// A push adds five lines on top; the head check sees it, the
+			// threads aren't read again: line 20 is still H2's.
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed";
+			const top = Array.from({ length: 5 }, (_, i) => `top ${i + 1}`);
+			const h3 = pr.moveHead({
+				"a.txt": `${[...top, ...lines].join("\n")}\n`,
+			});
+			serve(h3);
+			expect(await s.checkHead()).toMatchObject({ currentHead: h3 });
+			expect(await placed(h3)).toEqual(on(25));
+		});
+
 		it("answers pending at once, then the answer; the viewed head carries provisionally; the first mark starts PS2 with the carries", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const ps1 = s.snapshot();

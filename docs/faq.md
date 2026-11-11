@@ -208,7 +208,9 @@ commit was force-pushed away and can't be fetched, or it shares no history
 with the base. Those sit on the line GitHub shows them on now. When
 GitHub shows them on no line, they are listed under their file:
 `outdated` when GitHub marks them so, `untraced` otherwise (also when
-GitHub's line isn't the same text in the patch set you are viewing).
+GitHub's line isn't the same text in the patch set you are viewing, and
+for a line on the old side, which GitHub counts against its own merge
+base).
 `rewritten` means a real trace found the lines gone.
 `docs/product-rules.md`, "A thread with nothing to trace from sits on
 GitHub's line".

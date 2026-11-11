@@ -88,8 +88,10 @@ history.
   traced from that same snapshot (its commit, the merge base above) into
   the viewed one. With none (no commit from GitHub, one no fetch brings
   back, or no merge base), it is traced from GitHub's own fact instead:
-  its current line on the PR's head as GitHub reports the head, whatever
-  history led there; only the same text places it
+  its current line on the PR's head GitHub reports in the same answer,
+  whatever history led there. New side only: an old-side line counts
+  against GitHub's merge base, which a base merged in since can make
+  differ from ours, so it stays `untraced`. Only the same text places it
   (`docs/product-rules.md`, "A thread with nothing to trace from sits on
   GitHub's line").
 

@@ -222,6 +222,8 @@ async function call(io) {
 				viewerCanReply: true,
 				viewerCanResolve: !t.isResolved,
 				viewerCanUnresolve: t.isResolved === true,
+				// The PR's head as this answer has it: what `line` counts on.
+				headOf: { headRefOid: s.prs[pr]?.view?.headRefOid ?? null },
 				...t,
 				id: t.id ?? `T${pr}-${i}`,
 				...(t.first

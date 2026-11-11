@@ -115,8 +115,11 @@ Thread placement traces each thread from the commit it was written on
 (owner, 2026-11-11, CAR-116). When there is nothing of its own to trace
 from (GitHub gave no `originalCommit`, the commit can't be fetched, or it
 shares no history with the base), it is traced instead from where GitHub
-puts it now: its current line on the PR's head as GitHub last reported it
-(one line: GitHub's current start line isn't kept). Only that same text
+puts it now: its current line on the PR's head GitHub gave in the same
+answer (never a head learned later), new side only (one line: GitHub's
+current start line isn't kept; an old-side line is numbered against
+GitHub's merge base, which can differ from ours, so it is `untraced`).
+Only that same text
 places it, with no chip, as GitHub would show it; GitHub's line rewritten
 or gone in the viewed snapshot, or its file out of the comparison, is
 `untraced` (never "changed since" or "deleted since the review": no

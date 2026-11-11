@@ -335,7 +335,7 @@ describe("ThreadPlacer", () => {
 		);
 		const [placed] = await p.place(
 			target,
-			await p.inputs(target, [lost], base(), H2),
+			await p.inputs(target, [lost], base()),
 			new Map(),
 		);
 		expect(placed?.placement).toEqual({
@@ -364,7 +364,11 @@ describe("ThreadPlacer", () => {
 				repo.path,
 				new ThreadCodeSource(repo.path, async (_r, oid) => !lost.includes(oid)),
 			);
-			const inputs = await p.inputs(target, threads, base(), githubHead);
+			// The head comes with the threads' lines, in the same answer.
+			const read = threads.map((t) =>
+				githubHead ? { ...t, currentHead: githubHead } : t,
+			);
+			const inputs = await p.inputs(target, read, base());
 			const placed = await p.place(target, inputs, new Map());
 			return new Map(placed.map((x) => [x.id, x.placement]));
 		}
@@ -450,6 +454,20 @@ describe("ThreadPlacer", () => {
 			expect(
 				(await placeFrom([lostHead], H2, [H2])).get(lostHead.id),
 			).toMatchObject({ kind: "unplaced", fate: "untraced" });
+		});
+
+		it("an old-side line from GitHub is never taken (its merge base may not be ours): untraced", async () => {
+			const t = thread(
+				"c.ts",
+				{ line: 3, side: "LEFT", startSide: "LEFT", commit: "" },
+				{ commit: "", currentLine: 3 },
+			);
+			expect((await placeFrom([t], H2)).get(t.id)).toEqual({
+				kind: "unplaced",
+				fate: "untraced",
+				path: "c.ts",
+				nearest: null,
+			});
 		});
 
 		it("a thread its own commit traces is never moved to GitHub's line", async () => {

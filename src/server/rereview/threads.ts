@@ -50,8 +50,10 @@ export type TraceableThread = Pick<
 > & {
 	unavailable?: ReviewThread["unavailable"];
 	resolved?: boolean;
-	/** GitHub's line on the PR's head now (review threads only). */
+	/** GitHub's line on `currentHead` (review threads only). */
 	currentLine?: ReviewThread["currentLine"];
+	/** The PR's head in the same GitHub answer as `currentLine`. */
+	currentHead?: string;
 	/** GitHub marks it outdated (review threads only). */
 	outdated?: boolean;
 };
@@ -149,31 +151,32 @@ interface Source {
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
- * Where GitHub puts a thread now, as an anchor on the PR's head `head`:
- * its current line (one line: GitHub's current start line isn't kept, and
- * on the old side isn't reliable, see overview.ts threadAnchor), on its
- * side; a file comment's stand-in line, which only follows its file. Null
- * when GitHub gives no line (outdated, or as of a cutoff) or no head.
- * `at`: when GitHub said so (the base branch's tip then is its old side).
+ * Where GitHub puts a thread now, as an anchor on `currentHead`, the PR's
+ * head in the same answer as its line: its current line, new side only
+ * (one line: GitHub's current start line isn't kept); a file comment's
+ * stand-in line, which only follows its file. Null when GitHub gives no
+ * head, no line (outdated, or as of a cutoff), or an old-side one: GitHub
+ * numbers that against its own merge base, which can differ from ours
+ * (a base merged in since). `at`: when GitHub said so.
  */
 export function githubAnchor(
 	t: TraceableThread,
-	head: string,
 	at: string,
 ): CodeAnchor | null {
-	if (!OID.test(head)) return null;
+	const head = t.currentHead;
+	if (typeof head !== "string" || !OID.test(head)) return null;
 	if (!t.anchor) return { ...anchorOf(t), commit: head, at };
 	const line = t.currentLine;
 	if (typeof line !== "number" || !Number.isInteger(line) || line < 1) {
 		return null;
 	}
-	const { side } = t.anchor;
+	if (t.anchor.side !== "RIGHT") return null;
 	return {
 		path: t.path,
 		commit: head,
-		side,
+		side: "RIGHT",
 		line,
-		startSide: side,
+		startSide: "RIGHT",
 		startLine: line,
 		at,
 	};
@@ -263,29 +266,28 @@ export class ThreadPlacer {
 	/**
 	 * Each placeable thread's input for `placeThread` into `target`, with
 	 * no stored placement yet: git's work, cached by OIDs. `base` is the
-	 * session's diff base (the code panes' own). `githubHead`: the PR's
-	 * head as GitHub last told it, where a thread's `currentLine` counts;
-	 * a thread with no own snapshot to trace from is traced from there
-	 * (githubAnchor), else left untraced.
+	 * session's diff base (the code panes' own). A thread with no own
+	 * snapshot to trace from is traced from GitHub's line on the head of
+	 * the same answer (githubAnchor), else left untraced. `at`: when the
+	 * threads were read (default now).
 	 */
 	async inputs(
 		target: Snapshot,
 		threads: readonly TraceableThread[],
 		base: DiffBase,
-		githubHead?: string,
+		at: string = new Date().toISOString(),
 	): Promise<ThreadInput[]> {
 		const list = placeable(threads);
-		const now = new Date().toISOString();
 		const own = await Promise.all(
 			list.map(async (t): Promise<Source | null> => {
 				const anchor = anchorOf(t);
 				const ends = await this.code.endpoints(anchor, base);
 				if (ends) return { anchor: t.anchor && anchor, ends };
-				const github = githubHead ? githubAnchor(t, githubHead, now) : null;
+				const github = githubAnchor(t, at);
 				if (!github) return null;
-				const at = await this.code.endpoints(github, base);
-				return at
-					? { anchor: t.anchor && github, ends: at, source: "github" }
+				const there = await this.code.endpoints(github, base);
+				return there
+					? { anchor: t.anchor && github, ends: there, source: "github" }
 					: null;
 			}),
 		);

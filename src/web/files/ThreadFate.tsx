@@ -4,7 +4,6 @@ import {
 	CheckCircleIcon,
 	ChevronUpIcon,
 	CircleSlashIcon,
-	ClockIcon,
 	DiffRemovedIcon,
 	FileRemovedIcon,
 	GitCompareIcon,
@@ -130,9 +129,10 @@ export const FATES: Record<
 	},
 	outdated: {
 		label: "outdated",
-		icon: ClockIcon,
+		// The icon of the "outdated" badge: one sign for one flag.
+		icon: HistoryIcon,
 		tone: "yellow",
-		tip: "GitHub marks it outdated; its own commit can't be traced",
+		tip: "Outdated on GitHub; its own commit can't be traced",
 		sentence: "GitHub marks the commented line outdated",
 		short: "Outdated",
 	},
@@ -140,7 +140,7 @@ export const FATES: Record<
 		label: "untraced",
 		icon: QuestionIcon,
 		tone: "yellow",
-		tip: "Its own commit can't be traced, and GitHub puts it on no line here",
+		tip: "Couldn't trace the commented line here",
 		sentence: "Couldn't trace the commented line here",
 		short: "Line untraced",
 	},
@@ -226,6 +226,8 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 		return <ChangedChip thread={thread} />;
 	}
 	if (placement.kind === "unplaced" || placement.kind === "outside") {
+		// GitHub's outdated already has its badge on the card: no second sign.
+		if (placement.fate === "outdated" && thread.outdated) return null;
 		const fate = FATES[placement.fate];
 		return (
 			<Chip

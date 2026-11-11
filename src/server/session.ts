@@ -764,15 +764,14 @@ export class Session {
 				]);
 				// Filed under its snapshot id too: a head and its patch set share it.
 				this.#placing.set(`${target.revision}|${readId}`, job);
-				// Where the threads' current lines count: the PR's head as
-				// GitHub last told it (a thread with nothing of its own to
-				// trace from is traced from there).
-				const githubHead = this.#meta.headOid;
+				// When GitHub gave the threads' current lines (each with the
+				// head it counts on): one time per read.
+				const at = new Date(read.started).toISOString();
 				const open = await this.#placer.inputs(
 					target,
 					view.threads.filter((t) => !t.resolved),
 					this.#diffBase(),
-					githubHead,
+					at,
 				);
 				job.done = { target, inputs: open, complete: false };
 				// The resolved threads join after; their failure never takes
@@ -782,7 +781,7 @@ export class Session {
 						target,
 						view.threads.filter((t) => t.resolved),
 						this.#diffBase(),
-						githubHead,
+						at,
 					)
 					.catch(() => []);
 				job.done = { target, inputs: [...open, ...resolved], complete: true };
