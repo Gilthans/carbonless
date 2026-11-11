@@ -211,9 +211,10 @@ test("the same from Files changed", async ({ page, pr, agentCrb }) => {
 	await expect(
 		row(section, 3).getByRole("button", { name: /^1 comment on line 3/ }),
 	).toHaveCount(0);
+	// Its answer still new (the seen mark held).
 	await expect(
 		row(section, 3).getByTestId("agent-bubble"),
-	).toHaveAccessibleName("1 agent thread on line 3");
+	).toHaveAccessibleName("1 agent thread on line 3, 1 new");
 });
 
 test("opens scrolled to its end; closes from the strip, the comment counter and the agent button", async ({
