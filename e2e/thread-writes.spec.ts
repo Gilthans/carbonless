@@ -7,7 +7,12 @@ import {
 	type Scenario,
 	threadComment,
 } from "../test/fake-gh/scenario";
-import { fileSection, openFiles } from "./files-ui";
+import {
+	expectNoPageOverflow,
+	fileSection,
+	openFiles,
+	sideBySide,
+} from "./files-ui";
 import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 /**
@@ -243,12 +248,14 @@ test("reply and resolve from Files changed", async ({ page, pr, startCrb }) => {
 		thread.getByTestId("thread-comment").filter({ hasText: "From the diff" }),
 	).toHaveCount(1);
 	await thread.getByRole("button", { name: "Resolve" }).click();
+	// Closed down to its bubble, which says resolved and has the focus.
+	await expect(thread).toHaveCount(0);
+	const resolvedBubble = section.getByRole("button", {
+		name: /^2 comments on line 2, resolved/,
+	});
+	await expect(resolvedBubble).toBeFocused();
+	await resolvedBubble.click();
 	await expect(thread).toHaveAttribute("aria-label", /^Resolved thread/);
-	await expect(
-		section.getByRole("button", {
-			name: /^2 comments on line 2, resolved/,
-		}),
-	).toBeVisible();
 	await expect(thread.getByRole("button", { name: "Unresolve" })).toBeVisible();
 	await expect.poll(() => storedReplies(p, "From the diff")).toBe(1);
 	// On GitHub before the reload reads it back.
@@ -291,6 +298,62 @@ test("reply and resolve from Files changed", async ({ page, pr, startCrb }) => {
 		}),
 	).toHaveCount(0);
 });
+
+for (const view of ["unified", "side-by-side"] as const) {
+	test(`Resolve in Files changed closes the thread to its bubble (${view})`, async ({
+		page,
+		pr,
+		startCrb,
+		isMobile,
+	}) => {
+		if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+		// The resolve's read-back waits: closed before GitHub's answer is in.
+		const p = await setup(pr, { hold: ["thread"] });
+		const s = await startCrb();
+		await openFiles(page, s.url);
+		if (view === "side-by-side") await sideBySide(page, true);
+		const section = fileSection(page, "a.txt");
+		await section.getByRole("button", { name: "Expand file" }).click();
+		// Side by side on a phone, a row's bubbles sit in a row of their own.
+		const bubble = section
+			.getByRole("button", { name: /^1 comment on line 2/ })
+			.last();
+		await bubble.click();
+		const thread = section.getByTestId("files-thread");
+		await expect(thread).toHaveAttribute("aria-label", /^Unresolved thread/);
+		const resolve = thread.getByRole("button", {
+			name: "Resolve",
+			exact: true,
+		});
+		// Measured once the click's own scroll is done: Resolve mid-screen,
+		// clear of the phone's floating Files button (else the click scrolls
+		// again to reach it, after the measure).
+		await resolve.evaluate((el) => el.scrollIntoView({ block: "center" }));
+		const top = (await bubble.boundingBox())?.y ?? Number.NaN;
+		await resolve.click();
+		await expect(thread).toHaveCount(0);
+		const closed = section
+			.getByRole("button", { name: /^1 comment on line 2, resolved/ })
+			.last();
+		await expect(closed).toHaveAttribute("aria-expanded", "false");
+		await expect(closed).toBeFocused();
+		// The bubble stays where it was: the page didn't jump.
+		expect((await closed.boundingBox())?.y).toBeCloseTo(top, 0);
+		await expectNoPageOverflow(page);
+		await expect.poll(() => storedResolved(p, "a.txt")).toBe(true);
+		release(p.scenarioPath, "thread");
+		// Opened again: the thread, resolved.
+		await closed.click();
+		await expect(thread).toHaveAttribute("aria-label", /^Resolved thread/);
+		await expect(
+			thread.getByRole("button", { name: "Unresolve" }),
+		).toBeVisible();
+		// Unresolve closes nothing.
+		await thread.getByRole("button", { name: "Unresolve" }).click();
+		await expect(thread).toHaveAttribute("aria-label", /^Unresolved thread/);
+		await expect.poll(() => storedResolved(p, "a.txt")).toBe(false);
+	});
+}
 
 test("a reload while an unresolve is read back shows it unresolved at once", async ({
 	page,

@@ -59,6 +59,21 @@ const specs = readdirSync("e2e")
 const E2E_MAP = [
 	// Pure (hunks in, placements out); its unit tests are the coverage.
 	[/^src\/shared\/tracer\//, []],
+	// The re-review engine (shape, interdiff, carry): the methodology
+	// matrix drives it end to end, the Files page's graph and since view
+	// read its answers.
+	[/^src\/(server|shared)\/rereview\//, ["methodology", "rereview"]],
+	// Thread placement in the page: the changed card, the unplaced list,
+	// the trailing group; Files changed's threads at large.
+	[
+		/^src\/web\/files\/(ThreadFate|NotInComparison|threadPlacement|ThreadRow)\.tsx?$/,
+		["rereview", "files-threads"],
+	],
+	// The patch set graph, the toast and the since view (the comparison).
+	[
+		/^src\/web\/files\/(PatchsetGraph|HeadToast|graphCards|comparison|FilesPage|FileDiff|DiffBody|FileTree|ProgressBar|useSetStates|landing)\.tsx?$|^src\/web\/(App|shortcuts)\.tsx$|^e2e\/pr-setup\.ts$/,
+		["rereview"],
+	],
 	[/^src\/web\/agent\//, ["agent", "agent-setup"]],
 	[
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
@@ -114,6 +129,12 @@ const E2E_MAP = [
 		/^src\/web\/verdict\/|^src\/server\/verdict\.ts$|^src\/web\/(App|pages|router)\.tsx?$|^src\/web\/files\/(FilesPage|RefusedWrites)\.tsx$|^src\/web\/threads\/(threadWrites|refusals)\.ts$/,
 		["verdict"],
 	],
+	// The markable invariant: whatever renders units, keys their lines or
+	// saves their states (docs/product-rules.md).
+	[
+		/^src\/web\/files\/(DiffBody|FileDiff|FilesPage|whitespace|sideBySide|since|useSince|useSetStates|stateSync)\.tsx?$|^src\/server\/(rereview\/engine|diff\/hunks)\.ts$|^test\/markable(-harness)?\.tsx?$|^src\/shared\/pieces\.ts$/,
+		["markable"],
+	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	// Unit-test data (wordBlocks.fixture.test.ts); inlineDiff.spec.ts reads
 	// a few of its cases.
@@ -135,7 +156,7 @@ const E2E_MAP = [
 	],
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],
 	[
-		/^src\/server\/asOf\.ts$|^src\/web\/(HeadBanner|RelativeTime)\.tsx$/,
+		/^src\/server\/asOf\.ts$|^src\/web\/RelativeTime\.tsx$/,
 		["asof", "overview", "pinned-head"],
 	],
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
@@ -151,7 +172,7 @@ const E2E_MAP = [
 	[/^test\/module-log\.mjs$/, []],
 	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
 	[
-		/^src\/(cli|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
+		/^src\/(cli|main|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
 		["serve", "cli"],
 	],
 ];
@@ -165,7 +186,7 @@ const reasons = [];
 for (const file of changed) {
 	// Unit-test-only files.
 	if (
-		/\.test\.tsx?$|^test\/(setup|diff-fixture|pr-fixture|methodology-matrix)\.ts$|^vitest\.config/.test(
+		/\.test\.tsx?$|^test\/(setup|diff-fixture|pr-fixture|methodology-matrix|rereview-fixture)\.ts$|^vitest\.config/.test(
 			file,
 		)
 	) {
@@ -201,37 +222,37 @@ console.log(
 	}`,
 );
 
+/** A test step, run in its turn on the machine (scripts/queue.mjs). */
+const queued = (...cmd) => ["node", ["scripts/queue.mjs", ...cmd]];
+
 const steps = [
 	["pnpm", ["lint"]],
 	["pnpm", ["typecheck"]],
-	["pnpm", ["exec", "vitest", "run", "--changed", base, "--passWithNoTests"]],
+	queued(
+		"pnpm",
+		"exec",
+		"vitest",
+		"run",
+		"--changed",
+		base,
+		"--passWithNoTests",
+	),
 ];
 // src/cli.test.ts only spawns the CLI, so --changed never finds it through
 // imports: it runs whenever the CLI's module graph may have changed.
 const cliGraph = changed.filter((f) =>
-	/^src\/(cli|client)\.ts$|^src\/server\/|^test\/module-log\.mjs$/.test(f),
+	/^src\/(cli|main|client)\.ts$|^src\/server\/|^test\/module-log\.mjs$/.test(f),
 );
 if (cliGraph.length && !changed.includes("src/cli.test.ts")) {
 	console.log(`  unit: src/cli.test.ts (${cliGraph[0]} changed)`);
-	steps.push(["pnpm", ["exec", "vitest", "run", "src/cli.test.ts"]]);
+	steps.push(queued("pnpm", "exec", "vitest", "run", "src/cli.test.ts"));
 }
 if (allE2e || e2e.size) {
 	steps.push(["pnpm", ["build"]]);
 	const files = allE2e ? [] : [...e2e].map((s) => `e2e/${s}.spec.ts`);
-	// The whole suite waits its turn on the machine (scripts/queue.mjs).
-	steps.push([
-		"node",
-		[
-			"scripts/queue.mjs",
-			"--unless-filtered",
-			"pnpm",
-			"exec",
-			"playwright",
-			"test",
-			...files,
-			...passthrough,
-		],
-	]);
+	steps.push(
+		queued("pnpm", "exec", "playwright", "test", ...files, ...passthrough),
+	);
 }
 
 for (const [cmd, a] of steps) {

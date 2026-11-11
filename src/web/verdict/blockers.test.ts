@@ -44,6 +44,8 @@ const overview = (more: Partial<PrOverview> = {}): PrOverview => ({
 });
 
 const facts = (more: Partial<VerdictFacts> = {}): VerdictFacts => ({
+	since: null,
+	yourVerdict: null,
 	mergeStateStatus: "CLEAN",
 	reviewDecision: null,
 	checks: [],

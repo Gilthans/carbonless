@@ -56,6 +56,12 @@ export interface NewThreadTarget extends ThreadWriteTarget {
 	add: (id: string, nodes: ThreadNodes, seq: number, startedAt: number) => void;
 	/** A thread's code from the clone, checked against GitHub's hunk. */
 	code: (anchor: CodeAnchor, hunk: string) => Promise<CodeWindow | null>;
+	/**
+	 * Run once a post is cleared, before it goes to GitHub: a new thread is
+	 * a lasting action on the snapshot, so the session starts the patch set
+	 * when the snapshot is none yet (and refuses an earlier one, 409 stale).
+	 */
+	startPatchset?: () => Promise<void>;
 }
 
 type Json = Record<string, unknown>;
@@ -235,6 +241,9 @@ export async function startThread(
 		}
 	}
 	if (!record) {
+		// The patch set first, in its own transaction: the thread then lands
+		// on a started snapshot.
+		await target.startPatchset?.();
 		let posted: PostedComment;
 		try {
 			posted = await postThread(

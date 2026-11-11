@@ -2,7 +2,14 @@ import { createHash } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { ulid } from "ulid";
-import type { Snapshot, StateChange } from "../../shared/types.js";
+import { type LineRanges, parseRanges, size } from "../../shared/lineRanges.js";
+import { changeFor, fitRanges, sinceMarkKey } from "../../shared/pieces.js";
+import type {
+	Cluster,
+	SinceMark,
+	Snapshot,
+	StateChange,
+} from "../../shared/types.js";
 import { runGit } from "../git.js";
 import {
 	type CarriedEvent,
@@ -298,11 +305,18 @@ export class ReviewService {
 		checkReviewId(reviewId);
 		checkSlug(slug);
 		const pathOf = new Map<string, string>();
+		const clusterOf = new Map<string, Cluster>();
 		for (const file of snapshot.files) {
-			for (const c of file.clusters) pathOf.set(c.key, file.path);
+			for (const c of file.clusters) {
+				pathOf.set(c.key, file.path);
+				clusterOf.set(c.key, c);
+			}
 		}
+		// A mark on since-only pieces goes by its own key (sinceMarkKey).
+		const marks = changes.filter((c) => c.sinceMark !== undefined);
+		const clusterChanges = changes.filter((c) => c.sinceMark === undefined);
 		// Every refused change is named, not just the first.
-		const unknown = changes.filter((c) => !pathOf.has(c.key));
+		const unknown = clusterChanges.filter((c) => !pathOf.has(c.key));
 		const [firstUnknown] = unknown;
 		if (firstUnknown) {
 			throw new UnknownClusterError(
@@ -324,16 +338,65 @@ export class ReviewService {
 				invalid.map((c) => c.key),
 			);
 		}
-		const payloads = changes.map(({ key, state, reason }) => {
+		// Part of a cluster: only with unreviewed, and only lines it has
+		// (principle 2: a mark never reaches past what the reviewer marked).
+		const badLines = clusterChanges.filter((c) => {
+			if (c.reviewedLines === undefined && c.crossedLines === undefined) {
+				return false;
+			}
+			const cluster = clusterOf.get(c.key) as Cluster;
+			return (
+				c.state !== "unreviewed" ||
+				c.reason !== undefined ||
+				fitRanges(cluster, c.reviewedLines ?? []) === null ||
+				fitRanges(cluster, c.crossedLines ?? []) === null
+			);
+		});
+		const badMarks = marks.filter((c) => !sinceMarkOk(c));
+		const refused = [...badLines, ...badMarks];
+		const [firstBad] = refused;
+		if (firstBad) {
+			throw new InvalidChangeError(
+				refusedMessage(
+					`Lines past cluster ${firstBad.key}, or not a valid mark of part of it`,
+					refused.length,
+				),
+				refused.map((c) => c.key),
+			);
+		}
+		const payloads = clusterChanges.map((change) => {
+			const { key, state, reason } = change;
 			const path = pathOf.get(key) ?? "";
 			// The reason is optional; a blank one isn't stored.
 			const trimmed = state === "crossed-off" ? reason?.trim() : undefined;
+			const cluster = clusterOf.get(key) as Cluster;
+			const parted =
+				change.reviewedLines !== undefined || change.crossedLines !== undefined;
+			// A whole mark when one covers every line, or none is marked.
+			const normal = parted
+				? changeFor(
+						cluster,
+						change.reviewedLines ?? [],
+						change.crossedLines ?? [],
+					)
+				: change;
+			const lines =
+				normal.reviewedLines || normal.crossedLines
+					? {
+							reviewed: normal.reviewedLines ?? [],
+							crossed: normal.crossedLines ?? [],
+						}
+					: null;
 			return {
-				patchset: snapshot.revision,
-				cluster: key,
-				path,
-				state,
-				...(trimmed ? { reason: trimmed } : {}),
+				cluster,
+				lines,
+				payload: {
+					patchset: snapshot.revision,
+					cluster: key,
+					path,
+					state: normal.state,
+					...(trimmed && !parted ? { reason: trimmed } : {}),
+				},
 			};
 		});
 
@@ -343,8 +406,27 @@ export class ReviewService {
 		const known = progress.patchsets.some(
 			(p) => p.revision === snapshot.revision,
 		);
+		// A since mark names an earlier patch set of the reviewer's.
+		const earlier = new Set(
+			progress.patchsets
+				.filter((p) => p.revision !== snapshot.revision)
+				.map((p) => p.number),
+		);
+		const stale = marks.filter(
+			(c) => !earlier.has((c.sinceMark as SinceMark).since),
+		);
+		const [firstStale] = stale;
+		if (firstStale) {
+			throw new InvalidChangeError(
+				refusedMessage(
+					`No earlier patch set ${firstStale.sinceMark?.since}`,
+					stale.length,
+				),
+				stale.map((c) => c.key),
+			);
+		}
 		if (known) checkWritable(progress, snapshot);
-		else if (payloads.length > 0) {
+		else if (changes.length > 0) {
 			// PS1 needs no start; a later one does (else the tab is stale).
 			const how = start ?? (progress.patchset ? null : FIRST_START);
 			if (!how) checkWritable(progress, snapshot);
@@ -357,17 +439,76 @@ export class ReviewService {
 		}
 		const stamp = stamper(existing);
 
-		for (const payload of payloads) {
-			const event: ClusterStateEvent = newEvent(
-				"cluster-state",
+		for (const { cluster, lines, payload } of payloads) {
+			if (lines === null) {
+				const event: ClusterStateEvent = newEvent(
+					"cluster-state",
+					slug,
+					payload,
+					"human",
+					stamp(),
+				);
+				await this.store.appendEvent(
+					ref,
+					`crb: ${VERBS[event.state]} 1 cluster in ${event.path}`,
+					event,
+					slug,
+				);
+				continue;
+			}
+			// Part of it: the whole cluster unreviewed, then its marked lines,
+			// in one commit (a reader that predates lines-state sees it
+			// unreviewed, never more reviewed than the reviewer marked).
+			const { patchset, path } = payload;
+			const events: CrbEvent[] = [
+				newEvent(
+					"cluster-state",
+					slug,
+					{ patchset, cluster: cluster.key, path, state: "unreviewed" },
+					"human",
+					stamp(),
+				),
+			];
+			for (const [state, ranges] of [
+				["reviewed", lines.reviewed],
+				["crossed-off", lines.crossed],
+			] as const) {
+				if (ranges.length === 0) continue;
+				events.push(
+					newEvent(
+						"lines-state",
+						slug,
+						{ patchset, cluster: cluster.key, path, state, lines: ranges },
+						"human",
+						stamp(),
+					),
+				);
+			}
+			await this.store.appendEvents(
+				ref,
+				`crb: marked ${size(lines.reviewed) + size(lines.crossed)} of ${cluster.lines} lines of 1 cluster in ${path}`,
+				events,
 				slug,
-				payload,
+			);
+		}
+		for (const change of marks) {
+			const mark = change.sinceMark as SinceMark;
+			const event = newEvent(
+				"since-lines-state",
+				slug,
+				{
+					patchset: snapshot.revision,
+					since: mark.since,
+					path: mark.path,
+					reviewed: sides(mark.reviewed),
+					crossed: sides(mark.crossed),
+				},
 				"human",
 				stamp(),
 			);
 			await this.store.appendEvent(
 				ref,
-				`crb: ${VERBS[event.state]} 1 cluster in ${event.path}`,
+				`crb: marked pieces since PS${mark.since} in ${mark.path}`,
 				event,
 				slug,
 			);
@@ -508,6 +649,41 @@ export class ReviewService {
  * everything already stored, so a backward clock step can't put a reset
  * before the state it undoes.
  */
+/** Normalized `{ old, new }` ranges (checked by sinceMarkOk). */
+const sides = (s: { old: LineRanges; new: LineRanges }) => ({
+	old: parseRanges(s.old) ?? [],
+	new: parseRanges(s.new) ?? [],
+});
+
+/** Longest path a since mark may name. */
+const MAX_PATH = 4096;
+
+/**
+ * A since mark as the store can take it: its key its own, a positive
+ * patch set number, a path of printable characters, and ranges.
+ */
+function sinceMarkOk(change: StateChange): boolean {
+	const mark = change.sinceMark;
+	if (!mark || change.reviewedLines || change.crossedLines) return false;
+	const { since, path } = mark;
+	return (
+		Number.isSafeInteger(since) &&
+		since > 0 &&
+		typeof path === "string" &&
+		path.length > 0 &&
+		path.length <= MAX_PATH &&
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: refusing them.
+		!/[\u0000-\u001f\u007f]/.test(path) &&
+		change.key === sinceMarkKey(since, path) &&
+		[
+			mark.reviewed?.old,
+			mark.reviewed?.new,
+			mark.crossed?.old,
+			mark.crossed?.new,
+		].every((r) => parseRanges(r) !== null)
+	);
+}
+
 function stamper(existing: CrbEvent[]): () => number {
 	// A loop, not Math.max(...): spreading ~100k events overflows the stack.
 	let lastTs = -1;

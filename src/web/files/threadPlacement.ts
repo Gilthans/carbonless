@@ -1,4 +1,7 @@
+import type { ThreadPlacement } from "../../shared/rereview/placement";
+import { createLineMapper } from "../../shared/tracer/lineMapper";
 import type {
+	Cluster,
 	DiffLine,
 	DiffSide,
 	DisplayHunk,
@@ -23,8 +26,11 @@ export interface GapTarget {
 /**
  * What placeThreads places: a review thread, or an agent thread seen the
  * same way (its path, the commit it was asked on, file or line, the range).
+ * `id` is a review thread's: the key of its traced placement (agent
+ * threads have none and are placed on the commit they were asked on).
  */
 export interface Placeable {
+	id?: string;
 	path: string;
 	commit: string;
 	subject: "line" | "file";
@@ -53,12 +59,115 @@ export interface FilePlacement<T extends Placeable = ReviewThread> {
 	gapTargets: Map<T, GapTarget>;
 	/** File comments ("file") and lines that couldn't be placed ("unplaced"). */
 	header: { thread: T; reason: "file" | "unplaced" }[];
+	/**
+	 * Threads the tracer couldn't place in this file, with their fate: the
+	 * list under the file's header.
+	 */
+	fates: {
+		thread: T;
+		placement: Extract<ThreadPlacement, { kind: "unplaced" }>;
+	}[];
+}
+
+/** Each unresolved thread's place in the viewed snapshot, by thread id (GET /placements). */
+export type Placements = ReadonlyMap<string, ThreadPlacement>;
+
+/** Re-anchored copies, one per thread and placement (stable identities). */
+const shownCopies = new WeakMap<
+	ReviewThread,
+	WeakMap<ThreadPlacement, ReviewThread>
+>();
+
+/**
+ * A thread as Files changed shows it in the viewed snapshot (its head
+ * `snapshotHead`): a placed or changed one on its new lines (and path), a
+ * file comment on its file's path now, an unplaced one under its file's
+ * path, each as if made on the viewed head; its code pane stays its own.
+ * One with no placement (resolved, id-less, or the placements not in yet)
+ * shows only where it was made, when that is the viewed head. Null: not
+ * in this snapshot's files (outside the comparison, or another head's).
+ */
+export function shownThread(
+	t: ReviewThread,
+	snapshotHead: string,
+	placements: Placements | null,
+): ReviewThread | null {
+	const p = placements?.get(t.id);
+	if (!p) return t.commit !== "" && t.commit === snapshotHead ? t : null;
+	if (p.kind === "outside") return null;
+	let copies = shownCopies.get(t);
+	if (!copies) {
+		copies = new WeakMap();
+		shownCopies.set(t, copies);
+	}
+	const known = copies.get(p);
+	if (known && known.commit === snapshotHead) return known;
+	let shown: ReviewThread;
+	if (p.kind === "placed" || p.kind === "changed") {
+		const a = p.anchor;
+		// A rewritten line's columns no longer hold: whole lines.
+		const cols =
+			p.kind === "placed" && t.anchor
+				? {
+						startCol: t.anchor.startCol ?? null,
+						endCol: t.anchor.endCol ?? null,
+					}
+				: { startCol: null, endCol: null };
+		shown = {
+			...t,
+			path: a.path,
+			commit: snapshotHead,
+			subject: "line",
+			anchor: {
+				path: a.path,
+				commit: snapshotHead,
+				side: a.side,
+				line: a.line,
+				startSide: a.startSide,
+				startLine: a.startLine,
+				at: t.anchor?.at ?? t.createdAt,
+				...cols,
+			},
+		};
+	} else {
+		shown = { ...t, path: p.path, commit: snapshotHead };
+	}
+	copies.set(p, shown);
+	return shown;
+}
+
+/** Every thread Files changed shows in the viewed snapshot's files (shownThread). */
+export function shownThreads(
+	threads: readonly ReviewThread[],
+	snapshotHead: string,
+	placements: Placements | null,
+): ReviewThread[] {
+	return threads.flatMap((t) => {
+		const shown = shownThread(t, snapshotHead, placements);
+		return shown ? [shown] : [];
+	});
 }
 
 /**
- * The threads Files changed shows for the viewed head, in their order:
- * those whose opening comment was made on it. One on no known commit ("")
- * is on no head.
+ * The threads whose file is not in the comparison at all (the trailing
+ * "Not in this comparison" group), in the order given.
+ */
+export function outsideThreads(
+	threads: readonly ReviewThread[],
+	placements: Placements | null,
+): {
+	thread: ReviewThread;
+	placement: Extract<ThreadPlacement, { kind: "outside" }>;
+}[] {
+	return threads.flatMap((thread) => {
+		const placement = placements?.get(thread.id);
+		return placement?.kind === "outside" ? [{ thread, placement }] : [];
+	});
+}
+
+/**
+ * The threads made on the viewed head, in their order. One on no known
+ * commit ("") is on no head. Agent threads, never traced, show this way.
  */
 export function threadsOnHead<T extends Placeable>(
 	threads: T[],
@@ -157,12 +266,52 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
 }
 
 /**
- * Which threads belong to this file's viewed diff, and where. Threads on
- * other commits (or on none GitHub named) are left out. The one place that
- * decides where a thread shows in Files changed: threads from earlier
- * commits, and LEFT lines checked against the old side the commenter saw,
- * will change only this. Today LEFT lines are placed by their number alone,
- * like RIGHT ones.
+ * The since view's `leftToNew` for placeThreads: through the full diff's
+ * line clusters (base → head), the head line a base line became; null
+ * when the full diff deleted it.
+ */
+export function sinceLeftToNew(
+	clusters: readonly Pick<
+		Cluster,
+		"kind" | "oldStart" | "oldCount" | "newStart" | "newCount"
+	>[],
+): (n: number) => number | null {
+	const full = createLineMapper(clusters.filter((c) => c.kind === "lines"));
+	return (n) => full.oldToNew(n);
+}
+
+/**
+ * An anchor with its LEFT lines moved to the new side through `leftToNew`
+ * (the since view, placeThreads); null when its end line was deleted. A
+ * deleted start line starts the range at its end.
+ */
+function onNewSide<A extends SpanRange>(
+	anchor: A | null | undefined,
+	leftToNew: (n: number) => number | null,
+): A | null | undefined {
+	if (!anchor) return anchor;
+	const line = anchor.side === "LEFT" ? leftToNew(anchor.line) : anchor.line;
+	if (line === null) return null;
+	const start =
+		anchor.startSide === "LEFT"
+			? leftToNew(anchor.startLine)
+			: anchor.startLine;
+	return {
+		...anchor,
+		side: "RIGHT",
+		line,
+		startSide: "RIGHT",
+		startLine: start === null || start > line ? line : start,
+	};
+}
+
+/**
+ * Which threads belong to this file's viewed diff, and where: the one
+ * place that decides where a thread shows in Files changed. `threads` are
+ * shownThreads' (each on the viewed head, the tracer's placement applied:
+ * threads from earlier commits on their traced lines, LEFT lines checked
+ * against the old side the commenter saw); threads on other commits are
+ * left out. Those the tracer couldn't place go to `fates`.
  *
  * Every thread it keeps lands somewhere: on its last line's row, on the gap
  * hiding that line, or in the file's header (a file comment, or a line it
@@ -180,6 +329,16 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	noLines?: boolean;
 	/** More ranges to paint like a thread's (new threads being written). */
 	spans?: readonly SpanRange[];
+	/** Where the tracer put each thread (shownThreads applied them already). */
+	placements?: Placements | null;
+	/**
+	 * The since view: its old side is the compared patch set's, not the
+	 * base a LEFT anchor counts in. The head line base line `n` became in
+	 * the full diff (null: the full diff deleted it); a LEFT anchor is
+	 * placed there, on the new side, and one on a deleted line goes to the
+	 * header, never onto a row that merely shares its number.
+	 */
+	leftToNew?: (n: number) => number | null;
 }): FilePlacement<T> {
 	const placement: FilePlacement<T> = {
 		end: new Map(),
@@ -189,6 +348,7 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 		gaps: new Map(),
 		gapTargets: new Map(),
 		header: [],
+		fates: [],
 	};
 	const mine = fileThreads(args.threads, args.path, args.snapshotHead);
 	const spans = args.spans ?? [];
@@ -199,7 +359,9 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	rows.forEach((row, i) => {
 		for (const key of keysOf(row)) rowAt.set(key, i);
 	});
-	const gaps = hunks ? fileGaps(hunks.hunks, hunks.newLineCount) : [];
+	const gaps = hunks
+		? fileGaps(hunks.hunks, hunks.newLineCount, hunks.wholeGap)
+		: [];
 	const push = <K>(map: Map<K, T[]>, key: K, t: T) => {
 		const list = map.get(key);
 		if (list) list.push(t);
@@ -247,7 +409,19 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	}
 
 	for (const t of mine) {
-		const anchor = t.anchor;
+		const traced = t.id === undefined ? undefined : args.placements?.get(t.id);
+		if (traced?.kind === "unplaced") {
+			placement.fates.push({ thread: t, placement: traced });
+			continue;
+		}
+		const anchor = args.leftToNew
+			? onNewSide(t.anchor, args.leftToNew)
+			: t.anchor;
+		if (anchor === null && t.anchor) {
+			// A LEFT line the full diff deleted: no row of the since view is it.
+			placement.header.push({ thread: t, reason: "unplaced" });
+			continue;
+		}
 		if (!anchor) {
 			if (t.subject === "file") {
 				placement.header.push({ thread: t, reason: "file" });

@@ -22,6 +22,25 @@ import {
 	useState,
 } from "react";
 import type { AgentThread } from "../../shared/agent";
+import {
+	contains,
+	covers,
+	has,
+	type LineRanges,
+	size,
+	union,
+} from "../../shared/lineRanges";
+import {
+	crossedCount,
+	lineIndex,
+	marksOf as lineMarksOf,
+	partlyMarked,
+	pieceState,
+	reviewedCount,
+	type SincePiece,
+	sinceMarkKey,
+	sinceOnlyState,
+} from "../../shared/pieces";
 import type {
 	ClusterView,
 	DiffLine,
@@ -30,6 +49,7 @@ import type {
 	FileHunks,
 	FileView,
 	ReviewThread,
+	SinceMark,
 } from "../../shared/types";
 import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer } from "../agent/AgentComposer";
@@ -39,7 +59,11 @@ import {
 	type AgentComposerItem,
 	useAgentComposers,
 } from "../agent/askAgentAction";
-import { type AgentPlaceable, agentPlaceable } from "../agent/placeable";
+import {
+	type AgentPlaceable,
+	shownAgentPlaceables,
+	useAgentPlacing,
+} from "../agent/placeable";
 import { contextQuery, hunksQuery, overviewQuery, sessionQuery } from "../api";
 import {
 	CodeLine,
@@ -50,7 +74,12 @@ import {
 } from "../code/Invisibles";
 import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
 import { Spinner } from "../Spinner";
-import { clickPointer, isTap, Tooltip } from "../Tooltip";
+import {
+	clickPointer,
+	isTap,
+	Tooltip,
+	type TooltipTriggerProps,
+} from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
 import { type LineTexts, useDrafts } from "../threads/drafts";
 import { NewThread, quoteOf } from "../threads/NewThread";
@@ -67,12 +96,12 @@ import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
-import { contextRanges } from "./contextRanges";
-import { findBarElement } from "./find/hitSeen";
+import { contextRanges, rangesKeyOf } from "./contextRanges";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
+import { KindChip } from "./KindChip";
 import type { Landing } from "./landing";
 import {
 	getPicks,
@@ -83,8 +112,11 @@ import {
 	setPicks,
 	usePicks,
 } from "./linePicks";
+import { type ResolveCollapse, useResolveCollapse } from "./resolveCollapse";
+import { stickyBottom } from "./scrollAnchor";
 import { type CodeSpan, describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
+import type { KindEntry } from "./since";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
 import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
 import {
@@ -97,7 +129,9 @@ import {
 	type FilePlacement,
 	type LineKey,
 	lineKey,
+	type Placements,
 	placeThreads,
+	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
 import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
@@ -107,8 +141,13 @@ import { hunkWordMarks } from "./wordBlocks";
 export interface DiffThreads {
 	readId: string;
 	snapshotHead: string;
-	/** The PR's threads; placeThreads picks this file's. */
+	/**
+	 * The threads shown in the viewed snapshot (shownThreads: each on the
+	 * viewed head, where the tracer put it); placeThreads picks this file's.
+	 */
 	threads: ReviewThread[];
+	/** The tracer's placements by thread id; null (or none) until they are in. */
+	placements?: Placements | null;
 }
 
 /** The find's view of this file (FilesPage): marks per line, the current hit, and steps onto it. */
@@ -231,6 +270,8 @@ interface RowThreads {
 	/** A row whose bubble takes focus once it shows (a gap thread opened). */
 	focus: LineKey | null;
 	onFocused: () => void;
+	/** Resolve closes a thread to its bubble (resolveCollapse.ts). */
+	collapse: ResolveCollapse<LineKey>;
 }
 
 /**
@@ -389,6 +430,63 @@ const RAIL: Record<ClusterView["state"], string> = {
 	"crossed-off": "hatch",
 };
 
+/** What a piece's controls do (the since view): its own mark, not its cluster's. */
+interface Marker {
+	toggle: () => void;
+	crossOff: () => void;
+}
+
+/** A piece shown as a cluster of its own: reviewed or crossed off when every line it owns is. */
+function pieceView(whole: ClusterView, piece: LineRanges): ClusterView {
+	const { reviewedLines: _, crossedLines: __, reason: ___, ...rest } = whole;
+	return { ...rest, state: pieceState(whole, piece) };
+}
+
+/** A line of a cluster marked one piece at a time: its own mark. */
+function lineReviewedState(
+	cluster: ClusterView,
+	line: DiffLine,
+): ClusterView["state"] {
+	const i = lineIndex(cluster, line);
+	if (i === undefined) return cluster.state;
+	const { reviewed, crossed } = lineMarksOf(cluster);
+	return has(reviewed, i)
+		? "reviewed"
+		: has(crossed, i)
+			? "crossed-off"
+			: "unreviewed";
+}
+
+/** A row's state from its lines' (reviewed only when every line on it is). */
+function combined(
+	lines: (DiffLine | undefined)[],
+	lineState: (line: DiffLine | undefined) => ClusterView["state"] | undefined,
+	state: ClusterView["state"] | undefined,
+): ClusterView["state"] | undefined {
+	const states = lines.filter((l) => l !== undefined).map(lineState);
+	const [first] = states;
+	if (first === undefined) return state;
+	return states.every((s) => s === first) ? first : "unreviewed";
+}
+
+const rowState = (
+	r: DiffRow,
+	lineState: (line: DiffLine | undefined) => ClusterView["state"] | undefined,
+	state: ClusterView["state"] | undefined,
+) =>
+	r.kind === "line"
+		? lineState(r.line)
+		: combined([r.del, r.add], lineState, state);
+
+const pairState = (
+	r: SideRow,
+	lineState: (line: DiffLine | undefined) => ClusterView["state"] | undefined,
+	state: ClusterView["state"] | undefined,
+) =>
+	r.kind === "context"
+		? lineState(r.line)
+		: combined([r.del, r.add], lineState, state);
+
 /**
  * A reviewed cluster's lines settle down: their added/deleted tint fades to
  * a quieter one, the text keeping full contrast (the green rail and checked
@@ -435,11 +533,23 @@ const SIGN: Record<RowLine["kind"], string> = {
 
 const NO_NEWLINE = "\\ No newline at end of file";
 
-/** The left rail: cluster state, the accent while the cluster has focus or the pointer. */
-function Rail({ state }: { state?: ClusterView["state"] }) {
-	const color = state
-		? `${RAIL[state]} group-hover:bg-accent group-hover:bg-none group-focus-within:bg-accent group-focus-within:bg-none`
-		: "";
+/**
+ * The left rail: cluster state, the accent while the cluster has focus or
+ * the pointer; red for a gone cluster (the compared patch set's, not in
+ * this snapshot).
+ */
+function Rail({
+	state,
+	gone,
+}: {
+	state?: ClusterView["state"];
+	gone?: boolean;
+}) {
+	const color = gone
+		? "bg-bad"
+		: state
+			? `${RAIL[state]} group-hover:bg-accent group-hover:bg-none group-focus-within:bg-accent group-focus-within:bg-none`
+			: "";
 	return <td aria-hidden className={`w-1 min-w-1 p-0 ${color}`} />;
 }
 
@@ -812,6 +922,8 @@ interface RowProps {
 	lang: string | null;
 	tabWidth?: number;
 	state?: ClusterView["state"];
+	/** The run is a gone cluster's lines (since view): red rail, no controls. */
+	gone?: boolean;
 	checkbox?: ReactNode;
 	landed: Landed | null;
 	threads?: RowThreads;
@@ -865,7 +977,13 @@ function wordsOf(
  * both sides' composers share one.
  */
 function RowTail(props: {
-	opened: { endKey: LineKey; ending: ReviewThread[]; side: DiffSide }[];
+	opened: {
+		endKey: LineKey;
+		/** The bubble's keys: what closes it. */
+		keys: LineKey[];
+		ending: ReviewThread[];
+		side: DiffSide;
+	}[];
 	composing: { side: DiffSide; items: NewThreadItem[] }[];
 	threads?: RowThreads;
 	composers?: RowComposers;
@@ -900,16 +1018,28 @@ function RowTail(props: {
 	return (
 		<>
 			{threads &&
-				props.opened.map((cell) => (
-					<ThreadRow
-						key={cell.endKey}
-						id={threads.idOf(cell.endKey)}
-						readId={threads.readId}
-						threads={cell.ending}
-						place={place(cell.side)}
-						rail={rail}
-					/>
-				))}
+				props.opened.map((cell) => {
+					const shown = cell.ending.filter(threads.collapse.shows);
+					return (
+						<ThreadRow
+							key={cell.endKey}
+							id={threads.idOf(cell.endKey)}
+							readId={threads.readId}
+							threads={shown}
+							place={place(cell.side)}
+							rail={rail}
+							onResolved={(t, from) =>
+								threads.collapse.resolved({
+									key: cell.endKey,
+									keys: cell.keys,
+									thread: t,
+									shown,
+									from,
+								})
+							}
+						/>
+					);
+				})}
 			{composers &&
 				composing
 					.filter(({ items }) => items.length > 0)
@@ -1062,7 +1192,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-find-current={current || undefined}
 				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""} ${current ? "mark-tint" : ""}`}
 			>
-				<Rail state={state} />
+				<Rail state={state} gone={props.gone} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
 				<NumberCell
 					side="LEFT"
@@ -1108,7 +1238,9 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 			</tr>
 			{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
 			<RowTail
-				opened={open && endKey ? [{ endKey, ending, side: cell.side }] : []}
+				opened={
+					open && endKey ? [{ endKey, keys, ending, side: cell.side }] : []
+				}
 				composing={[{ side: cell.side, items: composing }]}
 				threads={threads}
 				composers={props.composers}
@@ -1389,7 +1521,7 @@ function PairRow(
 				data-picked={isPicked || undefined}
 				className={phase ? LANDED_ROW[phase] : ""}
 			>
-				<Rail state={state} />
+				<Rail state={state} gone={props.gone} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
 				{cells("LEFT", left)}
 				{cells("RIGHT", right)}
@@ -1409,7 +1541,14 @@ function PairRow(
 			<RowTail
 				opened={sides.flatMap(([side, cell]) =>
 					cell?.open && cell.endKey
-						? [{ endKey: cell.endKey, ending: cell.ending, side }]
+						? [
+								{
+									endKey: cell.endKey,
+									keys: cell.shared?.keys ?? cell.keys,
+									ending: cell.ending,
+									side,
+								},
+							]
 						: [],
 				)}
 				composing={sides.map(([side, cell]) => ({
@@ -1488,13 +1627,44 @@ function ClusterControls(props: {
 	noteId?: string;
 	onToggle: (cluster: ClusterView) => void;
 	onCrossOff: (cluster: ClusterView) => void;
+	/** An earlier patch set, as reviewed: the marks are locked. */
+	readOnly?: boolean;
 }) {
 	const crossedOff = props.cluster.state === "crossed-off";
+	// Marked one piece at a time, not all of it: a dash; a click reviews
+	// the whole cluster.
+	const partly = partlyMarked(props.cluster);
+	const reviewed = props.cluster.state === "reviewed";
+	const readOnly = props.readOnly === true;
 	// On touch each control gets its own 40×40 target, side by side so a
 	// mis-tap can't reach the other one; the negative margins keep the row
 	// height. With a mouse they stay compact.
 	const target =
 		"flex items-center justify-center pointer-coarse:-my-2.5 pointer-coarse:h-10 pointer-coarse:w-10";
+	const box = (trigger: Partial<TooltipTriggerProps> = {}) => (
+		<label
+			{...trigger}
+			data-testid="cluster-box-target"
+			className={`${target} ${readOnly ? "cursor-not-allowed" : "cursor-pointer"}`}
+		>
+			<input
+				type="checkbox"
+				aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
+				aria-describedby={crossedOff ? props.noteId : undefined}
+				aria-checked={partly ? "mixed" : undefined}
+				data-partly={partly || undefined}
+				ref={(el) => {
+					if (el) el.indeterminate = crossedOff || partly;
+				}}
+				checked={props.cluster.state === "reviewed"}
+				disabled={readOnly}
+				onChange={() => props.onToggle(props.cluster)}
+				className={`h-3.5 w-3.5 cursor-pointer disabled:cursor-not-allowed ${
+					crossedOff ? "accent-crossed" : "accent-ok-fill"
+				}`}
+			/>
+		</label>
+	);
 	return (
 		// The slot keeps its size while the controls float (stickyControls.ts).
 		<span {...{ [SLOT]: "" }} className="block">
@@ -1502,53 +1672,129 @@ function ClusterControls(props: {
 				{...{ [CONTROLS]: "" }}
 				className="z-[5] flex w-fit items-center gap-1 rounded-md pointer-coarse:gap-0 data-[stuck]:bg-raised data-[stuck]:shadow-control data-[stuck]:ring-1 data-[stuck]:ring-line-strong"
 			>
-				<label
-					data-testid="cluster-box-target"
-					className={`${target} cursor-pointer`}
-				>
-					<input
-						type="checkbox"
-						aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
-						aria-describedby={crossedOff ? props.noteId : undefined}
-						ref={(box) => {
-							if (box) box.indeterminate = crossedOff;
-						}}
-						checked={props.cluster.state === "reviewed"}
-						onChange={() => props.onToggle(props.cluster)}
-						className={`h-3.5 w-3.5 cursor-pointer ${
-							crossedOff ? "accent-crossed" : "accent-ok-fill"
-						}`}
-					/>
-				</label>
+				{readOnly ? (
+					<Tooltip content={READ_ONLY_TIP} describe={false} lazy>
+						{(trigger) => box(trigger)}
+					</Tooltip>
+				) : partly ? (
+					<Tooltip content={partlyTip(props.cluster)} lazy>
+						{(trigger) => box(trigger)}
+					</Tooltip>
+				) : (
+					box()
+				)}
 				<Tooltip
-					content={crossedOff ? "Undo cross-off" : "Cross off cluster"}
-					describe={false}
+					content={
+						readOnly
+							? READ_ONLY_TIP
+							: crossedOff
+								? "Undo cross-off"
+								: reviewed
+									? UNTICK_TO_CROSS
+									: "Cross off cluster"
+					}
+					// Disabled, its reason is its description (its name says what it does).
+					describe={readOnly || reviewed}
 				>
-					{(trigger) => (
-						<button
-							type="button"
-							{...trigger}
-							aria-label="Cross off cluster"
-							aria-pressed={crossedOff}
-							disabled={props.cluster.state === "reviewed"}
-							onClick={() => props.onCrossOff(props.cluster)}
-							className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
+					{({ ref, onMouseEnter, onMouseLeave, ...trigger }) => (
+						// The wrapper takes the hover, so a disabled button still
+						// explains itself; focus (and so tap) goes to the button.
+						// biome-ignore lint/a11y/noStaticElementInteractions: hover only; the button inside is the control.
+						<span
+							ref={ref}
+							onMouseEnter={onMouseEnter}
+							onMouseLeave={onMouseLeave}
+							className="flex [&>button:disabled]:pointer-events-none"
 						>
-							<span
-								aria-hidden
-								className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
-									crossedOff
-										? "bg-crossed-strong text-ink"
-										: "text-done group-hover/x:bg-crossed/25"
-								}`}
+							<button
+								type="button"
+								{...trigger}
+								aria-label="Cross off cluster"
+								aria-pressed={crossedOff}
+								disabled={readOnly || reviewed}
+								onClick={() => props.onCrossOff(props.cluster)}
+								className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
 							>
-								⊘
-							</span>
-						</button>
+								<span
+									aria-hidden
+									className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
+										crossedOff
+											? "bg-crossed-strong text-ink"
+											: "text-done group-hover/x:bg-crossed/25"
+									}`}
+								>
+									⊘
+								</span>
+							</button>
+						</span>
 					)}
 				</Tooltip>
 			</span>
 		</span>
+	);
+}
+
+/** "Partly reviewed: 3 of 10 lines" (and how many are crossed off). */
+function partlyTip(cluster: ClusterView): string {
+	const crossed = crossedCount(cluster);
+	return `Partly reviewed: ${reviewedCount(cluster)} of ${cluster.lines} lines${
+		crossed > 0 ? `, ${crossed} crossed off` : ""
+	}`;
+}
+
+/** Why a reviewed cluster's cross-off is off (R21: untick it first). */
+export const UNTICK_TO_CROSS = "Reviewed: untick to cross off";
+
+/** Why a mark can't change on an earlier patch set. */
+export const READ_ONLY_TIP = "Read-only: an earlier patch set, as reviewed";
+
+/**
+ * A row above a cluster's lines saying what happened to it since the
+ * compared patch set (KindChip): reworked, new, gone, or carried.
+ */
+function KindRow(props: {
+	columns: number;
+	state?: ClusterView["state"];
+	gone?: boolean;
+	entry?: KindEntry;
+	carried?: ClusterView["carried"];
+	/** A piece that owns no line of this snapshot: reverted, or removed. */
+	sinceOnly?: "reverted" | "removed";
+	from?: number;
+}) {
+	const kind =
+		props.entry?.kind === "gone"
+			? "gone"
+			: props.entry?.kind === "reworked" || props.entry?.kind === "new"
+				? props.entry.kind
+				: props.carried
+					? "carried"
+					: null;
+	if (!kind && !props.sinceOnly) return null;
+	return (
+		<tr
+			data-testid="cluster-kind"
+			data-kind={kind ?? props.sinceOnly}
+			className="bg-band"
+		>
+			<Rail state={props.state} gone={props.gone} />
+			<td colSpan={props.columns - 1} className="px-2 py-0.5">
+				<span className="flex items-center gap-1">
+					{kind && (
+						<KindChip
+							kind={kind}
+							from={
+								kind === "carried" ? props.carried?.from : props.entry?.from
+							}
+							rule={props.carried?.rule}
+						/>
+					)}
+					{props.sinceOnly && (
+						<KindChip kind={props.sinceOnly} from={props.from} />
+					)}
+				</span>
+			</td>
+		</tr>
 	);
 }
 
@@ -1740,8 +1986,13 @@ const hunkHeader = (h: DisplayHunk) =>
 export function DiffBody(props: {
 	file: FileView;
 	revision: string;
-	onToggle: (cluster: ClusterView) => void;
-	onCrossOff: (cluster: ClusterView) => void;
+	/** A cluster's checkbox; in the since view, one piece of it (`piece`, pieces.ts). */
+	onToggle: (cluster: ClusterView, piece?: LineRanges) => void;
+	onCrossOff: (cluster: ClusterView, piece?: LineRanges) => void;
+	/** The since view: a piece that owns no line of this snapshot ticked (or `cross`ed off). */
+	onSinceMark?: (piece: SincePiece, cross: boolean) => void;
+	/** The patch set's marks on such pieces (ReviewView.sinceMarks). */
+	sinceMarks?: SinceMark[];
 	landing?: Landing;
 	/** Review threads to place on the lines (annotations only: they change no review state). */
 	threads?: DiffThreads;
@@ -1749,11 +2000,58 @@ export function DiffBody(props: {
 	headSure?: boolean;
 	/** The file's bubble and its threads' row (FileDiff). */
 	lead?: FileLead;
+	/**
+	 * The since view: the interdiff from patch set `from` (hunksQuery), with
+	 * `kinds` saying what happened to each cluster (a gone key is the
+	 * compared patch set's: red, not markable).
+	 */
+	from?: number;
+	kinds?: Map<string, KindEntry>;
+	/** An earlier patch set, as reviewed: the marks are locked. */
+	readOnly?: boolean;
 	/** The find's hits in this file and its current one (FilesPage). */
 	find?: DiffFind;
 }) {
 	const { file, revision, find } = props;
-	const hunks = useQuery(hunksQuery(revision, file.index));
+	const hunks = useQuery(hunksQuery(revision, file.index, props.from));
+	// The since view: unreviewed clusters the engine lists as reworked or
+	// new whose lines these hunks don't show (gap 5: unreviewed on the
+	// compared patch set, unchanged since), and the carried count.
+	const unshownToRead = useMemo(() => {
+		if (props.from === undefined || !props.kinds || !hunks.data) return 0;
+		// A cluster's lines the pieces here can mark (they own them).
+		const owned = new Map<string, LineRanges>();
+		const shownKeys = new Set<string>();
+		for (const hunk of hunks.data.hunks) {
+			for (const line of hunk.lines) {
+				if (line.clusterKey !== undefined) shownKeys.add(line.clusterKey);
+			}
+		}
+		for (const p of hunks.data.pieces ?? []) {
+			if (p.key && p.owns) {
+				owned.set(p.key, [...(owned.get(p.key) ?? []), ...p.owns]);
+			}
+		}
+		return file.clusters.filter((c) => {
+			// As the counts do (sinceUnits): a reworked or new cluster, or one
+			// whose carried mark the reviewer replaced.
+			const kind = props.kinds?.get(c.key)?.kind;
+			if (kind !== "reworked" && kind !== "new" && c.carried) return false;
+			if (c.state !== "unreviewed") return false;
+			if (!shownKeys.has(c.key)) return true;
+			// Its pieces all marked, it still has lines no piece owns (not
+			// unchanged since a reviewed line): those are the full diff's.
+			const pieces = hunks.data?.pieces;
+			if (!pieces) return false;
+			const own = owned.get(c.key) ?? [];
+			const { reviewed, crossed } = lineMarksOf(c);
+			return (
+				contains(union(reviewed, crossed), own) &&
+				!covers(union(own, []), c.lines)
+			);
+		}).length;
+	}, [props.from, props.kinds, hunks.data, file.clusters]);
+	const carriedHere = file.clusters.filter((c) => c.carried).length;
 	const ignoreWs = ignoreWhitespace.use();
 	const view: View = sideBySide.use() ? "side-by-side" : "unified";
 	const wide = useMedia(NOT_PHONE);
@@ -1764,14 +2062,67 @@ export function DiffBody(props: {
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
 	const centred = view === "unified";
-	const ranges = contextRanges.use(revision, file.index);
+	// The since view's expanded context is its own (the interdiff's gaps,
+	// not the full diff's): kept apart from the full diff's; the search
+	// reads the comparison's own.
+	const rangesKey = rangesKeyOf(revision, props.from);
+	const ranges = contextRanges.use(rangesKey, file.index);
 	const contexts = useQueries({
 		queries: ranges.map(([from, to]) =>
-			contextQuery(revision, file.index, from, to),
+			contextQuery(revision, file.index, from, to, props.from),
 		),
 	});
 	const lang = languageFor(file.path);
 	const clusters = new Map(file.clusters.map((c) => [c.key, c]));
+	// The since view: every run of changed lines is a piece (pieces.ts,
+	// the engine's), marked on its own, by the run's first line.
+	const pieces = useMemo(() => {
+		if (props.from === undefined || !hunks.data?.pieces) return null;
+		const { hunks: list, pieces: all } = hunks.data;
+		const out = new Map<DiffLine, SincePiece>();
+		for (const piece of all) {
+			const first = list[piece.hunk]?.lines[piece.line];
+			if (first) out.set(first, piece);
+		}
+		return out;
+	}, [props.from, hunks.data]);
+	/** A piece as a cluster of its own, and what its controls do. */
+	const markOf = (
+		piece: SincePiece,
+	): { cluster: ClusterView; marker: Marker } | undefined => {
+		const { owns } = piece;
+		if (owns) {
+			const whole = piece.key ? clusters.get(piece.key) : undefined;
+			if (!whole) return undefined;
+			return {
+				cluster: pieceView(whole, owns),
+				marker: {
+					toggle: () => props.onToggle(whole, owns),
+					crossOff: () => props.onCrossOff(whole, owns),
+				},
+			};
+		}
+		if (props.from === undefined) return undefined;
+		const since = props.from;
+		return {
+			cluster: {
+				key: `${sinceMarkKey(since, file.path)}:${piece.hunk}:${piece.line}`,
+				kind: "lines",
+				oldStart: 0,
+				oldCount: 0,
+				newStart: 0,
+				newCount: 0,
+				removed: [],
+				added: [],
+				lines: size(piece.old) + size(piece.new),
+				state: sinceOnlyState(props.sinceMarks, since, file.path, piece),
+			},
+			marker: {
+				toggle: () => props.onSinceMark?.(piece, false),
+				crossOff: () => props.onSinceMark?.(piece, true),
+			},
+		};
+	};
 	const idBase = useId();
 	const noteIds = new Map(
 		file.clusters.map((c, i) => [c.key, `${idBase}-note-${i}`]),
@@ -1822,10 +2173,10 @@ export function DiffBody(props: {
 		}
 	}
 	const gaps = hunks.data
-		? fileGaps(hunks.data.hunks, hunks.data.newLineCount)
+		? fileGaps(hunks.data.hunks, hunks.data.newLineCount, hunks.data.wholeGap)
 		: [];
 	const addRange = (from: number, to: number) =>
-		contextRanges.add(revision, file.index, from, to);
+		contextRanges.add(rangesKey, file.index, from, to);
 
 	// New threads being written on this file's lines, on the viewed head;
 	// those on another head are orphans (their lines are gone).
@@ -1851,12 +2202,19 @@ export function DiffBody(props: {
 	// FilesPage reads them (and the tree counts them); here, from the cache.
 	const agentThreads = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
-	const agentPlaceables = useMemo(
-		() => (agentThreads ?? []).map(agentPlaceable),
-		[agentThreads],
-	);
 	const agentComposerList = useAgentComposers();
 	const agentHeadNow = snapshotHead ?? sessionHead;
+	// Each where the tracer put it in the viewed head (or where it was asked).
+	const agentPlacing = useAgentPlacing();
+	const agentPlaceables = useMemo(
+		() =>
+			shownAgentPlaceables(
+				agentThreads ?? [],
+				agentHeadNow ?? "",
+				agentPlacing,
+			),
+		[agentThreads, agentHeadNow, agentPlacing],
+	);
 	const agentMine = agentComposerList.filter(
 		(c) => c.span.path === file.path && c.span.subject === "line",
 	);
@@ -1867,6 +2225,14 @@ export function DiffBody(props: {
 		? agentMine.filter((c) => c.span.commit !== agentHeadNow)
 		: [];
 
+	// The since view numbers its old side in the compared patch set; a
+	// LEFT anchor counts in the base, so it goes through the full diff
+	// (its clusters) to the head line it became (threadPlacement.ts).
+	const leftToNew = useMemo(
+		() =>
+			props.from === undefined ? undefined : sinceLeftToNew(file.clusters),
+		[props.from, file.clusters],
+	);
 	// Where the file's threads sit (all start closed). Opening one only
 	// shows it: no review state changes.
 	const placement = props.threads
@@ -1878,6 +2244,8 @@ export function DiffBody(props: {
 				loadedContext: [...loaded.values()],
 				noLines: file.binary || file.submodule,
 				spans: lineItems.map((i) => i.span as SpanRange),
+				placements: props.threads.placements,
+				leftToNew,
 			})
 		: null;
 	// Written on a row that isn't shown (a gap): above the diff, never lost.
@@ -1888,6 +2256,23 @@ export function DiffBody(props: {
 		() => new Set(),
 	);
 	const [focusThread, setFocusThread] = useState<LineKey | null>(null);
+	// Resolve closes the thread to its bubble (resolveCollapse.ts): under
+	// every key of its row, as the bubble closes it (a context line's is
+	// open under either side's).
+	const collapse = useResolveCollapse<LineKey>(props.threads?.threads, {
+		open: (key) => setOpenThreads((open) => new Set(open).add(key)),
+		close: (key, keys) =>
+			setOpenThreads((open) => {
+				const next = new Set(open);
+				for (const k of [key, ...keys]) next.delete(k);
+				return next;
+			}),
+		focus: setFocusThread,
+		element: (key) =>
+			scroller.current?.querySelector(
+				`[aria-controls="${CSS.escape(`${idBase}-thread-${key}`)}"]`,
+			) ?? null,
+	});
 	// A gap's window that failed drops its focus target, so a later Retry
 	// doesn't take focus from wherever the reader is by then.
 	const windowFailed = contexts.some((c) => c.isError);
@@ -1896,6 +2281,8 @@ export function DiffBody(props: {
 	}, [windowFailed]);
 	const toggleThreads = (key: LineKey, keys: LineKey[]) => {
 		setFocusThread(null);
+		for (const k of keys) collapse.toggled(k);
+		collapse.toggled(key);
 		setOpenThreads((open) => {
 			const next = new Set(open);
 			if (keys.some((k) => next.has(k))) for (const k of keys) next.delete(k);
@@ -1989,6 +2376,7 @@ export function DiffBody(props: {
 					idOf: (key) => `${idBase}-thread-${key}`,
 					focus: focusThread,
 					onFocused: () => setFocusThread(null),
+					collapse,
 				}
 			: undefined;
 
@@ -2005,6 +2393,7 @@ export function DiffBody(props: {
 				loadedContext: [...loaded.values()],
 				noLines: file.binary || file.submodule,
 				spans: agentLineItems.map((c) => c.span as SpanRange),
+				leftToNew,
 			})
 		: null;
 	const [openAgent, setOpenAgent] = useState<ReadonlySet<LineKey>>(
@@ -2061,12 +2450,13 @@ export function DiffBody(props: {
 		}
 	}, [agentEnded]);
 
-	const checkbox = (cluster: ClusterView) => (
+	const checkbox = (cluster: ClusterView, marker?: Marker) => (
 		<ClusterControls
 			cluster={cluster}
 			noteId={noteId(cluster)}
-			onToggle={props.onToggle}
-			onCrossOff={props.onCrossOff}
+			onToggle={(c) => (marker ? marker.toggle() : props.onToggle(c))}
+			onCrossOff={(c) => (marker ? marker.crossOff() : props.onCrossOff(c))}
+			readOnly={props.readOnly}
 		/>
 	);
 
@@ -2191,7 +2581,15 @@ export function DiffBody(props: {
 			const failed = inRun.flatMap((r) =>
 				r.result?.isError ? [r.result] : [],
 			);
-			const pending = inRun.some((r) => r.result?.isPending);
+			// Answered, yet lines it asked for are still in this run (a run's
+			// lines are the unloaded ones): a failure too, never "N hidden
+			// lines" forever.
+			const short = inRun.flatMap((r) =>
+				r.result?.isSuccess && !r.result.isFetching ? [r.result] : [],
+			);
+			const pending = inRun.some(
+				(r) => r.result?.isPending || r.result?.isFetching,
+			);
 			const buttons =
 				remaining > 0 ? expansions(part, top, bottom, remaining) : [];
 			const runThreads = threadsOf.get(i) ?? [];
@@ -2200,6 +2598,7 @@ export function DiffBody(props: {
 				remaining === 0 &&
 				!pending &&
 				failed.length === 0 &&
+				short.length === 0 &&
 				runThreads.length === 0 &&
 				runAgent.length === 0
 			) {
@@ -2327,13 +2726,13 @@ export function DiffBody(props: {
 								)}
 							</BubbleSlot>
 						)}
-						{failed.length > 0 ? (
+						{failed.length > 0 || short.length > 0 ? (
 							<span role="alert" className="text-bad">
-								{failed[0]?.error?.message}{" "}
+								{failed[0]?.error?.message ?? "Lines didn't load"}{" "}
 								<button
 									type="button"
 									onClick={() => {
-										for (const f of failed) void f.refetch();
+										for (const f of [...failed, ...short]) void f.refetch();
 									}}
 									className="rounded border border-bad/60 px-1.5 text-xs hover:bg-bad/15 focus-visible:outline-2 focus-visible:outline-accent"
 								>
@@ -2412,9 +2811,13 @@ export function DiffBody(props: {
 				// Once per hunk: not here when its hidden-lines row has it.
 				heading={headedOnGap.has(index) ? undefined : hunk.heading}
 				clusters={clusters}
+				kinds={props.kinds}
 				lang={lang}
 				tabWidth={file.tabWidth}
 				checkbox={checkbox}
+				pieces={pieces}
+				markOf={markOf}
+				from={props.from}
 				noteId={noteId}
 				landed={landed}
 				landingLine={landingLine}
@@ -2525,6 +2928,32 @@ export function DiffBody(props: {
 					{tailRows}
 				</table>
 			</div>
+			{props.from !== undefined && hunks.data && unshownToRead > 0 && (
+				// Clusters the engine says are to read (reworked or new) with no
+				// line in these hunks (unreviewed on the compared patch set and
+				// unchanged since): never "nothing to read"; the full diff has them.
+				<p
+					data-testid="since-unshown"
+					className="flex min-h-10 items-center gap-2 px-3 text-xs text-warn"
+				>
+					{unshownToRead} to read · only in the full diff ·{" "}
+					<span className="text-muted">{carriedHere} carried</span>
+				</p>
+			)}
+			{props.from !== undefined &&
+				hunks.data &&
+				hunks.data.hunks.length === 0 &&
+				fileClusters.length === 0 &&
+				unshownToRead === 0 && (
+					// The since view of a file the author left alone: say so (never
+					// an empty table that reads as "nothing changed" by mistake).
+					<p
+						data-testid="since-empty"
+						className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
+					>
+						Nothing to read since PS{props.from} · {carriedHere} carried
+					</p>
+				)}
 			{hunks.isPending && (
 				// A screen tall while loading, so a file picked in the tree can
 				// scroll its header to the top before its lines arrive.
@@ -2757,16 +3186,7 @@ interface Hint {
  * itself should it reach lower.
  */
 function scrollUnderStack(root: HTMLElement, target: Element, margin: number) {
-	const header = root.closest("section")?.querySelector("header");
-	const vars = getComputedStyle(root);
-	const stack =
-		(Number.parseFloat(vars.getPropertyValue("--app-header")) || 0) +
-		(Number.parseFloat(vars.getPropertyValue("--files-bar")) || 0) +
-		(header?.offsetHeight ?? 0);
-	const sticky = Math.max(
-		stack,
-		findBarElement()?.getBoundingClientRect().bottom ?? 0,
-	);
+	const sticky = stickyBottom(root);
 	window.scrollTo({
 		top: target.getBoundingClientRect().top + window.scrollY - sticky - margin,
 	});
@@ -2855,18 +3275,41 @@ function useLanding(
 		scrollTo(row, 60);
 		const line = landing.line as number;
 		setLanded({ old, line, phase: "on" });
-		const fade = window.setTimeout(
-			() => setLanded({ old, line, phase: "fading" }),
-			LANDED_MS,
-		);
-		const end = window.setTimeout(() => setLanded(null), LANDED_MS + FADE_MS);
+		// The highlight's time counts from when the page is next idle: the
+		// line's first paint often comes with heavy work (the highlighter's
+		// first load), and a highlight that faded while the page was busy
+		// would never have been looked at.
+		let fade: number | undefined;
+		let end: number | undefined;
+		const start = () => {
+			fade = window.setTimeout(
+				() => setLanded({ old, line, phase: "fading" }),
+				LANDED_MS,
+			);
+			end = window.setTimeout(() => setLanded(null), LANDED_MS + FADE_MS);
+		};
+		const idle = whenIdle(start);
 		return () => {
+			idle();
 			window.clearTimeout(fade);
 			window.clearTimeout(end);
 			setLanded(null);
 		};
 	}, [root, landing, ready]);
 	return { hint, landed, pending };
+}
+
+/**
+ * Runs `fn` when the main thread is next idle (a timeout where the browser
+ * has no idle callbacks); returns its cancel.
+ */
+function whenIdle(fn: () => void): () => void {
+	if (typeof window.requestIdleCallback === "function") {
+		const id = window.requestIdleCallback(fn, { timeout: 5000 });
+		return () => window.cancelIdleCallback(id);
+	}
+	const id = window.setTimeout(fn, 0);
+	return () => window.clearTimeout(id);
 }
 
 function LandingHint({ hint }: { hint: Hint }) {
@@ -2895,9 +3338,18 @@ function HunkRows(props: {
 	/** The heading on its @@ row (none when the row above has it). */
 	heading?: string;
 	clusters: Map<string, ClusterView>;
+	/** The since view: what happened to each cluster (DiffBody `kinds`). */
+	kinds?: Map<string, KindEntry>;
 	lang: string | null;
 	tabWidth?: number;
-	checkbox: (cluster: ClusterView) => ReactNode;
+	checkbox: (cluster: ClusterView, marker?: Marker) => ReactNode;
+	/** The since view's pieces, by their run's first line; null in the full diff. */
+	pieces?: ReadonlyMap<DiffLine, SincePiece> | null;
+	markOf?: (
+		piece: SincePiece,
+	) => { cluster: ClusterView; marker: Marker } | undefined;
+	/** The since view's compared patch set. */
+	from?: number;
 	noteId: (cluster: ClusterView) => string | undefined;
 	landed: Landed | null;
 	landingLine: LineRef | null;
@@ -2980,17 +3432,59 @@ function HunkRows(props: {
 			{hunkRuns.map((run) => {
 				const first = run.lines[0];
 				const runKey = `${run.key ?? ""}:${first?.oldNo}:${first?.newNo}`;
-				const cluster =
+				const whole =
 					run.key === undefined ? undefined : props.clusters.get(run.key);
+				// The since view: every piece is marked as a cluster of its own,
+				// one that owns no line of this snapshot on its own lines.
+				const piece =
+					props.pieces && first ? props.pieces.get(first) : undefined;
+				const marked = piece ? props.markOf?.(piece) : undefined;
+				const marker = marked?.marker;
+				const cluster: ClusterView | undefined = props.pieces
+					? marked?.cluster
+					: whole;
+				const entry =
+					run.key === undefined ? undefined : props.kinds?.get(run.key);
+				// Its chip: reverted or removed (a piece of its own, or a cluster's
+				// piece of removals only).
+				const sinceOnly = piece?.kind;
 				// A cluster the review doesn't list still shows as unreviewed.
-				const state =
-					run.key === undefined ? undefined : (cluster?.state ?? "unreviewed");
+				const state = cluster
+					? cluster.state
+					: run.key === undefined
+						? undefined
+						: "unreviewed";
+				// A gone cluster's lines (the compared patch set's): red until marked.
+				const gone = entry?.kind === "gone" && state === "unreviewed";
+				// Marked one piece at a time (full diff): each line its own state.
+				const lineState = (line: DiffLine | undefined) =>
+					cluster &&
+					!props.pieces &&
+					line &&
+					(cluster.reviewedLines || cluster.crossedLines)
+						? lineReviewedState(cluster, line)
+						: state;
+				const kindRow = (
+					<KindRow
+						columns={columns}
+						state={state}
+						gone={gone}
+						// A piece of its own isn't its neighbour's: only gone says where it came from.
+						entry={
+							piece?.owns === null && entry?.kind !== "gone" ? undefined : entry
+						}
+						carried={cluster?.carried}
+						sinceOnly={sinceOnly}
+						from={props.from}
+					/>
+				);
 				const { rows } = run;
 				const rowProps = {
 					shape,
 					lang: props.lang,
 					tabWidth: props.tabWidth,
 					state,
+					gone,
 					landed: props.landed,
 					threads,
 					hunk: props.hunkId,
@@ -3014,6 +3508,7 @@ function HunkRows(props: {
 										row={r}
 										checkbox={i === 0 ? controls : undefined}
 										{...rowProps}
+										state={pairState(r, lineState, state)}
 									/>
 								);
 							})
@@ -3028,9 +3523,18 @@ function HunkRows(props: {
 										order={shown ? orderOf(shown) : undefined}
 										checkbox={i === 0 ? controls : undefined}
 										{...rowProps}
+										state={rowState(r, lineState, state)}
 									/>
 								);
 							});
+				if (gone) {
+					return (
+						<tbody key={runKey} className="group" data-gone="">
+							{kindRow}
+							{runRows(cluster ? props.checkbox(cluster, marker) : undefined)}
+						</tbody>
+					);
+				}
 				if (state && ignoreWhitespace && whitespaceOnly(rows)) {
 					// A bubble, a pick, a landed-on line or the find's current hit
 					// (once a step showed it: typing never changes the layout)
@@ -3062,13 +3566,30 @@ function HunkRows(props: {
 							lines={cluster?.lines ?? run.lines.length}
 							pinned={pinned}
 							columns={columns}
-							controls={cluster ? props.checkbox(cluster) : undefined}
+							controls={cluster ? props.checkbox(cluster, marker) : undefined}
 							note={
 								cluster && (
-									<CrossedOffNote
-										cluster={cluster}
-										id={props.noteId(cluster)}
-									/>
+									<>
+										{(entry?.kind === "reworked" ||
+											entry?.kind === "new" ||
+											cluster.carried) && (
+											<KindChip
+												kind={
+													cluster.carried &&
+													entry?.kind !== "reworked" &&
+													entry?.kind !== "new"
+														? "carried"
+														: (entry?.kind as "reworked" | "new")
+												}
+												from={cluster.carried?.from ?? entry?.from}
+												rule={cluster.carried?.rule}
+											/>
+										)}
+										<CrossedOffNote
+											cluster={cluster}
+											id={props.noteId(cluster)}
+										/>
+									</>
 								)
 							}
 						>
@@ -3078,7 +3599,8 @@ function HunkRows(props: {
 				}
 				return (
 					<tbody key={runKey} className={state ? "group" : undefined}>
-						{runRows(cluster ? props.checkbox(cluster) : undefined)}
+						{kindRow}
+						{runRows(cluster ? props.checkbox(cluster, marker) : undefined)}
 						{cluster?.state === "crossed-off" && (
 							<tr>
 								<Rail state={cluster.state} />
