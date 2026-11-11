@@ -6,6 +6,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -632,6 +633,30 @@ describe("promote: CI passed on the RC's commit", () => {
 			// Another repository's run doesn't count.
 			expect(cli([run()], { GITHUB_REPOSITORY: "fork/repo" }).code).toBe(1);
 			expect(cli([run()], {}).code).toBe(2);
+			// Run through a symlinked directory or file, it still judges: no
+			// run at all fails, never exits 0 having checked nothing.
+			const linkedDir = join(dir, "linked");
+			symlinkSync(import.meta.dirname, linkedDir, "dir");
+			const linkedFile = join(dir, "ci-passed-link.mjs");
+			symlinkSync(join(import.meta.dirname, "ci-passed.mjs"), linkedFile);
+			writeFileSync(file, JSON.stringify({ workflow_runs: [] }));
+			for (const script of [join(linkedDir, "ci-passed.mjs"), linkedFile]) {
+				let code = 0;
+				let stderr = "";
+				try {
+					execFileSync(process.execPath, [script, SHA, file], {
+						encoding: "utf8",
+						stdio: "pipe",
+						env: { PATH: process.env.PATH, GITHUB_REPOSITORY: REPO },
+					});
+				} catch (error) {
+					const e = error as { status: number; stderr: string };
+					code = e.status;
+					stderr = e.stderr;
+				}
+				expect(code, script).toBe(1);
+				expect(stderr, script).toContain("CI has no run for a push to master");
+			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -641,7 +666,7 @@ describe("promote: CI passed on the RC's commit", () => {
 			"utf8",
 		);
 		expect(source.match(/^import .* from "([^"]+)";$/gm)).toEqual([
-			'import { readFileSync } from "node:fs";',
+			'import { readFileSync, realpathSync } from "node:fs";',
 			'import { fileURLToPath } from "node:url";',
 		]);
 	});
@@ -1897,6 +1922,8 @@ describe("release-finish: each step only once", () => {
 			"GH_TOKEN: ${{ github.token }}",
 			"actions/workflows/ci.yml/runs?head_sha=$RC_SHA&event=push&branch=master",
 			'node scripts/ci-passed.mjs "$RC_SHA" "$RUNNER_TEMP/ci-runs.json"',
+			// Only the verdict passes, not a silent exit 0.
+			'[[ "$out" == "CI passed on $RC_SHA ("* ]] || {',
 		]);
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
 		expect(ci).toContain("tag: ${{ steps.rc.outputs.tag }}");
@@ -1970,6 +1997,28 @@ describe("release-finish: each step only once", () => {
 					if (token && ranCode) {
 						out.push(`${name}: a token after repo code ran`);
 					}
+					// Nothing a token step writes for later steps can carry it:
+					// no $GITHUB_ENV or $GITHUB_PATH at all, and no output line
+					// that mentions the token's variable (or the auth built from it).
+					if (token) {
+						const vars = [
+							...body.matchAll(/^\s+(\w+): \$\{\{ github\.token \}\}/gm),
+						].map((m) => m[1]);
+						const secret = new RegExp(
+							`\\$\\{?(${[...vars, "auth"].join("|")})\\b`,
+						);
+						for (const line of body.split("\n")) {
+							if (/GITHUB_ENV|GITHUB_PATH/.test(line)) {
+								out.push(
+									`${name}: a token step writes $GITHUB_ENV or $GITHUB_PATH`,
+								);
+							} else if (/GITHUB_OUTPUT/.test(line) && secret.test(line)) {
+								out.push(
+									`${name}: a token step writes the token to $GITHUB_OUTPUT`,
+								);
+							}
+						}
+					}
 					if (REPO_CODE.test(body)) ranCode = true;
 				}
 			}
@@ -1983,7 +2032,9 @@ describe("release-finish: each step only once", () => {
 			.sort();
 		expect(withToken).toEqual(["promote-ci", "rc-build", "rc-publish"]);
 		// The check catches each way a token could reach repo code.
-		const ciPassed = 'run: node scripts/ci-passed.mjs "$RC_SHA"';
+		const ciPassed = "      - name: CI passed on the RC's commit\n";
+		const ghApi = '            >"$RUNNER_TEMP/ci-runs.json"\n';
+		const tip = '            echo "publish=true" >>"$GITHUB_OUTPUT"\n';
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
 		const checkEnv = "      NEXT_INPUT: ${{ inputs.next }}\n";
 		const install =
@@ -2007,9 +2058,23 @@ describe("release-finish: each step only once", () => {
 			[
 				release.replace(
 					ciPassed,
-					`env:\n          GH_TOKEN: \${{ github.token }}\n        ${ciPassed}`,
+					`${ciPassed}        env:\n          GH_TOKEN: \${{ github.token }}\n`,
 				),
 				"promote-ci: a token next to repo code",
+			],
+			[
+				release.replace(
+					ghApi,
+					`${ghApi}          echo "GH_TOKEN=$GH_TOKEN" >>"$GITHUB_ENV"\n`,
+				),
+				"promote-ci: a token step writes $GITHUB_ENV or $GITHUB_PATH",
+			],
+			[
+				release.replace(
+					tip,
+					`${tip}            echo "t=$TOKEN" >>"$GITHUB_OUTPUT"\n`,
+				),
+				"rc-build: a token step writes the token to $GITHUB_OUTPUT",
 			],
 			[
 				release.replace(

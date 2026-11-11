@@ -353,8 +353,12 @@ jobs:
           node-version-file: .nvmrc
       - name: CI passed on the RC's commit
         # A successful run of ci.yml for a push to master at exactly RC_SHA
-        # (a re-run that passed counts). No dependencies, no token.
-        run: node scripts/ci-passed.mjs "$RC_SHA" "$RUNNER_TEMP/ci-runs.json"
+        # (a re-run that passed counts). No dependencies, no token. Only its
+        # verdict passes: an exit 0 that says nothing doesn't.
+        run: |
+          out="$(node scripts/ci-passed.mjs "$RC_SHA" "$RUNNER_TEMP/ci-runs.json")"
+          echo "$out"
+          [[ "$out" == "CI passed on $RC_SHA ("* ]] || { echo "::error::ci-passed.mjs gave no verdict for $RC_SHA"; exit 1; }
 
   promote-check:
     needs: promote-ci

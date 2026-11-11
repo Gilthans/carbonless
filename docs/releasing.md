@@ -513,7 +513,7 @@ the website, approve only the stage id in the promote run's summary.
 - **promote failed:** nothing is live. "CI has no run / did not pass /
   is still running on <sha>": wait for CI, or re-run its failed jobs on
   GitHub, then promote again (or promote a newer RC). "planned … but
-  promote-ci checked …": a new RC was tagged between the two jobs; promote
+  promote-ci checked …": the RC changed between the two jobs; promote
   again. A failed smoke test or build-info check is a packaging bug: fix
   it on master and promote the next RC. The smoke test is master's: on an
   older RC it can fail because master's script expects newer behaviour
