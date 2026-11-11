@@ -1,7 +1,8 @@
 /**
  * Measures the agent threads ref (docs/review-data-storage.md, "Agent
- * threads ref"): 50 threads of 4 messages of 2 KiB each in a throwaway
- * bare repo, written through AgentThreadStore. Prints the loose and packed
+ * threads ref"): 50 GitHub-thread conversations of 4 messages of 2 KiB each
+ * (a view on each human message, a head on each answer, one seen event per
+ * answer) in a throwaway bare repo, written through AgentThreadStore. Prints the loose and packed
  * size, one append (wall and CPU, carbonless's and its git children's) and
  * a cold read() (a new store, nothing cached), loose and after `git gc`.
  *
@@ -11,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { AgentThreadStore } from "../src/server/agent/store";
 import { RefStore } from "../src/server/review/refStore";
-import type { AgentAnchor } from "../src/shared/agent";
+import type { AgentAnchor, AgentView } from "../src/shared/agent";
 import { createBareRepo, testGitEnv } from "../test/git-fixture";
 
 /** A review id as the server makes one (a lowercase ULID). */
@@ -23,17 +24,24 @@ const TEXT_BYTES = 2048;
 const RUNS = 9;
 
 const agent = { name: "claude-agent-acp", version: "0.5.1" };
+const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const anchor = (i: number): AgentAnchor => ({
-	subject: "line",
+	subject: "thread",
+	// A GitHub review thread's node id.
+	thread: `PRRT_kwDOKx${String(i).padStart(6, "0")}Hq1AbCdEf`,
 	path: `src/module${i}/service.ts`,
-	commit: "0123456789abcdef0123456789abcdef01234567",
+	commit: COMMIT,
 	side: "RIGHT",
 	line: 40 + i,
 	startSide: "RIGHT",
 	startLine: 38 + i,
-	startCol: null,
-	endCol: null,
 });
+const view: AgentView = {
+	target: { patchset: 2 },
+	from: { branch: true },
+	left: COMMIT,
+	right: COMMIT,
+};
 
 // Prose-like text from a seeded generator: compresses like real answers,
 // not like one repeated letter.
@@ -112,10 +120,11 @@ try {
 			text: text(),
 			by: "human",
 			clientId: `c${i}`,
+			view,
 		});
 		ids.push(t.id);
 		for (let m = 1; m < MESSAGES; m++) {
-			await store.message(
+			const after = await store.message(
 				t.id,
 				m % 2
 					? {
@@ -123,13 +132,16 @@ try {
 							text: text(),
 							agent,
 							stop: "end_turn",
+							head: COMMIT,
 							activity: [
 								{ kind: "read", title: "Read src/db/pool.ts" },
 								{ kind: "search", title: "grep withLock" },
 							],
 						}
-					: { by: "human", text: text(), clientId: `c${i}.${m}` },
+					: { by: "human", text: text(), clientId: `c${i}.${m}`, view },
 			);
+			// The reviewer sees each answer.
+			if (m % 2) await store.seen(t.id, after.messages.at(-1)?.id ?? "");
 		}
 	}
 	const textBytes = THREADS * MESSAGES * TEXT_BYTES;
@@ -158,7 +170,7 @@ try {
 	const rows = [
 		[
 			"Events",
-			`${THREADS} threads × ${MESSAGES} messages of ${TEXT_BYTES / 1024} KiB (${THREADS * MESSAGES} commits, ${textBytes / 1024} KiB of text)`,
+			`${THREADS} threads × ${MESSAGES} messages of ${TEXT_BYTES / 1024} KiB (${THREADS * MESSAGES} message commits + ${THREADS * (MESSAGES / 2)} seen, ${textBytes / 1024} KiB of text)`,
 		],
 		["Loose size", `${loose.loose} KiB`],
 		["Packed size (git gc)", `${packed.packed} KiB`],
