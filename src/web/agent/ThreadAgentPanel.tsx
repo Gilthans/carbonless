@@ -42,11 +42,8 @@ const NONE: AgentThread = {
 export function AgentCover(props: { children: ReactNode; className?: string }) {
 	const agent = useThreadAgentContext();
 	const shown = useShown(agent?.open ?? false);
-	if (!agent) {
-		return (
-			<div className={props.className ?? "space-y-2"}>{props.children}</div>
-		);
-	}
+	// No agent: the children as they are, in their parent's flow.
+	if (!agent) return <>{props.children}</>;
 	return (
 		<div
 			data-testid="agent-cover"
