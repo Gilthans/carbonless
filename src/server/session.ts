@@ -15,6 +15,7 @@ import type {
 	PrOverview,
 	ReplyRequest,
 	RereviewAnswer,
+	ReviewThread,
 	ReviewView,
 	SessionInfo,
 	Snapshot,
@@ -356,7 +357,32 @@ export class Session {
 					},
 					async () => "",
 				),
+			threads: async () => (await this.#agentGithub()).threads,
+			thread: async (id) => {
+				const { read, threads } = await this.#agentGithub();
+				const found = threads.find((t) => t.id === id);
+				if (!found) return null;
+				// Deleted since the list was read: its comments say so.
+				const [c] = (await read.comments([id])).threads;
+				return c?.unavailable
+					? { ...found, unavailable: c.unavailable }
+					: found;
+			},
+			patchsets: () => this.#patchsets,
+			currentHead: () => this.#meta.headOid,
 		});
+	}
+
+	/**
+	 * The review threads of the read the overview serves (their summaries,
+	 * this session's own writes applied), as the agent joins them.
+	 */
+	async #agentGithub(): Promise<{
+		read: OverviewRead;
+		threads: ReviewThread[];
+	}> {
+		const read = this.#pickRead(Number.POSITIVE_INFINITY);
+		return { read, threads: (await read.threads("summary")).threads };
 	}
 
 	/** Sessions not closed yet (closeAll). */

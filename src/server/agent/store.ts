@@ -38,6 +38,13 @@ export interface AgentThreadFold extends Omit<AgentThread, "code"> {
 	clientId?: string;
 }
 
+/** Thrown for a seen mark on a message the thread doesn't hold (the app answers 400). */
+export class UnknownAgentMessageError extends Error {
+	constructor(readonly messageId: string) {
+		super(`Unknown agent message: ${messageId}`);
+	}
+}
+
 /** Thrown for a thread id the ref doesn't hold (the app answers 404). */
 export class UnknownAgentThreadError extends Error {
 	constructor(readonly thread: string) {
@@ -292,6 +299,17 @@ export class AgentThreadStore {
 		return foldAgentThreads(await this.#events());
 	}
 
+	/** The thread with this id (a later opening's id finds the first's); UnknownAgentThreadError if none. */
+	async find(thread: string): Promise<AgentThreadFold> {
+		return this.#find(await this.#events(), thread);
+	}
+
+	/** The thread a human opening with this clientId opened, if any (open() returns it). */
+	async openedWith(clientId: string): Promise<string | undefined> {
+		await this.#events();
+		return this.#opened.get(clientId);
+	}
+
 	/** Opens a thread; a clientId already seen (in memory, or in details.clientId of a stored opened event) returns that thread unchanged. */
 	open(input: OpenInput): Promise<AgentThreadFold> {
 		return this.#serial(async () => {
@@ -404,7 +422,7 @@ export class AgentThreadStore {
 			const events = await this.#events();
 			const current = this.#find(events, thread);
 			const at = current.messages.findIndex((m) => m.id === upTo);
-			if (at < 0) throw new Error(`Unknown message: ${upTo}`);
+			if (at < 0) throw new UnknownAgentMessageError(upTo);
 			const mark = current.messages.findIndex((m) => m.id === current.seenUpTo);
 			if (mark >= at) return current;
 			const event = newEvent(

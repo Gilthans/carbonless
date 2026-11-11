@@ -6,12 +6,14 @@ import type {
 	AgentMessageRequest,
 	AgentStatus,
 	AgentThread,
+	AgentView,
 	OpenAgentThreadRequest,
 } from "../../shared/agent.js";
 import type {
 	CodeAnchor,
 	CodeWindow,
 	DiffLine,
+	ReviewThread,
 	Snapshot,
 } from "../../shared/types.js";
 import { readConfig } from "../config.js";
@@ -20,6 +22,7 @@ import type { PrMeta } from "../gh.js";
 import { runGitBuffer } from "../git.js";
 import { RefStore } from "../review/refStore.js";
 import { agentsDir } from "./checkout.js";
+import { joinGithub, liveGithubThreads, resolveView } from "./githubJoin.js";
 import { isSafePath, mimeTypeOf } from "./prompt.js";
 import { AgentRunner, type RunnerFacts } from "./runner.js";
 import { type AgentThreadFold, AgentThreadStore } from "./store.js";
@@ -31,10 +34,37 @@ export const setServerPort = (port: number): void => {
 };
 export const serverPort = (): number => listeningPort;
 
+/** A request the agent host refuses as made (the app answers 400). */
+export class AgentRequestError extends Error {}
+
+/**
+ * A request that conflicts with what is there (the app answers 409): a
+ * conversation already on that GitHub thread (`thread` names it), a
+ * question on a resolved GitHub thread, a resolve of a thread conversation.
+ */
+export class AgentConflictError extends Error {
+	constructor(
+		message: string,
+		readonly thread?: string,
+	) {
+		super(message);
+	}
+}
+
+/** What the host reads of the review's GitHub threads and patch sets. */
+export type AgentGithub = Pick<
+	ReviewAgentSource,
+	"threads" | "thread" | "patchsets"
+> & {
+	/** The snapshot's merge base (a viewed head's, unless it is a patch set's). */
+	base(): string;
+};
+
 /**
  * A review's agent as its Session owns it: the runner, and the one store
  * of the reviewer's agent threads every route goes through (its dedupe of
- * clientIds holds within one store).
+ * clientIds holds within one store). Thread conversations are joined with
+ * GitHub's threads on every read (githubJoin.ts).
  */
 export class AgentHost {
 	constructor(
@@ -44,55 +74,100 @@ export class AgentHost {
 			anchor: AgentAnchor,
 			at: string,
 		) => Promise<CodeWindow | undefined>,
+		private readonly github: AgentGithub,
 	) {}
 
 	status(): Promise<AgentStatus> {
 		return this.runner.status();
 	}
 
-	/** The threads in opened order; a line anchor's carries its code window. */
+	/** The threads in opened order, joined with GitHub; a line anchor's carries its code window. */
 	async threads(): Promise<AgentThread[]> {
-		const folds = await this.store.read();
+		const folds = await this.#joined(await this.store.read());
 		return Promise.all(folds.map((t) => this.#view(t)));
 	}
 
-	/** Each thread's id, anchor and when it was asked (what placement reads). */
+	/**
+	 * Each span thread's id, anchor and when it was asked (what placement
+	 * reads): a live thread conversation goes where its GitHub thread goes,
+	 * so it is left out; an orphan comes with its span anchor.
+	 */
 	async asked(): Promise<{ id: string; anchor: AgentAnchor; at: string }[]> {
-		return (await this.store.read()).map(({ id, anchor, at }) => ({
-			id,
-			anchor,
-			at,
-		}));
+		return (await this.#joined(await this.store.read()))
+			.filter((t) => t.anchor.subject !== "thread")
+			.map(({ id, anchor, at }) => ({ id, anchor, at }));
 	}
 
+	/**
+	 * Opens a thread on a span, or on a GitHub thread (`req.thread`): one
+	 * listed, with an id and not deleted (else AgentRequestError), and with
+	 * no conversation yet (else AgentConflictError naming it). A resend of
+	 * an opening already written returns its thread.
+	 */
 	async open(req: OpenAgentThreadRequest): Promise<AgentThread> {
-		// Opening on a GitHub thread arrives with the routes (CAR-120).
-		if (!req.span) throw new Error("Opening an agent thread needs a span");
+		const view = req.view ? this.#resolveView(req.view) : undefined;
+		let anchor: AgentAnchor;
+		if (req.span) anchor = req.span;
+		else if (req.thread !== undefined) {
+			anchor = await this.#threadAnchor(req.thread, req.clientId);
+		} else throw new AgentRequestError("A span or a thread, one of them");
 		const t = await this.store.open({
-			anchor: req.span,
+			anchor,
 			text: req.text,
 			by: "human",
 			clientId: req.clientId,
+			...(view ? { view } : {}),
 		});
 		this.runner.asked();
-		return this.#view(t);
+		return this.#view(await this.#joinedOne(t));
 	}
 
+	/** A question in a thread; refused (AgentConflictError) while its GitHub thread is resolved. */
 	async message(
 		thread: string,
 		req: AgentMessageRequest,
 	): Promise<AgentThread> {
+		const view = req.view ? this.#resolveView(req.view) : undefined;
+		const current = await this.#joinedOne(await this.store.find(thread));
+		if (current.anchor.subject === "thread" && current.resolved) {
+			throw new AgentConflictError(
+				"The GitHub thread is resolved: unresolve it to ask again",
+			);
+		}
 		const t = await this.store.message(thread, {
 			by: "human",
 			text: req.text,
 			clientId: req.clientId,
+			...(view ? { view } : {}),
 		});
 		this.runner.asked();
-		return this.#view(t);
+		return this.#view(await this.#joinedOne(t));
 	}
 
+	/**
+	 * Resolves a span thread or an orphan; a live thread conversation has
+	 * no resolved state of its own (AgentConflictError: resolve the GitHub
+	 * thread, a human action on its card).
+	 */
 	async setResolved(thread: string, resolved: boolean): Promise<AgentThread> {
-		return this.#view(await this.store.setResolved(thread, resolved));
+		const current = await this.store.find(thread);
+		if (current.anchor.subject === "thread") {
+			// Unknown GitHub threads fail the write (502), never resolve it here.
+			const live = liveGithubThreads(await this.github.threads());
+			if (live.has(current.anchor.thread)) {
+				throw new AgentConflictError(
+					"A thread conversation resolves with its GitHub thread",
+				);
+			}
+		}
+		const t = await this.store.setResolved(thread, resolved);
+		return this.#view(await this.#joinedOne(t));
+	}
+
+	/** The reviewer has seen the thread up to a message (no write when already seen). */
+	async seen(thread: string, upTo: string): Promise<AgentThread> {
+		const t = await this.store.seen(thread, upTo);
+		return this.#view(await this.#joinedOne(t));
 	}
 
 	cancel(): Promise<void> {
@@ -106,6 +181,65 @@ export class AgentHost {
 
 	close(): Promise<void> {
 		return this.runner.close();
+	}
+
+	#resolveView(view: Omit<AgentView, "left" | "right">): AgentView {
+		const v = resolveView(view, this.github.patchsets(), this.github.base());
+		if (!v) throw new AgentRequestError("view names no patch set or commit");
+		return v;
+	}
+
+	/** The anchor of a new conversation on GitHub thread `id`; see open(). */
+	async #threadAnchor(id: string, clientId: string): Promise<AgentAnchor> {
+		const rt = await this.github.thread(id);
+		if (!rt || rt.id === "" || rt.unavailable === "deleted") {
+			throw new AgentRequestError(`No GitHub thread ${id} to ask about`);
+		}
+		const anchor: AgentAnchor = {
+			subject: "thread",
+			thread: rt.id,
+			path: rt.path,
+			// One GitHub gave unreadably: on no known commit, like "".
+			commit: OID.test(rt.commit) ? rt.commit : "",
+			...(rt.anchor
+				? {
+						side: rt.anchor.side,
+						line: rt.anchor.line,
+						startSide: rt.anchor.startSide,
+						startLine: rt.anchor.startLine,
+					}
+				: {}),
+		};
+		// A resend of this very opening: open() returns its thread.
+		if ((await this.store.openedWith(clientId)) !== undefined) return anchor;
+		const existing = (await this.store.read()).find(
+			(f) => f.anchor.subject === "thread" && f.anchor.thread === rt.id,
+		);
+		if (existing) {
+			throw new AgentConflictError(
+				"This thread already has a conversation",
+				existing.id,
+			);
+		}
+		return anchor;
+	}
+
+	/**
+	 * The folds joined with GitHub's threads, read only when a thread
+	 * conversation is among them. When GitHub can't be read, thread
+	 * conversations stay live (where their thread is) and open.
+	 */
+	async #joined(folds: AgentThreadFold[]): Promise<AgentThreadFold[]> {
+		if (!folds.some((f) => f.anchor.subject === "thread")) return folds;
+		const threads = await this.github.threads().catch(() => null);
+		if (threads) return joinGithub(folds, threads);
+		return folds.map((f) =>
+			f.anchor.subject === "thread" ? { ...f, resolved: false } : f,
+		);
+	}
+
+	async #joinedOne(t: AgentThreadFold): Promise<AgentThreadFold> {
+		return (await this.#joined([t]))[0] ?? t;
 	}
 
 	async #view(t: AgentThreadFold): Promise<AgentThread> {
@@ -131,6 +265,14 @@ export interface ReviewAgentSource {
 	snapshot(): Snapshot;
 	prFacts(): Promise<{ title: string; body: string }>;
 	code(anchor: CodeAnchor): Promise<CodeWindow | null>;
+	/** The PR's review threads as last read from GitHub (their summaries). */
+	threads(): Promise<ReviewThread[]>;
+	/** One review thread, null when GitHub doesn't list it; a deleted one says so (`unavailable`). */
+	thread(id: string): Promise<ReviewThread | null>;
+	/** The reviewer's patch sets. */
+	patchsets(): readonly { number: number; head: string; mergeBase: string }[];
+	/** The PR's head on GitHub as last read (it may be past the snapshot's). */
+	currentHead(): string;
 }
 
 /** The setup modal's Saves since the server started (PUT /api/config/agent). */
@@ -197,21 +339,31 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		viewer: src.viewer,
 		facts,
 	});
-	return new AgentHost(runner, store, async (anchor, at) => {
-		if (anchor.subject !== "line") return undefined;
-		const window = await src.code({
-			path: anchor.path,
-			commit: anchor.commit,
-			side: anchor.side,
-			line: anchor.line,
-			startSide: anchor.startSide,
-			startLine: anchor.startLine,
-			at,
-			startCol: anchor.startCol ?? null,
-			endCol: anchor.endCol ?? null,
-		});
-		return window ?? undefined;
-	});
+	return new AgentHost(
+		runner,
+		store,
+		async (anchor, at) => {
+			if (anchor.subject !== "line") return undefined;
+			const window = await src.code({
+				path: anchor.path,
+				commit: anchor.commit,
+				side: anchor.side,
+				line: anchor.line,
+				startSide: anchor.startSide,
+				startLine: anchor.startLine,
+				at,
+				startCol: anchor.startCol ?? null,
+				endCol: anchor.endCol ?? null,
+			});
+			return window ?? undefined;
+		},
+		{
+			threads: () => src.threads(),
+			thread: (id) => src.thread(id),
+			patchsets: () => src.patchsets(),
+			base: () => src.snapshot().base,
+		},
+	);
 }
 
 /**
