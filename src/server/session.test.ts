@@ -2024,6 +2024,44 @@ describe("Session", () => {
 			expect(s.info().patchsets).toHaveLength(2);
 		});
 
+		it("S7: each patch set keeps its own base branch; after a retarget PS1 still says main, PS2 the new base", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			await s.overview(0);
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			// Retargeted to develop (at main's tip), then a push.
+			execFileSync("git", ["branch", "develop", pr.mergeBase], {
+				cwd: pr.repo.path,
+				env: testGitEnv(),
+			});
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: newHead, baseRefName: "develop" }),
+						graphql: { reviewThreads: [], reviews: [] },
+					},
+				},
+			});
+			await s.checkHead();
+			const view = await s.viewHead(newHead);
+			const laterKey = view.files.find((f) => f.path === "later.txt")
+				?.clusters[0]?.key;
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			await s.setStates(view.revision, [{ key: laterKey, state: "reviewed" }]);
+			expect(s.info().patchsets.map((p) => [p.number, p.baseBranch])).toEqual([
+				[1, "main"],
+				[2, "develop"],
+			]);
+			const again = await Session.open(pr.arg, process.cwd());
+			expect(again.info().patchsets.map((p) => p.baseBranch)).toEqual([
+				"main",
+				"develop",
+			]);
+		});
+
 		it("checkHead compares the triple: the same head costs no fetch; a base branch change fetches once and reports the merge base", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const clone = clonePath("acme", "widget");
@@ -2104,6 +2142,65 @@ describe("Session", () => {
 			expect(theirs.agent).toBeNull();
 			const mine = await Session.open(pr.arg, process.cwd());
 			expect(mine.agent).not.toBeNull();
+		});
+
+		it("agentPlacements traces each agent thread into a patch set or a head; an unknown patch set is a RangeError", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			await s.setStates((await s.review()).revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const h1 = pr.head();
+			await host.open({
+				clientId: "q1",
+				text: "Why?",
+				span: {
+					subject: "line",
+					path: "a.txt",
+					commit: h1,
+					side: "RIGHT",
+					line: 2,
+					startSide: "RIGHT",
+					startLine: 2,
+				},
+			});
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed";
+			const h2 = pr.moveHead({
+				"a.txt": `top 1\ntop 2\n${lines.join("\n")}\n`,
+			});
+			const ps1 = (await s.reviewAt(1)).revision;
+			const onHead = await s.agentPlacements(host, { head: h2 });
+			expect(onHead.revision).toBe((await s.viewHead(h2)).revision);
+			expect(onHead.revision).not.toBe(ps1);
+			expect(onHead.threads).toEqual([
+				{
+					id: expect.any(String),
+					placement: {
+						kind: "placed",
+						anchor: {
+							path: "a.txt",
+							startSide: "RIGHT",
+							startLine: 4,
+							side: "RIGHT",
+							line: 4,
+						},
+						changed: false,
+					},
+				},
+			]);
+			const onPs1 = await s.agentPlacements(host, { patchset: 1 });
+			expect(onPs1.revision).toBe(ps1);
+			expect(onPs1.threads[0]?.placement).toMatchObject({
+				kind: "placed",
+				anchor: { line: 2 },
+			});
+			await expect(s.agentPlacements(host, { patchset: 9 })).rejects.toThrow(
+				RangeError,
+			);
+			await s.close();
 		});
 
 		it("close() closes the host (checkout removed)", async () => {

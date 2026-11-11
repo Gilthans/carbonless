@@ -59,7 +59,11 @@ import {
 	type AgentComposerItem,
 	useAgentComposers,
 } from "../agent/askAgentAction";
-import { type AgentPlaceable, agentPlaceable } from "../agent/placeable";
+import {
+	type AgentPlaceable,
+	shownAgentPlaceables,
+	useAgentPlacing,
+} from "../agent/placeable";
 import { contextQuery, hunksQuery, overviewQuery, sessionQuery } from "../api";
 import {
 	CodeLine,
@@ -93,7 +97,6 @@ import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { contextRanges, rangesKeyOf } from "./contextRanges";
-import { findBarElement } from "./find/hitSeen";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
@@ -109,6 +112,8 @@ import {
 	setPicks,
 	usePicks,
 } from "./linePicks";
+import { type ResolveCollapse, useResolveCollapse } from "./resolveCollapse";
+import { stickyBottom } from "./scrollAnchor";
 import { type CodeSpan, describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import type { KindEntry } from "./since";
@@ -265,6 +270,8 @@ interface RowThreads {
 	/** A row whose bubble takes focus once it shows (a gap thread opened). */
 	focus: LineKey | null;
 	onFocused: () => void;
+	/** Resolve closes a thread to its bubble (resolveCollapse.ts). */
+	collapse: ResolveCollapse<LineKey>;
 }
 
 /**
@@ -970,7 +977,13 @@ function wordsOf(
  * both sides' composers share one.
  */
 function RowTail(props: {
-	opened: { endKey: LineKey; ending: ReviewThread[]; side: DiffSide }[];
+	opened: {
+		endKey: LineKey;
+		/** The bubble's keys: what closes it. */
+		keys: LineKey[];
+		ending: ReviewThread[];
+		side: DiffSide;
+	}[];
 	composing: { side: DiffSide; items: NewThreadItem[] }[];
 	threads?: RowThreads;
 	composers?: RowComposers;
@@ -1005,16 +1018,28 @@ function RowTail(props: {
 	return (
 		<>
 			{threads &&
-				props.opened.map((cell) => (
-					<ThreadRow
-						key={cell.endKey}
-						id={threads.idOf(cell.endKey)}
-						readId={threads.readId}
-						threads={cell.ending}
-						place={place(cell.side)}
-						rail={rail}
-					/>
-				))}
+				props.opened.map((cell) => {
+					const shown = cell.ending.filter(threads.collapse.shows);
+					return (
+						<ThreadRow
+							key={cell.endKey}
+							id={threads.idOf(cell.endKey)}
+							readId={threads.readId}
+							threads={shown}
+							place={place(cell.side)}
+							rail={rail}
+							onResolved={(t, from) =>
+								threads.collapse.resolved({
+									key: cell.endKey,
+									keys: cell.keys,
+									thread: t,
+									shown,
+									from,
+								})
+							}
+						/>
+					);
+				})}
 			{composers &&
 				composing
 					.filter(({ items }) => items.length > 0)
@@ -1213,7 +1238,9 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 			</tr>
 			{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
 			<RowTail
-				opened={open && endKey ? [{ endKey, ending, side: cell.side }] : []}
+				opened={
+					open && endKey ? [{ endKey, keys, ending, side: cell.side }] : []
+				}
 				composing={[{ side: cell.side, items: composing }]}
 				threads={threads}
 				composers={props.composers}
@@ -1514,7 +1541,14 @@ function PairRow(
 			<RowTail
 				opened={sides.flatMap(([side, cell]) =>
 					cell?.open && cell.endKey
-						? [{ endKey: cell.endKey, ending: cell.ending, side }]
+						? [
+								{
+									endKey: cell.endKey,
+									keys: cell.shared?.keys ?? cell.keys,
+									ending: cell.ending,
+									side,
+								},
+							]
 						: [],
 				)}
 				composing={sides.map(([side, cell]) => ({
@@ -2168,12 +2202,19 @@ export function DiffBody(props: {
 	// FilesPage reads them (and the tree counts them); here, from the cache.
 	const agentThreads = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
-	const agentPlaceables = useMemo(
-		() => (agentThreads ?? []).map(agentPlaceable),
-		[agentThreads],
-	);
 	const agentComposerList = useAgentComposers();
 	const agentHeadNow = snapshotHead ?? sessionHead;
+	// Each where the tracer put it in the viewed head (or where it was asked).
+	const agentPlacing = useAgentPlacing();
+	const agentPlaceables = useMemo(
+		() =>
+			shownAgentPlaceables(
+				agentThreads ?? [],
+				agentHeadNow ?? "",
+				agentPlacing,
+			),
+		[agentThreads, agentHeadNow, agentPlacing],
+	);
 	const agentMine = agentComposerList.filter(
 		(c) => c.span.path === file.path && c.span.subject === "line",
 	);
@@ -2215,6 +2256,23 @@ export function DiffBody(props: {
 		() => new Set(),
 	);
 	const [focusThread, setFocusThread] = useState<LineKey | null>(null);
+	// Resolve closes the thread to its bubble (resolveCollapse.ts): under
+	// every key of its row, as the bubble closes it (a context line's is
+	// open under either side's).
+	const collapse = useResolveCollapse<LineKey>(props.threads?.threads, {
+		open: (key) => setOpenThreads((open) => new Set(open).add(key)),
+		close: (key, keys) =>
+			setOpenThreads((open) => {
+				const next = new Set(open);
+				for (const k of [key, ...keys]) next.delete(k);
+				return next;
+			}),
+		focus: setFocusThread,
+		element: (key) =>
+			scroller.current?.querySelector(
+				`[aria-controls="${CSS.escape(`${idBase}-thread-${key}`)}"]`,
+			) ?? null,
+	});
 	// A gap's window that failed drops its focus target, so a later Retry
 	// doesn't take focus from wherever the reader is by then.
 	const windowFailed = contexts.some((c) => c.isError);
@@ -2223,6 +2281,8 @@ export function DiffBody(props: {
 	}, [windowFailed]);
 	const toggleThreads = (key: LineKey, keys: LineKey[]) => {
 		setFocusThread(null);
+		for (const k of keys) collapse.toggled(k);
+		collapse.toggled(key);
 		setOpenThreads((open) => {
 			const next = new Set(open);
 			if (keys.some((k) => next.has(k))) for (const k of keys) next.delete(k);
@@ -2316,6 +2376,7 @@ export function DiffBody(props: {
 					idOf: (key) => `${idBase}-thread-${key}`,
 					focus: focusThread,
 					onFocused: () => setFocusThread(null),
+					collapse,
 				}
 			: undefined;
 
@@ -3125,16 +3186,7 @@ interface Hint {
  * itself should it reach lower.
  */
 function scrollUnderStack(root: HTMLElement, target: Element, margin: number) {
-	const header = root.closest("section")?.querySelector("header");
-	const vars = getComputedStyle(root);
-	const stack =
-		(Number.parseFloat(vars.getPropertyValue("--app-header")) || 0) +
-		(Number.parseFloat(vars.getPropertyValue("--files-bar")) || 0) +
-		(header?.offsetHeight ?? 0);
-	const sticky = Math.max(
-		stack,
-		findBarElement()?.getBoundingClientRect().bottom ?? 0,
-	);
+	const sticky = stickyBottom(root);
 	window.scrollTo({
 		top: target.getBoundingClientRect().top + window.scrollY - sticky - margin,
 	});

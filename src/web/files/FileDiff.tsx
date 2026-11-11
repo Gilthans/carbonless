@@ -27,7 +27,11 @@ import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer } from "../agent/AgentComposer";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
-import { agentPlaceable } from "../agent/placeable";
+import {
+	agentWaiting,
+	shownAgentPlaceables,
+	useAgentPlacing,
+} from "../agent/placeable";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import type { FindMark } from "../code/Invisibles";
 import { Spinner } from "../Spinner";
@@ -56,6 +60,7 @@ import { displayPath } from "./find/pathMarks";
 import { KindChip } from "./KindChip";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
+import { useResolveCollapse } from "./resolveCollapse";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
 import { type FileSince, goneFileView } from "./since";
 import { isStale } from "./stateSync";
@@ -239,7 +244,7 @@ function HeaderIconButton(props: {
  * Whether this session can start a comment on the whole file: true, or why
  * not.
  */
-function useFileComment(file: FileView, commit: string) {
+function useFileComment(file: FileView, commit: string, readOnly = false) {
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
 	const span: CodeSpan = { path: file.path, commit, subject: "file" };
 	const ok = overview
@@ -247,6 +252,7 @@ function useFileComment(file: FileView, commit: string) {
 				writes: overview.writes,
 				commentLeft: overview.commentLeft !== false,
 				file,
+				readOnly,
 			})
 		: "Comment on file";
 	return { span, ok };
@@ -257,8 +263,12 @@ function useFileComment(file: FileView, commit: string) {
  * file), in the composer of the file bubble's row; disabled with the
  * reason when this session can't comment.
  */
-function FileCommentButton(props: { file: FileView; commit: string }) {
-	const { span, ok } = useFileComment(props.file, props.commit);
+function FileCommentButton(props: {
+	file: FileView;
+	commit: string;
+	readOnly?: boolean;
+}) {
+	const { span, ok } = useFileComment(props.file, props.commit, props.readOnly);
 	return (
 		<Tooltip content={ok === true ? "Comment on file" : ok}>
 			{(trigger) => (
@@ -756,6 +766,14 @@ export function FileDiff(props: {
 	const unplaced =
 		header.some((h) => h.reason === "unplaced" && !h.thread.resolved) ||
 		fates.some((f) => !f.thread.resolved);
+	// Resolve closes a file thread to the file bubble (resolveCollapse.ts).
+	const collapse = useResolveCollapse<"file">(props.threads?.threads, {
+		open: () => setFileOpen(true),
+		close: () => setFileOpen(false),
+		focus: () => setFocusFile(true),
+		element: () =>
+			document.querySelector(`[aria-controls="${CSS.escape(fileThreadsId)}"]`),
+	});
 	// New comments on the whole file, open or closed: under the header,
 	// where file threads show; on another head (gone): kept as orphans.
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;
@@ -783,26 +801,35 @@ export function FileDiff(props: {
 		}
 	}, [fileItems, snapshotHead, writer]);
 
-	const fileComment = useFileComment(file, snapshotHead);
+	const fileComment = useFileComment(file, snapshotHead, readOnly);
 
 	// The reviewer's agent threads on the file (FilesPage reads them): those
 	// on the whole file, and lines the diff can't show, beside the file's
 	// comment threads with their own bubble; and Ask agent on the file.
 	const agentAll = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
+	// Each where the tracer put it in the viewed head (as GitHub's threads
+	// are), else where it was asked.
+	const agentPlacing = useAgentPlacing();
+	const agentPlacements = agentPlacing.placements;
 	const agentPlaceables = useMemo(
-		() => (agentAll ?? []).map(agentPlaceable),
-		[agentAll],
+		() => shownAgentPlaceables(agentAll ?? [], snapshotHead, agentPlacing),
+		[agentAll, snapshotHead, agentPlacing],
 	);
-	// Every agent thread on the file, on this head or an earlier one: those
-	// asked on an earlier head show in the lead row, marked outdated.
-	const agentMine = agentPlaceables
-		.filter((p) => p.path === file.path)
-		.map((p) => p.thread);
+	// Every agent thread on the file: those the tracer couldn't place in
+	// it listed with their fate; those it has no place for (not in yet,
+	// failed) and asked on an earlier head in the lead row, outdated.
+	// One the tracer put outside the comparison is listed after the files
+	// (AgentNotInComparison), never here.
+	const agentMineP = agentPlaceables.filter(
+		(p) =>
+			p.path === file.path && agentPlacements?.get(p.id)?.kind !== "outside",
+	);
+	const agentMine = agentMineP.map((p) => p.thread);
 	const agentOutdated = snapshotHead
-		? agentMine.filter((t) => t.anchor.commit !== snapshotHead)
+		? agentMineP.filter((p) => p.commit !== snapshotHead).map((p) => p.thread)
 		: [];
-	const agentHeader = snapshotHead
+	const agentPlaced = snapshotHead
 		? placeThreads({
 				threads: agentPlaceables,
 				path: file.path,
@@ -810,12 +837,21 @@ export function FileDiff(props: {
 				hunks: hunks.data ?? null,
 				loadedContext: [],
 				noLines: file.binary || file.submodule,
+				placements: agentPlacements,
 				...(props.since === undefined
 					? {}
 					: { leftToNew: sinceLeftToNew(file.clusters) }),
-			}).header
-		: [];
+			})
+		: null;
+	const agentHeader = agentPlaced?.header ?? [];
+	// Resolved ones after the rest (shownAgentPlaceables' order), muted.
+	const agentFates = new Map(
+		(agentPlaced?.fates ?? []).map(
+			(f) => [f.thread.thread, f.placement] as const,
+		),
+	);
 	const agentGroups = [
+		{ reason: "fate" as const, threads: [...agentFates.keys()] },
 		...(["file", "unplaced"] as const).map((reason) => ({
 			reason,
 			threads: agentHeader
@@ -825,6 +861,18 @@ export function FileDiff(props: {
 		{ reason: "outdated" as const, threads: agentOutdated },
 	].filter((g) => g.threads.length > 0);
 	const agentLead = agentGroups.flatMap((g) => g.threads);
+	// While the placements load: this file's agent threads asked on
+	// another head wait, and its agent bubble spins where they will show.
+	const agentWaitingHere = useMemo(
+		() =>
+			agentPlacing.pending && snapshotHead
+				? agentWaiting(agentAll ?? [], snapshotHead, agentPlacing).filter(
+						(p) => p.path === file.path || p.path === file.oldPath,
+					)
+				: [],
+		[agentPlacing, agentAll, snapshotHead, file.path, file.oldPath],
+	);
+	const agentLoading = agentWaitingHere.length > 0;
 	const [agentOpen, setAgentOpen] = useState(false);
 	const agentThreadsId = useId();
 	const agentFileItems = useAgentComposers().filter(
@@ -869,8 +917,9 @@ export function FileDiff(props: {
 	 * diff can't show. Opened, its row has their threads and Comment on
 	 * file; with none it is an outline that starts a comment at once.
 	 */
+	const fileShown = header.filter((h) => collapse.shows(h.thread));
 	const lead: FileLead = {
-		count: agentLead.length > 0 ? 2 : 1,
+		count: agentLead.length > 0 || agentLoading ? 2 : 1,
 		bubble: (
 			<>
 				<ThreadBubble
@@ -893,13 +942,15 @@ export function FileDiff(props: {
 						if (!fileOpen && header.length === 0 && fileComment.ok === true) {
 							openComposer(fileComment.span);
 						}
+						collapse.toggled("file");
 						setFileOpen(!fileOpen);
 					}}
 				/>
-				{agentLead.length > 0 && (
+				{(agentLead.length > 0 || agentLoading) && (
 					<AgentBubble
 						inline
 						threads={agentLead}
+						loading={agentLoading && agentLead.length === 0}
 						where="on this file"
 						open={agentOpen}
 						controls={agentOpen ? agentThreadsId : undefined}
@@ -920,12 +971,20 @@ export function FileDiff(props: {
 						rail={rail}
 						threads={
 							fileOpen && props.threads
-								? header.map((h, i) => (
+								? fileShown.map((h, i) => (
 										<ThreadBlock
 											key={h.thread.id || `#${i}`}
 											readId={props.threads?.readId ?? ""}
 											thread={h.thread}
 											unplaced={h.reason === "unplaced"}
+											onResolved={(t, from) =>
+												collapse.resolved({
+													key: "file",
+													thread: t,
+													shown: fileShown.map((s) => s.thread),
+													from,
+												})
+											}
 										/>
 									))
 								: null
@@ -933,7 +992,11 @@ export function FileDiff(props: {
 						composers={fileItems.length > 0 ? newItems : null}
 						comment={
 							fileOpen && fileItems.length === 0 ? (
-								<FileCommentButton file={file} commit={snapshotHead} />
+								<FileCommentButton
+									file={file}
+									commit={snapshotHead}
+									readOnly={readOnly}
+								/>
 							) : null
 						}
 					/>
@@ -948,6 +1011,7 @@ export function FileDiff(props: {
 							rail={rail}
 							unplaced={g.reason === "unplaced"}
 							outdated={g.reason === "outdated"}
+							fates={g.reason === "fate" ? agentFates : undefined}
 						/>
 					))}
 				{agentComposers && (
@@ -1055,9 +1119,10 @@ export function FileDiff(props: {
 								<StatusIcon file={file} hover={summaryTrigger} />
 							</span>
 							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
-								{!expanded && agentMine.length > 0 && (
+								{!expanded && (agentMine.length > 0 || agentLoading) && (
 									<AgentBubble
 										threads={agentMine}
+										loading={agentLoading && agentMine.length === 0}
 										where="in this file"
 										open={false}
 										onToggle={() => {

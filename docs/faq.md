@@ -135,6 +135,13 @@ that is what is searched: a line changed before that patch set and left
 alone since is no changed line there. Move the base to the branch to search
 the whole PR.
 
+## Why does Find in PR's count change when I switch to side by side?
+
+With Ignore whitespace on, unified view shows a whitespace-only change as
+one `~` row with the new text, so Find counts that row's hits once. Side by
+side shows the old and the new text, so it counts both. The current hit
+stays on the same row.
+
 ## Why does Home show coverage in lines, when the Files page shows files?
 
 Home counts a started review's coverage in changed lines, the finest unit,

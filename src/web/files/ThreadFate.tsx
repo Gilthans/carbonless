@@ -79,7 +79,7 @@ export interface PlacementInfo {
 	/** The patch set a drag stores into; null: none (a head, an earlier patch set). */
 	placeOn: number | null;
 	/** The patch set a thread was opened on (openedOn); null without patch sets. */
-	openedOn: (t: ReviewThread) => number | null;
+	openedOn: (t: Pick<ReviewThread, "createdAt">) => number | null;
 }
 
 const PlacementContext = createContext<PlacementInfo>({
@@ -205,17 +205,7 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 	// attention: its chip is muted.
 	const quiet = thread.resolved;
 	if (placement.kind === "changed") {
-		const ps = psLabel(info.openedOn(thread));
-		return (
-			<Chip
-				tone={quiet ? "gray" : "yellow"}
-				icon={GitCompareIcon}
-				tip={`The line changed since ${ps || "the thread was made"}`}
-				testId="placement-changed"
-			>
-				changed since
-			</Chip>
-		);
+		return <ChangedChip thread={thread} />;
 	}
 	if (placement.kind === "unplaced" || placement.kind === "outside") {
 		const fate = FATES[placement.fate];
@@ -233,6 +223,26 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 	return null;
 }
 
+/** "changed since": a thread's line was rewritten since it was made (muted once resolved). */
+export function ChangedChip({
+	thread,
+}: {
+	thread: Pick<ReviewThread, "createdAt" | "resolved">;
+}) {
+	const info = usePlacementInfo();
+	const ps = psLabel(info.openedOn(thread));
+	return (
+		<Chip
+			tone={thread.resolved ? "gray" : "yellow"}
+			icon={GitCompareIcon}
+			tip={`The line changed since ${ps || "the thread was made"}`}
+			testId="placement-changed"
+		>
+			changed since
+		</Chip>
+	);
+}
+
 /**
  * A changed thread's old lines (from its own patch set) above the lines
  * that replaced them, and the fate line with a way to its patch set.
@@ -242,7 +252,8 @@ export function ChangedSince({
 	placement,
 	lines = true,
 }: {
-	thread: ReviewThread;
+	/** A review thread, or an agent thread seen the same way. */
+	thread: Pick<ReviewThread, "createdAt" | "path" | "code">;
 	placement: Extract<ThreadPlacement, { kind: "changed" }>;
 	/** The old and new lines too (the Overview's card shows its own code). */
 	lines?: boolean;
@@ -313,7 +324,12 @@ export function ChangedSince({
  * patch set, path and line numbers. A frame while the code is still on
  * its way; nothing when there is none.
  */
-export function OriginalCode({ thread }: { thread: ReviewThread }) {
+export function OriginalCode({
+	thread,
+}: {
+	/** A review thread, or an agent thread seen the same way. */
+	thread: Pick<ReviewThread, "code" | "path" | "createdAt">;
+}) {
 	const info = usePlacementInfo();
 	const code = thread.code;
 	const path = code?.anchor.path ?? thread.path;
@@ -402,31 +418,60 @@ export function UnplacedRow(props: {
 	handle?: ReactNode;
 }) {
 	const { thread } = props;
-	const [open, setOpen] = useState(false);
-	// A resolved thread is one quiet line until expanded; resolving one
-	// collapses it again (owner, 2026-11-08).
+	return (
+		<UnplacedShell
+			thread={thread}
+			who={thread.author}
+			fate={props.fate}
+			path={props.path}
+			movedTo={props.movedTo}
+			link={props.link}
+			handle={props.handle}
+		>
+			<Opener thread={thread} />
+			<UnplacedReplies thread={thread} readId={props.readId} />
+		</UnplacedShell>
+	);
+}
+
+/**
+ * The frame of a thread the tracer couldn't place, the same for a review
+ * thread and an agent thread (only the body differs): its fate in a
+ * sentence on the top line, the code it was written on in the "Original
+ * Reviewed Change" box, then `children`. Resolved, one quiet line (the
+ * resolved icon, the fate shortened, `who`) until expanded; resolving it
+ * collapses it again (owner, 2026-11-08).
+ */
+export function UnplacedShell(props: {
+	thread: Pick<ReviewThread, "id" | "resolved" | "code" | "path" | "createdAt">;
+	/** Who opened it, for the quiet line ("you" for an agent thread). */
+	who: string;
+	/** Its fate; null: unknown (the placements couldn't be computed). */
+	fate: Fate | null;
+	path?: string;
+	movedTo?: string;
+	link?: ReactNode;
+	handle?: ReactNode;
+	testId?: string;
+	children: ReactNode;
+}) {
+	const { thread } = props;
+	const testId = props.testId ?? "unplaced-thread";
 	const [expanded, setExpanded] = useState(false);
 	const [wasResolved, setWasResolved] = useState(thread.resolved);
 	if (wasResolved !== thread.resolved) {
 		setWasResolved(thread.resolved);
-		if (thread.resolved) {
-			setExpanded(false);
-			setOpen(false);
-		}
+		if (thread.resolved) setExpanded(false);
 	}
-	const repliesId = useId();
 	const fate = props.fate ? FATES[props.fate] : UNKNOWN_FATE;
 	const sentence =
 		props.fate === "moved" && props.movedTo
 			? `${fate.sentence} to ${props.movedTo}`
 			: fate.sentence;
-	const replies = useReplyCount(thread, props.readId);
-	const canAct = useCanAct(thread);
-	const readable = thread.unavailable === undefined && thread.id !== "";
 	if (thread.resolved && !expanded) {
 		return (
 			<li
-				data-testid="unplaced-thread"
+				data-testid={testId}
 				data-fate={props.fate ?? "unknown"}
 				data-thread={thread.id}
 				data-resolved="true"
@@ -435,7 +480,7 @@ export function UnplacedRow(props: {
 				<button
 					type="button"
 					aria-expanded={false}
-					aria-label={`Resolved thread by ${thread.author}: ${fate.short}${props.path ? ` · ${props.path}` : ""}. Expand`}
+					aria-label={`Resolved thread by ${props.who}: ${fate.short}${props.path ? ` · ${props.path}` : ""}. Expand`}
 					data-testid="unplaced-collapsed"
 					onClick={() => setExpanded(true)}
 					className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
@@ -450,7 +495,7 @@ export function UnplacedRow(props: {
 							</>
 						)}
 						{" · "}
-						{thread.author}
+						{props.who}
 					</span>
 				</button>
 			</li>
@@ -458,7 +503,7 @@ export function UnplacedRow(props: {
 	}
 	return (
 		<li
-			data-testid="unplaced-thread"
+			data-testid={testId}
 			data-fate={props.fate ?? "unknown"}
 			data-thread={thread.id}
 			data-resolved={thread.resolved || undefined}
@@ -509,7 +554,26 @@ export function UnplacedRow(props: {
 				)}
 			</div>
 			<OriginalCode thread={thread} />
-			<Opener thread={thread} />
+			{props.children}
+		</li>
+	);
+}
+
+/** An unplaced review thread's replies and actions, behind Show more. */
+function UnplacedReplies({
+	thread,
+	readId,
+}: {
+	thread: ReviewThread;
+	readId: string;
+}) {
+	const [open, setOpen] = useState(false);
+	const repliesId = useId();
+	const replies = useReplyCount(thread, readId);
+	const canAct = useCanAct(thread);
+	const readable = thread.unavailable === undefined && thread.id !== "";
+	return (
+		<>
 			{open && readable && (
 				<div id={repliesId} className="space-y-2">
 					{replies.n > 0 && (
@@ -517,7 +581,7 @@ export function UnplacedRow(props: {
 							data-testid="thread-replies"
 							className="ml-2 border-l-2 border-line pl-3"
 						>
-							<ThreadComments readId={props.readId} thread={thread} skipFirst />
+							<ThreadComments readId={readId} thread={thread} skipFirst />
 						</div>
 					)}
 					<ThreadActions thread={thread} />
@@ -534,7 +598,7 @@ export function UnplacedRow(props: {
 					/>
 				</div>
 			)}
-		</li>
+		</>
 	);
 }
 
@@ -801,7 +865,7 @@ export function resolvedLast<T extends { thread: ReviewThread }>(
 }
 
 /** "near 88": lands on the closest surviving line, the comparison kept. */
-function NearLink(props: {
+export function NearLink(props: {
 	path: string;
 	line: number;
 	side: "LEFT" | "RIGHT";
@@ -880,7 +944,8 @@ export function useSessionPlacements(
 			readId: readId ?? null,
 			to,
 			placeOn: null,
-			openedOn: (t: ReviewThread) => openedOn(t.createdAt, patchsets ?? []),
+			openedOn: (t: Pick<ReviewThread, "createdAt">) =>
+				openedOn(t.createdAt, patchsets ?? []),
 		}),
 		[placements, asked, answer, query, readId, toKey, patchsets],
 	);

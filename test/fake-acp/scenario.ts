@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import type { ActivityKind, AgentStop } from "../../src/shared/agent.js";
 import { writeFileAtomic } from "../fake-gh/atomic.mjs";
 
@@ -94,7 +94,7 @@ export function useFakeAcp(
 		CRB_FAKE_ACP: process.env.CRB_FAKE_ACP,
 		CRB_FAKE_ACP_LOG: process.env.CRB_FAKE_ACP_LOG,
 	};
-	process.env.PATH = `${FAKE_ACP_BIN}:${process.env.PATH}`;
+	process.env.PATH = `${FAKE_ACP_BIN}${delimiter}${process.env.PATH}`;
 	process.env.CRB_FAKE_ACP = scenario;
 	process.env.CRB_FAKE_ACP_LOG = log;
 	const configDir = join(process.env.XDG_CONFIG_HOME as string, "carbonless");

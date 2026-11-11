@@ -11,3 +11,6 @@ playwright-report/
 .crb-dev/
 .envrc
 *.tgz
+
+# Machine-specific agent notes (never tracked)
+CLAUDE.local.md

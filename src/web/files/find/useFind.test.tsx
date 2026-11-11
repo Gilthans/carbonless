@@ -8,6 +8,7 @@ import { heldJson } from "../../../../test/loading";
 import type { DiffLine, FileHunks, FileView } from "../../../shared/types";
 import { hunksQuery } from "../../api";
 import { newQueryClient } from "../../queryClient";
+import { ignoreWhitespace, sideBySide } from "../../viewSettings";
 import { contextRanges } from "../contextRanges";
 import type { Hit } from "./findInPr";
 import { findState } from "./findState";
@@ -146,6 +147,8 @@ beforeEach(() => {
 afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
+	ignoreWhitespace.reset();
+	sideBySide.reset();
 });
 
 function renderFind(props: {
@@ -382,6 +385,169 @@ describe("useFind", () => {
 		});
 		await waitFor(() => expect(result.current.count).toEqual({ at: 2, of: 2 }));
 		expect(result.current.caret).toEqual({ pos, shown: true });
+	});
+
+	it("unified with Ignore whitespace counts a whitespace-only pair once; a view switch keeps the current hit", async () => {
+		act(() => {
+			ignoreWhitespace.set(true);
+			sideBySide.set(true);
+		});
+		const files = [file(0, ["save(a) save"], ["  save(a)  save"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "ctx") }],
+			});
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		// Side by side: both texts show, both count.
+		expect(result.current.count).toEqual({ at: 1, of: 4 });
+		act(() => {
+			result.current.step(1);
+			result.current.step(1);
+		});
+		expect(result.current.caret).toEqual({
+			pos: { index: 0, side: "LEFT", line: 2, col: 8 },
+			shown: true,
+		});
+		// Unified: the `~` row shows the new text only; the old side's second
+		// hit becomes the row's second shown one, not the top.
+		act(() => sideBySide.set(false));
+		expect(result.current.count).toEqual({ at: 2, of: 2 });
+		expect(result.current.caret).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 2, col: 11 },
+			shown: true,
+		});
+		expect(result.current.tree.counts.get(0)).toBe(2);
+		expect(result.current.diffOf(0)?.marksOf("LEFT", 2)).toEqual([]);
+		act(() => {
+			result.current.step(-1);
+		});
+		expect(result.current.count).toEqual({ at: 1, of: 2 });
+		// Back to side by side: N grows, the current hit stays.
+		act(() => sideBySide.set(true));
+		expect(result.current.count).toEqual({ at: 3, of: 4 });
+		expect(result.current.caret?.pos).toEqual({
+			index: 0,
+			side: "RIGHT",
+			line: 2,
+			col: 2,
+		});
+		// Ignore whitespace off: both count in unified too.
+		act(() => {
+			sideBySide.set(false);
+			ignoreWhitespace.set(false);
+		});
+		expect(result.current.count).toEqual({ at: 3, of: 4 });
+	});
+
+	it("turning Ignore whitespace on in unified moves a current old-side hit onto its `~` row", async () => {
+		const files = [file(0, ["save(a) save"], ["  save(a)  save"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "ctx") }],
+			});
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		// Unified, Ignore whitespace off: two rows, both count.
+		expect(result.current.count).toEqual({ at: 1, of: 4 });
+		act(() => {
+			result.current.step(1);
+			result.current.step(1);
+		});
+		expect(result.current.caret?.pos).toEqual({
+			index: 0,
+			side: "LEFT",
+			line: 2,
+			col: 8,
+		});
+		act(() => ignoreWhitespace.set(true));
+		expect(result.current.count).toEqual({ at: 2, of: 2 });
+		expect(result.current.caret).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 2, col: 11 },
+			shown: true,
+		});
+	});
+
+	it("a current hit moved onto its `~` row stays there: side by side again, or Ignore whitespace off", async () => {
+		act(() => {
+			ignoreWhitespace.set(true);
+			sideBySide.set(true);
+		});
+		const files = [file(0, ["save(a) save"], ["  save(a)  save"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "ctx") }],
+			});
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		act(() => {
+			result.current.step(1);
+			result.current.step(1);
+		});
+		expect(result.current.caret?.pos).toMatchObject({ side: "LEFT", col: 8 });
+		const moved = {
+			pos: { index: 0, side: "RIGHT", line: 2, col: 11 },
+			shown: true,
+		};
+		act(() => sideBySide.set(false));
+		expect(result.current.caret).toEqual(moved);
+		// Back to side by side: still the new side's hit, not the old one.
+		act(() => sideBySide.set(true));
+		expect(result.current.caret).toEqual(moved);
+		expect(result.current.count).toEqual({ at: 4, of: 4 });
+		// Unified again, then Ignore whitespace off: the same.
+		act(() => sideBySide.set(false));
+		act(() => ignoreWhitespace.set(false));
+		expect(result.current.caret).toEqual(moved);
+		expect(result.current.count).toEqual({ at: 4, of: 4 });
+		// And the next step goes on from it.
+		act(() => {
+			result.current.step(1);
+		});
+		expect(result.current.count).toEqual({ at: 1, of: 4 });
+	});
+
+	it("a current hit moved off its row (whitespace differs in the term) doesn't stick: back in side by side it is the old side's again", async () => {
+		act(() => {
+			ignoreWhitespace.set(true);
+			sideBySide.set(true);
+		});
+		// "e o" is on the old side of the pair (line 2) and on added line 3,
+		// not on the pair's new side ("saveother").
+		const files = [file(0, ["save other"], ["saveother", "save other x"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
+		search("e o");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "ctx") }],
+			});
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		expect(result.current.count).toEqual({ at: 1, of: 2 });
+		act(() => {
+			result.current.step(1);
+		});
+		const old = { index: 0, side: "LEFT", line: 2, col: 3 };
+		expect(result.current.caret).toEqual({ pos: old, shown: true });
+		act(() => sideBySide.set(false));
+		expect(result.current.count).toEqual({ at: 1, of: 1 });
+		expect(result.current.caret).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 3, col: 3 },
+			shown: false,
+		});
+		act(() => sideBySide.set(true));
+		expect(result.current.caret).toEqual({ pos: old, shown: true });
+		expect(result.current.count).toEqual({ at: 1, of: 2 });
 	});
 
 	it("restarts the prefetch for a new revision and stops it on close", async () => {

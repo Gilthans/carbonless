@@ -1,5 +1,5 @@
 // Scenario ids are the C-cases of
-// docs/superpowers/specs/2026-11-02-re-review-scenarios-and-prior-art.md.
+// Linear CAR-5's document "Re-review after new pushes: scenarios and prior art".
 // Covered elsewhere: C7 (renames) and C9–C12 (other heads, moved code) are
 // inputs the server resolves before calling the tracer (PR 3 and PR 5); C14
 // (a suggestion applied) is C2; C18 (file-level) has no position to trace;

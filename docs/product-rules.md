@@ -187,6 +187,15 @@ switch wouldn't happen.
   request for changes: that one press makes two writes, the comment and
   then the dismissal of that review, since that is what Comment means
   (below). Its tooltip says so before the press.
+- **Resolve in Files changed closes the thread to its bubble** (the owner,
+  2026-11-09), on the press. Once none of the bubble's threads shows, it
+  closes and takes the focus (a bubble above the view comes down to just
+  under the headers); while others show, only the resolved one is hidden
+  (until it reads unresolved) and the next one takes the focus. Opening the
+  bubble shows them all. Any write of the thread GitHub refuses opens it
+  again (beside its notice). A thread with unsent text (its reply box, an
+  edit) or a reply, edit or delete on its way stays open. Unresolve closes
+  nothing (`src/web/files/resolveCollapse.ts`).
 - **Immediate, never into a pending review.** Replies use REST
   `POST /repos/{o}/{r}/pulls/{n}/comments/{commentId}/replies` (to the
   thread's first comment), never GraphQL `addPullRequestReviewThreadReply`,
@@ -550,6 +559,29 @@ question would be on someone else's behalf, or about a past moment.
   access key (on a loopback bind with no key, any local process).
 - **One agent per review per machine.** Another server with the review
   open shows `elsewhere` and leaves the answering to the holder.
+- **Agent threads are traced like comments (owner, 2026-11-09).** One
+  asked on an earlier head is placed in the viewed patch set or head by
+  the same tracer as review threads (`GET /agent/placements`,
+  `placeAgentThreads`): on its traced line when it survives, else under
+  its file with its fate sentence and the "Original Reviewed Change" box;
+  resolved ones after the rest, muted, counted nowhere. It keeps its agent
+  bubble and card, and never counts as a GitHub thread; otherwise it shows
+  as a review thread does (owner, 2026-11-10): a rewritten line's "changed
+  since" chip and old lines, an unplaced one in the review threads' own
+  unplaced row (fate, "near N", Original Reviewed Change, the quiet
+  resolved line). While the placements load, one asked on another head
+  waits: its file's agent bubble and the tree spin, as for comments (never
+  outdated first); an answer for another snapshot is asked once more. If
+  they fail, the failure shows with a Retry and those threads as
+  unknown-fate rows, as review threads. Comment and Ask agent never wait
+  on GitHub's threads. One the tracer puts outside the comparison, or on
+  a path the diff doesn't have (a file renamed since, still tracing or
+  failed), is listed after the files in its own "Not in this comparison"
+  group as its agent card (with its fate when known): never gone. An
+  earlier patch set shows only those asked before the next one started,
+  as review threads, except those asked on its own commit (asked there). Placements are for the viewed snapshot (a moved base
+  asks again), retried on failure, computed and never stored: no drag, no
+  storage change. Bubbles count unresolved agent threads only.
 - **A question never waits on the agent to be sent.** Ask agent writes
   the thread at once; it waits (yellow) until an agent answers, whether
   none is set up, it is starting, busy, crashed or elsewhere.

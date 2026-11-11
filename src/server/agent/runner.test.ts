@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AcpScenario,
@@ -127,7 +127,7 @@ beforeEach(() => {
 	prHead = origin.shas[1] as string;
 	for (const k of ["PATH", "CRB_FAKE_ACP", "CRB_FAKE_ACP_LOG"])
 		saved[k] = process.env[k];
-	process.env.PATH = `${FAKE_ACP_BIN}:${process.env.PATH}`;
+	process.env.PATH = `${FAKE_ACP_BIN}${delimiter}${process.env.PATH}`;
 	process.env.CRB_FAKE_ACP_LOG = logPath;
 	scenario();
 });
@@ -494,32 +494,40 @@ describe("AgentRunner", () => {
 		expect((await threads())[0]?.messages[1]?.text).toBe("Two writers race.");
 	});
 
-	it("an agent whose connection closes but whose process lingers is killed and replaced", async () => {
-		scenario({
-			lingerOnPrompt: true,
-			answers: [{ text: "half and the rest", chunks: 2 }],
-		});
-		await ask("one?", 1);
-		makeRunner().poke();
-		await answered(1);
-		expect((await threads())[0]?.messages[1]).toMatchObject({
-			text: "half and ",
-			stop: "error",
-		});
-		const lost = await until((s) => s.state === "error");
-		expect(lost.error).toMatch(/connection closed/);
-		const lingering = spawns()[0]?.pid as number;
-		await vi.waitFor(() => expect(() => process.kill(lingering, 0)).toThrow(), {
-			timeout: 20_000,
-			interval: 20,
-		});
-		scenario({ answers: [{ text: "fine" }] });
-		await ask("two?", 2);
-		runner.asked();
-		await answered(2);
-		expect(spawns()).toHaveLength(2);
-		await until((s) => s.state === "ready");
-	});
+	// Not on Windows: the .cmd shim's cmd.exe holds the stdout pipe open, so
+	// the agent closing its end is no EOF until the agent exits.
+	it.skipIf(process.platform === "win32")(
+		"an agent whose connection closes but whose process lingers is killed and replaced",
+		async () => {
+			scenario({
+				lingerOnPrompt: true,
+				answers: [{ text: "half and the rest", chunks: 2 }],
+			});
+			await ask("one?", 1);
+			makeRunner().poke();
+			await answered(1);
+			expect((await threads())[0]?.messages[1]).toMatchObject({
+				text: "half and ",
+				stop: "error",
+			});
+			const lost = await until((s) => s.state === "error");
+			expect(lost.error).toMatch(/connection closed/);
+			const lingering = spawns()[0]?.pid as number;
+			await vi.waitFor(
+				() => expect(() => process.kill(lingering, 0)).toThrow(),
+				{
+					timeout: 20_000,
+					interval: 20,
+				},
+			);
+			scenario({ answers: [{ text: "fine" }] });
+			await ask("two?", 2);
+			runner.asked();
+			await answered(2);
+			expect(spawns()).toHaveLength(2);
+			await until((s) => s.state === "ready");
+		},
+	);
 
 	it("bad config is an error status, not a crash", async () => {
 		config = {
