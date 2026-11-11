@@ -11,7 +11,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentThread } from "../../shared/agent";
+import type { AgentMessage, AgentThread } from "../../shared/agent";
 import type { PrOverview, ReviewThread, SessionInfo } from "../../shared/types";
 import { overviewQuery, sessionQuery, showCommentsOf } from "../api";
 import { ThreadActions } from "../threads/Conversation";
@@ -315,6 +315,76 @@ describe("ThreadAgentPanel", () => {
 		expect(screen.getByRole("button", { name: "Resolve" }).className).toContain(
 			"ring-ok",
 		);
+	});
+
+	it("a later answer that doesn't suggest resolving retracts the suggestion: no button, no ring; a failed or stopped one, or a question, doesn't", async () => {
+		const base = conversation().messages;
+		const suggested = (more: AgentThread["messages"]) =>
+			conversation({
+				messages: [
+					...base.slice(0, 3),
+					{ ...(base[3] as AgentMessage), suggests: "resolve" },
+					...more,
+				],
+				seenUpTo: more.at(-1)?.id ?? "m4",
+			});
+		const resolve = () => screen.getByRole("button", { name: "Resolve" });
+		const suggestion = () =>
+			within(panel()).queryAllByRole("button", {
+				name: "Resolve By Agent Suggestion",
+			});
+		// Regressed: the latest answer no longer suggests it.
+		show(reviewThread(), [
+			suggested([
+				{ id: "m5", by: "human", at: "2026-11-11T10:04:00Z", text: "Now?" },
+				{
+					id: "m6",
+					by: "ai",
+					at: "2026-11-11T10:05:00Z",
+					text: "Regressed, not resolved.",
+					stop: "end_turn",
+				},
+			]),
+		]);
+		await userEvent.click(agentButton());
+		expect(suggestion()).toHaveLength(0);
+		expect(resolve().className).not.toContain("ring-ok");
+		// A failed answer, a stopped one and a question alone leave it standing.
+		for (const more of [
+			[
+				{ id: "m5", by: "human", at: "2026-11-11T10:04:00Z", text: "Now?" },
+				{
+					id: "m6",
+					by: "ai",
+					at: "2026-11-11T10:05:00Z",
+					text: "",
+					stop: "error",
+					error: "boom",
+				},
+			],
+			[
+				{ id: "m5", by: "human", at: "2026-11-11T10:04:00Z", text: "Now?" },
+				{
+					id: "m6",
+					by: "ai",
+					at: "2026-11-11T10:05:00Z",
+					text: "Let me",
+					stop: "cancelled",
+				},
+			],
+			[{ id: "m5", by: "human", at: "2026-11-11T10:04:00Z", text: "Now?" }],
+		] as AgentThread["messages"][]) {
+			cleanup();
+			show(reviewThread(), [suggested(more)]);
+			await userEvent.click(agentButton());
+			const buttons = suggestion();
+			expect(buttons).toHaveLength(1);
+			expect(buttons[0]?.closest("[data-message]")).toHaveAttribute(
+				"data-message",
+				"m4",
+			);
+			expect(resolve().className).toContain("ring-ok");
+		}
 	});
 
 	it("sending posts the current view", async () => {

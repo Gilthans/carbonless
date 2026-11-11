@@ -90,8 +90,10 @@ export function agentButtonName(
 }
 
 /**
- * The message whose "Resolve By Agent Suggestion" stands: the latest that
- * suggests resolving, while the GitHub thread is open and still there.
+ * The message whose "Resolve By Agent Suggestion" stands: the latest
+ * finished answer, when it suggests resolving, while the GitHub thread is
+ * open and still there. A later answer that doesn't suggest it retracts
+ * it; one that failed or was stopped doesn't, nor does a question alone.
  */
 export function standingSuggestion(
 	conversation: AgentThread | undefined,
@@ -100,9 +102,10 @@ export function standingSuggestion(
 	if (!conversation || conversation.orphaned || thread.resolved) {
 		return undefined;
 	}
-	return [...conversation.messages]
+	const latest = [...conversation.messages]
 		.reverse()
-		.find((m) => m.by === "ai" && m.suggests === "resolve");
+		.find((m) => m.by === "ai" && m.stop !== "error" && m.stop !== "cancelled");
+	return latest?.suggests === "resolve" ? latest : undefined;
 }
 
 // --- The comparison a question is asked in ---------------------------------
