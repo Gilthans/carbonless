@@ -1,7 +1,15 @@
+import {
+	crossedCount,
+	reviewedCount,
+	type SinceUnit,
+	sinceUnits,
+} from "../../shared/pieces";
+import { fileFlags } from "../../shared/progress";
 import { overlayCarries } from "../../shared/rereview/overlay";
 import type {
-	ClusterKind,
+	ClusterView,
 	FileView,
+	Progress,
 	RereviewAnswer,
 	ReviewView,
 } from "../../shared/types";
@@ -45,11 +53,37 @@ export interface FileSince {
 	/** Each cluster key's entry (gone keys are the compared patch set's). */
 	kinds: Map<string, KindEntry>;
 	conflict: boolean;
-	/** `carried` counts the view's clusters that carry a mark (the view decides, not the answer alone). */
-	counts: { reworked: number; new: number; gone: number; carried: number };
+	/**
+	 * The file's units (sinceUnits) not marked yet, by kind: what its
+	 * header chips count, dropping as pieces are marked; `carried` counts
+	 * the view's clusters that carry a mark (the view decides).
+	 */
+	counts: {
+		reworked: number;
+		new: number;
+		gone: number;
+		carried: number;
+		reverted: number;
+		removed: number;
+		/** Clusters whose carried mark the reviewer replaced (no chip). */
+		unticked: number;
+	};
+	/** Its units not marked yet: how many, and their lines. */
+	left: { units: number; lines: number };
 }
 
-/** What the engine says, by file index, over the view's files. */
+/** The since view's units under the view's marks (sinceUnits). */
+export function unitsOf(answer: RereviewAnswer, view: ReviewView): SinceUnit[] {
+	const viewFiles = new Map(view.files.map((f) => [f.index, f]));
+	return sinceUnits(
+		answer.files,
+		answer.from,
+		(index) => viewFiles.get(index)?.clusters ?? [],
+		view.sinceMarks,
+	);
+}
+
+/** What the engine says, by file index, over the view's files and marks. */
 export function sinceByFile(
 	answer: RereviewAnswer,
 	view: ReviewView,
@@ -57,16 +91,29 @@ export function sinceByFile(
 	const out = new Map<number, FileSince>();
 	const viewFiles = new Map(view.files.map((f) => [f.index, f]));
 	for (const file of answer.files) {
-		const kinds = new Map(file.clusters.map((c) => [c.key, c]));
-		const counts = { reworked: 0, new: 0, gone: 0, carried: 0 };
-		for (const c of file.clusters) {
-			if (c.kind === "reworked") counts.reworked++;
-			else if (c.kind === "new") counts.new++;
-			else if (c.kind === "gone") counts.gone++;
-		}
-		counts.carried =
-			viewFiles.get(file.index)?.clusters.filter((c) => c.carried).length ?? 0;
-		out.set(file.index, { kinds, conflict: file.conflict, counts });
+		out.set(file.index, {
+			kinds: new Map(file.clusters.map((c) => [c.key, c])),
+			conflict: file.conflict,
+			counts: {
+				reworked: 0,
+				new: 0,
+				gone: 0,
+				reverted: 0,
+				removed: 0,
+				unticked: 0,
+				carried:
+					viewFiles.get(file.index)?.clusters.filter((c) => c.carried).length ??
+					0,
+			},
+			left: { units: 0, lines: 0 },
+		});
+	}
+	for (const u of unitsOf(answer, view)) {
+		const info = out.get(u.index);
+		if (!info || u.state !== "unreviewed") continue;
+		info.counts[u.kind]++;
+		info.left.units++;
+		info.left.lines += u.open;
 	}
 	return out;
 }
@@ -78,31 +125,75 @@ export function goneFiles(
 ): RereviewAnswer["files"] {
 	const indexes = new Set(view.files.map((f) => f.index));
 	return answer.files.filter(
-		(f) => !indexes.has(f.index) && f.clusters.some((c) => c.kind === "gone"),
+		(f) =>
+			!indexes.has(f.index) &&
+			(f.clusters.some((c) => c.kind === "gone") ||
+				(f.pieces?.length ?? 0) > 0),
 	);
 }
 
-const needsEyes = (kind: ClusterKind) => kind === "reworked" || kind === "new";
+/**
+ * A gone file (goneFiles) as a file the diff and the search read: no
+ * clusters of its own, its lines are the since view's hunks.
+ */
+export function goneFileView(file: { index: number; path: string }): FileView {
+	return {
+		index: file.index,
+		path: file.path,
+		status: "modified",
+		binary: false,
+		submodule: false,
+		additions: 0,
+		deletions: 0,
+		clusters: [],
+		done: false,
+		reviewed: false,
+		crossedOff: false,
+	};
+}
 
 /**
- * How much is still to read in the unit: the view's unreviewed clusters
- * the engine lists as reworked or new (a cluster marked meanwhile is read;
- * one the reviewer unticked is to read again). Files: those with any.
+ * How much is still to read in the unit: the since view's units not
+ * marked yet (pieces, and the rest of a reworked or new cluster only the
+ * full diff shows). Files: those with any.
  */
 export function toReadCount(
 	since: Map<number, FileSince>,
-	view: ReviewView,
+	_view: ReviewView,
 	unit: Unit,
 ): number {
 	let n = 0;
+	for (const info of since.values()) {
+		const { units, lines } = info.left;
+		n +=
+			unit === "files" ? (units > 0 ? 1 : 0) : unit === "lines" ? lines : units;
+	}
+	return n;
+}
+
+/**
+ * The full diff's "to read" (it counts the snapshot's clusters): the
+ * view's clusters the engine lists as reworked or new, not reviewed or
+ * crossed off yet, in the unit (lines: the ones not marked).
+ */
+export function toReadClusters(
+	answer: RereviewAnswer,
+	view: ReviewView,
+	unit: Unit,
+): number {
+	const kinds = new Map(
+		answer.files.flatMap((f) => f.clusters.map((c) => [c.key, c.kind])),
+	);
+	let n = 0;
 	for (const file of view.files) {
-		const kinds = since.get(file.index)?.kinds;
-		if (!kinds) continue;
 		let inFile = 0;
 		for (const c of file.clusters) {
-			const kind = kinds.get(c.key)?.kind;
-			if (!kind || !needsEyes(kind) || c.state !== "unreviewed") continue;
-			inFile += unit === "lines" ? c.lines : 1;
+			const kind = kinds.get(c.key);
+			if ((kind !== "reworked" && kind !== "new") || c.state !== "unreviewed") {
+				continue;
+			}
+			inFile +=
+				unit === "lines" ? c.lines - reviewedCount(c) - crossedCount(c) : 1;
 		}
 		n += unit === "files" ? (inFile > 0 ? 1 : 0) : inFile;
 	}
@@ -110,24 +201,87 @@ export function toReadCount(
 }
 
 /**
+ * The since view's progress (owner: "the progress bar should also be
+ * related to the current view"): its units in the clusters unit, their
+ * shown lines in lines, the files with any in files.
+ */
+export function sinceProgress(units: readonly SinceUnit[]): Progress {
+	const clusters = { total: 0, reviewed: 0, crossedOff: 0 };
+	const lines = { total: 0, reviewed: 0, crossedOff: 0 };
+	const byFile = new Map<number, SinceUnit[]>();
+	for (const u of units) {
+		clusters.total++;
+		lines.total += u.lines;
+		if (u.state === "reviewed") {
+			clusters.reviewed++;
+			lines.reviewed += u.lines;
+		} else if (u.state === "crossed-off") {
+			clusters.crossedOff++;
+			lines.crossedOff += u.lines;
+		}
+		byFile.set(u.index, [...(byFile.get(u.index) ?? []), u]);
+	}
+	const files = { total: 0, reviewed: 0, crossedOff: 0, done: 0 };
+	for (const list of byFile.values()) {
+		files.total++;
+		const done = list.every((u) => u.state !== "unreviewed");
+		if (done) files.done++;
+		if (list.every((u) => u.state === "crossed-off")) files.crossedOff++;
+		else if (done) files.reviewed++;
+	}
+	return { clusters, lines, files };
+}
+
+/**
+ * The file as the since view counts it (its header meter and sentence):
+ * one cluster per unit, with the unit's lines and state.
+ */
+export function unitsFile(
+	file: FileView,
+	units: readonly SinceUnit[],
+): FileView {
+	const clusters: ClusterView[] = units.map((u, i) => ({
+		key: `unit:${i}`,
+		kind: "lines",
+		oldStart: 0,
+		oldCount: 0,
+		newStart: 0,
+		newCount: 0,
+		removed: [],
+		added: [],
+		lines: u.lines,
+		state: u.state,
+	}));
+	return { ...file, clusters, ...fileFlags(clusters) };
+}
+
+/** The connector's "to read" for the comparison on screen: its units not marked yet. */
+export function liveToRead(
+	since: Map<number, FileSince>,
+): RereviewAnswer["toRead"] & { gone: number } {
+	let files = 0;
+	let clusters = 0;
+	let gone = 0;
+	for (const info of since.values()) {
+		if (info.left.units > 0 || info.conflict) files++;
+		clusters += info.left.units;
+		gone += info.counts.gone;
+	}
+	return { files, clusters, gone };
+}
+
+/**
  * The tree's dot for a file in a comparison the engine has answered:
- * "read" when anything in it needs eyes (a reworked, new or gone cluster,
- * a conflict, or any unreviewed cluster), "carried" when every mark
- * carried over; null without an answer for it.
+ * "read" when anything in it needs eyes (a unit not marked: sinceUnits
+ * leaves no unmarked line out; or a conflict), "carried" when every mark carried over; null
+ * without an answer for it.
  */
 export function eyesOf(
-	file: FileView,
+	_file: FileView,
 	since: FileSince | undefined,
 ): "read" | "carried" | null {
 	if (!since) return null;
-	const { counts } = since;
-	if (
-		since.conflict ||
-		counts.reworked > 0 ||
-		counts.new > 0 ||
-		counts.gone > 0 ||
-		file.clusters.some((c) => c.state === "unreviewed")
-	) {
+	if (since.conflict || since.left.units > 0) {
 		return "read";
 	}
 	return "carried";
@@ -139,9 +293,10 @@ export function nothingSince(
 	since: Map<number, FileSince>,
 ): boolean {
 	if (answer.toRead.clusters > 0 || answer.toRead.files > 0) return false;
-	for (const s of since.values()) {
-		if (s.counts.gone > 0 || s.conflict) return false;
+	if (answer.files.some((f) => f.clusters.some((c) => c.kind === "gone"))) {
+		return false;
 	}
+	for (const s of since.values()) if (s.conflict) return false;
 	return true;
 }
 

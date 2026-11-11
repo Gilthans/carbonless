@@ -8,6 +8,7 @@ import {
 	type HunksBatch,
 	type NewThreadAnswer,
 	type NewThreadRequest,
+	type PlacementsAnswer,
 	type PrOverview,
 	type ReplyRequest,
 	type RereviewAnswer,
@@ -15,6 +16,7 @@ import {
 	type ReviewView,
 	type SessionInfo,
 	type StateChange,
+	type ThreadAnchorRef,
 	type ThreadComment,
 	type ThreadComments,
 	type ThreadGone,
@@ -203,25 +205,60 @@ export const fetchRereview = (from: number, to: RereviewTo) =>
 	);
 
 export type RereviewTo = { patchset: number } | { head: string };
-export const fetchHunksBatch = (revision: string, indexes: readonly number[]) =>
+/** Several files' hunks (the search's prefetch); with `from`, the since view's. */
+export const fetchHunksBatch = (
+	revision: string,
+	indexes: readonly number[],
+	from?: number,
+) =>
 	request<HunksBatch>(
-		`/api/files/hunks?${new URLSearchParams({ revision, indexes: indexes.join(",") })}`,
+		`/api/files/hunks?${new URLSearchParams({
+			revision,
+			indexes: indexes.join(","),
+			...(from === undefined ? {} : { from: String(from) }),
+		})}`,
 	);
 
 /** A revision's hunks and context never change; kept this long unobserved, so a search's prefetch outlives the bar. */
 export const HUNKS_KEPT_MS = 60 * 60_000;
 
+/** Every unresolved thread of read `readId` placed into a patch set or a head. */
+export const fetchPlacements = (readId: string, to: RereviewTo) =>
+	request<PlacementsAnswer | { pending: true }>(
+		`/api/placements?${new URLSearchParams({
+			read: readId,
+			...("patchset" in to ? { ps: String(to.patchset) } : { head: to.head }),
+		})}`,
+	);
+
+/** The reviewer places a thread on lines of their latest patch set. */
+export const postPlacement = (
+	threadId: string,
+	patchset: number,
+	anchor: ThreadAnchorRef,
+) =>
+	post<PlacementsAnswer["threads"][number]>(
+		`/api/threads/${encodeURIComponent(threadId)}/placement`,
+		{ patchset, anchor },
+	);
+
+/**
+ * Unchanged lines `from..to` of a file; with `since`, the since view's (the
+ * interdiff's from that patch set, numbered as its hunks are).
+ */
 export const fetchContext = (
 	revision: string,
 	index: number,
 	from: number,
 	to: number,
+	since?: number,
 ) =>
 	request<DiffLine[]>(
 		`/api/files/${index}/context?${new URLSearchParams({
 			revision,
 			newFrom: String(from),
 			newTo: String(to),
+			...(since === undefined ? {} : { from: String(since) }),
 		})}`,
 	);
 
@@ -293,6 +330,34 @@ export const sessionQuery = queryOptions({
 	queryFn: fetchSession,
 	staleTime: Number.POSITIVE_INFINITY,
 });
+
+/**
+ * The patch sets' commit counts (`SessionInfo.patchsets[].commits`), which
+ * the server counts in the background: the session read again every
+ * REREVIEW_POLL_MS until every count is in, under its own key, so the
+ * polls never touch the session the page runs on (the graph merges them).
+ */
+export const patchsetCommitsQuery = (missing: string[]) =>
+	queryOptions({
+		// By the counts still missing: a newly started patch set asks anew.
+		queryKey: ["patchset-commits", ...missing],
+		queryFn: async () => {
+			const info = await fetchSession();
+			return Object.fromEntries(
+				info.patchsets.map((p) => [`${p.number} ${p.head}`, p.commits]),
+			) as Record<string, SessionInfo["patchsets"][number]["commits"]>;
+		},
+		staleTime: Number.POSITIVE_INFINITY,
+		refetchInterval: (query) => {
+			const data = query.state.data;
+			// Asked again only while a count is still being made: one that
+			// failed for good, or a patch set no longer there, stops it.
+			if (query.state.status === "error") return false;
+			return !data || missing.some((k) => data[k] === null)
+				? REREVIEW_POLL_MS
+				: false;
+		},
+	});
 
 /**
  * The head check: polled every 5 minutes and on window focus, and each answer
@@ -699,6 +764,12 @@ export const verdictQuery = queryOptions({
 	queryKey: ["verdict"],
 	queryFn: fetchVerdict,
 	staleTime: Number.POSITIVE_INFINITY,
+	// What changed since the reviewer's verdict comes from the engine:
+	// asked again while it computes (the server keeps its GitHub read).
+	refetchInterval: (query) =>
+		query.state.data?.since?.changes.status === "pending"
+			? REREVIEW_POLL_MS
+			: false,
 });
 
 /** Every review query's key starts with this (invalidate them all at once). */
@@ -751,15 +822,53 @@ export const rereviewQuery = (from: number, to: RereviewTo) =>
 				: false,
 	});
 
+/**
+ * The threads' placements in a snapshot for one read: polled every
+ * REREVIEW_POLL_MS while `pending`, then kept (a placement write updates
+ * it; a new read is another key).
+ */
+export const placementsQuery = (readId: string, to: RereviewTo) =>
+	queryOptions({
+		queryKey: [
+			"placements",
+			readId,
+			...("patchset" in to ? ["ps", to.patchset] : ["head", to.head]),
+		],
+		queryFn: async ({ client, queryKey }) => {
+			const next = await fetchPlacements(readId, to);
+			// Placements once shown never go back to spinners (a job the
+			// server started again answers pending for a while).
+			if ("pending" in next) {
+				const shown = client.getQueryData<PlacementsAnswer | { pending: true }>(
+					queryKey,
+				);
+				if (shown && !("pending" in shown)) return shown;
+			}
+			return next;
+		},
+		staleTime: Number.POSITIVE_INFINITY,
+		// Asked again while pending, and while the resolved threads are
+		// still joining (the unresolved ones are in already).
+		// Never after an error: the last data would keep it going.
+		refetchInterval: (query) =>
+			query.state.status !== "error" &&
+			query.state.data &&
+			("pending" in query.state.data || query.state.data.complete === false)
+				? REREVIEW_POLL_MS
+				: false,
+	});
+
 export const contextQuery = (
 	revision: string,
 	index: number,
 	from: number,
 	to: number,
+	/** The since view's patch set (hunksQuery's `from`): its own lines. */
+	since?: number,
 ) =>
 	queryOptions({
-		queryKey: ["context", revision, index, from, to],
-		queryFn: () => fetchContext(revision, index, from, to),
+		queryKey: ["context", revision, index, from, to, since ?? null],
+		queryFn: () => fetchContext(revision, index, from, to, since),
 		staleTime: Number.POSITIVE_INFINITY,
 		gcTime: HUNKS_KEPT_MS,
 	});

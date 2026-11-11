@@ -3,7 +3,8 @@
 `agent.mjs` is an ACP agent over stdio, built on `@agentclientprotocol/sdk`'s
 `agent()`, that tests spawn in place of the reviewer's harness. Put
 `FAKE_ACP_BIN` (`test/fake-acp/bin`, holding an executable named
-`claude-agent-acp`) first on `PATH`, write a scenario with
+`claude-agent-acp`, and the `.cmd` shim npm writes beside it on Windows)
+first on `PATH`, write a scenario with
 `writeAcpScenario(dir, {...})` and pass its path in `CRB_FAKE_ACP`; set
 `CRB_FAKE_ACP_LOG` to a file to record every request it receives (with its
 `pid`, plus a first `spawn` line with its `cwd`, argv and env names) and

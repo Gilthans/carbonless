@@ -541,7 +541,10 @@ describe("ResolveButton", () => {
 			{ writes: "on" },
 		);
 		await userEvent.click(screen.getByRole("button", { name: "Resolve" }));
-		expect(onToggle).toHaveBeenCalledWith(true);
+		expect(onToggle).toHaveBeenCalledWith(
+			true,
+			screen.getByRole("button", { name: "Resolve" }),
+		);
 		expect(writeCalls).toEqual([
 			{ path: "/api/threads/T1/resolved", body: { resolved: true } },
 		]);

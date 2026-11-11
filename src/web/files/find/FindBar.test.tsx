@@ -66,6 +66,13 @@ describe("FindBar", () => {
 		rerender(bar(props({ count: null, searching: true })));
 		expect(screen.getByTestId("find-count")).toBeEmptyDOMElement();
 		expect(screen.queryByRole("status")).toBeNull();
+		// Nothing found yet while files are still on their way: the spinner,
+		// never "0 of 0" (principle 8).
+		rerender(bar(props({ count: { at: 0, of: 0 }, searching: true })));
+		expect(screen.getByTestId("find-count")).toBeEmptyDOMElement();
+		expect(
+			screen.getByRole("status", { name: "Searching files…" }),
+		).toBeTruthy();
 	});
 
 	it("keeps the count's live region in place, so the first count is announced", () => {

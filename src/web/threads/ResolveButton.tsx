@@ -22,8 +22,8 @@ export function canToggle(thread: ReviewThread, writesOn: boolean): boolean {
 export function ResolveButton(props: {
 	/** The thread as the reviewer intends it (overlayThreads). */
 	thread: ReviewThread;
-	/** Told after each flip, with the new state (the Overview's fade). */
-	onToggle?: (resolved: boolean) => void;
+	/** Told after each flip, with the new state and the button (the Overview's fade, Files changed's close). */
+	onToggle?: (resolved: boolean, from: Element) => void;
 }) {
 	const { thread } = props;
 	const writer = useThreadWriter();
@@ -35,10 +35,10 @@ export function ResolveButton(props: {
 		<button
 			type="button"
 			data-testid="resolve-button"
-			onClick={() => {
+			onClick={(e) => {
 				const next = !thread.resolved;
 				writer.setResolved(thread.id, next);
-				props.onToggle?.(next);
+				props.onToggle?.(next, e.currentTarget);
 			}}
 			// A focused reply box keeps its focus (and so its size) on a mouse
 			// click: shrinking under the pointer, it would move the button away.

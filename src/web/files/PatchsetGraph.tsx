@@ -1,22 +1,29 @@
-import { CheckIcon } from "@primer/octicons-react";
-import { useQueries } from "@tanstack/react-query";
+import { AlertIcon, CheckIcon } from "@primer/octicons-react";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import {
 	type ReactNode,
 	type PointerEvent as ReactPointerEvent,
+	useCallback,
 	useEffect,
+	useId,
+	useLayoutEffect,
 	useRef,
 	useState,
 } from "react";
+import { createPortal } from "react-dom";
+import { openedOn } from "../../shared/rereview/openedOn";
 import type { RereviewAnswer, SessionInfo, Shape } from "../../shared/types";
-import { rereviewQuery } from "../api";
+import { overviewQuery, patchsetCommitsQuery, rereviewQuery } from "../api";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
 import { useShortcut } from "../shortcuts";
-import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
+import { placeNear, Tooltip, type TooltipTriggerProps } from "../Tooltip";
+import { useThreads } from "../threads/useThreads";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import {
 	type Comparison,
 	type ComparisonBase,
+	moveMarker,
 	positionOf,
 	type Viewing,
 } from "./comparison";
@@ -44,10 +51,16 @@ interface Dot {
 	base?: ComparisonBase;
 	/** The commit it is at (a patch set's head; the branch's merge base). */
 	oid: string;
+	/** The merge base it was against (its card's "Against"), and its branch. */
+	mergeBase?: string;
+	baseBranch?: string;
 	patchset?: SessionInfo["patchsets"][number];
 }
 
 const short = (oid: string) => oid.slice(0, 7);
+
+const why = (move: { disabled: string } | object): string | null =>
+	"disabled" in move ? move.disabled : null;
 
 const sameViewing = (a: Viewing | undefined, b: Viewing | null) =>
 	!!a &&
@@ -78,14 +91,33 @@ export function railDots(
 	const latest = session.patchsets.at(-1);
 	const mergeBase =
 		latest?.mergeBase ?? session.head?.mergeBase ?? session.snapshotHead;
+	// The branch dot is a virtual pointer (owner, 2026-11-09): the comparison
+	// target's base branch at the target's merge base, so it follows the
+	// target (a retarget, a rebase or a merge-in moves it).
+	const target =
+		viewing?.kind === "patchset"
+			? session.patchsets.find((p) => p.number === viewing.number)
+			: undefined;
+	const onHead =
+		viewing?.kind === "head" &&
+		session.head &&
+		viewing.oid === session.head.oid;
+	const branchOf = target
+		? { label: target.baseBranch, oid: target.mergeBase }
+		: onHead && session.head
+			? { label: session.head.baseBranch, oid: session.head.mergeBase }
+			: {
+					label: latest?.baseBranch ?? session.head?.baseBranch ?? "base",
+					oid: mergeBase,
+				};
 	const dots: Dot[] = [
 		{
 			id: "branch",
 			kind: "branch",
-			label: session.head?.baseBranch ?? "base",
+			label: branchOf.label,
 			position: 0,
 			base: { kind: "branch" },
-			oid: mergeBase,
+			oid: branchOf.oid,
 		},
 		...session.patchsets.map(
 			(p): Dot => ({
@@ -117,6 +149,8 @@ export function railDots(
 			position: positionOf({ kind: "head", oid: snapshotOid }, numbers),
 			viewing: { kind: "head", oid: snapshotOid },
 			oid: snapshotOid,
+			mergeBase,
+			...(latest ? { baseBranch: latest.baseBranch } : {}),
 		});
 	}
 	const head =
@@ -158,21 +192,23 @@ function DotGlyph(props: { dot: Dot; viewing: boolean; base: boolean }) {
 	);
 }
 
-/** A marker on the rail: viewing (accent) or comparison base (violet). */
+/** A marker on the rail: comparison target (accent) or comparison base (violet). */
 function Marker(props: {
 	kind: "viewing" | "base";
 	phone: boolean;
 	onPointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => void;
 	dragging: boolean;
+	/** While dragged: how far it follows the pointer, kept inside the rail. */
+	dx?: number;
 }) {
 	const base = props.kind === "base";
-	const label = base ? "comparison base" : "viewing";
+	const label = base ? "comparison base" : "comparison target";
 	return (
 		<Tooltip
 			content={
 				base
 					? "Comparison base: the diff shown starts here. Drag to move it."
-					: "Viewing: the diff shown ends here. Drag to move it."
+					: "Comparison target: the diff shown ends here. Drag to move it."
 			}
 			describe={false}
 		>
@@ -185,14 +221,19 @@ function Marker(props: {
 					data-dragging={props.dragging || undefined}
 					onPointerDown={props.onPointerDown}
 					// The rail scrolls sideways on a phone; a drag on a marker must not.
-					style={{ touchAction: "none" }}
+					style={{
+						touchAction: "none",
+						...(props.dragging && props.dx !== undefined
+							? { transform: `translateX(${props.dx}px)`, zIndex: 10 }
+							: {}),
+					}}
 					className={`relative inline-flex min-h-10 cursor-grab items-center rounded-full px-1.5 text-[10.5px] tracking-[0.04em] uppercase select-none focus-visible:outline-2 focus-visible:outline-accent active:cursor-grabbing sm:min-h-[18px] ${
 						base
 							? "border-[1.5px] border-done text-done"
 							: "border-[1.5px] border-accent text-accent"
-					} ${props.dragging ? "opacity-60" : ""}`}
+					} ${props.dragging ? "cursor-grabbing opacity-80 shadow-float" : ""}`}
 				>
-					{base && props.phone ? "comp. base" : label}
+					{props.phone ? (base ? "comp. base" : "comp. target") : label}
 				</button>
 			)}
 		</Tooltip>
@@ -221,65 +262,146 @@ const Sha = ({ oid }: { oid: string }) => (
 	<code className="font-mono text-ink-soft">{short(oid)}</code>
 );
 
-/** A dot's details (its hover card, the phone sheet's text). */
-function dotCard(dot: Dot, session: SessionInfo): ReactNode {
+/** A dot's card: a title, a subtitle, then one row per fact. */
+function DotCardLayout(props: {
+	title: string;
+	subtitle: ReactNode;
+	rows: ReactNode[];
+}) {
+	return (
+		<span className="block max-w-72 text-left">
+			<span className="block font-semibold text-ink">{props.title}</span>
+			<span className="block text-muted">{props.subtitle}</span>
+			<span className="mt-1 block text-ink-soft">
+				{props.rows.map((row, i) => (
+					// biome-ignore lint/suspicious/noArrayIndexKey: fixed rows, in a fixed order.
+					<span key={i} className="flex min-h-5 items-center gap-1.5">
+						{row}
+					</span>
+				))}
+			</span>
+		</span>
+	);
+}
+
+const plural = (n: number, word: string) =>
+	`${n} ${n === 1 ? word : `${word}s`}`;
+
+/**
+ * "8 threads created (6 resolved)": the PR's threads opened while patch
+ * set `number` was the newest (openedOn), from the threads the page reads
+ * anyway; a spinner until they are in.
+ */
+function ThreadsRow(props: { number: number; session: SessionInfo }) {
+	const overview = useQuery(overviewQuery);
+	const { view, error } = useThreads(overview.data?.readId);
+	if (!view) {
+		if (error || overview.error) {
+			return <span className="text-bad">Couldn't read threads</span>;
+		}
+		return (
+			<Spinner label="Counting threads" size={12} testId="threads-pending" />
+		);
+	}
+	const opened = view.threads.filter(
+		(t) => openedOn(t.createdAt, props.session.patchsets) === props.number,
+	);
+	if (opened.length === 0) return <>No threads created</>;
+	const resolved = opened.filter((t) => t.resolved).length;
+	return (
+		<>
+			{plural(opened.length, "thread")} created ({resolved} resolved)
+		</>
+	);
+}
+
+/** "Against main at 1a2b3c4" (the merge base alone when no branch is known). */
+const Against = (props: { branch?: string; oid: string }) => (
+	<span>
+		Against {props.branch ? `${props.branch} at ` : ""}
+		<Sha oid={props.oid} />
+	</span>
+);
+
+const Commit = ({ oid }: { oid: string }) => (
+	<span>
+		Commit <Sha oid={oid} />
+	</span>
+);
+
+/** A dot's details, for a reader who doesn't know the data model. */
+function DotCard(props: { dot: Dot; session: SessionInfo }) {
+	const { dot, session } = props;
+	// The PR's current base: the head's (each patch set has its own).
+	const branch = session.head?.baseBranch;
 	switch (dot.kind) {
 		case "branch":
 			return (
-				<Card
-					head={`${dot.label} · base branch`}
-					body={
-						<>
-							merge base <Sha oid={dot.oid} />
-						</>
-					}
+				<DotCardLayout
+					title={dot.label}
+					subtitle="Base branch"
+					rows={[
+						<span key="mb">
+							Merge base <Sha oid={dot.oid} />
+						</span>,
+					]}
 				/>
 			);
 		case "patchset": {
 			const p = dot.patchset as SessionInfo["patchsets"][number];
 			return (
-				<Card
-					head={
+				<DotCardLayout
+					title={`Patch Set ${p.number}`}
+					subtitle={
 						<>
-							{dot.label} · <Sha oid={p.head} /> · started{" "}
+							Reviewed starting{" "}
 							<RelativeTime iso={new Date(p.startedAt).toISOString()} />
 						</>
 					}
-					body={
-						<>
-							against <Sha oid={p.mergeBase} />
-							{p.since !== null && ` · since PS${p.since}`}
-						</>
-					}
+					rows={[
+						<Commit key="c" oid={p.head} />,
+						<Against key="a" branch={p.baseBranch} oid={p.mergeBase} />,
+						<ThreadsRow key="t" number={p.number} session={session} />,
+					]}
 				/>
 			);
 		}
 		case "snapshot":
 			return (
-				<Card
-					head={
-						<>
-							snapshot <Sha oid={dot.oid} />
-						</>
-					}
-					body="not a patch set yet: your first mark starts it"
+				<DotCardLayout
+					title="Snapshot"
+					subtitle="Not reviewed yet"
+					rows={[
+						<Commit key="c" oid={dot.oid} />,
+						<Against
+							key="a"
+							branch={dot.baseBranch ?? branch}
+							oid={dot.mergeBase ?? dot.oid}
+						/>,
+					]}
 				/>
 			);
 		case "head":
 			return (
-				<Card
-					head={
-						<>
-							head · <Sha oid={dot.oid} />
-						</>
-					}
-					body={
-						session.head
-							? `${commitsLabel(session.head.commits, false)} since ${latestLabel(
-									session,
-								)}`
-							: undefined
-					}
+				<DotCardLayout
+					title="Head"
+					subtitle="Not reviewed yet"
+					rows={[
+						<Commit key="c" oid={dot.oid} />,
+						...(session.head
+							? [
+									<Against
+										key="a"
+										branch={branch}
+										oid={session.head.mergeBase}
+									/>,
+									<span key="n">
+										{commitsLabel(session.head.commits, false)} since{" "}
+										{latestLabel(session)}
+									</span>,
+								]
+							: []),
+					]}
 				/>
 			);
 	}
@@ -294,11 +416,20 @@ interface Connector {
 	 * it is in (also before the first read lands), or why it failed.
 	 */
 	answer: RereviewAnswer | { pending: true } | { error: string } | undefined;
-	/** The commit count known at once (the head's), else from the answer. */
+	/**
+	 * The commit count known from the session (the head's; the first patch
+	 * set's over the branch), else from the answer.
+	 */
 	commits: number | null;
+	/** The session's count is still being counted (a spinner in its slot). */
+	counting: boolean;
+	/** Why the session's count couldn't be made (an error in its slot). */
+	countError: string | null;
 	/** The shape code known from the session (a patch set's record). */
 	shape: Shape["code"] | null;
 	dashed: boolean;
+	/** The comparison on screen: what is left there (live), over the engine's count. */
+	live?: ToRead;
 }
 
 /** The answer once it is in; null while pending, failed or never asked. */
@@ -334,7 +465,11 @@ function ConnectorCard(props: { c: Connector; baseBranch?: string }) {
 		return (
 			<Card
 				head={head}
-				body={connectorLine(answer.shape, toReadOf(answer), props.baseBranch)}
+				body={connectorLine(
+					answer.shape,
+					c.live ?? toReadOf(answer),
+					props.baseBranch,
+				)}
 			/>
 		);
 	}
@@ -353,7 +488,17 @@ function ConnectorCard(props: { c: Connector; baseBranch?: string }) {
 		return (
 			<Card
 				head={head}
-				body={c.commits === null ? undefined : commitsLabel(c.commits, false)}
+				body={
+					c.commits !== null ? (
+						commitsLabel(c.commits, false)
+					) : c.countError !== null ? (
+						<span className="text-bad">
+							Couldn't count the commits: {c.countError}
+						</span>
+					) : c.counting ? (
+						<Spinner label="Counting commits" size={12} />
+					) : undefined
+				}
 			/>
 		);
 	}
@@ -399,14 +544,22 @@ function ConnectorLine(props: {
 					warn: "border-warn",
 					ok: "border-ok",
 					bad: "border-bad",
-				}[connectorTone(answer.shape, toReadOf(answer))]
+				}[connectorTone(answer.shape, c.live ?? toReadOf(answer))]
 			: "border-warn";
 	// The count's slot keeps its height while it loads (nothing moves).
 	const label =
 		count !== null ? (
 			commitsLabel(count, props.phone)
-		) : c.answer ? (
-			<Spinner label="Counting commits" size={10} />
+		) : c.countError !== null ? (
+			// Failed for good: not loading, not 0 (its card says why).
+			<AlertIcon
+				size={10}
+				aria-hidden
+				data-testid="ps-conn-count-error"
+				className="text-bad"
+			/>
+		) : c.answer || c.counting ? (
+			<Spinner label="Counting commits" size={10} testId="ps-conn-counting" />
 		) : null;
 	return (
 		<Tooltip
@@ -418,7 +571,7 @@ function ConnectorLine(props: {
 				<span
 					{...trigger}
 					role="img"
-					aria-label={`${c.from.label} to ${c.to.label}${count !== null ? `: ${commitsLabel(count, false)}` : ""}`}
+					aria-label={`${c.from.label} to ${c.to.label}${count !== null ? `: ${commitsLabel(count, false)}` : c.countError !== null ? ": couldn't count the commits" : ""}`}
 					data-testid={`ps-conn-${c.to.id}`}
 					data-tone={c.dashed ? tone.replace("border-", "") : undefined}
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: the card opens on focus.
@@ -444,69 +597,160 @@ function ConnectorLine(props: {
 }
 
 /**
- * On a phone a tap on a dot opens this sheet: its details, and View /
- * Compare from here, the fallback for dragging a marker.
+ * A dot's sticky card: opened by a click, a tap, or Enter / Space on the
+ * dot; its details and the two buttons that give the dot a role. Escape,
+ * a click outside, the dot again or focus leaving it closes it. Focus
+ * moves into it on open (the first enabled button) and back to the dot on
+ * close by Escape or a button. Fixed, kept inside the viewport.
  */
-function DotSheet(props: {
-	dot: Dot | null;
+function DotPopover(props: {
+	id: string;
+	dot: Dot;
 	session: SessionInfo;
-	canView: boolean;
-	canBase: boolean;
-	onView: () => void;
+	anchor: HTMLElement | null;
+	/** Why each button is disabled (moveMarker), or null. */
+	base: string | null;
+	target: string | null;
 	onBase: () => void;
-	onClose: () => void;
+	onTarget: () => void;
+	/** `refocus`: give focus back to the dot. */
+	onClose: (refocus: boolean) => void;
 }) {
-	const dialog = useRef<HTMLDialogElement>(null);
-	const open = props.dot !== null;
+	const box = useRef<HTMLDivElement>(null);
+	const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+	const { anchor, onClose } = props;
+	useLayoutEffect(() => {
+		const place = () => {
+			const t = anchor?.getBoundingClientRect();
+			const b = box.current?.getBoundingClientRect();
+			if (t && b) setPos(placeNear(t, b));
+		};
+		place();
+		window.addEventListener("scroll", place, true);
+		window.addEventListener("resize", place);
+		// Its content can change size (the threads line after its spinner).
+		const resized =
+			typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+		if (box.current) resized?.observe(box.current);
+		return () => {
+			window.removeEventListener("scroll", place, true);
+			window.removeEventListener("resize", place);
+			resized?.disconnect();
+		};
+	}, [anchor]);
 	useEffect(() => {
-		const d = dialog.current;
-		if (!d) return;
-		if (open && !d.open) {
-			if (typeof d.showModal === "function") d.showModal();
-			else d.setAttribute("open", "");
-		} else if (!open && d.open) {
-			if (typeof d.close === "function") d.close();
-			else d.removeAttribute("open");
-		}
-	}, [open]);
+		const first = box.current?.querySelector<HTMLButtonElement>(
+			"button:not([aria-disabled])",
+		);
+		(first ?? box.current)?.focus();
+	}, []);
+	useEffect(() => {
+		const onKey = (e: globalThis.KeyboardEvent) => {
+			if (e.key === "Escape") onClose(true);
+		};
+		const onDown = (e: PointerEvent) => {
+			const target = e.target as Node | null;
+			if (!target) return;
+			if (box.current?.contains(target) || anchor?.contains(target)) return;
+			onClose(false);
+		};
+		window.addEventListener("keydown", onKey);
+		window.addEventListener("pointerdown", onDown, true);
+		return () => {
+			window.removeEventListener("keydown", onKey);
+			window.removeEventListener("pointerdown", onDown, true);
+		};
+	}, [anchor, onClose]);
 	const button =
-		"flex min-h-10 flex-1 items-center justify-center rounded-md border border-line-strong px-3 text-sm font-semibold text-ink hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40";
-	return (
-		<dialog
-			ref={dialog}
-			aria-label={props.dot ? `${props.dot.label} details` : "Dot details"}
-			data-testid="dot-sheet"
-			onClose={props.onClose}
-			onClick={(event) => {
-				// A click on the backdrop lands on the dialog itself.
-				if (event.target === dialog.current) props.onClose();
+		"flex min-h-10 flex-1 items-center justify-center rounded-md border border-line-strong px-2 text-xs font-semibold whitespace-nowrap text-ink hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:opacity-40 aria-disabled:hover:bg-transparent sm:min-h-8";
+	// An enabled one is its label alone (a tooltip would only repeat it);
+	// a disabled one stays focusable, its reason its tooltip and description.
+	const action = (label: string, why: string | null, onPress: () => void) =>
+		why === null ? (
+			<button type="button" className={button} onClick={onPress}>
+				{label}
+			</button>
+		) : (
+			<Tooltip content={why}>
+				{(trigger) => (
+					<button type="button" {...trigger} className={button} aria-disabled>
+						{label}
+					</button>
+				)}
+			</Tooltip>
+		);
+	return createPortal(
+		<div
+			ref={box}
+			id={props.id}
+			role="dialog"
+			aria-label={`${props.dot.label} details`}
+			data-testid="dot-popover"
+			// Clicks on its text keep focus inside (a blur to nowhere would close it).
+			tabIndex={-1}
+			onKeyDown={(e) => {
+				// Tab or Shift+Tab out of it closes it, focus back on the dot
+				// (it sits at the end of the page, far from the dot otherwise).
+				if (e.key !== "Tab" || !box.current) return;
+				const stops = [
+					...box.current.querySelectorAll<HTMLElement>(
+						// Disabled ones too: their reason is read on focus.
+						'button, a[href], [tabindex="0"]',
+					),
+				];
+				const at = document.activeElement;
+				const leaving = e.shiftKey
+					? at === box.current || at === stops[0]
+					: stops.length === 0 || at === stops.at(-1);
+				if (!leaving) return;
+				e.preventDefault();
+				onClose(true);
 			}}
-			onKeyDown={(event) => {
-				if (event.key === "Escape") props.onClose();
+			onBlur={(e) => {
+				const next = e.relatedTarget as Node | null;
+				if (next && (box.current?.contains(next) || anchor?.contains(next)))
+					return;
+				// Focus left for somewhere else on the page (Tab past the end).
+				if (next) onClose(false);
 			}}
-			className="m-0 mt-auto w-full max-w-none rounded-t-2xl border-t border-edge bg-overlay p-3 text-sm text-ink shadow-sheet backdrop:bg-canvas/70"
+			style={{
+				left: pos?.left ?? 0,
+				top: pos?.top ?? 0,
+				visibility: pos ? "visible" : "hidden",
+			}}
+			className="fixed z-[999] w-max max-w-[min(20rem,calc(100vw-1rem))] rounded-md border border-edge bg-overlay px-2.5 py-2 text-xs leading-5 text-ink shadow-float focus:outline-none"
 		>
-			{props.dot && dotCard(props.dot, props.session)}
-			<div className="mt-3 flex gap-2">
-				<button
-					type="button"
-					className={button}
-					disabled={!props.canView}
-					onClick={props.onView}
-				>
-					View
-				</button>
-				<button
-					type="button"
-					className={button}
-					disabled={!props.canBase}
-					onClick={props.onBase}
-				>
-					Compare from here
-				</button>
+			<DotCard dot={props.dot} session={props.session} />
+			<div className="mt-2 flex gap-2">
+				{action("Comparison Base", props.base, props.onBase)}
+				{action("Comparison Target", props.target, props.onTarget)}
 			</div>
-		</dialog>
+		</div>,
+		document.body,
 	);
+}
+
+/**
+ * The session with each patch set's commit count filled in once the
+ * server has counted it (patchsetCommitsQuery, polled only while one is
+ * missing).
+ */
+function useWithCommits(session: SessionInfo): SessionInfo {
+	const missing = session.patchsets
+		.filter((p) => p.commits === null)
+		.map((p) => `${p.number} ${p.head}`);
+	const counted = useQuery({
+		...patchsetCommitsQuery(missing),
+		enabled: missing.length > 0,
+	}).data;
+	if (missing.length === 0 || !counted) return session;
+	return {
+		...session,
+		patchsets: session.patchsets.map((p) => ({
+			...p,
+			commits: p.commits ?? counted[`${p.number} ${p.head}`] ?? null,
+		})),
+	};
 }
 
 /**
@@ -518,18 +762,26 @@ function DotSheet(props: {
  * arrives). Two markers set the comparison: viewing and comparison base,
  * dragged (pointer events, touch too) or moved with Ctrl+[ / Ctrl+] and
  * Ctrl+Shift+[ / Ctrl+Shift+] (qualified keys only, owner 2026-11-07).
- * Dots and connectors show a card on hover or focus; on a phone a tap on
- * a dot opens a sheet with View and Compare from here. Viewing the head
- * stores nothing (the first mark starts the patch set).
+ * Dots (the label and the dot, one element) and connectors show a card on
+ * hover or focus. A click, a tap or Enter / Space on a dot moves nothing:
+ * it makes the dot's card sticky, with Comparison Base and Comparison
+ * Target, which give the dot that role (owner, 2026-11-08). Viewing the
+ * head stores nothing (the first mark starts the patch set).
  */
 export function PatchsetGraph(props: {
 	session: SessionInfo;
 	comparison: Comparison;
 	/** The comparison's own answer (the connectors read theirs, cached alike). */
 	rereview?: RereviewAnswer | { pending: true } | undefined;
+	/**
+	 * What is left to read in the comparison on screen (the since view's
+	 * units, as marked): its connector says that, not the engine's count.
+	 */
+	live?: { from: number; to: Viewing; toRead: ToRead };
 	onViewHead?: () => void;
 }) {
-	const { session, comparison } = props;
+	const { comparison } = props;
+	const session = useWithCommits(props.session);
 	const phone = !useMedia(NOT_PHONE);
 	const { dots, head } = railDots(session, comparison.viewing);
 	const all = head ? [...dots, head] : dots;
@@ -562,35 +814,67 @@ export function PatchsetGraph(props: {
 					: answers[at]?.error
 						? { error: answers[at].error.message }
 						: (answers[at]?.data ?? { pending: true }),
-			commits: to.kind === "head" && session.head ? session.head.commits : null,
+			commits:
+				to.kind === "head" && session.head
+					? session.head.commits
+					: from.kind === "branch" && typeof to.patchset?.commits === "number"
+						? to.patchset.commits
+						: null,
+			counting:
+				from.kind === "branch" &&
+				to.patchset !== undefined &&
+				to.patchset.commits === null,
+			countError:
+				from.kind === "branch" &&
+				to.patchset?.commits !== null &&
+				typeof to.patchset?.commits === "object"
+					? to.patchset.commits.error
+					: null,
 			shape: to.patchset?.shape ?? null,
 			dashed: to.kind === "head",
+			...(props.live &&
+			from.base?.kind === "patchset" &&
+			from.base.number === props.live.from &&
+			sameViewing(to.viewing, props.live.to)
+				? { live: props.live.toRead }
+				: {}),
 		};
 	});
 	const headConnector = connectors.find((c) => c.to.kind === "head") ?? null;
-	const viewingPos = comparison.viewing
-		? positionOf(comparison.viewing, comparison.patchsets)
-		: -1;
+	/** A dot's Comparison Base or Target: the move, or why not (moveMarker). */
+	const pressed = (role: "base" | "target", dot: Dot) =>
+		comparison.viewing
+			? moveMarker(role, all.indexOf(dot), all, {
+					viewing: comparison.viewing,
+					base: comparison.base,
+					baseChosen: comparison.baseChosen,
+				})
+			: { disabled: "Loading" };
+	const press = (role: "base" | "target", dot: Dot) => {
+		const move = pressed(role, dot);
+		if ("disabled" in move) return;
+		comparison.set(move.viewing, move.base);
+		if (move.viewing.kind === "head" && move.viewing.oid === head?.oid)
+			props.onViewHead?.();
+	};
 
 	// Dragging a marker: which one, and the dot under the pointer.
 	const [drag, setDrag] = useState<{
 		kind: "viewing" | "base";
 		over: string | null;
+		/** The label's shift with the pointer (inside the rail). */
+		dx: number;
 	} | null>(null);
 	const rail = useRef<HTMLDivElement>(null);
 	const canView = (dot: Dot) => dot.viewing !== undefined;
-	const canBase = (dot: Dot) =>
-		dot.base !== undefined && dot.position < viewingPos;
 	const view = (dot: Dot) => {
 		if (!dot.viewing) return;
 		comparison.setViewing(dot.viewing);
 		if (dot.kind === "head") props.onViewHead?.();
 	};
-	const baseOn = (dot: Dot) => {
-		if (dot.base && canBase(dot)) comparison.setBase(dot.base);
-	};
-	/** The dot nearest to `x` among the rail's dots. */
+	/** The dot nearest to `x` among the rail's dots (as they are now). */
 	const dotAt = (x: number): Dot | null => {
+		const all = now.current.all;
 		const root = rail.current;
 		if (!root) return null;
 		let best: { dot: Dot; d: number } | null = null;
@@ -602,36 +886,80 @@ export function PatchsetGraph(props: {
 		}
 		return best?.dot ?? null;
 	};
+	// What a drag in progress reads at each event (this render's graph).
+	const now = useRef({ all, canView, pressed, press, view, dotAt });
+	now.current = { all, canView, pressed, press, view, dotAt };
+	// The drag in progress' end: unmounting mid-drag removes its listeners.
+	const endDrag = useRef<(() => void) | null>(null);
+	useEffect(() => () => endDrag.current?.(), []);
 	const startDrag =
 		(kind: "viewing" | "base") => (e: ReactPointerEvent<HTMLButtonElement>) => {
 			e.preventDefault();
+			// A drag runs across renders: it reads the graph as it is at each
+			// event (a key move or a new head mid-drag), never as it was here.
+			const at = () => now.current;
 			const target = e.currentTarget;
 			target.setPointerCapture(e.pointerId);
-			setDrag({ kind, over: null });
+			// The label follows the pointer, its box never leaving the rail.
+			const startX = e.clientX;
+			const box = target.getBoundingClientRect();
+			const bounds = rail.current?.getBoundingClientRect();
+			const shift = (x: number) =>
+				bounds
+					? Math.min(
+							bounds.right - box.right,
+							Math.max(bounds.left - box.left, x - startX),
+						)
+					: 0;
+			setDrag({ kind, over: null, dx: 0 });
+			// The base goes where moveMarker lets it, pushing the target past it.
 			const allowed = (dot: Dot | null) =>
-				dot && (kind === "viewing" ? canView(dot) : canBase(dot)) ? dot : null;
+				dot &&
+				(kind === "viewing"
+					? at().canView(dot)
+					: !("disabled" in at().pressed("base", dot)))
+					? dot
+					: null;
 			const move = (ev: PointerEvent) => {
-				setDrag({ kind, over: allowed(dotAt(ev.clientX))?.id ?? null });
+				setDrag({
+					kind,
+					over: allowed(at().dotAt(ev.clientX))?.id ?? null,
+					dx: shift(ev.clientX),
+				});
+			};
+			const done = () => {
+				target.removeEventListener("pointermove", move);
+				target.removeEventListener("pointerup", up);
+				target.removeEventListener("pointercancel", cancel);
+				target.removeEventListener("lostpointercapture", cancel);
+				window.removeEventListener("keydown", onEscape, true);
+				if (endDrag.current === done) endDrag.current = null;
+				setDrag(null);
 			};
 			const up = (ev: PointerEvent) => {
-				target.removeEventListener("pointermove", move);
-				target.removeEventListener("pointerup", up);
-				target.removeEventListener("pointercancel", cancel);
-				setDrag(null);
-				const dot = allowed(dotAt(ev.clientX));
+				done();
+				const dot = allowed(at().dotAt(ev.clientX));
 				if (!dot) return;
-				if (kind === "viewing") view(dot);
-				else baseOn(dot);
+				if (kind === "viewing") at().view(dot);
+				else at().press("base", dot);
 			};
-			const cancel = () => {
-				target.removeEventListener("pointermove", move);
-				target.removeEventListener("pointerup", up);
-				target.removeEventListener("pointercancel", cancel);
-				setDrag(null);
+			// A cancelled pointer, or capture lost (the browser took it): no drop.
+			const cancel = () => done();
+			// Escape drops it back on its dot, nothing moved.
+			const onEscape = (ev: KeyboardEvent) => {
+				if (ev.key !== "Escape") return;
+				ev.stopPropagation();
+				if (target.hasPointerCapture?.(e.pointerId))
+					target.releasePointerCapture(e.pointerId);
+				done();
 			};
+			endDrag.current?.();
+			endDrag.current = done;
+			window.addEventListener("keydown", onEscape, true);
 			target.addEventListener("pointermove", move);
 			target.addEventListener("pointerup", up);
 			target.addEventListener("pointercancel", cancel);
+			target.addEventListener("lostpointercapture", cancel);
 		};
 
 	// Qualified keys only (owner, 2026-11-07): nothing moves by accident.
@@ -646,18 +974,18 @@ export function PatchsetGraph(props: {
 		if (!next) return;
 		if (kind === "viewing") {
 			if (canView(next)) view(next);
-		} else if (canBase(next)) baseOn(next);
+		} else press("base", next);
 	};
 	const group = "Files changed";
 	useShortcut({
 		keys: "Ctrl+]",
-		label: "View the next patch set (the head past the newest)",
+		label: "Move the comparison target right (the head past the newest)",
 		group,
 		run: () => step("viewing", 1),
 	});
 	useShortcut({
 		keys: "Ctrl+[",
-		label: "View the previous patch set",
+		label: "Move the comparison target left",
 		group,
 		run: () => step("viewing", -1),
 	});
@@ -674,39 +1002,79 @@ export function PatchsetGraph(props: {
 		run: () => step("base", -1),
 	});
 
-	const [sheet, setSheet] = useState<Dot | null>(null);
+	// The dot whose card is sticky (a click opened it), and its element.
+	const [sticky, setSticky] = useState<string | null>(null);
+	const stickyNow = useRef(sticky);
+	stickyNow.current = sticky;
+	const dotEls = useRef(new Map<string, HTMLButtonElement>());
+	// Focus going back to a dot after its card closed shows no hover card.
+	const refocusing = useRef(false);
+	const closeSticky = useCallback((refocus: boolean) => {
+		const el = stickyNow.current
+			? dotEls.current.get(stickyNow.current)
+			: undefined;
+		setSticky(null);
+		if (refocus && el) {
+			refocusing.current = true;
+			el.focus();
+			refocusing.current = false;
+		}
+	}, []);
+	const popoverId = useId();
 	const upToDate = session.head !== null && !head;
 
 	const node = (dot: Dot) => {
 		const isViewing = sameViewing(dot.viewing, comparison.viewing);
 		const isBase = sameBase(dot.base, comparison.base);
 		const over = drag?.over === dot.id;
+		const open = sticky === dot.id;
 		const name =
 			dot.kind === "branch"
 				? `${dot.label} (base branch)`
 				: dot.kind === "head" || dot.kind === "snapshot"
 					? `${dot.kind} ${short(dot.oid)}`
 					: dot.label;
-		const button = (trigger: Partial<TooltipTriggerProps> = {}) => (
+		// The label and the dot are one element: one hover target, one
+		// focus ring, one card, one click.
+		const button = (trigger: TooltipTriggerProps) => (
 			<button
 				type="button"
 				{...trigger}
+				ref={(el) => {
+					trigger.ref(el);
+					if (el) dotEls.current.set(dot.id, el);
+					else dotEls.current.delete(dot.id);
+				}}
+				onMouseEnter={open ? undefined : trigger.onMouseEnter}
+				onFocus={(e) => {
+					if (!open && !refocusing.current) trigger.onFocus(e);
+				}}
 				aria-label={name}
+				aria-expanded={open}
+				aria-haspopup="dialog"
+				aria-controls={open ? popoverId : undefined}
 				data-dot={dot.id}
 				data-testid={`ps-dot-${dot.id}`}
 				data-viewing={isViewing || undefined}
 				data-base={isBase || undefined}
 				data-drop={over || undefined}
 				onClick={() => {
-					if (phone) setSheet(dot);
-					else if (dot.kind === "branch") baseOn(dot);
-					else view(dot);
+					if (open) closeSticky(false);
+					else setSticky(dot.id);
 				}}
-				className={`flex h-10 w-10 items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-accent ${
+				className={`grid min-w-10 justify-items-center gap-0.5 rounded-md focus-visible:outline-2 focus-visible:outline-accent ${
 					over ? "bg-accent/20" : ""
 				}`}
 			>
-				<DotGlyph dot={dot} viewing={isViewing} base={isBase} />
+				<span
+					data-testid="ps-dot-label"
+					className={`text-[11px] ${isViewing ? "font-semibold text-ink" : "text-muted"}`}
+				>
+					{dot.label}
+				</span>
+				<span className="flex h-10 w-10 items-center justify-center">
+					<DotGlyph dot={dot} viewing={isViewing} base={isBase} />
+				</span>
 			</button>
 		);
 		return (
@@ -716,17 +1084,32 @@ export function PatchsetGraph(props: {
 				data-kind={dot.kind}
 				className="relative grid min-w-11 shrink-0 justify-items-center gap-0.5 sm:min-w-14"
 			>
-				<span
-					className={`text-[11px] ${isViewing ? "font-semibold text-ink" : "text-muted"}`}
+				<Tooltip
+					content={<DotCard dot={dot} session={session} />}
+					describe={false}
+					lazy
+					dismissKey={open}
 				>
-					{dot.label}
-				</span>
-				{phone ? (
-					button()
-				) : (
-					<Tooltip content={dotCard(dot, session)} describe={false} lazy>
-						{(trigger) => button(trigger)}
-					</Tooltip>
+					{(trigger) => button(trigger)}
+				</Tooltip>
+				{open && (
+					<DotPopover
+						id={popoverId}
+						dot={dot}
+						session={session}
+						anchor={dotEls.current.get(dot.id) ?? null}
+						base={why(pressed("base", dot))}
+						target={why(pressed("target", dot))}
+						onBase={() => {
+							press("base", dot);
+							closeSticky(true);
+						}}
+						onTarget={() => {
+							press("target", dot);
+							closeSticky(true);
+						}}
+						onClose={closeSticky}
+					/>
 				)}
 				{/* The markers' row keeps its height on every dot: none jumps. */}
 				<span className="flex min-h-10 items-start gap-1 sm:min-h-[18px]">
@@ -735,6 +1118,7 @@ export function PatchsetGraph(props: {
 							kind="base"
 							phone={phone}
 							dragging={drag?.kind === "base"}
+							dx={drag?.kind === "base" ? drag.dx : undefined}
 							onPointerDown={startDrag("base")}
 						/>
 					)}
@@ -743,6 +1127,7 @@ export function PatchsetGraph(props: {
 							kind="viewing"
 							phone={phone}
 							dragging={drag?.kind === "viewing"}
+							dx={drag?.kind === "viewing" ? drag.dx : undefined}
 							onPointerDown={startDrag("viewing")}
 						/>
 					)}
@@ -811,23 +1196,6 @@ export function PatchsetGraph(props: {
 					<span className="mt-4 pl-2 text-[11px] text-faint">pinned</span>
 				) : null}
 			</div>
-			{phone && (
-				<DotSheet
-					dot={sheet}
-					session={session}
-					canView={sheet ? canView(sheet) : false}
-					canBase={sheet ? canBase(sheet) : false}
-					onView={() => {
-						if (sheet) view(sheet);
-						setSheet(null);
-					}}
-					onBase={() => {
-						if (sheet) baseOn(sheet);
-						setSheet(null);
-					}}
-					onClose={() => setSheet(null)}
-				/>
-			)}
 		</div>
 	);
 }

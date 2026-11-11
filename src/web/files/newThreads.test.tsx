@@ -20,6 +20,7 @@ import type {
 	ReviewThread,
 	SessionInfo,
 } from "../../shared/types";
+import { ASK_AGENT_ACTION } from "../agent/askAgentAction";
 import { ShortcutsProvider } from "../shortcuts";
 import { type LineTexts, spanTexts } from "../threads/draftMove";
 import { draftsFor, newThreadKey } from "../threads/drafts";
@@ -204,6 +205,8 @@ function setup(
 		children?: ReactNode;
 		/** The diff shown is the viewed head's (default yes). */
 		headSure?: boolean;
+		/** The selection bar's own view facts (FilesPage's). */
+		bar?: { headSure?: boolean; readOnly?: boolean };
 	} = {},
 ) {
 	vi.stubGlobal(
@@ -251,7 +254,7 @@ function setup(
 					/>
 				</section>
 				{opts.children}
-				<SelectionBar files={[file()]} />
+				<SelectionBar files={[file()]} {...opts.bar} />
 			</ShortcutsProvider>
 		</QueryClientProvider>
 	);
@@ -889,6 +892,49 @@ describe("the selection bar", () => {
 			}),
 		);
 
+	it("on a read-only earlier patch set: Comment off with why, Ask agent on", async () => {
+		const remove = registerSelectionAction(ASK_AGENT_ACTION);
+		try {
+			const { user } = setup({ bar: { readOnly: true } });
+			await loaded();
+			pick([6]);
+			const bar = within(await screen.findByTestId("selection-bar"));
+			const comment = bar.getByRole("button", { name: "Comment" });
+			expect(comment).toHaveAttribute("aria-disabled", "true");
+			expect(comment).toHaveAccessibleDescription(
+				"An earlier patch set: comment on the latest",
+			);
+			await user.click(comment);
+			expect(getComposers()).toEqual([]);
+			expect(
+				bar.getByRole("button", { name: "Ask agent" }),
+			).not.toHaveAttribute("aria-disabled");
+		} finally {
+			remove();
+		}
+	});
+
+	it("while the diff shown is not yet the viewed head's (a Refresh): Comment and Ask agent off with why", async () => {
+		const remove = registerSelectionAction(ASK_AGENT_ACTION);
+		try {
+			const { user } = setup({ bar: { headSure: false } });
+			await loaded();
+			pick([6]);
+			const bar = within(await screen.findByTestId("selection-bar"));
+			for (const name of ["Comment", "Ask agent"]) {
+				const button = bar.getByRole("button", { name });
+				expect(button, name).toHaveAttribute("aria-disabled", "true");
+				expect(button, name).toHaveAccessibleDescription(
+					"The new head's diff is loading",
+				);
+			}
+			await user.click(bar.getByRole("button", { name: "Comment" }));
+			expect(getComposers()).toEqual([]);
+		} finally {
+			remove();
+		}
+	});
+
 	it("keeps Comment visible but off, with the reason, where writing is off", async () => {
 		const { user } = setup({ overview: { writes: "as-of" } });
 		await loaded();
@@ -1354,6 +1400,7 @@ describe("Comment on file", () => {
 			hunks?: FileHunks;
 			threads?: ReviewThread[];
 			overview?: Partial<PrOverview>;
+			placements?: DiffThreads["placements"];
 		} = {},
 	) => {
 		vi.stubGlobal(
@@ -1385,6 +1432,7 @@ describe("Comment on file", () => {
 			readId: "r",
 			snapshotHead: HEAD,
 			threads: opts.threads ?? [],
+			placements: opts.placements ?? null,
 		};
 		const ui = (expanded: boolean) => (
 			<QueryClientProvider client={client}>
@@ -1653,6 +1701,93 @@ describe("Comment on file", () => {
 			expect(bubble).toHaveAttribute("aria-expanded", "true"),
 		);
 		expect(bubble).toHaveFocus();
+	});
+
+	it("closed, an unplaced thread flags the header; a resolved one doesn't (unplaced, or past the end)", async () => {
+		const unplaced = (t: ReviewThread) =>
+			new Map([
+				[
+					t.id,
+					{
+						kind: "unplaced" as const,
+						fate: "deleted" as const,
+						path: PATH,
+						nearest: null,
+					},
+				],
+			]);
+		const flagged = "1 comment in this file, line not in this diff";
+		const open = thread({ line: 3 });
+		renderFile(
+			{},
+			{
+				expanded: false,
+				hunks: HUNKS,
+				threads: [open],
+				placements: unplaced(open),
+			},
+		);
+		expect(screen.getByRole("button", { name: flagged })).toBeInTheDocument();
+		cleanup();
+		const done = { ...thread({ line: 3 }), resolved: true };
+		renderFile(
+			{},
+			{
+				expanded: false,
+				hunks: HUNKS,
+				threads: [done],
+				placements: unplaced(done),
+			},
+		);
+		expect(
+			screen.getByRole("button", { name: "1 comment in this file, resolved" }),
+		).toBeInTheDocument();
+		cleanup();
+		// Placed, but past the rows the diff shows (known once the file has
+		// been open): the header's own list.
+		const past = { ...thread({ line: 50 }), resolved: true };
+		const { user } = renderFile(
+			{},
+			{
+				expanded: true,
+				hunks: HUNKS,
+				threads: [past],
+				placements: new Map([
+					[
+						past.id,
+						{
+							kind: "placed" as const,
+							anchor: {
+								path: PATH,
+								startSide: "RIGHT" as const,
+								startLine: 50,
+								side: "RIGHT" as const,
+								line: 50,
+							},
+							changed: false as const,
+						},
+					],
+				]),
+			},
+		);
+		const bubble = await screen.findByRole("button", {
+			name: "1 comment on this file, resolved, line not in this diff",
+		});
+		// Said, but muted: a resolved thread asks for nothing.
+		const alert = bubble.querySelector(".octicon-alert");
+		expect(alert?.getAttribute("class")).toContain("text-muted");
+		expect(alert?.getAttribute("class")).not.toContain("text-warn");
+		await user.click(bubble);
+		const warning = within(await screen.findByTestId("files-thread")).getByRole(
+			"img",
+			{ name: "Line not in this diff" },
+		);
+		expect(warning.getAttribute("class")).toContain("text-muted");
+		expect(warning.getAttribute("class")).not.toContain("text-warn");
+		await user.click(screen.getByRole("button", { name: "Collapse file" }));
+		expect(
+			screen.getByRole("button", { name: "1 comment in this file, resolved" }),
+		).toBeInTheDocument();
 	});
 
 	it("closed, the header counts the file's threads; it opens the file and the file bubble", async () => {
