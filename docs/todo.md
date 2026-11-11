@@ -25,7 +25,7 @@ Foundation for everything below.
 
 - **PR review view (done):** open a PR, see the overview, review it cluster by cluster
   with progress tracking. Design:
-  `docs/superpowers/specs/2026-10-21-pr-review-parity-design.md`.
+  the PR review parity spec (Linear, M2 project documents).
 - **Commenting** from carbonless.
 - **LEFT-side thread placement (discuss with the owner right after the
   threads stage):** GitHub records no commit for a comment's LEFT side
@@ -182,7 +182,7 @@ Not scheduled yet; after everything above.
 - **Bots in human threads:** decide how bot comments (review bots, CI
   bots replying in a human thread) should count in a thread's attention set.
   For now (2026-10-26) bots never join it and a bot's comment never counts as
-  the latest one (`docs/superpowers/specs/2026-10-26-pr-threads-design.md`).
+  the latest one (the PR threads spec, Linear, M2 project documents).
 - **Attention set:** like Gerrit's, but computed automatically as far as
   possible (whose turn it is on each PR), plus a view of pending review work
   across PRs.
