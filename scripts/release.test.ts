@@ -329,9 +329,7 @@ describe("workflow steps", () => {
 		);
 		expect(guard).toBeGreaterThan(-1);
 		expect(guard).toBeLessThan(wf.indexOf("npm publish"));
-		expect(wf).toContain(
-			'npm publish "$TGZ" --tag rc --access public --provenance=false',
-		);
+		expect(wf).toContain('npm publish "$TGZ" --tag rc --access public\n');
 	});
 
 	it("the workflows' steps read the checkout's tags, never origin", async () => {
@@ -1546,7 +1544,7 @@ describe("release-finish: each step only once", () => {
 		expect(promote).toContain("pnpm release publish $GITHUB_RUN_ID");
 		// A release is only staged (latest, fixed at stage time); never published.
 		expect(promote).toContain(
-			'npm stage publish "$TGZ" --tag latest --access public --provenance=false --json',
+			'npm stage publish "$TGZ" --tag latest --access public --json',
 		);
 		expect(promote).not.toMatch(/npm publish|npm dist-tag/);
 	});
@@ -1621,6 +1619,81 @@ describe("release-finish: each step only once", () => {
 			const runs = runValues(workflow(file));
 			expect(runs.length, file).toBeGreaterThan(5);
 			for (const run of runs) expect(run, file).not.toContain("${{");
+		}
+	});
+
+	it("public repository: fork PRs reach no credential, no OIDC, no `npm` environment", () => {
+		const files = readdirSync(
+			join(import.meta.dirname, "../.github/workflows"),
+		).filter((f) => f.endsWith(".yml"));
+		expect(files.sort()).toEqual([
+			"ci.yml",
+			"release-finish.yml",
+			"release.yml",
+		]);
+		/** A workflow's `on:` block. */
+		const triggers = (text: string) =>
+			code(
+				text.slice(
+					text.indexOf("\non:\n"),
+					text.search(/\n(permissions|concurrency|jobs):/),
+				),
+			);
+		for (const file of files) {
+			const text = code(workflow(file));
+			// pull_request_target runs with the base's token and secrets on a
+			// fork's code; no workflow uses repository secrets at all.
+			expect(text, file).not.toContain("pull_request_target");
+			expect(text, file).not.toMatch(/\bsecrets\./);
+			// npm makes provenance itself (trusted publishing, public repo).
+			expect(text, file).not.toContain("--provenance");
+		}
+		// CI is the only workflow a pull request (a fork's too) runs: read-only,
+		// no environment, no OIDC, no write anywhere.
+		const ci = code(workflow("ci.yml"));
+		expect(triggers(ci)).toMatch(/^ {2}pull_request:$/m);
+		expect(ci).toMatch(/^permissions:\n {2}contents: read\n/m);
+		expect(ci).not.toMatch(/: write\b|id-token|environment:/);
+		// The release workflows: a completed CI on master, or a dispatch (which
+		// needs write access to the repository); never a PR or a push.
+		expect(triggers(workflow("release-finish.yml")).trim()).toBe(
+			"on:\n  workflow_dispatch:\n    inputs:\n      version:\n        description: The published release (X.Y.Z)\n        required: true\n      run:\n        description: The promote run that built it (its id)\n        required: true",
+		);
+		const release = workflow("release.yml");
+		const on = triggers(release);
+		expect(on.match(/^ {2}\w+:$/gm)).toEqual([
+			"  workflow_run:",
+			"  workflow_dispatch:",
+		]);
+		expect(on).toContain(
+			"workflows: [CI]\n    types: [completed]\n    branches: [master]",
+		);
+		// workflow_run fires for a fork's PR too (its branch may be called
+		// master): every job it runs checks for a push of this repository, in
+		// its own `if`, not only through `needs`.
+		const guard = [
+			"github.event_name == 'workflow_run'",
+			"github.event.workflow_run.event == 'push'",
+			"github.event.workflow_run.head_repository.full_name == github.repository",
+		];
+		const ifOf = (job: string) =>
+			/^ {4}if: >-\n((?: {6}.*\n)+)|^ {4}if: (.*)$/m
+				.exec(code(job))
+				?.slice(1)
+				.join("") ?? "";
+		for (const [name, job] of jobs(release)) {
+			const cond = ifOf(job);
+			if (name.startsWith("rc-")) {
+				for (const g of guard) expect(cond, name).toContain(g);
+			} else {
+				// Dispatched: only from master (the `npm` environment's branch
+				// rule is the gate; this keeps a run from another ref from
+				// doing anything at all).
+				expect(cond, name).toContain(
+					"github.event_name == 'workflow_dispatch'",
+				);
+				expect(cond, name).toContain("github.ref == 'refs/heads/master'");
+			}
 		}
 	});
 

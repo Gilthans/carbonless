@@ -11,11 +11,16 @@
 #     package's first publish nothing is staged: the owner publishes that one.
 #   - mode=fixup (release-finish): `rc` up to a new release, when behind.
 #
-# npm: Trusted Publishing (OIDC), no token. Only the jobs in the GitHub
-# environment `npm` (master only) get `id-token: write`, and they run no
-# dependency code (no pnpm install; node, npm and git only). Registered on
-# npmjs.com: workflow release.yml, environment npm, publish and dist-tag
-# allowed (staging always is).
+# npm: Trusted Publishing (OIDC), no token; npm adds provenance (the repo is
+# public). Only the jobs in the GitHub environment `npm` (master only) get
+# `id-token: write`, and they run no dependency code (no pnpm install; node,
+# npm and git only). Registered on npmjs.com: workflow release.yml,
+# environment npm, publish and dist-tag allowed (staging always is).
+#
+# Public repository: a fork's PR runs CI (pull_request: read-only token, no
+# secrets), and its completion reaches this workflow too. Every job checks
+# in its own `if` that it runs for a push to master of this repository, or
+# for a dispatch (write access) of master.
 name: Release
 run-name: >-
   ${{ github.event_name == 'workflow_run' && 'Publish RC' ||
@@ -164,8 +169,13 @@ jobs:
   rc-publish:
     needs: rc-build
     # This run's RC (or, before the first release, only its tag); and the
-    # rc fix-up, even when nothing is published (any merge heals rc).
+    # rc fix-up, even when nothing is published (any merge heals rc). The
+    # push-of-this-repository check again, not only through needs: this job
+    # gets npm's credential.
     if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
       needs.rc-build.outputs.tip == 'true' &&
       (needs.rc-build.outputs.publish == 'true' || needs.rc-build.outputs.first_publish == 'false')
     runs-on: ubuntu-latest
@@ -232,8 +242,8 @@ jobs:
         # published first `latest`: the first version must be a release
         # (the owner's), so this only tags the RC in git.
         if: env.PUBLISH == 'true' && env.FIRST == 'false'
-        # The repo is private: npm makes no provenance for it.
-        run: npm publish "$TGZ" --tag rc --access public --provenance=false
+        # npm adds provenance itself (trusted publishing, public repo).
+        run: npm publish "$TGZ" --tag rc --access public
       - name: Tag
         if: env.PUBLISH == 'true'
         env:
@@ -272,7 +282,9 @@ jobs:
         run: npm dist-tag add "carbonless-review@$MOVE_TO" rc
 
   promote-check:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'promote'
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'promote' &&
+      github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -376,6 +388,9 @@ jobs:
 
   promote-stage:
     needs: promote-check
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'promote' &&
+      github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: npm
@@ -441,12 +456,13 @@ jobs:
         working-directory: ${{ runner.temp }}
         if: steps.npm.outputs.exists == 'true'
         # The tag is fixed at stage time (npm stage: "The tag is an immutable
-        # property of the staged package"). The repo is private: no provenance.
+        # property of the staged package"). npm adds provenance to a staged
+        # version too (trusted publishing, public repo).
         run: |
           # (npm stage list needs the owner's interactive login, not OIDC:
           # a second staged entry for this version is caught by the owner's
           # pnpm release publish, which refuses until it is rejected.)
-          out="$(npm stage publish "$TGZ" --tag latest --access public --provenance=false --json)"
+          out="$(npm stage publish "$TGZ" --tag latest --access public --json)"
           echo "$out"
           # --json prints { "carbonless-review": { ..., "stageId": "<uuid>" } }.
           id="$(node -e '

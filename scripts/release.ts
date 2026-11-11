@@ -142,7 +142,7 @@ function setVersion(version: string, dir: string) {
 		execFileSync("git", args, { cwd: dir, encoding: "utf8" });
 	// gitHead: npm then records the commit, so an RC or a release can be
 	// told from a master build of the same version (`crb --version` shows the
-	// commit; the devbox's npm mode compares it).
+	// commit, and a machine following npm can compare it).
 	const head = git("rev-parse", "HEAD").trim();
 	writeFileSync(
 		file,
