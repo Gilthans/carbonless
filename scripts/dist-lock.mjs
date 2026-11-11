@@ -12,9 +12,10 @@
 // shared hold fails: it would change the dist that hold serves. No `flock` on
 // PATH: the command runs unlocked. A signal gives up the wait, or is passed
 // on to the command.
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { run as runChild } from "./run-child.mjs";
 
 const argv = process.argv.slice(2);
 const shared = argv[0] === "--shared";
@@ -26,38 +27,11 @@ if (!cmd) {
 	process.exit(2);
 }
 
-const SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
-const SIGNAL_CODES = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
 // flock's exit status when the lock is taken; a held command's own 200 comes
 // back as 1 so the two never mix.
 const TAKEN = 200;
 
-let current = null;
-for (const sig of SIGNALS) {
-	process.on(sig, () => {
-		if (!current) process.exit(128 + SIGNAL_CODES[sig]);
-		current.caught ??= sig;
-		try {
-			current.child.kill(sig);
-		} catch {}
-	});
-}
-
-/** Runs `c` to its end: its exit status, or 128 + the signal that ended it. */
-function run(c, a, env = process.env) {
-	return new Promise((done) => {
-		const child = spawn(c, a, { stdio: "inherit", env });
-		current = { child, caught: null };
-		child.on("error", (e) => {
-			console.error(`dist-lock: ${c}: ${e.message}`);
-		});
-		child.on("exit", (status, signal) => {
-			const by = signal ?? current.caught;
-			current = null;
-			done(status ?? (by ? 128 + (SIGNAL_CODES[by] ?? 1) : 1));
-		});
-	});
-}
+const run = (c, a, env) => runChild("dist-lock", c, a, env);
 
 const lock = join(
 	resolve(import.meta.dirname, ".."),
@@ -108,8 +82,6 @@ const flock = (wait) => [
 const status = await run("flock", flock(false), env);
 if (status !== TAKEN) process.exit(status);
 console.log(
-	shared
-		? "dist-lock: waiting for a build in this tree to finish"
-		: "dist-lock: waiting for the runs using this tree's dist to finish",
+	`dist-lock: waiting for ${shared ? "a build in this tree" : "the runs using this tree's dist"} to finish (lock: ${lock})`,
 );
 process.exit(await run("flock", flock(true), env));

@@ -123,9 +123,11 @@ loading never looking empty, checking against a real PR):
 - A tree's `dist` lock (`scripts/dist-lock.mjs`, `flock` on
   `node_modules/.crb-dist.lock`) keeps any build (`pnpm build`, so prepack,
   `test:pack`) from changing a `dist` that a Playwright run in the same tree
-  is serving: a build waits for those runs, printing so. An e2e run
-  (`scripts/e2e.mjs`: `test:e2e`, `verify:fast`, `flake-check`) builds before
-  its turn in the queue, then holds the lock shared from its turn to its end.
+  is serving: a build waits for those runs, printing so and the lock's path.
+  An e2e run (`scripts/e2e.mjs`: `test:e2e`, `verify:fast`, `flake-check`)
+  builds, then holds the lock shared from its turn in the queue to its end;
+  `test:e2e` and `verify:fast` build before their turn (overlapping the
+  wait), `flake-check` and `pnpm verify` inside the slot they already hold.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in

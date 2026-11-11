@@ -9,6 +9,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -34,7 +35,8 @@ const exe = (path: string, text: string) => {
 };
 
 beforeEach(() => {
-	tmp = mkdtempSync(join(tmpdir(), "crb-dist-lock-"));
+	// A space in the path: the scripts must find each other by file path.
+	tmp = mkdtempSync(join(tmpdir(), "crb dist-lock-"));
 	tree = join(tmp, "tree");
 	bin = join(tmp, "bin");
 	out = join(tmp, "out");
@@ -48,6 +50,7 @@ beforeEach(() => {
 		"dist-lock.mjs",
 		"queue.mjs",
 		"queue-config.mjs",
+		"run-child.mjs",
 	]) {
 		copyFileSync(join(here, f), join(tree, "scripts", f));
 	}
@@ -87,6 +90,7 @@ process.exit(r.status ?? 1);
 		`#!/usr/bin/env node
 const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const { OUT, RUN, HOLD } = process.env;
+writeFileSync(OUT + "/" + RUN + ".pid", String(process.pid));
 const dist = () => {
 	try {
 		return readFileSync("dist/build-info.json", "utf8") + "/" + readFileSync("dist/web/index.html", "utf8");
@@ -101,7 +105,10 @@ const end = () => {
 	process.exit(0);
 };
 if (!HOLD) end();
+// The test gone (its tmp dir removed) or a minute passed: stop holding.
+const deadline = Date.now() + 60000;
 const t = setInterval(() => {
+	if (!existsSync(OUT) || Date.now() > deadline) process.exit(1);
 	if (existsSync(OUT + "/" + RUN + ".release")) {
 		clearInterval(t);
 		end();
@@ -115,6 +122,13 @@ afterEach(() => {
 	for (const c of started.splice(0)) {
 		try {
 			if (c.pid) process.kill(-c.pid, "SIGKILL");
+		} catch {}
+	}
+	// queue.mjs starts the command in a process group of its own: the fake
+	// Playwright isn't in the group above.
+	for (const f of readdirSync(out).filter((f) => f.endsWith(".pid"))) {
+		try {
+			process.kill(Number(readFileSync(join(out, f), "utf8")), "SIGKILL");
 		} catch {}
 	}
 	rmSync(tmp, { recursive: true, force: true });
@@ -254,6 +268,16 @@ describe.skipIf(!hasFlock)("dist-lock nesting", () => {
 		() => {
 			expect(lock("sh", "-c", "exit 7").status).toBe(7);
 			expect(lock("sh", "-c", "exit 200").status).toBe(1);
+		},
+		TIMEOUT,
+	);
+
+	it(
+		"a command that can't start ends with 127 and says why",
+		() => {
+			const r = lock("crb-no-such-command");
+			expect(r.status).toBe(127);
+			expect(r.stderr).toMatch(/can't run crb-no-such-command: not found/);
 		},
 		TIMEOUT,
 	);
