@@ -540,9 +540,9 @@ describe("wordMarks", () => {
 	 * pairs. Its cost moves with the machine (runner speed, load, a busy
 	 * sibling core) the same way wordMarks' does, so the ratio of the two
 	 * holds still where the absolute time doesn't: 0.58–0.61 (similar) and
-	 * 1.54–1.58 (unrelated) on the devbox both idle and with a busy loop
-	 * per core, while CI's absolute time for the similar pairs ranged
-	 * 36–100 ms (CAR-115).
+	 * 1.54–1.58 (unrelated) on a dev machine both idle and with a busy loop
+	 * per core, 0.68 and 1.84 on CI (another CPU), while CI's absolute time
+	 * for the similar pairs ranged 36–100 ms (CAR-115).
 	 */
 	const reference = new DiffMatchPatch();
 	reference.Diff_Timeout = 0;
@@ -578,25 +578,26 @@ describe("wordMarks", () => {
 		return { best, ratio: best / ref };
 	};
 
-	// The ratio budgets are twice the measured ratio: a 2x slowdown fails,
-	// and so does diffing characters instead of tokens (1.6 and 7.4). The
+	// The ratio budgets are about twice the higher (CI) ratio: a 2x slowdown
+	// fails, and so does diffing characters instead of tokens (1.6 and 7.6
+	// on the dev machine, whose plain ratios are lower). The
 	// absolute ceilings are only a backstop for the yardstick itself
 	// slowing down: three times CI's slowest best-of-three (100 and 241 ms).
 	it(
-		"marks 2,000 pairs of similar 120-character lines in 1.2x the CPU of a character diff",
+		"marks 2,000 pairs of similar 120-character lines in 1.4x the CPU of a character diff",
 		() => {
 			const { best, ratio } = bestCpu(similarPairs());
 			console.info(
 				`wordMarks: 2,000 similar pairs in ${best} µs CPU, ${ratio.toFixed(2)}x the yardstick`,
 			);
-			expect(ratio).toBeLessThan(1.2);
+			expect(ratio).toBeLessThan(1.4);
 			expect(best).toBeLessThan(300_000);
 		},
 		LOADED,
 	);
 
 	it(
-		"marks 2,000 pairs of unrelated 120-character lines in 3x the CPU of a character diff",
+		"marks 2,000 pairs of unrelated 120-character lines in 3.7x the CPU of a character diff",
 		() => {
 			// A rewritten block: every pair two unrelated lines (GitHub marks them all).
 			const { line } = codeLines(11);
@@ -608,7 +609,7 @@ describe("wordMarks", () => {
 			console.info(
 				`wordMarks: 2,000 unrelated pairs in ${best} µs CPU, ${ratio.toFixed(2)}x the yardstick`,
 			);
-			expect(ratio).toBeLessThan(3);
+			expect(ratio).toBeLessThan(3.7);
 			expect(best).toBeLessThan(750_000);
 		},
 		LOADED,
