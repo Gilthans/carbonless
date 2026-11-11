@@ -1,6 +1,7 @@
 import { GitCommitIcon, XIcon } from "@primer/octicons-react";
 import { useEffect, useState } from "react";
 import type { SessionInfo } from "../../shared/types";
+import { ToastSlot } from "../Toasts";
 import { Tooltip } from "../Tooltip";
 import { headIsNewer } from "./PatchsetGraph";
 
@@ -55,7 +56,7 @@ export function HeadToast(props: {
 		props.onDismiss?.();
 	};
 	return (
-		<div className={TOAST_PLACE}>
+		<ToastSlot>
 			<div
 				role="status"
 				data-testid="head-toast"
@@ -103,6 +104,6 @@ export function HeadToast(props: {
 					)}
 				</Tooltip>
 			</div>
-		</div>
+		</ToastSlot>
 	);
 }

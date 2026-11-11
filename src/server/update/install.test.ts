@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	detectInstall,
@@ -15,7 +16,7 @@ const NPM_ROOT = "/usr/lib/node_modules/carbonless-review";
 const reader =
 	(pkg: object | string) =>
 	(file: string): string => {
-		expect(file).toBe(`${NPM_ROOT}/package.json`);
+		expect(file).toBe(join(NPM_ROOT, "package.json"));
 		return typeof pkg === "string" ? pkg : JSON.stringify(pkg);
 	};
 

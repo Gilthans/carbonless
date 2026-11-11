@@ -56,6 +56,7 @@ describe("/api/update", () => {
 			exit: (c) => exits.push(c),
 			port: () => 4747,
 			startHelper: async () => {},
+			graceMs: 10,
 		});
 		await updater.start();
 		await updater.checkNow();

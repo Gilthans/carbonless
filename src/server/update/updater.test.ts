@@ -67,6 +67,7 @@ function updater(over: Partial<UpdaterOptions> = {}) {
 		resultFile: join(dir, "result.json"),
 		logFile: join(dir, "update.log"),
 		platform: "linux",
+		graceMs: 10,
 		...over,
 	});
 	return { u, exits, helpers, checks };

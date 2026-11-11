@@ -264,6 +264,63 @@ put back on `X.Y.Z` by the same run. Promote and `pnpm release publish`
 refuse a release that isn't newer than `latest`, so `latest` never moves
 back either.
 
+## Updating an installed crb
+
+`crb serve` tells the reviewer when npm has a newer crb and updates itself
+on one click (CAR-108; never automatically). Code: `src/server/update`,
+`src/web/UpdateToast.tsx`.
+
+- **Check.** At start and every 6 hours, crb asks the registry
+  (`$CRB_NPM_REGISTRY`, default `https://registry.npmjs.org`) for
+  `carbonless-review`'s dist-tags and takes the tag of its own channel:
+  `rc` when it runs a prerelease, else `latest` (so an RC follows `rc`
+  onto the release `rc` moves to, and from there `latest`). Only a version
+  strictly newer by semver counts. Any failure (offline, a 404 before the
+  first publish, a bad answer) is silent.
+- **Only builds npm served.** The check runs only when the package crb runs
+  from (in some `node_modules`) has a `package.json` whose `gitHead` is the
+  build's own clean commit, at the build's version: CI writes `gitHead` into
+  every RC and release ("The version in a build" above), while `pnpm
+  build`, the dev server, a checkout and `pnpm release local` (what a machine
+  following master installs) have none. Off switches: `CRB_NO_UPDATE_CHECK=1`,
+  or `"updates": { "check": false }` in config.json.
+- **The toast**, on every page: the version (linking to its tag,
+  `https://github.com/Gilthans/carbonless/releases/tag/v<version>`), Update
+  and a dismiss (remembered per version in the browser). Pages poll
+  `/api/update` every 10 minutes, every 5 seconds while an update is on
+  offer, so every open tab sees an update another one started.
+- **Update** asks first when the page has unsaved work (what leaving the
+  page asks about), then installs exactly `carbonless-review@<version>`
+  with the package manager that installed crb, told from where crb runs:
+  `<prefix>/lib/node_modules/carbonless-review` (Windows:
+  `<prefix>\node_modules\...`) is npm (`npm install -g`);
+  `<PNPM_HOME>/global/.../.pnpm/...` is pnpm (`pnpm add -g`, with the
+  release-age exemption above). Anything else (yarn, bun, a project's
+  dependency, npx) shows the command to copy instead of the button.
+- **Restart in place.** crb answers "restarting" for 6 seconds (so every
+  tab sees it), then exits, freeing its port. A helper, copied to a temp
+  dir first (never run from the package being replaced) and started
+  detached with node, waits for crb's pid to exit, runs the install, leaves
+  the outcome in the state dir (`update-result.json`), and starts crb again
+  with the same arguments (on the port it listened on, without
+  `--new-key`), directory and environment, logging to the cache dir
+  (`update.log`). npm's crb is started again by its `cli.js` (npm replaces
+  it in place); pnpm's by its `crb` shim (pnpm installs a new directory).
+  The same on Windows (`npm.cmd`/`pnpm.cmd` and `.cmd` shims go through
+  the shell; only checked versions reach a command line). The page shows
+  it updating and reloads once `/api/version` answers the new version; a
+  failed install brings the old crb back, which shows the install's output
+  and the command; no answer within 5 minutes is a failure too.
+- **Under a service manager** that starts crb again, crb installs while it
+  still serves, then exits for the manager to start the new version (the
+  manager would kill a helper left in its unit, or start crb while the
+  install runs): systemd, when crb is its unit's main process (exit code 75
+  for `Restart=always`/`on-failure`, 0 for `on-success`; with `Restart=no`
+  the command is shown instead); pm2; and anything that sets
+  `CRB_SERVICE=1` in crb's environment (launchd, a Windows service wrapper
+  such as NSSM or WinSW, a container's restart policy). A failed install
+  leaves crb running and shows the output.
+
 ## Setup (the owner)
 
 In this order. Before any of it: npm two-factor on the account `gilthans`

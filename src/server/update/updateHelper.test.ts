@@ -4,6 +4,7 @@ import {
 	existsSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -96,7 +97,8 @@ ${opts.installExit ? `console.error("npm error 404 Not Found");\nprocess.exit(${
 	const relaunch = script(
 		"crb.mjs",
 		`import { writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(join(dir, "relaunched.json"))}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), mark: process.env.CRB_HELPER_MARK }));
+import { realpathSync } from "node:fs";
+writeFileSync(${JSON.stringify(join(dir, "relaunched.json"))}, JSON.stringify({ args: process.argv.slice(2), cwd: realpathSync(process.cwd()), mark: process.env.CRB_HELPER_MARK }));
 `,
 	);
 	return {
@@ -147,7 +149,7 @@ describe("update helper", () => {
 		await until(() => existsSync(join(dir, "relaunched.json")), "relaunch");
 		expect(read("relaunched.json")).toEqual({
 			args: ["serve", "--port", "4747"],
-			cwd: dir,
+			cwd: realpathSync(dir),
 			mark: "same env",
 		});
 		const log = readFileSync(c.log, "utf8");

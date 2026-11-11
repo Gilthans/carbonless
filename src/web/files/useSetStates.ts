@@ -134,6 +134,33 @@ export function useReviewView(target: ReviewTarget = CURRENT_REVIEW) {
  *   them back and resends what was sent (ThreadWrites.resume).
  */
 export function useUnsavedGuard() {
+	const unsaved = useUnsaved();
+	useEffect(() => {
+		if (!unsaved) return;
+		const ask = (event: BeforeUnloadEvent) => {
+			if (leaveAllowed) return;
+			event.preventDefault();
+			// Older browsers ask only when returnValue is set.
+			event.returnValue = "";
+		};
+		window.addEventListener("beforeunload", ask);
+		return () => window.removeEventListener("beforeunload", ask);
+	}, [unsaved]);
+}
+
+/** Set once the reviewer agreed to leave (an update's restart): no second ask. */
+let leaveAllowed = false;
+
+/** The reviewer already agreed to lose what is unsaved: the reload doesn't ask again. */
+export function allowLeave(): void {
+	leaveAllowed = true;
+}
+
+/**
+ * Whether leaving the page now would lose something (useUnsavedGuard's
+ * list): what an update's restart asks about first, as leaving does.
+ */
+export function useUnsaved(): boolean {
 	const states = useSyncState().pending.size > 0;
 	const drafts = unsent(useDrafts());
 	const durable = useDraftsDurable();
@@ -148,16 +175,7 @@ export function useUnsavedGuard() {
 	const saver = viewSaverFor(useQueryClient());
 	const view =
 		useSyncExternalStore(saver.subscribe, saver.snapshot).intended !== null;
-	const unsaved =
-		states || view || lost || verdictUnsaved || (!durable && (drafts || busy));
-	useEffect(() => {
-		if (!unsaved) return;
-		const ask = (event: BeforeUnloadEvent) => {
-			event.preventDefault();
-			// Older browsers ask only when returnValue is set.
-			event.returnValue = "";
-		};
-		window.addEventListener("beforeunload", ask);
-		return () => window.removeEventListener("beforeunload", ask);
-	}, [unsaved]);
+	return (
+		states || view || lost || verdictUnsaved || (!durable && (drafts || busy))
+	);
 }

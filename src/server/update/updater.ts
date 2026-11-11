@@ -40,6 +40,13 @@ import {
 /** How often the registry is asked again after the check at start. */
 export const CHECK_EVERY_MS = 6 * 60 * 60_000;
 
+/**
+ * How long crb keeps answering "restarting" before it stops: every open
+ * page polls /api/update more often than this while an update is on offer
+ * (UPDATE_WATCH_MS), so each shows the update and waits to reload.
+ */
+export const RESTART_GRACE_MS = 6_000;
+
 /** How long the helper waits for crb to exit before giving up. */
 const HELPER_WAIT_MS = 60_000;
 
@@ -78,6 +85,8 @@ export interface UpdaterOptions {
 	run?: typeof runCommand;
 	/** Runs the helper (default: node on a copy of it, detached). */
 	startHelper?: (config: HelperConfig) => Promise<void>;
+	/** RESTART_GRACE_MS, shorter in tests. */
+	graceMs?: number;
 	/** Where the helper's result is left for the next crb. */
 	resultFile?: string;
 	logFile?: string;
@@ -238,7 +247,7 @@ export class Updater {
 				);
 				if (code === 0) {
 					this.#state = "restarting";
-					this.#o.exit(exitCode);
+					this.#exitSoon(exitCode);
 				} else {
 					this.#failed = { version, tail: tailOf(output), command: display };
 					this.#state = "idle";
@@ -276,9 +285,15 @@ export class Updater {
 			this.#state = "idle";
 			throw error;
 		}
-		// Long enough for this answer to reach the page.
-		setTimeout(() => this.#o.exit(0), 300).unref();
+		this.#exitSoon(0);
 		return this.info();
+	}
+
+	#exitSoon(code: number): void {
+		setTimeout(
+			() => this.#o.exit(code),
+			this.#o.graceMs ?? RESTART_GRACE_MS,
+		).unref();
 	}
 
 	#log(text: string): void {
