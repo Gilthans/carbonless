@@ -182,19 +182,21 @@ any version and any tag, `latest` included. So:
   `release.yml` (or to `scripts/rc-fixup.mjs`) merged into master, or a
   compromised action or npm release used there. Whoever can change master
   can publish.
-- What keeps that to the owner: the ruleset on `master` (changes only
-  through PRs, CI green, no force pushes), the environment `npm` limited
+- What keeps that to the owner: the ruleset on `master` (only the owner
+  can update it, and only by merging a PR; no force pushes or deletion),
+  the environment `npm` limited
   to `master` (npm checks the repository, the workflow file and the
   environment name, not the branch: the environment's branch rule is the
   only thing that keeps a workflow on another branch from getting npm's
   credential), and the owner's 2FA approval of every staged `latest`.
   Merging only PRs the owner read, on the owner's word, is the rest.
-- Code owners' review keeps others' PRs that touch `.github/`, the
-  release scripts or `package.json` from merging without the owner. It is
-  no barrier against agents: they act through the owner's GitHub login,
-  so their PRs are the owner's own, which is also why the owner (admin)
-  bypasses the ruleset for pull requests (GitHub never counts an author's
-  own approval).
+- Nobody else can merge: the ruleset's "Restrict updates" lets only its
+  bypass list (the owner, as repository admin, for pull requests only)
+  update `master`, whatever access a collaborator has. Anyone can still
+  open a PR or leave a review; neither moves `master`. `.github/CODEOWNERS`
+  only asks for the owner's review on what can publish. Agents act through
+  the owner's GitHub login, so to GitHub they are the owner: they merge
+  only on the owner's word for that PR (CLAUDE.md, "How we work").
 - With "Require two-factor authentication and disallow tokens" set on the
   package, no npm token can publish it; the trusted publisher still can.
 - On the owner's machine the OTP approves whatever the code that asks for
@@ -274,15 +276,17 @@ machine.
    reviewers, no secrets. Check the environment's page shows that rule: a
    job that names a missing environment makes GitHub create it with **no**
    rule, which would let any branch's workflow get npm's credential.
-3. **A ruleset on `master`**, Settings → Rules → Rulesets: pull request
-   required, status check `checks` (CI) required, require review from code
-   owners (`.github/CODEOWNERS` makes `.github/` and the release scripts
-   the owner's), block force pushes and deletion. Bypass list: the
-   Repository admin role, mode "For pull requests only": direct pushes and
-   force pushes stay blocked for everyone, and the owner can merge their
-   own PRs (agents' PRs are the owner's: GitHub never counts an author's
-   own approval, so without it no PR touching a code-owned path could
-   merge).
+3. **A ruleset on `master`**, Settings → Rules → Rulesets → New branch
+   ruleset `master`, Active, target the default branch. Bypass list: the
+   Repository admin role, mode "For pull requests only". Rules: Restrict
+   updates (only the bypass list updates `master`: the owner merges,
+   nobody else, whatever their access), Restrict deletions, Block force
+   pushes, Require a pull request before merging (0 approvals: only the
+   owner can merge anyway), Require status checks to pass (`checks`,
+   `windows-agent`, `e2e`). Not "Require review from Code Owners": with
+   Restrict updates it adds nothing. Nobody pushes straight to `master`,
+   the owner included; the owner can merge any PR, with or without an
+   approval or green checks (GitHub's "bypass rules" box).
 4. **Actions may create PRs**, Settings → Actions → General → Allow GitHub
    Actions to create and approve pull requests (the "next" PR). The
    default workflow permissions stay read-only: every workflow asks for
