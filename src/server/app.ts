@@ -10,6 +10,7 @@ import {
 	MAX_AGENT_TEXT,
 	type OpenAgentThreadRequest,
 } from "../shared/agent.js";
+import { type LineRanges, parseRanges } from "../shared/lineRanges.js";
 import {
 	type ClusterState,
 	COMMENTS_BATCH,
@@ -17,6 +18,7 @@ import {
 	HUNKS_BATCH,
 	type NewThreadRequest,
 	type ReplyRequest,
+	type SinceMark,
 	type StateChange,
 	type ThreadsStage,
 	type VerdictRequest,
@@ -49,6 +51,8 @@ import {
 	type SessionRegistry,
 	UnknownReviewError,
 } from "./registry.js";
+import { parsePlacementBody } from "./rereview/placementBody.js";
+import { InvalidPlacementError } from "./rereview/threads.js";
 import {
 	InvalidChangeError,
 	RefusedChangeError,
@@ -135,8 +139,12 @@ const STATES: readonly string[] = [
 ] satisfies ClusterState[];
 const POSITIVE = /^[1-9]\d{0,8}$/;
 const INDEX = /^(0|[1-9]\d{0,8})$/;
+/** A full object id (the only form a route passes on to git). */
+const OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 /** loadFileHunks/loadContext's error for an index the snapshot doesn't have. */
 const NO_FILE = /^No file \d+ in this snapshot$/;
+/** Session.reviewAt/rereview's error for a patch set the reviewer hasn't. */
+const NO_PATCHSET = /^No patch set \d+$/;
 
 /**
  * A span per request when tracing ($CRB_TRACE_DIR), current for its handler
@@ -224,13 +232,19 @@ export async function buildApp(
 			return reply.status(400).send({ error: error.message, keys: error.keys });
 		}
 		if (error instanceof BadRequestError) return send(400, error.message);
+		if (error instanceof InvalidPlacementError) {
+			return send(400, error.message);
+		}
 		if (error instanceof NoAgentError) {
 			return reply.status(404).send({ error: error.message, code: "no-agent" });
 		}
 		if (error instanceof UnknownAgentThreadError) {
 			return send(404, error.message);
 		}
-		if (error instanceof RangeError && NO_FILE.test(error.message)) {
+		if (
+			error instanceof RangeError &&
+			(NO_FILE.test(error.message) || NO_PATCHSET.test(error.message))
+		) {
 			return send(404, error.message);
 		}
 		if (error instanceof WriteRefusedError) {
@@ -361,35 +375,115 @@ export async function buildApp(
 				if (!read) throw new BadRequestError("read is required");
 				return sessionOf(request).timeline(read);
 			});
-			review.get("/review", (request) => sessionOf(request).review());
-			// Several files' hunks at once (the search's prefetch).
-			review.get<{ Querystring: { revision?: unknown; indexes?: unknown } }>(
-				"/files/hunks",
+			// The current patch set's review; `patchset=<n>` an earlier one as
+			// reviewed (read-only); `head=<oid>` the snapshot of that head,
+			// viewed (its first lasting action starts the patch set).
+			review.get<{ Querystring: { patchset?: unknown; head?: unknown } }>(
+				"/review",
 				(request) => {
-					const revision = revisionParam(request.query.revision);
-					const { indexes: raw } = request.query;
-					if (typeof raw !== "string" || !raw) {
-						throw new BadRequestError("indexes is required");
+					const { patchset, head } = request.query;
+					if (patchset !== undefined && head !== undefined) {
+						throw new BadRequestError("patchset and head can't be combined");
 					}
-					const indexes = [...new Set(raw.split(",").map(fileIndex))];
-					if (indexes.length > HUNKS_BATCH) {
-						throw new BadRequestError(`At most ${HUNKS_BATCH} files a request`);
+					if (patchset !== undefined) {
+						return sessionOf(request).reviewAt(patchsetParam(patchset));
 					}
-					return sessionOf(request).fileHunksBatch(revision, indexes);
+					if (head !== undefined) {
+						return sessionOf(request).viewHead(oidParam("head", head));
+					}
+					return sessionOf(request).review();
 				},
 			);
+			// The engine's answer for patch set `from` to patch set `to` (its
+			// pinned snapshot) or to `head` (its snapshot against the base
+			// tip): `{ pending: true }` until it is computed (Session.rereview).
+			review.get<{
+				Querystring: { from?: unknown; to?: unknown; head?: unknown };
+			}>("/rereview", (request) => {
+				const { from, to, head } = request.query;
+				if ((to === undefined) === (head === undefined)) {
+					throw new BadRequestError(
+						"to (a patch set) or head (a commit id), one of them",
+					);
+				}
+				return sessionOf(request).rereview(
+					patchsetParam(from),
+					to !== undefined
+						? { patchset: patchsetParam(to) }
+						: { head: oidParam("head", head) },
+				);
+			});
+			// Every unresolved thread of read `read` placed into a patch set
+			// (`ps`) or a head's snapshot (`head`): `{ pending: true }` until
+			// git's part is done (Session.placements).
+			review.get<{
+				Querystring: { read?: unknown; ps?: unknown; head?: unknown };
+			}>("/placements", (request) => {
+				const { read, ps, head } = request.query;
+				if ((ps === undefined) === (head === undefined)) {
+					throw new BadRequestError(
+						"ps (a patch set) or head (a commit id), one of them",
+					);
+				}
+				if (typeof read !== "string" || !read) {
+					throw new BadRequestError("read is required");
+				}
+				return sessionOf(request).placements(
+					ps !== undefined
+						? { patchset: patchsetParam(ps) }
+						: { head: oidParam("head", head) },
+					read,
+				);
+			});
+			// Several files' hunks at once (the search's prefetch); with
+			// `from=<n>`, the since view's (Session.interdiffHunksBatch).
+			review.get<{
+				Querystring: { revision?: unknown; indexes?: unknown; from?: unknown };
+			}>("/files/hunks", (request) => {
+				const revision = revisionParam(request.query.revision);
+				const { indexes: raw, from } = request.query;
+				if (typeof raw !== "string" || !raw) {
+					throw new BadRequestError("indexes is required");
+				}
+				const indexes = [...new Set(raw.split(",").map(fileIndex))];
+				if (indexes.length > HUNKS_BATCH) {
+					throw new BadRequestError(`At most ${HUNKS_BATCH} files a request`);
+				}
+				if (from !== undefined) {
+					return sessionOf(request).interdiffHunksBatch(
+						patchsetParam(from),
+						revision,
+						indexes,
+					);
+				}
+				return sessionOf(request).fileHunksBatch(revision, indexes);
+			});
+			// A file's hunks; with `from=<n>`, the since view's: the interdiff
+			// from patch set n to the snapshot (Session.interdiffHunks).
 			review.get<{
 				Params: { index: string };
-				Querystring: { revision?: unknown };
-			}>("/files/:index/hunks", (request) =>
-				sessionOf(request).fileHunks(
-					revisionParam(request.query.revision),
-					fileIndex(request.params.index),
-				),
-			);
+				Querystring: { revision?: unknown; from?: unknown };
+			}>("/files/:index/hunks", (request) => {
+				const revision = revisionParam(request.query.revision);
+				const index = fileIndex(request.params.index);
+				const { from } = request.query;
+				if (from !== undefined) {
+					return sessionOf(request).interdiffHunks(
+						patchsetParam(from),
+						revision,
+						index,
+					);
+				}
+				return sessionOf(request).fileHunks(revision, index);
+			});
 			review.get<{
 				Params: { index: string };
-				Querystring: { revision?: unknown; newFrom?: string; newTo?: string };
+				Querystring: {
+					revision?: unknown;
+					newFrom?: string;
+					newTo?: string;
+					from?: unknown;
+				};
 			}>("/files/:index/context", (request) => {
 				const index = fileIndex(request.params.index);
 				const revision = revisionParam(request.query.revision);
@@ -401,6 +495,18 @@ export async function buildApp(
 				) {
 					throw new BadRequestError(
 						"newFrom and newTo must be line numbers with newFrom <= newTo",
+					);
+				}
+				// With `from=<n>`, the since view's: the interdiff's context
+				// (Session.interdiffContext), numbered as its hunks are.
+				const { from } = request.query;
+				if (from !== undefined) {
+					return sessionOf(request).interdiffContext(
+						patchsetParam(from),
+						revision,
+						index,
+						Number(newFrom),
+						Number(newTo),
 					);
 				}
 				return sessionOf(request).context(
@@ -477,6 +583,19 @@ export async function buildApp(
 					);
 				},
 			);
+			// The reviewer places a thread on lines of their latest patch set
+			// (a drag): `thread-placed`, checked against the patch set first.
+			review.post<{ Params: { threadId: string } }>(
+				"/threads/:threadId/placement",
+				(request) => {
+					const { patchset, anchor } = parsePlacementBody(request.body);
+					return sessionOf(request).placeThread(
+						threadIdParam(request.params.threadId),
+						patchset,
+						anchor,
+					);
+				},
+			);
 			review.patch<{ Params: { threadId: string; commentId: string } }>(
 				"/threads/:threadId/comments/:commentId",
 				(request) => {
@@ -532,6 +651,25 @@ export async function buildApp(
 			review.get("/agent/threads", async (request) => ({
 				threads: await agentOf(request).threads(),
 			}));
+			// The agent threads placed into a patch set (`ps`) or a head's
+			// snapshot (`head`), by the review threads' tracer.
+			review.get<{ Querystring: { ps?: unknown; head?: unknown } }>(
+				"/agent/placements",
+				(request) => {
+					const { ps, head } = request.query;
+					if ((ps === undefined) === (head === undefined)) {
+						throw new BadRequestError(
+							"ps (a patch set) or head (a commit id), one of them",
+						);
+					}
+					return sessionOf(request).agentPlacements(
+						agentOf(request),
+						ps !== undefined
+							? { patchset: patchsetParam(ps) }
+							: { head: oidParam("head", head) },
+					);
+				},
+			);
 			review.post("/agent/threads", (request) =>
 				agentOf(request).open(parseAgentOpen(request.body)),
 			);
@@ -931,6 +1069,20 @@ function revisionParam(raw: unknown): string {
 	return raw;
 }
 
+function patchsetParam(raw: unknown): number {
+	if (typeof raw !== "string" || !POSITIVE.test(raw)) {
+		throw new BadRequestError("A patch set number is required");
+	}
+	return Number(raw);
+}
+
+function oidParam(name: string, raw: unknown): string {
+	if (typeof raw !== "string" || !OID.test(raw)) {
+		throw new BadRequestError(`${name} must be a commit id`);
+	}
+	return raw;
+}
+
 function parseStatesBody(body: unknown): {
 	revision: string;
 	changes: StateChange[];
@@ -952,11 +1104,49 @@ function parseStatesBody(body: unknown): {
 		if (typeof change !== "object" || change === null) {
 			throw fail("Each change must be an object");
 		}
-		const { key, state, reason } = change as Record<string, unknown>;
+		const { key, state, reason, reviewedLines, crossedLines, sinceMark } =
+			change as Record<string, unknown>;
 		if (typeof key !== "string") throw fail("A change's key must be a string");
 		if (typeof state !== "string" || !STATES.includes(state)) {
 			refused.push({ key, message: `Unknown cluster state: ${String(state)}` });
 			return undefined;
+		}
+		if (sinceMark !== undefined) {
+			// Since-only pieces: a mark of its own, checked whole (shape,
+			// path, key, patch set, no lines with it) by the store against the
+			// review (sinceMarkOk), which refuses it by key.
+			return {
+				key,
+				state: state as ClusterState,
+				sinceMark: sinceMark as SinceMark,
+				// Lines with it are refused there too.
+				...(reviewedLines === undefined
+					? {}
+					: { reviewedLines: reviewedLines as LineRanges }),
+				...(crossedLines === undefined
+					? {}
+					: { crossedLines: crossedLines as LineRanges }),
+			};
+		}
+		if (reviewedLines !== undefined || crossedLines !== undefined) {
+			// Part of a cluster: ranges of its lines, with unreviewed only;
+			// whether they fit the cluster is checked against the snapshot.
+			const r = reviewedLines === undefined ? [] : parseRanges(reviewedLines);
+			const x = crossedLines === undefined ? [] : parseRanges(crossedLines);
+			if (!r || !x || state !== "unreviewed" || reason !== undefined) {
+				refused.push({
+					key,
+					message:
+						"reviewedLines and crossedLines must be [start, end) pairs of line indexes, with unreviewed",
+				});
+				return undefined;
+			}
+			return {
+				key,
+				state: "unreviewed",
+				...(reviewedLines === undefined ? {} : { reviewedLines: r }),
+				...(crossedLines === undefined ? {} : { crossedLines: x }),
+			};
 		}
 		if (reason === undefined) return { key, state: state as ClusterState };
 		if (typeof reason !== "string" || reason.length > MAX_REASON) {

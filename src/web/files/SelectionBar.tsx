@@ -329,9 +329,25 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
  * even if a tap clears the selection first. Escape dismisses it and clears
  * picked lines; an action clears both.
  */
-export function SelectionBar(props: { files: readonly FileView[] }) {
-	const commit =
+export function SelectionBar(props: {
+	files: readonly FileView[];
+	/**
+	 * The head the diff shows (an earlier patch set's, or the head in the
+	 * since view): a span's lines are its lines, so its anchor names it.
+	 * The session's snapshot head when not given.
+	 */
+	commit?: string;
+	/**
+	 * The diff on screen is the viewed head's (useHeadSure; default yes):
+	 * until it is, a span's lines are the old head's, so line actions wait.
+	 */
+	headSure?: boolean;
+	/** An earlier patch set: Comment off (Ask agent stays). */
+	readOnly?: boolean;
+}) {
+	const sessionHead =
 		useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead ?? "";
+	const commit = props.commit || sessionHead;
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
 	const picks = usePicks();
 	const wide = useMedia(NOT_PHONE);
@@ -546,6 +562,8 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 						submodule: file?.submodule ?? false,
 					},
 					inDiff: target.inDiff,
+					headUnsure: props.headSure === false,
+					readOnly: props.readOnly === true,
 				}
 			: null;
 	const run = (action: SelectionAction) => {

@@ -17,7 +17,7 @@ In priority order.
   (done); view at the commit you last reviewed (`--head reviewed`); instant
   saves; actions from the UI that write to GitHub (comment, reply, resolve,
   approve / request changes: done 2026-11-02, Final Verdict); then carrying threads and progress over from
-  earlier snapshots.
+  earlier snapshots (done 2026-11-08: re-review, below).
 
 ## 0. Parity with the GitHub review workflow
 
@@ -39,7 +39,12 @@ Foundation for everything below.
   viewed head. Place the others too, mapping their lines onto the viewed
   diff in `placeThreads` (`src/web/files/threadPlacement.ts`), the one
   function that decides where a thread goes.
-- **Re-review after new pushes:** one of GitHub's weakest spots.
+- **Re-review after new pushes (done 2026-11-08):** one of GitHub's
+  weakest spots. Patch sets, the patch set graph and the toast, the since
+  view with carried marks, thread placement with fates, "since your
+  verdict" on the Final Verdict tab. Design: the
+  document on Linear CAR-5; demo: the
+  gallery's re-review showcase. Still open:
   - Show a thread's code as the commenter saw it: diff its commit against
     the base of the view the comment was made in ("changes since your last
     review", a single commit), not the PR's merge base, then drop the
@@ -49,6 +54,27 @@ Foundation for everything below.
     match GitHub's hunk (3 of 26 on the real-PR check as of its cutoff, 7 of
     105 overall; `pnpm compare-threads` lists them). Find out why the verdict
     says "different" there.
+  - Stacked PRs: let the patch set graph have more than one comparison base
+    (the parent PR's head besides the base branch), so a child PR can be read
+    since the parent landed (owner, 2026-11-07). The gallery's `rr-stacked`
+    shows today's behaviour.
+  - The patch set card's "85% of clusters reviewed" and "X files with Y
+    line changes" (owner, 2026-11-08; the threads line is built). Both
+    need the patch set's snapshot: for any but the viewed or latest one
+    that is a whole snapshot rebuild and its full review sent to the page
+    per patch set hovered (`GET /review?patchset=`), too much on a big PR.
+    Cheap way: the session keeps per patch set its cluster total, files
+    and lines (from the snapshot once built, or stored when the patch set
+    starts) and its reviewed count from the fold, and `SessionInfo.patchsets`
+    carries them.
+  - Per-line review states in the full diff: marking any range of a
+    cluster by hand. The storage supports ranges since 2026-11-08
+    (`lines-state`, `docs/review-data-storage.md`, "Marks on part of a
+    cluster"); only the since view's pieces write them so far.
+  - Which commit changed what (owner, 2026-11-07: deferred everywhere): a
+    fate's commit ("rewritten in `c0ffee1`"), the patch set that deleted a
+    file in "Not in this comparison", landmarks (heads others commented or
+    gave a verdict on) as since points.
 - **Store review state in git refs** (`refs/crb/...`). Design:
   `docs/review-data-storage.md`. Carry-over after pushes is deferred to the
   re-review item above (ideas so far: Gerrit-style change kinds and
@@ -62,6 +88,9 @@ Foundation for everything below.
   commits. Triggered when the PR is merged or closed. No event may be lost;
   clients that see a compacted ref replace their copy instead of merging it.
   See "Compaction" in `docs/review-data-storage.md`.
+  Also (owner, 2026-11-08): once every line of a cluster is marked, its
+  `lines-state` events compact to one whole `cluster-state`, and the
+  `since-lines-state` events of a (since, path) to the last one.
 
 ## 1. Split a change into review groups
 

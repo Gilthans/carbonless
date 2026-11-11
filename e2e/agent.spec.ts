@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { acpLog, releaseAcp } from "../test/fake-acp/scenario";
@@ -16,8 +16,8 @@ import {
 	selectText,
 	test,
 } from "./agent-ui";
-import { expectNoPageOverflow } from "./files-ui";
-import { OWNER_REPO } from "./fixtures";
+import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
+import { OWNER_REPO, reviewPage } from "./fixtures";
 
 /**
  * The reviewer's own agent (review buddy) against the fake ACP agent: ask
@@ -481,31 +481,85 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	expect([...perPid.values()]).toEqual([1, 1]);
 });
 
-test("a thread asked on an earlier head stays reachable in its file's lead, marked outdated", async ({
+/** The tracer's answer (GET /agent/placements), held: the review-bound route. */
+async function holdPlacements(page: Page) {
+	const hits: string[] = [];
+	let release: () => void = () => {};
+	const released = new Promise<void>((r) => {
+		release = r;
+	});
+	await page.route("**/api/r/*/agent/placements?*", async (route) => {
+		hits.push(new URL(route.request().url()).search);
+		await released;
+		await route.continue();
+	});
+	return { hits, release };
+}
+
+const calcLines = (top: string[], total = "export const total = v1 + v2;") =>
+	`${[
+		...top,
+		...Array.from({ length: 12 }, (_, i) =>
+			i === 2 ? total : `export const v${i + 1} = ${i + 1};`,
+		),
+	].join("\n")}\n`;
+const OTHER = "src/other.ts";
+const REN = "src/ren.ts";
+const REN2 = "src/ren2.ts";
+const five = (p: string) =>
+	Array.from({ length: 5 }, (_, i) => `${p} ${i + 1}`);
+const withLine2 = (lines: string[], text: string) =>
+	`${lines.map((l, i) => (i === 1 ? text : l)).join("\n")}\n`;
+
+test("agent threads follow a push: a spinner while they are traced, then on the moved line; a reverted file's after the files with its fate, a renamed file's under its new path", async ({
 	page,
 	pr,
 	agentCrb,
+	isMobile,
 }) => {
-	// An answer, a push, a Refresh and the file again.
+	// Three asks, an answer each, a push, a Refresh and the files again.
 	test.slow();
-	const p = await pr(fixture);
+	const p = await pr({
+		base: {
+			...fixture.base,
+			[OTHER]: `${five("other").join("\n")}\n`,
+			[REN]: `${five("ren").join("\n")}\n`,
+		},
+		files: [
+			{
+				message: "calc and more",
+				files: {
+					[CALC]: calcLines([]),
+					[OTHER]: withLine2(five("other"), "other 2 changed"),
+					[REN]: withLine2(five("ren"), "ren 2 changed"),
+				},
+			},
+		],
+	});
 	const s = await agentCrb();
-	const section = await openFile(page, s.url, CALC);
-	const card = await ask(page, section, 3, "Asked before the push");
-	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
-	const before = p.repo.shas.at(-1) ?? "";
+	const asks = [
+		[CALC, 3, "About calc"],
+		[OTHER, 2, "About other"],
+		[REN, 2, "About ren"],
+	] as const;
+	for (const [path, line, text] of asks) {
+		const section = await openFile(page, s.url, path);
+		const card = await ask(page, section, line, text);
+		await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
+	}
+	// Two lines on top of calc (its line 3 is line 5 now), other.ts back to
+	// the base, ren.ts renamed whole.
 	p.moveHead({
 		message: "later push",
+		// A rename: moveHead deletes and adds (git pairs them).
+		delete: [REN],
 		files: {
-			[CALC]: `${Array.from({ length: 12 }, (_, i) =>
-				i === 2
-					? "export const total = v1 + v2;"
-					: i === 4
-						? "export const v5 = 50;"
-						: `export const v${i + 1} = ${i + 1};`,
-			).join("\n")}\n`,
+			[CALC]: calcLines(["// one", "// two"]),
+			[OTHER]: `${five("other").join("\n")}\n`,
+			[REN2]: withLine2(five("ren"), "ren 2 changed"),
 		},
 	});
+	const held = await holdPlacements(page);
 	const refreshed = page.waitForResponse(
 		(r) => r.url().endsWith("/refresh") && r.ok(),
 	);
@@ -513,22 +567,314 @@ test("a thread asked on an earlier head stays reachable in its file's lead, mark
 	await refreshed;
 	await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
 	const again = await openFile(page, s.url, CALC);
-	// Not on line 3 any more (that head is gone)...
-	await expect(row(again, 3).getByTestId("agent-bubble")).toHaveCount(0);
-	// ...but in the file's lead, outdated, with the head it was asked on.
-	await again
-		.getByRole("button", { name: /^1 agent thread on this file/ })
-		.click();
-	const old = again
-		.getByTestId("agent-thread")
-		.filter({ hasText: "Asked before the push" });
+	await expect.poll(() => held.hits.length).toBeGreaterThan(0);
+	expect(held.hits.every((q) => q.includes("head="))).toBe(true);
+	// Held: a spinner where they will show, none of them outdated or
+	// listed meanwhile (loading never looks like a result).
+	const loading = page.getByTestId("agent-placements-loading");
+	await expect(loading).toBeVisible();
+	await expect(loading).toHaveAttribute("aria-busy", "true");
+	const lead = again.getByRole("button", {
+		name: /^1 agent thread on this file/,
+	});
+	await expect(lead).toHaveCount(0);
+	// Where calc's will show: its agent bubble spins (and the tree, beside
+	// the diff, as while comments load).
 	await expect(
-		old.getByRole("img", {
-			name: `Asked on an earlier version (${before.slice(0, 7)})`,
+		again.getByRole("button", { name: "Placing agent threads on this file" }),
+	).toHaveAttribute("aria-busy", "true");
+	if (!isMobile) {
+		await expect(
+			page
+				.getByTestId("file-tree")
+				.getByRole("status", { name: "Placing agent threads" }),
+		).toBeVisible();
+	}
+	await expect(page.getByTestId("agent-outdated")).toHaveCount(0);
+	const outside = page.getByTestId("agent-not-in-comparison");
+	const outsideRow = (text: string) =>
+		outside.getByTestId("agent-outside").filter({ hasText: text });
+	await expect(outside).toHaveCount(0);
+	held.release();
+	await expect(loading).toHaveCount(0);
+	await expect(
+		again.getByRole("button", { name: "Placing agent threads on this file" }),
+	).toHaveCount(0);
+	// Answered: calc's on line 5 with the agent's bubble, gone from the lead.
+	const bubble = row(again, 5).getByTestId("agent-bubble");
+	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
+	await expect(lead).toHaveCount(0);
+	await bubble.click();
+	const moved = again
+		.getByTestId("agent-thread")
+		.filter({ hasText: "About calc" });
+	await expect(moved.getByTestId("agent-message-ai")).toHaveText("ok");
+	await expect(moved.getByTestId("agent-outdated")).toHaveCount(0);
+	// Ren's followed its file; other's stays after the files, with its fate.
+	await expect(outsideRow("About ren")).toHaveCount(0);
+	await expect(
+		fileSection(page, REN2).getByRole("button", {
+			name: /^1 agent thread in this file/,
 		}),
-	).toBeAttached();
-	await expect(old.getByTestId("agent-message-ai")).toHaveText("ok");
+	).toBeVisible();
+	await expect(outsideRow("About other")).toHaveAttribute(
+		"data-fate",
+		"reverted",
+	);
 });
+
+test("on a patch set and in the since view: traced from PS1 into the head (a reworked line: changed since, with its old lines), then into PS2; a comment and a question name the head they were written on", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// An answer, a mark, a push, the since view and a second mark.
+	test.slow();
+	const p = await pr(fixture);
+	const s = await agentCrb();
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 3, "Asked on PS1");
+	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
+	// The mark starts PS1 (the file's only cluster: it closes).
+	await marksReady(page, section);
+	await section
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.first()
+		.click();
+	await expect(
+		section.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	// Two lines on top, and the asked line (now 5) reworked.
+	const head = p.moveHead({
+		message: "rework",
+		files: {
+			[CALC]: calcLines(
+				["// one", "// two"],
+				"export const total = v1 + v2 + v3;",
+			),
+		},
+	});
+	const held = await holdPlacements(page);
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		// The head check's fetch on a loaded machine (rereview.spec's GIT_WAIT).
+		{ timeout: 30_000 },
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	// The since view, PS1 → the head.
+	const since = fileSection(page, CALC);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	await expect(row(since, 5)).toBeVisible({ timeout: 30_000 });
+	await expect.poll(() => held.hits.length).toBeGreaterThan(0);
+	expect(held.hits.some((q) => q.includes("head="))).toBe(true);
+	// Held: a spinner, not the thread outdated in the lead.
+	await expect(page.getByTestId("agent-placements-loading")).toBeVisible();
+	await expect(
+		since.getByRole("button", { name: /^1 agent thread on this file/ }),
+	).toHaveCount(0);
+	held.release();
+	const bubble = row(since, 5).getByTestId("agent-bubble");
+	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
+	// Its line was reworked since: the changed chip and its old lines, as a
+	// review thread's card has them.
+	await bubble.click();
+	const changed = since.getByTestId("agent-changed");
+	await expect(changed.getByTestId("placement-changed")).toHaveText(
+		"changed since",
+	);
+	await expect(changed.getByTestId("placement-changed-line")).toHaveText([
+		/export const total = v1 \+ v2;/,
+		/export const total = v1 \+ v2 \+ v3;/,
+	]);
+	await expect(changed.getByTestId("placement-fate-line")).toContainText(
+		"Line rewritten since PS1",
+	);
+	await bubble.click();
+	// A comment on the head's line 5 starts PS2 (the page views it): it
+	// names the head it was written on, with that head's line.
+	const before = held.hits.length;
+	const number = row(since, 5).getByTestId("new");
+	if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+		await number.tap();
+	} else await number.click();
+	await bar(page).getByRole("button", { name: "Comment" }).click();
+	const composer = since.getByTestId("new-thread");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("On the head");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(page.getByTestId("ps-node-ps2")).toBeVisible({
+		timeout: 30_000,
+	});
+	expect(storedThreads(p)).toMatchObject([
+		{ path: CALC, line: 5, originalCommit: head },
+	]);
+	await expect
+		.poll(() => held.hits.slice(before).some((q) => q.includes("ps=2")))
+		.toBe(true);
+	const ps2 = fileSection(page, CALC);
+	const expand = async (section: typeof ps2) => {
+		if (
+			await section.getByRole("button", { name: "Expand file" }).isVisible()
+		) {
+			await section.getByRole("button", { name: "Expand file" }).click();
+		}
+	};
+	await expand(ps2);
+	await expect(row(ps2, 5).getByTestId("agent-bubble")).toHaveAccessibleName(
+		"1 agent thread on line 5",
+	);
+	// Back on PS1 (PS2 started since): a question asked there is on PS1's
+	// head and line, shown there, and traced into PS2 like the first.
+	await page.goto(reviewPage(s.url, "files", "ps=1"));
+	await expect(page.getByTestId("read-only-note")).toContainText("PS1");
+	const ps1 = fileSection(page, CALC);
+	await ps1.getByRole("button", { name: "Expand file" }).click();
+	await expect(row(ps1, 3)).toBeVisible();
+	const late = await ask(page, ps1, 3, "Asked on PS1 after PS2");
+	await expect(late).toHaveAttribute("aria-label", "Agent thread, answered");
+	await expect(row(ps1, 3).getByTestId("agent-bubble")).toHaveAccessibleName(
+		"2 agent threads on line 3",
+	);
+	await page.goto(reviewPage(s.url, "files", "ps=2"));
+	const back = fileSection(page, CALC);
+	// Freshly opened: the file starts closed.
+	await back.getByRole("button", { name: "Expand file" }).click();
+	await expect(row(back, 5).getByTestId("agent-bubble")).toHaveAccessibleName(
+		"2 agent threads on line 5",
+	);
+});
+
+test("right after a Refresh, until the new head's diff shows, Comment and Ask agent wait: nothing names the old lines on the new head", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// A Refresh held, then a second page load of the file.
+	test.slow();
+	const p = await pr(fixture);
+	const s = await agentCrb();
+	const section = await openFile(page, s.url, CALC);
+	p.moveHead({
+		message: "later push",
+		files: { [CALC]: calcLines(["// one", "// two"]) },
+	});
+	// The new head's review, held: the old diff stays under the new head.
+	let held = 0;
+	let release: () => void = () => {};
+	const released = new Promise<void>((r) => {
+		release = r;
+	});
+	await page.route("**/api/r/*/review", async (route) => {
+		held++;
+		await released;
+		await route.continue();
+	});
+	const refreshed = page.waitForResponse(
+		(r) => r.url().endsWith("/refresh") && r.ok(),
+	);
+	await page.getByRole("button", { name: "Refresh" }).click();
+	await refreshed;
+	await expect.poll(() => held).toBeGreaterThan(0);
+	// The old diff's line 3 (the head's line 5 now).
+	await expect(row(section, 3)).toContainText("total");
+	const number = row(section, 3).getByTestId("new");
+	if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+		await number.tap();
+	} else await number.click();
+	for (const name of ["Comment", "Ask agent"]) {
+		const button = bar(page).getByRole("button", { name });
+		await expect(button, name).toHaveAttribute("aria-disabled", "true");
+		await expect(button, name).toHaveAccessibleDescription(
+			"The new head's diff is loading",
+		);
+	}
+	release();
+	await expect.poll(() => storedThreads(p)).toEqual([]);
+	// The new head's diff: line 5 is that line, and Comment is on again.
+	await page.unroute("**/api/r/*/review");
+	const again = await openFile(page, s.url, CALC);
+	await expect(row(again, 5)).toContainText("total");
+	const five = row(again, 5).getByTestId("new");
+	if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+		await five.tap();
+	} else await five.click();
+	await expect(
+		bar(page).getByRole("button", { name: "Comment" }),
+	).not.toHaveAttribute("aria-disabled");
+});
+
+test("Comment and Ask agent don't wait on GitHub's threads: on while their read is held, and after it failed", async ({
+	page,
+	pr,
+	agentCrb,
+	expectConsoleError,
+}) => {
+	// The failed read's own 502.
+	expectConsoleError(/502/);
+	// Two page loads, each opening the file and picking a line.
+	test.slow();
+	await pr(fixture);
+	const s = await agentCrb();
+	const actionsOn = async () => {
+		const section = await openFile(page, s.url, CALC);
+		const number = row(section, 3).getByTestId("new");
+		if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+			await number.tap();
+		} else await number.click();
+		for (const name of ["Comment", "Ask agent"]) {
+			await expect(
+				bar(page).getByRole("button", { name }),
+				name,
+			).not.toHaveAttribute("aria-disabled");
+		}
+	};
+	// Held: the thread read never answers while the actions are checked.
+	let held = 0;
+	await page.route("**/api/r/*/threads?*", async () => {
+		held++;
+		await new Promise(() => {});
+	});
+	await actionsOn();
+	expect(held).toBeGreaterThan(0);
+	// Failed: the read answers an error.
+	await page.unroute("**/api/r/*/threads?*");
+	let failed = 0;
+	await page.route("**/api/r/*/threads?*", (route) => {
+		failed++;
+		return route.fulfill({ status: 502, body: '{"error":"GitHub is down"}' });
+	});
+	await actionsOn();
+	expect(failed).toBeGreaterThan(0);
+});
+
+/** The review threads the fake gh holds, with each one's first comment's commit. */
+function storedThreads(p: { scenarioPath: string }) {
+	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {
+		prs: Record<
+			string,
+			{
+				graphql?: {
+					reviewThreads?: {
+						path: string;
+						line: number;
+						first?: { nodes: { originalCommit?: { oid: string } }[] };
+					}[];
+				};
+			}
+		>;
+	};
+	return Object.values(s.prs).flatMap((pr) =>
+		(pr.graphql?.reviewThreads ?? []).map((t) => ({
+			path: t.path,
+			line: t.line,
+			originalCommit: t.first?.nodes[0]?.originalCommit?.oid,
+		})),
+	);
+}
 
 /** A PR that tries to make whatever opens it run things. */
 const hostile = (workdir: string) => ({

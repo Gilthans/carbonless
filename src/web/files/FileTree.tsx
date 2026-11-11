@@ -2,6 +2,7 @@ import {
 	ChevronDownIcon,
 	ChevronRightIcon,
 	DiffRenamedIcon,
+	EyeIcon,
 	FoldIcon,
 	UnfoldIcon,
 } from "@primer/octicons-react";
@@ -42,6 +43,7 @@ import {
 } from "./unit";
 
 const NONE = () => [];
+const NO_EYES = () => null;
 const NO_AGENT = (): AgentThread[] => [];
 
 /** The find's view of the tree: hits per file, and marks on names. Nothing is hidden or dimmed. */
@@ -133,6 +135,18 @@ function MarkDot({ mark, legend }: { mark: Mark; legend?: boolean }) {
 	);
 }
 
+/** What the comparison's dot says of a file. */
+const EYES = { read: "needs eyes", carried: "carried" } as const;
+
+/** The comparison's dot: yellow needs eyes, green every mark carried. */
+function EyesDot({ eyes }: { eyes: "read" | "carried" }) {
+	return (
+		<span
+			aria-hidden
+			className={`h-2 w-2 rounded-full ${eyes === "read" ? "bg-warn" : "bg-ok"}`}
+		/>
+	);
+}
 /**
  * A tooltip's title: the row's name, prominent, its full path below (unless
  * the path is the name: a top-level folder or a root file).
@@ -313,11 +327,13 @@ function FileItem(props: {
 	mark: Mark;
 	onSelect: (index: number) => void;
 	threads: ReviewThread[];
+	/** In a comparison: anything to read in it (yellow), or every mark carried (green). */
+	eyes: "read" | "carried" | null;
 	find?: TreeFind;
 	/** The reviewer's agent threads in the file: a second, agent-tinted dot. */
 	agentThreads?: AgentThread[];
 }) {
-	const { file, unit, threads, mark } = props;
+	const { file, unit, threads, mark, eyes } = props;
 	const agentThreads = props.agentThreads ?? [];
 	const asked =
 		agentThreads.length > 0
@@ -377,6 +393,11 @@ function FileItem(props: {
 									{capital(talk)}
 								</TipLine>
 							)}
+							{eyes && (
+								<TipLine kind="eyes" icon={<EyesDot eyes={eyes} />}>
+									{capital(EYES[eyes])}
+								</TipLine>
+							)}
 							{asked && (
 								<TipLine kind="agent-threads" icon={AGENT_DOT}>
 									{capital(asked)}
@@ -416,6 +437,15 @@ function FileItem(props: {
 						}`}
 					>
 						<StatusIcon file={file} />
+						{eyes && (
+							<span
+								data-testid="tree-eyes"
+								data-eyes={eyes}
+								className="flex h-4 w-2 shrink-0 items-center"
+							>
+								<EyesDot eyes={eyes} />
+							</span>
+						)}
 						{/* A rename's new path in green: where the file is now. */}
 						<ChangeKindIcon
 							file={file}
@@ -468,6 +498,7 @@ function FileItem(props: {
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
 						</span>
+						{eyes && <span className="sr-only">, {EYES[eyes]}</span>}
 						{mark && <span className="sr-only">, {markText(mark, false)}</span>}
 						<TreeMeter counts={p.counts} incomplete={p.clustersLeft > 0} />
 					</button>
@@ -491,6 +522,7 @@ interface Level {
 	/** The threads are still on their way: no folder says none wait. */
 	threadsLoading: boolean;
 	folds: Folds;
+	eyesOf: (file: FileView) => "read" | "carried" | null;
 	find?: TreeFind;
 }
 
@@ -738,6 +770,7 @@ function Children(props: Level & { nodes: Node[] }) {
 						mark={markOf(node.file.path, props.openedPath, props.currentPath)}
 						onSelect={props.onSelect}
 						threads={props.threadsOf(node.file)}
+						eyes={props.eyesOf(node.file)}
 						find={props.find}
 						agentThreads={props.agentThreadsOf(node.file)}
 					/>
@@ -806,6 +839,8 @@ export function FileTree(props: {
 	agentThreadsOf?: (file: FileView) => AgentThread[];
 	/** The threads are still on their way: no file's dot means none yet. */
 	threadsLoading?: boolean;
+	/** Agent threads wait for their place (their dots come once placed). */
+	agentLoading?: boolean;
 	/** Where this PR's fold state is kept (foldsKey); null: in memory only. */
 	foldKey?: string | null;
 	/**
@@ -813,10 +848,17 @@ export function FileTree(props: {
 	 * opened file's folded folders unfold, even right after load.
 	 */
 	revealSeq?: number;
+	/** In a comparison the engine answered: each file's dot (since.ts eyesOf). */
+	eyesOf?: (file: FileView) => "read" | "carried" | null;
+	/**
+	 * The "needs eyes" filter (hides fully carried files, never clusters):
+	 * its state and its toggle, shown only in such a comparison.
+	 */
+	filter?: { on: boolean; onChange: (on: boolean) => void };
 	/** The find's counts and name marks (Find in PR); nothing is hidden by it. */
 	find?: TreeFind;
 }) {
-	const { files, current } = props;
+	const { files, current, filter } = props;
 	const opened = props.opened ?? null;
 	const tree = useMemo(() => buildTree(files), [files]);
 	const allFolders = useMemo(() => folderPaths(tree), [tree]);
@@ -828,37 +870,67 @@ export function FileTree(props: {
 		index === null ? undefined : files.find((f) => f.index === index)?.path;
 	return (
 		<div>
-			{allFolders.length > 0 && (
+			{(allFolders.length > 0 || filter) && (
 				// Stays on top while the tree scrolls under it, on the
 				// background of what holds the tree (--tree-bg).
 				<div
 					role="toolbar"
 					aria-label="Folders"
-					className="sticky top-0 z-10 mb-1 flex justify-end gap-1 pt-1 bg-(--tree-bg,var(--color-canvas))"
+					className="sticky top-0 z-10 mb-1 flex items-center justify-end gap-1 pt-1 bg-(--tree-bg,var(--color-canvas))"
 				>
-					<TreeAction
-						label="Fold all"
-						icon={FoldIcon}
-						onClick={() => folds.setAll(allFolders)}
-					/>
-					<TreeAction
-						label="Open all"
-						icon={UnfoldIcon}
-						onClick={() => folds.setAll([])}
-					/>
+					{filter && (
+						<Tooltip content="Needs eyes: hide files whose every mark carried over">
+							{(trigger) => (
+								<button
+									type="button"
+									{...trigger}
+									aria-label="Needs eyes"
+									aria-pressed={filter.on}
+									data-testid="needs-eyes"
+									onClick={() => filter.onChange(!filter.on)}
+									className={`mr-auto flex h-7 items-center gap-1 rounded-md px-1.5 text-xs transition-colors hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none pointer-coarse:h-10 ${
+										filter.on
+											? "bg-warn/15 text-warn"
+											: "text-muted hover:text-ink"
+									}`}
+								>
+									<EyeIcon size={16} aria-hidden />
+									needs eyes
+								</button>
+							)}
+						</Tooltip>
+					)}
+					{allFolders.length > 0 && (
+						<>
+							<TreeAction
+								label="Fold all"
+								icon={FoldIcon}
+								onClick={() => folds.setAll(allFolders)}
+							/>
+							<TreeAction
+								label="Open all"
+								icon={UnfoldIcon}
+								onClick={() => folds.setAll([])}
+							/>
+						</>
+					)}
 				</div>
 			)}
 			<nav
 				aria-label="Files"
-				aria-busy={props.threadsLoading || undefined}
+				aria-busy={props.threadsLoading || props.agentLoading || undefined}
 				data-testid="file-tree"
 				className="relative"
 			>
-				{props.threadsLoading && (
+				{(props.threadsLoading || props.agentLoading) && (
 					// Laid over the first row's end, so the tree doesn't move when
 					// it goes; taps go through to the row under it.
 					<Spinner
-						label="Loading comments"
+						label={
+							props.threadsLoading
+								? "Loading comments"
+								: "Placing agent threads"
+						}
 						className="pointer-events-none absolute top-0 right-0 z-[5] h-6 rounded-full border border-line bg-raised px-1 shadow-control"
 					/>
 				)}
@@ -874,6 +946,7 @@ export function FileTree(props: {
 					agentThreadsOf={props.agentThreadsOf ?? NO_AGENT}
 					threadsLoading={props.threadsLoading === true}
 					folds={folds}
+					eyesOf={props.eyesOf ?? NO_EYES}
 					find={props.find}
 				/>
 			</nav>

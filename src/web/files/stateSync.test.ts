@@ -697,6 +697,55 @@ describe("overlayReview", () => {
 		});
 	});
 
+	it("lays a piece's intent over the view: part reviewed, all of it reviewed, none unreviewed; a range past the cluster covers nothing", () => {
+		const four = (key: string, over: Partial<ClusterView> = {}) =>
+			cluster(key, {
+				removed: ["a", "b"],
+				added: ["c", "d"],
+				oldCount: 2,
+				newCount: 2,
+				lines: 4,
+				...over,
+			});
+		const base = view([
+			file("a.ts", [
+				four("k1"),
+				four("k2", { reviewedLines: [[0, 2]] }),
+				four("k3", { state: "reviewed" }),
+				four("k4"),
+			]),
+		]);
+		const part = (key: string, lines: [number, number][]): StateChange => ({
+			key,
+			state: "unreviewed",
+			reviewedLines: lines,
+		});
+		const shown = overlayReview(
+			base,
+			pendingOf("r1", [
+				part("k1", [[1, 3]]),
+				part("k2", [[0, 4]]),
+				set("k3", "unreviewed"),
+				part("k4", [[0, 5]]),
+			]),
+		);
+		const [k1, k2, k3, k4] = shown.files[0]?.clusters ?? [];
+		expect(k1).toMatchObject({ state: "unreviewed", reviewedLines: [[1, 3]] });
+		expect(k2?.state).toBe("reviewed");
+		expect(k2?.reviewedLines).toBeUndefined();
+		expect(k3?.state).toBe("unreviewed");
+		expect(k4?.state).toBe("unreviewed");
+		expect(k4?.reviewedLines).toBeUndefined();
+		expect(shown.progress.lines.reviewed).toBe(2 + 4);
+		expect(shown.progress.clusters.reviewed).toBe(1);
+		// A whole-cluster change clears the partial lines.
+		const whole = overlayReview(
+			base,
+			pendingOf("r1", [set("k2", "unreviewed")]),
+		);
+		expect(whole.files[0]?.clusters[1]?.reviewedLines).toBeUndefined();
+	});
+
 	it("drops a crossed-off reason when a cluster is undone", () => {
 		const base = view([
 			file("a.ts", [cluster("k1", { state: "crossed-off", reason: "gen" })]),

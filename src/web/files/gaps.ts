@@ -19,11 +19,22 @@ export interface Gap {
 
 /**
  * The gaps of a file. Files without hunks (renames, binaries) have none: there
- * is no diff to put context around. Hunks always show at least one new-side
- * line unless the new file is empty.
+ * is no diff to put context around, except `whole` (the since view's file
+ * the interdiff doesn't change, FileHunks.wholeGap): all its lines are one
+ * gap, so they and the threads on them can be opened. Hunks always show at
+ * least one new-side line unless the new file is empty.
  */
-export function fileGaps(hunks: DisplayHunk[], newLineCount: number): Gap[] {
-	if (hunks.length === 0 || newLineCount === 0) return [];
+export function fileGaps(
+	hunks: DisplayHunk[],
+	newLineCount: number,
+	whole = false,
+): Gap[] {
+	if (newLineCount === 0) return [];
+	if (hunks.length === 0) {
+		return whole
+			? [{ index: 0, from: 1, to: newLineCount, above: true, below: true }]
+			: [];
+	}
 	const gaps: Gap[] = [];
 	let next = 1;
 	hunks.forEach((hunk, index) => {

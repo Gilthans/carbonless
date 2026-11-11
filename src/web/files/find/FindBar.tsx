@@ -138,7 +138,8 @@ export function FindBar(props: {
 				aria-live="polite"
 				className="mr-auto min-w-[7ch] shrink-0 pl-1 text-sm text-muted tabular-nums sm:mr-0 sm:min-w-[10ch] sm:pl-0 sm:text-right"
 			>
-				{props.count && (
+				{/* Nothing found while files are still on their way is no answer yet: the spinner alone. */}
+				{props.count && !(props.searching && props.count.of === 0) && (
 					<>
 						<span className="hidden sm:inline">
 							{props.count.at} of {props.count.of}

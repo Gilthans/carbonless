@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sinceMarkKey } from "../../shared/pieces";
 import type { ClusterState } from "../../shared/types";
 import { finishes, nextFile, resetChanges } from "./fileFinish";
 
@@ -22,6 +23,29 @@ describe("finishes", () => {
 		expect(finishes(done, [{ key: "b", state: "reviewed" }])).toBe(false);
 		expect(finishes(done, [{ key: "a", state: "unreviewed" }])).toBe(false);
 		expect(finishes([], [])).toBe(false);
+	});
+
+	it("a piece's mark finishes only when it leaves no line unmarked; a since-only mark never", () => {
+		const clusters = [c("a", "reviewed"), c("b", "unreviewed")];
+		// Part of b's lines: the change keeps b unreviewed (pieces.ts changeFor).
+		expect(
+			finishes(clusters, [
+				{ key: "b", state: "unreviewed", reviewedLines: [[0, 5]] },
+			]),
+		).toBe(false);
+		expect(
+			finishes(clusters, [
+				{ key: "b", state: "unreviewed", crossedLines: [[0, 5]] },
+			]),
+		).toBe(false);
+		// The last piece: changeFor makes the whole cluster's state.
+		expect(finishes(clusters, [{ key: "b", state: "reviewed" }])).toBe(true);
+		// A since-only piece's mark has its own key, never a cluster's.
+		expect(
+			finishes(clusters, [
+				{ key: sinceMarkKey(1, "src/a.ts"), state: "reviewed" },
+			]),
+		).toBe(false);
 	});
 
 	it("ignores a change for a key the file doesn't have", () => {

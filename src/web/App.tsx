@@ -5,7 +5,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { Link, Outlet } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import {
 	type RefObject,
 	useEffect,
@@ -18,7 +18,7 @@ import {
 	headQuery,
 	overviewQuery,
 	postRefresh,
-	reviewQuery,
+	REVIEW_KEY,
 	sessionQuery,
 	verdictQuery,
 } from "./api";
@@ -28,8 +28,8 @@ import { AgentSetupHost } from "./agent/AgentSetup";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { FindButton } from "./files/find/FindButton";
 import { findFloat, findState } from "./files/find/findState";
+import { HeadToast } from "./files/HeadToast";
 import { SyncNotices } from "./files/SyncNotices";
-import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
 import { fullDate } from "./RelativeTime";
 import {
@@ -359,7 +359,7 @@ export function App() {
 			queryClient.setQueryData(sessionQuery.queryKey, info);
 			return Promise.all([
 				queryClient.invalidateQueries({ queryKey: overviewQuery.queryKey }),
-				queryClient.invalidateQueries({ queryKey: reviewQuery.queryKey }),
+				queryClient.invalidateQueries({ queryKey: REVIEW_KEY }),
 				// Read only once the tab has shown (refetched only if so).
 				queryClient.invalidateQueries({ queryKey: verdictQuery.queryKey }),
 			]);
@@ -379,6 +379,14 @@ export function App() {
 	const findBar = useHeight(() => slot, swapped && slot !== null, !swapped);
 	const above = swapped ? findBar : 0;
 	const id = useReviewId();
+	const navigate = useNavigate();
+	/** The toast's View: the Files page with the comparison target on the head. */
+	const viewHead = (oid: string) =>
+		navigate({
+			to: "/r/$id/files",
+			params: { id },
+			search: { head: oid },
+		});
 	const pr = session.data?.pr;
 	const prUrl = safeHref(pr?.url);
 	// The tab names the PR, so several reviews open side by side tell apart.
@@ -518,7 +526,6 @@ export function App() {
 							<ErrorMessage error={refresh.error} />
 						</div>
 					)}
-					{session.data && <HeadBanner info={session.data} />}
 					<div
 						ref={row}
 						data-testid="app-header-row"
@@ -716,6 +723,16 @@ export function App() {
 					<Wordmark className="text-sm" />
 				</footer>
 				<SyncNotices />
+				{/* New commits: a toast, never a banner (nothing above the page moves). */}
+				{session.data?.head && (
+					<HeadToast
+						session={session.data}
+						onView={() => {
+							const oid = session.data?.head?.oid;
+							if (oid) void viewHead(oid);
+						}}
+					/>
+				)}
 				<AgentSetupHost />
 			</div>
 		</AppHeaderHeight.Provider>
