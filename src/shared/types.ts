@@ -1,3 +1,5 @@
+import type { LineRanges } from "./lineRanges.js";
+import type { SincePiece } from "./pieces.js";
 import type { ThreadPlacement } from "./rereview/placement.js";
 
 export type FileStatus =
@@ -117,6 +119,26 @@ export interface DisplayHunk {
 export interface FileHunks {
 	hunks: DisplayHunk[];
 	newLineCount: number;
+	/** The since view's only: its pieces, each markable (pieces.ts). */
+	pieces?: SincePiece[];
+	/**
+	 * The since view's only: the interdiff doesn't change the file's
+	 * lines, so all `newLineCount` of them are one gap (gaps.ts).
+	 */
+	wholeGap?: true;
+}
+
+/**
+ * A mark on the since view's pieces that own no line of the viewed
+ * snapshot (removed or reverted since patch set `since`): their lines in
+ * file `path`, by number on the since view's sides. The whole set for
+ * that comparison and file.
+ */
+export interface SinceMark {
+	since: number;
+	path: string;
+	reviewed: { old: LineRanges; new: LineRanges };
+	crossed: { old: LineRanges; new: LineRanges };
 }
 
 export interface ClusterView extends Cluster {
@@ -128,6 +150,19 @@ export interface ClusterView extends Cluster {
 	 * rule (and not re-marked by hand since). Never on an unreviewed cluster.
 	 */
 	carried?: { from: number; rule: "exact" | "rename" };
+	/**
+	 * Marked one piece at a time (pieces.ts, lineRanges.ts). On an
+	 * unreviewed cluster, partly marked: the lines reviewed, never all.
+	 * Their lines count in the line totals; the cluster counts unreviewed.
+	 */
+	reviewedLines?: LineRanges;
+	/**
+	 * The lines crossed off one piece at a time: on an unreviewed cluster,
+	 * some of them; on a reviewed one, every line is marked and these are
+	 * crossed off (done with lines reviewed: it counts as reviewed, as a
+	 * file does), never all of them (that is a crossed-off cluster).
+	 */
+	crossedLines?: LineRanges;
 }
 
 export interface FileView extends Omit<FileSummary, "clusters"> {
@@ -165,12 +200,27 @@ export interface ReviewView {
 	patchset: number | null;
 	files: FileView[];
 	progress: Progress;
+	/** The patch set's marks on since-only pieces (never in `progress`). */
+	sinceMarks?: SinceMark[];
 }
 
 export interface StateChange {
 	key: string;
 	state: ClusterState;
 	reason?: string;
+	/**
+	 * Only with `unreviewed`: these of the cluster's lines stay reviewed (a
+	 * piece ticked or unticked in the since view; pieces.ts changeFor).
+	 */
+	reviewedLines?: LineRanges;
+	/** Only with `unreviewed`, like reviewedLines: these lines crossed off. */
+	crossedLines?: LineRanges;
+	/**
+	 * A mark on since-only pieces instead of a cluster: every such line of
+	 * file `path` reviewed since patch set `since` (the whole set). Its key
+	 * is sinceMarkKey(since, path), never a cluster's.
+	 */
+	sinceMark?: SinceMark;
 }
 
 /** A side of a diff: "LEFT" numbers the old file, "RIGHT" the new one. */
@@ -679,6 +729,56 @@ export interface VerdictFacts {
 	head: string;
 	/** When the server finished reading this from GitHub (its clock). */
 	fetchedAt: string;
+	/**
+	 * The reviewer's own latest verdict, which `since` compares from: their
+	 * standing approval or change request (or its dismissal), else their
+	 * latest Comment with a message. A review comment posted on its own is
+	 * a COMMENTED review with no message on GitHub: not a verdict. As
+	 * `reviews`' rows; null when they gave none.
+	 */
+	yourVerdict: VerdictFacts["reviews"][number] | null;
+	/**
+	 * What changed since the reviewer's own verdict (the `you` review):
+	 * null with no verdict, one on a head that is none of the reviewer's
+	 * patch sets, or one on the head a verdict now goes on. Worked out
+	 * when served (the engine's answer moves on), never kept with the
+	 * GitHub read.
+	 */
+	since: VerdictSince | null;
+}
+
+/**
+ * The reviewer's verdict, the patch set it was given on, and the engine's
+ * answer from that patch set to the head a verdict now goes on (the
+ * latest patch set's, or the PR's head past it). Counts only from the
+ * engine's answer: "nothing to re-read" needs `identical` with no
+ * reworked, new or gone cluster (principle 2); pending and failed say so.
+ */
+export interface VerdictSince {
+	state: ReviewVerdict;
+	/** The verdict's commit and when it was given. */
+	head: string;
+	at: string;
+	/** The review on GitHub (as `reviews[].url`); absent when GitHub gave none. */
+	url?: string;
+	/** The patch set whose head it was given on. */
+	patchset: number;
+	/** Where a verdict goes now: the latest patch set's head, or the PR's head past it (patchset null). */
+	to: { head: string; patchset: number | null };
+	changes:
+		| { status: "pending" }
+		| { status: "failed"; message: string }
+		| {
+				status: "done";
+				shape: ShapeCode;
+				commits: number;
+				/** Files with a reworked or new cluster, or a conflict. */
+				files: number;
+				reworked: number;
+				new: number;
+				gone: number;
+				identical: boolean;
+		  };
 }
 
 /** `POST /api/verdict`: submit a review with an event. */
@@ -938,6 +1038,11 @@ export interface RereviewAnswer {
 			state?: "reviewed" | "crossed-off";
 			rule?: "exact" | "rename";
 		}[];
+		/**
+		 * The file's since-view pieces (pieces.ts SincePiece), what the since
+		 * view marks and counts (sinceUnits); absent without an interdiff.
+		 */
+		pieces?: SincePiece[];
 	}[];
 	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
 	toRead: { files: number; clusters: number };
@@ -962,6 +1067,11 @@ export interface PlacementsAnswer {
 	/** Its patch set (where a drag stores one); null for a head that is none yet. */
 	patchset: number | null;
 	threads: { id: string; placement: ThreadPlacement }[];
+	/**
+	 * Every thread is in: unresolved threads are placed first and answered
+	 * at once, resolved ones join later (false until then; ask again).
+	 */
+	complete?: boolean;
 }
 
 export interface SessionInfo {
@@ -996,11 +1106,22 @@ export interface SessionInfo {
 		number: number;
 		head: string;
 		mergeBase: string;
+		/**
+		 * The base branch it was reviewed against (its own, kept after a
+		 * retarget: its card's "Against").
+		 */
+		baseBranch: string;
 		/** Ms since epoch. */
 		startedAt: number;
 		/** The patch set it follows; null for PS1. */
 		since: number | null;
 		shape: ShapeCode | null;
+		/**
+		 * Its commits over its merge base (`rev-list --count`); null while
+		 * the server counts them in the background; why not, once the
+		 * count has failed for good.
+		 */
+		commits: number | null | { error: string };
 	}[];
 	/**
 	 * The PR's head when this crb last opened the review, before this open

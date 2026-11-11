@@ -470,6 +470,85 @@ describe("re-review events", () => {
 	});
 });
 
+describe("lines-state and since-lines-state events", () => {
+	const lines = newEvent("lines-state", "dan", {
+		patchset: "f".repeat(64),
+		cluster: "c1",
+		path: "src/a.ts",
+		state: "reviewed",
+		lines: [
+			[0, 3],
+			[5, 6],
+		],
+	});
+	const since = newEvent("since-lines-state", "dan", {
+		patchset: "f".repeat(64),
+		since: 1,
+		path: "src/a.ts",
+		reviewed: { old: [[350, 356]], new: [] },
+		crossed: { old: [], new: [[4, 5]] },
+	});
+
+	it("round-trip through a commit message", () => {
+		const crossed = { ...lines, state: "crossed-off" as const };
+		expect(
+			parseEventLines(
+				serializeCommitMessage("crb: x", [lines, crossed, since]),
+			),
+		).toEqual([lines, crossed, since]);
+	});
+
+	it("must be written by a human: others are dropped on read and refused on write", () => {
+		for (const e of [lines, since]) {
+			for (const by of ["ai", "auto"] as const) {
+				const other = { ...e, by };
+				expect(parseEventLines(msg([other]))).toEqual([]);
+				expect(() => validateForWrite(other)).toThrow(/human/);
+			}
+		}
+	});
+
+	it("reads ranges normalized, and skips malformed ones", () => {
+		const unsorted = {
+			...lines,
+			lines: [
+				[5, 6],
+				[0, 2],
+				[2, 3],
+			],
+		};
+		expect(parseEventLines(msg([unsorted]))).toEqual([lines]);
+		for (const bad of [
+			undefined,
+			[],
+			[[0]],
+			[[3, 3]],
+			[[4, 2]],
+			[[-1, 2]],
+			[[0, 1.5]],
+			"0-3",
+		]) {
+			expect(parseEventLines(msg([{ ...lines, lines: bad }]))).toEqual([]);
+		}
+		for (const state of ["unreviewed", "done", undefined]) {
+			expect(parseEventLines(msg([{ ...lines, state }]))).toEqual([]);
+		}
+		const { cluster: _, ...noCluster } = lines;
+		expect(parseEventLines(msg([noCluster]))).toEqual([]);
+		expect(() => validateForWrite({ ...lines, lines: [] })).toThrow(/invalid/);
+		for (const bad of [
+			{ since: 0 },
+			{ since: "1" },
+			{ path: 3 },
+			{ reviewed: { old: [[2, 1]], new: [] } },
+			{ crossed: { old: [] } },
+			{ reviewed: undefined },
+		]) {
+			expect(parseEventLines(msg([{ ...since, ...bad }]))).toEqual([]);
+		}
+	});
+});
+
 describe("agent events", () => {
 	const thread = newEvent("cluster-state", "dan", payload).id;
 	const anchor = {

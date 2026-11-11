@@ -1,18 +1,16 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawnSync } from "node:child_process";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Readable, Writable } from "node:stream";
-import {
-	type ActiveSession,
-	type ClientConnection,
-	type ContentBlock,
-	client,
-	methods,
-	ndJsonStream,
-	type RequestPermissionRequest,
-	type RequestPermissionResponse,
-	type SessionUpdate,
+import type {
+	ActiveSession,
+	ClientConnection,
+	ContentBlock,
+	RequestPermissionRequest,
+	RequestPermissionResponse,
+	SessionUpdate,
 } from "@agentclientprotocol/sdk";
+import spawn from "cross-spawn";
 import type {
 	AgentCheck,
 	AgentConfig,
@@ -21,6 +19,17 @@ import type {
 } from "../../shared/agent.js";
 import { inheritedEnv } from "../git.js";
 import { BUILD } from "../version.js";
+
+type Sdk = typeof import("@agentclientprotocol/sdk");
+let sdk: Promise<Sdk> | undefined;
+/**
+ * The ACP SDK, loaded on first use (an agent started or checked): it costs
+ * ~140 ms of CPU, which every crb serve start would pay (CAR-105).
+ */
+const loadSdk = (): Promise<Sdk> => {
+	sdk ??= import("@agentclientprotocol/sdk");
+	return sdk;
+};
 
 /** How long spawn + initialize + session/new may take. */
 export const AGENT_START_MS = 60_000;
@@ -32,6 +41,8 @@ const SESSION_CLOSE_MS = 1_000;
 const STDERR_TAIL = 2048;
 /** A failed turn's reason, as stored on its reply and shown in the status. */
 export const MAX_TURN_ERROR = 300;
+
+const WINDOWS = process.platform === "win32";
 
 /**
  * Names never passed to the agent: secrets of the server's environment
@@ -48,9 +59,13 @@ export const SECRET_ENV = /TOKEN|SECRET|PASSWORD|KEY$/i;
 export function agentEnv(
 	extra: Record<string, string>,
 ): Record<string, string> {
+	// Windows names are case-insensitive: the config's PATH replaces Path,
+	// never sits beside it for the child to pick one of.
+	const fold = (key: string) => (WINDOWS ? key.toUpperCase() : key);
+	const replaced = new Set(Object.keys(extra).map(fold));
 	const env: Record<string, string> = {};
 	for (const [key, value] of Object.entries(inheritedEnv())) {
-		if (value === undefined) continue;
+		if (value === undefined || replaced.has(fold(key))) continue;
 		if (SECRET_ENV.test(key) && key !== "HOME" && key !== "PATH") continue;
 		env[key] = value;
 	}
@@ -96,6 +111,18 @@ function track(child: ChildProcess): void {
 
 /** Signals the child's process group (its own tools too), else the child. */
 function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+	if (WINDOWS) {
+		// No process groups or signals: the tree goes at once, else killing
+		// a .cmd shim's cmd.exe would orphan the agent under it.
+		if (child.pid === undefined || child.exitCode !== null) return;
+		const kill = spawnSync(
+			"taskkill",
+			["/pid", String(child.pid), "/t", "/f"],
+			{ stdio: "ignore", windowsHide: true },
+		);
+		if (kill.error) child.kill(signal);
+		return;
+	}
 	try {
 		if (child.pid === undefined) throw new Error("not started");
 		process.kill(-child.pid, signal);
@@ -112,7 +139,11 @@ const STOPS: readonly string[] = [
 	"cancelled",
 ] satisfies AgentStop[];
 
-/** A command the spawn takes as given (no shell): a non-empty string without NUL. */
+/**
+ * A command the spawn takes as given (no shell, but on Windows cross-spawn
+ * runs a .cmd/.bat shim through cmd.exe with its args escaped): a non-empty
+ * string without NUL.
+ */
 function checkCommand(command: string, args: string[]): void {
 	if (!command || command.includes("\0") || args.some((a) => a.includes("\0")))
 		throw new AgentStartError(
@@ -123,6 +154,7 @@ function checkCommand(command: string, args: string[]): void {
 }
 
 interface Started {
+	methods: Sdk["methods"];
 	child: ChildProcess;
 	conn: ClientConnection;
 	info: AgentIdentity;
@@ -141,6 +173,11 @@ async function start(
 	then: (s: Started) => Promise<void>,
 ): Promise<Started> {
 	checkCommand(opts.command, opts.args);
+	const { client, methods, ndJsonStream } = await loadSdk();
+	// Stopped (the session closing, crb exiting) while the SDK loaded: no
+	// process to start, and none to kill.
+	if (opts.signal?.aborted)
+		throw new AgentStartError("Stopped while starting", "exited", "");
 	let file: WriteStream | null = null;
 	if (opts.stderrFile) {
 		mkdirSync(dirname(opts.stderrFile), { recursive: true });
@@ -157,7 +194,9 @@ async function start(
 		cwd: opts.cwd,
 		env: opts.env,
 		stdio: ["pipe", "pipe", "pipe"],
-		detached: true,
+		// On Windows `detached` means a console window of its own, not a group.
+		detached: !WINDOWS,
+		windowsHide: true,
 	});
 	track(child);
 	child.stderr?.on("data", (chunk: Buffer) => {
@@ -254,7 +293,14 @@ async function start(
 						: basename(opts.command) || opts.command,
 				version: String(init.agentInfo?.version ?? ""),
 			};
-			const started: Started = { child, conn, info, exited, stderr };
+			const started: Started = {
+				methods,
+				child,
+				conn,
+				info,
+				exited,
+				stderr,
+			};
 			await then(started);
 			return started;
 		})();
@@ -397,7 +443,8 @@ export class AcpAgent {
 
 	/** Asks the agent to stop the current turn (session/cancel). */
 	async cancel(): Promise<void> {
-		await this.started.conn.agent
+		const { conn, methods } = this.started;
+		await conn.agent
 			.notify(methods.agent.session.cancel, {
 				sessionId: this.session.sessionId,
 			})
@@ -407,7 +454,7 @@ export class AcpAgent {
 	/** session/close (errors ignored), then SIGTERM, then SIGKILL after 5 s. */
 	close(): Promise<void> {
 		this.#closing ??= (async () => {
-			const { child, conn, exited } = this.started;
+			const { child, conn, exited, methods } = this.started;
 			const gone = exited.then(() => true);
 			if (child.exitCode === null && child.signalCode === null) {
 				await Promise.race([

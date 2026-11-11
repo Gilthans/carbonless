@@ -10,12 +10,28 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { ClusterView, FileView, StateChange } from "../../shared/types";
+import type { LineRanges } from "../../shared/lineRanges";
+import {
+	crossOffChange,
+	type SincePiece,
+	sinceToggleChange,
+	toggleChange,
+} from "../../shared/pieces";
+import type {
+	ClusterView,
+	FileView,
+	SinceMark,
+	StateChange,
+} from "../../shared/types";
 import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer } from "../agent/AgentComposer";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
-import { agentPlaceable } from "../agent/placeable";
+import {
+	agentWaiting,
+	shownAgentPlaceables,
+	useAgentPlacing,
+} from "../agent/placeable";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import type { FindMark } from "../code/Invisibles";
 import { Spinner } from "../Spinner";
@@ -44,8 +60,9 @@ import { displayPath } from "./find/pathMarks";
 import { KindChip } from "./KindChip";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
+import { useResolveCollapse } from "./resolveCollapse";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
-import type { FileSince } from "./since";
+import { type FileSince, goneFileView } from "./since";
 import { isStale } from "./stateSync";
 import {
 	ChangeCount,
@@ -57,7 +74,7 @@ import {
 import { ThreadBubble } from "./ThreadBubble";
 import { UnplacedThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
-import { fileThreads, placeThreads } from "./threadPlacement";
+import { fileThreads, placeThreads, sinceLeftToNew } from "./threadPlacement";
 import {
 	describeFileProgress,
 	fileUnitProgress,
@@ -227,7 +244,7 @@ function HeaderIconButton(props: {
  * Whether this session can start a comment on the whole file: true, or why
  * not.
  */
-function useFileComment(file: FileView, commit: string) {
+function useFileComment(file: FileView, commit: string, readOnly = false) {
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
 	const span: CodeSpan = { path: file.path, commit, subject: "file" };
 	const ok = overview
@@ -235,6 +252,7 @@ function useFileComment(file: FileView, commit: string) {
 				writes: overview.writes,
 				commentLeft: overview.commentLeft !== false,
 				file,
+				readOnly,
 			})
 		: "Comment on file";
 	return { span, ok };
@@ -245,8 +263,12 @@ function useFileComment(file: FileView, commit: string) {
  * file), in the composer of the file bubble's row; disabled with the
  * reason when this session can't comment.
  */
-function FileCommentButton(props: { file: FileView; commit: string }) {
-	const { span, ok } = useFileComment(props.file, props.commit);
+function FileCommentButton(props: {
+	file: FileView;
+	commit: string;
+	readOnly?: boolean;
+}) {
+	const { span, ok } = useFileComment(props.file, props.commit, props.readOnly);
 	return (
 		<Tooltip content={ok === true ? "Comment on file" : ok}>
 			{(trigger) => (
@@ -401,6 +423,12 @@ function SinceChips(props: { info?: FileSince; since?: number }) {
 			{counts.gone > 0 && (
 				<KindChip kind="gone" count={counts.gone} from={props.since} />
 			)}
+			{counts.reverted > 0 && (
+				<KindChip kind="reverted" count={counts.reverted} from={props.since} />
+			)}
+			{counts.removed > 0 && (
+				<KindChip kind="removed" count={counts.removed} from={props.since} />
+			)}
 			{counts.carried > 0 && (
 				<KindChip kind="carried" count={counts.carried} from={props.since} />
 			)}
@@ -422,6 +450,24 @@ function FileProgress(props: {
 	const { file, unit, summary, trigger } = props;
 	const p = fileUnitProgress(file, unit);
 	const { counts } = p;
+	// The since view's count of a file it has nothing of (all carried):
+	// its own state, never the snapshot's numbers.
+	if (file.clusters.length === 0) {
+		return (
+			<div
+				{...trigger}
+				role="progressbar"
+				aria-label="File progress"
+				aria-valuetext="Nothing to read"
+				data-state="empty"
+				// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+				tabIndex={0}
+				className="flex h-9 w-28 shrink-0 items-center justify-end rounded-sm text-xs text-muted focus-visible:outline-2 focus-visible:outline-accent @lg:order-6 @2xl:w-48"
+			>
+				Nothing to read
+			</div>
+		);
+	}
 	return (
 		<div
 			{...trigger}
@@ -513,6 +559,13 @@ export function FileDiff(props: {
 	 */
 	since?: number;
 	sinceInfo?: FileSince;
+	/** The patch set's marks on since-only pieces (ReviewView.sinceMarks). */
+	sinceMarks?: SinceMark[];
+	/**
+	 * The since view: the file as its units count it (since.ts unitsFile),
+	 * for the header's meter and sentence; the full diff counts clusters.
+	 */
+	counted?: FileView;
 	/** The engine is still computing: the chips' slot spins. */
 	sincePending?: boolean;
 	/** An earlier patch set, as reviewed: the marks are locked. */
@@ -605,22 +658,25 @@ export function FileDiff(props: {
 	};
 	// Only an unreviewed cluster's box marks it reviewed: unchecking a reviewed
 	// one or undoing a cross-off makes it unreviewed (R21).
-	const toggle = (cluster: ClusterView) => {
-		mark([
-			{
-				key: cluster.key,
-				state: cluster.state === "unreviewed" ? "reviewed" : "unreviewed",
-			},
-		]);
+	// The whole cluster (mixed or unreviewed → reviewed, reviewed →
+	// unreviewed), or in the since view one piece of it (pieces.ts). A
+	// piece's change keeps the cluster unreviewed until every line is
+	// marked, so only the last piece finishes the file (fileFinish.ts).
+	const toggle = (cluster: ClusterView, piece?: LineRanges) => {
+		mark([toggleChange(cluster, piece)]);
 	};
-	// Crossing off a cluster, or undoing it to unreviewed (never reviewed).
-	const crossOff = (cluster: ClusterView) => {
-		mark([
-			{
-				key: cluster.key,
-				state: cluster.state === "crossed-off" ? "unreviewed" : "crossed-off",
-			},
-		]);
+	// Crossing off a cluster (or a piece of it), or undoing it to
+	// unreviewed (never reviewed).
+	const crossOff = (cluster: ClusterView, piece?: LineRanges) => {
+		mark([crossOffChange(cluster, piece)]);
+	};
+	// A since-view piece that owns no line of this snapshot: its own mark,
+	// never a cluster's, so it never finishes the file; guarded like one.
+	const sinceMark = (piece: SincePiece, cross: boolean) => {
+		if (props.since === undefined || readOnly || marksIgnored()) return;
+		save([
+			sinceToggleChange(props.sinceMarks, props.since, file.path, piece, cross),
+		]).catch(() => {});
 	};
 	const unreviewed = file.clusters.filter((c) => c.state === "unreviewed");
 	// Each action is a toggle: it marks what's unreviewed; once nothing is
@@ -646,7 +702,7 @@ export function FileDiff(props: {
 	// One sentence for the header's status, counts and progress. The counts
 	// are the same in every unit; only the progress follows it.
 	const status = fileStatus(file);
-	const sentence = describeFileProgress(file, props.unit);
+	const sentence = describeFileProgress(props.counted ?? file, props.unit);
 	const summary = [
 		sentence.startsWith(status) ? null : status,
 		lineCount(file),
@@ -678,6 +734,11 @@ export function FileDiff(props: {
 				loadedContext: [],
 				noLines: file.binary || file.submodule,
 				placements: props.threads.placements,
+				// The since view: as its DiffBody places them (LEFT through
+				// the full diff), so the header holds what no row can.
+				...(props.since === undefined
+					? {}
+					: { leftToNew: sinceLeftToNew(file.clusters) }),
 			})
 		: null;
 	const header = filePlacement?.header ?? [];
@@ -700,7 +761,19 @@ export function FileDiff(props: {
 	// The file bubble flags a line it holds that the diff can't show; the
 	// closed header, any thread of the file that isn't on a line.
 	const headerFlag = header.some((h) => h.reason === "unplaced");
-	const unplaced = headerFlag || fates.length > 0;
+	// A resolved thread asks for nothing (a quiet line): the closed header
+	// flags unresolved ones only, wherever they ended up.
+	const unplaced =
+		header.some((h) => h.reason === "unplaced" && !h.thread.resolved) ||
+		fates.some((f) => !f.thread.resolved);
+	// Resolve closes a file thread to the file bubble (resolveCollapse.ts).
+	const collapse = useResolveCollapse<"file">(props.threads?.threads, {
+		open: () => setFileOpen(true),
+		close: () => setFileOpen(false),
+		focus: () => setFocusFile(true),
+		element: () =>
+			document.querySelector(`[aria-controls="${CSS.escape(fileThreadsId)}"]`),
+	});
 	// New comments on the whole file, open or closed: under the header,
 	// where file threads show; on another head (gone): kept as orphans.
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;
@@ -728,26 +801,35 @@ export function FileDiff(props: {
 		}
 	}, [fileItems, snapshotHead, writer]);
 
-	const fileComment = useFileComment(file, snapshotHead);
+	const fileComment = useFileComment(file, snapshotHead, readOnly);
 
 	// The reviewer's agent threads on the file (FilesPage reads them): those
 	// on the whole file, and lines the diff can't show, beside the file's
 	// comment threads with their own bubble; and Ask agent on the file.
 	const agentAll = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
+	// Each where the tracer put it in the viewed head (as GitHub's threads
+	// are), else where it was asked.
+	const agentPlacing = useAgentPlacing();
+	const agentPlacements = agentPlacing.placements;
 	const agentPlaceables = useMemo(
-		() => (agentAll ?? []).map(agentPlaceable),
-		[agentAll],
+		() => shownAgentPlaceables(agentAll ?? [], snapshotHead, agentPlacing),
+		[agentAll, snapshotHead, agentPlacing],
 	);
-	// Every agent thread on the file, on this head or an earlier one: those
-	// asked on an earlier head show in the lead row, marked outdated.
-	const agentMine = agentPlaceables
-		.filter((p) => p.path === file.path)
-		.map((p) => p.thread);
+	// Every agent thread on the file: those the tracer couldn't place in
+	// it listed with their fate; those it has no place for (not in yet,
+	// failed) and asked on an earlier head in the lead row, outdated.
+	// One the tracer put outside the comparison is listed after the files
+	// (AgentNotInComparison), never here.
+	const agentMineP = agentPlaceables.filter(
+		(p) =>
+			p.path === file.path && agentPlacements?.get(p.id)?.kind !== "outside",
+	);
+	const agentMine = agentMineP.map((p) => p.thread);
 	const agentOutdated = snapshotHead
-		? agentMine.filter((t) => t.anchor.commit !== snapshotHead)
+		? agentMineP.filter((p) => p.commit !== snapshotHead).map((p) => p.thread)
 		: [];
-	const agentHeader = snapshotHead
+	const agentPlaced = snapshotHead
 		? placeThreads({
 				threads: agentPlaceables,
 				path: file.path,
@@ -755,9 +837,21 @@ export function FileDiff(props: {
 				hunks: hunks.data ?? null,
 				loadedContext: [],
 				noLines: file.binary || file.submodule,
-			}).header
-		: [];
+				placements: agentPlacements,
+				...(props.since === undefined
+					? {}
+					: { leftToNew: sinceLeftToNew(file.clusters) }),
+			})
+		: null;
+	const agentHeader = agentPlaced?.header ?? [];
+	// Resolved ones after the rest (shownAgentPlaceables' order), muted.
+	const agentFates = new Map(
+		(agentPlaced?.fates ?? []).map(
+			(f) => [f.thread.thread, f.placement] as const,
+		),
+	);
 	const agentGroups = [
+		{ reason: "fate" as const, threads: [...agentFates.keys()] },
 		...(["file", "unplaced"] as const).map((reason) => ({
 			reason,
 			threads: agentHeader
@@ -767,6 +861,18 @@ export function FileDiff(props: {
 		{ reason: "outdated" as const, threads: agentOutdated },
 	].filter((g) => g.threads.length > 0);
 	const agentLead = agentGroups.flatMap((g) => g.threads);
+	// While the placements load: this file's agent threads asked on
+	// another head wait, and its agent bubble spins where they will show.
+	const agentWaitingHere = useMemo(
+		() =>
+			agentPlacing.pending && snapshotHead
+				? agentWaiting(agentAll ?? [], snapshotHead, agentPlacing).filter(
+						(p) => p.path === file.path || p.path === file.oldPath,
+					)
+				: [],
+		[agentPlacing, agentAll, snapshotHead, file.path, file.oldPath],
+	);
+	const agentLoading = agentWaitingHere.length > 0;
 	const [agentOpen, setAgentOpen] = useState(false);
 	const agentThreadsId = useId();
 	const agentFileItems = useAgentComposers().filter(
@@ -811,8 +917,9 @@ export function FileDiff(props: {
 	 * diff can't show. Opened, its row has their threads and Comment on
 	 * file; with none it is an outline that starts a comment at once.
 	 */
+	const fileShown = header.filter((h) => collapse.shows(h.thread));
 	const lead: FileLead = {
-		count: agentLead.length > 0 ? 2 : 1,
+		count: agentLead.length > 0 || agentLoading ? 2 : 1,
 		bubble: (
 			<>
 				<ThreadBubble
@@ -835,13 +942,15 @@ export function FileDiff(props: {
 						if (!fileOpen && header.length === 0 && fileComment.ok === true) {
 							openComposer(fileComment.span);
 						}
+						collapse.toggled("file");
 						setFileOpen(!fileOpen);
 					}}
 				/>
-				{agentLead.length > 0 && (
+				{(agentLead.length > 0 || agentLoading) && (
 					<AgentBubble
 						inline
 						threads={agentLead}
+						loading={agentLoading && agentLead.length === 0}
 						where="on this file"
 						open={agentOpen}
 						controls={agentOpen ? agentThreadsId : undefined}
@@ -862,12 +971,20 @@ export function FileDiff(props: {
 						rail={rail}
 						threads={
 							fileOpen && props.threads
-								? header.map((h, i) => (
+								? fileShown.map((h, i) => (
 										<ThreadBlock
 											key={h.thread.id || `#${i}`}
 											readId={props.threads?.readId ?? ""}
 											thread={h.thread}
 											unplaced={h.reason === "unplaced"}
+											onResolved={(t, from) =>
+												collapse.resolved({
+													key: "file",
+													thread: t,
+													shown: fileShown.map((s) => s.thread),
+													from,
+												})
+											}
 										/>
 									))
 								: null
@@ -875,7 +992,11 @@ export function FileDiff(props: {
 						composers={fileItems.length > 0 ? newItems : null}
 						comment={
 							fileOpen && fileItems.length === 0 ? (
-								<FileCommentButton file={file} commit={snapshotHead} />
+								<FileCommentButton
+									file={file}
+									commit={snapshotHead}
+									readOnly={readOnly}
+								/>
 							) : null
 						}
 					/>
@@ -890,6 +1011,7 @@ export function FileDiff(props: {
 							rail={rail}
 							unplaced={g.reason === "unplaced"}
 							outdated={g.reason === "outdated"}
+							fates={g.reason === "fate" ? agentFates : undefined}
 						/>
 					))}
 				{agentComposers && (
@@ -997,9 +1119,10 @@ export function FileDiff(props: {
 								<StatusIcon file={file} hover={summaryTrigger} />
 							</span>
 							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
-								{!expanded && agentMine.length > 0 && (
+								{!expanded && (agentMine.length > 0 || agentLoading) && (
 									<AgentBubble
 										threads={agentMine}
+										loading={agentLoading && agentMine.length === 0}
 										where="in this file"
 										open={false}
 										onToggle={() => {
@@ -1109,7 +1232,7 @@ export function FileDiff(props: {
 								)}
 							</div>
 							<FileProgress
-								file={file}
+								file={props.counted ?? file}
 								unit={props.unit}
 								summary={summary}
 								trigger={summaryTrigger}
@@ -1148,6 +1271,8 @@ export function FileDiff(props: {
 					find={props.find}
 					from={props.since}
 					kinds={props.sinceInfo?.kinds}
+					onSinceMark={sinceMark}
+					sinceMarks={props.sinceMarks}
 					readOnly={readOnly}
 				/>
 			)}
@@ -1158,8 +1283,8 @@ export function FileDiff(props: {
 /**
  * A file of the since view that the viewed snapshot no longer changes:
  * everything the reviewer saw of it on the compared patch set was undone,
- * so its clusters are gone. Its header names it; its body is the interdiff
- * (deletion blocks, red-railed, not markable).
+ * so its clusters are gone. Its header names it; its body is the interdiff,
+ * each piece marked on its own (since marks: pieces.ts).
  */
 export function GoneFile(props: {
 	index: number;
@@ -1167,23 +1292,38 @@ export function GoneFile(props: {
 	revision: string;
 	since: number;
 	info?: FileSince;
+	sinceMarks?: SinceMark[];
+	/** An earlier patch set, as reviewed: the marks are locked. */
+	readOnly?: boolean;
+	/** Controlled open state (the page's open file: a find's step opens it). */
+	expanded?: boolean;
+	onExpandedChange?: (expanded: boolean) => void;
+	/** The find's hits on the path, and in the lines (FilesPage). */
+	pathFind?: readonly FindMark[];
+	find?: DiffFind;
 }) {
-	const [expanded, setExpanded] = useState(false);
-	const file: FileView = {
-		index: props.index,
-		path: props.path,
-		status: "modified",
-		binary: false,
-		submodule: false,
-		additions: 0,
-		deletions: 0,
-		clusters: [],
-		done: false,
-		reviewed: false,
-		crossedOff: false,
+	const [ownExpanded, setOwnExpanded] = useState(false);
+	const expanded = props.expanded ?? ownExpanded;
+	const setExpanded = (next: boolean) => {
+		if (props.expanded === undefined) setOwnExpanded(next);
+		props.onExpandedChange?.(next);
 	};
+	const { save } = useSetStates();
+	const sinceMark = (piece: SincePiece, cross: boolean) => {
+		save(props.revision, props.path, [
+			sinceToggleChange(
+				props.sinceMarks,
+				props.since,
+				props.path,
+				piece,
+				cross,
+			),
+		]).catch(() => {});
+	};
+	const file = goneFileView(props);
 	return (
 		<section
+			id={`file-${props.index}`}
 			data-gone-file={props.path}
 			aria-label={props.path}
 			className="overflow-clip rounded-lg border border-bad/40 bg-surface"
@@ -1198,7 +1338,11 @@ export function GoneFile(props: {
 				>
 					{expanded ? "▾" : "▸"}
 				</button>
-				<PathScroller text={props.path} kind="Reviewed work gone" />
+				<PathScroller
+					text={props.path}
+					marks={props.pathFind}
+					kind="Reviewed work gone"
+				/>
 				<span data-testid="since-chips" className="flex items-center gap-1">
 					<KindChip
 						kind="gone"
@@ -1215,7 +1359,10 @@ export function GoneFile(props: {
 					onCrossOff={() => {}}
 					from={props.since}
 					kinds={props.info?.kinds}
-					readOnly
+					onSinceMark={sinceMark}
+					sinceMarks={props.sinceMarks}
+					readOnly={props.readOnly}
+					find={props.find}
 				/>
 			)}
 		</section>

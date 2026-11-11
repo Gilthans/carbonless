@@ -199,3 +199,49 @@ expect_files() {
 	got="$(review_view | jq '.files | length')"
 	[ "$got" = "$n" ] || die "expected $n files, the review has $got"
 }
+
+# Every cluster key of the review view on stdin (one per line).
+all_keys() { jq -r '.files[].clusters[].key'; }
+
+# Marks every cluster of the review view `view` (JSON) `state`.
+mark_view() {
+	local view="$1" state="${2:-reviewed}"
+	local keys=()
+	while IFS= read -r k; do keys+=("$k"); done < <(all_keys <<<"$view")
+	mark "$(jq -r .revision <<<"$view")" "$state" -- "${keys[@]}"
+}
+
+# Gives a verdict through carbonless (it lands on GitHub as a review):
+# `verdict <APPROVE|COMMENT|REQUEST_CHANGES> <commit> [body]`. The gallery's
+# PRs are the gh login's own, so GitHub takes only COMMENT from it.
+verdict() {
+	local event="$1" commit="$2" body="${3:-}"
+	api POST /verdict "$(jq -n --arg e "$event" --arg c "$commit" --arg b "$body" \
+		--arg id "gallery-$(date +%s%N)" \
+		'{clientId: $id, event: $e, commit: $c, attemptedAt: (now | todate), retry: false}
+		 + (if $b == "" then {} else {body: $b} end)')" >/dev/null
+	log "verdict $event on ${commit:0:7}"
+}
+
+# Waits until the server reports the PR's base branch as `branch` (a
+# retarget after the parent PR merged), a minute at most.
+wait_base() {
+	local branch="$1" base i
+	for i in $(seq 1 20); do
+		base="$(api GET /head | jq -r '.head.baseBranch // empty')"
+		[ "$base" = "$branch" ] && return 0
+		sleep 3
+	done
+	die "the server reports base $base, not $branch"
+}
+
+# Waits until GitHub lists PR `pr`'s base as `branch`, a minute at most.
+wait_pr_base() {
+	local pr="$1" branch="$2" base i
+	for i in $(seq 1 20); do
+		base="$(gh pr view "$pr" -R "$GALLERY" --json baseRefName -q .baseRefName)"
+		[ "$base" = "$branch" ] && return 0
+		sleep 3
+	done
+	die "GitHub lists PR #$pr's base as $base, not $branch"
+}

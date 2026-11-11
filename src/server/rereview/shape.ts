@@ -45,6 +45,17 @@ async function countBetween(
 	return Number(out.trim());
 }
 
+/** `git rev-list --count <mergeBase>..<head>`: a patch set's commits. */
+export async function commitsOver(
+	repo: string,
+	mergeBase: string,
+	head: string,
+	signal?: AbortSignal,
+): Promise<number> {
+	if (mergeBase === head) return 0;
+	return countBetween(repo, checkOid(mergeBase), checkOid(head), signal);
+}
+
 /**
  * How many commits `to` has over `from` on its own line (the connector's
  * count): since `from` when `to` descends from it, else since `mergeBase`

@@ -252,9 +252,21 @@ describe("the engine", () => {
 				path: "extra.txt",
 				conflict: false,
 				clusters: [{ key: extraKey, kind: "gone", from: 1 }],
+				// Its removal is a piece of its own, back to the base: to read.
+				pieces: [
+					{
+						hunk: 0,
+						line: 0,
+						key: extraKey,
+						owns: null,
+						old: [[1, 2]],
+						new: [],
+						kind: "reverted",
+					},
+				],
 			},
 		]);
-		expect(answer.toRead).toEqual({ files: 0, clusters: 0 });
+		expect(answer.toRead).toEqual({ files: 1, clusters: 1 });
 		const hunks = interdiffFileHunks(traced, r, answer, 2);
 		expect(hunks).toEqual({
 			hunks: [
@@ -269,6 +281,17 @@ describe("the engine", () => {
 				},
 			],
 			newLineCount: 0,
+			pieces: [
+				{
+					hunk: 0,
+					line: 0,
+					key: extraKey,
+					owns: null,
+					old: [[1, 2]],
+					new: [],
+					kind: "reverted",
+				},
+			],
 		});
 		// A file the interdiff doesn't touch has no hunks since.
 		expect(interdiffFileHunks(traced, r, answer, 0)).toEqual({

@@ -3,7 +3,7 @@ import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { ReviewThread } from "../../shared/types";
 import { Badge } from "../overview/parts";
 import { Spinner } from "../Spinner";
-import { threadsLabel, UnplacedRow } from "./ThreadFate";
+import { resolvedLast, threadsLabel, UnplacedRow } from "./ThreadFate";
 
 /**
  * The trailing group of threads whose file is not in this comparison at
@@ -12,6 +12,7 @@ import { threadsLabel, UnplacedRow } from "./ThreadFate";
  * written on. It is there on every patch set until each thread is
  * resolved, so an unresolved thread never disappears with its file. A
  * spinner while the placements are on their way (never an empty group).
+ * A resolved thread stays listed as a quiet line after the rest (UnplacedRow).
  */
 export function NotInComparison(props: {
 	threads: {
@@ -22,7 +23,8 @@ export function NotInComparison(props: {
 	pending: boolean;
 	/**
 	 * The placements couldn't be computed: the threads not shown where they
-	 * were made, listed here with the error and a retry (never dropped).
+	 * were made, listed here with the error and a retry (never dropped);
+	 * resolved ones as quiet lines after the rest.
 	 */
 	failed?: {
 		threads: ReviewThread[];
@@ -33,6 +35,8 @@ export function NotInComparison(props: {
 	} | null;
 }) {
 	if (props.failed) {
+		// Resolved ones too, as quiet lines after the rest, counted nowhere.
+		const unresolved = props.failed.threads.filter((t) => !t.resolved).length;
 		return (
 			<section
 				aria-label="Thread places couldn't be computed"
@@ -43,9 +47,9 @@ export function NotInComparison(props: {
 				<h3 className="flex min-h-10 flex-wrap items-center gap-2 px-1 text-sm font-semibold text-ink">
 					<AlertIcon size={16} aria-hidden className="text-bad" />
 					Thread places couldn't be computed
-					{props.failed.threads.length > 0 && (
+					{unresolved > 0 && (
 						<Badge tone="red" icon={CircleSlashIcon}>
-							{threadsLabel(props.failed.threads.length)}
+							{threadsLabel(unresolved)}
 						</Badge>
 					)}
 					{/* One slot for the button and its spinner: nothing moves. */}
@@ -69,15 +73,17 @@ export function NotInComparison(props: {
 					</p>
 				)}
 				<ul className="space-y-1.5">
-					{props.failed.threads.map((thread) => (
-						<UnplacedRow
-							key={thread.id}
-							thread={thread}
-							readId={props.readId}
-							fate={null}
-							path={thread.path}
-						/>
-					))}
+					{resolvedLast(props.failed.threads.map((thread) => ({ thread }))).map(
+						({ thread }) => (
+							<UnplacedRow
+								key={thread.id}
+								thread={thread}
+								readId={props.readId}
+								fate={null}
+								path={thread.path}
+							/>
+						),
+					)}
 				</ul>
 			</section>
 		);
@@ -95,6 +101,8 @@ export function NotInComparison(props: {
 			</section>
 		);
 	}
+	// Resolved ones are quiet lines after the rest, counted nowhere.
+	const open = props.threads.filter((t) => !t.thread.resolved).length;
 	return (
 		<section
 			aria-label="Not in this comparison"
@@ -103,12 +111,14 @@ export function NotInComparison(props: {
 		>
 			<h3 className="flex min-h-10 flex-wrap items-center gap-2 px-1 text-sm font-semibold text-ink">
 				Not in this comparison
-				<Badge tone="red" icon={CircleSlashIcon}>
-					{threadsLabel(props.threads.length)}
-				</Badge>
+				{open > 0 && (
+					<Badge tone="red" icon={CircleSlashIcon}>
+						{threadsLabel(open)}
+					</Badge>
+				)}
 			</h3>
 			<ul className="space-y-1.5">
-				{props.threads.map(({ thread, placement }) => (
+				{resolvedLast(props.threads).map(({ thread, placement }) => (
 					<UnplacedRow
 						key={thread.id}
 						thread={thread}
