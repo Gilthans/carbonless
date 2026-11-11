@@ -305,7 +305,9 @@ test("the compact title is centered between the tabs and the header's next butto
 	isMobile,
 }) => {
 	const project = isMobile ? "phone" : "desktop";
-	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	// 440px: narrower, beside the row's agent chip, the pill has little or
+	// no room (it goes: sticky.spec.ts); here it is to be measured.
+	if (isMobile) await page.setViewportSize({ width: 440, height: 780 });
 	await openPr(pr);
 	const s = await startCrb();
 	await openFiles(page, s.url);
