@@ -166,10 +166,14 @@ waiting dot, the 32 KiB cap. Additions:
   judges the thread resolved **in the viewed patch set** (`view.right`). A
   fix that exists only in a later commit (step 2 above) never earns the
   marker: the reviewer hasn't seen that code. The runner strips that line and stores
-  `suggests: "resolve"` on the message. The message shows a small "✓
-  suggests resolving" chip in `ok` and the thread's Resolve button gets an
-  `ok` ring. Nothing else happens. The marker is just a hint, the human
-  still clicks. So a hostile PR text that tricks the agent into suggesting
+  `suggests: "resolve"` on the message. The message shows a visible
+  **"Resolve By Agent Suggestion"** button in `ok` (owner, 2026-11-11). It
+  runs the same GitHub resolve as the card's Resolve, so resolving stays a
+  human click. It shows only on the latest suggesting message while the
+  thread is unresolved, and not in `--viewer`/`--as-of` reviews or on
+  orphaned conversations. The composer's Resolve also gets an `ok` ring
+  (my call, pending the owner's answer in the spec comments). Nothing else
+  happens: the agent never resolves. So a hostile PR text that tricks the agent into suggesting
   it costs nothing. (Marker format is my call; the builder may pick
   another, as long as it is stripped and stored as data.)
 
@@ -429,7 +433,9 @@ conversations) with `unread: boolean`, and thread conversations with
   thread and from Files changed, get an answer, see the counter; the
   conversation opens scrolled to its end and closes from the strip, the
   comment counter and the agent button; resolve the GitHub thread and see
-  it fold; the slide-over at 360px.
+  it fold; a suggesting answer shows "Resolve By Agent Suggestion", and
+  pressing it resolves the GitHub thread (fake gh records the write) and
+  hides the button; the slide-over at 360px.
 - Gallery: a `case/thread-agent` PR with a thread fixed in one place but not
   another (the owner's "all places or just here" case), plus a re-push, for
   QA.
@@ -458,8 +464,8 @@ on close).
 - Text typed to the agent keeps a thread open on Resolve in Files changed, like an unsent reply. **Owner: yes.**
 - Each card opens its conversation independently; the open state isn't stored. **Owner: yes.**
 - Unread markers on span agent threads too. **Owner: yes, if cheap (it is: UI only).**
-- `[suggest-resolve]` line as the suggestion marker.
-- A question waiting when the thread is resolved is still answered.
+- `[suggest-resolve]` line as the suggestion marker. **Owner: fine, and it shows a "Resolve By Agent Suggestion" button.**
+- A question waiting when the thread is resolved is still answered. **Owner: yes.**
 - Orphaned conversations live in the Overview's agent row.
 - Code links open the head the answer was written on (`?ps=` / `?head=`).
 - The agent's checkout for a thread turn is GitHub's current head, not the
