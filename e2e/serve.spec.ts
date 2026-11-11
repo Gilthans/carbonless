@@ -14,8 +14,8 @@ import {
 	test,
 } from "./fixtures";
 
-// How `crb <pr>` and crb serve find each other.
-test.use({ crbClient: "cli" });
+// How `crb <pr>` and crb serve find each other runs the built CLI.
+const cliTest = test.extend({ crbClient: "cli" as const });
 
 /** A free port, let go of. */
 function freePort(): Promise<number> {
@@ -54,28 +54,26 @@ function addSecondPr(p: Pr): void {
 const title = (page: import("@playwright/test").Page) =>
 	page.getByRole("heading", { level: 1 });
 
-test("one server holds two reviews at once", async ({
-	context,
-	page,
-	pr,
-	startCrb,
-}) => {
-	const p = await pr();
-	addSecondPr(p);
-	const first = await startCrb();
-	const second = await startCrb(`${OWNER_REPO}#8`);
-	expect(new URL(first.url).port).toBe(new URL(second.url).port);
-	expect(first.url).not.toBe(second.url);
-	await page.goto(first.url);
-	const other = await context.newPage();
-	await other.goto(second.url);
-	await expect(title(page)).toHaveText("Add widget cache");
-	await expect(title(other)).toHaveText("Second PR");
-	// Each still its own after the other is used.
-	await page.reload();
-	await expect(title(page)).toHaveText("Add widget cache");
-	await other.close();
-});
+cliTest(
+	"one server holds two reviews at once",
+	async ({ context, page, pr, startCrb }) => {
+		const p = await pr();
+		addSecondPr(p);
+		const first = await startCrb();
+		const second = await startCrb(`${OWNER_REPO}#8`);
+		expect(new URL(first.url).port).toBe(new URL(second.url).port);
+		expect(first.url).not.toBe(second.url);
+		await page.goto(first.url);
+		const other = await context.newPage();
+		await other.goto(second.url);
+		await expect(title(page)).toHaveText("Add widget cache");
+		await expect(title(other)).toHaveText("Second PR");
+		// Each still its own after the other is used.
+		await page.reload();
+		await expect(title(page)).toHaveText("Add widget cache");
+		await other.close();
+	},
+);
 
 test("crb <pr> with no server starts one; the next crb <pr> uses it", async ({
 	pr,

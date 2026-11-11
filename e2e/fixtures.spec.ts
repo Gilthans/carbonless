@@ -6,6 +6,7 @@ import { testSpanContext } from "../test/trace-run";
 import {
 	CrbExitError,
 	CrbStartTimeout,
+	clientRequest,
 	expect,
 	NeedsCliError,
 	OWNER_REPO,
@@ -112,6 +113,7 @@ test.describe("the client", () => {
 
 test("startCrb over HTTP opens the review crb <pr> opens, flags and all", async ({
 	pr,
+	request,
 	startCrb,
 	workdir,
 }) => {
@@ -135,18 +137,68 @@ test("startCrb over HTTP opens the review crb <pr> opens, flags and all", async 
 		];
 		sc.commits = { [head]: { contexts: null } };
 	});
-	const flags = ["--as-of", "2026-01-05T00:00:00Z", "--viewer", "someone-else"];
-	for (const args of [[], flags]) {
-		const http = await startCrb(undefined, args);
+	const pr7 = `${OWNER_REPO}#${PR_NUMBER}`;
+	// What reached the server: the session's cutoff and pinned head, and
+	// whether it has an agent (none as of a cutoff or as --viewer someone
+	// else; the viewer is in neither the review's id nor the session's info).
+	const plain = { asOf: null, pinnedHead: null, agent: 200 };
+	const cases = [
+		{ arg: pr7, args: [], seen: plain },
+		{
+			arg: pr7,
+			args: ["--viewer", "someone-else"],
+			body: { pr: pr7, viewer: "someone-else" },
+			seen: { ...plain, agent: 404 },
+		},
+		{
+			arg: pr7,
+			args: [
+				"--as-of",
+				"2026-01-05T00:00:00+00:00",
+				"--viewer",
+				"someone-else",
+			],
+			// The client sends the cutoff normalized.
+			body: { pr: pr7, asOf: "2026-01-05T00:00:00Z", viewer: "someone-else" },
+			seen: { asOf: "2026-01-05T00:00:00Z", pinnedHead: null, agent: 404 },
+		},
+		{
+			arg: pr7,
+			args: ["--head", head.slice(0, 7)],
+			body: { pr: pr7, head: head.slice(0, 7) },
+			seen: { asOf: null, pinnedHead: head, agent: 200 },
+		},
+		// A URL goes to the server as given, as the client sends it.
+		{
+			arg: `https://github.com/${OWNER_REPO}/pull/${PR_NUMBER}`,
+			args: [],
+			seen: plain,
+		},
+	];
+	const urls: string[] = [];
+	for (const c of cases) {
+		if (c.body) expect(clientRequest(c.arg, c.args)).toEqual(c.body);
+		const http = await startCrb(c.arg, c.args);
+		const api = `${new URL(http.url).origin}/api/r/${new URL(http.url).pathname.split("/").at(-1)}`;
+		const session = await (await request.get(`${api}/session`)).json();
+		const agent = (await request.get(`${api}/agent`)).status();
+		expect({
+			asOf: session.asOf,
+			pinnedHead: session.pinnedHead,
+			agent,
+		}).toEqual(c.seen);
 		// The CLI against the same server (it finds it through server.json).
-		const cli = await runCli(workdir, [`${OWNER_REPO}#${PR_NUMBER}`, ...args]);
+		const cli = await runCli(workdir, [c.arg, ...c.args]);
 		expect(cli.code).toBe(0);
 		expect(cli.stdout).toBe(`${http.url}\n`);
+		urls.push(http.url);
 	}
-	// The flags reached the server: another review.
-	expect((await startCrb()).url).not.toBe(
-		(await startCrb(undefined, flags)).url,
-	);
+	// The cutoff and the head make reviews of their own; the viewer and the
+	// URL form are #7's.
+	const [first, viewer, asOf, pinned, url] = urls;
+	expect(new Set([first, asOf, pinned]).size).toBe(3);
+	expect(viewer).toBe(first);
+	expect(url).toBe(first);
 });
 
 test("a failed open over HTTP carries the server's error, in the client's words", async ({
@@ -173,7 +225,7 @@ test("startCrb over HTTP refuses what only the CLI does, naming crbClient", asyn
 	await pr();
 	for (const [arg, args] of [
 		[`${PR_NUMBER}`, []],
-		[`https://github.com/${OWNER_REPO}/pull/${PR_NUMBER}`, []],
+		[`${OWNER_REPO}#0`, []],
 		[undefined, ["--open"]],
 		[undefined, ["--head", "tip"]],
 		[undefined, ["--head", "reviewed", "--as-of", "2026-01-01T00:00Z"]],

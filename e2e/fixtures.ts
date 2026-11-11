@@ -28,7 +28,7 @@ import {
 	type PrOptions,
 } from "./pr-setup";
 
-export { type CrbClient, NeedsCliError } from "./crb-open";
+export { type CrbClient, clientRequest, NeedsCliError } from "./crb-open";
 export {
 	type CrbExit,
 	CrbExitError,
@@ -71,7 +71,9 @@ export function reviewPage(url: string, page: string, search = ""): string {
  * Runs a test's setup step (a fixture repo, starting crb) and gives the test
  * back the time it took: on a loaded machine these take seconds, and the
  * test's own timeout is for its own steps. START_TIMEOUT_MS
- * (crb-process.ts) still bounds a start that hangs.
+ * (crb-process.ts) still bounds a start or an open that hangs: a CLI run
+ * is killed, an open over HTTP aborted (crb-open.ts), and either fails as
+ * CrbExitError with the server's log.
  */
 export async function untimed<T>(info: TestInfo, step: () => T | Promise<T>) {
 	const started = Date.now();

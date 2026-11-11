@@ -1,8 +1,9 @@
 import { connect } from "node:net";
 import { CrbExitError, expect, reviewPage, test } from "./fixtures";
 
-// `crb <pr>` itself: its output, exit codes and checks.
-test.use({ crbClient: "cli" });
+// `crb <pr>` itself (its output, exit codes and checks) runs the built CLI;
+// what is the server's opens over HTTP.
+const cliTest = test.extend({ crbClient: "cli" as const });
 
 async function exitOf(promise: Promise<unknown>): Promise<CrbExitError> {
 	const error = await promise.then(
@@ -15,21 +16,21 @@ async function exitOf(promise: Promise<unknown>): Promise<CrbExitError> {
 	return error;
 }
 
-test("rejects an argument that is not a PR", async ({ pr, startCrb }) => {
+cliTest("rejects an argument that is not a PR", async ({ pr, startCrb }) => {
 	await pr();
 	const exit = await exitOf(startCrb("not-a-pr"));
 	expect(exit.code).toBe(1);
 	expect(exit.output).toContain("crb: Not a PR");
 });
 
-test("says when gh is not logged in", async ({ pr, startCrb }) => {
+cliTest("says when gh is not logged in", async ({ pr, startCrb }) => {
 	await pr({ scenario: { loggedOut: true } });
 	const exit = await exitOf(startCrb());
 	expect(exit.code).toBe(1);
 	expect(exit.output).toContain("gh is not logged in");
 });
 
-test("says when the PR does not exist", async ({ pr, startCrb }) => {
+cliTest("says when the PR does not exist", async ({ pr, startCrb }) => {
 	await pr();
 	const exit = await exitOf(startCrb("acme/widget#99"));
 	expect(exit.code).toBe(1);
@@ -80,7 +81,7 @@ test("the access key leaves the address bar once loaded, and Overview is the cur
 	).toHaveAttribute("aria-current", "page");
 });
 
-test("can be restarted on the same PR", async ({ page, pr, startCrb }) => {
+cliTest("can be restarted on the same PR", async ({ page, pr, startCrb }) => {
 	await pr();
 	const first = await startCrb();
 	await first.stop();
@@ -130,16 +131,16 @@ test("exits promptly on SIGTERM while a page is open", async ({
 	expect(exit?.code).toBe(0);
 });
 
-test("--as-of needs an ISO time with a zone, and stays out of the usage", async ({
-	pr,
-	startCrb,
-}) => {
-	await pr();
-	const exit = await exitOf(startCrb(undefined, ["--as-of", "2026-01-03"]));
-	expect(exit.code).toBe(1);
-	expect(exit.output).toMatch(/crb: Invalid --as-of: 2026-01-03/);
-	const help = await exitOf(startCrb(undefined, ["--help"]));
-	expect(help.output).toContain("Usage: crb");
-	expect(help.output).not.toContain("as-of");
-	expect(help.output).not.toContain("viewer");
-});
+cliTest(
+	"--as-of needs an ISO time with a zone, and stays out of the usage",
+	async ({ pr, startCrb }) => {
+		await pr();
+		const exit = await exitOf(startCrb(undefined, ["--as-of", "2026-01-03"]));
+		expect(exit.code).toBe(1);
+		expect(exit.output).toMatch(/crb: Invalid --as-of: 2026-01-03/);
+		const help = await exitOf(startCrb(undefined, ["--help"]));
+		expect(help.output).toContain("Usage: crb");
+		expect(help.output).not.toContain("as-of");
+		expect(help.output).not.toContain("viewer");
+	},
+);

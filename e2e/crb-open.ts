@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseAsOf } from "../src/server/asOf";
+import { parsePrArg } from "../src/server/gh";
 import { parseHead } from "../src/server/pinnedHead";
 import type { ServerState } from "../src/server/serverState";
 import { VERSION_HEADER } from "../src/server/version";
-import type { Served } from "./crb-process";
+import { type Served, START_TIMEOUT_MS } from "./crb-process";
 import { crbEnv } from "./pr-setup";
 
 /*
@@ -23,7 +24,6 @@ import { crbEnv } from "./pr-setup";
 export type CrbClient = "http" | "cli";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
-const OWNER_REPO_N = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/;
 /** The client flags this path sends as the client would, each with a value. */
 const FLAGS: Record<string, "head" | "asOf" | "viewer"> = {
 	"--head": "head",
@@ -45,7 +45,15 @@ export function clientRequest(
 	arg: string,
 	args: string[],
 ): { pr: string; head?: string; asOf?: string; viewer?: string } {
-	if (!OWNER_REPO_N.test(arg)) {
+	// The client's grammar (prForServer): owner/repo#n and URLs go to the
+	// server as given; a bare number it resolves through the git remote.
+	let parsed: ReturnType<typeof parsePrArg>;
+	try {
+		parsed = parsePrArg(arg);
+	} catch {
+		throw new NeedsCliError(`check the PR argument "${arg}"`);
+	}
+	if (!("owner" in parsed)) {
 		throw new NeedsCliError(`resolve the PR argument "${arg}"`);
 	}
 	const req: { pr: string; head?: string; asOf?: string; viewer?: string } = {
@@ -128,22 +136,28 @@ export async function openOverHttp(
 		stdout: "",
 		output: `crb: ${message}\n`,
 	});
+	// runCli's bound: a hung open fails as a failed one, with the server's log.
+	const signal = AbortSignal.timeout(START_TIMEOUT_MS);
 	let res: Response;
+	let body: { url?: unknown; error?: unknown };
 	try {
 		res = await fetch(`${state.url}/api/reviews`, {
 			method: "POST",
 			headers,
 			body: JSON.stringify(req),
+			signal,
 		});
+		body = (await res.json().catch((error: unknown) => {
+			if (signal.aborted) throw error;
+			return {};
+		})) as typeof body;
 	} catch (error) {
 		return failed(
-			`Could not reach crb serve at ${state.url}: ${(error as Error).message}`,
+			signal.aborted
+				? `crb serve did not answer the open in ${START_TIMEOUT_MS / 1000} s`
+				: `Could not reach crb serve at ${state.url}: ${(error as Error).message}`,
 		);
 	}
-	const body = (await res.json().catch(() => ({}))) as {
-		url?: unknown;
-		error?: unknown;
-	};
 	if (!res.ok || typeof body.url !== "string") {
 		return failed(
 			typeof body.error === "string"

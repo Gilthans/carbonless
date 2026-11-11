@@ -17,7 +17,8 @@ export class CrbExitError extends Error {
 	}
 }
 
-const START_TIMEOUT_MS = 20_000;
+/** How long a start, a CLI run or an open over HTTP may take. */
+export const START_TIMEOUT_MS = 20_000;
 
 /**
  * How long crb may take to exit after SIGTERM before the harness kills it
