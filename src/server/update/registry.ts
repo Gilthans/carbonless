@@ -8,6 +8,10 @@ export const registryUrl = (env: NodeJS.ProcessEnv = process.env): string =>
 	(env.CRB_NPM_REGISTRY || "https://registry.npmjs.org").replace(/\/+$/, "");
 
 const TIMEOUT_MS = 10_000;
+/** The largest answer read. */
+const MAX_ANSWER = 64 * 1024;
+/** The longest version taken (it reaches the page and a command line). */
+const MAX_VERSION = 64;
 
 /**
  * The version on the running version's channel (`rc` for a prerelease,
@@ -32,12 +36,20 @@ export async function newerOnRegistry(
 			signal: AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_MS),
 		});
 		if (!res.ok) return null;
-		const tags = (await res.json()) as unknown;
+		// dist-tags are a few names and versions: anything big is not one.
+		if (Number(res.headers.get("content-length") ?? 0) > MAX_ANSWER) {
+			return null;
+		}
+		const text = await res.text();
+		if (text.length > MAX_ANSWER) return null;
+		const tags = JSON.parse(text) as unknown;
 		if (typeof tags !== "object" || tags === null) return null;
 		const offered = (tags as Record<string, unknown>)[
 			opts.channel ?? channelOf(current)
 		];
-		return typeof offered === "string" && isNewer(offered, current)
+		return typeof offered === "string" &&
+			offered.length <= MAX_VERSION &&
+			isNewer(offered, current)
 			? offered
 			: null;
 	} catch {

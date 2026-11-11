@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateInfo } from "../shared/update";
 import { ToastStack } from "./Toasts";
-import { UpdateToast } from "./UpdateToast";
+import { BACK_LIMIT_MS, BACK_POLL_MS, UpdateToast } from "./UpdateToast";
+
+// Whether the page has unsaved work (useUnsavedGuard's condition).
+const page = vi.hoisted(() => ({ unsaved: false }));
+vi.mock("./files/useSetStates", () => ({ useUnsaved: () => page.unsaved }));
 
 const OFFER: UpdateInfo = {
 	current: "0.2.0",
@@ -31,6 +35,7 @@ function serve(opts: {
 	post?: () => Response;
 }) {
 	const posts: unknown[] = [];
+	const asked = { version: 0 };
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (url: string, init?: RequestInit) => {
@@ -42,6 +47,7 @@ function serve(opts: {
 			}
 			if (url === "/api/update") return json(200, opts.info());
 			if (url === "/api/version") {
+				asked.version++;
 				const v = opts.version?.() ?? null;
 				if (v === null) throw new TypeError("Failed to fetch");
 				return json(200, { version: v, commit: "x" });
@@ -49,11 +55,12 @@ function serve(opts: {
 			return json(404, {});
 		}),
 	);
-	return { posts };
+	return { posts, asked };
 }
 
 let reload: ReturnType<typeof vi.fn>;
 beforeEach(() => {
+	page.unsaved = false;
 	localStorage.clear();
 	reload = vi.fn();
 	Object.defineProperty(window, "location", {
@@ -63,6 +70,7 @@ beforeEach(() => {
 });
 afterEach(() => {
 	cleanup();
+	vi.useRealTimers();
 	vi.unstubAllGlobals();
 });
 
@@ -144,8 +152,11 @@ describe("UpdateToast", () => {
 	});
 
 	it("Update: posts the version, shows it updating, reloads once crb answers the new version", async () => {
-		let version: string | null = "0.2.0";
-		const { posts } = serve({ info: () => OFFER, version: () => version });
+		let version: string | null = null;
+		const { posts, asked } = serve({
+			info: () => OFFER,
+			version: () => version,
+		});
 		show();
 		await toast();
 		await userEvent.click(screen.getByRole("button", { name: "Update" }));
@@ -153,13 +164,112 @@ describe("UpdateToast", () => {
 		await waitFor(() => expect(t.dataset.state).toBe("updating"));
 		expect(t.textContent).toContain("Updating to v0.3.0");
 		expect(posts).toEqual([{ version: "0.3.0" }]);
-		// Down while it installs: still updating, never empty.
-		version = null;
-		await new Promise((r) => setTimeout(r, 1200));
+		// Down while it installs (crb asked, no answer): still updating,
+		// never empty.
+		await waitFor(() => expect(asked.version).toBeGreaterThan(0), {
+			timeout: 5000,
+		});
 		expect((await toast()).dataset.state).toBe("updating");
 		expect(reload).not.toHaveBeenCalled();
 		version = "0.3.0";
 		await waitFor(() => expect(reload).toHaveBeenCalled(), { timeout: 5000 });
+	});
+
+	it("crb back with unsaved work on the page: no reload by itself; Reload, which the browser's leave ask guards", async () => {
+		page.unsaved = true;
+		// Another tab's update: this page's reviewer was asked nothing.
+		serve({
+			info: () => ({ ...OFFER, state: "restarting" }),
+			version: () => "0.3.0",
+		});
+		show();
+		await waitFor(
+			async () => expect((await toast()).dataset.state).toBe("back"),
+			{ timeout: 5000 },
+		);
+		expect(reload).not.toHaveBeenCalled();
+		expect((await toast()).textContent).toContain("Updated to v0.3.0");
+		await userEvent.click(screen.getByRole("button", { name: "Reload" }));
+		expect(reload).toHaveBeenCalledTimes(1);
+	});
+
+	it("this tab's Update with unsaved work: asks first; back, the reload is the reviewer's again", async () => {
+		page.unsaved = true;
+		let version: string | null = null;
+		const { posts } = serve({ info: () => OFFER, version: () => version });
+		const confirm = vi.fn(() => false);
+		vi.stubGlobal("confirm", confirm);
+		show();
+		await toast();
+		await userEvent.click(screen.getByRole("button", { name: "Update" }));
+		expect(confirm).toHaveBeenCalledTimes(1);
+		expect(posts).toEqual([]);
+		expect((await toast()).dataset.state).toBe("available");
+		confirm.mockReturnValue(true);
+		await userEvent.click(screen.getByRole("button", { name: "Update" }));
+		expect(posts).toEqual([{ version: "0.3.0" }]);
+		version = "0.3.0";
+		// Edits made while crb was down are as unsaved as any: no reload
+		// past the browser's ask.
+		await waitFor(
+			async () => expect((await toast()).dataset.state).toBe("back"),
+			{ timeout: 5000 },
+		);
+		expect(reload).not.toHaveBeenCalled();
+	});
+
+	it("crb never comes back: after BACK_LIMIT_MS, a failure with the command", async () => {
+		vi.useFakeTimers({
+			toFake: [
+				"setTimeout",
+				"clearTimeout",
+				"setInterval",
+				"clearInterval",
+				"Date",
+			],
+		});
+		const { asked } = serve({
+			info: () => ({ ...OFFER, state: "restarting" }),
+			version: () => null,
+		});
+		show();
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
+		await act(() => vi.advanceTimersByTimeAsync(BACK_LIMIT_MS - BACK_POLL_MS));
+		// Still asking, still updating, just short of the limit.
+		expect(asked.version).toBeGreaterThan(100);
+		expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
+		await act(() => vi.advanceTimersByTimeAsync(3 * BACK_POLL_MS));
+		const t = screen.getByTestId("update-toast");
+		expect(t.dataset.state).toBe("failed");
+		expect(screen.getByTestId("update-output").textContent).toBe(
+			"crb did not come back with 0.3.0 within 5 minutes",
+		);
+		expect(screen.getByTestId("update-command").textContent).toBe(
+			OFFER.command,
+		);
+		expect(reload).not.toHaveBeenCalled();
+	});
+
+	it("a failure: Retry updates again; its dismiss leaves the offer", async () => {
+		const failed = {
+			version: "0.3.0",
+			tail: "EACCES",
+			command: OFFER.command as string,
+		};
+		const { posts } = serve({ info: () => ({ ...OFFER, failed }) });
+		show();
+		expect((await toast()).dataset.state).toBe("failed");
+		await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+		expect((await toast()).dataset.state).toBe("available");
+		cleanup();
+		show();
+		expect((await toast()).dataset.state).toBe("failed");
+		await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+		expect(posts).toEqual([{ version: "0.3.0" }]);
+		await waitFor(async () =>
+			expect((await toast()).dataset.state).toBe("updating"),
+		);
 	});
 
 	it("another tab's update: shows it updating too", async () => {
@@ -233,22 +343,5 @@ describe("UpdateToast", () => {
 		expect(screen.getByTestId("update-output").textContent).toBe(
 			"An update is already under way",
 		);
-	});
-
-	it("a failure crb reports at start shows until dismissed", async () => {
-		serve({
-			info: () => ({
-				...OFFER,
-				failed: {
-					version: "0.3.0",
-					tail: "EACCES",
-					command: OFFER.command as string,
-				},
-			}),
-		});
-		show();
-		expect((await toast()).dataset.state).toBe("failed");
-		await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-		expect(screen.queryByTestId("update-toast")).toBeNull();
 	});
 });

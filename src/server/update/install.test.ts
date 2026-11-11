@@ -68,120 +68,99 @@ describe("isFromNpm", () => {
 });
 
 describe("detectInstall", () => {
+	const all = () => true;
 	const none = () => false;
 
-	it("npm global: <prefix>/lib/node_modules, relaunched by its own cli.js", () => {
+	it("npm global: <prefix>/lib/node_modules with its crb shim; the new version lands in place", () => {
+		const root =
+			"/home/me/.nvm/versions/node/v24.1.0/lib/node_modules/carbonless-review";
 		expect(
-			detectInstall(
-				"/home/me/.nvm/versions/node/v24.1.0/lib/node_modules/carbonless-review",
-				{
-					platform: "linux",
-					execPath: "/home/me/.nvm/versions/node/v24.1.0/bin/node",
-					exists: none,
-				},
-			),
+			detectInstall(root, {
+				platform: "linux",
+				exists: (f) => f === "/home/me/.nvm/versions/node/v24.1.0/bin/crb",
+				writable: (d) =>
+					d === "/home/me/.nvm/versions/node/v24.1.0/lib/node_modules",
+			}),
 		).toEqual({
 			pm: "npm",
-			launcher: {
-				command: "/home/me/.nvm/versions/node/v24.1.0/bin/node",
-				args: [
-					"/home/me/.nvm/versions/node/v24.1.0/lib/node_modules/carbonless-review/dist/cli.js",
-				],
-			},
+			root,
+			home: "/home/me/.nvm/versions/node/v24.1.0",
+			writable: true,
+			packages: [root],
+			scan: [],
 		});
 	});
 
-	it("npm global on Windows: %APPDATA%\\npm or node's own directory", () => {
-		const node = "C:\\Program Files\\nodejs\\node.exe";
+	it("npm global on Windows: <prefix>\\node_modules with crb.cmd", () => {
+		const root =
+			"C:\\Users\\Jane Doe\\AppData\\Roaming\\npm\\node_modules\\carbonless-review";
 		expect(
-			detectInstall(
-				"C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\carbonless-review",
-				{
-					platform: "win32",
-					execPath: node,
-					exists: none,
-				},
-			),
-		).toEqual({
+			detectInstall(root, {
+				platform: "win32",
+				exists: (f) =>
+					f === "C:\\Users\\Jane Doe\\AppData\\Roaming\\npm\\crb.cmd",
+				writable: all,
+			}),
+		).toMatchObject({
 			pm: "npm",
-			launcher: {
-				command: node,
-				args: [
-					"C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\carbonless-review\\dist\\cli.js",
-				],
-			},
+			home: "C:\\Users\\Jane Doe\\AppData\\Roaming\\npm",
+			writable: true,
 		});
-		expect(
-			detectInstall(
-				"C:\\Program Files\\nodejs\\node_modules\\carbonless-review",
-				{
-					platform: "win32",
-					execPath: node,
-					exists: none,
-				},
-			)?.pm,
-		).toBe("npm");
 	});
 
-	it("pnpm global (v11's layout): relaunched through its crb shim, which moves to the new version", () => {
+	it("a prefix the reviewer can't write (a system node): no one-click", () => {
+		expect(
+			detectInstall("/usr/lib/node_modules/carbonless-review", {
+				platform: "linux",
+				exists: all,
+				writable: none,
+			})?.writable,
+		).toBe(false);
+	});
+
+	it("pnpm global: found again after the install in its global dir (a new dir per install)", () => {
 		const root =
 			"/home/me/.local/share/pnpm/global/v11/88719-18e7/node_modules/.pnpm/carbonless-review@0.2.0/node_modules/carbonless-review";
 		expect(
 			detectInstall(root, {
 				platform: "linux",
-				execPath: "/usr/bin/node",
-				exists: (f) => f === "/home/me/.local/share/pnpm/bin/crb",
-			}),
-		).toEqual({
-			pm: "pnpm",
-			launcher: { command: "/home/me/.local/share/pnpm/bin/crb", args: [] },
-		});
-		// Older pnpm: the shim in PNPM_HOME itself; none at all: its cli.js.
-		expect(
-			detectInstall(root, {
-				platform: "linux",
-				execPath: "/usr/bin/node",
-				exists: (f) => f === "/home/me/.local/share/pnpm/crb",
-			})?.launcher.command,
-		).toBe("/home/me/.local/share/pnpm/crb");
-		expect(
-			detectInstall(root, {
-				platform: "linux",
-				execPath: "/usr/bin/node",
 				exists: none,
-			})?.launcher,
-		).toEqual({ command: "/usr/bin/node", args: [`${root}/dist/cli.js`] });
-	});
-
-	it("pnpm global on Windows: its crb.cmd", () => {
-		const root =
-			"C:\\Users\\me\\AppData\\Local\\pnpm\\global\\5\\node_modules\\.pnpm\\carbonless-review@0.2.0\\node_modules\\carbonless-review";
-		expect(
-			detectInstall(root, {
-				platform: "win32",
-				execPath: "C:\\node\\node.exe",
-				exists: (f) => f === "C:\\Users\\me\\AppData\\Local\\pnpm\\crb.cmd",
+				writable: (d) => d === "/home/me/.local/share/pnpm/global/v11",
 			}),
 		).toEqual({
 			pm: "pnpm",
-			launcher: {
-				command: "C:\\Users\\me\\AppData\\Local\\pnpm\\crb.cmd",
-				args: [],
-			},
+			root,
+			home: "/home/me/.local/share/pnpm",
+			writable: true,
+			packages: [
+				"/home/me/.local/share/pnpm/global/v11/node_modules/carbonless-review",
+			],
+			scan: ["/home/me/.local/share/pnpm/global/v11"],
 		});
 	});
 
-	it("anything else is unknown: a project's dependency, a project's pnpm store, a checkout, yarn's global", () => {
-		const opts = {
-			platform: "linux" as const,
-			execPath: "/usr/bin/node",
-			exists: none,
-		};
+	it("pnpm global on Windows, in a profile with a space", () => {
+		const root =
+			"C:\\Users\\Jane Doe\\AppData\\Local\\pnpm\\global\\5\\node_modules\\.pnpm\\carbonless-review@0.2.0\\node_modules\\carbonless-review";
+		expect(
+			detectInstall(root, { platform: "win32", exists: none, writable: all }),
+		).toMatchObject({
+			pm: "pnpm",
+			home: "C:\\Users\\Jane Doe\\AppData\\Local\\pnpm",
+			scan: ["C:\\Users\\Jane Doe\\AppData\\Local\\pnpm\\global\\5"],
+		});
+	});
+
+	it("anything else is unknown: a project's dependency (even under a lib dir), a project's pnpm store, a checkout, yarn's or volta's global", () => {
+		const opts = { platform: "linux" as const, exists: none, writable: all };
 		for (const root of [
 			"/home/me/project/node_modules/carbonless-review",
+			"/home/me/x/lib/node_modules/carbonless-review",
 			"/home/me/project/node_modules/.pnpm/carbonless-review@0.2.0/node_modules/carbonless-review",
+			"/home/me/global/project/node_modules/.pnpm/carbonless-review@0.2.0/node_modules/carbonless-review",
 			"/home/me/carbonless",
 			"/home/me/.config/yarn/global/node_modules/carbonless-review",
+			"/home/me/.volta/tools/image/packages/carbonless-review/lib/node_modules/carbonless-review",
 			"/usr/lib/node_modules/other/node_modules/carbonless-review",
 		]) {
 			expect(detectInstall(root, opts), root).toBeNull();
@@ -190,23 +169,87 @@ describe("detectInstall", () => {
 });
 
 describe("commands", () => {
-	it("installs exactly the version, with pnpm's release-age delay lifted for it", () => {
-		expect(installCommand("npm", "0.3.0", "linux")).toEqual({
-			command: "npm",
-			args: ["install", "-g", "carbonless-review@0.3.0"],
+	const NPM = {
+		pm: "npm" as const,
+		home: "/home/me/.nvm/versions/node/v24.1.0",
+	};
+	const PNPM = { pm: "pnpm" as const, home: "/home/me/.local/share/pnpm" };
+
+	it("npm: the prefix's own, else the one beside the running node, into the detected prefix", () => {
+		expect(
+			installCommand(NPM, "0.3.0", {
+				platform: "linux",
+				execPath: "/usr/bin/node",
+				exists: () => true,
+			}).command,
+		).toBe("/home/me/.nvm/versions/node/v24.1.0/bin/npm");
+		expect(
+			installCommand(NPM, "0.3.0", {
+				platform: "linux",
+				execPath: "/home/me/.nvm/versions/node/v24.1.0/bin/node",
+				exists: (f) => f === "/home/me/.nvm/versions/node/v24.1.0/bin/npm",
+			}),
+		).toEqual({
+			command: "/home/me/.nvm/versions/node/v24.1.0/bin/npm",
+			args: [
+				"install",
+				"-g",
+				"--prefix",
+				"/home/me/.nvm/versions/node/v24.1.0",
+				"carbonless-review@0.3.0",
+			],
 		});
-		expect(installCommand("pnpm", "0.3.0-rc.2", "linux")).toEqual({
-			command: "pnpm",
+		// None beside node: PATH's, still into the prefix; Windows: npm.cmd.
+		expect(
+			installCommand(NPM, "0.3.0", {
+				platform: "win32",
+				execPath: "C:\\node\\node.exe",
+				exists: () => false,
+			}).command,
+		).toBe("npm.cmd");
+	});
+
+	it("pnpm: its own from PNPM_HOME, with PNPM_HOME and its bin dir set, release-age delay lifted for us", () => {
+		expect(
+			installCommand(PNPM, "0.3.0-rc.2", {
+				platform: "linux",
+				exists: (f) =>
+					f === "/home/me/.local/share/pnpm/bin" ||
+					f === "/home/me/.local/share/pnpm/bin/pnpm",
+				env: { PATH: "/usr/bin" },
+			}),
+		).toEqual({
+			command: "/home/me/.local/share/pnpm/bin/pnpm",
 			args: [
 				"add",
 				"-g",
 				"carbonless-review@0.3.0-rc.2",
 				"--config.minimumReleaseAgeExclude=carbonless-review",
 			],
+			env: {
+				PNPM_HOME: "/home/me/.local/share/pnpm",
+				PATH: "/home/me/.local/share/pnpm/bin:/usr/bin",
+			},
 		});
-		expect(installCommand("npm", "0.3.0", "win32").command).toBe("npm.cmd");
-		expect(showCommand(installCommand("npm", "0.3.0", "win32"))).toBe(
+		// Windows spells it Path; no pnpm in PNPM_HOME: PATH's pnpm.cmd.
+		const win = installCommand({ pm: "pnpm", home: "C:\\pnpm" }, "0.3.0", {
+			platform: "win32",
+			exists: () => false,
+			env: { Path: "C:\\bin" },
+		});
+		expect(win.command).toBe("pnpm.cmd");
+		expect(win.env).toEqual({
+			PNPM_HOME: "C:\\pnpm",
+			Path: "C:\\pnpm;C:\\bin",
+		});
+	});
+
+	it("shown as the reviewer would type it", () => {
+		expect(showCommand("npm", "0.3.0")).toBe(
 			"npm install -g carbonless-review@0.3.0",
+		);
+		expect(showCommand("pnpm", "0.3.0")).toBe(
+			"pnpm add -g carbonless-review@0.3.0 --config.minimumReleaseAgeExclude=carbonless-review",
 		);
 		expect(manualCommand("0.3.0")).toBe(
 			"npm install -g carbonless-review@0.3.0",
@@ -214,8 +257,9 @@ describe("commands", () => {
 	});
 
 	it("never puts anything but a version on a command line", () => {
-		expect(() => installCommand("npm", "0.3.0 && rm -rf /", "linux")).toThrow();
-		expect(() => installCommand("npm", "latest", "linux")).toThrow();
+		expect(() => installCommand(NPM, "0.3.0 && rm -rf /")).toThrow();
+		expect(() => installCommand(NPM, "latest")).toThrow();
+		expect(() => installCommand(NPM, `1.0.0-${"a".repeat(80)}`)).toThrow();
 	});
 
 	it("restarts on the port it listens on, without rotating the key", () => {

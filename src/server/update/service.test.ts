@@ -19,7 +19,9 @@ function systemd(props: string, seen: string[][] = []) {
 
 describe("detectService", () => {
 	it("none: a crb started from a shell", async () => {
-		expect(await detectService({ env: {}, platform: "linux" })).toBeNull();
+		expect(
+			await detectService({ env: {}, platform: "linux", pid: 4242 }),
+		).toBeNull();
 	});
 
 	it("$CRB_SERVICE: any manager that restarts it on exit (launchd, a Windows service wrapper)", async () => {
@@ -62,10 +64,11 @@ describe("detectService", () => {
 		).toBeNull();
 	});
 
-	it("systemd: not the main process (a shell in a unit started it), or no systemctl: none", async () => {
-		expect(
-			await detectService(systemd("MainPID=7\nRestart=always\n")),
-		).toBeNull();
+	it("systemd: not the main process (a wrapper, a shell the unit runs), or systemctl can't tell: the command only, never a helper systemd would kill", async () => {
+		const managed = { manager: "systemd (crb.service)", exitCode: null };
+		expect(await detectService(systemd("MainPID=7\nRestart=always\n"))).toEqual(
+			managed,
+		);
 		expect(
 			await detectService({
 				...systemd(""),
@@ -73,7 +76,10 @@ describe("detectService", () => {
 					throw new Error("no systemctl");
 				},
 			}),
-		).toBeNull();
+		).toEqual(managed);
+	});
+
+	it("systemd, but not in a service (a session scope): none", async () => {
 		expect(
 			await detectService({
 				...systemd("MainPID=42\nRestart=always\n"),
@@ -81,6 +87,24 @@ describe("detectService", () => {
 					"0::/user.slice/user-1000.slice/session-3.scope\n",
 			}),
 		).toBeNull();
+	});
+
+	it("PID 1 (a container's main process): the command only, unless CRB_SERVICE", async () => {
+		expect(await detectService({ env: {}, platform: "linux", pid: 1 })).toEqual(
+			{
+				manager: "PID 1",
+				exitCode: null,
+			},
+		);
+		expect(
+			(
+				await detectService({
+					env: { CRB_SERVICE: "1" },
+					platform: "linux",
+					pid: 1,
+				})
+			)?.exitCode,
+		).toBe(RESTART_EXIT);
 	});
 
 	it("a system unit and cgroup v1", async () => {

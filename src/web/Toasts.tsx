@@ -4,10 +4,12 @@ import { createPortal } from "react-dom";
 /**
  * Where toasts sit: fixed at the bottom of the window, left of the save
  * notices (SyncNotices sits right from md up), above the floating Files
- * button on a phone; several stack upwards instead of covering each other.
+ * button on a phone, and there above the save notices too (they share the
+ * spot below md: `--sync-notices` is how far up they reach); several
+ * stack upwards instead of covering each other.
  */
 export const TOAST_PLACE =
-	"pointer-events-none fixed inset-x-3 bottom-20 z-40 flex flex-col-reverse gap-2 sm:inset-x-auto sm:left-4 sm:w-96 md:bottom-4";
+	"pointer-events-none fixed inset-x-3 bottom-[max(5rem,var(--sync-notices,0px))] z-40 flex flex-col-reverse gap-2 sm:inset-x-auto sm:left-4 sm:w-96 md:bottom-4";
 
 const Stack = createContext<HTMLElement | null>(null);
 

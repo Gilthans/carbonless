@@ -4,6 +4,7 @@ import {
 	cpSync,
 	existsSync,
 	mkdirSync,
+	readdirSync,
 	readFileSync,
 	symlinkSync,
 	writeFileSync,
@@ -11,7 +12,7 @@ import {
 import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { Page } from "@playwright/test";
 import { expectNoPageOverflow } from "./files-ui";
 import {
@@ -85,8 +86,15 @@ function install(workdir: string, registry: string): Installed {
 	// Its dependencies: the checkout's.
 	symlinkSync(join(ROOT, "node_modules"), join(pkg, "node_modules"), "dir");
 	setVersion(pkg, CURRENT);
-	const bin = join(workdir, "fake-npm-bin");
+	// The prefix's bin: crb's shim (how a global npm install is told) and
+	// the prefix's own npm, which an update runs.
+	const bin = join(prefix, "bin");
 	mkdirSync(bin);
+	writeFileSync(
+		join(bin, "crb"),
+		`#!/bin/sh\nexec "${process.execPath}" "${join(pkg, "dist", "cli.js")}" "$@"\n`,
+	);
+	chmodSync(join(bin, "crb"), 0o755);
 	const npmLog = join(workdir, "npm.log");
 	const failFile = join(workdir, "npm-fail");
 	writeFileSync(
@@ -101,7 +109,7 @@ if (fs.existsSync(${JSON.stringify(failFile)})) {
 	console.error("npm error 404 Not Found - GET carbonless-review@${NEWER}");
 	process.exit(1);
 }
-const spec = args[2] ?? "";
+const spec = args.at(-1) ?? "";
 setVersion(${JSON.stringify(pkg)}, spec.slice(spec.lastIndexOf("@") + 1));
 console.log("changed 1 package in 1s");
 `,
@@ -116,8 +124,10 @@ console.log("changed 1 package in 1s");
 	]) {
 		delete env[k];
 	}
-	env.PATH = `${bin}${delimiter}${env.PATH ?? ""}`;
 	env.CRB_NPM_REGISTRY = registry;
+	// The helper's temp dirs here, for teardown to wait on.
+	env.TMPDIR = join(workdir, "tmp");
+	mkdirSync(env.TMPDIR);
 	return { pkg, cli: join(pkg, "dist", "cli.js"), npmLog, failFile, env };
 }
 
@@ -181,11 +191,26 @@ const it = test.extend<{
 		});
 		await page.goto("about:blank").catch(() => {});
 		for (const child of children) await stopChild(child).catch(() => {});
-		// One the helper started (after an update, or a failed one).
+		// A helper still at work (a test that failed mid-update) would start
+		// crb after teardown: wait for it to finish first.
+		const tmp = join(workdir, "tmp");
+		const until = Date.now() + 60_000;
+		while (
+			readdirSync(tmp).some((d) => d.startsWith("crb-update-")) &&
+			Date.now() < until
+		) {
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		// The crb a helper started (after an update, or a failed one).
 		const pid = serverPid(workdir);
 		if (pid !== null) {
 			try {
 				process.kill(pid, "SIGTERM");
+				const gone = Date.now() + 10_000;
+				while (Date.now() < gone) {
+					process.kill(pid, 0);
+					await new Promise((r) => setTimeout(r, 100));
+				}
 			} catch {
 				// Gone.
 			}
@@ -258,22 +283,46 @@ it("an update on offer: on Home and on a review, linking to the release; dismiss
 	await expect(toast(page)).toHaveAttribute("data-state", "available");
 	await expectNoPageOverflow(page);
 	await shot(page, "update-review", isMobile);
+	if (isMobile) {
+		// Below md the save notices share the toasts' spot: the toasts sit
+		// above as far as the notices reach (--sync-notices).
+		await page.evaluate(() =>
+			document.documentElement.style.setProperty("--sync-notices", "300px"),
+		);
+		await expect
+			.poll(async () => {
+				const box = await toast(page).boundingBox();
+				return box ? 740 - (box.y + box.height) : 0;
+			})
+			.toBeGreaterThanOrEqual(300);
+		await page.evaluate(() =>
+			document.documentElement.style.removeProperty("--sync-notices"),
+		);
+	}
 	await toast(page).getByRole("button", { name: "Dismiss" }).click();
 	await expect(toast(page)).toHaveCount(0);
 	await page.goto(reviewPage(review, "files"));
+	await page.goto("about:blank");
+	// Home asks again; once answered (the offer still there), still dismissed.
+	const answered = page.waitForResponse(
+		(r) => new URL(r.url()).pathname === "/api/update",
+	);
 	await page.goto(`${url}/`);
-	// Home asked again (its toast would be there by now): still dismissed.
-	await expect
-		.poll(() =>
-			page.evaluate(() => localStorage.getItem("crb:update-dismissed")),
-		)
-		.toBe(NEWER);
-	await expect(toast(page)).toHaveCount(0);
+	expect(
+		((await (await answered).json()) as { available: string }).available,
+	).toBe(NEWER);
+	// Rendered with that answer (a commit comes within two frames).
+	await page.evaluate(
+		() =>
+			new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+	);
+	expect(await toast(page).count()).toBe(0);
 	expect(existsSync(installed.npmLog)).toBe(false);
 });
 
 it("Update installs exactly that version with npm, restarts crb on its port, and the page reloads on the new version", async ({
 	page,
+	workdir,
 	pr,
 	installed,
 	isMobile,
@@ -312,10 +361,20 @@ it("Update installs exactly that version with npm, restarts crb on its port, and
 	};
 	expect(version.version).toBe(NEWER);
 	expect(readFileSync(installed.npmLog, "utf8").trim().split("\n")).toEqual([
-		JSON.stringify(["install", "-g", `carbonless-review@${NEWER}`]),
+		JSON.stringify([
+			"install",
+			"-g",
+			"--prefix",
+			join(workdir, "npm-prefix"),
+			`carbonless-review@${NEWER}`,
+		]),
 	]);
-	await expect(page.getByTestId("toast-stack")).toBeAttached();
-	await expect(toast(page)).toHaveCount(0);
+	// Rendered with that answer (a commit comes within two frames).
+	await page.evaluate(
+		() =>
+			new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+	);
+	expect(await toast(page).count()).toBe(0);
 });
 
 it("a failed install: a distinct error with npm's output and the command; the old crb is back", async ({
@@ -353,7 +412,7 @@ it("a failed install: a distinct error with npm's output and the command; the ol
 	expect(version.version).toBe(CURRENT);
 });
 
-it("unsaved work: Update asks first, and the reload doesn't ask again", async ({
+it("unsaved work: Update asks first; crb back, Reload, and leaving asks as always", async ({
 	page,
 	pr,
 	installed,
@@ -405,11 +464,19 @@ it("unsaved work: Update asks first, and the reload doesn't ask again", async ({
 			{ timeout: 90_000 },
 		)
 		.toBe(NEWER);
-	// The page reloads (the message is gone with it) without a second ask.
+	// Not reloaded by itself: what is unsaved now (also what was typed
+	// while crb was down) is the reviewer's to give up.
+	await expect(toast(page)).toHaveAttribute("data-state", "back", {
+		timeout: 20_000,
+	});
+	await expect(card.getByRole("textbox", { name: "Message" })).toHaveValue(
+		"Half a thought",
+	);
+	await toast(page).getByRole("button", { name: "Reload" }).click();
 	await expect(card.getByRole("textbox", { name: "Message" })).toHaveCount(0, {
 		timeout: 20_000,
 	});
-	expect(asked).toEqual(["confirm", "confirm"]);
+	expect(asked).toEqual(["confirm", "confirm", "beforeunload"]);
 });
 
 it("an rc install under a service manager: stays on rc past a release; installs while serving, exits 75, the manager starts the new one", async ({
@@ -446,7 +513,13 @@ it("an rc install under a service manager: stays on rc past a release; installs 
 	// Installed while it still served, then exited for the manager.
 	expect(await exited).toBe(75);
 	expect(readFileSync(installed.npmLog, "utf8").trim().split("\n")).toEqual([
-		JSON.stringify(["install", "-g", `carbonless-review@${NEWER}`]),
+		JSON.stringify([
+			"install",
+			"-g",
+			"--prefix",
+			join(workdir, "npm-prefix"),
+			`carbonless-review@${NEWER}`,
+		]),
 	]);
 	// No helper started one: the manager does, on its port.
 	expect(serverPid(workdir)).toBeNull();

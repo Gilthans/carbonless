@@ -10,8 +10,8 @@ afterEach(async () => {
 	for (const a of apps.splice(0)) await a.close();
 });
 
-async function app(updater?: Updater) {
-	const a = await buildApp(new SessionRegistry(), { accessKey: null, updater });
+async function app(updater?: Updater, accessKey: string | null = null) {
+	const a = await buildApp(new SessionRegistry(), { accessKey, updater });
 	apps.push(a);
 	// The loopback Host check needs the real listening port.
 	await a.listen({ port: 0, host: "127.0.0.1" });
@@ -50,7 +50,14 @@ describe("/api/update", () => {
 		const updater = new Updater({
 			build: { version: "0.2.0", commit: "a".repeat(40) },
 			enabled: true,
-			install: { pm: "npm", launcher: { command: "node", args: ["cli.js"] } },
+			install: {
+				pm: "npm",
+				root: "/p/lib/node_modules/carbonless-review",
+				home: "/p",
+				writable: true,
+				packages: [],
+				scan: [],
+			},
 			check: async () => "0.3.0",
 			service: async () => null,
 			exit: (c) => exits.push(c),
@@ -87,5 +94,42 @@ describe("/api/update", () => {
 		expect(ok.statusCode).toBe(202);
 		expect(ok.json()).toMatchObject({ state: "restarting" });
 		updater.stop();
+	});
+
+	it("Update is refused from another site, and without the key", async () => {
+		let asked = 0;
+		const updater = {
+			info: () => {
+				throw new Error("not asked");
+			},
+			update: async () => {
+				asked++;
+				throw new Error("not asked");
+			},
+		} as unknown as Updater;
+		const a = await app(updater);
+		const cross = await a.inject({
+			method: "POST",
+			url: "/api/update",
+			headers: { host, origin: "https://evil.example" },
+			payload: { version: "0.3.0" },
+		});
+		expect(cross.statusCode).toBe(403);
+		const site = await a.inject({
+			method: "POST",
+			url: "/api/update",
+			headers: { host, "sec-fetch-site": "cross-site" },
+			payload: { version: "0.3.0" },
+		});
+		expect(site.statusCode).toBe(403);
+		const keyed = await app(updater, "k3y");
+		const nokey = await keyed.inject({
+			method: "POST",
+			url: "/api/update",
+			headers: { host },
+			payload: { version: "0.3.0" },
+		});
+		expect(nokey.statusCode, nokey.body).toBe(401);
+		expect(asked).toBe(0);
 	});
 });

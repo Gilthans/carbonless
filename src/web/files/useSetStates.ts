@@ -138,7 +138,6 @@ export function useUnsavedGuard() {
 	useEffect(() => {
 		if (!unsaved) return;
 		const ask = (event: BeforeUnloadEvent) => {
-			if (leaveAllowed) return;
 			event.preventDefault();
 			// Older browsers ask only when returnValue is set.
 			event.returnValue = "";
@@ -146,14 +145,6 @@ export function useUnsavedGuard() {
 		window.addEventListener("beforeunload", ask);
 		return () => window.removeEventListener("beforeunload", ask);
 	}, [unsaved]);
-}
-
-/** Set once the reviewer agreed to leave (an update's restart): no second ask. */
-let leaveAllowed = false;
-
-/** The reviewer already agreed to lose what is unsaved: the reload doesn't ask again. */
-export function allowLeave(): void {
-	leaveAllowed = true;
 }
 
 /**

@@ -15,10 +15,11 @@ import { UpdateRefusedError, Updater, type UpdaterOptions } from "./updater";
 const BUILD = { version: "0.2.0", commit: "a".repeat(40) };
 const NPM: Install = {
 	pm: "npm",
-	launcher: {
-		command: "/usr/bin/node",
-		args: ["/usr/lib/node_modules/carbonless-review/dist/cli.js"],
-	},
+	root: "/home/me/.npm-global/lib/node_modules/carbonless-review",
+	home: "/home/me/.npm-global",
+	writable: true,
+	packages: ["/home/me/.npm-global/lib/node_modules/carbonless-review"],
+	scan: [],
 };
 
 let dir: string;
@@ -70,6 +71,10 @@ function updater(over: Partial<UpdaterOptions> = {}) {
 		channelFile: join(dir, "channel"),
 		logFile: join(dir, "update.log"),
 		platform: "linux",
+		execPath: "/usr/bin/node",
+		execArgv: ["--max-old-space-size=4096"],
+		exists: () => false,
+		serveLog: join(dir, "serve.log"),
 		graceMs: 10,
 		...over,
 	});
@@ -210,21 +215,25 @@ describe("Updater", () => {
 				version: "0.3.0",
 				install: {
 					command: "npm",
-					args: ["install", "-g", "carbonless-review@0.3.0"],
-					shell: false,
+					args: [
+						"install",
+						"-g",
+						"--prefix",
+						"/home/me/.npm-global",
+						"carbonless-review@0.3.0",
+					],
 				},
 				display: "npm install -g carbonless-review@0.3.0",
 				relaunch: {
-					command: "/usr/bin/node",
-					args: [
-						"/usr/lib/node_modules/carbonless-review/dist/cli.js",
-						"serve",
-						"--port",
-						"5123",
-					],
-					shell: false,
+					execPath: "/usr/bin/node",
+					execArgv: ["--max-old-space-size=4096"],
+					args: ["serve", "--port", "5123"],
+					cli: "/home/me/.npm-global/lib/node_modules/carbonless-review/dist/cli.js",
+					packages: ["/home/me/.npm-global/lib/node_modules/carbonless-review"],
+					scan: [],
 					cwd: "/somewhere",
 					env: { PATH: "/bin", GH_TOKEN: "t" },
+					log: join(dir, "serve.log"),
 				},
 				log: join(dir, "update.log"),
 				result: join(dir, "result.json"),
@@ -237,28 +246,68 @@ describe("Updater", () => {
 		u.stop();
 	});
 
-	it("on Windows: npm.cmd and a .cmd shim go through the shell", async () => {
+	it("pnpm on Windows: its pnpm.cmd; the relaunch is node on the new cli.js, found in pnpm's global dir", async () => {
+		const home = "C:\\Users\\Jane Doe\\AppData\\Local\\pnpm";
 		const { u, helpers } = updater({
 			platform: "win32",
+			execPath: "C:\\node\\node.exe",
+			exists: (f) => f === `${home}\\pnpm.cmd`,
+			env: { Path: "C:\\bin" },
 			install: {
 				pm: "pnpm",
-				launcher: { command: "C:\\pnpm\\crb.cmd", args: [] },
+				root: `${home}\\global\\5\\node_modules\\.pnpm\\x\\node_modules\\carbonless-review`,
+				home,
+				writable: true,
+				packages: [`${home}\\global\\5\\node_modules\\carbonless-review`],
+				scan: [`${home}\\global\\5`],
 			},
 		});
 		await u.start();
 		await settle(u);
 		await u.update("0.3.0");
-		expect(helpers[0]?.install).toMatchObject({
-			command: "pnpm.cmd",
-			shell: true,
+		expect(helpers[0]?.install).toEqual({
+			command: `${home}\\pnpm.cmd`,
+			args: [
+				"add",
+				"-g",
+				"carbonless-review@0.3.0",
+				"--config.minimumReleaseAgeExclude=carbonless-review",
+			],
+			env: { PNPM_HOME: home, Path: `${home};C:\\bin` },
 		});
 		expect(helpers[0]?.relaunch).toMatchObject({
-			command: "C:\\pnpm\\crb.cmd",
-			shell: true,
+			execPath: "C:\\node\\node.exe",
+			scan: [`${home}\\global\\5`],
 		});
 		expect(helpers[0]?.display).toBe(
 			"pnpm add -g carbonless-review@0.3.0 --config.minimumReleaseAgeExclude=carbonless-review",
 		);
+		u.stop();
+	});
+
+	it("an install crb can't write (a system prefix): the command, no one-click", async () => {
+		const { u } = updater({ install: { ...NPM, writable: false } });
+		await u.start();
+		await settle(u);
+		expect(u.info()).toMatchObject({
+			oneClick: false,
+			command: "npm install -g carbonless-review@0.3.0",
+		});
+		await expect(u.update("0.3.0")).rejects.toBeInstanceOf(UpdateRefusedError);
+		u.stop();
+	});
+
+	it("after a failed update, Update again is allowed", async () => {
+		const { u, helpers } = updater({
+			service: async () => ({ manager: "pm2", exitCode: 75 }),
+			run: async () => ({ code: 1, output: "E404" }),
+		});
+		await u.start();
+		await settle(u);
+		await u.update("0.3.0");
+		await vi.waitFor(() => expect(u.info().failed).not.toBeNull());
+		expect((await u.update("0.3.0")).state).toBe("installing");
+		expect(helpers).toEqual([]);
 		u.stop();
 	});
 
@@ -279,10 +328,12 @@ describe("Updater", () => {
 	it("under a service manager: installs while serving, then exits for the manager to restart it", async () => {
 		let finish: (r: { code: number; output: string }) => void = () => {};
 		const ran: string[][] = [];
+		const timeouts: (number | undefined)[] = [];
 		const { u, exits, helpers } = updater({
 			service: async () => ({ manager: "systemd (crb.service)", exitCode: 75 }),
-			run: (c) => {
+			run: (c, _log, opts) => {
 				ran.push([c.command, ...c.args]);
+				timeouts.push(opts?.timeoutMs);
 				return new Promise((r) => {
 					finish = r;
 				});
@@ -291,8 +342,19 @@ describe("Updater", () => {
 		await u.start();
 		await settle(u);
 		expect((await u.update("0.3.0")).state).toBe("installing");
-		expect(ran).toEqual([["npm", "install", "-g", "carbonless-review@0.3.0"]]);
+		expect(ran).toEqual([
+			[
+				"npm",
+				"install",
+				"-g",
+				"--prefix",
+				"/home/me/.npm-global",
+				"carbonless-review@0.3.0",
+			],
+		]);
 		expect(u.info().state).toBe("installing");
+		// A hung install doesn't keep it installing for ever.
+		expect(timeouts).toEqual([600_000]);
 		finish({ code: 0, output: "added 1 package" });
 		await vi.waitFor(() => expect(exits).toEqual([75]));
 		expect(u.info().state).toBe("restarting");

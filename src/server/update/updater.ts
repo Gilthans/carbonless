@@ -50,6 +50,9 @@ export const CHECK_EVERY_MS = 6 * 60 * 60_000;
  */
 export const RESTART_GRACE_MS = 6_000;
 
+/** How long a service's install may run before it counts as failed. */
+export const INSTALL_TIMEOUT_MS = 10 * 60_000;
+
 /** How long the helper waits for crb to exit before giving up. */
 const HELPER_WAIT_MS = 60_000;
 
@@ -92,6 +95,14 @@ export interface UpdaterOptions {
 	run?: typeof runCommand;
 	/** Runs the helper (default: node on a copy of it, detached). */
 	startHelper?: (config: HelperConfig) => Promise<void>;
+	/** INSTALL_TIMEOUT_MS, shorter in tests. */
+	installTimeoutMs?: number;
+	/** The node, its flags and file checks the commands are built with (tests). */
+	execPath?: string;
+	execArgv?: readonly string[];
+	exists?: (file: string) => boolean;
+	/** Where the restarted crb logs (serve.log in the state dir). */
+	serveLog?: string;
 	/** RESTART_GRACE_MS, shorter in tests. */
 	graceMs?: number;
 	/** Where the helper's result is left for the next crb. */
@@ -222,12 +233,13 @@ export class Updater {
 
 	#oneClick(): boolean {
 		if (!this.#o.install) return false;
+		if (!this.#o.install.writable) return false;
 		return !this.#service || this.#service.exitCode !== null;
 	}
 
 	#command(version: string): string {
 		return this.#o.install
-			? showCommand(installCommand(this.#o.install.pm, version, "linux"))
+			? showCommand(this.#o.install.pm, version)
 			: manualCommand(version);
 	}
 
@@ -263,8 +275,12 @@ export class Updater {
 			throw new UpdateRefusedError(`Update by hand: ${this.#command(version)}`);
 		}
 		const platform = this.#o.platform ?? process.platform;
-		const cmd = installCommand(install.pm, version, platform);
-		const shell = platform === "win32";
+		const cmd = installCommand(install, version, {
+			platform,
+			...(this.#o.execPath ? { execPath: this.#o.execPath } : {}),
+			...(this.#o.exists ? { exists: this.#o.exists } : {}),
+			env: this.#o.env ?? process.env,
+		});
 		const display = this.#command(version);
 		if (this.#service) {
 			const exitCode = this.#service.exitCode as number;
@@ -275,10 +291,10 @@ export class Updater {
 				log(
 					`[${new Date().toISOString()}] update to ${version} under ${this.#service?.manager}: ${display}\n`,
 				);
-				const { code, output } = await (this.#o.run ?? runCommand)(
-					{ ...cmd, shell },
-					log,
-				);
+				const { code, output } = await (this.#o.run ?? runCommand)(cmd, log, {
+					timeoutMs: this.#o.installTimeoutMs ?? INSTALL_TIMEOUT_MS,
+					platform,
+				});
 				if (code === 0) {
 					this.#state = "restarting";
 					this.#exitSoon(exitCode);
@@ -289,22 +305,25 @@ export class Updater {
 			})();
 			return this.info();
 		}
-		const launcher = install.launcher;
 		const config: HelperConfig = {
 			pid: process.pid,
 			waitMs: HELPER_WAIT_MS,
 			version,
-			install: { ...cmd, shell },
+			install: cmd,
 			display,
 			relaunch: {
-				command: launcher.command,
-				args: [
-					...launcher.args,
-					...restartArgs(this.#o.argv ?? process.argv.slice(2), this.#o.port()),
-				],
-				shell: shell && /\.cmd$/i.test(launcher.command),
+				execPath: this.#o.execPath ?? process.execPath,
+				execArgv: [...(this.#o.execArgv ?? process.execArgv)],
+				args: restartArgs(
+					this.#o.argv ?? process.argv.slice(2),
+					this.#o.port(),
+				),
+				cli: join(install.root, "dist", "cli.js"),
+				packages: install.packages,
+				scan: install.scan,
 				cwd: this.#o.cwd ?? process.cwd(),
 				env: this.#o.env ?? process.env,
+				log: this.#o.serveLog ?? join(stateDir(), "serve.log"),
 			},
 			log: this.#logFile,
 			result: this.#resultFile,
@@ -332,7 +351,7 @@ export class Updater {
 
 	#log(text: string): void {
 		void mkdir(cacheDir(), { recursive: true })
-			.then(() => writeFile(this.#logFile, text, { flag: "a" }))
+			.then(() => writeFile(this.#logFile, text, { flag: "a", mode: 0o600 }))
 			.catch(() => {});
 	}
 }
@@ -354,29 +373,41 @@ const helperSource = (): string => {
  * being replaced), writes its config there (it holds crb's environment:
  * 0600, removed once read) and starts it with node, detached.
  */
-export async function startHelper(config: HelperConfig): Promise<void> {
-	const dir = await mkdtemp(join(tmpdir(), HELPER_DIR_PREFIX));
-	const source = helperSource();
-	const script = join(
-		dir,
-		source.endsWith(".ts") ? "update-helper.mts" : "update-helper.mjs",
-	);
-	await copyFile(source, script);
-	const configFile = join(dir, "config.json");
-	await writeFile(configFile, JSON.stringify(config), { mode: 0o600 });
-	await new Promise<void>((done, fail) => {
-		const child = spawn(process.execPath, [script, configFile], {
-			detached: true,
-			stdio: "ignore",
-			windowsHide: true,
-			cwd: dir,
+export async function startHelper(
+	config: HelperConfig,
+	opts: { source?: string; tmp?: string } = {},
+): Promise<void> {
+	const tmp = opts.tmp ?? tmpdir();
+	const dir = await mkdtemp(join(tmp, HELPER_DIR_PREFIX));
+	try {
+		const source = opts.source ?? helperSource();
+		const script = join(
+			dir,
+			source.endsWith(".ts") ? "update-helper.mts" : "update-helper.mjs",
+		);
+		await copyFile(source, script);
+		const configFile = join(dir, "config.json");
+		await writeFile(configFile, JSON.stringify(config), { mode: 0o600 });
+		await new Promise<void>((done, fail) => {
+			const child = spawn(process.execPath, [script, "--run", configFile], {
+				detached: true,
+				stdio: "ignore",
+				windowsHide: true,
+				// Not its own dir, which it removes (Windows can't remove a
+				// process's current directory).
+				cwd: tmp,
+			});
+			child.once("spawn", () => {
+				child.unref();
+				done();
+			});
+			child.once("error", fail);
 		});
-		child.once("spawn", () => {
-			child.unref();
-			done();
-		});
-		child.once("error", fail);
-	});
+	} catch (error) {
+		// Nothing left behind, the config (crb's environment) least of all.
+		await rm(dir, { recursive: true, force: true }).catch(() => {});
+		throw error;
+	}
 }
 
 /**

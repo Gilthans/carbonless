@@ -38,9 +38,13 @@ const systemctl = (args: string[]) =>
  *   in a launchd job, a Windows service wrapper such as NSSM or WinSW, a
  *   container's restart policy);
  * - pm2 (`$pm_id`);
- * - systemd (`$INVOCATION_ID`), when crb is its unit's main process
- *   (`systemctl show`'s MainPID; a crb started from a shell that a unit
- *   runs is not), with its `Restart=` deciding the exit code.
+ * - systemd (`$INVOCATION_ID`, in a `.service` cgroup): when crb is its
+ *   unit's main process (`systemctl show`'s MainPID), its `Restart=`
+ *   decides the exit code; when it isn't (a wrapper script, a shell the
+ *   unit runs), or systemctl can't tell, the command only: systemd kills
+ *   whatever is left in the unit when its main process ends, a helper too;
+ * - PID 1 (a container's main process): the command only, since the
+ *   container ends with it, unless `$CRB_SERVICE` says something restarts it.
  */
 export async function detectService(
 	deps: ServiceDeps = {},
@@ -51,6 +55,9 @@ export async function detectService(
 		return { manager: "service", exitCode: RESTART_EXIT };
 	if (env.pm_id !== undefined)
 		return { manager: "pm2", exitCode: RESTART_EXIT };
+	if ((deps.pid ?? process.pid) === 1) {
+		return { manager: "PID 1", exitCode: null };
+	}
 	if (!env.INVOCATION_ID || (deps.platform ?? process.platform) !== "linux") {
 		return null;
 	}
@@ -66,19 +73,21 @@ export async function detectService(
 		const unit = segments.at(-1);
 		if (!unit?.endsWith(".service")) return null;
 		const user = segments.some((s) => /^user@\d+\.service$/.test(s));
+		const managed: Service = { manager: `systemd (${unit})`, exitCode: null };
 		const out = await (deps.systemctl ?? systemctl)([
 			...(user ? ["--user"] : []),
 			"show",
 			unit,
 			"--property=MainPID,Restart",
-		]);
+		]).catch(() => null);
+		if (out === null) return managed;
 		const props = Object.fromEntries(
 			out
 				.trim()
 				.split("\n")
 				.map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
 		);
-		if (Number(props.MainPID) !== (deps.pid ?? process.pid)) return null;
+		if (Number(props.MainPID) !== (deps.pid ?? process.pid)) return managed;
 		const restart = props.Restart ?? "no";
 		const exitCode =
 			restart === "always" || restart === "on-failure"

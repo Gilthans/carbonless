@@ -89,6 +89,23 @@ describe("newerOnRegistry", () => {
 		).toBe(null);
 	});
 
+	it("an oversized answer or version: nothing", async () => {
+		expect(
+			(
+				await check("0.1.0", {
+					tags: { latest: `1.0.0-${"a".repeat(80)}`, pad: "x" },
+				})
+			).newer,
+		).toBe(null);
+		expect(
+			(
+				await check("0.1.0", {
+					tags: { latest: "0.2.0", pad: "x".repeat(70_000) },
+				})
+			).newer,
+		).toBe(null);
+	});
+
 	it("404 (not published yet) or a server error: silent", async () => {
 		expect((await check("0.1.0", { status: 404 })).newer).toBe(null);
 		expect((await check("0.1.0", { status: 500 })).newer).toBe(null);

@@ -1,14 +1,15 @@
 import {
 	AlertIcon,
+	CheckCircleIcon,
 	CopyIcon,
 	DownloadIcon,
 	XIcon,
 } from "@primer/octicons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { UpdateInfo } from "../shared/update";
 import { ApiError, fetchJson } from "./api";
-import { allowLeave, useUnsaved } from "./files/useSetStates";
+import { useUnsaved } from "./files/useSetStates";
 import { SpinnerIcon } from "./Spinner";
 import { ToastSlot } from "./Toasts";
 import { Tooltip } from "./Tooltip";
@@ -52,10 +53,14 @@ function writeDismissed(version: string): void {
 type Phase =
 	| { kind: "idle" }
 	| { kind: "updating"; version: string; since: number }
+	/** crb is back on `version`, but this page has unsaved work: Reload asks. */
+	| { kind: "back"; version: string }
 	| { kind: "failed"; version: string; tail: string; command: string };
 
 const CARD =
 	"pointer-events-auto flex w-full flex-col rounded-lg border border-edge bg-overlay py-1 pr-1 pl-3 text-sm text-ink shadow-float";
+const TEXT_BUTTON =
+	"flex h-10 shrink-0 items-center rounded-md px-3 text-sm font-semibold text-ink hover:bg-pressed focus-visible:outline-2 focus-visible:outline-accent";
 const ICON_BUTTON =
 	"flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-faint hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent";
 
@@ -118,7 +123,18 @@ export function UpdateToast() {
 	const client = useQueryClient();
 	const [phase, setPhase] = useState<Phase>({ kind: "idle" });
 	const [dismissed, setDismissed] = useState<string | null>(readDismissed);
+	const [failureDismissed, setFailureDismissed] = useState<string | null>(null);
 	const unsaved = useUnsaved();
+	const unsavedNow = useRef(unsaved);
+	unsavedNow.current = unsaved;
+	// crb runs `version` now: this page's code is the old one. Reloads at
+	// once with nothing unsaved; else offers Reload, and leaving asks as
+	// always (an ask the reviewer answered at Update covered only what was
+	// unsaved then, and another tab's Update asked nothing here).
+	const back = useCallback((version: string) => {
+		if (unsavedNow.current) setPhase({ kind: "back", version });
+		else window.location.reload();
+	}, []);
 	const info = useQuery({
 		queryKey: UPDATE_KEY,
 		queryFn: fetchUpdate,
@@ -151,11 +167,12 @@ export function UpdateToast() {
 	useEffect(() => {
 		if (!data) return;
 		if (offered.current !== null && data.current === offered.current) {
-			window.location.reload();
+			offered.current = null;
+			back(data.current);
 			return;
 		}
 		if (data.available) offered.current = data.available;
-	}, [data]);
+	}, [data, back]);
 
 	// Updating: wait for crb to answer with the new version, then reload.
 	const target = phase.kind === "updating" ? phase.version : null;
@@ -173,8 +190,7 @@ export function UpdateToast() {
 				});
 				if (stopped) return;
 				if (v.version === target) {
-					allowLeave();
-					window.location.reload();
+					back(target);
 					return;
 				}
 				// The old crb answers: still stopping, or back after a failure.
@@ -209,11 +225,16 @@ export function UpdateToast() {
 			stopped = true;
 			window.clearTimeout(timer);
 		};
-	}, [target, since, client]);
+	}, [target, since, client, back]);
 
 	const dismiss = (version: string) => {
 		writeDismissed(version);
 		setDismissed(version);
+		setPhase({ kind: "idle" });
+	};
+	// A failure's dismiss leaves the offer (and its Update) in place.
+	const dismissFailure = (version: string) => {
+		setFailureDismissed(version);
 		setPhase({ kind: "idle" });
 	};
 
@@ -226,7 +247,6 @@ export function UpdateToast() {
 		) {
 			return;
 		}
-		if (unsaved) allowLeave();
 		setPhase({ kind: "updating", version, since: Date.now() });
 		try {
 			const answer = await fetchJson<UpdateInfo>("/api/update", {
@@ -268,10 +288,46 @@ export function UpdateToast() {
 		);
 	}
 
+	if (phase.kind === "back") {
+		return (
+			<ToastSlot>
+				<div
+					role="status"
+					data-testid="update-toast"
+					data-state="back"
+					className={`${CARD} min-h-12 justify-center`}
+				>
+					<div className="flex items-center gap-2">
+						<CheckCircleIcon
+							size={16}
+							aria-hidden
+							className="shrink-0 text-ok"
+						/>
+						<span className="min-w-0 flex-1 truncate">
+							Updated to <b className="font-semibold">v{phase.version}</b>
+						</span>
+						<Tooltip content="Load the new version" describe={false}>
+							{(trigger) => (
+								<button
+									type="button"
+									{...trigger}
+									onClick={() => window.location.reload()}
+									className={TEXT_BUTTON}
+								>
+									Reload
+								</button>
+							)}
+						</Tooltip>
+					</div>
+				</div>
+			</ToastSlot>
+		);
+	}
+
 	const failure =
 		phase.kind === "failed"
 			? phase
-			: data?.failed && data.failed.version !== dismissed
+			: data?.failed && data.failed.version !== failureDismissed
 				? data.failed
 				: null;
 	if (failure) {
@@ -288,9 +344,23 @@ export function UpdateToast() {
 						<span className="min-w-0 flex-1 truncate font-semibold">
 							Update to v{failure.version} failed
 						</span>
+						{data?.oneClick && data.available === failure.version && (
+							<Tooltip content="Try again" describe={false}>
+								{(trigger) => (
+									<button
+										type="button"
+										{...trigger}
+										onClick={() => void update(failure.version)}
+										className={TEXT_BUTTON}
+									>
+										Retry
+									</button>
+								)}
+							</Tooltip>
+						)}
 						<IconButton
 							label="Dismiss"
-							onClick={() => dismiss(failure.version)}
+							onClick={() => dismissFailure(failure.version)}
 						>
 							<XIcon size={16} aria-hidden />
 						</IconButton>
