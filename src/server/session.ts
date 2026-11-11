@@ -381,6 +381,7 @@ export class Session {
 		read: OverviewRead;
 		threads: ReviewThread[];
 	}> {
+		if (this.#closed) throw new SessionClosedError("The session is closed");
 		const read = this.#pickRead(Number.POSITIVE_INFINITY);
 		return { read, threads: (await read.threads("summary")).threads };
 	}
