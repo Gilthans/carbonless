@@ -518,11 +518,13 @@ describe("wordMarks", () => {
 	};
 
 	/**
-	 * The budget tests' wall-clock timeout: they gate CPU time, and a few
-	 * seconds of rounds on a loaded machine (load 40 on 4 cores) can take
-	 * many times that in wall time.
+	 * The budget tests' wall-clock timeout: they gate CPU time, not wall
+	 * time. The unrelated test spends about 2 s of CPU (six rounds of
+	 * wordMarks and the yardstick, the warm-up included), and a loaded
+	 * machine (load 40 on 4 cores) stretches CPU time about 10x in wall
+	 * time: 20 s, so 60 s leaves room.
 	 */
-	const LOADED = 30_000;
+	const LOADED = 60_000;
 
 	type Pairs = readonly (readonly [string, string])[];
 
@@ -539,10 +541,11 @@ describe("wordMarks", () => {
 	 * The yardstick: diff-match-patch's own character diff of the similar
 	 * pairs. Its cost moves with the machine (runner speed, load, a busy
 	 * sibling core) the same way wordMarks' does, so the ratio of the two
-	 * holds much stiller than the absolute time: 0.58–0.61 (similar) and
-	 * 1.54–1.58 (unrelated) on a dev machine both idle and with a busy loop
-	 * per core, 0.68–0.86 and 1.80–1.84 on CI (another CPU), while CI's
-	 * absolute time for the similar pairs ranged 36–100 ms (CAR-115).
+	 * holds much stiller than the absolute time: 0.58–0.64 (similar) and
+	 * 1.51–1.58 (unrelated) on a dev machine both idle and with a busy loop
+	 * per core, 0.64–0.86 and 1.63–1.84 in three CI runs (another CPU),
+	 * while CI's absolute time for the similar pairs ranged 36–100 ms
+	 * (CAR-115).
 	 */
 	const reference = new DiffMatchPatch();
 	reference.Diff_Timeout = 0;
@@ -578,15 +581,17 @@ describe("wordMarks", () => {
 		return { best, ratio: best / ref };
 	};
 
-	// The ratio budgets are about twice CI's highest ratio. Diffing
-	// characters instead of tokens (1.6 and 7.6 on the dev machine) fails
-	// the unrelated test, the one that's sensitive; the similar one, whose
-	// ratio moves more with load (wordMarks allocates, the yardstick
-	// doesn't), catches a several-x slowdown. The absolute ceilings are
-	// only a backstop for the yardstick itself slowing down: three times
-	// CI's slowest best-of-three (100 and 241 ms).
+	// The ratio budgets are about twice CI's highest ratio, so a uniform
+	// slowdown fails the similar test from about 3.4x on a dev machine
+	// (2.1x on CI) and the unrelated one from about 2.6x (2x on CI); a 2x
+	// slowdown can pass both. Diffing characters instead of tokens (1.6x
+	// and 7.6x the yardstick on the dev machine) fails the unrelated test.
+	// The similar ratio moves more with load (wordMarks allocates more
+	// than the yardstick), hence its looser budget. The absolute ceilings
+	// are only a backstop for the yardstick itself slowing down: three
+	// times CI's slowest best-of-three (100 and 241 ms).
 	it(
-		"marks 2,000 pairs of similar 120-character lines in 1.8x the CPU of a character diff",
+		"marks 2,000 pairs of similar 120-character lines in 1.8x the CPU of their character diff",
 		() => {
 			const { best, ratio } = bestCpu(similarPairs());
 			console.info(
@@ -599,7 +604,7 @@ describe("wordMarks", () => {
 	);
 
 	it(
-		"marks 2,000 pairs of unrelated 120-character lines in 3.7x the CPU of a character diff",
+		"marks 2,000 pairs of unrelated 120-character lines in 3.7x the CPU of the similar pairs' character diff",
 		() => {
 			// A rewritten block: every pair two unrelated lines (GitHub marks them all).
 			const { line } = codeLines(11);
