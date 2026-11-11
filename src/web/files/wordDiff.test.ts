@@ -539,10 +539,10 @@ describe("wordMarks", () => {
 	 * The yardstick: diff-match-patch's own character diff of the similar
 	 * pairs. Its cost moves with the machine (runner speed, load, a busy
 	 * sibling core) the same way wordMarks' does, so the ratio of the two
-	 * holds still where the absolute time doesn't: 0.58–0.61 (similar) and
+	 * holds much stiller than the absolute time: 0.58–0.61 (similar) and
 	 * 1.54–1.58 (unrelated) on a dev machine both idle and with a busy loop
-	 * per core, 0.68 and 1.84 on CI (another CPU), while CI's absolute time
-	 * for the similar pairs ranged 36–100 ms (CAR-115).
+	 * per core, 0.68–0.86 and 1.80–1.84 on CI (another CPU), while CI's
+	 * absolute time for the similar pairs ranged 36–100 ms (CAR-115).
 	 */
 	const reference = new DiffMatchPatch();
 	reference.Diff_Timeout = 0;
@@ -578,19 +578,21 @@ describe("wordMarks", () => {
 		return { best, ratio: best / ref };
 	};
 
-	// The ratio budgets are about twice the higher (CI) ratio: a 2x slowdown
-	// fails, and so does diffing characters instead of tokens (1.6 and 7.6
-	// on the dev machine, whose plain ratios are lower). The
-	// absolute ceilings are only a backstop for the yardstick itself
-	// slowing down: three times CI's slowest best-of-three (100 and 241 ms).
+	// The ratio budgets are about twice CI's highest ratio. Diffing
+	// characters instead of tokens (1.6 and 7.6 on the dev machine) fails
+	// the unrelated test, the one that's sensitive; the similar one, whose
+	// ratio moves more with load (wordMarks allocates, the yardstick
+	// doesn't), catches a several-x slowdown. The absolute ceilings are
+	// only a backstop for the yardstick itself slowing down: three times
+	// CI's slowest best-of-three (100 and 241 ms).
 	it(
-		"marks 2,000 pairs of similar 120-character lines in 1.4x the CPU of a character diff",
+		"marks 2,000 pairs of similar 120-character lines in 1.8x the CPU of a character diff",
 		() => {
 			const { best, ratio } = bestCpu(similarPairs());
 			console.info(
 				`wordMarks: 2,000 similar pairs in ${best} µs CPU, ${ratio.toFixed(2)}x the yardstick`,
 			);
-			expect(ratio).toBeLessThan(1.4);
+			expect(ratio).toBeLessThan(1.8);
 			expect(best).toBeLessThan(300_000);
 		},
 		LOADED,
