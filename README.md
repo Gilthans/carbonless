@@ -125,7 +125,7 @@ Requires Node 24 (`nvm use`) and pnpm. From a checkout, `pnpm build` and run
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, unit tests and the pack
 smoke test on every PR and push to master, and Playwright on `v*` tags and on
-demand.
+demand (`gh workflow run ci.yml --ref <branch>`), in four parallel shards.
 
 Tests never call the real `gh`: `test/fake-gh/gh` answers from a scenario JSON
 (`$CRB_FAKE_GH`, optional call log in `$CRB_FAKE_GH_LOG`). The Playwright
