@@ -25,6 +25,7 @@ import {
 	type AgentStatus,
 	type AgentStop,
 	type AgentThread,
+	type AgentView,
 	MAX_AGENT_TEXT,
 } from "../../shared/agent";
 import { sessionQuery } from "../api";
@@ -51,7 +52,10 @@ import {
 	withThread,
 } from "./api";
 import { openAgentSetup } from "./setupStore";
-import { useSendView } from "./threadAgent";
+import { useSeenWriter, useSendView } from "./threadAgent";
+
+/** The longest request the origin chip shows. */
+const MAX_ORIGIN = 200;
 
 const plural = (n: number, one: string, many: string) =>
 	`${n} ${n === 1 ? one : many}`;
@@ -173,6 +177,7 @@ function HumanMessage(props: { message: AgentMessage; viewer: string }) {
 				<Avatar login={props.viewer} url="" />
 				<span className="font-semibold text-ink-soft">{props.viewer}</span>
 				<RelativeTime iso={props.message.at} />
+				{props.message.view && <ViewChip view={props.message.view} />}
 			</Who>
 			<p
 				data-testid="agent-message-human"
@@ -182,6 +187,62 @@ function HumanMessage(props: { message: AgentMessage; viewer: string }) {
 			</p>
 			{props.message.truncated && <TruncatedChip />}
 		</div>
+	);
+}
+
+/** The accent dot of a conversation with an answer the reviewer hasn't seen. */
+function UnreadDot(props: { unread: boolean }) {
+	if (!props.unread) return null;
+	return (
+		<span
+			role="img"
+			aria-label="Unread"
+			data-testid="agent-unread-dot"
+			className="h-2.5 w-2.5 shrink-0 rounded-full bg-accent"
+		/>
+	);
+}
+
+/** The comparison a question was asked in: "PS 3", or the commit's short id. */
+function ViewChip(props: { view: AgentView }) {
+	const { target } = props.view;
+	const label =
+		"patchset" in target ? `PS ${target.patchset}` : target.head.slice(0, 7);
+	const tip =
+		"patchset" in target
+			? `Asked viewing patch set ${target.patchset}`
+			: `Asked viewing commit ${target.head.slice(0, 7)}`;
+	return (
+		<Tooltip content={tip} describe={false}>
+			{(trigger) => (
+				<span
+					{...trigger}
+					data-testid="agent-view-chip"
+					// Focusable so keyboard and touch users get the tip.
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					className="inline-flex rounded-full focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					<Badge tone="gray">{label}</Badge>
+				</span>
+			)}
+		</Tooltip>
+	);
+}
+
+/** Over an agent-opened conversation's first message: the request behind it. */
+function OriginChip(props: { request: string }) {
+	const text =
+		props.request.length > MAX_ORIGIN
+			? `${props.request.slice(0, MAX_ORIGIN - 1)}…`
+			: props.request;
+	return (
+		<span
+			data-testid="agent-origin-chip"
+			className="inline-flex max-w-full self-start rounded-full border border-agent-edge bg-agent px-2 py-0.5 text-xs break-words text-agent-ink"
+		>
+			↳ {text}
+		</span>
 	);
 }
 
@@ -237,7 +298,7 @@ function AiMessage(props: { message: AgentMessage; name: string }) {
 				className={`${AGENT_SURFACE} text-sm`}
 			>
 				{message.text || !reason ? (
-					<AgentMarkdown text={message.text} />
+					<AgentMarkdown text={message.text} head={message.head} />
 				) : (
 					<p
 						data-testid="agent-message-error"
@@ -386,6 +447,10 @@ export function AgentThreadCard(props: {
 		([, w]) => w.thread === thread.id,
 	);
 	const closed = resolved && !expanded;
+	// Span threads too: an accent dot while an answer is unseen, and the
+	// same seen mark the thread panel writes, once it has been in view.
+	const card = useRef<HTMLElement>(null);
+	useSeenWriter(thread, !closed, card);
 	const first = thread.messages.find((m) => m.by === "human")?.text ?? "";
 	const toggle = (
 		<Tooltip content={closed ? "Show thread" : "Hide thread"} describe={false}>
@@ -414,6 +479,7 @@ export function AgentThreadCard(props: {
 		// resolved check, the question, and the way back in.
 		return (
 			<article
+				ref={card}
 				data-testid="agent-thread"
 				data-thread={thread.id}
 				data-closed="true"
@@ -427,6 +493,7 @@ export function AgentThreadCard(props: {
 						className="shrink-0 text-agent-ink"
 					/>
 					<span className="shrink-0 font-semibold text-ink-soft">{name}</span>
+					<UnreadDot unread={thread.unread} />
 					<LabeledIcon
 						icon={CheckCircleIcon}
 						label="Resolved"
@@ -449,6 +516,7 @@ export function AgentThreadCard(props: {
 	}
 	return (
 		<article
+			ref={card}
 			data-testid="agent-thread"
 			data-thread={thread.id}
 			aria-label={`Agent thread, ${state}`}
@@ -461,6 +529,7 @@ export function AgentThreadCard(props: {
 					className="shrink-0 text-agent-ink"
 				/>
 				<span className="font-semibold text-ink-soft">{name}</span>
+				<UnreadDot unread={thread.unread} />
 				{state === "resolved" && (
 					<LabeledIcon
 						icon={CheckCircleIcon}
@@ -569,8 +638,11 @@ export function AgentMessageItems(props: {
 		thread !== undefined && agentThreadState(thread, answering) === "waiting";
 	return (
 		<>
-			{thread?.messages.map((m) => (
+			{thread?.messages.map((m, i) => (
 				<Fragment key={m.id}>
+					{i === 0 && thread.origin && (
+						<OriginChip request={thread.origin.request} />
+					)}
 					{m.id === props.divider && <NewDivider />}
 					{m.by === "human" ? (
 						<HumanMessage message={m} viewer={viewer} />

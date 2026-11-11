@@ -87,3 +87,34 @@ describe("an agent bubble's count", () => {
 		expect(agent).toHaveTextContent(/^2$/);
 	});
 });
+
+describe("an agent bubble's unread dot", () => {
+	it("shows while a thread under it is unread, with the count in its name", () => {
+		const unread = { ...agentThread(false), id: "U", unread: true };
+		const { rerender } = render(
+			<AgentBubble
+				threads={[agentThread(false), unread]}
+				open={false}
+				onToggle={() => {}}
+				where="on line 3"
+			/>,
+		);
+		const bubble = screen.getByTestId("agent-bubble");
+		expect(bubble).toHaveAccessibleName("2 agent threads on line 3, 1 new");
+		expect(screen.getByTestId("agent-unread-dot").className).toContain(
+			"bg-accent",
+		);
+		rerender(
+			<AgentBubble
+				threads={[agentThread(false)]}
+				open={false}
+				onToggle={() => {}}
+				where="on line 3"
+			/>,
+		);
+		expect(screen.queryByTestId("agent-unread-dot")).toBeNull();
+		expect(screen.getByTestId("agent-bubble")).toHaveAccessibleName(
+			"1 agent thread on line 3",
+		);
+	});
+});

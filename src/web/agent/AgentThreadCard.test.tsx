@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+	act,
 	cleanup,
 	render,
 	screen,
@@ -13,11 +14,13 @@ import type {
 	AgentActivity,
 	AgentStatus,
 	AgentThread,
+	AgentView,
 } from "../../shared/agent";
 import { AgentThreadCard, activitySummary } from "./AgentThreadCard";
 import { resetAgentWrites } from "./agentWrites";
 import { agentThreadsQuery } from "./api";
 import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
+import { SEEN_AFTER_MS } from "./threadAgent";
 
 const status = (more: Partial<AgentStatus> = {}): AgentStatus => ({
 	state: "ready",
@@ -426,5 +429,99 @@ describe("activitySummary", () => {
 				{ kind: "execute", title: "f" },
 			]),
 		).toBe("read 1 file · ran 2 commands · edited 2 files · used 1 tool");
+	});
+
+	it("a span agent card shows the unread dot and writes seen when viewed", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const unread = answered({ unread: true, seenUpTo: "m1" });
+			show(unread, status());
+			expect(screen.getByTestId("agent-unread-dot").className).toContain(
+				"bg-accent",
+			);
+			await act(async () => {
+				vi.advanceTimersByTime(SEEN_AFTER_MS);
+			});
+			const seen = fetchMock.mock.calls.filter(([u]) =>
+				String(u).endsWith("/threads/T1/seen"),
+			);
+			expect(seen).toHaveLength(1);
+			expect(JSON.parse(String(seen[0]?.[1]?.body))).toEqual({ upTo: "m2" });
+			cleanup();
+			fetchMock.mockClear();
+			// Nothing unseen: no dot, no write.
+			show(answered(), status());
+			expect(screen.queryByTestId("agent-unread-dot")).toBeNull();
+			await act(async () => {
+				vi.advanceTimersByTime(SEEN_AFTER_MS * 3);
+			});
+			expect(
+				fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/seen")),
+			).toHaveLength(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("the view chip shows PS 3 on a human message; the origin chip shows over an ai-opened first message, cut to 200", () => {
+		const view = (target: AgentView["target"]): AgentView => ({
+			target,
+			from: { branch: true },
+			left: "l".repeat(40),
+			right: "r".repeat(40),
+		});
+		show(
+			thread({
+				messages: [
+					{
+						id: "m1",
+						by: "human",
+						at: "2026-11-07T10:00:00Z",
+						text: "Q1",
+						view: view({ patchset: 3 }),
+					},
+					{
+						id: "m2",
+						by: "human",
+						at: "2026-11-07T10:01:00Z",
+						text: "Q2",
+						view: view({ head: `abcdef1${"0".repeat(33)}` }),
+					},
+				],
+			}),
+			status(),
+		);
+		const chips = screen.getAllByTestId("agent-view-chip");
+		expect(chips.map((c) => c.textContent)).toEqual(["PS 3", "abcdef1"]);
+		expect(screen.queryByTestId("agent-origin-chip")).toBeNull();
+		cleanup();
+		show(
+			thread({
+				openedBy: "ai",
+				origin: { request: "x".repeat(300) },
+				waiting: false,
+				messages: [
+					{
+						id: "m1",
+						by: "ai",
+						at: "2026-11-07T10:00:00Z",
+						text: "Found one.",
+						agent: { name: "Claude Agent", version: "0.100.0" },
+					},
+					{
+						id: "m2",
+						by: "ai",
+						at: "2026-11-07T10:01:00Z",
+						text: "And another.",
+					},
+				],
+			}),
+			status(),
+		);
+		const origin = screen.getByTestId("agent-origin-chip");
+		expect(origin.textContent).toBe(`↳ ${"x".repeat(199)}…`);
+		// Over the first message only.
+		expect(screen.getAllByTestId("agent-origin-chip")).toHaveLength(1);
+		expect(origin.nextElementSibling?.textContent).toContain("Found one.");
 	});
 });
