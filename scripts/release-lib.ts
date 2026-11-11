@@ -601,6 +601,68 @@ async function onMaster(io: Io, tag: string): Promise<boolean> {
 	return ["ahead", "identical"].includes(status.trim());
 }
 
+/** A CI run as GitHub's REST API lists it (`actions/workflows/ci.yml/runs`). */
+type CiRun = {
+	id?: number;
+	path?: string;
+	event?: string;
+	head_branch?: string;
+	head_sha?: string;
+	head_repository?: { full_name?: string } | null;
+	status?: string;
+	conclusion?: string | null;
+	run_attempt?: number;
+	html_url?: string;
+};
+
+/**
+ * Fails unless CI (`ci.yml`) passed on `sha` as a push to master of `repo`:
+ * a run of that workflow, event `push`, branch master, at exactly `sha`,
+ * completed with conclusion `success` (all its jobs). The API lists each
+ * run's latest attempt, so a failed run re-run green counts. `runsJson` is
+ * the API's answer, fetched by the workflow (`gh api`, the only step with
+ * the token); nothing here trusts its query filters.
+ */
+export function checkCiPassed(
+	runsJson: string,
+	sha: string,
+	repo: string,
+): string {
+	if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
+	const parsed = JSON.parse(runsJson) as { workflow_runs?: CiRun[] };
+	if (!Array.isArray(parsed.workflow_runs)) {
+		throw new Error("not a list of workflow runs (no workflow_runs)");
+	}
+	const runs = parsed.workflow_runs.filter(
+		(r) =>
+			r.path?.replace(/@.*$/, "") === ".github/workflows/ci.yml" &&
+			r.event === "push" &&
+			r.head_branch === "master" &&
+			r.head_sha === sha &&
+			r.head_repository?.full_name === repo,
+	);
+	const name = (r: CiRun) =>
+		`run ${r.id}${r.run_attempt && r.run_attempt > 1 ? ` attempt ${r.run_attempt}` : ""}`;
+	const passed = runs.find(
+		(r) => r.status === "completed" && r.conclusion === "success",
+	);
+	if (passed) return `CI passed on ${sha} (${name(passed)})`;
+	if (runs.length === 0) {
+		throw new Error(
+			`CI has no run for a push to master at ${sha}: only a commit CI passed on master can be released`,
+		);
+	}
+	const running = runs.filter((r) => r.status !== "completed");
+	if (running.length > 0) {
+		throw new Error(
+			`CI is still running on ${sha} (${running.map((r) => `${name(r)}: ${r.status}`).join(", ")}): promote again once it passes`,
+		);
+	}
+	throw new Error(
+		`CI did not pass on ${sha} (${runs.map((r) => `${name(r)}: ${r.conclusion}`).join(", ")}): re-run it, or promote another RC`,
+	);
+}
+
 /** The version a publish step may publish under `rc`: `X.Y.Z-rc.N`, nothing else. */
 export function checkRcPublish(version: string, tag: string): void {
 	if (tag !== "rc")

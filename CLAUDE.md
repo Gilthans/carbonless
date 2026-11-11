@@ -321,7 +321,8 @@ installs the global `crb`; then `systemctl --user restart crb`.
 **Release:** only on the owner's word ("release", "promote"):
 1. `pnpm release promote [<rc tag>] [--next patch|minor|major]` (default:
    the newest RC, then minor) starts the promote run of `release.yml` and
-   prints its link. It checks the RC in full, packs `X.Y.Z` and stages it
+   prints its link. It checks CI passed on the RC's commit (it doesn't run
+   the suite again), packs `X.Y.Z`, smoke-tests that tarball and stages it
    on npm: hidden until the owner approves it with their two-factor.
 2. When the run is green, send the owner its link and summary. **The owner**
    runs `pnpm release publish` on their machine: it checks the staged

@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { rcMoveTo } from "./rc-fixup.mjs";
 import {
 	bump,
+	checkCiPassed,
 	checkRcPublish,
 	compareVersions,
 	finishPlan,
@@ -507,6 +508,92 @@ describe("workflow steps", () => {
 			tag: "v0.1.1-rc.1",
 			release: "0.1.1",
 		});
+	});
+});
+
+describe("promote: CI passed on the RC's commit", () => {
+	const SHA = "c".repeat(40);
+	const REPO = "owner/repo";
+	const run = (over: Record<string, unknown> = {}) => ({
+		id: 41,
+		path: ".github/workflows/ci.yml",
+		event: "push",
+		head_branch: "master",
+		head_sha: SHA,
+		head_repository: { full_name: REPO },
+		status: "completed",
+		conclusion: "success",
+		run_attempt: 1,
+		...over,
+	});
+	const check = (...runs: Record<string, unknown>[]) =>
+		checkCiPassed(JSON.stringify({ workflow_runs: runs }), SHA, REPO);
+
+	it("passes on a successful push run of ci.yml on master at exactly the sha", () => {
+		expect(check(run())).toBe(`CI passed on ${SHA} (run 41)`);
+	});
+
+	it("a failed attempt re-run green counts (the API lists the latest attempt)", () => {
+		expect(check(run({ run_attempt: 2 }))).toBe(
+			`CI passed on ${SHA} (run 41 attempt 2)`,
+		);
+		// Or a failed run next to one that passed.
+		expect(check(run({ id: 40, conclusion: "failure" }), run())).toContain(
+			"(run 41)",
+		);
+	});
+
+	it("fails when CI failed, naming the run and its conclusion", () => {
+		for (const conclusion of ["failure", "cancelled", "timed_out", null]) {
+			expect(() => check(run({ conclusion }))).toThrow(
+				`CI did not pass on ${SHA} (run 41: ${conclusion})`,
+			);
+		}
+	});
+
+	it("fails while CI is still running", () => {
+		for (const status of ["in_progress", "queued", "waiting"]) {
+			expect(() => check(run({ status, conclusion: null }))).toThrow(
+				`CI is still running on ${SHA} (run 41: ${status})`,
+			);
+		}
+	});
+
+	it("fails with no run at all, or none that is CI on a push to master at this sha", () => {
+		const none = `CI has no run for a push to master at ${SHA}`;
+		expect(() => check()).toThrow(none);
+		for (const other of [
+			// A pull request's run (a fork's branch may be called master).
+			{ event: "pull_request" },
+			{ event: "workflow_dispatch" },
+			// Another commit: the API's filter is not trusted.
+			{ head_sha: "d".repeat(40) },
+			// A tag push, another branch, another workflow, a fork.
+			{ head_branch: "v0.1.0-rc.1" },
+			{ head_branch: "try" },
+			{ path: ".github/workflows/release.yml" },
+			{ head_repository: { full_name: "fork/repo" } },
+			{ head_repository: null },
+		]) {
+			expect(() => check(run(other)), JSON.stringify(other)).toThrow(none);
+		}
+		// Another workflow green and this one failed is not a pass.
+		expect(() =>
+			check(
+				run({ path: ".github/workflows/release.yml" }),
+				run({ conclusion: "failure" }),
+			),
+		).toThrow("CI did not pass");
+	});
+
+	it("refuses what isn't a runs listing or a commit", () => {
+		expect(() => checkCiPassed("{}", SHA, REPO)).toThrow(
+			"not a list of workflow runs",
+		);
+		expect(() => checkCiPassed("<html>", SHA, REPO)).toThrow();
+		expect(() =>
+			checkCiPassed(JSON.stringify({ workflow_runs: [] }), "HEAD", REPO),
+		).toThrow("not a commit: HEAD");
 	});
 });
 
@@ -1723,6 +1810,79 @@ describe("release-finish: each step only once", () => {
 			expect(runs.length, file).toBeGreaterThan(5);
 			for (const run of runs) expect(run, file).not.toContain("${{");
 		}
+	});
+
+	it("promote checks CI passed and smoke-tests the release tarball; it doesn't run the suite again", () => {
+		const check = new Map(jobs(workflow("release.yml"))).get("promote-check");
+		expect(check).toBeDefined();
+		const job = code(check ?? "");
+		// Least privilege: read the code, read CI's runs.
+		expect(
+			/^ {4}permissions:\n((?: {6}.*\n)+)/m
+				.exec(job)?.[1]
+				?.replace(/ +#.*$/gm, ""),
+		).toBe("      contents: read\n      actions: read\n");
+		// No lint, typecheck, unit tests or Playwright: CI ran them.
+		const runs = runValues(job).join("\n");
+		expect(runs).not.toMatch(
+			/pnpm (lint|typecheck|test|test:e2e|test:pack|verify)\b|playwright|vitest/,
+		);
+		expect(job).not.toMatch(/playwright-report|test-results/);
+		// In order: plan, CI passed at the RC's commit (before the RC's
+		// install), pack, the smoke test on that very tarball, the manifest.
+		const at = (text: string) => {
+			const i = job.indexOf(text);
+			expect(i, text).toBeGreaterThan(-1);
+			return i;
+		};
+		const order = [
+			"ci:promote-plan",
+			'git worktree add --detach "$RC_DIR"',
+			"actions/workflows/ci.yml/runs?head_sha=$RC_SHA&event=push&branch=master",
+			'ci:ci-passed "$RC_SHA" "$RUNNER_TEMP/ci-runs.json"',
+			"name: Install the RC",
+			"ci:set-version",
+			'pnpm pack --pack-destination "$out"',
+			'echo "TGZ=$tgz" >>"$GITHUB_ENV"',
+			'node scripts/pack-smoke.mjs "$TGZ"',
+			'ci:manifest "$TGZ"',
+			"name: checked",
+		].map(at);
+		expect(order).toEqual([...order].sort((a, b) => a - b));
+	});
+
+	it("in the release workflow the token reaches no step that runs repo or dependency code", () => {
+		/** Steps of a workflow's jobs that have github.token, as [job, step]. */
+		const withToken = (text: string) =>
+			jobs(text).flatMap(([name, job]) =>
+				job
+					.split(/\n(?= {6}- )/)
+					.filter((step) => step.startsWith("      - "))
+					.filter((step) => /github\.token/.test(code(step)))
+					.map((step) => [name, step] as const),
+			);
+		const release = workflow("release.yml");
+		const steps = withToken(release);
+		expect(steps.map(([name]) => name).sort()).toEqual([
+			"promote-check",
+			"rc-build",
+			"rc-publish",
+		]);
+		for (const [name, step] of steps) {
+			expect(code(step), name).not.toMatch(DEPENDENCY_CODE);
+			expect(code(step), name).not.toMatch(/\bnode\b|scripts\//);
+		}
+		// The check catches a token next to repo code.
+		const ciPassed = "run: pnpm exec tsx scripts/release.ts ci:ci-passed";
+		expect(release).toContain(ciPassed);
+		const mutated = release.replace(
+			ciPassed,
+			`env:\n          GH_TOKEN: \${{ github.token }}\n        ${ciPassed}`,
+		);
+		const bad = withToken(mutated).filter(([, step]) =>
+			DEPENDENCY_CODE.test(code(step)),
+		);
+		expect(bad.map(([name]) => name)).toEqual(["promote-check"]);
 	});
 
 	it("every run: script parses: bash -n, and each `node -e '…'` body as JavaScript", () => {

@@ -37,8 +37,9 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
    - `pnpm release promote [<rc tag>] [--next patch|minor|major]` starts
      `.github/workflows/release.yml` (mode `promote`) and prints the run's
      link. It checks out the RC tag (default: the newest; it must be on
-     master), runs every check including Playwright, sets the version
-     `X.Y.Z` (and the RC's commit as `gitHead`), packs it, and **stages**
+     master), checks that CI passed on the RC's commit (below), sets the
+     version `X.Y.Z` (and the RC's commit as `gitHead`), packs it,
+     smoke-tests that very tarball, and **stages**
      it on npm (`npm stage publish --tag latest`): the version is uploaded
      but hidden, with its dist-tag fixed, until a maintainer approves it
      with two-factor. The run's artifact `release` holds the tarball and a
@@ -99,6 +100,29 @@ works for any commit, including RC tags whose `build-info.mjs` predates it
 jobs unpack the tarball they pack and fail unless its
 `dist/build-info.json` says this version and this commit; `pnpm release
 publish` checks it again before approving.
+
+### What promote checks
+
+CI already ran the whole suite (lint, typecheck, unit tests, the pack
+smoke test, Playwright) on the RC's commit: `rc-build` only runs on CI's
+success for a push to master. So promote (`promote-check`: install, build,
+pack and the smoke test, a few minutes instead of 10–15) doesn't
+run it again (a flaky test can't fail a release that CI passed); it checks
+what is unique to the release:
+1. **CI passed on the RC's commit:** `gh api` (the step's only command
+   with the token: `actions: read`) lists `ci.yml`'s runs at that commit,
+   and `release.ts ci:ci-passed` requires one for event `push` on
+   `master` of this repository at exactly that sha, completed with
+   conclusion `success` (every job). A run re-run green counts (GitHub
+   lists each run's latest attempt). It fails, saying which, when there
+   is none, it failed, or it is still running. It runs before the RC's
+   `pnpm install`.
+2. **The release tarball itself:** the RC packed as `X.Y.Z` (its
+   `build-info.json` must say that version and the RC's commit), then
+   master's `scripts/pack-smoke.mjs` on that very tarball (`pnpm test:pack
+   <tarball>`): installed globally into a temp dir, its `crb --version`,
+   `--help` and `crb serve` answering. The manifest's sha256 is of that
+   file, and the stage job stages only it.
 
 ### The first publish
 
@@ -236,8 +260,8 @@ full-history checkout has every tag).
 ### What GITHUB_TOKEN can't do
 
 Tags and PRs created with the workflow's `GITHUB_TOKEN` start no workflows.
-So an RC tag doesn't run CI's tag-only Playwright job (promote runs it
-before releasing instead), and the "next" PR shows no CI checks until
+So an RC tag starts no CI run (promote relies on CI's run for the push
+to master at the RC's commit instead), and the "next" PR shows no CI checks until
 someone pushes to it or closes and reopens it (a rerun of release-finish
 leaves such pushes alone). CI is a required check on master, so that PR
 needs one of those before it can merge (or the workflows a token of the
@@ -475,7 +499,11 @@ the website, approve only the stage id in the promote run's summary.
   publisher doesn't match (file name `release.yml`, environment `npm`,
   repository) or expired (unused for 2 days after it was added): fix or
   re-add it on npmjs.com, then re-run.
-- **promote failed:** nothing is live; fix and run it again. A version
+- **promote failed:** nothing is live. "CI has no run / did not pass /
+  is still running on <sha>": wait for CI, or re-run its failed jobs on
+  GitHub, then promote again (or promote a newer RC). A failed smoke test
+  or build-info check is a packaging bug: fix it on master and promote
+  the next RC. Otherwise fix and run it again. A version
   staged by a failed run stays staged until rejected (its stage id is in
   the run's summary; `pnpm release publish` refuses while two entries of
   one version are staged): `npm stage list carbonless-review`, then `npm

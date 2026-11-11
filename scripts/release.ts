@@ -9,7 +9,8 @@
 //   pnpm release status                       master's next version, rc and latest on npm and in tags
 //   pnpm release promote [<rc tag>] [--next patch|minor|major]
 //                                             starts release.yml's promote: <rc tag> (default:
-//                                             the newest) checked in full, packed as X.Y.Z and
+//                                             the newest; CI must have passed on it), packed as
+//                                             X.Y.Z, the tarball smoke-tested, and
 //                                             staged on npm (hidden until approved); prints the
 //                                             run's URL
 //   pnpm release publish [<run-id>]
@@ -22,8 +23,8 @@
 //                                             a branch and PR setting master's next release
 //
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
-// ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
-// ci:check-run, ci:finish-plan, ci:changelog, ci:bump. They print KEY=value
+// ci:check-publish, ci:write-version, ci:promote-plan, ci:ci-passed,
+// ci:manifest, ci:check-run, ci:finish-plan, ci:changelog, ci:bump. They print KEY=value
 // lines for $GITHUB_OUTPUT and read the checkout's tags. (The rc fix-up is
 // scripts/rc-fixup.mjs, with no dependencies, for the jobs that hold npm's
 // OIDC credential.)
@@ -34,6 +35,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
 	bump,
+	checkCiPassed,
 	checkPromoteRun,
 	checkRcPublish,
 	DEFAULT_REPO,
@@ -200,6 +202,14 @@ async function main(argv: string[]) {
 				}),
 			);
 			console.log(JSON.stringify(manifest, null, "\t"));
+			return;
+		}
+		case "ci:ci-passed": {
+			// ci:ci-passed <sha> <runs.json>: fails unless CI passed on sha as a
+			// push to master (runs.json: the API's runs of ci.yml at sha).
+			const [sha, file] = rest;
+			if (!sha || !file) usage();
+			console.log(checkCiPassed(readFileSync(file, "utf8"), sha, io.repo));
 			return;
 		}
 		case "ci:check-run": {
