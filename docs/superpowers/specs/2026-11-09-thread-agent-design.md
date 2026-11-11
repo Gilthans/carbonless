@@ -209,7 +209,7 @@ interface PromptEnvelope {
     resolved: boolean;
     comments: { author: { login: string; role: "reviewer" | "pr_author" | "other" }; at: string; body: string }[];
   };
-  view?: { target: string; from: string; left: string; right: string };  // latest question's comparison
+  view: { target: string; from: string; left: string; right: string };   // the patch set on screen now
   current: string;                      // GitHub's newest head
   patchsets: { number: number; head: string; mergeBase: string; startedAt: string }[];
   placement?: ThreadPlacement;          // on the viewed comparison
@@ -230,8 +230,13 @@ interface PromptEnvelope {
 - **Three commits, named:**
   - `github.openedOn`: `ReviewThread.commit`, plus the patch set it falls
     in (`openedOn(createdAt, patchsets)`, `src/shared/rereview/openedOn.ts`),
-  - `view`: the comparison of the latest question (above), with its
-    `left`/`right` commits and patch set numbers,
+  - `view`: the patch set the reviewer is viewing for this turn (its
+    commit, `right`, and the base it's compared against, `left`, with patch
+    set numbers), not the comparison stored on an earlier question. Every
+    send (the first message and each follow-up) carries the current view,
+    and the turn uses that one. An agent-started conversation has no send
+    to carry it, so it uses the latest patch set (the snapshot head when
+    there's none). (Owner, 2026-11-11.)
   - `current`: GitHub's newest head (`SessionInfo.currentHead`). Before a
     thread turn the runner runs `checkHead`, which fetches a new head into
     the cache clone once per head (`session.ts:1960`, `src/server/clone.ts`). The
