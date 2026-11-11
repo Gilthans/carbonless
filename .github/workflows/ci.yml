@@ -1,6 +1,6 @@
-# Cheap checks on every PR and push to master; the full Playwright run
-# (desktop + phone) only on version tags and on demand, to save Actions
-# minutes. The release-flip workflow chains on `name: CI`: keep it.
+# Every PR, push to master, tag and manual run gets the checks and the full
+# Playwright run (desktop + phone). The release-flip workflow chains on
+# `name: CI`: keep it.
 name: CI
 
 on:
@@ -74,7 +74,6 @@ jobs:
   # its own artifacts; `e2e` below merges the traces and is the one result.
   e2e-shard:
     name: e2e (${{ matrix.shard }}/4)
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # Hang safety nets, sized for one shard.
     timeout-minutes: 25
@@ -122,7 +121,7 @@ jobs:
   # (artifact `test-traces-e2e`, docs/test-profiling.md).
   e2e:
     needs: e2e-shard
-    if: always() && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
