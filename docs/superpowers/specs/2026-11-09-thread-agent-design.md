@@ -447,8 +447,8 @@ on close).
 - Resolved state is derived from the GitHub thread, so a thread resolved on
   GitHub by someone else folds its conversation. **Owner: ok.**
 - Unread uses `accent` (periwinkle), not yellow. **Owner: ok.**
-- Seen marks live in the private ref, so phone and desktop agree.
-- The card header and the composer row (with Resolve) are never covered.
+- Seen marks live in the private ref, so phone and desktop agree. **Owner: ok.**
+- The card header and the composer row (with Resolve) are never covered. **Owner: yes.**
 - Text typed to the agent keeps a thread open on Resolve in Files changed, like an unsent reply.
 - Each card opens its conversation independently; the open state isn't stored.
 - Unread markers only on thread conversations this slice.
