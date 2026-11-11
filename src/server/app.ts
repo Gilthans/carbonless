@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import fastifyStatic from "@fastify/static";
+// Its types (reply.sendFile); the plugin itself loads only with a web root.
+import type {} from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import {
 	type AgentConfig,
@@ -650,6 +651,25 @@ export async function buildApp(
 			review.get("/agent/threads", async (request) => ({
 				threads: await agentOf(request).threads(),
 			}));
+			// The agent threads placed into a patch set (`ps`) or a head's
+			// snapshot (`head`), by the review threads' tracer.
+			review.get<{ Querystring: { ps?: unknown; head?: unknown } }>(
+				"/agent/placements",
+				(request) => {
+					const { ps, head } = request.query;
+					if ((ps === undefined) === (head === undefined)) {
+						throw new BadRequestError(
+							"ps (a patch set) or head (a commit id), one of them",
+						);
+					}
+					return sessionOf(request).agentPlacements(
+						agentOf(request),
+						ps !== undefined
+							? { patchset: patchsetParam(ps) }
+							: { head: oidParam("head", head) },
+					);
+				},
+			);
 			review.post("/agent/threads", (request) =>
 				agentOf(request).open(parseAgentOpen(request.body)),
 			);
@@ -759,6 +779,8 @@ export async function buildApp(
 			.send(withPrTitle(html, title));
 	};
 	if (webRoot) {
+		// Loaded here: crb serve --api-only (the dev server) never needs it.
+		const { default: fastifyStatic } = await import("@fastify/static");
 		await app.register(fastifyStatic, { root: webRoot });
 		// Client routes (TanStack Router) all load the single page.
 		app.setNotFoundHandler((request, reply) => {

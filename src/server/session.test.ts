@@ -2144,6 +2144,65 @@ describe("Session", () => {
 			expect(mine.agent).not.toBeNull();
 		});
 
+		it("agentPlacements traces each agent thread into a patch set or a head; an unknown patch set is a RangeError", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			await s.setStates((await s.review()).revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const h1 = pr.head();
+			await host.open({
+				clientId: "q1",
+				text: "Why?",
+				span: {
+					subject: "line",
+					path: "a.txt",
+					commit: h1,
+					side: "RIGHT",
+					line: 2,
+					startSide: "RIGHT",
+					startLine: 2,
+				},
+			});
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed";
+			const h2 = pr.moveHead({
+				"a.txt": `top 1\ntop 2\n${lines.join("\n")}\n`,
+			});
+			const ps1 = (await s.reviewAt(1)).revision;
+			const onHead = await s.agentPlacements(host, { head: h2 });
+			expect(onHead.revision).toBe((await s.viewHead(h2)).revision);
+			expect(onHead.revision).not.toBe(ps1);
+			expect(onHead.threads).toEqual([
+				{
+					id: expect.any(String),
+					placement: {
+						kind: "placed",
+						anchor: {
+							path: "a.txt",
+							startSide: "RIGHT",
+							startLine: 4,
+							side: "RIGHT",
+							line: 4,
+						},
+						changed: false,
+					},
+				},
+			]);
+			const onPs1 = await s.agentPlacements(host, { patchset: 1 });
+			expect(onPs1.revision).toBe(ps1);
+			expect(onPs1.threads[0]?.placement).toMatchObject({
+				kind: "placed",
+				anchor: { line: 2 },
+			});
+			await expect(s.agentPlacements(host, { patchset: 9 })).rejects.toThrow(
+				RangeError,
+			);
+			await s.close();
+		});
+
 		it("close() closes the host (checkout removed)", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const host = s.agent;

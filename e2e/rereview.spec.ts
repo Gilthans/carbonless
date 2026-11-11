@@ -25,7 +25,7 @@ import {
 } from "./fixtures";
 
 /*
- * Re-review after new pushes (docs/superpowers/specs/2026-11-04-re-review-design.md):
+ * Re-review after new pushes (design: Linear CAR-5):
  * the patch set graph, the toast, the since view and the carried marks,
  * on desktop and on a phone.
  */
