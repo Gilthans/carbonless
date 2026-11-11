@@ -19,6 +19,7 @@ import {
 	type DiffRow,
 	linesWhitespaceEqual,
 	matchHunk,
+	matchSides,
 	PAIR_CAP,
 	pairHunk,
 	pairRun,
@@ -618,5 +619,34 @@ describe("viewRuns", () => {
 			"+3",
 			" 4/4",
 		]);
+	});
+});
+
+describe("matchSides' equal-keys fast path", () => {
+	it("gives exactly what the DP gives, and the DP is still asked when the keys differ", () => {
+		let s = 7;
+		const r = () => {
+			s = (s * 1664525 + 1013904223) % 4294967296;
+			return s / 4294967296;
+		};
+		for (let seed = 0; seed < 500; seed++) {
+			const n = Math.floor(r() * 30);
+			const a = Array.from({ length: n }, () => ({
+				key: ["a", "b", "c"][Math.floor(r() * 3)] as string,
+				context: r() < 0.3,
+			}));
+			const b = a.map((x) => ({ ...x }));
+			expect(matchSides(a, b), `seed ${seed}`).toEqual(matchSides(a, b, false));
+			expect(matchSides(a, b), `seed ${seed}`).toEqual(a.map((_, i) => [i, i]));
+			// One side changed: no fast path, the DP's answer.
+			if (n > 0) {
+				const c = b.map((x) => ({ ...x }));
+				const k = Math.floor(r() * n);
+				c[k] = { key: "z", context: false };
+				expect(matchSides(a, c), `seed ${seed}`).toEqual(
+					matchSides(a, c, false),
+				);
+			}
+		}
 	});
 });

@@ -153,6 +153,9 @@ function FilesSheet(props: {
  * lower by the visual viewport's pan (visualTop).
  * Not while the page is hidden (`active` false): nothing is in view then,
  * and the file in view when it shows again is the one it was left on.
+ * A new `top` alone (the sticky stack growing or shrinking: the find bar
+ * opening or closing, a bar wrapping) holds the file in view until the page
+ * next scrolls, which picks it afresh.
  */
 export function useCurrentFile(
 	container: RefObject<HTMLElement | null>,
@@ -162,15 +165,44 @@ export function useCurrentFile(
 ) {
 	const [current, setCurrent] = useState<number | null>(null);
 	// The visual viewport's pan (iOS's keyboard): the stack sits that lower.
-	const band = top + visualTop.use();
+	const pan = visualTop.use();
+	const band = top + pan;
+	// What the observer was last made for: a new one made for a new `top`
+	// only takes its first report as the files in the band, not as a move.
+	const last = useRef({ sections, top, pan, active });
+	// Held since the settling report, at this scroll: the next scroll
+	// (another scrollY) picks the file afresh, crossing or not. A file set
+	// from outside (a pick, a Find step) ends the hold.
+	const heldAt = useRef<number | null>(null);
 	// `sections` changes when the rendered file sections do: observe the new ones.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: see above.
 	useEffect(() => {
+		const was = last.current;
+		last.current = { sections, top, pan, active };
 		const root = container.current;
 		if (!active || !root || typeof IntersectionObserver === "undefined") {
 			return;
 		}
+		// Only the stack's height changed: a layout change, not a move.
+		let settle =
+			was.active &&
+			was.sections === sections &&
+			was.pan === pan &&
+			was.top !== top;
 		const visible = new Set<number>();
+		// The first in the page's order (fileOrder), not the lowest index.
+		const firstVisible = () =>
+			[...root.querySelectorAll<HTMLElement>("[data-file-index]")]
+				.map((el) => Number(el.dataset.fileIndex))
+				.find((index) => visible.has(index));
+		heldAt.current = null;
+		const onScroll = () => {
+			if (heldAt.current === null || window.scrollY === heldAt.current) return;
+			heldAt.current = null;
+			const first = firstVisible();
+			if (first !== undefined) setCurrent(first);
+		};
+		window.addEventListener("scroll", onScroll, { passive: true });
 		const observer = new IntersectionObserver(
 			(entries) => {
 				for (const entry of entries) {
@@ -178,13 +210,15 @@ export function useCurrentFile(
 					if (entry.isIntersecting) visible.add(index);
 					else visible.delete(index);
 				}
-				// The first in the page's order (fileOrder), not the lowest index.
-				const first = [
-					...root.querySelectorAll<HTMLElement>("[data-file-index]"),
-				]
-					.map((el) => Number(el.dataset.fileIndex))
-					.find((index) => visible.has(index));
-				if (first !== undefined) setCurrent(first);
+				const first = firstVisible();
+				// The first report (every file, as observing starts) after a
+				// layout change keeps the file in view; later ones follow moves.
+				const settling = settle;
+				settle = false;
+				heldAt.current = settling ? window.scrollY : null;
+				if (first === undefined) return;
+				if (settling) setCurrent((now) => now ?? first);
+				else setCurrent(first);
 			},
 			{
 				// The top 40% of what is left under the sticky stack: a taller
@@ -198,9 +232,17 @@ export function useCurrentFile(
 		for (const section of root.querySelectorAll("[data-file-index]")) {
 			observer.observe(section);
 		}
-		return () => observer.disconnect();
+		return () => {
+			observer.disconnect();
+			window.removeEventListener("scroll", onScroll);
+			heldAt.current = null;
+		};
 	}, [container, sections, band, active]);
-	return [current, setCurrent] as const;
+	const set = useCallback((index: number | null) => {
+		heldAt.current = null;
+		setCurrent(index);
+	}, []);
+	return [current, set] as const;
 }
 
 /**
