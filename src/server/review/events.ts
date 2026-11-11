@@ -9,17 +9,26 @@ import {
 	MAX_AGENT_ERROR,
 	MAX_AGENT_TEXT,
 } from "../../shared/agent.js";
-import type { ClusterState, DiffSide } from "../../shared/types.js";
+import { type LineRanges, parseRanges } from "../../shared/lineRanges.js";
+import type {
+	ClusterState,
+	DiffSide,
+	ShapeCode,
+	ThreadAnchorRef,
+} from "../../shared/types.js";
 import { oneLine } from "../agent/prompt.js";
+
+export type { ShapeCode, ThreadAnchorRef };
 
 /**
  * crb events, stored one JSON object per line in crb commit messages.
  * See docs/review-data-storage.md ("Commit format", "Events").
  */
 
-export type By = "human" | "ai";
+/** Who wrote an event: the reviewer, an AI, or the deterministic engine. */
+export type By = "human" | "ai" | "auto";
 
-interface EventBase {
+export interface EventBase {
 	v: 1;
 	/** Lowercase ULID. */
 	id: string;
@@ -50,9 +59,16 @@ export interface ReviewCreatedEvent extends EventBase {
 export interface PatchsetStartedEvent extends EventBase {
 	type: "patchset-started";
 	patchset: number;
+	/** The snapshot id. */
 	revision: string;
 	mergeBase: string;
 	head: string;
+	/** The patch set this one follows (its carries' source); none for PS1. */
+	since?: number;
+	shape?: ShapeCode;
+	/** GitHub's base branch name when it started. */
+	baseBranch?: string;
+	interdiff?: "available" | "unavailable";
 }
 
 export interface ClusterStateEvent extends EventBase {
@@ -64,6 +80,85 @@ export interface ClusterStateEvent extends EventBase {
 	path: string;
 	state: ClusterState;
 	reason?: string;
+}
+
+/**
+ * The reviewer marked part of a cluster: `lines` of it (lineRanges.ts: its
+ * removed lines, then its added ones) reviewed or crossed off, one piece
+ * of it in the since view. A new type, not a `cluster-state` field, so a
+ * reader that predates it skips it and sees the cluster unreviewed (GitDB
+ * 8: fails closed). The writer always puts a `cluster-state` unreviewed
+ * for the whole cluster first, then these, in one commit: the cluster's
+ * marks, whole. Only `by: "human"`. See docs/review-data-storage.md.
+ */
+export interface LinesStateEvent extends EventBase {
+	type: "lines-state";
+	/** The patch set's snapshot id. */
+	patchset: string;
+	cluster: string;
+	path: string;
+	state: "reviewed" | "crossed-off";
+	/** Normalized, non-empty. */
+	lines: LineRanges;
+}
+
+/**
+ * The reviewer's marks on the since view's pieces that own no line of the
+ * patch set's snapshot (lines gone or reverted since patch set `since`),
+ * in file `path`: every such line marked, by number on the since view's
+ * sides (`old`: the compared head, or its rebase on the new base; `new`:
+ * this head). The whole set for (since, path): the last one wins. They
+ * never change a cluster's state, never carry. Only `by: "human"`.
+ */
+export interface SinceLinesStateEvent extends EventBase {
+	type: "since-lines-state";
+	patchset: string;
+	since: number;
+	path: string;
+	reviewed: { old: LineRanges; new: LineRanges };
+	crossed: { old: LineRanges; new: LineRanges };
+}
+
+/** One cluster state carried from one patch set to the next. */
+export interface CarriedEntry {
+	/** The cluster in the `to` patch set. */
+	key: string;
+	/**
+	 * The cluster in the `from` patch set it was carried from. Written only
+	 * when it differs from `key` (the exact rule's usual case has them equal,
+	 * and a key is 64 hex characters); a read entry always has it, parse
+	 * fills in `key`.
+	 */
+	fromKey?: string;
+	state: "reviewed" | "crossed-off";
+}
+
+/**
+ * The engine's carry of human states from patch set `from` to patch set
+ * `to` under one rule: one event per rule per start, never per cluster.
+ * Only `by: "auto"`. The fold trusts an entry only when its source state
+ * folds to a human state equal to it (fold.ts).
+ */
+export interface CarriedEvent extends EventBase {
+	type: "carried";
+	from: number;
+	to: number;
+	rule: "exact" | "rename";
+	states: CarriedEntry[];
+}
+
+/**
+ * A thread placed in a patch set by the reviewer (or an AI), overriding the
+ * engine's own placement. `engine` is the tracer's version at the time.
+ */
+export interface ThreadPlacedEvent extends EventBase {
+	type: "thread-placed";
+	/** The thread's id (ReviewThread.id). */
+	thread: string;
+	/** The patch set number. */
+	patchset: number;
+	anchor: ThreadAnchorRef;
+	engine: number;
 }
 
 /** Parsed and validated only; not written in this milestone. */
@@ -156,15 +251,21 @@ export interface AgentThreadResolvedEvent extends EventBase {
 	resolved: boolean;
 }
 
-export type AgentEvent =
+/** Agent threads are a conversation: a human's or the agent's, never automatic. */
+export type AgentEvent = (
 	| AgentThreadOpenedEvent
 	| AgentMessageEvent
-	| AgentThreadResolvedEvent;
+	| AgentThreadResolvedEvent
+) & { by: "human" | "ai" };
 
 export type CrbEvent =
 	| ReviewCreatedEvent
 	| PatchsetStartedEvent
 	| ClusterStateEvent
+	| LinesStateEvent
+	| SinceLinesStateEvent
+	| CarriedEvent
+	| ThreadPlacedEvent
 	| ReviewClosedEvent
 	| InboxEvent
 	| AgentEvent;
@@ -195,6 +296,22 @@ const CLUSTER_STATES: readonly string[] = [
 	"reviewed",
 	"crossed-off",
 ] satisfies ClusterState[];
+const CARRIED_STATES: readonly string[] = [
+	"reviewed",
+	"crossed-off",
+] satisfies CarriedEntry["state"][];
+const SHAPES: readonly string[] = [
+	"S1",
+	"S3",
+	"S4a",
+	"S4b",
+	"S4c",
+	"S5",
+	"S6",
+	"S7",
+] satisfies ShapeCode[];
+/** A cluster key: sha256 hex, repeats suffixed `:2`, `:3`… (diff/identity.ts). */
+const CLUSTER_KEY = /^[0-9a-f]{64}(?::[1-9][0-9]*)?$/;
 const SIDES: readonly string[] = ["LEFT", "RIGHT"];
 /** A full commit ID (SHA-1 or SHA-256). */
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -254,8 +371,20 @@ export function validateForWrite(e: CrbEvent): void {
 	if (e.type === "cluster-state" && e.by !== "human") {
 		throw new Error("cluster-state events must be written by a human");
 	}
+	if (
+		(e.type === "lines-state" || e.type === "since-lines-state") &&
+		e.by !== "human"
+	) {
+		throw new Error(`${e.type} events must be written by a human`);
+	}
 	if (INBOX_TYPES.includes(e.type) && e.by !== "human") {
 		throw new Error(`${e.type} events must be written by a human`);
+	}
+	if (e.type === "carried" && e.by !== "auto") {
+		throw new Error("carried events must be written by auto (the engine)");
+	}
+	if (e.type === "thread-placed" && e.by === "auto") {
+		throw new Error("thread-placed events must be written by a human or ai");
 	}
 	if (e.type === "agent-thread-resolved" && e.by !== "human") {
 		throw new Error("agent-thread-resolved events must be written by a human");
@@ -305,6 +434,18 @@ const isStr = (value: unknown): value is string =>
 	typeof value === "string" && value.length > 0;
 const isPosInt = (value: unknown): value is number =>
 	Number.isSafeInteger(value) && (value as number) > 0;
+const isSide = (value: unknown): value is DiffSide =>
+	value === "LEFT" || value === "RIGHT";
+
+/** `{ old, new }` line ranges, or null. */
+export function parseSides(
+	value: unknown,
+): { old: LineRanges; new: LineRanges } | null {
+	if (!isObj(value)) return null;
+	const old = parseRanges(value.old);
+	const fresh = parseRanges(value.new);
+	return old && fresh ? { old, new: fresh } : null;
+}
 
 /** Returns a clean copy holding only known fields, or null to skip it. */
 function parseEvent(raw: unknown): CrbEvent | null {
@@ -312,7 +453,7 @@ function parseEvent(raw: unknown): CrbEvent | null {
 	const { id, ts, by, actor, details } = raw;
 	if (typeof id !== "string" || !LOWER_ULID.test(id)) return null;
 	if (!Number.isSafeInteger(ts) || (ts as number) < 0) return null;
-	if (by !== "human" && by !== "ai") return null;
+	if (by !== "human" && by !== "ai" && by !== "auto") return null;
 	if (typeof actor !== "string" || !isSlug(actor)) return null;
 	const base = {
 		v: 1 as const,
@@ -349,11 +490,30 @@ function parseEvent(raw: unknown): CrbEvent | null {
 		}
 		case "patchset-started": {
 			const { patchset, revision, mergeBase, head } = raw;
+			const { since, shape, baseBranch, interdiff } = raw;
 			if (
 				!isPosInt(patchset) ||
 				!isStr(revision) ||
 				!isStr(mergeBase) ||
 				!isStr(head)
+			) {
+				return null;
+			}
+			// The optional fields: absent (older events), or well-formed.
+			if (since !== undefined && (!isPosInt(since) || since >= patchset)) {
+				return null;
+			}
+			if (
+				shape !== undefined &&
+				(typeof shape !== "string" || !SHAPES.includes(shape))
+			) {
+				return null;
+			}
+			if (baseBranch !== undefined && !isStr(baseBranch)) return null;
+			if (
+				interdiff !== undefined &&
+				interdiff !== "available" &&
+				interdiff !== "unavailable"
 			) {
 				return null;
 			}
@@ -364,6 +524,68 @@ function parseEvent(raw: unknown): CrbEvent | null {
 				revision,
 				mergeBase,
 				head,
+				...(since !== undefined ? { since } : {}),
+				...(shape !== undefined ? { shape: shape as ShapeCode } : {}),
+				...(baseBranch !== undefined ? { baseBranch } : {}),
+				...(interdiff !== undefined ? { interdiff } : {}),
+			};
+		}
+		case "carried": {
+			// Fail safe: only the engine carries, and only human states.
+			if (base.by !== "auto") return null;
+			const { from, to, rule, states } = raw;
+			if (!isPosInt(from) || !isPosInt(to) || from >= to) return null;
+			if (rule !== "exact" && rule !== "rename") return null;
+			if (!Array.isArray(states)) return null;
+			const entries: CarriedEntry[] = [];
+			for (const entry of states) {
+				if (!isObj(entry)) return null;
+				const { key, state } = entry;
+				// Absent: carried from the same key.
+				const fromKey = entry.fromKey === undefined ? key : entry.fromKey;
+				if (
+					typeof key !== "string" ||
+					!CLUSTER_KEY.test(key) ||
+					typeof fromKey !== "string" ||
+					!CLUSTER_KEY.test(fromKey) ||
+					typeof state !== "string" ||
+					!CARRIED_STATES.includes(state)
+				) {
+					return null;
+				}
+				entries.push({
+					key,
+					fromKey,
+					state: state as CarriedEntry["state"],
+				});
+			}
+			return { ...base, type: "carried", from, to, rule, states: entries };
+		}
+		case "thread-placed": {
+			// A placement is a decision: the reviewer's or an AI's, never automatic.
+			if (base.by === "auto") return null;
+			const { thread, patchset, anchor, engine } = raw;
+			if (!isStr(thread) || !isPosInt(patchset) || !isPosInt(engine)) {
+				return null;
+			}
+			if (!isObj(anchor)) return null;
+			const { path, startSide, startLine, side, line } = anchor;
+			if (
+				!isStr(path) ||
+				!isSide(startSide) ||
+				!isSide(side) ||
+				!isPosInt(startLine) ||
+				!isPosInt(line)
+			) {
+				return null;
+			}
+			return {
+				...base,
+				type: "thread-placed",
+				thread,
+				patchset,
+				anchor: { path, startSide, startLine, side, line },
+				engine,
 			};
 		}
 		case "cluster-state": {
@@ -390,6 +612,55 @@ function parseEvent(raw: unknown): CrbEvent | null {
 				...(reason !== undefined ? { reason } : {}),
 			};
 		}
+		case "lines-state": {
+			// Fail safe: only a human marks lines.
+			if (base.by !== "human") return null;
+			const { patchset, cluster, path, state } = raw;
+			const lines = parseRanges(raw.lines);
+			if (
+				!isStr(patchset) ||
+				!isStr(cluster) ||
+				!isStr(path) ||
+				(state !== "reviewed" && state !== "crossed-off") ||
+				!lines ||
+				lines.length === 0
+			) {
+				return null;
+			}
+			return {
+				...base,
+				type: "lines-state",
+				patchset,
+				cluster,
+				path,
+				state,
+				lines,
+			};
+		}
+		case "since-lines-state": {
+			if (base.by !== "human") return null;
+			const { patchset, since, path } = raw;
+			const reviewed = parseSides(raw.reviewed);
+			const crossed = parseSides(raw.crossed);
+			if (
+				!isStr(patchset) ||
+				!isPosInt(since) ||
+				!isStr(path) ||
+				!reviewed ||
+				!crossed
+			) {
+				return null;
+			}
+			return {
+				...base,
+				type: "since-lines-state",
+				patchset,
+				since,
+				path,
+				reviewed,
+				crossed,
+			};
+		}
 		case "review-closed": {
 			const { outcome, mergeCommit } = raw;
 			if (outcome !== "merged" && outcome !== "closed") return null;
@@ -410,7 +681,10 @@ function parseEvent(raw: unknown): CrbEvent | null {
 		case "agent-thread-opened":
 		case "agent-message":
 		case "agent-thread-resolved":
-			return parseAgentEvent(raw, base);
+			// A conversation's words are a human's or the agent's, never auto's.
+			return base.by === "auto"
+				? null
+				: parseAgentEvent(raw, { ...base, by: base.by });
 		default:
 			return null;
 	}

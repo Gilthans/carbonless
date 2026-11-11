@@ -9,7 +9,16 @@ import { createAppRouter } from "./router";
 
 const ID = "01cccccccccccccccccccccccc";
 
-afterEach(() => {
+/** The routers rendered by the running test. */
+const routers: ReturnType<typeof createAppRouter>[] = [];
+
+afterEach(async () => {
+	// A load still in flight (a page's code loading) commits through the
+	// unmounted router once it ends, after this file's jsdom may be gone:
+	// every test ends with its router settled.
+	for (const router of routers.splice(0)) {
+		await waitFor(() => expect(router.state.status).toBe("idle"));
+	}
 	cleanup();
 	for (const name of ["crb-not-found", "crb-pr-title"]) {
 		document.head.querySelector(`meta[name="${name}"]`)?.remove();
@@ -59,6 +68,7 @@ function renderAt(path: string) {
 			</QueryClientProvider>
 		</StrictMode>,
 	);
+	routers.push(router);
 	return router;
 }
 
@@ -80,8 +90,9 @@ describe("/pr/<owner>/<repo>/<n>", () => {
 			"/",
 		);
 		api.release();
+		// Arrived: the review's page loaded, not just the address changed.
 		await waitFor(() =>
-			expect(router.state.location.pathname).toBe(`/r/${ID}`),
+			expect(router.state.resolvedLocation?.pathname).toBe(`/r/${ID}`),
 		);
 		// In place: Back skips the loading page.
 		expect(router.history.length).toBe(1);
@@ -100,7 +111,7 @@ describe("/pr/<owner>/<repo>/<n>", () => {
 		const api = serve(() => json(200, { id: ID }));
 		const router = renderAt("/pr/acme/widget/7?head=1234567");
 		await waitFor(() =>
-			expect(router.state.location.pathname).toBe(`/r/${ID}`),
+			expect(router.state.resolvedLocation?.pathname).toBe(`/r/${ID}`),
 		);
 		const post = api.fetch.mock.calls.find(([url]) => url === "/api/reviews");
 		expect(JSON.parse(String(post?.[1]?.body))).toEqual({

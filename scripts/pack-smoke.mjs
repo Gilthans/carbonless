@@ -80,6 +80,18 @@ try {
 		!files.some((f) => f.endsWith(".map") || /\.test\.|\.d\.ts$/.test(f)),
 		`${files.length} files, no maps, tests or typings`,
 	);
+	// The bundled packages' notices ship with the package (OFL fonts too).
+	const notices = sh("tar", [
+		"-xzOf",
+		tarball,
+		"package/dist/THIRD-PARTY-NOTICES.md",
+	]);
+	check(
+		notices.includes("## react@") &&
+			notices.includes("## @fontsource-variable/outfit@") &&
+			notices.includes("SIL OPEN FONT LICENSE"),
+		`dist/THIRD-PARTY-NOTICES.md in the tarball (${notices.length} bytes)`,
+	);
 
 	sh("pnpm", ["add", "-g", tarball]);
 	const crb = join(sh("pnpm", ["bin", "-g"]).trim(), "crb");

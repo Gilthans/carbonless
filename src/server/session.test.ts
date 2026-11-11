@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acpLog, releaseAcp, useFakeAcp } from "../../test/fake-acp/scenario";
@@ -17,11 +18,20 @@ import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { agentsDir } from "./agent/checkout";
 import { clonePath } from "./clone";
+import { buildSnapshot } from "./diff/snapshot";
 import { GhError } from "./errors";
 import { parseHead } from "./pinnedHead";
-import { StaleSnapshotError } from "./review/reviews";
+import { answerRereview } from "./rereview/engine";
+import { RefStore } from "./review/refStore";
+import { ReviewService, StaleSnapshotError } from "./review/reviews";
 import { refusal, Session, UnknownReadError } from "./session";
 import { ThreadCodeSource } from "./threadCode";
+
+// The engine as is, its answer counted (a batch computes it once).
+vi.mock("./rereview/engine", async (original) => {
+	const engine = await original<typeof import("./rereview/engine")>();
+	return { ...engine, answerRereview: vi.fn(engine.answerRereview) };
+});
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -63,6 +73,14 @@ describe("Session", () => {
 			patchset: null,
 			asOf: null,
 			pinnedHead: null,
+			patchsets: [],
+			lastSeen: null,
+			head: {
+				oid: pr.head(),
+				mergeBase: pr.mergeBase,
+				baseBranch: "main",
+				commits: 0,
+			},
 		});
 		expect(s.snapshot().base).toBe(pr.mergeBase);
 		expect(s.snapshot().files.map((f) => f.path)).toEqual(["a.txt", "new.txt"]);
@@ -1158,6 +1176,955 @@ describe("Session", () => {
 		});
 	});
 
+	describe("patch sets", () => {
+		/** Starts PS2 for octo-cat on the PR's new head, as a later crb would. */
+		const startSecond = async (s: Session) => {
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			// Fetches the new head into the clone; the session stays on PS1.
+			await s.refresh();
+			const clone = clonePath("acme", "widget");
+			const reviews = new ReviewService(new RefStore(clone));
+			const snap2 = await buildSnapshot(clone, pr.mergeBase, newHead);
+			const key = snap2.files.find((f) => f.path === "later.txt")?.clusters[0]
+				?.key;
+			if (!key) throw new Error("no cluster in later.txt");
+			await reviews.recordStates(
+				s.id,
+				"octo-cat",
+				snap2,
+				[{ key, state: "reviewed" }],
+				{
+					since: 1,
+					shape: "S1",
+					baseBranch: "main",
+					interdiff: "available",
+					carried: [],
+				},
+			);
+			return { newHead, snap2 };
+		};
+
+		it("remembers the head seen on the previous open", async () => {
+			const first = await Session.open(pr.arg, process.cwd());
+			expect(first.info().lastSeen).toBeNull();
+			const head1 = pr.head();
+			const head2 = pr.moveHead({ "later.txt": "later\n" });
+			const second = await Session.open(pr.arg, process.cwd());
+			expect(second.info().lastSeen?.head).toBe(head1);
+			expect(second.info().currentHead).toBe(head2);
+			const third = await Session.open(pr.arg, process.cwd());
+			expect(third.info().lastSeen?.head).toBe(head2);
+		});
+
+		it("lists every patch set and serves an earlier one as reviewed, read-only", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			const key = firstKey(s);
+			await s.setStates(ps1.revision, [{ key, state: "reviewed" }]);
+			const { newHead, snap2 } = await startSecond(s);
+
+			const again = await Session.open(pr.arg, process.cwd());
+			const info = again.info();
+			expect(info.patchset).toBe(2);
+			expect(info.snapshotHead).toBe(newHead);
+			expect(info.patchsets).toMatchObject([
+				{ number: 1, head: ps1.head, mergeBase: ps1.base, since: null },
+				{
+					number: 2,
+					head: newHead,
+					mergeBase: pr.mergeBase,
+					since: 1,
+					shape: "S1",
+				},
+			]);
+			expect(info.patchsets.map((p) => typeof p.startedAt)).toEqual([
+				"number",
+				"number",
+			]);
+			expect((await again.review()).revision).toBe(snap2.revision);
+
+			const old = await again.reviewAt(1);
+			expect(old.patchset).toBe(1);
+			expect(old.revision).toBe(ps1.revision);
+			expect(old.files.map((f) => f.path)).toEqual(["a.txt", "new.txt"]);
+			expect(old.progress.clusters).toMatchObject({ total: 3, reviewed: 1 });
+			// Its hunks and context load by its revision, as the current one's do.
+			const hunks = await again.fileHunks(ps1.revision, 0);
+			expect(hunks.hunks.length).toBeGreaterThan(0);
+			expect(
+				(await again.context(ps1.revision, 0, 10, 12)).map((l) => l.text),
+			).toEqual(["line 10", "line 11", "line 12"]);
+			// And it takes no writes.
+			await expect(
+				again.setStates(ps1.revision, [{ key, state: "unreviewed" }]),
+			).rejects.toBeInstanceOf(StaleSnapshotError);
+			expect((await again.reviewAt(1)).progress.clusters.reviewed).toBe(1);
+			// The latest one is still the session's.
+			expect(again.snapshot().revision).toBe(snap2.revision);
+			await expect(again.reviewAt(9)).rejects.toBeInstanceOf(RangeError);
+			await expect(again.reviewAt(0)).rejects.toBeInstanceOf(RangeError);
+		});
+
+		it("counts each patch set's commits over its merge base in the background, null until known", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const { newHead } = await startSecond(s);
+			const again = await Session.open(pr.arg, process.cwd());
+			// The page read never waits for git: unknown at first.
+			expect(again.info().patchsets.map((p) => p.commits)).toEqual([
+				null,
+				null,
+			]);
+			const clone = clonePath("acme", "widget");
+			const count = (head: string) =>
+				Number(
+					execFileSync(
+						"git",
+						["-C", clone, "rev-list", "--count", `${pr.mergeBase}..${head}`],
+						{ env: testGitEnv() },
+					)
+						.toString()
+						.trim(),
+				);
+			const expected = [count(ps1.head), count(newHead)];
+			expect(expected[0]).toBeGreaterThan(0);
+			expect(expected[1]).toBe((expected[0] as number) + 1);
+			await vi.waitFor(() =>
+				expect(again.info().patchsets.map((p) => p.commits)).toEqual(expected),
+			);
+		});
+
+		it("rebuilds an earlier patch set from its pins, with the recorded merge base when -base is missing", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			await startSecond(s);
+			const clone = clonePath("acme", "widget");
+			execFileSync(
+				"git",
+				[
+					"-C",
+					clone,
+					"update-ref",
+					"-d",
+					`refs/crb/reviews/${s.id}/reviewers/octo-cat/patchsets/1-base`,
+				],
+				{ env: testGitEnv() },
+			);
+			const again = await Session.open(pr.arg, process.cwd());
+			const old = await again.reviewAt(1);
+			expect(old).toMatchObject({ patchset: 1, revision: ps1.revision });
+			expect(old.progress.clusters.reviewed).toBe(1);
+		});
+	});
+
+	describe("re-review", () => {
+		const thread = () =>
+			reviewThread({ path: "a.txt", line: 2, diffSide: "RIGHT" }, [
+				threadComment({ login: "rev1", text: "Why?", commit: pr.head() }),
+			]);
+		const withThreads = () =>
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: { reviewThreads: [thread()], reviews: [] },
+					},
+				},
+			});
+		const now = () => new Date().toISOString();
+		/** The answer once the background job is done. */
+		const settled = async (
+			s: Session,
+			from: number,
+			to: { head: string } | { patchset: number },
+		) => {
+			for (;;) {
+				const answer = await s.rereview(from, to);
+				if (!("pending" in answer)) return answer;
+				await new Promise((r) => setTimeout(r, 20));
+			}
+		};
+		const kinds = (answer: Awaited<ReturnType<typeof settled>>) =>
+			Object.fromEntries(
+				answer.files.map((f) => [
+					f.path,
+					f.clusters.map((c) =>
+						c.from === undefined ? c.kind : `${c.kind}:${c.from}`,
+					),
+				]),
+			);
+
+		it("answers pending at once, then the answer; the viewed head carries provisionally; the first mark starts PS2 with the carries", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			const checked = await s.checkHead();
+			expect(checked).toMatchObject({
+				headMoved: true,
+				snapshotHead: ps1.head,
+				head: {
+					oid: newHead,
+					mergeBase: pr.mergeBase,
+					baseBranch: "main",
+					commits: 1,
+				},
+			});
+			// Pending before any git could answer: the first ask settles
+			// ahead of an immediate, which no child process can.
+			const first = await Promise.race([
+				s.rereview(1, { head: newHead }),
+				new Promise<"late">((r) => setImmediate(() => r("late"))),
+			]);
+			expect(first).toEqual({ pending: true });
+			const answer = await settled(s, 1, { head: newHead });
+			expect(answer).toMatchObject({
+				from: 1,
+				toHead: newHead,
+				shape: { code: "S1", commits: 1 },
+				interdiff: "available",
+				toRead: { files: 3, clusters: 3 },
+				threads: [],
+			});
+			expect(kinds(answer)).toEqual({
+				"a.txt": ["carried:1", "new"],
+				"new.txt": ["new"],
+				"later.txt": ["new"],
+			});
+			// Served from memory now: the same answer, at once.
+			expect(await s.rereview(1, { head: newHead })).toEqual(answer);
+			// Nothing written yet.
+			expect(s.info().patchsets).toHaveLength(1);
+
+			const view = await s.viewHead(newHead);
+			expect(view.patchset).toBeNull();
+			expect(view.revision).toBe(answer.toRevision);
+			expect(view.files[0]?.clusters[0]).toMatchObject({
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			});
+			expect(view.progress.clusters).toEqual({
+				total: 4,
+				reviewed: 1,
+				crossedOff: 0,
+			});
+			expect(s.info().patchsets).toHaveLength(1);
+
+			// The since view's hunks: the old side numbered in H1', the new in H2.
+			const later = view.files.find((f) => f.path === "later.txt");
+			if (!later) throw new Error("no later.txt");
+			const since = await s.interdiffHunks(1, view.revision, later.index);
+			const laterKey = later.clusters[0]?.key;
+			expect(since).toEqual({
+				hunks: [
+					{
+						oldStart: 0,
+						oldCount: 0,
+						newStart: 1,
+						newCount: 1,
+						lines: [
+							{ kind: "add", newNo: 1, text: "later", clusterKey: laterKey },
+						],
+					},
+				],
+				newLineCount: 1,
+				// One piece, all of later.txt's cluster.
+				pieces: [
+					{
+						hunk: 0,
+						line: 0,
+						key: laterKey,
+						owns: [[0, 1]],
+						old: [],
+						new: [[1, 2]],
+					},
+				],
+			});
+			// a.txt is untouched since PS1: one whole-file gap.
+			expect(await s.interdiffHunks(1, view.revision, 0)).toEqual({
+				hunks: [],
+				newLineCount: 30,
+				wholeGap: true,
+			});
+
+			// The first mark starts PS2, carrying PS1's mark.
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			const after = await s.setStates(view.revision, [
+				{ key: laterKey, state: "reviewed" },
+			]);
+			expect(after.patchset).toBe(2);
+			expect(after.progress.clusters).toEqual({
+				total: 4,
+				reviewed: 2,
+				crossedOff: 0,
+			});
+			expect(after.files[0]?.clusters[0]).toMatchObject({
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			});
+			expect(s.info()).toMatchObject({
+				patchset: 2,
+				snapshotHead: newHead,
+				headMoved: false,
+				head: { oid: newHead, commits: 0 },
+			});
+			expect(
+				s.info().patchsets.map((p) => [p.number, p.since, p.shape]),
+			).toEqual([
+				[1, null, null],
+				[2, 1, "S1"],
+			]);
+			expect((await s.review()).revision).toBe(view.revision);
+			// PS1 is read-only now; a fresh open lands on PS2 with the carry.
+			await expect(
+				s.setStates(ps1.revision, [{ key: firstKey(s), state: "unreviewed" }]),
+			).rejects.toBeInstanceOf(StaleSnapshotError);
+			const again = await Session.open(pr.arg, process.cwd());
+			expect(again.info().patchset).toBe(2);
+			expect((await again.review()).progress.clusters.reviewed).toBe(2);
+			expect((await again.reviewAt(1)).progress.clusters.reviewed).toBe(1);
+			await expect(s.rereview(9, { head: newHead })).rejects.toBeInstanceOf(
+				RangeError,
+			);
+			await expect(s.rereview(1, { patchset: 9 })).rejects.toBeInstanceOf(
+				RangeError,
+			);
+			await expect(s.rereview(1, { head: "main" })).rejects.toThrow(
+				/Not an object id/,
+			);
+			// By patch set: PS2 against PS1, its pinned snapshot.
+			const toPs2 = await settled(again, 1, { patchset: 2 });
+			expect(toPs2).toMatchObject({
+				from: 1,
+				toHead: newHead,
+				toRevision: view.revision,
+				shape: { code: "S1" },
+			});
+			expect(kinds(toPs2)).toEqual(kinds(answer));
+		});
+
+		it("the since view's context comes from the interdiff (PS1 numbering on the old side); a file it doesn't touch is one whole-file gap", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			// PS2 changes a.txt's line 15 and adds a line after it (the new
+			// side shifts by one below it); new.txt is untouched since PS1.
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed";
+			const ps2Lines = [...lines];
+			ps2Lines[14] = "line 15 again";
+			ps2Lines.splice(15, 0, "inserted");
+			const newHead = pr.moveHead({
+				"a.txt": `${ps2Lines.join("\n")}\n`,
+				"new.txt": "new\n",
+			});
+			await s.checkHead();
+			const answer = await settled(s, 1, { head: newHead });
+			const view = await s.viewHead(newHead);
+			expect(view.revision).toBe(answer.toRevision);
+			const a = view.files.find((f) => f.path === "a.txt");
+			const added = view.files.find((f) => f.path === "new.txt");
+			if (!a || !added) throw new Error("no a.txt or new.txt");
+
+			const since = await s.interdiffHunks(1, view.revision, a.index);
+			expect(
+				since.hunks.map((h) => [h.oldStart, h.newStart, h.newCount]),
+			).toEqual([[12, 12, 8]]);
+			// Lines 1–3 hold line 2, which the PR added at PS1 and left
+			// unchanged since: the interdiff's context, PS1 and PS2 numbering.
+			expect(await s.interdiffContext(1, view.revision, a.index, 1, 3)).toEqual(
+				[
+					{ kind: "context", oldNo: 1, newNo: 1, text: "line 1" },
+					{ kind: "context", oldNo: 2, newNo: 2, text: "line 2 changed" },
+					{ kind: "context", oldNo: 3, newNo: 3, text: "line 3" },
+				],
+			);
+			// Below the change, the old side is PS1's (one line behind).
+			expect(
+				await s.interdiffContext(1, view.revision, a.index, 26, 27),
+			).toEqual([
+				{ kind: "context", oldNo: 25, newNo: 26, text: "line 25" },
+				{ kind: "context", oldNo: 26, newNo: 27, text: "line 26 changed" },
+			]);
+			// The full diff's context for the same lines is unchanged: line 2
+			// is its own change there.
+			expect(await s.context(view.revision, a.index, 1, 3)).toEqual([
+				{ kind: "context", oldNo: 1, newNo: 1, text: "line 1" },
+				{ kind: "context", oldNo: 3, newNo: 3, text: "line 3" },
+			]);
+
+			// new.txt is untouched since PS1: no hunks, one whole-file gap.
+			expect(await s.interdiffHunks(1, view.revision, added.index)).toEqual({
+				hunks: [],
+				newLineCount: 1,
+				wholeGap: true,
+			});
+			expect(
+				await s.interdiffContext(1, view.revision, added.index, 1, 1),
+			).toEqual([{ kind: "context", oldNo: 1, newNo: 1, text: "new" }]);
+		});
+
+		/**
+		 * A push made by hand on `from` (git commands in a worktree of the
+		 * GitHub-side repo), the fake gh pointed at it (base `baseRefOid`).
+		 */
+		const pushByHand = (
+			from: string,
+			steps: (git: (...args: string[]) => string, dir: string) => void,
+			baseRefOid?: string,
+		) => {
+			const dir = mkdtempSync(join(tmpdir(), "crb-push-"));
+			const repoGit = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			repoGit("worktree", "add", "--quiet", "--detach", dir, from);
+			const w = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: dir,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			steps(w, dir);
+			const head = w("rev-parse", "HEAD");
+			repoGit("worktree", "remove", "--force", dir);
+			rmSync(dir, { recursive: true, force: true });
+			repoGit("update-ref", "refs/pull/12/head", head);
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({
+							headRefOid: head,
+							baseRefName: "main",
+							...(baseRefOid ? { baseRefOid } : {}),
+						}),
+					},
+				},
+			});
+			return head;
+		};
+		/** PS1 marked, then `push()`: the since view of the new head. */
+		const sinceAfter = async (push: () => string) => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const newHead = push();
+			await s.checkHead();
+			const answer = await settled(s, 1, { head: newHead });
+			expect(answer.interdiff).toBe("available");
+			const view = await s.viewHead(newHead);
+			const index = (path: string) => {
+				const f = view.files.find((x) => x.path === path);
+				if (!f) throw new Error(`no ${path}`);
+				return f.index;
+			};
+			return { s, view, index };
+		};
+		const lines30 = () => {
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed";
+			return lines;
+		};
+
+		it("since view batch (the search's prefetch): the engine's answer once per batch, a gone file's interdiff, 404 for an index in neither", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(
+				ps1.revision,
+				ps1.files.flatMap((f) =>
+					f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+				),
+			);
+			// PS2 takes a.txt back to the base: gone from the PR, its
+			// interdiff (PS1's changed lines removed) shown under the gone files.
+			const base = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			const newHead = pr.moveHead({
+				"a.txt": `${base.join("\n")}\n`,
+				"later.txt": "later\n",
+			});
+			await s.checkHead();
+			const answer = await settled(s, 1, { head: newHead });
+			const view = await s.viewHead(newHead);
+			expect(view.files.map((f) => f.path)).toEqual(["later.txt", "new.txt"]);
+			const gone = answer.files.find((f) => f.path === "a.txt");
+			if (!gone) throw new Error("a.txt isn't in the answer");
+			expect(gone.index).toBe(view.files.length);
+			const calls = vi.mocked(answerRereview).mock.calls.length;
+			const two = await s.interdiffHunksBatch(1, view.revision, [0, 1]);
+			expect(vi.mocked(answerRereview).mock.calls.length - calls).toBe(1);
+			expect(two.files[1]?.hunks).toMatchObject({ wholeGap: true });
+			const batch = await s.interdiffHunksBatch(1, view.revision, [
+				1,
+				gone.index,
+			]);
+			expect(batch.files.map((f) => f.index)).toEqual([1, gone.index]);
+			expect(batch.files[1]?.hunks).toEqual(
+				await s.interdiffHunks(1, view.revision, gone.index),
+			);
+			const removed = batch.files[1]?.hunks?.hunks
+				.flatMap((h) => h.lines)
+				.filter((l) => l.kind === "del")
+				.map((l) => l.text);
+			expect(removed).toEqual(["line 2 changed", "line 26 changed"]);
+			await expect(
+				s.interdiffHunksBatch(1, view.revision, [0, gone.index + 1]),
+			).rejects.toThrow(RangeError);
+		});
+
+		it("since view, a file the interdiff only renames: one whole-file gap of its lines", async () => {
+			const { s, view, index } = await sinceAfter(() =>
+				pushByHand(pr.head(), (git) => {
+					git("mv", "new.txt", "renamed.txt");
+					git("commit", "--quiet", "-m", "rename");
+				}),
+			);
+			const renamed = index("renamed.txt");
+			expect(await s.interdiffHunks(1, view.revision, renamed)).toEqual({
+				hunks: [],
+				newLineCount: 1,
+				wholeGap: true,
+			});
+			expect(await s.interdiffContext(1, view.revision, renamed, 1, 1)).toEqual(
+				[{ kind: "context", oldNo: 1, newNo: 1, text: "new" }],
+			);
+		});
+
+		it("since view, an untouched file without a newline at its end: its last line says so", async () => {
+			pr.moveHead({ "nonl.txt": "x\ny" });
+			const { s, view, index } = await sinceAfter(() =>
+				pr.moveHead({ "later.txt": "later\n" }),
+			);
+			const nonl = index("nonl.txt");
+			expect(await s.interdiffHunks(1, view.revision, nonl)).toEqual({
+				hunks: [],
+				newLineCount: 2,
+				wholeGap: true,
+			});
+			expect(await s.interdiffContext(1, view.revision, nonl, 1, 2)).toEqual([
+				{ kind: "context", oldNo: 1, newNo: 1, text: "x" },
+				{ kind: "context", oldNo: 2, newNo: 2, text: "y", noNewline: true },
+			]);
+		});
+
+		it("since view after the base moved: gap lines are the head's on the new side, the rebased PS1's on the old", async () => {
+			// main inserts 5 lines after base line 14; PS2 merges it and
+			// changes line 10.
+			const base = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			const mid = ["mid 1", "mid 2", "mid 3", "mid 4", "mid 5"];
+			const insert = (lines: string[]) => [
+				...lines.slice(0, 14),
+				...mid,
+				...lines.slice(14),
+			];
+			writeFileSync(
+				join(pr.repo.path, "a.txt"),
+				`${insert(base).join("\n")}\n`,
+			);
+			const main = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			main("commit", "--quiet", "-am", "main inserts mid lines");
+			const b2 = main("rev-parse", "HEAD");
+			const ps2 = insert(lines30());
+			ps2[9] = "line 10 again";
+			const { s, view, index } = await sinceAfter(() =>
+				pushByHand(
+					pr.head(),
+					(git, dir) => {
+						git("merge", "--quiet", "--no-edit", b2);
+						writeFileSync(join(dir, "a.txt"), `${ps2.join("\n")}\n`);
+						git("commit", "--quiet", "-am", "line 10 again");
+					},
+					b2,
+				),
+			);
+			const a = index("a.txt");
+			const since = await s.interdiffHunks(1, view.revision, a);
+			expect(since.hunks.map((h) => [h.oldStart, h.newStart])).toEqual([
+				[7, 7],
+			]);
+			// Below base's insertion: head 30–32 are base 25–27, line 26 the
+			// PR's own (unchanged since PS1). The rebased PS1 has the mid
+			// lines too, so its numbers are the head's.
+			expect(await s.interdiffContext(1, view.revision, a, 30, 32)).toEqual([
+				{ kind: "context", oldNo: 30, newNo: 30, text: "line 25" },
+				{ kind: "context", oldNo: 31, newNo: 31, text: "line 26 changed" },
+				{ kind: "context", oldNo: 32, newNo: 32, text: "line 27" },
+			]);
+			// The new side is the head's numbering, as a RIGHT anchor's is:
+			// the full diff (base B2 → head) agrees on the line at 30.
+			expect(await s.context(view.revision, a, 30, 30)).toEqual([
+				{ kind: "context", oldNo: 30, newNo: 30, text: "line 25" },
+			]);
+		});
+
+		it("a new thread and a verdict start a patch set; a reply, a resolve and an unresolve never do", async () => {
+			withThreads();
+			const s = await Session.open(pr.arg, process.cwd());
+			await s.overview(0);
+			expect(s.info().patchset).toBeNull();
+			const reply = { attemptedAt: now(), retry: false, knownCommentIds: [] };
+			await s.replyToThread("T12-0", { ...reply, body: "ok", clientId: "r1" });
+			await s.setThreadResolved("T12-0", true);
+			await s.setThreadResolved("T12-0", false);
+			expect(s.info().patchset).toBeNull();
+			expect(s.info().patchsets).toEqual([]);
+			await s.startThread({
+				clientId: "n1",
+				body: "Why?",
+				attemptedAt: now(),
+				retry: false,
+				path: "a.txt",
+				commit: pr.head(),
+				subject: "line",
+				side: "RIGHT",
+				line: 2,
+			});
+			expect(s.info()).toMatchObject({ patchset: 1, snapshotHead: pr.head() });
+			expect(s.info().patchsets[0]).toMatchObject({ number: 1, since: null });
+
+			// A verdict on a viewed head starts the next one, with the carries.
+			const key = firstKey(s);
+			const ps1Head = pr.head();
+			await s.setStates(s.snapshot().revision, [{ key, state: "reviewed" }]);
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			await s.checkHead();
+			await s.viewHead(newHead);
+			await s.submitVerdict({
+				clientId: "v1",
+				event: "APPROVE",
+				commit: newHead,
+				attemptedAt: now(),
+				retry: false,
+			});
+			expect(s.info()).toMatchObject({ patchset: 2, snapshotHead: newHead });
+			expect(s.info().patchsets[1]).toMatchObject({
+				number: 2,
+				since: 1,
+				shape: "S1",
+			});
+			const view = await s.review();
+			expect(view.patchset).toBe(2);
+			expect(view.files[0]?.clusters[0]).toMatchObject({
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			});
+			// A thread on the earlier patch set's head is refused: read-only.
+			const stale = await s
+				.startThread({
+					clientId: "n2",
+					body: "Late",
+					attemptedAt: now(),
+					retry: false,
+					path: "a.txt",
+					commit: ps1Head,
+					subject: "file",
+				})
+				.then(
+					() => null,
+					(e: unknown) => e,
+				);
+			expect(stale).toMatchObject({ code: "stale" });
+		});
+
+		it("viewing the head of an earlier patch set shows that patch set (a force-push back)", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			await s.checkHead();
+			const view = await s.viewHead(newHead);
+			const laterKey = view.files.find((f) => f.path === "later.txt")
+				?.clusters[0]?.key;
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			await s.setStates(view.revision, [{ key: laterKey, state: "reviewed" }]);
+			expect(s.info().patchset).toBe(2);
+			const back = await s.viewHead(ps1.head);
+			expect(back).toMatchObject({ patchset: 1, revision: ps1.revision });
+			expect(back.progress.clusters.reviewed).toBe(1);
+			// The engine for PS2 → PS1's head: a move back, with what is gone.
+			const answer = await settled(s, 2, { head: ps1.head });
+			expect(answer.shape.code).toBe("S6");
+			expect(kinds(answer)).toEqual({
+				"a.txt": ["carried:1", "new"],
+				"new.txt": ["new"],
+				// Only PS2 had it: listed past the snapshot's files.
+				"later.txt": ["gone:2"],
+			});
+			expect(answer.files.at(-1)).toMatchObject({
+				index: 2,
+				path: "later.txt",
+			});
+		});
+
+		it("M2: a retarget under the same head gives a fresh answer by snapshot id, and viewHead overlays it", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			await s.checkHead();
+			const before = await settled(s, 1, { head: newHead });
+			// The base branch becomes one that holds the new head itself: the
+			// merge base is the head, the comparison empty.
+			execFileSync("git", ["branch", "develop", newHead], {
+				cwd: pr.repo.path,
+				env: testGitEnv(),
+			});
+			pr.scenario({
+				prs: {
+					12: { view: prView({ headRefOid: newHead, baseRefName: "develop" }) },
+				},
+			});
+			const checked = await s.checkHead();
+			expect(checked.head).toMatchObject({ oid: newHead, mergeBase: newHead });
+			const after = await settled(s, 1, { head: newHead });
+			expect(after.toRevision).not.toBe(before.toRevision);
+			expect(after.files).toEqual([]);
+			const view = await s.viewHead(newHead);
+			expect(view.revision).toBe(after.toRevision);
+			expect(view.files).toEqual([]);
+		});
+
+		it("the base taking in the PR's first commit under the same head moves the merge base; a mark starts PS2 on it", async () => {
+			const first = pr.head();
+			const view = (baseRefOid: string) =>
+				pr.scenario({
+					prs: {
+						12: {
+							view: prView({
+								headRefOid: pr.head(),
+								baseRefName: "main",
+								baseRefOid,
+							}),
+						},
+					},
+				});
+			const h2 = pr.moveHead({ "later.txt": "later\n" });
+			view(pr.mergeBase);
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			expect(ps1.base).toBe(pr.mergeBase);
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			// main takes in the PR's first commit (same sha); the head stays.
+			pr.moveMain(first);
+			view(first);
+			const checked = await s.checkHead();
+			expect(checked).toMatchObject({
+				headMoved: false,
+				snapshotHead: h2,
+				head: { oid: h2, mergeBase: first, baseBranch: "main", commits: 0 },
+			});
+			const clone = clonePath("acme", "widget");
+			const tracking = () =>
+				execFileSync(
+					"git",
+					["-C", clone, "rev-parse", "refs/remotes/origin/main"],
+					{ env: testGitEnv(), encoding: "utf8" },
+				).trim();
+			expect(tracking()).toBe(first);
+			// Once per triple: main moves on the origin only (GitHub still
+			// reports the same base oid), and nothing is fetched again.
+			pr.moveMain(h2);
+			await s.checkHead();
+			expect(tracking()).toBe(first);
+			expect(s.info().head).toMatchObject({ mergeBase: first });
+			const answer = await settled(s, 1, { head: h2 });
+			// PS1's first commit is in the base now: only later.txt is the PR's.
+			expect(kinds(answer)).toEqual({ "later.txt": ["new"] });
+			expect(answer.toRead).toEqual({ files: 1, clusters: 1 });
+			const viewed = await s.viewHead(h2);
+			expect(viewed.revision).toBe(answer.toRevision);
+			expect(viewed.revision).not.toBe(ps1.revision);
+			const later = viewed.files.find((f) => f.path === "later.txt");
+			const laterKey = later?.clusters[0]?.key;
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			const after = await s.setStates(viewed.revision, [
+				{ key: laterKey, state: "reviewed" },
+			]);
+			expect(after.patchset).toBe(2);
+			expect(s.info().patchsets.map((p) => [p.number, p.mergeBase])).toEqual([
+				[1, pr.mergeBase],
+				[2, first],
+			]);
+		});
+
+		it("L2: a thread on a head two kept snapshots share goes to the patch set's: read-only", async () => {
+			withThreads();
+			const s = await Session.open(pr.arg, process.cwd());
+			await s.overview(0);
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			await s.checkHead();
+			const view = await s.viewHead(newHead);
+			const laterKey = view.files.find((f) => f.path === "later.txt")
+				?.clusters[0]?.key;
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			await s.setStates(view.revision, [{ key: laterKey, state: "reviewed" }]);
+			// Back on PS1's head with the base retargeted to it: another
+			// snapshot with that head, kept after the patch set's.
+			execFileSync("git", ["branch", "develop", ps1.head], {
+				cwd: pr.repo.path,
+				env: testGitEnv(),
+			});
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: ps1.head, baseRefName: "develop" }),
+						graphql: { reviewThreads: [thread()], reviews: [] },
+					},
+				},
+			});
+			await s.checkHead();
+			const viewed = await s.viewHead(ps1.head);
+			expect(viewed.revision).not.toBe(ps1.revision);
+			expect(s.info().patchsets).toHaveLength(2);
+			const refused = await s
+				.startThread({
+					clientId: "n9",
+					body: "Late",
+					attemptedAt: now(),
+					retry: false,
+					path: "a.txt",
+					commit: ps1.head,
+					subject: "file",
+				})
+				.then(
+					() => null,
+					(e: unknown) => e,
+				);
+			expect(refused).toMatchObject({ code: "stale" });
+			expect(s.info().patchsets).toHaveLength(2);
+		});
+
+		it("S7: each patch set keeps its own base branch; after a retarget PS1 still says main, PS2 the new base", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			await s.overview(0);
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			// Retargeted to develop (at main's tip), then a push.
+			execFileSync("git", ["branch", "develop", pr.mergeBase], {
+				cwd: pr.repo.path,
+				env: testGitEnv(),
+			});
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: newHead, baseRefName: "develop" }),
+						graphql: { reviewThreads: [], reviews: [] },
+					},
+				},
+			});
+			await s.checkHead();
+			const view = await s.viewHead(newHead);
+			const laterKey = view.files.find((f) => f.path === "later.txt")
+				?.clusters[0]?.key;
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			await s.setStates(view.revision, [{ key: laterKey, state: "reviewed" }]);
+			expect(s.info().patchsets.map((p) => [p.number, p.baseBranch])).toEqual([
+				[1, "main"],
+				[2, "develop"],
+			]);
+			const again = await Session.open(pr.arg, process.cwd());
+			expect(again.info().patchsets.map((p) => p.baseBranch)).toEqual([
+				"main",
+				"develop",
+			]);
+		});
+
+		it("checkHead compares the triple: the same head costs no fetch; a base branch change fetches once and reports the merge base", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const clone = clonePath("acme", "widget");
+			const git = (...args: string[]) =>
+				execFileSync("git", ["-C", clone, ...args], {
+					env: testGitEnv(),
+					encoding: "utf8",
+				}).trim();
+			const origin = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					env: testGitEnv(),
+					encoding: "utf8",
+				}).trim();
+			// main moves on without the merge base changing (S2).
+			origin("checkout", "--quiet", "main");
+			writeFileSync(join(pr.repo.path, "x.txt"), "x\n");
+			origin("add", "--all");
+			origin("commit", "--quiet", "-m", "base: x.txt");
+			const mainNow = origin("rev-parse", "HEAD");
+			expect((await s.checkHead()).head).toEqual({
+				oid: pr.head(),
+				mergeBase: pr.mergeBase,
+				baseBranch: "main",
+				commits: 0,
+			});
+			expect(git("rev-parse", "refs/remotes/origin/main")).toBe(pr.mergeBase);
+			// Retargeted (S7): the new base branch is fetched, the merge base moves.
+			origin("branch", "develop", pr.head());
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "develop" }),
+					},
+				},
+			});
+			expect((await s.checkHead()).head).toEqual({
+				oid: pr.head(),
+				mergeBase: pr.head(),
+				baseBranch: "develop",
+				commits: 0,
+			});
+			expect(git("rev-parse", "refs/remotes/origin/develop")).toBe(pr.head());
+			// The same pair again: nothing fetched (develop moved on the origin only).
+			origin("update-ref", "refs/heads/develop", mainNow);
+			await s.checkHead();
+			expect(git("rev-parse", "refs/remotes/origin/develop")).toBe(pr.head());
+			// A merged PR reports no head.
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({
+							headRefOid: pr.head(),
+							baseRefName: "main",
+							state: "MERGED",
+						}),
+					},
+				},
+			});
+			expect((await s.checkHead()).head).toBeNull();
+		});
+	});
+
 	describe("agent", () => {
 		let fake: ReturnType<typeof useFakeAcp>;
 		beforeEach(() => {
@@ -1175,6 +2142,65 @@ describe("Session", () => {
 			expect(theirs.agent).toBeNull();
 			const mine = await Session.open(pr.arg, process.cwd());
 			expect(mine.agent).not.toBeNull();
+		});
+
+		it("agentPlacements traces each agent thread into a patch set or a head; an unknown patch set is a RangeError", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			await s.setStates((await s.review()).revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const h1 = pr.head();
+			await host.open({
+				clientId: "q1",
+				text: "Why?",
+				span: {
+					subject: "line",
+					path: "a.txt",
+					commit: h1,
+					side: "RIGHT",
+					line: 2,
+					startSide: "RIGHT",
+					startLine: 2,
+				},
+			});
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed";
+			const h2 = pr.moveHead({
+				"a.txt": `top 1\ntop 2\n${lines.join("\n")}\n`,
+			});
+			const ps1 = (await s.reviewAt(1)).revision;
+			const onHead = await s.agentPlacements(host, { head: h2 });
+			expect(onHead.revision).toBe((await s.viewHead(h2)).revision);
+			expect(onHead.revision).not.toBe(ps1);
+			expect(onHead.threads).toEqual([
+				{
+					id: expect.any(String),
+					placement: {
+						kind: "placed",
+						anchor: {
+							path: "a.txt",
+							startSide: "RIGHT",
+							startLine: 4,
+							side: "RIGHT",
+							line: 4,
+						},
+						changed: false,
+					},
+				},
+			]);
+			const onPs1 = await s.agentPlacements(host, { patchset: 1 });
+			expect(onPs1.revision).toBe(ps1);
+			expect(onPs1.threads[0]?.placement).toMatchObject({
+				kind: "placed",
+				anchor: { line: 2 },
+			});
+			await expect(s.agentPlacements(host, { patchset: 9 })).rejects.toThrow(
+				RangeError,
+			);
+			await s.close();
 		});
 
 		it("close() closes the host (checkout removed)", async () => {

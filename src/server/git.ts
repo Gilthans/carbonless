@@ -121,15 +121,46 @@ export async function runGit(
 }
 
 /** Like `runGit`, but returns stdout as raw bytes. */
-export function runGitBuffer(
+export async function runGitBuffer(
 	repoPath: string,
 	args: string[],
 	opts: RunGitOptions = {},
 ): Promise<Buffer> {
+	const result = await runGitFull(repoPath, args, opts).catch((error) => {
+		if (opts.allowFailure) return null;
+		throw error;
+	});
+	if (result === null) return Buffer.alloc(0);
+	if (result.code === 0) return result.stdout;
+	if (opts.allowFailure) return Buffer.alloc(0);
+	const stderr = result.stderr.trim();
+	throw new GitError(stderr || `git exited with code ${result.code}`);
+}
+
+/** What a git that ran to the end gave: its exit code, stdout and stderr. */
+export interface GitResult {
+	code: number;
+	stdout: Buffer;
+	stderr: string;
+}
+
+/**
+ * Runs git and reports its exit code with its output, for commands whose
+ * non-zero exit is an answer, not a failure (`merge-tree --write-tree`
+ * exits 1 with the tree and the conflicted paths, `diff-tree --quiet` 1
+ * for a difference). A git that could not run, timed out or was stopped
+ * still rejects with a GitError (`allowFailure` makes those an exit of -1).
+ */
+export function runGitFull(
+	repoPath: string,
+	args: string[],
+	opts: RunGitOptions = {},
+): Promise<GitResult> {
 	return new Promise((resolve, reject) => {
 		const fail = (message: string) => {
-			if (opts.allowFailure) resolve(Buffer.alloc(0));
-			else reject(new GitError(message));
+			if (opts.allowFailure) {
+				resolve({ code: -1, stdout: Buffer.alloc(0), stderr: message });
+			} else reject(new GitError(message));
 		};
 		if (opts.signal?.aborted) {
 			fail("git was stopped");
@@ -184,8 +215,7 @@ export function runGitBuffer(
 			span?.end(undefined, error.message);
 			clearTimeout(timer);
 			opts.signal?.removeEventListener("abort", onAbort);
-			if (opts.allowFailure) resolve(Buffer.alloc(0));
-			else reject(new GitError(error.message));
+			fail(error.message);
 		});
 		child.on("close", (code) => {
 			span?.end({ exit: code ?? -1 });
@@ -193,13 +223,13 @@ export function runGitBuffer(
 			opts.signal?.removeEventListener("abort", onAbort);
 			if (timedOut) {
 				// Already settled.
-			} else if (code === 0) {
-				resolve(Buffer.concat(out));
-			} else if (opts.allowFailure) {
-				resolve(Buffer.alloc(0));
 			} else {
-				const stderr = Buffer.concat(err).toString("utf8").trim();
-				reject(new GitError(stderr || `git exited with code ${code}`));
+				resolve({
+					// A signal kill reports no code; it is a failure like any other.
+					code: code ?? -1,
+					stdout: Buffer.concat(out),
+					stderr: Buffer.concat(err).toString("utf8"),
+				});
 			}
 		});
 		child.stdin.end(opts.input ?? "");

@@ -1,3 +1,4 @@
+import { viewOfLines } from "../../shared/pieces";
 import { fileFlags, reviewProgress } from "../../shared/progress";
 import type { ClusterView, ReviewView, StateChange } from "../../shared/types";
 import { ApiError } from "../api";
@@ -527,7 +528,20 @@ export function pendingFiles(
 }
 
 function withState(c: ClusterView, change: StateChange): ClusterView {
-	const { reason: _, ...rest } = c;
+	const { reason: _, reviewedLines: had, crossedLines: hadX, ...rest } = c;
+	if (change.reviewedLines !== undefined || change.crossedLines !== undefined) {
+		// Part of the cluster (pieces.ts): its lines as the change says.
+		return (
+			viewOfLines(
+				rest,
+				change.reviewedLines ?? [],
+				change.crossedLines ?? [],
+			) ?? {
+				...rest,
+				state: "unreviewed",
+			}
+		);
+	}
 	if (change.state === "crossed-off") {
 		const reason = change.reason?.trim();
 		if (c.state === "crossed-off" && c.reason === (reason || undefined)) {
@@ -537,7 +551,9 @@ function withState(c: ClusterView, change: StateChange): ClusterView {
 			? { ...rest, state: "crossed-off", reason }
 			: { ...rest, state: "crossed-off" };
 	}
-	if (c.state === change.state && c.reason === undefined) return c;
+	if (c.state === change.state && c.reason === undefined && !had && !hadX) {
+		return c;
+	}
 	return { ...rest, state: change.state };
 }
 
@@ -575,5 +591,23 @@ export function overlayReview(
 		changed = true;
 		return { ...file, clusters, ...fileFlags(clusters) };
 	});
-	return changed ? { ...view, files, progress: reviewProgress(files) } : view;
+	// Marks on since-only pieces: the pending one replaces its comparison's.
+	let sinceMarks = view.sinceMarks;
+	for (const p of pending.values()) {
+		const mark = p.change.sinceMark;
+		if (!mark || p.revision !== view.revision) continue;
+		sinceMarks = [
+			...(sinceMarks ?? []).filter(
+				(m) => m.since !== mark.since || m.path !== mark.path,
+			),
+			mark,
+		];
+	}
+	const marksChanged = sinceMarks !== view.sinceMarks;
+	if (!changed && !marksChanged) return view;
+	return {
+		...view,
+		...(changed ? { files, progress: reviewProgress(files) } : {}),
+		...(sinceMarks ? { sinceMarks } : {}),
+	};
 }

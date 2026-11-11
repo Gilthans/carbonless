@@ -27,6 +27,17 @@ describe("fileGaps", () => {
 		expect(fileGaps([], 40)).toEqual([]);
 		expect(fileGaps([{ ...hunk(0, 0), oldCount: 3 }], 0)).toEqual([]);
 	});
+
+	it("makes a since-view file the interdiff doesn't touch one whole-file gap", () => {
+		expect(fileGaps([], 40, true)).toEqual([
+			{ index: 0, from: 1, to: 40, above: true, below: true },
+		]);
+		expect(fileGaps([], 0, true)).toEqual([]);
+		// With hunks, `whole` changes nothing.
+		expect(fileGaps([hunk(2, 7)], 79, true)).toEqual(
+			fileGaps([hunk(2, 7)], 79),
+		);
+	});
 });
 
 describe("gapState", () => {

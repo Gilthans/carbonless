@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type {
 	RequestPermissionRequest,
 	SessionUpdate,
@@ -71,12 +71,11 @@ function options(over: Partial<AcpSpawn> = {}): AcpSpawn & { seen: Seen } {
 		seen,
 		command: "claude-agent-acp",
 		args: [],
-		env: {
-			...agentEnv({}),
-			PATH: `${FAKE_ACP_BIN}:${process.env.PATH}`,
+		env: agentEnv({
+			PATH: `${FAKE_ACP_BIN}${delimiter}${process.env.PATH}`,
 			CRB_FAKE_ACP: scenarioPath,
 			CRB_FAKE_ACP_LOG: logPath,
-		},
+		}),
 		cwd: dir,
 		stderrFile: join(dir, "agent.stderr.log"),
 		onUpdate: (u) => seen.updates.push(u),
@@ -116,6 +115,23 @@ describe("AcpAgent", () => {
 			},
 		});
 		expect(session?.params).toEqual({ cwd: dir, mcpServers: [] });
+	});
+
+	it("args reach the agent as given, shell metacharacters too (a Windows .cmd shim runs through cmd.exe)", async () => {
+		scenario();
+		const args = [
+			"two words",
+			'a "quoted" arg',
+			"100%PATH%",
+			"a&echo injected",
+			"^caret",
+			"<in> | out",
+			"!bang!",
+			"trailing\\",
+			"",
+		];
+		await spawn({ args });
+		expect(acpLog(logPath)[0]?.params).toMatchObject({ argv: args });
 	});
 
 	it("a prompt streams chunks and stops end_turn", async () => {
@@ -288,13 +304,22 @@ describe("agentEnv", () => {
 	});
 });
 
+describe("agentEnv PATH", () => {
+	it("the config's PATH is the only PATH (Windows names ignore case)", () => {
+		const env = agentEnv({ PATH: "/only" });
+		const paths = Object.keys(env).filter((k) => k.toUpperCase() === "PATH");
+		expect(paths).toEqual(["PATH"]);
+		expect(env.PATH).toBe("/only");
+	});
+});
+
 describe("checkAgent", () => {
 	const withFake = async <T>(run: () => Promise<T>) => {
 		const saved = {
 			PATH: process.env.PATH,
 			CRB_FAKE_ACP: process.env.CRB_FAKE_ACP,
 		};
-		process.env.PATH = `${FAKE_ACP_BIN}:${process.env.PATH}`;
+		process.env.PATH = `${FAKE_ACP_BIN}${delimiter}${process.env.PATH}`;
 		process.env.CRB_FAKE_ACP = scenarioPath;
 		try {
 			return await run();

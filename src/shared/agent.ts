@@ -1,3 +1,4 @@
+import type { ThreadPlacement } from "./rereview/placement.js";
 import type { CodeWindow, DiffSide } from "./types.js";
 
 /**
@@ -103,6 +104,17 @@ export interface AgentThread {
 	 */
 	waiting: boolean;
 	code?: CodeWindow;
+}
+
+/**
+ * The agent threads placed into a target snapshot (GET /agent/placements),
+ * by the review threads' tracer. A thread missing from `threads` couldn't
+ * be traced: the page shows it where it was asked.
+ */
+export interface AgentPlacementsAnswer {
+	/** The snapshot id placed into. */
+	revision: string;
+	threads: { id: string; placement: ThreadPlacement }[];
 }
 
 export interface AgentStatus {

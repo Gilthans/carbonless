@@ -130,6 +130,17 @@ Only what the diff can show is searched: file paths, changed lines and the
 context lines around them, plus any context you expanded. A line far from
 every change isn't shown, so it isn't searched. Expand the gap that holds
 it and the hit appears. Comments, threads and the overview aren't searched.
+In the since view (base on a patch set) the diff shown is the interdiff, so
+that is what is searched: a line changed before that patch set and left
+alone since is no changed line there. Move the base to the branch to search
+the whole PR.
+
+## Why does Find in PR's count change when I switch to side by side?
+
+With Ignore whitespace on, unified view shows a whitespace-only change as
+one `~` row with the new text, so Find counts that row's hits once. Side by
+side shows the old and the new text, so it counts both. The current hit
+stays on the same row.
 
 ## Why does Home show coverage in lines, when the Files page shows files?
 
@@ -161,6 +172,33 @@ carbonless and the box shows it as you typed it; GitHub's own edit box
 shows the backslash. Code (in backticks or a code block), `a < b` and
 the tags GitHub keeps (`<b>`, `<details>`, `<kbd>`, ...) are left as they
 are.
+
+## Why does a cluster show as carried?
+
+After the author pushes, the reviewer's marks from the last patch set
+come along only where the author's change is exactly the one they
+marked: carbonless traces the cluster into the new head (through a
+rebase, a merged-in base or a rename) and its removed and added lines are
+byte for byte what was reviewed. Such a cluster shows green with a
+`carried` chip, and it stays out of the since view, which shows only
+what the author changed since. Anything else (a line edited, a cluster
+split or grown, a conflict resolved) is `reworked` or `new` and
+unreviewed. Only the reviewer's own marks carry, never a carried one by
+itself, and unticking a carried cluster is the reviewer's own word: it
+stays unticked. Viewing the head carries provisionally; the first mark,
+new thread or verdict there stores the carries with the new patch set.
+`docs/product-rules.md`, "Marks carry only exact changes".
+
+## Why is a thread under "Not in this comparison"?
+
+Its file isn't in the diff being shown at all: the file was deleted, or
+renamed away with the commented line gone, in this patch set or an
+earlier one, or the PR no longer changes it (`reverted`). GitHub keeps
+such comments as outdated; carbonless keeps them in a trailing group with
+the original path and why, on every later patch set until the thread is
+resolved, so an unresolved thread never disappears with its file. A
+thread whose file is still there but whose lines are gone is listed under
+that file's header instead, with its fate and the code it was written on.
 
 ## Setting up an agent
 

@@ -51,7 +51,6 @@ import {
 } from "../../shared/types";
 import { AgentOverviewRow } from "../agent/AgentOverviewRow";
 import {
-	commentsQuery,
 	OVERVIEW_FRESH_MS,
 	overviewAge,
 	overviewQuery,
@@ -59,13 +58,21 @@ import {
 	sessionQuery,
 } from "../api";
 import { type FilesSearch, threadTarget } from "../files/landing";
+import {
+	ChangedSince,
+	OpenedOnChip,
+	PlacementChip,
+	PlacementProvider,
+	usePlacementInfo,
+	useSessionPlacements,
+} from "../files/ThreadFate";
 import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { usePageActive } from "../pageActive";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
 import { Spinner } from "../Spinner";
-import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
+import { Tooltip } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
 	CommentActions,
@@ -85,6 +92,7 @@ import {
 	useCanAct,
 } from "../threads/Conversation";
 import { kept, useDrafts } from "../threads/drafts";
+import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { Avatar, PeopleProvider, TINTS, usePerson } from "../threads/people";
 import { canToggle } from "../threads/ResolveButton";
@@ -157,6 +165,9 @@ export function OverviewPage() {
 		enabled: stale,
 	});
 	const threads = useThreads(data?.readId);
+	// Where each unresolved thread sits in the session's snapshot: the
+	// cards' "changed since" and fate chips.
+	const placementInfo = useSessionPlacements(threads.readId);
 	// What each thread list shows, for the order comments are read in.
 	const [shown, setShown] = useState<Record<string, ShownThreads>>({});
 	const onShown = useCallback(
@@ -194,12 +205,14 @@ export function OverviewPage() {
 	return (
 		<ImageErrorContext value={onImageError}>
 			<PeopleProvider threads={threads.view?.threads}>
-				<OverviewContent
-					overview={overview}
-					threads={threads}
-					onShown={onShown}
-					updateError={revalidate.isError ? revalidate.error : null}
-				/>
+				<PlacementProvider value={placementInfo}>
+					<OverviewContent
+						overview={overview}
+						threads={threads}
+						onShown={onShown}
+						updateError={revalidate.isError ? revalidate.error : null}
+					/>
+				</PlacementProvider>
 			</PeopleProvider>
 		</ImageErrorContext>
 	);
@@ -1714,6 +1727,8 @@ function ThreadItem({
 							{gone ? "Deleted" : "Moving…"}
 						</span>
 					)}
+					<OpenedOnChip thread={thread} />
+					<PlacementChip thread={thread} />
 					<ThreadStatus thread={thread} mark={false} />
 					{!thread.hasReply && !thread.resolved && (
 						<Badge tone="yellow" icon={ReplyIcon}>
@@ -1730,6 +1745,7 @@ function ThreadItem({
 			</div>
 			<div className="space-y-2 px-3 pt-1 pb-3">
 				<ThreadPlace thread={thread} line={line} target={target} />
+				<ThreadFateLine thread={thread} />
 				{thread.code?.source === "pending" ? (
 					<div className="grid gap-3 md:grid-cols-2 md:items-start">
 						{/* The code is still being built: the pane's frame. */}
@@ -1798,6 +1814,13 @@ function ThreadItem({
 	);
 }
 
+/** A changed thread's fate line ("Line rewritten since PS1 · See on PS1"). */
+function ThreadFateLine({ thread }: { thread: Thread }) {
+	const placement = usePlacementInfo().placements?.get(thread.id);
+	if (placement?.kind !== "changed") return null;
+	return <ChangedSince thread={thread} placement={placement} lines={false} />;
+}
+
 /** No comment (the opener's not read yet): no writes to it. */
 const NO_COMMENT: ThreadComment = {
 	id: "",
@@ -1813,30 +1836,6 @@ const NO_COMMENT: ThreadComment = {
 	viewerCan: { update: false, delete: false },
 	deleted: false,
 };
-
-/** "1 reply", "2 replies". */
-const repliesText = (n: number) => `${n} ${n === 1 ? "reply" : "replies"}`;
-
-/**
- * How many replies a card has: GitHub's count past the opener, plus the
- * viewer's own pending ones once their comments are in, plus replies sent
- * and not yet confirmed.
- */
-function useReplyCount(
-	thread: Thread,
-	readId: string,
-): { n: number; pending: number } {
-	const sending = useThreadWrites().threads.get(thread.id)?.replies.length ?? 0;
-	const known = useQuery({
-		...commentsQuery(readId, thread.id),
-		enabled: false,
-	}).data;
-	const pending = known?.comments.filter((c) => c.pending).length ?? 0;
-	return {
-		n: Math.max(0, thread.commentCount - 1) + pending + sending,
-		pending,
-	};
-}
 
 /**
  * What a card's toggle opens to: "more" when there's something to read
@@ -1855,94 +1854,6 @@ export function toggleKind(p: {
 	if (p.canReply) return "reply";
 	if (p.canResolve) return "resolve";
 	return "more";
-}
-
-/** The toggle's words, closed and open, by what it opens to. */
-const TOGGLE_TEXT = {
-	more: { closed: "Show more", open: "Show less" },
-	reply: { closed: "Reply", open: "Hide" },
-	resolve: { closed: "Resolve", open: "Hide" },
-} as const;
-
-/**
- * The card's one toggle: "Show more", with how many replies wait behind
- * it (and a clock for the viewer's pending ones), or "Show less". On a
- * card with nothing more to read, "Reply" (or "Resolve") and "Hide".
- */
-function MoreToggle(props: {
-	open: boolean;
-	onClick: () => void;
-	controls: string;
-	replies: { n: number; pending: number };
-	kind: "more" | "reply" | "resolve";
-}) {
-	const { open, replies, kind } = props;
-	const text = TOGGLE_TEXT[kind];
-	const KindIcon =
-		kind === "reply" ? ReplyIcon : kind === "resolve" ? CheckCircleIcon : null;
-	const { pending } = replies;
-	// Why the count passes the header's, and why it grew.
-	const pendingTip =
-		!open && pending > 0
-			? `${pending} pending, only you see ${pending === 1 ? "it" : "them"}`
-			: null;
-	const toggle = (trigger?: TooltipTriggerProps) => (
-		<button
-			{...trigger}
-			type="button"
-			aria-expanded={open}
-			aria-controls={props.controls}
-			aria-label={
-				open
-					? text.open
-					: [
-							text.closed,
-							replies.n > 0 ? repliesText(replies.n) : "",
-							pendingTip ?? "",
-						]
-							.filter(Boolean)
-							.join(", ")
-			}
-			data-testid="thread-more"
-			onClick={props.onClick}
-			className="-mb-2 flex min-h-10 items-center gap-1 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-		>
-			{KindIcon && !open ? (
-				<KindIcon size={16} aria-hidden />
-			) : (
-				<ChevronDownIcon
-					size={16}
-					aria-hidden
-					className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
-				/>
-			)}
-			{open ? text.open : text.closed}
-			{!open && replies.n > 0 && (
-				<>
-					<span aria-hidden className="px-0.5">
-						·
-					</span>
-					<CommentDiscussionIcon size={16} aria-hidden />
-					{repliesText(replies.n)}
-				</>
-			)}
-			{pendingTip && (
-				<ClockIcon
-					size={16}
-					aria-hidden
-					data-testid="replies-pending"
-					className="text-warn"
-				/>
-			)}
-		</button>
-	);
-	return pendingTip ? (
-		<Tooltip content={pendingTip} describe={false}>
-			{toggle}
-		</Tooltip>
-	) : (
-		toggle()
-	);
 }
 
 /**

@@ -57,6 +57,23 @@ const specs = readdirSync("e2e")
 // not untested; an entry with no specs, covered by unit tests alone. Files
 // outside src/, e2e/ and test/ (docs, scripts) run none.
 const E2E_MAP = [
+	// Pure (hunks in, placements out); its unit tests are the coverage.
+	[/^src\/shared\/tracer\//, []],
+	// The re-review engine (shape, interdiff, carry): the methodology
+	// matrix drives it end to end, the Files page's graph and since view
+	// read its answers.
+	[/^src\/(server|shared)\/rereview\//, ["methodology", "rereview"]],
+	// Thread placement in the page: the changed card, the unplaced list,
+	// the trailing group; Files changed's threads at large.
+	[
+		/^src\/web\/files\/(ThreadFate|NotInComparison|threadPlacement|ThreadRow)\.tsx?$/,
+		["rereview", "files-threads"],
+	],
+	// The patch set graph, the toast and the since view (the comparison).
+	[
+		/^src\/web\/files\/(PatchsetGraph|HeadToast|graphCards|comparison|FilesPage|FileDiff|DiffBody|FileTree|ProgressBar|useSetStates|landing)\.tsx?$|^src\/web\/(App|shortcuts)\.tsx$|^e2e\/pr-setup\.ts$/,
+		["rereview"],
+	],
 	[/^src\/web\/agent\//, ["agent", "agent-setup", "agent-join"]],
 	// The join bar sits above the header (App), the setup line's key (app.ts).
 	[/^src\/web\/App\.tsx$|^src\/server\/app\.ts$/, ["agent-join"]],
@@ -114,6 +131,12 @@ const E2E_MAP = [
 		/^src\/web\/verdict\/|^src\/server\/verdict\.ts$|^src\/web\/(App|pages|router)\.tsx?$|^src\/web\/files\/(FilesPage|RefusedWrites)\.tsx$|^src\/web\/threads\/(threadWrites|refusals)\.ts$/,
 		["verdict"],
 	],
+	// The markable invariant: whatever renders units, keys their lines or
+	// saves their states (docs/product-rules.md).
+	[
+		/^src\/web\/files\/(DiffBody|FileDiff|FilesPage|whitespace|sideBySide|since|useSince|useSetStates|stateSync)\.tsx?$|^src\/server\/(rereview\/engine|diff\/hunks)\.ts$|^test\/markable(-harness)?\.tsx?$|^src\/shared\/pieces\.ts$/,
+		["markable"],
+	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	// Unit-test data (wordBlocks.fixture.test.ts); inlineDiff.spec.ts reads
 	// a few of its cases.
@@ -135,7 +158,7 @@ const E2E_MAP = [
 	],
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],
 	[
-		/^src\/server\/asOf\.ts$|^src\/web\/(HeadBanner|RelativeTime)\.tsx$/,
+		/^src\/server\/asOf\.ts$|^src\/web\/RelativeTime\.tsx$/,
 		["asof", "overview", "pinned-head"],
 	],
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
@@ -165,7 +188,7 @@ const reasons = [];
 for (const file of changed) {
 	// Unit-test-only files.
 	if (
-		/\.test\.tsx?$|^test\/(setup|diff-fixture|pr-fixture|methodology-matrix)\.ts$|^vitest\.config/.test(
+		/\.test\.tsx?$|^test\/(setup|diff-fixture|pr-fixture|methodology-matrix|rereview-fixture)\.ts$|^vitest\.config/.test(
 			file,
 		)
 	) {

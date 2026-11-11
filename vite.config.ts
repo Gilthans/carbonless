@@ -1,6 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { thirdPartyNotices } from "./scripts/third-party-notices.mjs";
 
 // `pnpm dev`'s crb serve; CRB_API_PORT lets two worktrees run dev at once
 // (Vite itself moves to the next free port when 5173 is taken). Never 4747:
@@ -12,7 +13,8 @@ const toApi = { target: api, changeOrigin: true, headers: { origin: api } };
 
 export default defineConfig({
 	root: "src/web",
-	plugins: [react(), tailwindcss()],
+	// thirdPartyNotices: dist/THIRD-PARTY-NOTICES.md, from what the build uses.
+	plugins: [react(), tailwindcss(), thirdPartyNotices()],
 	build: {
 		outDir: "../../dist/web",
 		emptyOutDir: true,
