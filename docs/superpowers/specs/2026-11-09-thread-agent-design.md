@@ -61,8 +61,6 @@ into thread conversations without changing the format.
 - The agent drafting a comment, reply or new thread: CAR-83 (the owner's
   2026-11-09 words were added to it).
 - Fixing an answer that streams in and pushes the page: CAR-91.
-- Unread markers on span (code) agent threads. The data supports them. Only
-  thread conversations show them in this slice (my call: keeps the slice small).
 - Pushing conversations to GitHub or to another device: they stay in the
   private agent ref, as review buddy's do.
 
@@ -302,6 +300,12 @@ interface PromptEnvelope {
   agree (the owner reads on both, through the same server).
 - The **"new" divider** in the conversation sits above the first unseen
   message. It stays until the conversation closes.
+- **Span agent threads too** (owner, 2026-11-11: "If it's cheap let's add
+  it to regular agent threads as well"). The seen event and the unread
+  fold are per agent thread, so they cover span threads with no data
+  change. The UI work: the accent dot on span agent cards and their
+  bubbles in Files changed, in the file tree's dot, and in the Overview
+  agent row's unread count.
 
 ### In the UI (see the mockups)
 
@@ -349,8 +353,8 @@ much space").
   comment counter are 40px tall, the strip 40px wide. Principle 5: no
   horizontal page scroll at 360px, and a Playwright phone test.
 - **The Overview's agent row** (`AgentOverviewRow`) counts thread
-  conversations with span threads, and its unread count links to the first
-  unread one.
+  conversations with span threads, and its unread count (both kinds) links
+  to the first unread one.
 
 ### Living with what master already does
 
@@ -393,7 +397,8 @@ Reuses review buddy's routes (`/api/r/:id/agent/threads…`). Additions:
 | `POST agent/threads/:tid/seen` | `{ upTo }`; no-op if already seen up to there |
 | `POST agent/threads/:tid/resolved` | 409 for a thread conversation (resolve the GitHub thread instead) |
 
-`GET agent/threads` returns thread conversations with `unread: boolean`,
+`GET agent/threads` returns every agent thread (span and thread
+conversations) with `unread: boolean`, and thread conversations with
 `suggests`, `origin`, and each human message's `view`.
 
 ## Tests (beyond what review buddy has)
@@ -416,7 +421,8 @@ Reuses review buddy's routes (`/api/r/:id/agent/threads…`). Additions:
   GitHub resolve or reply writers.
 - Web: links in answers land on the line, non-PR paths stay text, a
   `javascript:` link from the agent is dropped; the unread dot appears and
-  clears after viewing (fake ACP answer while the conversation is closed); the placeholder switches between
+  clears after viewing (fake ACP answer while the conversation is closed), on a
+  thread conversation and on a span agent thread; the placeholder switches between
   "Reply…" and "Ask agent…"; the Ask agent button is absent on id-less, deleted,
   `--viewer` and `--as-of` threads.
 - Playwright, desktop and phone: open a conversation from an Overview
@@ -449,9 +455,9 @@ on close).
 - Unread uses `accent` (periwinkle), not yellow. **Owner: ok.**
 - Seen marks live in the private ref, so phone and desktop agree. **Owner: ok.**
 - The card header and the composer row (with Resolve) are never covered. **Owner: yes.**
-- Text typed to the agent keeps a thread open on Resolve in Files changed, like an unsent reply.
-- Each card opens its conversation independently; the open state isn't stored.
-- Unread markers only on thread conversations this slice.
+- Text typed to the agent keeps a thread open on Resolve in Files changed, like an unsent reply. **Owner: yes.**
+- Each card opens its conversation independently; the open state isn't stored. **Owner: yes.**
+- Unread markers on span agent threads too. **Owner: yes, if cheap (it is: UI only).**
 - `[suggest-resolve]` line as the suggestion marker.
 - A question waiting when the thread is resolved is still answered.
 - Orphaned conversations live in the Overview's agent row.
