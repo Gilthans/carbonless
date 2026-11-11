@@ -252,6 +252,55 @@ async function scrollToStick(page: Page, tabX: number | undefined, below = 0) {
 	}
 }
 
+test("the tabs and the title never move as the agent loads: the chip's place is kept from the first paint", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	// The overview (whether there is an agent) and the agent's status,
+	// each held until let go.
+	const held = (pattern: RegExp) => {
+		let release = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		return {
+			route: page.route(pattern, async (route) => {
+				await gate;
+				await route.continue();
+			}),
+			release: () => release(),
+		};
+	};
+	const overview = held(/\/api\/r\/[^/]+\/overview/);
+	const agent = held(/\/api\/r\/[^/]+\/agent$/);
+	await overview.route;
+	await agent.route;
+	await page.goto(s.url);
+	const files = page.getByRole("link", { name: "Files changed" });
+	await expect(files).toBeVisible();
+	const at = async () => ({
+		tab: await files.boundingBox(),
+		title: (await page.getByTestId("header-title").boundingBox())?.x,
+	});
+	const first = await at();
+	// Its place, spinning, by the logo (soft: the tabs are what's checked).
+	await expect.soft(page.getByTestId("agent-chip-pending")).toBeVisible();
+	overview.release();
+	await expect(page.getByTestId("agent-chip")).toHaveAttribute(
+		"aria-busy",
+		"true",
+	);
+	expect(await at()).toEqual(first);
+	agent.release();
+	await expect(page.getByTestId("agent-chip-icon")).toBeVisible();
+	expect(await at()).toEqual(first);
+});
+
 test("a long title wrapping over several lines: the chip stays by the logo, then in sight as the header sticks", async ({
 	page,
 	pr,

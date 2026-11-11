@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import type { AgentStatus } from "../../shared/agent";
-import { ApiError } from "../api";
+import { ApiError, overviewQuery } from "../api";
 import { plural } from "../overview/parts";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
@@ -76,30 +76,74 @@ export function useAgentSync(
 	}, [key, client]);
 }
 
+/** The chip's icon colour: the status dot's, as text (agentDot). */
+export function agentInk(status: AgentStatus): string {
+	switch (agentDot(status)) {
+		case "bg-bad":
+			return "text-bad";
+		case "bg-ok":
+			return "text-ok";
+		case "bg-warn":
+			return "text-warn";
+		default:
+			return "text-unreviewed";
+	}
+}
+
+/** The chip's one size, wherever it is (and the space kept for it). */
+export const CHIP_BOX = "flex h-10 w-7 shrink-0 items-center justify-center";
+
+/**
+ * Whether the header keeps a place for the chip: from the first paint
+ * (the overview, which says whether there is an agent, still on its way),
+ * until known to have none (as of a cutoff, --viewer, no agent).
+ */
+export function useAgentChipPlace(asOf: boolean): boolean {
+	const overview = useQuery({ ...overviewQuery, enabled: false });
+	const on = overview.data?.writes === "on";
+	// Reads what the chip read; never asks itself (no chip, no read).
+	const status = useQuery({ ...agentStatusQuery, enabled: false });
+	if (asOf) return false;
+	if (overview.data && !on) return false;
+	return !(status.error instanceof ApiError && status.error.status === 404);
+}
+
 /**
  * The reviewer's agent in the header, by the logo (in the sticky row,
- * beside the compact mark, once scrolled): the sparkle, its name and a
- * status dot (on a phone the sparkle alone, the dot a badge on it), the
- * detail in the tooltip.
- * Pressing it opens the agent setup in every state. Its first read shows a
- * spinner in the dot's place; a routine poll changes nothing unless the
+ * beside the compact mark, once scrolled): the sparkle alone, coloured by
+ * its status; the name and detail in the tooltip. One size in every state
+ * (CHIP_BOX). Pressing it opens the agent setup in every state. Until the
+ * overview says whether there is an agent, and on its first read, a
+ * spinner in the icon's place; a routine poll changes nothing unless the
  * answer does. None where the review has no agent (--viewer, --as-of).
  */
 export function AgentChip({
 	dismissKey,
+	asOf = false,
 }: {
 	/** Closes the tooltip whenever it changes (the chip moved). */
 	dismissKey?: unknown;
+	/** As of a cutoff (the session says): no agent, no place for one. */
+	asOf?: boolean;
 } = {}) {
 	const client = useQueryClient();
 	const on = useAgentOn();
 	const status = useQuery({ ...agentStatusQuery, enabled: on });
+	const place = useAgentChipPlace(asOf);
 	useAgentSync(client, status.data);
-	if (
-		!on ||
-		(status.error instanceof ApiError && status.error.status === 404)
-	) {
-		return null;
+	if (!place) return null;
+	if (!on) {
+		// Whether there is an agent isn't known yet: its place, spinning.
+		return (
+			<span
+				aria-hidden
+				data-chip-space
+				data-testid="agent-chip-pending"
+				className={CHIP_BOX}
+			>
+				<SpinnerIcon size={16} className="text-muted" />
+			</span>
+		);
 	}
 	const data = status.data;
 	const tip = data
@@ -107,8 +151,6 @@ export function AgentChip({
 		: status.error
 			? status.error.message
 			: "Loading your agent";
-	const off = !data || data.state === "off" || data.state === "elsewhere";
-	const name = data?.agent?.name;
 	return (
 		<Tooltip content={tip} describe={false} dismissKey={dismissKey}>
 			{(trigger) => (
@@ -120,37 +162,20 @@ export function AgentChip({
 					aria-label={`Your agent: ${tip}`}
 					aria-busy={status.isPending || undefined}
 					onClick={openAgentSetup}
-					className="inline-flex min-h-10 items-center rounded-full focus-visible:outline-2 focus-visible:outline-accent sm:min-h-0"
+					className={`${CHIP_BOX} rounded-full hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent`}
 				>
-					{/* A phone's is the sparkle alone, its dot a badge on the corner. */}
-					<span className="relative inline-flex min-h-6 w-7 items-center justify-center rounded-full border border-line bg-raised text-xs text-ink-soft hover:text-ink sm:w-auto sm:gap-1.5 sm:px-2">
-						<SparkleFillIcon
-							size={14}
-							aria-hidden
-							className={`text-agent-ink ${off ? "opacity-50" : ""}`}
-						/>
-						{name && (
-							<span className="hidden max-w-[10rem] truncate sm:inline">
-								{name}
-							</span>
-						)}
-						{status.isPending ? (
-							<span
-								data-testid="agent-chip-loading"
-								className="absolute -top-1 -right-1 flex rounded-full bg-raised sm:static sm:bg-transparent"
-							>
-								<SpinnerIcon size={10} className="text-muted" />
-							</span>
-						) : (
-							<span
-								aria-hidden
-								data-testid="agent-chip-dot"
-								className={`absolute -top-0.5 -right-0.5 h-2 w-2 shrink-0 rounded-full ring-2 ring-raised sm:static sm:ring-0 ${
-									data ? agentDot(data) : "bg-bad"
-								}`}
-							/>
-						)}
-					</span>
+					{status.isPending ? (
+						<span data-testid="agent-chip-loading" className="flex">
+							<SpinnerIcon size={16} className="text-muted" />
+						</span>
+					) : (
+						<span
+							data-testid="agent-chip-icon"
+							className={`flex ${data ? agentInk(data) : "text-bad"}`}
+						>
+							<SparkleFillIcon size={16} aria-hidden />
+						</span>
+					)}
 				</button>
 			)}
 		</Tooltip>
