@@ -66,3 +66,23 @@ describe("a resolved agent bubble", () => {
 		expect(button).toHaveClass("select-none");
 	});
 });
+
+describe("an agent bubble's count", () => {
+	it("counts unresolved threads only; all resolved, it counts them with the check", () => {
+		const t = (id: string, resolved: boolean) => ({
+			...agentThread(resolved),
+			id,
+		});
+		render(
+			<AgentBubble
+				threads={[t("A", false), t("R", true), t("B", false)]}
+				open={false}
+				onToggle={() => {}}
+				where="on line 3"
+			/>,
+		);
+		const agent = screen.getByTestId("agent-bubble");
+		expect(agent).toHaveAccessibleName("2 agent threads on line 3");
+		expect(agent).toHaveTextContent(/^2$/);
+	});
+});

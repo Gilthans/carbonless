@@ -14,6 +14,7 @@ import {
 	prView,
 	type reviewThread,
 	type Scenario,
+	timelineFact,
 	writeScenario,
 } from "../test/fake-gh/scenario";
 import {
@@ -66,6 +67,19 @@ export interface Pr {
 	number: typeof PR_NUMBER;
 	/** Pushes a commit (its files and deletions) onto the PR and points the fake gh at it; returns its SHA. */
 	moveHead: (commit: FixtureCommit) => string;
+	/**
+	 * Force-pushes: commits `commit` on top of `onto` (the merge base by
+	 * default), so the new head does not descend from the old one, points
+	 * the fake gh at it and adds the force-push to the PR's timeline;
+	 * returns its SHA.
+	 */
+	forceHead: (commit: FixtureCommit, onto?: string) => string;
+	/** Force-pushes the PR back to `sha` (an earlier head), with the timeline event. */
+	rewindHead: (sha: string) => void;
+	/** The PR's head as the fake gh reports it now. */
+	head: () => string;
+	/** The PR's merge base (its base branch's commit). */
+	mergeBase: string;
 	/** Edits the fake gh's scenario in place (lost on the next moveHead). */
 	editScenario: (edit: (s: Scenario) => void) => void;
 	/** Every fake gh call so far, a line each (its args), in the order they started. */
@@ -129,6 +143,8 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 		);
 	const mergeBase = repo.shas[0] ?? "";
 	let head = repo.shas.at(-1) ?? "";
+	// The timeline the fake gh serves: the force-pushes are appended to it.
+	const timeline: unknown[] = [...(opts.timeline ?? [])];
 	// The PR head lives only under refs/pull/<n>/head, like on GitHub.
 	git("update-ref", `refs/pull/${PR_NUMBER}/head`, head);
 	git("reset", "--quiet", "--hard", mergeBase);
@@ -152,7 +168,7 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 						reviewThreads: opts.threads ?? [],
 						reviews: opts.reviews ?? [],
 						comments: opts.comments ?? [],
-						timelineItems: opts.timeline ?? [],
+						timelineItems: timeline,
 					},
 				},
 			},
@@ -160,21 +176,52 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 		});
 	const scenarioPath = write();
 
+	const commitOn = (base: string, commit: FixtureCommit) => {
+		const work = join(workdir, "work");
+		git("worktree", "add", "--quiet", "--detach", work, base);
+		try {
+			return commitInWorktree(work, commit);
+		} finally {
+			git("worktree", "remove", "--force", work);
+		}
+	};
+	const forcePushed = (before: string, after: string) => {
+		timeline.push(
+			timelineFact("HeadRefForcePushedEvent", {
+				login: "octo-author",
+				at: new Date().toISOString(),
+				beforeCommit: { oid: before },
+				afterCommit: { oid: after },
+			}),
+		);
+	};
+
 	return {
 		repo,
 		scenarioPath,
 		number: PR_NUMBER,
+		mergeBase,
+		head: () => head,
 		moveHead: (commit) => {
-			const work = join(workdir, "work");
-			git("worktree", "add", "--quiet", "--detach", work, head);
-			try {
-				head = commitInWorktree(work, commit);
-			} finally {
-				git("worktree", "remove", "--force", work);
-			}
+			head = commitOn(head, commit);
 			git("update-ref", `refs/pull/${PR_NUMBER}/head`, head);
 			write();
 			return head;
+		},
+		forceHead: (commit, onto = mergeBase) => {
+			const before = head;
+			head = commitOn(onto, commit);
+			git("update-ref", `refs/pull/${PR_NUMBER}/head`, head);
+			forcePushed(before, head);
+			write();
+			return head;
+		},
+		rewindHead: (sha) => {
+			const before = head;
+			head = sha;
+			git("update-ref", `refs/pull/${PR_NUMBER}/head`, head);
+			forcePushed(before, head);
+			write();
 		},
 		editScenario: (edit) => {
 			const s = JSON.parse(readFileSync(scenarioPath, "utf8")) as Scenario;

@@ -16,7 +16,7 @@ and the reviewer's corrections) should live in git, not in loose JSON files:
 - Its identity survives rebases and force-pushes of the PR branch.
 
 This replaces the JSON-file storage first proposed in
-`2026-10-21-pr-review-parity-design.md`. The cluster concept, cluster identity,
+the PR review parity spec (Linear, M2 project documents). The cluster concept, cluster identity,
 cluster states and the coverage invariant from that spec are used here as
 defined there.
 
@@ -24,11 +24,12 @@ The general principles behind this design, with their reasoning, are in
 `docs/gitdb-design-principles.md`. The numbers in brackets below, like
 "(GitDB 19)", point to them.
 
-**Out of scope for this milestone:** carrying review state over from an earlier
-revision to a new one. It's planned with "Re-review after new pushes" in
-`docs/todo.md`. Until then, a reviewer keeps seeing the snapshot they started
-on (see "After a push"), and the event format leaves room for carry-over (see
-"Deferred").
+**Re-review after new pushes** (design: the
+document "Re-review after new pushes: design" on Linear CAR-5) adds to this format
+the events, refs and folding that let a reviewer move to a new push and keep
+every mark it can carry: `carried` and `thread-placed` events, the `-base` pin
+ref, per-patch-set folding. The engine that computes carries and the UI
+that moves the reviewer are its own PRs; the storage below is ready for them.
 
 ## Constraints
 
@@ -46,7 +47,10 @@ on (see "After a push"), and the event format leaves room for carry-over (see
   reviewer's coverage comes only from their own progress ref, so nothing another
   person pushes can make it look more complete.
 - **AI never writes review state.** Only the reviewer (`by: "human"`) writes
-  cluster states. Enforced on write and covered by tests.
+  cluster states. The deterministic engine (`by: "auto"`) writes only
+  `carried` events, and the fold trusts an entry of one only when the state
+  it carries is a human state in the source patch set (see "Reading").
+  Enforced on write and on read, and covered by tests.
 
 ## Concepts
 
@@ -64,22 +68,30 @@ going through `gh`). Each source defines its own key, and nothing outside the
 source assumes a review is a PR. The source and its fields are stored in the
 review's metadata.
 
-**Revision.** Any head the tool sees for the review's branch: every push,
-including force-pushed rebases and merges. Identified by a hash of its
-`(merge base, head)` pair. Revisions are not recorded as events: they come and
-go with the branch, and the current one is always derivable from git.
+**Snapshot.** One state of the PR: a `(merge base, head)` pair and its
+three-dot diff. Any head the tool sees for the review's branch is one: every
+push, including force-pushed rebases and merges. Identified by a hash of the
+pair, the **snapshot id**, which code and routes still call `revision`
+(`Snapshot.revision`, `cluster-state.patchset`). Snapshots are not recorded
+as events: they come and go with the branch, and the current one is always
+derivable from git.
 
-**Patch set.** A revision that is a landmark in one reviewer's history: one they
-actually reviewed against. Patch sets are per reviewer and recorded in that
-reviewer's progress ref. A revision becomes a patch set automatically on the
-reviewer's first action against it (marking or crossing off a cluster). A patch
-set stays tied to the revision it was started on. It never moves to a later
-push: acting on a new push starts a new patch set.
+**Patch set.** A snapshot that is a landmark in one reviewer's history: one
+they actually reviewed against. Patch sets are per reviewer and recorded in
+that reviewer's progress ref. A snapshot becomes a patch set automatically on
+the reviewer's first lasting action against it (marking or crossing off a
+cluster; the re-review design adds opening a thread and giving a verdict). A
+patch set stays tied to the snapshot it was started on. It never moves to a
+later push: acting on a new push starts a new patch set, which records which
+one it follows (`since`) and how the two relate (`shape`). Only the latest
+patch set takes writes; earlier ones are read-only, and open exactly as
+reviewed (their snapshots are pinned, see "Ref layout").
 Patch sets are numbered per reviewer in the order they were started ("PS2"); the
-number is a display label, the revision hash is the identity. The name comes
-from Gerrit, with two differences: a Gerrit patch set is a single commit and
-every upload creates one, while ours is a range that can span many commits and
-only revisions the reviewer acted on become one.
+number is a display label, the snapshot id is the identity, so two patch sets
+never share a snapshot. The name comes from Gerrit, with two differences: a
+Gerrit patch set is a single commit and every upload creates one, while ours
+is a range that can span many commits and only snapshots the reviewer acted
+on become one.
 
 **Event.** One JSON object recording one action. Events are append-only and
 never edited. Undoing something is a new event.
@@ -94,6 +106,7 @@ anyone who can read the refs.
 refs/crb/reviews/<review-id>/meta                            shared review metadata
 refs/crb/reviews/<review-id>/reviewers/<reviewer>/progress        one per reviewer
 refs/crb/reviews/<review-id>/reviewers/<reviewer>/patchsets/<n>   head of patch set n
+refs/crb/reviews/<review-id>/reviewers/<reviewer>/patchsets/<n>-base   merge base of patch set n
 refs/crb/reviews/<review-id>/reviewers/<reviewer>/agent/threads   the reviewer's private agent threads
 refs/crb/lookup/<source>/<key-hash>                               lookup: source key → review id
 refs/crb/inbox/<reviewer>                                         one per reviewer per repo: Home's annotations
@@ -101,13 +114,20 @@ refs/crb/inbox/<reviewer>                                         one per review
 
 - **meta** holds review-level events: created, closed, compacted. Anyone may
   append. Merging two copies is a plain union.
-- **patchsets/<n>** points at the head commit of the reviewer's patch set `n`.
-  A head OID stored in an event doesn't keep the commit alive. After a
-  force-push nothing else references it, so `git gc` could delete it, and the
-  reviewer's snapshot (see "After a push") would be lost. One ref per patch set
-  keeps it reachable, locally and on the remote. The merge base needs no ref:
-  it's in the base branch's history. Patch sets are few per reviewer, so these
-  refs add little.
+- **patchsets/<n>** points at the head commit of the reviewer's patch set `n`,
+  and **patchsets/<n>-base** at its merge base. An OID stored in an event
+  doesn't keep the commit alive. After a force-push nothing else references
+  the old head, so `git gc` could delete it, and the reviewer's snapshot (see
+  "After a push") would be lost; a base branch that is rewritten does the
+  same to the merge base. One ref each keeps them reachable, locally and on
+  the remote, so any patch set opens exactly as reviewed. Both are created in
+  the transaction that starts the patch set, with "must not exist yet" as
+  their old value, so two tabs starting the same number can't both succeed
+  (`ReviewService.ensurePatchset`). A reader treats a missing `-base` ref (a
+  patch set started before it existed) as unpinned and falls back to the
+  merge base OID recorded in `patchset-started`, which is almost always still
+  reachable. Patch sets are few per reviewer (a review with 3 reviewers and 5
+  patch sets each has 30 pin refs), so these refs add little (GitDB 4, 14).
 - **progress** holds one reviewer's patch sets and cluster states. Only that
   reviewer writes it, so two people can never produce conflicting writes. This
   is a convention, not enforced: anyone with push access can write any ref
@@ -197,7 +217,7 @@ Every event has:
 | `id` | Lowercase ULID, unique per event |
 | `type` | Event type |
 | `ts` | Time the action happened (ms since epoch) |
-| `by` | `human` or `ai` (later: `auto`, see "Deferred") |
+| `by` | `human`, `ai`, or `auto` for the deterministic re-review engine |
 | `actor` | Reviewer slug |
 | `details` | Optional. A type-specific object for extra information about the event |
 
@@ -214,17 +234,42 @@ Initial event types:
 | meta | `review-created` | source name and key; for `github-pr`: owner, repo, PR number and URL, base branch, head branch and head repository |
 | meta | `review-closed` | `merged` or `closed`, merge commit if any |
 | meta | `compacted` | see "Compaction" |
-| progress | `patchset-started` | patch set number, revision ID, merge base, head |
-| progress | `cluster-state` | patch set ID, cluster identity hash, file path, state (`unreviewed`, `reviewed`, `crossed-off`), optional reason for crossed off |
+| progress | `patchset-started` | patch set number, snapshot id (`revision`), merge base, head; optional, from re-review on: `since` (the patch set it follows, a smaller number), `shape` (`S1`, `S3`, `S4a`, `S4b`, `S4c`, `S5`, `S6`, `S7`), `baseBranch` (GitHub's base branch name then), `interdiff` (`available` or `unavailable`) |
+| progress | `cluster-state` | snapshot id (`patchset`), cluster identity hash, file path, state (`unreviewed`, `reviewed`, `crossed-off`), optional reason for crossed off |
+| progress | `carried` | `from` and `to` (patch set numbers, `from < to`), `rule` (`exact` or `rename`), `states`: a list of `{ key, fromKey, state }`, one per cluster carried under that rule, `state` being `reviewed` or `crossed-off`; `fromKey` is written only when it differs from `key` (absent means equal: the reader fills it in) |
+| progress | `lines-state` | snapshot id (`patchset`), cluster identity hash, file path, `state` (`reviewed` or `crossed-off`), `lines`: line ranges of the cluster (see "Marks on part of a cluster") |
+| progress | `since-lines-state` | snapshot id (`patchset`), `since` (an earlier patch set's number), file `path`, `reviewed` and `crossed`: each `{ old, new }` line ranges on the since view's sides; the whole set for that (since, path) |
+| progress | `thread-placed` | `thread` (the thread's id), `patchset` (number), `anchor` (`path`, `startSide`, `startLine`, `side`, `line`), `engine` (the tracer's version, a positive integer) |
 
-Later features (carry-over, AI groupings, the reviewer's corrections to them)
-add their own types.
+`carried` holds many clusters in one event, so a move costs one event per
+rule, not one per cluster (see "Measurements"). It is written by the engine
+only, once, in the same commit as the `patchset-started` it carries into. A
+`thread-placed` is the reviewer's own placement of a thread in a patch set
+(an AI's later), overriding the engine's; computed placements are never
+stored. It lives in the reviewer's progress ref; once sync exists it is
+shared through `meta` only when it was placed or moved by hand (owner,
+2026-11-07).
 
-Write rules, enforced in code and tested:
+Later features (AI groupings, the reviewer's corrections to them) add their
+own types.
+
+Write rules, enforced in code (`validateForWrite`, `parseEvent`) and tested;
+a reader drops what breaks them:
 
 - `cluster-state` must have `by: "human"`.
-- `by: "ai"` events can never change a cluster's state.
+- `carried` must have `by: "auto"`; every entry's keys are cluster keys (64
+  hex characters, a repeat's `:2` suffix allowed; `fromKey` absent reads as
+  `key`) and its state `reviewed` or `crossed-off`, never `unreviewed`.
+- `thread-placed` must have `by: "human"` or `"ai"`, never `"auto"`.
+- `lines-state` and `since-lines-state` must have `by: "human"`; their
+  ranges must parse (pairs of integers, `0 <= start < end`).
+- `by: "ai"` events can never change a cluster's state; `by: "auto"` ones
+  can only carry one that a human already set (the fold checks, see
+  "Reading").
 - `agent-thread-resolved` must have `by: "human"` (see "Agent threads ref").
+- Agent events (`agent-thread-opened`, `agent-message`,
+  `agent-thread-resolved`) are a human's or the agent's (`by: "ai"`), never
+  `"auto"`.
 
 ## Writing
 
@@ -247,8 +292,153 @@ Write rules, enforced in code and tested:
 - **Compare-and-swap.** Update refs with `git update-ref <ref> <new> <old>`. If
   the ref moved, re-parent the commit onto the new tip and retry. Events are
   append-only, so there's nothing to merge.
-- **Several refs at once** (for example progress and a new `patchsets/<n>` ref
-  when a patch set starts) use one `git update-ref --stdin` transaction.
+- **Several refs at once** (progress and the new `patchsets/<n>` and
+  `patchsets/<n>-base` refs when a patch set starts) use one
+  `git update-ref --stdin` transaction. A start's `since` must be the
+  latest patch set's number as the store holds it at that moment (none for
+  PS1): its carries were computed against that patch set, and landing them
+  past a newer one would skip that one's human states (principle 2: an
+  untick there must stand). A start whose `since` is anything else is
+  refused as stale (HTTP 409), whether it lost a race just now or was
+  computed long ago, and the client computes it again. A start that loses
+  the race on the progress ref reads again and retries; if the snapshot is
+  a patch set by now, nothing is written.
+- **Starting the next patch set.** `recordStates` on a snapshot that is none
+  of the reviewer's patch sets starts one when told how
+  (`PatchsetStart`: `since`, `shape`, `baseBranch`, `interdiff` and the
+  `carried` events), else refuses it as stale (HTTP 409); PS1 needs no
+  start. A write against an earlier patch set is refused as read-only
+  (`ReadOnlyPatchsetError`, also 409). New threads and verdicts take the
+  same path before their GitHub write (re-review design, "Server").
+
+## Marks on part of a cluster
+
+Added 2026-11-08 (owner: "Marking a cluster as reviewed should affect only
+that cluster regardless of the original reworked cluster"; "Breaking the
+illusion of a regular review when reviewing an interdiff is a steep price
+to pay"). The since view shows the interdiff from an earlier patch set. One
+cluster of the patch set's snapshot can show there as several **pieces**:
+runs of its changed lines with lines unchanged since the earlier patch set
+between them as context. Every piece is reviewed, and crossed off, on its
+own, exactly as a cluster is in an ordinary review. A mark still belongs to
+the snapshot's clusters (principle 2: coverage comes only from them), so a
+piece's mark is a mark on part of its cluster.
+
+**Line ranges.** A cluster's lines are indexed in its own diff, its removed
+lines first (`0 … removed - 1`), then its added ones (`removed … lines - 1`).
+A set of them is a list of half-open ranges `[start, end)`, normalized
+(sorted, merged, none empty): `src/shared/lineRanges.ts`.
+
+**Which lines a piece owns** (`pieceRanges`, `src/shared/pieces.ts`; the
+engine computes it for the since view's hunks, `interdiffFileHunks`):
+
+- A shown added line is the cluster's line at its new number. A shown
+  removed line is the cluster's removed line at its place in the new base,
+  found by position: the since view numbers it in the earlier head (or its
+  virtual rebase), and the engine maps it back through that patch set's
+  own diff and the bases' diff (`lineKeys.baseLine`); its text must match
+  as a guard. Never by text alone: a twin elsewhere (a blank line, a `}`)
+  is another line. A line the earlier patch set added, or one that can't
+  be mapped, is none of the cluster's.
+- A cluster line no piece shows is unchanged since the earlier patch set.
+  It joins a piece only when it is unchanged since a line the reviewer
+  **reviewed** there: an added line that is the same line as one a reviewed
+  earlier cluster added (through the interdiff's line map), or a removed
+  base line a reviewed earlier cluster removed too (through the bases' line
+  map). Such an added line goes to the piece shown before it (the first
+  piece for those before any), a removed one to the first piece. Marking the
+  piece may cover it because it reads the same as a line the reviewer
+  marked reviewed on the earlier patch set, and nothing about it changed.
+  Only a whole `reviewed` mark vouches: a crossed-off or partly marked
+  earlier cluster vouches for nothing.
+- **Fails closed.** A line unchanged since a line that was *not* reviewed
+  (or one the engine can't map) joins no piece. Ticking every piece then
+  leaves the cluster partly reviewed (mixed in the full diff), and the
+  since view counts it under "only in the full diff". Tested in
+  `src/server/rereview/pieces.test.ts` and `src/shared/pieces.test.ts`.
+- A removed base line is keyed to the snapshot's cluster that removes that
+  base line (by position); a removal with no key of its own otherwise to the
+  snapshot's cluster at its place (`clusterAt`): the author changed that
+  place again, so its lines are that cluster's piece (the gallery's
+  `rr-pieces`, second section).
+
+**`lines-state`.** A piece's mark is written as one commit: a
+`cluster-state` `unreviewed` for the whole cluster, then a `lines-state`
+`reviewed` for its reviewed lines and one `crossed-off` for its crossed
+lines (each only when non-empty). The whole cluster's marks, every time:
+no merging with earlier ones. When the marks cover every line one way, the
+writer writes the whole mark (`cluster-state` `reviewed` or `crossed-off`)
+instead. It is a new event type, not a field of `cluster-state`: a reader
+that predates it skips it, and with the reset in front it sees the cluster
+**unreviewed**, never more reviewed than the reviewer marked (GitDB 8:
+fails closed, so no version bump). The fold applies a `lines-state` only to
+a cluster with no whole mark; the coverage join (`buildReviewView`,
+`viewOfLines`) drops a cluster's line marks entirely when any range lies
+past its lines or it is a file-level cluster. A cluster whose lines are all
+marked, some crossed off, counts as reviewed (as a file does) and shows its
+crossed lines; one partly marked is unreviewed, with its marked lines in
+the line counts (`ClusterView.reviewedLines`, `crossedLines`). A cluster
+marked piece by piece never carries and never vouches, even once every
+line is marked (its stored entry stays line marks; the carry takes whole
+human states only), so a later push asks for it again even when its change
+is identical; a `cluster-state` written by the full diff's box ends that.
+
+**Since-only pieces and `since-lines-state`.** A piece that owns no line
+of the snapshot (lines the earlier patch set had that are gone, or base
+lines restored: "reverted" when the snapshot's diff doesn't touch its
+place, else "removed") has nothing in the snapshot to mark. Its mark is
+kept against the comparison: the earlier patch set's number, the file's
+path, and its lines by number on the since view's two sides (`old`: the
+earlier head, or its virtual rebase on the new base; `new`: this head).
+One event holds the whole set for a (since, path), reviewed and crossed;
+the last wins. **Departure** (owner's brief: "the earlier patch set's
+cluster key and the piece's old-side range"): no cluster key, because a
+piece can hold lines of no earlier cluster (a base line the earlier patch
+set kept); path and range name the lines without one. Both sides are fixed
+for a started patch set (its own and the earlier one's heads are pinned),
+so the numbers stay put, as long as the virtual rebase comes out the same
+(git's merge-tree: a change in it can shift a stale mark; it never marks a
+cluster, see below). A mark counts for a piece only when it holds all of
+the piece's lines: a range that holds no since-only piece of this
+comparison marks nothing, and a range that holds more than the marked
+pieces marks every since-only piece inside it, in the since view only. These marks never change a
+cluster's state, never carry, and never count in the snapshot's progress;
+the since view counts an unmarked since-only piece in "to read", and the
+engine's answer lists them per file (`sinceOnly`) and in `toRead`.
+
+**Counts follow the view** (owner, 2026-11-08: "all the counts should be
+related to the interdiff, not the base diff"). In the since view every
+count is over its **units** (`sinceUnits`, `src/shared/pieces.ts`): each
+piece, and the rest of a cluster no piece owns (only the full diff shows
+it: lines unchanged since a line not reviewed then, or a cluster the
+interdiff doesn't show) for a reworked or new cluster and for any whose
+mark is not the engine's carry (one the reviewer unticked), marked as the
+folded marks say: no unmarked line is left out (principle 2). A since view
+with no units says "Nothing to read", and one the engine failed "Not
+counted": never the full diff's numbers. The progress bar
+(units, their shown lines, files with any), "to read", the file header
+chips, the tree's dots and "needs eyes", and the connector of the
+comparison on screen all count them and drop as pieces are marked; the
+engine's `toRead` counts every unit, for any other connector. Each file's
+header meter counts its own units too. The full diff counts the
+snapshot's clusters. None of this is stored.
+
+**Writes** (`ReviewService.recordStates`, `POST /review/states`): a change
+with `reviewedLines`/`crossedLines` (state `unreviewed`, no reason) whose
+ranges fit the cluster; a change with `sinceMark` (key
+`since:<since>:<path>`, a path of printable characters, `since` an earlier
+patch set of the reviewer's). Anything else is refused by key (400) before
+anything is written.
+
+**Sizes**, measured 2026-11-08 (`reviews.test.ts`, "storage: marks per
+piece"): one piece's commit (reset + `lines-state`) 821 bytes raw, about
+380 deflated; one `since-lines-state` commit about 470 bytes raw (325
+deflated), 909 raw (524 deflated) with 25 pieces of one file marked. A
+heavy review, 200 files and 600 clusters each split into 5 pieces ticked
+one at a time (4 piece commits, then the whole mark) plus a since-only
+piece per file: 5,600 events, 1.8 MB raw, **67 KiB deflated** as one
+squashed commit (what a push would carry). Unsquashed, locally, it is
+about 3,000 loose commits of under 1 KB each until a squash and `git gc`.
 
 ## Inbox ref
 
@@ -376,7 +566,28 @@ tree, slug identities, compare-and-swap). Written by
 1. `git rev-list <ref>`, then read the commit messages (one
    `git log --format=%B` or `git cat-file --batch` call).
 2. Parse events, drop duplicates by `id`, and sort by `(ts, id)`.
-3. Fold into state. For each `(patch set, cluster)`, the last event wins.
+3. Fold into state (`foldProgress`): every `patchset-started` is a patch
+   set, in start order (a repeated number or snapshot id is ignored), each
+   with its own state map keyed by its snapshot id; then, replaying the rest
+   in order, a human `cluster-state` sets its cluster's entry in the patch
+   set on its snapshot id (none: ignored), a human `lines-state` marks its
+   lines of a cluster that holds no whole mark (reviewed lines and crossed
+   lines, each taking its lines from the other), a human `since-lines-state`
+   replaces the patch set's mark on since-only pieces of its (since, path),
+   a `carried` entry sets the `to`
+   patch set's entry as `{ state, carried: { from, rule } }`, and a
+   `thread-placed` replaces the thread's placement in its patch set. For
+   each `(patch set, cluster)`, the last event wins, so a human mark after a
+   carry overrides it.
+   **The carried guard** (principle 2): an entry counts only when `from`
+   and `to` are known patch sets and, at that moment of the replay, the
+   source cluster (`fromKey` in `from`) holds a human state (not itself
+   carried) that is `reviewed` or `crossed-off` and equal to the entry's.
+   An entry whose source is unreviewed, missing, carried, of another state,
+   or set only later, and an event naming an unknown patch set, are ignored
+   entry by entry: a forged or stale carry can only leave the target
+   unreviewed. The other half, that the target cluster really is the same
+   change, is the engine's correctness, covered by its own tests.
 4. Cache the parsed events in memory, keyed by the ref and its tip OID
    (`RefStore.readEvents`, a bounded map). A commit's history never changes,
    so an unchanged tip skips `git log`; folding the cached events again is
@@ -387,23 +598,41 @@ drop duplicates), applied to the commit graph: the set of events is the union of
 everything reachable from the ref, so merging two copies never conflicts.
 
 **Coverage** is computed exactly as in the parity spec: clusters come from the
-git diff of the revision being reviewed. A cluster with no folded state is
-unreviewed. A folded state with no matching cluster is ignored. Only the
-reviewer's own progress ref is folded. States only count against the patch set's own
-revision, and anything ambiguous stays unreviewed: two clusters sharing one
-identity (never expected). A `crossed-off` state counts as crossed off with or
-without a reason; crossed off never counts as reviewed.
+git diff of the snapshot being reviewed, and take their states from the map
+of the patch set on that snapshot id (`buildReviewView`), so an earlier patch
+set folds against its own snapshot the same way as the latest. A cluster with
+no folded state is unreviewed. A folded state with no matching cluster is
+ignored. Only the reviewer's own progress ref is folded. States only count
+against the patch set's own snapshot, and anything ambiguous stays
+unreviewed: two clusters sharing one identity (never expected). A
+`crossed-off` state counts as crossed off with or without a reason; crossed
+off never counts as reviewed. A carried state keeps its `carried` mark in
+the view, so the page can show where it came from.
 
 ## After a push
 
-- A reviewer with a patch set keeps seeing that patch set's revision: its
-  merge base and head, as recorded in `patchset-started` and pinned by
-  `patchsets/<n>`. A banner says newer pushes exist.
-- Coverage is computed against that revision's diff, so a push never changes
+- A reviewer with a patch set keeps seeing their latest patch set's snapshot:
+  its merge base and head, as recorded in `patchset-started` and pinned by
+  `patchsets/<n>` and `patchsets/<n>-base`. Newer pushes are shown beside it
+  (the re-review design's patch set graph; until it lands, a banner).
+- Coverage is computed against that snapshot's diff, so a push never changes
   what the reviewer sees as reviewed or unreviewed.
 - A reviewer with no patch set yet sees the current head.
-- There is no way to move to a newer push in this milestone: the banner stays
-  until carry-over exists (see "Deferred").
+- Any earlier patch set opens as reviewed (`Session.reviewAt(n)`): its
+  snapshot is rebuilt from the pins and its hunks and context load by its
+  snapshot id like the current one's; writes against it are refused.
+- Moving to a newer push starts the next patch set with its carries (the
+  re-review design's engine and UI; the store side is "Writing").
+
+## Last-seen head
+
+The PR's head when this crb instance last opened a review is kept outside
+git, as `$XDG_STATE_HOME/carbonless/seen/<review-id>.json` (`{ head, at }`,
+written atomically on every open after the previous value was read into
+`SessionInfo.lastSeen`; `src/server/seen.ts`). It is UI state, private to the
+instance: it lets the page say what is new since the reviewer last looked
+before any patch set exists, and it never affects folding or coverage. An
+unreadable or malformed file reads as none.
 
 ## Sync with the remote
 
@@ -457,17 +686,9 @@ Tracked in `docs/todo.md`.
 
 ## Deferred
 
-Carry-over is out of scope for this milestone. Notes for when it's designed, so
-this format doesn't need to change:
-
-- Patch sets already record the merge base and head each reviewer worked
-  against, and `patchsets/<n>` keeps those heads alive, which is what
-  carry-over will diff from.
-- Moving to a newer push, and carrying a patch set's state forward to it, is
-  part of carry-over. Until then, a patch set stays on the revision it was
-  started on and the reviewer can't switch to a newer push.
-- Carry-over will add its own event types and a third `by` value, `auto`, for
-  the deterministic engine. AI still never writes cluster states.
+- Sharing `thread-placed` through `meta` once sync exists, for placements
+  made or moved by hand only (owner, 2026-11-07).
+- Earlier patch sets are read-only in this round (owner, 2026-11-07).
 
 ## Measurements
 
@@ -493,6 +714,23 @@ below the 37 KiB column.
 A heavy review (3 reviewers × 600 events, 200 files, 6 revisions) took about
 2 MiB with the nested layout.
 
+**A patch set start with carries**, measured 2026-11-07 in
+`src/server/review/reviews.test.ts` ("storage: a start carrying 200
+clusters"): the commit holding `patchset-started` and one `carried` event of
+200 entries, raw (`git cat-file -s`) and deflated (as git stores it):
+
+| 200 entries | raw | deflated |
+|---|---|---|
+| every `fromKey` equal to `key` (omitted; the exact rule's usual case) | about 20 KB | about 8 KB |
+| every `fromKey` different (renames, moved context) | about 35 KB | about 15 KB |
+
+An entry is one or two 64-hex cluster keys and a state (about 90 or 170
+bytes); the design doc's 7 KiB estimate assumed 32-hex keys. The test
+asserts under 20 KiB raw and 10 KiB deflated for the first case and 40 KiB
+and 20 KiB for the second. A review's cost still depends only on its own
+size: one such commit per patch set start per reviewer, nothing per
+cluster.
+
 **Everyday git** (ms, median of 5) on a 3,000-commit, 2,000-file repo, with the
 review refs on the remote and the clone using the default refspec:
 
@@ -514,14 +752,25 @@ reviews.
   state); last-event-wins; the coverage join from the parity spec; a `reviewed`
   event in another reviewer's progress ref never changes this reviewer's
   coverage.
+- Unit, re-review: `carried` and `thread-placed` round-trip, and each way
+  they can break the write rules is dropped on read and refused on write;
+  the fold keeps every patch set with its own map, and each way a carried
+  entry can be wrong (source unreviewed, missing, itself carried, of another
+  state, set later; an unknown `from` or `to`) leaves the target unreviewed;
+  a human mark after a carry wins; `buildReviewView` applies PS1's states to
+  PS1's snapshot and PS2's to PS2's.
 - Git integration, with throwaway repos (`test/git-fixture.ts`): compare-and-swap
   retry; squash before push keeps every event, builds on the remote tip and
   pushes as a fast-forward, including when another machine pushed in between;
   fetch of a single review into `refs/crb-remotes/`; a default clone of a repo
   with crb refs gets no `refs/crb/*`; compaction keeps every event; a patch
   set's head is still readable after the branch is force-pushed and
-  `git gc --prune=now` runs; with a git config that sets a real user email,
-  crb commits still carry only the slug and tool identities.
+  `git gc --prune=now` runs, and its merge base after the base branch is
+  deleted; with a git config that sets a real user email, crb commits still
+  carry only the slug and tool identities; starting PS2 writes `since`, the
+  carries and both pins in one commit and one transaction, twice at once
+  ends with one PS2, a write against PS1 is then read-only, and against an
+  unknown snapshot without a start stale; the 200-entry carry's size.
 - Playwright: state persists across restarts through the refs; a revision the
   reviewer never acted on doesn't create a patch set; after a force-push, a
   reviewer with a patch set still sees its diff and progress unchanged, with

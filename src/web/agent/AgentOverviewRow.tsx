@@ -25,7 +25,7 @@ export function AgentOverviewRow() {
 		(t) => head !== undefined && t.anchor.commit !== head,
 	);
 	// Which files the diff has: read only when an earlier thread needs it.
-	const review = useQuery({ ...reviewQuery, enabled: earlier.length > 0 });
+	const review = useQuery({ ...reviewQuery(), enabled: earlier.length > 0 });
 	const paths = review.data
 		? new Set(review.data.files.map((f) => f.path))
 		: null;

@@ -49,7 +49,7 @@ describe("AgentOverviewRow", () => {
 		client.setQueryData(sessionQuery.queryKey, {
 			snapshotHead: HEAD,
 		} as SessionInfo);
-		client.setQueryData(reviewQuery.queryKey, {
+		client.setQueryData(reviewQuery().queryKey, {
 			files: [{ path: "src/kept.ts" }],
 		} as ReviewView);
 		client.setQueryData(agentThreadsQuery.queryKey, {

@@ -1,3 +1,4 @@
+import { size } from "./lineRanges.js";
 import type { ClusterView, Counts, FileView, Progress } from "./types.js";
 
 /** A file's flags from its clusters' states (see FileView). */
@@ -28,12 +29,19 @@ export function reviewProgress(files: FileView[]): Progress {
 		for (const c of file.clusters) {
 			clusters.total++;
 			lines.total += c.lines;
+			const crossed = size(c.crossedLines ?? []);
 			if (c.state === "reviewed") {
 				clusters.reviewed++;
-				lines.reviewed += c.lines;
+				// Some lines may be crossed off one piece at a time.
+				lines.reviewed += c.lines - crossed;
+				lines.crossedOff += crossed;
 			} else if (c.state === "crossed-off") {
 				clusters.crossedOff++;
 				lines.crossedOff += c.lines;
+			} else {
+				// Partly marked: unreviewed, but its marked lines count.
+				lines.reviewed += size(c.reviewedLines ?? []);
+				lines.crossedOff += crossed;
 			}
 		}
 		fileCounts.total++;
