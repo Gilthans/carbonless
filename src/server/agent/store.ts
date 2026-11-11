@@ -6,10 +6,12 @@ import {
 	type AgentMessage,
 	type AgentStop,
 	type AgentThread,
+	type AgentView,
 	MAX_ACTIVITY_BYTES,
 	MAX_ACTIVITY_ENTRIES,
 	MAX_AGENT_ERROR,
 	MAX_AGENT_TEXT,
+	MAX_ORIGIN_REQUEST,
 } from "../../shared/agent.js";
 import {
 	type AgentEvent,
@@ -47,7 +49,8 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const isAgentEvent = (e: CrbEvent): e is AgentEvent =>
 	e.type === "agent-thread-opened" ||
 	e.type === "agent-message" ||
-	e.type === "agent-thread-resolved";
+	e.type === "agent-thread-resolved" ||
+	e.type === "agent-thread-seen";
 const clientIdOf = (e: CrbEvent): string | undefined => {
 	const id = e.details?.clientId;
 	return typeof id === "string" ? id : undefined;
@@ -74,6 +77,13 @@ function messageOf(
 		...(e.type === "agent-message" && e.error !== undefined
 			? { error: e.error }
 			: {}),
+		...(e.view ? { view: e.view } : {}),
+		...(e.type === "agent-message" && e.head !== undefined
+			? { head: e.head }
+			: {}),
+		...(e.type === "agent-message" && e.suggests
+			? { suggests: e.suggests }
+			: {}),
 	};
 }
 
@@ -81,23 +91,50 @@ function messageOf(
  * The threads, in the order they were opened: events deduplicated by id and
  * sorted by (ts, id). A thread's opening text is its first message; it waits
  * while a human message has no answer (isWaiting); resolved is the last resolve's word.
- * Messages and resolves of a thread never opened are dropped.
+ * Messages and resolves of a thread never opened are dropped. Openings that
+ * anchor the same GitHub thread fold into the first: later openings and
+ * everything written under their ids join it. `seenUpTo` is the latest seen
+ * message by position; `unread` is an ai message after it.
  */
 export function foldAgentThreads(
 	events: readonly CrbEvent[],
 ): AgentThreadFold[] {
+	return foldWithAliases(events).threads;
+}
+
+interface Folded {
+	threads: AgentThreadFold[];
+	/** A later opening's thread id → the first opening's, for one GitHub thread. */
+	alias: ReadonlyMap<string, string>;
+}
+
+function foldWithAliases(events: readonly CrbEvent[]): Folded {
 	const seen = new Set<string>();
 	const sorted = events
 		.filter(isAgentEvent)
 		.filter((e) => !seen.has(e.id) && seen.add(e.id))
 		.sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 	const threads = new Map<string, AgentThreadFold>();
+	const alias = new Map<string, string>();
+	/** GitHub thread id → the folded thread that anchors it. */
+	const byGithub = new Map<string, string>();
+	const seenUpTo = new Map<string, string[]>();
 	for (const e of sorted) {
-		const thread = threads.get(e.thread);
+		const id = alias.get(e.thread) ?? e.thread;
+		const thread = threads.get(id);
 		switch (e.type) {
 			case "agent-thread-opened": {
 				// A thread opens once; a second opening of one id is ignored.
 				if (thread) continue;
+				const github =
+					e.anchor.subject === "thread" ? e.anchor.thread : undefined;
+				const first = github !== undefined ? byGithub.get(github) : undefined;
+				const into = first !== undefined ? threads.get(first) : undefined;
+				if (into && first !== undefined) {
+					alias.set(e.thread, first);
+					into.messages.push(messageOf(e));
+					break;
+				}
 				const clientId = e.by === "human" ? clientIdOf(e) : undefined;
 				threads.set(e.thread, {
 					id: e.thread,
@@ -107,8 +144,11 @@ export function foldAgentThreads(
 					messages: [messageOf(e)],
 					resolved: false,
 					waiting: false,
+					unread: false,
+					...(e.origin ? { origin: e.origin } : {}),
 					...(clientId !== undefined ? { clientId } : {}),
 				});
+				if (github !== undefined) byGithub.set(github, e.thread);
 				break;
 			}
 			case "agent-message":
@@ -117,11 +157,27 @@ export function foldAgentThreads(
 			case "agent-thread-resolved":
 				if (thread) thread.resolved = e.resolved;
 				break;
+			case "agent-thread-seen":
+				if (thread) seenUpTo.set(id, [...(seenUpTo.get(id) ?? []), e.upTo]);
+				break;
 		}
 	}
 	const out = [...threads.values()];
-	for (const t of out) t.waiting = isWaiting(t.messages);
-	return out;
+	for (const t of out) {
+		t.waiting = isWaiting(t.messages);
+		// The seen mark furthest along; a message the fold doesn't hold counts for nothing.
+		let mark = -1;
+		for (const upTo of seenUpTo.get(t.id) ?? []) {
+			mark = Math.max(
+				mark,
+				t.messages.findIndex((m) => m.id === upTo),
+			);
+		}
+		const markMessage = t.messages[mark];
+		if (markMessage) t.seenUpTo = markMessage.id;
+		t.unread = t.messages.some((m, i) => i > mark && m.by === "ai");
+	}
+	return { threads: out, alias };
 }
 
 /**
@@ -172,10 +228,23 @@ export function capActivity(a: AgentActivity[]): AgentActivity[] {
 const nextUlid = monotonicFactory();
 
 type OpenInput =
-	| { anchor: AgentAnchor; text: string; by: "human"; clientId: string }
-	| { anchor: AgentAnchor; text: string; by: "ai"; agent: AgentIdentity };
+	| {
+			anchor: AgentAnchor;
+			text: string;
+			by: "human";
+			clientId: string;
+			view?: AgentView;
+	  }
+	| {
+			anchor: AgentAnchor;
+			text: string;
+			by: "ai";
+			agent: AgentIdentity;
+			/** Why the agent opened it; cut to MAX_ORIGIN_REQUEST characters. */
+			origin?: { request: string };
+	  };
 type MessageInput =
-	| { by: "human"; text: string; clientId: string }
+	| { by: "human"; text: string; clientId: string; view?: AgentView }
 	| {
 			by: "ai";
 			text: string;
@@ -186,6 +255,9 @@ type MessageInput =
 			replyTo?: string;
 			/** With stop "error": the agent's reason. */
 			error?: string;
+			/** The OID of the checkout the answer came from. */
+			head?: string;
+			suggests?: "resolve";
 	  };
 
 /**
@@ -238,8 +310,23 @@ export class AgentThreadStore {
 					text,
 					...(truncated ? { truncated } : {}),
 					...(input.by === "ai"
-						? { agent: input.agent }
-						: { details: { clientId: input.clientId } }),
+						? {
+								agent: input.agent,
+								...(input.origin
+									? {
+											origin: {
+												request: input.origin.request.slice(
+													0,
+													MAX_ORIGIN_REQUEST,
+												),
+											},
+										}
+									: {}),
+							}
+						: {
+								details: { clientId: input.clientId },
+								...(input.view ? { view: input.view } : {}),
+							}),
 				},
 				input.by,
 				stampAfter(events),
@@ -277,8 +364,13 @@ export class AgentThreadStore {
 								...(input.stop === "error" && input.error
 									? { error: input.error.slice(0, MAX_AGENT_ERROR) }
 									: {}),
+								...(input.head ? { head: input.head } : {}),
+								...(input.suggests ? { suggests: input.suggests } : {}),
 							}
-						: { details: { clientId: input.clientId } }),
+						: {
+								details: { clientId: input.clientId },
+								...(input.view ? { view: input.view } : {}),
+							}),
 				},
 				input.by,
 				stampAfter(events),
@@ -303,6 +395,29 @@ export class AgentThreadStore {
 		});
 	}
 
+	/**
+	 * The reviewer has seen the thread up to a message. Writes nothing when
+	 * the thread is already seen up to it or later.
+	 */
+	seen(thread: string, upTo: string): Promise<AgentThreadFold> {
+		return this.#serial(async () => {
+			const events = await this.#events();
+			const current = this.#find(events, thread);
+			const at = current.messages.findIndex((m) => m.id === upTo);
+			if (at < 0) throw new Error(`Unknown message: ${upTo}`);
+			const mark = current.messages.findIndex((m) => m.id === current.seenUpTo);
+			if (mark >= at) return current;
+			const event = newEvent(
+				"agent-thread-seen",
+				this.slug,
+				{ thread: current.id, upTo },
+				"human",
+				stampAfter(events),
+			);
+			return this.#write(events, "crb: agent thread seen", event);
+		});
+	}
+
 	/** The ref's events; every human clientId in them is remembered. */
 	async #events(): Promise<CrbEvent[]> {
 		const events = await this.store.readEvents(this.#ref);
@@ -323,7 +438,9 @@ export class AgentThreadStore {
 	}
 
 	#find(events: readonly CrbEvent[], thread: string): AgentThreadFold {
-		const found = foldAgentThreads(events).find((t) => t.id === thread);
+		const { threads, alias } = foldWithAliases(events);
+		const id = alias.get(thread) ?? thread;
+		const found = threads.find((t) => t.id === id);
 		if (!found) throw new UnknownAgentThreadError(thread);
 		return found;
 	}

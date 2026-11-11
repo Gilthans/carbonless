@@ -51,6 +51,7 @@ const thread = (more: Partial<AgentThread> = {}): AgentThread => ({
 	],
 	resolved: false,
 	waiting: true,
+	unread: false,
 	...more,
 });
 

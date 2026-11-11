@@ -66,6 +66,8 @@ export class AgentHost {
 	}
 
 	async open(req: OpenAgentThreadRequest): Promise<AgentThread> {
+		// Opening on a GitHub thread arrives with the routes (CAR-120).
+		if (!req.span) throw new Error("Opening an agent thread needs a span");
 		const t = await this.store.open({
 			anchor: req.span,
 			text: req.text,

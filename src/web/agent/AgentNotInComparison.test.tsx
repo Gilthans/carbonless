@@ -41,6 +41,7 @@ const asked = (id: string, path: string): AgentThread => ({
 	},
 	resolved: false,
 	waiting: false,
+	unread: false,
 });
 
 describe("AgentNotInComparison", () => {

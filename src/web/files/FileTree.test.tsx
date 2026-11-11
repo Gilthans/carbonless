@@ -567,6 +567,7 @@ describe("tooltip legend", () => {
 		messages: [],
 		resolved: false,
 		waiting: true,
+		unread: false,
 	};
 
 	it("titles a busy file by its name and gives each indicator a line, in the row's order", async () => {
@@ -1613,6 +1614,7 @@ describe("a file's agent threads", () => {
 			messages: [],
 			resolved: false,
 			waiting: true,
+			unread: false,
 		};
 		render(
 			<FileTree

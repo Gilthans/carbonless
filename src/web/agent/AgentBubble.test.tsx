@@ -16,6 +16,7 @@ const agentThread = (resolved: boolean): AgentThread => ({
 	messages: [],
 	resolved,
 	waiting: false,
+	unread: false,
 });
 
 describe("a resolved agent bubble", () => {

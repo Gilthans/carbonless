@@ -27,6 +27,7 @@ const thread = (id: string, path: string, commit: string): AgentThread => ({
 	],
 	resolved: false,
 	waiting: true,
+	unread: false,
 });
 
 afterEach(() => {

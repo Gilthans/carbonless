@@ -11,24 +11,42 @@ export interface AgentPlaceable extends Placeable {
 /** An agent thread where it was asked: its own commit, path and range. */
 export function agentPlaceable(thread: AgentThread): AgentPlaceable {
 	const a = thread.anchor;
-	return {
-		id: thread.id,
-		path: a.path,
-		commit: a.commit,
-		subject: a.subject,
-		anchor:
-			a.subject === "line"
-				? {
-						side: a.side,
-						line: a.line,
-						startSide: a.startSide,
-						startLine: a.startLine,
-						startCol: a.startCol ?? null,
-						endCol: a.endCol ?? null,
-					}
-				: null,
-		thread,
-	};
+	const base = { id: thread.id, path: a.path, commit: a.commit, thread };
+	if (a.subject === "line") {
+		return {
+			...base,
+			subject: "line",
+			anchor: {
+				side: a.side,
+				line: a.line,
+				startSide: a.startSide,
+				startLine: a.startLine,
+				startCol: a.startCol ?? null,
+				endCol: a.endCol ?? null,
+			},
+		};
+	}
+	// A GitHub-thread anchor places as the span GitHub gave it, else as a file.
+	if (
+		a.subject === "thread" &&
+		a.side !== undefined &&
+		a.line !== undefined &&
+		a.startLine !== undefined
+	) {
+		return {
+			...base,
+			subject: "line",
+			anchor: {
+				side: a.side,
+				line: a.line,
+				startSide: a.startSide ?? a.side,
+				startLine: a.startLine,
+				startCol: null,
+				endCol: null,
+			},
+		};
+	}
+	return { ...base, subject: "file", anchor: null };
 }
 
 /**

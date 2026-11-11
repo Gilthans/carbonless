@@ -681,7 +681,7 @@ describe("agent events", () => {
 	};
 	const view = {
 		target: { patchset: 2 },
-		from: { branch: true },
+		from: { branch: true as const },
 		left: "b".repeat(40),
 		right: "c".repeat(40),
 	};

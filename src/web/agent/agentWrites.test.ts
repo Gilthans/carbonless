@@ -44,6 +44,7 @@ const thread = (id: string, text: string): AgentThread => ({
 	messages: [{ id: "m1", by: "human", at: "2026-11-07T10:00:00Z", text }],
 	resolved: false,
 	waiting: true,
+	unread: false,
 });
 
 const answer = (status: number, body: unknown) =>

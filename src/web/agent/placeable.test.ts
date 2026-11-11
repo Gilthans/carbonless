@@ -36,6 +36,7 @@ const asked = (
 	messages: [],
 	resolved: false,
 	waiting: false,
+	unread: false,
 });
 
 const moved: ThreadPlacement = {
