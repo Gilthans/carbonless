@@ -155,7 +155,7 @@ loading never looking empty, checking against a real PR):
   the review verdict: approve, comment, request changes, and Comment
   dismissing your own standing approval or change request):
   `docs/product-rules.md`, "Writing to GitHub".
-- Main on the devbox and branch instances: "Versions and instances" below.
+- The owner's main instance and branch instances: "Versions and instances" below.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
   (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. It is a bash shim that
   forwards each call to the test process's fake gh server (`fakeGhEnv()`
@@ -270,16 +270,12 @@ for them.
 ## Versions and instances
 
 The owner's main is the globally installed package (`carbonless-review`),
-run as `crb serve` by the systemd user service `crb.service` on port 4747,
-the owner's, with a stable key:
-`http://100.78.32.127:4747/?key=$(cat ~/.local/state/carbonless/key)`.
-It never runs a worktree's `dist`, and nothing else binds 4747. Setup:
-README, "Remote machine". Logs: `journalctl --user -u crb`. The owner's
-devbox moves main to `origin/master`'s newest build by itself, within ~5
-minutes of a merge, through local setup outside the repo
-(`~/.local/share/carbonless-devbox`, `crb-follow.timer`; logs: `journalctl
---user -u crb-follow`). To put another build on 4747 by hand, pause it
-first (`systemctl --user stop crb-follow.timer`) and start it again after.
+run as `crb serve` on port 4747 with a stable key, and it moves to
+`origin/master`'s newest build by itself within minutes of a merge. It
+never runs a worktree's `dist`, and nothing else binds 4747. Setup:
+README, "Remote machine". The owner's machine-specific details (address,
+service and timer names, logs, how to pause it) live in the untracked
+`CLAUDE.local.md`; never write them into tracked files.
 
 **Branch instance (ad hoc):** whenever a branch has something the owner
 should see before it reaches master: a coordinator's "ready" report, a fix
@@ -289,7 +285,7 @@ in the main checkout:
    `scripts/agent-worktree.sh` already have `.envrc`), then
    `source .envrc`. The port is fixed per branch, so its links survive
    restarts: a free one from 4748–4799 (`ss -ltn`), never 4747.
-2. `pnpm build`, then `nohup node dist/cli.js serve --host 100.78.32.127
+2. `pnpm build`, then `nohup node dist/cli.js serve --host "$(tailscale ip -4)"
    --port <port> > .crb-dev/serve.log 2>&1 &` and keep `$!`.
 3. `node dist/cli.js <pr>` prints the review's link; send that (Tailscale
    IP, with the key).
@@ -301,10 +297,9 @@ in the main checkout:
 **RC: every merge to master is a new RC** (the owner: merging a PR to main
 implies a new RC version). Changes reach master only as PRs ("How we
 work"). After one merges:
-1. Within ~5 minutes the follow timer builds `origin/master` and moves 4747
-   to it (`crb --version` shows the commit). If `journalctl --user -u
-   crb-follow` shows a failure, tell the owner what it says; don't install
-   by hand.
+1. Within minutes main moves to the new `origin/master` build (`crb
+   --version` shows the commit). If it fails (logs: `CLAUDE.local.md`),
+   tell the owner what it says; don't install by hand.
 2. Send the owner the link and what is new since the last build.
 3. Stop the instances of branches that just merged.
 

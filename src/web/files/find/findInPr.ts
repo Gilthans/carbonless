@@ -4,6 +4,7 @@ import type {
 	FileHunks,
 	FileView,
 } from "../../../shared/types";
+import { viewRuns } from "../whitespace";
 
 /** Where a hit is: a path, an old path, or a line on one side. */
 export type HitSide = "path" | "oldPath" | DiffSide;
@@ -19,6 +20,12 @@ export interface HitPos {
 export interface Hit extends HitPos {
 	/** Matched length in UTF-16 units (the term's, in the original string). */
 	len: number;
+	/**
+	 * On the old side of a whitespace-only pair (Ignore whitespace on): the
+	 * pair's new line number. Unified shows the pair as one `~` row with the
+	 * new text only, so the hit isn't shown there (shownHits).
+	 */
+	twin?: number;
 }
 
 /**
@@ -57,6 +64,49 @@ export interface SourceLine {
 	side: DiffSide;
 	line: number;
 	text: string;
+	/**
+	 * With `pairs` (fileLines), a hunk's line: the hunk's lines and the line
+	 * itself, so findInPr can put the hunk's hits in row order (pairedHunk).
+	 */
+	hunk?: DiffLine[];
+	source?: DiffLine;
+}
+
+/** A hunk as unified view with Ignore whitespace renders it (pairedHunk). */
+export interface PairedHunk {
+	/**
+	 * The hunk's lines in the order of the rows shown (viewRuns): a
+	 * two-sided `~` row's removed line right before its added line, at the
+	 * row's place.
+	 */
+	order: DiffLine[];
+	/** A two-sided `~` row's removed line → its added line's number. */
+	twins: ReadonlyMap<DiffLine, number>;
+}
+
+/**
+ * A hunk's rows as the view renders them (viewRuns, what HunkRows shows,
+ * whose O(n·m) matching is cached per hunk and shared with it), as Find
+ * needs them. Kept per hunk: a search per keystroke never pairs it again.
+ */
+const pairedByHunk = new WeakMap<DiffLine[], PairedHunk>();
+function pairedHunk(lines: DiffLine[]): PairedHunk {
+	let paired = pairedByHunk.get(lines);
+	if (!paired) {
+		const order: DiffLine[] = [];
+		const twins = new Map<DiffLine, number>();
+		for (const run of viewRuns(lines, true))
+			for (const row of run.rows) {
+				if (row.kind === "line") order.push(row.line);
+				else if (row.del && row.add) {
+					order.push(row.del, row.add);
+					twins.set(row.del, row.add.newNo as number);
+				} else order.push((row.del ?? row.add) as DiffLine);
+			}
+		paired = { order, twins };
+		pairedByHunk.set(lines, paired);
+	}
+	return paired;
 }
 
 /**
@@ -67,12 +117,14 @@ export interface SourceLine {
  * lies before it and after the previous hunk (sorted by newNo, first of a
  * duplicate newNo wins, one inside a hunk's new range ignored), then the
  * hunk's lines (del → LEFT:oldNo, add and context → RIGHT:newNo); then the
- * expanded lines after the last hunk.
+ * expanded lines after the last hunk. With `pairs` (and hunks), a hunk's
+ * line carries its hunk and itself (SourceLine.hunk, .source).
  */
 export function fileLines(
 	file: FileView,
 	hunks: FileHunks | undefined,
 	context: readonly DiffLine[],
+	pairs = false,
 ): SourceLine[] {
 	if (!hunks) {
 		return file.clusters.flatMap((c) => [
@@ -113,9 +165,15 @@ export function fileLines(
 	hunks.hunks.forEach((h, i) => {
 		lines.push(...(gaps[i] as SourceLine[]));
 		for (const l of h.lines) {
-			if (l.kind === "del")
-				lines.push({ side: "LEFT", line: l.oldNo as number, text: l.text });
-			else lines.push({ side: "RIGHT", line: l.newNo as number, text: l.text });
+			const at: SourceLine =
+				l.kind === "del"
+					? { side: "LEFT", line: l.oldNo as number, text: l.text }
+					: { side: "RIGHT", line: l.newNo as number, text: l.text };
+			if (pairs) {
+				at.hunk = h.lines;
+				at.source = l;
+			}
+			lines.push(at);
 		}
 	});
 	return [...lines, ...after];
@@ -124,7 +182,15 @@ export function fileLines(
 /**
  * The PR's hits in reading order: for each file (in the order given: the
  * tree's), its path's hits, then its old path's, then its lines' (fileLines)
- * in column order. Binary files and submodules have path hits only.
+ * in column order. Binary files and submodules have path hits only. Every
+ * line of both sides is searched. With `pairs` (the view is unified with
+ * Ignore whitespace on: only then is a pair one row), a whitespace-only
+ * pair's old-side hits carry `twin` (shownHits leaves them out), and a
+ * hunk's hits are in the order of the rows shown (a `~` row's where it sits
+ * on screen; its removed line's hidden hits right before its added
+ * line's). A hunk is paired (O(n·m), cached) only once one of its removed
+ * lines has a hit: without one, the row order of its hits is the hunk's
+ * own (pairRun keeps the added lines in order, and context runs in place).
  */
 export function findInPr(
 	term: string,
@@ -132,6 +198,7 @@ export function findInPr(
 	hunksOf: (file: FileView) => FileHunks | undefined,
 	contextOf: (file: FileView) => readonly DiffLine[],
 	matchCase: boolean,
+	pairs = false,
 ): Hit[] {
 	const hits: Hit[] = [];
 	const re = pattern(term, matchCase);
@@ -139,21 +206,168 @@ export function findInPr(
 	for (const file of files) {
 		const index = file.index;
 		// occurrences' loop, inline: no array or closure per line.
-		const push = (side: HitSide, line: number, text: string) => {
+		const push = (
+			side: HitSide,
+			line: number,
+			text: string,
+			into: Hit[] = hits,
+		) => {
 			re.lastIndex = 0;
 			for (let m = re.exec(text); m; m = re.exec(text)) {
 				const len = m[0].length;
-				hits.push({ index, side, line, col: m.index, len });
+				into.push({ index, side, line, col: m.index, len });
 				re.lastIndex = m.index + len;
 			}
 		};
 		push("path", 0, file.path);
 		if (file.oldPath) push("oldPath", 0, file.oldPath);
 		if (file.binary || file.submodule) continue;
-		for (const l of fileLines(file, hunksOf(file), contextOf(file)))
-			push(l.side, l.line, l.text);
+		// With `pairs`, a hunk's hits wait for its end: each line's, and
+		// whether a removed line has any (then the hunk is paired).
+		let hunk: DiffLine[] | undefined;
+		let byLine: Map<DiffLine, Hit[]> | null = null;
+		let seen: DiffLine[] = [];
+		let delHit = false;
+		const flush = () => {
+			if (!byLine || !hunk) return;
+			emitHunk(hits, seen, byLine, delHit ? pairedHunk(hunk) : null);
+			byLine = null;
+		};
+		for (const l of fileLines(file, hunksOf(file), contextOf(file), pairs)) {
+			if (l.hunk !== hunk) {
+				flush();
+				hunk = l.hunk;
+				if (hunk) {
+					byLine = new Map();
+					seen = [];
+					delHit = false;
+				}
+			}
+			if (!hunk || !byLine || !l.source) {
+				push(l.side, l.line, l.text);
+				continue;
+			}
+			const found: Hit[] = [];
+			push(l.side, l.line, l.text, found);
+			if (found.length === 0) continue;
+			byLine.set(l.source, found);
+			seen.push(l.source);
+			if (l.source.kind === "del") delHit = true;
+		}
+		flush();
 	}
 	return hits;
+}
+
+/**
+ * A held hunk's hits into `out`: in its rows' order (`paired`), else in
+ * hunk order (`seen`, the lines with hits). Then, so a hit is never lost
+ * should the rows ever miss a line, every line's hits not yet emitted, in
+ * hunk order. Empties `byLine`.
+ */
+export function emitHunk(
+	out: Hit[],
+	seen: readonly DiffLine[],
+	byLine: Map<DiffLine, Hit[]>,
+	paired: PairedHunk | null,
+): void {
+	const emit = (l: DiffLine) => {
+		const found = byLine.get(l);
+		if (!found) return;
+		byLine.delete(l);
+		const twin = paired?.twins.get(l);
+		for (const h of found) {
+			if (twin !== undefined) h.twin = twin;
+			out.push(h);
+		}
+	};
+	if (paired) for (const l of paired.order) emit(l);
+	for (const l of seen) emit(l);
+}
+
+/**
+ * The hits the view shows, the ones "n of N" counts and steps through:
+ * side by side, all of them (both texts of a pair show); unified, all but
+ * a whitespace-only pair's old side (its `~` row shows the new text only,
+ * owner 2026-11-10: count the pair once). The same array when none is
+ * left out.
+ */
+export function shownHits(all: readonly Hit[], unified: boolean): Hit[] {
+	if (!unified || !all.some((h) => h.twin !== undefined)) return all as Hit[];
+	return all.filter((h) => h.twin === undefined);
+}
+
+/**
+ * Where a caret goes when its hit stops being shown (the view or Ignore
+ * whitespace changed): a pair's old-side hit → the same row's shown hit of
+ * the same occurrence order, else the row's first; else the first shown
+ * hit after it in `all` (wrapping). Null when `pos` isn't in `all` either
+ * (a hit that is gone, not hidden).
+ */
+export function hiddenHitMoved(
+	all: readonly Hit[],
+	shown: readonly Hit[],
+	pos: HitPos,
+): { pos: HitPos; sameRow: boolean } | null {
+	const at = hitIndex(all, pos);
+	if (at < 0 || shown.length === 0) return null;
+	const hit = all[at] as Hit;
+	if (hit.twin !== undefined) {
+		const twin = hit.twin;
+		const nth = all
+			.filter(
+				(h) =>
+					h.index === hit.index && h.side === hit.side && h.line === hit.line,
+			)
+			.indexOf(hit);
+		const row = shown.filter(
+			(h) => h.index === hit.index && h.side === "RIGHT" && h.line === twin,
+		);
+		const same = row[nth] ?? row[0];
+		if (same) return { pos: posOf(same), sameRow: true };
+	}
+	const key = (h: HitPos) => `${h.index}:${h.side}:${h.line}:${h.col}`;
+	const isShown = new Set(shown.map(key));
+	for (let i = 1; i <= all.length; i++) {
+		const next = all[(at + i) % all.length] as Hit;
+		if (isShown.has(key(next))) return { pos: posOf(next), sameRow: false };
+	}
+	return null;
+}
+
+/**
+ * The stepped caret as the hits now stand: kept while its hit is shown,
+ * moved (hiddenHitMoved) when only hidden; null when its hit is gone. A
+ * move on the same row keeps whether it was shown (the reviewer is looking
+ * at that row); a move elsewhere is unshown, so the next step goes to it
+ * rather than past it, and it pins nothing open.
+ */
+export function keptCaret(
+	all: readonly Hit[],
+	shown: readonly Hit[],
+	caret: Caret,
+): Caret | null {
+	return caretMove(all, shown, caret)?.caret ?? null;
+}
+
+/**
+ * keptCaret, and whether the move sticks (owner, 2026-11-10: you stay on
+ * the line you were looking at): only a move onto the same row does; a
+ * move off it (a term whose whitespace differs between the sides) doesn't,
+ * so the pair's old side is current again once it shows.
+ */
+export function caretMove(
+	all: readonly Hit[],
+	shown: readonly Hit[],
+	caret: Caret,
+): { caret: Caret; sticks: boolean } | null {
+	if (hitIndex(shown, caret.pos) >= 0) return { caret, sticks: false };
+	const moved = hiddenHitMoved(all, shown, caret.pos);
+	if (!moved) return null;
+	return {
+		caret: { pos: moved.pos, shown: moved.sameRow && caret.shown },
+		sticks: moved.sameRow,
+	};
 }
 
 export const samePos = (a: HitPos, b: HitPos): boolean =>

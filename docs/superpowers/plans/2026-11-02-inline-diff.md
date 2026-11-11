@@ -117,4 +117,4 @@
 
 ## Integration (coordinator)
 
-Cherry-pick each reviewed brief onto `inline-diff`; full `pnpm verify` (background); branch instance on port 4751 (`node scripts/crb-private-env.mjs "$PWD" 4751`, `source .envrc`, `crb serve --host 100.78.32.127 --port 4751`), gallery PR #14 link to the owner; push `inline-diff` to Gilthans/carbonless and open a PR (what changed, what to QA with links, edge cases, attribution); CI green; merge only on the owner's word for that PR.
+Cherry-pick each reviewed brief onto `inline-diff`; full `pnpm verify` (background); branch instance on port 4751 (`node scripts/crb-private-env.mjs "$PWD" 4751`, `source .envrc`, `crb serve --host "$(tailscale ip -4)" --port 4751`), gallery PR #14 link to the owner; push `inline-diff` to Gilthans/carbonless and open a PR (what changed, what to QA with links, edge cases, attribution); CI green; merge only on the owner's word for that PR.
