@@ -25,7 +25,7 @@ Foundation for everything below.
 
 - **PR review view (done):** open a PR, see the overview, review it cluster by cluster
   with progress tracking. Design:
-  `docs/superpowers/specs/2026-10-21-pr-review-parity-design.md`.
+  the PR review parity spec (Linear, M2 project documents).
 - **Commenting** from carbonless.
 - **LEFT-side thread placement (discuss with the owner right after the
   threads stage):** GitHub records no commit for a comment's LEFT side
@@ -145,8 +145,8 @@ agent threads on Home.
   cache clone, config and state. Drop the checkout's `alternates` link to
   the cache clone, so it becomes a standalone clone. If the sandbox can't
   start, the agent doesn't start, and the status chip says why. Test that
-  a `git update-ref` from the agent fails. On the devbox `bwrap` is
-  installed, but `kernel.apparmor_restrict_unprivileged_userns = 1` may
+  a `git update-ref` from the agent fails. Where `bwrap` is
+  installed, `kernel.apparmor_restrict_unprivileged_userns = 1` may still
   block it; test that first.
 
 Follow-ups from the first slice's final review (2026-11-07):
@@ -206,7 +206,7 @@ Not scheduled yet; after everything above.
 - **Bots in human threads:** decide how bot comments (review bots, CI
   bots replying in a human thread) should count in a thread's attention set.
   For now (2026-10-26) bots never join it and a bot's comment never counts as
-  the latest one (`docs/superpowers/specs/2026-10-26-pr-threads-design.md`).
+  the latest one (the PR threads spec, Linear, M2 project documents).
 - **Attention set:** like Gerrit's, but computed automatically as far as
   possible (whose turn it is on each PR), plus a view of pending review work
   across PRs.
@@ -307,7 +307,7 @@ Not scheduled yet; after everything above.
   a known language" (10/10), and `wordDiff.test.ts`'s 100 ms CPU budget for
   similar pairs (5/5; isolated runs take 51–89 ms, so little headroom).
 - Old agent worktrees under `.worktrees/` and stray processes (e.g. old
-  `threads-c` instances on test-automation#99) pile up; prune them.
+  `threads-c` instances on the real-PR check) pile up; prune them.
 
 ## Final Verdict and Home
 
