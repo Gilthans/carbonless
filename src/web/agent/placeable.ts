@@ -131,7 +131,8 @@ export const AgentPlacingProvider = AgentPlacingContext.Provider;
 export const useAgentPlacing = () => useContext(AgentPlacingContext);
 
 /**
- * The agent threads Files changed shows in the viewed head: on an earlier
+ * The agent threads Files changed shows in the viewed head (span threads
+ * only; a GitHub thread's conversation is its card's): on an earlier
  * patch set only those asked before the next one started (as review
  * threads, threadsUntil: never traced backwards) or on its own head, each placed
  * (tracedAgentPlaceables), resolved ones after the rest so every group
@@ -143,10 +144,14 @@ export function shownAgentPlaceables(
 	placing: AgentPlacing,
 ): AgentPlaceable[] {
 	const { until } = placing;
+	// A live thread conversation goes where its GitHub thread goes (on its
+	// card's agent button): never an agent card or bubble of its own. An
+	// orphan reaches here with a span anchor (the GitHub join).
+	const spans = threads.filter((t) => t.anchor.subject !== "thread");
 	const kept =
 		until === null
-			? threads
-			: threads.filter(
+			? spans
+			: spans.filter(
 					// One asked on this very head stays where it was asked.
 					(t) => t.anchor.commit === snapshotHead || Date.parse(t.at) < until,
 				);

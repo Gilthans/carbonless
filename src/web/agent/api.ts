@@ -12,6 +12,7 @@ import {
 	type AgentMessageRequest,
 	type AgentPlacementsAnswer,
 	type AgentResolvedRequest,
+	type AgentSeenRequest,
 	type AgentStatus,
 	type AgentThread,
 	type OpenAgentThreadRequest,
@@ -205,6 +206,13 @@ export const postAgentResolved = (thread: string, resolved: boolean) =>
 	review<AgentThread>(
 		`agent/threads/${encodeURIComponent(thread)}/resolved`,
 		json("POST", { resolved } satisfies AgentResolvedRequest),
+	);
+
+/** Marks a conversation seen up to the message `upTo` (a no-op when it already is). */
+export const postAgentSeen = (thread: string, upTo: string) =>
+	review<AgentThread>(
+		`agent/threads/${encodeURIComponent(thread)}/seen`,
+		json("POST", { upTo } satisfies AgentSeenRequest),
 	);
 
 export const postAgentCancel = async (): Promise<void> => {

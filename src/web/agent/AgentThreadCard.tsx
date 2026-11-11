@@ -10,7 +10,9 @@ import {
 } from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+	Fragment,
 	type KeyboardEvent,
+	type ReactNode,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -35,6 +37,7 @@ import { newClientId } from "../threads/newThreads";
 import { Avatar, usePerson } from "../threads/people";
 import { AgentMarkdown } from "./AgentMarkdown";
 import {
+	type AgentWrite,
 	dropAgentWrite,
 	replyAgent,
 	retryAgentWrite,
@@ -48,6 +51,7 @@ import {
 	withThread,
 } from "./api";
 import { openAgentSetup } from "./setupStore";
+import { useSendView } from "./threadAgent";
 
 const plural = (n: number, one: string, many: string) =>
 	`${n} ${n === 1 ? one : many}`;
@@ -495,71 +499,14 @@ export function AgentThreadCard(props: {
 				{resolved && toggle}
 			</div>
 			<div id={bodyId} className="space-y-2 p-2.5">
-				{thread.messages.map((m) =>
-					m.by === "human" ? (
-						<HumanMessage key={m.id} message={m} viewer={viewer} />
-					) : (
-						<AiMessage key={m.id} message={m} name={name} />
-					),
-				)}
-				{answering && (
-					<div
-						data-testid="agent-answering"
-						aria-busy="true"
-						className="min-w-0 space-y-1"
-					>
-						<Who>
-							<SparkleFillIcon
-								size={14}
-								aria-hidden
-								className="text-agent-ink"
-							/>
-							<span className="font-semibold text-ink-soft">{name}</span>
-							<Spinner label="Answering" size={12} />
-						</Who>
-						{answering.text && (
-							<div className={`${AGENT_SURFACE} text-sm`}>
-								<AgentMarkdown text={answering.text} />
-							</div>
-						)}
-						<ActivityLine activity={answering.activity} />
-					</div>
-				)}
-				{state === "waiting" &&
-					(status && !status.configured ? (
-						<button
-							type="button"
-							data-testid="agent-waiting"
-							onClick={openAgentSetup}
-							className="flex min-h-10 items-center gap-2 rounded-md px-1 text-sm text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-						>
-							<span
-								aria-hidden
-								className="h-2 w-2 shrink-0 rounded-full bg-warn"
-							/>
-							Set up an agent
-						</button>
-					) : (
-						<p
-							data-testid="agent-waiting"
-							className="flex min-h-10 items-center gap-2 px-1 text-sm text-muted"
-						>
-							<span
-								aria-hidden
-								className="h-2 w-2 shrink-0 rounded-full bg-warn"
-							/>
-							waiting for an agent
-						</p>
-					))}
-				{replies.map(([clientId, w]) => (
-					<PendingReply
-						key={clientId}
-						clientId={clientId}
-						text={w.text}
-						error={w.error?.message}
-						viewer={viewer}
-					/>
-				))}
+				<AgentMessageItems
+					thread={shown}
+					status={status}
+					answering={answering}
+					viewer={viewer}
+					name={name}
+					pending={replies}
+				/>
 				{resolve.error && (
 					<p
 						role="alert"
@@ -594,6 +541,119 @@ export function AgentThreadCard(props: {
 				</div>
 			</div>
 		</article>
+	);
+}
+
+/**
+ * A conversation's messages as the agent card and the thread agent panel
+ * show them: each message (the "new" divider above `divider`, `after`
+ * under each), the turn under way (its streamed text, activity and
+ * `stop`), the waiting dot, and the replies on their way.
+ */
+export function AgentMessageItems(props: {
+	thread: AgentThread | undefined;
+	status: AgentStatus | undefined;
+	answering: Answering | undefined;
+	viewer: string;
+	name: string;
+	pending: readonly (readonly [string, AgentWrite])[];
+	/** The first unseen message: the "new" divider goes above it. */
+	divider?: string;
+	/** Under a message (the suggestion's button). */
+	after?: (message: AgentMessage) => ReactNode;
+	/** In the answering row (the panel's Stop). */
+	stop?: ReactNode;
+}) {
+	const { thread, status, answering, viewer, name } = props;
+	const waiting =
+		thread !== undefined && agentThreadState(thread, answering) === "waiting";
+	return (
+		<>
+			{thread?.messages.map((m) => (
+				<Fragment key={m.id}>
+					{m.id === props.divider && <NewDivider />}
+					{m.by === "human" ? (
+						<HumanMessage message={m} viewer={viewer} />
+					) : (
+						<AiMessage message={m} name={name} />
+					)}
+					{props.after?.(m)}
+				</Fragment>
+			))}
+			{answering && (
+				<div
+					data-testid="agent-answering"
+					aria-busy="true"
+					className="min-w-0 space-y-1"
+				>
+					<Who>
+						<SparkleFillIcon size={14} aria-hidden className="text-agent-ink" />
+						<span className="font-semibold text-ink-soft">{name}</span>
+						<Spinner label="Answering" size={12} />
+						{props.stop}
+					</Who>
+					{answering.text && (
+						<div className={`${AGENT_SURFACE} text-sm`}>
+							<AgentMarkdown text={answering.text} />
+						</div>
+					)}
+					<ActivityLine activity={answering.activity} />
+				</div>
+			)}
+			{waiting &&
+				(status && !status.configured ? (
+					<button
+						type="button"
+						data-testid="agent-waiting"
+						onClick={openAgentSetup}
+						className="flex min-h-10 items-center gap-2 rounded-md px-1 text-sm text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						<span
+							aria-hidden
+							className="h-2 w-2 shrink-0 rounded-full bg-warn"
+						/>
+						Set up an agent
+					</button>
+				) : (
+					<p
+						data-testid="agent-waiting"
+						className="flex min-h-10 items-center gap-2 px-1 text-sm text-muted"
+					>
+						<span
+							aria-hidden
+							className="h-2 w-2 shrink-0 rounded-full bg-warn"
+						/>
+						waiting for an agent
+					</p>
+				))}
+			{props.pending.map(([clientId, w]) => (
+				<PendingReply
+					key={clientId}
+					clientId={clientId}
+					text={w.text}
+					error={w.error?.message}
+					viewer={viewer}
+				/>
+			))}
+		</>
+	);
+}
+
+/** Above the first message the reviewer hadn't seen when the conversation opened. */
+function NewDivider() {
+	return (
+		// An <hr> can't hold its label: a named separator with the word in it.
+		// biome-ignore lint/a11y/useSemanticElements: see above.
+		<div
+			data-testid="agent-new-divider"
+			role="separator"
+			aria-label="new"
+			className="flex items-center gap-2 text-xs font-semibold text-accent"
+		>
+			<span aria-hidden className="h-px flex-1 bg-accent/60" />
+			new
+			<span aria-hidden className="h-px flex-1 bg-accent/60" />
+		</div>
 	);
 }
 
@@ -663,9 +723,10 @@ function AgentReplyBox(props: { thread: string }) {
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text]);
 	const tooLong = new TextEncoder().encode(text).length > MAX_AGENT_TEXT;
+	const view = useSendView();
 	const send = () => {
 		if (!text.trim() || tooLong) return;
-		replyAgent(client, props.thread, text, newClientId());
+		replyAgent(client, props.thread, text, newClientId(), view);
 		setText("");
 	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {

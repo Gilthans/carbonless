@@ -46,6 +46,8 @@ export class ApiError extends Error {
 			/** An edit refused as `changed`: the comment as GitHub has it now. */
 			current?: ThreadComment;
 		},
+		/** The answer's JSON as it came (a 409's `thread`, say). */
+		readonly body?: unknown,
 	) {
 		super(message);
 		this.name = "ApiError";
@@ -138,6 +140,7 @@ export async function fetchJson<T>(
 						...(isComment(current) ? { current } : {}),
 					}
 				: undefined,
+			body,
 		);
 	}
 	return body as T;

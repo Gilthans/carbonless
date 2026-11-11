@@ -1632,3 +1632,49 @@ describe("a file's agent threads", () => {
 		expect(screen.queryByTestId("tree-threads")).toBeNull();
 	});
 });
+
+describe("unread agent messages", () => {
+	afterEach(cleanup);
+
+	it("the accent dot shows on a file and its folders while a conversation under them is unread", () => {
+		const unread = new Set(["src/a/deep/one.ts"]);
+		const { rerender } = render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				agentUnreadOf={(f) => unread.has(f.path)}
+			/>,
+		);
+		const dots = screen.getAllByTestId("tree-agent-unread");
+		const rows = dots.map(
+			(d) =>
+				d.closest("button")?.getAttribute("data-folder") ??
+				d.closest("button")?.textContent,
+		);
+		// The file, and each folder holding it ("a/deep" is one row).
+		expect(rows).toEqual([
+			"src",
+			"src/a/deep",
+			expect.stringContaining("one.ts"),
+		]);
+		for (const d of dots) {
+			expect(d.querySelector(".bg-accent")).not.toBeNull();
+		}
+		expect(
+			screen.getByRole("button", { name: /one\.ts.*new agent messages/ }),
+		).toBeInTheDocument();
+		unread.clear();
+		rerender(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				agentUnreadOf={(f) => unread.has(f.path)}
+			/>,
+		);
+		expect(screen.queryByTestId("tree-agent-unread")).toBeNull();
+	});
+});

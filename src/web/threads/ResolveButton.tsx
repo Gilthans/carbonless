@@ -24,6 +24,8 @@ export function ResolveButton(props: {
 	thread: ReviewThread;
 	/** Told after each flip, with the new state and the button (the Overview's fade, Files changed's close). */
 	onToggle?: (resolved: boolean, from: Element) => void;
+	/** The thread's agent suggests resolving it: an `ok` ring. */
+	suggested?: boolean;
 }) {
 	const { thread } = props;
 	const writer = useThreadWriter();
@@ -47,7 +49,7 @@ export function ResolveButton(props: {
 				thread.resolved
 					? "border-line-strong text-ink-soft hover:bg-overlay hover:text-ink"
 					: "border-ok/60 bg-ok/10 text-ok hover:bg-ok/20"
-			}`}
+			}${props.suggested && !thread.resolved ? " ring-2 ring-ok ring-offset-1 ring-offset-surface" : ""}`}
 		>
 			<IconEl size={16} aria-hidden />
 			{label}

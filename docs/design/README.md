@@ -569,7 +569,23 @@ states keep their convention colours.
   `cta`, only after a Check of the fields as they are).
 - **Overview**: an "Agent threads" band after the thread groups in "Is it
   ready": "N open · N waiting" (a skeleton while they load) and the chip's
-  dot, or "Set up an agent" when none is.
+  dot, or "Set up an agent" when none is; "N new" (an `accent` dot) links
+  to the first agent thread with an unseen message.
+- **The thread agent** (`ThreadAgentButton`, `ThreadAgentPanel`): each
+  GitHub thread card's header has, beside the comment counter, a teal pill
+  (`agent` inside `agent-edge`, `agent-ink` sparkle and count of messages);
+  a dashed sparkle ("Ask agent") before a conversation exists; a spinner in
+  its place while the agent threads load. An `accent` dot on the pill (and
+  in the file tree, on a file and its folders) is an unseen agent message:
+  unread, never a state. Pressed, the conversation slides in from the right
+  over the comments (250 ms `transform`, none under reduced motion), leaving
+  their 40px avatar column as a strip that brings the thread back, as do the
+  counter and the pill; the card header and the composer row stay
+  uncovered. The composer's "Reply…" crossfades to "Ask agent…" (an
+  `agent-edge` box, the sparkle to send). A "new" rule in `accent` sits
+  above the first unseen agent message. An answer suggesting a resolve gets
+  "Resolve By Agent Suggestion" (`ok`) under it and an `ok` ring on Resolve;
+  only a press resolves. 40px tall on a phone (pill and counter).
 
 ## Final Verdict
 

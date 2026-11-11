@@ -2,6 +2,11 @@ import { AlertIcon, ClockIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import type { ReviewThread, ThreadComment } from "../../shared/types";
+import { AgentCover } from "../agent/ThreadAgentPanel";
+import {
+	standingSuggestion,
+	useThreadAgentContext,
+} from "../agent/threadAgent";
 import { ApiError, sessionQuery } from "../api";
 import { BotIcon, LabeledIcon, plural } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
@@ -72,7 +77,10 @@ export function Conversation(props: {
 		return <UnavailableText reason={thread.unavailable ?? "unreadable"} />;
 	return (
 		<div className="space-y-2">
-			<ThreadComments {...props} />
+			{/* The thread's agent conversation slides over the comments alone. */}
+			<AgentCover>
+				<ThreadComments {...props} />
+			</AgentCover>
 			{/* While they load or fail too: a draft is never kept from its thread. */}
 			<ThreadActions thread={thread} onToggle={props.onToggle} />
 		</div>
@@ -103,19 +111,31 @@ export function ThreadActions(props: {
 	// The box closed (one line, empty): Resolve beside it on a phone too;
 	// opened, it takes the phone's width and Resolve goes below.
 	const [boxOpen, setBoxOpen] = useState(false);
-	if (!useCanAct(thread)) return null;
+	// The thread's agent conversation open: the same box asks the agent
+	// (hidden while the thread is resolved), Resolve rings while it suggests.
+	const agent = useThreadAgentContext();
+	const asking = agent?.open === true;
+	const canAct = useCanAct(thread);
+	if (!canAct && !asking) return null;
+	const box = asking ? !thread.resolved : on && thread.viewerCan.reply;
 	return (
 		<div
 			data-testid="thread-actions"
-			data-box-open={boxOpen || undefined}
-			className={`flex gap-2 ${boxOpen ? "flex-col sm:flex-row sm:items-end" : "flex-row items-end"}`}
+			data-box-open={(box && boxOpen) || undefined}
+			className={`flex gap-2 ${box && boxOpen ? "flex-col sm:flex-row sm:items-end" : "flex-row items-end"}`}
 		>
-			{on && thread.viewerCan.reply && (
+			{box && (
 				<div className="min-w-0 flex-1">
 					<ReplyBox thread={thread} onOpenChange={setBoxOpen} />
 				</div>
 			)}
-			<ResolveButton thread={thread} onToggle={props.onToggle} />
+			<ResolveButton
+				thread={thread}
+				onToggle={props.onToggle}
+				suggested={
+					standingSuggestion(agent?.conversation, thread) !== undefined
+				}
+			/>
 		</div>
 	);
 }

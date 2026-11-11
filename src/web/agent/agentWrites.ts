@@ -9,8 +9,8 @@
  */
 import type { QueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
-import type { AgentThread } from "../../shared/agent";
-import type { ApiError } from "../api";
+import type { AgentThread, AgentView } from "../../shared/agent";
+import { ApiError } from "../api";
 import type { CodeSpan } from "../files/selectionActions";
 import { isTransient, RETRY_DELAYS_MS } from "../files/stateSync";
 import {
@@ -26,6 +26,10 @@ export interface AgentWrite {
 	/** A new thread's span, or the thread a reply goes to. */
 	span?: CodeSpan;
 	thread?: string;
+	/** A new conversation on this GitHub review thread (its id). */
+	githubThread?: string;
+	/** The comparison on screen when it was sent. */
+	view?: Omit<AgentView, "left" | "right">;
 	text: string;
 	/** Refused: why, until a retry or a drop. */
 	error?: ApiError | Error;
@@ -75,8 +79,25 @@ function send(client: QueryClient, clientId: string): void {
 	const item = state.pending.get(clientId);
 	if (!item) return;
 	let write: Promise<AgentThread>;
+	const view = item.view ? { view: item.view } : {};
 	if (item.thread !== undefined) {
-		write = postAgentMessage(item.thread, { clientId, text: item.text });
+		write = postAgentMessage(item.thread, {
+			clientId,
+			text: item.text,
+			...view,
+		});
+	} else if (item.githubThread !== undefined) {
+		write = postAgentThread({
+			clientId,
+			text: item.text,
+			thread: item.githubThread,
+			...view,
+		}).catch((error: unknown) => {
+			// Opened meanwhile (the other device): the question joins it.
+			const tid = conversationOf(error);
+			if (tid === null || state.pending.get(clientId) !== item) throw error;
+			return postAgentMessage(tid, { clientId, text: item.text, ...view });
+		});
 	} else {
 		const span = item.span && anchorOf(item.span);
 		if (!span) {
@@ -87,7 +108,7 @@ function send(client: QueryClient, clientId: string): void {
 			});
 			return;
 		}
-		write = postAgentThread({ clientId, text: item.text, span });
+		write = postAgentThread({ clientId, text: item.text, span, ...view });
 	}
 	write.then(
 		(thread) => {
@@ -105,7 +126,7 @@ function send(client: QueryClient, clientId: string): void {
 		},
 		(error: unknown) => {
 			if (state.pending.get(clientId) !== item) return;
-			if (isTransient(error)) {
+			if (isTransient(error) && !refusedByServer(error)) {
 				const n = attempts.get(clientId) ?? 0;
 				attempts.set(clientId, n + 1);
 				const wait = RETRY_DELAYS_MS[Math.min(n, RETRY_DELAYS_MS.length - 1)];
@@ -130,6 +151,21 @@ function send(client: QueryClient, clientId: string): void {
 	);
 }
 
+/** The conversation a 409 on opening one names (it exists already). */
+function conversationOf(error: unknown): string | null {
+	if (!(error instanceof ApiError) || error.status !== 409) return null;
+	const tid = (error.body as { thread?: unknown } | undefined)?.thread;
+	return typeof tid === "string" && tid !== "" ? tid : null;
+}
+
+/**
+ * A 502 the server wrote itself (GitHub couldn't be read, so it can't
+ * tell whether the thread is open): shown with Retry, never sent again
+ * silently.
+ */
+const refusedByServer = (error: unknown) =>
+	error instanceof ApiError && error.status === 502;
+
 function start(client: QueryClient, clientId: string, item: AgentWrite): void {
 	// One press, one write: a press while one is out sends nothing more.
 	const out = state.pending.get(clientId);
@@ -144,8 +180,20 @@ export function askAgent(
 	span: CodeSpan,
 	text: string,
 	clientId: string,
+	view?: Omit<AgentView, "left" | "right">,
 ): void {
-	start(client, clientId, { span, text, retrying: false });
+	start(client, clientId, { span, text, view, retrying: false });
+}
+
+/** Opens the conversation of GitHub thread `githubThread` with a question. */
+export function askAgentOnThread(
+	client: QueryClient,
+	githubThread: string,
+	text: string,
+	clientId: string,
+	view?: Omit<AgentView, "left" | "right">,
+): void {
+	start(client, clientId, { githubThread, text, view, retrying: false });
 }
 
 /** Adds the reviewer's reply to an agent thread. */
@@ -154,8 +202,9 @@ export function replyAgent(
 	thread: string,
 	text: string,
 	clientId: string,
+	view?: Omit<AgentView, "left" | "right">,
 ): void {
-	start(client, clientId, { thread, text, retrying: false });
+	start(client, clientId, { thread, text, view, retrying: false });
 }
 
 /** Sends a refused (or waiting) write again, now. */

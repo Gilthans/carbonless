@@ -15,6 +15,7 @@ import {
 	setAgentComposerText,
 	useAgentComposers,
 } from "./askAgentAction";
+import { useSendView } from "./threadAgent";
 
 /** UTF-8 bytes, as the server caps a question. */
 const bytes = (text: string) => new TextEncoder().encode(text).length;
@@ -62,9 +63,10 @@ export function AgentComposer(props: {
 	}, [text, sending]);
 	const tooLong = bytes(text) > MAX_AGENT_TEXT;
 	const blank = !text.trim();
+	const view = useSendView();
 	const ask = () => {
 		if (blank || tooLong || sending) return;
-		askAgent(client, span, text, clientId);
+		askAgent(client, span, text, clientId, view);
 	};
 	const cancel = () => {
 		if (text.trim() && !window.confirm("Discard your question?")) return;
