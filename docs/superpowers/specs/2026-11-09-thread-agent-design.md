@@ -1,4 +1,4 @@
-# Thread agent: a side-bar per GitHub thread
+# Thread agent: an agent conversation per GitHub thread
 
 Status: draft, 2026-11-09. Branches from the re-review stack (tip
 `rr-markable`, PR #34; spec `docs/superpowers/specs/2026-11-04-re-review-design.md`)
@@ -24,10 +24,10 @@ looking at now.
 
 Later (a follow-up, not this slice) the reviewer will send one general
 request, such as "go over all threads and tell me which were resolved", and
-the agent will answer it in each thread's side-bar. The owner said they will
+the agent will answer it in each thread's agent conversation. The owner said they will
 read every thread anyway. What they want is "to have the response ready as I
 open the thread". This slice shapes the data so that follow-up can write
-into side-bars without changing the format.
+into thread conversations without changing the format.
 
 ## Goals
 
@@ -61,7 +61,7 @@ into side-bars without changing the format.
   2026-11-09 words were added to it).
 - Fixing an answer that streams in and pushes the page: CAR-91.
 - Unread markers on span (code) agent threads. The data supports them. Only
-  thread side-bars show them in this slice (my call: keeps the slice small).
+  thread conversations show them in this slice (my call: keeps the slice small).
 - Pushing conversations to GitHub or to another device: they stay in the
   private agent ref, as review buddy's do.
 
@@ -74,9 +74,10 @@ into side-bars without changing the format.
 - **Nothing here changes review coverage** (principle 2). An answer saying
   "resolved" is only text: no thread, line or file changes state because of
   it.
-- **No side-bar may hide its thread.** On a narrow screen the conversation
-  is a tab inside the thread card, never a layer covering the GitHub
-  comments with no way back.
+- **The conversation never hides its thread completely.** It covers the
+  thread's comments, but a strip of the thread stays visible, and one tap
+  brings the thread back (owner: "covering 95% of it (so it's clear it's
+  still there)").
 
 ## How it works
 
@@ -93,7 +94,7 @@ type AgentAnchor =
 ```
 
 - `thread`: the GitHub thread's id (`ReviewThread.id`). A thread whose id
-  is `""` (GitHub gave none) gets no side-bar, and its button doesn't show.
+  is `""` (GitHub gave none) gets no conversation, and its agent button doesn't show.
 - `path` and `commit`: the thread's path and the commit its opening comment
   was made on (`ReviewThread.commit`, possibly `""`), recorded when the
   conversation opens. They're for display and for the prompt, never for
@@ -101,15 +102,15 @@ type AgentAnchor =
 - **At most one conversation per GitHub thread.** The fold keeps the first
   `agent-thread-opened` for a given `thread` id and folds the messages of
   any later one into it, so two devices opening the same conversation at
-  once can't leave two side-bars. A unit test covers this.
+  once can't leave two conversations. A unit test covers this.
 - **Resolved together:** a thread conversation has no resolved state of its
   own. It is resolved exactly when its GitHub thread is resolved, by anyone,
   including on GitHub. It has no Resolve button of its own: the thread
   card's Resolve and Unresolve act on both. `agent-thread-resolved` events
   for a thread conversation are ignored by the fold. (My reading of
   "resolved together". It means a thread resolved on GitHub folds its
-  side-bar too.)
-- While resolved, the side-bar is collapsed with the thread, still readable,
+  conversation too.)
+- While resolved, the conversation is collapsed with the thread, still readable,
   and its composer is hidden. Unresolving reopens both.
 - A question already waiting when the thread gets resolved is still
   answered (it was asked); no new one can be sent until it's unresolved
@@ -121,15 +122,16 @@ type AgentAnchor =
 
 ### Opening one
 
-- Each GitHub thread card gets an **Ask agent** button: the Overview's
+- Each GitHub thread card's header gets the **agent button** (see In the
+  UI), beside its comment counter: the Overview's
   `ThreadItem` (`OverviewPage.tsx:1459`), Files changed's `ThreadBlock`
   (`ThreadRow.tsx`), and re-review's `UnplacedRow` and not-in-comparison
   rows (`ThreadFate.tsx:391`, `NotInComparison.tsx`), so a thread whose
-  line is gone can still be asked about. The button is a sparkle icon with the tooltip "Ask agent",
-  following review buddy's icon and the 40px target rule. It's absent in
+  line is gone can still be asked about. Before a conversation exists it is
+  a dashed sparkle with the tooltip "Ask agent". It's absent in
   `--viewer` and `--as-of` reviews (review buddy does the same), on threads
   with no id, and on deleted threads.
-- Pressing it opens the side-bar with an empty composer. Sending the first
+- Pressing it slides the conversation open with the "Ask agent…" composer. Sending the first
   message writes `agent-thread-opened` (`by: "human"`) with the thread
   anchor. As in review buddy, sending works with no agent attached: the
   conversation waits, with the yellow dot.
@@ -149,7 +151,7 @@ waiting dot, the 32 KiB cap. Additions:
   list. Sent from Files changed, it is the URL's `ps`/`head`/`from`. Sent
   from the Overview, it is the comparison the Overview places threads
   against (the latest patch set, or the snapshot head when there's none;
-  `useSessionPlacements`). The prompt uses it (below), and the side-bar
+  `useSessionPlacements`). The prompt uses it (below), and the conversation
   shows a small "PS 3" / head chip on the question.
 - **Code links.** `path:line` and `path:start-end` in an agent's answer
   (inside inline code or bare) become links to Files changed at that line.
@@ -178,7 +180,7 @@ waiting dot, the 32 KiB cap. Additions:
   dropped (`src/server/review/events.ts:565`), so seeded test events carry
   both. It gains an optional
   `origin: { request: string }`: the reviewer's general request, cut to 200
-  characters, which the side-bar shows as a chip ("↳ Check every thread")
+  characters, which the conversation shows as a chip ("↳ Check every thread")
   over the first message.
 - An ai-opened conversation isn't waiting (review buddy's fold rule). It
   counts as unread until seen.
@@ -207,7 +209,7 @@ interface PromptEnvelope {
   current: string;                      // GitHub's newest head
   patchsets: { number: number; head: string; mergeBase: string; startedAt: string }[];
   placement?: ThreadPlacement;          // on the viewed comparison
-  messages: PromptMessage[];            // the side-bar conversation
+  messages: PromptMessage[];            // the thread's agent conversation
   …
 }
 ```
@@ -252,42 +254,60 @@ interface PromptEnvelope {
 
 - **Seen marks** are events in the same private ref:
   `agent-thread-seen { thread, upTo: <message event id> }`, `by: "human"`.
-  The web writes one when a side-bar with unseen agent messages is open and
+  The web writes one when a conversation with unseen agent messages is open and
   visible (the builder picks the visibility rule, e.g. in view for 1 s). It
   never writes one when nothing is unseen, so there's at most one per agent
   message (principle 3: bounded by the message count).
 - A conversation is **unread** when it has an `ai` message after its last
   `upTo`. Kept in the ref, not `localStorage`, so the phone and the desktop
   agree (the owner reads on both, through the same server).
-- The **"new" divider** in the side-bar sits above the first unseen message.
-  It stays until the side-bar closes.
+- The **"new" divider** in the conversation sits above the first unseen
+  message. It stays until the conversation closes.
 
 ### In the UI (see the mockups)
 
-- **Counters on the thread card header** (Overview row, Files changed card)
-  and on the Files changed **thread bubble**: the existing comment pill,
-  then a teal `agent` pill with the sparkle and the count of the agent's
-  messages in the conversation (owner: "a counter of agent messages"). An **unread** conversation adds a dot in `accent` (periwinkle) on
-  that pill. Yellow stays "your turn" / "waiting", green the resolved
-  check. (Accent for unread is my call. The design README says agent teal
-  is never a state colour, and yellow and green are taken.) The accessible
-  name says it: "3 agent messages, 1 new".
+The conversation lives inside its thread card and slides over the
+thread's comments, on the Overview, in Files changed and on the phone
+alike (owner, 2026-11-11: "we can't have the agent thread take up so
+much space").
+
+- **The agent button.** The card header holds the comment counter and,
+  beside it, an agent button: the sparkle icon in a teal pill, clearly a
+  button. With a conversation, it shows the number of messages in it. When
+  an agent message hasn't been seen, it adds a dot in `accent`
+  (periwinkle). With no conversation yet it's a dashed sparkle ("Ask
+  agent"). Its accessible name says it all: "4 agent messages, 1 new".
+  Yellow stays "your turn" / "waiting", green the resolved check.
+  (Accent for unread is my call: agent teal is never a state colour, and
+  yellow and green are taken.)
+- **Opening.** Pressing the agent button slides the conversation in from
+  the right over the thread's comments, animated (about 250 ms, none under
+  `prefers-reduced-motion`). It covers about 95% of the comment area. A
+  strip of the thread stays visible on the left, at least 40px so it
+  remains a tap target (my call). The composer's "Reply…" placeholder fades
+  out and "Ask agent…" fades in; the same input now sends to the agent.
+  The agent button shows pressed.
+- **Closing.** Pressing the visible strip, the comment counter, or the
+  agent button again slides the conversation out and brings the thread
+  back, with "Reply…" fading back in.
+- **Scroll.** The thread opens scrolled to its top, as today. The
+  conversation opens scrolled to its end, so the latest answer is what the
+  reviewer sees first.
+- **What stays uncovered** (my calls): the card header (so the comment
+  counter and the agent button stay reachable) and the composer row with
+  Resolve. Only the comments are covered. A thread whose comments are
+  shorter than the conversation grows to a minimum height (the builder
+  picks it) so the conversation has room, and it scrolls inside.
+- **Resolve** stays in the composer row (the GitHub action); a "suggests
+  resolving" answer rings it in `ok`.
+- **Several cards** may have their conversations open at once: each card
+  keeps its own open state (my call; nothing else gets covered). The open
+  state isn't stored: a reload shows threads.
 - **The file tree** gets the agent dot it already shows for span threads,
   plus the accent dot while something under it is unread.
-- **Desktop side-bar:** a panel to the right of the thread card, joined to
-  it by a teal connector at the header, `agent-edge` border. Header: the
-  sparkle, the thread's `path:line`, Close. Body: messages, the origin chip
-  when agent-started, the "new" divider. Footer: the composer. In Files
-  changed it sits in a column to the right of the diff, level with its
-  thread, and the diff narrows while one is open. One side-bar open at a
-  time (my call: opening another closes the first).
-- **Narrow screens (phone, and desktop below the builder's breakpoint):**
-  the thread card gets two tabs, "Thread N" and "✦ Agent N", with the
-  unread dot on the agent tab. The composer and Resolve stay at the bottom
-  of the card. Principle 5: no horizontal page scroll at 360px, 40px
-  targets, and a Playwright phone test.
-- **Resolve** stays on the thread card (the GitHub action), and is shared
-  with the side-bar on narrow screens.
+- **Phone.** The same slide-over inside the card; the agent button and the
+  comment counter are 40px tall, the strip 40px wide. Principle 5: no
+  horizontal page scroll at 360px, and a Playwright phone test.
 - **The Overview's agent row** (`AgentOverviewRow`) counts thread
   conversations with span threads, and its unread count links to the first
   unread one.
@@ -334,12 +354,14 @@ Reuses review buddy's routes (`/api/r/:id/agent/threads…`). Additions:
   GitHub resolve or reply writers.
 - Web: links in answers land on the line, non-PR paths stay text, a
   `javascript:` link from the agent is dropped; the unread dot appears and
-  clears after viewing (fake ACP answer while the side-bar is closed); one
-  side-bar at a time; the Ask agent button is absent on id-less, deleted,
+  clears after viewing (fake ACP answer while the conversation is closed); the placeholder switches between
+  "Reply…" and "Ask agent…"; the Ask agent button is absent on id-less, deleted,
   `--viewer` and `--as-of` threads.
 - Playwright, desktop and phone: open a conversation from an Overview
-  thread and from Files changed, get an answer, see the counter; resolve the
-  GitHub thread and see the side-bar fold; phone tabs at 360px.
+  thread and from Files changed, get an answer, see the counter; the
+  conversation opens scrolled to its end and closes from the strip, the
+  comment counter and the agent button; resolve the GitHub thread and see
+  it fold; the slide-over at 360px.
 - Gallery: a `case/thread-agent` PR with a thread fixed in one place but not
   another (the owner's "all places or just here" case), plus a re-push, for
   QA.
@@ -352,17 +374,21 @@ a human action; the agent may only suggest it), `docs/design/README.md`
 
 ## Left to the builder
 
-The breakpoint for the side-bar vs tabs; the code-link recogniser; the seen
-visibility rule; component structure (reuse `AgentThreadCard` pieces in a
-`ThreadSidebar`); icons for Close and Send; where the composer keeps focus.
+The code-link recogniser; the seen visibility rule; the conversation's
+minimum height; the animation curve; component structure (reuse
+`AgentThreadCard` pieces in a `ThreadAgentPanel`); where focus goes on
+opening and closing (my suggestion: the composer on open, the agent button
+on close).
 
 ## Calls I made (for the owner to check)
 
 - Resolved state is derived from the GitHub thread, so a thread resolved on
-  GitHub by someone else folds its side-bar.
+  GitHub by someone else folds its conversation.
 - Unread uses `accent` (periwinkle), not yellow.
 - Seen marks live in the private ref, so phone and desktop agree.
-- One side-bar open at a time on desktop.
+- The strip left showing is at least 40px wide (a tap target).
+- The card header and the composer row (with Resolve) are never covered.
+- Each card opens its conversation independently; the open state isn't stored.
 - Unread markers only on thread conversations this slice.
 - `[suggest-resolve]` line as the suggestion marker.
 - A question waiting when the thread is resolved is still answered.
