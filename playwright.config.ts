@@ -1,6 +1,12 @@
 import { availableParallelism } from "node:os";
 import { defineConfig, devices } from "@playwright/test";
+import { queuedWorkers, requireQueue } from "./scripts/queue-guard.mjs";
 import { startTraceRun } from "./test/trace-run";
+
+// `playwright test --list` only reads the specs; any other `test` runs them.
+if (process.argv.includes("test") && !process.argv.includes("--list")) {
+	requireQueue("pnpm test:e2e [specs...]");
+}
 
 // Test traces (docs/test-profiling.md): the main process picks the run's
 // directory; workers inherit it ($CRB_TRACE_DIR) and e2e/trace-reporter.ts
@@ -13,10 +19,9 @@ const TRACE_REPORTER = ["./e2e/trace-reporter.ts"] as const;
 export default defineConfig({
 	testDir: "e2e",
 	fullyParallel: true,
-	// A run that holds the machine-wide queue (scripts/queue.mjs) has the
-	// machine to itself: a worker per core (the whole suite ~18% faster than
-	// Playwright's half). Otherwise other runs may share it: the default.
-	workers: process.env.CRB_QUEUE_HELD ? availableParallelism() : undefined,
+	// A run in the queue (scripts/queue.mjs) shares the machine with the
+	// other slots only: a worker per core it gets. Otherwise Playwright's default.
+	workers: queuedWorkers(availableParallelism()),
 	forbidOnly: !!process.env.CI,
 	// No retries, in CI either: a flaky test must fail visibly to get fixed.
 	retries: 0,

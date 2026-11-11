@@ -145,6 +145,15 @@ switch wouldn't happen.
   request for changes: that one press makes two writes, the comment and
   then the dismissal of that review, since that is what Comment means
   (below). Its tooltip says so before the press.
+- **Resolve in Files changed closes the thread to its bubble** (the owner,
+  2026-11-09), on the press. Once none of the bubble's threads shows, it
+  closes and takes the focus (a bubble above the view comes down to just
+  under the headers); while others show, only the resolved one is hidden
+  (until it reads unresolved) and the next one takes the focus. Opening the
+  bubble shows them all. Any write of the thread GitHub refuses opens it
+  again (beside its notice). A thread with unsent text (its reply box, an
+  edit) or a reply, edit or delete on its way stays open. Unresolve closes
+  nothing (`src/web/files/resolveCollapse.ts`).
 - **Immediate, never into a pending review.** Replies use REST
   `POST /repos/{o}/{r}/pulls/{n}/comments/{commentId}/replies` (to the
   thread's first comment), never GraphQL `addPullRequestReviewThreadReply`,
