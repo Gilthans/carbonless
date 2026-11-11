@@ -119,14 +119,13 @@ puts it now: its current line on the PR's head GitHub gave in the same
 answer (never a head learned later), new side only (one line: GitHub's
 current start line isn't kept; an old-side line is numbered against
 GitHub's merge base, which can differ from ours, so it is `untraced`).
-Only that same text
-places it, with no chip, as GitHub would show it; GitHub's line rewritten
-or gone in the viewed snapshot, or its file out of the comparison, is
-`untraced` (never "changed since" or "deleted since the review": no
-history was followed). With no line from GitHub either, it is listed
-under its file as `outdated` when GitHub says so, else `untraced`.
-`rewritten` is only ever a real trace's answer. A placement from GitHub's
-line carries `source: "github"` in `GET /placements`.
+Only that same text places it, with no chip, as GitHub would show it;
+GitHub's line rewritten or gone in the viewed snapshot, or its file out
+of the comparison, is `untraced` (never "changed since" or "deleted since
+the review": no history was followed). With no line from GitHub either,
+it is listed under its file as `outdated` when GitHub says so, else
+`untraced`. `rewritten` is only ever a real trace's answer. A placement
+from GitHub's line carries `source: "github"` in `GET /placements`.
 
 ## Every visible cluster is individually markable
 
