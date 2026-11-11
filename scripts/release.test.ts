@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Script } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { rcMoveTo } from "./rc-fixup.mjs";
 import {
@@ -1721,6 +1722,34 @@ describe("release-finish: each step only once", () => {
 			const runs = runValues(workflow(file));
 			expect(runs.length, file).toBeGreaterThan(5);
 			for (const run of runs) expect(run, file).not.toContain("${{");
+		}
+	});
+
+	it("every run: script parses: bash -n, and each `node -e '…'` body as JavaScript", () => {
+		const files = readdirSync(
+			join(import.meta.dirname, "../.github/workflows"),
+		).filter((f) => f.endsWith(".yml"));
+		for (const file of files) {
+			for (const run of runValues(workflow(file))) {
+				const [head = "", ...rest] = run.split("\n");
+				const inline = head.replace(/^\s*(?:- )?run: /, "");
+				const lines = inline === "|" ? rest : [inline];
+				const indent = Math.min(
+					...lines.filter((l) => l.trim()).map((l) => l.search(/\S/)),
+				);
+				const script = lines.map((l) => l.slice(indent)).join("\n");
+				// A quote inside a single-quoted `node -e` body ends it early.
+				expect(
+					() => execFileSync("bash", ["-n"], { input: script, stdio: "pipe" }),
+					`${file}: ${head.trim()}\n${script}`,
+				).not.toThrow();
+				for (const [, body] of script.matchAll(/node -e '([^']*)'/g)) {
+					expect(
+						() => new Script(body ?? ""),
+						`${file}: node -e\n${body}`,
+					).not.toThrow();
+				}
+			}
 		}
 	});
 
