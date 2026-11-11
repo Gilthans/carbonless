@@ -8,6 +8,7 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../../test/git-fixture";
+import type { AgentAnchor } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type {
 	CodeAnchor,
@@ -17,7 +18,7 @@ import type {
 } from "../../shared/types";
 import { buildSnapshot } from "../diff/snapshot";
 import { ThreadCodeSource } from "../threadCode";
-import { placeable, ThreadPlacer } from "./threads";
+import { placeAgentThreads, placeable, ThreadPlacer } from "./threads";
 
 vi.setConfig(GIT_TEST_TIMEOUTS);
 
@@ -376,5 +377,100 @@ describe("ThreadPlacer", () => {
 		expect(await p.lineCount(target, "new.ts", "LEFT")).toBe(10);
 		expect(await p.lineCount(target, "del.ts", "RIGHT")).toBeNull();
 		expect(await p.lineCount(target, "nowhere.ts", "RIGHT")).toBeNull();
+	});
+});
+
+describe("placeAgentThreads", () => {
+	const asked = (
+		id: string,
+		anchor: Partial<AgentAnchor> & { path: string },
+	) => ({
+		id,
+		at: "2026-01-01T00:00:00Z",
+		anchor: {
+			subject: "line",
+			commit: H1,
+			side: "RIGHT",
+			line: 1,
+			startSide: "RIGHT",
+			startLine: 1,
+			...anchor,
+		} as AgentAnchor,
+	});
+
+	it("traces an agent thread asked on PS1 onto PS2's moved line, like a comment", async () => {
+		const got = await placeAgentThreads(
+			placer(),
+			target,
+			[asked("A1", { path: "a.ts", line: 15, startLine: 15 })],
+			base(),
+		);
+		expect(got).toEqual([
+			{
+				id: "A1",
+				placement: {
+					kind: "placed",
+					anchor: {
+						path: "a.ts",
+						startSide: "RIGHT",
+						startLine: 16,
+						side: "RIGHT",
+						line: 16,
+					},
+					changed: false,
+				},
+			},
+		]);
+	});
+
+	it("one whose line was deleted is unplaced with its fate; a file question follows its file", async () => {
+		const got = await placeAgentThreads(
+			placer(),
+			target,
+			[
+				asked("A2", { path: "a.ts", line: 10, startLine: 10 }),
+				{
+					id: "A3",
+					at: "2026-01-01T00:00:00Z",
+					anchor: { subject: "file", path: "old.ts", commit: H1 },
+				},
+			],
+			base(),
+		);
+		expect(new Map(got.map((p) => [p.id, p.placement]))).toEqual(
+			new Map<string, ThreadPlacement>([
+				[
+					"A2",
+					{
+						kind: "unplaced",
+						fate: "deleted",
+						path: "a.ts",
+						nearest: { side: "RIGHT", line: 11 },
+					},
+				],
+				["A3", { kind: "file", path: "new.ts" }],
+			]),
+		);
+	});
+
+	it("a thread whose tracing fails is left out (the page keeps it where it was asked), the others placed", async () => {
+		const code = new ThreadCodeSource(repo.path, async () => true);
+		const broken = "e".repeat(40);
+		const endpoints = code.endpoints.bind(code);
+		vi.spyOn(code, "endpoints").mockImplementation((anchor, b) =>
+			anchor.commit === broken
+				? Promise.reject(new Error("git broke"))
+				: endpoints(anchor, b),
+		);
+		const got = await placeAgentThreads(
+			new ThreadPlacer(repo.path, code),
+			target,
+			[
+				asked("BAD", { path: "a.ts", line: 15, startLine: 15, commit: broken }),
+				asked("OK", { path: "a.ts", line: 15, startLine: 15 }),
+			],
+			base(),
+		);
+		expect(got.map((p) => p.id)).toEqual(["OK"]);
 	});
 });

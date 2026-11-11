@@ -23,6 +23,7 @@ import { NOT_PHONE, useMedia } from "../useMedia";
 import {
 	type Comparison,
 	type ComparisonBase,
+	moveMarker,
 	positionOf,
 	type Viewing,
 } from "./comparison";
@@ -50,12 +51,16 @@ interface Dot {
 	base?: ComparisonBase;
 	/** The commit it is at (a patch set's head; the branch's merge base). */
 	oid: string;
-	/** The merge base it was against (its card's "Against"). */
+	/** The merge base it was against (its card's "Against"), and its branch. */
 	mergeBase?: string;
+	baseBranch?: string;
 	patchset?: SessionInfo["patchsets"][number];
 }
 
 const short = (oid: string) => oid.slice(0, 7);
+
+const why = (move: { disabled: string } | object): string | null =>
+	"disabled" in move ? move.disabled : null;
 
 const sameViewing = (a: Viewing | undefined, b: Viewing | null) =>
 	!!a &&
@@ -86,14 +91,33 @@ export function railDots(
 	const latest = session.patchsets.at(-1);
 	const mergeBase =
 		latest?.mergeBase ?? session.head?.mergeBase ?? session.snapshotHead;
+	// The branch dot is a virtual pointer (owner, 2026-11-09): the comparison
+	// target's base branch at the target's merge base, so it follows the
+	// target (a retarget, a rebase or a merge-in moves it).
+	const target =
+		viewing?.kind === "patchset"
+			? session.patchsets.find((p) => p.number === viewing.number)
+			: undefined;
+	const onHead =
+		viewing?.kind === "head" &&
+		session.head &&
+		viewing.oid === session.head.oid;
+	const branchOf = target
+		? { label: target.baseBranch, oid: target.mergeBase }
+		: onHead && session.head
+			? { label: session.head.baseBranch, oid: session.head.mergeBase }
+			: {
+					label: latest?.baseBranch ?? session.head?.baseBranch ?? "base",
+					oid: mergeBase,
+				};
 	const dots: Dot[] = [
 		{
 			id: "branch",
 			kind: "branch",
-			label: session.head?.baseBranch ?? "base",
+			label: branchOf.label,
 			position: 0,
 			base: { kind: "branch" },
-			oid: mergeBase,
+			oid: branchOf.oid,
 		},
 		...session.patchsets.map(
 			(p): Dot => ({
@@ -126,6 +150,7 @@ export function railDots(
 			viewing: { kind: "head", oid: snapshotOid },
 			oid: snapshotOid,
 			mergeBase,
+			...(latest ? { baseBranch: latest.baseBranch } : {}),
 		});
 	}
 	const head =
@@ -173,6 +198,8 @@ function Marker(props: {
 	phone: boolean;
 	onPointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => void;
 	dragging: boolean;
+	/** While dragged: how far it follows the pointer, kept inside the rail. */
+	dx?: number;
 }) {
 	const base = props.kind === "base";
 	const label = base ? "comparison base" : "comparison target";
@@ -194,12 +221,17 @@ function Marker(props: {
 					data-dragging={props.dragging || undefined}
 					onPointerDown={props.onPointerDown}
 					// The rail scrolls sideways on a phone; a drag on a marker must not.
-					style={{ touchAction: "none" }}
+					style={{
+						touchAction: "none",
+						...(props.dragging && props.dx !== undefined
+							? { transform: `translateX(${props.dx}px)`, zIndex: 10 }
+							: {}),
+					}}
 					className={`relative inline-flex min-h-10 cursor-grab items-center rounded-full px-1.5 text-[10.5px] tracking-[0.04em] uppercase select-none focus-visible:outline-2 focus-visible:outline-accent active:cursor-grabbing sm:min-h-[18px] ${
 						base
 							? "border-[1.5px] border-done text-done"
 							: "border-[1.5px] border-accent text-accent"
-					} ${props.dragging ? "opacity-60" : ""}`}
+					} ${props.dragging ? "cursor-grabbing opacity-80 shadow-float" : ""}`}
 				>
 					{props.phone ? (base ? "comp. base" : "comp. target") : label}
 				</button>
@@ -300,6 +332,7 @@ const Commit = ({ oid }: { oid: string }) => (
 /** A dot's details, for a reader who doesn't know the data model. */
 function DotCard(props: { dot: Dot; session: SessionInfo }) {
 	const { dot, session } = props;
+	// The PR's current base: the head's (each patch set has its own).
 	const branch = session.head?.baseBranch;
 	switch (dot.kind) {
 		case "branch":
@@ -327,7 +360,7 @@ function DotCard(props: { dot: Dot; session: SessionInfo }) {
 					}
 					rows={[
 						<Commit key="c" oid={p.head} />,
-						<Against key="a" branch={branch} oid={p.mergeBase} />,
+						<Against key="a" branch={p.baseBranch} oid={p.mergeBase} />,
 						<ThreadsRow key="t" number={p.number} session={session} />,
 					]}
 				/>
@@ -340,7 +373,11 @@ function DotCard(props: { dot: Dot; session: SessionInfo }) {
 					subtitle="Not reviewed yet"
 					rows={[
 						<Commit key="c" oid={dot.oid} />,
-						<Against key="a" branch={branch} oid={dot.mergeBase ?? dot.oid} />,
+						<Against
+							key="a"
+							branch={dot.baseBranch ?? branch}
+							oid={dot.mergeBase ?? dot.oid}
+						/>,
 					]}
 				/>
 			);
@@ -571,8 +608,9 @@ function DotPopover(props: {
 	dot: Dot;
 	session: SessionInfo;
 	anchor: HTMLElement | null;
-	canBase: boolean;
-	canTarget: boolean;
+	/** Why each button is disabled (moveMarker), or null. */
+	base: string | null;
+	target: string | null;
 	onBase: () => void;
 	onTarget: () => void;
 	/** `refocus`: give focus back to the dot. */
@@ -602,7 +640,7 @@ function DotPopover(props: {
 	}, [anchor]);
 	useEffect(() => {
 		const first = box.current?.querySelector<HTMLButtonElement>(
-			"button:not(:disabled)",
+			"button:not([aria-disabled])",
 		);
 		(first ?? box.current)?.focus();
 	}, []);
@@ -624,7 +662,23 @@ function DotPopover(props: {
 		};
 	}, [anchor, onClose]);
 	const button =
-		"flex min-h-10 flex-1 items-center justify-center rounded-md border border-line-strong px-2 text-xs font-semibold whitespace-nowrap text-ink hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8";
+		"flex min-h-10 flex-1 items-center justify-center rounded-md border border-line-strong px-2 text-xs font-semibold whitespace-nowrap text-ink hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:opacity-40 aria-disabled:hover:bg-transparent sm:min-h-8";
+	// An enabled one is its label alone (a tooltip would only repeat it);
+	// a disabled one stays focusable, its reason its tooltip and description.
+	const action = (label: string, why: string | null, onPress: () => void) =>
+		why === null ? (
+			<button type="button" className={button} onClick={onPress}>
+				{label}
+			</button>
+		) : (
+			<Tooltip content={why}>
+				{(trigger) => (
+					<button type="button" {...trigger} className={button} aria-disabled>
+						{label}
+					</button>
+				)}
+			</Tooltip>
+		);
 	return createPortal(
 		<div
 			ref={box}
@@ -640,7 +694,8 @@ function DotPopover(props: {
 				if (e.key !== "Tab" || !box.current) return;
 				const stops = [
 					...box.current.querySelectorAll<HTMLElement>(
-						'button:not(:disabled), a[href], [tabindex="0"]',
+						// Disabled ones too: their reason is read on focus.
+						'button, a[href], [tabindex="0"]',
 					),
 				];
 				const at = document.activeElement;
@@ -667,22 +722,8 @@ function DotPopover(props: {
 		>
 			<DotCard dot={props.dot} session={props.session} />
 			<div className="mt-2 flex gap-2">
-				<button
-					type="button"
-					className={button}
-					disabled={!props.canBase}
-					onClick={props.onBase}
-				>
-					Comparison Base
-				</button>
-				<button
-					type="button"
-					className={button}
-					disabled={!props.canTarget}
-					onClick={props.onTarget}
-				>
-					Comparison Target
-				</button>
+				{action("Comparison Base", props.base, props.onBase)}
+				{action("Comparison Target", props.target, props.onTarget)}
 			</div>
 		</div>,
 		document.body,
@@ -800,29 +841,40 @@ export function PatchsetGraph(props: {
 		};
 	});
 	const headConnector = connectors.find((c) => c.to.kind === "head") ?? null;
-	const viewingPos = comparison.viewing
-		? positionOf(comparison.viewing, comparison.patchsets)
-		: -1;
+	/** A dot's Comparison Base or Target: the move, or why not (moveMarker). */
+	const pressed = (role: "base" | "target", dot: Dot) =>
+		comparison.viewing
+			? moveMarker(role, all.indexOf(dot), all, {
+					viewing: comparison.viewing,
+					base: comparison.base,
+					baseChosen: comparison.baseChosen,
+				})
+			: { disabled: "Loading" };
+	const press = (role: "base" | "target", dot: Dot) => {
+		const move = pressed(role, dot);
+		if ("disabled" in move) return;
+		comparison.set(move.viewing, move.base);
+		if (move.viewing.kind === "head" && move.viewing.oid === head?.oid)
+			props.onViewHead?.();
+	};
 
 	// Dragging a marker: which one, and the dot under the pointer.
 	const [drag, setDrag] = useState<{
 		kind: "viewing" | "base";
 		over: string | null;
+		/** The label's shift with the pointer (inside the rail). */
+		dx: number;
 	} | null>(null);
 	const rail = useRef<HTMLDivElement>(null);
 	const canView = (dot: Dot) => dot.viewing !== undefined;
-	const canBase = (dot: Dot) =>
-		dot.base !== undefined && dot.position < viewingPos;
 	const view = (dot: Dot) => {
 		if (!dot.viewing) return;
 		comparison.setViewing(dot.viewing);
 		if (dot.kind === "head") props.onViewHead?.();
 	};
-	const baseOn = (dot: Dot) => {
-		if (dot.base && canBase(dot)) comparison.setBase(dot.base);
-	};
-	/** The dot nearest to `x` among the rail's dots. */
+	/** The dot nearest to `x` among the rail's dots (as they are now). */
 	const dotAt = (x: number): Dot | null => {
+		const all = now.current.all;
 		const root = rail.current;
 		if (!root) return null;
 		let best: { dot: Dot; d: number } | null = null;
@@ -834,36 +886,80 @@ export function PatchsetGraph(props: {
 		}
 		return best?.dot ?? null;
 	};
+	// What a drag in progress reads at each event (this render's graph).
+	const now = useRef({ all, canView, pressed, press, view, dotAt });
+	now.current = { all, canView, pressed, press, view, dotAt };
+	// The drag in progress' end: unmounting mid-drag removes its listeners.
+	const endDrag = useRef<(() => void) | null>(null);
+	useEffect(() => () => endDrag.current?.(), []);
 	const startDrag =
 		(kind: "viewing" | "base") => (e: ReactPointerEvent<HTMLButtonElement>) => {
 			e.preventDefault();
+			// A drag runs across renders: it reads the graph as it is at each
+			// event (a key move or a new head mid-drag), never as it was here.
+			const at = () => now.current;
 			const target = e.currentTarget;
 			target.setPointerCapture(e.pointerId);
-			setDrag({ kind, over: null });
+			// The label follows the pointer, its box never leaving the rail.
+			const startX = e.clientX;
+			const box = target.getBoundingClientRect();
+			const bounds = rail.current?.getBoundingClientRect();
+			const shift = (x: number) =>
+				bounds
+					? Math.min(
+							bounds.right - box.right,
+							Math.max(bounds.left - box.left, x - startX),
+						)
+					: 0;
+			setDrag({ kind, over: null, dx: 0 });
+			// The base goes where moveMarker lets it, pushing the target past it.
 			const allowed = (dot: Dot | null) =>
-				dot && (kind === "viewing" ? canView(dot) : canBase(dot)) ? dot : null;
+				dot &&
+				(kind === "viewing"
+					? at().canView(dot)
+					: !("disabled" in at().pressed("base", dot)))
+					? dot
+					: null;
 			const move = (ev: PointerEvent) => {
-				setDrag({ kind, over: allowed(dotAt(ev.clientX))?.id ?? null });
+				setDrag({
+					kind,
+					over: allowed(at().dotAt(ev.clientX))?.id ?? null,
+					dx: shift(ev.clientX),
+				});
+			};
+			const done = () => {
+				target.removeEventListener("pointermove", move);
+				target.removeEventListener("pointerup", up);
+				target.removeEventListener("pointercancel", cancel);
+				target.removeEventListener("lostpointercapture", cancel);
+				window.removeEventListener("keydown", onEscape, true);
+				if (endDrag.current === done) endDrag.current = null;
+				setDrag(null);
 			};
 			const up = (ev: PointerEvent) => {
-				target.removeEventListener("pointermove", move);
-				target.removeEventListener("pointerup", up);
-				target.removeEventListener("pointercancel", cancel);
-				setDrag(null);
-				const dot = allowed(dotAt(ev.clientX));
+				done();
+				const dot = allowed(at().dotAt(ev.clientX));
 				if (!dot) return;
-				if (kind === "viewing") view(dot);
-				else baseOn(dot);
+				if (kind === "viewing") at().view(dot);
+				else at().press("base", dot);
 			};
-			const cancel = () => {
-				target.removeEventListener("pointermove", move);
-				target.removeEventListener("pointerup", up);
-				target.removeEventListener("pointercancel", cancel);
-				setDrag(null);
+			// A cancelled pointer, or capture lost (the browser took it): no drop.
+			const cancel = () => done();
+			// Escape drops it back on its dot, nothing moved.
+			const onEscape = (ev: KeyboardEvent) => {
+				if (ev.key !== "Escape") return;
+				ev.stopPropagation();
+				if (target.hasPointerCapture?.(e.pointerId))
+					target.releasePointerCapture(e.pointerId);
+				done();
 			};
+			endDrag.current?.();
+			endDrag.current = done;
+			window.addEventListener("keydown", onEscape, true);
 			target.addEventListener("pointermove", move);
 			target.addEventListener("pointerup", up);
 			target.addEventListener("pointercancel", cancel);
+			target.addEventListener("lostpointercapture", cancel);
 		};
 
 	// Qualified keys only (owner, 2026-11-07): nothing moves by accident.
@@ -878,7 +974,7 @@ export function PatchsetGraph(props: {
 		if (!next) return;
 		if (kind === "viewing") {
 			if (canView(next)) view(next);
-		} else if (canBase(next)) baseOn(next);
+		} else press("base", next);
 	};
 	const group = "Files changed";
 	useShortcut({
@@ -1002,14 +1098,14 @@ export function PatchsetGraph(props: {
 						dot={dot}
 						session={session}
 						anchor={dotEls.current.get(dot.id) ?? null}
-						canBase={canBase(dot) && !isBase}
-						canTarget={canView(dot) && !isViewing}
+						base={why(pressed("base", dot))}
+						target={why(pressed("target", dot))}
 						onBase={() => {
-							baseOn(dot);
+							press("base", dot);
 							closeSticky(true);
 						}}
 						onTarget={() => {
-							view(dot);
+							press("target", dot);
 							closeSticky(true);
 						}}
 						onClose={closeSticky}
@@ -1022,6 +1118,7 @@ export function PatchsetGraph(props: {
 							kind="base"
 							phone={phone}
 							dragging={drag?.kind === "base"}
+							dx={drag?.kind === "base" ? drag.dx : undefined}
 							onPointerDown={startDrag("base")}
 						/>
 					)}
@@ -1030,6 +1127,7 @@ export function PatchsetGraph(props: {
 							kind="viewing"
 							phone={phone}
 							dragging={drag?.kind === "viewing"}
+							dx={drag?.kind === "viewing" ? drag.dx : undefined}
 							onPointerDown={startDrag("viewing")}
 						/>
 					)}

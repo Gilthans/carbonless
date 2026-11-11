@@ -59,7 +59,11 @@ import {
 	type AgentComposerItem,
 	useAgentComposers,
 } from "../agent/askAgentAction";
-import { type AgentPlaceable, agentPlaceable } from "../agent/placeable";
+import {
+	type AgentPlaceable,
+	shownAgentPlaceables,
+	useAgentPlacing,
+} from "../agent/placeable";
 import { contextQuery, hunksQuery, overviewQuery, sessionQuery } from "../api";
 import {
 	CodeLine,
@@ -92,8 +96,7 @@ import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
-import { contextRanges } from "./contextRanges";
-import { findBarElement } from "./find/hitSeen";
+import { contextRanges, rangesKeyOf } from "./contextRanges";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
@@ -109,6 +112,8 @@ import {
 	setPicks,
 	usePicks,
 } from "./linePicks";
+import { type ResolveCollapse, useResolveCollapse } from "./resolveCollapse";
+import { stickyBottom } from "./scrollAnchor";
 import { type CodeSpan, describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import type { KindEntry } from "./since";
@@ -126,6 +131,7 @@ import {
 	lineKey,
 	type Placements,
 	placeThreads,
+	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
 import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
@@ -264,6 +270,8 @@ interface RowThreads {
 	/** A row whose bubble takes focus once it shows (a gap thread opened). */
 	focus: LineKey | null;
 	onFocused: () => void;
+	/** Resolve closes a thread to its bubble (resolveCollapse.ts). */
+	collapse: ResolveCollapse<LineKey>;
 }
 
 /**
@@ -969,7 +977,13 @@ function wordsOf(
  * both sides' composers share one.
  */
 function RowTail(props: {
-	opened: { endKey: LineKey; ending: ReviewThread[]; side: DiffSide }[];
+	opened: {
+		endKey: LineKey;
+		/** The bubble's keys: what closes it. */
+		keys: LineKey[];
+		ending: ReviewThread[];
+		side: DiffSide;
+	}[];
 	composing: { side: DiffSide; items: NewThreadItem[] }[];
 	threads?: RowThreads;
 	composers?: RowComposers;
@@ -1004,16 +1018,28 @@ function RowTail(props: {
 	return (
 		<>
 			{threads &&
-				props.opened.map((cell) => (
-					<ThreadRow
-						key={cell.endKey}
-						id={threads.idOf(cell.endKey)}
-						readId={threads.readId}
-						threads={cell.ending}
-						place={place(cell.side)}
-						rail={rail}
-					/>
-				))}
+				props.opened.map((cell) => {
+					const shown = cell.ending.filter(threads.collapse.shows);
+					return (
+						<ThreadRow
+							key={cell.endKey}
+							id={threads.idOf(cell.endKey)}
+							readId={threads.readId}
+							threads={shown}
+							place={place(cell.side)}
+							rail={rail}
+							onResolved={(t, from) =>
+								threads.collapse.resolved({
+									key: cell.endKey,
+									keys: cell.keys,
+									thread: t,
+									shown,
+									from,
+								})
+							}
+						/>
+					);
+				})}
 			{composers &&
 				composing
 					.filter(({ items }) => items.length > 0)
@@ -1212,7 +1238,9 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 			</tr>
 			{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
 			<RowTail
-				opened={open && endKey ? [{ endKey, ending, side: cell.side }] : []}
+				opened={
+					open && endKey ? [{ endKey, keys, ending, side: cell.side }] : []
+				}
 				composing={[{ side: cell.side, items: composing }]}
 				threads={threads}
 				composers={props.composers}
@@ -1513,7 +1541,14 @@ function PairRow(
 			<RowTail
 				opened={sides.flatMap(([side, cell]) =>
 					cell?.open && cell.endKey
-						? [{ endKey: cell.endKey, ending: cell.ending, side }]
+						? [
+								{
+									endKey: cell.endKey,
+									keys: cell.shared?.keys ?? cell.keys,
+									ending: cell.ending,
+									side,
+								},
+							]
 						: [],
 				)}
 				composing={sides.map(([side, cell]) => ({
@@ -1599,6 +1634,7 @@ function ClusterControls(props: {
 	// Marked one piece at a time, not all of it: a dash; a click reviews
 	// the whole cluster.
 	const partly = partlyMarked(props.cluster);
+	const reviewed = props.cluster.state === "reviewed";
 	const readOnly = props.readOnly === true;
 	// On touch each control gets its own 40×40 target, side by side so a
 	// mis-tap can't reach the other one; the negative margins keep the row
@@ -1653,31 +1689,44 @@ function ClusterControls(props: {
 							? READ_ONLY_TIP
 							: crossedOff
 								? "Undo cross-off"
-								: "Cross off cluster"
+								: reviewed
+									? UNTICK_TO_CROSS
+									: "Cross off cluster"
 					}
-					describe={false}
+					// Disabled, its reason is its description (its name says what it does).
+					describe={readOnly || reviewed}
 				>
-					{(trigger) => (
-						<button
-							type="button"
-							{...trigger}
-							aria-label="Cross off cluster"
-							aria-pressed={crossedOff}
-							disabled={readOnly || props.cluster.state === "reviewed"}
-							onClick={() => props.onCrossOff(props.cluster)}
-							className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
+					{({ ref, onMouseEnter, onMouseLeave, ...trigger }) => (
+						// The wrapper takes the hover, so a disabled button still
+						// explains itself; focus (and so tap) goes to the button.
+						// biome-ignore lint/a11y/noStaticElementInteractions: hover only; the button inside is the control.
+						<span
+							ref={ref}
+							onMouseEnter={onMouseEnter}
+							onMouseLeave={onMouseLeave}
+							className="flex [&>button:disabled]:pointer-events-none"
 						>
-							<span
-								aria-hidden
-								className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
-									crossedOff
-										? "bg-crossed-strong text-ink"
-										: "text-done group-hover/x:bg-crossed/25"
-								}`}
+							<button
+								type="button"
+								{...trigger}
+								aria-label="Cross off cluster"
+								aria-pressed={crossedOff}
+								disabled={readOnly || reviewed}
+								onClick={() => props.onCrossOff(props.cluster)}
+								className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
 							>
-								⊘
-							</span>
-						</button>
+								<span
+									aria-hidden
+									className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
+										crossedOff
+											? "bg-crossed-strong text-ink"
+											: "text-done group-hover/x:bg-crossed/25"
+									}`}
+								>
+									⊘
+								</span>
+							</button>
+						</span>
 					)}
 				</Tooltip>
 			</span>
@@ -1692,6 +1741,9 @@ function partlyTip(cluster: ClusterView): string {
 		crossed > 0 ? `, ${crossed} crossed off` : ""
 	}`;
 }
+
+/** Why a reviewed cluster's cross-off is off (R21: untick it first). */
+export const UNTICK_TO_CROSS = "Reviewed: untick to cross off";
 
 /** Why a mark can't change on an earlier patch set. */
 export const READ_ONLY_TIP = "Read-only: an earlier patch set, as reviewed";
@@ -2010,10 +2062,14 @@ export function DiffBody(props: {
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
 	const centred = view === "unified";
-	const ranges = contextRanges.use(revision, file.index);
+	// The since view's expanded context is its own (the interdiff's gaps,
+	// not the full diff's): kept apart from the full diff's; the search
+	// reads the comparison's own.
+	const rangesKey = rangesKeyOf(revision, props.from);
+	const ranges = contextRanges.use(rangesKey, file.index);
 	const contexts = useQueries({
 		queries: ranges.map(([from, to]) =>
-			contextQuery(revision, file.index, from, to),
+			contextQuery(revision, file.index, from, to, props.from),
 		),
 	});
 	const lang = languageFor(file.path);
@@ -2117,10 +2173,10 @@ export function DiffBody(props: {
 		}
 	}
 	const gaps = hunks.data
-		? fileGaps(hunks.data.hunks, hunks.data.newLineCount)
+		? fileGaps(hunks.data.hunks, hunks.data.newLineCount, hunks.data.wholeGap)
 		: [];
 	const addRange = (from: number, to: number) =>
-		contextRanges.add(revision, file.index, from, to);
+		contextRanges.add(rangesKey, file.index, from, to);
 
 	// New threads being written on this file's lines, on the viewed head;
 	// those on another head are orphans (their lines are gone).
@@ -2146,12 +2202,19 @@ export function DiffBody(props: {
 	// FilesPage reads them (and the tree counts them); here, from the cache.
 	const agentThreads = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
-	const agentPlaceables = useMemo(
-		() => (agentThreads ?? []).map(agentPlaceable),
-		[agentThreads],
-	);
 	const agentComposerList = useAgentComposers();
 	const agentHeadNow = snapshotHead ?? sessionHead;
+	// Each where the tracer put it in the viewed head (or where it was asked).
+	const agentPlacing = useAgentPlacing();
+	const agentPlaceables = useMemo(
+		() =>
+			shownAgentPlaceables(
+				agentThreads ?? [],
+				agentHeadNow ?? "",
+				agentPlacing,
+			),
+		[agentThreads, agentHeadNow, agentPlacing],
+	);
 	const agentMine = agentComposerList.filter(
 		(c) => c.span.path === file.path && c.span.subject === "line",
 	);
@@ -2162,6 +2225,14 @@ export function DiffBody(props: {
 		? agentMine.filter((c) => c.span.commit !== agentHeadNow)
 		: [];
 
+	// The since view numbers its old side in the compared patch set; a
+	// LEFT anchor counts in the base, so it goes through the full diff
+	// (its clusters) to the head line it became (threadPlacement.ts).
+	const leftToNew = useMemo(
+		() =>
+			props.from === undefined ? undefined : sinceLeftToNew(file.clusters),
+		[props.from, file.clusters],
+	);
 	// Where the file's threads sit (all start closed). Opening one only
 	// shows it: no review state changes.
 	const placement = props.threads
@@ -2174,6 +2245,7 @@ export function DiffBody(props: {
 				noLines: file.binary || file.submodule,
 				spans: lineItems.map((i) => i.span as SpanRange),
 				placements: props.threads.placements,
+				leftToNew,
 			})
 		: null;
 	// Written on a row that isn't shown (a gap): above the diff, never lost.
@@ -2184,6 +2256,23 @@ export function DiffBody(props: {
 		() => new Set(),
 	);
 	const [focusThread, setFocusThread] = useState<LineKey | null>(null);
+	// Resolve closes the thread to its bubble (resolveCollapse.ts): under
+	// every key of its row, as the bubble closes it (a context line's is
+	// open under either side's).
+	const collapse = useResolveCollapse<LineKey>(props.threads?.threads, {
+		open: (key) => setOpenThreads((open) => new Set(open).add(key)),
+		close: (key, keys) =>
+			setOpenThreads((open) => {
+				const next = new Set(open);
+				for (const k of [key, ...keys]) next.delete(k);
+				return next;
+			}),
+		focus: setFocusThread,
+		element: (key) =>
+			scroller.current?.querySelector(
+				`[aria-controls="${CSS.escape(`${idBase}-thread-${key}`)}"]`,
+			) ?? null,
+	});
 	// A gap's window that failed drops its focus target, so a later Retry
 	// doesn't take focus from wherever the reader is by then.
 	const windowFailed = contexts.some((c) => c.isError);
@@ -2192,6 +2281,8 @@ export function DiffBody(props: {
 	}, [windowFailed]);
 	const toggleThreads = (key: LineKey, keys: LineKey[]) => {
 		setFocusThread(null);
+		for (const k of keys) collapse.toggled(k);
+		collapse.toggled(key);
 		setOpenThreads((open) => {
 			const next = new Set(open);
 			if (keys.some((k) => next.has(k))) for (const k of keys) next.delete(k);
@@ -2285,6 +2376,7 @@ export function DiffBody(props: {
 					idOf: (key) => `${idBase}-thread-${key}`,
 					focus: focusThread,
 					onFocused: () => setFocusThread(null),
+					collapse,
 				}
 			: undefined;
 
@@ -2301,6 +2393,7 @@ export function DiffBody(props: {
 				loadedContext: [...loaded.values()],
 				noLines: file.binary || file.submodule,
 				spans: agentLineItems.map((c) => c.span as SpanRange),
+				leftToNew,
 			})
 		: null;
 	const [openAgent, setOpenAgent] = useState<ReadonlySet<LineKey>>(
@@ -2488,7 +2581,15 @@ export function DiffBody(props: {
 			const failed = inRun.flatMap((r) =>
 				r.result?.isError ? [r.result] : [],
 			);
-			const pending = inRun.some((r) => r.result?.isPending);
+			// Answered, yet lines it asked for are still in this run (a run's
+			// lines are the unloaded ones): a failure too, never "N hidden
+			// lines" forever.
+			const short = inRun.flatMap((r) =>
+				r.result?.isSuccess && !r.result.isFetching ? [r.result] : [],
+			);
+			const pending = inRun.some(
+				(r) => r.result?.isPending || r.result?.isFetching,
+			);
 			const buttons =
 				remaining > 0 ? expansions(part, top, bottom, remaining) : [];
 			const runThreads = threadsOf.get(i) ?? [];
@@ -2497,6 +2598,7 @@ export function DiffBody(props: {
 				remaining === 0 &&
 				!pending &&
 				failed.length === 0 &&
+				short.length === 0 &&
 				runThreads.length === 0 &&
 				runAgent.length === 0
 			) {
@@ -2624,13 +2726,13 @@ export function DiffBody(props: {
 								)}
 							</BubbleSlot>
 						)}
-						{failed.length > 0 ? (
+						{failed.length > 0 || short.length > 0 ? (
 							<span role="alert" className="text-bad">
-								{failed[0]?.error?.message}{" "}
+								{failed[0]?.error?.message ?? "Lines didn't load"}{" "}
 								<button
 									type="button"
 									onClick={() => {
-										for (const f of failed) void f.refetch();
+										for (const f of [...failed, ...short]) void f.refetch();
 									}}
 									className="rounded border border-bad/60 px-1.5 text-xs hover:bg-bad/15 focus-visible:outline-2 focus-visible:outline-accent"
 								>
@@ -3084,16 +3186,7 @@ interface Hint {
  * itself should it reach lower.
  */
 function scrollUnderStack(root: HTMLElement, target: Element, margin: number) {
-	const header = root.closest("section")?.querySelector("header");
-	const vars = getComputedStyle(root);
-	const stack =
-		(Number.parseFloat(vars.getPropertyValue("--app-header")) || 0) +
-		(Number.parseFloat(vars.getPropertyValue("--files-bar")) || 0) +
-		(header?.offsetHeight ?? 0);
-	const sticky = Math.max(
-		stack,
-		findBarElement()?.getBoundingClientRect().bottom ?? 0,
-	);
+	const sticky = stickyBottom(root);
 	window.scrollTo({
 		top: target.getBoundingClientRect().top + window.scrollY - sticky - margin,
 	});

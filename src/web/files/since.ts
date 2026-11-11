@@ -133,6 +133,26 @@ export function goneFiles(
 }
 
 /**
+ * A gone file (goneFiles) as a file the diff and the search read: no
+ * clusters of its own, its lines are the since view's hunks.
+ */
+export function goneFileView(file: { index: number; path: string }): FileView {
+	return {
+		index: file.index,
+		path: file.path,
+		status: "modified",
+		binary: false,
+		submodule: false,
+		additions: 0,
+		deletions: 0,
+		clusters: [],
+		done: false,
+		reviewed: false,
+		crossedOff: false,
+	};
+}
+
+/**
  * How much is still to read in the unit: the since view's units not
  * marked yet (pieces, and the rest of a reworked or new cluster only the
  * full diff shows). Files: those with any.

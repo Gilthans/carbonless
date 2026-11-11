@@ -23,6 +23,7 @@ import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { AgentStatus, AgentThread } from "../shared/agent";
 import type {
 	CommentsView,
+	DiffLine,
 	HunksBatch,
 	ReviewThread,
 	ReviewView,
@@ -1366,6 +1367,46 @@ describe("API", () => {
 			expect(res.statusCode).toBe(404);
 		});
 
+		it("GET agent/placements: by head or patch set; 400 for both, neither or a bad oid; 404 for an unknown patch set", async () => {
+			expect((await ask()).statusCode).toBe(200);
+			const h1 = pr.head();
+			const byHead = await get(`/api/agent/placements?head=${h1}`);
+			expect(byHead).toMatchObject({
+				revision: await revision(),
+				threads: [
+					{
+						placement: {
+							kind: "placed",
+							anchor: { path: "a.txt", line: 2 },
+						},
+					},
+				],
+			});
+			const ps1: ReviewView = await get("/api/review");
+			const [key = ""] = keys(ps1);
+			await post("/api/review/states", {
+				revision: ps1.revision,
+				changes: [{ key, state: "reviewed" }],
+			});
+			expect(await get("/api/agent/placements?ps=1")).toMatchObject({
+				revision: ps1.revision,
+				threads: [{ placement: { kind: "placed" } }],
+			});
+			for (const bad of [
+				"",
+				`ps=1&head=${h1}`,
+				"head=main",
+				"head=abc",
+				"ps=0",
+			]) {
+				expect(
+					(await inject(`/api/agent/placements?${bad}`)).statusCode,
+					bad,
+				).toBe(400);
+			}
+			expect((await inject("/api/agent/placements?ps=9")).statusCode).toBe(404);
+		});
+
 		it("a viewer session has no agent: 404 no-agent", async () => {
 			const viewer = await registry.open({
 				pr: pr.arg,
@@ -1374,6 +1415,7 @@ describe("API", () => {
 			for (const [method, url] of [
 				["GET", "/api/agent"],
 				["GET", "/api/agent/threads"],
+				["GET", `/api/agent/placements?head=${pr.head()}`],
 				["POST", "/api/agent/cancel"],
 			] as const) {
 				const res = await inject(r(url, viewer.id), { method });
@@ -2115,6 +2157,66 @@ describe("API", () => {
 			expect(
 				(await inject(`/api/files/0/hunks?revision=${view.revision}&from=9`))
 					.statusCode,
+			).toBe(404);
+			// context?from= is the since view's: a.txt is untouched since PS1,
+			// so line 2 (the PR's own, unchanged) loads; the full diff skips it.
+			const context = (from: string) =>
+				get(
+					`/api/files/0/context?revision=${view.revision}&newFrom=1&newTo=3${from}`,
+				);
+			expect((await context("&from=1")).map((l: DiffLine) => l.newNo)).toEqual([
+				1, 2, 3,
+			]);
+			expect((await context("")).map((l: DiffLine) => l.newNo)).toEqual([1, 3]);
+			expect(
+				(
+					await inject(
+						`/api/files/0/context?revision=${view.revision}&newFrom=1&newTo=3&from=x`,
+					)
+				).statusCode,
+			).toBe(400);
+			expect(
+				(
+					await inject(
+						`/api/files/0/context?revision=${view.revision}&newFrom=1&newTo=3&from=9`,
+					)
+				).statusCode,
+			).toBe(404);
+			// files/hunks?from= (the search's prefetch) batches the since
+			// view's hunks: a.txt is untouched since PS1 (one gap, no lines),
+			// later.txt is new. Without from, the full diff's, as before.
+			const batch = (from: string) =>
+				get(
+					`/api/files/hunks?revision=${view.revision}&indexes=0,${later.index}${from}`,
+				);
+			const sinceBatch = await batch("&from=1");
+			expect(sinceBatch.files.map((f: { index: number }) => f.index)).toEqual([
+				0,
+				later.index,
+			]);
+			expect(sinceBatch.files[0].hunks).toMatchObject({
+				hunks: [],
+				wholeGap: true,
+			});
+			expect(sinceBatch.files[1].hunks).toEqual(since);
+			const fullBatch = await batch("");
+			expect(fullBatch.files[0].hunks).toEqual(
+				await get(`/api/files/0/hunks?revision=${view.revision}`),
+			);
+			expect(fullBatch.files[0].hunks.hunks.length).toBeGreaterThan(0);
+			expect(
+				(
+					await inject(
+						`/api/files/hunks?revision=${view.revision}&indexes=0&from=x`,
+					)
+				).statusCode,
+			).toBe(400);
+			expect(
+				(
+					await inject(
+						`/api/files/hunks?revision=${view.revision}&indexes=0&from=9`,
+					)
+				).statusCode,
 			).toBe(404);
 			// Nothing written by viewing.
 			expect((await get("/api/session")).patchsets).toHaveLength(1);

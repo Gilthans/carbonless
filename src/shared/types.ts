@@ -121,6 +121,11 @@ export interface FileHunks {
 	newLineCount: number;
 	/** The since view's only: its pieces, each markable (pieces.ts). */
 	pieces?: SincePiece[];
+	/**
+	 * The since view's only: the interdiff doesn't change the file's
+	 * lines, so all `newLineCount` of them are one gap (gaps.ts).
+	 */
+	wholeGap?: true;
 }
 
 /**
@@ -1101,6 +1106,11 @@ export interface SessionInfo {
 		number: number;
 		head: string;
 		mergeBase: string;
+		/**
+		 * The base branch it was reviewed against (its own, kept after a
+		 * retarget: its card's "Against").
+		 */
+		baseBranch: string;
 		/** Ms since epoch. */
 		startedAt: number;
 		/** The patch set it follows; null for PS1. */

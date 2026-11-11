@@ -23,7 +23,8 @@ export function NotInComparison(props: {
 	pending: boolean;
 	/**
 	 * The placements couldn't be computed: the threads not shown where they
-	 * were made, listed here with the error and a retry (never dropped).
+	 * were made, listed here with the error and a retry (never dropped);
+	 * resolved ones as quiet lines after the rest.
 	 */
 	failed?: {
 		threads: ReviewThread[];
@@ -34,6 +35,8 @@ export function NotInComparison(props: {
 	} | null;
 }) {
 	if (props.failed) {
+		// Resolved ones too, as quiet lines after the rest, counted nowhere.
+		const unresolved = props.failed.threads.filter((t) => !t.resolved).length;
 		return (
 			<section
 				aria-label="Thread places couldn't be computed"
@@ -44,9 +47,9 @@ export function NotInComparison(props: {
 				<h3 className="flex min-h-10 flex-wrap items-center gap-2 px-1 text-sm font-semibold text-ink">
 					<AlertIcon size={16} aria-hidden className="text-bad" />
 					Thread places couldn't be computed
-					{props.failed.threads.length > 0 && (
+					{unresolved > 0 && (
 						<Badge tone="red" icon={CircleSlashIcon}>
-							{threadsLabel(props.failed.threads.length)}
+							{threadsLabel(unresolved)}
 						</Badge>
 					)}
 					{/* One slot for the button and its spinner: nothing moves. */}
@@ -70,15 +73,17 @@ export function NotInComparison(props: {
 					</p>
 				)}
 				<ul className="space-y-1.5">
-					{props.failed.threads.map((thread) => (
-						<UnplacedRow
-							key={thread.id}
-							thread={thread}
-							readId={props.readId}
-							fate={null}
-							path={thread.path}
-						/>
-					))}
+					{resolvedLast(props.failed.threads.map((thread) => ({ thread }))).map(
+						({ thread }) => (
+							<UnplacedRow
+								key={thread.id}
+								thread={thread}
+								readId={props.readId}
+								fate={null}
+								path={thread.path}
+							/>
+						),
+					)}
 				</ul>
 			</section>
 		);

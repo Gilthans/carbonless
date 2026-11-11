@@ -16,7 +16,7 @@ and the reviewer's corrections) should live in git, not in loose JSON files:
 - Its identity survives rebases and force-pushes of the PR branch.
 
 This replaces the JSON-file storage first proposed in
-`2026-10-21-pr-review-parity-design.md`. The cluster concept, cluster identity,
+the PR review parity spec (Linear, M2 project documents). The cluster concept, cluster identity,
 cluster states and the coverage invariant from that spec are used here as
 defined there.
 
@@ -24,8 +24,8 @@ The general principles behind this design, with their reasoning, are in
 `docs/gitdb-design-principles.md`. The numbers in brackets below, like
 "(GitDB 19)", point to them.
 
-**Re-review after new pushes** (design:
-`docs/superpowers/specs/2026-11-04-re-review-design.md`) adds to this format
+**Re-review after new pushes** (design: the
+document "Re-review after new pushes: design" on Linear CAR-5) adds to this format
 the events, refs and folding that let a reviewer move to a new push and keep
 every mark it can carry: `carried` and `thread-placed` events, the `-base` pin
 ref, per-patch-set folding. The engine that computes carries and the UI

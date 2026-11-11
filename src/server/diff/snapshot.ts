@@ -287,6 +287,25 @@ export async function loadFileHunks(
 }
 
 /**
+ * The new side's lines of one file of the snapshot (none for a binary, a
+ * submodule or a deleted file): the since view's text of a file the
+ * interdiff doesn't touch, the same on both sides.
+ */
+export async function loadNewText(
+	repo: string,
+	snapshot: Snapshot,
+	index: number,
+): Promise<FileText> {
+	const file = fileAt(snapshot, index);
+	if (file.binary || file.submodule || file.status === "deleted") {
+		return fileText(EMPTY, EMPTY);
+	}
+	const [oid] = await resolveBlobs(repo, [`${snapshot.head}:${file.path}`]);
+	const blobs = await readBlobs(repo, oid ? [oid] : []);
+	return fileText(EMPTY, (oid && blobs.get(oid)) || EMPTY);
+}
+
+/**
  * Display hunks of several files of the snapshot, one git read at a time
  * (the server is shared with the open file's own reads). A file whose
  * hunks fail answers with `error`; an index not in the snapshot throws
