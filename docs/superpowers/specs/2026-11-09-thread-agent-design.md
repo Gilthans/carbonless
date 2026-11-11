@@ -445,8 +445,8 @@ on close).
 ## Calls I made (for the owner to check)
 
 - Resolved state is derived from the GitHub thread, so a thread resolved on
-  GitHub by someone else folds its conversation.
-- Unread uses `accent` (periwinkle), not yellow.
+  GitHub by someone else folds its conversation. **Owner: ok.**
+- Unread uses `accent` (periwinkle), not yellow. **Owner: ok.**
 - Seen marks live in the private ref, so phone and desktop agree.
 - The card header and the composer row (with Resolve) are never covered.
 - Text typed to the agent keeps a thread open on Resolve in Files changed, like an unsent reply.
