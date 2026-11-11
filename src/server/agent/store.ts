@@ -310,6 +310,12 @@ export class AgentThreadStore {
 		return this.#opened.get(clientId);
 	}
 
+	/** Whether a human message with this clientId is stored in this thread (message() returns the thread unchanged). */
+	async messagedWith(thread: string, clientId: string): Promise<boolean> {
+		await this.#events();
+		return this.#messaged.has(`${thread} ${clientId}`);
+	}
+
 	/** Opens a thread; a clientId already seen (in memory, or in details.clientId of a stored opened event) returns that thread unchanged. */
 	open(input: OpenInput): Promise<AgentThreadFold> {
 		return this.#serial(async () => {

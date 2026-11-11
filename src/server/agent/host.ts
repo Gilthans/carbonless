@@ -105,11 +105,16 @@ export class AgentHost {
 	 * an opening already written returns its thread.
 	 */
 	async open(req: OpenAgentThreadRequest): Promise<AgentThread> {
+		// A resend of an opening already stored: its thread, whatever GitHub says now.
+		const known = await this.store.openedWith(req.clientId);
+		if (known !== undefined) {
+			return this.#view(await this.#joinedOne(await this.store.find(known)));
+		}
 		const view = req.view ? this.#resolveView(req.view) : undefined;
 		let anchor: AgentAnchor;
 		if (req.span) anchor = req.span;
 		else if (req.thread !== undefined) {
-			anchor = await this.#threadAnchor(req.thread, req.clientId);
+			anchor = await this.#threadAnchor(req.thread);
 		} else throw new AgentRequestError("A span or a thread, one of them");
 		const t = await this.store.open({
 			anchor,
@@ -122,17 +127,31 @@ export class AgentHost {
 		return this.#view(await this.#joinedOne(t));
 	}
 
-	/** A question in a thread; refused (AgentConflictError) while its GitHub thread is resolved. */
+	/**
+	 * A question in a thread; refused (AgentConflictError) while its GitHub
+	 * thread is resolved, and failing (the read's error, 502) while GitHub
+	 * can't be read. A resend of a message already stored returns the
+	 * thread before either check.
+	 */
 	async message(
 		thread: string,
 		req: AgentMessageRequest,
 	): Promise<AgentThread> {
+		if (await this.store.messagedWith(thread, req.clientId)) {
+			return this.#view(await this.#joinedOne(await this.store.find(thread)));
+		}
 		const view = req.view ? this.#resolveView(req.view) : undefined;
-		const current = await this.#joinedOne(await this.store.find(thread));
-		if (current.anchor.subject === "thread" && current.resolved) {
-			throw new AgentConflictError(
-				"The GitHub thread is resolved: unresolve it to ask again",
+		const current = await this.store.find(thread);
+		if (current.anchor.subject === "thread") {
+			// Fails closed: an unread GitHub never lets a question through.
+			const rt = liveGithubThreads(await this.github.threads()).get(
+				current.anchor.thread,
 			);
+			if (rt?.resolved) {
+				throw new AgentConflictError(
+					"The GitHub thread is resolved: unresolve it to ask again",
+				);
+			}
 		}
 		const t = await this.store.message(thread, {
 			by: "human",
@@ -190,7 +209,7 @@ export class AgentHost {
 	}
 
 	/** The anchor of a new conversation on GitHub thread `id`; see open(). */
-	async #threadAnchor(id: string, clientId: string): Promise<AgentAnchor> {
+	async #threadAnchor(id: string): Promise<AgentAnchor> {
 		const rt = await this.github.thread(id);
 		if (!rt || rt.id === "" || rt.unavailable === "deleted") {
 			throw new AgentRequestError(`No GitHub thread ${id} to ask about`);
@@ -210,8 +229,6 @@ export class AgentHost {
 					}
 				: {}),
 		};
-		// A resend of this very opening: open() returns its thread.
-		if ((await this.store.openedWith(clientId)) !== undefined) return anchor;
 		const existing = (await this.store.read()).find(
 			(f) => f.anchor.subject === "thread" && f.anchor.thread === rt.id,
 		);
@@ -227,14 +244,15 @@ export class AgentHost {
 	/**
 	 * The folds joined with GitHub's threads, read only when a thread
 	 * conversation is among them. When GitHub can't be read, thread
-	 * conversations stay live (where their thread is) and open.
+	 * conversations stay live (where their thread is), flagged
+	 * `githubUnknown`, with their own stored `resolved`: never a made-up one.
 	 */
 	async #joined(folds: AgentThreadFold[]): Promise<AgentThreadFold[]> {
 		if (!folds.some((f) => f.anchor.subject === "thread")) return folds;
 		const threads = await this.github.threads().catch(() => null);
 		if (threads) return joinGithub(folds, threads);
 		return folds.map((f) =>
-			f.anchor.subject === "thread" ? { ...f, resolved: false } : f,
+			f.anchor.subject === "thread" ? { ...f, githubUnknown: true } : f,
 		);
 	}
 

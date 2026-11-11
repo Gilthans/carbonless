@@ -1712,6 +1712,64 @@ describe("API", () => {
 				}
 			});
 
+			it("a resent message after the GitHub thread was resolved returns the stored message", async () => {
+				await github();
+				const t: AgentThread = (await askThread()).json();
+				const send = () =>
+					post(`/api/agent/threads/${t.id}/messages`, {
+						clientId: "m1",
+						text: "Still?",
+					});
+				expect((await send()).statusCode).toBe(200);
+				const resolve = await post("/api/threads/T12-0/resolved", {
+					resolved: true,
+				});
+				expect(resolve.statusCode, resolve.body).toBe(200);
+				const again = await send();
+				expect(again.statusCode, again.body).toBe(200);
+				const texts = (again.json() as AgentThread).messages
+					.filter((m) => m.by === "human")
+					.map((m) => m.text);
+				expect(texts).toEqual(["Fixed?", "Still?"]);
+			});
+
+			it("a resent open after the thread was deleted returns the stored thread", async () => {
+				await github();
+				const first: AgentThread = (await askThread()).json();
+				await github({ deletedThreads: ["T12-0"] });
+				const again = await askThread();
+				expect(again.statusCode, again.body).toBe(200);
+				expect(again.json().id).toBe(first.id);
+				expect((await get("/api/agent/threads")).threads).toHaveLength(1);
+			});
+
+			it("GET agent/threads with gh failing marks thread conversations githubUnknown, and a message answers 502", async () => {
+				await github();
+				const t: AgentThread = (await askThread()).json();
+				const spanThread: AgentThread = (await ask()).json();
+				// GitHub's review threads can't be read any more: a new read, kept.
+				await github({ failGraphql: "reviewThreads" }).catch(() => {});
+				const { threads } = await get("/api/agent/threads");
+				const byId = new Map((threads as AgentThread[]).map((x) => [x.id, x]));
+				expect(byId.get(t.id)).toMatchObject({
+					githubUnknown: true,
+					resolved: false,
+					anchor: threadAnchor(),
+				});
+				expect(byId.get(t.id)).not.toHaveProperty("orphaned");
+				expect(byId.get(spanThread.id)).not.toHaveProperty("githubUnknown");
+				const before = byId.get(t.id)?.messages.length;
+				const res = await post(`/api/agent/threads/${t.id}/messages`, {
+					clientId: "m9",
+					text: "Now?",
+				});
+				expect(res.statusCode, res.body).toBe(502);
+				const after: AgentThread[] = (await get("/api/agent/threads")).threads;
+				expect(after.find((x) => x.id === t.id)?.messages).toHaveLength(
+					before ?? -1,
+				);
+			});
+
 			it("POST agent/threads/:tid/messages answers 409 while the GitHub thread is resolved", async () => {
 				await github();
 				const t: AgentThread = (await askThread()).json();

@@ -123,6 +123,12 @@ export interface AgentThread {
 	seenUpTo?: string;
 	/** Set by the GitHub join: the thread is gone from GitHub. */
 	orphaned?: boolean;
+	/**
+	 * Set by the GitHub join: GitHub's threads couldn't be read, so this
+	 * thread conversation's resolved state is unknown (`resolved` is its own
+	 * stored value). Absent when GitHub was read.
+	 */
+	githubUnknown?: boolean;
 	code?: CodeWindow;
 }
 
