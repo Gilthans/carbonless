@@ -94,6 +94,15 @@ export function agentInk(status: AgentStatus): string {
 export const CHIP_BOX = "flex h-10 w-7 shrink-0 items-center justify-center";
 
 /**
+ * The chip's face, a bordered circle filling the box's width (a control's
+ * outline, line-strong), so it reads as a button; its icon or spinner
+ * (CHIP_ICON px) inside.
+ */
+const CHIP_FACE =
+	"flex h-7 w-7 items-center justify-center rounded-full border border-line-strong bg-raised";
+const CHIP_ICON = 18;
+
+/**
  * Whether the header keeps a place for the chip: from the first paint
  * (the overview, which says whether there is an agent, still on its way),
  * until known to have none (as of a cutoff, --viewer, no agent).
@@ -111,8 +120,8 @@ export function useAgentChipPlace(asOf: boolean): boolean {
 /**
  * The reviewer's agent in the header, by the logo (in the sticky row,
  * beside the compact mark, once scrolled): the sparkle alone, coloured by
- * its status; the name and detail in the tooltip. One size in every state
- * (CHIP_BOX). Pressing it opens the agent setup in every state. Until the
+ * its status, in a bordered circle; the name and detail in the tooltip.
+ * One size in every state (CHIP_BOX). Pressing it opens the agent setup in every state. Until the
  * overview says whether there is an agent, and on its first read, a
  * spinner in the icon's place; a routine poll changes nothing unless the
  * answer does. None where the review has no agent (--viewer, --as-of).
@@ -141,7 +150,9 @@ export function AgentChip({
 				data-testid="agent-chip-pending"
 				className={CHIP_BOX}
 			>
-				<SpinnerIcon size={16} className="text-muted" />
+				<span className={CHIP_FACE}>
+					<SpinnerIcon size={CHIP_ICON} className="text-muted" />
+				</span>
 			</span>
 		);
 	}
@@ -162,20 +173,25 @@ export function AgentChip({
 					aria-label={`Your agent: ${tip}`}
 					aria-busy={status.isPending || undefined}
 					onClick={openAgentSetup}
-					className={`${CHIP_BOX} rounded-full hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent`}
+					className={`group ${CHIP_BOX} rounded-full focus-visible:outline-2 focus-visible:outline-accent`}
 				>
-					{status.isPending ? (
-						<span data-testid="agent-chip-loading" className="flex">
-							<SpinnerIcon size={16} className="text-muted" />
-						</span>
-					) : (
-						<span
-							data-testid="agent-chip-icon"
-							className={`flex ${data ? agentInk(data) : "text-bad"}`}
-						>
-							<SparkleFillIcon size={16} aria-hidden />
-						</span>
-					)}
+					<span
+						data-testid="agent-chip-face"
+						className={`${CHIP_FACE} group-hover:bg-overlay`}
+					>
+						{status.isPending ? (
+							<span data-testid="agent-chip-loading" className="flex">
+								<SpinnerIcon size={CHIP_ICON} className="text-muted" />
+							</span>
+						) : (
+							<span
+								data-testid="agent-chip-icon"
+								className={`flex ${data ? agentInk(data) : "text-bad"}`}
+							>
+								<SparkleFillIcon size={CHIP_ICON} aria-hidden />
+							</span>
+						)}
+					</span>
 				</button>
 			)}
 		</Tooltip>

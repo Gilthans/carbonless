@@ -460,6 +460,26 @@ test("the agent chip sits by the logo, and stays in sight and in reach as the he
 	);
 	expect((await overview.boundingBox())?.x).toBe(tabX);
 	await expect(chip).toHaveAccessibleName(/^Your agent: /);
+	// It reads as a button: a 28px circle with a control's border, the
+	// sparkle inside; a 40px tap target.
+	const face = page.getByTestId("agent-chip-face");
+	const ring = await face.evaluate((el) => {
+		const c = getComputedStyle(el);
+		const r = el.getBoundingClientRect();
+		return {
+			width: r.width,
+			height: r.height,
+			border: c.borderTopWidth,
+			color: c.borderTopColor,
+		};
+	});
+	expect(ring).toMatchObject({ width: 28, height: 28, border: "1px" });
+	expect(ring.color).not.toMatch(/^(transparent|rgba\(0, 0, 0, 0\))$/);
+	expect(
+		(await page.getByTestId("agent-chip-icon").locator("svg").boundingBox())
+			?.width,
+	).toBe(18);
+	expect(await tapHeight(chip)).toBeGreaterThanOrEqual(40);
 	if (isMobile) {
 		expect(await tapHeight(chip)).toBeGreaterThanOrEqual(40);
 		// The whole row fits: Refresh and Settings still on screen.

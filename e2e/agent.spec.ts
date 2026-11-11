@@ -257,6 +257,14 @@ test("the chip: starting while the handshake is held, ready, busy while answerin
 	releaseAcp(acpScenario, "initialize");
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
 	await expect(chip(page)).toHaveAccessibleName("Your agent: Fake Agent 9.9.9");
+	// Ready: the sparkle green (shots for the design review).
+	await expect(page.getByTestId("agent-chip-icon")).toHaveClass(/text-ok/);
+	const shots = process.env.DESIGN_SHOTS;
+	const project = (await page.evaluate(() => navigator.maxTouchPoints > 0))
+		? "phone"
+		: "desktop";
+	if (shots)
+		await page.screenshot({ path: `${shots}/chip-ready-top-${project}.png` });
 	const section = await openFile(page, s.url, CALC);
 	const card = await ask(page, section, 3, "Busy?");
 	await expect(chip(page)).toHaveAttribute("data-state", "busy");
@@ -264,6 +272,14 @@ test("the chip: starting while the handshake is held, ready, busy while answerin
 	releaseAcp(acpScenario, "prompt");
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	if (shots) {
+		// Scrolled, the header stuck: the chip docked beside the mark.
+		await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+		await expect(
+			page.getByTestId("app-header-row").getByTestId("agent-chip"),
+		).toBeVisible();
+		await page.screenshot({ path: `${shots}/chip-ready-stuck-${project}.png` });
+	}
 });
 
 test("the chip turns red when the agent crashes mid-answer; the partial reply stays", async ({
