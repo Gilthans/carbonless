@@ -5,9 +5,13 @@ import {
 	type AgentAnchor,
 	type AgentIdentity,
 	type AgentStop,
+	type AgentView,
+	type AgentViewFrom,
+	type AgentViewTarget,
 	MAX_ACTIVITY_ENTRIES,
 	MAX_AGENT_ERROR,
 	MAX_AGENT_TEXT,
+	MAX_ORIGIN_REQUEST,
 } from "../../shared/agent.js";
 import { type LineRanges, parseRanges } from "../../shared/lineRanges.js";
 import type {
@@ -225,6 +229,10 @@ export interface AgentThreadOpenedEvent extends EventBase {
 	truncated?: boolean;
 	/** Required when by === "ai". */
 	agent?: AgentIdentity;
+	/** ai only: why the agent opened it (≤ MAX_ORIGIN_REQUEST characters). */
+	origin?: { request: string };
+	/** human only: the comparison on screen. */
+	view?: AgentView;
 }
 
 export interface AgentMessageEvent extends EventBase {
@@ -242,6 +250,19 @@ export interface AgentMessageEvent extends EventBase {
 	replyTo?: string;
 	/** ai only, with stop "error": why the agent failed the turn (one line, ≤ MAX_AGENT_ERROR). */
 	error?: string;
+	/** human only: the comparison on screen. */
+	view?: AgentView;
+	/** ai only: the OID of the checkout the answer came from. */
+	head?: string;
+	/** ai only: the answer suggests resolving the thread. */
+	suggests?: "resolve";
+}
+
+/** The reviewer has seen the thread up to a message (a lowercase ULID). */
+export interface AgentThreadSeenEvent extends EventBase {
+	type: "agent-thread-seen";
+	thread: string;
+	upTo: string;
 }
 
 export interface AgentThreadResolvedEvent extends EventBase {
@@ -255,6 +276,7 @@ export type AgentEvent = (
 	| AgentThreadOpenedEvent
 	| AgentMessageEvent
 	| AgentThreadResolvedEvent
+	| AgentThreadSeenEvent
 ) & { by: "human" | "ai" };
 
 export type CrbEvent =
@@ -387,6 +409,9 @@ export function validateForWrite(e: CrbEvent): void {
 	}
 	if (e.type === "agent-thread-resolved" && e.by !== "human") {
 		throw new Error("agent-thread-resolved events must be written by a human");
+	}
+	if (e.type === "agent-thread-seen" && e.by !== "human") {
+		throw new Error("agent-thread-seen events must be written by a human");
 	}
 	if (parseEvent(JSON.parse(JSON.stringify(e))) === null) {
 		throw new Error(`Refusing to write an invalid ${e.type} event`);
@@ -680,6 +705,7 @@ function parseEvent(raw: unknown): CrbEvent | null {
 		case "agent-thread-opened":
 		case "agent-message":
 		case "agent-thread-resolved":
+		case "agent-thread-seen":
 			// A conversation's words are a human's or the agent's, never auto's.
 			return base.by === "auto"
 				? null
@@ -749,6 +775,7 @@ function parseAnchor(raw: unknown): AgentAnchor | null {
 	if (!isStr(path) || typeof commit !== "string") return null;
 	if (commit !== "" && !COMMIT.test(commit)) return null;
 	if (subject === "file") return { subject, path, commit };
+	if (subject === "thread") return parseThreadAnchor(raw, path, commit);
 	if (subject !== "line") return null;
 	const { side, line, startSide, startLine, startCol, endCol } = raw;
 	if (
@@ -775,6 +802,71 @@ function parseAnchor(raw: unknown): AgentAnchor | null {
 		...(startCol !== undefined ? { startCol: startCol as number | null } : {}),
 		...(endCol !== undefined ? { endCol: endCol as number | null } : {}),
 	};
+}
+
+function parseThreadAnchor(
+	raw: Obj,
+	path: string,
+	commit: string,
+): AgentAnchor | null {
+	const { thread, side, line, startSide, startLine } = raw;
+	// GitHub node ids are not ULIDs.
+	if (typeof thread !== "string" || thread === "" || thread.length > 200) {
+		return null;
+	}
+	if (
+		side !== undefined &&
+		(typeof side !== "string" || !SIDES.includes(side))
+	) {
+		return null;
+	}
+	if (
+		startSide !== undefined &&
+		(typeof startSide !== "string" || !SIDES.includes(startSide))
+	) {
+		return null;
+	}
+	if (line !== undefined && !isLine(line)) return null;
+	if (startLine !== undefined && !isLine(startLine)) return null;
+	if (
+		side !== undefined &&
+		side === startSide &&
+		line !== undefined &&
+		startLine !== undefined &&
+		startLine > line
+	) {
+		return null;
+	}
+	return {
+		subject: "thread",
+		thread,
+		path,
+		commit,
+		...(side !== undefined ? { side: side as DiffSide } : {}),
+		...(line !== undefined ? { line: line as number } : {}),
+		...(startSide !== undefined ? { startSide: startSide as DiffSide } : {}),
+		...(startLine !== undefined ? { startLine: startLine as number } : {}),
+	};
+}
+
+const isPatchset = (value: unknown): value is number =>
+	Number.isSafeInteger(value) && (value as number) >= 1;
+const isCommit = (value: unknown): value is string =>
+	typeof value === "string" && COMMIT.test(value);
+
+function parseView(raw: unknown): AgentView | null {
+	if (!isObj(raw) || !isObj(raw.target) || !isObj(raw.from)) return null;
+	const { target, from, left, right } = raw;
+	if (!isCommit(left) || !isCommit(right)) return null;
+	let t: AgentViewTarget;
+	if (isPatchset(target.patchset)) t = { patchset: target.patchset };
+	else if (isCommit(target.head)) t = { head: target.head };
+	else return null;
+	let f: AgentViewFrom;
+	if (from.branch === true) f = { branch: true };
+	else if (isPatchset(from.patchset)) f = { patchset: from.patchset };
+	else return null;
+	return { target: t, from: f, left, right };
 }
 
 function parseIdentity(raw: unknown): AgentIdentity | null {
@@ -838,7 +930,29 @@ function parseAgentEvent(
 			if (!anchor || !extras || !isText(raw.text)) return null;
 			// An agent-opened thread names its agent.
 			if (base.by === "ai" && !extras.agent) return null;
+			const { origin, view } = raw;
+			// Fail safe: an origin is the agent's, a view the human's.
+			let parsedOrigin: { request: string } | undefined;
+			if (origin !== undefined) {
+				if (
+					base.by !== "ai" ||
+					!isObj(origin) ||
+					typeof origin.request !== "string" ||
+					origin.request.length > MAX_ORIGIN_REQUEST
+				) {
+					return null;
+				}
+				parsedOrigin = { request: origin.request };
+			}
+			let parsedView: AgentView | undefined;
+			if (view !== undefined) {
+				const v = base.by === "human" ? parseView(view) : null;
+				if (!v) return null;
+				parsedView = v;
+			}
 			return {
+				...(parsedOrigin ? { origin: parsedOrigin } : {}),
+				...(parsedView ? { view: parsedView } : {}),
 				...base,
 				type: "agent-thread-opened",
 				thread,
@@ -879,6 +993,22 @@ function parseAgentEvent(
 			) {
 				return null;
 			}
+			const { view, head, suggests } = raw;
+			let parsedView: AgentView | undefined;
+			if (view !== undefined) {
+				const v = base.by === "human" ? parseView(view) : null;
+				if (!v) return null;
+				parsedView = v;
+			}
+			if (head !== undefined && (base.by !== "ai" || !isCommit(head))) {
+				return null;
+			}
+			if (
+				suggests !== undefined &&
+				(base.by !== "ai" || suggests !== "resolve")
+			) {
+				return null;
+			}
 			return {
 				...base,
 				type: "agent-message",
@@ -889,6 +1019,9 @@ function parseAgentEvent(
 				...(activity ? { activity } : {}),
 				...(replyTo !== undefined ? { replyTo } : {}),
 				...(error !== undefined ? { error } : {}),
+				...(parsedView ? { view: parsedView } : {}),
+				...(head !== undefined ? { head } : {}),
+				...(suggests !== undefined ? { suggests: "resolve" as const } : {}),
 			};
 		}
 		case "agent-thread-resolved": {
@@ -897,6 +1030,13 @@ function parseAgentEvent(
 			const { resolved } = raw;
 			if (typeof resolved !== "boolean") return null;
 			return { ...base, type: "agent-thread-resolved", thread, resolved };
+		}
+		case "agent-thread-seen": {
+			// Fail safe: only the reviewer has seen things.
+			if (base.by !== "human") return null;
+			const { upTo } = raw;
+			if (typeof upTo !== "string" || !LOWER_ULID.test(upTo)) return null;
+			return { ...base, type: "agent-thread-seen", thread, upTo };
 		}
 		default:
 			return null;

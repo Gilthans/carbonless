@@ -59,7 +59,28 @@ export type AgentAnchor =
 			startCol?: number | null;
 			endCol?: number | null;
 	  }
-	| { subject: "file"; path: string; commit: string };
+	| { subject: "file"; path: string; commit: string }
+	/** A GitHub review thread (its node id), with the span GitHub gave it, if any. */
+	| {
+			subject: "thread";
+			thread: string;
+			path: string;
+			commit: string;
+			side?: DiffSide;
+			line?: number;
+			startSide?: DiffSide;
+			startLine?: number;
+	  };
+
+export type AgentViewTarget = { patchset: number } | { head: string };
+export type AgentViewFrom = { branch: true } | { patchset: number };
+/** The comparison on screen when a human message was sent; left/right filled by the server. */
+export interface AgentView {
+	target: AgentViewTarget;
+	from: AgentViewFrom;
+	left: string;
+	right: string;
+}
 
 export interface AgentMessage {
 	id: string;
@@ -74,6 +95,12 @@ export interface AgentMessage {
 	replyTo?: string;
 	/** ai only, with stop "error": why the agent failed the turn (its own words, one line). */
 	error?: string;
+	/** human only: the comparison on screen when it was sent. */
+	view?: AgentView;
+	/** ai only: the OID of the checkout its answer came from. */
+	head?: string;
+	/** ai only: the answer suggests resolving the thread. */
+	suggests?: "resolve";
 }
 
 export interface AgentThread {
@@ -88,6 +115,14 @@ export interface AgentThread {
 	 * or one came after the last answer's `replyTo`.
 	 */
 	waiting: boolean;
+	/** The agent opened it, saying why (ai-opened threads only). */
+	origin?: { request: string };
+	/** An ai message the reviewer has not seen. */
+	unread: boolean;
+	/** The id of the last message the reviewer has seen. */
+	seenUpTo?: string;
+	/** Set by the GitHub join: the thread is gone from GitHub. */
+	orphaned?: boolean;
 	code?: CodeWindow;
 }
 
@@ -120,16 +155,27 @@ export interface AgentStatus {
 	waiting: number;
 }
 
+/** Exactly one of `span` and `thread`. */
 export interface OpenAgentThreadRequest {
 	clientId: string;
 	text: string;
-	span: AgentAnchor;
+	span?: AgentAnchor;
+	thread?: string;
+	view?: Omit<AgentView, "left" | "right">;
 }
 
 export interface AgentMessageRequest {
 	clientId: string;
 	text: string;
+	view?: Omit<AgentView, "left" | "right">;
 }
+
+export interface AgentSeenRequest {
+	upTo: string;
+}
+
+/** An agent-opened thread's reason, in characters. */
+export const MAX_ORIGIN_REQUEST = 200;
 
 export interface AgentResolvedRequest {
 	resolved: boolean;
