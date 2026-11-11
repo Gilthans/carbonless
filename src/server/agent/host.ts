@@ -9,21 +9,30 @@ import type {
 	AgentView,
 	OpenAgentThreadRequest,
 } from "../../shared/agent.js";
+import type { ThreadPlacement } from "../../shared/rereview/placement.js";
 import type {
 	CodeAnchor,
 	CodeWindow,
 	DiffLine,
 	ReviewThread,
 	Snapshot,
+	ThreadComment,
 } from "../../shared/types.js";
 import { readConfig } from "../config.js";
 import { loadFileHunks } from "../diff/snapshot.js";
 import type { PrMeta } from "../gh.js";
 import { runGitBuffer } from "../git.js";
+import { stripMarker } from "../marker.js";
 import { RefStore } from "../review/refStore.js";
+import { slugify } from "../slug.js";
 import { agentsDir } from "./checkout.js";
-import { joinGithub, liveGithubThreads, resolveView } from "./githubJoin.js";
-import { isSafePath, mimeTypeOf } from "./prompt.js";
+import { joinRead, liveGithubThreads, resolveView } from "./githubJoin.js";
+import {
+	type CommentRole,
+	type GithubThreadFacts,
+	isSafePath,
+	mimeTypeOf,
+} from "./prompt.js";
 import { AgentRunner, type RunnerFacts } from "./runner.js";
 import { type AgentThreadFold, AgentThreadStore } from "./store.js";
 
@@ -241,19 +250,9 @@ export class AgentHost {
 		return anchor;
 	}
 
-	/**
-	 * The folds joined with GitHub's threads, read only when a thread
-	 * conversation is among them. When GitHub can't be read, thread
-	 * conversations stay live (where their thread is), flagged
-	 * `githubUnknown`, with their own stored `resolved`: never a made-up one.
-	 */
-	async #joined(folds: AgentThreadFold[]): Promise<AgentThreadFold[]> {
-		if (!folds.some((f) => f.anchor.subject === "thread")) return folds;
-		const threads = await this.github.threads().catch(() => null);
-		if (threads) return joinGithub(folds, threads);
-		return folds.map((f) =>
-			f.anchor.subject === "thread" ? { ...f, githubUnknown: true } : f,
-		);
+	/** The folds joined with GitHub's threads (joinRead). */
+	#joined(folds: AgentThreadFold[]): Promise<AgentThreadFold[]> {
+		return joinRead(folds, () => this.github.threads());
 	}
 
 	async #joinedOne(t: AgentThreadFold): Promise<AgentThreadFold> {
@@ -287,10 +286,114 @@ export interface ReviewAgentSource {
 	threads(): Promise<ReviewThread[]>;
 	/** One review thread, null when GitHub doesn't list it; a deleted one says so (`unavailable`). */
 	thread(id: string): Promise<ReviewThread | null>;
-	/** The reviewer's patch sets. */
-	patchsets(): readonly { number: number; head: string; mergeBase: string }[];
+	/** The reviewer's patch sets (`startedAt` in ms). */
+	patchsets(): readonly {
+		number: number;
+		head: string;
+		mergeBase: string;
+		startedAt: number;
+	}[];
 	/** The PR's head on GitHub as last read (it may be past the snapshot's). */
 	currentHead(): string;
+	/** Asks GitHub for the PR's head, fetching a new one into the clone (Session.checkHead). */
+	checkHead(): Promise<void>;
+	/** The PR author's login. */
+	prAuthor(): Promise<string>;
+	/**
+	 * GitHub thread `id` from the current read, for a thread turn: its
+	 * summary, its comments and its placement on `view`; null when GitHub
+	 * no longer lists it (or it was deleted).
+	 */
+	githubThread(id: string, view: AgentView): Promise<AgentThreadRead | null>;
+}
+
+/** What the session reads of one GitHub thread for a thread turn. */
+export interface AgentThreadRead {
+	thread: Pick<
+		ReviewThread,
+		| "path"
+		| "line"
+		| "commit"
+		| "createdAt"
+		| "outdated"
+		| "resolved"
+		| "anchor"
+		| "code"
+	>;
+	comments: Pick<ThreadComment, "author" | "publishedAt" | "body">[];
+	/** The opening comment's REST id (its `#discussion_r` link); null when GitHub gave none. */
+	openerRestId: number | null;
+	placement?: ThreadPlacement;
+}
+
+/**
+ * Who `login` is in a thread: the reviewer (the viewer: first, so your own
+ * PR's threads read as yours), the PR's author, or someone else. Logins
+ * compare as slugs, as the viewer is one.
+ */
+export function authorOf(
+	login: string,
+	people: { viewer: string; prAuthor: string },
+): CommentRole {
+	const who = slugify(login);
+	if (who === "") return "other";
+	if (who === slugify(people.viewer)) return "reviewer";
+	if (who === slugify(people.prAuthor)) return "pr_author";
+	return "other";
+}
+
+/**
+ * A GitHub thread as a thread turn gives it to the prompt: its lines and
+ * span columns (both or neither), a link to its first comment (the PR's
+ * when GitHub gave no id), the comments with their roles (bodies without
+ * a crb marker; a pending one undated) and its code window as diff text.
+ */
+export function threadFacts(
+	read: AgentThreadRead,
+	prUrl: string,
+	roleOf: (login: string) => CommentRole,
+): GithubThreadFacts {
+	const { thread: t, comments, openerRestId, placement } = read;
+	const a = t.anchor;
+	const cols =
+		typeof a?.startCol === "number" && typeof a?.endCol === "number"
+			? { startCol: a.startCol, endCol: a.endCol }
+			: {};
+	return {
+		url:
+			openerRestId !== null && Number.isSafeInteger(openerRestId)
+				? `${prUrl}#discussion_r${openerRestId}`
+				: prUrl,
+		path: t.path,
+		startLine: a ? a.startLine : t.line,
+		line: t.line,
+		...cols,
+		openedOn: OID.test(t.commit) ? t.commit : "",
+		createdAt: t.createdAt,
+		outdated: t.outdated,
+		resolved: t.resolved,
+		comments: comments.map((c) => ({
+			login: c.author,
+			role: roleOf(c.author),
+			at: c.publishedAt ?? "",
+			body: stripMarker(c.body),
+		})),
+		...(placement ? { placement } : {}),
+		code: windowText(t.code),
+	};
+}
+
+/** A code window's rows as unified diff text; null with none (a file thread, pending). */
+export function windowText(code: CodeWindow | null): string | null {
+	const rows = code?.rows ?? [];
+	if (rows.length === 0) return null;
+	const start = (no: "oldNo" | "newNo") =>
+		rows.find((r) => r[no] !== null)?.[no] ?? 0;
+	const count = (kind: "add" | "del") =>
+		rows.filter((r) => r.kind === "context" || r.kind === kind).length;
+	const header = `@@ -${start("oldNo")},${count("del")} +${start("newNo")},${count("add")} @@`;
+	const sign = { context: " ", add: "+", del: "-" } as const;
+	return [header, ...rows.map((r) => `${sign[r.kind]}${r.text}`)].join("\n");
 }
 
 /** The setup modal's Saves since the server started (PUT /api/config/agent). */
@@ -322,6 +425,8 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		src.viewer,
 	);
 	const tree = join(agentsDir(), src.reviewId, "tree");
+	/** The PR author's login; "" when it can't be read (nobody is then). */
+	const prAuthor = () => src.prAuthor().catch(() => "");
 	const facts: RunnerFacts = {
 		review: () => {
 			const m = src.meta();
@@ -342,7 +447,28 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		}),
 		anchored: (anchor) => anchoredFile(src, tree, anchor),
 		hunk: (anchor) => anchorHunk(src, anchor),
-		authorOf: (login) => (login === src.viewer ? "reviewer" : "other"),
+		authorOf: async (login) =>
+			authorOf(login, { viewer: src.viewer, prAuthor: await prAuthor() }),
+		join: (folds) => joinRead(folds, () => src.threads()),
+		github: async (id, view) => {
+			const read = await src.githubThread(id, view);
+			if (!read) return null;
+			const author = await prAuthor();
+			return threadFacts(read, src.meta().url, (login) =>
+				authorOf(login, { viewer: src.viewer, prAuthor: author }),
+			);
+		},
+		views: () => ({
+			patchsets: src.patchsets().map((p) => ({
+				number: p.number,
+				head: p.head,
+				mergeBase: p.mergeBase,
+				startedAt: new Date(p.startedAt).toISOString(),
+			})),
+			current: src.currentHead(),
+		}),
+		// Read-only towards GitHub: it asks for the head and fetches.
+		checkHead: () => src.checkHead(),
 	};
 	const runner = new AgentRunner({
 		reviewId: src.reviewId,
@@ -390,13 +516,20 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
  * stays inside the tree; null when it can't be read, is binary or large.
  */
 export async function anchoredFile(
-	src: Pick<ReviewAgentSource, "repo" | "snapshot">,
+	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
+		Partial<Pick<ReviewAgentSource, "patchsets">>,
 	tree: string,
 	anchor: AgentAnchor,
 ): Promise<{ uri: string; mimeType: string; text: string } | null> {
 	if (!isSafePath(anchor.path)) return null;
-	const left = anchor.subject === "line" && anchor.side === "LEFT";
-	const commit = left ? src.snapshot().base : anchor.commit;
+	let commit = anchor.commit;
+	if (anchor.subject !== "file" && anchor.side === "LEFT") {
+		// A thread's LEFT side: its patch set's merge base, as the prompt says.
+		commit =
+			(anchor.subject === "thread"
+				? src.patchsets?.().find((p) => p.head === anchor.commit)?.mergeBase
+				: undefined) ?? src.snapshot().base;
+	}
 	if (!OID.test(commit)) return null;
 	const blob = await runGitBuffer(
 		src.repo,

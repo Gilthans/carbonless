@@ -21,12 +21,18 @@ import type {
 	AgentAnchor,
 	AgentConfig,
 	AgentStatus,
+	AgentView,
 } from "../../shared/agent.js";
 import { RefStore } from "../review/refStore.js";
 import { agentsDir } from "./checkout.js";
-import type { PromptEnvelope } from "./prompt.js";
-import { AgentRunner, type RunnerDeps } from "./runner.js";
-import { AgentThreadStore } from "./store.js";
+import { orphanAnchor } from "./githubJoin.js";
+import type {
+	GithubThreadFacts,
+	PromptEnvelope,
+	PromptPatchset,
+} from "./prompt.js";
+import { AgentRunner, type RunnerDeps, type RunnerFacts } from "./runner.js";
+import { type AgentThreadFold, AgentThreadStore } from "./store.js";
 
 // Real git and fake agent processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -49,6 +55,18 @@ let config: { agent: AgentConfig | null; problems: string[] };
 let runner: AgentRunner;
 /** The PR's head as the review sees it (a Refresh moves it). */
 let prHead: string;
+/** The reviewer's patch sets, as the runner's facts give them. */
+let patchsets: PromptPatchset[];
+/** GitHub's newest head (SessionInfo.currentHead). */
+let currentHead: string;
+/** What checkHead does (a test's fake gh moving the head), after counting. */
+let onCheckHead: () => void;
+let checkHeads: number;
+/** GitHub's word on every thread conversation's thread. */
+let ghState: "open" | "resolved" | "gone" | "unknown";
+/** GitHub's thread as the session reads it for a turn. */
+let ghThread: () => GithubThreadFacts;
+const githubReads: { thread: string; view: AgentView }[] = [];
 const saved: Record<string, string | undefined> = {};
 
 const anchor = (line: number): AgentAnchor => ({
@@ -95,11 +113,39 @@ function makeRunner(over: Partial<RunnerDeps> = {}): AgentRunner {
 			}),
 			anchored: async () => null,
 			hunk: async () => null,
-			authorOf: () => "reviewer",
+			authorOf: async () => "reviewer",
+			...threadFacts(),
 		},
 		...over,
 	});
 	return runner;
+}
+
+/** The runner's facts about GitHub threads, patch sets and the head, from the test's state. */
+function threadFacts(): Pick<
+	RunnerFacts,
+	"join" | "github" | "views" | "checkHead"
+> {
+	return {
+		join: async (folds: AgentThreadFold[]) =>
+			folds.map((f) => {
+				if (f.anchor.subject !== "thread") return f;
+				if (ghState === "gone") {
+					return { ...f, anchor: orphanAnchor(f.anchor), orphaned: true };
+				}
+				if (ghState === "unknown") return { ...f, githubUnknown: true };
+				return { ...f, resolved: ghState === "resolved" };
+			}),
+		github: async (thread, view) => {
+			githubReads.push({ thread, view });
+			return ghState === "gone" ? null : ghThread();
+		},
+		views: () => ({ patchsets, current: currentHead }),
+		checkHead: async () => {
+			checkHeads++;
+			onCheckHead();
+		},
+	};
 }
 
 beforeEach(() => {
@@ -125,6 +171,31 @@ beforeEach(() => {
 	store = new AgentThreadStore(new RefStore(cache.path), REVIEW, "dan");
 	config = { agent: AGENT, problems: [] };
 	prHead = origin.shas[1] as string;
+	currentHead = prHead;
+	patchsets = [];
+	onCheckHead = () => {};
+	checkHeads = 0;
+	ghState = "open";
+	githubReads.length = 0;
+	ghThread = () => ({
+		url: "https://github.com/acme/widget/pull/12#discussion_r7",
+		path: "a.txt",
+		startLine: 1,
+		line: 1,
+		openedOn: origin.shas[1] as string,
+		createdAt: "2026-11-02T00:00:00.000Z",
+		outdated: false,
+		resolved: ghState === "resolved",
+		comments: [
+			{
+				login: "ann",
+				role: "pr_author",
+				at: "2026-11-02T00:00:00.000Z",
+				body: "Is this right?",
+			},
+		],
+		code: "@@ -1 +1 @@\n-old\n+new",
+	});
 	for (const k of ["PATH", "CRB_FAKE_ACP", "CRB_FAKE_ACP_LOG"])
 		saved[k] = process.env[k];
 	process.env.PATH = `${FAKE_ACP_BIN}${delimiter}${process.env.PATH}`;
@@ -143,6 +214,30 @@ afterEach(async () => {
 	rmSync(tmp, { recursive: true, force: true });
 	rmSync(agentsDir(), { recursive: true, force: true });
 });
+
+const run = (cwd: string, ...args: string[]) =>
+	execFileSync("git", ["-C", cwd, ...args], {
+		encoding: "utf8",
+		env: testGitEnv(),
+	}).trim();
+/** A new commit on the PR on GitHub's side, not fetched yet. */
+const commitOnOrigin = (files: Record<string, string>): string => {
+	for (const [name, text] of Object.entries(files))
+		writeFileSync(join(origin.path, name), text);
+	run(origin.path, "commit", "--quiet", "-am", "more");
+	return run(origin.path, "rev-parse", "HEAD");
+};
+/** Fetches `sha` into the cache clone, as a Refresh or checkHead does. */
+const fetchIntoCache = (sha: string) =>
+	run(cache.path, "fetch", "--quiet", origin.path, `${sha}:refs/pull/12/head`);
+/** A new commit on the PR, fetched into the cache clone like a Refresh. */
+const pushToPr = (files: Record<string, string>): string => {
+	const sha = commitOnOrigin(files);
+	fetchIntoCache(sha);
+	return sha;
+};
+const tree = () => join(agentsDir(), REVIEW, "tree");
+const treeHead = () => run(tree(), "rev-parse", "HEAD");
 
 const ask = (text: string, line = 1, clientId = `c-${text.length}-${line}`) =>
 	store.open({ anchor: anchor(line), text, by: "human", clientId });
@@ -699,7 +794,8 @@ describe("AgentRunner", () => {
 				prFacts: async () => ({ title: "", body: "", files: [] }),
 				anchored: async () => null,
 				hunk: async () => null,
-				authorOf: () => "reviewer",
+				authorOf: async () => "reviewer",
+				...threadFacts(),
 			},
 		});
 		try {
@@ -729,36 +825,6 @@ describe("AgentRunner", () => {
 		}
 	});
 
-	/** A new commit on the PR, fetched into the cache clone like a Refresh. */
-	const pushToPr = (files: Record<string, string>): string => {
-		const run = (cwd: string, ...args: string[]) =>
-			execFileSync("git", ["-C", cwd, ...args], {
-				encoding: "utf8",
-				env: testGitEnv(),
-			}).trim();
-		for (const [name, text] of Object.entries(files))
-			writeFileSync(join(origin.path, name), text);
-		run(origin.path, "commit", "--quiet", "-am", "more");
-		const sha = run(origin.path, "rev-parse", "HEAD");
-		run(
-			cache.path,
-			"fetch",
-			"--quiet",
-			origin.path,
-			`${sha}:refs/pull/12/head`,
-		);
-		return sha;
-	};
-	const treeHead = () =>
-		execFileSync(
-			"git",
-			["-C", join(agentsDir(), REVIEW, "tree"), "rev-parse", "HEAD"],
-			{
-				encoding: "utf8",
-				env: testGitEnv(),
-			},
-		).trim();
-
 	it("the agent's tree follows the PR's head before a turn", async () => {
 		await ask("one?", 1);
 		makeRunner().poke();
@@ -785,5 +851,330 @@ describe("AgentRunner", () => {
 		await answered(2);
 		expect(treeHead()).toBe(old);
 		expect(prompts()[1]?.notice).toContain(`The PR's head is now ${prHead}`);
+	});
+});
+
+describe("AgentRunner: thread conversations", () => {
+	const threadAnchor = (
+		commit = origin.shas[1] as string,
+	): Extract<AgentAnchor, { subject: "thread" }> => ({
+		subject: "thread",
+		thread: "PRRT_1",
+		path: "a.txt",
+		commit,
+		side: "RIGHT",
+		line: 1,
+		startSide: "RIGHT",
+		startLine: 1,
+	});
+	const ps = (n: number, head: string): PromptPatchset => ({
+		number: n,
+		head,
+		mergeBase: origin.shas[0] as string,
+		startedAt: `2026-11-0${n}T00:00:00.000Z`,
+	});
+	const viewOf = (p: PromptPatchset): AgentView => ({
+		target: { patchset: p.number },
+		from: { branch: true },
+		left: p.mergeBase,
+		right: p.head,
+	});
+	const askThread = (text: string, view?: AgentView, anchor = threadAnchor()) =>
+		store.open({
+			anchor,
+			text,
+			by: "human",
+			clientId: `t-${text}`,
+			...(view ? { view } : {}),
+		});
+	const has = (cwd: string, oid: string) => {
+		try {
+			run(cwd, "cat-file", "-e", `${oid}^{commit}`);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	it("a thread turn runs checkHead and the envelope's current follows the new head while the snapshot stays", async () => {
+		const ps1 = ps(1, origin.shas[1] as string);
+		patchsets = [ps1];
+		const pushed = commitOnOrigin({ "a.txt": "pushed\n" });
+		// The fake gh moves the head: checkHead fetches it, current follows.
+		onCheckHead = () => {
+			fetchIntoCache(pushed);
+			currentHead = pushed;
+		};
+		await askThread("fixed?", viewOf(ps1));
+		makeRunner().poke();
+		await answered(1);
+		expect(checkHeads).toBe(1);
+		const [env] = prompts();
+		expect(env?.kind).toBe("github_thread_conversation");
+		expect(env?.current).toBe(pushed);
+		expect(env?.review.head.commit).toBe(origin.shas[1]);
+		expect(env?.github).toMatchObject({
+			openedOn: origin.shas[1],
+			openedOnPatchset: 1,
+			resolved: false,
+			comments: [{ author: { login: "ann", role: "pr_author" } }],
+		});
+		expect(env?.patchsets).toEqual([ps1]);
+		expect(env?.notice).toBeUndefined();
+		// The code it was opened on goes in as the diff block.
+		const blocks = acpLog(logPath).find((e) => e.method === "session/prompt")
+			?.params as { prompt: Array<{ text?: string }> };
+		expect(blocks.prompt.at(-1)?.text).toContain(
+			"The code the thread was opened on:\n```diff\n@@ -1 +1 @@",
+		);
+		// A span thread's turn doesn't check the head.
+		await ask("span?");
+		runner.poke();
+		await answered(2);
+		expect(checkHeads).toBe(1);
+	});
+
+	it("the checkout is at view.right for the turn and current's objects are reachable", async () => {
+		const ps1 = ps(1, origin.shas[1] as string);
+		const ps2 = ps(2, pushToPr({ "a.txt": "ps2\n" }));
+		prHead = ps2.head;
+		patchsets = [ps1, ps2];
+		const pushed = commitOnOrigin({ "a.txt": "pushed\n" });
+		onCheckHead = () => {
+			fetchIntoCache(pushed);
+			currentHead = pushed;
+		};
+		scenario({ hold: ["prompt"] });
+		await askThread("fixed?", viewOf(ps1));
+		makeRunner().poke();
+		await until((s) => s.state === "busy");
+		expect(treeHead()).toBe(ps1.head);
+		expect(has(tree(), pushed)).toBe(true);
+		releaseAcp(scenarioPath, "prompt");
+		await answered(1);
+		// A span thread's turn moves it back to the PR's head.
+		await ask("span?");
+		runner.poke();
+		await answered(2);
+		expect(treeHead()).toBe(ps2.head);
+	});
+
+	it("view is the one sent with the turn's last human message; an ai-opened conversation uses the latest patch set (the snapshot head without patch sets)", async () => {
+		const ps1 = ps(1, origin.shas[1] as string);
+		const ps2 = ps(2, pushToPr({ "a.txt": "ps2\n" }));
+		patchsets = [ps1, ps2];
+		currentHead = ps2.head;
+		const t = await askThread("on PS1?", viewOf(ps1));
+		makeRunner().poke();
+		await answered(1);
+		await store.message(t.id, {
+			by: "human",
+			text: "and on PS2?",
+			clientId: "m2",
+			view: viewOf(ps2),
+		});
+		runner.poke();
+		await vi.waitFor(() => expect(prompts()).toHaveLength(2), {
+			timeout: 20_000,
+			interval: 20,
+		});
+		await runner.settled();
+		const [first, second] = prompts();
+		expect(first?.view).toMatchObject({ right: ps1.head, targetPatchset: 1 });
+		expect(second?.view).toMatchObject({ right: ps2.head, targetPatchset: 2 });
+
+		// Agent-started: no send carried a view.
+		const opened = await store.open({
+			anchor: { ...threadAnchor(), thread: "PRRT_2" },
+			text: "This thread looks fixed.",
+			by: "ai",
+			agent: { name: "fake-acp", version: "1.0.0" },
+		});
+		await store.message(opened.id, {
+			by: "human",
+			text: "is it?",
+			clientId: "m3",
+		});
+		runner.poke();
+		await vi.waitFor(() => expect(prompts()).toHaveLength(3), {
+			timeout: 20_000,
+			interval: 20,
+		});
+		expect(prompts()[2]?.view).toEqual({
+			target: { patchset: 2 },
+			from: { branch: true },
+			left: ps2.mergeBase,
+			right: ps2.head,
+			targetPatchset: 2,
+		});
+		await runner.settled();
+
+		// No patch sets at all: the snapshot head, against the merge base.
+		patchsets = [];
+		await store.message(opened.id, {
+			by: "human",
+			text: "now?",
+			clientId: "m4",
+		});
+		runner.poke();
+		await vi.waitFor(() => expect(prompts()).toHaveLength(4), {
+			timeout: 20_000,
+			interval: 20,
+		});
+		expect(prompts()[3]?.view).toEqual({
+			target: { head: prHead },
+			from: { branch: true },
+			left: origin.shas[0],
+			right: prHead,
+		});
+	});
+
+	it("the stored head is the checkout's commit when the answer ends", async () => {
+		const ps1 = ps(1, origin.shas[1] as string);
+		patchsets = [ps1];
+		const pushed = commitOnOrigin({ "a.txt": "pushed\n" });
+		onCheckHead = () => {
+			fetchIntoCache(pushed);
+			currentHead = pushed;
+		};
+		scenario({
+			answers: [
+				{
+					text: "Fixed later, in the newest head.",
+					run: ["git", "-C", "tree", "checkout", "--quiet", "--detach", pushed],
+				},
+			],
+		});
+		await askThread("fixed?", viewOf(ps1));
+		makeRunner().poke();
+		await answered(1);
+		const [t] = await threads();
+		expect(t?.messages[1]).toMatchObject({ by: "ai", head: pushed });
+	});
+
+	it("a final [suggest-resolve] is stripped and stored as suggests; one mid-message is not", async () => {
+		patchsets = [ps(1, origin.shas[1] as string)];
+		scenario({
+			answers: [
+				{ match: "first", text: "Fixed in PS 1.\n[suggest-resolve]\n" },
+				{
+					match: "second",
+					text: "Not resolved: I would write [suggest-resolve]\n[suggest-resolve]\nonly if it were.",
+				},
+				{ text: "ok" },
+			],
+		});
+		const t = await askThread("first?");
+		makeRunner().poke();
+		await answered(1);
+		await store.message(t.id, { by: "human", text: "second?", clientId: "m2" });
+		runner.poke();
+		await vi.waitFor(
+			async () => expect((await threads())[0]?.messages).toHaveLength(4),
+			{ timeout: 20_000, interval: 20 },
+		);
+		const messages = (await threads())[0]?.messages ?? [];
+		expect(messages[1]).toMatchObject({
+			text: "Fixed in PS 1.",
+			suggests: "resolve",
+		});
+		expect(messages[3]?.text).toBe(
+			"Not resolved: I would write [suggest-resolve]\n[suggest-resolve]\nonly if it were.",
+		);
+		expect(messages[3]?.suggests).toBeUndefined();
+		// The stripped text is what the next prompt replays.
+		expect(prompts()[1]?.messages[1]?.text).toBe("Fixed in PS 1.");
+	});
+
+	it("a span thread's answer keeps a final marker as text", async () => {
+		scenario({ answers: [{ text: "Sure.\n[suggest-resolve]" }] });
+		await ask("span?");
+		makeRunner().poke();
+		await answered(1);
+		const [t] = await threads();
+		expect(t?.messages[1]?.text).toBe("Sure.\n[suggest-resolve]");
+		expect(t?.messages[1]?.suggests).toBeUndefined();
+	});
+
+	it("a question waiting on a resolved GitHub thread is still answered", async () => {
+		ghState = "resolved";
+		patchsets = [ps(1, origin.shas[1] as string)];
+		await askThread("fixed?");
+		// A resolved span thread with a waiting question is not.
+		const span = await ask("span?");
+		await store.setResolved(span.id, true);
+		makeRunner().poke();
+		await vi.waitFor(() => expect(prompts()).toHaveLength(1), {
+			timeout: 20_000,
+			interval: 20,
+		});
+		await runner.settled();
+		expect(prompts()).toHaveLength(1);
+		expect(prompts()[0]?.github?.resolved).toBe(true);
+		const all = await threads();
+		expect(all.find((t) => t.anchor.subject === "thread")?.waiting).toBe(false);
+		expect(all.find((t) => t.id === span.id)?.waiting).toBe(true);
+	});
+
+	it("a commit the clone lacks is named in notice", async () => {
+		const lost = "e".repeat(40);
+		patchsets = [ps(1, origin.shas[1] as string)];
+		const facts = ghThread;
+		ghThread = () => ({ ...facts(), openedOn: lost });
+		await askThread(
+			"fixed?",
+			viewOf(patchsets[0] as PromptPatchset),
+			threadAnchor(lost),
+		);
+		makeRunner().poke();
+		await answered(1);
+		const [env] = prompts();
+		expect(env?.notice).toContain(lost);
+		expect(env?.notice).not.toContain(origin.shas[1]);
+		expect(env?.github?.openedOn).toBe(lost);
+	});
+
+	it("GitHub unread: the turn runs without a github block, the notice says so", async () => {
+		ghState = "unknown";
+		patchsets = [ps(1, origin.shas[1] as string)];
+		await askThread("fixed?");
+		makeRunner().poke();
+		await answered(1);
+		const [env] = prompts();
+		expect(env?.kind).toBe("github_thread_conversation");
+		expect(env?.github).toBeUndefined();
+		expect(env?.notice).toMatch(/GitHub couldn't be read/);
+		expect(githubReads).toEqual([]);
+		// Reading GitHub failing in the turn is the same.
+		ghState = "open";
+		ghThread = () => {
+			throw new Error("gh: 502");
+		};
+		const [t] = await threads();
+		await store.message(t?.id as string, {
+			by: "human",
+			text: "now?",
+			clientId: "m2",
+		});
+		runner.poke();
+		await vi.waitFor(() => expect(prompts()).toHaveLength(2), {
+			timeout: 20_000,
+			interval: 20,
+		});
+		expect(prompts()[1]?.github).toBeUndefined();
+		expect(prompts()[1]?.notice).toMatch(/GitHub couldn't be read/);
+	});
+
+	it("an orphan is a regular agent conversation on its lines; the notice says the GitHub thread is gone", async () => {
+		ghState = "gone";
+		await askThread("fixed?");
+		makeRunner().poke();
+		await answered(1);
+		const [env] = prompts();
+		expect(env?.kind).toBe("agent_thread");
+		expect(env?.github).toBeUndefined();
+		expect(env?.thread.anchor).toMatchObject({ subject: "line", line: 1 });
+		expect(env?.notice).toMatch(/GitHub thread .* is gone/);
+		expect(checkHeads).toBe(0);
 	});
 });

@@ -44,6 +44,24 @@ export function joinGithub(
 	});
 }
 
+/**
+ * The folds joined with the threads `read` gives, read only when a thread
+ * conversation is among them. When GitHub can't be read, thread
+ * conversations stay live (where their thread is), flagged
+ * `githubUnknown`, with their own stored `resolved`: never a made-up one.
+ */
+export async function joinRead(
+	folds: AgentThreadFold[],
+	read: () => Promise<readonly ReviewThread[]>,
+): Promise<AgentThreadFold[]> {
+	if (!folds.some((f) => f.anchor.subject === "thread")) return folds;
+	const threads = await read().catch(() => null);
+	if (threads) return joinGithub(folds, threads);
+	return folds.map((f) =>
+		f.anchor.subject === "thread" ? { ...f, githubUnknown: true } : f,
+	);
+}
+
 /** The span anchor an orphan falls back to: line anchor on the recorded lines at `commit`, else a file anchor. */
 export function orphanAnchor(a: ThreadAnchor): AgentAnchor {
 	const { path, commit, side, line } = a;
