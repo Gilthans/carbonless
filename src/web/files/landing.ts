@@ -11,20 +11,37 @@ export interface FilesSearch {
 	line?: number;
 	side?: "LEFT" | "RIGHT";
 	moved?: boolean;
+	/** The comparison (files/comparison.ts): the viewed patch set… */
+	ps?: number;
+	/** …or the viewed head (a commit id), and the comparison base. */
+	head?: string;
+	from?: number | "branch";
+}
+
+const OID = /^[0-9a-f]{40}$/;
+
+/** A positive integer, as the address has it (a string) or as given. */
+function positive(raw: unknown): number | undefined {
+	const n = typeof raw === "string" ? Number(raw) : raw;
+	return typeof n === "number" && Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
 /** Untrusted URL params to FilesSearch; anything odd is dropped. */
 export function parseFilesSearch(raw: Record<string, unknown>): FilesSearch {
 	const out: FilesSearch = {};
 	if (typeof raw.path === "string" && raw.path) out.path = raw.path;
-	const line = typeof raw.line === "string" ? Number(raw.line) : raw.line;
-	if (typeof line === "number" && Number.isInteger(line) && line > 0) {
-		out.line = line;
-	}
+	const line = positive(raw.line);
+	if (line !== undefined) out.line = line;
 	if (raw.side === "LEFT" || raw.side === "RIGHT") out.side = raw.side;
 	if (raw.moved === true || raw.moved === "true" || raw.moved === 1) {
 		out.moved = true;
 	}
+	const ps = positive(raw.ps);
+	if (ps !== undefined) out.ps = ps;
+	if (typeof raw.head === "string" && OID.test(raw.head)) out.head = raw.head;
+	const from = positive(raw.from);
+	if (from !== undefined) out.from = from;
+	else if (raw.from === "branch") out.from = "branch";
 	return out;
 }
 

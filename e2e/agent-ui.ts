@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import {
 	type AcpScenario,
@@ -110,7 +110,7 @@ export const test = base.extend<{
 				...crbEnv(workdir),
 				...(opts.state ? { XDG_STATE_HOME: join(workdir, opts.state) } : {}),
 			};
-			env.PATH = `${FAKE_ACP_BIN}:${env.PATH ?? ""}`;
+			env.PATH = `${FAKE_ACP_BIN}${delimiter}${env.PATH ?? ""}`;
 			env.CRB_FAKE_ACP = scenario;
 			env.CRB_FAKE_ACP_LOG = acpLogPath;
 			const served = await startServe(workdir, [], env);

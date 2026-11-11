@@ -1,3 +1,7 @@
+import type { LineRanges } from "./lineRanges.js";
+import type { SincePiece } from "./pieces.js";
+import type { ThreadPlacement } from "./rereview/placement.js";
+
 export type FileStatus =
 	| "added"
 	| "deleted"
@@ -6,6 +10,40 @@ export type FileStatus =
 	| "type-changed";
 
 export type ClusterState = "unreviewed" | "reviewed" | "crossed-off";
+
+/**
+ * How a patch set's snapshot relates to the one before it (the re-review
+ * design's shapes): S1 commits appended, S3 base merged in, S4a a trivial
+ * rebase, S4b a rebase with conflicts, S4c rework, S5 a squash, S6 a move
+ * backwards, S7 retargeted.
+ */
+export type ShapeCode =
+	| "S1"
+	| "S3"
+	| "S4a"
+	| "S4b"
+	| "S4c"
+	| "S5"
+	| "S6"
+	| "S7";
+
+/**
+ * What shape detection found between a patch set and a newer snapshot
+ * (src/server/rereview/shape.ts): the code, how many commits the new head
+ * has over the old one (over the merge base after a force-push), whether
+ * the old head virtually rebased onto the new base gives the new head's
+ * tree, and the virtual rebase itself: ok, with conflicts (the paths), or
+ * none could be built (unrelated histories, a shallow clone, an error).
+ */
+export interface Shape {
+	code: ShapeCode;
+	commits: number;
+	identical: boolean;
+	conflicts: string[];
+	virtualRebase: "ok" | "conflict" | "unrelated" | "shallow" | "error";
+	/** The virtual rebase's tree OID (`H1'`); null when none could be built. */
+	virtualHead: string | null;
+}
 
 export interface Cluster {
 	/** Identity, see Task 2. */
@@ -81,12 +119,50 @@ export interface DisplayHunk {
 export interface FileHunks {
 	hunks: DisplayHunk[];
 	newLineCount: number;
+	/** The since view's only: its pieces, each markable (pieces.ts). */
+	pieces?: SincePiece[];
+	/**
+	 * The since view's only: the interdiff doesn't change the file's
+	 * lines, so all `newLineCount` of them are one gap (gaps.ts).
+	 */
+	wholeGap?: true;
+}
+
+/**
+ * A mark on the since view's pieces that own no line of the viewed
+ * snapshot (removed or reverted since patch set `since`): their lines in
+ * file `path`, by number on the since view's sides. The whole set for
+ * that comparison and file.
+ */
+export interface SinceMark {
+	since: number;
+	path: string;
+	reviewed: { old: LineRanges; new: LineRanges };
+	crossed: { old: LineRanges; new: LineRanges };
 }
 
 export interface ClusterView extends Cluster {
 	state: ClusterState;
 	/** Only for crossed-off clusters. */
 	reason?: string;
+	/**
+	 * The state was carried by the engine from that patch set under that
+	 * rule (and not re-marked by hand since). Never on an unreviewed cluster.
+	 */
+	carried?: { from: number; rule: "exact" | "rename" };
+	/**
+	 * Marked one piece at a time (pieces.ts, lineRanges.ts). On an
+	 * unreviewed cluster, partly marked: the lines reviewed, never all.
+	 * Their lines count in the line totals; the cluster counts unreviewed.
+	 */
+	reviewedLines?: LineRanges;
+	/**
+	 * The lines crossed off one piece at a time: on an unreviewed cluster,
+	 * some of them; on a reviewed one, every line is marked and these are
+	 * crossed off (done with lines reviewed: it counts as reviewed, as a
+	 * file does), never all of them (that is a crossed-off cluster).
+	 */
+	crossedLines?: LineRanges;
 }
 
 export interface FileView extends Omit<FileSummary, "clusters"> {
@@ -124,16 +200,40 @@ export interface ReviewView {
 	patchset: number | null;
 	files: FileView[];
 	progress: Progress;
+	/** The patch set's marks on since-only pieces (never in `progress`). */
+	sinceMarks?: SinceMark[];
 }
 
 export interface StateChange {
 	key: string;
 	state: ClusterState;
 	reason?: string;
+	/**
+	 * Only with `unreviewed`: these of the cluster's lines stay reviewed (a
+	 * piece ticked or unticked in the since view; pieces.ts changeFor).
+	 */
+	reviewedLines?: LineRanges;
+	/** Only with `unreviewed`, like reviewedLines: these lines crossed off. */
+	crossedLines?: LineRanges;
+	/**
+	 * A mark on since-only pieces instead of a cluster: every such line of
+	 * file `path` reviewed since patch set `since` (the whole set). Its key
+	 * is sinceMarkKey(since, path), never a cluster's.
+	 */
+	sinceMark?: SinceMark;
 }
 
 /** A side of a diff: "LEFT" numbers the old file, "RIGHT" the new one. */
 export type DiffSide = "LEFT" | "RIGHT";
+
+/** Where a thread sits in a snapshot (a CodeAnchor's range). */
+export interface ThreadAnchorRef {
+	path: string;
+	startSide: DiffSide;
+	startLine: number;
+	side: DiffSide;
+	line: number;
+}
 
 /**
  * Where a comment points in the PR's code, whoever hosts the comment: a
@@ -629,6 +729,56 @@ export interface VerdictFacts {
 	head: string;
 	/** When the server finished reading this from GitHub (its clock). */
 	fetchedAt: string;
+	/**
+	 * The reviewer's own latest verdict, which `since` compares from: their
+	 * standing approval or change request (or its dismissal), else their
+	 * latest Comment with a message. A review comment posted on its own is
+	 * a COMMENTED review with no message on GitHub: not a verdict. As
+	 * `reviews`' rows; null when they gave none.
+	 */
+	yourVerdict: VerdictFacts["reviews"][number] | null;
+	/**
+	 * What changed since the reviewer's own verdict (the `you` review):
+	 * null with no verdict, one on a head that is none of the reviewer's
+	 * patch sets, or one on the head a verdict now goes on. Worked out
+	 * when served (the engine's answer moves on), never kept with the
+	 * GitHub read.
+	 */
+	since: VerdictSince | null;
+}
+
+/**
+ * The reviewer's verdict, the patch set it was given on, and the engine's
+ * answer from that patch set to the head a verdict now goes on (the
+ * latest patch set's, or the PR's head past it). Counts only from the
+ * engine's answer: "nothing to re-read" needs `identical` with no
+ * reworked, new or gone cluster (principle 2); pending and failed say so.
+ */
+export interface VerdictSince {
+	state: ReviewVerdict;
+	/** The verdict's commit and when it was given. */
+	head: string;
+	at: string;
+	/** The review on GitHub (as `reviews[].url`); absent when GitHub gave none. */
+	url?: string;
+	/** The patch set whose head it was given on. */
+	patchset: number;
+	/** Where a verdict goes now: the latest patch set's head, or the PR's head past it (patchset null). */
+	to: { head: string; patchset: number | null };
+	changes:
+		| { status: "pending" }
+		| { status: "failed"; message: string }
+		| {
+				status: "done";
+				shape: ShapeCode;
+				commits: number;
+				/** Files with a reworked or new cluster, or a conflict. */
+				files: number;
+				reworked: number;
+				new: number;
+				gone: number;
+				identical: boolean;
+		  };
 }
 
 /** `POST /api/verdict`: submit a review with an event. */
@@ -849,6 +999,81 @@ export interface TimelineView {
 	gaps: string[];
 }
 
+/**
+ * What became of a cluster of the viewed snapshot since the patch set it
+ * is compared with: carried (the same change, its mark carried over),
+ * reworked (the reviewer's marked change, edited since), new (not in that
+ * patch set), gone (a marked cluster of that patch set with no image in
+ * the snapshot; its key is the old cluster's).
+ */
+export type ClusterKind = "carried" | "reworked" | "new" | "gone";
+
+/**
+ * The engine's answer for one comparison, patch set `from` to the snapshot
+ * of `toHead` (`GET /rereview?from=&to=`): the shape, whether the
+ * interdiff could be built, each file's clusters by kind, how much there is
+ * to read, and the thread placements (empty until PR 5). Clusters of a
+ * conflicted file are all new. `files` holds every file of the snapshot by
+ * its index, then any file only the interdiff has (everything the reviewer
+ * saw of it was undone) at an index past the snapshot's files, good for
+ * `GET /files/:index/hunks?from=` alone.
+ */
+export interface RereviewAnswer {
+	from: number;
+	toHead: string;
+	toRevision: string;
+	shape: Shape;
+	interdiff: "available" | "unavailable";
+	reason?: Shape["virtualRebase"];
+	files: {
+		index: number;
+		path: string;
+		conflict: boolean;
+		clusters: {
+			key: string;
+			kind: ClusterKind;
+			/** carried and gone: the patch set the cluster is from. */
+			from?: number;
+			/** carried: the state carried, and the rule it carried under. */
+			state?: "reviewed" | "crossed-off";
+			rule?: "exact" | "rename";
+		}[];
+		/**
+		 * The file's since-view pieces (pieces.ts SincePiece), what the since
+		 * view marks and counts (sinceUnits); absent without an interdiff.
+		 */
+		pieces?: SincePiece[];
+	}[];
+	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
+	toRead: { files: number; clusters: number };
+	/**
+	 * Every unresolved thread's place in the target snapshot
+	 * (src/shared/rereview/placement.ts), as of the read of GitHub the
+	 * engine's job saw; the page reads them by read (`GET /placements`).
+	 */
+	threads: { id: string; placement: ThreadPlacement }[];
+}
+
+/**
+ * Every unresolved thread's place in one snapshot, for one read of GitHub
+ * (`GET /placements`): the tracer's placement with the reviewer's stored
+ * ones laid over. Resolved threads are not placed (the page shows them
+ * on their own head only).
+ */
+export interface PlacementsAnswer {
+	readId: string;
+	/** The snapshot id placed into. */
+	revision: string;
+	/** Its patch set (where a drag stores one); null for a head that is none yet. */
+	patchset: number | null;
+	threads: { id: string; placement: ThreadPlacement }[];
+	/**
+	 * Every thread is in: unresolved threads are placed first and answered
+	 * at once, resolved ones join later (false until then; ask again).
+	 */
+	complete?: boolean;
+}
+
 export interface SessionInfo {
 	pr: {
 		owner: string;
@@ -876,4 +1101,44 @@ export interface SessionInfo {
 	 * without one.
 	 */
 	pinnedHead: string | null;
+	/** The reviewer's patch sets, in start order (the patch set graph's dots). */
+	patchsets: {
+		number: number;
+		head: string;
+		mergeBase: string;
+		/**
+		 * The base branch it was reviewed against (its own, kept after a
+		 * retarget: its card's "Against").
+		 */
+		baseBranch: string;
+		/** Ms since epoch. */
+		startedAt: number;
+		/** The patch set it follows; null for PS1. */
+		since: number | null;
+		shape: ShapeCode | null;
+		/**
+		 * Its commits over its merge base (`rev-list --count`); null while
+		 * the server counts them in the background; why not, once the
+		 * count has failed for good.
+		 */
+		commits: number | null | { error: string };
+	}[];
+	/**
+	 * The PR's head when this crb last opened the review, before this open
+	 * (the toast's "since you last looked"); null on the first open.
+	 */
+	lastSeen: { head: string; at: number } | null;
+	/**
+	 * The PR's head on GitHub as last checked (`GET /head`), with its merge
+	 * base and the commits it has over the latest patch set's head (over its
+	 * merge base after a force-push; 0 when it is the snapshot's head): the
+	 * graph's head dot and the toast. Null for a merged or closed PR, an
+	 * as-of view and a pinned head, which show neither.
+	 */
+	head: {
+		oid: string;
+		mergeBase: string;
+		baseBranch: string;
+		commits: number;
+	} | null;
 }

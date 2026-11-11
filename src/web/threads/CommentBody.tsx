@@ -38,7 +38,7 @@ const SIGN_COLOR: Record<HunkLine["kind"], string> = {
 
 /** The file's tab width (.editorconfig), once the review has loaded. */
 function useTabWidth(path: string): number | undefined {
-	const review = useQuery(reviewQuery);
+	const review = useQuery(reviewQuery());
 	return review.data?.files.find((f) => f.path === path)?.tabWidth;
 }
 

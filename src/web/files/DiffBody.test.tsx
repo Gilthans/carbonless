@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { inRouter } from "../../../test/in-router";
 import { heldJson } from "../../../test/loading";
 import type { AgentThread } from "../../shared/agent";
 import type {
@@ -19,6 +20,7 @@ import type {
 	FileHunks,
 	FileView,
 	ReviewThread,
+	ReviewView,
 	SessionInfo,
 } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
@@ -26,7 +28,8 @@ import {
 	openAgentComposer,
 	resetAgentComposers,
 } from "../agent/askAgentAction";
-import { sessionQuery } from "../api";
+import { AgentPlacingProvider } from "../agent/placeable";
+import { hunksQuery, reviewQuery, sessionQuery } from "../api";
 import { rangeText } from "../code/Invisibles";
 import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
@@ -44,6 +47,7 @@ import type { Landing } from "./landing";
 import { setPicks } from "./linePicks";
 import type { CodeSpan } from "./selectionActions";
 import { ThreadBubble } from "./ThreadBubble";
+import type { Placements } from "./threadPlacement";
 
 vi.mock("./hiddenLines", async (original) => {
 	const real = await original<typeof import("./hiddenLines")>();
@@ -219,6 +223,10 @@ function setup(
 		agentThreads?: AgentThread[];
 		/** The session's head is known (before GitHub's threads are in). */
 		sessionHead?: string;
+		/** The tracer's placements of the agent threads (FilesPage's read). */
+		agentPlacements?: Placements;
+		/** In a router (pieces that link: a changed thread's pane). */
+		router?: boolean;
 	} = {},
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -231,20 +239,22 @@ function setup(
 				? (opts.hunks ?? hunks)
 				: url.pathname === "/api/comments"
 					? { threads: [] }
-					: url.pathname === "/api/files/0/context"
-						? Array.from(
-								{
-									length:
-										Number(url.searchParams.get("newTo")) -
-										Number(url.searchParams.get("newFrom")) +
-										1,
-								},
-								(_, i) => {
-									const n = Number(url.searchParams.get("newFrom")) + i;
-									return ctx(n, n);
-								},
-							)
-						: {};
+					: url.pathname === "/api/review"
+						? { files: [] }
+						: url.pathname === "/api/files/0/context"
+							? Array.from(
+									{
+										length:
+											Number(url.searchParams.get("newTo")) -
+											Number(url.searchParams.get("newFrom")) +
+											1,
+									},
+									(_, i) => {
+										const n = Number(url.searchParams.get("newFrom")) + i;
+										return ctx(n, n);
+									},
+								)
+							: {};
 		return new Response(JSON.stringify(body), { status: 200 });
 	});
 	vi.stubGlobal("fetch", fetchMock);
@@ -257,6 +267,12 @@ function setup(
 		queryClient.setQueryData(sessionQuery.queryKey, {
 			snapshotHead: opts.sessionHead,
 		} as SessionInfo);
+	}
+	if (opts.router) {
+		// A code pane reads the review's files (their tab width).
+		queryClient.setQueryData(reviewQuery().queryKey, {
+			files: [],
+		} as unknown as ReviewView);
 	}
 	if (opts.agentThreads) {
 		queryClient.setQueryData(agentThreadsQuery.queryKey, {
@@ -289,13 +305,21 @@ function setup(
 	);
 	const tree = (cs: ClusterView[], find: DiffFind | undefined) => (
 		<QueryClientProvider client={queryClient}>
-			{bodyOf(cs, find)}
-			{opts.twice && bodyOf(cs, find)}
+			<AgentPlacingProvider
+				value={{ placements: opts.agentPlacements ?? null, until: null }}
+			>
+				{bodyOf(cs, find)}
+				{opts.twice && bodyOf(cs, find)}
+			</AgentPlacingProvider>
 		</QueryClientProvider>
 	);
 	/** What the tree shows now: a restate keeps the find, a refind the clusters. */
 	const shown = { cs: opts.clusters ?? clusters, find: opts.find };
-	const { container, rerender } = render(tree(shown.cs, shown.find));
+	const { container, rerender } = render(
+		opts.router
+			? inRouter(() => tree(shown.cs, shown.find))
+			: tree(shown.cs, shown.find),
+	);
 	/** The same tree with the clusters' new states (no remount). */
 	const restate = (cs: ClusterView[]) => {
 		shown.cs = cs;
@@ -2083,7 +2107,7 @@ describe("number columns: as wide as the file's largest line number needs", () =
 
 	it("sizes the cells from it; touch keeps 48px", async () => {
 		const client = new QueryClient();
-		client.setQueryData(["hunks", "r1", 0], {
+		client.setQueryData(hunksQuery("r1", 0).queryKey, {
 			hunks: [
 				{
 					oldStart: 1,
@@ -2205,6 +2229,118 @@ describe("DiffBody: the agent's threads", () => {
 		expect(screen.getByTestId("thread-row").nextElementSibling).toBe(opened);
 		await user.click(agent);
 		expect(screen.queryByTestId("agent-thread-row")).toBeNull();
+	});
+
+	it("an agent thread asked on an earlier head shows on its traced line, as the agent's", async () => {
+		const { user } = setup({
+			threads: [],
+			agentThreads: [
+				agentThread(5, {
+					anchor: {
+						subject: "line",
+						path: PATH,
+						commit: "e".repeat(40),
+						side: "RIGHT",
+						line: 5,
+						startSide: "RIGHT",
+						startLine: 5,
+					},
+				}),
+			],
+			agentPlacements: new Map([
+				[
+					"A5",
+					{
+						kind: "placed",
+						anchor: {
+							path: PATH,
+							startSide: "RIGHT",
+							startLine: 11,
+							side: "RIGHT",
+							line: 11,
+						},
+						changed: false,
+					},
+				],
+			]),
+		});
+		await screen.findByText("line 11");
+		const rowOf = (n: number) =>
+			document.querySelector<HTMLElement>(
+				`[data-testid="diff-line"][data-new-no="${n}"]`,
+			) as HTMLElement;
+		expect(within(rowOf(5)).queryByTestId("agent-bubble")).toBeNull();
+		const bubble = within(rowOf(11)).getByTestId("agent-bubble");
+		expect(bubble).toHaveAccessibleName("1 agent thread on line 11, 1 waiting");
+		// Its own bubble in the agent's tint, the sparkle on it.
+		expect(bubble.firstElementChild).toHaveClass("bg-agent", "text-agent-ink");
+		expect(within(rowOf(11)).queryByTestId("thread-bubble")).toBeNull();
+		await user.click(bubble);
+		const opened = screen.getByTestId("agent-thread-row");
+		expect(rowOf(11).nextElementSibling).toBe(opened);
+		const card = within(opened).getByTestId("agent-thread");
+		expect(card).toHaveClass("border-agent-edge");
+		expect(card).toHaveAttribute("data-thread", "A5");
+		// On the viewed head now: not marked as from an earlier version.
+		expect(within(card).queryByTestId("agent-outdated")).toBeNull();
+	});
+
+	it("an agent thread whose line was rewritten since: on the new line with the changed chip and its old lines, as a review thread", async () => {
+		const { user } = setup({
+			router: true,
+			threads: [],
+			agentThreads: [
+				agentThread(5, {
+					anchor: {
+						subject: "line",
+						path: PATH,
+						commit: "e".repeat(40),
+						side: "RIGHT",
+						line: 5,
+						startSide: "RIGHT",
+						startLine: 5,
+					},
+				}),
+			],
+			agentPlacements: new Map([
+				[
+					"A5",
+					{
+						kind: "changed",
+						anchor: {
+							path: PATH,
+							startSide: "RIGHT",
+							startLine: 11,
+							side: "RIGHT",
+							line: 11,
+						},
+						old: { side: "RIGHT", startLine: 5, line: 5, text: ["was five"] },
+						now: ["line 11"],
+					},
+				],
+			]),
+		});
+		await screen.findByText("line 11");
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="11"]',
+		) as HTMLElement;
+		await user.click(within(row).getByTestId("agent-bubble"));
+		const opened = screen.getByTestId("agent-thread-row");
+		expect(within(opened).getByTestId("placement-changed")).toHaveTextContent(
+			"changed since",
+		);
+		expect(
+			within(opened)
+				.getAllByTestId("placement-changed-line")
+				.map((l) => l.textContent),
+		).toEqual([
+			expect.stringContaining("was five"),
+			expect.stringContaining("line 11"),
+		]);
+		expect(within(opened).getByTestId("placement-fate-line")).toHaveTextContent(
+			"Line rewritten",
+		);
+		expect(within(opened).getByTestId("agent-thread")).toBeTruthy();
 	});
 
 	it("shows agent threads before GitHub's threads are in", async () => {

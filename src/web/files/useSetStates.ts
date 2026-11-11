@@ -4,8 +4,15 @@ import {
 	useQueryClient,
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import type { StateChange } from "../../shared/types";
-import { postStates, reviewQuery, sessionQuery } from "../api";
+import type { ReviewView, StateChange } from "../../shared/types";
+import {
+	CURRENT_REVIEW,
+	postStates,
+	REVIEW_KEY,
+	type ReviewTarget,
+	reviewQuery,
+	sessionQuery,
+} from "../api";
 import { viewSaverFor } from "../home/viewSaver";
 import { unsent, useDrafts, useDraftsDurable } from "../threads/drafts";
 import { useThreadWrites } from "../threads/threadWrites";
@@ -39,21 +46,36 @@ export function stateSyncFor(queryClient: QueryClient): StateSync {
 		sync = new StateSync({
 			post: postStates,
 			stored: async (view) => {
-				await queryClient.cancelQueries({ queryKey: reviewQuery.queryKey });
-				queryClient.setQueryData(reviewQuery.queryKey, view);
-				// The first check-off starts patch set 1, which the session reports.
+				await queryClient.cancelQueries({ queryKey: REVIEW_KEY });
+				// The session's own review is the written snapshot's now (a
+				// first mark on a viewed head started its patch set); so is any
+				// other read of that snapshot (the viewed head's), at once.
+				queryClient.setQueryData(reviewQuery().queryKey, view);
+				queryClient.setQueriesData<ReviewView>(
+					{
+						queryKey: REVIEW_KEY,
+						predicate: (q) =>
+							(q.state.data as ReviewView | undefined)?.revision ===
+							view.revision,
+					},
+					view,
+				);
+				// The first check-off starts a patch set, which the session
+				// reports; the carries follow the marks.
 				void queryClient.invalidateQueries({
 					queryKey: sessionQuery.queryKey,
 				});
+				void queryClient.invalidateQueries({ queryKey: ["rereview"] });
 			},
 			staled: () => {
-				void queryClient.invalidateQueries({ queryKey: reviewQuery.queryKey });
+				void queryClient.invalidateQueries({ queryKey: REVIEW_KEY });
 				void queryClient.invalidateQueries({ queryKey: sessionQuery.queryKey });
 				void queryClient.invalidateQueries({ queryKey: ["hunks"] });
+				void queryClient.invalidateQueries({ queryKey: ["rereview"] });
 			},
 			// A batch may have been partly written: reread what the server has.
 			failed: () => {
-				void queryClient.invalidateQueries({ queryKey: reviewQuery.queryKey });
+				void queryClient.invalidateQueries({ queryKey: REVIEW_KEY });
 			},
 		});
 		syncs.set(queryClient, sync);
@@ -80,15 +102,20 @@ export function useSetStates() {
 	};
 }
 
-/** The review query, its data as the reviewer intends it (overlayReview). */
-export function useReviewView() {
-	const review = useQuery(reviewQuery);
+/**
+ * The review query of `target` (the session's own by default), its data as
+ * the reviewer intends it (overlayReview).
+ */
+export function useReviewView(target: ReviewTarget = CURRENT_REVIEW) {
+	const review = useQuery(reviewQuery(target));
 	const { pending } = useSyncState();
 	const data = useMemo(
 		() => review.data && overlayReview(review.data, pending),
 		[review.data, pending],
 	);
-	return { review, data };
+	// `raw` and `pending` for a caller that lays something of its own under
+	// the pending states (useSince).
+	return { review, data, raw: review.data, pending };
 }
 
 /**

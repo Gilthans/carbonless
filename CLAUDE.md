@@ -103,16 +103,23 @@ loading never looking empty, checking against a real PR):
   Otherwise set `CRB_NO_PHONE=1`, which drops the phone project from any
   Playwright run (`verify:fast`, `test:e2e`, `flake-check`). When unsure,
   include the phone.
-- Full test runs take turns: `pnpm verify`'s unit and e2e stages, `pnpm
-  test:e2e` without spec files, `-g` or `--last-failed`, an all-specs
-  `verify:fast` and `pnpm flake-check` wait for a machine-wide lock
-  (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock`),
-  printing whose run they wait for, so they never overload the machine (or
-  share a tree's `dist`) together. Waiting can take longer than a foreground
-  command may: run `pnpm verify` and an all-specs `verify:fast` in the
-  background (`run_in_background`); a signal ends the wait. A queued run
-  takes turns with the other full runs, so Playwright takes a worker per
-  core. `CRB_NO_QUEUE=1` skips the queue.
+- Test queue (for a machine shared by several agents): when
+  `~/.config/carbonless/queue.json` exists (`{"slots": 2}`), every Vitest and
+  Playwright run (`pnpm test`, `test:changed`, `test:e2e` with or without
+  spec files, `verify:fast`'s test steps, `pnpm verify`, `pnpm flake-check`)
+  waits for one of `slots` (default 1) machine-wide locks
+  (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock*`),
+  printing whose runs it waits for, so runs never overload the machine (or
+  share a tree's `dist`) together, and `vitest.config.ts`/`playwright.config.ts`
+  refuse a run outside it (`scripts/queue-guard.mjs`): use the package
+  scripts, or wrap a direct call as `node scripts/queue.mjs pnpm exec
+  playwright test ...`. The file is read on every run and while waiting: a
+  change applies at once, no restart. Interactive `pnpm test:watch` never
+  queues. Waiting can take longer than a foreground command may: run tests
+  in the background (`run_in_background`); a signal ends the wait. A run in
+  a slot gets the cores divided by `slots` as workers. `CRB_NO_QUEUE=1`
+  skips the queue for one command. No file (CI, a machine of one's own):
+  nothing queues.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
@@ -148,7 +155,7 @@ loading never looking empty, checking against a real PR):
   the review verdict: approve, comment, request changes, and Comment
   dismissing your own standing approval or change request):
   `docs/product-rules.md`, "Writing to GitHub".
-- Main on the devbox and branch instances: "Versions and instances" below.
+- The owner's main instance and branch instances: "Versions and instances" below.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
   (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. It is a bash shim that
   forwards each call to the test process's fake gh server (`fakeGhEnv()`
@@ -185,8 +192,10 @@ loading never looking empty, checking against a real PR):
   artifacts; `docs/test-profiling.md`).
 - If `nvm use` fails (e.g. in a sandbox), put `~/.nvm/versions/node/v24*/bin`
   first on `PATH`.
-- `pnpm compare-threads <pr> [--as-of <iso>] [--out <dir>]` checks every
-  thread's code pane against GitHub's REST comments (read-only); exits 1 on a mismatch.
+- `pnpm compare-threads <pr> [--as-of <iso>] [--placed-from <iso>] [--out <dir>]`
+  checks every thread's code pane against GitHub's REST comments (read-only);
+  exits 1 on a mismatch. `--placed-from` adds where re-review places each
+  thread of a first round against GitHub's `line` (listed, never failed).
 - Planned work and milestones live in Linear (see "Tickets" below).
   `docs/todo.md` is being retired: everything in it is already in Linear,
   so add nothing new there.
@@ -261,16 +270,12 @@ for them.
 ## Versions and instances
 
 The owner's main is the globally installed package (`carbonless-review`),
-run as `crb serve` by the systemd user service `crb.service` on port 4747,
-the owner's, with a stable key:
-`http://100.78.32.127:4747/?key=$(cat ~/.local/state/carbonless/key)`.
-It never runs a worktree's `dist`, and nothing else binds 4747. Setup:
-README, "Remote machine". Logs: `journalctl --user -u crb`. The owner's
-devbox moves main to `origin/master`'s newest build by itself, within ~5
-minutes of a merge, through local setup outside the repo
-(`~/.local/share/carbonless-devbox`, `crb-follow.timer`; logs: `journalctl
---user -u crb-follow`). To put another build on 4747 by hand, pause it
-first (`systemctl --user stop crb-follow.timer`) and start it again after.
+run as `crb serve` on port 4747 with a stable key, and it moves to
+`origin/master`'s newest build by itself within minutes of a merge. It
+never runs a worktree's `dist`, and nothing else binds 4747. Setup:
+README, "Remote machine". The owner's machine-specific details (address,
+service and timer names, logs, how to pause it) live in the untracked
+`CLAUDE.local.md`; never write them into tracked files.
 
 **Branch instance (ad hoc):** whenever a branch has something the owner
 should see before it reaches master: a coordinator's "ready" report, a fix
@@ -280,7 +285,7 @@ in the main checkout:
    `scripts/agent-worktree.sh` already have `.envrc`), then
    `source .envrc`. The port is fixed per branch, so its links survive
    restarts: a free one from 4748–4799 (`ss -ltn`), never 4747.
-2. `pnpm build`, then `nohup node dist/cli.js serve --host 100.78.32.127
+2. `pnpm build`, then `nohup node dist/cli.js serve --host "$(tailscale ip -4)"
    --port <port> > .crb-dev/serve.log 2>&1 &` and keep `$!`.
 3. `node dist/cli.js <pr>` prints the review's link; send that (Tailscale
    IP, with the key).
@@ -292,10 +297,9 @@ in the main checkout:
 **RC: every merge to master is a new RC** (the owner: merging a PR to main
 implies a new RC version). Changes reach master only as PRs ("How we
 work"). After one merges:
-1. Within ~5 minutes the follow timer builds `origin/master` and moves 4747
-   to it (`crb --version` shows the commit). If `journalctl --user -u
-   crb-follow` shows a failure, tell the owner what it says; don't install
-   by hand.
+1. Within minutes main moves to the new `origin/master` build (`crb
+   --version` shows the commit). If it fails (logs: `CLAUDE.local.md`),
+   tell the owner what it says; don't install by hand.
 2. Send the owner the link and what is new since the last build.
 3. Stop the instances of branches that just merged.
 

@@ -1,5 +1,15 @@
+import { availableParallelism } from "node:os";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
+import { queuedWorkers, requireQueue } from "./scripts/queue-guard.mjs";
+
+// Interactive watch mode (`pnpm test:watch` in a terminal) runs unqueued; a
+// one-shot run (`vitest run`, or any run without a TTY) takes its turn.
+const watching =
+	process.stdin.isTTY &&
+	!process.env.CI &&
+	!process.argv.some((a) => a === "run" || a === "--run");
+if (!watching) requireQueue("pnpm test [files...]");
 
 export default defineConfig({
 	plugins: [react()],
@@ -12,5 +22,7 @@ export default defineConfig({
 		// Components opt into a browser-like environment with a
 		// `// @vitest-environment jsdom` comment at the top of the file.
 		environment: "node",
+		// In the queue: the cores its slot gets (scripts/queue-guard.mjs).
+		maxWorkers: queuedWorkers(availableParallelism()),
 	},
 });
