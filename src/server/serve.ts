@@ -11,6 +11,7 @@ import {
 	rotateAccessKey,
 	writeServerState,
 } from "./serverState.js";
+import { updaterFor } from "./update/updater.js";
 import { BUILD } from "./version.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -43,6 +44,11 @@ export async function startServer(opts: {
 	newKey?: boolean;
 	/** Startup steps and config problems (crb serve: stderr). */
 	log?: (message: string) => void;
+	/**
+	 * Stops crb with this exit code (crb serve's shutdown), for an update's
+	 * restart; omitted, the server offers no updates.
+	 */
+	exit?: (code: number) => void;
 }): Promise<StartedServer> {
 	const log = opts.log ?? (() => {});
 	const { config, problems } = await readConfig();
@@ -70,7 +76,15 @@ export async function startServer(opts: {
 		config: configAccess(readConfig, updateConfig),
 	});
 	let url = "";
+	let actualPort = port;
+	const updater = updaterFor({
+		build: BUILD,
+		off: !opts.exit || !config.updates.check,
+		exit: (code) => opts.exit?.(code),
+		port: () => actualPort,
+	});
 	const app = await buildApp(registry, {
+		updater,
 		home,
 		accessKey: key,
 		loopback,
@@ -90,8 +104,7 @@ export async function startServer(opts: {
 	}
 	if (fresh) await rotateAccessKey(fresh);
 	const address = app.server.address();
-	const actualPort =
-		typeof address === "object" && address ? address.port : port;
+	actualPort = typeof address === "object" && address ? address.port : port;
 	setServerPort(actualPort);
 	const urlHost = host.includes(":") ? `[${host}]` : host;
 	url = `http://${urlHost}:${actualPort}`;
@@ -106,6 +119,9 @@ export async function startServer(opts: {
 		...(publicUrl ? { publicUrl } : {}),
 	});
 
+	// Asks npm in the background: never delays or fails a start.
+	void updater.start().catch(() => {});
+
 	let closed: Promise<void> | null = null;
 	return {
 		url,
@@ -113,6 +129,7 @@ export async function startServer(opts: {
 		publicUrl,
 		close: () => {
 			closed ??= (async () => {
+				updater.stop();
 				await removeServerState();
 				await app.close();
 				// Their background reads of GitHub and the clones stop with them.

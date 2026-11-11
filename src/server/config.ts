@@ -23,6 +23,8 @@ export interface CrbConfig {
 	refresh: { minutes: number };
 	/** The reviewer's own ACP agent (review buddy); null: off. */
 	agent: AgentConfig | null;
+	/** `check: false`: never ask npm for a newer crb (no update toast). */
+	updates: { check: boolean };
 }
 
 /** The config as read, and what was bad in the file and replaced by a default. */
@@ -36,6 +38,7 @@ export const DEFAULT_CONFIG: CrbConfig = Object.freeze({
 	views: Object.freeze([]) as unknown as ViewConfig[],
 	refresh: Object.freeze({ minutes: 2 }),
 	agent: null,
+	updates: Object.freeze({ check: true }),
 }) as CrbConfig;
 
 const DEFAULT_VIEW = "My PRs";
@@ -184,7 +187,17 @@ function validate(raw: Json | null): ConfigRead {
 		}
 	}
 	const agent = validateAgent(raw?.agent, problems);
-	return { config: { serve, views, refresh, agent }, problems };
+	const updates = { ...d.updates };
+	if (raw?.updates !== undefined) {
+		const check = isObject(raw.updates) ? raw.updates.check : undefined;
+		if (!isObject(raw.updates)) {
+			problems.push("updates must be an object; using the defaults");
+		} else if (check !== undefined) {
+			if (typeof check === "boolean") updates.check = check;
+			else problems.push("updates.check must be true or false; using true");
+		}
+	}
+	return { config: { serve, views, refresh, agent, updates }, problems };
 }
 
 /** The agent section: null when absent, null, or without a usable command. */
@@ -276,6 +289,7 @@ export function updateConfig(
 			views: c.views.map((v) => ({ ...rawOf(v.name), ...v })),
 			refresh: { ...keep(raw?.refresh), ...c.refresh },
 			agent: c.agent === null ? null : { ...keep(raw?.agent), ...c.agent },
+			updates: { ...keep(raw?.updates), ...c.updates },
 		};
 		await writeFileAtomic(configFile(), `${JSON.stringify(out, null, "\t")}\n`);
 		return c;
