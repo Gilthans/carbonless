@@ -33,6 +33,7 @@ import { detectService, type Service } from "./service.js";
 import {
 	HELPER_DIR_PREFIX,
 	type HelperConfig,
+	relaunchedPidFile,
 	runCommand,
 	tailOf,
 	type UpdateResult,
@@ -210,6 +211,7 @@ export class Updater {
 			return;
 		}
 		await rm(this.#resultFile, { force: true });
+		await rm(relaunchedPidFile(this.#resultFile), { force: true });
 		try {
 			const r = JSON.parse(text) as Partial<UpdateResult>;
 			if (typeof r.version !== "string" || typeof r.command !== "string") {

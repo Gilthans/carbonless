@@ -64,6 +64,51 @@ describe("newerOnRegistry", () => {
 		).toBe("0.3.0");
 	});
 
+	it("rc takes latest when it is newer (a fix released without moving rc)", async () => {
+		expect(
+			(await check("0.3.0-rc.2", { tags: { latest: "0.3.1", rc: "0.3.0" } }))
+				.newer,
+		).toBe("0.3.1");
+		expect(
+			(
+				await check("0.3.0-rc.2", {
+					tags: { latest: "0.2.0", rc: "0.3.0-rc.3" },
+				})
+			).newer,
+		).toBe("0.3.0-rc.3");
+		// latest never takes rc.
+		expect(
+			(await check("0.3.0", { tags: { latest: "0.3.0", rc: "0.4.0-rc.1" } }))
+				.newer,
+		).toBe(null);
+	});
+
+	it("an answer past 64 KB is dropped as it streams (no content-length)", async () => {
+		let sent = 0;
+		const server = createServer((_req, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			const chunk = "x".repeat(16 * 1024);
+			const more = () => {
+				// Without a cap the body would never end (crb buffering it all).
+				while (res.write(chunk)) sent += chunk.length;
+				res.once("drain", more);
+			};
+			res.write('{"latest":"9.9.9","pad":"');
+			more();
+		});
+		servers.push(server);
+		await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+		const { port } = server.address() as AddressInfo;
+		expect(
+			await newerOnRegistry("0.1.0", {
+				registry: `http://127.0.0.1:${port}`,
+				timeoutMs: 20_000,
+			}),
+		).toBe(null);
+		server.closeAllConnections();
+		expect(sent).toBeGreaterThan(0);
+	});
+
 	it("an explicit channel: a release kept on rc", async () => {
 		const r = await fakeRegistry({
 			tags: { latest: "0.3.0", rc: "0.4.0-rc.1" },

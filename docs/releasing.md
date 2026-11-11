@@ -280,7 +280,8 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
     `update-channel` in its state dir. From then on it follows `rc`, also
     once `rc` has moved onto a release `X.Y.Z` and it runs that release:
     it is offered `X.Y.Z+1-rc.N` as they come out, never pushed onto
-    `latest`.
+    `latest`. It is also offered `latest` when that is newer than `rc` (a
+    fix released without moving `rc`), and stays on `rc` after it.
   - A crb that never ran a prerelease follows `latest`.
   - `"updates": { "channel": "rc" | "latest" }` in config.json wins over
     both. Set `"rc"` for an install made from `@rc` while `rc` pointed at
@@ -354,9 +355,43 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
     command.
   - A failed install leaves crb running and shows the output. The unit's
     `PATH` must reach the package manager.
-  - An rc install under systemd, `Restart=on-failure` (a devbox's
-    `crb.service`): installs the new RC with the unit's npm or pnpm, exits
-    75, systemd starts the new version; the channel file keeps it on `rc`.
+  - ExecStart must run the `crb` shim (`$PNPM_HOME/bin/crb`, npm's
+    `<prefix>/bin/crb`), never a versioned `.../cli.js`: pnpm puts each
+    version in a new directory and rewrites the shim, so a unit pointing at
+    the old `cli.js` would restart the old version (and be offered the same
+    update again). The shims `exec` node, so crb stays the unit's main
+    process.
+  - An rc install under systemd (`crb.service`, `Restart=on-failure`):
+    installs the new RC with the install's own npm or pnpm, exits 75, and
+    systemd starts the new version; the channel keeps it on `rc`. Example,
+    a user unit after `pnpm add -g carbonless-review@rc
+    --config.minimumReleaseAgeExclude=carbonless-review`:
+
+    ```ini
+    # ~/.config/systemd/user/crb.service
+    [Unit]
+    Description=carbonless review server (crb serve)
+    StartLimitIntervalSec=0
+
+    [Service]
+    Type=simple
+    # Node 24's bin dir (yours) and the pnpm bin dir: crb's shim runs
+    # node, and the update runs pnpm.
+    Environment="PATH=/path/to/node-24/bin:%h/.local/share/pnpm/bin:/usr/bin:/bin"
+    ExecStart=%h/.local/share/pnpm/bin/crb serve
+    Restart=on-failure
+    RestartSec=5
+
+    [Install]
+    WantedBy=default.target
+    ```
+
+    and in `~/.config/carbonless/config.json` (rc for good, even when the
+    first version installed from `@rc` is a release):
+
+    ```json
+    { "updates": { "channel": "rc" } }
+    ```
 
 ## Setup (the owner)
 

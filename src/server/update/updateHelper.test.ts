@@ -190,6 +190,10 @@ describe("update helper", () => {
 			() => readFileSync(join(dir, "serve.log"), "utf8").includes("listening"),
 			"crb's output",
 		);
+		// Its pid, for whoever must stop it before it writes server.json.
+		expect(
+			Number(readFileSync(join(dir, "update-relaunched.pid"), "utf8")),
+		).toBeGreaterThan(0);
 		// crb's key line goes to serve.log, never update.log.
 		const log = readFileSync(c.log, "utf8");
 		expect(log).toContain("running pnpm add -g carbonless-review@0.3.0");

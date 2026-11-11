@@ -149,6 +149,14 @@ async function fakeRegistry(
 	};
 }
 
+/** The crb the helper started, as it recorded it. */
+function relaunchedPid(workdir: string): number | null {
+	const file = join(workdir, "state", "carbonless", "update-relaunched.pid");
+	if (!existsSync(file)) return null;
+	const pid = Number(readFileSync(file, "utf8"));
+	return pid > 0 ? pid : null;
+}
+
 /** The crb the helper started again (server.json), stopped at the end. */
 function serverPid(workdir: string): number | null {
 	const file = join(workdir, "state", "carbonless", "server.json");
@@ -201,9 +209,19 @@ const it = test.extend<{
 		) {
 			await new Promise((r) => setTimeout(r, 100));
 		}
-		// The crb a helper started (after an update, or a failed one).
-		const pid = serverPid(workdir);
-		if (pid !== null) {
+		// The crb a helper started (after an update, or a failed one): its
+		// pid as the helper recorded it (written before crb listens), and
+		// server.json's.
+		for (const pid of new Set([relaunchedPid(workdir), serverPid(workdir)])) {
+			if (pid === null) continue;
+			// Only this test's crb (a pid can be reused once it is gone).
+			let cmdline = "";
+			try {
+				cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+			} catch {
+				continue;
+			}
+			if (!cmdline.includes(join(workdir, "npm-prefix"))) continue;
 			try {
 				process.kill(pid, "SIGTERM");
 				const gone = Date.now() + 10_000;

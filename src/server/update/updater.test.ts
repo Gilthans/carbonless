@@ -222,6 +222,7 @@ describe("Updater", () => {
 						"/home/me/.npm-global",
 						"carbonless-review@0.3.0",
 					],
+					env: { PATH: "/usr/bin:/bin" },
 				},
 				display: "npm install -g carbonless-review@0.3.0",
 				relaunch: {
@@ -273,7 +274,7 @@ describe("Updater", () => {
 				"carbonless-review@0.3.0",
 				"--config.minimumReleaseAgeExclude=carbonless-review",
 			],
-			env: { PNPM_HOME: home, Path: `${home};C:\\bin` },
+			env: { PNPM_HOME: home, Path: `${home};C:\\node;C:\\bin` },
 		});
 		expect(helpers[0]?.relaunch).toMatchObject({
 			execPath: "C:\\node\\node.exe",

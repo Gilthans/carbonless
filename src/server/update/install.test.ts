@@ -1,6 +1,9 @@
+import { chmodSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	canWrite,
 	detectInstall,
 	installCommand,
 	isFromNpm,
@@ -168,6 +171,24 @@ describe("detectInstall", () => {
 	});
 });
 
+describe("canWrite", () => {
+	it("makes and removes a probe file: a dir it can't write is no", () => {
+		const dir = mkdtempSync(join(tmpdir(), "crb-canwrite-"));
+		try {
+			expect(canWrite(dir)).toBe(true);
+			expect(readdirSync(dir)).toEqual([]);
+			expect(canWrite(join(dir, "missing"))).toBe(false);
+			if (process.platform !== "win32" && process.getuid?.() !== 0) {
+				chmodSync(dir, 0o500);
+				expect(canWrite(dir)).toBe(false);
+				chmodSync(dir, 0o700);
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("commands", () => {
 	const NPM = {
 		pm: "npm" as const,
@@ -188,6 +209,7 @@ describe("commands", () => {
 				platform: "linux",
 				execPath: "/home/me/.nvm/versions/node/v24.1.0/bin/node",
 				exists: (f) => f === "/home/me/.nvm/versions/node/v24.1.0/bin/npm",
+				env: { PATH: "/usr/bin" },
 			}),
 		).toEqual({
 			command: "/home/me/.nvm/versions/node/v24.1.0/bin/npm",
@@ -198,6 +220,9 @@ describe("commands", () => {
 				"/home/me/.nvm/versions/node/v24.1.0",
 				"carbonless-review@0.3.0",
 			],
+			// Its shim runs `env node`: this node first on PATH (a service's
+			// PATH may have none).
+			env: { PATH: "/home/me/.nvm/versions/node/v24.1.0/bin:/usr/bin" },
 		});
 		// None beside node: PATH's, still into the prefix; Windows: npm.cmd.
 		expect(
@@ -213,6 +238,7 @@ describe("commands", () => {
 		expect(
 			installCommand(PNPM, "0.3.0-rc.2", {
 				platform: "linux",
+				execPath: "/opt/node/bin/node",
 				exists: (f) =>
 					f === "/home/me/.local/share/pnpm/bin" ||
 					f === "/home/me/.local/share/pnpm/bin/pnpm",
@@ -228,19 +254,20 @@ describe("commands", () => {
 			],
 			env: {
 				PNPM_HOME: "/home/me/.local/share/pnpm",
-				PATH: "/home/me/.local/share/pnpm/bin:/usr/bin",
+				PATH: "/home/me/.local/share/pnpm/bin:/opt/node/bin:/usr/bin",
 			},
 		});
 		// Windows spells it Path; no pnpm in PNPM_HOME: PATH's pnpm.cmd.
 		const win = installCommand({ pm: "pnpm", home: "C:\\pnpm" }, "0.3.0", {
 			platform: "win32",
+			execPath: "C:\\node\\node.exe",
 			exists: () => false,
 			env: { Path: "C:\\bin" },
 		});
 		expect(win.command).toBe("pnpm.cmd");
 		expect(win.env).toEqual({
 			PNPM_HOME: "C:\\pnpm",
-			Path: "C:\\pnpm;C:\\bin",
+			Path: "C:\\pnpm;C:\\node;C:\\bin",
 		});
 	});
 

@@ -81,6 +81,10 @@ const PACKAGE = "carbonless-review";
 const LOG_LIMIT = 1024 * 1024;
 const PRIVATE = 0o600;
 
+/** The pid of the crb the helper started, beside the result file. */
+export const relaunchedPidFile = (result: string) =>
+	join(dirname(result), "update-relaunched.pid");
+
 /** The temp dirs crb copies the helper into (`crb-update-XXXXXX`). */
 export const HELPER_DIR_PREFIX = "crb-update-";
 
@@ -303,6 +307,17 @@ export async function runHelper(config: HelperConfig): Promise<UpdateResult> {
 				stamp(`could not start crb: ${error.message}`),
 			);
 			child.unref();
+			// Where whoever stops this crb finds it before it writes
+			// server.json (a test's teardown).
+			if (child.pid) {
+				try {
+					writeFileSync(relaunchedPidFile(config.result), `${child.pid}\n`, {
+						mode: PRIVATE,
+					});
+				} catch {
+					// Only a convenience.
+				}
+			}
 			// An error event comes after spawn returns.
 			await new Promise((done) => setTimeout(done, 200));
 		} catch (error) {

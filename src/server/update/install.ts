@@ -1,4 +1,5 @@
-import { accessSync, constants, existsSync, readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { BuildInfo } from "../version.js";
 import { PACKAGE } from "./registry.js";
@@ -65,14 +66,27 @@ export interface DetectOptions {
 	writable?: (dir: string) => boolean;
 }
 
-const canWrite = (dir: string): boolean => {
+/**
+ * Whether crb can write in `dir`: a probe file made and removed (access()
+ * ignores Windows' ACLs, so `C:\\Program Files` would pass it).
+ */
+export function canWrite(dir: string): boolean {
+	const probe = path.join(
+		dir,
+		`.crb-write-probe-${process.pid}-${randomBytes(4).toString("hex")}`,
+	);
 	try {
-		accessSync(dir, constants.W_OK);
-		return true;
+		writeFileSync(probe, "", { flag: "wx" });
 	} catch {
 		return false;
 	}
-};
+	try {
+		unlinkSync(probe);
+	} catch {
+		// Written is what was asked; a probe left behind is harmless.
+	}
+	return true;
+}
 
 /**
  * The package manager that installed the package at `root` (a real path:
@@ -172,10 +186,12 @@ export function installCommand(
 	const p = platform === "win32" ? path.win32 : path.posix;
 	const exists = opts.exists ?? existsSync;
 	const ext = platform === "win32" ? ".cmd" : "";
+	const node = opts.execPath ?? process.execPath;
+	const env = opts.env ?? process.env;
+	const key = pathKey(env);
 	const first = (candidates: string[], fallback: string) =>
 		candidates.find(exists) ?? fallback;
 	if (install.pm === "npm") {
-		const node = opts.execPath ?? process.execPath;
 		const own =
 			platform === "win32"
 				? p.join(install.home, "npm.cmd")
@@ -183,13 +199,16 @@ export function installCommand(
 		return {
 			command: first([own, p.join(p.dirname(node), `npm${ext}`)], `npm${ext}`),
 			args: ["install", "-g", "--prefix", install.home, spec(version)],
+			// npm's shim runs `env node`: this node, whatever PATH the
+			// service has.
+			env: {
+				[key]: [p.dirname(node), env[key]].filter(Boolean).join(p.delimiter),
+			},
 		};
 	}
 	const bin = exists(p.join(install.home, "bin"))
 		? p.join(install.home, "bin")
 		: install.home;
-	const env = opts.env ?? process.env;
-	const key = pathKey(env);
 	return {
 		command: first(
 			[
@@ -206,7 +225,8 @@ export function installCommand(
 		],
 		env: {
 			PNPM_HOME: install.home,
-			[key]: [bin, env[key]].filter(Boolean).join(p.delimiter),
+			// pnpm's shim runs `node` unless one sits beside it: this node.
+			[key]: [bin, p.dirname(node), env[key]].filter(Boolean).join(p.delimiter),
 		},
 	};
 }
