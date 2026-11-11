@@ -16,7 +16,7 @@ and the reviewer's corrections) should live in git, not in loose JSON files:
 - Its identity survives rebases and force-pushes of the PR branch.
 
 This replaces the JSON-file storage first proposed in
-`2026-10-21-pr-review-parity-design.md`. The cluster concept, cluster identity,
+the PR review parity spec (Linear, M2 project documents). The cluster concept, cluster identity,
 cluster states and the coverage invariant from that spec are used here as
 defined there.
 
