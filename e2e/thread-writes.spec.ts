@@ -325,8 +325,10 @@ for (const view of ["unified", "side-by-side"] as const) {
 			name: "Resolve",
 			exact: true,
 		});
-		// Measured once the click's own scroll (into view) is done.
-		await resolve.scrollIntoViewIfNeeded();
+		// Measured once the click's own scroll is done: Resolve mid-screen,
+		// clear of the phone's floating Files button (else the click scrolls
+		// again to reach it, after the measure).
+		await resolve.evaluate((el) => el.scrollIntoView({ block: "center" }));
 		const top = (await bubble.boundingBox())?.y ?? Number.NaN;
 		await resolve.click();
 		await expect(thread).toHaveCount(0);

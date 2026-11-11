@@ -60,14 +60,19 @@ ownTest(
 
 		const s = await startCrb(undefined, ["--head", "reviewed"]);
 		await page.goto(s.url);
-		// The banner, not a section's loading spinner (also a status).
-		const banner = page.getByRole("status").filter({ hasText: "Viewing" });
-		await expect(banner).toHaveText(
-			`Viewing ${then.slice(0, 7)}; this PR has newer commits.`,
-		);
-		await expect(banner).not.toContainText("Refresh");
+		await expect(
+			page.getByRole("region", { name: "What it does" }),
+		).toBeVisible();
+		// A pinned head never moves: no toast about newer commits.
+		await expect(page.getByTestId("head-toast")).toHaveCount(0);
 
 		await openFiles(page, s.url);
+		// Nor a head dot in the graph: the slot says the view is pinned.
+		await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+			"data-state",
+			"none",
+		);
+		await expect(page.getByTestId("ps-tail")).toHaveText("pinned");
 		const files = page.locator('[data-page="/files"]');
 		await expect(fileSection(page, "new.txt")).toBeVisible();
 		await expect(fileSection(page, "a.txt")).toBeVisible();

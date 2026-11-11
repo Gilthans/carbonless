@@ -121,10 +121,24 @@ export function matchesKeys(keys: string, e: KeyboardEvent): boolean {
 		if (e.key.toLowerCase() === key) return true;
 		return !/^[\x20-\x7e]$/.test(e.key) && e.code === `Key${key.toUpperCase()}`;
 	}
+	// A bracket is named with or without Shift ("Ctrl+Shift+["): with it, a
+	// US layout prints "{", so the physical key decides.
+	const code = SHIFTABLE[key];
+	if (code) {
+		return (
+			e.shiftKey === mods.has("Shift") && (e.key === key || e.code === code)
+		);
+	}
 	// Any other printed character carries its own Shift ("?").
 	if (key.length === 1) return e.key === key;
 	return e.shiftKey === mods.has("Shift") && e.key === key;
 }
+
+/** Keys a shortcut may name with Shift: their physical key (`e.code`). */
+const SHIFTABLE: Record<string, string> = {
+	"[": "BracketLeft",
+	"]": "BracketRight",
+};
 
 const TEXT_INPUTS = new Set([
 	"text",

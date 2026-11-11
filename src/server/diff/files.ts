@@ -108,10 +108,16 @@ function parseNumstat(output: string): NumstatEntry[] {
 	return entries;
 }
 
+/**
+ * The files changed between `base` and `head` (commits or trees), in raw
+ * diff order; `paths` limits the diff to those paths (a pathspec after
+ * `--`: renames are detected among them only).
+ */
 export async function listChangedFiles(
 	repo: string,
 	base: string,
 	head: string,
+	paths: string[] = [],
 ): Promise<ChangedFile[]> {
 	const [raw, numstat] = await Promise.all([
 		runGit(repo, [
@@ -122,8 +128,9 @@ export async function listChangedFiles(
 			base,
 			head,
 			"--",
+			...paths,
 		]),
-		runGit(repo, [...DIFF_ARGS, "--numstat", "-z", base, head, "--"]),
+		runGit(repo, [...DIFF_ARGS, "--numstat", "-z", base, head, "--", ...paths]),
 	]);
 	const rawEntries = parseRaw(raw);
 	const stats = parseNumstat(numstat);

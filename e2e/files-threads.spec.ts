@@ -62,7 +62,8 @@ const UTIL = "src/util.ts";
  * range over new 5–6; LEFT on the deleted old 15; a resolved one on new 8;
  * one in the collapsed tail (new 40) and a LEFT one there (old 50); a file
  * comment on util.ts; one whose line isn't in the file; one on a line of the
- * binary src/zz.bin; and one on the older commit (not shown).
+ * binary src/zz.bin; and one on the older commit's line 9 (placed on the
+ * head's line 9 once the placements are in: core.ts is the same there).
  */
 function threads(head: string, older: string) {
 	const on = (commit: string) => ({ commit, diffHunk: "" });
@@ -110,7 +111,7 @@ function threads(head: string, older: string) {
 		reviewThread({ path: CORE, line: 500, subjectType: "LINE" }, [
 			threadComment({ login: "rev1", text: "Past the end", ...on(head) }),
 		]),
-		reviewThread({ path: CORE, line: 16, subjectType: "LINE" }, [
+		reviewThread({ path: CORE, line: 9, subjectType: "LINE" }, [
 			threadComment({ login: "rev3", text: "From before", ...on(older) }),
 		]),
 		reviewThread(
@@ -139,9 +140,15 @@ async function setup(
 	return p;
 }
 
-async function expand(page: Page, path: string) {
+async function expand(page: Page, path: string, placed = true) {
 	const section = fileSection(page, path);
 	await section.getByRole("button", { name: "Expand file" }).click();
+	// core.ts's thread past its end is listed under the header once the
+	// placements are in: wait for them, so nothing moves under a test's
+	// measurements afterwards.
+	if (path === CORE && placed) {
+		await expect(section.getByTestId("unplaced-threads")).toBeVisible();
+	}
 	return section;
 }
 
@@ -286,7 +293,7 @@ test("opening the bubble shows every comment, closing keeps the scroll position"
 	expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeLessThanOrEqual(1);
 });
 
-test("a thread on an older commit is not shown", async ({
+test("a thread on an older commit shows on its traced line once placed", async ({
 	page,
 	pr,
 	startCrb,
@@ -295,16 +302,19 @@ test("a thread on an older commit is not shown", async ({
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const section = await expand(page, CORE);
-	// Rows 16, 6, old 15 and 8; the gap's; the header's unplaced one.
-	await expect(bubbles(section)).toHaveCount(6);
-	await expect(
-		row(section, "new", 16).getByRole("button", {
-			name: "2 comments on line 16, your turn",
-		}),
-	).toBeVisible();
-	await openAll(section);
-	await expect(section.getByTestId("thread-comment").first()).toBeVisible();
-	await expect(section).not.toContainText("From before");
+	// core.ts's line 9 is the same on both commits: the older thread is
+	// placed there, as it is, with no chip.
+	const bubble = row(section, "new", 9).getByRole("button", {
+		name: "1 comment on line 9",
+	});
+	await expect(bubble).toBeVisible();
+	await bubble.click();
+	const card = section
+		.getByTestId("files-thread")
+		.filter({ hasText: "From before" });
+	await expect(card).toBeVisible();
+	await expect(card.getByTestId("placement-changed")).toHaveCount(0);
+	await expect(card.getByTestId("placement-fate")).toHaveCount(0);
 });
 
 test("file comment opens from the file header into the file bubble; a line not in the diff is flagged there", async ({
@@ -332,19 +342,17 @@ test("file comment opens from the file header into the file bubble; a line not i
 	await expect(
 		util.getByRole("button", { name: "1 comment on this file" }),
 	).toHaveAttribute("aria-expanded", "true");
-	// The line past the file's end: in core.ts's file bubble, flagged.
+	// The line past the file's end: listed under core.ts's header, never
+	// placed (it can't be traced), its thread a tap away.
 	const core = await expand(page, CORE);
-	const flagged = core.locator("table").getByRole("button", {
-		name: "1 comment on this file, line not in this diff",
-	});
-	await expect(flagged).toBeVisible();
-	await flagged.click();
-	await expect(core.getByTestId("thread-comment")).toContainText(
-		"Past the end",
+	const past = core
+		.getByTestId("unplaced-thread")
+		.filter({ hasText: "Past the end" });
+	await expect(past).toHaveAttribute("data-fate", "rewritten");
+	await expect(past.getByTestId("unplaced-fate")).toHaveText(
+		"Commented line has been rewritten since the review",
 	);
-	await expect(
-		core.getByRole("img", { name: "Line not in this diff" }),
-	).toBeVisible();
+	await expect(past.getByTestId("thread-body")).toContainText("Past the end");
 	const shots = process.env.DESIGN_SHOTS;
 	if (shots) {
 		await core.locator("header").scrollIntoViewIfNeeded();
@@ -459,7 +467,7 @@ test("threads loading: spinners in the bar and on the file, never no comments", 
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const bar = page.locator("[data-page-bar]");
-	const core = await expand(page, CORE);
+	const core = await expand(page, CORE, false);
 	const util = fileSection(page, UTIL);
 	// The open file's bubble spins rather than offering a first comment.
 	await expectLoadingThen({
@@ -629,9 +637,7 @@ test("the open file's comments are read first", async ({
 	const ids = asked.flat();
 	// T<n>-5 is util.ts's file comment.
 	expect(ids[0]).toBe(`T${p.number}-5`);
-	// The older commit's thread isn't in Files changed.
 	await expect.poll(() => asked.flat()).toContain(`T${p.number}-0`);
-	expect(asked.flat()).not.toContain(`T${p.number}-7`);
 });
 
 test("a commented range is marked on added rows too, unlike a landed line", async ({
@@ -721,7 +727,7 @@ test("a folded folder shows a yellow dot when a thread inside waits on you", asy
 			tree
 				.getByRole("button", { name: /core\.ts/ })
 				.getByTestId("tree-threads"),
-		).toHaveText("9 comments in this file, your turn");
+		).toHaveText("10 comments in this file, your turn");
 	});
 });
 
@@ -738,12 +744,13 @@ test("a closed file counts its threads; a binary file's line thread is flagged b
 		if (/\/api\/files\/\d+\/hunks/.test(r.url())) hunkReads.push(r.url());
 	});
 	await openFiles(page, s.url);
-	// core.ts, closed: its 7 threads (9 comments) on the head, the viewer's
-	// turn on one. Its hunks aren't read while closed, so the line past its
-	// end is flagged once it opens; a binary file's is flagged at once.
+	// core.ts, closed: its 8 threads (10 comments, the older commit's
+	// placed on the head too), the viewer's turn on one, and flagged: the
+	// line past its end can't be placed. A binary file's line thread is
+	// flagged too. No hunks are read for either.
 	const core = fileSection(page, CORE);
 	const count = core.locator("header").getByRole("button", {
-		name: "9 comments in this file, your turn",
+		name: "10 comments in this file, your turn, line not in this diff",
 	});
 	await expect(count).toBeVisible();
 	await expect(count.getByTestId("your-turn-dot")).toBeVisible();
@@ -761,7 +768,7 @@ test("a closed file counts its threads; a binary file's line thread is flagged b
 			tree
 				.getByRole("button", { name: /core\.ts/ })
 				.getByTestId("tree-threads"),
-		).toHaveText("9 comments in this file, your turn");
+		).toHaveText("10 comments in this file, your turn");
 		await expect(
 			tree
 				.getByRole("button", { name: /util\.ts/ })
@@ -775,7 +782,7 @@ test("a closed file counts its threads; a binary file's line thread is flagged b
 			.getByTestId("tree-threads")
 			.hover();
 		await expect(page.locator('[role="tooltip"]:not([hidden])')).toContainText(
-			"9 comments in this file, your turn",
+			"10 comments in this file, your turn",
 		);
 		const shots = process.env.DESIGN_SHOTS;
 		if (shots && !isMobile) {

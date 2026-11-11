@@ -92,7 +92,7 @@ function within<T>(run: Promise<T | null>, ms: number): Promise<T | null> {
 const isZeroOid = (oid: string) => /^0+$/.test(oid);
 
 /** Reads blobs by OID with one `git cat-file --batch` for all cache misses. */
-async function readBlobs(
+export async function readBlobs(
 	repo: string,
 	oids: string[],
 ): Promise<Map<string, Buffer>> {
@@ -143,14 +143,14 @@ async function resolveBlobs(repo: string, names: string[]): Promise<string[]> {
 }
 
 /** Old and new text of a file, decoded the same way on both sides. */
-interface FileText {
+export interface FileText {
 	encoding: TextEncoding;
 	oldLines: string[];
 	newLines: string[];
 	noNewlineAtEnd: boolean;
 }
 
-function fileText(oldBytes: Buffer, newBytes: Buffer): FileText {
+export function fileText(oldBytes: Buffer, newBytes: Buffer): FileText {
 	const encoding = chooseEncoding(oldBytes, newBytes);
 	const after = decodeLines(newBytes, encoding);
 	return {
@@ -224,10 +224,12 @@ export async function buildSnapshot(
 			clusters: clusters.map((c, i) => ({ ...c, key: keys[i] as string })),
 		};
 	});
-	const revision = createHash("sha256")
-		.update(`${base}\0${head}`)
-		.digest("hex");
-	return { base, head, revision, files };
+	return { base, head, revision: snapshotId(base, head), files };
+}
+
+/** The snapshot id of the comparison `base` → `head` (`Snapshot.revision`). */
+export function snapshotId(base: string, head: string): string {
+	return createHash("sha256").update(`${base}\0${head}`).digest("hex");
 }
 
 function fileAt(snapshot: Snapshot, index: number): FileSummary {
@@ -292,6 +294,25 @@ export async function loadFileHunks(
 			: hunks,
 		newLineCount: text.newLines.length,
 	};
+}
+
+/**
+ * The new side's lines of one file of the snapshot (none for a binary, a
+ * submodule or a deleted file): the since view's text of a file the
+ * interdiff doesn't touch, the same on both sides.
+ */
+export async function loadNewText(
+	repo: string,
+	snapshot: Snapshot,
+	index: number,
+): Promise<FileText> {
+	const file = fileAt(snapshot, index);
+	if (file.binary || file.submodule || file.status === "deleted") {
+		return fileText(EMPTY, EMPTY);
+	}
+	const [oid] = await resolveBlobs(repo, [`${snapshot.head}:${file.path}`]);
+	const blobs = await readBlobs(repo, oid ? [oid] : []);
+	return fileText(EMPTY, (oid && blobs.get(oid)) || EMPTY);
 }
 
 /**

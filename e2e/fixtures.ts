@@ -10,6 +10,14 @@ import {
 } from "@playwright/test";
 import { traceparent, tracer } from "../src/server/trace";
 import type { GitFixture } from "../test/git-fixture";
+import {
+	collectUnits,
+	isolationProblems,
+	statesOf,
+	type UnitReport,
+	type UnitState,
+	unitProblems,
+} from "../test/markable";
 import { testSpanContext } from "../test/trace-run";
 import { type CrbClient, openOverHttp } from "./crb-open";
 import {
@@ -480,6 +488,144 @@ export async function expectLoadingThen(opts: {
 		timeout: opts.timeout ?? 15_000,
 	});
 	await expect(opts.loading).toHaveCount(0);
+}
+
+/**
+ * The "every visible cluster is individually markable" invariant on a live
+ * page (docs/product-rules.md; the units as test/markable.ts reads them):
+ * every unit in `scope` (a file's section) has its own enabled reviewed
+ * checkbox and cross-off; ticking, unticking, crossing off and undoing each
+ * one changes that unit alone; the states left are there again after a
+ * reload (`reopen` opens the file again). `cycle: "tick"` only ticks and
+ * unticks each unit (fewer writes, for the repeat runs of a file).
+ * `readOnly`: an earlier patch set: every control is locked and the
+ * read-only chip shows.
+ */
+export async function expectEveryUnitMarkable(
+	scope: Locator,
+	opts: {
+		readOnly?: boolean;
+		cycle?: "full" | "tick";
+		reopen?: () => Promise<void>;
+	} = {},
+): Promise<void> {
+	const page = scope.page();
+	const units = await scope.evaluate(collectUnits);
+	expect(units.length, "the file shows no unit").toBeGreaterThan(0);
+	expect(unitProblems(units, opts)).toEqual([]);
+	await expectDisabledSayWhy(scope);
+	if (opts.readOnly) {
+		await expect(page.getByTestId("read-only-note")).toBeVisible();
+		return;
+	}
+	const states = async () => statesOf(await scope.evaluate(collectUnits));
+	const use = async (i: number, control: "box" | "cross", want: UnitState) => {
+		const now = await scope.evaluate(collectUnits);
+		const before = statesOf(now);
+		const unit = now[i];
+		if (!unit) throw new Error(`no unit ${i}`);
+		await unitBody(scope, unit)
+			.locator(
+				control === "box"
+					? 'input[type="checkbox"]'
+					: 'button[aria-label="Cross off cluster"]',
+			)
+			.first()
+			.click();
+		// A mark that finished the file closed it (the page moved on): open
+		// it again to read its units.
+		const expandFile = scope.getByRole("button", { name: "Expand file" });
+		if (await expandFile.isVisible()) {
+			// Its rows are new: collectUnits finds them again (states()).
+			// The move-on may still be landing: open it until it stays open.
+			await expect(async () => {
+				if (await expandFile.isVisible()) await expandFile.click();
+				await expect(
+					scope.locator('input[type="checkbox"]').first(),
+				).toBeVisible({ timeout: 1_000 });
+			}).toPass();
+		}
+		await expect
+			.poll(async () =>
+				isolationProblems(i, before, await states(), want).join("\n"),
+			)
+			.toBe("");
+		// In its new state too, every control is there, live or saying why.
+		expect(unitProblems(await scope.evaluate(collectUnits))).toEqual([]);
+		await expectDisabledSayWhy(scope, i);
+	};
+	for (const u of units) {
+		const now = (await states())[u.index];
+		if (now === "reviewed") {
+			await use(u.index, "box", "unreviewed");
+			await use(u.index, "box", "reviewed");
+		} else if (now === "mixed") {
+			// Partly reviewed: the box marks the whole unit, then unmarks it.
+			await use(u.index, "box", "reviewed");
+			await use(u.index, "box", "unreviewed");
+		} else if (now === "crossed-off") {
+			await use(u.index, "box", "unreviewed");
+			await use(u.index, "cross", "crossed-off");
+		} else {
+			await use(u.index, "box", "reviewed");
+			await use(u.index, "box", "unreviewed");
+			if (opts.cycle !== "tick") {
+				await use(u.index, "cross", "crossed-off");
+				await use(u.index, "box", "unreviewed");
+			}
+		}
+	}
+	if (!opts.reopen) return;
+	// Every other unit ticked, then a reload: each keeps its own state.
+	for (const u of units) {
+		if (u.index % 2 === 0 && (await states())[u.index] === "unreviewed") {
+			await use(u.index, "box", "reviewed");
+		}
+	}
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	const left = await states();
+	await page.reload();
+	await opts.reopen();
+	await expect.poll(states).toEqual(left);
+}
+
+/**
+ * A unit's `<tbody>` as a locator, by its place among `scope`'s tbodies
+ * (collectUnits only reads the page: there is no attribute to select it
+ * by, since a write per poll wakes every MutationObserver). A locator,
+ * not a handle: it finds the tbody again when React remounts it.
+ */
+const unitBody = (scope: Locator, unit: UnitReport): Locator =>
+	scope.locator("tbody").nth(unit.body);
+
+/**
+ * Every disabled cluster control in `scope` (or in its unit `only`) gives
+ * its reason: an accessible description, else a tooltip on hover (its
+ * wrapper takes the hover: a disabled control gets none).
+ */
+async function expectDisabledSayWhy(scope: Locator, only?: number) {
+	const units = (await scope.evaluate(collectUnits)).filter(
+		(u) => only === undefined || u.index === only,
+	);
+	for (const unit of units) {
+		const disabled = unitBody(scope, unit).locator(
+			'input[type="checkbox"]:disabled, button[aria-label="Cross off cluster"]:disabled',
+		);
+		for (const control of await disabled.all()) {
+			const described = await control.evaluate((el) =>
+				(el.getAttribute("aria-describedby") ?? "")
+					.split(/\s+/)
+					.some((id) => id && document.getElementById(id)?.textContent?.trim()),
+			);
+			if (described) continue;
+			await control.locator("xpath=..").hover();
+			await expect(
+				scope.page().locator('[role="tooltip"]:not([hidden])'),
+				"a disabled control with no reason",
+			).toHaveText(/\S/);
+			await scope.page().mouse.move(0, 0);
+		}
+	}
 }
 
 export { expect };

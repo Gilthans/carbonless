@@ -125,11 +125,8 @@ test("shows the PR as of a cutoff, with another login as you, in a review of its
 	]);
 	await page.goto(s.url);
 	await expect(page.getByTestId("as-of")).toContainText("as of 2026 Jan");
-	// The PR has moved on since, obviously: no banner says so.
-	// (The banner, not a section's loading spinner, also a status.)
-	await expect(
-		page.getByRole("status").filter({ hasText: /New commits|Viewing/ }),
-	).toHaveCount(0);
+	// The PR has moved on since, obviously: no toast says so.
+	await expect(page.getByTestId("head-toast")).toHaveCount(0);
 
 	const who = page.getByRole("region", { name: "Who's on it" });
 	await expect(who.getByRole("list", { name: "Reviews" })).toContainText(

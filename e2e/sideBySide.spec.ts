@@ -1249,7 +1249,8 @@ test("side by side, the file bubble sits in the first row's right cell (a pair r
 	const pair = pairs(section).nth(0);
 	const oldFive = pair.getByTestId("old");
 	const newFive = pair.getByTestId("new");
-	await oldFive.scrollIntoViewIfNeeded();
+	// Mid-window: the bar below the row needs room under it.
+	await pair.evaluate((el) => el.scrollIntoView({ block: "center" }));
 	if (isMobile) {
 		for (const number of [oldFive, newFive]) {
 			await number.tap();

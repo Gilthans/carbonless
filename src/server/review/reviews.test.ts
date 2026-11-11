@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import {
 	afterAll,
 	afterEach,
@@ -20,17 +21,21 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../../test/git-fixture.js";
+import { sinceMarkKey } from "../../shared/pieces.js";
 import type { Snapshot, StateChange } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
 import { buildReviewView } from "./coverage.js";
-import { newEvent } from "./events.js";
+import { newEvent, parseEventLines } from "./events.js";
+import { foldProgress } from "./fold.js";
 import { RefStore } from "./refStore.js";
 import {
 	findReviewById,
 	InvalidChangeError,
 	listReviews,
+	type PatchsetStart,
 	prKey,
+	ReadOnlyPatchsetError,
 	type ReviewPr,
 	ReviewService,
 	StaleSnapshotError,
@@ -53,6 +58,8 @@ const pr: ReviewPr = {
 let fixture: GitFixture;
 /** Same tree and parent as the PR head, different commit: a force-push. */
 let rewrittenHead: string;
+/** Same tree again, on top of the rewritten head: a third distinct head. */
+let thirdHead: string;
 let repo: string;
 let cleanup: () => void;
 let store: RefStore;
@@ -82,6 +89,15 @@ beforeAll(() => {
 		"head, rebased",
 	);
 	fixtureGit("branch", "rewritten", rewrittenHead);
+	thirdHead = fixtureGit(
+		"commit-tree",
+		`${head}^{tree}`,
+		"-p",
+		rewrittenHead,
+		"-m",
+		"head, rebased again",
+	);
+	fixtureGit("branch", "third", thirdHead);
 });
 afterAll(() => fixture.cleanup());
 
@@ -93,6 +109,7 @@ beforeEach(async () => {
 		fixture.path,
 		"main:refs/heads/main",
 		"rewritten:refs/heads/rewritten",
+		"third:refs/heads/third",
 	]);
 	store = new RefStore(repo);
 	svc = new ReviewService(store);
@@ -238,12 +255,15 @@ describe("recordStates", () => {
 			]),
 		).toBe(`${snap.head}\n`);
 		const progress = await svc.getProgress(id, "dan");
-		expect(progress.patchset).toEqual({
+		expect(progress.patchset).toMatchObject({
 			number: 1,
 			revision: snap.revision,
 			mergeBase: snap.base,
 			head: snap.head,
+			since: null,
+			shape: null,
 		});
+		expect(progress.patchsets).toEqual([progress.patchset]);
 		expect(progress.states.get(k1)).toEqual({ state: "reviewed" });
 	});
 
@@ -321,6 +341,246 @@ describe("recordStates", () => {
 			keys: ["ghost", "ghost2"],
 		});
 		expect(await store.tip(progressRef())).toBeNull();
+	});
+
+	describe("partial marks", () => {
+		/** A cluster of two lines (a line changed), and its file. */
+		const big = () => {
+			for (const f of snap.files) {
+				const c = f.clusters.find((c) => c.kind === "lines" && c.lines === 2);
+				if (c) return { c, path: f.path };
+			}
+			throw new Error("the fixture has no cluster of 2 lines");
+		};
+		const lastCommit = async () => {
+			const message = await runGit(repo, [
+				"log",
+				"-1",
+				"--format=%B",
+				progressRef(),
+			]);
+			return parseEventLines(message);
+		};
+
+		it("a piece writes one commit: the whole cluster unreviewed, then its lines; the view shows it partly marked", async () => {
+			const { c, path } = big();
+			const progress = await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "unreviewed", reviewedLines: [[1, 2]] },
+			]);
+			expect(progress.states.get(c.key)).toEqual({
+				state: "unreviewed",
+				lines: [[1, 2]],
+			});
+			expect(await lastCommit()).toMatchObject([
+				{ type: "cluster-state", state: "unreviewed", cluster: c.key },
+				{
+					type: "lines-state",
+					by: "human",
+					state: "reviewed",
+					cluster: c.key,
+					path,
+					lines: [[1, 2]],
+				},
+			]);
+			const subject = await runGit(repo, [
+				"log",
+				"-1",
+				"--format=%s",
+				progressRef(),
+			]);
+			expect(subject.trim()).toBe(
+				`crb: marked 1 of 2 lines of 1 cluster in ${path}`,
+			);
+			const view = buildReviewView(snap, progress);
+			const shown = view.files
+				.flatMap((f) => f.clusters)
+				.find((x) => x.key === c.key);
+			expect(shown).toMatchObject({
+				state: "unreviewed",
+				reviewedLines: [[1, 2]],
+			});
+		});
+
+		it("all lines reviewed, or all crossed off, is written as the whole mark", async () => {
+			const { c } = big();
+			let progress = await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "unreviewed", reviewedLines: [[0, 2]] },
+			]);
+			expect(progress.states.get(c.key)).toEqual({ state: "reviewed" });
+			progress = await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "unreviewed", crossedLines: [[0, 2]] },
+			]);
+			expect(progress.states.get(c.key)).toEqual({ state: "crossed-off" });
+			progress = await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "unreviewed", reviewedLines: [] },
+			]);
+			expect(progress.states.get(c.key)).toEqual({ state: "unreviewed" });
+		});
+
+		it("a piece crossed off next to one reviewed: done, counted reviewed with its crossed line", async () => {
+			const { c } = big();
+			const progress = await svc.recordStates(id, "dan", snap, [
+				{
+					key: c.key,
+					state: "unreviewed",
+					reviewedLines: [[0, 1]],
+					crossedLines: [[1, 2]],
+				},
+			]);
+			const shown = buildReviewView(snap, progress)
+				.files.flatMap((f) => f.clusters)
+				.find((x) => x.key === c.key);
+			expect(shown).toMatchObject({
+				state: "reviewed",
+				crossedLines: [[1, 2]],
+			});
+		});
+
+		it("unticking a piece of a reviewed cluster leaves the rest; a reader that skips lines-state sees it unreviewed", async () => {
+			const { c } = big();
+			await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "reviewed" },
+			]);
+			const rest: [number, number][] = [[1, 2]];
+			const progress = await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "unreviewed", reviewedLines: rest },
+			]);
+			expect(progress.states.get(c.key)).toEqual({
+				state: "unreviewed",
+				lines: rest,
+			});
+			const older = foldProgress(
+				(await store.readEvents(progressRef())).filter(
+					(e) => e.type !== "lines-state",
+				),
+			);
+			expect(older.states.get(c.key)).toEqual({ state: "unreviewed" });
+		});
+
+		it("refuses, naming the cluster, lines past it, on a file-level cluster, with a reason, or with a state other than unreviewed; writes nothing", async () => {
+			const { c } = big();
+			const fileLevel = snap.files
+				.flatMap((f) => f.clusters)
+				.find((x) => x.kind === "file");
+			const one: [number, number][] = [[0, 1]];
+			const bad: StateChange[] = [
+				{ key: c.key, state: "unreviewed", reviewedLines: [[0, c.lines + 1]] },
+				{ key: c.key, state: "unreviewed", crossedLines: [[1, c.lines + 1]] },
+				{ key: c.key, state: "reviewed", reviewedLines: one },
+				{ key: c.key, state: "crossed-off", crossedLines: one },
+				{ key: c.key, state: "unreviewed", crossedLines: one, reason: "x" },
+				...(fileLevel
+					? [
+							{
+								key: fileLevel.key,
+								state: "unreviewed" as const,
+								reviewedLines: one,
+							},
+						]
+					: []),
+			];
+			for (const change of bad) {
+				await expect(
+					svc.recordStates(id, "dan", snap, [change]),
+				).rejects.toMatchObject({
+					constructor: InvalidChangeError,
+					keys: [change.key],
+				});
+			}
+			expect(await store.tip(progressRef())).toBeNull();
+		});
+	});
+
+	describe("since marks", () => {
+		const mark = (since: number, path = "gone.ts") => ({
+			since,
+			path,
+			reviewed: { old: [[1, 2]] as [number, number][], new: [] },
+			crossed: { old: [], new: [] },
+		});
+		const change = (since: number, path = "gone.ts"): StateChange => ({
+			key: sinceMarkKey(since, path),
+			state: "reviewed",
+			sinceMark: mark(since, path),
+		});
+
+		it("records a mark against an earlier patch set: the view lists it, no cluster changes", async () => {
+			await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+			const start: PatchsetStart = {
+				since: 1,
+				shape: "S1",
+				baseBranch: "main",
+				interdiff: "available",
+				carried: [],
+			};
+			const progress = await svc.recordStates(
+				id,
+				"dan",
+				otherSnap,
+				[change(1)],
+				start,
+			);
+			expect(progress.sinceMarks.get(otherSnap.revision)).toEqual([mark(1)]);
+			expect(progress.states.size).toBe(0);
+			expect(buildReviewView(otherSnap, progress).sinceMarks).toEqual([
+				mark(1),
+			]);
+		});
+
+		it("refuses a mark naming no earlier patch set, or its own", async () => {
+			await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+			const tip = await store.tip(progressRef());
+			for (const c of [change(1), change(7)]) {
+				await expect(
+					svc.recordStates(id, "dan", snap, [c]),
+				).rejects.toMatchObject({
+					constructor: InvalidChangeError,
+					keys: [c.key],
+				});
+			}
+			expect(await store.tip(progressRef())).toBe(tip);
+		});
+
+		// Each against PS2 with since 1, so the one thing wrong is the one named.
+		it.each([
+			["a control character in the path", change(1, "a\nb.ts")],
+			["a DEL character in the path", change(1, "a\u007fb.ts")],
+			["an empty path", change(1, "")],
+			[
+				"a key not its own",
+				{ ...change(1, "x.ts"), key: sinceMarkKey(1, "y.ts") },
+			],
+			[
+				"lines of a cluster too",
+				{ ...change(1), reviewedLines: [[0, 1]] as [number, number][] },
+			],
+			[
+				"a side that isn't ranges",
+				{
+					...change(1),
+					sinceMark: { ...mark(1), reviewed: { old: [[2, 1]], new: [] } },
+				} as StateChange,
+			],
+		])("refuses a mark with %s, writing nothing", async (_, bad) => {
+			await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+			const start: PatchsetStart = {
+				since: 1,
+				shape: "S1",
+				baseBranch: "main",
+				interdiff: "available",
+				carried: [],
+			};
+			// PS2 started, and a good mark takes: only `bad` is wrong.
+			await svc.recordStates(id, "dan", otherSnap, [change(1, "ok.ts")], start);
+			const tip = await store.tip(progressRef());
+			await expect(
+				svc.recordStates(id, "dan", otherSnap, [bad]),
+			).rejects.toMatchObject({
+				constructor: InvalidChangeError,
+				keys: [bad.key],
+			});
+			expect(await store.tip(progressRef())).toBe(tip);
+		});
 	});
 
 	it("rejects unknown states", async () => {
@@ -553,5 +813,648 @@ describe("listReviews and findReviewById", () => {
 		} finally {
 			rmSync(cache, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("patch set n+1", () => {
+	const start = (over: Partial<PatchsetStart> = {}): PatchsetStart => ({
+		since: 1,
+		shape: "S4a",
+		baseBranch: "main",
+		interdiff: "available",
+		carried: [],
+		...over,
+	});
+	const pinRef = (n: number, base = false) =>
+		`refs/crb/reviews/${id}/reviewers/dan/patchsets/${n}${base ? "-base" : ""}`;
+	const tipOf = (ref: string) =>
+		runGit(repo, ["rev-parse", "--verify", ref]).then((o) => o.trim());
+
+	it("the first mark on a second snapshot starts PS2 with since 1 and both pin refs", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const progress = await svc.recordStates(
+			id,
+			"dan",
+			otherSnap,
+			[{ key: k2, state: "reviewed" }],
+			start(),
+		);
+		expect(progress.patchsets.map((p) => p.number)).toEqual([1, 2]);
+		expect(progress.patchset).toMatchObject({
+			number: 2,
+			revision: otherSnap.revision,
+			mergeBase: otherSnap.base,
+			head: otherSnap.head,
+			since: 1,
+			shape: "S4a",
+			baseBranch: "main",
+			interdiff: "available",
+		});
+		expect(progress.states.get(k2)).toEqual({ state: "reviewed" });
+		expect(progress.states.has(k1)).toBe(false);
+		expect(progress.statesByRevision.get(snap.revision)?.get(k1)).toEqual({
+			state: "reviewed",
+		});
+		expect(await tipOf(pinRef(2))).toBe(otherSnap.head);
+		expect(await tipOf(pinRef(2, true))).toBe(otherSnap.base);
+		// PS1 got its base pin too.
+		expect(await tipOf(pinRef(1, true))).toBe(snap.base);
+	});
+
+	it("the pinned base survives gc after the base branch is rewritten", async () => {
+		// A snapshot whose base is the rewritten branch's tip: the only thing
+		// that keeps it alive once the branch is gone is the -base pin.
+		const onRewritten = await buildSnapshot(
+			repo,
+			rewrittenHead,
+			fixture.shas[1] as string,
+		);
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		await svc.ensurePatchset(id, "dan", onRewritten, start());
+		await runGit(repo, ["update-ref", "-d", "refs/heads/rewritten"]);
+		await runGit(repo, ["reflog", "expire", "--expire=now", "--all"]);
+		await runGit(repo, ["gc", "--quiet", "--prune=now"]);
+		expect(await tipOf(pinRef(2, true))).toBe(rewrittenHead);
+		await expect(runGit(repo, ["cat-file", "-e", rewrittenHead])).resolves.toBe(
+			"",
+		);
+		const again = await buildSnapshot(
+			repo,
+			rewrittenHead,
+			fixture.shas[1] as string,
+		);
+		expect(again).toEqual(onRewritten);
+	});
+
+	it("a mark against an old patch set is refused as read-only", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		await svc.ensurePatchset(id, "dan", otherSnap, start());
+		const write = svc.recordStates(id, "dan", snap, [
+			{ key: k2, state: "reviewed" },
+		]);
+		await expect(write).rejects.toBeInstanceOf(ReadOnlyPatchsetError);
+		await expect(write).rejects.toBeInstanceOf(StaleSnapshotError);
+		// Even with a start: an old patch set never takes a write.
+		await expect(
+			svc.recordStates(
+				id,
+				"dan",
+				snap,
+				[{ key: k2, state: "reviewed" }],
+				start(),
+			),
+		).rejects.toBeInstanceOf(ReadOnlyPatchsetError);
+		const progress = await svc.getProgress(id, "dan");
+		expect(progress.statesByRevision.get(snap.revision)?.has(k2)).toBe(false);
+	});
+
+	it("a mark against an unknown snapshot without a start is stale", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const write = svc.recordStates(id, "dan", otherSnap, [
+			{ key: k2, state: "reviewed" },
+		]);
+		await expect(write).rejects.toBeInstanceOf(StaleSnapshotError);
+		await expect(write).rejects.not.toBeInstanceOf(ReadOnlyPatchsetError);
+		expect((await svc.getProgress(id, "dan")).patchsets).toHaveLength(1);
+		expect(await store.tip(pinRef(2))).toBeNull();
+	});
+
+	it("ensurePatchset is idempotent", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const first = await svc.ensurePatchset(id, "dan", otherSnap, start());
+		const second = await svc.ensurePatchset(
+			id,
+			"dan",
+			otherSnap,
+			start({ shape: "S1" }),
+		);
+		expect(second).toEqual(first);
+		expect(second.patchsets.map((p) => p.number)).toEqual([1, 2]);
+		const events = await store.readEvents(progressRef());
+		expect(events.filter((e) => e.type === "patchset-started")).toHaveLength(2);
+		// On the latest patch set it changes nothing either.
+		expect(await svc.ensurePatchset(id, "dan", snap, start())).toEqual(first);
+	});
+
+	it("without a patch set, the first mark starts PS1 with no start given", async () => {
+		const progress = await svc.recordStates(id, "dan", snap, [
+			{ key: k1, state: "reviewed" },
+		]);
+		expect(progress.patchset).toMatchObject({ number: 1, since: null });
+		expect(await tipOf(pinRef(1, true))).toBe(snap.base);
+	});
+
+	it("the carried events land in the start's commit and fold into PS2", async () => {
+		await svc.recordStates(id, "dan", snap, [
+			{ key: k1, state: "reviewed" },
+			{ key: k2, state: "crossed-off", reason: "generated" },
+		]);
+		const progress = await svc.ensurePatchset(
+			id,
+			"dan",
+			otherSnap,
+			start({
+				carried: [
+					{
+						type: "carried",
+						from: 1,
+						rule: "exact",
+						states: [{ key: k1, fromKey: k1, state: "reviewed" }],
+					},
+					{
+						type: "carried",
+						from: 1,
+						rule: "rename",
+						states: [{ key: k2, fromKey: k2, state: "crossed-off" }],
+					},
+				],
+			}),
+		);
+		expect(progress.states.get(k1)).toEqual({
+			state: "reviewed",
+			carried: { from: 1, rule: "exact" },
+		});
+		expect(progress.states.get(k2)).toEqual({
+			state: "crossed-off",
+			reason: "generated",
+			carried: { from: 1, rule: "rename" },
+		});
+		const tip = (await store.tip(progressRef())) as string;
+		const message = await runGit(repo, ["log", "-1", "--format=%B", tip]);
+		const lines = message.trim().split("\n").slice(2);
+		expect(lines.map((l) => JSON.parse(l).type)).toEqual([
+			"patchset-started",
+			"carried",
+			"carried",
+		]);
+		expect(lines.map((l) => JSON.parse(l).by)).toEqual([
+			"human",
+			"auto",
+			"auto",
+		]);
+		expect(JSON.parse(lines[1] as string).to).toBe(2);
+		// A human mark on PS2 then wins over the carry.
+		const after = await svc.recordStates(id, "dan", otherSnap, [
+			{ key: k1, state: "unreviewed" },
+		]);
+		expect(after.states.get(k1)).toEqual({ state: "unreviewed" });
+	});
+
+	it("a carried entry whose source isn't a human state is written but never counts", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const progress = await svc.ensurePatchset(
+			id,
+			"dan",
+			otherSnap,
+			start({
+				carried: [
+					{
+						type: "carried",
+						from: 1,
+						rule: "exact",
+						states: [{ key: k2, fromKey: k2, state: "reviewed" }],
+					},
+				],
+			}),
+		);
+		expect(progress.states.has(k2)).toBe(false);
+		expect(
+			buildReviewView(otherSnap, progress).progress.clusters.reviewed,
+		).toBe(0);
+	});
+
+	it("recordPlacement appends a thread-placed by the reviewer", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const anchor = {
+			path: "mod.ts",
+			startSide: "RIGHT" as const,
+			startLine: 2,
+			side: "RIGHT" as const,
+			line: 2,
+		};
+		const progress = await svc.recordPlacement(
+			id,
+			"dan",
+			1,
+			"PRRT_1",
+			anchor,
+			1,
+		);
+		expect(progress.placements.get(1)?.get("PRRT_1")).toMatchObject({
+			type: "thread-placed",
+			by: "human",
+			actor: "dan",
+			thread: "PRRT_1",
+			patchset: 1,
+			anchor,
+			engine: 1,
+		});
+		const log = await runGit(repo, ["log", "--format=%s", "-1", progressRef()]);
+		expect(log).toContain("placed thread");
+		// Not for a patch set that doesn't exist.
+		await expect(
+			svc.recordPlacement(id, "dan", 2, "PRRT_1", anchor, 1),
+		).rejects.toBeInstanceOf(StaleSnapshotError);
+	});
+
+	it("refuses a patch set number that isn't one before touching git", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const anchor = {
+			path: "mod.ts",
+			startSide: "RIGHT" as const,
+			startLine: 2,
+			side: "RIGHT" as const,
+			line: 2,
+		};
+		for (const n of [0, -1, 1.5, Number.NaN, 2 ** 53]) {
+			await expect(svc.patchsetPins(id, "dan", n)).rejects.toThrow(
+				/patch set number/,
+			);
+			await expect(
+				svc.recordPlacement(id, "dan", n, "PRRT_1", anchor, 1),
+			).rejects.toThrow(/patch set number/);
+		}
+		expect((await store.readEvents(progressRef())).length).toBe(2);
+		expect(await svc.patchsetPins(id, "dan", 1)).toEqual({
+			head: snap.head,
+			base: snap.base,
+		});
+		expect(await svc.patchsetPins(id, "dan", 7)).toEqual({
+			head: null,
+			base: null,
+		});
+	});
+
+	it("two tabs starting PS2 at once end with one PS2 and one set of pins", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const [a, b] = await Promise.all([
+			svc.ensurePatchset(id, "dan", otherSnap, start()),
+			svc.recordStates(
+				id,
+				"dan",
+				otherSnap,
+				[{ key: k2, state: "reviewed" }],
+				start(),
+			),
+		]);
+		expect(a.patchsets.map((p) => p.number)).toEqual([1, 2]);
+		expect(b.patchsets.map((p) => p.number)).toEqual([1, 2]);
+		expect(b.states.get(k2)).toEqual({ state: "reviewed" });
+		const events = await store.readEvents(progressRef());
+		expect(events.filter((e) => e.type === "patchset-started")).toHaveLength(2);
+		expect(await tipOf(pinRef(2))).toBe(otherSnap.head);
+		expect(await store.tip(pinRef(3))).toBeNull();
+	});
+
+	it("a start that loses the progress ref to a mark retries and lands", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const [progress] = await Promise.all([
+			svc.ensurePatchset(id, "dan", otherSnap, start()),
+			svc.recordStates(id, "dan", snap, [{ key: k2, state: "reviewed" }]),
+		]);
+		expect(progress.patchsets.map((p) => p.number)).toEqual([1, 2]);
+		const final = await svc.getProgress(id, "dan");
+		expect(final.statesByRevision.get(snap.revision)?.get(k2)).toEqual({
+			state: "reviewed",
+		});
+		expect(final.patchset?.number).toBe(2);
+	});
+
+	it("a start whose since isn't the latest patch set is stale, however it arrives", async () => {
+		// PS1: k1 reviewed. PS2 carries it; the reviewer unticks it there.
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const carryK1 = {
+			type: "carried" as const,
+			from: 1,
+			rule: "exact" as const,
+			states: [{ key: k1, fromKey: k1, state: "reviewed" as const }],
+		};
+		await svc.ensurePatchset(
+			id,
+			"dan",
+			otherSnap,
+			start({ carried: [carryK1] }),
+		);
+		await svc.recordStates(id, "dan", otherSnap, [
+			{ key: k1, state: "unreviewed" },
+		]);
+		// A tab whose engine answer was computed while PS1 was the latest:
+		// landing it would carry PS1's reviewed over PS2's untick.
+		const third = await buildSnapshot(
+			repo,
+			fixture.shas[0] as string,
+			thirdHead,
+		);
+		expect(third.revision).not.toBe(otherSnap.revision);
+		const stale = svc.ensurePatchset(
+			id,
+			"dan",
+			third,
+			start({ since: 1, carried: [carryK1] }),
+		);
+		await expect(stale).rejects.toBeInstanceOf(StaleSnapshotError);
+		await expect(stale).rejects.not.toBeInstanceOf(ReadOnlyPatchsetError);
+		await expect(
+			svc.recordStates(
+				id,
+				"dan",
+				third,
+				[
+					{
+						key: k1,
+						state: "reviewed",
+					},
+				],
+				start({ since: 1, carried: [carryK1] }),
+			),
+		).rejects.toBeInstanceOf(StaleSnapshotError);
+		const progress = await svc.getProgress(id, "dan");
+		expect(progress.patchsets.map((p) => p.number)).toEqual([1, 2]);
+		expect(progress.states.get(k1)).toEqual({ state: "unreviewed" });
+		expect(await store.tip(pinRef(3))).toBeNull();
+		// With the right since it lands as PS3.
+		const landed = await svc.ensurePatchset(
+			id,
+			"dan",
+			third,
+			start({ since: 2 }),
+		);
+		expect(landed.patchset).toMatchObject({ number: 3, since: 2 });
+	});
+
+	it("a start for PS1 that names a since is stale, not an invalid event", async () => {
+		const stale = svc.recordStates(
+			id,
+			"dan",
+			snap,
+			[{ key: k1, state: "reviewed" }],
+			start({ since: 1 }),
+		);
+		await expect(stale).rejects.toBeInstanceOf(StaleSnapshotError);
+		await expect(
+			svc.ensurePatchset(id, "dan", snap, start({ since: 1 })),
+		).rejects.toBeInstanceOf(StaleSnapshotError);
+		expect((await svc.getProgress(id, "dan")).patchsets).toEqual([]);
+		// since: null is PS1's start.
+		const first = await svc.ensurePatchset(
+			id,
+			"dan",
+			snap,
+			start({ since: null }),
+		);
+		expect(first.patchset).toMatchObject({ number: 1, since: null });
+	});
+
+	it("writes a carried entry's fromKey only when it differs from key; the fold is the same", async () => {
+		await svc.recordStates(id, "dan", snap, [
+			{ key: k1, state: "reviewed" },
+			{ key: k2, state: "crossed-off" },
+		]);
+		const progress = await svc.ensurePatchset(
+			id,
+			"dan",
+			otherSnap,
+			start({
+				carried: [
+					{
+						type: "carried",
+						from: 1,
+						rule: "exact",
+						states: [
+							{ key: k1, fromKey: k1, state: "reviewed" },
+							{ key: k1 === k2 ? k1 : k2, fromKey: k2, state: "crossed-off" },
+						],
+					},
+					{
+						type: "carried",
+						from: 1,
+						rule: "rename",
+						states: [{ key: "9".repeat(64), fromKey: k1, state: "reviewed" }],
+					},
+				],
+			}),
+		);
+		const tip = (await store.tip(progressRef())) as string;
+		const message = await runGit(repo, ["log", "-1", "--format=%B", tip]);
+		const [, exact, rename] = message
+			.trim()
+			.split("\n")
+			.slice(2)
+			.map((l) => JSON.parse(l));
+		expect(exact.states).toEqual([
+			{ key: k1, state: "reviewed" },
+			{ key: k2, state: "crossed-off" },
+		]);
+		expect(rename.states).toEqual([
+			{ key: "9".repeat(64), fromKey: k1, state: "reviewed" },
+		]);
+		// Read back, every entry names its source; the fold sees no difference.
+		const [event] = (await store.readEvents(progressRef())).filter(
+			(e) => e.type === "carried",
+		);
+		expect(event?.type === "carried" && event.states).toEqual([
+			{ key: k1, fromKey: k1, state: "reviewed" },
+			{ key: k2, fromKey: k2, state: "crossed-off" },
+		]);
+		expect(progress.states.get(k1)).toEqual({
+			state: "reviewed",
+			carried: { from: 1, rule: "exact" },
+		});
+		expect(progress.states.get(k2)).toEqual({
+			state: "crossed-off",
+			carried: { from: 1, rule: "exact" },
+		});
+		expect(progress.states.get("9".repeat(64))).toEqual({
+			state: "reviewed",
+			carried: { from: 1, rule: "rename" },
+		});
+	});
+
+	it("storage: a start carrying 200 clusters is one small commit", async () => {
+		const hex = (i: number) =>
+			createHash("sha256").update(`cluster ${i}`).digest("hex");
+		const entries = (fromOffset: number) =>
+			Array.from({ length: 200 }, (_, i) => ({
+				key: hex(i),
+				fromKey: hex(fromOffset + i),
+				state: i % 3 === 0 ? ("crossed-off" as const) : ("reviewed" as const),
+			}));
+		const measure = async (
+			slug: string,
+			states: ReturnType<typeof entries>,
+		) => {
+			await svc.recordStates(id, slug, snap, [{ key: k1, state: "reviewed" }]);
+			await svc.ensurePatchset(
+				id,
+				slug,
+				otherSnap,
+				start({
+					carried: [{ type: "carried", from: 1, rule: "exact", states }],
+				}),
+			);
+			const tip = (await store.tip(progressRef(slug))) as string;
+			const raw = await runGit(repo, ["cat-file", "commit", tip]);
+			const size = Number((await runGit(repo, ["cat-file", "-s", tip])).trim());
+			const events = await store.readEvents(progressRef(slug));
+			const carried = events.filter((e) => e.type === "carried");
+			expect(carried).toHaveLength(1);
+			expect(carried[0]?.type === "carried" && carried[0].states).toHaveLength(
+				200,
+			);
+			return { size, packed: deflateSync(Buffer.from(raw, "utf8")).length };
+		};
+		// Every entry carried from the same key (the exact rule's usual case):
+		// fromKey is omitted. Measured for docs/review-data-storage.md.
+		const same = await measure("dan", entries(0));
+		console.log(
+			`carried commit, 200 entries, fromKey = key: ${same.size} bytes raw, ${same.packed} deflated`,
+		);
+		expect(same.size).toBeLessThan(20 * 1024);
+		expect(same.packed).toBeLessThan(10 * 1024);
+		// Every entry from another key (renames, moved context): two 64-hex
+		// keys and a state each, about 170 bytes.
+		const different = await measure("eve", entries(1000));
+		console.log(
+			`carried commit, 200 entries, fromKey ≠ key: ${different.size} bytes raw, ${different.packed} deflated`,
+		);
+		expect(different.size).toBeLessThan(40 * 1024);
+		expect(different.packed).toBeLessThan(20 * 1024);
+	});
+
+	it("storage: marks per piece, one commit each and a heavy review's worth", async () => {
+		const hex = (i: number) =>
+			createHash("sha256").update(`cluster ${i}`).digest("hex");
+		const rev = snap.revision;
+		const path = (f: number) => `src/module-${f}/file-${f}.ts`;
+		// One piece ticked: the cluster reset, then its reviewed lines.
+		const pieceEvents = (c: number, upTo: number) => [
+			newEvent(
+				"cluster-state",
+				"dan",
+				{
+					patchset: rev,
+					cluster: hex(c),
+					path: path(c % 200),
+					state: "unreviewed",
+				},
+				"human",
+			),
+			newEvent(
+				"lines-state",
+				"dan",
+				{
+					patchset: rev,
+					cluster: hex(c),
+					path: path(c % 200),
+					state: "reviewed",
+					lines: [[0, upTo * 8]] as [number, number][],
+				},
+				"human",
+			),
+		];
+		const sinceEvent = (f: number) =>
+			newEvent(
+				"since-lines-state",
+				"dan",
+				{
+					patchset: rev,
+					since: 1,
+					path: path(f),
+					reviewed: { old: [[120, 126]] as [number, number][], new: [] },
+					crossed: { old: [], new: [] },
+				},
+				"human",
+			);
+		const sizeOf = async (oid: string) => {
+			const raw = await runGit(repo, ["cat-file", "commit", oid]);
+			return {
+				raw: Number((await runGit(repo, ["cat-file", "-s", oid])).trim()),
+				deflated: deflateSync(Buffer.from(raw, "utf8")).length,
+			};
+		};
+		const piece = await sizeOf(
+			await store.commit(
+				null,
+				"crb: marked 8 of 40 lines of 1 cluster in x",
+				pieceEvents(0, 1),
+				"dan",
+			),
+		);
+		const since = await sizeOf(
+			await store.commit(
+				null,
+				"crb: marked pieces since PS1 in x",
+				[sinceEvent(0)],
+				"dan",
+			),
+		);
+		console.log(
+			`piece commit: ${piece.raw} bytes raw, ${piece.deflated} deflated; since mark commit: ${since.raw} raw, ${since.deflated} deflated`,
+		);
+		expect(piece.raw).toBeLessThan(1024);
+		expect(since.raw).toBeLessThan(1024);
+		// A file's since mark holds every marked piece of it: 25 pieces, half
+		// crossed off, on both sides.
+		const ranges = (from: number) =>
+			Array.from({ length: 25 }, (_, i): [number, number] => [
+				from + i * 10,
+				from + i * 10 + 4,
+			]);
+		const busy = await sizeOf(
+			await store.commit(
+				null,
+				"crb: marked pieces since PS1 in x",
+				[
+					newEvent(
+						"since-lines-state",
+						"dan",
+						{
+							patchset: rev,
+							since: 1,
+							path: path(0),
+							reviewed: {
+								old: ranges(1).slice(0, 13),
+								new: ranges(5).slice(0, 13),
+							},
+							crossed: { old: ranges(1).slice(13), new: ranges(5).slice(13) },
+						},
+						"human",
+					),
+				],
+				"dan",
+			),
+		);
+		console.log(
+			`since mark commit, 25 pieces in one file: ${busy.raw} bytes raw, ${busy.deflated} deflated`,
+		);
+		expect(busy.raw).toBeLessThan(2048);
+		// Heavy: 200 files, 600 clusters, each in 5 pieces ticked one at a
+		// time (4 piece commits, then the whole cluster reviewed), and one
+		// since-only piece per file ticked: as pushed, squashed into one commit.
+		const all = [];
+		for (let c = 0; c < 600; c++) {
+			for (let p = 1; p <= 4; p++) all.push(...pieceEvents(c, p));
+			all.push(
+				newEvent(
+					"cluster-state",
+					"dan",
+					{
+						patchset: rev,
+						cluster: hex(c),
+						path: path(c % 200),
+						state: "reviewed",
+					},
+					"human",
+				),
+			);
+		}
+		for (let f = 0; f < 200; f++) all.push(sinceEvent(f));
+		const heavy = await sizeOf(
+			await store.commit(null, "crb: squashed", all, "dan"),
+		);
+		console.log(
+			`heavy review (${all.length} events, squashed): ${heavy.raw} bytes raw, ${heavy.deflated} deflated`,
+		);
+		expect(heavy.deflated).toBeLessThan(100 * 1024);
 	});
 });

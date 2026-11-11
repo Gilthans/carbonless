@@ -56,7 +56,9 @@ async function checkFirstCluster(page: Page) {
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 }
 
-const banner = (page: Page) => page.getByText("New commits were pushed");
+/** The patch set graph's last slot: "up to date", or the head dot. */
+const tail = (page: Page) => page.getByTestId("ps-tail");
+const toast = (page: Page) => page.getByTestId("head-toast");
 
 test.describe("a restarted server", () => {
 	// The client finds the new server through server.json; its own, to stop.
@@ -86,7 +88,8 @@ test("a started review stays on its snapshot after a push", async ({
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	await checkFirstCluster(page);
-	await expect(banner(page)).toBeHidden();
+	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
+	await expect(toast(page)).toHaveCount(0);
 
 	p.moveHead({
 		message: "later push",
@@ -102,18 +105,15 @@ test("a started review stays on its snapshot after a push", async ({
 	await refreshed;
 	await reloaded;
 	await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
-	await expect(banner(page)).toBeVisible();
-	await expect(banner(page)).toContainText("snapshot from");
+	// The graph's last slot holds the head dot now, and the toast says so;
+	// the review itself stays on its patch set.
+	await expect(tail(page)).toHaveAttribute("data-state", "head");
+	await expect(toast(page)).toContainText("1 new commit");
 	await expect(
 		page.getByRole("region", { name: "src/util.ts" }),
 	).not.toContainText("pushed");
 	await expect(clusters(page)).toHaveAttribute("aria-valuenow", "25");
-	await expect(
-		page.getByRole("link", { name: "Open the PR on GitHub" }),
-	).toHaveAttribute(
-		"href",
-		`https://github.com/${p.ownerRepo}/pull/${p.number}`,
-	);
+	// A finished file shows closed: open it to see its mark.
 	const utilFile = page.getByRole("region", { name: "src/util.ts" });
 	await utilFile.getByRole("button", { name: "Expand file" }).click();
 	await expect(
@@ -137,9 +137,9 @@ ownTest(
 			files: { "src/extra.ts": "export const extra = 1;\n" },
 		});
 		await page.getByRole("button", { name: "Refresh" }).click();
-		// The unpinned review follows the new head: five clusters, no banner.
+		// The unpinned review follows the new head: five clusters, up to date.
 		await expect(clusters(page)).toContainText("0 / 5 clusters reviewed");
-		await expect(banner(page)).toBeHidden();
+		await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
 		await expect(
 			page.getByRole("region", { name: "src/extra.ts" }),
 		).toBeVisible();
@@ -156,7 +156,7 @@ ownTest(
 	},
 );
 
-test("a push found by the head poll on an unstarted review asks for a Refresh", async ({
+test("a push found by the head poll shows the head dot and the toast; nothing changes under the reader", async ({
 	page,
 	pr,
 	startCrb,
@@ -172,12 +172,8 @@ test("a push found by the head poll on an unstarted review asks for a Refresh", 
 		files: { "src/extra.ts": "export const extra = 1;\n" },
 	});
 	await page.clock.fastForward("05:01");
-	await expect(
-		page.getByText(
-			"New commits were pushed to this PR. Press Refresh to load them.",
-		),
-	).toBeVisible();
-	await expect(page.getByText("snapshot from")).toBeHidden();
+	await expect(toast(page)).toContainText("1 new commit");
+	await expect(tail(page)).toHaveAttribute("data-state", "head");
 	// Nothing changed under the reader.
 	await expect(clusters(page)).toContainText("0 / 4 clusters reviewed");
 });
