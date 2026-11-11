@@ -262,7 +262,7 @@ Owner's decisions on this part (2026-10-28):
 
   ```json
   {
-    "serve": { "host": "100.78.32.127", "port": 4747 },
+    "serve": { "host": "100.x.y.z", "port": 4747 },
     "views": [{ "name": "My PRs", "repos": ["acme/api", "acme/console"] }],
     "refresh": { "minutes": 2 }
   }
