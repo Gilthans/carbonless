@@ -406,6 +406,7 @@ on close).
 - Unread uses `accent` (periwinkle), not yellow.
 - Seen marks live in the private ref, so phone and desktop agree.
 - The card header and the composer row (with Resolve) are never covered.
+- Text typed to the agent keeps a thread open on Resolve in Files changed, like an unsent reply.
 - Each card opens its conversation independently; the open state isn't stored.
 - Unread markers only on thread conversations this slice.
 - `[suggest-resolve]` line as the suggestion marker.
