@@ -317,17 +317,40 @@ export function useComparison(session: SessionInfo | undefined): Comparison {
 	}, [active, kept, go, inAddress]);
 	const { viewing, base } = parsed;
 	// A viewed head that became a patch set (the first mark started it):
-	// the address names the patch set from now on. Keyed by value, so the
-	// one navigation it makes doesn't run it again.
-	const started =
+	// the address names the patch set from now on. Keyed by the head, so
+	// the one navigation it makes doesn't run it again. It rewrites the
+	// address as it is when it navigates, not as this render read it: a
+	// move made since (a key pressed as the session's answer landed, before
+	// this effect ran) already names the comparison, and stays.
+	const startedHead =
 		inAddress.head !== undefined && viewing?.kind === "patchset"
-			? comparisonSearch(viewing, base, patchsets)
+			? inAddress.head
 			: null;
-	const startedKey = started ? JSON.stringify(started) : null;
+	const sessionNow = useRef(session);
+	sessionNow.current = session;
 	useEffect(() => {
-		if (!active || startedKey === null) return;
-		go(JSON.parse(startedKey) as ComparisonSearch);
-	}, [active, startedKey, go]);
+		if (!active || startedHead === null) return;
+		void navigate({
+			to: "/r/$id/files",
+			params: { id },
+			search: (prev: Record<string, unknown>) => {
+				const now = pick(parseFilesSearch(prev));
+				if (now.head !== startedHead) return prev;
+				const s = sessionNow.current;
+				const { viewing, base } = parseComparison(now, s);
+				if (!s || viewing?.kind !== "patchset") return prev;
+				const next = comparisonSearch(
+					viewing,
+					base,
+					s.patchsets.map((p) => p.number),
+				);
+				setKept(next);
+				return { ...withoutComparison(prev), ...next };
+			},
+			replace: true,
+			resetScroll: false,
+		});
+	}, [active, startedHead, navigate, id]);
 	return {
 		viewing,
 		base,
