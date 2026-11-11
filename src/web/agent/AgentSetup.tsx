@@ -22,6 +22,7 @@ import {
 	type AgentHarness,
 } from "../../shared/agentHarnesses";
 import { boundReviewId } from "../api";
+import { copyText } from "../copyText";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipLayer } from "../Tooltip";
 import { NOT_PHONE, useMedia } from "../useMedia";
@@ -112,6 +113,37 @@ function Field(props: { label: string; children: ReactNode }) {
 /** What a session that's already running does to pick up a line just added. */
 export const RELOAD_HINT = "Session already running? /reload-plugins";
 
+/** A Copy press's outcome: none yet, on the clipboard, or refused. */
+type Copied = "ok" | "failed" | null;
+
+const copyWord = (copied: Copied) =>
+	copied === "ok" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy";
+
+function CopyMark(props: { copied: Copied }) {
+	if (props.copied === "ok")
+		return <CheckIcon size={16} aria-hidden className="text-ok" />;
+	if (props.copied === "failed")
+		return <XIcon size={16} aria-hidden className="text-bad" />;
+	return <CopyIcon size={16} aria-hidden />;
+}
+
+/**
+ * Copies `text` and says how it went. When the browser refuses, the line
+ * is selected instead, for the reviewer to copy by hand.
+ */
+async function copyInto(
+	text: string,
+	line: HTMLInputElement | null,
+	done: (copied: Copied) => void,
+) {
+	const ok = await copyText(text);
+	done(ok ? "ok" : "failed");
+	if (!ok) {
+		line?.focus();
+		line?.select();
+	}
+}
+
 /**
  * One line to copy: read-only, selected on focus, with an icon Copy button
  * and, with `hint`, an info icon whose tooltip (and name) is the hint.
@@ -122,10 +154,12 @@ function CopyRow(props: {
 	testId: string;
 	hint?: string;
 }) {
-	const [copied, setCopied] = useState(false);
+	const [copied, setCopied] = useState<Copied>(null);
+	const field = useRef<HTMLInputElement>(null);
 	return (
 		<div className="flex min-w-0 gap-1.5">
 			<input
+				ref={field}
 				readOnly
 				aria-label={props.label}
 				data-testid={props.testId}
@@ -133,24 +167,18 @@ function CopyRow(props: {
 				onFocus={(e) => e.currentTarget.select()}
 				className={FIELD}
 			/>
-			<Tooltip content={copied ? "Copied" : "Copy"} describe={false}>
+			<Tooltip content={copyWord(copied)} describe={false}>
 				{(trigger) => (
 					<button
 						type="button"
 						{...trigger}
 						aria-label={`Copy ${props.label.toLowerCase()}`}
 						onClick={() => {
-							void navigator.clipboard
-								?.writeText(props.value)
-								.then(() => setCopied(true));
+							void copyInto(props.value, field.current, setCopied);
 						}}
 						className={`${BUTTON} w-10 px-0`}
 					>
-						{copied ? (
-							<CheckIcon size={16} aria-hidden className="text-ok" />
-						) : (
-							<CopyIcon size={16} aria-hidden />
-						)}
+						<CopyMark copied={copied} />
 					</button>
 				)}
 			</Tooltip>
@@ -265,7 +293,8 @@ export function AgentSetup(props: {
 		key: string;
 		result: AgentCheck;
 	} | null>(null);
-	const [copied, setCopied] = useState(false);
+	const [copied, setCopied] = useState<Copied>(null);
+	const install = useRef<HTMLInputElement>(null);
 	const choose = (id: HarnessId) => {
 		const h = harness(id);
 		setPick(id);
@@ -282,7 +311,7 @@ export function AgentSetup(props: {
 			setCommand("");
 			setArgs("");
 		}
-		setCopied(false);
+		setCopied(null);
 	};
 	// Each opening starts from what config.json says, once it is read: the
 	// harness whose command and arguments it has (else Other with them),
@@ -304,7 +333,7 @@ export function AgentSetup(props: {
 		setCommand(agent?.command ?? preset?.command ?? "");
 		setArgs(formatArgs(preset?.args ?? agent?.args ?? []));
 		setChecked(null);
-		setCopied(false);
+		setCopied(null);
 	}, [open, read]);
 	useEffect(() => {
 		const d = dialog.current;
@@ -549,6 +578,7 @@ export function AgentSetup(props: {
 										<Field label="Install">
 											<div className="flex min-w-0 gap-1.5">
 												<input
+													ref={install}
 													readOnly
 													aria-label="Install"
 													value={chosen.install}
@@ -558,22 +588,16 @@ export function AgentSetup(props: {
 												<button
 													type="button"
 													onClick={() => {
-														void navigator.clipboard
-															?.writeText(chosen.install ?? "")
-															.then(() => setCopied(true));
+														void copyInto(
+															chosen.install ?? "",
+															install.current,
+															setCopied,
+														);
 													}}
 													className={BUTTON}
 												>
-													{copied ? (
-														<CheckIcon
-															size={16}
-															aria-hidden
-															className="text-ok"
-														/>
-													) : (
-														<CopyIcon size={16} aria-hidden />
-													)}
-													{copied ? "Copied" : "Copy"}
+													<CopyMark copied={copied} />
+													{copyWord(copied)}
 												</button>
 											</div>
 										</Field>

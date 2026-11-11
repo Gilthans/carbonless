@@ -16,6 +16,16 @@ import { AgentSetup, RELOAD_HINT } from "./AgentSetup";
 import { agentStatusQuery } from "./api";
 import type { SetupTab } from "./setupStore";
 
+// user-event stubs the Clipboard API; what reaches the clipboard is
+// copyText's (copyText.test.ts). Here: what each outcome shows.
+const copied = vi.hoisted(() => ({ ok: true, texts: [] as string[] }));
+vi.mock("../copyText", () => ({
+	copyText: async (text: string) => {
+		copied.texts.push(text);
+		return copied.ok;
+	},
+}));
+
 const json = (status: number, body: unknown) =>
 	new Response(JSON.stringify(body), {
 		status,
@@ -110,6 +120,36 @@ async function openIt(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("AgentSetup", () => {
+	it("Copy says Copied, or Copy failed with the line selected to copy by hand", async () => {
+		copied.ok = true;
+		copied.texts = [];
+		const { user } = show();
+		const dialog = await openIt(user);
+		await user.click(within(dialog).getByRole("button", { name: "Copy" }));
+		expect(copied.texts).toEqual([
+			"npm i -g @agentclientprotocol/claude-agent-acp",
+		]);
+		expect(
+			await within(dialog).findByRole("button", { name: "Copied" }),
+		).toBeVisible();
+		// Another harness starts over.
+		await user.click(within(dialog).getByRole("radio", { name: "Gemini CLI" }));
+		await user.click(
+			within(dialog).getByRole("radio", { name: "Claude Code" }),
+		);
+		copied.ok = false;
+		await user.click(within(dialog).getByRole("button", { name: "Copy" }));
+		expect(
+			await within(dialog).findByRole("button", { name: "Copy failed" }),
+		).toBeVisible();
+		const line = within(dialog).getByRole("textbox", { name: "Install" });
+		expect(line).toHaveFocus();
+		expect(
+			line instanceof HTMLInputElement &&
+				line.value.slice(line.selectionStart ?? 0, line.selectionEnd ?? 0),
+		).toBe("npm i -g @agentclientprotocol/claude-agent-acp");
+	});
+
 	it("picking Claude Code fills the command and shows its install line", async () => {
 		const { user } = show();
 		const dialog = await openIt(user);
@@ -511,6 +551,26 @@ describe("AgentSetup's Join from a session tab", () => {
 		await user.unhover(hint);
 		// Unbound in a component test: no review, so no join line.
 		expect(within(dialog).queryByTestId("join-line")).toBeNull();
+		// A refused copy says so and selects the line, to copy by hand.
+		copied.ok = false;
+		copied.texts = [];
+		const copy = within(dialog).getByRole("button", {
+			name: "Copy setup line",
+		});
+		await user.click(copy);
+		const line = within(dialog).getByTestId("join-setup-line");
+		expect(copied.texts).toEqual([(line as HTMLInputElement).value]);
+		await waitFor(() => expect(line).toHaveFocus());
+		// A press closes the tooltip until the pointer comes back.
+		await user.unhover(copy);
+		await user.hover(copy);
+		await waitFor(() =>
+			expect(
+				screen.getByText("Copy failed", { selector: "[role=tooltip]" }),
+			).toBeVisible(),
+		);
+		await user.unhover(copy);
+		copied.ok = true;
 		await user.click(
 			within(dialog).getByRole("tab", { name: "Launch an agent" }),
 		);
