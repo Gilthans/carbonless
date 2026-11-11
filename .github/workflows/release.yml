@@ -4,11 +4,11 @@
 #     `rc` dist-tag and the git tag vX.Y.Z-rc.N, where X.Y.Z is master's
 #     package.json version (the next release), set only in the runner.
 #   - mode=promote (`pnpm release promote`, on the owner's word): a tried RC
-#     (its tag must be on master, CI must have passed on its commit) packed
-#     as X.Y.Z, that tarball smoke-tested, and staged on npm with the
-#     dist-tag `latest`, hidden until the owner approves it with their
-#     two-factor (`pnpm release publish`). The run's
-#     artifact `release` holds the tarball and its manifest. Before the
+#     (its tag must be on master, CI must have passed on its commit:
+#     promote-ci) packed as X.Y.Z, that tarball smoke-tested, and staged on
+#     npm with the dist-tag `latest`, hidden until the owner approves it
+#     with their two-factor (`pnpm release publish`). The run's artifact
+#     `release` holds the tarball and its manifest. Before the
 #     package's first publish nothing is staged: the owner publishes that one.
 #   - mode=fixup (release-finish): `rc` up to a new release, when behind.
 #
@@ -302,22 +302,78 @@ jobs:
           echo "::error::carbonless-review@$VERSION has no provenance on npm (dist.attestations: ${out:-none})"
           exit 1
 
-  promote-check:
+  promote-ci:
+    # Did CI pass on the RC's commit? CI ran the whole suite there (rc-build
+    # runs on its success), so promote doesn't run it again. Its own job: the
+    # token step runs before anything of the repository or its dependencies
+    # (git and gh only), and nothing here installs anything.
     if: >-
       github.event_name == 'workflow_dispatch' && inputs.mode == 'promote' &&
       github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    # CI ran the whole suite on the RC's commit (rc-build runs on its
-    # success): this job checks CI passed there, and tests what is unique to
-    # the release, the X.Y.Z tarball itself. No lint, tests or Playwright.
     permissions:
       contents: read
       actions: read # CI's runs on the RC's commit
+    timeout-minutes: 5
+    env:
+      # Inputs reach the shell as variables, never pasted into scripts.
+      RC_INPUT: ${{ inputs.rc }}
+    outputs:
+      tag: ${{ steps.rc.outputs.tag }}
+      sha: ${{ steps.rc.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: master
+          fetch-depth: 0 # every tag
+          persist-credentials: false
+      - name: The RC
+        # git only. promote-check plans it again with release.ts and fails
+        # unless it is this tag at this commit.
+        id: rc
+        run: |
+          tag="$RC_INPUT"
+          if [[ -z "$tag" ]]; then
+            tag="$(git tag -l 'v*-rc.*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' | head -1 || true)"
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo "::error::not an RC tag (vX.Y.Z-rc.N): '$tag'"; exit 1; }
+          sha="$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")" || { echo "::error::no tag $tag"; exit 1; }
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+          echo "RC_SHA=$sha" >>"$GITHUB_ENV"
+      - name: CI's runs on the RC's commit
+        # The only step with the token: gh only, before any repository code.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RC_SHA&event=push&branch=master&per_page=100" \
+            >"$RUNNER_TEMP/ci-runs.json"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: CI passed on the RC's commit
+        # A successful run of ci.yml for a push to master at exactly RC_SHA
+        # (a re-run that passed counts). No dependencies, no token.
+        run: node scripts/ci-passed.mjs "$RC_SHA" "$RUNNER_TEMP/ci-runs.json"
+
+  promote-check:
+    needs: promote-ci
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'promote' &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    # After promote-ci (CI passed on the RC's commit): tests what is unique
+    # to the release, the X.Y.Z tarball itself. No lint, tests or Playwright.
+    permissions:
+      contents: read
     timeout-minutes: 20
     env:
       # Inputs reach the shell as variables, never pasted into scripts.
       RC_INPUT: ${{ inputs.rc }}
       NEXT_INPUT: ${{ inputs.next }}
+      # The RC promote-ci found CI passed on.
+      CI_TAG: ${{ needs.promote-ci.outputs.tag }}
+      CI_SHA: ${{ needs.promote-ci.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -342,18 +398,13 @@ jobs:
           echo "RC_DIR=$RUNNER_TEMP/rc" >>"$GITHUB_ENV"
           RC_DIR="$RUNNER_TEMP/rc"
           git worktree add --detach "$RC_DIR" "refs/tags/$TAG"
-          echo "RC_SHA=$(git rev-parse "refs/tags/$TAG^{commit}")" >>"$GITHUB_ENV"
-      - name: CI's runs on the RC's commit
-        # gh only (no repo code) with the token, before the RC's install.
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RC_SHA&event=push&branch=master&per_page=100" \
-            >"$RUNNER_TEMP/ci-runs.json"
-      - name: CI passed on the RC's commit
-        # Master's release.ts: a successful run of ci.yml for a push to
-        # master at exactly RC_SHA (a re-run that passed counts).
-        run: pnpm exec tsx scripts/release.ts ci:ci-passed "$RC_SHA" "$RUNNER_TEMP/ci-runs.json"
+          sha="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          # The RC promote-ci checked: the same tag at the same commit.
+          if [[ "$TAG" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then
+            echo "::error::planned $TAG at $sha, but promote-ci checked $CI_TAG at $CI_SHA"
+            exit 1
+          fi
+          echo "RC_SHA=$sha" >>"$GITHUB_ENV"
       - name: Install the RC
         # What builds the tarball (prepack); nothing of the suite runs.
         working-directory: ${{ runner.temp }}/rc
@@ -379,6 +430,9 @@ jobs:
               process.exit(1);
             }' "$RUNNER_TEMP/build-info.json" "$RELEASE" "$RC_SHA"
           echo "TGZ=$tgz" >>"$GITHUB_ENV"
+          # Hashed now: the manifest must be of the file packed, untouched by
+          # the smoke test.
+          echo "PACKED_SHA256=$(sha256sum "$tgz" | cut -d' ' -f1)" >>"$GITHUB_ENV"
       - name: Pack smoke test, on the release tarball
         # Master's pack-smoke.mjs (the RC's may not take a tarball): installs
         # this very tarball globally and runs crb from it.
@@ -390,6 +444,12 @@ jobs:
         run: |
           out="$RUNNER_TEMP/release"
           pnpm exec tsx scripts/release.ts ci:manifest "$TGZ" "$RELEASE" "$TAG" "$RC_SHA" "$NEXT_INPUT" >"$out/manifest.json"
+          node -e '
+            const m = require(process.argv[1]);
+            if (m.sha256 !== process.argv[2]) {
+              console.error(`the tarball is ${m.sha256} now, ${process.argv[2]} when packed`);
+              process.exit(1);
+            }' "$out/manifest.json" "$PACKED_SHA256"
           {
             echo "### Ready to publish carbonless-review@$RELEASE from $TAG"
             echo

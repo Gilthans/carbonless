@@ -12,10 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Script } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { checkCiPassed } from "./ci-passed.mjs";
 import { rcMoveTo } from "./rc-fixup.mjs";
 import {
 	bump,
-	checkCiPassed,
 	checkRcPublish,
 	compareVersions,
 	finishPlan,
@@ -594,6 +594,56 @@ describe("promote: CI passed on the RC's commit", () => {
 		expect(() =>
 			checkCiPassed(JSON.stringify({ workflow_runs: [] }), "HEAD", REPO),
 		).toThrow("not a commit: HEAD");
+	});
+
+	it("runs as the workflow runs it: plain node, no dependencies, the repository from the environment", () => {
+		const dir = mkdtempSync(join(tmpdir(), "crb-ci-passed-"));
+		try {
+			const file = join(dir, "runs.json");
+			const cli = (
+				runs: Record<string, unknown>[],
+				env: Record<string, string> = { GITHUB_REPOSITORY: REPO },
+			) => {
+				writeFileSync(file, JSON.stringify({ workflow_runs: runs }));
+				try {
+					const out = execFileSync(
+						process.execPath,
+						[join(import.meta.dirname, "ci-passed.mjs"), SHA, file],
+						{
+							encoding: "utf8",
+							stdio: "pipe",
+							env: { PATH: process.env.PATH, ...env },
+						},
+					);
+					return { code: 0, out };
+				} catch (error) {
+					const e = error as { status: number; stderr: string };
+					return { code: e.status, out: e.stderr };
+				}
+			};
+			expect(cli([run()])).toEqual({
+				code: 0,
+				out: `CI passed on ${SHA} (run 41)\n`,
+			});
+			expect(cli([run({ conclusion: "failure" })])).toEqual({
+				code: 1,
+				out: `error: CI did not pass on ${SHA} (run 41: failure): re-run it, or promote another RC\n`,
+			});
+			// Another repository's run doesn't count.
+			expect(cli([run()], { GITHUB_REPOSITORY: "fork/repo" }).code).toBe(1);
+			expect(cli([run()], {}).code).toBe(2);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+		// Node built-ins only.
+		const source = readFileSync(
+			join(import.meta.dirname, "ci-passed.mjs"),
+			"utf8",
+		);
+		expect(source.match(/^import .* from "([^"]+)";$/gm)).toEqual([
+			'import { readFileSync } from "node:fs";',
+			'import { fileURLToPath } from "node:url";',
+		]);
 	});
 });
 
@@ -1539,6 +1589,7 @@ const DISPATCH_GUARD = [
 const RELEASE_GUARDS: Record<string, string[]> = {
 	"rc-build": WORKFLOW_RUN_GUARD,
 	"rc-publish": WORKFLOW_RUN_GUARD,
+	"promote-ci": DISPATCH_GUARD,
 	"promote-check": DISPATCH_GUARD,
 	"promote-stage": DISPATCH_GUARD,
 	fixup: DISPATCH_GUARD,
@@ -1812,77 +1863,165 @@ describe("release-finish: each step only once", () => {
 		}
 	});
 
-	it("promote checks CI passed and smoke-tests the release tarball; it doesn't run the suite again", () => {
-		const check = new Map(jobs(workflow("release.yml"))).get("promote-check");
-		expect(check).toBeDefined();
-		const job = code(check ?? "");
-		// Least privilege: read the code, read CI's runs.
-		expect(
+	it("promote checks CI passed in a job of its own, smoke-tests the release tarball, and doesn't run the suite again", () => {
+		const byName = new Map(jobs(workflow("release.yml")));
+		const ci = code(byName.get("promote-ci") ?? "");
+		const job = code(byName.get("promote-check") ?? "");
+		expect(ci).not.toBe("");
+		expect(job).not.toBe("");
+		/** A job's permissions, without comments. */
+		const permissions = (text: string) =>
 			/^ {4}permissions:\n((?: {6}.*\n)+)/m
-				.exec(job)?.[1]
-				?.replace(/ +#.*$/gm, ""),
-		).toBe("      contents: read\n      actions: read\n");
-		// No lint, typecheck, unit tests or Playwright: CI ran them.
+				.exec(text)?.[1]
+				?.replace(/ +#.*$/gm, "");
+		// Least privilege: only promote-ci reads CI's runs.
+		expect(permissions(ci)).toBe("      contents: read\n      actions: read\n");
+		expect(permissions(job)).toBe("      contents: read\n");
+		expect(job).toMatch(/^ {4}needs: promote-ci$/m);
+		/** Each text's index in `text`, which must be increasing. */
+		const inOrder = (text: string, parts: string[]) => {
+			const at = parts.map((part) => {
+				const i = text.indexOf(part);
+				expect(i, part).toBeGreaterThan(-1);
+				return i;
+			});
+			expect(at).toEqual([...at].sort((a, b) => a - b));
+		};
+		// promote-ci: git, then gh with the token, then the dependency-free
+		// judge. No install, no dependency code at all.
+		expect(ci).not.toMatch(DEPENDENCY_CODE);
+		inOrder(ci, [
+			"actions/checkout@",
+			'git rev-parse --verify --quiet "refs/tags/$tag^{commit}"',
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+			"GH_TOKEN: ${{ github.token }}",
+			"actions/workflows/ci.yml/runs?head_sha=$RC_SHA&event=push&branch=master",
+			'node scripts/ci-passed.mjs "$RC_SHA" "$RUNNER_TEMP/ci-runs.json"',
+		]);
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+		expect(ci).toContain("tag: ${{ steps.rc.outputs.tag }}");
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+		expect(ci).toContain("sha: ${{ steps.rc.outputs.sha }}");
+		// promote-check: no token, no lint, typecheck, unit tests or
+		// Playwright (CI ran them).
+		expect(job).not.toMatch(/github\.token|GITHUB_TOKEN|\bgh /);
 		const runs = runValues(job).join("\n");
 		expect(runs).not.toMatch(
 			/pnpm (lint|typecheck|test|test:e2e|test:pack|verify)\b|playwright|vitest/,
 		);
 		expect(job).not.toMatch(/playwright-report|test-results/);
-		// In order: plan, CI passed at the RC's commit (before the RC's
-		// install), pack, the smoke test on that very tarball, the manifest.
-		const at = (text: string) => {
-			const i = job.indexOf(text);
-			expect(i, text).toBeGreaterThan(-1);
-			return i;
-		};
-		const order = [
+		// In order: plan, the RC promote-ci checked (same tag and commit), the
+		// RC's install, pack (hashed), the smoke test on that very tarball,
+		// the manifest of the unchanged file.
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+		expect(job).toContain("CI_TAG: ${{ needs.promote-ci.outputs.tag }}");
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+		expect(job).toContain("CI_SHA: ${{ needs.promote-ci.outputs.sha }}");
+		inOrder(job, [
 			"ci:promote-plan",
 			'git worktree add --detach "$RC_DIR"',
-			"actions/workflows/ci.yml/runs?head_sha=$RC_SHA&event=push&branch=master",
-			'ci:ci-passed "$RC_SHA" "$RUNNER_TEMP/ci-runs.json"',
+			'if [[ "$TAG" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
 			"name: Install the RC",
 			"ci:set-version",
 			'pnpm pack --pack-destination "$out"',
 			'echo "TGZ=$tgz" >>"$GITHUB_ENV"',
+			'PACKED_SHA256=$(sha256sum "$tgz"',
 			'node scripts/pack-smoke.mjs "$TGZ"',
 			'ci:manifest "$TGZ"',
+			'"$out/manifest.json" "$PACKED_SHA256"',
 			"name: checked",
-		].map(at);
-		expect(order).toEqual([...order].sort((a, b) => a - b));
+		]);
+		// CI runs the smoke test's tarball mode, as promote does.
+		inOrder(code(workflow("ci.yml")), [
+			'pnpm pack --pack-destination "$RUNNER_TEMP/pack"',
+			'node scripts/pack-smoke.mjs "$RUNNER_TEMP"/pack/carbonless-review-*.tgz',
+		]);
 	});
 
-	it("in the release workflow the token reaches no step that runs repo or dependency code", () => {
-		/** Steps of a workflow's jobs that have github.token, as [job, step]. */
-		const withToken = (text: string) =>
-			jobs(text).flatMap(([name, job]) =>
-				job
-					.split(/\n(?= {6}- )/)
-					.filter((step) => step.startsWith("      - "))
-					.filter((step) => /github\.token/.test(code(step)))
-					.map((step) => [name, step] as const),
-			);
+	it("in the release workflow the token reaches no step that runs repo or dependency code, nor one after such a step", () => {
+		/** Repository or dependency code. */
+		const REPO_CODE = new RegExp(
+			`${DEPENDENCY_CODE.source}|scripts/|\\buses: \\./`,
+		);
+		/** A job's steps (its header, before `steps:`, apart). */
+		const parts = (job: string) => {
+			const [header = "", ...steps] = job.split(/\n(?= {6}- )/);
+			return { header, steps };
+		};
+		/** Where the token is in a workflow, or isn't where it may be. */
+		const problems = (text: string) => {
+			const out: string[] = [];
+			const top = text.slice(0, text.indexOf("\njobs:\n"));
+			if (/github\.token|GITHUB_TOKEN/.test(code(top))) {
+				out.push("workflow: a token outside a step");
+			}
+			for (const [name, job] of jobs(text)) {
+				const { header, steps } = parts(job);
+				if (/github\.token|GITHUB_TOKEN/.test(code(header))) {
+					out.push(`${name}: a token in the job's env`);
+				}
+				let ranCode = false;
+				for (const step of steps) {
+					const body = code(step);
+					const token = /github\.token|GITHUB_TOKEN/.test(body);
+					if (token && REPO_CODE.test(body)) {
+						out.push(`${name}: a token next to repo code`);
+					}
+					if (token && ranCode) {
+						out.push(`${name}: a token after repo code ran`);
+					}
+					if (REPO_CODE.test(body)) ranCode = true;
+				}
+			}
+			return out;
+		};
 		const release = workflow("release.yml");
-		const steps = withToken(release);
-		expect(steps.map(([name]) => name).sort()).toEqual([
-			"promote-check",
-			"rc-build",
-			"rc-publish",
-		]);
-		for (const [name, step] of steps) {
-			expect(code(step), name).not.toMatch(DEPENDENCY_CODE);
-			expect(code(step), name).not.toMatch(/\bnode\b|scripts\//);
+		expect(problems(release)).toEqual([]);
+		const withToken = jobs(release)
+			.filter(([, job]) => /github\.token/.test(code(job)))
+			.map(([name]) => name)
+			.sort();
+		expect(withToken).toEqual(["promote-ci", "rc-build", "rc-publish"]);
+		// The check catches each way a token could reach repo code.
+		const ciPassed = 'run: node scripts/ci-passed.mjs "$RC_SHA"';
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+		const checkEnv = "      NEXT_INPUT: ${{ inputs.next }}\n";
+		const install =
+			"      - name: Install the RC\n        # What builds the tarball (prepack); nothing of the suite runs.\n";
+		for (const [mutated, problem] of [
+			[
+				release.replace(
+					checkEnv,
+					`${checkEnv}      GH_TOKEN: \${{ github.token }}\n`,
+				),
+				"promote-check: a token in the job's env",
+			],
+			[
+				release.replace(
+					"permissions:\n  contents: read\n",
+					// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+					"permissions:\n  contents: read\nenv:\n  GH_TOKEN: ${{ github.token }}\n",
+				),
+				"workflow: a token outside a step",
+			],
+			[
+				release.replace(
+					ciPassed,
+					`env:\n          GH_TOKEN: \${{ github.token }}\n        ${ciPassed}`,
+				),
+				"promote-ci: a token next to repo code",
+			],
+			[
+				release.replace(
+					install,
+					`      - name: gh\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: gh api user\n${install}`,
+				),
+				"promote-check: a token after repo code ran",
+			],
+		] as const) {
+			expect(mutated).not.toBe(release);
+			expect(problems(mutated)).toContain(problem);
 		}
-		// The check catches a token next to repo code.
-		const ciPassed = "run: pnpm exec tsx scripts/release.ts ci:ci-passed";
-		expect(release).toContain(ciPassed);
-		const mutated = release.replace(
-			ciPassed,
-			`env:\n          GH_TOKEN: \${{ github.token }}\n        ${ciPassed}`,
-		);
-		const bad = withToken(mutated).filter(([, step]) =>
-			DEPENDENCY_CODE.test(code(step)),
-		);
-		expect(bad.map(([name]) => name)).toEqual(["promote-check"]);
 	});
 
 	it("every run: script parses: bash -n, and each `node -e '…'` body as JavaScript", () => {
@@ -2171,6 +2310,8 @@ esac
 			"/.github/",
 			"/scripts/release*.ts",
 			"/scripts/rc-fixup.mjs",
+			"/scripts/ci-passed.mjs",
+			"/scripts/pack-smoke.mjs",
 			"/.npmrc",
 			"/.nvmrc",
 			"/package.json",

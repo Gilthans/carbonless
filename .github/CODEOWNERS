@@ -6,6 +6,9 @@
 /scripts/release*.ts @Gilthans
 /scripts/rc-fixup.mjs @Gilthans
 /scripts/rc-fixup.d.mts @Gilthans
+/scripts/ci-passed.mjs @Gilthans
+/scripts/ci-passed.d.mts @Gilthans
+/scripts/pack-smoke.mjs @Gilthans
 /scripts/build-info.mjs @Gilthans
 # What npm and setup-node read in those workflows' checkout.
 /.npmrc @Gilthans

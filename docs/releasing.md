@@ -105,24 +105,31 @@ publish` checks it again before approving.
 
 CI already ran the whole suite (lint, typecheck, unit tests, the pack
 smoke test, Playwright) on the RC's commit: `rc-build` only runs on CI's
-success for a push to master. So promote (`promote-check`: install, build,
-pack and the smoke test, a few minutes instead of 10–15) doesn't
-run it again (a flaky test can't fail a release that CI passed); it checks
-what is unique to the release:
-1. **CI passed on the RC's commit:** `gh api` (the step's only command
-   with the token: `actions: read`) lists `ci.yml`'s runs at that commit,
-   and `release.ts ci:ci-passed` requires one for event `push` on
-   `master` of this repository at exactly that sha, completed with
-   conclusion `success` (every job). A run re-run green counts (GitHub
-   lists each run's latest attempt). It fails, saying which, when there
-   is none, it failed, or it is still running. It runs before the RC's
-   `pnpm install`.
-2. **The release tarball itself:** the RC packed as `X.Y.Z` (its
-   `build-info.json` must say that version and the RC's commit), then
-   master's `scripts/pack-smoke.mjs` on that very tarball (`pnpm test:pack
-   <tarball>`): installed globally into a temp dir, its `crb --version`,
-   `--help` and `crb serve` answering. The manifest's sha256 is of that
-   file, and the stage job stages only it.
+success for a push to master. So promote doesn't run it again (a flaky
+test can't fail a release that CI passed). It checks what is unique to
+the release, in two jobs; an estimate, not measured yet: a few minutes in
+all, where the suite took 10–15.
+1. **`promote-ci`: CI passed on the RC's commit.** It installs nothing
+   and runs no code of the repository before its token step. git finds
+   the RC (the tag given, else the newest `vX.Y.Z-rc.N`) and its commit;
+   `gh api`, the job's only step with the token (`actions: read`), lists
+   `ci.yml`'s runs at that commit; then `node scripts/ci-passed.mjs` (no
+   dependencies, no token) requires one for event `push` on `master` of
+   this repository at exactly that sha, completed with conclusion
+   `success` (every job). A run re-run green counts (GitHub lists each
+   run's latest attempt). It fails, saying which, when there is none, it
+   failed, or it is still running.
+2. **`promote-check`: the release tarball itself** (after `promote-ci`,
+   with no token at all). It plans the RC again with `release.ts` (on
+   master, not released) and fails unless that is the tag and commit
+   `promote-ci` checked. Then the RC packed as `X.Y.Z` (its
+   `build-info.json` must say that version and the RC's commit, and its
+   sha256 is recorded), and master's `node scripts/pack-smoke.mjs "$TGZ"`
+   on that very tarball: installed globally into a temp dir, its `crb
+   --version`, `--help` and `crb serve` answering. The manifest is of that
+   file, refused if its sha256 changed since the pack, and the stage job
+   stages only it. CI runs the smoke test the same way, on a tarball it
+   packs first; `pnpm test:pack` (in `pnpm verify`) packs its own.
 
 ### The first publish
 
@@ -252,10 +259,14 @@ and none of it reaches a credential.
 All workflows check out with `persist-credentials: false`: the GitHub token
 is not in `.git/config` while `pnpm install`, the build or the tests run.
 Only the steps that reach origin (the tip check, pushing tags and the
-`next/*` branch, the PR, starting the fix-up) get `GITHUB_TOKEN` (git gets
+`next/*` branch, the PR, starting the fix-up, listing CI's runs on the
+RC's commit in `promote-ci`) get `GITHUB_TOKEN` (git gets
 it through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, not
 on its command line). Steps that need tags read the checkout's own (a
-full-history checkout has every tag).
+full-history checkout has every tag). In `release.yml` no job's or the
+workflow's `env` holds the token, and a step with it never follows, in its
+job, a step that runs code of the repository or its dependencies
+(`scripts/release.test.ts` checks both).
 
 ### What GITHUB_TOKEN can't do
 
@@ -501,9 +512,12 @@ the website, approve only the stage id in the promote run's summary.
   re-add it on npmjs.com, then re-run.
 - **promote failed:** nothing is live. "CI has no run / did not pass /
   is still running on <sha>": wait for CI, or re-run its failed jobs on
-  GitHub, then promote again (or promote a newer RC). A failed smoke test
-  or build-info check is a packaging bug: fix it on master and promote
-  the next RC. Otherwise fix and run it again. A version
+  GitHub, then promote again (or promote a newer RC). "planned … but
+  promote-ci checked …": a new RC was tagged between the two jobs; promote
+  again. A failed smoke test or build-info check is a packaging bug: fix
+  it on master and promote the next RC. The smoke test is master's: on an
+  older RC it can fail because master's script expects newer behaviour
+  (its `--help` text, the server's log line); promote the newest RC. Otherwise fix and run it again. A version
   staged by a failed run stays staged until rejected (its stage id is in
   the run's summary; `pnpm release publish` refuses while two entries of
   one version are staged): `npm stage list carbonless-review`, then `npm
