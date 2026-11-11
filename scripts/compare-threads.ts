@@ -1,7 +1,7 @@
 /**
  * Checks carbonless's thread code panes against GitHub (read-only):
  *
- *   pnpm compare-threads <pr-url-or-owner/repo#n> [--as-of <iso>] [--out <dir>]
+ *   pnpm compare-threads <pr-url-or-owner/repo#n> [--as-of <iso>] [--placed-from <iso>] [--out <dir>]
  *
  * Opens the PR the way `crb` does (Session, in-process, with its own cache
  * under <out>/xdg) and reads its threads as the UI is served them (stage
@@ -16,6 +16,15 @@
  * context and deleted rows may differ. Where carbonless's snapshot verdict
  * says `same`, every marked row and the rows before them must match
  * GitHub's hunk exactly.
+ *
+ * `--placed-from <iso>`: a re-review across rounds (C19). Every unresolved
+ * thread opened by that cutoff (the reviewer's first round) is placed by
+ * carbonless into the head of `--as-of` (their next round) and into the
+ * head GitHub's REST `line` is on now (the same head unless the PR moved
+ * on since), and the latter compared with GitHub's `line`: the
+ * Placements table in compare.md. Disagreements are listed, not failed:
+ * GitHub calls a comment outdated when anything in its hunk changed,
+ * carbonless only when its own lines did.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -27,15 +36,23 @@ import { atOrBefore, parseAsOf } from "../src/server/asOf.js";
 import { clonePath } from "../src/server/clone.js";
 import { visibleAt } from "../src/server/commentTime.js";
 import {
+	fetchHeadAsOf,
 	fetchPrMeta,
 	fetchThreadSummaries,
+	type PrRef,
 	resolvePrRef,
 	runGh,
 } from "../src/server/gh.js";
 import { killDetachedGits } from "../src/server/git.js";
 import { Session } from "../src/server/session.js";
 import { type HunkLine, parseDiffHunk } from "../src/shared/diffHunk.js";
-import type { CodeRow, DiffSide, ReviewThread } from "../src/shared/types.js";
+import type { ThreadPlacement } from "../src/shared/rereview/placement.js";
+import type {
+	CodeRow,
+	DiffSide,
+	PlacementsAnswer,
+	ReviewThread,
+} from "../src/shared/types.js";
 
 /** The fields of GitHub's REST review comment this compares against. */
 interface RestComment {
@@ -70,9 +87,64 @@ export interface ThreadResult {
 	notes: string[];
 }
 
+/** How carbonless's placement on GitHub's head compares with GitHub's `line`. */
+export type PlacementKind =
+	| "agree"
+	| "line"
+	| "side"
+	| "path"
+	| "we-unplace"
+	| "we-place-outdated";
+
+export interface PlacementRow {
+	id: string;
+	/** The thread's path as GitHub lists it. */
+	path: string;
+	/** When its opener was published. */
+	opened: string;
+	/** GitHub's place on its head now: "RIGHT 29", "RIGHT 25-26", "outdated", "file". */
+	github: string;
+	/** carbonless's on the as-of head: "placed RIGHT 29", "changed RIGHT 2", "unplaced deleted", "outside file-gone", "file". */
+	ours: string;
+	/** carbonless's on GitHub's head now, when that isn't the as-of head; else "". */
+	oursNow: string;
+	kind: PlacementKind;
+	/** For an "agree": how strongly (placementAgreement). */
+	agreement?: PlacementAgreement;
+}
+
+/**
+ * How much an "agree" says: `line-exact` and `file` are both tools on the
+ * same place; the `outdated↔…` ones are GitHub's outdated against a
+ * carbonless outcome other than placed, which agrees by the rule only
+ * (GitHub outdates per hunk, carbonless decides per line).
+ */
+export type PlacementAgreement =
+	| "line-exact"
+	| "file"
+	| "outdated↔changed"
+	| "outdated↔unplaced"
+	| "outdated↔outside";
+
+export interface Placements {
+	placedFrom: string;
+	/** The PR's head at --placed-from, at --as-of (or now), and on GitHub now. */
+	fromHead: string;
+	toHead: string;
+	githubHead: string;
+	rows: PlacementRow[];
+	/** Unresolved threads opened by --placed-from that GitHub lists no REST comment for. */
+	unlisted: number;
+	counts: { total: number; agree: number; disagree: number };
+	/** The agreements by strength, only those that occur. */
+	agreements: Partial<Record<PlacementAgreement, number>>;
+}
+
 export interface Comparison {
 	pr: string;
 	asOf: string | null;
+	/** With --placed-from: thread placement across the two rounds. */
+	placements?: Placements;
 	/** GitHub's state when the PR is over: compared as of now, at its last head. */
 	over: "MERGED" | "CLOSED" | null;
 	threads: ThreadResult[];
@@ -260,10 +332,194 @@ export function compareThread(
 	return result(github, ours);
 }
 
+/** A placement as one cell: "placed RIGHT 29", "unplaced deleted", "file". */
+export function placementCell(p: ThreadPlacement): string {
+	switch (p.kind) {
+		case "placed":
+		case "changed": {
+			const a = p.anchor;
+			return `${p.kind} ${range(a.startSide, a.startLine, a.side, a.line)}`;
+		}
+		case "unplaced":
+			return `unplaced ${p.fate}${p.movedTo ? ` → ${p.movedTo}` : ""}`;
+		case "outside":
+			return `outside ${p.fate}`;
+		case "file":
+			return "file";
+	}
+}
+
+/** GitHub's place for a thread on its head now, from the REST opener. */
+export function githubCell(rest: RestComment): string {
+	if (rest.subject_type === "file") return "file";
+	if (rest.line === null) return "outdated";
+	const side = rest.side ?? "RIGHT";
+	return range(
+		rest.start_side ?? side,
+		rest.start_line ?? rest.line,
+		side,
+		rest.line,
+	);
+}
+
+/**
+ * carbonless's placement on GitHub's head against GitHub's REST `line`
+ * there: the same path, side and end line is "agree"; a line GitHub calls
+ * outdated agrees with anything but "placed" (GitHub outdates a comment
+ * when its hunk changed, carbonless says "changed" or a fate).
+ */
+export function placementKind(
+	ours: ThreadPlacement,
+	rest: RestComment,
+): PlacementKind {
+	if (rest.subject_type === "file") {
+		if (ours.kind !== "file") return "we-unplace";
+		return ours.path === rest.path ? "agree" : "path";
+	}
+	if (rest.line === null) {
+		return ours.kind === "placed" ? "we-place-outdated" : "agree";
+	}
+	if (ours.kind !== "placed" && ours.kind !== "changed") return "we-unplace";
+	const a = ours.anchor;
+	if (a.path !== rest.path) return "path";
+	if (a.side !== (rest.side ?? "RIGHT")) return "side";
+	return a.line === rest.line ? "agree" : "line";
+}
+
+/** An agreement's strength (PlacementAgreement); null for a disagreement. */
+export function placementAgreement(
+	ours: ThreadPlacement,
+	rest: RestComment,
+): PlacementAgreement | null {
+	if (placementKind(ours, rest) !== "agree") return null;
+	if (rest.subject_type === "file") return "file";
+	if (rest.line !== null) return "line-exact";
+	switch (ours.kind) {
+		case "changed":
+			return "outdated↔changed";
+		case "unplaced":
+			return "outdated↔unplaced";
+		case "outside":
+			return "outdated↔outside";
+		default:
+			// A file comment's placement against a line comment's outdated.
+			return "outdated↔outside";
+	}
+}
+
+/** Placements into `head`, once the session's background job has them. */
+async function placedInto(
+	session: Session,
+	head: string,
+	readId: string,
+): Promise<PlacementsAnswer> {
+	for (;;) {
+		const answer = await session.placements({ head }, readId);
+		if (!("pending" in answer)) return answer;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+}
+
+/**
+ * The Placements table (--placed-from): every unresolved thread published
+ * by `placedFrom` in the session's read (as of a cutoff every thread reads
+ * unresolved: GitHub doesn't say when one was resolved), placed into the
+ * session's head and into GitHub's head now, compared with GitHub's REST
+ * `line`. Placement traces each thread from its own commit, so no patch
+ * set is needed (and an as-of review is one per cutoff, so a first
+ * round's patch set couldn't be found from the second's anyway).
+ */
+async function comparePlacements(
+	session: Session,
+	ref: PrRef,
+	placedFrom: string,
+	over: boolean,
+): Promise<Placements> {
+	const [meta, overview, rest, summaries] = await Promise.all([
+		fetchPrMeta(ref),
+		session.overview(),
+		restComments(ref.owner, ref.repo, ref.number),
+		fetchThreadSummaries(ref),
+	]);
+	const fromHead = await fetchHeadAsOf(ref, placedFrom);
+	const toHead = session.snapshot().head;
+	const githubHead = meta.headOid;
+	const served = await session.threads(overview.readId, "full");
+	const byNode = new Map(
+		rest.filter((c) => c.in_reply_to_id == null).map((c) => [c.node_id, c]),
+	);
+	const opened = new Map<string, { at: string; node: string }>();
+	for (const raw of summaries as {
+		id: string;
+		first?: { nodes?: { id?: string }[] };
+	}[]) {
+		const opener = raw.first?.nodes?.[0];
+		const at = visibleAt(opener);
+		if (at !== null && atOrBefore(at, placedFrom)) {
+			opened.set(raw.id, { at, node: opener?.id ?? "" });
+		}
+	}
+	const ours = await placedInto(session, toHead, overview.readId);
+	// GitHub's `line` is on its head now: placed there too when the PR
+	// moved on (a merged or closed PR's last head is the as-of one).
+	const now =
+		githubHead === toHead || over
+			? ours
+			: await placedInto(session, githubHead, overview.readId);
+	const placement = (a: PlacementsAnswer, id: string) =>
+		a.threads.find((t) => t.id === id)?.placement;
+	const rows: PlacementRow[] = [];
+	let unlisted = 0;
+	for (const t of served.threads) {
+		const when = opened.get(t.id);
+		if (!when || t.resolved) continue;
+		const r = byNode.get(when.node);
+		const mine = placement(ours, t.id);
+		const mineNow = placement(now, t.id);
+		if (!r || !mine || !mineNow) {
+			unlisted++;
+			continue;
+		}
+		rows.push({
+			id: t.id,
+			path: r.path,
+			opened: when.at,
+			github: githubCell(r),
+			ours: placementCell(mine),
+			oursNow: now === ours ? "" : placementCell(mineNow),
+			kind: placementKind(mineNow, r),
+			...((a) => (a ? { agreement: a } : {}))(placementAgreement(mineNow, r)),
+		});
+	}
+	const agree = rows.filter((r) => r.kind === "agree").length;
+	const agreements: Placements["agreements"] = {};
+	for (const r of rows) {
+		if (r.agreement) {
+			agreements[r.agreement] = (agreements[r.agreement] ?? 0) + 1;
+		}
+	}
+	return {
+		placedFrom,
+		fromHead,
+		toHead,
+		githubHead,
+		rows,
+		unlisted,
+		counts: { total: rows.length, agree, disagree: rows.length - agree },
+		agreements,
+	};
+}
+
 /** Opens `pr` as crb does and compares every thread it serves with GitHub. */
 export async function compareThreads(
 	pr: string,
-	options: { asOf?: string; cwd?: string; progress?: (m: string) => void } = {},
+	options: {
+		asOf?: string;
+		/** A first round's cutoff: the Placements table (comparePlacements). */
+		placedFrom?: string;
+		cwd?: string;
+		progress?: (m: string) => void;
+	} = {},
 ): Promise<Comparison> {
 	const cwd = options.cwd ?? process.cwd();
 	let asOf = options.asOf;
@@ -353,9 +609,13 @@ export async function compareThreads(
 			}
 		}
 		const count = (f: (t: ThreadResult) => boolean) => threads.filter(f).length;
+		const placements = options.placedFrom
+			? await comparePlacements(session, ref, options.placedFrom, over !== null)
+			: undefined;
 		return {
 			pr: `${ref.owner}/${ref.repo}#${ref.number}`,
 			asOf: asOf ?? null,
+			...(placements ? { placements } : {}),
 			over,
 			threads,
 			counts: {
@@ -398,10 +658,53 @@ Checks per line comment, against GitHub's REST review comment: path, commit, sid
 | # | path | GitHub | ours | source | snapshot | match | causes; notes |
 |---|---|---|---|---|---|---|---|
 ${rows.join("\n")}
+${c.placements ? renderPlacements(c.placements) : ""}`;
+}
+
+const short = (oid: string) => oid.slice(0, 7);
+
+const STRENGTH_ORDER: PlacementAgreement[] = [
+	"line-exact",
+	"file",
+	"outdated↔changed",
+	"outdated↔unplaced",
+	"outdated↔outside",
+];
+
+/** " (2 line-exact, 11 outdated↔changed)", or "" with nothing agreeing. */
+function strengths(p: Placements): string {
+	const parts = STRENGTH_ORDER.flatMap((k) =>
+		p.agreements[k] ? [`${p.agreements[k]} ${k}`] : [],
+	);
+	return parts.length ? ` (${parts.join(", ")})` : "";
+}
+
+/** compare.md's Placements section (--placed-from). */
+export function renderPlacements(p: Placements): string {
+	const moved = p.githubHead !== p.toHead;
+	const rows = p.rows.map(
+		(r, i) =>
+			`| ${i + 1} | ${cell(r.path)} | ${r.opened} | ${cell(r.github)} | ${cell(r.ours)} |${moved ? ` ${cell(r.oursNow)} |` : ""} ${r.kind}${r.agreement ? ` (${r.agreement})` : ""} |`,
+	);
+	return `
+## Placements
+
+Unresolved threads opened by ${p.placedFrom} (head ${short(p.fromHead)}), placed by carbonless into ${short(p.toHead)}${moved ? ` and into GitHub's head now, ${short(p.githubHead)}` : ""}, against GitHub's REST \`line\` on ${short(p.githubHead)}: ${p.counts.agree}/${p.counts.total} agree${strengths(p)}, ${p.counts.disagree} disagree${p.unlisted ? `, ${p.unlisted} not listed by GitHub's REST` : ""}.
+
+Kinds: agree; line, side, path (both place it, elsewhere); we-unplace (GitHub places it, carbonless lists it unplaced or outside); we-place-outdated (GitHub calls it outdated, carbonless places it on the same text).
+
+GitHub's outdated agrees with every carbonless outcome except placed: GitHub outdates a comment when anything in its hunk changed, carbonless decides per line. So only line-exact and file agreements say both tools put the thread in the same place; an outdated↔changed, outdated↔unplaced or outdated↔outside agreement only says neither keeps it on its old line.
+
+| # | path | opened | GitHub | ours on ${short(p.toHead)} |${moved ? ` ours on ${short(p.githubHead)} |` : ""} kind |
+|---|---|---|---|---|${moved ? "---|" : ""}---|
+${rows.join("\n")}
 `;
 }
 
-const USAGE = `Usage: pnpm compare-threads <pr-url-or-owner/repo#n> [--as-of <iso>] [--out <dir>]
+const USAGE = `Usage: pnpm compare-threads <pr-url-or-owner/repo#n> [--as-of <iso>] [--placed-from <iso>] [--out <dir>]
+
+--placed-from: a first round's cutoff; adds the Placements table (threads
+opened by then, placed into the --as-of head, against GitHub's line).
 
 --out defaults to $TMPDIR/crb-compare/<owner>-<repo>-<n>[-asof].
 On a live PR a thread opened mid-run can look "not served": such a
@@ -412,7 +715,11 @@ export async function main(argv: string[]): Promise<number> {
 	const { values, positionals } = parseArgs({
 		args: argv,
 		allowPositionals: true,
-		options: { "as-of": { type: "string" }, out: { type: "string" } },
+		options: {
+			"as-of": { type: "string" },
+			"placed-from": { type: "string" },
+			out: { type: "string" },
+		},
 	});
 	const [pr, ...extra] = positionals;
 	if (!pr || extra.length) {
@@ -421,6 +728,14 @@ export async function main(argv: string[]): Promise<number> {
 	}
 	const asOf =
 		values["as-of"] === undefined ? undefined : parseAsOf(values["as-of"]);
+	const placedFrom =
+		values["placed-from"] === undefined
+			? undefined
+			: parseAsOf(values["placed-from"]);
+	if (placedFrom && asOf && placedFrom >= asOf) {
+		console.error("--placed-from must be before --as-of");
+		return 2;
+	}
 	const ref = await resolvePrRef(pr, process.cwd());
 	const out = resolve(
 		values.out ??
@@ -439,6 +754,7 @@ export async function main(argv: string[]): Promise<number> {
 	try {
 		c = await compareThreads(pr, {
 			asOf,
+			placedFrom,
 			progress: (m) => console.error(`crb: ${m}`),
 		});
 	} finally {
@@ -451,7 +767,7 @@ export async function main(argv: string[]): Promise<number> {
 	);
 	writeFileSync(join(out, "compare.md"), renderMarkdown(c));
 	console.log(
-		`${c.counts.matching}/${c.counts.total} match, ${c.counts.mismatches} mismatches: ${join(out, "compare.md")}`,
+		`${c.counts.matching}/${c.counts.total} match, ${c.counts.mismatches} mismatches${c.placements ? `; placements ${c.placements.counts.agree}/${c.placements.counts.total} agree` : ""}: ${join(out, "compare.md")}`,
 	);
 	return c.counts.mismatches ? 1 : 0;
 }

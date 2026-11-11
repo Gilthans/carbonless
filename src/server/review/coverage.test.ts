@@ -86,6 +86,7 @@ function progressOf(
 		patchset,
 		states: (patchset && statesByRevision.get(patchset.revision)) ?? new Map(),
 		statesByRevision,
+		sinceMarks: new Map(sets.map(([, revision]) => [revision, []])),
 		placements: new Map(),
 	};
 }
@@ -96,6 +97,113 @@ const three = snapshot([
 ]);
 
 describe("buildReviewView", () => {
+	it("a partly reviewed cluster is unreviewed with its reviewed lines; its lines count, the cluster doesn't", () => {
+		const snap = snapshot([
+			file(0, "a.ts", [cluster("k1", 10), cluster("k2", 4)]),
+		]);
+		const view = buildReviewView(
+			snap,
+			progress({
+				k1: { state: "unreviewed", lines: [[2, 5]] },
+				k2: { state: "unreviewed", lines: [[0, 4]] },
+			}),
+		);
+		const [k1, k2] = view.files[0]?.clusters ?? [];
+		expect(k1).toMatchObject({ state: "unreviewed", reviewedLines: [[2, 5]] });
+		// Every line marked one piece at a time: the cluster is reviewed.
+		expect(k2?.state).toBe("reviewed");
+		expect(k2?.reviewedLines).toBeUndefined();
+		expect(view.files[0]?.done).toBe(false);
+		expect(view.progress.clusters).toEqual({
+			total: 2,
+			reviewed: 1,
+			crossedOff: 0,
+		});
+		expect(view.progress.lines).toEqual({
+			total: 14,
+			reviewed: 7,
+			crossedOff: 0,
+		});
+	});
+
+	it("lines crossed off one piece at a time: partly marked, done (reviewed with its crossed lines), or all crossed off", () => {
+		const snap = snapshot([
+			file(0, "a.ts", [cluster("k1", 10), cluster("k2", 4), cluster("k3", 4)]),
+		]);
+		const view = buildReviewView(
+			snap,
+			progress({
+				k1: { state: "unreviewed", lines: [[0, 2]], crossed: [[5, 6]] },
+				k2: { state: "unreviewed", lines: [[0, 3]], crossed: [[3, 4]] },
+				k3: { state: "unreviewed", crossed: [[0, 4]] },
+			}),
+		);
+		const [k1, k2, k3] = view.files[0]?.clusters ?? [];
+		expect(k1).toMatchObject({
+			state: "unreviewed",
+			reviewedLines: [[0, 2]],
+			crossedLines: [[5, 6]],
+		});
+		expect(k2).toMatchObject({ state: "reviewed", crossedLines: [[3, 4]] });
+		expect(k3?.state).toBe("crossed-off");
+		expect(view.progress.lines).toEqual({
+			total: 18,
+			reviewed: 2 + 3,
+			crossedOff: 1 + 1 + 4,
+		});
+		expect(view.progress.clusters).toEqual({
+			total: 3,
+			reviewed: 1,
+			crossedOff: 1,
+		});
+	});
+
+	it("shows the patch set's since marks, never in its progress", () => {
+		const base = progress({});
+		const mark = {
+			since: 1,
+			path: "a.ts",
+			reviewed: { old: [[3, 5]] as [number, number][], new: [] },
+			crossed: { old: [], new: [] },
+		};
+		base.sinceMarks.set(REV, [mark]);
+		const view = buildReviewView(three, base);
+		expect(view.sinceMarks).toEqual([mark]);
+		expect(view.progress.lines.reviewed).toBe(0);
+		expect(buildReviewView(three, progress({})).sinceMarks).toBeUndefined();
+	});
+
+	it("a partial mark past the cluster's lines, or on a file-level cluster, covers nothing (fail closed)", () => {
+		const fileLevel: Cluster = {
+			...cluster("k3", 0),
+			kind: "file",
+			newCount: 0,
+			added: [],
+		};
+		const snap = snapshot([
+			file(0, "a.ts", [cluster("k1", 4), cluster("k2", 4), fileLevel]),
+		]);
+		const view = buildReviewView(
+			snap,
+			progress({
+				k1: { state: "unreviewed", lines: [[0, 5]] },
+				k2: {
+					state: "unreviewed",
+					lines: [
+						[0, 1],
+						[3, 9],
+					],
+				},
+				k3: { state: "unreviewed", lines: [[0, 1]] },
+			}),
+		);
+		for (const c of view.files[0]?.clusters ?? []) {
+			expect(c.state).toBe("unreviewed");
+			expect(c.reviewedLines).toBeUndefined();
+		}
+		expect(view.progress.lines.reviewed).toBe(0);
+	});
+
 	it("clusters without a stored state are unreviewed", () => {
 		const view = buildReviewView(three, progress({ k2: "reviewed" }));
 		expect(

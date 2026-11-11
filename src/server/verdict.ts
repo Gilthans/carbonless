@@ -1,11 +1,13 @@
 import {
 	MAX_REPLY,
 	type PrOverview,
+	type RereviewAnswer,
 	type ReviewVerdict,
 	type VerdictAnswer,
 	type VerdictEvent,
 	type VerdictFacts,
 	type VerdictRequest,
+	type VerdictSince,
 } from "../shared/types.js";
 import { atOrBefore } from "./asOf.js";
 import { WriteRefusedError } from "./errors.js";
@@ -125,10 +127,12 @@ function latestReviews(
 	nodes: unknown[],
 	viewer: string,
 	asOf: string | undefined,
-): Review[] {
+): { reviews: Review[]; yours: Review | null } {
 	/** Each reviewer's latest opinionated review, and latest of any kind. */
 	const opinionated = new Map<string, Review>();
 	const any = new Map<string, Review>();
+	/** The viewer's latest verdict-like review: an opinion, or a Comment with a message. */
+	let verdictLike: Review | undefined;
 	const later = (map: Map<string, Review>, key: string, review: Review) => {
 		const prev = map.get(key);
 		if (!prev || prev.submittedAt <= review.submittedAt) map.set(key, review);
@@ -153,10 +157,23 @@ function latestReviews(
 		};
 		later(any, key, review);
 		if (state !== "COMMENTED") later(opinionated, key, review);
+		if (
+			review.you &&
+			(state !== "COMMENTED" || str(r.body).trim() !== "") &&
+			(!verdictLike || verdictLike.submittedAt <= review.submittedAt)
+		) {
+			verdictLike = review;
+		}
 	}
-	return [...any.keys()]
+	const reviews = [...any.keys()]
 		.map((key) => standingOf(opinionated.get(key), any.get(key) as Review))
 		.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+	const mine = reviews.find((r) => r.you);
+	const opinion = mine ? opinionated.get(mine.author.toLowerCase()) : undefined;
+	return {
+		reviews,
+		yours: verdictLike ? standingOf(opinion, verdictLike) : null,
+	};
 }
 
 /**
@@ -212,6 +229,7 @@ export function mapVerdict(input: {
 			];
 		})
 		.sort((a, b) => CHECK_ORDER[a.status] - CHECK_ORDER[b.status]);
+	const latest = latestReviews(read.reviews, viewer, asOf);
 	const codeOwnerRequests: VerdictFacts["codeOwnerRequests"] = [];
 	// Who GitHub asks now: not known as of a cutoff.
 	for (const raw of asOf ? [] : arr(obj(pr.reviewRequests).nodes)) {
@@ -237,9 +255,108 @@ export function mapVerdict(input: {
 		checks,
 		rule: open ? input.rule : null,
 		codeOwnerRequests,
-		reviews: latestReviews(read.reviews, viewer, asOf),
+		reviews: latest.reviews,
+		yourVerdict: latest.yours,
 		head: read.head,
 		fetchedAt: input.fetchedAt,
+		// Worked out when served (Session.verdict, sinceTarget), never kept.
+		since: null,
+	};
+}
+
+/** What VerdictFacts.since compares: the verdict, its patch set, the head a verdict goes on now. */
+export type SinceTarget = Omit<VerdictSince, "changes">;
+
+/**
+ * The reviewer's own verdict (VerdictFacts.yourVerdict), the
+ * patch set it was given on (among those whose head is the verdict's
+ * commit, the latest started by the verdict's time: a retarget keeps the
+ * head and starts another; the earliest when none was, a clock apart),
+ * and where a verdict goes now: the PR's head when it isn't the latest
+ * patch set's snapshot (`head` and its merge base, as the head check last
+ * found them; null
+ * when none is shown: pinned, as-of, merged or closed), else the latest
+ * patch set's head. Null when there is no verdict, its commit is none of
+ * the reviewer's patch sets' heads (given elsewhere, before any patch
+ * set), or it is on the head a verdict goes on now (nothing since).
+ */
+export function sinceTarget(input: {
+	verdict: VerdictFacts["yourVerdict"];
+	patchsets: readonly {
+		number: number;
+		head: string;
+		mergeBase: string;
+		startedAt: number;
+	}[];
+	head: { oid: string; mergeBase: string } | null;
+}): SinceTarget | null {
+	const mine = input.verdict;
+	if (!mine || mine.commitId === "") return null;
+	const byNumber = [...input.patchsets].sort((a, b) => b.number - a.number);
+	const onIt = byNumber.filter((p) => p.head === mine.commitId);
+	// GitHub's times are whole seconds; the patch set starts before the post.
+	const at = Date.parse(mine.submittedAt) + 1000;
+	const given = onIt.find((p) => p.startedAt <= at) ?? onIt.at(-1);
+	const latest = byNumber[0];
+	if (!given || !latest) return null;
+	const head = input.head;
+	const to =
+		head && (head.oid !== latest.head || head.mergeBase !== latest.mergeBase)
+			? {
+					head: head.oid,
+					// Moved back onto an earlier patch set's snapshot (S6): that
+					// one. The same head on another merge base is another
+					// snapshot, none of the reviewer's.
+					patchset:
+						byNumber.find(
+							(p) => p.head === head.oid && p.mergeBase === head.mergeBase,
+						)?.number ?? null,
+				}
+			: { head: latest.head, patchset: latest.number };
+	if (to.head === mine.commitId) return null;
+	return {
+		state: mine.state,
+		head: mine.commitId,
+		at: mine.submittedAt,
+		...(mine.url ? { url: mine.url } : {}),
+		patchset: given.number,
+		to,
+	};
+}
+
+/**
+ * VerdictFacts.since from its target and the engine's answer from the
+ * verdict's patch set to `to` (Session.rereview): pending while it is
+ * computed, failed with the error's message, else the counts, every one
+ * from the answer (the clusters' kinds, its files to read, its shape).
+ */
+export function sinceOf(
+	target: SinceTarget,
+	answer: RereviewAnswer | { pending: true } | { error: string },
+): VerdictSince {
+	if ("pending" in answer) return { ...target, changes: { status: "pending" } };
+	if ("error" in answer) {
+		return {
+			...target,
+			changes: { status: "failed", message: answer.error },
+		};
+	}
+	const count = { reworked: 0, new: 0, gone: 0 };
+	for (const file of answer.files) {
+		for (const c of file.clusters) {
+			if (c.kind !== "carried") count[c.kind] += 1;
+		}
+	}
+	return {
+		...target,
+		changes: {
+			status: "done",
+			shape: answer.shape.code,
+			commits: answer.shape.commits,
+			files: answer.toRead.files,
+			...count,
+			identical: answer.shape.identical,
+		},
 	};
 }
 

@@ -108,6 +108,8 @@ function thread(id: string, more: Partial<ReviewThread> = {}): ReviewThread {
 const threads = [thread("t1"), thread("t2", { author: "octo" })];
 
 const facts: VerdictFacts = {
+	since: null,
+	yourVerdict: null,
 	mergeStateStatus: "BLOCKED",
 	reviewDecision: "CHANGES_REQUESTED",
 	checks: [

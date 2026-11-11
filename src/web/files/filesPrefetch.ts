@@ -6,7 +6,7 @@ import { threadOrder } from "./threadPlacement";
  * first (`open`, an index into `files`), then the other files in file
  * order; in each file, file comments, then top down (threadOrder, with the
  * file's hunks when `hunksOf` has them). `threads` are those on the viewed
- * head (threadsOnHead); threads on files not shown are left out.
+ * head (shownThreads); threads on files not shown are left out.
  */
 export function filesPrefetchOrder<F extends { path: string }>(
 	files: F[],
