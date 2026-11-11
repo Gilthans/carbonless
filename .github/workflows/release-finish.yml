@@ -34,6 +34,10 @@ defaults:
 
 jobs:
   finish:
+    # Only a dispatch of master, as release.yml's dispatched jobs.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

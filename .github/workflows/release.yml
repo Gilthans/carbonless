@@ -280,6 +280,26 @@ jobs:
         env:
           MOVE_TO: ${{ steps.fixup.outputs.move_rc_to }}
         run: npm dist-tag add "carbonless-review@$MOVE_TO" rc
+      - name: Provenance on npm?
+        # npm skips provenance silently when it can't tell the package is
+        # public: fail the run instead. Last, so the tag and rc are done.
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
+        if: env.PUBLISH == 'true' && env.FIRST == 'false'
+        env:
+          TRIES: 10 # the registry can lag: up to ~2.5 minutes
+          WAIT: 15
+        run: |
+          for ((i = 1; i <= TRIES; i++)); do
+            out="$(npm view "carbonless-review@$VERSION" dist.attestations --json --prefer-online 2>/dev/null || true)"
+            if [[ "$out" == *'"provenance"'* ]]; then
+              echo "carbonless-review@$VERSION has provenance: $out"
+              exit 0
+            fi
+            ((i == TRIES)) || sleep "$WAIT"
+          done
+          echo "::error::carbonless-review@$VERSION has no provenance on npm (dist.attestations: ${out:-none})"
+          exit 1
 
   promote-check:
     if: >-

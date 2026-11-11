@@ -1397,6 +1397,108 @@ function jobs(text: string): [string, string][] {
 	return out;
 }
 
+/** A job's `if:` expression (folded or on one line), "" without one. */
+const ifOf = (job: string) => {
+	const m = /^ {4}if: >-\n((?: {6}.*\n?)+)|^ {4}if: (.*)$/m.exec(code(job));
+	if (!m) return "";
+	return (m[1] ?? m[2] ?? "")
+		.split("\n")
+		.map((l) => l.trim())
+		.filter(Boolean)
+		.join(" ");
+};
+
+/** An expression's top-level `&&` terms; throws on a top-level `||`. */
+function conjuncts(expr: string): string[] {
+	const out: string[] = [];
+	let depth = 0;
+	let quoted = false;
+	let term = "";
+	for (let i = 0; i < expr.length; i++) {
+		const ch = expr[i];
+		const two = expr.slice(i, i + 2);
+		if (ch === "'") quoted = !quoted;
+		else if (!quoted && ch === "(") depth++;
+		else if (!quoted && ch === ")") depth--;
+		else if (!quoted && depth === 0 && two === "||") {
+			throw new Error(`a top-level || in ${expr}`);
+		} else if (!quoted && depth === 0 && two === "&&") {
+			out.push(term.trim());
+			term = "";
+			i++;
+			continue;
+		}
+		term += ch;
+	}
+	out.push(term.trim());
+	return out;
+}
+
+/** How a workflow_run job checks out the commit CI ran. */
+// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+const HEAD_SHA = "ref: ${{ github.event.workflow_run.head_sha }}";
+
+/** What every run of these jobs must be: each a top-level conjunct. */
+const WORKFLOW_RUN_GUARD = [
+	"github.event_name == 'workflow_run'",
+	"github.event.workflow_run.event == 'push'",
+	"github.event.workflow_run.head_repository.full_name == github.repository",
+];
+const DISPATCH_GUARD = [
+	"github.event_name == 'workflow_dispatch'",
+	"github.ref == 'refs/heads/master'",
+];
+const RELEASE_GUARDS: Record<string, string[]> = {
+	"rc-build": WORKFLOW_RUN_GUARD,
+	"rc-publish": WORKFLOW_RUN_GUARD,
+	"promote-check": DISPATCH_GUARD,
+	"promote-stage": DISPATCH_GUARD,
+	fixup: DISPATCH_GUARD,
+};
+
+/**
+ * Where a workflow's jobs aren't guarded as `guards` says: every job is
+ * listed, its own `if` has each guard as a top-level conjunct (no `||` can
+ * undo it), and a workflow_run job checks out the commit CI ran, never a
+ * branch name (a fork's PR branch may be called master).
+ */
+function guardProblems(
+	text: string,
+	guards: Record<string, string[]>,
+): string[] {
+	const problems: string[] = [];
+	const found = jobs(text);
+	expect(found.map(([name]) => name).sort()).toEqual(
+		Object.keys(guards).sort(),
+	);
+	for (const [name, job] of found) {
+		let terms: string[];
+		try {
+			terms = conjuncts(ifOf(job));
+		} catch (error) {
+			problems.push(`${name}: ${(error as Error).message}`);
+			continue;
+		}
+		for (const g of guards[name] ?? []) {
+			if (!terms.includes(g)) {
+				const what = /head_repository|github\.ref|event_name|event ==/.exec(
+					g,
+				)?.[0];
+				problems.push(`${name}: no ${what} conjunct (${g})`);
+			}
+		}
+		if (guards[name] === WORKFLOW_RUN_GUARD) {
+			const sha = HEAD_SHA;
+			const checkouts = code(job).split("actions/checkout@").length - 1;
+			const pinned = code(job).split(sha).length - 1;
+			if (checkouts !== pinned || /head_branch/.test(code(job))) {
+				problems.push(`${name}: checks out something other than ${sha}`);
+			}
+		}
+	}
+	return problems;
+}
+
 describe("release-finish: each step only once", () => {
 	const SHA = "a".repeat(40);
 	const manifest = {
@@ -1668,33 +1770,134 @@ describe("release-finish: each step only once", () => {
 		expect(on).toContain(
 			"workflows: [CI]\n    types: [completed]\n    branches: [master]",
 		);
-		// workflow_run fires for a fork's PR too (its branch may be called
-		// master): every job it runs checks for a push of this repository, in
-		// its own `if`, not only through `needs`.
-		const guard = [
-			"github.event_name == 'workflow_run'",
-			"github.event.workflow_run.event == 'push'",
-			"github.event.workflow_run.head_repository.full_name == github.repository",
-		];
-		const ifOf = (job: string) =>
-			/^ {4}if: >-\n((?: {6}.*\n)+)|^ {4}if: (.*)$/m
-				.exec(code(job))
-				?.slice(1)
-				.join("") ?? "";
-		for (const [name, job] of jobs(release)) {
-			const cond = ifOf(job);
-			if (name.startsWith("rc-")) {
-				for (const g of guard) expect(cond, name).toContain(g);
-			} else {
-				// Dispatched: only from master (the `npm` environment's branch
-				// rule is the gate; this keeps a run from another ref from
-				// doing anything at all).
-				expect(cond, name).toContain(
-					"github.event_name == 'workflow_dispatch'",
-				);
-				expect(cond, name).toContain("github.ref == 'refs/heads/master'");
-			}
+		expect(guardProblems(release, RELEASE_GUARDS)).toEqual([]);
+		expect(
+			guardProblems(workflow("release-finish.yml"), {
+				finish: DISPATCH_GUARD,
+			}),
+		).toEqual([]);
+		// The check catches a guard that is there but doesn't hold, and a
+		// checkout of the branch's name instead of the commit CI ran.
+		// rc-publish's guard (the concurrency group has the same words).
+		const push =
+			"      github.event.workflow_run.event == 'push' &&\n      github.event.workflow_run.head_repository";
+		expect(release).toContain(push);
+		for (const [mutated, problem] of [
+			[
+				release.replace(push, push.replace("'push' &&", "'push' || true &&")),
+				/rc-(build|publish): a top-level \|\|/,
+			],
+			[
+				release.replace(
+					"github.event.workflow_run.head_repository.full_name == github.repository &&\n      needs",
+					"needs",
+				),
+				/rc-publish: no head_repository/,
+			],
+			[
+				release.replace(HEAD_SHA, HEAD_SHA.replace("head_sha", "head_branch")),
+				/rc-build: checks out/,
+			],
+			[
+				release.replace(
+					"inputs.mode == 'fixup' &&\n      github.ref == 'refs/heads/master'",
+					"inputs.mode == 'fixup'",
+				),
+				/fixup: no github.ref/,
+			],
+		] as const) {
+			expect(mutated).not.toBe(release);
+			expect(guardProblems(mutated, RELEASE_GUARDS).join("\n")).toMatch(
+				problem,
+			);
 		}
+	});
+
+	it("an RC run fails when npm shows no provenance for the RC, after a bounded wait", () => {
+		const rc = new Map(jobs(workflow("release.yml"))).get("rc-publish") ?? "";
+		const step =
+			rc.split(/\n(?= {6}- )/).find((s) => s.includes("dist.attestations")) ??
+			"";
+		// After the publish (and the tag and rc), only when an RC was published.
+		expect(rc.indexOf("dist.attestations")).toBeGreaterThan(
+			rc.indexOf('npm publish "$TGZ"'),
+		);
+		expect(step).toContain("if: env.PUBLISH == 'true' && env.FIRST == 'false'");
+		expect(step).toContain("TRIES: 10");
+		expect(step).toContain("WAIT: 15");
+		// The script itself, as the runner runs it, with a fake npm.
+		const script = (runValues(step)[0] ?? "")
+			.replace(/^\s*run: \|\n/, "")
+			.replace(/^ {10}/gm, "");
+		expect(script).toContain("npm view");
+		const dir = mkdtempSync(join(tmpdir(), "crb-attest-"));
+		try {
+			const run = (answers: string[]) => {
+				writeFileSync(join(dir, "count"), "0");
+				writeFileSync(
+					join(dir, "npm"),
+					`#!/usr/bin/env bash
+n=$(( $(cat "${dir}/count") + 1 )); echo "$n" >"${dir}/count"
+echo "$*" >>"${dir}/calls"
+case "$(sed -n "\${n}p" "${dir}/answers")" in
+  fail) echo "E500" >&2; exit 1 ;;
+  empty) ;;
+  *) echo '{"url":"https://registry.npmjs.org/-/npm/v1/attestations/x","provenance":{"predicateType":"https://slsa.dev/provenance/v1"}}' ;;
+esac
+`,
+					{ mode: 0o755 },
+				);
+				writeFileSync(join(dir, "answers"), `${answers.join("\n")}\n`);
+				writeFileSync(join(dir, "calls"), "");
+				let code = 0;
+				try {
+					execFileSync(
+						"bash",
+						["--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+						{
+							stdio: "pipe",
+							env: {
+								...process.env,
+								PATH: `${dir}:${process.env.PATH}`,
+								VERSION: "0.2.0-rc.1",
+								TRIES: "3",
+								WAIT: "0",
+							},
+						},
+					);
+				} catch (error) {
+					code = (error as { status?: number }).status ?? -1;
+				}
+				const calls = readFileSync(join(dir, "calls"), "utf8")
+					.split("\n")
+					.filter(Boolean);
+				return { code, calls };
+			};
+			const ok = run(["empty", "fail", "attested"]);
+			expect(ok.code).toBe(0);
+			expect(ok.calls).toEqual(
+				Array(3).fill(
+					"view carbonless-review@0.2.0-rc.1 dist.attestations --json --prefer-online",
+				),
+			);
+			const none = run(["empty", "empty", "empty", "attested"]);
+			expect(none.code).toBe(1);
+			expect(none.calls).toHaveLength(3);
+			expect(run(["fail", "fail", "fail"]).code).toBe(1);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("an expression's top-level conjuncts; a top-level || is refused", () => {
+		expect(conjuncts("a == 'x' && (b || c) && d")).toEqual([
+			"a == 'x'",
+			"(b || c)",
+			"d",
+		]);
+		expect(conjuncts("a && 'p || q'")).toEqual(["a", "'p || q'"]);
+		expect(() => conjuncts("a == 'push' || true && b")).toThrow(/\|\|/);
+		expect(() => conjuncts("a && b || c")).toThrow(/\|\|/);
 	});
 
 	it("no workflow has an npm token; only master's `npm` environment gets OIDC, with no dependency code", () => {

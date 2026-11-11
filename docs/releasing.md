@@ -150,8 +150,15 @@ statement (which repository, workflow run and commit built the version)
 for every RC and every staged release, with no flag: with trusted
 publishing from GitHub Actions npm turns it on when the OIDC token says
 the repository is public and the package is public (`npm stage publish`
-is `npm publish` with staging, the same path). The first release, which
-the owner publishes from their machine, has none.
+is `npm publish` with staging, the same path). But npm skips it silently
+when it can't tell the package is public, so the RC run's last step
+fails unless `npm view carbonless-review@X.Y.Z-rc.N dist.attestations`
+shows a provenance (retrying for up to ~2.5 minutes while the registry
+catches up). A staged release can't be checked that way: npm shows it
+only once approved, and `npm stage view` needs the owner's interactive
+login, not CI's OIDC; the owner checks it after approving (setup, step
+10). The first release, which the owner publishes from their machine, has
+none.
 
 Only three jobs get `id-token: write` (`rc-publish`, `promote-stage`,
 `fixup`), each in the GitHub environment `npm`, which only `master` may
@@ -175,14 +182,19 @@ any version and any tag, `latest` included. So:
   `release.yml` (or to `scripts/rc-fixup.mjs`) merged into master, or a
   compromised action or npm release used there. Whoever can change master
   can publish.
-- What keeps that to the owner, on GitHub: a ruleset on `master` (PRs
-  required, CI green, no direct or force pushes, no bypass), `CODEOWNERS`
-  (the release workflows and scripts are the owner's) with code owners'
-  review required, and the environment `npm` limited to `master` (npm
-  checks the repository, the workflow file and the environment name, not
-  the branch: the environment's branch rule is the only thing that keeps
-  a workflow on another branch from getting npm's credential). Merging
-  only PRs the owner read, on the owner's word, is the rest.
+- What keeps that to the owner: the ruleset on `master` (changes only
+  through PRs, CI green, no force pushes), the environment `npm` limited
+  to `master` (npm checks the repository, the workflow file and the
+  environment name, not the branch: the environment's branch rule is the
+  only thing that keeps a workflow on another branch from getting npm's
+  credential), and the owner's 2FA approval of every staged `latest`.
+  Merging only PRs the owner read, on the owner's word, is the rest.
+- Code owners' review keeps others' PRs that touch `.github/`, the
+  release scripts or `package.json` from merging without the owner. It is
+  no barrier against agents: they act through the owner's GitHub login,
+  so their PRs are the owner's own, which is also why the owner (admin)
+  bypasses the ruleset for pull requests (GitHub never counts an author's
+  own approval).
 - With "Require two-factor authentication and disallow tokens" set on the
   package, no npm token can publish it; the trusted publisher still can.
 - On the owner's machine the OTP approves whatever the code that asks for
@@ -203,9 +215,9 @@ and none of it reaches a credential.
   check in their own `if` that CI ran for a push of this repository
   (`workflow_run.event == 'push'` and `head_repository == repository`),
   so such a run does nothing.
-- The promote and fix-up jobs run only on a dispatch of `master`
-  (`github.ref`), which needs write access; the `npm` environment's
-  branch rule is the gate behind that.
+- The promote and fix-up jobs, and release-finish, run only on a dispatch
+  of `master` (`github.ref`), which needs write access; the `npm`
+  environment's branch rule is the gate behind that.
 - Caches a PR's run writes are scoped to that PR's ref: master's runs never
   restore them.
 `scripts/release.test.ts` checks all of this in the workflow files.
@@ -264,8 +276,12 @@ machine.
 3. **A ruleset on `master`**, Settings → Rules → Rulesets: pull request
    required, status check `checks` (CI) required, require review from code
    owners (`.github/CODEOWNERS` makes `.github/` and the release scripts
-   the owner's), no direct pushes, no force pushes, no deletion, no
-   bypass.
+   the owner's), block force pushes and deletion. Bypass list: the
+   Repository admin role, mode "For pull requests only": direct pushes and
+   force pushes stay blocked for everyone, and the owner can merge their
+   own PRs (agents' PRs are the owner's: GitHub never counts an author's
+   own approval, so without it no PR touching a code-owned path could
+   merge).
 4. **Actions may create PRs**, Settings → Actions → General → Allow GitHub
    Actions to create and approve pull requests (the "next" PR). The
    default workflow permissions stay read-only: every workflow asks for
@@ -296,10 +312,14 @@ machine.
 10. **Merge "next: 0.2.0" within 2 days of step 8**: the trusted publisher
     publishes `0.2.0-rc.1` to `rc` (with provenance). Check `npm view
     carbonless-review dist-tags` (`latest: 0.1.0, rc: 0.2.0-rc.1`) and `npm
-    view carbonless-review@0.1.0 gitHead` (the promoted RC's commit). The
-    "next" PR shows no CI checks until someone pushes to it or closes and
-    reopens it ("What GITHUB_TOKEN can't do"). From here the owner's main
-    follows npm `rc` (machine-specific steps: CLAUDE.local.md).
+    view carbonless-review@0.1.0 gitHead` (the promoted RC's commit), and
+    that `npm view carbonless-review@0.2.0-rc.1 dist.attestations` shows a
+    `provenance` (the run checks it too). The "next" PR shows no CI checks
+    until someone pushes to it or closes and reopens it ("What
+    GITHUB_TOKEN can't do"). From here the owner's main follows npm `rc`
+    (machine-specific steps: CLAUDE.local.md). On the first staged release
+    (0.2.0), after approving it: `npm view carbonless-review@0.2.0
+    dist.attestations` shows a `provenance` too.
 
 From then on a release is: `pnpm release promote` (CI stages it), then
 `pnpm release publish` (the owner approves it with the OTP). Promoting the
