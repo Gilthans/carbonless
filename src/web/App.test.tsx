@@ -2849,6 +2849,11 @@ describe("Timeline", () => {
 });
 
 describe("the thread agent on the Overview", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
 	/** A placements answer already in the cache, as Files changed left it. */
 	const seedPlacements = (client: QueryClient) => {
 		const key = ["agent-placements", "ps:1", "rev1", "A1"];
