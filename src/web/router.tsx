@@ -20,6 +20,8 @@ import { parseOverviewSearch } from "./overview/threadLink";
 import { FilesPage, OverviewPage, VerdictPage } from "./pages";
 import { parseSearch, stringifySearch } from "./search";
 import { ShortcutsProvider } from "./shortcuts";
+import { ToastStack } from "./Toasts";
+import { UpdateToast } from "./UpdateToast";
 
 /**
  * Why the server answered this address with its 404 page (a PR that can't
@@ -49,15 +51,18 @@ export function NotFound({ reason }: { reason?: string | null }) {
 }
 
 /**
- * Every page with its keyboard shortcuts (one listener, the `?` help) and
- * the unsaved-work guard: a review's saves, drafts and thread writes
+ * Every page with its keyboard shortcuts (one listener, the `?` help), its
+ * toasts (crb's update toast among them) and the unsaved-work guard: a review's saves, drafts and thread writes
  * outlive its pages (Home, or the reload to another review, must ask too).
  */
 function Root() {
 	useUnsavedGuard();
 	return (
 		<ShortcutsProvider>
-			<Outlet />
+			<ToastStack>
+				<Outlet />
+				<UpdateToast />
+			</ToastStack>
 		</ShortcutsProvider>
 	);
 }

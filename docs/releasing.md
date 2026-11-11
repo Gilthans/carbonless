@@ -264,6 +264,135 @@ put back on `X.Y.Z` by the same run. Promote and `pnpm release publish`
 refuse a release that isn't newer than `latest`, so `latest` never moves
 back either.
 
+## Updating an installed crb
+
+`crb serve` tells the reviewer when npm has a newer crb and updates itself
+on one click (CAR-108; never automatically). Code: `src/server/update`,
+`src/web/UpdateToast.tsx`.
+
+- **Check.** At start and every 6 hours, crb asks the registry
+  (`$CRB_NPM_REGISTRY`, default `https://registry.npmjs.org`) for
+  `carbonless-review`'s dist-tags and takes its channel's tag. Only a
+  version strictly newer by semver counts. Any failure (offline, a 404
+  before the first publish, a bad answer) is silent.
+- **Channel**, durable: an RC install stays on `rc` for good.
+  - The first time crb runs a prerelease, it writes `rc` to
+    `update-channel` in its state dir. From then on it follows `rc`, also
+    once `rc` has moved onto a release `X.Y.Z` and it runs that release:
+    it is offered `X.Y.Z+1-rc.N` as they come out, never pushed onto
+    `latest`. It is also offered `latest` when that is newer than `rc` (a
+    fix released without moving `rc`), and stays on `rc` after it.
+  - A crb that never ran a prerelease follows `latest`.
+  - `"updates": { "channel": "rc" | "latest" }` in config.json wins over
+    both. Set `"rc"` for an install made from `@rc` while `rc` pointed at
+    a release (it never ran a prerelease, so nothing is remembered). Set
+    `"latest"` to leave `rc`; deleting `update-channel` does too.
+  - A restart keeps the channel: the file and the config outlive it.
+- **Only builds npm served.** The check runs only when the package crb runs
+  from (in some `node_modules`) has a `package.json` whose `gitHead` is the
+  build's own clean commit, at the build's version: CI writes `gitHead` into
+  every RC and release ("The version in a build" above), while `pnpm
+  build`, the dev server, a checkout and `pnpm release local` (what a machine
+  following master installs) have none. Off switches: `CRB_NO_UPDATE_CHECK=1`,
+  or `"updates": { "check": false }` in config.json.
+- **The toast**, on every page: the version (linking to its tag,
+  `https://github.com/Gilthans/carbonless/releases/tag/v<version>`), Update
+  and a dismiss (remembered per version in the browser). Pages poll
+  `/api/update` every 10 minutes, every 5 seconds while an update is on
+  offer, so every open tab sees an update another one started. Toasts share
+  one stack, which sits above the save notices on a phone.
+- **Who installs it**, told from where crb runs (its real path):
+  - npm: `<prefix>/lib/node_modules/carbonless-review` with the `crb` shim
+    in `<prefix>/bin` (Windows: `<prefix>\node_modules\...` and
+    `<prefix>\crb.cmd`). The install is `npm install -g --prefix <prefix>`,
+    run by the prefix's own npm, else the one beside the running node, else
+    PATH's: whichever npm, it goes where crb is.
+  - pnpm: `<PNPM_HOME>/global/<vN>/.../.pnpm/.../carbonless-review`. The
+    install is `pnpm add -g` (with the release-age exemption above) by
+    PNPM_HOME's pnpm (else PATH's), with `PNPM_HOME` set and its bin dir
+    first on PATH (pnpm refuses `add -g` otherwise).
+  - Anything else (yarn, bun, volta, a project's dependency, npx), or a
+    global dir crb can't write (a system node's `/usr/lib/node_modules`):
+    the toast shows the command to copy instead of the button.
+  - Only a checked version (semver, at most 64 characters) reaches a
+    command line; a registry answer over 64 KB is ignored.
+- **Update** asks first when the page has unsaved work (what leaving the
+  page asks about). When crb is back on the new version, a page with
+  nothing unsaved reloads; one with unsaved work (typed while crb was down,
+  or in a tab whose reviewer didn't click Update) shows "Updated" with a
+  Reload button instead, and leaving asks as it always does. A failure
+  shows the install's output and the command, with Retry; dismissing it
+  keeps the offer. No answer within 5 minutes is a failure too.
+- **Restart in place** (no service manager). crb answers "restarting" for
+  6 seconds (so every tab sees it), then exits, freeing its port. A helper,
+  copied to a temp dir of its own (never run from the package being
+  replaced) and started detached with node from the temp dir above it,
+  waits for crb's pid to exit, runs the install, leaves the outcome in the
+  state dir (`update-result.json`, 0600), and starts crb again: node (with
+  crb's node flags) on the new version's `cli.js`, found where the install
+  put it (npm: in place; pnpm: a new dir in its global dir per install),
+  else the old one; the same arguments (on the port it listened on,
+  without `--new-key`), directory and environment. No shell for the
+  restart; on Windows, `npm.cmd`/`pnpm.cmd` go through cmd.exe with every
+  part quoted. The helper logs to `update.log` in the cache dir (0600);
+  the restarted crb logs to `serve.log` in the state dir, as when `crb
+  <pr>` starts it. The helper's config holds crb's environment: 0600,
+  deleted once read, and its dir is removed at the end (or if it never
+  starts).
+- **Under a service manager** that starts crb again, crb installs while it
+  still serves (killed after 10 minutes), then exits for the manager to
+  start the new version (the manager would kill a helper left in its unit,
+  or start crb while the install runs):
+  - systemd, when crb is its unit's main process: exit 75 for
+    `Restart=always`/`on-failure`, 0 for `on-success`, the command for any
+    other. A crb inside a systemd service that isn't its main process (a
+    wrapper script, a shell the unit runs; use `exec`), or one systemctl
+    can't tell about, gets the command, never a helper systemd would kill.
+  - pm2, and anything that sets `CRB_SERVICE=1` in crb's environment
+    (launchd, a Windows service wrapper such as NSSM or WinSW, a
+    container's restart policy): exit 75.
+  - PID 1 without `CRB_SERVICE` (a container that ends with crb): the
+    command.
+  - A failed install leaves crb running and shows the output. The unit's
+    `PATH` must reach the package manager.
+  - ExecStart must run the `crb` shim (`$PNPM_HOME/bin/crb`, npm's
+    `<prefix>/bin/crb`), never a versioned `.../cli.js`: pnpm puts each
+    version in a new directory and rewrites the shim, so a unit pointing at
+    the old `cli.js` would restart the old version (and be offered the same
+    update again). The shims `exec` node, so crb stays the unit's main
+    process.
+  - An rc install under systemd (`crb.service`, `Restart=on-failure`):
+    installs the new RC with the install's own npm or pnpm, exits 75, and
+    systemd starts the new version; the channel keeps it on `rc`. Example,
+    a user unit after `pnpm add -g carbonless-review@rc
+    --config.minimumReleaseAgeExclude=carbonless-review`:
+
+    ```ini
+    # ~/.config/systemd/user/crb.service
+    [Unit]
+    Description=carbonless review server (crb serve)
+    StartLimitIntervalSec=0
+
+    [Service]
+    Type=simple
+    # Node 24's bin dir (yours) and the pnpm bin dir: crb's shim runs
+    # node, and the update runs pnpm.
+    Environment="PATH=/path/to/node-24/bin:%h/.local/share/pnpm/bin:/usr/bin:/bin"
+    ExecStart=%h/.local/share/pnpm/bin/crb serve
+    Restart=on-failure
+    RestartSec=5
+
+    [Install]
+    WantedBy=default.target
+    ```
+
+    and in `~/.config/carbonless/config.json` (rc for good, even when the
+    first version installed from `@rc` is a release):
+
+    ```json
+    { "updates": { "channel": "rc" } }
+    ```
+
 ## Setup (the owner)
 
 In this order. Before any of it: npm two-factor on the account `gilthans`

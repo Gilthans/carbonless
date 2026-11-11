@@ -123,7 +123,23 @@ async function serve(values: {
 	// Loaded here, not at the top: crb <pr> is only a client, and the server
 	// (Fastify and all under it) costs it ~0.4 s of CPU to load.
 	const { startServer } = await import("./server/serve.js");
-	const server = await startServer({
+	let closing = false;
+	let server: Awaited<ReturnType<typeof startServer>> | null = null;
+	const shutdown = async (code = 0) => {
+		// A second Ctrl-C means "now": don't wait for anything.
+		if (closing) process.exit(1);
+		closing = true;
+		// Timed gits run in their own process groups: Ctrl-C missed them.
+		killDetachedGits();
+		try {
+			await server?.close();
+			process.exit(code);
+		} catch (error) {
+			console.error(`crb: shutdown failed: ${(error as Error).message}`);
+			process.exit(1);
+		}
+	};
+	server = await startServer({
 		host: values.host,
 		port,
 		newKey: values["new-key"],
@@ -131,25 +147,15 @@ async function serve(values: {
 			? undefined
 			: fileURLToPath(new URL("./web/", import.meta.url)),
 		log: (message) => console.error(`crb: ${message}`),
+		// An update's restart (src/server/update).
+		exit: (code) => {
+			console.error(`crb: restarting for an update`);
+			void shutdown(code);
+		},
 	});
 
-	let closing = false;
-	const shutdown = async () => {
-		// A second Ctrl-C means "now": don't wait for anything.
-		if (closing) process.exit(1);
-		closing = true;
-		// Timed gits run in their own process groups: Ctrl-C missed them.
-		killDetachedGits();
-		try {
-			await server.close();
-			process.exit(0);
-		} catch (error) {
-			console.error(`crb: shutdown failed: ${(error as Error).message}`);
-			process.exit(1);
-		}
-	};
-	process.on("SIGINT", shutdown);
-	process.on("SIGTERM", shutdown);
+	process.on("SIGINT", () => void shutdown());
+	process.on("SIGTERM", () => void shutdown());
 	// Tests and agents parse this line to find the server.
 	const key = server.key ? `?key=${server.key}` : "";
 	const traced = tracer();
