@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import fastifyStatic from "@fastify/static";
+// Its types (reply.sendFile); the plugin itself loads only with a web root.
+import type {} from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import {
 	type AgentConfig,
@@ -9,6 +10,7 @@ import {
 	MAX_AGENT_TEXT,
 	type OpenAgentThreadRequest,
 } from "../shared/agent.js";
+import { type LineRanges, parseRanges } from "../shared/lineRanges.js";
 import {
 	type ClusterState,
 	COMMENTS_BATCH,
@@ -16,6 +18,7 @@ import {
 	HUNKS_BATCH,
 	type NewThreadRequest,
 	type ReplyRequest,
+	type SinceMark,
 	type StateChange,
 	type ThreadsStage,
 	type VerdictRequest,
@@ -432,22 +435,29 @@ export async function buildApp(
 					read,
 				);
 			});
-			// Several files' hunks at once (the search's prefetch).
-			review.get<{ Querystring: { revision?: unknown; indexes?: unknown } }>(
-				"/files/hunks",
-				(request) => {
-					const revision = revisionParam(request.query.revision);
-					const { indexes: raw } = request.query;
-					if (typeof raw !== "string" || !raw) {
-						throw new BadRequestError("indexes is required");
-					}
-					const indexes = [...new Set(raw.split(",").map(fileIndex))];
-					if (indexes.length > HUNKS_BATCH) {
-						throw new BadRequestError(`At most ${HUNKS_BATCH} files a request`);
-					}
-					return sessionOf(request).fileHunksBatch(revision, indexes);
-				},
-			);
+			// Several files' hunks at once (the search's prefetch); with
+			// `from=<n>`, the since view's (Session.interdiffHunksBatch).
+			review.get<{
+				Querystring: { revision?: unknown; indexes?: unknown; from?: unknown };
+			}>("/files/hunks", (request) => {
+				const revision = revisionParam(request.query.revision);
+				const { indexes: raw, from } = request.query;
+				if (typeof raw !== "string" || !raw) {
+					throw new BadRequestError("indexes is required");
+				}
+				const indexes = [...new Set(raw.split(",").map(fileIndex))];
+				if (indexes.length > HUNKS_BATCH) {
+					throw new BadRequestError(`At most ${HUNKS_BATCH} files a request`);
+				}
+				if (from !== undefined) {
+					return sessionOf(request).interdiffHunksBatch(
+						patchsetParam(from),
+						revision,
+						indexes,
+					);
+				}
+				return sessionOf(request).fileHunksBatch(revision, indexes);
+			});
 			// A file's hunks; with `from=<n>`, the since view's: the interdiff
 			// from patch set n to the snapshot (Session.interdiffHunks).
 			review.get<{
@@ -468,7 +478,12 @@ export async function buildApp(
 			});
 			review.get<{
 				Params: { index: string };
-				Querystring: { revision?: unknown; newFrom?: string; newTo?: string };
+				Querystring: {
+					revision?: unknown;
+					newFrom?: string;
+					newTo?: string;
+					from?: unknown;
+				};
 			}>("/files/:index/context", (request) => {
 				const index = fileIndex(request.params.index);
 				const revision = revisionParam(request.query.revision);
@@ -480,6 +495,18 @@ export async function buildApp(
 				) {
 					throw new BadRequestError(
 						"newFrom and newTo must be line numbers with newFrom <= newTo",
+					);
+				}
+				// With `from=<n>`, the since view's: the interdiff's context
+				// (Session.interdiffContext), numbered as its hunks are.
+				const { from } = request.query;
+				if (from !== undefined) {
+					return sessionOf(request).interdiffContext(
+						patchsetParam(from),
+						revision,
+						index,
+						Number(newFrom),
+						Number(newTo),
 					);
 				}
 				return sessionOf(request).context(
@@ -624,6 +651,25 @@ export async function buildApp(
 			review.get("/agent/threads", async (request) => ({
 				threads: await agentOf(request).threads(),
 			}));
+			// The agent threads placed into a patch set (`ps`) or a head's
+			// snapshot (`head`), by the review threads' tracer.
+			review.get<{ Querystring: { ps?: unknown; head?: unknown } }>(
+				"/agent/placements",
+				(request) => {
+					const { ps, head } = request.query;
+					if ((ps === undefined) === (head === undefined)) {
+						throw new BadRequestError(
+							"ps (a patch set) or head (a commit id), one of them",
+						);
+					}
+					return sessionOf(request).agentPlacements(
+						agentOf(request),
+						ps !== undefined
+							? { patchset: patchsetParam(ps) }
+							: { head: oidParam("head", head) },
+					);
+				},
+			);
 			review.post("/agent/threads", (request) =>
 				agentOf(request).open(parseAgentOpen(request.body)),
 			);
@@ -733,6 +779,8 @@ export async function buildApp(
 			.send(withPrTitle(html, title));
 	};
 	if (webRoot) {
+		// Loaded here: crb serve --api-only (the dev server) never needs it.
+		const { default: fastifyStatic } = await import("@fastify/static");
 		await app.register(fastifyStatic, { root: webRoot });
 		// Client routes (TanStack Router) all load the single page.
 		app.setNotFoundHandler((request, reply) => {
@@ -1056,11 +1104,49 @@ function parseStatesBody(body: unknown): {
 		if (typeof change !== "object" || change === null) {
 			throw fail("Each change must be an object");
 		}
-		const { key, state, reason } = change as Record<string, unknown>;
+		const { key, state, reason, reviewedLines, crossedLines, sinceMark } =
+			change as Record<string, unknown>;
 		if (typeof key !== "string") throw fail("A change's key must be a string");
 		if (typeof state !== "string" || !STATES.includes(state)) {
 			refused.push({ key, message: `Unknown cluster state: ${String(state)}` });
 			return undefined;
+		}
+		if (sinceMark !== undefined) {
+			// Since-only pieces: a mark of its own, checked whole (shape,
+			// path, key, patch set, no lines with it) by the store against the
+			// review (sinceMarkOk), which refuses it by key.
+			return {
+				key,
+				state: state as ClusterState,
+				sinceMark: sinceMark as SinceMark,
+				// Lines with it are refused there too.
+				...(reviewedLines === undefined
+					? {}
+					: { reviewedLines: reviewedLines as LineRanges }),
+				...(crossedLines === undefined
+					? {}
+					: { crossedLines: crossedLines as LineRanges }),
+			};
+		}
+		if (reviewedLines !== undefined || crossedLines !== undefined) {
+			// Part of a cluster: ranges of its lines, with unreviewed only;
+			// whether they fit the cluster is checked against the snapshot.
+			const r = reviewedLines === undefined ? [] : parseRanges(reviewedLines);
+			const x = crossedLines === undefined ? [] : parseRanges(crossedLines);
+			if (!r || !x || state !== "unreviewed" || reason !== undefined) {
+				refused.push({
+					key,
+					message:
+						"reviewedLines and crossedLines must be [start, end) pairs of line indexes, with unreviewed",
+				});
+				return undefined;
+			}
+			return {
+				key,
+				state: "unreviewed",
+				...(reviewedLines === undefined ? {} : { reviewedLines: r }),
+				...(crossedLines === undefined ? {} : { crossedLines: x }),
+			};
 		}
 		if (reason === undefined) return { key, state: state as ClusterState };
 		if (typeof reason !== "string" || reason.length > MAX_REASON) {

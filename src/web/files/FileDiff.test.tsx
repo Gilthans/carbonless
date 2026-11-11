@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { inRouter } from "../../../test/in-router";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { AgentThread } from "../../shared/agent";
 import type {
@@ -21,6 +22,7 @@ import type {
 	SessionInfo,
 } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
+import { AgentPlacingProvider } from "../agent/placeable";
 import { reviewQuery, sessionQuery } from "../api";
 import {
 	type FindMark,
@@ -31,6 +33,8 @@ import { ignoreWhitespace } from "../viewSettings";
 import { contextRanges } from "./contextRanges";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import { SyncNotices } from "./SyncNotices";
+import { unitsFile } from "./since";
+import type { Placements } from "./threadPlacement";
 import type { Unit } from "./unit";
 import { stateSyncFor, useReviewView } from "./useSetStates";
 
@@ -125,6 +129,14 @@ const view = (f: FileView): ReviewView => ({
 type Extra = {
 	onFinished?: () => void;
 	ignoreMarksUntil?: number;
+	/** The since view's units, counted by the meter. */
+	counted?: FileView;
+	/** The tracer's placements of the agent threads (FilesPage's read). */
+	agentPlacements?: Placements;
+	/** In a router (pieces that link: an unplaced row's "near N"). */
+	router?: boolean;
+	/** The agent placements are on their way. */
+	agentPending?: boolean;
 	/** The find's hits on the header's path. */
 	pathFind?: readonly FindMark[];
 };
@@ -135,14 +147,23 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 	return (
 		<>
 			{shown && (
-				<FileDiff
-					file={shown}
-					revision="r1"
-					unit={unit}
-					onFinished={extra.onFinished}
-					ignoreMarksUntil={extra.ignoreMarksUntil}
-					pathFind={extra.pathFind}
-				/>
+				<AgentPlacingProvider
+					value={{
+						placements: extra.agentPlacements ?? null,
+						until: null,
+						pending: extra.agentPending,
+					}}
+				>
+					<FileDiff
+						file={shown}
+						revision="r1"
+						unit={unit}
+						onFinished={extra.onFinished}
+						ignoreMarksUntil={extra.ignoreMarksUntil}
+						counted={extra.counted}
+						pathFind={extra.pathFind}
+					/>
+				</AgentPlacingProvider>
 			)}
 			<SyncNotices />
 		</>
@@ -192,11 +213,12 @@ function setup(
 		staleTime: Number.POSITIVE_INFINITY,
 	});
 	queryClient.setQueryData(reviewQuery().queryKey, view(f));
-	const rendered = render(
+	const shown = () => (
 		<QueryClientProvider client={queryClient}>
 			<Shown unit={unit} {...extra} />
-		</QueryClientProvider>,
+		</QueryClientProvider>
 	);
+	const rendered = render(extra.router ? inRouter(shown) : shown());
 	/** Shows `next` as the server's file, like a reread does. */
 	const rerender = (next: FileView) =>
 		act(async () => {
@@ -586,6 +608,67 @@ describe("FileDiff", () => {
 		);
 		cleanup();
 		setup(f, undefined, hunks, "files");
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("0 / 1");
+	});
+
+	it("in the since view the meter counts the file's units (its pieces), not its clusters", () => {
+		const f = file([cluster("k1", { lines: 10 })]);
+		// Three pieces of k1, one reviewed; and a reverted piece.
+		const units = unitsFile(f, [
+			{
+				index: 0,
+				path: "src/a.ts",
+				kind: "reworked",
+				lines: 2,
+				state: "reviewed",
+				open: 0,
+			},
+			{
+				index: 0,
+				path: "src/a.ts",
+				kind: "reworked",
+				lines: 2,
+				state: "unreviewed",
+				open: 2,
+			},
+			{
+				index: 0,
+				path: "src/a.ts",
+				kind: "reworked",
+				lines: 1,
+				state: "unreviewed",
+				open: 1,
+			},
+			{
+				index: 0,
+				path: "src/a.ts",
+				kind: "reverted",
+				lines: 3,
+				state: "unreviewed",
+				open: 3,
+			},
+		]);
+		setup(f, undefined, hunks, "clusters", { counted: units });
+		const progress = screen.getByRole("progressbar", { name: "File progress" });
+		expect(progress).toHaveTextContent("1 / 4");
+		cleanup();
+		setup(f, undefined, hunks, "lines", { counted: units });
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("2 / 8 lines");
+		cleanup();
+		// A fully carried file in the since view: nothing to read, no numbers.
+		setup(f, undefined, hunks, "clusters", {
+			counted: unitsFile(f, []),
+		});
+		const empty = screen.getByRole("progressbar", { name: "File progress" });
+		expect(empty).toHaveTextContent("Nothing to read");
+		expect(empty).not.toHaveTextContent(/\d/);
+		cleanup();
+		// The full diff: its one cluster.
+		setup(f, undefined, hunks, "clusters");
 		expect(
 			screen.getByRole("progressbar", { name: "File progress" }),
 		).toHaveTextContent("0 / 1");
@@ -1705,7 +1788,7 @@ describe("FileDiff", () => {
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
 
-	it("keeps lines the server didn't return loadable", async () => {
+	it("keeps lines the server didn't return loadable, and says they didn't load", async () => {
 		const { user } = setup(file([cluster("k1")]), () => ({
 			status: 200,
 			body: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18].map((n) => ctx(n, n)),
@@ -1716,7 +1799,12 @@ describe("FileDiff", () => {
 		);
 		expect(await screen.findByText("line 18")).toBeInTheDocument();
 		expect(screen.queryByText("Loading…")).toBeNull();
-		expect(screen.getByText("32 hidden lines")).toBeInTheDocument();
+		// Never a silent "32 hidden lines": the row says so, with Retry.
+		const alert = screen.getByRole("alert");
+		expect(alert).toHaveTextContent("Lines didn't load");
+		expect(
+			within(alert).getByRole("button", { name: "Retry" }),
+		).toBeInTheDocument();
 		expect(
 			screen.getByRole("button", { name: "Load 20 lines below" }),
 		).toBeInTheDocument();
@@ -1875,5 +1963,210 @@ describe("FileDiff: agent threads asked on an earlier head", () => {
 				.getAllByTestId("agent-bubble")
 				.some((b) => b.getAttribute("aria-label")?.includes("on this file")),
 		).toBe(true);
+	});
+});
+
+describe("FileDiff: agent threads traced into the viewed head", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	const OLD = "e".repeat(40);
+	const NOW = "f".repeat(40);
+	const asked = (
+		id: string,
+		line: number,
+		more: Partial<AgentThread> = {},
+	): AgentThread => ({
+		id,
+		anchor: {
+			subject: "line",
+			path: "src/a.ts",
+			commit: OLD,
+			side: "RIGHT",
+			line,
+			startSide: "RIGHT",
+			startLine: line,
+		},
+		openedBy: "human",
+		at: "2026-11-07T10:00:00Z",
+		messages: [
+			{
+				id: "m1",
+				by: "human",
+				at: "2026-11-07T10:00:00Z",
+				text: `About ${line}?`,
+			},
+		],
+		resolved: false,
+		waiting: false,
+		...more,
+	});
+	const deleted = {
+		kind: "unplaced",
+		fate: "deleted",
+		path: "src/a.ts",
+		nearest: { side: "RIGHT", line: 4 },
+	} as const;
+	async function show(threads: AgentThread[], agentPlacements: Placements) {
+		const { queryClient } = setup(
+			file([cluster("k1")]),
+			undefined,
+			hunks,
+			"clusters",
+			{ agentPlacements, router: true },
+		);
+		await act(async () => {
+			queryClient.setQueryData(sessionQuery.queryKey, {
+				snapshotHead: NOW,
+			} as SessionInfo);
+			queryClient.setQueryData(agentThreadsQuery.queryKey, { threads });
+			await new Promise((r) => setTimeout(r, 0));
+		});
+	}
+
+	it("one whose line was deleted is an unplaced row in the lead: the fate sentence, the Original Reviewed Change, its agent card; resolved ones after, muted", async () => {
+		const user = userEvent.setup();
+		const code: AgentThread["code"] = {
+			anchor: {
+				path: "src/a.ts",
+				commit: OLD,
+				side: "RIGHT",
+				line: 5,
+				startSide: "RIGHT",
+				startLine: 5,
+				at: "2026-11-07T10:00:00Z",
+			},
+			source: "clone",
+			rows: [
+				{ kind: "context", oldNo: 4, newNo: 4, text: "four", marked: false },
+				{ kind: "add", oldNo: null, newNo: 5, text: "five", marked: true },
+			],
+		};
+		await show(
+			[asked("R", 6, { resolved: true }), asked("A", 5, { code })],
+			new Map([
+				["A", deleted],
+				["R", deleted],
+			]),
+		);
+		// The closed header counts the unresolved one; it opens the file
+		// and its lead.
+		await user.click(
+			await screen.findByRole("button", {
+				name: /^1 agent thread in this file/,
+			}),
+		);
+		const rows = await screen.findAllByTestId("agent-unplaced");
+		expect(rows.map((r) => r.dataset.thread)).toEqual(["A", "R"]);
+		const [open, quiet] = rows as [HTMLElement, HTMLElement];
+		expect(open).toHaveAttribute("data-fate", "deleted");
+		expect(within(open).getByTestId("unplaced-fate")).toHaveTextContent(
+			"Commented line has been deleted since the review",
+		);
+		expect(within(open).getByTestId("original-code-title")).toHaveTextContent(
+			"Original Reviewed Change",
+		);
+		expect(within(open).getByTestId("original-code-label")).toHaveTextContent(
+			"src/a.ts · line 5",
+		);
+		// The nearest surviving line, as a review thread's row has it.
+		expect(within(open).getByTestId("near-line")).toHaveTextContent("near 4");
+		const card = within(open).getByTestId("agent-thread");
+		expect(card).toHaveClass("border-agent-edge");
+		expect(within(card).queryByTestId("agent-outdated")).toBeNull();
+		// In its bordered row box, as a review thread's.
+		expect(open).toHaveClass("rounded-md", "border", "border-line");
+		// Resolved: after the rest, one quiet line (the fate shortened) that
+		// expands to the full row and collapses again, as a review thread's.
+		expect(quiet).toHaveAttribute("data-resolved", "true");
+		const collapsed = within(quiet).getByTestId("unplaced-collapsed");
+		expect(collapsed).toHaveAccessibleName(
+			"Resolved thread by you: Line deleted. Expand",
+		);
+		expect(within(quiet).queryByTestId("agent-thread")).toBeNull();
+		await user.click(collapsed);
+		const full = screen
+			.getAllByTestId("agent-unplaced")
+			.find((r) => r.dataset.thread === "R") as HTMLElement;
+		expect(within(full).getByTestId("unplaced-fate")).toHaveTextContent(
+			"Commented line has been deleted since the review",
+		);
+		expect(within(full).getByTestId("agent-thread")).toBeTruthy();
+		await user.click(within(full).getByRole("button", { name: "Collapse" }));
+		expect(
+			within(
+				screen
+					.getAllByTestId("agent-unplaced")
+					.find((r) => r.dataset.thread === "R") as HTMLElement,
+			).getByTestId("unplaced-collapsed"),
+		).toBeTruthy();
+		expect(screen.queryByTestId("agent-outdated")).toBeNull();
+	});
+
+	it("while their placements load, a file whose agent threads wait shows a spinner in its agent bubble (closed and open), never an outdated thread", async () => {
+		const user = userEvent.setup();
+		const { queryClient } = setup(
+			file([cluster("k1")]),
+			undefined,
+			hunks,
+			"clusters",
+			{ agentPending: true },
+		);
+		await act(async () => {
+			queryClient.setQueryData(sessionQuery.queryKey, {
+				snapshotHead: NOW,
+			} as SessionInfo);
+			queryClient.setQueryData(agentThreadsQuery.queryKey, {
+				threads: [asked("W", 5)],
+			});
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		const closed = await screen.findByTestId("agent-bubble");
+		expect(closed).toHaveAccessibleName("Placing agent threads in this file");
+		expect(closed).toHaveAttribute("aria-busy", "true");
+		await user.click(closed);
+		const open = await screen.findByRole("button", {
+			name: "Placing agent threads on this file",
+		});
+		expect(open).toHaveAttribute("aria-busy", "true");
+		expect(screen.queryByTestId("agent-thread")).toBeNull();
+		expect(screen.queryByTestId("agent-outdated")).toBeNull();
+	});
+
+	it("one traced onto a line is not in the lead; one the tracer has no place for (failed, not in yet) stays there, outdated", async () => {
+		const user = userEvent.setup();
+		await show(
+			[asked("ON", 5), asked("LOST", 6)],
+			new Map([
+				[
+					"ON",
+					{
+						kind: "placed",
+						anchor: {
+							path: "src/a.ts",
+							startSide: "RIGHT",
+							startLine: 6,
+							side: "RIGHT",
+							line: 6,
+						},
+						changed: false,
+					},
+				],
+			]),
+		);
+		await user.click(
+			await screen.findByRole("button", {
+				name: /^2 agent threads in this file/,
+			}),
+		);
+		const lead = await screen.findAllByTestId("agent-thread");
+		expect(lead.map((c) => c.dataset.thread)).toEqual(["LOST"]);
+		expect(
+			within(lead[0] as HTMLElement).getByRole("img", {
+				name: "Asked on an earlier version (eeeeeee)",
+			}),
+		).toBeTruthy();
 	});
 });

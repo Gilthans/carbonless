@@ -1,6 +1,6 @@
 import { type ReactNode, type Ref, useId } from "react";
 import type { Counts, Progress } from "../../shared/types";
-import { Spinner } from "../Spinner";
+import { SkeletonBar, Spinner } from "../Spinner";
 import {
 	clustersLeft,
 	nothingLeft,
@@ -122,6 +122,17 @@ export function ProgressBar(props: {
 	toRead?: number | null;
 	/** A second row under the counts (an earlier patch set's read-only note). */
 	note?: ReactNode;
+	/**
+	 * The counts wait on the engine (the since view counts its pieces): a
+	 * spinner where the numbers go, never 0 (principle 8).
+	 */
+	pending?: boolean;
+	/**
+	 * Instead of counts, a state of its own (the since view): nothing to
+	 * count there, or its count failed. Never another view's numbers.
+	 * `pending` comes first: a refetch over an earlier empty answer spins.
+	 */
+	instead?: "empty" | "failed";
 }) {
 	const { progress, unit } = props;
 	const toRead =
@@ -157,54 +168,23 @@ export function ProgressBar(props: {
 				<div className="flex shrink-0 items-center gap-2">
 					<UnitPicker unit={unit} onChange={props.onUnitChange} />
 				</div>
-				<div
-					role="progressbar"
-					aria-label="Review progress"
-					aria-valuenow={value}
-					aria-valuemin={0}
-					aria-valuemax={100}
-					aria-valuetext={
-						empty
-							? `Nothing left to review: ${summary}`
-							: `${value}%, ${summary}${hiddenLeft ? `, ${note}` : ""}${
-									typeof toRead === "string" && toRead !== "pending"
-										? `, ${toRead}`
-										: ""
-								}`
-					}
-					// Beside the unit picker even on a phone: the bar stays compact.
-					className="flex min-w-0 flex-1 basis-0 flex-wrap items-center gap-x-3 gap-y-1 sm:flex-nowrap"
-				>
-					{empty ? (
-						<span className="shrink-0 font-display text-base font-semibold">
-							Nothing left to review
+				{props.pending ? (
+					<div
+						role="progressbar"
+						aria-label="Review progress"
+						aria-busy="true"
+						aria-valuetext="Counting the comparison"
+						className="flex min-w-0 flex-1 basis-0 items-center gap-x-3"
+					>
+						<span className="flex w-11 shrink-0 justify-end">
+							<Spinner label="Counting the comparison" size={14} />
 						</span>
-					) : (
-						<span className="w-11 shrink-0 text-right font-display text-base font-semibold tabular-nums">
-							{value}%
-						</span>
-					)}
-					<Meter
-						counts={counts}
-						incomplete={left > 0}
-						className="order-last h-2.5 w-full sm:order-none sm:w-auto sm:min-w-8 sm:flex-1"
-					/>
-					<span className="min-w-0 text-sm text-muted tabular-nums">
-						{empty ? (
-							summary
-						) : (
-							<>
-								{counts.reviewed} / {shown}
-								{/* The picker beside it names the unit on a phone. */}
-								<span className="hidden sm:inline"> {word} reviewed</span>
-							</>
-						)}
+						<SkeletonBar className="h-2.5 min-w-8 flex-1" />
 						{toRead !== null && (
 							<span
 								data-testid="to-read"
-								className="ml-1 inline-flex items-center gap-1 text-warn"
+								className="inline-flex items-center gap-1 text-sm text-warn"
 							>
-								{" · "}
 								{toRead === "pending" ? (
 									<Spinner label="Counting what is to read" size={12} />
 								) : (
@@ -212,8 +192,82 @@ export function ProgressBar(props: {
 								)}
 							</span>
 						)}
-					</span>
-				</div>
+					</div>
+				) : props.instead ? (
+					<div
+						role="progressbar"
+						aria-label="Review progress"
+						aria-valuetext={
+							props.instead === "empty" ? "Nothing to read" : "Not counted"
+						}
+						data-state={props.instead}
+						className="flex min-w-0 flex-1 basis-0 items-center gap-x-3"
+					>
+						<span
+							className={`font-display text-base font-semibold ${props.instead === "failed" ? "text-bad" : ""}`}
+						>
+							{props.instead === "empty" ? "Nothing to read" : "Not counted"}
+						</span>
+					</div>
+				) : (
+					<div
+						role="progressbar"
+						aria-label="Review progress"
+						aria-valuenow={value}
+						aria-valuemin={0}
+						aria-valuemax={100}
+						aria-valuetext={
+							empty
+								? `Nothing left to review: ${summary}`
+								: `${value}%, ${summary}${hiddenLeft ? `, ${note}` : ""}${
+										typeof toRead === "string" && toRead !== "pending"
+											? `, ${toRead}`
+											: ""
+									}`
+						}
+						// Beside the unit picker even on a phone: the bar stays compact.
+						className="flex min-w-0 flex-1 basis-0 flex-wrap items-center gap-x-3 gap-y-1 sm:flex-nowrap"
+					>
+						{empty ? (
+							<span className="shrink-0 font-display text-base font-semibold">
+								Nothing left to review
+							</span>
+						) : (
+							<span className="w-11 shrink-0 text-right font-display text-base font-semibold tabular-nums">
+								{value}%
+							</span>
+						)}
+						<Meter
+							counts={counts}
+							incomplete={left > 0}
+							className="order-last h-2.5 w-full sm:order-none sm:w-auto sm:min-w-8 sm:flex-1"
+						/>
+						<span className="min-w-0 text-sm text-muted tabular-nums">
+							{empty ? (
+								summary
+							) : (
+								<>
+									{counts.reviewed} / {shown}
+									{/* The picker beside it names the unit on a phone. */}
+									<span className="hidden sm:inline"> {word} reviewed</span>
+								</>
+							)}
+							{toRead !== null && (
+								<span
+									data-testid="to-read"
+									className="ml-1 inline-flex items-center gap-1 text-warn"
+								>
+									{" · "}
+									{toRead === "pending" ? (
+										<Spinner label="Counting what is to read" size={12} />
+									) : (
+										toRead
+									)}
+								</span>
+							)}
+						</span>
+					</div>
+				)}
 				{props.children}
 			</div>
 			{hiddenLeft && <p className="mt-1 text-xs text-warn">{note}</p>}

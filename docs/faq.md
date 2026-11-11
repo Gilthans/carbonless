@@ -130,6 +130,17 @@ Only what the diff can show is searched: file paths, changed lines and the
 context lines around them, plus any context you expanded. A line far from
 every change isn't shown, so it isn't searched. Expand the gap that holds
 it and the hit appears. Comments, threads and the overview aren't searched.
+In the since view (base on a patch set) the diff shown is the interdiff, so
+that is what is searched: a line changed before that patch set and left
+alone since is no changed line there. Move the base to the branch to search
+the whole PR.
+
+## Why does Find in PR's count change when I switch to side by side?
+
+With Ignore whitespace on, unified view shows a whitespace-only change as
+one `~` row with the new text, so Find counts that row's hits once. Side by
+side shows the old and the new text, so it counts both. The current hit
+stays on the same row.
 
 ## Why does Home show coverage in lines, when the Files page shows files?
 

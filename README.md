@@ -31,7 +31,8 @@ crb <n>        # a PR of the GitHub repo in the current directory
 (nothing else on stdout); with no server running it starts one in the
 background (logging to `$XDG_STATE_HOME/carbonless/serve.log`). The server
 clones the repository into its own cache (`$XDG_CACHE_HOME/carbonless`,
-default `~/.cache/carbonless`; your working copies are never touched). Its
+default `~/.cache/carbonless`; your working copies are never touched),
+which also keeps Node's compile cache for `crb`'s own code (`compile-cache`). Its
 root is Home; `/pr/<owner>/<repo>/<n>` opens any PR's review.
 
 | `crb <pr>` option | |
@@ -125,12 +126,13 @@ Requires Node 24 (`nvm use`) and pnpm. From a checkout, `pnpm build` and run
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, unit tests and the pack
 smoke test on every PR and push to master, and Playwright on `v*` tags and on
-demand.
+demand (`gh workflow run ci.yml --ref <branch>`), in four parallel shards.
 
 Tests never call the real `gh`: `test/fake-gh/gh` answers from a scenario JSON
 (`$CRB_FAKE_GH`, optional call log in `$CRB_FAKE_GH_LOG`). The Playwright
 harness (`e2e/fixtures.ts`) puts it first on `PATH` and runs the built CLI
 against throwaway git repos.
 
-Layout: `src/cli.ts` (entry), `src/server` (Fastify + git + gh), `src/web` (React),
+Layout: `src/cli.ts` (entry: turns on Node's compile cache, then loads
+`src/main.ts`, the CLI), `src/server` (Fastify + git + gh), `src/web` (React),
 `src/shared` (types used by both), `test/` (shared test helpers), `e2e/` (Playwright).

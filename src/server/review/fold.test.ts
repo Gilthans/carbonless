@@ -90,6 +90,62 @@ const placed = (thread: string, patchset: number, line: number) =>
 		}),
 	);
 
+const linesState = (
+	cluster: string,
+	lines: [number, number][],
+	opts: {
+		patchset?: string;
+		by?: "human" | "ai" | "auto";
+		state?: "reviewed" | "crossed-off";
+	} = {},
+) =>
+	at(
+		newEvent(
+			"lines-state",
+			"dan",
+			{
+				patchset: opts.patchset ?? REV,
+				cluster,
+				path: "src/a.ts",
+				state: opts.state ?? "reviewed",
+				lines,
+			},
+			opts.by ?? "human",
+		),
+	);
+const linesReviewed = (
+	cluster: string,
+	lines: [number, number][],
+	opts: { patchset?: string; by?: "human" | "ai" | "auto" } = {},
+) => linesState(cluster, lines, opts);
+const linesCrossed = (cluster: string, lines: [number, number][]) =>
+	linesState(cluster, lines, { state: "crossed-off" });
+
+const sinceMark = (
+	since: number,
+	path: string,
+	old: [number, number][],
+	opts: {
+		patchset?: string;
+		by?: "human" | "ai" | "auto";
+		crossed?: [number, number][];
+	} = {},
+) =>
+	at(
+		newEvent(
+			"since-lines-state",
+			"dan",
+			{
+				patchset: opts.patchset ?? REV,
+				since,
+				path,
+				reviewed: { old, new: [] },
+				crossed: { old: opts.crossed ?? [], new: [] },
+			},
+			opts.by ?? "human",
+		),
+	);
+
 function shuffle<T>(items: T[]): T[] {
 	const copy = [...items];
 	for (let i = copy.length - 1; i > 0; i--) {
@@ -119,6 +175,7 @@ describe("foldProgress", () => {
 			patchset: null,
 			states: new Map(),
 			statesByRevision: new Map(),
+			sinceMarks: new Map(),
 			placements: new Map(),
 		});
 	});
@@ -422,6 +479,144 @@ describe("foldProgress", () => {
 			expect(statesOf(evs, THIRD_REV)).toEqual({
 				[K4]: { state: "reviewed", carried: { from: 2, rule: "exact" } },
 			});
+		});
+	});
+
+	describe("partial marks (lines-reviewed)", () => {
+		it("union into the cluster's reviewed lines, in any order", () => {
+			const evs = [
+				started(),
+				linesReviewed(K1, [[0, 3]]),
+				linesReviewed(K1, [[5, 7]]),
+				linesReviewed(K1, [[2, 4]]),
+			];
+			expect(statesOf(shuffle(evs), REV)).toEqual({
+				[K1]: {
+					state: "unreviewed",
+					lines: [
+						[0, 4],
+						[5, 7],
+					],
+				},
+			});
+		});
+
+		it("a later whole-cluster mark overrides earlier partial ones", () => {
+			const evs = [
+				started(),
+				linesReviewed(K1, [[0, 3]]),
+				state(K1, "reviewed"),
+				linesReviewed(K2, [[0, 3]]),
+				state(K2, "unreviewed"),
+			];
+			expect(statesOf(evs, REV)).toEqual({
+				[K1]: { state: "reviewed" },
+				[K2]: { state: "unreviewed" },
+			});
+		});
+
+		it("a partial mark on a whole mark changes nothing (the writer resets the cluster first)", () => {
+			const evs = [
+				started(),
+				state(K1, "reviewed"),
+				linesCrossed(K1, [[0, 3]]),
+				state(K2, "crossed-off", { reason: "generated" }),
+				linesReviewed(K2, [[1, 2]]),
+			];
+			expect(statesOf(evs, REV)).toEqual({
+				[K1]: { state: "reviewed" },
+				[K2]: { state: "crossed-off", reason: "generated" },
+			});
+		});
+
+		it("crossing lines off takes them from the reviewed ones, and back", () => {
+			const evs = [
+				started(),
+				linesReviewed(K1, [[0, 6]]),
+				linesCrossed(K1, [[2, 4]]),
+				linesReviewed(K1, [[3, 4]]),
+			];
+			expect(statesOf(evs, REV)).toEqual({
+				[K1]: {
+					state: "unreviewed",
+					lines: [
+						[0, 2],
+						[3, 6],
+					],
+					crossed: [[2, 3]],
+				},
+			});
+		});
+
+		it("since marks: the last per (since, path) wins, only by a human, only on a patch set", () => {
+			const evs = [
+				started(),
+				sinceMark(1, "a.ts", [[10, 12]]),
+				sinceMark(1, "b.ts", [[3, 4]]),
+				sinceMark(1, "a.ts", [[10, 11]], { crossed: [[11, 12]] }),
+				sinceMark(1, "c.ts", [[1, 2]], { by: "ai" }),
+				sinceMark(1, "d.ts", [[1, 2]], { patchset: OTHER_REV }),
+			];
+			const progress = foldProgress(shuffle(evs));
+			expect(progress.sinceMarks.get(REV)).toEqual([
+				{
+					since: 1,
+					path: "a.ts",
+					reviewed: { old: [[10, 11]], new: [] },
+					crossed: { old: [[11, 12]], new: [] },
+				},
+				{
+					since: 1,
+					path: "b.ts",
+					reviewed: { old: [[3, 4]], new: [] },
+					crossed: { old: [], new: [] },
+				},
+			]);
+			expect(progress.sinceMarks.get(OTHER_REV)).toBeUndefined();
+			// They never touch a cluster's state.
+			expect(progress.states.size).toBe(0);
+		});
+
+		it("unticking a piece inside a reviewed cluster: unreviewed, then the rest reviewed, leaves exactly the rest", () => {
+			const evs = [
+				started(),
+				state(K1, "reviewed"),
+				state(K1, "unreviewed"),
+				linesReviewed(K1, [
+					[0, 4],
+					[7, 10],
+				]),
+			];
+			expect(statesOf(evs, REV)).toEqual({
+				[K1]: {
+					state: "unreviewed",
+					lines: [
+						[0, 4],
+						[7, 10],
+					],
+				},
+			});
+		});
+
+		it("ignores partial marks not written by a human, or for a revision that is no patch set", () => {
+			const evs = [
+				started(),
+				linesReviewed(K1, [[0, 3]], { by: "ai" }),
+				linesReviewed(K2, [[0, 3]], { by: "auto" }),
+				linesReviewed(K3, [[0, 3]], { patchset: OTHER_REV }),
+			];
+			expect(statesOf(evs, REV)).toEqual({});
+			expect(statesOf(evs, OTHER_REV)).toEqual({});
+		});
+
+		it("a partly reviewed source never carries", () => {
+			const evs = [
+				started(REV, 1),
+				linesReviewed(K1, [[0, 3]]),
+				started(OTHER_REV, 2, 1),
+				carried([entry(K1, K1, "reviewed")]),
+			];
+			expect(statesOf(evs, OTHER_REV)).toEqual({});
 		});
 	});
 

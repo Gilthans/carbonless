@@ -9,6 +9,7 @@
  * session; only the reviewer's stored placements are read each time.
  */
 
+import type { AgentAnchor } from "../../shared/agent.js";
 import {
 	placeThread,
 	type ThreadInput,
@@ -39,16 +40,87 @@ export interface PlacedThread {
 	placement: ThreadPlacement;
 }
 
-/** The threads placement covers: unresolved, still on GitHub, with an id. */
-export const placeable = (threads: readonly ReviewThread[]) =>
-	threads.filter(
-		(t) => !t.resolved && t.id !== "" && t.unavailable !== "deleted",
+/**
+ * What the tracer reads of a thread: a review thread, or an agent thread
+ * seen the same way (agentTraceable).
+ */
+export type TraceableThread = Pick<
+	ReviewThread,
+	"id" | "path" | "commit" | "anchor" | "createdAt"
+> & {
+	unavailable?: ReviewThread["unavailable"];
+	resolved?: boolean;
+};
+
+/**
+ * The threads placement covers: those still on GitHub, with an id.
+ * Resolved ones too (owner, 2026-11-08): an unplaced resolved thread
+ * shows as one quiet line, never vanishing, and one resolved on the page
+ * keeps its place.
+ */
+export const placeable = <T extends TraceableThread>(threads: readonly T[]) =>
+	threads.filter((t) => t.id !== "" && t.unavailable !== "deleted");
+
+/** What placeAgentThreads reads of an agent thread (its stored fold). */
+export interface AgentAsked {
+	id: string;
+	anchor: AgentAnchor;
+	at: string;
+}
+
+/** An agent thread as the tracer reads it: asked on its anchor's commit. */
+export function agentTraceable(t: AgentAsked): TraceableThread {
+	const a = t.anchor;
+	return {
+		id: t.id,
+		path: a.path,
+		commit: a.commit,
+		createdAt: t.at,
+		anchor:
+			a.subject === "line"
+				? {
+						path: a.path,
+						commit: a.commit,
+						side: a.side,
+						line: a.line,
+						startSide: a.startSide,
+						startLine: a.startLine,
+						at: t.at,
+					}
+				: null,
+	};
+}
+
+/**
+ * The reviewer's agent threads placed into `target` by the same tracer as
+ * review threads (no stored placements: a drag places review threads
+ * only). Each is traced on its own, so one whose tracing fails is left
+ * out, never the rest: the page then shows it where it was asked (on an
+ * earlier head, its file's lead, outdated), never nowhere.
+ */
+export async function placeAgentThreads(
+	placer: ThreadPlacer,
+	target: Snapshot,
+	threads: readonly AgentAsked[],
+	base: DiffBase,
+): Promise<PlacedThread[]> {
+	const placed = await Promise.all(
+		threads.map(async (t) => {
+			try {
+				const inputs = await placer.inputs(target, [agentTraceable(t)], base);
+				return await placer.place(target, inputs, new Map());
+			} catch {
+				return [];
+			}
+		}),
 	);
+	return placed.flat();
+}
 
 const EMPTY = Buffer.alloc(0);
 
 /** A thread's range as the tracer reads it, or a stand-in for a file comment. */
-function anchorOf(t: ReviewThread): CodeAnchor {
+function anchorOf(t: TraceableThread): CodeAnchor {
 	return (
 		t.anchor ?? {
 			path: t.path,
@@ -150,7 +222,7 @@ export class ThreadPlacer {
 	 */
 	async inputs(
 		target: Snapshot,
-		threads: readonly ReviewThread[],
+		threads: readonly TraceableThread[],
 		base: DiffBase,
 	): Promise<ThreadInput[]> {
 		const list = placeable(threads);

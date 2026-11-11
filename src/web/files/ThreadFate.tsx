@@ -1,6 +1,8 @@
 import {
 	AlertIcon,
 	ArrowSwitchIcon,
+	CheckCircleIcon,
+	ChevronUpIcon,
 	CircleSlashIcon,
 	DiffRemovedIcon,
 	FileRemovedIcon,
@@ -38,13 +40,22 @@ import {
 	type RereviewTo,
 	sessionQuery,
 } from "../api";
-import { Badge, Chip, SkeletonBar } from "../overview/parts";
+import { Badge, BotIcon, Chip, SkeletonBar } from "../overview/parts";
+import { RelativeTime } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
 import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
-import { CodeRows } from "../threads/CommentBody";
-import { Avatar } from "../threads/people";
-import { ThreadBlock } from "./ThreadRow";
+import { CodeRows, CommentBody } from "../threads/CommentBody";
+import {
+	COMMENT_SURFACE,
+	commentSurface,
+	ThreadActions,
+	ThreadComments,
+	UnavailableText,
+	useCanAct,
+} from "../threads/Conversation";
+import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
+import { Avatar, usePerson } from "../threads/people";
 import type { Placements } from "./threadPlacement";
 
 /**
@@ -68,7 +79,7 @@ export interface PlacementInfo {
 	/** The patch set a drag stores into; null: none (a head, an earlier patch set). */
 	placeOn: number | null;
 	/** The patch set a thread was opened on (openedOn); null without patch sets. */
-	openedOn: (t: ReviewThread) => number | null;
+	openedOn: (t: Pick<ReviewThread, "createdAt">) => number | null;
 }
 
 const PlacementContext = createContext<PlacementInfo>({
@@ -88,43 +99,64 @@ export const usePlacementInfo = () => useContext(PlacementContext);
 /** A fate's word, icon, tone and tooltip. */
 export const FATES: Record<
 	Fate,
-	{ label: string; icon: Icon; tone: "red" | "yellow"; tip: string }
+	{
+		label: string;
+		icon: Icon;
+		tone: "red" | "yellow";
+		tip: string;
+		/** An unplaced row's top line (owner, 2026-11-08). */
+		sentence: string;
+		/** A resolved row's quiet line: the sentence shortened. */
+		short: string;
+	}
 > = {
 	deleted: {
 		label: "deleted",
 		icon: DiffRemovedIcon,
 		tone: "red",
 		tip: "Its lines were deleted",
+		sentence: "Commented line has been deleted since the review",
+		short: "Line deleted",
 	},
 	rewritten: {
 		label: "rewritten",
 		icon: AlertIcon,
 		tone: "yellow",
 		tip: "Rewritten beyond tracing: its lines can't be followed here",
+		sentence: "Commented line has been rewritten since the review",
+		short: "Line rewritten",
 	},
 	"file-gone": {
 		label: "file deleted",
 		icon: FileRemovedIcon,
 		tone: "red",
 		tip: "Its file was deleted",
+		sentence: "Commented file has been deleted since the review",
+		short: "File deleted",
 	},
 	moved: {
 		label: "moved?",
 		icon: ArrowSwitchIcon,
 		tone: "yellow",
 		tip: "Its file was renamed and its lines didn't follow: maybe moved",
+		sentence: "Commented line may have moved",
+		short: "Line may have moved",
 	},
 	reverted: {
 		label: "reverted",
 		icon: HistoryIcon,
 		tone: "yellow",
 		tip: "The PR no longer changes this place",
+		sentence: "The commented change has been reverted since the review",
+		short: "Change reverted",
 	},
 	"base-changed": {
 		label: "base changed",
 		icon: GitCompareIcon,
 		tone: "yellow",
 		tip: "The base branch changed this line since",
+		sentence: "The base changed under the commented line since the review",
+		short: "Base changed",
 	},
 };
 
@@ -134,6 +166,8 @@ const UNKNOWN_FATE = {
 	icon: AlertIcon,
 	tone: "red" as const,
 	tip: "Where this thread sits now couldn't be computed",
+	sentence: "Couldn't work out where this thread is now",
+	short: "Place unknown",
 };
 
 /** "PS2", or nothing without a patch set. */
@@ -167,24 +201,17 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 			</span>
 		) : null;
 	}
+	// A resolved thread is placed so it never vanishes, never to ask for
+	// attention: its chip is muted.
+	const quiet = thread.resolved;
 	if (placement.kind === "changed") {
-		const ps = psLabel(info.openedOn(thread));
-		return (
-			<Chip
-				tone="yellow"
-				icon={GitCompareIcon}
-				tip={`The line changed since ${ps || "the thread was made"}`}
-				testId="placement-changed"
-			>
-				changed since
-			</Chip>
-		);
+		return <ChangedChip thread={thread} />;
 	}
 	if (placement.kind === "unplaced" || placement.kind === "outside") {
 		const fate = FATES[placement.fate];
 		return (
 			<Chip
-				tone={fate.tone}
+				tone={quiet ? "gray" : fate.tone}
 				icon={fate.icon}
 				tip={fate.tip}
 				testId="placement-fate"
@@ -196,6 +223,26 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 	return null;
 }
 
+/** "changed since": a thread's line was rewritten since it was made (muted once resolved). */
+export function ChangedChip({
+	thread,
+}: {
+	thread: Pick<ReviewThread, "createdAt" | "resolved">;
+}) {
+	const info = usePlacementInfo();
+	const ps = psLabel(info.openedOn(thread));
+	return (
+		<Chip
+			tone={thread.resolved ? "gray" : "yellow"}
+			icon={GitCompareIcon}
+			tip={`The line changed since ${ps || "the thread was made"}`}
+			testId="placement-changed"
+		>
+			changed since
+		</Chip>
+	);
+}
+
 /**
  * A changed thread's old lines (from its own patch set) above the lines
  * that replaced them, and the fate line with a way to its patch set.
@@ -205,7 +252,8 @@ export function ChangedSince({
 	placement,
 	lines = true,
 }: {
-	thread: ReviewThread;
+	/** A review thread, or an agent thread seen the same way. */
+	thread: Pick<ReviewThread, "createdAt" | "path" | "code">;
 	placement: Extract<ThreadPlacement, { kind: "changed" }>;
 	/** The old and new lines too (the Overview's card shows its own code). */
 	lines?: boolean;
@@ -276,7 +324,12 @@ export function ChangedSince({
  * patch set, path and line numbers. A frame while the code is still on
  * its way; nothing when there is none.
  */
-export function OriginalCode({ thread }: { thread: ReviewThread }) {
+export function OriginalCode({
+	thread,
+}: {
+	/** A review thread, or an agent thread seen the same way. */
+	thread: Pick<ReviewThread, "code" | "path" | "createdAt">;
+}) {
 	const info = usePlacementInfo();
 	const code = thread.code;
 	const path = code?.anchor.path ?? thread.path;
@@ -314,14 +367,22 @@ export function OriginalCode({ thread }: { thread: ReviewThread }) {
 	return (
 		<figure
 			data-testid="original-code"
-			aria-label={label}
-			className="min-w-0 overflow-hidden rounded-md border border-line bg-code"
+			aria-label={`Original Reviewed Change: ${label}`}
+			className="min-w-0 overflow-hidden rounded-md border-2 border-line-strong bg-code"
 		>
-			<figcaption
-				data-testid="original-code-label"
-				className="truncate border-b border-line px-2 py-0.5 font-mono text-[11px] text-muted"
-			>
-				{label}
+			<figcaption className="border-b border-line-strong bg-band px-2 py-1">
+				<span
+					data-testid="original-code-title"
+					className="block text-xs font-semibold text-ink"
+				>
+					Original Reviewed Change
+				</span>
+				<span
+					data-testid="original-code-label"
+					className="block truncate font-mono text-[11px] text-muted"
+				>
+					{label}
+				</span>
 			</figcaption>
 			<div className="overflow-x-auto font-mono text-xs leading-5 text-code-ink [scrollbar-width:thin]">
 				<table className="w-full border-collapse">
@@ -337,13 +398,18 @@ export function OriginalCode({ thread }: { thread: ReviewThread }) {
 	);
 }
 
-/** One unplaced thread's row: who, its fate, its text, its code; opens to the thread. */
+/**
+ * One unplaced thread's row: its fate in a sentence on the top line, the
+ * code it was written on in a titled box, its first comment at once (as
+ * the Overview's card shows it), and Show more for the replies and the
+ * reply box.
+ */
 export function UnplacedRow(props: {
 	thread: ReviewThread;
 	readId: string;
 	/** Its fate; null: unknown (the placements couldn't be computed). */
 	fate: Fate | null;
-	/** Before the fate: the original path (the trailing group). */
+	/** Under the fate: the original path (the trailing group). */
 	path?: string;
 	movedTo?: string;
 	/** A link beside the row ("near 88"). */
@@ -352,62 +418,241 @@ export function UnplacedRow(props: {
 	handle?: ReactNode;
 }) {
 	const { thread } = props;
-	const [open, setOpen] = useState(false);
-	const bodyId = useId();
+	return (
+		<UnplacedShell
+			thread={thread}
+			who={thread.author}
+			fate={props.fate}
+			path={props.path}
+			movedTo={props.movedTo}
+			link={props.link}
+			handle={props.handle}
+		>
+			<Opener thread={thread} />
+			<UnplacedReplies thread={thread} readId={props.readId} />
+		</UnplacedShell>
+	);
+}
+
+/**
+ * The frame of a thread the tracer couldn't place, the same for a review
+ * thread and an agent thread (only the body differs): its fate in a
+ * sentence on the top line, the code it was written on in the "Original
+ * Reviewed Change" box, then `children`. Resolved, one quiet line (the
+ * resolved icon, the fate shortened, `who`) until expanded; resolving it
+ * collapses it again (owner, 2026-11-08).
+ */
+export function UnplacedShell(props: {
+	thread: Pick<ReviewThread, "id" | "resolved" | "code" | "path" | "createdAt">;
+	/** Who opened it, for the quiet line ("you" for an agent thread). */
+	who: string;
+	/** Its fate; null: unknown (the placements couldn't be computed). */
+	fate: Fate | null;
+	path?: string;
+	movedTo?: string;
+	link?: ReactNode;
+	handle?: ReactNode;
+	testId?: string;
+	children: ReactNode;
+}) {
+	const { thread } = props;
+	const testId = props.testId ?? "unplaced-thread";
+	const [expanded, setExpanded] = useState(false);
+	const [wasResolved, setWasResolved] = useState(thread.resolved);
+	if (wasResolved !== thread.resolved) {
+		setWasResolved(thread.resolved);
+		if (thread.resolved) setExpanded(false);
+	}
 	const fate = props.fate ? FATES[props.fate] : UNKNOWN_FATE;
+	const sentence =
+		props.fate === "moved" && props.movedTo
+			? `${fate.sentence} to ${props.movedTo}`
+			: fate.sentence;
+	if (thread.resolved && !expanded) {
+		return (
+			<li
+				data-testid={testId}
+				data-fate={props.fate ?? "unknown"}
+				data-thread={thread.id}
+				data-resolved="true"
+				className="min-w-0"
+			>
+				<button
+					type="button"
+					aria-expanded={false}
+					aria-label={`Resolved thread by ${props.who}: ${fate.short}${props.path ? ` · ${props.path}` : ""}. Expand`}
+					data-testid="unplaced-collapsed"
+					onClick={() => setExpanded(true)}
+					className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					<CheckCircleIcon size={14} aria-hidden className="shrink-0" />
+					<span className="truncate">
+						{fate.short}
+						{props.path && (
+							<>
+								{" · "}
+								<code className="font-mono">{props.path}</code>
+							</>
+						)}
+						{" · "}
+						{props.who}
+					</span>
+				</button>
+			</li>
+		);
+	}
 	return (
 		<li
-			data-testid="unplaced-thread"
+			data-testid={testId}
 			data-fate={props.fate ?? "unknown"}
 			data-thread={thread.id}
+			data-resolved={thread.resolved || undefined}
 			className="min-w-0 space-y-1.5 rounded-md border border-line bg-surface p-2"
 		>
 			<div className="flex min-h-10 min-w-0 items-center gap-2">
 				{props.handle}
-				<Avatar login={thread.author} url={thread.avatarUrl} />
-				<button
-					type="button"
-					aria-expanded={open}
-					aria-controls={bodyId}
-					onClick={() => setOpen(!open)}
-					className="flex min-h-10 min-w-0 flex-1 flex-col items-start justify-center rounded-sm text-left text-sm focus-visible:outline-2 focus-visible:outline-accent"
-				>
-					<span className="flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5">
-						{props.path && (
-							<code className="min-w-0 font-mono text-xs break-all text-ink-soft">
-								{props.path}
-							</code>
-						)}
-						<span className="inline-flex items-center gap-1 font-semibold text-ink">
-							<fate.icon
-								size={12}
-								aria-hidden
-								className={fate.tone === "red" ? "text-bad" : "text-warn"}
-							/>
-							{fate.label}
-						</span>
-						{props.movedTo && (
-							<span className="text-muted">
-								to{" "}
-								<code className="font-mono text-xs break-all">
-									{props.movedTo}
-								</code>
+				<fate.icon
+					size={16}
+					aria-hidden
+					className={`shrink-0 ${fate.tone === "red" ? "text-bad" : "text-warn"}`}
+				/>
+				<span className="flex min-w-0 flex-1 flex-col">
+					<Tooltip content={sentence} describe={false}>
+						{(trigger) => (
+							<span
+								{...trigger}
+								data-testid="unplaced-fate"
+								className="truncate text-sm font-semibold text-ink"
+							>
+								{sentence}
 							</span>
 						)}
-					</span>
-					<span className="line-clamp-2 max-w-full text-xs break-words text-muted">
-						{thread.excerpt}
-					</span>
-				</button>
+					</Tooltip>
+					{props.path && (
+						<code className="truncate font-mono text-xs text-ink-soft">
+							{props.path}
+						</code>
+					)}
+				</span>
 				{props.link}
+				{thread.resolved && (
+					<Tooltip content="Collapse" describe={false}>
+						{(trigger) => (
+							<button
+								{...trigger}
+								type="button"
+								aria-label="Collapse"
+								aria-expanded
+								data-testid="unplaced-collapse"
+								onClick={() => setExpanded(false)}
+								className="flex min-h-10 min-w-10 shrink-0 items-center justify-center rounded-md text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+							>
+								<ChevronUpIcon size={16} aria-hidden />
+							</button>
+						)}
+					</Tooltip>
+				)}
 			</div>
 			<OriginalCode thread={thread} />
-			{open && (
-				<div id={bodyId}>
-					<ThreadBlock readId={props.readId} thread={thread} />
+			{props.children}
+		</li>
+	);
+}
+
+/** An unplaced review thread's replies and actions, behind Show more. */
+function UnplacedReplies({
+	thread,
+	readId,
+}: {
+	thread: ReviewThread;
+	readId: string;
+}) {
+	const [open, setOpen] = useState(false);
+	const repliesId = useId();
+	const replies = useReplyCount(thread, readId);
+	const canAct = useCanAct(thread);
+	const readable = thread.unavailable === undefined && thread.id !== "";
+	return (
+		<>
+			{open && readable && (
+				<div id={repliesId} className="space-y-2">
+					{replies.n > 0 && (
+						<div
+							data-testid="thread-replies"
+							className="ml-2 border-l-2 border-line pl-3"
+						>
+							<ThreadComments readId={readId} thread={thread} skipFirst />
+						</div>
+					)}
+					<ThreadActions thread={thread} />
 				</div>
 			)}
-		</li>
+			{readable && (replies.n > 0 || canAct) && (
+				<div className="flex justify-center">
+					<MoreToggle
+						open={open}
+						onClick={() => setOpen((o) => !o)}
+						controls={open ? repliesId : ""}
+						replies={replies}
+						kind="more"
+					/>
+				</div>
+			)}
+		</>
+	);
+}
+
+/**
+ * A thread's first comment as the Overview's card shows it: its author,
+ * when, and its text as GitHub renders it (sanitized), on the author's
+ * tint; its frame while the text is on its way.
+ */
+function Opener({ thread }: { thread: ReviewThread }) {
+	const opener = usePerson(thread.author, thread.avatarUrl);
+	if (thread.unavailable !== undefined || (thread.id === "" && thread.loaded))
+		return <UnavailableText reason={thread.unavailable ?? "unreadable"} />;
+	return (
+		<div data-testid="unplaced-opener" className="min-w-0 space-y-1">
+			<p className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+				<Avatar login={thread.author} url={thread.avatarUrl} size={16} />
+				<span className="truncate font-medium text-ink-soft">
+					{thread.author}
+				</span>
+				{thread.bot && <BotIcon />}
+				<RelativeTime iso={thread.createdAt} className="shrink-0" />
+			</p>
+			{!thread.loaded ? (
+				<div
+					aria-busy="true"
+					data-testid="thread-body-loading"
+					className={`${COMMENT_SURFACE} space-y-2.5 py-3`}
+				>
+					<span className="sr-only">Loading…</span>
+					<SkeletonBar className="w-full" />
+					<SkeletonBar className="w-4/5" />
+				</div>
+			) : thread.html.trim() ? (
+				<div
+					data-testid="thread-body"
+					className={`${commentSurface(opener.tint)} break-words`}
+				>
+					<CommentBody
+						html={thread.html}
+						body={thread.body}
+						code={thread.code}
+						path={thread.path}
+						open={false}
+					/>
+				</div>
+			) : (
+				<p
+					data-testid="thread-body"
+					className={`${commentSurface(opener.tint)} text-sm break-words`}
+				>
+					{thread.excerpt}
+				</p>
+			)}
+		</div>
 	);
 }
 
@@ -550,16 +795,21 @@ export function UnplacedThreads(props: {
 	const place = usePlaceThread();
 	const sectionId = `file-${props.fileIndex}`;
 	if (props.fates.length === 0) return null;
+	// Resolved ones last, quiet, and counted nowhere.
+	const fates = resolvedLast(props.fates);
+	const open = fates.filter((f) => !f.thread.resolved).length;
 	return (
 		<div
 			data-testid="unplaced-threads"
 			className="space-y-1.5 border-b border-line bg-canvas p-2"
 		>
-			<p className="flex items-center gap-2 text-xs text-muted">
-				<Badge tone="red" icon={CircleSlashIcon}>
-					{props.fates.length} unplaced
-				</Badge>
-			</p>
+			{open > 0 && (
+				<p className="flex items-center gap-2 text-xs text-muted">
+					<Badge tone="red" icon={CircleSlashIcon}>
+						{open} unplaced
+					</Badge>
+				</p>
+			)}
 			{place.isError && (
 				<p role="alert" className="text-xs text-bad">
 					Couldn't place it:{" "}
@@ -569,7 +819,7 @@ export function UnplacedThreads(props: {
 				</p>
 			)}
 			<ul className="space-y-1.5">
-				{props.fates.map(({ thread, placement }) => (
+				{fates.map(({ thread, placement }) => (
 					<UnplacedRow
 						key={thread.id}
 						thread={thread}
@@ -604,8 +854,18 @@ export function UnplacedThreads(props: {
 	);
 }
 
+/** Unresolved threads first, resolved ones after, each in the order given. */
+export function resolvedLast<T extends { thread: ReviewThread }>(
+	rows: readonly T[],
+): T[] {
+	return [
+		...rows.filter((r) => !r.thread.resolved),
+		...rows.filter((r) => r.thread.resolved),
+	];
+}
+
 /** "near 88": lands on the closest surviving line, the comparison kept. */
-function NearLink(props: {
+export function NearLink(props: {
 	path: string;
 	line: number;
 	side: "LEFT" | "RIGHT";
@@ -684,7 +944,8 @@ export function useSessionPlacements(
 			readId: readId ?? null,
 			to,
 			placeOn: null,
-			openedOn: (t: ReviewThread) => openedOn(t.createdAt, patchsets ?? []),
+			openedOn: (t: Pick<ReviewThread, "createdAt">) =>
+				openedOn(t.createdAt, patchsets ?? []),
 		}),
 		[placements, asked, answer, query, readId, toKey, patchsets],
 	);

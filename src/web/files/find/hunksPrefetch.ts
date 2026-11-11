@@ -34,6 +34,8 @@ export interface PrefetchSnapshot {
 export class HunksPrefetcher {
 	readonly #client: QueryClient;
 	readonly #revision: string;
+	/** The since view's patch set: its hunks (hunksQuery's `from`), not the full diff's. */
+	readonly #from: number | undefined;
 	readonly #fetchBatch: typeof fetchHunksBatch;
 	readonly #onStale: () => Promise<boolean>;
 	/** A request answered 409 and the page is reading the review again. */
@@ -58,9 +60,11 @@ export class HunksPrefetcher {
 		fetchBatch: typeof fetchHunksBatch = fetchHunksBatch,
 		/** Reads the review again; true when it moved to a new revision. */
 		onStale: () => Promise<boolean> = async () => false,
+		from?: number,
 	) {
 		this.#client = client;
 		this.#revision = revision;
+		this.#from = from;
 		this.#fetchBatch = fetchBatch;
 		this.#onStale = onStale;
 	}
@@ -95,7 +99,7 @@ export class HunksPrefetcher {
 	/** The file's own entry is answered or being fetched. */
 	#cached(index: number): boolean {
 		const state = this.#client.getQueryState(
-			hunksQuery(this.#revision, index).queryKey,
+			hunksQuery(this.#revision, index, this.#from).queryKey,
 		);
 		return state?.status === "success" || state?.fetchStatus === "fetching";
 	}
@@ -173,7 +177,7 @@ export class HunksPrefetcher {
 	async #send(batch: number[]): Promise<void> {
 		let failed: number[] = [];
 		try {
-			const answer = await this.#fetchBatch(this.#revision, batch);
+			const answer = await this.#fetchBatch(this.#revision, batch, this.#from);
 			const answered = new Set<number>();
 			for (const file of answer.files) {
 				if (!batch.includes(file.index) || answered.has(file.index)) continue;
@@ -181,7 +185,7 @@ export class HunksPrefetcher {
 					answered.add(file.index);
 					// Built with the query's options, so its gcTime applies.
 					const options = this.#client.defaultQueryOptions(
-						hunksQuery(this.#revision, file.index),
+						hunksQuery(this.#revision, file.index, this.#from),
 					);
 					this.#client.getQueryCache().build(this.#client, options);
 					this.#client.setQueryData(options.queryKey, file.hunks);
