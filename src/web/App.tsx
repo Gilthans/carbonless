@@ -16,6 +16,7 @@ import {
 import { createPortal } from "react-dom";
 import {
 	headQuery,
+	invalidateAgentThreads,
 	overviewQuery,
 	postRefresh,
 	REVIEW_KEY,
@@ -362,6 +363,8 @@ export function App() {
 				queryClient.invalidateQueries({ queryKey: REVIEW_KEY }),
 				// Read only once the tab has shown (refetched only if so).
 				queryClient.invalidateQueries({ queryKey: verdictQuery.queryKey }),
+				// A thread deleted on GitHub shows its conversation as a span.
+				invalidateAgentThreads(queryClient),
 			]);
 		},
 	});

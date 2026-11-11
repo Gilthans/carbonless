@@ -200,6 +200,20 @@ test("the same from Files changed", async ({ page, pr, agentCrb }) => {
 	const section = page.locator(`[data-path="${CALC}"]`);
 	await expect(section.getByTestId("agent-thread")).toHaveCount(0);
 	await expect(row(section, 3).getByTestId("agent-bubble")).toHaveCount(0);
+	// Deleted on GitHub: after Refresh the conversation is a span on its
+	// lines, never shown nowhere.
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [];
+	});
+	await page.getByRole("button", { name: "Refresh" }).first().click();
+	await expect(
+		row(section, 3).getByRole("button", { name: /^1 comment on line 3/ }),
+	).toHaveCount(0);
+	await expect(
+		row(section, 3).getByTestId("agent-bubble"),
+	).toHaveAccessibleName("1 agent thread on line 3");
 });
 
 test("opens scrolled to its end; closes from the strip, the comment counter and the agent button", async ({

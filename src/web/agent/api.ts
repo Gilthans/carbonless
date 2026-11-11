@@ -18,6 +18,8 @@ import {
 	type OpenAgentThreadRequest,
 } from "../../shared/agent";
 import {
+	AGENT_PLACEMENTS_KEY,
+	AGENT_THREADS_KEY,
 	ApiError,
 	fetchJson,
 	overviewQuery,
@@ -84,7 +86,7 @@ export const agentStatusQuery = queryOptions({
 
 /** The review's agent threads; refetched when the status moves (useAgentSync). */
 export const agentThreadsQuery = queryOptions({
-	queryKey: ["agent", "threads"],
+	queryKey: AGENT_THREADS_KEY,
 	queryFn: () => review<{ threads: AgentThread[] }>("agent/threads"),
 	staleTime: Number.POSITIVE_INFINITY,
 	// A review with no agent (--viewer, --as-of) answers 404: no threads.
@@ -107,7 +109,12 @@ export const agentPlacementsQuery = (
 ) => {
 	const target = "patchset" in to ? `ps:${to.patchset}` : `head:${to.head}`;
 	return queryOptions({
-		queryKey: ["agent-placements", target, revision, [...ids].sort().join(",")],
+		queryKey: [
+			...AGENT_PLACEMENTS_KEY,
+			target,
+			revision,
+			[...ids].sort().join(","),
+		],
 		queryFn: () =>
 			review<AgentPlacementsAnswer>(
 				`agent/placements?${new URLSearchParams(

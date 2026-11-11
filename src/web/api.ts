@@ -752,6 +752,8 @@ export const revalidateOverviewQuery = (fetchedAt: string, maxAge: number) =>
 					threads,
 				);
 				client.setQueryData(overviewQuery.queryKey, fresh);
+				// A thread the new read finds gone moves to an orphan span.
+				void invalidateAgentThreads(client);
 			}
 			return fresh.fetchedAt;
 		},
@@ -777,6 +779,22 @@ export const verdictQuery = queryOptions({
 
 /** Every review query's key starts with this (invalidate them all at once). */
 export const REVIEW_KEY = ["review"] as const;
+
+/** The agent threads' key (agentThreadsQuery). */
+export const AGENT_THREADS_KEY = ["agent", "threads"] as const;
+/** Every agent placements query's key starts with this (agentPlacementsQuery). */
+export const AGENT_PLACEMENTS_KEY = ["agent-placements"] as const;
+
+/**
+ * Reads the agent threads and their placements again: a new GitHub read
+ * can delete a thread, and its conversation then shows as an orphan span
+ * (the server's join), not under a card that is gone.
+ */
+export const invalidateAgentThreads = (client: QueryClient) =>
+	Promise.all([
+		client.invalidateQueries({ queryKey: AGENT_THREADS_KEY }),
+		client.invalidateQueries({ queryKey: AGENT_PLACEMENTS_KEY }),
+	]);
 
 /**
  * The review to show: the session's own (key `["review"]`, which a stored

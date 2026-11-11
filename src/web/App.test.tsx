@@ -1792,7 +1792,7 @@ describe("OverviewPage", () => {
 	 */
 	const oldRead = () => {
 		const served = "2026-01-05T12:10:00Z";
-		renderApp({
+		const { client } = renderApp({
 			"/api/overview": ok({
 				...overview,
 				title: "Then",
@@ -1824,7 +1824,7 @@ describe("OverviewPage", () => {
 			if (!routes) throw new Error("no mock");
 			return routes(input, init);
 		});
-		return { release, signals };
+		return { release, signals, client };
 	};
 
 	it("shows an old kept overview at once and brings it up to date, Refresh spinning meanwhile", async () => {
@@ -1852,6 +1852,28 @@ describe("OverviewPage", () => {
 				String(i).includes("read=read2&stage=full"),
 			),
 		).toBe(true);
+	});
+
+	it("reads the agent threads and their placements again once a re-read lands", async () => {
+		const { release, client } = oldRead();
+		const key = ["agent-placements", "ps:1", "rev1", "A1"];
+		client.setQueryData(key, { placements: [] });
+		await screen.findByRole("region", { name: "What it does" });
+		const before = calls("/api/agent/threads");
+		expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+		release();
+		const what = screen.getByRole("region", { name: "What it does" });
+		await waitFor(() =>
+			expect(within(what).getByRole("heading", { level: 3 })).toHaveTextContent(
+				"Now",
+			),
+		);
+		await waitFor(() =>
+			expect(client.getQueryState(key)?.isInvalidated).toBe(true),
+		);
+		await waitFor(() =>
+			expect(calls("/api/agent/threads")).toBeGreaterThan(before),
+		);
 	});
 
 	it("swaps to a re-read without waiting for its timeline, the old one shown until it comes", async () => {
@@ -2827,6 +2849,27 @@ describe("Timeline", () => {
 });
 
 describe("the thread agent on the Overview", () => {
+	/** A placements answer already in the cache, as Files changed left it. */
+	const seedPlacements = (client: QueryClient) => {
+		const key = ["agent-placements", "ps:1", "rev1", "A1"];
+		client.setQueryData(key, { placements: [] });
+		return () => client.getQueryState(key)?.isInvalidated;
+	};
+
+	it("reads the agent threads and their placements again on Refresh: a deleted thread's conversation moves to a span", async () => {
+		const user = userEvent.setup();
+		const { client } = renderApp({
+			"/api/agent/threads": ok({ threads: [] }),
+			"/api/refresh": ok(info),
+		});
+		await waitFor(() => expect(calls("/api/agent/threads")).toBe(1));
+		const invalidated = seedPlacements(client);
+		expect(invalidated()).toBe(false);
+		await user.click(await screen.findByRole("button", { name: "Refresh" }));
+		await waitFor(() => expect(calls("/api/agent/threads")).toBe(2));
+		expect(invalidated()).toBe(true);
+	});
+
 	it("slides over the comments alone: the code pane stays outside the cover", async () => {
 		renderApp({ "/api/agent/threads": ok({ threads: [] }) });
 		const card = (
