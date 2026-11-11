@@ -7,6 +7,9 @@ import {
 } from "../test/fake-gh/scenario";
 import { expect, test } from "./fixtures";
 
+// CAR-106 pilot: one crb serve per worker.
+test.use({ crbServer: "shared" });
+
 const botThreadNoReply = reviewThread({ path: "src/bot.ts", line: 3 }, [
 	threadComment({
 		login: "lint-bot",
@@ -193,14 +196,14 @@ test.describe("in Israel's time zone", () => {
 		startCrb,
 	}) => {
 		const updated = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
-		await pr({ overview: { updatedAt: updated } });
+		const p = await pr({ overview: { updatedAt: updated } });
 		const s = await startCrb();
 		await page.goto(s.url);
 		const what = page.getByRole("region", { name: "What it does" });
 		const github = what.getByRole("link", { name: "View on GitHub" });
 		await expect(github).toHaveAttribute(
 			"href",
-			"https://github.com/acme/widget/pull/7",
+			`https://github.com/${p.ownerRepo}/pull/${p.number}`,
 		);
 		await expect(github).not.toHaveText(/\S/);
 		const box = await github.boundingBox();
@@ -927,7 +930,7 @@ test("a line comment GitHub kept no hunk for shows its code from the clone; a fi
 	const p = await pr();
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "a.txt", line: 2, subjectType: "LINE" }, [
@@ -985,7 +988,7 @@ test("a thread's code comes from the clone, three rows before and after its line
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "b.txt", line: 60 }, [
@@ -1080,7 +1083,7 @@ test("a thread whose code can't be shown to be what the commenter saw has a red 
 			createdAt: `2099-01-0${day}T00:00:00Z`,
 		});
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			// The PR's diff, as GitHub kept it.
@@ -1177,7 +1180,7 @@ test("a thread's file:line opens Files changed at that line, highlighted; a move
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "b.txt", line: 60 }, [
