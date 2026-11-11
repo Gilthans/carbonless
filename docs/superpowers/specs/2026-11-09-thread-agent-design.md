@@ -35,9 +35,10 @@ into thread conversations without changing the format.
    tied to the thread (owner: "it's tied to the thread (they're resolved
    together etc), the context includes the thread contents, and the UI links
    them").
-2. **Context:** the agent sees the whole GitHub thread, the commit the
-   thread was opened on, the patch set the reviewer is viewing, and the PR's
-   current head (owner: "it should see what commit the thread was opened
+2. **Context:** the agent *can see* the whole GitHub thread, the commit
+   the thread was opened on, the patch set the reviewer is viewing, and the
+   PR's current head. It needn't be fed all of it on every turn (owner:
+   "It's able to see, not necessarily fed the entire thread each time") (owner: "it should see what commit the thread was opened
    on, as well as the current viewed patch set and the head").
 3. **Answers point at code:** `path:line` references in an answer are links
    that open those lines in Files changed.
@@ -249,6 +250,15 @@ interface PromptEnvelope {
   thread (comments, resolved) from the session's current read at the start
   of each turn; it is not in the agent ref. (This avoids CAR-53's stale
   merge base for this kind. Fixing CAR-53 for span threads stays separate.)
+
+- **After the MCP (CAR-81), not blocking this slice.** The comments go in
+  the envelope only because there's no other way to reach them yet. Once
+  the agent can query carbonless over MCP, the envelope shrinks to the
+  question, the anchor (thread id, path, `openedOn`) and the `view` and
+  `current` commits, and the agent fetches the thread's comments and code
+  it needs. Only the `github` block changes: the fold, storage and UI stay
+  as they are. Until then, re-sending a long thread on every turn is this
+  approach's main cost.
 
 ### Unread
 
