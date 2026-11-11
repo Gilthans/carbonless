@@ -59,6 +59,14 @@ export function dirHash(dir: string): string {
 	return files.length ? hash.digest("hex") : "";
 }
 
+/** The last `n` lines of `text`, for a message (a server's output grows all its life). */
+export function tail(text: string, n = 200): string {
+	const lines = text.trimEnd().split("\n");
+	return lines.length <= n
+		? lines.join("\n")
+		: [`… (${lines.length - n} lines before)`, ...lines.slice(-n)].join("\n");
+}
+
 /** The files under `dir`, for a message. */
 function filesUnder(dir: string): string[] {
 	if (!existsSync(dir)) return [];
@@ -97,6 +105,8 @@ export class SharedServer {
 	#strayOffset = 0;
 	#configHash = "";
 	#finished: Record<string, string> = {};
+	/** Strays that came between tests: no test's to fail, so the worker's (close). */
+	#between: string[] = [];
 	/**
 	 * The worker's span, in a trace of its own: the shared server's parent,
 	 * so each test's requests (their traceparent another trace) nest under
@@ -142,8 +152,23 @@ export class SharedServer {
 		return this.#served === null;
 	}
 
+	/** Stray log lines since the last look. */
+	#freshStrays(): string[] {
+		const strays = existsSync(this.strays)
+			? readFileSync(this.strays, "utf8")
+			: "";
+		const fresh = strays.slice(this.#strayOffset);
+		this.#strayOffset = strays.length;
+		return fresh.split("\n").filter((l) => l.trim());
+	}
+
 	/** The test running now: its gh calls go to its scenario from here on. */
 	begin(test: SharedTest): void {
+		// Strays since the last test's checks aren't this test's: the worker
+		// reports them (close).
+		for (const line of this.#freshStrays()) {
+			this.#between.push(`${line} (before '${test.title}' began)`);
+		}
 		const router: FakeGhRouter = {
 			router: 1,
 			current: {
@@ -164,7 +189,7 @@ export class SharedServer {
 	 */
 	async start(): Promise<Served> {
 		const dead = this.#served && !alive(this.#served);
-		const died = dead ? (this.#served as Served).output() : null;
+		const died = dead ? tail((this.#served as Served).output()) : null;
 		if (dead) this.#served = null;
 		if (!this.#served) {
 			this.#dir = join(this.root, `s${++this.#starts}`);
@@ -232,21 +257,25 @@ export class SharedServer {
 		let state: SharedServerState | null = null;
 		if (served && !alive(served)) {
 			problems.push(
-				`the shared crb serve died; its output:\n${served.output()}`,
+				`the shared crb serve died; its output:\n${tail(served.output())}`,
 			);
 			this.#served = null;
 		} else if (served) {
+			let reset = true;
 			try {
-				const reset = (await this.#hook("/api/_test/reset", "POST")) as {
+				const answer = (await this.#hook("/api/_test/reset", "POST")) as {
 					leftovers: string[];
 				};
-				if (reset.leftovers.length > 0) {
+				if (answer.leftovers.length > 0) {
 					problems.push(
-						`the reset left these running: ${reset.leftovers.join("; ")}`,
+						`the reset left these running: ${answer.leftovers.join("; ")}`,
 					);
 				}
 			} catch (error) {
-				problems.push(`the reset failed: ${(error as Error).message}`);
+				reset = false;
+				problems.push(
+					`the reset failed: ${(error as Error).message}; crb serve's output:\n${tail(served.output(), 50)}`,
+				);
 			}
 			const until = Date.now() + GH_SETTLE_MS;
 			while (fakeGhServerCalls().running > 0 && Date.now() < until) {
@@ -256,40 +285,51 @@ export class SharedServer {
 			if (running > 0) {
 				problems.push(`the fake gh still runs ${running} call(s)`);
 			}
-			try {
-				state = await this.state();
-				if (state.sessions.length > 0) {
-					problems.push(
-						`sessions open after the reset: ${state.sessions.join(", ")}`,
-					);
+			// One hang is enough: a server that didn't reset isn't asked again.
+			if (reset) {
+				try {
+					state = await this.state();
+					if (state.sessions.length > 0) {
+						problems.push(
+							`sessions open after the reset: ${state.sessions.join(", ")}`,
+						);
+					}
+				} catch (error) {
+					problems.push(`the state route failed: ${(error as Error).message}`);
 				}
-			} catch (error) {
-				problems.push(`the state route failed: ${(error as Error).message}`);
 			}
 		}
-		// The test is over: its repos are finished, a gh call for one a stray.
-		this.end(test);
-		if (this.#dir) {
-			rmSync(join(this.#dir, "cache", "carbonless", "repos"), {
-				recursive: true,
-				force: true,
-			});
-		}
-		const strays = existsSync(this.strays)
-			? readFileSync(this.strays, "utf8")
-			: "";
-		const fresh = strays.slice(this.#strayOffset).trim();
-		this.#strayOffset = strays.length;
-		if (fresh) problems.push(`stray gh calls:\n${fresh}`);
 		if (this.#dir && dirHash(this.configDir) !== this.#configHash) {
 			problems.push(
 				`crb serve's config dir changed (a test that writes config takes test.use({ crbServer: "own" })): ${filesUnder(this.configDir).join(", ")}`,
 			);
 		}
+		// A leak takes the server with it, before anything else: what leaked
+		// (a git in the clone, a held open) stops with it. No graceful stop:
+		// the leak may hold it up.
+		if (problems.length > 0) await this.discard(true);
+		// The test is over: its repos are finished, a gh call for one a stray.
+		this.end(test);
+		if (this.#dir) {
+			try {
+				rmSync(join(this.#dir, "cache", "carbonless", "repos"), {
+					recursive: true,
+					force: true,
+					maxRetries: 3,
+				});
+			} catch (error) {
+				problems.push(
+					`could not delete the clones: ${(error as Error).message}`,
+				);
+			}
+		}
+		// One problem per stray: an expected one takes no other with it.
+		for (const line of this.#freshStrays()) {
+			problems.push(`stray gh call: ${line}`);
+		}
+		if (problems.length > 0) await this.discard(true);
 		this.#tests++;
 		if (state) this.#record(state, test);
-		// A leak, expected or not, takes the server with it.
-		const leaked = problems.length > 0;
 		for (const pattern of expected) {
 			const at = problems.findIndex((p) => pattern.test(p));
 			if (at === -1) {
@@ -298,10 +338,8 @@ export class SharedServer {
 				problems = problems.filter((_, i) => i !== at);
 			}
 		}
-		if (leaked) {
-			// No graceful stop: what leaked (a held open) may hold it up.
-			await this.discard(true);
-		} else if (
+		if (
+			this.#served &&
 			state &&
 			this.#firstRss > 0 &&
 			state.rss > this.#firstRss + RECYCLE_GROWTH
@@ -357,12 +395,25 @@ export class SharedServer {
 		});
 	}
 
-	/** Worker teardown: stops the server and removes its files. */
+	/**
+	 * Worker teardown: stops the server and removes its files. Throws (the
+	 * run fails) on strays no test was running for: between tests, or after
+	 * the last.
+	 */
 	async close(): Promise<void> {
 		await this.discard();
 		this.#span?.end({ tests: this.#tests, starts: this.#starts });
 		tracer("playwright-worker").flush();
+		const strays = [
+			...this.#between,
+			...this.#freshStrays().map((l) => `${l} (after the last test)`),
+		];
 		rmSync(this.root, { recursive: true, force: true });
+		if (strays.length > 0) {
+			throw new Error(
+				`stray gh calls on the worker's shared crb serve, outside any test:\n- ${strays.join("\n- ")}`,
+			);
+		}
 	}
 }
 

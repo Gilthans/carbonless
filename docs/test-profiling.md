@@ -97,13 +97,18 @@ that fires fails the test, and the server is replaced:
   test (often a `hold` never released, or an open GitHub still holds);
 - `the fake gh still runs N call(s)`: the same, seen from the fake gh;
 - `sessions open after the reset`: the reset missed one;
-- `stray gh calls: …`: a gh call for a finished test's repo, or with no
-  test running (a late read of an earlier test), named in the line;
+- `stray gh call: …`, one per call: a gh call for a finished test's repo
+  (a late read of an earlier test), named in the line. A stray that lands
+  between tests, or after a worker's last, fails the run at the worker's
+  teardown instead of an innocent test;
 - `crb serve's config dir changed`: the test writes config;
-- `the shared crb serve died`: its output follows.
+- `the shared crb serve died`: its last output follows;
+- `could not delete the clones`: something still writes in them.
 
-`e2e/fixtures.spec.ts` has a canary for the first, the stray and the
-config checks (`expectCrbLeak`).
+`e2e/fixtures.spec.ts` has canaries for a held open, a stray, a config
+write, a server's death, and an undeclared leak failing its test
+(`expectCrbLeak` declares the leak a canary expects; only that spec may
+use it).
 
 **`test.use({ crbServer: "own" })`** gives a test its own `crb serve`, as
 before; serve flags (`--host`, `--port`, `--new-key`) always do. Use it

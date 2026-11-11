@@ -399,7 +399,7 @@ test.describe("the shared crb serve", () => {
 	}) => {
 		const p = await pr({ scenario: { hold: ["prView"] } });
 		expectCrbLeak(/the reset left these running: open .*\(pending\)/);
-		expectCrbLeak(/the fake gh still runs 1 call/);
+		expectCrbLeak(/the fake gh still runs \d+ call/);
 		// Never answers: the held open ends with the server, after the checks.
 		void startCrb().catch(() => {});
 		await expect.poll(() => p.ghLog()).toContain("pr view");
@@ -419,6 +419,79 @@ test.describe("the shared crb serve", () => {
 			{ data: { command: "true" } },
 		);
 		expect(res.status()).toBe(200);
+	});
+
+	// No expectCrbLeak: an undeclared leak fails its test (the throw in
+	// startCrb's teardown), which is what every other test relies on.
+	test("canary: an undeclared leak fails its test", async ({
+		pr,
+		startCrb,
+		request,
+	}) => {
+		test.fail(true, "writes config on the shared server: a leak");
+		await pr();
+		const crb = await startCrb();
+		const res = await request.put(
+			`${new URL(crb.url).origin}/api/config/agent`,
+			{ data: { command: "true" } },
+		);
+		expect(res.status()).toBe(200);
+	});
+
+	test.describe("a server that dies", () => {
+		test.describe.configure({ mode: "serial" });
+		let deadPid: number | undefined;
+
+		test("canary: a shared server that dies mid-test fails that test", async ({
+			pr,
+			startCrb,
+			sharedCrb,
+			expectCrbLeak,
+		}) => {
+			await pr();
+			await startCrb();
+			const child = sharedCrb.served?.child;
+			deadPid = child?.pid;
+			expectCrbLeak(/the shared crb serve died; its output:/);
+			const exited = new Promise((r) => child?.once("exit", r));
+			child?.kill("SIGKILL");
+			await exited;
+		});
+
+		test("the next test opens on a new shared server", async ({
+			page,
+			pr,
+			startCrb,
+			sharedCrb,
+		}) => {
+			expect(deadPid).toBeDefined();
+			await pr();
+			const crb = await startCrb();
+			expect(sharedCrb.served?.child.pid).not.toBe(deadPid);
+			await page.goto(crb.url);
+			await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+				"Add widget cache",
+			);
+		});
+	});
+
+	test("canary: an open on a shared server found dead fails with its output, on a new server", async ({
+		pr,
+		startCrb,
+		sharedCrb,
+	}) => {
+		await pr();
+		await startCrb();
+		const child = sharedCrb.served?.child;
+		const exited = new Promise((r) => child?.once("exit", r));
+		child?.kill("SIGKILL");
+		await exited;
+		await expect(startCrb()).rejects.toThrow(
+			/the worker's shared crb serve had died \(a new one runs now\); its output:\n[\s\S]*carbonless listening on/,
+		);
+		// The new one serves the next open, and this test's checks pass on it.
+		expect(sharedCrb.served?.child.pid).not.toBe(child?.pid);
+		await startCrb();
 	});
 
 	test.describe("a late gh call", () => {

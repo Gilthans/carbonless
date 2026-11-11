@@ -62,6 +62,12 @@ async function deepInLongCluster(page: Page, open = true) {
 	return section;
 }
 
+/**
+ * Its own crb serve, so its PR is #7: these place a short PR number in the
+ * compact row at phone widths (a shared test's is #1xx), and one goes Home.
+ */
+const ownTest = test.extend({ crbServer: "own" as const });
+
 test("the app header compacts after scrolling and its tabs work from deep down", async ({
 	page,
 	pr,
@@ -145,107 +151,107 @@ async function stuckOnOverview(page: Page) {
 	await expect(compactTitle(page)).not.toHaveAttribute("inert");
 }
 
-test("once stuck, the compact mark goes Home and the number to the PR on GitHub", async ({
-	page,
-	pr,
-	ownerRepo,
-	prNumber,
-	startCrb,
-	isMobile,
-}) => {
-	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
-	await pr(fixture);
-	const s = await startCrb();
-	await page.goto(s.url);
-	const home = page.getByTestId("compact-home-link");
-	const number = page.getByTestId("compact-pr-link");
-	// At the top, out of reach like the title: neither focusable nor clickable.
-	await expect(compactTitle(page)).toHaveAttribute("inert");
-	await expect(home).toHaveAttribute("inert");
-	await expect(number).toHaveAttribute("inert");
+ownTest(
+	"once stuck, the compact mark goes Home and the number to the PR on GitHub",
+	async ({ page, pr, ownerRepo, prNumber, startCrb, isMobile }) => {
+		if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+		await pr(fixture);
+		const s = await startCrb();
+		await page.goto(s.url);
+		const home = page.getByTestId("compact-home-link");
+		const number = page.getByTestId("compact-pr-link");
+		// At the top, out of reach like the title: neither focusable nor clickable.
+		await expect(compactTitle(page)).toHaveAttribute("inert");
+		await expect(home).toHaveAttribute("inert");
+		await expect(number).toHaveAttribute("inert");
 
-	await stuckOnOverview(page);
-	await expect(home).not.toHaveAttribute("inert");
-	if (isMobile) {
-		// At 360px the pill's column holds the clamped title alone: the
-		// number goes rather than squeeze the title out, nothing overflows,
-		// and the title is still a tap target.
-		await expect(compactTitle(page)).toBeVisible();
-		await expect(number).toBeHidden();
+		await stuckOnOverview(page);
+		await expect(home).not.toHaveAttribute("inert");
+		if (isMobile) {
+			// At 360px the pill's column holds the clamped title alone: the
+			// number goes rather than squeeze the title out, nothing overflows,
+			// and the title is still a tap target.
+			await expect(compactTitle(page)).toBeVisible();
+			await expect(number).toBeHidden();
+			await expectNoPageOverflow(page);
+			expect(await tapHeight(compactTitle(page))).toBeGreaterThanOrEqual(40);
+			await page.setViewportSize({ width: 412, height: 780 });
+		}
+		await expect(number).toBeVisible();
+		await expect(number).not.toHaveAttribute("inert");
+		await expect(home).toHaveAccessibleName("Home");
+		await expect(home).toHaveAttribute("href", "/");
+		await expect(number).toHaveAccessibleName(`#${prNumber} on GitHub`);
+		await expect(number).toHaveAttribute(
+			"href",
+			`https://github.com/${ownerRepo}/pull/${prNumber}`,
+		);
+		await expect(number).toHaveAttribute("target", "_blank");
+		await expect(number).toHaveAttribute("rel", "noreferrer");
+		// Title and number share the pill: one title to the eye.
+		const pill = compactPill(page);
+		await expect(pill.getByTestId("compact-title")).toHaveText(
+			"Make the review header sticky",
+		);
+		await expect(pill.getByTestId("compact-pr-link")).toHaveText(
+			`#${prNumber}`,
+		);
+		await expect(compactTitle(page)).toHaveAccessibleName(
+			"Back to top: Make the review header sticky",
+		);
+		for (const el of [home, compactTitle(page), number]) {
+			expect(await tapHeight(el)).toBeGreaterThanOrEqual(40);
+		}
+		// Beside the number the title keeps a tap's width.
+		expect((await box(compactTitle(page))).width).toBeGreaterThanOrEqual(40);
 		await expectNoPageOverflow(page);
-		expect(await tapHeight(compactTitle(page))).toBeGreaterThanOrEqual(40);
-		await page.setViewportSize({ width: 412, height: 780 });
-	}
-	await expect(number).toBeVisible();
-	await expect(number).not.toHaveAttribute("inert");
-	await expect(home).toHaveAccessibleName("Home");
-	await expect(home).toHaveAttribute("href", "/");
-	await expect(number).toHaveAccessibleName(`#${prNumber} on GitHub`);
-	await expect(number).toHaveAttribute(
-		"href",
-		`https://github.com/${ownerRepo}/pull/${prNumber}`,
-	);
-	await expect(number).toHaveAttribute("target", "_blank");
-	await expect(number).toHaveAttribute("rel", "noreferrer");
-	// Title and number share the pill: one title to the eye.
-	const pill = compactPill(page);
-	await expect(pill.getByTestId("compact-title")).toHaveText(
-		"Make the review header sticky",
-	);
-	await expect(pill.getByTestId("compact-pr-link")).toHaveText(`#${prNumber}`);
-	await expect(compactTitle(page)).toHaveAccessibleName(
-		"Back to top: Make the review header sticky",
-	);
-	for (const el of [home, compactTitle(page), number]) {
-		expect(await tapHeight(el)).toBeGreaterThanOrEqual(40);
-	}
-	// Beside the number the title keeps a tap's width.
-	expect((await box(compactTitle(page))).width).toBeGreaterThanOrEqual(40);
-	await expectNoPageOverflow(page);
 
-	// The mark goes Home.
-	await home.click();
-	await expect(page).toHaveURL(`${new URL(s.url).origin}/`);
-});
+		// The mark goes Home.
+		await home.click();
+		await expect(page).toHaveURL(`${new URL(s.url).origin}/`);
+	},
+);
 
-test("the compact row's keyboard order: mark, tabs, title, number, Find in PR, Refresh", async ({
-	page,
-	pr,
-	startCrb,
-	isMobile,
-}) => {
-	// Wide enough for the number (the 360px floor is the test above's).
-	if (isMobile) await page.setViewportSize({ width: 412, height: 780 });
-	await pr(fixture);
-	const s = await startCrb();
-	await page.goto(s.url);
-	await stuckOnOverview(page);
-	const home = page.getByTestId("compact-home-link");
-	const number = page.getByTestId("compact-pr-link");
-	// Keyboard focus (a key press first marks the input as the keyboard).
-	await page.keyboard.press("Shift");
-	await home.focus();
-	await expect(home).toBeFocused();
-	await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText("Home");
-	for (const name of ["Overview", "Files changed", "Final Verdict"]) {
+ownTest(
+	"the compact row's keyboard order: mark, tabs, title, number, Find in PR, Refresh",
+	async ({ page, pr, startCrb, isMobile }) => {
+		// Wide enough for the number (the 360px floor is the test above's).
+		if (isMobile) await page.setViewportSize({ width: 412, height: 780 });
+		await pr(fixture);
+		const s = await startCrb();
+		await page.goto(s.url);
+		await stuckOnOverview(page);
+		const home = page.getByTestId("compact-home-link");
+		const number = page.getByTestId("compact-pr-link");
+		// Keyboard focus (a key press first marks the input as the keyboard).
+		await page.keyboard.press("Shift");
+		await home.focus();
+		await expect(home).toBeFocused();
+		await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText(
+			"Home",
+		);
+		for (const name of ["Overview", "Files changed", "Final Verdict"]) {
+			await page.keyboard.press("Tab");
+			await expect(page.getByRole("link", { name })).toBeFocused();
+		}
 		await page.keyboard.press("Tab");
-		await expect(page.getByRole("link", { name })).toBeFocused();
-	}
-	await page.keyboard.press("Tab");
-	await expect(compactTitle(page)).toBeFocused();
-	await page.keyboard.press("Tab");
-	await expect(number).toBeFocused();
-	await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText(
-		"Open on GitHub",
-	);
-	await page.keyboard.press("Tab");
-	await expect(page.getByRole("button", { name: "Find in PR" })).toBeFocused();
-	await page.keyboard.press("Tab");
-	await expect(page.getByRole("button", { name: "Refresh" })).toBeFocused();
-	// None of that moved the page: the row is stuck.
-	expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
-	await expect(compactPill(page)).toHaveCSS("opacity", "1");
-});
+		await expect(compactTitle(page)).toBeFocused();
+		await page.keyboard.press("Tab");
+		await expect(number).toBeFocused();
+		await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText(
+			"Open on GitHub",
+		);
+		await page.keyboard.press("Tab");
+		await expect(
+			page.getByRole("button", { name: "Find in PR" }),
+		).toBeFocused();
+		await page.keyboard.press("Tab");
+		await expect(page.getByRole("button", { name: "Refresh" })).toBeFocused();
+		// None of that moved the page: the row is stuck.
+		expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+		await expect(compactPill(page)).toHaveCSS("opacity", "1");
+	},
+);
 
 test("a five-digit PR number never crushes the compact title: it shows beside a tap-wide title or not at all", async ({
 	page,

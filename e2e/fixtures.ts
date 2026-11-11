@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -180,8 +180,12 @@ export const test = base.extend<
 
 	// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
 	_leaks: async ({}, use) => use([]),
-	expectCrbLeak: async ({ _leaks }, use) =>
+	expectCrbLeak: async ({ _leaks }, use, info) =>
 		use((pattern) => {
+			// The harness's own canaries only: no test declares a leak away.
+			if (!info.file.endsWith("fixtures.spec.ts")) {
+				throw new Error("expectCrbLeak is for e2e/fixtures.spec.ts's canaries");
+			}
 			_leaks.push(pattern);
 		}),
 
@@ -314,6 +318,7 @@ export const test = base.extend<
 							: openOverHttp(server, arg, client),
 					{ box: true },
 				);
+				if (onShared && crbClient === "cli") strangerServer(server);
 				const output = () => `${server.output().slice(from)}${run.output}`;
 				const url = run.stdout.trim().split("\n").at(-1) ?? "";
 				if (run.code !== 0 || !/^http:\/\//.test(url)) {
@@ -330,30 +335,45 @@ export const test = base.extend<
 				return { url, output, stop };
 			}),
 		);
-		// Pages would keep polling the stopped server and log connection errors.
+		// Pages would keep polling the stopped server and log connection errors
+		// (on a shared one, reopen the review after the reset): every page of
+		// every context goes blank, or closes (a beforeunload prompt keeps it).
+		const pages = (context.browser()?.contexts() ?? [context]).flatMap((c) =>
+			c.pages(),
+		);
 		await Promise.all(
-			context.pages().map((p) => p.goto("about:blank").catch(() => {})),
+			pages.map(async (p) => {
+				await p.goto("about:blank").catch(() => {});
+				if (p.url() !== "about:blank") await p.close().catch(() => {});
+			}),
 		);
 		let problems: string[] = [];
-		if (usedShared) {
-			problems = await base.step(
-				"teardown: crb reset",
-				() => sharedCrb.finish(shared, _leaks),
+		try {
+			if (usedShared) {
+				// Its own time: a hung reset still reports the leak (bounded in
+				// shared-server.ts), not the test's timeout.
+				problems = await untimed(info, () =>
+					base.step(
+						"teardown: crb reset",
+						() => sharedCrb.finish(shared, _leaks),
+						{ box: true },
+					),
+				);
+			} else if (crbServer === "shared") {
+				sharedCrb.end(shared);
+			}
+		} finally {
+			await base.step(
+				"teardown: crb stop",
+				() => Promise.all(servers.map((s) => stopChild(s.child))),
 				{ box: true },
 			);
-		} else if (crbServer === "shared") {
-			sharedCrb.end(shared);
 		}
 		if (_leaks.length > 0 && !usedShared) {
 			problems.push(
 				"expectCrbLeak in a test that never opened on the shared crb serve",
 			);
 		}
-		await base.step(
-			"teardown: crb stop",
-			() => Promise.all(servers.map((s) => stopChild(s.child))),
-			{ box: true },
-		);
 		if (problems.length > 0) {
 			throw new Error(
 				`the shared crb serve: this test leaked (e2e/shared-server.ts)\n- ${problems.join("\n- ")}`,
@@ -372,6 +392,32 @@ export const test = base.extend<
 		{ auto: true },
 	],
 });
+
+/**
+ * After a CLI client on the shared server: the server.json it read must be
+ * that server's. A client that found none (the server died meanwhile)
+ * starts one of its own, detached: it is killed, and the test fails.
+ */
+function strangerServer(server: Served): void {
+	const file = join(
+		server.env.XDG_STATE_HOME as string,
+		"carbonless",
+		"server.json",
+	);
+	let pid: number | undefined;
+	try {
+		pid = (JSON.parse(readFileSync(file, "utf8")) as { pid?: number }).pid;
+	} catch {
+		return;
+	}
+	if (pid === undefined || pid === server.child.pid) return;
+	try {
+		process.kill(pid, "SIGKILL");
+	} catch {}
+	throw new Error(
+		`crb <pr> started a crb serve of its own (pid ${pid}, killed) instead of the shared one (pid ${server.child.pid})`,
+	);
+}
 
 export interface ConsoleErrorWatch {
 	/** Declares errors matching `pattern` as expected. */
