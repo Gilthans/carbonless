@@ -63,7 +63,9 @@ export interface PrOptions {
 export interface Pr {
 	repo: GitFixture;
 	scenarioPath: string;
-	number: typeof PR_NUMBER;
+	/** Its repository on the fake GitHub (owner/repo). */
+	ownerRepo: string;
+	number: number;
 	/** Pushes a commit (its files and deletions) onto the PR and points the fake gh at it; returns its SHA. */
 	moveHead: (commit: FixtureCommit) => string;
 	/** Edits the fake gh's scenario in place (lost on the next moveHead). */
@@ -104,12 +106,24 @@ export function crbEnv(workdir: string): NodeJS.ProcessEnv {
 	});
 }
 
+/** Which PR a fixture is on GitHub: `acme/widget#7` unless a test is given another. */
+export interface PrAt {
+	ownerRepo: string;
+	number: number;
+}
+
 /**
  * A git repo with `main` and the PR's commits (the head only under
  * refs/pull/<n>/head, like on GitHub) and the fake gh's scenario for it in
- * `workdir`. The caller cleans `repo` up.
+ * `workdir`, as PR `at` (a test on a shared crb serve has a repo and number
+ * of its own: e2e/shared-server.ts). The caller cleans `repo` up.
  */
-export function createPr(workdir: string, opts: PrOptions = {}): Pr {
+export function createPr(
+	workdir: string,
+	opts: PrOptions = {},
+	at: PrAt = { ownerRepo: OWNER_REPO, number: PR_NUMBER },
+): Pr {
+	const { ownerRepo, number } = at;
 	const repo = createGitFixture([
 		{
 			message: "base",
@@ -130,19 +144,19 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 	const mergeBase = repo.shas[0] ?? "";
 	let head = repo.shas.at(-1) ?? "";
 	// The PR head lives only under refs/pull/<n>/head, like on GitHub.
-	git("update-ref", `refs/pull/${PR_NUMBER}/head`, head);
+	git("update-ref", `refs/pull/${number}/head`, head);
 	git("reset", "--quiet", "--hard", mergeBase);
 
 	const write = () =>
 		writeScenario(workdir, {
 			repoPath: repo.path,
 			user: { login: "Octo_Cat" },
-			nameWithOwner: OWNER_REPO,
+			nameWithOwner: ownerRepo,
 			prs: {
-				[PR_NUMBER]: {
+				[number]: {
 					view: prView({
-						number: PR_NUMBER,
-						url: `https://github.com/${OWNER_REPO}/pull/${PR_NUMBER}`,
+						number,
+						url: `https://github.com/${ownerRepo}/pull/${number}`,
 						baseRefName: "main",
 						...opts.overview,
 						headRefOid: head,
@@ -163,7 +177,8 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 	return {
 		repo,
 		scenarioPath,
-		number: PR_NUMBER,
+		ownerRepo,
+		number,
 		moveHead: (commit) => {
 			const work = join(workdir, "work");
 			git("worktree", "add", "--quiet", "--detach", work, head);
@@ -172,7 +187,7 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 			} finally {
 				git("worktree", "remove", "--force", work);
 			}
-			git("update-ref", `refs/pull/${PR_NUMBER}/head`, head);
+			git("update-ref", `refs/pull/${number}/head`, head);
 			write();
 			return head;
 		},

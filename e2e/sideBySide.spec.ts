@@ -72,7 +72,7 @@ async function setup(pr: (opts?: PrOptions) => Promise<Pr>) {
 	const p = await pr(fixture);
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: GREET, line: 6, subjectType: "LINE" }, [
@@ -407,7 +407,7 @@ test("a four-digit file side by side on a phone: a thread's bubble takes no room
 	const p = await setup(pr);
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			...(graph.reviewThreads ?? []),
@@ -691,7 +691,7 @@ test("a text selection stays on one side, and Copy gives that side only", async 
 /** Threads the fake gh stores: where each one is anchored. */
 function stored(p: Pr) {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-	return (s.prs[7]?.graphql?.reviewThreads ?? []) as {
+	return (s.prs[p.number]?.graphql?.reviewThreads ?? []) as {
 		path: string;
 		subjectType: string;
 		line: number;
@@ -1060,7 +1060,7 @@ test("side by side, a cluster's floating controls stop above a thread opened und
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: LONG, line: 15, subjectType: "LINE" }, [
@@ -1334,7 +1334,7 @@ test("side by side, a context line's thread has its bubble in both cells and ope
 	const head = p.repo.shas.at(-1) ?? "";
 	// A thread GitHub placed LEFT on the context line old 8 / new 9.
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread(
@@ -1428,7 +1428,7 @@ async function bubblyPr(pr: (opts?: PrOptions) => Promise<Pr>) {
 	const comment = (text: string) =>
 		threadComment({ login: "rev1", text, commit: head, diffHunk: "" });
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread(

@@ -42,7 +42,7 @@ async function setup(
 	const p = await pr(fixture);
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "new.txt", line: 1, subjectType: "LINE" }, [
@@ -103,7 +103,7 @@ function stored(
 	i: number,
 ): { removed: boolean; comments: StoredComment[] } {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-	const t = (s.prs[7]?.graphql?.reviewThreads ?? [])[i] as {
+	const t = (s.prs[p.number]?.graphql?.reviewThreads ?? [])[i] as {
 		removed?: boolean;
 		comments: { nodes: StoredComment[] };
 	};
@@ -513,7 +513,7 @@ test("changed on GitHub meanwhile: refused with the draft kept, then Save anyway
 test("no Edit or Delete as of a cutoff", async ({ page, pr, startCrb }) => {
 	const p = await setup(pr);
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (graph) {
 			graph.commits = [
 				{

@@ -93,7 +93,7 @@ async function setup(
 	const p = await pr({ ...fixture(), ...more });
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "a.txt", line: 2, subjectType: "LINE" }, [
@@ -129,7 +129,7 @@ interface StoredReview {
 /** The PR's reviews as the fake gh stores them. */
 function reviews(p: Pr): StoredReview[] {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-	return (s.prs[7]?.graphql?.reviews ?? []) as StoredReview[];
+	return (s.prs[p.number]?.graphql?.reviews ?? []) as StoredReview[];
 }
 
 const submitted = (p: Pr) => reviews(p).filter((r) => r.state !== "PENDING");
@@ -669,7 +669,7 @@ test("the Reviews section lists each reviewer: yours first, approvals and change
 	const head = p.repo.shas.at(-1) ?? "";
 	const earlier = p.repo.shas.at(-2) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		const review = (login: string, state: string, at: string, oid = head) => ({
 			author: { login, __typename: "User" },

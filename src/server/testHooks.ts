@@ -5,6 +5,7 @@ import { ghRunning } from "./gh.js";
 import { gitChildren } from "./git.js";
 import type { HomeService } from "./home/homeService.js";
 import type { SessionRegistry } from "./registry.js";
+import { tracer } from "./trace.js";
 
 /*
  * Test-only routes (CAR-106: one `crb serve` shared by a Playwright worker's
@@ -21,8 +22,9 @@ import type { SessionRegistry } from "./registry.js";
  *   it within one bounded wait, until no open, close, gh call, gh process
  *   or git process is left, and answers `{ closed, ghInFlight, ghChildren,
  *   gitChildren, leftovers }` (leftovers: what still ran at the deadline).
+ *   Writes the trace spans buffered so far.
  * GET /api/_test/state: open sessions, Home's cached repos, RSS, and what
- *   gh and git run now.
+ *   gh and git run now. Writes the trace spans buffered so far too.
  */
 
 export const TEST_HOOKS_ENV = "CRB_TEST_HOOKS";
@@ -115,6 +117,9 @@ export async function registerTestHooks(
 			// (Home's config read, a blob's cat-file) may have written since.
 			options.home?.reset();
 			clearSnapshotCaches();
+			// A shared server lives as long as its worker: the test's spans go
+			// to disk now (a test reads them; a killed server loses no more).
+			tracer().flush();
 			return {
 				closed,
 				ghInFlight: left.calls.length,
@@ -129,6 +134,7 @@ export async function registerTestHooks(
 			};
 		});
 		scope.get("/api/_test/state", async (): Promise<TestState> => {
+			tracer().flush();
 			const gh = ghRunning();
 			return {
 				sessions: options.registry.openIds(),

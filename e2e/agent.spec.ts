@@ -655,7 +655,7 @@ test("--as-of: no agent, Ask agent off with why", async ({
 	});
 	// The PR's one commit is from before the cutoff.
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (graph) {
 			graph.commits = [
 				{

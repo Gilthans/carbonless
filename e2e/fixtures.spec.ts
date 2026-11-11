@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { readRequests, type Span, spansOf } from "../scripts/test-profile/load";
@@ -298,4 +299,162 @@ test("crb's compile cache: the run's shared one (global-setup.ts), else its own 
 	} finally {
 		await stopChild(second.child);
 	}
+});
+
+// The worker's shared crb serve (e2e/shared-server.ts): a later test's
+// requests trace under that test, and its leak checks fire. Desktop only:
+// they test the harness, not a layout.
+test.describe("the shared crb serve", () => {
+	test.use({ crbServer: "shared" });
+	test.skip(({ isMobile }) => isMobile, "harness checks: desktop only");
+
+	test.describe("traces", () => {
+		test.describe.configure({ mode: "serial" });
+		let firstPid: number | undefined;
+
+		test("a first test starts the shared server", async ({
+			pr,
+			startCrb,
+			sharedCrb,
+		}) => {
+			await pr();
+			await startCrb();
+			firstPid = sharedCrb.served?.child.pid;
+			expect(firstPid).toBeDefined();
+		});
+
+		test("a second test's crb requests, gits and fake gh trace under its own span", async ({
+			page,
+			pr,
+			startCrb,
+			sharedCrb,
+		}, info) => {
+			const dir = process.env.CRB_TRACE_DIR;
+			const run = process.env.CRB_TRACE_RUN;
+			test.skip(!dir || !run, "test traces are off (CRB_TEST_TRACES=0)");
+			const ctx = testSpanContext(
+				run as string,
+				info.testId,
+				info.retry,
+				info.repeatEachIndex,
+			);
+			await pr();
+			const crb = await startCrb();
+			// The first test's server, not one this test started.
+			expect(sharedCrb.served?.child.pid).toBe(firstPid);
+			await page.goto(crb.url);
+			await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+				"Add widget cache",
+			);
+			// The state route writes the server's buffered spans.
+			await sharedCrb.state();
+			tracer().flush();
+
+			const spans = spansOf(readRequests(dir as string, ctx.traceId));
+			const byId = new Map(spans.map((s) => [s.spanId, s]));
+			const under = (s: Span, ancestor: string): boolean => {
+				for (let p = s.parent; p; p = byId.get(p)?.parent ?? null) {
+					if (p === ancestor) return true;
+				}
+				return false;
+			};
+			// The server's own span is in the worker's trace, not this test's.
+			expect(
+				spans.filter((s) => s.service === "crb" && s.name === "crb serve"),
+			).toEqual([]);
+			const open = spans.find(
+				(s) => s.service === "crb" && s.name === "POST /api/reviews",
+			);
+			expect(open?.parent).toBe(ctx.spanId);
+			// The page's requests (context.setExtraHTTPHeaders).
+			const pageReads = spans.filter(
+				(s) => s.service === "crb" && /^GET \/api\/r\//.test(s.name),
+			);
+			expect(pageReads.length).toBeGreaterThan(0);
+			for (const read of pageReads) expect(read.parent).toBe(ctx.spanId);
+			const gits = spans.filter(
+				(s) => s.service === "crb" && s.name.startsWith("git "),
+			);
+			expect(gits.length).toBeGreaterThan(0);
+			for (const git of gits) expect(under(git, ctx.spanId)).toBe(true);
+			// A gh call still under way (the page's reads) has no span of crb's
+			// yet: the fake's of it can't be placed.
+			const fakes = spans.filter(
+				(s) => s.service === "fake-gh" && byId.has(s.parent ?? ""),
+			);
+			expect(fakes.length).toBeGreaterThan(0);
+			for (const fake of fakes) {
+				expect(byId.get(fake.parent ?? "")?.name).toMatch(/^gh /);
+				expect(under(fake, ctx.spanId)).toBe(true);
+			}
+		});
+	});
+
+	// Canaries: each leaks on purpose, and the checks after it must say so
+	// (expectCrbLeak; one not found fails the test). The server goes with
+	// the leak, so the next test starts a clean one.
+	test("canary: an open GitHub holds outlives the reset, and fails its test", async ({
+		pr,
+		startCrb,
+		expectCrbLeak,
+	}) => {
+		const p = await pr({ scenario: { hold: ["prView"] } });
+		expectCrbLeak(/the reset left these running: open .*\(pending\)/);
+		expectCrbLeak(/the fake gh still runs 1 call/);
+		// Never answers: the held open ends with the server, after the checks.
+		void startCrb().catch(() => {});
+		await expect.poll(() => p.ghLog()).toContain("pr view");
+	});
+
+	test("canary: a test that writes config fails", async ({
+		pr,
+		startCrb,
+		request,
+		expectCrbLeak,
+	}) => {
+		await pr();
+		const crb = await startCrb();
+		expectCrbLeak(/config dir changed/);
+		const res = await request.put(
+			`${new URL(crb.url).origin}/api/config/agent`,
+			{ data: { command: "true" } },
+		);
+		expect(res.status()).toBe(200);
+	});
+
+	test.describe("a late gh call", () => {
+		test.describe.configure({ mode: "serial" });
+		let earlier = "";
+
+		test("a test's repo", async ({ pr, startCrb, ownerRepo }) => {
+			await pr();
+			await startCrb();
+			earlier = ownerRepo;
+		});
+
+		test("canary: a gh call for a finished test's repo is a stray, and fails the test it lands in", async ({
+			pr,
+			startCrb,
+			sharedCrb,
+			ownerRepo,
+			expectCrbLeak,
+		}) => {
+			expect(earlier).not.toBe("");
+			expect(ownerRepo).not.toBe(earlier);
+			await pr();
+			await startCrb();
+			expectCrbLeak(
+				new RegExp(
+					`stray call for ${earlier} \\(test '.*a test's repo', finished\\)`,
+				),
+			);
+			const late = spawnSync(
+				"gh",
+				["pr", "view", "101", "-R", earlier, "--json", "number"],
+				{ env: sharedCrb.ghEnv(), encoding: "utf8" },
+			);
+			expect(late.status).toBe(1);
+			expect(late.stderr).toContain(`stray call for ${earlier}`);
+		});
+	});
 });

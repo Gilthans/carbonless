@@ -27,6 +27,7 @@ import {
 	type Pr,
 	type PrOptions,
 } from "./pr-setup";
+import { SharedServer, type SharedTest } from "./shared-server";
 
 export { type CrbClient, clientRequest, NeedsCliError } from "./crb-open";
 export {
@@ -44,14 +45,26 @@ export type {
 	ThreadJson,
 	ViewJson,
 } from "./pr-setup";
-export { OWNER_REPO, PR_NUMBER };
+export { OWNER_REPO, PR_NUMBER, SharedServer };
+
+/**
+ * Which `crb serve` a test's startCrb opens on: "shared", its worker's
+ * (e2e/shared-server.ts: a repo and PR number of the test's own, a reset
+ * and leak checks after it), or "own", one for the test alone, as a test
+ * that stops or restarts crb, passes serve flags, writes config or reads
+ * the server's files needs.
+ */
+export type CrbServer = "shared" | "own";
 
 export interface Crb {
 	/** The review's URL, as `crb <pr>` printed it: `http://<host>:<port>/r/<id>`. */
 	url: string;
 	/** What crb serve logged since this `crb <pr>`, then the client's own output. */
 	output(): string;
-	/** SIGTERMs the test's crb serve; rejects unless it exits promptly with 0. */
+	/**
+	 * SIGTERMs the test's crb serve; rejects unless it exits promptly with
+	 * 0. On a shared server it rejects at once: the test needs its own.
+	 */
 	stop(): Promise<CrbExit | null>;
 }
 
@@ -104,27 +117,73 @@ function splitArgs(args: string[]): { serve: string[]; client: string[] } {
 	return { serve, client };
 }
 
-export const test = base.extend<{
-	/**
-	 * How startCrb opens a review: "http" POSTs /api/reviews itself, as the
-	 * client would (e2e/crb-open.ts), sparing the client process; "cli" runs
-	 * the built `crb <pr>`, for tests of the client: its output and exit
-	 * codes, PR resolution, flag checks, --open, finding or starting a server.
-	 */
-	crbClient: CrbClient;
-	_trace: undefined;
-	workdir: string;
-	pr: (opts?: PrOptions) => Promise<Pr>;
-	startCrb: (arg?: string, extraArgs?: string[]) => Promise<Crb>;
-	/**
-	 * Auto fixture: fails the test on browser console errors and uncaught page
-	 * errors, except those matching a pattern declared with
-	 * `expectConsoleError(/409/)` (Chromium logs "Failed to load resource"
-	 * for every non-2xx fetch).
-	 */
-	expectConsoleError: (pattern: RegExp) => void;
-}>({
+export const test = base.extend<
+	{
+		/**
+		 * How startCrb opens a review: "http" POSTs /api/reviews itself, as the
+		 * client would (e2e/crb-open.ts), sparing the client process; "cli" runs
+		 * the built `crb <pr>`, for tests of the client: its output and exit
+		 * codes, PR resolution, flag checks, --open, finding or starting a server.
+		 */
+		crbClient: CrbClient;
+		/** Which crb serve startCrb uses (CrbServer); serve flags always get the test's own. */
+		crbServer: CrbServer;
+		/** The test's PR on the fake GitHub: its own on a shared server, else acme/widget#7. */
+		ownerRepo: string;
+		prNumber: number;
+		/**
+		 * Declares a leak the shared server's checks must find after this test
+		 * (fixtures.spec.ts's canaries): one not found fails the test.
+		 */
+		expectCrbLeak: (pattern: RegExp) => void;
+		_prAt: { ownerRepo: string; number: number };
+		_leaks: RegExp[];
+		_trace: undefined;
+		workdir: string;
+		pr: (opts?: PrOptions) => Promise<Pr>;
+		startCrb: (arg?: string, extraArgs?: string[]) => Promise<Crb>;
+		/**
+		 * Auto fixture: fails the test on browser console errors and uncaught page
+		 * errors, except those matching a pattern declared with
+		 * `expectConsoleError(/409/)` (Chromium logs "Failed to load resource"
+		 * for every non-2xx fetch).
+		 */
+		expectConsoleError: (pattern: RegExp) => void;
+	},
+	{
+		/** The worker's shared crb serve, started by its first shared test. */
+		sharedCrb: SharedServer;
+	}
+>({
 	crbClient: ["http", { option: true }],
+	crbServer: ["own", { option: true }],
+
+	sharedCrb: [
+		// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
+		async ({}, use, info) => {
+			const shared = new SharedServer(info.workerIndex);
+			await use(shared);
+			await shared.close();
+		},
+		{ scope: "worker" },
+	],
+
+	_prAt: async ({ crbServer, sharedCrb }, use) => {
+		await use(
+			crbServer === "shared"
+				? sharedCrb.nextPr()
+				: { ownerRepo: OWNER_REPO, number: PR_NUMBER },
+		);
+	},
+	ownerRepo: async ({ _prAt }, use) => use(_prAt.ownerRepo),
+	prNumber: async ({ _prAt }, use) => use(_prAt.number),
+
+	// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
+	_leaks: async ({}, use) => use([]),
+	expectCrbLeak: async ({ _leaks }, use) =>
+		use((pattern) => {
+			_leaks.push(pattern);
+		}),
 
 	// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
 	workdir: async ({}, use) => {
@@ -157,11 +216,11 @@ export const test = base.extend<{
 		{ auto: true, box: true },
 	],
 
-	pr: async ({ workdir }, use, info) => {
+	pr: async ({ workdir, _prAt }, use, info) => {
 		const repos: GitFixture[] = [];
 		await use(async (opts = {}) => {
 			const pr = await untimed(info, () =>
-				base.step("setup: fixture repo", () => createPr(workdir, opts), {
+				base.step("setup: fixture repo", () => createPr(workdir, opts, _prAt), {
 					box: true,
 				}),
 			);
@@ -171,40 +230,88 @@ export const test = base.extend<{
 		for (const repo of repos) repo.cleanup();
 	},
 
-	startCrb: async ({ workdir, context, crbClient }, use, info) => {
-		// One crb serve per test, started by the first crb <pr> (and again
-		// after a stop), as the CLI's auto-start would.
+	startCrb: async (
+		{
+			workdir,
+			context,
+			crbClient,
+			crbServer,
+			sharedCrb,
+			ownerRepo,
+			prNumber,
+			_leaks,
+		},
+		use,
+		info,
+	) => {
+		// Page requests nest under the test in its trace, also on a server
+		// another test started.
+		const parent = process.env.TRACEPARENT;
+		if (parent) await context.setExtraHTTPHeaders({ traceparent: parent });
+		// The test's own crb serve, started by the first crb <pr> that needs
+		// one (and again after a stop), as the CLI's auto-start would; or the
+		// worker's shared one.
 		const servers: Served[] = [];
 		let current: Served | null = null;
 		let currentFlags = "";
-		await use((arg = `${OWNER_REPO}#${PR_NUMBER}`, extraArgs = []) =>
+		const shared: SharedTest = {
+			title: info.titlePath.join(" › "),
+			scenario: join(workdir, "fake-gh-scenario.json"),
+			log: join(workdir, "fake-gh.log"),
+			repos: [ownerRepo],
+		};
+		let usedShared = false;
+		// Before the server's first gh call: its calls for this test's repo
+		// go to this test's scenario.
+		if (crbServer === "shared") sharedCrb.begin(shared);
+		const own = async (serve: string[]) => {
+			const live =
+				current &&
+				current.child.exitCode === null &&
+				current.child.signalCode === null;
+			if (!current || !live) {
+				current = await base.step(
+					"setup: crb serve",
+					() => startServe(workdir, serve),
+					{ box: true },
+				);
+				currentFlags = serve.join(" ");
+				servers.push(current);
+			} else if (serve.length > 0 && serve.join(" ") !== currentFlags) {
+				throw new Error(
+					`crb serve already runs with "${currentFlags}", not "${serve.join(" ")}": stop() it first`,
+				);
+			}
+			return current;
+		};
+		await use((arg = `${ownerRepo}#${prNumber}`, extraArgs = []) =>
 			untimed(info, async () => {
 				const { serve, client } = splitArgs(extraArgs);
-				const live =
-					current &&
-					current.child.exitCode === null &&
-					current.child.signalCode === null;
-				if (!current || !live) {
-					current = await base.step(
-						"setup: crb serve",
-						() => startServe(workdir, serve),
-						{ box: true },
-					);
-					currentFlags = serve.join(" ");
-					servers.push(current);
-				} else if (serve.length > 0 && serve.join(" ") !== currentFlags) {
-					throw new Error(
-						`crb serve already runs with "${currentFlags}", not "${serve.join(" ")}": stop() it first`,
-					);
+				const onShared = crbServer === "shared" && serve.length === 0;
+				let server: Served;
+				if (onShared) {
+					usedShared = true;
+					server = sharedCrb.idle
+						? await base.step("setup: crb serve", () => sharedCrb.start(), {
+								box: true,
+							})
+						: await sharedCrb.start();
+				} else {
+					server = await own(serve);
 				}
-				const server = current;
 				const from = server.output().length;
 				const run = await base.step(
 					"setup: crb open",
 					() =>
 						crbClient === "cli"
-							? runCli(workdir, [arg, ...client])
-							: openOverHttp(server, workdir, arg, client),
+							? runCli(
+									workdir,
+									[arg, ...client],
+									onShared
+										? { ...server.env, TRACEPARENT: process.env.TRACEPARENT }
+										: undefined,
+								)
+							: openOverHttp(server, arg, client),
 					{ box: true },
 				);
 				const output = () => `${server.output().slice(from)}${run.output}`;
@@ -212,18 +319,46 @@ export const test = base.extend<{
 				if (run.code !== 0 || !/^http:\/\//.test(url)) {
 					throw new CrbExitError(run.code, output());
 				}
-				return { url, output, stop: () => stopChild(server.child) };
+				const stop = onShared
+					? () =>
+							Promise.reject(
+								new Error(
+									"this test shares its worker's crb serve, which it can't stop: test.use({ crbServer: \"own\" })",
+								),
+							)
+					: () => stopChild(server.child);
+				return { url, output, stop };
 			}),
 		);
 		// Pages would keep polling the stopped server and log connection errors.
 		await Promise.all(
 			context.pages().map((p) => p.goto("about:blank").catch(() => {})),
 		);
+		let problems: string[] = [];
+		if (usedShared) {
+			problems = await base.step(
+				"teardown: crb reset",
+				() => sharedCrb.finish(shared, _leaks),
+				{ box: true },
+			);
+		} else if (crbServer === "shared") {
+			sharedCrb.end(shared);
+		}
+		if (_leaks.length > 0 && !usedShared) {
+			problems.push(
+				"expectCrbLeak in a test that never opened on the shared crb serve",
+			);
+		}
 		await base.step(
 			"teardown: crb stop",
 			() => Promise.all(servers.map((s) => stopChild(s.child))),
 			{ box: true },
 		);
+		if (problems.length > 0) {
+			throw new Error(
+				`the shared crb serve: this test leaked (e2e/shared-server.ts)\n- ${problems.join("\n- ")}`,
+			);
+		}
 	},
 
 	expectConsoleError: [

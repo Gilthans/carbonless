@@ -9,13 +9,7 @@ import {
 	sideBySide,
 	tapHeight,
 } from "./files-ui";
-import {
-	expect,
-	OWNER_REPO,
-	PR_NUMBER,
-	type PrOptions,
-	test,
-} from "./fixtures";
+import { expect, type PrOptions, test } from "./fixtures";
 
 const text = (lines: string[]) => `${lines.join("\n")}\n`;
 const short = Array.from({ length: 12 }, (_, i) => `short ${i + 1}`);
@@ -71,6 +65,7 @@ async function deepInLongCluster(page: Page, open = true) {
 test("the app header compacts after scrolling and its tabs work from deep down", async ({
 	page,
 	pr,
+	prNumber,
 	startCrb,
 	isMobile,
 }) => {
@@ -95,7 +90,7 @@ test("the app header compacts after scrolling and its tabs work from deep down",
 	expect(header.bottom).toBeLessThanOrEqual(isMobile ? 48 : 56);
 	await expect(page.getByRole("heading", { level: 1 })).not.toBeInViewport();
 	await expect(compactPill(page)).toHaveCSS("opacity", "1");
-	await expect(compactPill(page)).toContainText("#7");
+	await expect(compactPill(page)).toContainText(`#${prNumber}`);
 	await expectNoPageOverflow(page);
 
 	// The stack lines up, no gaps or overlaps: header, bar, file header.
@@ -153,6 +148,8 @@ async function stuckOnOverview(page: Page) {
 test("once stuck, the compact mark goes Home and the number to the PR on GitHub", async ({
 	page,
 	pr,
+	ownerRepo,
+	prNumber,
 	startCrb,
 	isMobile,
 }) => {
@@ -183,10 +180,10 @@ test("once stuck, the compact mark goes Home and the number to the PR on GitHub"
 	await expect(number).not.toHaveAttribute("inert");
 	await expect(home).toHaveAccessibleName("Home");
 	await expect(home).toHaveAttribute("href", "/");
-	await expect(number).toHaveAccessibleName("#7 on GitHub");
+	await expect(number).toHaveAccessibleName(`#${prNumber} on GitHub`);
 	await expect(number).toHaveAttribute(
 		"href",
-		"https://github.com/acme/widget/pull/7",
+		`https://github.com/${ownerRepo}/pull/${prNumber}`,
 	);
 	await expect(number).toHaveAttribute("target", "_blank");
 	await expect(number).toHaveAttribute("rel", "noreferrer");
@@ -195,7 +192,7 @@ test("once stuck, the compact mark goes Home and the number to the PR on GitHub"
 	await expect(pill.getByTestId("compact-title")).toHaveText(
 		"Make the review header sticky",
 	);
-	await expect(pill.getByTestId("compact-pr-link")).toHaveText("#7");
+	await expect(pill.getByTestId("compact-pr-link")).toHaveText(`#${prNumber}`);
 	await expect(compactTitle(page)).toHaveAccessibleName(
 		"Back to top: Make the review header sticky",
 	);
@@ -262,28 +259,28 @@ test("a five-digit PR number never crushes the compact title: it shows beside a 
 	const big = 12345;
 	execFileSync(
 		"git",
-		["update-ref", `refs/pull/${big}/head`, `refs/pull/${PR_NUMBER}/head`],
+		["update-ref", `refs/pull/${big}/head`, `refs/pull/${p.number}/head`],
 		{ cwd: p.repo.path },
 	);
 	p.editScenario((sc) => {
-		const seven = sc.prs[String(PR_NUMBER)];
+		const seven = sc.prs[String(p.number)];
 		if (!seven) throw new Error("fixture PR missing");
 		sc.prs[String(big)] = {
 			...seven,
 			view: {
 				...seven.view,
 				number: big,
-				url: `https://github.com/${OWNER_REPO}/pull/${big}`,
+				url: `https://github.com/${p.ownerRepo}/pull/${big}`,
 			},
 		};
 	});
-	const s = await startCrb(`${OWNER_REPO}#${big}`);
+	const s = await startCrb(`${p.ownerRepo}#${big}`);
 	await page.goto(s.url);
 	await stuckOnOverview(page);
 	const number = page.getByTestId("compact-pr-link");
 	await expect(number).toHaveAttribute(
 		"href",
-		`https://github.com/${OWNER_REPO}/pull/${big}`,
+		`https://github.com/${p.ownerRepo}/pull/${big}`,
 	);
 	const title = await box(compactTitle(page));
 	if (await number.isVisible()) {
