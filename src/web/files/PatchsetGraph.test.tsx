@@ -24,6 +24,7 @@ const patchset = (number: number) => ({
 	number,
 	head: oid(String(number)),
 	mergeBase: oid("0"),
+	baseBranch: "main",
 	startedAt: Date.now() - number * 86_400_000,
 	since: number === 1 ? null : number - 1,
 	shape: number === 1 ? null : ("S1" as const),
@@ -74,7 +75,7 @@ const answer = (over: Partial<RereviewAnswer> = {}): RereviewAnswer => ({
 
 function renderGraph(
 	s: SessionInfo,
-	comparison: { viewing: Viewing; base: ComparisonBase },
+	comparison: { viewing: Viewing; base: ComparisonBase; baseChosen?: boolean },
 	rereview: (
 		url: URL,
 	) => { status: number; body: unknown } | Promise<Response> = () => ({
@@ -112,13 +113,16 @@ function renderGraph(
 	vi.stubGlobal("fetch", fetchMock);
 	const setViewing = vi.fn();
 	const setBase = vi.fn();
+	const set = vi.fn();
 	const onViewHead = vi.fn();
 	const c: Comparison = {
+		baseChosen: true,
 		...comparison,
 		target: { kind: "current" },
 		patchsets: s.patchsets.map((p) => p.number),
 		setViewing,
 		setBase,
+		set,
 	};
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
@@ -130,13 +134,15 @@ function renderGraph(
 			</ShortcutsProvider>
 		</QueryClientProvider>
 	);
-	const { rerender } = render(tree(s));
+	const { rerender, unmount } = render(tree(s));
 	return {
 		fetchMock,
 		setViewing,
 		setBase,
+		set,
 		onViewHead,
 		rerender: (next: SessionInfo) => rerender(tree(next)),
+		unmount,
 	};
 }
 
@@ -315,7 +321,7 @@ describe("PatchsetGraph", () => {
 
 	it("a click moves nothing: it makes the dot's card sticky, whose buttons set the roles", async () => {
 		const user = userEvent.setup();
-		const { setViewing, setBase, onViewHead } = renderGraph(
+		const { set, setViewing, setBase, onViewHead } = renderGraph(
 			session([1, 2], oid("f")),
 			{ viewing: ps(2), base: ps(1) as ComparisonBase },
 		);
@@ -324,50 +330,264 @@ describe("PatchsetGraph", () => {
 			screen.queryByRole("dialog", { name: `${name} details` });
 		const action = (name: "Comparison Base" | "Comparison Target") =>
 			within(screen.getByRole("dialog")).getByRole("button", { name });
+		const disabled = (name: "Comparison Base" | "Comparison Target") =>
+			expect(action(name)).toHaveAttribute("aria-disabled", "true");
+		const enabled = (name: "Comparison Base" | "Comparison Target") =>
+			expect(action(name)).not.toHaveAttribute("aria-disabled");
 
-		// PS1 (the comparison base): the card, no move; Target views it.
+		// PS1 (the comparison base): the card, no move; Target views it, the
+		// base just left of it.
 		expect(dot("PS1")).toHaveAttribute("aria-expanded", "false");
 		await user.click(dot("PS1"));
-		expect(setViewing).not.toHaveBeenCalled();
-		expect(setBase).not.toHaveBeenCalled();
+		expect(set).not.toHaveBeenCalled();
 		expect(card("PS1")).toBeInTheDocument();
 		expect(dot("PS1")).toHaveAttribute("aria-expanded", "true");
-		expect(action("Comparison Base")).toBeDisabled();
-		expect(action("Comparison Target")).toBeEnabled();
+		disabled("Comparison Base");
+		enabled("Comparison Target");
 		// Focus moved into it, on the first button it can press.
 		expect(action("Comparison Target")).toHaveFocus();
 		await user.click(action("Comparison Target"));
-		expect(setViewing).toHaveBeenLastCalledWith({
-			kind: "patchset",
-			number: 1,
-		});
+		expect(set).toHaveBeenLastCalledWith(ps(1), { kind: "branch" });
 		expect(card("PS1")).toBeNull();
 		expect(dot("PS1")).toHaveFocus();
 
-		// The viewed dot: neither role is free (the base can't be on or past it).
+		// The viewed dot: Target is taken; Base pushes the target right.
 		await user.click(dot("PS2"));
-		expect(action("Comparison Target")).toBeDisabled();
-		expect(action("Comparison Base")).toBeDisabled();
+		disabled("Comparison Target");
+		enabled("Comparison Base");
 		await user.click(dot("PS2"));
 		expect(card("PS2")).toBeNull();
 
 		// The branch: a base only.
 		await user.click(dot("main (base branch)"));
-		expect(action("Comparison Target")).toBeDisabled();
+		disabled("Comparison Target");
 		await user.click(action("Comparison Base"));
-		expect(setBase).toHaveBeenLastCalledWith({ kind: "branch" });
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
 
-		// The head: the only way to view it by click is its Target.
+		// The head: the only way to view it by click is a button.
 		await user.click(dot("head fffffff"));
-		expect(setViewing).toHaveBeenCalledTimes(1);
+		expect(set).toHaveBeenCalledTimes(2);
 		expect(onViewHead).not.toHaveBeenCalled();
-		expect(action("Comparison Base")).toBeDisabled();
+		disabled("Comparison Base");
 		await user.click(action("Comparison Target"));
-		expect(setViewing).toHaveBeenLastCalledWith({
-			kind: "head",
-			oid: oid("f"),
-		});
+		expect(set).toHaveBeenLastCalledWith(
+			{ kind: "head", oid: oid("f") },
+			{ kind: "patchset", number: 2 },
+		);
 		expect(onViewHead).toHaveBeenCalledTimes(1);
+		expect(setViewing).not.toHaveBeenCalled();
+		expect(setBase).not.toHaveBeenCalled();
+	});
+
+	it("Comparison Base on or right of the target moves both, side by side; each disabled button says why", async () => {
+		const user = userEvent.setup();
+		const { set, setViewing, setBase, onViewHead } = renderGraph(
+			session([1, 2, 3], oid("f")),
+			{ viewing: ps(2), base: ps(1) as ComparisonBase },
+		);
+		const action = (name: "Comparison Base" | "Comparison Target") =>
+			within(screen.getByRole("dialog")).getByRole("button", { name });
+		const open = (name: string) =>
+			user.click(screen.getByRole("button", { name }));
+		const disabledWith = (
+			name: "Comparison Base" | "Comparison Target",
+			why: string,
+		) => {
+			expect(action(name)).toHaveAttribute("aria-disabled", "true");
+			expect(action(name)).toHaveAccessibleDescription(why);
+		};
+
+		// On the target: the base goes there, the target just right of it.
+		await open("PS2");
+		await user.click(action("Comparison Base"));
+		expect(set).toHaveBeenLastCalledWith(ps(3), {
+			kind: "patchset",
+			number: 2,
+		});
+		// Right of it, next to the head: the head is viewed (an explicit press).
+		await open("PS3");
+		await user.click(action("Comparison Base"));
+		expect(set).toHaveBeenLastCalledWith(
+			{ kind: "head", oid: oid("f") },
+			{ kind: "patchset", number: 3 },
+		);
+		expect(onViewHead).toHaveBeenCalledTimes(1);
+
+		// The ends, and a dot that has the role already: disabled, with why.
+		await open("head fffffff");
+		disabledWith(
+			"Comparison Base",
+			"Nothing right of it for the comparison target",
+		);
+		await user.click(action("Comparison Base"));
+		await user.keyboard("{Escape}");
+		await open("main (base branch)");
+		disabledWith(
+			"Comparison Target",
+			"Nothing left of it for the comparison base",
+		);
+		await user.click(action("Comparison Target"));
+		await user.keyboard("{Escape}");
+		await open("PS1");
+		disabledWith("Comparison Base", "Already the comparison base");
+		await user.click(action("Comparison Base"));
+		await user.keyboard("{Escape}");
+		expect(set).toHaveBeenCalledTimes(2);
+		expect(setViewing).not.toHaveBeenCalled();
+		expect(setBase).not.toHaveBeenCalled();
+	});
+
+	it("up to date, the newest patch set's Comparison Base is disabled: nothing right of it", async () => {
+		const user = userEvent.setup();
+		renderGraph(session([1, 2], oid("2")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		await user.click(screen.getByRole("button", { name: "PS2" }));
+		const base = within(screen.getByRole("dialog")).getByRole("button", {
+			name: "Comparison Base",
+		});
+		expect(base).toHaveAttribute("aria-disabled", "true");
+		expect(base).toHaveAccessibleDescription(
+			"Nothing right of it for the comparison target",
+		);
+	});
+
+	/** The tooltips on screen (hidden ones and aria-hidden ones too). */
+	const shownTips = () =>
+		[...document.querySelectorAll('[role="tooltip"]:not([hidden])')].map(
+			(t) => t.textContent,
+		);
+
+	it("a card opens with no tooltip showing: an enabled button needs none", async () => {
+		const user = userEvent.setup();
+		renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		// By a click, and by Enter (keyboard focus keeps a tooltip open).
+		await user.click(screen.getByRole("button", { name: "PS1" }));
+		expect(
+			within(screen.getByRole("dialog")).getByRole("button", {
+				name: "Comparison Target",
+			}),
+		).toHaveFocus();
+		expect(shownTips()).toEqual([]);
+		await user.keyboard("{Escape}");
+		await user.keyboard("{Enter}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+		expect(shownTips()).toEqual([]);
+	});
+
+	it("only a disabled button has a tooltip: its reason", async () => {
+		const user = userEvent.setup();
+		renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		await user.click(screen.getByRole("button", { name: "PS1" }));
+		const card = screen.getByRole("dialog");
+		const target = within(card).getByRole("button", {
+			name: "Comparison Target",
+		});
+		const base = within(card).getByRole("button", { name: "Comparison Base" });
+		await user.hover(target);
+		await act(() => new Promise((r) => setTimeout(r, 300)));
+		expect(shownTips()).toEqual([]);
+		expect(target).not.toHaveAccessibleDescription();
+		await user.hover(base);
+		await waitFor(() =>
+			expect(shownTips()).toEqual(["Already the comparison base"]),
+		);
+		expect(base).toHaveAccessibleDescription("Already the comparison base");
+	});
+
+	it("the snapshot dot's card names the newest patch set's base branch", async () => {
+		const user = userEvent.setup();
+		const s = session([1, 2], oid("f"));
+		renderGraph(
+			{
+				...s,
+				patchsets: s.patchsets.map((p) =>
+					p.number === 2 ? { ...p, baseBranch: "release" } : p,
+				),
+				head: {
+					oid: oid("f"),
+					mergeBase: oid("9"),
+					baseBranch: "develop",
+					commits: 3,
+				},
+			},
+			{
+				viewing: { kind: "head", oid: oid("e") },
+				base: ps(2) as ComparisonBase,
+			},
+		);
+		await user.click(screen.getByRole("button", { name: "snapshot eeeeeee" }));
+		const card = screen.getByRole("dialog", { name: "eeeeeee details" });
+		expect(card).toHaveTextContent("Against release at 0000000");
+	});
+
+	it("the branch dot follows the comparison target: its base branch and merge base (a virtual pointer)", async () => {
+		const user = userEvent.setup();
+		const s = session([1, 2], oid("f"));
+		const retargeted: SessionInfo = {
+			...s,
+			patchsets: s.patchsets.map((p) =>
+				p.number === 1
+					? { ...p, baseBranch: "release", mergeBase: oid("8") }
+					: p,
+			),
+			head: {
+				oid: oid("f"),
+				mergeBase: oid("9"),
+				baseBranch: "develop",
+				commits: 3,
+			},
+		};
+		const branchCard = async (viewing: Viewing, name: string) => {
+			renderGraph(retargeted, { viewing, base: { kind: "branch" } });
+			await user.click(
+				screen.getByRole("button", { name: `${name} (base branch)` }),
+			);
+			const text = screen.getByRole("dialog", {
+				name: `${name} details`,
+			}).textContent;
+			cleanup();
+			return text;
+		};
+		expect(await branchCard(ps(1), "release")).toContain("Merge base 8888888");
+		expect(
+			await branchCard({ kind: "head", oid: oid("f") }, "develop"),
+		).toContain("Merge base 9999999");
+		expect(await branchCard(ps(2), "main")).toContain("Merge base 0000000");
+		// When the target moves, the dot does: railDots by the target.
+		expect(railDots(retargeted, ps(1)).dots[0]).toMatchObject({
+			label: "release",
+			oid: oid("8"),
+		});
+		expect(
+			railDots(retargeted, { kind: "head", oid: oid("f") }).dots[0],
+		).toMatchObject({ label: "develop", oid: oid("9") });
+	});
+
+	it("a hostile base branch name is text on the card, never markup", async () => {
+		const user = userEvent.setup();
+		const hostile = '<img src=x onerror="window.pwned=1">';
+		const s = session([1, 2], oid("f"));
+		renderGraph(
+			{
+				...s,
+				patchsets: s.patchsets.map((p) =>
+					p.number === 1 ? { ...p, baseBranch: hostile } : p,
+				),
+			},
+			{ viewing: ps(2), base: ps(1) as ComparisonBase },
+		);
+		await user.click(screen.getByRole("button", { name: "PS1" }));
+		const card = screen.getByRole("dialog", { name: "PS1 details" });
+		expect(card).toHaveTextContent(`Against ${hostile} at 0000000`);
+		expect(card.querySelector("img")).toBeNull();
 	});
 
 	it("the sticky card closes on Escape (focus back on the dot), a click outside or the dot again; Enter opens it", async () => {
@@ -403,16 +623,21 @@ describe("PatchsetGraph", () => {
 		});
 		const head = screen.getByRole("button", { name: "head fffffff" });
 		await user.click(head);
-		// The head: Comparison Base is disabled, Target is the only button.
-		const target = within(screen.getByRole("dialog")).getByRole("button", {
-			name: "Comparison Target",
-		});
-		expect(target).toHaveFocus();
+		// The head: Comparison Base is disabled (still a stop, for its
+		// reason), focus starts on Target, the one it can press.
+		const button = (name: string) =>
+			within(screen.getByRole("dialog")).getByRole("button", { name });
+		expect(button("Comparison Target")).toHaveFocus();
 		await user.tab();
 		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(head).toHaveFocus();
 		await user.keyboard("{Enter}");
 		expect(screen.getByRole("dialog")).toBeInTheDocument();
+		await user.tab({ shift: true });
+		expect(button("Comparison Base")).toHaveFocus();
+		expect(button("Comparison Base")).toHaveAccessibleDescription(
+			"Nothing right of it for the comparison target",
+		);
 		await user.tab({ shift: true });
 		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(head).toHaveFocus();
@@ -545,6 +770,37 @@ describe("PatchsetGraph", () => {
 		expect(card).toHaveTextContent("3 commits since PS2");
 	});
 
+	it("after a retarget each patch set's card names its own base branch and merge base; the head's the PR's current base", async () => {
+		const user = userEvent.setup();
+		const s = session([1, 2], oid("f"));
+		const retargeted: SessionInfo = {
+			...s,
+			patchsets: s.patchsets.map((p) =>
+				p.number === 1 ? { ...p, baseBranch: "release" } : p,
+			),
+			head: {
+				oid: oid("f"),
+				mergeBase: oid("9"),
+				baseBranch: "develop",
+				commits: 3,
+			},
+		};
+		// Whatever the comparison: the card is the dot's own.
+		renderGraph(retargeted, { viewing: ps(2), base: { kind: "branch" } });
+		const cardOf = async (dot: string, name: string) => {
+			await user.click(screen.getByRole("button", { name: dot }));
+			const card = screen.getByRole("dialog", { name: `${name} details` });
+			const text = card.textContent;
+			await user.keyboard("{Escape}");
+			return text;
+		};
+		expect(await cardOf("PS1", "PS1")).toContain("Against release at 0000000");
+		expect(await cardOf("PS2", "PS2")).toContain("Against main at 0000000");
+		expect(await cardOf("head fffffff", "head")).toContain(
+			"Against develop at 9999999",
+		);
+	});
+
 	it("the counts the server is still making are asked for again until they are in, then shown", async () => {
 		const s = session([1, 2], oid("f"));
 		const counting: SessionInfo = {
@@ -635,10 +891,13 @@ describe("PatchsetGraph", () => {
 	});
 
 	it("Ctrl+] and Ctrl+[ move the comparison target; with Shift the base; bare brackets move nothing", () => {
-		const { setViewing, setBase } = renderGraph(session([1, 2], oid("f")), {
-			viewing: ps(2),
-			base: ps(1) as ComparisonBase,
-		});
+		const { setViewing, setBase, set, onViewHead } = renderGraph(
+			session([1, 2], oid("f")),
+			{
+				viewing: ps(2),
+				base: ps(1) as ComparisonBase,
+			},
+		);
 		const press = (key: string, init: KeyboardEventInit) =>
 			fireEvent.keyDown(document.body, { key, ...init });
 		press("]", { code: "BracketRight" });
@@ -657,17 +916,27 @@ describe("PatchsetGraph", () => {
 			number: 1,
 		});
 		press("{", { ctrlKey: true, shiftKey: true, code: "BracketLeft" });
-		expect(setBase).toHaveBeenLastCalledWith({ kind: "branch" });
-		// Right of the base is the viewed dot itself: the base can't go there.
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
+		// Right of the base is the target: the base goes there and pushes the
+		// target just right of it, onto the head (an explicit action).
 		press("}", { ctrlKey: true, shiftKey: true, code: "BracketRight" });
-		expect(setBase).toHaveBeenCalledTimes(1);
+		expect(set).toHaveBeenLastCalledWith(
+			{ kind: "head", oid: oid("f") },
+			{ kind: "patchset", number: 2 },
+		);
+		// (Ctrl+] onto the head was the first.)
+		expect(onViewHead).toHaveBeenCalledTimes(2);
+		expect(setBase).not.toHaveBeenCalled();
 	});
 
-	it("dragging the comparison target onto the head dot views it; onto the branch does nothing", () => {
-		const { setViewing, setBase } = renderGraph(session([1, 2], oid("f")), {
-			viewing: ps(2),
-			base: ps(1) as ComparisonBase,
-		});
+	it("dragging the comparison target onto the head dot views it; onto the branch does nothing; the base dragged onto the target pushes it", () => {
+		const { setViewing, setBase, set, onViewHead } = renderGraph(
+			session([1, 2], oid("f")),
+			{
+				viewing: ps(2),
+				base: ps(1) as ComparisonBase,
+			},
+		);
 		const centre = (el: HTMLElement, x: number) => {
 			vi.spyOn(el, "getBoundingClientRect").mockReturnValue({
 				left: x - 20,
@@ -701,15 +970,234 @@ describe("PatchsetGraph", () => {
 		fireEvent.pointerDown(marker, { pointerId: 2, clientX: 210 });
 		fireEvent.pointerUp(marker, { pointerId: 2, clientX: 12 });
 		expect(setViewing).toHaveBeenCalledTimes(1);
-		// The base marker: left of the viewed dot only.
+		// The base marker: never on the head (the rightmost dot).
 		const base = screen.getByRole("button", { name: "comparison base" });
 		base.setPointerCapture = () => {};
 		fireEvent.pointerDown(base, { pointerId: 3, clientX: 110 });
+		fireEvent.pointerMove(base, { pointerId: 3, clientX: 300 });
+		expect(screen.getByTestId("ps-dot-head")).not.toHaveAttribute("data-drop");
 		fireEvent.pointerUp(base, { pointerId: 3, clientX: 300 });
-		expect(setBase).not.toHaveBeenCalled();
+		expect(set).not.toHaveBeenCalled();
 		fireEvent.pointerDown(base, { pointerId: 4, clientX: 110 });
 		fireEvent.pointerUp(base, { pointerId: 4, clientX: 12 });
-		expect(setBase).toHaveBeenLastCalledWith({ kind: "branch" });
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
+		// Onto the target: the target is pushed just right of it, the head.
+		fireEvent.pointerDown(base, { pointerId: 5, clientX: 110 });
+		fireEvent.pointerMove(base, { pointerId: 5, clientX: 205 });
+		expect(screen.getByTestId("ps-dot-ps2")).toHaveAttribute(
+			"data-drop",
+			"true",
+		);
+		fireEvent.pointerUp(base, { pointerId: 5, clientX: 205 });
+		expect(set).toHaveBeenLastCalledWith(
+			{ kind: "head", oid: oid("f") },
+			{ kind: "patchset", number: 2 },
+		);
+		expect(onViewHead).toHaveBeenCalledTimes(2);
+		expect(setBase).not.toHaveBeenCalled();
+	});
+
+	/** Gives the rail, the dots and a marker boxes (jsdom has none). */
+	const boxes = (marker: HTMLElement, dots: [string, number][]) => {
+		const rect = (left: number, width: number) =>
+			({
+				left,
+				width,
+				right: left + width,
+				top: 0,
+				bottom: 40,
+				height: 40,
+				x: left,
+				y: 0,
+				toJSON: () => ({}),
+			}) as DOMRect;
+		vi.spyOn(
+			screen.getByTestId("psrail"),
+			"getBoundingClientRect",
+		).mockReturnValue(rect(0, 400));
+		for (const [id, x] of dots) {
+			vi.spyOn(
+				screen.getByTestId(`ps-dot-${id}`),
+				"getBoundingClientRect",
+			).mockReturnValue(rect(x - 20, 40));
+		}
+		vi.spyOn(marker, "getBoundingClientRect").mockReturnValue(rect(80, 60));
+		marker.setPointerCapture = () => {};
+	};
+
+	it("a drag ends when the pointer is cancelled: back on its dot, nothing moved, Escape does nothing after", () => {
+		const { set, setViewing } = renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const marker = screen.getByRole("button", { name: "comparison base" });
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		]);
+		fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+		fireEvent.pointerMove(marker, { pointerId: 1, clientX: 20 });
+		expect(marker.style.transform).toBe("translateX(-80px)");
+		fireEvent.pointerCancel(marker, { pointerId: 1 });
+		expect(
+			screen.getByRole("button", { name: "comparison base" }).style.transform,
+		).toBe("");
+		const esc = new KeyboardEvent("keydown", {
+			key: "Escape",
+			bubbles: true,
+		});
+		const stop = vi.spyOn(esc, "stopPropagation");
+		document.body.dispatchEvent(esc);
+		expect(stop).not.toHaveBeenCalled();
+		fireEvent.pointerUp(marker, { pointerId: 1, clientX: 12 });
+		expect(set).not.toHaveBeenCalled();
+		expect(setViewing).not.toHaveBeenCalled();
+	});
+
+	it("a drag ends when the marker loses pointer capture, and unmounting mid-drag leaves no listener behind", () => {
+		const added = vi.spyOn(window, "addEventListener");
+		const removed = vi.spyOn(window, "removeEventListener");
+		const { set, unmount } = renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const marker = screen.getByRole("button", { name: "comparison base" });
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		]);
+		fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+		fireEvent.pointerMove(marker, { pointerId: 1, clientX: 20 });
+		fireEvent(marker, new Event("lostpointercapture"));
+		expect(
+			screen.getByRole("button", { name: "comparison base" }).style.transform,
+		).toBe("");
+		fireEvent.pointerUp(marker, { pointerId: 1, clientX: 12 });
+		expect(set).not.toHaveBeenCalled();
+		// A drag the graph unmounts in the middle of.
+		fireEvent.pointerDown(
+			screen.getByRole("button", { name: "comparison base" }),
+			{
+				pointerId: 2,
+				clientX: 110,
+			},
+		);
+		const keydowns = () =>
+			added.mock.calls.filter(
+				([type, , opts]) => type === "keydown" && opts === true,
+			);
+		const listener = keydowns().at(-1)?.[1];
+		expect(listener).toBeDefined();
+		unmount();
+		expect(
+			removed.mock.calls.some(
+				([type, fn, opts]) =>
+					type === "keydown" && fn === listener && opts === true,
+			),
+		).toBe(true);
+	});
+
+	it("a drop reads the graph as it is then: a head that arrived mid-drag can be dropped on", () => {
+		const s = session([1, 2], oid("2"));
+		const { setViewing, onViewHead, rerender } = renderGraph(s, {
+			viewing: ps(1),
+			base: { kind: "branch" },
+		});
+		const marker = screen.getByRole("button", { name: "comparison target" });
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+		]);
+		fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+		// A push lands while the marker is held: the head dot appears.
+		rerender(session([1, 2], oid("f")));
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		]);
+		fireEvent.pointerMove(marker, { pointerId: 1, clientX: 305 });
+		fireEvent.pointerUp(marker, { pointerId: 1, clientX: 305 });
+		expect(setViewing).toHaveBeenLastCalledWith({
+			kind: "head",
+			oid: oid("f"),
+		});
+		expect(onViewHead).toHaveBeenCalledTimes(1);
+	});
+
+	it("a dragged marker's label follows the pointer inside the rail, and snaps back on drop or Escape", () => {
+		const { set } = renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const rect = (left: number, width: number) =>
+			({
+				left,
+				width,
+				right: left + width,
+				top: 0,
+				bottom: 40,
+				height: 40,
+				x: left,
+				y: 0,
+				toJSON: () => ({}),
+			}) as DOMRect;
+		vi.spyOn(
+			screen.getByTestId("psrail"),
+			"getBoundingClientRect",
+		).mockReturnValue(rect(0, 400));
+		for (const [id, x] of [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		] as const) {
+			vi.spyOn(
+				screen.getByTestId(`ps-dot-${id}`),
+				"getBoundingClientRect",
+			).mockReturnValue(rect(x - 20, 40));
+		}
+		for (const name of ["comparison base", "comparison target"]) {
+			const marker = screen.getByRole("button", { name });
+			vi.spyOn(marker, "getBoundingClientRect").mockReturnValue(rect(80, 60));
+			marker.setPointerCapture = () => {};
+			expect(marker.className).toContain("cursor-grab");
+			fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+			fireEvent.pointerMove(marker, { pointerId: 1, clientX: 150 });
+			const moved = screen.getByRole("button", { name });
+			expect(moved.style.transform).toBe("translateX(40px)");
+			expect(moved.className).toContain("cursor-grabbing");
+			// Never out of the rail: its right edge stops at the rail's.
+			fireEvent.pointerMove(marker, { pointerId: 1, clientX: 900 });
+			expect(screen.getByRole("button", { name }).style.transform).toBe(
+				"translateX(260px)",
+			);
+			fireEvent.pointerMove(marker, { pointerId: 1, clientX: -900 });
+			expect(screen.getByRole("button", { name }).style.transform).toBe(
+				"translateX(-80px)",
+			);
+			// Escape cancels: back on its dot, nothing moved.
+			fireEvent.keyDown(document.body, { key: "Escape" });
+			expect(screen.getByRole("button", { name }).style.transform).toBe("");
+			fireEvent.pointerUp(marker, { pointerId: 1, clientX: 10 });
+			expect(set).not.toHaveBeenCalled();
+		}
+		// A drop snaps it to where it lands (here: the branch).
+		const base = screen.getByRole("button", { name: "comparison base" });
+		fireEvent.pointerDown(base, { pointerId: 2, clientX: 110 });
+		fireEvent.pointerMove(base, { pointerId: 2, clientX: 20 });
+		expect(base.style.transform).toBe("translateX(-80px)");
+		fireEvent.pointerUp(base, { pointerId: 2, clientX: 12 });
+		expect(
+			screen.getByRole("button", { name: "comparison base" }).style.transform,
+		).toBe("");
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
 	});
 
 	it("a pinned head, a merged PR or an as-of view: neither the head dot nor up to date", () => {

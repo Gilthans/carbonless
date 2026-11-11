@@ -1,4 +1,5 @@
-import type { ClusterState } from "../../shared/types.js";
+import { type LineRanges, subtract, union } from "../../shared/lineRanges.js";
+import type { ClusterState, SinceMark } from "../../shared/types.js";
 import type { CrbEvent, ShapeCode, ThreadPlacedEvent } from "./events.js";
 
 /** One of the reviewer's patch sets, as its `patchset-started` recorded it. */
@@ -26,6 +27,13 @@ export interface StateEntry {
 	 * human state has replaced it since. Absent on a human state.
 	 */
 	carried?: { from: number; rule: "exact" | "rename" };
+	/**
+	 * Only on `unreviewed`: the lines the reviewer marked one piece at a
+	 * time (`lines-state`), reviewed and crossed off, not yet checked
+	 * against the cluster's size (the coverage join does: buildReviewView).
+	 */
+	lines?: LineRanges;
+	crossed?: LineRanges;
 }
 
 export interface ProgressState {
@@ -37,6 +45,8 @@ export interface ProgressState {
 	states: Map<string, StateEntry>;
 	/** Each patch set's states, by its snapshot id. */
 	statesByRevision: Map<string, Map<string, StateEntry>>;
+	/** Each patch set's marks on since-only pieces (`since-lines-state`), by its snapshot id. */
+	sinceMarks: Map<string, SinceMark[]>;
 	/** Patch set number → thread id → its last placement. */
 	placements: Map<number, Map<string, ThreadPlacedEvent>>;
 }
@@ -46,7 +56,11 @@ export interface ProgressState {
  * by (ts, id), take every `patchset-started` as a patch set (a repeated
  * number or snapshot id is ignored), then replay the rest in order: a human
  * `cluster-state` sets the cluster's entry in the patch set on its
- * snapshot id (none: ignored); a `carried` entry sets the target's entry
+ * snapshot id (none: ignored); a human `lines-state` marks its lines of
+ * an unreviewed cluster reviewed or crossed off, and a later
+ * `cluster-state` replaces them all; a human `since-lines-state` replaces
+ * the patch set's mark on since-only pieces of its (since, path); a
+ * `carried` entry sets the target's entry
  * only when, at that moment, its source cluster in `from` holds a human
  * state equal to it (CLAUDE.md principle 2: anything else leaves the
  * target unreviewed); a `thread-placed` replaces the thread's placement in
@@ -70,6 +84,7 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 	const byNumber = new Map<number, PatchsetRecord>();
 	const statesByRevision: ProgressState["statesByRevision"] = new Map();
 	const placements: ProgressState["placements"] = new Map();
+	const sinceMarks: ProgressState["sinceMarks"] = new Map();
 
 	// Patch sets first, whatever their events' timestamps: a state stamped
 	// before its patch set's start (a clock oddity) still belongs to it.
@@ -92,6 +107,7 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 		patchsets.push(record);
 		byNumber.set(record.number, record);
 		statesByRevision.set(record.revision, new Map());
+		sinceMarks.set(record.revision, []);
 	}
 
 	for (const e of ordered) {
@@ -107,6 +123,51 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 						? { state: e.state, reason: e.reason }
 						: { state: e.state },
 				);
+				break;
+			}
+			case "lines-state": {
+				// Fail safe: only a human marks lines.
+				if (e.by !== "human") break;
+				const states = statesByRevision.get(e.patchset);
+				if (!states) break;
+				const prior = states.get(e.cluster);
+				// The writer resets the cluster first: lines only add to an
+				// unreviewed one (a whole mark stands as it is).
+				if (prior && prior.state !== "unreviewed") break;
+				const reviewed = prior?.lines ?? [];
+				const crossed = prior?.crossed ?? [];
+				const next =
+					e.state === "reviewed"
+						? {
+								lines: union(reviewed, e.lines),
+								crossed: subtract(crossed, e.lines),
+							}
+						: {
+								lines: subtract(reviewed, e.lines),
+								crossed: union(crossed, e.lines),
+							};
+				states.set(e.cluster, {
+					state: "unreviewed",
+					...(next.lines.length > 0 ? { lines: next.lines } : {}),
+					...(next.crossed.length > 0 ? { crossed: next.crossed } : {}),
+				});
+				break;
+			}
+			case "since-lines-state": {
+				if (e.by !== "human") break;
+				const marks = sinceMarks.get(e.patchset);
+				if (!marks) break;
+				const at = marks.findIndex(
+					(m) => m.since === e.since && m.path === e.path,
+				);
+				const mark: SinceMark = {
+					since: e.since,
+					path: e.path,
+					reviewed: e.reviewed,
+					crossed: e.crossed,
+				};
+				if (at >= 0) marks[at] = mark;
+				else marks.push(mark);
 				break;
 			}
 			case "carried": {
@@ -161,6 +222,7 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 		patchset,
 		states: (patchset && statesByRevision.get(patchset.revision)) ?? new Map(),
 		statesByRevision,
+		sinceMarks,
 		placements,
 	};
 }

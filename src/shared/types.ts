@@ -1,3 +1,5 @@
+import type { LineRanges } from "./lineRanges.js";
+import type { SincePiece } from "./pieces.js";
 import type { ThreadPlacement } from "./rereview/placement.js";
 
 export type FileStatus =
@@ -117,6 +119,26 @@ export interface DisplayHunk {
 export interface FileHunks {
 	hunks: DisplayHunk[];
 	newLineCount: number;
+	/** The since view's only: its pieces, each markable (pieces.ts). */
+	pieces?: SincePiece[];
+	/**
+	 * The since view's only: the interdiff doesn't change the file's
+	 * lines, so all `newLineCount` of them are one gap (gaps.ts).
+	 */
+	wholeGap?: true;
+}
+
+/**
+ * A mark on the since view's pieces that own no line of the viewed
+ * snapshot (removed or reverted since patch set `since`): their lines in
+ * file `path`, by number on the since view's sides. The whole set for
+ * that comparison and file.
+ */
+export interface SinceMark {
+	since: number;
+	path: string;
+	reviewed: { old: LineRanges; new: LineRanges };
+	crossed: { old: LineRanges; new: LineRanges };
 }
 
 export interface ClusterView extends Cluster {
@@ -128,6 +150,19 @@ export interface ClusterView extends Cluster {
 	 * rule (and not re-marked by hand since). Never on an unreviewed cluster.
 	 */
 	carried?: { from: number; rule: "exact" | "rename" };
+	/**
+	 * Marked one piece at a time (pieces.ts, lineRanges.ts). On an
+	 * unreviewed cluster, partly marked: the lines reviewed, never all.
+	 * Their lines count in the line totals; the cluster counts unreviewed.
+	 */
+	reviewedLines?: LineRanges;
+	/**
+	 * The lines crossed off one piece at a time: on an unreviewed cluster,
+	 * some of them; on a reviewed one, every line is marked and these are
+	 * crossed off (done with lines reviewed: it counts as reviewed, as a
+	 * file does), never all of them (that is a crossed-off cluster).
+	 */
+	crossedLines?: LineRanges;
 }
 
 export interface FileView extends Omit<FileSummary, "clusters"> {
@@ -165,12 +200,27 @@ export interface ReviewView {
 	patchset: number | null;
 	files: FileView[];
 	progress: Progress;
+	/** The patch set's marks on since-only pieces (never in `progress`). */
+	sinceMarks?: SinceMark[];
 }
 
 export interface StateChange {
 	key: string;
 	state: ClusterState;
 	reason?: string;
+	/**
+	 * Only with `unreviewed`: these of the cluster's lines stay reviewed (a
+	 * piece ticked or unticked in the since view; pieces.ts changeFor).
+	 */
+	reviewedLines?: LineRanges;
+	/** Only with `unreviewed`, like reviewedLines: these lines crossed off. */
+	crossedLines?: LineRanges;
+	/**
+	 * A mark on since-only pieces instead of a cluster: every such line of
+	 * file `path` reviewed since patch set `since` (the whole set). Its key
+	 * is sinceMarkKey(since, path), never a cluster's.
+	 */
+	sinceMark?: SinceMark;
 }
 
 /** A side of a diff: "LEFT" numbers the old file, "RIGHT" the new one. */
@@ -988,6 +1038,11 @@ export interface RereviewAnswer {
 			state?: "reviewed" | "crossed-off";
 			rule?: "exact" | "rename";
 		}[];
+		/**
+		 * The file's since-view pieces (pieces.ts SincePiece), what the since
+		 * view marks and counts (sinceUnits); absent without an interdiff.
+		 */
+		pieces?: SincePiece[];
 	}[];
 	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
 	toRead: { files: number; clusters: number };
@@ -1051,6 +1106,11 @@ export interface SessionInfo {
 		number: number;
 		head: string;
 		mergeBase: string;
+		/**
+		 * The base branch it was reviewed against (its own, kept after a
+		 * retarget: its card's "Against").
+		 */
+		baseBranch: string;
 		/** Ms since epoch. */
 		startedAt: number;
 		/** The patch set it follows; null for PS1. */

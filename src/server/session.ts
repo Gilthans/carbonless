@@ -1,3 +1,4 @@
+import type { AgentPlacementsAnswer } from "../shared/agent.js";
 import { overlayCarries } from "../shared/rereview/overlay.js";
 import { type ThreadInput, validAnchor } from "../shared/rereview/placement.js";
 import { TRACER_VERSION } from "../shared/tracer/index.js";
@@ -29,11 +30,13 @@ import type {
 } from "../shared/types.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
+import { contextLines } from "./diff/hunks.js";
 import {
 	buildSnapshot,
 	loadContext,
 	loadFileHunks,
 	loadHunksBatch,
+	loadNewText,
 	snapshotId,
 } from "./diff/snapshot.js";
 import { WriteRefusedError } from "./errors.js";
@@ -67,6 +70,7 @@ import { RereviewCache } from "./rereview/cache.js";
 import {
 	answerRereview,
 	type EarlierPatchset,
+	interdiffFileContext,
 	interdiffFileHunks,
 	rereviewKey,
 	type SincePatchset,
@@ -78,6 +82,7 @@ import { checkOid, commitsOver, commitsSince } from "./rereview/shape.js";
 import {
 	InvalidPlacementError,
 	type PlacedThread,
+	placeAgentThreads,
 	ThreadPlacer,
 } from "./rereview/threads.js";
 import { buildReviewView } from "./review/coverage.js";
@@ -404,12 +409,12 @@ export class Session {
 		// Opt-in ($CRB_TRACE_DIR): the open, with its slow steps under it.
 		const traced = tracer();
 		if (!traced.enabled) {
-			return Session.#openReview(arg, cwd, progress, options, traced);
+			return Session.openReview(arg, cwd, progress, options, traced);
 		}
 		const span = traced.start("crb: open review");
 		try {
 			return await traced.run(span, () =>
-				Session.#openReview(arg, cwd, progress, options, traced),
+				Session.openReview(arg, cwd, progress, options, traced),
 			);
 		} catch (error) {
 			span.end(undefined, (error as Error).message);
@@ -419,7 +424,11 @@ export class Session {
 		}
 	}
 
-	static async #openReview(
+	// TS-private statics, not `static #…`: V8 (Node 24.22) reads a static
+	// private method back wrong from Node's compile cache (cli.ts) in a
+	// class with this many private methods: the next start crashes
+	// ("Receiver must be class #…", or a segfault).
+	private static async openReview(
 		arg: string,
 		cwd: string,
 		progress: (message: string) => void,
@@ -548,10 +557,13 @@ export class Session {
 			asOf: this.options.asOf ?? null,
 			pinnedHead: this.pinned,
 			patchsets: this.#patchsets.map(
-				({ number, head, mergeBase, startedAt, since, shape }) => ({
+				({ number, head, mergeBase, startedAt, since, shape, baseBranch }) => ({
 					number,
 					head,
 					mergeBase,
+					// One started before the name was recorded: the current one
+					// (as #sinceOf takes it; a retarget before it can't be told).
+					baseBranch: baseBranch ?? this.#snapshotBase,
 					startedAt,
 					since,
 					shape,
@@ -696,6 +708,36 @@ export class Session {
 		return {
 			...(await this.#placedFor(job.done.target, job.done.inputs, readId)),
 			complete,
+		};
+	}
+
+	/**
+	 * The reviewer's agent threads placed into a target (a patch set or a
+	 * head) by the same tracer as review threads: what the page shows them
+	 * by. A thread whose tracing fails is left out (the page shows it where
+	 * it was asked). A RangeError for a patch set that is none of the
+	 * reviewer's.
+	 */
+	async agentPlacements(
+		agent: AgentHost,
+		to: { patchset: number } | { head: string },
+	): Promise<AgentPlacementsAnswer> {
+		if (this.#closed) throw new SessionClosedError("The session is closed");
+		let target: Snapshot;
+		if ("patchset" in to) {
+			const record = this.#patchsets.find((p) => p.number === to.patchset);
+			if (!record) throw new RangeError(`No patch set ${to.patchset}`);
+			target = await this.#snapshotOf(record);
+		} else target = await this.#headSnapshot(checkOid(to.head));
+		const threads = await agent.asked();
+		return {
+			revision: target.revision,
+			threads: await placeAgentThreads(
+				this.#placer,
+				target,
+				threads,
+				this.#diffBase(),
+			),
 		};
 	}
 
@@ -874,6 +916,51 @@ export class Session {
 		revision: string,
 		index: number,
 	): Promise<FileHunks> {
+		return (await this.#interdiffOf(from, revision)).hunks(index);
+	}
+
+	/**
+	 * The since view's hunks of several files, for the search's prefetch:
+	 * the engine's answer computed once for the batch. As fileHunksBatch, a
+	 * file that fails answers with `error`; an unknown patch set, or an
+	 * index neither in the snapshot nor one of the answer's files (a gone
+	 * file the since view shows), throws (404).
+	 */
+	async interdiffHunksBatch(
+		from: number,
+		revision: string,
+		indexes: readonly number[],
+	): Promise<HunksBatch> {
+		const interdiff = await this.#interdiffOf(from, revision);
+		for (const index of indexes) {
+			if (!interdiff.has(index)) {
+				throw new RangeError(`No file ${index} in this comparison`);
+			}
+		}
+		const files: HunksBatch["files"] = [];
+		for (const index of indexes) {
+			try {
+				files.push({ index, hunks: await interdiff.hunks(index) });
+			} catch {
+				// Not git's message: it can carry the clone cache's path.
+				files.push({ index, error: "Couldn't read this file" });
+			}
+		}
+		return { files };
+	}
+
+	/**
+	 * The since view from patch set `from` to the snapshot with this
+	 * `revision`: the engine's answer and the states, read once, and each
+	 * file's hunks from them (interdiffHunks).
+	 */
+	async #interdiffOf(
+		from: number,
+		revision: string,
+	): Promise<{
+		has: (index: number) => boolean;
+		hunks: (index: number) => Promise<FileHunks>;
+	}> {
 		const snapshot = this.#current(revision);
 		const since = (await this.#progress()).patchsets.find(
 			(p) => p.number === from,
@@ -881,7 +968,71 @@ export class Session {
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		const traced = await this.#traced(since, snapshot);
 		const { answer } = await this.#answerFor(since, snapshot, traced);
-		return interdiffFileHunks(traced, snapshot, answer, index);
+		// Its states say which unshown lines a piece may take (vouched).
+		const states =
+			(await this.#progress()).statesByRevision.get(since.revision) ??
+			new Map();
+		const known = new Set([
+			...snapshot.files.map((f) => f.index),
+			...answer.files.map((f) => f.index),
+		]);
+		return {
+			has: (index) => known.has(index),
+			hunks: async (index) => {
+				const hunks = interdiffFileHunks(
+					traced,
+					snapshot,
+					answer,
+					index,
+					states,
+				);
+				if (hunks.hunks.length > 0) return hunks;
+				// A file the interdiff doesn't change (or only renames): its
+				// lines are one gap, so they and the threads on them can be opened.
+				const context = interdiffFileContext(traced, answer, index, 1, 1);
+				if (context === "none") return hunks;
+				const newLineCount =
+					context === "untouched"
+						? (await loadNewText(this.repo, snapshot, index)).newLines.length
+						: hunks.newLineCount;
+				return newLineCount > 0
+					? { hunks: [], newLineCount, wholeGap: true }
+					: { ...hunks, newLineCount };
+			},
+		};
+	}
+
+	/**
+	 * The since view's unchanged lines `newFrom..newTo` of file `index` of
+	 * the snapshot with this `revision`: the interdiff's from patch set
+	 * `from` (engine.ts, interdiffFileContext), numbered as its hunks are.
+	 */
+	async interdiffContext(
+		from: number,
+		revision: string,
+		index: number,
+		newFrom: number,
+		newTo: number,
+	): Promise<DiffLine[]> {
+		const snapshot = this.#current(revision);
+		const since = (await this.#progress()).patchsets.find(
+			(p) => p.number === from,
+		);
+		if (!since) throw new RangeError(`No patch set ${from}`);
+		const traced = await this.#traced(since, snapshot);
+		const { answer } = await this.#answerFor(since, snapshot, traced);
+		const context = interdiffFileContext(traced, answer, index, newFrom, newTo);
+		if (context === "none") return [];
+		if (context !== "untouched") return context;
+		const text = await loadNewText(this.repo, snapshot, index);
+		return contextLines(
+			text.newLines,
+			text.newLines,
+			[],
+			newFrom,
+			newTo,
+			text.noNewlineAtEnd,
+		);
 	}
 
 	/**
@@ -1836,7 +1987,8 @@ export class Session {
 	}
 
 	/** The (head, base oid, base branch) triple #fetchedHeads files a fetch under. */
-	static #headKey(meta: PrMeta): string {
+	// Not `static #headKey`: see openReview.
+	private static headKey(meta: PrMeta): string {
 		return `${meta.headOid} ${meta.baseOid ?? ""} ${meta.baseBranch}`;
 	}
 
@@ -1850,7 +2002,7 @@ export class Session {
 			this.#head = null;
 			return;
 		}
-		const key = Session.#headKey(meta);
+		const key = Session.headKey(meta);
 		let pending = this.#fetchedHeads.get(key);
 		if (!pending) {
 			pending = fetchPr(this.repo, meta, { signal: this.#stop.signal }).then(
@@ -1879,7 +2031,7 @@ export class Session {
 	/** Notes a fetch the session made anyway (open, refresh) under its triple. */
 	#fetched(meta: PrMeta, mergeBase: string): void {
 		this.#fetchedHeads.set(
-			Session.#headKey(meta),
+			Session.headKey(meta),
 			Promise.resolve({ mergeBase }),
 		);
 	}

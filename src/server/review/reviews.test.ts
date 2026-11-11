@@ -21,11 +21,13 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../../test/git-fixture.js";
+import { sinceMarkKey } from "../../shared/pieces.js";
 import type { Snapshot, StateChange } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
 import { buildReviewView } from "./coverage.js";
-import { newEvent } from "./events.js";
+import { newEvent, parseEventLines } from "./events.js";
+import { foldProgress } from "./fold.js";
 import { RefStore } from "./refStore.js";
 import {
 	findReviewById,
@@ -339,6 +341,246 @@ describe("recordStates", () => {
 			keys: ["ghost", "ghost2"],
 		});
 		expect(await store.tip(progressRef())).toBeNull();
+	});
+
+	describe("partial marks", () => {
+		/** A cluster of two lines (a line changed), and its file. */
+		const big = () => {
+			for (const f of snap.files) {
+				const c = f.clusters.find((c) => c.kind === "lines" && c.lines === 2);
+				if (c) return { c, path: f.path };
+			}
+			throw new Error("the fixture has no cluster of 2 lines");
+		};
+		const lastCommit = async () => {
+			const message = await runGit(repo, [
+				"log",
+				"-1",
+				"--format=%B",
+				progressRef(),
+			]);
+			return parseEventLines(message);
+		};
+
+		it("a piece writes one commit: the whole cluster unreviewed, then its lines; the view shows it partly marked", async () => {
+			const { c, path } = big();
+			const progress = await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "unreviewed", reviewedLines: [[1, 2]] },
+			]);
+			expect(progress.states.get(c.key)).toEqual({
+				state: "unreviewed",
+				lines: [[1, 2]],
+			});
+			expect(await lastCommit()).toMatchObject([
+				{ type: "cluster-state", state: "unreviewed", cluster: c.key },
+				{
+					type: "lines-state",
+					by: "human",
+					state: "reviewed",
+					cluster: c.key,
+					path,
+					lines: [[1, 2]],
+				},
+			]);
+			const subject = await runGit(repo, [
+				"log",
+				"-1",
+				"--format=%s",
+				progressRef(),
+			]);
+			expect(subject.trim()).toBe(
+				`crb: marked 1 of 2 lines of 1 cluster in ${path}`,
+			);
+			const view = buildReviewView(snap, progress);
+			const shown = view.files
+				.flatMap((f) => f.clusters)
+				.find((x) => x.key === c.key);
+			expect(shown).toMatchObject({
+				state: "unreviewed",
+				reviewedLines: [[1, 2]],
+			});
+		});
+
+		it("all lines reviewed, or all crossed off, is written as the whole mark", async () => {
+			const { c } = big();
+			let progress = await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "unreviewed", reviewedLines: [[0, 2]] },
+			]);
+			expect(progress.states.get(c.key)).toEqual({ state: "reviewed" });
+			progress = await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "unreviewed", crossedLines: [[0, 2]] },
+			]);
+			expect(progress.states.get(c.key)).toEqual({ state: "crossed-off" });
+			progress = await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "unreviewed", reviewedLines: [] },
+			]);
+			expect(progress.states.get(c.key)).toEqual({ state: "unreviewed" });
+		});
+
+		it("a piece crossed off next to one reviewed: done, counted reviewed with its crossed line", async () => {
+			const { c } = big();
+			const progress = await svc.recordStates(id, "dan", snap, [
+				{
+					key: c.key,
+					state: "unreviewed",
+					reviewedLines: [[0, 1]],
+					crossedLines: [[1, 2]],
+				},
+			]);
+			const shown = buildReviewView(snap, progress)
+				.files.flatMap((f) => f.clusters)
+				.find((x) => x.key === c.key);
+			expect(shown).toMatchObject({
+				state: "reviewed",
+				crossedLines: [[1, 2]],
+			});
+		});
+
+		it("unticking a piece of a reviewed cluster leaves the rest; a reader that skips lines-state sees it unreviewed", async () => {
+			const { c } = big();
+			await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "reviewed" },
+			]);
+			const rest: [number, number][] = [[1, 2]];
+			const progress = await svc.recordStates(id, "dan", snap, [
+				{ key: c.key, state: "unreviewed", reviewedLines: rest },
+			]);
+			expect(progress.states.get(c.key)).toEqual({
+				state: "unreviewed",
+				lines: rest,
+			});
+			const older = foldProgress(
+				(await store.readEvents(progressRef())).filter(
+					(e) => e.type !== "lines-state",
+				),
+			);
+			expect(older.states.get(c.key)).toEqual({ state: "unreviewed" });
+		});
+
+		it("refuses, naming the cluster, lines past it, on a file-level cluster, with a reason, or with a state other than unreviewed; writes nothing", async () => {
+			const { c } = big();
+			const fileLevel = snap.files
+				.flatMap((f) => f.clusters)
+				.find((x) => x.kind === "file");
+			const one: [number, number][] = [[0, 1]];
+			const bad: StateChange[] = [
+				{ key: c.key, state: "unreviewed", reviewedLines: [[0, c.lines + 1]] },
+				{ key: c.key, state: "unreviewed", crossedLines: [[1, c.lines + 1]] },
+				{ key: c.key, state: "reviewed", reviewedLines: one },
+				{ key: c.key, state: "crossed-off", crossedLines: one },
+				{ key: c.key, state: "unreviewed", crossedLines: one, reason: "x" },
+				...(fileLevel
+					? [
+							{
+								key: fileLevel.key,
+								state: "unreviewed" as const,
+								reviewedLines: one,
+							},
+						]
+					: []),
+			];
+			for (const change of bad) {
+				await expect(
+					svc.recordStates(id, "dan", snap, [change]),
+				).rejects.toMatchObject({
+					constructor: InvalidChangeError,
+					keys: [change.key],
+				});
+			}
+			expect(await store.tip(progressRef())).toBeNull();
+		});
+	});
+
+	describe("since marks", () => {
+		const mark = (since: number, path = "gone.ts") => ({
+			since,
+			path,
+			reviewed: { old: [[1, 2]] as [number, number][], new: [] },
+			crossed: { old: [], new: [] },
+		});
+		const change = (since: number, path = "gone.ts"): StateChange => ({
+			key: sinceMarkKey(since, path),
+			state: "reviewed",
+			sinceMark: mark(since, path),
+		});
+
+		it("records a mark against an earlier patch set: the view lists it, no cluster changes", async () => {
+			await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+			const start: PatchsetStart = {
+				since: 1,
+				shape: "S1",
+				baseBranch: "main",
+				interdiff: "available",
+				carried: [],
+			};
+			const progress = await svc.recordStates(
+				id,
+				"dan",
+				otherSnap,
+				[change(1)],
+				start,
+			);
+			expect(progress.sinceMarks.get(otherSnap.revision)).toEqual([mark(1)]);
+			expect(progress.states.size).toBe(0);
+			expect(buildReviewView(otherSnap, progress).sinceMarks).toEqual([
+				mark(1),
+			]);
+		});
+
+		it("refuses a mark naming no earlier patch set, or its own", async () => {
+			await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+			const tip = await store.tip(progressRef());
+			for (const c of [change(1), change(7)]) {
+				await expect(
+					svc.recordStates(id, "dan", snap, [c]),
+				).rejects.toMatchObject({
+					constructor: InvalidChangeError,
+					keys: [c.key],
+				});
+			}
+			expect(await store.tip(progressRef())).toBe(tip);
+		});
+
+		// Each against PS2 with since 1, so the one thing wrong is the one named.
+		it.each([
+			["a control character in the path", change(1, "a\nb.ts")],
+			["a DEL character in the path", change(1, "a\u007fb.ts")],
+			["an empty path", change(1, "")],
+			[
+				"a key not its own",
+				{ ...change(1, "x.ts"), key: sinceMarkKey(1, "y.ts") },
+			],
+			[
+				"lines of a cluster too",
+				{ ...change(1), reviewedLines: [[0, 1]] as [number, number][] },
+			],
+			[
+				"a side that isn't ranges",
+				{
+					...change(1),
+					sinceMark: { ...mark(1), reviewed: { old: [[2, 1]], new: [] } },
+				} as StateChange,
+			],
+		])("refuses a mark with %s, writing nothing", async (_, bad) => {
+			await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+			const start: PatchsetStart = {
+				since: 1,
+				shape: "S1",
+				baseBranch: "main",
+				interdiff: "available",
+				carried: [],
+			};
+			// PS2 started, and a good mark takes: only `bad` is wrong.
+			await svc.recordStates(id, "dan", otherSnap, [change(1, "ok.ts")], start);
+			const tip = await store.tip(progressRef());
+			await expect(
+				svc.recordStates(id, "dan", otherSnap, [bad]),
+			).rejects.toMatchObject({
+				constructor: InvalidChangeError,
+				keys: [bad.key],
+			});
+			expect(await store.tip(progressRef())).toBe(tip);
+		});
 	});
 
 	it("rejects unknown states", async () => {
@@ -1077,5 +1319,142 @@ describe("patch set n+1", () => {
 		);
 		expect(different.size).toBeLessThan(40 * 1024);
 		expect(different.packed).toBeLessThan(20 * 1024);
+	});
+
+	it("storage: marks per piece, one commit each and a heavy review's worth", async () => {
+		const hex = (i: number) =>
+			createHash("sha256").update(`cluster ${i}`).digest("hex");
+		const rev = snap.revision;
+		const path = (f: number) => `src/module-${f}/file-${f}.ts`;
+		// One piece ticked: the cluster reset, then its reviewed lines.
+		const pieceEvents = (c: number, upTo: number) => [
+			newEvent(
+				"cluster-state",
+				"dan",
+				{
+					patchset: rev,
+					cluster: hex(c),
+					path: path(c % 200),
+					state: "unreviewed",
+				},
+				"human",
+			),
+			newEvent(
+				"lines-state",
+				"dan",
+				{
+					patchset: rev,
+					cluster: hex(c),
+					path: path(c % 200),
+					state: "reviewed",
+					lines: [[0, upTo * 8]] as [number, number][],
+				},
+				"human",
+			),
+		];
+		const sinceEvent = (f: number) =>
+			newEvent(
+				"since-lines-state",
+				"dan",
+				{
+					patchset: rev,
+					since: 1,
+					path: path(f),
+					reviewed: { old: [[120, 126]] as [number, number][], new: [] },
+					crossed: { old: [], new: [] },
+				},
+				"human",
+			);
+		const sizeOf = async (oid: string) => {
+			const raw = await runGit(repo, ["cat-file", "commit", oid]);
+			return {
+				raw: Number((await runGit(repo, ["cat-file", "-s", oid])).trim()),
+				deflated: deflateSync(Buffer.from(raw, "utf8")).length,
+			};
+		};
+		const piece = await sizeOf(
+			await store.commit(
+				null,
+				"crb: marked 8 of 40 lines of 1 cluster in x",
+				pieceEvents(0, 1),
+				"dan",
+			),
+		);
+		const since = await sizeOf(
+			await store.commit(
+				null,
+				"crb: marked pieces since PS1 in x",
+				[sinceEvent(0)],
+				"dan",
+			),
+		);
+		console.log(
+			`piece commit: ${piece.raw} bytes raw, ${piece.deflated} deflated; since mark commit: ${since.raw} raw, ${since.deflated} deflated`,
+		);
+		expect(piece.raw).toBeLessThan(1024);
+		expect(since.raw).toBeLessThan(1024);
+		// A file's since mark holds every marked piece of it: 25 pieces, half
+		// crossed off, on both sides.
+		const ranges = (from: number) =>
+			Array.from({ length: 25 }, (_, i): [number, number] => [
+				from + i * 10,
+				from + i * 10 + 4,
+			]);
+		const busy = await sizeOf(
+			await store.commit(
+				null,
+				"crb: marked pieces since PS1 in x",
+				[
+					newEvent(
+						"since-lines-state",
+						"dan",
+						{
+							patchset: rev,
+							since: 1,
+							path: path(0),
+							reviewed: {
+								old: ranges(1).slice(0, 13),
+								new: ranges(5).slice(0, 13),
+							},
+							crossed: { old: ranges(1).slice(13), new: ranges(5).slice(13) },
+						},
+						"human",
+					),
+				],
+				"dan",
+			),
+		);
+		console.log(
+			`since mark commit, 25 pieces in one file: ${busy.raw} bytes raw, ${busy.deflated} deflated`,
+		);
+		expect(busy.raw).toBeLessThan(2048);
+		// Heavy: 200 files, 600 clusters, each in 5 pieces ticked one at a
+		// time (4 piece commits, then the whole cluster reviewed), and one
+		// since-only piece per file ticked: as pushed, squashed into one commit.
+		const all = [];
+		for (let c = 0; c < 600; c++) {
+			for (let p = 1; p <= 4; p++) all.push(...pieceEvents(c, p));
+			all.push(
+				newEvent(
+					"cluster-state",
+					"dan",
+					{
+						patchset: rev,
+						cluster: hex(c),
+						path: path(c % 200),
+						state: "reviewed",
+					},
+					"human",
+				),
+			);
+		}
+		for (let f = 0; f < 200; f++) all.push(sinceEvent(f));
+		const heavy = await sizeOf(
+			await store.commit(null, "crb: squashed", all, "dan"),
+		);
+		console.log(
+			`heavy review (${all.length} events, squashed): ${heavy.raw} bytes raw, ${heavy.deflated} deflated`,
+		);
+		expect(heavy.deflated).toBeLessThan(100 * 1024);
 	});
 });

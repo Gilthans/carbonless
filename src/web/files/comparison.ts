@@ -29,8 +29,12 @@ export interface Comparison {
 	target: ReviewTarget;
 	/** The patch set numbers, in order (the dots between the branch and the head). */
 	patchsets: number[];
+	/** The reviewer put the base where it is (`from` in the address). */
+	baseChosen: boolean;
 	setViewing(v: Viewing): void;
 	setBase(b: ComparisonBase): void;
+	/** Both markers at once (moveMarker's answer). */
+	set(v: Viewing, b: ComparisonBase): void;
 }
 
 export type ComparisonSearch = Pick<FilesSearch, "ps" | "head" | "from">;
@@ -122,22 +126,107 @@ export function parseComparison(
 }
 
 /**
- * The params after the comparison target moves to `viewing`: the base by
- * nextBase when the reviewer put it somewhere (`from` in the address),
- * else the new default (a base left where it was by default was never
- * "chosen": it keeps being the previous dot).
+ * The base once the comparison target moves to `viewing`: by nextBase when
+ * the reviewer put it somewhere (`chosen`: `from` in the address), else
+ * the new default (a base left where it was by default was never
+ * "chosen": it keeps being the previous dot). Either way it ends left of
+ * `viewing`.
  */
+function baseAfterTarget(
+	prev: { viewing: Viewing; base: ComparisonBase },
+	viewing: Viewing,
+	patchsets: readonly number[],
+	chosen: boolean,
+): ComparisonBase {
+	return chosen
+		? nextBase(prev, viewing, patchsets)
+		: defaultBase(viewing, patchsets);
+}
+
+/** The params after the comparison target moves to `viewing` (baseAfterTarget). */
 export function movedSearch(
 	current: ComparisonSearch,
 	prev: { viewing: Viewing; base: ComparisonBase },
 	viewing: Viewing,
 	patchsets: readonly number[],
 ): ComparisonSearch {
-	const base =
-		current.from === undefined
-			? defaultBase(viewing, patchsets)
-			: nextBase(prev, viewing, patchsets);
+	const base = baseAfterTarget(
+		prev,
+		viewing,
+		patchsets,
+		current.from !== undefined,
+	);
 	return comparisonSearch(viewing, base, patchsets);
+}
+
+/** A dot of the patch set graph, left to right, as the markers see it. */
+export interface RailStop {
+	/** The comparison target it can be (none for the branch). */
+	viewing?: Viewing;
+	/** The comparison base it can be (none for a head or a snapshot). */
+	base?: ComparisonBase;
+}
+
+/** Why a dot's Comparison Base or Comparison Target is disabled. */
+export const MOVE_REASONS = {
+	alreadyBase: "Already the comparison base",
+	alreadyTarget: "Already the comparison target",
+	rightmost: "Nothing right of it for the comparison target",
+	leftmost: "Nothing left of it for the comparison base",
+	notBase: "Only the branch or a patch set can be the comparison base",
+} as const;
+
+const sameViewingOf = (a: Viewing | undefined, b: Viewing) =>
+	!!a &&
+	(a.kind === "patchset"
+		? b.kind === "patchset" && a.number === b.number
+		: b.kind === "head" && a.oid === b.oid);
+
+/**
+ * The comparison after giving the dot at `at` a role (its Comparison Base
+ * or Comparison Target; the owner, 2026-11-09): the markers move together
+ * and never cross or stack. A base on or right of the target pushes the
+ * target to the dot just right of it; a target on or left of the base
+ * pushes the base to the dot just left of it (baseAfterTarget, which also
+ * keeps nextBase's rule otherwise). Disabled, with the reason, on the dot
+ * that already has the role, a base on the rightmost dot, a target on the
+ * leftmost (the branch), and a base on a dot that can't be one.
+ */
+export function moveMarker(
+	role: "base" | "target",
+	at: number,
+	rail: readonly RailStop[],
+	current: { viewing: Viewing; base: ComparisonBase; baseChosen: boolean },
+): { viewing: Viewing; base: ComparisonBase } | { disabled: string } {
+	const stop = rail[at];
+	const patchsets = rail.flatMap((s) =>
+		s.base?.kind === "patchset" ? [s.base.number] : [],
+	);
+	if (role === "target") {
+		if (!stop?.viewing) return { disabled: MOVE_REASONS.leftmost };
+		if (sameViewingOf(stop.viewing, current.viewing))
+			return { disabled: MOVE_REASONS.alreadyTarget };
+		return {
+			viewing: stop.viewing,
+			base: baseAfterTarget(
+				current,
+				stop.viewing,
+				patchsets,
+				current.baseChosen,
+			),
+		};
+	}
+	if (stop?.base && sameBase(stop.base, current.base))
+		return { disabled: MOVE_REASONS.alreadyBase };
+	if (at >= rail.length - 1) return { disabled: MOVE_REASONS.rightmost };
+	if (!stop?.base) return { disabled: MOVE_REASONS.notBase };
+	const target = rail.findIndex((s) =>
+		sameViewingOf(s.viewing, current.viewing),
+	);
+	if (at < target) return { viewing: current.viewing, base: stop.base };
+	const next = rail[at + 1]?.viewing;
+	if (!next) return { disabled: MOVE_REASONS.rightmost };
+	return { viewing: next, base: stop.base };
 }
 
 /** The address's params for a comparison; `from` only when it isn't the default. */
@@ -244,6 +333,7 @@ export function useComparison(session: SessionInfo | undefined): Comparison {
 		base,
 		target: reviewTargetOf(viewing, session),
 		patchsets,
+		baseChosen: named.from !== undefined,
 		setViewing: (v) => {
 			if (!viewing) return;
 			go(movedSearch(named, { viewing, base }, v, patchsets));
@@ -252,6 +342,7 @@ export function useComparison(session: SessionInfo | undefined): Comparison {
 			if (!viewing) return;
 			go(comparisonSearch(viewing, b, patchsets));
 		},
+		set: (v, b) => go(comparisonSearch(v, b, patchsets)),
 	};
 }
 

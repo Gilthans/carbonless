@@ -1,3 +1,4 @@
+import { viewOfLines } from "../../shared/pieces.js";
 import { fileFlags, reviewProgress } from "../../shared/progress.js";
 import type {
 	ClusterView,
@@ -19,7 +20,9 @@ import type { ProgressState } from "./fold.js";
  * - clusters sharing a key (never expected) stay unreviewed.
  * A crossed-off state counts as crossed off with or without a reason (a blank
  * reason is dropped). Crossed off never counts as reviewed. A state the
- * engine carried keeps its `carried` mark, so the page can say so.
+ * engine carried keeps its `carried` mark, so the page can say so. A
+ * partly reviewed cluster (pieces.ts) is unreviewed with its reviewed
+ * lines, only when they all lie within it, and reviewed once they are all.
  */
 export function buildReviewView(
 	snapshot: Snapshot,
@@ -50,16 +53,24 @@ export function buildReviewView(
 					? { ...c, state: "crossed-off", reason, ...carried }
 					: { ...c, state: "crossed-off", ...carried };
 			}
+			// Marked one piece at a time: only lines the cluster has count; a
+			// range past them voids the marks (forged or stale: fail closed).
+			if (stored?.state === "unreviewed" && (stored.lines || stored.crossed)) {
+				const shown = viewOfLines(c, stored.lines ?? [], stored.crossed ?? []);
+				if (shown) return shown;
+			}
 			return { ...c, state: "unreviewed" };
 		});
 		const { clusters: _, ...summary } = file;
 		return { ...summary, clusters: views, ...fileFlags(views) };
 	});
 
+	const sinceMarks = record ? progress.sinceMarks.get(snapshot.revision) : [];
 	return {
 		revision: snapshot.revision,
 		patchset: record?.number ?? null,
 		files: fileViews,
 		progress: reviewProgress(fileViews),
+		...(sinceMarks && sinceMarks.length > 0 ? { sinceMarks } : {}),
 	};
 }

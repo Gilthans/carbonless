@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { size } from "../../shared/lineRanges";
 import type { Counts, FileView, Progress } from "../../shared/types";
 
 /** The unit every count on the Files page is shown in. */
@@ -115,13 +116,24 @@ export interface FileUnitProgress {
 const clustersPhrase = (n: number) =>
 	`${n} ${n === 1 ? "cluster" : "clusters"}`;
 
+/** Weighs a cluster by its lines (a partly reviewed one's reviewed lines count). */
+const BY_LINES = (lines: number) => lines;
+const BY_CLUSTER = () => 1;
+
 function clusterCounts(file: FileView, weight: (lines: number) => number) {
 	const counts: Counts = { total: 0, reviewed: 0, crossedOff: 0 };
 	for (const c of file.clusters) {
 		const w = weight(c.lines);
 		counts.total += w;
-		if (c.state === "reviewed") counts.reviewed += w;
-		else if (c.state === "crossed-off") counts.crossedOff += w;
+		const crossed = weight === BY_LINES ? size(c.crossedLines ?? []) : 0;
+		if (c.state === "reviewed") {
+			counts.reviewed += w - crossed;
+			counts.crossedOff += crossed;
+		} else if (c.state === "crossed-off") counts.crossedOff += w;
+		else if (weight === BY_LINES) {
+			counts.reviewed += size(c.reviewedLines ?? []);
+			counts.crossedOff += crossed;
+		}
 	}
 	return counts;
 }
@@ -159,9 +171,9 @@ export function fileUnitProgress(file: FileView, unit: Unit): FileUnitProgress {
 			status: file.done ? finished : null,
 		};
 	}
-	let counts = clusterCounts(file, unit === "lines" ? (n) => n : () => 1);
+	let counts = clusterCounts(file, unit === "lines" ? BY_LINES : BY_CLUSTER);
 	const noLines = counts.total === 0;
-	if (noLines) counts = clusterCounts(file, () => 1);
+	if (noLines) counts = clusterCounts(file, BY_CLUSTER);
 	const value = capped(percent(counts), counts, clustersLeft);
 	// Nothing to show as a fraction: no changed lines, or all of what's left
 	// in the unit was crossed off.
@@ -289,8 +301,8 @@ export function folderUnitProgress(
 			counts.crossedOff += c.crossedOff;
 		}
 	} else {
-		counts = sum(unit === "lines" ? (n) => n : () => 1);
-		if (counts.total === 0) counts = sum(() => 1);
+		counts = sum(unit === "lines" ? BY_LINES : BY_CLUSTER);
+		if (counts.total === 0) counts = sum(BY_CLUSTER);
 	}
 	return {
 		counts,

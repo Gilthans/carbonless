@@ -128,6 +128,23 @@ describe("carryClusters", () => {
 		});
 	});
 
+	it("a partly reviewed cluster never carries, and an older full mark doesn't either", () => {
+		const partly: SourceState & { lines: [number, number][] } = {
+			state: "unreviewed",
+			lines: [[0, 1]],
+		};
+		const r = carryClusters(
+			input(
+				[
+					ps(2, [source("a.txt", [two], { k2: partly })]),
+					ps(1, [source("a.txt", [two], { k2: "reviewed" })]),
+				],
+				[target("a.txt", [two])],
+			),
+		);
+		expect(r.carried).toEqual([]);
+	});
+
 	it("P2: context that differs (the base changed a line next to it) still carries", () => {
 		// The base changed line 4 (B1 → B2), the head has it too (H1 → H2):
 		// the cluster at line 2 is untouched, its context not.
