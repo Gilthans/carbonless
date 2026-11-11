@@ -409,12 +409,12 @@ export class Session {
 		// Opt-in ($CRB_TRACE_DIR): the open, with its slow steps under it.
 		const traced = tracer();
 		if (!traced.enabled) {
-			return Session.#openReview(arg, cwd, progress, options, traced);
+			return Session.openReview(arg, cwd, progress, options, traced);
 		}
 		const span = traced.start("crb: open review");
 		try {
 			return await traced.run(span, () =>
-				Session.#openReview(arg, cwd, progress, options, traced),
+				Session.openReview(arg, cwd, progress, options, traced),
 			);
 		} catch (error) {
 			span.end(undefined, (error as Error).message);
@@ -424,7 +424,11 @@ export class Session {
 		}
 	}
 
-	static async #openReview(
+	// TS-private statics, not `static #…`: V8 (Node 24.22) reads a static
+	// private method back wrong from Node's compile cache (cli.ts) in a
+	// class with this many private methods: the next start crashes
+	// ("Receiver must be class #…", or a segfault).
+	private static async openReview(
 		arg: string,
 		cwd: string,
 		progress: (message: string) => void,
@@ -1983,7 +1987,8 @@ export class Session {
 	}
 
 	/** The (head, base oid, base branch) triple #fetchedHeads files a fetch under. */
-	static #headKey(meta: PrMeta): string {
+	// Not `static #headKey`: see openReview.
+	private static headKey(meta: PrMeta): string {
 		return `${meta.headOid} ${meta.baseOid ?? ""} ${meta.baseBranch}`;
 	}
 
@@ -1997,7 +2002,7 @@ export class Session {
 			this.#head = null;
 			return;
 		}
-		const key = Session.#headKey(meta);
+		const key = Session.headKey(meta);
 		let pending = this.#fetchedHeads.get(key);
 		if (!pending) {
 			pending = fetchPr(this.repo, meta, { signal: this.#stop.signal }).then(
@@ -2026,7 +2031,7 @@ export class Session {
 	/** Notes a fetch the session made anyway (open, refresh) under its triple. */
 	#fetched(meta: PrMeta, mergeBase: string): void {
 		this.#fetchedHeads.set(
-			Session.#headKey(meta),
+			Session.headKey(meta),
 			Promise.resolve({ mergeBase }),
 		);
 	}
