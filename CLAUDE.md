@@ -271,7 +271,7 @@ The owner's main is the globally installed package (`carbonless-review`),
 run as `crb serve` on port 4747 with a stable key, and it moves to the
 newest RC by itself within minutes of a merge. It
 never runs a worktree's `dist`, and nothing else binds 4747. Setup:
-README, "Remote machine". The owner's machine-specific details (address,
+`docs/remote-machine.md`. The owner's machine-specific details (address,
 service and timer names, logs, how to pause it) live in the untracked
 `CLAUDE.local.md`; never write them into tracked files.
 
