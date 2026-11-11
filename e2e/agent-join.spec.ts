@@ -1,4 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import { acpLog } from "../test/fake-acp/scenario";
 import { ask, CALC, chip, expect, fixture, openFile, test } from "./agent-ui";
@@ -357,11 +358,14 @@ test("the full loop: the watcher wakes the session for a question, its reply lan
 	agentCrb,
 	acpLogPath,
 }) => {
-	// Test-only: a short grace window instead of the real minute, long
-	// enough for the chip's 5 s poll to see `reconnecting` first.
-	test.setTimeout(90_000);
+	// Test-only: the grace window ends when this file exists (a gate on the
+	// test's cue), not after the real minute.
+	const gate = test.info().outputPath("grace-gate");
+	// Five waits ride on the chip's 5 s status poll (ready, busy, ready,
+	// reconnecting, the toast): over the default 30 s on a loaded machine.
+	test.setTimeout(60_000);
 	await pr(fixture);
-	const s = await agentCrb({ env: { CRB_JOIN_GRACE_MS: "15000" } });
+	const s = await agentCrb({ env: { CRB_JOIN_GRACE_GATE: gate } });
 	const section = await openFile(page, s.url, CALC);
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
 	const request = await attach(s.url);
@@ -411,12 +415,10 @@ test("the full loop: the watcher wakes the session for a question, its reply lan
 	second.drop();
 	await expect(chip(page)).toHaveAttribute("data-state", "reconnecting");
 	await expect(chip(page)).toHaveAttribute("data-via", "mcp");
-	// …and once the (shortened) grace window passes, it has left as lost.
-	// Grace 15 s plus a 5 s poll: longer than the default 10 s expect.
+	// …and once the grace window ends (the gate opens), it has left as lost.
+	writeFileSync(gate, "");
 	const toast = page.getByTestId("join-toast");
-	await expect(toast).toContainText(`${SESSION.name} disconnected`, {
-		timeout: 30_000,
-	});
+	await expect(toast).toContainText(`${SESSION.name} disconnected`);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
 	// Its token is dead: a watcher run now gets 410, and the line exits 3.

@@ -23,23 +23,23 @@ import { oneLine } from "./prompt.js";
  * (the watcher's open connection is the keep-alive) and the review's "ACP
  * off" flag. Server memory plus two files in the review's agent dir:
  * `joined.json` (token hash, identity, since) and `acp-off`. Never git.
- * See docs/superpowers/specs/2026-11-10-join-review-mcp-design.md.
+ * Spec: the CAR-81 ticket's spec document.
  */
 
 /**
- * Test only: `CRB_JOIN_GRACE_MS` (a positive integer of milliseconds)
- * replaces JOIN.graceMs, so an end-to-end test sees a dropped watcher's
- * session leave as `lost` without waiting out the real minute. Anything
- * else (unset, empty, not a positive integer) keeps the real window.
+ * Test only: `CRB_JOIN_GRACE_GATE` names a file. While it's set, a dropped
+ * watcher's grace window doesn't run on the clock: it ends when that file
+ * exists, so an end-to-end test sees the session leave as `lost` on its own
+ * cue (a gate, not a shortened timer). Unset or blank: the real window.
  */
-export function joinGraceMs(env: NodeJS.ProcessEnv = process.env): number {
-	const raw = env.CRB_JOIN_GRACE_MS?.trim() ?? "";
-	if (!/^[1-9][0-9]{0,8}$/.test(raw)) return JOIN.graceMs;
-	return Number(raw);
+export function joinGraceGate(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return env.CRB_JOIN_GRACE_GATE?.trim() || undefined;
 }
 
-/** Read once, when the server starts (this module loads). */
-const GRACE_MS = joinGraceMs();
+/** How often a gated grace window looks for its file. */
+const GATE_POLL_MS = 50;
 
 export type AttachOutcome =
 	| { state: "pending"; request: string }
@@ -90,6 +90,8 @@ export interface JoinBrokerDeps {
 	 * the holder (tests).
 	 */
 	claim?: ReviewClaim;
+	/** Test only: see joinGraceGate. Default: CRB_JOIN_GRACE_GATE. */
+	graceGate?: string;
 }
 
 type Presence = "listening" | "busy" | "reconnecting";
@@ -157,12 +159,14 @@ export class JoinBroker {
 	#handed: { thread: string; asked: string | undefined } | null = null;
 	/** No watcher: leaves as `lost` when it fires. */
 	#absence: ReturnType<typeof setTimeout> | null = null;
+	readonly #gate: string | undefined;
 	#left: (JoinIdentity & { why: JoinLeave; at: number }) | null = null;
 	#closed = false;
 
 	constructor(deps: JoinBrokerDeps) {
 		this.#deps = deps;
 		this.#now = deps.now ?? Date.now;
+		this.#gate = deps.graceGate ?? joinGraceGate();
 	}
 
 	/**
@@ -521,18 +525,32 @@ export class JoinBroker {
 		this.#disarm();
 		const j = this.#joined;
 		if (!j || this.#closed || this.#lease) return;
-		const ms = !j.collected
-			? JOIN.expiryMs
-			: this.#handed || this.#woken
-				? JOIN.busyMs
-				: GRACE_MS;
-		this.#absence = setTimeout(() => {
+		const lost = () => {
 			this.#absence = null;
 			if (this.#joined === j) this.leave("lost");
-		}, ms);
+		};
+		const grace = j.collected && !this.#handed && !this.#woken;
+		const gate = grace ? this.#gate : undefined;
+		if (gate) {
+			// Test only: the window ends on the test's cue, not the clock.
+			const poll = setInterval(() => {
+				if (!existsSync(gate)) return;
+				clearInterval(poll);
+				lost();
+			}, GATE_POLL_MS);
+			this.#absence = poll;
+			return;
+		}
+		const ms = !j.collected
+			? JOIN.expiryMs
+			: grace
+				? JOIN.graceMs
+				: JOIN.busyMs;
+		this.#absence = setTimeout(lost, ms);
 	}
 
 	#disarm(): void {
+		// clearTimeout ends a gate's setInterval too (Node shares the ids).
 		if (this.#absence) clearTimeout(this.#absence);
 		this.#absence = null;
 	}

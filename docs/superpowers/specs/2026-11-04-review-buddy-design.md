@@ -619,7 +619,7 @@ once.
 - **Agent-opened threads:** the storage accepts them; a producer is an ACP
   extension method or the MCP door's `open_thread`.
 - **The MCP door:** designed and built in
-  `2026-11-10-join-review-mcp-design.md` (CAR-81): a session the reviewer
+  CAR-81 (the spec is a document on the ticket): a session the reviewer
   already has joins a review through crb's `/mcp` after the reviewer's
   Approve, and a background watcher wakes it for each question. Same
   thread model, same ref.

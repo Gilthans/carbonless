@@ -241,8 +241,7 @@ over when the other closes the review, at its next status poll.
 
 Instead of an agent carbonless launches, a session you already have (the
 coding session, or one with context you want to keep) can be the review's
-buddy, from any machine that reaches crb. Spec:
-`docs/superpowers/specs/2026-11-10-join-review-mcp-design.md`.
+buddy, from any machine that reaches crb. Spec: the CAR-81 ticket.
 
 **One-time setup per harness and machine.** crb serves MCP over
 Streamable HTTP at `/mcp`, on the web UI's address and port, behind the
@@ -337,6 +336,3 @@ handed but didn't answer goes back to waiting.
 reconnects, and a session back within the 60 s window stays joined with
 the same token. A new session (a restart on the session's side without
 `--continue`) needs a new `attach` and a new Approve.
-
-`CRB_JOIN_GRACE_MS` (a positive integer of milliseconds, read once when
-crb starts) replaces the 60 s window. It is for tests only.

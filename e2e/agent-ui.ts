@@ -63,7 +63,7 @@ export interface AgentOptions {
 	state?: string;
 	/** crb <pr>'s own flags (--viewer, --as-of). */
 	args?: string[];
-	/** Extra environment for the serve (e.g. test-only CRB_JOIN_GRACE_MS). */
+	/** Extra environment for the serve (e.g. test-only CRB_JOIN_GRACE_GATE). */
 	env?: NodeJS.ProcessEnv;
 }
 

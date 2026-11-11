@@ -4,6 +4,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ import {
 	JoinBroker,
 	type JoinBrokerDeps,
 	JoinElsewhereError,
-	joinGraceMs,
+	joinGraceGate,
 	StaleJoinRequestError,
 	type WatchLease,
 } from "./join.js";
@@ -576,12 +577,58 @@ describe("JoinBroker: restart", () => {
 	});
 });
 
-describe("joinGraceMs (test-only CRB_JOIN_GRACE_MS)", () => {
-	it("takes a positive integer, and keeps the real window for anything else", () => {
-		expect(joinGraceMs({ CRB_JOIN_GRACE_MS: "1500" })).toBe(1500);
-		expect(joinGraceMs({ CRB_JOIN_GRACE_MS: " 20 " })).toBe(20);
-		for (const v of [undefined, "", "0", "-5", "1e3", "12ms", "0x10", "1.5"]) {
-			expect(joinGraceMs({ CRB_JOIN_GRACE_MS: v })).toBe(JOIN.graceMs);
+describe("the grace gate (test-only CRB_JOIN_GRACE_GATE)", () => {
+	it("names a file; unset or blank keeps the real window", () => {
+		expect(joinGraceGate({ CRB_JOIN_GRACE_GATE: " /t/gate " })).toBe("/t/gate");
+		for (const v of [undefined, "", "  "]) {
+			expect(joinGraceGate({ CRB_JOIN_GRACE_GATE: v })).toBeUndefined();
 		}
+	});
+
+	it("a dropped watcher stays reconnecting past graceMs, and leaves as lost once the file exists", async () => {
+		const gate = join(dir, "grace-gate");
+		const b = make({ graceGate: gate });
+		const token = await joined(b);
+		const lease = b.watcher(token) as WatchLease;
+		await vi.advanceTimersByTimeAsync(0);
+		lease.close();
+		await vi.advanceTimersByTimeAsync(JOIN.graceMs * 2);
+		expect(left).toEqual([]);
+		expect(b.view().presence).toBe("reconnecting");
+		writeFileSync(gate, "");
+		await vi.advanceTimersByTimeAsync(100);
+		expect(left).toEqual(["lost"]);
+		expect(b.check(token)).toBe(false);
+	});
+
+	it("a watcher back inside a gated window stops it: the gate opening later doesn't end the session", async () => {
+		const gate = join(dir, "grace-gate");
+		const b = make({ graceGate: gate });
+		const token = await joined(b);
+		const first = b.watcher(token) as WatchLease;
+		await vi.advanceTimersByTimeAsync(0);
+		first.close();
+		expect(b.view().presence).toBe("reconnecting");
+		b.watcher(token) as WatchLease;
+		writeFileSync(gate, "");
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(left).toEqual([]);
+		expect(b.view().presence).toBe("listening");
+	});
+
+	it("gates only the grace window: a busy session still leaves after busyMs, open gate or not", async () => {
+		const gate = join(dir, "grace-gate");
+		writeFileSync(gate, "");
+		const b = make({ graceGate: gate });
+		const token = await joined(b);
+		const lease = b.watcher(token) as WatchLease;
+		b.wake();
+		await lease.deliver;
+		lease.close();
+		// Busy, not grace: the open gate doesn't end it.
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(left).toEqual([]);
+		await vi.advanceTimersByTimeAsync(JOIN.busyMs);
+		expect(left).toEqual(["lost"]);
 	});
 });

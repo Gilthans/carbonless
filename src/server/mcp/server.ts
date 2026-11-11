@@ -29,7 +29,7 @@ import {
  * (`reviews`), asks to join it (`attach`, the reviewer approves), then
  * answers its agent threads (`next`, `reply`) until it leaves (`detach`).
  * Every tool but `reviews` and `attach` needs the token an approved
- * `attach` hands out. See docs/superpowers/specs/2026-11-10-join-review-mcp-design.md.
+ * `attach` hands out. Spec: the CAR-81 ticket's spec document.
  */
 
 /** What one MCP request knows of where it came from. */
