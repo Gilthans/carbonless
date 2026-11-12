@@ -18,10 +18,18 @@
 // ~/.cache/carbonless-verify.lock.<i>: the kernel frees it when the holder
 // exits, however it exits. SIGTERM, SIGINT or SIGHUP gives up the wait, or
 // stops the command (its whole process group) and exits.
+//
+// First come, first served: each run puts a ticket in
+// ~/.cache/carbonless-queue (queue-line.mjs) from its arrival to its end, and
+// tries the slots only while it is among the `slots` oldest live tickets. The
+// flock slots stay the real exclusion; the tickets only order who tries. A
+// run killed with SIGKILL leaves a ticket the next reader drops (its pid is
+// gone, or is now another process).
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { home, queueSlots } from "./queue-config.mjs";
+import { joinLine } from "./queue-line.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
 if (!cmd) {
@@ -34,7 +42,8 @@ const SIGNAL_CODES = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
 // flock's exit status when the slot is taken; a held command's own 200
 // comes back as 1 so the two never mix.
 const TAKEN = 200;
-const POLL_MS = 1000;
+// CRB_QUEUE_POLL_MS: for tests, a waiter that polls faster than the others.
+const POLL_MS = Number(process.env.CRB_QUEUE_POLL_MS) || 1000;
 
 /** The child a signal goes on to; with `group`, to its process group. */
 let current = null;
@@ -114,12 +123,21 @@ if (
 
 mkdirSync(dir, { recursive: true });
 const start = Date.now();
+const ticket = joinLine(join(dir, "carbonless-queue"));
+// Kept while the command runs too: a run holding a slot stays ahead of the
+// ones that came after it. process.exit (signals included) runs this.
+process.on("exit", () => ticket.leave());
 let told = false;
 for (;;) {
 	const slots = queueSlots();
 	// The queue was turned off while waiting.
-	if (!slots) process.exit(await unqueued());
-	for (let i = 0; i < slots; i++) {
+	if (!slots) {
+		ticket.leave();
+		process.exit(await unqueued());
+	}
+	// Runs that came earlier and still wait (or run) go first.
+	const tries = ticket.place() < slots ? slots : 0;
+	for (let i = 0; i < tries; i++) {
 		// -n: a taken slot ends flock at once with TAKEN; a free one becomes
 		// this script again (--no-fork), holding the slot.
 		const status = await run(

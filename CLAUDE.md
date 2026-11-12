@@ -110,9 +110,12 @@ loading never looking empty, checking against a real PR):
   waits for one of `slots` (default 1) machine-wide locks
   (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock*`),
   printing whose runs it waits for, so runs never overload the machine
-  together, and `vitest.config.ts`/`playwright.config.ts`
-  refuse a run outside it (`scripts/queue-guard.mjs`): use the package
-  scripts, or wrap a direct call as `node scripts/queue.mjs pnpm exec
+  together. Runs go first come, first served: each has a ticket in
+  `~/.cache/carbonless-queue` (`scripts/queue-line.mjs`) from arrival to
+  end and tries a slot only while among the `slots` oldest live tickets; a
+  ticket whose pid died (or was reused) is dropped by whoever reads it.
+  `vitest.config.ts`/`playwright.config.ts` refuse a run outside it
+  (`scripts/queue-guard.mjs`): use the package scripts, or wrap a direct call as `node scripts/queue.mjs pnpm exec
   playwright test ...`. The file is read on every run and while waiting: a
   change applies at once, no restart. Interactive `pnpm test:watch` never
   queues. Waiting can take longer than a foreground command may: run tests
