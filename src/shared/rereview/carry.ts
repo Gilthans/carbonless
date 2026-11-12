@@ -308,11 +308,12 @@ export function carryTraced(
 		const states = new Map<string, SourceState>();
 		// Files often share one map (the engine passes the patch set's
 		// states with each file): read each map once, or this is quadratic
-		// in the files (CAR-67).
-		const read = new Set<ReadonlyMap<string, SourceState>>();
-		for (const file of ps.files) {
-			if (read.has(file.states)) continue;
-			read.add(file.states);
+		// in the files (CAR-67). Once, at its last file: a key then takes
+		// the last file's value that has it, as reading every file's would.
+		const last = new Map<ReadonlyMap<string, SourceState>, number>();
+		for (const [at, file] of ps.files.entries()) last.set(file.states, at);
+		for (const [at, file] of ps.files.entries()) {
+			if (last.get(file.states) !== at) continue;
 			for (const [key, state] of file.states) states.set(key, state);
 		}
 		for (const t of traced) {
