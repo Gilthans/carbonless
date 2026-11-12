@@ -74,7 +74,7 @@ describe("SessionRegistry", () => {
 	});
 
 	it(
-		"open returns before the agent has answered initialize; it starts after",
+		"open spawns nothing; Spawn returns before the agent has answered initialize, and it starts after",
 		async () => {
 			const fake = useFakeAcp(pr.repo.path, {
 				agent: { name: "fake-acp", version: "1.0.0" },
@@ -84,7 +84,13 @@ describe("SessionRegistry", () => {
 				const { session } = await registry().open({ pr: pr.arg });
 				const host = session.agent;
 				if (!host) throw new Error("no agent");
-				// Held: the open did not wait for the handshake.
+				// Configured, but no Spawn in this review: nothing starts.
+				expect((await host.status()).state).toBe("off");
+				expect(acpLog(fake.log).filter((e) => e.method === "spawn")).toEqual(
+					[],
+				);
+				await host.startAcp();
+				// Held: Spawn did not wait for the handshake.
 				await vi.waitFor(
 					async () => expect((await host.status()).state).toBe("starting"),
 					{ timeout: 20_000, interval: 20 },
