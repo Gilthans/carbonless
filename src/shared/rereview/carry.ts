@@ -306,7 +306,13 @@ export function carryTraced(
 	const blocked = new Set<string>();
 	sources.forEach((ps, i) => {
 		const states = new Map<string, SourceState>();
+		// Files often share one map (the engine passes the patch set's
+		// states with each file): read each map once, or this is quadratic
+		// in the files (CAR-67).
+		const read = new Set<ReadonlyMap<string, SourceState>>();
 		for (const file of ps.files) {
+			if (read.has(file.states)) continue;
+			read.add(file.states);
 			for (const [key, state] of file.states) states.set(key, state);
 		}
 		for (const t of traced) {
