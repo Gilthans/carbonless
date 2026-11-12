@@ -13,6 +13,9 @@ import { expectNoPageOverflow } from "./files-ui";
  * with the tool names of the plan (reviews, attach, …).
  */
 
+// Its own crb serve: the agent's config, its fake ACP env, the grace gate.
+test.use({ crbServer: "own" });
+
 /** The review's /mcp endpoint, with its access key when it has one. */
 function mcpUrl(reviewUrl: string): string {
 	const u = new URL(reviewUrl);

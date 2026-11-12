@@ -5,6 +5,9 @@ import { releaseAcp } from "../test/fake-acp/scenario";
 import { ask, CALC, chip, expect, fixture, openFile, test } from "./agent-ui";
 import { reviewPage } from "./fixtures";
 
+// Its own crb serve: the setup writes the agent config.
+test.use({ crbServer: "own" });
+
 /**
  * Setting up the reviewer's agent through the modal, against the fake ACP
  * agent on PATH (named like Claude Code's adapter, `claude-agent-acp`).

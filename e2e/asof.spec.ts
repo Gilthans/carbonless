@@ -1,6 +1,9 @@
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { expect, test } from "./fixtures";
 
+// Its own crb serve: the test ends with stop().
+test.use({ crbServer: "own" });
+
 /**
  * As-of mode (hidden dev flags): the PR as it was at CUTOFF. Before it: the
  * PR's first commit, a review by the gh user and one by rev1, a comment and a

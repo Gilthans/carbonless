@@ -10,6 +10,9 @@ import { CALC, expect, fixture, openFile, row, test } from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
 import type { Pr, PrOptions } from "./fixtures";
 
+// Its own crb serve: the agent's config, its fake ACP env and checkouts.
+test.use({ crbServer: "own" });
+
 /**
  * The thread agent (CAR-120): a private agent conversation per GitHub
  * thread, behind the agent button in the thread card's header, sliding

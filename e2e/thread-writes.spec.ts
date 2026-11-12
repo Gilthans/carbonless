@@ -46,7 +46,7 @@ async function setup(
 	const p = await pr(fixture);
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "new.txt", line: 1, subjectType: "LINE" }, [
@@ -77,7 +77,7 @@ async function setup(
 /** Replies to the thread in the fake gh's store, by text. */
 function storedReplies(p: Pr, text: string): number {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-	const threads = (s.prs[7]?.graphql?.reviewThreads ?? []) as {
+	const threads = (s.prs[p.number]?.graphql?.reviewThreads ?? []) as {
 		comments: { nodes: { body?: string; bodyText?: string }[] };
 	}[];
 	return threads
@@ -88,7 +88,7 @@ function storedReplies(p: Pr, text: string): number {
 /** Whether the fake gh has the thread on `path` resolved. */
 function storedResolved(p: Pr, path: string): boolean | undefined {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-	const threads = (s.prs[7]?.graphql?.reviewThreads ?? []) as {
+	const threads = (s.prs[p.number]?.graphql?.reviewThreads ?? []) as {
 		path: string;
 		isResolved: boolean;
 	}[];
@@ -362,7 +362,7 @@ test("a reload while an unresolve is read back shows it unresolved at once", asy
 }) => {
 	const p = await setup(pr);
 	p.editScenario((s) => {
-		const t = s.prs[7]?.graphql?.reviewThreads?.[1] as
+		const t = s.prs[p.number]?.graphql?.reviewThreads?.[1] as
 			| { isResolved: boolean }
 			| undefined;
 		if (t) t.isResolved = true;
@@ -586,7 +586,10 @@ test("a pending review shows the warning and refuses replies with the link", asy
 	await expect(warning).toContainText("Pending review on GitHub");
 	await expect(
 		warning.getByRole("link", { name: "Open on GitHub" }),
-	).toHaveAttribute("href", "https://github.com/acme/widget/pull/7/files");
+	).toHaveAttribute(
+		"href",
+		`https://github.com/${p.ownerRepo}/pull/${p.number}/files`,
+	);
 	const c = card(page, "new.txt");
 	const box = await openReply(c);
 	await box.fill("Blocked");
@@ -597,7 +600,10 @@ test("a pending review shows the warning and refuses replies with the link", asy
 	);
 	await expect(
 		notice.getByRole("link", { name: "Open on GitHub" }),
-	).toHaveAttribute("href", "https://github.com/acme/widget/pull/7/files");
+	).toHaveAttribute(
+		"href",
+		`https://github.com/${p.ownerRepo}/pull/${p.number}/files`,
+	);
 	await expect(box).toHaveValue("Blocked");
 	const shots = process.env.DESIGN_SHOTS;
 	if (shots) {
@@ -615,7 +621,7 @@ test("no reply box or resolve toggle as of a cutoff", async ({
 }) => {
 	const p = await setup(pr);
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (graph) {
 			graph.commits = [
 				{

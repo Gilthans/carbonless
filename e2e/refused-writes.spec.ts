@@ -39,7 +39,7 @@ async function setup(
 	const p = await pr(fixture);
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "new.txt", line: 1, subjectType: "LINE" }, [
@@ -78,7 +78,7 @@ interface StoredThread {
 /** The fake gh's threads as stored. */
 function storedThreads(p: Pr): StoredThread[] {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-	return (s.prs[7]?.graphql?.reviewThreads ?? []) as StoredThread[];
+	return (s.prs[p.number]?.graphql?.reviewThreads ?? []) as StoredThread[];
 }
 
 /** Comment bodies on GitHub (the fake's), deleted ones left out. */

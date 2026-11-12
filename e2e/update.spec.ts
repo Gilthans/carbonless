@@ -26,6 +26,9 @@ import {
 } from "./fixtures";
 import { crbEnv } from "./pr-setup";
 
+// Its own crb serve, installed and restarted by the update: acme/widget#7.
+test.use({ crbServer: "own" });
+
 /**
  * The update toast (CAR-108) against a crb "installed from npm": the built
  * dist copied into a global npm prefix (`<prefix>/lib/node_modules/

@@ -51,6 +51,8 @@ export interface Served {
 	url: string;
 	/** Everything it has logged so far. */
 	output(): string;
+	/** The environment it runs in (its XDG dirs, the fake gh's files). */
+	env: NodeJS.ProcessEnv;
 }
 
 /**
@@ -91,7 +93,7 @@ export function startServe(
 			const match = output.match(/carbonless listening on (http:\/\/\S+)/);
 			if (match?.[1]) {
 				clearTimeout(timer);
-				done({ child, url: match[1], output: () => output });
+				done({ child, url: match[1], output: () => output, env });
 			}
 		};
 		child.stdout?.on("data", onData);
