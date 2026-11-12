@@ -305,7 +305,7 @@ describe("AgentSetup: Invite", () => {
 				at: SINCE,
 			},
 		});
-		const { user, dialog } = await opened(openInviteSetup);
+		const { user, dialog, client } = await opened(openInviteSetup);
 		const card = await within(dialog).findByTestId("join-request-card");
 		expect(card).toHaveTextContent("widgets-pr-77");
 		expect(card).toHaveTextContent("Claude Code");
@@ -318,10 +318,79 @@ describe("AgentSetup: Invite", () => {
 		await waitFor(() =>
 			expect(writes.log).toContainEqual(["answerJoin", ["req1", false]]),
 		);
-		await user.click(within(card).getByRole("button", { name: "Approve" }));
-		await waitFor(() =>
-			expect(writes.log).toContainEqual(["answerJoin", ["req1", true]]),
+		// Answered: gone at once, as from the bar, though the status still has it.
+		expect(
+			await within(dialog).findByText("No agent requesting to join"),
+		).toBeTruthy();
+		// The next request: Approve, with its name kept while it is sent.
+		const api = await import("../api");
+		let release = () => {};
+		vi.mocked(api.answerJoin).mockImplementationOnce(
+			(...args) =>
+				new Promise((done) => {
+					writes.log.push(["answerJoin", args]);
+					release = () => done({ ok: true });
+				}),
 		);
+		current = status({
+			joinRequest: { id: "req2", name: "next", machine: "m", at: SINCE },
+		});
+		await client.invalidateQueries({ queryKey: ["agent"] });
+		const next = await within(dialog).findByTestId("join-request-card");
+		const approve = within(next).getByRole("button", { name: "Approve" });
+		await user.click(approve);
+		await waitFor(() =>
+			expect(writes.log).toContainEqual(["answerJoin", ["req2", true]]),
+		);
+		expect(approve).toHaveAccessibleName("Approve");
+		expect(approve).toHaveAttribute("aria-busy", "true");
+		expect(
+			within(next).getByRole("button", { name: "Decline" }),
+		).not.toHaveAttribute("aria-busy");
+		release();
+		await waitFor(() =>
+			expect(within(dialog).queryByTestId("join-request-card")).toBeNull(),
+		);
+	});
+
+	it("a request that would replace a running agent says whom", async () => {
+		current = status({
+			state: "ready",
+			agent: { name: "Claude Agent", version: "1" },
+			joinRequest: { id: "r3", name: "s", machine: "m", at: SINCE },
+		});
+		const { dialog } = await opened(openInviteSetup);
+		const card = await within(dialog).findByTestId("join-request-card");
+		expect(card).toHaveTextContent("Replaces Claude Agent");
+	});
+
+	it("the harness picked is remembered in crb.agentSetup.mcpHarness", async () => {
+		const first = await opened(openInviteSetup);
+		await within(first.dialog).findByTestId("join-setup-line");
+		await first.user.click(
+			within(first.dialog).getByRole("button", { name: "Gemini CLI" }),
+		);
+		expect(localStorage.getItem("crb.agentSetup.mcpHarness")).toBe("gemini");
+		closeAgentSetup();
+		cleanup();
+		const again = await opened(openInviteSetup);
+		expect(
+			within(again.dialog).getByRole("button", { name: "Gemini CLI" }),
+		).toHaveAttribute("aria-pressed", "true");
+		expect(
+			await within(again.dialog).findByTestId("join-setup-line"),
+		).toHaveValue(mcpLine("gemini", window.location.origin, "k3y"));
+	});
+
+	it("only the selected tab controls a panel, and that panel is there", async () => {
+		const { dialog } = await opened(openInviteSetup);
+		const invite = within(dialog).getByRole("tab", { name: "Invite" });
+		const spawn = within(dialog).getByRole("tab", { name: "Spawn" });
+		expect(spawn).not.toHaveAttribute("aria-controls");
+		const panel = document.getElementById(
+			invite.getAttribute("aria-controls") ?? "",
+		);
+		expect(panel).toHaveAttribute("role", "tabpanel");
 	});
 
 	it("a request while a session is joined leaves the modal on the connected view", async () => {
@@ -538,6 +607,9 @@ describe("AgentSetup: Review Agent (connected)", () => {
 			via: "acp",
 			agent: { name: "Claude Agent", version: "0.100.0" },
 			seen: SINCE,
+			spawnedAt: "2026-11-12T09:00:00Z",
+			// A state change since: Connected must not follow it.
+			since: "2026-11-12T11:00:00Z",
 		});
 		stored = {
 			agent: { command: "claude-agent-acp", args: [], env: {}, leash: "open" },
@@ -553,6 +625,32 @@ describe("AgentSetup: Review Agent (connected)", () => {
 		expect(
 			within(dialog).getByRole("button", { name: "Stop current" }),
 		).toBeDisabled();
+	});
+
+	it("Connected is when Spawn set the flag; left out without it, never the last state change", async () => {
+		current = status({ state: "ready", spawned: true, spawnedAt: SINCE });
+		let { dialog } = await opened();
+		let card = await within(dialog).findByTestId("agent-status-card");
+		const connected = within(card).getByText("Connected").nextElementSibling;
+		expect(connected?.querySelector("time")).toHaveAttribute("datetime", SINCE);
+		closeAgentSetup();
+		cleanup();
+		current = status({ state: "ready", spawned: true });
+		({ dialog } = await opened());
+		card = await within(dialog).findByTestId("agent-status-card");
+		expect(within(card).queryByText("Connected")).toBeNull();
+		expect(within(card).getByText("Last seen")).toBeTruthy();
+	});
+
+	it("a joined session's Connected is when it joined", async () => {
+		current = status({ state: "ready", via: "mcp", joined: JOINED });
+		const { dialog } = await opened();
+		const card = await within(dialog).findByTestId("agent-status-card");
+		const connected = within(card).getByText("Connected").nextElementSibling;
+		expect(connected?.querySelector("time")).toHaveAttribute(
+			"datetime",
+			JOINED.since,
+		);
 	});
 
 	it("a joined session: Stop current is disabled, its tooltip says to stop it in the session", async () => {
@@ -621,6 +719,24 @@ describe("AgentSetup: Review Agent (connected)", () => {
 				name: "Setup Review Agent",
 			}),
 		).toBeTruthy();
+	});
+
+	it("a failed Detach goes back to Detach and says why", async () => {
+		current = status({ state: "ready", spawned: true });
+		writes.detach = () => Promise.reject(new Error("could not detach"));
+		const { user, dialog } = await opened();
+		await user.click(
+			await within(dialog).findByRole("button", { name: "Detach" }),
+		);
+		expect(await within(dialog).findByText("could not detach")).toBeTruthy();
+		const detach = within(dialog).getByRole("button", { name: "Detach" });
+		expect(detach).toBeEnabled();
+		// And it can be pressed again.
+		writes.detach = null;
+		await user.click(detach);
+		await waitFor(() =>
+			expect(names(writes.log)).toEqual(["postAgentDetach", "postAgentDetach"]),
+		);
 	});
 
 	it("an agent that crashed out shows the error and Restart, which starts it again", async () => {

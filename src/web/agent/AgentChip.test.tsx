@@ -172,33 +172,8 @@ describe("the chip with a joined session", () => {
 	});
 });
 
-describe("the chip with the spawn flag set", () => {
-	it("Start shows with a config, and posts; the join line opens the setup's Invite tab", async () => {
-		const off = status({ state: "off", spawned: true, agent: undefined });
-		const fetchMock = routed(off);
-		const { user } = chipOver(off, fetchMock);
-		const chip = screen.getByTestId("agent-chip");
-		expect(screen.queryByTestId("agent-chip-plug")).toBeNull();
-		await user.click(chip);
-		const pop = screen.getByTestId("agent-popover");
-		await user.click(within(pop).getByTestId("agent-start"));
-		await waitFor(() =>
-			expect(fetchMock).toHaveBeenCalledWith(
-				"/api/agent/start",
-				expect.objectContaining({ method: "POST" }),
-			),
-		);
-		await waitFor(() => expect(chip).toHaveAttribute("aria-expanded", "false"));
-		await user.click(chip);
-		await user.click(
-			within(screen.getByTestId("agent-popover")).getByTestId(
-				"agent-join-setup",
-			),
-		);
-		expect(screen.getByTestId("setup")).toHaveTextContent("invite");
-	});
-
-	it("Start and Disconnect: two presses before a re-render post once", async () => {
+describe("the chip without a joined session", () => {
+	it("Disconnect: two presses before a re-render post once", async () => {
 		const releases: Array<() => void> = [];
 		const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
 			init?.method === "POST"
@@ -209,55 +184,38 @@ describe("the chip with the spawn flag set", () => {
 					})
 				: Promise.resolve(new Response(JSON.stringify(status()))),
 		);
-		for (const [s, button] of [
-			[
-				status({ state: "off", spawned: true, agent: undefined }),
-				"agent-start",
-			],
-			[status(joined()), "agent-disconnect"],
-		] as const) {
-			fetchMock.mockClear();
-			const { user } = chipOver(s, fetchMock);
-			await user.click(screen.getByTestId("agent-chip"));
-			const press = within(screen.getByTestId("agent-popover")).getByTestId(
-				button,
-			);
-			act(() => {
-				fireEvent.click(press);
-				fireEvent.click(press);
-			});
-			await waitFor(() => expect(posts(fetchMock).length).toBeGreaterThan(0));
-			expect(posts(fetchMock)).toHaveLength(1);
-			await act(async () => releases.shift()?.());
-			cleanup();
-		}
-	});
-
-	it("no Start without a config", async () => {
-		const { user } = chipOver(
-			status({
-				state: "off",
-				configured: false,
-				spawned: true,
-				agent: undefined,
-			}),
-		);
+		const { user } = chipOver(status(joined()), fetchMock);
 		await user.click(screen.getByTestId("agent-chip"));
-		const pop = screen.getByTestId("agent-popover");
-		expect(within(pop).queryByTestId("agent-start")).toBeNull();
-		expect(within(pop).getByTestId("agent-join-setup")).toBeInTheDocument();
+		const press = within(screen.getByTestId("agent-popover")).getByTestId(
+			"agent-disconnect",
+		);
+		act(() => {
+			fireEvent.click(press);
+			fireEvent.click(press);
+		});
+		await waitFor(() => expect(posts(fetchMock).length).toBeGreaterThan(0));
+		expect(posts(fetchMock)).toHaveLength(1);
+		await act(async () => releases.shift()?.());
 	});
 
-	it("with no flag and nothing joined the chip opens the setup, no popover", async () => {
-		expect(chipPopover(status())).toBe(false);
-		expect(chipPopover(status({ spawned: true }))).toBe(true);
-		expect(chipPopover(status(joined()))).toBe(true);
-		const { user } = chipOver(status());
+	it.each<[string, Partial<AgentStatus>]>([
+		["a spawned agent", { state: "ready", spawned: true }],
+		["a crashed spawned agent", { state: "error", spawned: true }],
+		["no agent, configured", { state: "off", agent: undefined }],
+		["no agent, no config", { state: "off", configured: false }],
+	])("%s: the chip opens the agent modal, no popover", async (_n, more) => {
+		expect(chipPopover(status(more))).toBe(false);
+		const { user } = chipOver(status(more));
 		const chip = screen.getByTestId("agent-chip");
 		expect(chip).not.toHaveAttribute("aria-expanded");
 		await user.click(chip);
 		expect(screen.queryByTestId("agent-popover")).toBeNull();
-		expect(screen.getByTestId("setup")).toHaveTextContent("invite");
+		expect(screen.getByTestId("setup")).not.toHaveTextContent("closed");
+	});
+
+	it("only a joined session has the popover", () => {
+		expect(chipPopover(undefined)).toBe(false);
+		expect(chipPopover(status(joined()))).toBe(true);
 	});
 });
 

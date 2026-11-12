@@ -191,7 +191,9 @@ export function AgentSetup(props: {
 									}}
 									role="tab"
 									id={`${titleId}-tab-${t}`}
-									aria-controls={`${titleId}-panel-${t}`}
+									aria-controls={
+										tab === t ? `${titleId}-panel-${t}` : undefined
+									}
 									aria-selected={tab === t}
 									tabIndex={tab === t ? 0 : -1}
 									data-testid={`agent-setup-tab-${t}`}

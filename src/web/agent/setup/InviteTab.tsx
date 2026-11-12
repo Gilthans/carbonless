@@ -1,20 +1,14 @@
 import { CheckIcon, PlugIcon, XIcon } from "@primer/octicons-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import type { AgentStatus } from "../../../shared/agent";
 import { MCP_HARNESSES, type McpHarness } from "../../../shared/agentHarnesses";
 import { boundReviewId } from "../../api";
 import { RelativeTime } from "../../RelativeTime";
-import { Spinner } from "../../Spinner";
-import {
-	agentStatusQuery,
-	answerJoin,
-	type JoinAnswer,
-	joinLine,
-	joinSetupQuery,
-	mcpLine,
-} from "../api";
+import { Spinner, SpinnerIcon } from "../../Spinner";
+import { joinLine, joinSetupQuery, mcpLine } from "../api";
 import { approveTip } from "../JoinBar";
+import { useAnswerJoin } from "../useAnswerJoin";
 import {
 	CopyRow,
 	ErrorLine,
@@ -119,16 +113,7 @@ export function InviteTab(props: { status: AgentStatus }) {
 						request={props.status.joinRequest}
 					/>
 				) : (
-					<div
-						data-testid="join-request-none"
-						className="flex min-h-12 items-center gap-2.5 rounded-lg border border-dashed border-edge px-3.5 text-[13px] text-muted"
-					>
-						<span
-							aria-hidden
-							className="size-2 shrink-0 rounded-full border-2 border-line-strong"
-						/>
-						No agent requesting to join
-					</div>
+					<NoRequest />
 				)}
 			</Step>
 		</>
@@ -145,33 +130,11 @@ function RequestCard(props: {
 	request: NonNullable<AgentStatus["joinRequest"]>;
 }) {
 	const { request } = props;
-	const client = useQueryClient();
-	const inFlight = useRef(false);
-	const [refused, setRefused] = useState<string | null>(null);
-	const answer = useMutation({
-		mutationFn: (approve: boolean) => answerJoin(request.id, approve),
-		onSuccess: (result: JoinAnswer) => {
-			if (!result.ok && result.code === "elsewhere")
-				setRefused(
-					result.port
-						? `Answered by the server on :${result.port}`
-						: result.error,
-				);
-			void client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
-		},
-	});
-	const press = (approve: boolean) => {
-		// Set at once: a second press before the re-render posts nothing.
-		if (inFlight.current) return;
-		inFlight.current = true;
-		answer.mutate(approve, {
-			onSettled: () => {
-				inFlight.current = false;
-			},
-		});
-	};
+	const { press, done, refused, pending, approving, error } = useAnswerJoin();
+	// Answered here (or in another tab): gone until the status moves on.
+	if (done === request.id) return <NoRequest />;
 	const tip = approveTip(props.status);
-	const busy = answer.isPending;
+	const stopped = refused?.request.id === request.id ? refused.error : null;
 	const who = [request.harness, request.machine].filter(Boolean).join(" · ");
 	return (
 		<div
@@ -200,18 +163,17 @@ function RequestCard(props: {
 					Waiting
 				</span>
 			</div>
-			{(refused || answer.error) && (
-				<ErrorLine>{refused ?? answer.error?.message}</ErrorLine>
-			)}
+			{(stopped || error) && <ErrorLine>{stopped ?? error?.message}</ErrorLine>}
 			<div className="flex justify-end gap-2">
 				<button
 					type="button"
-					disabled={busy}
-					onClick={() => press(false)}
+					aria-busy={approving === false || undefined}
+					disabled={pending}
+					onClick={() => press(request, false)}
 					className="flex h-10 items-center gap-1.5 rounded-md border border-line-strong px-3.5 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60"
 				>
-					{busy && answer.variables === false ? (
-						<Spinner label="Declining" size={14} />
+					{approving === false ? (
+						<SpinnerIcon size={14} />
 					) : (
 						<XIcon size={16} aria-hidden />
 					)}
@@ -219,18 +181,35 @@ function RequestCard(props: {
 				</button>
 				<button
 					type="button"
-					disabled={busy}
-					onClick={() => press(true)}
+					aria-busy={approving === true || undefined}
+					disabled={pending}
+					onClick={() => press(request, true)}
 					className="flex h-10 items-center gap-1.5 rounded-md bg-ok-fill px-4 text-sm font-semibold text-canvas hover:brightness-110 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60"
 				>
-					{busy && answer.variables === true ? (
-						<Spinner label="Approving" size={14} />
+					{approving === true ? (
+						<SpinnerIcon size={14} />
 					) : (
 						<CheckIcon size={16} aria-hidden />
 					)}
 					Approve
 				</button>
 			</div>
+		</div>
+	);
+}
+
+/** Step 3 with no request: a dashed row, a hollow dot. */
+function NoRequest() {
+	return (
+		<div
+			data-testid="join-request-none"
+			className="flex min-h-12 items-center gap-2.5 rounded-lg border border-dashed border-edge px-3.5 text-[13px] text-muted"
+		>
+			<span
+				aria-hidden
+				className="size-2 shrink-0 rounded-full border-2 border-line-strong"
+			/>
+			No agent requesting to join
 		</div>
 	);
 }

@@ -85,14 +85,19 @@ export function StatusView(props: { status: AgentStatus; onClose(): void }) {
 	const config = useQuery({ ...agentConfigQuery, enabled: acp });
 	const refresh = () =>
 		client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
-	// One write per press: set at once, before any re-render.
-	const inFlight = useRef(false);
-	const once = (run: (opts: { onSettled(): void }) => void) => {
-		if (inFlight.current) return;
-		inFlight.current = true;
+	// One write per press, each button its own: set at once, before any
+	// re-render.
+	const detachFlight = useRef(false);
+	const restartFlight = useRef(false);
+	const once = (
+		flight: { current: boolean },
+		run: (opts: { onSettled(): void }) => void,
+	) => {
+		if (flight.current) return;
+		flight.current = true;
 		run({
 			onSettled: () => {
-				inFlight.current = false;
+				flight.current = false;
 			},
 		});
 	};
@@ -115,6 +120,8 @@ export function StatusView(props: { status: AgentStatus; onClose(): void }) {
 			? `${status.agent.name}${status.agent.version ? ` ${status.agent.version}` : ""}`
 			: "Agent";
 	const pill = pillOf(status);
+	// Since when: the join, or the Spawn (never the last state change).
+	const connectedAt = joined ? joined.since : status.spawnedAt;
 	const failed = status.state === "error";
 	const why =
 		failed && !status.configured
@@ -172,12 +179,14 @@ export function StatusView(props: { status: AgentStatus; onClose(): void }) {
 							</span>
 						</div>
 						<dl className="m-0 grid min-w-0 grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-							<Fact term="Connected">
-								<RelativeTime iso={joined ? joined.since : status.since} />
-							</Fact>
+							{connectedAt && (
+								<Fact term="Connected">
+									<RelativeTime iso={connectedAt} />
+								</Fact>
+							)}
 							<Fact term="Last seen">
 								{status.seen ? (
-									<RelativeTime iso={status.seen} className="text-ok" />
+									<RelativeTime iso={status.seen} />
 								) : (
 									<span className="text-muted">—</span>
 								)}
@@ -227,7 +236,7 @@ export function StatusView(props: { status: AgentStatus; onClose(): void }) {
 					type="button"
 					data-testid="agent-detach"
 					disabled={detaching}
-					onClick={() => once((o) => detach.mutate(undefined, o))}
+					onClick={() => once(detachFlight, (o) => detach.mutate(undefined, o))}
 					className={`${BUTTON} border-bad font-semibold text-bad hover:bg-bad/10 hover:text-bad disabled:text-bad disabled:opacity-60`}
 				>
 					{detaching ? (
@@ -242,7 +251,9 @@ export function StatusView(props: { status: AgentStatus; onClose(): void }) {
 						type="button"
 						data-testid="agent-restart"
 						disabled={restart.isPending}
-						onClick={() => once((o) => restart.mutate(undefined, o))}
+						onClick={() =>
+							once(restartFlight, (o) => restart.mutate(undefined, o))
+						}
 						className={BUTTON}
 					>
 						{restart.isPending ? (
