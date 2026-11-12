@@ -20,7 +20,7 @@ auto-start.
 
 ## Global Constraints
 
-- The branch is `agent-setup-modal`, from `origin/car-81-mcp-buddy` (#77).
+- The branch is `agent-setup-modal`, from `master` (#77 merged as b0e2033).
   Each task branches from it.
 - Design principles 5, 6 and 8 (CLAUDE.md) apply:
   - Every page works at 360px with no horizontal page scroll.
@@ -282,6 +282,8 @@ auto-start.
   - "a join request shows in step 3 and in the bar; Approve in the modal
     connects": see "Invited · MCP" in the modal, and the bar is gone.
   - "the tab is remembered across reloads".
+  - Specs that write config or read the server's files take
+    `test.use({ crbServer: "own" })` (the shared-server rule in CLAUDE.md).
   - Every spec above runs in both projects. At 360px there's no
     horizontal scroll (`document.documentElement.scrollWidth <= innerWidth`)
     on both views.
