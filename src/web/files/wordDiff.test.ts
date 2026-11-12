@@ -621,4 +621,173 @@ describe("wordMarks", () => {
 		},
 		LOADED,
 	);
+
+	/**
+	 * Minified-code-like text: one-letter and short identifiers, keywords,
+	 * numbers and punctuation with hardly a space, so a 120-character piece
+	 * is about 85 tokens (the code lines above are about 40).
+	 */
+	const minified = (seed: number) => {
+		const random = rng(seed);
+		const pick = <T>(xs: readonly T[]): T =>
+			xs[Math.floor(random() * xs.length)] as T;
+		const letters = [..."abcdefghijklmnopqrstuvwxyz"];
+		const words = letters
+			.concat(
+				letters.map((c) => `${c}e`),
+				letters.map((c) => `_${c}`),
+			)
+			.concat(["Object", "length", "push", "call", "function", "return"])
+			.concat(["var", "this", "0", "1", "null", "void"]);
+		const seps = [..."().,=;{}?:![]+ "].concat(["&&", "||", "===", "=>"]);
+		const piece = () => {
+			let s = "";
+			while (s.length < 120) s += pick(words) + pick(seps);
+			return s.slice(0, 120);
+		};
+		/** The piece with one token changed (a renamed variable, a new constant). */
+		const edit = (text: string) => {
+			const tokens = tokenize(text);
+			const at = Math.floor(random() * tokens.length);
+			let other = pick(words);
+			while (other === tokens[at]) other = pick(words);
+			tokens[at] = other;
+			return tokens.join("").slice(0, 120);
+		};
+		return { piece, edit };
+	};
+
+	/** Eight 120-character pieces to a long line: 960 characters, under the cut. */
+	const PIECES = 8;
+
+	/**
+	 * Long pairs and the same text as short pairs: each long line is eight
+	 * 120-character pieces joined, its pair the eight pieces' pairs joined,
+	 * so both sides hold the same characters, tokens and changes.
+	 */
+	const longAndShort = (
+		count: number,
+		pair: () => readonly [string, string],
+	) => {
+		const short: [string, string][] = [];
+		const long: [string, string][] = [];
+		for (let i = 0; i < count; i++) {
+			const pieces = Array.from({ length: PIECES }, pair);
+			short.push(...pieces.map(([a, b]) => [a, b] as [string, string]));
+			long.push([
+				pieces.map(([a]) => a).join(""),
+				pieces.map(([, b]) => b).join(""),
+			]);
+		}
+		return { short, long };
+	};
+
+	/**
+	 * CPU µs of marking `pairs` and the ratio to marking `against`, after a
+	 * warm-up: each the best of five rounds, taken in turn (as `bestCpu`).
+	 */
+	const bestCpuAgainst = (pairs: Pairs, against: Pairs) => {
+		const marks = (ps: Pairs) => () => {
+			for (const [a, b] of ps) wordMarks(a, b);
+		};
+		const run = marks(pairs);
+		const yardstick = marks(against);
+		run();
+		yardstick();
+		let best = Number.POSITIVE_INFINITY;
+		let ref = Number.POSITIVE_INFINITY;
+		for (let round = 0; round < 5; round++) {
+			best = Math.min(best, cpu(run));
+			ref = Math.min(ref, cpu(yardstick));
+		}
+		return { best, ratio: best / ref };
+	};
+
+	// Long lines. Every line above is 120 characters, so a cost that grows
+	// with the square of a line's length hides in them. Here the yardstick
+	// is wordMarks itself on the same text cut into 120-character pairs: a
+	// cost linear in a line's length marks a long line in about the time of
+	// its pieces, and a uniform slowdown cancels out (the tests above catch
+	// that). The cut (WORD_DIFF_MAX) bounds a marked line, so a quadratic
+	// cost grows at most 8x here: 960 characters (about 700 tokens) against
+	// 120.
+	//
+	// Similar lines, one token changed per piece: the exact diff's best
+	// case, linear: 0.96–1.10x, idle and with a busy loop per core. Fails
+	// on a quadratic step in the per-line work: copying the token array
+	// for each token (2.0–2.2x), reading each character by splitting the
+	// line up to it (2.8x; the similar 120-character test passes it at
+	// 1.06x), each gap's diff starting at the line's start instead of the
+	// last anchor (29x). Can miss a quadratic step over the changed tokens
+	// alone (few change here), or one cheap enough per token pair to stay
+	// under 1.7x.
+	it(
+		"marks 960-character similar lines in 1.7x the CPU of the same text as 120-character lines",
+		() => {
+			const { piece, edit } = minified(13);
+			const { short, long } = longAndShort(100, () => {
+				const a = piece();
+				return [a, edit(a)] as const;
+			});
+			const { best, ratio } = bestCpuAgainst(long, short);
+			console.info(
+				`wordMarks: 100 similar 960-character pairs in ${best} µs CPU, ${ratio.toFixed(2)}x their 120-character pieces`,
+			);
+			expect(ratio).toBeLessThan(1.7);
+		},
+		LOADED,
+	);
+
+	// Unrelated lines: here the exact diff (O(N·D) over the tokens, D about
+	// N) is itself quadratic in a line's length: 4.0–4.2x its pieces,
+	// 8 ms of CPU a pair on the dev machine (13 ms under load). So this
+	// test can't see one more quadratic step (none of the three above
+	// moves it past 4.3x); it holds that bounded worst case where it is,
+	// failing when it grows about 1.7x further.
+	it(
+		"marks 960-character unrelated lines in 7x the CPU of the same text as 120-character lines",
+		() => {
+			const { piece } = minified(17);
+			const { short, long } = longAndShort(
+				20,
+				() => [piece(), piece()] as const,
+			);
+			const { best, ratio } = bestCpuAgainst(long, short);
+			console.info(
+				`wordMarks: 20 unrelated 960-character pairs in ${best} µs CPU, ${ratio.toFixed(2)}x their 120-character pieces`,
+			);
+			expect(ratio).toBeLessThan(7);
+		},
+		LOADED,
+	);
+
+	// Past the cut (a minified bundle's line), a pair costs only the length
+	// check: 0.00x a 120-character pair. Fails when the cut comes after the
+	// line is tokenized (2.5x) or goes (440x: 100 ms a pair, the exact diff
+	// over 2,800 tokens a side).
+	it(
+		"leaves a pair of 4,000-character lines plain in less CPU than a pair of 120-character lines",
+		() => {
+			const { piece, edit } = minified(19);
+			const short: [string, string][] = [];
+			const long: [string, string][] = [];
+			for (let i = 0; i < 200; i++) {
+				const pieces = Array.from({ length: 34 }, () => {
+					const a = piece();
+					return [a, i % 2 ? piece() : edit(a)] as const;
+				});
+				short.push([...(pieces[0] as readonly [string, string])]);
+				long.push([
+					pieces.map(([a]) => a).join(""),
+					pieces.map(([, b]) => b).join(""),
+				]);
+			}
+			const { best, ratio } = bestCpuAgainst(long, short);
+			console.info(
+				`wordMarks: 200 4,080-character pairs in ${best} µs CPU, ${ratio.toFixed(2)}x 200 120-character pairs`,
+			);
+			expect(ratio).toBeLessThan(1);
+		},
+		LOADED,
+	);
 });
