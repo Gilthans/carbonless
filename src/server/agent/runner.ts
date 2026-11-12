@@ -300,7 +300,10 @@ export class AgentRunner {
 			})
 			.finally(() => {
 				this.#pump = null;
-				if (this.#again && !this.#closed) this.poke();
+				if (this.#closed) return;
+				// Turned off while it ran (a poke then found it busy): wind down now.
+				if (this.#off()) this.#windDown();
+				else if (this.#again) this.poke();
 			});
 	}
 
