@@ -195,10 +195,14 @@ loading never looking empty, checking against a real PR):
   write, once released, drops test edits made while it waited.
   Unit tests that run git and the fake gh use `GIT_TEST_TIMEOUTS`. A speed
   property is measured in CPU time (`process.threadCpuUsage`), or as "doesn't
-  wait" (a timeout of 0, a hold), never as wall-clock time. No automatic
-  retries (Playwright `retries`, Vitest `retry`): a flaky test fails visibly
-  and gets fixed. Playwright's expects wait 10 s (a reload's chained reads);
-  a test that needs longer says why.
+  wait" (a timeout of 0, a hold), never as wall-clock time. CPU time is
+  checked against a reference measured in the same test (a ratio to a
+  reference workload, or a scaling check: the input 4x as large against
+  four runs of the quarter; `test/cpu.ts`), never against an absolute
+  budget measured on the devbox alone, because CI runners' CPUs are slower
+  and contended. No automatic retries (Playwright `retries`, Vitest
+  `retry`): a flaky test fails visibly and gets fixed. Playwright's expects
+  wait 10 s (a reload's chained reads); a test that needs longer says why.
 - `pnpm flake-check <files…> [--runs N] [--load L] [-g title] [--project p]`
   runs unit files or e2e specs N times (default 5), in the queue. `--load L`
   adds L busy loops (default none: the devbox is loaded enough by other

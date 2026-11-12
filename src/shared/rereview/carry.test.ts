@@ -634,6 +634,62 @@ describe("carryClusters", () => {
 		expect(older.gone).toEqual([]);
 	});
 
+	it("carryTraced reads files that share a states map as if each had its own", () => {
+		// k2 carries only when its state is reviewed: which file's map wins
+		// for it decides the result.
+		const traced = traceClusters({
+			sources: [ps(1, [source("a.txt", [two], {})])],
+			target: [target("a.txt", [two])],
+		});
+		const map = (state: ClusterState) =>
+			new Map<string, SourceState>([["k2", { state }]]);
+		const file = (path: string, states: Map<string, SourceState>) => ({
+			path,
+			clusters: [two],
+			states,
+		});
+		/** The same files, each with a copy of its map: no map shared. */
+		const copied = (files: SourceFile[]) =>
+			files.map((f) => ({ ...f, states: new Map(f.states) }));
+		const shared = map("reviewed");
+		for (const files of [
+			// Two files share a map; a third, its own, sets k2 last.
+			[
+				file("a.txt", shared),
+				file("b.txt", shared),
+				file("c.txt", map("unreviewed")),
+			],
+			// The shared map again after another: its value is the last.
+			[
+				file("a.txt", shared),
+				file("b.txt", map("unreviewed")),
+				file("c.txt", shared),
+			],
+			[
+				file("a.txt", map("unreviewed")),
+				file("b.txt", shared),
+				file("c.txt", shared),
+			],
+		]) {
+			const sharing = carryTraced(traced, [{ number: 1, files }]);
+			const own = carryTraced(traced, [{ number: 1, files: copied(files) }]);
+			expect(sharing).toEqual(own);
+		}
+		// The order A, B, A carries: A's reviewed is the last word.
+		expect(
+			carryTraced(traced, [
+				{
+					number: 1,
+					files: [
+						file("a.txt", shared),
+						file("b.txt", map("unreviewed")),
+						file("c.txt", shared),
+					],
+				},
+			]).carried,
+		).toHaveLength(1);
+	});
+
 	it("traceClusters is state-free and carryTraced applies the marks of the moment", () => {
 		const traced = traceClusters({
 			sources: [ps(1, [source("a.txt", [two, thirty], {})])],

@@ -26,11 +26,14 @@ describe("languageFor", () => {
 });
 
 describe("highlightLine", () => {
-	// The first use imports shiki, its regex engine and the grammar, and
-	// compiles it: real work a loaded machine can take seconds over. Done
-	// here, with its own time, rather than inside the test's 5 s.
+	// The first use imports shiki, its regex engine and the grammar: real
+	// work a loaded machine can take seconds over. Done here, with its own
+	// time, rather than inside the test's 5 s. The engine compiles each of
+	// the grammar's rules the first time a line reaches it, so the warm-up
+	// is a line like the test's: after an empty one, the test's line still
+	// took 116–130 ms of CPU (12–20 ms after this one).
 	beforeAll(async () => {
-		await highlightLine("", "csharp");
+		await highlightLine("public class Warm { }", "csharp");
 	}, 60_000);
 
 	it("colors code in a known language", async () => {

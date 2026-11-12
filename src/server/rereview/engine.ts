@@ -554,19 +554,23 @@ export function answerRereview(
 		}
 		// The target as the carries leave it: a carried cluster holds its
 		// mark (not to read), every other is unmarked.
+		// By index once (the first, as a scan finds): a scan per file is
+		// quadratic in the files.
+		const targetAt = new Map<number, (typeof target.files)[number]>();
+		for (const t of target.files) {
+			if (!targetAt.has(t.index)) targetAt.set(t.index, t);
+		}
 		const unmarked = (index: number): ClusterView[] =>
-			(target.files.find((t) => t.index === index)?.clusters ?? []).map(
-				(c): ClusterView => {
-					const carry = carriedByKey.get(c.key);
-					return carry
-						? {
-								...c,
-								state: carry.state,
-								carried: { from: carry.from, rule: carry.rule },
-							}
-						: { ...c, state: "unreviewed" };
-				},
-			);
+			(targetAt.get(index)?.clusters ?? []).map((c): ClusterView => {
+				const carry = carriedByKey.get(c.key);
+				return carry
+					? {
+							...c,
+							state: carry.state,
+							carried: { from: carry.from, rule: carry.rule },
+						}
+					: { ...c, state: "unreviewed" };
+			});
 		const units = sinceUnits(files, ps.number, unmarked, undefined);
 		const byFile = new Set(units.map((u) => u.index));
 		for (const f of files) if (f.conflict) byFile.add(f.index);
