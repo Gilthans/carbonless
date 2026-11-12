@@ -397,8 +397,8 @@ const partnered = (...pairs: [DiffLine, DiffLine][]): Partners =>
 	new Map(pairs.flatMap(([d, a]) => [[d, a] as const, [a, d] as const]));
 
 describe("layoutRows with partners", () => {
-	const D = (n: number) => del(n, `d${n}`);
-	const A = (n: number) => add(n, `a${n}`);
+	const D = (n: number): DiffLine => del(n, `d${n}`);
+	const A = (n: number): DiffLine => add(n, `a${n}`);
 
 	it("puts a pair on one row, gaps by position (spec cases 2, 3, 5)", () => {
 		// Case 2: the one removed line pairs with the second added.
@@ -480,12 +480,51 @@ describe("layoutRows with partners", () => {
 		]);
 	});
 
+	it("lays out spec cases 1 and 4", () => {
+		// Case 1: 'beta' -> 'beta,' + 'gamma'.
+		const d = del(1, "beta");
+		const [a1, a2] = [add(1, "beta,"), add(2, "gamma")];
+		expect(
+			trace(layoutRows([d, a1, a2].map(line), partnered([d, a1]))),
+		).toEqual(["[-1|+1]", "[|+2]"]);
+		// Case 4: no pairs, today's layout.
+		const rows = [...dels(2), ...adds(3)];
+		expect(layoutRows(rows, new Map())).toEqual(layoutRows(rows));
+		expect(trace(layoutRows(rows, new Map()))).toEqual([
+			"[-1|+1]",
+			"[-2|+2]",
+			"[|+3]",
+		]);
+	});
+
+	it("keeps every line once, in order, when partners cross", () => {
+		const [d1, d2, a1, a2] = [
+			del(1, "x"),
+			del(2, "y"),
+			add(1, "y"),
+			add(2, "x"),
+		];
+		const out = layoutRows(
+			[d1, d2, a1, a2].map(line),
+			partnered([d1, a2], [d2, a1]),
+		);
+		const left = out.flatMap((r) =>
+			r.kind === "pair" && r.del ? [r.del] : [],
+		);
+		const right = out.flatMap((r) =>
+			r.kind === "pair" && r.add ? [r.add] : [],
+		);
+		expect(left).toEqual([d1, d2]);
+		expect(right).toEqual([a1, a2]);
+	});
+
 	it("keeps every line once, in order, a pair on one row, for random partners", () => {
 		let seed = 4242;
 		const rand = (n: number) => {
 			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-			return seed % n;
+			return (seed >>> 8) % n;
 		};
+		let twoSidedGaps = 0;
 		for (let n = 0; n < 500; n++) {
 			const ds = Array.from({ length: rand(9) }, (_, i) => D(i + 1));
 			const as = Array.from({ length: rand(9) }, (_, i) => A(i + 1));
@@ -509,9 +548,19 @@ describe("layoutRows with partners", () => {
 			);
 			expect(left).toEqual(ds);
 			expect(right).toEqual(as);
-			// Each pair saves a row against one-line-per-row. (Not "never more
-			// than today's": d1 d2 / a1 a2 with d1-a2 is three rows, today two.)
-			expect(out.length).toBe(ds.length + as.length - pairs.length);
+			// Rows per stretch: each gap's max(dels, adds), plus the pairs.
+			let expected = pairs.length;
+			let di = 0;
+			let ai2 = 0;
+			for (const [d, a] of [...pairs, [undefined, undefined] as const]) {
+				const dj = d ? ds.indexOf(d) : ds.length;
+				const aj = a ? as.indexOf(a) : as.length;
+				expected += Math.max(dj - di, aj - ai2);
+				if (dj - di > 0 && aj - ai2 > 0) twoSidedGaps++;
+				di = dj + 1;
+				ai2 = aj + 1;
+			}
+			expect(out.length).toBe(expected);
 			for (const [d, a] of pairs) {
 				expect(
 					out.some((r) => r.kind === "pair" && r.del === d && r.add === a),
@@ -525,5 +574,6 @@ describe("layoutRows with partners", () => {
 			}
 			expect(layoutRows(mixed, partnered(...pairs))).toEqual(out);
 		}
+		expect(twoSidedGaps).toBeGreaterThan(50);
 	});
 });
