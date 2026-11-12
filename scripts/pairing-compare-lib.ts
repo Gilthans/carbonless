@@ -93,3 +93,28 @@ export interface CaseRank {
 export function byWorst(a: CaseRank, b: CaseRank): number {
 	return a.minScore - b.minScore || b.move - a.move || b.size - a.size;
 }
+
+/** Text as HTML: code from other people's repos reaches the page only through this. */
+export function esc(s: string): string {
+	return s.replace(
+		/[&<>"']/g,
+		(c) =>
+			({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+				c
+			] as string,
+	);
+}
+
+/** A line's text, escaped, with its marked ranges (UTF-16 offsets, `to` exclusive) as <mark>. */
+export function markup(
+	text: string,
+	marks: readonly (readonly [number, number])[] | undefined,
+): string {
+	let out = "";
+	let at = 0;
+	for (const [from, to] of marks ?? []) {
+		out += `${esc(text.slice(at, from))}<mark>${esc(text.slice(from, to))}</mark>`;
+		at = to;
+	}
+	return out + esc(text.slice(at));
+}

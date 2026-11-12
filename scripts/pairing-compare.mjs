@@ -40,6 +40,7 @@ const { layoutRows } = await load("../src/web/files/sideBySide.ts");
 const { lineSimilarity } = await load("../src/web/files/linePairing.ts");
 const { wordMarks } = await load("../src/web/files/wordDiff.ts");
 const lib = await load("./pairing-compare-lib.ts");
+const { esc, markup } = lib;
 
 const git = (cwd, ...args) =>
 	execFileSync("git", args, {
@@ -74,26 +75,10 @@ const stats = {
 	skipped: 0,
 };
 const cases = [];
-const esc = (s) =>
-	s.replace(
-		/[&<>"]/g,
-		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
-	);
 const hash = (s) => {
 	let h = 2166136261;
 	for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
 	return (h >>> 0).toString(36).slice(0, 4);
-};
-
-/** A line's text with its marks as <mark>. */
-const markup = (text, marks) => {
-	let out = "";
-	let at = 0;
-	for (const [from, to] of marks ?? []) {
-		out += `${esc(text.slice(at, from))}<mark>${esc(text.slice(from, to))}</mark>`;
-		at = to;
-	}
-	return out + esc(text.slice(at));
 };
 
 for (const lang of readdirSync(corpus, { withFileTypes: true })) {

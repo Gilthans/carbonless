@@ -3,7 +3,9 @@ import {
 	byWorst,
 	type ClusterLayouts,
 	changedByStep2,
+	esc,
 	farthestMove,
+	markup,
 } from "./pairing-compare-lib";
 
 const layouts = (over: Partial<ClusterLayouts> = {}): ClusterLayouts => ({
@@ -86,5 +88,29 @@ describe("byWorst", () => {
 			c(0.9, 5, 9),
 			c(Infinity, 0, 99),
 		]);
+	});
+});
+
+describe("esc and markup (third-party code reaches the page's HTML)", () => {
+	it("escapes markup characters, quotes and ampersands", () => {
+		expect(esc(`<script>alert("x" + 'y' & z)</script>`)).toBe(
+			"&lt;script&gt;alert(&quot;x&quot; + &#39;y&#39; &amp; z)&lt;/script&gt;",
+		);
+	});
+	it("escapes inside a marked range and across its boundaries", () => {
+		// marks cover `b<` and `>c`: a < inside one, a > starting the other
+		const text = "a<b<>c</d>";
+		const html = markup(text, [
+			[2, 4],
+			[4, 6],
+		]);
+		expect(html).toBe("a&lt;<mark>b&lt;</mark><mark>&gt;c</mark>&lt;/d&gt;");
+		// the only tags in the output are our own <mark>s
+		expect(html.replace(/<\/?mark>/g, "")).not.toMatch(/[<>]/);
+	});
+	it("keeps text without marks and a script tag split by a mark inert", () => {
+		expect(markup("<b>", undefined)).toBe("&lt;b&gt;");
+		const html = markup("<script>", [[3, 5]]);
+		expect(html.replace(/<\/?mark>/g, "")).toBe("&lt;scr" + "ipt&gt;");
 	});
 });
