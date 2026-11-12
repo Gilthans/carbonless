@@ -1,6 +1,10 @@
 import { AlertIcon, SparkleFillIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import type { AgentThread } from "../../shared/agent";
 import { ApiError, reviewQuery, sessionQuery } from "../api";
+import type { FilesSearch } from "../files/landing";
+import { useReviewId } from "../reviewId";
 import { SkeletonBar, Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { agentDot, agentTip } from "./AgentChip";
@@ -21,8 +25,12 @@ export function AgentOverviewRow() {
 	const status = useQuery({ ...agentStatusQuery, enabled: false });
 	const threads = useQuery(agentThreadsQuery);
 	const head = useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead;
+	// A thread conversation shows with its GitHub thread, never as a card here.
 	const earlier = (threads.data?.threads ?? []).filter(
-		(t) => head !== undefined && t.anchor.commit !== head,
+		(t) =>
+			t.anchor.subject !== "thread" &&
+			head !== undefined &&
+			t.anchor.commit !== head,
 	);
 	// Which files the diff has: read only when an earlier thread needs it.
 	const review = useQuery({ ...reviewQuery(), enabled: earlier.length > 0 });
@@ -75,6 +83,7 @@ export function AgentOverviewRow() {
 						{open} open · {waiting} waiting
 					</span>
 				)}
+				{list && <UnreadLink threads={list} />}
 				{s?.configured ? (
 					<Tooltip content={agentTip(s)} describe={false}>
 						{(trigger) => (
@@ -140,5 +149,43 @@ export function AgentOverviewRow() {
 				</ul>
 			)}
 		</div>
+	);
+}
+
+/** Where an agent thread's lines are in Files changed (a file's top without lines). */
+function landingOf(thread: AgentThread): FilesSearch {
+	const a = thread.anchor;
+	if (a.subject === "file" || a.line === undefined || a.side === undefined) {
+		return { path: a.path };
+	}
+	return { path: a.path, line: a.line, side: a.side };
+}
+
+/**
+ * How many agent threads (thread conversations and span threads alike)
+ * hold a message the reviewer hasn't seen, in `accent`, linking to the
+ * first of them. Nothing while none does.
+ */
+function UnreadLink(props: { threads: readonly AgentThread[] }) {
+	const unread = props.threads.filter((t) => t.unread);
+	const first = unread[0];
+	if (!first) return null;
+	return <UnreadLinkTo first={first} n={unread.length} />;
+}
+
+function UnreadLinkTo({ first, n }: { first: AgentThread; n: number }) {
+	const id = useReviewId();
+	return (
+		<Link
+			to="/r/$id/files"
+			params={{ id }}
+			search={landingOf(first)}
+			data-testid="agent-overview-unread"
+			aria-label={`${n} agent ${n === 1 ? "thread" : "threads"} with new messages`}
+			className="inline-flex min-h-10 items-center gap-1.5 rounded-md px-1 text-sm font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+		>
+			<span aria-hidden className="h-2 w-2 rounded-full bg-accent" />
+			{n} new
+		</Link>
 	);
 }

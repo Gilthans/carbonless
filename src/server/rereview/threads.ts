@@ -96,7 +96,9 @@ export function agentTraceable(t: AgentAsked): TraceableThread {
  * review threads (no stored placements: a drag places review threads
  * only). Each is traced on its own, so one whose tracing fails is left
  * out, never the rest: the page then shows it where it was asked (on an
- * earlier head, its file's lead, outdated), never nowhere.
+ * earlier head, its file's lead, outdated), never nowhere. A thread
+ * conversation (a `thread` anchor) is never traced: it goes where its
+ * GitHub thread goes (AgentHost.asked() gives an orphan its span anchor).
  */
 export async function placeAgentThreads(
 	placer: ThreadPlacer,
@@ -104,8 +106,9 @@ export async function placeAgentThreads(
 	threads: readonly AgentAsked[],
 	base: DiffBase,
 ): Promise<PlacedThread[]> {
+	const spans = threads.filter((t) => t.anchor.subject !== "thread");
 	const placed = await Promise.all(
-		threads.map(async (t) => {
+		spans.map(async (t) => {
 			try {
 				const inputs = await placer.inputs(target, [agentTraceable(t)], base);
 				return await placer.place(target, inputs, new Map());

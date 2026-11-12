@@ -18,6 +18,7 @@ import type {
 	ReviewThread,
 	SessionInfo,
 } from "../../shared/types";
+import { resetAgentDrafts, setAgentDraft } from "../agent/threadAgent";
 import { overlayThreads, useThreadWrites } from "../threads/threadWrites";
 import { sideBySide } from "../viewSettings";
 import { DiffBody } from "./DiffBody";
@@ -226,6 +227,19 @@ describe("unsettled", () => {
 				}) as never,
 			),
 		).toBe(true);
+	});
+
+	it("unsent agent text keeps the thread open", () => {
+		expect(unsettled("A", drafts, view({}) as never)).toBe(false);
+		setAgentDraft("A", "Was this fixed everywhere?");
+		try {
+			expect(unsettled("A", drafts, view({}) as never)).toBe(true);
+			// Only its own thread's.
+			expect(unsettled("B", drafts, view({}) as never)).toBe(false);
+		} finally {
+			resetAgentDrafts();
+		}
+		expect(unsettled("A", drafts, view({}) as never)).toBe(false);
 	});
 });
 

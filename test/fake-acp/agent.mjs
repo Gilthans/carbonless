@@ -2,6 +2,7 @@
 // with the SDK's agent(). It answers from the scenario JSON at
 // $CRB_FAKE_ACP (see scenario.ts) and appends every request it gets, and
 // every permission answer it is given, to $CRB_FAKE_ACP_LOG (JSONL).
+import { execFileSync } from "node:child_process";
 import { appendFileSync, closeSync, readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { agent, methods, ndJsonStream } from "@agentclientprotocol/sdk";
@@ -142,6 +143,10 @@ agent({ name })
 		const answer =
 			answers.find((a) => a.match !== undefined && latest.includes(a.match)) ??
 			answers.at(-1);
+		// A command the agent runs in its cwd before answering (e.g. a checkout).
+		if (answer.run?.length) {
+			execFileSync(answer.run[0], answer.run.slice(1), { stdio: "ignore" });
+		}
 		const [first = "", ...rest] = split(answer.text, answer.chunks);
 		await update({
 			sessionUpdate: "agent_message_chunk",

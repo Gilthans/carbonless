@@ -252,7 +252,7 @@ export function findReply(
 }
 
 /** The opening comment's REST id, which replies are posted to. */
-function openerRestId(summary: unknown): number | null {
+export function openerRestId(summary: unknown): number | null {
 	const t = obj(summary);
 	const first = obj(
 		arr(obj(t.first).nodes)[0] ?? arr(obj(t.comments).nodes)[0],

@@ -673,6 +673,144 @@ describe("agent events", () => {
 		expect(parseEventLines(msg([withAgent]))).toEqual([withAgent]);
 	});
 
+	const threadAnchor = {
+		subject: "thread" as const,
+		thread: "PRRT_kwDOAbc123",
+		path: "src/a.ts",
+		commit: "a".repeat(40),
+	};
+	const view = {
+		target: { patchset: 2 },
+		from: { branch: true as const },
+		left: "b".repeat(40),
+		right: "c".repeat(40),
+	};
+
+	it("parses a thread anchor with and without lines", () => {
+		const bare = { ...opened, anchor: threadAnchor };
+		const withLines = {
+			...opened,
+			anchor: {
+				...threadAnchor,
+				side: "RIGHT",
+				line: 12,
+				startSide: "RIGHT",
+				startLine: 10,
+			},
+		};
+		expect(parseEventLines(msg([bare, withLines]))).toEqual([bare, withLines]);
+		expect(() => validateForWrite(bare)).not.toThrow();
+	});
+
+	it("drops a thread anchor with an empty thread id or a bad side", () => {
+		const bad = [
+			{ ...threadAnchor, thread: "" },
+			{ ...threadAnchor, thread: "x".repeat(201) },
+			{ ...threadAnchor, thread: 7 },
+			{ ...threadAnchor, side: "BOTH" },
+			{ ...threadAnchor, startSide: "left" },
+			{ ...threadAnchor, line: 0 },
+			{
+				...threadAnchor,
+				side: "RIGHT",
+				startSide: "RIGHT",
+				line: 3,
+				startLine: 9,
+			},
+			{ ...threadAnchor, commit: "abc" },
+			{ ...threadAnchor, path: "" },
+		];
+		expect(
+			parseEventLines(msg(bad.map((a) => ({ ...opened, anchor: a })))),
+		).toEqual([]);
+		const long = {
+			...opened,
+			anchor: { ...threadAnchor, thread: "x".repeat(200) },
+		};
+		expect(parseEventLines(msg([long]))).toEqual([long]);
+	});
+
+	it("parses view on human messages and drops it on ai ones", () => {
+		const humanMsg = newEvent("agent-message", "dan", {
+			thread,
+			text: "q",
+			view,
+		});
+		const headView = {
+			...view,
+			target: { head: "d".repeat(40) },
+			from: { patchset: 1 },
+		};
+		const openedView = { ...opened, view: headView };
+		expect(parseEventLines(msg([humanMsg, openedView]))).toEqual([
+			humanMsg,
+			openedView,
+		]);
+		expect(() => validateForWrite(humanMsg)).not.toThrow();
+		const bad = [
+			{ ...reply, view },
+			{ ...humanMsg, view: { ...view, left: "abc" } },
+			{ ...humanMsg, view: { ...view, target: {} } },
+			{ ...humanMsg, view: { ...view, target: { patchset: 0 } } },
+			{ ...humanMsg, view: { ...view, from: { branch: false } } },
+			{ ...humanMsg, view: "x" },
+			{ ...opened, by: "ai", agent, view },
+		];
+		expect(parseEventLines(msg(bad))).toEqual([]);
+	});
+
+	it("parses head and suggests on ai messages and drops them on human ones", () => {
+		const full = { ...reply, head: "d".repeat(40), suggests: "resolve" };
+		expect(parseEventLines(msg([full]))).toEqual([full]);
+		expect(() => validateForWrite(full as typeof reply)).not.toThrow();
+		const humanMsg = newEvent("agent-message", "dan", { thread, text: "q" });
+		const bad = [
+			{ ...humanMsg, head: "d".repeat(40) },
+			{ ...humanMsg, suggests: "resolve" },
+			{ ...reply, head: "xyz" },
+			{ ...reply, suggests: "yes" },
+		];
+		expect(parseEventLines(msg(bad))).toEqual([]);
+	});
+
+	it("drops origin on a human opening and cuts nothing: an origin over 200 chars is dropped", () => {
+		const aiOpened = { ...opened, by: "ai", agent };
+		const ok = { ...aiOpened, origin: { request: "x".repeat(200) } };
+		expect(parseEventLines(msg([ok]))).toEqual([ok]);
+		expect(
+			parseEventLines(
+				msg([
+					{ ...opened, origin: { request: "why" } },
+					{ ...aiOpened, origin: { request: "x".repeat(201) } },
+					{ ...aiOpened, origin: { request: 7 } },
+					{ ...aiOpened, origin: "why" },
+				]),
+			),
+		).toEqual([]);
+	});
+
+	it("parses agent-thread-seen by a human, drops it by ai", () => {
+		const seen = newEvent("agent-thread-seen", "dan", {
+			thread,
+			upTo: reply.id,
+		});
+		expect(parseEventLines(msg([seen]))).toEqual([seen]);
+		expect(() => validateForWrite(seen)).not.toThrow();
+		const ai = { ...seen, by: "ai" } as unknown as CrbEvent;
+		expect(parseEventLines(msg([ai]))).toEqual([]);
+		expect(() => validateForWrite(ai)).toThrow();
+		const auto = { ...seen, by: "auto" } as unknown as CrbEvent;
+		expect(parseEventLines(msg([auto]))).toEqual([]);
+		expect(
+			parseEventLines(
+				msg([
+					{ ...seen, upTo: "NOT-A-ULID" },
+					{ ...seen, upTo: undefined },
+				]),
+			),
+		).toEqual([]);
+	});
+
 	it("drops an anchor with a bad side, line or commit", () => {
 		const bad = [
 			{ ...anchor, side: "BOTH" },

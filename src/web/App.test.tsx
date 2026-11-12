@@ -1792,7 +1792,7 @@ describe("OverviewPage", () => {
 	 */
 	const oldRead = () => {
 		const served = "2026-01-05T12:10:00Z";
-		renderApp({
+		const { client } = renderApp({
 			"/api/overview": ok({
 				...overview,
 				title: "Then",
@@ -1824,7 +1824,7 @@ describe("OverviewPage", () => {
 			if (!routes) throw new Error("no mock");
 			return routes(input, init);
 		});
-		return { release, signals };
+		return { release, signals, client };
 	};
 
 	it("shows an old kept overview at once and brings it up to date, Refresh spinning meanwhile", async () => {
@@ -1852,6 +1852,28 @@ describe("OverviewPage", () => {
 				String(i).includes("read=read2&stage=full"),
 			),
 		).toBe(true);
+	});
+
+	it("reads the agent threads and their placements again once a re-read lands", async () => {
+		const { release, client } = oldRead();
+		const key = ["agent-placements", "ps:1", "rev1", "A1"];
+		client.setQueryData(key, { placements: [] });
+		await screen.findByRole("region", { name: "What it does" });
+		const before = calls("/api/agent/threads");
+		expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+		release();
+		const what = screen.getByRole("region", { name: "What it does" });
+		await waitFor(() =>
+			expect(within(what).getByRole("heading", { level: 3 })).toHaveTextContent(
+				"Now",
+			),
+		);
+		await waitFor(() =>
+			expect(client.getQueryState(key)?.isInvalidated).toBe(true),
+		);
+		await waitFor(() =>
+			expect(calls("/api/agent/threads")).toBeGreaterThan(before),
+		);
 	});
 
 	it("swaps to a re-read without waiting for its timeline, the old one shown until it comes", async () => {
@@ -2237,6 +2259,17 @@ describe("compactProgress", () => {
 	});
 });
 
+/**
+ * The header's agent chip once it says `name` (the Overview's agent row
+ * has a button of the same name: the chip is found by its test id).
+ */
+const headerChip = (name: string) =>
+	waitFor(() => {
+		const chip = screen.getByTestId("agent-chip");
+		expect(chip).toHaveAccessibleName(name);
+		return chip;
+	});
+
 describe("App header", () => {
 	afterEach(() => {
 		cleanup();
@@ -2254,9 +2287,7 @@ describe("App header", () => {
 			}),
 		});
 		await screen.findByRole("heading", { level: 1 });
-		const chip = await screen.findByRole("button", {
-			name: "Your agent: Claude Agent 0.100.0",
-		});
+		const chip = await headerChip("Your agent: Claude Agent 0.100.0");
 		expect(screen.getAllByTestId("agent-chip")).toEqual([chip]);
 		const slot = screen.getByTestId("agent-chip-slot");
 		expect(slot).toContainElement(chip);
@@ -2339,9 +2370,7 @@ describe("App header", () => {
 					waiting: 0,
 				}),
 			});
-			const chip = await screen.findByRole("button", {
-				name: "Your agent: Claude Agent 0.100.0",
-			});
+			const chip = await headerChip("Your agent: Claude Agent 0.100.0");
 			// Its tooltip (always there, hidden while closed), opened by a hover.
 			const tip = () =>
 				[...document.querySelectorAll("[role=tooltip]")].find(
@@ -2401,9 +2430,7 @@ describe("App header", () => {
 					waiting: 0,
 				}),
 			});
-			const chip = await screen.findByRole("button", {
-				name: "Your agent: Claude Agent 0.100.0",
-			});
+			const chip = await headerChip("Your agent: Claude Agent 0.100.0");
 			expect(screen.getByTestId("agent-chip-slot")).toContainElement(chip);
 			const reads = calls("/api/agent");
 			expect(reads).toBe(1);
@@ -2818,5 +2845,56 @@ describe("Timeline", () => {
 		const section = await screen.findByRole("region", { name: "Timeline" });
 		expect(await within(section).findByText("timeline broke")).toBeVisible();
 		expect(within(section).queryByTestId("timeline-loading")).toBeNull();
+	});
+});
+
+describe("the thread agent on the Overview", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	/** A placements answer already in the cache, as Files changed left it. */
+	const seedPlacements = (client: QueryClient) => {
+		const key = ["agent-placements", "ps:1", "rev1", "A1"];
+		client.setQueryData(key, { placements: [] });
+		return () => client.getQueryState(key)?.isInvalidated;
+	};
+
+	it("reads the agent threads and their placements again on Refresh: a deleted thread's conversation moves to a span", async () => {
+		const user = userEvent.setup();
+		const { client } = renderApp({
+			"/api/agent/threads": ok({ threads: [] }),
+			"/api/refresh": ok(info),
+		});
+		await waitFor(() => expect(calls("/api/agent/threads")).toBe(1));
+		const invalidated = seedPlacements(client);
+		expect(invalidated()).toBe(false);
+		await user.click(await screen.findByRole("button", { name: "Refresh" }));
+		await waitFor(() => expect(calls("/api/agent/threads")).toBe(2));
+		expect(invalidated()).toBe(true);
+	});
+
+	it("slides over the comments alone: the code pane stays outside the cover", async () => {
+		renderApp({ "/api/agent/threads": ok({ threads: [] }) });
+		const card = (
+			await screen.findAllByTestId("thread", {}, { timeout: 5000 })
+		).find((c) => c.id === "thread-T-cache") as HTMLElement;
+		expect(card).toBeTruthy();
+		await userEvent.click(
+			await within(card).findByRole("button", { name: "Ask agent" }),
+		);
+		const cover = within(card).getByTestId("agent-cover");
+		const panel = within(card).getByTestId("thread-agent-panel");
+		expect(panel).toHaveAttribute("data-open", "true");
+		expect(cover).toContainElement(panel);
+		expect(cover).toContainElement(within(card).getByTestId("thread-body"));
+		const code = within(card).getByTestId("thread-code");
+		expect(cover).not.toContainElement(code);
+		expect(code.contains(cover)).toBe(false);
+		// The composer row stays outside too.
+		expect(cover).not.toContainElement(
+			within(card).getByRole("textbox", { name: "Ask agent" }),
+		);
 	});
 });

@@ -50,6 +50,9 @@ import {
 	type ThreadsView,
 } from "../../shared/types";
 import { AgentOverviewRow } from "../agent/AgentOverviewRow";
+import { ThreadAgentButton } from "../agent/ThreadAgentButton";
+import { AgentCover } from "../agent/ThreadAgentPanel";
+import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
 	OVERVIEW_FRESH_MS,
 	overviewAge,
@@ -1483,6 +1486,12 @@ function ThreadItem({
 	useEffect(() => {
 		if (draftsShown) setOpen(true);
 	}, [draftsShown]);
+	// Its agent conversation: opening it shows the composer row too.
+	const showMore = useCallback(() => setOpen(true), []);
+	const agent = useThreadAgent(thread, {
+		onOpen: showMore,
+		onToggle: onToggle && ((resolved) => onToggle(resolved)),
+	});
 	// State, not refs: either box can mount later than the card.
 	const [codeBox, setCodeBox] = useState<HTMLElement | null>(null);
 	const [commentBox, setCommentBox] = useState<HTMLDivElement | null>(null);
@@ -1640,177 +1649,207 @@ function ThreadItem({
 	) : (
 		comment
 	);
+	const repliesEl =
+		open && !thread.unavailable && replies.n > 0 ? (
+			<div
+				id={repliesId}
+				data-testid="thread-replies"
+				// The replies hang off the opener on a rail.
+				className="ml-2 border-l-2 border-line pl-3"
+			>
+				<ThreadComments readId={readId} thread={thread} skipFirst />
+			</div>
+		) : null;
+	// With an agent, its conversation slides over the comments alone (the
+	// opener and the replies, in the comment column), never the code pane.
+	const comments = agent ? (
+		<AgentCover>
+			{commentCell}
+			{repliesEl}
+		</AgentCover>
+	) : (
+		commentCell
+	);
 	const session = useQuery(sessionQuery);
 	const target = threadTarget(thread, session.data, line);
 	const status = thread.resolved ? "Resolved" : "Unresolved";
 	return (
-		<li
-			data-testid="thread"
-			id={thread.id ? threadAnchor(thread.id) : undefined}
-			// Focused when the timeline brings it into view.
-			tabIndex={-1}
-			data-fading={fading || undefined}
-			style={
-				fading ? ({ "--fade-ms": `${FADE_MS}ms` } as CSSProperties) : undefined
-			}
-			className={`min-w-0 scroll-mt-24 overflow-hidden rounded-lg border border-edge bg-surface focus-visible:outline-2 focus-visible:outline-accent ${fading ? "thread-fading" : ""}`}
-		>
-			<div
-				data-testid="thread-head"
-				className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-line bg-band px-2.5 py-1.5 text-xs text-muted"
+		<ThreadAgentContext.Provider value={agent}>
+			<li
+				data-testid="thread"
+				id={thread.id ? threadAnchor(thread.id) : undefined}
+				// Focused when the timeline brings it into view.
+				tabIndex={-1}
+				data-fading={fading || undefined}
+				style={
+					fading
+						? ({ "--fade-ms": `${FADE_MS}ms` } as CSSProperties)
+						: undefined
+				}
+				className={`min-w-0 scroll-mt-24 overflow-hidden rounded-lg border border-edge bg-surface focus-visible:outline-2 focus-visible:outline-accent ${fading ? "thread-fading" : ""}`}
 			>
-				{/*
-				 * Each part draws its "·" before itself; the first part on a line
-				 * has its dot in the clipped margin, so no line starts with one.
-				 */}
-				<div className="min-w-0 flex-[1_1_auto] overflow-hidden px-0.5">
-					<p className="-ml-3 flex flex-wrap items-center gap-y-0.5">
-						<span className={HEAD_PART}>
-							{thread.resolved ? (
-								<CheckCircleIcon
-									size={14}
-									aria-hidden
-									className="mr-1.5 shrink-0 text-ok"
-								/>
-							) : (
-								<CommentDiscussionIcon
-									size={14}
-									aria-hidden
-									className="mr-1.5 shrink-0 text-warn"
-								/>
-							)}
-							<span>
-								<span className="font-semibold text-ink-soft">
-									{/* Resolved is unmistakable: the word in green too. */}
-									<span className={thread.resolved ? "text-ok" : undefined}>
-										{status}
-									</span>{" "}
-									thread
-								</span>{" "}
-								by{" "}
-								<span className="inline-flex items-center gap-1 align-middle font-medium text-ink-soft">
-									<Avatar
-										login={thread.author}
-										url={thread.avatarUrl}
-										size={16}
+				<div
+					data-testid="thread-head"
+					className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-line bg-band px-2.5 py-1.5 text-xs text-muted"
+				>
+					{/*
+					 * Each part draws its "·" before itself; the first part on a line
+					 * has its dot in the clipped margin, so no line starts with one.
+					 */}
+					<div className="min-w-0 flex-[1_1_auto] overflow-hidden px-0.5">
+						<p className="-ml-3 flex flex-wrap items-center gap-y-0.5">
+							<span className={HEAD_PART}>
+								{thread.resolved ? (
+									<CheckCircleIcon
+										size={14}
+										aria-hidden
+										className="mr-1.5 shrink-0 text-ok"
 									/>
-									{thread.author}
-									{thread.bot && <BotIcon />}
+								) : (
+									<CommentDiscussionIcon
+										size={14}
+										aria-hidden
+										className="mr-1.5 shrink-0 text-warn"
+									/>
+								)}
+								<span>
+									<span className="font-semibold text-ink-soft">
+										{/* Resolved is unmistakable: the word in green too. */}
+										<span className={thread.resolved ? "text-ok" : undefined}>
+											{status}
+										</span>{" "}
+										thread
+									</span>{" "}
+									by{" "}
+									<span className="inline-flex items-center gap-1 align-middle font-medium text-ink-soft">
+										<Avatar
+											login={thread.author}
+											url={thread.avatarUrl}
+											size={16}
+										/>
+										{thread.author}
+										{thread.bot && <BotIcon />}
+									</span>
 								</span>
 							</span>
-						</span>
-						<span className={`${HEAD_PART} whitespace-nowrap`}>
-							opened&nbsp;
-							<RelativeTime iso={thread.createdAt} />
-						</span>
-						{first?.editedAt && (
 							<span className={`${HEAD_PART} whitespace-nowrap`}>
-								<EditedMark iso={first.editedAt} />
+								opened&nbsp;
+								<RelativeTime iso={thread.createdAt} />
 							</span>
-						)}
-						{thread.lastActivityAt !== thread.createdAt && (
-							<span className={`${HEAD_PART} whitespace-nowrap`}>
-								updated&nbsp;
-								<RelativeTime iso={thread.lastActivityAt} />
-							</span>
-						)}
-					</p>
-				</div>
-				<div className="ml-auto flex items-center gap-2 pl-1.5">
-					{fading && (
-						// The still form of the fade (reduced motion).
-						<span
-							role="status"
-							data-testid="thread-moving"
-							className="hidden text-warn motion-reduce:inline"
-						>
-							{gone ? "Deleted" : "Moving…"}
-						</span>
-					)}
-					<OpenedOnChip thread={thread} />
-					<PlacementChip thread={thread} />
-					<ThreadStatus thread={thread} mark={false} />
-					{!thread.hasReply && !thread.resolved && (
-						<Badge tone="yellow" icon={ReplyIcon}>
-							no reply
-						</Badge>
-					)}
-					{thread.outdated && (
-						<Badge tone="gray" icon={HistoryIcon}>
-							outdated
-						</Badge>
-					)}
-					{thread.code && <SnapshotChip code={thread.code} />}
-				</div>
-			</div>
-			<div className="space-y-2 px-3 pt-1 pb-3">
-				<ThreadPlace thread={thread} line={line} target={target} />
-				<ThreadFateLine thread={thread} />
-				{thread.code?.source === "pending" ? (
-					<div className="grid gap-3 md:grid-cols-2 md:items-start">
-						{/* The code is still being built: the pane's frame. */}
-						<div
-							data-testid="thread-code-loading"
-							aria-busy="true"
-							className="min-w-0 space-y-2 rounded-md border border-line bg-code px-3 py-3"
-						>
-							<span className="sr-only">Loading…</span>
-							{["w-3/5", "w-4/5", "w-full", "w-2/3", "w-3/4"].map((w) => (
-								<SkeletonBar key={w} className={w} />
-							))}
-						</div>
-						{commentCell}
+							{first?.editedAt && (
+								<span className={`${HEAD_PART} whitespace-nowrap`}>
+									<EditedMark iso={first.editedAt} />
+								</span>
+							)}
+							{thread.lastActivityAt !== thread.createdAt && (
+								<span className={`${HEAD_PART} whitespace-nowrap`}>
+									updated&nbsp;
+									<RelativeTime iso={thread.lastActivityAt} />
+								</span>
+							)}
+						</p>
 					</div>
-				) : thread.code && rows.length > 0 ? (
-					<div className="grid gap-3 md:grid-cols-2 md:items-start">
-						<ThreadCodePane
-							ref={setCodeBox}
-							id={codeId}
-							path={thread.path}
-							lines={rows}
-							source={thread.code.source}
-							open={open}
-							scrollable={open ? codeOverflowsOpen : codeMore}
-						/>
-						{commentCell}
-					</div>
-				) : (
-					commentCell
-				)}
-				{open && !thread.unavailable && (
-					<div id={repliesId} className="space-y-2">
-						{replies.n > 0 && (
-							<div
-								data-testid="thread-replies"
-								// The replies hang off the opener on a rail.
-								className="ml-2 border-l-2 border-line pl-3"
+					<div className="ml-auto flex items-center gap-2 pl-1.5">
+						{fading && (
+							// The still form of the fade (reduced motion).
+							<span
+								role="status"
+								data-testid="thread-moving"
+								className="hidden text-warn motion-reduce:inline"
 							>
-								<ThreadComments readId={readId} thread={thread} skipFirst />
-							</div>
+								{gone ? "Deleted" : "Moving…"}
+							</span>
 						)}
-						<ThreadActions thread={thread} onToggle={onToggle} />
-					</div>
-				)}
-				{more && (
-					// Its own row, centred under the card.
-					<div data-testid="thread-more-row" className="flex justify-center">
-						<MoreToggle
-							open={open}
-							onClick={() => setOpen((o) => !o)}
-							controls={[
-								rows.length ? codeId : "",
-								commentId,
-								open ? repliesId : "",
-							]
-								.filter(Boolean)
-								.join(" ")}
-							replies={replies}
-							kind={kind}
+						<OpenedOnChip thread={thread} />
+						<PlacementChip thread={thread} />
+						<ThreadStatus
+							thread={thread}
+							mark={false}
+							tall={agent !== null}
+							onCounter={agent?.open ? agent.close : undefined}
 						/>
+						{agent && (
+							<ThreadAgentButton
+								thread={thread}
+								conversation={agent.conversation}
+								open={agent.open}
+								onToggle={agent.toggle}
+							/>
+						)}
+						{!thread.hasReply && !thread.resolved && (
+							<Badge tone="yellow" icon={ReplyIcon}>
+								no reply
+							</Badge>
+						)}
+						{thread.outdated && (
+							<Badge tone="gray" icon={HistoryIcon}>
+								outdated
+							</Badge>
+						)}
+						{thread.code && <SnapshotChip code={thread.code} />}
 					</div>
-				)}
-			</div>
-		</li>
+				</div>
+				<div className="space-y-2 px-3 pt-1 pb-3">
+					<ThreadPlace thread={thread} line={line} target={target} />
+					<ThreadFateLine thread={thread} />
+					{thread.code?.source === "pending" ? (
+						<div className="grid gap-3 md:grid-cols-2 md:items-start">
+							{/* The code is still being built: the pane's frame. */}
+							<div
+								data-testid="thread-code-loading"
+								aria-busy="true"
+								className="min-w-0 space-y-2 rounded-md border border-line bg-code px-3 py-3"
+							>
+								<span className="sr-only">Loading…</span>
+								{["w-3/5", "w-4/5", "w-full", "w-2/3", "w-3/4"].map((w) => (
+									<SkeletonBar key={w} className={w} />
+								))}
+							</div>
+							{comments}
+						</div>
+					) : thread.code && rows.length > 0 ? (
+						<div className="grid gap-3 md:grid-cols-2 md:items-start">
+							<ThreadCodePane
+								ref={setCodeBox}
+								id={codeId}
+								path={thread.path}
+								lines={rows}
+								source={thread.code.source}
+								open={open}
+								scrollable={open ? codeOverflowsOpen : codeMore}
+							/>
+							{comments}
+						</div>
+					) : (
+						comments
+					)}
+					{/* No agent: the replies under the whole card, as they were. */}
+					{!agent && repliesEl}
+					{/* The composer row: never under the agent's panel. */}
+					{(open || agent?.open) && !thread.unavailable && (
+						<ThreadActions thread={thread} onToggle={onToggle} />
+					)}
+					{more && (
+						// Its own row, centred under the card.
+						<div data-testid="thread-more-row" className="flex justify-center">
+							<MoreToggle
+								open={open}
+								onClick={() => setOpen((o) => !o)}
+								controls={[
+									rows.length ? codeId : "",
+									commentId,
+									open && replies.n > 0 ? repliesId : "",
+								]
+									.filter(Boolean)
+									.join(" ")}
+								replies={replies}
+								kind={kind}
+							/>
+						</div>
+					)}
+				</div>
+			</li>
+		</ThreadAgentContext.Provider>
 	);
 }
 

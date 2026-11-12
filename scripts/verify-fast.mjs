@@ -74,7 +74,16 @@ const E2E_MAP = [
 		/^src\/web\/files\/(PatchsetGraph|HeadToast|graphCards|comparison|FilesPage|FileDiff|DiffBody|FileTree|ProgressBar|useSetStates|landing)\.tsx?$|^src\/web\/(App|shortcuts)\.tsx$|^e2e\/pr-setup\.ts$/,
 		["rereview"],
 	],
-	[/^src\/web\/agent\//, ["agent", "agent-setup"]],
+	// The reviewer's agent: review buddy's span threads and the thread
+	// agent (a conversation per GitHub thread), web and server.
+	[/^src\/(web|server)\/agent\//, ["agent", "agent-setup", "thread-agent"]],
+	// What the thread agent lives in: the thread cards (Overview, Files
+	// changed, unplaced and not in comparison), their reply box and
+	// Resolve, Resolve's close in Files changed, and the routes.
+	[
+		/^src\/web\/threads\/|^src\/web\/files\/(ThreadRow|ThreadFate|NotInComparison)\.tsx$|^src\/web\/files\/resolveCollapse\.ts$|^src\/web\/overview\/OverviewPage\.tsx$|^src\/server\/app\.ts$/,
+		["thread-agent"],
+	],
 	[
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],

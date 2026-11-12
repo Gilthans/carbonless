@@ -453,6 +453,37 @@ describe("placeAgentThreads", () => {
 		);
 	});
 
+	it("a thread conversation's anchor never reaches the tracer: it goes where its GitHub thread goes", async () => {
+		const inputs = vi.spyOn(ThreadPlacer.prototype, "inputs");
+		const got = await placeAgentThreads(
+			placer(),
+			target,
+			[
+				{
+					id: "TC",
+					at: "2026-01-01T00:00:00Z",
+					anchor: {
+						subject: "thread",
+						thread: "T1",
+						path: "a.ts",
+						commit: H1,
+						side: "RIGHT",
+						line: 15,
+						startSide: "RIGHT",
+						startLine: 15,
+					},
+				},
+				asked("A1", { path: "a.ts", line: 15, startLine: 15 }),
+			],
+			base(),
+		);
+		expect(got.map((p) => p.id)).toEqual(["A1"]);
+		expect(inputs.mock.calls.flatMap(([, ts]) => ts.map((t) => t.id))).toEqual([
+			"A1",
+		]);
+		inputs.mockRestore();
+	});
+
 	it("a thread whose tracing fails is left out (the page keeps it where it was asked), the others placed", async () => {
 		const code = new ThreadCodeSource(repo.path, async () => true);
 		const broken = "e".repeat(40);

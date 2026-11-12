@@ -24,6 +24,8 @@ export function agentBubbleLabel(
 	const parts = [head];
 	if (n > 0 && threads.every((t) => t.resolved)) parts.push("resolved");
 	if (waiting > 0) parts.push(`${waiting} waiting`);
+	const unread = threads.filter((t) => t.unread).length;
+	if (unread > 0) parts.push(`${unread} new`);
 	return parts.join(", ");
 }
 
@@ -55,6 +57,7 @@ export function AgentBubble(props: {
 		: agentBubbleLabel(threads, props.where);
 	const resolved = threads.length > 0 && threads.every((t) => t.resolved);
 	const waiting = threads.some((t) => t.waiting && !t.resolved);
+	const unread = !loading && threads.some((t) => t.unread);
 	return (
 		<Tooltip content={label} describe={false} dismissKey={props.open}>
 			{(trigger) => (
@@ -74,7 +77,7 @@ export function AgentBubble(props: {
 					<span
 						aria-hidden
 						data-resolved={resolved || undefined}
-						className={`flex h-5 items-center gap-1 rounded-full border px-1.5 text-xs leading-none tabular-nums shadow-control transition-colors motion-reduce:transition-none ${
+						className={`relative flex h-5 items-center gap-1 rounded-full border px-1.5 text-xs leading-none tabular-nums shadow-control transition-colors motion-reduce:transition-none ${
 							props.open
 								? "border-accent bg-pressed text-agent-ink"
 								: resolved
@@ -90,6 +93,12 @@ export function AgentBubble(props: {
 							<span
 								data-testid="agent-waiting-dot"
 								className="h-2 w-2 rounded-full bg-warn"
+							/>
+						)}
+						{unread && (
+							<span
+								data-testid="agent-unread-dot"
+								className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full border-2 border-surface bg-accent"
 							/>
 						)}
 					</span>

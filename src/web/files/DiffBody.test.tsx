@@ -2178,6 +2178,7 @@ const agentThread = (
 	],
 	resolved: false,
 	waiting: true,
+	unread: false,
 	...more,
 });
 

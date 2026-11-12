@@ -29,6 +29,8 @@ export interface AcpScenario {
 		/** With stop "error": the message the prompt fails with (a JSON-RPC internal error). */
 		error?: string;
 		chunks?: number;
+		/** A command (argv) run in the agent's cwd before it answers. */
+		run?: string[];
 	}>;
 	/** Permission requests made before answering, each also a tool_call update. */
 	requests?: Array<{ kind: ActivityKind; title: string; rawInput?: unknown }>;

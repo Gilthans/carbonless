@@ -1937,6 +1937,7 @@ describe("FileDiff: agent threads asked on an earlier head", () => {
 			],
 			resolved: false,
 			waiting: false,
+			unread: false,
 		};
 		await act(async () => {
 			queryClient.setQueryData(sessionQuery.queryKey, {
@@ -2001,6 +2002,7 @@ describe("FileDiff: agent threads traced into the viewed head", () => {
 		],
 		resolved: false,
 		waiting: false,
+		unread: false,
 		...more,
 	});
 	const deleted = {

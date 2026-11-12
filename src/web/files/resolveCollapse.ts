@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReviewThread } from "../../shared/types";
+import { agentDraftText } from "../agent/threadAgent";
 import type { DraftStore } from "../threads/drafts";
 import {
 	type ThreadWritesState,
@@ -65,7 +66,7 @@ export function pruneHidden<K>(
 
 /**
  * The thread has something not yet on GitHub that closing would hide:
- * text in its reply box, an edit in progress, a reply, edit or delete
+ * text in its reply box (or typed to its agent), an edit in progress, a reply, edit or delete
  * on its way, or a refused write still listed (closing would only reopen).
  */
 export function unsettled(
@@ -74,6 +75,8 @@ export function unsettled(
 	writes: Pick<ThreadWritesState, "threads">,
 ): boolean {
 	if (drafts.text(threadId).trim()) return true;
+	// Typed to its agent and not sent: kept open, as an unsent reply is.
+	if (agentDraftText(threadId).trim()) return true;
 	if (
 		drafts.get().some((d) => d.threadId === threadId && (d.edit || d.sending))
 	) {

@@ -1,6 +1,14 @@
 import { join } from "node:path";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
-import { type AgentAnchor, PREAMBLE } from "../../shared/agent.js";
+import {
+	type AgentAnchor,
+	type AgentView,
+	PREAMBLE,
+	SUGGEST_RESOLVE,
+	THREAD_PREAMBLE,
+} from "../../shared/agent.js";
+import { openedOn } from "../../shared/rereview/openedOn.js";
+import type { ThreadPlacement } from "../../shared/rereview/placement.js";
 
 /**
  * What every prompt tells the agent: the fixed PREAMBLE, then the thread as
@@ -27,13 +35,79 @@ export interface PromptMessage {
 	text: string;
 }
 
+export type CommentRole = "reviewer" | "pr_author" | "other";
+
+/** One of the reviewer's patch sets, as the envelope lists them. */
+export interface PromptPatchset {
+	number: number;
+	head: string;
+	mergeBase: string;
+	/** ISO time. */
+	startedAt: string;
+}
+
+/** The GitHub thread in the envelope (kind `github_thread_conversation`). */
+export interface PromptGithub {
+	/** The thread's first comment on GitHub. */
+	url: string;
+	path: string;
+	startLine: number | null;
+	line: number | null;
+	/** The span inside the lines, from the crb marker: both or neither. */
+	startCol?: number;
+	endCol?: number;
+	/** The commit the thread was opened on ("" = unknown). */
+	openedOn: string;
+	/** The patch set `openedOn` falls in, by when the thread was opened. */
+	openedOnPatchset?: number;
+	outdated: boolean;
+	resolved: boolean;
+	comments: {
+		author: { login: string; role: CommentRole };
+		at: string;
+		body: string;
+	}[];
+}
+
 export interface PromptEnvelope {
-	kind: "agent_thread";
+	kind: "agent_thread" | "github_thread_conversation";
 	review: PromptReview;
 	thread: { id: string; anchor: AgentAnchor & { file: string } };
+	/** Thread kind only; absent when GitHub couldn't be read or the thread is gone (`notice` says). */
+	github?: PromptGithub;
+	/** Thread kind only: the comparison the turn answers in. */
+	view?: AgentView & { targetPatchset?: number; fromPatchset?: number };
+	/** Thread kind only: the PR's newest head on GitHub. */
+	current?: string;
+	patchsets?: PromptPatchset[];
+	/** Thread kind only: the thread's placement on the viewed comparison. */
+	placement?: ThreadPlacement;
 	messages: PromptMessage[];
 	notice?: string;
 	pr?: { title: string; body: string; files: string[] };
+}
+
+/**
+ * GitHub's thread as the runner reads it for a turn (RunnerFacts.github):
+ * the session's current read, comment roles named, its placement on the
+ * viewed comparison and the code window at `openedOn` as diff text.
+ */
+export interface GithubThreadFacts {
+	url: string;
+	path: string;
+	startLine: number | null;
+	line: number | null;
+	startCol?: number | null;
+	endCol?: number | null;
+	openedOn: string;
+	/** When the thread was opened (published), ISO. */
+	createdAt: string;
+	outdated: boolean;
+	resolved: boolean;
+	comments: { login: string; role: CommentRole; at: string; body: string }[];
+	placement?: ThreadPlacement;
+	/** The code the thread was opened on, as diff text; null when unknown. */
+	code?: string | null;
 }
 
 /** A relative path inside a tree: no leading `/`, no `..` segment, no NUL. */
@@ -50,17 +124,123 @@ export function isSafePath(path: string): boolean {
  * The anchor as the envelope gives it: `file` its absolute path in the tree
  * (the tree itself for a path that isn't safe), and `commit` the commit its
  * side is on: the merge base (the diff's left side) for a LEFT anchor,
- * whose file in the tree is the head's version.
+ * whose file in the tree is the head's version. A thread anchor's commit
+ * is the one its comment was made on: on the LEFT, the merge base of the
+ * patch set with that head, else the review's, as for a line anchor.
  */
 export function anchorFor(
 	anchor: AgentAnchor,
 	review: PromptReview,
+	patchsets: readonly { head: string; mergeBase: string }[] = [],
 ): AgentAnchor & { file: string } {
 	const file = isSafePath(anchor.path)
 		? join(review.tree, anchor.path)
 		: review.tree;
-	const left = anchor.subject === "line" && anchor.side === "LEFT";
-	return { ...anchor, ...(left ? { commit: review.mergeBase } : {}), file };
+	if (anchor.subject === "file" || anchor.side !== "LEFT") {
+		return { ...anchor, file };
+	}
+	const commit =
+		anchor.subject === "thread"
+			? (patchsets.find((p) => p.head === anchor.commit)?.mergeBase ??
+				review.mergeBase)
+			: review.mergeBase;
+	return { ...anchor, commit, file };
+}
+
+/**
+ * A thread conversation's envelope (kind `github_thread_conversation`),
+ * not yet sanitised: `github` only when GitHub's thread was read (never a
+ * made-up `resolved`), the view with its patch set numbers, `current`, the
+ * patch sets and the placement.
+ */
+export function threadEnvelope(input: {
+	review: PromptReview;
+	thread: { id: string; anchor: AgentAnchor };
+	github: GithubThreadFacts | null;
+	view: AgentView;
+	current: string;
+	patchsets: readonly PromptPatchset[];
+	messages: PromptMessage[];
+	notice?: string;
+	pr?: PromptEnvelope["pr"];
+}): PromptEnvelope {
+	const { review, thread, github: g, view, patchsets } = input;
+	const numberOf = (head: string) =>
+		patchsets.find((p) => p.head === head)?.number;
+	const targetPatchset =
+		"patchset" in view.target ? view.target.patchset : numberOf(view.right);
+	const fromPatchset =
+		"patchset" in view.from ? view.from.patchset : numberOf(view.left);
+	let github: PromptGithub | undefined;
+	if (g) {
+		const opened = openedOn(
+			g.createdAt,
+			patchsets.map((p) => ({
+				number: p.number,
+				startedAt: Date.parse(p.startedAt),
+			})),
+		);
+		const cols =
+			typeof g.startCol === "number" && typeof g.endCol === "number"
+				? { startCol: g.startCol, endCol: g.endCol }
+				: {};
+		github = {
+			url: g.url,
+			path: g.path,
+			startLine: g.startLine,
+			line: g.line,
+			...cols,
+			openedOn: g.openedOn,
+			...(opened !== null && g.openedOn !== ""
+				? { openedOnPatchset: opened }
+				: {}),
+			outdated: g.outdated,
+			resolved: g.resolved,
+			comments: g.comments.map((c) => ({
+				author: { login: c.login, role: c.role },
+				at: c.at,
+				body: c.body,
+			})),
+		};
+	}
+	return {
+		kind: "github_thread_conversation",
+		review,
+		thread: {
+			id: thread.id,
+			anchor: anchorFor(thread.anchor, review, patchsets),
+		},
+		...(github ? { github } : {}),
+		view: {
+			...view,
+			...(targetPatchset !== undefined ? { targetPatchset } : {}),
+			...(fromPatchset !== undefined ? { fromPatchset } : {}),
+		},
+		current: input.current,
+		patchsets: patchsets.map((p) => ({ ...p })),
+		...(g?.placement ? { placement: g.placement } : {}),
+		messages: input.messages,
+		...(input.notice ? { notice: input.notice } : {}),
+		...(input.pr ? { pr: input.pr } : {}),
+	};
+}
+
+/**
+ * The answer's text without a final `[suggest-resolve]` line, and whether
+ * it had one: the last non-blank line holding exactly the marker (spaces
+ * around it aside). A marker anywhere else is plain text.
+ */
+export function takeSuggestion(text: string): {
+	text: string;
+	suggests: boolean;
+} {
+	const lines = text.split("\n");
+	let last = lines.length - 1;
+	while (last >= 0 && (lines[last] ?? "").trim() === "") last--;
+	if (last < 0 || (lines[last] ?? "").trim() !== SUGGEST_RESOLVE) {
+		return { text, suggests: false };
+	}
+	return { text: lines.slice(0, last).join("\n").trimEnd(), suggests: true };
 }
 
 const MIME: Record<string, string> = {
@@ -144,11 +324,13 @@ export function sanitizeThirdParty(text: string): string {
 /**
  * `env` with every text from the PR sanitised (sanitizeThirdParty): the
  * base and head ref names, the anchor's path (and so its file), the PR's
- * title, body and file paths. The reviewer's and the agent's messages stay.
+ * title, body and file paths, the GitHub thread's url, path, comment
+ * logins and bodies, the placement's paths, and the notice (it may name a
+ * path or an error from GitHub). The reviewer's and the agent's messages stay.
  */
 export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 	const s = sanitizeThirdParty;
-	const { review, thread, pr } = env;
+	const { review, thread, pr, github, placement, notice } = env;
 	return {
 		...env,
 		review: {
@@ -173,7 +355,42 @@ export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 					},
 				}
 			: {}),
+		...(github
+			? {
+					github: {
+						...github,
+						url: s(github.url),
+						path: s(github.path),
+						comments: github.comments.map((c) => ({
+							...c,
+							author: { ...c.author, login: s(c.author.login) },
+							body: s(c.body),
+						})),
+					},
+				}
+			: {}),
+		...(placement ? { placement: sanitizePlacement(placement) } : {}),
+		...(notice !== undefined ? { notice: s(notice) } : {}),
 	};
+}
+
+/** A placement's paths sanitised; its code text is code, like the hunk. */
+function sanitizePlacement(p: ThreadPlacement): ThreadPlacement {
+	const s = sanitizeThirdParty;
+	switch (p.kind) {
+		case "placed":
+		case "changed":
+			return { ...p, anchor: { ...p.anchor, path: s(p.anchor.path) } };
+		case "unplaced":
+			return {
+				...p,
+				path: s(p.path),
+				...(p.movedTo !== undefined ? { movedTo: s(p.movedTo) } : {}),
+			};
+		case "file":
+		case "outside":
+			return { ...p, path: s(p.path) };
+	}
 }
 
 /**
@@ -190,15 +407,21 @@ export function fenced(text: string, info = ""): string {
 }
 
 /**
- * The prompt's blocks: the preamble with the tree's path and the envelope
- * as JSON; the anchored file as a resource; the diff hunk around the anchor.
+ * The prompt's blocks: the preamble with the tree's path (and the thread
+ * preamble for a thread conversation) and the envelope as JSON; the
+ * anchored file as a resource; the diff hunk around the anchor (for a
+ * thread conversation, the code it was opened on).
  */
 export function buildPrompt(
 	env: PromptEnvelope,
 	anchored: { uri: string; mimeType: string; text: string } | null,
 	hunk: string | null,
 ): ContentBlock[] {
-	const preamble = PREAMBLE.replace("<tree>", env.review.tree);
+	const base = PREAMBLE.replace("<tree>", env.review.tree);
+	const preamble =
+		env.kind === "github_thread_conversation"
+			? `${base} ${THREAD_PREAMBLE}`
+			: base;
 	const blocks: ContentBlock[] = [
 		{ type: "text", text: `${preamble}\n\n${JSON.stringify(env)}` },
 	];
@@ -206,7 +429,7 @@ export function buildPrompt(
 	if (hunk !== null) {
 		blocks.push({
 			type: "text",
-			text: `Diff hunk around the anchor:\n${fenced(hunk, "diff")}`,
+			text: `${env.kind === "github_thread_conversation" ? "The code the thread was opened on" : "Diff hunk around the anchor"}:\n${fenced(hunk, "diff")}`,
 		});
 	}
 	return blocks;

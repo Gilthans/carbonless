@@ -36,6 +36,7 @@ const asked = (
 	messages: [],
 	resolved: false,
 	waiting: false,
+	unread: false,
 });
 
 const moved: ThreadPlacement = {
@@ -149,6 +150,21 @@ describe("tracedAgentPlaceables", () => {
 });
 
 describe("shownAgentPlaceables", () => {
+	it("a live thread conversation is never a span placeable (it is its GitHub thread's)", () => {
+		const span = asked("S", 3);
+		const onThread: AgentThread = {
+			...asked("C", 3),
+			anchor: { subject: "thread", thread: "RT1", path: "a.ts", commit: H1 },
+		};
+		expect(
+			shownAgentPlaceables([span, onThread], H1, {
+				placements: null,
+				until: null,
+			}).map((p) => p.id),
+		).toEqual(["S"]);
+		expect(agentWaiting([span, onThread], H2, { until: null })).toHaveLength(1);
+	});
+
 	it("an earlier patch set shows the threads asked before the next one started, as review threads (never traced backwards)", () => {
 		const before = { ...asked("B", 3), at: "2026-11-07T10:00:00Z" };
 		const after = { ...asked("L", 4), at: "2026-11-08T10:00:00Z" };
