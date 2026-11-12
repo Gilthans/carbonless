@@ -204,7 +204,9 @@ loading never looking empty, checking against a real PR):
   git and gh call) into `~/.cache/carbonless/test-traces/<run>/`, kept 7
   days. `pnpm test-profile [run|latest] [--compare <run>] [--jaeger]`
   says where the time goes (CI uploads its runs as `test-traces-*`
-  artifacts; `docs/test-profiling.md`).
+  artifacts; `docs/test-profiling.md`). Unit files start slowest first,
+  by a checked-in list: refresh it after a full unit run with
+  `pnpm test-profile --write-durations` ("Unit file order" there).
 - If `nvm use` fails (e.g. in a sandbox), put `~/.nvm/versions/node/v24*/bin`
   first on `PATH`.
 - `pnpm compare-threads <pr> [--as-of <iso>] [--placed-from <iso>] [--out <dir>]`
