@@ -48,6 +48,12 @@ import { setPicks } from "./linePicks";
 import type { CodeSpan } from "./selectionActions";
 import { ThreadBubble } from "./ThreadBubble";
 import type { Placements } from "./threadPlacement";
+import {
+	configureWordWork,
+	markPairs,
+	type Runner,
+	resetWordWork,
+} from "./wordWork";
 
 vi.mock("./hiddenLines", async (original) => {
 	const real = await original<typeof import("./hiddenLines")>();
@@ -2623,6 +2629,7 @@ describe("DiffBody word marks", () => {
 		showInvisibles.reset();
 		ignoreWhitespace.reset();
 		sideBySide.reset();
+		resetWordWork();
 	});
 
 	/** One hunk: context, then `dels` removed and `adds` added lines, then context. */
@@ -2685,6 +2692,67 @@ describe("DiffBody word marks", () => {
 		await shown("memberCount");
 		expect(marked(cellOf("LEFT"))).toEqual([["userCount", "bg-del-word"]]);
 		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
+	});
+
+	/** A word-marks runner that waits for `release`, keeping what it was sent. */
+	const heldMarks = () => {
+		const sent: (readonly [string, string])[][] = [];
+		let open: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const runner: Runner = async (pairs) => {
+			sent.push([...pairs]);
+			await gate;
+			return markPairs(pairs);
+		};
+		return { runner, sent, release: () => open() };
+	};
+	const pendingSpinners = () =>
+		screen.queryAllByRole("status", { name: "Marking changed words" });
+
+	// CAR-135: a pair too costly to mark in render is marked later.
+	it("shows a pair's lines with a spinner in the sign's place while its marks are on their way; a toggle keeps them", async () => {
+		const { runner, sent, release } = heldMarks();
+		// Nothing marked in render: every pair is later.
+		configureWordWork({ budgetMs: 0, runner });
+		sideBySide.set(false);
+		setup({ hunks: RENAME, clusters: [cluster("c")] });
+		await shown("memberCount");
+		await waitFor(() => expect(sent).toHaveLength(1));
+		expect(words()).toEqual([]);
+		expect(pendingSpinners()).toHaveLength(2);
+		const code = (kind: string) =>
+			rowOf(kind).querySelector('td[data-testid="code"]') as HTMLElement;
+		expect(code("del")).toHaveAttribute("aria-busy", "true");
+		expect(code("add")).toHaveAttribute("aria-busy", "true");
+		release();
+		await waitFor(() =>
+			expect(marked(rowOf("add"))).toEqual([["memberCount", "bg-add-word"]]),
+		);
+		expect(marked(rowOf("del"))).toEqual([["userCount", "bg-del-word"]]);
+		expect(pendingSpinners()).toEqual([]);
+		expect(code("add")).not.toHaveAttribute("aria-busy");
+		// Side by side, then Ignore whitespace: marked at once, not sent again.
+		act(() => sideBySide.set(true));
+		expect(marked(cellOf("LEFT"))).toEqual([["userCount", "bg-del-word"]]);
+		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
+		expect(pendingSpinners()).toEqual([]);
+		act(() => ignoreWhitespace.set(true));
+		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
+		expect(pendingSpinners()).toEqual([]);
+		expect(sent).toHaveLength(1);
+	});
+
+	it("marks a cheap pair in render: no spinner, nothing sent", async () => {
+		const { runner, sent } = heldMarks();
+		configureWordWork({ runner });
+		sideBySide.set(false);
+		setup({ hunks: RENAME, clusters: [cluster("c")] });
+		await shown("memberCount");
+		expect(marked(rowOf("add"))).toEqual([["memberCount", "bg-add-word"]]);
+		expect(pendingSpinners()).toEqual([]);
+		expect(sent).toEqual([]);
 	});
 
 	it("pairs a block whose removed and added lines are in two clusters", async () => {
