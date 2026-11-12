@@ -49,6 +49,7 @@ import type { CodeSpan } from "./selectionActions";
 import { ThreadBubble } from "./ThreadBubble";
 import type { Placements } from "./threadPlacement";
 import {
+	CHUNK,
 	configureWordWork,
 	markPairs,
 	type Runner,
@@ -2778,6 +2779,29 @@ describe("DiffBody word marks", () => {
 		expect(
 			within(cellOf("RIGHT")).getAllByRole("img", { name: /^Couldn't/ }),
 		).toHaveLength(1);
+		expect(sent).toHaveLength(1);
+	});
+
+	it("stops asking once the diff is gone: a queued chunk is never sent", async () => {
+		const { runner, sent, release } = heldMarks();
+		configureWordWork({ budgetMs: 0, runner });
+		sideBySide.set(false);
+		// One more pair than a chunk holds: two chunks, the second queued.
+		const n = CHUNK + 1;
+		setup({
+			hunks: block(
+				Array.from({ length: n }, (_, i) => `const a${i} = 1;`),
+				Array.from({ length: n }, (_, i) => `const a${i} = 2;`),
+			),
+			clusters: [cluster("c")],
+		});
+		await shown(`const a${CHUNK} = 2;`);
+		await waitFor(() => expect(sent).toHaveLength(1));
+		expect(sent[0]).toHaveLength(CHUNK);
+		cleanup();
+		release();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(sent).toHaveLength(1);
 	});
 

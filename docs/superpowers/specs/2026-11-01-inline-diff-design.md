@@ -211,7 +211,9 @@ Meanwhile a pending pair's lines show a spinner in the sign's place
 pair whose marking fails shows a ⚠ there ("Couldn't mark changed words"),
 never a spinner forever and never plain. Its tests hold the work and assert
 the spinner; unit tests mark everything in render (an unlimited budget)
-unless they test the budget, on a fake clock.
+unless they test the budget, on a fake clock. Known gap: a worker that
+never answers (alive but stuck, with no error) leaves its pairs pending,
+spinners showing, until the page reloads; there is no timeout.
 Budget (call): computing the marks of 2,000 pairs of 120-character lines
 (an equal block, the worst case DiffBody meets, since it renders a file's
 rows at once) takes under 100 ms of CPU time (`process.threadCpuUsage`, a

@@ -271,6 +271,14 @@ function forget(chunk: Chunk) {
 	}
 }
 
+/**
+ * Fails a pair, unless it's done: marked meanwhile (in render, while its
+ * chunk was out), a failure never takes its marks away.
+ */
+function failIfNotDone(del: DiffLine, add: DiffLine) {
+	if (!lookup(done, del, add)) store(done, del, add, FAILED);
+}
+
 /** Runs the oldest chunk still wanted, when none runs. */
 function pump() {
 	if (running) return;
@@ -298,12 +306,14 @@ function pump() {
 				if (gen !== generation) return;
 				job.pairs.forEach(([del, add], i) => {
 					// A missing answer is a failure, never a pair left plain.
-					store(done, del, add, marks[i] ?? FAILED);
+					const pair = marks[i];
+					if (pair) store(done, del, add, pair);
+					else failIfNotDone(del, add);
 				});
 			},
 			(error: unknown) => {
 				if (gen !== generation || error instanceof Dropped) return;
-				for (const [del, add] of job.pairs) store(done, del, add, FAILED);
+				for (const [del, add] of job.pairs) failIfNotDone(del, add);
 			},
 		)
 		.finally(() => {
@@ -368,7 +378,8 @@ export function hunkWords(rows: readonly DiffRow[]): HunkWords {
 /**
  * Marks `pairs` off the render path, in chunks of `CHUNK`; `progress` is
  * called as each chunk holding some of them is done (marked or failed:
- * `hunkWords` then has them). A pair already on its way isn't sent again.
+ * `hunkWords` then has them), and once, in a microtask, when some were
+ * done already (so a caller that saw them pending always hears). A pair already on its way isn't sent again.
  * Returns the cancel: the caller no longer waits, and a chunk nobody waits
  * for is dropped before it runs (or, on the main thread, between slices).
  */
@@ -377,11 +388,20 @@ export function requestMarks(
 	progress: () => void,
 ): () => void {
 	// Its own identity: one caller can ask twice.
-	const listener = () => progress();
+	let live = true;
+	const listener = () => {
+		if (live) progress();
+	};
 	const mine = new Set<Chunk>();
 	let fresh: Chunk | undefined;
+	// Some are done already (their chunk answered after the caller saw them
+	// pending, before it asked): it hears so, as from a chunk.
+	let doneAlready = false;
 	for (const [del, add] of pairs) {
-		if (lookup(done, del, add)) continue;
+		if (lookup(done, del, add)) {
+			doneAlready = true;
+			continue;
+		}
 		const chunk = lookup(waiting, del, add);
 		if (chunk) {
 			chunk.wanted.add(listener);
@@ -397,7 +417,9 @@ export function requestMarks(
 		store(waiting, del, add, fresh);
 	}
 	pump();
+	if (doneAlready) queueMicrotask(listener);
 	return () => {
+		live = false;
 		for (const chunk of mine) chunk.wanted.delete(listener);
 	};
 }

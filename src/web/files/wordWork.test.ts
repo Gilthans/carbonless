@@ -352,7 +352,65 @@ describe("hunkWords", () => {
 	});
 });
 
+describe("a caller always hears", () => {
+	it("says so when pairs it saw pending were done before it asked (a hunk remounted while its chunk was out)", async () => {
+		const { runner, jobs } = heldRunner();
+		configureWordWork({ budgetMs: 0, runner });
+		const hunk = block([["a = 1", "a = 2"]]);
+		// Mounted: asks, then unmounts while the chunk is out.
+		const cancel = requestMarks(hunkWords(hunk).later, () => {});
+		cancel();
+		// Remounted: sees the pair pending...
+		const words = hunkWords(hunk);
+		expect(words.later).toHaveLength(1);
+		// ...and the chunk answers before it asks.
+		jobs[0]?.release();
+		await flush();
+		const progress = vi.fn();
+		requestMarks(words.later, progress);
+		await flush();
+		expect(progress).toHaveBeenCalledTimes(1);
+		expect(hunkWords(hunk).pending.size).toBe(0);
+		expect(jobs).toHaveLength(1);
+	});
+
+	it("not after the caller cancelled", async () => {
+		configureWordWork({ budgetMs: Number.POSITIVE_INFINITY });
+		const d = del("a = 1");
+		const a = add("a = 2");
+		expect(hunkWords(rows(d, a)).marks.size).toBe(2);
+		const progress = vi.fn();
+		// Done already, asked for anyway, then cancelled at once.
+		requestMarks([[d, a]], progress)();
+		await flush();
+		expect(progress).not.toHaveBeenCalled();
+	});
+});
+
 describe("failures settle", () => {
+	it("a failure never takes away marks a pair got meanwhile (in render)", async () => {
+		for (const how of ["rejected", "missing"] as const) {
+			resetWordWork();
+			const { runner, jobs } = heldRunner();
+			configureWordWork({
+				budgetMs: 0,
+				runner: how === "rejected" ? runner : async () => [] as never,
+			});
+			const hunk = block([["a = 1", "a = 2"]]);
+			const progress = vi.fn();
+			requestMarks(hunkWords(hunk).later, progress);
+			// The same pair marked in render while its chunk is out.
+			configureWordWork({ budgetMs: Number.POSITIVE_INFINITY });
+			expect(hunkWords(hunk).marks.size).toBe(2);
+			if (how === "rejected") jobs[0]?.fail(new Error("no"));
+			await flush();
+			expect(progress).toHaveBeenCalled();
+			const after = hunkWords(hunk);
+			expect(after.failed.size, how).toBe(0);
+			expect(after.marks.size, how).toBe(2);
+		}
+	});
+
 	const pairs = [
 		["const userCount = 1;", "const memberCount = 1;"],
 		["a\tb", "a  b"],
