@@ -23,10 +23,16 @@ import type {
 	AgentStatus,
 } from "../../shared/agent.js";
 import { RefStore } from "../review/refStore.js";
-import { agentsDir } from "./checkout.js";
+import { agentsDir, createCheckout } from "./checkout.js";
 import type { PromptEnvelope } from "./prompt.js";
 import { AgentRunner, type RunnerDeps } from "./runner.js";
 import { AgentThreadStore } from "./store.js";
+
+// The real checkout, which a test may hold on its way (vi.mocked).
+vi.mock("./checkout.js", async (importOriginal) => {
+	const real = await importOriginal<typeof import("./checkout.js")>();
+	return { ...real, createCheckout: vi.fn(real.createCheckout) };
+});
 
 // Real git and fake agent processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -633,6 +639,40 @@ describe("AgentRunner", () => {
 		await runner.close();
 		expect(() => process.kill(pid, 0)).toThrow();
 		expect((await runner.status()).state).toBe("off");
+	});
+
+	it("close while the checkout is being made spawns nothing and doesn't wait for a start", async () => {
+		// initialize held for good: a start after close would keep close()
+		// waiting for the agent's start timeout.
+		scenario({ hold: ["initialize"] });
+		const real =
+			await vi.importActual<typeof import("./checkout.js")>("./checkout.js");
+		let inCheckout!: () => void;
+		const entered = new Promise<void>((r) => {
+			inCheckout = r;
+		});
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		vi.mocked(createCheckout).mockImplementationOnce(async (...args) => {
+			inCheckout();
+			await gate;
+			return real.createCheckout(...args);
+		});
+		makeRunner().poke();
+		await entered;
+		const closed = runner.close();
+		release();
+		await closed;
+		expect(spawns()).toEqual([]);
+		expect((await runner.status()).state).toBe("off");
+		expect(() =>
+			execFileSync("test", ["-e", join(agentsDir(), REVIEW, "tree")]),
+		).toThrow();
+		expect(() =>
+			execFileSync("test", ["-e", join(agentsDir(), REVIEW, "claim.json")]),
+		).toThrow();
 	});
 
 	it("an agent set to none releases the claim and removes the tree; set again, both come back", async () => {
