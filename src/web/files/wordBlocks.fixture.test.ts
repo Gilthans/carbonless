@@ -22,9 +22,10 @@ import { pairWordMarks } from "./wordBlocks";
  * Carbonless's marks against GitHub's, on the gallery's inline-diff case
  * (Gilthans/carbonless-gallery#14, our playground; rebuilt by
  * scripts/inline-diff-fixtures.mjs). The case files go through carbonless's
- * own diff, as the server serves them, then the view's rows and
- * hunkWordMarks. Every difference from GitHub's observed marks is listed in
- * known-differences.json with its reason. The list may only shrink, except by
+ * own diff, as the server serves them, then the view's rows and their
+ * marks (pairWordMarks of hunkView's pairs). Every difference from
+ * GitHub's observed marks is listed in known-differences.json with its
+ * reason. The list may only shrink, except by
  * an owner decision: dated and quoted in the entry's reason, and recorded in
  * the spec's "Decided by the owner" (2026-11-04 grew it from 5 to 23; the
  * same day's bridging of spaces between two changes shrank it to 8; step 2's

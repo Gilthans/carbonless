@@ -22,6 +22,23 @@ export const ALIGN_CHARS = 120_000;
  */
 export const ALIGN_WORD_OPS = 3_000_000;
 
+/**
+ * Word steps (as ALIGN_WORD_OPS counts them) one hunk's unequal clusters may
+ * spend between them (hunkPairs): about four of the costliest clusters
+ * ALIGN_WORD_OPS lets through. Past it, a cluster and every later one in
+ * the hunk get no pairs, the layout as today (CPU tests: wordBlocks.test.ts,
+ * findInPr.test.ts).
+ */
+export const HUNK_ALIGN_WORD_OPS = 4 * ALIGN_WORD_OPS;
+
+/**
+ * What a hunk has left of its word steps (hunkPairs, HUNK_ALIGN_WORD_OPS):
+ * alignCluster takes each cluster's estimate out of `left`. A cluster it
+ * doesn't cover gets no pairs and leaves it below 0, so no later cluster
+ * gets any either.
+ */
+export type AlignBudget = { left: number };
+
 /** Two scores this close are a tie. */
 const EPS = 1e-9;
 
@@ -71,7 +88,7 @@ function patterns(a: string): Uint32Array[] {
 /**
  * Length of the longest common subsequence of two one-char-per-token
  * strings, by the bit-parallel algorithm (Hyyro): 32 tokens of `a` per word
- * operation, so a cell costs |b|·|a|/32 steps whether or not the lines alike.
+ * operation, so a cell costs |b|·|a|/32 steps whether or not the lines are alike.
  */
 function lcs(a: string, b: string, masks = patterns(a)): number {
 	const m = a.length;
@@ -191,7 +208,7 @@ export function lineSimilarity(oldText: string, newText: string): number {
 type Chain = { del: number; add: number; rest: Chain } | null;
 type Cell = { total: number; positions: number; chain: Chain };
 
-/** Whether chain `a` sorts before chain `b` (earlier pair, then shorter). */
+/** Whether chain `a` sorts before chain `b` (earlier pair, then longer). */
 function earlier(a: Chain, b: Chain): boolean {
 	for (; a && b; a = a.rest, b = b.rest) {
 		if (a.del !== b.del) return a.del < b.del;
@@ -213,14 +230,18 @@ function better(x: Cell, y: Cell): boolean {
  * similarity. Ties keep the most position pairs (same index on both sides),
  * then the earliest pairs. Index pairs, increasing in both; none above
  * `ALIGN_CAP` lines², `ALIGN_CHARS` or `ALIGN_WORD_OPS`, or when nothing is
- * similar.
+ * similar. With a `budget`, also none once the word steps (as
+ * ALIGN_WORD_OPS counts them) don't fit what it has left; a cluster that
+ * scores spends them from it. A cluster over the guards above spends none.
  */
 export function alignCluster(
 	dels: readonly string[],
 	adds: readonly string[],
+	budget?: AlignBudget,
 ): [del: number, add: number][] {
 	const n = dels.length;
 	const m = adds.length;
+	if (budget && budget.left < 0) return [];
 	if (n === 0 || m === 0 || n * m > ALIGN_CAP) return [];
 	let chars = 0;
 	for (const t of dels) chars += t.length;
@@ -233,7 +254,12 @@ export function alignCluster(
 	let newTokens = 0;
 	for (const x of d) oldSteps += (x.all.length + 31) >>> 5;
 	for (const x of a) newTokens += x.all.length;
-	if (oldSteps * newTokens > ALIGN_WORD_OPS) return [];
+	const ops = oldSteps * newTokens;
+	if (ops > ALIGN_WORD_OPS) return [];
+	if (budget) {
+		budget.left -= ops;
+		if (budget.left < 0) return [];
+	}
 	const sharedAll = overlaps(
 		d.map((x) => x.all),
 		a.map((x) => x.all),

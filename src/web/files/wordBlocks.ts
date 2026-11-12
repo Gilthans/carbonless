@@ -1,6 +1,10 @@
 import type { DiffLine } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
-import { alignCluster } from "./linePairing";
+import {
+	type AlignBudget,
+	alignCluster,
+	HUNK_ALIGN_WORD_OPS,
+} from "./linePairing";
 import type { DiffRow } from "./whitespace";
 import { wordMarks } from "./wordDiff";
 
@@ -8,17 +12,25 @@ import { wordMarks } from "./wordDiff";
 export type LinePair = [del: DiffLine, add: DiffLine];
 
 /**
- * GitHub's pairs in a hunk (spec:
- * docs/superpowers/specs/2026-11-01-inline-diff-design.md), each as its
+ * The pairs behind a hunk's word marks and its pairs' places, each as its
  * removed and its added line. `rows` are the whole hunk's displayed rows
  * in order, every run's rows one after the other, so a block that spans
  * two clusters still pairs. A block is a run of removed lines directly
  * followed by a run of added lines; a context line or a whitespace-only
  * (`~`) row ends it (a stretch). A stretch with as many added lines as
- * removed ones pairs i-th with i-th (GitHub's pairs); one with a different
- * count, both above 0, pairs by similarity (step 2, alignCluster).
+ * removed ones pairs i-th with i-th: GitHub's pairs (spec:
+ * docs/superpowers/specs/2026-11-01-inline-diff-design.md). One with a
+ * different count, both above 0, pairs by similarity (step 2, alignCluster,
+ * spec: docs/superpowers/specs/2026-11-08-inline-diff-step2-design.md),
+ * the hunk's unequal stretches sharing `budget` word steps (default
+ * HUNK_ALIGN_WORD_OPS): once one doesn't fit, it and every later unequal
+ * stretch get none.
  */
-export function hunkPairs(rows: readonly DiffRow[]): LinePair[] {
+export function hunkPairs(
+	rows: readonly DiffRow[],
+	budget = HUNK_ALIGN_WORD_OPS,
+): LinePair[] {
+	const work: AlignBudget = { left: budget };
 	const pairs: LinePair[] = [];
 	let dels: DiffLine[] = [];
 	let adds: DiffLine[] = [];
@@ -31,6 +43,7 @@ export function hunkPairs(rows: readonly DiffRow[]): LinePair[] {
 			for (const [i, j] of alignCluster(
 				dels.map((l) => l.text),
 				adds.map((l) => l.text),
+				work,
 			)) {
 				pairs.push([dels[i] as DiffLine, adds[j] as DiffLine]);
 			}
@@ -60,11 +73,4 @@ export function pairWordMarks(
 		if (pair.new.length > 0) marks.set(add, pair.new);
 	}
 	return marks;
-}
-
-/** Each paired line's word marks (hunkPairs). */
-export function hunkWordMarks(
-	rows: readonly DiffRow[],
-): Map<DiffLine, readonly Mark[]> {
-	return pairWordMarks(hunkPairs(rows));
 }

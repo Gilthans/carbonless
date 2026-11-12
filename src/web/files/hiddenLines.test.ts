@@ -3,7 +3,10 @@ import type { DiffLine } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
 import { hiddenLines } from "./hiddenLines";
 import type { DiffRow } from "./whitespace";
-import { hunkPairs, hunkWordMarks, pairWordMarks } from "./wordBlocks";
+import { hunkPairs, pairWordMarks } from "./wordBlocks";
+
+/** Each paired line's word marks, as the view gets them. */
+const marksOf = (rows: readonly DiffRow[]) => pairWordMarks(hunkPairs(rows));
 
 const del = (text: string, noNewline?: boolean): DiffLine => ({
 	kind: "del",
@@ -54,19 +57,19 @@ describe("hiddenLines", () => {
 		const lone = add("zzz qqq");
 		const bom = add(`${BOM}zzz qqq`);
 		const r = rows(d, bom, lone);
-		expect(hunkWordMarks(r).size).toBe(0);
-		expect([...hiddenLines(r, hunkWordMarks(r), 4)]).toEqual([bom]);
+		expect(marksOf(r).size).toBe(0);
+		expect([...hiddenLines(r, marksOf(r), 4)]).toEqual([bom]);
 		// Similar enough to pair: marked.
 		const r2 = rows(d, a1, lone);
-		expect(hunkWordMarks(r2).has(a1)).toBe(true);
-		expect([...hiddenLines(r2, hunkWordMarks(r2), 4)]).toEqual([a1]);
+		expect(marksOf(r2).has(a1)).toBe(true);
+		expect([...hiddenLines(r2, marksOf(r2), 4)]).toEqual([a1]);
 		// Paired: its mark on the BOM.
 		const p = rows(d, a1);
-		expect([...hiddenLines(p, hunkWordMarks(p), 4)]).toEqual([a1]);
+		expect([...hiddenLines(p, marksOf(p), 4)]).toEqual([a1]);
 		// The BOM removed: the old side warns.
 		const old = del(`${BOM}x`);
 		const q = rows(old, add("x"));
-		expect([...hiddenLines(q, hunkWordMarks(q), 4)]).toEqual([old]);
+		expect([...hiddenLines(q, marksOf(q), 4)]).toEqual([old]);
 		// Mid-file (files joined by cat), unpaired.
 		const joined = add(`${BOM}echo two`);
 		expect([...hiddenLines(rows(joined), new Map(), 4)]).toEqual([joined]);
@@ -125,7 +128,7 @@ describe("hiddenLines", () => {
 			[d1, a1],
 			[d2, a2],
 		]);
-		const words = hunkWordMarks(ws);
+		const words = marksOf(ws);
 		expect(hiddenLines(ws, words, 4)).toEqual(new Set([d2, a2]));
 	});
 
@@ -134,7 +137,7 @@ describe("hiddenLines", () => {
 		const d = del("a  ");
 		const a = add("x \t");
 		const ws = rows(d, a);
-		const words = hunkWordMarks(ws);
+		const words = marksOf(ws);
 		expect(words.get(a)).toEqual([[0, 3]]);
 		expect(hiddenLines(ws, words, 4).has(a)).toBe(true);
 	});
@@ -158,7 +161,7 @@ describe("hiddenLines", () => {
 			const d = del(before as string);
 			const a = add(after as string);
 			const ws = rows(d, a);
-			const words = hunkWordMarks(ws);
+			const words = marksOf(ws);
 			expect(words.has(a), after).toBe(true);
 			expect(hiddenLines(ws, words, 4).has(a), after).toBe(true);
 		}
