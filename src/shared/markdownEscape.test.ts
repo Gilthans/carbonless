@@ -208,6 +208,7 @@ describe("escapeTags", () => {
 		const { ratio } = bestCpuRatio(
 			() => run(full),
 			repeat(4, () => run(quarter)),
+			3,
 		);
 		return ratio;
 	};

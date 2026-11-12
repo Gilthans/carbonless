@@ -30,8 +30,8 @@ describe("highlightLine", () => {
 	// work a loaded machine can take seconds over. Done here, with its own
 	// time, rather than inside the test's 5 s. The engine compiles each of
 	// the grammar's rules the first time a line reaches it, so the warm-up
-	// is a line like the test's: an empty one left about two thirds of the
-	// first-use CPU (126 of 180 ms) to the test.
+	// is a line like the test's: after an empty one, the test's line still
+	// took 116–130 ms of CPU (12–20 ms after this one).
 	beforeAll(async () => {
 		await highlightLine("public class Warm { }", "csharp");
 	}, 60_000);

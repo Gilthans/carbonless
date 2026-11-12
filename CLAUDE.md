@@ -195,10 +195,9 @@ loading never looking empty, checking against a real PR):
   reference workload, or a scaling check: the input 4x as large against
   four runs of the quarter; `test/cpu.ts`), never against an absolute
   budget measured on the devbox alone, because CI runners' CPUs are slower
-  and contended. No automatic
-  retries (Playwright `retries`, Vitest `retry`): a flaky test fails visibly
-  and gets fixed. Playwright's expects wait 10 s (a reload's chained reads);
-  a test that needs longer says why.
+  and contended. No automatic retries (Playwright `retries`, Vitest
+  `retry`): a flaky test fails visibly and gets fixed. Playwright's expects
+  wait 10 s (a reload's chained reads); a test that needs longer says why.
 - `pnpm flake-check <files…> [--runs N] [--load L] [-g title] [--project p]`
   runs unit files or e2e specs N times (default 5), in the queue. `--load L`
   adds L busy loops (default none: the devbox is loaded enough by other

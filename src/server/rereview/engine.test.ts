@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { bestCpuRatioAsync } from "../../../test/cpu";
+import { bestCpuRatio, bestCpuRatioAsync, repeat } from "../../../test/cpu";
 import {
 	createGitFixture,
 	GIT_TEST_TIMEOUTS,
@@ -672,46 +672,58 @@ describe("the engine's cost", () => {
 		const r = await buildSnapshot(fx.path, b0, h2);
 		expect(ps1.files).toHaveLength(count);
 		const states = marked(ps1);
-		const run = async () => {
-			const traced = await traceRereview(
-				fx.path,
-				since(1, ps1, states),
-				[],
-				targetOf(r),
-			);
-			return answerRereview(traced, since(1, ps1, states), [], targetOf(r))
-				.answer;
-		};
-		return { fx, run };
+		const trace = () =>
+			traceRereview(fx.path, since(1, ps1, states), [], targetOf(r));
+		const traced = await trace();
+		const answer = () =>
+			answerRereview(traced, since(1, ps1, states), [], targetOf(r)).answer;
+		return { fx, trace, answer };
 	};
 
-	it("traces and answers a 200-file PR in linear time", async () => {
-		const large = await pr(200);
-		const small = await pr(50);
-		try {
-			// This thread's CPU (git's own processes don't count) against a
-			// run over a PR a quarter the size (CLAUDE.md). A run's fixed
-			// cost (git calls to spawn and read, whatever the PR's size)
-			// is most of a 50-file run's, so linear is about 1.3x, where a
-			// cost quadratic in the files would be about 3x.
-			const { best, ratio } = await bestCpuRatioAsync(large.run, small.run);
-			console.info(
-				`engine CPU for 200 files: ${(best / 1000).toFixed(0)} ms, ${ratio.toFixed(2)}x a 50-file run`,
-			);
-			expect(ratio).toBeLessThan(2);
-			const answer = await large.run();
-			expect(answer.toRead).toEqual({ files: 5, clusters: 5 });
-			expect(
-				answer.files
-					.flatMap((f) => f.clusters)
-					.filter((c) => c.kind === "carried"),
-			).toHaveLength(600);
-			execFileSync("git", ["-C", large.fx.path, "status"], {
-				env: testGitEnv(),
-			});
-		} finally {
-			large.fx.cleanup();
-			small.fx.cleanup();
-		}
+	// Two PRs, built once for both tests (the fixtures are most of the time).
+	let large: Awaited<ReturnType<typeof pr>>;
+	let small: Awaited<ReturnType<typeof pr>>;
+	beforeAll(async () => {
+		large = await pr(200);
+		small = await pr(50);
+	});
+	afterAll(() => {
+		large?.fx.cleanup();
+		small?.fx.cleanup();
+	});
+
+	it("answers a 200-file PR in linear time", () => {
+		// Git is out of the loop (traced once, above): the answer's CPU
+		// against four answers over a PR a quarter the size (CLAUDE.md):
+		// linear is about 1x, a cost quadratic in the files 4x.
+		const { best, ratio } = bestCpuRatio(large.answer, repeat(4, small.answer));
+		console.info(
+			`engine answer CPU for 200 files: ${(best / 1000).toFixed(1)} ms, ${ratio.toFixed(2)}x four 50-file answers`,
+		);
+		expect(ratio).toBeLessThan(2);
+		const answer = large.answer();
+		expect(answer.toRead).toEqual({ files: 5, clusters: 5 });
+		expect(
+			answer.files
+				.flatMap((f) => f.clusters)
+				.filter((c) => c.kind === "carried"),
+		).toHaveLength(600);
+		execFileSync("git", ["-C", large.fx.path, "status"], {
+			env: testGitEnv(),
+		});
+	});
+
+	it("traces a 200-file PR without git work per file", async () => {
+		// A trace runs a fixed number of git commands, whatever the PR's
+		// size; spawning and reading them is most of this thread's CPU for
+		// 50 files. Against one 50-file trace, that is about 1.15x; a git
+		// command per file (about 1 ms here each) would be about 4x. Too
+		// coarse for the trace's own per-file work: a quadratic step there
+		// fails only once it adds about 10 ms at 200 files.
+		const { best, ratio } = await bestCpuRatioAsync(large.trace, small.trace);
+		console.info(
+			`engine trace CPU for 200 files: ${(best / 1000).toFixed(0)} ms, ${ratio.toFixed(2)}x a 50-file trace`,
+		);
+		expect(ratio).toBeLessThan(2);
 	});
 });
