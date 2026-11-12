@@ -115,7 +115,7 @@ const STOPS: Partial<
  * counts, opened to every title, carbonless's decisions marked. Stays with
  * the message, so what a PR made the agent do remains visible.
  */
-function ActivityLine(props: { activity: readonly AgentActivity[] }) {
+export function ActivityLine(props: { activity: readonly AgentActivity[] }) {
 	const summary = activitySummary(props.activity);
 	if (!summary) return null;
 	return (

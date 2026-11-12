@@ -188,8 +188,6 @@ export interface AgentStatus {
 	spawnedAt?: string;
 	/** When carbonless last heard from the agent (ISO): an ACP message, an MCP tool call or watcher. */
 	seen?: string;
-	/** @deprecated Task 2 removes the readers; the server no longer sets it. */
-	acpOff?: boolean;
 }
 
 /** Exactly one of `span` and `thread`. */

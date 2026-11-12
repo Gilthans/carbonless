@@ -59,7 +59,6 @@ const joined = (more: Partial<AgentStatus> = {}): Partial<AgentStatus> => ({
 		harness: "Claude Code 2.1",
 		since: "2026-11-10T10:00:00Z",
 	},
-	acpOff: true,
 	...more,
 });
 
@@ -113,7 +112,6 @@ describe("the chip with a joined session", () => {
 		const fetchMock = routed(
 			status({
 				state: "off",
-				acpOff: true,
 				agent: undefined,
 				left: {
 					name: "carbonless · main",
@@ -174,9 +172,9 @@ describe("the chip with a joined session", () => {
 	});
 });
 
-describe("the chip with the ACP buddy off", () => {
-	it("Start shows with a config, and posts; the join line opens the setup's Join tab", async () => {
-		const off = status({ state: "off", acpOff: true, agent: undefined });
+describe("the chip with the spawn flag set", () => {
+	it("Start shows with a config, and posts; the join line opens the setup's Invite tab", async () => {
+		const off = status({ state: "off", spawned: true, agent: undefined });
 		const fetchMock = routed(off);
 		const { user } = chipOver(off, fetchMock);
 		const chip = screen.getByTestId("agent-chip");
@@ -197,7 +195,7 @@ describe("the chip with the ACP buddy off", () => {
 				"agent-join-setup",
 			),
 		);
-		expect(screen.getByTestId("setup")).toHaveTextContent("join");
+		expect(screen.getByTestId("setup")).toHaveTextContent("invite");
 	});
 
 	it("Start and Disconnect: two presses before a re-render post once", async () => {
@@ -212,7 +210,10 @@ describe("the chip with the ACP buddy off", () => {
 				: Promise.resolve(new Response(JSON.stringify(status()))),
 		);
 		for (const [s, button] of [
-			[status({ state: "off", acpOff: true, agent: undefined }), "agent-start"],
+			[
+				status({ state: "off", spawned: true, agent: undefined }),
+				"agent-start",
+			],
 			[status(joined()), "agent-disconnect"],
 		] as const) {
 			fetchMock.mockClear();
@@ -237,7 +238,7 @@ describe("the chip with the ACP buddy off", () => {
 			status({
 				state: "off",
 				configured: false,
-				acpOff: true,
+				spawned: true,
 				agent: undefined,
 			}),
 		);
@@ -247,16 +248,16 @@ describe("the chip with the ACP buddy off", () => {
 		expect(within(pop).getByTestId("agent-join-setup")).toBeInTheDocument();
 	});
 
-	it("with ACP on and nothing joined the chip opens the setup, no popover", async () => {
+	it("with no flag and nothing joined the chip opens the setup, no popover", async () => {
 		expect(chipPopover(status())).toBe(false);
-		expect(chipPopover(status({ acpOff: true }))).toBe(true);
-		expect(chipPopover(status(joined({ acpOff: undefined })))).toBe(true);
+		expect(chipPopover(status({ spawned: true }))).toBe(true);
+		expect(chipPopover(status(joined()))).toBe(true);
 		const { user } = chipOver(status());
 		const chip = screen.getByTestId("agent-chip");
 		expect(chip).not.toHaveAttribute("aria-expanded");
 		await user.click(chip);
 		expect(screen.queryByTestId("agent-popover")).toBeNull();
-		expect(screen.getByTestId("setup")).toHaveTextContent("launch");
+		expect(screen.getByTestId("setup")).toHaveTextContent("invite");
 	});
 });
 
@@ -318,10 +319,10 @@ describe("the agent chip", () => {
 			"carbonless · main · reconnecting",
 		],
 		[
-			"off after a join, with a config",
-			{ state: "off", acpOff: true, agent: undefined },
+			"off, with a config",
+			{ state: "off", agent: undefined },
 			"bg-unreviewed",
-			"Agent off · start it",
+			"No agent · spawn or invite",
 		],
 		[
 			"elsewhere",

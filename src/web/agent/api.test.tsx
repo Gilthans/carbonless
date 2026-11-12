@@ -13,7 +13,7 @@ import {
 	answerJoin,
 	type JoinPoll,
 	joinLine,
-	mcpAddLine,
+	mcpLine,
 	shellWord,
 	useHiddenJoinPoll,
 } from "./api";
@@ -267,19 +267,39 @@ describe("answering a join request", () => {
 
 describe("the join lines", () => {
 	it("the setup line quotes the URL for the shell (zsh globs an unquoted ?)", () => {
-		expect(mcpAddLine("http://100.1.2.3:4747", "k3y")).toBe(
+		expect(mcpLine("claude-code", "http://100.1.2.3:4747", "k3y")).toBe(
 			'claude mcp add --scope user --transport http crb "http://100.1.2.3:4747/mcp?key=k3y"',
 		);
-		expect(mcpAddLine("http://127.0.0.1:4747", null)).toBe(
+		expect(mcpLine("claude-code", "http://127.0.0.1:4747", null)).toBe(
 			'claude mcp add --scope user --transport http crb "http://127.0.0.1:4747/mcp"',
 		);
 	});
 
 	it("a key with shell characters is encoded in the URL and can't break out", () => {
-		const line = mcpAddLine("http://h:1", `a"$(rm -rf ~)\`'b`);
+		const line = mcpLine("claude-code", "http://h:1", `a"$(rm -rf ~)\`'b`);
 		expect(line).toBe(
 			`claude mcp add --scope user --transport http crb "http://h:1/mcp?key=a%22%24%28rm+-rf+%7E%29%60%27b"`,
 		);
+	});
+
+	it("each MCP harness gets its own add command; Other is the bare URL", () => {
+		const o = "http://100.1.2.3:4747";
+		expect(mcpLine("codex", o, "k3y")).toBe(
+			'codex mcp add crb --url "http://100.1.2.3:4747/mcp?key=k3y"',
+		);
+		expect(mcpLine("gemini", o, "k3y")).toBe(
+			'gemini mcp add --scope user --transport http crb "http://100.1.2.3:4747/mcp?key=k3y"',
+		);
+		expect(mcpLine("other", o, "k3y")).toBe(
+			"http://100.1.2.3:4747/mcp?key=k3y",
+		);
+		// A hostile key stays inside the quoted word for every harness.
+		const key = `a"$(rm -rf ~)\`'b`;
+		for (const h of ["codex", "gemini"] as const) {
+			expect(mcpLine(h, "http://h:1", key)).toMatch(
+				/ "http:\/\/h:1\/mcp\?key=a%22%24%28rm\+-rf\+%7E%29%60%27b"$/,
+			);
+		}
 	});
 
 	it("shellWord single-quotes anything that would expand in double quotes", () => {

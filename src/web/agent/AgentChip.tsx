@@ -20,7 +20,7 @@ import {
 	postAgentStart,
 	useAgentOn,
 } from "./api";
-import { openAgentSetup, openJoinSetup } from "./setupStore";
+import { openAgentSetup, openInviteSetup } from "./setupStore";
 
 /** The status dot's colour: muted off or elsewhere, yellow on its way or busy, green ready, red failing. */
 export function agentDot(status: AgentStatus): string {
@@ -49,8 +49,8 @@ export function agentTip(status: AgentStatus): string {
 	}
 	switch (status.state) {
 		case "off":
-			return status.acpOff && status.configured
-				? "Agent off · start it"
+			return status.configured
+				? "No agent · spawn or invite"
 				: "No agent · set one up";
 		case "starting":
 			return who ? `${who} · starting` : "Starting";
@@ -102,7 +102,7 @@ export function useAgentSync(
 
 /** Whether pressing the chip opens its popover (else the setup). */
 export const chipPopover = (status: AgentStatus | undefined): boolean =>
-	Boolean(status?.joined || status?.acpOff);
+	Boolean(status?.joined || status?.spawned);
 
 /** A joined session's presence, as a word. */
 const presenceWord = (status: AgentStatus): string =>
@@ -234,7 +234,7 @@ function ChipPanel(props: { status: AgentStatus; onDone(): void }) {
 						data-testid="agent-join-setup"
 						onClick={() => {
 							onDone();
-							openJoinSetup();
+							openInviteSetup();
 						}}
 						className={`${POP_BUTTON} border border-line-strong text-ink-soft hover:bg-overlay hover:text-ink`}
 					>
