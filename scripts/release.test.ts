@@ -2216,7 +2216,7 @@ describe("release-finish: each step only once", () => {
 			rc.indexOf('npm publish "$TGZ"'),
 		);
 		expect(step).toContain("if: env.PUBLISH == 'true' && env.FIRST == 'false'");
-		expect(step).toContain("TRIES: 10");
+		expect(step).toContain("TRIES: 40");
 		expect(step).toContain("WAIT: 15");
 		// The script itself, as the runner runs it, with a fake npm.
 		const script = (runValues(step)[0] ?? "")
