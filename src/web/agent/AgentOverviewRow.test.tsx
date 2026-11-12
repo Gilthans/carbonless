@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { inRouter } from "../../../test/in-router";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { AgentStatus, AgentThread } from "../../shared/agent";
 import type { ReviewView, SessionInfo } from "../../shared/types";
@@ -27,6 +28,7 @@ const thread = (id: string, path: string, commit: string): AgentThread => ({
 	],
 	resolved: false,
 	waiting: true,
+	unread: false,
 });
 
 afterEach(() => {
@@ -164,5 +166,56 @@ describe("AgentOverviewRow", () => {
 		expect(screen.getByTestId("agent-overview-counts")).toHaveTextContent(
 			"1 open · 1 waiting",
 		);
+	});
+
+	it("counts thread conversations with span threads; unread links to the first unread", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise(() => {})),
+		);
+		const c = client();
+		const span = thread("A1", "src/kept.ts", HEAD);
+		const onThread: AgentThread = {
+			...thread("A2", "src/cache.ts", HEAD),
+			anchor: {
+				subject: "thread",
+				thread: "RT1",
+				path: "src/cache.ts",
+				commit: HEAD,
+				side: "RIGHT",
+				line: 12,
+				startSide: "RIGHT",
+				startLine: 10,
+			},
+			waiting: false,
+			unread: true,
+		};
+		const laterUnread = { ...thread("A3", "src/kept.ts", HEAD), unread: true };
+		c.setQueryData(agentThreadsQuery.queryKey, {
+			threads: [span, onThread, laterUnread],
+		});
+		render(
+			<QueryClientProvider client={c}>
+				{inRouter(() => (
+					<AgentOverviewRow />
+				))}
+			</QueryClientProvider>,
+		);
+		expect(
+			await screen.findByTestId("agent-overview-counts"),
+		).toHaveTextContent("3 open · 2 waiting");
+		const link = screen.getByRole("link", {
+			name: "2 agent threads with new messages",
+		});
+		expect(link).toHaveTextContent("2 new");
+		const to = new URL(link.getAttribute("href") ?? "", "http://crb");
+		expect(to.pathname).toBe("/r/01testreview0000000000000a/files");
+		expect(Object.fromEntries(to.searchParams)).toEqual({
+			path: "src/cache.ts",
+			line: "12",
+			side: "RIGHT",
+		});
+		// The thread conversation is its thread's, never an agent card here.
+		expect(screen.queryByTestId("agent-overview-gone")).toBeNull();
 	});
 });

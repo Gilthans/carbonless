@@ -16,6 +16,7 @@ import {
 import { createPortal } from "react-dom";
 import {
 	headQuery,
+	invalidateAgentThreads,
 	overviewQuery,
 	postRefresh,
 	REVIEW_KEY,
@@ -359,6 +360,10 @@ export function App() {
 			queryClient.cancelQueries({ queryKey: ["overview-revalidate"] }),
 		onSuccess: (info) => {
 			queryClient.setQueryData(sessionQuery.queryKey, info);
+			// A thread deleted on GitHub shows its conversation as a span.
+			// Not waited for: placements can take a while (a push being
+			// traced), and Refresh is done once the PR is read again.
+			void invalidateAgentThreads(queryClient);
 			return Promise.all([
 				queryClient.invalidateQueries({ queryKey: overviewQuery.queryKey }),
 				queryClient.invalidateQueries({ queryKey: REVIEW_KEY }),

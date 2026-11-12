@@ -19,6 +19,9 @@ const TRACE_REPORTER = ["./e2e/trace-reporter.ts"] as const;
 export default defineConfig({
 	testDir: "e2e",
 	fullyParallel: true,
+	// One crb start, clone and browser launch before the workers start, so
+	// their first tests don't all load cold at once (e2e/global-setup.ts).
+	globalSetup: "./e2e/global-setup.ts",
 	// A run in the queue (scripts/queue.mjs) shares the machine with the
 	// other slots only: a worker per core it gets. Otherwise Playwright's default.
 	workers: queuedWorkers(availableParallelism()),

@@ -102,7 +102,10 @@ export const CLI = resolve(import.meta.dirname, "../dist/cli.js");
 
 /**
  * The environment crb runs in: the fake gh first on PATH; cache, state
- * (server.json, key) and config in `workdir`, never the reviewer's.
+ * (server.json, key) and config in `workdir`, never the reviewer's. The
+ * rest is this process's env: NODE_COMPILE_CACHE among it, the run's one
+ * compile cache (e2e/global-setup.ts), which a per-test XDG_CACHE_HOME
+ * would leave empty for every crb.
  */
 export function crbEnv(workdir: string): NodeJS.ProcessEnv {
 	return testGitEnv({

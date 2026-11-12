@@ -10,7 +10,9 @@ import {
 } from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+	Fragment,
 	type KeyboardEvent,
+	type ReactNode,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -23,6 +25,7 @@ import {
 	type AgentStatus,
 	type AgentStop,
 	type AgentThread,
+	type AgentView,
 	MAX_AGENT_TEXT,
 } from "../../shared/agent";
 import { sessionQuery } from "../api";
@@ -35,6 +38,7 @@ import { newClientId } from "../threads/newThreads";
 import { Avatar, usePerson } from "../threads/people";
 import { AgentMarkdown } from "./AgentMarkdown";
 import {
+	type AgentWrite,
 	dropAgentWrite,
 	replyAgent,
 	retryAgentWrite,
@@ -48,6 +52,10 @@ import {
 	withThread,
 } from "./api";
 import { openAgentSetup } from "./setupStore";
+import { useSeenWriter, useSendView } from "./threadAgent";
+
+/** The longest request the origin chip shows. */
+const MAX_ORIGIN = 200;
 
 const plural = (n: number, one: string, many: string) =>
 	`${n} ${n === 1 ? one : many}`;
@@ -169,6 +177,7 @@ function HumanMessage(props: { message: AgentMessage; viewer: string }) {
 				<Avatar login={props.viewer} url="" />
 				<span className="font-semibold text-ink-soft">{props.viewer}</span>
 				<RelativeTime iso={props.message.at} />
+				{props.message.view && <ViewChip view={props.message.view} />}
 			</Who>
 			<p
 				data-testid="agent-message-human"
@@ -178,6 +187,70 @@ function HumanMessage(props: { message: AgentMessage; viewer: string }) {
 			</p>
 			{props.message.truncated && <TruncatedChip />}
 		</div>
+	);
+}
+
+/** The accent dot of a conversation with an answer the reviewer hasn't seen. */
+function UnreadDot(props: { unread: boolean }) {
+	if (!props.unread) return null;
+	return (
+		<span
+			role="img"
+			aria-label="Unread"
+			data-testid="agent-unread-dot"
+			className="h-2.5 w-2.5 shrink-0 rounded-full bg-accent"
+		/>
+	);
+}
+
+/** The comparison a question was asked in: "PS 3", or the commit's short id. */
+function ViewChip(props: { view: AgentView }) {
+	const { target } = props.view;
+	const label =
+		"patchset" in target ? `PS ${target.patchset}` : target.head.slice(0, 7);
+	const tip =
+		"patchset" in target
+			? `Asked viewing patch set ${target.patchset}`
+			: `Asked viewing commit ${target.head.slice(0, 7)}`;
+	return (
+		<Tooltip content={tip} describe={false}>
+			{(trigger) => (
+				<span
+					{...trigger}
+					data-testid="agent-view-chip"
+					// Focusable so keyboard and touch users get the tip.
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					className="inline-flex rounded-full focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					<Badge tone="gray">{label}</Badge>
+				</span>
+			)}
+		</Tooltip>
+	);
+}
+
+/** Over an agent-opened conversation's first message: the request behind it. */
+function OriginChip(props: { request: string }) {
+	const text =
+		props.request.length > MAX_ORIGIN
+			? `${props.request.slice(0, MAX_ORIGIN - 1)}…`
+			: props.request;
+	return (
+		<Tooltip content={props.request} describe={false}>
+			{(trigger) => (
+				<span
+					{...trigger}
+					data-testid="agent-origin-chip"
+					// Focusable so keyboard and touch users get the full request.
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					className="inline-flex max-w-full self-start rounded-full border border-agent-edge bg-agent px-2 py-0.5 text-xs break-words text-agent-ink focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					↳ {text}
+				</span>
+			)}
+		</Tooltip>
 	);
 }
 
@@ -191,7 +264,12 @@ function TruncatedChip() {
 	);
 }
 
-function AiMessage(props: { message: AgentMessage; name: string }) {
+function AiMessage(props: {
+	message: AgentMessage;
+	name: string;
+	/** The last part of the reply, inside its box (the suggestion's button). */
+	footer?: ReactNode;
+}) {
 	const { message } = props;
 	const known = message.stop ? STOPS[message.stop] : undefined;
 	// A failed turn names the agent's reason (rate limit, expired login…).
@@ -233,7 +311,7 @@ function AiMessage(props: { message: AgentMessage; name: string }) {
 				className={`${AGENT_SURFACE} text-sm`}
 			>
 				{message.text || !reason ? (
-					<AgentMarkdown text={message.text} />
+					<AgentMarkdown text={message.text} head={message.head} />
 				) : (
 					<p
 						data-testid="agent-message-error"
@@ -242,6 +320,14 @@ function AiMessage(props: { message: AgentMessage; name: string }) {
 						<AlertIcon size={14} aria-hidden className="mt-0.5 shrink-0" />
 						{reason}
 					</p>
+				)}
+				{props.footer && (
+					<div
+						data-message={message.id}
+						className="mt-2 flex border-agent-edge border-t pt-2"
+					>
+						{props.footer}
+					</div>
 				)}
 			</div>
 			{message.activity && <ActivityLine activity={message.activity} />}
@@ -382,6 +468,10 @@ export function AgentThreadCard(props: {
 		([, w]) => w.thread === thread.id,
 	);
 	const closed = resolved && !expanded;
+	// Span threads too: an accent dot while an answer is unseen, and the
+	// same seen mark the thread panel writes, once it has been in view.
+	const card = useRef<HTMLElement>(null);
+	useSeenWriter(thread, !closed, card);
 	const first = thread.messages.find((m) => m.by === "human")?.text ?? "";
 	const toggle = (
 		<Tooltip content={closed ? "Show thread" : "Hide thread"} describe={false}>
@@ -410,6 +500,7 @@ export function AgentThreadCard(props: {
 		// resolved check, the question, and the way back in.
 		return (
 			<article
+				ref={card}
 				data-testid="agent-thread"
 				data-thread={thread.id}
 				data-closed="true"
@@ -423,6 +514,7 @@ export function AgentThreadCard(props: {
 						className="shrink-0 text-agent-ink"
 					/>
 					<span className="shrink-0 font-semibold text-ink-soft">{name}</span>
+					<UnreadDot unread={thread.unread} />
 					<LabeledIcon
 						icon={CheckCircleIcon}
 						label="Resolved"
@@ -445,6 +537,7 @@ export function AgentThreadCard(props: {
 	}
 	return (
 		<article
+			ref={card}
 			data-testid="agent-thread"
 			data-thread={thread.id}
 			aria-label={`Agent thread, ${state}`}
@@ -457,6 +550,7 @@ export function AgentThreadCard(props: {
 					className="shrink-0 text-agent-ink"
 				/>
 				<span className="font-semibold text-ink-soft">{name}</span>
+				<UnreadDot unread={thread.unread} />
 				{state === "resolved" && (
 					<LabeledIcon
 						icon={CheckCircleIcon}
@@ -495,71 +589,14 @@ export function AgentThreadCard(props: {
 				{resolved && toggle}
 			</div>
 			<div id={bodyId} className="space-y-2 p-2.5">
-				{thread.messages.map((m) =>
-					m.by === "human" ? (
-						<HumanMessage key={m.id} message={m} viewer={viewer} />
-					) : (
-						<AiMessage key={m.id} message={m} name={name} />
-					),
-				)}
-				{answering && (
-					<div
-						data-testid="agent-answering"
-						aria-busy="true"
-						className="min-w-0 space-y-1"
-					>
-						<Who>
-							<SparkleFillIcon
-								size={14}
-								aria-hidden
-								className="text-agent-ink"
-							/>
-							<span className="font-semibold text-ink-soft">{name}</span>
-							<Spinner label="Answering" size={12} />
-						</Who>
-						{answering.text && (
-							<div className={`${AGENT_SURFACE} text-sm`}>
-								<AgentMarkdown text={answering.text} />
-							</div>
-						)}
-						<ActivityLine activity={answering.activity} />
-					</div>
-				)}
-				{state === "waiting" &&
-					(status && !status.configured && !status.joined ? (
-						<button
-							type="button"
-							data-testid="agent-waiting"
-							onClick={openAgentSetup}
-							className="flex min-h-10 items-center gap-2 rounded-md px-1 text-sm text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-						>
-							<span
-								aria-hidden
-								className="h-2 w-2 shrink-0 rounded-full bg-warn"
-							/>
-							Set up an agent
-						</button>
-					) : (
-						<p
-							data-testid="agent-waiting"
-							className="flex min-h-10 items-center gap-2 px-1 text-sm text-muted"
-						>
-							<span
-								aria-hidden
-								className="h-2 w-2 shrink-0 rounded-full bg-warn"
-							/>
-							waiting for an agent
-						</p>
-					))}
-				{replies.map(([clientId, w]) => (
-					<PendingReply
-						key={clientId}
-						clientId={clientId}
-						text={w.text}
-						error={w.error?.message}
-						viewer={viewer}
-					/>
-				))}
+				<AgentMessageItems
+					thread={shown}
+					status={status}
+					answering={answering}
+					viewer={viewer}
+					name={name}
+					pending={replies}
+				/>
 				{resolve.error && (
 					<p
 						role="alert"
@@ -594,6 +631,121 @@ export function AgentThreadCard(props: {
 				</div>
 			</div>
 		</article>
+	);
+}
+
+/**
+ * A conversation's messages as the agent card and the thread agent panel
+ * show them: each message (the "new" divider above `divider`, `footer`
+ * inside each agent reply), the turn under way (its streamed text, activity and
+ * `stop`), the waiting dot, and the replies on their way.
+ */
+export function AgentMessageItems(props: {
+	thread: AgentThread | undefined;
+	status: AgentStatus | undefined;
+	answering: Answering | undefined;
+	viewer: string;
+	name: string;
+	pending: readonly (readonly [string, AgentWrite])[];
+	/** The first unseen message: the "new" divider goes above it. */
+	divider?: string;
+	/** Inside an agent reply, its last part (the suggestion's button). */
+	footer?: (message: AgentMessage) => ReactNode;
+	/** In the answering row (the panel's Stop). */
+	stop?: ReactNode;
+}) {
+	const { thread, status, answering, viewer, name } = props;
+	const waiting =
+		thread !== undefined && agentThreadState(thread, answering) === "waiting";
+	return (
+		<>
+			{thread?.messages.map((m, i) => (
+				<Fragment key={m.id}>
+					{i === 0 && thread.origin && (
+						<OriginChip request={thread.origin.request} />
+					)}
+					{m.id === props.divider && <NewDivider />}
+					{m.by === "human" ? (
+						<HumanMessage message={m} viewer={viewer} />
+					) : (
+						<AiMessage message={m} name={name} footer={props.footer?.(m)} />
+					)}
+				</Fragment>
+			))}
+			{answering && (
+				<div
+					data-testid="agent-answering"
+					aria-busy="true"
+					className="min-w-0 space-y-1"
+				>
+					<Who>
+						<SparkleFillIcon size={14} aria-hidden className="text-agent-ink" />
+						<span className="font-semibold text-ink-soft">{name}</span>
+						<Spinner label="Answering" size={12} />
+						{props.stop}
+					</Who>
+					{answering.text && (
+						<div className={`${AGENT_SURFACE} text-sm`}>
+							<AgentMarkdown text={answering.text} />
+						</div>
+					)}
+					<ActivityLine activity={answering.activity} />
+				</div>
+			)}
+			{waiting &&
+				(status && !status.configured && !status.joined ? (
+					<button
+						type="button"
+						data-testid="agent-waiting"
+						onClick={openAgentSetup}
+						className="flex min-h-10 items-center gap-2 rounded-md px-1 text-sm text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						<span
+							aria-hidden
+							className="h-2 w-2 shrink-0 rounded-full bg-warn"
+						/>
+						Set up an agent
+					</button>
+				) : (
+					<p
+						data-testid="agent-waiting"
+						className="flex min-h-10 items-center gap-2 px-1 text-sm text-muted"
+					>
+						<span
+							aria-hidden
+							className="h-2 w-2 shrink-0 rounded-full bg-warn"
+						/>
+						waiting for an agent
+					</p>
+				))}
+			{props.pending.map(([clientId, w]) => (
+				<PendingReply
+					key={clientId}
+					clientId={clientId}
+					text={w.text}
+					error={w.error?.message}
+					viewer={viewer}
+				/>
+			))}
+		</>
+	);
+}
+
+/** Above the first message the reviewer hadn't seen when the conversation opened. */
+function NewDivider() {
+	return (
+		// An <hr> can't hold its label: a named separator with the word in it.
+		// biome-ignore lint/a11y/useSemanticElements: see above.
+		<div
+			data-testid="agent-new-divider"
+			role="separator"
+			aria-label="new"
+			className="flex items-center gap-2 text-xs font-semibold text-accent"
+		>
+			<span aria-hidden className="h-px flex-1 bg-accent/60" />
+			new
+			<span aria-hidden className="h-px flex-1 bg-accent/60" />
+		</div>
 	);
 }
 
@@ -663,9 +815,10 @@ function AgentReplyBox(props: { thread: string }) {
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text]);
 	const tooLong = new TextEncoder().encode(text).length > MAX_AGENT_TEXT;
+	const view = useSendView();
 	const send = () => {
 		if (!text.trim() || tooLong) return;
-		replyAgent(client, props.thread, text, newClientId());
+		replyAgent(client, props.thread, text, newClientId(), view);
 		setText("");
 	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {

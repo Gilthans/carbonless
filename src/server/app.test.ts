@@ -34,6 +34,7 @@ import { buildApp, prTitle, withPrTitle } from "./app";
 import type { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
 import { ThreadPlacer } from "./rereview/threads";
+import { RefStore } from "./review/refStore";
 import { BUILD, VERSION_HEADER } from "./version";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
@@ -1555,6 +1556,350 @@ describe("API", () => {
 				});
 				expect(res.statusCode, url).toBe(403);
 			}
+		});
+
+		describe("on GitHub threads", () => {
+			/** Two GitHub threads on a.txt (T12-0 on line 2, T12-1 on line 26), read again. */
+			const github = async (
+				over: Partial<Scenario> = {},
+				{ resolved = false, only }: { resolved?: boolean; only?: number } = {},
+			) => {
+				const head = pr.head();
+				// Fixed ids: dropping one thread doesn't rename the other.
+				const all = [
+					Object.assign(
+						reviewThread({ path: "a.txt", line: 2, isResolved: resolved }, [
+							threadComment({ login: "rev", text: "Why?", commit: head }),
+						]),
+						{ id: "T12-0" },
+					),
+					Object.assign(
+						reviewThread({ path: "a.txt", line: 26 }, [
+							threadComment({ login: "rev", text: "And?", commit: head }),
+						]),
+						{ id: "T12-1" },
+					),
+				];
+				pr.scenario({
+					...over,
+					prs: {
+						12: {
+							view: prView({ headRefOid: head, baseRefName: "main" }),
+							graphql: {
+								reviewThreads:
+									only === undefined ? all : all.slice(only, only + 1),
+								// An --as-of review finds the head by them.
+								commits: [
+									{
+										commit: {
+											oid: head,
+											committedDate: "2026-01-01T00:00:00Z",
+										},
+									},
+								],
+							},
+						},
+					},
+				});
+				await get("/api/overview?maxAge=0");
+			};
+			/** Patch set 1, made by a check-off. */
+			const patchset1 = async () => {
+				const view: ReviewView = await get("/api/review");
+				const [key = ""] = keys(view);
+				await post("/api/review/states", {
+					revision: view.revision,
+					changes: [{ key, state: "reviewed" }],
+				});
+				const info: SessionInfo = await get("/api/session");
+				const ps = info.patchsets[0];
+				if (!ps) throw new Error("no patch set");
+				return ps;
+			};
+			const askThread = (over: Record<string, unknown> = {}) =>
+				post("/api/agent/threads", {
+					clientId: "g1",
+					text: "Fixed?",
+					thread: "T12-0",
+					...over,
+				});
+			const threadAnchor = () => ({
+				subject: "thread",
+				thread: "T12-0",
+				path: "a.txt",
+				commit: pr.head(),
+				side: "RIGHT",
+				line: 2,
+				startSide: "RIGHT",
+				startLine: 2,
+			});
+			/** Drops T12-0 from GitHub (T12-1 alone is listed), read again. */
+			const goneFromGithub = () => github({}, { only: 1 });
+
+			it("POST agent/threads with thread opens a thread conversation", async () => {
+				await github();
+				const ps = await patchset1();
+				const res = await askThread({
+					view: { target: { patchset: 1 }, from: { branch: true } },
+				});
+				expect(res.statusCode, res.body).toBe(200);
+				const t: AgentThread = res.json();
+				expect(t.anchor).toEqual(threadAnchor());
+				expect(t).toMatchObject({ resolved: false, openedBy: "human" });
+				expect(t).not.toHaveProperty("orphaned");
+				expect(t.messages[0]).toMatchObject({
+					by: "human",
+					text: "Fixed?",
+					view: {
+						target: { patchset: 1 },
+						from: { branch: true },
+						left: ps.mergeBase,
+						right: ps.head,
+					},
+				});
+			});
+
+			it("POST agent/threads for a thread that has one answers 409 with its id", async () => {
+				await github();
+				const first: AgentThread = (await askThread()).json();
+				// A resend of the same opening is that thread, not a conflict.
+				const resend = await askThread();
+				expect(resend.statusCode, resend.body).toBe(200);
+				expect(resend.json().id).toBe(first.id);
+				const other = await askThread({ clientId: "g2" });
+				expect(other.statusCode).toBe(409);
+				expect(other.json()).toMatchObject({ thread: first.id });
+				expect((await get("/api/agent/threads")).threads).toHaveLength(1);
+			});
+
+			it("POST agent/threads with an unknown, empty or deleted thread id answers 400", async () => {
+				await github({ deletedThreads: ["T12-1"] });
+				for (const bad of [
+					{ thread: "T12-9" },
+					{ thread: "" },
+					{ thread: "T12-1" },
+					{ thread: "x".repeat(201) },
+					{ thread: 7 },
+					// Both a span and a thread, or neither.
+					{ span: span() },
+					{ thread: undefined },
+					// A view of a patch set that isn't one, or a head that isn't an OID.
+					{ view: { target: { patchset: 9 }, from: { branch: true } } },
+					{ view: { target: { head: "main" }, from: { branch: true } } },
+					{ view: { target: { patchset: 1 } } },
+				]) {
+					const res = await askThread(bad);
+					expect(res.statusCode, JSON.stringify(bad)).toBe(400);
+					expect(res.json().error).toEqual(expect.any(String));
+				}
+				expect((await get("/api/agent/threads")).threads).toHaveLength(0);
+			});
+
+			it("POST agent/threads/:tid/messages stores view", async () => {
+				await github();
+				const ps = await patchset1();
+				const t: AgentThread = (await askThread()).json();
+				const head = pr.head();
+				const res = await post(`/api/agent/threads/${t.id}/messages`, {
+					clientId: "m1",
+					text: "And now?",
+					view: { target: { head }, from: { patchset: 1 } },
+				});
+				expect(res.statusCode, res.body).toBe(200);
+				const sent = res
+					.json()
+					.messages.find(
+						(m: AgentThread["messages"][0]) => m.text === "And now?",
+					);
+				expect(sent?.view).toEqual({
+					target: { head },
+					from: { patchset: 1 },
+					left: ps.head,
+					right: head,
+				});
+				const bad = await post(`/api/agent/threads/${t.id}/messages`, {
+					clientId: "m2",
+					text: "?",
+					view: { target: { patchset: 4 }, from: { branch: true } },
+				});
+				expect(bad.statusCode).toBe(400);
+			});
+
+			it("POST agent/threads/:tid/seen marks seen; a second identical call writes nothing", async () => {
+				await github();
+				const t: AgentThread = (await askThread()).json();
+				const [answered] = await answeredThreads(1);
+				expect(answered?.unread).toBe(true);
+				const ai = answered?.messages.find((m) => m.by === "ai");
+				const appends = vi.spyOn(RefStore.prototype, "appendEvent");
+				const seen = await post(`/api/agent/threads/${t.id}/seen`, {
+					upTo: ai?.id,
+				});
+				expect(seen.statusCode, seen.body).toBe(200);
+				expect(seen.json()).toMatchObject({ unread: false, seenUpTo: ai?.id });
+				expect(appends).toHaveBeenCalledTimes(1);
+				const again = await post(`/api/agent/threads/${t.id}/seen`, {
+					upTo: ai?.id,
+				});
+				expect(again.statusCode).toBe(200);
+				expect(appends).toHaveBeenCalledTimes(1);
+				for (const upTo of [undefined, "nope", "01k9e6m2q8x4v7c3n5b0h1j2t6"]) {
+					const bad = await post(`/api/agent/threads/${t.id}/seen`, { upTo });
+					expect(bad.statusCode, String(upTo)).toBe(400);
+				}
+				appends.mockRestore();
+			});
+
+			it("POST agent/threads/:tid/resolved answers 409 for a live thread conversation and works for an orphan", async () => {
+				await github();
+				const t: AgentThread = (await askThread()).json();
+				const live = await post(`/api/agent/threads/${t.id}/resolved`, {
+					resolved: true,
+				});
+				expect(live.statusCode).toBe(409);
+				await goneFromGithub();
+				const orphan = await post(`/api/agent/threads/${t.id}/resolved`, {
+					resolved: true,
+				});
+				expect(orphan.statusCode, orphan.body).toBe(200);
+				expect(orphan.json()).toMatchObject({ resolved: true, orphaned: true });
+			});
+
+			it("GET agent/threads returns unread on span and thread conversations, and orphans as span threads", async () => {
+				await github();
+				const conv: AgentThread = (await askThread()).json();
+				await answeredThreads(1);
+				const spanThread: AgentThread = (await ask()).json();
+				const threads = await answeredThreads(2);
+				const byId = new Map(threads.map((t) => [t.id, t]));
+				expect(byId.get(conv.id)).toMatchObject({
+					unread: true,
+					anchor: threadAnchor(),
+				});
+				expect(byId.get(spanThread.id)?.unread).toBe(true);
+				await goneFromGithub();
+				const after: AgentThread[] = (await get("/api/agent/threads")).threads;
+				expect(after.find((t) => t.id === conv.id)).toMatchObject({
+					orphaned: true,
+					anchor: { ...span(), subject: "line" },
+				});
+			});
+
+			it("GET agent/placements leaves live thread conversations out and traces orphans", async () => {
+				await github();
+				const conv: AgentThread = (await askThread()).json();
+				const spanThread: AgentThread = (await ask()).json();
+				const placed = await get(`/api/agent/placements?head=${pr.head()}`);
+				expect(placed.threads.map((p: { id: string }) => p.id)).toEqual([
+					spanThread.id,
+				]);
+				await goneFromGithub();
+				const after = await get(`/api/agent/placements?head=${pr.head()}`);
+				expect(
+					new Map(
+						after.threads.map((p: { id: string; placement: unknown }) => [
+							p.id,
+							p.placement,
+						]),
+					).get(conv.id),
+				).toMatchObject({ kind: "placed", anchor: { path: "a.txt", line: 2 } });
+			});
+
+			it("--viewer and --as-of reviews refuse a thread open", async () => {
+				await github();
+				for (const req of [
+					{ pr: pr.arg, viewer: "someone-else" },
+					{ pr: pr.arg, asOf: "2099-01-01T00:00:00Z" },
+				]) {
+					const other = await registry.open(req);
+					const res = await inject(r("/api/agent/threads", other.id), {
+						method: "POST",
+						payload: { clientId: "g1", text: "Fixed?", thread: "T12-0" },
+					});
+					expect(res.statusCode, JSON.stringify(req)).toBe(404);
+					expect(res.json()).toMatchObject({ code: "no-agent" });
+				}
+			});
+
+			it("a resent message after the GitHub thread was resolved returns the stored message", async () => {
+				await github();
+				const t: AgentThread = (await askThread()).json();
+				const send = () =>
+					post(`/api/agent/threads/${t.id}/messages`, {
+						clientId: "m1",
+						text: "Still?",
+					});
+				expect((await send()).statusCode).toBe(200);
+				const resolve = await post("/api/threads/T12-0/resolved", {
+					resolved: true,
+				});
+				expect(resolve.statusCode, resolve.body).toBe(200);
+				const again = await send();
+				expect(again.statusCode, again.body).toBe(200);
+				const texts = (again.json() as AgentThread).messages
+					.filter((m) => m.by === "human")
+					.map((m) => m.text);
+				expect(texts).toEqual(["Fixed?", "Still?"]);
+			});
+
+			it("a resent open after the thread was deleted returns the stored thread", async () => {
+				await github();
+				const first: AgentThread = (await askThread()).json();
+				await github({ deletedThreads: ["T12-0"] });
+				const again = await askThread();
+				expect(again.statusCode, again.body).toBe(200);
+				expect(again.json().id).toBe(first.id);
+				expect((await get("/api/agent/threads")).threads).toHaveLength(1);
+			});
+
+			it("GET agent/threads with gh failing marks thread conversations githubUnknown, and a message answers 502", async () => {
+				await github();
+				const t: AgentThread = (await askThread()).json();
+				const spanThread: AgentThread = (await ask()).json();
+				// GitHub's review threads can't be read any more: a new read, kept.
+				await github({ failGraphql: "reviewThreads" }).catch(() => {});
+				const { threads } = await get("/api/agent/threads");
+				const byId = new Map((threads as AgentThread[]).map((x) => [x.id, x]));
+				expect(byId.get(t.id)).toMatchObject({
+					githubUnknown: true,
+					resolved: false,
+					anchor: threadAnchor(),
+				});
+				expect(byId.get(t.id)).not.toHaveProperty("orphaned");
+				expect(byId.get(spanThread.id)).not.toHaveProperty("githubUnknown");
+				const before = byId.get(t.id)?.messages.length;
+				const res = await post(`/api/agent/threads/${t.id}/messages`, {
+					clientId: "m9",
+					text: "Now?",
+				});
+				expect(res.statusCode, res.body).toBe(502);
+				const after: AgentThread[] = (await get("/api/agent/threads")).threads;
+				expect(after.find((x) => x.id === t.id)?.messages).toHaveLength(
+					before ?? -1,
+				);
+			});
+
+			it("POST agent/threads/:tid/messages answers 409 while the GitHub thread is resolved", async () => {
+				await github();
+				const t: AgentThread = (await askThread()).json();
+				// Resolved through carbonless: the kept read knows at once.
+				const resolve = await post("/api/threads/T12-0/resolved", {
+					resolved: true,
+				});
+				expect(resolve.statusCode, resolve.body).toBe(200);
+				const ask2 = () =>
+					post(`/api/agent/threads/${t.id}/messages`, {
+						clientId: "m1",
+						text: "Still?",
+					});
+				expect((await ask2()).statusCode).toBe(409);
+				expect((await get("/api/agent/threads")).threads[0]).toMatchObject({
+					resolved: true,
+				});
+				// Unresolved (on GitHub, say): asking works again.
+				await github();
+				expect((await ask2()).statusCode).toBe(200);
+			});
 		});
 
 		/** A route outside the review scope (r() would move it in). */

@@ -13,19 +13,23 @@ import {
 	type AgentStatus,
 	JOIN,
 	JOINED_PREAMBLE,
+	JOINED_THREAD_PREAMBLE,
 } from "../../shared/agent.js";
-import type { Snapshot } from "../../shared/types.js";
+import type { ReviewThread, Snapshot } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { RefStore } from "../review/refStore.js";
 import {
 	type AgentHost,
 	anchoredFile,
 	anchorHunk,
+	authorOf,
 	buildAgentHost,
 	type HostRunner,
 	NotHandedError,
 	SessionTokenError,
+	threadFacts,
 } from "./host.js";
+import type { GithubThreadFacts, PromptPatchset } from "./prompt.js";
 import type { RunnerFacts } from "./runner.js";
 import { AgentThreadStore } from "./store.js";
 
@@ -181,14 +185,36 @@ describe("AgentHost with a session joined through MCP", () => {
 			text: "hello\n",
 		}),
 		hunk: async () => "@@ -1 +1 @@\n-a\n+b",
-		authorOf: () => "reviewer",
+		authorOf: async () => "reviewer",
+		join: async (folds) => folds,
+		github: async () => ghThread,
+		views: () => ({ patchsets: PATCHSETS, current: head }),
+		checkHead: async () => {},
 	};
+	/** GitHub's thread as the stub facts read it (thread conversations). */
+	let ghThread: GithubThreadFacts | null;
+	const PATCHSETS: PromptPatchset[] = [
+		{
+			number: 1,
+			head: "d".repeat(40),
+			mergeBase: "c".repeat(40),
+			startedAt: "2026-11-01T00:00:00Z",
+		},
+	];
+	/** The review's GitHub threads (none: span threads only). */
+	let ghThreads: ReviewThread[];
 
 	const make = () =>
 		buildAgentHost({
 			dir,
 			store,
 			code: async () => undefined,
+			github: {
+				threads: async () => ghThreads,
+				thread: async (id) => ghThreads.find((t) => t.id === id) ?? null,
+				patchsets: () => [],
+				base: () => "c".repeat(40),
+			},
 			session: { facts, viewer: "dan" },
 			runner: (off) => {
 				acpOff = off;
@@ -220,6 +246,8 @@ describe("AgentHost with a session joined through MCP", () => {
 		};
 		busy = null;
 		head = "d".repeat(40);
+		ghThread = null;
+		ghThreads = [];
 		host = make();
 	});
 	afterEach(async () => {
@@ -239,6 +267,116 @@ describe("AgentHost with a session joined through MCP", () => {
 		path: "a.txt",
 		commit: "a".repeat(40),
 	};
+
+	const ghAnchor: AgentAnchor = {
+		subject: "thread",
+		thread: "PRRT_1",
+		path: "a.txt",
+		commit: "d".repeat(40),
+		side: "RIGHT",
+		line: 1,
+		startSide: "RIGHT",
+		startLine: 1,
+	};
+	const ghFacts = (resolved: boolean): GithubThreadFacts => ({
+		url: "https://github.com/acme/widget/pull/12#discussion_r1",
+		path: "a.txt",
+		startLine: 1,
+		line: 1,
+		openedOn: "d".repeat(40),
+		createdAt: "2026-11-02T00:00:00.000Z",
+		outdated: false,
+		resolved,
+		comments: [
+			{
+				login: "ann",
+				role: "pr_author",
+				at: "2026-11-02T00:00:00Z",
+				body: "Fix?",
+			},
+		],
+		code: "@@ -1 +1 @@\n-a\n+b",
+	});
+
+	/** GitHub lists thread PRRT_1 (joinGithub reads its id and resolved). */
+	const listGh = (resolved: boolean) => {
+		ghThreads = [{ id: "PRRT_1", resolved } as ReviewThread];
+		ghThread = ghFacts(resolved);
+	};
+
+	it("a GitHub thread conversation: next gives its envelope (no checkout), and a final [suggest-resolve] line is a suggestion", async () => {
+		listGh(false);
+		const asked = await store.open({
+			anchor: ghAnchor,
+			text: "Is this fixed?",
+			by: "human",
+			clientId: "g1",
+		});
+		const token = await approve();
+		const q = await host.sessionNext(token);
+		expect(q?.thread).toBe(asked.id);
+		expect(q?.envelope.kind).toBe("github_thread_conversation");
+		expect(q?.preamble).toContain(JOINED_PREAMBLE);
+		expect(q?.preamble).toContain(JOINED_THREAD_PREAMBLE);
+		expect(q?.preamble).not.toContain("Your checkout");
+		expect(q?.envelope.github).toMatchObject({
+			resolved: false,
+			comments: [{ author: { login: "ann", role: "pr_author" }, body: "Fix?" }],
+		});
+		expect(q?.envelope.current).toBe(head);
+		expect(q?.envelope.view?.right).toBe(PATCHSETS[0]?.head);
+		// No path into carbonless's checkout, anywhere.
+		expect(q?.envelope.review.tree).toBeUndefined();
+		expect(q?.envelope.thread.anchor.file).toBeUndefined();
+		expect(JSON.stringify(q)).not.toContain(TREE);
+		// The code the thread was opened on.
+		expect(q?.hunk).toBe("@@ -1 +1 @@\n-a\n+b");
+		const t = await host.sessionReply(token, {
+			thread: asked.id,
+			replyTo: q?.replyTo as string,
+			text: "Yes, fixed in PS 1.\n\n[suggest-resolve]\n",
+		});
+		expect(t.messages[1]).toMatchObject({
+			by: "ai",
+			text: "Yes, fixed in PS 1.",
+			suggests: "resolve",
+		});
+	});
+
+	it("a joined session: the marker means nothing on a span thread; a GitHub thread resolved since it was asked is still handed out", async () => {
+		const x = await host.open({ clientId: "c1", text: "Why?", span });
+		const token = await approve();
+		const q = await host.sessionNext(token);
+		expect(q?.envelope.kind).toBe("agent_thread");
+		const t = await host.sessionReply(token, {
+			thread: x.id,
+			replyTo: q?.replyTo as string,
+			text: "Because.\n[suggest-resolve]",
+		});
+		expect(t.messages[1]?.text).toBe("Because.\n[suggest-resolve]");
+		expect(t.messages[1]?.suggests).toBeUndefined();
+		// A question on a GitHub thread resolved since it was asked: still
+		// the session's, as the ACP buddy's (it was asked).
+		listGh(true);
+		const g = await store.open({
+			anchor: ghAnchor,
+			text: "Done?",
+			by: "human",
+			clientId: "g2",
+		});
+		expect(await host.sessionWaiting()).toBe(1);
+		const q2 = await host.sessionNext(token);
+		expect(q2?.thread).toBe(g.id);
+		expect(q2?.envelope.github?.resolved).toBe(true);
+		// A reply that is only the marker is empty: refused, nothing stored.
+		await expect(
+			host.sessionReply(token, {
+				thread: g.id,
+				replyTo: q2?.replyTo as string,
+				text: "[suggest-resolve]",
+			}),
+		).rejects.toThrow("empty");
+	});
 
 	it("approving stops the ACP buddy and turns it off; status shows the joined session", async () => {
 		expect((await host.status()).via).toBeUndefined();
@@ -508,6 +646,152 @@ describe("AgentHost with a session joined through MCP", () => {
 				machine: WHO.machine,
 			});
 			expect(host.join.handedOut()).toBeNull();
+		});
+	});
+});
+
+describe("authorOf", () => {
+	const people = { viewer: "octo-cat", prAuthor: "Ann_B" };
+	it("authorOf names the PR author pr_author", () => {
+		expect(authorOf("Ann_B", people)).toBe("pr_author");
+		// Logins compare as the review's slugs do (the viewer is one).
+		expect(authorOf("ann-b", people)).toBe("pr_author");
+		expect(authorOf("Octo_Cat", people)).toBe("reviewer");
+		expect(authorOf("someone", people)).toBe("other");
+		// Reviewing your own PR: you are the reviewer here.
+		expect(
+			authorOf("octo-cat", { viewer: "octo-cat", prAuthor: "Octo_Cat" }),
+		).toBe("reviewer");
+		// The author unknown: nobody is the author.
+		expect(authorOf("", { viewer: "octo-cat", prAuthor: "" })).toBe("other");
+	});
+});
+
+describe("threadFacts", () => {
+	it("is the thread's comments with roles, its span columns, a link to its first comment and its code as diff text", () => {
+		const facts = threadFacts(
+			{
+				thread: {
+					path: "src/x.ts",
+					line: 30,
+					commit: "c".repeat(40),
+					createdAt: "2026-11-02T00:00:00.000Z",
+					outdated: false,
+					resolved: false,
+					anchor: {
+						path: "src/x.ts",
+						commit: "c".repeat(40),
+						side: "RIGHT",
+						line: 30,
+						startSide: "RIGHT",
+						startLine: 29,
+						at: "2026-11-02T00:00:00.000Z",
+						startCol: 2,
+						endCol: 5,
+					},
+					code: {
+						anchor: {
+							path: "src/x.ts",
+							commit: "c".repeat(40),
+							side: "RIGHT",
+							line: 30,
+							startSide: "RIGHT",
+							startLine: 29,
+							at: "2026-11-02T00:00:00.000Z",
+						},
+						source: "clone",
+						rows: [
+							{
+								kind: "context",
+								oldNo: 29,
+								newNo: 29,
+								text: "line 29",
+								marked: true,
+							},
+							{
+								kind: "del",
+								oldNo: 30,
+								newNo: null,
+								text: "line 30",
+								marked: false,
+							},
+							{
+								kind: "add",
+								oldNo: null,
+								newNo: 30,
+								text: "line 30 changed",
+								marked: true,
+							},
+						],
+					},
+				},
+				comments: [
+					{
+						author: "Ann_B",
+						publishedAt: "2026-11-02T00:00:00.000Z",
+						body: "Why?",
+					},
+					{ author: "octo-cat", publishedAt: null, body: "Pending reply" },
+				],
+				openerRestId: 11,
+			},
+			"https://github.com/acme/widget/pull/7",
+			(login) => authorOf(login, { viewer: "octo-cat", prAuthor: "Ann_B" }),
+		);
+		expect(facts).toEqual({
+			url: "https://github.com/acme/widget/pull/7#discussion_r11",
+			path: "src/x.ts",
+			startLine: 29,
+			line: 30,
+			startCol: 2,
+			endCol: 5,
+			openedOn: "c".repeat(40),
+			createdAt: "2026-11-02T00:00:00.000Z",
+			outdated: false,
+			resolved: false,
+			comments: [
+				{
+					login: "Ann_B",
+					role: "pr_author",
+					at: "2026-11-02T00:00:00.000Z",
+					body: "Why?",
+				},
+				{ login: "octo-cat", role: "reviewer", at: "", body: "Pending reply" },
+			],
+			code: "@@ -29,2 +29,2 @@\n line 29\n-line 30\n+line 30 changed",
+		});
+	});
+
+	it("a file thread has no lines, columns or code; without an opener id the link is the PR's", () => {
+		const facts = threadFacts(
+			{
+				thread: {
+					path: "README.md",
+					line: null,
+					commit: "",
+					createdAt: "2026-11-02T00:00:00.000Z",
+					outdated: false,
+					resolved: true,
+					anchor: null,
+					code: null,
+				},
+				comments: [],
+				openerRestId: null,
+			},
+			"https://github.com/acme/widget/pull/7",
+			() => "other",
+		);
+		expect(facts).toEqual({
+			url: "https://github.com/acme/widget/pull/7",
+			path: "README.md",
+			startLine: null,
+			line: null,
+			openedOn: "",
+			createdAt: "2026-11-02T00:00:00.000Z",
+			outdated: false,
+			resolved: true,
+			comments: [],
+			code: null,
 		});
 	});
 });

@@ -44,6 +44,7 @@ import {
 
 const NONE = () => [];
 const NO_EYES = () => null;
+const NO_UNREAD = () => false;
 const NO_AGENT = (): AgentThread[] => [];
 
 /** The find's view of the tree: hits per file, and marks on names. Nothing is hidden or dimmed. */
@@ -91,6 +92,17 @@ const AGENT_DOT = (
 		aria-hidden
 		className="h-2 w-2 rounded-full border border-agent-edge bg-agent-ink"
 	/>
+);
+
+/** A new agent message under the row: the accent dot (unread, never a state). */
+const AGENT_UNREAD = (
+	<span
+		data-testid="tree-agent-unread"
+		className="flex h-4 w-2 shrink-0 items-center"
+	>
+		<span aria-hidden className="h-2 w-2 rounded-full bg-accent" />
+		<span className="sr-only">, new agent messages</span>
+	</span>
 );
 
 /**
@@ -332,6 +344,8 @@ function FileItem(props: {
 	find?: TreeFind;
 	/** The reviewer's agent threads in the file: a second, agent-tinted dot. */
 	agentThreads?: AgentThread[];
+	/** An agent message in the file is unseen: the accent dot. */
+	agentUnread?: boolean;
 }) {
 	const { file, unit, threads, mark, eyes } = props;
 	const agentThreads = props.agentThreads ?? [];
@@ -494,6 +508,7 @@ function FileItem(props: {
 								<span className="sr-only">{asked}</span>
 							</span>
 						)}
+						{props.agentUnread && AGENT_UNREAD}
 						<ChangeCount file={file} />
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
@@ -519,6 +534,7 @@ interface Level {
 	onSelect: (index: number) => void;
 	threadsOf: (file: FileView) => ReviewThread[];
 	agentThreadsOf: (file: FileView) => AgentThread[];
+	agentUnreadOf: (file: FileView) => boolean;
 	/** The threads are still on their way: no folder says none wait. */
 	threadsLoading: boolean;
 	folds: Folds;
@@ -554,6 +570,8 @@ function FolderItem(props: Level & { folder: Folder }) {
 		folded && !ghost && !props.threadsLoading
 			? waitingLabel(files.flatMap((f) => props.threadsOf(f)))
 			: "";
+	// Open or folded: something under it has a new agent message.
+	const agentUnread = !ghost && files.some((f) => props.agentUnreadOf(f));
 	const Chevron = folded ? ChevronRightIcon : ChevronDownIcon;
 	return (
 		// The whole group (row and children) in a subtle border, nested
@@ -650,6 +668,7 @@ function FolderItem(props: Level & { folder: Folder }) {
 								<ThreadDot tone="bg-warn" />
 							</span>
 						)}
+						{agentUnread && AGENT_UNREAD}
 						{!ghost && (
 							<>
 								<ChangeCount file={p} />
@@ -773,6 +792,7 @@ function Children(props: Level & { nodes: Node[] }) {
 						eyes={props.eyesOf(node.file)}
 						find={props.find}
 						agentThreads={props.agentThreadsOf(node.file)}
+						agentUnread={props.agentUnreadOf(node.file)}
 					/>
 				) : node.kind === "moved" ? (
 					<MovedItem
@@ -837,6 +857,8 @@ export function FileTree(props: {
 	threadsOf?: (file: FileView) => ReviewThread[];
 	/** Each file's agent threads (a second, agent-tinted dot). */
 	agentThreadsOf?: (file: FileView) => AgentThread[];
+	/** Whether an agent message in the file (a conversation of its threads, or its agent threads) is unseen. */
+	agentUnreadOf?: (file: FileView) => boolean;
 	/** The threads are still on their way: no file's dot means none yet. */
 	threadsLoading?: boolean;
 	/** Agent threads wait for their place (their dots come once placed). */
@@ -944,6 +966,7 @@ export function FileTree(props: {
 					onSelect={props.onSelect}
 					threadsOf={props.threadsOf ?? NONE}
 					agentThreadsOf={props.agentThreadsOf ?? NO_AGENT}
+					agentUnreadOf={props.agentUnreadOf ?? NO_UNREAD}
 					threadsLoading={props.threadsLoading === true}
 					folds={folds}
 					eyesOf={props.eyesOf ?? NO_EYES}

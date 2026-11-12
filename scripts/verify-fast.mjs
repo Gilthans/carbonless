@@ -74,9 +74,21 @@ const E2E_MAP = [
 		/^src\/web\/files\/(PatchsetGraph|HeadToast|graphCards|comparison|FilesPage|FileDiff|DiffBody|FileTree|ProgressBar|useSetStates|landing)\.tsx?$|^src\/web\/(App|shortcuts)\.tsx$|^e2e\/pr-setup\.ts$/,
 		["rereview"],
 	],
-	[/^src\/web\/agent\//, ["agent", "agent-setup", "agent-join"]],
+	// The reviewer's agent: review buddy's span threads and the thread
+	// agent (a conversation per GitHub thread), web and server.
+	[
+		/^src\/(web|server)\/agent\//,
+		["agent", "agent-setup", "thread-agent", "agent-join"],
+	],
 	// The join bar sits above the header (App), the setup line's key (app.ts).
 	[/^src\/web\/App\.tsx$|^src\/server\/app\.ts$/, ["agent-join"]],
+	// What the thread agent lives in: the thread cards (Overview, Files
+	// changed, unplaced and not in comparison), their reply box and
+	// Resolve, Resolve's close in Files changed, and the routes.
+	[
+		/^src\/web\/threads\/|^src\/web\/files\/(ThreadRow|ThreadFate|NotInComparison)\.tsx$|^src\/web\/files\/resolveCollapse\.ts$|^src\/web\/overview\/OverviewPage\.tsx$|^src\/server\/app\.ts$/,
+		["thread-agent"],
+	],
 	[
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
@@ -173,6 +185,7 @@ const E2E_MAP = [
 	// Only src/cli.test.ts preloads it.
 	[/^test\/module-log\.mjs$/, []],
 	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
+	[/^e2e\/agent-ui\.ts$/, ["agent", "agent-setup"]],
 	[
 		/^src\/(cli|main|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
 		["serve", "cli"],
@@ -180,7 +193,7 @@ const E2E_MAP = [
 ];
 // Shared plumbing: anything here can break any spec.
 const ALL =
-	/^(e2e\/(fixtures|pr-setup)\.ts|test\/(fake-gh|git-fixture)|playwright\.config|vite\.config|package\.json|pnpm-lock|tsconfig)/;
+	/^(e2e\/(fixtures|pr-setup|crb-process|global-setup)\.ts|test\/(fake-gh|git-fixture)|playwright\.config|vite\.config|package\.json|pnpm-lock|tsconfig)/;
 
 const e2e = new Set();
 let allE2e = false;
@@ -250,11 +263,10 @@ if (cliGraph.length && !changed.includes("src/cli.test.ts")) {
 	steps.push(queued("pnpm", "exec", "vitest", "run", "src/cli.test.ts"));
 }
 if (allE2e || e2e.size) {
-	steps.push(["pnpm", ["build"]]);
+	// Builds, then runs in its turn on a dist no other build in this tree
+	// changes while it runs (scripts/e2e.mjs).
 	const files = allE2e ? [] : [...e2e].map((s) => `e2e/${s}.spec.ts`);
-	steps.push(
-		queued("pnpm", "exec", "playwright", "test", ...files, ...passthrough),
-	);
+	steps.push(["node", ["scripts/e2e.mjs", ...files, ...passthrough]]);
 }
 
 for (const [cmd, a] of steps) {

@@ -268,7 +268,7 @@ a reader drops what breaks them:
   "Reading").
 - `agent-thread-resolved` must have `by: "human"` (see "Agent threads ref").
 - Agent events (`agent-thread-opened`, `agent-message`,
-  `agent-thread-resolved`) are a human's or the agent's (`by: "ai"`), never
+  `agent-thread-resolved`, `agent-thread-seen`) are a human's or the agent's (`by: "ai"`), never
   `"auto"`.
 
 ## Writing
@@ -509,14 +509,24 @@ tree, slug identities, compare-and-swap). Written by
 
 | Type | By | Payload |
 |---|---|---|
-| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; or `file`: path, commit), `text`, optional `truncated`; `agent` `{name, version, via?, machine?}` (required by ai; `via` `acp` or `mcp`, and a joined session's `machine`: optional, a bad value is dropped and the event kept; a few dozen bytes, this ref is never pushed); a human's carries `details.clientId` |
-| `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent` (as above; a joined session's `name` is how it named itself, `version` its harness string, `via` `mcp`, and `machine`), `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the prompt included; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); a human's carries `details.clientId` |
+| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; `file`: path, commit; or `thread`: GitHub thread node id `thread` (1 to 200 characters, not a ULID), path, commit, and optionally side, line, startSide, startLine), `text`, optional `truncated`; `agent` `{name, version, via?, machine?}` (required by ai; `via` `acp` or `mcp`, and a joined session's `machine`: optional, a bad value is dropped and the event kept; a few dozen bytes, this ref is never pushed); ai only: `origin` `{request}` (why the agent opened it, at most 200 characters); human only: `view` (below); a human's carries `details.clientId` |
+| `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent` (as above; a joined session's `name` is how it named itself, `version` its harness string, `via` `mcp`, and `machine`), `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the prompt included; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); ai only: `head` (the OID of the checkout the answer came from), `suggests` (`"resolve"`); human only: `view`; a human's carries `details.clientId` |
 | `agent-thread-resolved` | human | `thread`, `resolved` (`false` reopens) |
+| `agent-thread-seen` | human | `thread`, `upTo` (the id of the last message the reviewer has seen; a lowercase ULID) |
+
+`view` is the comparison on screen when a human message was sent:
+`target` (`{patchset}` or `{head}`), `from` (`{branch: true}` or
+`{patchset}`), and the resolved `left` and `right` commit OIDs. Readers drop
+an event whose `view` is malformed, or carried by an ai event; the same
+for `origin` on a human opening (or one over 200 characters), `head` and
+`suggests` on a human message, and any `agent-thread-seen` by ai.
 
 - **Write rule**, enforced on write and on read: the agent may open a
   thread and answer in one, never resolve one; an `agent-thread-resolved`
   by ai is skipped by readers, and so is an ai-opened thread without its
-  `agent`.
+  `agent`. Only a human has seen a thread: `agent-thread-seen` by ai is
+  refused on write and skipped on read, so nothing automatic can make an
+  answer look seen.
 - **Fold:** deduplicate by `id`, sort by `(ts, id)`. Threads in the order
   they were opened; the opening text is the first message. A thread waits
   while a human message has no answer: one comes after the last ai
@@ -528,6 +538,17 @@ tree, slug identities, compare-and-swap). Written by
   restarts; resolved is the last `agent-thread-resolved`'s
   word, false before any. Messages and resolves of a thread never opened
   are dropped. New events are stamped after the ref's newest.
+  **One conversation per GitHub thread:** openings whose `thread` anchors
+  name the same GitHub thread fold into the first one (its `id` stays): a
+  later opening's text joins as a message in `(ts, id)` order, and
+  messages, seen marks and resolves written under its own thread id join
+  too. `seenUpTo` is the `upTo` furthest along in the thread's messages (an
+  older mark written later does not move it back; an `upTo` the fold
+  doesn't hold counts for nothing); `unread` is an ai message after it, or
+  any ai message when there is none. An ai-opened thread is unread until
+  seen; the store writes no `agent-thread-seen` when the thread is already
+  seen up to there or later. `agent-thread-resolved` folds as ever for a
+  thread anchor; whether it counts is the GitHub join's call.
 - **Resends:** a human's question carries the page's `clientId` in
   `details` (informational: the fold ignores it). The store remembers the
   ones in the ref and the ones it wrote, so Ask pressed twice, or resent
@@ -535,31 +556,36 @@ tree, slug identities, compare-and-swap). Written by
   only on its own thread. The dedupe and the timestamp order hold within
   one store, so the server keeps one store per review and reviewer.
 - **Caps:** the writer cuts a text at 32 KiB of UTF-8 (`MAX_AGENT_TEXT`, on
-  a code point) and flags it `truncated`, and keeps an activity list's
-  first 50 entries, fewer if its JSON passes 4 KiB. Readers skip an event
+  a code point) and flags it `truncated`, cuts an `origin.request` to 200
+  characters (`MAX_ORIGIN_REQUEST`; a reader drops an event whose request
+  is over 200), and keeps an activity list's first 50 entries, fewer if
+  its JSON passes 4 KiB. Readers skip an event
   whose text is over 32 KiB or whose activity has more than 50 entries; the
   4 KiB byte cap is the writer's alone. The anchor's code is computed from the clone on read, never stored.
 - **Privacy:** the threads are the reviewer's own (not secret, only
   theirs). Never pushed; like the inbox, when sync arrives the ref stays
   local unless the reviewer turns it on (GitDB 20): a future push of
   `reviewers/<reviewer>/*` must exclude `agent/`.
-- **Size**, measured 2026-11-07 (`pnpm tsx scripts/measure-agent-ref.ts`, a
-  4-core machine under load ~9; CPU is carbonless's process plus its git
-  children):
+- **Size**, measured 2026-11-11 (`pnpm tsx scripts/measure-agent-ref.ts`, a
+  4-core machine, load ~1; CPU is carbonless's process plus its git
+  children). Format with thread anchors, a `view` on every human message, a
+  `head` on every answer and one `agent-thread-seen` per answer (2026-11-07,
+  before these: 804 KiB loose, 139 KiB packed):
 
   | Measure | Value |
   |---|---|
-  | Events | 50 threads × 4 messages of 2 KiB of prose (200 commits, 400 KiB of text) |
-  | Loose size | 804 KiB |
-  | Packed size (`git gc`) | 139 KiB |
-  | One append to the full ref (median of 9) | 73 ms wall; CPU 16 ms + 20 ms git |
-  | Cold `read()`, loose (median of 9) | 28 ms wall; CPU 9 ms + 10 ms git |
-  | Cold `read()`, packed (median of 9) | 27 ms wall; CPU 9 ms + 10 ms git |
+  | Events | 50 GitHub-thread conversations × 4 messages of 2 KiB of prose (200 message commits + 100 seen, 400 KiB of text) |
+  | Loose size | 1204 KiB |
+  | Packed size (`git gc`) | 163 KiB |
+  | One append to the full ref (median of 9) | 27 ms wall; CPU 16 ms + 20 ms git |
+  | Cold `read()`, loose (median of 9) | 15 ms wall; CPU 12 ms + 10 ms git |
+  | Cold `read()`, packed (median of 9) | 14 ms wall; CPU 8 ms + 10 ms git |
 
   Well inside the bounds set for it (an append under 100 ms of CPU, a cold
   fold under 200 ms, under 300 KiB packed), so texts stay in commit
   messages; moving long ones to tree blobs (GitDB 6) is the fallback. No
-  compaction, as for review refs.
+  compaction, as for review refs. The 100 seen events add 100 commits' worth
+  of git objects (loose size) but little packed.
 
 ## Reading
 

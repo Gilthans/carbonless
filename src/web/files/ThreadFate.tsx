@@ -18,6 +18,7 @@ import {
 	createContext,
 	type ReactNode,
 	type PointerEvent as ReactPointerEvent,
+	useCallback,
 	useContext,
 	useId,
 	useMemo,
@@ -33,6 +34,9 @@ import type {
 	ReviewThread,
 	ThreadAnchorRef,
 } from "../../shared/types";
+import { ThreadAgentButton } from "../agent/ThreadAgentButton";
+import { AgentCover } from "../agent/ThreadAgentPanel";
+import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
 	ApiError,
 	placementsQuery,
@@ -417,20 +421,41 @@ export function UnplacedRow(props: {
 	/** A drag handle, when the thread can be placed by hand. */
 	handle?: ReactNode;
 }) {
-	const { thread } = props;
+	const { thread, readId } = props;
+	const [more, setMore] = useState(false);
+	const showMore = useCallback(() => setMore(true), []);
+	// Its agent conversation: opening it shows the composer row too.
+	const agent = useThreadAgent(thread, { onOpen: showMore });
 	return (
-		<UnplacedShell
-			thread={thread}
-			who={thread.author}
-			fate={props.fate}
-			path={props.path}
-			movedTo={props.movedTo}
-			link={props.link}
-			handle={props.handle}
-		>
-			<Opener thread={thread} />
-			<UnplacedReplies thread={thread} readId={props.readId} />
-		</UnplacedShell>
+		<ThreadAgentContext.Provider value={agent}>
+			<UnplacedShell
+				thread={thread}
+				who={thread.author}
+				fate={props.fate}
+				path={props.path}
+				movedTo={props.movedTo}
+				link={props.link}
+				handle={props.handle}
+				agent={
+					agent && (
+						<ThreadAgentButton
+							thread={thread}
+							conversation={agent.conversation}
+							open={agent.open}
+							onToggle={agent.toggle}
+						/>
+					)
+				}
+			>
+				<UnplacedReplies
+					thread={thread}
+					readId={readId}
+					open={more}
+					setOpen={setMore}
+					asking={agent?.open === true}
+				/>
+			</UnplacedShell>
+		</ThreadAgentContext.Provider>
 	);
 }
 
@@ -452,6 +477,8 @@ export function UnplacedShell(props: {
 	movedTo?: string;
 	link?: ReactNode;
 	handle?: ReactNode;
+	/** The thread's agent button, beside the link. */
+	agent?: ReactNode;
 	testId?: string;
 	children: ReactNode;
 }) {
@@ -535,6 +562,7 @@ export function UnplacedShell(props: {
 					)}
 				</span>
 				{props.link}
+				{props.agent}
 				{thread.resolved && (
 					<Tooltip content="Collapse" describe={false}>
 						{(trigger) => (
@@ -559,40 +587,50 @@ export function UnplacedShell(props: {
 	);
 }
 
-/** An unplaced review thread's replies and actions, behind Show more. */
+/**
+ * An unplaced review thread's opener, then its replies and actions behind
+ * Show more; its agent conversation slides over the opener and replies,
+ * the composer row below it.
+ */
 function UnplacedReplies({
 	thread,
 	readId,
+	open,
+	setOpen,
+	asking,
 }: {
 	thread: ReviewThread;
 	readId: string;
+	open: boolean;
+	setOpen: (update: (open: boolean) => boolean) => void;
+	/** Its agent conversation is open: the composer row shows. */
+	asking: boolean;
 }) {
-	const [open, setOpen] = useState(false);
 	const repliesId = useId();
 	const replies = useReplyCount(thread, readId);
 	const canAct = useCanAct(thread);
 	const readable = thread.unavailable === undefined && thread.id !== "";
 	return (
 		<>
-			{open && readable && (
-				<div id={repliesId} className="space-y-2">
-					{replies.n > 0 && (
-						<div
-							data-testid="thread-replies"
-							className="ml-2 border-l-2 border-line pl-3"
-						>
-							<ThreadComments readId={readId} thread={thread} skipFirst />
-						</div>
-					)}
-					<ThreadActions thread={thread} />
-				</div>
-			)}
+			<AgentCover>
+				<Opener thread={thread} />
+				{open && readable && replies.n > 0 && (
+					<div
+						id={repliesId}
+						data-testid="thread-replies"
+						className="ml-2 border-l-2 border-line pl-3"
+					>
+						<ThreadComments readId={readId} thread={thread} skipFirst />
+					</div>
+				)}
+			</AgentCover>
+			{(open || asking) && readable && <ThreadActions thread={thread} />}
 			{readable && (replies.n > 0 || canAct) && (
 				<div className="flex justify-center">
 					<MoreToggle
 						open={open}
 						onClick={() => setOpen((o) => !o)}
-						controls={open ? repliesId : ""}
+						controls={open && replies.n > 0 ? repliesId : ""}
 						replies={replies}
 						kind="more"
 					/>

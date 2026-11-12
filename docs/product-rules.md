@@ -599,3 +599,18 @@ question would be on someone else's behalf, or about a past moment.
   Start in the chip does. Questions wait (yellow) meanwhile, and a
   question handed to a session that never replied waits again.
 
+- **Resolving is always a human action; the agent may only suggest it
+  (owner, 2026-11-11: "Resolving a thread is ALWAYS a human action. The
+  agent could suggest resolving, but never do it for us").** A GitHub
+  thread's agent conversation (the thread agent) never resolves,
+  unresolves, replies to or writes to its thread: no route takes such a
+  write from an `ai` event or a runner action, and the parser drops an
+  `agent-thread-seen` or `agent-thread-resolved` by `ai`. The agent
+  suggests with a final `[suggest-resolve]` line, stripped and stored as
+  data (`suggests: "resolve"`), and only for a fix in the patch set the
+  reviewer is viewing (a fix found only in a later push is said plainly,
+  "fixed later, in PS m", and never suggests). The suggestion shows, inside the reply,
+  "Resolve By Agent Suggestion" and rings Resolve in `ok`; only the
+  reviewer's press resolves, through the same GitHub write as Resolve. A
+  thread conversation has no resolved state of its own: it folds and
+  reopens with its GitHub thread, whoever resolves it, on GitHub too.

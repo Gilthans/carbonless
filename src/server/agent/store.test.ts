@@ -445,3 +445,200 @@ describe("AgentThreadStore", () => {
 		expect(git("check-ref-format", ref)).toBe("");
 	});
 });
+
+describe("GitHub thread conversations", () => {
+	const gh = (thread: string): AgentAnchor => ({
+		subject: "thread",
+		thread,
+		path: "src/lock.ts",
+		commit: "a".repeat(40),
+		side: "RIGHT",
+		line: 12,
+		startSide: "RIGHT",
+		startLine: 10,
+	});
+	const askOn = (thread: string, text: string, clientId: string) =>
+		store.open({ anchor: gh(thread), text, by: "human", clientId });
+	const view = {
+		target: { patchset: 2 },
+		from: { branch: true as const },
+		left: "b".repeat(40),
+		right: "c".repeat(40),
+	};
+
+	it("two openings of one GitHub thread fold into one", async () => {
+		const first = await askOn("PRRT_1", "Why a lock?", "c1");
+		await answer(first.id, "Two writers.");
+		const second = await askOn("PRRT_1", "And the retry?", "c2");
+		// Joined: the first's id, every message in (ts, id) order.
+		expect(second.id).toBe(first.id);
+		await store.message(second.id, {
+			by: "human",
+			text: "Also this",
+			clientId: "c3",
+		});
+		const all = await store.read();
+		expect(all).toHaveLength(1);
+		expect(all[0]?.id).toBe(first.id);
+		expect(all[0]?.messages.map((m) => m.text)).toEqual([
+			"Why a lock?",
+			"Two writers.",
+			"And the retry?",
+			"Also this",
+		]);
+		// A different GitHub thread is its own conversation.
+		const other = await askOn("PRRT_2", "Elsewhere?", "c4");
+		expect(other.id).not.toBe(first.id);
+		expect(await store.read()).toHaveLength(2);
+		// A message written under the second opening's own id joins too.
+		const raw = (await refs.readEvents(ref)).filter(
+			(e) => e.type === "agent-thread-opened",
+		);
+		const secondId =
+			raw[1]?.type === "agent-thread-opened" ? raw[1].thread : "";
+		expect(secondId).not.toBe(first.id);
+		const viaAlias = await store.message(secondId, {
+			by: "human",
+			text: "via alias",
+			clientId: "c5",
+		});
+		expect(viaAlias.id).toBe(first.id);
+		expect(viaAlias.messages.at(-1)?.text).toBe("via alias");
+		// A resent clientId of the joined opening returns the joined thread.
+		expect((await askOn("PRRT_1", "And the retry?", "c2")).id).toBe(first.id);
+	});
+
+	it("unread: an ai message after the last seen upTo", async () => {
+		const t = await ask("Why?", "c1");
+		expect(t.unread).toBe(false);
+		const a1 = await answer(t.id, "Because.");
+		expect(a1.unread).toBe(true);
+		const answered = a1.messages[1]?.id as string;
+		const seen = await store.seen(t.id, answered);
+		expect(seen).toMatchObject({ unread: false, seenUpTo: answered });
+		const a2 = await answer(t.id, "Also.");
+		expect(a2.unread).toBe(true);
+		expect(a2.seenUpTo).toBe(answered);
+		// A fresh store folds the same.
+		const fresh = await new AgentThreadStore(
+			new RefStore(repo),
+			REVIEW,
+			"dan",
+		).read();
+		expect(fresh[0]).toMatchObject({ unread: true, seenUpTo: answered });
+	});
+
+	it("an ai-opened thread is unread until seen", async () => {
+		const t = await store.open({
+			anchor: { subject: "file", path: "src/lock.ts", commit: "" },
+			text: "A lock is taken twice.",
+			by: "ai",
+			agent,
+		});
+		expect(t.unread).toBe(true);
+		const seen = await store.seen(t.id, t.messages[0]?.id as string);
+		expect(seen.unread).toBe(false);
+	});
+
+	it("a seen upTo naming an earlier message than a previous seen does not move it back", async () => {
+		const t = await ask("Why?", "c1");
+		await answer(t.id, "One.");
+		const last = await answer(t.id, "Two.");
+		const [, one, two] = last.messages.map((m) => m.id) as string[];
+		await store.seen(t.id, two as string);
+		// Written by hand: a stale client's older mark, later in the ref.
+		await refs.appendEvent(
+			ref,
+			"seen",
+			newEvent("agent-thread-seen", "dan", {
+				thread: t.id,
+				upTo: one as string,
+			}),
+			"dan",
+		);
+		const read = (await store.read())[0];
+		expect(read).toMatchObject({ seenUpTo: two, unread: false });
+	});
+
+	it("seen writes nothing when already seen up to there", async () => {
+		const t = await ask("Why?", "c1");
+		const a = await answer(t.id, "Because.");
+		const [q, ans] = a.messages.map((m) => m.id) as string[];
+		await store.seen(t.id, ans as string);
+		const count = () => Number(git("rev-list", "--count", ref));
+		const before = count();
+		await store.seen(t.id, ans as string);
+		await store.seen(t.id, q as string);
+		expect(count()).toBe(before);
+		await expect(store.seen(t.id, "x".repeat(26))).rejects.toThrow();
+		await expect(store.seen("nope", ans as string)).rejects.toBeInstanceOf(
+			UnknownAgentThreadError,
+		);
+	});
+
+	it("view, head, suggests and origin round trip", async () => {
+		const t = await store.open({
+			anchor: gh("PRRT_9"),
+			text: "Why?",
+			by: "human",
+			clientId: "c1",
+			view,
+		});
+		expect(t.messages[0]?.view).toEqual(view);
+		const m = await store.message(t.id, {
+			by: "human",
+			text: "More",
+			clientId: "c2",
+			view: { ...view, target: { head: "d".repeat(40) } },
+		});
+		expect(m.messages[1]?.view?.target).toEqual({ head: "d".repeat(40) });
+		const reply = await store.message(t.id, {
+			by: "ai",
+			text: "Fine.",
+			agent,
+			stop: "end_turn",
+			activity: [],
+			head: "e".repeat(40),
+			suggests: "resolve",
+		});
+		expect(reply.messages[2]).toMatchObject({
+			head: "e".repeat(40),
+			suggests: "resolve",
+		});
+		const flagged = await store.open({
+			anchor: { subject: "file", path: "src/lock.ts", commit: "" },
+			text: "Locks twice.",
+			by: "ai",
+			agent,
+			origin: { request: "Check the locking" },
+		});
+		expect(flagged.origin).toEqual({ request: "Check the locking" });
+		const fresh = await new AgentThreadStore(
+			new RefStore(repo),
+			REVIEW,
+			"dan",
+		).read();
+		expect(fresh[0]?.messages[0]?.view).toEqual(view);
+		expect(fresh[0]?.messages[2]).toMatchObject({ suggests: "resolve" });
+		expect(fresh[1]?.origin).toEqual({ request: "Check the locking" });
+		expect(fresh[0]?.origin).toBeUndefined();
+	});
+
+	it("open cuts an ai origin request to 200 characters", async () => {
+		const t = await store.open({
+			anchor: { subject: "file", path: "src/lock.ts", commit: "" },
+			text: "x",
+			by: "ai",
+			agent,
+			origin: { request: "y".repeat(500) },
+		});
+		expect(t.origin?.request).toBe("y".repeat(200));
+		expect((await store.read())[0]?.origin?.request).toHaveLength(200);
+	});
+
+	it("agent-thread-resolved still folds for a thread anchor", async () => {
+		const t = await askOn("PRRT_1", "Why?", "c1");
+		expect((await store.setResolved(t.id, true)).resolved).toBe(true);
+		expect((await store.setResolved(t.id, false)).resolved).toBe(false);
+	});
+});

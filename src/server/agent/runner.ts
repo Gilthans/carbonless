@@ -15,15 +15,32 @@ import {
 	type AgentState,
 	type AgentStatus,
 	type AgentStop,
+	type AgentView,
 } from "../../shared/agent.js";
+import { runGit } from "../git.js";
 import { AcpAgent, AgentStartError, agentEnv } from "./acp.js";
 import { agentsDir, type Checkout, createCheckout } from "./checkout.js";
 import { type ReviewClaim, takeClaim } from "./claim.js";
 import { decidePermission } from "./policy.js";
-import { buildPrompt, type PromptReview, threadEnvelope } from "./prompt.js";
+import {
+	anchorFor,
+	buildPrompt,
+	type CommentRole,
+	type GithubThreadFacts,
+	type PromptEnvelope,
+	type PromptMessage,
+	type PromptPatchset,
+	type PromptReview,
+	sanitizeEnvelope,
+	takeSuggestion,
+	threadEnvelope,
+} from "./prompt.js";
 import type { AgentThreadFold, AgentThreadStore } from "./store.js";
 
-/** What the runner asks of the review it serves. */
+/**
+ * What the runner asks of the review it serves. None of it writes to
+ * GitHub: the runner can't resolve, reply to or write to a thread.
+ */
 export interface RunnerFacts {
 	review(): PromptReview;
 	prFacts(): Promise<{ title: string; body: string; files: string[] }>;
@@ -31,8 +48,34 @@ export interface RunnerFacts {
 		anchor: AgentAnchor,
 	): Promise<{ uri: string; mimeType: string; text: string } | null>;
 	hunk(anchor: AgentAnchor): Promise<string | null>;
-	authorOf(login: string): "reviewer" | "pr_author" | "other";
+	authorOf(login: string): Promise<CommentRole>;
+	/**
+	 * The folds joined with GitHub's threads (githubJoin.ts): a live
+	 * thread conversation resolved with its GitHub thread, an orphan a
+	 * span thread, `githubUnknown` when GitHub can't be read.
+	 */
+	join(folds: AgentThreadFold[]): Promise<AgentThreadFold[]>;
+	/**
+	 * GitHub thread `thread` from the session's current read, placed on
+	 * `view`; null when GitHub no longer lists it; throws when it can't be read.
+	 */
+	github(thread: string, view: AgentView): Promise<GithubThreadFacts | null>;
+	/** The reviewer's patch sets and GitHub's newest head as last read. */
+	views(): { patchsets: PromptPatchset[]; current: string };
+	/** Asks GitHub for the PR's head, fetching a new one into the cache clone. */
+	checkHead(): Promise<void>;
 }
+
+/** What a turn sends: the envelope, the anchored file and the code block. */
+interface Prepared {
+	env: PromptEnvelope;
+	anchored: { uri: string; mimeType: string; text: string } | null;
+	hunk: string | null;
+	/** A thread conversation's turn: its answer may suggest resolving. */
+	suggestions: boolean;
+}
+
+const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 export interface RunnerDeps {
 	reviewId: string;
@@ -533,8 +576,14 @@ export class AgentRunner {
 			// ACP going off: the turn that ran finished; no new one starts.
 			if (this.#off()) return;
 			if (this.#proc.key !== this.#key || !agent.alive) return;
-			const threads = await this.#deps.store.read();
-			const next = threads.find((t) => !t.resolved && t.waiting);
+			const threads = await this.#deps.facts.join(
+				await this.#deps.store.read(),
+			);
+			// A question already waiting on a GitHub thread resolved since is
+			// still answered (it was asked); a resolved span thread's isn't.
+			const next = threads.find(
+				(t) => t.waiting && (t.anchor.subject === "thread" || !t.resolved),
+			);
 			if (!next) {
 				// A failed last turn keeps its reason up until the next one.
 				if (this.#current(agent) && this.#state !== "error") {
@@ -549,31 +598,19 @@ export class AgentRunner {
 	/** One prompt for `thread`; false when draining should stop. */
 	async #turn(agent: AcpAgent, thread: AgentThreadFold): Promise<boolean> {
 		const { facts } = this.#deps;
-		const review = facts.review();
 		const rejected = this.#notices.get(thread.id);
-		// The tree follows the PR's head (a Refresh moves it).
-		const stuck = await this.#checkout
-			?.moveTo(review.head.commit)
-			.catch((error: unknown) => (error as Error).message);
-		const notice =
-			[
-				rejected,
-				stuck
-					? `The PR's head is now ${review.head.commit}, but your checkout could not move there (${stuck.trim().slice(0, 300)}); it is still at the commit you were given before.`
-					: undefined,
-			]
-				.filter(Boolean)
-				.join("\n") || undefined;
-		const env = await threadEnvelope(facts, thread, {
-			...(this.#deps.viewer ? { viewer: this.#deps.viewer } : {}),
-			withPr: !this.#prompted,
-			...(notice ? { notice } : {}),
-			tree: true,
-		});
-		const [anchored, hunk] = await Promise.all([
-			facts.anchored(thread.anchor).catch(() => null),
-			facts.hunk(thread.anchor).catch(() => null),
-		]);
+		let pr: PromptEnvelope["pr"];
+		if (!this.#prompted) {
+			pr = await facts.prFacts().then(
+				(p) => ({ title: p.title, body: p.body, files: p.files }),
+				() => undefined,
+			);
+		}
+		const messages = await this.#messages(thread);
+		const { env, anchored, hunk, suggestions } =
+			thread.anchor.subject === "thread"
+				? await this.#threadTurn(thread, messages, rejected, pr)
+				: await this.#spanTurn(thread, messages, rejected, pr);
 		if (this.#closed || this.#proc?.agent !== agent) return false;
 		// The answer names the last human message it saw: a reply sent while
 		// the turn runs lands before the answer and still waits (the fold).
@@ -595,12 +632,192 @@ export class AgentRunner {
 		clearTimeout(deadline);
 		this.#prompted = true;
 		try {
-			return await this.#store(agent, thread, reply, answering, rejected);
+			return await this.#store(
+				agent,
+				thread,
+				reply,
+				answering,
+				rejected,
+				suggestions,
+			);
 		} finally {
 			// Only once the reply is stored (or never will be): the status
 			// keeps the streamed text until the thread holds it.
 			if (this.#answering === answering) this.#answering = null;
 		}
+	}
+
+	/** The thread's messages as the envelope gives them. */
+	async #messages(thread: AgentThreadFold): Promise<PromptMessage[]> {
+		const viewer = this.#deps.viewer;
+		const role = viewer ? await this.#deps.facts.authorOf(viewer) : undefined;
+		return thread.messages.map(
+			(m): PromptMessage =>
+				m.by === "ai"
+					? { author: { role: "agent" }, at: m.at, text: m.text }
+					: {
+							author:
+								viewer && role ? { login: viewer, role } : { role: "reviewer" },
+							at: m.at,
+							text: m.text,
+						},
+		);
+	}
+
+	/**
+	 * A span thread's turn (an orphan's too): the tree follows the PR's
+	 * head (a Refresh moves it); the anchored file and the hunk around it.
+	 */
+	async #spanTurn(
+		thread: AgentThreadFold,
+		messages: PromptMessage[],
+		rejected: string | undefined,
+		pr: PromptEnvelope["pr"],
+	): Promise<Prepared> {
+		const { facts } = this.#deps;
+		const review = facts.review();
+		const stuck = await this.#moveTo(review.head.commit);
+		const notice = joinNotices([
+			rejected,
+			thread.orphaned
+				? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${thread.anchor.path} at ${thread.anchor.commit || "an unknown commit"}).`
+				: undefined,
+			stuck
+				? `The PR's head is now ${review.head.commit}, but your checkout could not move there (${stuck}); it is still at the commit you were given before.`
+				: undefined,
+		]);
+		const env = sanitizeEnvelope({
+			kind: "agent_thread",
+			review,
+			thread: { id: thread.id, anchor: anchorFor(thread.anchor, review) },
+			messages,
+			...(notice ? { notice } : {}),
+			...(pr ? { pr } : {}),
+		});
+		const [anchored, hunk] = await Promise.all([
+			facts.anchored(thread.anchor).catch(() => null),
+			facts.hunk(thread.anchor).catch(() => null),
+		]);
+		return { env, anchored, hunk, suggestions: false };
+	}
+
+	/**
+	 * A thread conversation's turn: checkHead first (so `current`'s objects
+	 * are in the clone), the view of the last human message (else the
+	 * latest patch set), the checkout moved to `view.right`, GitHub's
+	 * thread read now (none when it can't be: never a made-up resolved),
+	 * and any commit the clone lacks named in the notice.
+	 */
+	async #threadTurn(
+		thread: AgentThreadFold,
+		messages: PromptMessage[],
+		rejected: string | undefined,
+		pr: PromptEnvelope["pr"],
+	): Promise<Prepared> {
+		const { facts } = this.#deps;
+		const anchor = thread.anchor as Extract<AgentAnchor, { subject: "thread" }>;
+		const checked = await facts.checkHead().then(
+			() => undefined,
+			(error: unknown) => oneLine((error as Error).message),
+		);
+		const review = facts.review();
+		const { patchsets, current } = facts.views();
+		const view = viewOf(thread, patchsets, review);
+		let github: GithubThreadFacts | null = null;
+		let unread: string | undefined;
+		let gone = false;
+		if (thread.githubUnknown) unread = "";
+		else {
+			try {
+				github = await facts.github(anchor.thread, view);
+				gone = github === null;
+			} catch (error) {
+				unread = oneLine((error as Error).message);
+			}
+		}
+		const stuck = await this.#moveTo(view.right);
+		const opened = github ? github.openedOn : anchor.commit;
+		const missing = await this.#missing([
+			[opened, "the commit the thread was opened on (openedOn)"],
+			[view.left, "view.left"],
+			[view.right, "view.right"],
+			[current, "current"],
+		]);
+		const notice = joinNotices([
+			rejected,
+			unread !== undefined
+				? `GitHub couldn't be read${unread ? ` (${unread})` : ""}: the thread's comments and whether it is resolved are not in this prompt.`
+				: undefined,
+			gone
+				? `The GitHub thread (${anchor.path}) is gone: it is no longer listed on GitHub.`
+				: undefined,
+			checked
+				? `carbonless couldn't check GitHub for the PR's newest head (${checked}): \`current\` is the head as last read.`
+				: undefined,
+			stuck
+				? `Your checkout could not move to view.right, ${view.right} (${stuck}); run \`git rev-parse HEAD\` to see where it is.`
+				: undefined,
+			...missing.map(
+				([oid, what]) =>
+					`Commit ${oid} (${what}) is missing from the clone: it was never fetched (likely force-pushed away before carbonless saw it), so it can't be checked out or diffed.`,
+			),
+		]);
+		const env = sanitizeEnvelope(
+			threadEnvelope({
+				review,
+				thread: { id: thread.id, anchor },
+				github,
+				view,
+				current,
+				patchsets,
+				messages,
+				...(notice ? { notice } : {}),
+				...(pr ? { pr } : {}),
+			}),
+		);
+		const anchored = await facts.anchored(anchor).catch(() => null);
+		return {
+			env,
+			anchored,
+			hunk: github?.code ?? null,
+			suggestions: true,
+		};
+	}
+
+	/** Moves the checkout to `commit`: undefined when it is there, else why not (one line). */
+	async #moveTo(commit: string): Promise<string | undefined> {
+		const stuck = await this.#checkout
+			?.moveTo(commit)
+			.catch((error: unknown) => (error as Error).message);
+		return stuck ? oneLine(stuck) : undefined;
+	}
+
+	/** The commits (OIDs; others are skipped, never passed to git) the clone doesn't have. */
+	async #missing(commits: [string, string][]): Promise<[string, string][]> {
+		const repo = this.#checkout?.tree ?? this.#deps.cacheClone;
+		const out: [string, string][] = [];
+		const seen = new Set<string>();
+		for (const [oid, what] of commits) {
+			if (!OID.test(oid) || seen.has(oid)) continue;
+			seen.add(oid);
+			const type = (
+				await runGit(repo, ["cat-file", "-t", `${oid}^{commit}`], {
+					allowFailure: true,
+				})
+			).trim();
+			if (type !== "commit") out.push([oid, what]);
+		}
+		return out;
+	}
+
+	/** The checkout's commit now, when it can be read. */
+	async #checkoutHead(): Promise<string | undefined> {
+		const tree = this.#checkout?.tree;
+		if (!tree) return undefined;
+		const head = (
+			await runGit(tree, ["rev-parse", "HEAD"], { allowFailure: true })
+		).trim();
+		return OID.test(head) ? head : undefined;
 	}
 
 	/** Stores a turn's reply; false when draining should stop. */
@@ -610,6 +827,7 @@ export class AgentRunner {
 		reply: { text: string; stop: AgentStop; error?: string },
 		answering: Answering,
 		rejected: string | undefined,
+		suggestions: boolean,
 	): Promise<boolean> {
 		if (rejected !== undefined && this.#notices.get(thread.id) === rejected) {
 			this.#notices.delete(thread.id);
@@ -624,11 +842,21 @@ export class AgentRunner {
 			(this.#proc?.agent === agent && this.#proc.key !== this.#key) ||
 			(this.#proc?.agent !== agent && !this.#crashedLast(agent));
 		if (stoppedOnPurpose) return false;
+		// A suggestion is data on the message: only a human's press resolves.
+		// The marker is stripped on any stop; only a finished answer suggests.
+		const taken = suggestions
+			? takeSuggestion(reply.text)
+			: { text: reply.text, suggests: false };
+		const text = taken.text;
+		const suggests = taken.suggests && reply.stop === "end_turn";
+		const head = await this.#checkoutHead();
 		try {
 			await this.#deps.store.message(thread.id, {
 				by: "ai",
-				text: reply.text,
+				text,
 				agent: agent.info,
+				...(head ? { head } : {}),
+				...(suggests ? { suggests: "resolve" as const } : {}),
 				stop: reply.stop,
 				activity: answering.activity,
 				...(answering.asked ? { replyTo: answering.asked } : {}),
@@ -702,6 +930,49 @@ export class AgentRunner {
 		}
 		return d.response;
 	}
+}
+
+/** The notices that are set, one per line; undefined when none is. */
+function joinNotices(parts: (string | undefined)[]): string | undefined {
+	return parts.filter(Boolean).join("\n") || undefined;
+}
+
+/** An error message on one line, cut to 300 characters. */
+function oneLine(message: string): string {
+	return message.trim().replace(/\s+/g, " ").slice(0, 300);
+}
+
+/**
+ * The comparison a thread turn answers in: the view sent with the last
+ * human message, else (an agent-started conversation, or a message sent
+ * without one) the latest patch set against the base branch, or the
+ * snapshot's head when there is none.
+ */
+export function viewOf(
+	thread: AgentThreadFold,
+	patchsets: readonly PromptPatchset[],
+	review: PromptReview,
+): AgentView {
+	const sent = thread.messages.findLast((m) => m.by === "human")?.view;
+	if (sent && OID.test(sent.right) && OID.test(sent.left)) return sent;
+	const latest = patchsets.reduce<PromptPatchset | undefined>(
+		(a, p) => (a && a.number > p.number ? a : p),
+		undefined,
+	);
+	if (latest) {
+		return {
+			target: { patchset: latest.number },
+			from: { branch: true },
+			left: latest.mergeBase,
+			right: latest.head,
+		};
+	}
+	return {
+		target: { head: review.head.commit },
+		from: { branch: true },
+		left: review.mergeBase,
+		right: review.head.commit,
+	};
 }
 
 function startError(error: unknown): string {

@@ -288,7 +288,7 @@ jobs:
         working-directory: ${{ runner.temp }}
         if: env.PUBLISH == 'true' && env.FIRST == 'false'
         env:
-          TRIES: 10 # the registry can lag: up to ~2.5 minutes
+          TRIES: 40 # the registry can lag minutes (0.3.0-rc.1: over 2 min): up to ~10 minutes
           WAIT: 15
         run: |
           for ((i = 1; i <= TRIES; i++)); do
