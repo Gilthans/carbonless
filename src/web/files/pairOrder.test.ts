@@ -81,6 +81,9 @@ describe("orderRun", () => {
 		expect(out[7]).toMatch(/^-\/\/ IsCacheSkippedForDomain /);
 		expect(out[8]).toMatch(/^\+\/\/ SkipsCacheFor /);
 	});
+	// Provisional: these exact pairs are pinned as a regression detector
+	// until the owner's pass over the real-PR comparison; a different
+	// answer from the owner changes them.
 	it("case 6: Clear's old signature pairs with Touch's, after the new functions", () => {
 		const { rows, pairs } = galleryCase("06-clear-touch.go");
 		const out = texts(orderRun(rows, partners(...pairs)));

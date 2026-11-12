@@ -497,6 +497,9 @@ describe("layoutRows with partners", () => {
 		expect(c4.pairs).toEqual([]);
 		expect(layoutRows(c4.rows, new Map())).toEqual(layoutRows(c4.rows));
 		expect(trace(layoutRows(c4.rows, new Map()))).toEqual(["[-1|+1]", "[|+2]"]);
+		// Provisional: these exact pairs are pinned as a regression detector
+		// until the owner's pass over the real-PR comparison; a different
+		// answer from the owner changes them.
 		// Case 6: Clear's old signature is on one row with Touch's, after the
 		// fourteen lines of the new functions.
 		const c6 = galleryCase("06-clear-touch.go");

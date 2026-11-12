@@ -279,6 +279,9 @@ describe("hunkPairs on the gallery's cases 5 and 6", () => {
 		expect(pairs[0]?.[0]).toMatch(/^\/\/ IsCacheSkippedForDomain /);
 		expect(pairs[0]?.[1]).toMatch(/^\/\/ SkipsCacheFor /);
 	});
+	// Provisional: these exact pairs are pinned as a regression detector
+	// until the owner's pass over the real-PR comparison; a different
+	// answer from the owner changes them.
 	it("case 6: Clear's old signature pairs with the new Touch's", () => {
 		const pairs = pairsOf("06-clear-touch.go");
 		expect(pairs).toHaveLength(4);

@@ -1,12 +1,15 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { DIFF_ARGS } from "../src/server/diff/files";
 
 /**
  * The gallery's step 2 cases (`pairing/01…07` of
  * Gilthans/carbonless-gallery, branches `base/similarity-pairing` and
  * `case/similarity-pairing`), mirrored byte for byte into
  * test/fixtures/pairing by scripts/pairing-fixtures.mjs. A case's clusters
- * come from git's own diff of its two files, as the server's do.
+ * come from git's diff of its two files with the server's arguments
+ * (DIFF_ARGS: Myers, indent heuristic, no inter-hunk context) and `-U0`,
+ * with the user's git config ignored, so they are the same on every machine.
  */
 const DIR = fileURLToPath(new URL("./fixtures/pairing/", import.meta.url));
 
@@ -19,10 +22,8 @@ export interface Cluster {
 /** The clusters of case `file` (e.g. `05-helper-above.go`), in file order. */
 export function pairingClusters(file: string): Cluster[] {
 	const args = [
-		"diff",
+		...DIFF_ARGS,
 		"--no-index",
-		"--no-color",
-		"--no-ext-diff",
 		"-U0",
 		"--",
 		`${DIR}base/pairing/${file}`,
@@ -30,7 +31,14 @@ export function pairingClusters(file: string): Cluster[] {
 	];
 	let diff: string;
 	try {
-		diff = execFileSync("git", args, { encoding: "utf8" });
+		diff = execFileSync("git", args, {
+			encoding: "utf8",
+			env: {
+				...process.env,
+				GIT_CONFIG_GLOBAL: "/dev/null",
+				GIT_CONFIG_NOSYSTEM: "1",
+			},
+		});
 	} catch (e) {
 		// `--no-index` exits 1 when the files differ.
 		const err = e as { status?: number; stdout?: string };

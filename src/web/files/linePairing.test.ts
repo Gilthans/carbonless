@@ -119,6 +119,9 @@ describe("alignCluster", () => {
 		const [first, second, third] = clusters.map((c) =>
 			alignCluster(c.dels, c.adds),
 		);
+		// Provisional: these exact pairs are pinned as a regression detector
+		// until the owner's pass over the real-PR comparison; a different
+		// answer from the owner changes them.
 		// Clear's old signature pairs with Touch's (the 15th added line, the
 		// same parameters), past GetFingerprint and SetFingerprint; the new
 		// Clear is in the next cluster.
@@ -158,7 +161,8 @@ describe("alignCluster", () => {
 	// LCS, about tokens*tokens/32 word steps, so no scaling check (4x the
 	// input against a quarter) can read 1x: each reference below is of
 	// comparable intended cost instead, and a cost beyond it shows as a
-	// ratio that grows. Measured idle, and with a busy loop per core
+	// ratio that grows. The two scoring tests' references share no code
+	// with the LCS (plainWordSteps), so swapping the LCS shows. Measured idle, and with a busy loop per core
 	// (`pnpm flake-check ... --load 16`): the ratios in the comments.
 	const LOADED = 60_000;
 	/** `n` pseudo-random lines of `t` punctuation tokens (a token a character). */
@@ -173,39 +177,57 @@ describe("alignCluster", () => {
 			Array.from({ length: t }, () => marks[next() % marks.length]).join(""),
 		);
 	};
-	/** `n` lines of `t` words, half of them shared with every other line. */
-	const sharing = (side: string, n: number, t: number) =>
-		Array.from({ length: n }, (_, i) =>
-			Array.from({ length: t }, (_, k) =>
-				k % 2 === 0
-					? `w${(k * 7 + i) % 80}`
-					: `${side}${(i * t + k).toString(36)}`,
-			).join(" "),
-		);
 	const chars = (lines: readonly string[]) =>
 		lines.reduce((sum, l) => sum + l.length, 0);
+	/**
+	 * A yardstick that shares no code with the LCS: `steps` word steps (the
+	 * unit ALIGN_WORD_OPS counts: an and, an add with carry, an or) in a
+	 * plain loop, so replacing the LCS by another algorithm changes the
+	 * cost under test and not the yardstick.
+	 */
+	const sink = new Uint32Array(1);
+	const plainWordSteps = (steps: number) => {
+		const v = new Uint32Array(6).fill(0xffffffff);
+		const mask = Uint32Array.from(
+			{ length: 6 },
+			(_, i) => 0x9e3779b1 * (i + 1),
+		);
+		let carry = 0;
+		for (let n = 0; n < steps; n += 6) {
+			for (let w = 0; w < 6; w++) {
+				const x = v[w] as number;
+				const u = (x & (mask[w] as number)) >>> 0;
+				const sum = x + u + carry;
+				carry = sum > 0xffffffff ? 1 : 0;
+				v[w] = (sum | (x & ~(mask[w] as number))) >>> 0;
+			}
+		}
+		sink[0] = (sink[0] as number) ^ (v[0] as number) ^ carry;
+	};
 
 	it(
 		"lineSimilarity of lines just inside WORD_DIFF_MAX costs about tokens x tokens/32",
 		() => {
-			// 1,000 tokens a side is 1,000 x 1,000/32 word steps; four pairs of
-			// 500 tokens are 4 x 500 x 500/32, the same steps with twice the
-			// tokens to scan. Measured 0.4-0.6x. A cost that grows faster than
-			// the square of the tokens (a table per token, a pass per word)
-			// would read far above 2.
+			// 1,000 tokens a side is 1,000 x 1,000/32 = 31,250 word steps. The
+			// yardstick shares no code with the LCS: tokenizing both lines and
+			// the same number of word steps in a plain loop (plainWordSteps),
+			// so a correct implementation reads about 3x (the line
+			// preparation and masks come on top). An LCS of another kind (a
+			// plain table, 1,000,000 cells for 31,250 steps) reads about 39x,
+			// one that grows faster than tokens x tokens/32 more.
 			const [a, b] = punctuation(2, 1000, 1) as [string, string];
-			const small = punctuation(8, 500, 2);
 			const { best, ref, ratio } = bestCpuRatio(
 				() => lineSimilarity(a, b),
 				() => {
-					for (let i = 0; i < small.length; i += 2)
-						lineSimilarity(small[i] as string, small[i + 1] as string);
+					tokenize(a);
+					tokenize(b);
+					plainWordSteps(31_250);
 				},
 			);
 			console.info(
-				`lineSimilarity 1000 tokens: ${best} µs, ${ratio.toFixed(2)}x four 500-token pairs (${ref} µs)`,
+				`lineSimilarity 1000 tokens: ${best} µs, ${ratio.toFixed(2)}x tokenizing and 31,250 plain word steps (${ref} µs)`,
 			);
-			expect(ratio).toBeLessThan(2);
+			expect(ratio).toBeLessThan(8);
 		},
 		LOADED,
 	);
@@ -234,37 +256,39 @@ describe("alignCluster", () => {
 	it(
 		"alignCluster 50 x 50 lines of 192 tokens, just inside ALIGN_WORD_OPS, stays near its yardstick",
 		() => {
-			// The most expensive shape ALIGN_WORD_OPS lets through (about 20-40
-			// ms): every pair of lines shares half its words, so all 2,500
-			// scores run. The yardstick is the same 100 lines as 50 clusters
-			// of one removed and one added line: the same characters tokenized
-			// and the same cells, but 50 scores in place of 2,500. So the
-			// ratio is what the other 2,450 scores add to the cost of reading
-			// the lines (measured 1.5x idle), and an extra cost per cell or per
-			// line pair beyond the score (a chain copied per cell, an index
-			// walked per pair) grows it.
-			const dels = sharing("d", 50, 192);
-			const adds = sharing("a", 50, 192);
+			// The most expensive shape ALIGN_WORD_OPS lets through: the lines
+			// of 192 punctuation tokens share enough with every line on the
+			// other side to pass score()'s bound, so all 2,500 scores run
+			// their LCS (2.88 million word steps, ALIGN_WORD_OPS is 3
+			// million). Lines that share too little skip the LCS and measure
+			// nothing here. The yardstick shares no code with the LCS: the
+			// 100 lines tokenized plus 2,880,000 word steps in a plain loop
+			// (plainWordSteps), so a correct implementation reads about 3x
+			// (the line preparation and masks come on top) and an LCS of
+			// another kind, a plain table of 192 x 192 cells a pair, reads
+			// about 55x. Extra work per cell or per pair on top shows too.
+			const dels = punctuation(50, 192, 7);
+			const adds = punctuation(50, 192, 8);
 			expect(chars([...dels, ...adds])).toBeLessThanOrEqual(ALIGN_CHARS);
 			expect(Math.max(...[...dels, ...adds].map((l) => l.length))).toBeLessThan(
 				WORD_DIFF_MAX,
 			);
 			expect(50 * 6 * 50 * 192).toBeLessThanOrEqual(ALIGN_WORD_OPS);
-			expect(alignCluster(dels, adds)).toEqual(
-				Array.from({ length: 50 }, (_, i) => [i, i]),
-			);
+			// Every pair clears the bound: the lines share most of their tokens.
+			for (const d of dels.slice(0, 3))
+				for (const a of adds.slice(0, 3))
+					expect(lineSimilarity(d, a)).toBeGreaterThan(0.2);
 			const { best, ref, ratio } = bestCpuRatio(
 				() => alignCluster(dels, adds),
 				() => {
-					dels.forEach((d, i) => {
-						alignCluster([d], [adds[i] as string]);
-					});
+					for (const l of [...dels, ...adds]) tokenize(l);
+					plainWordSteps(50 * 6 * 50 * 192);
 				},
 			);
 			console.info(
-				`alignCluster 50x50 of 192 tokens: ${best} µs, ${ratio.toFixed(2)}x as 50 one-line clusters (${ref} µs)`,
+				`alignCluster 50x50 of 192 tokens: ${best} µs, ${ratio.toFixed(2)}x tokenizing and 2.88M plain word steps (${ref} µs)`,
 			);
-			expect(ratio).toBeLessThan(3);
+			expect(ratio).toBeLessThan(6);
 		},
 		LOADED,
 	);
@@ -276,7 +300,9 @@ describe("alignCluster", () => {
 			// of 50: the same lines read and the same cells, and each cluster
 			// keeps the removed line's table. Linear in the lines both ways, so
 			// it reads about 1x (1.0-1.1); a cost per cell that grows with the
-			// cluster's width (a row copied per cell) reads far above 2.
+			// cluster's width would read above 2. (Not mutation-tested: this
+			// shape's cost is mostly reading the lines, scoring one removed
+			// line against each added line.)
 			const del = "w1 x2 y z q0 (3);";
 			const adds = Array.from({ length: 2500 }, (_, i) =>
 				`w${i % 7} x${i % 5} y z q${i % 3} (${i % 11}); // item ${i}`
