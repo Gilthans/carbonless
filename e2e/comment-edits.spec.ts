@@ -315,9 +315,11 @@ test("a reload in a delete's undo window asks first, and a dismissed ask stays",
 			void d.dismiss().then(done);
 		});
 	});
-	// A dismissed reload never navigates: its promise is left behind.
-	void page.reload().catch(() => {});
-	await dismissed;
+	// A dismissed reload never navigates: its promise is left behind. If
+	// the page stops asking, the reload goes through instead, and `asked`
+	// says so.
+	const reloaded = page.reload().catch(() => {});
+	await Promise.race([dismissed, reloaded]);
 	expect(asked).toEqual(["beforeunload"]);
 	await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
 	// The window runs out on the page that stayed: the delete goes.

@@ -660,12 +660,14 @@ test("a reload with an unconfirmed reply posts it once", async ({
 	await box.fill("Survives a reload");
 	await send(c).click();
 	await expect(c.getByTestId("thread-comment-sending")).toBeVisible();
-	// The reloaded page's posts (the one before it is cut off by the reload).
-	const posts: string[] = [];
+	// The reloaded page's posts, counted before each leaves the page (the
+	// one before the reload is already out).
 	const isPost = (r: Request) =>
 		r.method() === "POST" && new URL(r.url()).pathname.endsWith("/replies");
-	page.on("request", (r) => {
-		if (isPost(r)) posts.push(r.url());
+	let posts = 0;
+	await page.route("**/replies", (route) => {
+		if (isPost(route.request())) posts++;
+		return route.continue();
 	});
 	const resent = page.waitForResponse((r) => isPost(r.request()));
 	await page.reload();
@@ -679,10 +681,13 @@ test("a reload with an unconfirmed reply posts it once", async ({
 	// Both the first post and the resend are answered: GitHub has it once.
 	await resent;
 	await expect.poll(() => storedReplies(p, "Survives a reload")).toBe(1);
-	// And no retry later posts it again.
+	// And no retry later posts it again: past any retry, then a request
+	// of the page's own goes out after whatever the jump started, so a
+	// second post would have reached the route by the time it is answered.
 	await page.clock.fastForward("01:00");
+	await page.evaluate(() => fetch(location.href, { method: "HEAD" }));
 	await expect(again.getByTestId("thread-comment-sending")).toHaveCount(0);
-	expect(posts).toHaveLength(1);
+	expect(posts).toBe(1);
 	expect(storedReplies(p, "Survives a reload")).toBe(1);
 });
 
