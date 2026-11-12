@@ -1,5 +1,5 @@
 import { GearIcon, ToolsIcon } from "@primer/octicons-react";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState } from "react";
 import { VIEW_KEYS } from "./files/viewShortcuts";
 import { Keys, useOpenShortcutsHelp } from "./shortcuts";
@@ -100,6 +100,31 @@ function SettingsList({ phone }: { phone: boolean }) {
 const popoverSupported = () =>
 	typeof HTMLElement !== "undefined" &&
 	typeof HTMLElement.prototype.showPopover === "function";
+
+/**
+ * The row to Global settings (`/settings`): the router's link, or a plain
+ * one where no router runs (component tests of the pages around it).
+ */
+function GlobalSettingsLink(props: { onClick: () => void; className: string }) {
+	const router = useRouter({ warn: false }) as ReturnType<
+		typeof useRouter
+	> | null;
+	const content = (
+		<>
+			<ToolsIcon aria-hidden className="shrink-0" />
+			Global settings
+		</>
+	);
+	return router ? (
+		<Link to="/settings" onClick={props.onClick} className={props.className}>
+			{content}
+		</Link>
+	) : (
+		<a href="/settings" onClick={props.onClick} className={props.className}>
+			{content}
+		</a>
+	);
+}
 
 const ROW =
 	"flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm text-ink hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent";
@@ -270,17 +295,10 @@ export function Settings({ review = true }: { review?: boolean } = {}) {
 							Keyboard shortcuts
 						</button>
 					)}
-					{/* Only while open: a closed gear needs no router (component tests). */}
-					{open && (
-						<Link
-							to="/settings"
-							onClick={() => setOpen(false)}
-							className={review ? `mt-1 ${ROW}` : ROW}
-						>
-							<ToolsIcon aria-hidden className="shrink-0" />
-							Global settings
-						</Link>
-					)}
+					<GlobalSettingsLink
+						onClick={() => setOpen(false)}
+						className={review ? `mt-1 ${ROW}` : ROW}
+					/>
 				</div>
 			</dialog>
 		</div>

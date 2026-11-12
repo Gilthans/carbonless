@@ -274,9 +274,13 @@ function VersionSection() {
 					channel <b className="font-mono font-semibold">{data.channel}</b>
 				</span>
 				{data.checksOff ? (
-					<span data-testid="updates-off" className="text-muted">
-						· <CircleSlashIcon size={12} aria-label="Updates off" /> updates
-						off: {OFF_REASON[data.checksOff]}
+					<span
+						data-testid="updates-off"
+						className="inline-flex items-center gap-1 text-muted"
+					>
+						<span aria-hidden>·</span>
+						<CircleSlashIcon size={12} aria-hidden className="shrink-0" />
+						updates off: {OFF_REASON[data.checksOff]}
 					</span>
 				) : (
 					how.length > 0 && (

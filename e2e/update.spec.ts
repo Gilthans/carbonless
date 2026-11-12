@@ -590,7 +590,8 @@ it("Global settings: the running version; Check for updates offers the newer one
 	isMobile,
 	expectConsoleError,
 }) => {
-	expectConsoleError(/ERR_CONNECTION_REFUSED/);
+	// The page's requests while crb stops (one may be cut off) and is down.
+	expectConsoleError(/ERR_CONNECTION_(REFUSED|RESET)/);
 	await pr();
 	if (isMobile) await page.setViewportSize({ width: 360, height: 740 });
 	// Nothing newer yet.
