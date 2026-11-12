@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Thread Moves</title>
+<style>
+:root {
+	--canvas: #0b0d16; --surface: #12141f; --raised: #191c2b; --band: #161927;
+	--overlay: #23263a; --pressed: #2c3048; --line: #262a3d; --line-strong: #72789d; --edge: #363a54;
+	--ink: #f4f1ec; --ink-soft: #d0cde2; --muted: #a0a2c6; --faint: #9396b9; --label: #a397f7;
+	--accent: #8fa6ff; --link: #a9b9ff;
+	--ok: #4ad894; --bad: #ff6f8c; --warn: #f5b625;
+	--code: #0e1019; --code-ink: #e6e3f2;
+	--add: #0f2b22; --add-gutter: #153a2d; --add-ink: #74e8ac;
+	--del: #2d1221; --del-gutter: #3e172c; --del-ink: #ff94aa;
+	--hunk: #151936; --hunk-ink: #a7b0e8;
+	--agent: #0f3534; --agent-edge: #1f7a76; --agent-ink: #5fd6cf;
+	--mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	--sans: "Atkinson Hyperlegible Next", ui-sans-serif, system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--canvas); color: var(--ink); font: 14px/1.45 var(--sans); }
+body { padding: 24px 16px 64px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--label); margin: 40px 0 12px; }
+.lead { color: var(--muted); margin: 0 0 8px; max-width: 70ch; }
+.frames { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.frame { border: 1px solid var(--edge); border-radius: 10px; background: var(--surface); overflow: hidden; }
+.frame.desk { width: 920px; max-width: 100%; }
+.frame.phone { width: 360px; max-width: 100%; }
+.cap { display: flex; gap: 8px; align-items: baseline; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--raised); font-size: 12px; color: var(--muted); }
+.cap b { color: var(--ink); font-size: 13px; }
+.note { font-size: 12px; color: var(--muted); padding: 8px 12px; border-top: 1px solid var(--line); }
+.note code, .lead code { font-family: var(--mono); font-size: 12px; color: var(--ink-soft); }
+svg.i { width: 16px; height: 16px; fill: currentColor; flex: none; }
+svg.s14 { width: 14px; height: 14px; }
+svg.s12 { width: 12px; height: 12px; }
+
+/* File header */
+.fh { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--raised); border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12px; min-height: 40px; }
+.fh .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+.fh .plus { color: var(--ok); } .fh .minus { color: var(--bad); }
+
+/* Diff */
+.diff { overflow-x: auto; background: var(--code); }
+table.d { border-collapse: collapse; width: 100%; font: 12px/20px var(--mono); color: var(--code-ink); }
+table.d td { padding: 0 8px; white-space: pre; }
+table.d td.n { width: 40px; text-align: right; color: var(--faint); user-select: none; padding: 0 6px; }
+table.d td.sg { width: 14px; padding: 0 2px; color: var(--faint); }
+tr.add td { background: var(--add); } tr.add td.n { background: var(--add-gutter); } tr.add td.sg { color: var(--add-ink); }
+tr.del td { background: var(--del); } tr.del td.n { background: var(--del-gutter); } tr.del td.sg { color: var(--del-ink); }
+tr.hunk td { background: var(--hunk); color: var(--hunk-ink); }
+tr.drop { outline: 2px solid var(--accent); outline-offset: -2px; }
+tr.tint td { box-shadow: inset 0 0 0 999px rgba(143,166,255,.08); }
+tr.picked td.n { background: rgba(143,166,255,.35); color: var(--ink); }
+tr.picked td { box-shadow: inset 0 0 0 999px rgba(143,166,255,.10); }
+tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; font-family: var(--sans); font-size: 14px; line-height: 1.45; }
+.phone table.d td.n { width: 30px; }
+
+/* Agent card */
+.card { border: 1px solid var(--agent-edge); border-radius: 8px; background: var(--surface); overflow: hidden; min-width: 0; }
+.card.moving { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ch { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0 4px 0 10px; min-height: 40px; background: var(--band); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.ch .name { font-weight: 600; color: var(--ink-soft); }
+.ch .spark { color: var(--agent-ink); }
+.ch .grow { flex: 1; }
+.cb { padding: 8px 10px; display: grid; gap: 8px; }
+.msg { border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+.msg.me { background: var(--raised); border: 1px solid var(--line); }
+.msg.ai { background: var(--agent); border: 1px solid var(--agent-edge); }
+.who { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+
+/* Controls */
+.btn { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 6px; color: var(--muted); border: 0; background: transparent; flex: none; }
+.btn:hover, .btn.hot { background: var(--overlay); color: var(--ink); }
+.btn.grab { cursor: grab; }
+.btn.grabbing { cursor: grabbing; background: var(--pressed); color: var(--ink); }
+.btn.focus { outline: 2px solid var(--accent); outline-offset: -2px; color: var(--ink); }
+.chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid; white-space: nowrap; }
+.chip.gray { color: var(--muted); border-color: var(--edge); background: var(--raised); }
+.chip.yellow { color: var(--warn); border-color: rgba(245,182,37,.5); background: rgba(245,182,37,.08); }
+.chip.red { color: var(--bad); border-color: rgba(255,111,140,.5); background: rgba(255,111,140,.08); }
+.link { color: var(--link); font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; min-height: 40px; padding: 0 4px; }
+
+/* Ghost while dragging */
+.ghostwrap { position: relative; }
+.ghost { position: absolute; z-index: 2; display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--agent-edge); background: var(--agent); color: var(--ink-soft); font-size: 12px; box-shadow: 0 6px 18px rgba(0,0,0,.5); white-space: nowrap; }
+.cursor { position: absolute; z-index: 3; width: 16px; height: 16px; color: var(--ink); }
+
+/* Move bar and selection bar */
+.movebar { position: sticky; top: 0; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 12px; min-height: 48px; background: var(--surface); border-bottom: 1px solid var(--line); box-shadow: 0 4px 12px rgba(0,0,0,.35); font-size: 13px; }
+.movebar .what { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; font-size: 12px; }
+.movebar .pin { color: var(--accent); }
+.appbar { display: flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; min-height: 44px; background: var(--surface); border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.appbar b { color: var(--ink); font-weight: 600; }
+.selbar { display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--overlay); border: 1px solid var(--edge); box-shadow: 0 6px 18px rgba(0,0,0,.5); }
+.selbar .btn { color: var(--ink); }
+.selbar .btn.place { color: var(--accent); background: var(--pressed); }
+.tip { display: inline-block; padding: 3px 8px; border-radius: 6px; background: var(--overlay); border: 1px solid var(--edge); color: var(--ink); font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,.4); white-space: nowrap; }
+
+/* Unplaced row */
+.unpl { padding: 8px; background: var(--canvas); border-bottom: 1px solid var(--line); display: grid; gap: 6px; }
+.unpl .top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--ink-soft); }
+.orig { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.orig .t { font-size: 11px; color: var(--label); letter-spacing: .08em; text-transform: uppercase; padding: 4px 8px; background: var(--band); border-bottom: 1px solid var(--line); }
+.legendless { display: none; }
+@media (max-width: 400px) { body { padding: 16px 8px 48px; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+	<symbol id="grabber" viewBox="0 0 16 16"><path d="M10 13a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm0-4a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm-4 4a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm5-9a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM7 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM6 5a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></symbol>
+	<symbol id="pin" viewBox="0 0 16 16"><path d="m11.294.984 3.722 3.722a1.75 1.75 0 0 1-.504 2.826l-1.327.613a3.089 3.089 0 0 0-1.707 2.084l-.584 2.454c-.317 1.332-1.972 1.8-2.94.832L5.75 11.311 1.78 15.28a.749.749 0 1 1-1.06-1.06l3.969-3.97-2.204-2.204c-.968-.968-.5-2.623.832-2.94l2.454-.584a3.08 3.08 0 0 0 2.084-1.707l.613-1.327a1.75 1.75 0 0 1 2.826-.504ZM6.283 9.723l2.732 2.731a.25.25 0 0 0 .42-.119l.584-2.454a4.586 4.586 0 0 1 2.537-3.098l1.328-.613a.25.25 0 0 0 .072-.404l-3.722-3.722a.25.25 0 0 0-.404.072l-.613 1.328a4.584 4.584 0 0 1-3.098 2.537l-2.454.584a.25.25 0 0 0-.119.42l2.731 2.732Z"/></symbol>
+	<symbol id="undo" viewBox="0 0 16 16"><path d="M1.22 6.28a.749.749 0 0 1 0-1.06l3.5-3.5a.749.749 0 1 1 1.06 1.06L3.561 5h7.188l.001.007L10.749 5c.058 0 .116.007.171.019A4.501 4.501 0 0 1 10.5 14H8.796a.75.75 0 0 1 0-1.5H10.5a3 3 0 1 0 0-6H3.561L5.78 8.72a.749.749 0 1 1-1.06 1.06l-3.5-3.5Z"/></symbol>
+	<symbol id="sparkle" viewBox="0 0 16 16"><path d="M7.53 1.282a.5.5 0 0 1 .94 0l.478 1.306a7.492 7.492 0 0 0 4.464 4.464l1.305.478a.5.5 0 0 1 0 .94l-1.305.478a7.492 7.492 0 0 0-4.464 4.464l-.478 1.305a.5.5 0 0 1-.94 0l-.478-1.305a7.492 7.492 0 0 0-4.464-4.464L1.282 8.47a.5.5 0 0 1 0-.94l1.306-.478a7.492 7.492 0 0 0 4.464-4.464Z"/></symbol>
+	<symbol id="compare" viewBox="0 0 16 16"><path d="M9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM6 12v-1.646a.25.25 0 0 1 .427-.177l2.396 2.396a.25.25 0 0 1 0 .354l-2.396 2.396A.25.25 0 0 1 6 15.146V13.5H5A2.5 2.5 0 0 1 2.5 11V5.372a2.25 2.25 0 1 1 1.5 0V11a1 1 0 0 0 1 1ZM4 3.25a.75.75 0 1 0-1.5 0 .75.75 0 0 0 1.5 0ZM12.75 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></symbol>
+	<symbol id="x" viewBox="0 0 16 16"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.749.749 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.749.749 0 1 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></symbol>
+	<symbol id="removed" viewBox="0 0 16 16"><path d="M13.25 1c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 13.25 15H2.75A1.75 1.75 0 0 1 1 13.25V2.75C1 1.784 1.784 1 2.75 1ZM2.75 2.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25Zm8.5 6.25h-6.5a.75.75 0 0 1 0-1.5h6.5a.75.75 0 0 1 0 1.5Z"/></symbol>
+	<symbol id="chev" viewBox="0 0 16 16"><path d="M3.22 10.53a.749.749 0 0 1 0-1.06l4.25-4.25a.749.749 0 0 1 1.06 0l4.25 4.25a.749.749 0 1 1-1.06 1.06L8 6.811 4.28 10.53a.749.749 0 0 1-1.06 0Z"/></symbol>
+	<symbol id="cursor" viewBox="0 0 16 16"><path d="M2 1l11 7-5 1-2 5z" stroke="#0b0d16" stroke-width="1"/></symbol>
+</svg>
+
+<h1>Agent thread moves</h1>
+<p class="lead">CAR-139 mockups. Desktop A–D, phone E–H. Spec: <code>2026-11-12-agent-thread-placement-design.md</code>. Example: the agent was asked about <code>release()</code> on PS2; after a push the tracer put it on the twin <code>release()</code> at line 88 instead of 52.</p>
+
+<h2>Desktop</h2>
+<div class="frames">
+
+<!-- A: tracer's place, handle -->
+<section class="frame desk">
+	<div class="cap"><b>A · The tracer's place</b> handle in the card header</div>
+	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
+	<div class="diff"><table class="d">
+		<tr class="hunk"><td class="n"></td><td class="n"></td><td class="sg"></td><td>@@ -48,8 +48,10 @@ export class Pool {</td></tr>
+		<tr><td class="n">50</td><td class="n">50</td><td class="sg"></td><td>  async withLock(fn) {</td></tr>
+		<tr><td class="n">51</td><td class="n">51</td><td class="sg"></td><td>    const token = await this.take();</td></tr>
+		<tr class="add"><td class="n"></td><td class="n">52</td><td class="sg">+</td><td>    try { return await fn(); } finally { this.release(token); }</td></tr>
+		<tr class="hunk"><td class="n"></td><td class="n"></td><td class="sg"></td><td>@@ -84,4 +86,6 @@ export class Pool {</td></tr>
+		<tr><td class="n">86</td><td class="n">87</td><td class="sg"></td><td>  drain() {</td></tr>
+		<tr class="add"><td class="n"></td><td class="n">88</td><td class="sg">+</td><td>    for (const t of this.held) this.release(t);</td></tr>
+		<tr class="card"><td colspan="4">
+			<article class="card">
+				<div class="ch">
+					<svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span>
+					<span class="chip yellow"><svg class="i s12"><use href="#compare"/></svg>changed since</span>
+					<span class="grow"></span>
+					<span class="btn grab hot" title="Drag to a line, or press to pick one" aria-label="Move thread"><svg class="i"><use href="#grabber"/></svg></span>
+					<span class="btn"><svg class="i"><use href="#chev"/></svg></span>
+				</div>
+				<div class="cb">
+					<div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div>
+					<div class="msg ai"><div class="who">Claude</div>Yes: <code>finally</code> calls <code>release(token)</code> on every path.</div>
+				</div>
+			</article>
+			<p style="margin:6px 0 0"><span class="tip">Drag to a line, or press to pick one</span></p>
+		</td></tr>
+	</table></div>
+	<div class="note">Wrong twin: the question is about line 52. The tracer's placement looks as today; the Grabber (40×40) is the only addition.</div>
+</section>
+
+<!-- B: dragging -->
+<section class="frame desk">
+	<div class="cap"><b>B · Dragging</b> the line under the pointer is outlined</div>
+	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
+	<div class="diff ghostwrap"><table class="d">
+		<tr class="hunk"><td class="n"></td><td class="n"></td><td class="sg"></td><td>@@ -48,8 +48,10 @@ export class Pool {</td></tr>
+		<tr><td class="n">50</td><td class="n">50</td><td class="sg"></td><td>  async withLock(fn) {</td></tr>
+		<tr><td class="n">51</td><td class="n">51</td><td class="sg"></td><td>    const token = await this.take();</td></tr>
+		<tr class="add drop"><td class="n"></td><td class="n">52</td><td class="sg">+</td><td>    try { return await fn(); } finally { this.release(token); }</td></tr>
+		<tr class="hunk"><td class="n"></td><td class="n"></td><td class="sg"></td><td>@@ -84,4 +86,6 @@ export class Pool {</td></tr>
+		<tr><td class="n">86</td><td class="n">87</td><td class="sg"></td><td>  drain() {</td></tr>
+		<tr class="add"><td class="n"></td><td class="n">88</td><td class="sg">+</td><td>    for (const t of this.held) this.release(t);</td></tr>
+		<tr class="card"><td colspan="4">
+			<article class="card" style="opacity:.55">
+				<div class="ch">
+					<svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span>
+					<span class="chip yellow"><svg class="i s12"><use href="#compare"/></svg>changed since</span>
+					<span class="grow"></span>
+					<span class="btn grabbing"><svg class="i"><use href="#grabber"/></svg></span>
+					<span class="btn"><svg class="i"><use href="#chev"/></svg></span>
+				</div>
+				<div class="cb"><div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div></div>
+			</article>
+		</td></tr>
+	</table>
+	<div class="ghost" style="left:420px; top:66px"><svg class="i s14 spark"><use href="#sparkle"/></svg>Is the lock released if fn throws?</div>
+	<svg class="cursor" style="left:408px; top:62px"><use href="#cursor"/></svg>
+	</div>
+	<div class="note">The card stays put (dimmed); a slim ghost follows the pointer. Drop on a row of this file to place; Escape or a drop elsewhere cancels. Nothing is written until the drop.</div>
+</section>
+
+<!-- C: placed by you -->
+<section class="frame desk">
+	<div class="cap"><b>C · Placed by you</b> pin chip + Undo</div>
+	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
+	<div class="diff"><table class="d">
+		<tr class="hunk"><td class="n"></td><td class="n"></td><td class="sg"></td><td>@@ -48,8 +48,10 @@ export class Pool {</td></tr>
+		<tr><td class="n">50</td><td class="n">50</td><td class="sg"></td><td>  async withLock(fn) {</td></tr>
+		<tr><td class="n">51</td><td class="n">51</td><td class="sg"></td><td>    const token = await this.take();</td></tr>
+		<tr class="add tint"><td class="n"></td><td class="n">52</td><td class="sg">+</td><td>    try { return await fn(); } finally { this.release(token); }</td></tr>
+		<tr class="card"><td colspan="4">
+			<article class="card">
+				<div class="ch">
+					<svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span>
+					<span class="chip gray" title="Moved here by you on PS3"><svg class="i s12"><use href="#pin"/></svg>moved</span>
+					<span class="btn focus" title="Back to the tracer's place" aria-label="Back to the tracer's place"><svg class="i"><use href="#undo"/></svg></span>
+					<span class="grow"></span>
+					<span class="btn grab"><svg class="i"><use href="#grabber"/></svg></span>
+					<span class="btn"><svg class="i"><use href="#chev"/></svg></span>
+				</div>
+				<div class="cb">
+					<div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div>
+					<div class="msg ai"><div class="who">Claude</div>Yes: <code>finally</code> calls <code>release(token)</code> on every path.</div>
+				</div>
+			</article>
+			<p style="margin:6px 0 0"><span class="tip">Moved here by you on PS3</span></p>
+		</td></tr>
+		<tr class="hunk"><td class="n"></td><td class="n"></td><td class="sg"></td><td>@@ -84,4 +86,6 @@ export class Pool {</td></tr>
+		<tr><td class="n">86</td><td class="n">87</td><td class="sg"></td><td>  drain() {</td></tr>
+		<tr class="add"><td class="n"></td><td class="n">88</td><td class="sg">+</td><td>    for (const t of this.held) this.release(t);</td></tr>
+	</table></div>
+	<div class="note">Gray chip: a fact, not a state. Line 52 gets the landing tint (fades); focus lands on Undo. "changed since" is gone: the line is the one chosen, in this snapshot.</div>
+</section>
+
+<!-- D: next push, moved-to line deleted -->
+<section class="frame desk">
+	<div class="cap"><b>D · A later push deleted the line it was moved to</b> unplaced, still yours</div>
+	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+9</span><span class="minus">−11</span></div>
+	<div class="unpl">
+		<div class="top">
+			<span class="chip red"><svg class="i s12"><use href="#removed"/></svg>deleted</span>
+			<span>The line it was on was deleted.</span>
+			<span class="link">near 50</span>
+			<span class="chip gray" title="Moved by you on PS3, followed here"><svg class="i s12"><use href="#pin"/></svg>moved</span>
+			<span class="btn" title="Back to the tracer's place"><svg class="i"><use href="#undo"/></svg></span>
+			<span class="grow" style="flex:1"></span>
+			<span class="btn grab" title="Drag to a line, or press to pick one"><svg class="i"><use href="#grabber"/></svg></span>
+		</div>
+		<div class="orig">
+			<div class="t">Original Reviewed Change</div>
+			<div class="diff"><table class="d">
+				<tr><td class="n">51</td><td class="sg"></td><td>    const token = await this.take();</td></tr>
+				<tr class="add"><td class="n">52</td><td class="sg">+</td><td>    try { return await fn(); } finally { this.release(token); }</td></tr>
+			</table></div>
+		</div>
+		<article class="card">
+			<div class="ch"><svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span><span class="grow"></span><span class="btn"><svg class="i"><use href="#chev"/></svg></span></div>
+			<div class="cb"><div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div></div>
+		</article>
+	</div>
+	<div class="diff"><table class="d">
+		<tr class="hunk"><td class="n"></td><td class="n"></td><td class="sg"></td><td>@@ -48,10 +48,7 @@ export class Pool {</td></tr>
+		<tr><td class="n">50</td><td class="n">50</td><td class="sg"></td><td>  async withLock(fn) {</td></tr>
+		<tr class="del"><td class="n">52</td><td class="n"></td><td class="sg">−</td><td>    try { return await fn(); } finally { this.release(token); }</td></tr>
+		<tr class="add"><td class="n"></td><td class="n">51</td><td class="sg">+</td><td>    return this.lock.run(fn);</td></tr>
+	</table></div>
+	<div class="note">Followed from the move (PS3), not from where it was asked. Original box: the moved-to lines. Undo goes back one move.</div>
+</section>
+</div>
+
+<h2>Phone · 360px</h2>
+<div class="frames">
+
+<!-- E -->
+<section class="frame phone">
+	<div class="cap"><b>E · Handle</b> tap it</div>
+	<div class="appbar"><b>#412</b><span>Files</span></div>
+	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
+	<div class="diff"><table class="d">
+		<tr><td class="n">87</td><td class="sg"></td><td>  drain() {</td></tr>
+		<tr class="add"><td class="n">88</td><td class="sg">+</td><td>    for (const t of this.held)…</td></tr>
+		<tr class="card"><td colspan="3">
+			<article class="card">
+				<div class="ch">
+					<svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span>
+					<span class="grow"></span>
+					<span class="btn grab hot"><svg class="i"><use href="#grabber"/></svg></span>
+					<span class="btn"><svg class="i"><use href="#chev"/></svg></span>
+					<span class="chip yellow"><svg class="i s12"><use href="#compare"/></svg>changed since</span>
+				</div>
+				<div class="cb"><div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div></div>
+			</article>
+		</td></tr>
+	</table></div>
+	<div class="note">Chips wrap to a second row. Drag may work; a tap is always enough.</div>
+</section>
+
+<!-- F -->
+<section class="frame phone">
+	<div class="cap"><b>F · Move mode</b> bar pushes the page down</div>
+	<div class="movebar">
+		<svg class="i pin"><use href="#pin"/></svg><b>Pick a line</b>
+		<span class="what">Is the lock released if fn throws?</span>
+		<span class="btn" title="Cancel" aria-label="Cancel"><svg class="i"><use href="#x"/></svg></span>
+	</div>
+	<div class="appbar"><b>#412</b><span>Files</span></div>
+	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
+	<div class="diff"><table class="d">
+		<tr><td class="n">50</td><td class="sg"></td><td>  async withLock(fn) {</td></tr>
+		<tr><td class="n">51</td><td class="sg"></td><td>    const token = await…</td></tr>
+		<tr class="add"><td class="n">52</td><td class="sg">+</td><td>    try { return await fn…</td></tr>
+		<tr><td class="n">87</td><td class="sg"></td><td>  drain() {</td></tr>
+		<tr class="add"><td class="n">88</td><td class="sg">+</td><td>    for (const t of this.held)…</td></tr>
+		<tr class="card"><td colspan="3">
+			<article class="card moving">
+				<div class="ch"><svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span><span class="grow"></span><span class="btn grabbing"><svg class="i"><use href="#grabber"/></svg></span><span class="btn"><svg class="i"><use href="#chev"/></svg></span></div>
+			</article>
+		</td></tr>
+	</table></div>
+	<div class="note">The card being moved is outlined. Line numbers in any file are targets (48×20, the picker's own).</div>
+</section>
+
+<!-- G -->
+<section class="frame phone">
+	<div class="cap"><b>G · Picked</b> one button: Place here</div>
+	<div class="movebar">
+		<svg class="i pin"><use href="#pin"/></svg><b>Pick a line</b>
+		<span class="what">Is the lock released if fn throws?</span>
+		<span class="btn"><svg class="i"><use href="#x"/></svg></span>
+	</div>
+	<div class="appbar"><b>#412</b><span>Files</span></div>
+	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
+	<div class="diff" style="position:relative"><table class="d">
+		<tr><td class="n">50</td><td class="sg"></td><td>  async withLock(fn) {</td></tr>
+		<tr><td class="n">51</td><td class="sg"></td><td>    const token = await…</td></tr>
+		<tr class="add picked"><td class="n">52</td><td class="sg">+</td><td>    try { return await fn…</td></tr>
+		<tr><td class="n">53</td><td class="sg"></td><td>  }</td></tr>
+		<tr><td class="n">54</td><td class="sg"></td><td></td></tr>
+	</table>
+	<div style="position:absolute; left:40px; top:64px"><span class="selbar"><span class="btn place" title="Place here" aria-label="Place here"><svg class="i"><use href="#pin"/></svg></span></span> <span class="tip" style="vertical-align:top;margin-top:8px">Place here</span></div>
+	<div style="height:40px"></div>
+	</div>
+	<div class="note">Drag down the numbers for a range. Escape / ✕ leaves with nothing written.</div>
+</section>
+
+<!-- H -->
+<section class="frame phone">
+	<div class="cap"><b>H · Placed by you</b></div>
+	<div class="appbar"><b>#412</b><span>Files</span></div>
+	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
+	<div class="diff"><table class="d">
+		<tr><td class="n">51</td><td class="sg"></td><td>    const token = await…</td></tr>
+		<tr class="add tint"><td class="n">52</td><td class="sg">+</td><td>    try { return await fn…</td></tr>
+		<tr class="card"><td colspan="3">
+			<article class="card">
+				<div class="ch">
+					<svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span>
+					<span class="grow"></span>
+					<span class="btn grab"><svg class="i"><use href="#grabber"/></svg></span>
+					<span class="btn"><svg class="i"><use href="#chev"/></svg></span>
+					<span class="chip gray"><svg class="i s12"><use href="#pin"/></svg>moved</span>
+					<span class="btn focus"><svg class="i"><use href="#undo"/></svg></span>
+				</div>
+				<div class="cb">
+					<div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div>
+					<div class="msg ai"><div class="who">Claude</div>Yes: <code>finally</code> releases it.</div>
+				</div>
+			</article>
+		</td></tr>
+	</table></div>
+	<div class="note">Bar gone, page back in place; chip and 40px Undo on the header's second row.</div>
+</section>
+</div>
+</body>
+</html>
