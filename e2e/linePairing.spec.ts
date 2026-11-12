@@ -212,7 +212,7 @@ for (const view of ["unified", "side-by-side"] as const) {
 		const p = await pr(fixture);
 		const head = p.repo.shas.at(-1) ?? "";
 		p.editScenario((s) => {
-			const graph = s.prs[7]?.graphql;
+			const graph = s.prs[p.number]?.graphql;
 			if (!graph) throw new Error("no PR in the scenario");
 			graph.reviewThreads = [
 				reviewThread(
