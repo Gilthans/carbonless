@@ -141,7 +141,7 @@ test("Resolve closes the card, still the agent's; it opens to Unresolve, kept ac
 	const again = await openFile(page, s.url, CALC);
 	const bubble = row(again, 3).getByTestId("agent-bubble");
 	await expect(bubble).toHaveAccessibleName(
-		"1 agent thread on line 3, resolved",
+		"1 agent thread on line 3, resolved, 1 new",
 	);
 	await bubble.click();
 	const reopened = again.getByTestId("agent-thread");
@@ -260,6 +260,14 @@ test("the chip: starting while the handshake is held, ready, busy while answerin
 	releaseAcp(acpScenario, "initialize");
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
 	await expect(chip(page)).toHaveAccessibleName("Your agent: Fake Agent 9.9.9");
+	// Ready: the sparkle green (shots for the design review).
+	await expect(page.getByTestId("agent-chip-icon")).toHaveClass(/text-ok/);
+	const shots = process.env.DESIGN_SHOTS;
+	const project = (await page.evaluate(() => navigator.maxTouchPoints > 0))
+		? "phone"
+		: "desktop";
+	if (shots)
+		await page.screenshot({ path: `${shots}/chip-ready-top-${project}.png` });
 	const section = await openFile(page, s.url, CALC);
 	const card = await ask(page, section, 3, "Busy?");
 	await expect(chip(page)).toHaveAttribute("data-state", "busy");
@@ -267,6 +275,14 @@ test("the chip: starting while the handshake is held, ready, busy while answerin
 	releaseAcp(acpScenario, "prompt");
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	if (shots) {
+		// Scrolled, the header stuck: the chip docked beside the mark.
+		await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+		await expect(
+			page.getByTestId("app-header-row").getByTestId("agent-chip"),
+		).toBeVisible();
+		await page.screenshot({ path: `${shots}/chip-ready-stuck-${project}.png` });
+	}
 });
 
 test("the chip turns red when the agent crashes mid-answer; the partial reply stays", async ({
@@ -589,7 +605,7 @@ test("agent threads follow a push: a spinner while they are traced, then on the 
 	).toHaveCount(0);
 	// Answered: calc's on line 5 with the agent's bubble, gone from the lead.
 	const bubble = row(again, 5).getByTestId("agent-bubble");
-	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
+	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5, 1 new");
 	await expect(lead).toHaveCount(0);
 	await bubble.click();
 	const moved = again
@@ -666,7 +682,7 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	).toHaveCount(0);
 	held.release();
 	const bubble = row(since, 5).getByTestId("agent-bubble");
-	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
+	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5, 1 new");
 	// Its line was reworked since: the changed chip and its old lines, as a
 	// review thread's card has them.
 	await bubble.click();
@@ -712,7 +728,7 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	};
 	await expand(ps2);
 	await expect(row(ps2, 5).getByTestId("agent-bubble")).toHaveAccessibleName(
-		"1 agent thread on line 5",
+		"1 agent thread on line 5, 1 new",
 	);
 	// Back on PS1 (PS2 started since): a question asked there is on PS1's
 	// head and line, shown there, and traced into PS2 like the first.
@@ -721,17 +737,22 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	const ps1 = fileSection(page, CALC);
 	await ps1.getByRole("button", { name: "Expand file" }).click();
 	await expect(row(ps1, 3)).toBeVisible();
+	// Hold every seen mark from here to the end (the route outlives the
+	// gotos): the open card would count as seen after a second, so both
+	// answers on the line, the first one's (never opened since) and this
+	// one's, stay new (no timer race).
+	await page.route(/\/api\/r\/[^/]+\/agent\/threads\/[^/]+\/seen$/, () => {});
 	const late = await ask(page, ps1, 3, "Asked on PS1 after PS2");
 	await expect(late).toHaveAttribute("aria-label", "Agent thread, answered");
 	await expect(row(ps1, 3).getByTestId("agent-bubble")).toHaveAccessibleName(
-		"2 agent threads on line 3",
+		"2 agent threads on line 3, 2 new",
 	);
 	await page.goto(reviewPage(s.url, "files", "ps=2"));
 	const back = fileSection(page, CALC);
 	// Freshly opened: the file starts closed.
 	await back.getByRole("button", { name: "Expand file" }).click();
 	await expect(row(back, 5).getByTestId("agent-bubble")).toHaveAccessibleName(
-		"2 agent threads on line 5",
+		"2 agent threads on line 5, 2 new",
 	);
 });
 

@@ -13,6 +13,8 @@ import { AgentThreadCard } from "../agent/AgentThreadCard";
 import { AgentUnplaced } from "../agent/AgentUnplaced";
 import { agentStatusQuery } from "../agent/api";
 import { useAgentPlacing } from "../agent/placeable";
+import { ThreadAgentButton } from "../agent/ThreadAgentButton";
+import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
 import { ThreadStatus } from "../threads/ThreadStatus";
@@ -40,61 +42,81 @@ export function ThreadBlock(props: {
 }) {
 	const { thread, onResolved } = props;
 	const placement = usePlacementInfo().placements?.get(thread.id);
+	const onToggle =
+		onResolved &&
+		((resolved: boolean, from: Element) => {
+			if (resolved) onResolved(thread, from);
+		});
+	const agent = useThreadAgent(thread, { onToggle });
 	return (
-		<article
-			data-testid="files-thread"
-			aria-label={`${thread.resolved ? "Resolved" : "Unresolved"} thread by ${thread.author}`}
-			className="min-w-0 overflow-hidden rounded-lg border border-edge bg-surface"
-		>
-			<div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-band px-2.5 py-1 text-xs text-muted">
-				{thread.resolved ? (
-					<CheckCircleIcon size={14} aria-hidden className="shrink-0 text-ok" />
-				) : (
-					<CommentDiscussionIcon
-						size={14}
-						aria-hidden
-						className="shrink-0 text-warn"
-					/>
-				)}
-				<span
-					className={`font-semibold ${thread.resolved ? "text-ok" : "text-ink-soft"}`}
-				>
-					{thread.resolved ? "Resolved" : "Unresolved"}
-				</span>
-				{props.unplaced && (
-					<LabeledIcon
-						icon={AlertIcon}
-						label="Line not in this diff"
-						// A resolved thread asks for nothing: the fact, muted.
-						className={thread.resolved ? "text-muted" : "text-warn"}
-					/>
-				)}
-				<span className="ml-auto flex items-center gap-2">
-					<PlacementChip thread={thread} />
-					<ThreadStatus thread={thread} mark={false} />
-					{thread.outdated && (
-						<Badge tone="gray" icon={HistoryIcon}>
-							outdated
-						</Badge>
+		<ThreadAgentContext.Provider value={agent}>
+			<article
+				data-testid="files-thread"
+				aria-label={`${thread.resolved ? "Resolved" : "Unresolved"} thread by ${thread.author}`}
+				className="min-w-0 overflow-hidden rounded-lg border border-edge bg-surface"
+			>
+				<div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-band px-2.5 py-1 text-xs text-muted">
+					{thread.resolved ? (
+						<CheckCircleIcon
+							size={14}
+							aria-hidden
+							className="shrink-0 text-ok"
+						/>
+					) : (
+						<CommentDiscussionIcon
+							size={14}
+							aria-hidden
+							className="shrink-0 text-warn"
+						/>
 					)}
-				</span>
-			</div>
-			<div className="space-y-2 p-2.5">
-				{placement?.kind === "changed" && (
-					<ChangedSince thread={thread} placement={placement} />
-				)}
-				<Conversation
-					readId={props.readId}
-					thread={thread}
-					onToggle={
-						onResolved &&
-						((resolved, from) => {
-							if (resolved) onResolved(thread, from);
-						})
-					}
-				/>
-			</div>
-		</article>
+					<span
+						className={`font-semibold ${thread.resolved ? "text-ok" : "text-ink-soft"}`}
+					>
+						{thread.resolved ? "Resolved" : "Unresolved"}
+					</span>
+					{props.unplaced && (
+						<LabeledIcon
+							icon={AlertIcon}
+							label="Line not in this diff"
+							// A resolved thread asks for nothing: the fact, muted.
+							className={thread.resolved ? "text-muted" : "text-warn"}
+						/>
+					)}
+					<span className="ml-auto flex items-center gap-2">
+						<PlacementChip thread={thread} />
+						<ThreadStatus
+							thread={thread}
+							mark={false}
+							tall={agent !== null}
+							onCounter={agent?.open ? agent.close : undefined}
+						/>
+						{agent && (
+							<ThreadAgentButton
+								thread={thread}
+								conversation={agent.conversation}
+								open={agent.open}
+								onToggle={agent.toggle}
+							/>
+						)}
+						{thread.outdated && (
+							<Badge tone="gray" icon={HistoryIcon}>
+								outdated
+							</Badge>
+						)}
+					</span>
+				</div>
+				<div className="space-y-2 p-2.5">
+					{placement?.kind === "changed" && (
+						<ChangedSince thread={thread} placement={placement} />
+					)}
+					<Conversation
+						readId={props.readId}
+						thread={thread}
+						onToggle={onToggle}
+					/>
+				</div>
+			</article>
+		</ThreadAgentContext.Provider>
 	);
 }
 

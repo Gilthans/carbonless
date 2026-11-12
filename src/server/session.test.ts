@@ -3,7 +3,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { acpLog, releaseAcp, useFakeAcp } from "../../test/fake-acp/scenario";
+import {
+	acpLog,
+	releaseAcp,
+	useFakeAcp,
+	writeAcpScenario,
+} from "../../test/fake-acp/scenario";
 import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
 	letThrough,
@@ -1086,6 +1091,10 @@ describe("Session", () => {
 			expect(o.reviews.map((r) => r.author)).toEqual(["Octo_Cat"]);
 			expect(o.checks).toEqual([{ name: "ci", status: "passing" }]);
 			// Nothing moves as of a cutoff: the read is kept, gh isn't asked again.
+			// The read's threads and timeline go on after its overview is in (on a
+			// loaded machine their gh calls may log later): once they are in too,
+			// any call is a new read's.
+			await Promise.all([s.threads(o.readId, "full"), s.timeline(o.readId)]);
 			const ghCalls = pr.ghLog().length;
 			expect(await s.overview()).toEqual(o);
 			expect(pr.ghLog().length).toBe(ghCalls);
@@ -2201,6 +2210,100 @@ describe("Session", () => {
 				RangeError,
 			);
 			await s.close();
+		});
+
+		it("a thread turn, a suggestion included, never resolves, replies to or writes to the GitHub thread", async () => {
+			writeAcpScenario(pr.repo.path, {
+				agent: { name: "fake-acp", version: "1.0.0" },
+				answers: [{ text: "Fixed in the viewed head.\n[suggest-resolve]" }],
+			});
+			const head = pr.head();
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: head, baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2 }, [
+									threadComment({
+										login: "octo-author",
+										text: "<!-- hidden -->Is line 2 right?",
+										commit: head,
+									}),
+								]),
+							],
+						},
+					},
+				},
+			});
+			const writes = (
+				[
+					"setThreadResolved",
+					"replyToThread",
+					"editThreadComment",
+					"deleteThreadComment",
+				] as const
+			).map((m) => vi.spyOn(Session.prototype, m));
+			try {
+				const s = await Session.open(pr.arg, process.cwd());
+				const host = s.agent;
+				if (!host) throw new Error("no agent");
+				const { readId } = await s.overview();
+				const [rt] = (await s.threads(readId, "summary")).threads;
+				if (!rt) throw new Error("no thread");
+				await host.open({
+					clientId: "q1",
+					text: "Is it fixed?",
+					thread: rt.id,
+					view: { target: { head }, from: { branch: true } },
+				});
+				await vi.waitFor(
+					async () =>
+						expect((await host.threads())[0]?.messages).toHaveLength(2),
+					{ timeout: 20_000, interval: 20 },
+				);
+				const [t] = await host.threads();
+				expect(t?.messages[1]).toMatchObject({
+					by: "ai",
+					text: "Fixed in the viewed head.",
+					suggests: "resolve",
+					head,
+				});
+				const sent = acpLog(fake.log).find((e) => e.method === "session/prompt")
+					?.params as { prompt: Array<{ text?: string }> };
+				const text = sent.prompt[0]?.text ?? "";
+				const env = JSON.parse(text.slice(text.indexOf("\n\n{") + 2));
+				expect(env).toMatchObject({
+					kind: "github_thread_conversation",
+					current: head,
+					view: { right: head, left: pr.mergeBase },
+					github: {
+						path: "a.txt",
+						openedOn: head,
+						resolved: false,
+						comments: [
+							{
+								author: { login: "octo-author", role: "pr_author" },
+								body: "Is line 2 right?",
+							},
+						],
+					},
+					placement: { kind: "placed" },
+				});
+				expect(env.messages[0].author).toEqual({
+					login: "octo-cat",
+					role: "reviewer",
+				});
+				// The suggestion is data: nothing wrote to GitHub's thread.
+				for (const w of writes) expect(w).not.toHaveBeenCalled();
+				expect(pr.ghLog()).not.toMatch(
+					/-X (POST|PATCH|PUT|DELETE)|--method|resolveReviewThread|unresolveReviewThread|addPullRequestReview|mutation/,
+				);
+				expect(t?.resolved).toBe(false);
+				await s.close();
+			} finally {
+				for (const w of writes) w.mockRestore();
+			}
 		});
 
 		it("close() closes the host (checkout removed)", async () => {

@@ -48,7 +48,12 @@ jobs:
         timeout-minutes: 25
         env:
           CRB_TEST_TRACE_ROOT: ${{ runner.temp }}/test-traces
-      - run: pnpm test:pack
+      # The pack smoke test as promote runs it, on a tarball packed first
+      # (pnpm test:pack, in pnpm verify, packs its own).
+      - name: Pack smoke test, on a packed tarball
+        run: |
+          pnpm pack --pack-destination "$RUNNER_TEMP/pack"
+          node scripts/pack-smoke.mjs "$RUNNER_TEMP"/pack/carbonless-review-*.tgz
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -57,7 +62,8 @@ jobs:
           retention-days: 14
 
   # The agent's spawn and kill differ on Windows (npm .cmd shims, no process
-  # groups); the rest of the suite assumes POSIX. vitest runs unqueued:
+  # groups), and so do the update helper's wait, install and relaunch; the
+  # rest of the suite assumes POSIX. vitest runs unqueued:
   # scripts/queue.mjs takes its lock with flock.
   windows-agent:
     runs-on: windows-latest
@@ -72,7 +78,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec vitest run src/server/agent/acp.test.ts src/server/agent/runner.test.ts
+      - run: pnpm exec vitest run src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts
 
   # Playwright in parallel shards (about 15 min each at ~830 tests on a
   # 2-core runner; one runner took 35+ min and hit its limit). Each uploads

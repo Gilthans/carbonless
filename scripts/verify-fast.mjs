@@ -74,7 +74,16 @@ const E2E_MAP = [
 		/^src\/web\/files\/(PatchsetGraph|HeadToast|graphCards|comparison|FilesPage|FileDiff|DiffBody|FileTree|ProgressBar|useSetStates|landing)\.tsx?$|^src\/web\/(App|shortcuts)\.tsx$|^e2e\/pr-setup\.ts$/,
 		["rereview"],
 	],
-	[/^src\/web\/agent\//, ["agent", "agent-setup"]],
+	// The reviewer's agent: review buddy's span threads and the thread
+	// agent (a conversation per GitHub thread), web and server.
+	[/^src\/(web|server)\/agent\//, ["agent", "agent-setup", "thread-agent"]],
+	// What the thread agent lives in: the thread cards (Overview, Files
+	// changed, unplaced and not in comparison), their reply box and
+	// Resolve, Resolve's close in Files changed, and the routes.
+	[
+		/^src\/web\/threads\/|^src\/web\/files\/(ThreadRow|ThreadFate|NotInComparison)\.tsx$|^src\/web\/files\/resolveCollapse\.ts$|^src\/web\/overview\/OverviewPage\.tsx$|^src\/server\/app\.ts$/,
+		["thread-agent"],
+	],
 	[
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
@@ -249,11 +258,10 @@ if (cliGraph.length && !changed.includes("src/cli.test.ts")) {
 	steps.push(queued("pnpm", "exec", "vitest", "run", "src/cli.test.ts"));
 }
 if (allE2e || e2e.size) {
-	steps.push(["pnpm", ["build"]]);
+	// Builds, then runs in its turn on a dist no other build in this tree
+	// changes while it runs (scripts/e2e.mjs).
 	const files = allE2e ? [] : [...e2e].map((s) => `e2e/${s}.spec.ts`);
-	steps.push(
-		queued("pnpm", "exec", "playwright", "test", ...files, ...passthrough),
-	);
+	steps.push(["node", ["scripts/e2e.mjs", ...files, ...passthrough]]);
 }
 
 for (const [cmd, a] of steps) {

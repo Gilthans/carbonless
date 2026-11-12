@@ -5,6 +5,7 @@ import type { CodeSpan } from "../files/selectionActions";
 import { RETRY_DELAYS_MS } from "../files/stateSync";
 import {
 	askAgent,
+	askAgentOnThread,
 	dropAgentWrite,
 	getAgentWrites,
 	replyAgent,
@@ -44,6 +45,7 @@ const thread = (id: string, text: string): AgentThread => ({
 	messages: [{ id: "m1", by: "human", at: "2026-11-07T10:00:00Z", text }],
 	resolved: false,
 	waiting: true,
+	unread: false,
 });
 
 const answer = (status: number, body: unknown) =>
@@ -187,12 +189,68 @@ describe("agent writes", () => {
 	});
 
 	it("drop stops a waiting retry", async () => {
-		fetchMock.mockResolvedValue(answer(502, {}));
+		fetchMock.mockResolvedValue(answer(503, {}));
 		askAgent(client, span, "x", "c1");
 		await vi.advanceTimersByTimeAsync(0);
 		dropAgentWrite("c1");
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(getAgentWrites().pending.size).toBe(0);
+	});
+
+	it("a span question that gets 502 is still resent", async () => {
+		fetchMock
+			.mockResolvedValueOnce(answer(502, { error: "Bad gateway" }))
+			.mockResolvedValue(answer(200, thread("T1", "x")));
+		askAgent(client, span, "x", "c1");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(getAgentWrites().pending.get("c1")).toMatchObject({
+			retrying: true,
+		});
+		expect(getAgentWrites().pending.get("c1")?.error).toBeUndefined();
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0] ?? 0);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(getAgentWrites().pending.size).toBe(0);
+	});
+
+	it("a span reply that gets 502 is still resent", async () => {
+		client.setQueryData(agentThreadsQuery.queryKey, {
+			threads: [thread("T1", "x")],
+		});
+		fetchMock
+			.mockResolvedValueOnce(answer(502, {}))
+			.mockResolvedValue(answer(200, thread("T1", "x")));
+		replyAgent(client, "T1", "more", "r1");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(getAgentWrites().pending.get("r1")?.retrying).toBe(true);
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0] ?? 0);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("a 502 on a GitHub thread's conversation is shown, never resent by itself", async () => {
+		const onThread: AgentThread = {
+			...thread("C1", "x"),
+			anchor: {
+				subject: "thread",
+				thread: "RT1",
+				path: "src/a.ts",
+				commit: "h",
+			},
+		};
+		client.setQueryData(agentThreadsQuery.queryKey, { threads: [onThread] });
+		fetchMock.mockImplementation(async () =>
+			answer(502, { error: "GitHub couldn't be read" }),
+		);
+		replyAgent(client, "C1", "fixed?", "r1");
+		askAgentOnThread(client, "RT2", "and here?", "o1");
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(getAgentWrites().pending.get("r1")).toMatchObject({
+			retrying: false,
+			error: expect.objectContaining({ message: "GitHub couldn't be read" }),
+		});
+		expect(getAgentWrites().pending.get("o1")?.error?.message).toBe(
+			"GitHub couldn't be read",
+		);
 	});
 });

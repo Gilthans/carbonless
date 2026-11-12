@@ -4,6 +4,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import {
 	act,
 	cleanup,
+	fireEvent,
 	render,
 	screen,
 	waitFor,
@@ -1791,7 +1792,7 @@ describe("OverviewPage", () => {
 	 */
 	const oldRead = () => {
 		const served = "2026-01-05T12:10:00Z";
-		renderApp({
+		const { client } = renderApp({
 			"/api/overview": ok({
 				...overview,
 				title: "Then",
@@ -1823,7 +1824,7 @@ describe("OverviewPage", () => {
 			if (!routes) throw new Error("no mock");
 			return routes(input, init);
 		});
-		return { release, signals };
+		return { release, signals, client };
 	};
 
 	it("shows an old kept overview at once and brings it up to date, Refresh spinning meanwhile", async () => {
@@ -1851,6 +1852,28 @@ describe("OverviewPage", () => {
 				String(i).includes("read=read2&stage=full"),
 			),
 		).toBe(true);
+	});
+
+	it("reads the agent threads and their placements again once a re-read lands", async () => {
+		const { release, client } = oldRead();
+		const key = ["agent-placements", "ps:1", "rev1", "A1"];
+		client.setQueryData(key, { placements: [] });
+		await screen.findByRole("region", { name: "What it does" });
+		const before = calls("/api/agent/threads");
+		expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+		release();
+		const what = screen.getByRole("region", { name: "What it does" });
+		await waitFor(() =>
+			expect(within(what).getByRole("heading", { level: 3 })).toHaveTextContent(
+				"Now",
+			),
+		);
+		await waitFor(() =>
+			expect(client.getQueryState(key)?.isInvalidated).toBe(true),
+		);
+		await waitFor(() =>
+			expect(calls("/api/agent/threads")).toBeGreaterThan(before),
+		);
 	});
 
 	it("swaps to a re-read without waiting for its timeline, the old one shown until it comes", async () => {
@@ -2236,10 +2259,207 @@ describe("compactProgress", () => {
 	});
 });
 
+/**
+ * The header's agent chip once it says `name` (the Overview's agent row
+ * has a button of the same name: the chip is found by its test id).
+ */
+const headerChip = (name: string) =>
+	waitFor(() => {
+		const chip = screen.getByTestId("agent-chip");
+		expect(chip).toHaveAccessibleName(name);
+		return chip;
+	});
+
 describe("App header", () => {
 	afterEach(() => {
 		cleanup();
 		vi.unstubAllGlobals();
+	});
+
+	it("puts the agent chip right by the logo, before the title: one chip in the header", async () => {
+		renderApp({
+			"/api/agent": ok({
+				state: "ready",
+				configured: true,
+				agent: { name: "Claude Agent", version: "0.100.0" },
+				since: "2026-11-07T10:00:00Z",
+				waiting: 0,
+			}),
+		});
+		await screen.findByRole("heading", { level: 1 });
+		const chip = await headerChip("Your agent: Claude Agent 0.100.0");
+		expect(screen.getAllByTestId("agent-chip")).toEqual([chip]);
+		const slot = screen.getByTestId("agent-chip-slot");
+		expect(slot).toContainElement(chip);
+		// Logo, chip, title: side by side in the title row.
+		const logo = screen.getByTestId("home-link");
+		const title = screen.getByTestId("header-title");
+		expect(slot.parentElement).toBe(title.parentElement);
+		expect(logo.parentElement).toBe(slot.parentElement);
+		expect(
+			logo.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(slot.nextElementSibling).toBe(title);
+		// Not in the meta line under the title any more.
+		expect(screen.getByText("acme/widget").parentElement).not.toContainElement(
+			chip,
+		);
+		// The sticky row's place for it holds nothing to focus or name
+		// until it docks there.
+		const row = screen.getByTestId("agent-chip-row-slot");
+		expect(row.querySelector("button, [aria-label]")).toBeNull();
+	});
+
+	it("leaves no chip and no kept space without an agent (the layout itself: e2e/sticky.spec.ts)", async () => {
+		renderApp({ "/api/overview": ok({ ...overview, writes: "viewer" }) });
+		await screen.findByRole("heading", { level: 1 });
+		await screen.findByRole("region", { name: "Bot reviews" });
+		expect(screen.queryByTestId("agent-chip")).toBeNull();
+		for (const id of ["agent-chip-slot", "agent-chip-row-slot"]) {
+			const slot = screen.getByTestId(id);
+			expect(slot.querySelector("button, [data-chip-space]")).toBeNull();
+		}
+	});
+
+	it("mounts no chip, and reads no agent, without a PR (session failed)", async () => {
+		renderApp({
+			"/api/session": { status: 502, body: { error: "gh is not logged in" } },
+			"/api/agent": ok({
+				state: "ready",
+				configured: true,
+				agent: { name: "Claude Agent", version: "0.100.0" },
+				since: "2026-11-07T10:00:00Z",
+				waiting: 0,
+			}),
+		});
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"gh is not logged in",
+		);
+		// The overview (writes on) is in: a mounted chip would read now.
+		await screen.findByRole("region", { name: "What it does" });
+		await act(async () => {});
+		expect(calls("/api/agent")).toBe(0);
+		expect(screen.queryByTestId("agent-chip")).toBeNull();
+	});
+
+	it("closes the chip's tooltip when the chip moves into the sticky row", async () => {
+		const rect = vi
+			.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+			.mockImplementation(function (this: HTMLElement) {
+				const by = this.dataset.testid === "agent-chip-slot";
+				const top = by && window.scrollY > 0 ? -10 : 20;
+				return {
+					top,
+					bottom: top + 24,
+					left: 0,
+					right: by ? 46 : 0,
+					width: by ? 46 : 0,
+					height: by ? 24 : 0,
+					x: 0,
+					y: top,
+					toJSON: () => ({}),
+				} as DOMRect;
+			});
+		try {
+			renderApp({
+				"/api/agent": ok({
+					state: "ready",
+					configured: true,
+					agent: { name: "Claude Agent", version: "0.100.0" },
+					since: "2026-11-07T10:00:00Z",
+					waiting: 0,
+				}),
+			});
+			const chip = await headerChip("Your agent: Claude Agent 0.100.0");
+			// Its tooltip (always there, hidden while closed), opened by a hover.
+			const tip = () =>
+				[...document.querySelectorAll("[role=tooltip]")].find(
+					(t) => t.textContent === "Claude Agent 0.100.0",
+				);
+			expect(tip()).toHaveAttribute("hidden");
+			fireEvent.mouseEnter(chip);
+			await waitFor(() => expect(tip()).not.toHaveAttribute("hidden"));
+			act(() => {
+				Object.defineProperty(window, "scrollY", {
+					value: 100,
+					configurable: true,
+				});
+				window.dispatchEvent(new Event("scroll"));
+			});
+			await waitFor(() =>
+				expect(screen.getByTestId("agent-chip-row-slot")).toContainElement(
+					chip,
+				),
+			);
+			await waitFor(() => expect(tip()).toHaveAttribute("hidden"));
+		} finally {
+			rect.mockRestore();
+			Object.defineProperty(window, "scrollY", {
+				value: 0,
+				configurable: true,
+			});
+		}
+	});
+
+	it("moves the one chip into the sticky row as its place by the logo leaves the screen: never remounted, so never read again", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const rect = vi
+			.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+			.mockImplementation(function (this: HTMLElement) {
+				const by = this.dataset.testid === "agent-chip-slot";
+				const top = by && window.scrollY > 0 ? -10 : 20;
+				return {
+					top,
+					bottom: top + 24,
+					left: 0,
+					right: by ? 46 : 0,
+					width: by ? 46 : 0,
+					height: by ? 24 : 0,
+					x: 0,
+					y: top,
+					toJSON: () => ({}),
+				} as DOMRect;
+			});
+		try {
+			renderApp({
+				"/api/agent": ok({
+					state: "ready",
+					configured: true,
+					agent: { name: "Claude Agent", version: "0.100.0" },
+					since: "2026-11-07T10:00:00Z",
+					waiting: 0,
+				}),
+			});
+			const chip = await headerChip("Your agent: Claude Agent 0.100.0");
+			expect(screen.getByTestId("agent-chip-slot")).toContainElement(chip);
+			const reads = calls("/api/agent");
+			expect(reads).toBe(1);
+			// Long after its read (stale: a remount would read it again).
+			vi.setSystemTime(Date.now() + 60_000);
+			for (const y of [100, 0, 100]) {
+				act(() => {
+					Object.defineProperty(window, "scrollY", {
+						value: y,
+						configurable: true,
+					});
+					window.dispatchEvent(new Event("scroll"));
+				});
+				const place = y > 0 ? "agent-chip-row-slot" : "agent-chip-slot";
+				await waitFor(() =>
+					expect(screen.getByTestId(place)).toContainElement(chip),
+				);
+				// The same node, the only one.
+				expect(screen.getAllByTestId("agent-chip")).toEqual([chip]);
+			}
+			expect(calls("/api/agent")).toBe(reads);
+		} finally {
+			rect.mockRestore();
+			Object.defineProperty(window, "scrollY", {
+				value: 0,
+				configurable: true,
+			});
+			vi.useRealTimers();
+		}
 	});
 
 	it("offers the title again as a back-to-top button, inert until stuck", async () => {
@@ -2625,5 +2845,56 @@ describe("Timeline", () => {
 		const section = await screen.findByRole("region", { name: "Timeline" });
 		expect(await within(section).findByText("timeline broke")).toBeVisible();
 		expect(within(section).queryByTestId("timeline-loading")).toBeNull();
+	});
+});
+
+describe("the thread agent on the Overview", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	/** A placements answer already in the cache, as Files changed left it. */
+	const seedPlacements = (client: QueryClient) => {
+		const key = ["agent-placements", "ps:1", "rev1", "A1"];
+		client.setQueryData(key, { placements: [] });
+		return () => client.getQueryState(key)?.isInvalidated;
+	};
+
+	it("reads the agent threads and their placements again on Refresh: a deleted thread's conversation moves to a span", async () => {
+		const user = userEvent.setup();
+		const { client } = renderApp({
+			"/api/agent/threads": ok({ threads: [] }),
+			"/api/refresh": ok(info),
+		});
+		await waitFor(() => expect(calls("/api/agent/threads")).toBe(1));
+		const invalidated = seedPlacements(client);
+		expect(invalidated()).toBe(false);
+		await user.click(await screen.findByRole("button", { name: "Refresh" }));
+		await waitFor(() => expect(calls("/api/agent/threads")).toBe(2));
+		expect(invalidated()).toBe(true);
+	});
+
+	it("slides over the comments alone: the code pane stays outside the cover", async () => {
+		renderApp({ "/api/agent/threads": ok({ threads: [] }) });
+		const card = (
+			await screen.findAllByTestId("thread", {}, { timeout: 5000 })
+		).find((c) => c.id === "thread-T-cache") as HTMLElement;
+		expect(card).toBeTruthy();
+		await userEvent.click(
+			await within(card).findByRole("button", { name: "Ask agent" }),
+		);
+		const cover = within(card).getByTestId("agent-cover");
+		const panel = within(card).getByTestId("thread-agent-panel");
+		expect(panel).toHaveAttribute("data-open", "true");
+		expect(cover).toContainElement(panel);
+		expect(cover).toContainElement(within(card).getByTestId("thread-body"));
+		const code = within(card).getByTestId("thread-code");
+		expect(cover).not.toContainElement(code);
+		expect(code.contains(cover)).toBe(false);
+		// The composer row stays outside too.
+		expect(cover).not.toContainElement(
+			within(card).getByRole("textbox", { name: "Ask agent" }),
+		);
 	});
 });

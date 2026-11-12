@@ -567,6 +567,7 @@ describe("tooltip legend", () => {
 		messages: [],
 		resolved: false,
 		waiting: true,
+		unread: false,
 	};
 
 	it("titles a busy file by its name and gives each indicator a line, in the row's order", async () => {
@@ -1613,6 +1614,7 @@ describe("a file's agent threads", () => {
 			messages: [],
 			resolved: false,
 			waiting: true,
+			unread: false,
 		};
 		render(
 			<FileTree
@@ -1628,5 +1630,51 @@ describe("a file's agent threads", () => {
 		expect(dots[0]?.textContent).toBe("1 agent thread in this file, 1 waiting");
 		expect(dots[0]?.querySelector(".bg-agent-ink")).not.toBeNull();
 		expect(screen.queryByTestId("tree-threads")).toBeNull();
+	});
+});
+
+describe("unread agent messages", () => {
+	afterEach(cleanup);
+
+	it("the accent dot shows on a file and its folders while a conversation under them is unread", () => {
+		const unread = new Set(["src/a/deep/one.ts"]);
+		const { rerender } = render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				agentUnreadOf={(f) => unread.has(f.path)}
+			/>,
+		);
+		const dots = screen.getAllByTestId("tree-agent-unread");
+		const rows = dots.map(
+			(d) =>
+				d.closest("button")?.getAttribute("data-folder") ??
+				d.closest("button")?.textContent,
+		);
+		// The file, and each folder holding it ("a/deep" is one row).
+		expect(rows).toEqual([
+			"src",
+			"src/a/deep",
+			expect.stringContaining("one.ts"),
+		]);
+		for (const d of dots) {
+			expect(d.querySelector(".bg-accent")).not.toBeNull();
+		}
+		expect(
+			screen.getByRole("button", { name: /one\.ts.*new agent messages/ }),
+		).toBeInTheDocument();
+		unread.clear();
+		rerender(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				agentUnreadOf={(f) => unread.has(f.path)}
+			/>,
+		);
+		expect(screen.queryByTestId("tree-agent-unread")).toBeNull();
 	});
 });

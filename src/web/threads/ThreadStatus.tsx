@@ -15,9 +15,24 @@ export function ThreadStatus(props: {
 	 * already named beside it, as in the Overview card's header.
 	 */
 	mark?: boolean;
+	/**
+	 * While the thread's agent conversation covers it: the counter is a
+	 * button that brings the thread back.
+	 */
+	onCounter?: () => void;
+	/** Beside an agent button: 40px tall on a phone, as it is. */
+	tall?: boolean;
 }) {
 	const { thread } = props;
 	const n = thread.commentCount;
+	const counter = (
+		<LabeledIcon
+			icon={CommentIcon}
+			label={plural(n, "comment")}
+			text={String(n)}
+			className="gap-1 text-muted"
+		/>
+	);
 	return (
 		<span className="inline-flex items-center gap-2">
 			{thread.resolved && props.mark !== false && (
@@ -27,12 +42,29 @@ export function ThreadStatus(props: {
 					className="text-ok"
 				/>
 			)}
-			<LabeledIcon
-				icon={CommentIcon}
-				label={plural(n, "comment")}
-				text={String(n)}
-				className="gap-1 text-muted"
-			/>
+			{props.onCounter ? (
+				<Tooltip content={plural(n, "comment")} describe={false}>
+					{(trigger) => (
+						<button
+							{...trigger}
+							type="button"
+							aria-label={plural(n, "comment")}
+							data-testid="thread-counter"
+							onClick={props.onCounter}
+							className="inline-flex h-7 min-w-10 items-center justify-center gap-1 rounded-md text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent max-sm:h-10 pointer-coarse:h-10"
+						>
+							<CommentIcon size={16} aria-hidden />
+							<span aria-hidden>{n}</span>
+						</button>
+					)}
+				</Tooltip>
+			) : props.tall ? (
+				<span className="inline-flex items-center max-sm:min-h-10 pointer-coarse:min-h-10">
+					{counter}
+				</span>
+			) : (
+				counter
+			)}
 			{thread.yourTurn && !thread.resolved && <YourTurnDot />}
 		</span>
 	);

@@ -1,6 +1,10 @@
-import type { AgentPlacementsAnswer } from "../shared/agent.js";
+import type { AgentPlacementsAnswer, AgentView } from "../shared/agent.js";
 import { overlayCarries } from "../shared/rereview/overlay.js";
-import { type ThreadInput, validAnchor } from "../shared/rereview/placement.js";
+import {
+	type ThreadInput,
+	type ThreadPlacement,
+	validAnchor,
+} from "../shared/rereview/placement.js";
 import { TRACER_VERSION } from "../shared/tracer/index.js";
 import type {
 	CommentsView,
@@ -15,6 +19,7 @@ import type {
 	PrOverview,
 	ReplyRequest,
 	RereviewAnswer,
+	ReviewThread,
 	ReviewView,
 	SessionInfo,
 	Snapshot,
@@ -100,6 +105,7 @@ import { ThreadCodeSource } from "./threadCode.js";
 import {
 	deleteThreadComment,
 	editComment,
+	openerRestId,
 	type PostedRecord,
 	replyToThread,
 	setResolved,
@@ -356,7 +362,80 @@ export class Session {
 					},
 					async () => "",
 				),
+			threads: async () => (await this.#agentGithub()).threads,
+			thread: async (id) => {
+				const { read, threads } = await this.#agentGithub();
+				const found = threads.find((t) => t.id === id);
+				if (!found) return null;
+				// Deleted since the list was read: its comments say so.
+				const [c] = (await read.comments([id])).threads;
+				return c?.unavailable
+					? { ...found, unavailable: c.unavailable }
+					: found;
+			},
+			patchsets: () => this.#patchsets,
+			currentHead: () => this.#meta.headOid,
+			checkHead: async () => {
+				await this.checkHead();
+			},
+			prAuthor: async () => (await this.overview()).author,
+			githubThread: async (id, view) => {
+				const { read, threads } = await this.#agentGithub();
+				const thread = threads.find((t) => t.id === id);
+				if (!thread || thread.unavailable === "deleted") return null;
+				const [c] = (await read.comments([id])).threads;
+				if (c?.unavailable === "deleted") return null;
+				const placement = await this.#agentPlacement(id, view, read.id).catch(
+					() => undefined,
+				);
+				return {
+					thread,
+					comments: c?.comments ?? [],
+					openerRestId: openerRestId(read.summaryOf(id)),
+					...(placement ? { placement } : {}),
+				};
+			},
 		});
+	}
+
+	/**
+	 * Thread `id`'s placement on a thread turn's view (its target: a patch
+	 * set or a head), by read `readId`: waits for git's part once if it is
+	 * still running; undefined when the thread isn't placed there.
+	 */
+	async #agentPlacement(
+		id: string,
+		view: AgentView,
+		readId: string,
+	): Promise<ThreadPlacement | undefined> {
+		const to =
+			"patchset" in view.target
+				? { patchset: view.target.patchset }
+				: { head: checkOid(view.right) };
+		let answer = await this.placements(to, readId);
+		if ("pending" in answer) {
+			const key =
+				"patchset" in to
+					? this.#patchsets.find((p) => p.number === to.patchset)?.revision
+					: `head:${to.head}`;
+			await this.#placing.get(`${key}|${readId}`)?.settled;
+			answer = await this.placements(to, readId);
+		}
+		if ("pending" in answer) return undefined;
+		return answer.threads.find((t) => t.id === id)?.placement;
+	}
+
+	/**
+	 * The review threads of the read the overview serves (their summaries,
+	 * this session's own writes applied), as the agent joins them.
+	 */
+	async #agentGithub(): Promise<{
+		read: OverviewRead;
+		threads: ReviewThread[];
+	}> {
+		if (this.#closed) throw new SessionClosedError("The session is closed");
+		const read = this.#pickRead(Number.POSITIVE_INFINITY);
+		return { read, threads: (await read.threads("summary")).threads };
 	}
 
 	/** Sessions not closed yet (closeAll). */

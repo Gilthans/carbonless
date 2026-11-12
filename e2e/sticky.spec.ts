@@ -115,7 +115,10 @@ test("the app header compacts after scrolling and its tabs work from deep down",
 	expect(Math.abs(fileHeader.top - bar)).toBeLessThanOrEqual(1);
 
 	// The small title has the full one as its tooltip and takes you back
-	// to the top, focusing the full title.
+	// to the top, focusing the full title. (At 360px, beside the agent
+	// chip, it has no room: a wider phone shows it.)
+	if (isMobile) await page.setViewportSize({ width: 430, height: 780 });
+	await expect(compactTitle(page)).toBeVisible();
 	// Keyboard focus (a key press first marks the input as the keyboard).
 	await page.keyboard.press("Shift");
 	await compactTitle(page).focus();
@@ -153,7 +156,7 @@ async function stuckOnOverview(page: Page) {
 
 ownTest(
 	"once stuck, the compact mark goes Home and the number to the PR on GitHub",
-	async ({ page, pr, ownerRepo, prNumber, startCrb, isMobile }) => {
+	async ({ page, pr, startCrb, isMobile }) => {
 		if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 		await pr(fixture);
 		const s = await startCrb();
@@ -168,23 +171,29 @@ ownTest(
 		await stuckOnOverview(page);
 		await expect(home).not.toHaveAttribute("inert");
 		if (isMobile) {
-			// At 360px the pill's column holds the clamped title alone: the
-			// number goes rather than squeeze the title out, nothing overflows,
-			// and the title is still a tap target.
+			// At 360px, beside the agent chip, the pill's column can't hold a
+			// tap-wide title: the pill goes rather than cover the buttons, and
+			// nothing overflows.
+			await expect(compactPill(page)).toBeHidden();
+			await expectNoPageOverflow(page);
+			// At 420px it holds the clamped title alone: the number goes rather
+			// than squeeze the title out, and the title is still a tap target.
+			await page.setViewportSize({ width: 420, height: 780 });
 			await expect(compactTitle(page)).toBeVisible();
 			await expect(number).toBeHidden();
 			await expectNoPageOverflow(page);
 			expect(await tapHeight(compactTitle(page))).toBeGreaterThanOrEqual(40);
-			await page.setViewportSize({ width: 412, height: 780 });
+			expect((await box(compactTitle(page))).width).toBeGreaterThanOrEqual(40);
+			await page.setViewportSize({ width: 460, height: 780 });
 		}
 		await expect(number).toBeVisible();
 		await expect(number).not.toHaveAttribute("inert");
 		await expect(home).toHaveAccessibleName("Home");
 		await expect(home).toHaveAttribute("href", "/");
-		await expect(number).toHaveAccessibleName(`#${prNumber} on GitHub`);
+		await expect(number).toHaveAccessibleName("#7 on GitHub");
 		await expect(number).toHaveAttribute(
 			"href",
-			`https://github.com/${ownerRepo}/pull/${prNumber}`,
+			"https://github.com/acme/widget/pull/7",
 		);
 		await expect(number).toHaveAttribute("target", "_blank");
 		await expect(number).toHaveAttribute("rel", "noreferrer");
@@ -193,9 +202,7 @@ ownTest(
 		await expect(pill.getByTestId("compact-title")).toHaveText(
 			"Make the review header sticky",
 		);
-		await expect(pill.getByTestId("compact-pr-link")).toHaveText(
-			`#${prNumber}`,
-		);
+		await expect(pill.getByTestId("compact-pr-link")).toHaveText("#7");
 		await expect(compactTitle(page)).toHaveAccessibleName(
 			"Back to top: Make the review header sticky",
 		);
@@ -212,11 +219,319 @@ ownTest(
 	},
 );
 
+const shots = process.env.DESIGN_SHOTS;
+
+/**
+ * Scrolls from the top in 6px steps until the header sticks: at each step
+ * exactly one agent chip, wholly on screen below `below` (the find bar's
+ * bottom, if open), and the Overview tab at `tabX`.
+ */
+async function scrollToStick(page: Page, tabX: number | undefined, below = 0) {
+	const overview = page.getByRole("link", { name: "Overview" });
+	const stuckAt = await appRow(page).evaluate(
+		(r) => (r as HTMLElement).offsetTop,
+	);
+	const top = await page.evaluate(() => window.scrollY);
+	for (let y = top; y <= top + stuckAt + 8; y += 6) {
+		await page.evaluate((y) => window.scrollTo(0, y), y);
+		await expect
+			.poll(() =>
+				page.evaluate((below) => {
+					const all = document.querySelectorAll('[data-testid="agent-chip"]');
+					if (all.length !== 1) return `${all.length} chips`;
+					const r = all[0]?.getBoundingClientRect();
+					if (!r) return "no chip";
+					return r.top >= below - 0.5 && r.bottom <= window.innerHeight
+						? "in sight"
+						: `at ${r.top}`;
+				}, below),
+			)
+			.toBe("in sight");
+		expect((await overview.boundingBox())?.x).toBe(tabX);
+	}
+}
+
+test("the tabs and the title never move as the agent loads: the chip's place is kept from the first paint", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	// The overview (whether there is an agent) and the agent's status,
+	// each held until let go.
+	const held = (pattern: RegExp) => {
+		let release = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		return {
+			route: page.route(pattern, async (route) => {
+				await gate;
+				await route.continue();
+			}),
+			release: () => release(),
+		};
+	};
+	const overview = held(/\/api\/r\/[^/]+\/overview/);
+	const agent = held(/\/api\/r\/[^/]+\/agent$/);
+	await overview.route;
+	await agent.route;
+	await page.goto(s.url);
+	const files = page.getByRole("link", { name: "Files changed" });
+	await expect(files).toBeVisible();
+	const at = async () => ({
+		tab: await files.boundingBox(),
+		title: (await page.getByTestId("header-title").boundingBox())?.x,
+	});
+	const first = await at();
+	// Its place, spinning, by the logo (soft: the tabs are what's checked).
+	await expect.soft(page.getByTestId("agent-chip-pending")).toBeVisible();
+	overview.release();
+	await expect(page.getByTestId("agent-chip")).toHaveAttribute(
+		"aria-busy",
+		"true",
+	);
+	expect(await at()).toEqual(first);
+	agent.release();
+	await expect(page.getByTestId("agent-chip-icon")).toBeVisible();
+	expect(await at()).toEqual(first);
+});
+
+test("a long title wrapping over several lines: the chip stays by the logo, then in sight as the header sticks", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr({
+		...fixture,
+		overview: {
+			title:
+				"Make the review header sticky, keep the agent chip in sight beside the logo, and never let the tabs jump while it moves",
+		},
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	const h1 = await box(page.getByRole("heading", { level: 1 }));
+	// Two lines on desktop, more on a phone.
+	expect(h1.height).toBeGreaterThan(40);
+	const chip = page.getByTestId("agent-chip");
+	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toBeVisible();
+	const tabX = (
+		await page.getByRole("link", { name: "Overview" }).boundingBox()
+	)?.x;
+	await scrollToStick(page, tabX);
+	await expect(appRow(page).locator(chip)).toBeVisible();
+	await expectNoPageOverflow(page);
+});
+
+test("with Find in PR open above the header, the chip docks under the bar, and the tabs don't move", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a phone's find bar takes the header's place");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await page.getByRole("button", { name: "Find in PR", exact: true }).click();
+	const bar = page.getByRole("search", { name: "Find in PR" });
+	await expect(bar).toBeVisible();
+	// Back to the top with the bar open, the header under it.
+	await page.evaluate(() => window.scrollTo(0, 0));
+	const chip = page.getByTestId("agent-chip");
+	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toBeVisible();
+	// The header sits under the bar's slot (the bar and its own rows).
+	const below = (await box(page.locator("[data-find-slot]"))).bottom;
+	expect(below).toBeGreaterThanOrEqual((await box(bar)).bottom);
+	expect((await box(chip)).top).toBeGreaterThanOrEqual(below);
+	const tabX = (
+		await page.getByRole("link", { name: "Overview" }).boundingBox()
+	)?.x;
+	await scrollToStick(page, tabX, below);
+	await expect(appRow(page).locator(chip)).toBeVisible();
+	// Deeper down, stuck under the bar, the chip in it below the bar.
+	await page.evaluate(() => window.scrollBy(0, 600));
+	await expect
+		.poll(async () => (await box(appRow(page))).top)
+		.toBeGreaterThanOrEqual(below - 0.5);
+	expect((await box(chip)).top).toBeGreaterThanOrEqual(below - 0.5);
+	await expect(appRow(page).locator(chip)).toBeInViewport();
+});
+
+test("with no agent (--viewer): no chip and no space for it, by the logo or in the row; the compact title as before", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb(undefined, ["--viewer", "someone-else"]);
+	await page.goto(s.url);
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	await expect(page.getByTestId("agent-chip")).toHaveCount(0);
+	await expect(page.getByTestId("agent-chip-slot")).toBeHidden();
+	await expect(page.getByTestId("agent-chip-row-slot")).toBeHidden();
+	// The title right after the logo, one gap between them.
+	const logo = await page.getByTestId("home-link").boundingBox();
+	const title = await page.getByTestId("header-title").boundingBox();
+	if (!logo || !title) throw new Error("not rendered");
+	expect(title.x - (logo.x + logo.width)).toBe(isMobile ? 8 : 12);
+	// The tabs right after the mark's slot.
+	const row = await box(appRow(page));
+	const rowX = (await appRow(page).boundingBox())?.x ?? 0;
+	const overviewX =
+		(await page.getByRole("link", { name: "Overview" }).boundingBox())?.x ?? 0;
+	expect(overviewX - rowX).toBe((isMobile ? 8 : 24) + 28);
+	expect(row.height).toBeGreaterThan(0);
+	// Stuck at 360px, the compact title shows: no chip to give way to.
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await expect(page.getByTestId("compact-home-link")).not.toHaveAttribute(
+		"inert",
+	);
+	await expect(compactPill(page)).toBeVisible();
+	await expect(compactTitle(page)).toBeVisible();
+	await expectNoPageOverflow(page);
+});
+
+test("the agent chip sits by the logo, and stays in sight and in reach as the header sticks", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	await page.goto(s.url);
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	const chip = page.getByTestId("agent-chip");
+	const overview = page.getByRole("link", { name: "Overview" });
+	// At the top: right after the logo, centred on it, before the title.
+	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toBeVisible();
+	const logo = await page.getByTestId("home-link").boundingBox();
+	const at = await chip.boundingBox();
+	const title = await page.getByTestId("header-title").boundingBox();
+	if (!logo || !at || !title) throw new Error("not rendered");
+	expect(at.x).toBeGreaterThanOrEqual(logo.x + logo.width);
+	expect(at.x - (logo.x + logo.width)).toBeLessThanOrEqual(12);
+	expect(at.x + at.width).toBeLessThanOrEqual(title.x);
+	expect(
+		Math.abs(at.y + at.height / 2 - (logo.y + logo.height / 2)),
+	).toBeLessThanOrEqual(2);
+	const tabX = (await overview.boundingBox())?.x;
+	await expectNoPageOverflow(page);
+	if (shots)
+		await page.screenshot({
+			path: `${shots}/chip-top-${isMobile ? "phone" : "desktop"}.png`,
+		});
+
+	// Scrolled bit by bit until the header sticks: one chip, never off
+	// screen, the tabs never moving.
+	await scrollToStick(page, tabX);
+
+	// Stuck: beside the compact mark, in the row at the top.
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await expect(page.getByTestId("compact-home-link")).not.toHaveAttribute(
+		"inert",
+	);
+	await expect(appRow(page).locator(chip)).toBeVisible();
+	expect((await box(appRow(page))).top).toBe(0);
+	const mark = await page.getByTestId("compact-home-link").boundingBox();
+	const docked = await chip.boundingBox();
+	if (!mark || !docked) throw new Error("not rendered");
+	expect(docked.x).toBeGreaterThan(mark.x);
+	expect(docked.x + docked.width).toBeLessThanOrEqual(
+		(await overview.boundingBox())?.x ?? 0,
+	);
+	expect((await overview.boundingBox())?.x).toBe(tabX);
+	await expect(chip).toHaveAccessibleName(/^Your agent: /);
+	// It reads as a button: a 28px circle with a control's border, the
+	// sparkle inside; a 40px tap target.
+	const face = page.getByTestId("agent-chip-face");
+	const ring = await face.evaluate((el) => {
+		const c = getComputedStyle(el);
+		const r = el.getBoundingClientRect();
+		return {
+			width: r.width,
+			height: r.height,
+			border: c.borderTopWidth,
+			color: c.borderTopColor,
+		};
+	});
+	expect(ring).toMatchObject({ width: 28, height: 28, border: "1px" });
+	expect(ring.color).not.toMatch(/^(transparent|rgba\(0, 0, 0, 0\))$/);
+	expect(
+		(await page.getByTestId("agent-chip-icon").locator("svg").boundingBox())
+			?.width,
+	).toBe(18);
+	expect(await tapHeight(chip)).toBeGreaterThanOrEqual(40);
+	if (isMobile) {
+		expect(await tapHeight(chip)).toBeGreaterThanOrEqual(40);
+		// The whole row fits: Refresh and Settings still on screen.
+		for (const name of ["Refresh", "Settings"]) {
+			const b = await appRow(page).getByRole("button", { name }).boundingBox();
+			expect((b?.x ?? 0) + (b?.width ?? 0)).toBeLessThanOrEqual(360);
+		}
+	}
+	await expectNoPageOverflow(page);
+	if (shots)
+		await page.screenshot({
+			path: `${shots}/chip-stuck-${isMobile ? "phone" : "desktop"}.png`,
+		});
+
+	// In reach: it opens the agent setup, and focus comes back to it.
+	await chip.click();
+	const setup = page.getByRole("dialog", { name: "Your agent" });
+	await expect(setup).toBeVisible();
+	await page.keyboard.press("Escape");
+	await expect(setup).toHaveCount(0);
+	await expect(chip).toBeFocused();
+
+	// The setup open from the docked chip, the page behind it scrolled to
+	// the top (the chip back by the logo): closing it still gives the chip
+	// its focus back.
+	await chip.click();
+	await expect(setup).toBeVisible();
+	await page.evaluate(() => window.scrollTo(0, 0));
+	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toHaveCount(
+		1,
+	);
+	await page.keyboard.press("Escape");
+	await expect(setup).toHaveCount(0);
+	await expect(chip).toBeFocused();
+
+	// Docked again with focus on it, then back at the top: by the logo
+	// again; still one, still focused.
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await expect(appRow(page).locator(chip)).toBeVisible();
+	await expect(chip).toBeFocused();
+	await page.evaluate(() => window.scrollTo(0, 0));
+	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toBeVisible();
+	await expect(chip).toHaveCount(1);
+	// The move kept the keyboard on it.
+	await expect(chip).toBeFocused();
+	expect((await overview.boundingBox())?.x).toBe(tabX);
+});
+
 ownTest(
-	"the compact row's keyboard order: mark, tabs, title, number, Find in PR, Refresh",
+	"the compact row's keyboard order: mark, agent chip, tabs, title, number, Find in PR, Refresh",
 	async ({ page, pr, startCrb, isMobile }) => {
-		// Wide enough for the number (the 360px floor is the test above's).
-		if (isMobile) await page.setViewportSize({ width: 412, height: 780 });
+		// Wide enough for the number (the narrower floors are the test above's).
+		if (isMobile) await page.setViewportSize({ width: 460, height: 780 });
 		await pr(fixture);
 		const s = await startCrb();
 		await page.goto(s.url);
@@ -230,6 +545,8 @@ ownTest(
 		await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText(
 			"Home",
 		);
+		await page.keyboard.press("Tab");
+		await expect(page.getByTestId("agent-chip")).toBeFocused();
 		for (const name of ["Overview", "Files changed", "Final Verdict"]) {
 			await page.keyboard.press("Tab");
 			await expect(page.getByRole("link", { name })).toBeFocused();
@@ -259,7 +576,7 @@ test("a five-digit PR number never crushes the compact title: it shows beside a 
 	startCrb,
 	isMobile,
 }) => {
-	if (isMobile) await page.setViewportSize({ width: 412, height: 780 });
+	if (isMobile) await page.setViewportSize({ width: 440, height: 780 });
 	const p = await pr(fixture);
 	// The same PR under a five-digit number: its ref, and gh's answers.
 	const big = 12345;

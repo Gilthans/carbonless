@@ -1,3 +1,4 @@
+import DiffMatchPatch from "diff-match-patch";
 import { describe, expect, it } from "vitest";
 import type { Mark } from "../code/Invisibles";
 import { tokenize, tokenMarks, WORD_DIFF_MAX, wordMarks } from "./wordDiff";
@@ -517,43 +518,93 @@ describe("wordMarks", () => {
 	};
 
 	/**
-	 * The budget tests' wall-clock timeout: they gate CPU time, and four
-	 * rounds of 2,000 pairs on a loaded machine (load 40 on 4 cores) take
-	 * 5–8 s of wall time for under 1 s of CPU.
+	 * The budget tests' wall-clock timeout: they gate CPU time, not wall
+	 * time. The unrelated test spends about 2 s of CPU (six rounds of
+	 * wordMarks and the yardstick, the warm-up included), and a loaded
+	 * machine (load 40 on 4 cores) stretches CPU time about 10x in wall
+	 * time: 20 s, so 60 s leaves room.
 	 */
-	const LOADED = 30_000;
+	const LOADED = 60_000;
 
-	/** CPU µs of marking every pair, after a warm-up: the best of three (load only adds time). */
-	const bestCpu = (pairs: readonly (readonly [string, string])[]) => {
-		for (const [a, b] of pairs) wordMarks(a, b);
-		let best = Number.POSITIVE_INFINITY;
-		for (let run = 0; run < 3; run++) {
-			const before = process.threadCpuUsage();
-			for (const [a, b] of pairs) wordMarks(a, b);
-			const spent = process.threadCpuUsage(before);
-			best = Math.min(best, spent.user + spent.system);
-		}
-		return best;
+	type Pairs = readonly (readonly [string, string])[];
+
+	/** About 10% of each line's tokens changed (an equal block of edited lines). */
+	const similarPairs = (): Pairs => {
+		const { line, edit } = codeLines(7);
+		return Array.from({ length: 2000 }, () => {
+			const a = line();
+			return [a, edit(a)] as const;
+		});
 	};
 
+	/**
+	 * The yardstick: diff-match-patch's own character diff of the similar
+	 * pairs. Its cost moves with the machine (runner speed, load, a busy
+	 * sibling core) the same way wordMarks' does, so the ratio of the two
+	 * holds much stiller than the absolute time: 0.58–0.64 (similar) and
+	 * 1.51–1.58 (unrelated) on a dev machine both idle and with a busy loop
+	 * per core, 0.64–0.86 and 1.63–1.84 in three CI runs (another CPU),
+	 * while CI's absolute time for the similar pairs ranged 36–100 ms
+	 * (CAR-115).
+	 */
+	const reference = new DiffMatchPatch();
+	reference.Diff_Timeout = 0;
+	const referencePairs = similarPairs();
+
+	const cpu = (run: () => void) => {
+		const before = process.threadCpuUsage();
+		run();
+		const spent = process.threadCpuUsage(before);
+		return spent.user + spent.system;
+	};
+
+	/**
+	 * CPU µs of marking every pair and of the yardstick, after a warm-up:
+	 * each the best of five rounds (load only adds time), the two taken in
+	 * turn so they see the same load.
+	 */
+	const bestCpu = (pairs: Pairs) => {
+		const marks = () => {
+			for (const [a, b] of pairs) wordMarks(a, b);
+		};
+		const yardstick = () => {
+			for (const [a, b] of referencePairs) reference.diff_main(a, b, false);
+		};
+		marks();
+		yardstick();
+		let best = Number.POSITIVE_INFINITY;
+		let ref = Number.POSITIVE_INFINITY;
+		for (let round = 0; round < 5; round++) {
+			best = Math.min(best, cpu(marks));
+			ref = Math.min(ref, cpu(yardstick));
+		}
+		return { best, ratio: best / ref };
+	};
+
+	// The ratio budgets are about twice CI's highest ratio, so a uniform
+	// slowdown fails the similar test from about 3.4x on a dev machine
+	// (2.1x on CI) and the unrelated one from about 2.6x (2x on CI); a 2x
+	// slowdown can pass both. Diffing characters instead of tokens (1.6x
+	// and 7.6x the yardstick on the dev machine) fails the unrelated test.
+	// The similar ratio moves more with load (wordMarks allocates more
+	// than the yardstick), hence its looser budget. The absolute ceilings
+	// are only a backstop for the yardstick itself slowing down: three
+	// times CI's slowest best-of-three (100 and 241 ms).
 	it(
-		"marks 2,000 pairs of similar 120-character lines in under 100 ms of CPU",
+		"marks 2,000 pairs of similar 120-character lines in 1.8x the CPU of their character diff",
 		() => {
-			// An equal block of edited lines: about 10% of each line's tokens changed.
-			const { line, edit } = codeLines(7);
-			const pairs = Array.from({ length: 2000 }, () => {
-				const a = line();
-				return [a, edit(a)] as const;
-			});
-			const best = bestCpu(pairs);
-			console.info(`wordMarks: 2,000 similar pairs in ${best} µs CPU`);
-			expect(best).toBeLessThan(100_000);
+			const { best, ratio } = bestCpu(similarPairs());
+			console.info(
+				`wordMarks: 2,000 similar pairs in ${best} µs CPU, ${ratio.toFixed(2)}x the yardstick`,
+			);
+			expect(ratio).toBeLessThan(1.8);
+			expect(best).toBeLessThan(300_000);
 		},
 		LOADED,
 	);
 
 	it(
-		"marks 2,000 pairs of unrelated 120-character lines in under 400 ms of CPU",
+		"marks 2,000 pairs of unrelated 120-character lines in 3.7x the CPU of the similar pairs' character diff",
 		() => {
 			// A rewritten block: every pair two unrelated lines (GitHub marks them all).
 			const { line } = codeLines(11);
@@ -561,9 +612,12 @@ describe("wordMarks", () => {
 				{ length: 2000 },
 				() => [line(), line()] as const,
 			);
-			const best = bestCpu(pairs);
-			console.info(`wordMarks: 2,000 unrelated pairs in ${best} µs CPU`);
-			expect(best).toBeLessThan(400_000);
+			const { best, ratio } = bestCpu(pairs);
+			console.info(
+				`wordMarks: 2,000 unrelated pairs in ${best} µs CPU, ${ratio.toFixed(2)}x the yardstick`,
+			);
+			expect(ratio).toBeLessThan(3.7);
+			expect(best).toBeLessThan(750_000);
 		},
 		LOADED,
 	);
