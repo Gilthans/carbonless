@@ -211,6 +211,7 @@ rows at once) takes under 100 ms of CPU time (`process.threadCpuUsage`, a
 unit test, so it holds on a loaded machine). The first-open and switch times
 of a 2,000-line equal-block fixture are measured before and after and put
 in the report, not gated (wall clock is too noisy for a 10% gate).
+(Note 2026-11-12: CAR-67 replaced the absolute budgets with CPU ratios against a reference measured in the same test, `test/cpu.ts`.)
 
 ## Non-goals (step 1)
 
@@ -321,6 +322,7 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 - `~` rows end a block under Ignore whitespace.
 - The speed budget is a CPU-time unit test (2,000 pairs under 100 ms);
   page times are measured and reported, not gated.
+  (Note 2026-11-12: CAR-67 replaced the absolute budgets with CPU ratios against a reference measured in the same test, `test/cpu.ts`.)
 - The gallery's case files and GitHub's observed marks are committed as
   test fixtures; carbonless's own diff decides block shape, and any
   difference from GitHub is a listed known difference.

@@ -127,7 +127,8 @@ than `git diff -w` would, never less.
 ## Why are lines in a different order, or marked where GitHub shows none?
 
 When a cluster has more removed lines than added ones (or the reverse),
-GitHub pairs them by position and marks nothing. carbonless pairs the lines
+GitHub marks nothing: its unified view pairs no lines, and its split view
+only lines the rows up by position. carbonless pairs the lines
 that are clearly similar instead, and marks the words that changed in each
 pair. Unified shows a pair together, the removed line right above its
 added one; side by side puts it on one row. Unpaired lines keep today's
