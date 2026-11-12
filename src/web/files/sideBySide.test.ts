@@ -4,7 +4,7 @@ import type { DiffLine } from "../../shared/types";
 import { alignCluster } from "./linePairing";
 import type { Partners } from "./pairOrder";
 import { layoutRows, type SideRow, sides } from "./sideBySide";
-import { type DiffRow, matchHunk, pairHunk, pairRun, runs } from "./whitespace";
+import { type DiffRow, hunkView, matchHunk, pairRun, runs } from "./whitespace";
 
 const del = (oldNo: number, text: string, over: Partial<DiffLine> = {}) => ({
 	kind: "del" as const,
@@ -26,6 +26,8 @@ const ctx = (oldNo: number, newNo: number, text: string): DiffLine => ({
 	newNo,
 	text,
 });
+/** A hunk's rows in git's order with Ignore whitespace on (hunkView). */
+const gitRows = (lines: DiffLine[]): DiffRow[] => hunkView(lines, true).gitRows;
 /** A line as the view's plain row (Ignore whitespace off, or a context run). */
 const line = (line: DiffLine): DiffRow => ({ kind: "line", line });
 
@@ -204,7 +206,7 @@ describe("layoutRows", () => {
 			add(2, "  a"),
 			add(3, "q"),
 		];
-		const rows = pairHunk(lines);
+		const rows = gitRows(lines);
 		expect(rows.map((r) => r.kind)).toEqual([
 			"line",
 			"line",
@@ -232,7 +234,7 @@ describe("layoutRows", () => {
 			add(3, "q"),
 			add(4, "r"),
 		];
-		const unevenRows = pairHunk(uneven);
+		const unevenRows = gitRows(uneven);
 		expect(trace(layoutRows(unevenRows))).toEqual([
 			"[-1|+1]",
 			"[-2|]",
@@ -302,8 +304,8 @@ describe("layoutRows", () => {
 			" 7/6",
 		]);
 		// The same from the whole hunk's flattened rows.
-		expect(trace(layoutRows(pairHunk(lines)))).toEqual(trace(out));
-		expectLayout(pairHunk(lines), layoutRows(pairHunk(lines)));
+		expect(trace(layoutRows(gitRows(lines)))).toEqual(trace(out));
+		expectLayout(gitRows(lines), layoutRows(gitRows(lines)));
 	});
 
 	it("holds for any input", () => {
@@ -352,7 +354,7 @@ describe("layoutRows", () => {
 				expectLayout(paired, layoutRows(paired));
 				laidOut++;
 			}
-			expectLayout(pairHunk(lines), layoutRows(pairHunk(lines)));
+			expectLayout(gitRows(lines), layoutRows(gitRows(lines)));
 			laidOut++;
 		}
 		// Rows of any shape, as the type allows them (one-sided whitespace

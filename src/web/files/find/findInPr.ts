@@ -72,7 +72,7 @@ export interface SourceLine {
 	source?: DiffLine;
 }
 
-/** A hunk as unified view with Ignore whitespace renders it (pairedHunk). */
+/** A hunk as the unified view renders it, Ignore whitespace on or off (pairedHunk). */
 export interface PairedHunk {
 	/**
 	 * The hunk's lines in the order of the rows shown (hunkView): a
@@ -208,11 +208,14 @@ export function findInPr(
 	hunksOf: (file: FileView) => FileHunks | undefined,
 	contextOf: (file: FileView) => readonly DiffLine[],
 	matchCase: boolean,
-	pairs = false,
+	pairs: boolean,
 	/** A file without hunks yet is searched in its clusters (fileLines). */
-	clusters = true,
-	/** The view's Ignore whitespace: its `~` rows (twins) exist only with it on. */
-	ignoreWhitespace = true,
+	clusters: boolean,
+	/**
+	 * The view's Ignore whitespace: its `~` rows (twins) exist only with it
+	 * on, and the rows (hunkView) differ with it, on or off.
+	 */
+	ignoreWhitespace: boolean,
 ): Hit[] {
 	const hits: Hit[] = [];
 	const re = pattern(term, matchCase);

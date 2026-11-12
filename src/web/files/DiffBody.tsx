@@ -935,7 +935,7 @@ interface RowProps {
 	composers?: RowComposers;
 	find?: DiffFind;
 	agent?: AgentRows;
-	/** The hunk's paired lines' word marks (hunkWordMarks), by line. */
+	/** The hunk's paired lines' word marks (pairWordMarks of hunkView's pairs), by line. */
 	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
 	/** The marked lines whose change doesn't show with hidden characters off (hiddenLines). */
 	hidden?: ReadonlySet<DiffLine>;

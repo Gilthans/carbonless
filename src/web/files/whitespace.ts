@@ -279,7 +279,12 @@ export interface ViewRun {
 /** What the view shows of a hunk: its runs, and the pairs behind the marks and the order. */
 export interface HunkView {
 	runs: ViewRun[];
-	/** hunkPairs over the rows in git's order (before orderRun moves any). */
+	/**
+	 * Every run's rows one after the other in git's order: pairRun's with
+	 * Ignore whitespace on, before orderRun moves a pair together.
+	 */
+	gitRows: DiffRow[];
+	/** hunkPairs over `gitRows`. */
 	pairs: LinePair[];
 	partners: Partners;
 }
@@ -311,7 +316,8 @@ export function hunkView(
 				? pairRun(run.lines, twins)
 				: run.lines.map((line): DiffRow => ({ kind: "line", line })),
 	}));
-	const pairs = hunkPairs(git.flatMap((run) => run.rows));
+	const gitRows = git.flatMap((run) => run.rows);
+	const pairs = hunkPairs(gitRows);
 	const partners = new Map<DiffLine, DiffLine>();
 	for (const [del, add] of pairs) {
 		partners.set(del, add);
@@ -323,6 +329,7 @@ export function hunkView(
 				? run
 				: { ...run, rows: orderRun(run.rows, partners) },
 		),
+		gitRows,
 		pairs,
 		partners,
 	};
@@ -330,25 +337,4 @@ export function hunkView(
 	entry[slot] = view;
 	viewsByHunk.set(lines, entry);
 	return view;
-}
-
-/** A hunk's runs and their rows (hunkView). */
-export function viewRuns(
-	lines: DiffLine[],
-	ignoreWhitespace: boolean,
-): ViewRun[] {
-	return hunkView(lines, ignoreWhitespace).runs;
-}
-
-/**
- * A whole hunk's whitespace rows, run by run, in git's order (pairRun's:
- * before hunkView's orderRun moves a pair together).
- */
-export function pairHunk(lines: DiffLine[]): DiffRow[] {
-	const twins = hunkTwins(lines);
-	return runs(lines).flatMap((run) =>
-		run.key !== undefined
-			? pairRun(run.lines, twins)
-			: run.lines.map((line): DiffRow => ({ kind: "line", line })),
-	);
 }
