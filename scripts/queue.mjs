@@ -30,7 +30,6 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { home, queueSlots } from "./queue-config.mjs";
-import { joinLine } from "./queue-line.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
 if (!cmd) {
@@ -124,6 +123,8 @@ if (
 
 mkdirSync(dir, { recursive: true });
 const start = Date.now();
+// Loaded only here: a nested or unqueued run never depends on the line.
+const { joinLine } = await import("./queue-line.mjs");
 const ticket = joinLine(join(dir, "carbonless-queue"));
 // Kept while the command runs too: a run holding a slot stays ahead of the
 // ones that came after it. process.exit (signals included) runs this.

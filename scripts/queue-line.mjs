@@ -9,20 +9,25 @@
 // different start time in /proc/<pid>/stat) is a run killed with SIGKILL:
 // whoever reads it removes it. A stopped run (Ctrl-Z) keeps its ticket but
 // isn't counted until it runs again. A ticket from another pid namespace (a
-// sandbox sharing HOME) can't be judged from here: it is neither counted nor
-// removed.
+// sandbox sharing HOME) can't be judged from here: it isn't counted, and is
+// removed only once its file is a day old.
 import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	readlinkSync,
 	renameSync,
+	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 
 const TICKET = /^(\d{20})-(\d+)$/;
+/** A foreign ticket older than this is left over: removed. */
+const FOREIGN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** Failed rewrites of our own ticket in a row before trying slots anyway. */
+const REJOIN_TRIES = 3;
 
 /** This process's pid namespace ("pid:[4026531836]"); "" when unknown. */
 function pidNamespace() {
@@ -106,13 +111,22 @@ export function line(dir) {
 		}
 		const state = ticketState(content);
 		if (state === "live") live.push(name);
-		else if (state === "dead") {
+		else if (state === "dead" || (state === "foreign" && stale(dir, name))) {
 			try {
 				unlinkSync(join(dir, name));
 			} catch {}
 		}
 	}
 	return live;
+}
+
+/** Whether ticket `name`'s file is older than FOREIGN_MAX_AGE_MS. */
+function stale(dir, name) {
+	try {
+		return Date.now() - statSync(join(dir, name)).mtimeMs > FOREIGN_MAX_AGE_MS;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -128,26 +142,43 @@ function writeTicket(dir, name) {
 
 /**
  * Puts this process at the end of the line in `dir`. `place()`: how many
- * live tickets are ahead of it (Infinity when it has none: never first by
- * accident). `leave()`: removes the ticket (again is a no-op).
+ * live tickets are ahead of it; Infinity while it has no ticket (never first
+ * by accident), until REJOIN_TRIES rewrites in a row failed: then 0, so the
+ * run tries the slots as if there were no line (said once on stderr).
+ * `leave()`: removes the ticket (again is a no-op).
  */
 export function joinLine(dir) {
 	const name = `${process.hrtime.bigint().toString().padStart(20, "0")}-${process.pid}`;
 	writeTicket(dir, name);
 	let left = false;
+	let failed = 0;
+	let warned = false;
 	return {
 		name,
 		place() {
 			const i = line(dir).indexOf(name);
-			if (i >= 0) return i;
+			if (i >= 0) {
+				failed = 0;
+				return i;
+			}
 			// Our ticket is gone (removed by hand): back in, at our arrival.
+			let j = -1;
 			try {
 				writeTicket(dir, name);
-			} catch {
-				return Number.POSITIVE_INFINITY;
+				j = line(dir).indexOf(name);
+			} catch {}
+			if (j >= 0) {
+				failed = 0;
+				return j;
 			}
-			const j = line(dir).indexOf(name);
-			return j >= 0 ? j : Number.POSITIVE_INFINITY;
+			if (++failed < REJOIN_TRIES) return Number.POSITIVE_INFINITY;
+			if (!warned) {
+				warned = true;
+				console.error(
+					`queue: can't keep a ticket in ${dir}; trying the slots without the line`,
+				);
+			}
+			return 0;
 		},
 		leave() {
 			if (left) return;

@@ -1,17 +1,19 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queueSlots } from "./queue-config.mjs";
 import { queuedWorkers, requireQueue } from "./queue-guard.mjs";
 import { joinLine, line, startTime, ticketState } from "./queue-line.mjs";
@@ -114,9 +116,8 @@ describe("queue line tickets", () => {
 		"a zombie's ticket is dead, a stopped run's is stopped",
 		{ timeout: 30_000 },
 		async () => {
-			// `sleep 0` exits under a parent (the exec'd sleep 30) that never
-			// reaps it.
-			const parent = spawn("sh", ["-c", "sleep 0 & echo $!; exec sleep 30"]);
+			// A child killed while its parent is stopped stays unreaped.
+			const parent = spawn("sh", ["-c", "sleep 30 & echo $!; wait"]);
 			started.push(parent);
 			let out = "";
 			parent.stdout?.on("data", (d) => {
@@ -124,6 +125,9 @@ describe("queue line tickets", () => {
 			});
 			await until(() => out.endsWith("\n"));
 			const zombie = Number(out);
+			parent.kill("SIGSTOP");
+			await until(() => state(parent.pid as number) === "T");
+			process.kill(zombie, "SIGKILL");
 			await until(() => state(zombie) === "Z");
 			expect(ticketState(ticketOf(zombie))).toBe("dead");
 
@@ -140,7 +144,7 @@ describe("queue line tickets", () => {
 		},
 	);
 
-	it("a ticket from another pid namespace is neither counted nor removed", () => {
+	it("a ticket from another pid namespace isn't counted, and is removed only a day old", () => {
 		const dir = mkdtempSync(join(tmpdir(), "crb-line-"));
 		try {
 			const gone = spawnSync("true").pid as number;
@@ -149,12 +153,17 @@ describe("queue line tickets", () => {
 			expect(ticketState(`${gone} 5 pid:[1]`)).toBe("foreign");
 			expect(line(dir)).toEqual([]);
 			expect(existsSync(join(dir, foreign))).toBe(true);
+			// A day old: left over, removed.
+			const twoDaysAgo = (Date.now() - 2 * 24 * 60 * 60 * 1000) / 1000;
+			utimesSync(join(dir, foreign), twoDaysAgo, twoDaysAgo);
+			expect(line(dir)).toEqual([]);
+			expect(existsSync(join(dir, foreign))).toBe(false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
-	it("a run whose ticket vanished rejoins whole, and is never first without one", () => {
+	it("a run whose ticket vanished rejoins whole, is never first without one, and falls back to no line when it can't rejoin", () => {
 		const dir = mkdtempSync(join(tmpdir(), "crb-line-"));
 		const me = joinLine(dir);
 		try {
@@ -164,10 +173,20 @@ describe("queue line tickets", () => {
 			expect(ticketState(readFileSync(join(dir, me.name), "utf8"))).toBe(
 				"live",
 			);
-			// Gone and can't be written back: not in line, so not first.
+			// Gone and can't be written back: not in line, so not first...
 			rmSync(join(dir, me.name));
 			chmodSync(dir, 0o555);
+			const warn = vi.spyOn(console, "error").mockImplementation(() => {});
 			expect(me.place()).toBe(Number.POSITIVE_INFINITY);
+			expect(me.place()).toBe(Number.POSITIVE_INFINITY);
+			expect(warn).not.toHaveBeenCalled();
+			// ...until a few rewrites in a row failed: then it tries the slots
+			// without the line, and says so once.
+			expect(me.place()).toBe(0);
+			expect(me.place()).toBe(0);
+			expect(warn).toHaveBeenCalledOnce();
+			expect(String(warn.mock.calls[0]?.[0])).toContain("without the line");
+			warn.mockRestore();
 		} finally {
 			chmodSync(dir, 0o755);
 			me.leave();
@@ -283,6 +302,36 @@ describe.skipIf(!hasFlock)("queue", () => {
 			release: () => spawnSync("touch", [release]),
 		};
 	};
+
+	it("a run nested in a held slot, or with no queue, needs no line and waits for none", {
+		timeout: 30_000,
+	}, async () => {
+		// queue.mjs on its own (as another tree's copy may be): no queue-line.mjs.
+		const alone = join(home, "alone");
+		mkdirSync(alone);
+		for (const f of ["queue.mjs", "queue-config.mjs"])
+			copyFileSync(join(import.meta.dirname, f), join(alone, f));
+		const run = (env: NodeJS.ProcessEnv) =>
+			spawnSync(process.execPath, [join(alone, "queue.mjs"), "true"], {
+				env: {
+					...process.env,
+					HOME: home,
+					CRB_NO_QUEUE: "",
+					CRB_QUEUE_SINCE: "",
+					...env,
+				},
+				timeout: 20_000,
+			}).status;
+		// A holder in line and in the slot: a nested run still goes at once.
+		const a = holdUntil("a");
+		await until(a.held);
+		expect(tickets().length).toBe(1);
+		expect(run({ CRB_QUEUE_HELD: join(home, "nested.holder") })).toBe(0);
+		configure(null);
+		expect(run({ CRB_QUEUE_HELD: "" })).toBe(0);
+		a.release();
+		expect(await exited(a.child)).toBe(0);
+	});
 
 	it("a signal ends a wait, and stops a held run's whole group; the lock is free", {
 		timeout: 30_000,
