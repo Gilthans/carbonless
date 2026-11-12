@@ -285,3 +285,11 @@ export async function ask(
 
 /** The header's agent chip. */
 export const chip = (page: Page) => page.getByTestId("agent-chip");
+
+/** The agent modal's setup view (no agent connected): Invite and Spawn. */
+export const setupDialog = (page: Page) =>
+	page.getByRole("dialog", { name: "Setup Review Agent", exact: true });
+
+/** The agent modal's connected view: the agent's status, Detach. */
+export const statusDialog = (page: Page) =>
+	page.getByRole("dialog", { name: "Review Agent", exact: true });

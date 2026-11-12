@@ -14,6 +14,8 @@ import {
 	openFile,
 	row,
 	selectText,
+	setupDialog,
+	statusDialog,
 	test,
 } from "./agent-ui";
 import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
@@ -1085,9 +1087,20 @@ test("no sideways scroll at 360 px with a card, a composer and the setup open", 
 	await expect(section.getByTestId("agent-composer")).toBeVisible();
 	await expectNoPageOverflow(page);
 	await shot(page, "agent-360-card", isMobile);
+	// The modal's both views: the agent's status, then (Detach) the setup.
 	await chip(page).click();
-	await expect(page.getByRole("dialog", { name: "Your agent" })).toBeVisible();
-	await expect(page.getByRole("radiogroup", { name: "Harness" })).toBeVisible();
+	const status = statusDialog(page);
+	await expect(status.getByTestId("agent-state")).toHaveText("Ready");
+	await expectNoPageOverflow(page);
+	await shot(page, "agent-360-status", isMobile);
+	await status.getByRole("button", { name: "Detach" }).click();
+	const setup = setupDialog(page);
+	await expect(setup.getByTestId("join-line")).toBeVisible();
+	await expectNoPageOverflow(page);
+	await setup.getByRole("tab", { name: "Spawn" }).click();
+	await expect(
+		setup.getByRole("radiogroup", { name: "Harness" }),
+	).toBeVisible();
 	await expectNoPageOverflow(page);
 	await shot(page, "agent-360-setup", isMobile);
 });

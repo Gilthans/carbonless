@@ -185,7 +185,10 @@ const E2E_MAP = [
 	// Only src/cli.test.ts preloads it.
 	[/^test\/module-log\.mjs$/, []],
 	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
-	[/^e2e\/agent-ui\.ts$/, ["agent", "agent-setup"]],
+	[
+		/^e2e\/agent-ui\.ts$/,
+		["agent", "agent-setup", "agent-join", "thread-agent"],
+	],
 	[
 		/^src\/(cli|main|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
 		["serve", "cli"],
