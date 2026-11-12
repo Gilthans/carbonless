@@ -11,6 +11,9 @@ import {
 } from "./files-ui";
 import { expect, OWNER_REPO, PR_NUMBER, type Pr, test } from "./fixtures";
 
+// Its own crb serve: Home writes config views, caches repo facts and lists every clone.
+test.use({ crbServer: "own" });
+
 /**
  * Home in the built `crb serve`, on a fake gh scenario: acme/api in the
  * view with a PR for each section, and the review PR (acme/widget#7, a

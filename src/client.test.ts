@@ -201,4 +201,32 @@ describe("the client", () => {
 			),
 		).rejects.toThrow(/not found/);
 	});
+
+	it("sends its $TRACEPARENT with the open, so the server's span goes under it", async () => {
+		servers.push(await startServer({ port: 0 }));
+		const parent = "00-0123456789abcdef0123456789abcdef-0011223344556677-01";
+		const sent: (string | null)[] = [];
+		const realFetch = globalThis.fetch;
+		const spy = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation((input, init) => {
+				if (String(input).endsWith("/api/reviews")) {
+					sent.push(new Headers(init?.headers).get("traceparent"));
+				}
+				return realFetch(input, init);
+			});
+		const saved = process.env.TRACEPARENT;
+		try {
+			for (const value of [parent, undefined, "nonsense"]) {
+				if (value === undefined) delete process.env.TRACEPARENT;
+				else process.env.TRACEPARENT = value;
+				await runClient({ pr: pr.arg, cwd: process.cwd() }, { out: () => {} });
+			}
+		} finally {
+			spy.mockRestore();
+			if (saved === undefined) delete process.env.TRACEPARENT;
+			else process.env.TRACEPARENT = saved;
+		}
+		expect(sent).toEqual([parent, null, null]);
+	});
 });

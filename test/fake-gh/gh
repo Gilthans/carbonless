@@ -35,19 +35,22 @@ if [[ $CRB_FAKE_GH_SERVER =~ ^127\.0\.0\.1:([0-9]+):([0-9a-f]{32})$ ]] &&
 		exit 1
 	}
 	answer() {
-		read -r code errn outn <&3 || broken "no answer"
+		IFS= read -r line <&3 || broken "no answer"
 	}
 	answer
-	# The server read the scenario: the call goes in the log, written by
-	# this gh while alive, as a gh process does. A log that can't be
-	# written fails the call (and the server sees this gh gone).
-	if [[ $code == log ]]; then
-		printf '%s\n' "$*" >>"$CRB_FAKE_GH_LOG" || exit 1
+	# The server read the scenario: the call goes in the log it names
+	# ("log <path>"), written by this gh while alive, as a gh process does.
+	# A log that can't be written fails the call (and the server sees this
+	# gh gone).
+	if [[ $line == "log "* ]]; then
+		printf '%s\n' "$*" >>"${line#log }" || exit 1
 		printf k >&3
 		answer
 	fi
-	[[ $code =~ ^[0-9]+$ && $errn =~ ^[0-9]+$ && $outn =~ ^[0-9]+$ ]] ||
-		broken "a bad answer"
+	[[ $line =~ ^([0-9]+)\ ([0-9]+)\ ([0-9]+)$ ]] || broken "a bad answer"
+	code=${BASH_REMATCH[1]}
+	errn=${BASH_REMATCH[2]}
+	outn=${BASH_REMATCH[3]}
 	IFS= read -r -N "$errn" e <&3 && ((${#e} == errn)) || broken "a short answer"
 	IFS= read -r -N "$outn" o <&3 && ((${#o} == outn)) || broken "a short answer"
 	printf '%s' "$o"

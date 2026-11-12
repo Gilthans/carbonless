@@ -178,6 +178,13 @@ loading never looking empty, checking against a real PR):
   (`test/real-gh-trap.ts`) and fails the run, naming the test, when a call
   gets past the fake: prepend a fake gh to `PATH`, never replace `PATH`,
   and `await settleGh()` (`test/settle-gh.ts`) before restoring the env.
+- A Playwright worker's e2e tests share one `crb serve`; each test has its
+  own repo and PR (`ownerRepo`, `prNumber`, `p.number`: never hard-code
+  `acme/widget#7`), and a reset plus leak checks after it fail the test
+  that leaked. A test that stops or restarts crb, writes config, reads the
+  server's files or runs `runCli(workdir, …)` against it takes
+  `test.use({ crbServer: "own" })`. What each leak message means:
+  `docs/test-profiling.md`, "One server for many tests".
 - Tests must pass on a loaded machine (several suites often run at once). A
   test of a loading state holds the fake gh's answer (scenario `hold`, then
   `release()` once it has seen the spinner) rather than racing a `…DelayMs`;

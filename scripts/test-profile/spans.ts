@@ -41,6 +41,7 @@ const STEP_PHASES: Record<string, string> = {
 	"setup: fixture repo": "setup.fixture",
 	"setup: crb serve": "setup.crb_serve",
 	"setup: crb open": "setup.crb_open",
+	"teardown: crb reset": "teardown.crb_reset",
 	"teardown: crb stop": "teardown.crb_stop",
 };
 

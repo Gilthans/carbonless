@@ -14,8 +14,10 @@ if (process.argv.includes("test") && !process.argv.includes("--list")) {
 if (!process.env.TEST_WORKER_INDEX) startTraceRun("e2e");
 const TRACE_REPORTER = ["./e2e/trace-reporter.ts"] as const;
 
-// Each test starts its own server on a throwaway git repo (see e2e/fixtures.ts),
-// so there is no shared webServer here. Run via `pnpm test:e2e`, which builds first.
+// Each worker's tests share one crb serve, each test on a throwaway git repo
+// of its own (e2e/shared-server.ts; some take their own server, see
+// e2e/fixtures.ts), so there is no webServer here. Run via `pnpm test:e2e`,
+// which builds first.
 export default defineConfig({
 	testDir: "e2e",
 	fullyParallel: true,
