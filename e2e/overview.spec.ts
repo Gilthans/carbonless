@@ -5,7 +5,8 @@ import {
 	suggestionHtml,
 	threadComment,
 } from "../test/fake-gh/scenario";
-import { expect, test } from "./fixtures";
+import { passLanding } from "./files-ui";
+import { expect, installClock, test } from "./fixtures";
 
 const botThreadNoReply = reviewThread({ path: "src/bot.ts", line: 3 }, [
 	threadComment({
@@ -1204,6 +1205,7 @@ test("a thread's file:line opens Files changed at that line, highlighted; a move
 		];
 	});
 	const s = await startCrb();
+	await installClock(page);
 	await page.goto(s.url);
 	const threads = page
 		.getByRole("region", { name: "Human reviews" })
@@ -1221,7 +1223,8 @@ test("a thread's file:line opens Files changed at that line, highlighted; a move
 	await expect(row).toBeInViewport();
 	await expect(section.getByTestId("landing-hint")).toHaveCount(0);
 	// The highlight fades after a moment.
-	await expect(row).not.toHaveAttribute("data-landed", { timeout: 5000 });
+	await passLanding(page);
+	await expect(row).not.toHaveAttribute("data-landed");
 
 	await page.getByRole("link", { name: "Overview" }).click();
 	await threads.nth(1).getByRole("link", { name: "b.txt:10" }).click();

@@ -9,7 +9,14 @@ import {
 	fileSection,
 	openFiles,
 } from "./files-ui";
-import { expect, OWNER_REPO, PR_NUMBER, type Pr, test } from "./fixtures";
+import {
+	expect,
+	installClock,
+	OWNER_REPO,
+	PR_NUMBER,
+	type Pr,
+	test,
+} from "./fixtures";
 
 // Its own crb serve: Home writes config views, caches repo facts and lists every clone.
 test.use({ crbServer: "own" });
@@ -686,6 +693,7 @@ test("after Save the pencil's tooltip doesn't stay over the sections", async ({
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	await setup(workdir, pr);
 	const crb = await startCrb();
+	await installClock(page);
 	await goHome(page, crb.url);
 	const pencil = page.getByRole("button", { name: "Edit repos" });
 	if (isMobile) await pencil.tap();
@@ -699,8 +707,12 @@ test("after Save the pencil's tooltip doesn't stay over the sections", async ({
 	const tip = page
 		.locator("[role=tooltip]:not([hidden])")
 		.filter({ hasText: "Edit repos" });
-	// Give a late tooltip its chance to show.
-	await page.waitForTimeout(500);
+	// Give a late tooltip its chance to show: past any hover delay, then a
+	// frame drawn.
+	await page.clock.fastForward(1000);
+	await page.evaluate(
+		() => new Promise((done) => requestAnimationFrame(() => done(null))),
+	);
 	await expect(tip).toHaveCount(0);
 });
 

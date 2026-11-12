@@ -190,7 +190,12 @@ loading never looking empty, checking against a real PR):
   write, once released, drops test edits made while it waited.
   Unit tests that run git and the fake gh use `GIT_TEST_TIMEOUTS`. A speed
   property is measured in CPU time (`process.threadCpuUsage`), or as "doesn't
-  wait" (a timeout of 0, a hold), never as wall-clock time. No automatic
+  wait" (a timeout of 0, a hold), never as wall-clock time. A test that
+  needs an app timer to elapse (a fade, an undo window, a delayed-save
+  hint, a poll) moves the page's clock (`installClock`, `e2e/fixtures.ts`,
+  then `page.clock.fastForward` or `runFor`), never waits it out or sleeps
+  (no `page.waitForTimeout`); to prove something doesn't happen, it moves
+  past the window and checks what was sent (`p.ghLog()`). No automatic
   retries (Playwright `retries`, Vitest `retry`): a flaky test fails visibly
   and gets fixed. Playwright's expects wait 10 s (a reload's chained reads);
   a test that needs longer says why.

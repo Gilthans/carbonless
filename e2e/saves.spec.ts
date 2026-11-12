@@ -1,4 +1,5 @@
 import type { Page, Route } from "@playwright/test";
+import { DELAYED_MS } from "../src/web/files/stateSync";
 import {
 	fileAction,
 	fileActionButton,
@@ -7,7 +8,7 @@ import {
 	openFiles,
 	progress,
 } from "./files-ui";
-import { expect, type PrOptions, test } from "./fixtures";
+import { expect, installClock, type PrOptions, test } from "./fixtures";
 
 const text = (lines: string[]) => `${lines.join("\n")}\n`;
 const lines = (name: string, n: number) =>
@@ -63,6 +64,7 @@ test("a click shows at once while its write is held, and a reload shows what was
 }) => {
 	await pr(fixture);
 	const s = await startCrb();
+	await installClock(page);
 	await openFiles(page, s.url);
 	const writes = await holdWrites(page);
 	const a = fileSection(page, "src/a.ts");
@@ -72,9 +74,10 @@ test("a click shows at once while its write is held, and a reload shows what was
 	await expect(progress(page)).toContainText("1 / 2 clusters reviewed");
 	await expect(fileActionButton(a, "Unmark reviewed")).toBeEnabled();
 	await expect.poll(writes.count).toBe(1);
-	// The delayed notice after 5 s, naming what waits; gone once stored.
+	// The delayed notice after DELAYED_MS, naming what waits; gone once stored.
 	const delayed = page.getByTestId("save-delayed");
-	await expect(delayed).toBeVisible({ timeout: 8000 });
+	await page.clock.fastForward(DELAYED_MS);
+	await expect(delayed).toBeVisible();
 	await expect(delayed).toContainText("Saving 1 change…");
 	await expect(delayed).toContainText("Reviewed · src/a.ts");
 	await expect(page.getByRole("status").filter({ has: delayed })).toBeVisible();
@@ -175,6 +178,8 @@ test("the save notices stay clear of the sticky header, the tree and the Files b
 		.getByRole("checkbox", { name: "Mark cluster reviewed" })
 		.first()
 		.click();
+	// Waited out in real time: on this page (a long file open) moving the
+	// clock past DELAYED_MS costs more than the wait (measured, CAR-132).
 	await expect(page.getByTestId("save-delayed")).toBeVisible({ timeout: 8000 });
 	// Read on: a's header sticks at the top.
 	await page.mouse.wheel(0, 1500);
@@ -264,6 +269,7 @@ test("a write that fails transiently is retried and stored, with no error", asyn
 	expectConsoleError(/503|Failed to load resource/);
 	await pr(fixture);
 	const s = await startCrb();
+	await installClock(page);
 	await openFiles(page, s.url);
 	let failures = 0;
 	await page.route("**/api/r/*/review/states", async (route) => {
@@ -278,9 +284,11 @@ test("a write that fails transiently is retried and stored, with no error", asyn
 	});
 	await fileAction(fileSection(page, "src/a.ts"), "Mark remaining reviewed");
 	// Two retries (1 s, then 2 s), then stored.
-	await expect(page.getByTestId("sync-notices")).toHaveCount(0, {
-		timeout: 10_000,
-	});
+	await expect.poll(() => failures).toBe(1);
+	await page.clock.fastForward(1000);
+	await expect.poll(() => failures).toBe(2);
+	await page.clock.fastForward(2000);
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	expect(failures).toBe(2);
 	await expect(page.getByRole("alert")).toHaveCount(0);
 	await page.unroute("**/api/r/*/review/states");

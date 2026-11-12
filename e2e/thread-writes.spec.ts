@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Request } from "@playwright/test";
 import { FADE_MS } from "../src/web/threads/threadWrites";
 import {
 	release,
@@ -13,7 +13,13 @@ import {
 	openFiles,
 	sideBySide,
 } from "./files-ui";
-import { expect, type Pr, type PrOptions, test } from "./fixtures";
+import {
+	expect,
+	installClock,
+	type Pr,
+	type PrOptions,
+	test,
+} from "./fixtures";
 
 /**
  * Replying and resolving, written to the fake gh (its writes persist in the
@@ -410,6 +416,7 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 }) => {
 	await setup(pr);
 	const s = await startCrb();
+	await installClock(page);
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
 	// Closed, the card has no Resolve: it's inside Show more.
@@ -422,11 +429,12 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 	// The bigger action next to Send.
 	const sendSize = await send(c).boundingBox();
 	expect(size?.width ?? 0).toBeGreaterThan(sendSize?.width ?? 0);
-	const el = await c.elementHandle();
 	await resolve.click();
 	await expect(c).toHaveAttribute("data-fading", "true");
-	// The fade runs over FADE_MS: a hold at full opacity, then down to 0 by
-	// 85%, so the card is fully faded before it's removed.
+	// The fade runs over FADE_MS, the removal timer's own delay: a hold at
+	// full opacity, then down to 0 by 85%, so the card is fully faded before
+	// it's removed. (Read off the animation: the page's clock is moved past
+	// the timer below, and CSS animations don't follow it.)
 	const fade = await c.evaluate((node) => {
 		const a = node
 			.getAnimations()
@@ -446,24 +454,11 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 	const zero = fade.frames.find((f: { opacity: number }) => f.opacity === 0);
 	expect(zero?.offset ?? 1).toBeLessThanOrEqual(0.9);
 	expect(fade.frames.at(-1)?.opacity).toBe(0);
-	// And on screen: the last frame it was drawn in was (all but) invisible.
-	const last = el?.evaluate(
-		(node) =>
-			new Promise<number>((done) => {
-				let seen = 1;
-				const tick = () => {
-					if (!node.isConnected) return done(seen);
-					seen = Number(getComputedStyle(node).opacity);
-					requestAnimationFrame(tick);
-				};
-				tick();
-			}),
-	);
 	await expect(c.getByTestId("thread-head")).toContainText("Resolved thread");
 	// Still in place, the toggle there to undo; then gone to the other list.
 	await expect(c.getByRole("button", { name: "Unresolve" })).toBeVisible();
-	await expect(c).toHaveCount(0, { timeout: 8000 });
-	expect(await last).toBeLessThanOrEqual(0.05);
+	await page.clock.fastForward(FADE_MS);
+	await expect(c).toHaveCount(0);
 	await humans(page)
 		.getByRole("radiogroup", { name: "Threads shown" })
 		.getByText("1 resolved")
@@ -472,7 +467,8 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 	await openCard(back);
 	await back.getByRole("button", { name: "Unresolve" }).click();
 	await expect(back).toHaveAttribute("data-fading", "true");
-	await expect(back).toHaveCount(0, { timeout: 8000 });
+	await page.clock.fastForward(FADE_MS);
+	await expect(back).toHaveCount(0);
 	await page.reload();
 	await expect(
 		humans(page).getByRole("radio", { name: "0 resolved" }),
@@ -483,13 +479,14 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 test("undo during the fade keeps the card", async ({ page, pr, startCrb }) => {
 	await setup(pr);
 	const s = await startCrb();
+	await installClock(page);
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
 	await openCard(c);
 	await c.getByRole("button", { name: "Resolve" }).click();
 	await c.getByRole("button", { name: "Unresolve" }).click();
 	await expect(c).not.toHaveAttribute("data-fading");
-	await page.waitForTimeout(4500);
+	await page.clock.fastForward(FADE_MS);
 	await expect(card(page, "new.txt")).toBeVisible();
 	await expect(c.getByTestId("thread-head")).toContainText("Unresolved thread");
 });
@@ -651,6 +648,7 @@ test("a reload with an unconfirmed reply posts it once", async ({
 	// The post stays out until after the reload.
 	const p = await setup(pr, { hold: ["reply"] });
 	const s = await startCrb();
+	await installClock(page);
 	await page.goto(s.url);
 	const asked: string[] = [];
 	page.on("dialog", (d) => {
@@ -662,6 +660,14 @@ test("a reload with an unconfirmed reply posts it once", async ({
 	await box.fill("Survives a reload");
 	await send(c).click();
 	await expect(c.getByTestId("thread-comment-sending")).toBeVisible();
+	// The reloaded page's posts (the one before it is cut off by the reload).
+	const posts: string[] = [];
+	const isPost = (r: Request) =>
+		r.method() === "POST" && new URL(r.url()).pathname.endsWith("/replies");
+	page.on("request", (r) => {
+		if (isPost(r)) posts.push(r.url());
+	});
+	const resent = page.waitForResponse((r) => isPost(r.request()));
 	await page.reload();
 	// It didn't ask: its draft keeps it, and this page resends it.
 	expect(asked).toEqual([]);
@@ -670,8 +676,13 @@ test("a reload with an unconfirmed reply posts it once", async ({
 	await expect(again.getByRole("img", { name: "2 comments" })).toBeVisible({
 		timeout: 10_000,
 	});
+	// Both the first post and the resend are answered: GitHub has it once.
+	await resent;
 	await expect.poll(() => storedReplies(p, "Survives a reload")).toBe(1);
-	await page.waitForTimeout(3000);
+	// And no retry later posts it again.
+	await page.clock.fastForward("01:00");
+	await expect(again.getByTestId("thread-comment-sending")).toHaveCount(0);
+	expect(posts).toHaveLength(1);
 	expect(storedReplies(p, "Survives a reload")).toBe(1);
 });
 

@@ -839,7 +839,10 @@ test("an opened thread survives a Refresh", async ({ page, pr, startCrb }) => {
 	).toBeEnabled({
 		timeout: 20_000,
 	});
-	await page.waitForTimeout(500);
+	// Refresh is enabled once the answer is in: a frame later it is drawn.
+	await page.evaluate(
+		() => new Promise((done) => requestAnimationFrame(() => done(null))),
+	);
 	expect(
 		await page.evaluate(() => (window as unknown as { lost: boolean }).lost),
 	).toBe(false);
