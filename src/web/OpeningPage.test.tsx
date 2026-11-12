@@ -161,7 +161,10 @@ describe("/pr/<owner>/<repo>/<n>", () => {
 		expect(await screen.findByTestId("not-found")).toHaveTextContent(
 			"Not a PR: acme/widget#0",
 		);
-		expect(api.fetch).not.toHaveBeenCalled();
+		// Nothing about the PR (every page asks about crb's updates).
+		expect(
+			api.fetch.mock.calls.filter(([url]) => url !== "/api/update"),
+		).toEqual([]);
 	});
 
 	it("another failure shows the error and stays", async () => {

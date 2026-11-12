@@ -52,16 +52,20 @@ export interface Served {
 	output(): string;
 }
 
-/** Starts `crb serve` on a free port in `workdir`'s environment. */
+/**
+ * Starts `crb serve` on a free port in `workdir`'s environment (`cli`: the
+ * built CLI, or another copy of it).
+ */
 export function startServe(
 	workdir: string,
 	args: string[] = [],
 	env: NodeJS.ProcessEnv = crbEnv(workdir),
+	cli: string = CLI,
 	timeoutMs = START_TIMEOUT_MS,
 ): Promise<Served> {
 	const child = spawn(
 		process.execPath,
-		[CLI, "serve", "--port", "0", ...args],
+		[cli, "serve", "--port", "0", ...args],
 		{
 			cwd: workdir,
 			stdio: ["ignore", "pipe", "pipe"],

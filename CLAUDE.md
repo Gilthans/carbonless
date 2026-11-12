@@ -321,7 +321,8 @@ installs the global `crb`; then `systemctl --user restart crb`.
 **Release:** only on the owner's word ("release", "promote"):
 1. `pnpm release promote [<rc tag>] [--next patch|minor|major]` (default:
    the newest RC, then minor) starts the promote run of `release.yml` and
-   prints its link. It checks the RC in full, packs `X.Y.Z` and stages it
+   prints its link. It checks CI passed on the RC's commit (it doesn't run
+   the suite again), packs `X.Y.Z`, smoke-tests that tarball and stages it
    on npm: hidden until the owner approves it with their two-factor.
 2. When the run is green, send the owner its link and summary. **The owner**
    runs `pnpm release publish` on their machine: it checks the staged
@@ -331,7 +332,7 @@ installs the global `crb`; then `systemctl --user restart crb`.
    release-finish (the `vX.Y.Z` tag, `rc`, the "next: X.Y+1.0" PR with the
    changelog). Agents never run `pnpm release publish`, never approve a
    staged version, and never ask for, or handle, the OTP.
-3. The owner merges the "next" PR like any other. For another next
+3. The "next" PR merges on the owner's approval like any other. For another next
    version (a fix release): `pnpm release next <patch|minor|major|X.Y.Z>`
    opens that PR.
 After the first release (0.1.0) the owner adds the trusted publisher
@@ -374,7 +375,8 @@ After the first release (0.1.0) the owner adds the trusted publisher
   links), edge cases, and the attribution line. CI
   (`.github/workflows/ci.yml`) must be green before asking the owner to
   merge. A PR is merged only on the owner's explicit word for that PR (by
-  the owner on GitHub, or by an agent with `gh pr merge`). Never push
+  the owner on GitHub, or on their behalf by an agent with `gh pr merge
+  --admin`, the ruleset's bypass for the owner's login). Never push
   `master` or `v*` tags.
 - On the owner's word only: `pnpm release promote` (starts the promote run,
   which checks, packs and stages; nothing goes live) and `pnpm release

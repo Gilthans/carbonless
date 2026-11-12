@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// pnpm test:pack: packs carbonless-review as npm would publish it, installs
-// the tarball globally into a temp PNPM_HOME (temp XDG dirs, a gh that
-// refuses every call), and runs the installed crb: --version, --help, and
-// crb serve on a free port answering /api/version and serving the web page.
-// Proves the tarball holds the web assets and dependencies holds every
-// runtime import. Cleans up after itself, also on failure.
+// pnpm test:pack [<tarball>]: packs carbonless-review as npm would publish
+// it (or takes a tarball packed already: promote's release, so the thing
+// tested is the thing staged), installs the tarball globally into a temp
+// PNPM_HOME (temp XDG dirs, a gh that refuses every call), and runs the
+// installed crb: --version, --help, and crb serve on a free port answering
+// /api/version and serving the web page. Proves the tarball holds the web
+// assets and dependencies holds every runtime import. Cleans up after
+// itself, also on failure.
 import { execFileSync, spawn } from "node:child_process";
 import {
 	chmodSync,
@@ -16,13 +18,11 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const { name, version } = JSON.parse(
-	readFileSync(join(root, "package.json"), "utf8"),
-);
+const given = process.argv[2] ? resolve(process.argv[2]) : null;
 const started = Date.now();
 const tmp = mkdtempSync(join(tmpdir(), "crb-pack-"));
 let server;
@@ -64,28 +64,36 @@ try {
 			stdio: ["ignore", "pipe", "inherit"],
 		});
 
-	// prepack builds dist.
-	sh("pnpm", ["pack", "--pack-destination", tmp], root);
-	const tarball = join(tmp, `${name}-${version}.tgz`);
+	let tarball = given;
+	if (!tarball) {
+		const { name, version } = JSON.parse(
+			readFileSync(join(root, "package.json"), "utf8"),
+		);
+		// prepack builds dist.
+		sh("pnpm", ["pack", "--pack-destination", tmp], root);
+		tarball = join(tmp, `${name}-${version}.tgz`);
+		check(
+			readdirSync(tmp).includes(`${name}-${version}.tgz`),
+			`pnpm pack made ${name}-${version}.tgz`,
+		);
+	}
+	// By its bare name, in its directory: GNU tar reads a drive's colon
+	// (E:\...) as a remote host.
+	const tar = (...args) => sh("tar", [...args], dirname(tarball));
+	const inside = (file) => tar("-xzOf", basename(tarball), `package/${file}`);
+	// The tarball's own name and version: what npm would publish.
+	const { name, version } = JSON.parse(inside("package.json"));
 	check(
-		readdirSync(tmp).includes(`${name}-${version}.tgz`),
-		`pnpm pack made ${name}-${version}.tgz`,
+		basename(tarball) === `${name}-${version}.tgz`,
+		`${basename(tarball)} is ${name}@${version}`,
 	);
-	// By its bare name, in tmp: GNU tar reads a drive's colon (E:\...) as a
-	// remote host.
-	const files = sh("tar", ["tzf", `${name}-${version}.tgz`])
-		.trim()
-		.split("\n");
+	const files = tar("tzf", basename(tarball)).trim().split("\n");
 	check(
 		!files.some((f) => f.endsWith(".map") || /\.test\.|\.d\.ts$/.test(f)),
 		`${files.length} files, no maps, tests or typings`,
 	);
 	// The bundled packages' notices ship with the package (OFL fonts too).
-	const notices = sh("tar", [
-		"-xzOf",
-		tarball,
-		"package/dist/THIRD-PARTY-NOTICES.md",
-	]);
+	const notices = inside("dist/THIRD-PARTY-NOTICES.md");
 	check(
 		notices.includes("## react@") &&
 			notices.includes("## @fontsource-variable/outfit@") &&
@@ -95,9 +103,8 @@ try {
 
 	sh("pnpm", ["add", "-g", tarball]);
 	const crb = join(sh("pnpm", ["bin", "-g"]).trim(), "crb");
-	const built = JSON.parse(
-		readFileSync(join(root, "dist/build-info.json"), "utf8"),
-	);
+	// The tarball's build-info, not the checkout's dist.
+	const built = JSON.parse(inside("dist/build-info.json"));
 	check(built.version === version, `built version ${built.version}`);
 
 	const short = built.commit.replace(/-dirty$/, "").slice(0, 7);

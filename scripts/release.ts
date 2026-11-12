@@ -9,7 +9,8 @@
 //   pnpm release status                       master's next version, rc and latest on npm and in tags
 //   pnpm release promote [<rc tag>] [--next patch|minor|major]
 //                                             starts release.yml's promote: <rc tag> (default:
-//                                             the newest) checked in full, packed as X.Y.Z and
+//                                             the newest; CI must have passed on it), packed as
+//                                             X.Y.Z, the tarball smoke-tested, and
 //                                             staged on npm (hidden until approved); prints the
 //                                             run's URL
 //   pnpm release publish [<run-id>]
@@ -23,7 +24,8 @@
 //
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
 // ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
-// ci:check-run, ci:finish-plan, ci:changelog, ci:bump. They print KEY=value
+// ci:check-run, ci:finish-plan, ci:changelog, ci:bump. (CI passed on the
+// RC's commit: scripts/ci-passed.mjs, with no dependencies.) They print KEY=value
 // lines for $GITHUB_OUTPUT and read the checkout's tags. (The rc fix-up is
 // scripts/rc-fixup.mjs, with no dependencies, for the jobs that hold npm's
 // OIDC credential.)

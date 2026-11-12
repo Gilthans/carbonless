@@ -11,7 +11,7 @@ import {
 	test,
 	watchConsoleErrors,
 } from "./fixtures";
-import { crbEnv } from "./pr-setup";
+import { CLI, crbEnv } from "./pr-setup";
 
 // The harness itself: console errors fail a test unless declared.
 
@@ -110,7 +110,7 @@ test("a crb serve that prints no URL in time is killed, not left running", async
 	workdir,
 }) => {
 	// 1 ms: no crb listens that soon, so the start timer fires.
-	const error = await startServe(workdir, [], crbEnv(workdir), 1).catch(
+	const error = await startServe(workdir, [], crbEnv(workdir), CLI, 1).catch(
 		(e: unknown) => e,
 	);
 	expect(error).toBeInstanceOf(CrbStartTimeout);
