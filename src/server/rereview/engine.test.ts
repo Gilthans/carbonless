@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { bestCpuRatioAsync } from "../../../test/cpu";
 import {
 	createGitFixture,
 	GIT_TEST_TIMEOUTS,
@@ -642,13 +643,18 @@ describe("RereviewCache", () => {
 });
 
 describe("the engine's cost", () => {
-	it("traces and answers a 200-file PR within 2 s of CPU", async () => {
+	/**
+	 * A PR of `count` 60-line files, three lines changed in each, then a
+	 * push that changes one more line in every 40th file; and a run of the
+	 * engine over it (its trace and its answer).
+	 */
+	const pr = async (count: number) => {
 		const files: Record<string, string> = {};
 		const changed: Record<string, string> = {};
 		const again: Record<string, string> = {};
 		const body = (n: number, marks: number[]) =>
 			`${Array.from({ length: 60 }, (_, i) => (marks.includes(i) ? `file ${n} line ${i + 1} changed` : `file ${n} line ${i + 1}`)).join("\n")}\n`;
-		for (let n = 0; n < 200; n++) {
+		for (let n = 0; n < count; n++) {
 			files[`src/f${n}.txt`] = body(n, []);
 			changed[`src/f${n}.txt`] = body(n, [4, 20, 45]);
 			again[`src/f${n}.txt`] = body(
@@ -661,39 +667,51 @@ describe("the engine's cost", () => {
 			{ message: "PR", files: changed },
 			{ message: "PR: more", files: again },
 		]);
-		try {
-			const [b0, h1, h2] = fx.shas as [string, string, string];
-			const ps1 = await buildSnapshot(fx.path, b0, h1);
-			const r = await buildSnapshot(fx.path, b0, h2);
-			expect(ps1.files).toHaveLength(200);
-			const states = marked(ps1);
-			const before = process.threadCpuUsage();
+		const [b0, h1, h2] = fx.shas as [string, string, string];
+		const ps1 = await buildSnapshot(fx.path, b0, h1);
+		const r = await buildSnapshot(fx.path, b0, h2);
+		expect(ps1.files).toHaveLength(count);
+		const states = marked(ps1);
+		const run = async () => {
 			const traced = await traceRereview(
 				fx.path,
 				since(1, ps1, states),
 				[],
 				targetOf(r),
 			);
-			const { answer } = answerRereview(
-				traced,
-				since(1, ps1, states),
-				[],
-				targetOf(r),
+			return answerRereview(traced, since(1, ps1, states), [], targetOf(r))
+				.answer;
+		};
+		return { fx, run };
+	};
+
+	it("traces and answers a 200-file PR in linear time", async () => {
+		const large = await pr(200);
+		const small = await pr(50);
+		try {
+			// This thread's CPU (git's own processes don't count) against a
+			// run over a PR a quarter the size (CLAUDE.md). A run's fixed
+			// cost (git calls to spawn and read, whatever the PR's size)
+			// is most of a 50-file run's, so linear is about 1.3x, where a
+			// cost quadratic in the files would be about 3x.
+			const { best, ratio } = await bestCpuRatioAsync(large.run, small.run);
+			console.info(
+				`engine CPU for 200 files: ${(best / 1000).toFixed(0)} ms, ${ratio.toFixed(2)}x a 50-file run`,
 			);
-			const after = process.threadCpuUsage();
-			const cpuMs =
-				(after.user - before.user + after.system - before.system) / 1000;
-			console.log(`engine CPU for 200 files: ${cpuMs.toFixed(0)} ms`);
-			expect(cpuMs).toBeLessThan(2000);
+			expect(ratio).toBeLessThan(2);
+			const answer = await large.run();
 			expect(answer.toRead).toEqual({ files: 5, clusters: 5 });
 			expect(
 				answer.files
 					.flatMap((f) => f.clusters)
 					.filter((c) => c.kind === "carried"),
 			).toHaveLength(600);
-			execFileSync("git", ["-C", fx.path, "status"], { env: testGitEnv() });
+			execFileSync("git", ["-C", large.fx.path, "status"], {
+				env: testGitEnv(),
+			});
 		} finally {
-			fx.cleanup();
+			large.fx.cleanup();
+			small.fx.cleanup();
 		}
 	});
 });

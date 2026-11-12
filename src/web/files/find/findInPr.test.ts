@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { bestCpuRatio, repeat } from "../../../../test/cpu";
 import { buildDisplayHunks } from "../../../server/diff/hunks";
 import type {
 	Cluster,
@@ -251,13 +252,26 @@ describe("caret", () => {
 	it("after typing, finds the caret in one pass over the hits (not one per file)", () => {
 		// Every hit in the first file, the open one has none: each file
 		// after it looked for its first hit over all of them.
-		const n = 20_000;
-		const order = Array.from({ length: n }, (_, i) => i);
-		const hits = Array.from({ length: n }, (_, i) => hit(0, i + 1));
-		const t = process.threadCpuUsage();
-		const caret = caretAfterTyping(hits, order, 1);
-		expect(process.threadCpuUsage(t).user).toBeLessThan(150_000);
-		expect(caret?.pos).toMatchObject({ index: 0, line: 1 });
+		const of = (n: number) => ({
+			order: Array.from({ length: n }, (_, i) => i),
+			hits: Array.from({ length: n }, (_, i) => hit(0, i + 1)),
+		});
+		const long = of(20_000);
+		const short = of(5_000);
+		// CPU against four runs a quarter the size (CLAUDE.md): one pass is
+		// about 1x, one per file 4x.
+		const { ratio } = bestCpuRatio(
+			() => caretAfterTyping(long.hits, long.order, 1),
+			repeat(4, () => caretAfterTyping(short.hits, short.order, 1)),
+		);
+		console.info(
+			`caretAfterTyping: 4x the hits in ${ratio.toFixed(2)}x the CPU`,
+		);
+		expect(ratio).toBeLessThan(2);
+		expect(caretAfterTyping(long.hits, long.order, 1)?.pos).toMatchObject({
+			index: 0,
+			line: 1,
+		});
 	});
 
 	it("after typing, the caret is the open file's first hit, else the next file's, wrapping, else the PR's first", () => {
