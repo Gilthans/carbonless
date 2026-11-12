@@ -178,3 +178,20 @@ A request whose `traceparent` is of another trace than the server's own
 goes under that span, so on a shared server each test's requests nest
 under that test, not under the test that started the server. A request in
 the server's own trace stays under `crb serve`, as before.
+
+## Unit file order
+
+Vitest starts the slowest unit files first, so none starts last and runs
+alone at the end (`scripts/test-profile/sequencer.mjs`): failed last time
+first, then the longest duration from Vitest's cache
+(`node_modules/.vite/vitest`), else from the checked-in list
+`scripts/test-profile/unit-durations.json`, then unlisted files largest
+first. A fresh tree and CI have no cache, so the list is what orders them.
+Refresh it after a full unit run (`pnpm test`) when files were added or
+their times moved: `pnpm test-profile --write-durations` (the newest unit
+run, or name one) merges that run's file times into it, keeps files it
+didn't run and drops deleted ones, and prints the biggest changes; commit
+the result. It refuses a run that looks filtered or partial (under 90% of
+the listed files, or many times below a third of the listed ones: a `-t`
+or flake-check run); `--force` writes it anyway. Keys use forward slashes
+on every OS.

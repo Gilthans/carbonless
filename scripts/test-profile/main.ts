@@ -1,19 +1,24 @@
 // pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]
+// pnpm test-profile [unit run] --write-durations [--force]
 //
 // Summarizes a test run's traces (docs/test-profiling.md). A run is named
 // by its directory under ~/.cache/carbonless/test-traces, "latest", or any
 // part of a name (the newest match: "e2e", "unit"), or by a path: a run
 // directory or a directory of runs, such as a CI artifact downloaded with
 // `gh run download <id> -n test-traces-e2e -D <dir>`. --jaeger loads it into
-// a local Jaeger (docker) and prints the link.
+// a local Jaeger (docker) and prints the link. --write-durations writes a
+// unit run's file durations into the list the Vitest sequencer starts
+// the slowest files by (scripts/test-profile/sequencer.mjs).
 import { execFileSync } from "node:child_process";
 import { traceRoot } from "../../test/trace-run";
+import { writeDurations } from "./durations";
 import { readRequests, spansOf, viewRun } from "./load";
 import { resolveRun } from "./runs";
+import { DURATIONS_FILE } from "./sequencer.mjs";
 import { formatCompare, formatSummary, summarize } from "./summary";
 
 const USAGE =
-	"usage: pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]";
+	"usage: pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]\n       pnpm test-profile [unit run] --write-durations [--force]";
 
 const load = (dir: string) => viewRun(dir);
 
@@ -117,6 +122,8 @@ async function main(argv: string[]): Promise<void> {
 	let compare: string | undefined;
 	let top = 8;
 	let toJaeger = false;
+	let toDurations = false;
+	let force = false;
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i] as string;
 		if (a === "--compare") compare = argv[++i];
@@ -126,6 +133,8 @@ async function main(argv: string[]): Promise<void> {
 				throw new Error(`--top takes a count\n${USAGE}`);
 			}
 		} else if (a === "--jaeger") toJaeger = true;
+		else if (a === "--write-durations") toDurations = true;
+		else if (a === "--force") force = true;
 		else if (a === "-h" || a === "--help") {
 			console.log(USAGE);
 			return;
@@ -133,8 +142,14 @@ async function main(argv: string[]): Promise<void> {
 		else run = a;
 	}
 	const root = traceRoot();
-	const found = resolveRun(root, run);
+	const found = resolveRun(root, run ?? (toDurations ? "unit" : undefined));
 	const { dir } = found;
+	if (toDurations) {
+		const { count, changes } = writeDurations(process.cwd(), load(dir), force);
+		console.log(`⏳ ${count} files from ${found.name} → ${DURATIONS_FILE}`);
+		if (changes) console.log(`biggest changes:\n${changes}`);
+		return;
+	}
 	if (toJaeger) {
 		viewRun(dir); // Packs a finished run first.
 		await jaeger(dir);

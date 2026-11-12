@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { bestCpuRatio, repeat } from "../../test/cpu";
 import { escapeTags, unescapeTags } from "./markdownEscape";
 
 /** [typed, as posted] */
@@ -198,52 +199,82 @@ describe("escapeTags", () => {
 		}
 	});
 
+	// Each body as a function of `k`: k = 4 is the full body, about 64 KB,
+	// and k = 1 holds about a quarter of its characters. CPU against four
+	// quarter bodies (CLAUDE.md): linear is about 1x, quadratic 4x.
+	const linear = (body: (k: number) => string, run: (text: string) => void) => {
+		const full = body(4);
+		const quarter = body(1);
+		const { ratio } = bestCpuRatio(
+			() => run(full),
+			repeat(4, () => run(quarter)),
+			3,
+		);
+		return ratio;
+	};
+
 	it.each([
-		["unclosed processing instructions", "<?".repeat(30000)],
-		["unclosed declarations", "<!a".repeat(20000)],
-		["unclosed CDATA", "<![CDATA[".repeat(7000)],
-		["unclosed comments", "<!--".repeat(16000)],
+		["unclosed processing instructions", (k: number) => "<?".repeat(7500 * k)],
+		["unclosed declarations", (k: number) => "<!a".repeat(5000 * k)],
+		["unclosed CDATA", (k: number) => "<![CDATA[".repeat(1750 * k)],
+		["unclosed comments", (k: number) => "<!--".repeat(4000 * k)],
 		[
+			// Twice the runs hold four times the characters.
 			"backtick runs of every length",
-			Array.from({ length: 350 }, (_, i) => `${"`".repeat(i + 1)} <T> `).join(
-				"",
-			),
+			(k: number) =>
+				Array.from(
+					{ length: 175 * Math.sqrt(k) },
+					(_, i) => `${"`".repeat(i + 1)} <T> `,
+				).join(""),
 		],
-		["unclosed quotes", '<a b="'.repeat(10000) + "<T>".repeat(2000)],
-		["headings", "# <T>\n".repeat(9000)],
-		["URLs", "https://x<a".repeat(6000)],
-		["a URL word, then <T>s", `https://x.com/a${"<T>".repeat(20_000)}`],
-		["schemes everywhere", "1https://".repeat(7000)],
+		[
+			"unclosed quotes",
+			(k: number) => '<a b="'.repeat(2500 * k) + "<T>".repeat(500 * k),
+		],
+		["headings", (k: number) => "# <T>\n".repeat(2250 * k)],
+		["URLs", (k: number) => "https://x<a".repeat(1500 * k)],
+		[
+			"a URL word, then <T>s",
+			(k: number) => `https://x.com/a${"<T>".repeat(5000 * k)}`,
+		],
+		["schemes everywhere", (k: number) => "1https://".repeat(1750 * k)],
 		[
 			"a 64 KB mix",
-			[
-				"<?",
-				"<!a",
-				"<![CDATA[",
-				"<!--",
-				'<a b="',
-				"`".repeat(7),
-				"https://x<T",
-				"\\<T>",
-				"<T>",
-				"```\n",
-				"> ",
-			]
-				.join(" ")
-				.repeat(1200)
-				.slice(0, 65_536),
+			(k: number) =>
+				[
+					"<?",
+					"<!a",
+					"<![CDATA[",
+					"<!--",
+					'<a b="',
+					"`".repeat(7),
+					"https://x<T",
+					"\\<T>",
+					"<T>",
+					"```\n",
+					"> ",
+				]
+					.join(" ")
+					.repeat(300 * k)
+					.slice(0, 16_384 * k),
 		],
-	])("stays linear: %s", (_, body) => {
-		const t = process.threadCpuUsage();
-		unescapeTags(escapeTags(body));
-		expect(process.threadCpuUsage(t).user).toBeLessThan(300_000);
+	])("stays linear: %s", (name, body) => {
+		const ratio = linear(body, (text) => unescapeTags(escapeTags(text)));
+		console.info(
+			`markdownEscape ${name}: 4x the body in ${ratio.toFixed(2)}x the CPU`,
+		);
+		expect(ratio).toBeLessThan(2);
 	});
 
 	it("stays linear on a long body", () => {
-		const body = "<a x='".repeat(2000) + "List<T> ".repeat(5000);
-		const t = process.threadCpuUsage();
-		escapeTags(body);
-		expect(process.threadCpuUsage(t).user).toBeLessThan(2_000_000);
+		const ratio = linear(
+			(k) => "<a x='".repeat(500 * k) + "List<T> ".repeat(1250 * k),
+			escapeTags,
+		);
+		console.info(
+			`markdownEscape long body: 4x the body in ${ratio.toFixed(2)}x the CPU`,
+		);
+		expect(ratio).toBeLessThan(2);
 	});
 });
 

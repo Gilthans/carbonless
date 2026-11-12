@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { bestCpuRatio, repeat } from "../../../test/cpu";
 import { Settings } from "../Settings";
 import {
 	CodeLine,
@@ -462,24 +463,34 @@ describe("colorPieces", () => {
 	});
 
 	it("is linear in the pieces and tokens of a 100 KB line", () => {
-		const text = "let a = b;  ".repeat(9000);
-		const tokens: Token[] = [];
-		for (let at = 0; at < text.length; at += 3) {
-			tokens.push({ content: text.slice(at, at + 3), offset: at });
-		}
-		// CPU time of this thread, not the wall clock: other processes on a
-		// loaded machine don't count, a quadratic pass still does.
-		const start = process.threadCpuUsage();
-		const pieces = renderInvisibles(text, 4);
-		const out = colorPieces(pieces, tokens);
-		const { user, system } = process.threadCpuUsage(start);
-		expect((user + system) / 1000).toBeLessThan(200);
+		const line = (repeats: number) => {
+			const text = "let a = b;  ".repeat(repeats);
+			const tokens: Token[] = [];
+			for (let at = 0; at < text.length; at += 3) {
+				tokens.push({ content: text.slice(at, at + 3), offset: at });
+			}
+			return { text, tokens };
+		};
+		const long = line(9000);
+		const short = line(2250);
+		const color = ({ text, tokens }: typeof long) =>
+			colorPieces(renderInvisibles(text, 4), tokens);
+		// CPU against four lines a quarter as long (CLAUDE.md): linear is
+		// about 1x, a quadratic pass 4x.
+		const { ratio } = bestCpuRatio(
+			() => color(long),
+			repeat(4, () => color(short)),
+		);
+		console.info(`colorPieces: a 4x line in ${ratio.toFixed(2)}x the CPU`);
+		expect(ratio).toBeLessThan(2);
+		const pieces = renderInvisibles(long.text, 4);
+		const out = colorPieces(pieces, long.tokens);
 		const joined = pieces
 			.map((p, i) =>
 				p.kind === "text" ? (out[i] ?? []).map((s) => s.text).join("") : p.raw,
 			)
 			.join("");
-		expect(joined).toBe(text);
+		expect(joined).toBe(long.text);
 	});
 });
 

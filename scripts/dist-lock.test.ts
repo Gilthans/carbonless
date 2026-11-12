@@ -50,6 +50,7 @@ beforeEach(() => {
 		"dist-lock.mjs",
 		"queue.mjs",
 		"queue-config.mjs",
+		"queue-line.mjs",
 		"run-child.mjs",
 	]) {
 		copyFileSync(join(here, f), join(tree, "scripts", f));

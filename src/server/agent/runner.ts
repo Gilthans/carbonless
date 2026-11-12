@@ -403,6 +403,10 @@ export class AgentRunner {
 			});
 			return null;
 		}
+		// Closed while the checkout was made: close() found no process to
+		// stop and waits for this pump, so a start now would hold it until
+		// the start times out (close removes the checkout after).
+		if (this.#closed) return null;
 		const key = this.#key as string;
 		const proc: Proc = {
 			agent: null,
