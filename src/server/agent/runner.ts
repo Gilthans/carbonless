@@ -291,9 +291,11 @@ export class AgentRunner {
 			this.#windDown();
 			return;
 		}
+		// A detach under way finishes first; its end pokes again. Not
+		// #again: the pump it waits for would take that as a new round.
+		if (this.#detaching) return;
 		this.#again = true;
-		// A detach under way finishes first; its end pokes again.
-		if (this.#pump || this.#detaching) return;
+		if (this.#pump) return;
 		this.#pump = this.#run()
 			.catch((error: unknown) => {
 				this.#set("error", { error: (error as Error).message });
@@ -391,7 +393,10 @@ export class AgentRunner {
 		) {
 			return;
 		}
-		void this.#startDetach({ keepCheckout: true });
+		// #detach catches what it awaits; a failure here still shows.
+		this.#startDetach({ keepCheckout: true }).catch((error: unknown) => {
+			this.#set("error", { error: (error as Error).message });
+		});
 	}
 
 	/**

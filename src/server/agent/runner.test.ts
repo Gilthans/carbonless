@@ -1087,6 +1087,37 @@ describe("AgentRunner", () => {
 			expect((await r.status()).state).toBe("ready");
 		});
 
+		it("Spawn pressed while a detach waits for the turn it cancelled: the old pump doesn't start another agent; detach ends, then one new agent runs", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			const first = spawns()[0]?.pid as number;
+			off = true;
+			let done = false;
+			const detached = r.detach().then(() => {
+				done = true;
+			});
+			// Spawn while the detach awaits the cancel and the old pump.
+			await Promise.resolve();
+			off = false;
+			r.asked();
+			// The prompt stays held: only the detach's cancel ends the old
+			// turn, so a detach waiting on a second agent's turn never ends.
+			await vi.waitFor(() => expect(done).toBe(true), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			await detached;
+			expect(() => process.kill(first, 0)).toThrow();
+			await until((s) => s.state === "busy");
+			expect(spawns()).toHaveLength(2);
+			const [t] = await threads();
+			expect(t?.messages).toHaveLength(1);
+		});
+
 		it("the flag cleared elsewhere, then a poke (no status): the process stops and the claim goes", async () => {
 			let off = false;
 			const c = countingClaim();
