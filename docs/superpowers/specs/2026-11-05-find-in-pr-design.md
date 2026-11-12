@@ -250,10 +250,11 @@ The PR's hits, in **reading order**, are, for each file in the tree's order
    2026-11-10, "count once"): in unified view with Ignore whitespace on, a
    whitespace-only pair is one `~` row showing its new text, so its removed
    line's hits aren't counted or stepped through. Side by side shows both
-   texts and counts both, so the count may change with the view. In that
-   view (unified, Ignore whitespace on) a hunk's hits also follow its rows
-   as rendered (`viewRuns`), not hunk order: a `~` row's hits are where the
-   row sits on screen. A current hit on a pair's old side moves to the
+   texts and counts both, so the count may change with the view. In
+   unified view a hunk's hits also follow its rows as rendered
+   (`hunkView`), not hunk order: a `~` row's hits are where the row sits
+   on screen, and (since step 2's similarity pairs, with Ignore whitespace
+   on or off) a moved pair's hits where the pair sits. A current hit on a pair's old side moves to the
    row's new-side hit of the same order, and that move stays (owner,
    2026-11-10): switching back to side by side or turning Ignore whitespace
    off keeps it on the row's new side. A move off the row (the new side has

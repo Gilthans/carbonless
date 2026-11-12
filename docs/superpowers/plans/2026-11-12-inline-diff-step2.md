@@ -20,7 +20,7 @@
 - Rows never leave their cluster run. A pair whose two lines sit in different runs gets marks but no row move.
 - Marks are `wordMarks(old, new)`, unchanged (the 1,024-character cut, hidden characters, bridging).
 - No server change; clusters, counts, keys and review state untouched.
-- Speed: CPU time (`process.threadCpuUsage`), never wall clock. Step 1's 2,000-pair budget (under 100 ms) still holds.
+- Speed: CPU time (`process.threadCpuUsage`), never wall clock. Step 1's 2,000-pair budget (under 100 ms) still holds. (Note 2026-11-12: CAR-67 replaced the absolute budgets with CPU ratios against a reference measured in the same test, `test/cpu.ts`.)
 - Repo is public: no access links, IPs, local paths or work repo names in tracked files, PR text or comments. The owner's two Go cases are approved for the gallery and fixtures verbatim; the extract-method example is not (made-up code of its shape only).
 - Commits via `git commit --only -- <paths>`; `pnpm verify:fast` while iterating, `pnpm verify` once before the PR; `CRB_NO_PHONE=1` except for the e2e task.
 
@@ -147,6 +147,8 @@
 - [ ] **Step 2: Run**; if over budget, lower `ALIGN_CAP` (and Task 1's cap tests) until it passes, and record the value. `pnpm flake-check` the test.
 - [ ] **Step 3: Measure** first-open time of a file of 200 unequal 3/2 clusters before and after (built CLI, branch instance), for the report; not gated.
 - [ ] **Step 4: Commit**: "word diff step 2: CPU budget for pairing (CAR-30)".
+
+(Note 2026-11-12: CAR-67 replaced the absolute budgets above with CPU ratios against a reference measured in the same test, `test/cpu.ts`; a per-hunk budget, `HUNK_ALIGN_WORD_OPS`, was added in the final fix wave.)
 
 ### Task 7: Real-PR comparison page (owner QA, gates the merge)
 

@@ -124,6 +124,16 @@ the `if`, its `}` and the `log` line that crossed the loop's closing brace;
 the rest of the body goes quiet). It can show a little more as changed
 than `git diff -w` would, never less.
 
+## Why are lines in a different order, or marked where GitHub shows none?
+
+When a cluster has more removed lines than added ones (or the reverse),
+GitHub pairs them by position and marks nothing. carbonless pairs the lines
+that are clearly similar instead, and marks the words that changed in each
+pair. Unified shows a pair together, the removed line right above its
+added one; side by side puts it on one row. Unpaired lines keep today's
+layout, nothing is hidden, and each side stays in its own order. This is
+the first place carbonless deliberately differs from GitHub.
+
 ## Why doesn't Find in PR find a line I know is in the file?
 
 Only what the diff can show is searched: file paths, changed lines and the

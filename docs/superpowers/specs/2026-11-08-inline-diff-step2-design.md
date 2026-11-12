@@ -90,6 +90,20 @@ Ties go to the layout closest to today's (position pairing), so a cluster
 that position already pairs well looks the same as before, plus marks
 (case 1).
 
+(Corrected 2026-11-12 during implementation.) The unit that pairs is a
+stretch, not quite a cluster: a run of removed lines directly followed by a
+run of added lines in the hunk's rows in git's order, ended by a context
+line or a `~` row (`hunkPairs`). A stretch is usually one cluster, but may
+span two adjacent cluster runs with no context between them; a pair across
+them gets its marks and moves no row (each run keeps its own rows). Two
+known edges, left as they are: an equal stretch spanning two runs pairs by
+position, and unified then moves the pair inside one run together, though
+that run alone is an unequal cluster (not seen to occur); and with Ignore
+whitespace on, a stretch whose rows `pairRun` interleaves (a removed line
+after an added one) keeps its order in unified while side by side still
+puts its pairs on one row, so the two views can differ there. Either way,
+every line still shows exactly once on its side, in order.
+
 If no pair is allowed, the cluster looks exactly as it does today: side by
 side keeps its position rows, with no marks (case 4).
 
@@ -101,10 +115,24 @@ still marked). The threshold is one named constant, set from the fixtures
 and the real-PR comparison (below), strict enough that case 4 and
 Clear/Touch's cluster 2 under Myers (an old `cacheFileGz :=` line against
 `return c.baseDir.Join(…).Touch(ctx)`) are judged on purpose, with the
-choice written in the report.
+choice written in the report. (Corrected 2026-11-12 during
+implementation: the constant is `PAIR_MIN_SIMILARITY = 0.5` in
+`linePairing.ts`, provisional until the owner's pass over the real-PR
+comparison.)
 
 **Size guard:** a cluster whose removed × added count is above a cap keeps
 today's layout and no marks. The builder sets the cap from the budget.
+(Corrected 2026-11-12 during implementation: three guards per cluster and
+one per hunk, all in `linePairing.ts`.) A cluster keeps today's layout and
+no marks when its removed × added count is above `ALIGN_CAP` (2,500), its
+lines' characters above `ALIGN_CHARS` (120,000), or its estimated word
+steps (Σ ⌈old tokens / 32⌉ × Σ new tokens, the bit-parallel LCS's cost)
+above `ALIGN_WORD_OPS` (3,000,000). A hunk's unequal clusters share
+`HUNK_ALIGN_WORD_OPS` (4 × `ALIGN_WORD_OPS`) between them: once one
+doesn't fit what is left, it and every later unequal cluster of the hunk
+keep today's layout. A cluster over its own guards spends nothing. (Find
+in unified pairs every hunk with a removed-line hit on its first search,
+so the hunk's total, not just a cluster's, must stay bounded.)
 
 ### Gaps between pairs
 
@@ -112,10 +140,13 @@ The pairs cut a cluster into gaps: the unpaired lines before the first pair,
 between two pairs, and after the last. A gap is laid out exactly as today
 lays out a cluster, as if it were a cluster of its own: side by side, its
 removed and added lines share rows by position, the surplus one-sided, no
-marks; unified, its removed lines then its added lines. So a cluster never
-grows taller than today's, and a gap with lines on one side only (cases 2,
-3 and 5) gives those lines their own rows with a blank cell opposite. (This
-spec's call.)
+marks; unified, its removed lines then its added lines. So in unified a
+cluster never grows taller than today's; side by side, a pair off the
+diagonal costs up to one extra row per gap: the cluster takes Σ over its
+gaps of max(removed, added), plus one row per pair. (Corrected 2026-11-12
+during implementation: this said no cluster grows taller, in either view.)
+A gap with lines on one side only (cases 2, 3 and 5) gives those lines
+their own rows with a blank cell opposite. (This spec's call.)
 
 ### Side by side
 
@@ -157,7 +188,12 @@ Each pair gets `wordMarks(old, new)`, unchanged from step 1, including the
 Budget (call, like step 1's): pairing and marking the worst case DiffBody
 meets within the size guard stays under 100 ms of CPU time
 (`process.threadCpuUsage`, a unit test). Step 1's 2,000-pair equal-cluster
-budget still holds unchanged. First-open time of a file full of unequal
+budget still holds unchanged. (Corrected 2026-11-12 during implementation:
+speed is tested as CPU ratios against a reference measured in the same
+test, never as absolute milliseconds, CAR-67, `test/cpu.ts`; step 1's
+budget is a ratio too. The worst cluster inside the guards, and a hunk of
+40 of them (in `hunkPairs` and in Find with Ignore whitespace off), are
+measured against plain word steps that share no code with the LCS.) First-open time of a file full of unequal
 clusters is measured before and after and reported, not gated. Work happens
 lazily per hunk in the browser like step 1's. If it ever moves off the main
 thread, a pending cluster shows the spinner, never plain lines that read as
@@ -244,7 +280,9 @@ One gallery PR holds all seven (`base/similarity-pairing`,
 - Ties go to today's layout.
 - Whitespace doesn't count toward similarity.
 - A gap between pairs is laid out like today's cluster (position rows, no
-  marks), so no cluster grows taller.
+  marks), so no cluster grows taller in unified. (Corrected 2026-11-12
+  during implementation: side by side, a pair off the diagonal may add up
+  to one row per gap.)
 - Thread ranges and line picks over moved rows behave as they do over
   Ignore whitespace's reordered rows.
 - The real-PR comparison is part of the owner's QA before merge.
