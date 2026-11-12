@@ -4,7 +4,7 @@ import type {
 	FileHunks,
 	FileView,
 } from "../../../shared/types";
-import { viewRuns } from "../whitespace";
+import { hunkView } from "../whitespace";
 
 /** Where a hit is: a path, an old path, or a line on one side. */
 export type HitSide = "path" | "oldPath" | DiffSide;
@@ -75,7 +75,7 @@ export interface SourceLine {
 /** A hunk as unified view with Ignore whitespace renders it (pairedHunk). */
 export interface PairedHunk {
 	/**
-	 * The hunk's lines in the order of the rows shown (viewRuns): a
+	 * The hunk's lines in the order of the rows shown (hunkView): a
 	 * two-sided `~` row's removed line right before its added line, at the
 	 * row's place.
 	 */
@@ -85,7 +85,7 @@ export interface PairedHunk {
 }
 
 /**
- * A hunk's rows as the view renders them (viewRuns, what HunkRows shows,
+ * A hunk's rows as the view renders them (hunkView, what HunkRows shows,
  * whose O(n·m) matching is cached per hunk and shared with it), as Find
  * needs them. Kept per hunk: a search per keystroke never pairs it again.
  */
@@ -95,7 +95,7 @@ function pairedHunk(lines: DiffLine[]): PairedHunk {
 	if (!paired) {
 		const order: DiffLine[] = [];
 		const twins = new Map<DiffLine, number>();
-		for (const run of viewRuns(lines, true))
+		for (const run of hunkView(lines, true).runs)
 			for (const row of run.rows) {
 				if (row.kind === "line") order.push(row.line);
 				else if (row.del && row.add) {

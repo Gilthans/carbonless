@@ -134,8 +134,8 @@ import {
 	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
-import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
-import { hunkPairs, pairWordMarks } from "./wordBlocks";
+import { type DiffRow, hunkView, whitespaceOnly } from "./whitespace";
+import { pairWordMarks } from "./wordBlocks";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
 export interface DiffThreads {
@@ -3380,11 +3380,12 @@ function HunkRows(props: {
 	// runs' rows (a block may span two clusters), computed here, with the
 	// rows: a pair is never shown plain while its marks are pending.
 	const { hunkRuns, pairs, words } = useMemo(() => {
-		const runs = viewRuns(hunk.lines, ignoreWhitespace).map((run) => ({
+		const shown = hunkView(hunk.lines, ignoreWhitespace);
+		const runs = shown.runs.map((run) => ({
 			...run,
 			side: view === "side-by-side" ? layoutRows(run.rows) : null,
 		}));
-		const pairs = hunkPairs(runs.flatMap((run) => run.rows));
+		const pairs = shown.pairs;
 		return { hunkRuns: runs, pairs, words: pairWordMarks(pairs) };
 	}, [hunk, ignoreWhitespace, view]);
 	// The lines whose change doesn't show with hidden characters off (none

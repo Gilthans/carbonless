@@ -1,5 +1,7 @@
 import { lineRuns } from "../../shared/pieces";
 import type { DiffLine } from "../../shared/types";
+import { orderRun, type Partners } from "./pairOrder";
+import { hunkPairs, type LinePair } from "./wordBlocks";
 
 /**
  * "Ignore whitespace" (Settings): the view matches a hunk's removed and
@@ -274,27 +276,79 @@ export interface ViewRun {
 	rows: DiffRow[];
 }
 
+/** What the view shows of a hunk: its runs, and the pairs behind the marks and the order. */
+export interface HunkView {
+	runs: ViewRun[];
+	/** hunkPairs over the rows in git's order (before orderRun moves any). */
+	pairs: LinePair[];
+	partners: Partners;
+}
+
+const viewsByHunk = new WeakMap<DiffLine[], [HunkView?, HunkView?]>();
+
 /**
- * A hunk's runs and each run's rows as the view shows them (HunkRows, and
- * the word-marks fixture test, so the two can't drift): with "Ignore
- * whitespace" on, a cluster's run is paired (pairRun, by the whole hunk's
- * twins); otherwise, and for context runs, every line as it is.
+ * A hunk as the view shows it (HunkRows, Find in PR, the fixture test, so
+ * they can't drift), once per hunk's lines and "Ignore whitespace" setting
+ * (the hunks query's arrays: callers must never change `lines` in place).
+ * With the setting on, a cluster's run is paired (pairRun, by the whole
+ * hunk's twins); otherwise, and for context runs, every line is a row as it
+ * is. `pairs` come from the rows in git's order (a stretch ends at a
+ * context or `~` row); then each cluster run's rows are put in unified B's
+ * order (orderRun): a pair reads together.
  */
-export function viewRuns(
+export function hunkView(
 	lines: DiffLine[],
 	ignoreWhitespace: boolean,
-): ViewRun[] {
+): HunkView {
+	const slot = ignoreWhitespace ? 1 : 0;
+	const cached = viewsByHunk.get(lines);
+	if (cached?.[slot]) return cached[slot];
 	const twins = ignoreWhitespace ? hunkTwins(lines) : null;
-	return runs(lines).map((run) => ({
+	const git = runs(lines).map((run) => ({
 		...run,
 		rows:
 			twins && run.key !== undefined
 				? pairRun(run.lines, twins)
 				: run.lines.map((line): DiffRow => ({ kind: "line", line })),
 	}));
+	const pairs = hunkPairs(git.flatMap((run) => run.rows));
+	const partners = new Map<DiffLine, DiffLine>();
+	for (const [del, add] of pairs) {
+		partners.set(del, add);
+		partners.set(add, del);
+	}
+	const view: HunkView = {
+		runs: git.map((run) =>
+			run.key === undefined
+				? run
+				: { ...run, rows: orderRun(run.rows, partners) },
+		),
+		pairs,
+		partners,
+	};
+	const entry = cached ?? [];
+	entry[slot] = view;
+	viewsByHunk.set(lines, entry);
+	return view;
 }
 
-/** A whole hunk's rows, run by run (what the view shows, flattened). */
+/** A hunk's runs and their rows (hunkView). */
+export function viewRuns(
+	lines: DiffLine[],
+	ignoreWhitespace: boolean,
+): ViewRun[] {
+	return hunkView(lines, ignoreWhitespace).runs;
+}
+
+/**
+ * A whole hunk's whitespace rows, run by run, in git's order (pairRun's:
+ * before hunkView's orderRun moves a pair together).
+ */
 export function pairHunk(lines: DiffLine[]): DiffRow[] {
-	return viewRuns(lines, true).flatMap((run) => run.rows);
+	const twins = hunkTwins(lines);
+	return runs(lines).flatMap((run) =>
+		run.key !== undefined
+			? pairRun(run.lines, twins)
+			: run.lines.map((line): DiffRow => ({ kind: "line", line })),
+	);
 }

@@ -997,3 +997,46 @@ describe("whitespace pairing's cost (a re-indented PR)", () => {
 		expect(rows).toBeLessThan(dp / 5);
 	});
 });
+
+describe("findInPr over a moved pair (step 2, unified B)", () => {
+	it("steps through case 3's hits in the order shown", () => {
+		const del = (n: number, text: string): DiffLine => ({
+			kind: "del",
+			oldNo: n,
+			text,
+			clusterKey: "k",
+		});
+		const add = (n: number, text: string): DiffLine => ({
+			kind: "add",
+			newNo: n,
+			text,
+			clusterKey: "k",
+		});
+		const lines = [
+			ctx(20, 20, "x"),
+			del(21, "retry(getUser, 3)"),
+			del(22, "log(msg)"),
+			del(23, "retry(getOrders, 3)"),
+			add(21, "retry(getUser, 5)"),
+			add(22, "retry(getOrders, 5)"),
+			ctx(24, 23, "y"),
+		];
+		const f = file(0, { path: "a.txt" });
+		const hunks: FileHunks = {
+			newLineCount: 23,
+			hunks: [{ oldStart: 20, oldCount: 5, newStart: 20, newCount: 4, lines }],
+		};
+		const hits = findInPr("retry", [f], () => hunks, noContext, false, true);
+		const shown = shownHits(hits, true).map(
+			(h) => `${h.side === "LEFT" ? "old" : "new"} ${h.line}`,
+		);
+		expect(shown).toEqual(["old 21", "new 21", "old 23", "new 22"]);
+		// The oracle: the rows HunkRows renders.
+		const oracle = viewRuns(lines, true)
+			.flatMap((r) => r.rows)
+			.flatMap((r) => (r.kind === "line" ? [r.line] : []))
+			.filter((l) => l.text.startsWith("retry"))
+			.map((l) => (l.kind === "del" ? `old ${l.oldNo}` : `new ${l.newNo}`));
+		expect(oracle).toEqual(shown);
+	});
+});
