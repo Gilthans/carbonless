@@ -2,6 +2,8 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
 	ALIGN_CAP,
+	ALIGN_CHARS,
+	ALIGN_WORD_OPS,
 	alignCluster,
 	lineSimilarity,
 	PAIR_MIN_SIMILARITY,
@@ -41,7 +43,14 @@ describe("lineSimilarity", () => {
 
 describe("lineSimilarity against a plain token LCS", () => {
 	const word = fc.constantFrom("a", "b", "c", "d", "e", "f");
-	const line = fc.array(word, { maxLength: 90 }).map((t) => t.join(" "));
+	const line = fc
+		.array(word, { maxLength: 200, size: "max" })
+		.map((t) => t.join(" "));
+	it("carries between 32-token words (71 and 40 tokens)", () => {
+		const a = Array.from({ length: 71 }, (_, i) => (i % 3 ? "a" : "b"));
+		const b = Array.from({ length: 40 }, (_, i) => (i % 5 ? "b" : "a"));
+		expect(lineSimilarity(a.join(" "), b.join(" "))).toBeCloseTo(62 / 111);
+	});
 	it("property", () => {
 		fc.assert(
 			fc.property(line, line, (x, y) => {
@@ -117,9 +126,17 @@ describe("alignCluster", () => {
 		expect(alignCluster(["x"], ["a", "x", "x"])).toEqual([[0, 1]]);
 		expect(alignCluster(["}", "}"], ["a", "b", "}"])).toEqual([[0, 2]]);
 	});
-	it("worst case inside the cap stays under 50 ms of CPU", () => {
-		// 50 x 50 distinct ~800-character lines, each sharing half its tokens
-		// with every line on the other side, so no cell is skipped.
+	/** CPU ms of one call, after a small warm-up. */
+	const cpuMs = (run: () => unknown) => {
+		const before = process.threadCpuUsage();
+		run();
+		const spent = process.threadCpuUsage(before);
+		return (spent.user + spent.system) / 1000;
+	};
+	const tokens = (n: number) => Array.from({ length: n }, () => "a").join(" ");
+	it("worst cases inside the guards stay under 100 ms of CPU", () => {
+		// 50 x 50 lines of 160 tokens, each sharing half its tokens with every
+		// line on the other side, so no cell is skipped (about 40 ms).
 		const mk = (side: string) =>
 			Array.from({ length: 50 }, (_, i) =>
 				Array.from({ length: 160 }, (_, k) =>
@@ -129,10 +146,40 @@ describe("alignCluster", () => {
 		const dels = mk("d");
 		const adds = mk("a");
 		alignCluster(dels.slice(0, 5), adds.slice(0, 5)); // warm-up
-		const before = process.threadCpuUsage();
-		alignCluster(dels, adds);
-		const spent = process.threadCpuUsage(before);
-		expect((spent.user + spent.system) / 1000).toBeLessThan(50);
+		expect(cpuMs(() => alignCluster(dels, adds))).toBeLessThan(100);
+		// 50 x 50 lines of 511 one-letter tokens (1021 characters): over the
+		// word-step guard, so none.
+		const wide = Array.from({ length: 50 }, () => tokens(511));
+		expect(
+			cpuMs(() => expect(alignCluster(wide, wide)).toEqual([])),
+		).toBeLessThan(100);
+		// 1 x 2500 such lines: over the character guard.
+		const many = Array.from({ length: 2500 }, () => tokens(511));
+		expect(
+			cpuMs(() => expect(alignCluster([many[0] as string], many)).toEqual([])),
+		).toBeLessThan(100);
+	});
+	it("a cluster just inside ALIGN_CHARS pairs, just over has none", () => {
+		const pad = (n: number) => `x${" ".repeat(n - 1)}`;
+		const dels = Array.from({ length: 119 }, () => pad(1000));
+		const inside = [...dels, pad(1000)]; // 120 x 1000 chars: dels + 1 add
+		expect(ALIGN_CHARS).toBe(120_000);
+		expect(alignCluster(inside.slice(0, 119), inside.slice(119))).toEqual([
+			[0, 0],
+		]);
+		expect(alignCluster(inside.slice(0, 119), [pad(1001)])).toEqual([]);
+	});
+	it("a cluster just inside ALIGN_WORD_OPS pairs, just over has none", () => {
+		// 50 x 50 equal lines of t tokens: 50·⌈t/32⌉ · 50·t steps.
+		const line = (t: number) => "(".repeat(t);
+		const mk = (t: number) => Array.from({ length: 50 }, () => line(t));
+		expect(ALIGN_WORD_OPS).toBe(3_000_000);
+		expect(50 * 6 * 50 * 192).toBeLessThanOrEqual(ALIGN_WORD_OPS);
+		expect(50 * 7 * 50 * 193).toBeGreaterThan(ALIGN_WORD_OPS);
+		expect(alignCluster(mk(192), mk(192))).toEqual(
+			Array.from({ length: 50 }, (_, i) => [i, i]),
+		);
+		expect(alignCluster(mk(193), mk(193))).toEqual([]);
 	});
 	it("pairs nothing above the cap", () => {
 		const line = (i: number) => `same ${i}`;

@@ -11,6 +11,15 @@ export const PAIR_MIN_SIMILARITY = 0.5;
 /** Removed × added lines above this: no pairs, the layout stays as today. */
 export const ALIGN_CAP = 2500;
 
+/** Total characters of a cluster's lines above this: no pairs. */
+export const ALIGN_CHARS = 120_000;
+
+/**
+ * Word steps of the token LCS (Σ ⌈|old|/32⌉ × Σ |new|, in tokens) above
+ * this: no pairs. About 60 ms of CPU, inside the 100 ms budget.
+ */
+export const ALIGN_WORD_OPS = 3_000_000;
+
 /** Two scores this close are a tie. */
 const EPS = 1e-9;
 
@@ -72,7 +81,7 @@ function lcs(a: string, b: string, masks = patterns(a)): number {
 		let carry = 0;
 		for (let w = 0; w < words; w++) {
 			const x = v[w] as number;
-			const u = x & (mask[w] as number);
+			const u = (x & (mask[w] as number)) >>> 0;
 			const sum = x + u + carry;
 			carry = sum > 0xffffffff ? 1 : 0;
 			v[w] = (sum | (x & ~(mask[w] as number))) >>> 0;
@@ -201,7 +210,8 @@ function better(x: Cell, y: Cell): boolean {
  * pairs scoring at least `PAIR_MIN_SIMILARITY` with the most total
  * similarity. Ties keep the most position pairs (same index on both sides),
  * then the earliest pairs. Index pairs, increasing in both; none above
- * `ALIGN_CAP` lines² or when nothing is similar.
+ * `ALIGN_CAP` lines², `ALIGN_CHARS` or `ALIGN_WORD_OPS`, or when nothing is
+ * similar.
  */
 export function alignCluster(
 	dels: readonly string[],
@@ -210,9 +220,18 @@ export function alignCluster(
 	const n = dels.length;
 	const m = adds.length;
 	if (n === 0 || m === 0 || n * m > ALIGN_CAP) return [];
+	let chars = 0;
+	for (const t of dels) chars += t.length;
+	for (const t of adds) chars += t.length;
+	if (chars > ALIGN_CHARS) return [];
 	const codes: Codes = new Map();
 	const d = dels.map((t) => prepare(t, codes));
 	const a = adds.map((t) => prepare(t, codes));
+	let oldSteps = 0;
+	let newTokens = 0;
+	for (const x of d) oldSteps += (x.all.length + 31) >>> 5;
+	for (const x of a) newTokens += x.all.length;
+	if (oldSteps * newTokens > ALIGN_WORD_OPS) return [];
 	const sharedAll = overlaps(
 		d.map((x) => x.all),
 		a.map((x) => x.all),
