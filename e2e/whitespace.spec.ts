@@ -378,7 +378,7 @@ test("copying across a collapsed whitespace-only cluster takes the code alone: n
 /** Threads the fake gh stores: where each one is anchored. */
 function stored(p: Pr) {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-	return (s.prs[7]?.graphql?.reviewThreads ?? []) as {
+	return (s.prs[p.number]?.graphql?.reviewThreads ?? []) as {
 		path: string;
 		line: number;
 		originalStartLine: number | null;

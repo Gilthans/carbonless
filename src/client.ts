@@ -17,6 +17,7 @@ import {
 	readLiveServerState,
 	type ServerState,
 } from "./server/serverState.js";
+import { parseTraceparent } from "./server/trace.js";
 import {
 	BUILD,
 	type BuildInfo,
@@ -210,6 +211,10 @@ export async function runClient(
 			headers: {
 				"content-type": "application/json",
 				[VERSION_HEADER]: JSON.stringify(build),
+				// The server's span of this open goes under the caller's (a test's).
+				...(parseTraceparent(process.env.TRACEPARENT)
+					? { traceparent: process.env.TRACEPARENT }
+					: {}),
 				...(await authHeaders(server)),
 			},
 			body: JSON.stringify({

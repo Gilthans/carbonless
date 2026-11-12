@@ -216,6 +216,11 @@ export class InboxStore {
 		this.#now = now;
 	}
 
+	/** Forgets its ref stores (the test hook's reset). */
+	reset(): void {
+		this.#stores = new Map();
+	}
+
 	#store(path: string): RefStore {
 		let store = this.#stores.get(path);
 		if (!store) {

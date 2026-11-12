@@ -7,6 +7,9 @@ import {
 import { fileSection, openFiles } from "./files-ui";
 import { CrbExitError, expect, OWNER_REPO, PR_NUMBER, test } from "./fixtures";
 
+// Its own crb serve: stages restart it, so the next open reads GitHub afresh.
+test.use({ crbServer: "own" });
+
 /**
  * The git-methodology matrix end to end (docs/git-methodology.md): the
  * updated PR shows only its own files whatever the history shape, and once

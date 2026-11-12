@@ -11,6 +11,7 @@ import {
 	rotateAccessKey,
 	writeServerState,
 } from "./serverState.js";
+import { TEST_HOOKS_ENV, testHookToken } from "./testHooks.js";
 import { updaterFor } from "./update/updater.js";
 import { BUILD } from "./version.js";
 
@@ -70,6 +71,14 @@ export async function startServer(opts: {
 
 	// Agent checkouts left by servers that stopped (none is open here yet).
 	await sweepStaleCheckouts(new Set()).catch(() => {});
+	// Test-only routes, only with the harness's token (testHooks.ts).
+	const hooksEnv = process.env[TEST_HOOKS_ENV];
+	// Not passed on: no gh, git or agent this server runs may call them.
+	delete process.env[TEST_HOOKS_ENV];
+	const testHooks = testHookToken(hooksEnv);
+	if (hooksEnv && !testHooks) {
+		log(`${TEST_HOOKS_ENV} is not a 32-hex token: test hooks off`);
+	}
 	const registry = new SessionRegistry();
 	// Home reads GitHub only when its page asks (no timer to stop).
 	const home = new HomeService({
@@ -93,6 +102,7 @@ export async function startServer(opts: {
 		webRoot: opts.webRoot,
 		baseUrl: () => publicUrl ?? url,
 		progress: log,
+		testHooks,
 	});
 	try {
 		await app.listen({ port, host });
