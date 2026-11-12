@@ -24,6 +24,7 @@ import {
 	type VerdictRequest,
 	type WriteError,
 } from "../shared/types.js";
+import type { UpdateInfo, UpdateRequest } from "../shared/update.js";
 import { registerAccessKey, registerHostCheck } from "./access.js";
 import { checkAgent } from "./agent/acp.js";
 import { agentsDir } from "./agent/checkout.js";
@@ -68,6 +69,7 @@ import {
 } from "./session.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
 import { type Span, tracer } from "./trace.js";
+import { UpdateRefusedError, type Updater } from "./update/updater.js";
 import { verdictProblem } from "./verdict.js";
 import {
 	BUILD,
@@ -103,7 +105,20 @@ export interface AppOptions {
 	home?: HomeService;
 	/** The MCP watcher's keep-alive period (tests; default JOIN.keepAliveMs). */
 	mcpKeepAliveMs?: number;
+	/** crb's self-update (`/api/update`); omit: no update is ever offered. */
+	updater?: Updater;
 }
+
+/** What a server without an updater answers: nothing to offer. */
+const noUpdate = (): UpdateInfo => ({
+	current: BUILD.version,
+	available: null,
+	releaseUrl: null,
+	oneClick: false,
+	command: null,
+	state: "idle",
+	failed: null,
+});
 
 /** A malformed request (HTTP 400). */
 class BadRequestError extends Error {}
@@ -236,6 +251,7 @@ export async function buildApp(
 			return reply.status(400).send({ error: error.message, keys: error.keys });
 		}
 		if (error instanceof BadRequestError) return send(400, error.message);
+		if (error instanceof UpdateRefusedError) return send(409, error.message);
 		if (error instanceof InvalidPlacementError) {
 			return send(400, error.message);
 		}
@@ -299,6 +315,19 @@ export async function buildApp(
 	});
 
 	app.get("/api/version", async () => BUILD);
+	// A newer crb on npm, and an update's progress (src/server/update).
+	app.get("/api/update", async (_request, reply) => {
+		reply.header("cache-control", "no-store");
+		return options.updater?.info() ?? noUpdate();
+	});
+	app.post("/api/update", async (request, reply) => {
+		const body = request.body as Partial<UpdateRequest> | undefined;
+		if (typeof body?.version !== "string") {
+			throw new BadRequestError("Expected { version }");
+		}
+		if (!options.updater) throw new UpdateRefusedError("No updates here");
+		return reply.status(202).send(await options.updater.update(body.version));
+	});
 	// The page strips ?key= from its address, so a home-screen install would
 	// save a keyless URL and a shortcut with its own cookie jar would get 401.
 	app.get("/manifest.webmanifest", async (_request, reply) => {
