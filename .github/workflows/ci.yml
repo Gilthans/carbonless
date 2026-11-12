@@ -36,6 +36,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+      - name: Machine
+        run: echo "nproc $(nproc); $(grep -m1 'model name' /proc/cpuinfo)"
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
@@ -86,6 +88,15 @@ jobs:
   e2e-shard:
     name: e2e (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    # Playwright's own image: the browsers and their system libraries come
+    # installed, so no step needs apt or the Ubuntu mirrors (when those were
+    # down, every shard failed at `playwright install --with-deps`). It runs
+    # as root (Chromium without its sandbox, Playwright's default); --init
+    # reaps the servers the tests spawn, --ipc=host gives Chromium shared
+    # memory. Its Node is replaced by setup-node's (.nvmrc).
+    container:
+      image: mcr.microsoft.com/playwright:v${{ matrix.playwright }}-noble
+      options: --init --ipc=host
     # Hang safety nets, sized for one shard.
     timeout-minutes: 25
     strategy:
@@ -94,8 +105,15 @@ jobs:
         # The shard count (4) is also in the job name, `--shard=…/4` and
         # the merged run.json's "shards" in `e2e`: change them together.
         shard: [1, 2, 3, 4]
+        # The image's Playwright: exactly the locked @playwright/test
+        # (pnpm-lock.yaml). A bump without it fails the check step below.
+        playwright: ["1.64.1"]
     steps:
+      - name: Machine
+        run: echo "nproc $(nproc); $(grep -m1 'model name' /proc/cpuinfo)"
       - uses: actions/checkout@v4
+      # The checkout is the runner user's, git runs as root here.
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: pnpm/action-setup@v4
         with:
           version: 12.14.0
@@ -104,7 +122,15 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      - name: The image's Playwright is the locked one
+        env:
+          IMAGE_PLAYWRIGHT: ${{ matrix.playwright }}
+        run: |
+          locked=$(node -p "require('@playwright/test/package.json').version")
+          if [ "$locked" != "$IMAGE_PLAYWRIGHT" ]; then
+            echo "::error file=.github/workflows/ci.yml::@playwright/test is $locked, the e2e image is v$IMAGE_PLAYWRIGHT: set matrix.playwright in e2e-shard to $locked"
+            exit 1
+          fi
       # Queued (scripts/queue.mjs): the lock is free on a runner, and a run
       # holding it gets a Playwright worker per core.
       - run: pnpm test:e2e --shard=${{ matrix.shard }}/4

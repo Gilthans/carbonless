@@ -18,8 +18,10 @@ Requires Node 24 (`nvm use`) and pnpm. From a checkout, `pnpm build` and run
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, unit tests, the pack
 smoke test and Playwright (in four parallel shards) on every PR and push to
-master. A release is promoted only from a commit CI passed on as a push to
-master (`docs/releasing.md`).
+master. The shards run in Playwright's Docker image, whose version must equal
+the locked `@playwright/test` (a check step fails on a mismatch: bump
+`matrix.playwright` in `ci.yml` with it). A release is promoted only from a
+commit CI passed on as a push to master (`docs/releasing.md`).
 
 Tests never call the real `gh`: `test/fake-gh/gh` answers from a scenario JSON
 (`$CRB_FAKE_GH`, optional call log in `$CRB_FAKE_GH_LOG`). The Playwright
