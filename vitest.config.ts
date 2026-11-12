@@ -2,6 +2,7 @@ import { availableParallelism } from "node:os";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 import { queuedWorkers, requireQueue } from "./scripts/queue-guard.mjs";
+import { SlowFirstSequencer } from "./scripts/test-profile/sequencer";
 
 // Interactive watch mode (`pnpm test:watch` in a terminal) runs unqueued; a
 // one-shot run (`vitest run`, or any run without a TTY) takes its turn.
@@ -24,5 +25,8 @@ export default defineConfig({
 		environment: "node",
 		// In the queue: the cores its slot gets (scripts/queue-guard.mjs).
 		maxWorkers: queuedWorkers(availableParallelism()),
+		// The slowest files start first, from Vitest's duration cache or,
+		// in a fresh tree or CI, a checked-in list (docs/test-profiling.md).
+		sequence: { sequencer: SlowFirstSequencer },
 	},
 });

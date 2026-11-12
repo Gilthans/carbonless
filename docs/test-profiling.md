@@ -85,3 +85,16 @@ cache, which the warm-up fills. Without it each test's own
 `XDG_CACHE_HOME` would leave crb's default cache
 (`$XDG_CACHE_HOME/carbonless/compile-cache`) empty at every start;
 `e2e/fixtures.spec.ts` checks both paths.
+
+## Unit file order
+
+Vitest starts the slowest unit files first, so none starts last and runs
+alone at the end (`scripts/test-profile/sequencer.ts`): failed last time
+first, then the longest duration from Vitest's cache
+(`node_modules/.vite/vitest`), else from the checked-in list
+`scripts/test-profile/unit-durations.json`, then unlisted files largest
+first. A fresh tree and CI have no cache, so the list is what orders them.
+Refresh it after a full unit run (`pnpm test`) when files were added or
+their times moved: `pnpm test-profile --write-durations` (the newest unit
+run, or name one) merges that run's file times into it, keeps files it
+didn't run and drops deleted ones; commit the result.
