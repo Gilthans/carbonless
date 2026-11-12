@@ -1368,6 +1368,106 @@ describe("API", () => {
 			expect(res.statusCode).toBe(404);
 		});
 
+		it("join: Approve and Deny race, the second is 409; disconnect; start", async () => {
+			const { session } = await registry.open({ pr: pr.arg });
+			const host = session.agent;
+			if (!host) throw new Error("no agent");
+			const who = { name: "carbonless · main", machine: "devbox" };
+			const { request } = host.join.request(who);
+			const pending: AgentStatus = await get("/api/agent");
+			expect(pending.joinRequest).toMatchObject({ id: request, ...who });
+			const [a, b] = await Promise.all([
+				post(`/api/agent/join/${request}`, { approve: true }),
+				post(`/api/agent/join/${request}`, { approve: false }),
+			]);
+			expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409]);
+			const loser = a.statusCode === 409 ? a : b;
+			expect(loser.json()).toMatchObject({ code: "stale-join" });
+			// Whichever came first: Approve gives one token, Deny none.
+			const outcome = await host.join.outcome(request, 0);
+			if (a.statusCode === 409) {
+				expect(outcome.state).toBe("denied");
+				return;
+			}
+			expect(outcome.state).toBe("approved");
+			const joined: AgentStatus = await get("/api/agent");
+			expect(joined).toMatchObject({
+				via: "mcp",
+				joined: who,
+				acpOff: true,
+				agent: { name: who.name, via: "mcp", machine: who.machine },
+			});
+			expect(joined.joinRequest).toBeUndefined();
+			const off = await post("/api/agent/disconnect");
+			expect(off.statusCode, off.body).toBe(200);
+			const left: AgentStatus = await get("/api/agent");
+			expect(left.left).toMatchObject({ ...who, why: "disconnected" });
+			expect(left).toMatchObject({ state: "off", acpOff: true });
+			const start = await post("/api/agent/start");
+			expect(start.statusCode, start.body).toBe(200);
+			expect((await get("/api/agent")).acpOff).toBeUndefined();
+		});
+
+		it("a hidden tab's join poll: the pending request, without opening, keeping or waking the review", async () => {
+			const { session } = await registry.open({ pr: pr.arg });
+			const agent = session.agent;
+			if (!agent) throw new Error("no agent");
+			const runner = (agent as unknown as { runner: { status(): unknown } })
+				.runner;
+			const runnerStatus = vi.spyOn(runner, "status");
+			const hostStatus = vi.spyOn(agent, "status");
+			const lookup = vi.spyOn(registry, "get");
+			const touch = vi.spyOn(registry, "touch");
+			const open = vi.spyOn(registry, "open");
+			const used = () =>
+				registry.list().find((e) => e.session.id === id)?.lastUsed;
+			const before = used();
+			const poll = async () => {
+				const res = await app.inject({
+					url: `/api/r/${id}/agent/join`,
+					headers: { host },
+				});
+				expect(res.statusCode, res.body).toBe(200);
+				return res.json();
+			};
+			expect(await poll()).toEqual({});
+			const who = { name: "carbonless · main", machine: "devbox" };
+			const { request } = agent.join.request(who);
+			const pending = await poll();
+			expect(pending).toEqual({
+				joinRequest: expect.objectContaining({ id: request, ...who }),
+			});
+			// Nothing else of the status: no state, no threads count.
+			expect(Object.keys(pending)).toEqual(["joinRequest"]);
+			// Not a use, no status read, no lookup that opens.
+			expect(runnerStatus).not.toHaveBeenCalled();
+			expect(hostStatus).not.toHaveBeenCalled();
+			expect(lookup).not.toHaveBeenCalled();
+			expect(touch).not.toHaveBeenCalled();
+			expect(used()).toBe(before);
+			// A review that isn't open stays closed.
+			await registry.closeAll();
+			expect(await poll()).toEqual({});
+			expect(open).not.toHaveBeenCalled();
+			expect(lookup).not.toHaveBeenCalled();
+			expect(registry.list()).toHaveLength(0);
+		});
+
+		it("join answers: 400 on a bad body or id", async () => {
+			for (const [url, body] of [
+				["/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6", {}],
+				["/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6", { approve: "yes" }],
+				["/api/agent/join/not-an-id", { approve: true }],
+			] as const) {
+				const res = await post(url, body);
+				expect(res.statusCode, url).toBe(400);
+			}
+			const stale = await post("/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6", {
+				approve: true,
+			});
+			expect(stale.statusCode).toBe(409);
+		});
+
 		it("GET agent/placements: by head or patch set; 400 for both, neither or a bad oid; 404 for an unknown patch set", async () => {
 			expect((await ask()).statusCode).toBe(200);
 			const h1 = pr.head();
@@ -1418,6 +1518,8 @@ describe("API", () => {
 				["GET", "/api/agent/threads"],
 				["GET", `/api/agent/placements?head=${pr.head()}`],
 				["POST", "/api/agent/cancel"],
+				["POST", "/api/agent/disconnect"],
+				["POST", "/api/agent/start"],
 			] as const) {
 				const res = await inject(r(url, viewer.id), { method });
 				expect(res.statusCode).toBe(404);
@@ -1432,6 +1534,13 @@ describe("API", () => {
 					"/api/agent/threads",
 					{ clientId: "q", text: "x", span: span() },
 				],
+				[
+					"POST",
+					"/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6",
+					{ approve: true },
+				],
+				["POST", "/api/agent/disconnect", {}],
+				["POST", "/api/agent/start", {}],
 				["PUT", "/api/config/agent", null],
 				["POST", "/api/config/agent/check", { command: "x" }],
 			] as const) {
@@ -2177,6 +2286,45 @@ describe("API", () => {
 			}
 			const open = await inject("/manifest.webmanifest");
 			expect(open.json().start_url).toBe("/");
+		});
+
+		it("GET /api/mcp/setup gives the key behind the key, null without one", async () => {
+			const keyed = await buildApp(registry, { accessKey: "k3y" });
+			try {
+				expect((await keyed.inject("/api/mcp/setup")).statusCode).toBe(401);
+				const res = await keyed.inject({
+					url: "/api/mcp/setup",
+					cookies: { crb_key: "k3y" },
+				});
+				expect(res.headers["cache-control"]).toBe("no-store");
+				expect(res.headers["cross-origin-resource-policy"]).toBe("same-origin");
+				expect(res.json()).toEqual({ key: "k3y" });
+				// Another port on this host (same-site, not same-origin): refused.
+				for (const site of ["same-site", "cross-site"]) {
+					const other = await keyed.inject({
+						url: "/api/mcp/setup",
+						cookies: { crb_key: "k3y" },
+						headers: { "sec-fetch-site": site },
+					});
+					expect(other.statusCode, site).toBe(403);
+					expect(other.body).not.toContain("k3y");
+				}
+				for (const site of ["same-origin", "none"]) {
+					const own = await keyed.inject({
+						url: "/api/mcp/setup",
+						cookies: { crb_key: "k3y" },
+						headers: { "sec-fetch-site": site },
+					});
+					expect(own.json(), site).toEqual({ key: "k3y" });
+				}
+			} finally {
+				await keyed.close();
+			}
+			const open = await app.inject({
+				url: "/api/mcp/setup",
+				headers: { host },
+			});
+			expect(open.json()).toEqual({ key: null });
 		});
 
 		it("POST /api/reviews refuses a bad body (400) and an unreviewable PR (409)", async () => {

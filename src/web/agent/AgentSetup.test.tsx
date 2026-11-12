@@ -10,9 +10,21 @@ import {
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { AgentCheck, AgentConfig, AgentStatus } from "../../shared/agent";
-import { AgentSetup } from "./AgentSetup";
+import { AgentSetup, RELOAD_HINT } from "./AgentSetup";
 import { agentStatusQuery } from "./api";
+import type { SetupTab } from "./setupStore";
+
+// user-event stubs the Clipboard API; what reaches the clipboard is
+// copyText's (copyText.test.ts). Here: what each outcome shows.
+const copied = vi.hoisted(() => ({ ok: true, texts: [] as string[] }));
+vi.mock("../copyText", () => ({
+	copyText: async (text: string) => {
+		copied.texts.push(text);
+		return copied.ok;
+	},
+}));
 
 const json = (status: number, body: unknown) =>
 	new Response(JSON.stringify(body), {
@@ -108,6 +120,36 @@ async function openIt(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("AgentSetup", () => {
+	it("Copy says Copied, or Copy failed with the line selected to copy by hand", async () => {
+		copied.ok = true;
+		copied.texts = [];
+		const { user } = show();
+		const dialog = await openIt(user);
+		await user.click(within(dialog).getByRole("button", { name: "Copy" }));
+		expect(copied.texts).toEqual([
+			"npm i -g @agentclientprotocol/claude-agent-acp",
+		]);
+		expect(
+			await within(dialog).findByRole("button", { name: "Copied" }),
+		).toBeVisible();
+		// Another harness starts over.
+		await user.click(within(dialog).getByRole("radio", { name: "Gemini CLI" }));
+		await user.click(
+			within(dialog).getByRole("radio", { name: "Claude Code" }),
+		);
+		copied.ok = false;
+		await user.click(within(dialog).getByRole("button", { name: "Copy" }));
+		expect(
+			await within(dialog).findByRole("button", { name: "Copy failed" }),
+		).toBeVisible();
+		const line = within(dialog).getByRole("textbox", { name: "Install" });
+		expect(line).toHaveFocus();
+		expect(
+			line instanceof HTMLInputElement &&
+				line.value.slice(line.selectionStart ?? 0, line.selectionEnd ?? 0),
+		).toBe("npm i -g @agentclientprotocol/claude-agent-acp");
+	});
+
 	it("picking Claude Code fills the command and shows its install line", async () => {
 		const { user } = show();
 		const dialog = await openIt(user);
@@ -452,5 +494,135 @@ describe("AgentSetup", () => {
 		const dialog = await openIt(user);
 		expect(within(dialog).getByTestId("agent-leash")).toHaveTextContent("open");
 		expect(dialog.textContent).toContain("stricter levels later");
+	});
+});
+
+describe("AgentSetup's Join from a session tab", () => {
+	function JoinHarness() {
+		const [tab, setTab] = useState<SetupTab>("launch");
+		return <AgentSetup open onClose={() => {}} tab={tab} onTab={setTab} />;
+	}
+
+	it("shows the setup line with the key (a spinner while it is read) and the join line", async () => {
+		const held = heldJson();
+		fetchMock.mockImplementation(async (url: string) =>
+			url === "/api/mcp/setup" ? held.response : json(200, stored),
+		);
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<JoinHarness />
+			</QueryClientProvider>,
+		);
+		const user = userEvent.setup();
+		const dialog = screen.getByTestId("agent-setup");
+		const tab = within(dialog).getByRole("tab", {
+			name: "Join from a session",
+		});
+		expect(tab).toHaveAttribute("aria-selected", "false");
+		await user.click(tab);
+		expect(tab).toHaveAttribute("aria-selected", "true");
+		expect(
+			within(dialog).queryByRole("radiogroup", { name: "Harness" }),
+		).toBeNull();
+		await expectLoadingThen({
+			loading: () =>
+				within(dialog).queryByRole("status", {
+					name: "Loading the setup line",
+				}),
+			release: () => held.release({ key: "k3y" }),
+			result: () => within(dialog).queryByTestId("join-setup-line"),
+		});
+		expect(within(dialog).getByTestId("join-setup-line")).toHaveValue(
+			`claude mcp add --scope user --transport http crb "${window.location.origin}/mcp?key=k3y"`,
+		);
+		// A session already running picks the server up with /reload-plugins:
+		// an icon, named by the hint, with it as its tooltip.
+		const hint = within(dialog).getByRole("img", { name: RELOAD_HINT });
+		expect(RELOAD_HINT).toContain("/reload-plugins");
+		await user.hover(hint);
+		await waitFor(() =>
+			expect(
+				screen.getByText(RELOAD_HINT, { selector: "[role=tooltip]" }),
+			).toBeVisible(),
+		);
+		await user.unhover(hint);
+		// Unbound in a component test: no review, so no join line.
+		expect(within(dialog).queryByTestId("join-line")).toBeNull();
+		// A refused copy says so and selects the line, to copy by hand.
+		copied.ok = false;
+		copied.texts = [];
+		const copy = within(dialog).getByRole("button", {
+			name: "Copy setup line",
+		});
+		await user.click(copy);
+		const line = within(dialog).getByTestId("join-setup-line");
+		expect(copied.texts).toEqual([(line as HTMLInputElement).value]);
+		await waitFor(() => expect(line).toHaveFocus());
+		// A press closes the tooltip until the pointer comes back.
+		await user.unhover(copy);
+		await user.hover(copy);
+		await waitFor(() =>
+			expect(
+				screen.getByText("Copy failed", { selector: "[role=tooltip]" }),
+			).toBeVisible(),
+		);
+		await user.unhover(copy);
+		copied.ok = true;
+		await user.click(
+			within(dialog).getByRole("tab", { name: "Launch an agent" }),
+		);
+		await within(dialog).findByRole("radiogroup", { name: "Harness" });
+	});
+
+	it("tabs: wired to their panels, arrow keys move between them, each with a tooltip", async () => {
+		fetchMock.mockImplementation(async (url: string) =>
+			url === "/api/mcp/setup" ? json(200, { key: null }) : json(200, stored),
+		);
+		render(
+			<QueryClientProvider
+				client={
+					new QueryClient({ defaultOptions: { queries: { retry: false } } })
+				}
+			>
+				<JoinHarness />
+			</QueryClientProvider>,
+		);
+		const user = userEvent.setup();
+		const dialog = screen.getByTestId("agent-setup");
+		const launch = within(dialog).getByRole("tab", { name: "Launch an agent" });
+		const join = within(dialog).getByRole("tab", {
+			name: "Join from a session",
+		});
+		const panelOf = (tab: HTMLElement) =>
+			document.getElementById(tab.getAttribute("aria-controls") ?? "");
+		expect(panelOf(launch)).toHaveAttribute("role", "tabpanel");
+		expect(panelOf(launch)).toHaveAccessibleName("Launch an agent");
+		expect(launch).toHaveAttribute("tabindex", "0");
+		expect(join).toHaveAttribute("tabindex", "-1");
+		// The icon-only tab (a phone's) has its name as a tooltip.
+		await user.hover(launch);
+		// aria-hidden: it repeats the tab's name.
+		await waitFor(() =>
+			expect(
+				screen.getByText("Launch an agent", { selector: "[role=tooltip]" }),
+			).toBeVisible(),
+		);
+		await user.unhover(launch);
+		launch.focus();
+		await user.keyboard("{ArrowRight}");
+		expect(join).toHaveAttribute("aria-selected", "true");
+		expect(join).toHaveFocus();
+		expect(panelOf(join)).toHaveAttribute("role", "tabpanel");
+		expect(panelOf(join)).toHaveAccessibleName("Join from a session");
+		await user.keyboard("{ArrowRight}");
+		expect(launch).toHaveAttribute("aria-selected", "true");
+		expect(launch).toHaveFocus();
+		await user.keyboard("{End}");
+		expect(join).toHaveFocus();
+		await user.keyboard("{ArrowLeft}");
+		expect(launch).toHaveFocus();
 	});
 });

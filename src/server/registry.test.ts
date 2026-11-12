@@ -10,6 +10,19 @@ import {
 	UnknownReviewError,
 } from "./registry";
 
+// The reopens' lookups of a review by id, in order.
+const lookups = vi.hoisted(() => [] as string[]);
+vi.mock("./review/reviews.js", async (importOriginal) => {
+	const real = await importOriginal<typeof import("./review/reviews.js")>();
+	return {
+		...real,
+		findReviewById: (...args: Parameters<typeof real.findReviewById>) => {
+			lookups.push(args[1]);
+			return real.findReviewById(...args);
+		},
+	};
+});
+
 describe("SessionRegistry", () => {
 	let pr: PrFixture;
 	const registries: SessionRegistry[] = [];
@@ -230,6 +243,78 @@ describe("SessionRegistry", () => {
 		expect(reopened).not.toBe(session);
 		expect(reopened.closed).toBe(false);
 	});
+
+	it("peek never opens a review and isn't a use; touch is", async () => {
+		let now = 1_000_000;
+		const r = registry({ idleMs: 60_000, now: () => now });
+		const id = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		lookups.length = 0;
+		expect(r.peek(id)).toBeUndefined();
+		expect(lookups).toEqual([]);
+		const opened = await r.open({ pr: pr.arg });
+		now += 59_000;
+		expect(r.peek(opened.id)).toBe(opened.session);
+		now += 2_000;
+		await r.sweep();
+		// Peeked 2 s ago, opened 61 s ago: idle all the same.
+		expect(opened.session.closed).toBe(true);
+		expect(r.peek(opened.id)).toBeUndefined();
+		const again = await r.get(opened.id);
+		now += 59_000;
+		r.touch(opened.id);
+		now += 2_000;
+		await r.sweep();
+		expect(again.closed).toBe(false);
+		r.touch("01k9e6m2q8x4v7c3n5b0h1j2t7");
+	});
+
+	it("a review a session asks to join (or is joined to) isn't closed when idle", async () => {
+		let now = 1_000_000;
+		const r = registry({ idleMs: 60_000, now: () => now });
+		const { session } = await r.open({ pr: pr.arg });
+		const join = session.agent?.join;
+		if (!join) throw new Error("no agent");
+		const { request } = join.request({ name: "s", machine: "m" });
+		now += 61_000;
+		await r.sweep();
+		expect(session.closed).toBe(false);
+		await join.answer(request, false);
+		await r.sweep();
+		expect(session.closed).toBe(true);
+	});
+
+	it(
+		"a reopen of a review waits for its old session's close (the agent claim goes first)",
+		async () => {
+			let now = 1_000_000;
+			const r = registry({ idleMs: 60_000, now: () => now });
+			const { id, session } = await r.open({ pr: pr.arg });
+			let release: () => void = () => {};
+			const held = new Promise<void>((done) => {
+				release = done;
+			});
+			const close = session.close.bind(session);
+			vi.spyOn(session, "close").mockImplementation(async () => {
+				await held;
+				await close();
+			});
+			now += 61_000;
+			const sweeping = r.sweep();
+			lookups.length = 0;
+			const reopen = r.get(id);
+			// The close is held: the reopen hasn't even looked the review up.
+			for (let i = 0; i < 50; i++) await Promise.resolve();
+			expect(lookups).toEqual([]);
+			release();
+			await sweeping;
+			const reopened = await reopen;
+			expect(lookups).toEqual([id]);
+			expect(reopened).not.toBe(session);
+			expect(reopened.closed).toBe(false);
+			// Real git: an open, then a reopen by id (clone, snapshot twice).
+		},
+		GIT_TEST_TIMEOUTS.testTimeout,
+	);
 
 	it("closeAll closes every session", async () => {
 		const r = registry();

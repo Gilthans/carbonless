@@ -20,7 +20,7 @@ import {
 import { runGit } from "../git.js";
 import { AcpAgent, AgentStartError, agentEnv } from "./acp.js";
 import { agentsDir, type Checkout, createCheckout } from "./checkout.js";
-import { takeClaim } from "./claim.js";
+import { type ReviewClaim, takeClaim } from "./claim.js";
 import { decidePermission } from "./policy.js";
 import {
 	anchorFor,
@@ -97,6 +97,13 @@ export interface RunnerDeps {
 	turnMs?: number;
 	/** The reviewer's login, named on their messages in the envelope. */
 	viewer?: string;
+	/**
+	 * The review's ACP buddy is off (a session joined through MCP; only
+	 * the reviewer's Start clears it): nothing spawns, no turn starts.
+	 */
+	acpOff?: () => boolean;
+	/** The review's claim, shared with a joined session (else the runner takes its own). */
+	claim?: ReviewClaim;
 }
 
 /** A live title is cut here; the stored list is capped again (capActivity). */
@@ -180,6 +187,8 @@ export class AgentRunner {
 	/** Agents that went away by crashing (their last turn is stored). */
 	readonly #crashedAgents = new WeakSet<AcpAgent>();
 	#pump: Promise<void> | null = null;
+	/** The agent whose turn stop() cancelled: its partial reply isn't stored. */
+	#stopCancelled: AcpAgent | null = null;
 	#again = false;
 	#closed: Promise<void> | null = null;
 
@@ -193,7 +202,8 @@ export class AgentRunner {
 	async status(): Promise<AgentStatus> {
 		if (!this.#closed) {
 			const read = await this.#readConfig();
-			if (!this.#closed) {
+			// ACP off: the config is read (configured), nothing starts.
+			if (!this.#closed && !this.#off()) {
 				if (read.saved && !read.changed && this.#config) {
 					// A Save (the same config): a stopped agent starts again.
 					if (this.#state === "error" || this.#state === "off") this.poke();
@@ -223,17 +233,19 @@ export class AgentRunner {
 		// Questions asked elsewhere (another server showing `elsewhere`)
 		// reach the ref, not this runner: the holder answers them on its poll.
 		if (waiting > 0 && this.#state === "ready" && !this.#pump) this.poke();
+		const answering = this.#answering;
+		// ACP going off: off at once, unless a turn still finishes (stop()).
+		const stopping = this.#off() && !answering;
 		const error =
-			this.#state === "error"
+			this.#state === "error" && !stopping
 				? this.#error
 				: this.#problems.length
 					? this.#problems.join("; ")
 					: undefined;
-		const answering = this.#answering;
 		return {
-			state: this.#state,
+			state: stopping ? "off" : this.#state,
 			configured: this.#configured,
-			...(this.#identity ? { agent: this.#identity } : {}),
+			...(this.#identity && !stopping ? { agent: this.#identity } : {}),
 			since: new Date(this.#since).toISOString(),
 			...(answering
 				? {
@@ -255,7 +267,7 @@ export class AgentRunner {
 
 	/** After a human open or message: spawns if needed, then drains. Never throws. */
 	poke(): void {
-		if (this.#closed) return;
+		if (this.#closed || this.#off()) return;
 		this.#again = true;
 		if (this.#pump) return;
 		this.#pump = this.#run()
@@ -275,6 +287,49 @@ export class AgentRunner {
 	asked(): void {
 		this.#crashes = 0;
 		this.poke();
+	}
+
+	/**
+	 * ACP is going off (a join was approved): the turn under way may
+	 * finish for up to `ms`, then is cancelled; the agent is closed and
+	 * the status is `off`. The claim and the checkout stay.
+	 */
+	async stop(ms: number): Promise<void> {
+		this.#again = false;
+		if (this.#answering && this.#pump) {
+			const agent = this.#proc?.agent;
+			// carbonless's cancel, not the reviewer's: the question keeps
+			// waiting for the joined session (principle 2).
+			const timer = setTimeout(() => {
+				this.#stopCancelled = agent ?? null;
+				void agent?.cancel();
+			}, ms);
+			try {
+				await this.#pump;
+			} finally {
+				clearTimeout(timer);
+				this.#stopCancelled = null;
+			}
+		}
+		// Start pressed while the turn finished: the agent stays.
+		if (!this.#off()) return;
+		await this.#stopProc();
+		await this.#pump;
+		// A spawn that finished meanwhile (its checks saw ACP off) is closed too.
+		await this.#stopProc();
+		if (!this.#off()) return;
+		this.#identity = undefined;
+		this.#answering = null;
+		if (!this.#closed) this.#set("off");
+	}
+
+	/** The thread the ACP buddy is answering now, if any (a joined session skips it). */
+	inFlight(): string | null {
+		return this.#answering?.thread ?? null;
+	}
+
+	#off(): boolean {
+		return this.#deps.acpOff?.() ?? false;
 	}
 
 	/** Resolves once nothing is running (tests). */
@@ -349,6 +404,12 @@ export class AgentRunner {
 	async #ensure(): Promise<AcpAgent | null> {
 		await this.#readConfig();
 		if (this.#closed) return null;
+		if (this.#off()) {
+			await this.#stopProc();
+			this.#identity = undefined;
+			this.#set("off");
+			return null;
+		}
 		const config = this.#config;
 		if (this.#proc && this.#proc.key !== this.#key) await this.#stopProc();
 		if (!config) {
@@ -370,10 +431,12 @@ export class AgentRunner {
 		// human asks again or the config is saved.
 		if (this.#crashes >= 2) return null;
 		if (!this.#release) {
-			const claim = await takeClaim(this.#dir(), {
-				pid: process.pid,
-				port: this.#deps.port,
-			});
+			const claim = this.#deps.claim
+				? await this.#deps.claim.hold("acp")
+				: await takeClaim(this.#dir(), {
+						pid: process.pid,
+						port: this.#deps.port,
+					});
 			if (!claim.ok) {
 				this.#set("elsewhere", { elsewhere: claim.holder.port });
 				return null;
@@ -384,6 +447,8 @@ export class AgentRunner {
 			}
 			this.#release = claim.release;
 		}
+		// ACP went off while the claim was taken.
+		if (this.#off()) return null;
 		// The config moved while the claim was taken: the next round has it.
 		if (this.#config !== config) return null;
 		this.#set("starting");
@@ -407,6 +472,11 @@ export class AgentRunner {
 		// stop and waits for this pump, so a start now would hold it until
 		// the start times out (close removes the checkout after).
 		if (this.#closed) return null;
+		// ACP went off while the checkout was made: nothing spawns.
+		if (this.#off()) {
+			this.#set("off");
+			return null;
+		}
 		const key = this.#key as string;
 		const proc: Proc = {
 			agent: null,
@@ -437,9 +507,12 @@ export class AgentRunner {
 		if (
 			proc.stopping ||
 			this.#closed ||
+			this.#off() ||
 			this.#proc !== proc ||
 			proc.key !== this.#key
 		) {
+			if (this.#proc === proc) this.#proc = null;
+			proc.stopping = true;
 			await agent.close();
 			return null;
 		}
@@ -504,6 +577,8 @@ export class AgentRunner {
 	async #drain(agent: AcpAgent): Promise<void> {
 		for (;;) {
 			if (this.#closed || this.#proc?.agent !== agent) return;
+			// ACP going off: the turn that ran finished; no new one starts.
+			if (this.#off()) return;
 			if (this.#proc.key !== this.#key || !agent.alive) return;
 			const threads = await this.#deps.facts.join(
 				await this.#deps.store.read(),
@@ -765,6 +840,8 @@ export class AgentRunner {
 		// nothing half-written lands; the thread still waits for the next one.
 		const stoppedOnPurpose =
 			this.#closed ||
+			// stop()'s cancel at an Approve: the thread waits for the session.
+			this.#stopCancelled === agent ||
 			// The config changed under the turn: the new agent answers it.
 			(this.#proc?.agent === agent && this.#proc.key !== this.#key) ||
 			(this.#proc?.agent !== agent && !this.#crashedLast(agent));

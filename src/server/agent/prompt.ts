@@ -23,7 +23,8 @@ export interface PromptReview {
 	base: { ref: string; commit: string };
 	head: { ref: string; commit: string };
 	mergeBase: string;
-	tree: string;
+	/** The ACP buddy's checkout; none for a joined session (it has its own copy, if any). */
+	tree?: string;
 }
 
 export interface PromptMessage {
@@ -72,7 +73,7 @@ export interface PromptGithub {
 export interface PromptEnvelope {
 	kind: "agent_thread" | "github_thread_conversation";
 	review: PromptReview;
-	thread: { id: string; anchor: AgentAnchor & { file: string } };
+	thread: { id: string; anchor: AgentAnchor & { file?: string } };
 	/** Thread kind only; absent when GitHub couldn't be read or the thread is gone (`notice` says). */
 	github?: PromptGithub;
 	/** Thread kind only: the comparison the turn answers in. */
@@ -133,9 +134,8 @@ export function anchorFor(
 	review: PromptReview,
 	patchsets: readonly { head: string; mergeBase: string }[] = [],
 ): AgentAnchor & { file: string } {
-	const file = isSafePath(anchor.path)
-		? join(review.tree, anchor.path)
-		: review.tree;
+	const tree = review.tree ?? "";
+	const file = isSafePath(anchor.path) ? join(tree, anchor.path) : tree;
 	if (anchor.subject === "file" || anchor.side !== "LEFT") {
 		return { ...anchor, file };
 	}
@@ -322,6 +322,20 @@ export function sanitizeThirdParty(text: string): string {
 }
 
 /**
+ * A one-line label from a third party (a joined session's name, machine,
+ * harness): sanitised, every run of whitespace, line separators and NEL
+ * one space, C1 controls gone, trimmed, at most `max` code points (a
+ * surrogate pair is never split).
+ */
+export function oneLine(text: string, max: number): string {
+	const flat = sanitizeThirdParty(text)
+		.replace(/[\s\u0085]+/g, " ")
+		.replace(/[\u0080-\u009f]/g, "")
+		.trim();
+	return Array.from(flat).slice(0, max).join("").trim();
+}
+
+/**
  * `env` with every text from the PR sanitised (sanitizeThirdParty): the
  * base and head ref names, the anchor's path (and so its file), the PR's
  * title, body and file paths, the GitHub thread's url, path, comment
@@ -343,7 +357,9 @@ export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 			anchor: {
 				...thread.anchor,
 				path: s(thread.anchor.path),
-				file: s(thread.anchor.file),
+				...(thread.anchor.file === undefined
+					? {}
+					: { file: s(thread.anchor.file) }),
 			},
 		},
 		...(pr
@@ -417,7 +433,7 @@ export function buildPrompt(
 	anchored: { uri: string; mimeType: string; text: string } | null,
 	hunk: string | null,
 ): ContentBlock[] {
-	const base = PREAMBLE.replace("<tree>", env.review.tree);
+	const base = PREAMBLE.replace("<tree>", env.review.tree ?? "");
 	const preamble =
 		env.kind === "github_thread_conversation"
 			? `${base} ${THREAD_PREAMBLE}`

@@ -26,6 +26,7 @@ import type {
 import { RefStore } from "../review/refStore.js";
 import { agentsDir, createCheckout } from "./checkout.js";
 import { orphanAnchor } from "./githubJoin.js";
+import { JoinBroker } from "./join.js";
 import type {
 	GithubThreadFacts,
 	PromptEnvelope,
@@ -34,14 +35,28 @@ import type {
 import { AgentRunner, type RunnerDeps, type RunnerFacts } from "./runner.js";
 import { type AgentThreadFold, AgentThreadStore } from "./store.js";
 
-// The real checkout, wrapped so a test can hold it.
-vi.mock("./checkout.js", async (importOriginal) => {
-	const real = await importOriginal<typeof import("./checkout.js")>();
-	return { ...real, createCheckout: vi.fn(real.createCheckout) };
-});
-
 // Real git and fake agent processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
+
+// The real checkout, wrapped so a test can hold it: by the gate, or by
+// mocking one call (vi.mocked(createCheckout)).
+const checkoutGate = vi.hoisted(() => ({
+	hold: null as Promise<void> | null,
+	entered: 0,
+}));
+vi.mock("./checkout.js", async (importOriginal) => {
+	const real = await importOriginal<typeof import("./checkout.js")>();
+	return {
+		...real,
+		createCheckout: vi.fn(
+			async (...args: Parameters<typeof real.createCheckout>) => {
+				checkoutGate.entered++;
+				if (checkoutGate.hold) await checkoutGate.hold;
+				return real.createCheckout(...args);
+			},
+		),
+	};
+});
 
 const REVIEW = "01k9e6m2q8x4v7c3n5b0h1j2t6";
 const AGENT: AgentConfig = {
@@ -891,6 +906,185 @@ describe("AgentRunner", () => {
 		await answered(2);
 		expect(treeHead()).toBe(old);
 		expect(prompts()[1]?.notice).toContain(`The PR's head is now ${prHead}`);
+	});
+
+	describe("ACP off (a session joined through MCP)", () => {
+		const broker = () =>
+			new JoinBroker({
+				dir: join(agentsDir(), REVIEW),
+				onApproved: async () => {},
+				onLeft: () => {},
+			});
+
+		it("never spawns while ACP is off: status poll, new question, config save, a new runner on the same dir", async () => {
+			const b = broker();
+			await b.setAcpOff(true);
+			let saves = 0;
+			await ask("why?");
+			const r = makeRunner({
+				acpOff: () => b.acpOff(),
+				config: async () => ({ ...config, saves }),
+			});
+			r.poke();
+			await r.settled();
+			expect((await r.status()).state).toBe("off");
+			await ask("and?", 2);
+			r.asked();
+			await r.settled();
+			saves++;
+			await r.status();
+			await r.settled();
+			// The config changed: still off.
+			config = { agent: { ...AGENT, args: ["--x"] }, problems: [] };
+			await r.status();
+			await r.settled();
+			expect(spawns()).toHaveLength(0);
+			const status = await r.status();
+			expect(status).toMatchObject({
+				state: "off",
+				configured: true,
+				waiting: 2,
+			});
+			await r.close();
+			// A crb restart: a new broker and runner on the same dir.
+			const again = broker();
+			const r2 = makeRunner({ acpOff: () => again.acpOff() });
+			r2.poke();
+			await r2.status();
+			await r2.settled();
+			expect(spawns()).toHaveLength(0);
+			// Start: on again, the backlog is answered.
+			await again.setAcpOff(false);
+			r2.asked();
+			await answered(2);
+			expect(spawns()).toHaveLength(1);
+		});
+
+		it("stop() lets the running turn finish, then closes the agent and stays off", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			await ask("second?", 2);
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			off = true;
+			let stopped = false;
+			const stop = r.stop(60 * 60_000).then(() => {
+				stopped = true;
+			});
+			// Held: the stop waits for the turn.
+			await r.status();
+			expect(stopped).toBe(false);
+			releaseAcp(scenarioPath, "prompt");
+			await stop;
+			const [first, second] = await threads();
+			expect(first?.messages[1]).toMatchObject({
+				text: "a b",
+				stop: "end_turn",
+			});
+			// The next question isn't taken: ACP is off.
+			expect(second?.waiting).toBe(true);
+			const status = await r.status();
+			expect(status.state).toBe("off");
+			expect(status.agent).toBeUndefined();
+			await r.settled();
+			expect(spawns()).toHaveLength(1);
+		});
+
+		it("stop() while the agent is being started (its checkout under way): nothing spawns, it stays off", async () => {
+			let open: () => void = () => {};
+			checkoutGate.hold = new Promise<void>((r) => {
+				open = r;
+			});
+			checkoutGate.entered = 0;
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			try {
+				r.poke();
+				await vi.waitFor(() => expect(checkoutGate.entered).toBe(1), {
+					timeout: 20_000,
+					interval: 20,
+				});
+				off = true;
+				const stop = r.stop(60 * 60_000);
+				open();
+				await stop;
+				await r.settled();
+			} finally {
+				checkoutGate.hold = null;
+				open();
+			}
+			expect(spawns()).toHaveLength(0);
+			expect((await r.status()).state).toBe("off");
+			expect((await threads())[0]?.waiting).toBe(true);
+		});
+
+		it("ACP turned off (no stop) while the agent's initialize is held: the spawned process is closed, not kept", async () => {
+			scenario({ hold: ["initialize"] });
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await vi.waitFor(() => expect(spawns()).toHaveLength(1), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			const pid = spawns()[0]?.pid as number;
+			// A gate with no stop(): e.g. a joined session restored with the
+			// file missing. Only the post-spawn check closes the process.
+			off = true;
+			releaseAcp(scenarioPath, "initialize");
+			await r.settled();
+			await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			expect((await r.status()).state).toBe("off");
+			expect((await threads())[0]?.waiting).toBe(true);
+		});
+
+		it("Start pressed while stop() waits for the turn: the agent stays and answers the next thread", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			await ask("second?", 2);
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			off = true;
+			const stop = r.stop(60 * 60_000);
+			// Start: on again before the turn ends.
+			off = false;
+			r.asked();
+			releaseAcp(scenarioPath, "prompt");
+			await stop;
+			await answered(2);
+			expect(spawns()).toHaveLength(1);
+			expect((await r.status()).state).not.toBe("off");
+		});
+
+		it("stop() cancels a turn that runs past its time; nothing is stored and the question still waits", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			off = true;
+			// Held for good: only the cancel ends the turn (not a time bound).
+			await r.stop(50);
+			expect(acpLog(logPath).some((e) => e.method === "session/cancel")).toBe(
+				true,
+			);
+			const [t] = await threads();
+			expect(t?.messages).toHaveLength(1);
+			expect(t?.waiting).toBe(true);
+			const status = await r.status();
+			expect(status.state).toBe("off");
+			expect(status.answering).toBeUndefined();
+		});
 	});
 });
 

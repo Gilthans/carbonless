@@ -623,6 +623,11 @@ export class Session {
 		return this.#closed !== null;
 	}
 
+	/** The PR's facts as last read (no read of GitHub). */
+	prMeta(): PrMeta {
+		return this.#meta;
+	}
+
 	info(): SessionInfo {
 		const { owner, repo, number, title, url, headOid } = this.#meta;
 		return {
