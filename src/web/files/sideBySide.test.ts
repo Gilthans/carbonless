@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DiffLine } from "../../shared/types";
+import type { Partners } from "./pairOrder";
 import { layoutRows, type SideRow, sides } from "./sideBySide";
 import { type DiffRow, matchHunk, pairHunk, pairRun, runs } from "./whitespace";
 
@@ -388,5 +389,141 @@ describe("layoutRows", () => {
 			laidOut++;
 		}
 		expect(laidOut).toBeGreaterThan(600);
+	});
+});
+
+/** Partners both ways, as hunkView gives them. */
+const partnered = (...pairs: [DiffLine, DiffLine][]): Partners =>
+	new Map(pairs.flatMap(([d, a]) => [[d, a] as const, [a, d] as const]));
+
+describe("layoutRows with partners", () => {
+	const D = (n: number) => del(n, `d${n}`);
+	const A = (n: number) => add(n, `a${n}`);
+
+	it("puts a pair on one row, gaps by position (spec cases 2, 3, 5)", () => {
+		// Case 2: the one removed line pairs with the second added.
+		const [d1, a1, a2] = [D(1), A(1), A(2)] as const;
+		const c2 = [d1, a1, a2].map(line);
+		expect(trace(layoutRows(c2, partnered([d1, a2])))).toEqual([
+			"[|+1]",
+			"[-1|+2]",
+		]);
+		// Case 3: pairs d1-a1 and d3-a2, d2 alone between.
+		const ds = [D(1), D(2), D(3)];
+		const as = [A(1), A(2)];
+		const c3 = [...ds, ...as].map(line);
+		expect(
+			trace(
+				layoutRows(
+					c3,
+					partnered(
+						[ds[0] as DiffLine, as[0] as DiffLine],
+						[ds[2] as DiffLine, as[1] as DiffLine],
+					),
+				),
+			),
+		).toEqual(["[-1|+1]", "[-2|]", "[-3|+2]"]);
+		// Case 5: seven added lines, then the pair.
+		const x = D(1);
+		const ys = Array.from({ length: 8 }, (_, i) => A(i + 1));
+		const c5 = [x, ...ys].map(line);
+		expect(trace(layoutRows(c5, partnered([x, ys[7] as DiffLine])))).toEqual([
+			...Array.from({ length: 7 }, (_, i) => `[|+${i + 1}]`),
+			"[-1|+8]",
+		]);
+	});
+
+	it("shares rows by position in a gap with lines on both sides", () => {
+		const [d1, dX, d2] = [D(1), D(2), D(3)] as const;
+		const [a1, aY, a2] = [A(1), A(2), A(3)] as const;
+		// d1 dX d2 / a1 aY a2 with d1-a2 paired: nothing before d1; after it dX d2 / (none).
+		const rows = [d1, dX, d2, a1, aY, a2].map(line);
+		expect(trace(layoutRows(rows, partnered([d1, a2])))).toEqual([
+			"[|+1]",
+			"[|+2]",
+			"[-1|+3]",
+			"[-2|]",
+			"[-3|]",
+		]);
+		// Two pairs d1-a1 and d2-a2 around a gap dX / aY.
+		const p = partnered([d1, a1], [d2, a2]);
+		const gapRows = [d1, dX, d2, a1, aY, a2].map(line);
+		expect(trace(layoutRows(gapRows, p))).toEqual([
+			"[-1|+1]",
+			"[-2|+2]",
+			"[-3|+3]",
+		]);
+	});
+
+	it("is the same for git order and interleaved unified order", () => {
+		const [d1, d2, d3] = [D(1), D(2), D(3)] as const;
+		const [a1, a2] = [A(1), A(2)] as const;
+		const p = partnered([d1, a1], [d3, a2]);
+		const git = [d1, d2, d3, a1, a2].map(line);
+		const mixed = [d1, a1, d2, d3, a2].map(line);
+		expect(layoutRows(mixed, p)).toEqual(layoutRows(git, p));
+		expect(trace(layoutRows(git, p))).toEqual(["[-1|+1]", "[-2|]", "[-3|+2]"]);
+	});
+
+	it("treats a partner outside the stretch or the rows as unpaired", () => {
+		const [d1, a1] = [D(1), A(1)] as const;
+		const c = ctx(2, 2, "mid");
+		const stranger = A(9);
+		const rows = [line(d1), line(c), line(a1)];
+		expect(trace(layoutRows(rows, partnered([d1, a1])))).toEqual([
+			"[-1|]",
+			" 2/2",
+			"[|+1]",
+		]);
+		expect(trace(layoutRows([line(d1)], partnered([d1, stranger])))).toEqual([
+			"[-1|]",
+		]);
+	});
+
+	it("keeps every line once, in order, a pair on one row, for random partners", () => {
+		let seed = 4242;
+		const rand = (n: number) => {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			return seed % n;
+		};
+		for (let n = 0; n < 500; n++) {
+			const ds = Array.from({ length: rand(9) }, (_, i) => D(i + 1));
+			const as = Array.from({ length: rand(9) }, (_, i) => A(i + 1));
+			// Random non-crossing partners.
+			const pairs: [DiffLine, DiffLine][] = [];
+			let ai = 0;
+			for (const d of ds) {
+				if (ai < as.length && rand(2) === 0) {
+					const j = ai + rand(as.length - ai);
+					pairs.push([d, as[j] as DiffLine]);
+					ai = j + 1;
+				}
+			}
+			const git = [...ds, ...as].map(line);
+			const out = layoutRows(git, partnered(...pairs));
+			const left = out.flatMap((r) =>
+				r.kind === "pair" && r.del ? [r.del] : [],
+			);
+			const right = out.flatMap((r) =>
+				r.kind === "pair" && r.add ? [r.add] : [],
+			);
+			expect(left).toEqual(ds);
+			expect(right).toEqual(as);
+			// Each pair saves a row against one-line-per-row. (Not "never more
+			// than today's": d1 d2 / a1 a2 with d1-a2 is three rows, today two.)
+			expect(out.length).toBe(ds.length + as.length - pairs.length);
+			for (const [d, a] of pairs) {
+				expect(
+					out.some((r) => r.kind === "pair" && r.del === d && r.add === a),
+				).toBe(true);
+			}
+			// Interleaved input lays out the same.
+			const mixed: DiffRow[] = [];
+			for (let i = 0; i < Math.max(ds.length, as.length); i++) {
+				if (ds[i]) mixed.push(line(ds[i] as DiffLine));
+				if (as[i]) mixed.push(line(as[i] as DiffLine));
+			}
+			expect(layoutRows(mixed, partnered(...pairs))).toEqual(out);
+		}
 	});
 });
