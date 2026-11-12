@@ -57,8 +57,9 @@ const EXPECTED: Record<string, { del: string[]; add: string[] }> = {
 	// The 4 added indent spaces and the `>` → `>=`.
 	"04-reindent-and-change.ts": { del: [], add: ["    ", "="] },
 	"05-whitespace-indent-only.ts": { del: [], add: ["    "] },
-	// 1 removed, 3 added: no pairs.
-	"44-block-1x3-match-third.ts": { del: [], add: [] },
+	// 1 removed, 3 added: the removed line pairs with the third by similarity
+	// (step 2; GitHub leaves the block plain).
+	"44-block-1x3-match-third.ts": { del: ["8080"], add: ["9090"] },
 	"60-len-1023.ts": { del: ["s"], add: ["t"] },
 	// 1,024 characters: plain.
 	"60-len-1024.ts": { del: [], add: [] },

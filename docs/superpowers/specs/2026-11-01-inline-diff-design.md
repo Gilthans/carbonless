@@ -253,7 +253,7 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   all before bridging; after it, the marks add exactly each run of
   unmarked spaces and tabs with a mark right before and after it, so an
   unchanged non-whitespace token is never inside a mark;
-  an equal pair has no marks; a pair over the cut and every unequal block
+  an equal pair has no marks; a pair over the cut and (before step 2) every unequal block
   have none; a `\r` only one line ends in is marked.
 - **Unit, render:** a marked token renders with the word tint over its
   syntax color; invisibles inside a mark are marked; a span mark wins;
@@ -271,6 +271,7 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 
 ## Decided by the owner
 
+- **Step 2 grows the list** (2026-11-08): unequal clusters pair by similarity and get marks where GitHub leaves them plain: "This is the point where we start diverging from github" (docs/superpowers/specs/2026-11-08-inline-diff-step2-design.md). 12 entries (`line <i>` units of cases 42 to 45, 48 to 50) were added.
 - **Tighter marks, not GitHub's folding** (2026-11-02): "You can go ahead
   and use the tighter version. I'm not 100% it's strictly better, but I'm
   not sure it's an interesting edge case anyway, so let's do what's

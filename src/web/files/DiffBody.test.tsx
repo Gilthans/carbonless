@@ -2701,14 +2701,34 @@ describe("DiffBody word marks", () => {
 	});
 
 	for (const view of ["unified", "side-by-side"] as const) {
-		it(`leaves an unequal block plain (${view})`, async () => {
+		it(`leaves an unequal block of unrelated lines plain (${view})`, async () => {
 			sideBySide.set(view === "side-by-side");
 			setup({
-				hunks: block(["a = 1"], ["a = 2", "b = 3"]),
+				hunks: block(
+					["sendEmail(user);"],
+					["queue.push(job);", "metrics.inc('jobs');"],
+				),
 				clusters: [cluster("c")],
 			});
-			await shown("b = 3");
+			await shown("metrics");
 			expect(words()).toEqual([]);
+		});
+
+		it(`marks the lines of an unequal block that pair by similarity (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(
+					["const timeout = 30;"],
+					["// seconds", "const timeout = 60;"],
+				),
+				clusters: [cluster("c")],
+			});
+			await shown("seconds");
+			await waitFor(() => expect(words()).toHaveLength(2));
+			expect(marked()).toEqual([
+				["30", "bg-del-word"],
+				["60", "bg-add-word"],
+			]);
 		});
 
 		it(`uses the reviewed tints on a reviewed pair, following its state in place (${view})`, async () => {

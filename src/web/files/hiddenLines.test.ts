@@ -3,7 +3,7 @@ import type { DiffLine } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
 import { hiddenLines } from "./hiddenLines";
 import type { DiffRow } from "./whitespace";
-import { hunkPairs, hunkWordMarks } from "./wordBlocks";
+import { hunkPairs, hunkWordMarks, pairWordMarks } from "./wordBlocks";
 
 const del = (text: string, noNewline?: boolean): DiffLine => ({
 	kind: "del",
@@ -50,10 +50,16 @@ describe("hiddenLines", () => {
 		const d = del("export const a = 1;");
 		const a1 = add(`${BOM}export const a = 1;`);
 		const a2 = add("const b = 2;");
-		// One removed, two added: no pair, so no marks.
-		const r = rows(d, a1, a2);
+		// One removed, two added, nothing similar enough: no pair, no marks.
+		const lone = add("zzz qqq");
+		const bom = add(`${BOM}zzz qqq`);
+		const r = rows(d, bom, lone);
 		expect(hunkWordMarks(r).size).toBe(0);
-		expect([...hiddenLines(r, hunkWordMarks(r), 4)]).toEqual([a1]);
+		expect([...hiddenLines(r, hunkWordMarks(r), 4)]).toEqual([bom]);
+		// Similar enough to pair: marked.
+		const r2 = rows(d, a1, lone);
+		expect(hunkWordMarks(r2).has(a1)).toBe(true);
+		expect([...hiddenLines(r2, hunkWordMarks(r2), 4)]).toEqual([a1]);
 		// Paired: its mark on the BOM.
 		const p = rows(d, a1);
 		expect([...hiddenLines(p, hunkWordMarks(p), 4)]).toEqual([a1]);
@@ -66,6 +72,18 @@ describe("hiddenLines", () => {
 		expect([...hiddenLines(rows(joined), new Map(), 4)]).toEqual([joined]);
 		// An unchanged line is no change.
 		expect(hiddenLines(rows(ctx(`${BOM}x`)), new Map(), 4).size).toBe(0);
+	});
+
+	it("warns on a line paired by similarity in an unequal cluster", () => {
+		const d = del("const timeout = 30;");
+		const c = add("// seconds");
+		const a = add("const timeout = 30; ");
+		const r = rows(d, c, a);
+		const pairs = hunkPairs(r);
+		expect(pairs).toEqual([[d, a]]);
+		const words = pairWordMarks(pairs);
+		expect([...hiddenLines(r, words, 4, pairs)]).toEqual([a]);
+		expect([...hiddenLines(r, words, 4)]).toEqual([a]);
 	});
 
 	it("compares a pair's lines at the file's tab width", () => {

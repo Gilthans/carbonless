@@ -135,7 +135,7 @@ import {
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
 import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
-import { hunkWordMarks } from "./wordBlocks";
+import { hunkPairs, pairWordMarks } from "./wordBlocks";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
 export interface DiffThreads {
@@ -3379,15 +3379,13 @@ function HunkRows(props: {
 	// compose. The word marks of the hunk's pairs with them, over all its
 	// runs' rows (a block may span two clusters), computed here, with the
 	// rows: a pair is never shown plain while its marks are pending.
-	const { hunkRuns, words } = useMemo(() => {
+	const { hunkRuns, pairs, words } = useMemo(() => {
 		const runs = viewRuns(hunk.lines, ignoreWhitespace).map((run) => ({
 			...run,
 			side: view === "side-by-side" ? layoutRows(run.rows) : null,
 		}));
-		return {
-			hunkRuns: runs,
-			words: hunkWordMarks(runs.flatMap((run) => run.rows)),
-		};
+		const pairs = hunkPairs(runs.flatMap((run) => run.rows));
+		return { hunkRuns: runs, pairs, words: pairWordMarks(pairs) };
 	}, [hunk, ignoreWhitespace, view]);
 	// The lines whose change doesn't show with hidden characters off (none
 	// to look for while they show).
@@ -3400,8 +3398,9 @@ function HunkRows(props: {
 						hunkRuns.flatMap((run) => run.rows),
 						words,
 						props.tabWidth ?? DEFAULT_TAB_WIDTH,
+						pairs,
 					),
-		[showHidden, hunkRuns, words, props.tabWidth],
+		[showHidden, hunkRuns, words, pairs, props.tabWidth],
 	);
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).

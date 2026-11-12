@@ -3,13 +3,13 @@ import { hiddenChange } from "../code/hiddenChange";
 import type { Mark } from "../code/Invisibles";
 import { BOM } from "../code/invisibleChars";
 import type { DiffRow } from "./whitespace";
-import { hunkPairs } from "./wordBlocks";
+import { hunkPairs, type LinePair } from "./wordBlocks";
 
 /**
  * The hunk's marked lines whose change doesn't show while "Show hidden
  * characters" is off (hiddenChange.ts). Every marked line is checked for a
  * mark that draws nothing; a paired line (hunkPairs, the pairing its marks
- * come from) is also compared with its partner. A changed line holding
+ * come from; `pairs` when the caller has them already) is also compared with its partner. A changed line holding
  * a BOM (drawn as nothing) without marks (unpaired, or too long to
  * compare) counts too: its BOM may be all that changed, and nothing
  * tells (overstating is the safe side).
@@ -18,6 +18,7 @@ export function hiddenLines(
 	rows: readonly DiffRow[],
 	words: ReadonlyMap<DiffLine, readonly Mark[]>,
 	tabWidth: number,
+	pairs?: readonly LinePair[],
 ): ReadonlySet<DiffLine> {
 	const hidden = new Set<DiffLine>();
 	for (const row of rows) {
@@ -33,7 +34,7 @@ export function hiddenLines(
 	}
 	if (words.size === 0) return hidden;
 	const partners = new Map<DiffLine, DiffLine>();
-	for (const [del, add] of hunkPairs(rows)) {
+	for (const [del, add] of pairs ?? hunkPairs(rows)) {
 		partners.set(del, add);
 		partners.set(add, del);
 	}

@@ -91,11 +91,42 @@ describe("hunkWordMarks", () => {
 		expect(marks.size).toBe(4);
 	});
 
-	it("leaves unequal blocks plain", () => {
+	it("pairs a 1/2 cluster by similarity: the comment stays unmarked (case 2)", () => {
+		const d = del("const timeout = 30;");
+		const c = add("// seconds");
+		const a = add("const timeout = 60;");
+		const marks = hunkWordMarks(rows(d, c, a));
+		expect(marks.get(d)).toEqual([[16, 18]]);
+		expect(marks.get(a)).toEqual([[16, 18]]);
+		expect(marks.has(c)).toBe(false);
+	});
+
+	it("pairs a 3/2 cluster by similarity: the dropped line stays unmarked (case 3)", () => {
+		const d1 = del("retry(getUser, 3)");
+		const dl = del("log('retrying')");
+		const d2 = del("retry(getOrders, 3)");
+		const a1 = add("retry(getUser, 5)");
+		const a2 = add("retry(getOrders, 5)");
+		const marks = hunkWordMarks(rows(d1, dl, d2, a1, a2));
+		expect(marks.get(d1)).toEqual([[15, 16]]);
+		expect(marks.get(a1)).toEqual([[15, 16]]);
+		expect(marks.get(d2)).toEqual([[17, 18]]);
+		expect(marks.get(a2)).toEqual([[17, 18]]);
+		expect(marks.has(dl)).toBe(false);
+		expect(marks.size).toBe(4);
+	});
+
+	it("leaves a 1/2 cluster of unrelated lines plain (case 4)", () => {
+		const r = rows(
+			del("sendEmail(user);"),
+			add("queue.push(job);"),
+			add("metrics.inc('jobs');"),
+		);
+		expect(hunkWordMarks(r).size).toBe(0);
+	});
+
+	it("leaves blocks with a missing side plain", () => {
 		for (const [n, m] of [
-			[1, 2],
-			[3, 1],
-			[2, 3],
 			[1, 0],
 			[0, 1],
 		] as const) {
@@ -105,6 +136,21 @@ describe("hunkWordMarks", () => {
 			];
 			expect(hunkWordMarks(rows(...lines)).size).toBe(0);
 		}
+	});
+
+	it("never pairs an unequal cluster across a whitespace-only row", () => {
+		const d = del("const timeout = 30;");
+		const wd = del("  b");
+		const wa = add("b");
+		const c = add("// seconds");
+		const a = add("const timeout = 60;");
+		const r: DiffRow[] = [
+			{ kind: "line", line: d },
+			{ kind: "ws", del: wd, add: wa },
+			{ kind: "line", line: c },
+			{ kind: "line", line: a },
+		];
+		expect(hunkWordMarks(r).size).toBe(0);
 	});
 
 	it("never pairs across a context line", () => {

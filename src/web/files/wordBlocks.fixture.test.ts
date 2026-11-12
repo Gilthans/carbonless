@@ -27,7 +27,9 @@ import { hunkWordMarks } from "./wordBlocks";
  * known-differences.json with its reason. The list may only shrink, except by
  * an owner decision: dated and quoted in the entry's reason, and recorded in
  * the spec's "Decided by the owner" (2026-11-04 grew it from 5 to 23; the
- * same day's bridging of spaces between two changes shrank it to 8).
+ * same day's bridging of spaces between two changes shrank it to 8; step 2's
+ * similarity pairing of unequal clusters, 2026-11-08, grew it by 12: lines of
+ * unequal blocks GitHub leaves plain now get marks).
  */
 
 // Real git processes: see GIT_TEST_TIMEOUTS.
