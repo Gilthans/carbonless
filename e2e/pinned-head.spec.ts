@@ -101,30 +101,40 @@ test("--head reviewed shows the PR up to the commit you last reviewed", async ({
 	await expect(fileSection(page, "later.txt")).toBeVisible();
 });
 
-test("--head fails clearly without a submitted review, and with --as-of", async ({
-	pr,
-	startCrb,
-}) => {
-	await pr();
-	const exitOf = (promise: Promise<unknown>) =>
-		promise.then(
-			() => {
-				throw new Error("crb started but should have exited");
-			},
-			(e: unknown) => {
-				if (!(e instanceof CrbExitError)) throw e;
-				return e;
-			},
+test.describe("the client", () => {
+	// Its flag checks and their output are the client's.
+	test.use({ crbClient: "cli" });
+
+	test("--head fails clearly without a submitted review, and with --as-of", async ({
+		pr,
+		startCrb,
+	}) => {
+		await pr();
+		const exitOf = (promise: Promise<unknown>) =>
+			promise.then(
+				() => {
+					throw new Error("crb started but should have exited");
+				},
+				(e: unknown) => {
+					if (!(e instanceof CrbExitError)) throw e;
+					return e;
+				},
+			);
+		const none = await exitOf(startCrb(undefined, ["--head", "reviewed"]));
+		expect(none.code).toBe(1);
+		expect(none.output).toContain(
+			"crb: octo-cat has no submitted review on acme/widget#7",
 		);
-	const none = await exitOf(startCrb(undefined, ["--head", "reviewed"]));
-	expect(none.code).toBe(1);
-	expect(none.output).toContain(
-		"crb: octo-cat has no submitted review on acme/widget#7",
-	);
-	const both = await exitOf(
-		startCrb(undefined, ["--head", "reviewed", "--as-of", "2026-01-01T00:00Z"]),
-	);
-	expect(both.output).toContain("crb: --head can't be combined with --as-of");
-	const bad = await exitOf(startCrb(undefined, ["--head", "tip"]));
-	expect(bad.output).toContain("crb: Invalid --head: tip");
+		const both = await exitOf(
+			startCrb(undefined, [
+				"--head",
+				"reviewed",
+				"--as-of",
+				"2026-01-01T00:00Z",
+			]),
+		);
+		expect(both.output).toContain("crb: --head can't be combined with --as-of");
+		const bad = await exitOf(startCrb(undefined, ["--head", "tip"]));
+		expect(bad.output).toContain("crb: Invalid --head: tip");
+	});
 });
