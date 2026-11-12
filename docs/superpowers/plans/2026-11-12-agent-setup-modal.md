@@ -20,7 +20,7 @@ auto-start.
 
 ## Global Constraints
 
-- The branch is `agent-setup-modal`, from `master` (#77 merged as b0e2033).
+- The branch is `car-141-agent-setup-modal` (CAR-141), from `master` (#77 merged as b0e2033).
   Each task branches from it.
 - Design principles 5, 6 and 8 (CLAUDE.md) apply:
   - Every page works at 360px with no horizontal page scroll.
