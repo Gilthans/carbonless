@@ -1,4 +1,3 @@
-import DiffMatchPatch from "diff-match-patch";
 import { tokenize, WORD_DIFF_MAX } from "./wordDiff";
 
 /**
@@ -22,10 +21,6 @@ const BLANK = /^\s+$/u;
 /** `arr[i]`, known to be there. */
 const at = <T>(arr: readonly T[], i: number): T => arr[i] as T;
 
-/** The token diff: no time limit, so exact; cheap when the lines are alike. */
-const dmp = new DiffMatchPatch();
-dmp.Diff_Timeout = 0;
-
 /** Token to its one-character code, for the lines being scored. */
 type Codes = Map<string, string>;
 
@@ -38,17 +33,69 @@ const code = (codes: Codes, t: string): string => {
 	return c;
 };
 
-/** Length of the longest common subsequence of two one-char-per-token strings. */
-function lcs(a: string, b: string): number {
-	let n = 0;
-	for (const [op, chars] of dmp.diff_main(a, b, false)) {
-		if (op === DiffMatchPatch.DIFF_EQUAL) n += chars.length;
+/** Number of 1 bits in a 32-bit word. */
+function ones(x: number): number {
+	x -= (x >>> 1) & 0x55555555;
+	x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+	return (Math.imul((x + (x >>> 4)) & 0x0f0f0f0f, 0x01010101) >>> 24) & 0xff;
+}
+
+/** Per token, the bit set of its places in `a`, for `lcs`. */
+function patterns(a: string): Uint32Array[] {
+	const words = (a.length + 31) >>> 5;
+	const masks = [] as Uint32Array[];
+	for (let i = 0; i < a.length; i++) {
+		const c = a.charCodeAt(i);
+		let mask = masks[c];
+		if (!mask) {
+			mask = new Uint32Array(words);
+			masks[c] = mask;
+		}
+		const w = i >>> 5;
+		mask[w] = (mask[w] as number) | (1 << (i & 31));
 	}
-	return n;
+	return masks;
+}
+
+/**
+ * Length of the longest common subsequence of two one-char-per-token
+ * strings, by the bit-parallel algorithm (Hyyro): 32 tokens of `a` per word
+ * operation, so a cell costs |b|·|a|/32 steps whether or not the lines alike.
+ */
+function lcs(a: string, b: string, masks = patterns(a)): number {
+	const m = a.length;
+	const words = (m + 31) >>> 5;
+	const v = new Uint32Array(words).fill(0xffffffff);
+	for (let k = 0; k < b.length; k++) {
+		const mask = masks[b.charCodeAt(k)];
+		if (!mask) continue; // V + 0 | V & ~0: unchanged
+		let carry = 0;
+		for (let w = 0; w < words; w++) {
+			const x = v[w] as number;
+			const u = x & (mask[w] as number);
+			const sum = x + u + carry;
+			carry = sum > 0xffffffff ? 1 : 0;
+			v[w] = (sum | (x & ~(mask[w] as number))) >>> 0;
+		}
+	}
+	let zeros = 0;
+	for (let w = 0; w < words; w++) {
+		const bits = w === words - 1 && m & 31 ? m & 31 : 32;
+		const live = bits === 32 ? 0xffffffff : (1 << bits) - 1;
+		zeros += ones(~(v[w] as number) & live);
+	}
+	return zeros;
 }
 
 /** A line's scoring tokens, one character each. */
-type Scored = { all: string; words: string; long: boolean };
+type Scored = {
+	all: string;
+	words: string;
+	long: boolean;
+	/** `patterns` of `all` / `words`, made when first scored as the old side. */
+	allMasks?: Uint32Array[];
+	wordMasks?: Uint32Array[];
+};
 
 function prepare(text: string, codes: Codes): Scored {
 	const all = tokenize(text).filter((t) => !BLANK.test(t));
@@ -62,7 +109,41 @@ function prepare(text: string, codes: Codes): Scored {
 	};
 }
 
-function score(a: Scored, b: Scored): number {
+/** Per removed line, per added line it shares tokens with: the shared count. */
+type Overlaps = Map<number, number>[];
+
+/**
+ * How many tokens (counted with repeats) each removed line shares with each
+ * added line, from an index of the added lines' tokens, so work follows
+ * what is shared. Lines sharing nothing have no entry.
+ */
+function overlaps(dels: readonly string[], adds: readonly string[]): Overlaps {
+	const index = new Map<string, Map<number, number>>();
+	adds.forEach((line, j) => {
+		for (const t of line) {
+			let posting = index.get(t);
+			if (!posting) {
+				posting = new Map();
+				index.set(t, posting);
+			}
+			posting.set(j, (posting.get(j) ?? 0) + 1);
+		}
+	});
+	return dels.map((line) => {
+		const counts = new Map<string, number>();
+		for (const t of line) counts.set(t, (counts.get(t) ?? 0) + 1);
+		const out = new Map<number, number>();
+		for (const [t, c] of counts) {
+			for (const [j, cj] of index.get(t) ?? []) {
+				out.set(j, (out.get(j) ?? 0) + Math.min(c, cj));
+			}
+		}
+		return out;
+	});
+}
+
+/** `shared`: tokens the lines have in common, when known (bounds the LCS). */
+function score(a: Scored, b: Scored, shared = Infinity): number {
 	if (a.long || b.long) return 0;
 	const [x, y] =
 		a.words.length > 0 && b.words.length > 0
@@ -70,10 +151,18 @@ function score(a: Scored, b: Scored): number {
 			: [a.all, b.all];
 	const total = x.length + y.length;
 	if (total === 0) return 0;
-	// Even a full match of the shorter line can't reach the threshold.
-	if ((2 * Math.min(x.length, y.length)) / total < PAIR_MIN_SIMILARITY)
-		return 0;
-	return (2 * lcs(x, y)) / total;
+	// Even a full match of what the lines share can't reach the threshold.
+	const common = Math.min(x.length, y.length, shared);
+	if ((2 * common) / total < PAIR_MIN_SIMILARITY) return 0;
+	let masks: Uint32Array[];
+	if (x === a.words) {
+		a.wordMasks ??= patterns(a.words);
+		masks = a.wordMasks;
+	} else {
+		a.allMasks ??= patterns(a.all);
+		masks = a.allMasks;
+	}
+	return (2 * lcs(x, y, masks)) / total;
 }
 
 /**
@@ -124,13 +213,14 @@ export function alignCluster(
 	const codes: Codes = new Map();
 	const d = dels.map((t) => prepare(t, codes));
 	const a = adds.map((t) => prepare(t, codes));
-	// Cheap prefilter: lines that share no token can't be a pair.
-	const sets = a.map((x) => new Set(x.all));
+	const sharedAll = overlaps(
+		d.map((x) => x.all),
+		a.map((x) => x.all),
+	);
 	const sim = (i: number, j: number): number => {
-		const x = at(d, i);
-		const y = at(a, j);
-		if (![...x.all].some((t) => at(sets, j).has(t))) return 0;
-		return score(x, y);
+		const all = at(sharedAll, i).get(j) ?? 0;
+		if (all === 0) return 0; // sharing no token: no pair
+		return score(at(d, i), at(a, j), all);
 	};
 	const empty: Cell = { total: 0, positions: 0, chain: null };
 	// best[i][j]: the best pairs of dels[i..] with adds[j..].

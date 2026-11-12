@@ -39,6 +39,38 @@ describe("lineSimilarity", () => {
 	});
 });
 
+describe("lineSimilarity against a plain token LCS", () => {
+	const word = fc.constantFrom("a", "b", "c", "d", "e", "f");
+	const line = fc.array(word, { maxLength: 90 }).map((t) => t.join(" "));
+	it("property", () => {
+		fc.assert(
+			fc.property(line, line, (x, y) => {
+				const a = x.split(" ").filter(Boolean);
+				const b = y.split(" ").filter(Boolean);
+				const dp = Array.from({ length: a.length + 1 }, () =>
+					new Array<number>(b.length + 1).fill(0),
+				);
+				for (let i = 1; i <= a.length; i++)
+					for (let j = 1; j <= b.length; j++)
+						(dp[i] as number[])[j] =
+							a[i - 1] === b[j - 1]
+								? ((dp[i - 1] as number[])[j - 1] as number) + 1
+								: Math.max(
+										(dp[i - 1] as number[])[j] as number,
+										(dp[i] as number[])[j - 1] as number,
+									);
+				const l = (dp[a.length] as number[])[b.length] as number;
+				const total = a.length + b.length;
+				const want = total === 0 ? 0 : (2 * l) / total;
+				const got = lineSimilarity(x, y);
+				// Below the pairing threshold a bound may cut the score to 0.
+				if (want >= PAIR_MIN_SIMILARITY) expect(got).toBeCloseTo(want);
+				else expect(got === 0 || Math.abs(got - want) < 1e-9).toBe(true);
+			}),
+		);
+	});
+});
+
 describe("alignCluster", () => {
 	it("case 1: list item added", () => {
 		expect(alignCluster(["  'beta'"], ["  'beta',", "  'gamma'"])).toEqual([
@@ -85,21 +117,22 @@ describe("alignCluster", () => {
 		expect(alignCluster(["x"], ["a", "x", "x"])).toEqual([[0, 1]]);
 		expect(alignCluster(["}", "}"], ["a", "b", "}"])).toEqual([[0, 2]]);
 	});
-	it("worst case inside the cap stays under 100 ms of CPU", () => {
-		// 50 x 50 distinct ~1000-character lines of short words, half shared.
+	it("worst case inside the cap stays under 50 ms of CPU", () => {
+		// 50 x 50 distinct ~800-character lines, each sharing half its tokens
+		// with every line on the other side, so no cell is skipped.
 		const mk = (side: string) =>
 			Array.from({ length: 50 }, (_, i) =>
 				Array.from({ length: 160 }, (_, k) =>
-					k % 2 === 0 ? `s${i}_${k}` : `${side}${i}_${k}`,
+					k % 2 === 0 ? `w${(k * 7 + i) % 80}` : `${side}${i}_${k}`,
 				).join(" "),
-			).map((l) => l.slice(0, 1000));
+			);
 		const dels = mk("d");
 		const adds = mk("a");
 		alignCluster(dels.slice(0, 5), adds.slice(0, 5)); // warm-up
 		const before = process.threadCpuUsage();
 		alignCluster(dels, adds);
 		const spent = process.threadCpuUsage(before);
-		expect((spent.user + spent.system) / 1000).toBeLessThan(100);
+		expect((spent.user + spent.system) / 1000).toBeLessThan(50);
 	});
 	it("pairs nothing above the cap", () => {
 		const line = (i: number) => `same ${i}`;
