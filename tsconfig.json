@@ -17,5 +17,5 @@
 	},
 	"include": ["src", "e2e", "test", "scripts", "*.config.ts"],
 	// The gallery's case files, data for wordBlocks.fixture.test.ts.
-	"exclude": ["test/fixtures/inline-diff"]
+	"exclude": ["test/fixtures/inline-diff", "test/fixtures/pairing"]
 }

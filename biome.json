@@ -7,7 +7,12 @@
 	},
 	"files": {
 		"ignoreUnknown": true,
-		"includes": ["**", "!test/fixtures/inline-diff", "!test/fake-gh/gh.mjs"]
+		"includes": [
+			"**",
+			"!test/fixtures/inline-diff",
+			"!test/fixtures/pairing",
+			"!test/fake-gh/gh.mjs"
+		]
 	},
 	"formatter": {
 		"enabled": true,

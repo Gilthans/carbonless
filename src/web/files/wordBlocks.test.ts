@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { bestCpuRatio } from "../../../test/cpu";
+import { pairingClusters } from "../../../test/pairing-fixtures";
 import type { DiffLine } from "../../shared/types";
 import type { DiffRow } from "./whitespace";
 import { hunkPairs, hunkWordMarks } from "./wordBlocks";
@@ -75,6 +77,36 @@ function bigHunk(): { rows: DiffRow[]; pieces: DiffRow[][] } {
 		else last.push(row);
 	}
 	return { rows: [...dels, ...adds, ...rest], pieces };
+}
+
+/**
+ * A hunk of 2,000 unequal clusters (3 removed lines, 2 added ones, each pair
+ * of lines sharing most of its words, so alignCluster pairs them), a context
+ * line between, and the same clusters as small hunks cut at a context line
+ * once a hunk has 200 rows: no cluster is split, so both make the same pairs.
+ */
+function unequalHunk(): { rows: DiffRow[]; pieces: DiffRow[][] } {
+	const out: DiffRow[] = [];
+	let n = 0;
+	const text = (k: number, tail: string) =>
+		`const total = compute(a, b, c, ${k}, ${tail});`;
+	const row = (kind: "del" | "add", t: string): DiffRow => ({
+		kind: "line",
+		line: { kind, text: t, clusterKey: "k" },
+	});
+	for (let c = 0; c < 2000; c++) {
+		out.push(line("context", n++));
+		for (let i = 0; i < 3; i++) out.push(row("del", text(n++, "old")));
+		for (let i = 0; i < 2; i++) out.push(row("add", text(n++, "new")));
+	}
+	const pieces: DiffRow[][] = [[]];
+	for (const row of out) {
+		const last = pieces[pieces.length - 1] as DiffRow[];
+		const context = row.kind === "line" && row.line.kind === "context";
+		if (context && last.length >= 200) pieces.push([row]);
+		else last.push(row);
+	}
+	return { rows: out, pieces };
 }
 
 describe("hunkWordMarks", () => {
@@ -228,61 +260,82 @@ describe("hunkWordMarks", () => {
 	});
 });
 
-describe("hunkPairs", () => {
-	const cpu = (run: () => void) => {
-		const before = process.threadCpuUsage();
-		run();
-		const spent = process.threadCpuUsage(before);
-		return spent.user + spent.system;
+describe("hunkPairs on the gallery's cases 5 and 6", () => {
+	// test/fixtures/pairing: git's clusters of each case, a context line
+	// between them. An equal cluster pairs i-th with i-th (step 1), an unequal
+	// one by similarity (step 2).
+	const pairsOf = (file: string) => {
+		const clusters = pairingClusters(file);
+		const hunk = clusters.flatMap((c, i) => [
+			...(i > 0 ? [ctx("between")] : []),
+			...c.dels.map((t) => del(t)),
+			...c.adds.map((t) => add(t)),
+		]);
+		return hunkPairs(rows(...hunk)).map(([d, a]) => [d.text, a.text]);
 	};
+	it("case 5: the signature pairs with its rename, the helper stays alone", () => {
+		const pairs = pairsOf("05-helper-above.go");
+		expect(pairs).toHaveLength(3);
+		expect(pairs[0]?.[0]).toMatch(/^\/\/ IsCacheSkippedForDomain /);
+		expect(pairs[0]?.[1]).toMatch(/^\/\/ SkipsCacheFor /);
+	});
+	it("case 6: Clear's old signature pairs with the new Touch's", () => {
+		const pairs = pairsOf("06-clear-touch.go");
+		expect(pairs).toHaveLength(4);
+		expect(pairs[0]?.[0]).toMatch(/\) Clear\(/);
+		expect(pairs[0]?.[1]).toMatch(/\) Touch\(/);
+	});
+});
 
+describe("hunkPairs", () => {
 	/**
 	 * The budget test's wall-clock timeout: it gates CPU time, not wall
-	 * time. It spends well under a second of CPU, which a loaded machine
-	 * (load 40 on 4 cores) stretches about 10x in wall time.
+	 * time. One pass of each hunk is tens of milliseconds of CPU, which a
+	 * loaded machine (load 40 on 4 cores) stretches about 10x in wall time.
 	 */
 	const LOADED = 60_000;
 
 	// The yardstick is hunkPairs on the same lines as small hunks of about
-	// 200 rows (bigHunk), making the same pairs: each small hunk costs the
-	// same however many there are, so a cost linear in the hunk's rows pairs
-	// the big hunk in about the time of the small ones (0.94–1.03x, idle
-	// and with a busy loop per core), and a uniform slowdown cancels out. A
-	// cost that grows with the square of a block's lines or of the hunk's
-	// pairs grows far more in the 5,000-line block and the 10,000 pairs than
-	// in 20-line blocks and a small hunk's pairs: copying the removed lines
-	// per line (14x), looking each one's index up again (8.8–9.7x) or
-	// copying the pairs per pair (21x) fail. Can miss a cost quadratic only
-	// in a hunk's context lines or blocks, or one that shows only past
-	// 30,000 rows.
-	it(
-		"pairs a 30,000-row hunk in 2x the CPU of the same lines as 200-row hunks",
-		() => {
-			const { rows, pieces } = bigHunk();
-			// Each round pairs the rows 40 times: one pass is about half a millisecond.
-			const whole = () => {
-				for (let r = 0; r < 40; r++) hunkPairs(rows);
-			};
-			const cut = () => {
-				for (let r = 0; r < 40; r++) for (const p of pieces) hunkPairs(p);
-			};
-			// Both make the same pairs: the big block's, and half the small blocks'.
+	// 200 rows, making the same pairs: each small hunk costs the same
+	// however many there are, so a cost linear in the hunk's rows pairs the
+	// big hunk in about the time of the small ones, and a uniform slowdown
+	// cancels out. A cost that grows with the square of a block's lines, of
+	// the hunk's pairs or of its clusters grows far more in the big hunk
+	// than in small ones: copying the removed lines per line (14x), looking
+	// each one's index up again (8.8-9.7x) or copying the pairs per pair
+	// (21x) fail. Can miss a cost quadratic only in a hunk's context lines
+	// or blocks, or one that shows only past 30,000 rows.
+	//
+	// Since step 2 the unequal clusters pair by similarity (alignCluster,
+	// O(n*m) inside its cap by design), so a pass is tens of milliseconds
+	// instead of half of one. The cut hunks keep every cluster whole (they
+	// are cut at context lines), so each cluster's alignCluster cost is in
+	// both sides and cancels; only a cost that depends on the hunk around a
+	// cluster shows. "Same pairs" still holds, and is asserted. The second
+	// hunk is all unequal clusters, 2,000 of them (the first has them in
+	// half of its small blocks, and one 5,000-line equal block).
+	const cases: [string, () => { rows: DiffRow[]; pieces: DiffRow[][] }][] = [
+		["a 30,000-row hunk (one 5,000-line block, blocks of 1-40 lines)", bigHunk],
+		["a hunk of 2,000 unequal 3/2 clusters", unequalHunk],
+	];
+	it.each(cases)(
+		"pairs %s in 2x the CPU of the same lines as 200-row hunks",
+		(_name, build) => {
+			const { rows, pieces } = build();
 			const pairs = hunkPairs(rows).length;
 			expect(pieces.reduce((sum, p) => sum + hunkPairs(p).length, 0)).toBe(
 				pairs,
 			);
-			expect(pairs).toBeGreaterThan(5000 + 5000);
-			whole();
-			cut();
-			let best = Number.POSITIVE_INFINITY;
-			let ref = Number.POSITIVE_INFINITY;
-			for (let round = 0; round < 5; round++) {
-				best = Math.min(best, cpu(whole));
-				ref = Math.min(ref, cpu(cut));
-			}
-			const ratio = best / ref;
+			expect(pairs).toBeGreaterThanOrEqual(4000);
+			expect(pieces.length).toBeGreaterThan(10);
+			const { best, ref, ratio } = bestCpuRatio(
+				() => hunkPairs(rows),
+				() => {
+					for (const p of pieces) hunkPairs(p);
+				},
+			);
 			console.info(
-				`hunkPairs: ${rows.length} rows 40 times in ${best} µs CPU, ${ratio.toFixed(2)}x as 200-row hunks`,
+				`hunkPairs: ${rows.length} rows in ${best} µs CPU, ${ratio.toFixed(2)}x as 200-row hunks (${ref} µs)`,
 			);
 			expect(ratio).toBeLessThan(2);
 		},

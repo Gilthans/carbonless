@@ -1,6 +1,8 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { type Cluster, pairingClusters } from "../../../test/pairing-fixtures";
 import type { DiffLine } from "../../shared/types";
+import { alignCluster } from "./linePairing";
 import { orderRun, type Partners } from "./pairOrder";
 import { type DiffRow, hunkView } from "./whitespace";
 
@@ -41,33 +43,51 @@ const texts = (rows: DiffRow[]) =>
 	);
 
 describe("orderRun", () => {
+	/** The gallery's case `file` (test/fixtures/pairing), cluster `at`, and its pairs. */
+	const galleryCase = (file: string, at = 0) => {
+		const c = pairingClusters(file)[at] as Cluster;
+		const ds = c.dels.map((t) => del(t));
+		const as = c.adds.map((t) => add(t));
+		const pairs = alignCluster(c.dels, c.adds).map(
+			([i, j]) => [ds[i], as[j]] as [DiffLine, DiffLine],
+		);
+		return { rows: plain(...ds, ...as), pairs };
+	};
 	it("case 2: the comment, then the pair", () => {
-		const d = del("t");
-		const c = add("comment");
-		const a = add("t'");
-		expect(texts(orderRun(plain(d, c, a), partners([d, a])))).toEqual([
-			"+comment",
-			"-t",
-			"+t'",
+		const { rows, pairs } = galleryCase("02-comment-above.ts");
+		expect(texts(orderRun(rows, partners(...pairs)))).toEqual([
+			"+// seconds before a request gives up",
+			"-const timeout = 30;",
+			"+const timeout = 60;",
 		]);
 	});
 	it("case 3: a pair, the dropped line, a pair", () => {
-		const u = del("u");
-		const log = del("log");
-		const o = del("o");
-		const u2 = add("u'");
-		const o2 = add("o'");
-		expect(
-			texts(orderRun(plain(u, log, o, u2, o2), partners([u, u2], [o, o2]))),
-		).toEqual(["-u", "+u'", "-log", "-o", "+o'"]);
+		const { rows, pairs } = galleryCase("03-removed-middle.ts");
+		expect(texts(orderRun(rows, partners(...pairs)))).toEqual([
+			"-\tconst user = await retry(getUser, 3);",
+			"+\tconst user = await retry(getUser, 5);",
+			'-\tlog("fetching orders");',
+			"-\tconst orders = await retry(getOrders, 3);",
+			"+\tconst orders = await retry(getOrders, 5);",
+		]);
 	});
 	it("case 5: the helper's added lines, then the pair", () => {
-		const c = del("c");
-		const h = Array.from({ length: 7 }, (_, i) => add(`h${i + 1}`));
-		const c2 = add("c'");
-		expect(
-			texts(orderRun(plain(c, ...h, c2), partners([c, c2]))).join(" "),
-		).toBe("+h1 +h2 +h3 +h4 +h5 +h6 +h7 -c +c'");
+		const { rows, pairs } = galleryCase("05-helper-above.go");
+		const out = texts(orderRun(rows, partners(...pairs)));
+		expect(out).toHaveLength(9);
+		expect(out.slice(0, 7).every((t) => t.startsWith("+"))).toBe(true);
+		expect(out[0]).toMatch(/^\+\/\/ flagsOr /);
+		expect(out[6]).toBe("+}");
+		expect(out[7]).toMatch(/^-\/\/ IsCacheSkippedForDomain /);
+		expect(out[8]).toMatch(/^\+\/\/ SkipsCacheFor /);
+	});
+	it("case 6: Clear's old signature pairs with Touch's, after the new functions", () => {
+		const { rows, pairs } = galleryCase("06-clear-touch.go");
+		const out = texts(orderRun(rows, partners(...pairs)));
+		expect(out).toHaveLength(16);
+		expect(out.slice(0, 14).every((t) => t.startsWith("+"))).toBe(true);
+		expect(out[14]).toMatch(/^-func .*\) Clear\(/);
+		expect(out[15]).toMatch(/^\+func .*\) Touch\(/);
 	});
 	it("an equal 2/2 cluster keeps its order", () => {
 		const a = del("a");

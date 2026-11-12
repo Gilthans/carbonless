@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { type Cluster, pairingClusters } from "../../../test/pairing-fixtures";
 import type { DiffLine } from "../../shared/types";
+import { alignCluster } from "./linePairing";
 import type { Partners } from "./pairOrder";
 import { layoutRows, type SideRow, sides } from "./sideBySide";
 import { type DiffRow, matchHunk, pairHunk, pairRun, runs } from "./whitespace";
@@ -400,34 +402,37 @@ describe("layoutRows with partners", () => {
 	const D = (n: number): DiffLine => del(n, `d${n}`);
 	const A = (n: number): DiffLine => add(n, `a${n}`);
 
-	it("puts a pair on one row, gaps by position (spec cases 2, 3, 5)", () => {
+	/**
+	 * The gallery's case `file` (test/fixtures/pairing), cluster `at`: its
+	 * lines as rows, and the pairs alignCluster makes of them.
+	 */
+	const galleryCase = (file: string, at = 0) => {
+		const c = pairingClusters(file)[at] as Cluster;
+		const ds = c.dels.map((t, i) => del(i + 1, t));
+		const as = c.adds.map((t, i) => add(i + 1, t));
+		const pairs = alignCluster(c.dels, c.adds).map(
+			([i, j]) => [ds[i], as[j]] as [DiffLine, DiffLine],
+		);
+		return { rows: [...ds, ...as].map(line), pairs };
+	};
+
+	it("puts a pair on one row, gaps by position (gallery cases 2, 3, 5)", () => {
 		// Case 2: the one removed line pairs with the second added.
-		const [d1, a1, a2] = [D(1), A(1), A(2)] as const;
-		const c2 = [d1, a1, a2].map(line);
-		expect(trace(layoutRows(c2, partnered([d1, a2])))).toEqual([
+		const c2 = galleryCase("02-comment-above.ts");
+		expect(trace(layoutRows(c2.rows, partnered(...c2.pairs)))).toEqual([
 			"[|+1]",
 			"[-1|+2]",
 		]);
 		// Case 3: pairs d1-a1 and d3-a2, d2 alone between.
-		const ds = [D(1), D(2), D(3)];
-		const as = [A(1), A(2)];
-		const c3 = [...ds, ...as].map(line);
-		expect(
-			trace(
-				layoutRows(
-					c3,
-					partnered(
-						[ds[0] as DiffLine, as[0] as DiffLine],
-						[ds[2] as DiffLine, as[1] as DiffLine],
-					),
-				),
-			),
-		).toEqual(["[-1|+1]", "[-2|]", "[-3|+2]"]);
+		const c3 = galleryCase("03-removed-middle.ts");
+		expect(trace(layoutRows(c3.rows, partnered(...c3.pairs)))).toEqual([
+			"[-1|+1]",
+			"[-2|]",
+			"[-3|+2]",
+		]);
 		// Case 5: seven added lines, then the pair.
-		const x = D(1);
-		const ys = Array.from({ length: 8 }, (_, i) => A(i + 1));
-		const c5 = [x, ...ys].map(line);
-		expect(trace(layoutRows(c5, partnered([x, ys[7] as DiffLine])))).toEqual([
+		const c5 = galleryCase("05-helper-above.go");
+		expect(trace(layoutRows(c5.rows, partnered(...c5.pairs)))).toEqual([
 			...Array.from({ length: 7 }, (_, i) => `[|+${i + 1}]`),
 			"[-1|+8]",
 		]);
@@ -480,20 +485,24 @@ describe("layoutRows with partners", () => {
 		]);
 	});
 
-	it("lays out spec cases 1 and 4", () => {
+	it("lays out gallery cases 1, 4 and 6", () => {
 		// Case 1: 'beta' -> 'beta,' + 'gamma'.
-		const d = del(1, "beta");
-		const [a1, a2] = [add(1, "beta,"), add(2, "gamma")];
-		expect(
-			trace(layoutRows([d, a1, a2].map(line), partnered([d, a1]))),
-		).toEqual(["[-1|+1]", "[|+2]"]);
-		// Case 4: no pairs, today's layout.
-		const rows = [...dels(2), ...adds(3)];
-		expect(layoutRows(rows, new Map())).toEqual(layoutRows(rows));
-		expect(trace(layoutRows(rows, new Map()))).toEqual([
+		const c1 = galleryCase("01-list-item.ts");
+		expect(trace(layoutRows(c1.rows, partnered(...c1.pairs)))).toEqual([
 			"[-1|+1]",
-			"[-2|+2]",
-			"[|+3]",
+			"[|+2]",
+		]);
+		// Case 4: no pairs, today's layout.
+		const c4 = galleryCase("04-nothing-similar.ts");
+		expect(c4.pairs).toEqual([]);
+		expect(layoutRows(c4.rows, new Map())).toEqual(layoutRows(c4.rows));
+		expect(trace(layoutRows(c4.rows, new Map()))).toEqual(["[-1|+1]", "[|+2]"]);
+		// Case 6: Clear's old signature is on one row with Touch's, after the
+		// fourteen lines of the new functions.
+		const c6 = galleryCase("06-clear-touch.go");
+		expect(trace(layoutRows(c6.rows, partnered(...c6.pairs)))).toEqual([
+			...Array.from({ length: 14 }, (_, i) => `[|+${i + 1}]`),
+			"[-1|+15]",
 		]);
 	});
 
