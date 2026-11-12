@@ -3372,18 +3372,22 @@ function HunkRows(props: {
 		const order = new Map(hunk.lines.map((l, i) => [l, i] as const));
 		return (line: DiffLine) => order.get(line);
 	}, [hunk]);
-	// The hunk's runs and their rows, once per hunk (the matching is O(n·m)
-	// over the whole hunk): not again on a toggle, a landing, a thread
-	// opening or a context load. Side by side, the rows laid out as pairs
-	// (sideBySide.ts): the whitespace rows are its input, so the two settings
-	// compose. The word marks of the hunk's pairs with them, over all its
-	// runs' rows (a block may span two clusters), computed here, with the
-	// rows: a pair is never shown plain while its marks are pending.
+	// The hunk's runs and their rows (hunkView, cached per hunk: the
+	// matching is O(n·m) over the whole hunk), not again on a toggle, a
+	// landing, a thread opening or a context load. Rows never leave their
+	// run: unified, a run's rows are already in hunkView's order (a
+	// similarity pair reads together); side by side, they're laid out as
+	// rows with a pair on one (sideBySide.ts, by the hunk's partners), so the
+	// whitespace and pairing compose. The word marks of the hunk's pairs are
+	// computed here with the rows, so a pair is never shown plain while its
+	// marks are pending. A pair whose lines sit in two runs gets its
+	// marks only: neither row moves.
 	const { hunkRuns, pairs, words } = useMemo(() => {
 		const shown = hunkView(hunk.lines, ignoreWhitespace);
 		const runs = shown.runs.map((run) => ({
 			...run,
-			side: view === "side-by-side" ? layoutRows(run.rows) : null,
+			side:
+				view === "side-by-side" ? layoutRows(run.rows, shown.partners) : null,
 		}));
 		const pairs = shown.pairs;
 		return { hunkRuns: runs, pairs, words: pairWordMarks(pairs) };

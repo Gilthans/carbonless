@@ -2805,6 +2805,50 @@ describe("DiffBody word marks", () => {
 			).toHaveAttribute("data-glyph", "···");
 		});
 
+		it(`warns on a similarity pair's line whose change doesn't show, on its moved row (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["let s = 1;"], ["// note", "let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("// note");
+			const row = document.querySelector<HTMLElement>(
+				`[data-testid="diff-line"][data-new-no="3"]`,
+			) as HTMLElement;
+			if (view === "unified") {
+				// The removed line sits right above its partner.
+				expect(
+					Array.from(
+						document.querySelectorAll<HTMLElement>(
+							'[data-testid="diff-line"]:not([data-kind="context"])',
+						),
+						(r) => r.querySelector("[data-code]")?.textContent,
+					),
+				).toEqual(["// note", "let s = 1;", "let s = 1;   "]);
+			} else {
+				// The pair shares a row; the comment has a blank cell opposite.
+				const sideText = (r: Element | null, side: string) =>
+					r?.querySelector(`td[data-side="${side}"] [data-code]`)?.textContent;
+				expect(sideText(row, "LEFT")).toBe("let s = 1;");
+				const note = document.querySelector(
+					`[data-testid="diff-line"][data-new-no="2"]`,
+				);
+				expect(sideText(note, "RIGHT")).toBe("// note");
+				expect(sideText(note, "LEFT")).toBeUndefined();
+			}
+			const warnings = screen.getAllByRole("button", {
+				name: "Hidden characters changed. Turn on Show hidden characters (h)",
+			});
+			expect(warnings).toHaveLength(1);
+			expect(row.contains(warnings[0] as HTMLElement)).toBe(true);
+			const cell = (warnings[0] as HTMLElement).closest("td") as HTMLElement;
+			if (view === "side-by-side")
+				expect(cell).toHaveAttribute("data-side", "RIGHT");
+			expect(cell.querySelector("[data-code]")?.textContent).toBe(
+				"let s = 1;   ",
+			);
+		});
+
 		it(`a touch or pen tap on the warning only explains where the switch is; a mouse click turns it on (${view})`, async () => {
 			sideBySide.set(view === "side-by-side");
 			setup({
