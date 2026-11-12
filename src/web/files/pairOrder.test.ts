@@ -4,6 +4,7 @@ import { type Cluster, pairingClusters } from "../../../test/pairing-fixtures";
 import type { DiffLine } from "../../shared/types";
 import { alignCluster } from "./linePairing";
 import { orderRun, type Partners } from "./pairOrder";
+import { layoutRows } from "./sideBySide";
 import { type DiffRow, hunkView } from "./whitespace";
 
 let n = 0;
@@ -232,4 +233,115 @@ describe("hunkView", () => {
 		expect(v.runs[0]?.rows).toEqual(plain(d));
 		expect(v.runs[1]?.rows).toEqual(plain(a));
 	});
+});
+
+describe("principle 2 end to end: hunkView's rows, unified and side by side", () => {
+	// Random hunks through the real hunkView under both Ignore whitespace
+	// settings: similar lines (they pair), whitespace twins (`~` rows),
+	// adjacent cluster runs without context between, and added lines under
+	// another cluster's key. Whatever pairs or moves, no line is lost,
+	// doubled or moved out of order or out of its run.
+	const vocab = [
+		"retry(getUser, 3)",
+		"retry(getUser, 5)",
+		"  retry(getUser, 3)",
+		"log(msg)",
+		"x = 1",
+		"x = 2",
+		"  x = 1",
+		"}",
+		"},",
+		"",
+		"const a = b",
+		"foo bar baz",
+	];
+	const text = fc.constantFrom(...vocab);
+	const run = fc.record({
+		context: fc.array(text, { maxLength: 2 }),
+		sameKeyAsLast: fc.boolean(),
+		dels: fc.array(text, { maxLength: 4 }),
+		adds: fc.array(fc.record({ text, otherKey: fc.boolean() }), {
+			maxLength: 4,
+		}),
+	});
+	type RunShape = {
+		context: string[];
+		sameKeyAsLast: boolean;
+		dels: string[];
+		adds: { text: string; otherKey: boolean }[];
+	};
+	const hunkOf = (runs: RunShape[]): DiffLine[] => {
+		const lines: DiffLine[] = [];
+		let oldNo = 1;
+		let newNo = 1;
+		runs.forEach((r, k) => {
+			for (const t of r.context)
+				lines.push({
+					kind: "context",
+					oldNo: oldNo++,
+					newNo: newNo++,
+					text: t,
+				});
+			const key = r.sameKeyAsLast && k > 0 ? `k${k - 1}` : `k${k}`;
+			for (const t of r.dels)
+				lines.push({ kind: "del", oldNo: oldNo++, text: t, clusterKey: key });
+			for (const a of r.adds)
+				lines.push({
+					kind: "add",
+					newNo: newNo++,
+					text: a.text,
+					clusterKey: a.otherKey ? `z${k}` : key,
+				});
+		});
+		return lines;
+	};
+	it("property: every line exactly once, each side in order, no row leaves its run", () => {
+		// A wall-clock timeout only: about a second of CPU, which a loaded
+		// machine stretches several times over.
+		fc.assert(
+			fc.property(fc.array(run, { minLength: 1, maxLength: 4 }), (shape) => {
+				const lines = hunkOf(shape);
+				const left = lines.filter((l) => l.kind !== "add");
+				const right = lines.filter((l) => l.kind !== "del");
+				for (const ws of [false, true]) {
+					const v = hunkView(lines, ws);
+					// Unified: the rows' lines, every one once.
+					const shown: DiffLine[] = [];
+					for (const r of v.runs) {
+						const own = new Set(r.lines);
+						for (const row of r.rows) {
+							const got =
+								row.kind === "line"
+									? [row.line]
+									: [row.del, row.add].filter(
+											(l): l is DiffLine => l !== undefined,
+										);
+							for (const l of got) expect(own.has(l)).toBe(true);
+							shown.push(...got);
+						}
+					}
+					expect(shown).toHaveLength(lines.length);
+					expect(new Set(shown).size).toBe(lines.length);
+					expect(shown.filter((l) => l.kind !== "add")).toEqual(left);
+					expect(shown.filter((l) => l.kind !== "del")).toEqual(right);
+					// Side by side: each side's lines once, in order.
+					const sl: DiffLine[] = [];
+					const sr: DiffLine[] = [];
+					for (const r of v.runs)
+						for (const s of layoutRows(r.rows, v.partners)) {
+							if (s.kind === "context") {
+								sl.push(s.line);
+								sr.push(s.line);
+							} else {
+								if (s.del) sl.push(s.del);
+								if (s.add) sr.push(s.add);
+							}
+						}
+					expect(sl).toEqual(left);
+					expect(sr).toEqual(right);
+				}
+			}),
+			{ numRuns: 1000 },
+		);
+	}, 60_000);
 });
