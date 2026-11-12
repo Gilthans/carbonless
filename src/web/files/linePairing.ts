@@ -16,7 +16,9 @@ export const ALIGN_CHARS = 120_000;
 
 /**
  * Word steps of the token LCS (Σ ⌈|old|/32⌉ × Σ |new|, in tokens) above
- * this: no pairs. About 60 ms of CPU, inside the 100 ms budget.
+ * this: no pairs. The most expensive shape it lets through (50 x 50 lines
+ * of 192 tokens) measured about 30 ms of CPU on the devbox; the CPU tests
+ * (linePairing.test.ts) pin it as a ratio, not a time.
  */
 export const ALIGN_WORD_OPS = 3_000_000;
 

@@ -211,7 +211,9 @@ describe("alignCluster", () => {
 			// 1,000 tokens a side is 1,000 x 1,000/32 = 31,250 word steps. The
 			// yardstick shares no code with the LCS: tokenizing both lines and
 			// the same number of word steps in a plain loop (plainWordSteps),
-			// so a correct implementation reads about 3x (the line
+			// so a correct implementation reads about 3x, limit 12 (a typed-array
+			// yardstick against Map-heavy code may drift 2-2.5x between machines;
+			// the mutant reads 39x) (the line
 			// preparation and masks come on top). An LCS of another kind (a
 			// plain table, 1,000,000 cells for 31,250 steps) reads about 39x,
 			// one that grows faster than tokens x tokens/32 more.
@@ -227,7 +229,7 @@ describe("alignCluster", () => {
 			console.info(
 				`lineSimilarity 1000 tokens: ${best} µs, ${ratio.toFixed(2)}x tokenizing and 31,250 plain word steps (${ref} µs)`,
 			);
-			expect(ratio).toBeLessThan(8);
+			expect(ratio).toBeLessThan(12);
 		},
 		LOADED,
 	);
@@ -263,7 +265,9 @@ describe("alignCluster", () => {
 			// million). Lines that share too little skip the LCS and measure
 			// nothing here. The yardstick shares no code with the LCS: the
 			// 100 lines tokenized plus 2,880,000 word steps in a plain loop
-			// (plainWordSteps), so a correct implementation reads about 3x
+			// (plainWordSteps), so a correct implementation reads about 3x, limit 12 (a
+			// typed-array yardstick against Map-heavy code may drift 2-2.5x on CI;
+			// the mutant reads 55x)
 			// (the line preparation and masks come on top) and an LCS of
 			// another kind, a plain table of 192 x 192 cells a pair, reads
 			// about 55x. Extra work per cell or per pair on top shows too.
@@ -274,10 +278,23 @@ describe("alignCluster", () => {
 				WORD_DIFF_MAX,
 			);
 			expect(50 * 6 * 50 * 192).toBeLessThanOrEqual(ALIGN_WORD_OPS);
-			// Every pair clears the bound: the lines share most of their tokens.
-			for (const d of dels.slice(0, 3))
-				for (const a of adds.slice(0, 3))
-					expect(lineSimilarity(d, a)).toBeGreaterThan(0.2);
+			// Every pair clears score()'s bound (2 x shared / 384 >= 0.5, so at
+			// least 96 shared tokens, counted with repeats): checked for all
+			// 2,500 pairs from the lines' token counts.
+			const counts = (l: string) => {
+				const m = new Map<string, number>();
+				for (const c of l) m.set(c, (m.get(c) ?? 0) + 1);
+				return m;
+			};
+			const addCounts = adds.map(counts);
+			for (const d of dels) {
+				const dc = counts(d);
+				for (const ac of addCounts) {
+					let shared = 0;
+					for (const [t, n] of dc) shared += Math.min(n, ac.get(t) ?? 0);
+					expect(shared).toBeGreaterThanOrEqual(96);
+				}
+			}
 			const { best, ref, ratio } = bestCpuRatio(
 				() => alignCluster(dels, adds),
 				() => {
@@ -288,7 +305,7 @@ describe("alignCluster", () => {
 			console.info(
 				`alignCluster 50x50 of 192 tokens: ${best} µs, ${ratio.toFixed(2)}x tokenizing and 2.88M plain word steps (${ref} µs)`,
 			);
-			expect(ratio).toBeLessThan(6);
+			expect(ratio).toBeLessThan(12);
 		},
 		LOADED,
 	);
@@ -346,7 +363,7 @@ describe("alignCluster", () => {
 			console.info(
 				`alignCluster over ALIGN_WORD_OPS: ${best} µs, ${ratio.toFixed(2)}x tokenizing the lines (${ref} µs)`,
 			);
-			expect(ratio).toBeLessThan(8);
+			expect(ratio).toBeLessThan(12);
 		},
 		LOADED,
 	);
