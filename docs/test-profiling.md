@@ -17,7 +17,7 @@ turns it off, running crb as it ships.
 | --- | --- | --- |
 | `e2e` | Playwright reporter (`e2e/trace-reporter.ts`) | one trace per test: the test, hooks, fixtures, `test.step`s, navigations, with `crb.phase` on setup ones |
 | `playwright-worker` | e2e worker | fixture gits (`crb.fixture`) |
-| `crb`, `crb-client` | `crb serve`, `crb <pr>` under test | the process, HTTP requests, git and gh calls, opening a review (clone, fetch, snapshot), overview reads |
+| `crb`, `crb-client` | `crb serve` under test; `crb <pr>` only in tests that run the CLI (`crbClient: "cli"`; the others open over HTTP, `e2e/crb-open.ts`) | the process, HTTP requests, git and gh calls, opening a review (clone, fetch, snapshot), overview reads |
 | `fake-gh` | `test/fake-gh/gh` (its server, `serve.mjs`, in the test process) | one per call, from the server taking it to its answer (`process.pid`: the shim's), under crb's `gh` span |
 | `vitest` | unit worker (`test/setup.ts`) | one trace per file: the file, its tests, and crb's git and gh calls and fixture gits under the test |
 
@@ -61,7 +61,9 @@ is off and costs a property check per git or gh call.
   `docker rm -f crb-jaeger` drops it; its storage is in memory.
 
 Phases of an e2e test: `setup.fixture` (the fixture repo), `setup.crb_serve`
-(`crb serve` until it prints its URL), `setup.crb_open` (`crb <pr>`),
+(`crb serve` until it prints its URL), `setup.crb_open` (opening the review:
+the harness's `POST /api/reviews`, or `crb <pr>` in a test with
+`crbClient: "cli"`),
 `setup.browser` (browser, context, page fixtures), `setup.first_load` (the
 first navigation), `setup.other` (other before-hooks), `body`,
 `teardown.crb_stop`, `teardown.other`.
