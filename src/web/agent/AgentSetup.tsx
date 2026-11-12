@@ -1,6 +1,5 @@
 import {
 	CheckIcon,
-	CopyIcon,
 	InfoIcon,
 	PlugIcon,
 	SparkleFillIcon,
@@ -22,7 +21,7 @@ import {
 	type AgentHarness,
 } from "../../shared/agentHarnesses";
 import { boundReviewId } from "../api";
-import { copyText } from "../copyText";
+import { type Copied, CopyMark, copyInto, copyWord } from "../CopyMark";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipLayer } from "../Tooltip";
 import { NOT_PHONE, useMedia } from "../useMedia";
@@ -112,37 +111,6 @@ function Field(props: { label: string; children: ReactNode }) {
 
 /** What a session that's already running does to pick up a line just added. */
 export const RELOAD_HINT = "Session already running? /reload-plugins";
-
-/** A Copy press's outcome: none yet, on the clipboard, or refused. */
-type Copied = "ok" | "failed" | null;
-
-const copyWord = (copied: Copied) =>
-	copied === "ok" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy";
-
-function CopyMark(props: { copied: Copied }) {
-	if (props.copied === "ok")
-		return <CheckIcon size={16} aria-hidden className="text-ok" />;
-	if (props.copied === "failed")
-		return <XIcon size={16} aria-hidden className="text-bad" />;
-	return <CopyIcon size={16} aria-hidden />;
-}
-
-/**
- * Copies `text` and says how it went. When the browser refuses, the line
- * is selected instead, for the reviewer to copy by hand.
- */
-async function copyInto(
-	text: string,
-	line: HTMLInputElement | null,
-	done: (copied: Copied) => void,
-) {
-	const ok = await copyText(text);
-	done(ok ? "ok" : "failed");
-	if (!ok) {
-		line?.focus();
-		line?.select();
-	}
-}
 
 /**
  * One line to copy: read-only, selected on focus, with an icon Copy button
