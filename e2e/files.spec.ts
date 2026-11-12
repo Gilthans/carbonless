@@ -16,13 +16,7 @@ import {
 	treeNumbers,
 	withTree,
 } from "./files-ui";
-import {
-	expect,
-	installClock,
-	type PrOptions,
-	reviewPage,
-	test,
-} from "./fixtures";
+import { expect, type PrOptions, reviewPage, test } from "./fixtures";
 
 const core = Array.from({ length: 78 }, (_, i) => `core ${i + 1}`);
 const util = Array.from({ length: 10 }, (_, i) => `util ${i + 1}`);
@@ -500,7 +494,6 @@ test("a click right as Undo cross-off swaps in doesn't undo", async ({
 }) => {
 	await pr(fixture);
 	const s = await startCrb();
-	await installClock(page);
 	await openFiles(page, s.url);
 	const section = fileSection(page, "src/util.ts");
 	const bar = progress(page);
@@ -540,12 +533,10 @@ test("a click right as Undo cross-off swaps in doesn't undo", async ({
 	);
 	await expect(undo).toBeVisible();
 	await expect(bar).toContainText("0 / 3 clusters reviewed");
-	// Once the guard (UNDO_ARM_MS) is over, a click asks and a second one
-	// undoes.
-	const now = await page.evaluate(() => performance.now());
-	await page.clock.fastForward(
-		Math.max(0, Math.ceil(clickedAt + 500 - now)) + 1,
-	);
+	// Once the guard (UNDO_ARM_MS, 500 ms) is over, a click asks and a second
+	// one undoes. Waited for in real time: the faked clock slows this page by
+	// more than the guard lasts (measured, CAR-132).
+	await page.waitForFunction((t) => performance.now() > t + 500, clickedAt);
 	await undo.click();
 	const armed = section.locator("button[data-armed]");
 	await expect(armed).toBeVisible();
