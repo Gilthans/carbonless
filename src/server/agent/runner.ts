@@ -238,21 +238,7 @@ export class AgentRunner {
 		// Questions asked elsewhere (another server showing `elsewhere`)
 		// reach the ref, not this runner: the holder answers them on its poll.
 		if (waiting > 0 && this.#state === "ready" && !this.#pump) this.poke();
-		// ACP turned off with no stop() here (another server's Detach, a
-		// flag removed by hand, a join approved): the process goes and the
-		// claim is let go; the checkout stays for a Spawn to come.
-		if (
-			!this.#closed &&
-			!this.#detaching &&
-			this.#off() &&
-			!this.#pump &&
-			!this.#answering &&
-			(this.#proc || this.#release)
-		) {
-			this.#detaching = this.#detach({ keepCheckout: true }).finally(() => {
-				this.#detaching = null;
-			});
-		}
+		if (this.#off()) this.#windDown();
 		const answering = this.#answering;
 		// ACP going off: off at once, unless a turn still finishes (stop()).
 		const stopping = this.#off() && !answering;
@@ -299,9 +285,15 @@ export class AgentRunner {
 
 	/** After a human open or message: spawns if needed, then drains. Never throws. */
 	poke(): void {
-		if (this.#closed || this.#off()) return;
+		if (this.#closed) return;
+		if (this.#off()) {
+			// The flag cleared elsewhere: what still runs here goes.
+			this.#windDown();
+			return;
+		}
 		this.#again = true;
-		if (this.#pump) return;
+		// A detach under way finishes first; its end pokes again.
+		if (this.#pump || this.#detaching) return;
 		this.#pump = this.#run()
 			.catch((error: unknown) => {
 				this.#set("error", { error: (error as Error).message });
@@ -378,14 +370,42 @@ export class AgentRunner {
 	 */
 	detach(): Promise<void> {
 		if (this.#closed) return this.#closed;
+		return this.#startDetach({ keepCheckout: false });
+	}
+
+	/**
+	 * ACP turned off with no stop() here (another server's Detach, a flag
+	 * removed by hand, a join approved): the process goes and the claim is
+	 * let go; the checkout stays for a Spawn to come. On a status or a poke.
+	 */
+	#windDown(): void {
+		if (
+			this.#closed ||
+			this.#detaching ||
+			this.#pump ||
+			this.#answering ||
+			!(this.#proc || this.#release)
+		) {
+			return;
+		}
+		void this.#startDetach({ keepCheckout: true });
+	}
+
+	/**
+	 * One detach at a time, after any under way. While one runs, poke()
+	 * only records itself; once it is over (and #detaching is clear), a
+	 * flag set meanwhile (Spawn, Restart) starts the agent afresh.
+	 */
+	#startDetach(opts: { keepCheckout: boolean }): Promise<void> {
 		const under = this.#detaching;
 		const run = async () => {
-			// A status's wind-down under way finishes first; then all of it.
 			await under;
-			await this.#detach({ keepCheckout: false });
+			await this.#detach(opts);
 		};
 		const mine: Promise<void> = run().finally(() => {
-			if (this.#detaching === mine) this.#detaching = null;
+			if (this.#detaching !== mine) return;
+			this.#detaching = null;
+			if (!this.#closed && !this.#off()) this.poke();
 		});
 		this.#detaching = mine;
 		return mine;
@@ -418,9 +438,8 @@ export class AgentRunner {
 		this.#crashes = 0;
 		this.#seen = undefined;
 		if (this.#closed) return;
+		// Spawn pressed again while this ran: #startDetach pokes once it ends.
 		this.#set("off");
-		// Spawn pressed again while this ran: on again.
-		if (!this.#off()) this.poke();
 	}
 
 	/** Stops the current turn only. */

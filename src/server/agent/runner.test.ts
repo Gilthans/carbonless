@@ -1023,6 +1023,89 @@ describe("AgentRunner", () => {
 			expect(treeHead()).toBe(origin.shas[1]);
 		});
 
+		/** A claim that counts holds and releases; `gate` holds each release. */
+		const countingClaim = () => {
+			const c = {
+				holds: 0,
+				releases: 0,
+				gate: null as Promise<void> | null,
+				releasing: 0,
+				held: () => c.holds - c.releases,
+				claim: {
+					hold: async () => {
+						c.holds++;
+						return {
+							ok: true as const,
+							release: async () => {
+								c.releasing++;
+								if (c.gate) await c.gate;
+								c.releases++;
+							},
+						};
+					},
+					drop: async () => {},
+				} as unknown as ReviewClaim,
+			};
+			return c;
+		};
+
+		it("Spawn pressed while a detach is still releasing: once it ends, one agent runs, holding the claim", async () => {
+			let off = false;
+			const c = countingClaim();
+			const r = makeRunner({ acpOff: () => off, claim: c.claim });
+			r.poke();
+			await until((s) => s.state === "ready");
+			const first = spawns()[0]?.pid as number;
+			let open!: () => void;
+			c.gate = new Promise<void>((res) => {
+				open = res;
+			});
+			off = true;
+			const detached = r.detach();
+			await vi.waitFor(() => expect(c.releasing).toBe(1), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			// Spawn: the flag set again while the release is held.
+			off = false;
+			r.asked();
+			c.gate = null;
+			open();
+			await detached;
+			const s = await until((st) => st.state === "ready");
+			expect(s.state).toBe("ready");
+			expect(spawns()).toHaveLength(2);
+			const second = spawns()[1]?.pid as number;
+			expect(() => process.kill(first, 0)).toThrow();
+			expect(() => process.kill(second, 0)).not.toThrow();
+			expect(c.held()).toBe(1);
+			expect(treeHead()).toBe(origin.shas[1]);
+			// It stays: a later status doesn't wind it down.
+			await r.status();
+			await r.settled();
+			expect(c.held()).toBe(1);
+			expect((await r.status()).state).toBe("ready");
+		});
+
+		it("the flag cleared elsewhere, then a poke (no status): the process stops and the claim goes", async () => {
+			let off = false;
+			const c = countingClaim();
+			const r = makeRunner({ acpOff: () => off, claim: c.claim });
+			r.poke();
+			await until((s) => s.state === "ready");
+			const pid = spawns()[0]?.pid as number;
+			off = true;
+			r.poke();
+			await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			await vi.waitFor(() => expect(c.held()).toBe(0), {
+				timeout: 20_000,
+				interval: 20,
+			});
+		});
+
 		it("seen: set by the agent's messages, the status time while it is alive and idle", async () => {
 			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
 			let t = Date.parse("2026-11-12T10:00:00.000Z");

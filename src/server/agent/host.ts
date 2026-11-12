@@ -381,6 +381,8 @@ export class AgentHost {
 	async detach(): Promise<void> {
 		await this.#restored;
 		if (this.join.isJoined()) {
+			// The spawn flag is left as it is: set while joined (Spawn pressed
+			// on another server), the ACP buddy starts once the session leaves.
 			this.join.leave("disconnected");
 			return;
 		}

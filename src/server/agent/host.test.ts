@@ -208,8 +208,9 @@ describe("AgentHost with a session joined through MCP", () => {
 	/** The review's GitHub threads (none: span threads only). */
 	let ghThreads: ReviewThread[];
 
-	const make = () =>
+	const make = (now?: () => number) =>
 		buildAgentHost({
+			...(now ? { now } : {}),
 			dir,
 			store,
 			code: async () => undefined,
@@ -595,17 +596,37 @@ describe("AgentHost with a session joined through MCP", () => {
 		});
 	});
 
-	it("seen: the later of the ACP agent's and the joined session's", async () => {
+	it("seen: the later of the ACP agent's and the joined session's (the broker's clock, not the machine's)", async () => {
+		await host.close();
+		let clock = Date.parse("2026-11-12T10:00:00.000Z");
+		host = make(() => clock);
 		expect((await host.status()).seen).toBeUndefined();
-		acpSeen = Date.parse("2026-11-12T10:00:00.000Z");
-		expect((await host.status()).seen).toBe("2026-11-12T10:00:00.000Z");
+		acpSeen = Date.parse("2026-11-12T09:00:00.000Z");
+		expect((await host.status()).seen).toBe("2026-11-12T09:00:00.000Z");
 		const token = await approve();
-		host.join.watcher(token);
-		const s = await host.status();
-		expect(Date.parse(s.seen as string)).toBeGreaterThan(acpSeen);
+		const lease = host.join.watcher(token);
+		clock += 60_000;
+		// Watched: the session's now beats the ACP agent's older word.
+		expect((await host.status()).seen).toBe("2026-11-12T10:01:00.000Z");
+		lease?.close();
+		clock += 60_000;
 		await host.sessionThreads(token);
-		acpSeen = Date.now() + 60_000;
-		expect((await host.status()).seen).toBe(new Date(acpSeen).toISOString());
+		clock += 60_000;
+		expect((await host.status()).seen).toBe("2026-11-12T10:02:00.000Z");
+		acpSeen = Date.parse("2026-11-12T11:00:00.000Z");
+		expect((await host.status()).seen).toBe("2026-11-12T11:00:00.000Z");
+	});
+
+	it("detach of a joined session leaves a spawn flag set meanwhile (Spawn pressed elsewhere): ACP may start", async () => {
+		await approve();
+		// Another server's Spawn while this one's session is joined.
+		writeFileSync(join(dir, "acp-on"), "");
+		expect(acpOff()).toBe(true);
+		await host.detach();
+		expect(existsSync(join(dir, "acp-on"))).toBe(true);
+		expect(acpOff()).toBe(false);
+		expect((await host.status()).spawned).toBe(true);
+		expect(runner.detach).not.toHaveBeenCalled();
 	});
 
 	it("a new host on the same dir restores the joined session as reconnecting", async () => {
