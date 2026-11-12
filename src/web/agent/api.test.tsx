@@ -14,7 +14,6 @@ import {
 	type JoinPoll,
 	joinLine,
 	mcpLine,
-	shellWord,
 	useHiddenJoinPoll,
 } from "./api";
 
@@ -302,11 +301,14 @@ describe("the join lines", () => {
 		}
 	});
 
-	it("shellWord single-quotes anything that would expand in double quotes", () => {
-		expect(shellWord("plain?x=1&y")).toBe('"plain?x=1&y"');
-		expect(shellWord("a$b")).toBe("'a$b'");
-		expect(shellWord("it's `x`")).toBe("'it'\\''s `x`'");
-		expect(shellWord('say "hi"!')).toBe(`'say "hi"!'`);
+	it("the URL is single-quoted when anything in it would expand in double quotes", () => {
+		// The origin isn't encoded, so it reaches the shell word as is.
+		const word = (origin: string) =>
+			mcpLine("codex", origin, null).replace("codex mcp add crb --url ", "");
+		expect(word("http://plain?x=1&y")).toBe('"http://plain?x=1&y/mcp"');
+		expect(word("http://a$b")).toBe("'http://a$b/mcp'");
+		expect(word("http://it's `x`")).toBe("'http://it'\\''s `x`/mcp'");
+		expect(word('http://say "hi"!')).toBe(`'http://say "hi"!/mcp'`);
 	});
 
 	it("the join line names the review's link", () => {

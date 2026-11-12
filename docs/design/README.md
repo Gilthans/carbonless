@@ -533,7 +533,9 @@ states keep their convention colours.
   person tint, the agent's on `agent` inside `agent-edge`, as GitHub-flavored
   Markdown through the GitHub comment sanitiser (code fences in a known
   language drawn as the diff's code rows). Waiting: a `warn` dot and
-  "waiting for an agent", a button "Set up an agent" when none is. Answering:
+  "waiting for an agent"; with none spawned or joined, a button that opens
+the setup ("Spawn or invite an agent", or "Set up an agent" with no
+config). Answering:
   a spinner beside the name, the text growing in place, one collapsed
   activity line ("read 2 files · ran 1 command · edited 1 file · used 1
   tool", opened to every title, a rejected decision in `bad`) and Stop in
@@ -548,25 +550,31 @@ states keep their convention colours.
 - **The chip** (`AgentChip`) sits in the header's meta line after
   `owner/repo`: the sparkle (at half strength when off or elsewhere), the
   agent's name on a desktop only, and a dot: `unreviewed` grey off or
-  elsewhere, `warn` starting or busy, `ok` ready, `bad` error or a bad
-  config. Its tooltip says the detail ("No agent · set one up", "Claude
-  Agent 0.100.0 · answering 1 thread", the error, "answered by the server
-  on :4748"). It opens the setup in every state. 40px tall on a phone. Its
+  elsewhere, `warn` starting (spawned, not yet up) or busy, `ok` ready,
+  `bad` error, a bad config or a spawn with no agent configured. Its
+  tooltip says the detail ("No agent · spawn or invite", "Claude Agent
+  0.100.0 · answering 1 thread", the error, "answered by the server on
+  :4748"). A joined session's chip opens a popover (Disconnect); every
+  other press opens the agent modal. 40px tall on a phone. Its
   first read spins in the dot's place; a routine poll moves nothing. The
   status is read every 5 s while the page is visible, every second while
   the agent starts or answers (its text streams through the status), again
   when the page comes back, never while it is hidden; the threads are read
   again whenever the status's state (or when it last changed), the thread
   answered or the waiting count moves.
-- **The setup** (`AgentSetup`): a centred dialog on a desktop
-  (`surface` inside `edge`, `shadow-float`), a bottom sheet on a
-  phone. Three steps on one panel: the harnesses as 40px radio tiles
-  (`agent-edge` when picked), the install line in a read-only code field
-  with Copy, Command and Arguments (typed only for Other), Claude Code's
-  env line; Check, then its result (`ok` name and version, or the `bad`
-  reason with the stderr in a `pre`); the leash ("open", "stricter levels
-  later" in `faint`). Remove (when one is set up), Cancel, and Save (the
-  `cta`, only after a Check of the fields as they are).
+- **The agent modal** (`AgentSetup`): a centred dialog on a desktop
+  (`surface` inside `edge`, `shadow-float`), a bottom sheet on a phone;
+  its view follows the status. No agent connected: "Setup Review Agent",
+  tabs Invite (MCP: a line per harness, the join line, Approve) and Spawn
+  (ACP: the harnesses as 40px radio tiles, `agent-edge` when picked, the
+  install line with Copy; the leash, Open; Command and Arguments, typed
+  only for Other, and Spawn, which checks, saves and starts, or shows the
+  `bad` reason with the stderr in a `pre`), in numbered steps; only Close
+  in the footer. Connected: "Review Agent", a Status card (name, Invited
+  · MCP or Spawned · ACP, the state pill, Connected, Last seen, Machine or
+  Command, Leash), Activity (the thread answered or Idle, "N waiting",
+  Stop current) and a red Detach (Restart too after a crash). Spec:
+  `docs/superpowers/specs/2026-11-12-agent-setup-modal-design.md`.
 - **Overview**: an "Agent threads" band after the thread groups in "Is it
   ready": "N open · N waiting" (a skeleton while they load) and the chip's
   dot, or "Set up an agent" when none is; "N new" (an `accent` dot) links

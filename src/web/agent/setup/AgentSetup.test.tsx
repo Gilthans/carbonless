@@ -21,8 +21,7 @@ import { mcpLine } from "../api";
 import {
 	closeAgentSetup,
 	openAgentSetup,
-	openInviteSetup,
-	openSpawnSetup,
+	setAgentSetupTab,
 	TAB_KEY,
 } from "../setupStore";
 import { AgentSetupHost, RELOAD_HINT } from "./AgentSetup";
@@ -175,6 +174,14 @@ async function opened(open?: () => void) {
 	return { user, client, dialog };
 }
 
+/** Opens the setup on a tab, the way a reviewer's last choice does. */
+const onTab = (tab: "invite" | "spawn") => () => {
+	setAgentSetupTab(tab);
+	openAgentSetup();
+};
+const openInviteSetup = onTab("invite");
+const openSpawnSetup = onTab("spawn");
+
 const names = (calls: Array<[string, unknown]>) => calls.map(([n]) => n);
 
 describe("AgentSetup: the view follows the status", () => {
@@ -232,19 +239,6 @@ describe("AgentSetup: the view follows the status", () => {
 		expect(
 			within(third.dialog).getByRole("tab", { name: "Invite" }),
 		).toHaveAttribute("aria-selected", "true");
-	});
-
-	it("an opener that names a tab opens it and stores it", async () => {
-		const { dialog } = await opened(openSpawnSetup);
-		expect(within(dialog).getByRole("tab", { name: "Spawn" })).toHaveAttribute(
-			"aria-selected",
-			"true",
-		);
-		expect(localStorage.getItem(TAB_KEY)).toBe("spawn");
-		closeAgentSetup();
-		cleanup();
-		await opened(openInviteSetup);
-		expect(localStorage.getItem(TAB_KEY)).toBe("invite");
 	});
 
 	it("with localStorage throwing, it opens on Invite and the tabs still switch", async () => {
@@ -756,10 +750,51 @@ describe("AgentSetup: Review Agent (connected)", () => {
 		await waitFor(() => expect(names(writes.log)).toEqual(["postAgentStart"]));
 	});
 
-	it("a flag with no config: Error, No agent configured", async () => {
-		current = status({ state: "error", spawned: true, configured: false });
+	it("a flag with no config: Error, No agent configured, Detach (never Starting)", async () => {
+		// The server's shape: the runner stays off, the flag is set.
+		current = status({ state: "off", spawned: true, configured: false });
 		const { dialog } = await opened();
 		expect(await within(dialog).findByText("No agent configured")).toBeTruthy();
+		const pill = within(dialog).getByTestId("agent-state");
+		expect(pill).toHaveTextContent("Error");
+		expect(pill).not.toHaveTextContent("Starting");
+		expect(
+			within(dialog).getByRole("button", { name: "Detach" }),
+		).toBeEnabled();
+	});
+
+	it("spawned and configured, the runner not yet up: Starting", async () => {
+		current = status({ state: "off", spawned: true, configured: true });
+		const { dialog } = await opened();
+		expect(await within(dialog).findByTestId("agent-state")).toHaveTextContent(
+			"Starting",
+		);
+		expect(within(dialog).queryByText("No agent configured")).toBeNull();
+	});
+
+	it("Detach of a joined session that turns into a spawned agent: Detach again, not stuck on Detaching…", async () => {
+		current = status({ state: "ready", via: "mcp", joined: JOINED });
+		const { user, dialog, client } = await opened();
+		await user.click(
+			await within(dialog).findByRole("button", { name: "Detach" }),
+		);
+		await waitFor(() => expect(names(writes.log)).toEqual(["postAgentDetach"]));
+		// Another server set the spawn flag: still connected, now over ACP.
+		current = status({
+			state: "ready",
+			spawned: true,
+			via: "acp",
+			agent: { name: "Claude Agent", version: "1" },
+		});
+		await client.invalidateQueries({ queryKey: ["agent"] });
+		await waitFor(() =>
+			expect(within(dialog).getByTestId("agent-status-card")).toHaveTextContent(
+				"Spawned · ACP",
+			),
+		);
+		expect(
+			await within(dialog).findByRole("button", { name: "Detach" }),
+		).toBeEnabled();
 	});
 
 	it("another carbonless runs it: says so with its port", async () => {
@@ -780,9 +815,11 @@ describe("AgentSetup: Review Agent (connected)", () => {
 		});
 		threads = [thread("T1", "src/host.ts", 234)];
 		const { dialog } = await opened();
-		expect(
-			await within(dialog).findByTestId("agent-waiting-count"),
-		).toHaveTextContent("2 waiting");
+		const count = await within(dialog).findByTestId("agent-waiting-count");
+		expect(count).toHaveTextContent("2 waiting");
+		// Plain text: nothing to press, so no tap target under 40px.
+		expect(count).not.toHaveAttribute("tabindex");
+		expect(count).toHaveAttribute("title", "2 threads waiting for the agent");
 	});
 
 	it("the thread link names path:line and the question, and closes the modal", async () => {

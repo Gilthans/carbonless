@@ -21,11 +21,23 @@ import {
 } from "./api";
 import { openAgentSetup } from "./setupStore";
 
+/**
+ * Spawned (not joined) and the runner not up yet: starting when an agent is
+ * configured, an error when none is (nothing will ever start).
+ */
+function spawnGap(status: AgentStatus): "starting" | "unconfigured" | null {
+	if (status.joined || !status.spawned || status.state !== "off") return null;
+	return status.configured ? "starting" : "unconfigured";
+}
+
 /** The status dot's colour: muted off or elsewhere, yellow on its way or busy, green ready, red failing. */
 export function agentDot(status: AgentStatus): string {
-	if (status.state === "error" || status.error) return "bg-bad";
+	const gap = spawnGap(status);
+	if (status.state === "error" || status.error || gap === "unconfigured")
+		return "bg-bad";
 	if (status.state === "ready") return "bg-ok";
 	if (
+		gap === "starting" ||
 		status.state === "starting" ||
 		status.state === "busy" ||
 		status.state === "reconnecting"
@@ -46,6 +58,9 @@ export function agentTip(status: AgentStatus): string {
 		if (status.state === "reconnecting") return `${name} · reconnecting`;
 		return `${name} · listening`;
 	}
+	const gap = spawnGap(status);
+	if (gap === "unconfigured") return "No agent configured";
+	if (gap === "starting") return who ? `${who} · starting` : "Starting";
 	switch (status.state) {
 		case "off":
 			return status.configured

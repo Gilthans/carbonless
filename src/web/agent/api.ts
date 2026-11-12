@@ -214,8 +214,6 @@ export const joinSetupQuery = queryOptions({
 	retry: false,
 });
 
-export { shellWord } from "../../shared/agentHarnesses";
-
 /** The MCP URL of this crb, with its access key when one is needed. */
 export const mcpUrl = (origin: string, key: string | null): string =>
 	`${origin}/mcp${key ? `?${new URLSearchParams({ key })}` : ""}`;

@@ -36,6 +36,9 @@ function pillOf(status: AgentStatus): {
 	dot: string;
 	spin?: boolean;
 } {
+	// Spawned with no agent configured: nothing will ever start.
+	if (unconfigured(status))
+		return { label: "Error", tone: "text-bad", dot: "bg-bad" };
 	switch (status.state) {
 		case "ready":
 			return { label: "Ready", tone: "text-ok", dot: "bg-ok" };
@@ -58,6 +61,10 @@ function pillOf(status: AgentStatus): {
 			return { label: "Starting", tone: "text-muted", dot: "", spin: true };
 	}
 }
+
+/** Spawned (not joined) with no agent configured: an error, whatever the runner's state. */
+const unconfigured = (status: AgentStatus): boolean =>
+	!status.joined && Boolean(status.spawned) && !status.configured;
 
 /** A path's last part. */
 const fileOf = (path: string) => path.split("/").pop() ?? path;
@@ -103,6 +110,14 @@ export function StatusView(props: { status: AgentStatus; onClose(): void }) {
 	};
 	// Pressed: "Detaching…" until the status says no agent (this view goes).
 	const [detaching, setDetaching] = useState(false);
+	// The connected kind changed under a Detach (a joined session's Detach
+	// while another server spawned this review's agent): the press is spent.
+	const kind = joined ? "joined" : "acp";
+	const [detachedKind, setDetachedKind] = useState(kind);
+	if (detachedKind !== kind) {
+		setDetachedKind(kind);
+		setDetaching(false);
+	}
 	const detach = useMutation({
 		mutationFn: postAgentDetach,
 		onMutate: () => setDetaching(true),
@@ -124,7 +139,7 @@ export function StatusView(props: { status: AgentStatus; onClose(): void }) {
 	const connectedAt = joined ? joined.since : status.spawnedAt;
 	const failed = status.state === "error";
 	const why =
-		failed && !status.configured
+		unconfigured(status) || (failed && !status.configured)
 			? "No agent configured"
 			: (status.error ?? null);
 	const command = config.data?.agent
@@ -313,24 +328,15 @@ function Activity(props: { status: AgentStatus; onClose(): void }) {
 				<h3 id="agent-activity-heading" className={SECTION}>
 					Activity
 				</h3>
-				<Tooltip
-					content={`${waiting} ${waiting === 1 ? "thread" : "threads"} waiting for the agent`}
-					describe={false}
+				<span
+					data-testid="agent-waiting-count"
+					title={`${waiting} ${waiting === 1 ? "thread" : "threads"} waiting for the agent`}
+					className={`inline-flex h-[22px] items-center rounded-full px-2 text-xs font-semibold ${
+						waiting > 0 ? "bg-warn/15 text-warn" : "bg-overlay text-muted"
+					}`}
 				>
-					{(trigger) => (
-						<span
-							{...trigger}
-							data-testid="agent-waiting-count"
-							// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
-							tabIndex={0}
-							className={`inline-flex h-[22px] items-center rounded-full px-2 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-accent ${
-								waiting > 0 ? "bg-warn/15 text-warn" : "bg-overlay text-muted"
-							}`}
-						>
-							{waiting} waiting
-						</span>
-					)}
-				</Tooltip>
+					{waiting} waiting
+				</span>
 			</div>
 			<div className="flex min-w-0 flex-col gap-3 rounded-[10px] border border-line bg-raised px-4 py-3.5">
 				{answering ? (

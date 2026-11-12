@@ -247,6 +247,18 @@ describe("the agent chip", () => {
 			"exited with code 70: boom",
 		],
 		[
+			"spawned, the runner not up yet",
+			{ state: "off", spawned: true, agent: undefined },
+			"bg-warn",
+			"Starting",
+		],
+		[
+			"spawned with no agent configured",
+			{ state: "off", spawned: true, configured: false, agent: undefined },
+			"bg-bad",
+			"No agent configured",
+		],
+		[
 			"a bad config",
 			{ state: "off", configured: false, error: "agent.command: not a string" },
 			"bg-bad",

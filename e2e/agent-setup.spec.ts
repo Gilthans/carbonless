@@ -396,3 +396,22 @@ test("ask with no agent: it waits; set one up from the thread, Spawn, and the ba
 	);
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
 });
+
+test("ask with a config but nothing spawned: the thread's button opens the modal on setup", async ({
+	page,
+	pr,
+	agentCrb,
+	acpLogPath,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({ spawn: false });
+	const section = await openFile(page, s.url, CALC);
+	await expect(chip(page)).toHaveAccessibleName(
+		"Your agent: No agent · spawn or invite",
+	);
+	const card = await ask(page, section, 3, "Anyone there?");
+	await expect(card).toHaveAttribute("aria-label", "Agent thread, waiting");
+	await card.getByRole("button", { name: "Spawn or invite an agent" }).click();
+	await expect(setupDialog(page)).toBeVisible();
+	expect(spawns(acpLogPath)).toBe(0);
+});

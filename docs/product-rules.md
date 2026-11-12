@@ -594,7 +594,7 @@ question would be on someone else's behalf, or about a past moment.
 - **No agent starts in a review the reviewer didn't ask for one in.** A
   configured ACP agent runs in a review only while that review's spawn
   flag is set (`acp-on` in its agent dir, kept across restarts; local
-  state, never `refs/crb`). Only the reviewer's Spawn (Start in the chip)
+  state, never `refs/crb`). Only the reviewer's Spawn (in the setup modal)
   sets it; nothing else does: not opening the review, a status poll, a new
   question, a config save or a crb restart. Detach clears it, stops the
   agent, removes its checkout and releases the review's claim (spec

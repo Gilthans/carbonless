@@ -47,16 +47,6 @@ const set = (open: boolean, tab: SetupTab = state.tab) => {
 
 /** Opens the setup on the stored tab (an onClick handler: takes no argument). */
 export const openAgentSetup = (): void => set(true, storedTab());
-/** Opens the setup on Invite, and remembers it. */
-export const openInviteSetup = (): void => {
-	store("invite");
-	set(true, "invite");
-};
-/** Opens the setup on Spawn, and remembers it. */
-export const openSpawnSetup = (): void => {
-	store("spawn");
-	set(true, "spawn");
-};
 export const closeAgentSetup = (): void => set(false);
 export const setAgentSetupTab = (tab: SetupTab): void => {
 	store(tab);
