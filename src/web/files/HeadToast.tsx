@@ -1,19 +1,12 @@
 import { GitCommitIcon, XIcon } from "@primer/octicons-react";
 import { useEffect, useState } from "react";
 import type { SessionInfo } from "../../shared/types";
+import { ToastSlot } from "../Toasts";
 import { Tooltip } from "../Tooltip";
 import { headIsNewer } from "./PatchsetGraph";
 
 /** How long the toast stays before it goes by itself. */
 export const TOAST_MS = 20_000;
-
-/**
- * Where the toast sits: fixed at the bottom of the window, left of the
- * save notices (SyncNotices' NOTICE_STACK sits right from md up), above
- * the floating Files button on a phone.
- */
-const TOAST_PLACE =
-	"pointer-events-none fixed inset-x-3 bottom-20 z-40 flex sm:inset-x-auto sm:left-4 sm:w-96 md:bottom-4";
 
 /**
  * The head the toast would be about: the PR's head when it is newer than
@@ -55,7 +48,7 @@ export function HeadToast(props: {
 		props.onDismiss?.();
 	};
 	return (
-		<div className={TOAST_PLACE}>
+		<ToastSlot>
 			<div
 				role="status"
 				data-testid="head-toast"
@@ -103,6 +96,6 @@ export function HeadToast(props: {
 					)}
 				</Tooltip>
 			</div>
-		</div>
+		</ToastSlot>
 	);
 }

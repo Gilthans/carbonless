@@ -16,9 +16,10 @@ Requires Node 24 (`nvm use`) and pnpm. From a checkout, `pnpm build` and run
 | `pnpm test:pack` | Pack, install the tarball into a temp dir and run its `crb` |
 | `pnpm verify` | All of the above |
 
-CI (`.github/workflows/ci.yml`) runs lint, typecheck, unit tests and the pack
-smoke test on every PR and push to master, and Playwright on `v*` tags and on
-demand (`gh workflow run ci.yml --ref <branch>`), in four parallel shards.
+CI (`.github/workflows/ci.yml`) runs lint, typecheck, unit tests, the pack
+smoke test and Playwright (in four parallel shards) on every PR and push to
+master. A release is promoted only from a commit CI passed on as a push to
+master (`docs/releasing.md`).
 
 Tests never call the real `gh`: `test/fake-gh/gh` answers from a scenario JSON
 (`$CRB_FAKE_GH`, optional call log in `$CRB_FAKE_GH_LOG`). The Playwright
@@ -38,5 +39,5 @@ Every merge to master publishes a release candidate to npm through trusted
 publishing (no npm token anywhere); `pnpm release promote` stages one as a
 release, and the owner approves it with npm two-factor (`pnpm release
 publish`). The release workflows on master can publish without that
-approval, so master's ruleset (only the owner merges) is the real gate:
+approval, so master's ruleset (merges only on the owner's approval) is the real gate:
 `docs/releasing.md` (and the npm and GitHub setup).

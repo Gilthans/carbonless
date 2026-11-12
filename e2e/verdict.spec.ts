@@ -430,7 +430,7 @@ test("the Files changed end card: the verdict, its blockers' count, clear of the
 	await expect(page.getByTestId("github-status")).toBeVisible();
 });
 
-test("the three tabs, Refresh and the title fit at 360px with no horizontal scroll", async ({
+test("the three tabs, the agent chip and Refresh fit at 360px with no horizontal scroll", async ({
 	page,
 	pr,
 	startCrb,
@@ -451,11 +451,13 @@ test("the three tabs, Refresh and the title fit at 360px with no horizontal scro
 		"Verdict",
 		{ useInnerText: true },
 	);
-	// Scrolled until the header sticks, the title's pill shows beside them.
+	// Scrolled until the header sticks, the agent chip beside the mark
+	// (the title's pill has no room beside it at 360px).
 	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
 	await expect(page.getByTestId("compact-title")).not.toHaveAttribute("inert");
 	const row = await page.getByTestId("app-header-row").boundingBox();
 	for (const el of [
+		page.getByTestId("app-header-row").getByTestId("agent-chip"),
 		nav.getByRole("link", { name: "Overview" }),
 		nav.getByRole("link", { name: "Files changed" }),
 		nav.getByRole("link", { name: "Final Verdict" }),

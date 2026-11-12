@@ -91,17 +91,16 @@ async function check() {
 		}
 	}
 	if (specs.length) {
-		if ((await sh("pnpm", ["build"])) !== 0) process.exit(1);
+		// Builds, then runs on a dist no other build in this tree changes
+		// meanwhile (scripts/e2e.mjs; this run's slot already held).
 		const pw = [
-			"exec",
-			"playwright",
-			"test",
+			"scripts/e2e.mjs",
 			...specs,
 			`--repeat-each=${runs}`,
 			...projects.map((p) => `--project=${p}`),
 		];
 		if (grep) pw.push("-g", grep);
-		results.push([`e2e ×${runs}`, await sh("pnpm", pw)]);
+		results.push([`e2e ×${runs}`, await sh("node", pw)]);
 	}
 
 	console.log(`\nflake-check, ${load} busy loops:`);

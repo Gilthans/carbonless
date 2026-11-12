@@ -39,6 +39,7 @@ describe("config", () => {
 				views: [],
 				refresh: { minutes: 2 },
 				agent: null,
+				updates: { check: true },
 			},
 			problems: [],
 		});
@@ -59,6 +60,7 @@ describe("config", () => {
 				views: [{ name: "My PRs", repos: ["acme/api", "acme/console"] }],
 				refresh: { minutes: 5 },
 				agent: null,
+				updates: { check: true },
 			},
 			problems: [],
 		});
@@ -96,6 +98,7 @@ describe("config", () => {
 			views: [{ name: "Mine", repos: ["acme/api"] }],
 			refresh: { minutes: 2 },
 			agent: null,
+			updates: { check: true },
 		});
 		expect(problems).toEqual([
 			"serve.host must be a non-empty string; using 127.0.0.1",
@@ -168,6 +171,7 @@ describe("config", () => {
 			],
 			refresh: { minutes: 3, jitter: true },
 			agent: null,
+			updates: { check: true },
 		});
 	});
 
@@ -204,6 +208,32 @@ describe("config", () => {
 		]);
 	});
 
+	it("updates: check a boolean, true by default; channel rc or latest; kept by updateConfig", async () => {
+		write(JSON.stringify({ updates: { check: false, other: 1 } }));
+		expect((await readConfig()).config.updates).toEqual({ check: false });
+		await updateConfig((c) => ({ ...c, refresh: { minutes: 3 } }));
+		expect(onDisk().updates).toEqual({ check: false, other: 1 });
+		write(JSON.stringify({ updates: { check: "no" } }));
+		expect(await readConfig()).toMatchObject({
+			config: { updates: { check: true } },
+			problems: ["updates.check must be true or false; using true"],
+		});
+		write(JSON.stringify({ updates: { channel: "rc" } }));
+		expect((await readConfig()).config.updates).toEqual({
+			check: true,
+			channel: "rc",
+		});
+		write(JSON.stringify({ updates: { channel: "beta" } }));
+		expect(await readConfig()).toMatchObject({
+			config: { updates: { check: true } },
+			problems: ['updates.channel must be "rc" or "latest"; ignored'],
+		});
+		write(JSON.stringify({ updates: 3 }));
+		expect((await readConfig()).problems).toEqual([
+			"updates must be an object; using the defaults",
+		]);
+	});
+
 	it("updateConfig over garbage rewrites a valid file, unknown keys of the good parts kept", async () => {
 		write(
 			JSON.stringify({ extra: 1, serve: "nope", views: [{ repos: ["x"] }] }),
@@ -218,6 +248,7 @@ describe("config", () => {
 			views: [{ name: "My PRs", repos: ["acme/api"] }],
 			refresh: { minutes: 2 },
 			agent: null,
+			updates: { check: true },
 		});
 		expect(await readConfig()).toMatchObject({ problems: [] });
 

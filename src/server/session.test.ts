@@ -1086,6 +1086,10 @@ describe("Session", () => {
 			expect(o.reviews.map((r) => r.author)).toEqual(["Octo_Cat"]);
 			expect(o.checks).toEqual([{ name: "ci", status: "passing" }]);
 			// Nothing moves as of a cutoff: the read is kept, gh isn't asked again.
+			// The read's threads and timeline go on after its overview is in (on a
+			// loaded machine their gh calls may log later): once they are in too,
+			// any call is a new read's.
+			await Promise.all([s.threads(o.readId, "full"), s.timeline(o.readId)]);
 			const ghCalls = pr.ghLog().length;
 			expect(await s.overview()).toEqual(o);
 			expect(pr.ghLog().length).toBe(ghCalls);

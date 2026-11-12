@@ -1,6 +1,6 @@
 {
 	"name": "carbonless-review",
-	"version": "0.1.0",
+	"version": "0.3.0",
 	"description": "Local, AI-assisted tool for reading the changes between two git commits",
 	"license": "MIT",
 	"repository": {
@@ -20,7 +20,7 @@
 	},
 	"scripts": {
 		"dev": "node scripts/dev.mjs",
-		"build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/build-info.mjs && vite build",
+		"build": "node scripts/dist-lock.mjs sh -c 'rm -rf dist && tsc -p tsconfig.build.json && node scripts/build-info.mjs && vite build'",
 		"start": "node dist/cli.js",
 		"typecheck": "tsc -p tsconfig.json",
 		"lint": "biome check .",
@@ -28,8 +28,8 @@
 		"test": "node scripts/queue.mjs vitest run",
 		"test:watch": "vitest",
 		"test:changed": "node scripts/queue.mjs vitest run --changed",
-		"test:e2e": "pnpm build && node scripts/queue.mjs playwright test",
-		"test:pack": "node scripts/pack-smoke.mjs",
+		"test:e2e": "node scripts/e2e.mjs",
+		"test:pack": "node scripts/dist-lock.mjs node scripts/pack-smoke.mjs",
 		"verify": "pnpm lint && pnpm typecheck && node scripts/queue.mjs sh -c 'pnpm test && pnpm test:e2e && pnpm test:pack'",
 		"verify:fast": "node scripts/verify-fast.mjs",
 		"flake-check": "node scripts/flake-check.mjs",
