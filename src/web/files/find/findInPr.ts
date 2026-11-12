@@ -89,13 +89,20 @@ export interface PairedHunk {
  * whose O(n·m) matching is cached per hunk and shared with it), as Find
  * needs them. Kept per hunk: a search per keystroke never pairs it again.
  */
-const pairedByHunk = new WeakMap<DiffLine[], PairedHunk>();
-function pairedHunk(lines: DiffLine[]): PairedHunk {
-	let paired = pairedByHunk.get(lines);
+const pairedByHunk = [
+	new WeakMap<DiffLine[], PairedHunk>(),
+	new WeakMap<DiffLine[], PairedHunk>(),
+];
+function pairedHunk(lines: DiffLine[], ignoreWhitespace: boolean): PairedHunk {
+	const cache = pairedByHunk[ignoreWhitespace ? 1 : 0] as WeakMap<
+		DiffLine[],
+		PairedHunk
+	>;
+	let paired = cache.get(lines);
 	if (!paired) {
 		const order: DiffLine[] = [];
 		const twins = new Map<DiffLine, number>();
-		for (const run of hunkView(lines, true).runs)
+		for (const run of hunkView(lines, ignoreWhitespace).runs)
 			for (const row of run.rows) {
 				if (row.kind === "line") order.push(row.line);
 				else if (row.del && row.add) {
@@ -104,7 +111,7 @@ function pairedHunk(lines: DiffLine[]): PairedHunk {
 				} else order.push((row.del ?? row.add) as DiffLine);
 			}
 		paired = { order, twins };
-		pairedByHunk.set(lines, paired);
+		cache.set(lines, paired);
 	}
 	return paired;
 }
@@ -186,8 +193,8 @@ export function fileLines(
  * The PR's hits in reading order: for each file (in the order given: the
  * tree's), its path's hits, then its old path's, then its lines' (fileLines)
  * in column order. Binary files and submodules have path hits only. Every
- * line of both sides is searched. With `pairs` (the view is unified with
- * Ignore whitespace on: only then is a pair one row), a whitespace-only
+ * line of both sides is searched. With `pairs` (the view is unified: a pair reads together, and with
+ * Ignore whitespace on a whitespace-only pair is one row), a whitespace-only
  * pair's old-side hits carry `twin` (shownHits leaves them out), and a
  * hunk's hits are in the order of the rows shown (a `~` row's where it sits
  * on screen; its removed line's hidden hits right before its added
@@ -204,6 +211,8 @@ export function findInPr(
 	pairs = false,
 	/** A file without hunks yet is searched in its clusters (fileLines). */
 	clusters = true,
+	/** The view's Ignore whitespace: its `~` rows (twins) exist only with it on. */
+	ignoreWhitespace = true,
 ): Hit[] {
 	const hits: Hit[] = [];
 	const re = pattern(term, matchCase);
@@ -235,7 +244,12 @@ export function findInPr(
 		let delHit = false;
 		const flush = () => {
 			if (!byLine || !hunk) return;
-			emitHunk(hits, seen, byLine, delHit ? pairedHunk(hunk) : null);
+			emitHunk(
+				hits,
+				seen,
+				byLine,
+				delHit ? pairedHunk(hunk, ignoreWhitespace) : null,
+			);
 			byLine = null;
 		};
 		for (const l of fileLines(

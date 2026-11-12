@@ -15,8 +15,8 @@ import {
 import { buildSnapshot, loadFileHunks } from "../../server/diff/snapshot";
 import type { DiffLine, DisplayHunk } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
-import { type DiffRow, viewRuns } from "./whitespace";
-import { hunkWordMarks } from "./wordBlocks";
+import { hunkView } from "./whitespace";
+import { pairWordMarks } from "./wordBlocks";
 
 /**
  * Carbonless's marks against GitHub's, on the gallery's inline-diff case
@@ -143,17 +143,12 @@ function githubLines(file: GitHubFile, ignoreWhitespace: boolean): Line[] {
 	return lines;
 }
 
-/** A hunk's rows as the view lays them out (HunkRows), every run's rows. */
-function rowsOf(hunk: DisplayHunk, ignoreWhitespace: boolean): DiffRow[] {
-	return viewRuns(hunk.lines, ignoreWhitespace).flatMap((run) => run.rows);
-}
-
 function ourLines(
 	hunks: DisplayHunk[],
 	ignoreWhitespace: boolean,
 ): { line: DiffLine; marks: readonly Mark[] }[] {
 	return hunks.flatMap((hunk) => {
-		const marks = hunkWordMarks(rowsOf(hunk, ignoreWhitespace));
+		const marks = pairWordMarks(hunkView(hunk.lines, ignoreWhitespace).pairs);
 		return hunk.lines
 			.filter((l) => l.kind !== "context")
 			.map((line) => ({ line, marks: marks.get(line) ?? [] }));

@@ -184,4 +184,29 @@ describe("hunkView", () => {
 		}
 		expect(hunkView(lines, true)).not.toBe(hunkView(lines, false));
 	});
+	it("a `~` row between a similar del and add: no pair across it, no move past it", () => {
+		const d = del("retry(getUser, 3)");
+		const wd = del("  w x");
+		const wa = add("w x");
+		const a = add("retry(getUser, 5)");
+		const v = hunkView([d, wd, wa, a], true);
+		const flat = v.runs.flatMap((r) => r.rows);
+		expect(flat.map((r) => r.kind)).toEqual(["line", "ws", "line"]);
+		expect(flat[0]).toEqual({ kind: "line", line: d });
+		expect(flat[2]).toEqual({ kind: "line", line: a });
+		expect(v.pairs).toEqual([]);
+		expect(v.partners.size).toBe(0);
+	});
+	it("a pair across two adjacent cluster runs: marked, and both runs' rows unchanged", () => {
+		const d = del("const timeout = 30;", "k1");
+		const a = add("const timeout = 60;", "k2");
+		const lines = [d, a];
+		const v = hunkView(lines, false);
+		// Whether a hunk can hold two clusters with no context between: if
+		// runs() splits them, the pair spans runs.
+		expect(v.runs).toHaveLength(2);
+		expect(v.pairs).toEqual([[d, a]]);
+		expect(v.runs[0]?.rows).toEqual(plain(d));
+		expect(v.runs[1]?.rows).toEqual(plain(a));
+	});
 });

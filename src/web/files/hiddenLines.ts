@@ -12,7 +12,8 @@ import { hunkPairs, type LinePair } from "./wordBlocks";
  * come from; `pairs` when the caller has them already) is also compared with its partner. A changed line holding
  * a BOM (drawn as nothing) without marks (unpaired, or too long to
  * compare) counts too: its BOM may be all that changed, and nothing
- * tells (overstating is the safe side).
+ * tells (overstating is the safe side). Without `pairs`, `rows` must be in
+ * git's order (hunkPairs pairs the rows as given, not the view's reordered ones).
  */
 export function hiddenLines(
 	rows: readonly DiffRow[],
