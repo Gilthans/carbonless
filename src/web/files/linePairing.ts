@@ -1,3 +1,4 @@
+import DiffMatchPatch from "diff-match-patch";
 import { tokenize, WORD_DIFF_MAX } from "./wordDiff";
 
 /**
@@ -18,35 +19,47 @@ const EPS = 1e-9;
 const HAS_WORD = /[\p{L}\p{M}\p{N}_]/u;
 const BLANK = /^\s+$/u;
 
-/** A line's tokens for scoring: no whitespace; `wordy` if any is a word. */
-function scoringTokens(text: string): { all: string[]; words: string[] } {
-	const all = tokenize(text).filter((t) => !BLANK.test(t));
-	return { all, words: all.filter((t) => HAS_WORD.test(t)) };
-}
-
 /** `arr[i]`, known to be there. */
 const at = <T>(arr: readonly T[], i: number): T => arr[i] as T;
 
-/** Length of the longest common subsequence of two token lists. */
-function lcs(a: readonly string[], b: readonly string[]): number {
-	let prev = new Array<number>(b.length + 1).fill(0);
-	let cur = new Array<number>(b.length + 1).fill(0);
-	for (let i = 1; i <= a.length; i++) {
-		for (let j = 1; j <= b.length; j++) {
-			cur[j] =
-				a[i - 1] === b[j - 1]
-					? at(prev, j - 1) + 1
-					: Math.max(at(prev, j), at(cur, j - 1));
-		}
-		[prev, cur] = [cur, prev];
+/** The token diff: no time limit, so exact; cheap when the lines are alike. */
+const dmp = new DiffMatchPatch();
+dmp.Diff_Timeout = 0;
+
+/** Token to its one-character code, for the lines being scored. */
+type Codes = Map<string, string>;
+
+const code = (codes: Codes, t: string): string => {
+	let c = codes.get(t);
+	if (c === undefined) {
+		c = String.fromCharCode(0x100 + codes.size);
+		codes.set(t, c);
 	}
-	return at(prev, b.length);
+	return c;
+};
+
+/** Length of the longest common subsequence of two one-char-per-token strings. */
+function lcs(a: string, b: string): number {
+	let n = 0;
+	for (const [op, chars] of dmp.diff_main(a, b, false)) {
+		if (op === DiffMatchPatch.DIFF_EQUAL) n += chars.length;
+	}
+	return n;
 }
 
-type Scored = { all: string[]; words: string[]; long: boolean };
+/** A line's scoring tokens, one character each. */
+type Scored = { all: string; words: string; long: boolean };
 
-function prepare(text: string): Scored {
-	return { ...scoringTokens(text), long: text.length >= WORD_DIFF_MAX };
+function prepare(text: string, codes: Codes): Scored {
+	const all = tokenize(text).filter((t) => !BLANK.test(t));
+	return {
+		all: all.map((t) => code(codes, t)).join(""),
+		words: all
+			.filter((t) => HAS_WORD.test(t))
+			.map((t) => code(codes, t))
+			.join(""),
+		long: text.length >= WORD_DIFF_MAX,
+	};
 }
 
 function score(a: Scored, b: Scored): number {
@@ -55,8 +68,12 @@ function score(a: Scored, b: Scored): number {
 		a.words.length > 0 && b.words.length > 0
 			? [a.words, b.words]
 			: [a.all, b.all];
-	if (x.length + y.length === 0) return 0;
-	return (2 * lcs(x, y)) / (x.length + y.length);
+	const total = x.length + y.length;
+	if (total === 0) return 0;
+	// Even a full match of the shorter line can't reach the threshold.
+	if ((2 * Math.min(x.length, y.length)) / total < PAIR_MIN_SIMILARITY)
+		return 0;
+	return (2 * lcs(x, y)) / total;
 }
 
 /**
@@ -66,7 +83,8 @@ function score(a: Scored, b: Scored): number {
  * line of `WORD_DIFF_MAX` characters or more scores 0.
  */
 export function lineSimilarity(oldText: string, newText: string): number {
-	return score(prepare(oldText), prepare(newText));
+	const codes: Codes = new Map();
+	return score(prepare(oldText, codes), prepare(newText, codes));
 }
 
 /** A chosen set of pairs, as a persistent list (earliest pair first). */
@@ -103,14 +121,15 @@ export function alignCluster(
 	const n = dels.length;
 	const m = adds.length;
 	if (n === 0 || m === 0 || n * m > ALIGN_CAP) return [];
-	const d = dels.map(prepare);
-	const a = adds.map(prepare);
+	const codes: Codes = new Map();
+	const d = dels.map((t) => prepare(t, codes));
+	const a = adds.map((t) => prepare(t, codes));
 	// Cheap prefilter: lines that share no token can't be a pair.
 	const sets = a.map((x) => new Set(x.all));
 	const sim = (i: number, j: number): number => {
 		const x = at(d, i);
 		const y = at(a, j);
-		if (!x.all.some((t) => at(sets, j).has(t))) return 0;
+		if (![...x.all].some((t) => at(sets, j).has(t))) return 0;
 		return score(x, y);
 	};
 	const empty: Cell = { total: 0, positions: 0, chain: null };

@@ -81,6 +81,26 @@ describe("alignCluster", () => {
 			[0, 0],
 		]);
 	});
+	it("ties with no position pair go to the earliest", () => {
+		expect(alignCluster(["x"], ["a", "x", "x"])).toEqual([[0, 1]]);
+		expect(alignCluster(["}", "}"], ["a", "b", "}"])).toEqual([[0, 2]]);
+	});
+	it("worst case inside the cap stays under 100 ms of CPU", () => {
+		// 50 x 50 distinct ~1000-character lines of short words, half shared.
+		const mk = (side: string) =>
+			Array.from({ length: 50 }, (_, i) =>
+				Array.from({ length: 160 }, (_, k) =>
+					k % 2 === 0 ? `s${i}_${k}` : `${side}${i}_${k}`,
+				).join(" "),
+			).map((l) => l.slice(0, 1000));
+		const dels = mk("d");
+		const adds = mk("a");
+		alignCluster(dels.slice(0, 5), adds.slice(0, 5)); // warm-up
+		const before = process.threadCpuUsage();
+		alignCluster(dels, adds);
+		const spent = process.threadCpuUsage(before);
+		expect((spent.user + spent.system) / 1000).toBeLessThan(100);
+	});
 	it("pairs nothing above the cap", () => {
 		const line = (i: number) => `same ${i}`;
 		const mk = (n: number) => Array.from({ length: n }, (_, i) => line(i));
