@@ -584,7 +584,7 @@ states keep their convention colours.
   uncovered. The composer's "Reply…" crossfades to "Ask agent…" (an
   `agent-edge` box, the sparkle to send). A "new" rule in `accent` sits
   above the first unseen agent message. An answer suggesting a resolve gets
-  "Resolve By Agent Suggestion" (`ok`) under it and an `ok` ring on Resolve;
+  "Resolve By Agent Suggestion" (`ok`) inside it, as its last part, and an `ok` ring on Resolve;
   only a press resolves. 40px tall on a phone (pill and counter).
 
 ## Final Verdict

@@ -373,12 +373,17 @@ test("Resolve By Agent Suggestion resolves the GitHub thread (the fake gh record
 	await openPanel(card);
 	await sendToAgent(card, "Is this resolved?");
 	const reply = panel(card).getByTestId("agent-message-ai");
-	await expect(reply).toHaveText("Fixed here, in PS 1.");
+	// The reply's text, then its own button.
+	await expect(reply).toHaveText(
+		/^Fixed here, in PS 1\.\s*Resolve By Agent Suggestion$/,
+	);
 	// The marker is data, never text.
 	await expect(panel(card)).not.toContainText("[suggest-resolve]");
-	const suggest = panel(card).getByRole("button", {
-		name: "Resolve By Agent Suggestion",
-	});
+	// Part of the reply: inside its box.
+	const suggest = panel(card)
+		.getByTestId("agent-message-ai")
+		.last()
+		.getByRole("button", { name: "Resolve By Agent Suggestion" });
 	await expect(suggest).toBeVisible();
 	// The agent resolved nothing: GitHub still has it open, no write made.
 	expect(storedResolved(p)).toBe(false);

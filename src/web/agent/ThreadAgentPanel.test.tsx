@@ -283,6 +283,12 @@ describe("ThreadAgentPanel", () => {
 			"m4",
 		);
 		expect(buttons[0]?.className).toContain("text-ok");
+		// Inside the suggesting reply's own surface, not an earlier one.
+		const replies = within(panel()).getAllByTestId("agent-message-ai");
+		const inside = replies.filter((r) => r.contains(buttons[0] as HTMLElement));
+		expect(inside).toHaveLength(1);
+		expect(replies.length).toBeGreaterThan(1);
+		expect(inside[0]).toBe(replies[replies.length - 1]);
 		// Nothing is written until a human presses it.
 		expect(calls).toEqual([]);
 		await userEvent.click(buttons[0] as HTMLElement);

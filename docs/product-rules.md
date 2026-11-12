@@ -596,7 +596,7 @@ question would be on someone else's behalf, or about a past moment.
   suggests with a final `[suggest-resolve]` line, stripped and stored as
   data (`suggests: "resolve"`), and only for a fix in the patch set the
   reviewer is viewing (a fix found only in a later push is said plainly,
-  "fixed later, in PS m", and never suggests). The suggestion shows
+  "fixed later, in PS m", and never suggests). The suggestion shows, inside the reply,
   "Resolve By Agent Suggestion" and rings Resolve in `ok`; only the
   reviewer's press resolves, through the same GitHub write as Resolve. A
   thread conversation has no resolved state of its own: it folds and

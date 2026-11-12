@@ -264,7 +264,12 @@ function TruncatedChip() {
 	);
 }
 
-function AiMessage(props: { message: AgentMessage; name: string }) {
+function AiMessage(props: {
+	message: AgentMessage;
+	name: string;
+	/** The last part of the reply, inside its box (the suggestion's button). */
+	footer?: ReactNode;
+}) {
 	const { message } = props;
 	const known = message.stop ? STOPS[message.stop] : undefined;
 	// A failed turn names the agent's reason (rate limit, expired login…).
@@ -315,6 +320,14 @@ function AiMessage(props: { message: AgentMessage; name: string }) {
 						<AlertIcon size={14} aria-hidden className="mt-0.5 shrink-0" />
 						{reason}
 					</p>
+				)}
+				{props.footer && (
+					<div
+						data-message={message.id}
+						className="mt-2 flex border-agent-edge border-t pt-2"
+					>
+						{props.footer}
+					</div>
 				)}
 			</div>
 			{message.activity && <ActivityLine activity={message.activity} />}
@@ -623,8 +636,8 @@ export function AgentThreadCard(props: {
 
 /**
  * A conversation's messages as the agent card and the thread agent panel
- * show them: each message (the "new" divider above `divider`, `after`
- * under each), the turn under way (its streamed text, activity and
+ * show them: each message (the "new" divider above `divider`, `footer`
+ * inside each agent reply), the turn under way (its streamed text, activity and
  * `stop`), the waiting dot, and the replies on their way.
  */
 export function AgentMessageItems(props: {
@@ -636,8 +649,8 @@ export function AgentMessageItems(props: {
 	pending: readonly (readonly [string, AgentWrite])[];
 	/** The first unseen message: the "new" divider goes above it. */
 	divider?: string;
-	/** Under a message (the suggestion's button). */
-	after?: (message: AgentMessage) => ReactNode;
+	/** Inside an agent reply, its last part (the suggestion's button). */
+	footer?: (message: AgentMessage) => ReactNode;
 	/** In the answering row (the panel's Stop). */
 	stop?: ReactNode;
 }) {
@@ -655,9 +668,8 @@ export function AgentMessageItems(props: {
 					{m.by === "human" ? (
 						<HumanMessage message={m} viewer={viewer} />
 					) : (
-						<AiMessage message={m} name={name} />
+						<AiMessage message={m} name={name} footer={props.footer?.(m)} />
 					)}
-					{props.after?.(m)}
 				</Fragment>
 			))}
 			{answering && (

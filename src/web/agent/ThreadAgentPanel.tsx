@@ -206,9 +206,9 @@ function PanelMessages(props: {
 	const writer = useThreadWriter();
 	const agent = useThreadAgentContext();
 	const mayResolve = canToggle(thread, useWritesOn());
-	const after = (m: AgentMessage) =>
+	const footer = (m: AgentMessage) =>
 		m.id === suggestion?.id && mayResolve ? (
-			<div data-message={m.id} className="flex">
+			<>
 				<button
 					type="button"
 					data-testid="resolve-by-agent"
@@ -216,12 +216,12 @@ function PanelMessages(props: {
 						writer.setResolved(thread.id, true);
 						agent?.onToggle?.(true, e.currentTarget);
 					}}
-					className="flex h-10 items-center gap-2 rounded-md border border-ok/60 bg-ok/10 px-3 text-sm font-semibold text-ok hover:bg-ok/20 focus-visible:outline-2 focus-visible:outline-accent"
+					className="flex min-h-10 items-center gap-2 rounded-md border border-ok/60 bg-ok/10 px-3 text-sm font-semibold text-ok hover:bg-ok/20 focus-visible:outline-2 focus-visible:outline-accent"
 				>
 					<CheckCircleIcon size={16} aria-hidden />
 					Resolve By Agent Suggestion
 				</button>
-			</div>
+			</>
 		) : null;
 	return (
 		<AgentMessageItems
@@ -232,7 +232,7 @@ function PanelMessages(props: {
 			name={agentName(conversation ?? NONE, status)}
 			pending={pending}
 			divider={props.divider}
-			after={after}
+			footer={footer}
 			stop={
 				<button
 					type="button"

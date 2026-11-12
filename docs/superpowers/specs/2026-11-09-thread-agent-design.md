@@ -179,7 +179,7 @@ waiting dot, the 32 KiB cap. Additions:
   fix that exists only in a later commit (step 2 above) never earns the
   marker: the reviewer hasn't seen that code. The runner strips that line and stores
   `suggests: "resolve"` on the message. The message shows a visible
-  **"Resolve By Agent Suggestion"** button in `ok` (owner, 2026-11-11). It
+  **"Resolve By Agent Suggestion"** button in `ok` (owner, 2026-11-11), inside the reply (owner 2026-11-12). It
   runs the same GitHub resolve as the card's Resolve, so resolving stays a
   human click. It shows only on the latest suggesting message while the
   thread is unresolved, and not in `--viewer`/`--as-of` reviews or on
