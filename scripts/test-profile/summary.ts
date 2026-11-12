@@ -15,6 +15,7 @@ export const PHASES = [
 	"setup.first_load",
 	"setup.other",
 	"body",
+	"teardown.crb_reset",
 	"teardown.crb_stop",
 	"teardown.other",
 ] as const;

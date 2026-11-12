@@ -66,6 +66,18 @@ export class HomePeople {
 		home.onRefresh(() => {
 			this.#orgMembers();
 		});
+		// Home's reset (the test hook): as a fresh process.
+		home.onReset(() => {
+			this.#members = {
+				people: null,
+				at: Number.NEGATIVE_INFINITY,
+				ttl: SEARCH_TTL_MS,
+				loading: false,
+			};
+			this.#searches.clear();
+			this.#loggedCut = false;
+			this.#loggedSkip.clear();
+		});
 	}
 
 	/**
@@ -81,6 +93,8 @@ export class HomePeople {
 			m.loading = true;
 			fetchOrgMembers({ maxPages: this.#maxPages }).then(
 				({ people, truncated, skipped, failed }) => {
+					// Home's reset meanwhile replaced `m`: this answer is dropped.
+					if (this.#members !== m) return;
 					this.#members = {
 						people,
 						at: this.#now(),

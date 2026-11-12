@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { fileSection, openFiles, progress, tapHeight } from "./files-ui";
-import { expect, PR_NUMBER, type Pr, type PrOptions, test } from "./fixtures";
+import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 /**
  * Switching pages and back (tabs, browser back/forward) finds each page as
@@ -68,7 +68,7 @@ async function openPr(pr: (o: PrOptions) => Promise<Pr>) {
 	const p = await pr(fixture);
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[PR_NUMBER]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [botThread(head)];
 	});

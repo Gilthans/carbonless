@@ -132,7 +132,7 @@ async function setup(
 	const head = p.repo.shas.at(-1) ?? "";
 	const older = p.repo.shas.at(-2) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = threads(head, older);
 		Object.assign(s, scenario);
@@ -620,7 +620,7 @@ test("the open file's comments are read first", async ({
 	pr,
 	startCrb,
 }) => {
-	await setup(pr, { commentsDelayMs: 1500 });
+	const p = await setup(pr, { commentsDelayMs: 1500 });
 	const s = await startCrb();
 	const asked: string[][] = [];
 	page.on("request", (r) => {
@@ -635,9 +635,9 @@ test("the open file's comments are read first", async ({
 	);
 	await expect.poll(() => asked.length).toBeGreaterThan(0);
 	const ids = asked.flat();
-	// T7-5 is util.ts's file comment.
-	expect(ids[0]).toBe("T7-5");
-	await expect.poll(() => asked.flat()).toContain("T7-0");
+	// T<n>-5 is util.ts's file comment.
+	expect(ids[0]).toBe(`T${p.number}-5`);
+	await expect.poll(() => asked.flat()).toContain(`T${p.number}-0`);
 });
 
 test("a commented range is marked on added rows too, unlike a landed line", async ({
@@ -877,7 +877,7 @@ test("a thread on a file's last line opens below its no-newline marker", async (
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "src/end.ts", line: 3, subjectType: "LINE" }, [
@@ -923,7 +923,7 @@ test("a thread deep in a large gap loads only the lines around it", async ({
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "src/big.ts", line: 450, subjectType: "LINE" }, [
@@ -978,7 +978,7 @@ test("comments of the file opened next go first", async ({
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = names.flatMap((path) =>
 			Array.from({ length: 40 }, (_, i) =>
@@ -1055,7 +1055,7 @@ test("below an opened thread the cluster's controls float again", async ({
 	});
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "src/long.ts", line: 15, subjectType: "LINE" }, [

@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
 	test as base,
 	expect,
@@ -35,6 +35,11 @@ import {
 	type Pr,
 	type PrOptions,
 } from "./pr-setup";
+import {
+	FINISH_BOUND_MS,
+	SharedServer,
+	type SharedTest,
+} from "./shared-server";
 
 export { type CrbClient, clientRequest, NeedsCliError } from "./crb-open";
 export {
@@ -52,15 +57,33 @@ export type {
 	ThreadJson,
 	ViewJson,
 } from "./pr-setup";
-export { OWNER_REPO, PR_NUMBER };
+export { OWNER_REPO, PR_NUMBER, SharedServer };
+
+/**
+ * Which `crb serve` a test's startCrb opens on: "shared", its worker's
+ * (e2e/shared-server.ts: a repo and PR number of the test's own, a reset
+ * and leak checks after it), or "own", one for the test alone, as a test
+ * that stops or restarts crb, passes serve flags, writes config or reads
+ * the server's files needs.
+ */
+export type CrbServer = "shared" | "own";
 
 export interface Crb {
 	/** The review's URL, as `crb <pr>` printed it: `http://<host>:<port>/r/<id>`. */
 	url: string;
 	/** What crb serve logged since this `crb <pr>`, then the client's own output. */
 	output(): string;
-	/** SIGTERMs the test's crb serve; rejects unless it exits promptly with 0. */
+	/**
+	 * SIGTERMs the test's crb serve; rejects unless it exits promptly with
+	 * 0. On a shared server it rejects at once: the test needs its own.
+	 */
 	stop(): Promise<CrbExit | null>;
+	/**
+	 * Where this crb serve keeps its clone of `ownerRepo` (its
+	 * `XDG_CACHE_HOME`; a shared server's, not `workdir`'s): a test that
+	 * reads the review's refs reads them there.
+	 */
+	cloneOf(ownerRepo: string): string;
 }
 
 /**
@@ -112,27 +135,77 @@ function splitArgs(args: string[]): { serve: string[]; client: string[] } {
 	return { serve, client };
 }
 
-export const test = base.extend<{
-	/**
-	 * How startCrb opens a review: "http" POSTs /api/reviews itself, as the
-	 * client would (e2e/crb-open.ts), sparing the client process; "cli" runs
-	 * the built `crb <pr>`, for tests of the client: its output and exit
-	 * codes, PR resolution, flag checks, --open, finding or starting a server.
-	 */
-	crbClient: CrbClient;
-	_trace: undefined;
-	workdir: string;
-	pr: (opts?: PrOptions) => Promise<Pr>;
-	startCrb: (arg?: string, extraArgs?: string[]) => Promise<Crb>;
-	/**
-	 * Auto fixture: fails the test on browser console errors and uncaught page
-	 * errors, except those matching a pattern declared with
-	 * `expectConsoleError(/409/)` (Chromium logs "Failed to load resource"
-	 * for every non-2xx fetch).
-	 */
-	expectConsoleError: (pattern: RegExp) => void;
-}>({
+export const test = base.extend<
+	{
+		/**
+		 * How startCrb opens a review: "http" POSTs /api/reviews itself, as the
+		 * client would (e2e/crb-open.ts), sparing the client process; "cli" runs
+		 * the built `crb <pr>`, for tests of the client: its output and exit
+		 * codes, PR resolution, flag checks, --open, finding or starting a server.
+		 */
+		crbClient: CrbClient;
+		/** Which crb serve startCrb uses (CrbServer); serve flags always get the test's own. */
+		crbServer: CrbServer;
+		/** The test's PR on the fake GitHub: its own on a shared server, else acme/widget#7. */
+		ownerRepo: string;
+		prNumber: number;
+		/**
+		 * Declares a leak the shared server's checks must find after this test
+		 * (fixtures.spec.ts's canaries): one not found fails the test.
+		 */
+		expectCrbLeak: (pattern: RegExp) => void;
+		_prAt: { ownerRepo: string; number: number };
+		_leaks: RegExp[];
+		_trace: undefined;
+		workdir: string;
+		pr: (opts?: PrOptions) => Promise<Pr>;
+		startCrb: (arg?: string, extraArgs?: string[]) => Promise<Crb>;
+		/**
+		 * Auto fixture: fails the test on browser console errors and uncaught page
+		 * errors, except those matching a pattern declared with
+		 * `expectConsoleError(/409/)` (Chromium logs "Failed to load resource"
+		 * for every non-2xx fetch).
+		 */
+		expectConsoleError: (pattern: RegExp) => void;
+	},
+	{
+		/** The worker's shared crb serve, started by its first shared test. */
+		sharedCrb: SharedServer;
+	}
+>({
 	crbClient: ["http", { option: true }],
+	crbServer: ["shared", { option: true }],
+
+	sharedCrb: [
+		// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
+		async ({}, use, info) => {
+			const shared = new SharedServer(info.workerIndex);
+			await use(shared);
+			await shared.close();
+		},
+		{ scope: "worker" },
+	],
+
+	_prAt: async ({ crbServer, sharedCrb }, use) => {
+		await use(
+			crbServer === "shared"
+				? sharedCrb.nextPr()
+				: { ownerRepo: OWNER_REPO, number: PR_NUMBER },
+		);
+	},
+	ownerRepo: async ({ _prAt }, use) => use(_prAt.ownerRepo),
+	prNumber: async ({ _prAt }, use) => use(_prAt.number),
+
+	// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
+	_leaks: async ({}, use) => use([]),
+	expectCrbLeak: async ({ _leaks }, use, info) =>
+		use((pattern) => {
+			// The harness's own canaries only: no test declares a leak away.
+			if (basename(info.file) !== "fixtures.spec.ts") {
+				throw new Error("expectCrbLeak is for e2e/fixtures.spec.ts's canaries");
+			}
+			_leaks.push(pattern);
+		}),
 
 	// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
 	workdir: async ({}, use) => {
@@ -165,11 +238,11 @@ export const test = base.extend<{
 		{ auto: true, box: true },
 	],
 
-	pr: async ({ workdir }, use, info) => {
+	pr: async ({ workdir, _prAt }, use, info) => {
 		const repos: GitFixture[] = [];
 		await use(async (opts = {}) => {
 			const pr = await untimed(info, () =>
-				base.step("setup: fixture repo", () => createPr(workdir, opts), {
+				base.step("setup: fixture repo", () => createPr(workdir, opts, _prAt), {
 					box: true,
 				}),
 			);
@@ -179,59 +252,171 @@ export const test = base.extend<{
 		for (const repo of repos) repo.cleanup();
 	},
 
-	startCrb: async ({ workdir, context, crbClient }, use, info) => {
-		// One crb serve per test, started by the first crb <pr> (and again
-		// after a stop), as the CLI's auto-start would.
+	startCrb: async (
+		{
+			workdir,
+			context,
+			crbClient,
+			crbServer,
+			sharedCrb,
+			ownerRepo,
+			prNumber,
+			_leaks,
+		},
+		use,
+		info,
+	) => {
+		// Page requests nest under the test in its trace, also on a server
+		// another test started.
+		const parent = process.env.TRACEPARENT;
+		if (parent) await context.setExtraHTTPHeaders({ traceparent: parent });
+		// The test's own crb serve, started by the first crb <pr> that needs
+		// one (and again after a stop), as the CLI's auto-start would; or the
+		// worker's shared one.
 		const servers: Served[] = [];
 		let current: Served | null = null;
 		let currentFlags = "";
-		await use((arg = `${OWNER_REPO}#${PR_NUMBER}`, extraArgs = []) =>
-			untimed(info, async () => {
-				const { serve, client } = splitArgs(extraArgs);
-				const live =
-					current &&
-					current.child.exitCode === null &&
-					current.child.signalCode === null;
-				if (!current || !live) {
-					current = await base.step(
-						"setup: crb serve",
-						() => startServe(workdir, serve),
-						{ box: true },
-					);
-					currentFlags = serve.join(" ");
-					servers.push(current);
-				} else if (serve.length > 0 && serve.join(" ") !== currentFlags) {
-					throw new Error(
-						`crb serve already runs with "${currentFlags}", not "${serve.join(" ")}": stop() it first`,
-					);
-				}
-				const server = current;
-				const from = server.output().length;
-				const run = await base.step(
-					"setup: crb open",
-					() =>
-						crbClient === "cli"
-							? runCli(workdir, [arg, ...client])
-							: openOverHttp(server, workdir, arg, client),
+		const shared: SharedTest = {
+			title: info.titlePath.join(" › "),
+			scenario: join(workdir, "fake-gh-scenario.json"),
+			log: join(workdir, "fake-gh.log"),
+			repos: [ownerRepo],
+		};
+		let usedShared = false;
+		// Before the server's first gh call: its calls for this test's repo
+		// go to this test's scenario.
+		if (crbServer === "shared") sharedCrb.begin(shared);
+		const own = async (serve: string[]) => {
+			const live =
+				current &&
+				current.child.exitCode === null &&
+				current.child.signalCode === null;
+			if (!current || !live) {
+				current = await base.step(
+					"setup: crb serve",
+					() => startServe(workdir, serve),
 					{ box: true },
 				);
+				currentFlags = serve.join(" ");
+				servers.push(current);
+			} else if (serve.length > 0 && serve.join(" ") !== currentFlags) {
+				throw new Error(
+					`crb serve already runs with "${currentFlags}", not "${serve.join(" ")}": stop() it first`,
+				);
+			}
+			return current;
+		};
+		await use((arg = `${ownerRepo}#${prNumber}`, extraArgs = []) =>
+			untimed(info, async () => {
+				const { serve, client } = splitArgs(extraArgs);
+				const onShared = crbServer === "shared" && serve.length === 0;
+				let server: Served;
+				if (onShared) {
+					usedShared = true;
+					server = sharedCrb.idle
+						? await base.step("setup: crb serve", () => sharedCrb.start(), {
+								box: true,
+							})
+						: await sharedCrb.start();
+				} else {
+					server = await own(serve);
+				}
+				const from = server.output().length;
+				let run: { code: number | null; stdout: string; output: string };
+				try {
+					run = await base.step(
+						"setup: crb open",
+						() =>
+							crbClient === "cli"
+								? runCli(
+										workdir,
+										[arg, ...client],
+										onShared
+											? { ...server.env, TRACEPARENT: process.env.TRACEPARENT }
+											: undefined,
+									)
+								: openOverHttp(server, arg, client),
+						{ box: true },
+					);
+				} catch (error) {
+					// A client killed at its timeout may have started one too.
+					if (onShared && crbClient === "cli") {
+						strangerServer(server, (error as Error).message);
+					}
+					throw error;
+				}
+				if (onShared && crbClient === "cli") strangerServer(server, run.output);
 				const output = () => `${server.output().slice(from)}${run.output}`;
 				const url = run.stdout.trim().split("\n").at(-1) ?? "";
 				if (run.code !== 0 || !/^http:\/\//.test(url)) {
 					throw new CrbExitError(run.code, output());
 				}
-				return { url, output, stop: () => stopChild(server.child) };
+				const stop = onShared
+					? () =>
+							Promise.reject(
+								new Error(
+									"this test shares its worker's crb serve, which it can't stop: test.use({ crbServer: \"own\" })",
+								),
+							)
+					: () => stopChild(server.child);
+				const cloneOf = (ownerRepo: string) => {
+					const [owner = "", repo = ""] = ownerRepo.toLowerCase().split("/");
+					return join(
+						server.env.XDG_CACHE_HOME as string,
+						"carbonless",
+						"repos",
+						owner,
+						`${repo}.git`,
+					);
+				};
+				return { url, output, stop, cloneOf };
 			}),
 		);
-		// Pages would keep polling the stopped server and log connection errors.
+		// Pages would keep polling the stopped server and log connection errors
+		// (on a shared one, reopen the review after the reset): every page of
+		// every context goes blank, or closes (a beforeunload prompt keeps it).
+		const pages = (context.browser()?.contexts() ?? [context]).flatMap((c) =>
+			c.pages(),
+		);
 		await Promise.all(
-			context.pages().map((p) => p.goto("about:blank").catch(() => {})),
+			pages.map(async (p) => {
+				// Bounded: a beforeunload prompt, dismissed, cancels the navigation.
+				await p.goto("about:blank", { timeout: 5_000 }).catch(() => {});
+				if (p.url() !== "about:blank") await p.close().catch(() => {});
+			}),
 		);
-		await base.step(
-			"teardown: crb stop",
-			() => Promise.all(servers.map((s) => stopChild(s.child))),
-			{ box: true },
-		);
+		let problems: string[] = [];
+		try {
+			if (usedShared) {
+				// Teardown runs on a slot of the test's timeout of its own; it
+				// grows by the reset's bound first, so a hung reset still
+				// reports the leak, not "Tearing down … exceeded the timeout".
+				if (info.timeout > 0) info.setTimeout(info.timeout + FINISH_BOUND_MS);
+				problems = await base.step(
+					"teardown: crb reset",
+					() => sharedCrb.finish(shared, _leaks),
+					{ box: true },
+				);
+			} else if (crbServer === "shared") {
+				sharedCrb.end(shared);
+			}
+		} finally {
+			await base.step(
+				"teardown: crb stop",
+				() => Promise.all(servers.map((s) => stopChild(s.child))),
+				{ box: true },
+			);
+		}
+		if (_leaks.length > 0 && !usedShared) {
+			problems.push(
+				"expectCrbLeak in a test that never opened on the shared crb serve",
+			);
+		}
+		if (problems.length > 0) {
+			throw new Error(
+				`the shared crb serve: this test leaked (e2e/shared-server.ts)\n- ${problems.join("\n- ")}`,
+			);
+		}
 	},
 
 	expectConsoleError: [
@@ -245,6 +430,32 @@ export const test = base.extend<{
 		{ auto: true },
 	],
 });
+
+/**
+ * After a CLI client on the shared server: the server.json it read must be
+ * that server's. A client that found none (the server died meanwhile)
+ * starts one of its own, detached: it is killed, and the test fails.
+ */
+function strangerServer(server: Served, clientOutput: string): void {
+	const file = join(
+		server.env.XDG_STATE_HOME as string,
+		"carbonless",
+		"server.json",
+	);
+	let pid: number | undefined;
+	try {
+		pid = (JSON.parse(readFileSync(file, "utf8")) as { pid?: number }).pid;
+	} catch {
+		return;
+	}
+	if (pid === undefined || pid === server.child.pid) return;
+	try {
+		process.kill(pid, "SIGKILL");
+	} catch {}
+	throw new Error(
+		`crb <pr> started a crb serve of its own (pid ${pid}, killed) instead of the shared one (pid ${server.child.pid}); the client said:\n${clientOutput}`,
+	);
+}
 
 export interface ConsoleErrorWatch {
 	/** Declares errors matching `pattern` as expected. */

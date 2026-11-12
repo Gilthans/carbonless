@@ -19,6 +19,9 @@ import {
 import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
 import { OWNER_REPO, reviewPage } from "./fixtures";
 
+// Its own crb serve: the agent config, its fake ACP env and checkouts.
+test.use({ crbServer: "own" });
+
 /**
  * The reviewer's own agent (review buddy) against the fake ACP agent: ask
  * from a selection, the answer streaming in, the card's states, the chip,
@@ -1022,7 +1025,7 @@ test("--as-of: no agent, Ask agent off with why", async ({
 	});
 	// The PR's one commit is from before the cutoff.
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (graph) {
 			graph.commits = [
 				{

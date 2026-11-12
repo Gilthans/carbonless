@@ -83,6 +83,16 @@ function killGroup(child: ChildProcess): void {
 const detached = new Set<ChildProcess>();
 let killOnExit = false;
 
+/** Every git this process started and that hasn't exited yet: its args. */
+const running = new Map<ChildProcess, readonly string[]>();
+
+/** The gits still running (the test hook's leak check), as `git <args>`. */
+export function gitChildren(): string[] {
+	return [...running.values()].map((args) =>
+		`git ${args.join(" ")}`.slice(0, 160),
+	);
+}
+
 /** Kills every timed git still running, with its children. */
 export function killDetachedGits(): void {
 	for (const child of detached) killGroup(child);
@@ -185,6 +195,9 @@ export function runGitFull(
 			detached: opts.timeoutMs !== undefined,
 		});
 		if (opts.timeoutMs !== undefined) trackDetached(child);
+		running.set(child, args);
+		child.on("close", () => running.delete(child));
+		child.on("error", () => running.delete(child));
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
 		// A timeout or an abort settles at once, without waiting for the

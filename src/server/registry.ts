@@ -70,6 +70,15 @@ export class SessionRegistry {
 	readonly #reopening = new Map<string, Promise<Session>>();
 	readonly #timer: NodeJS.Timeout;
 	#closed = false;
+	/**
+	 * Bumped by reset(): an open or get begun before it closes the session
+	 * it lands with, rather than keep it in the reset registry.
+	 */
+	#generation = 0;
+	/** Resets under way: opens and gets are refused meanwhile (a straggler's). */
+	#resetting = 0;
+	/** Closes under way of sessions already out of #open (reset waits for them). */
+	readonly #closing = new Map<Promise<void>, string>();
 
 	constructor(options: { idleMs?: number; now?: () => number } = {}) {
 		this.#idleMs = options.idleMs ?? IDLE_MS;
@@ -92,6 +101,9 @@ export class SessionRegistry {
 		if (this.#closed) {
 			return Promise.reject(new SessionClosedError("The server is closing"));
 		}
+		if (this.#resetting > 0) {
+			return Promise.reject(new SessionClosedError("The server is resetting"));
+		}
 		const key = JSON.stringify([
 			req.pr,
 			req.cwd ?? null,
@@ -107,6 +119,7 @@ export class SessionRegistry {
 		}
 		const pending = this.#opening.get(key);
 		if (pending) return pending;
+		const generation = this.#generation;
 		const run = (async () => {
 			const session = await Session.open(
 				req.pr,
@@ -116,6 +129,10 @@ export class SessionRegistry {
 			).catch((error: unknown) => {
 				throw asRefusal(error);
 			});
+			if (generation !== this.#generation) {
+				this.#closeLater(session);
+				throw new SessionClosedError("The server was reset");
+			}
 			const kept = this.#keep(session, req.viewer);
 			// The agent spawns after the open, never in its way (first open).
 			kept.agent?.start();
@@ -123,9 +140,22 @@ export class SessionRegistry {
 			return { id: kept.id, session: kept };
 		})();
 		this.#opening.set(key, run);
-		const forget = () => this.#opening.delete(key);
+		// Only its own entry: a reset may have dropped it, and a newer open
+		// of the same request taken the key.
+		const forget = () => {
+			if (this.#opening.get(key) === run) this.#opening.delete(key);
+		};
 		run.then(forget, forget);
 		return run;
+	}
+
+	/** Closes `session`, out of #open already, tracked until it has closed. */
+	#closeLater(session: Session): Promise<void> {
+		const closing = session.close();
+		this.#closing.set(closing, session.id);
+		const done = () => this.#closing.delete(closing);
+		closing.then(done, done);
+		return closing;
 	}
 
 	/**
@@ -136,15 +166,15 @@ export class SessionRegistry {
 	#keep(session: Session, viewer: string | undefined): Session {
 		const existing = this.#open.get(session.id);
 		if (this.#closed) {
-			void session.close();
+			this.#closeLater(session);
 			throw new SessionClosedError("The server is closing");
 		}
 		if (existing && !existing.session.closed && existing.viewer === viewer) {
-			void session.close();
+			this.#closeLater(session);
 			existing.lastUsed = this.#now();
 			return existing.session;
 		}
-		if (existing) void existing.session.close();
+		if (existing) this.#closeLater(existing.session);
 		this.#open.set(session.id, { session, lastUsed: this.#now(), viewer });
 		return session;
 	}
@@ -155,6 +185,9 @@ export class SessionRegistry {
 	 */
 	async get(id: string): Promise<Session> {
 		if (this.#closed) throw new SessionClosedError("The server is closing");
+		if (this.#resetting > 0) {
+			throw new SessionClosedError("The server is resetting");
+		}
 		// Idle sessions leave the map now; their closes finish on their own.
 		void this.sweep();
 		const entry = this.#open.get(id);
@@ -165,9 +198,14 @@ export class SessionRegistry {
 		if (!REVIEW_ID.test(id)) throw new UnknownReviewError(`No review ${id}`);
 		const pending = this.#reopening.get(id);
 		if (pending) return pending;
+		const generation = this.#generation;
 		const run = (async () => {
 			const found = await findReviewById(cacheDir(), id);
 			if (!found) throw new UnknownReviewError(`No review ${id}`);
+			// Reset meanwhile: a late request of the last test opens nothing.
+			if (generation !== this.#generation) {
+				throw new SessionClosedError("The server was reset");
+			}
 			const { pr, head, asOf } = found.review;
 			const { session } = await this.open({
 				pr: `${pr.owner}/${pr.repo}#${pr.number}`,
@@ -182,7 +220,9 @@ export class SessionRegistry {
 			return session;
 		})();
 		this.#reopening.set(id, run);
-		const forget = () => this.#reopening.delete(id);
+		const forget = () => {
+			if (this.#reopening.get(id) === run) this.#reopening.delete(id);
+		};
 		run.then(forget, forget);
 		return run;
 	}
@@ -194,7 +234,73 @@ export class SessionRegistry {
 			([, e]) => now - e.lastUsed > this.#idleMs || e.session.closed,
 		);
 		for (const [id] of idle) this.#open.delete(id);
-		await Promise.all(idle.map(([, e]) => e.session.close()));
+		await Promise.all(idle.map(([, e]) => this.#closeLater(e.session)));
+	}
+
+	/**
+	 * Closes every session, as closeAll does (so no gh or git of theirs runs
+	 * after), and forgets which request opened which review, but stays open:
+	 * the next open of any PR is a new session, as in a fresh process (the
+	 * test hook's reset, testHooks.ts). An open or get under way, or begun
+	 * while this runs, is refused or closes the session it lands with. Waits at most
+	 * `timeoutMs` for those opens and every close (agents too); `pending`
+	 * names what still hadn't ended then.
+	 */
+	async reset(
+		timeoutMs = 5000,
+	): Promise<{ closed: number; pending: string[] }> {
+		this.#generation++;
+		this.#resetting++;
+		try {
+			return await this.#reset(Date.now() + timeoutMs);
+		} finally {
+			this.#resetting--;
+		}
+	}
+
+	async #reset(
+		deadline: number,
+	): Promise<{ closed: number; pending: string[] }> {
+		const opens = new Map<Promise<unknown>, string>();
+		for (const [key, run] of this.#opening) {
+			opens.set(run, `open ${String((JSON.parse(key) as unknown[])[0])}`);
+		}
+		for (const [id, run] of this.#reopening) opens.set(run, `reopen ${id}`);
+		const all = [...this.#open.values()];
+		this.#open.clear();
+		this.#idOf.clear();
+		this.#opening.clear();
+		this.#reopening.clear();
+		for (const e of all) this.#closeLater(e.session);
+		for (const run of opens.keys()) {
+			const done = () => opens.delete(run);
+			run.then(done, done);
+		}
+		// Opens that land close their session (#closeLater): wait for those
+		// closes too, as they come.
+		for (;;) {
+			const waiting = [...opens.keys(), ...this.#closing.keys()];
+			const left = deadline - Date.now();
+			if (waiting.length === 0 || left <= 0) break;
+			let timer: NodeJS.Timeout | undefined;
+			await Promise.race([
+				Promise.allSettled(waiting),
+				new Promise((resolve) => {
+					timer = setTimeout(resolve, left);
+				}),
+			]);
+			clearTimeout(timer);
+		}
+		const pending = [...opens.values()].map((o) => `${o} (pending)`);
+		for (const id of this.#closing.values()) {
+			pending.push(`session ${id} (still closing)`);
+		}
+		return { closed: all.length, pending };
+	}
+
+	/** Ids of the sessions open now (the test hook's state). */
+	openIds(): string[] {
+		return [...this.#open.keys()];
 	}
 
 	/** Closes every session (shutdown); opens under way close as they finish. */
@@ -206,5 +312,6 @@ export class SessionRegistry {
 		const all = [...this.#open.values()];
 		this.#open.clear();
 		await Promise.all(all.map((e) => e.session.close()));
+		await Promise.allSettled([...this.#closing.keys()]);
 	}
 }

@@ -47,7 +47,7 @@ const PENDING = {
 function stored(p: Pr) {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
 	return (
-		(s.prs[7]?.graphql?.reviewThreads ?? []) as {
+		(s.prs[p.number]?.graphql?.reviewThreads ?? []) as {
 			path: string;
 			subjectType: string;
 			line: number;
@@ -550,7 +550,10 @@ test("a pending review refuses it with the link, the draft kept", async ({
 	await expect(notice).toContainText(`${GREET}:3`);
 	await expect(
 		notice.getByRole("link", { name: "Open on GitHub" }),
-	).toHaveAttribute("href", "https://github.com/acme/widget/pull/7/files");
+	).toHaveAttribute(
+		"href",
+		`https://github.com/${p.ownerRepo}/pull/${p.number}/files`,
+	);
 	await expect(composer.getByTestId("new-thread-error")).toBeVisible();
 	await expect(box).toHaveValue("Blocked");
 	// The notice and the Files button leave the box and its button clear.

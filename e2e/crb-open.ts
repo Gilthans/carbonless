@@ -4,9 +4,9 @@ import { parseAsOf } from "../src/server/asOf";
 import { parsePrArg } from "../src/server/gh";
 import { parseHead } from "../src/server/pinnedHead";
 import type { ServerState } from "../src/server/serverState";
+import { parseTraceparent } from "../src/server/trace";
 import { VERSION_HEADER } from "../src/server/version";
 import { type Served, START_TIMEOUT_MS } from "./crb-process";
-import { crbEnv } from "./pr-setup";
 
 /*
  * `crb <pr>` without the client process (CAR-106): the harness POSTs
@@ -97,9 +97,12 @@ export function clientRequest(
 }
 
 /** The server.json `served` wrote: its address, build and whether it's keyed. */
-function stateOf(served: Served, workdir: string): ServerState {
-	const env = crbEnv(workdir);
-	const file = join(env.XDG_STATE_HOME as string, "carbonless", "server.json");
+function stateOf(served: Served): ServerState {
+	const file = join(
+		served.env.XDG_STATE_HOME as string,
+		"carbonless",
+		"server.json",
+	);
 	const state = JSON.parse(readFileSync(file, "utf8")) as ServerState;
 	if (state.pid !== served.child.pid) {
 		throw new Error(
@@ -115,16 +118,19 @@ function stateOf(served: Served, workdir: string): ServerState {
  */
 export async function openOverHttp(
 	served: Served,
-	workdir: string,
 	arg: string,
 	args: string[],
 ): Promise<{ code: number | null; stdout: string; output: string }> {
 	const req = clientRequest(arg, args);
-	const state = stateOf(served, workdir);
+	const state = stateOf(served);
 	const headers: Record<string, string> = {
 		"content-type": "application/json",
 		[VERSION_HEADER]: JSON.stringify(state.version),
 	};
+	// As the client sends its $TRACEPARENT: the open nests under the test
+	// that asked, also on a server another test started (a shared one).
+	const parent = process.env.TRACEPARENT;
+	if (parent && parseTraceparent(parent)) headers.traceparent = parent;
 	if (!LOOPBACK.has(state.host) || state.keyed) {
 		const key = new URL(served.url).searchParams.get("key");
 		if (!key)
