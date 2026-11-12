@@ -1,6 +1,6 @@
 # What can publish carbonless-review to npm: the release workflows and the
 # scripts they run. A PR touching them asks for the owner's review; only
-# the owner can merge into master anyway (docs/releasing.md, "Trusted
+# the owner approves merges into master anyway (docs/releasing.md, "Trusted
 # publishing").
 /.github/ @Gilthans
 /scripts/release*.ts @Gilthans

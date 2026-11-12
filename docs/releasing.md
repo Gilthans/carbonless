@@ -14,7 +14,8 @@ How carbonless reaches npm as `carbonless-review`. Decisions:
 
 ## How versions move
 
-Every change reaches master through a PR the owner merges on GitHub; nobody
+Every change reaches master through a PR merged on the owner's approval (by
+the owner, or by their agent on their word for that PR); nobody
 pushes master or tags by hand. `package.json`'s `version` on master is the
 **next release** `X.Y.Z`; no commit ever bumps it to an RC.
 
@@ -75,7 +76,7 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
      `vX.Y.Z` on the RC's commit, has `release.yml` move `rc` up to it
      (mode `fixup`), and opens the PR **"next: X.Y+1.0"** (or the `--next`
      bump) that sets master's version and adds the release's merged PRs to
-     `docs/changelog.md`. The owner merges that PR like any other; its
+     `docs/changelog.md`. It is merged on the owner's approval like any other; its
      merge publishes `X.Y+1.0-rc.1`.
 4. **A different next version** (a fix release instead of a minor, say):
    `pnpm release next <patch|minor|major|X.Y.Z>` opens a PR setting master's
@@ -213,21 +214,23 @@ any version and any tag, `latest` included. So:
   `release.yml` (or to `scripts/rc-fixup.mjs`) merged into master, or a
   compromised action or npm release used there. Whoever can change master
   can publish.
-- What keeps that to the owner: the ruleset on `master` (only the owner
-  can update it, and only by merging a PR; no force pushes or deletion),
+- What keeps that to the owner: the ruleset on `master` (only the owner's
+  login can update it, and only by merging a PR; no force pushes or deletion),
   the environment `npm` limited
   to `master` (npm checks the repository, the workflow file and the
   environment name, not the branch: the environment's branch rule is the
   only thing that keeps a workflow on another branch from getting npm's
   credential), and the owner's 2FA approval of every staged `latest`.
   Merging only PRs the owner read, on the owner's word, is the rest.
-- Nobody else can merge: the ruleset's "Restrict updates" lets only its
-  bypass list (the owner, as repository admin, for pull requests only)
-  update `master`, whatever access a collaborator has. Anyone can still
-  open a PR or leave a review; neither moves `master`. `.github/CODEOWNERS`
-  only asks for the owner's review on what can publish. Agents act through
-  the owner's GitHub login, so to GitHub they are the owner: they merge
-  only on the owner's word for that PR (CLAUDE.md, "How we work").
+- Only the owner approves a merge: the ruleset's "Restrict updates" lets
+  only its bypass list (the owner, as repository admin, for pull requests
+  only) update `master`, whatever access a collaborator has. Anyone can
+  still open a PR or leave a review; neither moves `master`.
+  `.github/CODEOWNERS` only asks for the owner's review on what can
+  publish. The owner's agents act through the owner's GitHub login, so to
+  GitHub they are the owner: they may merge on the owner's behalf, but only
+  on the owner's explicit approval of that PR (`gh pr merge --admin`, the
+  bypass; CLAUDE.md, "How we work").
 - With "Require two-factor authentication and disallow tokens" set on the
   package, no npm token can publish it; the trusted publisher still can.
 - On the owner's machine the OTP approves whatever the code that asks for
@@ -443,10 +446,10 @@ machine.
 3. **A ruleset on `master`**, Settings → Rules → Rulesets → New branch
    ruleset `master`, Active, target the default branch. Bypass list: the
    Repository admin role, mode "For pull requests only". Rules: Restrict
-   updates (only the bypass list updates `master`: the owner merges,
-   nobody else, whatever their access), Restrict deletions, Block force
+   updates (only the bypass list updates `master`: the owner, or their
+   agents on the owner's approval, nobody else, whatever their access), Restrict deletions, Block force
    pushes, Require a pull request before merging (0 approvals: only the
-   owner can merge anyway), Require status checks to pass (`checks`,
+   owner's login can merge anyway), Require status checks to pass (`checks`,
    `windows-agent`, `e2e`). Not "Require review from Code Owners": with
    Restrict updates it adds nothing. Nobody pushes straight to `master`,
    the owner included; the owner can merge any PR, with or without an
