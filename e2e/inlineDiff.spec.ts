@@ -661,14 +661,25 @@ test("a big rewritten block of long, unrelated lines shows at once, spinners in 
 	const old = marksOf("old");
 	const added = marksOf("new");
 	// The worker's script is held: nothing is marked off the render path
-	// until it's let through.
+	// until it's let through. What the server answers for it is kept, so
+	// the test knows the worker really loaded.
 	let release: () => void = () => {};
 	const held = new Promise<void>((resolve) => {
 		release = resolve;
 	});
+	const served: number[] = [];
 	await page.route("**/assets/wordWorker-*.js", async (route) => {
 		await held;
-		await route.continue();
+		const response = await route.fetch();
+		served.push(response.status());
+		await route.fulfill({ response });
+	});
+	// The main-thread fallback says so on the console (wordWork.ts).
+	const fellBack: string[] = [];
+	page.on("console", (message) => {
+		if (message.text().includes("main-thread fallback")) {
+			fellBack.push(message.text());
+		}
 	});
 	await pr(denseFixture);
 	const s = await startCrb();
@@ -686,7 +697,7 @@ test("a big rewritten block of long, unrelated lines shows at once, spinners in 
 	await expect(code.filter({ hasText: DENSE.add[29] as string })).toHaveCount(
 		1,
 	);
-	const spinners = section.getByRole("status", {
+	const spinners = section.getByRole("img", {
 		name: "Marking changed words",
 	});
 	await expect(spinners.first()).toBeVisible();
@@ -695,6 +706,17 @@ test("a big rewritten block of long, unrelated lines shows at once, spinners in 
 	release();
 	// The worker marks them: exactly what wordMarks says.
 	await expect(spinners).toHaveCount(0, { timeout: 30_000 });
+	await expect(
+		section.getByRole("img", { name: "Couldn't mark changed words" }),
+	).toHaveCount(0);
+	// From the worker: its script served, and no fallback to the main thread.
+	expect(served).toEqual([200]);
+	expect(fellBack).toEqual([]);
+	expect(
+		await page.evaluate(
+			() => document.documentElement.dataset.wordMarksFallback ?? null,
+		),
+	).toBeNull();
 	expect(await shownMarks(section, "LEFT")).toEqual(old);
 	expect(await shownMarks(section, "RIGHT")).toEqual(added);
 	// Side by side and Ignore whitespace: the marks stay, nothing to wait for.

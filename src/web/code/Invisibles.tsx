@@ -364,6 +364,11 @@ export interface Words {
 	 * shows a spinner in the sign's place.
 	 */
 	pending?: boolean;
+	/**
+	 * Computing the pair's marks failed (wordWork.ts): its code cell warns
+	 * in the sign's place.
+	 */
+	failed?: boolean;
 }
 
 /** Each tone's tint (index.css; written out whole, for Tailwind). */

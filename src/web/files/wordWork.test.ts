@@ -6,14 +6,16 @@ import type { DiffRow } from "./whitespace";
 import { hunkWordMarks } from "./wordBlocks";
 import { tokenize, wordMarks } from "./wordDiff";
 import {
+	CHUNK,
 	configureWordWork,
+	Dropped,
 	hunkWords,
-	markLater,
 	markPairs,
-	type PairMarks,
 	type Runner,
+	requestMarks,
 	resetWordWork,
 	slicedRunner,
+	wordWorkFallback,
 } from "./wordWork";
 
 const del = (text: string): DiffLine => ({
@@ -81,131 +83,322 @@ function minified(seed: number) {
 const plain = (marks: ReadonlyMap<DiffLine, readonly Mark[]>) =>
 	[...marks].map(([line, m]) => [line.kind, line.text, m]);
 
-/** A runner that waits for `release`, counting what it was sent. */
-function heldRunner() {
-	const sent: (readonly [string, string])[][] = [];
-	let open: () => void = () => {};
-	const gate = new Promise<void>((resolve) => {
-		open = resolve;
-	});
-	const runner: Runner = async (pairs) => {
-		sent.push([...pairs]);
-		await gate;
-		return markPairs(pairs);
-	};
-	return { runner, sent, release: () => open() };
+/**
+ * The hunk's words once nothing is pending: asks for what's left, chunk by
+ * chunk, until nothing is.
+ */
+async function settled(hunk: readonly DiffRow[]) {
+	for (;;) {
+		const words = hunkWords(hunk);
+		if (words.later.length === 0) return words;
+		await new Promise<void>((resolve) => {
+			const cancel = requestMarks(words.later, () => {
+				cancel();
+				resolve();
+			});
+		});
+	}
 }
+
+/** A runner whose every job waits for its own `release`, kept in `jobs`. */
+function heldRunner() {
+	const jobs: {
+		pairs: (readonly [string, string])[];
+		wanted: () => boolean;
+		release: () => void;
+		fail: (error: unknown) => void;
+	}[] = [];
+	const runner: Runner = (pairs, wanted) =>
+		new Promise((resolve, reject) => {
+			jobs.push({
+				pairs: [...pairs],
+				wanted,
+				release: () => resolve(markPairs(pairs)),
+				fail: reject,
+			});
+		});
+	return { runner, jobs };
+}
+
+/** Lets promise callbacks run (a job's answer reaching the queue). */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/**
+ * A clock for the render budget that moves `step` ms over each pair marked
+ * in render (it is read once before and once after a pair).
+ */
+const pairClock = (step: number) => {
+	let t = 0;
+	let reads = 0;
+	return () => {
+		reads++;
+		if (reads % 2 === 0) t += step;
+		return t;
+	};
+};
+
+/**
+ * The wall-clock timeout of the tests that mark hundreds of long pairs
+ * (seconds of CPU): a machine loaded with a busy loop per core and other
+ * suites stretches that tenfold and more. They gate CPU time or results,
+ * never wall time.
+ */
+const LOADED = 120_000;
 
 afterEach(() => {
 	resetWordWork();
 	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
 });
 
 describe("hunkWords", () => {
 	// CAR-135: 200 rewritten pairs of unrelated ~1,000-character lines take
-	// 1.6–2.8 s of CPU to mark (8–14 ms a pair). Marked in render
+	// 1.6–2.9 s of CPU to mark (8–14 ms a pair). Marked in render
 	// (hunkWordMarks, before), all of it blocked the page; now the render
 	// marks only while its task's budget lasts (8 ms, then the pair under
 	// way finishes), and the rest goes off the render path. The yardstick
 	// is the same pairs marked in full in this test: hunkWordMarks in its
-	// place measures 1.0x. Load only lowers the synchronous share (the
-	// budget is the wall-clock time spent marking; CPU time is at most that).
-	it("marks a rewritten block of 200 unrelated 1,000-character pairs in under a tenth of its CPU, the rest later", async () => {
-		const { line } = minified(29);
+	// place measures 1.0x. The real clock on purpose: load only lowers the
+	// synchronous share (the budget is the wall-clock time spent marking;
+	// CPU time is at most that).
+	it(
+		"marks a rewritten block of 200 unrelated 1,000-character pairs in under a tenth of its CPU, the rest later",
+		async () => {
+			const { line } = minified(29);
+			const pairs = Array.from(
+				{ length: 200 },
+				() => [line(1000), line(1000)] as const,
+			);
+			const hunk = block(pairs);
+			// The yardstick: every pair marked (new lines, nothing kept).
+			const full = cpuOf(() => {
+				hunkWordMarks(block(pairs));
+			});
+			let now: ReturnType<typeof hunkWords> | undefined;
+			const sync = cpuOf(() => {
+				now = hunkWords(hunk);
+			});
+			console.info(
+				`hunkWords: ${sync} µs CPU in render of ${full} µs in full (${((sync / full) * 100).toFixed(1)}%), ${now?.later.length} pairs later`,
+			);
+			expect(sync / full).toBeLessThan(0.1);
+			expect(now?.later.length).toBeGreaterThan(150);
+			// Every line of a pair still to mark says so.
+			// (What they end with: the 300-pair test below.)
+			expect(now?.pending.size).toBe((now?.later.length ?? 0) * 2);
+		},
+		LOADED,
+	);
+
+	it("marks in render until the task's budget is spent, by the clock it reads", async () => {
+		const { runner, jobs } = heldRunner();
+		// 5 ms a pair against 8: the first two pairs, then none.
+		configureWordWork({ runner, now: pairClock(5) });
 		const pairs = Array.from(
-			{ length: 200 },
-			() => [line(1000), line(1000)] as const,
+			{ length: 6 },
+			(_, i) => [`a = ${i}`, `a = ${i + 1}`] as const,
 		);
 		const hunk = block(pairs);
-		// The yardstick: every pair marked (new lines, nothing kept).
-		let fullMarks: ReturnType<typeof hunkWordMarks> = new Map();
-		const full = cpuOf(() => {
-			fullMarks = hunkWordMarks(block(pairs));
-		});
-		let now: ReturnType<typeof hunkWords> | undefined;
-		const sync = cpuOf(() => {
-			now = hunkWords(hunk);
-		});
-		console.info(
-			`hunkWords: ${sync} µs CPU in render of ${full} µs in full (${((sync / full) * 100).toFixed(1)}%), ${now?.later.length} pairs later`,
+		const words = hunkWords(hunk);
+		expect(words.later.map(([d]) => d.text)).toEqual(
+			pairs.slice(2).map(([a]) => a),
 		);
-		expect(sync / full).toBeLessThan(0.1);
-		expect(now?.later.length).toBeGreaterThan(150);
-		// Every line of a pair still to mark says so.
-		expect(now?.pending.size).toBe((now?.later.length ?? 0) * 2);
-		await markLater(now?.later ?? []);
-		const after = hunkWords(hunk);
-		expect(after.later).toEqual([]);
-		expect(after.pending.size).toBe(0);
-		expect(plain(after.marks)).toEqual(plain(fullMarks));
-	}, 60_000);
+		// The same task's next hunk gets nothing more.
+		expect(hunkWords(block([["b = 1", "b = 2"]])).later).toHaveLength(1);
+		// A new task, a new budget.
+		await flush();
+		expect(hunkWords(block([["c = 1", "c = 2"]])).later).toEqual([]);
+		expect(jobs).toEqual([]);
+	});
 
-	it("marks cheap pairs in render: nothing pending, nothing sent", async () => {
-		const { runner, sent } = heldRunner();
-		configureWordWork({ runner });
-		const hunk = block([
-			["const userCount = 1;", "const memberCount = 1;"],
-			["a = 1", "a = 2"],
-		]);
+	it("marks cheap pairs in render: nothing pending, nothing sent", () => {
+		const { runner, jobs } = heldRunner();
+		// 0.05 ms a pair: 100 pairs in half the budget.
+		configureWordWork({ runner, now: pairClock(0.05) });
+		const pairs = Array.from(
+			{ length: 100 },
+			(_, i) =>
+				[`const userCount${i} = 1;`, `const memberCount${i} = 1;`] as const,
+		);
+		const hunk = block(pairs);
 		const words = hunkWords(hunk);
 		expect(words.later).toEqual([]);
 		expect(words.pending.size).toBe(0);
 		expect(plain(words.marks)).toEqual(plain(hunkWordMarks(hunk)));
-		expect(sent).toEqual([]);
+		expect(jobs).toEqual([]);
 	});
 
-	it("marks later exactly what it would mark in render, for any pair (300 seeded pairs)", async () => {
-		const { line, edit, random } = minified(31);
-		const blanks = [" ", "\t", "  ", ""];
-		const pairs: (readonly [string, string])[] = [];
-		for (let i = 0; i < 300; i++) {
-			const length = [5, 40, 120, 600, 1023, 1024, 1500][i % 7] as number;
-			const a = line(length);
-			const kind = Math.floor(random() * 5);
-			const b =
-				kind === 0
-					? line(length)
-					: kind === 1
-						? edit(a)
-						: kind === 2
-							? `${blanks[i % 4]}${a}${blanks[(i + 1) % 4]}`
-							: kind === 3
-								? `${edit(a)}\r`
-								: a;
-			pairs.push([a, b]);
-		}
-		// Nothing in render: every pair goes the other way.
-		configureWordWork({ budgetMs: 0 });
-		const hunk = block(pairs);
-		const before = hunkWords(hunk);
-		expect(before.marks.size).toBe(0);
-		expect(before.later).toHaveLength(300);
-		await markLater(before.later);
-		expect(plain(hunkWords(hunk).marks)).toEqual(plain(hunkWordMarks(hunk)));
-		// The worker's function is wordMarks, pair by pair.
-		expect(markPairs(pairs)).toEqual(pairs.map(([a, b]) => wordMarks(a, b)));
-	});
+	it(
+		"marks later exactly what it would mark in render, for any pair (300 seeded pairs)",
+		async () => {
+			const { line, edit, random } = minified(31);
+			const blanks = [" ", "\t", "  ", ""];
+			const pairs: (readonly [string, string])[] = [];
+			for (let i = 0; i < 300; i++) {
+				const length = [5, 40, 120, 600, 1023, 1024, 1500][i % 7] as number;
+				const a = line(length);
+				const kind = Math.floor(random() * 5);
+				const b =
+					kind === 0
+						? line(length)
+						: kind === 1
+							? edit(a)
+							: kind === 2
+								? `${blanks[i % 4]}${a}${blanks[(i + 1) % 4]}`
+								: kind === 3
+									? `${edit(a)}\r`
+									: a;
+				pairs.push([a, b]);
+			}
+			// Nothing in render: every pair goes the other way.
+			configureWordWork({ budgetMs: 0 });
+			const hunk = block(pairs);
+			const before = hunkWords(hunk);
+			expect(before.marks.size).toBe(0);
+			expect(before.later).toHaveLength(300);
+			const after = await settled(hunk);
+			expect(after.failed.size).toBe(0);
+			expect(plain(after.marks)).toEqual(plain(hunkWordMarks(hunk)));
+			// The worker's function is wordMarks, pair by pair.
+			expect(markPairs(pairs)).toEqual(pairs.map(([a, b]) => wordMarks(a, b)));
+		},
+		LOADED,
+	);
 
-	it("keeps done pairs: the hunk's rows again (a toggle) mark nothing anew", async () => {
-		configureWordWork({ budgetMs: 0 });
+	it("keeps done pairs: the hunk's rows again (a toggle) mark nothing anew, and a pair on its way isn't sent twice", async () => {
+		const { runner, jobs } = heldRunner();
+		configureWordWork({ budgetMs: 0, runner });
 		const d = del("let a = 1;");
 		const a = add("let a = 2;");
 		const first = hunkWords(rows(d, a));
 		expect([...first.pending]).toEqual([d, a]);
-		const { runner, sent, release } = heldRunner();
-		configureWordWork({ runner });
-		const done = markLater(first.later);
+		const progress = vi.fn();
+		requestMarks(first.later, progress);
 		// A toggle while it's on its way: the pair isn't sent twice.
-		const again = markLater(hunkWords(rows(ctx("x"), d, a)).later);
-		expect(sent).toHaveLength(1);
-		release();
-		await Promise.all([done, again]);
+		const again = vi.fn();
+		requestMarks(hunkWords(rows(ctx("x"), d, a)).later, again);
+		expect(jobs).toHaveLength(1);
+		jobs[0]?.release();
+		await flush();
+		expect(progress).toHaveBeenCalledTimes(1);
+		expect(again).toHaveBeenCalledTimes(1);
 		// The same lines in new rows: done, without the runner.
 		const next = hunkWords(rows(ctx("x"), d, a, ctx("y")));
 		expect(next.pending.size).toBe(0);
 		expect(next.later).toEqual([]);
 		expect(next.marks.get(d)).toEqual([[8, 9]]);
-		expect(sent).toHaveLength(1);
+		expect(jobs).toHaveLength(1);
+	});
+
+	it(`sends ${CHUNK} pairs at a time, one job after another, each shown when done`, async () => {
+		const { runner, jobs } = heldRunner();
+		configureWordWork({ budgetMs: 0, runner });
+		const pairs = Array.from(
+			{ length: 2 * CHUNK + 5 },
+			(_, i) => [`x = ${i}`, `x = ${i + 1}`] as const,
+		);
+		const hunk = block(pairs);
+		const progress = vi.fn();
+		requestMarks(hunkWords(hunk).later, progress);
+		// One at a time.
+		expect(jobs.map((j) => j.pairs.length)).toEqual([CHUNK]);
+		jobs[0]?.release();
+		await flush();
+		expect(progress).toHaveBeenCalledTimes(1);
+		// The first chunk's pairs are in, the rest still pending.
+		expect(hunkWords(hunk).later).toHaveLength(CHUNK + 5);
+		expect(jobs.map((j) => j.pairs.length)).toEqual([CHUNK, CHUNK]);
+		jobs[1]?.release();
+		await flush();
+		jobs[2]?.release();
+		await flush();
+		expect(jobs.map((j) => j.pairs.length)).toEqual([CHUNK, CHUNK, 5]);
+		expect(progress).toHaveBeenCalledTimes(3);
+		expect(hunkWords(hunk).pending.size).toBe(0);
+	});
+
+	it("drops the chunks nobody waits for (a file closed) and sends them again when asked", async () => {
+		const { runner, jobs } = heldRunner();
+		configureWordWork({ budgetMs: 0, runner });
+		const pairs = Array.from(
+			{ length: 3 * CHUNK },
+			(_, i) => [`y = ${i}`, `y = ${i + 1}`] as const,
+		);
+		const closed = block(pairs);
+		const cancel = requestMarks(hunkWords(closed).later, () => {});
+		// The open file's hunk, asked after.
+		const open = block([["z = 1", "z = 2"]]);
+		const shown = vi.fn();
+		requestMarks(hunkWords(open).later, shown);
+		expect(jobs).toHaveLength(1);
+		expect(jobs[0]?.wanted()).toBe(true);
+		cancel();
+		// The running job is told; the queued two are skipped.
+		expect(jobs[0]?.wanted()).toBe(false);
+		jobs[0]?.release();
+		await flush();
+		expect(jobs.map((j) => j.pairs)).toEqual([
+			pairs.slice(0, CHUNK),
+			[["z = 1", "z = 2"]],
+		]);
+		jobs[1]?.release();
+		await flush();
+		expect(shown).toHaveBeenCalledTimes(1);
+		// Back to the closed file: what wasn't marked is asked for again.
+		const back = hunkWords(closed);
+		expect(back.later).toHaveLength(2 * CHUNK);
+		requestMarks(back.later, () => {});
+		expect(jobs.map((j) => j.pairs.length)).toEqual([CHUNK, 1, CHUNK]);
+	});
+});
+
+describe("failures settle", () => {
+	const pairs = [
+		["const userCount = 1;", "const memberCount = 1;"],
+		["a\tb", "a  b"],
+	] as const;
+
+	it("a failed job fails its pairs for good: warned, never pending, never plain", async () => {
+		const { runner, jobs } = heldRunner();
+		configureWordWork({ budgetMs: 0, runner });
+		const hunk = block(pairs);
+		const progress = vi.fn();
+		requestMarks(hunkWords(hunk).later, progress);
+		jobs[0]?.fail(new Error("no"));
+		await flush();
+		expect(progress).toHaveBeenCalledTimes(1);
+		const words = hunkWords(hunk);
+		expect(words.later).toEqual([]);
+		expect(words.pending.size).toBe(0);
+		expect(words.failed.size).toBe(4);
+		expect(words.marks.size).toBe(0);
+		// Not sent again.
+		requestMarks(words.later, () => {});
+		expect(jobs).toHaveLength(1);
+	});
+
+	it("a pair missing from a job's answer is failed, not plain", async () => {
+		configureWordWork({
+			budgetMs: 0,
+			runner: async (ps) => markPairs(ps).slice(0, 1),
+		});
+		const hunk = block(pairs);
+		const words = await settled(hunk);
+		expect(words.failed.size).toBe(2);
+		expect(words.marks.size).toBe(2);
+	});
+
+	it("on the main thread, a pair that throws rejects the run (it settles)", async () => {
+		const bad = [null as unknown as string, "x"] as const;
+		await expect(slicedRunner([pairs[0], bad], () => true)).rejects.toThrow();
+	});
+
+	it("a pair that throws in render is failed", () => {
+		const hunk = rows(
+			{ kind: "del", text: null as unknown as string, clusterKey: "k" },
+			add("x"),
+		);
+		expect(hunkWords(hunk).failed.size).toBe(2);
 	});
 });
 
@@ -216,33 +409,50 @@ describe("the runners", () => {
 	] as const;
 
 	it("marks in main-thread slices when there is no worker", async () => {
-		expect(await slicedRunner(pairs)).toEqual(markPairs(pairs));
+		expect(await slicedRunner(pairs, () => true)).toEqual(markPairs(pairs));
+	});
+
+	it("stops between slices once nobody waits", async () => {
+		await expect(slicedRunner(pairs, () => false)).rejects.toBeInstanceOf(
+			Dropped,
+		);
+	});
+
+	it("says when it falls back to the main thread for want of a worker", async () => {
+		const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+		configureWordWork({ budgetMs: 0 });
+		expect(wordWorkFallback()).toBeNull();
+		await settled(block(pairs));
+		expect(wordWorkFallback()).toBe("no worker");
+		expect(debug).toHaveBeenCalledWith(
+			"word marks: main-thread fallback (no worker)",
+		);
 	});
 
 	/** A stand-in Worker: runs the worker's message protocol in this thread. */
 	class FakeWorker {
-		static made = 0;
 		onmessage: ((event: { data: unknown }) => void) | null = null;
 		onerror: ((event: unknown) => void) | null = null;
 		onmessageerror: ((event: unknown) => void) | null = null;
 		constructor(
 			readonly url: URL,
 			readonly options: { type: string },
-		) {
-			FakeWorker.made++;
-		}
+		) {}
 		postMessage(data: { id: number; pairs: [string, string][] }) {
-			setTimeout(() =>
-				this.onmessage?.({
-					data: { id: data.id, marks: markPairs(data.pairs) },
-				}),
-			);
+			setTimeout(() => {
+				let answer: object;
+				try {
+					answer = { id: data.id, marks: markPairs(data.pairs) };
+				} catch (error) {
+					answer = { id: data.id, error: String(error) };
+				}
+				this.onmessage?.({ data: answer });
+			});
 		}
 		terminate() {}
 	}
 
 	it("sends the pairs to one worker, as a module, and takes its marks", async () => {
-		FakeWorker.made = 0;
 		const made: FakeWorker[] = [];
 		vi.stubGlobal(
 			"Worker",
@@ -255,15 +465,32 @@ describe("the runners", () => {
 		);
 		configureWordWork({ budgetMs: 0 });
 		const hunk = block(pairs);
-		await markLater(hunkWords(hunk).later);
-		await markLater(hunkWords(block([["x = 1", "x = 2"]])).later);
+		await settled(hunk);
+		await settled(block([["x = 1", "x = 2"]]));
 		expect(made).toHaveLength(1);
 		expect(made[0]?.url.pathname).toMatch(/wordWorker\.ts$/);
 		expect(made[0]?.options).toEqual({ type: "module" });
 		expect(plain(hunkWords(hunk).marks)).toEqual(plain(hunkWordMarks(hunk)));
+		expect(wordWorkFallback()).toBeNull();
 	});
 
-	it("marks on the main thread when the worker fails", async () => {
+	it("a job that fails in the worker fails its pairs, and the worker stays", async () => {
+		vi.stubGlobal("Worker", FakeWorker);
+		configureWordWork({ budgetMs: 0 });
+		const bad = rows(
+			{ kind: "del", text: null as unknown as string, clusterKey: "k" },
+			add("x"),
+		);
+		expect((await settled(bad)).failed.size).toBe(2);
+		expect(wordWorkFallback()).toBeNull();
+		const hunk = block(pairs);
+		expect(plain((await settled(hunk)).marks)).toEqual(
+			plain(hunkWordMarks(hunk)),
+		);
+	});
+
+	it("marks on the main thread when the worker fails, and says so", async () => {
+		const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
 		vi.stubGlobal(
 			"Worker",
 			class extends FakeWorker {
@@ -274,28 +501,36 @@ describe("the runners", () => {
 		);
 		configureWordWork({ budgetMs: 0 });
 		const hunk = block(pairs);
-		await markLater(hunkWords(hunk).later);
-		expect(plain(hunkWords(hunk).marks)).toEqual(plain(hunkWordMarks(hunk)));
+		const words = await settled(hunk);
+		expect(words.failed.size).toBe(0);
+		expect(plain(words.marks)).toEqual(plain(hunkWordMarks(hunk)));
+		expect(wordWorkFallback()).toBe("worker failed");
+		expect(debug).toHaveBeenCalledWith(
+			"word marks: main-thread fallback (worker failed)",
+		);
 		// A later job doesn't wait on the failed worker.
 		const next = block([["x = 1", "x = 2"]]);
-		await markLater(hunkWords(next).later);
-		expect(plain(hunkWords(next).marks)).toEqual(plain(hunkWordMarks(next)));
+		expect(plain((await settled(next)).marks)).toEqual(
+			plain(hunkWordMarks(next)),
+		);
 	});
 
-	it("a job that fails isn't kept as on its way", async () => {
-		let calls = 0;
+	it("a runner that rejects outright fails its pairs (no pending forever)", async () => {
 		const failing: Runner = async () => {
-			calls++;
 			throw new Error("no");
 		};
 		configureWordWork({ budgetMs: 0, runner: failing });
-		const hunk = block(pairs);
-		await expect(markLater(hunkWords(hunk).later)).rejects.toThrow("no");
-		configureWordWork({
-			runner: async (ps): Promise<PairMarks[]> => markPairs(ps),
-		});
-		await markLater(hunkWords(hunk).later);
-		expect(calls).toBe(1);
-		expect(hunkWords(hunk).pending.size).toBe(0);
+		const words = await settled(block(pairs));
+		expect(words.failed.size).toBe(4);
+		expect(words.pending.size).toBe(0);
+	});
+
+	it("a runner that throws (not even a promise) fails its pairs", async () => {
+		const throwing = (() => {
+			throw new Error("sync");
+		}) as unknown as Runner;
+		configureWordWork({ budgetMs: 0, runner: throwing });
+		const words = await settled(block(pairs));
+		expect(words.failed.size).toBe(4);
 	});
 });

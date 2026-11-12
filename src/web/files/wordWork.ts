@@ -10,11 +10,15 @@ import { wordMarks } from "./wordDiff";
  * 8–14 ms of CPU a pair, so a rewritten block of 200 of them would block the
  * page for seconds if marked during render. A render marks pairs only while
  * its task's budget (`SYNC_BUDGET_MS`) lasts, so the common, cheap pairs are
- * marked on first paint; the rest are marked off the render path (a Web
- * Worker, else in short slices of the main thread) and shown when done.
- * The same `wordMarks` either way: the marks never depend on where they
- * were computed. Done pairs are kept (by their two lines), so a view or
- * whitespace toggle marks nothing it marked before.
+ * marked on first paint; the rest are marked off the render path, in
+ * chunks of `CHUNK` pairs one after another (a Web Worker, else short
+ * slices of the main thread), each shown when done. Which pairs make the
+ * first paint depends on the machine's load; the marks never do: the same
+ * `wordMarks` either way. Done pairs are kept (by their two lines), so a
+ * view or whitespace toggle marks nothing it marked before. A chunk nobody
+ * waits for any more (its file closed) is dropped. A pair whose marking
+ * fails is failed for good: its lines say so, never pending forever, never
+ * plain.
  */
 
 /** A pair's marks: its removed line's (`old`) and its added line's (`new`). */
@@ -23,10 +27,25 @@ export interface PairMarks {
 	new: Mark[];
 }
 
-/** Marks pairs of texts (removed, added), in order, off the render path. */
+/**
+ * Marks pairs of texts (removed, added), in order, off the render path.
+ * `wanted` says whether anyone still waits for them: a runner that can
+ * stop between pairs rejects with `Dropped` once it says no.
+ */
 export type Runner = (
 	pairs: readonly (readonly [string, string])[],
+	wanted: () => boolean,
 ) => Promise<PairMarks[]>;
+
+/** A runner stopped: nobody waits for its pairs any more. */
+export class Dropped extends Error {
+	constructor() {
+		super("word marks no longer wanted");
+	}
+}
+
+/** Marking the pairs failed in the worker itself (not the worker failing). */
+class JobFailed extends Error {}
 
 /**
  * Each pair's marks, in order: what the worker runs. Exactly `wordMarks`,
@@ -44,13 +63,32 @@ export const markPairs = (
  */
 export const SYNC_BUDGET_MS = 8;
 
+/** Pairs a job sends at a time: a 200-pair hunk fills in ten steps. */
+export const CHUNK = 20;
+
 /** Milliseconds a main-thread slice marks for, when there is no worker. */
 const SLICE_MS = 8;
 
-/** Done pairs: by removed line, then by added line. */
-let done = new WeakMap<DiffLine, WeakMap<DiffLine, PairMarks>>();
-/** Pairs being marked off the render path, and when they will be done. */
-let inFlight = new WeakMap<DiffLine, WeakMap<DiffLine, Promise<void>>>();
+/** A pair whose marking failed. */
+const FAILED = { failed: true } as const;
+type Outcome = PairMarks | typeof FAILED;
+
+/** Pairs off the render path, sent (or to be sent) together. */
+interface Chunk {
+	pairs: [DiffLine, DiffLine][];
+	/** Who waits for it, each called once it's done. */
+	wanted: Set<() => void>;
+}
+
+/** Done pairs (marked or failed): by removed line, then by added line. */
+let done = new WeakMap<DiffLine, WeakMap<DiffLine, Outcome>>();
+/** Pairs queued or being marked, and their chunk. */
+let waiting = new WeakMap<DiffLine, WeakMap<DiffLine, Chunk>>();
+/** Chunks not started, oldest first; one runs at a time. */
+let queue: Chunk[] = [];
+let running = false;
+/** Bumped by `resetWordWork`: a job from before it is ignored. */
+let generation = 0;
 
 const lookup = <T>(
 	map: WeakMap<DiffLine, WeakMap<DiffLine, T>>,
@@ -75,15 +113,18 @@ function store<T>(
 /** Milliseconds this task has spent marking in render; null between tasks. */
 let spent: number | null = null;
 let budgetMs = SYNC_BUDGET_MS;
+const realNow = () => performance.now();
+/** The clock the render budget reads (tests: a fake one). */
+let now: () => number = realNow;
 
 /**
  * A pair's marks in render, when this task's budget isn't spent; undefined
  * once it is. The budget is per task (reset in a microtask, once the stack
  * that renders has returned), shared by every hunk the task renders, and
  * counts only the time spent marking: rendering between two hunks doesn't
- * use it up.
+ * use it up. A pair that throws is failed.
  */
-function markNow(del: DiffLine, add: DiffLine): PairMarks | undefined {
+function markNow(del: DiffLine, add: DiffLine): Outcome | undefined {
 	if (spent === null) {
 		spent = 0;
 		queueMicrotask(() => {
@@ -91,34 +132,71 @@ function markNow(del: DiffLine, add: DiffLine): PairMarks | undefined {
 		});
 	}
 	if (spent >= budgetMs) return undefined;
-	const start = performance.now();
-	const pair = wordMarks(del.text, add.text);
-	spent += performance.now() - start;
-	return pair;
+	const start = now();
+	try {
+		return wordMarks(del.text, add.text);
+	} catch {
+		return FAILED;
+	} finally {
+		spent += now() - start;
+	}
 }
 
-/** Marks in short main-thread slices, a macrotask between: no worker here. */
-export const slicedRunner: Runner = (pairs) =>
-	new Promise((resolve) => {
+/**
+ * Marks in short main-thread slices, a macrotask between: no worker here.
+ * Stops (`Dropped`) when the pairs are no longer wanted; a pair that throws
+ * rejects the whole run.
+ */
+export const slicedRunner: Runner = (pairs, wanted) =>
+	new Promise((resolve, reject) => {
 		const out: PairMarks[] = [];
 		const step = () => {
-			const start = performance.now();
-			while (out.length < pairs.length) {
-				const [a, b] = pairs[out.length] as readonly [string, string];
-				out.push(wordMarks(a, b));
-				if (performance.now() - start >= SLICE_MS) break;
+			try {
+				if (!wanted()) {
+					reject(new Dropped());
+					return;
+				}
+				const start = performance.now();
+				while (out.length < pairs.length) {
+					const [a, b] = pairs[out.length] as readonly [string, string];
+					out.push(wordMarks(a, b));
+					if (performance.now() - start >= SLICE_MS) break;
+				}
+				if (out.length < pairs.length) setTimeout(step, 0);
+				else resolve(out);
+			} catch (error) {
+				reject(error);
 			}
-			if (out.length < pairs.length) setTimeout(step, 0);
-			else resolve(out);
 		};
 		setTimeout(step, 0);
 	});
 
+/** Why marking fell back to the main thread; null while it hasn't. */
+let fallback: string | null = null;
+
+/** Tests: why marks are computed on the main thread, null when they aren't. */
+export const wordWorkFallback = () => fallback;
+
+/**
+ * Marks fall back to the main thread: said on the console and on the
+ * page's root (`data-word-marks-fallback`), so a test can tell the worker
+ * never ran.
+ */
+function fellBack(reason: string) {
+	if (fallback !== null) return;
+	fallback = reason;
+	console.debug(`word marks: main-thread fallback (${reason})`);
+	if (typeof document !== "undefined") {
+		document.documentElement.dataset.wordMarksFallback = reason;
+	}
+}
+
 /**
  * A Web Worker running `markPairs` (wordWorker.ts), one job at a time in
- * the order sent; null where there is none (tests, an old browser). A
- * worker that fails rejects its jobs, and every later one, so they are
- * marked on the main thread instead.
+ * the order sent; null where there is none (tests, an old browser). A job
+ * the worker answers with an error rejects with `JobFailed`; a worker that
+ * fails (its script missing, refused or broken) rejects its jobs, and every
+ * later one, so they are marked on the main thread instead.
  */
 function workerRunner(): Runner | null {
 	if (typeof Worker === "undefined") return null;
@@ -132,22 +210,24 @@ function workerRunner(): Runner | null {
 	}
 	let broken = false;
 	let next = 0;
-	const waiting = new Map<
+	const jobs = new Map<
 		number,
 		{ resolve: (marks: PairMarks[]) => void; reject: (e: unknown) => void }
 	>();
 	const fail = (error: unknown) => {
 		broken = true;
-		for (const job of waiting.values()) job.reject(error);
-		waiting.clear();
+		for (const job of jobs.values()) job.reject(error);
+		jobs.clear();
 		worker.terminate();
 	};
 	worker.onmessage = (
-		event: MessageEvent<{ id: number; marks: PairMarks[] }>,
+		event: MessageEvent<{ id: number; marks?: PairMarks[]; error?: string }>,
 	) => {
-		const { id, marks } = event.data;
-		waiting.get(id)?.resolve(marks);
-		waiting.delete(id);
+		const { id, marks, error } = event.data;
+		const job = jobs.get(id);
+		jobs.delete(id);
+		if (marks) job?.resolve(marks);
+		else job?.reject(new JobFailed(error));
 	};
 	worker.onerror = fail;
 	worker.onmessageerror = fail;
@@ -158,21 +238,81 @@ function workerRunner(): Runner | null {
 				return;
 			}
 			const id = next++;
-			waiting.set(id, { resolve, reject });
+			jobs.set(id, { resolve, reject });
 			worker.postMessage({ id, pairs });
 		});
 }
 
 let runner: Runner | null = null;
 /** The worker, made on first use; the main thread when it can't be. */
-function run(pairs: readonly (readonly [string, string])[]) {
+function run(
+	pairs: readonly (readonly [string, string])[],
+	wanted: () => boolean,
+) {
 	if (!runner) {
 		const worker = workerRunner();
+		if (!worker) fellBack("no worker");
 		runner = worker
-			? (ps) => worker(ps).catch(() => slicedRunner(ps))
+			? (ps, w) =>
+					worker(ps, w).catch((error: unknown) => {
+						if (error instanceof JobFailed) throw error;
+						fellBack("worker failed");
+						return slicedRunner(ps, w);
+					})
 			: slicedRunner;
 	}
-	return runner(pairs);
+	return runner(pairs, wanted);
+}
+
+/** Forgets a chunk's pairs as waiting (done, failed or dropped). */
+function forget(chunk: Chunk) {
+	for (const [del, add] of chunk.pairs) {
+		if (lookup(waiting, del, add) === chunk) waiting.get(del)?.delete(add);
+	}
+}
+
+/** Runs the oldest chunk still wanted, when none runs. */
+function pump() {
+	if (running) return;
+	let chunk = queue.shift();
+	while (chunk && chunk.wanted.size === 0) {
+		forget(chunk);
+		chunk = queue.shift();
+	}
+	if (!chunk) return;
+	const job = chunk;
+	const gen = generation;
+	running = true;
+	let attempt: Promise<PairMarks[]>;
+	try {
+		attempt = run(
+			job.pairs.map(([d, a]) => [d.text, a.text] as const),
+			() => job.wanted.size > 0,
+		);
+	} catch (error) {
+		attempt = Promise.reject(error);
+	}
+	void attempt
+		.then(
+			(marks) => {
+				if (gen !== generation) return;
+				job.pairs.forEach(([del, add], i) => {
+					// A missing answer is a failure, never a pair left plain.
+					store(done, del, add, marks[i] ?? FAILED);
+				});
+			},
+			(error: unknown) => {
+				if (gen !== generation || error instanceof Dropped) return;
+				for (const [del, add] of job.pairs) store(done, del, add, FAILED);
+			},
+		)
+		.finally(() => {
+			if (gen !== generation) return;
+			forget(job);
+			running = false;
+			for (const notify of job.wanted) notify();
+			pump();
+		});
 }
 
 /** A hunk's word marks as far as they are done. */
@@ -181,7 +321,9 @@ export interface HunkWords {
 	marks: Map<DiffLine, readonly Mark[]>;
 	/** The lines of the pairs not marked yet. */
 	pending: ReadonlySet<DiffLine>;
-	/** Those pairs, for `markLater`. */
+	/** The lines of the pairs whose marking failed. */
+	failed: ReadonlySet<DiffLine>;
+	/** The pending pairs, for `requestMarks`. */
 	later: [del: DiffLine, add: DiffLine][];
 }
 
@@ -190,11 +332,12 @@ const NONE: ReadonlySet<DiffLine> = new Set();
 /**
  * The hunk's word marks (hunkPairs): every pair done before, and new ones
  * while the task's render budget lasts; the rest are `later`, for
- * `markLater`.
+ * `requestMarks`.
  */
 export function hunkWords(rows: readonly DiffRow[]): HunkWords {
 	const marks = new Map<DiffLine, readonly Mark[]>();
 	const pending = new Set<DiffLine>();
+	const failed = new Set<DiffLine>();
 	const later: [DiffLine, DiffLine][] = [];
 	for (const [del, add] of hunkPairs(rows)) {
 		let pair = lookup(done, del, add);
@@ -206,62 +349,83 @@ export function hunkWords(rows: readonly DiffRow[]): HunkWords {
 			pending.add(del);
 			pending.add(add);
 			later.push([del, add]);
-			continue;
+		} else if ("failed" in pair) {
+			failed.add(del);
+			failed.add(add);
+		} else {
+			if (pair.old.length > 0) marks.set(del, pair.old);
+			if (pair.new.length > 0) marks.set(add, pair.new);
 		}
-		if (pair.old.length > 0) marks.set(del, pair.old);
-		if (pair.new.length > 0) marks.set(add, pair.new);
 	}
-	return { marks, pending: pending.size > 0 ? pending : NONE, later };
+	return {
+		marks,
+		pending: pending.size > 0 ? pending : NONE,
+		failed: failed.size > 0 ? failed : NONE,
+		later,
+	};
 }
 
 /**
- * Marks `pairs` off the render path; resolves once every one is done (then
- * `hunkWords` has them all). A pair already on its way isn't sent again.
+ * Marks `pairs` off the render path, in chunks of `CHUNK`; `progress` is
+ * called as each chunk holding some of them is done (marked or failed:
+ * `hunkWords` then has them). A pair already on its way isn't sent again.
+ * Returns the cancel: the caller no longer waits, and a chunk nobody waits
+ * for is dropped before it runs (or, on the main thread, between slices).
  */
-export function markLater(
+export function requestMarks(
 	pairs: readonly (readonly [DiffLine, DiffLine])[],
-): Promise<void> {
-	const waits: Promise<void>[] = [];
-	const send: (readonly [DiffLine, DiffLine])[] = [];
+	progress: () => void,
+): () => void {
+	// Its own identity: one caller can ask twice.
+	const listener = () => progress();
+	const mine = new Set<Chunk>();
+	let fresh: Chunk | undefined;
 	for (const [del, add] of pairs) {
 		if (lookup(done, del, add)) continue;
-		const wait = lookup(inFlight, del, add);
-		if (wait) waits.push(wait);
-		else send.push([del, add]);
+		const chunk = lookup(waiting, del, add);
+		if (chunk) {
+			chunk.wanted.add(listener);
+			mine.add(chunk);
+			continue;
+		}
+		if (!fresh || fresh.pairs.length >= CHUNK) {
+			fresh = { pairs: [], wanted: new Set([listener]) };
+			queue.push(fresh);
+			mine.add(fresh);
+		}
+		fresh.pairs.push([del, add]);
+		store(waiting, del, add, fresh);
 	}
-	if (send.length > 0) {
-		const flights = inFlight;
-		const job = run(send.map(([d, a]) => [d.text, a.text] as const)).then(
-			(marks) => {
-				send.forEach(([del, add], i) => {
-					store(done, del, add, marks[i] as PairMarks);
-				});
-			},
-		);
-		// Done or not, the pairs are no longer on their way.
-		const settled = job.finally(() => {
-			for (const [del, add] of send) flights.get(del)?.delete(add);
-		});
-		for (const [del, add] of send) store(flights, del, add, settled);
-		waits.push(settled);
-	}
-	return Promise.all(waits).then(() => undefined);
+	pump();
+	return () => {
+		for (const chunk of mine) chunk.wanted.delete(listener);
+	};
 }
 
-/** Tests: the render budget and the runner (null: the default). */
+/** Tests: the render budget, its clock, and the runner (null: the default). */
 export function configureWordWork(options: {
 	budgetMs?: number;
+	now?: () => number;
 	runner?: Runner | null;
 }) {
 	if (options.budgetMs !== undefined) budgetMs = options.budgetMs;
+	if (options.now !== undefined) now = options.now;
 	if (options.runner !== undefined) runner = options.runner;
 }
 
-/** Tests: forget every done pair and the settings. */
+/** Tests: forget every pair, job and setting. */
 export function resetWordWork() {
+	generation++;
 	done = new WeakMap();
-	inFlight = new WeakMap();
+	waiting = new WeakMap();
+	queue = [];
+	running = false;
 	budgetMs = SYNC_BUDGET_MS;
+	now = realNow;
 	runner = null;
 	spent = null;
+	fallback = null;
+	if (typeof document !== "undefined") {
+		delete document.documentElement.dataset.wordMarksFallback;
+	}
 }

@@ -202,10 +202,16 @@ still loading result"). The exact token diff is O(N·D), so two unrelated
 lines just under the cut cost 8–14 ms each (CAR-123), and a rewritten block
 of 200 would block the page for seconds. Pairs past the budget are marked
 in a Web Worker (main-thread slices where there is none) by the same
-`wordMarks`, and kept by their lines, so a view or whitespace toggle marks
-nothing anew (CAR-135). Meanwhile a pending pair's lines show a spinner in
-the sign's place (`aria-busy` on the cell, design principle 8), never bare
-plain lines; its tests hold the work and assert the spinner.
+`wordMarks`, in chunks of 20 pairs that each show when done, and kept by
+their lines, so a view or whitespace toggle marks nothing anew (CAR-135).
+Which pairs show marked at once depends on the machine's load; the marks
+they end with never do. A closed file's queued chunks are dropped.
+Meanwhile a pending pair's lines show a spinner in the sign's place
+(`aria-busy` on the cell, design principle 8), never bare plain lines; a
+pair whose marking fails shows a ⚠ there ("Couldn't mark changed words"),
+never a spinner forever and never plain. Its tests hold the work and assert
+the spinner; unit tests mark everything in render (an unlimited budget)
+unless they test the budget, on a fake clock.
 Budget (call): computing the marks of 2,000 pairs of 120-character lines
 (an equal block, the worst case DiffBody meets, since it renders a file's
 rows at once) takes under 100 ms of CPU time (`process.threadCpuUsage`, a

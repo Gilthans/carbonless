@@ -53,6 +53,7 @@ import {
 	markPairs,
 	type Runner,
 	resetWordWork,
+	SYNC_BUDGET_MS,
 } from "./wordWork";
 
 vi.mock("./hiddenLines", async (original) => {
@@ -2694,22 +2695,33 @@ describe("DiffBody word marks", () => {
 		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
 	});
 
-	/** A word-marks runner that waits for `release`, keeping what it was sent. */
+	/** A word-marks runner whose jobs wait for `release` (or `fail`), keeping what it was sent. */
 	const heldMarks = () => {
 		const sent: (readonly [string, string])[][] = [];
 		let open: () => void = () => {};
-		const gate = new Promise<void>((resolve) => {
+		let refuse: (error: unknown) => void = () => {};
+		const gate = new Promise<void>((resolve, reject) => {
 			open = resolve;
+			refuse = reject;
 		});
 		const runner: Runner = async (pairs) => {
 			sent.push([...pairs]);
 			await gate;
 			return markPairs(pairs);
 		};
-		return { runner, sent, release: () => open() };
+		return {
+			runner,
+			sent,
+			release: () => open(),
+			fail: () => refuse(new Error("no")),
+		};
 	};
-	const pendingSpinners = () =>
-		screen.queryAllByRole("status", { name: "Marking changed words" });
+	const pendingSigns = () =>
+		screen.queryAllByRole("img", { name: "Marking changed words" });
+	const failedSigns = () =>
+		screen.queryAllByRole("img", { name: "Couldn't mark changed words" });
+	const code = (kind: string) =>
+		rowOf(kind).querySelector('td[data-testid="code"]') as HTMLElement;
 
 	// CAR-135: a pair too costly to mark in render is marked later.
 	it("shows a pair's lines with a spinner in the sign's place while its marks are on their way; a toggle keeps them", async () => {
@@ -2721,9 +2733,9 @@ describe("DiffBody word marks", () => {
 		await shown("memberCount");
 		await waitFor(() => expect(sent).toHaveLength(1));
 		expect(words()).toEqual([]);
-		expect(pendingSpinners()).toHaveLength(2);
-		const code = (kind: string) =>
-			rowOf(kind).querySelector('td[data-testid="code"]') as HTMLElement;
+		expect(pendingSigns()).toHaveLength(2);
+		// No live region per line: the cell is busy.
+		expect(screen.queryAllByRole("status")).toEqual([]);
 		expect(code("del")).toHaveAttribute("aria-busy", "true");
 		expect(code("add")).toHaveAttribute("aria-busy", "true");
 		release();
@@ -2731,27 +2743,60 @@ describe("DiffBody word marks", () => {
 			expect(marked(rowOf("add"))).toEqual([["memberCount", "bg-add-word"]]),
 		);
 		expect(marked(rowOf("del"))).toEqual([["userCount", "bg-del-word"]]);
-		expect(pendingSpinners()).toEqual([]);
+		expect(pendingSigns()).toEqual([]);
 		expect(code("add")).not.toHaveAttribute("aria-busy");
 		// Side by side, then Ignore whitespace: marked at once, not sent again.
 		act(() => sideBySide.set(true));
 		expect(marked(cellOf("LEFT"))).toEqual([["userCount", "bg-del-word"]]);
 		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
-		expect(pendingSpinners()).toEqual([]);
+		expect(pendingSigns()).toEqual([]);
 		act(() => ignoreWhitespace.set(true));
 		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
-		expect(pendingSpinners()).toEqual([]);
+		expect(pendingSigns()).toEqual([]);
 		expect(sent).toHaveLength(1);
 	});
 
-	it("marks a cheap pair in render: no spinner, nothing sent", async () => {
+	it("warns on a pair whose marks failed: no spinner left, no marks", async () => {
+		const { runner, sent, fail } = heldMarks();
+		configureWordWork({ budgetMs: 0, runner });
+		sideBySide.set(false);
+		setup({ hunks: RENAME, clusters: [cluster("c")] });
+		await shown("memberCount");
+		await waitFor(() => expect(sent).toHaveLength(1));
+		expect(pendingSigns()).toHaveLength(2);
+		fail();
+		await waitFor(() => expect(failedSigns()).toHaveLength(2));
+		expect(pendingSigns()).toEqual([]);
+		expect(words()).toEqual([]);
+		expect(code("add")).not.toHaveAttribute("aria-busy");
+		// Its line's own: in the sign's place.
+		expect(
+			within(code("add")).getByRole("img", { name: /^Couldn't/ }),
+		).toBeVisible();
+		// Side by side too.
+		act(() => sideBySide.set(true));
+		expect(
+			within(cellOf("RIGHT")).getAllByRole("img", { name: /^Couldn't/ }),
+		).toHaveLength(1);
+		expect(sent).toHaveLength(1);
+	});
+
+	it("marks a cheap pair in render, by the budget's clock: no spinner, nothing sent", async () => {
 		const { runner, sent } = heldMarks();
-		configureWordWork({ runner });
+		// The real budget, on a clock where a pair takes 0.05 ms.
+		let t = 0;
+		let reads = 0;
+		const now = () => {
+			reads++;
+			if (reads % 2 === 0) t += 0.05;
+			return t;
+		};
+		configureWordWork({ budgetMs: SYNC_BUDGET_MS, now, runner });
 		sideBySide.set(false);
 		setup({ hunks: RENAME, clusters: [cluster("c")] });
 		await shown("memberCount");
 		expect(marked(rowOf("add"))).toEqual([["memberCount", "bg-add-word"]]);
-		expect(pendingSpinners()).toEqual([]);
+		expect(pendingSigns()).toEqual([]);
 		expect(sent).toEqual([]);
 	});
 
