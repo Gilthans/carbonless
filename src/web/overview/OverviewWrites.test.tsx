@@ -628,12 +628,17 @@ describe("the Drafts filter", () => {
 		const orphan = within(humans).getByTestId("orphan-draft");
 		expect(orphan).toHaveTextContent("Written to a deleted thread");
 		const writeText = vi.fn(async () => {});
+		// The Clipboard API is used only in a secure context (copyText).
+		vi.stubGlobal("isSecureContext", true);
 		Object.defineProperty(navigator, "clipboard", {
 			value: { writeText },
 			configurable: true,
 		});
 		await user.click(within(orphan).getByRole("button", { name: "Copy" }));
 		expect(writeText).toHaveBeenCalledWith("Written to a deleted thread");
+		expect(
+			await within(orphan).findByRole("button", { name: "Copied" }),
+		).toBeInTheDocument();
 		await user.click(within(orphan).getByRole("button", { name: "Discard" }));
 		expect(draftsFor(client).get()).toEqual([]);
 		await waitFor(() =>
