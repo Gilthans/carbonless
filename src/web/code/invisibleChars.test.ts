@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { bestCpuRatio, repeat } from "../../../test/cpu";
 import {
 	describeCodePoint,
 	escapeLabel,
@@ -84,12 +85,20 @@ describe("renderInvisibles", () => {
 		expect(pieces[4]).toMatchObject({ columns: 4 });
 	});
 
-	it("splits a 100 KB line quickly", () => {
-		const text = "const value = call(a, b);\t// note  ".repeat(3000);
-		const start = performance.now();
-		const pieces = renderInvisibles(text, 4);
-		expect(performance.now() - start).toBeLessThan(200);
-		expect(joinPieces(pieces)).toBe(text);
+	it("splits a 100 KB line in linear time", () => {
+		const line = (repeats: number) =>
+			"const value = call(a, b);\t// note  ".repeat(repeats);
+		const text = line(3000);
+		const quarter = line(750);
+		// CPU against four lines a quarter as long (CLAUDE.md): linear is
+		// about 1x, a quadratic split 4x.
+		const { ratio } = bestCpuRatio(
+			() => renderInvisibles(text, 4),
+			repeat(4, () => renderInvisibles(quarter, 4)),
+		);
+		console.info(`renderInvisibles: a 4x line in ${ratio.toFixed(2)}x the CPU`);
+		expect(ratio).toBeLessThan(2);
+		expect(joinPieces(renderInvisibles(text, 4))).toBe(text);
 	});
 
 	it("shows CRLF as \\r\\n, and no ending on a last line without newline", () => {

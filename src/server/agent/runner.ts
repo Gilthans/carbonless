@@ -468,6 +468,10 @@ export class AgentRunner {
 			});
 			return null;
 		}
+		// Closed while the checkout was made: close() found no process to
+		// stop and waits for this pump, so a start now would hold it until
+		// the start times out (close removes the checkout after).
+		if (this.#closed) return null;
 		// ACP went off while the checkout was made: nothing spawns.
 		if (this.#off()) {
 			this.#set("off");

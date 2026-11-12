@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { bestCpuRatio, repeat } from "../../../test/cpu.js";
 import {
 	createGitFixture,
 	GIT_TEST_TIMEOUTS,
@@ -56,7 +57,11 @@ describe("compileGlob", () => {
 	});
 
 	it("matches pathological headers in linear time", () => {
-		const path = `${"a/".repeat(100)}${"a".repeat(500)}${"1".repeat(400)}`;
+		// The path's parts in proportion, `scale` times over.
+		const path = (scale: number) =>
+			`${"a/".repeat(25 * scale)}${"a".repeat(125 * scale)}${"1".repeat(100 * scale)}`;
+		const short = path(4);
+		const long = path(16);
 		for (const glob of [
 			"*".repeat(30),
 			`${"*".repeat(30)}x`,
@@ -66,12 +71,17 @@ describe("compileGlob", () => {
 			`${"{a,*}".repeat(30)}x`,
 		]) {
 			const glob_ = compileGlob(glob);
-			// CPU time of this thread, not the wall clock: other processes on a
-			// loaded machine don't count, a backtracking match still does.
-			const start = process.threadCpuUsage();
-			glob_.test(path);
-			const { user, system } = process.threadCpuUsage(start);
-			expect((user + system) / 1000, glob).toBeLessThan(1000);
+			// CPU time against four matches of a path a quarter as long, the
+			// same characters in all (CLAUDE.md): linear is about 1x, a
+			// quadratic match 4x, a backtracking one far more.
+			const { ratio } = bestCpuRatio(
+				() => glob_.test(long),
+				repeat(4, () => glob_.test(short)),
+			);
+			console.info(
+				`glob ${glob}: 4x the path in ${ratio.toFixed(2)}x four short matches' CPU`,
+			);
+			expect(ratio, glob).toBeLessThan(2);
 		}
 	});
 

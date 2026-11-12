@@ -24,7 +24,7 @@ import type {
 	AgentView,
 } from "../../shared/agent.js";
 import { RefStore } from "../review/refStore.js";
-import { agentsDir } from "./checkout.js";
+import { agentsDir, createCheckout } from "./checkout.js";
 import { orphanAnchor } from "./githubJoin.js";
 import { JoinBroker } from "./join.js";
 import type {
@@ -38,7 +38,8 @@ import { type AgentThreadFold, AgentThreadStore } from "./store.js";
 // Real git and fake agent processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
 
-// A gate on the agent's checkout: a test holds it to act while it is made.
+// The real checkout, wrapped so a test can hold it: by the gate, or by
+// mocking one call (vi.mocked(createCheckout)).
 const checkoutGate = vi.hoisted(() => ({
 	hold: null as Promise<void> | null,
 	entered: 0,
@@ -47,11 +48,13 @@ vi.mock("./checkout.js", async (importOriginal) => {
 	const real = await importOriginal<typeof import("./checkout.js")>();
 	return {
 		...real,
-		createCheckout: async (...args: Parameters<typeof real.createCheckout>) => {
-			checkoutGate.entered++;
-			if (checkoutGate.hold) await checkoutGate.hold;
-			return real.createCheckout(...args);
-		},
+		createCheckout: vi.fn(
+			async (...args: Parameters<typeof real.createCheckout>) => {
+				checkoutGate.entered++;
+				if (checkoutGate.hold) await checkoutGate.hold;
+				return real.createCheckout(...args);
+			},
+		),
 	};
 });
 
@@ -746,6 +749,40 @@ describe("AgentRunner", () => {
 		await runner.close();
 		expect(() => process.kill(pid, 0)).toThrow();
 		expect((await runner.status()).state).toBe("off");
+	});
+
+	it("close while the checkout is being made spawns nothing and doesn't wait for a start", async () => {
+		// initialize held for good: a start after close would keep close()
+		// waiting for the agent's start timeout.
+		scenario({ hold: ["initialize"] });
+		const real =
+			await vi.importActual<typeof import("./checkout.js")>("./checkout.js");
+		let inCheckout!: () => void;
+		const entered = new Promise<void>((r) => {
+			inCheckout = r;
+		});
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		vi.mocked(createCheckout).mockImplementationOnce(async (...args) => {
+			inCheckout();
+			await gate;
+			return real.createCheckout(...args);
+		});
+		makeRunner().poke();
+		await entered;
+		const closed = runner.close();
+		release();
+		await closed;
+		expect(spawns()).toEqual([]);
+		expect((await runner.status()).state).toBe("off");
+		expect(() =>
+			execFileSync("test", ["-e", join(agentsDir(), REVIEW, "tree")]),
+		).toThrow();
+		expect(() =>
+			execFileSync("test", ["-e", join(agentsDir(), REVIEW, "claim.json")]),
+		).toThrow();
 	});
 
 	it("an agent set to none releases the claim and removes the tree; set again, both come back", async () => {
