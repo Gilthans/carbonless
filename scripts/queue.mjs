@@ -24,7 +24,8 @@
 // tries the slots only while it is among the `slots` oldest live tickets. The
 // flock slots stay the real exclusion; the tickets only order who tries. A
 // run killed with SIGKILL leaves a ticket the next reader drops (its pid is
-// gone, or is now another process).
+// gone, a zombie, or now another process); a stopped run (Ctrl-Z) keeps its
+// ticket but lets the runs behind it go.
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -43,7 +44,7 @@ const SIGNAL_CODES = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
 // comes back as 1 so the two never mix.
 const TAKEN = 200;
 // CRB_QUEUE_POLL_MS: for tests, a waiter that polls faster than the others.
-const POLL_MS = Number(process.env.CRB_QUEUE_POLL_MS) || 1000;
+const POLL_MS = Math.max(10, Number(process.env.CRB_QUEUE_POLL_MS) || 1000);
 
 /** The child a signal goes on to; with `group`, to its process group. */
 let current = null;
@@ -136,7 +137,8 @@ for (;;) {
 		process.exit(await unqueued());
 	}
 	// Runs that came earlier and still wait (or run) go first.
-	const tries = ticket.place() < slots ? slots : 0;
+	const ahead = ticket.place();
+	const tries = ahead < slots ? slots : 0;
 	for (let i = 0; i < tries; i++) {
 		// -n: a taken slot ends flock at once with TAKEN; a free one becomes
 		// this script again (--no-fork), holding the slot.
@@ -166,7 +168,10 @@ for (;;) {
 	}
 	if (!told) {
 		told = true;
-		console.log(`queue: waiting for ${holders(slots).join("; ")} to finish`);
+		const n = Number.isFinite(ahead) ? ` (${ahead} ahead)` : "";
+		console.log(
+			`queue: waiting for ${holders(slots).join("; ")} to finish${n}`,
+		);
 	}
 	await sleep(POLL_MS);
 }

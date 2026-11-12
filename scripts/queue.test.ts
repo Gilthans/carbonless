@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -13,7 +14,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { queueSlots } from "./queue-config.mjs";
 import { queuedWorkers, requireQueue } from "./queue-guard.mjs";
-import { startTime, alive as ticketAlive } from "./queue-line.mjs";
+import { joinLine, line, startTime, ticketState } from "./queue-line.mjs";
 
 let home: string;
 const env = { ...process.env };
@@ -83,14 +84,95 @@ describe("queue config and guard", () => {
 });
 
 describe("queue line tickets", () => {
+	const started: ChildProcess[] = [];
+	afterEach(() => {
+		for (const c of started) if (c.exitCode === null) c.kill("SIGKILL");
+	});
+	const state = (pid: number) => {
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			return stat.slice(stat.lastIndexOf(")") + 2)[0];
+		} catch {
+			return "";
+		}
+	};
+	const until = async (check: () => boolean) => {
+		while (!check()) await new Promise((r) => setTimeout(r, 20));
+	};
+	const ticketOf = (pid: number) => `${pid} ${startTime(pid)}`;
+
 	it("a ticket is live only while its pid runs with the start time it wrote", () => {
-		const me = `${process.pid} ${startTime(process.pid)}`;
-		expect(ticketAlive(me)).toBe(true);
+		expect(ticketState(ticketOf(process.pid))).toBe("live");
 		// The pid now belongs to another process (pid reuse).
-		expect(ticketAlive(`${process.pid} 1`)).toBe(false);
-		expect(ticketAlive("")).toBe(false);
+		expect(ticketState(`${process.pid} 1`)).toBe("dead");
+		expect(ticketState("")).toBe("dead");
 		const gone = spawnSync("true").pid as number;
-		expect(ticketAlive(`${gone} ${startTime(gone)}`)).toBe(false);
+		expect(ticketState(ticketOf(gone))).toBe("dead");
+	});
+
+	it.skipIf(!existsSync("/proc/self/stat"))(
+		"a zombie's ticket is dead, a stopped run's is stopped",
+		{ timeout: 30_000 },
+		async () => {
+			// `sleep 0` exits under a parent (the exec'd sleep 30) that never
+			// reaps it.
+			const parent = spawn("sh", ["-c", "sleep 0 & echo $!; exec sleep 30"]);
+			started.push(parent);
+			let out = "";
+			parent.stdout?.on("data", (d) => {
+				out += d;
+			});
+			await until(() => out.endsWith("\n"));
+			const zombie = Number(out);
+			await until(() => state(zombie) === "Z");
+			expect(ticketState(ticketOf(zombie))).toBe("dead");
+
+			const stopped = spawn("sleep", ["30"]);
+			started.push(stopped);
+			const pid = stopped.pid as number;
+			const ticket = ticketOf(pid);
+			stopped.kill("SIGSTOP");
+			await until(() => state(pid) === "T");
+			expect(ticketState(ticket)).toBe("stopped");
+			stopped.kill("SIGCONT");
+			await until(() => state(pid) === "S" || state(pid) === "R");
+			expect(ticketState(ticket)).toBe("live");
+		},
+	);
+
+	it("a ticket from another pid namespace is neither counted nor removed", () => {
+		const dir = mkdtempSync(join(tmpdir(), "crb-line-"));
+		try {
+			const gone = spawnSync("true").pid as number;
+			const foreign = `${"1".padStart(20, "0")}-${gone}`;
+			writeFileSync(join(dir, foreign), `${gone} 5 pid:[1]\n`);
+			expect(ticketState(`${gone} 5 pid:[1]`)).toBe("foreign");
+			expect(line(dir)).toEqual([]);
+			expect(existsSync(join(dir, foreign))).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("a run whose ticket vanished rejoins whole, and is never first without one", () => {
+		const dir = mkdtempSync(join(tmpdir(), "crb-line-"));
+		const me = joinLine(dir);
+		try {
+			expect(me.place()).toBe(0);
+			rmSync(join(dir, me.name));
+			expect(me.place()).toBe(0);
+			expect(ticketState(readFileSync(join(dir, me.name), "utf8"))).toBe(
+				"live",
+			);
+			// Gone and can't be written back: not in line, so not first.
+			rmSync(join(dir, me.name));
+			chmodSync(dir, 0o555);
+			expect(me.place()).toBe(Number.POSITIVE_INFINITY);
+		} finally {
+			chmodSync(dir, 0o755);
+			me.leave();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -232,31 +314,61 @@ describe.skipIf(!hasFlock)("queue", () => {
 	it("waiters go in arrival order, even when a later one polls faster", {
 		timeout: 30_000,
 	}, async () => {
-		const a = holdUntil("a");
-		await until(a.held);
+		// The slot is held outside the line (a run from an older queue.mjs),
+		// so b, first in line, keeps trying it.
+		mkdirSync(join(home, ".cache"), { recursive: true });
+		const aHeld = join(home, "a.held");
+		const aGo = join(home, "a.go");
+		const a = spawn(realFlock, [
+			lock(0),
+			"sh",
+			"-c",
+			`touch ${aHeld}; while [ ! -e ${aGo} ]; do sleep 0.05; done`,
+		]);
+		started.push(a);
+		await until(() => existsSync(aHeld));
 		const b = holdUntil("b", 1000);
 		await until(() => b.out().includes("queue: waiting for"));
 		const c = holdUntil("c", 20);
 		await until(() => c.out().includes("queue: waiting for"));
-		// Free the slot just after b tried it, so c, polling every 20 ms, gets
-		// there first if the fastest poll wins. In line, b doesn't try while
-		// a's ticket is ahead of it: a, b and c all hold tickets then.
+		// Free the slot just after b tried it: c, polling every 20 ms, gets
+		// there first if the fastest poll wins.
 		const tried = attempts().filter((n) => n === "b").length;
-		await until(
-			() =>
-				tickets().length === 3 ||
-				attempts().filter((n) => n === "b").length > tried,
-		);
-		a.release();
+		await until(() => attempts().filter((n) => n === "b").length > tried);
+		spawnSync("touch", [aGo]);
 		await until(() => b.held() || c.held());
 		expect(b.held()).toBe(true);
 		expect(c.held()).toBe(false);
-		// c, second in line, never even tried the lock.
+		// c, second in line, never even tried the lock, and said so.
 		expect(attempts()).not.toContain("c");
+		expect(c.out()).toContain("(1 ahead)");
 
 		b.release();
 		await until(c.held);
 		c.release();
+		for (const r of [a, b.child, c.child]) expect(await exited(r)).toBe(0);
+		expect(tickets()).toEqual([]);
+	});
+
+	it("a stopped waiter lets the ones behind it go, and keeps its place", {
+		timeout: 30_000,
+	}, async () => {
+		const a = holdUntil("a");
+		await until(a.held);
+		const b = holdUntil("b", 20);
+		await until(() => b.out().includes("queue: waiting for"));
+		b.child.kill("SIGSTOP");
+		const c = holdUntil("c", 20);
+		await until(() => c.out().includes("queue: waiting for"));
+		a.release();
+		await until(c.held);
+		expect(b.held()).toBe(false);
+		expect(tickets().some((t) => t.endsWith(`-${b.child.pid}`))).toBe(true);
+
+		b.child.kill("SIGCONT");
+		c.release();
+		await until(b.held);
+		b.release();
 		for (const r of [a, b, c]) expect(await exited(r.child)).toBe(0);
 		expect(tickets()).toEqual([]);
 	});

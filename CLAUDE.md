@@ -104,25 +104,26 @@ loading never looking empty, checking against a real PR):
   Playwright run (`verify:fast`, `test:e2e`, `flake-check`). When unsure,
   include the phone.
 - Test queue (for a machine shared by several agents): when
-  `~/.config/carbonless/queue.json` exists (`{"slots": 2}`), every Vitest and
-  Playwright run (`pnpm test`, `test:changed`, `test:e2e` with or without
-  spec files, `verify:fast`'s test steps, `pnpm verify`, `pnpm flake-check`)
-  waits for one of `slots` (default 1) machine-wide locks
+  `~/.config/carbonless/queue.json` exists (`{"slots": 2}`), every Vitest
+  and Playwright run (`pnpm test`, `test:changed`, `test:e2e` with or
+  without spec files, `verify:fast`'s test steps, `pnpm verify`,
+  `pnpm flake-check`) waits for one of `slots` (default 1) machine-wide locks
   (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock*`),
   printing whose runs it waits for, so runs never overload the machine
   together. Runs go first come, first served: each has a ticket in
-  `~/.cache/carbonless-queue` (`scripts/queue-line.mjs`) from arrival to
-  end and tries a slot only while among the `slots` oldest live tickets; a
-  ticket whose pid died (or was reused) is dropped by whoever reads it.
+  `~/.cache/carbonless-queue` (`scripts/queue-line.mjs`) from arrival to end
+  and tries a slot only while among the `slots` oldest live tickets; whoever
+  reads a ticket whose pid died, is a zombie or was reused drops it, and a
+  stopped run (Ctrl-Z) lets the ones behind it pass.
   `vitest.config.ts`/`playwright.config.ts` refuse a run outside it
-  (`scripts/queue-guard.mjs`): use the package scripts, or wrap a direct call as `node scripts/queue.mjs pnpm exec
-  playwright test ...`. The file is read on every run and while waiting: a
-  change applies at once, no restart. Interactive `pnpm test:watch` never
-  queues. Waiting can take longer than a foreground command may: run tests
-  in the background (`run_in_background`); a signal ends the wait. A run in
-  a slot gets the cores divided by `slots` as workers. `CRB_NO_QUEUE=1`
-  skips the queue for one command. No file (CI, a machine of one's own):
-  nothing queues.
+  (`scripts/queue-guard.mjs`): use the package scripts, or wrap a direct
+  call as `node scripts/queue.mjs pnpm exec playwright test ...`. The file
+  is read on every run and while waiting: a change applies at once, no
+  restart. Interactive `pnpm test:watch` never queues. Waiting can take
+  longer than a foreground command may: run tests in the background
+  (`run_in_background`); a signal ends the wait. A run in a slot gets the
+  cores divided by `slots` as workers. `CRB_NO_QUEUE=1` skips the queue for
+  one command. No file (CI, a machine of one's own): nothing queues.
 - A tree's `dist` lock (`scripts/dist-lock.mjs`, `flock` on
   `node_modules/.crb-dist.lock`) keeps any build (`pnpm build`, so prepack,
   `test:pack`) from changing a `dist` that a Playwright run in the same tree

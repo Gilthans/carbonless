@@ -2,16 +2,20 @@
 // come, first served. Each run has a ticket in the line's directory from its
 // arrival to its end:
 //
-//   <arrival ns, 20 digits>-<pid>   containing "<pid> <pid's start time>"
+//   <arrival ns, 20 digits>-<pid>   containing "<pid> <start time> <pid ns>"
 //
 // Arrival is the system-wide monotonic clock, so tickets sort in arrival
-// order. A ticket whose pid is gone, or now belongs to another process (a
-// different start time in /proc/<pid>/stat), is a run killed with SIGKILL:
-// whoever reads it removes it.
+// order. A ticket whose pid is gone, a zombie, or now another process (a
+// different start time in /proc/<pid>/stat) is a run killed with SIGKILL:
+// whoever reads it removes it. A stopped run (Ctrl-Z) keeps its ticket but
+// isn't counted until it runs again. A ticket from another pid namespace (a
+// sandbox sharing HOME) can't be judged from here: it is neither counted nor
+// removed.
 import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	renameSync,
 	unlinkSync,
 	writeFileSync,
@@ -20,32 +24,58 @@ import { join } from "node:path";
 
 const TICKET = /^(\d{20})-(\d+)$/;
 
-/**
- * When `pid` started (clock ticks since boot, /proc/<pid>/stat field 22);
- * "" when unknown (no /proc).
- */
-export function startTime(pid) {
+/** This process's pid namespace ("pid:[4026531836]"); "" when unknown. */
+function pidNamespace() {
 	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		// Fields after the command name, which may hold spaces or ")".
-		const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-		return rest[19] ?? "";
+		return readlinkSync("/proc/self/ns/pid");
 	} catch {
 		return "";
 	}
 }
+const NS = pidNamespace();
 
-/** Whether the process that wrote a ticket ("<pid> <start>") still runs. */
-export function alive(content) {
-	const [pid, start = ""] = content.trim().split(" ");
+/**
+ * `pid`'s state letter and start time (clock ticks since boot, field 22)
+ * from /proc/<pid>/stat; null when unknown (gone, or no /proc).
+ */
+function proc(pid) {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		// Fields after the command name, which may hold spaces or ")".
+		const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+		return { state: rest[0] ?? "", start: rest[19] ?? "" };
+	} catch {
+		return null;
+	}
+}
+
+/** When `pid` started; "" when unknown (no /proc). */
+export function startTime(pid) {
+	return proc(pid)?.start ?? "";
+}
+
+/**
+ * What a ticket ("<pid> <start> <ns>") says of its run: "live" (in line),
+ * "dead" (remove it), "stopped" (keep it, don't count it) or "foreign"
+ * (another pid namespace: leave it alone).
+ */
+export function ticketState(content) {
+	const [pid, start = "", ns = ""] = content.trim().split(" ");
+	if (ns && NS && ns !== NS) return "foreign";
 	const n = Number(pid);
-	if (!Number.isInteger(n) || n <= 0) return false;
+	if (!Number.isInteger(n) || n <= 0) return "dead";
 	try {
 		process.kill(n, 0);
 	} catch (e) {
-		if (e.code !== "EPERM") return false;
+		if (e.code !== "EPERM") return "dead";
 	}
-	return startTime(n) === start;
+	const p = proc(n);
+	// No /proc: a live pid is all there is to go on.
+	if (!p) return start ? "dead" : "live";
+	if (p.start !== start) return "dead";
+	if (p.state === "Z" || p.state === "X") return "dead";
+	if (p.state === "T" || p.state === "t") return "stopped";
+	return "live";
 }
 
 /** The live tickets in `dir`, oldest first; dead ones are removed. */
@@ -74,8 +104,9 @@ export function line(dir) {
 		} catch {
 			continue; // Left the line meanwhile.
 		}
-		if (alive(content)) live.push(name);
-		else {
+		const state = ticketState(content);
+		if (state === "live") live.push(name);
+		else if (state === "dead") {
 			try {
 				unlinkSync(join(dir, name));
 			} catch {}
@@ -85,34 +116,44 @@ export function line(dir) {
 }
 
 /**
+ * Writes this process's ticket `name` in `dir`, whole before it appears: a
+ * reader never sees one without its start time.
+ */
+function writeTicket(dir, name) {
+	mkdirSync(dir, { recursive: true });
+	const tmp = join(dir, `.${name}.tmp`);
+	writeFileSync(tmp, `${process.pid} ${startTime(process.pid)} ${NS}\n`);
+	renameSync(tmp, join(dir, name));
+}
+
+/**
  * Puts this process at the end of the line in `dir`. `place()`: how many
- * live tickets are ahead of it. `leave()`: removes the ticket (again is a
- * no-op).
+ * live tickets are ahead of it (Infinity when it has none: never first by
+ * accident). `leave()`: removes the ticket (again is a no-op).
  */
 export function joinLine(dir) {
-	mkdirSync(dir, { recursive: true });
 	const name = `${process.hrtime.bigint().toString().padStart(20, "0")}-${process.pid}`;
-	const path = join(dir, name);
-	// Written whole before it appears: a reader never sees a ticket without
-	// its start time.
-	const tmp = join(dir, `.${name}.tmp`);
-	writeFileSync(tmp, `${process.pid} ${startTime(process.pid)}\n`);
-	renameSync(tmp, path);
+	writeTicket(dir, name);
 	let left = false;
 	return {
 		name,
 		place() {
 			const i = line(dir).indexOf(name);
-			// Our own ticket gone (removed by hand): last in line, rejoin.
 			if (i >= 0) return i;
-			writeFileSync(path, `${process.pid} ${startTime(process.pid)}\n`);
-			return line(dir).indexOf(name);
+			// Our ticket is gone (removed by hand): back in, at our arrival.
+			try {
+				writeTicket(dir, name);
+			} catch {
+				return Number.POSITIVE_INFINITY;
+			}
+			const j = line(dir).indexOf(name);
+			return j >= 0 ? j : Number.POSITIVE_INFINITY;
 		},
 		leave() {
 			if (left) return;
 			left = true;
 			try {
-				unlinkSync(path);
+				unlinkSync(join(dir, name));
 			} catch {}
 		},
 	};
