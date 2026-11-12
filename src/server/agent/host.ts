@@ -62,7 +62,14 @@ export const serverPort = (): number => listeningPort;
 /** What the host asks of its ACP runner (an AgentRunner; a stub in tests). */
 export type HostRunner = Pick<
 	AgentRunner,
-	"status" | "asked" | "poke" | "stop" | "cancel" | "close" | "inFlight"
+	| "status"
+	| "asked"
+	| "poke"
+	| "stop"
+	| "detach"
+	| "cancel"
+	| "close"
+	| "inFlight"
 >;
 
 /** A joined session's token isn't (or is no longer) this review's (code unknown-token). */
@@ -173,12 +180,18 @@ export class AgentHost {
 	/** The runner's status, with a joined session (or a request to join) laid over it. */
 	async status(): Promise<AgentStatus> {
 		await this.#restored;
-		const base = await this.runner.status();
+		const { seen: acpSeen, ...base } = await this.runner.status();
 		const { presence, ...view } = this.join.view();
+		const joinSeen = this.join.seen();
+		const seen = Math.max(
+			acpSeen ? Date.parse(acpSeen) : Number.NEGATIVE_INFINITY,
+			joinSeen ?? Number.NEGATIVE_INFINITY,
+		);
 		const out: AgentStatus = {
 			...base,
 			...view,
-			...(this.join.acpOff() ? { acpOff: true } : {}),
+			...this.#spawnedFields(),
+			...(Number.isFinite(seen) ? { seen: new Date(seen).toISOString() } : {}),
 		};
 		const joined = view.joined;
 		if (!joined) return out;
@@ -214,6 +227,14 @@ export class AgentHost {
 					? { answering: acpTurn }
 					: {}),
 		};
+	}
+
+	/** `spawned` and `spawnedAt` while this review's spawn flag is set. */
+	#spawnedFields(): Pick<AgentStatus, "spawned" | "spawnedAt"> {
+		const at = this.join.spawnedAt();
+		return at === null
+			? {}
+			: { spawned: true, spawnedAt: new Date(at).toISOString() };
 	}
 
 	/** The thread the ACP buddy still answers (after an Approve, for up to JOIN.acpStopMs): `next` skips it. */
@@ -343,12 +364,28 @@ export class AgentHost {
 		this.runner.poke();
 	}
 
-	/** The reviewer's Start: the ACP buddy on again (a joined session leaves first). */
+	/** The reviewer's Spawn (Start): this review's spawn flag set, the ACP buddy on (a joined session leaves first). */
 	async startAcp(): Promise<void> {
 		await this.#restored;
 		this.join.leave("disconnected");
-		await this.join.setAcpOff(false);
+		await this.join.setSpawned(true);
 		this.runner.asked();
+	}
+
+	/**
+	 * The reviewer's Detach: a joined session is disconnected; else the
+	 * spawn flag is cleared (review-wide: another server holding the agent
+	 * stops it on its next status) and the ACP buddy here is detached (its
+	 * turn cancelled, its process stopped, its checkout and claim gone).
+	 */
+	async detach(): Promise<void> {
+		await this.#restored;
+		if (this.join.isJoined()) {
+			this.join.leave("disconnected");
+			return;
+		}
+		await this.join.setSpawned(false);
+		await this.runner.detach();
 	}
 
 	/** The reviewer's Disconnect of a joined session; the ACP buddy stays as it is (off). */
@@ -778,9 +815,9 @@ function oneError(error: unknown): string {
 
 /**
  * The host with its join broker on `dir` (`<agentsDir()>/<review-id>`):
- * the runner is made with the broker's ACP-off flag, and approving a join
- * turns ACP off and stops the runner (its running turn gets
- * JOIN.acpStopMs, then is cancelled).
+ * the runner runs only while the broker's spawn flag is set and no session
+ * is joined, and approving a join clears the flag and stops the runner
+ * (its running turn gets JOIN.acpStopMs, then is cancelled).
  */
 export function buildAgentHost(o: {
 	dir: string;
@@ -808,7 +845,7 @@ export function buildAgentHost(o: {
 		dir: o.dir,
 		...(o.now ? { now: o.now } : {}),
 		...(o.claim ? { claim: o.claim } : {}),
-		// The broker already set ACP off (before joined.json).
+		// The broker already cleared the spawn flag (before joined.json).
 		// Once the ACP buddy's last turn ends (or is cancelled), what it
 		// left waiting is the session's: wake its watcher.
 		onApproved: async () => {
@@ -822,8 +859,9 @@ export function buildAgentHost(o: {
 		onLeft: () => {},
 		waiting: () => waiting(),
 	});
-	// A joined session keeps the ACP buddy off even without the file.
-	runner = o.runner(() => join.acpOff() || join.isJoined(), o.claim);
+	// Off until the reviewer's Spawn; a joined session keeps it off even
+	// with the flag set.
+	runner = o.runner(() => !join.spawned() || join.isJoined(), o.claim);
 	return new AgentHost(runner, o.store, o.code, o.github, join, o.session);
 }
 

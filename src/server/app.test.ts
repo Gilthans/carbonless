@@ -1249,11 +1249,14 @@ describe("API", () => {
 
 	describe("the agent", () => {
 		let fake: ReturnType<typeof useFakeAcp>;
-		beforeEach(() => {
+		beforeEach(async () => {
 			fake = useFakeAcp(pr.repo.path, {
 				agent: { name: "fake-acp", version: "1.0.0" },
 				answers: [{ text: "Two writers race." }],
 			});
+			// Nothing spawns by itself: the reviewer's Spawn, in this review.
+			const start = await post("/api/agent/start");
+			expect(start.statusCode, start.body).toBe(200);
 		});
 		afterEach(async () => {
 			// The agent goes with its session, before the env it ran in.
@@ -1394,18 +1397,42 @@ describe("API", () => {
 			expect(joined).toMatchObject({
 				via: "mcp",
 				joined: who,
-				acpOff: true,
 				agent: { name: who.name, via: "mcp", machine: who.machine },
 			});
+			expect(joined.spawned).toBeUndefined();
 			expect(joined.joinRequest).toBeUndefined();
 			const off = await post("/api/agent/disconnect");
 			expect(off.statusCode, off.body).toBe(200);
 			const left: AgentStatus = await get("/api/agent");
 			expect(left.left).toMatchObject({ ...who, why: "disconnected" });
-			expect(left).toMatchObject({ state: "off", acpOff: true });
+			expect(left.state).toBe("off");
+			expect(left.spawned).toBeUndefined();
 			const start = await post("/api/agent/start");
 			expect(start.statusCode, start.body).toBe(200);
-			expect((await get("/api/agent")).acpOff).toBeUndefined();
+			expect((await get("/api/agent")).spawned).toBe(true);
+		});
+
+		it("POST /agent/detach answers ok and the status says off", async () => {
+			expect((await get("/api/agent")).spawned).toBe(true);
+			const res = await post("/api/agent/detach");
+			expect(res.statusCode, res.body).toBe(200);
+			expect(res.json()).toEqual({ ok: true });
+			const s: AgentStatus = await get("/api/agent");
+			expect(s.state).toBe("off");
+			expect(s.spawned).toBeUndefined();
+			// A joined session: Detach ends its join (disconnected).
+			const { session } = await registry.open({ pr: pr.arg });
+			const host = session.agent;
+			if (!host) throw new Error("no agent");
+			const who = { name: "carbonless · main", machine: "devbox" };
+			const { request } = host.join.request(who);
+			await host.join.answer(request, true);
+			expect((await get("/api/agent")).joined).toMatchObject(who);
+			const again = await post("/api/agent/detach");
+			expect(again.statusCode, again.body).toBe(200);
+			const left: AgentStatus = await get("/api/agent");
+			expect(left.joined).toBeUndefined();
+			expect(left.left).toMatchObject({ ...who, why: "disconnected" });
 		});
 
 		it("a hidden tab's join poll: the pending request, without opening, keeping or waking the review", async () => {
@@ -1520,6 +1547,7 @@ describe("API", () => {
 				["POST", "/api/agent/cancel"],
 				["POST", "/api/agent/disconnect"],
 				["POST", "/api/agent/start"],
+				["POST", "/api/agent/detach"],
 			] as const) {
 				const res = await inject(r(url, viewer.id), { method });
 				expect(res.statusCode).toBe(404);
@@ -1541,6 +1569,7 @@ describe("API", () => {
 				],
 				["POST", "/api/agent/disconnect", {}],
 				["POST", "/api/agent/start", {}],
+				["POST", "/api/agent/detach", {}],
 				["PUT", "/api/config/agent", null],
 				["POST", "/api/config/agent/check", { command: "x" }],
 			] as const) {

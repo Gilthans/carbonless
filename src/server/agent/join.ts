@@ -4,6 +4,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -20,9 +21,11 @@ import { oneLine } from "./prompt.js";
 /**
  * A session carbonless didn't launch, joined to one review through MCP:
  * its join requests (the reviewer approves each), its token, its presence
- * (the watcher's open connection is the keep-alive) and the review's "ACP
- * off" flag. Server memory plus two files in the review's agent dir:
- * `joined.json` (token hash, identity, since) and `acp-off`. Never git.
+ * (the watcher's open connection is the keep-alive) and the review's ACP
+ * spawn flag (the reviewer's Spawn: only then does the ACP buddy run).
+ * Server memory plus two files in the review's agent dir: `joined.json`
+ * (token hash, identity, since) and `acp-on`. Never git. A leftover
+ * `acp-off` (the old "ACP off" flag) is ignored.
  * Spec: the CAR-81 ticket's spec document.
  */
 
@@ -123,7 +126,8 @@ const MAX_IDENTITY = 80;
 /** Answered requests remembered for a late `attach({request})`. */
 const MAX_FINISHED = 20;
 const JOINED_FILE = "joined.json";
-const ACP_OFF_FILE = "acp-off";
+/** The review's ACP spawn flag (an empty file): see JoinBroker.spawned. */
+export const ACP_ON_FILE = "acp-on";
 const nextUlid = monotonicFactory();
 
 const hashOf = (token: string): Buffer =>
@@ -161,6 +165,8 @@ export class JoinBroker {
 	#absence: ReturnType<typeof setTimeout> | null = null;
 	readonly #gate: string | undefined;
 	#left: (JoinIdentity & { why: JoinLeave; at: number }) | null = null;
+	/** The joined session's last tool call or watcher contact (ms). */
+	#seen: number | null = null;
 	#closed = false;
 
 	constructor(deps: JoinBrokerDeps) {
@@ -284,9 +290,9 @@ export class JoinBroker {
 			if (!claim.ok) throw new JoinElsewhereError(claim.holder);
 			if (this.#closed) throw new StaleJoinRequestError(request);
 			this.#end("replaced", { keepClaim: true });
-			// ACP off first: a crash between the two files never leaves a
-			// restored join beside a running ACP buddy.
-			await this.setAcpOff(true);
+			// The spawn flag cleared first: a crash between the two files
+			// never leaves a restored join beside a running ACP buddy.
+			await this.setSpawned(false);
 			token = randomBytes(32).toString("base64url");
 			const joined: Joined = {
 				who: pending.who,
@@ -296,6 +302,7 @@ export class JoinBroker {
 			};
 			installed = joined;
 			this.#joined = joined;
+			this.#seen = null;
 			this.#woken = false;
 			mkdirSync(this.#deps.dir, { recursive: true });
 			writeFileSync(
@@ -308,7 +315,7 @@ export class JoinBroker {
 			);
 		} catch (error) {
 			// Nothing half-installed: the request ends, no join, the claim
-			// goes back (ACP may stay off: Start brings it back).
+			// goes back (the spawn flag may be cleared: Spawn sets it again).
 			this.#finish(pending, { state: "expired" });
 			if (installed && this.#joined === installed) {
 				this.#joined = null;
@@ -357,7 +364,21 @@ export class JoinBroker {
 	check(token: string): boolean {
 		const j = this.#joined;
 		if (!j || typeof token !== "string" || !token) return false;
-		return timingSafeEqual(hashOf(token), j.hash);
+		const ok = timingSafeEqual(hashOf(token), j.hash);
+		// Every tool call and the watcher check the token: the session is seen.
+		if (ok) this.#seen = this.#now();
+		return ok;
+	}
+
+	/**
+	 * When the joined session was last heard from (ms): its last tool call
+	 * or watcher contact, now while its watcher is connected. Null with no
+	 * session joined, or one restored and not heard from yet.
+	 */
+	seen(): number | null {
+		if (!this.#joined) return null;
+		if (this.#lease) return this.#now();
+		return this.#seen;
 	}
 
 	/** `thread` was handed to the session by `next` (presence busy). */
@@ -420,6 +441,7 @@ export class JoinBroker {
 			close: () => {
 				if (this.#lease !== lease) return;
 				this.#lease = null;
+				this.#seen = this.#now();
 				if (lease.delivered) this.#woken = true;
 				this.#arm();
 			},
@@ -441,6 +463,7 @@ export class JoinBroker {
 		if (!j) return;
 		this.#joined = null;
 		this.#handed = null;
+		this.#seen = null;
 		this.#woken = false;
 		this.#disarm();
 		this.#lease?.end("left");
@@ -470,16 +493,37 @@ export class JoinBroker {
 		};
 	}
 
-	/** Read from the file each time: another server may have set or cleared it. */
-	acpOff(): boolean {
-		return existsSync(join(this.#deps.dir, ACP_OFF_FILE));
+	/**
+	 * The review's ACP spawn flag: set by the reviewer's Spawn (Start),
+	 * cleared by Detach and by an approved join. The ACP buddy runs only
+	 * while it is set. Read from the file each time: another server may
+	 * have set or cleared it.
+	 */
+	spawned(): boolean {
+		return existsSync(join(this.#deps.dir, ACP_ON_FILE));
 	}
 
-	async setAcpOff(off: boolean): Promise<void> {
-		const path = join(this.#deps.dir, ACP_OFF_FILE);
-		if (off) {
+	/**
+	 * When the spawn flag was set (ms): the time written in the file, else
+	 * its mtime (a hand-made or empty file). Null when it isn't set.
+	 */
+	spawnedAt(): number | null {
+		const path = join(this.#deps.dir, ACP_ON_FILE);
+		try {
+			const at = Date.parse(readFileSync(path, "utf8").trim());
+			return Number.isNaN(at) ? statSync(path).mtimeMs : at;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Sets (keeping the time of a flag already set) or clears the spawn flag. */
+	async setSpawned(on: boolean): Promise<void> {
+		const path = join(this.#deps.dir, ACP_ON_FILE);
+		if (on) {
+			if (this.spawnedAt() !== null) return;
 			mkdirSync(this.#deps.dir, { recursive: true });
-			writeFileSync(path, "");
+			writeFileSync(path, new Date(this.#now()).toISOString());
 		} else {
 			rmSync(path, { force: true });
 		}
@@ -579,6 +623,8 @@ export class JoinBroker {
 			const j = this.#joined;
 			if (j && timingSafeEqual(hashOf(o.token), j.hash)) {
 				j.collected = true;
+				// The approved attach collected: a tool call.
+				this.#seen = this.#now();
 				this.#arm();
 			} else {
 				return { state: "expired" };

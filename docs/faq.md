@@ -222,8 +222,14 @@ questions wait, and the chip in the header opens the setup modal:
 2. **Check** runs the command once through `initialize` and shows the
    agent's name and version, or why not: not found on `PATH`, not logged in
    (the agent's stderr), a protocol error.
-3. **Save** writes `"agent"` into `config.json`; the open review picks it
-   up within a poll and starts the agent. Remove writes `"agent": null`.
+3. **Save** writes `"agent"` into `config.json`. Remove writes
+   `"agent": null`.
+
+A configured agent never starts by itself: it starts in a review once
+you press Spawn there (or Start in the chip), and stays on in that review,
+across crb restarts, until you Detach it. Other reviews stay without one
+until you ask there too. A config saved later restarts it only in the
+reviews where it was spawned.
 
 The agent runs with the server's environment minus variables whose name
 contains `TOKEN`, `SECRET` or `PASSWORD` or ends in `KEY` (so `GH_TOKEN`
@@ -314,8 +320,9 @@ session can pick one. The tools' replies tell the session every step:
    which wakes the session (Claude Code: a background command's exit).
 
 Approving a join stops the ACP buddy (it finishes the turn it is on, or
-is cancelled after 30 s) and keeps it off, across crb restarts, until you
-press Start in the chip. A joined session leaving doesn't bring it back.
+is cancelled after 30 s) and clears the review's spawn flag, so it stays
+off, across crb restarts, until you press Spawn (or Start in the chip)
+again. A joined session leaving doesn't bring it back.
 
 **Does a session that's already running pick up the server?** Not
 through `/mcp`, but `/reload-plugins` does, without a restart. Checked

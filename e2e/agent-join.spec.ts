@@ -2,7 +2,16 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import { acpLog } from "../test/fake-acp/scenario";
-import { ask, CALC, chip, expect, fixture, openFile, test } from "./agent-ui";
+import {
+	ask,
+	CALC,
+	chip,
+	expect,
+	fixture,
+	openFile,
+	spawnAgent,
+	test,
+} from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
 
 /**
@@ -322,9 +331,9 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	expect(
 		acpLog(acpLogPath).filter((e) => e.method === "session/prompt"),
 	).toHaveLength(0);
-	// Start in the chip brings it back, and it answers.
-	await chip(page).click();
-	await page.getByTestId("agent-popover").getByTestId("agent-start").click();
+	// Spawn brings it back, and it answers. (The chip's Start reads the
+	// spawn flag once the web has it: CAR-141 Task 2.)
+	await spawnAgent(s.url);
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
 });
 
