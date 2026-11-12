@@ -503,10 +503,11 @@ export class Session {
 		}
 	}
 
-	// TS-private statics, not `static #…`: V8 (Node 24.22) reads a static
+	// TS-private statics, not `static #…`: V8 in Node 24 reads a static
 	// private method back wrong from Node's compile cache (cli.ts) in a
-	// class with this many private methods: the next start crashes
-	// ("Receiver must be class #…", or a segfault).
+	// class with this many private names: the next start crashes
+	// ("Receiver must be class #…", or a segfault). Lint forbids them
+	// (biome-plugins/no-static-private-method.grit).
 	private static async openReview(
 		arg: string,
 		cwd: string,

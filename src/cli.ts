@@ -11,6 +11,9 @@ import { cacheDir } from "./server/paths.js";
 // $NODE_COMPILE_CACHE, when set, has Node turn it on before this runs, and
 // $NODE_DISABLE_COMPILE_CACHE keeps it off. A cache that can't be turned on
 // (unwritable directory, …) is only slower, never a failed start.
+// V8 before 13.7 (Node 24) misreads a `static #method` from it in a class
+// of many private names (CAR-136): lint forbids them
+// (biome-plugins/no-static-private-method.grit).
 try {
 	enableCompileCache(join(cacheDir(), "compile-cache"));
 } catch {

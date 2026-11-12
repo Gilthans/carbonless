@@ -442,7 +442,8 @@ export class StateSync {
 	}
 
 	/** `map` is still `last`'s content (kept, so overlays stay cached). */
-	static #same(
+	// Not `static #same`: see biome-plugins/no-static-private-method.grit.
+	private static same(
 		last: ReadonlyMap<string, PendingChange> | undefined,
 		map: Map<string, PendingChange>,
 	): boolean {
@@ -472,10 +473,10 @@ export class StateSync {
 		// Unset while the constructor builds the first state.
 		const last = this.#state as SyncState | undefined;
 		return {
-			pending: StateSync.#same(last?.pending, this.#pending)
+			pending: StateSync.same(last?.pending, this.#pending)
 				? (last?.pending ?? new Map())
 				: new Map(this.#pending),
-			rejected: StateSync.#same(last?.rejected, this.#rejected)
+			rejected: StateSync.same(last?.rejected, this.#rejected)
 				? (last?.rejected ?? new Map())
 				: new Map(this.#rejected),
 			failure: this.#rejected.size > 0 ? this.#lastRefusal : null,
