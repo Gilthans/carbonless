@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { acpLog, releaseAcp } from "../test/fake-acp/scenario";
 import { testGitEnv } from "../test/git-fixture";
 import {
@@ -44,6 +44,15 @@ const configPath = (workdir: string) =>
 /** The fake agent's processes so far (each logs `spawn` first). */
 const spawns = (log: string) =>
 	acpLog(log).filter((e) => e.method === "spawn").length;
+
+/**
+ * The footer's Close: a text button, so not the header's icon-only X
+ * (named Close too), whatever their order.
+ */
+const closeButton = (dialog: Locator) =>
+	dialog
+		.getByRole("button", { name: "Close", exact: true })
+		.filter({ hasText: "Close" });
 
 /** The next answer of the review's status poll (GET /api/r/:id/agent). */
 const statusPoll = (page: Page) =>
@@ -150,7 +159,7 @@ test("Spawn shows the Review Agent status, Detach returns to setup", async ({
 	expect(spawns(acpLogPath)).toBe(started);
 	await expectNoPageOverflow(page);
 	// Close gives focus back to the chip.
-	await setupDialog(page).getByRole("button", { name: "Close" }).last().click();
+	await closeButton(setupDialog(page)).click();
 	await expect(setupDialog(page)).toBeHidden();
 	await expect(chip(page)).toBeFocused();
 });
@@ -159,6 +168,7 @@ test("a failed Spawn shows the error and saves nothing", async ({
 	page,
 	pr,
 	agentCrb,
+	acpLogPath,
 	workdir,
 	isMobile,
 }) => {
@@ -190,12 +200,18 @@ test("a failed Spawn shows the error and saves nothing", async ({
 	await expect(d.getByTestId("agent-spawn")).toHaveText("Spawn");
 	await expect(statusDialog(page)).toHaveCount(0);
 	await shot(page, "agent-setup-error", isMobile);
-	// Nothing written, nothing started.
+	// Nothing written, and no agent started: the check's one run of the
+	// command never got past its handshake (no session, no prompt).
+	expect(
+		acpLog(acpLogPath).filter((e) =>
+			["session/new", "session/prompt"].includes(e.method),
+		),
+	).toHaveLength(0);
 	const after = existsSync(configPath(workdir))
 		? readFileSync(configPath(workdir))
 		: null;
 	expect(after).toEqual(before);
-	await d.getByRole("button", { name: "Close" }).last().click();
+	await closeButton(d).click();
 	await expect(d).toBeHidden();
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).toHaveAccessibleName(
@@ -371,7 +387,7 @@ test("ask with no agent: it waits; set one up from the thread, Spawn, and the ba
 		env: {},
 		leash: "open",
 	});
-	await status.getByRole("button", { name: "Close" }).last().click();
+	await closeButton(status).click();
 	await expect(status).toBeHidden();
 	const thread = again.getByTestId("agent-thread");
 	await expect(thread).toHaveAttribute("aria-label", "Agent thread, answered");

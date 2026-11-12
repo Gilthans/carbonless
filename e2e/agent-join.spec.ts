@@ -321,8 +321,9 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	await expect(toast).toContainText(`${SESSION.name} left`);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
-	// Two status polls later the ACP buddy is still off: the question waits
-	// and the fake agent was never prompted.
+	// Two status polls later the ACP buddy is still off (the approved join
+	// cleared this review's spawn flag, and Disconnect doesn't set it): the
+	// question waits and the fake agent was never prompted.
 	for (let i = 0; i < 2; i++) {
 		await page.waitForResponse((r) =>
 			/\/api\/r\/[^/]+\/agent$/.test(new URL(r.url()).pathname),
@@ -333,8 +334,8 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	expect(
 		acpLog(acpLogPath).filter((e) => e.method === "session/prompt"),
 	).toHaveLength(0);
-	// Spawn brings it back, and it answers. (The chip's Start reads the
-	// spawn flag once the web has it: CAR-141 Task 2.)
+	// Spawn brings it back, and it answers. With no session joined the chip
+	// opens the modal (no popover Start), so the Spawn goes through the API.
 	await spawnAgent(s.url);
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
 });
