@@ -395,7 +395,8 @@ export class AgentHost {
 	/** Waiting questions a joined session can take (not the one the ACP buddy still answers). */
 	async sessionWaiting(): Promise<number> {
 		const busy = this.busyThread();
-		return (await this.store.read()).filter(
+		// Joined with GitHub: an orphan is a span thread (its resolve counts).
+		return (await this.#joined(await this.store.read())).filter(
 			(t) => isQuestion(t) && t.id !== busy,
 		).length;
 	}
@@ -450,7 +451,6 @@ export class AgentHost {
 		this.join.handOut(thread.id, asked);
 		const head = facts.review().head.commit;
 		const seen = this.#seen?.since === joined.since ? this.#seen : null;
-		this.#seen = { since: joined.since, head };
 		const moved =
 			seen && seen.head !== head
 				? `The PR's head moved from ${seen.head} to ${head} since your last question.`
@@ -479,6 +479,8 @@ export class AgentHost {
 				? await sessionThreadTurn(facts, thread, messages, moved, pr)
 				: await sessionSpanTurn(facts, thread, messages, moved, pr);
 		const { envelope } = turn;
+		// The head this question showed.
+		this.#seen = { since: joined.since, head: envelope.review.head.commit };
 		return {
 			preamble:
 				envelope.kind === "github_thread_conversation"
@@ -509,8 +511,10 @@ export class AgentHost {
 		await this.#token(secret);
 		const handed = this.join.handedOut();
 		if (handed?.thread !== r.thread) throw new NotHandedError(r.thread);
-		const thread = (await this.store.read()).find((t) => t.id === r.thread);
-		if (!thread) throw new UnknownAgentThreadError(r.thread);
+		const found = (await this.store.read()).find((t) => t.id === r.thread);
+		if (!found) throw new UnknownAgentThreadError(r.thread);
+		// As next gave it: an orphan is a span thread (no suggestion).
+		const thread = await this.#joinedOne(found);
 		// A GitHub thread conversation's answer may end with the suggestion
 		// marker: data on the message, as the ACP buddy's (only a human
 		// resolves).
@@ -794,7 +798,11 @@ export function buildAgentHost(o: {
 	// The thread the ACP buddy still answers isn't the session's.
 	const waiting = async () => {
 		const busy = runner?.inFlight() ?? null;
-		return (await o.store.read()).some((t) => isQuestion(t) && t.id !== busy);
+		// Joined with GitHub, as sessionNext reads them: an orphan is a span thread.
+		const folds = await joinRead(await o.store.read(), () =>
+			o.github.threads(),
+		);
+		return folds.some((t) => isQuestion(t) && t.id !== busy);
 	};
 	const join: JoinBroker = new JoinBroker({
 		dir: o.dir,

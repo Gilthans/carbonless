@@ -343,6 +343,47 @@ describe("AgentHost with a session joined through MCP", () => {
 		});
 	});
 
+	it("an orphan (its GitHub thread gone) is a span thread: a marker in a reply is text, and once resolved it wakes and counts for no one", async () => {
+		const token = await approve();
+		const orphan = await store.open({
+			anchor: ghAnchor,
+			text: "Still there?",
+			by: "human",
+			clientId: "o1",
+		});
+		// GitHub doesn't list PRRT_1.
+		const q = await host.sessionNext(token);
+		expect(q?.envelope.kind).toBe("agent_thread");
+		const t = await host.sessionReply(token, {
+			thread: orphan.id,
+			replyTo: q?.replyTo as string,
+			text: "Gone.\n[suggest-resolve]",
+		});
+		expect(t.messages[1]?.text).toBe("Gone.\n[suggest-resolve]");
+		expect(t.messages[1]?.suggests).toBeUndefined();
+		await store.message(orphan.id, {
+			by: "human",
+			text: "One more?",
+			clientId: "o2",
+		});
+		expect(await host.sessionWaiting()).toBe(1);
+		await store.setResolved(orphan.id, true);
+		expect(await host.sessionWaiting()).toBe(0);
+		expect(await host.sessionNext(token)).toBeNull();
+		// The watch waits (it would return at once while a question waits).
+		const reads = vi.spyOn(store, "read");
+		const lease = host.join.watcher(token);
+		let woken = false;
+		void lease?.deliver.then(() => {
+			woken = true;
+		});
+		await vi.waitFor(() => expect(reads).toHaveBeenCalled());
+		await reads.mock.results.at(-1)?.value;
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		expect(woken).toBe(false);
+		reads.mockRestore();
+	});
+
 	it("a joined session: the marker means nothing on a span thread; a GitHub thread resolved since it was asked is still handed out", async () => {
 		const x = await host.open({ clientId: "c1", text: "Why?", span });
 		const token = await approve();
