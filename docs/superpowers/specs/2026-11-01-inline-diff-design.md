@@ -193,14 +193,19 @@ Marks are computed in the browser from the hunk the page already has: no
 server change, nothing new to fetch. A pair is diffed when its row first
 renders and memoized with the hunk's rows (the `HunkRows` key already holds
 the view settings). The 1,024-character cut bounds the cost per pair.
-Marks are computed synchronously, as part of the row's render: a pair is
-never shown plain while its marks are pending, since a plain pair already
-means "GitHub would mark nothing here" (the owner's loading rule,
+Marks are computed in the render while the task's marking budget lasts
+(8 ms, `src/web/files/wordWork.ts`), which covers every cheap pair: those
+are never shown plain while their marks are pending, since a plain pair
+already means "GitHub would mark nothing here" (the owner's loading rule,
 2026-11-01: "An empty result should always be easily distinguishable for a
-still loading result"). If the budget below ever forces them off the main
-thread, a pending pair shows the shared `Spinner` (`src/web/Spinner.tsx`,
-design principle 8) in a fixed slot of its rows, never bare plain lines, and
-its test holds the work and asserts the spinner (`test/loading.ts`).
+still loading result"). The exact token diff is O(N·D), so two unrelated
+lines just under the cut cost 8–14 ms each (CAR-123), and a rewritten block
+of 200 would block the page for seconds. Pairs past the budget are marked
+in a Web Worker (main-thread slices where there is none) by the same
+`wordMarks`, and kept by their lines, so a view or whitespace toggle marks
+nothing anew (CAR-135). Meanwhile a pending pair's lines show a spinner in
+the sign's place (`aria-busy` on the cell, design principle 8), never bare
+plain lines; its tests hold the work and assert the spinner.
 Budget (call): computing the marks of 2,000 pairs of 120-character lines
 (an equal block, the worst case DiffBody meets, since it renders a file's
 rows at once) takes under 100 ms of CPU time (`process.threadCpuUsage`, a
