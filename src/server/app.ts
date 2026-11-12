@@ -7,6 +7,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import {
 	type AgentConfig,
 	type AgentMessageRequest,
+	type AgentView,
 	MAX_AGENT_TEXT,
 	type OpenAgentThreadRequest,
 } from "../shared/agent.js";
@@ -29,12 +30,17 @@ import { registerAccessKey, registerHostCheck } from "./access.js";
 import { checkAgent } from "./agent/acp.js";
 import { agentsDir } from "./agent/checkout.js";
 import {
+	AgentConflictError,
 	type AgentHost,
+	AgentRequestError,
 	agentConfig,
 	noteAgentConfigSaved,
 } from "./agent/host.js";
 import { isSafePath } from "./agent/prompt.js";
-import { UnknownAgentThreadError } from "./agent/store.js";
+import {
+	UnknownAgentMessageError,
+	UnknownAgentThreadError,
+} from "./agent/store.js";
 import { parseAsOf } from "./asOf.js";
 import { updateConfig } from "./config.js";
 import { GhError, WriteRefusedError } from "./errors.js";
@@ -256,6 +262,18 @@ export async function buildApp(
 		}
 		if (error instanceof UnknownAgentThreadError) {
 			return send(404, error.message);
+		}
+		if (
+			error instanceof AgentRequestError ||
+			error instanceof UnknownAgentMessageError
+		) {
+			return send(400, error.message);
+		}
+		if (error instanceof AgentConflictError) {
+			return reply.status(409).send({
+				error: error.message,
+				...(error.thread !== undefined ? { thread: error.thread } : {}),
+			});
 		}
 		if (
 			error instanceof RangeError &&
@@ -724,6 +742,19 @@ export async function buildApp(
 					);
 				},
 			);
+			review.post<{ Params: { tid: string } }>(
+				"/agent/threads/:tid/seen",
+				(request) => {
+					const upTo = (request.body as { upTo?: unknown } | null)?.upTo;
+					if (typeof upTo !== "string" || !AGENT_THREAD_ID.test(upTo)) {
+						throw new BadRequestError("upTo must be a message id");
+					}
+					return agentOf(request).seen(
+						agentThreadParam(request.params.tid),
+						upTo,
+					);
+				},
+			);
 			review.post("/agent/cancel", async (request) => {
 				await agentOf(request).cancel();
 				return { ok: true };
@@ -968,7 +999,10 @@ function clientIdProblem(clientId: unknown): string | null {
 		: "clientId must be 1 to 100 letters, digits or _.:-";
 }
 
-/** POST agent/threads' body; the span checked like a new comment's. */
+/**
+ * POST agent/threads' body: exactly one of `span` (checked like a new
+ * comment's) and `thread` (a GitHub thread's id), and an optional `view`.
+ */
 function parseAgentOpen(body: unknown): OpenAgentThreadRequest {
 	const b = (typeof body === "object" && body !== null ? body : {}) as Record<
 		string,
@@ -976,6 +1010,23 @@ function parseAgentOpen(body: unknown): OpenAgentThreadRequest {
 	>;
 	const problem = clientIdProblem(b.clientId) ?? agentTextProblem(b.text);
 	if (problem) throw new BadRequestError(problem);
+	if ((b.span === undefined) === (b.thread === undefined)) {
+		throw new BadRequestError("span or thread, one of them");
+	}
+	const view = parseAgentView(b.view);
+	const common = {
+		clientId: b.clientId as string,
+		text: b.text as string,
+		...(view ? { view } : {}),
+	};
+	if (b.thread !== undefined) {
+		const thread = b.thread;
+		// GitHub node ids; the stored anchor takes at most 200 characters.
+		if (typeof thread !== "string" || thread === "" || thread.length > 200) {
+			throw new BadRequestError("thread must be a GitHub thread's id");
+		}
+		return { ...common, thread };
+	}
 	const span = (
 		typeof b.span === "object" && b.span !== null ? b.span : {}
 	) as Record<string, unknown>;
@@ -1004,8 +1055,7 @@ function parseAgentOpen(body: unknown): OpenAgentThreadRequest {
 				}
 			: { subject: "file" as const };
 	return {
-		clientId: b.clientId as string,
-		text: b.text as string,
+		...common,
 		span: {
 			...line,
 			path: span.path,
@@ -1021,7 +1071,47 @@ function parseAgentMessage(body: unknown): AgentMessageRequest {
 	>;
 	const problem = clientIdProblem(b.clientId) ?? agentTextProblem(b.text);
 	if (problem) throw new BadRequestError(problem);
-	return { clientId: b.clientId as string, text: b.text as string };
+	const view = parseAgentView(b.view);
+	return {
+		clientId: b.clientId as string,
+		text: b.text as string,
+		...(view ? { view } : {}),
+	};
+}
+
+/**
+ * A message's comparison, `{ target: {patchset} | {head}, from: {branch:
+ * true} | {patchset} }`, rebuilt from its known keys; undefined when
+ * absent. The server fills in its commits (left, right).
+ */
+function parseAgentView(
+	raw: unknown,
+): Omit<AgentView, "left" | "right"> | undefined {
+	if (raw === undefined) return undefined;
+	const fail = () =>
+		new BadRequestError(
+			"view must be { target: {patchset} | {head}, from: {branch: true} | {patchset} }",
+		);
+	const obj = (v: unknown) =>
+		typeof v === "object" && v !== null && !Array.isArray(v)
+			? (v as Record<string, unknown>)
+			: null;
+	const isPatchset = (n: unknown): n is number =>
+		Number.isSafeInteger(n) && (n as number) >= 1;
+	const v = obj(raw);
+	const target = obj(v?.target);
+	const from = obj(v?.from);
+	if (!target || !from) throw fail();
+	let t: AgentView["target"];
+	if (isPatchset(target.patchset)) t = { patchset: target.patchset };
+	else if (typeof target.head === "string" && OID.test(target.head)) {
+		t = { head: target.head };
+	} else throw fail();
+	let f: AgentView["from"];
+	if (from.branch === true) f = { branch: true };
+	else if (isPatchset(from.patchset)) f = { patchset: from.patchset };
+	else throw fail();
+	return { target: t, from: f };
 }
 
 /**

@@ -129,6 +129,27 @@ export function spanOfAnchor(anchor: AgentAnchor): CodeSpan {
 	if (anchor.subject === "file") {
 		return { path: anchor.path, commit: anchor.commit, subject: "file" };
 	}
+	if (anchor.subject === "thread") {
+		// The span GitHub gave the thread; without lines, its file.
+		if (
+			anchor.side === undefined ||
+			anchor.line === undefined ||
+			anchor.startLine === undefined
+		) {
+			return { path: anchor.path, commit: anchor.commit, subject: "file" };
+		}
+		return {
+			path: anchor.path,
+			commit: anchor.commit,
+			subject: "line",
+			side: anchor.side,
+			line: anchor.line,
+			startSide: anchor.startSide ?? anchor.side,
+			startLine: anchor.startLine,
+			startCol: null,
+			endCol: null,
+		};
+	}
 	return {
 		path: anchor.path,
 		commit: anchor.commit,

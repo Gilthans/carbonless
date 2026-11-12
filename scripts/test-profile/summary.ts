@@ -54,6 +54,19 @@ export interface Summary {
 	slowest: TestRow[];
 	calls: Record<string, Calls>;
 	hot: HotSpot[];
+	/** e2e: the warm-up before the workers (e2e/global-setup.ts), if any. */
+	warmupMs?: number;
+	/** e2e: the first wave (tests that start before any test ends) against the rest. */
+	firstWave?: { first: Wave; rest: Wave };
+}
+
+/** Medians over a set of e2e tests; null when there is nothing to take one of. */
+export interface Wave {
+	tests: number;
+	/** The test's duration. */
+	testMs: number | null;
+	/** Its first `crb serve: listening` (crb's start until it listens). */
+	listenMs: number | null;
 }
 
 const dur = (s: Span) => Math.max(0, s.endMs - s.startMs);
@@ -66,6 +79,10 @@ function median(values: number[]): number {
 		? (sorted[mid] as number)
 		: ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
 }
+
+/** The median, or null for no values. */
+const orNull = (values: number[]): number | null =>
+	values.length ? median(values) : null;
 
 /** Which call bucket a span counts in, if any. */
 function callKind(s: Span): string | null {
@@ -232,6 +249,28 @@ export function summarize(spans: Span[], top = 8): Summary {
 		calls[kind] = { ...tot, medianN: median(ns), medianMs: median(ms) };
 	}
 
+	// e2e only: each worker's first test starts cold, all at once (CAR-102).
+	let firstWave: Summary["firstWave"];
+	if (fileSpans.length === 0 && tests.length > 0) {
+		const listen = new Map<string, number>();
+		for (const s of spans) {
+			if (s.name !== "crb serve: listening") continue;
+			const t = owner(s);
+			if (t && !listen.has(key(t))) listen.set(key(t), dur(s));
+		}
+		const ran = tests.filter((t) => t.attrs["test.status"] !== "skipped");
+		const firstEnd = Math.min(...ran.map((t) => t.endMs));
+		const wave = (list: Span[]): Wave => ({
+			tests: list.length,
+			testMs: orNull(list.map(dur)),
+			listenMs: orNull(list.flatMap((t) => listen.get(key(t)) ?? [])),
+		});
+		const first = ran.filter((t) => t.startMs < firstEnd);
+		const rest = ran.filter((t) => t.startMs >= firstEnd);
+		if (first.length > 0) firstWave = { first: wave(first), rest: wave(rest) };
+	}
+	const warmups = spans.filter((s) => s.attrs["crb.kind"] === "warmup");
+
 	const starts = spans.map((s) => s.startMs);
 	const ends = spans.map((s) => s.endMs);
 	return {
@@ -258,6 +297,10 @@ export function summarize(spans: Span[], top = 8): Summary {
 			}))
 			.sort((a, b) => b.ms - a.ms)
 			.slice(0, 12),
+		...(warmups.length
+			? { warmupMs: warmups.reduce((a, w) => a + dur(w), 0) }
+			: {}),
+		...(firstWave ? { firstWave } : {}),
 	};
 }
 
@@ -310,6 +353,21 @@ export function formatSummary(run: string, s: Summary, top = 8): string {
 			);
 		}
 	}
+	if (s.warmupMs !== undefined || s.firstWave) {
+		out.push("", "🌊 cold start");
+		if (s.warmupMs !== undefined) {
+			out.push(`  warm-up (before the workers) ${fmt(s.warmupMs)}`);
+		}
+		const w = s.firstWave;
+		if (w) {
+			out.push(
+				`  ${pad("", 14)} ${lpad("tests", 5)} ${lpad("test", 7)} ${lpad("listen", 7)}`,
+				`  ${pad("first wave", 14)} ${waveRow(w.first)}`,
+				`  ${pad("rest", 14)} ${waveRow(w.rest)}`,
+				"  (medians; listen: crb serve's start until it listens)",
+			);
+		}
+	}
 	out.push("", "📄 top files");
 	for (const f of s.files.slice(0, top)) {
 		out.push(`  ${lpad(fmt(f.ms), 7)} ${lpad(String(f.tests), 4)}t  ${f.file}`);
@@ -352,6 +410,16 @@ export function formatSummary(run: string, s: Summary, top = 8): string {
 	return out.join("\n");
 }
 
+/** A duration, or "–" for none (not 0: nothing was measured). */
+const fmtOr = (ms: number | null | undefined) => (ms == null ? "–" : fmt(ms));
+
+const waveRow = (w: Wave) =>
+	`${lpad(String(w.tests), 5)} ${lpad(fmtOr(w.testMs), 7)} ${lpad(fmtOr(w.listenMs), 7)}`;
+
+/** delta(), or both sides as they are when either is missing. */
+const deltaOr = (a: number | null | undefined, b: number | null | undefined) =>
+	a == null || b == null ? `${fmtOr(a)} → ${fmtOr(b)}` : delta(a, b);
+
 function delta(a: number, b: number, time = true): string {
 	const d = b - a;
 	const show = time ? fmt : (n: number) => String(Math.round(n));
@@ -383,6 +451,20 @@ export function formatCompare(
 			) as never[],
 		)) {
 			out.push(`  ${pad(p, 18)} ${delta(a.phases[p] ?? 0, b.phases[p] ?? 0)}`);
+		}
+	}
+	// Only when both runs have one: a missing side isn't a 0 (-100%).
+	if (a.firstWave && b.firstWave) {
+		const fa = a.firstWave.first;
+		const fb = b.firstWave.first;
+		out.push(
+			"",
+			"🌊 first wave (medians)",
+			`  test       ${deltaOr(fa.testMs, fb.testMs)}`,
+			`  listen     ${deltaOr(fa.listenMs, fb.listenMs)}`,
+		);
+		if (a.warmupMs !== undefined || b.warmupMs !== undefined) {
+			out.push(`  warm-up    ${deltaOr(a.warmupMs, b.warmupMs)}`);
 		}
 	}
 	const kinds = [
