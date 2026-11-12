@@ -710,7 +710,8 @@ describe("wordMarks", () => {
 	// its pieces, and a uniform slowdown cancels out (the tests above catch
 	// that). The cut (WORD_DIFF_MAX) bounds a marked line, so a quadratic
 	// cost grows at most 8x here: 960 characters (about 700 tokens) against
-	// 120.
+	// 120. (A join can merge two pieces' edge tokens into one, so the two
+	// sides' tokens differ there, by a few in 700.)
 	//
 	// Similar lines, one token changed per piece: the exact diff's best
 	// case, linear: 0.96–1.10x, idle and with a busy loop per core. Fails
@@ -740,10 +741,10 @@ describe("wordMarks", () => {
 
 	// Unrelated lines: here the exact diff (O(N·D) over the tokens, D about
 	// N) is itself quadratic in a line's length: 4.0–4.2x its pieces,
-	// 8 ms of CPU a pair on the dev machine (13 ms under load). So this
-	// test can't see one more quadratic step (none of the three above
-	// moves it past 4.3x); it holds that bounded worst case where it is,
-	// failing when it grows about 1.7x further.
+	// 8 ms of CPU a pair on the dev machine (13 ms under load). No added
+	// quadratic step can fail this test (none of the three above moves it
+	// past 4.3x): it fails only on a cost worse than quadratic, or on about
+	// 8x more quadratic work in the existing diff.
 	it(
 		"marks 960-character unrelated lines in 7x the CPU of the same text as 120-character lines",
 		() => {
