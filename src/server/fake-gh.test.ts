@@ -1022,7 +1022,7 @@ describe("fake gh", () => {
 				await new Promise<void>((resolve) =>
 					socket.on("data", (d) => {
 						said += d;
-						if (said === "log\n") resolve();
+						if (said === `log ${join(tmp, "gh.log")}\n`) resolve();
 					}),
 				);
 				socket.destroy();

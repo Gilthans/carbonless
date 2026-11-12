@@ -7,13 +7,13 @@ import {
 	timelineFact,
 	timelineReview,
 } from "../test/fake-gh/scenario";
-import { expect, PR_NUMBER, test } from "./fixtures";
+import { expect, test } from "./fixtures";
 
 const sha = (c: string) => c.repeat(40);
 const LONG_PATH = "src/some/very/long/directory/name/that/keeps/going/file.ts";
 
-/** Two threads and a timeline whose review comments are in them. */
-const fixture = {
+/** Two threads and a timeline whose review comments are in them (PR `n`'s). */
+const fixture = (n: number) => ({
 	threads: [
 		reviewThread({ path: "src/cache.ts", line: 1 }, [
 			threadComment({
@@ -56,14 +56,14 @@ const fixture = {
 			comments: [
 				{
 					// The fake gh's ids for each thread's opening comment.
-					id: `C${PR_NUMBER}-0`,
+					id: `C${n}-0`,
 					path: "src/cache.ts",
 					line: 1,
 					at: "2026-01-03T09:00:00Z",
 					text: "Should this expire?",
 				},
 				{
-					id: `C${PR_NUMBER}-1`,
+					id: `C${n}-1`,
 					path: LONG_PATH,
 					line: 2,
 					at: "2026-01-03T09:05:00Z",
@@ -81,14 +81,15 @@ const fixture = {
 			at: "2026-01-04T09:00:00Z",
 		}),
 	],
-};
+});
 
 test("the Timeline: runs oldest first, each opening into its items", async ({
 	page,
 	pr,
+	prNumber,
 	startCrb,
 }) => {
-	await pr(fixture);
+	await pr(fixture(prNumber));
 	const s = await startCrb();
 	await page.goto(s.url);
 	const section = page.getByRole("region", { name: "Timeline" });
@@ -155,10 +156,14 @@ test("the Timeline: runs oldest first, each opening into its items", async ({
 test("the Timeline loads on its own: the rest of the page doesn't wait for it", async ({
 	page,
 	pr,
+	prNumber,
 	startCrb,
 }) => {
 	// The timeline waits until the test lets it go.
-	const p = await pr({ ...fixture, scenario: { hold: ["timeline"] } });
+	const p = await pr({
+		...fixture(prNumber),
+		scenario: { hold: ["timeline"] },
+	});
 	const s = await startCrb();
 	await page.goto(s.url);
 	const section = page.getByRole("region", { name: "Timeline" });

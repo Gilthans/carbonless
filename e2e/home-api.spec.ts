@@ -5,6 +5,9 @@ import { composeSections } from "../src/shared/homeSections";
 import { homePr, writeScenario } from "../test/fake-gh/scenario";
 import { expect, startServe, stopChild, test } from "./fixtures";
 
+// Its own crb serve, config and scenario.
+test.use({ crbServer: "own" });
+
 /**
  * Smoke test of Home's server side in the built `crb serve`: the API
  * answers the view and its repo's rows, which compose into the sections. The page's tests (home.spec.ts)

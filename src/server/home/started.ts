@@ -56,6 +56,12 @@ export class StartedReviews {
 		this.#build = options.build ?? buildSnapshot;
 	}
 
+	/** Forgets its ref stores and snapshots (the test hook's reset). */
+	reset(): void {
+		this.#stores.clear();
+		this.#snapshots.clear();
+	}
+
 	#store(repo: string): RefStore {
 		let store = this.#stores.get(repo);
 		if (!store) {

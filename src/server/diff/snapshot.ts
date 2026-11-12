@@ -52,6 +52,16 @@ export const HEADING_WAIT_MS = 500;
  */
 const headingRuns = new Map<string, Promise<GitHunkHeading[][] | null>>();
 
+/**
+ * Empties the blob and heading caches, as a fresh process has them (the
+ * test hook's reset): tests' fixture repos share blob ids, so a warm cache
+ * would hide a first open's cost from the next test.
+ */
+export function clearSnapshotCaches(): void {
+	blobCache.clear();
+	headingRuns.clear();
+}
+
 function snapshotHeadings(
 	repo: string,
 	base: string,

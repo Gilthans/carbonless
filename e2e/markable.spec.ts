@@ -90,7 +90,7 @@ test("full diff: every kind of line cluster is markable on its own, unified and 
 	// one removed), the middle line of a three-line cluster.
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((sc) => {
-		const graph = sc.prs[7]?.graphql;
+		const graph = sc.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: "src/main.ts", line: 35, subjectType: "LINE" }, [
