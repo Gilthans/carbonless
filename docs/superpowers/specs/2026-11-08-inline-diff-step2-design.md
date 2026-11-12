@@ -1,6 +1,6 @@
 # Highlighting what changed inside a line, step 2: pairing by similarity
 
-Status: draft for the owner's review (2026-11-08).
+Status: approved by the owner (2026-11-12): "It sounds great. Let's move to implementation".
 Mockups (desktop and phone, today's rows next to step 2's) were shared
 with the owner in chat.
 
