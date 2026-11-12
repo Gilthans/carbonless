@@ -1,43 +1,40 @@
+// Starts the slowest unit files first (docs/test-profiling.md, "Unit file
+// order"). Loaded by vitest.config.ts; plain JS (types in sequencer.d.mts)
+// so the config loads without Vite bundling a TypeScript import.
 import { readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
-import type { TestSpecification } from "vitest/node";
+import path from "node:path";
 import { BaseSequencer } from "vitest/node";
 
 /**
  * Unit files' durations (ms) from a traced run, keyed by path from the repo
- * root: `pnpm test-profile unit --write-durations` refreshes it
- * (docs/test-profiling.md).
+ * root with forward slashes: `pnpm test-profile --write-durations`
+ * refreshes it.
  */
 export const DURATIONS_FILE = "scripts/test-profile/unit-durations.json";
 
-export type Durations = Record<string, number>;
+/**
+ * `file`'s path from `root` with forward slashes on every OS, so the list
+ * has one key per file. `paths`: node:path's own (tests pass `path.win32`).
+ */
+export function repoPath(root, file, paths = path) {
+	return paths.relative(root, file).replaceAll("\\", "/");
+}
 
 /** The checked-in hint list; empty when missing or unreadable. */
-export function readDurations(root: string): Durations {
+export function readDurations(root) {
 	try {
 		const parsed = JSON.parse(
-			readFileSync(join(root, DURATIONS_FILE), "utf8"),
-		) as unknown;
+			readFileSync(path.join(root, DURATIONS_FILE), "utf8"),
+		);
 		if (!parsed || typeof parsed !== "object") return {};
 		return Object.fromEntries(
 			Object.entries(parsed).filter(
-				(e): e is [string, number] =>
-					typeof e[1] === "number" && Number.isFinite(e[1]),
+				([, ms]) => typeof ms === "number" && Number.isFinite(ms),
 			),
 		);
 	} catch {
 		return {};
 	}
-}
-
-/** What the order knows about one file. */
-export interface FileFacts {
-	/** Vitest's cached result, when this tree has run the file before. */
-	cached?: { duration: number; failed: boolean };
-	/** The hint list's duration. */
-	hint?: number;
-	/** The file's size, the last resort. */
-	size?: number;
 }
 
 /**
@@ -46,7 +43,7 @@ export interface FileFacts {
  * then files with no duration largest first. Longest first means the
  * slowest files never start last and run alone at the end.
  */
-export function compareFiles(a: FileFacts, b: FileFacts): number {
+export function compareFiles(a, b) {
 	const aFailed = a.cached?.failed ?? false;
 	const bFailed = b.cached?.failed ?? false;
 	if (aFailed !== bFailed) return aFailed ? -1 : 1;
@@ -66,15 +63,13 @@ export function compareFiles(a: FileFacts, b: FileFacts): number {
  * slow files first too. Sharding is BaseSequencer's.
  */
 export class SlowFirstSequencer extends BaseSequencer {
-	override async sort(
-		files: TestSpecification[],
-	): Promise<TestSpecification[]> {
+	async sort(files) {
 		const root = this.ctx.config.root;
 		const hints = readDurations(root);
-		const facts = new Map<TestSpecification, FileFacts>();
+		const facts = new Map();
 		for (const spec of files) {
 			const cached = this.ctx.cache.getTestSpecificationResult(spec);
-			const hint = hints[relative(root, spec.moduleId)];
+			const hint = hints[repoPath(root, spec.moduleId)];
 			facts.set(spec, {
 				cached: cached
 					? { duration: cached.duration, failed: cached.failed }
@@ -95,14 +90,14 @@ export class SlowFirstSequencer extends BaseSequencer {
 			if (a.project.config.isolate !== b.project.config.isolate) {
 				return a.project.config.isolate ? -1 : 1;
 			}
-			return compareFiles(facts.get(a) as FileFacts, facts.get(b) as FileFacts);
+			return compareFiles(facts.get(a), facts.get(b));
 		});
 	}
 }
 
-function sizeOf(path: string): number | undefined {
+function sizeOf(file) {
 	try {
-		return statSync(path).size;
+		return statSync(file).size;
 	} catch {
 		return undefined;
 	}

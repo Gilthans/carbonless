@@ -27,7 +27,11 @@ beforeEach((ctx) => {
 // under its test's span.
 const traced = tracer("vitest");
 if (traced.enabled) {
-	const path = relative(process.cwd(), expect.getState().testPath ?? "?");
+	// Forward slashes on every OS: the unit-durations list's keys.
+	const path = relative(
+		process.cwd(),
+		expect.getState().testPath ?? "?",
+	).replaceAll("\\", "/");
 	const file = traced.start(
 		`file: ${path}`,
 		{ "crb.kind": "file", "test.file": path },

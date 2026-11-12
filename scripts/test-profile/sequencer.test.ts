@@ -1,16 +1,22 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import path, { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TestSpecification } from "vitest/node";
-import { fileDurations, mergeDurations } from "./durations";
+import {
+	checkRefresh,
+	fileDurations,
+	mergeDurations,
+	writeDurations,
+} from "./durations";
 import type { Span } from "./load";
 import {
 	compareFiles,
 	DURATIONS_FILE,
 	readDurations,
+	repoPath,
 	SlowFirstSequencer,
-} from "./sequencer";
+} from "./sequencer.mjs";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -162,6 +168,17 @@ describe("SlowFirstSequencer", () => {
 	});
 });
 
+describe("repoPath", () => {
+	it("keys a nested file with forward slashes on Windows too", () => {
+		expect(
+			repoPath("C:\\repo", "C:\\repo\\src\\server\\a.test.ts", path.win32),
+		).toBe("src/server/a.test.ts");
+		expect(repoPath("/repo", "/repo/src/server/a.test.ts", path.posix)).toBe(
+			"src/server/a.test.ts",
+		);
+	});
+});
+
 describe("compareFiles", () => {
 	it("puts known durations before unknown ones, whatever the size", () => {
 		expect(compareFiles({ hint: 100 }, { size: 1e6 })).toBeLessThan(0);
@@ -180,6 +197,12 @@ describe("the duration list", () => {
 		endMs: 1000 + ms,
 		attrs: { "crb.kind": "file", "test.file": file },
 		error: false,
+	});
+
+	it("keys a Windows run's backslash paths with forward slashes", () => {
+		expect(fileDurations([span("src\\server\\a.test.ts", 2000)])).toEqual({
+			"src/server/a.test.ts": 2000,
+		});
 	});
 
 	it("reads each unit file's span, rounded, the longest when run twice", () => {
@@ -214,5 +237,74 @@ describe("the duration list", () => {
 	it("reads the checked-in list's numbers only", () => {
 		const root = tree({}, { "a.test.ts": 100, "b.test.ts": "x" });
 		expect(readDurations(root)).toEqual({ "a.test.ts": 100 });
+	});
+});
+
+describe("refreshing the list", () => {
+	const listed = Object.fromEntries(
+		Array.from({ length: 20 }, (_, i) => [`f${i}.test.ts`, 3000]),
+	);
+	const all = () => true;
+
+	it("accepts a full run whose times moved within load noise", () => {
+		const run = Object.fromEntries(
+			Object.keys(listed).map((f, i) => [f, i % 2 ? 1500 : 6000]),
+		);
+		expect(checkRefresh(listed, run, all).problems).toEqual([]);
+	});
+
+	it("refuses a run of a few files (pnpm test <file>, flake-check)", () => {
+		const { problems } = checkRefresh(
+			listed,
+			{ "f0.test.ts": 3000, "f1.test.ts": 3100 },
+			all,
+		);
+		expect(problems).toEqual(["the run covers 2 of the 20 listed files"]);
+	});
+
+	it("counts only listed files still in the tree", () => {
+		const gone = (f: string) => Number(f.slice(1, -8)) < 2;
+		expect(
+			checkRefresh(listed, { "f0.test.ts": 3000, "f1.test.ts": 3000 }, gone)
+				.problems,
+		).toEqual([]);
+	});
+
+	it("refuses a filtered (-t) run: every file, most times far down", () => {
+		const run = Object.fromEntries(Object.keys(listed).map((f) => [f, 200]));
+		expect(checkRefresh(listed, run, all).problems).toEqual([
+			"20 of 20 files took under a third of their listed time",
+		]);
+	});
+
+	it("lists the biggest changes first", () => {
+		const run = { ...listed, "f3.test.ts": 9000, "f4.test.ts": 2000 };
+		expect(checkRefresh(listed, run, all).changes.slice(0, 2)).toEqual([
+			["f3.test.ts", 3000, 9000],
+			["f4.test.ts", 3000, 2000],
+		]);
+	});
+
+	const spanOf = (file: string, ms: number): Span => ({
+		traceId: "t",
+		spanId: file,
+		parent: null,
+		name: `file: ${file}`,
+		service: "vitest",
+		startMs: 0,
+		endMs: ms,
+		attrs: { "crb.kind": "file", "test.file": file },
+		error: false,
+	});
+
+	it("writes nothing for a partial run unless forced", () => {
+		const files = Object.fromEntries(Object.keys(listed).map((f) => [f, 10]));
+		const root = tree(files, listed);
+		expect(() => writeDurations(root, [spanOf("f0.test.ts", 9000)])).toThrow(
+			/not refreshing .*covers 1 of the 20 listed files[\s\S]*3\.0s → 9\.0s {2}f0\.test\.ts/,
+		);
+		expect(readDurations(root)).toEqual(listed);
+		writeDurations(root, [spanOf("f0.test.ts", 9000)], true);
+		expect(readDurations(root)).toEqual({ ...listed, "f0.test.ts": 9000 });
 	});
 });

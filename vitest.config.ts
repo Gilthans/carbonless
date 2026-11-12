@@ -2,7 +2,7 @@ import { availableParallelism } from "node:os";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 import { queuedWorkers, requireQueue } from "./scripts/queue-guard.mjs";
-import { SlowFirstSequencer } from "./scripts/test-profile/sequencer";
+import { SlowFirstSequencer } from "./scripts/test-profile/sequencer.mjs";
 
 // Interactive watch mode (`pnpm test:watch` in a terminal) runs unqueued; a
 // one-shot run (`vitest run`, or any run without a TTY) takes its turn.
