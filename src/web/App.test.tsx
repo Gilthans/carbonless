@@ -685,12 +685,15 @@ describe("App", () => {
 		await user.tab();
 		expect(gear).toHaveAttribute("aria-expanded", "true");
 		expect(screen.getByRole("link", { name: "Global settings" })).toHaveFocus();
-		// Global settings is the page's last control: focus goes on to the
-		// page's first one.
-		const first = screen
-			.getAllByRole("link")
-			.find((l) => !screen.getByTestId("settings").contains(l));
-		act(() => first?.focus());
+		// Global settings is the document's last control: Tab goes to the
+		// body (jsdom's wrap), then on to the page's first control, out of
+		// the popover, which closes.
+		await user.tab();
+		await user.tab();
+		expect(document.activeElement).not.toBe(document.body);
+		expect(
+			screen.getByTestId("settings").contains(document.activeElement),
+		).toBe(false);
 		expect(gear).toHaveAttribute("aria-expanded", "false");
 		await user.click(gear);
 		expect(gear).toHaveAttribute("aria-expanded", "true");

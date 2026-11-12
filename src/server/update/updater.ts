@@ -461,6 +461,17 @@ export async function startHelper(
 }
 
 /**
+ * Why crb serve never checks, from what it was started with: no way to
+ * restart (no exit hook) is "unavailable", config.json's `updates.check:
+ * false` is "config"; null: up to updaterFor (the env and the build).
+ */
+export const serveChecksOff = (opts: {
+	canRestart: boolean;
+	configCheck: boolean;
+}): ChecksOff | null =>
+	!opts.canRestart ? "unavailable" : opts.configCheck ? null : "config";
+
+/**
  * The updater of this crb: on when it is a build npm served
  * (isFromNpm) and neither `$CRB_NO_UPDATE_CHECK` nor config.json's
  * `updates.check: false` turns it off (`off`: "config", or "unavailable"

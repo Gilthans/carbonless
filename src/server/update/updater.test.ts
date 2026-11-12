@@ -13,9 +13,11 @@ import { RegistryError } from "./registry";
 import type { HelperConfig } from "./updateHelper";
 import {
 	CHECK_EVERY_MS,
+	serveChecksOff,
 	UpdateRefusedError,
 	Updater,
 	type UpdaterOptions,
+	updaterFor,
 } from "./updater";
 
 const BUILD = { version: "0.2.0", commit: "a".repeat(40) };
@@ -606,5 +608,38 @@ describe("Updater", () => {
 			),
 		);
 		u.stop();
+	});
+});
+
+describe("why checks are off", () => {
+	const make = (off: Parameters<typeof updaterFor>[0]["off"], env = {}) =>
+		updaterFor({
+			build: BUILD,
+			off,
+			exit: () => {},
+			port: () => 0,
+			env,
+		}).info().checksOff;
+
+	it("updaterFor: the given reason first, then the env, then a build npm didn't serve", () => {
+		// This checkout is no npm install: a local build.
+		expect(make(null)).toBe("local-build");
+		expect(make(null, { CRB_NO_UPDATE_CHECK: "1" })).toBe("env");
+		expect(make(null, { CRB_NO_UPDATE_CHECK: "0" })).toBe("local-build");
+		expect(make("config", { CRB_NO_UPDATE_CHECK: "1" })).toBe("config");
+		expect(make("unavailable")).toBe("unavailable");
+	});
+
+	it("crb serve: no restart hook is unavailable, updates.check false is config", () => {
+		expect(serveChecksOff({ canRestart: false, configCheck: true })).toBe(
+			"unavailable",
+		);
+		expect(serveChecksOff({ canRestart: false, configCheck: false })).toBe(
+			"unavailable",
+		);
+		expect(serveChecksOff({ canRestart: true, configCheck: false })).toBe(
+			"config",
+		);
+		expect(serveChecksOff({ canRestart: true, configCheck: true })).toBe(null);
 	});
 });

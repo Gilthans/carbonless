@@ -10,7 +10,7 @@ import {
 } from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
 	type ChecksOff,
 	commitUrl,
@@ -93,14 +93,19 @@ function Section(props: {
 	);
 }
 
-/** The result of the last check: up to date, a newer version, or a failure. */
+/**
+ * The result of the last check: a newer version (whatever happened since:
+ * a failed check keeps what an earlier one found), a failure, or up to
+ * date. While an update is under way, no failure: Check is off then.
+ */
 function CheckResult(props: {
 	info: UpdateInfo;
 	checking: boolean;
+	updating: boolean;
 	failed: string | null;
 	retry: () => void;
 }) {
-	const { info } = props;
+	const { info, updating } = props;
 	const flow = useUpdateFlow();
 	if (props.checking) {
 		return (
@@ -109,28 +114,15 @@ function CheckResult(props: {
 			</Row>
 		);
 	}
-	const failure = props.failed ?? info.checkError;
-	if (failure) {
-		return (
-			<Row
-				icon={<AlertIcon className="text-bad" />}
-				label="Check failed"
-				testId="update-result"
-			>
-				<span data-state="failed" className="min-w-0 text-bad">
-					Check failed: {failure}
-				</span>
-				<button type="button" onClick={props.retry} className={BUTTON}>
-					Retry
-				</button>
-			</Row>
-		);
-	}
 	const version = info.available;
-	if (version) {
-		const updating = flow?.phase.kind === "updating" || info.state !== "idle";
-		return (
-			<div data-testid="update-result" data-state="available">
+	const failure = updating ? null : (props.failed ?? info.checkError);
+	if (!version && !failure && !info.lastChecked) return null;
+	return (
+		<div
+			data-testid="update-result"
+			data-state={version ? "available" : failure ? "failed" : "current"}
+		>
+			{version && (
 				<Row
 					icon={<DownloadIcon className="text-accent" />}
 					label="Update available"
@@ -176,31 +168,38 @@ function CheckResult(props: {
 							</Tooltip>
 						))}
 				</Row>
-				{!info.oneClick && info.command && (
-					<div className="pl-6">
-						<Command command={info.command} />
-					</div>
-				)}
-			</div>
-		);
-	}
-	if (info.lastChecked) {
-		return (
-			<Row
-				icon={<CheckCircleIcon className="text-ok" />}
-				label="Up to date"
-				testId="update-result"
-			>
-				<span data-state="current">Up to date</span>
-			</Row>
-		);
-	}
-	return null;
+			)}
+			{version && !info.oneClick && info.command && (
+				<div className="pl-6">
+					<Command command={info.command} />
+				</div>
+			)}
+			{failure && (
+				<Row icon={<AlertIcon className="text-bad" />} label="Check failed">
+					<span data-testid="check-failed" className="min-w-0 text-bad">
+						Check failed: {failure}
+					</span>
+					<button type="button" onClick={props.retry} className={BUTTON}>
+						Retry
+					</button>
+				</Row>
+			)}
+			{!version && !failure && (
+				<Row icon={<CheckCircleIcon className="text-ok" />} label="Up to date">
+					<span>Up to date</span>
+				</Row>
+			)}
+		</div>
+	);
 }
 
 /** The running crb: its version and commit, its channel, and updates. */
 function VersionSection() {
 	const client = useQueryClient();
+	const flow = useUpdateFlow();
+	// When the last manual check failed: its failure shows until fresher
+	// info arrives (the toast's poll, another tab's check).
+	const [failedAt, setFailedAt] = useState(0);
 	const info = useQuery({
 		queryKey: UPDATE_KEY,
 		queryFn: fetchUpdate,
@@ -214,6 +213,7 @@ function VersionSection() {
 				cache: "no-store",
 			}),
 		onSuccess: (answer) => client.setQueryData(UPDATE_KEY, answer),
+		onError: () => setFailedAt(Date.now()),
 	});
 	const data = info.data;
 	if (!data) {
@@ -233,6 +233,11 @@ function VersionSection() {
 			</Section>
 		);
 	}
+	const updating = flow?.phase.kind === "updating" || data.state !== "idle";
+	const failed =
+		check.isError && info.dataUpdatedAt <= failedAt
+			? check.error.message
+			: null;
 	const commit = commitUrl(data.commit);
 	const short = data.commit.replace(/-dirty$/, "").slice(0, 7);
 	const dirty = data.commit.endsWith("-dirty") ? "-dirty" : "";
@@ -303,7 +308,7 @@ function VersionSection() {
 						<button
 							type="button"
 							onClick={() => check.mutate()}
-							disabled={check.isPending}
+							disabled={check.isPending || updating}
 							aria-busy={check.isPending || undefined}
 							className={`${BUTTON} ml-auto`}
 						>
@@ -321,7 +326,8 @@ function VersionSection() {
 					<CheckResult
 						info={data}
 						checking={check.isPending}
-						failed={check.isError ? check.error.message : null}
+						updating={updating}
+						failed={failed}
 						retry={() => check.mutate()}
 					/>
 				</>

@@ -608,8 +608,25 @@ it("Global settings: the running version; Check for updates offers the newer one
 		/channel latest\s*· npm global/,
 	);
 	const check = version.getByRole("button", { name: "Check for updates" });
+	// The click asks crb, which asks the registry now: a check newer than
+	// the start's, its answer the page's.
+	const before = Date.now();
+	const checked = page.waitForResponse(
+		(r) =>
+			new URL(r.url()).pathname === "/api/update/check" &&
+			r.request().method() === "POST",
+	);
 	await check.click();
+	const answer = await checked;
+	expect(answer.status()).toBe(200);
+	const fresh = (await answer.json()) as {
+		lastChecked: string;
+		available: string | null;
+	};
+	expect(Date.parse(fresh.lastChecked)).toBeGreaterThanOrEqual(before);
+	expect(fresh.available).toBeNull();
 	const result = version.getByTestId("update-result");
+	await expect(result).toHaveAttribute("data-state", "current");
 	await expect(result).toContainText("Up to date");
 	await expect(version.getByTestId("version-checked")).toContainText(
 		"checked now",

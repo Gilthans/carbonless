@@ -61,6 +61,8 @@ const json = (status: number, body: unknown) =>
 function serve(opts: {
 	get: () => UpdateInfo | Promise<Response>;
 	check?: () => Response | Promise<Response>;
+	/** POST /api/update's answer (default: restarting). */
+	post?: () => Response;
 }) {
 	const calls: string[] = [];
 	vi.stubGlobal(
@@ -72,10 +74,10 @@ function serve(opts: {
 				return opts.check?.() ?? json(409, { error: "no" });
 			}
 			if (url === "/api/update" && method === "POST") {
-				return json(202, {
-					...(opts.get() as UpdateInfo),
-					state: "restarting",
-				});
+				return (
+					opts.post?.() ??
+					json(202, { ...(opts.get() as UpdateInfo), state: "restarting" })
+				);
 			}
 			if (url === "/api/update") {
 				const answer = opts.get();
@@ -116,6 +118,7 @@ function show() {
 			<RouterProvider router={router} />
 		</QueryClientProvider>,
 	);
+	return client;
 }
 
 const section = async () => {
@@ -323,6 +326,70 @@ describe("GlobalSettingsPage", () => {
 			expect(result()).toBeNull();
 		},
 	);
+
+	it("a failed check never hides the update on offer: both show", async () => {
+		serve({
+			get: () => ({ ...INFO, ...OFFER, checkError: "Registry unreachable" }),
+		});
+		show();
+		const r = await screen.findByTestId("update-result");
+		await waitFor(() => expect(r).toHaveAttribute("data-state", "available"));
+		expect(within(r).getByRole("button", { name: "Update" })).toBeEnabled();
+		expect(within(r).getByTestId("check-failed")).toHaveTextContent(
+			"Check failed: Registry unreachable",
+		);
+		expect(within(r).queryByText("Up to date")).toBeNull();
+	});
+
+	it("a failed check request is gone once fresher info arrives", async () => {
+		let now: UpdateInfo = INFO;
+		serve({
+			get: () => now,
+			check: () => json(500, { error: "Internal server error" }),
+		});
+		const client = show();
+		await section();
+		await userEvent.click(checkButton());
+		await waitFor(() => expect(result()).toHaveTextContent("Check failed"));
+		// The toast's poll (or another tab's check) brings a newer answer.
+		now = { ...INFO, ...OFFER, lastChecked: new Date().toISOString() };
+		await client.refetchQueries({ queryKey: ["update"] });
+		await waitFor(() =>
+			expect(result()).toHaveAttribute("data-state", "available"),
+		);
+		expect(screen.queryByTestId("check-failed")).toBeNull();
+	});
+
+	it("Check is off while crb installs or restarts", async () => {
+		serve({ get: () => ({ ...INFO, ...OFFER, state: "installing" }) });
+		show();
+		await section();
+		expect(checkButton()).toBeDisabled();
+	});
+
+	it("Check is off once this page's Update started, before crb says so", async () => {
+		serve({
+			get: () => ({ ...INFO, ...OFFER, checkError: "Registry unreachable" }),
+			// crb answers still idle (the page's phase is what says updating).
+			post: () => json(202, { ...INFO, ...OFFER }),
+		});
+		show();
+		const r = await screen.findByTestId("update-result");
+		await waitFor(() => expect(r).toHaveAttribute("data-state", "available"));
+		expect(checkButton()).toBeEnabled();
+		await userEvent.click(within(r).getByRole("button", { name: "Update" }));
+		await waitFor(() => expect(checkButton()).toBeDisabled());
+		// No failure under a toast that says Updating.
+		expect(screen.queryByTestId("check-failed")).toBeNull();
+	});
+
+	it("a -dirty build: shown as dirty, never linked to the clean commit", async () => {
+		serve({ get: () => ({ ...INFO, commit: `${SHA}-dirty` }) });
+		show();
+		const row = await screen.findByTestId("version-current");
+		expect(row).toHaveTextContent("282f365-dirty");
+		expect(within(row).queryByRole("link")).toBeNull();
+	});
 
 	it("a commit that isn't a SHA: shown, not linked", async () => {
 		serve({

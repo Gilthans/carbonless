@@ -322,7 +322,9 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
   (`POST /api/update/check`: checks now, sharing a check already under
   way, and answers the fresh `/api/update`; the hourly timer keeps its
   times). A newer version shows there with the toast's own Update (or the
-  command), a failed check says why with Retry. A build that never checks
+  command), also after a later check failed; a failed check says why with
+  Retry. Check is off while an update installs or restarts. A `-dirty`
+  build's commit is shown as such, not linked. A build that never checks
   says why instead (local build, `CRB_NO_UPDATE_CHECK`, `updates.check`
   off) and has no Check button.
 - **Channel**, durable: an RC install stays on `rc` for good.

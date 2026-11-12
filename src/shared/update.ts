@@ -47,13 +47,14 @@ export interface UpdateFailure {
 	command: string;
 }
 
-/** The commit page of `sha` on GitHub; null when it isn't a full SHA. */
-export const commitUrl = (sha: string): string | null => {
-	const clean = sha.replace(/-dirty$/, "");
-	return /^[0-9a-f]{40}$/.test(clean)
-		? `https://github.com/Gilthans/carbonless/commit/${clean}`
+/**
+ * The commit page of `sha` on GitHub; null when it isn't a full SHA, or is
+ * a "-dirty" build's (built from changes that commit doesn't have).
+ */
+export const commitUrl = (sha: string): string | null =>
+	/^[0-9a-f]{40}$/.test(sha)
+		? `https://github.com/Gilthans/carbonless/commit/${sha}`
 		: null;
-};
 
 /** `POST /api/update`'s body: the version the toast offered. */
 export interface UpdateRequest {

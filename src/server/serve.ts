@@ -12,7 +12,7 @@ import {
 	writeServerState,
 } from "./serverState.js";
 import { TEST_HOOKS_ENV, testHookToken } from "./testHooks.js";
-import { updaterFor } from "./update/updater.js";
+import { serveChecksOff, updaterFor } from "./update/updater.js";
 import { BUILD } from "./version.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -88,7 +88,10 @@ export async function startServer(opts: {
 	let actualPort = port;
 	const updater = updaterFor({
 		build: BUILD,
-		off: !opts.exit ? "unavailable" : config.updates.check ? null : "config",
+		off: serveChecksOff({
+			canRestart: opts.exit !== undefined,
+			configCheck: config.updates.check,
+		}),
 		...(config.updates.channel ? { channel: config.updates.channel } : {}),
 		exit: (code) => opts.exit?.(code),
 		port: () => actualPort,
