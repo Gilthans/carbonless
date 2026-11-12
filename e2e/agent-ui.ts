@@ -18,6 +18,7 @@ import {
 	type Served,
 	startServe,
 	stopChild,
+	untimed,
 } from "./fixtures";
 import { crbEnv } from "./pr-setup";
 
@@ -84,61 +85,78 @@ export const test = base.extend<{
 	acpLogPath: async ({ workdir }, use) => {
 		await use(join(workdir, "fake-acp.log"));
 	},
-	agentCrb: async ({ workdir, context, acpLogPath }, use) => {
+	agentCrb: async ({ workdir, context, acpLogPath }, use, info) => {
 		const servers: Served[] = [];
-		await use(async (opts = {}) => {
-			const scenario = writeAcpScenario(
-				workdir,
-				opts.scenario ?? DEFAULT_SCENARIO,
-			);
-			if (opts.configured !== false) {
-				const dir = join(workdir, "config", "carbonless");
-				mkdirSync(dir, { recursive: true });
-				writeFileSync(
-					join(dir, "config.json"),
-					JSON.stringify({
-						agent: {
-							command: "claude-agent-acp",
-							args: [],
-							env: {},
-							leash: "open",
-						},
-					}),
+		// Like startCrb: the setup is the fixture's, not the test's time
+		// (untimed), and its boxed steps are the profile's setup phases.
+		await use((opts = {}) =>
+			untimed(info, async () => {
+				const scenario = writeAcpScenario(
+					workdir,
+					opts.scenario ?? DEFAULT_SCENARIO,
 				);
-			}
-			const env: NodeJS.ProcessEnv = {
-				...crbEnv(workdir),
-				...(opts.state ? { XDG_STATE_HOME: join(workdir, opts.state) } : {}),
-			};
-			env.PATH = `${FAKE_ACP_BIN}${delimiter}${env.PATH ?? ""}`;
-			env.CRB_FAKE_ACP = scenario;
-			env.CRB_FAKE_ACP_LOG = acpLogPath;
-			const served = await startServe(workdir, [], env);
-			servers.push(served);
-			const run = await runCli(
-				workdir,
-				[`${OWNER_REPO}#${PR_NUMBER}`, ...(opts.args ?? [])],
-				env,
-			);
-			const url = run.stdout.trim().split("\n").at(-1) ?? "";
-			if (run.code !== 0 || !/^http:\/\//.test(url)) {
-				throw new CrbExitError(run.code, `${served.output()}${run.output}`);
-			}
-			return {
-				url,
-				served,
-				stop: async () => {
-					await Promise.all(
-						context.pages().map((p) => p.goto("about:blank").catch(() => {})),
+				if (opts.configured !== false) {
+					const dir = join(workdir, "config", "carbonless");
+					mkdirSync(dir, { recursive: true });
+					writeFileSync(
+						join(dir, "config.json"),
+						JSON.stringify({
+							agent: {
+								command: "claude-agent-acp",
+								args: [],
+								env: {},
+								leash: "open",
+							},
+						}),
 					);
-					await stopChild(served.child);
-				},
-			};
-		});
+				}
+				const env: NodeJS.ProcessEnv = {
+					...crbEnv(workdir),
+					...(opts.state ? { XDG_STATE_HOME: join(workdir, opts.state) } : {}),
+				};
+				env.PATH = `${FAKE_ACP_BIN}${delimiter}${env.PATH ?? ""}`;
+				env.CRB_FAKE_ACP = scenario;
+				env.CRB_FAKE_ACP_LOG = acpLogPath;
+				const served = await base.step(
+					"setup: crb serve",
+					() => startServe(workdir, [], env),
+					{ box: true },
+				);
+				servers.push(served);
+				const run = await base.step(
+					"setup: crb open",
+					() =>
+						runCli(
+							workdir,
+							[`${OWNER_REPO}#${PR_NUMBER}`, ...(opts.args ?? [])],
+							env,
+						),
+					{ box: true },
+				);
+				const url = run.stdout.trim().split("\n").at(-1) ?? "";
+				if (run.code !== 0 || !/^http:\/\//.test(url)) {
+					throw new CrbExitError(run.code, `${served.output()}${run.output}`);
+				}
+				return {
+					url,
+					served,
+					stop: async () => {
+						await Promise.all(
+							context.pages().map((p) => p.goto("about:blank").catch(() => {})),
+						);
+						await stopChild(served.child);
+					},
+				};
+			}),
+		);
 		await Promise.all(
 			context.pages().map((p) => p.goto("about:blank").catch(() => {})),
 		);
-		await Promise.all(servers.map((s) => stopChild(s.child)));
+		await base.step(
+			"teardown: crb stop",
+			() => Promise.all(servers.map((s) => stopChild(s.child))),
+			{ box: true },
+		);
 	},
 });
 
