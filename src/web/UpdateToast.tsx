@@ -5,7 +5,15 @@ import {
 	XIcon,
 } from "@primer/octicons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	createContext,
+	type ReactNode,
+	useCallback,
+	useContext,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import type { UpdateInfo } from "../shared/update";
 import { ApiError, fetchJson } from "./api";
 import { type Copied, CopyMark, copyInto, copyWord } from "./CopyMark";
@@ -31,7 +39,7 @@ const DISMISSED = "crb:update-dismissed";
 
 export const UPDATE_KEY = ["update"] as const;
 
-const fetchUpdate = () =>
+export const fetchUpdate = () =>
 	fetchJson<UpdateInfo>("/api/update", { cache: "no-store" });
 
 function readDismissed(): string | null {
@@ -87,7 +95,7 @@ function IconButton(props: {
 }
 
 /** A command to run by hand, with a copy button. */
-function Command(props: { command: string }) {
+export function Command(props: { command: string }) {
 	const [copied, setCopied] = useState<Copied>(null);
 	const shown = useRef<HTMLElement>(null);
 	return (
@@ -111,16 +119,48 @@ function Command(props: { command: string }) {
 	);
 }
 
+/** What a page shares with the update toast: its phase, and Update itself. */
+export interface UpdateFlow {
+	phase: Phase;
+	/** The toast's Update: asks about unsaved work, installs, restarts, reloads. */
+	update: (version: string) => Promise<void>;
+}
+
+const FlowContext = createContext<UpdateFlow | null>(null);
+
+/** The update flow of the page's UpdateToast (null outside one). */
+export const useUpdateFlow = (): UpdateFlow | null => useContext(FlowContext);
+
 /**
  * "Update available" (CAR-108): on every page, when npm has a newer crb on
  * its channel. Update installs it and restarts crb (asking first when the
  * page has unsaved work, as leaving does); the page shows it updating and
  * reloads once crb answers with the new version. When crb can't update
- * itself, the command to run instead. Dismissed per version.
+ * itself, the command to run instead. Dismissed per version. `children`
+ * (the pages) share its Update (useUpdateFlow: Global settings' button).
  */
-export function UpdateToast() {
-	const client = useQueryClient();
+export function UpdateToast(props: { children?: ReactNode }) {
 	const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+	const update = useRef<UpdateFlow["update"]>(async () => {});
+	// One stable function for the pages: the latest Update behind it.
+	const [flowUpdate] = useState(
+		() => (version: string) => update.current(version),
+	);
+	return (
+		<FlowContext.Provider value={{ phase, update: flowUpdate }}>
+			{props.children}
+			<Toast phase={phase} setPhase={setPhase} updateRef={update} />
+		</FlowContext.Provider>
+	);
+}
+
+function Toast(props: {
+	phase: Phase;
+	setPhase: (phase: Phase) => void;
+	updateRef: { current: UpdateFlow["update"] };
+}) {
+	const { phase, setPhase } = props;
+	const client = useQueryClient();
 	const [dismissed, setDismissed] = useState<string | null>(readDismissed);
 	const [failureDismissed, setFailureDismissed] = useState<string | null>(null);
 	const unsaved = useUnsaved();
@@ -130,10 +170,13 @@ export function UpdateToast() {
 	// once with nothing unsaved; else offers Reload, and leaving asks as
 	// always (an ask the reviewer answered at Update covered only what was
 	// unsaved then, and another tab's Update asked nothing here).
-	const back = useCallback((version: string) => {
-		if (unsavedNow.current) setPhase({ kind: "back", version });
-		else window.location.reload();
-	}, []);
+	const back = useCallback(
+		(version: string) => {
+			if (unsavedNow.current) setPhase({ kind: "back", version });
+			else window.location.reload();
+		},
+		[setPhase],
+	);
 	const info = useQuery({
 		queryKey: UPDATE_KEY,
 		queryFn: fetchUpdate,
@@ -158,7 +201,7 @@ export function UpdateToast() {
 				since: Date.now(),
 			});
 		}
-	}, [data, phase.kind]);
+	}, [data, phase.kind, setPhase]);
 
 	// crb now runs the version that was on offer (another tab's update this
 	// page didn't see start): this page's code is the old one, reload.
@@ -224,7 +267,7 @@ export function UpdateToast() {
 			stopped = true;
 			window.clearTimeout(timer);
 		};
-	}, [target, since, client, back]);
+	}, [target, since, client, back, setPhase]);
 
 	const dismiss = (version: string) => {
 		writeDismissed(version);
@@ -266,6 +309,7 @@ export function UpdateToast() {
 			}
 		}
 	};
+	props.updateRef.current = update;
 
 	if (phase.kind === "updating") {
 		return (

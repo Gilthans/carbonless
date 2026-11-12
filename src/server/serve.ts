@@ -88,7 +88,7 @@ export async function startServer(opts: {
 	let actualPort = port;
 	const updater = updaterFor({
 		build: BUILD,
-		off: !opts.exit || !config.updates.check,
+		off: !opts.exit ? "unavailable" : config.updates.check ? null : "config",
 		...(config.updates.channel ? { channel: config.updates.channel } : {}),
 		exit: (code) => opts.exit?.(code),
 		port: () => actualPort,

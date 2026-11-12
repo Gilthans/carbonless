@@ -674,8 +674,8 @@ describe("App", () => {
 		).findByRole("button", { name: "Settings" });
 		await user.click(gear);
 		expect(gear).toHaveAttribute("aria-expanded", "true");
-		// Focus moves on through the three switches and the shortcuts
-		// entry, then out of the popover.
+		// Focus moves on through the three switches, the shortcuts entry
+		// and Global settings, then out of the popover.
 		await user.tab();
 		expect(gear).toHaveAttribute("aria-expanded", "true");
 		await user.tab();
@@ -683,6 +683,14 @@ describe("App", () => {
 		await user.tab();
 		expect(gear).toHaveAttribute("aria-expanded", "true");
 		await user.tab();
+		expect(gear).toHaveAttribute("aria-expanded", "true");
+		expect(screen.getByRole("link", { name: "Global settings" })).toHaveFocus();
+		// Global settings is the page's last control: focus goes on to the
+		// page's first one.
+		const first = screen
+			.getAllByRole("link")
+			.find((l) => !screen.getByTestId("settings").contains(l));
+		act(() => first?.focus());
 		expect(gear).toHaveAttribute("aria-expanded", "false");
 		await user.click(gear);
 		expect(gear).toHaveAttribute("aria-expanded", "true");

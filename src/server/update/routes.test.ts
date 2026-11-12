@@ -35,7 +35,20 @@ describe("/api/update", () => {
 			command: null,
 			state: "idle",
 			failed: null,
+			commit: BUILD.commit,
+			channel: expect.stringMatching(/^(rc|latest)$/),
+			install: null,
+			byHand: false,
+			lastChecked: null,
+			checkError: null,
+			checksOff: "unavailable",
 		});
+		const check = await a.inject({
+			method: "POST",
+			url: "/api/update/check",
+			headers: { host },
+		});
+		expect(check.statusCode).toBe(409);
 		const post = await a.inject({
 			method: "POST",
 			url: "/api/update",
@@ -94,6 +107,82 @@ describe("/api/update", () => {
 		expect(ok.statusCode).toBe(202);
 		expect(ok.json()).toMatchObject({ state: "restarting" });
 		updater.stop();
+	});
+
+	it("check now: the fresh info, one check for concurrent asks; refused when checks are off", async () => {
+		let asked = 0;
+		let release: (v: string | null) => void = () => {};
+		const updater = new Updater({
+			build: { version: "0.2.0", commit: "a".repeat(40) },
+			enabled: true,
+			install: null,
+			check: () => {
+				asked++;
+				return new Promise((r) => {
+					release = r;
+				});
+			},
+			service: async () => null,
+			exit: () => {},
+			port: () => 4747,
+		});
+		const a = await app(updater);
+		const post = () =>
+			a.inject({ method: "POST", url: "/api/update/check", headers: { host } });
+		const first = post();
+		const second = post();
+		await expect.poll(() => asked).toBe(1);
+		release("0.3.0");
+		const [one, two] = await Promise.all([first, second]);
+		expect(asked).toBe(1);
+		for (const res of [one, two]) {
+			expect(res.statusCode).toBe(200);
+			expect(res.headers["cache-control"]).toBe("no-store");
+			expect(res.json()).toMatchObject({
+				available: "0.3.0",
+				byHand: true,
+				command: "npm install -g carbonless-review@0.3.0",
+				checkError: null,
+			});
+			expect(res.json().lastChecked).toEqual(expect.any(String));
+		}
+		const off = await app(
+			new Updater({
+				build: { version: "0.2.0", commit: "a".repeat(40) },
+				enabled: false,
+				off: "config",
+				install: null,
+				exit: () => {},
+				port: () => 4747,
+			}),
+		);
+		const refused = await off.inject({
+			method: "POST",
+			url: "/api/update/check",
+			headers: { host },
+		});
+		expect(refused.statusCode).toBe(409);
+		expect(
+			(await off.inject({ url: "/api/update", headers: { host } })).json(),
+		).toMatchObject({ checksOff: "config" });
+	});
+
+	it("check now is refused from another site", async () => {
+		let asked = 0;
+		const updater = {
+			info: () => ({ checksOff: null }),
+			checkNow: async () => {
+				asked++;
+			},
+		} as unknown as Updater;
+		const a = await app(updater);
+		const cross = await a.inject({
+			method: "POST",
+			url: "/api/update/check",
+			headers: { host, origin: "https://evil.example" },
+		});
+		expect(cross.statusCode).toBe(403);
+		expect(asked).toBe(0);
 	});
 
 	it("Update is refused from another site, and without the key", async () => {

@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { newerOnRegistry, registryUrl } from "./registry";
+import { checkRegistry, newerOnRegistry, registryUrl } from "./registry";
 
 /** A fake registry: dist-tags for carbonless-review, or a status. */
 async function fakeRegistry(
@@ -172,6 +172,45 @@ describe("newerOnRegistry", () => {
 			}),
 		).toBe(null);
 		hang.closeAllConnections();
+	});
+
+	it("checkRegistry says why a check failed, in a few words", async () => {
+		const missing = await fakeRegistry({ status: 404 });
+		servers.push(missing.server);
+		await expect(
+			checkRegistry("0.1.0", { registry: missing.url }),
+		).rejects.toThrow("Registry answered 404");
+		const bad = await fakeRegistry({ tags: {} });
+		servers.push(bad.server);
+		await expect(
+			checkRegistry("0.1.0", {
+				registry: bad.url,
+				fetch: async () => new Response("not json", { status: 200 }),
+			}),
+		).rejects.toThrow("Registry gave a bad answer");
+		await expect(
+			checkRegistry("0.1.0", {
+				registry: bad.url,
+				fetch: async () => {
+					throw new TypeError("fetch failed");
+				},
+			}),
+		).rejects.toThrow("Registry unreachable");
+		const hang = createServer(() => {});
+		servers.push(hang);
+		await new Promise<void>((done) => hang.listen(0, "127.0.0.1", done));
+		const { port } = hang.address() as AddressInfo;
+		await expect(
+			checkRegistry("0.1.0", {
+				registry: `http://127.0.0.1:${port}`,
+				timeoutMs: 50,
+			}),
+		).rejects.toThrow("Registry timed out");
+		hang.closeAllConnections();
+		// Nothing newer is no failure.
+		const same = await fakeRegistry({ tags: { latest: "0.1.0" } });
+		servers.push(same.server);
+		expect(await checkRegistry("0.1.0", { registry: same.url })).toBe(null);
 	});
 
 	it("registry: $CRB_NPM_REGISTRY, else npm's", () => {

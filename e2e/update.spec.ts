@@ -566,3 +566,131 @@ it("an rc install under a service manager: stays on rc past a release; installs 
 		toast(page).getByRole("link", { name: "v0.4.0-rc.1" }),
 	).toBeVisible();
 });
+
+/** Home's gear → Global settings: the page, at `url`'s crb. */
+async function openGlobalSettings(page: Page, url: string) {
+	await page.goto(`${url}/`);
+	await page.getByRole("button", { name: "Settings" }).click();
+	const settings = page.getByTestId("settings");
+	// Home's popover: Global settings alone.
+	await expect(settings.getByRole("switch")).toHaveCount(0);
+	await settings.getByRole("link", { name: "Global settings" }).click();
+	await expect(page).toHaveURL(/\/settings$/);
+	await expect(
+		page.getByRole("heading", { name: "Global settings" }),
+	).toBeVisible();
+	return page.getByTestId("settings-version");
+}
+
+it("Global settings: the running version; Check for updates offers the newer one, and its Update installs and restarts like the toast's", async ({
+	page,
+	workdir,
+	pr,
+	installed,
+	isMobile,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/ERR_CONNECTION_REFUSED/);
+	await pr();
+	if (isMobile) await page.setViewportSize({ width: 360, height: 740 });
+	// Nothing newer yet.
+	installed.tags.latest = CURRENT;
+	installed.tags.rc = CURRENT;
+	const { url } = await installed.start();
+	const version = await openGlobalSettings(page, url);
+	await expect(version.getByTestId("version-current")).toContainText(CURRENT);
+	await expect(version.getByRole("link", { name: /^ccccccc/ })).toHaveAttribute(
+		"href",
+		`https://github.com/Gilthans/carbonless/commit/${"c".repeat(40)}`,
+	);
+	await expect(version.getByTestId("version-install")).toHaveText(
+		/channel latest\s*· npm global/,
+	);
+	const check = version.getByRole("button", { name: "Check for updates" });
+	await check.click();
+	const result = version.getByTestId("update-result");
+	await expect(result).toContainText("Up to date");
+	await expect(version.getByTestId("version-checked")).toContainText(
+		"checked now",
+	);
+	await expect(toast(page)).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	for (const target of [
+		check,
+		page.getByRole("link", { name: "Home" }),
+		version.getByRole("link", { name: /^ccccccc/ }),
+	]) {
+		const box = await target.boundingBox();
+		expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+	}
+	await shot(page, "global-settings-current", isMobile);
+
+	// A release comes out: the page's check finds it (the hourly one hasn't).
+	installed.tags.latest = NEWER;
+	installed.tags.rc = NEWER;
+	await check.click();
+	await expect(result).toHaveAttribute("data-state", "available");
+	await expect(result.getByRole("link", { name: `v${NEWER}` })).toHaveAttribute(
+		"href",
+		`https://github.com/Gilthans/carbonless/releases/tag/v${NEWER}`,
+	);
+	// The toast offers it too.
+	await expect(toast(page)).toHaveAttribute("data-state", "available");
+	await expectNoPageOverflow(page);
+	await shot(page, "global-settings-available", isMobile);
+	await page.evaluate(() => {
+		(window as unknown as { beforeUpdate: boolean }).beforeUpdate = true;
+	});
+	await result.getByRole("button", { name: "Update" }).click();
+	await expect(toast(page)).toHaveAttribute("data-state", "updating");
+	await expect(
+		result.getByRole("status", { name: `Updating to v${NEWER}` }),
+	).toBeVisible();
+	// Installed, restarted, reloaded on the new version (as the toast's
+	// Update: npm, the grace and a start on a loaded machine).
+	await expect
+		.poll(
+			() =>
+				page
+					.evaluate(
+						() =>
+							(window as unknown as { beforeUpdate?: boolean }).beforeUpdate ??
+							false,
+					)
+					.catch(() => true),
+			{ timeout: 90_000 },
+		)
+		.toBe(false);
+	expect(readFileSync(installed.npmLog, "utf8").trim().split("\n")).toEqual([
+		JSON.stringify([
+			"install",
+			"-g",
+			"--prefix",
+			join(workdir, "npm-prefix"),
+			`carbonless-review@${NEWER}`,
+		]),
+	]);
+	await expect(
+		page.getByTestId("settings-version").getByTestId("version-current"),
+	).toContainText(NEWER);
+});
+
+it("Global settings with checks off: the version, why it never checks, no Check button", async ({
+	page,
+	pr,
+	installed,
+	isMobile,
+}) => {
+	test.skip(isMobile, "the page's layout is the test above's");
+	await pr();
+	const { url } = await installed.start([], { CRB_NO_UPDATE_CHECK: "1" });
+	const version = await openGlobalSettings(page, url);
+	await expect(version.getByTestId("version-current")).toContainText(CURRENT);
+	await expect(version.getByTestId("updates-off")).toContainText(
+		"updates off: CRB_NO_UPDATE_CHECK",
+	);
+	await expect(
+		version.getByRole("button", { name: "Check for updates" }),
+	).toHaveCount(0);
+	await shot(page, "global-settings-off", isMobile);
+});

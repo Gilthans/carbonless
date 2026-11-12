@@ -76,6 +76,7 @@ import {
 import { registerTestHooks } from "./testHooks.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
 import { parseTraceparent, type Span, type Tracer, tracer } from "./trace.js";
+import { channelOf } from "./update/semver.js";
 import { UpdateRefusedError, type Updater } from "./update/updater.js";
 import { verdictProblem } from "./verdict.js";
 import {
@@ -132,6 +133,13 @@ const noUpdate = (): UpdateInfo => ({
 	command: null,
 	state: "idle",
 	failed: null,
+	commit: BUILD.commit,
+	channel: channelOf(BUILD.version),
+	install: null,
+	byHand: false,
+	lastChecked: null,
+	checkError: null,
+	checksOff: "unavailable",
 });
 
 /** A malformed request (HTTP 400). */
@@ -364,6 +372,17 @@ export async function buildApp(
 		}
 		if (!options.updater) throw new UpdateRefusedError("No updates here");
 		return reply.status(202).send(await options.updater.update(body.version));
+	});
+	// Global settings' "Check for updates": a check now (sharing one under
+	// way), its answer the fresh info. The hourly timer keeps its times.
+	app.post("/api/update/check", async (_request, reply) => {
+		reply.header("cache-control", "no-store");
+		const info = options.updater?.info();
+		if (!options.updater || !info || info.checksOff) {
+			throw new UpdateRefusedError("Update checks are off");
+		}
+		await options.updater.checkNow();
+		return options.updater.info();
 	});
 	// The page strips ?key= from its address, so a home-screen install would
 	// save a keyless URL and a shortcut with its own cookie jar would get 401.

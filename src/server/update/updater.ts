@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	type ChecksOff,
 	releaseUrl,
 	type UpdateFailure,
 	type UpdateInfo,
@@ -27,8 +28,8 @@ import {
 	restartArgs,
 	showCommand,
 } from "./install.js";
-import { newerOnRegistry, registryUrl } from "./registry.js";
-import { channelOf } from "./semver.js";
+import { checkRegistry, RegistryError, registryUrl } from "./registry.js";
+import { channelOf, isNewer } from "./semver.js";
 import { detectService, type Service } from "./service.js";
 import {
 	HELPER_DIR_PREFIX,
@@ -41,8 +42,12 @@ import {
 
 export type Channel = "rc" | "latest";
 
-/** How often the registry is asked again after the check at start. */
-export const CHECK_EVERY_MS = 6 * 60 * 60_000;
+/**
+ * How often the registry is asked again after the check at start: RCs
+ * land several times a day. A check from the Global settings page
+ * (checkNow) leaves this timer alone.
+ */
+export const CHECK_EVERY_MS = 60 * 60_000;
 
 /**
  * How long crb keeps answering "restarting" before it stops: every open
@@ -74,9 +79,14 @@ export interface UpdaterOptions {
 	build: BuildInfo;
 	/** Checks at all: a build npm served, not switched off. */
 	enabled: boolean;
+	/** Why it doesn't, when not `enabled` (default "local-build"). */
+	off?: ChecksOff;
 	/** How crb was installed (null: unknown, the command instead). */
 	install: Install | null;
-	/** The registry's newer version, or null (newerOnRegistry). */
+	/**
+	 * The registry's newer version, or null (checkRegistry); rejects when
+	 * the registry can't be asked.
+	 */
 	check?: (current: string, channel: Channel) => Promise<string | null>;
 	/** config.json's `updates.channel`: over the remembered one. */
 	channel?: Channel;
@@ -110,13 +120,16 @@ export interface UpdaterOptions {
 	resultFile?: string;
 	logFile?: string;
 	platform?: NodeJS.Platform;
+	/** The clock lastChecked reads (tests). */
+	now?: () => Date;
 }
 
 /**
  * crb's self-update (CAR-108): asks npm for a newer version at start and
- * every CHECK_EVERY_MS, and on the reviewer's click installs exactly that
- * version and restarts crb in place. Never automatic; silent on any
- * failure to check.
+ * every CHECK_EVERY_MS (and when the Global settings page asks), and on
+ * the reviewer's click installs exactly that version and restarts crb in
+ * place. Never automatic. A failed check is only recorded (`checkError`),
+ * for the Global settings page; the toast stays silent.
  */
 export class Updater {
 	#available: string | null = null;
@@ -125,11 +138,17 @@ export class Updater {
 	#service: Service | null = null;
 	#timer: NodeJS.Timeout | null = null;
 	#checking: Promise<void> | null = null;
-	#channel: Channel = "latest";
+	#channel: Channel;
+	#lastChecked: Date | null = null;
+	#checkError: string | null = null;
 	readonly #o: UpdaterOptions;
+	readonly #now: () => Date;
 
 	constructor(options: UpdaterOptions) {
 		this.#o = options;
+		this.#now = options.now ?? (() => new Date());
+		// Until start() reads the remembered one: the version's own.
+		this.#channel = options.channel ?? channelOf(options.build.version);
 	}
 
 	get #resultFile() {
@@ -159,27 +178,49 @@ export class Updater {
 		this.#timer = null;
 	}
 
-	/** One check of the registry (one at a time). */
+	/**
+	 * One check of the registry (concurrent callers share it). Leaves the
+	 * timer alone: the hourly checks keep their times. Never rejects.
+	 */
 	checkNow(): Promise<void> {
+		if (!this.#o.enabled) return Promise.resolve();
 		this.#checking ??= (async () => {
 			try {
 				const check =
 					this.#o.check ??
 					((current: string, channel: Channel) =>
-						newerOnRegistry(current, {
+						checkRegistry(current, {
 							registry: registryUrl(this.#o.env),
 							channel,
 						}));
-				const newer = await check(this.#o.build.version, this.#channel).catch(
-					() => null,
-				);
-				// A failed check keeps what an earlier one found.
-				if (newer !== null) this.#available = newer;
+				const current = this.#o.build.version;
+				let newer: string | null;
+				try {
+					newer = await check(current, this.#channel);
+					this.#checkError = null;
+				} catch (error) {
+					newer = null;
+					this.#checkError =
+						error instanceof RegistryError
+							? error.message
+							: "Registry check failed";
+				}
+				this.#lastChecked = this.#now();
+				// Only a strictly newer semver reaches the page or a command line.
+				if (newer !== null && newer.length <= 64 && isNewer(newer, current)) {
+					this.#available = newer;
+				}
+				// A failed check (or none newer) keeps what an earlier one found.
 			} finally {
 				this.#checking = null;
 			}
 		})();
 		return this.#checking;
+	}
+
+	/** Resolves once the check under way (if any) is done; starts none. */
+	settled(): Promise<void> {
+		return this.#checking ?? Promise.resolve();
 	}
 
 	/**
@@ -255,6 +296,13 @@ export class Updater {
 			command: v ? this.#command(v) : null,
 			state: this.#state,
 			failed: this.#failed,
+			commit: this.#o.build.commit,
+			channel: this.#channel,
+			install: this.#o.enabled ? (this.#o.install?.pm ?? null) : null,
+			byHand: this.#o.enabled && !this.#oneClick(),
+			lastChecked: this.#lastChecked?.toISOString() ?? null,
+			checkError: this.#checkError,
+			checksOff: this.#o.enabled ? null : (this.#o.off ?? "local-build"),
 		};
 	}
 
@@ -415,11 +463,12 @@ export async function startHelper(
 /**
  * The updater of this crb: on when it is a build npm served
  * (isFromNpm) and neither `$CRB_NO_UPDATE_CHECK` nor config.json's
- * `updates.check: false` turns it off.
+ * `updates.check: false` turns it off (`off`: "config", or "unavailable"
+ * for a server that can't restart).
  */
 export function updaterFor(opts: {
 	build: BuildInfo;
-	off: boolean;
+	off: ChecksOff | null;
 	channel?: Channel;
 	exit: (code: number) => void;
 	port: () => number;
@@ -427,11 +476,18 @@ export function updaterFor(opts: {
 }): Updater {
 	const env = opts.env ?? process.env;
 	const root = packageRoot();
-	const enabled =
-		!opts.off && env.CRB_NO_UPDATE_CHECK !== "1" && isFromNpm(root, opts.build);
+	const off: ChecksOff | null =
+		opts.off ??
+		(env.CRB_NO_UPDATE_CHECK === "1"
+			? "env"
+			: isFromNpm(root, opts.build)
+				? null
+				: "local-build");
+	const enabled = off === null;
 	return new Updater({
 		build: opts.build,
 		enabled,
+		...(off ? { off } : {}),
 		install: enabled ? detectInstall(root) : null,
 		...(opts.channel ? { channel: opts.channel } : {}),
 		exit: opts.exit,

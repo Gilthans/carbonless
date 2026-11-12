@@ -19,6 +19,7 @@ import { OpeningPage, parseOpeningSearch } from "./OpeningPage";
 import { parseOverviewSearch } from "./overview/threadLink";
 import { FilesPage, OverviewPage, VerdictPage } from "./pages";
 import { parseSearch, stringifySearch } from "./search";
+import { GlobalSettingsPage } from "./settings/GlobalSettingsPage";
 import { ShortcutsProvider } from "./shortcuts";
 import { ToastStack } from "./Toasts";
 import { UpdateToast } from "./UpdateToast";
@@ -60,8 +61,9 @@ function Root() {
 	return (
 		<ShortcutsProvider>
 			<ToastStack>
-				<Outlet />
-				<UpdateToast />
+				<UpdateToast>
+					<Outlet />
+				</UpdateToast>
 			</ToastStack>
 		</ShortcutsProvider>
 	);
@@ -107,6 +109,13 @@ const homeRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/",
 	component: HomePage,
+});
+
+/** crb's own settings (the gear's "Global settings"). */
+const settingsRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/settings",
+	component: GlobalSettingsPage,
 });
 
 /** A PR by its address: shows it loading while the server opens its review. */
@@ -172,6 +181,7 @@ const verdictRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
 	homeRoute,
+	settingsRoute,
 	openingRoute,
 	reviewRoute.addChildren([overviewRoute, filesRoute, verdictRoute]),
 ]);

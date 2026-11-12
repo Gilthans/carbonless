@@ -9,8 +9,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Install } from "./install";
+import { RegistryError } from "./registry";
 import type { HelperConfig } from "./updateHelper";
-import { UpdateRefusedError, Updater, type UpdaterOptions } from "./updater";
+import {
+	CHECK_EVERY_MS,
+	UpdateRefusedError,
+	Updater,
+	type UpdaterOptions,
+} from "./updater";
 
 const BUILD = { version: "0.2.0", commit: "a".repeat(40) };
 const NPM: Install = {
@@ -81,8 +87,9 @@ function updater(over: Partial<UpdaterOptions> = {}) {
 	return { u, exits, helpers, checks, channels };
 }
 
+/** Waits for the check under way (start()'s), without starting another. */
 const settle = async (u: Updater) => {
-	await u.checkNow();
+	await u.settled();
 };
 
 describe("Updater", () => {
@@ -112,6 +119,13 @@ describe("Updater", () => {
 			command: "npm install -g carbonless-review@0.3.0",
 			state: "idle",
 			failed: null,
+			commit: BUILD.commit,
+			channel: "latest",
+			install: "npm",
+			byHand: false,
+			lastChecked: expect.any(String),
+			checkError: null,
+			checksOff: null,
 		});
 		u.stop();
 	});
@@ -154,7 +168,7 @@ describe("Updater", () => {
 		back.u.stop();
 	});
 
-	it("checks again every few hours; a failed check keeps what was found", async () => {
+	it("checks again on the timer; a failed check keeps what was found", async () => {
 		vi.useFakeTimers();
 		try {
 			let answer: string | null = "0.3.0";
@@ -178,6 +192,138 @@ describe("Updater", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("checks every hour", () => {
+		expect(CHECK_EVERY_MS).toBe(60 * 60_000);
+	});
+
+	it("checkNow: records when it checked and why it failed; a success clears the failure", async () => {
+		let fail = true;
+		let t = Date.parse("2026-11-12T10:00:00Z");
+		const { u } = updater({
+			check: async () => {
+				if (fail) throw new RegistryError("Registry answered 503");
+				return "0.3.0";
+			},
+			now: () => new Date(t),
+		});
+		expect(u.info()).toMatchObject({ lastChecked: null, checkError: null });
+		await u.checkNow();
+		expect(u.info()).toMatchObject({
+			available: null,
+			lastChecked: "2026-11-12T10:00:00.000Z",
+			checkError: "Registry answered 503",
+		});
+		fail = false;
+		t += 60_000;
+		await u.checkNow();
+		expect(u.info()).toMatchObject({
+			available: "0.3.0",
+			lastChecked: "2026-11-12T10:01:00.000Z",
+			checkError: null,
+		});
+		// Not a RegistryError: a generic reason, never the error's own text.
+		fail = true;
+		const odd = updater({
+			check: async () => {
+				throw new Error("secret /home/me/path");
+			},
+		});
+		await odd.u.checkNow();
+		expect(odd.u.info().checkError).toBe("Registry check failed");
+	});
+
+	it("checkNow: concurrent calls share one check", async () => {
+		let release: (v: string | null) => void = () => {};
+		let asked = 0;
+		const { u } = updater({
+			check: () => {
+				asked++;
+				return new Promise((r) => {
+					release = r;
+				});
+			},
+		});
+		const a = u.checkNow();
+		const b = u.checkNow();
+		expect(asked).toBe(1);
+		release("0.3.0");
+		await Promise.all([a, b]);
+		expect(u.info().available).toBe("0.3.0");
+		// Once done, the next asks again.
+		const c = u.checkNow();
+		expect(asked).toBe(2);
+		release(null);
+		await c;
+	});
+
+	it("checkNow leaves the hourly timer alone", async () => {
+		vi.useFakeTimers();
+		try {
+			const { u, checks } = updater({ checkEveryMs: 1000 });
+			await u.start();
+			await settle(u);
+			expect(checks).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(600);
+			await u.checkNow();
+			expect(checks).toHaveLength(2);
+			// The timer's next tick is still at 1000, not 600 + 1000.
+			await vi.advanceTimersByTimeAsync(400);
+			expect(checks).toHaveLength(3);
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(checks).toHaveLength(4);
+			u.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("only a strictly newer semver is offered, whatever the check returns", async () => {
+		for (const bad of ["0.2.0", "0.1.0", "latest", "1.0.0 && rm -rf /"]) {
+			const { u } = updater({ check: async () => bad });
+			await u.checkNow();
+			expect(u.info().available).toBe(null);
+		}
+	});
+
+	it("info tells the channel, the install and the commit", async () => {
+		const { u } = updater();
+		await u.start();
+		await settle(u);
+		expect(u.info()).toMatchObject({
+			commit: BUILD.commit,
+			channel: "latest",
+			install: "npm",
+			byHand: false,
+			checksOff: null,
+		});
+		u.stop();
+		const rc = updater({
+			build: { version: "0.3.0-rc.1", commit: BUILD.commit },
+			install: null,
+		});
+		expect(rc.u.info()).toMatchObject({
+			channel: "rc",
+			install: null,
+			byHand: true,
+		});
+	});
+
+	it("off: says why, never checks, and info has no install", async () => {
+		for (const off of ["local-build", "env", "config"] as const) {
+			const { u, checks } = updater({ enabled: false, off });
+			await u.start();
+			await u.checkNow();
+			expect(checks).toEqual([]);
+			expect(u.info()).toMatchObject({
+				checksOff: off,
+				install: null,
+				byHand: false,
+				lastChecked: null,
+			});
+		}
+		expect(updater({ enabled: false }).u.info().checksOff).toBe("local-build");
 	});
 
 	it("unknown install: the command, no one-click", async () => {
