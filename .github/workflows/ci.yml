@@ -109,8 +109,17 @@ jobs:
         # (pnpm-lock.yaml). A bump without it fails the check step below.
         playwright: ["1.64.1"]
     steps:
+      # The image's tools too: without git (2.18+) actions/checkout falls
+      # back to a tarball with no .git, and the build's build-info fails.
       - name: Machine
-        run: echo "nproc $(nproc); $(grep -m1 'model name' /proc/cpuinfo)"
+        run: |
+          echo "nproc $(nproc); $(grep -m1 'model name' /proc/cpuinfo)"
+          if ! command -v git >/dev/null; then
+            echo "::error::no git in the Playwright image: actions/checkout needs git 2.18+"
+            exit 1
+          fi
+          git --version
+          flock --version | head -1 || echo "no flock (scripts/queue.mjs runs unqueued)"
       - uses: actions/checkout@v4
       # The checkout is the runner user's, git runs as root here.
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
