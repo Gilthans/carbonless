@@ -73,7 +73,9 @@ the test fixture (below).
   removed and i-th added line (rows apart); in side by side it is the pair
   row's two halves (the side-by-side layout already pairs GitHub's way, so
   an equal block's pair rows are exactly the marked pairs; an unequal
-  block's pair rows stay plain).
+  block's pair rows stay plain). (Step 1; step 2 pairs an unequal block's
+  lines by similarity, marks those pairs and moves their rows together:
+  `docs/superpowers/specs/2026-11-08-inline-diff-step2-design.md`.)
 - **What:** the changed tokens, computed by two token diffs of the two
   lines (diff-match-patch over one character per token, no time limit, so
   exact):
@@ -195,7 +197,9 @@ renders and memoized with the hunk's rows (the `HunkRows` key already holds
 the view settings). The 1,024-character cut bounds the cost per pair.
 Marks are computed synchronously, as part of the row's render: a pair is
 never shown plain while its marks are pending, since a plain pair already
-means "GitHub would mark nothing here" (the owner's loading rule,
+means "GitHub would mark nothing here" (since step 2, a plain line in an
+unequal cluster means "no similar partner, or over the size guards") (the
+owner's loading rule,
 2026-11-01: "An empty result should always be easily distinguishable for a
 still loading result"). If the budget below ever forces them off the main
 thread, a pending pair shows the shared `Spinner` (`src/web/Spinner.tsx`,
@@ -207,6 +211,7 @@ rows at once) takes under 100 ms of CPU time (`process.threadCpuUsage`, a
 unit test, so it holds on a loaded machine). The first-open and switch times
 of a 2,000-line equal-block fixture are measured before and after and put
 in the report, not gated (wall clock is too noisy for a 10% gate).
+(Note 2026-11-12: CAR-67 replaced the absolute budgets with CPU ratios against a reference measured in the same test, `test/cpu.ts`.)
 
 ## Non-goals (step 1)
 
@@ -234,7 +239,8 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 - **Unit, the GitHub fixture:** the gallery PR's 79 base/case file pairs
   (our own playground data, not a real PR's) and GitHub's observed marks
   for them (166 pairs; `[start, end)` in string indices, unequal blocks
-  listed with no marks) committed under `test/fixtures/inline-diff/`, with
+  listed with no marks; since step 2, the unequal cases 42 to 45 and 48
+  to 50 carry step 2 known-difference entries) committed under `test/fixtures/inline-diff/`, with
   the script that rebuilds the files. The test runs the files through
   carbonless's own diff (as the server does) and the marks code, then
   compares: carbonless's blocks are the truth for shape, and every
@@ -253,7 +259,7 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   all before bridging; after it, the marks add exactly each run of
   unmarked spaces and tabs with a mark right before and after it, so an
   unchanged non-whitespace token is never inside a mark;
-  an equal pair has no marks; a pair over the cut and every unequal block
+  an equal pair has no marks; a pair over the cut and (before step 2) every unequal block
   have none; a `\r` only one line ends in is marked.
 - **Unit, render:** a marked token renders with the word tint over its
   syntax color; invisibles inside a mark are marked; a span mark wins;
@@ -261,7 +267,9 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 - **e2e** (desktop and phone, unified and side by side): open the gallery
   fixture's equivalent (a throwaway repo with a handful of PR #14's cases),
   check the marked text of a renamed word, a changed operator, a re-indent,
-  an unequal block (no marks), a 1,024-character pair (no marks); Ignore
+  an unequal block (no marks; since step 2 the e2e expects marks on case
+  44, whose removed line pairs with the third added one), a 1,024-character
+  pair (no marks); Ignore
   whitespace on hides the whitespace-only pair's marks; a screenshot per
   view for the design shots.
 - **Contrast:** `theme.test.ts` on the new tokens with every code and
@@ -271,6 +279,7 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 
 ## Decided by the owner
 
+- **Step 2 grows the list** (2026-11-08): unequal clusters pair by similarity and get marks where GitHub leaves them plain: "This is the point where we start diverging from github" (docs/superpowers/specs/2026-11-08-inline-diff-step2-design.md). 12 entries (`line <i>` units of cases 42 to 45, 48 to 50) were added.
 - **Tighter marks, not GitHub's folding** (2026-11-02): "You can go ahead
   and use the tighter version. I'm not 100% it's strictly better, but I'm
   not sure it's an interesting edge case anyway, so let's do what's
@@ -308,11 +317,12 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 
 - Marks computed in the browser, per pair, lazily.
 - Unequal blocks stay plain in step 1, even though the side-by-side rows
-  pair them; step 2 is where they change.
+  pair them; step 2 is where they change (`docs/superpowers/specs/2026-11-08-inline-diff-step2-design.md`).
 - Nothing announced to screen readers per word.
 - `~` rows end a block under Ignore whitespace.
 - The speed budget is a CPU-time unit test (2,000 pairs under 100 ms);
   page times are measured and reported, not gated.
+  (Note 2026-11-12: CAR-67 replaced the absolute budgets with CPU ratios against a reference measured in the same test, `test/cpu.ts`.)
 - The gallery's case files and GitHub's observed marks are committed as
   test fixtures; carbonless's own diff decides block shape, and any
   difference from GitHub is a listed known difference.

@@ -134,8 +134,8 @@ import {
 	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
-import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
-import { hunkWordMarks } from "./wordBlocks";
+import { type DiffRow, hunkView, whitespaceOnly } from "./whitespace";
+import { pairWordMarks } from "./wordBlocks";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
 export interface DiffThreads {
@@ -935,7 +935,7 @@ interface RowProps {
 	composers?: RowComposers;
 	find?: DiffFind;
 	agent?: AgentRows;
-	/** The hunk's paired lines' word marks (hunkWordMarks), by line. */
+	/** The hunk's paired lines' word marks (pairWordMarks of hunkView's pairs), by line. */
 	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
 	/** The marked lines whose change doesn't show with hidden characters off (hiddenLines). */
 	hidden?: ReadonlySet<DiffLine>;
@@ -3372,22 +3372,25 @@ function HunkRows(props: {
 		const order = new Map(hunk.lines.map((l, i) => [l, i] as const));
 		return (line: DiffLine) => order.get(line);
 	}, [hunk]);
-	// The hunk's runs and their rows, once per hunk (the matching is O(n·m)
-	// over the whole hunk): not again on a toggle, a landing, a thread
-	// opening or a context load. Side by side, the rows laid out as pairs
-	// (sideBySide.ts): the whitespace rows are its input, so the two settings
-	// compose. The word marks of the hunk's pairs with them, over all its
-	// runs' rows (a block may span two clusters), computed here, with the
-	// rows: a pair is never shown plain while its marks are pending.
-	const { hunkRuns, words } = useMemo(() => {
-		const runs = viewRuns(hunk.lines, ignoreWhitespace).map((run) => ({
+	// The hunk's runs and their rows (hunkView, cached per hunk: the
+	// matching is O(n·m) over the whole hunk), not again on a toggle, a
+	// landing, a thread opening or a context load. Rows never leave their
+	// run: unified, a run's rows are already in hunkView's order (a
+	// similarity pair reads together); side by side, they're laid out as
+	// rows with a pair on one (sideBySide.ts, by the hunk's partners), so the
+	// whitespace and pairing compose. The word marks of the hunk's pairs are
+	// computed here with the rows, so a pair is never shown plain while its
+	// marks are pending. A pair whose lines sit in two runs gets its
+	// marks only: neither row moves.
+	const { hunkRuns, pairs, words } = useMemo(() => {
+		const shown = hunkView(hunk.lines, ignoreWhitespace);
+		const runs = shown.runs.map((run) => ({
 			...run,
-			side: view === "side-by-side" ? layoutRows(run.rows) : null,
+			side:
+				view === "side-by-side" ? layoutRows(run.rows, shown.partners) : null,
 		}));
-		return {
-			hunkRuns: runs,
-			words: hunkWordMarks(runs.flatMap((run) => run.rows)),
-		};
+		const pairs = shown.pairs;
+		return { hunkRuns: runs, pairs, words: pairWordMarks(pairs) };
 	}, [hunk, ignoreWhitespace, view]);
 	// The lines whose change doesn't show with hidden characters off (none
 	// to look for while they show).
@@ -3400,8 +3403,9 @@ function HunkRows(props: {
 						hunkRuns.flatMap((run) => run.rows),
 						words,
 						props.tabWidth ?? DEFAULT_TAB_WIDTH,
+						pairs,
 					),
-		[showHidden, hunkRuns, words, props.tabWidth],
+		[showHidden, hunkRuns, words, pairs, props.tabWidth],
 	);
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).

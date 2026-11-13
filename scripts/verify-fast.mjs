@@ -157,6 +157,11 @@ const E2E_MAP = [
 		/^src\/web\/files\/(wordDiff|wordBlocks|whitespace)\.ts$|^src\/web\/code\/Invisibles\.tsx$|^src\/web\/files\/DiffBody\.tsx$/,
 		["inlineDiff"],
 	],
+	// Inline diff step 2: similarity pairs read together (CAR-30).
+	[
+		/^src\/web\/files\/(linePairing|pairOrder|wordBlocks|whitespace|sideBySide|hiddenLines|DiffBody)\.tsx?$/,
+		["linePairing"],
+	],
 	[
 		/^src\/server\/home\/|^src\/shared\/home(Sections)?\.ts$/,
 		["home-api", "home"],

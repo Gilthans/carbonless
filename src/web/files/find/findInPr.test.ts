@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { bestCpuRatio, repeat } from "../../../../test/cpu";
+import { plainWordSteps, punctuation } from "../../../../test/word-steps";
 import { buildDisplayHunks } from "../../../server/diff/hunks";
 import type {
 	Cluster,
@@ -8,7 +9,8 @@ import type {
 	FileHunks,
 	FileView,
 } from "../../../shared/types";
-import { viewRuns } from "../whitespace";
+import { hunkView } from "../whitespace";
+import { tokenize } from "../wordDiff";
 import {
 	type Caret,
 	caretAfterTyping,
@@ -107,7 +109,16 @@ describe("findInPr", () => {
 				}),
 			],
 		});
-		const hits = findInPr("save", [f], none, noContext, false);
+		const hits = findInPr(
+			"save",
+			[f],
+			none,
+			noContext,
+			false,
+			false,
+			true,
+			true,
+		);
 		expect(hits.map(at)).toEqual([
 			{ side: "path", line: 0, col: 4 },
 			{ side: "oldPath", line: 0, col: 8 },
@@ -124,7 +135,16 @@ describe("findInPr", () => {
 			file(0, { path: "save.png", binary: true, clusters: c }),
 			file(1, { path: "save-mod", submodule: true, clusters: c }),
 		];
-		const hits = findInPr("save", files, none, noContext, false);
+		const hits = findInPr(
+			"save",
+			files,
+			none,
+			noContext,
+			false,
+			false,
+			true,
+			true,
+		);
 		expect(hits.map((h) => [h.index, h.side])).toEqual([
 			[0, "path"],
 			[1, "path"],
@@ -177,6 +197,9 @@ describe("findInPr", () => {
 			() => hunks,
 			() => context,
 			false,
+			false,
+			true,
+			true,
 		);
 		expect(hits.filter((h) => h.line === 2)).toHaveLength(1);
 		expect(hits.map((h) => h.line)).toEqual([2, 5, 6, 12]);
@@ -184,7 +207,16 @@ describe("findInPr", () => {
 
 	it("orders files as given", () => {
 		const mk = (i: number) => file(i, { path: "save", clusters: [] });
-		const hits = findInPr("save", [mk(1), mk(0)], none, noContext, false);
+		const hits = findInPr(
+			"save",
+			[mk(1), mk(0)],
+			none,
+			noContext,
+			false,
+			false,
+			true,
+			true,
+		);
 		expect(hits.map((h) => h.index)).toEqual([1, 0]);
 	});
 
@@ -193,7 +225,16 @@ describe("findInPr", () => {
 			path: "a.txt",
 			clusters: [cluster({ added: ["save"], newStart: 3, newCount: 1 })],
 		});
-		const before = findInPr("save", [f], none, noContext, false);
+		const before = findInPr(
+			"save",
+			[f],
+			none,
+			noContext,
+			false,
+			false,
+			true,
+			true,
+		);
 		const pos: HitPos = { index: 0, side: "RIGHT", line: 3, col: 0 };
 		expect(hitIndex(before, pos)).toBe(0);
 		const hunks: FileHunks = {
@@ -212,7 +253,16 @@ describe("findInPr", () => {
 				},
 			],
 		};
-		const after = findInPr("save", [f], () => hunks, noContext, false);
+		const after = findInPr(
+			"save",
+			[f],
+			() => hunks,
+			noContext,
+			false,
+			false,
+			true,
+			true,
+		);
 		expect(hitIndex(after, pos)).toBe(1);
 		expect(after[1]?.len).toBe(before[0]?.len);
 		expect(hitIndex(after, { ...pos, line: 99 })).toBe(-1);
@@ -231,7 +281,16 @@ describe("findInPr's cost", () => {
 		});
 		vi.stubGlobal("RegExp", built);
 		try {
-			const hits = findInPr("save", [f], none, noContext, false);
+			const hits = findInPr(
+				"save",
+				[f],
+				none,
+				noContext,
+				false,
+				false,
+				true,
+				true,
+			);
 			expect(hits).toHaveLength(100);
 		} finally {
 			vi.unstubAllGlobals();
@@ -431,7 +490,16 @@ describe("integrity", () => {
 			const hunksOf = (f: FileView) => hunksByIndex.get(f.index);
 			const contextOf = (f: FileView) => contextByIndex.get(f.index) ?? [];
 
-			const hits = findInPr(term, order, hunksOf, contextOf, matchCase);
+			const hits = findInPr(
+				term,
+				order,
+				hunksOf,
+				contextOf,
+				matchCase,
+				false,
+				true,
+				true,
+			);
 
 			// (a) the counts add up to the hits
 			let total = 0;
@@ -545,9 +613,18 @@ describe("integrity", () => {
 			// (f) Pairing (unified + Ignore whitespace) finds the plain
 			// search's hits. Unified shows exactly those not on the old line of
 			// a two-sided `~` row, in the order of the rows as rendered: the
-			// oracle is viewRuns, what HunkRows renders, with each hunk's rows
+			// oracle is hunkView's runs, what HunkRows renders, with each hunk's rows
 			// in the hunk's place.
-			const paired = findInPr(term, order, hunksOf, contextOf, matchCase, true);
+			const paired = findInPr(
+				term,
+				order,
+				hunksOf,
+				contextOf,
+				matchCase,
+				true,
+				true,
+				true,
+			);
 			const posKey = (h: {
 				index: number;
 				side: string;
@@ -579,7 +656,7 @@ describe("integrity", () => {
 							: lineKey(f.index, "RIGHT", first.newNo as number),
 					) as number;
 					let row = 0;
-					for (const run of viewRuns(h.lines, true))
+					for (const run of hunkView(h.lines, true).runs)
 						for (const r of run.rows) {
 							if (r.kind === "ws" && r.del && r.add)
 								offScreen.add(lineKey(f.index, "LEFT", r.del.oldNo as number));
@@ -668,7 +745,7 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 		ws: boolean,
 	) => {
 		const { f, hunks } = pairFile(oldText, newText);
-		return findInPr(term, [f], () => hunks, noContext, false, ws);
+		return findInPr(term, [f], () => hunks, noContext, false, ws, true, true);
 	};
 	const where = (h: Hit) => `${h.side}:${h.line}:${h.col}`;
 
@@ -741,7 +818,16 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 			newLineCount: 4,
 			hunks: [{ oldStart: 1, oldCount: 5, newStart: 1, newCount: 4, lines }],
 		};
-		const unified = findInPr("save", [f], () => hunks, noContext, false, true);
+		const unified = findInPr(
+			"save",
+			[f],
+			() => hunks,
+			noContext,
+			false,
+			true,
+			true,
+			true,
+		);
 		expect(shownHits(unified, true).map(where)).toEqual([
 			"LEFT:2:0",
 			"RIGHT:2:0",
@@ -757,7 +843,16 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 			"RIGHT:3:0",
 		]);
 		// Side by side, or Ignore whitespace off: the hunk's own order.
-		const plain = findInPr("save", [f], () => hunks, noContext, false);
+		const plain = findInPr(
+			"save",
+			[f],
+			() => hunks,
+			noContext,
+			false,
+			false,
+			true,
+			true,
+		);
 		expect(plain.map(where)).toEqual([
 			"LEFT:2:0",
 			"LEFT:3:2",
@@ -807,7 +902,7 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 			[c, [hit("RIGHT", 2)]],
 		]);
 		const out: Hit[] = [];
-		// Rows that lost `a` (a regression in viewRuns would): still emitted.
+		// Rows that lost `a` (a regression in hunkView would): still emitted.
 		emitHunk(out, [a, b, c], byLine, {
 			order: [b, c],
 			twins: new Map(),
@@ -818,7 +913,7 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 
 	it("without hunks yet (clusters only), nothing is paired", () => {
 		const { f } = pairFile("save", "  save");
-		const all = findInPr("save", [f], none, noContext, false, true);
+		const all = findInPr("save", [f], none, noContext, false, true, true, true);
 		expect(shownHits(all, true)).toHaveLength(3);
 	});
 
@@ -955,10 +1050,28 @@ describe("whitespace pairing's cost (a re-indented PR)", () => {
 		const whole = setOf(reindent(30, 0, false));
 		// A term on paths only: as cheap as not pairing at all.
 		const plain = cpu(() =>
-			findInPr("reindent", whole.files, whole.hunksOf, noContext, false),
+			findInPr(
+				"reindent",
+				whole.files,
+				whole.hunksOf,
+				noContext,
+				false,
+				false,
+				true,
+				true,
+			),
 		);
 		const lazy = cpu(() =>
-			findInPr("reindent", whole.files, whole.hunksOf, noContext, false, true),
+			findInPr(
+				"reindent",
+				whole.files,
+				whole.hunksOf,
+				noContext,
+				false,
+				true,
+				true,
+				true,
+			),
 		);
 		// A term on every line: every hunk paired (equal keys: the fast path).
 		let hits: Hit[] = [];
@@ -970,19 +1083,39 @@ describe("whitespace pairing's cost (a re-indented PR)", () => {
 				noContext,
 				false,
 				true,
+				true,
+				true,
 			);
 		});
 		const again = cpu(() =>
-			findInPr("value", whole.files, whole.hunksOf, noContext, false, true),
+			findInPr(
+				"value",
+				whole.files,
+				whole.hunksOf,
+				noContext,
+				false,
+				true,
+				true,
+				true,
+			),
 		);
 		// A re-indent with one line added (the DP), and the diff's rows
-		// (HunkRows' viewRuns) after Find: its matching reused, not redone.
+		// (HunkRows' hunkView) after Find: its matching reused, not redone.
 		const partial = setOf(reindent(10, 100, true));
 		const dp = cpu(() =>
-			findInPr("value", partial.files, partial.hunksOf, noContext, false, true),
+			findInPr(
+				"value",
+				partial.files,
+				partial.hunksOf,
+				noContext,
+				false,
+				true,
+				true,
+				true,
+			),
 		);
 		const rows = cpu(() => {
-			for (const lines of partial.lines) viewRuns(lines, true);
+			for (const lines of partial.lines) hunkView(lines, true);
 		});
 		console.info(
 			`whitespace pairing CPU ms: plain ${plain.toFixed(1)}, lazy (no del hit) ${lazy.toFixed(1)}, first paired (fast path) ${first.toFixed(1)}, again ${again.toFixed(1)}, DP (10 hunks) ${dp.toFixed(1)}, HunkRows after the DP ${rows.toFixed(1)}`,
@@ -996,4 +1129,129 @@ describe("whitespace pairing's cost (a re-indented PR)", () => {
 		expect(again).toBeLessThan(plain * 10 + 50);
 		expect(rows).toBeLessThan(dp / 5);
 	});
+});
+
+describe("similarity pairing's cost in Find (Ignore whitespace off)", () => {
+	// A hunk of 40 of the costliest unequal clusters the per-cluster guards
+	// let through (wordBlocks.test.ts: 50 removed and 49 added lines of 192
+	// punctuation tokens, 2,822,400 word steps each), each cluster's first
+	// removed line a hit: unified Find puts the hunk's hits in the order of
+	// its rows (hunkView), so the first search pairs the hunk. The hunk's
+	// budget (HUNK_ALIGN_WORD_OPS) lets four clusters align, not 40.
+	const LOADED = 60_000;
+	const WORST = 50 * 6 * 49 * 192;
+	const lines: DiffLine[] = [];
+	const first4: string[] = [];
+	let oldNo = 1;
+	let newNo = 1;
+	for (let k = 0; k < 40; k++) {
+		if (k > 0) lines.push(ctx(oldNo++, newNo++, `between ${k}`));
+		const old = punctuation(50, 192, k + 7);
+		old[0] = `hit${(old[0] as string).slice(1)}`;
+		const added = old.slice(1).map((t) => `#${t.slice(1)}`);
+		for (const text of old)
+			lines.push({ kind: "del", oldNo: oldNo++, text, clusterKey: `k${k}` });
+		for (const text of added)
+			lines.push({ kind: "add", newNo: newNo++, text, clusterKey: `k${k}` });
+		if (k < 4) first4.push(...old, ...added);
+	}
+	const f = file(0, { path: "worst.txt" });
+	// A fresh array of the hunk's lines per search: hunkView and Find keep
+	// their work per array, and each search here is a first one.
+	const fresh = (): FileHunks => ({
+		newLineCount: newNo - 1,
+		hunks: [
+			{
+				oldStart: 1,
+				oldCount: oldNo - 1,
+				newStart: 1,
+				newCount: newNo - 1,
+				lines: lines.slice(),
+			},
+		],
+	});
+	const find = (pairs: boolean) =>
+		findInPr("hit", [f], fresh, noContext, false, pairs, true, false);
+
+	it(
+		"a first search over 40 worst-case clusters pairs about 4 of them, against plain word steps",
+		() => {
+			expect(shownHits(find(true), true)).toHaveLength(40);
+			// The yardstick shares no code with the LCS: the same search
+			// without pairing, plus the four clusters' lines tokenized and
+			// their word steps in a plain loop (wordBlocks.test.ts: hunkPairs
+			// alone reads 2.5x against the last two). Measured 2.5x, limit 12;
+			// without the budget all 40 align and it reads about 24x.
+			const { best, ref, ratio } = bestCpuRatio(
+				() => find(true),
+				() => {
+					find(false);
+					for (const l of first4) tokenize(l);
+					plainWordSteps(4 * WORST);
+				},
+			);
+			console.info(
+				`Find over 40 worst clusters (Ignore whitespace off): ${best} µs, ${ratio.toFixed(2)}x unpaired search, tokenizing 4 clusters and their word steps (${ref} µs)`,
+			);
+			expect(ratio).toBeLessThan(12);
+		},
+		LOADED,
+	);
+});
+
+describe("findInPr over a moved pair (step 2, unified B)", () => {
+	it.each([true, false])(
+		"steps through case 3's hits in the order shown (Ignore whitespace %s)",
+		(ws) => {
+			const del = (n: number, text: string): DiffLine => ({
+				kind: "del",
+				oldNo: n,
+				text,
+				clusterKey: "k",
+			});
+			const add = (n: number, text: string): DiffLine => ({
+				kind: "add",
+				newNo: n,
+				text,
+				clusterKey: "k",
+			});
+			const lines = [
+				ctx(20, 20, "x"),
+				del(21, "retry(getUser, 3)"),
+				del(22, "log(msg)"),
+				del(23, "retry(getOrders, 3)"),
+				add(21, "retry(getUser, 5)"),
+				add(22, "retry(getOrders, 5)"),
+				ctx(24, 23, "y"),
+			];
+			const f = file(0, { path: "a.txt" });
+			const hunks: FileHunks = {
+				newLineCount: 23,
+				hunks: [
+					{ oldStart: 20, oldCount: 5, newStart: 20, newCount: 4, lines },
+				],
+			};
+			const hits = findInPr(
+				"retry",
+				[f],
+				() => hunks,
+				noContext,
+				false,
+				true,
+				true,
+				ws,
+			);
+			const shown = shownHits(hits, true).map(
+				(h) => `${h.side === "LEFT" ? "old" : "new"} ${h.line}`,
+			);
+			expect(shown).toEqual(["old 21", "new 21", "old 23", "new 22"]);
+			// The oracle: the rows HunkRows renders.
+			const oracle = hunkView(lines, ws)
+				.runs.flatMap((r) => r.rows)
+				.flatMap((r) => (r.kind === "line" ? [r.line] : []))
+				.filter((l) => l.text.startsWith("retry"))
+				.map((l) => (l.kind === "del" ? `old ${l.oldNo}` : `new ${l.newNo}`));
+			expect(oracle).toEqual(shown);
+		},
+	);
 });

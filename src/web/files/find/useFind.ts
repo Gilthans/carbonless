@@ -202,12 +202,14 @@ export function useFind(opts: {
 				(f) => hunksBy.get(f.index),
 				(f) => contextBy.get(f.index) ?? NO_LINES,
 				matchCase,
-				// Only unified shows a pair as one row: side by side, or with
-				// Ignore whitespace off, nothing is paired (no O(n·m) matching).
-				ignoreWs && unified,
+				// Only unified moves a pair together (and, with Ignore whitespace
+				// on, shows a whitespace-only pair as one row): the hits follow
+				// the rows shown. Side by side keeps the hunk's own order.
+				unified,
 				// The since view's lines are its hunks': the clusters (the
 				// full diff's) never stand in for them.
 				from === undefined,
+				ignoreWs,
 			);
 			return { all, hits: shownHits(all, unified) };
 		};

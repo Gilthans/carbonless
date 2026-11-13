@@ -15,19 +15,22 @@ import {
 import { buildSnapshot, loadFileHunks } from "../../server/diff/snapshot";
 import type { DiffLine, DisplayHunk } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
-import { type DiffRow, viewRuns } from "./whitespace";
-import { hunkWordMarks } from "./wordBlocks";
+import { hunkView } from "./whitespace";
+import { pairWordMarks } from "./wordBlocks";
 
 /**
  * Carbonless's marks against GitHub's, on the gallery's inline-diff case
  * (Gilthans/carbonless-gallery#14, our playground; rebuilt by
  * scripts/inline-diff-fixtures.mjs). The case files go through carbonless's
- * own diff, as the server serves them, then the view's rows and
- * hunkWordMarks. Every difference from GitHub's observed marks is listed in
- * known-differences.json with its reason. The list may only shrink, except by
+ * own diff, as the server serves them, then the view's rows and their
+ * marks (pairWordMarks of hunkView's pairs). Every difference from
+ * GitHub's observed marks is listed in known-differences.json with its
+ * reason. The list may only shrink, except by
  * an owner decision: dated and quoted in the entry's reason, and recorded in
  * the spec's "Decided by the owner" (2026-11-04 grew it from 5 to 23; the
- * same day's bridging of spaces between two changes shrank it to 8).
+ * same day's bridging of spaces between two changes shrank it to 8; step 2's
+ * similarity pairing of unequal clusters, 2026-11-08, grew it by 12: lines of
+ * unequal blocks GitHub leaves plain now get marks).
  */
 
 // Real git processes: see GIT_TEST_TIMEOUTS.
@@ -141,17 +144,12 @@ function githubLines(file: GitHubFile, ignoreWhitespace: boolean): Line[] {
 	return lines;
 }
 
-/** A hunk's rows as the view lays them out (HunkRows), every run's rows. */
-function rowsOf(hunk: DisplayHunk, ignoreWhitespace: boolean): DiffRow[] {
-	return viewRuns(hunk.lines, ignoreWhitespace).flatMap((run) => run.rows);
-}
-
 function ourLines(
 	hunks: DisplayHunk[],
 	ignoreWhitespace: boolean,
 ): { line: DiffLine; marks: readonly Mark[] }[] {
 	return hunks.flatMap((hunk) => {
-		const marks = hunkWordMarks(rowsOf(hunk, ignoreWhitespace));
+		const marks = pairWordMarks(hunkView(hunk.lines, ignoreWhitespace).pairs);
 		return hunk.lines
 			.filter((l) => l.kind !== "context")
 			.map((line) => ({ line, marks: marks.get(line) ?? [] }));

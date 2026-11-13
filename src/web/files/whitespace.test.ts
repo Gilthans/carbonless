@@ -17,15 +17,14 @@ import { buildDisplayHunks } from "../../server/diff/hunks";
 import type { DiffLine, DisplayHunk } from "../../shared/types";
 import {
 	type DiffRow,
+	hunkView,
 	linesWhitespaceEqual,
 	matchHunk,
 	matchSides,
 	PAIR_CAP,
-	pairHunk,
 	pairRun,
 	runs,
 	stripWhitespace,
-	viewRuns,
 	whitespaceEqual,
 	whitespaceOnly,
 } from "./whitespace";
@@ -203,7 +202,10 @@ describe("stripWhitespace", () => {
 	});
 });
 
-describe("pairHunk", () => {
+/** A hunk's rows in git's order with Ignore whitespace on (hunkView). */
+const gitRows = (lines: DiffLine[]): DiffRow[] => hunkView(lines, true).gitRows;
+
+describe("hunkView's rows in git's order (Ignore whitespace on)", () => {
 	it("pairs a re-indented block line by line", () => {
 		const lines = [
 			del(1, "a"),
@@ -213,7 +215,7 @@ describe("pairHunk", () => {
 			add(2, "  b"),
 			add(3, "  c"),
 		];
-		const rows = pairHunk(lines);
+		const rows = gitRows(lines);
 		expect(trace(rows)).toEqual(["~1/1", "~2/2", "~3/3"]);
 		expect(whitespaceOnly(rows)).toBe(true);
 		expectCoverage(lines, rows);
@@ -221,13 +223,13 @@ describe("pairHunk", () => {
 
 	it("pairs a CRLF to LF change", () => {
 		const lines = [del(5, "x\r"), del(6, "y\r"), add(5, "x"), add(6, "y")];
-		const rows = pairHunk(lines);
+		const rows = gitRows(lines);
 		expect(trace(rows)).toEqual(["~5/5", "~6/6"]);
 		expect(whitespaceOnly(rows)).toBe(true);
 	});
 
 	it("pairs trailing-space removal", () => {
-		const rows = pairHunk([del(1, "x   "), add(1, "x")]);
+		const rows = gitRows([del(1, "x   "), add(1, "x")]);
 		expect(trace(rows)).toEqual(["~1/1"]);
 	});
 
@@ -242,7 +244,7 @@ describe("pairHunk", () => {
 			add(5, "  c"),
 			add(6, "  d"),
 		];
-		const rows = pairHunk(lines);
+		const rows = gitRows(lines);
 		expect(trace(rows)).toEqual(["~3/3", "-4", "+4", "~5/5", "~6/6"]);
 		expect(whitespaceOnly(rows)).toBe(false);
 		expectCoverage(lines, rows);
@@ -259,7 +261,7 @@ describe("pairHunk", () => {
 			add(4, " b"),
 			add(5, "tail"),
 		];
-		const rows = pairHunk(lines);
+		const rows = gitRows(lines);
 		expect(trace(rows)).toEqual(["~1/1", "-2", "+2", "+3", "~3/4", "+5"]);
 		expectCoverage(lines, rows);
 	});
@@ -272,39 +274,39 @@ describe("pairHunk", () => {
 			add(1, "  }"),
 			add(2, "  }"),
 		];
-		const rows = pairHunk(lines);
+		const rows = gitRows(lines);
 		expect(trace(rows)).toEqual(["~1/1", "~2/2", "-3"]);
 		expectCoverage(lines, rows);
 	});
 
 	it("leaves one-sided and empty clusters as plain rows", () => {
-		expect(pairHunk([])).toEqual([]);
+		expect(gitRows([])).toEqual([]);
 		const adds = [add(1, "a"), add(2, "b")];
-		expect(trace(pairHunk(adds))).toEqual(["+1", "+2"]);
-		expect(whitespaceOnly(pairHunk(adds))).toBe(false);
+		expect(trace(gitRows(adds))).toEqual(["+1", "+2"]);
+		expect(whitespaceOnly(gitRows(adds))).toBe(false);
 		const dels = [del(1, "a")];
-		expect(trace(pairHunk(dels))).toEqual(["-1"]);
-		expectCoverage(dels, pairHunk(dels));
+		expect(trace(gitRows(dels))).toEqual(["-1"]);
+		expectCoverage(dels, gitRows(dels));
 	});
 
 	it("never pairs lines that differ in more than whitespace", () => {
 		const lines = [del(1, "a\u00A0b"), add(1, "a b")];
-		expect(trace(pairHunk(lines))).toEqual(["-1", "+1"]);
+		expect(trace(gitRows(lines))).toEqual(["-1", "+1"]);
 	});
 
 	it("treats a final newline lost or gained as a real change, like git -w", () => {
 		// Old file ends without a newline, new one with it: a change.
 		expect(
-			trace(pairHunk([del(1, "a", { noNewline: true }), add(1, "a")])),
+			trace(gitRows([del(1, "a", { noNewline: true }), add(1, "a")])),
 		).toEqual(["-1", "+1"]);
 		// And the other way round.
 		expect(
-			trace(pairHunk([del(1, "a"), add(1, " a", { noNewline: true })])),
+			trace(gitRows([del(1, "a"), add(1, " a", { noNewline: true })])),
 		).toEqual(["-1", "+1"]);
 		// Both without one: whitespace only.
 		expect(
 			trace(
-				pairHunk([
+				gitRows([
 					del(1, "a", { noNewline: true }),
 					add(1, "  a", { noNewline: true }),
 				]),
@@ -325,11 +327,11 @@ describe("pairHunk", () => {
 			),
 		];
 		const over = big(PAIR_CAP + 1);
-		const plain = pairHunk(over);
+		const plain = gitRows(over);
 		expect(plain.every((r) => r.kind === "line")).toBe(true);
 		expectCoverage(over, plain);
 		const at = big(PAIR_CAP);
-		const paired = pairHunk(at);
+		const paired = gitRows(at);
 		expect(paired.every((r) => r.kind === "ws")).toBe(true);
 		expect(paired).toHaveLength(PAIR_CAP);
 	});
@@ -350,7 +352,7 @@ describe("pairHunk", () => {
 			ctx(half + 1, half + 1, "between"),
 			...run("B", half + 2),
 		];
-		const rows = pairHunk(lines);
+		const rows = gitRows(lines);
 		expectCoverage(lines, rows);
 		expect(rows.filter((r) => r.kind === "ws")).toHaveLength(2 * half);
 		// A single run over the cap on its own still can't be matched.
@@ -363,7 +365,7 @@ describe("pairHunk", () => {
 			),
 		];
 		const wide: DiffLine[] = [...huge, ctx(PAIR_CAP + 2, PAIR_CAP + 2, "x")];
-		expect(pairHunk(wide).every((r) => r.kind === "line")).toBe(true);
+		expect(gitRows(wide).every((r) => r.kind === "line")).toBe(true);
 	});
 
 	it("leaves a run of an unexpected shape alone", () => {
@@ -386,7 +388,7 @@ describe("pairHunk", () => {
 			del(11, "}", { clusterKey: "B" }),
 			ctx(12, 12, "return;"),
 		];
-		const rows = pairHunk(lines);
+		const rows = gitRows(lines);
 		expect(trace(rows)).toEqual([
 			"~8/8",
 			"~/9",
@@ -414,8 +416,8 @@ describe("pairHunk", () => {
 			ctx(1, 2, "A"),
 			del(2, " B", { clusterKey: "B" }),
 		];
-		expect(trace(pairHunk(lines))).toEqual(["+1", " 1/2", "-2"]);
-		expectCoverage(lines, pairHunk(lines));
+		expect(trace(gitRows(lines))).toEqual(["+1", " 1/2", "-2"]);
+		expectCoverage(lines, gitRows(lines));
 	});
 
 	it("keeps a re-indented block moved across an unchanged line a change", () => {
@@ -428,8 +430,8 @@ describe("pairHunk", () => {
 			del(2, "  a();", { clusterKey: "B" }),
 			del(3, "  b();", { clusterKey: "B" }),
 		];
-		expect(trace(pairHunk(t1))).toEqual(["+1", "+2", " 1/3", "-2", "-3"]);
-		expectCoverage(t1, pairHunk(t1));
+		expect(trace(gitRows(t1))).toEqual(["+1", "+2", " 1/3", "-2", "-3"]);
+		expectCoverage(t1, gitRows(t1));
 		// Three lines: more change matches than one context self-match.
 		const t2: DiffLine[] = [
 			add(1, "    a();", { clusterKey: "A" }),
@@ -440,7 +442,7 @@ describe("pairHunk", () => {
 			del(3, "  b();", { clusterKey: "B" }),
 			del(4, "  c();", { clusterKey: "B" }),
 		];
-		expect(trace(pairHunk(t2))).toEqual([
+		expect(trace(gitRows(t2))).toEqual([
 			"+1",
 			"+2",
 			"+3",
@@ -449,21 +451,21 @@ describe("pairHunk", () => {
 			"-3",
 			"-4",
 		]);
-		expectCoverage(t2, pairHunk(t2));
+		expectCoverage(t2, gitRows(t2));
 	});
 
 	it("keeps a change that would take one side of a context line a change", () => {
 		// A second `}` added before a context `}`: one of them is new, and
 		// no context row can show that, so the added one stays added.
 		const lines: DiffLine[] = [add(1, "}"), ctx(1, 2, "  }")];
-		expect(trace(pairHunk(lines))).toEqual(["+1", " 1/2"]);
+		expect(trace(gitRows(lines))).toEqual(["+1", " 1/2"]);
 		const both: DiffLine[] = [ctx(1, 1, "  }"), del(2, "}")];
-		expect(trace(pairHunk(both))).toEqual([" 1/1", "-2"]);
+		expect(trace(gitRows(both))).toEqual([" 1/1", "-2"]);
 	});
 
 	it("a pure re-indent that git splits over context lines comes out all whitespace-only", () => {
 		const hunk = gitHunk(REINDENT_OLD, REINDENT_NEW);
-		const rows = pairHunk(hunk.lines);
+		const rows = gitRows(hunk.lines);
 		expectCoverage(hunk.lines, rows);
 		const changes = rows.filter(
 			(r) => r.kind === "line" && r.line.kind !== "context",
@@ -479,7 +481,7 @@ describe("pairHunk", () => {
 
 	it("a wrapped loop shows the `if`, its `}` and the `log` line that crossed a context row; the body is whitespace-only", () => {
 		const hunk = gitHunk(WRAP_OLD, WRAP_NEW);
-		const rows = pairHunk(hunk.lines);
+		const rows = gitRows(hunk.lines);
 		expectCoverage(hunk.lines, rows);
 		const changes = rows.flatMap((r) =>
 			r.kind === "line" && r.line.kind !== "context" ? [r.line] : [],
@@ -533,7 +535,7 @@ describe("pairHunk", () => {
 				if (lastAdd && rand(3) === 0) lastAdd.noNewline = true;
 				lines.push(...dels, ...adds);
 			}
-			const rows = pairHunk(lines);
+			const rows = gitRows(lines);
 			expectCoverage(lines, rows);
 			for (const run of runs(lines)) {
 				if (run.key === undefined) continue;
@@ -580,13 +582,13 @@ describe("pairHunk", () => {
 					}),
 				);
 			}
-			const rows = pairHunk(lines);
+			const rows = gitRows(lines);
 			expectCoverage(lines, rows);
 		}
 	});
 });
 
-describe("viewRuns", () => {
+describe("hunkView's runs", () => {
 	const lines: DiffLine[] = [
 		ctx(1, 1, "a"),
 		del(2, "b"),
@@ -597,7 +599,7 @@ describe("viewRuns", () => {
 	];
 
 	it("keeps every line as it is with Ignore whitespace off", () => {
-		const out = viewRuns(lines, false);
+		const out = hunkView(lines, false).runs;
 		expect(out.map((r) => r.key)).toEqual([undefined, "k", undefined]);
 		expect(trace(out.flatMap((r) => r.rows))).toEqual([
 			" 1/1",
@@ -609,8 +611,8 @@ describe("viewRuns", () => {
 		]);
 	});
 
-	it("pairs each cluster run with Ignore whitespace on, as pairHunk", () => {
-		const out = viewRuns(lines, true);
+	it("pairs each cluster run with Ignore whitespace on, as its gitRows", () => {
+		const out = hunkView(lines, true).runs;
 		expect(out.map((r) => r.lines)).toEqual(runs(lines).map((r) => r.lines));
 		expect(trace(out.flatMap((r) => r.rows))).toEqual([
 			" 1/1",

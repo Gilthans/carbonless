@@ -72,5 +72,101 @@
 			"new": [[0, 3], [4, 7], [8, 20]]
 		},
 		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces and punctuation (the shared `(` and `)`) between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/42-block-3x1-match-second.ts",
+		"pair": "line 1",
+		"ours": {
+			"old": [[32, 36]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/42-block-3x1-match-second.ts",
+		"pair": "line 3",
+		"ours": {
+			"new": [[32, 36]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/43-block-3x1-match-first.ts",
+		"pair": "line 0",
+		"ours": {
+			"old": [[32, 36]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/43-block-3x1-match-first.ts",
+		"pair": "line 3",
+		"ours": {
+			"new": [[32, 36]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/44-block-1x3-match-third.ts",
+		"pair": "line 0",
+		"ours": {
+			"old": [[32, 36]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/44-block-1x3-match-third.ts",
+		"pair": "line 3",
+		"ours": {
+			"new": [[32, 36]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/45-block-1x3-match-first.ts",
+		"pair": "line 0",
+		"ours": {
+			"old": [[32, 36]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/45-block-1x3-match-first.ts",
+		"pair": "line 1",
+		"ours": {
+			"new": [[32, 36]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/48-block-2x3-insert-middle.ts",
+		"pair": "line 2",
+		"ours": {
+			"new": [[33, 36]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/48-block-2x3-insert-middle.ts",
+		"pair": "line 4",
+		"ours": {
+			"new": [[35, 38]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/49-split-line.ts",
+		"pair": "line 0",
+		"ours": {
+			"old": [[15, 50], [73, 74]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
+	},
+	{
+		"file": "inline/50-join-lines.ts",
+		"pair": "line 2",
+		"ours": {
+			"new": [[15, 50], [73, 74]]
+		},
+		"reason": "step 2 pairs unequal clusters by similarity (owner, 2026-11-08: \"This is the point where we start diverging from github\")"
 	}
 ]

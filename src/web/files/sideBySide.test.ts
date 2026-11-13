@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { type Cluster, pairingClusters } from "../../../test/pairing-fixtures";
 import type { DiffLine } from "../../shared/types";
+import { alignCluster } from "./linePairing";
+import type { Partners } from "./pairOrder";
 import { layoutRows, type SideRow, sides } from "./sideBySide";
-import { type DiffRow, matchHunk, pairHunk, pairRun, runs } from "./whitespace";
+import { type DiffRow, hunkView, matchHunk, pairRun, runs } from "./whitespace";
 
 const del = (oldNo: number, text: string, over: Partial<DiffLine> = {}) => ({
 	kind: "del" as const,
@@ -23,6 +26,8 @@ const ctx = (oldNo: number, newNo: number, text: string): DiffLine => ({
 	newNo,
 	text,
 });
+/** A hunk's rows in git's order with Ignore whitespace on (hunkView). */
+const gitRows = (lines: DiffLine[]): DiffRow[] => hunkView(lines, true).gitRows;
 /** A line as the view's plain row (Ignore whitespace off, or a context run). */
 const line = (line: DiffLine): DiffRow => ({ kind: "line", line });
 
@@ -201,7 +206,7 @@ describe("layoutRows", () => {
 			add(2, "  a"),
 			add(3, "q"),
 		];
-		const rows = pairHunk(lines);
+		const rows = gitRows(lines);
 		expect(rows.map((r) => r.kind)).toEqual([
 			"line",
 			"line",
@@ -229,7 +234,7 @@ describe("layoutRows", () => {
 			add(3, "q"),
 			add(4, "r"),
 		];
-		const unevenRows = pairHunk(uneven);
+		const unevenRows = gitRows(uneven);
 		expect(trace(layoutRows(unevenRows))).toEqual([
 			"[-1|+1]",
 			"[-2|]",
@@ -299,8 +304,8 @@ describe("layoutRows", () => {
 			" 7/6",
 		]);
 		// The same from the whole hunk's flattened rows.
-		expect(trace(layoutRows(pairHunk(lines)))).toEqual(trace(out));
-		expectLayout(pairHunk(lines), layoutRows(pairHunk(lines)));
+		expect(trace(layoutRows(gitRows(lines)))).toEqual(trace(out));
+		expectLayout(gitRows(lines), layoutRows(gitRows(lines)));
 	});
 
 	it("holds for any input", () => {
@@ -349,7 +354,7 @@ describe("layoutRows", () => {
 				expectLayout(paired, layoutRows(paired));
 				laidOut++;
 			}
-			expectLayout(pairHunk(lines), layoutRows(pairHunk(lines)));
+			expectLayout(gitRows(lines), layoutRows(gitRows(lines)));
 			laidOut++;
 		}
 		// Rows of any shape, as the type allows them (one-sided whitespace
@@ -388,5 +393,201 @@ describe("layoutRows", () => {
 			laidOut++;
 		}
 		expect(laidOut).toBeGreaterThan(600);
+	});
+});
+
+/** Partners both ways, as hunkView gives them. */
+const partnered = (...pairs: [DiffLine, DiffLine][]): Partners =>
+	new Map(pairs.flatMap(([d, a]) => [[d, a] as const, [a, d] as const]));
+
+describe("layoutRows with partners", () => {
+	const D = (n: number): DiffLine => del(n, `d${n}`);
+	const A = (n: number): DiffLine => add(n, `a${n}`);
+
+	/**
+	 * The gallery's case `file` (test/fixtures/pairing), cluster `at`: its
+	 * lines as rows, and the pairs alignCluster makes of them.
+	 */
+	const galleryCase = (file: string, at = 0) => {
+		const c = pairingClusters(file)[at] as Cluster;
+		const ds = c.dels.map((t, i) => del(i + 1, t));
+		const as = c.adds.map((t, i) => add(i + 1, t));
+		const pairs = alignCluster(c.dels, c.adds).map(
+			([i, j]) => [ds[i], as[j]] as [DiffLine, DiffLine],
+		);
+		return { rows: [...ds, ...as].map(line), pairs };
+	};
+
+	it("puts a pair on one row, gaps by position (gallery cases 2, 3, 5)", () => {
+		// Case 2: the one removed line pairs with the second added.
+		const c2 = galleryCase("02-comment-above.ts");
+		expect(trace(layoutRows(c2.rows, partnered(...c2.pairs)))).toEqual([
+			"[|+1]",
+			"[-1|+2]",
+		]);
+		// Case 3: pairs d1-a1 and d3-a2, d2 alone between.
+		const c3 = galleryCase("03-removed-middle.ts");
+		expect(trace(layoutRows(c3.rows, partnered(...c3.pairs)))).toEqual([
+			"[-1|+1]",
+			"[-2|]",
+			"[-3|+2]",
+		]);
+		// Case 5: seven added lines, then the pair.
+		const c5 = galleryCase("05-helper-above.go");
+		expect(trace(layoutRows(c5.rows, partnered(...c5.pairs)))).toEqual([
+			...Array.from({ length: 7 }, (_, i) => `[|+${i + 1}]`),
+			"[-1|+8]",
+		]);
+	});
+
+	it("shares rows by position in a gap with lines on both sides", () => {
+		const [d1, dX, d2] = [D(1), D(2), D(3)] as const;
+		const [a1, aY, a2] = [A(1), A(2), A(3)] as const;
+		// d1 dX d2 / a1 aY a2 with d1-a2 paired: nothing before d1; after it dX d2 / (none).
+		const rows = [d1, dX, d2, a1, aY, a2].map(line);
+		expect(trace(layoutRows(rows, partnered([d1, a2])))).toEqual([
+			"[|+1]",
+			"[|+2]",
+			"[-1|+3]",
+			"[-2|]",
+			"[-3|]",
+		]);
+		// Two pairs d1-a1 and d2-a2 around a gap dX / aY.
+		const p = partnered([d1, a1], [d2, a2]);
+		const gapRows = [d1, dX, d2, a1, aY, a2].map(line);
+		expect(trace(layoutRows(gapRows, p))).toEqual([
+			"[-1|+1]",
+			"[-2|+2]",
+			"[-3|+3]",
+		]);
+	});
+
+	it("is the same for git order and interleaved unified order", () => {
+		const [d1, d2, d3] = [D(1), D(2), D(3)] as const;
+		const [a1, a2] = [A(1), A(2)] as const;
+		const p = partnered([d1, a1], [d3, a2]);
+		const git = [d1, d2, d3, a1, a2].map(line);
+		const mixed = [d1, a1, d2, d3, a2].map(line);
+		expect(layoutRows(mixed, p)).toEqual(layoutRows(git, p));
+		expect(trace(layoutRows(git, p))).toEqual(["[-1|+1]", "[-2|]", "[-3|+2]"]);
+	});
+
+	it("treats a partner outside the stretch or the rows as unpaired", () => {
+		const [d1, a1] = [D(1), A(1)] as const;
+		const c = ctx(2, 2, "mid");
+		const stranger = A(9);
+		const rows = [line(d1), line(c), line(a1)];
+		expect(trace(layoutRows(rows, partnered([d1, a1])))).toEqual([
+			"[-1|]",
+			" 2/2",
+			"[|+1]",
+		]);
+		expect(trace(layoutRows([line(d1)], partnered([d1, stranger])))).toEqual([
+			"[-1|]",
+		]);
+	});
+
+	it("lays out gallery cases 1, 4 and 6", () => {
+		// Case 1: 'beta' -> 'beta,' + 'gamma'.
+		const c1 = galleryCase("01-list-item.ts");
+		expect(trace(layoutRows(c1.rows, partnered(...c1.pairs)))).toEqual([
+			"[-1|+1]",
+			"[|+2]",
+		]);
+		// Case 4: no pairs, today's layout.
+		const c4 = galleryCase("04-nothing-similar.ts");
+		expect(c4.pairs).toEqual([]);
+		expect(layoutRows(c4.rows, new Map())).toEqual(layoutRows(c4.rows));
+		expect(trace(layoutRows(c4.rows, new Map()))).toEqual(["[-1|+1]", "[|+2]"]);
+		// Provisional: these exact pairs are pinned as a regression detector
+		// until the owner's pass over the real-PR comparison; a different
+		// answer from the owner changes them.
+		// Case 6: Clear's old signature is on one row with Touch's, after the
+		// fourteen lines of the new functions.
+		const c6 = galleryCase("06-clear-touch.go");
+		expect(trace(layoutRows(c6.rows, partnered(...c6.pairs)))).toEqual([
+			...Array.from({ length: 14 }, (_, i) => `[|+${i + 1}]`),
+			"[-1|+15]",
+		]);
+	});
+
+	it("keeps every line once, in order, when partners cross", () => {
+		const [d1, d2, a1, a2] = [
+			del(1, "x"),
+			del(2, "y"),
+			add(1, "y"),
+			add(2, "x"),
+		];
+		const out = layoutRows(
+			[d1, d2, a1, a2].map(line),
+			partnered([d1, a2], [d2, a1]),
+		);
+		const left = out.flatMap((r) =>
+			r.kind === "pair" && r.del ? [r.del] : [],
+		);
+		const right = out.flatMap((r) =>
+			r.kind === "pair" && r.add ? [r.add] : [],
+		);
+		expect(left).toEqual([d1, d2]);
+		expect(right).toEqual([a1, a2]);
+	});
+
+	it("keeps every line once, in order, a pair on one row, for random partners", () => {
+		let seed = 4242;
+		const rand = (n: number) => {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			return (seed >>> 8) % n;
+		};
+		let twoSidedGaps = 0;
+		for (let n = 0; n < 500; n++) {
+			const ds = Array.from({ length: rand(9) }, (_, i) => D(i + 1));
+			const as = Array.from({ length: rand(9) }, (_, i) => A(i + 1));
+			// Random non-crossing partners.
+			const pairs: [DiffLine, DiffLine][] = [];
+			let ai = 0;
+			for (const d of ds) {
+				if (ai < as.length && rand(2) === 0) {
+					const j = ai + rand(as.length - ai);
+					pairs.push([d, as[j] as DiffLine]);
+					ai = j + 1;
+				}
+			}
+			const git = [...ds, ...as].map(line);
+			const out = layoutRows(git, partnered(...pairs));
+			const left = out.flatMap((r) =>
+				r.kind === "pair" && r.del ? [r.del] : [],
+			);
+			const right = out.flatMap((r) =>
+				r.kind === "pair" && r.add ? [r.add] : [],
+			);
+			expect(left).toEqual(ds);
+			expect(right).toEqual(as);
+			// Rows per stretch: each gap's max(dels, adds), plus the pairs.
+			let expected = pairs.length;
+			let di = 0;
+			let ai2 = 0;
+			for (const [d, a] of [...pairs, [undefined, undefined] as const]) {
+				const dj = d ? ds.indexOf(d) : ds.length;
+				const aj = a ? as.indexOf(a) : as.length;
+				expected += Math.max(dj - di, aj - ai2);
+				if (dj - di > 0 && aj - ai2 > 0) twoSidedGaps++;
+				di = dj + 1;
+				ai2 = aj + 1;
+			}
+			expect(out.length).toBe(expected);
+			for (const [d, a] of pairs) {
+				expect(
+					out.some((r) => r.kind === "pair" && r.del === d && r.add === a),
+				).toBe(true);
+			}
+			// Interleaved input lays out the same.
+			const mixed: DiffRow[] = [];
+			for (let i = 0; i < Math.max(ds.length, as.length); i++) {
+				if (ds[i]) mixed.push(line(ds[i] as DiffLine));
+				if (as[i]) mixed.push(line(as[i] as DiffLine));
+			}
+			expect(layoutRows(mixed, partnered(...pairs))).toEqual(out);
+		}
+		expect(twoSidedGaps).toBeGreaterThan(50);
 	});
 });
