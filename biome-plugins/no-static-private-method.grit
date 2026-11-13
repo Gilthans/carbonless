@@ -1,0 +1,26 @@
+// CAR-136: no `static #method()`, `static get|set #x` or `static accessor
+// #x` anywhere. V8 before 13.7 (all of Node 24) reads a static private
+// method's class check back wrong from a code cache when its class has
+// about 73 or more private names (methods and fields together), and crb
+// serve turns Node's compile cache on (src/cli.ts): the next start throws
+// "Receiver must be class #…" or segfaults. V8 fixed it in 13.7 (crbug
+// 409512701). Static private fields are fine. `static accessor #x` counts:
+// tsc (target ES2024) emits it as `static get/set #x`. This covers the
+// repo's source only: a dependency could still bring one in (none does
+// today).
+language js
+
+or {
+	or {
+		JsMethodClassMember(modifiers=$modifiers, name=$name),
+		JsGetterClassMember(modifiers=$modifiers, name=$name),
+		JsSetterClassMember(modifiers=$modifiers, name=$name)
+	} where { $modifiers <: contains JsStaticModifier() },
+	JsPropertyClassMember(modifiers=$modifiers, name=$name) where {
+		$modifiers <: contains JsStaticModifier(),
+		$modifiers <: contains JsAccessorModifier()
+	}
+} where {
+	$name <: JsPrivateClassMemberName(),
+	register_diagnostic(span=$name, message="No static #private methods or accessors: V8 in Node 24 can read them back wrong from the compile cache crb serve uses, and the next start crashes (CAR-136). Use `private static name()` (TypeScript-private) or a module-level function.")
+}
