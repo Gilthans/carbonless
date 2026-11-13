@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import { wordMarks } from "../src/web/files/wordDiff";
 import {
 	expectNoPageOverflow,
 	fileSection,
@@ -573,5 +574,170 @@ test("an emoji's changed selector or joiner warns with hidden characters off, an
 			.evaluate((el) => el.textContent),
 	).toBe('export const pets = "🐶\u200D🐱";');
 	await shot(section, "emoji-hidden-on", isMobile);
+	await expectNoPageOverflow(page);
+});
+
+/**
+ * A rewritten block (CAR-135): 30 lines of synthetic minified-like code,
+ * each replaced by an unrelated one, 1,000 characters each (under the
+ * 1,024 cut). A pair takes 8–14 ms of CPU to mark, so the render marks one
+ * or two and the rest is done off the render path (wordWork.ts); the unit
+ * test (wordWork.test.ts) measures 200. Not more here: 60 lines of
+ * hundreds of marks each are a heavy page for a loaded machine. No spaces:
+ * a line's code shows its text as is.
+ */
+function denseBlock(): { del: string[]; add: string[] } {
+	let s = 41;
+	const random = () => {
+		s = (s + 0x6d2b79f5) >>> 0;
+		let t = s;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+	const pick = <T>(xs: readonly T[]): T =>
+		xs[Math.floor(random() * xs.length)] as T;
+	const letters = [..."abcdefghijklmnopqrstuvwxyz"];
+	const words = letters.concat(
+		letters.map((c) => `${c}e`),
+		["push", "call"],
+	);
+	const seps = [..."().,=;{}?:![]+"].concat(["&&", "||", "===", "=>"]);
+	const line = () => {
+		let text = "";
+		while (text.length < 1000) text += pick(words) + pick(seps);
+		return text.slice(0, 1000);
+	};
+	return {
+		del: Array.from({ length: 30 }, line),
+		add: Array.from({ length: 30 }, line),
+	};
+}
+const DENSE = denseBlock();
+// Plain text: no syntax highlighting to wait for.
+const DENSE_PATH = "inline/dense-rewrite.txt";
+const denseFile = (lines: string[]) =>
+	["// before", ...lines, "// after", ""].join("\n");
+const denseFixture: PrOptions = {
+	base: { [DENSE_PATH]: denseFile(DENSE.del) },
+	files: [
+		{
+			message: "Rewrite a dense block",
+			files: { [DENSE_PATH]: denseFile(DENSE.add) },
+		},
+	],
+};
+
+/** Each line's marked text, joined (marks may be split across elements). */
+const marksOf = (side: "old" | "new") =>
+	Object.fromEntries(
+		DENSE.del.map((a, i) => {
+			const b = DENSE.add[i] as string;
+			const text = side === "old" ? a : b;
+			const marks = wordMarks(a, b)[side];
+			return [text, marks.map(([from, to]) => text.slice(from, to)).join("")];
+		}),
+	);
+
+/** Each of a side's block lines (by its text) and its marked text, joined. */
+const shownMarks = (section: Locator, side: "LEFT" | "RIGHT") =>
+	section
+		.locator(`td[data-testid="code"][data-side="${side}"]`)
+		.evaluateAll((cells) =>
+			Object.fromEntries(
+				cells
+					.map((cell) => [
+						cell.querySelector("[data-code]")?.textContent ?? "",
+						Array.from(
+							cell.querySelectorAll("[data-word]"),
+							(w) => w.textContent,
+						).join(""),
+					])
+					.filter(([text]) => (text as string).length >= 1000),
+			),
+		);
+
+test("a big rewritten block of long, unrelated lines shows at once, spinners in the signs' place until its marks come; toggles keep them", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	// Marking the pairs takes about a second of CPU on an idle dev machine
+	// (in the worker), many times that under load, and the page is heavy.
+	test.slow();
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const old = marksOf("old");
+	const added = marksOf("new");
+	// The worker's script is held: nothing is marked off the render path
+	// until it's let through. What the server answers for it is kept, so
+	// the test knows the worker really loaded.
+	let release: () => void = () => {};
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const served: number[] = [];
+	await page.route("**/assets/wordWorker-*.js", async (route) => {
+		await held;
+		const response = await route.fetch();
+		served.push(response.status());
+		await route.fulfill({ response });
+	});
+	// The main-thread fallback says so on the console (wordWork.ts).
+	const fellBack: string[] = [];
+	page.on("console", (message) => {
+		if (message.text().includes("main-thread fallback")) {
+			fellBack.push(message.text());
+		}
+	});
+	await pr(denseFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, false);
+	const section = fileSection(page, DENSE_PATH);
+	const expand = section.getByRole("button", { name: "Expand file" });
+	if (await expand.isVisible()) await expand.click();
+	// Every line shows while its marks are on their way, a spinner in the
+	// sign's place.
+	const code = section.locator('td[data-testid="code"] [data-code]');
+	await expect(code.filter({ hasText: DENSE.del[29] as string })).toHaveCount(
+		1,
+	);
+	await expect(code.filter({ hasText: DENSE.add[29] as string })).toHaveCount(
+		1,
+	);
+	const spinners = section.getByRole("img", {
+		name: "Marking changed words",
+	});
+	await expect(spinners.first()).toBeVisible();
+	expect(await spinners.count()).toBeGreaterThan(40);
+	await expectNoPageOverflow(page);
+	release();
+	// The worker marks them: exactly what wordMarks says.
+	await expect(spinners).toHaveCount(0, { timeout: 30_000 });
+	await expect(
+		section.getByRole("img", { name: "Couldn't mark changed words" }),
+	).toHaveCount(0);
+	// From the worker: its script served, and no fallback to the main thread.
+	expect(served).toEqual([200]);
+	expect(fellBack).toEqual([]);
+	expect(
+		await page.evaluate(
+			() => document.documentElement.dataset.wordMarksFallback ?? null,
+		),
+	).toBeNull();
+	expect(await shownMarks(section, "LEFT")).toEqual(old);
+	expect(await shownMarks(section, "RIGHT")).toEqual(added);
+	// Side by side and Ignore whitespace: the marks stay, nothing to wait for.
+	await sideBySide(page, true);
+	await expect(
+		section.locator('table[data-view="side-by-side"]'),
+	).toBeVisible();
+	await expect(spinners).toHaveCount(0);
+	expect(await shownMarks(section, "LEFT")).toEqual(old);
+	expect(await shownMarks(section, "RIGHT")).toEqual(added);
+	await ignoreWhitespace(page, true);
+	await expect(spinners).toHaveCount(0);
+	expect(await shownMarks(section, "RIGHT")).toEqual(added);
 	await expectNoPageOverflow(page);
 });

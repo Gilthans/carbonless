@@ -75,4 +75,11 @@ if (typeof document !== "undefined") {
 	const { configure } = await import("@testing-library/react");
 	configure({ asyncUtilTimeout: 4000 });
 	vi.setConfig({ testTimeout: 20_000 });
+	// Word marks (wordWork.ts): every pair is marked in render, whatever the
+	// load, so a test sees them on first paint. Tests of the budget and of
+	// pairs marked later set their own (configureWordWork).
+	const { configureWordWork } = await import("../src/web/files/wordWork");
+	beforeEach(() => {
+		configureWordWork({ budgetMs: Number.POSITIVE_INFINITY });
+	});
 }

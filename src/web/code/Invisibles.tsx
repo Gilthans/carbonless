@@ -359,6 +359,16 @@ export interface Words {
 	 * (hiddenChange.ts): its code cell warns in the sign's place.
 	 */
 	hidden?: boolean;
+	/**
+	 * The pair's marks are still being computed (wordWork.ts): its code cell
+	 * shows a spinner in the sign's place.
+	 */
+	pending?: boolean;
+	/**
+	 * Computing the pair's marks failed (wordWork.ts): its code cell warns
+	 * in the sign's place.
+	 */
+	failed?: boolean;
 }
 
 /** Each tone's tint (index.css; written out whole, for Tailwind). */

@@ -154,7 +154,7 @@ const E2E_MAP = [
 	// a few of its cases.
 	[/^test\/fixtures\/inline-diff\//, ["inlineDiff"]],
 	[
-		/^src\/web\/files\/(wordDiff|wordBlocks|whitespace)\.ts$|^src\/web\/code\/Invisibles\.tsx$|^src\/web\/files\/DiffBody\.tsx$/,
+		/^src\/web\/files\/(wordDiff|wordBlocks|wordWork|wordWorker|whitespace)\.ts$|^src\/web\/code\/Invisibles\.tsx$|^src\/web\/files\/DiffBody\.tsx$/,
 		["inlineDiff"],
 	],
 	[

@@ -73,7 +73,7 @@ import {
 	type Words,
 } from "../code/Invisibles";
 import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
-import { Spinner } from "../Spinner";
+import { Spinner, SpinnerIcon } from "../Spinner";
 import {
 	clickPointer,
 	isTap,
@@ -135,7 +135,7 @@ import {
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
 import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
-import { hunkWordMarks } from "./wordBlocks";
+import { hunkWords, requestMarks } from "./wordWork";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
 export interface DiffThreads {
@@ -686,6 +686,42 @@ function Sign({ kind }: { kind: RowLine["kind"] }) {
 }
 
 /**
+ * In the sign's place, on a paired line whose word marks are still being
+ * computed off the render path (wordWork.ts): a spinner; or, when marking
+ * them failed, a warning (the line is unmarked, but not because nothing
+ * changed). As wide as the sign, so nothing moves when the marks come and
+ * the sign is back. An image, not a live region: a block of hundreds of
+ * pending lines mustn't flood a screen reader (the cell is `aria-busy`).
+ */
+function WordsSign({ failed }: { failed?: boolean }) {
+	const label = failed ? FAILED_WORDS : PENDING_WORDS;
+	return (
+		<Tooltip content={label} describe={false} lazy>
+			{(trigger) => (
+				<span
+					{...trigger}
+					role="img"
+					aria-label={label}
+					tabIndex={-1}
+					data-words-pending={failed ? undefined : ""}
+					data-words-failed={failed ? "" : undefined}
+					className={`mr-2 inline-flex w-[1ch] select-none justify-center align-[-1px] ${failed ? "text-bad" : "text-muted"} focus-visible:outline-2 focus-visible:outline-accent`}
+				>
+					{failed ? (
+						<AlertIcon size={12} aria-hidden />
+					) : (
+						<SpinnerIcon size={12} />
+					)}
+				</span>
+			)}
+		</Tooltip>
+	);
+}
+
+const PENDING_WORDS = "Marking changed words";
+const FAILED_WORDS = "Couldn't mark changed words";
+
+/**
  * Before a warning goes, moves focus it holds to its line: the line's number
  * button (its own side's first), else the code cell itself.
  */
@@ -872,6 +908,7 @@ function CodeCell(props: {
 			data-commented={cell?.commented ? "" : undefined}
 			data-picked={cell?.picked || undefined}
 			data-find-current={cell?.current || undefined}
+			aria-busy={props.words?.pending || undefined}
 			// Top-aligned next to its number, however tall the other side makes the row.
 			className={`${cell ? "align-top whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${bubblePad(bubbles)} ${cell?.paint ?? ""}`}
 		>
@@ -884,6 +921,10 @@ function CodeCell(props: {
 			)}
 			{props.words?.hidden ? (
 				<HiddenWarning kind={line.kind} />
+			) : props.words?.failed ? (
+				<WordsSign failed />
+			) : props.words?.pending ? (
+				<WordsSign />
 			) : (
 				<Sign kind={line.kind} />
 			)}
@@ -935,10 +976,14 @@ interface RowProps {
 	composers?: RowComposers;
 	find?: DiffFind;
 	agent?: AgentRows;
-	/** The hunk's paired lines' word marks (hunkWordMarks), by line. */
+	/** The hunk's paired lines' word marks (wordWork.ts hunkWords), by line. */
 	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
 	/** The marked lines whose change doesn't show with hidden characters off (hiddenLines). */
 	hidden?: ReadonlySet<DiffLine>;
+	/** The paired lines whose word marks are still being computed (wordWork.ts). */
+	pendingWords?: ReadonlySet<DiffLine>;
+	/** The paired lines whose word marks couldn't be computed (wordWork.ts). */
+	failedWords?: ReadonlySet<DiffLine>;
 }
 
 /** The spans painted over a cell's characters: those of the threads on its keys. */
@@ -953,18 +998,22 @@ const NO_MARKS: readonly Mark[] = [];
  */
 function wordsOf(
 	line: RowLine,
-	props: Pick<RowProps, "words" | "hidden">,
+	props: Pick<RowProps, "words" | "hidden" | "pendingWords" | "failedWords">,
 	reviewed: boolean,
 ): Words | undefined {
 	if (line.kind !== "add" && line.kind !== "del") return undefined;
 	const marks = props.words?.get(line);
 	// A BOM may be hidden on a line without marks (hiddenLines).
 	const hidden = props.hidden?.has(line) || undefined;
-	if (!marks && !hidden) return undefined;
+	const pending = props.pendingWords?.has(line) || undefined;
+	const failed = props.failedWords?.has(line) || undefined;
+	if (!marks && !hidden && !pending && !failed) return undefined;
 	return {
 		marks: marks ?? NO_MARKS,
 		tone: reviewed ? `${line.kind}-done` : line.kind,
 		hidden,
+		pending,
+		failed,
 	};
 }
 
@@ -3376,19 +3425,32 @@ function HunkRows(props: {
 	// over the whole hunk): not again on a toggle, a landing, a thread
 	// opening or a context load. Side by side, the rows laid out as pairs
 	// (sideBySide.ts): the whitespace rows are its input, so the two settings
-	// compose. The word marks of the hunk's pairs with them, over all its
-	// runs' rows (a block may span two clusters), computed here, with the
-	// rows: a pair is never shown plain while its marks are pending.
-	const { hunkRuns, words } = useMemo(() => {
-		const runs = viewRuns(hunk.lines, ignoreWhitespace).map((run) => ({
-			...run,
-			side: view === "side-by-side" ? layoutRows(run.rows) : null,
-		}));
-		return {
-			hunkRuns: runs,
-			words: hunkWordMarks(runs.flatMap((run) => run.rows)),
-		};
-	}, [hunk, ignoreWhitespace, view]);
+	// compose.
+	const hunkRuns = useMemo(
+		() =>
+			viewRuns(hunk.lines, ignoreWhitespace).map((run) => ({
+				...run,
+				side: view === "side-by-side" ? layoutRows(run.rows) : null,
+			})),
+		[hunk, ignoreWhitespace, view],
+	);
+	// The word marks of the hunk's pairs, over all its runs' rows (a block
+	// may span two clusters): those done before and those the render budget
+	// allows now; the rest are marked off the render path and come in with
+	// `marked`, chunk by chunk (wordWork.ts, CAR-135). Their lines show a
+	// spinner meanwhile, or a warning if marking them failed. Unmounted, the
+	// hunk stops waiting, and work nobody waits for is dropped.
+	const [marked, setMarked] = useState(0);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `marked` says more pairs are done.
+	const hunkMarks = useMemo(
+		() => hunkWords(hunkRuns.flatMap((run) => run.rows)),
+		[hunkRuns, marked],
+	);
+	const words = hunkMarks.marks;
+	useEffect(() => {
+		if (hunkMarks.later.length === 0) return;
+		return requestMarks(hunkMarks.later, () => setMarked((n) => n + 1));
+	}, [hunkMarks]);
 	// The lines whose change doesn't show with hidden characters off (none
 	// to look for while they show).
 	const showHidden = useShowInvisibles();
@@ -3495,6 +3557,8 @@ function HunkRows(props: {
 					agent: props.agent,
 					words,
 					hidden,
+					pendingWords: hunkMarks.pending,
+					failedWords: hunkMarks.failed,
 				};
 				/** The run's rows, the cluster's controls on the first when given. */
 				const runRows = (controls?: ReactNode) =>
