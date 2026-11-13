@@ -308,11 +308,25 @@ back either.
 on one click (CAR-108; never automatically). Code: `src/server/update`,
 `src/web/UpdateToast.tsx`.
 
-- **Check.** At start and every 6 hours, crb asks the registry
-  (`$CRB_NPM_REGISTRY`, default `https://registry.npmjs.org`) for
-  `carbonless-review`'s dist-tags and takes its channel's tag. Only a
-  version strictly newer by semver counts. Any failure (offline, a 404
-  before the first publish, a bad answer) is silent.
+- **Check.** At start and every hour (RCs land several times a day), crb
+  asks the registry (`$CRB_NPM_REGISTRY`, default
+  `https://registry.npmjs.org`) for `carbonless-review`'s dist-tags and
+  takes its channel's tag. Only a version strictly newer by semver counts.
+  A failure (offline, a 404 before the first publish, a bad answer) never
+  shows a toast; crb keeps when it last checked and why that failed, for
+  the Global settings page.
+- **Global settings** (`/settings`, the gear's "Global settings" row on
+  Home and on a review): the running version and commit (linked to it on
+  GitHub), the channel, how crb was installed (npm global, pnpm global, or
+  update by hand), when it last checked, and **Check for updates**
+  (`POST /api/update/check`: checks now, sharing a check already under
+  way, and answers the fresh `/api/update`; the hourly timer keeps its
+  times). A newer version shows there with the toast's own Update (or the
+  command), also after a later check failed; a failed check says why with
+  Retry. Check is off while an update installs or restarts. A `-dirty`
+  build's commit is shown as such, not linked. A build that never checks
+  says why instead (local build, `CRB_NO_UPDATE_CHECK`, `updates.check`
+  off) and has no Check button.
 - **Channel**, durable: an RC install stays on `rc` for good.
   - The first time crb runs a prerelease, it writes `rc` to
     `update-channel` in its state dir. From then on it follows `rc`, also

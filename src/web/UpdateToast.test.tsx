@@ -30,6 +30,13 @@ const OFFER: UpdateInfo = {
 	command: "npm install -g carbonless-review@0.3.0",
 	state: "idle",
 	failed: null,
+	commit: "c".repeat(40),
+	channel: "latest",
+	install: "npm",
+	byHand: false,
+	lastChecked: "2026-11-12T10:00:00.000Z",
+	checkError: null,
+	checksOff: null,
 };
 
 const json = (status: number, body: unknown) =>

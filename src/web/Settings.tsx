@@ -1,4 +1,5 @@
-import { GearIcon } from "@primer/octicons-react";
+import { GearIcon, ToolsIcon } from "@primer/octicons-react";
+import { Link, useRouter } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState } from "react";
 import { VIEW_KEYS } from "./files/viewShortcuts";
 import { Keys, useOpenShortcutsHelp } from "./shortcuts";
@@ -101,11 +102,41 @@ const popoverSupported = () =>
 	typeof HTMLElement.prototype.showPopover === "function";
 
 /**
+ * The row to Global settings (`/settings`): the router's link, or a plain
+ * one where no router runs (component tests of the pages around it).
+ */
+function GlobalSettingsLink(props: { onClick: () => void; className: string }) {
+	const router = useRouter({ warn: false }) as ReturnType<
+		typeof useRouter
+	> | null;
+	const content = (
+		<>
+			<ToolsIcon aria-hidden className="shrink-0" />
+			Global settings
+		</>
+	);
+	return router ? (
+		<Link to="/settings" onClick={props.onClick} className={props.className}>
+			{content}
+		</Link>
+	) : (
+		<a href="/settings" onClick={props.onClick} className={props.className}>
+			{content}
+		</a>
+	);
+}
+
+const ROW =
+	"flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm text-ink hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent";
+
+/**
  * The gear in the app bar's last row (so it stays in the compact sticky
  * header): a popover under it, a bottom sheet on a phone. Closed by the gear,
  * Escape from anywhere, a click or focus outside (the backdrop on a phone).
+ * On a review its rows are the diff's switches, Keyboard shortcuts and
+ * Global settings; `review={false}` (Home) has Global settings alone.
  */
-export function Settings() {
+export function Settings({ review = true }: { review?: boolean } = {}) {
 	const [open, setOpen] = useState(false);
 	const phone = !useMedia(NOT_PHONE);
 	const dialog = useRef<HTMLDialogElement>(null);
@@ -146,7 +177,7 @@ export function Settings() {
 			window.addEventListener("resize", schedule);
 		} else if (typeof d.show === "function") d.show();
 		else d.setAttribute("open", "");
-		d.querySelector<HTMLElement>("[role=switch]")?.focus();
+		d.querySelector<HTMLElement>("[role=switch], a[href]")?.focus();
 		return () => {
 			cancelAnimationFrame(frame);
 			window.removeEventListener("scroll", schedule);
@@ -250,20 +281,24 @@ export function Settings() {
 					)}
 				</div>
 				<div className={phone ? "px-2 pt-2 pb-6" : "p-2"}>
-					<SettingsList phone={phone} />
-					{!phone && (
+					{review && <SettingsList phone={phone} />}
+					{review && !phone && (
 						<button
 							type="button"
 							onClick={() => {
 								close();
 								openHelp();
 							}}
-							className="mt-1 flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm text-ink hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+							className={`mt-1 ${ROW}`}
 						>
 							<KeyboardIcon />
 							Keyboard shortcuts
 						</button>
 					)}
+					<GlobalSettingsLink
+						onClick={() => setOpen(false)}
+						className={review ? `mt-1 ${ROW}` : ROW}
+					/>
 				</div>
 			</dialog>
 		</div>
