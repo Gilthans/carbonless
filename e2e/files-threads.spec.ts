@@ -317,6 +317,53 @@ test("a thread on an older commit shows on its traced line once placed", async (
 	await expect(card.getByTestId("placement-fate")).toHaveCount(0);
 });
 
+test("a thread with no commit of its own sits on GitHub's line; an outdated one is listed under its file as outdated", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await setup(pr);
+	// GitHub gave no originalCommit: nothing to trace from but its line now.
+	p.editScenario((s) => {
+		s.prs[7]?.graphql?.reviewThreads?.push(
+			reviewThread({ path: CORE, line: 7, subjectType: "LINE" }, [
+				threadComment({ login: "rev3", text: "No commit here" }),
+			]),
+			reviewThread(
+				{
+					path: CORE,
+					line: null,
+					originalLine: 3,
+					isOutdated: true,
+					subjectType: "LINE",
+				},
+				[threadComment({ login: "rev3", text: "Outdated, no commit" })],
+			),
+		);
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// expand waits for the placements (core.ts's unplaced list).
+	const section = await expand(page, CORE);
+	const bubble = row(section, "new", 7).getByRole("button", {
+		name: "1 comment on line 7",
+	});
+	await expect(bubble).toBeVisible();
+	const unplaced = section.getByTestId("unplaced-thread");
+	await expect(unplaced.filter({ hasText: "No commit here" })).toHaveCount(0);
+	const outdated = unplaced.filter({ hasText: "Outdated, no commit" });
+	await expect(outdated).toHaveAttribute("data-fate", "outdated");
+	await expect(outdated.getByTestId("unplaced-fate")).toHaveText(
+		"GitHub marks the commented line outdated",
+	);
+	await bubble.click();
+	const card = section
+		.getByTestId("files-thread")
+		.filter({ hasText: "No commit here" });
+	await expect(card).toBeVisible();
+	await expect(card.getByTestId("placement-fate")).toHaveCount(0);
+});
+
 test("file comment opens from the file header into the file bubble; a line not in the diff is flagged there", async ({
 	page,
 	pr,
@@ -839,7 +886,10 @@ test("an opened thread survives a Refresh", async ({ page, pr, startCrb }) => {
 	).toBeEnabled({
 		timeout: 20_000,
 	});
-	await page.waitForTimeout(500);
+	// Refresh is enabled once the answer is in: a frame later it is drawn.
+	await page.evaluate(
+		() => new Promise((done) => requestAnimationFrame(() => done(null))),
+	);
 	expect(
 		await page.evaluate(() => (window as unknown as { lost: boolean }).lost),
 	).toBe(false);

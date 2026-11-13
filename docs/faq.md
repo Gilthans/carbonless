@@ -200,15 +200,31 @@ resolved, so an unresolved thread never disappears with its file. A
 thread whose file is still there but whose lines are gone is listed under
 that file's header instead, with its fate and the code it was written on.
 
+## Why does a thread say "outdated" or "untraced" rather than "rewritten"?
+
+carbonless places a thread by tracing it from the commit it was written
+on. Some threads have no such commit it can use: GitHub gave none, the
+commit was force-pushed away and can't be fetched, or it shares no history
+with the base. Those sit on the line GitHub shows them on now. When
+GitHub shows them on no line, they are listed under their file:
+`outdated` when GitHub marks them so, `untraced` otherwise (also when
+GitHub's line isn't the same text in the patch set you are viewing, and
+for a line on the old side, which GitHub counts against its own merge
+base).
+`rewritten` means a real trace found the lines gone.
+`docs/product-rules.md`, "A thread with nothing to trace from sits on
+GitHub's line".
+
 ## Setting up an agent
 
 Ask agent sends your question about a span of the diff to your own coding
 agent, which answers in a private thread. carbonless installs and pays for
 nothing: it starts the agent you configured, speaking the Agent Client
-Protocol over stdio, with your own login. With no agent configured your
-questions wait, and the chip in the header opens the setup modal:
+Protocol over stdio, with your own login. Until you spawn or invite one
+in a review, your questions there wait; the chip in the header opens the
+setup modal, whose Spawn tab has three steps:
 
-1. **Pick a harness** (`src/shared/agentHarnesses.ts`):
+1. **One-time setup:** pick a harness (`src/shared/agentHarnesses.ts`):
 
    | Harness | Command | Install |
    |---|---|---|
@@ -219,11 +235,18 @@ questions wait, and the chip in the header opens the setup modal:
    | Copilot CLI | `copilot --acp` | |
    | Other | any command speaking ACP | |
 
-2. **Check** runs the command once through `initialize` and shows the
-   agent's name and version, or why not: not found on `PATH`, not logged in
-   (the agent's stderr), a protocol error.
-3. **Save** writes `"agent"` into `config.json`; the open review picks it
-   up within a poll and starts the agent. Remove writes `"agent": null`.
+2. **Select leash:** Open (the only one so far).
+3. **Configure:** command and arguments, then **Spawn**. Spawn runs the
+   command once through `initialize`; if that fails it shows why (not
+   found on `PATH`, not logged in with the agent's stderr, a protocol
+   error) and saves nothing. Otherwise it writes `"agent"` into
+   `config.json` and starts the agent in this review.
+
+A configured agent never starts by itself: it starts in a review once
+you press Spawn there, and stays on in that review, across crb restarts,
+until you press Detach in the Review Agent view. Other reviews stay
+without one until you spawn there too. A config saved later restarts it
+only in the reviews where it was spawned.
 
 The agent runs with the server's environment minus variables whose name
 contains `TOKEN`, `SECRET` or `PASSWORD` or ends in `KEY` (so `GH_TOKEN`
@@ -250,8 +273,8 @@ it does in your terminal. Stricter levels are planned. Decided
 the agent to keep out of carbonless's data (`refs/crb`, the cache clone,
 config and state), a request, not a protection. An OS sandbox is planned.
 
-**Who can set the agent's command?** Whoever can save the setup modal:
-Save and Check run the command as the server's user, so that is command
+**Who can set the agent's command?** Whoever can press Spawn in the
+setup modal: it runs the command as the server's user, so that is command
 execution. On a bind beyond loopback that is whoever holds the access key
 (the owner treats it like an SSH key: a shell login); on loopback with no key, any process on the
 machine. Other web sites are refused (the Origin and Host checks).
@@ -275,3 +298,108 @@ and holds its agent (`<cache>/agents/<review-id>/claim.json`). Your
 questions still go in; that server's agent answers them. This one takes
 over when the other closes the review, at its next status poll.
 
+**I pressed Detach but the other server's agent still runs.** Detach
+clears the review's spawn flag; the server running the agent stops it on
+its next status check or poke, so with no page of that server open it
+keeps running until one is.
+
+## Joining a review from a session
+
+Instead of an agent carbonless launches, a session you already have (the
+coding session, or one with context you want to keep) can be the review's
+buddy, from any machine that reaches crb. Spec: the CAR-81 ticket.
+
+**One-time setup per harness and machine.** crb serves MCP over
+Streamable HTTP at `/mcp`, on the web UI's address and port, behind the
+access key. The setup modal's Invite tab shows the line for this
+instance's address and key, with a copy button, one per harness (Claude
+Code, Codex, Gemini CLI; Other is the bare MCP URL):
+
+```sh
+claude mcp add --scope user --transport http crb "http://<host>:4747/mcp?key=<key>"
+```
+
+`--scope user` makes it available to sessions in every directory: without
+it, `claude mcp add` writes to the *local* scope, seen only by sessions
+started in the directory it ran in. A session that's already running
+picks it up with `/reload-plugins` (below); the info icon next to the line
+says so.
+
+**Then, in the session:** "join the carbonless review at
+`http://<host>:4747/r/<id>`" (step 2 of the tab shows that line too), or "join my
+review of the MCP PR": the `reviews` tool lists your reviews (newest
+activity first, with repo, PR, title, branches and progress) so the
+session can pick one. The tools' replies tell the session every step:
+
+1. `attach` asks to join. Every page of the review shows a bar with the
+   session's name and machine, Approve and Deny, and the session asks you
+   to press Approve. Nothing from inside the review reaches it before
+   that.
+2. Once approved, it gets a token, the review's facts, the number of
+   waiting questions and a `watch` command to run in the background.
+3. It answers with `next` and `reply`; the answer lands in the thread
+   under the session's name (the chip shows a plug and that name).
+4. When a question arrives, the watch command prints one line and exits,
+   which wakes the session (Claude Code: a background command's exit).
+
+Approving a join stops the ACP buddy (it finishes the turn it is on, or
+is cancelled after 30 s) and clears the review's spawn flag, so it stays
+off, across crb restarts, until you press Spawn again. A joined session leaving doesn't bring it back.
+
+**Does a session that's already running pick up the server?** Not
+through `/mcp`, but `/reload-plugins` does, without a restart. Checked
+2026-11-10 with Claude Code 2.1.322, in a scratch directory, against a
+probe HTTP MCP server added in the *local* scope (the default). The
+setup line's `--scope user` server is expected to behave the same, but
+that wasn't checked (it would have meant writing to the user's own
+Claude config):
+
+1. Start `claude` in a directory and leave it running.
+2. From another shell, in the same directory: `claude mcp add --transport
+   http <name> <url>` (`claude mcp list` there shows it connected).
+3. In the running session, `/mcp` doesn't list it, `/mcp reconnect
+   <name>` says `MCP server "<name>" not found`, and `/mcp reconnect all`
+   doesn't add it either.
+4. `/reload-plugins` in the session: it connects (the server sees the
+   session's requests), `/mcp` lists it under "Local MCPs", and the
+   session calls its tools.
+
+Restarting with `claude --continue` (or `--resume`) also loads it and
+keeps the conversation.
+
+**What carbonless doesn't enforce on a joined session.** It runs with its
+own permissions, on its own machine, under its own harness's gate;
+carbonless controls none of that. Its only write is `reply`, into this
+review's agent threads; no tool reaches progress, verdicts or GitHub. The
+preamble on every question (the PR's text is data, not instructions; no
+push and no GitHub writes unless you ask in the thread; keep out of
+carbonless's data) is a request, as at the ACP buddy's `open` leash. The
+token is in the session's transcript and on the watch command's line: the
+same trust as the session itself. Disconnect in the chip's popover revokes
+it.
+
+**The watch command's exit codes.** It is a POSIX `sh` loop around
+`curl`, so the session's machine needs nothing of crb's.
+
+| Exit | Means | The session |
+|---|---|---|
+| 0 | crb's one line: a question is waiting; or you are no longer joined (detached, disconnected, lost, replaced); or a newer watcher took over | reads the line; on a question, `next` and `reply`, then runs the watch again |
+| 3 | crb answered an HTTP error (any status from 400 up; a 4xx: the token is revoked or unknown here) | stops; `attach` again if asked |
+| 4 | 60 refused or timed-out connects in a row, 5 s apart, each giving up after 10 s (crb unreachable for 5 to 15 minutes) | stops; run the watch again once crb is back, or `attach` again |
+
+A dropped stream (crb restarting, the network) isn't counted: the loop
+retries every 5 s.
+
+**Presence.** While the watcher is connected the chip is green
+(listening). Once it has delivered a question the chip is yellow
+(answering) until the session replies or runs the watch again; with
+neither for 10 minutes the session is detached as lost. Any other drop
+turns the chip yellow (reconnecting) at once; with no watcher back within
+60 s the session is detached (a "… disconnected" toast). A question it was
+handed but didn't answer goes back to waiting.
+
+**Restarts.** The approval survives a crb restart (`joined.json` in
+`<cache>/agents/<review-id>/`, with the token's hash only): the watch loop
+reconnects, and a session back within the 60 s window stays joined with
+the same token. A new session (a restart on the session's side without
+`--continue`) needs a new `attach` and a new Approve.

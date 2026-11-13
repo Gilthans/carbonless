@@ -36,6 +36,7 @@ import {
 	agentConfig,
 	noteAgentConfigSaved,
 } from "./agent/host.js";
+import { JoinElsewhereError, StaleJoinRequestError } from "./agent/join.js";
 import { isSafePath } from "./agent/prompt.js";
 import {
 	UnknownAgentMessageError,
@@ -50,6 +51,7 @@ import type { HomeService } from "./home/homeService.js";
 import { registerHomeRoutes } from "./home/routes.js";
 import { HomeSearch } from "./home/search.js";
 import { MARKER_ID } from "./marker.js";
+import { joinableDeps, listJoinable, registerMcp } from "./mcp/routes.js";
 import { newThreadProblem } from "./newThreads.js";
 import { type HeadSpec, parseHead } from "./pinnedHead.js";
 import {
@@ -108,6 +110,8 @@ export interface AppOptions {
 	progress?: (message: string) => void;
 	/** Home (`/api/home/*`); omit for a server without it (tests). */
 	home?: HomeService;
+	/** The MCP watcher's keep-alive period (tests; default JOIN.keepAliveMs). */
+	mcpKeepAliveMs?: number;
 	/**
 	 * The test hooks' token ($CRB_TEST_HOOKS, testHooks.ts): with one, the
 	 * `/api/_test/*` routes exist; without, they don't (404).
@@ -279,6 +283,18 @@ export async function buildApp(
 		if (error instanceof NoAgentError) {
 			return reply.status(404).send({ error: error.message, code: "no-agent" });
 		}
+		if (error instanceof JoinElsewhereError) {
+			return reply.status(409).send({
+				error: error.message,
+				code: "elsewhere",
+				port: error.holder.port,
+			});
+		}
+		if (error instanceof StaleJoinRequestError) {
+			return reply
+				.status(409)
+				.send({ error: error.message, code: "stale-join" });
+		}
 		if (error instanceof UnknownAgentThreadError) {
 			return send(404, error.message);
 		}
@@ -371,6 +387,19 @@ export async function buildApp(
 				],
 			});
 	});
+	// The setup modal's "Join from a session" line carries the key (the
+	// page's own cookie is HttpOnly). Behind the key, as the manifest.
+	// Same origin only: another port on this host (same-site) can't ask.
+	app.get("/api/mcp/setup", async (request, reply) => {
+		const site = request.headers["sec-fetch-site"];
+		if (site !== undefined && site !== "same-origin" && site !== "none") {
+			return reply.status(403).send({ error: "Same origin only" });
+		}
+		return reply
+			.header("cache-control", "no-store")
+			.header("cross-origin-resource-policy", "same-origin")
+			.send({ key: options.accessKey });
+	});
 	// Opens (or finds) the review of a PR: crb <pr>.
 	app.post("/api/reviews", async (request) => {
 		const req = parseOpenBody(request.body);
@@ -380,6 +409,25 @@ export async function buildApp(
 	});
 	const baseUrl = (request: FastifyRequest) =>
 		options.baseUrl?.() ?? `http://${request.headers.host ?? "localhost"}`;
+
+	// A hidden tab's poll: whether a session asks to join this review, or
+	// left it. A pure lookup (registry.peek), outside the review routes'
+	// preHandler: it never opens a review, never counts as a use (the idle
+	// sweep still closes a forgotten one), and never reads or wakes its
+	// agent. A review with a pending request is never idle-closed (the
+	// broker is active), so a closed one has none: {}.
+	app.get<{ Params: { id: string } }>(
+		"/api/r/:id/agent/join",
+		async (request) => {
+			const agent = registry.peek(request.params.id)?.agent;
+			if (!agent) return {};
+			const { joinRequest, left } = agent.join.view();
+			return {
+				...(joinRequest ? { joinRequest } : {}),
+				...(left ? { left } : {}),
+			};
+		},
+	);
 
 	// A review's routes, by its id: /api/r/<id>/session, ...
 	await app.register(
@@ -778,6 +826,38 @@ export async function buildApp(
 				await agentOf(request).cancel();
 				return { ok: true };
 			});
+			// A session joining through MCP: the reviewer's Approve or Deny.
+			review.post<{ Params: { request: string } }>(
+				"/agent/join/:request",
+				async (request) => {
+					const approve = (request.body as { approve?: unknown } | null)
+						?.approve;
+					if (typeof approve !== "boolean") {
+						throw new BadRequestError("approve must be true or false");
+					}
+					await agentOf(request).join.answer(
+						joinRequestParam(request.params.request),
+						approve,
+					);
+					return { ok: true };
+				},
+			);
+			// The reviewer's Disconnect of a joined session.
+			review.post("/agent/disconnect", async (request) => {
+				await agentOf(request).disconnect();
+				return { ok: true };
+			});
+			// The reviewer's Spawn (Start): this review's ACP buddy on.
+			review.post("/agent/start", async (request) => {
+				await agentOf(request).startAcp();
+				return { ok: true };
+			});
+			// The reviewer's Detach: a joined session disconnected, or the
+			// ACP buddy off until the next Spawn.
+			review.post("/agent/detach", async (request) => {
+				await agentOf(request).detach();
+				return { ok: true };
+			});
 			review.post("/refresh", (request) => sessionOf(request).refresh());
 			review.get("/head", (request) => sessionOf(request).checkHead());
 		},
@@ -825,6 +905,18 @@ export async function buildApp(
 			if (error instanceof GitError) throw error;
 			return notFoundPage(reply, (error as Error).message);
 		}
+	});
+
+	// A session joining a review as its buddy (MCP), and its watcher.
+	const joinable = joinableDeps(registry, options.home);
+	registerMcp(app, {
+		registry,
+		reviews: (origin, query) => listJoinable(joinable, origin, query),
+		accessKey: options.accessKey,
+		joinedOnDisk: (id) => existsSync(join(agentsDir(), id, "joined.json")),
+		...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
+		baseUrl: () => options.baseUrl?.() ?? "http://localhost",
+		...(options.mcpKeepAliveMs ? { keepAliveMs: options.mcpKeepAliveMs } : {}),
 	});
 
 	if (options.home) {
@@ -1001,6 +1093,14 @@ function agentOf(request: FastifyRequest): AgentHost {
 }
 
 const AGENT_THREAD_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
+
+/** A join request id (a lowercase ULID); 400 otherwise. */
+function joinRequestParam(raw: string): string {
+	if (!AGENT_THREAD_ID.test(raw)) {
+		throw new BadRequestError("Not a join request id");
+	}
+	return raw;
+}
 
 function agentThreadParam(raw: string): string {
 	if (!AGENT_THREAD_ID.test(raw)) {

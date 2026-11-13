@@ -1,7 +1,6 @@
 import {
 	AlertIcon,
 	CheckCircleIcon,
-	CopyIcon,
 	DownloadIcon,
 	XIcon,
 } from "@primer/octicons-react";
@@ -9,6 +8,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UpdateInfo } from "../shared/update";
 import { ApiError, fetchJson } from "./api";
+import { type Copied, CopyMark, copyInto, copyWord } from "./CopyMark";
 import { useUnsaved } from "./files/useSetStates";
 import { SpinnerIcon } from "./Spinner";
 import { ToastSlot } from "./Toasts";
@@ -88,25 +88,24 @@ function IconButton(props: {
 
 /** A command to run by hand, with a copy button. */
 function Command(props: { command: string }) {
-	const [copied, setCopied] = useState(false);
+	const [copied, setCopied] = useState<Copied>(null);
+	const shown = useRef<HTMLElement>(null);
 	return (
 		<div className="flex min-w-0 items-center gap-1">
 			<code
+				ref={shown}
 				data-testid="update-command"
 				className="min-w-0 flex-1 overflow-x-auto rounded bg-code px-2 py-1 font-mono text-xs whitespace-nowrap text-code-ink select-all"
 			>
 				{props.command}
 			</code>
 			<IconButton
-				label={copied ? "Copied" : "Copy command"}
+				label={copyWord(copied, "Copy command")}
 				onClick={() => {
-					void navigator.clipboard
-						?.writeText(props.command)
-						.then(() => setCopied(true))
-						.catch(() => {});
+					void copyInto(props.command, shown.current, setCopied);
 				}}
 			>
-				<CopyIcon size={16} aria-hidden />
+				<CopyMark copied={copied} />
 			</IconButton>
 		</div>
 	);

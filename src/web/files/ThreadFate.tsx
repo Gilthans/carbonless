@@ -10,6 +10,7 @@ import {
 	GrabberIcon,
 	HistoryIcon,
 	type Icon,
+	QuestionIcon,
 	VersionsIcon,
 } from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -130,6 +131,23 @@ export const FATES: Record<
 		sentence: "Commented line has been rewritten since the review",
 		short: "Line rewritten",
 	},
+	outdated: {
+		label: "outdated",
+		// The icon of the "outdated" badge: one sign for one flag.
+		icon: HistoryIcon,
+		tone: "yellow",
+		tip: "Outdated on GitHub; its own commit can't be traced",
+		sentence: "GitHub marks the commented line outdated",
+		short: "Outdated",
+	},
+	untraced: {
+		label: "untraced",
+		icon: QuestionIcon,
+		tone: "yellow",
+		tip: "Couldn't trace the commented line here",
+		sentence: "Couldn't trace the commented line here",
+		short: "Line untraced",
+	},
 	"file-gone": {
 		label: "file deleted",
 		icon: FileRemovedIcon,
@@ -212,6 +230,8 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 		return <ChangedChip thread={thread} />;
 	}
 	if (placement.kind === "unplaced" || placement.kind === "outside") {
+		// GitHub's outdated already has its badge on the card: no second sign.
+		if (placement.fate === "outdated" && thread.outdated) return null;
 		const fate = FATES[placement.fate];
 		return (
 			<Chip

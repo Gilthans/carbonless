@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
+import { AGENT_POLL_MS } from "../src/shared/agent";
 import { acpLog, releaseAcp } from "../test/fake-acp/scenario";
 import { testGitEnv } from "../test/git-fixture";
 import {
@@ -14,10 +15,12 @@ import {
 	openFile,
 	row,
 	selectText,
+	setupDialog,
+	statusDialog,
 	test,
 } from "./agent-ui";
 import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
-import { OWNER_REPO, reviewPage } from "./fixtures";
+import { installClock, OWNER_REPO, reviewPage } from "./fixtures";
 
 // Its own crb serve: the agent config, its fake ACP env and checkouts.
 test.use({ crbServer: "own" });
@@ -414,6 +417,8 @@ test("elsewhere: a second server leaves the agent to the first, which answers wh
 	test.slow();
 	await pr(fixture);
 	const first = await agentCrb();
+	// Both pages' (one context's) clock.
+	await installClock(page);
 	await page.goto(first.url);
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
 	const port = new URL(first.url).port;
@@ -428,11 +433,15 @@ test("elsewhere: a second server leaves the agent to the first, which answers wh
 	// the machine is the first server's.
 	const section = await openFile(other, second.url, CALC);
 	const card = await ask(other, section, 3, "Who answers?");
-	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered", {
-		// The holder sees the question on its next status poll (5 s, the
-		// first page's), then this page on its own (5 s): two idle polls.
-		timeout: 20_000,
-	});
+	// The holder sees the question on its next status poll (the first
+	// page's), then this page on its own: idle polls, which the clock moves
+	// on to rather than waits out (the agent answers in real time between).
+	await expect(async () => {
+		await page.clock.fastForward(AGENT_POLL_MS);
+		await expect(card).toHaveAttribute("aria-label", "Agent thread, answered", {
+			timeout: 1000,
+		});
+	}).toPass({ timeout: 20_000 });
 	await expect(card.getByTestId("agent-message-ai")).toHaveText("ok");
 	const pids = new Set(
 		acpLog(acpLogPath)
@@ -450,7 +459,8 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	acpScenario,
 	acpLogPath,
 }) => {
-	// Two server starts, each opening the review and spawning its agent.
+	// Two server starts, each opening the review and spawning its agent
+	// (the second by the spawn flag the first set: it outlives a restart).
 	test.slow();
 	await pr(fixture);
 	const scenario = {
@@ -463,7 +473,7 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	const card = await ask(page, section, 3, "Survive a restart?");
 	await expect(card.getByTestId("agent-answering")).toBeVisible();
 	await s.stop();
-	const again = await agentCrb({ scenario });
+	const again = await agentCrb({ scenario, spawn: false });
 	const reopened = await openFile(page, again.url, CALC);
 	await row(reopened, 3).getByTestId("agent-bubble").click();
 	const thread = reopened.getByTestId("agent-thread");
@@ -999,7 +1009,11 @@ test("--viewer: no agent, Ask agent off with why", async ({
 	agentCrb,
 }) => {
 	await pr(fixture);
-	const s = await agentCrb({ args: ["--viewer", "someone-else"] });
+	const s = await agentCrb({
+		args: ["--viewer", "someone-else"],
+		// No agent here to spawn.
+		spawn: false,
+	});
 	await openFile(page, s.url, CALC);
 	await selectText(page, CALC, 3, 0, 6);
 	const button = bar(page).getByRole("button", { name: "Ask agent" });
@@ -1038,7 +1052,11 @@ test("--as-of: no agent, Ask agent off with why", async ({
 		}
 		sc.commits = { [p.repo.shas.at(-1) ?? ""]: { contexts: null } };
 	});
-	const s = await agentCrb({ args: ["--as-of", "2026-01-05T00:00:00Z"] });
+	const s = await agentCrb({
+		args: ["--as-of", "2026-01-05T00:00:00Z"],
+		// No agent here to spawn.
+		spawn: false,
+	});
 	await openFile(page, s.url, CALC);
 	await selectText(page, CALC, 3, 0, 6);
 	const off = bar(page).getByRole("button", { name: "Ask agent" });
@@ -1076,9 +1094,20 @@ test("no sideways scroll at 360 px with a card, a composer and the setup open", 
 	await expect(section.getByTestId("agent-composer")).toBeVisible();
 	await expectNoPageOverflow(page);
 	await shot(page, "agent-360-card", isMobile);
+	// The modal's both views: the agent's status, then (Detach) the setup.
 	await chip(page).click();
-	await expect(page.getByRole("dialog", { name: "Your agent" })).toBeVisible();
-	await expect(page.getByRole("radiogroup", { name: "Harness" })).toBeVisible();
+	const status = statusDialog(page);
+	await expect(status.getByTestId("agent-state")).toHaveText("Ready");
+	await expectNoPageOverflow(page);
+	await shot(page, "agent-360-status", isMobile);
+	await status.getByRole("button", { name: "Detach" }).click();
+	const setup = setupDialog(page);
+	await expect(setup.getByTestId("join-line")).toBeVisible();
+	await expectNoPageOverflow(page);
+	await setup.getByRole("tab", { name: "Spawn" }).click();
+	await expect(
+		setup.getByRole("radiogroup", { name: "Harness" }),
+	).toBeVisible();
 	await expectNoPageOverflow(page);
 	await shot(page, "agent-360-setup", isMobile);
 });

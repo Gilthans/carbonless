@@ -26,6 +26,7 @@ import { stubIntersection } from "./threadAgentFixtures";
 const status = (more: Partial<AgentStatus> = {}): AgentStatus => ({
 	state: "ready",
 	configured: true,
+	spawned: true,
 	agent: { name: "Claude Agent", version: "0.100.0" },
 	since: "2026-11-07T10:00:00Z",
 	waiting: 0,
@@ -130,13 +131,55 @@ describe("AgentThreadCard", () => {
 	it("waiting with no agent set up: the row opens the setup", async () => {
 		show(
 			thread(),
-			status({ state: "off", configured: false, agent: undefined }),
+			status({
+				state: "off",
+				configured: false,
+				spawned: false,
+				agent: undefined,
+			}),
 		);
 		expect(screen.getByTestId("agent-thread").textContent).toContain("Agent");
 		await userEvent.click(
 			screen.getByRole("button", { name: "Set up an agent" }),
 		);
 		expect(screen.getByTestId("setup-open")).toBeTruthy();
+	});
+
+	it("waiting with a config but nothing spawned or joined: the row opens the modal", async () => {
+		show(
+			thread(),
+			status({
+				state: "off",
+				configured: true,
+				spawned: false,
+				agent: undefined,
+			}),
+		);
+		expect(
+			screen.queryByRole("button", { name: "Set up an agent" }),
+		).toBeNull();
+		await userEvent.click(
+			screen.getByRole("button", { name: "Spawn or invite an agent" }),
+		);
+		expect(screen.getByTestId("setup-open")).toBeTruthy();
+	});
+
+	it("waiting with a joined session: no button, just waiting", () => {
+		show(
+			thread(),
+			status({
+				state: "ready",
+				spawned: false,
+				via: "mcp",
+				joined: {
+					name: "s",
+					machine: "m",
+					harness: "Claude Code",
+					since: "2026-11-07T10:00:00Z",
+				},
+			}),
+		);
+		expect(screen.getByTestId("agent-waiting").tagName).toBe("P");
 	});
 
 	it("answering: a spinner, the streamed text as Markdown, the activity, Stop", async () => {

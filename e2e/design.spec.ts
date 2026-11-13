@@ -166,10 +166,11 @@ node bench.js --runs 20
 };
 
 async function shot(page: Page, name: string, isMobile: boolean, full = false) {
-	await page.waitForTimeout(250);
+	// Transitions and animations shown at their end, not mid-way.
 	await page.screenshot({
 		path: `${dir}/design-${name}-${isMobile ? "phone" : "desktop"}.png`,
 		fullPage: full,
+		animations: "disabled",
 	});
 }
 

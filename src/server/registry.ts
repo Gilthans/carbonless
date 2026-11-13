@@ -77,7 +77,11 @@ export class SessionRegistry {
 	#generation = 0;
 	/** Resets under way: opens and gets are refused meanwhile (a straggler's). */
 	#resetting = 0;
-	/** Closes under way of sessions already out of #open (reset waits for them). */
+	/**
+	 * Closes under way of sessions already out of #open, to their review ids:
+	 * reset waits for them, and a reopen for its review's (the old session
+	 * releases the agent claim a new one restores a join under).
+	 */
 	readonly #closing = new Map<Promise<void>, string>();
 
 	constructor(options: { idleMs?: number; now?: () => number } = {}) {
@@ -121,6 +125,7 @@ export class SessionRegistry {
 		if (pending) return pending;
 		const generation = this.#generation;
 		const run = (async () => {
+			if (known !== undefined) await this.#afterClose(known);
 			const session = await Session.open(
 				req.pr,
 				req.cwd ?? process.cwd(),
@@ -174,7 +179,7 @@ export class SessionRegistry {
 			existing.lastUsed = this.#now();
 			return existing.session;
 		}
-		if (existing) this.#closeLater(existing.session);
+		if (existing) void this.#closeLater(existing.session);
 		this.#open.set(session.id, { session, lastUsed: this.#now(), viewer });
 		return session;
 	}
@@ -200,6 +205,7 @@ export class SessionRegistry {
 		if (pending) return pending;
 		const generation = this.#generation;
 		const run = (async () => {
+			await this.#afterClose(id);
 			const found = await findReviewById(cacheDir(), id);
 			if (!found) throw new UnknownReviewError(`No review ${id}`);
 			// Reset meanwhile: a late request of the last test opens nothing.
@@ -227,14 +233,49 @@ export class SessionRegistry {
 		return run;
 	}
 
-	/** Closes the sessions idle for longer than idleMs. */
+	/**
+	 * Review `id` if it is open now; never opens one, and isn't a use
+	 * (touch() once the caller knows the request is good).
+	 */
+	peek(id: string): Session | undefined {
+		const entry = this.#open.get(id);
+		return entry && !entry.session.closed ? entry.session : undefined;
+	}
+
+	/** Counts as a use of open review `id` (it isn't closed as idle); no-op otherwise. */
+	touch(id: string): void {
+		const entry = this.#open.get(id);
+		if (entry) entry.lastUsed = this.#now();
+	}
+
+	/** The reviews open now, with when each was last used (ms); none is touched. */
+	list(): { session: Session; lastUsed: number }[] {
+		return [...this.#open.values()]
+			.filter((e) => !e.session.closed)
+			.map((e) => ({ session: e.session, lastUsed: e.lastUsed }));
+	}
+
+	/** Closes the sessions idle for longer than idleMs (not one a session is joined to). */
 	async sweep(): Promise<void> {
 		const now = this.#now();
 		const idle = [...this.#open].filter(
-			([, e]) => now - e.lastUsed > this.#idleMs || e.session.closed,
+			([, e]) =>
+				// A joined session (or a request to join) is use: its watcher
+				// and tools may be all that reaches the review.
+				(now - e.lastUsed > this.#idleMs && !e.session.agent?.active()) ||
+				e.session.closed,
 		);
 		for (const [id] of idle) this.#open.delete(id);
 		await Promise.all(idle.map(([, e]) => this.#closeLater(e.session)));
+	}
+
+	/** Resolves once no close of review `id` is under way. */
+	async #afterClose(id: string): Promise<void> {
+		for (;;) {
+			const mine = [...this.#closing].filter(([, of]) => of === id);
+			if (mine.length === 0) return;
+			await Promise.allSettled(mine.map(([c]) => c));
+		}
 	}
 
 	/**

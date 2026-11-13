@@ -291,14 +291,111 @@ describe("placeThread", () => {
 		expect(p).toEqual({ kind: "outside", path: "a.ts", fate: "reverted" });
 	});
 
-	it("a thread whose own snapshot couldn't be had is never placed: rewritten", () => {
-		expect(placeThread(input({ diffs: null }), count)).toMatchObject({
+	it("a thread with nothing to trace from is never placed: untraced, or GitHub's outdated", () => {
+		expect(placeThread(input({ diffs: null }), count)).toEqual({
 			kind: "unplaced",
-			fate: "rewritten",
+			fate: "untraced",
+			path: "a.ts",
+			nearest: null,
 		});
 		expect(
+			placeThread(input({ diffs: null, untraced: "outdated" }), count),
+		).toMatchObject({ kind: "unplaced", fate: "outdated" });
+		expect(
 			placeThread(input({ diffs: null, inComparison: false }), count),
-		).toEqual({ kind: "outside", path: "a.ts", fate: "rewritten" });
+		).toEqual({ kind: "outside", path: "a.ts", fate: "untraced" });
+		expect(
+			placeThread(
+				input({ diffs: null, inComparison: false, untraced: "outdated" }),
+				count,
+			),
+		).toEqual({ kind: "outside", path: "a.ts", fate: "outdated" });
+	});
+
+	describe("traced from GitHub's line (CAR-116)", () => {
+		const github = (over: Partial<ThreadInput> = {}) =>
+			input({ source: "github", ...over });
+
+		it("on the same text: placed there, marked as GitHub's", () => {
+			expect(placeThread(github(), count)).toEqual({
+				kind: "placed",
+				anchor: {
+					path: "a.ts",
+					startSide: "RIGHT",
+					startLine: 5,
+					side: "RIGHT",
+					line: 5,
+				},
+				changed: false,
+				source: "github",
+			});
+			// Through a rename and lines inserted above.
+			expect(
+				placeThread(
+					github({
+						newPath: "b.ts",
+						diffs: diffs({ bd: createLineMapper([h(1, 0, 2, 2)]) }),
+					}),
+					count,
+				),
+			).toMatchObject({
+				kind: "placed",
+				anchor: { path: "b.ts", line: 7 },
+				source: "github",
+			});
+		});
+
+		it("its line rewritten or deleted: untraced, never changed or deleted since the review", () => {
+			const rewritten = placeThread(
+				github({ diffs: diffs({ bd: createLineMapper([h(5, 1, 5, 1)]) }) }),
+				count,
+			);
+			expect(rewritten).toEqual({
+				kind: "unplaced",
+				fate: "untraced",
+				path: "a.ts",
+				nearest: { side: "RIGHT", line: 5 },
+			});
+			const deleted = placeThread(
+				github({ diffs: diffs({ bd: createLineMapper([h(5, 1, 4, 0)]) }) }),
+				count,
+			);
+			expect(deleted).toMatchObject({
+				kind: "unplaced",
+				fate: "untraced",
+				path: "a.ts",
+				nearest: { side: "RIGHT", line: 4 },
+			});
+		});
+
+		it("its file out of the comparison: outside, untraced; gone: untraced too", () => {
+			expect(placeThread(github({ inComparison: false }), count)).toEqual({
+				kind: "outside",
+				path: "a.ts",
+				fate: "untraced",
+			});
+			expect(
+				placeThread(github({ diffs: null, newPath: null }), count),
+			).toMatchObject({ kind: "unplaced", fate: "untraced" });
+		});
+
+		it("a file comment stays on its file; a stored placement is the reviewer's, not GitHub's", () => {
+			expect(
+				placeThread(github({ anchor: null, newPath: "b.ts" }), count),
+			).toEqual({ kind: "file", path: "b.ts" });
+			const stored: ThreadAnchorRef = {
+				path: "a.ts",
+				startSide: "RIGHT",
+				startLine: 9,
+				side: "RIGHT",
+				line: 9,
+			};
+			expect(placeThread(github({ stored }), count)).toEqual({
+				kind: "placed",
+				anchor: stored,
+				changed: false,
+			});
+		});
 	});
 
 	it("C18: a file comment follows its file through a rename", () => {

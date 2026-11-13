@@ -20,6 +20,7 @@ import type {
 	ShapeCode,
 	ThreadAnchorRef,
 } from "../../shared/types.js";
+import { oneLine } from "../agent/prompt.js";
 
 export type { ShapeCode, ThreadAnchorRef };
 
@@ -804,6 +805,9 @@ function parseAnchor(raw: unknown): AgentAnchor | null {
 	};
 }
 
+/** A joined session's machine as read back from a ref: one line, capped (join.ts writes it so). */
+const MAX_MACHINE = 80;
+
 function parseThreadAnchor(
 	raw: Obj,
 	path: string,
@@ -871,9 +875,17 @@ function parseView(raw: unknown): AgentView | null {
 
 function parseIdentity(raw: unknown): AgentIdentity | null {
 	if (!isObj(raw)) return null;
-	const { name, version } = raw;
+	const { name, version, via, machine } = raw;
 	if (!isStr(name) || typeof version !== "string") return null;
-	return { name, version };
+	// Optional, informational: a bad value is dropped, the event kept.
+	return {
+		name,
+		version,
+		...(via === "acp" || via === "mcp" ? { via } : {}),
+		...(typeof machine === "string" && oneLine(machine, MAX_MACHINE)
+			? { machine: oneLine(machine, MAX_MACHINE) }
+			: {}),
+	};
 }
 
 function parseActivity(raw: unknown): AgentActivity[] | null {

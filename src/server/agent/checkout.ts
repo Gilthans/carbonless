@@ -87,9 +87,15 @@ export async function createCheckout(
 }
 
 /**
+ * What a review's agent dir keeps across servers (see join.ts): the spawn
+ * flag, a joined session, and a leftover `acp-off` (ignored, never deleted).
+ */
+const KEEP = new Set(["acp-on", "acp-off", "joined.json"]);
+
+/**
  * Removes `<agentsDir>/<review id>` dirs not in `live` whose claim is free
- * or names a dead pid (left by a server that stopped). Other names are
- * left alone.
+ * or names a dead pid (left by a server that stopped), all but their
+ * `acp-on`, `acp-off` and `joined.json`. Other names are left alone.
  */
 export async function sweepStaleCheckouts(
 	live: ReadonlySet<string>,
@@ -107,7 +113,19 @@ export async function sweepStaleCheckouts(
 				const dir = join(agentsDir(), name);
 				const claim = await readClaim(dir);
 				if (claim && pidAlive(claim.pid)) return;
-				await rm(dir, { recursive: true, force: true });
+				// A joined session and the spawn flag outlive a server
+				// (join.ts): only they stay.
+				const entries = await readdir(dir).catch(() => [] as string[]);
+				const kept = entries.filter((e) => KEEP.has(e));
+				if (kept.length === 0) {
+					await rm(dir, { recursive: true, force: true });
+					return;
+				}
+				await Promise.all(
+					entries
+						.filter((e) => !KEEP.has(e))
+						.map((e) => rm(join(dir, e), { recursive: true, force: true })),
+				);
 			}),
 	);
 }

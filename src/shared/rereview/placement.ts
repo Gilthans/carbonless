@@ -14,6 +14,15 @@
  * detection), never a text search across lines. Which commit did what is
  * not computed (owner, 2026-11-07: deferred).
  *
+ * A thread that can't be traced from its own commit (none given, or one
+ * git can't have) is traced from where GitHub puts it now instead: its
+ * current line on the PR's head (`source: "github"`; owner, 2026-11-11,
+ * CAR-116). Only the same text counts there: anything else (its line
+ * changed or gone, its file out of the comparison) is `untraced`, since
+ * "since the review" would be a claim about history it never followed.
+ * With no line from GitHub either, it is `outdated` (GitHub's word) or
+ * `untraced`, under its file. `rewritten` stays a trace's own answer.
+ *
  * Pure: no git, no I/O, nothing from `src/server/`.
  */
 
@@ -28,8 +37,10 @@ import type { CodeAnchor, DiffSide, ThreadAnchorRef } from "../types.js";
 
 /**
  * What became of a thread's lines: deleted (nothing replaced them);
- * rewritten (they can't be traced: past the end of the file, or the
- * thread's own commit couldn't be read); file-gone (the file was deleted);
+ * rewritten (a trace lost them: past the end of the file); outdated
+ * (never traced: no commit of its own to trace from, and GitHub marks it
+ * outdated); untraced (never traced, and GitHub gives no line it still
+ * sits on here); file-gone (the file was deleted);
  * moved (the file was renamed and the lines didn't follow: a candidate
  * only); reverted (the PR no longer changes that place: what the thread was
  * about is out of the PR); base-changed (an old-side line the base itself
@@ -38,14 +49,25 @@ import type { CodeAnchor, DiffSide, ThreadAnchorRef } from "../types.js";
 export type Fate =
 	| "deleted"
 	| "rewritten"
+	| "outdated"
+	| "untraced"
 	| "file-gone"
 	| "moved"
 	| "reverted"
 	| "base-changed";
 
 export type ThreadPlacement =
-	/** On the same text (a stored placement too: the reviewer's word). */
-	| { kind: "placed"; anchor: ThreadAnchorRef; changed: false }
+	/**
+	 * On the same text (a stored placement too: the reviewer's word);
+	 * `source: "github"`: traced from GitHub's current line, not from the
+	 * thread's own commit.
+	 */
+	| {
+			kind: "placed";
+			anchor: ThreadAnchorRef;
+			changed: false;
+			source?: "github";
+	  }
 	/**
 	 * On the lines that replaced the commented ones; `old` the commented
 	 * range in the thread's own snapshot and its text there (empty when
@@ -74,7 +96,7 @@ export type ThreadPlacement =
 	/**
 	 * The file is not in the comparison at all: listed in the trailing
 	 * group by its original `path`, with why (file-gone: deleted; reverted:
-	 * the PR no longer changes it; rewritten: not traceable).
+	 * the PR no longer changes it; outdated, untraced: not traceable).
 	 */
 	| { kind: "outside"; path: string; fate: Fate };
 
@@ -103,6 +125,18 @@ export interface ThreadInput {
 	own?: LineMapper;
 	/** Text in the target snapshot, for a changed thread's new lines. */
 	newLineText?: (pos: Position) => string | null;
+	/**
+	 * "github": `anchor`, `diffs` and `own` are GitHub's current line on
+	 * the PR's head, not the thread's own commit (it has none to trace
+	 * from).
+	 */
+	source?: "github";
+	/**
+	 * Why `diffs` is null when the file isn't gone: there is nothing to
+	 * trace from, and GitHub says outdated ("outdated") or gives no line
+	 * ("untraced", the default).
+	 */
+	untraced?: "outdated" | "untraced";
 }
 
 const isLine = (n: unknown): n is number =>
@@ -235,12 +269,34 @@ export function placeThread(
 			changed: false,
 		};
 	}
+	const p = traced(t);
+	if (t.source !== "github" || p.kind === "file") return p;
+	if (p.kind === "placed") return { ...p, source: "github" };
+	// Only GitHub's own line, unchanged, is GitHub's word: the rest was
+	// never traced from the thread's own commit.
+	if (p.kind === "outside") return { ...p, fate: "untraced" };
+	return p.kind === "changed"
+		? {
+				kind: "unplaced",
+				fate: "untraced",
+				path: p.anchor.path,
+				nearest: { side: p.anchor.side, line: p.anchor.line },
+			}
+		: { kind: "unplaced", fate: "untraced", path: p.path, nearest: p.nearest };
+}
+
+/** placeThread's trace, with no stored placement. */
+function traced(t: ThreadInput): ThreadPlacement {
 	const gone = t.newPath === null;
 	if (!t.inComparison) {
 		return {
 			kind: "outside",
 			path: t.path,
-			fate: gone ? "file-gone" : t.diffs === null ? "rewritten" : "reverted",
+			fate: gone
+				? "file-gone"
+				: t.diffs === null
+					? (t.untraced ?? "untraced")
+					: "reverted",
 		};
 	}
 	const path = t.newPath ?? t.path;
@@ -250,7 +306,12 @@ export function placeThread(
 	if (!t.anchor) return { kind: "file", path };
 	const diffs = t.diffs;
 	if (!diffs) {
-		return { kind: "unplaced", fate: "rewritten", path, nearest: null };
+		return {
+			kind: "unplaced",
+			fate: t.untraced ?? "untraced",
+			path,
+			nearest: null,
+		};
 	}
 	const startPos: Position = {
 		side: t.anchor.startSide,

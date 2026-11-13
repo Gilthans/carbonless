@@ -6,10 +6,17 @@ import {
 	fileSection,
 	ignoreWhitespace,
 	openFiles,
+	passLanding,
 	setSwitch,
 	sideBySide,
 } from "./files-ui";
-import { expect, type PrOptions, reviewPage, test } from "./fixtures";
+import {
+	expect,
+	installClock,
+	type PrOptions,
+	reviewPage,
+	test,
+} from "./fixtures";
 
 /**
  * A handful of the gallery's inline-diff cases (Gilthans/carbonless-gallery
@@ -177,6 +184,7 @@ test("a landing's and a pick's wash show over the word marks, and the landing's 
 	await pr(fixture);
 	const s = await startCrb();
 	const path = "inline/01-rename-identifier.ts";
+	await installClock(page);
 	await page.goto(
 		reviewPage(
 			s.url,
@@ -204,7 +212,8 @@ test("a landing's and a pick's wash show over the word marks, and the landing's 
 		await word.evaluate((el) => getComputedStyle(el).backgroundImage),
 	).toContain("linear-gradient");
 	// ...and fades from it with the row, to nothing.
-	await expect(row).not.toHaveAttribute("data-landed", { timeout: 5000 });
+	await passLanding(page);
+	await expect(row).not.toHaveAttribute("data-landed");
 	await expect.poll(wash).toBe(none);
 	// A pick's wash reaches it too.
 	await row.locator('td[data-testid="new"] button').click();

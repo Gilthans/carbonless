@@ -3,6 +3,18 @@ import { expect, reviewPage } from "./fixtures";
 
 /** Files page helpers that work on desktop and phone layouts alike. */
 
+/**
+ * Moves the page's clock (installClock) past a landed row's highlight:
+ * LANDED_MS, then its 1 s fade (DiffBody.tsx), counted from the page's next
+ * idle callback. Two jumps: the first runs the idle callback, which starts
+ * the highlight's timers; the second fires them. (One runFor would do it
+ * too, but steps through every animation frame on the way.)
+ */
+export async function passLanding(page: Page) {
+	await page.clock.fastForward(100);
+	await page.clock.fastForward(2500 + 1000);
+}
+
 export const progress = (page: Page) =>
 	page.getByRole("progressbar", { name: "Review progress" });
 

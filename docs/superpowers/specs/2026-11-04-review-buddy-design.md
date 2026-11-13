@@ -275,6 +275,10 @@ hole carbonless never sees.
   it (30 min idle). Opening a review page is what opens the session, so
   the owner's "as soon as I open the review page" holds. The process is
   idle until a question arrives; it costs no tokens.
+  *Superseded 2026-11-12 (agent setup modal spec, "Server: no automatic
+  spawn"):* a configured agent spawns only in a review whose spawn flag
+  (`acp-on`) the reviewer set with Spawn; opening the review no longer
+  starts it.
 - **One ACP session per review**, created right after `initialize`. Every
   thread's messages are prompts on that session, one at a time, so the
   agent keeps what it learned across threads. (Per-thread sessions are a
@@ -618,12 +622,11 @@ once.
   actually uses.
 - **Agent-opened threads:** the storage accepts them; a producer is an ACP
   extension method or the MCP door's `open_thread`.
-- **The MCP door:** a carbonless MCP server (`attach`, a non-blocking
-  `requests` poll with a cursor, `thread`, `reply`) over Streamable HTTP
-  with a per-review bearer token, for agents carbonless can't launch
-  (another machine, a harness without ACP). Same thread model, same ref.
-  The owner's preference: the poll returns at once and the agent chooses
-  its cadence.
+- **The MCP door:** designed and built in
+  CAR-81 (the spec is a document on the ticket): a session the reviewer
+  already has joins a review through crb's `/mcp` after the reviewer's
+  Approve, and a background watcher wakes it for each question. Same
+  thread model, same ref.
 - Remote ACP agents when the HTTP/WebSocket transport lands.
 - Suggest a review comment from an agent thread (the reviewer edits and
   posts; AI text still never goes straight to GitHub).

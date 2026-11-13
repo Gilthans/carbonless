@@ -109,6 +109,24 @@ re-read" show only when the engine's answer says so: an identical diff
 with no reworked, new or gone cluster. Approving again on an identical
 diff posts a review only on the reviewer's press.
 
+## A thread with nothing to trace from sits on GitHub's line
+
+Thread placement traces each thread from the commit it was written on
+(owner, 2026-11-11, CAR-116). When there is nothing of its own to trace
+from (GitHub gave no `originalCommit`, the commit can't be fetched, or it
+shares no history with the base), it is traced instead from where GitHub
+puts it now: its current line on the PR's head GitHub gave in the same
+answer (never a head learned later), new side only (one line: GitHub's
+current start line isn't kept; an old-side line is numbered against
+GitHub's merge base, which can differ from ours, so it is `untraced`).
+Only that same text places it, with no chip, as GitHub would show it;
+GitHub's line rewritten or gone in the viewed snapshot, or its file out
+of the comparison, is `untraced` (never "changed since" or "deleted since
+the review": no history was followed). With no line from GitHub either,
+it is listed under its file as `outdated` when GitHub says so, else
+`untraced`. `rewritten` is only ever a real trace's answer. A placement
+from GitHub's line carries `source: "github"` in `GET /placements`.
+
 ## Every visible cluster is individually markable
 
 The owner: "every cluster visible in the UI in any view should be
@@ -585,6 +603,26 @@ question would be on someone else's behalf, or about a past moment.
 - **A question never waits on the agent to be sent.** Ask agent writes
   the thread at once; it waits (yellow) until an agent answers, whether
   none is set up, it is starting, busy, crashed or elsewhere.
+- **The reviewer approves every join.** A session that asks to join
+  through crb's `/mcp` (`attach`) gets nothing from inside the review
+  (threads, code, PR body) until the reviewer presses Approve in the bar
+  on that review's pages; Deny, or no answer within 10 minutes, ends the
+  request. The access key alone lets a session list reviews, never join
+  one (spec 2026-11-10, `docs/faq.md` "Joining a review from a session").
+- **No agent starts in a review the reviewer didn't ask for one in.** A
+  configured ACP agent runs in a review only while that review's spawn
+  flag is set (`acp-on` in its agent dir, kept across restarts; local
+  state, never `refs/crb`). Only the reviewer's Spawn (in the setup modal)
+  sets it; nothing else does: not opening the review, a status poll, a new
+  question, a config save or a crb restart. Detach clears it, stops the
+  agent, removes its checkout and releases the review's claim (spec
+  2026-11-12, agent setup modal).
+- **One buddy per review, and the ACP buddy stays off once replaced.**
+  Approving a join clears the spawn flag (before `joined.json` is
+  written) and stops the ACP buddy. When the joined session leaves
+  (detach, Disconnect, lost, replaced), nothing starts the ACP buddy again
+  until the reviewer's Spawn. Questions wait (yellow) meanwhile, and a
+  question handed to a session that never replied waits again.
 
 - **Resolving is always a human action; the agent may only suggest it
   (owner, 2026-11-11: "Resolving a thread is ALWAYS a human action. The

@@ -527,10 +527,15 @@ test("a click right as Undo cross-off swaps in doesn't undo", async ({
 			}),
 	);
 	const undo = fileActionButton(section, "Undo cross-off");
-	await page.waitForTimeout(100);
+	// The ignored click's turn has passed: a frame drawn after it.
+	await page.evaluate(
+		() => new Promise((done) => requestAnimationFrame(() => done(null))),
+	);
 	await expect(undo).toBeVisible();
 	await expect(bar).toContainText("0 / 3 clusters reviewed");
-	// Once the guard is over, a click asks and a second one undoes.
+	// Once the guard (UNDO_ARM_MS, 500 ms) is over, a click asks and a second
+	// one undoes. Waited for in real time: the faked clock slows this page by
+	// more than the guard lasts (measured, CAR-132).
 	await page.waitForFunction((t) => performance.now() > t + 500, clickedAt);
 	await undo.click();
 	const armed = section.locator("button[data-armed]");
