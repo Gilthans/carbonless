@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
+import { AGENT_POLL_MS } from "../src/shared/agent";
 import { acpLog, releaseAcp } from "../test/fake-acp/scenario";
 import { testGitEnv } from "../test/git-fixture";
 import {
@@ -19,7 +20,7 @@ import {
 	test,
 } from "./agent-ui";
 import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
-import { OWNER_REPO, reviewPage } from "./fixtures";
+import { installClock, OWNER_REPO, reviewPage } from "./fixtures";
 
 // Its own crb serve: the agent config, its fake ACP env and checkouts.
 test.use({ crbServer: "own" });
@@ -416,6 +417,8 @@ test("elsewhere: a second server leaves the agent to the first, which answers wh
 	test.slow();
 	await pr(fixture);
 	const first = await agentCrb();
+	// Both pages' (one context's) clock.
+	await installClock(page);
 	await page.goto(first.url);
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
 	const port = new URL(first.url).port;
@@ -430,11 +433,15 @@ test("elsewhere: a second server leaves the agent to the first, which answers wh
 	// the machine is the first server's.
 	const section = await openFile(other, second.url, CALC);
 	const card = await ask(other, section, 3, "Who answers?");
-	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered", {
-		// The holder sees the question on its next status poll (5 s, the
-		// first page's), then this page on its own (5 s): two idle polls.
-		timeout: 20_000,
-	});
+	// The holder sees the question on its next status poll (the first
+	// page's), then this page on its own: idle polls, which the clock moves
+	// on to rather than waits out (the agent answers in real time between).
+	await expect(async () => {
+		await page.clock.fastForward(AGENT_POLL_MS);
+		await expect(card).toHaveAttribute("aria-label", "Agent thread, answered", {
+			timeout: 1000,
+		});
+	}).toPass({ timeout: 20_000 });
 	await expect(card.getByTestId("agent-message-ai")).toHaveText("ok");
 	const pids = new Set(
 		acpLog(acpLogPath)

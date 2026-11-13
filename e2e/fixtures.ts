@@ -99,6 +99,22 @@ export function reviewPage(url: string, page: string, search = ""): string {
 }
 
 /**
+ * Fakes the page's clock from the real time now (relative dates read
+ * right), before its first navigation: Date, timers, requestAnimationFrame
+ * and idle callbacks of every page in its context, kept across reloads. Time
+ * flows as usual until the test moves it past an app timer (a fade, an
+ * undo window, a delayed-save hint, a poll) with `page.clock.fastForward`
+ * (each due timer fires once) or `runFor` (every timer in order, those
+ * they start too), instead of waiting it out. The app's own timer logic
+ * still runs; only time moves. CSS animations and transitions keep real
+ * time (check their computed values, not their run), and so do crb and the
+ * fake gh: only the page's clock is faked.
+ */
+export async function installClock(page: Page): Promise<void> {
+	await page.clock.install({ time: Date.now() });
+}
+
+/**
  * Runs a test's setup step (a fixture repo, starting crb) and gives the test
  * back the time it took: on a loaded machine these take seconds, and the
  * test's own timeout is for its own steps. START_TIMEOUT_MS

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import { DELETE_UNDO_MS, FADE_MS } from "../src/web/threads/threadWrites";
 import {
 	editElsewhere,
 	release,
@@ -8,7 +9,13 @@ import {
 	threadComment,
 } from "../test/fake-gh/scenario";
 import { fileSection, openFiles } from "./files-ui";
-import { expect, type Pr, type PrOptions, test } from "./fixtures";
+import {
+	expect,
+	installClock,
+	type Pr,
+	type PrOptions,
+	test,
+} from "./fixtures";
 
 /**
  * Editing and deleting the viewer's own comments, written to the fake gh
@@ -136,6 +143,9 @@ async function confirmDelete(page: Page, del: Locator) {
 	await confirmation(page).getByRole("button", { name: "Delete" }).click();
 	await expect(confirmation(page)).toHaveCount(0);
 }
+
+/** How many deletes reached GitHub. */
+const deletes = (p: Pr) => (p.ghLog().match(/ -X DELETE /g) ?? []).length;
 
 const overflow = (page: Page) =>
 	page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
@@ -291,6 +301,7 @@ test("a reload in a delete's undo window asks first, and a dismissed ask stays",
 }) => {
 	const p = await setup(pr);
 	const s = await startCrb();
+	await installClock(page);
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
 	await openCard(c);
@@ -298,14 +309,22 @@ test("a reload in a delete's undo window asks first, and a dismissed ask stays",
 	await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
 	// Nothing is sent yet and nothing resends it: leaving would lose it.
 	const asked: string[] = [];
-	page.once("dialog", (d) => {
-		asked.push(d.type());
-		void d.dismiss();
+	const dismissed = new Promise<void>((done) => {
+		page.once("dialog", (d) => {
+			asked.push(d.type());
+			void d.dismiss().then(done);
+		});
 	});
-	await page.reload({ timeout: 2000 }).catch(() => {});
+	// A dismissed reload never navigates: its promise is left behind. If
+	// the page stops asking, the reload goes through instead, and `asked`
+	// says so.
+	const reloaded = page.reload().catch(() => {});
+	await Promise.race([dismissed, reloaded]);
 	expect(asked).toEqual(["beforeunload"]);
 	await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
-	await expect.poll(() => stored(p, 0).removed, { timeout: 10_000 }).toBe(true);
+	// The window runs out on the page that stayed: the delete goes.
+	await page.clock.fastForward(DELETE_UNDO_MS);
+	await expect.poll(() => stored(p, 0).removed).toBe(true);
 });
 
 test("delete from an Overview card: Undo sends nothing; then the card fades and leaves", async ({
@@ -314,12 +333,10 @@ test("delete from an Overview card: Undo sends nothing; then the card fades and 
 	startCrb,
 	isMobile,
 }) => {
-	// It waits out the 5 s undo window twice, then the fade: past the
-	// default 30 s on a loaded machine.
-	test.slow();
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	const p = await setup(pr);
 	const s = await startCrb();
+	await installClock(page);
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
 	await openCard(c);
@@ -359,12 +376,19 @@ test("delete from an Overview card: Undo sends nothing; then the card fades and 
 	await shot(page, "deleted-undo", isMobile, c);
 	await row.getByRole("button", { name: "Undo" }).click();
 	await expect(c.getByTestId("thread-body")).toContainText("My take");
-	await page.waitForTimeout(5500);
-	expect(stored(p, 0).removed).toBe(false);
+	// Past the undone window: nothing goes.
+	await page.clock.fastForward(DELETE_UNDO_MS);
 	await confirmDelete(page, c.getByRole("button", { name: "Delete" }));
-	await expect(c).toHaveAttribute("data-fading", "true", { timeout: 10_000 });
-	await expect(c).toHaveCount(0, { timeout: 10_000 });
+	await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
+	await page.clock.fastForward(DELETE_UNDO_MS);
+	// Gone on GitHub: the card fades, then leaves.
+	await expect(c).toHaveAttribute("data-fading", "true");
+	await page.clock.fastForward(FADE_MS);
+	await expect(c).toHaveCount(0);
 	expect(stored(p, 0).removed).toBe(true);
+	// One delete reached GitHub: the undone one was never sent (it would
+	// have gone first, on the same thread's lane).
+	expect(deletes(p)).toBe(1);
 	await page.reload();
 	await expect(humans(page).getByTestId("thread")).toHaveCount(2);
 });
@@ -403,6 +427,7 @@ test("deleting an opener with replies leaves [deleted] as a normal comment, whic
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	const p = await setup(pr);
 	const s = await startCrb();
+	await installClock(page);
 	await page.goto(s.url);
 	const c = card(page, "b.txt");
 	await openCard(c);
@@ -413,9 +438,9 @@ test("deleting an opener with replies leaves [deleted] as a normal comment, whic
 		"It stays as [deleted] in the thread.",
 	);
 	await confirmation(page).getByRole("button", { name: "Delete" }).click();
-	await expect(c.getByTestId("thread-body")).toHaveText("[deleted]", {
-		timeout: 10_000,
-	});
+	await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
+	await page.clock.fastForward(DELETE_UNDO_MS);
+	await expect(c.getByTestId("thread-body")).toHaveText("[deleted]");
 	await expect.poll(() => bodies(p, 2)).toEqual(["[deleted]", "Fair"]);
 	await page.reload();
 	const again = card(page, "b.txt");
@@ -447,6 +472,7 @@ test("edit and delete a reply from Files changed", async ({
 }) => {
 	const p = await setup(pr);
 	const s = await startCrb();
+	await installClock(page);
 	await openFiles(page, s.url);
 	const section = fileSection(page, "a.txt");
 	await section.getByRole("button", { name: "Expand file" }).click();
@@ -477,9 +503,8 @@ test("edit and delete a reply from Files changed", async ({
 		.toEqual(["Changed how?", "Because of the cache"]);
 	await confirmDelete(page, edited.getByRole("button", { name: "Delete" }));
 	await expect(thread.getByTestId("comment-deleted-row")).toBeVisible();
-	await expect(thread.getByTestId("thread-comment")).toHaveCount(1, {
-		timeout: 10_000,
-	});
+	await page.clock.fastForward(DELETE_UNDO_MS);
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(1);
 	await expect.poll(() => bodies(p, 1)).toEqual(["Changed how?"]);
 	await expect(
 		section.getByRole("button", { name: /^1 comment on line 2/ }),

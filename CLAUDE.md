@@ -200,9 +200,18 @@ loading never looking empty, checking against a real PR):
   reference workload, or a scaling check: the input 4x as large against
   four runs of the quarter; `test/cpu.ts`), never against an absolute
   budget measured on the devbox alone, because CI runners' CPUs are slower
-  and contended. No automatic retries (Playwright `retries`, Vitest
-  `retry`): a flaky test fails visibly and gets fixed. Playwright's expects
-  wait 10 s (a reload's chained reads); a test that needs longer says why.
+  and contended. A test that needs an app timer to elapse (a fade, an undo
+  window, a delayed-save hint, a poll) moves the page's clock by default
+  (`installClock`, `e2e/fixtures.ts`); where the clock costs more than it
+  skips (measured; a comment says so), it waits on the state with an
+  expect, never a fixed sleep (no `page.waitForTimeout`). To prove
+  something doesn't happen, it moves past the window and checks what was
+  sent (`p.ghLog()`, a `page.route` count). `fastForward` for one-shot
+  timers, `runFor` when a chain must fire in order; don't assert "just
+  before the timer" without `pauseAt`. No automatic retries (Playwright
+  `retries`, Vitest `retry`): a flaky test fails visibly and gets fixed.
+  Playwright's expects wait 10 s (a reload's chained reads); a test that
+  needs longer says why.
 - `pnpm flake-check <files…> [--runs N] [--load L] [-g title] [--project p]`
   runs unit files or e2e specs N times (default 5), in the queue. `--load L`
   adds L busy loops (default none: the devbox is loaded enough by other
