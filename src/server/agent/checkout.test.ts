@@ -124,13 +124,15 @@ describe("sweepStaleCheckouts", () => {
 		expect(existsSync(join(agentsDir(), OTHER))).toBe(true);
 	});
 
-	it("keeps a stale dir's acp-off and joined.json (a crb restart keeps them), the rest goes", async () => {
+	it("keeps a stale dir's acp-on, a leftover acp-off and joined.json (a crb restart keeps them), the rest goes", async () => {
 		claimed(REVIEW, dead());
+		writeFileSync(join(agentsDir(), REVIEW, "acp-on"), "");
 		writeFileSync(join(agentsDir(), REVIEW, "acp-off"), "");
 		writeFileSync(join(agentsDir(), REVIEW, "joined.json"), "{}");
 		await sweepStaleCheckouts(new Set());
 		expect(readdirSync(join(agentsDir(), REVIEW)).sort()).toEqual([
 			"acp-off",
+			"acp-on",
 			"joined.json",
 		]);
 	});

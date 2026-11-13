@@ -182,8 +182,12 @@ export interface AgentStatus {
 	joinRequest?: JoinIdentity & { id: string; at: string };
 	/** The latest joined session to leave (in server memory). */
 	left?: JoinIdentity & { why: JoinLeave; at: string };
-	/** The ACP buddy stays off (a join was approved) until Start. */
-	acpOff?: boolean;
+	/** This review's ACP spawn flag is set (Spawn pressed; cleared by Detach or an approved join). */
+	spawned?: boolean;
+	/** When this review's spawn flag was set (ISO). */
+	spawnedAt?: string;
+	/** When carbonless last heard from the agent (ISO): an ACP message, an MCP tool call or watcher. */
+	seen?: string;
 }
 
 /** Exactly one of `span` and `thread`. */

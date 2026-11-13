@@ -20,7 +20,6 @@ const status = (left?: { why: JoinLeave; at: string }): AgentStatus => ({
 	configured: true,
 	since: "2026-11-10T10:00:00Z",
 	waiting: 1,
-	acpOff: true,
 	...(left
 		? { left: { name: "carbonless · main", machine: "devbox", ...left } }
 		: {}),

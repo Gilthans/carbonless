@@ -98,8 +98,9 @@ export interface RunnerDeps {
 	/** The reviewer's login, named on their messages in the envelope. */
 	viewer?: string;
 	/**
-	 * The review's ACP buddy is off (a session joined through MCP; only
-	 * the reviewer's Start clears it): nothing spawns, no turn starts.
+	 * The review's ACP buddy is off (its spawn flag isn't set, or a
+	 * session joined through MCP): nothing spawns, no turn starts, and a
+	 * process still running is stopped on the next status. None: always on.
 	 */
 	acpOff?: () => boolean;
 	/** The review's claim, shared with a joined session (else the runner takes its own). */
@@ -191,6 +192,10 @@ export class AgentRunner {
 	#stopCancelled: AcpAgent | null = null;
 	#again = false;
 	#closed: Promise<void> | null = null;
+	/** A detach under way (the reviewer's, or ACP found off on a status). */
+	#detaching: Promise<void> | null = null;
+	/** The last message from the agent's connection (ms). */
+	#seen: number | undefined;
 
 	constructor(deps: RunnerDeps) {
 		this.#deps = deps;
@@ -233,6 +238,7 @@ export class AgentRunner {
 		// Questions asked elsewhere (another server showing `elsewhere`)
 		// reach the ref, not this runner: the holder answers them on its poll.
 		if (waiting > 0 && this.#state === "ready" && !this.#pump) this.poke();
+		if (this.#off()) this.#windDown();
 		const answering = this.#answering;
 		// ACP going off: off at once, unless a turn still finishes (stop()).
 		const stopping = this.#off() && !answering;
@@ -261,13 +267,33 @@ export class AgentRunner {
 			...(this.#state === "elsewhere" && this.#elsewhere !== undefined
 				? { elsewhere: this.#elsewhere }
 				: {}),
+			...(this.#seenAt() ? { seen: this.#seenAt() } : {}),
 			waiting,
 		};
 	}
 
+	/** When the agent was last heard from (ISO): now while it is alive and idle. */
+	#seenAt(): string | undefined {
+		const agent = this.#proc?.agent;
+		if (agent?.alive && !this.#answering && !this.#off()) {
+			return new Date(this.#now()).toISOString();
+		}
+		return this.#seen === undefined
+			? undefined
+			: new Date(this.#seen).toISOString();
+	}
+
 	/** After a human open or message: spawns if needed, then drains. Never throws. */
 	poke(): void {
-		if (this.#closed || this.#off()) return;
+		if (this.#closed) return;
+		if (this.#off()) {
+			// The flag cleared elsewhere: what still runs here goes.
+			this.#windDown();
+			return;
+		}
+		// A detach under way finishes first; its end pokes again. Not
+		// #again: the pump it waits for would take that as a new round.
+		if (this.#detaching) return;
 		this.#again = true;
 		if (this.#pump) return;
 		this.#pump = this.#run()
@@ -276,7 +302,10 @@ export class AgentRunner {
 			})
 			.finally(() => {
 				this.#pump = null;
-				if (this.#again && !this.#closed) this.poke();
+				if (this.#closed) return;
+				// Turned off while it ran (a poke then found it busy): wind down now.
+				if (this.#off()) this.#windDown();
+				else if (this.#again) this.poke();
 			});
 	}
 
@@ -337,6 +366,90 @@ export class AgentRunner {
 		while (this.#pump) await this.#pump;
 	}
 
+	/**
+	 * The reviewer's Detach (its spawn flag already cleared): the turn
+	 * under way is cancelled (its partial reply isn't stored; the question
+	 * still waits), the process stops, the checkout is removed and the
+	 * claim released: nothing is coming. Off. Unlike close(), the runner
+	 * stays usable: the next Spawn starts afresh.
+	 */
+	detach(): Promise<void> {
+		if (this.#closed) return this.#closed;
+		return this.#startDetach({ keepCheckout: false });
+	}
+
+	/**
+	 * ACP turned off with no stop() here (another server's Detach, a flag
+	 * removed by hand, a join approved): the process goes and the claim is
+	 * let go; the checkout stays for a Spawn to come. On a status or a poke.
+	 */
+	#windDown(): void {
+		if (
+			this.#closed ||
+			this.#detaching ||
+			this.#pump ||
+			this.#answering ||
+			!(this.#proc || this.#release)
+		) {
+			return;
+		}
+		// #detach catches what it awaits; a failure here still shows.
+		this.#startDetach({ keepCheckout: true }).catch((error: unknown) => {
+			this.#set("error", { error: (error as Error).message });
+		});
+	}
+
+	/**
+	 * One detach at a time, after any under way. While one runs, poke()
+	 * only records itself; once it is over (and #detaching is clear), a
+	 * flag set meanwhile (Spawn, Restart) starts the agent afresh.
+	 */
+	#startDetach(opts: { keepCheckout: boolean }): Promise<void> {
+		const under = this.#detaching;
+		const run = async () => {
+			await under;
+			await this.#detach(opts);
+		};
+		const mine: Promise<void> = run().finally(() => {
+			if (this.#detaching !== mine) return;
+			this.#detaching = null;
+			if (!this.#closed && !this.#off()) this.poke();
+		});
+		this.#detaching = mine;
+		return mine;
+	}
+
+	async #detach(opts: { keepCheckout: boolean }): Promise<void> {
+		this.#again = false;
+		const agent = this.#proc?.agent;
+		if (agent && this.#answering) {
+			// carbonless's cancel, not the reviewer's Stop: nothing is stored.
+			this.#stopCancelled = agent;
+			await agent.cancel();
+		}
+		try {
+			await this.#stopProc();
+			await this.#pump;
+			// A spawn that finished meanwhile is closed too.
+			await this.#stopProc();
+		} finally {
+			this.#stopCancelled = null;
+		}
+		if (!opts.keepCheckout) {
+			await this.#checkout?.remove().catch(() => {});
+			this.#checkout = null;
+		}
+		await this.#release?.().catch(() => {});
+		this.#release = null;
+		this.#identity = undefined;
+		this.#answering = null;
+		this.#crashes = 0;
+		this.#seen = undefined;
+		if (this.#closed) return;
+		// Spawn pressed again while this ran: #startDetach pokes once it ends.
+		this.#set("off");
+	}
+
 	/** Stops the current turn only. */
 	async cancel(): Promise<void> {
 		const agent = this.#proc?.agent;
@@ -347,6 +460,8 @@ export class AgentRunner {
 	close(): Promise<void> {
 		this.#closed ??= (async () => {
 			this.#again = false;
+			// A detach under way finishes first (one release of the claim).
+			await this.#detaching;
 			await this.#stopProc();
 			await this.#pump;
 			await this.#checkout?.remove().catch(() => {});
@@ -518,6 +633,8 @@ export class AgentRunner {
 		}
 		this.#identity = agent.info;
 		this.#prompted = false;
+		// Its handshake answered.
+		this.#seen = this.#now();
 		this.#set("ready");
 		return agent;
 	}
@@ -634,6 +751,8 @@ export class AgentRunner {
 		);
 		const reply = await agent.prompt(buildPrompt(env, anchored, hunk));
 		clearTimeout(deadline);
+		// Its stop (or its connection's end) came in.
+		if (reply.stop !== "error") this.#seen = this.#now();
 		this.#prompted = true;
 		try {
 			return await this.#store(
@@ -894,6 +1013,7 @@ export class AgentRunner {
 	}
 
 	#onUpdate(u: SessionUpdate): void {
+		this.#seen = this.#now();
 		const a = this.#answering;
 		if (!a) return;
 		if (u.sessionUpdate === "agent_message_chunk") {
@@ -914,6 +1034,7 @@ export class AgentRunner {
 	}
 
 	#onPermission(req: RequestPermissionRequest): RequestPermissionResponse {
+		this.#seen = this.#now();
 		const d = decidePermission(req, this.#config?.leash ?? "open");
 		const a = this.#answering;
 		if (a) {

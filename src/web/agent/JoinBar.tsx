@@ -1,16 +1,11 @@
 import { CheckIcon, PlugIcon, XIcon } from "@primer/octicons-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
 import type { AgentStatus } from "../../shared/agent";
 import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
-import {
-	agentStatusQuery,
-	answerJoin,
-	type JoinAnswer,
-	useAgentOn,
-	useHiddenJoinPoll,
-} from "./api";
+import { agentStatusQuery, useAgentOn, useHiddenJoinPoll } from "./api";
+import { useAnswerJoin } from "./useAnswerJoin";
 
 /** The hidden tab's title prefix while a session asks to join. */
 export const JOIN_TITLE_PREFIX = "⏚ ";
@@ -69,38 +64,18 @@ const BUTTON =
  * holding the review's agent says so in the bar.
  */
 export function JoinBar() {
-	const client = useQueryClient();
 	const on = useAgentOn();
 	const status = useQuery({ ...agentStatusQuery, enabled: on });
 	const live = on ? status.data?.joinRequest : undefined;
-	// The request this tab answered (or found answered): hidden until the
-	// status moves on.
-	const [done, setDone] = useState<string | null>(null);
-	// An Approve another server refused: the request (gone from the status
-	// once expired) and why, shown until dismissed or another comes.
-	const [refused, setRefused] = useState<{
-		request: NonNullable<AgentStatus["joinRequest"]>;
-		error: string;
-	} | null>(null);
-	const inFlight = useRef(false);
-	const answer = useMutation({
-		mutationFn: (v: {
-			id: string;
-			approve: boolean;
-			request: NonNullable<AgentStatus["joinRequest"]>;
-		}) => answerJoin(v.id, v.approve),
-		onSuccess: (result: JoinAnswer, v) => {
-			if (result.ok || result.code === "stale-join") setDone(v.id);
-			else
-				setRefused({
-					request: v.request,
-					error: result.port
-						? `Answered by the server on :${result.port}`
-						: result.error,
-				});
-			void client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
-		},
-	});
+	const {
+		press: answer,
+		done,
+		dismiss,
+		refused,
+		pending,
+		approving,
+		error,
+	} = useAnswerJoin();
 	const request =
 		refused && (!live || live.id === refused.request.id)
 			? refused.request
@@ -114,20 +89,8 @@ export function JoinBar() {
 		? `${request.name} · ${request.machine} · ${request.harness}`
 		: `${request.name} · ${request.machine}`;
 	const stopped = refused?.request.id === request.id ? refused.error : null;
-	const busy = answer.isPending;
-	const press = (approve: boolean) => {
-		// Set at once: a second press before the re-render posts nothing.
-		if (inFlight.current) return;
-		inFlight.current = true;
-		answer.mutate(
-			{ id: request.id, approve, request },
-			{
-				onSettled: () => {
-					inFlight.current = false;
-				},
-			},
-		);
-	};
+	const busy = pending;
+	const press = (approve: boolean) => answer(request, approve);
 	const tip = approveTip(status.data);
 	return (
 		<section
@@ -179,7 +142,7 @@ export function JoinBar() {
 									type="button"
 									{...trigger}
 									aria-label="Dismiss"
-									onClick={() => setDone(request.id)}
+									onClick={() => dismiss(request.id)}
 									className={`${BUTTON} w-10 text-ink-soft hover:bg-overlay hover:text-ink sm:px-0`}
 								>
 									<XIcon aria-hidden />
@@ -189,9 +152,9 @@ export function JoinBar() {
 					</>
 				) : (
 					<>
-						{answer.error && (
+						{error && (
 							<span role="alert" className="min-w-0 text-xs text-bad">
-								{answer.error.message}
+								{error.message}
 							</span>
 						)}
 						<Tooltip content="Deny" describe={false}>
@@ -205,7 +168,7 @@ export function JoinBar() {
 									onClick={() => press(false)}
 									className={`${BUTTON} border border-line-strong text-ink-soft hover:bg-overlay hover:text-ink`}
 								>
-									{busy && answer.variables?.approve === false ? (
+									{approving === false ? (
 										<Spinner label="Denying" size={14} />
 									) : (
 										<XIcon aria-hidden className="sm:hidden" />
@@ -225,7 +188,7 @@ export function JoinBar() {
 									onClick={() => press(true)}
 									className={`${BUTTON} bg-ok-fill text-canvas hover:brightness-110`}
 								>
-									{busy && answer.variables?.approve === true ? (
+									{approving === true ? (
 										<Spinner label="Approving" size={14} />
 									) : (
 										<CheckIcon aria-hidden className="sm:hidden" />

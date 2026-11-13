@@ -591,12 +591,19 @@ question would be on someone else's behalf, or about a past moment.
   on that review's pages; Deny, or no answer within 10 minutes, ends the
   request. The access key alone lets a session list reviews, never join
   one (spec 2026-11-10, `docs/faq.md` "Joining a review from a session").
+- **No agent starts in a review the reviewer didn't ask for one in.** A
+  configured ACP agent runs in a review only while that review's spawn
+  flag is set (`acp-on` in its agent dir, kept across restarts; local
+  state, never `refs/crb`). Only the reviewer's Spawn (in the setup modal)
+  sets it; nothing else does: not opening the review, a status poll, a new
+  question, a config save or a crb restart. Detach clears it, stops the
+  agent, removes its checkout and releases the review's claim (spec
+  2026-11-12, agent setup modal).
 - **One buddy per review, and the ACP buddy stays off once replaced.**
-  Approving a join stops the ACP buddy and records it off for that review
-  (`acp-off`, kept across restarts). When the joined session leaves
-  (detach, Disconnect, lost, replaced), nothing starts the ACP buddy again:
-  not a status poll, a new question, a config save or a crb restart. Only
-  Start in the chip does. Questions wait (yellow) meanwhile, and a
+  Approving a join clears the spawn flag (before `joined.json` is
+  written) and stops the ACP buddy. When the joined session leaves
+  (detach, Disconnect, lost, replaced), nothing starts the ACP buddy again
+  until the reviewer's Spawn. Questions wait (yellow) meanwhile, and a
   question handed to a session that never replied waits again.
 
 - **Resolving is always a human action; the agent may only suggest it

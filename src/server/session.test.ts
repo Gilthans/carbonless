@@ -2248,6 +2248,8 @@ describe("Session", () => {
 				const s = await Session.open(pr.arg, process.cwd());
 				const host = s.agent;
 				if (!host) throw new Error("no agent");
+				// The reviewer's Spawn: nothing starts by itself.
+				await host.startAcp();
 				const { readId } = await s.overview();
 				const [rt] = (await s.threads(readId, "summary")).threads;
 				if (!rt) throw new Error("no thread");
@@ -2310,7 +2312,8 @@ describe("Session", () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const host = s.agent;
 			if (!host) throw new Error("no agent");
-			host.start();
+			// The reviewer's Spawn: nothing starts by itself.
+			await host.startAcp();
 			await vi.waitFor(
 				async () => expect((await host.status()).state).toBe("starting"),
 				{ timeout: 20_000, interval: 20 },

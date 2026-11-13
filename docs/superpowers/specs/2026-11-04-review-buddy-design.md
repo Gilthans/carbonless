@@ -275,6 +275,10 @@ hole carbonless never sees.
   it (30 min idle). Opening a review page is what opens the session, so
   the owner's "as soon as I open the review page" holds. The process is
   idle until a question arrives; it costs no tokens.
+  *Superseded 2026-11-12 (agent setup modal spec, "Server: no automatic
+  spawn"):* a configured agent spawns only in a review whose spawn flag
+  (`acp-on`) the reviewer set with Spawn; opening the review no longer
+  starts it.
 - **One ACP session per review**, created right after `initialize`. Every
   thread's messages are prompts on that session, one at a time, so the
   agent keeps what it learned across threads. (Per-thread sessions are a

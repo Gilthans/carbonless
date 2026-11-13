@@ -47,7 +47,7 @@ const deps = (over: Partial<JoinableDeps> = {}): JoinableDeps => ({
 	started: async () => [],
 	cached: () => undefined,
 	acpConfigured: async () => false,
-	acpOff: () => false,
+	spawned: () => false,
 	joinedOnDisk: () => false,
 	...over,
 });
@@ -115,7 +115,7 @@ describe("listJoinable", () => {
 		expect(rows.find((r) => r.pr === 1)?.reason).toMatch(/past/);
 	});
 
-	it("buddy: acp when configured and not off; joined from disk for a closed review", async () => {
+	it("buddy: acp only when configured and spawned (acp-on); joined from disk for a closed review", async () => {
 		const rows = await listJoinable(
 			deps({
 				started: async () => [
@@ -124,13 +124,23 @@ describe("listJoinable", () => {
 					started(3, "2026-11-08T12:00:00Z"),
 				],
 				acpConfigured: async () => true,
-				acpOff: (r) => r === id(2),
+				spawned: (r) => r === id(1),
 				joinedOnDisk: (r) => r === id(3),
 			}),
 			ORIGIN,
 		);
 		const buddy = Object.fromEntries(rows.map((r) => [r.pr, r.buddy]));
 		expect(buddy).toEqual({ 1: "acp", 2: "none", 3: "joined" });
+		// Spawned, but no agent configured: nobody answers.
+		const unconfigured = await listJoinable(
+			deps({
+				started: async () => [started(1, "2026-11-08T10:00:00Z")],
+				acpConfigured: async () => false,
+				spawned: () => true,
+			}),
+			ORIGIN,
+		);
+		expect(unconfigured[0]?.buddy).toBe("none");
 	});
 
 	it("filters on repo, title, branch and #number; caps the list", async () => {
