@@ -20,6 +20,16 @@ import {
 } from "./fixtures";
 import { CLI, crbEnv } from "./pr-setup";
 
+/**
+ * The spans of trace `traceId` under `dir`. readRequests keeps every line
+ * (a flush of a process's buffer) that mentions the trace, and a shared
+ * crb serve's flush holds other traces' spans too, e.g. a request with no
+ * traceparent, in the server's own trace under its `crb serve` span (the
+ * Review Buddy's hidden-tab join poll, which a page fires as it unloads).
+ */
+const traceSpans = (dir: string, traceId: string) =>
+	spansOf(readRequests(dir, traceId)).filter((s) => s.traceId === traceId);
+
 // The harness itself: console errors fail a test unless declared.
 
 test("a declared console error passes", async ({
@@ -74,7 +84,7 @@ test.describe("the client", () => {
 		await crb.stop();
 		tracer().flush();
 
-		const spans = spansOf(readRequests(dir as string, ctx.traceId));
+		const spans = traceSpans(dir as string, ctx.traceId);
 		const byId = new Map(spans.map((s) => [s.spanId, s]));
 		const under = (s: Span, ancestor: string): boolean => {
 			for (let p = s.parent; p; p = byId.get(p)?.parent ?? null) {
@@ -352,7 +362,7 @@ test.describe("the shared crb serve", () => {
 			expect((await sharedCrb.reset()).leftovers).toEqual([]);
 			tracer().flush();
 
-			const spans = spansOf(readRequests(dir as string, ctx.traceId));
+			const spans = traceSpans(dir as string, ctx.traceId);
 			const byId = new Map(spans.map((s) => [s.spanId, s]));
 			const under = (s: Span, ancestor: string): boolean => {
 				for (let p = s.parent; p; p = byId.get(p)?.parent ?? null) {
