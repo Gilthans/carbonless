@@ -2,7 +2,18 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import { acpLog } from "../test/fake-acp/scenario";
-import { ask, CALC, chip, expect, fixture, openFile, test } from "./agent-ui";
+import {
+	ask,
+	CALC,
+	chip,
+	expect,
+	fixture,
+	openFile,
+	setupDialog,
+	spawnAgent,
+	statusDialog,
+	test,
+} from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
 
 /**
@@ -310,8 +321,9 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	await expect(toast).toContainText(`${SESSION.name} left`);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
-	// Two status polls later the ACP buddy is still off: the question waits
-	// and the fake agent was never prompted.
+	// Two status polls later the ACP buddy is still off (the approved join
+	// cleared this review's spawn flag, and Disconnect doesn't set it): the
+	// question waits and the fake agent was never prompted.
 	for (let i = 0; i < 2; i++) {
 		await page.waitForResponse((r) =>
 			/\/api\/r\/[^/]+\/agent$/.test(new URL(r.url()).pathname),
@@ -322,9 +334,9 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	expect(
 		acpLog(acpLogPath).filter((e) => e.method === "session/prompt"),
 	).toHaveLength(0);
-	// Start in the chip brings it back, and it answers.
-	await chip(page).click();
-	await page.getByTestId("agent-popover").getByTestId("agent-start").click();
+	// Spawn brings it back, and it answers. With no session joined the chip
+	// opens the modal (no popover Start), so the Spawn goes through the API.
+	await spawnAgent(s.url);
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
 });
 
@@ -427,4 +439,126 @@ test("the full loop: the watcher wakes the session for a question, its reply lan
 	// Its token is dead: a watcher run now gets 410, and the line exits 3.
 	const late = startWatcher(approved.watch, approved.token);
 	if (hasCurl) expect((await late.done).code).toBe(3);
+});
+
+test("a join request shows in step 3 and in the bar; Approve in the modal connects; Detach goes back to setup", async ({
+	page,
+	pr,
+	agentCrb,
+	acpLogPath,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	// Configured, never spawned: no agent in the review.
+	const s = await agentCrb({ spawn: false });
+	await page.goto(s.url);
+	await expect(chip(page)).toHaveAttribute("data-state", "off");
+	await chip(page).click();
+	const setup = setupDialog(page);
+	await expect(setup.getByRole("tab", { name: "Invite" })).toHaveAttribute(
+		"aria-selected",
+		"true",
+	);
+	await expect(setup.getByTestId("join-request-none")).toBeVisible();
+	const request = await attach(s.url);
+	// Step 3 shows who asks, and so does the bar behind the modal.
+	const card = setup.getByTestId("join-request-card");
+	await expect(card).toContainText(SESSION.name);
+	await expect(card).toContainText(`e2e 1.0 · ${SESSION.machine}`);
+	await expect(setup.getByTestId("join-request-none")).toHaveCount(0);
+	await expect(joinBar(page).getByTestId("join-bar-name")).toHaveText(
+		SESSION.name,
+	);
+	for (const name of ["Decline", "Approve"]) {
+		const box = await card.getByRole("button", { name }).boundingBox();
+		expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+	}
+	await expectNoPageOverflow(page);
+	await card.getByRole("button", { name: "Approve" }).click();
+	// Connected: the modal shows the session, the bar is gone.
+	const status = statusDialog(page);
+	const facts = status.getByTestId("agent-status-card");
+	await expect(facts).toContainText("Invited · MCP");
+	await expect(facts).toContainText(SESSION.name);
+	await expect(facts).toContainText(`${SESSION.machine} · e2e 1.0`);
+	await expect(joinBar(page)).toHaveCount(0);
+	// Stop current can't reach a session's turn.
+	await expect(
+		status.getByRole("button", { name: "Stop current" }),
+	).toHaveAttribute("aria-disabled", "true");
+	await expectNoPageOverflow(page);
+	const approved = await callTool(mcpUrl(s.url), "attach", {
+		review: reviewLink(s.url),
+		...SESSION,
+		request,
+	});
+	expect(approved.state).toBe("approved");
+	await expect(chip(page)).toHaveAttribute("data-via", "mcp");
+	// Detach: the session leaves, the setup shows again, no ACP agent started.
+	await status.getByRole("button", { name: "Detach" }).click();
+	await expect(setupDialog(page)).toBeVisible();
+	await expect(
+		setupDialog(page).getByTestId("join-request-none"),
+	).toBeVisible();
+	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
+	await expect(chip(page)).toHaveAttribute("data-state", "off");
+	expect(acpLog(acpLogPath).filter((e) => e.method === "spawn")).toHaveLength(
+		0,
+	);
+});
+
+test("Decline in step 3: the bar goes, and the session hears denied", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({ spawn: false });
+	await page.goto(s.url);
+	await chip(page).click();
+	const setup = setupDialog(page);
+	await expect(setup.getByTestId("join-request-none")).toBeVisible();
+	const request = await attach(s.url);
+	const card = setup.getByTestId("join-request-card");
+	await expect(card).toContainText(SESSION.name);
+	await expect(joinBar(page)).toBeVisible();
+	await card.getByRole("button", { name: "Decline" }).click();
+	await expect(setup.getByTestId("join-request-none")).toBeVisible();
+	await expect(joinBar(page)).toHaveCount(0);
+	const out = await callTool(mcpUrl(s.url), "attach", {
+		review: reviewLink(s.url),
+		...SESSION,
+		request,
+	});
+	expect(out.state).toBe("denied");
+	await expect(setupDialog(page)).toBeVisible();
+	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
+});
+
+test("Approve from the bar in another tab: the open modal's step 3 moves on to the session", async ({
+	page,
+	context,
+	pr,
+	agentCrb,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({ spawn: false });
+	await page.goto(s.url);
+	await chip(page).click();
+	const setup = setupDialog(page);
+	await expect(setup.getByTestId("join-request-none")).toBeVisible();
+	const other = await context.newPage();
+	await other.goto(s.url);
+	const request = await attach(s.url);
+	await expect(setup.getByTestId("join-request-card")).toContainText(
+		SESSION.name,
+	);
+	await approve(other, s.url, request);
+	await expect(joinBar(other)).toHaveCount(0);
+	// The modal's next status poll: the session, connected.
+	await expect(
+		statusDialog(page).getByTestId("agent-status-card"),
+	).toContainText("Invited · MCP");
+	await expect(joinBar(page)).toHaveCount(0);
 });

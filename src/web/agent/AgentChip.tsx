@@ -17,16 +17,27 @@ import {
 	agentStatusQuery,
 	agentThreadsQuery,
 	postAgentDisconnect,
-	postAgentStart,
 	useAgentOn,
 } from "./api";
-import { openAgentSetup, openJoinSetup } from "./setupStore";
+import { openAgentSetup } from "./setupStore";
+
+/**
+ * Spawned (not joined) and the runner not up yet: starting when an agent is
+ * configured, an error when none is (nothing will ever start).
+ */
+function spawnGap(status: AgentStatus): "starting" | "unconfigured" | null {
+	if (status.joined || !status.spawned || status.state !== "off") return null;
+	return status.configured ? "starting" : "unconfigured";
+}
 
 /** The status dot's colour: muted off or elsewhere, yellow on its way or busy, green ready, red failing. */
 export function agentDot(status: AgentStatus): string {
-	if (status.state === "error" || status.error) return "bg-bad";
+	const gap = spawnGap(status);
+	if (status.state === "error" || status.error || gap === "unconfigured")
+		return "bg-bad";
 	if (status.state === "ready") return "bg-ok";
 	if (
+		gap === "starting" ||
 		status.state === "starting" ||
 		status.state === "busy" ||
 		status.state === "reconnecting"
@@ -47,10 +58,13 @@ export function agentTip(status: AgentStatus): string {
 		if (status.state === "reconnecting") return `${name} · reconnecting`;
 		return `${name} · listening`;
 	}
+	const gap = spawnGap(status);
+	if (gap === "unconfigured") return "No agent configured";
+	if (gap === "starting") return who ? `${who} · starting` : "Starting";
 	switch (status.state) {
 		case "off":
-			return status.acpOff && status.configured
-				? "Agent off · start it"
+			return status.configured
+				? "No agent · spawn or invite"
 				: "No agent · set one up";
 		case "starting":
 			return who ? `${who} · starting` : "Starting";
@@ -100,9 +114,9 @@ export function useAgentSync(
 	}, [key, client]);
 }
 
-/** Whether pressing the chip opens its popover (else the setup). */
+/** Whether pressing the chip opens its popover (a joined session); else the agent modal. */
 export const chipPopover = (status: AgentStatus | undefined): boolean =>
-	Boolean(status?.joined || status?.acpOff);
+	Boolean(status?.joined);
 
 /** A joined session's presence, as a word. */
 const presenceWord = (status: AgentStatus): string =>
@@ -116,136 +130,73 @@ const POP_BUTTON =
 	"flex h-10 items-center justify-center gap-1.5 rounded-md px-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60";
 
 /**
- * The chip's popover: a joined session (name, machine and harness, its
- * presence and since when, Disconnect), or with nothing joined and the ACP
- * buddy off, Start (with a config) and the way to join from a session.
+ * The chip's popover for a joined session: its name, machine and harness,
+ * its presence and since when, and Disconnect.
  */
 function ChipPanel(props: { status: AgentStatus; onDone(): void }) {
 	const { status, onDone } = props;
 	const client = useQueryClient();
-	const refresh = () =>
-		client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
 	const disconnect = useMutation({
 		mutationFn: postAgentDisconnect,
 		onSuccess: () => {
-			void refresh();
+			void client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
 			onDone();
 		},
 	});
-	const start = useMutation({
-		mutationFn: postAgentStart,
-		onSuccess: () => {
-			void refresh();
-			onDone();
-		},
-	});
-	const error = disconnect.error ?? start.error;
 	// One write per press: set at once, before any re-render.
 	const inFlight = useRef(false);
-	const once = (run: (opts: { onSettled(): void }) => void) => () => {
-		if (inFlight.current) return;
-		inFlight.current = true;
-		run({
-			onSettled: () => {
-				inFlight.current = false;
-			},
-		});
-	};
 	const joined = status.joined;
+	if (!joined) return null;
 	return (
 		<div className="grid min-w-0 gap-2 text-sm">
-			{joined ? (
-				<>
-					<div className="flex min-w-0 items-center gap-1.5">
-						<PlugIcon
-							size={16}
-							aria-hidden
-							className="shrink-0 text-agent-ink"
-						/>
-						<b
-							data-testid="agent-pop-name"
-							className="min-w-0 truncate font-semibold text-ink"
-						>
-							{joined.name}
-						</b>
-					</div>
-					<div className="min-w-0 truncate text-muted">
-						{joined.harness
-							? `${joined.machine} · ${joined.harness}`
-							: joined.machine}
-					</div>
-					<div className="flex min-w-0 flex-wrap items-center gap-1.5 text-muted">
-						<span
-							aria-hidden
-							className={`h-2 w-2 shrink-0 rounded-full ${agentDot(status)}`}
-						/>
-						<span data-testid="agent-pop-presence">{presenceWord(status)}</span>
-						· joined <RelativeTime iso={joined.since} />
-					</div>
-					<button
-						type="button"
-						data-testid="agent-disconnect"
-						disabled={disconnect.isPending}
-						onClick={once((o) => disconnect.mutate(undefined, o))}
-						className={`${POP_BUTTON} border border-bad text-bad hover:bg-bad/10`}
-					>
-						{disconnect.isPending ? (
-							<Spinner label="Disconnecting" size={14}>
-								Disconnect
-							</Spinner>
-						) : (
-							"Disconnect"
-						)}
-					</button>
-				</>
-			) : (
-				<>
-					{!status.configured && (
-						<button
-							type="button"
-							onClick={() => {
-								onDone();
-								openAgentSetup();
-							}}
-							className={`${POP_BUTTON} border border-agent-edge bg-agent text-agent-ink hover:text-ink`}
-						>
-							<SparkleFillIcon size={16} aria-hidden />
-							Set up an agent
-						</button>
-					)}
-					{status.configured && (
-						<button
-							type="button"
-							data-testid="agent-start"
-							disabled={start.isPending}
-							onClick={once((o) => start.mutate(undefined, o))}
-							className={`${POP_BUTTON} border border-agent-edge bg-agent text-agent-ink hover:text-ink`}
-						>
-							{start.isPending ? (
-								<Spinner label="Starting" size={14} />
-							) : (
-								<SparkleFillIcon size={16} aria-hidden />
-							)}
-							Start
-						</button>
-					)}
-					<button
-						type="button"
-						data-testid="agent-join-setup"
-						onClick={() => {
-							onDone();
-							openJoinSetup();
-						}}
-						className={`${POP_BUTTON} border border-line-strong text-ink-soft hover:bg-overlay hover:text-ink`}
-					>
-						<PlugIcon size={16} aria-hidden />
-						Join from a session
-					</button>
-				</>
-			)}
-			{error && (
+			<div className="flex min-w-0 items-center gap-1.5">
+				<PlugIcon size={16} aria-hidden className="shrink-0 text-agent-ink" />
+				<b
+					data-testid="agent-pop-name"
+					className="min-w-0 truncate font-semibold text-ink"
+				>
+					{joined.name}
+				</b>
+			</div>
+			<div className="min-w-0 truncate text-muted">
+				{joined.harness
+					? `${joined.machine} · ${joined.harness}`
+					: joined.machine}
+			</div>
+			<div className="flex min-w-0 flex-wrap items-center gap-1.5 text-muted">
+				<span
+					aria-hidden
+					className={`h-2 w-2 shrink-0 rounded-full ${agentDot(status)}`}
+				/>
+				<span data-testid="agent-pop-presence">{presenceWord(status)}</span>·
+				joined <RelativeTime iso={joined.since} />
+			</div>
+			<button
+				type="button"
+				data-testid="agent-disconnect"
+				disabled={disconnect.isPending}
+				onClick={() => {
+					if (inFlight.current) return;
+					inFlight.current = true;
+					disconnect.mutate(undefined, {
+						onSettled: () => {
+							inFlight.current = false;
+						},
+					});
+				}}
+				className={`${POP_BUTTON} border border-bad text-bad hover:bg-bad/10`}
+			>
+				{disconnect.isPending ? (
+					<Spinner label="Disconnecting" size={14}>
+						Disconnect
+					</Spinner>
+				) : (
+					"Disconnect"
+				)}
+			</button>
+			{disconnect.error && (
 				<p role="alert" className="text-xs break-words text-bad">
-					{error.message}
+					{disconnect.error.message}
 				</p>
 			)}
 		</div>
@@ -299,7 +250,7 @@ export function useAgentChipPlace(asOf: boolean): boolean {
  * its status, in a bordered circle; the name and detail in the tooltip.
  * One size in every state (CHIP_BOX); a plug badge on the circle for a
  * session joined through MCP. Pressing it opens the agent setup, or, with
- * a joined session or the ACP buddy off, a popover (a bottom sheet on a
+ * a joined session, a popover (a bottom sheet on a
  * phone). Until the
  * overview says whether there is an agent, and on its first read, a
  * spinner in the icon's place; a routine poll changes nothing unless the

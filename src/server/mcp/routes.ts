@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { JOIN } from "../../shared/agent.js";
 import { agentsDir } from "../agent/checkout.js";
 import { agentConfig } from "../agent/host.js";
+import { ACP_ON_FILE } from "../agent/join.js";
 import type { HomeService } from "../home/homeService.js";
 import { StartedReviews } from "../home/started.js";
 import { type SessionRegistry, UnknownReviewError } from "../registry.js";
@@ -247,7 +248,7 @@ export function joinableDeps(
 		started: (slug) => started.list(slug),
 		cached: (owner, repo, number) => home?.cachedPr(owner, repo, number),
 		acpConfigured: async () => (await agentConfig()).agent !== null,
-		acpOff: (id) => existsSync(dir(id, "acp-off")),
+		spawned: (id) => existsSync(dir(id, ACP_ON_FILE)),
 		joinedOnDisk: (id) => existsSync(dir(id, "joined.json")),
 	};
 }

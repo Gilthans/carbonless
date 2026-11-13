@@ -14,6 +14,8 @@ import {
 	openFile,
 	row,
 	selectText,
+	setupDialog,
+	statusDialog,
 	test,
 } from "./agent-ui";
 import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
@@ -450,7 +452,8 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	acpScenario,
 	acpLogPath,
 }) => {
-	// Two server starts, each opening the review and spawning its agent.
+	// Two server starts, each opening the review and spawning its agent
+	// (the second by the spawn flag the first set: it outlives a restart).
 	test.slow();
 	await pr(fixture);
 	const scenario = {
@@ -463,7 +466,7 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	const card = await ask(page, section, 3, "Survive a restart?");
 	await expect(card.getByTestId("agent-answering")).toBeVisible();
 	await s.stop();
-	const again = await agentCrb({ scenario });
+	const again = await agentCrb({ scenario, spawn: false });
 	const reopened = await openFile(page, again.url, CALC);
 	await row(reopened, 3).getByTestId("agent-bubble").click();
 	const thread = reopened.getByTestId("agent-thread");
@@ -999,7 +1002,11 @@ test("--viewer: no agent, Ask agent off with why", async ({
 	agentCrb,
 }) => {
 	await pr(fixture);
-	const s = await agentCrb({ args: ["--viewer", "someone-else"] });
+	const s = await agentCrb({
+		args: ["--viewer", "someone-else"],
+		// No agent here to spawn.
+		spawn: false,
+	});
 	await openFile(page, s.url, CALC);
 	await selectText(page, CALC, 3, 0, 6);
 	const button = bar(page).getByRole("button", { name: "Ask agent" });
@@ -1038,7 +1045,11 @@ test("--as-of: no agent, Ask agent off with why", async ({
 		}
 		sc.commits = { [p.repo.shas.at(-1) ?? ""]: { contexts: null } };
 	});
-	const s = await agentCrb({ args: ["--as-of", "2026-01-05T00:00:00Z"] });
+	const s = await agentCrb({
+		args: ["--as-of", "2026-01-05T00:00:00Z"],
+		// No agent here to spawn.
+		spawn: false,
+	});
 	await openFile(page, s.url, CALC);
 	await selectText(page, CALC, 3, 0, 6);
 	const off = bar(page).getByRole("button", { name: "Ask agent" });
@@ -1076,9 +1087,20 @@ test("no sideways scroll at 360 px with a card, a composer and the setup open", 
 	await expect(section.getByTestId("agent-composer")).toBeVisible();
 	await expectNoPageOverflow(page);
 	await shot(page, "agent-360-card", isMobile);
+	// The modal's both views: the agent's status, then (Detach) the setup.
 	await chip(page).click();
-	await expect(page.getByRole("dialog", { name: "Your agent" })).toBeVisible();
-	await expect(page.getByRole("radiogroup", { name: "Harness" })).toBeVisible();
+	const status = statusDialog(page);
+	await expect(status.getByTestId("agent-state")).toHaveText("Ready");
+	await expectNoPageOverflow(page);
+	await shot(page, "agent-360-status", isMobile);
+	await status.getByRole("button", { name: "Detach" }).click();
+	const setup = setupDialog(page);
+	await expect(setup.getByTestId("join-line")).toBeVisible();
+	await expectNoPageOverflow(page);
+	await setup.getByRole("tab", { name: "Spawn" }).click();
+	await expect(
+		setup.getByRole("radiogroup", { name: "Harness" }),
+	).toBeVisible();
 	await expectNoPageOverflow(page);
 	await shot(page, "agent-360-setup", isMobile);
 });

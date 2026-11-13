@@ -25,7 +25,8 @@ import { crbEnv } from "./pr-setup";
 /**
  * The reviewer's agent in e2e: a crb serve with the fake ACP agent
  * (test/fake-acp) first on PATH, its scenario and log in the test's
- * workdir, and (unless `configured: false`) a config.json naming it.
+ * workdir, and (unless `configured: false`) a config.json naming it and
+ * the review's Spawn pressed (a configured agent never starts by itself).
  */
 
 /** A .ts file whose lines are highlighted (selectText waits for a token). */
@@ -66,6 +67,26 @@ export interface AgentOptions {
 	args?: string[];
 	/** Extra environment for the serve (e.g. test-only CRB_JOIN_GRACE_GATE). */
 	env?: NodeJS.ProcessEnv;
+	/** Press Spawn in the review once it is open (default: when configured). */
+	spawn?: boolean;
+}
+
+/**
+ * The reviewer's Spawn in the review at `url` (`crb <pr>`'s link): POST
+ * /agent/start, as the setup modal's Spawn and the chip's Start do.
+ */
+export async function spawnAgent(url: string): Promise<void> {
+	const u = new URL(url);
+	const id = /^\/r\/([^/]+)/.exec(u.pathname)?.[1];
+	if (!id) throw new Error(`Not a review link: ${url}`);
+	const key = u.searchParams.get("key");
+	const res = await fetch(
+		`${u.origin}/api/r/${id}/agent/start${key ? `?${new URLSearchParams({ key })}` : ""}`,
+		{ method: "POST" },
+	);
+	if (!res.ok) {
+		throw new Error(`Spawn answered ${res.status}: ${await res.text()}`);
+	}
 }
 
 export const DEFAULT_SCENARIO: AcpScenario = {
@@ -139,6 +160,11 @@ export const test = base.extend<{
 				const url = run.stdout.trim().split("\n").at(-1) ?? "";
 				if (run.code !== 0 || !/^http:\/\//.test(url)) {
 					throw new CrbExitError(run.code, `${served.output()}${run.output}`);
+				}
+				if (opts.spawn ?? opts.configured !== false) {
+					await base.step("setup: spawn", () => spawnAgent(url), {
+						box: true,
+					});
 				}
 				return {
 					url,
@@ -259,3 +285,11 @@ export async function ask(
 
 /** The header's agent chip. */
 export const chip = (page: Page) => page.getByTestId("agent-chip");
+
+/** The agent modal's setup view (no agent connected): Invite and Spawn. */
+export const setupDialog = (page: Page) =>
+	page.getByRole("dialog", { name: "Setup Review Agent", exact: true });
+
+/** The agent modal's connected view: the agent's status, Detach. */
+export const statusDialog = (page: Page) =>
+	page.getByRole("dialog", { name: "Review Agent", exact: true });

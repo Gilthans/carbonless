@@ -115,7 +115,7 @@ const STOPS: Partial<
  * counts, opened to every title, carbonless's decisions marked. Stays with
  * the message, so what a PR made the agent do remains visible.
  */
-function ActivityLine(props: { activity: readonly AgentActivity[] }) {
+export function ActivityLine(props: { activity: readonly AgentActivity[] }) {
 	const summary = activitySummary(props.activity);
 	if (!summary) return null;
 	return (
@@ -693,7 +693,9 @@ export function AgentMessageItems(props: {
 				</div>
 			)}
 			{waiting &&
-				(status && !status.configured && !status.joined ? (
+				// Nothing connected (no join, nothing spawned): the button opens
+				// the modal to spawn or invite one.
+				(status && !status.spawned && !status.joined ? (
 					<button
 						type="button"
 						data-testid="agent-waiting"
@@ -704,7 +706,7 @@ export function AgentMessageItems(props: {
 							aria-hidden
 							className="h-2 w-2 shrink-0 rounded-full bg-warn"
 						/>
-						Set up an agent
+						{status.configured ? "Spawn or invite an agent" : "Set up an agent"}
 					</button>
 				) : (
 					<p

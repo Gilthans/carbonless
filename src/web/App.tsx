@@ -25,9 +25,9 @@ import {
 } from "./api";
 import "./agent";
 import { AgentChip, CHIP_BOX, useAgentChipPlace } from "./agent/AgentChip";
-import { AgentSetupHost } from "./agent/AgentSetup";
 import { JoinBar } from "./agent/JoinBar";
 import { JoinToast } from "./agent/JoinToast";
+import { AgentSetupHost } from "./agent/setup/AgentSetup";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { FindButton } from "./files/find/FindButton";
 import { findFloat, findState } from "./files/find/findState";

@@ -4,6 +4,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +21,23 @@ import {
 	StaleJoinRequestError,
 	type WatchLease,
 } from "./join.js";
+
+// Every file write and removal, in order (the Approve's ordering test).
+const fsCalls = vi.hoisted(() => [] as string[]);
+vi.mock("node:fs", async (importOriginal) => {
+	const real = await importOriginal<typeof import("node:fs")>();
+	return {
+		...real,
+		writeFileSync: (...args: Parameters<typeof real.writeFileSync>) => {
+			fsCalls.push(`write ${String(args[0])}`);
+			return real.writeFileSync(...args);
+		},
+		rmSync: (...args: Parameters<typeof real.rmSync>) => {
+			fsCalls.push(`rm ${String(args[0])}`);
+			return real.rmSync(...args);
+		},
+	};
+});
 
 const WHO = { name: "carbonless · main", machine: "devbox", harness: "cc 2.1" };
 
@@ -246,17 +264,23 @@ describe("JoinBroker: requests", () => {
 		warn.mockRestore();
 	});
 
-	it("an Approve sets acp-off itself, before joined.json and onApproved", async () => {
+	it("approving clears the spawn flag before joined.json and onApproved", async () => {
 		const order: string[] = [];
 		const b = make({
 			onApproved: async () => {
-				order.push(existsSync(join(dir, "acp-off")) ? "acp-off" : "no acp-off");
+				order.push(existsSync(join(dir, "acp-on")) ? "acp-on" : "no acp-on");
 			},
 		});
-		expect(b.acpOff()).toBe(false);
+		await b.setSpawned(true);
+		expect(b.spawned()).toBe(true);
+		fsCalls.length = 0;
 		await joined(b);
-		expect(order).toEqual(["acp-off"]);
-		expect(b.acpOff()).toBe(true);
+		const flag = fsCalls.indexOf(`rm ${join(dir, "acp-on")}`);
+		const file = fsCalls.indexOf(`write ${join(dir, "joined.json")}`);
+		expect(flag).toBeGreaterThanOrEqual(0);
+		expect(file).toBeGreaterThan(flag);
+		expect(order).toEqual(["no acp-on"]);
+		expect(b.spawned()).toBe(false);
 	});
 
 	it("active while asked, joined or watched", async () => {
@@ -564,16 +588,57 @@ describe("JoinBroker: restart", () => {
 		expect(c.view().joined).toBeUndefined();
 	});
 
-	it("acp-off survives a new broker on the same dir, and one made before sees it", async () => {
+	it("seen: each good token check (a tool call) and the watcher, now while it is open; none once the session leaves", async () => {
+		let t = 1_000;
+		const b = make({ now: () => t });
+		expect(b.seen()).toBeNull();
+		// The approved attach collected: a tool call.
+		const token = await joined(b);
+		expect(b.seen()).toBe(1_000);
+		t = 2_000;
+		expect(b.check("A".repeat(43))).toBe(false);
+		expect(b.seen()).toBe(1_000);
+		expect(b.check(token)).toBe(true);
+		expect(b.seen()).toBe(2_000);
+		const lease = b.watcher(token);
+		t = 4_000;
+		expect(b.seen()).toBe(4_000);
+		lease?.close();
+		t = 5_000;
+		expect(b.seen()).toBe(4_000);
+		b.leave("disconnected");
+		expect(b.seen()).toBeNull();
+	});
+
+	it("spawnedAt: when the flag was set, kept by a second set and by a new broker; the mtime for an empty file; none once cleared", async () => {
+		let t = Date.parse("2026-11-12T10:00:00.000Z");
+		const b = make({ now: () => t });
+		expect(b.spawnedAt()).toBeNull();
+		await b.setSpawned(true);
+		expect(b.spawnedAt()).toBe(Date.parse("2026-11-12T10:00:00.000Z"));
+		t += 60_000;
+		await b.setSpawned(true);
+		expect(b.spawnedAt()).toBe(Date.parse("2026-11-12T10:00:00.000Z"));
+		expect(make().spawnedAt()).toBe(Date.parse("2026-11-12T10:00:00.000Z"));
+		writeFileSync(join(dir, "acp-on"), "");
+		const mtime = statSync(join(dir, "acp-on")).mtimeMs;
+		expect(b.spawnedAt()).toBe(mtime);
+		await b.setSpawned(false);
+		expect(b.spawnedAt()).toBeNull();
+	});
+
+	it("acp-on survives a new broker on the same dir, and one made before sees it; a leftover acp-off means nothing and stays", async () => {
 		const b = make();
 		const earlier = make();
-		expect(b.acpOff()).toBe(false);
-		await b.setAcpOff(true);
+		writeFileSync(join(dir, "acp-off"), "");
+		expect(b.spawned()).toBe(false);
+		await b.setSpawned(true);
+		expect(existsSync(join(dir, "acp-on"))).toBe(true);
+		expect(make().spawned()).toBe(true);
+		expect(earlier.spawned()).toBe(true);
+		await b.setSpawned(false);
+		expect(make().spawned()).toBe(false);
 		expect(existsSync(join(dir, "acp-off"))).toBe(true);
-		expect(make().acpOff()).toBe(true);
-		expect(earlier.acpOff()).toBe(true);
-		await b.setAcpOff(false);
-		expect(make().acpOff()).toBe(false);
 	});
 });
 

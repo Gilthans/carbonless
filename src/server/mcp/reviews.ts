@@ -65,8 +65,8 @@ export interface JoinableDeps {
 		| undefined;
 	/** Whether an ACP agent is configured. */
 	acpConfigured(): Promise<boolean>;
-	/** Whether review `id`'s ACP buddy is off (acp-off). */
-	acpOff(id: string): boolean;
+	/** Whether review `id`'s ACP spawn flag is set (acp-on). */
+	spawned(id: string): boolean;
 	/** Whether review `id` has a joined session on disk (joined.json). */
 	joinedOnDisk(id: string): boolean;
 }
@@ -103,7 +103,7 @@ export async function listJoinable(
 	): JoinableReview["buddy"] => {
 		if (live) return live;
 		if (live === undefined && deps.joinedOnDisk(id)) return "joined";
-		return acp && !deps.acpOff(id) ? "acp" : "none";
+		return acp && deps.spawned(id) ? "acp" : "none";
 	};
 	const openById = new Map(open.map((o) => [o.id, o]));
 	for (const s of started) {

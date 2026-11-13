@@ -847,9 +847,15 @@ export async function buildApp(
 				await agentOf(request).disconnect();
 				return { ok: true };
 			});
-			// The reviewer's Start: the ACP buddy on again.
+			// The reviewer's Spawn (Start): this review's ACP buddy on.
 			review.post("/agent/start", async (request) => {
 				await agentOf(request).startAcp();
+				return { ok: true };
+			});
+			// The reviewer's Detach: a joined session disconnected, or the
+			// ACP buddy off until the next Spawn.
+			review.post("/agent/detach", async (request) => {
+				await agentOf(request).detach();
 				return { ok: true };
 			});
 			review.post("/refresh", (request) => sessionOf(request).refresh());

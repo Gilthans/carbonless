@@ -23,6 +23,7 @@ import {
 	type AgentThread,
 	type OpenAgentThreadRequest,
 } from "../../shared/agent";
+import { MCP_HARNESSES, type McpHarness } from "../../shared/agentHarnesses";
 import {
 	AGENT_PLACEMENTS_KEY,
 	AGENT_THREADS_KEY,
@@ -192,9 +193,17 @@ export const postAgentDisconnect = async (): Promise<void> => {
 	await review<{ ok: true }>("agent/disconnect", json("POST"));
 };
 
-/** Turns the ACP buddy on again after a join turned it off. */
+/** Spawns this review's ACP buddy (sets its spawn flag; a joined session leaves). */
 export const postAgentStart = async (): Promise<void> => {
 	await review<{ ok: true }>("agent/start", json("POST"));
+};
+
+/**
+ * Detaches the review's agent: a joined session's attachment ends, or the
+ * ACP buddy stops and its spawn flag is cleared.
+ */
+export const postAgentDetach = async (): Promise<void> => {
+	await review<{ ok: true }>("agent/detach", json("POST"));
 };
 
 /** The access key the setup line carries (null: none needed). */
@@ -205,19 +214,18 @@ export const joinSetupQuery = queryOptions({
 	retry: false,
 });
 
-/**
- * A word quoted for a POSIX shell (and zsh, where an unquoted `?` globs):
- * in double quotes when nothing there expands, else in single quotes.
- */
-export function shellWord(word: string): string {
-	if (!/[$`"\\!\n]/.test(word)) return `"${word}"`;
-	return `'${word.replaceAll("'", `'\\''`)}'`;
-}
+/** The MCP URL of this crb, with its access key when one is needed. */
+export const mcpUrl = (origin: string, key: string | null): string =>
+	`${origin}/mcp${key ? `?${new URLSearchParams({ key })}` : ""}`;
 
-/** The one-time setup line: adds this crb's /mcp to Claude Code. */
-export function mcpAddLine(origin: string, key: string | null): string {
-	const url = `${origin}/mcp${key ? `?${new URLSearchParams({ key })}` : ""}`;
-	return `claude mcp add --scope user --transport http crb ${shellWord(url)}`;
+/** The one-time setup line that adds this crb's /mcp to harness `h` (Other: the URL). */
+export function mcpLine(
+	h: McpHarness["id"],
+	origin: string,
+	key: string | null,
+): string {
+	const harness = MCP_HARNESSES.find((x) => x.id === h) ?? MCP_HARNESSES[0];
+	return harness ? harness.line(mcpUrl(origin, key)) : mcpUrl(origin, key);
 }
 
 /** The sentence a session is told to join this review. */
