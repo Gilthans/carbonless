@@ -200,6 +200,21 @@ resolved, so an unresolved thread never disappears with its file. A
 thread whose file is still there but whose lines are gone is listed under
 that file's header instead, with its fate and the code it was written on.
 
+## Why does a thread say "outdated" or "untraced" rather than "rewritten"?
+
+carbonless places a thread by tracing it from the commit it was written
+on. Some threads have no such commit it can use: GitHub gave none, the
+commit was force-pushed away and can't be fetched, or it shares no history
+with the base. Those sit on the line GitHub shows them on now. When
+GitHub shows them on no line, they are listed under their file:
+`outdated` when GitHub marks them so, `untraced` otherwise (also when
+GitHub's line isn't the same text in the patch set you are viewing, and
+for a line on the old side, which GitHub counts against its own merge
+base).
+`rewritten` means a real trace found the lines gone.
+`docs/product-rules.md`, "A thread with nothing to trace from sits on
+GitHub's line".
+
 ## Setting up an agent
 
 Ask agent sends your question about a span of the diff to your own coding

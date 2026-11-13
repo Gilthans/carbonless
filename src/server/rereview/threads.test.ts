@@ -323,7 +323,7 @@ describe("ThreadPlacer", () => {
 		});
 	});
 
-	it("a thread on a commit git can't give is never placed", async () => {
+	it("a thread on a commit git can't give, with no line from GitHub, is never placed", async () => {
 		const lost = thread(
 			"a.ts",
 			{ line: 7, commit: "f".repeat(40) },
@@ -338,9 +338,151 @@ describe("ThreadPlacer", () => {
 			await p.inputs(target, [lost], base()),
 			new Map(),
 		);
-		expect(placed?.placement).toMatchObject({
+		expect(placed?.placement).toEqual({
 			kind: "unplaced",
-			fate: "rewritten",
+			fate: "untraced",
+			path: "a.ts",
+			nearest: null,
+		});
+	});
+
+	describe("nothing of its own to trace from: GitHub's line (CAR-116)", () => {
+		/** A thread on `commit` that GitHub puts on `currentLine` of the PR's head. */
+		const untraceable = (
+			commit: string,
+			currentLine: number | null,
+			extra: Partial<ReviewThread> = {},
+		) => thread("a.ts", { line: 3, commit }, { commit, currentLine, ...extra });
+
+		async function placeFrom(
+			threads: ReviewThread[],
+			githubHead: string | undefined,
+			/** The commits the clone can't have. */
+			lost: string[] = [],
+		) {
+			const p = new ThreadPlacer(
+				repo.path,
+				new ThreadCodeSource(repo.path, async (_r, oid) => !lost.includes(oid)),
+			);
+			// The head comes with the threads' lines, in the same answer.
+			const read = threads.map((t) =>
+				githubHead ? { ...t, currentHead: githubHead } : t,
+			);
+			const inputs = await p.inputs(target, read, base());
+			const placed = await p.place(target, inputs, new Map());
+			return new Map(placed.map((x) => [x.id, x.placement]));
+		}
+
+		const onLine = (line: number, path = "a.ts") => ({
+			kind: "placed",
+			anchor: {
+				path,
+				startSide: "RIGHT",
+				startLine: line,
+				side: "RIGHT",
+				line,
+			},
+			changed: false,
+			source: "github",
+		});
+
+		it("no commit (GitHub gave no originalCommit): on GitHub's line", async () => {
+			const t = untraceable("", 9);
+			expect((await placeFrom([t], H2)).get(t.id)).toEqual(onLine(9));
+		});
+
+		it("a commit git can't fetch (force-pushed away): on GitHub's line", async () => {
+			const t = untraceable("f".repeat(40), 9);
+			expect((await placeFrom([t], H2, ["f".repeat(40)])).get(t.id)).toEqual(
+				onLine(9),
+			);
+		});
+
+		it("a commit with no merge base with the base (unrelated history): on GitHub's line", async () => {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const orphan = git("commit-tree", `${H1}^{tree}`, "-m", "orphan");
+			const t = untraceable(orphan, 9);
+			expect((await placeFrom([t], H2)).get(t.id)).toEqual(onLine(9));
+		});
+
+		it("GitHub's head is another snapshot: traced from there; only the same text places", async () => {
+			// On H1, a.ts line 15 is H2's 16; line 5 was rewritten.
+			const same = untraceable("", 15);
+			const rewritten = untraceable("", 5);
+			const got = await placeFrom([same, rewritten], H1);
+			expect(got.get(same.id)).toEqual(onLine(16));
+			expect(got.get(rewritten.id)).toMatchObject({
+				kind: "unplaced",
+				fate: "untraced",
+				path: "a.ts",
+			});
+		});
+
+		it("a file comment with no commit follows its file from GitHub's head", async () => {
+			const t = thread("old.ts", null, { commit: "" });
+			expect((await placeFrom([t], H1)).get(t.id)).toEqual({
+				kind: "file",
+				path: "new.ts",
+			});
+		});
+
+		it("GitHub gives no line: outdated when it says so, else untraced; under the file either way", async () => {
+			const outdated = untraceable("", null, { outdated: true });
+			const asOf = untraceable("", null);
+			const noHead = untraceable("", 9);
+			const lostHead = untraceable("", 9);
+			const got = await placeFrom([outdated, asOf], H2);
+			expect(got.get(outdated.id)).toEqual({
+				kind: "unplaced",
+				fate: "outdated",
+				path: "a.ts",
+				nearest: null,
+			});
+			expect(got.get(asOf.id)).toMatchObject({
+				kind: "unplaced",
+				fate: "untraced",
+			});
+			// No head from GitHub, or one git can't give.
+			expect(
+				(await placeFrom([noHead], undefined)).get(noHead.id),
+			).toMatchObject({ kind: "unplaced", fate: "untraced" });
+			expect(
+				(await placeFrom([lostHead], H2, [H2])).get(lostHead.id),
+			).toMatchObject({ kind: "unplaced", fate: "untraced" });
+		});
+
+		it("an old-side line from GitHub is never taken (its merge base may not be ours): untraced", async () => {
+			const t = thread(
+				"c.ts",
+				{ line: 3, side: "LEFT", startSide: "LEFT", commit: "" },
+				{ commit: "", currentLine: 3 },
+			);
+			expect((await placeFrom([t], H2)).get(t.id)).toEqual({
+				kind: "unplaced",
+				fate: "untraced",
+				path: "c.ts",
+				nearest: null,
+			});
+		});
+
+		it("a thread its own commit traces is never moved to GitHub's line", async () => {
+			const t = thread("a.ts", { line: 15 }, { currentLine: 2 });
+			expect((await placeFrom([t], H2)).get(t.id)).toEqual({
+				kind: "placed",
+				anchor: {
+					path: "a.ts",
+					startSide: "RIGHT",
+					startLine: 16,
+					side: "RIGHT",
+					line: 16,
+				},
+				changed: false,
+			});
 		});
 	});
 

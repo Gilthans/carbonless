@@ -109,6 +109,24 @@ re-read" show only when the engine's answer says so: an identical diff
 with no reworked, new or gone cluster. Approving again on an identical
 diff posts a review only on the reviewer's press.
 
+## A thread with nothing to trace from sits on GitHub's line
+
+Thread placement traces each thread from the commit it was written on
+(owner, 2026-11-11, CAR-116). When there is nothing of its own to trace
+from (GitHub gave no `originalCommit`, the commit can't be fetched, or it
+shares no history with the base), it is traced instead from where GitHub
+puts it now: its current line on the PR's head GitHub gave in the same
+answer (never a head learned later), new side only (one line: GitHub's
+current start line isn't kept; an old-side line is numbered against
+GitHub's merge base, which can differ from ours, so it is `untraced`).
+Only that same text places it, with no chip, as GitHub would show it;
+GitHub's line rewritten or gone in the viewed snapshot, or its file out
+of the comparison, is `untraced` (never "changed since" or "deleted since
+the review": no history was followed). With no line from GitHub either,
+it is listed under its file as `outdated` when GitHub says so, else
+`untraced`. `rewritten` is only ever a real trace's answer. A placement
+from GitHub's line carries `source: "github"` in `GET /placements`.
+
 ## Every visible cluster is individually markable
 
 The owner: "every cluster visible in the UI in any view should be

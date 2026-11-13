@@ -848,10 +848,14 @@ export class Session {
 				]);
 				// Filed under its snapshot id too: a head and its patch set share it.
 				this.#placing.set(`${target.revision}|${readId}`, job);
+				// When GitHub gave the threads' current lines (each with the
+				// head it counts on): one time per read.
+				const at = new Date(read.started).toISOString();
 				const open = await this.#placer.inputs(
 					target,
 					view.threads.filter((t) => !t.resolved),
 					this.#diffBase(),
+					at,
 				);
 				job.done = { target, inputs: open, complete: false };
 				// The resolved threads join after; their failure never takes
@@ -861,6 +865,7 @@ export class Session {
 						target,
 						view.threads.filter((t) => t.resolved),
 						this.#diffBase(),
+						at,
 					)
 					.catch(() => []);
 				job.done = { target, inputs: [...open, ...resolved], complete: true };
