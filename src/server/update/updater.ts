@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import {
 	copyFile,
@@ -421,12 +421,14 @@ const helperSource = (): string => {
 /**
  * Copies the helper to a temp dir of its own (never run from the package
  * being replaced), writes its config there (it holds crb's environment:
- * 0600, removed once read) and starts it with node, detached.
+ * 0600, removed once read) and starts it with node, detached. Resolves
+ * with the helper's process (unref'd: crb never waits for it; a test
+ * does, before removing the dirs it runs in).
  */
 export async function startHelper(
 	config: HelperConfig,
 	opts: { source?: string; tmp?: string } = {},
-): Promise<void> {
+): Promise<ChildProcess> {
 	const tmp = opts.tmp ?? tmpdir();
 	const dir = await mkdtemp(join(tmp, HELPER_DIR_PREFIX));
 	try {
@@ -438,7 +440,7 @@ export async function startHelper(
 		await copyFile(source, script);
 		const configFile = join(dir, "config.json");
 		await writeFile(configFile, JSON.stringify(config), { mode: 0o600 });
-		await new Promise<void>((done, fail) => {
+		return await new Promise<ChildProcess>((done, fail) => {
 			const child = spawn(process.execPath, [script, "--run", configFile], {
 				detached: true,
 				stdio: "ignore",
@@ -449,7 +451,7 @@ export async function startHelper(
 			});
 			child.once("spawn", () => {
 				child.unref();
-				done();
+				done(child);
 			});
 			child.once("error", fail);
 		});

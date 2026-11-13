@@ -1,10 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { once } from "node:events";
 import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	realpathSync,
 	rmSync,
 	statSync,
@@ -34,6 +36,8 @@ const SOURCE = fileURLToPath(new URL("./updateHelper.ts", import.meta.url));
 
 let dir: string;
 let tmp: string;
+/** The helpers this test started (startHelper's processes). */
+let helpers: ChildProcess[] = [];
 beforeEach(() => {
 	// A space in every path: a Windows profile like C:\Users\Jane Doe.
 	dir = join(mkdtempSync(join(tmpdir(), "crb-helper-test-")), "with space");
@@ -41,9 +45,97 @@ beforeEach(() => {
 	tmp = join(dir, "tmp");
 	mkdirSync(tmp);
 });
-afterEach(() => {
-	rmSync(join(dir, ".."), { recursive: true, force: true });
+afterEach(async () => {
+	// Windows refuses to remove a dir that a live process runs in or has a
+	// file open in (EPERM): the helper runs from tmp, and the crb it starts
+	// again from dir, writing serve.log. Both outlive what a test waits for
+	// (the helper removes its own dir before it exits; crb's last line comes
+	// before its exit): wait for each to exit, then remove.
+	const pidFile = join(dir, "update-relaunched.pid");
+	const relaunched = existsSync(pidFile)
+		? Number(readFileSync(pidFile, "utf8"))
+		: null;
+	const known = [
+		...helpers.flatMap((h) => (h.pid ? [h.pid] : [])),
+		...(relaunched ? [relaunched] : []),
+	];
+	for (const helper of helpers) await exited(helper);
+	helpers = [];
+	if (relaunched) {
+		await until(
+			() => !running(relaunched),
+			`the started crb (pid ${relaunched}) exits`,
+		);
+	}
+	const top = join(dir, "..");
+	expect(holders(top, known), "processes still in the test's dirs").toEqual([]);
+	rmSync(top, { recursive: true, force: true });
 });
+
+/** Resolves once `child` has exited (its exit event, or already gone). */
+async function exited(child: ChildProcess): Promise<void> {
+	if (child.exitCode !== null || child.signalCode !== null) return;
+	await once(child, "exit");
+}
+
+/** Whether `pid` still runs (not ours to wait on: the helper started it). */
+function running(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/**
+ * The processes (Linux: /proc) whose current directory or an open file is
+ * under `top`: what makes Windows refuse to remove it (EPERM). Empty
+ * elsewhere.
+ */
+function holders(top: string, known: number[]): string[] {
+	if (process.platform !== "linux") return [];
+	const real = realpathSync(top);
+	const under = (link: string) => link === real || link.startsWith(`${real}/`);
+	const link = (path: string) => {
+		try {
+			return readlinkSync(path);
+		} catch {
+			return ""; // Gone meanwhile, or another user's.
+		}
+	};
+	// The processes the test knows of first (a scan of every process takes
+	// long enough for them to exit meanwhile), then every cwd, then the
+	// open files (many).
+	const pids = [
+		...new Set([
+			...known.map(String),
+			...readdirSync("/proc").filter((e) => /^\d+$/.test(e)),
+		]),
+	];
+	const found = pids
+		.map((pid) => ({ pid, cwd: link(`/proc/${pid}/cwd`) }))
+		.filter((p) => under(p.cwd))
+		.map((p) => `${p.pid}: cwd ${p.cwd}`);
+	for (const pid of pids) {
+		let fds: string[] = [];
+		try {
+			fds = readdirSync(`/proc/${pid}/fd`);
+		} catch {
+			continue;
+		}
+		for (const fd of fds) {
+			const target = link(`/proc/${pid}/fd/${fd}`);
+			if (under(target)) found.push(`${pid}: fd ${target}`);
+		}
+	}
+	return found;
+}
+
+/** Starts the helper as crb does, and keeps its process for afterEach. */
+async function start(c: HelperConfig): Promise<void> {
+	helpers.push(await startHelper(c, { source: SOURCE, tmp }));
+}
 
 function script(name: string, body: string): string {
 	const file = join(dir, name);
@@ -147,7 +239,7 @@ describe("update helper", () => {
 		const crb = standInCrb();
 		// biome-ignore lint/style/noNonNullAssertion: spawned.
 		const c = config(crb.pid!);
-		await startHelper(c, { source: SOURCE, tmp });
+		await start(c);
 		// It read its config (and removed it: it holds crb's environment)
 		// while crb still runs: nothing installed yet.
 		await until(
@@ -210,10 +302,7 @@ describe("update helper", () => {
 	it("a failed install: the result says so with the output, and the old crb starts again", async () => {
 		const crb = standInCrb();
 		// biome-ignore lint/style/noNonNullAssertion: spawned.
-		await startHelper(config(crb.pid!, { installExit: 1 }), {
-			source: SOURCE,
-			tmp,
-		});
+		await start(config(crb.pid!, { installExit: 1 }));
 		crb.stdin?.write("exit\n");
 		await until(() => existsSync(join(dir, "relaunched.json")), "relaunch");
 		const result = read<UpdateResult>("update-result.json");
@@ -229,10 +318,7 @@ describe("update helper", () => {
 		const crb = standInCrb();
 		try {
 			// biome-ignore lint/style/noNonNullAssertion: spawned.
-			await startHelper(config(crb.pid!, { waitMs: 0 }), {
-				source: SOURCE,
-				tmp,
-			});
+			await start(config(crb.pid!, { waitMs: 0 }));
 			await until(() => existsSync(join(dir, "update-result.json")), "result");
 			expect(read<UpdateResult>("update-result.json")).toMatchObject({
 				ok: false,
