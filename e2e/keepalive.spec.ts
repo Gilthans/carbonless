@@ -43,9 +43,9 @@ const fixture: PrOptions = {
 
 /**
  * The bot's thread on b/long.ts line 3, written on the PR's head: placed on
- * its line from the start. (Without a commit it can't be traced, and the
- * placements' late answer moves it into the file's header list: 654 px above
- * the reader, which scroll anchoring makes a change of scrollY.)
+ * its line from the start. (A thread the placements' late answer moves,
+ * e.g. into the file's header list, shifts the page: 654 px above the
+ * reader, which scroll anchoring makes a change of scrollY.)
  */
 const botThread = (commit: string) =>
 	reviewThread({ path: "b/long.ts", line: 3 }, [

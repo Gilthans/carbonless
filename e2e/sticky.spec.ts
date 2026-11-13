@@ -495,7 +495,10 @@ test("the agent chip sits by the logo, and stays in sight and in reach as the he
 
 	// In reach: it opens the agent setup, and focus comes back to it.
 	await chip.click();
-	const setup = page.getByRole("dialog", { name: "Your agent" });
+	const setup = page.getByRole("dialog", {
+		name: "Setup Review Agent",
+		exact: true,
+	});
 	await expect(setup).toBeVisible();
 	await page.keyboard.press("Escape");
 	await expect(setup).toHaveCount(0);

@@ -1,5 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -116,6 +122,19 @@ describe("sweepStaleCheckouts", () => {
 		await sweepStaleCheckouts(new Set([OTHER]));
 		expect(existsSync(join(agentsDir(), REVIEW))).toBe(false);
 		expect(existsSync(join(agentsDir(), OTHER))).toBe(true);
+	});
+
+	it("keeps a stale dir's acp-on, a leftover acp-off and joined.json (a crb restart keeps them), the rest goes", async () => {
+		claimed(REVIEW, dead());
+		writeFileSync(join(agentsDir(), REVIEW, "acp-on"), "");
+		writeFileSync(join(agentsDir(), REVIEW, "acp-off"), "");
+		writeFileSync(join(agentsDir(), REVIEW, "joined.json"), "{}");
+		await sweepStaleCheckouts(new Set());
+		expect(readdirSync(join(agentsDir(), REVIEW)).sort()).toEqual([
+			"acp-off",
+			"acp-on",
+			"joined.json",
+		]);
 	});
 
 	it("is fine without an agents dir", async () => {

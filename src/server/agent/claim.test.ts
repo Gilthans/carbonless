@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { takeClaim } from "./claim.js";
+import { ReviewClaim, takeClaim } from "./claim.js";
 
 let dir: string;
 beforeEach(() => {
@@ -84,5 +84,31 @@ describe("takeClaim", () => {
 		expect(theirs.ok).toBe(true);
 		await claim.release();
 		expect(JSON.parse(readFileSync(file(), "utf8")).port).toBe(4801);
+	});
+});
+
+describe("ReviewClaim", () => {
+	const self = () => ({ pid: process.pid, port: 4800 });
+
+	it("a hold while a drop is still releasing waits for it and is ok (not its own claim as another's)", async () => {
+		const claim = new ReviewClaim(dir, self);
+		expect((await claim.hold("join")).ok).toBe(true);
+		const dropping = claim.drop("join");
+		const again = await claim.hold("acp");
+		await dropping;
+		expect(again.ok).toBe(true);
+		expect(claim.held()).toBe(true);
+		expect(existsSync(file())).toBe(true);
+	});
+
+	it("shared by two users: released only when both drop", async () => {
+		const claim = new ReviewClaim(dir, self);
+		await claim.hold("join");
+		await claim.hold("acp");
+		await claim.drop("join");
+		expect(existsSync(file())).toBe(true);
+		await claim.drop("acp");
+		expect(existsSync(file())).toBe(false);
+		expect(claim.held()).toBe(false);
 	});
 });

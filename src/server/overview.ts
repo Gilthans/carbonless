@@ -498,6 +498,9 @@ export function mapThreads(
 						? (lineNumber(t.originalLine) ?? lineNumber(t.line))
 						: (lineNumber(t.line) ?? lineNumber(t.originalLine)))),
 			currentLine: asOf || onFile ? null : lineNumber(t.line),
+			...((head) => (!asOf && OID.test(head) ? { currentHead: head } : {}))(
+				str(obj(t.headOf).headRefOid),
+			),
 			loaded,
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
 			html: stripMarkerHtml(str(first.bodyHTML)),

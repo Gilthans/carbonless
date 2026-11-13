@@ -76,7 +76,12 @@ const E2E_MAP = [
 	],
 	// The reviewer's agent: review buddy's span threads and the thread
 	// agent (a conversation per GitHub thread), web and server.
-	[/^src\/(web|server)\/agent\//, ["agent", "agent-setup", "thread-agent"]],
+	[
+		/^src\/(web|server)\/agent\//,
+		["agent", "agent-setup", "thread-agent", "agent-join"],
+	],
+	// The join bar sits above the header (App), the setup line's key (app.ts).
+	[/^src\/web\/App\.tsx$|^src\/server\/app\.ts$/, ["agent-join"]],
 	// What the thread agent lives in: the thread cards (Overview, Files
 	// changed, unplaced and not in comparison), their reply box and
 	// Resolve, Resolve's close in Files changed, and the routes.
@@ -169,7 +174,7 @@ const E2E_MAP = [
 		["asof", "overview", "pinned-head"],
 	],
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
-	[/^src\/server\/agent\/|^test\/fake-acp\//, ["agent"]],
+	[/^src\/server\/agent\/|^test\/fake-acp\//, ["agent", "agent-join"]],
 	[
 		/^src\/web\/(brand\/|Tooltip\.tsx$|theme)|^src\/web\/index\.css$/,
 		["design", "mobile"],
@@ -180,7 +185,10 @@ const E2E_MAP = [
 	// Only src/cli.test.ts preloads it.
 	[/^test\/module-log\.mjs$/, []],
 	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
-	[/^e2e\/agent-ui\.ts$/, ["agent", "agent-setup"]],
+	[
+		/^e2e\/agent-ui\.ts$/,
+		["agent", "agent-setup", "agent-join", "thread-agent"],
+	],
 	[
 		/^src\/(cli|main|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
 		["serve", "cli"],

@@ -153,7 +153,7 @@ export function AgentOverviewRow() {
 }
 
 /** Where an agent thread's lines are in Files changed (a file's top without lines). */
-function landingOf(thread: AgentThread): FilesSearch {
+export function landingOf(thread: AgentThread): FilesSearch {
 	const a = thread.anchor;
 	if (a.subject === "file" || a.line === undefined || a.side === undefined) {
 		return { path: a.path };

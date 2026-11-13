@@ -531,8 +531,9 @@ const COMMENT_TIMES = "createdAt publishedAt state";
 const COMMENT_PAGE = "pageInfo { hasNextPage endCursor }";
 const SUMMARY_COMMENT = `id ${COMMENT_AUTHOR} ${COMMENT_TIMES}`;
 // What the viewer may do to it (reply, resolve, unresolve), and the
-// opener's REST id, which a reply is posted to.
-const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId ${COMMENT_AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${COMMENT_AUTHOR} ${COMMENT_TIMES} } } comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${SUMMARY_COMMENT} } }`;
+// opener's REST id, which a reply is posted to. `headOf`: the PR's head in
+// the same answer, the commit its `line` counts on (thread placement).
+const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide headOf: pullRequest { headRefOid } viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId ${COMMENT_AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${COMMENT_AUTHOR} ${COMMENT_TIMES} } } comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${SUMMARY_COMMENT} } }`;
 /**
  * Each comment's text, and GitHub's diff hunk (the opening one's shows the
  * code); when it was last edited, what the viewer may do to it (only to

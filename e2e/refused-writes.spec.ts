@@ -1,12 +1,19 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import { DELETE_UNDO_MS } from "../src/web/threads/threadWrites";
 import {
 	reviewThread,
 	type Scenario,
 	threadComment,
 } from "../test/fake-gh/scenario";
 import { fileSection, openFiles } from "./files-ui";
-import { expect, type Pr, type PrOptions, test } from "./fixtures";
+import {
+	expect,
+	installClock,
+	type Pr,
+	type PrOptions,
+	test,
+} from "./fixtures";
 
 /**
  * Writes GitHub refuses (the fake gh's `failNext`, used up once) are listed
@@ -190,6 +197,9 @@ const KINDS: Kind[] = [
 				.getByRole("alertdialog", { name: "Delete this comment?" })
 				.getByRole("button", { name: "Delete" })
 				.click();
+			// Sent once its undo window is over (the test installed the clock).
+			await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
+			await page.clock.fastForward(DELETE_UNDO_MS);
 		},
 		landed: (p) => !bodies(p).includes("My take"),
 	},
@@ -224,6 +234,7 @@ for (const kind of KINDS) {
 			failNext: { op: kind.op, status: 403, message: "Not allowed here" },
 		});
 		const s = await startCrb();
+		await installClock(page);
 		await page.goto(s.url);
 		await kind.write(page);
 		// Newly refused: the chip, its list open.
@@ -316,6 +327,7 @@ test("a refused delete survives a reload, and its Retry deletes it", async ({
 		failNext: { op: "delete", status: 403, message: "Not allowed here" },
 	});
 	const s = await startCrb();
+	await installClock(page);
 	await page.goto(s.url);
 	await KINDS[3]?.write(page);
 	await expect(item(page)).toContainText("Delete · new.txt:1");

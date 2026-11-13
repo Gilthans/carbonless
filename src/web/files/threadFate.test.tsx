@@ -330,6 +330,46 @@ describe("PlacementChip", () => {
 		expect(screen.queryByTestId("placement-fate")).toBeNull();
 		expect(screen.queryByTestId("placement-changed")).toBeNull();
 		expect(screen.queryByRole("status")).toBeNull();
+		// GitHub's outdated is the card's own badge: no second chip for it.
+		const outdated = new Map([
+			[
+				t.id,
+				{
+					kind: "unplaced" as const,
+					fate: "outdated" as const,
+					path: "a.ts",
+					nearest: null,
+				},
+			],
+		]);
+		rerender(
+			wrap(
+				info({ placements: outdated }),
+				<PlacementChip thread={{ ...t, outdated: true }} />,
+			),
+		);
+		expect(screen.queryByTestId("placement-fate")).toBeNull();
+		rerender(
+			wrap(
+				info({
+					placements: new Map([
+						[
+							t.id,
+							{
+								kind: "unplaced",
+								fate: "untraced",
+								path: "a.ts",
+								nearest: null,
+							},
+						],
+					]),
+				}),
+				<PlacementChip thread={t} />,
+			),
+		);
+		expect(screen.getByTestId("placement-fate").textContent).toContain(
+			"untraced",
+		);
 	});
 });
 
@@ -339,6 +379,8 @@ describe("UnplacedRow", () => {
 	it.each<[Fate | null, string]>([
 		["deleted", "Commented line has been deleted since the review"],
 		["rewritten", "Commented line has been rewritten since the review"],
+		["outdated", "GitHub marks the commented line outdated"],
+		["untraced", "Couldn't trace the commented line here"],
 		["reverted", "The commented change has been reverted since the review"],
 		[
 			"base-changed",

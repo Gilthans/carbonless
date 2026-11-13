@@ -408,6 +408,12 @@ export interface ReviewThread {
 	/** GitHub's current line for the comment; null when outdated or a file comment. */
 	currentLine: number | null;
 	/**
+	 * The PR's head in the same GitHub answer as `currentLine`: the commit
+	 * that line counts on (thread placement's fallback). Absent when GitHub
+	 * gave none, and as of a cutoff (today's head, not the cutoff's).
+	 */
+	currentHead?: string;
+	/**
 	 * Whether the opening comment's text (`excerpt`, `html`, `body`) has been
 	 * read; until then they are "" (the card shows its frame).
 	 */

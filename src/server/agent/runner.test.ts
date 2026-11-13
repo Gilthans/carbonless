@@ -25,7 +25,10 @@ import type {
 } from "../../shared/agent.js";
 import { RefStore } from "../review/refStore.js";
 import { agentsDir, createCheckout } from "./checkout.js";
+import { ReviewClaim } from "./claim.js";
 import { orphanAnchor } from "./githubJoin.js";
+import { type AgentHost, buildAgentHost } from "./host.js";
+import { JoinBroker } from "./join.js";
 import type {
 	GithubThreadFacts,
 	PromptEnvelope,
@@ -34,14 +37,28 @@ import type {
 import { AgentRunner, type RunnerDeps, type RunnerFacts } from "./runner.js";
 import { type AgentThreadFold, AgentThreadStore } from "./store.js";
 
-// The real checkout, wrapped so a test can hold it.
-vi.mock("./checkout.js", async (importOriginal) => {
-	const real = await importOriginal<typeof import("./checkout.js")>();
-	return { ...real, createCheckout: vi.fn(real.createCheckout) };
-});
-
 // Real git and fake agent processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
+
+// The real checkout, wrapped so a test can hold it: by the gate, or by
+// mocking one call (vi.mocked(createCheckout)).
+const checkoutGate = vi.hoisted(() => ({
+	hold: null as Promise<void> | null,
+	entered: 0,
+}));
+vi.mock("./checkout.js", async (importOriginal) => {
+	const real = await importOriginal<typeof import("./checkout.js")>();
+	return {
+		...real,
+		createCheckout: vi.fn(
+			async (...args: Parameters<typeof real.createCheckout>) => {
+				checkoutGate.entered++;
+				if (checkoutGate.hold) await checkoutGate.hold;
+				return real.createCheckout(...args);
+			},
+		),
+	};
+});
 
 const REVIEW = "01k9e6m2q8x4v7c3n5b0h1j2t6";
 const AGENT: AgentConfig = {
@@ -891,6 +908,498 @@ describe("AgentRunner", () => {
 		await answered(2);
 		expect(treeHead()).toBe(old);
 		expect(prompts()[1]?.notice).toContain(`The PR's head is now ${prHead}`);
+	});
+
+	describe("ACP off (a session joined through MCP)", () => {
+		const broker = () =>
+			new JoinBroker({
+				dir: join(agentsDir(), REVIEW),
+				onApproved: async () => {},
+				onLeft: () => {},
+			});
+
+		it("a configured runner never spawns without the spawn flag: status poll, new question, config save, a new runner on the same dir", async () => {
+			const b = broker();
+			let saves = 0;
+			await ask("why?");
+			const r = makeRunner({
+				acpOff: () => !b.spawned(),
+				config: async () => ({ ...config, saves }),
+			});
+			await r.status();
+			r.poke();
+			await r.settled();
+			expect((await r.status()).state).toBe("off");
+			await ask("and?", 2);
+			r.asked();
+			await r.settled();
+			// A Save of the same config: still off.
+			saves++;
+			await r.status();
+			await r.settled();
+			expect((await r.status()).state).toBe("off");
+			// The config changed: still off.
+			config = { agent: { ...AGENT, args: ["--x"] }, problems: [] };
+			await r.status();
+			await r.settled();
+			expect(spawns()).toHaveLength(0);
+			const status = await r.status();
+			expect(status).toMatchObject({
+				state: "off",
+				configured: true,
+				waiting: 2,
+			});
+			await r.close();
+			// A crb restart: a new broker and runner on the same dir.
+			const again = broker();
+			const r2 = makeRunner({ acpOff: () => !again.spawned() });
+			r2.poke();
+			await r2.status();
+			await r2.settled();
+			expect(spawns()).toHaveLength(0);
+			// Spawn: the flag set, the backlog is answered.
+			await again.setSpawned(true);
+			r2.asked();
+			await answered(2);
+			expect(spawns()).toHaveLength(1);
+		});
+
+		it("detach() cancels the turn (nothing stored, the question waits), stops the process, removes the checkout, releases the claim; a later poke spawns again", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			const pid = spawns()[0]?.pid as number;
+			off = true;
+			// Held for good: only the cancel or the stop ends the turn.
+			await r.detach();
+			const dir = join(agentsDir(), REVIEW);
+			expect(() => process.kill(pid, 0)).toThrow();
+			expect(() => execFileSync("test", ["-e", join(dir, "tree")])).toThrow();
+			expect(() =>
+				execFileSync("test", ["-e", join(dir, "claim.json")]),
+			).toThrow();
+			const [t] = await threads();
+			expect(t?.messages).toHaveLength(1);
+			expect(t?.waiting).toBe(true);
+			const status = await r.status();
+			expect(status.state).toBe("off");
+			expect(status.agent).toBeUndefined();
+			expect(status.answering).toBeUndefined();
+			// Still usable (unlike close): on again, it answers.
+			scenario();
+			off = false;
+			r.asked();
+			await answered(1);
+			expect(spawns()).toHaveLength(2);
+		});
+
+		it("the flag cleared elsewhere (no stop, no detach here): the next status poll stops the process and releases the claim, keeping the checkout", async () => {
+			let off = false;
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "ready");
+			const pid = spawns()[0]?.pid as number;
+			off = true;
+			expect((await r.status()).state).toBe("off");
+			await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			await vi.waitFor(
+				() =>
+					expect(() =>
+						execFileSync("test", [
+							"-e",
+							join(agentsDir(), REVIEW, "claim.json"),
+						]),
+					).toThrow(),
+				{ timeout: 20_000, interval: 20 },
+			);
+			expect((await r.status()).state).toBe("off");
+			// The checkout stays for a Spawn to come (only Detach removes it).
+			expect(treeHead()).toBe(origin.shas[1]);
+		});
+
+		/** A claim that counts holds and releases; `gate` holds each release. */
+		const countingClaim = () => {
+			const c = {
+				holds: 0,
+				releases: 0,
+				gate: null as Promise<void> | null,
+				releasing: 0,
+				held: () => c.holds - c.releases,
+				claim: {
+					hold: async () => {
+						c.holds++;
+						return {
+							ok: true as const,
+							release: async () => {
+								c.releasing++;
+								if (c.gate) await c.gate;
+								c.releases++;
+							},
+						};
+					},
+					drop: async () => {},
+				} as unknown as ReviewClaim,
+			};
+			return c;
+		};
+
+		it("Spawn pressed while a detach is still releasing: once it ends, one agent runs, holding the claim", async () => {
+			let off = false;
+			const c = countingClaim();
+			const r = makeRunner({ acpOff: () => off, claim: c.claim });
+			r.poke();
+			await until((s) => s.state === "ready");
+			const first = spawns()[0]?.pid as number;
+			let open!: () => void;
+			c.gate = new Promise<void>((res) => {
+				open = res;
+			});
+			off = true;
+			const detached = r.detach();
+			await vi.waitFor(() => expect(c.releasing).toBe(1), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			// Spawn: the flag set again while the release is held.
+			off = false;
+			r.asked();
+			c.gate = null;
+			open();
+			await detached;
+			const s = await until((st) => st.state === "ready");
+			expect(s.state).toBe("ready");
+			expect(spawns()).toHaveLength(2);
+			const second = spawns()[1]?.pid as number;
+			expect(() => process.kill(first, 0)).toThrow();
+			expect(() => process.kill(second, 0)).not.toThrow();
+			expect(c.held()).toBe(1);
+			expect(treeHead()).toBe(origin.shas[1]);
+			// It stays: a later status doesn't wind it down.
+			await r.status();
+			await r.settled();
+			expect(c.held()).toBe(1);
+			expect((await r.status()).state).toBe("ready");
+		});
+
+		it("Spawn pressed while a detach waits for the turn it cancelled: the old pump doesn't start another agent; detach ends, then one new agent runs", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			const first = spawns()[0]?.pid as number;
+			off = true;
+			let done = false;
+			const detached = r.detach().then(() => {
+				done = true;
+			});
+			// Spawn while the detach awaits the cancel and the old pump.
+			await Promise.resolve();
+			off = false;
+			r.asked();
+			// The prompt stays held: only the detach's cancel ends the old
+			// turn, so a detach waiting on a second agent's turn never ends.
+			await vi.waitFor(() => expect(done).toBe(true), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			await detached;
+			expect(() => process.kill(first, 0)).toThrow();
+			await until((s) => s.state === "busy");
+			expect(spawns()).toHaveLength(2);
+			const [t] = await threads();
+			expect(t?.messages).toHaveLength(1);
+		});
+
+		it("the flag cleared elsewhere, then a poke (no status): the process stops and the claim goes", async () => {
+			let off = false;
+			const c = countingClaim();
+			const r = makeRunner({ acpOff: () => off, claim: c.claim });
+			r.poke();
+			await until((s) => s.state === "ready");
+			const pid = spawns()[0]?.pid as number;
+			off = true;
+			r.poke();
+			await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			await vi.waitFor(() => expect(c.held()).toBe(0), {
+				timeout: 20_000,
+				interval: 20,
+			});
+		});
+
+		it("seen: set by the agent's messages, the status time while it is alive and idle", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let t = Date.parse("2026-11-12T10:00:00.000Z");
+			const r = makeRunner({ now: () => t });
+			expect((await r.status()).seen).toBeUndefined();
+			await ask("why?");
+			r.poke();
+			await until((s) => s.state === "busy" && !!s.answering?.text);
+			// Busy: the time of its last message (the first chunk), not now.
+			const chunkAt = t;
+			t += 60_000;
+			expect((await r.status()).seen).toBe(new Date(chunkAt).toISOString());
+			t += 60_000;
+			releaseAcp(scenarioPath, "prompt");
+			await answered(1);
+			await until((s) => s.state === "ready");
+			t += 60_000;
+			// Alive and idle: now.
+			expect((await r.status()).seen).toBe(new Date(t).toISOString());
+		});
+
+		it("stop() lets the running turn finish, then closes the agent and stays off", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			await ask("second?", 2);
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			off = true;
+			let stopped = false;
+			const stop = r.stop(60 * 60_000).then(() => {
+				stopped = true;
+			});
+			// Held: the stop waits for the turn.
+			await r.status();
+			expect(stopped).toBe(false);
+			releaseAcp(scenarioPath, "prompt");
+			await stop;
+			const [first, second] = await threads();
+			expect(first?.messages[1]).toMatchObject({
+				text: "a b",
+				stop: "end_turn",
+			});
+			// The next question isn't taken: ACP is off.
+			expect(second?.waiting).toBe(true);
+			const status = await r.status();
+			expect(status.state).toBe("off");
+			expect(status.agent).toBeUndefined();
+			await r.settled();
+			expect(spawns()).toHaveLength(1);
+		});
+
+		it("stop() while the agent is being started (its checkout under way): nothing spawns, it stays off", async () => {
+			let open: () => void = () => {};
+			checkoutGate.hold = new Promise<void>((r) => {
+				open = r;
+			});
+			checkoutGate.entered = 0;
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			try {
+				r.poke();
+				await vi.waitFor(() => expect(checkoutGate.entered).toBe(1), {
+					timeout: 20_000,
+					interval: 20,
+				});
+				off = true;
+				const stop = r.stop(60 * 60_000);
+				open();
+				await stop;
+				await r.settled();
+			} finally {
+				checkoutGate.hold = null;
+				open();
+			}
+			expect(spawns()).toHaveLength(0);
+			expect((await r.status()).state).toBe("off");
+			expect((await threads())[0]?.waiting).toBe(true);
+		});
+
+		it("ACP turned off (no stop) while the agent's initialize is held: the spawned process is closed, not kept", async () => {
+			scenario({ hold: ["initialize"] });
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await vi.waitFor(() => expect(spawns()).toHaveLength(1), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			const pid = spawns()[0]?.pid as number;
+			// A gate with no stop(): e.g. a joined session restored with the
+			// file missing. Only the post-spawn check closes the process.
+			off = true;
+			releaseAcp(scenarioPath, "initialize");
+			await r.settled();
+			await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			expect((await r.status()).state).toBe("off");
+			expect((await threads())[0]?.waiting).toBe(true);
+		});
+
+		it("Start pressed while stop() waits for the turn: the agent stays and answers the next thread", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			await ask("second?", 2);
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			off = true;
+			const stop = r.stop(60 * 60_000);
+			// Start: on again before the turn ends.
+			off = false;
+			r.asked();
+			releaseAcp(scenarioPath, "prompt");
+			await stop;
+			await answered(2);
+			expect(spawns()).toHaveLength(1);
+			expect((await r.status()).state).not.toBe("off");
+		});
+
+		it("stop() cancels a turn that runs past its time; nothing is stored and the question still waits", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			off = true;
+			// Held for good: only the cancel ends the turn (not a time bound).
+			await r.stop(50);
+			expect(acpLog(logPath).some((e) => e.method === "session/cancel")).toBe(
+				true,
+			);
+			const [t] = await threads();
+			expect(t?.messages).toHaveLength(1);
+			expect(t?.waiting).toBe(true);
+			const status = await r.status();
+			expect(status.state).toBe("off");
+			expect(status.answering).toBeUndefined();
+		});
+	});
+});
+
+describe("AgentHost with a real runner: Spawn and Detach", () => {
+	let host: AgentHost | undefined;
+	const make = (shared = false): AgentHost => {
+		const dir = join(agentsDir(), REVIEW);
+		host = buildAgentHost({
+			dir,
+			...(shared
+				? {
+						claim: new ReviewClaim(dir, () => ({
+							pid: process.pid,
+							port: 4800,
+						})),
+					}
+				: {}),
+			store,
+			code: async () => undefined,
+			github: {
+				threads: async () => [],
+				thread: async () => null,
+				patchsets: () => [],
+				base: () => origin.shas[0] as string,
+			},
+			runner: (acpOff, claim) =>
+				makeRunner({ acpOff, ...(claim ? { claim } : {}) }),
+		});
+		return host;
+	};
+	afterEach(async () => {
+		await host?.close();
+		host = undefined;
+	});
+	const hostUntil = async (h: AgentHost, check: (s: AgentStatus) => boolean) =>
+		vi.waitFor(
+			async () => {
+				const s = await h.status();
+				expect(check(s)).toBe(true);
+				return s;
+			},
+			{ timeout: 20_000, interval: 20 },
+		);
+
+	it("spawnedAt: set by startAcp, kept across a turn (ready, busy, ready), cleared by detach", async () => {
+		scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+		const h = make();
+		expect((await h.status()).spawnedAt).toBeUndefined();
+		await h.startAcp();
+		const ready = await hostUntil(h, (s) => s.state === "ready");
+		const at = ready.spawnedAt;
+		expect(at).toBeDefined();
+		expect(Number.isNaN(Date.parse(at as string))).toBe(false);
+		await ask("why?");
+		h.start();
+		const busy = await hostUntil(h, (s) => s.state === "busy");
+		expect(busy.spawnedAt).toBe(at);
+		releaseAcp(scenarioPath, "prompt");
+		await answered(1);
+		const again = await hostUntil(h, (s) => s.state === "ready");
+		expect(again.spawnedAt).toBe(at);
+		await h.detach();
+		const off = await h.status();
+		expect(off.spawned).toBeUndefined();
+		expect(off.spawnedAt).toBeUndefined();
+	});
+
+	it("Spawn, an approved join (the flag cleared), status polls, Disconnect, Spawn again: the question is answered", async () => {
+		const h = make(true);
+		await h.startAcp();
+		await hostUntil(h, (s) => s.state === "ready");
+		const { request } = h.join.request({ name: "s", machine: "m" });
+		await h.join.answer(request, true);
+		for (let i = 0; i < 3; i++) await h.status();
+		await ask("why?");
+		for (let i = 0; i < 3; i++) await h.status();
+		await h.disconnect();
+		for (let i = 0; i < 3; i++) await h.status();
+		await h.startAcp();
+		await answered(1);
+	});
+
+	it("a configured agent doesn't start by itself; startAcp sets the flag and spawns", async () => {
+		const h = make();
+		await ask("why?");
+		const before = await h.status();
+		expect(before.spawned).toBeUndefined();
+		expect(before.state).toBe("off");
+		await runner.settled();
+		expect(spawns()).toHaveLength(0);
+		await h.startAcp();
+		expect((await h.status()).spawned).toBe(true);
+		await answered(1);
+		expect(spawns()).toHaveLength(1);
+	});
+
+	it("detach clears the flag, stops the process, removes the checkout and releases the claim", async () => {
+		const h = make();
+		await h.startAcp();
+		await hostUntil(h, (s) => s.state === "ready");
+		const pid = spawns()[0]?.pid as number;
+		await h.detach();
+		const s = await h.status();
+		expect(s.spawned).toBeUndefined();
+		expect(s.state).toBe("off");
+		const dir = join(agentsDir(), REVIEW);
+		expect(() => process.kill(pid, 0)).toThrow();
+		expect(() => execFileSync("test", ["-e", join(dir, "tree")])).toThrow();
+		expect(() =>
+			execFileSync("test", ["-e", join(dir, "claim.json")]),
+		).toThrow();
+		expect(() => execFileSync("test", ["-e", join(dir, "acp-on")])).toThrow();
+		// It stays off: a question doesn't bring it back.
+		await ask("and?", 2);
+		await runner.settled();
+		expect((await h.status()).state).toBe("off");
+		expect(spawns()).toHaveLength(1);
 	});
 });
 
