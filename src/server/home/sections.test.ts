@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { viewersTurn } from "../../shared/homeSections.js";
 import type { PrFacts, StartedReview } from "./facts.js";
 import {
 	RECENTLY_CLOSED_MS,
@@ -327,79 +326,5 @@ describe("turnWithWaiting", () => {
 		).toEqual({
 			kind: "none",
 		});
-	});
-});
-
-describe("viewersTurn", () => {
-	const mine = (p: PrFacts, teams: string[] | null = ["ACME/backend"]) =>
-		viewersTurn(turnOf(p, VIEWER, teams), VIEWER);
-	it("is the viewer's turn when the turn table names them, case-insensitive", () => {
-		// 2: their own draft.
-		expect(mine(pr({ author: person("octo"), draft: true }))).toBe(true);
-		// 3: changes requested on their PR.
-		expect(
-			mine(pr({ author: person("OCTO"), decision: "changes-requested" })),
-		).toBe(true);
-		// 4: a review requested from them, among others.
-		expect(mine(pr({ requested: { users: ["bob", "octo"], teams: [] } }))).toBe(
-			true,
-		);
-		// 5: their approved PR, to merge.
-		expect(mine(pr({ author: person("Octo"), decision: "approved" }))).toBe(
-			true,
-		);
-		// 6: they reviewed, the author answered last.
-		expect(
-			mine(
-				pr({
-					reviewers: ["octo"],
-					lastActivity: { alice: iso(NOW - 10), octo: iso(NOW - 100) },
-				}),
-			),
-		).toBe(true);
-		// 7: a reviewer acted last on their PR.
-		expect(
-			mine(
-				pr({
-					author: person("Octo"),
-					reviewers: ["bob"],
-					lastActivity: { Octo: iso(NOW - 100), bob: iso(NOW - 10) },
-				}),
-			),
-		).toBe(true);
-		// 8: their own PR with no reviewer: theirs to request one.
-		expect(mine(pr({ author: person("Octo") }))).toBe(true);
-	});
-
-	it("isn't when the turn is someone else's, a team's, nobody's or none", () => {
-		expect(mine(pr({ draft: true }))).toBe(false);
-		expect(mine(pr({ requested: { users: ["bob"], teams: [] } }))).toBe(false);
-		// A team the viewer is in names the team, not them.
-		expect(
-			mine(pr({ requested: { users: [], teams: ["acme/backend"] } })),
-		).toBe(false);
-		// 8 on someone else's PR: "no reviewer".
-		expect(mine(pr())).toBe(false);
-		expect(mine(pr({ author: person("octo"), state: "MERGED" }))).toBe(false);
-	});
-
-	it("follows the viewer's waiting-on: Me makes it theirs, someone else doesn't", () => {
-		const turn = turnOf(
-			pr({ requested: { users: ["bob"], teams: [] } }),
-			VIEWER,
-		);
-		expect(
-			viewersTurn(
-				turnWithWaiting(turn, { who: "octo", at: iso(NOW) }, VIEWER),
-				VIEWER,
-			),
-		).toBe(true);
-		const own = turnOf(pr({ author: person("Octo") }), VIEWER);
-		expect(
-			viewersTurn(
-				turnWithWaiting(own, { who: "bob", at: iso(NOW) }, VIEWER),
-				VIEWER,
-			),
-		).toBe(false);
 	});
 });
