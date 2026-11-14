@@ -143,3 +143,34 @@ test("the diff's horizontal scrollbar stays within reach while any of the diff i
 	).toBe(true);
 	await expect(other.getByTestId("diff-scrollbar")).toHaveCount(0);
 });
+
+test("a smooth scroll of the table or of the bar runs to its end, the other one following", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, WIDE);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const scroller = diffScroller(section);
+	const bar = section.getByTestId("diff-scrollbar");
+	await expect(bar).toBeVisible();
+	const end = await scroller.evaluate((el) => el.scrollWidth - el.clientWidth);
+	expect(end).toBeGreaterThan(500);
+	const at = async () => ({
+		table: Math.round(await scroller.evaluate((el) => el.scrollLeft)),
+		bar: Math.round(await bar.evaluate((el) => el.scrollLeft)),
+	});
+	// Animated, as keys, a wheel or a click on a track scroll: each step's
+	// echo in the other box must not pull the leader back.
+	await scroller.evaluate((el, left) => {
+		el.scrollTo({ left, behavior: "smooth" });
+	}, end);
+	await expect.poll(at).toEqual({ table: end, bar: end });
+	await bar.evaluate((el) => {
+		el.scrollTo({ left: 0, behavior: "smooth" });
+	});
+	await expect.poll(at).toEqual({ table: 0, bar: 0 });
+});

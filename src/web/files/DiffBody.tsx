@@ -463,10 +463,15 @@ const PIN_CELL = `${PIN} z-[3]`;
  * row's: the slot) would paint under the cells of the rows below, where
  * they reach on touch (stacked, ClusterControls) and when they float
  * (position: fixed, stickyControls.ts): the cell with the slot rises above
- * the other cells.
+ * the other cells. While they float it rises above everything in the table
+ * (OVER_CONTROLS too), as they did before the cells were pinned: a bubble
+ * row or a gap scrolling under them never covers them or takes their clicks.
  */
-const PIN_CONTROLS = `${PIN_CELL} left-1 has-[[data-sticky-slot]]:z-[4]`;
-/** Above a touch cluster's cross-off reaching down from the row above (PIN_CONTROLS). */
+const PIN_CONTROLS = `${PIN_CELL} left-1 has-[[data-sticky-slot]]:z-[4] has-[[data-sticky-slot]_[data-stuck]]:z-[6]`;
+/**
+ * Above a touch cluster's cross-off reaching down from the row above
+ * (PIN_CONTROLS); so is a thread's card (TailRow).
+ */
 const OVER_CONTROLS = "z-[5]";
 const PIN_NUMBER: Record<DiffSide, string> = {
 	LEFT: `${PIN_CELL} left-[var(--gutter)]`,
@@ -2207,6 +2212,7 @@ export function DiffBody(props: {
 	const tight = useTight(scroller);
 	const proxy = useRef<HTMLDivElement>(null);
 	const overflow = useScrollbarProxy(scroller, table, proxy);
+	useFocusClearOfPin(scroller);
 	useBubbleFocusKept(scroller, wide);
 	const onPointerDown = useOneSideSelection(table, view);
 	const { hint, landed, pending } = useLanding(
@@ -3220,7 +3226,11 @@ function useBubbleFocusKept(
  * the table, is sticky at the viewport's bottom while the diff's end is
  * below it and sits at the diff's end once that is in view. It scrolls the
  * table and follows it: each one's scroll sets the other's `scrollLeft`,
- * and one already there sets nothing, so there is no loop. Rendered (the
+ * and one already there sets nothing, so there is no loop. Only the box
+ * being scrolled leads: the scroll event a write causes (its echo, a frame
+ * later) sets nothing back, or it would put the leader back where it was a
+ * frame ago and stop a smooth scroll (keys, a wheel, a click on the bar's
+ * track, a fling) after its first step. Rendered (the
  * returned width, the table's) only while the table is wider than its box,
  * measured again when either changes size (ResizeObserver), never per
  * frame.
@@ -3248,8 +3258,17 @@ function useScrollbarProxy(
 		const el = scroller.current;
 		const bar = proxy.current;
 		if (!shown || !el || !bar) return;
+		// Where each box was put by the other (read back: clamped, rounded),
+		// until its echo comes.
+		const put = new Map<HTMLElement, number>();
 		const follow = (from: HTMLElement, to: HTMLElement) => () => {
-			if (to.scrollLeft !== from.scrollLeft) to.scrollLeft = from.scrollLeft;
+			const echo = put.get(from);
+			put.delete(from);
+			if (echo === from.scrollLeft) return;
+			if (to.scrollLeft !== from.scrollLeft) {
+				to.scrollLeft = from.scrollLeft;
+				put.set(to, to.scrollLeft);
+			}
 		};
 		const tableScrolled = follow(el, bar);
 		const barScrolled = follow(bar, el);
@@ -3266,6 +3285,38 @@ function useScrollbarProxy(
 		};
 	}, [scroller, proxy, shown]);
 	return width;
+}
+
+/**
+ * Focus landing on something in a unified line's code (the ⚠, by script
+ * or a screen reader) while it is scrolled under the pinned cells: the
+ * browser counts it in view (it is in the scroller's box), so the code is
+ * scrolled back just enough to show it right of the line's numbers. The
+ * code cell itself (focus kept on a line, preventScroll) never moves it.
+ */
+function useFocusClearOfPin(scroller: RefObject<HTMLDivElement | null>) {
+	useEffect(() => {
+		const el = scroller.current;
+		if (!el) return;
+		const onFocus = (e: FocusEvent) => {
+			const target = e.target;
+			if (!(target instanceof HTMLElement)) return;
+			const cell = target.closest<HTMLElement>(
+				'table[data-view="unified"] td[data-testid="code"]',
+			);
+			if (!cell || cell === target || !el.contains(cell)) return;
+			const pinned = cell.parentElement?.querySelector<HTMLElement>(
+				':scope > td[data-testid="new"]',
+			);
+			if (!pinned) return;
+			const under =
+				pinned.getBoundingClientRect().right -
+				target.getBoundingClientRect().left;
+			if (under > 0) el.scrollLeft -= Math.ceil(under);
+		};
+		el.addEventListener("focusin", onFocus);
+		return () => el.removeEventListener("focusin", onFocus);
+	}, [scroller]);
 }
 
 /**

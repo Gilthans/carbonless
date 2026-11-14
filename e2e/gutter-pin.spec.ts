@@ -526,6 +526,22 @@ test("word marks and a hidden change's ⚠ scroll under the pinned cells; a gap'
 	await page.keyboard.press("Escape");
 	await expectNoPageOverflow(page);
 
+	// Focused while under the numbers (in the scroller's box, so the
+	// browser wouldn't scroll, but behind the pinned cells), the ⚠ scrolls
+	// out from under them, not left hidden there.
+	await scroller.evaluate((el, left) => {
+		el.scrollLeft = left;
+	}, by);
+	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(by);
+	await warning.evaluate((el) => (el as HTMLElement).focus());
+	await expect
+		.poll(async () => {
+			const w = await warning.boundingBox();
+			const n = await number.boundingBox();
+			return w && n ? Math.round(w.x - (n.x + n.width)) : Number.NaN;
+		})
+		.toBeGreaterThanOrEqual(0);
+
 	// Side by side, for the eyes (DESIGN_SHOTS).
 	if (shots) {
 		await sideBySide(page, true);
@@ -536,4 +552,157 @@ test("word marks and a hidden change's ⚠ scroll under the pinned cells; a gap'
 		await shot("side-by-side");
 		await sideBySide(page, false);
 	}
+});
+
+/**
+ * On touch a cluster's cross-off is stacked under its box, reaching into
+ * the rows below its line: never over an opened thread's card there.
+ */
+test("a touch cluster's cross-off never covers the thread card under its line", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the stacked controls are touch only");
+	const p = await pr(fixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			// On the deleted line: the cluster's first row, where its controls are.
+			reviewThread(
+				{ path: WIDE, line: 3, diffSide: "LEFT", subjectType: "LINE" },
+				[
+					threadComment({
+						login: "ann",
+						text: "Why three?",
+						commit: head,
+						diffHunk: "",
+					}),
+				],
+			),
+		];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, WIDE);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const first = section.locator(
+		'tr[data-testid="diff-line"][data-kind="del"][data-old-no="3"]',
+	);
+	await expect(first.getByTestId("cluster-box-target")).toBeVisible();
+	await first.getByRole("button", { name: /1 comment on/ }).tap();
+	const card = section.getByTestId("thread-row");
+	await expect(card).toBeVisible();
+	// The cross-off reaches into the card's rows...
+	const cross = await first
+		.getByRole("button", { name: "Cross off cluster" })
+		.boundingBox();
+	const box = await card.boundingBox();
+	if (!cross || !box) throw new Error("not rendered");
+	expect(cross.y + cross.height).toBeGreaterThan(box.y);
+	// ...but where they meet, the card is on top.
+	const under = await card.evaluate(
+		(el, c) => {
+			const out: string[] = [];
+			const top = el.getBoundingClientRect().top;
+			for (let y = top + 1; y < c.y + c.height; y += 4) {
+				for (let x = c.x + 2; x < c.x + c.width; x += 6) {
+					const hit = document.elementFromPoint(x, y);
+					if (!hit || !el.contains(hit)) {
+						out.push(`${x},${y}: ${hit?.tagName ?? "nothing"}`);
+					}
+				}
+			}
+			return out;
+		},
+		{ x: cross.x, y: cross.y, width: cross.width, height: cross.height },
+	);
+	expect(under).toEqual([]);
+});
+
+/**
+ * Side by side on a phone, the bubbles get rows of their own: while a
+ * cluster's controls float over its lines, those rows pass under them.
+ */
+const MANY = "src/many.ts";
+const manyFixture: PrOptions = {
+	base: { [MANY]: text(["many 0"]) },
+	files: [
+		{
+			message: "Many",
+			files: {
+				[MANY]: text([
+					"many 0",
+					...Array.from({ length: 40 }, (_, i) => `many ${i + 1}`),
+				]),
+			},
+		},
+	],
+};
+
+test("side by side on a phone, the floating cluster controls stay above the bubble rows", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "bubble rows are a phone's");
+	const p = await pr(manyFixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		// A thread on every added line: a bubble row under each.
+		graph.reviewThreads = Array.from({ length: 40 }, (_, i) =>
+			reviewThread({ path: MANY, line: i + 2, subjectType: "LINE" }, [
+				threadComment({
+					login: "ann",
+					text: `Line ${i + 2}?`,
+					commit: head,
+					diffHunk: "",
+				}),
+			]),
+		);
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	await page.keyboard.press("Escape");
+	const section = fileSection(page, MANY);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.getByTestId("bubble-row")).toHaveCount(40);
+	// The cluster's first line scrolled under the header: its controls float.
+	await section
+		.locator('tr[data-testid="diff-line"][data-new-no="20"]')
+		.evaluate((el) => el.scrollIntoView({ block: "start" }));
+	const controls = section.locator("[data-sticky-controls][data-stuck]");
+	await expect(controls).toHaveAttribute("data-stuck", "fixed");
+	const c = await controls.boundingBox();
+	if (!c) throw new Error("not rendered");
+	// A bubble row passes under them...
+	const rows = await section.getByTestId("bubble-row").evaluateAll((trs) =>
+		trs.map((tr) => {
+			const r = tr.getBoundingClientRect();
+			return { top: r.top, bottom: r.bottom };
+		}),
+	);
+	expect(rows.some((r) => r.top < c.y + c.height && r.bottom > c.y)).toBe(true);
+	// ...and all over the floating box, the controls are on top.
+	const off = await controls.evaluate((el) => {
+		const r = el.getBoundingClientRect();
+		const out: string[] = [];
+		for (let y = r.top + 2; y < r.bottom - 1; y += 4) {
+			for (let x = r.left + 2; x < r.right - 1; x += 6) {
+				const hit = document.elementFromPoint(x, y);
+				if (!hit || !el.contains(hit)) {
+					out.push(`${x},${y}: ${hit?.tagName ?? "nothing"}`);
+				}
+			}
+		}
+		return out;
+	});
+	expect(off).toEqual([]);
 });

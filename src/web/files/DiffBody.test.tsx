@@ -3325,6 +3325,35 @@ describe("the diff's scrollbar proxy (useScrollbarProxy)", () => {
 		expect(set).not.toHaveBeenCalled();
 	});
 
+	it("leaves a smooth scroll to the box being scrolled: a write's late echo sets nothing back", async () => {
+		widths(3000, 800);
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const bar = proxy();
+		if (!bar) throw new Error("no bar");
+		const table = scrollerOf(bar);
+		// The table's first step: the bar follows.
+		table.scrollLeft = 10;
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(10);
+		// The table's next step lands before the bar's echo of the first.
+		table.scrollLeft = 20;
+		bar.dispatchEvent(new Event("scroll"));
+		expect(table.scrollLeft).toBe(20);
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(20);
+		// The same the other way: a click on the bar's track, animated.
+		bar.dispatchEvent(new Event("scroll"));
+		bar.scrollLeft = 300;
+		bar.dispatchEvent(new Event("scroll"));
+		expect(table.scrollLeft).toBe(300);
+		bar.scrollLeft = 340;
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(340);
+		bar.dispatchEvent(new Event("scroll"));
+		expect(table.scrollLeft).toBe(340);
+	});
+
 	it("isn't there while the table fits its box", async () => {
 		widths(800, 800);
 		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
