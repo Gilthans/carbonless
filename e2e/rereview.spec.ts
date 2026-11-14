@@ -2512,7 +2512,7 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 	).toHaveCount(0);
 });
 
-test("the since view's gaps side by side: core 30's thread opens its gap onto its line", async ({
+test("the since view's gaps side by side: core 30's thread opens under its gap, then on its line", async ({
 	page,
 	pr,
 	startCrb,

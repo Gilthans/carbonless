@@ -137,14 +137,19 @@ export interface Bubbles<K> {
 export interface ResolveCollapse<K> {
 	/** Whether an opened bubble shows the thread (Resolve didn't hide it). */
 	shows: (thread: ReviewThread) => boolean;
-	/** Resolve was pressed on `thread`, opened under `key` (and `keys`) with `shown`, from the button `from`. */
+	/**
+	 * Resolve was pressed on `thread`, opened under `key` (and `keys`) with
+	 * `shown`, from the button `from`. What it did: the thread stayed
+	 * (unsent text, a write on its way), was hidden while others still
+	 * show, or closed the bubble.
+	 */
 	resolved: (press: {
 		key: K;
 		keys?: readonly K[];
 		thread: ReviewThread;
 		shown: readonly ReviewThread[];
 		from?: Element;
-	}) => void;
+	}) => "kept" | "hidden" | "closed";
 	/** The bubble was opened or closed by hand: it shows all its threads. */
 	toggled: (key: K) => void;
 }
@@ -205,7 +210,9 @@ export function useResolveCollapse<K>(
 	return {
 		shows: (t) => !hiddenIn(hidden, t),
 		resolved: ({ key, keys = [], thread, shown, from }) => {
-			if (unsettled(thread.id, writer.drafts, writer.getState())) return;
+			if (unsettled(thread.id, writer.drafts, writer.getState())) {
+				return "kept";
+			}
 			const { closeBubble } = closeResolved(hidden, key, thread, shown);
 			if (closeBubble) {
 				const bubble = latest.current.element(key);
@@ -233,6 +240,7 @@ export function useResolveCollapse<K>(
 				latest.current.close(key, keys);
 				latest.current.focus(key);
 			}
+			return closeBubble ? "closed" : "hidden";
 		},
 		toggled: (key) => setHidden((h) => forBubble(h, key)),
 	};

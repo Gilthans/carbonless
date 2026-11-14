@@ -2250,6 +2250,12 @@ export function DiffBody(props: {
 		() => new Set(),
 	);
 	const [focusThread, setFocusThread] = useState<LineKey | null>(null);
+	/**
+	 * Each thread key on a hidden-lines row, to the key its bubble goes by
+	 * (the run's first thread's): filled as the gap rows are drawn.
+	 */
+	const runBubbleOf = useRef(new Map<LineKey, LineKey>());
+	runBubbleOf.current = new Map();
 	// Resolve closes the thread to its bubble (resolveCollapse.ts): under
 	// every key of its row, as the bubble closes it (a context line's is
 	// open under either side's).
@@ -2262,9 +2268,10 @@ export function DiffBody(props: {
 				return next;
 			}),
 		focus: setFocusThread,
+		// A thread of a hidden-lines row is under that row's bubble.
 		element: (key) =>
 			scroller.current?.querySelector(
-				`[aria-controls="${CSS.escape(`${idBase}-thread-${key}`)}"]`,
+				`[aria-controls="${CSS.escape(`${idBase}-thread-${runBubbleOf.current.get(key) ?? key}`)}"]`,
 			) ?? null,
 	});
 	const toggleThreads = (key: LineKey, keys: LineKey[]) => {
@@ -2620,6 +2627,7 @@ export function DiffBody(props: {
 				return key ? [key] : [];
 			});
 			const runKey = runKeys[0];
+			if (runKey) for (const k of runKeys) runBubbleOf.current.set(k, runKey);
 			const runOpen = runKeys.some((k) => openThreads.has(k));
 			const runShown = runOpen
 				? runThreads.filter(rowThreads?.collapse.shows ?? (() => true))
@@ -2708,7 +2716,9 @@ export function DiffBody(props: {
 												? `${idBase}-thread-${runKey}`
 												: undefined
 										}
-										focus={runKey !== undefined && focusThread === runKey}
+										focus={
+											focusThread !== null && runKeys.includes(focusThread)
+										}
 										onFocused={() => setFocusThread(null)}
 										onToggle={() => openRun(runKeys, !runOpen)}
 									/>
@@ -2777,27 +2787,44 @@ export function DiffBody(props: {
 				const readId = props.threads.readId;
 				rows.push(
 					<ThreadRow
-						key={`gap${gap.index}:${run.from}:threads`}
+						// By its first thread's line: stays mounted as lines
+						// load around it and the run shrinks.
+						key={`gap${gap.index}:${runKey}:threads`}
 						id={`${idBase}-thread-${runKey}`}
 						readId={readId}
 						threads={runShown}
 						place={{ columns }}
-						onResolved={(t, from) =>
-							collapse.resolved({
-								key: runKey,
+						onResolved={(t, from) => {
+							// Under the thread's own line, where it shows once
+							// that line loads: hidden or brought back there.
+							const own = targetOf(t)?.key ?? runKey;
+							const did = collapse.resolved({
+								key: own,
 								keys: runKeys,
 								thread: t,
 								shown: runShown,
 								from,
-							})
-						}
+							});
+							// Hidden while others show: its line's bubble is
+							// closed, unless another shown thread ends there.
+							const shared = runShown.some(
+								(o) => o !== t && targetOf(o)?.key === own,
+							);
+							if (did === "hidden" && !shared) {
+								setOpenThreads((open) => {
+									const next = new Set(open);
+									next.delete(own);
+									return next;
+								});
+							}
+						}}
 					/>,
 				);
 			}
 			if (agentKey && agentOpen) {
 				rows.push(
 					<AgentThreadRow
-						key={`gap${gap.index}:${run.from}:agent`}
+						key={`gap${gap.index}:${agentKey}:agent`}
 						id={`${idBase}-agent-${agentKey}`}
 						threads={runAgent.map((p) => p.thread)}
 						place={{ columns }}
