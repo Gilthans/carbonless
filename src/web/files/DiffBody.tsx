@@ -249,6 +249,77 @@ function LeadSlot(props: { lead: FileLead; centred: boolean }) {
 const leadText = (lead: FileLead | undefined, centred: boolean, others = 0) =>
 	`${bubblePad(others + (lead && !centred ? (lead.count ?? 1) : 0))} ${lead && centred ? LEAD_LINE : ""}`;
 
+/**
+ * A file-level label ("Renamed from …", a mode change) and the file's
+ * bubbles, when it is the diff's first row (CAR-152): one row as wide as
+ * the diff's visible width (`--diff-w`) less what sits left of the label
+ * (`--lead-l`, measured), the label wrapping in what the bubbles leave it,
+ * whatever width they render at. Sticky at the left, so scrolling long
+ * lines sideways keeps both in view. Centred, the bubble would cover the
+ * label's text and taps.
+ */
+function FileLabel(props: { children: ReactNode; bubble?: ReactNode }) {
+	const box = useRef<HTMLDivElement>(null);
+	useLayoutEffect(() => {
+		const el = box.current;
+		const cell = el?.parentElement;
+		const table = cell?.closest("table");
+		if (!el || !cell || !table) return;
+		const set = () => {
+			const pad = Number.parseFloat(getComputedStyle(cell).paddingLeft) || 0;
+			const left =
+				cell.getBoundingClientRect().left -
+				table.getBoundingClientRect().left +
+				pad;
+			el.style.setProperty("--lead-l", `${left}px`);
+		};
+		set();
+		if (typeof ResizeObserver === "undefined") return;
+		// The controls beside it, or the table, change size: it moves.
+		const observer = new ResizeObserver(set);
+		observer.observe(table);
+		if (cell.previousElementSibling) {
+			observer.observe(cell.previousElementSibling);
+		}
+		return () => observer.disconnect();
+	}, []);
+	return (
+		<div
+			ref={box}
+			data-testid="file-label"
+			className="sticky left-0 z-[4] flex w-[calc(var(--diff-w,100%)-var(--lead-l,0px)-0.5rem)] items-start gap-2"
+		>
+			<span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+				{props.children}
+			</span>
+			{props.bubble && (
+				<span className="flex shrink-0 select-none">{props.bubble}</span>
+			)}
+		</div>
+	);
+}
+
+/**
+ * A label whose paths may break after each "/" (`<wbr>`: nothing added to
+ * copy), rather than mid-name; a name wider than the line still breaks
+ * anywhere (FileLabel). Plain text: React escapes it.
+ */
+export function breakablePath(text: string | undefined): ReactNode {
+	if (!text) return null;
+	const parts = text.split("/");
+	return parts.map((part, i) =>
+		i === parts.length - 1 ? (
+			// biome-ignore lint/suspicious/noArrayIndexKey: the parts never reorder.
+			<Fragment key={i}>{part}</Fragment>
+		) : (
+			// biome-ignore lint/suspicious/noArrayIndexKey: the parts never reorder.
+			<Fragment key={i}>
+				{part}/<wbr />
+			</Fragment>
+		),
+	);
+}
+
 /** The cell padding that keeps `n` bubbles clear of the code. */
 const bubblePad = (n: number) =>
 	n === 0
@@ -2790,13 +2861,11 @@ export function DiffBody(props: {
 				<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
 					<Rail state={cluster.state} />
 					<ControlsCell className="py-1">{checkbox(cluster)}</ControlsCell>
-					<td
-						colSpan={columns - 2}
-						className={`${leadText(lead, centred)} py-1 font-sans text-sm`}
-					>
-						{lead && <LeadSlot lead={lead} centred={centred} />}
-						{cluster.label}
-						<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+					<td colSpan={columns - 2} className="px-2 py-1 font-sans text-sm">
+						<FileLabel bubble={lead?.bubble}>
+							{breakablePath(cluster.label)}
+							<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+						</FileLabel>
 					</td>
 				</tr>
 				{lead?.row(columns, RAIL[cluster.state])}
