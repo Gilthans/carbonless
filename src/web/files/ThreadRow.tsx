@@ -302,8 +302,8 @@ const asThread = (t: AgentThread) => ({
 
 /**
  * An agent thread on the lines that replaced the ones it was asked on, as
- * a review thread's card has it: the "changed since" chip, its old lines
- * above the new ones and the fate line; then its own card.
+ * a review thread's card has it: the "changed since" chip, the code it
+ * was asked on and the fate line; then its own card.
  */
 function AgentChanged(props: {
 	thread: AgentThread;

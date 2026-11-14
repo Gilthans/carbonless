@@ -623,7 +623,7 @@ test("agent threads follow a push: a spinner while they are traced, then on the 
 	);
 });
 
-test("on a patch set and in the since view: traced from PS1 into the head (a reworked line: changed since, with its old lines), then into PS2; a comment and a question name the head they were written on", async ({
+test("on a patch set and in the since view: traced from PS1 into the head (a reworked line: changed since, with the code it was asked on), then into PS2; a comment and a question name the head they were written on", async ({
 	page,
 	pr,
 	agentCrb,
@@ -680,8 +680,8 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	held.release();
 	const bubble = row(since, 5).getByTestId("agent-bubble");
 	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5, 1 new");
-	// Its line was reworked since: the changed chip and its old lines, as a
-	// review thread's card has them.
+	// Its line was reworked since: the changed chip and the code it was
+	// asked on, as a review thread's card has them.
 	await bubble.click();
 	const changed = since.getByTestId("agent-changed");
 	await expect(changed.getByTestId("placement-changed")).toHaveText(

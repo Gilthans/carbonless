@@ -573,9 +573,9 @@ question would be on someone else's behalf, or about a past moment.
   resolved ones after the rest, muted, counted nowhere. It keeps its agent
   bubble and card, and never counts as a GitHub thread; otherwise it shows
   as a review thread does (owner, 2026-11-10): a rewritten line's "changed
-  since" chip and the code it was asked on, an unplaced one in the review threads' own
-  unplaced row (fate, "near N", Original Reviewed Change, the quiet
-  resolved line). While the placements load, one asked on another head
+  since" chip and the code it was asked on, an unplaced one in the review
+  threads' own unplaced row (fate, "near N", Original Reviewed Change, the
+  quiet resolved line). While the placements load, one asked on another head
   waits: its file's agent bubble and the tree spin, as for comments (never
   outdated first); an answer for another snapshot is asked once more. If
   they fail, the failure shows with a Retry and those threads as

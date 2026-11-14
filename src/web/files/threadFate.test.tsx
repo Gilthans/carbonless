@@ -398,6 +398,38 @@ describe("ChangedSince", () => {
 		expect(screen.queryByTestId("original-code-line")).toBeNull();
 	});
 
+	it("with no code of its own (none, or none marked): the commented lines it was written on from the placement, never the ones it sits on now", async () => {
+		const t = thread();
+		for (const code of [
+			null,
+			t.code && {
+				...t.code,
+				rows: t.code.rows.map((r) => ({ ...r, marked: false })),
+			},
+		]) {
+			const { unmount } = render(
+				wrap(
+					info(),
+					inRouter(() => (
+						<ChangedSince thread={thread({ code })} placement={changed} />
+					)),
+				),
+			);
+			const box = await screen.findByTestId("original-code");
+			expect(within(box).getByTestId("original-code-label").textContent).toBe(
+				`PS1 · src/${HOSTILE}.ts · line 3`,
+			);
+			const rows = within(box).getAllByTestId("original-code-line");
+			expect(rows.map((l) => l.textContent)).toEqual([
+				expect.stringContaining(HOSTILE),
+			]);
+			expect(rows[0]).toHaveAttribute("data-marked", "true");
+			expect(document.body.textContent).not.toContain("the line placed on now");
+			expect(document.querySelector("img[src='x']")).toBeNull();
+			unmount();
+		}
+	});
+
 	it("the Overview's card (lines off) shows only the fate line: the card has its own code", async () => {
 		render(
 			wrap(

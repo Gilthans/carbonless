@@ -29,6 +29,7 @@ import { openedOn } from "../../shared/rereview/openedOn";
 import type { Fate, ThreadPlacement } from "../../shared/rereview/placement";
 import type {
 	CodeRow,
+	DiffSide,
 	PlacementsAnswer,
 	ReviewThread,
 	ThreadAnchorRef,
@@ -268,7 +269,7 @@ export function ChangedSince({
 	const { old } = placement;
 	return (
 		<div data-testid="placement-changed-pane" className="space-y-1">
-			{lines && <OriginalCode thread={thread} />}
+			{lines && <OriginalCode thread={thread} fallback={old} />}
 			<p
 				data-testid="placement-fate-line"
 				className="flex min-h-10 flex-wrap items-center gap-x-2 text-xs text-muted"
@@ -294,23 +295,29 @@ export function ChangedSince({
 	);
 }
 
+/** A changed placement's commented lines as the tracer read them in the thread's own patch set. */
+export type OldLines = Extract<ThreadPlacement, { kind: "changed" }>["old"];
+
 /**
  * The code a thread was written on, cut to its commented lines and two
  * lines either side, the commented ones highlighted; labelled with its
  * patch set, path and line numbers. A frame while the code is still on
- * its way; nothing when there is none.
+ * its way. With no code to show (none, or none of it marked), the
+ * commented lines from `fallback` (a changed placement's `old`: the same
+ * patch set's lines, never where the thread sits now); else nothing.
  */
 export function OriginalCode({
 	thread,
+	fallback,
 }: {
 	/** A review thread, or an agent thread seen the same way. */
 	thread: Pick<ReviewThread, "code" | "path" | "createdAt">;
+	fallback?: OldLines;
 }) {
 	const info = usePlacementInfo();
 	const code = thread.code;
 	const path = code?.anchor.path ?? thread.path;
-	if (!code) return null;
-	if (code.source === "pending") {
+	if (code?.source === "pending") {
 		return (
 			<div
 				data-testid="original-code-loading"
@@ -323,14 +330,11 @@ export function OriginalCode({
 			</div>
 		);
 	}
-	const marked = code.rows.flatMap((r, i) => (r.marked ? [i] : []));
-	if (marked.length === 0) return null;
-	const first = Math.max(0, (marked[0] as number) - 2);
-	const last = Math.min(code.rows.length - 1, (marked.at(-1) as number) + 2);
-	const rows = code.rows.slice(first, last + 1);
-	const side = code.anchor.side;
+	const shown = codeRows(code) ?? oldRows(fallback);
+	if (!shown) return null;
+	const { rows, side } = shown;
 	const numberOf = (r: CodeRow) => (side === "LEFT" ? r.oldNo : r.newNo);
-	const nums = code.rows
+	const nums = rows
 		.filter((r) => r.marked)
 		.map(numberOf)
 		.filter((n): n is number => n !== null);
@@ -372,6 +376,35 @@ export function OriginalCode({
 			</div>
 		</figure>
 	);
+}
+
+/** A code window cut to its marked rows ±2; null with none marked. */
+function codeRows(
+	code: ReviewThread["code"],
+): { rows: CodeRow[]; side: DiffSide } | null {
+	if (!code) return null;
+	const marked = code.rows.flatMap((r, i) => (r.marked ? [i] : []));
+	if (marked.length === 0) return null;
+	const first = Math.max(0, (marked[0] as number) - 2);
+	const last = Math.min(code.rows.length - 1, (marked.at(-1) as number) + 2);
+	return { rows: code.rows.slice(first, last + 1), side: code.anchor.side };
+}
+
+/** A changed placement's old lines as marked rows on their side; null with no text. */
+function oldRows(
+	old: OldLines | undefined,
+): { rows: CodeRow[]; side: DiffSide } | null {
+	if (!old || old.text.length === 0) return null;
+	const rows = old.text.map(
+		(text, i): CodeRow => ({
+			kind: "context",
+			oldNo: old.side === "LEFT" ? old.startLine + i : null,
+			newNo: old.side === "RIGHT" ? old.startLine + i : null,
+			text,
+			marked: true,
+		}),
+	);
+	return { rows, side: old.side };
 }
 
 /**
