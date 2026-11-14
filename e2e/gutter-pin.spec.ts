@@ -4,6 +4,8 @@ import {
 	expectNoPageOverflow,
 	fileSection,
 	openFiles,
+	setSwitch,
+	sideBySide,
 	tapHeight,
 	tapWidth,
 } from "./files-ui";
@@ -14,6 +16,9 @@ import { expect, type Pr, type PrOptions, test } from "./fixtures";
  * cluster's rail, its controls and both line numbers stay at the scroller's
  * left edge, in every kind of row, opaque, and still pick lines there.
  */
+
+/** DESIGN_SHOTS=<dir>: also save gutter-{chromium,phone}-*.png there. */
+const shots = process.env.DESIGN_SHOTS;
 
 const text = (lines: string[]) => `${lines.join("\n")}\n`;
 const WIDE = "src/wide.ts";
@@ -43,7 +48,7 @@ async function setup(pr: (opts?: PrOptions) => Promise<Pr>) {
 	const p = await pr(fixture);
 	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
-		const graph = s.prs[7]?.graphql;
+		const graph = s.prs[p.number]?.graphql;
 		if (!graph) throw new Error("no PR in the scenario");
 		graph.reviewThreads = [
 			reviewThread({ path: WIDE, line: 4, subjectType: "LINE" }, [
@@ -388,4 +393,147 @@ test("a phone is cramped: a narrow pinned block whose controls and numbers still
 	await expect(row).toHaveAttribute("data-picked", "true");
 	expect(await scroller.evaluate((el) => el.scrollLeft)).toBe(120);
 	await expectNoPageOverflow(page);
+});
+
+/**
+ * The code cell's own furniture scrolls under the pinned cells like its
+ * text: a pair's word marks, and the ⚠ of a change that only shows with
+ * hidden characters (a positioned button with a 40px touch target) never
+ * paint over a pinned number or take its tap. A gap's stacked arrows keep
+ * the controls column's width.
+ */
+const MARKS = "src/marks.ts";
+const tail = "mark ".repeat(80);
+const marksBase = Array.from({ length: 60 }, (_, i) =>
+	i === 4 || i === 44 ? `const w${i + 1} = "${tail}";` : `mark ${i + 1}`,
+);
+const marksFixture: PrOptions = {
+	base: { [MARKS]: text(marksBase) },
+	files: [
+		{
+			message: "Marks",
+			files: {
+				[MARKS]: text(
+					marksBase.map((l, i) =>
+						i === 4
+							? `const v5 = "${tail}";`
+							: // A byte order mark: a change nothing shows.
+								i === 44
+								? `const w\uFEFF45 = "${tail}";`
+								: l,
+					),
+				),
+			},
+		},
+	],
+};
+
+test("word marks and a hidden change's ⚠ scroll under the pinned cells; a gap's arrows keep the column", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}, testInfo) => {
+	await pr(marksFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, MARKS);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	// Hidden characters off: the BOM draws nothing, its line warns.
+	await setSwitch(page, "Show hidden characters", false);
+	await page.keyboard.press("Escape");
+	const shot = async (name: string) => {
+		if (shots) {
+			await section.screenshot({
+				path: `${shots}/gutter-${testInfo.project.name}-${name}.png`,
+			});
+		}
+	};
+	const marked = section.locator(
+		'tr[data-testid="diff-line"][data-kind="add"][data-new-no="5"]',
+	);
+	await expect(marked.locator("[data-word]")).not.toHaveCount(0);
+	const warned = section.locator(
+		'tr[data-testid="diff-line"][data-kind="add"][data-new-no="45"]',
+	);
+	const warning = warned.locator("[data-hidden-change]");
+	await expect(warning).toBeVisible();
+	// The gaps: their arrows (stacked where there are two or three) in the
+	// rail and controls, the columns after them start where every line's do.
+	const lineNumberX = await x(marked.getByTestId("old"));
+	const gaps = await section.getByTestId("gap-row").evaluateAll((rows) =>
+		rows.map((tr) => ({
+			arrows: tr.querySelectorAll("button[data-glyph]").length,
+			end: tr.children[0]?.getBoundingClientRect().right ?? Number.NaN,
+		})),
+	);
+	expect(Math.max(...gaps.map((g) => g.arrows))).toBeGreaterThan(1);
+	for (const g of gaps) expect(g.end).toBeCloseTo(lineNumberX, 0);
+	await shot("unscrolled");
+
+	// Scroll the ⚠ right under the new number's centre.
+	const scroller = diffScroller(section);
+	const number = warned.getByTestId("new");
+	const centre = async (l: Locator) => {
+		const b = await l.boundingBox();
+		if (!b) throw new Error("not rendered");
+		return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+	};
+	const by = Math.round((await centre(warning)).x - (await centre(number)).x);
+	await scroller.evaluate((el, left) => {
+		el.scrollLeft = left;
+	}, by);
+	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(by);
+	await shot("scrolled");
+	// Clear of what floats at the viewport's bottom (the diff's own
+	// scrollbar, the phone's Files button) and of the sticky header.
+	await warned.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	// What's on top at the number, all across it, is the number: else what
+	// is, named.
+	const over = await number.evaluate((el) => {
+		const b = el.getBoundingClientRect();
+		const y = b.top + b.height / 2;
+		const out: string[] = [];
+		for (let at = b.left + 1; at < b.right - 1; at += 2) {
+			const hit = document.elementFromPoint(at, y);
+			if (hit === null || !el.contains(hit)) {
+				out.push(
+					`${Math.round(at)}: ${hit?.tagName ?? "nothing"} ${hit?.getAttribute("data-testid") ?? ""} ${hit?.className ?? ""}`,
+				);
+			}
+		}
+		return out;
+	});
+	expect(over, "the number, not the ⚠, on top").toEqual([]);
+	for (const row of [marked, warned]) {
+		for (const cell of [row.getByTestId("old"), row.getByTestId("new")]) {
+			const covered = await cell.evaluate((el) => {
+				const b = el.getBoundingClientRect();
+				const hit = document.elementFromPoint(
+					b.left + b.width / 2,
+					b.top + b.height / 2,
+				);
+				return hit !== null && el.contains(hit);
+			});
+			expect(covered).toBe(true);
+		}
+	}
+	// A tap or click on the number picks the line; hidden characters stay off.
+	if (isMobile) await number.tap();
+	else await number.click();
+	await expect(warned).toHaveAttribute("data-picked", "true");
+	await expect(warning).toBeVisible();
+	await page.keyboard.press("Escape");
+	await expectNoPageOverflow(page);
+
+	// Side by side, for the eyes (DESIGN_SHOTS).
+	if (shots) {
+		await sideBySide(page, true);
+		await page.keyboard.press("Escape");
+		await expect(
+			section.locator('table[data-view="side-by-side"]'),
+		).toBeVisible();
+		await shot("side-by-side");
+		await sideBySide(page, false);
+	}
 });

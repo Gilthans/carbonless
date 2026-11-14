@@ -453,16 +453,24 @@ const SIGN_MR = "mr-2 group-data-[tight]/diff:mr-1";
  */
 const PIN = "sticky";
 /**
+ * A pinned cell sits above whatever the code cell positions (the ⚠'s
+ * button and its touch target's two layers, HiddenWarning, at z 1 and 2),
+ * so nothing of the code scrolled under it paints or takes a tap there.
+ */
+const PIN_CELL = `${PIN} z-[3]`;
+/**
  * A stuck cell is a stacking context, so a cluster's controls (its first
  * row's: the slot) would paint under the cells of the rows below, where
  * they reach on touch (stacked, ClusterControls) and when they float
  * (position: fixed, stickyControls.ts): the cell with the slot rises above
  * the other cells.
  */
-const PIN_CONTROLS = `${PIN} left-1 has-[[data-sticky-slot]]:z-[1]`;
+const PIN_CONTROLS = `${PIN_CELL} left-1 has-[[data-sticky-slot]]:z-[4]`;
+/** Above a touch cluster's cross-off reaching down from the row above (PIN_CONTROLS). */
+const OVER_CONTROLS = "z-[5]";
 const PIN_NUMBER: Record<DiffSide, string> = {
-	LEFT: `${PIN} left-[var(--gutter)]`,
-	RIGHT: `${PIN} left-[calc(var(--gutter)+var(--num-w,3rem))]`,
+	LEFT: `${PIN_CELL} left-[var(--gutter)]`,
+	RIGHT: `${PIN_CELL} left-[calc(var(--gutter)+var(--num-w,3rem))]`,
 };
 /**
  * A row's words stay in view too (a cluster's label says what it is): an
@@ -604,7 +612,7 @@ function Rail({
 			? `${RAIL[state]} group-hover:bg-accent group-hover:bg-none group-focus-within:bg-accent group-focus-within:bg-none`
 			: "";
 	return (
-		<td aria-hidden className={`${PIN} left-0 w-1 min-w-1 p-0 ${color}`} />
+		<td aria-hidden className={`${PIN_CELL} left-0 w-1 min-w-1 p-0 ${color}`} />
 	);
 }
 
@@ -815,7 +823,7 @@ function HiddenWarning({ kind }: { kind: RowLine["kind"] }) {
 						keepFocusOnLine(e.currentTarget);
 						showInvisibles.set(true);
 					}}
-					className={`relative mr-2 inline-flex w-[1ch] cursor-pointer select-none justify-center align-[-1px] text-warn focus-visible:outline-2 focus-visible:outline-accent ${WARNING_TARGET}`}
+					className={`relative ${SIGN_MR} inline-flex w-[1ch] cursor-pointer select-none justify-center align-[-1px] text-warn focus-visible:outline-2 focus-visible:outline-accent ${WARNING_TARGET}`}
 				>
 					<AlertIcon size={12} aria-hidden />
 				</button>
@@ -1648,10 +1656,9 @@ function BubbleRow(props: {
 	const has = (b: Bubbles) => Boolean(b.lead || b.bubble || b.agent);
 	if (!has(left) && !has(right)) return null;
 	const group = (side: DiffSide, b: Bubbles) => (
-		// Above a touch cluster's cross-off reaching down from the row above (PIN_CONTROLS).
 		<div
 			data-bubbles={side}
-			className={`relative z-[2] flex ${side === "RIGHT" ? "justify-end" : ""}`}
+			className={`relative ${OVER_CONTROLS} flex ${side === "RIGHT" ? "justify-end" : ""}`}
 		>
 			{b.lead}
 			{b.bubble}
@@ -1842,7 +1849,7 @@ function KindRow(props: {
 		>
 			<Rail state={props.state} gone={props.gone} />
 			<td colSpan={props.columns - 1} className="px-2 py-0.5">
-				<span className="flex items-center gap-1">
+				<span className={`${PIN} flex w-fit items-center gap-1 left-3`}>
 					{kind && (
 						<KindChip
 							kind={kind}
@@ -2732,10 +2739,9 @@ export function DiffBody(props: {
 					// Not code: a selection across it leaves it out.
 					className="group/gap bg-hunk text-hunk-ink select-none"
 				>
-					{/* Above a touch cluster's cross-off reaching down from the row above (PIN_CONTROLS). */}
 					<td
 						colSpan={2}
-						className={`${PIN} left-0 z-[2] px-1 pointer-coarse:px-0.5`}
+						className={`${PIN} left-0 ${OVER_CONTROLS} px-1 pointer-coarse:px-0.5`}
 					>
 						<div
 							className={`flex ${buttons.length > 1 ? "flex-col items-start" : ""}`}
