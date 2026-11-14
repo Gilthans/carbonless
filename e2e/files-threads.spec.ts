@@ -325,7 +325,10 @@ test("a thread with no commit of its own sits on GitHub's line; an outdated one 
 	const p = await setup(pr);
 	// GitHub gave no originalCommit: nothing to trace from but its line now.
 	p.editScenario((s) => {
-		s.prs[7]?.graphql?.reviewThreads?.push(
+		// The test's own PR (the shared crb serve gives each test its number).
+		const graph = s.prs[p.number]?.graphql;
+		if (!graph?.reviewThreads) throw new Error("no PR threads in the scenario");
+		graph.reviewThreads.push(
 			reviewThread({ path: CORE, line: 7, subjectType: "LINE" }, [
 				threadComment({ login: "rev3", text: "No commit here" }),
 			]),

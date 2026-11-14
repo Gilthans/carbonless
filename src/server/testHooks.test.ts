@@ -135,9 +135,14 @@ describe("test hooks", () => {
 			},
 		});
 		await session.overview(0);
-		await vi.waitFor(() => expect(ghRunning().calls).not.toHaveLength(0), {
-			timeout: 10_000,
-		});
+		// Held once the fake gh has logged it: the log is written inside the
+		// call, before its hold. (crb's own count goes up at the spawn, before
+		// the fake gh has the call: not yet running there.)
+		await vi.waitFor(
+			() => expect(pr.ghLog()).toMatch(/reviewThreads[\s\S]*viewerCanResolve/),
+			{ timeout: 10_000 },
+		);
+		expect(ghRunning().calls).not.toHaveLength(0);
 		expect(fakeGhServerCalls().running).toBeGreaterThan(0);
 
 		const answer = await reset();
