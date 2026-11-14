@@ -10,10 +10,12 @@ import {
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { inRouter } from "../../../test/in-router";
 import type { Fate } from "../../shared/rereview/placement";
 import type { ReviewThread } from "../../shared/types";
 import { NotInComparison } from "./NotInComparison";
 import {
+	ChangedSince,
 	PlacementChip,
 	type PlacementInfo,
 	PlacementProvider,
@@ -330,6 +332,84 @@ describe("PlacementChip", () => {
 		expect(screen.queryByTestId("placement-fate")).toBeNull();
 		expect(screen.queryByTestId("placement-changed")).toBeNull();
 		expect(screen.queryByRole("status")).toBeNull();
+	});
+});
+
+describe("ChangedSince", () => {
+	/** Carried from line 3 on PS1 to line 9, rewritten: what replaced it is the head's. */
+	const changed = {
+		kind: "changed" as const,
+		anchor: {
+			path: `src/${HOSTILE}.ts`,
+			startSide: "RIGHT" as const,
+			startLine: 9,
+			side: "RIGHT" as const,
+			line: 9,
+		},
+		old: { side: "RIGHT" as const, startLine: 3, line: 3, text: [HOSTILE] },
+		now: ["the line placed on now"],
+	};
+
+	it("shows the code the thread was written on (its own patch set's lines), never the lines it sits on now", async () => {
+		render(
+			wrap(
+				info(),
+				inRouter(() => <ChangedSince thread={thread()} placement={changed} />),
+			),
+		);
+		const box = await screen.findByTestId("original-code");
+		expect(within(box).getByTestId("original-code-label").textContent).toBe(
+			`PS1 · src/${HOSTILE}.ts · line 3`,
+		);
+		expect(
+			within(box)
+				.getAllByTestId("original-code-line")
+				.map((l) => l.textContent),
+		).toEqual([
+			expect.stringContaining("line 1"),
+			expect.stringContaining("line 2"),
+			expect.stringContaining(HOSTILE),
+			expect.stringContaining("line 4"),
+			expect.stringContaining("line 5"),
+		]);
+		expect(document.body.textContent).not.toContain("the line placed on now");
+		expect(screen.getByTestId("placement-fate-line").textContent).toContain(
+			"Line rewritten since PS1",
+		);
+		expect(document.querySelector("img[src='x']")).toBeNull();
+	});
+
+	it("while its code is on its way: the code's frame, never the lines it sits on now", async () => {
+		const t = thread();
+		const pending = thread({
+			code: t.code && { ...t.code, rows: [], source: "pending" },
+		});
+		render(
+			wrap(
+				info(),
+				inRouter(() => <ChangedSince thread={pending} placement={changed} />),
+			),
+		);
+		expect(await screen.findByTestId("original-code-loading")).toHaveAttribute(
+			"aria-busy",
+			"true",
+		);
+		expect(document.body.textContent).not.toContain("the line placed on now");
+		expect(screen.queryByTestId("original-code-line")).toBeNull();
+	});
+
+	it("the Overview's card (lines off) shows only the fate line: the card has its own code", async () => {
+		render(
+			wrap(
+				info(),
+				inRouter(() => (
+					<ChangedSince thread={thread()} placement={changed} lines={false} />
+				)),
+			),
+		);
+		await screen.findByTestId("placement-fate-line");
+		expect(screen.queryByTestId("original-code")).toBeNull();
+		expect(document.body.textContent).not.toContain("the line placed on now");
 	});
 });
 

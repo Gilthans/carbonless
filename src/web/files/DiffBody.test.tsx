@@ -2286,7 +2286,7 @@ describe("DiffBody: the agent's threads", () => {
 		expect(within(card).queryByTestId("agent-outdated")).toBeNull();
 	});
 
-	it("an agent thread whose line was rewritten since: on the new line with the changed chip and its old lines, as a review thread", async () => {
+	it("an agent thread whose line was rewritten since: on the new line with the changed chip and the code it was asked on, never the lines it sits on now", async () => {
 		const { user } = setup({
 			router: true,
 			threads: [],
@@ -2300,6 +2300,27 @@ describe("DiffBody: the agent's threads", () => {
 						line: 5,
 						startSide: "RIGHT",
 						startLine: 5,
+					},
+					// The code it was asked on (PS1's lines 3–7).
+					code: {
+						anchor: {
+							path: PATH,
+							commit: "e".repeat(40),
+							side: "RIGHT",
+							line: 5,
+							startSide: "RIGHT",
+							startLine: 5,
+							at: "2026-11-07T10:00:00Z",
+						},
+						rows: [3, 4, 5, 6, 7].map((n) => ({
+							kind: "context" as const,
+							oldNo: n,
+							newNo: n,
+							text: n === 5 ? "was five" : `old ${n}`,
+							marked: n === 5,
+						})),
+						source: "clone",
+						snapshot: { same: true },
 					},
 				}),
 			],
@@ -2332,12 +2353,17 @@ describe("DiffBody: the agent's threads", () => {
 		);
 		expect(
 			within(opened)
-				.getAllByTestId("placement-changed-line")
+				.getAllByTestId("original-code-line")
 				.map((l) => l.textContent),
 		).toEqual([
+			expect.stringContaining("old 3"),
+			expect.stringContaining("old 4"),
 			expect.stringContaining("was five"),
-			expect.stringContaining("line 11"),
+			expect.stringContaining("old 6"),
+			expect.stringContaining("old 7"),
 		]);
+		// The line it sits on now is the diff's row, not in the thread.
+		expect(within(opened).queryByText(/line 11/)).toBeNull();
 		expect(within(opened).getByTestId("placement-fate-line")).toHaveTextContent(
 			"Line rewritten",
 		);

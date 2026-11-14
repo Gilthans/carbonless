@@ -25,7 +25,6 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { HunkLine } from "../../shared/diffHunk";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { Fate, ThreadPlacement } from "../../shared/rereview/placement";
 import type {
@@ -248,8 +247,9 @@ export function ChangedChip({
 }
 
 /**
- * A changed thread's old lines (from its own patch set) above the lines
- * that replaced them, and the fate line with a way to its patch set.
+ * A changed thread's code as it was written on (its own patch set's lines,
+ * never the ones it sits on now: those are the diff's own row above), and
+ * the fate line with a way to its patch set.
  */
 export function ChangedSince({
 	thread,
@@ -259,44 +259,16 @@ export function ChangedSince({
 	/** A review thread, or an agent thread seen the same way. */
 	thread: Pick<ReviewThread, "createdAt" | "path" | "code">;
 	placement: Extract<ThreadPlacement, { kind: "changed" }>;
-	/** The old and new lines too (the Overview's card shows its own code). */
+	/** Its original code too (the Overview's card shows its own). */
 	lines?: boolean;
 }) {
 	const info = usePlacementInfo();
 	const ps = info.openedOn(thread);
 	const id = useReviewId();
-	const { old, now, anchor } = placement;
-	const rows: (HunkLine & { marked?: boolean })[] = [
-		...old.text.map((text, i) => ({
-			kind: "del" as const,
-			oldNo: old.startLine + i,
-			newNo: null,
-			text,
-		})),
-		...now.map((text, i) => ({
-			kind: "add" as const,
-			oldNo: null,
-			newNo: anchor.line - now.length + 1 + i,
-			text,
-		})),
-	];
+	const { old } = placement;
 	return (
 		<div data-testid="placement-changed-pane" className="space-y-1">
-			{lines && rows.length > 0 && (
-				<figure
-					aria-label={`Lines as they were${ps === null ? "" : ` on PS${ps}`}, and now`}
-					className="overflow-x-auto rounded-md border border-line bg-code font-mono text-xs leading-5 text-code-ink [scrollbar-width:thin]"
-				>
-					<table className="w-full border-collapse">
-						<CodeRows
-							lines={rows}
-							path={anchor.path}
-							wrap={false}
-							testId="placement-changed-line"
-						/>
-					</table>
-				</figure>
-			)}
+			{lines && <OriginalCode thread={thread} />}
 			<p
 				data-testid="placement-fate-line"
 				className="flex min-h-10 flex-wrap items-center gap-x-2 text-xs text-muted"

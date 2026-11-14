@@ -1203,7 +1203,7 @@ const rewriteAndDelete = {
 const unplacedRows = (section: Locator) =>
 	section.getByTestId("unplaced-thread");
 
-test("threads: a rewritten line is changed with its old lines, a deleted one unplaced under its file with its code, in both views; a drag places it and a reload keeps it; the Overview's chips", async ({
+test("threads: a rewritten line is changed with the code it was written on, a deleted one unplaced under its file with its code, in both views; a drag places it and a reload keeps it; the Overview's chips", async ({
 	page,
 	pr,
 	startCrb,
@@ -1273,10 +1273,17 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 		await expect(card.getByTestId("placement-changed")).toHaveText(
 			"changed since",
 		);
-		await expect(card.getByTestId("placement-changed-line")).toHaveText([
-			/core 5 changed/,
-			/core 5 reworked/,
-		]);
+		// The code it was written on (PS1's), never the line it sits on now.
+		await expect(card.getByTestId("original-code-label")).toHaveText(
+			"PS1 · src/core.ts · line 5",
+		);
+		await expect(
+			card
+				.getByTestId("original-code-line")
+				.filter({ hasText: "core 5 changed" }),
+		).toHaveAttribute("data-marked", "true");
+		await expect(card.getByTestId("original-code-line")).toHaveCount(5);
+		await expect(card.getByText(/core 5 reworked/)).toHaveCount(0);
 		await expect(card.getByTestId("placement-fate-line")).toContainText(
 			"Line rewritten since PS1",
 		);
@@ -1395,6 +1402,11 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 	await expect(card.getByTestId("placement-fate-line")).toContainText(
 		"Line rewritten since PS1",
 	);
+	// Its code pane: PS1's line, never the one it sits on now.
+	await expect(
+		card.getByTestId("thread-code-line").filter({ hasText: "core 5 changed" }),
+	).toHaveCount(1);
+	await expect(card.getByText(/core 5 reworked/)).toHaveCount(0);
 	const fine = page
 		.getByTestId("thread")
 		.filter({ hasText: "util 3 looks fine" });

@@ -687,10 +687,15 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	await expect(changed.getByTestId("placement-changed")).toHaveText(
 		"changed since",
 	);
-	await expect(changed.getByTestId("placement-changed-line")).toHaveText([
-		/export const total = v1 \+ v2;/,
-		/export const total = v1 \+ v2 \+ v3;/,
-	]);
+	// The code it was asked on (PS1's), never the line it sits on now.
+	await expect(
+		changed
+			.getByTestId("original-code-line")
+			.filter({ hasText: "export const total = v1 + v2;" }),
+	).toHaveAttribute("data-marked", "true");
+	await expect(
+		changed.getByText("export const total = v1 + v2 + v3;"),
+	).toHaveCount(0);
 	await expect(changed.getByTestId("placement-fate-line")).toContainText(
 		"Line rewritten since PS1",
 	);

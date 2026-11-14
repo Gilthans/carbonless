@@ -109,6 +109,12 @@ re-read" show only when the engine's answer says so: an identical diff
 with no reworked, new or gone cluster. Approving again on an identical
 diff posts a review only on the reviewer's press.
 
+A carried thread sits where it is placed now, but shows the code it was
+written on (owner, 2026-11-14): a rewritten line's card has its own
+patch set's lines in the "Original Reviewed Change" box, never the lines
+it sits on now (those are the diff's own row); while that code loads, its
+frame.
+
 ## Every visible cluster is individually markable
 
 The owner: "every cluster visible in the UI in any view should be
@@ -567,7 +573,7 @@ question would be on someone else's behalf, or about a past moment.
   resolved ones after the rest, muted, counted nowhere. It keeps its agent
   bubble and card, and never counts as a GitHub thread; otherwise it shows
   as a review thread does (owner, 2026-11-10): a rewritten line's "changed
-  since" chip and old lines, an unplaced one in the review threads' own
+  since" chip and the code it was asked on, an unplaced one in the review threads' own
   unplaced row (fate, "near N", Original Reviewed Change, the quiet
   resolved line). While the placements load, one asked on another head
   waits: its file's agent bubble and the tree spin, as for comments (never
