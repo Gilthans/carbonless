@@ -38,6 +38,8 @@ let dir: string;
 let tmp: string;
 /** The helpers this test started (startHelper's processes). */
 let helpers: ChildProcess[] = [];
+/** The stand-in crbs this test started. */
+let crbs: ChildProcess[] = [];
 beforeEach(() => {
 	// A space in every path: a Windows profile like C:\Users\Jane Doe.
 	dir = join(mkdtempSync(join(tmpdir(), "crb-helper-test-")), "with space");
@@ -51,17 +53,20 @@ afterEach(async () => {
 	// again from dir, writing serve.log. Both outlive what a test waits for
 	// (the helper removes its own dir before it exits; crb's last line comes
 	// before its exit): wait for each to exit, then remove.
+	// A test that failed before telling its stand-in crb to exit: end it
+	// now, or the helper waits it out (waitMs) and so does this hook.
+	for (const crb of crbs) crb.kill();
+	crbs = [];
+	const known = helpers.flatMap((h) => (h.pid ? [h.pid] : []));
+	for (const helper of helpers) await exited(helper);
+	helpers = [];
+	// Final once the helper has exited (it writes it just before).
 	const pidFile = join(dir, "update-relaunched.pid");
 	const relaunched = existsSync(pidFile)
 		? Number(readFileSync(pidFile, "utf8"))
 		: null;
-	const known = [
-		...helpers.flatMap((h) => (h.pid ? [h.pid] : [])),
-		...(relaunched ? [relaunched] : []),
-	];
-	for (const helper of helpers) await exited(helper);
-	helpers = [];
 	if (relaunched) {
+		known.push(relaunched);
 		await until(
 			() => !running(relaunched),
 			`the started crb (pid ${relaunched}) exits`,
@@ -145,11 +150,13 @@ function script(name: string, body: string): string {
 
 /** A stand-in crb: runs until told to exit (a line on stdin). */
 function standInCrb(): ChildProcess {
-	return spawn(
+	const crb = spawn(
 		process.execPath,
 		["-e", "process.stdin.once('data', () => process.exit(0))"],
 		{ stdio: ["pipe", "ignore", "ignore"] },
 	);
+	crbs.push(crb);
+	return crb;
 }
 
 /** Waits for a condition (the helper runs detached: no exit to wait for). */
