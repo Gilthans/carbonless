@@ -64,7 +64,7 @@ export interface HomeRow {
 export interface HomeSection {
 	id: SectionId;
 	rows: HomeRow[];
-} // hidden rows included, flagged; the viewer's turn first, then newest updatedAt
+} // hidden rows included, flagged; newest updatedAt first
 /** GET /api/home: everything Home shows that isn't one repo's. */
 export interface HomeView {
 	viewer: Person;

@@ -90,10 +90,7 @@ async function load(
 	return {
 		...view,
 		repos,
-		sections: composeSections(
-			repos.flatMap((r) => r.rows),
-			view.viewer.login,
-		),
+		sections: composeSections(repos.flatMap((r) => r.rows)),
 	};
 }
 const refresh = (home: HomeService) => load(home, { fresh: true });
@@ -571,12 +568,12 @@ describe("HomeService", () => {
 		expect(row(back, 3)?.annotations.note).toBe("after lunch");
 	});
 
-	it("puts the viewer's turn first in each section, then newest activity", async () => {
+	it("orders each section by newest activity, whoever's turn it is", async () => {
 		fx = createHomeFixture({
 			repos: {
 				"acme/api": {
 					prs: [
-						// Mine: bob's turn (newer), then mine to request a reviewer (8).
+						// Mine: bob's turn (newer) before mine to request a reviewer (8).
 						homePr({
 							repo: "acme/api",
 							number: 24,
@@ -590,8 +587,8 @@ describe("HomeService", () => {
 							author: "Octo",
 							updatedAt: iso(T0 - 5 * H),
 						}),
-						// Reviewing: the viewer reviewed last, alice's turn (newer);
-						// a review asked of the viewer (older).
+						// Reviewing: the viewer reviewed last, alice's turn (newer),
+						// before a review asked of the viewer (older).
 						homePr({
 							repo: "acme/api",
 							number: 21,
@@ -612,8 +609,8 @@ describe("HomeService", () => {
 		});
 		const { home } = service();
 		const view = await refresh(home);
-		expect(ids(view, "mine")).toEqual([23, 24]);
-		expect(ids(view, "reviewing")).toEqual([22, 21]);
+		expect(ids(view, "mine")).toEqual([24, 23]);
+		expect(ids(view, "reviewing")).toEqual([21, 22]);
 	});
 
 	it("several started reviews of one PR: sub-rows, newest activity first", async () => {

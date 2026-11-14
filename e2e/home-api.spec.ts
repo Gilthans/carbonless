@@ -69,7 +69,7 @@ test("crb serve answers /api/home with the scenario's sections", async ({
 		).json()) as RepoHome;
 		expect(repo.error).toBe(null);
 		expect(
-			composeSections(repo.rows, view.viewer.login).map((s) => [
+			composeSections(repo.rows).map((s) => [
 				s.id,
 				s.rows.map((r) => r.number),
 			]),
