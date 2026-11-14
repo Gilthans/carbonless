@@ -3218,7 +3218,7 @@ describe("DiffBody: hunk headings and the clickable gap row", () => {
 		expect(contextCalls(calls)).toHaveLength(1);
 	});
 
-	it("a thread bubble on the row opens its thread and loads only around it, never the arrow's lines", async () => {
+	it("a thread bubble on the row opens its thread under the row and loads nothing", async () => {
 		const { calls, user } = setup({
 			hunks: twoHunks(),
 			clusters: twoClusters,
@@ -3232,12 +3232,40 @@ describe("DiffBody: hunk headings and the clickable gap row", () => {
 		fireEvent.pointerMove(bubble);
 		expect(between.dataset.hot).toBe("");
 		await user.click(bubble);
-		await screen.findByText("line 35");
-		// Only the thread's window: not lines 12–31 (↓) nor 40–59 (↑) whole.
-		const loads = contextCalls(calls);
-		expect(loads).toHaveLength(1);
-		expect(loads[0]).not.toContain("newFrom=12&newTo=31");
-		expect(loads[0]).not.toContain("newFrom=40&newTo=59");
+		const opened = await screen.findByTestId("thread-row");
+		expect(bubble).toHaveAttribute("aria-expanded", "true");
+		expect(bubble).toHaveAttribute("aria-controls", opened.id);
+		// Right under the hidden row, which stays as it was: nothing loaded.
+		expect(between.nextElementSibling).toBe(opened);
+		expect(gapRows()[1]).toBe(between);
+		expect(screen.queryByText("line 35")).toBeNull();
+		expect(contextCalls(calls)).toHaveLength(0);
+		// Closing leaves the row as it was.
+		await user.click(bubble);
+		expect(screen.queryByTestId("thread-row")).toBeNull();
+		expect(bubble).toHaveAttribute("aria-expanded", "false");
+		expect(contextCalls(calls)).toHaveLength(0);
+	});
+
+	it("an agent bubble on the row opens its threads under the row and loads nothing", async () => {
+		const { calls, user } = setup({
+			hunks: twoHunks(),
+			clusters: twoClusters,
+			threads: [],
+			agentThreads: [agentThread(35)],
+		});
+		await screen.findAllByTestId("hunk-header");
+		const between = gapRows()[1] as HTMLElement;
+		const bubble = within(between).getByTestId("agent-bubble");
+		await user.click(bubble);
+		const opened = await screen.findByTestId("agent-thread-row");
+		expect(bubble).toHaveAttribute("aria-expanded", "true");
+		expect(between.nextElementSibling).toBe(opened);
+		expect(screen.queryByText("line 35")).toBeNull();
+		expect(contextCalls(calls)).toHaveLength(0);
+		await user.click(bubble);
+		expect(screen.queryByTestId("agent-thread-row")).toBeNull();
+		expect(contextCalls(calls)).toHaveLength(0);
 	});
 
 	it("a row with no arrow (its lines loading) doesn't react", async () => {

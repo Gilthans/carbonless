@@ -378,16 +378,25 @@ test("a thread in a collapsed gap is reachable", async ({
 		name: "2 comments on hidden lines 20–79",
 	});
 	await expect(bubble).toBeVisible();
-	// By keyboard: focus lands on the opened row's bubble.
+	// By keyboard: the threads open right under the row, its lines still
+	// hidden, focus kept on the bubble.
 	await bubble.focus();
 	await page.keyboard.press("Enter");
-	// The gap opens around the lines, and the threads open under them.
+	await expect(bubble).toHaveAttribute("aria-expanded", "true");
+	const rows = section.getByTestId("thread-row");
+	// One row under the gap row, both threads in it.
+	await expect(rows).toHaveCount(1);
+	await expect(rows.getByTestId("thread-comment")).toHaveCount(2);
+	await expect(rows).toContainText("Far down here");
+	await expect(rows).toContainText("Old fifty");
+	await expect(row(section, "new", 40)).toHaveCount(0);
+	await expect(bubble).toBeFocused();
+	// The row's own button shows the lines, the threads open on them.
+	const down = gap.getByRole("button", { name: "Load 20 lines below" });
+	await down.click();
+	await down.click();
 	await expect(row(section, "new", 40)).toBeVisible();
 	await expect(row(section, "new", 40)).toHaveAttribute("data-commented", "");
-	const rows = section.getByTestId("thread-row");
-	await expect(
-		rows.filter({ hasText: "Far down here" }).getByTestId("thread-comment"),
-	).toHaveCount(1);
 	await expect(
 		row(section, "new", 40).getByRole("button", {
 			name: "1 comment on line 40",
@@ -400,17 +409,14 @@ test("a thread in a collapsed gap is reachable", async ({
 		old50.getByRole("button", { name: "1 comment on line 51" }),
 	).toHaveAttribute("aria-expanded", "true");
 	await expect(
+		rows.filter({ hasText: "Far down here" }).getByTestId("thread-comment"),
+	).toHaveCount(1);
+	await expect(
 		rows.filter({ hasText: "Old fifty" }).getByTestId("thread-comment"),
 	).toHaveCount(1);
-	const focused = await page.evaluate(() => {
-		const el = document.activeElement;
-		return el?.getAttribute("data-testid") === "thread-bubble"
-			? (el.getAttribute("aria-label") ?? "")
-			: (el?.tagName ?? "none");
-	});
-	expect(focused).toMatch(/^1 comment on line (40|51)$/);
 	// The gap lines that stay hidden are still counted, with no "0 hidden".
-	await expect(section).not.toContainText("0 hidden lines");
+	await expect(section).toContainText("20 hidden lines");
+	await expect(section).not.toContainText(/(^|\D)0 hidden lines/);
 });
 
 test("opening a thread doesn't change review progress", async ({
@@ -902,7 +908,7 @@ test("a thread on a file's last line opens below its no-newline marker", async (
 	expect(after[1]).toBe("thread-row");
 });
 
-test("a thread deep in a large gap loads only the lines around it", async ({
+test("a thread deep in a large gap opens without loading its lines", async ({
 	page,
 	pr,
 	startCrb,
@@ -937,21 +943,13 @@ test("a thread deep in a large gap loads only the lines around it", async ({
 	await section
 		.getByRole("button", { name: /^1 comment on hidden lines/ })
 		.click();
-	await expect(row(section, "new", 450)).toBeVisible();
 	await expect(
 		section.getByTestId("thread-row").getByTestId("thread-comment"),
 	).toHaveText(/Deep down/);
-	// A few lines around it, hidden runs above and below.
-	const shown = await section.locator('tr[data-testid="diff-line"]').count();
-	expect(shown).toBeLessThan(40);
+	await expect(row(section, "new", 450)).toHaveCount(0);
 	const gaps = section.getByTestId("gap-row");
-	await expect(gaps).toHaveCount(2);
-	await expect(gaps.first()).toContainText(/\d+ hidden lines/);
-	await expect(gaps.last()).toContainText(/\d+ hidden lines/);
-	// The run above still grows from either end.
-	await expect(
-		gaps.first().getByRole("button", { name: /Load 20 lines (below|above)/ }),
-	).toHaveCount(2);
+	await expect(gaps).toHaveCount(1);
+	await expect(gaps).toContainText("896 hidden lines");
 });
 
 test("comments of the file opened next go first", async ({
@@ -1089,34 +1087,4 @@ test("below an opened thread the cluster's controls float again", async ({
 			.first()
 			.getAttribute("data-stuck"),
 	).toBe("fixed");
-});
-
-test("a gap window that failed doesn't take focus when it's retried later", async ({
-	page,
-	pr,
-	startCrb,
-	expectConsoleError,
-}) => {
-	expectConsoleError(/500|Failed to load resource/);
-	await setup(pr);
-	let fail = true;
-	await page.route("**/api/r/*/files/*/context**", (route) =>
-		fail ? route.fulfill({ status: 500, body: "{}" }) : route.continue(),
-	);
-	const s = await startCrb();
-	await openFiles(page, s.url);
-	const section = await expand(page, CORE);
-	await section
-		.getByRole("button", { name: "2 comments on hidden lines 20–79" })
-		.click();
-	const retry = section.getByRole("button", { name: "Retry" });
-	await expect(retry).toBeVisible();
-	fail = false;
-	await retry.click();
-	await expect(row(section, "new", 40)).toBeVisible();
-	// The reader is on Retry's spot; the opened row's bubble doesn't grab focus.
-	const focused = await page.evaluate(
-		() => document.activeElement?.getAttribute("data-testid") ?? "",
-	);
-	expect(focused).not.toBe("thread-bubble");
 });
