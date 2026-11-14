@@ -249,6 +249,19 @@ function LeadSlot(props: { lead: FileLead; centred: boolean }) {
 const leadText = (lead: FileLead | undefined, centred: boolean, others = 0) =>
 	`${bubblePad(others + (lead && !centred ? (lead.count ?? 1) : 0))} ${lead && centred ? LEAD_LINE : ""}`;
 
+/**
+ * A file-level label's width: the diff's visible width (`--diff-w`) less
+ * the rail and controls on its left (wider on touch) and its row's
+ * bubbles on the right (`n` of them, 0 without), so a sideways-scrolling
+ * table never runs it under the sticky bubble.
+ */
+const labelWidth = (n = 0) =>
+	n === 0
+		? "max-w-[calc(var(--diff-w,100vw)-4rem)] pointer-coarse:max-w-[calc(var(--diff-w,100vw)-7rem)]"
+		: n === 1
+			? "max-w-[calc(var(--diff-w,100vw)-7rem)] pointer-coarse:max-w-[calc(var(--diff-w,100vw)-10rem)]"
+			: "max-w-[calc(var(--diff-w,100vw)-10rem)] pointer-coarse:max-w-[calc(var(--diff-w,100vw)-13rem)]";
+
 /** The cell padding that keeps `n` bubbles clear of the code. */
 const bubblePad = (n: number) =>
 	n === 0
@@ -2785,6 +2798,10 @@ export function DiffBody(props: {
 	};
 	const clusterRows = fileClusters.map((cluster) => {
 		const lead = takeLead();
+		// A file-level label ("Renamed from …", a mode change) is text the
+		// centred bubble would cover, and tap through (CAR-152): here the
+		// bubble sits at the right in both views, the label wrapping clear of
+		// it within the visible width, however wide the table's lines make it.
 		return (
 			<tbody key={cluster.key} className="group">
 				<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
@@ -2792,11 +2809,16 @@ export function DiffBody(props: {
 					<ControlsCell className="py-1">{checkbox(cluster)}</ControlsCell>
 					<td
 						colSpan={columns - 2}
-						className={`${leadText(lead, centred)} py-1 font-sans text-sm`}
+						className={`${leadText(lead, false)} py-1 font-sans text-sm`}
 					>
-						{lead && <LeadSlot lead={lead} centred={centred} />}
-						{cluster.label}
-						<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+						{lead && <LeadSlot lead={lead} centred={false} />}
+						<span
+							data-testid="file-label"
+							className={`block [overflow-wrap:anywhere] ${labelWidth(lead?.count)}`}
+						>
+							{cluster.label}
+							<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+						</span>
 					</td>
 				</tr>
 				{lead?.row(columns, RAIL[cluster.state])}

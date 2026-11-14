@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import {
 	barBottom,
 	chooseUnit,
 	clicksReady,
+	expectNoPageOverflow,
 	fileAction,
 	fileActionButton,
 	fileProgress,
@@ -2028,3 +2030,147 @@ test("the tree and the diff list share one order: folders first, then files, by 
 		await expect(rows.first()).toHaveAttribute("aria-current", "true");
 	});
 });
+
+type Box = { x: number; y: number; width: number; height: number };
+
+/** The boxes of `text`'s text node inside `scope`, one per line it wraps to. */
+const textBoxes = (scope: Locator, text: string) =>
+	scope.evaluate((node, t) => {
+		const walk = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+		for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+			if (!n.textContent?.includes(t)) continue;
+			const range = document.createRange();
+			range.selectNodeContents(n);
+			return [...range.getClientRects()].map((r) => ({
+				x: r.left,
+				y: r.top,
+				width: r.width,
+				height: r.height,
+			}));
+		}
+		return [];
+	}, text);
+
+const intersects = (a: Box, b: Box) =>
+	a.x < b.x + b.width &&
+	b.x < a.x + a.width &&
+	a.y < b.y + b.height &&
+	b.y < a.y + a.height;
+
+/** The element at `box`'s centre is `el` or inside it. */
+const hitsCentre = (el: Locator) =>
+	el.evaluate((node) => {
+		const r = node.getBoundingClientRect();
+		const at = document.elementFromPoint(
+			r.left + r.width / 2,
+			r.top + r.height / 2,
+		);
+		return at !== null && node.contains(at);
+	});
+
+const notes = Array.from(
+	{ length: 40 },
+	(_, i) => `note ${i + 1} of the file that moves`,
+);
+for (const [width, wide] of [
+	[undefined, false],
+	[undefined, true],
+	[360, false],
+	[360, true],
+] as const) {
+	test(`a renamed file's bubble and its rename bar don't cover each other${width ? ` at ${width}px` : ""}${wide ? ", lines wider than the screen" : ""}`, async ({
+		page,
+		pr,
+		startCrb,
+		isMobile,
+	}) => {
+		test.skip(width !== undefined && !isMobile, "the narrow phone only");
+		if (width) {
+			await page.setViewportSize({
+				width,
+				height: page.viewportSize()?.height ?? 800,
+			});
+		}
+		const from =
+			"packages/server/src/some/much/longer/folder/before-the-move.md";
+		const path =
+			"packages/server/src/some/much/longer/folder/after-the-move.md";
+		const p = await pr({
+			base: { [from]: text(notes), "keep.txt": "keep\n" },
+			files: [
+				{
+					message: "PR change",
+					rename: { [from]: path },
+					// Edited too: a long line makes the table scroll sideways.
+					files: {
+						"keep.txt": "kept\n",
+						...(wide ? { [path]: text([...notes, "x".repeat(300)]) } : {}),
+					},
+				},
+			],
+		});
+		p.editScenario((s) => {
+			const graph = s.prs[7]?.graphql;
+			if (!graph) throw new Error("no PR in the scenario");
+			graph.reviewThreads = [
+				reviewThread({ path, line: null, subjectType: "FILE" }, [
+					threadComment({ login: "rev1", text: "Why move it?" }),
+				]),
+			];
+		});
+		const s = await startCrb();
+		await openFiles(page, s.url);
+		const section = await expand(page, path);
+		const bubble = section.getByRole("button", {
+			name: /1 comment on this file/,
+		});
+		await expect(bubble).toBeVisible();
+		const label = `Renamed from ${from}`;
+		const bar = section.locator("tbody").filter({ hasText: label }).first();
+		await expect(bar).toBeVisible();
+		const check = bar.getByRole("checkbox");
+		const dir = process.env.CRB_SHOTS;
+		if (dir) {
+			await page.screenshot({
+				path: `${dir}/car-152-${isMobile ? `phone${width ?? ""}` : "desktop"}${wide ? "-wide" : ""}.png`,
+			});
+		}
+		const b = await bubble.boundingBox();
+		const lines = await textBoxes(bar, label);
+		const c = await check.boundingBox();
+		if (!b || !c || lines.length === 0) throw new Error("no boxes");
+		for (const line of lines) expect(intersects(b, line)).toBe(false);
+		expect(intersects(b, c)).toBe(false);
+		// Both within the diff's visible width: a long path wraps.
+		const scroller = section.locator("table").first().locator("xpath=..");
+		const diff = await scroller.boundingBox();
+		if (!diff) throw new Error("no diff");
+		for (const line of lines) {
+			expect(line.x + line.width).toBeLessThanOrEqual(diff.x + diff.width);
+		}
+		expect(b.x + b.width).toBeLessThanOrEqual(diff.x + diff.width);
+		expect(await hitsCentre(bubble)).toBe(true);
+		expect(await hitsCentre(check)).toBe(true);
+		await bubble.click({ trial: true });
+		await check.click({ trial: true });
+		if (isMobile) {
+			expect(b.height).toBeGreaterThanOrEqual(40);
+			expect(b.width).toBeGreaterThanOrEqual(40);
+		}
+		await expectNoPageOverflow(page);
+		if (wide) {
+			// Scrolled sideways, the bubble stays in sight and clear of the label.
+			await scroller.evaluate((el) => {
+				el.scrollLeft = 300;
+			});
+			await expect
+				.poll(() => scroller.evaluate((el) => el.scrollLeft))
+				.toBeGreaterThan(0);
+			const b2 = await bubble.boundingBox();
+			if (!b2) throw new Error("no bubble");
+			expect(b2.x + b2.width).toBeLessThanOrEqual(diff.x + diff.width);
+			expect(b2.x).toBeGreaterThanOrEqual(diff.x);
+			expect(await hitsCentre(bubble)).toBe(true);
+		}
+	});
+}
