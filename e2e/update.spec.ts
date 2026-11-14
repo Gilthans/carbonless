@@ -350,8 +350,8 @@ it("Update installs exactly that version with npm, restarts crb on its port, and
 	expectConsoleError,
 }) => {
 	test.skip(isMobile, "no layout of its own");
-	// The page's requests while crb is down.
-	expectConsoleError(/ERR_CONNECTION_REFUSED/);
+	// The page's requests while crb stops (one may be cut off) and is down.
+	expectConsoleError(/ERR_CONNECTION_(REFUSED|RESET)/);
 	await pr();
 	const { url } = await installed.start();
 	await page.goto(`${url}/`);
@@ -407,8 +407,8 @@ it("a failed install: a distinct error with npm's output and the command; the ol
 }) => {
 	await pr();
 	if (isMobile) await page.setViewportSize({ width: 360, height: 740 });
-	// The page's polls while crb is down.
-	expectConsoleError(/ERR_CONNECTION_REFUSED/);
+	// The page's polls while crb stops (one may be cut off) and is down.
+	expectConsoleError(/ERR_CONNECTION_(REFUSED|RESET)/);
 	writeFileSync(installed.failFile, "");
 	const { url } = await installed.start();
 	await page.goto(`${url}/`);
@@ -441,7 +441,7 @@ it("unsaved work: Update asks first; crb back, Reload, and leaving asks as alway
 	expectConsoleError,
 }) => {
 	test.skip(isMobile, "no layout of its own");
-	expectConsoleError(/ERR_CONNECTION_REFUSED/);
+	expectConsoleError(/ERR_CONNECTION_(REFUSED|RESET)/);
 	await pr();
 	// Storage refuses: a typed message is kept nowhere but the page.
 	await page.addInitScript(() => {
@@ -509,7 +509,7 @@ it("an rc install under a service manager: stays on rc past a release; installs 
 	expectConsoleError,
 }) => {
 	test.skip(isMobile, "no layout of its own");
-	expectConsoleError(/ERR_CONNECTION_REFUSED/);
+	expectConsoleError(/ERR_CONNECTION_(REFUSED|RESET)/);
 	await pr();
 	// An RC user; rc has just moved onto the release.
 	installed.setCurrent("0.3.0-rc.1");

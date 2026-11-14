@@ -1,6 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import { AGENT_POLL_MS, type AgentStatus } from "../src/shared/agent";
 import { acpLog } from "../test/fake-acp/scenario";
 import {
 	ask,
@@ -15,6 +16,7 @@ import {
 	test,
 } from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
+import { installClock } from "./fixtures";
 
 /**
  * A session joins a review through crb's /mcp (CAR-81): the request bar on
@@ -297,6 +299,10 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	agentCrb,
 	acpLogPath,
 }) => {
+	// The chip's status polls (every AGENT_POLL_MS while off) are reached by
+	// moving the page's clock, not waited out: three real 5 s waits put
+	// this test past its timeout on a loaded machine.
+	await installClock(page);
 	await pr(fixture);
 	const s = await agentCrb();
 	const section = await openFile(page, s.url, CALC);
@@ -316,6 +322,10 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	const pop = page.getByTestId("agent-popover");
 	await expect(pop.getByTestId("agent-pop-name")).toHaveText(SESSION.name);
 	await expect(pop).toContainText(SESSION.machine);
+	// The ACP agent spawned at setup (stopped by the approved join).
+	const spawns = () =>
+		acpLog(acpLogPath).filter((e) => e.method === "spawn").length;
+	const spawnedBefore = spawns();
 	await pop.getByTestId("agent-disconnect").click();
 	const toast = page.getByTestId("join-toast");
 	await expect(toast).toContainText(`${SESSION.name} left`);
@@ -323,22 +333,36 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
 	// Two status polls later the ACP buddy is still off (the approved join
 	// cleared this review's spawn flag, and Disconnect doesn't set it): the
-	// question waits and the fake agent was never prompted.
+	// question waits and no agent was started or prompted. The polls'
+	// answers, not the chip: each poll would start an agent left on.
 	for (let i = 0; i < 2; i++) {
-		await page.waitForResponse((r) =>
-			/\/api\/r\/[^/]+\/agent$/.test(new URL(r.url()).pathname),
-		);
+		expect((await nextStatusPoll(page)).state).toBe("off");
 	}
 	await expect(card.getByTestId("agent-waiting")).toBeVisible();
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
+	expect(spawns()).toBe(spawnedBefore);
 	expect(
 		acpLog(acpLogPath).filter((e) => e.method === "session/prompt"),
 	).toHaveLength(0);
 	// Spawn brings it back, and it answers. With no session joined the chip
 	// opens the modal (no popover Start), so the Spawn goes through the API.
 	await spawnAgent(s.url);
+	// The page sees it on a poll once the agent is starting (it then polls
+	// every second on its own) or already back to ready (a moved since).
+	await expect(async () => {
+		expect((await nextStatusPoll(page)).state).not.toBe("off");
+	}).toPass({ timeout: 10_000 });
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
 });
+
+/** Moves the page's clock to the chip's next status poll; its answer. */
+async function nextStatusPoll(page: Page): Promise<AgentStatus> {
+	const polled = page.waitForResponse((r) =>
+		/\/api\/r\/[^/]+\/agent$/.test(new URL(r.url()).pathname),
+	);
+	await page.clock.fastForward(AGENT_POLL_MS);
+	return (await (await polled).json()) as AgentStatus;
+}
 
 test("Deny: the bar goes in every tab of the review, and the session hears denied", async ({
 	page,
