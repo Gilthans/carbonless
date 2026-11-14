@@ -417,12 +417,78 @@ export function numberDigits(data: FileHunks | undefined): number {
 }
 
 /**
- * A number column's width: its digits (`--num-w`, set on the table from
- * numberDigits) and padding; on touch it keeps 48px, its tap target. On the
- * number cells in both views, and on the side-by-side table's `col`s.
+ * The leading columns' widths, as CSS variables on the table (TABLE_VARS):
+ * a number column is its digits and padding (`--num-w`, from numberDigits
+ * and `--num-pad`), the controls column `--controls-w`, and `--gutter` is
+ * where the old number starts (the rail and the controls). Roomy when the
+ * diff has room; cramped (`data-tight`, useTight: the diff's box under
+ * TIGHT_BELOW, or a touch screen) with half the number padding, the
+ * controls column at its content, and the sign closer to the code. On
+ * touch the two controls stack in a 40px column (ClusterControls) and the
+ * two numbers together are the pick's tap target. Each width is a minimum
+ * too: a table wider than its box (a long line, what makes it scroll) lays
+ * its columns out at their minimum widths, where a plain `width` is only a
+ * wish, and the pinned cells' offsets count on these.
  */
-const NUMBER_W =
-	"w-[var(--num-w,3rem)] pointer-coarse:w-[max(3rem,var(--num-w,3rem))]";
+const TABLE_VARS =
+	"[--num-pad:1rem] [--controls-w:2.75rem] data-[tight]:[--num-pad:0.5rem] data-[tight]:pointer-fine:[--controls-w:2.375rem] pointer-coarse:[--controls-w:2.5rem] [--gutter:calc(0.25rem+var(--controls-w))]";
+/** The diff's box narrower than this is cramped (useTight). */
+const TIGHT_BELOW = 640;
+const NUMBER_W = "w-[var(--num-w,3rem)] min-w-[var(--num-w,3rem)]";
+const NUMBER_PAD = "px-2 group-data-[tight]/diff:px-1";
+const CONTROLS_W = "w-[var(--controls-w)] min-w-[var(--controls-w)]";
+const CONTROLS_PAD =
+	"px-1 group-data-[tight]/diff:pointer-fine:px-0.5 pointer-coarse:px-0";
+/** The sign's room before the code: closer when cramped. */
+const SIGN_MR = "mr-2 group-data-[tight]/diff:mr-1";
+
+/**
+ * The row's leading cells (rail, controls, old and new numbers) stay at the
+ * scroller's left edge while the code scrolls under them: sticky, each at
+ * the sum of the widths before it (the rail's 0.25rem, then `--gutter`,
+ * then a number's `--num-w`). Each paints its row's background (index.css:
+ * a sticky cell inherits it), so no code shows through. Unified only for
+ * the numbers (side by side never scrolls, and its new number sits
+ * elsewhere).
+ */
+const PIN = "sticky";
+/**
+ * A pinned cell sits above whatever the code cell positions (the ⚠'s
+ * button and its touch target's two layers, HiddenWarning, at z 1 and 2),
+ * so nothing of the code scrolled under it paints or takes a tap there.
+ */
+const PIN_CELL = `${PIN} z-[3]`;
+/**
+ * A stuck cell is a stacking context, so a cluster's controls (its first
+ * row's: the slot) would paint under the cells of the rows below, where
+ * they reach on touch (stacked, ClusterControls) and when they float
+ * (position: fixed, stickyControls.ts): the cell with the slot rises above
+ * the other cells. While they float it rises above everything in the table
+ * (OVER_CONTROLS too), as they did before the cells were pinned: a bubble
+ * row or a gap scrolling under them never covers them or takes their clicks.
+ */
+const PIN_CONTROLS = `${PIN_CELL} left-1 has-[[data-sticky-slot]]:z-[4] has-[[data-sticky-slot]_[data-stuck]]:z-[6]`;
+/**
+ * Above a touch cluster's cross-off reaching down from the row above
+ * (PIN_CONTROLS); so is a thread's card (TailRow).
+ */
+const OVER_CONTROLS = "z-[5]";
+const PIN_NUMBER: Record<DiffSide, string> = {
+	LEFT: `${PIN_CELL} left-[var(--gutter)]`,
+	RIGHT: `${PIN_CELL} left-[calc(var(--gutter)+var(--num-w,3rem))]`,
+};
+/**
+ * A row's words stay in view too (a cluster's label says what it is): an
+ * inline sticky span at its cell's start, past the cells before it and the
+ * cell's own `pl-2`. After the rail and controls (a file cluster's label, a
+ * gap's "N hidden lines", a whitespace cluster's words), after the rail
+ * alone (a crossed-off note, "No newline"), or from the table's edge (a
+ * hunk header).
+ */
+const PIN_TEXT_LEFT = "left-[calc(var(--gutter)+0.5rem)]";
+const PIN_TEXT = `${PIN} inline-block ${PIN_TEXT_LEFT}`;
+const PIN_TEXT_RAIL = `${PIN} inline-block left-3`;
+const PIN_TEXT_EDGE = `${PIN} inline-block left-2`;
 
 const RAIL: Record<ClusterView["state"], string> = {
 	unreviewed: "bg-unreviewed",
@@ -550,7 +616,9 @@ function Rail({
 		: state
 			? `${RAIL[state]} group-hover:bg-accent group-hover:bg-none group-focus-within:bg-accent group-focus-within:bg-none`
 			: "";
-	return <td aria-hidden className={`w-1 min-w-1 p-0 ${color}`} />;
+	return (
+		<td aria-hidden className={`${PIN_CELL} left-0 w-1 min-w-1 p-0 ${color}`} />
+	);
 }
 
 /**
@@ -637,7 +705,7 @@ const pickOf = (
 function ControlsCell(props: { children?: ReactNode; className?: string }) {
 	return (
 		<td
-			className={`w-11 px-1 align-top whitespace-nowrap select-none pointer-coarse:w-20 ${props.className ?? ""}`}
+			className={`${PIN_CONTROLS} ${CONTROLS_W} ${CONTROLS_PAD} align-top whitespace-nowrap select-none ${props.className ?? ""}`}
 		>
 			{props.children}
 		</td>
@@ -670,7 +738,7 @@ function Sign({ kind }: { kind: RowLine["kind"] }) {
 						role="img"
 						aria-label="Whitespace only"
 						tabIndex={-1}
-						className={`mr-2 select-none ${SIGN_COLOR.ws} focus-visible:outline-2 focus-visible:outline-accent`}
+						className={`${SIGN_MR} select-none ${SIGN_COLOR.ws} focus-visible:outline-2 focus-visible:outline-accent`}
 					>
 						{SIGN.ws}
 					</span>
@@ -679,7 +747,7 @@ function Sign({ kind }: { kind: RowLine["kind"] }) {
 		);
 	}
 	return (
-		<span aria-hidden className={`mr-2 select-none ${SIGN_COLOR[kind]}`}>
+		<span aria-hidden className={`${SIGN_MR} select-none ${SIGN_COLOR[kind]}`}>
 			{SIGN[kind]}
 		</span>
 	);
@@ -760,7 +828,7 @@ function HiddenWarning({ kind }: { kind: RowLine["kind"] }) {
 						keepFocusOnLine(e.currentTarget);
 						showInvisibles.set(true);
 					}}
-					className={`relative mr-2 inline-flex w-[1ch] cursor-pointer select-none justify-center align-[-1px] text-warn focus-visible:outline-2 focus-visible:outline-accent ${WARNING_TARGET}`}
+					className={`relative ${SIGN_MR} inline-flex w-[1ch] cursor-pointer select-none justify-center align-[-1px] text-warn focus-visible:outline-2 focus-visible:outline-accent ${WARNING_TARGET}`}
 				>
 					<AlertIcon size={12} aria-hidden />
 				</button>
@@ -793,7 +861,7 @@ function NumberCell(props: {
 			onPointerDown={picker?.onPointerDown}
 			onPointerEnter={picker?.onPointerEnter}
 			onClick={picker?.onClick}
-			className={`${NUMBER_W} px-2 text-right align-top select-none ${props.className} ${picker ? "cursor-pointer" : ""}`}
+			className={`${NUMBER_W} ${NUMBER_PAD} text-right align-top select-none ${props.className} ${picker ? "cursor-pointer" : ""}`}
 		>
 			{picker && pick?.button && n !== undefined ? (
 				<button
@@ -1126,7 +1194,7 @@ function NoNewlineRow(props: {
 			<tr data-testid="no-newline" className="select-none">
 				<Rail state={props.state} />
 				<td colSpan={columns - 1} className="px-2 text-muted italic">
-					{NO_NEWLINE}
+					<span className={PIN_TEXT_RAIL}>{NO_NEWLINE}</span>
 				</td>
 			</tr>
 		);
@@ -1197,14 +1265,14 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				<NumberCell
 					side="LEFT"
 					n={line.oldNo}
-					className={numberBg}
+					className={`${numberBg} ${PIN_NUMBER.LEFT}`}
 					picker={picker}
 					pick={pick("LEFT")}
 				/>
 				<NumberCell
 					side="RIGHT"
 					n={line.newNo}
-					className={numberBg}
+					className={`${numberBg} ${PIN_NUMBER.RIGHT}`}
 					picker={picker}
 					pick={pick("RIGHT")}
 				/>
@@ -1595,7 +1663,7 @@ function BubbleRow(props: {
 	const group = (side: DiffSide, b: Bubbles) => (
 		<div
 			data-bubbles={side}
-			className={`flex ${side === "RIGHT" ? "justify-end" : ""}`}
+			className={`relative ${OVER_CONTROLS} flex ${side === "RIGHT" ? "justify-end" : ""}`}
 		>
 			{b.lead}
 			{b.bubble}
@@ -1636,16 +1704,18 @@ function ClusterControls(props: {
 	const partly = partlyMarked(props.cluster);
 	const reviewed = props.cluster.state === "reviewed";
 	const readOnly = props.readOnly === true;
-	// On touch each control gets its own 40×40 target, side by side so a
-	// mis-tap can't reach the other one; the negative margins keep the row
-	// height. With a mouse they stay compact.
+	// On touch each control gets its own 40×40 target, the two stacked in a
+	// 40px column (the box over the row, the cross-off under it, reaching
+	// into the rows below: the cell is above them, PIN_CONTROLS) and out of
+	// the flow, so the row keeps its height and the column its width. A
+	// mis-tap can't reach the other one. With a mouse they stay compact.
 	const target =
-		"flex items-center justify-center pointer-coarse:-my-2.5 pointer-coarse:h-10 pointer-coarse:w-10";
+		"flex items-center justify-center pointer-coarse:h-10 pointer-coarse:w-10";
 	const box = (trigger: Partial<TooltipTriggerProps> = {}) => (
 		<label
 			{...trigger}
 			data-testid="cluster-box-target"
-			className={`${target} ${readOnly ? "cursor-not-allowed" : "cursor-pointer"}`}
+			className={`${target} pointer-coarse:-mt-2.5 ${readOnly ? "cursor-not-allowed" : "cursor-pointer"}`}
 		>
 			<input
 				type="checkbox"
@@ -1667,10 +1737,13 @@ function ClusterControls(props: {
 	);
 	return (
 		// The slot keeps its size while the controls float (stickyControls.ts).
-		<span {...{ [SLOT]: "" }} className="block">
+		<span
+			{...{ [SLOT]: "" }}
+			className="block pointer-coarse:relative pointer-coarse:h-5 pointer-coarse:w-10"
+		>
 			<span
 				{...{ [CONTROLS]: "" }}
-				className="z-[5] flex w-fit items-center gap-1 rounded-md pointer-coarse:gap-0 data-[stuck]:bg-raised data-[stuck]:shadow-control data-[stuck]:ring-1 data-[stuck]:ring-line-strong"
+				className="z-[5] flex w-fit items-center gap-1 rounded-md pointer-coarse:absolute pointer-coarse:top-0 pointer-coarse:left-0 pointer-coarse:flex-col pointer-coarse:gap-0 data-[stuck]:bg-raised data-[stuck]:shadow-control data-[stuck]:ring-1 data-[stuck]:ring-line-strong"
 			>
 				{readOnly ? (
 					<Tooltip content={READ_ONLY_TIP} describe={false} lazy>
@@ -1713,7 +1786,9 @@ function ClusterControls(props: {
 								aria-pressed={crossedOff}
 								disabled={readOnly || reviewed}
 								onClick={() => props.onCrossOff(props.cluster)}
-								className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
+								// Stacked under the box on touch, its glyph at the top of its
+								// target: on the cluster's second row, not two rows down.
+								className={`${target} group/x rounded pointer-coarse:items-start focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
 							>
 								<span
 									aria-hidden
@@ -1779,7 +1854,7 @@ function KindRow(props: {
 		>
 			<Rail state={props.state} gone={props.gone} />
 			<td colSpan={props.columns - 1} className="px-2 py-0.5">
-				<span className="flex items-center gap-1">
+				<span className={`${PIN} flex w-fit items-center gap-1 left-3`}>
 					{kind && (
 						<KindChip
 							kind={kind}
@@ -2134,6 +2209,10 @@ export function DiffBody(props: {
 	const table = useRef<HTMLTableElement>(null);
 	useStickyControls(root, scroller);
 	useVisibleWidth(scroller);
+	const tight = useTight(scroller);
+	const proxy = useRef<HTMLDivElement>(null);
+	const overflow = useScrollbarProxy(scroller, table, proxy);
+	useFocusClearOfPin(scroller);
 	useBubbleFocusKept(scroller, wide);
 	const onPointerDown = useOneSideSelection(table, view);
 	const { hint, landed, pending } = useLanding(
@@ -2664,9 +2743,12 @@ export function DiffBody(props: {
 						if (b) addRange(b.from, b.to);
 					}}
 					// Not code: a selection across it leaves it out.
-					className="group/gap bg-hunk text-hunk-ink select-none [--ctl-w:3rem] pointer-coarse:[--ctl-w:5.25rem]"
+					className="group/gap bg-hunk text-hunk-ink select-none"
 				>
-					<td colSpan={2} className="px-1">
+					<td
+						colSpan={2}
+						className={`${PIN} left-0 ${OVER_CONTROLS} px-1 pointer-coarse:px-0.5`}
+					>
 						<div
 							className={`flex ${buttons.length > 1 ? "flex-col items-start" : ""}`}
 						>
@@ -2726,38 +2808,40 @@ export function DiffBody(props: {
 								)}
 							</BubbleSlot>
 						)}
-						{failed.length > 0 || short.length > 0 ? (
-							<span role="alert" className="text-bad">
-								{failed[0]?.error?.message ?? "Lines didn't load"}{" "}
-								<button
-									type="button"
-									onClick={() => {
-										for (const f of [...failed, ...short]) void f.refetch();
-									}}
-									className="rounded border border-bad/60 px-1.5 text-xs hover:bg-bad/15 focus-visible:outline-2 focus-visible:outline-accent"
-								>
-									Retry
-								</button>
-							</span>
-						) : pending || remaining > 0 ? (
-							<Labelled
-								label={
-									pending ? (
-										<Spinner label="Loading lines" size={14} />
-									) : (
-										`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
-									)
-								}
-								heading={heading}
-								reserve={labelReserve(
-									"var(--ctl-w) + 0.5rem",
-									bubbles + (runLead && !centred ? (runLead.count ?? 1) : 0),
-									runLead && centred
-										? { count: runLead.count ?? 1 }
-										: undefined,
-								)}
-							/>
-						) : null}
+						<span className={PIN_TEXT}>
+							{failed.length > 0 || short.length > 0 ? (
+								<span role="alert" className="text-bad">
+									{failed[0]?.error?.message ?? "Lines didn't load"}{" "}
+									<button
+										type="button"
+										onClick={() => {
+											for (const f of [...failed, ...short]) void f.refetch();
+										}}
+										className="rounded border border-bad/60 px-1.5 text-xs hover:bg-bad/15 focus-visible:outline-2 focus-visible:outline-accent"
+									>
+										Retry
+									</button>
+								</span>
+							) : pending || remaining > 0 ? (
+								<Labelled
+									label={
+										pending ? (
+											<Spinner label="Loading lines" size={14} />
+										) : (
+											`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
+										)
+									}
+									heading={heading}
+									reserve={labelReserve(
+										"var(--gutter) + 0.5rem",
+										bubbles + (runLead && !centred ? (runLead.count ?? 1) : 0),
+										runLead && centred
+											? { count: runLead.count ?? 1 }
+											: undefined,
+									)}
+								/>
+							) : null}
+						</span>
 					</td>
 				</GapRowTr>,
 			);
@@ -2795,8 +2879,10 @@ export function DiffBody(props: {
 						className={`${leadText(lead, centred)} py-1 font-sans text-sm`}
 					>
 						{lead && <LeadSlot lead={lead} centred={centred} />}
-						{cluster.label}
-						<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+						<span className={PIN_TEXT}>
+							{cluster.label}
+							<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+						</span>
 					</td>
 				</tr>
 				{lead?.row(columns, RAIL[cluster.state])}
@@ -2888,7 +2974,11 @@ export function DiffBody(props: {
 					)}
 				</div>
 			)}
-			<div ref={scroller} className="overflow-x-auto">
+			{/* Its own bar is hidden: the proxy below is the one bar (useScrollbarProxy). */}
+			<div
+				ref={scroller}
+				className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+			>
 				{/*
 				 * Unified, the table is as wide as its longest line and scrolls in
 				 * the div; side by side it is the div's width, its two code columns
@@ -2898,20 +2988,21 @@ export function DiffBody(props: {
 				<table
 					ref={table}
 					data-view={view}
+					data-tight={tight || undefined}
 					onPointerDown={onPointerDown}
 					style={
 						{
-							"--num-w": `calc(${numberDigits(hunks.data)}ch + 1rem)`,
+							"--num-w": `calc(${numberDigits(hunks.data)}ch + var(--num-pad, 1rem))`,
 						} as CSSProperties
 					}
-					className={`border-collapse bg-code font-mono text-xs leading-5 text-code-ink ${
+					className={`group/diff ${TABLE_VARS} border-collapse bg-code font-mono text-xs leading-5 text-code-ink ${
 						view === "side-by-side" ? "w-full table-fixed" : "min-w-full"
 					}`}
 				>
 					{view === "side-by-side" && (
 						<colgroup>
 							<col className="w-1" />
-							<col className="w-11 pointer-coarse:w-20" />
+							<col className={CONTROLS_W} />
 							<col className={NUMBER_W} />
 							<col />
 							<col className={NUMBER_W} />
@@ -2928,6 +3019,23 @@ export function DiffBody(props: {
 					{tailRows}
 				</table>
 			</div>
+			{overflow !== null && (
+				// Stuck to the viewport's bottom while the diff's end is below it,
+				// clear of what floats there (the phone's Files button below md,
+				// the save notices, the selection bar: FilesPage's paddingBottom).
+				<div
+					ref={proxy}
+					data-testid="diff-scrollbar"
+					aria-hidden
+					// Chrome makes a scroller with nothing focusable in it a Tab
+					// stop: not this one (the pointer scrolls it; the keyboard
+					// has the lines).
+					tabIndex={-1}
+					className="sticky bottom-[max(5rem,var(--sync-notices,0px),var(--selection-room,0px))] z-[6] overflow-x-auto [scrollbar-width:thin] data-[overlay]:h-2.5 md:bottom-[max(var(--sync-notices,0px),var(--selection-room,0px))]"
+				>
+					<div style={{ width: overflow }} className="h-px" />
+				</div>
+			)}
 			{props.from !== undefined && hunks.data && unshownToRead > 0 && (
 				// Clusters the engine says are to read (reworked or new) with no
 				// line in these hunks (unreviewed on the compared patch set and
@@ -3110,6 +3218,127 @@ function useBubbleFocusKept(
 			)
 			?.focus({ preventScroll: true });
 	});
+}
+
+/**
+ * The diff's horizontal scrollbar, usable whenever any of the diff is on
+ * screen: `proxy`, a scroll box under the table holding a spacer as wide as
+ * the table, is sticky at the viewport's bottom while the diff's end is
+ * below it and sits at the diff's end once that is in view. It scrolls the
+ * table and follows it: each one's scroll sets the other's `scrollLeft`,
+ * and one already there sets nothing, so there is no loop. Only the box
+ * being scrolled leads: the scroll event a write causes (its echo, a frame
+ * later) sets nothing back, or it would put the leader back where it was a
+ * frame ago and stop a smooth scroll (keys, a wheel, a click on the bar's
+ * track, a fling) after its first step. Rendered (the
+ * returned width, the table's) only while the table is wider than its box,
+ * measured again when either changes size (ResizeObserver), never per
+ * frame.
+ */
+function useScrollbarProxy(
+	scroller: RefObject<HTMLDivElement | null>,
+	table: RefObject<HTMLTableElement | null>,
+	proxy: RefObject<HTMLDivElement | null>,
+): number | null {
+	const [width, setWidth] = useState<number | null>(null);
+	useLayoutEffect(() => {
+		const el = scroller.current;
+		if (!el) return;
+		const measure = () =>
+			setWidth(el.scrollWidth > el.clientWidth ? el.scrollWidth : null);
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(el);
+		if (table.current) observer.observe(table.current);
+		return () => observer.disconnect();
+	}, [scroller, table]);
+	const shown = width !== null;
+	useEffect(() => {
+		const el = scroller.current;
+		const bar = proxy.current;
+		if (!shown || !el || !bar) return;
+		// Where each box was put by the other (read back: clamped, rounded),
+		// until its echo comes.
+		const put = new Map<HTMLElement, number>();
+		const follow = (from: HTMLElement, to: HTMLElement) => () => {
+			const echo = put.get(from);
+			put.delete(from);
+			if (echo === from.scrollLeft) return;
+			if (to.scrollLeft !== from.scrollLeft) {
+				to.scrollLeft = from.scrollLeft;
+				put.set(to, to.scrollLeft);
+			}
+		};
+		const tableScrolled = follow(el, bar);
+		const barScrolled = follow(bar, el);
+		// The bar starts where the table is (a scroll kept from before).
+		tableScrolled();
+		// An overlay scrollbar (a phone's, a Mac's with a trackpad) takes no
+		// room and draws inside the box: the box is made tall enough for it.
+		if (bar.offsetHeight === bar.clientHeight) bar.dataset.overlay = "";
+		el.addEventListener("scroll", tableScrolled, { passive: true });
+		bar.addEventListener("scroll", barScrolled, { passive: true });
+		return () => {
+			el.removeEventListener("scroll", tableScrolled);
+			bar.removeEventListener("scroll", barScrolled);
+		};
+	}, [scroller, proxy, shown]);
+	return width;
+}
+
+/**
+ * Focus landing on something in a unified line's code (the ⚠, by script
+ * or a screen reader) while it is scrolled under the pinned cells: the
+ * browser counts it in view (it is in the scroller's box), so the code is
+ * scrolled back just enough to show it right of the line's numbers. The
+ * code cell itself (focus kept on a line, preventScroll) never moves it.
+ */
+function useFocusClearOfPin(scroller: RefObject<HTMLDivElement | null>) {
+	useEffect(() => {
+		const el = scroller.current;
+		if (!el) return;
+		const onFocus = (e: FocusEvent) => {
+			const target = e.target;
+			if (!(target instanceof HTMLElement)) return;
+			const cell = target.closest<HTMLElement>(
+				'table[data-view="unified"] td[data-testid="code"]',
+			);
+			if (!cell || cell === target || !el.contains(cell)) return;
+			const pinned = cell.parentElement?.querySelector<HTMLElement>(
+				':scope > td[data-testid="new"]',
+			);
+			if (!pinned) return;
+			const under =
+				pinned.getBoundingClientRect().right -
+				target.getBoundingClientRect().left;
+			if (under > 0) el.scrollLeft -= Math.ceil(under);
+		};
+		el.addEventListener("focusin", onFocus);
+		return () => el.removeEventListener("focusin", onFocus);
+	}, [scroller]);
+}
+
+/**
+ * Whether the diff is cramped (TABLE_VARS): its box narrower than
+ * TIGHT_BELOW (the tree dragged wide), or a touch screen, whatever its
+ * width. Measured again when the box changes size (ResizeObserver), never
+ * per frame; the viewport's width says nothing by itself.
+ */
+function useTight(scroller: RefObject<HTMLDivElement | null>): boolean {
+	const coarse = useMedia("(pointer: coarse)");
+	const [narrow, setNarrow] = useState(false);
+	useLayoutEffect(() => {
+		const el = scroller.current;
+		if (!el) return;
+		const measure = () => setNarrow(el.clientWidth < TIGHT_BELOW);
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(el);
+		return () => observer.disconnect();
+	}, [scroller]);
+	return coarse || narrow;
 }
 
 /**
@@ -3416,15 +3645,17 @@ function HunkRows(props: {
 				>
 					<td colSpan={columns} className={`${leadText(lead, centred)} py-0.5`}>
 						{lead && <LeadSlot lead={lead} centred={centred} />}
-						<Labelled
-							label={hunkHeader(hunk)}
-							heading={props.heading}
-							reserve={labelReserve(
-								"0.5rem",
-								lead && !centred ? (lead.count ?? 1) : 0,
-								lead && centred ? { count: lead.count ?? 1 } : undefined,
-							)}
-						/>
+						<span className={PIN_TEXT_EDGE}>
+							<Labelled
+								label={hunkHeader(hunk)}
+								heading={props.heading}
+								reserve={labelReserve(
+									"0.5rem",
+									lead && !centred ? (lead.count ?? 1) : 0,
+									lead && centred ? { count: lead.count ?? 1 } : undefined,
+								)}
+							/>
+						</span>
 					</td>
 				</tr>
 				{lead?.row(columns)}
@@ -3605,10 +3836,12 @@ function HunkRows(props: {
 							<tr>
 								<Rail state={cluster.state} />
 								<td colSpan={columns - 1} className="px-2 text-xs">
-									<CrossedOffNote
-										cluster={cluster}
-										id={props.noteId(cluster)}
-									/>
+									<span className={PIN_TEXT_RAIL}>
+										<CrossedOffNote
+											cluster={cluster}
+											id={props.noteId(cluster)}
+										/>
+									</span>
 								</td>
 							</tr>
 						)}
@@ -3662,7 +3895,9 @@ function WhitespaceCluster(props: {
 					colSpan={props.columns - 2}
 					className="px-2 font-sans text-xs select-none"
 				>
-					<span className="flex items-center gap-1">
+					<span
+						className={`${PIN} flex w-fit items-center gap-1 ${PIN_TEXT_LEFT}`}
+					>
 						{props.pinned ? (
 							<span className="text-muted">{words}</span>
 						) : (

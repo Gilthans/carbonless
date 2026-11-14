@@ -212,6 +212,21 @@ export async function expectNoPageOverflow(page: Page) {
  * centre that hit it (a hit area a pseudo-element extends counts, a box
  * does not say). Principle 5 wants 40px.
  */
+/** How wide the element's tap target is, as tapHeight measures its height. */
+export const tapWidth = (el: Locator) =>
+	el.evaluate((node) => {
+		const r = node.getBoundingClientRect();
+		const y = r.top + r.height / 2;
+		const mid = r.left + r.width / 2;
+		const hits = (x: number) => node.contains(document.elementFromPoint(x, y));
+		let left = mid;
+		let right = mid;
+		if (!hits(mid)) return 0;
+		while (left > 0 && hits(left - 1)) left -= 1;
+		while (right < window.innerWidth && hits(right + 1)) right += 1;
+		return right - left + 1;
+	});
+
 export const tapHeight = (el: Locator) =>
 	el.evaluate((node) => {
 		const r = node.getBoundingClientRect();

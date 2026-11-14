@@ -1901,13 +1901,11 @@ describe("DiffBody side by side", () => {
 				[...cells].every(
 					(el) =>
 						el.className.includes("w-[var(--num-w,3rem)]") &&
-						el.className.includes(
-							"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
-						),
+						el.className.includes("min-w-[var(--num-w,3rem)]"),
 				)
 			);
 		};
-		expect(width()).toBe("calc(4ch + 1rem)");
+		expect(width()).toBe("calc(4ch + var(--num-pad, 1rem))");
 		expect(document.querySelectorAll("col")).toHaveLength(6);
 		expect(
 			[...document.querySelectorAll("col")].filter((c) =>
@@ -1925,11 +1923,11 @@ describe("DiffBody side by side", () => {
 			clusters: [pairCluster()],
 		});
 		await screen.findByText("new seven");
-		expect(width()).toBe("calc(3ch + 1rem)");
+		expect(width()).toBe("calc(3ch + var(--num-pad, 1rem))");
 		expect(sized()).toBe(true);
 		// Unified too.
 		act(() => sideBySide.set(false));
-		expect(width()).toBe("calc(3ch + 1rem)");
+		expect(width()).toBe("calc(3ch + var(--num-pad, 1rem))");
 		expect(sized()).toBe(true);
 		// A deleted tail numbers higher on the old side than the new file is long.
 		cleanup();
@@ -1949,7 +1947,7 @@ describe("DiffBody side by side", () => {
 			clusters: [pairCluster()],
 		});
 		await screen.findByText("gone");
-		expect(width()).toBe("calc(4ch + 1rem)");
+		expect(width()).toBe("calc(4ch + var(--num-pad, 1rem))");
 	});
 
 	it("keeps unified's markup, its code cell naming its side", async () => {
@@ -2147,13 +2145,11 @@ describe("number columns: as wide as the file's largest line number needs", () =
 		);
 		const row = await screen.findByTestId("diff-line");
 		expect(row.closest("table")?.style.getPropertyValue("--num-w")).toBe(
-			"calc(4ch + 1rem)",
+			"calc(4ch + var(--num-pad, 1rem))",
 		);
 		const number = within(row).getByTestId("new");
 		expect(number.className).toContain("w-[var(--num-w,3rem)]");
-		expect(number.className).toContain(
-			"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
-		);
+		expect(number.className).toContain("min-w-[var(--num-w,3rem)]");
 	});
 });
 
@@ -3259,5 +3255,110 @@ describe("DiffBody: hunk headings and the clickable gap row", () => {
 		expect(row.dataset.hot).toBeUndefined();
 		fireEvent.click(row.lastElementChild as HTMLElement);
 		expect(held).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("the diff's scrollbar proxy (useScrollbarProxy)", () => {
+	const proxy = () =>
+		document.querySelector<HTMLElement>('[data-testid="diff-scrollbar"]');
+	/** The bar's scroller: the table's box right before it. */
+	const scrollerOf = (bar: HTMLElement) =>
+		bar.previousElementSibling as HTMLElement;
+	const scroller = () =>
+		[...document.querySelectorAll<HTMLElement>("div.overflow-x-auto")].find(
+			(el) => el.querySelector("table") !== null,
+		) as HTMLElement;
+	/** The scroller's table is `scroll` wide in a `client` box; everything else keeps jsdom's 0. */
+	const widths = (scroll: number, client: number) => {
+		const isScroller = (el: Element) =>
+			el.classList.contains("overflow-x-auto") &&
+			el.querySelector("table") !== null;
+		vi.spyOn(Element.prototype, "scrollWidth", "get").mockImplementation(
+			function (this: Element) {
+				return isScroller(this) ? scroll : 0;
+			},
+		);
+		vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(
+			function (this: Element) {
+				return isScroller(this) ? client : 0;
+			},
+		);
+	};
+	// An earlier describe's tree may still be in the document: only this one's.
+	beforeEach(() => cleanup());
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+	});
+
+	it("scrolls the table and follows it, writing nothing that is already there", async () => {
+		widths(3000, 800);
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const bar = proxy();
+		expect(bar).not.toBeNull();
+		if (!bar) return;
+		// Out of the Tab order, with a spacer as wide as the table.
+		expect(bar.tabIndex).toBe(-1);
+		expect((bar.firstElementChild as HTMLElement).style.width).toBe("3000px");
+		const table = scrollerOf(bar);
+		expect(table.querySelector("table")).not.toBeNull();
+		const set = vi.spyOn(Element.prototype, "scrollLeft", "set");
+		table.scrollLeft = 120;
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(120);
+		// The echo (the bar's own scroll event, nothing to change) writes
+		// nothing: no loop.
+		set.mockClear();
+		bar.dispatchEvent(new Event("scroll"));
+		expect(set).not.toHaveBeenCalled();
+		expect(table.scrollLeft).toBe(120);
+		// The other way round: the bar drives the table.
+		bar.scrollLeft = 40;
+		set.mockClear();
+		bar.dispatchEvent(new Event("scroll"));
+		expect(set).toHaveBeenCalledTimes(1);
+		expect(table.scrollLeft).toBe(40);
+		set.mockClear();
+		table.dispatchEvent(new Event("scroll"));
+		expect(set).not.toHaveBeenCalled();
+	});
+
+	it("leaves a smooth scroll to the box being scrolled: a write's late echo sets nothing back", async () => {
+		widths(3000, 800);
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const bar = proxy();
+		if (!bar) throw new Error("no bar");
+		const table = scrollerOf(bar);
+		// The table's first step: the bar follows.
+		table.scrollLeft = 10;
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(10);
+		// The table's next step lands before the bar's echo of the first.
+		table.scrollLeft = 20;
+		bar.dispatchEvent(new Event("scroll"));
+		expect(table.scrollLeft).toBe(20);
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(20);
+		// The same the other way: a click on the bar's track, animated.
+		bar.dispatchEvent(new Event("scroll"));
+		bar.scrollLeft = 300;
+		bar.dispatchEvent(new Event("scroll"));
+		expect(table.scrollLeft).toBe(300);
+		bar.scrollLeft = 340;
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(340);
+		bar.dispatchEvent(new Event("scroll"));
+		expect(table.scrollLeft).toBe(340);
+	});
+
+	it("isn't there while the table fits its box", async () => {
+		widths(800, 800);
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		expect(proxy()).toBeNull();
+		expect(scroller().scrollLeft).toBe(0);
 	});
 });
