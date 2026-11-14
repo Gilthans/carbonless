@@ -2392,20 +2392,35 @@ async function sinceGaps(
 	};
 }
 
-/** Opens core.ts's gap by core 30's thread: the PR's line, unchanged since PS1, with the thread open. */
+/**
+ * Opens core 30's thread from its hidden-lines row (the lines stay hidden),
+ * then loads the gap by its own buttons, up to core 30: the PR's line,
+ * unchanged since PS1, with the thread open on it.
+ */
 async function openCore30(coreS: Locator) {
 	await coreS.getByRole("button", { name: "Expand file" }).click();
-	await coreS
+	const gap = coreS
 		.getByTestId("gap-row")
-		.filter({ hasText: "32 hidden lines" })
+		.filter({ hasText: "32 hidden lines" });
+	await gap
 		.getByRole("button", { name: "1 comment on hidden lines 9–40" })
 		.click(GIT_WAIT);
-	await expect(
-		coreS.locator("tr").filter({ hasText: "core 30 changed" }).first(),
-	).toBeVisible();
-	await expect(
-		coreS.getByTestId("files-thread").filter({ hasText: "Is core 30 needed?" }),
-	).toBeVisible();
+	const thread = coreS
+		.getByTestId("files-thread")
+		.filter({ hasText: "Is core 30 needed?" });
+	await expect(thread).toBeVisible();
+	const core30 = coreS.locator("tr").filter({ hasText: "core 30 changed" });
+	await expect(core30).toHaveCount(0);
+	await expect(gap).toHaveCount(1);
+	// The row's ↓ twice: 9–28, then the rest, 29–40.
+	await gap.getByRole("button", { name: "Load 20 lines below" }).click();
+	await coreS
+		.getByTestId("gap-row")
+		.filter({ hasText: "12 hidden lines" })
+		.getByRole("button", { name: /^Load (all )?12 lines/ })
+		.click();
+	await expect(core30.first()).toBeVisible();
+	await expect(thread).toBeVisible();
 }
 
 test("the since view's gaps load the interdiff's lines: a line the PR added at PS1 and left alone, a thread on it, a file untouched since; a LEFT thread on a line the PR changed stays off its rows", async ({
@@ -2419,7 +2434,7 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 	const { coreS, utilS } = await sinceGaps(page, pr, startCrb);
 
 	// core.ts: the gap below the reworked line holds core 30's thread;
-	// opening it loads that line (the PR's, unchanged since PS1).
+	// its lines load that line (the PR's, unchanged since PS1).
 	await openCore30(coreS);
 	const core30 = coreS
 		.getByTestId("diff-line")
@@ -2429,9 +2444,7 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 	await expect(
 		core30.getByRole("button", { name: "1 comment on line 30" }),
 	).toHaveAttribute("aria-expanded", "true");
-	// The rest of the gap opens by its buttons, every line of it.
-	// (The thread loaded 27–40, near the gap's end; 9–26 and line 1 are left.)
-	await coreS.getByRole("button", { name: "Load all 18 lines" }).click();
+	// The rest of the file opens by its buttons, every line of it.
 	await coreS.getByRole("button", { name: "Load 1 line above" }).click();
 	await expect(coreS.getByTestId("gap-row")).toHaveCount(0);
 	for (const n of [9, 29, 31, 40]) {
@@ -2458,6 +2471,14 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 	await whole
 		.getByRole("button", { name: "1 comment on hidden lines 1–10" })
 		.click();
+	await expect(
+		utilS.getByTestId("files-thread").filter({ hasText: "util 3 looks fine" }),
+	).toBeVisible();
+	await expect(whole).toHaveText(/10 hidden lines/);
+	await whole
+		.getByRole("button", { name: /^Load / })
+		.first()
+		.click();
 	const util3 = utilS
 		.getByTestId("diff-line")
 		.filter({ hasText: "util 3 changed" });
@@ -2475,7 +2496,7 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 	).toHaveCount(0);
 });
 
-test("the since view's gaps side by side: core 30's thread opens its gap onto its line", async ({
+test("the since view's gaps side by side: core 30's thread opens under its gap, then on its line", async ({
 	page,
 	pr,
 	startCrb,

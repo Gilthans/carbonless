@@ -1813,12 +1813,6 @@ function CrossedOffNote(props: { cluster: ClusterView; id?: string }) {
 }
 
 /**
- * A thread's lines further than this from a gap's loaded edge load on
- * their own (a few around them), not the whole way from the edge.
- */
-const FAR = 200;
-
-/**
  * The runs of a gap's lines that aren't loaded, top down (lines on their way
  * or failed are in them: their run's row says so).
  */
@@ -2256,6 +2250,12 @@ export function DiffBody(props: {
 		() => new Set(),
 	);
 	const [focusThread, setFocusThread] = useState<LineKey | null>(null);
+	/**
+	 * Each thread key on a hidden-lines row, to the key its bubble goes by
+	 * (the run's first thread's): filled as the gap rows are drawn.
+	 */
+	const runBubbleOf = useRef(new Map<LineKey, LineKey>());
+	runBubbleOf.current = new Map();
 	// Resolve closes the thread to its bubble (resolveCollapse.ts): under
 	// every key of its row, as the bubble closes it (a context line's is
 	// open under either side's).
@@ -2268,17 +2268,12 @@ export function DiffBody(props: {
 				return next;
 			}),
 		focus: setFocusThread,
+		// A thread of a hidden-lines row is under that row's bubble.
 		element: (key) =>
 			scroller.current?.querySelector(
-				`[aria-controls="${CSS.escape(`${idBase}-thread-${key}`)}"]`,
+				`[aria-controls="${CSS.escape(`${idBase}-thread-${runBubbleOf.current.get(key) ?? key}`)}"]`,
 			) ?? null,
 	});
-	// A gap's window that failed drops its focus target, so a later Retry
-	// doesn't take focus from wherever the reader is by then.
-	const windowFailed = contexts.some((c) => c.isError);
-	useEffect(() => {
-		if (windowFailed) setFocusThread(null);
-	}, [windowFailed]);
 	const toggleThreads = (key: LineKey, keys: LineKey[]) => {
 		setFocusThread(null);
 		for (const k of keys) collapse.toggled(k);
@@ -2287,6 +2282,23 @@ export function DiffBody(props: {
 			const next = new Set(open);
 			if (keys.some((k) => next.has(k))) for (const k of keys) next.delete(k);
 			else next.add(key);
+			return next;
+		});
+	};
+	/**
+	 * A hidden-lines row's bubble: opens (or closes) its threads under the
+	 * keys of the rows they end on, every one, so each is open on its line
+	 * once the reviewer shows it.
+	 */
+	const openRun = (keys: LineKey[], open: boolean) => {
+		setFocusThread(null);
+		for (const k of keys) collapse.toggled(k);
+		setOpenThreads((was) => {
+			const next = new Set(was);
+			for (const k of keys) {
+				if (open) next.add(k);
+				else next.delete(k);
+			}
 			return next;
 		});
 	};
@@ -2604,41 +2616,28 @@ export function DiffBody(props: {
 			) {
 				return;
 			}
-			const start = run.from + top;
-			const end = run.to - bottom;
-			/**
-			 * Opens the run's threads where they are: loads their lines (from
-			 * the nearer edge when it's close, else just around them) and opens
-			 * each on its row, its bubble focused.
-			 */
-			const loadAround = (target: { show: [number, number] }) => {
-				const [from, to] = target.show;
-				const window: [number, number] =
-					from - start <= FAR && from - start <= end - to
-						? [start, Math.min(end, to + 3)]
-						: end - to <= FAR
-							? [Math.max(start, from - 3), end]
-							: [Math.max(start, from - 10), Math.min(end, to + 3)];
-				if (window[0] <= window[1]) addRange(window[0], window[1]);
-			};
-			/** Opens the run's agent threads where they are, like its comments. */
-			const openRunAgent = () => {
-				for (const p of runAgent) {
-					const target = agentTargetOf(p);
-					if (!target) continue;
-					loadAround(target);
-					setOpenAgent((open) => new Set(open).add(target.key));
-				}
-			};
-			const openRunThreads = () => {
-				for (const t of runThreads) {
-					const target = targetOf(t);
-					if (!target) continue;
-					loadAround(target);
-					setOpenThreads((open) => new Set(open).add(target.key));
-					setFocusThread(target.key);
-				}
-			};
+			// The run's bubbles open its threads right under the row, its
+			// lines left hidden (the owner, 2026-11-14: "opening a comment
+			// inside a hidden row opens the row - it shouldn't, just open the
+			// bubble"). They open under the keys of the rows they end on, so
+			// once the reviewer shows those lines by the row's own controls,
+			// they are open there.
+			const runKeys = runThreads.flatMap((t) => {
+				const key = targetOf(t)?.key;
+				return key ? [key] : [];
+			});
+			const runKey = runKeys[0];
+			if (runKey) for (const k of runKeys) runBubbleOf.current.set(k, runKey);
+			const runOpen = runKeys.some((k) => openThreads.has(k));
+			const runShown = runOpen
+				? runThreads.filter(rowThreads?.collapse.shows ?? (() => true))
+				: [];
+			const agentKeys = runAgent.flatMap((p) => {
+				const key = agentTargetOf(p)?.key;
+				return key ? [key] : [];
+			});
+			const agentKey = agentKeys[0];
+			const agentOpen = agentKeys.some((k) => openAgent.has(k));
 			const runLead = lead?.();
 			const where =
 				run.from === run.to
@@ -2711,8 +2710,17 @@ export function DiffBody(props: {
 										inline
 										threads={runThreads}
 										where={where}
-										open={false}
-										onToggle={openRunThreads}
+										open={runOpen}
+										controls={
+											runOpen && runKey
+												? `${idBase}-thread-${runKey}`
+												: undefined
+										}
+										focus={
+											focusThread !== null && runKeys.includes(focusThread)
+										}
+										onFocused={() => setFocusThread(null)}
+										onToggle={() => openRun(runKeys, !runOpen)}
 									/>
 								)}
 								{runAgent.length > 0 && (
@@ -2720,8 +2728,22 @@ export function DiffBody(props: {
 										inline
 										threads={runAgent.map((p) => p.thread)}
 										where={where}
-										open={false}
-										onToggle={openRunAgent}
+										open={agentOpen}
+										controls={
+											agentOpen && agentKey
+												? `${idBase}-agent-${agentKey}`
+												: undefined
+										}
+										onToggle={() =>
+											setOpenAgent((was) => {
+												const next = new Set(was);
+												for (const k of agentKeys) {
+													if (agentOpen) next.delete(k);
+													else next.add(k);
+												}
+												return next;
+											})
+										}
 									/>
 								)}
 							</BubbleSlot>
@@ -2761,6 +2783,54 @@ export function DiffBody(props: {
 					</td>
 				</GapRowTr>,
 			);
+			if (runKey && runOpen && props.threads) {
+				const readId = props.threads.readId;
+				rows.push(
+					<ThreadRow
+						// By its first thread's line: stays mounted as lines
+						// load around it and the run shrinks.
+						key={`gap${gap.index}:${runKey}:threads`}
+						id={`${idBase}-thread-${runKey}`}
+						readId={readId}
+						threads={runShown}
+						place={{ columns }}
+						onResolved={(t, from) => {
+							// Under the thread's own line, where it shows once
+							// that line loads: hidden or brought back there.
+							const own = targetOf(t)?.key ?? runKey;
+							const did = collapse.resolved({
+								key: own,
+								keys: runKeys,
+								thread: t,
+								shown: runShown,
+								from,
+							});
+							// Hidden while others show: its line's bubble is
+							// closed, unless another shown thread ends there.
+							const shared = runShown.some(
+								(o) => o !== t && targetOf(o)?.key === own,
+							);
+							if (did === "hidden" && !shared) {
+								setOpenThreads((open) => {
+									const next = new Set(open);
+									next.delete(own);
+									return next;
+								});
+							}
+						}}
+					/>,
+				);
+			}
+			if (agentKey && agentOpen) {
+				rows.push(
+					<AgentThreadRow
+						key={`gap${gap.index}:${agentKey}:agent`}
+						id={`${idBase}-agent-${agentKey}`}
+						threads={runAgent.map((p) => p.thread)}
+						place={{ columns }}
+					/>,
+				);
+			}
 			if (runLead) {
 				rows.push(
 					<Fragment key={`gap${gap.index}:${run.from}:file`}>

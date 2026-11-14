@@ -348,6 +348,8 @@ function Overlaid(props: { threads: ReviewThread[]; whole?: boolean }) {
 	);
 }
 
+/** The file's hunks as the server answers them (a test with a gap sets its own). */
+let currentHunks: FileHunks = hunks;
 let resolveAnswer: () => Promise<Response>;
 let resolveCalls: unknown[];
 let replyAnswer: () => Promise<Response> = () => new Promise(() => {});
@@ -364,34 +366,40 @@ function setup(threads: ReviewThread[], whole = false) {
 				return resolveAnswer();
 			}
 			if (url.pathname.endsWith("/replies")) return replyAnswer();
+			const from = Number(url.searchParams.get("newFrom"));
 			const body =
 				url.pathname === "/api/files/0/hunks"
-					? hunks
-					: url.pathname === "/api/comments"
-						? {
-								threads: (url.searchParams.get("ids") ?? "")
-									.split(",")
-									.map((threadId) => ({
-										threadId,
-										comments: [
-											{
-												id: `${threadId}-1`,
-												author: `rev-${threadId}`,
-												bot: false,
-												avatarUrl: "",
-												publishedAt: "2026-01-01T00:00:00Z",
-												pending: false,
-												html: "<p>a comment</p>",
-												body: "a comment",
-												text: "a comment",
-												editedAt: null,
-												viewerCan: { update: false, delete: false },
-												deleted: false,
-											},
-										],
-									})),
-							}
-						: {};
+					? currentHunks
+					: url.pathname === "/api/files/0/context"
+						? Array.from(
+								{ length: Number(url.searchParams.get("newTo")) - from + 1 },
+								(_, i) => ctx(from + i - 1, from + i),
+							)
+						: url.pathname === "/api/comments"
+							? {
+									threads: (url.searchParams.get("ids") ?? "")
+										.split(",")
+										.map((threadId) => ({
+											threadId,
+											comments: [
+												{
+													id: `${threadId}-1`,
+													author: `rev-${threadId}`,
+													bot: false,
+													avatarUrl: "",
+													publishedAt: "2026-01-01T00:00:00Z",
+													pending: false,
+													html: "<p>a comment</p>",
+													body: "a comment",
+													text: "a comment",
+													editedAt: null,
+													viewerCan: { update: false, delete: false },
+													deleted: false,
+												},
+											],
+										})),
+								}
+							: {};
 			return new Response(JSON.stringify(body), { status: 200 });
 		}),
 	);
@@ -609,6 +617,66 @@ describe.each([
 		expect(resolveCalls).toEqual([{ resolved: true }]);
 		expect(opened()).toEqual(["Resolved thread by rev-A"]);
 		expect(screen.getByRole("textbox", { name: "Reply" })).toHaveValue("wip");
+	});
+});
+
+describe("Resolve under a hidden-lines row", () => {
+	beforeEach(() => {
+		window.scrollTo = vi.fn();
+		window.scrollBy = vi.fn();
+		resolveCalls = [];
+		resolveAnswer = () => new Promise(() => {});
+		replyAnswer = () => new Promise(() => {});
+		// One added line at 3, then new 4–20 hidden: a gap with only ↓.
+		currentHunks = {
+			newLineCount: 20,
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 2,
+					newStart: 1,
+					newCount: 3,
+					lines: [
+						ctx(1, 1),
+						ctx(2, 2),
+						{ kind: "add", newNo: 3, text: "added", clusterKey: "c" },
+					],
+				},
+			],
+		};
+	});
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+		localStorage.clear();
+		currentHunks = hunks;
+	});
+
+	it("a thread resolved there is hidden under its own line: shown again by that line's bubble once loaded", async () => {
+		// B first: the run's bubble goes by B's line.
+		const user = setup([thread("B", 10), thread("A", 15)]);
+		await screen.findByText("added");
+		await user.click(
+			screen.getByRole("button", { name: /^2 comments on hidden lines/ }),
+		);
+		expect(opened()).toEqual([
+			"Unresolved thread by rev-B",
+			"Unresolved thread by rev-A",
+		]);
+		const resolve = screen.getAllByRole("button", { name: "Resolve" });
+		await user.click(resolve[1] as HTMLElement);
+		expect(opened()).toEqual(["Unresolved thread by rev-B"]);
+		// The row's own button shows the lines: B open on 10, A's line closed.
+		await user.click(screen.getByRole("button", { name: /^Load 17 lines/ }));
+		await screen.findByText("line 15");
+		expect(bubbleOn(10)).toHaveAttribute("aria-expanded", "true");
+		expect(bubbleOn(15)).toHaveAttribute("aria-expanded", "false");
+		// Its own bubble brings it back.
+		await user.click(bubbleOn(15));
+		expect(opened()).toEqual([
+			"Unresolved thread by rev-B",
+			expect.stringMatching(/rev-A$/),
+		]);
 	});
 });
 

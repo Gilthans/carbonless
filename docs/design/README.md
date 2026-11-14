@@ -416,10 +416,10 @@ decides where; nothing else does):
   load, "Loading comments" spins at the progress bar's end, atop the file
   tree and in place of an open file's bubble.
 - A line in a collapsed gap: the hidden run's row has the bubble ("on
-  hidden lines 20–79"); tapping it loads the thread's lines (from the
-  nearer loaded edge when it is within 200 lines, else just a few around
-  them, leaving hidden runs with their own ↑/↓ above and below), opens the
-  thread there and focuses its bubble.
+  hidden lines 20–79"); tapping it opens the threads in a row right under
+  the hidden row and loads nothing: the lines stay hidden until the
+  reviewer shows them with the row's own ↑/↓, and then each thread is
+  open on its line.
 - A closed file's header has one bubble for all its threads ("9 comments
   in this file, your turn"; its hunks aren't read while closed, so the
   alert shows only for a binary or submodule file, and a line past the end
