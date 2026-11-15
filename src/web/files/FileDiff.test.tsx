@@ -3036,6 +3036,32 @@ describe("FileDiff: review in the image view", () => {
 		expect(rendererPicks.get(SVG)).toBeUndefined();
 	});
 
+	it("picking Image after a thread link's Text shows no hint and doesn't scroll", async () => {
+		const scrolls = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+		const { user, update } = setup(svg([cluster("k1")]));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		update({
+			landing: { path: SVG, line: 5, side: "RIGHT", index: 0, seq: 1 },
+		});
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		await waitFor(() => expect(scrolls).toHaveBeenCalled());
+		expect(screen.queryByTestId("landing-hint")).toBeNull();
+		scrolls.mockClear();
+		await user.click(chip());
+		await user.click(screen.getByRole("menuitemradio", { name: "Image" }));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		// The same landing, still the page's, isn't replayed on the image.
+		await new Promise((r) => setTimeout(r, 20));
+		expect(screen.queryByTestId("landing-hint")).toBeNull();
+		expect(scrolls).not.toHaveBeenCalled();
+		// Nor after closing and reopening the file there.
+		await user.click(screen.getByRole("button", { name: "Collapse file" }));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await new Promise((r) => setTimeout(r, 20));
+		expect(screen.queryByTestId("landing-hint")).toBeNull();
+		expect(scrolls).not.toHaveBeenCalled();
+	});
+
 	it("a find step onto a PNG or a .ts file changes nothing (no Text for a binary)", async () => {
 		const png = file(
 			[

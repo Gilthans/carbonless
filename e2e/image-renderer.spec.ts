@@ -844,6 +844,16 @@ test("find in an SVG in Image view: stepping to a line hit switches that file to
 	await expect(svgRow(landed, 3)).toHaveAttribute("data-landed");
 	await expect(svgRow(landed, 3)).toBeInViewport();
 	expect(await storedPicks(page)).toBeNull();
+	// Image again: the link isn't replayed on the image (no "not in this
+	// diff" hint; the unit test checks it doesn't scroll either).
+	await chip(landed).click();
+	await page
+		.getByRole("menu", { name: "Show as" })
+		.getByRole("menuitemradio", { name: "Image" })
+		.click();
+	await expect(stageOf(landed)).toBeVisible();
+	await expect(landed.locator('[aria-busy="true"]')).toHaveCount(0);
+	await expect(landed.getByTestId("landing-hint")).toHaveCount(0);
 	await page.reload();
 	await expect(chip(fileSection(page, SVG))).toHaveAccessibleName(
 		"Show as: Image",

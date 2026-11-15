@@ -2395,18 +2395,27 @@ export function DiffBody(props: {
 	const overflow = useScrollbarProxy(scroller, table, proxy);
 	useBubbleFocusKept(scroller, wide);
 	const onPointerDown = useOneSideSelection(table, view);
+	// With its lines hidden (an image) no line is shown to land on: a
+	// thread link to a line, or a find's step, neither scrolls nor hints.
+	// Their file shows as Text to take them (FileDiff); a remount back to
+	// Image, or a reopen there, must not replay them as "not in this diff".
+	// A link to the file alone still brings it into view.
+	const lineLanding =
+		linesHidden && props.landing?.line !== undefined
+			? undefined
+			: props.landing;
 	const { hint, landed, pending } = useLanding(
 		root,
-		props.landing,
+		lineLanding,
 		hunks.isSuccess,
 	);
-	useFindStep(root, find, hunks.isSuccess);
+	useFindStep(root, linesHidden ? undefined : find, hunks.isSuccess);
 	// The line a thread link is about to land on (so a collapsed cluster
 	// holding it is open by the time the landing looks); once it has
 	// landed, `landed` keeps the cluster open while the highlight lasts.
 	const landingLine: LineRef | null =
-		pending && props.landing?.line !== undefined && !props.landing.moved
-			? { old: props.landing.side === "LEFT", line: props.landing.line }
+		pending && lineLanding?.line !== undefined && !lineLanding.moved
+			? { old: lineLanding.side === "LEFT", line: lineLanding.line }
 			: null;
 
 	const loaded = new Map<number, DiffLine>();
