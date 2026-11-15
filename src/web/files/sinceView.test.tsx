@@ -484,7 +484,7 @@ describe("the since view's gaps", () => {
 		expect(await within(gap).findByRole("alert")).toBeInTheDocument();
 	});
 
-	it("a file the interdiff doesn't touch is one gap; a thread on a hidden line shows once it opens", async () => {
+	it("a file the interdiff doesn't touch is one gap; a thread on a hidden line shows once its bubble opens", async () => {
 		renderGaps({ hunks: [], newLineCount: 30, wholeGap: true }, [threadOn(25)]);
 		const user = userEvent.setup();
 		const gap = await screen.findByTestId("gap-row");
@@ -496,13 +496,13 @@ describe("the since view's gaps", () => {
 				name: "1 comment on hidden lines 1–30",
 			}),
 		);
-		expect(await screen.findByText("pr line 25")).toBeInTheDocument();
-		// The thread opens on its line.
-		const bubble = await screen.findByRole("button", {
-			name: "1 comment on line 25",
-		});
-		expect(bubble).toHaveAttribute("aria-expanded", "true");
-		expect(bubble.closest("tr")).toHaveTextContent("pr line 25");
+		expect(await screen.findByTestId("thread-row")).toBeInTheDocument();
+		// Under its hidden row, the lines still hidden.
+		expect(screen.queryByText("pr line 25")).toBeNull();
+		expect(screen.getByTestId("gap-row")).toHaveTextContent("30 hidden lines");
+		expect(
+			screen.queryByRole("button", { name: "1 comment on line 25" }),
+		).toBeNull();
 	});
 });
 

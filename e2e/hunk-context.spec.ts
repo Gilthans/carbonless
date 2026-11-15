@@ -217,7 +217,7 @@ test("two arrows stack: the row's top half loads ↓, its bottom half ↑, hover
 	await expect(gapRow(section, "9 hidden lines")).toHaveCount(1);
 });
 
-test("a thread bubble on a hidden-lines row opens its thread and loads nothing else", async ({
+test("a thread bubble on a hidden-lines row opens its thread only; the lines stay hidden", async ({
 	page,
 	pr,
 	startCrb,
@@ -226,13 +226,31 @@ test("a thread bubble on a hidden-lines row opens its thread and loads nothing e
 	const s = await startCrb();
 	const section = await open(page, s.url);
 	const gap = gapRow(section, "49 hidden lines");
-	await gap.getByRole("button", { name: /^1 comment on hidden line/ }).click();
+	const bubble = gap.getByRole("button", { name: /^1 comment on hidden line/ });
+	await bubble.click();
 	await expect(section.getByText("Hidden one")).toBeVisible();
+	await expect(bubble).toHaveAttribute("aria-expanded", "true");
+	// The row stays as it was: no line loaded, the same 49 hidden.
+	await expect(line(section, 60)).toHaveCount(0);
+	await expect(gapRow(section, "49 hidden lines")).toHaveCount(1);
+	// Closing it leaves the row as it was.
+	await bubble.click();
+	await expect(section.getByText("Hidden one")).toHaveCount(0);
+	await expect(bubble).toHaveAttribute("aria-expanded", "false");
+	await expect(line(section, 60)).toHaveCount(0);
+	// By keyboard, the same.
+	await bubble.focus();
+	await page.keyboard.press("Enter");
+	await expect(section.getByText("Hidden one")).toBeVisible();
+	await expect(line(section, 60)).toHaveCount(0);
+	await expect(gapRow(section, "49 hidden lines")).toHaveCount(1);
+	// The row's own control still shows the lines, the thread open on 60.
+	await gap.getByRole("button", { name: "Load 20 lines above" }).click();
 	await expect(line(section, 60)).toBeVisible();
-	// Just around the thread (57–62): neither arrow's 20 lines.
-	await expect(line(section, 14)).toHaveCount(0);
-	await expect(line(section, 50)).toHaveCount(0);
-	await expect(gapRow(section, "43 hidden lines")).toHaveCount(1);
+	await expect(
+		line(section, 60).getByRole("button", { name: "1 comment on line 60" }),
+	).toHaveAttribute("aria-expanded", "true");
+	await expect(section.getByText("Hidden one")).toHaveCount(1);
 });
 
 test("on a phone a cut heading scrolls sideways in place, and only a tap loads", async ({

@@ -710,7 +710,8 @@ describe("painting a thread's span", () => {
 	it("the painted rows are the anchor's: expanded context", async () => {
 		const { user } = setup({ threads: [thread({ startLine: 11, line: 12 })] });
 		await loaded();
-		await user.click(screen.getByRole("button", { name: /comment/ }));
+		// The hidden lines, loaded by the gap row's own button.
+		await user.click(screen.getByRole("button", { name: /^Load .* below$/ }));
 		await screen.findByText("line 12");
 		expect(commented()).toEqual(["RIGHT:11", "RIGHT:12"]);
 	});
