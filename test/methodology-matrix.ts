@@ -18,7 +18,7 @@ import { computeRereview } from "../src/server/rereview/engine";
 import { RefStore } from "../src/server/review/refStore";
 import { ReviewService } from "../src/server/review/reviews";
 import { Session } from "../src/server/session";
-import type { Snapshot } from "../src/shared/types";
+import type { FileSummary, Snapshot } from "../src/shared/types";
 import {
 	fakeGhEnv,
 	reviewThread,
@@ -210,6 +210,19 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		}
 	});
 
+	/**
+	 * A file's summary without what follows the content's bytes: the
+	 * reference repo's base differs from the PR's (that's its point), so the
+	 * old side's byte size does too, and so could an LFS flag read from the
+	 * old side. Neither is a fact about how the team uses git.
+	 */
+	const methodologyFacts = ({
+		oldSize: _old,
+		newSize: _new,
+		lfs: _lfs,
+		...facts
+	}: FileSummary) => facts;
+
 	/** The snapshot shows exactly the PR's own changes of that stage. */
 	const expectPrOwnChanges = (
 		s: Session,
@@ -218,7 +231,9 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		expect(s.snapshot().files.map((f) => f.path)).toEqual(
 			repo.references[stage].paths,
 		);
-		expect(s.snapshot().files).toEqual(references[stage].files);
+		expect(s.snapshot().files.map(methodologyFacts)).toEqual(
+			references[stage].files.map(methodologyFacts),
+		);
 	};
 	const open = (asOf?: string) =>
 		Session.open(ARG, process.cwd(), () => {}, asOf ? { asOf } : {});
