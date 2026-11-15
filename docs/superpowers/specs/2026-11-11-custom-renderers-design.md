@@ -98,6 +98,11 @@ like a renamed file's or a mode change's (`src/server/rereview/engine.ts`,
 file-level since clusters). The rest of this section matters only for an
 SVG, which has line clusters.
 
+The owner, 2026-11-15, on SVG: "a tick should cover all changed lines. If
+you want to review line by line, you should be doing it on the line diff
+view". In Image view, one press covers every changed line the view shows;
+ticking line by line happens in Text view.
+
 The image renderer's review box ticks **exactly the units the current view
 shows for this file**, through the same write path today's view uses for
 them. In the full diff, those are the file's clusters (`/review/states`).
