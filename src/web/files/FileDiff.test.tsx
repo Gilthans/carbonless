@@ -3080,6 +3080,17 @@ describe("FileDiff: review in the image view", () => {
 		expect(chip()).toHaveAccessibleName("Show as: Text");
 	});
 
+	it("a switch ended by the pick changing elsewhere doesn't come back", async () => {
+		const { update } = setup(svg([cluster("k1")]));
+		update({ find: stepped(5, 1) });
+		expect(chip()).toHaveAccessibleName("Show as: Text");
+		// Another tab picks Text, then Image: the image, not the old switch.
+		act(() => rendererPicks.set(SVG, "text"));
+		expect(chip()).toHaveAccessibleName("Show as: Text");
+		act(() => rendererPicks.set(SVG, "image"));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+	});
+
 	it("a find step onto a PNG or a .ts file changes nothing (no Text for a binary)", async () => {
 		const png = file(
 			[

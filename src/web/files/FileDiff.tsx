@@ -1406,6 +1406,9 @@ function useLineTargetText(
 	// with the page's last step or landing, which mustn't switch it again.
 	const [seen, setSeen] = useState({ step, landed });
 	const [on, setOn] = useState(false);
+	// Ended once the file isn't one Text can take over (another pick, from
+	// this tab or another): a later Image pick shows the image.
+	if (on && !textable) setOn(false);
 	if (step !== seen.step || landed !== seen.landed) {
 		const fresh =
 			(step !== 0 && step !== seen.step) ||
