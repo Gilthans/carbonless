@@ -4,11 +4,14 @@ import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { type FixtureCommit, testGitEnv } from "../test/git-fixture";
 import {
+	clicksReady,
 	expectNoPageOverflow,
+	fileActionButton,
 	fileSection,
 	marksReady,
 	openFiles,
 	progress,
+	resetFile,
 	rowTop,
 	sideBySide,
 	tapHeight,
@@ -2519,4 +2522,90 @@ test("the since view's gaps side by side: core 30's thread opens under its gap, 
 	await sideBySide(page, true);
 	await openCore30(coreS);
 	await sideBySide(page, false);
+});
+
+/** PS1 also adds src/extra.ts; the next push deletes it: gone since PS1. */
+const extraFixture: PrOptions = {
+	base: fixture.base,
+	files: [
+		{
+			message: "PR change",
+			files: {
+				"src/core.ts": edit(core, {
+					5: "core 5 changed",
+					30: "core 30 changed",
+				}),
+				"src/util.ts": edit(util, { 3: "util 3 changed" }),
+				"src/extra.ts": text(["extra 1", "extra 2", "extra 3"]),
+			},
+		},
+	],
+};
+
+test("a file deleted since the last review keeps its header's ✓ and ⊘: ✓ marks its pieces reviewed and the counts move, ⊘ crosses them off; a reload keeps it (CAR-155)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(extraFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// PS1 fully reviewed from the closed headers (no move-on).
+	for (const path of ["src/core.ts", "src/extra.ts", "src/util.ts"]) {
+		const button = fileActionButton(
+			fileSection(page, path),
+			"Mark remaining reviewed",
+		);
+		await clicksReady(page, button);
+		await button.click();
+		await expect(
+			fileActionButton(fileSection(page, path), "Unmark reviewed"),
+		).toBeVisible();
+	}
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({ message: "drop extra", files: {}, delete: ["src/extra.ts"] });
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const extra = fileSection(page, "src/extra.ts");
+	await expect(extra).toHaveAttribute("data-gone-file", "src/extra.ts");
+	await expect(progress(page)).toContainText("0 / 1 cluster reviewed");
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	await expectNoPageOverflow(page);
+
+	// ✓ on the closed header: every piece reviewed, the counts move.
+	const review = fileActionButton(extra, "Mark remaining reviewed");
+	await expect(fileActionButton(extra, "Cross off file")).toBeEnabled();
+	await clicksReady(page, review);
+	await review.click();
+	await expect(fileActionButton(extra, "Unmark reviewed")).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toContainText("1 / 1 cluster reviewed");
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await extra.getByRole("button", { name: "Expand file" }).click();
+	await expect(boxes(extra)).toHaveCount(1, GIT_WAIT);
+	await expect(boxes(extra)).toBeChecked();
+
+	// Reset, then ⊘: every piece crossed off.
+	await resetFile(page, extra, "Unmark reviewed");
+	await expect(boxes(extra)).not.toBeChecked();
+	await expect(progress(page)).toContainText("0 / 1 cluster reviewed");
+	const cross = fileActionButton(extra, "Cross off file");
+	await clicksReady(page, cross);
+	await cross.click();
+	await expect(fileActionButton(extra, "Undo cross-off")).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(
+		extra.getByRole("checkbox", { name: "Undo cross-off" }),
+	).toBeVisible();
+	await page.reload();
+	await expect(
+		fileActionButton(fileSection(page, "src/extra.ts"), "Undo cross-off"),
+	).toBeVisible(GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 });

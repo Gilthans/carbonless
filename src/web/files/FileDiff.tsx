@@ -13,7 +13,10 @@ import {
 import type { LineRanges } from "../../shared/lineRanges";
 import {
 	crossOffChange,
+	type SinceFileAction,
 	type SincePiece,
+	sinceFileChange,
+	sinceOnlyPieces,
 	sinceToggleChange,
 	toggleChange,
 } from "../../shared/pieces";
@@ -562,6 +565,11 @@ export function FileDiff(props: {
 	/** The patch set's marks on since-only pieces (ReviewView.sinceMarks). */
 	sinceMarks?: SinceMark[];
 	/**
+	 * The since view: the file's pieces (the engine's answer), so the
+	 * header's actions mark those no cluster owns with the clusters.
+	 */
+	sincePieces?: readonly SincePiece[];
+	/**
 	 * The since view: the file as its units count it (since.ts unitsFile),
 	 * for the header's meter and sentence; the full diff counts clusters.
 	 */
@@ -679,20 +687,61 @@ export function FileDiff(props: {
 		]).catch(() => {});
 	};
 	const unreviewed = file.clusters.filter((c) => c.state === "unreviewed");
+	// In the since view the file's pieces that own no line of its clusters
+	// (gone, reverted, removed) are its too: the header's actions mark and
+	// reset them with the clusters (CAR-155), on the file's since mark.
+	const since = props.since;
+	const onlyPieces =
+		since === undefined
+			? []
+			: sinceOnlyPieces(
+					props.sincePieces ?? [],
+					new Set(file.clusters.map((c) => c.key)),
+				);
+	const sinceChange = (action: SinceFileAction) =>
+		since === undefined
+			? []
+			: [
+					sinceFileChange(
+						props.sinceMarks,
+						since,
+						file.path,
+						onlyPieces,
+						action,
+					),
+				].filter((c) => c !== null);
+	const piecesLeft = sinceChange("reviewed").length > 0;
+	const left = unreviewed.length > 0 || piecesLeft;
 	// Each action is a toggle: it marks what's unreviewed; once nothing is
-	// (the file is finished), it resets its own kind of mark, asking first;
-	// with none of its kind there is nothing to do. A file finished by both
-	// kinds resets each kind from its own button.
-	const unCross = resetChanges(file.clusters, "crossed-off");
-	const unReview = resetChanges(file.clusters, "reviewed");
+	// (the file is finished: no cluster and no piece left), it resets its
+	// own kind of mark, asking first; with none of its kind there is nothing
+	// to do. A file finished by both kinds resets each kind from its own
+	// button. Never a reset while anything is left (principle 2).
+	const resetOf = (kind: "reviewed" | "crossed-off") =>
+		left
+			? []
+			: [
+					...resetChanges(file.clusters, kind),
+					...sinceChange(
+						kind === "reviewed" ? "reset-reviewed" : "reset-crossed-off",
+					),
+				];
+	const unCross = resetOf("crossed-off");
+	const unReview = resetOf("reviewed");
 	const crossToggle = {
 		undo: unCross.length > 0,
-		none: unreviewed.length === 0 && unCross.length === 0,
+		none: !left && unCross.length === 0,
 	};
 	const reviewToggle = {
 		undo: unReview.length > 0,
-		none: unreviewed.length === 0 && unReview.length === 0,
+		none: !left && unReview.length === 0,
 	};
+	// What the reviewer already read stays reviewed, crossed off stays
+	// crossed off (R21): only the unreviewed is marked.
+	const markAll = (state: "reviewed" | "crossed-off"): StateChange[] => [
+		...unreviewed.map((c) => ({ key: c.key, state })),
+		...sinceChange(state),
+	];
 	// A reset is never a finish: it only adds unreviewed clusters.
 	const reset = (changes: StateChange[]) => {
 		if (readOnly) return;
@@ -712,7 +761,7 @@ export function FileDiff(props: {
 		.filter(Boolean)
 		.join(" · ");
 	const idle =
-		file.clusters.length === 0
+		file.clusters.length === 0 && onlyPieces.length === 0
 			? "No clusters in this file"
 			: "Nothing unreviewed";
 
@@ -1146,90 +1195,17 @@ export function FileDiff(props: {
 										}}
 									/>
 								)}
-								{crossToggle.undo ? (
-									<HeaderIconButton
-										ignoreClicksUntil={ignoreMarksUntil}
-										label="Undo cross-off"
-										tooltip={
-											readOnly
-												? READ_ONLY_TIP
-												: "Set crossed-off clusters back to unreviewed"
-										}
-										confirm="Remove all crossed-off markings from this file?"
-										icon="⊘"
-										tone="purple"
-										pressed
-										disabled={readOnly === true}
-										// Back to unreviewed, never reviewed (R21).
-										onClick={() => reset(unCross)}
-									/>
-								) : (
-									<HeaderIconButton
-										ignoreClicksUntil={ignoreMarksUntil}
-										label="Cross off file"
-										tooltip={
-											readOnly
-												? READ_ONLY_TIP
-												: crossToggle.none
-													? idle
-													: "Mark all unreviewed clusters as not needing review"
-										}
-										icon="⊘"
-										tone="purple"
-										pressed={false}
-										disabled={readOnly || crossToggle.none}
-										onClick={() => {
-											// What the reviewer already read stays reviewed (R21).
-											mark(
-												unreviewed.map((c) => ({
-													key: c.key,
-													state: "crossed-off",
-												})),
-											);
-										}}
-									/>
-								)}
-								{reviewToggle.undo ? (
-									<HeaderIconButton
-										ignoreClicksUntil={ignoreMarksUntil}
-										label="Unmark reviewed"
-										tooltip={
-											readOnly
-												? READ_ONLY_TIP
-												: "Set reviewed clusters back to unreviewed"
-										}
-										confirm="Remove all reviewed markings from this file?"
-										icon="✓"
-										tone="green"
-										pressed
-										disabled={readOnly === true}
-										onClick={() => reset(unReview)}
-									/>
-								) : (
-									<HeaderIconButton
-										ignoreClicksUntil={ignoreMarksUntil}
-										label="Mark remaining reviewed"
-										tooltip={
-											readOnly
-												? READ_ONLY_TIP
-												: reviewToggle.none
-													? idle
-													: "Mark all unreviewed clusters as reviewed"
-										}
-										icon="✓"
-										tone="green"
-										pressed={false}
-										disabled={readOnly || reviewToggle.none}
-										onClick={() => {
-											mark(
-												unreviewed.map((c) => ({
-													key: c.key,
-													state: "reviewed",
-												})),
-											);
-										}}
-									/>
-								)}
+								<FileMarkActions
+									cross={crossToggle}
+									review={reviewToggle}
+									readOnly={readOnly}
+									idle={idle}
+									ignoreClicksUntil={ignoreMarksUntil}
+									onMark={(state) => mark(markAll(state))}
+									onReset={(kind) =>
+										reset(kind === "reviewed" ? unReview : unCross)
+									}
+								/>
 							</div>
 							<FileProgress
 								file={props.counted ?? file}
@@ -1281,6 +1257,98 @@ export function FileDiff(props: {
 }
 
 /**
+ * A file header's whole-file actions: cross off (⊘) and mark reviewed (✓)
+ * what's unreviewed; once nothing is, each resets its own kind of mark,
+ * asking first (FileDiff, GoneFile).
+ */
+function FileMarkActions(props: {
+	cross: { undo: boolean; none: boolean };
+	review: { undo: boolean; none: boolean };
+	readOnly?: boolean;
+	/** The tooltip when there is nothing to do. */
+	idle: string;
+	ignoreClicksUntil?: number;
+	onMark: (state: "reviewed" | "crossed-off") => void;
+	onReset: (kind: "reviewed" | "crossed-off") => void;
+}) {
+	const { cross, review, readOnly, idle } = props;
+	return (
+		<>
+			{cross.undo ? (
+				<HeaderIconButton
+					ignoreClicksUntil={props.ignoreClicksUntil}
+					label="Undo cross-off"
+					tooltip={
+						readOnly
+							? READ_ONLY_TIP
+							: "Set crossed-off clusters back to unreviewed"
+					}
+					confirm="Remove all crossed-off markings from this file?"
+					icon="⊘"
+					tone="purple"
+					pressed
+					disabled={readOnly === true}
+					// Back to unreviewed, never reviewed (R21).
+					onClick={() => props.onReset("crossed-off")}
+				/>
+			) : (
+				<HeaderIconButton
+					ignoreClicksUntil={props.ignoreClicksUntil}
+					label="Cross off file"
+					tooltip={
+						readOnly
+							? READ_ONLY_TIP
+							: cross.none
+								? idle
+								: "Mark all unreviewed clusters as not needing review"
+					}
+					icon="⊘"
+					tone="purple"
+					pressed={false}
+					disabled={readOnly || cross.none}
+					// What the reviewer already read stays reviewed (R21).
+					onClick={() => props.onMark("crossed-off")}
+				/>
+			)}
+			{review.undo ? (
+				<HeaderIconButton
+					ignoreClicksUntil={props.ignoreClicksUntil}
+					label="Unmark reviewed"
+					tooltip={
+						readOnly
+							? READ_ONLY_TIP
+							: "Set reviewed clusters back to unreviewed"
+					}
+					confirm="Remove all reviewed markings from this file?"
+					icon="✓"
+					tone="green"
+					pressed
+					disabled={readOnly === true}
+					onClick={() => props.onReset("reviewed")}
+				/>
+			) : (
+				<HeaderIconButton
+					ignoreClicksUntil={props.ignoreClicksUntil}
+					label="Mark remaining reviewed"
+					tooltip={
+						readOnly
+							? READ_ONLY_TIP
+							: review.none
+								? idle
+								: "Mark all unreviewed clusters as reviewed"
+					}
+					icon="✓"
+					tone="green"
+					pressed={false}
+					disabled={readOnly || review.none}
+					onClick={() => props.onMark("reviewed")}
+				/>
+			)}
+		</>
+	);
+}
+
+/**
  * A file of the since view that the viewed snapshot no longer changes:
  * everything the reviewer saw of it on the compared patch set was undone,
  * so its clusters are gone. Its header names it; its body is the interdiff,
@@ -1293,6 +1361,8 @@ export function GoneFile(props: {
 	since: number;
 	info?: FileSince;
 	sinceMarks?: SinceMark[];
+	/** Its pieces (the engine's answer): the header marks them all. */
+	pieces?: readonly SincePiece[];
 	/** An earlier patch set, as reviewed: the marks are locked. */
 	readOnly?: boolean;
 	/** Controlled open state (the page's open file: a find's step opens it). */
@@ -1321,6 +1391,18 @@ export function GoneFile(props: {
 		]).catch(() => {});
 	};
 	const file = goneFileView(props);
+	// The header's whole-file actions, as on any file (CAR-155): every
+	// piece is the file's, marked on its since mark alone.
+	const pieces = props.pieces ?? [];
+	const change = (action: SinceFileAction) =>
+		sinceFileChange(props.sinceMarks, props.since, props.path, pieces, action);
+	const left = change("reviewed") !== null;
+	const unReview = left ? null : change("reset-reviewed");
+	const unCross = left ? null : change("reset-crossed-off");
+	const send = (c: StateChange | null) => {
+		if (!c || props.readOnly) return;
+		save(props.revision, props.path, [c]).catch(() => {});
+	};
 	return (
 		<section
 			id={`file-${props.index}`}
@@ -1328,7 +1410,7 @@ export function GoneFile(props: {
 			aria-label={props.path}
 			className="overflow-clip rounded-lg border border-bad/40 bg-surface"
 		>
-			<header className="flex min-h-11 flex-wrap items-center gap-1.5 border-b border-line bg-raised px-1.5">
+			<header className="@container flex min-h-11 flex-wrap items-center gap-1.5 border-b border-line bg-raised px-1.5">
 				<button
 					type="button"
 					aria-expanded={expanded}
@@ -1350,6 +1432,18 @@ export function GoneFile(props: {
 						from={props.since}
 					/>
 				</span>
+				{pieces.length > 0 && (
+					<div className="ml-auto flex shrink-0 items-center gap-1.5">
+						<FileMarkActions
+							cross={{ undo: unCross !== null, none: !left && !unCross }}
+							review={{ undo: unReview !== null, none: !left && !unReview }}
+							readOnly={props.readOnly}
+							idle="Nothing unreviewed"
+							onMark={(state) => send(change(state))}
+							onReset={(kind) => send(kind === "reviewed" ? unReview : unCross)}
+						/>
+					</div>
+				)}
 			</header>
 			{expanded && (
 				<DiffBody

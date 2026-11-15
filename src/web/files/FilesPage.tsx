@@ -1269,6 +1269,12 @@ export function FilesPage() {
 					? ("failed" as const)
 					: undefined;
 	// Each file's header meter in the since view: its own units.
+	// The since view's pieces of each file (the header marks them).
+	const piecesByFile = useMemo(
+		() =>
+			new Map((sinceAnswer?.files ?? []).map((f) => [f.index, f.pieces ?? []])),
+		[sinceAnswer],
+	);
 	const unitsByFile = useMemo(() => {
 		const out = new Map<number, typeof units>();
 		for (const u of units) out.set(u.index, [...(out.get(u.index) ?? []), u]);
@@ -1545,6 +1551,7 @@ export function FilesPage() {
 														)}
 														sincePending={sinceView.pending}
 														sinceMarks={data.sinceMarks}
+														sincePieces={piecesByFile.get(file.index)}
 														counted={
 															// The since view counts its units: none here is
 															// nothing to read, never the snapshot's numbers.
@@ -1570,6 +1577,7 @@ export function FilesPage() {
 														since={since as number}
 														info={byFile?.get(file.index)}
 														sinceMarks={data.sinceMarks}
+														pieces={file.pieces}
 														readOnly={readOnly}
 														expanded={open === keyOf(file.index)}
 														onExpandedChange={(expanded) =>

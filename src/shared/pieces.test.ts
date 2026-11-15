@@ -10,7 +10,9 @@ import {
 	pieceRanges,
 	pieceState,
 	reviewedCount,
+	sinceFileChange,
 	sinceMarkKey,
+	sinceOnlyPieces,
 	sinceOnlyState,
 	sincePieces,
 	sinceToggleChange,
@@ -400,5 +402,113 @@ describe("the since view's pieces", () => {
 		);
 		expect(undo.state).toBe("unreviewed");
 		expect(undo.sinceMark?.crossed).toEqual({ old: [], new: [] });
+	});
+
+	it("whole-file marks move only the given pieces of the file's own mark (CAR-155)", () => {
+		type R = [number, number][];
+		const a = { old: [[1, 3]] as R, new: [] as R };
+		const b = { old: [] as R, new: [[5, 6]] as R };
+		const c = { old: [[9, 10]] as R, new: [] as R };
+		// b already crossed off; another file's mark and another
+		// comparison's must stay as they are.
+		const other: SinceMark = {
+			since: 1,
+			path: "b.ts",
+			reviewed: { old: [[1, 3]], new: [] },
+			crossed: { old: [], new: [] },
+		};
+		const older: SinceMark = { ...other, since: 2, path: "a.ts" };
+		const marks: SinceMark[] = [
+			other,
+			older,
+			{
+				since: 1,
+				path: "a.ts",
+				reviewed: { old: [], new: [] },
+				crossed: { old: [], new: [[5, 6]] },
+			},
+		];
+		const tick = sinceFileChange(marks, 1, "a.ts", [a, b, c], "reviewed");
+		expect(tick).toEqual({
+			key: sinceMarkKey(1, "a.ts"),
+			state: "reviewed",
+			sinceMark: {
+				since: 1,
+				path: "a.ts",
+				reviewed: {
+					old: [
+						[1, 3],
+						[9, 10],
+					],
+					new: [],
+				},
+				crossed: { old: [], new: [[5, 6]] },
+			},
+		});
+		const after = [other, older, tick?.sinceMark as SinceMark];
+		for (const p of [a, c])
+			expect(sinceOnlyState(after, 1, "a.ts", p)).toBe("reviewed");
+		expect(sinceOnlyState(after, 1, "a.ts", b)).toBe("crossed-off");
+		// Nothing left to mark: no change.
+		expect(sinceFileChange(after, 1, "a.ts", [a, b, c], "reviewed")).toBe(null);
+		expect(sinceFileChange(after, 1, "a.ts", [a, b, c], "crossed-off")).toBe(
+			null,
+		);
+		// Resets take back only their kind.
+		const unReview = sinceFileChange(
+			after,
+			1,
+			"a.ts",
+			[a, b, c],
+			"reset-reviewed",
+		);
+		expect(unReview?.state).toBe("unreviewed");
+		expect(unReview?.sinceMark).toEqual({
+			since: 1,
+			path: "a.ts",
+			reviewed: { old: [], new: [] },
+			crossed: { old: [], new: [[5, 6]] },
+		});
+		const unCross = sinceFileChange(
+			after,
+			1,
+			"a.ts",
+			[a, b, c],
+			"reset-crossed-off",
+		);
+		expect(unCross?.sinceMark?.crossed).toEqual({ old: [], new: [] });
+		expect(unCross?.sinceMark?.reviewed).toEqual(tick?.sinceMark?.reviewed);
+		// Crossing off marks every unreviewed piece crossed, none reviewed.
+		const cross = sinceFileChange(undefined, 1, "a.ts", [a, c], "crossed-off");
+		expect(cross?.sinceMark).toEqual({
+			since: 1,
+			path: "a.ts",
+			reviewed: { old: [], new: [] },
+			crossed: {
+				old: [
+					[1, 3],
+					[9, 10],
+				],
+				new: [],
+			},
+		});
+	});
+
+	it("since-only pieces: those owning no line of a viewed cluster", () => {
+		const own = {
+			hunk: 0,
+			line: 0,
+			key: "k1",
+			owns: [[0, 1]] as [number, number][],
+			old: [],
+			new: [],
+		};
+		const goneKey = { ...own, key: "g1", owns: null };
+		const notInView = { ...own, key: "k2" };
+		const reverted = { hunk: 0, line: 3, owns: null, old: [], new: [] };
+		expect(
+			sinceOnlyPieces([own, goneKey, notInView, reverted], new Set(["k1"])),
+		).toEqual([goneKey, notInView, reverted]);
+		expect(sinceOnlyPieces([own], new Set())).toEqual([own]);
 	});
 });

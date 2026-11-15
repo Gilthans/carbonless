@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../test/in-router";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { AgentThread } from "../../shared/agent";
+import type { SincePiece } from "../../shared/pieces";
 import type {
 	ClusterView,
 	DiffLine,
@@ -20,6 +21,7 @@ import type {
 	FileView,
 	ReviewView,
 	SessionInfo,
+	SinceMark,
 } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
 import { AgentPlacingProvider } from "../agent/placeable";
@@ -139,6 +141,9 @@ type Extra = {
 	agentPending?: boolean;
 	/** The find's hits on the header's path. */
 	pathFind?: readonly FindMark[];
+	/** The since view: the compared patch set, and the file's pieces. */
+	since?: number;
+	sincePieces?: readonly SincePiece[];
 };
 
 function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
@@ -162,6 +167,9 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 						ignoreMarksUntil={extra.ignoreMarksUntil}
 						counted={extra.counted}
 						pathFind={extra.pathFind}
+						since={extra.since}
+						sincePieces={extra.sincePieces}
+						sinceMarks={data?.sinceMarks}
 					/>
 				</AgentPlacingProvider>
 			)}
@@ -433,6 +441,151 @@ describe("FileDiff", () => {
 				{ key: "k4", state: "reviewed" },
 			]),
 		);
+	});
+
+	describe("in the since view, the file's pieces no cluster owns (CAR-155)", () => {
+		// A gone cluster's removed lines, and a cluster's own piece.
+		const gonePiece: SincePiece = {
+			hunk: 0,
+			line: 0,
+			key: "g1",
+			owns: null,
+			old: [[10, 12]],
+			new: [],
+			kind: "removed",
+		};
+		const ownPiece: SincePiece = {
+			hunk: 0,
+			line: 3,
+			key: "k2",
+			owns: [[0, 2]],
+			old: [[5, 6]],
+			new: [[5, 6]],
+		};
+		const pieces = [gonePiece, ownPiece];
+		const goneMark = (kind: "reviewed" | "crossed"): SinceMark => ({
+			since: 1,
+			path: "src/a.ts",
+			reviewed: { old: kind === "reviewed" ? [[10, 12]] : [], new: [] },
+			crossed: { old: kind === "crossed" ? [[10, 12]] : [], new: [] },
+		});
+
+		it("✓ marks the unreviewed clusters and the since-only pieces, nothing else", async () => {
+			const f = file([cluster("k1", { state: "reviewed" }), cluster("k2")]);
+			const { posts, user } = setup(
+				f,
+				() => ({ status: 200, body: view(f) }),
+				hunks,
+				"clusters",
+				{ since: 1, sincePieces: pieces },
+			);
+			await user.click(
+				screen.getByRole("button", { name: "Mark remaining reviewed" }),
+			);
+			await waitFor(() =>
+				expect(posts()[0]?.body.changes).toEqual([
+					{ key: "k2", state: "reviewed" },
+					{
+						key: "since:1:src/a.ts",
+						state: "reviewed",
+						sinceMark: goneMark("reviewed"),
+					},
+				]),
+			);
+		});
+
+		it("⊘ crosses off a piece left when every cluster is marked; the file isn't finished till then", async () => {
+			const f = file([cluster("k1", { state: "reviewed" })]);
+			const { posts, user } = setup(
+				f,
+				() => ({ status: 200, body: view(f) }),
+				hunks,
+				"clusters",
+				{ since: 1, sincePieces: [gonePiece] },
+			);
+			// Something is left: no reset, the marks mark it.
+			expect(
+				screen.queryByRole("button", { name: "Unmark reviewed" }),
+			).toBeNull();
+			await user.click(screen.getByRole("button", { name: "Cross off file" }));
+			await waitFor(() =>
+				expect(posts()[0]?.body.changes).toEqual([
+					{
+						key: "since:1:src/a.ts",
+						state: "crossed-off",
+						sinceMark: goneMark("crossed"),
+					},
+				]),
+			);
+		});
+
+		it.each([
+			["reviewed", "Unmark reviewed", "Mark remaining reviewed", "reviewed"],
+			["crossed", "Undo cross-off", "Cross off file", "crossed-off"],
+		] as const)(
+			"a cluster left with a piece already %s: no reset, the header marks only the cluster",
+			async (kind, resetName, markName, state) => {
+				const f = file([cluster("k2")]);
+				const { queryClient, posts, user } = setup(
+					f,
+					() => ({ status: 200, body: view(f) }),
+					hunks,
+					"clusters",
+					{ since: 1, sincePieces: [gonePiece] },
+				);
+				await act(async () => {
+					queryClient.setQueryData(reviewQuery().queryKey, {
+						...view(f),
+						sinceMarks: [goneMark(kind)],
+					});
+					await new Promise((r) => setTimeout(r, 0));
+				});
+				expect(screen.queryByRole("button", { name: resetName })).toBeNull();
+				await user.click(screen.getByRole("button", { name: markName }));
+				await waitFor(() =>
+					expect(posts()[0]?.body.changes).toEqual([{ key: "k2", state }]),
+				);
+			},
+		);
+
+		it("once the pieces are marked too, the reset takes back clusters and pieces of its kind", async () => {
+			const f = file([cluster("k1", { state: "reviewed" })]);
+			const { queryClient, posts, user } = setup(
+				f,
+				() => ({ status: 200, body: view(f) }),
+				hunks,
+				"clusters",
+				{ since: 1, sincePieces: [gonePiece] },
+			);
+			await act(async () => {
+				queryClient.setQueryData(reviewQuery().queryKey, {
+					...view(f),
+					sinceMarks: [goneMark("reviewed")],
+				});
+				await new Promise((r) => setTimeout(r, 0));
+			});
+			// The button just swapped in: it takes clicks once armed.
+			tick();
+			await confirmClick(
+				user,
+				screen.getByRole("button", { name: "Unmark reviewed" }),
+			);
+			await waitFor(() =>
+				expect(posts()[0]?.body.changes).toEqual([
+					{ key: "k1", state: "unreviewed" },
+					{
+						key: "since:1:src/a.ts",
+						state: "unreviewed",
+						sinceMark: {
+							since: 1,
+							path: "src/a.ts",
+							reviewed: { old: [], new: [] },
+							crossed: { old: [], new: [] },
+						},
+					},
+				]),
+			);
+		});
 	});
 
 	it("splits a batch over 1000 clusters into sequential requests", async () => {

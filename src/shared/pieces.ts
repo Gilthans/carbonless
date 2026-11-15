@@ -459,6 +459,73 @@ export function sinceToggleChange(
 }
 
 /**
+ * A file's since-only pieces: those that own no line of a cluster of the
+ * viewed snapshot (`keys`), marked by the file's since mark (sinceUnits
+ * counts them the same way). A gone file has no clusters: all of them.
+ */
+export function sinceOnlyPieces(
+	pieces: readonly SincePiece[],
+	keys: ReadonlySet<string>,
+): SincePiece[] {
+	return pieces.filter(
+		(p) => !(p.owns && p.key !== undefined && keys.has(p.key)),
+	);
+}
+
+/** A file header's whole-file action (sinceFileChange). */
+export type SinceFileAction =
+	| "reviewed"
+	| "crossed-off"
+	| "reset-reviewed"
+	| "reset-crossed-off";
+
+/**
+ * The file header's whole-file action on a file's since-only pieces, as
+ * one change of its since mark (CAR-155): `reviewed` or `crossed-off`
+ * marks every unreviewed piece (what's marked stays); `reset-reviewed` or
+ * `reset-crossed-off` sets every piece marked that kind back to
+ * unreviewed. Only the given pieces' lines move, on this file's mark
+ * alone; null when it changes nothing.
+ */
+export function sinceFileChange(
+	marks: readonly SinceMark[] | undefined,
+	since: number,
+	path: string,
+	pieces: readonly Sides[],
+	action: SinceFileAction,
+): StateChange | null {
+	const mark = markOf(marks, since, path);
+	let reviewed = mark?.reviewed ?? NONE;
+	let crossed = mark?.crossed ?? NONE;
+	let moved = false;
+	for (const piece of pieces) {
+		const now = sinceOnlyState(marks, since, path, piece);
+		if (now === "unreviewed" && action === "reviewed") {
+			reviewed = plus(reviewed, piece);
+			crossed = minus(crossed, piece);
+		} else if (now === "unreviewed" && action === "crossed-off") {
+			crossed = plus(crossed, piece);
+			reviewed = minus(reviewed, piece);
+		} else if (
+			(now === "reviewed" && action === "reset-reviewed") ||
+			(now === "crossed-off" && action === "reset-crossed-off")
+		) {
+			reviewed = minus(reviewed, piece);
+			crossed = minus(crossed, piece);
+		} else continue;
+		moved = true;
+	}
+	if (!moved) return null;
+	const state: ClusterState =
+		action === "reviewed" || action === "crossed-off" ? action : "unreviewed";
+	return {
+		key: sinceMarkKey(since, path),
+		state,
+		sinceMark: { since, path, reviewed, crossed },
+	};
+}
+
+/**
  * A cluster marked one piece at a time, as the views show it: reviewed or
  * crossed off when one mark covers every line, reviewed with its crossed
  * lines when every line is marked (done with lines reviewed: counted as
