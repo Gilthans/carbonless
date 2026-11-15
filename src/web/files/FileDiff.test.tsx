@@ -37,7 +37,7 @@ import type { DiffThreads } from "./DiffBody";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import { rendererPicks } from "./renderers";
 import { SyncNotices } from "./SyncNotices";
-import { unitsFile } from "./since";
+import { type FileSince, unitsFile } from "./since";
 import type { Placements } from "./threadPlacement";
 import type { Unit } from "./unit";
 import { stateSyncFor, useReviewView } from "./useSetStates";
@@ -148,6 +148,8 @@ type Extra = {
 	sincePieces?: readonly SincePiece[];
 	/** The PR's review threads. */
 	threads?: DiffThreads;
+	/** The engine's answer for the file (its chips; the since view's kinds). */
+	sinceInfo?: FileSince;
 };
 
 function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
@@ -175,6 +177,7 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 						sincePieces={extra.sincePieces}
 						sinceMarks={data?.sinceMarks}
 						threads={extra.threads}
+						sinceInfo={extra.sinceInfo}
 					/>
 				</AgentPlacingProvider>
 			)}
@@ -2691,6 +2694,83 @@ describe("FileDiff: the renderer seam", () => {
 		});
 		await user.click(bubble);
 		expect(bubble).toHaveAttribute("aria-expanded", "true");
+		expect(hunkReads(paths)).toEqual([]);
+	});
+
+	it("since view, lines hidden: an SVG with nothing left to read says so, never an empty table", async () => {
+		const svg = file(
+			[
+				cluster("k1", {
+					state: "reviewed",
+					carried: { from: 1, rule: "exact" },
+				}),
+			],
+			{
+				path: "img/icon.svg",
+			},
+		);
+		const { user, paths } = setup(svg, undefined, undefined, "clusters", {
+			since: 1,
+			sincePieces: [],
+		});
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(await screen.findByTestId("since-empty")).toHaveTextContent(
+			"Nothing to read since PS1",
+		);
+		expect(hunkReads(paths)).toEqual([]);
+	});
+
+	it("since view, lines hidden: no lines note, and the header still counts the unshown clusters and pieces", async () => {
+		const svg = file([cluster("k1")], { path: "img/icon.svg" });
+		const gone: SincePiece = {
+			hunk: 0,
+			line: 0,
+			key: "g1",
+			owns: null,
+			old: [[10, 12]],
+			new: [],
+			kind: "removed",
+		};
+		const unit = (state: "unreviewed" | "reviewed") => ({
+			index: 0,
+			path: "img/icon.svg",
+			kind: "reworked" as const,
+			lines: 2,
+			state,
+			open: state === "unreviewed" ? 2 : 0,
+		});
+		// k1 (reworked) and the removed piece: two units, both open.
+		const counted = unitsFile(svg, [unit("unreviewed"), unit("unreviewed")]);
+		const sinceInfo: FileSince = {
+			kinds: new Map([["k1", { key: "k1", kind: "reworked" }]]),
+			conflict: false,
+			counts: {
+				reworked: 1,
+				new: 0,
+				gone: 0,
+				carried: 0,
+				reverted: 0,
+				removed: 1,
+				unticked: 0,
+			},
+			left: { units: 2, lines: 4 },
+		};
+		const { user, paths } = setup(svg, undefined, undefined, "clusters", {
+			since: 1,
+			sincePieces: [gone],
+			counted,
+			sinceInfo,
+		});
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("0 / 2");
+		// The header's action covers them: Mark remaining reviewed is live.
+		expect(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		).toBeEnabled();
+		expect(screen.queryByTestId("since-unshown")).toBeNull();
+		expect(screen.queryByTestId("since-empty")).toBeNull();
 		expect(hunkReads(paths)).toEqual([]);
 	});
 

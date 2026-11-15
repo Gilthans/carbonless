@@ -3304,7 +3304,8 @@ export function DiffBody(props: {
 					<div style={{ width: overflow }} className="h-px" />
 				</div>
 			)}
-			{/* Lines hidden (an image): the view says nothing of lines. */}
+			{/* Lines hidden (an image): the view says nothing of lines; the
+			    header's counts and action still hold every unit. */}
 			{props.from !== undefined &&
 				!linesHidden &&
 				hunks.data &&
@@ -3320,8 +3321,8 @@ export function DiffBody(props: {
 						<span className="text-muted">{carriedHere} carried</span>
 					</p>
 				)}
+			{/* Lines hidden too: with no file-level row, nothing else shows. */}
 			{props.from !== undefined &&
-				!linesHidden &&
 				hunks.data &&
 				hunks.data.hunks.length === 0 &&
 				fileClusters.length === 0 &&

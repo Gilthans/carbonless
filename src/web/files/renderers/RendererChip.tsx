@@ -94,6 +94,9 @@ export function RendererChip(props: {
 	const CurrentIcon = shown.icon;
 
 	const onMenuKey = (e: KeyboardEvent) => {
+		// The menu has the keys while open: none reaches the page's
+		// shortcuts (src/web/shortcuts.tsx listens on the document).
+		e.stopPropagation();
 		const items = Array.from(
 			menu.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ??
 				[],
@@ -109,7 +112,6 @@ export function RendererChip(props: {
 		else if (e.key === "End") move(items.length - 1);
 		else if (e.key === "Escape") {
 			e.preventDefault();
-			e.stopPropagation();
 			close(true);
 		} else if (e.key === "Tab") close(false);
 	};

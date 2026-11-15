@@ -314,7 +314,7 @@ describe("mapSetting", () => {
 		}
 		localStorage.setItem(
 			"crb.test.mj",
-			JSON.stringify({ a: "x", b: "z", c: 3, __proto__: "y" }),
+			JSON.stringify({ a: "x", b: "z", c: 3 }),
 		);
 		const s = mapSetting("crb.test.mj", ids);
 		expect(s.get("a")).toBe("x");
@@ -325,6 +325,36 @@ describe("mapSetting", () => {
 		expect(s.get("constructor")).toBeUndefined();
 	});
 
+	it("keeps a stored __proto__ name as a name, never a prototype", () => {
+		localStorage.setItem("crb.test.mp", '{"__proto__":"y","a":"x"}');
+		const s = mapSetting("crb.test.mp", ids);
+		expect(s.get("__proto__")).toBe("y");
+		expect(s.get("a")).toBe("x");
+		s.set("b", "x");
+		expect(JSON.parse(localStorage.getItem("crb.test.mp") ?? "")).toEqual(
+			JSON.parse('{"__proto__":"y","a":"x","b":"x"}'),
+		);
+		expect(Object.getPrototypeOf({})).toBe(Object.prototype);
+		expect(({} as Record<string, unknown>).a).toBeUndefined();
+		expect(Object.hasOwn(Object.prototype, "a")).toBe(false);
+	});
+
+	it("a pick merges onto what another tab stored since, never over it", () => {
+		const s = mapSetting("crb.test.tabs", ids);
+		const { result } = renderHook(() => s.use("a"));
+		act(() => s.set("a", "x"));
+		// Another tab, with its own copy, picks for b.
+		localStorage.setItem("crb.test.tabs", JSON.stringify({ a: "x", b: "y" }));
+		act(() => s.set("c", "y"));
+		expect(JSON.parse(localStorage.getItem("crb.test.tabs") ?? "")).toEqual({
+			a: "x",
+			b: "y",
+			c: "y",
+		});
+		expect(s.get("b")).toBe("y");
+		expect(result.current).toBe("x");
+	});
+
 	it("keeps a pick in memory when storage is unavailable", () => {
 		blockedStorage(() => {
 			const s = mapSetting("crb.test.mb", ids);
@@ -332,6 +362,9 @@ describe("mapSetting", () => {
 			const { result } = renderHook(() => s.use("a"));
 			expect(() => act(() => s.set("a", "y"))).not.toThrow();
 			expect(result.current).toBe("y");
+			act(() => s.set("b", "x"));
+			expect(result.current).toBe("y");
+			expect(s.get("b")).toBe("x");
 		});
 	});
 });

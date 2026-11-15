@@ -35,6 +35,11 @@ describe("rendererChoices", () => {
 		["an unknown text", f("src/a.ts"), ["text"]],
 		["an LFS pointer", f("big.png", { lfs: true }), ["text"]],
 		["a submodule", f("vendor/lib", { submodule: true }), ["text"]],
+		[
+			"a submodule at an image path",
+			f("vendor/logo.png", { submodule: true }),
+			["text"],
+		],
 	])("%s", (_, file, choices) => {
 		expect(rendererChoices(file)).toEqual(choices);
 	});
@@ -66,6 +71,7 @@ describe("resolveRenderer", () => {
 			f("a.ts"),
 			f("a.png", { lfs: true }),
 			f("lib", { submodule: true }),
+			f("vendor/logo.png", { submodule: true }),
 		]) {
 			expect(resolveRenderer(file, undefined)).toBe(rendererChoices(file)[0]);
 		}

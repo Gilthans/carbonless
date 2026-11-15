@@ -211,9 +211,13 @@ export function mapSetting<V extends string>(
 		key,
 		get: (name) => get(store.current(), name),
 		set(name, value) {
-			const was = store.current();
-			if (get(was, name) === value) return;
-			const next: Record<string, V> = Object.assign(Object.create(null), was);
+			// Onto what storage holds now (another tab may have picked
+			// since), over this page's own (all of it while storage is blocked).
+			const next: Record<string, V> = Object.assign(
+				Object.create(null),
+				store.current(),
+				store.read(),
+			);
 			next[name] = value;
 			store.set(next);
 		},
