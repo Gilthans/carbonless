@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import type {
 	Cluster,
 	ClusterState,
@@ -508,8 +508,11 @@ describe("buildReviewView and renderers", () => {
 		file(index, path, [cluster(`s${index}a`, 2), cluster(`s${index}b`, 3)]);
 
 	it("a file with a forged or missing cluster stays unreviewed whatever the renderer", () => {
-		// Nothing renderer-side can feed it: the snapshot and the states only.
-		expect(buildReviewView.length).toBe(2);
+		// Nothing renderer-side can feed it: the snapshot and the states
+		// only, not even an optional third parameter.
+		expectTypeOf(buildReviewView).parameters.toEqualTypeOf<
+			[Snapshot, ProgressState]
+		>();
 		const snap = snapshot([png(0), svg(1)]);
 		// Forged: states for a whole file, a path, a renderer's own key; and
 		// one SVG cluster's state missing.
