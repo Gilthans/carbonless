@@ -656,3 +656,63 @@ describe("the cut is part of cluster identity (CAR-156)", () => {
 		expect(clusterKeys("pin.ts", hunks, newLines)).toEqual([H1, H2]);
 	});
 });
+
+describe("file sizes and the LFS flag", () => {
+	let fx: GitFixture;
+	let snap: Snapshot;
+	const LFS = "version https://git-lfs.github.com/spec/v1";
+	const pointer = `${LFS}\noid sha256:${"ab".repeat(32)}\nsize 12345\n`;
+	const long = `${LFS}\n${"x".repeat(300 - LFS.length - 2)}\n`;
+	const png = (n: number) =>
+		new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, n]);
+	const fileOf = (path: string) => {
+		const file = snap.files.find((f) => f.path === path);
+		if (!file) throw new Error(`no ${path}`);
+		return file;
+	};
+
+	beforeAll(async () => {
+		fx = createGitFixture([
+			{
+				message: "base",
+				files: {
+					"pointer.png": `${LFS}\noid sha256:${"cd".repeat(32)}\nsize 1\n`,
+					"long.png": `${long}old\n`,
+				},
+				binary: { "logo.png": png(1) },
+			},
+			{
+				message: "head",
+				files: {
+					"pointer.png": pointer,
+					"notes.txt": pointer,
+					"long.png": long,
+				},
+				binary: {
+					"logo.png": new Uint8Array([...png(2), 7, 7, 7]),
+					"added.png": png(3),
+				},
+			},
+		]);
+		const [base, head] = fx.shas as [string, string];
+		snap = await buildSnapshot(fx.path, base, head);
+	});
+	afterAll(() => fx.cleanup());
+
+	it("gives each side's byte size", () => {
+		expect(fileOf("logo.png")).toMatchObject({ oldSize: 10, newSize: 13 });
+		const added = fileOf("added.png");
+		expect(added.newSize).toBe(10);
+		expect(added).not.toHaveProperty("oldSize");
+		expect(fileOf("notes.txt")).not.toHaveProperty("oldSize");
+		expect(fileOf("notes.txt").newSize).toBe(pointer.length);
+	});
+
+	it("flags an LFS pointer with an image path only", () => {
+		expect(fileOf("pointer.png").lfs).toBe(true);
+		expect(fileOf("notes.txt")).not.toHaveProperty("lfs");
+		expect(long.length).toBe(300);
+		expect(fileOf("long.png")).not.toHaveProperty("lfs");
+		expect(fileOf("logo.png")).not.toHaveProperty("lfs");
+	});
+});

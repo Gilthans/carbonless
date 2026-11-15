@@ -104,6 +104,15 @@ export interface FileSummary {
 	 * a numeric `indent_size`) when it sets one for this path.
 	 */
 	tabWidth?: number;
+	/** Byte size of the old side's blob (none for an added file or a submodule). */
+	oldSize?: number;
+	/** Byte size of the new side's blob (none for a deleted file or a submodule). */
+	newSize?: number;
+	/**
+	 * A Git LFS pointer with an image path (text, a side under 200 bytes
+	 * whose first line is LFS's `version` line): shown as text, not as an image.
+	 */
+	lfs?: true;
 	clusters: Cluster[];
 }
 
