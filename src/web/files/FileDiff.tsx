@@ -1,4 +1,4 @@
-import { CommentIcon } from "@primer/octicons-react";
+import { CommentIcon, DatabaseIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import {
 	type MouseEvent,
@@ -68,6 +68,8 @@ import {
 	WhitespaceLeftOut,
 	whitespaceLeftOutLabel,
 } from "./ProgressBar";
+import { rendererChoices, rendererPicks, resolveRenderer } from "./renderers";
+import { RendererChip } from "./renderers/RendererChip";
 import { useResolveCollapse } from "./resolveCollapse";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
 import { type FileSince, goneFileView } from "./since";
@@ -509,6 +511,30 @@ function FileProgress(props: {
 	);
 }
 
+const LFS_LABEL = "Git LFS pointer";
+
+/** Beside the path: the file is a Git LFS pointer, shown as its text. */
+function LfsIcon() {
+	return (
+		<Tooltip content={LFS_LABEL} describe={false}>
+			{({ ref, onMouseEnter, onMouseLeave }) => (
+				// Hover only: on touch and keyboard the path's tooltip says it.
+				<span
+					ref={ref}
+					onMouseEnter={onMouseEnter}
+					onMouseLeave={onMouseLeave}
+					role="img"
+					aria-label={LFS_LABEL}
+					data-testid="lfs-pointer"
+					className="inline-flex shrink-0 cursor-help items-center text-muted"
+				>
+					<DatabaseIcon size={12} aria-hidden className="block" />
+				</span>
+			)}
+		</Tooltip>
+	);
+}
+
 /**
  * One file of the diff: header with review status and bulk actions, and the
  * diff once expanded. Every file starts collapsed; collapsing is only a view
@@ -625,13 +651,24 @@ export function FileDiff(props: {
 	const toggleButton = useRef<HTMLButtonElement>(null);
 	const otherOpenNow = useRef(props.otherOpen ?? false);
 	otherOpenNow.current = props.otherOpen ?? false;
+	// How the body shows the file (renderers/): the reviewer's pick for
+	// its path, else the renderer that claims it. Only the view: never a
+	// review state.
+	const renderer = resolveRenderer(file, rendererPicks.use(file.path));
+	// The image renderer reads no lines: its review rows and threads are
+	// DiffBody's, with the lines hidden.
+	const linesHidden = renderer === "image";
 	const hunks = useQuery({
 		...hunksQuery(revision, file.index, props.since),
-		enabled: expanded,
+		enabled: expanded && !linesHidden,
 	});
+	const hunksPending = !linesHidden && hunks.isPending;
+	const hunkData = linesHidden ? null : (hunks.data ?? null);
+	// Opened by a move-on, its lines (or what shows instead) arrive under the
+	// pointer once read: just as unseen, so they restart the wait for marks.
 	const ignoreMarksUntil = useMarksWait(
 		props.ignoreMarksUntil,
-		expanded && !hunks.isPending,
+		expanded && !hunksPending,
 	);
 	const { save: saveStates } = useSetStates();
 	const save = (changes: StateChange[]) =>
@@ -786,6 +823,7 @@ export function FileDiff(props: {
 		clusterCount(file),
 		sentence,
 		leftOut > 0 ? whitespaceLeftOutLabel(leftOut) : null,
+		file.lfs ? LFS_LABEL : null,
 	]
 		.filter(Boolean)
 		.join(" · ");
@@ -808,9 +846,9 @@ export function FileDiff(props: {
 				threads: props.threads.threads,
 				path: file.path,
 				snapshotHead: props.threads.snapshotHead,
-				hunks: hunks.data ?? null,
+				hunks: hunkData,
 				loadedContext: [],
-				noLines: file.binary || file.submodule,
+				noLines: file.binary || file.submodule || linesHidden,
 				placements: props.threads.placements,
 				// The since view: as its DiffBody places them (LEFT through
 				// the full diff), so the header holds what no row can.
@@ -829,7 +867,7 @@ export function FileDiff(props: {
 	// has threads, and focus it (the header's count is gone).
 	const [fromHeader, setFromHeader] = useState(false);
 	const [focusFile, setFocusFile] = useState(false);
-	const hunksSettled = !expanded || !hunks.isPending;
+	const hunksSettled = !expanded || !hunksPending;
 	useEffect(() => {
 		if (!fromHeader || !expanded || !hunksSettled) return;
 		setFromHeader(false);
@@ -912,9 +950,9 @@ export function FileDiff(props: {
 				threads: agentPlaceables,
 				path: file.path,
 				snapshotHead,
-				hunks: hunks.data ?? null,
+				hunks: hunkData,
 				loadedContext: [],
-				noLines: file.binary || file.submodule,
+				noLines: file.binary || file.submodule || linesHidden,
 				placements: agentPlacements,
 				...(props.since === undefined
 					? {}
@@ -1116,6 +1154,27 @@ export function FileDiff(props: {
 		),
 	};
 
+	// Today's body (text, binary), or with its lines hidden (an image).
+	const body = (linesHidden?: true) => (
+		<DiffBody
+			lead={lead}
+			file={file}
+			revision={revision}
+			onToggle={toggle}
+			onCrossOff={crossOff}
+			landing={props.landing}
+			threads={props.threads}
+			headSure={props.headSure}
+			find={props.find}
+			from={props.since}
+			kinds={props.sinceInfo?.kinds}
+			onSinceMark={sinceMark}
+			sinceMarks={props.sinceMarks}
+			readOnly={readOnly}
+			linesHidden={linesHidden}
+		/>
+	);
+
 	return (
 		<section
 			id={`file-${file.index}`}
@@ -1173,6 +1232,7 @@ export function FileDiff(props: {
 											: changeKindLabel(file)
 									}
 								/>
+								{file.lfs && <LfsIcon />}
 								{/* Beside the path, so a phone's second row keeps its room. */}
 								<ChangeCount file={file} hover={summaryTrigger} />
 							</div>
@@ -1239,6 +1299,11 @@ export function FileDiff(props: {
 										}}
 									/>
 								)}
+								<RendererChip
+									current={renderer}
+									choices={rendererChoices(file)}
+									onPick={(id) => rendererPicks.set(file.path, id)}
+								/>
 								<FileMarkActions
 									cross={crossToggle}
 									review={reviewToggle}
@@ -1288,24 +1353,15 @@ export function FileDiff(props: {
 					{agentComposers}
 				</div>
 			)}
-			{expanded && (
-				<DiffBody
-					lead={lead}
-					file={file}
-					revision={revision}
-					onToggle={toggle}
-					onCrossOff={crossOff}
-					landing={props.landing}
-					threads={props.threads}
-					headSure={props.headSure}
-					find={props.find}
-					from={props.since}
-					kinds={props.sinceInfo?.kinds}
-					onSinceMark={sinceMark}
-					sinceMarks={props.sinceMarks}
-					readOnly={readOnly}
-				/>
-			)}
+			{expanded &&
+				(linesHidden ? (
+					<>
+						{/* Task 4: the image view (ImageView) goes here, above the review rows. */}
+						{body(true)}
+					</>
+				) : (
+					body()
+				))}
 		</section>
 	);
 }

@@ -33,7 +33,9 @@ import {
 } from "../code/Invisibles";
 import { ignoreWhitespace } from "../viewSettings";
 import { contextRanges } from "./contextRanges";
+import type { DiffThreads } from "./DiffBody";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
+import { rendererPicks } from "./renderers";
 import { SyncNotices } from "./SyncNotices";
 import { unitsFile } from "./since";
 import type { Placements } from "./threadPlacement";
@@ -144,6 +146,8 @@ type Extra = {
 	/** The since view: the compared patch set, and the file's pieces. */
 	since?: number;
 	sincePieces?: readonly SincePiece[];
+	/** The PR's review threads. */
+	threads?: DiffThreads;
 };
 
 function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
@@ -170,6 +174,7 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 						since={extra.since}
 						sincePieces={extra.sincePieces}
 						sinceMarks={data?.sinceMarks}
+						threads={extra.threads}
 					/>
 				</AgentPlacingProvider>
 			)}
@@ -2495,5 +2500,209 @@ describe("FileDiff: agent threads traced into the viewed head", () => {
 				name: "Asked on an earlier version (eeeeeee)",
 			}),
 		).toBeTruthy();
+	});
+});
+
+describe("FileDiff: the renderer seam", () => {
+	beforeEach(() => {
+		setShowInvisibles(false);
+		vi.spyOn(performance, "now").mockImplementation(() => 1000);
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		localStorage.clear();
+		rendererPicks.reset();
+		resetShowInvisibles();
+		contextRanges.reset();
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	const binaryCluster = (): ClusterView => ({
+		...cluster("bin"),
+		kind: "file",
+		label: "Binary file changed",
+		lines: 0,
+	});
+	const png = (over: Partial<FileView> = {}) =>
+		file([binaryCluster()], {
+			path: "img/logo.png",
+			binary: true,
+			additions: 0,
+			deletions: 0,
+			...over,
+		});
+	const binaryHunks: FileHunks = { newLineCount: 0, hunks: [] };
+	const chip = () => screen.queryByRole("button", { name: /^Show as/ });
+	const hunkReads = (paths: () => string[]) =>
+		paths().filter((p) => p.startsWith("/api/files/0/hunks"));
+
+	it("the chip shows for a PNG and not for a .ts", () => {
+		setup(png(), undefined, binaryHunks);
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		cleanup();
+		setup(file([cluster("k1")]));
+		expect(screen.getByTestId("file-path")).toHaveTextContent("src/a.ts");
+		expect(chip()).toBeNull();
+	});
+
+	it("the chip's menu lists the file's choices, the current one checked", async () => {
+		const { user } = setup(png(), undefined, binaryHunks);
+		const button = chip();
+		if (!button) throw new Error("no chip");
+		expect(button).toHaveAttribute("aria-haspopup", "menu");
+		expect(button).toHaveAttribute("aria-expanded", "false");
+		await user.click(button);
+		expect(button).toHaveAttribute("aria-expanded", "true");
+		const menu = screen.getByRole("menu", { name: "Show as" });
+		const items = within(menu).getAllByRole("menuitemradio");
+		expect(items.map((i) => i.textContent)).toEqual(["Image", "Binary"]);
+		expect(items.map((i) => i.getAttribute("aria-checked"))).toEqual([
+			"true",
+			"false",
+		]);
+		// Escape closes it, focus back on the chip.
+		await user.keyboard("{Escape}");
+		expect(screen.queryByRole("menu")).toBeNull();
+		expect(button).toHaveFocus();
+	});
+
+	it("picking Binary on a PNG renders today's binary rows and persists per path", async () => {
+		const { user, paths, posts } = setup(png(), undefined, binaryHunks);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		// Image: the file-level row, and no lines read.
+		expect(
+			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
+		).toBeInTheDocument();
+		expect(hunkReads(paths)).toEqual([]);
+		await user.click(chip() as HTMLElement);
+		await user.click(screen.getByRole("menuitemradio", { name: "Binary" }));
+		expect(screen.queryByRole("menu")).toBeNull();
+		expect(chip()).toHaveAccessibleName("Show as: Binary");
+		// Binary: today's DiffBody, its hunks read as before.
+		await waitFor(() =>
+			expect(hunkReads(paths)).toEqual(["/api/files/0/hunks?revision=r1"]),
+		);
+		expect(
+			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
+		).not.toBeChecked();
+		expect(screen.getByText("Binary file changed")).toBeInTheDocument();
+		// Kept per path, as data; no review state written.
+		expect(
+			JSON.parse(localStorage.getItem("crb.files.renderer") ?? ""),
+		).toEqual({ "img/logo.png": "binary" });
+		expect(rendererPicks.get("img/logo.png")).toBe("binary");
+		expect(rendererPicks.get("img/other.png")).toBeUndefined();
+		expect(posts()).toEqual([]);
+	});
+
+	it("a pick for another path leaves this file as it claims", () => {
+		rendererPicks.set("img/other.png", "binary");
+		setup(png(), undefined, binaryHunks);
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+	});
+
+	it("DiffBody linesHidden fetches no hunks and keeps the file-level checkbox", async () => {
+		// An SVG: text, line clusters, a file-level one (its mode changed).
+		const svg = file(
+			[
+				cluster("k1"),
+				{
+					...cluster("mode"),
+					kind: "file",
+					label: "Mode 100644 → 100755",
+					lines: 0,
+				},
+			],
+			{ path: "img/icon.svg" },
+		);
+		const { user, paths } = setup(svg);
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(box.closest("tr")).toHaveTextContent("Mode 100644 → 100755");
+		// One box: the line cluster has no row here (the header's action
+		// covers it), and no line, spinner or error stands in.
+		expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+		expect(screen.queryByText(codeLine("new five"))).toBeNull();
+		expect(document.querySelector('[aria-busy="true"]')).toBeNull();
+		expect(hunkReads(paths)).toEqual([]);
+		// The header's action still counts the line cluster.
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("0 / 2 clusters");
+		// Text: the lines, read as today.
+		await user.click(chip() as HTMLElement);
+		await user.click(screen.getByRole("menuitemradio", { name: "Text" }));
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(hunkReads(paths)).toEqual(["/api/files/0/hunks?revision=r1"]);
+	});
+
+	it("an SVG's line thread lists under the header in Image view, never dropped", async () => {
+		const head = "h".repeat(40);
+		const t = {
+			id: "T1",
+			loaded: true,
+			path: "img/icon.svg",
+			line: 5,
+			currentLine: 5,
+			excerpt: "a comment",
+			html: "<p>a comment</p>",
+			body: "a comment",
+			createdAt: "2026-01-01T00:00:00Z",
+			lastActivityAt: "2026-01-01T00:00:00Z",
+			author: "rev",
+			avatarUrl: "",
+			participants: [],
+			bot: false,
+			commentCount: 1,
+			hasReply: false,
+			outdated: false,
+			resolved: false,
+			code: null,
+			anchor: {
+				path: "img/icon.svg",
+				commit: head,
+				side: "RIGHT",
+				line: 5,
+				startSide: "RIGHT",
+				startLine: 5,
+				at: "2026-01-01T00:00:00Z",
+			},
+			commit: head,
+			subject: "line",
+			attention: [],
+			yourTurn: false,
+			viewerCan: { reply: false, resolve: false, unresolve: false },
+		} as unknown as DiffThreads["threads"][number];
+		const { user, paths } = setup(
+			file([cluster("k1")], { path: "img/icon.svg" }),
+			undefined,
+			undefined,
+			"clusters",
+			{ threads: { readId: "r", snapshotHead: head, threads: [t] } },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		// The file's bubble holds it, flagged as not on a line.
+		const bubble = await screen.findByRole("button", {
+			name: /^1 comment on this file.*line not in this diff/,
+		});
+		await user.click(bubble);
+		expect(bubble).toHaveAttribute("aria-expanded", "true");
+		expect(hunkReads(paths)).toEqual([]);
+	});
+
+	it("an LFS pointer shows the LFS icon and no chip", () => {
+		setup(file([cluster("k1")], { path: "img/big.png", lfs: true }), undefined);
+		expect(chip()).toBeNull();
+		const icon = screen.getByRole("img", { name: "Git LFS pointer" });
+		expect(icon).toBeInTheDocument();
+	});
+
+	it("a plain file shows no LFS icon", () => {
+		setup(png());
+		expect(screen.queryByRole("img", { name: "Git LFS pointer" })).toBeNull();
 	});
 });

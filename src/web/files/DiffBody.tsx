@@ -4,7 +4,11 @@ import {
 	ChevronRightIcon,
 	InfoIcon,
 } from "@primer/octicons-react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import {
+	type UseQueryResult,
+	useQueries,
+	useQuery,
+} from "@tanstack/react-query";
 import {
 	type CSSProperties,
 	Fragment,
@@ -2189,6 +2193,21 @@ export function gapRowTarget(
 	return e.clientY < box.top + box.height / 2 ? 0 : 1;
 }
 
+/** What DiffBody reads of its hunks' query. */
+type HunksRead = Pick<
+	UseQueryResult<FileHunks>,
+	"data" | "isSuccess" | "isPending" | "isError" | "error"
+>;
+
+/** `linesHidden`: no lines, settled at once (never a spinner or "nothing"). */
+const HIDDEN_HUNKS: HunksRead = {
+	data: { hunks: [], newLineCount: 0 },
+	isSuccess: true,
+	isPending: false,
+	isError: false,
+	error: null,
+};
+
 const hunkHeader = (h: DisplayHunk) =>
 	`@@ -${h.oldStart},${h.oldCount} +${h.newStart},${h.newCount} @@`;
 
@@ -2221,9 +2240,19 @@ export function DiffBody(props: {
 	readOnly?: boolean;
 	/** The find's hits in this file and its current one (FilesPage). */
 	find?: DiffFind;
+	/**
+	 * Another renderer shows the file (an image): no lines are read or
+	 * shown. The file-level clusters' rows and the file's threads stay,
+	 * its line threads listed under the header as a binary file's are.
+	 */
+	linesHidden?: boolean;
 }) {
-	const { file, revision, find } = props;
-	const hunks = useQuery(hunksQuery(revision, file.index, props.from));
+	const { file, revision, find, linesHidden } = props;
+	const read = useQuery({
+		...hunksQuery(revision, file.index, props.from),
+		enabled: !linesHidden,
+	});
+	const hunks: HunksRead = linesHidden ? HIDDEN_HUNKS : read;
 	// The since view: unreviewed clusters the engine lists as reworked or
 	// new whose lines these hunks don't show (gap 5: unreviewed on the
 	// compared patch set, unchanged since), and the carried count.
@@ -2472,7 +2501,7 @@ export function DiffBody(props: {
 				snapshotHead: props.threads.snapshotHead,
 				hunks: hunks.data ?? null,
 				loadedContext: [...loaded.values()],
-				noLines: file.binary || file.submodule,
+				noLines: file.binary || file.submodule || linesHidden,
 				spans: lineItems.map((i) => i.span as SpanRange),
 				placements: props.threads.placements,
 				leftToNew,
@@ -2639,7 +2668,7 @@ export function DiffBody(props: {
 				snapshotHead: agentHead,
 				hunks: hunks.data ?? null,
 				loadedContext: [...loaded.values()],
-				noLines: file.binary || file.submodule,
+				noLines: file.binary || file.submodule || linesHidden,
 				spans: agentLineItems.map((c) => c.span as SpanRange),
 				leftToNew,
 			})
@@ -3275,19 +3304,24 @@ export function DiffBody(props: {
 					<div style={{ width: overflow }} className="h-px" />
 				</div>
 			)}
-			{props.from !== undefined && hunks.data && unshownToRead > 0 && (
-				// Clusters the engine says are to read (reworked or new) with no
-				// line in these hunks (unreviewed on the compared patch set and
-				// unchanged since): never "nothing to read"; the full diff has them.
-				<p
-					data-testid="since-unshown"
-					className="flex min-h-10 items-center gap-2 px-3 text-xs text-warn"
-				>
-					{unshownToRead} to read · only in the full diff ·{" "}
-					<span className="text-muted">{carriedHere} carried</span>
-				</p>
-			)}
+			{/* Lines hidden (an image): the view says nothing of lines. */}
 			{props.from !== undefined &&
+				!linesHidden &&
+				hunks.data &&
+				unshownToRead > 0 && (
+					// Clusters the engine says are to read (reworked or new) with no
+					// line in these hunks (unreviewed on the compared patch set and
+					// unchanged since): never "nothing to read"; the full diff has them.
+					<p
+						data-testid="since-unshown"
+						className="flex min-h-10 items-center gap-2 px-3 text-xs text-warn"
+					>
+						{unshownToRead} to read · only in the full diff ·{" "}
+						<span className="text-muted">{carriedHere} carried</span>
+					</p>
+				)}
+			{props.from !== undefined &&
+				!linesHidden &&
 				hunks.data &&
 				hunks.data.hunks.length === 0 &&
 				fileClusters.length === 0 &&
@@ -3308,7 +3342,7 @@ export function DiffBody(props: {
 					<Spinner label="Loading diff" />
 				</div>
 			)}
-			{hunks.isError && (
+			{hunks.isError && hunks.error && (
 				<div className="p-2">
 					<ErrorMessage error={hunks.error} />
 				</div>
