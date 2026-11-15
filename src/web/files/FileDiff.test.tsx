@@ -3091,7 +3091,15 @@ describe("FileDiff: review in the image view", () => {
 		expect(chip()).toHaveAccessibleName("Show as: Image");
 	});
 
-	it("a find step onto a PNG or a .ts file changes nothing (no Text for a binary)", async () => {
+	it("a find step onto a .ts file changes nothing: no chip, no image", () => {
+		const { update } = setup(file([cluster("k1")]));
+		update({ find: stepped(5, 1) });
+		expect(screen.queryByRole("button", { name: /^Show as/ })).toBeNull();
+		expect(screen.queryByTestId("image-view")).toBeNull();
+		expect(localStorage.getItem("crb.files.renderer")).toBeNull();
+	});
+
+	it("a find step onto a PNG changes nothing (no Text for a binary)", async () => {
 		const png = file(
 			[
 				{
