@@ -179,7 +179,11 @@ const LFS_POINTER_LINE = "version https://git-lfs.github.com/spec/v1";
 /** A side this size or larger is never taken for an LFS pointer. */
 const LFS_POINTER_MAX_BYTES = 200;
 
-/** Whether `bytes` (a missing side when empty) look like an LFS pointer. */
+/**
+ * Whether `bytes` (a missing side when empty) look like an LFS pointer: under
+ * 200 bytes, and a first line of exactly LFS's `version` line. A CRLF pointer
+ * (`...v1\r`) deliberately doesn't count: the spec says "exactly".
+ */
 function isLfsPointer(bytes: Buffer): boolean {
 	if (bytes.length === 0 || bytes.length >= LFS_POINTER_MAX_BYTES) return false;
 	const eol = bytes.indexOf(0x0a);
@@ -227,13 +231,17 @@ export async function buildSnapshot(
 	const isText = (f: ChangedFile) => !f.binary && !f.submodule;
 	const oidsOf = (files: ChangedFile[]) =>
 		files.flatMap((f) => [f.oldOid, f.newOid]).filter((oid) => !isZeroOid(oid));
-	// The sizes' read runs beside the blobs': opening a review waits no longer.
+	// Text files' sizes are their bytes' length. The other sides' (binary,
+	// and gitlinks, which aren't blobs and get none) come from one read
+	// beside the blobs': none at all without such files, and opening a
+	// review waits no longer.
 	const [blobs, sizes] = await Promise.all([
 		readBlobs(repo, oidsOf(changed.filter(isText))),
-		readBlobSizes(repo, oidsOf(changed.filter((f) => !f.submodule))),
+		readBlobSizes(repo, oidsOf(changed.filter((f) => !isText(f)))),
 	]);
 	const bytesOf = (oid: string) => blobs.get(oid) ?? EMPTY;
-	const sizeOf = (oid: string) => (isZeroOid(oid) ? undefined : sizes.get(oid));
+	const sizeOf = (oid: string) =>
+		isZeroOid(oid) ? undefined : (blobs.get(oid)?.length ?? sizes.get(oid));
 	// Only text files with an image path: the bytes are already read.
 	const lfs = (f: ChangedFile) =>
 		isText(f) &&
@@ -272,8 +280,8 @@ export async function buildSnapshot(
 			});
 		const clusters = cutClusters(hunks, keysOf);
 		const tabWidth = tabWidths[index];
-		const oldSize = file.submodule ? undefined : sizeOf(oldOid);
-		const newSize = file.submodule ? undefined : sizeOf(newOid);
+		const oldSize = sizeOf(oldOid);
+		const newSize = sizeOf(newOid);
 		return {
 			index,
 			...summary,

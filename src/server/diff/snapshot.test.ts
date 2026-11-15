@@ -18,10 +18,29 @@ import {
 	loadContext,
 	loadFileHunks,
 	loadHunksBatch,
+	readBlobSizes,
 } from "./snapshot.js";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
+
+// Every git call's args, to prove which reads a snapshot makes.
+const gitCalls = vi.hoisted(() => [] as string[][]);
+vi.mock("../git.js", async (importOriginal) => {
+	const real = await importOriginal<typeof import("../git.js")>();
+	return {
+		...real,
+		runGit: (repo: string, args: string[], opts?: object) => {
+			gitCalls.push(args);
+			return real.runGit(repo, args, opts);
+		},
+		runGitBuffer: (repo: string, args: string[], opts?: object) => {
+			gitCalls.push(args);
+			return real.runGitBuffer(repo, args, opts);
+		},
+	};
+});
+const SIZES_FORMAT = "--batch-check=%(objectname) %(objecttype) %(objectsize)";
 
 let fixture: GitFixture;
 let snapshot: Snapshot;
@@ -663,8 +682,16 @@ describe("file sizes and the LFS flag", () => {
 	const LFS = "version https://git-lfs.github.com/spec/v1";
 	const pointer = `${LFS}\noid sha256:${"ab".repeat(32)}\nsize 12345\n`;
 	const long = `${LFS}\n${"x".repeat(300 - LFS.length - 2)}\n`;
+	const plain300 = `${"y".repeat(299)}\n`;
 	const png = (n: number) =>
 		new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, n]);
+	// Large enough, and alike enough, for git to pair the rename.
+	const bigPng = (last: number, extra = 0) =>
+		new Uint8Array([
+			...png(0),
+			...Array.from({ length: 2000 + extra }, (_, i) => (i * 7) % 251),
+			last,
+		]);
 	const fileOf = (path: string) => {
 		const file = snap.files.find((f) => f.path === path);
 		if (!file) throw new Error(`no ${path}`);
@@ -678,20 +705,32 @@ describe("file sizes and the LFS flag", () => {
 				files: {
 					"pointer.png": `${LFS}\noid sha256:${"cd".repeat(32)}\nsize 1\n`,
 					"long.png": `${long}old\n`,
+					"flip.png": plain300,
 				},
-				binary: { "logo.png": png(1) },
+				binary: {
+					"logo.png": png(1),
+					"before.png": bigPng(1),
+					// Unlike added.png, so git doesn't pair them as a rename.
+					"gone.png": new Uint8Array(64).fill(0xaa),
+				},
+				submodule: { lib: "1".repeat(40) },
 			},
 			{
 				message: "head",
+				delete: ["gone.png"],
+				rename: { "before.png": "after.png" },
 				files: {
 					"pointer.png": pointer,
 					"notes.txt": pointer,
 					"long.png": long,
+					"flip.png": pointer,
 				},
 				binary: {
 					"logo.png": new Uint8Array([...png(2), 7, 7, 7]),
 					"added.png": png(3),
+					"after.png": bigPng(2, 5),
 				},
+				submodule: { lib: "2".repeat(40) },
 			},
 		]);
 		const [base, head] = fx.shas as [string, string];
@@ -704,8 +743,39 @@ describe("file sizes and the LFS flag", () => {
 		const added = fileOf("added.png");
 		expect(added.newSize).toBe(10);
 		expect(added).not.toHaveProperty("oldSize");
+		const gone = fileOf("gone.png");
+		expect(gone).toMatchObject({ status: "deleted", oldSize: 64 });
+		expect(gone).not.toHaveProperty("newSize");
+		expect(fileOf("after.png")).toMatchObject({
+			status: "renamed",
+			oldPath: "before.png",
+			oldSize: bigPng(1).length,
+			newSize: bigPng(2, 5).length,
+		});
 		expect(fileOf("notes.txt")).not.toHaveProperty("oldSize");
 		expect(fileOf("notes.txt").newSize).toBe(pointer.length);
+		expect(fileOf("flip.png")).toMatchObject({
+			oldSize: 300,
+			newSize: pointer.length,
+		});
+	});
+
+	it("gives a submodule no size", () => {
+		const lib = fileOf("lib");
+		expect(lib.submodule).toBe(true);
+		expect(lib).not.toHaveProperty("oldSize");
+		expect(lib).not.toHaveProperty("newSize");
+	});
+
+	it("sizes only blobs", async () => {
+		const [base] = fx.shas as [string];
+		const blob = execFileSync("git", ["rev-parse", `${base}:logo.png`], {
+			cwd: fx.path,
+			encoding: "utf8",
+			env: testGitEnv(),
+		}).trim();
+		const sizes = await readBlobSizes(fx.path, [base, blob, "1".repeat(40)]);
+		expect([...sizes]).toEqual([[blob, 10]]);
 	});
 
 	it("flags an LFS pointer with an image path only", () => {
@@ -714,5 +784,33 @@ describe("file sizes and the LFS flag", () => {
 		expect(long.length).toBe(300);
 		expect(fileOf("long.png")).not.toHaveProperty("lfs");
 		expect(fileOf("logo.png")).not.toHaveProperty("lfs");
+	});
+
+	it("flags a file when either side is a pointer", () => {
+		expect(plain300.length).toBe(300);
+		expect(fileOf("flip.png").lfs).toBe(true);
+	});
+
+	it("reads no sizes from git for a review without binary files", async () => {
+		const textOnly = createGitFixture([
+			{ message: "base", files: { "a.txt": "one\n" } },
+			{ message: "head", files: { "a.txt": "two\n", "b.png": pointer } },
+		]);
+		try {
+			const [base, head] = textOnly.shas as [string, string];
+			gitCalls.length = 0;
+			const text = await buildSnapshot(textOnly.path, base, head);
+			expect(text.files.map((f) => [f.path, f.oldSize, f.newSize])).toEqual([
+				["a.txt", 4, 4],
+				["b.png", undefined, pointer.length],
+			]);
+			expect(gitCalls.some((args) => args.includes(SIZES_FORMAT))).toBe(false);
+			// The same check sees the read where there is a binary file.
+			gitCalls.length = 0;
+			await buildSnapshot(fx.path, fx.shas[0] as string, fx.shas[1] as string);
+			expect(gitCalls.some((args) => args.includes(SIZES_FORMAT))).toBe(true);
+		} finally {
+			textOnly.cleanup();
+		}
 	});
 });

@@ -46,7 +46,9 @@ const SIGNATURES: readonly [string, readonly (number | null)[]][] = [
 		"image/webp",
 		[0x52, 0x49, 0x46, 0x46, null, null, null, null, 0x57, 0x45, 0x42, 0x50],
 	],
-	["image/bmp", [0x42, 0x4d]],
+	// "BM" plus the rest of the 14-byte file header: two bytes alone are
+	// too common a start for text.
+	["image/bmp", [0x42, 0x4d, ...new Array<null>(12).fill(null)]],
 	["image/x-icon", [0x00, 0x00, 0x01, 0x00]],
 ];
 

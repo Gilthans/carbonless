@@ -46,7 +46,9 @@ describe("image types", () => {
 		expect(sniffRaster(bytes("RIFF", 1, 2, 3, 4, "WEBP", "VP8 "))).toBe(
 			"image/webp",
 		);
-		expect(sniffRaster(bytes("BM", 0, 0))).toBe("image/bmp");
+		expect(sniffRaster(bytes("BM", ...new Array(12).fill(0)))).toBe(
+			"image/bmp",
+		);
 		expect(sniffRaster(bytes(0, 0, 1, 0, 1, 0))).toBe("image/x-icon");
 	});
 
@@ -58,6 +60,9 @@ describe("image types", () => {
 		expect(sniffRaster(bytes(0x13, 0x37, 0x42, 0x99, 0x01, 0xfe))).toBeNull();
 		expect(sniffRaster(bytes("RIFF", 1, 2, 3, 4, "WAVE"))).toBeNull();
 		expect(sniffRaster(bytes(0x89, 0x50, 0x4e))).toBeNull();
+		// "BM" alone is too common a start: a BMP header is 14 bytes.
+		expect(sniffRaster(bytes("BMW"))).toBeNull();
+		expect(sniffRaster(bytes("BM short"))).toBeNull();
 		expect(sniffRaster(new Uint8Array())).toBeNull();
 	});
 });
