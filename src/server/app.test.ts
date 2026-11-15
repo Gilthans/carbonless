@@ -33,10 +33,12 @@ import type {
 } from "../shared/types";
 import { agentConfigSaveCount, setServerMcp } from "./agent/host";
 import { buildApp, prTitle, withPrTitle } from "./app";
+import { GitError } from "./git";
 import type { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
 import { ThreadPlacer } from "./rereview/threads";
 import { RefStore } from "./review/refStore";
+import { Session } from "./session";
 import { TEST_HOOK_HEADER } from "./testHooks";
 import { BUILD, VERSION_HEADER } from "./version";
 
@@ -3545,11 +3547,61 @@ describe("blob route", () => {
 				"referrer-policy": "no-referrer",
 			});
 		}
-		// HEAD: the same headers, no body (the web's stale probe).
-		const head = await blob("pic.png", "side=new", { method: "HEAD" });
-		expect(head.statusCode).toBe(200);
-		expect(head.headers["content-type"]).toBe("image/png");
-		expect(head.body).toBe("");
+	});
+
+	it("HEAD answers the headers without reading the bytes", async () => {
+		const read = vi.spyOn(Session.prototype, "blobBytes");
+		try {
+			const head = await blob("pic.png", "side=new", { method: "HEAD" });
+			expect(head.statusCode).toBe(200);
+			expect(head.headers).toMatchObject({
+				"content-type": "image/png",
+				"content-length": String(png(3).length),
+				etag: `"${oid(`${pr.head()}:pic.png`)}"`,
+				"cache-control": "private, max-age=31536000, immutable",
+				"x-content-type-options": "nosniff",
+			});
+			expect(head.body).toBe("");
+			expect(read).not.toHaveBeenCalled();
+			// A stale tab's probe: 409, as a GET.
+			const stale = await inject(
+				`/files/${indexOf("pic.png")}/blob?revision=old-one&side=new`,
+				{ method: "HEAD" },
+			);
+			expect(stale.statusCode).toBe(409);
+			expect(read).not.toHaveBeenCalled();
+		} finally {
+			read.mockRestore();
+		}
+	});
+
+	it("an error after the blob is found is never cached", async () => {
+		const read = vi
+			.spyOn(Session.prototype, "blobBytes")
+			.mockRejectedValue(new GitError("cat-file failed"));
+		try {
+			for (const query of ["side=new", "side=new&sniff=1"]) {
+				const res = await blob(
+					query.includes("sniff") ? "sig.dat" : "pic.png",
+					query,
+				);
+				expect(res.statusCode, query).toBe(500);
+				expect(res.headers["cache-control"], query).toBeUndefined();
+				expect(res.headers.etag, query).toBeUndefined();
+				expect(res.headers["content-type"], query).toContain(
+					"application/json",
+				);
+				expect(res.headers["x-content-type-options"]).toBe("nosniff");
+			}
+			const svg = await blob("logo.svg");
+			expect(svg.statusCode).toBe(500);
+			// The app-wide CSP, not the image's.
+			expect(svg.headers["content-security-policy"]).toBe(
+				"frame-ancestors 'none'",
+			);
+		} finally {
+			read.mockRestore();
+		}
 	});
 
 	it("blob: renamed file reads old side at oldPath", async () => {
@@ -3568,7 +3620,7 @@ describe("blob route", () => {
 		expect(res.headers["content-type"]).toBe("image/svg+xml");
 		// Replaces the app-wide one: one header, not two.
 		expect(res.headers["content-security-policy"]).toBe(
-			"default-src 'none'; style-src 'unsafe-inline'; sandbox",
+			"default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'",
 		);
 		expect(res.headers["x-frame-options"]).toBe("DENY");
 		expect(res.headers["referrer-policy"]).toBe("no-referrer");
@@ -3687,7 +3739,10 @@ describe("blob route", () => {
 		const keyed = await buildApp(registry, { accessKey: "k3y" });
 		try {
 			const url = `/api/r/${id}/files/${indexOf("pic.png")}/blob?revision=${revision}&side=new`;
-			expect((await keyed.inject({ url })).statusCode).toBe(401);
+			const refused = await keyed.inject({ url });
+			expect(refused.statusCode).toBe(401);
+			// Answered before any handler, still nosniff.
+			expect(refused.headers["x-content-type-options"]).toBe("nosniff");
 			const res = await keyed.inject({ url, cookies: { crb_key: "k3y" } });
 			expect(res.statusCode).toBe(200);
 			expect(res.rawPayload.equals(png(3))).toBe(true);

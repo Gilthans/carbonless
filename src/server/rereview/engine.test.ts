@@ -699,6 +699,51 @@ describe("the engine", () => {
 			);
 		});
 
+		it("a file renamed and edited since: old is the virtual rebase's at its old path", async () => {
+			const lines = (changes: Record<number, string>) =>
+				`${[1, 2, 3, 4, 5, 6, 7, 8].map((n) => changes[n] ?? `pic ${n}`).join("\n")}\n`;
+			const fx = createGitFixture([
+				{ message: "base", files: { "pic.txt": lines({}) } },
+				{ message: "PS1", files: { "pic.txt": lines({ 2: "two" }) } },
+				{
+					message: "PS2: rename and edit",
+					rename: { "pic.txt": "moved.txt" },
+					files: { "moved.txt": lines({ 2: "two", 7: "seven" }) },
+				},
+			]);
+			try {
+				const [b0 = "", p1 = "", p2 = ""] = fx.shas;
+				const ps1 = await buildSnapshot(fx.path, b0, p1);
+				const r = await buildSnapshot(fx.path, b0, p2);
+				const sincePs = since(1, ps1, marked(ps1));
+				const traced = await traceRereview(fx.path, sincePs, [], targetOf(r));
+				const { answer } = answerRereview(traced, sincePs, [], targetOf(r));
+				if (traced.interdiff.status !== "available") {
+					throw new Error("no interdiff");
+				}
+				expect(traced.interdiff.files[0]).toMatchObject({
+					path: "moved.txt",
+					oldPath: "pic.txt",
+				});
+				const moved = answer.files.find((f) => f.path === "moved.txt");
+				if (!moved) throw new Error("no moved.txt");
+				const old = interdiffBlobName(traced, r, answer, moved.index, "old");
+				expect(old).toBe(`${traced.interdiff.virtualHead}:pic.txt`);
+				expect(
+					execFileSync("git", ["cat-file", "-p", old as string], {
+						cwd: fx.path,
+						encoding: "utf8",
+						env: testGitEnv(),
+					}),
+				).toBe(lines({ 2: "two" }));
+				expect(interdiffBlobName(traced, r, answer, moved.index, "new")).toBe(
+					`${p2}:moved.txt`,
+				);
+			} finally {
+				fx.cleanup();
+			}
+		});
+
 		it("an unavailable interdiff has no old side", async () => {
 			const ps1 = await snap(h.b0, h.p2);
 			const r = await snap(h.orphan, h.orphanHead);

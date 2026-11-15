@@ -166,7 +166,8 @@ const VIEWER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
  * An SVG's (blob route): no script, no fetch, no navigation, whatever the
  * file holds; it replaces the app-wide policy, never adds to it.
  */
-const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+const SVG_CSP =
+	"default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'";
 /** A blob is named by its oid: its bytes never change. */
 const IMMUTABLE = "private, max-age=31536000, immutable";
 
@@ -179,8 +180,12 @@ function etagMatches(header: string | string[] | undefined, etag: string) {
 		.some((tag) => tag === "*" || tag === etag);
 }
 
-/** No framing (clickjacking) and no Referer leaking the access key. */
+/**
+ * No framing (clickjacking), no Referer leaking the access key, and no
+ * content sniffing (a blob is only ever the type the server says).
+ */
 const SECURITY_HEADERS = {
+	"x-content-type-options": "nosniff",
 	"x-frame-options": "DENY",
 	"content-security-policy": "frame-ancestors 'none'",
 	"referrer-policy": "no-referrer",
@@ -640,8 +645,9 @@ export async function buildApp(
 			// One side's bytes of a file, for the image view. Which blob, and
 			// the path its type comes from, are the snapshot's (with
 			// `from=<n>`, the since view's interdiff's: Session.blob), never
-			// the request's. HEAD (Fastify's own) answers the same headers.
-			review.get<{
+			// the request's. HEAD is its own (Fastify's would answer
+			// content-length 0) and reads no bytes.
+			review.route<{
 				Params: { index: string };
 				Querystring: {
 					revision?: unknown;
@@ -649,50 +655,64 @@ export async function buildApp(
 					from?: unknown;
 					sniff?: unknown;
 				};
-			}>("/files/:index/blob", async (request, reply) => {
-				reply.header("x-content-type-options", "nosniff");
-				const revision = revisionParam(request.query.revision);
-				const index = fileIndex(request.params.index);
-				const { side, from, sniff } = request.query;
-				if (side !== "old" && side !== "new") {
-					throw new BadRequestError("side must be old or new");
-				}
-				if (sniff !== undefined && sniff !== "1") {
-					throw new BadRequestError("sniff must be 1");
-				}
-				const session = sessionOf(request);
-				const blob = await session.blob(
-					revision,
-					index,
-					side,
-					from === undefined ? undefined : patchsetParam(from),
-				);
-				if (!blob) {
-					return reply.status(404).send({ error: `No ${side} side` });
-				}
-				if (blob.size > limits.imageMaxBytes) {
-					return reply.status(413).send({ error: "Too large to show" });
-				}
-				let type = imageTypeOf(blob.path);
-				let bytes: Buffer | null = null;
-				// Only on an explicit "Show as Image", and raster types only.
-				if (type === null && sniff === "1") {
-					bytes = await session.blobBytes(blob.oid);
-					type = sniffRaster(bytes.subarray(0, 16));
-				}
-				if (type === null) {
-					return reply.status(415).send({ error: "Not an image" });
-				}
-				const etag = `"${blob.oid}"`;
-				reply.header("etag", etag).header("cache-control", IMMUTABLE);
-				if (type === "image/svg+xml") {
-					reply.header("content-security-policy", SVG_CSP);
-				}
-				if (etagMatches(request.headers["if-none-match"], etag)) {
-					return reply.status(304).send();
-				}
-				bytes ??= await session.blobBytes(blob.oid);
-				return reply.type(type).send(bytes);
+			}>({
+				method: ["GET", "HEAD"],
+				url: "/files/:index/blob",
+				handler: async (request, reply) => {
+					const revision = revisionParam(request.query.revision);
+					const index = fileIndex(request.params.index);
+					const { side, from, sniff } = request.query;
+					if (side !== "old" && side !== "new") {
+						throw new BadRequestError("side must be old or new");
+					}
+					if (sniff !== undefined && sniff !== "1") {
+						throw new BadRequestError("sniff must be 1");
+					}
+					const session = sessionOf(request);
+					const blob = await session.blob(
+						revision,
+						index,
+						side,
+						from === undefined ? undefined : patchsetParam(from),
+					);
+					if (!blob) {
+						return reply.status(404).send({ error: `No ${side} side` });
+					}
+					if (blob.size > limits.imageMaxBytes) {
+						return reply.status(413).send({ error: "Too large to show" });
+					}
+					let type = imageTypeOf(blob.path);
+					let bytes: Buffer | null = null;
+					// Only on an explicit "Show as Image", and raster types only.
+					if (type === null && sniff === "1") {
+						bytes = await session.blobBytes(blob.oid);
+						type = sniffRaster(bytes.subarray(0, 16));
+					}
+					if (type === null) {
+						return reply.status(415).send({ error: "Not an image" });
+					}
+					const etag = `"${blob.oid}"`;
+					// Only a 200 or 304 carries them: an error must never be cached.
+					const found = {
+						etag,
+						"cache-control": IMMUTABLE,
+						"content-type": type,
+						...(type === "image/svg+xml"
+							? { "content-security-policy": SVG_CSP }
+							: {}),
+					};
+					if (etagMatches(request.headers["if-none-match"], etag)) {
+						return reply.status(304).headers(found).send();
+					}
+					// HEAD (the web's stale probe on an <img> error) reads no bytes.
+					if (request.method === "HEAD" && bytes === null) {
+						return reply
+							.headers({ ...found, "content-length": blob.size })
+							.send();
+					}
+					bytes ??= await session.blobBytes(blob.oid);
+					return reply.headers(found).send(bytes);
+				},
 			});
 			review.get<{
 				Params: { index: string };
