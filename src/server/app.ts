@@ -11,6 +11,7 @@ import {
 	MAX_AGENT_TEXT,
 	type OpenAgentThreadRequest,
 } from "../shared/agent.js";
+import { imageTypeOf, sniffRaster } from "../shared/imageTypes.js";
 import { type LineRanges, parseRanges } from "../shared/lineRanges.js";
 import {
 	type ClusterState,
@@ -74,7 +75,7 @@ import {
 	SessionClosedError,
 	UnknownReadError,
 } from "./session.js";
-import { registerTestHooks } from "./testHooks.js";
+import { defaultLimits, registerTestHooks } from "./testHooks.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
 import { parseTraceparent, type Span, type Tracer, tracer } from "./trace.js";
 import { channelOf } from "./update/semver.js";
@@ -161,6 +162,23 @@ const sessionOf = (request: FastifyRequest): Session => {
 
 const VIEWER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
 
+/**
+ * An SVG's (blob route): no script, no fetch, no navigation, whatever the
+ * file holds; it replaces the app-wide policy, never adds to it.
+ */
+const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+/** A blob is named by its oid: its bytes never change. */
+const IMMUTABLE = "private, max-age=31536000, immutable";
+
+/** Whether an If-None-Match header names the strong ETag `etag`. */
+function etagMatches(header: string | string[] | undefined, etag: string) {
+	const value = Array.isArray(header) ? header.join(",") : (header ?? "");
+	return value
+		.split(",")
+		.map((tag) => tag.trim().replace(/^W\//, ""))
+		.some((tag) => tag === "*" || tag === etag);
+}
+
 /** No framing (clickjacking) and no Referer leaking the access key. */
 const SECURITY_HEADERS = {
 	"x-frame-options": "DENY",
@@ -244,6 +262,8 @@ export async function buildApp(
 		forceCloseConnections: true,
 	});
 	traceRequests(app, options.tracer ?? tracer());
+	// Lowered only by a test (/api/_test/limits).
+	const limits = defaultLimits();
 	// First hook, so even the access checks' 401/403 replies carry them.
 	app.addHook("onRequest", async (_request, reply) => {
 		reply.headers(SECURITY_HEADERS);
@@ -617,6 +637,63 @@ export async function buildApp(
 				}
 				return sessionOf(request).fileHunks(revision, index);
 			});
+			// One side's bytes of a file, for the image view. Which blob, and
+			// the path its type comes from, are the snapshot's (with
+			// `from=<n>`, the since view's interdiff's: Session.blob), never
+			// the request's. HEAD (Fastify's own) answers the same headers.
+			review.get<{
+				Params: { index: string };
+				Querystring: {
+					revision?: unknown;
+					side?: unknown;
+					from?: unknown;
+					sniff?: unknown;
+				};
+			}>("/files/:index/blob", async (request, reply) => {
+				reply.header("x-content-type-options", "nosniff");
+				const revision = revisionParam(request.query.revision);
+				const index = fileIndex(request.params.index);
+				const { side, from, sniff } = request.query;
+				if (side !== "old" && side !== "new") {
+					throw new BadRequestError("side must be old or new");
+				}
+				if (sniff !== undefined && sniff !== "1") {
+					throw new BadRequestError("sniff must be 1");
+				}
+				const session = sessionOf(request);
+				const blob = await session.blob(
+					revision,
+					index,
+					side,
+					from === undefined ? undefined : patchsetParam(from),
+				);
+				if (!blob) {
+					return reply.status(404).send({ error: `No ${side} side` });
+				}
+				if (blob.size > limits.imageMaxBytes) {
+					return reply.status(413).send({ error: "Too large to show" });
+				}
+				let type = imageTypeOf(blob.path);
+				let bytes: Buffer | null = null;
+				// Only on an explicit "Show as Image", and raster types only.
+				if (type === null && sniff === "1") {
+					bytes = await session.blobBytes(blob.oid);
+					type = sniffRaster(bytes.subarray(0, 16));
+				}
+				if (type === null) {
+					return reply.status(415).send({ error: "Not an image" });
+				}
+				const etag = `"${blob.oid}"`;
+				reply.header("etag", etag).header("cache-control", IMMUTABLE);
+				if (type === "image/svg+xml") {
+					reply.header("content-security-policy", SVG_CSP);
+				}
+				if (etagMatches(request.headers["if-none-match"], etag)) {
+					return reply.status(304).send();
+				}
+				bytes ??= await session.blobBytes(blob.oid);
+				return reply.type(type).send(bytes);
+			});
 			review.get<{
 				Params: { index: string };
 				Querystring: {
@@ -957,6 +1034,7 @@ export async function buildApp(
 			token: options.testHooks,
 			registry,
 			home: options.home,
+			limits,
 		});
 	}
 

@@ -41,12 +41,14 @@ import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import { contextLines } from "./diff/hunks.js";
 import {
+	blobName,
 	buildSnapshot,
 	loadContext,
 	loadFileHunks,
 	loadHunksBatch,
 	loadNewText,
 	snapshotId,
+	statBlob,
 } from "./diff/snapshot.js";
 import { WriteRefusedError } from "./errors.js";
 import {
@@ -61,7 +63,7 @@ import {
 	type PrRef,
 	resolvePrRef,
 } from "./gh.js";
-import { runGit } from "./git.js";
+import { runGit, runGitBuffer } from "./git.js";
 import {
 	type NewThreadTarget,
 	type StartedRecord,
@@ -77,6 +79,7 @@ import { RereviewCache } from "./rereview/cache.js";
 import {
 	answerRereview,
 	type EarlierPatchset,
+	interdiffBlobName,
 	interdiffFileContext,
 	interdiffFileHunks,
 	rereviewKey,
@@ -1105,6 +1108,55 @@ export class Session {
 		index: number,
 	): Promise<FileHunks> {
 		return (await this.#interdiffOf(from, revision)).hunks(index);
+	}
+
+	/**
+	 * One side's blob of file `index` of the snapshot with this `revision`
+	 * (the blob route's: its oid, the path it is at, its byte size), or null
+	 * for a side the file hasn't. Without `from`, the full diff's sides (the
+	 * old one at the merge base); with `from`, the since view's from patch
+	 * set `from`, named by the same interdiff its hunks come from
+	 * (engine.ts, interdiffBlobName). Never reads the bytes.
+	 */
+	async blob(
+		revision: string,
+		index: number,
+		side: "old" | "new",
+		from?: number,
+	): Promise<{ oid: string; path: string; size: number } | null> {
+		const name =
+			from === undefined
+				? blobName(this.#current(revision), index, side)
+				: await this.#interdiffBlobName(from, revision, index, side);
+		if (name === null) return null;
+		// A missing side or a submodule's gitlink: null.
+		const blob = await statBlob(this.repo, name);
+		// The path is after the first ':' (a tree or commit id has none).
+		return blob && { ...blob, path: name.slice(name.indexOf(":") + 1) };
+	}
+
+	/**
+	 * A blob's bytes, by the oid `blob` gave: on their own, never through
+	 * the text blobs' cache (an image would push the text out of it).
+	 */
+	async blobBytes(oid: string): Promise<Buffer> {
+		return runGitBuffer(this.repo, ["cat-file", "blob", checkOid(oid)]);
+	}
+
+	async #interdiffBlobName(
+		from: number,
+		revision: string,
+		index: number,
+		side: "old" | "new",
+	): Promise<string | null> {
+		const snapshot = this.#current(revision);
+		const since = (await this.#progress()).patchsets.find(
+			(p) => p.number === from,
+		);
+		if (!since) throw new RangeError(`No patch set ${from}`);
+		const traced = await this.#traced(since, snapshot);
+		const { answer } = await this.#answerFor(since, snapshot, traced);
+		return interdiffBlobName(traced, snapshot, answer, index, side);
 	}
 
 	/**

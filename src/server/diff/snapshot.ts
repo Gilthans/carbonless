@@ -151,6 +151,28 @@ async function resolveBlobs(repo: string, names: string[]): Promise<string[]> {
 }
 
 /**
+ * The blob a `<rev>:<path>` name resolves to, with its byte size (one
+ * `git cat-file --batch-check`, any path); null when the name is missing
+ * or isn't a blob (a submodule's gitlink, a tree).
+ */
+export async function statBlob(
+	repo: string,
+	name: string,
+): Promise<{ oid: string; size: number } | null> {
+	const out = await runGit(
+		repo,
+		[
+			"cat-file",
+			"-z",
+			"--batch-check=%(objectname) %(objecttype) %(objectsize)",
+		],
+		{ input: `${name}\0` },
+	);
+	const match = /^([0-9a-f]+) blob (\d+)$/.exec(out.split("\n")[0] ?? "");
+	return match ? { oid: match[1] as string, size: Number(match[2]) } : null;
+}
+
+/**
  * Byte sizes of blobs by OID, with one `git cat-file --batch-check` for all.
  * An OID that isn't a blob here (a gitlink's commit, a missing object) has
  * no size.
@@ -351,6 +373,27 @@ function fileAt(snapshot: Snapshot, index: number): FileSummary {
 		throw new RangeError(`No file ${index} in this snapshot`);
 	}
 	return file;
+}
+
+/**
+ * The `<rev>:<path>` name of one side of file `index` of the snapshot, as
+ * its text is read (loadText): the old side at the merge base and the old
+ * path, the new side at the head. Null for a side the file hasn't (an
+ * added file's old, a deleted file's new) and for a submodule.
+ */
+export function blobName(
+	snapshot: Snapshot,
+	index: number,
+	side: "old" | "new",
+): string | null {
+	const file = fileAt(snapshot, index);
+	if (file.submodule) return null;
+	if (side === "old") {
+		return file.status === "added"
+			? null
+			: `${snapshot.base}:${file.oldPath ?? file.path}`;
+	}
+	return file.status === "deleted" ? null : `${snapshot.head}:${file.path}`;
 }
 
 /** Old and new text of a file in the snapshot (empty for a missing side). */

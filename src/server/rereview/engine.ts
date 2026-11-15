@@ -701,6 +701,39 @@ function interdiffFileAt(
 }
 
 /**
+ * The `<treeish>:<path>` name of one side of the since view's file at
+ * `index`, from the same interdiff its hunks come from, so the two can't
+ * drift apart: the old side is the virtual rebase's (`H1'`), or for a
+ * conflicted file the target's merge base (`B2`), never the patch set's
+ * own commit; the new side is the target head's. A file the interdiff
+ * doesn't list is the head's on both sides. Null for a side the file
+ * hasn't (an added file's old, a deleted file's new) and for the old side
+ * without an interdiff. RangeError for an index the answer hasn't.
+ */
+export function interdiffBlobName(
+	traced: Traced,
+	target: Snapshot,
+	answer: RereviewAnswer,
+	index: number,
+	side: "old" | "new",
+): string | null {
+	const { entry, file } = interdiffFileAt(traced, answer, index);
+	if (traced.interdiff.status !== "available") {
+		return side === "old" ? null : `${target.head}:${entry.path}`;
+	}
+	if (!file) {
+		const own = target.files.find((f) => f.path === entry.path);
+		return own?.status === "deleted" ? null : `${target.head}:${entry.path}`;
+	}
+	if (side === "new") {
+		return file.status === "deleted" ? null : `${target.head}:${file.path}`;
+	}
+	if (file.status === "added") return null;
+	const tree = file.conflict ? target.base : traced.interdiff.virtualHead;
+	return `${tree}:${file.oldPath ?? file.path}`;
+}
+
+/**
  * The since view's unchanged lines `newFrom..newTo` of one file, for its
  * gaps: the interdiff's context, the old side numbered as its hunks' are
  * (interdiffFileHunks), so lines the patch set added and left unchanged
