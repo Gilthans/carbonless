@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type RefObject, useLayoutEffect, useRef, useState } from "react";
 import { readyGeometry, Stage, StageImage } from "./ImageSingle";
 import type { ImageSide } from "./useImageSide";
 
@@ -24,8 +24,22 @@ export function ImageCompare(props: {
 	const geometry = readyGeometry(before, after);
 	const ready = geometry !== null;
 	const slider = mode === "slider";
+	const box = useRef<HTMLDivElement>(null);
+	// On a small stage the corner tags would cover the picture: they go
+	// above it, in a row of their own.
+	const small = useSmallStage(box);
+	const tagsAbove = ready && slider && small;
 	return (
-		<div className="grid w-full min-w-0 justify-items-center gap-1">
+		<div ref={box} className="grid w-full min-w-0 justify-items-center gap-1">
+			{tagsAbove && (
+				<div
+					data-testid="image-tags"
+					className="flex items-center gap-3 font-semibold text-xs leading-none"
+				>
+					<span className="text-del-ink">before</span>
+					<span className="text-add-ink">after</span>
+				</div>
+			)}
 			<Stage geometry={geometry} actual={props.actual}>
 				{/* Slider: each side of the handle shows only its own image. */}
 				<div
@@ -66,12 +80,16 @@ export function ImageCompare(props: {
 						>
 							<span className="absolute top-1/2 left-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink shadow-control" />
 						</div>
-						<span className="pointer-events-none absolute top-1.5 left-1.5 rounded bg-canvas/85 px-1.5 py-1 font-semibold text-del-ink text-xs leading-none">
-							before
-						</span>
-						<span className="pointer-events-none absolute top-1.5 right-1.5 rounded bg-canvas/85 px-1.5 py-1 font-semibold text-add-ink text-xs leading-none">
-							after
-						</span>
+						{!small && (
+							<>
+								<span className="pointer-events-none absolute top-1.5 left-1.5 rounded bg-canvas/85 px-1.5 py-1 font-semibold text-del-ink text-xs leading-none">
+									before
+								</span>
+								<span className="pointer-events-none absolute top-1.5 right-1.5 rounded bg-canvas/85 px-1.5 py-1 font-semibold text-add-ink text-xs leading-none">
+									after
+								</span>
+							</>
+						)}
 						<input
 							type="range"
 							min={0}
@@ -128,4 +146,33 @@ export function ImageCompare(props: {
 			)}
 		</div>
 	);
+}
+
+/**
+ * Below this shown size (CSS px) the two corner tags, about 50 × 20 each,
+ * would cover much of the picture.
+ */
+export const SMALL_STAGE = { w: 240, h: 96 };
+
+/** The stage inside `box` is shown smaller than SMALL_STAGE (measured). */
+function useSmallStage(box: RefObject<HTMLDivElement | null>): boolean {
+	const [small, setSmall] = useState(false);
+	useLayoutEffect(() => {
+		const stage = box.current?.querySelector<HTMLElement>(
+			'[data-testid="image-stage"]',
+		);
+		if (!stage) return;
+		const measure = () => {
+			const { width, height } = stage.getBoundingClientRect();
+			// Not laid out (jsdom, a hidden tab): keep the tags in the stage.
+			if (width === 0 && height === 0) return;
+			setSmall(width < SMALL_STAGE.w || height < SMALL_STAGE.h);
+		};
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(stage);
+		return () => observer.disconnect();
+	}, [box]);
+	return small;
 }

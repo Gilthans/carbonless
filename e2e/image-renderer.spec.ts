@@ -197,9 +197,10 @@ test("slider drags and moves with arrow keys", async ({
 	await page.keyboard.press("ArrowRight");
 	await page.keyboard.press("ArrowRight");
 	await expect(split).toHaveValue(String(dragged + 2));
-	// Tags in the top corners; the controls are tap-sized.
-	await expect(stageOf(section).getByText("before")).toBeVisible();
-	await expect(stageOf(section).getByText("after")).toBeVisible();
+	// A small stage (120×80): the tags sit above it; the controls are
+	// tap-sized.
+	await expect(section.getByTestId("image-tags")).toHaveText(/before\s*after/);
+	await expect(stageOf(section).getByText("before")).toHaveCount(0);
 	if (isMobile) {
 		for (const name of ["Slider", "Fade", "Actual size"]) {
 			expect(
@@ -360,6 +361,10 @@ test("size changed: stage is max w × max h, images top-left", async ({
 		expect(Math.abs(img.width - w * scale)).toBeLessThanOrEqual(1);
 		expect(Math.abs(img.height - h * scale)).toBeLessThanOrEqual(1);
 	}
+	// A stage this size keeps its tags in its top corners.
+	await expect(stageOf(section).getByText("before")).toBeVisible();
+	await expect(stageOf(section).getByText("after")).toBeVisible();
+	await expect(section.getByTestId("image-tags")).toHaveCount(0);
 	// Slider at 50%: left of the handle, below the before image's height,
 	// is the checkerboard, never the after image showing through.
 	const stack = await page.evaluate(
@@ -858,4 +863,51 @@ test("find in an SVG in Image view: stepping to a line hit switches that file to
 	await expect(chip(fileSection(page, SVG))).toHaveAccessibleName(
 		"Show as: Image",
 	);
+});
+
+test("a tiny image's before/after tags sit above it, never over it", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const TINY = "img/dot.png";
+	await pr({
+		baseBinary: { [TINY]: pngImage(40, 30, RED) },
+		files: [
+			{
+				message: "dot",
+				files: {},
+				binary: { [TINY]: pngImage(40, 30, GREEN) },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await openImage(page, TINY);
+	const tags = section.getByTestId("image-tags");
+	await expect(tags).toBeVisible();
+	const image = await section
+		.getByRole("img", { name: "Before" })
+		.boundingBox();
+	if (!image) throw new Error("no image");
+	for (const name of ["before", "after"]) {
+		const tag = await tags.getByText(name, { exact: true }).boundingBox();
+		if (!tag) throw new Error(`no ${name} tag`);
+		const apart =
+			tag.x + tag.width <= image.x ||
+			image.x + image.width <= tag.x ||
+			tag.y + tag.height <= image.y ||
+			image.y + image.height <= tag.y;
+		expect(apart, `${name} tag clear of the image`).toBe(true);
+	}
+	await expect(stageOf(section).getByText(/before|after/)).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		await section.scrollIntoViewIfNeeded();
+		await page.screenshot({
+			path: `${shots}/tiny-image-tags-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
 });
