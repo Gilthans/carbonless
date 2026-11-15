@@ -596,7 +596,16 @@ test("wide image on phone: no page overflow; at 1:1 a swipe scrolls, the grip dr
 	// The grip on the handle still drags it.
 	const grip = section.getByTestId("image-split-grip");
 	await grip.scrollIntoViewIfNeeded();
-	const g = await grip.boundingBox();
+	// A swipe's fling may still be scrolling the frame (and the grip with
+	// it): wait until the grip stays put between two reads.
+	let g = await grip.boundingBox();
+	await expect
+		.poll(async () => {
+			const was = g;
+			g = await grip.boundingBox();
+			return was !== null && g !== null && was.x === g.x && was.y === g.y;
+		})
+		.toBe(true);
 	if (!g) throw new Error("no grip");
 	expect(g.width).toBeGreaterThanOrEqual(40);
 	const gy = g.y + Math.min(g.height, 40) / 2;
