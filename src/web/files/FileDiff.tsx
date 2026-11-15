@@ -49,7 +49,7 @@ import {
 } from "../threads/newThreads";
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { useThreadWriter } from "../threads/threadWrites";
-import { ignoreWhitespace } from "../viewSettings";
+import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import {
 	DiffBody,
@@ -69,6 +69,7 @@ import {
 	whitespaceLeftOutLabel,
 } from "./ProgressBar";
 import { rendererChoices, rendererPicks, resolveRenderer } from "./renderers";
+import { ImageView } from "./renderers/image/ImageView";
 import { RendererChip } from "./renderers/RendererChip";
 import { useResolveCollapse } from "./resolveCollapse";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
@@ -658,6 +659,8 @@ export function FileDiff(props: {
 	// The image renderer reads no lines: its review rows and threads are
 	// DiffBody's, with the lines hidden.
 	const linesHidden = renderer === "image";
+	// The image view's layout follows Settings' "Side by side", as code does.
+	const sideBySideOn = sideBySide.use();
 	const hunks = useQuery({
 		...hunksQuery(revision, file.index, props.since),
 		enabled: expanded && !linesHidden,
@@ -1356,7 +1359,12 @@ export function FileDiff(props: {
 			{expanded &&
 				(linesHidden ? (
 					<>
-						{/* Task 4: the image view (ImageView) goes here, above the review rows. */}
+						<ImageView
+							file={file}
+							revision={revision}
+							from={props.since}
+							sideBySide={sideBySideOn}
+						/>
 						{body(true)}
 					</>
 				) : (

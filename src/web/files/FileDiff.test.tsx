@@ -2630,7 +2630,11 @@ describe("FileDiff: the renderer seam", () => {
 		// covers it), and no line, spinner or error stands in.
 		expect(screen.getAllByRole("checkbox")).toHaveLength(1);
 		expect(screen.queryByText(codeLine("new five"))).toBeNull();
-		expect(document.querySelector('[aria-busy="true"]')).toBeNull();
+		// The only busy region is the image's own stage (ImageView).
+		expect(screen.queryByRole("status", { name: "Loading diff" })).toBeNull();
+		for (const busy of document.querySelectorAll('[aria-busy="true"]')) {
+			expect(busy).toHaveAttribute("data-testid", "image-stage");
+		}
 		expect(hunkReads(paths)).toEqual([]);
 		// The header's action still counts the line cluster.
 		expect(
