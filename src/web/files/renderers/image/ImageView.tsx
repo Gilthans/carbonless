@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { isImagePath } from "../../../../shared/imageTypes";
+import { imageTypeOf, isImagePath } from "../../../../shared/imageTypes";
 import type { FileView } from "../../../../shared/types";
 import { blobUrl } from "../../../api";
 import { imageMode } from "../../../viewSettings";
@@ -55,6 +55,8 @@ export function ImageView(props: {
 	const { file, revision, from } = props;
 	// An extension crb doesn't know, shown as Image: the server checks the bytes.
 	const sniff = !isImagePath(file.path);
+	// An SVG with no width or height has no size of its own (stage.ts).
+	const svg = imageTypeOf(file.path) === "image/svg+xml";
 	// The since view's old side is the interdiff's: it may exist for a file
 	// the PR added (a 404 says it doesn't).
 	const oldUrl =
@@ -78,8 +80,17 @@ export function ImageView(props: {
 	const once = renamed && same.data === true;
 	// The full diff's old size isn't the interdiff's old side's.
 	const oldBytes = from === undefined ? file.oldSize : undefined;
-	const before = useImageSide(once || deciding ? null : oldUrl, oldBytes, true);
-	const after = useImageSide(deciding ? null : newUrl, file.newSize, true);
+	const before = useImageSide(
+		once || deciding ? null : oldUrl,
+		oldBytes,
+		true,
+		{
+			svg,
+		},
+	);
+	const after = useImageSide(deciding ? null : newUrl, file.newSize, true, {
+		svg,
+	});
 	const mode = imageMode.use();
 	const [actual, setActual] = useState(false);
 

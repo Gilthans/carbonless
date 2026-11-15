@@ -63,11 +63,41 @@ const byStatus = (status: number): ImageSideState =>
 				? "missing"
 				: "undecodable";
 
-/** See ImageSide. `bytes` is the side's blob size, when known. */
+/** A length in user units or px: an intrinsic size (not a percentage or em). */
+const ABSOLUTE = /^\s*\d*\.?\d+\s*(px)?\s*$/;
+
+/**
+ * Whether the SVG at `url` sets its own width and height (absolute), so
+ * the browser's natural size is its own. Parsed with DOMParser, an inert
+ * document: nothing in it runs or loads. Unknown (a failed read) is null.
+ */
+async function svgSized(url: string): Promise<boolean | null> {
+	try {
+		const response = await fetch(url);
+		if (!response.ok) return null;
+		const doc = new DOMParser().parseFromString(
+			await response.text(),
+			"image/svg+xml",
+		);
+		const root = doc.documentElement;
+		if (root.localName !== "svg") return null;
+		return ["width", "height"].every((name) =>
+			ABSOLUTE.test(root.getAttribute(name) ?? ""),
+		);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * See ImageSide. `bytes` is the side's blob size, when known; `svg`: an
+ * SVG, whose missing size reads as 0×0 (stage.ts).
+ */
 export function useImageSide(
 	url: string | null,
 	bytes: number | undefined,
 	auto: boolean,
+	opts: { svg?: boolean } = {},
 ): ImageSide {
 	const [shown, setShown] = useState<{
 		url: string | null;
@@ -104,7 +134,19 @@ export function useImageSide(
 		},
 		onLoad: (event) => {
 			const img = event.currentTarget;
-			settle("ready", { w: img.naturalWidth, h: img.naturalHeight });
+			const natural = { w: img.naturalWidth, h: img.naturalHeight };
+			if (!opts.svg || url === null) {
+				settle("ready", natural);
+				return;
+			}
+			// A browser gives an SVG with no size a default one (Chrome:
+			// 300×150): read its root (cached) to tell.
+			const read = url;
+			svgSized(read).then((sized) => {
+				if (mounted.current && live.current === read) {
+					settle("ready", sized === false ? { w: 0, h: 0 } : natural);
+				}
+			});
 		},
 		onError: () => {
 			if (url === null) return;

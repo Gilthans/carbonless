@@ -291,14 +291,16 @@ test("added and deleted labels", async ({ page, pr, startCrb }) => {
 	await expect(added.getByText("added", { exact: true })).toBeVisible();
 	await expect(added.getByRole("img", { name: "Added image" })).toBeVisible();
 	await expect(added.getByRole("group", { name: "Compare" })).toHaveCount(0);
-	await expect(added.getByTestId("image-dims")).toHaveText(/^40×30\s*· \d+ B$/);
+	await expect(added.getByTestId("image-dims")).toHaveText(
+		/^40×30\s*· \d+ (B|KB)$/,
+	);
 	const deleted = await openImage(page, DELETED);
 	await expect(deleted.getByText("deleted", { exact: true })).toBeVisible();
 	await expect(
 		deleted.getByRole("img", { name: "Deleted image" }),
 	).toBeVisible();
 	await expect(deleted.getByTestId("image-dims")).toHaveText(
-		/^30×20\s*· \d+ B$/,
+		/^30×20\s*· \d+ (B|KB)$/,
 	);
 	await expectNoPageOverflow(page);
 });
@@ -351,7 +353,10 @@ test("undecodable .tiff with Show as Image falls back to binary rows", async ({
 	page,
 	pr,
 	startCrb,
+	expectConsoleError,
 }) => {
+	// The <img> and its HEAD probe: no raster signature (sniff=1).
+	expectConsoleError(/status of 415/);
 	const TIFF = "img/scan.tiff";
 	// A TIFF header: no raster signature crb sniffs, and NULs (binary).
 	const tiff = (n: number) =>
@@ -375,7 +380,7 @@ test("undecodable .tiff with Show as Image falls back to binary rows", async ({
 		section.getByRole("img", { name: "Can't show this as an image" }),
 	).toBeVisible();
 	await expect(stageOf(section)).toHaveCount(0);
-	await expect(section.getByTestId("image-dims")).toHaveText("10 B");
+	await expect(section.getByTestId("image-dims")).toHaveText("10 → 10 B");
 	await expect(section.getByText("Binary file changed")).toBeVisible();
 	const box = section.getByRole("checkbox", { name: "Mark cluster reviewed" });
 	await expect(box).toBeVisible();
@@ -452,10 +457,14 @@ test("stale image shows refresh, not binary fallback", async ({
 	await expect.poll(() => held.length).toBeGreaterThanOrEqual(1);
 	holding = false;
 	for (const route of held.splice(0)) await route.continue();
-	// The new snapshot's image loads.
-	await expect(splitOf(section)).toBeVisible();
-	await expect(section.locator('[data-image-state="fallback"]')).toHaveCount(0);
+	// The page moved to the new snapshot (which opens with its files
+	// closed), and its image loads.
 	await expect(progress(page)).toContainText("0 / 3");
+	const reopened = await openImage(page, PNG);
+	await expect(splitOf(reopened)).toBeVisible();
+	await expect(reopened.locator('[data-image-state="fallback"]')).toHaveCount(
+		0,
+	);
 });
 
 test("svg without intrinsic size", async ({ page, pr, startCrb }) => {

@@ -125,4 +125,54 @@ describe("useImageSide", () => {
 		act(() => result.current.onLoad(loaded(10, 20)));
 		expect(result.current.state).toBe("ready");
 	});
+
+	describe("an SVG", () => {
+		const svgAnswer = (text: string) =>
+			new Response(text, {
+				status: 200,
+				headers: { "content-type": "image/svg+xml" },
+			});
+
+		it("with no width or height has no intrinsic size (0×0), whatever the browser's default", async () => {
+			fetchMock.mockResolvedValue(
+				svgAnswer('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'),
+			);
+			const { result } = renderHook(() =>
+				useImageSide(URL_A, 100, true, { svg: true }),
+			);
+			// Chrome reports 300×150 for it.
+			act(() => result.current.onLoad(loaded(300, 150)));
+			expect(result.current.state).toBe("loading");
+			await waitFor(() => expect(result.current.state).toBe("ready"));
+			expect(result.current.size).toEqual({ w: 0, h: 0 });
+			expect(fetchMock).toHaveBeenCalledWith(URL_A);
+		});
+
+		it.each([
+			['width="100%" height="50"', { w: 0, h: 0 }],
+			['viewBox="0 0 40 30"', { w: 0, h: 0 }],
+			['width="40" height="30"', { w: 300, h: 150 }],
+			['width="40px" height="30px" viewBox="0 0 4 3"', { w: 300, h: 150 }],
+		])("%s", async (attrs, size) => {
+			fetchMock.mockResolvedValue(
+				svgAnswer(`<svg xmlns="http://www.w3.org/2000/svg" ${attrs}/>`),
+			);
+			const { result } = renderHook(() =>
+				useImageSide(URL_A, 100, true, { svg: true }),
+			);
+			act(() => result.current.onLoad(loaded(300, 150)));
+			await waitFor(() => expect(result.current.state).toBe("ready"));
+			expect(result.current.size).toEqual(size);
+		});
+
+		it("that can't be read again keeps the browser's size", async () => {
+			fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+			const { result } = renderHook(() =>
+				useImageSide(URL_A, 100, true, { svg: true }),
+			);
+			act(() => result.current.onLoad(loaded(40, 30)));
+			await waitFor(() => expect(result.current.state).toBe("ready"));
+			expect(result.current.size).toEqual({ w: 40, h: 30 });
+		});
+	});
 });
