@@ -57,6 +57,8 @@ export function ImageView(props: {
 	const sniff = !isImagePath(file.path);
 	// An SVG with no width or height has no size of its own (stage.ts).
 	const svg = imageTypeOf(file.path) === "image/svg+xml";
+	// Only the since view may lack a side its status names (a 404 says so).
+	const mayBeAbsent = from !== undefined;
 	// The since view's old side is the interdiff's: it may exist for a file
 	// the PR added (a 404 says it doesn't).
 	const oldUrl =
@@ -84,12 +86,11 @@ export function ImageView(props: {
 		once || deciding ? null : oldUrl,
 		oldBytes,
 		true,
-		{
-			svg,
-		},
+		{ svg, mayBeAbsent },
 	);
 	const after = useImageSide(deciding ? null : newUrl, file.newSize, true, {
 		svg,
+		mayBeAbsent,
 	});
 	const mode = imageMode.use();
 	const [actual, setActual] = useState(false);
@@ -137,7 +138,10 @@ export function ImageView(props: {
 				data-image-state="loading"
 				className="@container border-line border-b"
 			>
-				<ImageToolbar dims={[{ tone: "add", size: undefined }]} bytes="" />
+				<ImageToolbar
+					dims={[{ tone: "add", size: undefined }]}
+					bytes={bytesPair(oldBytes, file.newSize)}
+				/>
 				<div className="grid min-w-0 justify-items-center gap-2 p-3">
 					<Stage geometry={null} actual={false}>
 						{null}

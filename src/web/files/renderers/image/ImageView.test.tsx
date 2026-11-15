@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
 	act,
 	cleanup,
@@ -115,9 +115,15 @@ describe("ImageView", () => {
 		loadImg("After", 10, 10);
 		const range = screen.getByRole("slider", { name: "Before/after split" });
 		expect(range).toHaveStyle({ touchAction: "pan-y" });
+		expect(range).toHaveAttribute("aria-valuetext", "50% before");
 		fireEvent.change(range, { target: { value: "30" } });
+		expect(range).toHaveAttribute("aria-valuetext", "30% before");
+		// Each side of the handle shows only its own image.
 		expect(screen.getByTestId("image-before-layer")).toHaveStyle({
 			clipPath: "inset(0 70% 0 0)",
+		});
+		expect(screen.getByTestId("image-after-layer")).toHaveStyle({
+			clipPath: "inset(0 0 0 30%)",
 		});
 	});
 
@@ -136,6 +142,7 @@ describe("ImageView", () => {
 		expect(screen.getByTestId("image-before-layer")).toHaveStyle({
 			opacity: "0.25",
 		});
+		expect(screen.getByTestId("image-after-layer").style.clipPath).toBe("");
 	});
 
 	it("added: one side, labelled, no compare modes", () => {
@@ -173,6 +180,7 @@ describe("ImageView", () => {
 		);
 		// Deciding whether it changed is loading, never a fallback.
 		expect(screen.getByRole("status", { name: "Loading image" })).toBeVisible();
+		expect(screen.getByTestId("image-dims")).toHaveTextContent("10 → 10 B");
 		expect(fetchMock).toHaveBeenCalledWith(
 			"/api/files/0/blob?revision=r1&side=old",
 			{ method: "HEAD" },
@@ -269,5 +277,53 @@ describe("ImageView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Load image (10 MB)" }));
 		expect(screen.getByAltText("After")).toBeInTheDocument();
 		expect(screen.getByAltText("Before")).toBeInTheDocument();
+	});
+
+	it("a 404 outside the since view is a fallback, never an added or deleted label", async () => {
+		fetchMock.mockResolvedValue(new Response(null, { status: 404 }));
+		show(file());
+		fireEvent.error(screen.getByAltText("Before"));
+		await waitFor(() =>
+			expect(screen.getByTestId("image-view")).toHaveAttribute(
+				"data-image-state",
+				"fallback",
+			),
+		);
+		expect(screen.queryByText("added")).toBeNull();
+	});
+
+	it("several stale images at once: one review re-read", async () => {
+		const read = heldJson();
+		const reviewFetch = vi.fn(() => read.response.then((r) => r.json()));
+		fetchMock.mockResolvedValue(new Response(null, { status: 409 }));
+		const client = newQueryClient();
+		client.setQueryData([...REVIEW_KEY], { revision: "r1" });
+		function ReviewReader() {
+			useQuery({
+				queryKey: [...REVIEW_KEY],
+				queryFn: reviewFetch,
+				staleTime: Number.POSITIVE_INFINITY,
+			});
+			return null;
+		}
+		render(
+			<QueryClientProvider client={client}>
+				<ReviewReader />
+				{[0, 1, 2].map((index) => (
+					<ImageView
+						key={index}
+						file={file({ index, path: `img/${index}.png` })}
+						revision="r1"
+						sideBySide={false}
+					/>
+				))}
+			</QueryClientProvider>,
+		);
+		for (const img of screen.getAllByAltText("After")) fireEvent.error(img);
+		await waitFor(() =>
+			expect(screen.getAllByText(STALE_MESSAGE)).toHaveLength(3),
+		);
+		expect(reviewFetch).toHaveBeenCalledTimes(1);
+		await act(async () => read.release({ revision: "r1" }));
 	});
 });

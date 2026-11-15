@@ -6,8 +6,9 @@ export type CompareMode = "slider" | "fade";
 
 /**
  * Both versions on one stage (the unified view). Slider: after underneath,
- * before on top clipped at the handle; a range stretched over the stage
- * drags it (keys too). Fade: a range under the stage sets the before
+ * before on top, each clipped at the handle; a range stretched over the
+ * stage drags it (keys too). At 1:1 a swipe scrolls the stage's frame
+ * instead, and only a 44px grip on the handle drags it. Fade: a range under the stage sets the before
  * image's opacity. The stage is the larger width by the larger height,
  * each image at its own size, pinned top-left (stage.ts).
  */
@@ -26,12 +27,19 @@ export function ImageCompare(props: {
 	return (
 		<div className="grid w-full min-w-0 justify-items-center gap-1">
 			<Stage geometry={geometry} actual={props.actual}>
-				<StageImage
-					side={after}
-					alt="After"
-					geometry={geometry}
-					rect={geometry?.after}
-				/>
+				{/* Slider: each side of the handle shows only its own image. */}
+				<div
+					data-testid="image-after-layer"
+					className="absolute inset-0"
+					style={slider ? { clipPath: `inset(0 0 0 ${split}%)` } : {}}
+				>
+					<StageImage
+						side={after}
+						alt="After"
+						geometry={geometry}
+						rect={geometry?.after}
+					/>
+				</div>
 				<div
 					data-testid="image-before-layer"
 					className="absolute inset-0"
@@ -72,9 +80,33 @@ export function ImageCompare(props: {
 							value={split}
 							onChange={(e) => setSplit(Number(e.currentTarget.value))}
 							aria-label="Before/after split"
+							aria-valuetext={`${split}% before`}
 							style={{ touchAction: "pan-y" }}
-							className="absolute inset-0 m-0 h-full w-full cursor-ew-resize opacity-0"
+							// At 1:1 a swipe scrolls the image: only the grip drags.
+							className={`absolute inset-0 m-0 h-full w-full cursor-ew-resize opacity-0 ${
+								props.actual ? "pointer-events-none" : ""
+							}`}
 						/>
+						{props.actual && (
+							<div
+								aria-hidden
+								data-testid="image-split-grip"
+								className="absolute inset-y-0 w-11 -translate-x-1/2 cursor-ew-resize touch-none"
+								style={{ left: `${split}%` }}
+								onPointerDown={(e) => {
+									e.currentTarget.setPointerCapture(e.pointerId);
+									e.preventDefault();
+								}}
+								onPointerMove={(e) => {
+									const grip = e.currentTarget;
+									if (!grip.hasPointerCapture(e.pointerId)) return;
+									const stage = grip.parentElement?.getBoundingClientRect();
+									if (!stage || stage.width === 0) return;
+									const at = ((e.clientX - stage.left) / stage.width) * 100;
+									setSplit(Math.round(Math.min(100, Math.max(0, at))));
+								}}
+							/>
+						)}
 					</>
 				)}
 			</Stage>

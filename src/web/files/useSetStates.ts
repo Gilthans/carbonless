@@ -23,6 +23,9 @@ export { isStale } from "./stateSync";
 
 export const STALE_MESSAGE = "The review moved to a new snapshot; reloaded.";
 
+/** Query clients whose review is being read again after a 409 (reloadStale). */
+const reloading = new WeakSet<QueryClient>();
+
 /**
  * The snapshot moved (a 409 `stale`: another tab or device refreshed the
  * review): read the review and what hangs on its revision again, so the
@@ -30,7 +33,13 @@ export const STALE_MESSAGE = "The review moved to a new snapshot; reloaded.";
  * answered 409 (ImageView) both take this path.
  */
 export function reloadStale(queryClient: QueryClient): void {
-	void queryClient.invalidateQueries({ queryKey: REVIEW_KEY });
+	// A burst (several images at once) reads once: a 409 while the
+	// re-read is out joins it.
+	if (reloading.has(queryClient)) return;
+	reloading.add(queryClient);
+	void queryClient
+		.invalidateQueries({ queryKey: REVIEW_KEY })
+		.finally(() => reloading.delete(queryClient));
 	void queryClient.invalidateQueries({ queryKey: sessionQuery.queryKey });
 	void queryClient.invalidateQueries({ queryKey: ["hunks"] });
 	void queryClient.invalidateQueries({ queryKey: ["rereview"] });

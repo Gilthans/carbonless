@@ -12,8 +12,9 @@ import type { Size } from "./stage";
  * - `loading`, then `ready` with the image's natural size.
  * - `stale`: the review moved to a new snapshot (the route's 409).
  * - `too-big`: over the route's cap (413, or the known size says so).
- * - `missing`: no such side (no url, or 404: e.g. a file new since the
- *   patch set compared with).
+ * - `missing`: no such side (no url; or, when `mayBeAbsent`, a 404: the
+ *   since view's file new since the patch set compared with). Elsewhere
+ *   the file's status says which sides exist, and a 404 is `undecodable`.
  * - `undecodable`: anything else the browser couldn't show.
  */
 export type ImageSideState =
@@ -54,12 +55,12 @@ function initial(
 	return "loading";
 }
 
-const byStatus = (status: number): ImageSideState =>
+const byStatus = (status: number, mayBeAbsent: boolean): ImageSideState =>
 	status === 409
 		? "stale"
 		: status === 413
 			? "too-big"
-			: status === 404
+			: status === 404 && mayBeAbsent
 				? "missing"
 				: "undecodable";
 
@@ -91,13 +92,14 @@ async function svgSized(url: string): Promise<boolean | null> {
 
 /**
  * See ImageSide. `bytes` is the side's blob size, when known; `svg`: an
- * SVG, whose missing size reads as 0×0 (stage.ts).
+ * SVG, whose missing size reads as 0×0 (stage.ts); `mayBeAbsent`: a 404
+ * means no such side (the since view).
  */
 export function useImageSide(
 	url: string | null,
 	bytes: number | undefined,
 	auto: boolean,
-	opts: { svg?: boolean } = {},
+	opts: { svg?: boolean; mayBeAbsent?: boolean } = {},
 ): ImageSide {
 	const [shown, setShown] = useState<{
 		url: string | null;
@@ -154,7 +156,7 @@ export function useImageSide(
 			fetch(probed, { method: "HEAD" }).then(
 				(response) => {
 					if (mounted.current && live.current === probed) {
-						settle(byStatus(response.status));
+						settle(byStatus(response.status, opts.mayBeAbsent === true));
 					}
 				},
 				() => {

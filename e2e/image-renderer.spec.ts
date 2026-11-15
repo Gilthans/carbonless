@@ -346,6 +346,26 @@ test("size changed: stage is max w × max h, images top-left", async ({
 		expect(Math.abs(img.width - w * scale)).toBeLessThanOrEqual(1);
 		expect(Math.abs(img.height - h * scale)).toBeLessThanOrEqual(1);
 	}
+	// Slider at 50%: left of the handle, below the before image's height,
+	// is the checkerboard, never the after image showing through.
+	const stack = await page.evaluate(
+		([x, y]) =>
+			document
+				.elementsFromPoint(x, y)
+				.map((el) => el.getAttribute("alt") ?? el.getAttribute("data-testid")),
+		[stage.x + stage.width * 0.25, stage.y + 250 * scale] as const,
+	);
+	expect(stack).toContain("image-stage");
+	expect(stack).not.toContain("After");
+	expect(stack).not.toContain("Before");
+	// Right of the handle, the after image (and not the before).
+	const right = await page.evaluate(
+		([x, y]) =>
+			document.elementsFromPoint(x, y).map((el) => el.getAttribute("alt")),
+		[stage.x + stage.width * 0.6, stage.y + 50 * scale] as const,
+	);
+	expect(right).toContain("After");
+	expect(right).not.toContain("Before");
 	await expectNoPageOverflow(page);
 });
 
@@ -489,10 +509,11 @@ test("svg without intrinsic size", async ({ page, pr, startCrb }) => {
 	await expectNoPageOverflow(page);
 });
 
-test("wide image on phone: no page overflow", async ({
+test("wide image on phone: no page overflow; at 1:1 a swipe scrolls, the grip drags", async ({
 	page,
 	pr,
 	startCrb,
+	isMobile,
 }) => {
 	const WIDE = "img/banner.png";
 	await pr({
@@ -528,6 +549,45 @@ test("wide image on phone: no page overflow", async ({
 	}));
 	expect(scrollWidth).toBeGreaterThan(clientWidth);
 	await expectNoPageOverflow(page);
+	const split = splitOf(section);
+	await expect(split).toHaveAttribute("aria-valuetext", "50% before");
+	if (isMobile) {
+		// A swipe away from the handle scrolls the image, not the split.
+		await frame.scrollIntoViewIfNeeded();
+		const box = await frame.boundingBox();
+		if (!box) throw new Error("no frame");
+		const cdp = await page.context().newCDPSession(page);
+		const y = Math.round(box.y + box.height / 2);
+		const x0 = Math.round(box.x + box.width - 40);
+		const touch = (type: "touchStart" | "touchMove" | "touchEnd", x: number) =>
+			cdp.send("Input.dispatchTouchEvent", {
+				type,
+				touchPoints: type === "touchEnd" ? [] : [{ x, y }],
+			});
+		await touch("touchStart", x0);
+		for (let step = 1; step <= 10; step++)
+			await touch("touchMove", x0 - step * 25);
+		await touch("touchEnd", x0 - 250);
+		await expect
+			.poll(() => frame.evaluate((el) => el.scrollLeft))
+			.toBeGreaterThan(50);
+		await expect(split).toHaveValue("50");
+		await expectNoPageOverflow(page);
+	}
+	// The grip on the handle still drags it.
+	const grip = section.getByTestId("image-split-grip");
+	await grip.scrollIntoViewIfNeeded();
+	const g = await grip.boundingBox();
+	if (!g) throw new Error("no grip");
+	expect(g.width).toBeGreaterThanOrEqual(40);
+	const gy = g.y + Math.min(g.height, 40) / 2;
+	await page.mouse.move(g.x + g.width / 2, gy);
+	await page.mouse.down();
+	await page.mouse.move(g.x + g.width / 2 + 100, gy, { steps: 5 });
+	await page.mouse.up();
+	await expect
+		.poll(async () => Number(await split.inputValue()))
+		.toBeGreaterThan(50);
 });
 
 test("renamed with no content change shows the image once", async ({

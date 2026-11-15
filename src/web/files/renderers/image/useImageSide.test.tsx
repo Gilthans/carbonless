@@ -51,13 +51,23 @@ describe("useImageSide", () => {
 		[415, "undecodable"],
 		[500, "undecodable"],
 		[413, "too-big"],
-		[404, "missing"],
+		// Outside the since view a side the file's status names must exist.
+		[404, "undecodable"],
 	] as const)("an error then HEAD %d is %s", async (status, state) => {
 		fetchMock.mockResolvedValue(new Response(null, { status }));
 		const { result } = renderHook(() => useImageSide(URL_A, 1000, true));
 		act(() => result.current.onError());
 		await waitFor(() => expect(result.current.state).toBe(state));
 		expect(result.current.src).toBeUndefined();
+	});
+
+	it("a side that may be absent (the since view): a 404 is missing", async () => {
+		fetchMock.mockResolvedValue(new Response(null, { status: 404 }));
+		const { result } = renderHook(() =>
+			useImageSide(URL_A, 1000, true, { mayBeAbsent: true }),
+		);
+		act(() => result.current.onError());
+		await waitFor(() => expect(result.current.state).toBe("missing"));
 	});
 
 	it("a probe that can't reach the server is undecodable", async () => {
