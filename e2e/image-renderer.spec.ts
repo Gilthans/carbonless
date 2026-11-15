@@ -851,7 +851,15 @@ test("find in an SVG in Image view: stepping to a line hit switches that file to
 	expect(await storedPicks(page)).toBeNull();
 	// Image again: the link isn't replayed on the image (no "not in this
 	// diff" hint; the unit test checks it doesn't scroll either).
-	await chip(landed).click();
+	// On a phone the page is still settling from the landing (its sticky
+	// header compacts after the scroll), and a scroll closes the menu:
+	// open it once it stays open.
+	const menu = page.getByRole("menu", { name: "Show as" });
+	await expect(async () => {
+		if ((await chip(landed).getAttribute("aria-expanded")) !== "true")
+			await chip(landed).click();
+		await expect(menu).toBeVisible({ timeout: 1000 });
+	}).toPass();
 	await page
 		.getByRole("menu", { name: "Show as" })
 		.getByRole("menuitemradio", { name: "Image" })
