@@ -1392,8 +1392,8 @@ export function FileDiff(props: {
  * view only: its lines are read, and DiffBody scrolls to the line as it
  * does for any file. The stored pick (`rendererPicks`) doesn't change, so a
  * reload shows the image again; `clear` (a pick in the chip) ends it. Each
- * step (`stepSeq`) and each landing (`seq`) switches once: marks changing
- * as the reviewer types never do.
+ * step (`stepSeq`) and each landing (`seq`) that arrives after mount
+ * switches once: marks changing as the reviewer types never do.
  */
 function useLineTargetText(
 	textable: boolean,
@@ -1402,7 +1402,9 @@ function useLineTargetText(
 ): { on: boolean; clear: () => void } {
 	const step = find?.current ? find.stepSeq : 0;
 	const landed = landing?.line !== undefined ? landing.seq : 0;
-	const [seen, setSeen] = useState({ step: 0, landed: 0 });
+	// What it was mounted with is spent: a new snapshot remounts the file
+	// with the page's last step or landing, which mustn't switch it again.
+	const [seen, setSeen] = useState({ step, landed });
 	const [on, setOn] = useState(false);
 	if (step !== seen.step || landed !== seen.landed) {
 		const fresh =

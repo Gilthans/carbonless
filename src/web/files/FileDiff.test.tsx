@@ -3062,6 +3062,24 @@ describe("FileDiff: review in the image view", () => {
 		expect(scrolls).not.toHaveBeenCalled();
 	});
 
+	it("mounted with a step or a landing already given (a new snapshot), it stays Image", async () => {
+		const { user, update } = setup(
+			svg([cluster("k1")]),
+			undefined,
+			hunks,
+			"clusters",
+			{
+				find: stepped(5, 3),
+				landing: { path: SVG, line: 5, side: "RIGHT", index: 0, seq: 2 },
+			},
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		// A step after it mounted still switches.
+		update({ find: stepped(5, 4) });
+		expect(chip()).toHaveAccessibleName("Show as: Text");
+	});
+
 	it("a find step onto a PNG or a .ts file changes nothing (no Text for a binary)", async () => {
 		const png = file(
 			[
