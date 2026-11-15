@@ -3091,6 +3091,26 @@ describe("FileDiff: review in the image view", () => {
 		expect(chip()).toHaveAccessibleName("Show as: Image");
 	});
 
+	it("since view: a find step onto an SVG line shows Text and reads the interdiff's lines", async () => {
+		const { user, update, paths } = setup(
+			svg([cluster("k1")]),
+			undefined,
+			hunks,
+			"clusters",
+			{ since: 1, sincePieces: [] },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		update({ find: stepped(5, 1) });
+		expect(chip()).toHaveAccessibleName("Show as: Text");
+		await waitFor(() =>
+			expect(hunkReads(paths)).toEqual([
+				"/api/files/0/hunks?revision=r1&from=1",
+			]),
+		);
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+	});
+
 	it("a find step onto a .ts file changes nothing: no chip, no image", () => {
 		const { update } = setup(file([cluster("k1")]));
 		update({ find: stepped(5, 1) });
