@@ -812,9 +812,10 @@ test("find in an SVG in Image view: stepping to a line hit switches that file to
 	const box = page.getByTestId("find-box");
 	await expect(box).toBeFocused();
 	await box.fill("lime");
-	await expect(
-		page.getByRole("status", { name: "Searching files…" }),
-	).toHaveCount(0);
+	// Every hit is in (the SVG's one) before the step.
+	await expect(page.getByTestId("find-count")).toHaveText(/^(1 of 1|1\/1)$/, {
+		useInnerText: true,
+	});
 	await box.press("Enter");
 	// Text for this view, on the hit's line.
 	await expect(chip(section)).toHaveAccessibleName("Show as: Text");
