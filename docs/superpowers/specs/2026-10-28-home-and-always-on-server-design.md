@@ -361,12 +361,12 @@ a patch set exists only after the reviewer's first action
 GitHub's facts put it.
 
 Hint under a title when it helps ("requested or started", "ready, no
-reviewer yet"). Rows in a section put the viewer's turn first (owner,
-2026-10-31: "everything should be sorted so things in my turn should
-appear before things with someone else's turn": the turn column names
-them, by the turn table below or their own waiting-on "Me"; a team
-they're in doesn't count), then by last GitHub activity, newest first,
-in each group **(call)**. Sub-rows keep their order under their PR. A PR closed without merging stays in Recently
+reviewer yet"). Rows in a section sort by last GitHub activity, newest
+first, whoever's turn it is; ties by repo, then number, highest first
+(owner, 2026-11-14: "let's drop the your turn grouping"; it replaced
+2026-10-31's "things in my turn should appear before things with
+someone else's turn", which kept your-turn PRs from a year ago above
+today's and read as a broken date sort). Sub-rows keep their order under their PR. A PR closed without merging stays in Recently
 closed for 3 days like a merged one, then drops off. A section longer
 than 20 rows shows 20 and a "show N more" footer line next to the hidden
 count (owner's wording; 20 is a **call**): a fold, never a drop, and the

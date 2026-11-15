@@ -59,7 +59,7 @@ const removeRepo = (name: string) => async (dialog: HTMLElement) => {
 };
 
 describe("Home's repos", () => {
-	it("composes the sections from every repo's rows: the viewer's turn first, then newest", async () => {
+	it("composes the sections from every repo's rows, newest first, whoever's turn it is", async () => {
 		fakeApi(
 			view({
 				reviewing: [
@@ -87,9 +87,9 @@ describe("Home's repos", () => {
 		renderWithQuery(<HomePage />);
 		await waitFor(() =>
 			expect(titles("Reviewing")).toEqual([
-				"Console mine to do",
 				"Console new",
 				"API old",
+				"Console mine to do",
 			]),
 		);
 	});

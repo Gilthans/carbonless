@@ -4,7 +4,6 @@ import { compareRows, composeSections, SECTION_IDS } from "./homeSections.js";
 
 const NOW = Date.parse("2026-10-29T12:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
-const VIEWER = "Octo";
 
 const people = (...logins: string[]): Turn => ({ kind: "people", logins });
 
@@ -53,7 +52,7 @@ describe("compareRows", () => {
 		updatedAt: iso(NOW - minutesAgo * 60_000),
 		turn: turn ? people(...turn) : ({ kind: "no-reviewer" } as const),
 	});
-	it("puts the viewer's turn first, then last activity, newest first, in each group", () => {
+	it("sorts by last activity, newest first, whoever's turn it is (owner, 2026-11-14)", () => {
 		const rows = [
 			r(1, 1, ["bob"]),
 			r(2, 50, ["octo"]),
@@ -61,33 +60,36 @@ describe("compareRows", () => {
 			r(4, 10, ["Octo", "bob"]),
 			r(5, 5, ["alice"]),
 		];
-		expect([...rows].sort(compareRows(VIEWER)).map((x) => x.number)).toEqual([
-			4, 2, 1, 5, 3,
+		// 3 and 5 tie on time and repo: the higher number first.
+		expect([...rows].sort(compareRows).map((x) => x.number)).toEqual([
+			1, 5, 3, 4, 2,
+		]);
+	});
+
+	it("a row that's the viewer's turn, older than someone else's, sorts after it", () => {
+		const yours = r(1, 60 * 24 * 365, ["Octo"]);
+		const theirs = r(2, 1, ["bob"]);
+		expect([yours, theirs].sort(compareRows).map((x) => x.number)).toEqual([
+			2, 1,
 		]);
 	});
 
 	it("a tie across repos is still one order", () => {
 		const a = { ...r(1, 5, null), repo: "web" };
 		const b = r(1, 5, null);
-		expect([a, b].sort(compareRows(VIEWER)).map((x) => x.repo)).toEqual([
-			"api",
-			"web",
-		]);
-		expect([b, a].sort(compareRows(VIEWER)).map((x) => x.repo)).toEqual([
-			"api",
-			"web",
-		]);
+		expect([a, b].sort(compareRows).map((x) => x.repo)).toEqual(["api", "web"]);
+		expect([b, a].sort(compareRows).map((x) => x.repo)).toEqual(["api", "web"]);
 	});
 });
 
 describe("composeSections", () => {
 	it("all five sections in order, always, even with no rows", () => {
-		const sections = composeSections([], VIEWER);
+		const sections = composeSections([]);
 		expect(sections.map((s) => s.id)).toEqual(SECTION_IDS);
 		expect(sections.every((s) => s.rows.length === 0)).toBe(true);
 	});
 
-	it("merges several repos' rows into their sections: the viewer's turn first, then newest activity", () => {
+	it("merges several repos' rows into their sections, newest activity first", () => {
 		const api = [
 			row("api", 1, "mine", 5),
 			row("api", 2, "reviewing", 30, { turn: people("octo") }),
@@ -100,9 +102,9 @@ describe("composeSections", () => {
 			row("web", 12, "reviewing", 50, { turn: people("Octo", "bob") }),
 			row("web", 13, "closed", 10),
 		];
-		const sections = composeSections([...api, ...web], VIEWER);
+		const sections = composeSections([...api, ...web]);
 		expect(ids(sections, "mine")).toEqual(["web#10", "api#1"]);
-		expect(ids(sections, "reviewing")).toEqual(["api#2", "web#12", "web#11"]);
+		expect(ids(sections, "reviewing")).toEqual(["web#11", "api#2", "web#12"]);
 		expect(ids(sections, "grabs")).toEqual(["api#3"]);
 		expect(ids(sections, "other")).toEqual([]);
 		expect(ids(sections, "closed")).toEqual(["web#13", "api#5"]);
@@ -134,10 +136,7 @@ describe("composeSections", () => {
 				},
 			],
 		});
-		const sections = composeSections(
-			[...many, snoozed, waiting, started],
-			VIEWER,
-		);
+		const sections = composeSections([...many, snoozed, waiting, started]);
 		const other = sections.find((s) => s.id === "other")?.rows ?? [];
 		// The fold and the hidden footer are the page's: nothing is cut here.
 		expect(other).toHaveLength(27);
@@ -151,7 +150,7 @@ describe("composeSections", () => {
 
 	it("a row whose section the page doesn't know lands in Other open, never dropped", () => {
 		const odd = row("api", 7, "later" as SectionId, 1);
-		const sections = composeSections([odd], VIEWER);
+		const sections = composeSections([odd]);
 		expect(ids(sections, "other")).toEqual(["api#7"]);
 	});
 });

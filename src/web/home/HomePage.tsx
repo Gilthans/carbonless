@@ -228,7 +228,6 @@ export function HomePage() {
 			: undefined;
 	const sections = composeSections(
 		repos.flatMap(({ query }) => query.data?.rows ?? []),
-		data?.viewer.login ?? "",
 	);
 	useEffect(() => {
 		document.title = "carbonless";
