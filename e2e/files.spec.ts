@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import {
 	barBottom,
 	chooseUnit,
 	clicksReady,
+	expectNoPageOverflow,
 	fileAction,
 	fileActionButton,
 	fileProgress,
@@ -13,6 +15,7 @@ import {
 	pickInTree,
 	progress,
 	resetFile,
+	sideBySide,
 	treeNumbers,
 	withTree,
 } from "./files-ui";
@@ -2033,3 +2036,215 @@ test("the tree and the diff list share one order: folders first, then files, by 
 		await expect(rows.first()).toHaveAttribute("aria-current", "true");
 	});
 });
+
+type Box = { x: number; y: number; width: number; height: number };
+
+/** The boxes of the text in `scope`, one per text node and line it wraps to. */
+const textBoxes = (scope: Locator) =>
+	scope.evaluate((node) => {
+		const boxes: Box[] = [];
+		const walk = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+		for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+			if (!n.textContent?.trim()) continue;
+			const range = document.createRange();
+			range.selectNodeContents(n);
+			for (const r of range.getClientRects()) {
+				boxes.push({ x: r.left, y: r.top, width: r.width, height: r.height });
+			}
+		}
+		return boxes;
+	});
+
+const intersects = (a: Box, b: Box) =>
+	a.x < b.x + b.width &&
+	b.x < a.x + a.width &&
+	a.y < b.y + b.height &&
+	b.y < a.y + a.height;
+
+/** The element at `el`'s centre is `el` or inside it. */
+const hitsCentre = (el: Locator) =>
+	el.evaluate((node) => {
+		const r = node.getBoundingClientRect();
+		const at = document.elementFromPoint(
+			r.left + r.width / 2,
+			r.top + r.height / 2,
+		);
+		return at !== null && node.contains(at);
+	});
+
+const notes = Array.from(
+	{ length: 40 },
+	(_, i) => `note ${i + 1} of the file that moves`,
+);
+
+interface LabelCase {
+	/** The phone at this width (phone project only). */
+	width?: number;
+	/** Code lines wider than the screen: the diff scrolls sideways. */
+	wide?: boolean;
+	/** The widest bubble: your turn, flagged, 10+ comments; and an old path whose first line fills the row. */
+	widest?: boolean;
+	sideBySide?: boolean;
+	/** The mode changes too: a longer label. */
+	chmod?: boolean;
+	/** The bubble this much wider (two bubbles' worth, and more). */
+	pad?: number;
+}
+
+const labelCases: LabelCase[] = [
+	{},
+	{ wide: true },
+	{ widest: true, wide: true },
+	{ pad: 100, wide: true },
+	{ sideBySide: true, widest: true },
+	{ width: 360 },
+	{ width: 360, wide: true },
+	{ width: 360, widest: true, wide: true },
+	{ width: 360, pad: 100, wide: true },
+	{ width: 360, sideBySide: true, widest: true },
+	{ width: 360, chmod: true, wide: true },
+];
+
+const caseName = (c: LabelCase) =>
+	Object.entries(c)
+		.map(([k, v]) => (v === true ? k : `${k} ${v}`))
+		.join(", ");
+
+for (const c of labelCases) {
+	test(`a renamed file's bubble and its rename bar don't cover each other${caseName(c) ? ` (${caseName(c)})` : ""}`, async ({
+		page,
+		pr,
+		startCrb,
+		isMobile,
+	}) => {
+		test.skip(c.width !== undefined && !isMobile, "the narrow phone only");
+		if (c.width) {
+			await page.setViewportSize({
+				width: c.width,
+				height: page.viewportSize()?.height ?? 800,
+			});
+		}
+		// Widest: one name too long for a line, so the label's line fills the row.
+		const dir = c.widest
+			? `packages/${"averyveryverylongfoldername".repeat(4)}`
+			: "packages/server/src/some/much/longer/folder";
+		const from = `${dir}/before-the-move.md`;
+		const path = `${dir}/after-the-move.md`;
+		const p = await pr({
+			base: { [from]: text(notes), "keep.txt": "keep\n" },
+			files: [
+				{
+					message: "PR change",
+					rename: { [from]: path },
+					files: {
+						"keep.txt": "kept\n",
+						...(c.wide ? { [path]: text([...notes, "x".repeat(300)]) } : {}),
+					},
+					...(c.chmod ? { chmod: { [path]: "755" as const } } : {}),
+				},
+			],
+		});
+		p.editScenario((s) => {
+			const graph = s.prs[7]?.graphql;
+			if (!graph) throw new Error("no PR in the scenario");
+			graph.reviewThreads = c.widest
+				? [
+						// The viewer asked, the author answered last: your turn; 11 comments.
+						reviewThread(
+							{ path, line: null, subjectType: "FILE" },
+							Array.from({ length: 11 }, (_, i) =>
+								threadComment({
+									login: i % 2 === 0 ? "octo-author" : "Octo_Cat",
+									text: `Comment ${i + 1}`,
+									createdAt: `2026-01-04T${String(i + 10).padStart(2, "0")}:00:00Z`,
+								}),
+							),
+						),
+						// A line comment with no line on this diff: on the bubble, flagged.
+						reviewThread({ path, line: null, subjectType: "LINE" }, [
+							threadComment({
+								login: "rev1",
+								text: "Past the end",
+								commit: p.repo.shas.at(-1) ?? "",
+								diffHunk: "",
+							}),
+						]),
+					]
+				: [
+						reviewThread({ path, line: null, subjectType: "FILE" }, [
+							threadComment({ login: "rev1", text: "Why move it?" }),
+						]),
+					];
+		});
+		const s = await startCrb();
+		await openFiles(page, s.url);
+		if (c.sideBySide) await sideBySide(page, true);
+		if (c.pad) {
+			await page.addStyleTag({
+				content: `[data-testid="file-label"] [data-testid="thread-bubble"] { margin-right: ${c.pad}px; }`,
+			});
+		}
+		const section = await expand(page, path);
+		const bar = section.getByTestId("file-label");
+		await expect(bar).toContainText(`Renamed from ${from}`);
+		const bubble = bar.getByRole("button", { name: /on this file/ });
+		await expect(bubble).toBeVisible();
+		if (c.widest) {
+			await expect(bubble).toHaveAccessibleName(
+				"12 comments on this file, your turn, line not in this diff",
+			);
+		}
+		const check = bar.locator("xpath=ancestor::tr").getByRole("checkbox");
+		const shots = process.env.CRB_SHOTS;
+		if (shots) {
+			await page.screenshot({
+				path: `${shots}/car-152-${isMobile ? "phone" : "desktop"}${caseName(c) ? `-${caseName(c).replace(/[ ,]+/g, "-")}` : ""}.png`,
+			});
+		}
+		const scroller = section.locator("table").first().locator("xpath=..");
+		/** Bubble, label and checkbox: apart, in sight, each hit at its centre. */
+		const apart = async (checkInSight: boolean) => {
+			const b = await bubble.boundingBox();
+			const diff = await scroller.boundingBox();
+			const lines = await textBoxes(bar.locator("span").first());
+			if (!b || !diff || lines.length === 0) throw new Error("no boxes");
+			for (const line of lines) {
+				expect(intersects(b, line), "a label line under the bubble").toBe(
+					false,
+				);
+				expect(line.x + line.width).toBeLessThanOrEqual(
+					diff.x + diff.width + 0.5,
+				);
+				expect(line.x).toBeGreaterThanOrEqual(diff.x - 0.5);
+			}
+			expect(b.x + b.width).toBeLessThanOrEqual(diff.x + diff.width + 0.5);
+			expect(b.x).toBeGreaterThanOrEqual(diff.x - 0.5);
+			expect(await hitsCentre(bubble)).toBe(true);
+			if (checkInSight) {
+				const k = await check.boundingBox();
+				if (!k) throw new Error("no checkbox");
+				expect(intersects(b, k)).toBe(false);
+				expect(await hitsCentre(check)).toBe(true);
+			}
+			return b;
+		};
+		const b = await apart(true);
+		await bubble.click({ trial: true });
+		await check.click({ trial: true });
+		if (isMobile) {
+			expect(b.height).toBeGreaterThanOrEqual(40);
+			expect(b.width).toBeGreaterThanOrEqual(40);
+		}
+		await expectNoPageOverflow(page);
+		if (c.wide && !c.sideBySide) {
+			// Scrolled sideways, the label and the bubble stay in sight, apart.
+			await scroller.evaluate((el) => {
+				el.scrollLeft = 300;
+			});
+			await expect
+				.poll(() => scroller.evaluate((el) => el.scrollLeft))
+				.toBeGreaterThan(0);
+			await apart(false);
+		}
+	});
+}
