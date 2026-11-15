@@ -1,13 +1,27 @@
+import { readFileSync } from "node:fs";
 import type { Locator, Page, Route } from "@playwright/test";
 import {
+	reviewThread,
+	type Scenario,
+	threadComment,
+} from "../test/fake-gh/scenario";
+import {
 	expectNoPageOverflow,
+	fileActionButton,
+	fileProgress,
 	fileSection,
 	openFiles,
 	progress,
 	sideBySide,
 	tapHeight,
 } from "./files-ui";
-import { expect, expectLoadingThen, test } from "./fixtures";
+import {
+	expect,
+	expectLoadingThen,
+	type Pr,
+	reviewPage,
+	test,
+} from "./fixtures";
 import { BLUE, bmp as bmpImage, GREEN, png as pngImage, RED } from "./images";
 
 /*
@@ -614,4 +628,223 @@ test("renamed with no content change shows the image once", async ({
 		/^50×40\s*· \d+ B$/,
 	);
 	await expect(section.getByText(`Renamed from ${OLD}`)).toBeVisible();
+});
+
+/*
+ * Review and comments in the image view (CAR-38 task 5): the header's
+ * whole-file action is the image view's review control; file comments
+ * post as GitHub file comments; an SVG's line threads list under the
+ * header in Image view and sit on their lines in Text view.
+ */
+
+/** Threads the fake gh stores, with their opener's body. */
+function stored(p: Pr) {
+	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
+	return (
+		(s.prs[p.number]?.graphql?.reviewThreads ?? []) as {
+			path: string;
+			subjectType: string;
+			comments: { nodes: { body: string }[] };
+		}[]
+	).map((t) => ({ ...t, body: t.comments.nodes[0]?.body ?? "" }));
+}
+
+/** The stored "Show as" picks (path → renderer), this viewer's. */
+const storedPicks = (page: Page) =>
+	page.evaluate(() => localStorage.getItem("crb.files.renderer"));
+
+const SVG = "img/badge.svg";
+/** An SVG: line 3's fill becomes "lime", and a line is added after it. */
+const badge = (fill: string, extra: string[] = []) =>
+	`${[
+		'<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30">',
+		"<title>badge</title>",
+		`<rect width="40" height="30" fill="${fill}"/>`,
+		...extra,
+		"</svg>",
+	].join("\n")}\n`;
+const svgPr = {
+	base: { [SVG]: badge("red") },
+	files: [
+		{
+			message: "recolor",
+			files: {
+				[SVG]: badge("lime", ['<circle cx="10" cy="10" r="4" fill="blue"/>']),
+			},
+		},
+	],
+};
+const svgRow = (section: Locator, n: number) =>
+	section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
+
+test("review tick on a BMP marks the file reviewed and survives reload", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(changed);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	let section = await openImage(page, BMP);
+	await expect(fileProgress(section)).toHaveText(/0 \/ 1/);
+	await fileActionButton(section, "Mark remaining reviewed").click();
+	await expect(fileActionButton(section, "Unmark reviewed")).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	await expect(fileProgress(section)).toHaveText(/1 \/ 1/);
+	// Only this file: the PNG is still to read.
+	await expect(progress(page)).toContainText("1 / 2");
+	await page.reload();
+	section = fileSection(page, BMP);
+	await expect(fileProgress(section)).toHaveText(/1 \/ 1/);
+	await expect(fileActionButton(section, "Unmark reviewed")).toBeVisible();
+	await expect(progress(page)).toContainText("1 / 2");
+	section = await openImage(page, BMP);
+	await expect(
+		section.getByRole("checkbox", { name: "Mark cluster reviewed" }),
+	).toBeChecked();
+	await expect(fileProgress(fileSection(page, PNG))).toHaveText(/0 \/ 1/);
+});
+
+test("comment on file from the image view posts a file comment", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr(changed);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await openImage(page, PNG);
+	const bubble = section.getByRole("button", { name: "Comment on file" });
+	await expect(bubble).toBeVisible();
+	if (isMobile) expect(await tapHeight(bubble)).toBeGreaterThanOrEqual(40);
+	await bubble.click();
+	const composer = section.getByTestId("new-thread");
+	await expect(composer).toContainText("whole file");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("Darker?");
+	await expectNoPageOverflow(page);
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(section.getByTestId("new-thread")).toHaveCount(0);
+	await expect(
+		section.getByTestId("file-threads").getByTestId("files-thread"),
+	).toContainText("Darker?");
+	// Still the image view, and nothing reviewed by commenting.
+	await expect(stageOf(section)).toBeVisible();
+	await expect(fileProgress(section)).toHaveText(/0 \/ 1/);
+	expect(stored(p)).toMatchObject([
+		// crb's own marker follows the text.
+		{
+			path: PNG,
+			subjectType: "FILE",
+			body: expect.stringMatching(/^Darker\?/),
+		},
+	]);
+});
+
+test("SVG line threads show under the header in Image view and on lines in Text view", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr(svgPr);
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: SVG, line: 3, subjectType: "LINE" }, [
+				threadComment({ login: "rev1", text: "Too bright?", commit: head }),
+			]),
+		];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await openImage(page, SVG);
+	await expect(chip(section)).toHaveAccessibleName("Show as: Image");
+	// Image view: listed with the file's own threads, never dropped.
+	const bubble = section.getByRole("button", {
+		name: /^1 comment on this file.*line not in this diff/,
+	});
+	await expect(bubble).toBeVisible();
+	await bubble.click();
+	await expect(
+		section.getByTestId("file-threads").getByTestId("files-thread"),
+	).toContainText("Too bright?");
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		await section.scrollIntoViewIfNeeded();
+		await page.screenshot({
+			path: `${shots}/svg-image-line-thread-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
+	// Text view: on its line.
+	await chip(section).click();
+	await page
+		.getByRole("menu", { name: "Show as" })
+		.getByRole("menuitemradio", { name: "Text" })
+		.click();
+	await expect(chip(section)).toHaveAccessibleName("Show as: Text");
+	await expect(
+		svgRow(section, 3).getByRole("button", { name: /^1 comment on line 3/ }),
+	).toBeVisible();
+	await expectNoPageOverflow(page);
+});
+
+test("find in an SVG in Image view: stepping to a line hit switches that file to Text for the view (the pick is unchanged) and lands on the line", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await pr(svgPr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, SVG);
+	await expect(chip(section)).toHaveAccessibleName("Show as: Image");
+	if (isMobile)
+		await page.getByRole("button", { name: "Find in PR", exact: true }).click();
+	else await page.keyboard.press("ControlOrMeta+f");
+	const box = page.getByTestId("find-box");
+	await expect(box).toBeFocused();
+	await box.fill("lime");
+	await expect(
+		page.getByRole("status", { name: "Searching files…" }),
+	).toHaveCount(0);
+	await box.press("Enter");
+	// Text for this view, on the hit's line.
+	await expect(chip(section)).toHaveAccessibleName("Show as: Text");
+	const current = section.locator("tr[data-find-current]");
+	await expect(current).toHaveAttribute("data-new-no", "3");
+	await expect(current).toBeInViewport();
+	await expect(stageOf(section)).toHaveCount(0);
+	expect(await storedPicks(page)).toBeNull();
+	await expectNoPageOverflow(page);
+	// Image again: the image, still nothing stored.
+	await chip(section).click();
+	await page
+		.getByRole("menu", { name: "Show as" })
+		.getByRole("menuitemradio", { name: "Image" })
+		.click();
+	await expect(chip(section)).toHaveAccessibleName("Show as: Image");
+	await expect(stageOf(section)).toBeVisible();
+	expect(await storedPicks(page)).toBeNull();
+
+	// A thread link to the line works the same way, and lasts the view only.
+	await page.goto(
+		reviewPage(s.url, "files", `?path=${encodeURIComponent(SVG)}&line=3`),
+	);
+	const landed = fileSection(page, SVG);
+	await expect(chip(landed)).toHaveAccessibleName("Show as: Text");
+	await expect(svgRow(landed, 3)).toHaveAttribute("data-landed");
+	await expect(svgRow(landed, 3)).toBeInViewport();
+	expect(await storedPicks(page)).toBeNull();
+	await page.reload();
+	await expect(chip(fileSection(page, SVG))).toHaveAccessibleName(
+		"Show as: Image",
+	);
 });

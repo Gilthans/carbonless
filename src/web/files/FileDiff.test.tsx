@@ -33,8 +33,9 @@ import {
 } from "../code/Invisibles";
 import { ignoreWhitespace } from "../viewSettings";
 import { contextRanges } from "./contextRanges";
-import type { DiffThreads } from "./DiffBody";
+import type { DiffFind, DiffThreads } from "./DiffBody";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
+import type { Landing } from "./landing";
 import { rendererPicks } from "./renderers";
 import { SyncNotices } from "./SyncNotices";
 import { type FileSince, unitsFile } from "./since";
@@ -150,6 +151,10 @@ type Extra = {
 	threads?: DiffThreads;
 	/** The engine's answer for the file (its chips; the since view's kinds). */
 	sinceInfo?: FileSince;
+	/** The find's view of the file's diff (a step bumps its stepSeq). */
+	find?: DiffFind;
+	/** A thread link landing in the file. */
+	landing?: Landing;
 };
 
 function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
@@ -178,6 +183,8 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 						sinceMarks={data?.sinceMarks}
 						threads={extra.threads}
 						sinceInfo={extra.sinceInfo}
+						find={extra.find}
+						landing={extra.landing}
 					/>
 				</AgentPlacingProvider>
 			)}
@@ -229,12 +236,17 @@ function setup(
 		staleTime: Number.POSITIVE_INFINITY,
 	});
 	queryClient.setQueryData(reviewQuery().queryKey, view(f));
-	const shown = () => (
+	const shown = (props: Extra = extra) => (
 		<QueryClientProvider client={queryClient}>
-			<Shown unit={unit} {...extra} />
+			<Shown unit={unit} {...props} />
 		</QueryClientProvider>
 	);
 	const rendered = render(extra.router ? inRouter(shown) : shown());
+	/** New props from the page (a find's step, a landing), as it rerenders. */
+	const update = (next: Partial<Extra>) => {
+		Object.assign(extra, next);
+		rendered.rerender(shown({ ...extra }));
+	};
 	/** Shows `next` as the server's file, like a reread does. */
 	const rerender = (next: FileView) =>
 		act(async () => {
@@ -259,6 +271,7 @@ function setup(
 		posts,
 		paths,
 		rerender,
+		update,
 		user: userEvent.setup(),
 	};
 }
@@ -2788,5 +2801,266 @@ describe("FileDiff: the renderer seam", () => {
 	it("a plain file shows no LFS icon", () => {
 		setup(png());
 		expect(screen.queryByRole("img", { name: "Git LFS pointer" })).toBeNull();
+	});
+});
+
+/*
+ * Review and comments in the image view (CAR-38 task 5). The image view's
+ * review control is the header's existing action (FileMarkActions): no new
+ * write path. An SVG keeps its line clusters; in Image view one press
+ * covers every unit the view shows.
+ */
+describe("FileDiff: review in the image view", () => {
+	beforeEach(() => {
+		setShowInvisibles(false);
+		clock = 1000;
+		vi.spyOn(performance, "now").mockImplementation(() => clock);
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		localStorage.clear();
+		rendererPicks.reset();
+		resetShowInvisibles();
+		contextRanges.reset();
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	const SVG = "img/icon.svg";
+	const svg = (clusters: ClusterView[]) => file(clusters, { path: SVG });
+	const chip = () => screen.getByRole("button", { name: /^Show as/ });
+	const hunkReads = (paths: () => string[]) =>
+		paths().filter((p) => p.startsWith("/api/files/0/hunks"));
+
+	it("SVG in Image view: Mark remaining reviewed ticks every shown line cluster, and nothing else", async () => {
+		const f = svg([
+			cluster("k1"),
+			cluster("k2", { newStart: 10, state: "reviewed" }),
+			cluster("k3", {
+				newStart: 20,
+				state: "crossed-off",
+				reason: "generated",
+			}),
+			cluster("k4", { newStart: 30 }),
+		]);
+		const { posts, user, paths } = setup(f, () => ({
+			status: 200,
+			body: view(f),
+		}));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+		// The open ones only: what's reviewed or crossed off stays as it is.
+		expect(posts()[0]).toEqual({
+			path: "/api/review/states",
+			body: {
+				revision: "r1",
+				changes: [
+					{ key: "k1", state: "reviewed" },
+					{ key: "k4", state: "reviewed" },
+				],
+			},
+		});
+		// Image view read no lines to do it.
+		expect(hunkReads(paths)).toEqual([]);
+	});
+
+	it("SVG with some clusters ticked in Text view: the header shows the mixed state and a press ticks only the open ones", async () => {
+		const mixed = svg([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { newStart: 20 }),
+		]);
+		const done = svg([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { newStart: 20, state: "reviewed" }),
+		]);
+		let answer = done;
+		const { posts, user, rerender } = setup(mixed, () => ({
+			status: 200,
+			body: view(answer),
+		}));
+		// Ticked line by line in Text view first.
+		rendererPicks.set(SVG, "text");
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		await user.click(chip());
+		await user.click(screen.getByRole("menuitemradio", { name: "Image" }));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		// Mixed: part done, and the action still marks (no reset while
+		// anything is open).
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("1 / 2 clusters");
+		expect(
+			screen.queryByRole("button", { name: "Unmark reviewed" }),
+		).toBeNull();
+		const markButton = screen.getByRole("button", {
+			name: "Mark remaining reviewed",
+		});
+		expect(markButton).toHaveAttribute("aria-pressed", "false");
+		await user.click(markButton);
+		await waitFor(() =>
+			expect(posts()[0]?.body.changes).toEqual([
+				{ key: "k2", state: "reviewed" },
+			]),
+		);
+		// All reviewed: the press unticks them all (asking first).
+		await rerender(done);
+		answer = mixed;
+		tick();
+		const undo = await screen.findByRole("button", {
+			name: "Unmark reviewed",
+		});
+		expect(undo).toHaveAttribute("aria-pressed", "true");
+		await confirmClick(user, undo);
+		await waitFor(() =>
+			expect(posts()[1]?.body.changes).toEqual([
+				{ key: "k1", state: "unreviewed" },
+				{ key: "k2", state: "unreviewed" },
+			]),
+		);
+	});
+
+	it("since view: an image's header action writes the since units only", async () => {
+		// A gone cluster's removed lines (no cluster owns them), and k2's
+		// own piece; k1 was reviewed (carried) and isn't in the interdiff.
+		const gonePiece: SincePiece = {
+			hunk: 0,
+			line: 0,
+			key: "g1",
+			owns: null,
+			old: [[10, 12]],
+			new: [],
+			kind: "removed",
+		};
+		const ownPiece: SincePiece = {
+			hunk: 0,
+			line: 3,
+			key: "k2",
+			owns: [[0, 2]],
+			old: [[5, 6]],
+			new: [[5, 6]],
+		};
+		const f = svg([
+			cluster("k1", {
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			}),
+			cluster("k2"),
+		]);
+		const { posts, user, paths } = setup(
+			f,
+			() => ({ status: 200, body: view(f) }),
+			hunks,
+			"clusters",
+			{ since: 1, sincePieces: [gonePiece, ownPiece] },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await waitFor(() =>
+			expect(posts()[0]?.body.changes).toEqual([
+				{ key: "k2", state: "reviewed" },
+				{
+					key: `since:1:${SVG}`,
+					state: "reviewed",
+					sinceMark: {
+						since: 1,
+						path: SVG,
+						reviewed: { old: [[10, 12]], new: [] },
+						crossed: { old: [], new: [] },
+					},
+				},
+			]),
+		);
+		expect(posts()).toHaveLength(1);
+		expect(hunkReads(paths)).toEqual([]);
+	});
+
+	/** The find's view of the file with its current hit on new `line`. */
+	const stepped = (line: number, stepSeq: number): DiffFind => ({
+		marksOf: () => [],
+		current: { old: false, line },
+		shown: true,
+		stepSeq,
+	});
+
+	it("a find step onto an SVG line in Image view shows it as Text for the view; the pick is unchanged, Image returns", async () => {
+		const { user, update, paths } = setup(svg([cluster("k1")]));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(screen.getByTestId("image-view")).toBeInTheDocument();
+		// Marks alone (typing) change nothing.
+		update({ find: { ...stepped(5, 0), current: null } });
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		// A step onto line 5: Text, its lines read, the line there.
+		update({ find: stepped(5, 1) });
+		expect(chip()).toHaveAccessibleName("Show as: Text");
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(hunkReads(paths)).toEqual(["/api/files/0/hunks?revision=r1"]);
+		expect(screen.queryByTestId("image-view")).toBeNull();
+		// The stored pick is untouched.
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+		expect(localStorage.getItem("crb.files.renderer")).toBeNull();
+		// The same step again (a rerender) doesn't switch back or again.
+		update({ find: stepped(5, 1) });
+		expect(chip()).toHaveAccessibleName("Show as: Text");
+		// Image again: back to the image, still nothing stored.
+		await user.click(chip());
+		await user.click(screen.getByRole("menuitemradio", { name: "Image" }));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(screen.getByTestId("image-view")).toBeInTheDocument();
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+		// A later step switches again.
+		update({ find: stepped(5, 2) });
+		expect(chip()).toHaveAccessibleName("Show as: Text");
+	});
+
+	it("a thread link to an SVG line in Image view shows it as Text for the view, not stored", async () => {
+		const { user, update } = setup(svg([cluster("k1")]));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		// A link to the file alone (no line) keeps the image.
+		update({ landing: { path: SVG, index: 0, seq: 1 } });
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		update({
+			landing: { path: SVG, line: 5, side: "RIGHT", index: 0, seq: 2 },
+		});
+		expect(chip()).toHaveAccessibleName("Show as: Text");
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+	});
+
+	it("a find step onto a PNG or a .ts file changes nothing (no Text for a binary)", async () => {
+		const png = file(
+			[
+				{
+					...cluster("bin"),
+					kind: "file",
+					label: "Binary file changed",
+					lines: 0,
+				},
+			],
+			{ path: "img/logo.png", binary: true, additions: 0, deletions: 0 },
+		);
+		const { update } = setup(png, undefined, { newLineCount: 0, hunks: [] });
+		update({ find: stepped(1, 1) });
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+	});
+
+	it("Text picked and stored stays Text after a step; picking Image stores Image", async () => {
+		rendererPicks.set(SVG, "text");
+		const { user, update } = setup(svg([cluster("k1")]));
+		update({ find: stepped(5, 1) });
+		expect(chip()).toHaveAccessibleName("Show as: Text");
+		await user.click(chip());
+		await user.click(screen.getByRole("menuitemradio", { name: "Image" }));
+		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(rendererPicks.get(SVG)).toBe("image");
 	});
 });

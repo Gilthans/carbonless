@@ -655,7 +655,13 @@ export function FileDiff(props: {
 	// How the body shows the file (renderers/): the reviewer's pick for
 	// its path, else the renderer that claims it. Only the view: never a
 	// review state.
-	const renderer = resolveRenderer(file, rendererPicks.use(file.path));
+	const resolved = resolveRenderer(file, rendererPicks.use(file.path));
+	const asText = useLineTargetText(
+		resolved === "image" && rendererChoices(file).includes("text"),
+		props.find,
+		props.landing,
+	);
+	const renderer = asText.on ? "text" : resolved;
 	// The image renderer reads no lines: its review rows and threads are
 	// DiffBody's, with the lines hidden.
 	const linesHidden = renderer === "image";
@@ -1305,7 +1311,13 @@ export function FileDiff(props: {
 								<RendererChip
 									current={renderer}
 									choices={rendererChoices(file)}
-									onPick={(id) => rendererPicks.set(file.path, id)}
+									onPick={(id) => {
+										// Image again after a line target's Text: back to
+										// the image, the stored pick as it was.
+										const back = asText.on && id === resolved;
+										asText.clear();
+										if (!back) rendererPicks.set(file.path, id);
+									}}
 								/>
 								<FileMarkActions
 									cross={crossToggle}
@@ -1372,6 +1384,34 @@ export function FileDiff(props: {
 				))}
 		</section>
 	);
+}
+
+/**
+ * A find's step or a thread link onto a line of a file shown without its
+ * lines (an SVG as Image: `textable`) shows that file as Text, for this
+ * view only: its lines are read, and DiffBody scrolls to the line as it
+ * does for any file. The stored pick (`rendererPicks`) doesn't change, so a
+ * reload shows the image again; `clear` (a pick in the chip) ends it. Each
+ * step (`stepSeq`) and each landing (`seq`) switches once: marks changing
+ * as the reviewer types never do.
+ */
+function useLineTargetText(
+	textable: boolean,
+	find: DiffFind | undefined,
+	landing: Landing | undefined,
+): { on: boolean; clear: () => void } {
+	const step = find?.current ? find.stepSeq : 0;
+	const landed = landing?.line !== undefined ? landing.seq : 0;
+	const [seen, setSeen] = useState({ step: 0, landed: 0 });
+	const [on, setOn] = useState(false);
+	if (step !== seen.step || landed !== seen.landed) {
+		const fresh =
+			(step !== 0 && step !== seen.step) ||
+			(landed !== 0 && landed !== seen.landed);
+		setSeen({ step, landed });
+		if (fresh && textable) setOn(true);
+	}
+	return { on: on && textable, clear: () => setOn(false) };
 }
 
 /**

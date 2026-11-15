@@ -480,3 +480,72 @@ describe("humanMarksOf (CAR-195)", () => {
 		expect(marks.get("k3")).toMatchObject({ reviewed: [], crossed: [] });
 	});
 });
+
+/*
+ * Custom renderers (CAR-38): a renderer only changes how a file is shown.
+ * Coverage is computed from the snapshot's clusters and the stored states
+ * alone: no renderer, no path type, no "whole file" shortcut.
+ */
+describe("buildReviewView and renderers", () => {
+	const fileCluster = (key: string): Cluster => ({
+		key,
+		kind: "file",
+		oldStart: 0,
+		oldCount: 0,
+		newStart: 0,
+		newCount: 0,
+		removed: [],
+		added: [],
+		lines: 0,
+		label: "Binary file changed",
+	});
+	const png = (index: number, path = "img/logo.png"): FileSummary => ({
+		...file(index, path, [fileCluster(`bin${index}`)]),
+		binary: true,
+		additions: 0,
+	});
+	const svg = (index: number, path = "img/icon.svg") =>
+		file(index, path, [cluster(`s${index}a`, 2), cluster(`s${index}b`, 3)]);
+
+	it("a file with a forged or missing cluster stays unreviewed whatever the renderer", () => {
+		// Nothing renderer-side can feed it: the snapshot and the states only.
+		expect(buildReviewView.length).toBe(2);
+		const snap = snapshot([png(0), svg(1)]);
+		// Forged: states for a whole file, a path, a renderer's own key; and
+		// one SVG cluster's state missing.
+		const view = buildReviewView(
+			snap,
+			progress({
+				"img/logo.png": "reviewed",
+				"file:img/logo.png": "reviewed",
+				"image:0": "reviewed",
+				"img/icon.svg": "reviewed",
+				s1a: "reviewed",
+			}),
+		);
+		const [image, vector] = view.files;
+		expect(image?.clusters.map((c) => c.state)).toEqual(["unreviewed"]);
+		expect(image?.done).toBe(false);
+		expect(vector?.clusters.map((c) => c.state)).toEqual([
+			"reviewed",
+			"unreviewed",
+		]);
+		expect(vector?.done).toBe(false);
+		expect(view.progress.files.done).toBe(0);
+		expect(JSON.stringify(view)).not.toContain("image:0");
+
+		// The same files at non-image paths fold the same: the path's type
+		// (what picks a renderer) plays no part.
+		const plain = buildReviewView(
+			snapshot([png(0, "bin/logo.dat"), svg(1, "src/icon.xml")]),
+			progress({ s1a: "reviewed" }),
+		);
+		const strip = (v: typeof view) => v.files.map(({ path, ...rest }) => rest);
+		expect(strip(plain)).toEqual(
+			strip(buildReviewView(snap, progress({ s1a: "reviewed" }))),
+		);
+		expect(plain.progress).toEqual(
+			buildReviewView(snap, progress({ s1a: "reviewed" })).progress,
+		);
+	});
+});
