@@ -682,6 +682,21 @@ const svgPr = {
 const svgRow = (section: Locator, n: number) =>
 	section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
 
+/**
+ * Picks `name` in `section`'s "Show as" menu right after a find step or a
+ * landing: the page may still scroll into place (the step's scroll on a
+ * loaded machine, a phone's header compacting), and a scroll closes the
+ * menu, so it is opened until it stays open.
+ */
+async function showAsAfterJump(page: Page, section: Locator, name: string) {
+	const menu = page.getByRole("menu", { name: "Show as" });
+	await expect(async () => {
+		if ((await chip(section).getAttribute("aria-expanded")) !== "true")
+			await chip(section).click();
+		await menu.getByRole("menuitemradio", { name }).click({ timeout: 1000 });
+	}).toPass();
+}
+
 test("review tick on a BMP marks the file reviewed and survives reload", async ({
 	page,
 	pr,
@@ -831,11 +846,7 @@ test("find in an SVG in Image view: stepping to a line hit switches that file to
 	expect(await storedPicks(page)).toBeNull();
 	await expectNoPageOverflow(page);
 	// Image again: the image, still nothing stored.
-	await chip(section).click();
-	await page
-		.getByRole("menu", { name: "Show as" })
-		.getByRole("menuitemradio", { name: "Image" })
-		.click();
+	await showAsAfterJump(page, section, "Image");
 	await expect(chip(section)).toHaveAccessibleName("Show as: Image");
 	await expect(stageOf(section)).toBeVisible();
 	expect(await storedPicks(page)).toBeNull();
@@ -851,19 +862,7 @@ test("find in an SVG in Image view: stepping to a line hit switches that file to
 	expect(await storedPicks(page)).toBeNull();
 	// Image again: the link isn't replayed on the image (no "not in this
 	// diff" hint; the unit test checks it doesn't scroll either).
-	// On a phone the page is still settling from the landing (its sticky
-	// header compacts after the scroll), and a scroll closes the menu:
-	// open it once it stays open.
-	const menu = page.getByRole("menu", { name: "Show as" });
-	await expect(async () => {
-		if ((await chip(landed).getAttribute("aria-expanded")) !== "true")
-			await chip(landed).click();
-		await expect(menu).toBeVisible({ timeout: 1000 });
-	}).toPass();
-	await page
-		.getByRole("menu", { name: "Show as" })
-		.getByRole("menuitemradio", { name: "Image" })
-		.click();
+	await showAsAfterJump(page, landed, "Image");
 	await expect(stageOf(landed)).toBeVisible();
 	await expect(landed.locator('[aria-busy="true"]')).toHaveCount(0);
 	await expect(landed.getByTestId("landing-hint")).toHaveCount(0);
