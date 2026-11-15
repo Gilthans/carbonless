@@ -260,6 +260,7 @@ Plan decision (coordinator's call, to confirm with the owner when reporting): th
     - `review tick on a BMP marks the file reviewed and survives reload`.
     - `comment on file from the image view posts a file comment` (fake gh log shows `subject_type: "file"`).
     - `SVG line threads show under the header in Image view and on lines in Text view`.
+    - `find in an SVG in Image view: stepping to a line hit switches that file to Text for the view (the pick is unchanged) and lands on the line`. A thread link to an SVG line works the same way. Found in the T3 review: without this, a step there silently does nothing.
 - [ ] **Step 2: Run them**; fix only what fails. Run: `pnpm verify:fast`, then `pnpm test:e2e e2e/image-renderer.spec.ts`.
 - [ ] **Step 3: Commit.** `"image renderer: review and comments in the image view (CAR-38)"`
 
