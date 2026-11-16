@@ -476,8 +476,9 @@ describe("colorPieces", () => {
 		const color = ({ text, tokens }: typeof long) =>
 			colorPieces(renderInvisibles(text, 4), tokens);
 		// CPU against four lines a quarter as long (CLAUDE.md): linear is
-		// about 1x, a quadratic pass 4x. Limit 2.5: CI read up to 1.76 over
-		// 78 runs (CAR-188).
+		// about 1x, a quadratic pass 4x. Limit 2.5 (CAR-188): CI read up to
+		// 1.76 over 78 runs (before the sides were sized warm), the devbox
+		// 0.96-1.11; the token scan restarted at each piece read 4.19-4.90.
 		const { ratio } = bestCpuRatio(
 			() => color(long),
 			repeat(4, () => color(short)),

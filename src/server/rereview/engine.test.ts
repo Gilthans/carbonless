@@ -720,15 +720,20 @@ describe("the engine's cost", () => {
 		// command per file (about 1 ms here each) would be about 4x. Too
 		// coarse for the trace's own per-file work: a quadratic step there
 		// fails only once it adds about 10 ms at 200 files.
-		const { best, ratio } = await bestCpuRatioAsync(large.trace, small.trace);
+		const { best, ratio, times } = await bestCpuRatioAsync(
+			large.trace,
+			small.trace,
+		);
+		// One trace's CPU: a side below the helper's floor runs `times` traces.
+		const one = best / times;
 		console.info(
-			`engine trace CPU for 200 files: ${(best / 1000).toFixed(0)} ms, ${ratio.toFixed(2)}x a 50-file trace`,
+			`engine trace CPU for 200 files: ${(one / 1000).toFixed(0)} ms, ${ratio.toFixed(2)}x a 50-file trace`,
 		);
 		expect(ratio).toBeLessThan(2);
 		// The absolute backstop CLAUDE.md allows: both sides pay the fixed
 		// per-run cost, so the ratio can't see it grow, even 100x. One
 		// 200-file trace measured 16-27 ms CPU on the dev machine and
 		// 15-35 ms on CI over 10 runs; 250 ms is about 7x CI's slowest.
-		expect(best).toBeLessThan(250_000);
+		expect(one).toBeLessThan(250_000);
 	});
 });

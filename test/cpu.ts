@@ -9,8 +9,12 @@
  * quarter: the same work in all, so linear is about 1x and quadratic 4x.
  * Their limit of 2 sits between the two: the ratios measured 0.77–1.23 on
  * the dev machine, idle and with a busy loop per core (CAR-67), and a
- * quadratic step put back (one pass per file) measured 4.6x. CI is noisier:
- * a few read up to 1.88 over 78 runs, and take 2.5 instead (CAR-188).
+ * quadratic step put back (one pass per file) measured 4.6x. CI is
+ * noisier: caretAfterTyping, markdownEscape and colorPieces (2.5) and the
+ * editorconfig globs (2.25) read 1.76-1.88 there over 78 runs, before the
+ * sides were sized warm, and take a wider limit, each between CI's noise
+ * and a probe's quadratic (CAR-188; the readings are in each test's
+ * comment). The others keep 2.
  */
 
 /** CPU µs (user + system) this thread spends in `run`. */
@@ -36,6 +40,8 @@ export type CpuRatio = {
 	ref: number;
 	/** `best / ref`. */
 	ratio: number;
+	/** How many runs `best` and `ref` are each of (the floor's repeats). */
+	times: number;
 };
 
 /**
@@ -73,10 +79,10 @@ export function bestCpuRatio(
 		best = Math.min(best, cpuOf(runs));
 		ref = Math.min(ref, cpuOf(references));
 	}
-	return { best, ref, ratio: best / ref };
+	return { best, ref, ratio: best / ref, times };
 }
 
-/** As `bestCpuRatio`, for work that awaits. */
+/** As `bestCpuRatio` (sized the same way), for work that awaits. */
 export async function bestCpuRatioAsync(
 	run: () => Promise<unknown>,
 	reference: () => Promise<unknown>,
@@ -84,14 +90,29 @@ export async function bestCpuRatioAsync(
 ): Promise<CpuRatio> {
 	await run();
 	await reference();
+	let times = 1;
+	const sized = async () =>
+		Math.min(
+			await cpuOfAsync(repeatAsync(times, reference)),
+			await cpuOfAsync(repeatAsync(times, reference)),
+		);
+	while ((await sized()) < MIN_SIDE_MICROS) times *= 2;
+	const runs = repeatAsync(times, run);
+	const references = repeatAsync(times, reference);
 	let best = Number.POSITIVE_INFINITY;
 	let ref = Number.POSITIVE_INFINITY;
 	for (let round = 0; round < rounds; round++) {
-		best = Math.min(best, await cpuOfAsync(run));
-		ref = Math.min(ref, await cpuOfAsync(reference));
+		best = Math.min(best, await cpuOfAsync(runs));
+		ref = Math.min(ref, await cpuOfAsync(references));
 	}
-	return { best, ref, ratio: best / ref };
+	return { best, ref, ratio: best / ref, times };
 }
+
+/** `body`, `times` times over, one after the other. */
+const repeatAsync =
+	(times: number, body: () => Promise<unknown>) => async () => {
+		for (let i = 0; i < times; i++) await body();
+	};
 
 /** `body`, `times` times over. */
 export const repeat = (times: number, body: () => void) => () => {
