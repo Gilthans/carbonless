@@ -155,10 +155,13 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	// With the switch on, whitespace-only clusters aren't counted: the
 	// bar says how many it leaves out.
 	await expect(bar).toContainText("0 / 6 clusters reviewed");
+	// The bar's (file headers that left one out have their own).
 	await expect(
-		page.getByRole("img", {
-			name: "10 whitespace-only clusters not counted",
-		}),
+		page
+			.locator("[data-page-bar]")
+			.locator(
+				'[data-testid="ws-left-out"][aria-label="10 whitespace-only clusters not counted"]',
+			),
 	).toBeVisible();
 	// Reviewed from the collapsed row: the mark is stored, not counted.
 	const box = collapsed.getByRole("checkbox", {

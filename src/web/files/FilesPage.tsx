@@ -75,7 +75,7 @@ import {
 } from "./landing";
 import { NotInComparison } from "./NotInComparison";
 import { PatchsetGraph } from "./PatchsetGraph";
-import { ProgressBar } from "./ProgressBar";
+import { ProgressBar, WhitespaceLeftOut } from "./ProgressBar";
 import { SelectionBar } from "./SelectionBar";
 import {
 	captureAnchor,
@@ -85,6 +85,8 @@ import {
 import { sidebarKey, useSidebarState } from "./sidebarState";
 import {
 	carriedCount,
+	countedFileUnits,
+	countedUnits,
 	eyesOf,
 	goneFiles,
 	goneFileView,
@@ -897,7 +899,7 @@ export function FilesPage() {
 		const next = nextFile(candidates, index, (f) =>
 			fileLeft(
 				// "Ignore whitespace" on: whitespace-only clusters aren't left.
-				ignoreWs && since === null
+				ignoreWs
 					? f.clusters.filter(
 							(c: { whitespaceOnly?: true }) => !c.whitespaceOnly,
 						)
@@ -1479,19 +1481,27 @@ export function FilesPage() {
 		[sinceAnswer, data],
 	);
 	// "Ignore whitespace" on: the full diff counts without whitespace-only
-	// clusters (countedProgress), and the bar says how many it left out.
+	// clusters (countedProgress), the since view without their units
+	// (countedUnits), and the bar says how many it left out.
 	const counted = useMemo(
 		() =>
 			ignoreWs && data && !sinceAnswer ? countedProgress(data.files) : null,
 		[ignoreWs, data, sinceAnswer],
 	);
+	const sinceCounted = useMemo(
+		() => countedUnits(units, ignoreWs),
+		[units, ignoreWs],
+	);
 	const viewProgress = useMemo(
 		() =>
 			sinceAnswer
-				? sinceProgress(units)
+				? sinceProgress(sinceCounted.units)
 				: (counted?.progress ?? data?.progress ?? null),
-		[sinceAnswer, units, data, counted],
+		[sinceAnswer, sinceCounted, data, counted],
 	);
+	const whitespaceLeftOut = sinceAnswer
+		? sinceCounted.leftOut
+		: counted?.leftOut;
 	// The since view never shows the full diff's numbers: its own empty
 	// state, or its failure.
 	const progressInstead =
@@ -1500,7 +1510,7 @@ export function FilesPage() {
 				counted && counted.progress.clusters.total === 0 && counted.leftOut > 0
 				? ("empty" as const)
 				: undefined
-			: sinceAnswer && units.length === 0
+			: sinceAnswer && sinceCounted.units.length === 0
 				? ("empty" as const)
 				: sinceView.error
 					? ("failed" as const)
@@ -1512,11 +1522,21 @@ export function FilesPage() {
 			new Map((sinceAnswer?.files ?? []).map((f) => [f.index, f.pieces ?? []])),
 		[sinceAnswer],
 	);
+	// Each file's units as its header counts them ("Ignore whitespace" on:
+	// countedFileUnits), and how many whitespace-only ones that left out.
 	const unitsByFile = useMemo(() => {
-		const out = new Map<number, typeof units>();
-		for (const u of units) out.set(u.index, [...(out.get(u.index) ?? []), u]);
+		const all = new Map<number, (typeof units)[number][]>();
+		for (const u of units) {
+			const list = all.get(u.index);
+			if (list) list.push(u);
+			else all.set(u.index, [u]);
+		}
+		const out = new Map<number, ReturnType<typeof countedFileUnits>>();
+		for (const [index, list] of all) {
+			out.set(index, countedFileUnits(list, ignoreWs));
+		}
 		return out;
-	}, [units]);
+	}, [units, ignoreWs]);
 	const progressPending = since !== null && sinceView.pending;
 	// The connector of the comparison on screen counts what is left here.
 	const live =
@@ -1528,7 +1548,11 @@ export function FilesPage() {
 		sinceView.answer &&
 		byFile &&
 		data &&
-		nothingSince(sinceView.answer, byFile)
+		nothingSince(
+			sinceView.answer,
+			byFile,
+			sinceCounted.leftOut > 0 ? sinceCounted.units : undefined,
+		)
 			? `Nothing to read since PS${since} · ${carriedCount(data)} carried`
 			: null;
 
@@ -1621,7 +1645,7 @@ export function FilesPage() {
 									<ProgressBar
 										ref={bar}
 										progress={viewProgress ?? data.progress}
-										whitespaceLeftOut={counted?.leftOut}
+										whitespaceLeftOut={whitespaceLeftOut}
 										pending={progressPending}
 										instead={progressInstead}
 										unit={unit}
@@ -1725,6 +1749,9 @@ export function FilesPage() {
 											className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-ok/30 bg-ok/10 px-3 text-sm text-ink"
 										>
 											{emptySince}
+											{(whitespaceLeftOut ?? 0) > 0 && (
+												<WhitespaceLeftOut count={whitespaceLeftOut ?? 0} />
+											)}
 										</p>
 									)}
 									{data.files.length === 0 && gone.length === 0 ? (
@@ -1796,8 +1823,13 @@ export function FilesPage() {
 															sinceAnswer
 																? unitsFile(
 																		file,
-																		unitsByFile.get(file.index) ?? [],
+																		unitsByFile.get(file.index)?.units ?? [],
 																	)
+																: undefined
+														}
+														countedLeftOut={
+															sinceAnswer
+																? (unitsByFile.get(file.index)?.leftOut ?? 0)
 																: undefined
 														}
 														readOnly={readOnly}

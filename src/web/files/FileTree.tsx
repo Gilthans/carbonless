@@ -27,7 +27,11 @@ import {
 } from "./fileOrder";
 import { MarkedText } from "./find/MarkedText";
 import { type Folds, useFolds } from "./folderFold";
-import { Meter } from "./ProgressBar";
+import {
+	Meter,
+	WhitespaceLeftOut,
+	whitespaceLeftOutLabel,
+} from "./ProgressBar";
 import {
 	ChangeCount,
 	type Changes,
@@ -357,6 +361,8 @@ function FileItem(props: {
 	// Its progress and state as counted: "Ignore whitespace" on leaves its
 	// whitespace-only clusters out (countedFile). The change count is all of it.
 	const file = countedFile(raw, ignoreWhitespace.use());
+	// How many it left out: the row's `~`.
+	const leftOut = raw.clusters.length - file.clusters.length;
 	const agentThreads = props.agentThreads ?? [];
 	const asked =
 		agentThreads.length > 0
@@ -429,6 +435,18 @@ function FileItem(props: {
 							{found && (
 								<TipLine kind="find" icon={FIND_SWATCH}>
 									{capital(found)}
+								</TipLine>
+							)}
+							{leftOut > 0 && (
+								<TipLine
+									kind="ws-left-out"
+									icon={
+										<span aria-hidden className="font-mono text-faint">
+											~
+										</span>
+									}
+								>
+									{capital(whitespaceLeftOutLabel(leftOut))}
 								</TipLine>
 							)}
 							<TipProgressLines
@@ -519,6 +537,7 @@ function FileItem(props: {
 						)}
 						{props.agentUnread && AGENT_UNREAD}
 						<ChangeCount file={raw} />
+						{leftOut > 0 && <WhitespaceLeftOut count={leftOut} inRow />}
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
 						</span>

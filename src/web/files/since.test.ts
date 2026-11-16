@@ -9,6 +9,8 @@ import type {
 } from "../../shared/types";
 import {
 	carriedCount,
+	countedFileUnits,
+	countedUnits,
 	eyesOf,
 	goneFiles,
 	liveToRead,
@@ -656,5 +658,145 @@ describe("an unticked carried cluster in the since view (principle 2)", () => {
 			reviewed: 1,
 			crossedOff: 0,
 		});
+	});
+});
+
+describe('"Ignore whitespace" in the since view (CAR-184)', () => {
+	const ws = (c: FileView["clusters"][number]) => ({
+		...c,
+		whitespaceOnly: true as const,
+	});
+	// core.ts: a reworked change and a reworked whitespace-only cluster;
+	// util.ts: only a new whitespace-only cluster.
+	const wv = view([
+		file(0, "core.ts", [
+			cluster("a", "reviewed"),
+			ws(cluster("w", "unreviewed")),
+		]),
+		file(1, "util.ts", [ws(cluster("u", "unreviewed"))]),
+	]);
+	const wa = answer(
+		[
+			{
+				index: 0,
+				path: "core.ts",
+				conflict: false,
+				clusters: [
+					{ key: "a", kind: "reworked" },
+					{ key: "w", kind: "reworked" },
+				],
+			},
+			{
+				index: 1,
+				path: "util.ts",
+				conflict: false,
+				clusters: [{ key: "u", kind: "new" }],
+			},
+		],
+		{ files: 2, clusters: 3 },
+	);
+
+	it("a unit of a whitespace-only cluster says so; switch off, nothing is left out", () => {
+		const units = unitsOf(wa, wv);
+		expect(units.map((u) => u.whitespaceOnly === true)).toEqual([
+			false,
+			true,
+			true,
+		]);
+		const off = countedUnits(units, false);
+		expect(off).toEqual({ units, leftOut: 0 });
+		expect(sinceProgress(off.units).clusters).toEqual({
+			total: 3,
+			reviewed: 1,
+			crossedOff: 0,
+		});
+	});
+
+	it("switch on, the bar leaves them all out: done, with how many", () => {
+		const on = countedUnits(unitsOf(wa, wv), true);
+		expect(on.leftOut).toBe(2);
+		expect(sinceProgress(on.units).clusters).toEqual({
+			total: 1,
+			reviewed: 1,
+			crossedOff: 0,
+		});
+		expect(sinceProgress(on.units).files.done).toBe(1);
+	});
+
+	it("a file's header leaves them out, but a file of nothing else keeps its own", () => {
+		const units = unitsOf(wa, wv);
+		const core = countedFileUnits(
+			units.filter((u) => u.index === 0),
+			true,
+		);
+		expect(core.units).toHaveLength(1);
+		expect(core.leftOut).toBe(1);
+		const util = countedFileUnits(
+			units.filter((u) => u.index === 1),
+			true,
+		);
+		expect(util.units).toHaveLength(1);
+		expect(util.leftOut).toBe(0);
+		// Off: as they are.
+		expect(
+			countedFileUnits(
+				units.filter((u) => u.index === 0),
+				false,
+			).leftOut,
+		).toBe(0);
+	});
+
+	it("each file's counts and dot follow the switch, never hiding a file of nothing else", () => {
+		const off = sinceByFile(wa, wv);
+		expect(off.get(0)?.left.units).toBe(1);
+		expect(eyesOf(wv.files[0] as FileView, off.get(0))).toBe("read");
+		const on = sinceByFile(wa, wv, true);
+		expect(on.get(0)?.left.units).toBe(0);
+		expect(on.get(0)?.counts.reworked).toBe(0);
+		expect(eyesOf(wv.files[0] as FileView, on.get(0))).toBe("carried");
+		// util.ts has only whitespace-only units: still read.
+		expect(on.get(1)?.left.units).toBe(1);
+		expect(eyesOf(wv.files[1] as FileView, on.get(1))).toBe("read");
+	});
+
+	it("nothing to read since: the counted units decide, a change unit always counts", () => {
+		// core.ts alone: its change carried, its whitespace-only cluster reworked.
+		const cv = view([
+			file(0, "core.ts", [
+				cluster("a", "reviewed", true),
+				ws(cluster("w", "unreviewed")),
+			]),
+		]);
+		const only = answer(
+			[
+				{
+					index: 0,
+					path: "core.ts",
+					conflict: false,
+					clusters: [
+						{
+							key: "a",
+							kind: "carried",
+							from: 1,
+							state: "reviewed",
+							rule: "exact",
+						},
+						{ key: "w", kind: "reworked" },
+					],
+				},
+			],
+			{ files: 1, clusters: 1 },
+		);
+		const units = unitsOf(only, cv);
+		const byFile = sinceByFile(only, cv, true);
+		// Off: the engine's to read.
+		expect(nothingSince(only, byFile)).toBe(false);
+		// On: only a whitespace-only unit, left out.
+		const on = countedUnits(units, true);
+		expect(on.leftOut).toBe(1);
+		expect(nothingSince(only, byFile, on.units)).toBe(true);
+		// A change unit, even reviewed, is something that changed.
+		const both = countedUnits(unitsOf(wa, wv), true);
+		expect(nothingSince(wa, sinceByFile(wa, wv, true), both.units)).toBe(false);
 	});
 });

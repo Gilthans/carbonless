@@ -160,6 +160,11 @@ const E2E_MAP = [
 		/^src\/web\/verdict\/|^src\/server\/verdict\.ts$|^src\/web\/(App|pages|router)\.tsx?$|^src\/web\/files\/(FilesPage|RefusedWrites)\.tsx$|^src\/web\/threads\/(threadWrites|refusals)\.ts$/,
 		["verdict"],
 	],
+	// The verdict and the since view follow Ignore whitespace (CAR-184).
+	[
+		/^src\/web\/verdict\/VerdictCard\.tsx$|^src\/shared\/pieces\.ts$/,
+		["ws-split"],
+	],
 	// The markable invariant: whatever renders units, keys their lines or
 	// saves their states (docs/product-rules.md).
 	[

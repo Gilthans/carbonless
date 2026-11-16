@@ -575,6 +575,13 @@ export interface SinceUnit {
 	open: number;
 	/** The rest of a cluster no piece owns: only the full diff shows those lines. */
 	rest?: true;
+	/**
+	 * Of a whitespace-only cluster of the viewed snapshot
+	 * (Cluster.whitespaceOnly): "Ignore whitespace" on leaves it out of the
+	 * counts (src/web/files/since.ts countedUnits). A piece no cluster owns
+	 * never is.
+	 */
+	whitespaceOnly?: true;
 }
 
 /** What sinceUnits reads of one file of the engine's answer. */
@@ -611,7 +618,14 @@ export function sinceUnits(
 				const kind = kinds.get(p.key) === "new" ? "new" : "reworked";
 				const state = pieceState(cluster, p.owns);
 				const open = state === "unreviewed" ? lines : 0;
-				out.push({ ...base, kind, lines, state, open });
+				out.push({
+					...base,
+					kind,
+					lines,
+					state,
+					open,
+					...(cluster.whitespaceOnly ? { whitespaceOnly: true } : {}),
+				});
 				continue;
 			}
 			const kind =
@@ -655,7 +669,15 @@ export function sinceUnits(
 				state === "unreviewed"
 					? size(subtract(rest, union(reviewed, crossed)))
 					: 0;
-			out.push({ ...base, kind, lines: size(rest), state, open, rest: true });
+			out.push({
+				...base,
+				kind,
+				lines: size(rest),
+				state,
+				open,
+				rest: true,
+				...(c.whitespaceOnly ? { whitespaceOnly: true } : {}),
+			});
 		}
 	}
 	return out;

@@ -113,9 +113,12 @@ changed lines are three clusters. With the switch on, a whitespace-only
 cluster reads as one quiet `~` row you can review from, or expand, and
 progress leaves it out: tick the real changes and the bar reaches 100%,
 with a `~` beside the counts saying how many whitespace-only clusters it
-didn't count. Ticking one still records it. Turn the switch off and every
-cluster counts again, so any whitespace-only one you never looked at shows
-as unreviewed.
+didn't count. File rows, file headers, the verdict and the since view
+count the same way, each with its `~` when it left one out. Ticking one
+still records it. Turn the switch off and every cluster counts again, so
+any whitespace-only one you never looked at shows as unreviewed. Home
+doesn't follow the switch (it never reads a review's view settings): its
+coverage counts every cluster.
 
 The view's `~` rows match over the whole hunk, context lines included,
 because git often splits a re-indented block in two with an

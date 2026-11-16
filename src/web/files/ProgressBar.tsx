@@ -105,12 +105,36 @@ function UnitPicker(props: { unit: Unit; onChange: (unit: Unit) => void }) {
 	);
 }
 
+/** What the `~` says: how many whitespace-only clusters the counts leave out. */
+export const whitespaceLeftOutLabel = (count: number) =>
+	`${count} whitespace-only ${count === 1 ? "cluster" : "clusters"} not counted`;
+
 /**
  * The `~` after the counts while "Ignore whitespace" leaves whitespace-only
- * clusters out of them: its name and tooltip say how many.
+ * clusters out of them: its name and tooltip say how many. `inRow`: inside
+ * a control that is its own target and tooltip (a tree row), the named
+ * glyph alone, nothing focusable of its own.
  */
-export function WhitespaceLeftOut({ count }: { count: number }) {
-	const label = `${count} whitespace-only ${count === 1 ? "cluster" : "clusters"} not counted`;
+export function WhitespaceLeftOut({
+	count,
+	inRow,
+}: {
+	count: number;
+	inRow?: boolean;
+}) {
+	const label = whitespaceLeftOutLabel(count);
+	if (inRow) {
+		return (
+			<span
+				role="img"
+				aria-label={label}
+				data-testid="ws-left-out"
+				className="inline-flex h-4 w-3 shrink-0 items-center justify-center font-mono text-xs text-faint"
+			>
+				~
+			</span>
+		);
+	}
 	return (
 		<Tooltip content={label} describe={false}>
 			{(trigger) => (
