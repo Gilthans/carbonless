@@ -228,7 +228,8 @@ always there. The renderers it offers for a file:
 - an extension crb doesn't know, that git calls binary: Binary (default),
   Image (works only if the bytes match a raster signature; otherwise it
   falls back to Binary);
-- an extension crb doesn't know, that git calls text: Text only, so no chip.
+- an extension crb doesn't know, that git calls text: Text only, so no
+  switch (and no row for one).
 
 "Text" is never offered for a binary file: the server sends no lines for
 one, and adding a binary-as-text diff is out of scope.

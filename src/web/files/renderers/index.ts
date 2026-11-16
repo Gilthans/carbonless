@@ -73,7 +73,7 @@ export function rendererChoices(file: RendererFile): RendererId[] {
 }
 
 /**
- * How `file` is shown: the reviewer's pick when the menu offers it, else
+ * How `file` is shown: the reviewer's pick when the view switch offers it, else
  * the first renderer that claims the file, else text or binary.
  */
 export function resolveRenderer(
