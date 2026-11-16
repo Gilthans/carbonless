@@ -47,8 +47,11 @@ const MIN_SIDE_MICROS = 20_000;
  * CPU of `run` against `reference`, after a warm-up of each: the best of
  * `rounds` (load only adds time), the two taken in turn so they see the
  * same load. A cheap pair runs both the same number of times over, until
- * the reference takes `MIN_SIDE_MICROS`; `best` and `ref` are then of that
- * many runs.
+ * the warm reference takes `MIN_SIDE_MICROS` (the less of two reads: one
+ * slowed by load would size it too small); `best` and `ref` are then of
+ * that many runs. Sized on a cold first run instead, a reference sped up
+ * once warm ran under the floor: CI read a 2.06x ratio of 22.7 ms to 11.0 ms
+ * where its other runs read 0.84-1.6x (CAR-188).
  */
 export function bestCpuRatio(
 	run: () => void,
@@ -56,8 +59,11 @@ export function bestCpuRatio(
 	rounds = 5,
 ): CpuRatio {
 	run();
+	reference();
 	let times = 1;
-	while (cpuOf(repeat(times, reference)) < MIN_SIDE_MICROS) times *= 2;
+	const sized = () =>
+		Math.min(cpuOf(repeat(times, reference)), cpuOf(repeat(times, reference)));
+	while (sized() < MIN_SIDE_MICROS) times *= 2;
 	const runs = repeat(times, run);
 	const references = repeat(times, reference);
 	let best = Number.POSITIVE_INFINITY;
