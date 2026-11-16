@@ -180,9 +180,10 @@ export const test = base.extend<
 		 * Auto fixture: fails the test on browser console errors and uncaught page
 		 * errors, except those matching a pattern declared with
 		 * `expectConsoleError(/409/)` (Chromium logs "Failed to load resource"
-		 * for every non-2xx fetch).
+		 * for every non-2xx fetch), seen from the declaration on. It returns
+		 * the expectation's end, for an error only a known window may show.
 		 */
-		expectConsoleError: (pattern: RegExp) => void;
+		expectConsoleError: (pattern: RegExp) => () => void;
 	},
 	{
 		/** The worker's shared crb serve, started by its first shared test. */
@@ -474,8 +475,12 @@ function strangerServer(server: Served, clientOutput: string): void {
 }
 
 export interface ConsoleErrorWatch {
-	/** Declares errors matching `pattern` as expected. */
-	expect: (pattern: RegExp) => void;
+	/**
+	 * Declares errors matching `pattern`, seen from now on, as expected.
+	 * Returns its end: errors seen after it are unexpected again (an error
+	 * only a known window may show, e.g. while crb restarts).
+	 */
+	expect: (pattern: RegExp) => () => void;
 	/** Console and uncaught page errors seen so far, minus the expected ones. */
 	unexpected: () => string[];
 }
@@ -483,17 +488,27 @@ export interface ConsoleErrorWatch {
 /** Collects `page`'s console errors and uncaught errors (see expectConsoleError). */
 export function watchConsoleErrors(page: Page): ConsoleErrorWatch {
 	const errors: string[] = [];
-	const expected: RegExp[] = [];
+	// Each covers the errors seen in [from, to).
+	const expected: { pattern: RegExp; from: number; to: number }[] = [];
 	page.on("console", (message) => {
 		if (message.type() === "error") errors.push(message.text());
 	});
 	page.on("pageerror", (error) => errors.push(error.message));
 	return {
 		expect: (pattern) => {
-			expected.push(pattern);
+			const entry = { pattern, from: errors.length, to: Infinity };
+			expected.push(entry);
+			return () => {
+				entry.to = Math.min(entry.to, errors.length);
+			};
 		},
 		unexpected: () =>
-			errors.filter((text) => !expected.some((pattern) => pattern.test(text))),
+			errors.filter(
+				(text, i) =>
+					!expected.some(
+						(e) => i >= e.from && i < e.to && e.pattern.test(text),
+					),
+			),
 	};
 }
 

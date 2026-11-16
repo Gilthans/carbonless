@@ -61,7 +61,7 @@ function serve(opts: {
 	post?: () => Response;
 }) {
 	const posts: unknown[] = [];
-	const asked = { version: 0 };
+	const asked = { version: 0, update: 0 };
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (url: string, init?: RequestInit) => {
@@ -71,7 +71,10 @@ function serve(opts: {
 					opts.post?.() ?? json(202, { ...opts.info(), state: "restarting" })
 				);
 			}
-			if (url === "/api/update") return json(200, opts.info());
+			if (url === "/api/update") {
+				asked.update++;
+				return json(200, opts.info());
+			}
 			if (url === "/api/version") {
 				asked.version++;
 				const v = opts.version?.() ?? null;
@@ -392,10 +395,16 @@ describe("UpdateToast", () => {
 
 	it("crb back on the old version with the install's failure: the output and the command", async () => {
 		let info: UpdateInfo = OFFER;
-		serve({ info: () => info, version: () => "0.2.0" });
+		// Down once (it stopped for the install), then the old crb again.
+		let version: string | null = null;
+		const { asked } = serve({ info: () => info, version: () => version });
 		show();
 		await toast();
 		await userEvent.click(screen.getByRole("button", { name: "Update" }));
+		await waitFor(() => expect(asked.version).toBeGreaterThan(0), {
+			timeout: 5000,
+		});
+		version = "0.2.0";
 		info = {
 			...OFFER,
 			failed: {
@@ -418,6 +427,73 @@ describe("UpdateToast", () => {
 			OFFER.command,
 		);
 		expect(reload).not.toHaveBeenCalled();
+	});
+
+	it("crb announced its restart: only /api/version until it was seen down, never /api/update while it may stop under it (CAR-177)", async () => {
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+		});
+		let info: UpdateInfo = { ...OFFER, state: "restarting" };
+		// The old crb, in its grace before it stops.
+		let version: string | null = "0.2.0";
+		const { asked } = serve({ info: () => info, version: () => version });
+		show();
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
+		const before = asked.update;
+		await act(() => vi.advanceTimersByTimeAsync(10 * BACK_POLL_MS));
+		expect(asked.version).toBeGreaterThanOrEqual(9);
+		expect(asked.update).toBe(before);
+		// Stopped, and back on the old version after a failed install: now
+		// /api/update says why.
+		version = null;
+		await act(() => vi.advanceTimersByTimeAsync(2 * BACK_POLL_MS));
+		expect(asked.update).toBe(before);
+		version = "0.2.0";
+		info = {
+			...OFFER,
+			failed: {
+				version: "0.3.0",
+				tail: "npm error code E404",
+				command: OFFER.command as string,
+			},
+		};
+		await act(() => vi.advanceTimersByTimeAsync(BACK_POLL_MS));
+		expect(asked.update).toBe(before + 1);
+		expect(screen.getByTestId("update-toast").dataset.state).toBe("failed");
+		expect(screen.getByTestId("update-output").textContent).toBe(
+			"npm error code E404",
+		);
+	});
+
+	it("a service's install while crb serves: asks /api/update until it fails, the failure shown (CAR-177)", async () => {
+		let info: UpdateInfo = OFFER;
+		const { asked } = serve({
+			info: () => info,
+			version: () => "0.2.0",
+			post: () => json(202, { ...OFFER, state: "installing" }),
+		});
+		show();
+		await toast();
+		await userEvent.click(screen.getByRole("button", { name: "Update" }));
+		info = { ...OFFER, state: "installing" };
+		const before = asked.update;
+		await waitFor(() => expect(asked.update).toBeGreaterThan(before), {
+			timeout: 5000,
+		});
+		expect((await toast()).dataset.state).toBe("updating");
+		info = {
+			...OFFER,
+			failed: {
+				version: "0.3.0",
+				tail: "npm error code E404",
+				command: OFFER.command as string,
+			},
+		};
+		await waitFor(
+			async () => expect((await toast()).dataset.state).toBe("failed"),
+			{ timeout: 5000 },
+		);
 	});
 
 	it("a refused Update: the failure, with the server's reason", async () => {

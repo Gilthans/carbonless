@@ -222,32 +222,49 @@ function Toast(props: {
 	const since = phase.kind === "updating" ? phase.since : 0;
 	const latest = useRef(data);
 	latest.current = data;
+	// This page's Update got no answer: crb may be stopping already.
+	const unanswered = useRef(false);
 	useEffect(() => {
 		if (target === null) return;
 		let stopped = false;
+		// crb was seen down since it announced its restart.
+		let down = false;
 		const tick = async () => {
 			if (stopped) return;
 			try {
 				const v = await fetchJson<{ version: string }>("/api/version", {
 					cache: "no-store",
+				}).catch((error: unknown) => {
+					down = true;
+					throw error;
 				});
 				if (stopped) return;
 				if (v.version === target) {
 					back(target);
 					return;
 				}
-				// The old crb answers: still stopping, or back after a failure.
-				const now = await fetchUpdate();
-				if (stopped) return;
-				client.setQueryData(UPDATE_KEY, now);
-				if (now.state === "idle" && now.failed?.version === target) {
-					setPhase({
-						kind: "failed",
-						version: target,
-						tail: now.failed.tail,
-						command: now.failed.command,
-					});
-					return;
+				// The old crb answers. Announced a restart and not down since:
+				// it is in its grace and stops any moment, cutting off whatever
+				// is in flight (CAR-177). Only /api/version, which waits for
+				// the new one anyway, crosses that moment: no /api/update.
+				const restarting =
+					latest.current?.state === "restarting" || unanswered.current;
+				if (!restarting || down) {
+					// Installing while it serves, or back after a failure.
+					const now = await fetchUpdate();
+					if (stopped) return;
+					client.setQueryData(UPDATE_KEY, now);
+					down = false;
+					unanswered.current = false;
+					if (now.state === "idle" && now.failed?.version === target) {
+						setPhase({
+							kind: "failed",
+							version: target,
+							tail: now.failed.tail,
+							command: now.failed.command,
+						});
+						return;
+					}
 				}
 			} catch {
 				// Down while it installs: ask again.
@@ -291,6 +308,7 @@ function Toast(props: {
 			return;
 		}
 		setPhase({ kind: "updating", version, since: Date.now() });
+		unanswered.current = false;
 		try {
 			const answer = await fetchJson<UpdateInfo>("/api/update", {
 				method: "POST",
@@ -300,7 +318,9 @@ function Toast(props: {
 			client.setQueryData(UPDATE_KEY, answer);
 		} catch (error) {
 			// Unreachable: it may be stopping already; the wait tells.
-			if (error instanceof ApiError && error.status !== 0) {
+			if (error instanceof ApiError && error.status === 0) {
+				unanswered.current = true;
+			} else if (error instanceof ApiError) {
 				setPhase({
 					kind: "failed",
 					version,
