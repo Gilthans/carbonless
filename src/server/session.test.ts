@@ -146,6 +146,7 @@ describe("Session", () => {
 			},
 			viewer: "octo-cat",
 			snapshotHead: pr.head(),
+			snapshotBase: pr.mergeBase,
 			currentHead: pr.head(),
 			headMoved: false,
 			patchset: null,

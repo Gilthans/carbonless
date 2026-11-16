@@ -45,7 +45,7 @@ export function openComposer(
 ): string {
 	const onSpan = composers.filter((c) => sameSpan(c.span, span));
 	const byId =
-		id === undefined ? undefined : composers.find((c) => c.clientId === id);
+		id === undefined ? undefined : onSpan.find((c) => c.clientId === id);
 	const same =
 		byId ??
 		// A typed draft's id with a conversation: that draft, nothing else.
@@ -65,7 +65,11 @@ export function openComposer(
 		);
 		return same.clientId;
 	}
-	const clientId = id ?? newClientId();
+	// An id already open on another span (a wrong call): never two with one id.
+	const clientId =
+		id !== undefined && !composers.some((c) => c.clientId === id)
+			? id
+			: newClientId();
 	changed([
 		...composers,
 		{

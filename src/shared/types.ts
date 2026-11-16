@@ -1176,6 +1176,8 @@ export interface SessionInfo {
 	viewer: string;
 	/** Head of the snapshot being reviewed (the patch set's, once started). */
 	snapshotHead: string;
+	/** The snapshot's merge base (its left side against the base branch). */
+	snapshotBase?: string;
 	/** The PR's head on GitHub, as last fetched or checked. */
 	currentHead: string;
 	headMoved: boolean;
