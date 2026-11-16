@@ -1,0 +1,54 @@
+# The release freeze (CAR-191): once master's version X.Y.Z is released
+# (tag vX.Y.Z), only the "next" PR (a next/* branch of this repository, not
+# a fork's) may merge until it moves master on; a merge before it publishes
+# no RC and misses the changelog. A workflow of its own, not a CI job: a
+# rerun doesn't wait for e2e, and `edited` runs it when a PR is retargeted
+# to master (a stacked PR whose base merged). It reads master at run time,
+# not the PR's merge commit, so a rerun after the "next" PR merges turns it
+# green with no new commit; release-finish reruns it on every open PR once
+# the release is out (docs/releasing.md, "The release freeze"). As
+# release.yml's token jobs: it installs nothing, and only the step that
+# asks GitHub has the token, before any code of the repository runs.
+name: Release gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [master]
+
+permissions:
+  contents: read
+
+# Only the newest run of a PR matters (an edit of the title runs it again).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-gate:
+    if: github.base_ref == 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # the open "next" PR, to name it
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Ask GitHub (master's package.json, tags, open PRs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/gate"
+          cd "$RUNNER_TEMP/gate"
+          gh api -H "Accept: application/vnd.github.raw+json" "repos/$GITHUB_REPOSITORY/contents/package.json?ref=master" >package.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" >tags.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls?state=open&base=master&per_page=100" >pulls.json
+      - name: Release freeze
+        # The head reaches the script as variables, never pasted into it.
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: node scripts/release-gate.mjs "$RUNNER_TEMP/gate/package.json" "$RUNNER_TEMP/gate/tags.json" "$RUNNER_TEMP/gate/pulls.json"

@@ -11,6 +11,11 @@ export type Gate = {
 	blocker: string | null;
 	message: string;
 };
+export function isReleased(
+	version: string,
+	tags: unknown,
+	npmVersions?: unknown,
+): boolean;
 export function isNextPr(pr: GatePr | null | undefined, repo: string): boolean;
 export function releaseGate(input: {
 	version: string;

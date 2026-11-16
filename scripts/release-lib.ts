@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rcMoveTo } from "./rc-fixup.mjs";
-import { releaseGate } from "./release-gate.mjs";
+import { isReleased, releaseGate } from "./release-gate.mjs";
 
 // Version math and the steps behind `pnpm release` and the release and
 // release-finish workflows (docs/releasing.md). Everything that touches git, gh or
@@ -355,9 +355,7 @@ async function freezeOf(
 ): Promise<string | null> {
 	const v = parseVersion(version);
 	if (!v || v.rc !== undefined) return null;
-	const released =
-		tags.includes(tagOf(v)) || (npm?.versions.includes(version) ?? false);
-	if (!released) return null;
+	if (!isReleased(version, tags, npm?.versions ?? [])) return null;
 	const gate = releaseGate({
 		version,
 		tags,
@@ -375,9 +373,13 @@ async function freezeOf(
  * Released counts npm's versions too, as the RC plan does.
  */
 export async function mergeOk(io: Io, pr: string): Promise<void> {
-	const number =
-		/^#?(\d+)$/.exec(pr)?.[1] ??
-		/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)\/?$/.exec(pr)?.[1];
+	const url = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/.exec(
+		pr,
+	);
+	if (url && url[1]?.toLowerCase() !== io.repo.toLowerCase()) {
+		throw new Error(`not a PR of ${io.repo}: ${pr}`);
+	}
+	const number = /^#?(\d+)$/.exec(pr)?.[1] ?? url?.[2];
 	if (!number) throw new Error(`not a PR number or URL: ${pr}`);
 	const [version, tags, npm, pull, pulls] = await Promise.all([
 		masterVersion(io),
@@ -620,8 +622,8 @@ export async function rcToPublish(
 		historyVersions(io, historyRef),
 	]);
 	const release = formatVersion(next);
-	const released =
-		tags.includes(tagOf(next)) || (npm?.versions.includes(release) ?? false);
+	// The same test as the release freeze's (scripts/release-gate.mjs).
+	const released = isReleased(release, tags, npm?.versions ?? []);
 	return {
 		version: formatVersion(
 			nextRc(next, tags, [...(npm?.versions ?? []), ...history]),

@@ -96,26 +96,33 @@ says the released `X.Y.Z`: a PR merged then publishes no RC (release.yml
 warns and skips) and its changelog entry is missing from the "next" PR,
 which was written before it. So until "next" merges, nothing else may
 (CAR-191):
-- **CI's `release-gate` job** (`ci.yml`, on every PR to master) fails while
+- **The `release-gate` check** (`.github/workflows/release-gate.yml`,
+  workflow "Release gate", on every PR to master: opened, pushed to,
+  reopened or edited, which includes a retarget to master) fails while
   `vX.Y.Z` is on GitHub for master's version, unless the PR's head is a
-  `next/X.Y.Z` branch of this repository (a fork's `next/*` is not exempt).
-  It reads master's `package.json` at run time (not the PR's merge commit),
-  installs nothing, and has the token (read only: contents, pull requests)
-  in its one step that asks GitHub, before any of the repository's code
-  runs; `scripts/release-gate.mjs` (no dependencies) judges. Its error
-  names the open "next" PR, or says to run release-finish again when none
-  is open. It is a required check on master (Setup, step 3).
-- **Turning green:** once "next" merges, open the blocked PR's CI run and
-  **Re-run failed jobs** (or `gh run rerun <run id> --failed`): the gate
-  reads master again and passes, with no new commit. A push to the PR
-  does the same.
+  `next/*` branch of this repository (`next/X.Y+1.0`, or whatever
+  `pnpm release next` made; a fork's `next/*` is not exempt, and nobody
+  else names a branch `next/A.B.C`). It reads master's `package.json` at
+  run time (not the PR's merge commit), installs nothing, and has the
+  token (read only: contents, pull requests) in its one step that asks
+  GitHub, before any of the repository's code runs;
+  `scripts/release-gate.mjs` (no dependencies) judges, and fails on an
+  answer it can't read. Its error names the open "next" PR, or says to run
+  release-finish again when none is open. It only blocks a merge once it
+  is a required check of the `master` ruleset (Setup, step 3).
+- **Checks that passed before the release:** release-finish, after
+  opening the "next" PR, reruns the newest `release-gate` run of every
+  open PR to master, so none stays green from before the tag. A run still
+  in progress then can't be rerun: the step warns, naming it; rerun it by
+  hand.
+- **Turning green:** once "next" merges, rerun the blocked PR's
+  "Release gate" run (Re-run jobs on its checks, or `gh run rerun <run
+  id>`): it reads master again and passes, with no new commit. A push to
+  the PR does the same.
 - **Agents' merges:** `gh pr merge --admin` bypasses required checks, so
   before merging any PR an agent runs `pnpm release merge-ok <pr>`, which
   fails with the same message for any PR but the "next" PR while frozen
   (it counts npm's versions as released too, as the RC plan does).
-- A gate that passed before the release stays green: in the window, a
-  merge on GitHub's button relies on merge-ok's habit or a look at
-  `pnpm release status`, not on the check.
 
 ### The version in a build, without a dirty tree
 
@@ -274,7 +281,8 @@ any version and any tag, `latest` included. So:
 
 **Fork pull requests** (the repository is public): anyone can open one,
 and none of it reaches a credential.
-- A PR runs only CI (`pull_request`, never `pull_request_target`): a
+- A PR runs only CI and the release gate (`pull_request`, never
+  `pull_request_target`): a
   read-only `GITHUB_TOKEN`, no secrets (no workflow uses any), no
   environment, no OIDC. With approval required for all external
   contributors (setup, step 5), a fork's runs wait for the owner unless
@@ -309,7 +317,7 @@ Tags and PRs created with the workflow's `GITHUB_TOKEN` start no workflows.
 So an RC tag starts no CI run (promote relies on CI's run for the push
 to master at the RC's commit instead), and the "next" PR shows no CI checks until
 someone pushes to it or closes and reopens it (a rerun of release-finish
-leaves such pushes alone). CI (with its `release-gate`) is a required check on master, so that PR
+leaves such pushes alone). CI and the release gate are required checks on master, so that PR
 needs one of those before it can merge (or the workflows a token of the
 owner's).
 
@@ -545,7 +553,8 @@ machine.
    agents on the owner's approval, nobody else, whatever their access), Restrict deletions, Block force
    pushes, Require a pull request before merging (0 approvals: only the
    owner's login can merge anyway), Require status checks to pass (`checks`,
-   `windows-agent`, `e2e`, `release-gate`). Not "Require review from Code Owners": with
+   `windows-agent`, `e2e`, and `release-gate`, the release freeze's check:
+   add it by hand, nothing sets it). Not "Require review from Code Owners": with
    Restrict updates it adds nothing. Nobody pushes straight to `master`,
    the owner included; the owner can merge any PR, with or without an
    approval or green checks (GitHub's "bypass rules" box).

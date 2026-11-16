@@ -21,11 +21,18 @@ import { fileURLToPath } from "node:url";
 /** The branch release-finish (and `pnpm release next`) opens: next/X.Y.Z. */
 const NEXT_BRANCH = /^next\/\d+\.\d+\.\d+$/;
 
-/** `gh api --paginate --slurp` wraps pages in an array: one list either way. */
-const flat = (value) =>
-	Array.isArray(value)
-		? value.flatMap((v) => (Array.isArray(v) ? v : [v]))
-		: [];
+/**
+ * `gh api --paginate --slurp` wraps pages in an array: one list either way.
+ * Anything but a list (an error body, say) throws: the gate fails closed.
+ */
+const flat = (value, what) => {
+	if (!Array.isArray(value)) {
+		throw new Error(
+			`${what} is not a list: ${JSON.stringify(value)?.slice(0, 200)}`,
+		);
+	}
+	return value.flatMap((v) => (Array.isArray(v) ? v : [v]));
+};
 
 /** A tag's name from `refs/tags/vX`, `{ ref: "refs/tags/vX" }` or `vX`. */
 const tagName = (t) =>
@@ -33,6 +40,17 @@ const tagName = (t) =>
 		/^refs\/tags\//,
 		"",
 	);
+
+/**
+ * Whether `version` (X.Y.Z) is released: its tag `vX.Y.Z` is among `tags`,
+ * or npm has it (`npmVersions`, when known). An RC tag doesn't count.
+ */
+export function isReleased(version, tags, npmVersions = []) {
+	return (
+		flat(tags, "tags").map(tagName).includes(`v${version}`) ||
+		flat(npmVersions, "npm versions").includes(version)
+	);
+}
 
 /** A "next" PR: its head is a next/X.Y.Z branch of this very repository. */
 export function isNextPr(pr, repo) {
@@ -75,10 +93,8 @@ export function releaseGate({
 			message: `#${pr.number} is not to master: no freeze applies`,
 		};
 	}
-	const released =
-		flat(tags).map(tagName).includes(`v${version}`) ||
-		flat(npmVersions).includes(version);
-	if (!released) {
+	const open = flat(pulls, "open PRs");
+	if (!isReleased(version, tags, npmVersions)) {
 		return {
 			ok: true,
 			frozen: false,
@@ -86,7 +102,7 @@ export function releaseGate({
 			message: `${version} is not released yet: merges to master are open`,
 		};
 	}
-	const next = flat(pulls)
+	const next = open
 		.filter((p) => isNextPr(p, repo))
 		.sort((a, b) => a.number - b.number);
 	const blocker =

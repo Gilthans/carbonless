@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isNextPr, releaseGate } from "./release-gate.mjs";
+import { GIT_TEST_TIMEOUTS } from "../test/git-fixture";
+import { isNextPr, isReleased, releaseGate } from "./release-gate.mjs";
 
 const REPO = "owner/repo";
 
@@ -134,7 +135,38 @@ describe("release gate (CAR-191)", () => {
 		).toThrow(/must be a release X\.Y\.Z/);
 	});
 
-	it("runs as CI runs it: plain node, no dependencies, the head from the environment", () => {
+	it("fails closed on an answer that isn't a list (an error body)", () => {
+		const base = {
+			version: "0.2.0",
+			tags: tagPages("v0.1.0"),
+			pulls: [[FEATURE]],
+			repo: REPO,
+			pr: FEATURE,
+		};
+		expect(releaseGate(base).ok).toBe(true);
+		expect(() =>
+			releaseGate({ ...base, tags: { message: "Not Found" } }),
+		).toThrow(/tags is not a list/);
+		expect(() =>
+			releaseGate({ ...base, pulls: { message: "Bad credentials" } }),
+		).toThrow(/open PRs is not a list/);
+		expect(() => isReleased("0.2.0", [], "0.2.0")).toThrow(
+			/npm versions is not a list/,
+		);
+	});
+
+	it("isReleased: the tag or the npm version, never an RC; the one test status, merge-ok and the RC plan share", () => {
+		expect(isReleased("0.2.0", tagPages("v0.2.0"))).toBe(true);
+		expect(isReleased("0.2.0", ["refs/tags/v0.2.0"])).toBe(true);
+		expect(
+			isReleased("0.2.0", ["v0.2.0-rc.1", "v0.2.00"], ["0.2.0-rc.1"]),
+		).toBe(false);
+		expect(isReleased("0.2.0", [], ["0.1.0", "0.2.0"])).toBe(true);
+	});
+
+	it("runs as CI runs it: plain node, no dependencies, the head from the environment", {
+		timeout: GIT_TEST_TIMEOUTS.testTimeout,
+	}, () => {
 		const dir = mkdtempSync(join(tmpdir(), "crb-release-gate-"));
 		try {
 			const files = (version: string, tags: string[], pulls: unknown[]) => {
@@ -204,6 +236,9 @@ describe("release gate (CAR-191)", () => {
 				}
 			})();
 			expect(noRepo).toBe(2);
+			// An error body for an answer fails, never passes.
+			writeFileSync(join(dir, "tags.json"), '{"message":"Not Found"}');
+			expect(cli(feature).code).toBe(1);
 			// Unreadable answers fail, never pass.
 			writeFileSync(join(dir, "pulls.json"), "not json");
 			expect(cli(feature).code).toBe(1);

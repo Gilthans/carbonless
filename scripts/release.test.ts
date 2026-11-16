@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Script } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { GIT_TEST_TIMEOUTS } from "../test/git-fixture";
 import { checkCiPassed } from "./ci-passed.mjs";
 import { rcMoveTo } from "./rc-fixup.mjs";
 import {
@@ -863,9 +864,14 @@ describe("pnpm release", () => {
 			);
 		});
 
-		it("refuses what isn't a PR, asking nothing", async () => {
+		it("refuses what isn't a PR, or another repository's PR, asking nothing", async () => {
 			const { io, calls } = frozen();
 			await expect(mergeOk(io, "main")).rejects.toThrow(/not a PR number/);
+			await expect(
+				mergeOk(io, "https://github.com/owner/other/pull/12"),
+			).rejects.toThrow(
+				"not a PR of owner/repo: https://github.com/owner/other/pull/12",
+			);
 			expect(calls).toEqual([]);
 		});
 	});
@@ -2274,19 +2280,33 @@ describe("release-finish: each step only once", () => {
 		}
 	});
 
-	it("CI's release-gate (CAR-191): PRs to master only, installs nothing, the token in one step before any repository code; its steps as the runner runs them", () => {
-		const ci = workflow("ci.yml");
-		const all = new Map(jobs(ci));
-		const gate = all.get("release-gate") ?? "";
-		expect(ifOf(gate)).toBe(
-			"github.event_name == 'pull_request' && github.base_ref == 'master'",
+	it("the release gate (CAR-191): its own workflow, PRs to master only, installs nothing, the token in one step before any repository code; its steps as the runner runs them", {
+		timeout: GIT_TEST_TIMEOUTS.testTimeout,
+	}, () => {
+		const wf = workflow("release-gate.yml");
+		const on = code(
+			wf.slice(
+				wf.indexOf("\non:\n"),
+				wf.search(/\n(permissions|concurrency|jobs):/),
+			),
 		);
+		// edited: a PR retargeted to master (its base merged) runs it too.
+		expect(on.trim()).toBe(
+			"on:\n  pull_request:\n    types: [opened, synchronize, reopened, edited]\n    branches: [master]",
+		);
+		expect(code(wf)).toMatch(/^permissions:\n {2}contents: read\n/m);
+		const all = new Map(jobs(wf));
+		expect([...all.keys()]).toEqual(["release-gate"]);
+		const gate = all.get("release-gate") ?? "";
+		expect(ifOf(gate)).toBe("github.base_ref == 'master'");
 		expect(code(gate)).toMatch(
 			/^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\b/m,
 		);
-		expect(code(gate)).not.toMatch(DEPENDENCY_CODE);
-		expect(code(gate)).not.toMatch(/setup-node|action-setup|: write\b/);
-		for (const uses of gate.match(/uses: \S+/g) ?? []) {
+		expect(code(wf)).not.toMatch(DEPENDENCY_CODE);
+		expect(code(wf)).not.toMatch(
+			/setup-node|action-setup|: write\b|id-token|environment:/,
+		);
+		for (const uses of wf.match(/uses: \S+/g) ?? []) {
 			expect(uses).toMatch(/@[0-9a-f]{40}$/);
 		}
 		expect(gate).toContain("persist-credentials: false");
@@ -2301,9 +2321,8 @@ describe("release-finish: each step only once", () => {
 		expect(nodeAt).toBeGreaterThan(tokenAt);
 		// The head reaches the script through env, never pasted into run:.
 		for (const run of runValues(gate)) expect(run).not.toContain("${{");
-		// No other CI job gets a token (the note at the top of ci.yml).
-		for (const [name, job] of all) {
-			if (name === "release-gate") continue;
+		// CI's jobs still get no token (the note at the top of ci.yml).
+		for (const [name, job] of jobs(workflow("ci.yml"))) {
 			expect(code(job), name).not.toMatch(
 				/github\.token|GH_TOKEN|GITHUB_TOKEN/,
 			);
@@ -2393,6 +2412,82 @@ esac
 		}
 	});
 
+	it("release-finish reruns every open PR's newest release-gate run once the next PR is open (CAR-191: no green from before the release)", {
+		timeout: GIT_TEST_TIMEOUTS.testTimeout,
+	}, () => {
+		const finish =
+			new Map(jobs(workflow("release-finish.yml"))).get("finish") ?? "";
+		const steps = finish.split(/\n(?= {6}- )/);
+		const at = steps.findIndex((st) =>
+			st.includes("name: Rerun open PRs' release gate"),
+		);
+		expect(at).toBeGreaterThan(
+			steps.findIndex((st) =>
+				st.includes("name: Next version and changelog PR"),
+			),
+		);
+		const step = steps[at] ?? "";
+		// Every time (a rerun of release-finish too), with the job's token.
+		expect(step).not.toMatch(/^ {8}if:/m);
+		expect(step).toMatch(/GH_TOKEN: \$\{\{ github\.token \}\}/);
+		expect(code(workflow("release-finish.yml"))).toMatch(
+			/^ {2}actions: write\b/m,
+		);
+		const script = (runValues(step)[0] ?? "")
+			.replace(/^\s*run: \|\n/, "")
+			.replace(/^ {10}/gm, "");
+		const A = "a".repeat(40);
+		const B = "b".repeat(40);
+		const C = "c".repeat(40);
+		const dir = mkdtempSync(join(tmpdir(), "crb-gate-rerun-"));
+		try {
+			writeFileSync(
+				join(dir, "gh"),
+				`#!/usr/bin/env bash
+echo "$*" >>"${dir}/calls"
+case "$*" in
+  *"/pulls?state=open&base=master&per_page=100"*) printf '9 ${A}\\n12 ${B}\\n13 ${C}\\n14 not-a-sha\\n' ;;
+  *"head_sha=${A}"*) echo 111 ;;
+  *"head_sha=${B}"*) echo ;;
+  *"head_sha=${C}"*) echo 333 ;;
+  *"runs/111/rerun") echo '{}' ;;
+  *"runs/333/rerun") echo "HTTP 403: This workflow is already running" >&2; exit 1 ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`,
+				{ mode: 0o755 },
+			);
+			const out = execFileSync(
+				"bash",
+				["--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+				{
+					encoding: "utf8",
+					stdio: "pipe",
+					env: {
+						...process.env,
+						PATH: `${dir}:${process.env.PATH}`,
+						GITHUB_REPOSITORY: "owner/repo",
+						GH_TOKEN: "x",
+					},
+				},
+			);
+			expect(out.trim().split("\n")).toEqual([
+				"#9: release-gate rerun (111)",
+				"#12: no release-gate run",
+				"::warning::#13: could not rerun release-gate run 333 (still running?): rerun it by hand",
+			]);
+			const calls = readFileSync(join(dir, "calls"), "utf8").trim().split("\n");
+			expect(calls.filter((c) => c.startsWith("api -X POST"))).toEqual([
+				"api -X POST repos/owner/repo/actions/runs/111/rerun",
+				"api -X POST repos/owner/repo/actions/runs/333/rerun",
+			]);
+			// A malformed answer reaches no URL.
+			expect(calls.some((c) => c.includes("not-a-sha"))).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("public repository: fork PRs reach no credential, no OIDC, no `npm` environment", () => {
 		const files = readdirSync(
 			join(import.meta.dirname, "../.github/workflows"),
@@ -2400,6 +2495,7 @@ esac
 		expect(files.sort()).toEqual([
 			"ci.yml",
 			"release-finish.yml",
+			"release-gate.yml",
 			"release.yml",
 		]);
 		/** A workflow's `on:` block. */
@@ -2419,12 +2515,19 @@ esac
 			// npm makes provenance itself (trusted publishing, public repo).
 			expect(text, file).not.toContain("--provenance");
 		}
-		// CI is the only workflow a pull request (a fork's too) runs: read-only,
-		// no environment, no OIDC, no write anywhere.
-		const ci = code(workflow("ci.yml"));
-		expect(triggers(ci)).toMatch(/^ {2}pull_request:$/m);
-		expect(ci).toMatch(/^permissions:\n {2}contents: read\n/m);
-		expect(ci).not.toMatch(/: write\b|id-token|environment:/);
+		// CI and the release gate are the only workflows a pull request (a
+		// fork's too) runs: read-only, no environment, no OIDC, no write
+		// anywhere.
+		for (const file of ["ci.yml", "release-gate.yml"]) {
+			const text = code(workflow(file));
+			expect(triggers(text), file).toMatch(/^ {2}pull_request:$/m);
+			expect(text, file).toMatch(/^permissions:\n {2}contents: read\n/m);
+			expect(text, file).not.toMatch(/: write\b|id-token|environment:/);
+		}
+		for (const file of files) {
+			if (file === "ci.yml" || file === "release-gate.yml") continue;
+			expect(triggers(workflow(file)), file).not.toMatch(/pull_request/);
+		}
 		// The release workflows: a completed CI on master, or a dispatch (which
 		// needs write access to the repository); never a PR or a push.
 		expect(triggers(workflow("release-finish.yml")).trim()).toBe(
