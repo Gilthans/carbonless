@@ -6,15 +6,13 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext } from "react";
-import type {
-	AgentAnchor,
-	AgentThread,
-	AgentViewFrom,
-} from "../../shared/agent";
+import type { AgentAnchor, AgentThread, AgentView } from "../../shared/agent";
 import type { DisplayHunk, PrOverview } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import { type CodeSpan, commentAvailable } from "../files/selectionActions";
 import {
+	closeComposer,
+	getComposers,
 	newThreadItems,
 	openComposer,
 	sameSpan,
@@ -70,10 +68,13 @@ export interface AgentCommentContext {
 	/** Both ends of the span are lines of GitHub's diff (undefined: unknown). */
 	inDiff?: boolean;
 	/**
-	 * What the conversation was asked against (its first question's view):
-	 * old lines name GitHub's base only when that was the branch.
+	 * The comparison the conversation was first asked in (its first
+	 * question's view): old lines name GitHub's base only when that was the
+	 * base branch, at the merge base it has now.
 	 */
-	askedFrom?: AgentViewFrom;
+	asked?: AgentView;
+	/** The merge base of the head shown (GitHub's base for it); undefined if unknown. */
+	base?: string;
 }
 
 const sidesOf = (a: AgentAnchor) =>
@@ -103,11 +104,16 @@ export function agentCommentAvailable(
 	if (anchor.commit !== ctx.right) {
 		return "Asked on an earlier version: ask again on the latest";
 	}
-	if (
-		sidesOf(anchor).includes("LEFT") &&
-		!(ctx.askedFrom && "branch" in ctx.askedFrom)
-	) {
-		return "Old lines not asked against the base branch";
+	if (sidesOf(anchor).includes("LEFT")) {
+		const asked = ctx.asked;
+		// No question with its comparison (one the agent opened, or older).
+		if (!asked) return "Old lines: not known to be the base branch's";
+		if (!("branch" in asked.from)) {
+			return "Old lines asked against a patch set, not the base branch";
+		}
+		if (ctx.base === undefined || asked.left !== ctx.base) {
+			return "Old lines asked against an earlier base";
+		}
 	}
 	return true;
 }
@@ -142,7 +148,12 @@ export function useAgentComment(
 				readOnly,
 				headUnsure: !scope.headSure,
 				inDiff: scope.inDiff(span),
-				askedFrom: thread.messages.find((m) => m.by === "human")?.view?.from,
+				asked: thread.messages.find((m) => m.by === "human")?.view,
+				base:
+					session?.patchsets?.find((p) => p.head === right)?.mergeBase ??
+					(session?.head && session.head.oid === right
+						? session.head.mergeBase
+						: undefined),
 			})
 		: "The PR is loading";
 	return {
@@ -162,6 +173,17 @@ export function useAgentComment(
 					draft.text,
 					draft.create.texts,
 				);
+				// Empty plain composers there would be a second box: gone.
+				for (const c of getComposers()) {
+					if (
+						c.clientId !== typed.clientId &&
+						!c.agentThread &&
+						sameSpan(c.span, span) &&
+						!writer.drafts.newThread(c.clientId)
+					) {
+						closeComposer(c.clientId);
+					}
+				}
 				openComposer(typed.span, typed.clientId, thread.id);
 				return;
 			}

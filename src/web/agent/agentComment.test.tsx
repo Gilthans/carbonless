@@ -4,7 +4,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentAnchor, AgentThread } from "../../shared/agent";
+import type { AgentAnchor, AgentThread, AgentView } from "../../shared/agent";
 import type {
 	DisplayHunk,
 	PrOverview,
@@ -176,20 +176,45 @@ describe("agentCommentAvailable", () => {
 		expect(agentCommentAvailable(file, { ...on, inDiff: false })).toBe(true);
 	});
 
-	it("old lines only when asked against the base branch (a since view's are a patch set's)", () => {
+	it("old lines only when asked against the base branch at today's merge base", () => {
 		const left = { ...line, side: "LEFT" as const, startSide: "LEFT" as const };
+		const BASE = "b".repeat(40);
+		const asked = (from: AgentView["from"], l = BASE): AgentView => ({
+			target: { patchset: 2 },
+			from,
+			left: l,
+			right: HEAD,
+		});
+		const branch = { ...on, base: BASE };
 		expect(
-			agentCommentAvailable(left, { ...on, askedFrom: { patchset: 1 } }),
-		).toMatch(/not asked against the base branch/);
-		expect(agentCommentAvailable(left, on)).toMatch(
-			/not asked against the base branch/,
+			agentCommentAvailable(left, { ...branch, asked: asked({ patchset: 1 }) }),
+		).toMatch(/asked against a patch set/);
+		// The base moved since it was asked: its old lines aren't GitHub's now.
+		expect(
+			agentCommentAvailable(left, {
+				...branch,
+				asked: asked({ branch: true }, "c".repeat(40)),
+			}),
+		).toMatch(/earlier base/);
+		expect(
+			agentCommentAvailable(left, {
+				...on,
+				asked: asked({ branch: true }),
+			}),
+		).toMatch(/earlier base/);
+		// No question with a comparison (one the agent opened, or older).
+		expect(agentCommentAvailable(left, branch)).toBe(
+			"Old lines: not known to be the base branch's",
 		);
 		expect(
-			agentCommentAvailable(left, { ...on, askedFrom: { branch: true } }),
+			agentCommentAvailable(left, {
+				...branch,
+				asked: asked({ branch: true }),
+			}),
 		).toBe(true);
 		// New lines are the head's whatever it was compared against.
 		expect(
-			agentCommentAvailable(line, { ...on, askedFrom: { patchset: 1 } }),
+			agentCommentAvailable(line, { ...on, asked: asked({ patchset: 1 }) }),
 		).toBe(true);
 	});
 });
@@ -306,7 +331,29 @@ describe("Comment on an agent conversation", () => {
 							},
 						],
 					},
-					/not asked against the base branch/,
+					/asked against a patch set/,
+				],
+				[
+					// Asked against the branch at a base it no longer has.
+					{ patchsets: [1] },
+					{
+						anchor: { ...line, side: "LEFT", startSide: "LEFT" },
+						messages: [
+							{
+								id: "m1",
+								by: "human",
+								at: "2026-11-07T10:00:00Z",
+								text: "Why?",
+								view: {
+									target: { patchset: 1 },
+									from: { branch: true },
+									left: "c".repeat(40),
+									right: HEAD,
+								},
+							},
+						],
+					},
+					/earlier base/,
 				],
 			];
 		for (const [opts, more, why] of cases) {
@@ -384,6 +431,52 @@ describe("Comment on an agent conversation", () => {
 			create: { agentThread: thread().id },
 		});
 		expect(getComposers().map((c) => c.clientId)).toEqual(["typed1"]);
+	});
+
+	it("a typed plain comment and an empty plain composer on the span: the typed one takes the conversation, alone, focused", async () => {
+		show(thread());
+		const writer = threadWritesFor(client);
+		const span = spanOfAnchor(line);
+		writer.drafts.setNew("typed1", targetOf(span), "Half done");
+		openComposer(span, "empty1");
+		await userEvent.click(
+			screen.getByRole("button", { name: "Comment on GitHub" }),
+		);
+		const items = newThreadItems(writer.drafts.get(), getComposers());
+		expect(items).toEqual([
+			expect.objectContaining({
+				clientId: "typed1",
+				text: "Half done",
+				agentThread: thread().id,
+				focus: true,
+			}),
+		]);
+	});
+
+	it("old lines asked against the base branch at today's merge base: on", () => {
+		show(
+			thread({
+				anchor: { ...line, side: "LEFT", startSide: "LEFT" },
+				messages: [
+					{
+						id: "m1",
+						by: "human",
+						at: "2026-11-07T10:00:00Z",
+						text: "Why?",
+						view: {
+							target: { patchset: 1 },
+							from: { branch: true },
+							left: "b".repeat(40),
+							right: HEAD,
+						},
+					},
+				],
+			}),
+			{ patchsets: [1] },
+		);
+		expect(
+			screen.getByRole("button", { name: "Comment on GitHub" }),
+		).not.toHaveAttribute("aria-disabled");
 	});
 
 	it("says on its card why a posted comment didn't take the conversation", async () => {

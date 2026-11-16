@@ -42,6 +42,3 @@ export function useLinkProblem(thread: string): string | undefined {
 		() => problems.get(thread),
 	);
 }
-
-export const linkProblemOf = (thread: string): string | undefined =>
-	problems.get(thread);
