@@ -498,6 +498,12 @@ leash config. We'll implement more strict versions in the future.").
   stripped, as it is for GitHub's HTML; a test feeds a reply with
   `<script>`, `<img onerror>` and a `javascript:` link and asserts none
   survive.
+  A top-level ```` ```comment ```` fence (info string exactly `comment`)
+  is not code: it is a review comment the agent suggests, shown as an
+  editable box the reviewer may post (CAR-83,
+  `docs/superpowers/specs/2026-11-16-agent-suggested-comment-design.md`);
+  one nested in a list or a quote stays code. Its text is the fence's raw
+  body, never HTML.
 - **Thread bubbles:** an agent thread gets its own bubble in the gutter
   (owner: "Agent threads should have a separate bubble"), in the agent
   tint with the sparkle, next to the comment bubble, each with its own

@@ -266,10 +266,11 @@ a reader drops what breaks them:
 - `by: "ai"` events can never change a cluster's state; `by: "auto"` ones
   can only carry one that a human already set (the fold checks, see
   "Reading").
-- `agent-thread-resolved` must have `by: "human"` (see "Agent threads ref").
+- `agent-thread-resolved` and `agent-comment-posted` must have `by:
+  "human"` (see "Agent threads ref").
 - Agent events (`agent-thread-opened`, `agent-message`,
-  `agent-thread-resolved`, `agent-thread-seen`) are a human's or the agent's (`by: "ai"`), never
-  `"auto"`.
+  `agent-thread-resolved`, `agent-thread-seen`, `agent-comment-posted`) are
+  a human's or the agent's (`by: "ai"`), never `"auto"`.
 
 ## Writing
 
@@ -513,6 +514,7 @@ tree, slug identities, compare-and-swap). Written by
 | `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent` (as above; a joined session's `name` is how it named itself, `version` its harness string, `via` `mcp`, and `machine`; a spawned agent's, written by its MCP `reply` too since 2026-11-13, `via` `acp` with its `agentInfo` name and version), `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the answer replies to: `reply`'s `replyTo`, or the question a stopped or failed hand-out ends; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); ai only: `head` (the OID of the checkout the answer came from; older ACP answers only, none since 2026-11-13), `suggests` (`"resolve"`), `origin` (below; an origin message has `stop: "end_turn"`, empty `activity`, no `replyTo`, and `details.key` when the agent gave one); human only: `view`; a human's carries `details.clientId` |
 | `agent-thread-resolved` | human | `thread`, `resolved` (`false` reopens) |
 | `agent-thread-seen` | human | `thread`, `upTo` (the id of the last message the reviewer has seen; a lowercase ULID) |
+| `agent-comment-posted` | human | `thread`, `message` (the agent message's id, a lowercase ULID), `block` (the ```` ```comment ```` block's index in that message, from 0), `clientId` (`ag.<thread>.<message>.<block>`, the comment's marker id), `github` `{thread, comment, url}` (the GitHub thread and comment node ids, and the comment's https link), `text` (what the reviewer posted, at most 32 KiB) |
 
 `view` is the comparison on screen when a human message was sent:
 `target` (`{patchset}` or `{head}`), `from` (`{branch: true}` or
@@ -538,7 +540,10 @@ folded from the origins on read (`startedBy`), never stored.
   by ai is skipped by readers, and so is an ai-opened thread without its
   `agent`. Only a human has seen a thread: `agent-thread-seen` by ai is
   refused on write and skipped on read, so nothing automatic can make an
-  answer look seen.
+  answer look seen. Only the reviewer posts to GitHub:
+  `agent-comment-posted` by ai is refused on write and skipped on read
+  (CAR-83, since 2026-11-16). It is written after GitHub took the comment,
+  once per block (the store writes nothing for a block already recorded).
 - **Fold:** deduplicate by `id`, sort by `(ts, id)`. Threads in the order
   they were opened; the opening text is the first message. A thread waits
   while a human message has no answer: one comes after the last answer's
@@ -563,6 +568,9 @@ folded from the origins on read (`startedBy`), never stored.
   seen; the store writes no `agent-thread-seen` when the thread is already
   seen up to there or later. `agent-thread-resolved` folds as ever for a
   thread anchor; whether it counts is the GitHub join's call.
+  `agent-comment-posted` folds onto its message as `posted: [{block, url,
+  at, text}]` (by block; the first record of a block wins), only onto an
+  ai message the thread holds; any other is dropped.
 - **Resends:** a human's question carries the page's `clientId` in
   `details` (informational: the fold ignores it). The store remembers the
   ones in the ref and the ones it wrote, so Ask pressed twice, or resent
