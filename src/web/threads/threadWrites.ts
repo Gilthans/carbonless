@@ -21,6 +21,8 @@ import type {
 	VerdictRequest,
 } from "../../shared/types";
 import {
+	AGENT_PLACEMENTS_KEY,
+	AGENT_THREADS_KEY,
 	ApiError,
 	commentsQuery,
 	deleteComment,
@@ -1674,6 +1676,12 @@ export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
 	void client.invalidateQueries({ queryKey: REVIEW_KEY });
 	void client.invalidateQueries({ queryKey: ["rereview"] });
 	void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
+	// An agent conversation moved onto it: its card leaves the code for the
+	// thread's agent button.
+	if (answer.agentThread) {
+		void client.invalidateQueries({ queryKey: AGENT_THREADS_KEY });
+		void client.invalidateQueries({ queryKey: AGENT_PLACEMENTS_KEY });
+	}
 }
 
 /** A thread's opener text fields, from its first comment. */

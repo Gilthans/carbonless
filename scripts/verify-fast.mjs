@@ -98,6 +98,7 @@ const E2E_MAP = [
 			"agent-join",
 			"agent-open",
 			"review-conversation",
+			"agent-comment",
 		],
 	],
 	// The review conversation's drawer: mounted and pushing the page in App,
@@ -119,7 +120,7 @@ const E2E_MAP = [
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
 	],
-	[/^src\/web\/threads\//, ["files-threads", "thread-people"]],
+	[/^src\/web\/threads\//, ["files-threads", "thread-people", "agent-comment"]],
 	[
 		/^src\/web\/files\/(ThreadRow|FilesPage)\.tsx$|^src\/web\/overview\/OverviewPage\.tsx$|^test\/fake-gh\/(demo-threads|showcase)\.ts$|^src\/web\/index\.css$/,
 		["thread-people"],

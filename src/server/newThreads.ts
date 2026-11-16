@@ -70,6 +70,8 @@ const obj = (v: unknown): Json =>
 
 const SIDES: readonly unknown[] = ["LEFT", "RIGHT"] satisfies DiffSide[];
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+/** An agent conversation's id: a lowercase ULID. */
+const AGENT_THREAD = /^[0-9a-hjkmnp-tv-z]{26}$/;
 const MAX_LINE = 999_999_999;
 const MAX_PATH = 4096;
 
@@ -100,6 +102,12 @@ export function newThreadProblem(req: unknown): string | null {
 	}
 	if (typeof r.commit !== "string" || !OID.test(r.commit)) {
 		return "commit must be a commit id";
+	}
+	if (
+		r.agentThread !== undefined &&
+		(typeof r.agentThread !== "string" || !AGENT_THREAD.test(r.agentThread))
+	) {
+		return "agentThread must be an agent conversation's id";
 	}
 	const lineFields = [r.startSide, r.startLine, r.side, r.line];
 	const cols = [r.startCol, r.endCol];

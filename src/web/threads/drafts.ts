@@ -145,7 +145,8 @@ function isNew(d: Partial<Draft>): boolean {
 		!optNumber(c.startLine) ||
 		!optNumber(c.line) ||
 		!optCol(c.startCol) ||
-		!optCol(c.endCol)
+		!optCol(c.endCol) ||
+		(c.agentThread !== undefined && typeof c.agentThread !== "string")
 	) {
 		return false;
 	}

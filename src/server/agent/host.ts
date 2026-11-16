@@ -690,6 +690,28 @@ export class AgentHost {
 		return this.#view(await this.#joinedOne(t));
 	}
 
+	/**
+	 * The reviewer posted GitHub thread `github` on `path` from span
+	 * conversation `thread` (POST threads' `agentThread`): the
+	 * conversation becomes that thread's (store.link). A conversation on
+	 * another file is refused (AgentRequestError); a resend links nothing
+	 * new.
+	 */
+	async link(
+		thread: string,
+		github: string,
+		path: string,
+	): Promise<AgentThread> {
+		const current = await this.store.find(thread);
+		if (current.anchor.path !== path) {
+			throw new AgentRequestError(
+				"The conversation is on another file than the comment",
+			);
+		}
+		const t = await this.store.link(current.id, github);
+		return this.#view(await this.#joinedOne(t));
+	}
+
 	/** The reviewer has seen the thread up to a message (no write when already seen). */
 	async seen(thread: string, upTo: string): Promise<AgentThread> {
 		const t = await this.store.seen(thread, upTo);

@@ -3,6 +3,7 @@ import {
 	CheckCircleIcon,
 	ChevronDownIcon,
 	ChevronUpIcon,
+	CommentIcon,
 	HistoryIcon,
 	IssueReopenedIcon,
 	SparkleFillIcon,
@@ -43,6 +44,7 @@ import { commentSurface } from "../threads/Conversation";
 import { newClientId } from "../threads/newThreads";
 import { Avatar, usePerson } from "../threads/people";
 import { AgentMarkdown } from "./AgentMarkdown";
+import { useAgentComment } from "./agentComment";
 import {
 	type AgentWrite,
 	dropAgentWrite,
@@ -393,6 +395,35 @@ export function agentName(
  * sparkle, with the resolved check), that opens again; a resolved thread
  * starts closed, and Unresolve opens it. Nothing here reaches GitHub.
  */
+/**
+ * A new GitHub thread on the conversation's span; once GitHub has it, the
+ * conversation moves behind that thread's agent button. Off, with why,
+ * where GitHub can't take a comment there.
+ */
+function CommentOnGithub(props: { thread: AgentThread }) {
+	const { ok, start } = useAgentComment(props.thread);
+	const tip = ok === true ? "Comment on GitHub" : ok;
+	return (
+		<Tooltip content={tip}>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					data-testid="agent-comment"
+					aria-label={
+						ok === true ? "Comment on GitHub" : `Comment on GitHub — ${ok}`
+					}
+					aria-disabled={ok !== true || undefined}
+					onClick={start}
+					className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:text-faint aria-disabled:hover:bg-transparent"
+				>
+					<CommentIcon size={16} aria-hidden />
+				</button>
+			)}
+		</Tooltip>
+	);
+}
+
 export function AgentThreadCard(props: {
 	thread: AgentThread;
 	status: AgentStatus | undefined;
@@ -566,19 +597,24 @@ export function AgentThreadCard(props: {
 						className="text-warn"
 					/>
 				)}
-				{answering && (
-					<button
-						type="button"
-						data-testid="agent-stop"
-						disabled={stop.isPending}
-						onClick={() => stop.mutate()}
-						className="ml-auto flex h-10 items-center gap-1.5 rounded-md border border-line-strong px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint"
-					>
-						<SquareFillIcon size={12} aria-hidden />
-						Stop
-					</button>
-				)}
-				{resolved && toggle}
+				<div className="ml-auto flex items-center gap-x-2">
+					{thread.anchor.subject !== "thread" && !thread.orphaned && (
+						<CommentOnGithub thread={thread} />
+					)}
+					{answering && (
+						<button
+							type="button"
+							data-testid="agent-stop"
+							disabled={stop.isPending}
+							onClick={() => stop.mutate()}
+							className="flex h-10 items-center gap-1.5 rounded-md border border-line-strong px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint"
+						>
+							<SquareFillIcon size={12} aria-hidden />
+							Stop
+						</button>
+					)}
+					{resolved && toggle}
+				</div>
 			</div>
 			<div id={bodyId} className="space-y-2 p-2.5">
 				<AgentMessageItems

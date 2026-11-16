@@ -662,7 +662,7 @@ export async function buildApp(
 				return sessionOf(request).setStates(revision, changes);
 			});
 			// Thread writes, posted to GitHub at once (threadWrites.ts, newThreads.ts).
-			review.post("/threads", (request) => {
+			review.post("/threads", async (request) => {
 				const problem = newThreadProblem(request.body);
 				if (problem) throw new WriteRefusedError(problem, "invalid");
 				const r = request.body as NewThreadRequest;
@@ -677,7 +677,7 @@ export async function buildApp(
 								endCol: r.endCol ?? null,
 							}
 						: {};
-				return sessionOf(request).startThread({
+				const answer = await sessionOf(request).startThread({
 					clientId: r.clientId,
 					body: r.body,
 					attemptedAt: r.attemptedAt,
@@ -687,6 +687,22 @@ export async function buildApp(
 					subject: r.subject,
 					...line,
 				});
+				// Started from an agent conversation: GitHub has the thread, so
+				// the conversation becomes its (a resend links nothing new). A
+				// link that fails leaves the conversation on its span, still
+				// shown; GitHub's thread stands either way.
+				const github = answer.thread.id;
+				if (r.agentThread === undefined || github === "") return answer;
+				try {
+					await agentOf(request).link(r.agentThread, github, r.path);
+					return { ...answer, agentThread: r.agentThread };
+				} catch (error) {
+					request.log.warn(
+						{ err: error },
+						"agent conversation not linked to its new thread",
+					);
+					return answer;
+				}
 			});
 			review.post<{ Params: { threadId: string } }>(
 				"/threads/:threadId/replies",
