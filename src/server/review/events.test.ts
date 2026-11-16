@@ -653,6 +653,22 @@ describe("agent events", () => {
 		for (const e of all) expect(() => validateForWrite(e)).not.toThrow();
 	});
 
+	it("parses and writes a review-subject opening", () => {
+		const reviewOpened = { ...opened, anchor: { subject: "review" as const } };
+		expect(parseEventLines(msg([reviewOpened]))).toEqual([reviewOpened]);
+		expect(() => validateForWrite(reviewOpened)).not.toThrow();
+		// Extra keys on the anchor are dropped: a review anchor has no path.
+		const extra = {
+			...opened,
+			anchor: { subject: "review", path: "src/a.ts", commit: "", line: 3 },
+		};
+		expect(parseEventLines(msg([extra]))).toEqual([reviewOpened]);
+		// Human-opened only: an ai opening is dropped and refused.
+		const aiOpened = { ...reviewOpened, by: "ai", agent } as CrbEvent;
+		expect(parseEventLines(msg([aiOpened]))).toEqual([]);
+		expect(() => validateForWrite(aiOpened)).toThrow();
+	});
+
 	it("agent events by auto are dropped and refused", () => {
 		for (const e of [opened, reply, resolved]) {
 			const auto = { ...e, by: "auto" } as unknown as CrbEvent;

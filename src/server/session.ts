@@ -1,4 +1,8 @@
-import type { AgentPlacementsAnswer, AgentView } from "../shared/agent.js";
+import type {
+	AgentPlacementsAnswer,
+	AgentView,
+	AgentViewTarget,
+} from "../shared/agent.js";
 import { overlayCarries } from "../shared/rereview/overlay.js";
 import {
 	type ThreadInput,
@@ -291,6 +295,8 @@ export class Session {
 	#reads: OverviewRead[] = [];
 	/** Every read not settled yet, kept or not: close() stops them all. */
 	readonly #live = new Set<OverviewRead>();
+	/** The read overview() last served the page (its route): never pushed out by newer reads. */
+	#served: OverviewRead | null = null;
 	/** Reads a Refresh replaced: their threads still serve, their overview not. */
 	readonly #superseded = new WeakSet<OverviewRead>();
 	/** Serializes everything that writes or swaps the snapshot. */
@@ -392,9 +398,13 @@ export class Session {
 					},
 					async () => "",
 				),
-			threads: async () => (await this.#agentGithub()).threads,
-			thread: async (id) => {
-				const { read, threads } = await this.#agentGithub();
+			threads: async (maxAgeMs) => (await this.#agentGithub(maxAgeMs)).threads,
+			threadsAt: async (maxAgeMs) => {
+				const { read, threads } = await this.#agentGithub(maxAgeMs);
+				return { threads, at: new Date(read.started).toISOString() };
+			},
+			thread: async (id, maxAgeMs) => {
+				const { read, threads } = await this.#agentGithub(maxAgeMs);
 				const found = threads.find((t) => t.id === id);
 				if (!found) return null;
 				// Deleted since the list was read: its comments say so.
@@ -409,8 +419,8 @@ export class Session {
 				await this.checkHead();
 			},
 			prAuthor: async () => (await this.overview()).author,
-			comments: async (ids) => {
-				const { read } = await this.#agentGithub();
+			comments: async (ids, maxAgeMs) => {
+				const { read } = await this.#agentGithub(maxAgeMs);
 				const out = new Map<string, { author: string; body: string }[]>();
 				for (const t of (await read.comments(ids)).threads) {
 					if (t.unavailable) continue;
@@ -421,6 +431,7 @@ export class Session {
 				}
 				return out;
 			},
+			coverage: (target) => this.coverage(target),
 			githubThread: async (id, view) => {
 				const { read, threads } = await this.#agentGithub();
 				const thread = threads.find((t) => t.id === id);
@@ -468,15 +479,17 @@ export class Session {
 	}
 
 	/**
-	 * The review threads of the read the overview serves (their summaries,
-	 * this session's own writes applied), as the agent joins them.
+	 * The review threads of a read at most `maxAgeMs` old (their summaries,
+	 * this session's own writes applied), as the agent joins them; by
+	 * default the read the overview serves, of any age.
 	 */
-	async #agentGithub(): Promise<{
+	async #agentGithub(maxAgeMs = Number.POSITIVE_INFINITY): Promise<{
 		read: OverviewRead;
 		threads: ReviewThread[];
 	}> {
 		if (this.#closed) throw new SessionClosedError("The session is closed");
-		const read = this.#pickRead(Number.POSITIVE_INFINITY);
+		// A recent or running read is reused (#pickRead): a burst reads once.
+		const read = this.#pickRead(maxAgeMs);
 		return { read, threads: (await read.threads("summary")).threads };
 	}
 
@@ -1451,6 +1464,8 @@ export class Session {
 	 */
 	overview(
 		maxAgeMs = Number.POSITIVE_INFINITY,
+		/** The page asks (its route): the read is kept while newer ones come. */
+		forPage = false,
 	): Promise<Omit<PrOverview, "servedAt">> {
 		if (this.#closed) {
 			return Promise.reject(new SessionClosedError("The session is closed"));
@@ -1458,7 +1473,9 @@ export class Session {
 		// Asked at once, never waited for: it is in by the time GitHub's
 		// overview is, or the next one says (true until it is known).
 		this.#commentLeftNow();
-		return this.#pickRead(maxAgeMs).overview.then((o) => ({
+		const read = this.#pickRead(maxAgeMs);
+		if (forPage) this.#served = read;
+		return read.overview.then((o) => ({
 			...o,
 			commentLeft: this.#commentLeftNow(),
 		}));
@@ -1951,8 +1968,14 @@ export class Session {
 		// Until it has settled, whether kept or not (close() stops it).
 		this.#live.add(read);
 		void read.settled.then(() => this.#live.delete(read));
-		// The newest few, so a page still showing an older one gets its threads.
-		this.#reads = [...this.#reads, read].slice(-KEPT_READS);
+		// The newest few, so a page still showing an older one gets its threads;
+		// and the one the page was last served, which an agent's fresh reads
+		// (a burst every 30 s) must not push out.
+		const all = [...this.#reads, read];
+		const kept = all.slice(-KEPT_READS);
+		const page = this.#served;
+		if (page && all.includes(page) && !kept.includes(page)) kept.unshift(page);
+		this.#reads = kept;
 		read.overview.catch(() => {
 			this.#reads = this.#reads.filter((r) => r !== read);
 		});
@@ -1973,6 +1996,38 @@ export class Session {
 		const view = buildReviewView(snapshot, await this.#progress());
 		if (snapshot === this.#snapshot) this.#patchset = view.patchset;
 		return view;
+	}
+
+	/**
+	 * The coverage the page shows for a comparison, with its merge base and
+	 * head (the agent's `progress`): patch set `target.patchset` as reviewAt
+	 * reads it, head `target.head` as viewHead does, else the review as
+	 * review() does. It writes nothing: no patch set starts.
+	 */
+	async coverage(
+		target?: AgentViewTarget,
+	): Promise<{ base: string; head: string; view: ReviewView }> {
+		if (target && "patchset" in target) {
+			const progress = await this.#progress();
+			const record = progress.patchsets.find(
+				(p) => p.number === target.patchset,
+			);
+			if (!record) throw new RangeError(`No patch set ${target.patchset}`);
+			const snapshot = await this.#snapshotOf(record);
+			const view = buildReviewView(snapshot, progress);
+			return { base: snapshot.base, head: snapshot.head, view };
+		}
+		if (target) {
+			const snapshot = await this.#headSnapshot(target.head);
+			const view = await this.viewHead(target.head);
+			if (view.revision !== snapshot.revision) {
+				throw new Error("The head's comparison moved while it was read");
+			}
+			return { base: snapshot.base, head: snapshot.head, view };
+		}
+		const snapshot = this.#snapshot;
+		const view = buildReviewView(snapshot, await this.#progress());
+		return { base: snapshot.base, head: snapshot.head, view };
 	}
 
 	/**

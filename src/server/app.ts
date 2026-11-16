@@ -478,6 +478,7 @@ export async function buildApp(
 					}
 					const overview = await sessionOf(request).overview(
 						maxAge === undefined ? undefined : Number(maxAge),
+						true,
 					);
 					// The server's clock: the page judges the age by it, not its own.
 					return { ...overview, servedAt: new Date().toISOString() };
@@ -881,11 +882,6 @@ export async function buildApp(
 					return { ok: true };
 				},
 			);
-			// The reviewer's Disconnect of a joined session.
-			review.post("/agent/disconnect", async (request) => {
-				await agentOf(request).disconnect();
-				return { ok: true };
-			});
 			// The reviewer's Spawn (Start): this review's ACP buddy on.
 			review.post("/agent/start", async (request) => {
 				await agentOf(request).startAcp();
@@ -1181,8 +1177,11 @@ function parseAgentOpen(body: unknown): OpenAgentThreadRequest {
 	>;
 	const problem = clientIdProblem(b.clientId) ?? agentTextProblem(b.text);
 	if (problem) throw new BadRequestError(problem);
-	if ((b.span === undefined) === (b.thread === undefined)) {
-		throw new BadRequestError("span or thread, one of them");
+	const given = [b.span, b.thread, b.review].filter(
+		(x) => x !== undefined,
+	).length;
+	if (given !== 1) {
+		throw new BadRequestError("span, thread or review, one of them");
 	}
 	const view = parseAgentView(b.view);
 	const common = {
@@ -1190,6 +1189,10 @@ function parseAgentOpen(body: unknown): OpenAgentThreadRequest {
 		text: b.text as string,
 		...(view ? { view } : {}),
 	};
+	if (b.review !== undefined) {
+		if (b.review !== true) throw new BadRequestError("review must be true");
+		return { ...common, review: true };
+	}
 	if (b.thread !== undefined) {
 		const thread = b.thread;
 		// GitHub node ids; the stored anchor takes at most 200 characters.

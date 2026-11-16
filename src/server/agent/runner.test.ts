@@ -19,8 +19,8 @@ import {
 	testGitEnv,
 } from "../../../test/git-fixture.js";
 import {
-	type AgentAnchor,
 	type AgentConfig,
+	type AgentSpanAnchor,
 	type AgentStatus,
 	JOINED_PREAMBLE,
 } from "../../shared/agent.js";
@@ -96,7 +96,7 @@ let mcpUrl: string;
 let prHead: string;
 const saved: Record<string, string | undefined> = {};
 
-const anchor = (line: number): AgentAnchor => ({
+const anchor = (line: number): AgentSpanAnchor => ({
 	subject: "line",
 	path: "a.txt",
 	commit: origin.shas[1] as string,
@@ -1690,5 +1690,45 @@ describe("AgentRunner: a question's time limit (no process)", () => {
 		state.handed = null;
 		await vi.advanceTimersByTimeAsync(5000);
 		expect(state.messages).toEqual([]);
+	});
+});
+
+describe("AgentRunner: the waiting count", () => {
+	it("a waiting review thread counts, also after a forced resolved event; a resolved span thread doesn't", async () => {
+		const r = makeRunner({ acpOff: () => true });
+		const t = await store.open({
+			anchor: { subject: "review" },
+			text: "q",
+			by: "human",
+			clientId: "c1",
+		});
+		expect((await r.status()).waiting).toBe(1);
+		// Written around the host's refusal, as a hand-edited ref could.
+		await store.setResolved(t.id, true);
+		expect((await r.status()).waiting).toBe(1);
+		const span = await ask("why?");
+		expect((await r.status()).waiting).toBe(2);
+		await store.setResolved(span.id, true);
+		expect((await r.status()).waiting).toBe(1);
+	});
+
+	it("a resolved orphaned thread conversation with a waiting question counts for no one", async () => {
+		// GitHub lists no thread: the conversation is an orphan, a span thread
+		// whose own resolve counts (next and the wake-up skip it once resolved).
+		const r = makeRunner({ acpOff: () => true });
+		const t = await store.open({
+			anchor: {
+				subject: "thread",
+				thread: "PRRT_gone",
+				path: "a.txt",
+				commit: origin.shas[1] as string,
+			},
+			text: "Still there?",
+			by: "human",
+			clientId: "o1",
+		});
+		expect((await r.status()).waiting).toBe(1);
+		await store.setResolved(t.id, true);
+		expect((await r.status()).waiting).toBe(0);
 	});
 });

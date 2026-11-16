@@ -26,7 +26,7 @@ const changes = (n: number) => `${n} ${n === 1 ? "change" : "changes"}`;
  * md up. Home's view save uses the same place.
  */
 export const NOTICE_STACK =
-	"pointer-events-none fixed inset-x-3 bottom-20 z-40 flex flex-col gap-2 sm:inset-x-auto sm:left-4 sm:w-96 md:right-4 md:bottom-4 md:left-auto md:w-80";
+	"pointer-events-none fixed inset-x-3 bottom-20 z-40 flex flex-col gap-2 sm:inset-x-auto sm:left-4 sm:w-96 sm:max-w-[calc(100vw-2rem-var(--drawer-push,0px))] md:right-[calc(1rem+var(--drawer-push,0px))] md:bottom-4 md:left-auto md:w-80";
 
 /** Yellow: a save that has waited over DELAYED_MS, why, and what it saves. */
 export function DelayedNotice(props: {

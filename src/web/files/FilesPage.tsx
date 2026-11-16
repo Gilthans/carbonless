@@ -14,7 +14,7 @@ import {
 	useState,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
-import type { AgentThread } from "../../shared/agent";
+import { type AgentThread, isSpanThread } from "../../shared/agent";
 import { sinceOnlyPieces } from "../../shared/pieces";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { ReviewThread, SessionInfo } from "../../shared/types";
@@ -27,10 +27,15 @@ import {
 import {
 	AgentPlacingProvider,
 	agentOutside,
+	agentPlacementIds,
 	agentWaiting,
 	shownAgentPlaceables,
 } from "../agent/placeable";
-import { comparisonView, SendViewProvider } from "../agent/threadAgent";
+import {
+	comparisonView,
+	SendViewProvider,
+	usePublishSendView,
+} from "../agent/threadAgent";
 import {
 	ApiError,
 	hunksQuery,
@@ -1183,8 +1188,9 @@ export function FilesPage() {
 	const agentThreads = agentThreadsRead.data?.threads;
 	// Where the tracer puts them in the viewed snapshot, as GitHub's are;
 	// until it answers (or if it fails) each shows where it was asked.
+	// The review conversation has no code to place: never asked about.
 	const agentIds = useMemo(
-		() => (agentThreads ?? []).map((t) => t.id),
+		() => agentPlacementIds(agentThreads),
 		[agentThreads],
 	);
 	const agentPlacingState = useAgentPlacementsFor({
@@ -1322,7 +1328,9 @@ export function FilesPage() {
 				? agentThreads
 				: agentThreads.filter(
 						(t) =>
-							t.anchor.commit === agentHead || Date.parse(t.at) < threadsCutoff,
+							!isSpanThread(t) ||
+							t.anchor.commit === agentHead ||
+							Date.parse(t.at) < threadsCutoff,
 					);
 		return agentRows(
 			listedConversations(
@@ -1572,6 +1580,8 @@ export function FilesPage() {
 		() => comparisonView(comparison.viewing, comparison.base),
 		[comparison.viewing, comparison.base],
 	);
+	// And the review conversation's drawer's, from any tab (kept while hidden).
+	usePublishSendView(sendView);
 	return (
 		<PeopleProvider threads={allThreads}>
 			<PlacementProvider value={placementInfo}>
@@ -1856,7 +1866,7 @@ export function FilesPage() {
 												aria-label="Files"
 												aria-haspopup="dialog"
 												onClick={() => setSheetOpen(true)}
-												className="fixed right-4 bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+												className="fixed right-[calc(1rem+var(--drawer-push,0px))] bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 											>
 												<span aria-hidden>☰</span>
 												Files

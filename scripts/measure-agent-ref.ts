@@ -5,8 +5,10 @@
  * answer) in a throwaway bare repo, written through AgentThreadStore. Prints the loose and packed
  * size, one append (wall and CPU, carbonless's and its git children's) and
  * a cold read() (a new store, nothing cached), loose and after `git gc`.
+ * With `--review`: one review conversation of 20 messages instead (no
+ * `head` on answers: every agent answers through MCP since 2026-11-13).
  *
- *   pnpm tsx scripts/measure-agent-ref.ts
+ *   pnpm tsx scripts/measure-agent-ref.ts [--review]
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -17,15 +19,18 @@ import { createBareRepo, testGitEnv } from "../test/git-fixture";
 
 /** A review id as the server makes one (a lowercase ULID). */
 const REVIEW = "01k9e6m2q8x4v7c3n5b0h1j2t6";
-const THREADS = 50;
-const MESSAGES = 4;
+const REVIEW_MODE = process.argv.includes("--review");
+const THREADS = REVIEW_MODE ? 1 : 50;
+const MESSAGES = REVIEW_MODE ? 20 : 4;
 const TEXT_BYTES = 2048;
 /** Appends and cold reads timed; the median is reported. */
 const RUNS = 9;
 
 const agent = { name: "claude-agent-acp", version: "0.5.1" };
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
-const anchor = (i: number): AgentAnchor => ({
+const anchor = (i: number): AgentAnchor =>
+	REVIEW_MODE ? { subject: "review" } : threadAnchor(i);
+const threadAnchor = (i: number): AgentAnchor => ({
 	subject: "thread",
 	// A GitHub review thread's node id.
 	thread: `PRRT_kwDOKx${String(i).padStart(6, "0")}Hq1AbCdEf`,
@@ -132,7 +137,7 @@ try {
 							text: text(),
 							agent,
 							stop: "end_turn",
-							head: COMMIT,
+							...(REVIEW_MODE ? {} : { head: COMMIT }),
 							activity: [
 								{ kind: "read", title: "Read src/db/pool.ts" },
 								{ kind: "search", title: "grep withLock" },
