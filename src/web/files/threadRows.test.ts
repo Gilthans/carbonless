@@ -12,7 +12,11 @@ import {
 	githubRows,
 	listedConversations,
 	listedRows,
+	type PanelRow,
+	panelOrder,
+	placeOf,
 	plainText,
+	stepRow,
 } from "./threadRows";
 
 const span = (more: Partial<AgentThread> = {}): SpanAgentThread =>
@@ -248,6 +252,87 @@ describe("listedRows", () => {
 			new Map(),
 		);
 		expect(listedRows(odd, false)).toHaveLength(2);
+	});
+});
+
+describe("j/k: panelOrder and stepRow", () => {
+	const [base] = githubRows([reviewThread({ id: "base" })], new Map());
+	if (!base) throw new Error("no row");
+	const row = (key: string, day: number, resolved = false): PanelRow => ({
+		...base,
+		key,
+		id: key,
+		at: `2026-01-${String(day).padStart(2, "0")}T00:00:00Z`,
+		resolved,
+	});
+	const people = [row("gh:p1", 3), row("gh:p2", 9), row("gh:done", 5, true)];
+	const ai = [row("ai:a1", 1), row("ai:a2", 20)];
+	const open = { peopleFolded: false, aiFolded: false, showResolved: false };
+	const keys = (rows: readonly PanelRow[]) => rows.map((r) => r.key);
+	const order = panelOrder(people, ai, open);
+	const step = (
+		rows: readonly PanelRow[],
+		from: PanelRow | null,
+		dir: 1 | -1,
+	) => stepRow(rows, from && placeOf(from), dir)?.key ?? null;
+	const find = (key: string) => {
+		const r = [...people, ...ai].find((x) => x.key === key);
+		if (!r) throw new Error(key);
+		return r;
+	};
+
+	it("orders as the panel shows: People then AI, each newest first, resolved left out", () => {
+		expect(keys(order)).toEqual(["gh:p2", "gh:p1", "ai:a2", "ai:a1"]);
+		expect(
+			keys(panelOrder(people, ai, { ...open, showResolved: true })),
+		).toEqual(["gh:p2", "gh:done", "gh:p1", "ai:a2", "ai:a1"]);
+	});
+
+	it("leaves out a folded region and one still loading", () => {
+		expect(
+			keys(panelOrder(people, ai, { ...open, peopleFolded: true })),
+		).toEqual(["ai:a2", "ai:a1"]);
+		expect(keys(panelOrder(people, null, open))).toEqual(["gh:p2", "gh:p1"]);
+		expect(keys(panelOrder(people, ai, { ...open, aiFolded: true }))).toEqual([
+			"gh:p2",
+			"gh:p1",
+		]);
+	});
+
+	it("with no current row, j goes to the first and k to the last", () => {
+		expect(step(order, null, 1)).toBe("gh:p2");
+		expect(step(order, null, -1)).toBe("ai:a1");
+		expect(step([], null, 1)).toBeNull();
+	});
+
+	it("steps across regions and stops at the ends", () => {
+		expect(step(order, find("gh:p1"), 1)).toBe("ai:a2");
+		expect(step(order, find("ai:a2"), -1)).toBe("gh:p1");
+		expect(step(order, find("ai:a1"), 1)).toBeNull();
+		expect(step(order, find("gh:p2"), -1)).toBeNull();
+	});
+
+	it("goes on from where the current row was once it is hidden", () => {
+		const shown = panelOrder(people, ai, { ...open, showResolved: true });
+		expect(step(shown, find("gh:p2"), 1)).toBe("gh:done");
+		// Hidden again with the toggle: the rows around it.
+		expect(step(order, find("gh:done"), 1)).toBe("gh:p1");
+		expect(step(order, find("gh:done"), -1)).toBe("gh:p2");
+	});
+
+	it("goes on from a row whose region is folded", () => {
+		const aiOnly = panelOrder(people, ai, { ...open, peopleFolded: true });
+		expect(step(aiOnly, find("gh:p1"), 1)).toBe("ai:a2");
+		expect(step(aiOnly, find("gh:p1"), -1)).toBeNull();
+		const peopleOnly = panelOrder(people, ai, { ...open, aiFolded: true });
+		expect(step(peopleOnly, find("ai:a2"), -1)).toBe("gh:p1");
+		expect(step(peopleOnly, find("ai:a2"), 1)).toBeNull();
+	});
+
+	it("an undated current row that left steps from the bottom of its region", () => {
+		const undated = { ...row("gh:x", 1), at: "" };
+		expect(stepRow(order, placeOf(undated), 1)?.key).toBe("ai:a2");
+		expect(stepRow(order, placeOf(undated), -1)?.key).toBe("gh:p1");
 	});
 });
 

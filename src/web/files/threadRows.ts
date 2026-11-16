@@ -233,6 +233,67 @@ export function listedRows(
 		.map(({ r }) => r);
 }
 
+/**
+ * The rows the panel shows, top to bottom: People, then AI, each as
+ * listedRows lists it; a folded region's rows (and one still loading) are
+ * left out, as they aren't on screen.
+ */
+export function panelOrder(
+	people: readonly PanelRow[] | null,
+	ai: readonly PanelRow[] | null,
+	view: { peopleFolded: boolean; aiFolded: boolean; showResolved: boolean },
+): PanelRow[] {
+	const region = (rows: readonly PanelRow[] | null, folded: boolean) =>
+		rows === null || folded ? [] : listedRows(rows, view.showResolved);
+	return [...region(people, view.peopleFolded), ...region(ai, view.aiFolded)];
+}
+
+/**
+ * Where the current row (j/k) is in the panel's order: its key, and its
+ * region and activity, so a step still knows where it was once the row
+ * leaves the list (resolved and hidden, its region folded).
+ */
+export interface RowPlace {
+	key: string;
+	/** 0 in People, 1 in AI. */
+	region: number;
+	/** Its activity (ms); -Infinity undated, as listedRows sorts it. */
+	ms: number;
+}
+
+/** In the AI region: its key says so (agentRows). */
+const regionOf = (row: PanelRow) => (row.key.startsWith("ai:") ? 1 : 0);
+
+export const placeOf = (row: PanelRow): RowPlace => ({
+	key: row.key,
+	region: regionOf(row),
+	ms: timeOf(row.at),
+});
+
+/**
+ * The row a step goes to in `order` (panelOrder) from `at`: the next one
+ * (`dir` 1) or the previous (-1); with no current row the first or the
+ * last. At an end, none (no wrap). A current row no longer listed is
+ * stepped from where it stood: the next is the first row not above it
+ * (People before AI, newer above), the previous the last row above it.
+ */
+export function stepRow(
+	order: readonly PanelRow[],
+	at: RowPlace | null,
+	dir: 1 | -1,
+): PanelRow | null {
+	if (order.length === 0) return null;
+	if (at === null) return (dir === 1 ? order[0] : order.at(-1)) ?? null;
+	const i = order.findIndex((r) => r.key === at.key);
+	if (i !== -1) return order[i + dir] ?? null;
+	const above = (r: PanelRow) => {
+		const region = regionOf(r);
+		return region !== at.region ? region < at.region : timeOf(r.at) > at.ms;
+	};
+	if (dir === 1) return order.find((r) => !above(r)) ?? null;
+	return order.findLast(above) ?? null;
+}
+
 /** What the page knows of where conversations' cards are (FilesPage). */
 export interface FocusWorld {
 	/** The diff's file at `path` (old paths too), by index; undefined: none. */
