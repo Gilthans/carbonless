@@ -1531,12 +1531,18 @@ export function FilesPage() {
 			if (list) list.push(u);
 			else all.set(u.index, [u]);
 		}
+		const clustersAt = new Map(
+			(data?.files ?? []).map((f) => [f.index, f.clusters]),
+		);
 		const out = new Map<number, ReturnType<typeof countedFileUnits>>();
 		for (const [index, list] of all) {
-			out.set(index, countedFileUnits(list, ignoreWs));
+			out.set(
+				index,
+				countedFileUnits(list, ignoreWs, clustersAt.get(index) ?? []),
+			);
 		}
 		return out;
-	}, [units, ignoreWs]);
+	}, [units, ignoreWs, data]);
 	const progressPending = since !== null && sinceView.pending;
 	// The connector of the comparison on screen counts what is left here.
 	const live =

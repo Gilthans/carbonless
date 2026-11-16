@@ -725,25 +725,119 @@ describe('"Ignore whitespace" in the since view (CAR-184)', () => {
 
 	it("a file's header leaves them out, but a file of nothing else keeps its own", () => {
 		const units = unitsOf(wa, wv);
-		const core = countedFileUnits(
+		const [core, util] = wv.files as [FileView, FileView];
+		const coreUnits = countedFileUnits(
 			units.filter((u) => u.index === 0),
 			true,
+			core.clusters,
 		);
-		expect(core.units).toHaveLength(1);
-		expect(core.leftOut).toBe(1);
-		const util = countedFileUnits(
+		expect(coreUnits.units).toHaveLength(1);
+		expect(coreUnits.leftOut).toBe(1);
+		const utilUnits = countedFileUnits(
 			units.filter((u) => u.index === 1),
 			true,
+			util.clusters,
 		);
-		expect(util.units).toHaveLength(1);
-		expect(util.leftOut).toBe(0);
+		expect(utilUnits.units).toHaveLength(1);
+		expect(utilUnits.leftOut).toBe(0);
 		// Off: as they are.
 		expect(
 			countedFileUnits(
 				units.filter((u) => u.index === 0),
 				false,
+				core.clusters,
 			).leftOut,
 		).toBe(0);
+	});
+
+	it("a file whose only since unit is whitespace-only, beside a carried change, leaves it out: its header reads done with the `~` (B1)", () => {
+		// PS1: a change and a re-indent, both reviewed; PS2 changes only the
+		// indent amount: the change is carried, the re-indent reworked.
+		const cv = view([
+			file(0, "core.ts", [
+				cluster("a", "reviewed", true),
+				ws(cluster("w", "unreviewed")),
+			]),
+		]);
+		const only = answer(
+			[
+				{
+					index: 0,
+					path: "core.ts",
+					conflict: false,
+					clusters: [
+						{
+							key: "a",
+							kind: "carried",
+							from: 1,
+							state: "reviewed",
+							rule: "exact",
+						},
+						{ key: "w", kind: "reworked" },
+					],
+				},
+			],
+			{ files: 1, clusters: 1 },
+		);
+		const units = unitsOf(only, cv);
+		expect(units).toHaveLength(1);
+		// Decided by the file's clusters (countedFile drops `w` too): the
+		// unit is left out and said so, never kept with no `~`.
+		const counted = countedFileUnits(
+			units,
+			true,
+			(cv.files[0] as FileView).clusters,
+		);
+		expect(counted).toEqual({ units: [], leftOut: 1 });
+		expect(sinceByFile(only, cv, true).get(0)?.left.units).toBe(0);
+	});
+
+	it("the `~` counts clusters, not pieces: a cluster's old and new pieces are one", () => {
+		const pieced = answer(
+			[
+				{
+					index: 0,
+					path: "core.ts",
+					conflict: false,
+					clusters: [
+						{ key: "a", kind: "reworked" },
+						{ key: "w", kind: "reworked" },
+					],
+					pieces: [
+						{
+							hunk: 0,
+							line: 0,
+							key: "w",
+							owns: [[0, 1]],
+							old: [[1, 2]],
+							new: [],
+						},
+						{
+							hunk: 0,
+							line: 1,
+							key: "w",
+							owns: [[1, 2]],
+							old: [],
+							new: [[1, 2]],
+						},
+					] satisfies SincePiece[],
+				},
+			],
+			{ files: 1, clusters: 3 },
+		);
+		const wide = view([
+			file(0, "core.ts", [
+				cluster("a", "unreviewed"),
+				ws(cluster("w", "unreviewed")),
+			]),
+		]);
+		const units = unitsOf(pieced, wide);
+		expect(units.filter((u) => u.whitespaceOnly)).toHaveLength(2);
+		expect(countedUnits(units, true).leftOut).toBe(1);
+		expect(
+			countedFileUnits(units, true, (wide.files[0] as FileView).clusters)
+				.leftOut,
+		).toBe(1);
 	});
 
 	it("each file's counts and dot follow the switch, never hiding a file of nothing else", () => {

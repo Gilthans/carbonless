@@ -7,6 +7,7 @@ import { ReviewService } from "../src/server/review/reviews";
 import type { Cluster, Snapshot } from "../src/shared/types";
 import { homePr } from "../test/fake-gh/scenario";
 import {
+	expectNoPageOverflow,
 	fileSection,
 	ignoreWhitespace,
 	marksReady,
@@ -76,6 +77,8 @@ test("change / whitespace-only / change in one hunk is three clusters; Ignore wh
 	pr,
 	startCrb,
 }) => {
+	// Both views, the switch twice and the Overview: past the default budget on a loaded machine.
+	test.slow();
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
@@ -148,6 +151,8 @@ test.describe("a review started before the split", () => {
 		pr,
 		startCrb,
 	}) => {
+		// Two crb servers and a review written in between: past the default budget on a loaded machine.
+		test.slow();
 		const p = await pr(fixture);
 		const s = await startCrb();
 		await openFiles(page, s.url);
@@ -225,14 +230,45 @@ const twoFiles: PrOptions = {
 };
 
 const header = (section: Locator) => section.locator("header");
+/** The `src` folder's own row (its first button: the files' rows follow). */
+const folderRow = (tree: Locator) =>
+	tree.locator('[data-folder-group="src"]').getByRole("button").first();
+
+/**
+ * The header's `~` slot overlaps none of the header's controls (its 40px
+ * touch target lies within it), and on a phone it is that 40px wide.
+ */
+async function tildeClear(head: Locator, isMobile: boolean) {
+	const slot = head.getByTestId("ws-left-out-slot");
+	const box = await slot.boundingBox();
+	if (isMobile) expect(box?.width).toBeGreaterThanOrEqual(40);
+	const overlaps = await head.evaluate((h) => {
+		const at = h.querySelector('[data-testid="ws-left-out-slot"]');
+		if (!at) return ["no slot"];
+		const a = at.getBoundingClientRect();
+		return [...h.querySelectorAll('button, [role="progressbar"]')]
+			.filter((el) => {
+				const b = el.getBoundingClientRect();
+				return (
+					a.left < b.right &&
+					b.left < a.right &&
+					a.top < b.bottom &&
+					b.top < a.bottom
+				);
+			})
+			.map((el) => el.getAttribute("aria-label") ?? el.textContent ?? "");
+	});
+	expect(overlaps).toEqual([]);
+}
 /** A tree row's `~` (inside the row's button: its name says it too). */
 const rowOf = (tree: Locator, name: RegExp) =>
 	tree.getByRole("button", { name });
 
-test("Ignore whitespace on: the file row, header and verdict read done with a `~`; off counts the whitespace-only cluster again; a plain file never shows one", async ({
+test("Ignore whitespace on: the file row, folder row, header and verdict read done with a `~`; off counts the whitespace-only cluster again; a plain file never shows one", async ({
 	page,
 	pr,
 	startCrb,
+	isMobile,
 }) => {
 	// Two files marked, three pages and two switch flips: past the default budget on a loaded machine.
 	test.slow();
@@ -250,6 +286,8 @@ test("Ignore whitespace on: the file row, header and verdict read done with a `~
 	await expect(
 		header(section).getByRole("img", { name: LEFT_OUT }),
 	).toBeVisible();
+	await tildeClear(header(section), isMobile);
+	if (isMobile) await expectNoPageOverflow(page);
 	// The move-on opened the plain file: tick it too.
 	const plain = fileSection(page, PLAIN);
 	await expect(plain.locator("table")).toBeVisible();
@@ -269,6 +307,9 @@ test("Ignore whitespace on: the file row, header and verdict read done with a `~
 		const plainRow = rowOf(tree, /plain\.ts/);
 		await expect(plainRow).toHaveAttribute("data-finished");
 		await expect(plainRow.getByTestId("ws-left-out")).toHaveCount(0);
+		// The folder holding both says so too.
+		await expect(folderRow(tree).getByTestId("ws-left-out")).toHaveText("~");
+		await expect(folderRow(tree)).toHaveAccessibleName(new RegExp(LEFT_OUT));
 	});
 
 	// The verdict: everything counted is reviewed, with the `~`.
@@ -294,6 +335,7 @@ test("Ignore whitespace on: the file row, header and verdict read done with a `~
 		const split = rowOf(tree, /split\.ts/);
 		await expect(split).not.toHaveAttribute("data-finished");
 		await expect(split.getByTestId("ws-left-out")).toHaveCount(0);
+		await expect(folderRow(tree).getByTestId("ws-left-out")).toHaveCount(0);
 	});
 	await expand(page);
 	await expect(boxes(section).nth(1)).not.toBeChecked();
@@ -347,7 +389,8 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 		.click();
 	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
 	// Each changed run is two pieces here (its old lines and its new
-	// ones): six, two of them the whitespace-only cluster's.
+	// ones): six, two of them the whitespace-only cluster's (one cluster,
+	// as the `~` says).
 	await expect(progress(page)).toContainText("0 / 6 clusters reviewed");
 	await expect(sinceLeftOut(page)).toHaveCount(0);
 
@@ -355,8 +398,7 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 	await ignoreWhitespace(page, true);
 	await expect(progress(page)).toContainText("0 / 4 clusters reviewed");
 	await expect(sinceLeftOut(page)).toBeVisible();
-	const since = fileSection(page, PATH);
-	if ((await since.locator("table").count()) === 0) await expand(page);
+	const since = await expand(page);
 	const pieceBox = (line: string) =>
 		since
 			.getByRole("row")
@@ -386,11 +428,76 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 	).toHaveCount(0);
 });
 
-const SINCE_LEFT_OUT = "2 whitespace-only clusters not counted";
-const sinceLeftOut = (page: Page) =>
-	page
-		.locator("[data-page-bar]")
-		.locator(`[data-testid="ws-left-out"][aria-label="${SINCE_LEFT_OUT}"]`);
+const SINCE_LEFT_OUT = LEFT_OUT;
+const sinceLeftOut = leftOut;
+
+test("the since view: a change carried, only the indent reworked: the header reads done with the `~`, never without (B1)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1: line 2 changed, lines 6-7 re-indented: a change and a
+	// whitespace-only cluster, both reviewed.
+	const ps1 = lines.map((l, i) =>
+		i === 1 ? `${l} changed` : i === 5 || i === 6 ? `    ${l}` : l,
+	);
+	const p = await pr({
+		base: { [PATH]: text(lines) },
+		files: [{ message: "Change and re-indent", files: { [PATH]: text(ps1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page);
+	await expect(boxes(section)).toHaveCount(2);
+	await boxes(section).first().click();
+	await expect(boxes(section).first()).toBeChecked();
+	await boxes(section).last().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// PS2: only the indent amount changes; the change is carried.
+	p.moveHead({
+		message: "Indent by two",
+		files: {
+			[PATH]: text(
+				lines.map((l, i) =>
+					i === 1 ? `${l} changed` : i === 5 || i === 6 ? `  ${l}` : l,
+				),
+			),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	await expect(progress(page)).toContainText(/0 \/ \d+ clusters? reviewed/);
+	const since = fileSection(page, PATH);
+	await expect(header(since)).not.toHaveAttribute("data-finished");
+
+	// On: the re-indent is left out. The header reads done, with the `~`.
+	await ignoreWhitespace(page, true);
+	await expect(progress(page)).toContainText("Nothing to read");
+	await expect(leftOut(page)).toBeVisible();
+	await expect(header(since)).toHaveAttribute("data-finished");
+	await expect(
+		header(since).getByRole("img", { name: LEFT_OUT }),
+	).toBeVisible();
+
+	// Off: to read again.
+	await ignoreWhitespace(page, false);
+	await expect(header(since)).not.toHaveAttribute("data-finished");
+	await expect(header(since).getByRole("img", { name: LEFT_OUT })).toHaveCount(
+		0,
+	);
+});
 
 test.describe("Home", () => {
 	// Its own crb serve: Home reads the config's views.
@@ -452,6 +559,11 @@ test.describe("Home", () => {
 		// Home, with the switch still on: 8 of the 12 lines, the
 		// whitespace-only cluster's 4 counted and unreviewed.
 		await page.goto(new URL("/", s.url).href);
+		// Home's first read of GitHub lists the repo's PRs: up to 30 s on a
+		// loaded machine (seen past 10 s).
+		await expect(
+			page.getByRole("region", { name: /^Reviewing/ }),
+		).not.toHaveAccessibleName(/Loading/, { timeout: 30_000 });
 		const row = page
 			.getByTestId(/^home-row/)
 			.filter({ hasText: "Split clusters" });

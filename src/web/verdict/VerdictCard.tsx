@@ -536,16 +536,17 @@ export function VerdictCard(props: {
 		(t) => isViewer(t.author, session.viewer) && t.unavailable === undefined,
 	);
 	const open = mine.filter((t) => !t.resolved).length;
-	const info: string[] = [];
-	if (lines && lines.total > 0) {
-		info.push(
-			`You reviewed ${lines.reviewed} of ${lines.total - lines.crossedOff} lines`,
-		);
-	}
-	if (mine.length > 0) {
-		info.push(`${open} of your threads ${open === 1 ? "is" : "are"} open`);
-	}
-
+	const reviewedText =
+		lines && lines.total > 0
+			? `You reviewed ${lines.reviewed} of ${lines.total - lines.crossedOff} lines`
+			: null;
+	// The `~` follows the lines it is about, and shows whenever anything was
+	// left out, even when that is everything (no lines to count).
+	const leftOut = counted?.leftOut ?? 0;
+	const threadsText =
+		mine.length > 0
+			? `${open} of your threads ${open === 1 ? "is" : "are"} open`
+			: null;
 	return (
 		<section
 			aria-labelledby={headingId}
@@ -579,14 +580,20 @@ export function VerdictCard(props: {
 			{since && !writes.verdict && (
 				<SinceVerdict since={since} review={review} counted={counted} />
 			)}
-			{info.length > 0 && (
+			{(reviewedText || leftOut > 0 || threadsText) && (
 				<p
 					data-testid="verdict-info"
 					className="flex flex-wrap items-center text-xs text-muted"
 				>
-					{info.join(" · ")}
-					{lines && lines.total > 0 && (counted?.leftOut ?? 0) > 0 && (
-						<WhitespaceLeftOut count={counted?.leftOut ?? 0} />
+					{reviewedText}
+					{leftOut > 0 && <WhitespaceLeftOut count={leftOut} />}
+					{threadsText && (
+						<span>
+							{(reviewedText || leftOut > 0) && (
+								<span className="whitespace-pre"> · </span>
+							)}
+							{threadsText}
+						</span>
 					)}
 				</p>
 			)}

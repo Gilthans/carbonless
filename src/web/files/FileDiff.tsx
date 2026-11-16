@@ -524,10 +524,10 @@ function FileProgress(props: {
  */
 function opensFile(event: MouseEvent<HTMLElement>): boolean {
 	const target = event.target as Element | null;
-	// A focusable glyph (the `~`) is a control of its own: its tooltip.
+	// The `~` is a control of its own: its tooltip.
 	if (
 		target?.closest(
-			'button, a, input, select, textarea, label, [role="img"][tabindex]',
+			'button, a, input, select, textarea, label, [data-testid="ws-left-out"]',
 		)
 	) {
 		return false;
@@ -641,12 +641,14 @@ export function FileDiff(props: {
 	// in the since view too (its meter counts its units: `counted`).
 	const ignoreWs = ignoreWhitespace.use();
 	const shown = countedFile(file, ignoreWs);
-	// How many whitespace-only clusters (since view: units) the header's
-	// counts leave out: its `~`.
+	// How many whitespace-only clusters the header's counts leave out: its
+	// `~`. In the since view its units' count, and never less than its
+	// state leaves out: a header that reads done without them says so.
+	const clustersLeftOut = file.clusters.length - shown.clusters.length;
 	const leftOut =
 		props.counted !== undefined
-			? (props.countedLeftOut ?? 0)
-			: file.clusters.length - shown.clusters.length;
+			? Math.max(props.countedLeftOut ?? 0, clustersLeftOut)
+			: clustersLeftOut;
 	/**
 	 * A mark that leaves nothing unreviewed (a cluster's, or the rest of the
 	 * file's) finishes the file: an open one closes at once and the page
@@ -1250,8 +1252,13 @@ export function FileDiff(props: {
 								/>
 							</div>
 							{leftOut > 0 && (
-								<span className="flex shrink-0 @lg:order-6">
-									<WhitespaceLeftOut count={leftOut} />
+								// A slot as wide as its touch target on a phone, so the
+								// target never lies over the buttons or the meter.
+								<span
+									data-testid="ws-left-out-slot"
+									className="flex shrink-0 items-center justify-center pointer-coarse:size-10 @lg:order-6"
+								>
+									<WhitespaceLeftOut count={leftOut} slot />
 								</span>
 							)}
 							<FileProgress

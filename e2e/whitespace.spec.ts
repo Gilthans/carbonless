@@ -313,8 +313,13 @@ test("an expanded whitespace-only cluster's controls float below the file header
 	await ignoreWhitespace(page, true);
 	// Nothing but a whitespace-only cluster: nothing the switch counts.
 	await expect(progress(page)).toContainText("Nothing to read");
+	// The bar's (the verdict at the end says so too).
 	await expect(
-		page.getByRole("img", { name: "1 whitespace-only cluster not counted" }),
+		page
+			.locator("[data-page-bar]")
+			.locator(
+				'[data-testid="ws-left-out"][aria-label="1 whitespace-only cluster not counted"]',
+			),
 	).toBeVisible();
 	const section = await expand(page, "src/long.ts");
 	const collapsed = section.getByTestId("ws-cluster");

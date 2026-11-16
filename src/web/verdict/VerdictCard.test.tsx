@@ -607,6 +607,29 @@ describe('the verdict card follows "Ignore whitespace" (CAR-184)', () => {
 		expect(leftOut(card_)).toBeNull();
 	});
 
+	it("on, every cluster whitespace-only: no lines to count, but the `~` still says one was left out", async () => {
+		ignoreWhitespace.set(true);
+		const only = [c("w", "unreviewed", 2, true)];
+		const onlyFiles: FileView[] = [
+			{ ...(files[0] as FileView), clusters: only, ...fileFlags(only) },
+		];
+		renderTab(
+			() => facts(given()),
+			session(),
+			() => null,
+			(patchsetNo) => ({
+				revision: "r2",
+				patchset: patchsetNo,
+				files: onlyFiles,
+				progress: reviewProgress(onlyFiles),
+			}),
+		);
+		const card_ = await card();
+		const info = await within(card_).findByTestId("verdict-info");
+		expect(info).not.toHaveTextContent("You reviewed");
+		expect(leftOut(info)).not.toBeNull();
+	});
+
 	it("on: the whitespace-only cluster is left out, all reads reviewed, with the `~`", async () => {
 		ignoreWhitespace.set(true);
 		renderTab(

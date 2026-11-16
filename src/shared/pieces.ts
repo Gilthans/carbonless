@@ -582,6 +582,8 @@ export interface SinceUnit {
 	 * never is.
 	 */
 	whitespaceOnly?: true;
+	/** The viewed snapshot's cluster it belongs to, if any (a cluster's pieces share it). */
+	cluster?: string;
 }
 
 /** What sinceUnits reads of one file of the engine's answer. */
@@ -624,6 +626,7 @@ export function sinceUnits(
 					lines,
 					state,
 					open,
+					cluster: p.key,
 					...(cluster.whitespaceOnly ? { whitespaceOnly: true } : {}),
 				});
 				continue;
@@ -676,6 +679,7 @@ export function sinceUnits(
 				state,
 				open,
 				rest: true,
+				cluster: c.key,
 				...(c.whitespaceOnly ? { whitespaceOnly: true } : {}),
 			});
 		}

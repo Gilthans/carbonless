@@ -268,6 +268,13 @@ function legendProgress(
 	return numbers === "done" || numbers === "crossed off" ? null : numbers;
 }
 
+/** The `~` in a row's tooltip (the row's own glyph carries the name). */
+const WS_TIP_ICON = (
+	<span aria-hidden className="font-mono text-faint">
+		~
+	</span>
+);
+
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
@@ -438,14 +445,7 @@ function FileItem(props: {
 								</TipLine>
 							)}
 							{leftOut > 0 && (
-								<TipLine
-									kind="ws-left-out"
-									icon={
-										<span aria-hidden className="font-mono text-faint">
-											~
-										</span>
-									}
-								>
+								<TipLine kind="ws-left-out" icon={WS_TIP_ICON}>
 									{capital(whitespaceLeftOutLabel(leftOut))}
 								</TipLine>
 							)}
@@ -583,10 +583,14 @@ function FolderItem(props: Level & { folder: Folder }) {
 	const ghost = files.length === 0;
 	// Counted as the page's bar counts (countedFolder); the change count is
 	// all of it.
-	const counted = folderUnitProgress(
-		countedFolder(files, ignoreWhitespace.use()),
-		unit,
-	);
+	const countedFiles = countedFolder(files, ignoreWhitespace.use());
+	const counted = folderUnitProgress(countedFiles, unit);
+	// How many whitespace-only clusters that left out: the row's `~`.
+	const leftOut =
+		countedFiles === files
+			? 0
+			: files.reduce((n, f) => n + f.clusters.length, 0) -
+				countedFiles.reduce((n, f) => n + f.clusters.length, 0);
 	const p = {
 		...counted,
 		clusters: files.flatMap((f) => f.clusters),
@@ -636,6 +640,11 @@ function FolderItem(props: Level & { folder: Folder }) {
 							{waiting && (
 								<TipLine kind="threads" icon={<ThreadDot tone="bg-warn" />}>
 									{capital(waiting)}
+								</TipLine>
+							)}
+							{leftOut > 0 && (
+								<TipLine kind="ws-left-out" icon={WS_TIP_ICON}>
+									{capital(whitespaceLeftOutLabel(leftOut))}
 								</TipLine>
 							)}
 							{found > 0 && (
@@ -709,6 +718,7 @@ function FolderItem(props: Level & { folder: Folder }) {
 						{!ghost && (
 							<>
 								<ChangeCount file={p} />
+								{leftOut > 0 && <WhitespaceLeftOut count={leftOut} inRow />}
 								<span data-testid="tree-numbers" className="sr-only">
 									{numbers}
 								</span>

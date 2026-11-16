@@ -537,15 +537,17 @@ their marks. They still show, collapsed to one quiet `~` row, and can
 still be ticked and crossed off: the mark is stored as usual and counts
 again when the switch is off, which counts everything exactly as before.
 While any is left out, the bar shows a `~` whose name and tooltip say how
-many ("3 whitespace-only clusters not counted"); so does each file row
-and file header that left one out (a file without any never shows it).
+many ("3 whitespace-only clusters not counted"); so does each file row,
+folder row and file header that left one out (a file without any never
+shows it; a header that reads done because of one always does).
 This is no AI decision: nothing is marked reviewed, and turning the
 switch off shows what is still unreviewed. The Overview's progress, the
 verdict (its "You reviewed" line and its meter of what changed since your
 verdict) and the since view (its bar, each file's header, chips and dot,
 "Nothing to read since", the move-on; its units of whitespace-only
-clusters, `SinceUnit.whitespaceOnly`) count the same way, with the same
-`~` (CAR-184). Home doesn't: it never reads a review's view settings
+clusters, `SinceUnit.whitespaceOnly`; whether a file is nothing else is
+decided by its clusters, and the `~` counts clusters, not their pieces)
+count the same way, with the same `~` (CAR-184). Home doesn't: it never reads a review's view settings
 (owner 2026-11-16: "Home shouldn't probe for specific review settings"),
 so it counts every cluster.
 

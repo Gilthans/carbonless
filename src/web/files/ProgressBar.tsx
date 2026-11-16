@@ -118,9 +118,12 @@ export const whitespaceLeftOutLabel = (count: number) =>
 export function WhitespaceLeftOut({
 	count,
 	inRow,
+	slot,
 }: {
 	count: number;
 	inRow?: boolean;
+	/** In a slot of its own (a file header's): no margin of its own. */
+	slot?: boolean;
 }) {
 	const label = whitespaceLeftOutLabel(count);
 	if (inRow) {
@@ -148,7 +151,7 @@ export function WhitespaceLeftOut({
 					// Its box never grows the bar (a phone's would wrap a line and
 					// move the rows being read): on touch, an invisible 40px target
 					// is laid over it instead.
-					className="relative ml-1.5 inline-flex h-5 w-4 items-center justify-center rounded font-mono text-faint focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:left-1/2 pointer-coarse:before:size-10 pointer-coarse:before:-translate-x-1/2 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-['']"
+					className={`relative ${slot ? "" : "ml-1.5 "}inline-flex h-5 w-4 items-center justify-center rounded font-mono text-faint focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:left-1/2 pointer-coarse:before:size-10 pointer-coarse:before:-translate-x-1/2 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-['']`}
 				>
 					~
 				</span>
