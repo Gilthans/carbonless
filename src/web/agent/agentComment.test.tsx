@@ -24,6 +24,7 @@ import { addThread, threadWritesFor } from "../threads/threadWrites";
 import { AgentThreadCard } from "./AgentThreadCard";
 import {
 	agentCommentAvailable,
+	baseOf,
 	type CommentScope,
 	CommentScopeProvider,
 	spanInHunks,
@@ -216,6 +217,58 @@ describe("agentCommentAvailable", () => {
 		expect(
 			agentCommentAvailable(line, { ...on, asked: asked({ patchset: 1 }) }),
 		).toBe(true);
+	});
+});
+
+describe("the merge base old lines are checked against", () => {
+	const left = { ...line, side: "LEFT" as const, startSide: "LEFT" as const };
+	const asked: AgentView = {
+		target: { head: HEAD },
+		from: { branch: true },
+		left: "b".repeat(40),
+		right: HEAD,
+	};
+
+	it("while the session loads: loading, not an earlier base", () => {
+		expect(
+			agentCommentAvailable(left, { ...on, asked, baseLoading: true }),
+		).toBe("Loading the PR");
+	});
+
+	it("is the shown head's patch set's, else GitHub's head's, else the snapshot's", () => {
+		const session = {
+			patchsets: [{ head: "p".repeat(40), mergeBase: "1".repeat(40) }],
+			head: { oid: "g".repeat(40), mergeBase: "2".repeat(40) },
+			snapshotHead: HEAD,
+			snapshotBase: "3".repeat(40),
+		} as unknown as SessionInfo;
+		expect(baseOf(session, "p".repeat(40))).toBe("1".repeat(40));
+		expect(baseOf(session, "g".repeat(40))).toBe("2".repeat(40));
+		// No patch set yet, GitHub moved on (or as-of / pinned: no head).
+		expect(baseOf(session, HEAD)).toBe("3".repeat(40));
+		expect(baseOf({ ...session, head: null }, HEAD)).toBe("3".repeat(40));
+		expect(baseOf(session, "o".repeat(40))).toBeUndefined();
+		expect(baseOf(undefined, HEAD)).toBeUndefined();
+	});
+});
+
+describe("openComposer with an id", () => {
+	const span = spanOfAnchor(line);
+	const other = { ...span, line: 9, startLine: 9 };
+
+	it("matches that id only on the same span: never two composers with one id", () => {
+		openComposer(other, "c1");
+		const id = openComposer(span, "c1", thread().id);
+		expect(id).not.toBe("c1");
+		const ids = getComposers().map((c) => c.clientId);
+		expect(new Set(ids).size).toBe(ids.length);
+		expect(getComposers().find((c) => c.clientId === "c1")?.span).toEqual(
+			other,
+		);
+		expect(getComposers().find((c) => c.clientId === id)).toMatchObject({
+			span,
+			agentThread: thread().id,
+		});
 	});
 });
 

@@ -209,7 +209,8 @@ export function NewThread(props: {
 								// Focusable so keyboard and touch users get the tip.
 								// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
 								tabIndex={0}
-								className="flex shrink-0 rounded-sm text-agent-ink focus-visible:outline-2 focus-visible:outline-accent"
+								// A 40px target around the 12px mark: the band no taller, its neighbours not overlapped.
+								className="-mx-2.5 -my-3.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-agent-ink focus-visible:outline-2 focus-visible:outline-accent"
 							>
 								<SparkleFillIcon size={12} aria-hidden />
 							</span>

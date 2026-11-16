@@ -7,9 +7,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext } from "react";
 import type { AgentAnchor, AgentThread, AgentView } from "../../shared/agent";
-import type { DisplayHunk, PrOverview } from "../../shared/types";
+import type { DisplayHunk, PrOverview, SessionInfo } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import { type CodeSpan, commentAvailable } from "../files/selectionActions";
+import { LOADING } from "../threads/NewThread";
 import {
 	closeComposer,
 	getComposers,
@@ -75,6 +76,8 @@ export interface AgentCommentContext {
 	asked?: AgentView;
 	/** The merge base of the head shown (GitHub's base for it); undefined if unknown. */
 	base?: string;
+	/** The session (where `base` comes from) isn't read yet. */
+	baseLoading?: boolean;
 }
 
 const sidesOf = (a: AgentAnchor) =>
@@ -111,11 +114,30 @@ export function agentCommentAvailable(
 		if (!("branch" in asked.from)) {
 			return "Old lines asked against a patch set, not the base branch";
 		}
+		if (ctx.base === undefined && ctx.baseLoading) return LOADING;
 		if (ctx.base === undefined || asked.left !== ctx.base) {
 			return "Old lines asked against an earlier base";
 		}
 	}
 	return true;
+}
+
+/**
+ * The merge base of head `right`: its patch set's, else GitHub's head's
+ * when that is it, else the snapshot's when it is the snapshot's head.
+ */
+export function baseOf(
+	session:
+		| Pick<SessionInfo, "patchsets" | "head" | "snapshotHead" | "snapshotBase">
+		| undefined,
+	right: string | undefined,
+): string | undefined {
+	if (!session || right === undefined) return undefined;
+	return (
+		session.patchsets.find((p) => p.head === right)?.mergeBase ??
+		(session.head?.oid === right ? session.head.mergeBase : undefined) ??
+		(session.snapshotHead === right ? session.snapshotBase : undefined)
+	);
 }
 
 /**
@@ -149,13 +171,10 @@ export function useAgentComment(
 				headUnsure: !scope.headSure,
 				inDiff: scope.inDiff(span),
 				asked: thread.messages.find((m) => m.by === "human")?.view,
-				base:
-					session?.patchsets?.find((p) => p.head === right)?.mergeBase ??
-					(session?.head && session.head.oid === right
-						? session.head.mergeBase
-						: undefined),
+				base: baseOf(session, right),
+				baseLoading: session === undefined,
 			})
-		: "The PR is loading";
+		: LOADING;
 	return {
 		ok,
 		start: () => {
