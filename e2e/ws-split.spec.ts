@@ -561,15 +561,12 @@ test.describe("Home", () => {
 		await page.goto(new URL("/", s.url).href);
 		// Home's first read of GitHub lists the repo's PRs: up to 30 s on a
 		// loaded machine (seen past 10 s).
-		await expect(
-			page.getByRole("region", { name: /^Reviewing/ }),
-		).not.toHaveAccessibleName(/Loading/, { timeout: 30_000 });
 		const row = page
 			.getByTestId(/^home-row/)
 			.filter({ hasText: "Split clusters" });
 		await expect(
 			row.getByRole("img", { name: "8 of 12 lines reviewed" }),
-		).toBeVisible();
+		).toBeVisible({ timeout: 30_000 });
 		await expect(anyLeftOut(page)).toHaveCount(0);
 	});
 });
