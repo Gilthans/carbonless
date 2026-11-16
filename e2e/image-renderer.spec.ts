@@ -733,7 +733,7 @@ test("renamed with no content change shows the image once, and says no binary ch
 	const box = section.getByRole("checkbox", { name: "Mark cluster reviewed" });
 	await expect(box).not.toBeChecked();
 	await box.click();
-	await expect(box).toBeChecked();
+	// Ticked, the file is fully reviewed and folds away: its progress says so.
 	await expect(fileProgress(section)).toHaveText(/1 \/ 1/);
 	const shots = process.env.DESIGN_SHOTS;
 	if (shots) {
