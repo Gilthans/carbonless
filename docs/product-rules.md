@@ -238,8 +238,12 @@ switch wouldn't happen.
   same REST paths as the reviewer's own (escaped tags, the marker), always
   as a retry under the block's own client id
   (`ag.<conversation>.<message>.<block>`), so GitHub is checked first and
-  it never posts twice, across reloads and devices. Posted shows only after
-  GitHub's answer, and is kept in the agent ref (`agent-comment-posted`).
+  it never posts twice, across reloads and devices. Once a press is out, its
+  text is fixed (the box reads only) until GitHub answers: a retry looks for
+  exactly what may have landed. Posted shows only after GitHub's answer, and
+  is kept in the agent ref (`agent-comment-posted`); until that record is
+  written, the browser keeps the post, shows it Posted and writes the record
+  on a later load.
   The agent has no tool to post; a refusal is never retried by itself.
 - **Resolve in Files changed closes the thread to its bubble** (the owner,
   2026-11-09), on the press. Once none of the bubble's threads shows, it

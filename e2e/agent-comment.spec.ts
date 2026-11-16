@@ -126,7 +126,7 @@ test("a line conversation: edit the suggestion, post it as a new thread on those
 	expect(newThreadPosts(p)).toHaveLength(1);
 });
 
-test("the record of a post lost: a press after a reload finds the comment on GitHub, never posts twice", async ({
+test("the record of a post lost: Posted holds across a reload and the record is written then; another device's press finds the comment, never posts twice", async ({
 	page,
 	pr,
 	agentCrb,
@@ -138,22 +138,29 @@ test("the record of a post lost: a press after a reload finds the comment on Git
 		scenario: { agent: AGENT, answers: [{ text: ANSWER }] },
 	});
 	const { card } = await askLine3(page, s.url);
-	// The agent ref's record fails: Posted for this page only.
-	await page.route("**/api/r/*/agent/threads/*/posted", (route) =>
+	// The agent ref's record fails: kept in the browser, Posted.
+	const RECORD = "**/api/r/*/agent/threads/*/posted";
+	await page.route(RECORD, (route) =>
 		route.fulfill({ status: 500, body: '{"error":"down"}' }),
 	);
 	await addButton(card).click();
 	await expect(box(card)).toContainText("Posted");
-	await page.unroute("**/api/r/*/agent/threads/*/posted");
+	await page.unroute(RECORD);
+	// Reloaded: still Posted (the browser's copy), and the record is written.
+	const recorded = page.waitForResponse(
+		(r) => /\/agent\/threads\/[^/]+\/posted$/.test(r.url()) && r.ok(),
+	);
 	await page.reload();
 	const again = await reopenLine3(page, s.url);
-	// Not recorded: the box is back; a press finds it on GitHub.
-	await addButton(again).click();
 	await expect(box(again)).toContainText("Posted");
+	await recorded;
 	expect(newThreadPosts(p)).toHaveLength(1);
-	expect(storedThreads(p)).toHaveLength(1);
+	// Another device: nothing kept there, Posted from the record alone.
+	await page.evaluate(() => localStorage.clear());
 	await page.reload();
 	await expect(box(await reopenLine3(page, s.url))).toContainText("Posted");
+	expect(newThreadPosts(p)).toHaveLength(1);
+	expect(storedThreads(p)).toHaveLength(1);
 });
 
 test("a GitHub-thread conversation: the box replies to that thread", async ({
@@ -288,6 +295,22 @@ test("lines gone in a new push: the button is off and says why; the box stays", 
 	const text = box(card).getByRole("textbox", { name: "Review comment" });
 	await expect(text).toHaveValue(SUGGESTED);
 	await expect(text).toBeEditable();
+	// A press on the off button sends nothing: past a reload (a post it
+	// started would be out by then), crb and the fake gh got none.
+	let posts = 0;
+	page.on("request", (r) => {
+		if (r.method() === "POST" && /\/api\/r\/[^/]+\/threads$/.test(r.url())) {
+			posts++;
+		}
+	});
 	await addButton(card).click({ force: true });
+	await page.reload();
+	await expect(
+		page
+			.getByTestId("agent-not-in-comparison")
+			.getByTestId("agent-outside")
+			.filter({ hasText: "Anything to ask the author?" }),
+	).toBeVisible();
+	expect(posts).toBe(0);
 	expect(newThreadPosts(p)).toHaveLength(0);
 });

@@ -373,22 +373,15 @@ export const postAgentPosted = (thread: string, req: AgentPostedRequest) =>
 	);
 
 /**
- * The span conversations `ids` placed into the snapshot of `head` (GET
+ * Every span conversation placed into the snapshot of `head` (GET
  * /agent/placements?head=), whatever is viewed: where a ```comment
  * block posts (agentComments.ts). Under the placements' key, so what
  * retraces them retraces these.
  */
-export const agentPlacementsOnHeadQuery = (
-	head: string,
-	ids: readonly string[],
-) =>
+export const agentPlacementsOnHeadQuery = (head: string) =>
 	queryOptions({
-		queryKey: [
-			...AGENT_PLACEMENTS_KEY,
-			`head:${head}`,
-			"post",
-			[...ids].sort().join(","),
-		],
+		// By head alone: the answer covers every conversation.
+		queryKey: [...AGENT_PLACEMENTS_KEY, `head:${head}`, "post"],
 		queryFn: () =>
 			review<AgentPlacementsAnswer>(
 				`agent/placements?${new URLSearchParams({ head })}`,

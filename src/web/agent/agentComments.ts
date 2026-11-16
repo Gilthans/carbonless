@@ -214,14 +214,24 @@ export function refusalText(error: Error, place: CommentPlace): string {
 	);
 }
 
-// ---- Per block, in this browser: its draft and a press on its way. ----
+// ---- Per block, in this browser: its draft, a press, a post not yet recorded. ----
+
+/** A post GitHub took whose record (`agent-comment-posted`) isn't known to be written. */
+export interface KeptPosted extends AgentPostedComment {
+	github: AgentPostedRequest["github"];
+}
 
 /** What the browser keeps for one block (by client id). */
 interface Kept {
 	/** The box's text, when it differs from the agent's. */
 	text?: string;
-	/** Pressed, GitHub's answer not seen yet: resent once on the next load. */
+	/**
+	 * Pressed, GitHub's answer not seen yet: its body is fixed from then on
+	 * (a retry looks for exactly it), and it is resent once on the next load.
+	 */
 	sending?: { attemptedAt: string; body: string; known?: string[] };
+	/** On GitHub, the record not yet written: shown Posted, the record retried. */
+	posted?: KeptPosted;
 }
 
 const keyOf = (clientId: string) => `crb:agent-comment:${clientId}`;
@@ -238,35 +248,82 @@ function storage(): Storage | undefined {
 const memory = new Map<string, Kept>();
 const listeners = new Set<() => void>();
 
+const isStr = (v: unknown): v is string => typeof v === "string";
+
+function parseSending(v: unknown): Kept["sending"] | undefined {
+	if (typeof v !== "object" || v === null) return undefined;
+	const s = v as Record<string, unknown>;
+	if (!isStr(s.attemptedAt) || !isStr(s.body)) return undefined;
+	const known = s.known;
+	if (known !== undefined && !(Array.isArray(known) && known.every(isStr))) {
+		return undefined;
+	}
+	return {
+		attemptedAt: s.attemptedAt,
+		body: s.body,
+		...(known ? { known: known as string[] } : {}),
+	};
+}
+
+function parsePosted(v: unknown): KeptPosted | undefined {
+	if (typeof v !== "object" || v === null) return undefined;
+	const p = v as Record<string, unknown>;
+	const g = p.github as Record<string, unknown> | null | undefined;
+	if (
+		typeof p.block !== "number" ||
+		!isStr(p.url) ||
+		!isStr(p.at) ||
+		!isStr(p.text) ||
+		typeof g !== "object" ||
+		g === null ||
+		!isStr(g.thread) ||
+		!isStr(g.comment) ||
+		!isStr(g.url)
+	) {
+		return undefined;
+	}
+	return {
+		block: p.block,
+		url: p.url,
+		at: p.at,
+		text: p.text,
+		github: { thread: g.thread, comment: g.comment, url: g.url },
+	};
+}
+
 export function keptOf(clientId: string): Kept {
 	const inMemory = memory.get(clientId);
 	if (inMemory) return inMemory;
 	try {
 		const raw = storage()?.getItem(keyOf(clientId));
-		if (!raw) return {};
+		if (!raw) {
+			memory.set(clientId, {});
+			return memory.get(clientId) as Kept;
+		}
 		const parsed = JSON.parse(raw) as unknown;
 		if (typeof parsed !== "object" || parsed === null) return {};
-		const p = parsed as Kept;
-		const s = p.sending;
-		return {
-			...(typeof p.text === "string" ? { text: p.text } : {}),
-			...(s &&
-			typeof s.attemptedAt === "string" &&
-			typeof s.body === "string" &&
-			(s.known === undefined ||
-				(Array.isArray(s.known) && s.known.every((x) => typeof x === "string")))
-				? { sending: s }
-				: {}),
+		const p = parsed as Record<string, unknown>;
+		const sending = parseSending(p.sending);
+		const posted = parsePosted(p.posted);
+		const kept: Kept = {
+			...(isStr(p.text) ? { text: p.text } : {}),
+			...(sending ? { sending } : {}),
+			...(posted ? { posted } : {}),
 		};
+		// Read once: later reads (useSyncExternalStore's) see one object.
+		memory.set(clientId, kept);
+		return kept;
 	} catch {
 		return {};
 	}
 }
 
 function setKept(clientId: string, kept: Kept): void {
-	const empty = kept.text === undefined && kept.sending === undefined;
-	if (empty) memory.delete(clientId);
-	else memory.set(clientId, kept);
+	const empty =
+		kept.text === undefined &&
+		kept.sending === undefined &&
+		kept.posted === undefined;
+	memory.set(clientId, kept);
 	try {
 		const s = storage();
 		if (empty) s?.removeItem(keyOf(clientId));
@@ -290,18 +347,11 @@ export function subscribeKept(listener: () => void): () => void {
 	};
 }
 
-/** Blocks posted on this page whose record may not have been written. */
-const postedHere = new Map<string, AgentPostedComment>();
-
-export function postedOnPage(clientId: string): AgentPostedComment | undefined {
-	return postedHere.get(clientId);
-}
-
 /** Forgets this page's memory (tests: a reload). */
 export function resetAgentComments(): void {
-	postedHere.clear();
 	memory.clear();
 	resent.clear();
+	recording.clear();
 	for (const l of listeners) l();
 }
 
@@ -315,8 +365,8 @@ const resent = new Set<string>();
 export function takeResend(clientId: string): Kept["sending"] | undefined {
 	if (resent.has(clientId)) return undefined;
 	resent.add(clientId);
-	if (postedHere.has(clientId)) return undefined;
-	return keptOf(clientId).sending;
+	const kept = keptOf(clientId);
+	return kept.posted ? undefined : kept.sending;
 }
 
 /** A failed post: refused (shown, never resent) or in doubt (it may have landed). */
@@ -330,26 +380,68 @@ export class AgentCommentError extends Error {
 	}
 }
 
-/** The conversation's GitHub thread's comment ids, as the page has them or reads them. */
+/**
+ * The conversation's GitHub thread's comment ids, as the page has them or
+ * reads them; null when they can't be had (nothing is sent then).
+ */
 async function threadCommentIds(
 	client: QueryClient,
 	threadId: string,
 	at: string,
-): Promise<string[]> {
+): Promise<string[] | null> {
 	const readId = client.getQueryData(overviewQuery.queryKey)?.readId;
-	if (!readId) return [];
+	if (!readId) return null;
 	const q = commentsQuery(readId, threadId);
 	const cached = client.getQueryData<ThreadComments>(q.queryKey);
 	const comments = cached ?? (await client.fetchQuery(q).catch(() => null));
-	return knownBefore(comments?.comments ?? [], at);
+	if (!comments) return null;
+	const known = knownBefore(comments.comments, at);
+	return known.length ? known : null;
+}
+
+/** Blocks whose record this page is writing (once each). */
+const recording = new Set<string>();
+
+/**
+ * Writes the record of a post GitHub took (POST agent/threads/:tid/posted)
+ * and, once it's in, drops the browser's copy. A failure keeps the copy:
+ * the box stays Posted, and the next load tries again.
+ */
+export async function recordPosted(
+	client: QueryClient,
+	thread: string,
+	message: string,
+	clientId: string,
+	posted: KeptPosted,
+): Promise<void> {
+	if (recording.has(clientId)) return;
+	recording.add(clientId);
+	try {
+		const t = await postAgentPosted(thread, {
+			message,
+			block: posted.block,
+			github: posted.github,
+			text: posted.text,
+		});
+		client.setQueryData(agentThreadsQuery.queryKey, (old) =>
+			withThread(old, t),
+		);
+		const { posted: _, ...rest } = keptOf(clientId);
+		setKept(clientId, rest);
+	} catch {
+		// Posted all the same: kept here, recorded on a later load.
+	} finally {
+		recording.delete(clientId);
+	}
 }
 
 /**
  * Posts block `block` of `message` (in conversation `thread`) to GitHub at
- * `place`, as `body` (the box's text): always as a retry under the
- * block's client id, so it never posts twice. Then records it; a record
- * that fails leaves it Posted for this page, and the next press (after a
- * reload) finds it on GitHub instead of posting again.
+ * `place`, always as a retry under the block's client id, so it never
+ * posts twice. The body is the box's text, unless a press is already on
+ * its way or in doubt: then the body it was sent with, so a retry looks
+ * for exactly what may have landed. Then records it (recordPosted); until
+ * the record is in, the post is kept in the browser and shows Posted.
  */
 export async function postAgentComment(
 	client: QueryClient,
@@ -365,27 +457,25 @@ export async function postAgentComment(
 ): Promise<AgentPostedComment> {
 	const { thread, message, block, place } = args;
 	const clientId = agentCommentClientId(thread.id, message.id, block);
-	const kept = keptOf(clientId);
 	const sending = args.resend ??
-		kept.sending ?? {
+		keptOf(clientId).sending ?? {
 			attemptedAt: new Date().toISOString(),
 			body: args.body,
 		};
-	// A new press sends the box as it is now; a resend as it was sent.
-	const body = args.resend ? args.resend.body : args.body;
+	const { body } = sending;
 	let github: AgentPostedRequest["github"];
 	let url: string | undefined;
+	let text: string | undefined;
 	try {
 		if (place.kind === "reply") {
 			const known =
 				sending.known ??
 				(await threadCommentIds(client, place.thread, message.at));
-			if (known.length === 0) {
-				throw new ApiError(0, "Couldn't read the thread's comments");
-			}
+			// Nothing sent: a refusal, never "may have landed".
+			if (!known) throw new Error("Couldn't read the thread's comments");
 			setKept(clientId, {
 				...keptOf(clientId),
-				sending: { ...sending, body, known },
+				sending: { ...sending, known },
 			});
 			const answer = await postReply(place.thread, {
 				body,
@@ -405,11 +495,9 @@ export async function postAgentComment(
 				url: "",
 			};
 			url = answer.url;
+			text = answer.comment?.body;
 		} else {
-			setKept(clientId, {
-				...keptOf(clientId),
-				sending: { ...sending, body },
-			});
+			setKept(clientId, { ...keptOf(clientId), sending });
 			const answer = await postThread({
 				...place.target,
 				clientId,
@@ -422,12 +510,14 @@ export async function postAgentComment(
 			} catch {
 				// Showing it failed; GitHub has it all the same.
 			}
+			const opener = answer.comments.comments[0];
 			github = {
 				thread: answer.thread.id,
-				comment: answer.comments.comments[0]?.id || answer.thread.id,
+				comment: opener?.id || answer.thread.id,
 				url: "",
 			};
 			url = answer.url;
+			text = opener?.body;
 		}
 	} catch (error) {
 		const e = error instanceof Error ? error : new Error(String(error));
@@ -441,27 +531,17 @@ export async function postAgentComment(
 	}
 	const prUrl = client.getQueryData(sessionQuery.queryKey)?.pr.url ?? "";
 	github.url = url ?? prUrl;
-	const posted: AgentPostedComment = {
+	const posted: KeptPosted = {
 		block,
 		url: github.url,
 		at: new Date().toISOString(),
-		text: body,
+		// What GitHub has (as typed): a retry may have found an earlier send.
+		text: text?.trim() ? text : body,
+		github,
 	};
-	postedHere.set(clientId, posted);
-	setKept(clientId, {});
-	try {
-		const t = await postAgentPosted(thread.id, {
-			message: message.id,
-			block,
-			github,
-			text: body,
-		});
-		client.setQueryData(agentThreadsQuery.queryKey, (old) =>
-			withThread(old, t),
-		);
-	} catch {
-		// Posted all the same: shown so for this page; a press after a
-		// reload finds it on GitHub.
-	}
-	return posted;
+	// Kept until the record is in: a reload shows Posted, never the box.
+	setKept(clientId, { posted });
+	await recordPosted(client, thread.id, message.id, clientId, posted);
+	const { github: _, ...shown } = posted;
+	return shown;
 }

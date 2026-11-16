@@ -277,7 +277,37 @@ describe("AgentComment: posting", () => {
 		expect(calls.filter((c) => c.method === "POST")).toEqual([]);
 	});
 
-	it("a second press after a reload goes as a retry under the same id (the server finds it: never twice)", async () => {
+	it("a lost record: after a reload the box shows Posted from what the browser kept, and the record is written then; nothing posts again", async () => {
+		const user = userEvent.setup();
+		let records = 0;
+		answer = async (_m, path) => {
+			if (path.endsWith("/threads"))
+				return json(newThreadAnswer("Why? Edited"));
+			records++;
+			return records === 1 ? json({ error: "down" }, 500) : json(lineThread());
+		};
+		show("Why?");
+		await user.type(box(), " Edited");
+		await user.click(button());
+		await screen.findByText("Posted");
+		// Reloaded: the record never landed; the post is still Posted, edit and all.
+		cleanup();
+		resetAgentComments();
+		show("Why?");
+		expect(screen.getByText("Posted")).toBeTruthy();
+		expect(screen.queryByRole("textbox")).toBeNull();
+		expect(document.body.textContent).toContain("Why? Edited");
+		await vi.waitFor(() => expect(records).toBe(2));
+		const record = calls.filter((c) => c.path.endsWith("/posted"));
+		expect(record[1]?.body).toMatchObject({ text: "Why? Edited", block: 0 });
+		expect(calls.filter((c) => c.path.endsWith("/threads"))).toHaveLength(1);
+		// Recorded: the browser's copy goes.
+		await vi.waitFor(() =>
+			expect(localStorage.getItem(`crb:agent-comment:${CLIENT_ID}`)).toBeNull(),
+		);
+	});
+
+	it("a second press on another device (nothing kept) goes as a retry under the same id (the server finds it: never twice)", async () => {
 		const user = userEvent.setup();
 		answer = async (_m, path) =>
 			path.endsWith("/threads")
@@ -286,9 +316,10 @@ describe("AgentComment: posting", () => {
 		show("Why?");
 		await user.click(button());
 		await screen.findByText("Posted");
-		// Reloaded: the record never landed, so the box is back.
+		// Another device: the record never landed and nothing is kept here.
 		cleanup();
 		resetAgentComments();
+		localStorage.clear();
 		show("Why?");
 		await user.click(button());
 		await screen.findByText("Posted");
@@ -362,6 +393,77 @@ describe("AgentComment: posting", () => {
 		});
 	});
 
+	it("in doubt, the text is fixed: the box can't be edited, a press resends what was sent, Posted shows GitHub's text", async () => {
+		const user = userEvent.setup();
+		const thread = lineThread({
+			anchor: {
+				subject: "thread",
+				thread: "PRRT_1",
+				path: "src/x.ts",
+				commit: OLD,
+			},
+		});
+		let replies = 0;
+		answer = async (_m, path, body) => {
+			if (path.endsWith("/posted")) return json(thread);
+			replies++;
+			return replies === 1
+				? json({ error: "unreachable" }, 502)
+				: json({
+						threadId: "PRRT_1",
+						comment: { id: "PRRC_3", body: (body as { body: string }).body },
+						comments: { threadId: "PRRT_1", comments: [] },
+						url: "https://github.com/o/r/pull/1#discussion_r3",
+					});
+		};
+		const { client } = show("Thanks!", thread);
+		client.setQueryData(["comments", "r1", "PRRT_1"], {
+			threadId: "PRRT_1",
+			comments: [{ id: "PRRC_1", publishedAt: "2026-11-16T09:00:00Z" }],
+		});
+		await user.click(button());
+		expect((await screen.findByRole("alert")).textContent).toMatch(
+			/may have landed/i,
+		);
+		expect(box()).toHaveProperty("readOnly", true);
+		await user.type(box(), " typo fixed");
+		expect(box()).toHaveProperty("value", "Thanks!");
+		await user.click(button());
+		await screen.findByText("Posted");
+		const sent = calls.filter((c) => c.path.includes("/replies"));
+		expect(sent.map((c) => (c.body as { body: string }).body)).toEqual([
+			"Thanks!",
+			"Thanks!",
+		]);
+		expect(document.body.textContent).toContain("Thanks!");
+		expect(document.body.textContent).not.toContain("typo fixed");
+	});
+
+	it("a reply whose thread comments can't be read is refused (nothing was sent), never 'may have landed'", async () => {
+		const user = userEvent.setup();
+		const thread = lineThread({
+			anchor: {
+				subject: "thread",
+				thread: "PRRT_1",
+				path: "src/x.ts",
+				commit: OLD,
+			},
+		});
+		const { client } = show("Thanks!", thread);
+		// The thread's comments came, but all after the agent wrote (clocks apart).
+		client.setQueryData(["comments", "r1", "PRRT_1"], {
+			threadId: "PRRT_1",
+			comments: [{ id: "PRRC_1", publishedAt: "2026-11-16T11:00:00Z" }],
+		});
+		await user.click(button());
+		const alert = await screen.findByRole("alert");
+		expect(alert.textContent).toContain("Couldn't read the thread's comments");
+		expect(alert.textContent).not.toMatch(/may have landed/i);
+		expect(alert.className).toContain("text-bad");
+		expect(calls.filter((c) => c.path.includes("/replies"))).toEqual([]);
+		expect(button()).not.toHaveAttribute("aria-disabled", "true");
+	});
+
 	it("a deleted GitHub thread: the button is off and says so", () => {
 		show(
 			"x",
@@ -428,6 +530,41 @@ describe("AgentComment: placement", () => {
 		expect(button()).toHaveAccessibleDescription(LINES_GONE);
 	});
 
+	it("a conversation newer than the placements: asked once more, pending meanwhile, then placed", async () => {
+		let asked = 0;
+		placements = async () => {
+			asked++;
+			return json({
+				revision: "r",
+				threads:
+					asked === 1
+						? []
+						: [
+								{
+									id: T,
+									placement: {
+										kind: "placed",
+										changed: false,
+										anchor: {
+											path: "src/x.ts",
+											side: "RIGHT",
+											startSide: "RIGHT",
+											startLine: 41,
+											line: 44,
+										},
+									},
+								},
+							],
+			} satisfies AgentPlacementsAnswer);
+		};
+		show("x", old);
+		await vi.waitFor(() => expect(asked).toBe(2));
+		await vi.waitFor(() =>
+			expect(button()).not.toHaveAttribute("aria-disabled", "true"),
+		);
+		expect(document.body.textContent).not.toContain("Couldn't trace");
+	});
+
 	it("lines changed: posts on the traced lines and shows the changed icon", async () => {
 		placements = async () =>
 			json({
@@ -461,7 +598,38 @@ describe("AgentComment: placement", () => {
 	});
 });
 
+describe("AgentComment: where nothing posts", () => {
+	it("a conversation of any other kind (the whole review's) shows the read-only quote and Copy, no box", () => {
+		const review = lineThread({
+			anchor: { subject: "review" } as unknown as AgentThread["anchor"],
+		});
+		show("Ask the author why", review);
+		expect(screen.queryByRole("textbox")).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Add review comment" }),
+		).toBeNull();
+		expect(screen.getByRole("button", { name: "Copy comment" })).toBeTruthy();
+		expect(document.body.textContent).toContain("Ask the author why");
+	});
+});
+
 describe("AgentComment: posted", () => {
+	it("a link that isn't http(s) is never rendered", () => {
+		const posted = message({
+			posted: [
+				{
+					block: 0,
+					url: "javascript:alert(1)",
+					at: "2026-11-16T10:05:00.000Z",
+					text: "x",
+				},
+			],
+		});
+		show("x", lineThread({ messages: [posted] }), posted);
+		expect(screen.getByText("Posted")).toBeTruthy();
+		expect(screen.queryByRole("link", { name: "Open on GitHub" })).toBeNull();
+	});
+
 	it("folds to Posted, the text rendered as GitHub comments are (sanitized)", () => {
 		const posted = message({
 			posted: [

@@ -50,14 +50,14 @@ import {
 	keptOf,
 	placeLabel,
 	postAgentComment,
-	postedOnPage,
+	recordPosted,
 	refusalText,
 	setDraft,
 	subscribeKept,
 	takeResend,
 	WRITES_OFF,
 } from "./agentComments";
-import { agentPlacementsOnHeadQuery, agentThreadsQuery } from "./api";
+import { agentPlacementsOnHeadQuery } from "./api";
 
 const md = new Marked({ gfm: true, breaks: false, async: false });
 
@@ -66,6 +66,9 @@ export interface CommentAt {
 	thread: AgentThread;
 	message: AgentMessage;
 }
+
+/** The conversation kinds a block posts from (an allowlist: any new kind is read-only). */
+const POSTS_FROM: ReadonlySet<string> = new Set(["line", "file", "thread"]);
 
 const PLACING = "Finding these lines in the latest push";
 
@@ -79,7 +82,11 @@ export function AgentComment(props: {
 	block: number;
 	at?: CommentAt;
 }) {
-	if (!props.at) return <ReadOnlyComment text={props.text} />;
+	// Only a conversation on code or a GitHub thread has a place to post;
+	// any other (the whole review's) shows the block read-only.
+	if (!props.at || !POSTS_FROM.has(props.at.thread.anchor.subject)) {
+		return <ReadOnlyComment text={props.text} />;
+	}
 	return <CommentBox text={props.text} block={props.block} at={props.at} />;
 }
 
@@ -123,22 +130,27 @@ function usePlace(thread: AgentThread): CommentPlace {
 	const head = useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead;
 	const a = thread.anchor;
 	const needed = a.subject !== "thread" && !!head && a.commit !== head;
-	const all = useQuery({ ...agentThreadsQuery, enabled: false }).data?.threads;
-	const ids = useMemo(() => {
-		const spans = (all ?? [])
-			.filter((t) => t.anchor.subject !== "thread")
-			.map((t) => t.id);
-		return spans.includes(thread.id) ? spans : [...spans, thread.id];
-	}, [all, thread.id]);
 	const placed = useQuery({
-		...agentPlacementsOnHeadQuery(head ?? "", ids),
+		...agentPlacementsOnHeadQuery(head ?? ""),
 		enabled: needed,
 	});
-	const placement = placed.data?.threads.find(
-		(t) => t.id === thread.id,
-	)?.placement;
-	const placing = placed.data ? "in" : placed.isError ? "failed" : "pending";
-	return commentPlace({ thread, head, placement, placing });
+	const { data, isError, dataUpdatedAt, refetch } = placed;
+	const placement = data?.threads.find((t) => t.id === thread.id)?.placement;
+	// A conversation newer than the answer (the agent just opened it): asked
+	// once more, pending meanwhile; still missing then, it couldn't be traced.
+	const missing = needed && data !== undefined && placement === undefined;
+	const [askedAt, setAskedAt] = useState<number | null>(null);
+	useEffect(() => {
+		if (!missing || askedAt !== null) return;
+		setAskedAt(dataUpdatedAt);
+		void refetch();
+	}, [missing, askedAt, dataUpdatedAt, refetch]);
+	const waiting = missing && (askedAt === null || dataUpdatedAt === askedAt);
+	const placing = isError ? "failed" : !data || waiting ? "pending" : "in";
+	return useMemo(
+		() => commentPlace({ thread, head, placement, placing }),
+		[thread, head, placement, placing],
+	);
 }
 
 type Phase =
@@ -153,16 +165,26 @@ function CommentBox(props: { text: string; block: number; at: CommentAt }) {
 	const clientId = agentCommentClientId(thread.id, message.id, block);
 	const client = useQueryClient();
 	const stored = message.posted?.find((p) => p.block === block);
-	const [postedNow, setPostedNow] = useState<AgentPostedComment | undefined>(
-		() => postedOnPage(clientId),
+	const [postedNow, setPostedNow] = useState<AgentPostedComment | undefined>();
+	// Posted here or on an earlier load, its record not yet written.
+	const keptPosted = useSyncExternalStore(
+		subscribeKept,
+		() => keptOf(clientId).posted,
+		() => undefined,
 	);
-	const posted = stored ?? postedNow;
+	const posted = stored ?? postedNow ?? keptPosted;
 	const draft = useSyncExternalStore(
 		subscribeKept,
 		() => keptOf(clientId).text ?? null,
 		() => null,
 	);
-	const text = draft ?? props.text;
+	// A press on its way or in doubt fixes the text: a retry looks for it.
+	const sentBody = useSyncExternalStore(
+		subscribeKept,
+		() => keptOf(clientId).sending?.body ?? null,
+		() => null,
+	);
+	const text = sentBody ?? draft ?? props.text;
 	const place = usePlace(thread);
 	const writes = useWritesOn();
 	const [phase, setPhase] = useState<Phase>({ kind: "ready" });
@@ -214,6 +236,11 @@ function CommentBox(props: { text: string; block: number; at: CommentAt }) {
 		const resend = takeResend(clientId);
 		if (resend) send(resend.body, resend);
 	}, [posted, postable, clientId, send]);
+	// Posted on an earlier load whose record didn't land: written now.
+	useEffect(() => {
+		if (stored || !keptPosted) return;
+		void recordPosted(client, thread.id, message.id, clientId, keptPosted);
+	}, [stored, keptPosted, client, thread.id, message.id, clientId]);
 
 	if (posted) return <PostedRow posted={posted} />;
 
@@ -296,7 +323,7 @@ function CommentBox(props: { text: string; block: number; at: CommentAt }) {
 					</Tooltip>
 				)}
 				<span className="flex-1" />
-				{draft !== null && !sending && (
+				{draft !== null && sentBody === null && !sending && (
 					<Tooltip content="Back to the agent's text" describe={false}>
 						{(trigger) => (
 							<button
@@ -314,7 +341,7 @@ function CommentBox(props: { text: string; block: number; at: CommentAt }) {
 			</div>
 			<CommentText
 				value={text}
-				readOnly={sending}
+				readOnly={sending || sentBody !== null}
 				onChange={(v) => setDraft(clientId, v, props.text)}
 				onKeyDown={onKeyDown}
 			/>
