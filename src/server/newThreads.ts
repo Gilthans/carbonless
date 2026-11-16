@@ -19,6 +19,7 @@ import { MARKER_ID, markerFor, parseMarker } from "./marker.js";
 import { mapComments, mapThreads, openerOf, withContent } from "./overview.js";
 import { slugify } from "./slug.js";
 import {
+	commentUrl,
 	gone,
 	LIST_WAITS_MS,
 	lists,
@@ -360,5 +361,8 @@ async function answer(
 			threadId: id,
 			...mapComments(nodes.summary, nodes.content, undefined, true),
 		},
+		...(record.posted.restId > 0
+			? { url: commentUrl(target.prUrl, record.posted.restId) }
+			: {}),
 	};
 }

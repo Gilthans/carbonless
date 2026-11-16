@@ -381,6 +381,10 @@ async function update(
 	const comment = commentId
 		? comments.comments.find((c) => c.id === commentId)
 		: undefined;
+	const node = commentId
+		? contentComments(nodes).find((c) => str(c.id) === commentId)
+		: undefined;
+	const restId = node ? restIdOf(node) : null;
 	return {
 		threadId,
 		resolved: thread.resolved,
@@ -391,8 +395,15 @@ async function update(
 		viewerCan: thread.viewerCan,
 		comments,
 		...(comment ? { comment } : {}),
+		...(comment && restId !== null
+			? { url: commentUrl(target.prUrl, restId) }
+			: {}),
 	};
 }
+
+/** A review comment's link on GitHub, by its REST id. */
+export const commentUrl = (prUrl: string, restId: number): string =>
+	`${prUrl.replace(/\/+$/, "")}#discussion_r${restId}`;
 
 /**
  * The thread's new state with reply `record` in it: GitHub's own list

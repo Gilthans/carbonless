@@ -176,6 +176,10 @@ describe("thread writes", () => {
 			"Octo_Cat",
 		]);
 		expect(answer.comments.comments.at(-1)?.id).toBe(answer.comment?.id);
+		// The posted comment's link on GitHub (an agent-suggested comment shows it, CAR-83).
+		expect(answer.url).toMatch(
+			/^https:\/\/github\.com\/acme\/widget\/pull\/12#discussion_r\d+$/,
+		);
 		// The kept read agrees until the next Refresh.
 		expect(await thread0()).toMatchObject({
 			commentCount: 3,
@@ -228,6 +232,8 @@ describe("thread writes", () => {
 		await fresh.threads((await fresh.overview()).readId, "summary");
 		const found = await reply("Done", { clientId, retry: true }, fresh);
 		expect(found.comment?.id).toBe(first.comment?.id);
+		expect(found.url).toBe(first.url);
+		expect(first.url).toEqual(expect.any(String));
 		expect(writeCalls()).toHaveLength(1);
 		expect(bodies(0)).toHaveLength(3);
 	});
