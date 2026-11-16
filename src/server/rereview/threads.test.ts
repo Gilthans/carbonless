@@ -8,7 +8,7 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../../test/git-fixture";
-import type { AgentAnchor } from "../../shared/agent";
+import type { AgentSpanAnchor } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type {
 	CodeAnchor,
@@ -159,6 +159,7 @@ function thread(
 		bot: false,
 		avatarUrl: "",
 		participants: [],
+		lastAuthor: { login: "octo", avatarUrl: "", bot: false },
 		commentCount: 1,
 		hasReply: false,
 		outdated: false,
@@ -525,7 +526,7 @@ describe("ThreadPlacer", () => {
 describe("placeAgentThreads", () => {
 	const asked = (
 		id: string,
-		anchor: Partial<AgentAnchor> & { path: string },
+		anchor: Partial<AgentSpanAnchor> & { path: string },
 	) => ({
 		id,
 		at: "2026-01-01T00:00:00Z",
@@ -537,7 +538,7 @@ describe("placeAgentThreads", () => {
 			startSide: "RIGHT",
 			startLine: 1,
 			...anchor,
-		} as AgentAnchor,
+		} as AgentSpanAnchor,
 	});
 
 	it("traces an agent thread asked on PS1 onto PS2's moved line, like a comment", async () => {

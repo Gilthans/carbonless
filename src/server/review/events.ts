@@ -848,6 +848,8 @@ const isCol = (value: unknown): boolean =>
 function parseAnchor(raw: unknown): AgentAnchor | null {
 	if (!isObj(raw)) return null;
 	const { subject, path, commit } = raw;
+	// The review conversation has no path: any other key is dropped.
+	if (subject === "review") return { subject };
 	if (!isStr(path) || typeof commit !== "string") return null;
 	if (commit !== "" && !COMMIT.test(commit)) return null;
 	if (subject === "file") return { subject, path, commit };
@@ -1026,6 +1028,8 @@ function parseAgentEvent(
 			if (!anchor || !extras || !isText(raw.text)) return null;
 			// An agent-opened thread names its agent.
 			if (base.by === "ai" && !extras.agent) return null;
+			// The review conversation is opened by the reviewer, never the agent.
+			if (base.by === "ai" && anchor.subject === "review") return null;
 			const { origin, view } = raw;
 			// Fail safe: an origin is the agent's, a view the human's.
 			let parsedOrigin: AgentOrigin | undefined;

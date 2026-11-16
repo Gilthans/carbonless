@@ -8,9 +8,12 @@ import {
 	ask,
 	CALC,
 	chip,
+	chipName,
 	expect,
 	fixture,
+	openAgentModal,
 	openFile,
+	reviewDrawer,
 	setupDialog,
 	statusDialog,
 	test,
@@ -62,6 +65,7 @@ const statusPoll = (page: Page) =>
 
 test("a new review opens on Setup Review Agent", async ({
 	page,
+	isMobile,
 	pr,
 	agentCrb,
 	acpLogPath,
@@ -72,9 +76,20 @@ test("a new review opens on Setup Review Agent", async ({
 	await page.goto(s.url);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).toHaveAccessibleName(
-		"Your agent: No agent · spawn or invite",
+		chipName("No agent · spawn or invite"),
 	);
+	// Configured: the chip toggles the review conversation's drawer, not
+	// the setup (the Overview's agent row opens it).
 	await chip(page).click();
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "true");
+	await expect(setupDialog(page)).toHaveCount(0);
+	// Closed again: the chip on a desktop; on a phone the full-screen
+	// drawer covers it, so its own Close.
+	if (isMobile) {
+		await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
+	} else await chip(page).click();
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
+	await openAgentModal(page);
 	const d = setupDialog(page);
 	await expect(d).toBeVisible();
 	await expect(d.getByRole("tab", { name: "Invite" })).toHaveAttribute(
@@ -150,7 +165,7 @@ test("Spawn shows the Review Agent status, Detach returns to setup", async ({
 	await expect(statusDialog(page)).toHaveCount(0);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).toHaveAccessibleName(
-		"Your agent: No agent · spawn or invite",
+		chipName("No agent · spawn or invite"),
 	);
 	// It stays off: another status poll, no new process.
 	const started = spawns(acpLogPath);
@@ -215,7 +230,7 @@ test("a failed Spawn shows the error and saves nothing", async ({
 	await expect(d).toBeHidden();
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).toHaveAccessibleName(
-		"Your agent: No agent · set one up",
+		chipName("No agent · set one up"),
 	);
 });
 
@@ -275,11 +290,11 @@ test("a config saved in one review doesn't start the agent in another", async ({
 	await expect(page.getByRole("heading", { level: 1 })).toHaveText("Second PR");
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).toHaveAccessibleName(
-		"Your agent: No agent · spawn or invite",
+		chipName("No agent · spawn or invite"),
 	);
 	await statusPoll(page);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
-	await chip(page).click();
+	await openAgentModal(page);
 	await expect(setupDialog(page)).toBeVisible();
 	expect(spawns(acpLogPath)).toBe(started);
 	// Review A still has its agent.
@@ -337,7 +352,7 @@ test("ask with no agent: it waits; set one up from the thread, Spawn, and the ba
 	const section = await openFile(page, s.url, CALC);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).toHaveAccessibleName(
-		"Your agent: No agent · set one up",
+		chipName("No agent · set one up"),
 	);
 	const card = await ask(page, section, 3, "Anyone there?");
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, waiting");
@@ -407,7 +422,7 @@ test("ask with a config but nothing spawned: the thread's button opens the modal
 	const s = await agentCrb({ spawn: false });
 	const section = await openFile(page, s.url, CALC);
 	await expect(chip(page)).toHaveAccessibleName(
-		"Your agent: No agent · spawn or invite",
+		chipName("No agent · spawn or invite"),
 	);
 	const card = await ask(page, section, 3, "Anyone there?");
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, waiting");

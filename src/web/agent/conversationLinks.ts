@@ -8,9 +8,10 @@
  * A link goes to Files changed (a conversation on code: its lines at the
  * comparison it is anchored on, as code links do) or to the Overview (one
  * on a GitHub thread: that thread's card). The page then asks for the
- * conversation to open (requestConversationOpen): its card opens (Files
- * changed) or its thread's panel slides in (Overview), and the message
- * named, if any, is outlined for a moment.
+ * conversation to open (requestConversationOpen, through threadFocus as
+ * the Threads tab's rows do): its card opens (Files changed) or its
+ * thread's panel slides in (Overview), and the message named, if any, is
+ * outlined for a moment.
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
@@ -19,9 +20,10 @@ import type { AgentMessage, AgentThread } from "../../shared/agent";
 import type { ThreadsView } from "../../shared/types";
 import { reviewQuery, sessionQuery } from "../api";
 import type { FilesSearch } from "../files/landing";
+import { threadFocus, usePendingFocus } from "../files/threadFocus";
 import type { OverviewSearch } from "../overview/threadLink";
-import { usePageActive } from "../pageActive";
 import { codeLinkSearch } from "./codeLinks";
+import { openReviewDrawer } from "./drawerStore";
 
 /** An agent thread or message id: a lowercase ULID. */
 export const ULID = /^[0-9a-hjkmnp-tv-z]{26}$/;
@@ -35,6 +37,7 @@ export function conversationLabel(
 	authorOf?: (githubThread: string) => string | undefined,
 ): string {
 	const a = thread.anchor;
+	if (a.subject === "review") return "Review";
 	if (a.subject === "thread" && !thread.orphaned) {
 		return `Thread · ${authorOf?.(a.thread) ?? a.path}`;
 	}
@@ -55,7 +58,8 @@ export type ConversationTarget =
  * goes: a live GitHub thread's conversation to the Overview's card; one on
  * code (an orphan's last known lines too) to Files changed at its lines, in
  * the comparison its anchor names (the patch set holding its commit, else
- * that commit). Null when its file isn't one of this review's.
+ * that commit). Null when its file isn't one of this review's, and for
+ * the review conversation (no place in a page).
  */
 export function conversationSearch(
 	thread: AgentThread,
@@ -68,6 +72,8 @@ export function conversationSearch(
 		...(message !== undefined && ULID.test(message) ? { message } : {}),
 	};
 	const a = thread.anchor;
+	// The review conversation has no place in a page: its drawer shows it.
+	if (a.subject === "review") return null;
 	if (a.subject === "thread" && !thread.orphaned) {
 		return { to: "/r/$id", search: { thread: a.thread, ...land } };
 	}
@@ -102,103 +108,43 @@ export interface ConversationLanding {
 	seq: number;
 }
 
-let landing: ConversationLanding | null = null;
-let seq = 0;
-const listeners = new Set<() => void>();
-const subscribe = (l: () => void) => {
-	listeners.add(l);
-	return () => {
-		listeners.delete(l);
-	};
-};
-const emit = () => {
-	for (const l of listeners) l();
-};
-
-/** The path the landing was asked on: it is dropped once the reviewer goes elsewhere. */
-let landingPath: string | null = null;
-const currentPath = () =>
-	typeof window === "undefined" ? "" : window.location.pathname;
-
 /**
  * A page landed on a conversation link: the conversation opens where it
- * shows. One no card takes (not placed in this comparison) is dropped on
- * the next move to another page, so it never opens a card later, out of
- * the blue. It waits as long as the page takes to place it (placements,
- * GitHub's threads), however slow: no timer.
+ * shows, through the same request a Threads tab row makes (threadFocus):
+ * its card (`card`: its review thread's, for a conversation on one; else
+ * its own), with the message outlined. One no card takes (not placed in
+ * this comparison) is dropped on the next move to another page, so it
+ * never opens a card later, out of the blue. It waits as long as the page
+ * takes to place it (placements, GitHub's threads), however slow: no timer.
  */
 export function requestConversationOpen(
 	conversation: string,
 	message?: string,
+	card?: string,
 ): void {
 	if (!ULID.test(conversation)) return;
-	seq += 1;
-	landing = {
+	threadFocus.request({
+		id: card ?? conversation,
 		conversation,
 		...(message !== undefined && ULID.test(message) ? { message } : {}),
-		seq,
-	};
-	landingPath = currentPath();
-	emit();
+	});
 }
 
-/** The landing still pending here, or null (dropped once the path changed). */
-function pending(snapshot: ConversationLanding | null) {
-	if (!snapshot) return null;
-	if (landingPath !== currentPath()) {
-		// Read during render: dropped just after it, so coming back to that
-		// page never brings it back.
-		queueMicrotask(() => {
-			if (landing !== snapshot || landingPath === currentPath()) return;
-			landing = null;
-			emit();
-		});
-		return null;
-	}
-	return snapshot;
-}
-
-/** The landing for conversation `id`, until it is taken (`done`). */
-export function useConversationLanding(id: string | undefined): {
-	landing: ConversationLanding | null;
-	done: (l: ConversationLanding) => void;
-} {
-	const current = useSyncExternalStore(
-		subscribe,
-		() => landing,
-		() => landing,
-	);
-	// A kept page that isn't showing leaves it to the one that is.
-	const active = usePageActive();
-	const done = useCallback((l: ConversationLanding) => {
-		if (landing?.seq !== l.seq) return;
-		landing = null;
-		emit();
-	}, []);
-	return {
-		landing:
-			active && id !== undefined && pending(current)?.conversation === id
-				? current
-				: null,
-		done,
-	};
-}
-
-/** The landing pending on the page showing, whichever conversation it names. */
+/** The conversation landing pending on the page showing, whichever it names. */
 export function usePendingLanding(): ConversationLanding | null {
-	const current = useSyncExternalStore(
-		subscribe,
-		() => landing,
-		() => landing,
-	);
-	return usePageActive() ? pending(current) : null;
+	const focus = usePendingFocus();
+	return focus?.conversation
+		? {
+				conversation: focus.conversation,
+				...(focus.message ? { message: focus.message } : {}),
+				seq: focus.seq,
+			}
+		: null;
 }
 
 /** Forgets a pending landing (tests). */
 export function resetConversationLanding(): void {
-	landing = null;
-	landingPath = null;
-	emit();
+	threadFocus.reset();
 }
 
 // --- In the page ---------------------------------------------------------------
@@ -296,7 +242,8 @@ export function useGithubAuthors(): (id: string) => string | undefined {
 /**
  * Opens conversation `thread` (landing on `message`): navigates to its
  * page with its search, which asks for it to open there. False when it
- * can't be placed (its file isn't this review's).
+ * can't be placed (its file isn't this review's). The review conversation
+ * opens its drawer instead, on whatever page shows.
  */
 export function useOpenConversation(): (
 	thread: AgentThread,
@@ -306,6 +253,12 @@ export function useOpenConversation(): (
 	const { files, patchsets } = useLinkFacts();
 	return useCallback(
 		(thread: AgentThread, message?: string) => {
+			// The review conversation's place is its drawer, over any page.
+			if (thread.anchor.subject === "review") {
+				openReviewDrawer();
+				requestConversationOpen(thread.id, message);
+				return true;
+			}
 			const target = conversationSearch(thread, files, patchsets, message);
 			if (!target || !router) return false;
 			const id = router.state.matches

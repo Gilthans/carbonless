@@ -272,6 +272,8 @@ a reader drops what breaks them:
   can only carry one that a human already set (the fold checks, see
   "Reading").
 - `agent-thread-resolved` must have `by: "human"` (see "Agent threads ref").
+- An `agent-thread-opened` with a `review` anchor (the review conversation)
+  must have `by: "human"`.
 - Agent events (`agent-thread-opened`, `agent-message`,
   `agent-thread-resolved`, `agent-thread-seen`) are a human's or the agent's (`by: "ai"`), never
   `"auto"`.
@@ -514,7 +516,7 @@ tree, slug identities, compare-and-swap). Written by
 
 | Type | By | Payload |
 |---|---|---|
-| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; `file`: path, commit; or `thread`: GitHub thread node id `thread` (1 to 200 characters, not a ULID), path, commit, and optionally side, line, startSide, startLine), `text`, optional `truncated`; `agent` `{name, version, via?, machine?}` (required by ai; `via` `acp` or `mcp`, and a joined session's `machine`: optional, a bad value is dropped and the event kept; a few dozen bytes, this ref is never pushed); ai only: `origin` (below); human only: `view` (below); a human's carries `details.clientId`, an ai one opened with the agent's idempotency key `details.key` |
+| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; `file`: path, commit; `thread`: GitHub thread node id `thread` (1 to 200 characters, not a ULID), path, commit, and optionally side, line, startSide, startLine; or `review`: the review conversation, no other key (any other is dropped on read), human only), `text`, optional `truncated`; `agent` `{name, version, via?, machine?}` (required by ai; `via` `acp` or `mcp`, and a joined session's `machine`: optional, a bad value is dropped and the event kept; a few dozen bytes, this ref is never pushed); ai only: `origin` (below); human only: `view` (below); a human's carries `details.clientId`, an ai one opened with the agent's idempotency key `details.key` |
 | `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent` (as above; a joined session's `name` is how it named itself, `version` its harness string, `via` `mcp`, and `machine`; a spawned agent's, written by its MCP `reply` too since 2026-11-13, `via` `acp` with its `agentInfo` name and version), `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the answer replies to: `reply`'s `replyTo`, or the question a stopped or failed hand-out ends; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); ai only: `head` (the OID of the checkout the answer came from; older ACP answers only, none since 2026-11-13), `suggests` (`"resolve"`), `origin` (below; an origin message has `stop: "end_turn"`, empty `activity`, no `replyTo`, and `details.key` when the agent gave one); human only: `view`; a human's carries `details.clientId` |
 | `agent-thread-resolved` | human | `thread`, `resolved` (`false` reopens) |
 | `agent-thread-seen` | human | `thread`, `upTo` (the id of the last message the reviewer has seen; a lowercase ULID) |
@@ -543,7 +545,20 @@ folded from the origins on read (`startedBy`), never stored.
   by ai is skipped by readers, and so is an ai-opened thread without its
   `agent`. Only a human has seen a thread: `agent-thread-seen` by ai is
   refused on write and skipped on read, so nothing automatic can make an
-  answer look seen.
+  answer look seen. The review conversation is the reviewer's to open: an
+  `agent-thread-opened` by ai with a `review` anchor is refused on write
+  and skipped on read.
+- **The review conversation** (`anchor: {subject: "review"}`, spec
+  `docs/superpowers/specs/2026-11-13-review-conversation-design.md`): one
+  agent conversation about the whole review, with no path or commit. At
+  most one per review: the store refuses a second opening (the route
+  answers 409 naming the one there; a resend of the same `clientId`
+  returns it), and on read later review openings fold into the first, as
+  for a GitHub thread (below), so a race or a hand-edited ref never shows
+  two. Never resolved: the host refuses the resolve (409) and the fold
+  ignores any `agent-thread-resolved` for it, so it always counts as open
+  for the waiting rules (`isAgentQuestion`). Placement, the code window
+  and the GitHub join skip it.
 - **Fold:** deduplicate by `id`, sort by `(ts, id)`. Threads in the order
   they were opened; the opening text is the first message. A thread waits
   while a human message has no answer: one comes after the last answer's
@@ -557,8 +572,9 @@ folded from the origins on read (`startedBy`), never stored.
   restarts; resolved is the last `agent-thread-resolved`'s
   word, false before any. Messages and resolves of a thread never opened
   are dropped. New events are stamped after the ref's newest.
-  **One conversation per GitHub thread:** openings whose `thread` anchors
-  name the same GitHub thread fold into the first one (its `id` stays): a
+  **One conversation per GitHub thread, one review conversation:** openings
+  whose `thread` anchors name the same GitHub thread, and openings with a
+  `review` anchor, fold into the first one (its `id` stays): a
   later opening's text joins as a message in `(ts, id)` order, and
   messages, seen marks and resolves written under its own thread id join
   too. `seenUpTo` is the `upTo` furthest along in the thread's messages (an
@@ -607,6 +623,22 @@ folded from the origins on read (`startedBy`), never stored.
   messages; moving long ones to tree blobs (GitDB 6) is the fallback. No
   compaction, as for review refs. The 100 seen events add 100 commits' worth
   of git objects (loose size) but little packed.
+
+  The review conversation, measured 2026-11-15 (`pnpm tsx
+  scripts/measure-agent-ref.ts --review`, same 4-core machine under load
+  ~23, so the times are pessimistic): one conversation of 20 messages of
+  2 KiB of prose (10 human with a `view`, 10 answers through MCP, no
+  `head`) and one seen per answer, 30 commits, 40 KiB of text:
+
+  | Measure | Value |
+  |---|---|
+  | Loose size | 124 KiB |
+  | Packed size (`git gc`) | 30 KiB |
+  | One append (median of 9) | 21 ms wall; CPU 9 ms + 10 ms git |
+  | Cold `read()`, loose or packed (median of 9) | 7 ms wall; CPU 4 ms |
+
+  It adds to a review what one long agent thread does; the format (one
+  more anchor subject, no new event kind, no new ref) changes nothing else.
 
 ## Split carries
 

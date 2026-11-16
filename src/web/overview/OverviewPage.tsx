@@ -72,6 +72,7 @@ import {
 	usePlacementInfo,
 	useSessionPlacements,
 } from "../files/ThreadFate";
+import { useFocusCard } from "../files/threadFocus";
 import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { usePageActive } from "../pageActive";
@@ -255,7 +256,11 @@ function OverviewContent({
 		showThread(search.thread);
 		// An agent conversation's link: its thread's panel opens.
 		if (search.conversation) {
-			requestConversationOpen(search.conversation, search.message);
+			requestConversationOpen(
+				search.conversation,
+				search.message,
+				search.thread,
+			);
 		}
 		void navigate({
 			to: "/r/$id",
@@ -1521,6 +1526,16 @@ function ThreadItem({
 		onOpen: showMore,
 		onToggle: onToggle && ((resolved) => onToggle(resolved)),
 	});
+	// Asked for (a link to its agent conversation): this card takes it,
+	// once shown; the page brings it into view itself (its list, enough of
+	// it, then the card), the panel opens by itself.
+	const cardRef = useRef<HTMLLIElement>(null);
+	useFocusCard(thread.id || undefined, cardRef, undefined, {
+		scroll: false,
+		// Its conversation, when asked for, once the agent threads say it's
+		// this thread's (a cold load reads them after GitHub's).
+		ready: (f) => !f.conversation || agent?.conversation?.id === f.conversation,
+	});
 	// State, not refs: either box can mount later than the card.
 	const [codeBox, setCodeBox] = useState<HTMLElement | null>(null);
 	const [commentBox, setCommentBox] = useState<HTMLDivElement | null>(null);
@@ -1707,6 +1722,7 @@ function ThreadItem({
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<li
+				ref={cardRef}
 				data-testid="thread"
 				id={thread.id ? threadAnchor(thread.id) : undefined}
 				// Focused when the timeline brings it into view.

@@ -1,25 +1,25 @@
 import { PlugIcon, SparkleFillIcon } from "@primer/octicons-react";
 import {
 	type QueryClient,
-	useMutation,
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { AgentStatus } from "../../shared/agent";
 import { ApiError, overviewQuery } from "../api";
 import { plural } from "../overview/parts";
-import { RelativeTime } from "../RelativeTime";
-import { Spinner, SpinnerIcon } from "../Spinner";
+import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
-import { NOT_PHONE, useMedia } from "../useMedia";
+import { agentStatusQuery, agentThreadsQuery, useAgentOn } from "./api";
 import {
-	agentStatusQuery,
-	agentThreadsQuery,
-	postAgentDisconnect,
-	useAgentOn,
-} from "./api";
+	closeReviewDrawer,
+	isReviewDrawerOpen,
+	openReviewDrawer,
+	useReviewDrawerOpen,
+} from "./drawerStore";
+import { useReviewConversation } from "./reviewConversation";
 import { openAgentSetup } from "./setupStore";
+import { unseenMessages } from "./threadAgent";
 
 /**
  * Spawned (not joined) and the runner not up yet: starting when an agent is
@@ -114,94 +114,46 @@ export function useAgentSync(
 	}, [key, client]);
 }
 
-/** Whether pressing the chip opens its popover (a joined session); else the agent modal. */
-export const chipPopover = (status: AgentStatus | undefined): boolean =>
-	Boolean(status?.joined);
-
-/** A joined session's presence, as a word. */
-const presenceWord = (status: AgentStatus): string =>
-	status.state === "busy"
-		? "answering"
-		: status.state === "reconnecting"
-			? "reconnecting"
-			: "listening";
-
-const POP_BUTTON =
-	"flex h-10 items-center justify-center gap-1.5 rounded-md px-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60";
+/**
+ * Whether pressing the chip (or Shift+A) toggles the review conversation's
+ * drawer: an ACP agent configured or a session joined. Otherwise (no agent,
+ * even with a conversation already there) it opens the agent setup.
+ */
+export const chipOpensDrawer = (status: AgentStatus | undefined): boolean =>
+	Boolean(status?.configured) || Boolean(status?.joined);
 
 /**
- * The chip's popover for a joined session: its name, machine and harness,
- * its presence and since when, and Disconnect.
+ * A press (the chip's tap or Shift+A) before the first status read: held
+ * until the status lands, then the drawer or the setup (chipOpensDrawer),
+ * never one swapped for the other. A second press cancels it, and a failed
+ * read spends it: nothing opens later, out of the blue.
  */
-function ChipPanel(props: { status: AgentStatus; onDone(): void }) {
-	const { status, onDone } = props;
-	const client = useQueryClient();
-	const disconnect = useMutation({
-		mutationFn: postAgentDisconnect,
-		onSuccess: () => {
-			void client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
-			onDone();
-		},
-	});
-	// One write per press: set at once, before any re-render.
-	const inFlight = useRef(false);
-	const joined = status.joined;
-	if (!joined) return null;
-	return (
-		<div className="grid min-w-0 gap-2 text-sm">
-			<div className="flex min-w-0 items-center gap-1.5">
-				<PlugIcon size={16} aria-hidden className="shrink-0 text-agent-ink" />
-				<b
-					data-testid="agent-pop-name"
-					className="min-w-0 truncate font-semibold text-ink"
-				>
-					{joined.name}
-				</b>
-			</div>
-			<div className="min-w-0 truncate text-muted">
-				{joined.harness
-					? `${joined.machine} · ${joined.harness}`
-					: joined.machine}
-			</div>
-			<div className="flex min-w-0 flex-wrap items-center gap-1.5 text-muted">
-				<span
-					aria-hidden
-					className={`h-2 w-2 shrink-0 rounded-full ${agentDot(status)}`}
-				/>
-				<span data-testid="agent-pop-presence">{presenceWord(status)}</span>·
-				joined <RelativeTime iso={joined.since} />
-			</div>
-			<button
-				type="button"
-				data-testid="agent-disconnect"
-				disabled={disconnect.isPending}
-				onClick={() => {
-					if (inFlight.current) return;
-					inFlight.current = true;
-					disconnect.mutate(undefined, {
-						onSettled: () => {
-							inFlight.current = false;
-						},
-					});
-				}}
-				className={`${POP_BUTTON} border border-bad text-bad hover:bg-bad/10`}
-			>
-				{disconnect.isPending ? (
-					<Spinner label="Disconnecting" size={14}>
-						Disconnect
-					</Spinner>
-				) : (
-					"Disconnect"
-				)}
-			</button>
-			{disconnect.error && (
-				<p role="alert" className="text-xs break-words text-bad">
-					{disconnect.error.message}
-				</p>
-			)}
-		</div>
-	);
+let earlyPress = false;
+
+/** Opens what the status says: the drawer, else the setup. */
+const openForStatus = (status: AgentStatus | undefined): void => {
+	if (chipOpensDrawer(status)) openReviewDrawer();
+	else openAgentSetup();
+};
+
+/**
+ * Presses the chip: an open drawer closes, whatever the agent (it may have
+ * left while it was open); else the drawer or the setup; before the first
+ * status read, the press is held.
+ */
+export function pressAgentChip(
+	status: AgentStatus | undefined,
+	pending: boolean,
+): void {
+	if (isReviewDrawerOpen()) closeReviewDrawer();
+	else if (pending) earlyPress = !earlyPress;
+	else openForStatus(status);
 }
+
+/** Forgets a held press (tests: the flag outlives a harness without the chip). */
+export const resetAgentChipPress = (): void => {
+	earlyPress = false;
+};
 
 /** The chip's icon colour: the status dot's, as text (agentDot). */
 export function agentInk(status: AgentStatus): string {
@@ -217,16 +169,32 @@ export function agentInk(status: AgentStatus): string {
 	}
 }
 
-/** The chip's one size, wherever it is (and the space kept for it). */
-export const CHIP_BOX = "flex h-10 w-7 shrink-0 items-center justify-center";
+/** The chip's one size, wherever it is (and the space kept for it): its tap target. */
+export const CHIP_BOX = "flex h-10 w-10 shrink-0 items-center justify-center";
 
 /**
- * The chip's face, a bordered circle filling the box's width (a control's
- * outline, line-strong), so it reads as a button; its icon or spinner
- * (CHIP_ICON px) inside.
+ * The header's right column for the chip, mirroring the logo on the left:
+ * always reserved at the chip's size (as of a cutoff, in another
+ * reviewer's view and while the chip is docked too, empty then), so the
+ * title wraps between the two, the row's height never changes, and the
+ * column's top (where the chip docks from) stays put.
+ */
+export const CHIP_COLUMN =
+	"flex h-10 w-10 shrink-0 items-center justify-center";
+
+/**
+ * The chip's face, a 32px bordered circle (a control's outline,
+ * line-strong), smaller than the logo, so it reads as a button; its icon or
+ * spinner (CHIP_ICON px) inside.
  */
 const CHIP_FACE =
-	"flex h-7 w-7 items-center justify-center rounded-full border border-line-strong bg-raised";
+	"flex h-8 w-8 items-center justify-center rounded-full border border-line-strong bg-raised";
+
+/** Pressed (the drawer open): the agent wash inside agent-edge. */
+const CHIP_FACE_PRESSED = CHIP_FACE.replace(
+	"border-line-strong bg-raised",
+	"border-agent-edge bg-agent",
+);
 const CHIP_ICON = 18;
 
 /**
@@ -245,16 +213,19 @@ export function useAgentChipPlace(asOf: boolean): boolean {
 }
 
 /**
- * The reviewer's agent in the header, by the logo (in the sticky row,
- * beside the compact mark, once scrolled): the sparkle alone, coloured by
- * its status, in a bordered circle; the name and detail in the tooltip.
- * One size in every state (CHIP_BOX); a plug badge on the circle for a
- * session joined through MCP. Pressing it opens the agent setup, or, with
- * a joined session, a popover (a bottom sheet on a
- * phone). Until the
- * overview says whether there is an agent, and on its first read, a
- * spinner in the icon's place; a routine poll changes nothing unless the
- * answer does. None where the review has no agent (--viewer, --as-of).
+ * The reviewer's agent and the review conversation in the header, in its
+ * own column pinned right (in the sticky row's right end once scrolled):
+ * the sparkle alone, coloured by its status, in a bordered circle; the
+ * name and detail in the tooltip. One size in every state (CHIP_BOX).
+ * The number of the conversation's unseen answers sits on the lower right
+ * while there are any (a joined session's plug inside it, before the
+ * number; the plug alone otherwise), and it looks pressed while the drawer
+ * is open. Pressing it toggles the drawer (chipOpensDrawer), else opens
+ * the agent setup; a press before the first status read waits for it
+ * (pressAgentChip). Until the overview says whether there is an agent, and
+ * on its first read, a spinner in the icon's place; no number until the
+ * threads are read (never a 0). None where the review has no agent
+ * (--viewer, --as-of).
  */
 export function AgentChip({
 	dismissKey,
@@ -262,7 +233,7 @@ export function AgentChip({
 }: {
 	/** Closes the tooltip whenever it changes (the chip moved). */
 	dismissKey?: unknown;
-	/** As of a cutoff (the session says): no agent, no place for one. */
+	/** As of a cutoff (the session says): no agent, no chip. */
 	asOf?: boolean;
 } = {}) {
 	const client = useQueryClient();
@@ -270,48 +241,26 @@ export function AgentChip({
 	const status = useQuery({ ...agentStatusQuery, enabled: on });
 	const place = useAgentChipPlace(asOf);
 	useAgentSync(client, status.data);
-	const phone = !useMedia(NOT_PHONE);
-	const [open, setOpen] = useState(false);
-	const wrapper = useRef<HTMLSpanElement>(null);
-	const button = useRef<HTMLButtonElement | null>(null);
-	const dialog = useRef<HTMLDialogElement>(null);
-	const titleId = useId();
-	const data = status.data;
-	const popover = chipPopover(data);
-	const shown = open && popover;
+	const conversation = useReviewConversation();
+	const drawerOpen = useReviewDrawerOpen();
+	// A press held before the first status read: acted on once it lands.
+	const statusData = status.data;
 	useEffect(() => {
-		const d = dialog.current;
-		if (!d) return;
-		if (d.open) {
-			if (typeof d.close === "function") d.close();
-			else d.removeAttribute("open");
-		}
-		if (!shown) return;
-		if (phone && typeof d.showModal === "function") d.showModal();
-		else if (typeof d.show === "function") d.show();
-		else d.setAttribute("open", "");
-		d.querySelector<HTMLElement>("button")?.focus();
-	}, [shown, phone]);
+		if (!earlyPress || !statusData) return;
+		earlyPress = false;
+		// Replayed as an open, never a toggle.
+		openForStatus(statusData);
+	}, [statusData]);
+	// A failed read spends it, as leaving the review does.
 	useEffect(() => {
-		if (!shown || phone) return;
-		const outside = (event: Event) => {
-			if (!wrapper.current?.contains(event.target as Node)) setOpen(false);
-		};
-		const onEscape = (event: KeyboardEvent) => {
-			if (event.key !== "Escape") return;
-			event.preventDefault();
-			setOpen(false);
-			button.current?.focus();
-		};
-		document.addEventListener("pointerdown", outside);
-		document.addEventListener("focusin", outside);
-		document.addEventListener("keydown", onEscape);
-		return () => {
-			document.removeEventListener("pointerdown", outside);
-			document.removeEventListener("focusin", outside);
-			document.removeEventListener("keydown", onEscape);
-		};
-	}, [shown, phone]);
+		if (status.isError) earlyPress = false;
+	}, [status.isError]);
+	useEffect(
+		() => () => {
+			earlyPress = false;
+		},
+		[],
+	);
 	if (!place) return null;
 	if (!on) {
 		// Whether there is an agent isn't known yet: its place, spinning.
@@ -328,108 +277,101 @@ export function AgentChip({
 			</span>
 		);
 	}
+	const data = status.data;
 	const tip = data
 		? agentTip(data)
 		: status.error
 			? status.error.message
 			: "Loading your agent";
 	const joined = data?.via === "mcp" && Boolean(data.joined);
-	const close = () => {
-		setOpen(false);
-		button.current?.focus();
-	};
+	const thread = conversation.thread;
+	// The agent's answers not yet seen; only once the threads are read
+	// (never a 0 while they load), and only while unseen.
+	const count = thread?.unread ? unseenMessages(thread).length : 0;
+	// An open drawer is the chip's to close, whatever the agent; until the
+	// first status read, neither (a press is held, above).
+	const drawer = drawerOpen || (!status.isPending && chipOpensDrawer(data));
+	const pressed = drawerOpen && drawer;
+	// Both jobs (the conversation, the agent), then the status.
+	const name = [
+		"Review conversation",
+		`Your agent: ${tip}`,
+		count > 0 ? `${count} unread` : "",
+	]
+		.filter(Boolean)
+		.join(" · ");
+	const plug = (
+		<span aria-hidden data-testid="agent-chip-plug" className="flex">
+			<PlugIcon size={10} />
+		</span>
+	);
 	return (
-		<span ref={wrapper} className="relative inline-flex">
-			<Tooltip content={tip} describe={false} dismissKey={dismissKey}>
-				{(trigger) => (
-					<button
-						type="button"
-						{...trigger}
-						ref={(el) => {
-							button.current = el;
-							trigger.ref(el);
-						}}
-						data-testid="agent-chip"
-						data-state={data?.state}
-						data-via={data?.via}
-						aria-label={`Your agent: ${tip}`}
-						aria-busy={status.isPending || undefined}
-						aria-haspopup={popover ? "dialog" : undefined}
-						aria-expanded={popover ? shown : undefined}
-						onClick={() => {
-							if (popover) setOpen((o) => !o);
-							else openAgentSetup();
-						}}
-						className={`group ${CHIP_BOX} rounded-full focus-visible:outline-2 focus-visible:outline-accent`}
+		<Tooltip content={tip} describe={false} dismissKey={dismissKey}>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					data-testid="agent-chip"
+					data-state={data?.state}
+					data-via={data?.via}
+					aria-label={name}
+					aria-busy={status.isPending || undefined}
+					aria-expanded={drawer ? pressed : undefined}
+					aria-controls={drawer ? "review-conversation" : undefined}
+					onClick={() => pressAgentChip(data, status.isPending)}
+					className={`group ${CHIP_BOX} rounded-full focus-visible:outline-2 focus-visible:outline-accent`}
+				>
+					<span
+						data-testid="agent-chip-face"
+						className={`relative ${
+							pressed
+								? CHIP_FACE_PRESSED
+								: `${
+										joined
+											? CHIP_FACE.replace(
+													"border-line-strong",
+													"border-agent-edge",
+												)
+											: CHIP_FACE
+									} group-hover:bg-overlay`
+						}`}
 					>
-						<span
-							data-testid="agent-chip-face"
-							className={`relative ${
-								joined
-									? CHIP_FACE.replace("border-line-strong", "border-agent-edge")
-									: CHIP_FACE
-							} group-hover:bg-overlay`}
-						>
-							{status.isPending ? (
-								<span data-testid="agent-chip-loading" className="flex">
-									<SpinnerIcon size={CHIP_ICON} className="text-muted" />
-								</span>
-							) : (
-								<span
-									data-testid="agent-chip-icon"
-									className={`flex ${data ? agentInk(data) : "text-bad"}`}
-								>
-									<SparkleFillIcon size={CHIP_ICON} aria-hidden />
-								</span>
-							)}
-							{joined && (
+						{status.isPending ? (
+							<span data-testid="agent-chip-loading" className="flex">
+								<SpinnerIcon size={CHIP_ICON} className="text-muted" />
+							</span>
+						) : (
+							<span
+								data-testid="agent-chip-icon"
+								className={`flex ${data ? agentInk(data) : "text-bad"}`}
+							>
+								<SparkleFillIcon size={CHIP_ICON} aria-hidden />
+							</span>
+						)}
+						{count > 0 ? (
+							<span
+								aria-hidden
+								data-testid="agent-chip-count"
+								// 4px past the face: the docked chip's face is 4px from a
+								// phone's edge (App's row slot), so the badge ends on it.
+								className="absolute -right-1 -bottom-1.5 flex h-4 min-w-4 items-center justify-center gap-0.5 rounded-full border border-agent-edge bg-agent px-1 text-[11px] leading-none font-bold text-agent-ink tabular-nums"
+							>
+								{joined && plug}
+								{count}
+							</span>
+						) : (
+							joined && (
 								<span
 									aria-hidden
-									data-testid="agent-chip-plug"
 									className="absolute -right-1 -bottom-1 flex rounded-full border border-agent-edge bg-agent p-px text-agent-ink"
 								>
-									<PlugIcon size={10} />
+									{plug}
 								</span>
-							)}
-						</span>
-					</button>
-				)}
-			</Tooltip>
-			{popover && data && (
-				<dialog
-					ref={dialog}
-					aria-labelledby={titleId}
-					data-testid="agent-popover"
-					onClose={() => setOpen(false)}
-					onCancel={(event) => {
-						event.preventDefault();
-						close();
-					}}
-					onKeyDown={(event) => {
-						// The popover's Escape is the document's (above).
-						if (phone && event.key === "Escape") {
-							event.preventDefault();
-							close();
-						}
-					}}
-					onClick={(event) => {
-						// A click on the sheet's backdrop lands on the dialog itself.
-						if (phone && event.target === dialog.current) close();
-					}}
-					className={
-						phone
-							? "m-0 mt-auto max-h-[85dvh] w-full max-w-none rounded-t-2xl border-t border-edge bg-surface p-0 text-ink shadow-sheet backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
-							: "absolute top-full left-0 z-40 m-0 mt-1 w-72 rounded-lg border border-edge bg-surface p-0 text-ink shadow-float"
-					}
-				>
-					<h2 id={titleId} className="sr-only">
-						Your agent
-					</h2>
-					<div className={phone ? "px-4 pt-3 pb-6" : "p-3"}>
-						{shown && <ChipPanel status={data} onDone={close} />}
-					</div>
-				</dialog>
+							)
+						)}
+					</span>
+				</button>
 			)}
-		</span>
+		</Tooltip>
 	);
 }

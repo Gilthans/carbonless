@@ -6,23 +6,42 @@ import {
 	type AgentMessage,
 	type AgentMessageRequest,
 	type AgentOrigin,
+	type AgentSpanAnchor,
 	type AgentStatus,
 	type AgentThread,
 	type AgentView,
+	type AgentViewTarget,
+	isAgentQuestion,
+	isOpenToAgent,
 	JOIN,
 	JOINED_PREAMBLE,
 	JOINED_THREAD_PREAMBLE,
 	MAX_OPENED_PER_REQUEST,
 	type OpenAgentThreadRequest,
+	REVIEW_PREAMBLE,
 	startedBy,
 } from "../../shared/agent.js";
 import { inGitOrder } from "../../shared/diffHunk.js";
+import {
+	all,
+	type LineRanges,
+	normalize,
+	subtract,
+	union,
+} from "../../shared/lineRanges.js";
+import { marksOf } from "../../shared/pieces.js";
 import type { ThreadPlacement } from "../../shared/rereview/placement.js";
 import type {
+	ClusterState,
+	ClusterView,
 	CodeAnchor,
 	CodeWindow,
+	Counts,
 	DiffLine,
+	FileStatus,
+	FileView,
 	ReviewThread,
+	ReviewView,
 	Snapshot,
 	ThreadComment,
 } from "../../shared/types.js";
@@ -42,8 +61,10 @@ import {
 	type CommentRole,
 	type GithubThreadFacts,
 	isSafePath,
+	type PromptCodeEnvelope,
 	type PromptEnvelope,
 	type PromptMessage,
+	type PromptReviewEnvelope,
 	sanitizeEnvelope,
 	sanitizeThirdParty,
 	takeSuggestion,
@@ -59,6 +80,7 @@ import {
 import {
 	type AgentThreadFold,
 	AgentThreadStore,
+	ReviewConversationError,
 	UnknownAgentThreadError,
 } from "./store.js";
 
@@ -207,6 +229,8 @@ export interface SessionReviewFacts {
 	threadsTruncated?: boolean;
 	/** GitHub's threads couldn't be read (why, one line). */
 	threadsError?: string;
+	/** When the GitHub read the threads come from started (ISO). */
+	threadsReadAt?: string;
 }
 
 /** A GitHub review thread as the `review` tool lists it (bodies sanitised and capped). */
@@ -222,6 +246,13 @@ export interface SessionGithubThread {
 	commentsPartial?: boolean;
 }
 
+/**
+ * How old a GitHub read `review` and `open`'s thread checks may use (ms):
+ * a recent or running read is reused, an older one replaced, so "was it
+ * resolved?" is answered from GitHub as of at most this long ago.
+ */
+export const AGENT_GITHUB_MAX_AGE_MS = 30_000;
+
 /** At most this many GitHub threads in `review`. */
 export const MAX_SESSION_THREADS = 200;
 /** A comment body in `review`, in characters (cut with an ellipsis). */
@@ -231,6 +262,51 @@ export const MAX_SESSION_COMMENT = 2048;
 export interface SessionFacts {
 	facts: RunnerFacts;
 	viewer?: string;
+	/** The coverage the page shows for `target` (none: the review's default comparison). */
+	coverage?(target?: AgentViewTarget): Promise<SessionCoverage>;
+}
+
+/** One comparison's coverage, as the page reads it (Session.coverage). */
+export interface SessionCoverage {
+	/** The comparison's merge base and head. */
+	base: string;
+	head: string;
+	view: ReviewView;
+}
+
+/** The reviewer's progress couldn't be read (code unavailable): never an empty or all-reviewed answer. */
+export class CoverageError extends Error {}
+
+/** Line ranges by side, inclusive: LEFT in the base's numbering, RIGHT in the head's. */
+export interface SideRanges {
+	LEFT: [number, number][];
+	RIGHT: [number, number][];
+}
+
+/** One changed file's lines in `progress`: each changed line in exactly one of the three. */
+export interface SessionProgressFile {
+	path: string;
+	oldPath?: string;
+	status: FileStatus;
+	reviewed: SideRanges;
+	unreviewed: SideRanges;
+	crossedOff: SideRanges;
+	/** File-level changes (a rename, a mode, a binary file): their state. */
+	whole?: { label?: string; state: ClusterState }[];
+}
+
+/** What `progress` answers: the comparison on screen and its coverage by line. */
+export interface SessionProgress {
+	comparison: {
+		base: string;
+		head: string;
+		patchset: number | null;
+		/** The view of the reviewer's latest message in the review conversation, or the review's default. */
+		source: "message" | "default";
+	};
+	files: SessionProgressFile[];
+	/** The page's line counts for this comparison. */
+	lines: Counts;
 }
 
 /** A request the agent host refuses as made (the app answers 400). */
@@ -253,13 +329,14 @@ export class AgentConflictError extends Error {
 /** What the host reads of the review's GitHub threads and patch sets. */
 export type AgentGithub = Pick<
 	ReviewAgentSource,
-	"threads" | "thread" | "patchsets"
+	"threads" | "thread" | "patchsets" | "threadsAt"
 > & {
 	/** The snapshot's merge base (a viewed head's, unless it is a patch set's). */
 	base(): string;
 	/** The comments (author, markdown) of these threads, by id; absent: openers only. */
 	comments?(
 		ids: string[],
+		maxAgeMs?: number,
 	): Promise<Map<string, { author: string; body: string }[]>>;
 };
 
@@ -492,19 +569,28 @@ export class AgentHost {
 	/**
 	 * Each span thread's id, anchor and when it was asked (what placement
 	 * reads): a live thread conversation goes where its GitHub thread goes,
-	 * so it is left out; an orphan comes with its span anchor.
+	 * so it is left out; an orphan comes with its span anchor. The review
+	 * conversation has no code to place on: left out.
 	 */
-	async asked(): Promise<{ id: string; anchor: AgentAnchor; at: string }[]> {
-		return (await this.#joined(await this.store.read()))
-			.filter((t) => t.anchor.subject !== "thread")
-			.map(({ id, anchor, at }) => ({ id, anchor, at }));
+	async asked(): Promise<
+		{ id: string; anchor: AgentSpanAnchor; at: string }[]
+	> {
+		const out: { id: string; anchor: AgentSpanAnchor; at: string }[] = [];
+		for (const { id, anchor, at } of await this.#joined(
+			await this.store.read(),
+		)) {
+			if (anchor.subject === "thread" || anchor.subject === "review") continue;
+			out.push({ id, anchor, at });
+		}
+		return out;
 	}
 
 	/**
-	 * Opens a thread on a span, or on a GitHub thread (`req.thread`): one
+	 * Opens a thread on a span, on a GitHub thread (`req.thread`): one
 	 * listed, with an id and not deleted (else AgentRequestError), and with
-	 * no conversation yet (else AgentConflictError naming it). A resend of
-	 * an opening already written returns its thread.
+	 * no conversation yet (else AgentConflictError naming it), or the review
+	 * conversation (`req.review`: one per review, else AgentConflictError
+	 * naming it). A resend of an opening already written returns its thread.
 	 */
 	async open(req: OpenAgentThreadRequest): Promise<AgentThread> {
 		// A resend of an opening already stored: its thread, whatever GitHub says now.
@@ -513,18 +599,33 @@ export class AgentHost {
 			return this.#view(await this.#joinedOne(await this.store.find(known)));
 		}
 		const view = req.view ? this.#resolveView(req.view) : undefined;
+		const given = [req.span, req.thread, req.review].filter(
+			(x) => x !== undefined,
+		).length;
+		if (given !== 1) {
+			throw new AgentRequestError(
+				"A span, a thread or the review, one of them",
+			);
+		}
 		let anchor: AgentAnchor;
 		if (req.span) anchor = req.span;
 		else if (req.thread !== undefined) {
 			anchor = await this.#threadAnchor(req.thread);
-		} else throw new AgentRequestError("A span or a thread, one of them");
-		const t = await this.store.open({
-			anchor,
-			text: req.text,
-			by: "human",
-			clientId: req.clientId,
-			...(view ? { view } : {}),
-		});
+		} else anchor = { subject: "review" };
+		const t = await this.store
+			.open({
+				anchor,
+				text: req.text,
+				by: "human",
+				clientId: req.clientId,
+				...(view ? { view } : {}),
+			})
+			.catch((error: unknown) => {
+				if (error instanceof ReviewConversationError) {
+					throw new AgentConflictError(error.message, error.thread);
+				}
+				throw error;
+			});
 		await this.#asked();
 		return this.#view(await this.#joinedOne(t));
 	}
@@ -568,10 +669,14 @@ export class AgentHost {
 	/**
 	 * Resolves a span thread or an orphan; a live thread conversation has
 	 * no resolved state of its own (AgentConflictError: resolve the GitHub
-	 * thread, a human action on its card).
+	 * thread, a human action on its card), and the review conversation is
+	 * never resolved (AgentConflictError).
 	 */
 	async setResolved(thread: string, resolved: boolean): Promise<AgentThread> {
 		const current = await this.store.find(thread);
+		if (current.anchor.subject === "review") {
+			throw new AgentConflictError("The review conversation is never resolved");
+		}
 		if (current.anchor.subject === "thread") {
 			// Unknown GitHub threads fail the write (502), never resolve it here.
 			const live = liveGithubThreads(await this.github.threads());
@@ -630,13 +735,6 @@ export class AgentHost {
 		await this.runner.detach();
 	}
 
-	/** The reviewer's Disconnect of a joined session (a spawned agent's ends it, as Detach). */
-	async disconnect(): Promise<void> {
-		await this.#restored;
-		if (this.join.isSpawned()) return this.detach();
-		this.join.leave("disconnected");
-	}
-
 	async close(): Promise<void> {
 		this.#closed = true;
 		if (this.#pageTimer) clearTimeout(this.#pageTimer);
@@ -682,7 +780,7 @@ export class AgentHost {
 		const skipped = this.#skipped();
 		// Joined with GitHub: an orphan is a span thread (its resolve counts).
 		return (await this.#joined(await this.store.read())).filter(
-			(t) => isQuestion(t) && !skipped.has(t.id),
+			(t) => isAgentQuestion(t) && !skipped.has(t.id),
 		).length;
 	}
 
@@ -713,17 +811,29 @@ export class AgentHost {
 
 	/** The PR's live GitHub threads for `review`, sanitised and capped. */
 	async #sessionThreads(): Promise<
-		Pick<SessionReviewFacts, "threads" | "threadsTruncated" | "threadsError">
+		Pick<
+			SessionReviewFacts,
+			"threads" | "threadsTruncated" | "threadsError" | "threadsReadAt"
+		>
 	> {
 		let listed: ReviewThread[];
+		let at: string | undefined;
 		try {
-			listed = [...liveGithubThreads(await this.github.threads()).values()];
+			// At most AGENT_GITHUB_MAX_AGE_MS old: "resolved" is GitHub's now.
+			const read = this.github.threadsAt
+				? await this.github.threadsAt(AGENT_GITHUB_MAX_AGE_MS)
+				: { threads: await this.github.threads(AGENT_GITHUB_MAX_AGE_MS) };
+			listed = [...liveGithubThreads(read.threads).values()];
+			at = "at" in read ? read.at : undefined;
 		} catch (error) {
 			return { threadsError: oneError(error) };
 		}
 		const kept = listed.slice(0, MAX_SESSION_THREADS);
 		const all = await (
-			this.github.comments?.(kept.map((t) => t.id)) ?? Promise.resolve(null)
+			this.github.comments?.(
+				kept.map((t) => t.id),
+				AGENT_GITHUB_MAX_AGE_MS,
+			) ?? Promise.resolve(null)
 		).catch(() => null);
 		const s = sanitizeThirdParty;
 		const cap = (body: string) => {
@@ -749,6 +859,7 @@ export class AgentHost {
 		});
 		return {
 			threads,
+			...(at ? { threadsReadAt: at } : {}),
 			...(listed.length > kept.length ? { threadsTruncated: true } : {}),
 		};
 	}
@@ -767,12 +878,8 @@ export class AgentHost {
 		const skipped = this.#skipped();
 		const thread =
 			(handed &&
-				threads.find(
-					(t) =>
-						t.id === handed.thread &&
-						(t.anchor.subject === "thread" || !t.resolved),
-				)) ||
-			threads.find((t) => isQuestion(t) && !skipped.has(t.id));
+				threads.find((t) => t.id === handed.thread && isOpenToAgent(t))) ||
+			threads.find((t) => isAgentQuestion(t) && !skipped.has(t.id));
 		if (!thread) return null;
 		// The read took a while: the session may have left meanwhile.
 		if (!this.join.check(secret)) throw new SessionTokenError();
@@ -784,22 +891,6 @@ export class AgentHost {
 		const spawned = this.join.isSpawned();
 		const rejected = spawned ? this.runner.takeNotice(thread.id) : undefined;
 		if (spawned) this.runner.handed(thread.id);
-		const head = facts.review().head.commit;
-		const seen = this.#seen?.since === joined.since ? this.#seen : null;
-		const moved =
-			joinNotices([
-				rejected,
-				seen && seen.head !== head
-					? `The PR's head moved from ${seen.head} to ${head} since your last question.`
-					: undefined,
-			]) ?? undefined;
-		let pr: PromptEnvelope["pr"];
-		if (!seen) {
-			pr = await facts.prFacts().then(
-				(p) => ({ title: p.title, body: p.body, files: p.files }),
-				() => undefined,
-			);
-		}
 		const role = viewer ? await facts.authorOf(viewer) : undefined;
 		const requestText = (o: AgentOrigin) =>
 			threads
@@ -823,11 +914,41 @@ export class AgentHost {
 							text: m.text,
 						},
 		);
+		// The review conversation: generic instructions and its own messages,
+		// no review data (no PR facts, head, file or hunk); the head this
+		// session saw stays as it was.
+		if (thread.anchor.subject === "review") {
+			return {
+				preamble: REVIEW_PREAMBLE,
+				thread: thread.id,
+				replyTo: asked,
+				envelope: sessionReviewTurn(thread, messages, rejected),
+				anchoredFile: null,
+				hunk: null,
+			};
+		}
+		const head = facts.review().head.commit;
+		const seen = this.#seen?.since === joined.since ? this.#seen : null;
+		const moved =
+			joinNotices([
+				rejected,
+				seen && seen.head !== head
+					? `The PR's head moved from ${seen.head} to ${head} since your last question.`
+					: undefined,
+			]) ?? undefined;
+		let pr: PromptCodeEnvelope["pr"];
+		if (!seen) {
+			pr = await facts.prFacts().then(
+				(p) => ({ title: p.title, body: p.body, files: p.files }),
+				() => undefined,
+			);
+		}
 		const turn =
 			thread.anchor.subject === "thread"
 				? await sessionThreadTurn(facts, thread, messages, moved, pr)
 				: await sessionSpanTurn(facts, thread, messages, moved, pr);
 		const { envelope } = turn;
+		const anchor = envelope.thread.anchor;
 		// The head this question showed.
 		this.#seen = {
 			since: joined.since,
@@ -842,13 +963,14 @@ export class AgentHost {
 			thread: thread.id,
 			replyTo: asked,
 			envelope,
-			anchoredFile: turn.anchored
-				? {
-						path: envelope.thread.anchor.path,
-						commit: envelope.thread.anchor.commit,
-						text: turn.anchored.text,
-					}
-				: null,
+			anchoredFile:
+				turn.anchored && anchor.subject !== "review"
+					? {
+							path: anchor.path,
+							commit: anchor.commit,
+							text: turn.anchored.text,
+						}
+					: null,
 			hunk: turn.hunk,
 		};
 	}
@@ -1001,7 +1123,7 @@ export class AgentHost {
 			existing = await this.#openThreadTarget(r.thread, threads);
 			if (!existing) {
 				try {
-					anchor = await this.#threadAnchor(r.thread);
+					anchor = await this.#threadAnchor(r.thread, AGENT_GITHUB_MAX_AGE_MS);
 				} catch (error) {
 					// The reviewer asked there meanwhile: one conversation per
 					// thread, so the agent's message continues theirs.
@@ -1016,7 +1138,11 @@ export class AgentHost {
 			}
 			if (existing?.id === origin.thread) throw new OwnThreadError();
 		} else if (r.code) {
-			anchor = await this.#codeAnchor(r.code);
+			// A review question showed no head: the review's, not an older question's.
+			anchor = await this.#codeAnchor(
+				r.code,
+				request.anchor.subject === "review",
+			);
 		} else throw new BadAnchorError("Give code or thread, one of them");
 		if (atLimit && !(existing && started.includes(existing.id))) {
 			throw new TooManyOpenedError();
@@ -1081,7 +1207,7 @@ export class AgentHost {
 	): Promise<AgentThreadFold | undefined> {
 		let listed: ReviewThread[];
 		try {
-			listed = await this.github.threads();
+			listed = await this.github.threads(AGENT_GITHUB_MAX_AGE_MS);
 		} catch (error) {
 			throw new ThreadUnavailableError(
 				`GitHub's threads can't be read now (${oneError(error)}): don't open on a thread; mention it in your reply`,
@@ -1109,14 +1235,36 @@ export class AgentHost {
 	 * files, the lines must exist in that version and the columns within
 	 * their lines.
 	 */
-	async #codeAnchor(c: Extract<OpenTarget, { code: object }>["code"]) {
+	async #codeAnchor(
+		c: Extract<OpenTarget, { code: object }>["code"],
+		reviewQuestion = false,
+	) {
 		const { facts } = this.#facts();
 		const joined = this.join.view().joined;
 		const seen =
-			joined && this.#seen?.since === joined.since ? this.#seen : null;
+			!reviewQuestion && joined && this.#seen?.since === joined.since
+				? this.#seen
+				: null;
 		const review = facts.review();
-		const head = seen?.head ?? review.head.commit;
-		const mergeBase = seen?.mergeBase ?? review.mergeBase;
+		// A review question: the comparison progress reads (#comparisonView).
+		// A review question: the very coverage read progress numbers its
+		// lines in (head and merge base), so LEFT lines match it.
+		let pinned: { head: string; base: string } | null = null;
+		const { coverage } = this.#facts();
+		if (reviewQuestion && coverage) {
+			const view = await this.#comparisonView();
+			pinned = await Promise.resolve()
+				.then(() => coverage(view?.target))
+				.then(
+					(c) =>
+						OID.test(c.head) && OID.test(c.base)
+							? { head: c.head, base: c.base }
+							: null,
+					() => null,
+				);
+		}
+		const head = pinned?.head ?? seen?.head ?? review.head.commit;
+		const mergeBase = pinned?.base ?? seen?.mergeBase ?? review.mergeBase;
 		const files = await facts.prFacts().then(
 			(p) => p.files,
 			() => null,
@@ -1208,6 +1356,63 @@ export class AgentHost {
 		} as AgentAnchor;
 	}
 
+	/**
+	 * The reviewer's progress for `progress`, read-only: the comparison the
+	 * view of their latest message in the review conversation names (else
+	 * the review's default), read with the page's own coverage join. A read
+	 * that fails is a CoverageError, never an empty or all-reviewed answer.
+	 */
+	async sessionProgress(secret: string): Promise<SessionProgress> {
+		await this.#token(secret);
+		const { coverage } = this.#facts();
+		const fail = (why: string) =>
+			new CoverageError(
+				`The reviewer's progress can't be read now (${why}): say so, don't guess it`,
+			);
+		if (!coverage) throw fail("this review has no coverage");
+		const view = await this.#comparisonView();
+		let read: SessionCoverage;
+		try {
+			read = await coverage(view?.target);
+		} catch (error) {
+			throw fail(sanitizeThirdParty(oneError(error)));
+		}
+		if (!OID.test(read.base) || !OID.test(read.head)) {
+			throw fail("no commit ids");
+		}
+		const { total, reviewed, crossedOff } = read.view.progress.lines;
+		return {
+			comparison: {
+				base: read.base,
+				head: read.head,
+				patchset: read.view.patchset,
+				source: view ? "message" : "default",
+			},
+			files: read.view.files.map(progressFile),
+			lines: { total, reviewed, crossedOff },
+		};
+	}
+
+	/**
+	 * "The comparison" for `progress` and a review question's `open`: the
+	 * view of the reviewer's message the held question answers (none: the
+	 * default); with no question held, the view of the latest human
+	 * message in the review conversation; else none (the default).
+	 */
+	async #comparisonView(): Promise<AgentView | undefined> {
+		const threads = await this.store.read();
+		const handed = this.join.handedOut();
+		if (handed?.asked) {
+			const asked = threads
+				.find((t) => t.id === handed.thread)
+				?.messages.find((m) => m.id === handed.asked);
+			if (asked) return asked.view;
+		}
+		return threads
+			.find((t) => t.anchor.subject === "review")
+			?.messages.findLast((m) => m.by === "human")?.view;
+	}
+
 	/** Every thread, for a joined session. */
 	async sessionThreads(secret: string): Promise<AgentThread[]> {
 		await this.#token(secret);
@@ -1245,8 +1450,9 @@ export class AgentHost {
 	}
 
 	/** The anchor of a new conversation on GitHub thread `id`; see open(). */
-	async #threadAnchor(id: string): Promise<AgentAnchor> {
-		const rt = await this.github.thread(id);
+	async #threadAnchor(id: string, maxAgeMs?: number): Promise<AgentAnchor> {
+		// The agent's open reads GitHub fresh; the reviewer's ask any read.
+		const rt = await this.github.thread(id, maxAgeMs);
 		if (!rt || rt.id === "" || rt.unavailable === "deleted") {
 			throw new AgentRequestError(`No GitHub thread ${id} to ask about`);
 		}
@@ -1294,20 +1500,29 @@ export class AgentHost {
 	}
 }
 
-/**
- * Whether a thread waits for an answer, by the runner's rule: a question
- * on a GitHub thread conversation even once that thread is resolved (it
- * was asked), on a span thread only while it is open.
- */
-function isQuestion(t: AgentThreadFold): boolean {
-	return t.waiting && (t.anchor.subject === "thread" || !t.resolved);
-}
-
 /** A joined session's turn: the envelope, the anchored file and the code block. */
 interface SessionTurn {
-	envelope: PromptEnvelope;
+	envelope: PromptCodeEnvelope;
 	anchored: { text: string } | null;
 	hunk: string | null;
+}
+
+/**
+ * The review conversation's question for a joined (or spawned) session:
+ * the thread and its own messages, nothing about the review (owner,
+ * 2026-11-15); `notice` only a refused tool call's reason.
+ */
+function sessionReviewTurn(
+	thread: AgentThreadFold,
+	messages: PromptMessage[],
+	notice: string | undefined,
+): PromptReviewEnvelope {
+	return sanitizeEnvelope({
+		kind: "review_conversation",
+		thread: { id: thread.id, anchor: { subject: "review" } },
+		messages,
+		...(notice ? { notice } : {}),
+	});
 }
 
 /**
@@ -1320,12 +1535,13 @@ async function sessionSpanTurn(
 	thread: AgentThreadFold,
 	messages: PromptMessage[],
 	moved: string | undefined,
-	pr: PromptEnvelope["pr"],
+	pr: PromptCodeEnvelope["pr"],
 ): Promise<SessionTurn> {
 	const review = facts.review();
+	const a = thread.anchor as AgentSpanAnchor;
 	const notice = joinNotices([
 		thread.orphaned
-			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${thread.anchor.path} at ${thread.anchor.commit || "an unknown commit"}).`
+			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${a.path} at ${a.commit || "an unknown commit"}).`
 			: undefined,
 		moved,
 	]);
@@ -1341,8 +1557,8 @@ async function sessionSpanTurn(
 		...(pr ? { pr } : {}),
 	});
 	const [anchored, hunk] = await Promise.all([
-		facts.anchored(thread.anchor).catch(() => null),
-		facts.hunk(thread.anchor).catch(() => null),
+		facts.anchored(a).catch(() => null),
+		facts.hunk(a).catch(() => null),
 	]);
 	return { envelope, anchored, hunk };
 }
@@ -1359,7 +1575,7 @@ async function sessionThreadTurn(
 	thread: AgentThreadFold,
 	messages: PromptMessage[],
 	moved: string | undefined,
-	pr: PromptEnvelope["pr"],
+	pr: PromptCodeEnvelope["pr"],
 ): Promise<SessionTurn> {
 	const anchor = thread.anchor as Extract<AgentAnchor, { subject: "thread" }>;
 	const checked = await facts.checkHead().then(
@@ -1406,12 +1622,73 @@ async function sessionThreadTurn(
 			...(pr ? { pr } : {}),
 		}),
 	);
-	const envelope: PromptEnvelope = env;
+	const envelope: PromptCodeEnvelope = env;
 	const anchored = await facts.anchored(anchor).catch(() => null);
 	return { envelope, anchored, hunk: github?.code ?? null };
 }
 
 /** The notices that are set, one per line; undefined when none is. */
+/**
+ * A file's coverage by line for `progress`: its clusters' reviewed,
+ * crossed-off and unreviewed lines on each side (pieces.ts marksOf, as
+ * the page counts them). Fails closed: a state it doesn't know is
+ * unreviewed whatever lines it names, marks are cut to the cluster's
+ * lines, and a line both reviewed and crossed off counts crossed off.
+ * Paths and labels are sanitised.
+ */
+function progressFile(f: FileView): SessionProgressFile {
+	const s = sanitizeThirdParty;
+	const half = () => ({ LEFT: [] as LineRanges, RIGHT: [] as LineRanges });
+	const sets = { reviewed: half(), unreviewed: half(), crossedOff: half() };
+	const whole: { label?: string; state: ClusterState }[] = [];
+	const known = (c: ClusterView) =>
+		c.state === "reviewed" ||
+		c.state === "crossed-off" ||
+		c.state === "unreviewed";
+	for (const c of f.clusters) {
+		const state: ClusterState = known(c) ? c.state : "unreviewed";
+		if (c.kind !== "lines") {
+			whole.push({ ...(c.label ? { label: s(c.label) } : {}), state });
+			continue;
+		}
+		const removed = c.removed.length;
+		const n = removed + c.added.length;
+		const every = all(n);
+		const within = (r: LineRanges) => subtract(every, subtract(every, r));
+		const marks = known(c) ? marksOf(c) : { reviewed: [], crossed: [] };
+		const crossed = within(marks.crossed);
+		const reviewed = subtract(within(marks.reviewed), crossed);
+		const rest = subtract(every, union(reviewed, crossed));
+		const place = (r: LineRanges, into: ReturnType<typeof half>) => {
+			for (const [a, b] of r) {
+				if (a < removed) {
+					into.LEFT.push([c.oldStart + a, c.oldStart + Math.min(b, removed)]);
+				}
+				if (b > removed) {
+					const from = Math.max(a, removed) - removed;
+					into.RIGHT.push([c.newStart + from, c.newStart + b - removed]);
+				}
+			}
+		};
+		place(reviewed, sets.reviewed);
+		place(crossed, sets.crossedOff);
+		place(rest, sets.unreviewed);
+	}
+	const out = (h: ReturnType<typeof half>): SideRanges => ({
+		LEFT: normalize(h.LEFT).map(([a, b]) => [a, b - 1]),
+		RIGHT: normalize(h.RIGHT).map(([a, b]) => [a, b - 1]),
+	});
+	return {
+		path: s(f.path),
+		...(f.oldPath !== undefined ? { oldPath: s(f.oldPath) } : {}),
+		status: f.status,
+		reviewed: out(sets.reviewed),
+		unreviewed: out(sets.unreviewed),
+		crossedOff: out(sets.crossedOff),
+		...(whole.length > 0 ? { whole } : {}),
+	};
+}
+
 function joinNotices(parts: (string | undefined)[]): string | undefined {
 	return parts.filter(Boolean).join("\n") || undefined;
 }
@@ -1462,7 +1739,7 @@ export function buildAgentHost(o: {
 		const folds = await joinRead(await o.store.read(), () =>
 			o.github.threads(),
 		);
-		return folds.some((t) => isQuestion(t) && !skipped.has(t.id));
+		return folds.some((t) => isAgentQuestion(t) && !skipped.has(t.id));
 	};
 	const join: JoinBroker = new JoinBroker({
 		dir: o.dir,
@@ -1511,10 +1788,14 @@ export interface ReviewAgentSource {
 	snapshot(): Snapshot;
 	prFacts(): Promise<{ title: string; body: string }>;
 	code(anchor: CodeAnchor): Promise<CodeWindow | null>;
-	/** The PR's review threads as last read from GitHub (their summaries). */
-	threads(): Promise<ReviewThread[]>;
+	/** The PR's review threads as read from GitHub (their summaries), at most `maxAgeMs` old (default: any). */
+	threads(maxAgeMs?: number): Promise<ReviewThread[]>;
+	/** As threads, with when that read started (ISO). */
+	threadsAt?(
+		maxAgeMs: number,
+	): Promise<{ threads: ReviewThread[]; at: string }>;
 	/** One review thread, null when GitHub doesn't list it; a deleted one says so (`unavailable`). */
-	thread(id: string): Promise<ReviewThread | null>;
+	thread(id: string, maxAgeMs?: number): Promise<ReviewThread | null>;
 	/** The reviewer's patch sets (`startedAt` in ms). */
 	patchsets(): readonly {
 		number: number;
@@ -1534,10 +1815,13 @@ export interface ReviewAgentSource {
 	 * no longer lists it (or it was deleted).
 	 */
 	githubThread(id: string, view: AgentView): Promise<AgentThreadRead | null>;
-	/** These threads' comments (author, markdown) from the current read, by id. */
+	/** These threads' comments (author, markdown) from a read at most `maxAgeMs` old (default: any), by id. */
 	comments?(
 		ids: string[],
+		maxAgeMs?: number,
 	): Promise<Map<string, { author: string; body: string }[]>>;
+	/** The coverage the page shows for a comparison (`progress`). */
+	coverage?(target?: AgentViewTarget): Promise<SessionCoverage>;
 }
 
 /** What the session reads of one GitHub thread for a thread turn. */
@@ -1722,13 +2006,18 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		store,
 		code,
 		github: {
-			threads: () => src.threads(),
-			thread: (id) => src.thread(id),
+			threads: (maxAgeMs) => src.threads(maxAgeMs),
+			thread: (id, maxAgeMs) => src.thread(id, maxAgeMs),
+			...(src.threadsAt ? { threadsAt: src.threadsAt.bind(src) } : {}),
 			patchsets: () => src.patchsets(),
 			base: () => src.snapshot().base,
 			...(src.comments ? { comments: src.comments } : {}),
 		},
-		session: { facts, viewer: src.viewer },
+		session: {
+			facts,
+			viewer: src.viewer,
+			...(src.coverage ? { coverage: src.coverage } : {}),
+		},
 		claim: new ReviewClaim(dir, () => ({
 			pid: process.pid,
 			port: serverPort(),
@@ -1757,14 +2046,16 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 /**
  * The anchored file's text at the anchor's commit (the merge base for a
  * LEFT anchor), read from the clone with a checked OID and a relative
- * path; null when it can't be read, is binary or large.
+ * path; null when it can't be read, is binary or large, and for the
+ * review conversation (no path).
  */
 export async function anchoredFile(
 	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
 		Partial<Pick<ReviewAgentSource, "patchsets">>,
 	anchor: AgentAnchor,
 ): Promise<{ text: string } | null> {
-	if (!isSafePath(anchor.path)) return null;
+	// The review conversation has no file.
+	if (anchor.subject === "review" || !isSafePath(anchor.path)) return null;
 	let commit = anchor.commit;
 	if (anchor.subject !== "file" && anchor.side === "LEFT") {
 		// A thread's LEFT side: its patch set's merge base, as the prompt says.

@@ -10,6 +10,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	createContext,
+	createElement,
+	type ReactNode,
 	type RefObject,
 	useCallback,
 	useContext,
@@ -23,13 +25,13 @@ import type { AgentMessage, AgentThread, AgentView } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import { ApiError, sessionQuery } from "../api";
 import type { ComparisonBase, Viewing } from "../files/comparison";
+import { useFocusWhere } from "../files/threadFocus";
 import {
 	agentThreadsQuery,
 	postAgentSeen,
 	useAgentOn,
 	withThread,
 } from "./api";
-import { useConversationLanding } from "./conversationLinks";
 
 /** The comparison a message is sent in; the server fills left/right. */
 export type SendView = Omit<AgentView, "left" | "right">;
@@ -154,6 +156,49 @@ export function comparisonView(
 const SendViewContext = createContext<SendView | null>(null);
 /** Files changed's comparison (the URL's ps/head/from), for its cards. */
 export const SendViewProvider = SendViewContext.Provider;
+
+const PublishSendView = createContext<((view: SendView | null) => void) | null>(
+	null,
+);
+const PublishedSendView = createContext<SendView | null>(null);
+
+/**
+ * Files changed's comparison, published for the review conversation's
+ * drawer (outside the page): useDrawerSendView reads it from any tab. Its
+ * own context, so no card elsewhere (the Overview's) sends it: they keep
+ * useSendView's own.
+ */
+export function SendViewHost(props: { children: ReactNode }) {
+	const [view, setView] = useState<SendView | null>(null);
+	return createElement(
+		PublishSendView.Provider,
+		{ value: setView },
+		createElement(PublishedSendView.Provider, { value: view }, props.children),
+	);
+}
+
+/** Files changed's comparison, published to SendViewHost (kept while the page is hidden). */
+export function usePublishSendView(view: SendView | null): void {
+	const publish = useContext(PublishSendView);
+	useEffect(() => {
+		if (!publish) return;
+		publish(view);
+	}, [publish, view]);
+	useEffect(() => {
+		if (!publish) return;
+		return () => publish(null);
+	}, [publish]);
+}
+
+/**
+ * The review conversation's view: Files changed's comparison (the last
+ * picked there, from any tab), else useSendView's.
+ */
+export function useDrawerSendView(): SendView {
+	const published = useContext(PublishedSendView);
+	const fallback = useSendView();
+	return published ?? fallback;
+}
 
 /**
  * The view to send: Files changed's URL comparison, or the Overview's
@@ -345,13 +390,15 @@ export function useThreadAgent(
 		if (to === "composer") composerRef.current?.focus();
 		else if (to === "button") buttonRef.current?.focus();
 	}, [open]);
-	// A link to this conversation: its panel opens (AgentMessageItems takes the landing).
-	const { landing } = useConversationLanding(conversation?.id);
-	useEffect(() => {
-		if (!landing) return;
-		setFolded(false);
-		setOpen(true);
-	}, [landing]);
+	// Asked for (a link to this conversation, a Threads tab row): its panel
+	// opens; the card takes the request, AgentMessageItems its outline.
+	useFocusWhere(
+		(f) => conversation !== undefined && f.conversation === conversation.id,
+		() => {
+			setFolded(false);
+			setOpen(true);
+		},
+	);
 	const toggle = useCallback(() => {
 		setFolded(false);
 		setOpen((o) => {

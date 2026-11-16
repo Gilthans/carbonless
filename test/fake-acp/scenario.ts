@@ -58,7 +58,7 @@ export interface AcpScenario {
 	 * With a `crb` MCP server in session/new, every turn works through it
 	 * as a joined session does: `attach` with the kickoff's request (a JSON
 	 * line `{"review":…,"request":…}` in the prompt; `attach: false` never
-	 * does), the `tools` named (e.g. `threads`), then `next` → `reply`
+	 * does), the `tools` named (e.g. `threads`, `progress`), then `next` → `reply`
 	 * (the text from `answers`, matched against the question's latest
 	 * message) until none waits. `replies: "none"` takes a question and
 	 * ends the turn without replying. `strayReply` first replies to that

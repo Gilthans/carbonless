@@ -14,7 +14,7 @@ import {
 	useState,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
-import type { AgentThread } from "../../shared/agent";
+import { type AgentThread, isSpanThread } from "../../shared/agent";
 import { sinceOnlyPieces } from "../../shared/pieces";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { ReviewThread, SessionInfo } from "../../shared/types";
@@ -27,11 +27,17 @@ import {
 import {
 	AgentPlacingProvider,
 	agentOutside,
+	agentPlacementIds,
 	agentWaiting,
 	shownAgentPlaceables,
 } from "../agent/placeable";
-import { comparisonView, SendViewProvider } from "../agent/threadAgent";
 import {
+	comparisonView,
+	SendViewProvider,
+	usePublishSendView,
+} from "../agent/threadAgent";
+import {
+	ApiError,
 	hunksQuery,
 	overviewQuery,
 	placementsQuery,
@@ -56,7 +62,7 @@ import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type Comparison, useComparison } from "./comparison";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff, GoneFile, UNDO_ARM_MS } from "./FileDiff";
-import { FileTree } from "./FileTree";
+import { FileTree, type SidebarTab } from "./FileTree";
 import { fileLeft, nextFile } from "./fileFinish";
 import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
@@ -81,6 +87,7 @@ import {
 	restoreAnchor,
 	type ScrollAnchor,
 } from "./scrollAnchor";
+import { sidebarKey, useSidebarState } from "./sidebarState";
 import {
 	carriedCount,
 	eyesOf,
@@ -99,8 +106,18 @@ import {
 	PlacementProvider,
 	usePlacementMap,
 } from "./ThreadFate";
+import { ShowResolvedToggle, ThreadsPanel, threadsCount } from "./ThreadsPanel";
 import { TreeColumn } from "./TreeResizer";
+import { threadFocus } from "./threadFocus";
 import { outsideThreads, shownThread, shownThreads } from "./threadPlacement";
+import {
+	agentRows,
+	type FocusWorld,
+	focusPlan,
+	githubRows,
+	listedConversations,
+	type PanelRow,
+} from "./threadRows";
 import { useSince } from "./useSince";
 
 const NO_THREADS: ReviewThread[] = [];
@@ -300,7 +317,18 @@ function useDiffThreads(
 	threads: DiffThreads | undefined;
 	/** Every thread of the read, on this head or not (people's tints). */
 	all: ReviewThread[] | undefined;
+	/**
+	 * The read's threads this view lists, wherever they show: those
+	 * deleted here and (on an earlier patch set) those published after it
+	 * left out.
+	 */
+	listed: ReviewThread[] | undefined;
 	failed: Error | null;
+	/**
+	 * The summaries are in but a later stage failed: the threads not yet
+	 * read (`loaded` false) won't be.
+	 */
+	contentFailed: boolean;
 	/** Still on their way: nothing failed and none are in yet. */
 	loading: boolean;
 	/** The threads whose file is not in the comparison (the trailing group). */
@@ -448,7 +476,9 @@ function useDiffThreads(
 	return {
 		threads,
 		all: view?.threads,
+		listed: visible,
 		failed,
+		contentFailed: view !== undefined && error !== null,
 		loading: !threads && !failed,
 		outside,
 		unplacedOnError,
@@ -767,6 +797,9 @@ export function FilesPage() {
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
 	const toggleFile = (index: number, expanded: boolean, auto = false) => {
+		// The reviewer opened or closed a file: a Threads row's pending
+		// card is no longer where they are going.
+		if (!auto) threadFocus.cancel();
 		// A file opened or closed here is no move-on's any more: its lines
 		// arriving later are the reviewer's own open, not unseen.
 		setMovedOn(null);
@@ -842,6 +875,7 @@ export function FilesPage() {
 	};
 	/** A file picked in the tree: open it alone and bring its header to the top. */
 	const select = (index: number) => {
+		threadFocus.cancel();
 		setMovedOn(null);
 		const fromSheet = sheetOpen;
 		if (fromSheet) setSheetOpen(false);
@@ -935,12 +969,22 @@ export function FilesPage() {
 	const id = useReviewId();
 	const [landing, setLanding] = useState<Landing | null>(null);
 	const landingSeq = useRef(0);
+	const landingClient = useQueryClient();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs per landing.
 	useEffect(() => {
 		if (!active || !data || !search.path) return;
+		threadFocus.cancel();
 		// An agent conversation's link: its card opens once it shows.
 		if (search.conversation) {
-			requestConversationOpen(search.conversation, search.message);
+			// Its card: its review thread's for a conversation on one.
+			const asked = landingClient
+				.getQueryData(agentThreadsQuery.queryKey)
+				?.threads.find((t) => t.id === search.conversation);
+			const card =
+				asked?.anchor.subject === "thread" && !asked.orphaned
+					? asked.anchor.thread
+					: undefined;
+			requestConversationOpen(search.conversation, search.message, card);
 		}
 		const file = landingFile(data.files, search);
 		landingSeq.current += 1;
@@ -1016,6 +1060,7 @@ export function FilesPage() {
 	// sees (painted current where they look, in the open file): on to the
 	// next. One in a closed file is gone to: its step opens the file.
 	const stepFind = (dir: 1 | -1) => {
+		threadFocus.cancel();
 		const hit = find.step(
 			dir,
 			(h) => h.index === openIndex && hitSeen(h, appHeader + barHeight),
@@ -1078,7 +1123,9 @@ export function FilesPage() {
 	const {
 		threads,
 		all: allThreads,
+		listed: listedThreads,
 		failed: threadsFailed,
+		contentFailed,
 		loading: threadsLoading,
 		outside,
 		unplacedOnError,
@@ -1134,14 +1181,16 @@ export function FilesPage() {
 	// The reviewer's agent threads (their own read, beside GitHub's): the
 	// tree's second dot; the diffs read them from this query's cache.
 	const agentOn = useAgentOn();
-	const agentThreads = useQuery({
+	const agentThreadsRead = useQuery({
 		...agentThreadsQuery,
 		enabled: agentOn,
-	}).data?.threads;
+	});
+	const agentThreads = agentThreadsRead.data?.threads;
 	// Where the tracer puts them in the viewed snapshot, as GitHub's are;
 	// until it answers (or if it fails) each shows where it was asked.
+	// The review conversation has no code to place: never asked about.
 	const agentIds = useMemo(
-		() => (agentThreads ?? []).map((t) => t.id),
+		() => agentPlacementIds(agentThreads),
 		[agentThreads],
 	);
 	const agentPlacingState = useAgentPlacementsFor({
@@ -1238,6 +1287,121 @@ export function FilesPage() {
 
 	// Folded folders are kept per PR, once it's known.
 	const pr = session?.pr;
+	// The tree's Threads tab: every conversation, People's and AI's, each
+	// row going to its thread. Its tab, folds and toggle are kept per PR.
+	const [sidebar, setSidebar] = useSidebarState(pr ? sidebarKey(pr) : null);
+	const shownById = useMemo(
+		() => new Map((threads?.threads ?? []).map((t) => [t.id, t])),
+		[threads],
+	);
+	const peopleRows = useMemo(
+		() =>
+			listedThreads
+				? githubRows(listedThreads, shownById, { contentFailed })
+				: null,
+		[listedThreads, shownById, contentFailed],
+	);
+	// No agent on this review (writes off, or the server has none: 404):
+	// none, known once the overview says so. Until then, loading.
+	const overviewKnown =
+		useQuery({ ...overviewQuery, enabled: false }).data !== undefined;
+	const noAgent =
+		(overviewKnown && !agentOn) ||
+		(agentThreadsRead.error instanceof ApiError &&
+			agentThreadsRead.error.status === 404);
+	const aiFailed = !noAgent && agentThreadsRead.error !== null;
+	const agentShownById = useMemo(
+		() => new Map(agentShown.map((p) => [p.thread.id, p])),
+		[agentShown],
+	);
+	const aiRows = useMemo(() => {
+		if (noAgent) return [];
+		if (!agentThreads) return null;
+		// A conversation on a review thread waits for GitHub's threads: it
+		// shows only while its thread is listed here (none when they failed:
+		// no card of theirs shows).
+		if (!listedThreads && threadsFailed === null) return null;
+		// On an earlier patch set, as the diff shows them: those asked on
+		// it or before the next one started.
+		const kept =
+			threadsCutoff === null
+				? agentThreads
+				: agentThreads.filter(
+						(t) =>
+							!isSpanThread(t) ||
+							t.anchor.commit === agentHead ||
+							Date.parse(t.at) < threadsCutoff,
+					);
+		return agentRows(
+			listedConversations(
+				kept,
+				new Set((listedThreads ?? []).map((t) => t.id)),
+			),
+			agentShownById,
+			shownById,
+		);
+	}, [
+		noAgent,
+		agentThreads,
+		listedThreads,
+		threadsFailed,
+		threadsCutoff,
+		agentHead,
+		agentShownById,
+		shownById,
+	]);
+	const peopleFailed = threadsFailed !== null;
+	// A Threads row's card still pending is no longer asked for once
+	// another comparison or read shows (a link's waits: it may be what
+	// changed the comparison). Leaving the page drops any (threadFocus).
+	const comparisonKey = `${data?.revision}|${threads?.readId}|${JSON.stringify(placingTo)}`;
+	useEffect(() => threadFocus.cancelOutside(comparisonKey), [comparisonKey]);
+	// Where the conversations' cards are, for a row's pick.
+	const focusWorld = useMemo<FocusWorld>(() => {
+		const shownFiles = new Set(files.map((f) => f.index));
+		return {
+			fileOf: (path) =>
+				data ? landingFile(data.files, { path })?.index : undefined,
+			hidden: (index) => !shownFiles.has(index),
+			githubAfter: new Set([
+				...outside.map((o) => o.thread.id),
+				...(unplacedOnError ?? []).map((t) => t.id),
+			]),
+			agentAfter: new Set([
+				...agentOutsideShown.map((p) => p.thread.id),
+				...(agentPlacingState.error
+					? agentWaitingList.map((p) => p.thread.id)
+					: []),
+			]),
+			pending: placementInfo.pending || agentPending,
+		};
+	}, [
+		files,
+		data,
+		outside,
+		unplacedOnError,
+		agentOutsideShown,
+		agentPlacingState.error,
+		agentWaitingList,
+		placementInfo.pending,
+		agentPending,
+	]);
+	/** A row picked: its conversation's card, open and in view. */
+	const jumpTo = (row: PanelRow) => {
+		setMovedOn(null);
+		if (sheetOpen) setSheetOpen(false);
+		// Its file opens (as a pick does); the card opens wherever it is (a
+		// line, a hidden run, the file bubble, the lists after the files)
+		// and scrolls in (threadFocus). "Needs eyes" lets the file show
+		// again when it hid the card's file.
+		const plan = focusPlan(row, focusWorld);
+		threadFocus.cancel();
+		if (plan.unhide) setEyesOnly(false);
+		if (plan.open !== null && plan.open !== openIndex) openOnly(plan.open);
+		if (plan.request) {
+			threadFocus.request({ ...plan.request, scope: comparisonKey });
+		}
+	};
 	const tree = data && (
 		<FileTree
 			files={files}
@@ -1255,6 +1419,31 @@ export function FilesPage() {
 			eyesOf={byFile ? (f) => eyesOf(f, byFile.get(f.index)) : undefined}
 			filter={byFile ? { on: eyesOnly, onChange: setEyesOnly } : undefined}
 			find={findMarks ? find.tree : undefined}
+			tabs={{
+				tab: sidebar.tab,
+				onTab: (tab: SidebarTab) => setSidebar({ tab }),
+				count: threadsCount(peopleRows, aiRows, {
+					people: peopleFailed,
+					ai: aiFailed,
+				}),
+				panel: (
+					<ThreadsPanel
+						people={peopleRows}
+						peopleError={peopleFailed}
+						ai={aiRows}
+						aiError={aiFailed}
+						state={sidebar}
+						onState={setSidebar}
+						onJump={jumpTo}
+					/>
+				),
+				controls: (
+					<ShowResolvedToggle
+						on={sidebar.showResolved}
+						onChange={(showResolved) => setSidebar({ showResolved })}
+					/>
+				),
+			}}
 		/>
 	);
 	// "5 to read": the comparison's unreviewed reworked and new clusters,
@@ -1391,6 +1580,8 @@ export function FilesPage() {
 		() => comparisonView(comparison.viewing, comparison.base),
 		[comparison.viewing, comparison.base],
 	);
+	// And the review conversation's drawer's, from any tab (kept while hidden).
+	usePublishSendView(sendView);
 	return (
 		<PeopleProvider threads={allThreads}>
 			<PlacementProvider value={placementInfo}>
@@ -1675,7 +1866,7 @@ export function FilesPage() {
 												aria-label="Files"
 												aria-haspopup="dialog"
 												onClick={() => setSheetOpen(true)}
-												className="fixed right-4 bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+												className="fixed right-[calc(1rem+var(--drawer-push,0px))] bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 											>
 												<span aria-hidden>☰</span>
 												Files

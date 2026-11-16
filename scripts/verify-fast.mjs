@@ -76,6 +76,12 @@ const E2E_MAP = [
 		/^src\/web\/files\/(ThreadFate|NotInComparison|threadPlacement|ThreadRow)\.tsx?$/,
 		["rereview", "files-threads"],
 	],
+	// The tree's Threads tab: its rows, its state, the tree's tabs, and
+	// who spoke last (the server's thread summaries).
+	[
+		/^src\/web\/files\/(ThreadsPanel|threadRows|sidebarState|FileTree|FilesPage|landing)\.tsx?$|^src\/server\/overview\.ts$|^e2e\/threads-tab\.spec\.ts$/,
+		["threads-tab"],
+	],
 	// The patch set graph, the toast and the since view (the comparison).
 	[
 		/^src\/web\/files\/(PatchsetGraph|HeadToast|graphCards|comparison|FilesPage|FileDiff|DiffBody|FileTree|ProgressBar|useSetStates|landing)\.tsx?$|^src\/web\/(App|shortcuts)\.tsx$|^e2e\/pr-setup\.ts$/,
@@ -85,7 +91,20 @@ const E2E_MAP = [
 	// agent (a conversation per GitHub thread), web and server.
 	[
 		/^src\/(web|server)\/agent\/|^test\/fake-acp\//,
-		["agent", "agent-setup", "thread-agent", "agent-join", "agent-open"],
+		[
+			"agent",
+			"agent-setup",
+			"thread-agent",
+			"agent-join",
+			"agent-open",
+			"review-conversation",
+		],
+	],
+	// The review conversation's drawer: mounted and pushing the page in App,
+	// the comparison it sends published by Files changed.
+	[
+		/^src\/web\/(App|shortcuts)\.tsx$|^src\/web\/files\/(FilesPage|SyncNotices)\.tsx$|^src\/server\/mcp\/|^e2e\/agent-ui\.ts$/,
+		["review-conversation"],
 	],
 	// The join bar sits above the header (App), the setup line's key (app.ts).
 	[/^src\/web\/App\.tsx$|^src\/server\/app\.ts$/, ["agent-join"]],

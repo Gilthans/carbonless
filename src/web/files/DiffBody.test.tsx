@@ -191,6 +191,7 @@ const thread = (side: "LEFT" | "RIGHT", line: number): ReviewThread => {
 		author: "rev",
 		avatarUrl: "",
 		participants: [],
+		lastAuthor: { login: "octo", avatarUrl: "", bot: false },
 		bot: false,
 		commentCount: 1,
 		hasReply: false,

@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentThread } from "../../shared/agent";
+import type { SpanAgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import { AgentNotInComparison } from "./AgentNotInComparison";
 import { agentPlaceable } from "./placeable";
@@ -12,7 +12,7 @@ afterEach(cleanup);
 
 const H1 = "1".repeat(40);
 const H2 = "2".repeat(40);
-const asked = (id: string, path: string): AgentThread => ({
+const asked = (id: string, path: string): SpanAgentThread => ({
 	id,
 	anchor: {
 		subject: "line",

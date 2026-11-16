@@ -163,6 +163,7 @@ const thread = (anchor: Partial<CodeAnchor>): ReviewThread => {
 		author: "rev",
 		avatarUrl: "",
 		participants: [],
+		lastAuthor: { login: "octo", avatarUrl: "", bot: false },
 		bot: false,
 		commentCount: 1,
 		hasReply: false,
@@ -2575,6 +2576,27 @@ describe("placeBar on a phone: clear of the handles, inside what the screen show
 			height: 370,
 		});
 		expect(currentView()).toEqual({ left: 12, top: 340, w: 180, h: 370 });
+	});
+
+	it("stops at the review conversation's docked drawer, not at a phone's full-screen one", () => {
+		vi.stubGlobal("visualViewport", {
+			offsetLeft: 0,
+			offsetTop: 0,
+			width: 1024,
+			height: 700,
+		});
+		const drawer = document.createElement("aside");
+		drawer.id = "review-conversation";
+		drawer.dataset.mode = "push";
+		drawer.getBoundingClientRect = () => new DOMRect(614, 0, 410, 700);
+		document.body.append(drawer);
+		try {
+			expect(currentView()).toEqual({ left: 0, top: 0, w: 614, h: 700 });
+			drawer.dataset.mode = "phone";
+			expect(currentView().w).toBe(1024);
+		} finally {
+			drawer.remove();
+		}
 	});
 });
 
