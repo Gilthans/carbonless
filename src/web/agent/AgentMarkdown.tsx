@@ -20,6 +20,7 @@ import { languageFor } from "../files/highlight";
 import { type FilesSearch, parseFilesSearch } from "../files/landing";
 import { GithubHtml } from "../GithubHtml";
 import { CodeRows } from "../threads/CommentBody";
+import { AgentComment, type CommentAt } from "./AgentComment";
 import { agentThreadsQuery } from "./api";
 import { Citation } from "./Citation";
 import { codeLinkSearch, linkCodeRefs } from "./codeLinks";
@@ -29,7 +30,9 @@ const md = new Marked({ gfm: true, breaks: false, async: false });
 
 type Part =
 	| { kind: "html"; html: string }
-	| { kind: "code"; path: string; lines: HunkLine[] };
+	| { kind: "code"; path: string; lines: HunkLine[] }
+	/** A ```comment block (CAR-83): its raw text, and its index in the message. */
+	| { kind: "comment"; block: number; text: string };
 
 /** A fence's lines as rows: a `diff` fence by its signs, others as context. */
 function fenceLines(text: string, diff: boolean): HunkLine[] {
@@ -49,11 +52,16 @@ function fenceLines(text: string, diff: boolean): HunkLine[] {
 	});
 }
 
-/** The reply as prose and code parts, in order. */
+/**
+ * The reply as prose, code and comment parts, in order. A comment part is
+ * a top-level fence whose info string is exactly `comment`; one nested in
+ * a list or a quote stays code. Blocks are numbered in order from 0.
+ */
 export function agentParts(text: string): Part[] {
 	const tokens = md.lexer(text);
 	const parts: Part[] = [];
 	let prose: Token[] = [];
+	let blocks = 0;
 	const flush = () => {
 		if (!prose.length) return;
 		const list = Object.assign(prose, { links: tokens.links }) as TokensList;
@@ -63,6 +71,11 @@ export function agentParts(text: string): Part[] {
 	for (const token of tokens) {
 		if (token.type === "code") {
 			const code = token as Tokens.Code;
+			if (!code.codeBlockStyle && (code.lang ?? "").trim() === "comment") {
+				flush();
+				parts.push({ kind: "comment", block: blocks++, text: code.text });
+				continue;
+			}
 			const info = (code.lang ?? "").trim().split(/\s+/)[0]?.toLowerCase();
 			const diff = info === "diff" || info === "patch";
 			// The info string names a language, not a path: `x.<info>`.
@@ -197,6 +210,11 @@ export function AgentMarkdown(props: {
 	text: string;
 	/** The commit the answer was written on: its code links open there. */
 	head?: string;
+	/**
+	 * The conversation and message its ```comment blocks post from; none:
+	 * they show read-only (a turn still streaming, nowhere to post).
+	 */
+	comment?: CommentAt;
 }) {
 	const parts = useMemo(() => agentParts(props.text), [props.text]);
 	const root = useRef<HTMLDivElement>(null);
@@ -216,6 +234,14 @@ export function AgentMarkdown(props: {
 					// Parts keep their order while the text grows.
 					// biome-ignore lint/suspicious/noArrayIndexKey: see above.
 					<GithubHtml key={i} html={part.html} />
+				) : part.kind === "comment" ? (
+					<AgentComment
+						// biome-ignore lint/suspicious/noArrayIndexKey: see above.
+						key={i}
+						text={part.text}
+						block={part.block}
+						at={props.comment}
+					/>
 				) : (
 					<div
 						// biome-ignore lint/suspicious/noArrayIndexKey: see above.
