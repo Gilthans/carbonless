@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BOOT_ID } from "../version";
 import type { Install } from "./install";
 import { RegistryError } from "./registry";
 import type { HelperConfig } from "./updateHelper";
@@ -122,6 +123,7 @@ describe("Updater", () => {
 			state: "idle",
 			failed: null,
 			commit: BUILD.commit,
+			boot: BOOT_ID,
 			channel: "latest",
 			install: "npm",
 			byHand: false,

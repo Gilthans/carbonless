@@ -19,6 +19,11 @@ export interface UpdateInfo {
 	failed: UpdateFailure | null;
 	/** The running build's commit (full SHA; "-dirty" or "unknown" from a checkout). */
 	commit: string;
+	/**
+	 * The answering crb process (`/api/version` says it too): another one
+	 * after a restart. Missing from a crb older than CAR-177.
+	 */
+	boot: string;
 	/** The npm dist-tag followed. */
 	channel: "rc" | "latest";
 	/** The global install crb updates (null: none it knows, or checks off). */

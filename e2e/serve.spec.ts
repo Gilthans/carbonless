@@ -241,9 +241,11 @@ test("refuses a crb of another build, and says which runs", async ({
 		`server runs ${build.version} (${build.commit.slice(0, 7)}`,
 	);
 	expect(body.error).toContain("this crb is 0.0.1 (abc1234)");
-	expect(await (await request.get(`${origin}/api/version`)).json()).toEqual(
-		build,
-	);
+	// And which crb process answers (an updating page's wait, CAR-177).
+	expect(await (await request.get(`${origin}/api/version`)).json()).toEqual({
+		...build,
+		boot: expect.any(String),
+	});
 	const version = await runCli(workdir, ["--version"]);
 	expect(version.stdout.trim()).toBe(
 		`${build.version} (${build.commit.slice(0, 7)}${build.commit.endsWith("-dirty") ? "-dirty" : ""})`,

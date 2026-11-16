@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../app";
 import { SessionRegistry } from "../registry";
-import { BUILD } from "../version";
+import { BOOT_ID, BUILD } from "../version";
 import { Updater } from "./updater";
 
 let host = "";
@@ -36,6 +36,7 @@ describe("/api/update", () => {
 			state: "idle",
 			failed: null,
 			commit: BUILD.commit,
+			boot: BOOT_ID,
 			channel: expect.stringMatching(/^(rc|latest)$/),
 			install: null,
 			byHand: false,

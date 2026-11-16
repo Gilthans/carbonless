@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 /** What a build of carbonless is: package.json's version and the commit built. */
@@ -45,6 +46,13 @@ function readBuild(): BuildInfo {
 }
 
 export const BUILD: BuildInfo = readBuild();
+
+/**
+ * This crb process: a restarted crb (of any build) answers another one, so
+ * an updating page tells the crb in its restart's grace from one that came
+ * back (`/api/version`, UpdateInfo.boot).
+ */
+export const BOOT_ID = randomUUID();
 
 /** "0.4.0-rc.1 (93fe843)", "-dirty" kept after the short commit. */
 export const formatVersion = (b: BuildInfo): string => {

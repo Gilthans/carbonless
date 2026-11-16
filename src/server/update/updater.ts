@@ -19,7 +19,7 @@ import {
 	type UpdateInfo,
 } from "../../shared/update.js";
 import { cacheDir, stateDir } from "../paths.js";
-import type { BuildInfo } from "../version.js";
+import { BOOT_ID, type BuildInfo } from "../version.js";
 import {
 	detectInstall,
 	type Install,
@@ -305,6 +305,7 @@ export class Updater {
 			state: this.#state,
 			failed: this.#failed,
 			commit: this.#o.build.commit,
+			boot: BOOT_ID,
 			channel: this.#channel,
 			install: this.#o.enabled ? (this.#o.install?.pm ?? null) : null,
 			byHand: reason !== null,

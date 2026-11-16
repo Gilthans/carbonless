@@ -81,6 +81,7 @@ import { channelOf } from "./update/semver.js";
 import { UpdateRefusedError, type Updater } from "./update/updater.js";
 import { verdictProblem } from "./verdict.js";
 import {
+	BOOT_ID,
 	BUILD,
 	mismatchMessage,
 	parseBuildInfo,
@@ -135,6 +136,7 @@ const noUpdate = (): UpdateInfo => ({
 	state: "idle",
 	failed: null,
 	commit: BUILD.commit,
+	boot: BOOT_ID,
 	channel: channelOf(BUILD.version),
 	install: null,
 	byHand: false,
@@ -362,7 +364,8 @@ export async function buildApp(
 		return send(500, "Internal server error");
 	});
 
-	app.get("/api/version", async () => BUILD);
+	// boot: which crb process answers (an updating page's wait, CAR-177).
+	app.get("/api/version", async () => ({ ...BUILD, boot: BOOT_ID }));
 	// A newer crb on npm, and an update's progress (src/server/update).
 	app.get("/api/update", async (_request, reply) => {
 		reply.header("cache-control", "no-store");

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	act,
 	cleanup,
+	fireEvent,
 	render,
 	screen,
 	waitFor,
@@ -38,6 +39,7 @@ const OFFER: UpdateInfo = {
 	state: "idle",
 	failed: null,
 	commit: "c".repeat(40),
+	boot: "boot-1",
 	channel: "latest",
 	install: "npm",
 	byHand: false,
@@ -48,16 +50,39 @@ const OFFER: UpdateInfo = {
 	checksOff: null,
 };
 
+const FAILED = {
+	version: "0.3.0",
+	tail: "npm error code E404",
+	command: OFFER.command as string,
+};
+
+/** Fake timers (and Date): the wait's ticks move only when a test says. */
+const fakeTimers = () =>
+	vi.useFakeTimers({
+		toFake: [
+			"setTimeout",
+			"clearTimeout",
+			"setInterval",
+			"clearInterval",
+			"Date",
+		],
+	});
+
 const json = (status: number, body: unknown) =>
 	new Response(JSON.stringify(body), {
 		status,
 		headers: { "content-type": "application/json" },
 	});
 
-/** A fake crb: /api/update answers `info()`, /api/version `version()`. */
+/**
+ * A fake crb: /api/update answers `info()`, /api/version `version()` (null:
+ * down) from process `boot()` (default OFFER's).
+ */
 function serve(opts: {
 	info: () => UpdateInfo;
 	version?: () => string | null;
+	/** Which crb answers /api/version; undefined: one too old to say. */
+	boot?: () => string | undefined;
 	post?: () => Response;
 }) {
 	const posts: unknown[] = [];
@@ -79,7 +104,11 @@ function serve(opts: {
 				asked.version++;
 				const v = opts.version?.() ?? null;
 				if (v === null) throw new TypeError("Failed to fetch");
-				return json(200, { version: v, commit: "x" });
+				return json(200, {
+					version: v,
+					commit: "x",
+					boot: opts.boot ? opts.boot() : OFFER.boot,
+				});
 			}
 			return json(404, {});
 		}),
@@ -394,29 +423,25 @@ describe("UpdateToast", () => {
 	});
 
 	it("crb back on the old version with the install's failure: the output and the command", async () => {
+		fakeTimers();
 		let info: UpdateInfo = OFFER;
-		// Down once (it stopped for the install), then the old crb again.
-		let version: string | null = null;
-		const { asked } = serve({ info: () => info, version: () => version });
-		show();
-		await toast();
-		await userEvent.click(screen.getByRole("button", { name: "Update" }));
-		await waitFor(() => expect(asked.version).toBeGreaterThan(0), {
-			timeout: 5000,
+		let boot = "boot-1";
+		const { posts } = serve({
+			info: () => info,
+			version: () => "0.2.0",
+			boot: () => boot,
 		});
-		version = "0.2.0";
-		info = {
-			...OFFER,
-			failed: {
-				version: "0.3.0",
-				tail: "npm error code E404",
-				command: OFFER.command as string,
-			},
-		};
-		await waitFor(
-			async () => expect((await toast()).dataset.state).toBe("failed"),
-			{ timeout: 5000 },
-		);
+		show();
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		act(() => {
+			fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		});
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		expect(posts).toEqual([{ version: "0.3.0" }]);
+		// The old crb again, its install failed (never seen down).
+		boot = "boot-2";
+		info = { ...OFFER, boot, failed: FAILED };
+		await act(() => vi.advanceTimersByTimeAsync(BACK_POLL_MS));
 		expect(screen.getByRole("alert").textContent).toContain(
 			"Update to v0.3.0 failed",
 		);
@@ -429,14 +454,17 @@ describe("UpdateToast", () => {
 		expect(reload).not.toHaveBeenCalled();
 	});
 
-	it("crb announced its restart: only /api/version until it was seen down, never /api/update while it may stop under it (CAR-177)", async () => {
-		vi.useFakeTimers({
-			toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
-		});
+	it("crb announced its restart: only /api/version while that crb answers, never /api/update it may stop under (CAR-177)", async () => {
+		fakeTimers();
+		// Another tab's Update: crb boot-1 restarts, in its grace.
 		let info: UpdateInfo = { ...OFFER, state: "restarting" };
-		// The old crb, in its grace before it stops.
 		let version: string | null = "0.2.0";
-		const { asked } = serve({ info: () => info, version: () => version });
+		let boot = "boot-1";
+		const { asked } = serve({
+			info: () => info,
+			version: () => version,
+			boot: () => boot,
+		});
 		show();
 		await act(() => vi.advanceTimersByTimeAsync(0));
 		expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
@@ -444,20 +472,14 @@ describe("UpdateToast", () => {
 		await act(() => vi.advanceTimersByTimeAsync(10 * BACK_POLL_MS));
 		expect(asked.version).toBeGreaterThanOrEqual(9);
 		expect(asked.update).toBe(before);
-		// Stopped, and back on the old version after a failed install: now
-		// /api/update says why.
+		// Down: still only /api/version.
 		version = null;
 		await act(() => vi.advanceTimersByTimeAsync(2 * BACK_POLL_MS));
 		expect(asked.update).toBe(before);
+		// Another crb, on the old version: /api/update says why.
 		version = "0.2.0";
-		info = {
-			...OFFER,
-			failed: {
-				version: "0.3.0",
-				tail: "npm error code E404",
-				command: OFFER.command as string,
-			},
-		};
+		boot = "boot-2";
+		info = { ...OFFER, boot, failed: FAILED };
 		await act(() => vi.advanceTimersByTimeAsync(BACK_POLL_MS));
 		expect(asked.update).toBe(before + 1);
 		expect(screen.getByTestId("update-toast").dataset.state).toBe("failed");
@@ -466,35 +488,80 @@ describe("UpdateToast", () => {
 		);
 	});
 
-	it("a service's install while crb serves: asks /api/update until it fails, the failure shown (CAR-177)", async () => {
-		let info: UpdateInfo = OFFER;
+	it("crb older than boot ids: /api/update every tick, as before", async () => {
+		fakeTimers();
+		const { boot: _, ...old } = { ...OFFER, state: "restarting" as const };
 		const { asked } = serve({
-			info: () => info,
+			info: () => old as UpdateInfo,
 			version: () => "0.2.0",
-			post: () => json(202, { ...OFFER, state: "installing" }),
+			boot: () => undefined,
 		});
 		show();
-		await toast();
-		await userEvent.click(screen.getByRole("button", { name: "Update" }));
-		info = { ...OFFER, state: "installing" };
+		await act(() => vi.advanceTimersByTimeAsync(0));
 		const before = asked.update;
-		await waitFor(() => expect(asked.update).toBeGreaterThan(before), {
-			timeout: 5000,
-		});
-		expect((await toast()).dataset.state).toBe("updating");
-		info = {
-			...OFFER,
-			failed: {
-				version: "0.3.0",
-				tail: "npm error code E404",
-				command: OFFER.command as string,
-			},
-		};
-		await waitFor(
-			async () => expect((await toast()).dataset.state).toBe("failed"),
-			{ timeout: 5000 },
-		);
+		await act(() => vi.advanceTimersByTimeAsync(3 * BACK_POLL_MS));
+		expect(asked.update).toBe(before + 3);
+		expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
 	});
+
+	it("this page's Update got no answer: /api/update says what crb does; restarting, then only /api/version (CAR-177)", async () => {
+		fakeTimers();
+		let info: UpdateInfo = OFFER;
+		const { posts, asked } = serve({
+			info: () => info,
+			version: () => "0.2.0",
+			post: () => {
+				info = { ...OFFER, state: "restarting" };
+				throw new TypeError("Failed to fetch");
+			},
+		});
+		show();
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		act(() => {
+			fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		});
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		expect(posts).toEqual([{ version: "0.3.0" }]);
+		expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
+		const before = asked.update;
+		await act(() => vi.advanceTimersByTimeAsync(BACK_POLL_MS));
+		expect(asked.update).toBe(before + 1);
+		await act(() => vi.advanceTimersByTimeAsync(5 * BACK_POLL_MS));
+		expect(asked.update).toBe(before + 1);
+		expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
+	});
+
+	for (const answered of [true, false]) {
+		it(`a service's install while crb serves (Update ${answered ? "answered" : "unanswered"}): asks /api/update until it fails, the failure shown (CAR-177)`, async () => {
+			fakeTimers();
+			let info: UpdateInfo = OFFER;
+			const { asked } = serve({
+				info: () => info,
+				version: () => "0.2.0",
+				post: () => {
+					info = { ...OFFER, state: "installing" };
+					if (!answered) throw new TypeError("Failed to fetch");
+					return json(202, info);
+				},
+			});
+			show();
+			await act(() => vi.advanceTimersByTimeAsync(0));
+			act(() => {
+				fireEvent.click(screen.getByRole("button", { name: "Update" }));
+			});
+			await act(() => vi.advanceTimersByTimeAsync(0));
+			const before = asked.update;
+			await act(() => vi.advanceTimersByTimeAsync(2 * BACK_POLL_MS));
+			expect(asked.update).toBe(before + 2);
+			expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
+			info = { ...OFFER, failed: FAILED };
+			await act(() => vi.advanceTimersByTimeAsync(BACK_POLL_MS));
+			expect(screen.getByTestId("update-toast").dataset.state).toBe("failed");
+			expect(screen.getByTestId("update-output").textContent).toBe(
+				"npm error code E404",
+			);
+		});
+	}
 
 	it("a refused Update: the failure, with the server's reason", async () => {
 		serve({
