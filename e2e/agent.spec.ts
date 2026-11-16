@@ -312,6 +312,99 @@ test("agent and comment bubbles side by side on one line, each with its own coun
 	await expect(again.getByTestId("agent-thread")).toHaveCount(2);
 });
 
+test("a comment being written turns into a question: on a line and on the file, the text carried over, nothing posted", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb();
+	const section = await openFile(page, s.url, CALC);
+	// A line comment (a column span), typed, then the agent button.
+	await selectText(page, CALC, 3, 0, 6);
+	await bar(page).getByRole("button", { name: "Comment" }).click();
+	const composer = section.getByTestId("new-thread");
+	await composer
+		.getByRole("textbox", { name: "Comment" })
+		.fill("Why <b>this</b>?");
+	await shot(page, "new-thread-agent-button", isMobile);
+	await composer.getByRole("button", { name: "Ask agent" }).click();
+	await expect(section.getByTestId("new-thread")).toHaveCount(0);
+	const asking = section.getByTestId("agent-composer");
+	await expect(asking).toContainText("line 3, new");
+	const box = asking.getByRole("textbox", { name: "Ask your agent" });
+	await expect(box).toHaveValue("Why <b>this</b>?");
+	await expect(box).toBeFocused();
+	await expectNoPageOverflow(page);
+	await asking.getByTestId("agent-composer-ask").click();
+	await expect(
+		section.getByTestId("agent-thread").filter({ hasText: "Why <b>this</b>?" }),
+	).toBeVisible();
+	await expect(section.getByTestId("files-thread")).toHaveCount(0);
+	// A file comment, the same.
+	await section.getByRole("button", { name: "Comment on file" }).click();
+	const onFile = section.getByTestId("new-thread");
+	await onFile.getByRole("textbox", { name: "Comment" }).fill("The file?");
+	await onFile.getByRole("button", { name: "Ask agent" }).click();
+	await expect(section.getByTestId("new-thread")).toHaveCount(0);
+	const fileAsking = section.getByTestId("agent-composer");
+	await expect(fileAsking).toContainText("whole file");
+	const fileBox = fileAsking.getByRole("textbox", { name: "Ask your agent" });
+	await expect(fileBox).toHaveValue("The file?");
+	await expect(fileBox).toBeFocused();
+	await expectNoPageOverflow(page);
+});
+
+test("a question being written turns into a comment: on a line and on the file, the text kept as a draft, nothing posted", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb();
+	const section = await openFile(page, s.url, CALC);
+	await selectText(page, CALC, 3, 0, 6);
+	await bar(page).getByRole("button", { name: "Ask agent" }).click();
+	const asking = section.getByTestId("agent-composer");
+	await asking
+		.getByRole("textbox", { name: "Ask your agent" })
+		.fill("Rename <i>it</i>");
+	await asking.getByRole("button", { name: "Comment" }).click();
+	await expect(section.getByTestId("agent-composer")).toHaveCount(0);
+	const composer = section.getByTestId("new-thread");
+	await expect(composer).toContainText("line 3, new");
+	const box = composer.getByRole("textbox", { name: "Comment" });
+	await expect(box).toHaveValue("Rename <i>it</i>");
+	await expect(box).toBeFocused();
+	await expectNoPageOverflow(page);
+	// A draft: still there after a reload; nothing went to GitHub.
+	await page.reload();
+	const again = await openFile(page, s.url, CALC);
+	await expect(
+		again.getByTestId("new-thread").getByRole("textbox", { name: "Comment" }),
+	).toHaveValue("Rename <i>it</i>");
+	await expect(again.getByTestId("files-thread")).toHaveCount(0);
+	// The file's: Comment on file, Ask agent, then back to Comment.
+	await again.getByRole("button", { name: "Comment on file" }).click();
+	const onFile = again
+		.getByTestId("new-thread")
+		.filter({ hasText: "whole file" });
+	await onFile.getByRole("textbox", { name: "Comment" }).fill("The file?");
+	await onFile.getByRole("button", { name: "Ask agent" }).click();
+	const fileAsking = again.getByTestId("agent-composer");
+	await expect(fileAsking).toContainText("whole file");
+	await fileAsking.getByRole("button", { name: "Comment" }).click();
+	await expect(again.getByTestId("agent-composer")).toHaveCount(0);
+	const back = again
+		.getByTestId("new-thread")
+		.filter({ hasText: "whole file" });
+	await expect(back.getByRole("textbox", { name: "Comment" })).toHaveValue(
+		"The file?",
+	);
+	await expect(back.getByRole("textbox", { name: "Comment" })).toBeFocused();
+});
+
 test("the chip: starting while the handshake is held, ready, busy while answering", async ({
 	page,
 	pr,
