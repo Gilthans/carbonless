@@ -71,6 +71,11 @@ export function quoteOf(span: CodeSpan, texts: readonly string[]): string {
 }
 
 const ASK_INSTEAD = "Ask agent instead";
+/** A comment started from an agent conversation's card: it takes that conversation along. */
+export const MOVES_CONVERSATION =
+	"Moves your agent conversation to this thread";
+/** Why Ask agent instead is off on such a comment. */
+const CARRIES = "Carries your agent conversation: ask there";
 /** Why neither switch is on before the overview is known. */
 export const LOADING = "Loading the PR";
 
@@ -148,9 +153,13 @@ export function NewThread(props: {
 	// The agent button: the comment becomes a question on the same span,
 	// its text moved (so no "Discard?"), nothing sent anywhere.
 	const writes = useQuery({ ...overviewQuery, enabled: false }).data?.writes;
-	const askable = writes
-		? askAgentAvailable(span, { writes, headUnsure: props.headUnsure })
-		: LOADING;
+	// Carrying an agent conversation (Comment on its card), it stays a
+	// comment: the conversation is one already, nothing to lose by switching.
+	const askable = item.agentThread
+		? CARRIES
+		: writes
+			? askAgentAvailable(span, { writes, headUnsure: props.headUnsure })
+			: LOADING;
 	const toAgent = () => {
 		if (askable !== true) return;
 		const text = writer.drafts.newThread(clientId)?.text ?? item.text;
@@ -194,6 +203,24 @@ export function NewThread(props: {
 				<span className="shrink-0 font-mono text-faint">
 					{props.where ?? describeSpan(span)}
 				</span>
+				{item.agentThread && (
+					<Tooltip content={MOVES_CONVERSATION} describe={false}>
+						{(trigger) => (
+							<span
+								{...trigger}
+								role="img"
+								aria-label={MOVES_CONVERSATION}
+								data-testid="new-thread-carries"
+								// Focusable so keyboard and touch users get the tip.
+								// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+								tabIndex={0}
+								className="flex shrink-0 rounded-sm text-agent-ink focus-visible:outline-2 focus-visible:outline-accent"
+							>
+								<SparkleFillIcon size={12} aria-hidden />
+							</span>
+						)}
+					</Tooltip>
+				)}
 			</div>
 			<div className="space-y-1.5 p-2.5">
 				{item.sending ? (
