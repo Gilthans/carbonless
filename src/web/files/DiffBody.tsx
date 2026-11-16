@@ -57,6 +57,7 @@ import { AgentBubble } from "../agent/AgentBubble";
 import {
 	type AgentCommentContext,
 	AgentComposer,
+	headFacts,
 } from "../agent/AgentComposer";
 import { takeJustAsked } from "../agent/agentWrites";
 import { agentThreadsQuery } from "../agent/api";
@@ -2670,7 +2671,7 @@ export function DiffBody(props: {
 	};
 	const commentOn = (span: CodeSpan): AgentCommentContext => ({
 		// Its comment would open on that head: an orphan draft at once.
-		stale: span.commit !== (snapshotHead ?? sessionHead),
+		...headFacts(span, snapshotHead ?? sessionHead),
 		file: { binary: file.binary, submodule: file.submodule },
 		inDiff: hunks.data
 			? hunkKeys.has(`${span.startSide}:${span.startLine}`) &&

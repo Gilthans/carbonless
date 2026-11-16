@@ -13,6 +13,8 @@ import {
 	type SelectionContext,
 } from "../files/selectionActions";
 import { newClientId, sameSpan } from "../threads/newThreads";
+// A cycle (agentWrites closes composers), used only inside functions.
+import { agentAsking } from "./agentWrites";
 
 /** Why the agent can't be asked here; true when it can. */
 export function askAgentAvailable(
@@ -37,7 +39,13 @@ export const ASK_AGENT_ACTION: SelectionAction = {
 	shortcut: "a",
 	available: askAgentAvailable,
 	start: (span) => {
-		openAgentComposer(span);
+		// The span's composer that can still be typed in, if any: one whose
+		// question is on its way has no box to focus.
+		const free = (c: AgentComposerItem) => !agentAsking(c.clientId);
+		const any = getAgentComposers().some(
+			(c) => sameSpan(c.span, span) && free(c),
+		);
+		openAgentComposer(span, undefined, "", any ? free : undefined);
 	},
 };
 
