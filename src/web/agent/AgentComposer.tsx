@@ -49,7 +49,17 @@ export type AgentCommentContext = Partial<
 > & {
 	/** Asked on a head other than the one the diff shows. */
 	stale?: boolean;
+	/** The head shown isn't known yet. */
+	loading?: boolean;
 };
+
+/** Where a question stands to the head shown (`head`, "" or undefined while unknown). */
+export function headFacts(
+	span: CodeSpan,
+	head: string | undefined,
+): Pick<AgentCommentContext, "stale" | "loading"> {
+	return head ? { stale: span.commit !== head } : { loading: true };
+}
 
 const COMMENT_INSTEAD = "Comment instead";
 
@@ -132,18 +142,19 @@ export function AgentComposer(props: {
 	// goes to GitHub until Comment is pressed there.
 	const writer = useThreadWriter();
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
-	const commentable = !overview
-		? LOADING
-		: props.comment?.stale
-			? "Asked on an earlier head"
-			: commentAvailable(span, {
-					writes: overview.writes,
-					commentLeft: overview.commentLeft !== false,
-					file: props.comment?.file ?? { binary: false, submodule: false },
-					inDiff: props.comment?.inDiff,
-					headUnsure: props.comment?.headUnsure,
-					readOnly: props.comment?.readOnly,
-				});
+	const commentable =
+		!overview || props.comment?.loading
+			? LOADING
+			: props.comment?.stale
+				? "Asked on an earlier head"
+				: commentAvailable(span, {
+						writes: overview.writes,
+						commentLeft: overview.commentLeft !== false,
+						file: props.comment?.file ?? { binary: false, submodule: false },
+						inDiff: props.comment?.inDiff,
+						headUnsure: props.comment?.headUnsure,
+						readOnly: props.comment?.readOnly,
+					});
 	const toComment = () => {
 		if (commentable !== true || sending) return;
 		dropAgentWrite(clientId);

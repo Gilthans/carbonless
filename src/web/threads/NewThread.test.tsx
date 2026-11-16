@@ -12,10 +12,10 @@ import type { PrOverview } from "../../shared/types";
 import {
 	type AgentCommentContext,
 	AgentComposer,
+	headFacts,
 } from "../agent/AgentComposer";
 import {
 	askAgent,
-	dropAgentWrite,
 	getAgentWrites,
 	resetAgentWrites,
 } from "../agent/agentWrites";
@@ -141,14 +141,11 @@ describe("NewThread's agent button", () => {
 			{ span: LINE, text: "second thought" },
 		]);
 		// The first lands (its composer closes); the second's text stays.
-		await act(async () => {
-			land(new Response(JSON.stringify(conversation({ id: "N1" }))));
-			await new Promise((r) => setTimeout(r, 0));
-		});
+		act(() => land(new Response(JSON.stringify(conversation({ id: "N1" })))));
+		await vi.waitFor(() => expect(getAgentComposers()).toHaveLength(1));
 		expect(getAgentComposers()).toMatchObject([
 			{ span: LINE, text: "second thought" },
 		]);
-		dropAgentWrite("a1");
 	});
 
 	it("is off until the overview is known", () => {
@@ -288,6 +285,21 @@ function showAsking(
 }
 
 describe("AgentComposer's comment button", () => {
+	it("knows a question's head: the shown one, an earlier one, or not yet", () => {
+		expect(headFacts(LINE, "head1")).toEqual({ stale: false });
+		expect(headFacts(LINE, "head0")).toEqual({ stale: true });
+		expect(headFacts(FILE, "")).toEqual({ loading: true });
+		expect(headFacts(FILE, undefined)).toEqual({ loading: true });
+	});
+
+	it("says it is loading while the head is unknown", () => {
+		showAsking(FILE, "x", { comment: { loading: true } });
+		const button = screen.getByRole("button", { name: "Comment instead" });
+		expect(button.getAttribute("aria-disabled")).toBe("true");
+		act(() => fireEvent.focus(button));
+		expect(screen.getByRole("tooltip")).toHaveTextContent("Loading the PR");
+	});
+
 	it("joins a comment draft already on the span: one card", () => {
 		const { writer } = showAsking(LINE, "and this", { draft: "kept" });
 		expect(screen.getAllByTestId("new-thread")).toHaveLength(1);
