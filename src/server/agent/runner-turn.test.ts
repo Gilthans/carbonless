@@ -114,6 +114,7 @@ function start(agent: { prompt: unknown }) {
 		now: () => clock,
 		store: {
 			read: async () => questions,
+			readWithRevision: async () => ({ threads: questions, revision: "" }),
 			message: stored,
 		} as unknown as AgentThreadStore,
 		cacheClone: "/nowhere",
@@ -258,7 +259,11 @@ describe("a turn's limit and the wake-up", () => {
 		}
 		await runner.settled();
 		expect(agent.texts).toHaveLength(2);
-		expect((await runner.status()).state).toBe("error");
+		// The polls saw the question waiting: the quiet is the dry-turn cap's.
+		expect(await runner.status()).toMatchObject({
+			state: "error",
+			waiting: 1,
+		});
 	});
 
 	it("a held question keeps its limit across a hold reminder: it fires turnMs after its next, not after the reminder (N8)", async () => {

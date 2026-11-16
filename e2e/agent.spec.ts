@@ -513,16 +513,19 @@ test("elsewhere: a second server leaves the agent to the first, which answers wh
 	// page's): idle polls, which the clock moves on to rather than waits out
 	// (the agent answers in real time between).
 	const stored = `/api${new URL(first.url).pathname}/agent/threads`;
-	await expect(async () => {
-		await page.clock.fastForward(AGENT_POLL_MS);
-		const { threads } = await page.evaluate(
-			async (u) => (await fetch(u)).json(),
-			stored,
-		);
-		expect(threads[0]?.waiting).toBe(false);
-	}).toPass({ timeout: 20_000 });
-	holding = false;
-	for (const go of held.splice(0)) await go();
+	try {
+		await expect(async () => {
+			await page.clock.fastForward(AGENT_POLL_MS);
+			const { threads } = await page.evaluate(
+				async (u) => (await fetch(u)).json(),
+				stored,
+			);
+			expect(threads[0]?.waiting).toBe(false);
+		}).toPass({ timeout: 20_000 });
+	} finally {
+		holding = false;
+		for (const go of held.splice(0)) await go();
+	}
 	await expect(async () => {
 		await other.clock.fastForward(AGENT_POLL_MS);
 		await expect(card).toHaveAttribute("aria-label", "Agent thread, answered", {

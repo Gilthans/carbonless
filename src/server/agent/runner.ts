@@ -21,6 +21,7 @@ import {
 	JOINED_PREAMBLE,
 	type JoinIdentity,
 } from "../../shared/agent.js";
+import { GitError } from "../git.js";
 import { AcpAgent, AgentStartError, agentEnv } from "./acp.js";
 import { agentsDir, type Checkout, createCheckout } from "./checkout.js";
 import { type ReviewClaim, takeClaim } from "./claim.js";
@@ -425,8 +426,10 @@ export class AgentRunner {
 			const read = await this.#deps.store.readWithRevision();
 			waiting = read.threads.filter((t) => t.waiting && !t.resolved).length;
 			threadsRev = read.revision;
-		} catch {
-			// The count is a hint; the ref may be unreadable a moment.
+		} catch (error) {
+			// The count is a hint; the ref may be unreadable a moment. Only
+			// git's failures: anything else is a bug, not an empty ref.
+			if (!(error instanceof GitError)) throw error;
 		}
 		// The ignored-wake warning ends once nothing waits.
 		if (

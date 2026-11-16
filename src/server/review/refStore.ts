@@ -101,18 +101,25 @@ export class RefStore {
 
 	/** Every valid event reachable from the ref, oldest commit first. */
 	async readEvents(ref: string): Promise<CrbEvent[]> {
+		return (await this.readEventsAt(ref)).events;
+	}
+
+	/** The ref's events (as readEvents) and the tip commit they were read from (null: no ref). */
+	async readEventsAt(
+		ref: string,
+	): Promise<{ tip: string | null; events: CrbEvent[] }> {
 		const tip = await this.tip(ref);
-		if (!tip) return [];
+		if (!tip) return { tip: null, events: [] };
 		const key = `${ref}@${tip}`;
 		const cached = this.#events.get(key);
-		if (cached) return [...cached];
+		if (cached) return { tip, events: [...cached] };
 		const events = await this.#logEvents(tip);
 		if (this.#events.size >= MAX_CACHED) {
 			const oldest = this.#events.keys().next().value;
 			if (oldest !== undefined) this.#events.delete(oldest);
 		}
 		this.#events.set(key, events);
-		return [...events];
+		return { tip, events: [...events] };
 	}
 
 	async #logEvents(tip: string): Promise<CrbEvent[]> {
