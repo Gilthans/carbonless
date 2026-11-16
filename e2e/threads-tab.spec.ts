@@ -250,6 +250,109 @@ test.describe("on GitHub's threads", () => {
 	});
 });
 
+test.describe("j and k on the Threads tab", () => {
+	test("step through the rows as a click does, marked; not on the Files tab, nor while typing; listed in the help", async ({
+		page,
+		pr,
+		startCrb,
+		isMobile,
+	}) => {
+		test.skip(isMobile, "keyboard shortcuts: desktop");
+		const p = await pr(fixture);
+		const on = { commit: p.head(), diffHunk: "" };
+		p.editScenario((sc) => {
+			const graph = sc.prs[p.number]?.graphql;
+			if (!graph) throw new Error("no PR in the scenario");
+			graph.reviewThreads = [
+				reviewThread({ path: A, line: 2, subjectType: "LINE" }, [
+					threadComment({
+						login: "rev2",
+						text: "Older one",
+						createdAt: "2026-01-04T10:00:00Z",
+						...on,
+					}),
+				]),
+				reviewThread({ path: B, line: 3, subjectType: "LINE" }, [
+					threadComment({
+						login: "rev1",
+						text: "Newer one",
+						createdAt: "2026-01-04T12:00:00Z",
+						...on,
+					}),
+				]),
+			];
+		});
+		const s = await startCrb();
+		await installClock(page);
+		await openFiles(page, s.url);
+		const side = page.locator("body");
+		const threadsTab = tabs(side).getByRole("tab", { name: /^Threads/ });
+		const filesTab = tabs(side).getByRole("tab", { name: /^Files/ });
+		const people = region(side, "People");
+		const rows = people.getByTestId("threads-row");
+		const current = people.locator('button[aria-current="true"]');
+		const card = (words: string) =>
+			page.getByTestId("files-thread").filter({ hasText: words });
+
+		// On the Files tab, j does nothing.
+		await page.keyboard.press("j");
+		await expect(card("Newer one")).toHaveCount(0);
+		await threadsTab.click();
+		await expect(rows).toHaveCount(2);
+		await expect(current).toHaveCount(0);
+
+		// j: the first row, as a click on it: its card open, in view.
+		await page.keyboard.press("j");
+		await expect(current).toHaveAccessibleName(/^src\/deep\/b\.ts:3/);
+		await expect(current).toHaveCount(1);
+		await expectShown(card("Newer one"));
+		// j again: the next.
+		await page.keyboard.press("j");
+		await expect(current).toHaveAccessibleName(/^a\.ts:2/);
+		await expectShown(card("Older one"));
+		// At the end it stops.
+		await page.keyboard.press("j");
+		await expect(current).toHaveAccessibleName(/^a\.ts:2/);
+		// k: back.
+		await page.keyboard.press("k");
+		await expect(current).toHaveAccessibleName(/^src\/deep\/b\.ts:3/);
+		await expectShown(card("Newer one"));
+
+		// Typing j in a reply box types it.
+		const box = card("Newer one").getByRole("textbox", { name: "Reply" });
+		await box.click();
+		await box.pressSequentially("jk");
+		await expect(box).toHaveValue("jk");
+		await expect(current).toHaveAccessibleName(/^src\/deep\/b\.ts:3/);
+		await box.fill("");
+		await box.blur();
+
+		// On the Files tab: nothing moves.
+		await filesTab.click();
+		await page.keyboard.press("j");
+		await threadsTab.click();
+		await expect(current).toHaveAccessibleName(/^src\/deep\/b\.ts:3/);
+
+		// A click sets the current row too.
+		await people.getByRole("button", { name: /^a\.ts:2/ }).click();
+		await expect(current).toHaveAccessibleName(/^a\.ts:2/);
+		await page.keyboard.press("k");
+		await expect(current).toHaveAccessibleName(/^src\/deep\/b\.ts:3/);
+
+		// In the help, under Files changed.
+		await page.keyboard.press("Shift+Slash");
+		const group = page
+			.getByRole("dialog", { name: "Keyboard shortcuts" })
+			.getByRole("region", { name: "Files changed" });
+		await expect(
+			group.getByRole("listitem").filter({ hasText: "Next conversation" }),
+		).toContainText("j");
+		await expect(
+			group.getByRole("listitem").filter({ hasText: "Previous conversation" }),
+		).toContainText("k");
+	});
+});
+
 test.describe("every kind of thread opens, in view", () => {
 	const C = "c.ts";
 	const KEEP = "keep.ts";
