@@ -59,3 +59,29 @@ export function parseDiffHunk(hunk: string): HunkLine[] {
 export function numberOn(line: HunkLine, side: DiffSide): number | null {
 	return side === "LEFT" ? line.oldNo : line.newNo;
 }
+
+/**
+ * A hunk's lines in git's (and GitHub's) order: each run of changed lines
+ * between context lines lists its removed lines, then its added ones. The
+ * Files page's hunks hold each cluster's lines together (a git hunk cut at
+ * its whitespace-only runs is several clusters, each removed-then-added),
+ * which within such a run is another order; a range comment's ends, and a
+ * draft's surrounding lines, go by this one.
+ */
+export function inGitOrder<L extends { kind: "context" | "del" | "add" }>(
+	lines: readonly L[],
+): L[] {
+	const out: L[] = [];
+	let added: L[] = [];
+	for (const line of lines) {
+		if (line.kind === "add") added.push(line);
+		else if (line.kind === "del") out.push(line);
+		else {
+			out.push(...added, line);
+			added = [];
+		}
+	}
+	// Removed lines go out as they come, added ones wait for the run's end.
+	out.push(...added);
+	return out;
+}

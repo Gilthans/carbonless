@@ -39,6 +39,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { countedProgress } from "../../shared/progress";
 import {
 	type CodeRow,
 	type CodeWindow,
@@ -62,6 +63,7 @@ import {
 	sessionQuery,
 } from "../api";
 import { type FilesSearch, threadTarget } from "../files/landing";
+import { WhitespaceLeftOut } from "../files/ProgressBar";
 import {
 	ChangedSince,
 	OpenedOnChip,
@@ -70,6 +72,7 @@ import {
 	usePlacementInfo,
 	useSessionPlacements,
 } from "../files/ThreadFate";
+import { useFocusCard } from "../files/threadFocus";
 import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { usePageActive } from "../pageActive";
@@ -115,6 +118,7 @@ import {
 } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage, safeHref } from "../ui";
+import { ignoreWhitespace } from "../viewSettings";
 import { createImageRefresher } from "./imageRefresh";
 import {
 	Badge,
@@ -252,7 +256,11 @@ function OverviewContent({
 		showThread(search.thread);
 		// An agent conversation's link: its thread's panel opens.
 		if (search.conversation) {
-			requestConversationOpen(search.conversation, search.message);
+			requestConversationOpen(
+				search.conversation,
+				search.message,
+				search.thread,
+			);
 		}
 		void navigate({
 			to: "/r/$id",
@@ -351,20 +359,32 @@ function ExternalLink(props: {
 function ReviewFilesButton() {
 	const { review, data } = useReviewView();
 	const id = useReviewId();
+	// As the Files page's bar counts: "Ignore whitespace" on leaves
+	// whitespace-only clusters out, and the `~` says how many.
+	const ignoreWs = ignoreWhitespace.use();
+	const counted = useMemo(
+		() => (ignoreWs && data ? countedProgress(data.files) : null),
+		[ignoreWs, data],
+	);
 	return (
 		<div className="flex flex-col items-center gap-3">
-			<Link
-				to="/r/$id/files"
-				params={{ id }}
-				className="cta inline-flex min-h-10 items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-ink transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
-			>
-				Review files
-				{data && (
-					<span className="rounded-full bg-canvas/35 px-2 text-xs tabular-nums">
-						{progressText(data.progress)}
-					</span>
+			<div className="flex items-center gap-1">
+				<Link
+					to="/r/$id/files"
+					params={{ id }}
+					className="cta inline-flex min-h-10 items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-ink transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
+				>
+					Review files
+					{data && (
+						<span className="rounded-full bg-canvas/35 px-2 text-xs tabular-nums">
+							{progressText(counted?.progress ?? data.progress)}
+						</span>
+					)}
+				</Link>
+				{(counted?.leftOut ?? 0) > 0 && (
+					<WhitespaceLeftOut count={counted?.leftOut ?? 0} />
 				)}
-			</Link>
+			</div>
 			{review.isPending && <Spinner label="Loading review progress" />}
 			{review.isError && <ErrorMessage error={review.error} />}
 		</div>
@@ -1506,6 +1526,16 @@ function ThreadItem({
 		onOpen: showMore,
 		onToggle: onToggle && ((resolved) => onToggle(resolved)),
 	});
+	// Asked for (a link to its agent conversation): this card takes it,
+	// once shown; the page brings it into view itself (its list, enough of
+	// it, then the card), the panel opens by itself.
+	const cardRef = useRef<HTMLLIElement>(null);
+	useFocusCard(thread.id || undefined, cardRef, undefined, {
+		scroll: false,
+		// Its conversation, when asked for, once the agent threads say it's
+		// this thread's (a cold load reads them after GitHub's).
+		ready: (f) => !f.conversation || agent?.conversation?.id === f.conversation,
+	});
 	// State, not refs: either box can mount later than the card.
 	const [codeBox, setCodeBox] = useState<HTMLElement | null>(null);
 	const [commentBox, setCommentBox] = useState<HTMLDivElement | null>(null);
@@ -1692,6 +1722,7 @@ function ThreadItem({
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<li
+				ref={cardRef}
 				data-testid="thread"
 				id={thread.id ? threadAnchor(thread.id) : undefined}
 				// Focused when the timeline brings it into view.

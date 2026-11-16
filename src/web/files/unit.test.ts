@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fileFlags } from "../../shared/progress";
 import type { ClusterState, ClusterView, FileView } from "../../shared/types";
 import {
+	countedFile,
+	countedFolder,
 	describeFileProgress,
 	describeFolderProgress,
 	type FormatOptions,
@@ -395,5 +397,43 @@ describe("a partly reviewed cluster", () => {
 			crossedOff: 0,
 		});
 		expect(folderUnitProgress([f], "lines").done).toBe(false);
+	});
+});
+
+describe("counted with Ignore whitespace on (CAR-156)", () => {
+	const ws = (state: ClusterState, lines: number): ClusterView => ({
+		...cluster(state, lines),
+		whitespaceOnly: true,
+	});
+	const mixed = file([
+		cluster("reviewed", 2),
+		ws("unreviewed", 4),
+		cluster("reviewed", 2),
+	]);
+	const allWs = { ...file([ws("unreviewed", 4)]), index: 1 };
+
+	it("a file counts without its whitespace-only clusters: done once the rest is", () => {
+		expect(fileUnitProgress(countedFile(mixed, true), "lines")).toMatchObject({
+			fraction: "4 / 4",
+			percent: 100,
+			clustersLeft: 0,
+		});
+		expect(fileUnitProgress(countedFile(mixed, false), "lines")).toMatchObject({
+			fraction: "4 / 8",
+			clustersLeft: 1,
+		});
+	});
+
+	it("a file of nothing but whitespace-only clusters shows its own marks", () => {
+		expect(countedFile(allWs, true)).toBe(allWs);
+	});
+
+	it("a folder counts its files without them, an all-whitespace file nowhere unless that is all it holds", () => {
+		const p = folderUnitProgress(countedFolder([mixed, allWs], true), "files");
+		expect(p).toMatchObject({ done: true, filesLeft: 0 });
+		expect(
+			folderUnitProgress(countedFolder([mixed, allWs], false), "files"),
+		).toMatchObject({ done: false, filesLeft: 2 });
+		expect(countedFolder([allWs], true)).toEqual([allWs]);
 	});
 });

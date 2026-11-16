@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
+	Cluster,
+	ClusterSplit,
 	DiffLine,
 	FileHunks,
 	FileSummary,
@@ -8,7 +10,7 @@ import type {
 } from "../../shared/types.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
 import { BlobCache } from "./blobCache.js";
-import { buildAllClusters } from "./clusters.js";
+import { buildAllClusters, splitCluster } from "./clusters.js";
 import { readTabWidths } from "./editorconfig.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
 import {
@@ -209,27 +211,74 @@ export async function buildSnapshot(
 	);
 	const files = changed.map((file, index): FileSummary => {
 		const { oldOid, newOid, ...summary } = file;
-		const clusters = unkeyed[index] ?? [];
+		const hunks = unkeyed[index] ?? [];
 		const text = texts[index];
-		const hasLines = clusters.some((c) => c.kind === "lines");
-		const keys = clusterKeys(file.path, clusters, text?.newLines ?? [], {
-			encoding: text?.encoding ?? "utf8",
-			// Without lines, a binary, submodule or type change would otherwise
-			// look the same whatever the content.
-			contentOids:
-				!text || (file.status === "type-changed" && !hasLines)
-					? [oldOid, newOid]
-					: undefined,
-		});
+		const hasLines = hunks.some((c) => c.kind === "lines");
+		const keysOf = (clusters: Omit<Cluster, "key">[]) =>
+			clusterKeys(file.path, clusters, text?.newLines ?? [], {
+				encoding: text?.encoding ?? "utf8",
+				// Without lines, a binary, submodule or type change would otherwise
+				// look the same whatever the content.
+				contentOids:
+					!text || (file.status === "type-changed" && !hasLines)
+						? [oldOid, newOid]
+						: undefined,
+			});
+		const clusters = cutClusters(hunks, keysOf);
 		const tabWidth = tabWidths[index];
 		return {
 			index,
 			...summary,
 			...(tabWidth === undefined ? {} : { tabWidth }),
-			clusters: clusters.map((c, i) => ({ ...c, key: keys[i] as string })),
+			clusters,
 		};
 	});
 	return { base, head, revision: snapshotId(base, head), files };
+}
+
+/**
+ * One file's git hunks (and its file-level cluster) as its clusters: each
+ * hunk cut at its whitespace-only runs (splitCluster, CAR-156), keyed by
+ * `keysOf` (clusterKeys over the file's clusters). A piece of a hunk that
+ * split remembers the key the whole hunk had (`keysOf` over the hunks, as
+ * before the cut) and where its lines sit in it, so marks on the hunk
+ * carry onto the pieces (splitCarry.ts).
+ */
+export function cutClusters(
+	hunks: Omit<Cluster, "key">[],
+	keysOf: (clusters: Omit<Cluster, "key">[]) => string[],
+): Cluster[] {
+	const clusters: Omit<Cluster, "key">[] = [];
+	const parts: { hunk: number; removedAt: number; addedAt: number }[] = [];
+	hunks.forEach((hunk, h) => {
+		const pieces =
+			hunk.kind === "lines"
+				? splitCluster(hunk)
+				: [{ cluster: hunk, removedAt: 0, addedAt: 0 }];
+		for (const piece of pieces) {
+			clusters.push(piece.cluster);
+			parts.push({
+				hunk: pieces.length > 1 ? h : -1,
+				removedAt: piece.removedAt,
+				addedAt: piece.addedAt,
+			});
+		}
+	});
+	const keys = keysOf(clusters);
+	const hunkKeys = parts.some((p) => p.hunk >= 0) ? keysOf(hunks) : [];
+	return clusters.map((c, i) => {
+		const part = parts[i];
+		const split: ClusterSplit | undefined =
+			part && part.hunk >= 0
+				? {
+						key: hunkKeys[part.hunk] as string,
+						removedAt: part.removedAt,
+						addedAt: part.addedAt,
+						removed: (hunks[part.hunk] as Omit<Cluster, "key">).removed.length,
+					}
+				: undefined;
+		return { ...c, key: keys[i] as string, ...(split ? { split } : {}) };
+	});
 }
 
 /** The snapshot id of the comparison `base` → `head` (`Snapshot.revision`). */

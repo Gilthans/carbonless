@@ -1,3 +1,4 @@
+import { inGitOrder } from "../../shared/diffHunk";
 import type { DiffLine, DisplayHunk } from "../../shared/types";
 import type { SpanRange } from "./spanMarks";
 
@@ -34,8 +35,10 @@ export function spanTexts(
 	hunks: readonly DisplayHunk[],
 	span: SpanRange,
 ): LineTexts | null {
+	// GitHub's order: a run's removed lines before its added ones, however
+	// the view groups them by cluster.
 	const rows = hunks.flatMap((h, hunk) =>
-		h.lines.map((line) => ({ line, hunk })),
+		inGitOrder(h.lines).map((line) => ({ line, hunk })),
 	);
 	const start = rows.findIndex(
 		(r) => numberOn(r.line, span.startSide) === span.startLine,

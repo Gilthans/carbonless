@@ -32,9 +32,10 @@ const INDENT = "src/indent.ts";
 const LONG = "src/long.ts";
 
 /**
- * Four clusters: src/greet.ts's lines 5–6 become three lines, the third 300
+ * Six clusters: src/greet.ts's lines 5–6 become three lines, the third 300
  * characters (2 removed / 3 added); src/mixed.ts's lines 3–6 re-indented
- * with line 4 really changed; src/indent.ts re-indented wholesale
+ * with line 4 really changed (three: whitespace only, the change,
+ * whitespace only); src/indent.ts re-indented wholesale
  * (whitespace only); src/long.ts, 1,200 lines, line 1,150 changed.
  */
 const fixture: PrOptions = {
@@ -222,7 +223,7 @@ test("Side by side lays clusters out as pairs in place, wraps long lines, and ke
 	// (the next file opened); open it again.
 	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(checkbox).toBeChecked();
-	await expect(progress(page)).toContainText("1 / 4 clusters reviewed");
+	await expect(progress(page)).toContainText("1 / 6 clusters reviewed");
 	await expect(pairRows.nth(0)).toHaveAttribute("data-reviewed", "true");
 	await expect(codeCells(pairRows.nth(0)).nth(0)).toHaveClass(/bg-del-done/);
 	await expect(codeCells(pairRows.nth(0)).nth(1)).toHaveClass(/bg-add-done/);
@@ -262,7 +263,7 @@ test("Side by side lays clusters out as pairs in place, wraps long lines, and ke
 	await expect(rows(section)).toHaveCount(3 + 5 + 3);
 	await expect(threadRow).toHaveCount(1);
 	await expect(threadRow).toBeVisible();
-	await expect(progress(page)).toContainText("1 / 4 clusters reviewed");
+	await expect(progress(page)).toContainText("1 / 6 clusters reviewed");
 	await sideBySide(page, true);
 	await expect(table(section, "side-by-side")).toBeVisible();
 	await expect(threadRow).toHaveCount(1);
@@ -297,18 +298,20 @@ test("Side by side lays clusters out as pairs in place, wraps long lines, and ke
 	await expect(collapsed).toHaveAttribute("data-expanded", "true");
 	await expect(pairs(indentSection)).toHaveCount(8);
 
-	// A mixed cluster shows `~` pairs between positional pairs.
+	// Lines 3–6: the real change a positional pair between two collapsed
+	// whitespace-only clusters (each its own, CAR-156).
 	const mixedSection = await expand(page, MIXED);
-	await expect(pairs(mixedSection)).toHaveCount(4);
+	await expect(mixedSection.getByTestId("ws-cluster")).toHaveCount(2);
+	await expect(pairs(mixedSection)).toHaveCount(1);
 	const kinds = (kind: string) =>
 		mixedSection.locator(`td[data-testid="code"][data-kind="${kind}"]`);
-	await expect(kinds("ws")).toHaveCount(6);
+	await expect(kinds("ws")).toHaveCount(0);
 	await expect(kinds("del")).toHaveCount(1);
 	await expect(kinds("del")).toContainText("mixed 4");
 	await expect(kinds("add")).toHaveCount(1);
 	await expect(kinds("add")).toContainText("mixed 4 changed");
-	await expect(pairs(mixedSection).nth(1)).toHaveAttribute("data-old-no", "4");
-	await expect(pairs(mixedSection).nth(1)).toHaveAttribute("data-new-no", "4");
+	await expect(pairs(mixedSection).nth(0)).toHaveAttribute("data-old-no", "4");
+	await expect(pairs(mixedSection).nth(0)).toHaveAttribute("data-new-no", "4");
 	await expect(mixedSection.getByTestId("change-count")).toContainText("+4");
 	await expectNoPageOverflow(page);
 });

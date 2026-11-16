@@ -22,7 +22,7 @@ import {
 	testGitEnv,
 } from "../../../test/git-fixture.js";
 import { sinceMarkKey } from "../../shared/pieces.js";
-import type { Snapshot, StateChange } from "../../shared/types.js";
+import type { Cluster, Snapshot, StateChange } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
 import { buildReviewView } from "./coverage.js";
@@ -1456,5 +1456,202 @@ describe("patch set n+1", () => {
 			`heavy review (${all.length} events, squashed): ${heavy.raw} bytes raw, ${heavy.deflated} deflated`,
 		);
 		expect(heavy.deflated).toBeLessThan(100 * 1024);
+	});
+});
+
+describe("carrySplits (CAR-156)", () => {
+	const hex = (i: number) =>
+		createHash("sha256").update(`cluster ${i}`).digest("hex");
+	/**
+	 * `snap` as the old rule saw it (`before`: each file's line clusters
+	 * whole) and as it is cut now (`after`: one line cluster of 6 + 6 lines
+	 * split in three, its key the whole hunk's before). Same revision.
+	 */
+	function shapes() {
+		const file = snap.files.find((f) =>
+			f.clusters.some((c) => c.kind === "lines"),
+		) as Snapshot["files"][number];
+		const whole = file.clusters.find((c) => c.kind === "lines") as Cluster;
+		const piece = (n: number, at: number): Cluster => ({
+			...whole,
+			key: hex(9000 + n),
+			removed: ["x", "y"],
+			added: ["X", "Y"],
+			lines: 4,
+			split: { key: whole.key, removedAt: at, addedAt: at, removed: 6 },
+		});
+		const after: Snapshot = {
+			...snap,
+			files: snap.files.map((f) =>
+				f === file
+					? {
+							...f,
+							clusters: f.clusters.flatMap((c) =>
+								c === whole ? [piece(1, 0), piece(2, 2), piece(3, 4)] : [c],
+							),
+						}
+					: f,
+			),
+		};
+		return { whole, after, path: file.path };
+	}
+
+	it("writes the pieces' marks once, by the engine; later reads write nothing", async () => {
+		const { whole, after } = shapes();
+		await svc.recordStates(id, "dan", snap, [
+			{ key: whole.key, state: "crossed-off", reason: "vendored" },
+		]);
+		const tip = await store.tip(progressRef());
+		const progress = await svc.carrySplits(id, "dan", after);
+		const view = buildReviewView(after, progress);
+		const pieces = view.files
+			.flatMap((f) => f.clusters)
+			.filter((c) => c.split !== undefined);
+		expect(pieces.map((c) => [c.state, c.reason])).toEqual(
+			Array(3).fill(["crossed-off", "vendored"]),
+		);
+		const events = await store.readEvents(progressRef());
+		const split = events.filter((e) => e.type === "split-carried");
+		expect(split).toHaveLength(1);
+		expect(split[0]?.by).toBe("auto");
+		const moved = await store.tip(progressRef());
+		expect(moved).not.toBe(tip);
+		const log = await runGit(repo, [
+			"log",
+			"-1",
+			"--format=%s",
+			moved as string,
+		]);
+		expect(log.trim()).toBe("crb: carried marks onto 3 split clusters of PS1");
+		// Idempotent: nothing more on a second read, or a third.
+		await svc.carrySplits(id, "dan", after);
+		await svc.carrySplits(id, "dan", after);
+		expect(await store.tip(progressRef())).toBe(moved);
+		// A reader that predates split-carried skips it: it still sees the
+		// whole hunk's own mark, never more.
+		const old = foldProgress(events.filter((e) => e.type !== "split-carried"));
+		expect(buildReviewView(snap, old).progress).toEqual(
+			buildReviewView(snap, await svc.getProgress(id, "dan")).progress,
+		);
+	});
+
+	it("two opens at once write one carry: the one that loses the race reads again and finds nothing to write", async () => {
+		const { whole, after } = shapes();
+		await svc.recordStates(id, "dan", snap, [
+			{ key: whole.key, state: "reviewed" },
+		]);
+		await Promise.all([
+			svc.carrySplits(id, "dan", after),
+			svc.carrySplits(id, "dan", after),
+			svc.carrySplits(id, "dan", after),
+		]);
+		const events = await store.readEvents(progressRef());
+		expect(events.filter((e) => e.type === "split-carried")).toHaveLength(1);
+	});
+
+	it("writes nothing for a snapshot that is no patch set, or a hunk nobody marked", async () => {
+		const { after } = shapes();
+		await svc.carrySplits(id, "dan", after);
+		expect(await store.tip(progressRef())).toBeNull();
+		await svc.recordStates(id, "dan", snap, [{ key: k2, state: "reviewed" }]);
+		const tip = await store.tip(progressRef());
+		const { whole } = shapes();
+		if (whole.key !== k2) {
+			await svc.carrySplits(id, "dan", after);
+			expect(await store.tip(progressRef())).toBe(tip);
+		}
+	});
+
+	it("carries onto an earlier, read-only patch set too", async () => {
+		const { whole, after } = shapes();
+		await svc.recordStates(id, "dan", snap, [
+			{ key: whole.key, state: "reviewed" },
+		]);
+		await svc.ensurePatchset(id, "dan", otherSnap, {
+			since: 1,
+			shape: "S4a",
+			baseBranch: "main",
+			interdiff: "available",
+			carried: [],
+		});
+		const progress = await svc.carrySplits(id, "dan", after);
+		expect(
+			buildReviewView(after, progress)
+				.files.flatMap((f) => f.clusters)
+				.filter((c) => c.split)
+				.map((c) => c.state),
+		).toEqual(["reviewed", "reviewed", "reviewed"]);
+	});
+
+	it("storage: a split carry is one small commit per patch set", async () => {
+		const sizeOf = async (oid: string) => {
+			const raw = await runGit(repo, ["cat-file", "commit", oid]);
+			return {
+				raw: Number((await runGit(repo, ["cat-file", "-s", oid])).trim()),
+				deflated: deflateSync(Buffer.from(raw, "utf8")).length,
+			};
+		};
+		// 200 hunks reviewed whole, each cut in three: 600 entries.
+		const whole = Array.from({ length: 200 }, (_, h) =>
+			Array.from({ length: 3 }, (_, p) => ({
+				key: hex(h * 3 + p),
+				fromKey: hex(10_000 + h),
+				state: "reviewed" as const,
+			})),
+		).flat();
+		const big = await sizeOf(
+			await store.commit(
+				null,
+				"crb: carried marks onto 600 split clusters of PS1",
+				[
+					newEvent(
+						"split-carried",
+						"dan",
+						{ patchset: snap.revision, states: whole },
+						"auto",
+					),
+				],
+				"dan",
+			),
+		);
+		// One hunk marked by lines: a partial entry.
+		const one = await sizeOf(
+			await store.commit(
+				null,
+				"crb: carried marks onto 1 split cluster of PS1",
+				[
+					newEvent(
+						"split-carried",
+						"dan",
+						{
+							patchset: snap.revision,
+							states: [
+								{
+									key: hex(1),
+									fromKey: hex(2),
+									state: "reviewed",
+									from: [
+										[2, 3],
+										[8, 9],
+									],
+									lines: [
+										[0, 1],
+										[2, 3],
+									],
+								},
+							],
+						},
+						"auto",
+					),
+				],
+				"dan",
+			),
+		);
+		console.log(
+			`split carry, 600 entries: ${big.raw} bytes raw, ${big.deflated} deflated; one partial entry: ${one.raw} raw, ${one.deflated} deflated`,
+		);
+		expect(big.raw).toBeLessThan(120 * 1024);
+		expect(big.deflated).toBeLessThan(60 * 1024);
+		expect(one.raw).toBeLessThan(1024);
 	});
 });

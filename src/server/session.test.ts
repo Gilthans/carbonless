@@ -24,6 +24,7 @@ import {
 import { ghCallKinds, ghCallsOf } from "../../test/gh-log";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import type { Snapshot } from "../shared/types";
 import { agentsDir } from "./agent/checkout";
 import { setServerMcp } from "./agent/host";
 import { clonePath } from "./clone";
@@ -53,6 +54,67 @@ const git = (cwd: string, ...args: string[]) =>
 		encoding: "utf8",
 		env: testGitEnv(),
 	}).trim();
+
+/** a.txt with lines 10-15 a change, a whitespace-only change, a change (CAR-156). */
+function splitA(): string {
+	const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+	lines[1] = "line 2 changed";
+	lines[25] = "line 26 changed";
+	lines[9] = "line ten";
+	lines[10] = "line eleven";
+	lines[11] = "  line 12";
+	lines[12] = "  line 13";
+	lines[13] = "line fourteen";
+	lines[14] = "line fifteen";
+	return `${lines.join("\n")}\n`;
+}
+
+/** The session snapshot's split pieces of a.txt. */
+const splitPieces = (snap: Snapshot) =>
+	snap.files.find((f) => f.path === "a.txt")?.clusters.filter((c) => c.split) ??
+	[];
+
+/**
+ * Marks a.txt's split hunk reviewed in `s`'s review, as an older crb did:
+ * one cluster under the whole hunk's key, on `s`'s snapshot (PS1).
+ */
+async function markWholeHunk(s: Session): Promise<void> {
+	const snap = s.snapshot();
+	const pieces = splitPieces(snap);
+	const [first] = pieces;
+	const whole = {
+		key: first?.split?.key as string,
+		kind: "lines" as const,
+		oldStart: first?.oldStart as number,
+		oldCount: pieces.reduce((n, c) => n + c.oldCount, 0),
+		newStart: first?.newStart as number,
+		newCount: pieces.reduce((n, c) => n + c.newCount, 0),
+		removed: pieces.flatMap((c) => c.removed),
+		added: pieces.flatMap((c) => c.added),
+		lines: pieces.reduce((n, c) => n + c.lines, 0),
+	};
+	const before = {
+		...snap,
+		files: snap.files.map((f) =>
+			f.path === "a.txt"
+				? { ...f, clusters: [...f.clusters.filter((c) => !c.split), whole] }
+				: f,
+		),
+	};
+	await new ReviewService(
+		new RefStore(clonePath("acme", "widget")),
+	).recordStates(s.id, "octo-cat", before, [
+		{ key: whole.key, state: "reviewed" },
+	]);
+}
+
+/** The split-carried events in `id`'s progress ref. */
+const splitCarried = async (id: string) =>
+	(
+		await new RefStore(clonePath("acme", "widget")).readEvents(
+			`refs/crb/reviews/${id}/reviewers/octo-cat/progress`,
+		)
+	).filter((e) => e.type === "split-carried");
 
 describe("Session", () => {
 	let pr: PrFixture;
@@ -1049,6 +1111,23 @@ describe("Session", () => {
 			).rejects.toThrow("--head can't be combined with --as-of");
 		});
 
+		it("never writes a split carry: its old marks read unreviewed (CAR-156)", async () => {
+			const then = pr.moveHead({ "a.txt": splitA() });
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioReviewed(then, now);
+			const s = await openPinned("reviewed");
+			await markWholeHunk(s);
+			const again = await openPinned("reviewed");
+			const view = await again.review();
+			expect(
+				view.files
+					.find((f) => f.path === "a.txt")
+					?.clusters.filter((c) => c.split)
+					.map((c) => c.state),
+			).toEqual(["unreviewed", "unreviewed", "unreviewed"]);
+			expect(await splitCarried(s.id)).toEqual([]);
+		});
+
 		it("never moves off the pinned commit on refresh or a head check", async () => {
 			const then = pr.head();
 			const now = pr.moveHead({ "later.txt": "later\n" });
@@ -1279,6 +1358,24 @@ describe("Session", () => {
 			expect(pr.ghLog().length).toBe(ghCalls);
 		});
 
+		it("never writes a split carry: its old marks read unreviewed (CAR-156)", async () => {
+			const then = pr.moveHead({ "a.txt": splitA() });
+			scenarioAsOf(then, pr.moveHead({ "later.txt": "later\n" }));
+			const open = () =>
+				Session.open(pr.arg, process.cwd(), () => {}, { asOf: CUTOFF });
+			const s = await open();
+			await markWholeHunk(s);
+			const again = await open();
+			const view = await again.review();
+			expect(
+				view.files
+					.find((f) => f.path === "a.txt")
+					?.clusters.filter((c) => c.split)
+					.map((c) => c.state),
+			).toEqual(["unreviewed", "unreviewed", "unreviewed"]);
+			expect(await splitCarried(s.id)).toEqual([]);
+		});
+
 		it("reads anew in four calls with no threads: the snapshot head's checks come in the overview's one query", async () => {
 			const then = pr.head();
 			scenarioAsOf(then, pr.moveHead({ "later.txt": "later\n" }));
@@ -1411,6 +1508,58 @@ describe("Session", () => {
 			);
 			return { newHead, snap2 };
 		};
+
+		it("carries marks made on a whole hunk before it split onto its pieces, in the latest patch set and an earlier one (CAR-156)", async () => {
+			pr.moveHead({ "a.txt": splitA() });
+			const s = await Session.open(pr.arg, process.cwd());
+			expect(
+				splitPieces(s.snapshot()).map((c) => c.whitespaceOnly === true),
+			).toEqual([false, true, false]);
+			await markWholeHunk(s);
+			const { snap2 } = await startSecond(s);
+			// PS2 is the latest: opening carries nothing there (its pieces were
+			// never marked); PS1's pieces take the hunk's mark when it opens.
+			const again = await Session.open(pr.arg, process.cwd());
+			expect((await again.review()).revision).toBe(snap2.revision);
+			const old = await again.reviewAt(1);
+			const shown = old.files
+				.find((f) => f.path === "a.txt")
+				?.clusters.filter((c) => c.split);
+			expect(shown?.map((c) => c.state)).toEqual([
+				"reviewed",
+				"reviewed",
+				"reviewed",
+			]);
+			expect(await splitCarried(s.id)).toHaveLength(1);
+		});
+
+		it("tries a split carry that failed again on the next read (CAR-156)", async () => {
+			pr.moveHead({ "a.txt": splitA() });
+			const s = await Session.open(pr.arg, process.cwd());
+			await markWholeHunk(s);
+			const carry = vi
+				.spyOn(ReviewService.prototype, "carrySplits")
+				.mockRejectedValueOnce(new Error("disk full"));
+			try {
+				const again = await Session.open(pr.arg, process.cwd());
+				expect(carry).toHaveBeenCalledTimes(1);
+				// The failure leaves them unreviewed, never more; the next read
+				// carries them.
+				const view = await again.review();
+				const states = view.files
+					.find((f) => f.path === "a.txt")
+					?.clusters.filter((c) => c.split)
+					.map((c) => c.state);
+				expect(states).toEqual(["reviewed", "reviewed", "reviewed"]);
+				expect(await splitCarried(s.id)).toHaveLength(1);
+				// Once carried, later reads don't try again.
+				const calls = carry.mock.calls.length;
+				await again.review();
+				expect(carry.mock.calls.length).toBe(calls);
+			} finally {
+				carry.mockRestore();
+			}
+		});
 
 		it("remembers the head seen on the previous open", async () => {
 			const first = await Session.open(pr.arg, process.cwd());

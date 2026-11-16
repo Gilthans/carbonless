@@ -26,8 +26,11 @@ import {
 	runs,
 	stripWhitespace,
 	whitespaceEqual,
-	whitespaceOnly,
 } from "./whitespace";
+
+/** Every row is whitespace-only: the run's lines all have twins. */
+const whitespaceOnly = (rows: DiffRow[]): boolean =>
+	rows.length > 0 && rows.every((r) => r.kind === "ws");
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);

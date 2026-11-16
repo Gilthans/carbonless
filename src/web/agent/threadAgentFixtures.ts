@@ -46,6 +46,7 @@ export const reviewThread = (
 	bot: false,
 	avatarUrl: "",
 	participants: [],
+	lastAuthor: { login: "octo", avatarUrl: "", bot: false },
 	commentCount: 3,
 	hasReply: true,
 	outdated: false,

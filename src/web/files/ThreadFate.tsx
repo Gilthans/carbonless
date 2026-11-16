@@ -62,6 +62,7 @@ import {
 } from "../threads/Conversation";
 import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
 import { Avatar, usePerson } from "../threads/people";
+import { type ThreadFocus, useFocusCard } from "./threadFocus";
 import type { Placements } from "./threadPlacement";
 
 /**
@@ -449,6 +450,9 @@ export function UnplacedRow(props: {
 			<UnplacedShell
 				thread={thread}
 				who={thread.author}
+				ready={(f) =>
+					!f.conversation || agent?.conversation?.id === f.conversation
+				}
 				fate={props.fate}
 				path={props.path}
 				movedTo={props.movedTo}
@@ -486,11 +490,18 @@ export function UnplacedShell(props: {
 	link?: ReactNode;
 	handle?: ReactNode;
 	testId?: string;
+	/** Whether it can serve a request yet (useFocusCard's `ready`). */
+	ready?: (focus: ThreadFocus) => boolean;
 	children: ReactNode;
 }) {
 	const { thread } = props;
 	const testId = props.testId ?? "unplaced-thread";
 	const [expanded, setExpanded] = useState(false);
+	// Asked for by the Threads tab: expanded and scrolled into view.
+	const card = useRef<HTMLLIElement>(null);
+	useFocusCard(thread.id, card, () => setExpanded(true), {
+		ready: props.ready,
+	});
 	const [wasResolved, setWasResolved] = useState(thread.resolved);
 	if (wasResolved !== thread.resolved) {
 		setWasResolved(thread.resolved);
@@ -504,6 +515,7 @@ export function UnplacedShell(props: {
 	if (thread.resolved && !expanded) {
 		return (
 			<li
+				ref={card}
 				data-testid={testId}
 				data-fate={props.fate ?? "unknown"}
 				data-thread={thread.id}
@@ -558,6 +570,7 @@ export function UnplacedShell(props: {
 	}
 	return (
 		<li
+			ref={card}
 			data-testid={testId}
 			data-fate={props.fate ?? "unknown"}
 			data-thread={thread.id}

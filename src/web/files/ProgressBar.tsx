@@ -1,6 +1,7 @@
 import { type ReactNode, type Ref, useId } from "react";
 import type { Counts, Progress } from "../../shared/types";
 import { SkeletonBar, Spinner } from "../Spinner";
+import { Tooltip } from "../Tooltip";
 import {
 	clustersLeft,
 	nothingLeft,
@@ -105,6 +106,34 @@ function UnitPicker(props: { unit: Unit; onChange: (unit: Unit) => void }) {
 }
 
 /**
+ * The `~` after the counts while "Ignore whitespace" leaves whitespace-only
+ * clusters out of them: its name and tooltip say how many.
+ */
+export function WhitespaceLeftOut({ count }: { count: number }) {
+	const label = `${count} whitespace-only ${count === 1 ? "cluster" : "clusters"} not counted`;
+	return (
+		<Tooltip content={label} describe={false}>
+			{(trigger) => (
+				<span
+					{...trigger}
+					role="img"
+					aria-label={label}
+					data-testid="ws-left-out"
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					// Its box never grows the bar (a phone's would wrap a line and
+					// move the rows being read): on touch, an invisible 40px target
+					// is laid over it instead.
+					className="relative ml-1.5 inline-flex h-5 w-4 items-center justify-center rounded font-mono text-faint focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:left-1/2 pointer-coarse:before:size-10 pointer-coarse:before:-translate-x-1/2 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-['']"
+				>
+					~
+				</span>
+			)}
+		</Tooltip>
+	);
+}
+
+/**
  * Sticky review progress in the selected unit: one bar, reviewed out of what
  * isn't crossed off.
  */
@@ -133,6 +162,11 @@ export function ProgressBar(props: {
 	 * `pending` comes first: a refetch over an earlier empty answer spins.
 	 */
 	instead?: "empty" | "failed";
+	/**
+	 * "Ignore whitespace" on: how many whitespace-only clusters the counts
+	 * leave out. A quiet `~` after the counts says so while any are.
+	 */
+	whitespaceLeftOut?: number;
 }) {
 	const { progress, unit } = props;
 	const toRead =
@@ -208,6 +242,9 @@ export function ProgressBar(props: {
 						>
 							{props.instead === "empty" ? "Nothing to read" : "Not counted"}
 						</span>
+						{(props.whitespaceLeftOut ?? 0) > 0 && (
+							<WhitespaceLeftOut count={props.whitespaceLeftOut ?? 0} />
+						)}
 					</div>
 				) : (
 					<div
@@ -251,6 +288,9 @@ export function ProgressBar(props: {
 									{/* The picker beside it names the unit on a phone. */}
 									<span className="hidden sm:inline"> {word} reviewed</span>
 								</>
+							)}
+							{(props.whitespaceLeftOut ?? 0) > 0 && (
+								<WhitespaceLeftOut count={props.whitespaceLeftOut ?? 0} />
 							)}
 							{toRead !== null && (
 								<span

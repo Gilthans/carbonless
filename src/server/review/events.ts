@@ -13,7 +13,7 @@ import {
 	MAX_AGENT_ERROR,
 	MAX_AGENT_TEXT,
 } from "../../shared/agent.js";
-import { type LineRanges, parseRanges } from "../../shared/lineRanges.js";
+import { type LineRanges, parseRanges, size } from "../../shared/lineRanges.js";
 import type {
 	ClusterState,
 	DiffSide,
@@ -149,6 +149,38 @@ export interface CarriedEvent extends EventBase {
 	to: number;
 	rule: "exact" | "rename";
 	states: CarriedEntry[];
+}
+
+/**
+ * One mark carried from a git hunk's key, as it was when the hunk was one
+ * cluster, onto one of the pieces it is cut into now (CAR-156). Without
+ * `from`, the hunk's whole mark; with `from` (the hunk's lines, in its own
+ * line index), its line marks that cover them: the whole piece's when
+ * `lines` is absent, else `lines` of the piece (in the piece's index, as
+ * many as `from`).
+ */
+export interface SplitEntry {
+	/** The piece. */
+	key: string;
+	/** The whole hunk's key before. */
+	fromKey: string;
+	state: "reviewed" | "crossed-off";
+	from?: LineRanges;
+	lines?: LineRanges;
+}
+
+/**
+ * The engine's carry of a patch set's marks on whole hunks onto the pieces
+ * its snapshot now cuts them into (whitespace-only runs, CAR-156), within
+ * that patch set (`patchset`: its snapshot id). Written once, when the
+ * pieces have no marks of their own. Only `by: "auto"`. The fold trusts an
+ * entry only when the hunk's key holds that mark at that moment and the
+ * piece holds nothing yet (fold.ts).
+ */
+export interface SplitCarriedEvent extends EventBase {
+	type: "split-carried";
+	patchset: string;
+	states: SplitEntry[];
 }
 
 /**
@@ -307,6 +339,7 @@ export type CrbEvent =
 	| LinesStateEvent
 	| SinceLinesStateEvent
 	| CarriedEvent
+	| SplitCarriedEvent
 	| ThreadPlacedEvent
 	| ReviewClosedEvent
 	| InboxEvent
@@ -422,8 +455,8 @@ export function validateForWrite(e: CrbEvent): void {
 	if (INBOX_TYPES.includes(e.type) && e.by !== "human") {
 		throw new Error(`${e.type} events must be written by a human`);
 	}
-	if (e.type === "carried" && e.by !== "auto") {
-		throw new Error("carried events must be written by auto (the engine)");
+	if ((e.type === "carried" || e.type === "split-carried") && e.by !== "auto") {
+		throw new Error(`${e.type} events must be written by auto (the engine)`);
 	}
 	if (e.type === "thread-placed" && e.by === "auto") {
 		throw new Error("thread-placed events must be written by a human or ai");
@@ -608,6 +641,46 @@ function parseEvent(raw: unknown): CrbEvent | null {
 				});
 			}
 			return { ...base, type: "carried", from, to, rule, states: entries };
+		}
+		case "split-carried": {
+			// Fail safe: only the engine carries, and only marks a hunk had.
+			if (base.by !== "auto") return null;
+			const { patchset, states } = raw;
+			if (!isStr(patchset) || !Array.isArray(states)) return null;
+			const entries: SplitEntry[] = [];
+			for (const entry of states) {
+				if (!isObj(entry)) return null;
+				const { key, fromKey, state } = entry;
+				const from =
+					entry.from === undefined ? undefined : parseRanges(entry.from);
+				const lines =
+					entry.lines === undefined ? undefined : parseRanges(entry.lines);
+				if (
+					typeof key !== "string" ||
+					!CLUSTER_KEY.test(key) ||
+					typeof fromKey !== "string" ||
+					!CLUSTER_KEY.test(fromKey) ||
+					typeof state !== "string" ||
+					!CARRIED_STATES.includes(state) ||
+					from === null ||
+					lines === null ||
+					(from !== undefined && from.length === 0) ||
+					(lines !== undefined &&
+						(from === undefined ||
+							lines.length === 0 ||
+							size(lines) !== size(from)))
+				) {
+					return null;
+				}
+				entries.push({
+					key,
+					fromKey,
+					state: state as SplitEntry["state"],
+					...(from ? { from } : {}),
+					...(lines ? { lines } : {}),
+				});
+			}
+			return { ...base, type: "split-carried", patchset, states: entries };
 		}
 		case "thread-placed": {
 			// A placement is a decision: the reviewer's or an AI's, never automatic.

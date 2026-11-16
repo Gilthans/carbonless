@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDiffHunk } from "./diffHunk";
+import { inGitOrder, parseDiffHunk } from "./diffHunk";
 
 const HUNK = [
 	"@@ -10,7 +10,8 @@ export class Cache {",
@@ -48,5 +48,41 @@ describe("parseDiffHunk", () => {
 	it("is empty without a header", () => {
 		expect(parseDiffHunk("")).toEqual([]);
 		expect(parseDiffHunk("+x\n-y")).toEqual([]);
+	});
+});
+
+describe("inGitOrder", () => {
+	const l = (kind: "context" | "del" | "add", n: number) => ({ kind, n });
+	it("lists each changed run's removed lines, then its added ones, context in place", () => {
+		// Cut at a whitespace-only run: change, whitespace only, change.
+		const lines = [
+			l("context", 1),
+			l("del", 2),
+			l("add", 2),
+			l("del", 3),
+			l("add", 3),
+			l("del", 4),
+			l("add", 4),
+			l("context", 5),
+			l("add", 6),
+			l("del", 6),
+		];
+		expect(inGitOrder(lines).map((x) => `${x.kind[0]}${x.n}`)).toEqual([
+			"c1",
+			"d2",
+			"d3",
+			"d4",
+			"a2",
+			"a3",
+			"a4",
+			"c5",
+			"d6",
+			"a6",
+		]);
+	});
+
+	it("leaves a hunk already in git's order as it is", () => {
+		const lines = [l("del", 1), l("del", 2), l("add", 1), l("context", 3)];
+		expect(inGitOrder(lines)).toEqual(lines);
 	});
 });

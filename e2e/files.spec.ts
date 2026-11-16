@@ -1993,7 +1993,8 @@ test("a renamed file's old path opens it; a folder of old paths is a ghost; fold
 	).toBeVisible();
 	// The toolbar sits above the tree: in the sheet on a phone (withTree).
 	await withTree(page, async (tree) => {
-		const panel = tree.locator("xpath=..");
+		// The Files tab's toolbar, in the bar above the tree's panel.
+		const panel = tree.page().getByRole("toolbar", { name: "Folders" });
 		await panel.getByRole("button", { name: "Fold all" }).click();
 		await expect(tree.locator("button[aria-expanded=true]")).toHaveCount(0);
 		await expect(tree.locator("button[aria-expanded=false]")).toHaveCount(3);

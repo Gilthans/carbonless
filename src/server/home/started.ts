@@ -9,6 +9,7 @@ import { cacheDir } from "../paths.js";
 import { buildReviewView } from "../review/coverage.js";
 import { foldProgress } from "../review/fold.js";
 import { RefStore } from "../review/refStore.js";
+import { withSplitCarries } from "../review/splitCarry.js";
 import type { StartedReview } from "./facts.js";
 
 /**
@@ -192,9 +193,13 @@ export class StartedReviews {
 		if (wanted) {
 			try {
 				const { mergeBase, head } = progress.patchset;
+				const snapshot = await this.#snapshot(repo, mergeBase, head);
+				// Home never writes: marks on hunks now cut at whitespace-only
+				// runs count on their pieces as the review's first open writes
+				// them (CAR-156).
 				coverage = coverageOf(
-					await this.#snapshot(repo, mergeBase, head),
-					progress,
+					snapshot,
+					withSplitCarries(events, snapshot, slug),
 				);
 			} catch {
 				// The patch set's commits aren't readable: no coverage to claim.

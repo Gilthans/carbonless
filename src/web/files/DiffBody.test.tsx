@@ -156,12 +156,14 @@ const hunks: FileHunks = {
 };
 
 const clusters = [
+	// The server flags it (CAR-156): only a flagged cluster collapses.
 	cluster("ws", {
 		oldStart: 2,
 		oldCount: 3,
 		newStart: 2,
 		newCount: 3,
 		lines: 6,
+		whitespaceOnly: true,
 	}),
 	cluster("mixed", {
 		oldStart: 8,
@@ -189,6 +191,7 @@ const thread = (side: "LEFT" | "RIGHT", line: number): ReviewThread => {
 		author: "rev",
 		avatarUrl: "",
 		participants: [],
+		lastAuthor: { login: "octo", avatarUrl: "", bot: false },
 		bot: false,
 		commentCount: 1,
 		hasReply: false,
@@ -657,8 +660,10 @@ describe("DiffBody with Ignore whitespace", () => {
 		}
 	});
 
-	it("shows a line whose twin is a context line or in another cluster as a one-sided row", async () => {
-		// Git's shape for a re-indented block whose `}` byte-matched another.
+	it("shows a line whose twin is a context line or in another cluster as a one-sided row, open: only a flagged cluster collapses", async () => {
+		// Git's shape for a re-indented block whose `}` byte-matched another,
+		// cut as the server cuts it (CAR-156): A1 the hunk's whitespace-only
+		// pair, A2 and B changes whose lines' twins sit across the context line.
 		const split: FileHunks = {
 			newLineCount: 12,
 			hunks: [
@@ -669,10 +674,10 @@ describe("DiffBody with Ignore whitespace", () => {
 					newCount: 6,
 					lines: [
 						ctx(7, 7),
-						del(8, "  if (x) {", "A"),
-						add(8, "    if (x) {", "A"),
-						add(9, "    }", "A"),
-						add(10, "    sum += 1;", "A"),
+						del(8, "  if (x) {", "A1"),
+						add(8, "    if (x) {", "A1"),
+						add(9, "    }", "A2"),
+						add(10, "    sum += 1;", "A2"),
 						{ kind: "context", oldNo: 9, newNo: 11, text: "  }" },
 						del(10, "  sum += 1;", "B"),
 						del(11, "}", "B"),
@@ -684,12 +689,20 @@ describe("DiffBody with Ignore whitespace", () => {
 		const { rows, collapsed, user } = setup({
 			hunks: split,
 			clusters: [
-				cluster("A", {
+				cluster("A1", {
 					oldStart: 8,
 					oldCount: 1,
 					newStart: 8,
-					newCount: 3,
-					lines: 4,
+					newCount: 1,
+					lines: 2,
+					whitespaceOnly: true,
+				}),
+				cluster("A2", {
+					oldStart: 8,
+					oldCount: 0,
+					newStart: 9,
+					newCount: 2,
+					lines: 2,
 				}),
 				cluster("B", {
 					oldStart: 10,
@@ -700,21 +713,24 @@ describe("DiffBody with Ignore whitespace", () => {
 				}),
 			],
 		});
-		await screen.findByText("Whitespace only · 4 lines");
-		expect(screen.getByText("Whitespace only · 2 lines")).toBeInTheDocument();
-		expect(collapsed()).toHaveLength(2);
-		expect(rows().map((r) => r.kind)).toEqual([
-			"context",
-			"context",
-			"context",
+		await screen.findByText("Whitespace only · 2 lines");
+		expect(collapsed()).toHaveLength(1);
+		// A2 and B still count: open, every line a one-sided `~` row.
+		expect(rows().map((r) => [r.kind, r.old, r.new])).toEqual([
+			["context", "7", "7"],
+			["ws", "", "9"],
+			["ws", "", "10"],
+			["context", "9", "11"],
+			["ws", "10", ""],
+			["ws", "11", ""],
+			["context", "12", "12"],
 		]);
-		for (const button of screen.getAllByRole("button", {
-			name: /^Whitespace only · \d+ lines$/,
-		})) {
-			expect(button).toHaveAttribute("aria-expanded", "false");
-			await user.click(button);
-			expect(button).toHaveAttribute("aria-expanded", "true");
-		}
+		expect(
+			screen.getAllByRole("checkbox", { name: "Mark cluster reviewed" }),
+		).toHaveLength(3);
+		await user.click(
+			screen.getByRole("button", { name: "Whitespace only · 2 lines" }),
+		);
 		const sides = Array.from(
 			document.querySelectorAll<HTMLElement>('[data-kind="ws"]'),
 		).map((row) => [

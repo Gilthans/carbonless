@@ -45,6 +45,36 @@ describe("spanTexts", () => {
 		expect(spanTexts([h], one(9))).toBeNull();
 		expect(spanTexts([h], { ...one(3), startLine: 4 })).toBeNull();
 	});
+
+	it("reads a span across clusters of one cut git hunk in GitHub's order: removed lines first (CAR-156)", () => {
+		const del = (o: number, text: string): DiffLine => ({
+			kind: "del",
+			oldNo: o,
+			text,
+		});
+		// The view's order: change, whitespace only, each removed-then-added.
+		const h = hunk([
+			ctx(1, 1, "a"),
+			del(2, "b"),
+			add(2, "B"),
+			del(3, " c"),
+			add(3, "c"),
+			ctx(4, 4, "d"),
+		]);
+		// GitHub's: -b, - c, +B, +c. From the removed ` c` to the added `B`.
+		expect(
+			spanTexts([h], {
+				startSide: "LEFT",
+				startLine: 3,
+				side: "RIGHT",
+				line: 2,
+			}),
+		).toEqual({
+			lines: [" c", "B"],
+			before: ["a", "b"],
+			after: ["c", "d"],
+		});
+	});
 });
 
 describe("canMove", () => {

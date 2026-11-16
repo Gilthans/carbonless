@@ -23,6 +23,7 @@ import {
 	useState,
 } from "react";
 import type { AgentThread } from "../../shared/agent";
+import { inGitOrder } from "../../shared/diffHunk";
 import {
 	contains,
 	covers,
@@ -60,7 +61,6 @@ import {
 	type AgentComposerItem,
 	useAgentComposers,
 } from "../agent/askAgentAction";
-import { usePendingLanding } from "../agent/conversationLinks";
 import {
 	type AgentPlaceable,
 	shownAgentPlaceables,
@@ -132,16 +132,18 @@ import {
 	TailRow,
 	ThreadRow,
 } from "./ThreadRow";
+import { useFocusAmong } from "./threadFocus";
 import {
 	type FilePlacement,
 	type LineKey,
 	lineKey,
+	type Placeable,
 	type Placements,
 	placeThreads,
 	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
-import { type DiffRow, hunkView, whitespaceOnly } from "./whitespace";
+import { type DiffRow, hunkView } from "./whitespace";
 import { hunkWords, requestMarks } from "./wordWork";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
@@ -2679,16 +2681,26 @@ export function DiffBody(props: {
 			});
 		}
 	}, [agentEnded]);
-	// A link to a conversation here (a citation, a Re row): its line's
-	// threads open, so its card shows and takes the landing.
-	const landing = usePendingLanding();
-	useEffect(() => {
-		if (!agentEnded || !landing) return;
-		for (const [key, list] of agentEnded) {
-			if (!list.some((p) => p.thread.id === landing.conversation)) continue;
+	// A card asked for in this file (threadFocus: a Threads tab row, a
+	// link to a conversation): its line's bubble opens, or its hidden
+	// run's (the lines stay hidden), so the card shows and takes it.
+	useFocusAmong(
+		(id) => focusKey(placement, (t) => t.id, id) !== undefined,
+		(f) => {
+			const key = focusKey(placement, (t) => t.id, f.id);
+			if (!key) return;
+			collapse.toggled(key);
+			setOpenThreads((open) => (open.has(key) ? open : new Set(open).add(key)));
+		},
+	);
+	useFocusAmong(
+		(id) => focusKey(agentPlacement, (p) => p.thread.id, id) !== undefined,
+		(f) => {
+			const key = focusKey(agentPlacement, (p) => p.thread.id, f.id);
+			if (!key) return;
 			setOpenAgent((open) => (open.has(key) ? open : new Set(open).add(key)));
-		}
-	}, [agentEnded, landing]);
+		},
+	);
 
 	const checkbox = (cluster: ClusterView, marker?: Marker) => (
 		<ClusterControls
@@ -3779,7 +3791,11 @@ function HunkRows(props: {
 	const { view } = shape;
 	// Each line's index in the hunk: GitHub's order (codeSpan.ts spanOfRange, linePicks.ts pickRange).
 	const orderOf = useMemo(() => {
-		const order = new Map(hunk.lines.map((l, i) => [l, i] as const));
+		// The view keeps each cluster's lines together; GitHub lists a run's
+		// removed lines first (inGitOrder).
+		const order = new Map(
+			inGitOrder(hunk.lines).map((l, i) => [l, i] as const),
+		);
 		return (line: DiffLine) => order.get(line);
 	}, [hunk]);
 	// The hunk's runs and their rows (hunkView, cached per hunk: the
@@ -3994,7 +4010,12 @@ function HunkRows(props: {
 						</tbody>
 					);
 				}
-				if (state && ignoreWhitespace && whitespaceOnly(rows)) {
+				// Whitespace only: the server's flag (a git hunk's whitespace-only
+				// run is a cluster of its own, CAR-156), the clusters progress
+				// leaves out with the switch on. A change cluster whose lines'
+				// twins sit elsewhere (a context line, another hunk) shows its `~`
+				// rows open: it still counts.
+				if (state && ignoreWhitespace && cluster?.whitespaceOnly) {
 					// A bubble, a pick, a landed-on line or the find's current hit
 					// (once a step showed it: typing never changes the layout)
 					// must never be hidden by the setting: the cluster stays open
@@ -4379,4 +4400,23 @@ function usePicker(
 		},
 		onFocus: (stop) => setFocused({ shown, stop }),
 	};
+}
+
+/**
+ * The key a thread's bubble opens under: its line's, or (in a hidden run)
+ * the line it will end on, which the run's bubble opens.
+ */
+function focusKey<T extends Placeable>(
+	placement: FilePlacement<T> | null | undefined,
+	idOf: (t: T) => string,
+	id: string,
+): LineKey | undefined {
+	if (!placement) return undefined;
+	for (const [key, list] of placement.end) {
+		if (list.some((t) => idOf(t) === id)) return key;
+	}
+	for (const [t, target] of placement.gapTargets) {
+		if (idOf(t) === id) return target.key;
+	}
+	return undefined;
 }

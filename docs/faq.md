@@ -107,22 +107,29 @@ than picking an older one. Pending reviews never count.
 ## Why does "Ignore whitespace" still show whitespace-only changes?
 
 Because they are still changes, and no setting may hide a change from the
-review (principle 2). The switch only changes how they read: a line whose
-only difference is whitespace becomes one quiet `~` row instead of a red
-and a green one, and a cluster that is all whitespace collapses to one row
-you can review from, or expand. Clusters, counts and progress stay what
-they are with the switch off.
+review (principle 2). Every whitespace-only run is a cluster of its own,
+switch on or off: two changed lines, two re-indented ones and two more
+changed lines are three clusters. With the switch on, a whitespace-only
+cluster reads as one quiet `~` row you can review from, or expand, and
+progress leaves it out: tick the real changes and the bar reaches 100%,
+with a `~` beside the counts saying how many whitespace-only clusters it
+didn't count. Ticking one still records it. Turn the switch off and every
+cluster counts again, so any whitespace-only one you never looked at shows
+as unreviewed.
 
-The matching runs over the whole hunk, context lines included, because git
-often splits a re-indented block in two with an unchanged-looking `}`
-between them; a line whose whitespace-equal twin sits in another cluster,
-or is a context line, shows as a one-sided `~` row with its one number.
-What the rows guarantee: take away the lines still shown as added or
-removed, and the two sides are whitespace-equal, so a line that moves
-across an unchanged line stays a change (a loop wrapped in an `if` shows
-the `if`, its `}` and the `log` line that crossed the loop's closing brace;
-the rest of the body goes quiet). It can show a little more as changed
-than `git diff -w` would, never less.
+The view's `~` rows match over the whole hunk, context lines included,
+because git often splits a re-indented block in two with an
+unchanged-looking `}` between them; a line whose whitespace-equal twin
+sits in another cluster, or is a context line, shows as a one-sided `~` row
+with its one number. What the rows guarantee: take away the lines still
+shown as added or removed, and the two sides are whitespace-equal, so a
+line that moves across an unchanged line stays a change (a loop wrapped in
+an `if` shows the `if`, its `}` and the `log` line that crossed the loop's
+closing brace; the rest of the body goes quiet). It can show a little more
+as changed than `git diff -w` would, never less. Clusters are cut within
+one of git's hunks only, so a line whose twin sits in another hunk, or is
+a context line, stays in a change cluster: its rows read as `~` but stay
+open, and progress counts it.
 
 ## Why are lines in a different order, or marked where GitHub shows none?
 

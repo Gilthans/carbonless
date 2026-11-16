@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { fileLevelCluster, parseU0Patch, splitPatch } from "./clusters.js";
+import type { LineCluster } from "./clusters.js";
+import {
+	fileLevelCluster,
+	parseU0Patch,
+	splitCluster,
+	splitPatch,
+} from "./clusters.js";
 import type { ChangedFile } from "./files.js";
 
 function file(partial: Partial<ChangedFile>): ChangedFile {
@@ -161,5 +167,50 @@ describe("splitPatch", () => {
 		expect(() => splitPatch(Buffer.from("junk\ndiff --git a/x b/x\n"))).toThrow(
 			/before its first file/,
 		);
+	});
+});
+
+describe("splitCluster (CAR-156)", () => {
+	const shape = (c: ReturnType<typeof splitCluster>[number]) => ({
+		ws: c.cluster.whitespaceOnly === true,
+		old: [c.cluster.oldStart, c.cluster.oldCount],
+		new: [c.cluster.newStart, c.cluster.newCount],
+		at: [c.removedAt, c.addedAt],
+	});
+
+	it("numbers each piece as git numbers a hunk: a side with no lines starts at the line it follows", () => {
+		const [hunk] = parseU0Patch(
+			"@@ -10,3 +10,3 @@\n-gone\n-  b1\n-  b2\n+b1\n+b2\n+new\n",
+		);
+		expect(splitCluster(hunk as LineCluster).map(shape)).toEqual([
+			{ ws: false, old: [10, 1], new: [9, 0], at: [0, 0] },
+			{ ws: true, old: [11, 2], new: [10, 2], at: [1, 0] },
+			{ ws: false, old: [12, 0], new: [12, 1], at: [3, 2] },
+		]);
+	});
+
+	it("keeps the end-of-file flags on the piece holding the last line", () => {
+		const [hunk] = parseU0Patch(
+			"@@ -1,2 +1,2 @@\n- a\n-b\n\\ No newline at end of file\n+a\n+B\n\\ No newline at end of file\n",
+		);
+		const pieces = splitCluster(hunk as LineCluster).map((p) => p.cluster);
+		expect(pieces).toMatchObject([
+			{ whitespaceOnly: true, removed: [" a"], added: ["a"] },
+			{ removed: ["b"], added: ["B"], noNewlineOld: true, noNewlineNew: true },
+		]);
+		expect(pieces[0]?.noNewlineOld).toBeUndefined();
+		expect(pieces[0]?.noNewlineNew).toBeUndefined();
+	});
+
+	it("leaves a hunk that doesn't split as it is, flagged when all whitespace", () => {
+		const [plain] = parseU0Patch("@@ -1 +1 @@\n-a\n+b\n");
+		expect(splitCluster(plain as LineCluster)).toEqual([
+			{ cluster: plain, removedAt: 0, addedAt: 0 },
+		]);
+		const [ws] = parseU0Patch("@@ -1 +1 @@\n-a\n+ a\n");
+		expect(splitCluster(ws as LineCluster)[0]?.cluster).toEqual({
+			...ws,
+			whitespaceOnly: true,
+		});
 	});
 });

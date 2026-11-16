@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ownerToken } from "./owner.mjs";
 import { queueSlots } from "./queue-config.mjs";
 import { queuedWorkers, requireQueue } from "./queue-guard.mjs";
 import { joinLine, line, startTime, ticketState } from "./queue-line.mjs";
@@ -244,9 +245,13 @@ describe.skipIf(!hasFlock)("queue", () => {
 	/**
 	 * queue.mjs running `script` in sh, with HOME (so config and locks) in
 	 * `home`. `as`: the name its flock attempts log under, and how often it
-	 * polls.
+	 * polls. `env`: on top of the rest.
 	 */
-	const queue = (script: string, as?: { name: string; pollMs: number }) => {
+	const queue = (
+		script: string,
+		as?: { name: string; pollMs: number },
+		env: NodeJS.ProcessEnv = {},
+	) => {
 		const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home };
 		if (as) {
 			childEnv.PATH = `${fakeFlock()}:${process.env.PATH}`;
@@ -257,6 +262,7 @@ describe.skipIf(!hasFlock)("queue", () => {
 		delete childEnv.CRB_QUEUE_HELD;
 		delete childEnv.CRB_QUEUE_SINCE;
 		delete childEnv.CRB_QUEUE_SLOTS;
+		Object.assign(childEnv, env);
 		const child = spawn(process.execPath, [QUEUE, "sh", "-c", script], {
 			env: childEnv,
 			cwd: home,
@@ -306,10 +312,10 @@ describe.skipIf(!hasFlock)("queue", () => {
 	it("a run nested in a held slot, or with no queue, needs no line and waits for none", {
 		timeout: 30_000,
 	}, async () => {
-		// queue.mjs on its own (as another tree's copy may be): no queue-line.mjs.
+		// queue.mjs without queue-line.mjs (as another tree's copy may be).
 		const alone = join(home, "alone");
 		mkdirSync(alone);
-		for (const f of ["queue.mjs", "queue-config.mjs"])
+		for (const f of ["queue.mjs", "queue-config.mjs", "owner.mjs"])
 			copyFileSync(join(import.meta.dirname, f), join(alone, f));
 		const run = (env: NodeJS.ProcessEnv) =>
 			spawnSync(process.execPath, [join(alone, "queue.mjs"), "true"], {
@@ -525,6 +531,82 @@ describe.skipIf(!hasFlock)("queue", () => {
 		expect(next.out()).toContain("unqueued");
 		holder.release();
 		expect(await exited(holder.child)).toBe(0);
+	});
+
+	/** A run holding its slot in sh, which writes its pid to `<name>.pid`. */
+	const holdWithPid = (name: string, env: NodeJS.ProcessEnv = {}) => {
+		const pidFile = join(home, `${name}.pid`);
+		const run = queue(
+			`echo $$ > ${pidFile}; while :; do sleep 0.05; done`,
+			undefined,
+			env,
+		);
+		return {
+			...run,
+			pid: async () => {
+				await until(
+					() =>
+						existsSync(pidFile) && readFileSync(pidFile, "utf8").endsWith("\n"),
+				);
+				return Number(readFileSync(pidFile, "utf8"));
+			},
+		};
+	};
+
+	it("a held run whose waiter is killed with SIGKILL stops its command and frees the slot", {
+		timeout: 30_000,
+	}, async () => {
+		const a = holdWithPid("a");
+		const sh = await a.pid();
+		a.child.kill("SIGKILL");
+		await exited(a.child);
+		await until(() => !alive(sh));
+		await until(() => free());
+	});
+
+	it("runs whose $CRB_OWNER is gone stop, the one holding and the one waiting", {
+		timeout: 30_000,
+	}, async () => {
+		const owner = spawn("sleep", ["60"]);
+		started.push(owner);
+		const env = { CRB_OWNER: ownerToken(owner.pid as number) };
+		const holder = holdWithPid("a", env);
+		const sh = await holder.pid();
+		// Polls slower than its owner watch (1 s): never takes the freed slot first.
+		const waiter = queue("true", undefined, {
+			...env,
+			CRB_QUEUE_POLL_MS: "5000",
+		});
+		await until(() => waiter.out().includes("queue: waiting for"));
+
+		owner.kill("SIGKILL");
+		expect(await exited(waiter.child)).toBe(143);
+		expect(await exited(holder.child)).toBe(143);
+		expect(alive(sh)).toBe(false);
+		expect(free()).toBe(true);
+		expect(tickets()).toEqual([]);
+	});
+
+	it("once $CRB_OWNER is gone, a member of the command's group that ignores SIGTERM gets SIGKILL", {
+		timeout: 30_000,
+	}, async () => {
+		const owner = spawn("sleep", ["60"]);
+		started.push(owner);
+		const pidFile = join(home, "stubborn.pid");
+		const run = queue(
+			`sh -c 'trap "" TERM; echo $$ > ${pidFile}; while :; do sleep 0.05; done' & wait`,
+			undefined,
+			{ CRB_OWNER: ownerToken(owner.pid as number) },
+		);
+		await until(
+			() => existsSync(pidFile) && readFileSync(pidFile, "utf8").endsWith("\n"),
+		);
+		const stubborn = Number(readFileSync(pidFile, "utf8"));
+
+		owner.kill("SIGKILL");
+		expect(await exited(run.child)).toBe(143);
+		await until(() => !alive(stubborn));
+		expect(free()).toBe(true);
 	});
 
 	it("a held command's own exit 200 doesn't read as a taken slot", {

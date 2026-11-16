@@ -2137,14 +2137,15 @@ describe("FileDiff", () => {
 		ignoreWhitespace.set(true);
 		// A second cluster keeps the file open once k1 is marked.
 		const other = cluster("k2", { newStart: 40, oldStart: 40 });
-		const reviewed = file([cluster("k1", { state: "reviewed" }), other]);
+		const ws = { whitespaceOnly: true as const };
+		const reviewed = file([cluster("k1", { state: "reviewed", ...ws }), other]);
 		const [first] = hunks.hunks;
 		if (!first) throw new Error("fixture has a hunk");
 		const lines = first.lines.map((l) =>
 			l.kind === "add" ? { ...l, text: "  old five" } : l,
 		);
 		const { posts, paths, user } = setup(
-			file([cluster("k1"), other]),
+			file([cluster("k1", ws), other]),
 			() => ({ status: 200, body: view(reviewed) }),
 			{ ...hunks, hunks: [{ ...first, lines }] },
 		);
@@ -2169,9 +2170,16 @@ describe("FileDiff", () => {
 		);
 		await waitFor(() => expect(box).toBeChecked());
 		expect(screen.getByTestId("ws-cluster")).toHaveAttribute("data-reviewed");
+		// Its mark is stored, but with the switch on the header counts k2 alone.
 		expect(
 			screen.getByRole("progressbar", { name: "File progress" }),
-		).toHaveTextContent("1 / 2 clusters");
+		).toHaveTextContent("0 / 1 cluster");
+		ignoreWhitespace.set(false);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("progressbar", { name: "File progress" }),
+			).toHaveTextContent("1 / 2 clusters"),
+		);
 	});
 });
 

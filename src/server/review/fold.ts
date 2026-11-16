@@ -1,4 +1,9 @@
-import { type LineRanges, subtract, union } from "../../shared/lineRanges.js";
+import {
+	contains,
+	type LineRanges,
+	subtract,
+	union,
+} from "../../shared/lineRanges.js";
 import type { ClusterState, SinceMark } from "../../shared/types.js";
 import type { CrbEvent, ShapeCode, ThreadPlacedEvent } from "./events.js";
 
@@ -63,8 +68,11 @@ export interface ProgressState {
  * `carried` entry sets the target's entry
  * only when, at that moment, its source cluster in `from` holds a human
  * state equal to it (CLAUDE.md principle 2: anything else leaves the
- * target unreviewed); a `thread-placed` replaces the thread's placement in
- * its patch set. Later events win. The result doesn't depend on the order
+ * target unreviewed); a `split-carried` entry fills a piece of a split
+ * hunk that holds nothing yet with the hunk's mark (whole, or the lines it
+ * names), only when the hunk's key holds that mark at that moment, a
+ * carried one staying carried; a `thread-placed` replaces the thread's
+ * placement in its patch set. Later events win. The result doesn't depend on the order
  * of `events` or on repeats.
  */
 export function foldProgress(events: CrbEvent[]): ProgressState {
@@ -198,6 +206,62 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 						...(origin.reason !== undefined ? { reason: origin.reason } : {}),
 						carried: { from: e.from, rule: e.rule },
 					});
+				}
+				break;
+			}
+			case "split-carried": {
+				// Parse enforces it; the fold holds it on its own too.
+				if (e.by !== "auto") break;
+				const states = statesByRevision.get(e.patchset);
+				if (!states) break;
+				// A piece that held anything before this event keeps it: a split
+				// carry only fills pieces nobody has marked.
+				const filled = new Set<string>();
+				for (const entry of e.states) {
+					if (states.has(entry.key) && !filled.has(entry.key)) continue;
+					const origin = states.get(entry.fromKey);
+					if (!origin) continue;
+					if (entry.from === undefined) {
+						// The hunk's whole mark, as it is (human, or carried).
+						if (origin.state !== entry.state) continue;
+						states.set(entry.key, {
+							state: origin.state,
+							...(origin.reason !== undefined ? { reason: origin.reason } : {}),
+							...(origin.carried ? { carried: origin.carried } : {}),
+						});
+						filled.add(entry.key);
+						continue;
+					}
+					// The hunk's line marks: only lines it has in that state.
+					if (origin.state !== "unreviewed") continue;
+					const marked =
+						entry.state === "reviewed" ? origin.lines : origin.crossed;
+					if (!marked || !contains(marked, entry.from)) continue;
+					if (entry.lines === undefined) {
+						states.set(entry.key, { state: entry.state });
+						filled.add(entry.key);
+						continue;
+					}
+					const prior = states.get(entry.key);
+					if (prior && prior.state !== "unreviewed") continue;
+					const reviewed = prior?.lines ?? [];
+					const crossed = prior?.crossed ?? [];
+					const next =
+						entry.state === "reviewed"
+							? {
+									lines: union(reviewed, entry.lines),
+									crossed: subtract(crossed, entry.lines),
+								}
+							: {
+									lines: subtract(reviewed, entry.lines),
+									crossed: union(crossed, entry.lines),
+								};
+					states.set(entry.key, {
+						state: "unreviewed",
+						...(next.lines.length > 0 ? { lines: next.lines } : {}),
+						...(next.crossed.length > 0 ? { crossed: next.crossed } : {}),
+					});
+					filled.add(entry.key);
 				}
 				break;
 			}

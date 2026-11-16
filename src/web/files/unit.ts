@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { size } from "../../shared/lineRanges";
+import { withoutWhitespaceOnly } from "../../shared/progress";
 import type { Counts, FileView, Progress } from "../../shared/types";
 
 /** The unit every count on the Files page is shown in. */
@@ -336,4 +337,36 @@ export function describeFolderProgress(
 		return `${p.counts.reviewed} / ${shown} ${unitWord(unit, shown)}`;
 	if (shown === 0) return left;
 	return `${p.counts.reviewed} / ${shown} ${unitWord(unit, shown)} · ${left}`;
+}
+
+/**
+ * A file as its row, header and meter count it: with "Ignore whitespace"
+ * on, without its whitespace-only clusters (withoutWhitespaceOnly); a
+ * file of nothing else as it is, its own marks shown (the page's bar
+ * leaves it out: countedProgress).
+ */
+export function countedFile(
+	file: FileView,
+	ignoreWhitespace: boolean,
+): FileView {
+	if (!ignoreWhitespace) return file;
+	const counted = withoutWhitespaceOnly(file);
+	return counted.clusters.length > 0 ? counted : file;
+}
+
+/**
+ * A folder's files as its row counts them: with "Ignore whitespace" on,
+ * each without its whitespace-only clusters, and a file of nothing else
+ * left out, as the page's bar leaves it out, unless every file is one
+ * (then they show as they are).
+ */
+export function countedFolder(
+	files: readonly FileView[],
+	ignoreWhitespace: boolean,
+): readonly FileView[] {
+	if (!ignoreWhitespace) return files;
+	const counted = files
+		.map(withoutWhitespaceOnly)
+		.filter((f, i) => f.clusters.length > 0 || files[i]?.clusters.length === 0);
+	return counted.length > 0 ? counted : files;
 }

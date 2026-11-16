@@ -17,6 +17,7 @@ import {
 	type OpenAgentThreadRequest,
 	startedBy,
 } from "../../shared/agent.js";
+import { inGitOrder } from "../../shared/diffHunk.js";
 import type { ThreadPlacement } from "../../shared/rereview/placement.js";
 import type {
 	CodeAnchor,
@@ -1829,9 +1830,11 @@ export async function anchorHunk(
 	};
 	const hunk = hunks.find((h) => h.lines.some(touches));
 	if (!hunk) return null;
-	const first = hunk.lines.findIndex(touches);
-	const last = hunk.lines.findLastIndex(touches);
-	const lines = hunk.lines.slice(
+	// GitHub's order: a cut hunk's clusters each list removed-then-added.
+	const ordered = inGitOrder(hunk.lines);
+	const first = ordered.findIndex(touches);
+	const last = ordered.findLastIndex(touches);
+	const lines = ordered.slice(
 		Math.max(0, first - HUNK_CONTEXT),
 		last + HUNK_CONTEXT + 1,
 	);

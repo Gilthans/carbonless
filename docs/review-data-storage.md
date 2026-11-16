@@ -238,6 +238,7 @@ Initial event types:
 | progress | `cluster-state` | snapshot id (`patchset`), cluster identity hash, file path, state (`unreviewed`, `reviewed`, `crossed-off`), optional reason for crossed off |
 | progress | `carried` | `from` and `to` (patch set numbers, `from < to`), `rule` (`exact` or `rename`), `states`: a list of `{ key, fromKey, state }`, one per cluster carried under that rule, `state` being `reviewed` or `crossed-off`; `fromKey` is written only when it differs from `key` (absent means equal: the reader fills it in) |
 | progress | `lines-state` | snapshot id (`patchset`), cluster identity hash, file path, `state` (`reviewed` or `crossed-off`), `lines`: line ranges of the cluster (see "Marks on part of a cluster") |
+| progress | `split-carried` | snapshot id (`patchset`), `states`: a list of `{ key, fromKey, state, from?, lines? }`, one per piece of a hunk cut at its whitespace-only runs (or two, one per state), `fromKey` the whole hunk's key before, `state` `reviewed` or `crossed-off`, `from` the hunk's line ranges it takes (for a hunk marked by lines), `lines` the piece's (only for part of it, as many as `from`); see "Split carries" |
 | progress | `since-lines-state` | snapshot id (`patchset`), `since` (an earlier patch set's number), file `path`, `reviewed` and `crossed`: each `{ old, new }` line ranges on the since view's sides; the whole set for that (since, path) |
 | progress | `thread-placed` | `thread` (the thread's id), `patchset` (number), `anchor` (`path`, `startSide`, `startLine`, `side`, `line`), `engine` (the tracer's version, a positive integer) |
 
@@ -260,6 +261,10 @@ a reader drops what breaks them:
 - `carried` must have `by: "auto"`; every entry's keys are cluster keys (64
   hex characters, a repeat's `:2` suffix allowed; `fromKey` absent reads as
   `key`) and its state `reviewed` or `crossed-off`, never `unreviewed`.
+- `split-carried` must have `by: "auto"`; every entry's `key` and `fromKey`
+  are cluster keys, its state `reviewed` or `crossed-off`; `from` and
+  `lines` parse as ranges, non-empty, and `lines` comes only with a `from`
+  of as many lines. One bad entry drops the event.
 - `thread-placed` must have `by: "human"` or `"ai"`, never `"auto"`.
 - `lines-state` and `since-lines-state` must have `by: "human"`; their
   ranges must parse (pairs of integers, `0 <= start < end`).
@@ -611,6 +616,78 @@ folded from the origins on read (`startedBy`), never stored.
   compaction, as for review refs. The 100 seen events add 100 commits' worth
   of git objects (loose size) but little packed.
 
+## Split carries
+
+Added 2026-11-15 (CAR-156, owner: "treating whitespace-only change as a
+separate cluster in all views sounds like a good idea regardless"; yes to
+carrying marks onto the split pieces). A snapshot's clusters used to be
+git's `-U0` hunks, one each. Now each hunk is cut at its whitespace-only
+runs (`splitHunk`, `src/shared/whitespace.ts`): a hunk that splits becomes
+several clusters, each keyed by the usual rule (its path, lines and the
+three new-side lines around it), so none of them has the key the whole hunk
+had. A hunk that doesn't split keeps its key. Each piece knows its whole
+hunk's old key and where its lines sit in it (`Cluster.split`).
+
+Reviews in progress hold marks on the old keys. When a patch set's snapshot
+is built (the session's open, an earlier patch set's view, a comparison
+reading it), the engine carries them onto the pieces
+(`ReviewService.carrySplits`, `splitCarries` in
+`src/server/review/splitCarry.ts`): one `split-carried` event (`by:
+"auto"`) in the reviewer's progress ref, for that patch set, any patch set,
+earlier read-only ones too, since it adds no mark the reviewer didn't
+make. Never in a view of the past (as of a cutoff) or on a pinned head:
+those dev modes don't write it, and their old marks read unreviewed. When
+two opens race, the one that loses the compare-and-swap reads again and
+writes nothing. For each piece that holds no state of its own whose hunk's key holds
+one (and is no cluster of the snapshot):
+
+- a whole mark (`reviewed`, or `crossed-off` with its reason) goes onto the
+  piece as it is, a carried one staying carried (so the next patch set's
+  carry walks back through it as it would through the hunk);
+- line marks (`lines-state`) go by line: the hunk's lines that are the
+  piece's (its removed lines at `removedAt` among the hunk's removed ones,
+  its added lines at `addedAt` among the hunk's added ones), as the piece's
+  whole mark when they cover it in one state, else as the piece's line
+  marks in each state, `from` naming the hunk's lines they come from.
+
+Written once: once a piece holds anything (the carry, or the reviewer's own
+mark), it is left alone, so every later read writes nothing. **The fold**
+(principle 2) applies an entry only when the piece holds nothing from
+before the event and, at that moment, the hunk's key holds that mark: a
+whole entry the same whole state, a lines entry line marks of that state
+holding every line of `from`. Anything else (a forged or stale entry, a
+hunk unticked first, a piece already marked) leaves the piece as it was. A
+reader that predates the event skips it (GitDB 8: fails closed) and keys
+clusters the old way, so it still reads the hunk's own mark, never more.
+Home never writes: it folds the carries in memory
+(`withSplitCarries`), as the review's next open writes them.
+
+**The cut is part of cluster identity.** Where `splitHunk` cuts decides
+which clusters exist and so their keys. A change to it, or to the matcher
+it shares with the view (`matchSides`: weights, tie-breaks, the fast path;
+`whitespaceKey`; the `SPLIT_CELLS` cap), moves cuts, and marks on pieces
+cut the old way stop matching: they fail safe (unreviewed), but the
+reviewer loses them, and the split carry only maps whole-hunk keys. Treat
+such a change as a key format change (carry it, or say so in the release);
+`snapshot.test.ts` pins the keys of a few fixed hunks. A hunk over
+`SPLIT_CELLS` (removed × added lines, 250,000) isn't cut unless both sides
+are the same keys line for line: the matching costs about 4 ms of CPU at
+the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on the server as the
+snapshot is built.
+
+**Mixed versions.** Once progress refs sync, an older crb that unticks the
+whole hunk (its key still a cluster there) leaves pieces already
+split-carried as they were: they still show a mark the reviewer made,
+though not their latest intent.
+
+**Departures.** It is a new event type, not a `carried` rule: `carried` is
+between two patch sets and its entries are never sources for the next
+carry (the fold's carried guard), while a split carry is a re-keying
+within one patch set whose result must act as the mark it came from. It is
+written on a read (opening a review), the one write that isn't a
+reviewer's action, because the alternative, translating old keys on every
+read forever, would spread the old cut through every reader of states.
+
 ## Reading
 
 1. `git rev-list <ref>`, then read the commit messages (one
@@ -625,7 +702,9 @@ folded from the origins on read (`startedBy`), never stored.
    lines, each taking its lines from the other), a human `since-lines-state`
    replaces the patch set's mark on since-only pieces of its (since, path),
    a `carried` entry sets the `to`
-   patch set's entry as `{ state, carried: { from, rule } }`, and a
+   patch set's entry as `{ state, carried: { from, rule } }`, a
+   `split-carried` entry fills a piece that holds nothing yet with its
+   hunk's mark ("Split carries"), and a
    `thread-placed` replaces the thread's placement in its patch set. For
    each `(patch set, cluster)`, the last event wins, so a human mark after a
    carry overrides it.
@@ -781,6 +860,18 @@ and 20 KiB for the second. A review's cost still depends only on its own
 size: one such commit per patch set start per reviewer, nothing per
 cluster.
 
+**A split carry**, measured 2026-11-15 in
+`src/server/review/reviews.test.ts` ("storage: a split carry is one small
+commit per patch set"): one commit holding one `split-carried` event, once
+per patch set per reviewer, only for reviews that had marks on hunks that
+now split. 600 entries (200 hunks reviewed whole, each cut in three), two
+random 64-hex keys and a state each: about 103 KB raw, 31 KB deflated. One
+entry for part of a piece (with `from` and `lines`): 587 bytes raw, 400
+deflated. The test asserts under 120 KiB raw and 60 KiB deflated for the
+first, 1 KiB raw for the second. Real reviews split few hunks (only hunks
+holding a whitespace-only run between changes), and a review started after
+the change never writes one.
+
 **Everyday git** (ms, median of 5) on a 3,000-commit, 2,000-file repo, with the
 review refs on the remote and the clone using the default refspec:
 
@@ -809,6 +900,17 @@ reviews.
   state, set later; an unknown `from` or `to`) leaves the target unreviewed;
   a human mark after a carry wins; `buildReviewView` applies PS1's states to
   PS1's snapshot and PS2's to PS2's.
+- Unit, split carries (`splitCarry.test.ts`, `fold.test.ts`,
+  `events.test.ts`): a whole mark, a crossed-off one with its reason, line
+  marks covering a piece whole or in part, in one state or two, a carried
+  hunk's mark staying carried, idempotence (nothing on a second read), a
+  stored key matching nothing old or new staying unmatched, a piece's own
+  mark never overridden, an entry before its hunk's mark or of another
+  state marking nothing, a split piece as the next patch set's carry
+  source; `carrySplits` writes once and onto a read-only patch set, and a
+  reader skipping the event sees the hunk's own mark
+  (`reviews.test.ts`); the session carries for the latest and an earlier
+  patch set (`session.test.ts`).
 - Git integration, with throwaway repos (`test/git-fixture.ts`): compare-and-swap
   retry; squash before push keeps every event, builds on the remote tip and
   pushes as a fast-forward, including when another machine pushed in between;

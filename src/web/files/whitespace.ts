@@ -1,5 +1,11 @@
 import { lineRuns } from "../../shared/pieces";
 import type { DiffLine } from "../../shared/types";
+import {
+	matchSides,
+	PAIR_CAP,
+	type Side,
+	whitespaceKey,
+} from "../../shared/whitespace";
 import { orderRun, type Partners } from "./pairOrder";
 import { hunkPairs, type LinePair } from "./wordBlocks";
 
@@ -8,36 +14,31 @@ import { hunkPairs, type LinePair } from "./wordBlocks";
  * added lines with whitespace-equal lines on the other side, so they read
  * as quiet rows. A view only: nothing here changes clusters, keys, counts
  * or review state, and every removed and added line of the hunk is in the
- * rows exactly once (whitespace.test.ts checks that for any input).
+ * rows exactly once (whitespace.test.ts checks that for any input). The
+ * server already cuts each git hunk's whitespace-only runs into clusters of
+ * their own (src/shared/whitespace.ts splitHunk); the matching here is over
+ * the whole display hunk, context included, so a line's twin may also be a
+ * context line or sit in another cluster (a one-sided `~` row).
  */
 
-/** ASCII whitespace, as git's `-w` ignores it. Unicode blanks are content. */
-const WHITESPACE = /[ \t\r\v\f]/g;
-
-export const stripWhitespace = (text: string): string =>
-	text.replace(WHITESPACE, "");
-
-/** Byte-identical after removing every ASCII whitespace character. */
-export const whitespaceEqual = (a: string, b: string): boolean =>
-	stripWhitespace(a) === stripWhitespace(b);
+export {
+	matchSides,
+	PAIR_CAP,
+	type Side,
+	stripWhitespace,
+	whitespaceEqual,
+} from "../../shared/whitespace";
 
 /**
- * What a line compares by: its text without whitespace, and whether git's
- * "No newline at end of file" follows it (`-w` doesn't ignore that: a
- * final newline lost or gained is a real change).
+ * What a line compares by (whitespaceKey): its text without whitespace,
+ * and whether git's "No newline at end of file" follows it.
  */
 const keyOf = (line: DiffLine): string =>
-	`${stripWhitespace(line.text)}${line.noNewline ? "\0" : ""}`;
+	whitespaceKey(line.text, line.noNewline === true);
 
 /** Two lines a pair may join: whitespace-equal, with the same final newline. */
 export const linesWhitespaceEqual = (del: DiffLine, add: DiffLine): boolean =>
 	keyOf(del) === keyOf(add);
-
-/**
- * A hunk (else each of its cluster runs) with more old-side or more
- * new-side lines than this isn't matched (the matching is O(n·m)).
- */
-export const PAIR_CAP = 2000;
 
 /**
  * A row of a cluster's run: a line as it is (a context line, or a change),
@@ -51,98 +52,12 @@ export type DiffRow =
 	| { kind: "ws"; del: DiffLine; add?: DiffLine }
 	| { kind: "ws"; del?: DiffLine; add: DiffLine };
 
-/** Every row is whitespace-only: the run changes nothing but whitespace. */
-export const whitespaceOnly = (rows: DiffRow[]): boolean =>
-	rows.length > 0 && rows.every((r) => r.kind === "ws");
-
 /** Splits a hunk into runs of context lines and runs of one cluster's lines. */
 export function runs(lines: DiffLine[]): { key?: string; lines: DiffLine[] }[] {
 	// A changed run without a key stays apart from context (pieces.ts).
 	return lineRuns(lines).map(({ key, lines }) =>
 		key === undefined ? { lines } : { key, lines },
 	);
-}
-
-/** One side of a line as the matching sees it. */
-export interface Side {
-	key: string;
-	context: boolean;
-}
-
-/**
- * The heaviest common subsequence of `a` and `b` under key equality, as
- * index pairs in order. A context side weighs P = n + m + 1 (more than
- * every change-to-change match together could), a change side nothing but
- * a floor of 1: context↔context = 2P, context side↔change = P,
- * change↔change = 1. Matching every context line to itself is always
- * possible, so any optimum matches every context side, to itself or to
- * changes: no unmatched line is ever a context side, which is what makes
- * the rows a sound `-w` edit script (a block moved across an unchanged
- * line is never "whitespace only").
- *
- * Fast path (`fast`, on but in its test): when both sides are the same
- * keys line for line, with context sides at the same places (a wholesale
- * re-indent), the identity is the optimum (each context side matched to
- * itself, the most changes matched) and the DP's traceback takes exactly
- * that diagonal: O(n), not O(n·m). whitespace.test.ts checks it gives what
- * the DP gives.
- */
-export function matchSides(
-	a: Side[],
-	b: Side[],
-	fast = true,
-): [number, number][] {
-	const n = a.length;
-	const m = b.length;
-	if (
-		fast &&
-		n === m &&
-		a.every(
-			(s, i) =>
-				s.key === (b[i] as Side).key && s.context === (b[i] as Side).context,
-		)
-	)
-		return a.map((_, i) => [i, i]);
-	const w = m + 1;
-	const P = n + m + 1;
-	const weight = (i: number, j: number) =>
-		((a[i] as Side).context ? P : 0) + ((b[j] as Side).context ? P : 0) || 1;
-	// best[i * w + j]: the best weight over a[i..] and b[j..]; up to
-	// 2P × PAIR_CAP ≈ 1.6e7, so 32 bits (16 MB at the cap, once per hunk).
-	const best = new Uint32Array((n + 1) * w);
-	for (let i = n - 1; i >= 0; i--) {
-		for (let j = m - 1; j >= 0; j--) {
-			const skip = Math.max(
-				best[(i + 1) * w + j] as number,
-				best[i * w + j + 1] as number,
-			);
-			const take =
-				(a[i] as Side).key === (b[j] as Side).key
-					? weight(i, j) + (best[(i + 1) * w + j + 1] as number)
-					: 0;
-			best[i * w + j] = Math.max(skip, take);
-		}
-	}
-	const out: [number, number][] = [];
-	let i = 0;
-	let j = 0;
-	while (i < n && j < m) {
-		if (
-			(a[i] as Side).key === (b[j] as Side).key &&
-			best[i * w + j] === weight(i, j) + (best[(i + 1) * w + j + 1] as number)
-		) {
-			out.push([i, j]);
-			i++;
-			j++;
-		} else if (
-			(best[(i + 1) * w + j] as number) >= (best[i * w + j + 1] as number)
-		) {
-			i++;
-		} else {
-			j++;
-		}
-	}
-	return out;
 }
 
 /**

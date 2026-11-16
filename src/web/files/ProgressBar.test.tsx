@@ -38,6 +38,63 @@ describe("ProgressBar", () => {
 		expect(bar).toHaveTextContent("2 / 9 files reviewed");
 	});
 
+	it("says, with a `~`, how many whitespace-only clusters Ignore whitespace leaves out, only while any are (CAR-156)", () => {
+		const { rerender } = render(
+			<ProgressBar
+				progress={sample}
+				unit="lines"
+				onUnitChange={() => {}}
+				whitespaceLeftOut={3}
+			/>,
+		);
+		const note = screen.getByRole("img", {
+			name: "3 whitespace-only clusters not counted",
+		});
+		expect(note).toHaveTextContent("~");
+		rerender(
+			<ProgressBar
+				progress={sample}
+				unit="lines"
+				onUnitChange={() => {}}
+				whitespaceLeftOut={1}
+			/>,
+		);
+		expect(
+			screen.getByRole("img", {
+				name: "1 whitespace-only cluster not counted",
+			}),
+		).toBeInTheDocument();
+		// Nothing else to count: "Nothing to read", the `~` beside it.
+		rerender(
+			<ProgressBar
+				progress={sample}
+				unit="lines"
+				onUnitChange={() => {}}
+				instead="empty"
+				whitespaceLeftOut={2}
+			/>,
+		);
+		expect(
+			screen.getByRole("progressbar", { name: "Review progress" }),
+		).toHaveTextContent("Nothing to read");
+		expect(
+			screen.getByRole("img", {
+				name: "2 whitespace-only clusters not counted",
+			}),
+		).toBeInTheDocument();
+		for (const none of [0, undefined]) {
+			rerender(
+				<ProgressBar
+					progress={sample}
+					unit="lines"
+					onUnitChange={() => {}}
+					whitespaceLeftOut={none}
+				/>,
+			);
+			expect(screen.queryByTestId("ws-left-out")).toBeNull();
+		}
+	});
+
 	it("while its counts wait on the engine, spins where the numbers go: never 0 or a percent (principle 8)", () => {
 		const zero: Progress = {
 			clusters: { total: 0, reviewed: 0, crossedOff: 0 },

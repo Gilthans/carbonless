@@ -528,23 +528,55 @@ if all clusters are crossed off. Otherwise it should count as reviewed").
 A file with any unreviewed cluster is neither. The rule is one function
 (`fileFlags`, `src/shared/progress.ts`), used by the server and the page.
 
-## "Ignore whitespace" is a view
+## Whitespace-only runs are clusters; "Ignore whitespace" leaves them out of progress
 
-Settings' "Ignore whitespace" (`src/web/files/whitespace.ts`, git's `-w`:
-lines equal once every ASCII whitespace character is removed) only changes
-how the diff reads. It never changes clusters, their keys, the +/− counts,
-progress, or what is unreviewed: the hunks the server sends are the ones
-shown, and a whitespace-only pair is still a change, drawn as one quiet
-row. A cluster that is all whitespace-only collapses to one row, but keeps
-its checkbox and cross-off and still has to be reviewed, and it stays open
-while a thread or a thread link's landing sits on one of its lines. The
-matching runs over the whole hunk (a line's twin may be a context line or
-sit in another cluster: a one-sided `~` row). What it guarantees, pure and
-checked for any input (principle 2): every line of the hunk is in the rows
-exactly once, and dropping the lines shown as added or removed from the two
-sides leaves them whitespace-equal, so a block moved across an unchanged
-line, or a line that crossed one, is never shown as whitespace-only. It may
-show more as changed than `git diff -w` does, never less.
+A whitespace-only change is its own cluster in every view (CAR-156, owner
+2026-11-15: "treating whitespace-only change as a separate cluster in all
+views sounds like a good idea regardless. Clusters are too big
+currently"). The server cuts each git hunk at its whitespace-only runs
+(`splitHunk`, `src/shared/whitespace.ts`, git's `-w`: lines equal once
+every ASCII whitespace character is removed): the longest order-preserving
+matching of the hunk's removed lines to its added ones, each maximal run
+of pairs a whitespace-only cluster (`Cluster.whitespaceOnly`), the lines
+between runs change clusters. Two changed lines, two re-indented ones and
+two more changed lines are three clusters, with the switch on or off. A
+single whitespace-only line between two changes counts; a pure addition or
+deletion never does, an added blank line included (as `git diff -w` shows
+it); a blank line paired with one of only whitespace does. A line moved
+across others stays a change. Only within a git hunk: a re-indented block
+whose two sides git puts in two hunks stays two changes. The pieces cover
+every changed line of the hunk exactly once (checked for any input,
+principle 2). Marks made on a hunk before it split carry onto its pieces
+(`docs/review-data-storage.md`, "Split carries").
+
+Settings' "Ignore whitespace" is the reviewer's own choice of what progress
+counts. With it on, whitespace-only clusters are left out of every count
+on the Files page (the bar, the tree's file and folder rows, each file's
+header and its finished state; a file of nothing else counts nowhere on
+the bar), whatever their marks. They still show, collapsed to one quiet
+`~` row, and can still be ticked and crossed off: the mark is stored as
+usual and counts again when the switch is off, which counts everything
+exactly as before. While any is left out, the bar shows a `~` whose name
+and tooltip say how many ("3 whitespace-only clusters not counted"). This
+is no AI decision: nothing is marked reviewed, and turning the switch off
+shows what is still unreviewed. The Overview's progress counts the same
+way, with the same `~`; the since view, Home and the verdict count every
+cluster.
+
+The view still pairs whitespace-equal lines as quiet `~` rows
+(`src/web/files/whitespace.ts`), over the whole display hunk, context
+included: a line's twin may be a context line or sit in another cluster
+(a one-sided `~` row). It never changes clusters, their keys or the +/−
+counts. A whitespace-only cluster (the server's flag) collapses to one
+row, keeps its checkbox and cross-off, and stays open while a thread or a
+thread link's landing sits on one of its lines; a change cluster whose
+lines' twins sit across a context line or in another hunk shows its `~`
+rows open, since progress counts it. What the rows guarantee, pure and checked for any
+input (principle 2): every line of the hunk is in the rows exactly once,
+and dropping the lines shown as added or removed from the two sides leaves
+them whitespace-equal, so a block moved across an unchanged line, or a line
+that crossed one, is never shown as whitespace-only. It may show more as
+changed than `git diff -w` does, never less.
 
 ## Home never hides a PR on its own
 

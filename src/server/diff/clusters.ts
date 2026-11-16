@@ -1,4 +1,5 @@
 import type { Cluster } from "../../shared/types.js";
+import { splitHunk } from "../../shared/whitespace.js";
 import { GitError, runGitBuffer } from "../git.js";
 import { type ChangedFile, DIFF_ARGS } from "./files.js";
 import { chooseEncoding, type TextEncoding } from "./text.js";
@@ -60,6 +61,72 @@ export function parseU0Patch(patch: string): LineCluster[] {
 		}
 	}
 	return clusters;
+}
+
+/** One piece of a split hunk, and where its lines sit in the hunk. */
+export interface HunkPart<C> {
+	cluster: C;
+	removedAt: number;
+	addedAt: number;
+}
+
+/**
+ * A `-U0` hunk's cluster cut at its whitespace-only runs (splitHunk): each
+ * run its own cluster flagged `whitespaceOnly`, the changes between them
+ * clusters of their own, numbered as git would number them as hunks (a
+ * side with no lines starts at the line it follows). A hunk that doesn't
+ * split comes back as itself, flagged when it is all whitespace. Never
+ * for a file-level cluster.
+ */
+export function splitCluster<C extends LineCluster>(
+	c: C,
+): HunkPart<C & { whitespaceOnly?: true }>[] {
+	const pieces = splitHunk(
+		c.removed,
+		c.added,
+		c.noNewlineOld === true,
+		c.noNewlineNew === true,
+	);
+	const flag = (ws: boolean) => (ws ? { whitespaceOnly: true as const } : {});
+	if (pieces.length === 1) {
+		const { whitespaceOnly: _, ...rest } = c as C & { whitespaceOnly?: true };
+		return [
+			{
+				cluster: { ...rest, ...flag(pieces[0]?.whitespaceOnly === true) } as C,
+				removedAt: 0,
+				addedAt: 0,
+			},
+		];
+	}
+	// Both sides have lines when a hunk splits: a run pairs one of each.
+	return pieces.map((p) => {
+		const oldCount = p.removedTo - p.removedFrom;
+		const newCount = p.addedTo - p.addedFrom;
+		const {
+			noNewlineOld: _o,
+			noNewlineNew: _n,
+			whitespaceOnly: _w,
+			...rest
+		} = c as C & { whitespaceOnly?: true };
+		const cluster = {
+			...rest,
+			oldStart: c.oldStart + p.removedFrom - (oldCount === 0 ? 1 : 0),
+			oldCount,
+			newStart: c.newStart + p.addedFrom - (newCount === 0 ? 1 : 0),
+			newCount,
+			removed: c.removed.slice(p.removedFrom, p.removedTo),
+			added: c.added.slice(p.addedFrom, p.addedTo),
+			lines: oldCount + newCount,
+			...(c.noNewlineOld && oldCount > 0 && p.removedTo === c.removed.length
+				? { noNewlineOld: true }
+				: {}),
+			...(c.noNewlineNew && newCount > 0 && p.addedTo === c.added.length
+				? { noNewlineNew: true }
+				: {}),
+			...flag(p.whitespaceOnly),
+		} as C;
+		return { cluster, removedAt: p.removedFrom, addedAt: p.addedFrom };
+	});
 }
 
 const short = (oid: string) => oid.slice(0, 7);

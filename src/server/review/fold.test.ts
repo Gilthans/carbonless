@@ -4,6 +4,7 @@ import {
 	type CarriedEntry,
 	type CrbEvent,
 	newEvent,
+	type SplitEntry,
 	type ThreadAnchorRef,
 } from "./events.js";
 import { foldProgress, type StateEntry } from "./fold.js";
@@ -69,6 +70,19 @@ const carried = (
 				states,
 			},
 			"auto",
+		),
+	);
+
+const splitCarried = (
+	states: SplitEntry[],
+	opts: { patchset?: string; by?: "human" | "ai" | "auto" } = {},
+) =>
+	at(
+		newEvent(
+			"split-carried",
+			"dan",
+			{ patchset: opts.patchset ?? REV, states },
+			opts.by ?? "auto",
 		),
 	);
 
@@ -617,6 +631,136 @@ describe("foldProgress", () => {
 				carried([entry(K1, K1, "reviewed")]),
 			];
 			expect(statesOf(evs, OTHER_REV)).toEqual({});
+		});
+	});
+
+	describe("split carries (CAR-156)", () => {
+		// K1: a whole hunk's key before it split; K2, K3: its pieces.
+		it("put a whole mark on the pieces, as human as the hunk's (a carried one stays carried), reason too", () => {
+			const evs = [
+				started(),
+				started(OTHER_REV, 2, 1),
+				state(K1, "crossed-off", { reason: "generated" }),
+				state(K4, "reviewed"),
+				carried([entry(K4, K4, "reviewed")]),
+				splitCarried([
+					{ key: K2, fromKey: K1, state: "crossed-off" },
+					{ key: K3, fromKey: K1, state: "crossed-off" },
+				]),
+				splitCarried([{ key: K2, fromKey: K4, state: "reviewed" }], {
+					patchset: OTHER_REV,
+				}),
+			];
+			expect(statesOf(shuffle(evs), REV)).toMatchObject({
+				[K2]: { state: "crossed-off", reason: "generated" },
+				[K3]: { state: "crossed-off", reason: "generated" },
+			});
+			expect(statesOf(evs, REV)[K2]?.carried).toBeUndefined();
+			expect(statesOf(evs, OTHER_REV)[K2]).toEqual({
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			});
+		});
+
+		it("map line marks onto a piece, whole when they cover it, by lines when partly", () => {
+			const evs = [
+				started(),
+				linesReviewed(K1, [[0, 4]]),
+				linesCrossed(K1, [[6, 8]]),
+				splitCarried([
+					{ key: K2, fromKey: K1, state: "reviewed", from: [[0, 2]] },
+					{
+						key: K3,
+						fromKey: K1,
+						state: "reviewed",
+						from: [[2, 4]],
+						lines: [[0, 2]],
+					},
+					{
+						key: K3,
+						fromKey: K1,
+						state: "crossed-off",
+						from: [[6, 7]],
+						lines: [[3, 4]],
+					},
+				]),
+			];
+			expect(statesOf(evs, REV)).toMatchObject({
+				[K2]: { state: "reviewed" },
+				[K3]: { state: "unreviewed", lines: [[0, 2]], crossed: [[3, 4]] },
+			});
+		});
+
+		it("never mark more than the hunk had: a stale or forged entry leaves the piece unreviewed", () => {
+			const evs = [
+				started(),
+				state(K1, "reviewed"),
+				linesReviewed(K4, [[0, 2]]),
+				splitCarried([
+					// The hunk is reviewed, not crossed off.
+					{ key: K2, fromKey: K1, state: "crossed-off" },
+					// K4's line 3 was never marked.
+					{ key: K3, fromKey: K4, state: "reviewed", from: [[0, 3]] },
+				]),
+				// Not the engine's.
+				splitCarried(
+					[{ key: "5".repeat(64), fromKey: K1, state: "reviewed" }],
+					{
+						by: "human",
+					},
+				),
+				// No such patch set.
+				splitCarried(
+					[{ key: "6".repeat(64), fromKey: K1, state: "reviewed" }],
+					{ patchset: THIRD_REV },
+				),
+			];
+			const states = statesOf(evs, REV);
+			expect(states[K2]).toBeUndefined();
+			expect(states[K3]).toBeUndefined();
+			expect(states["5".repeat(64)]).toBeUndefined();
+			expect(statesOf(evs, THIRD_REV)).toEqual({});
+		});
+
+		it("never override what a piece already holds, and lose to a later human mark", () => {
+			const evs = [
+				started(),
+				state(K1, "reviewed"),
+				state(K2, "unreviewed"),
+				splitCarried([
+					{ key: K2, fromKey: K1, state: "reviewed" },
+					{ key: K3, fromKey: K1, state: "reviewed" },
+				]),
+				splitCarried([{ key: K3, fromKey: K1, state: "reviewed" }]),
+				state(K3, "unreviewed"),
+			];
+			expect(statesOf(evs, REV)).toMatchObject({
+				[K2]: { state: "unreviewed" },
+				[K3]: { state: "unreviewed" },
+			});
+		});
+
+		it("need the hunk's mark at the time: an entry before it marks nothing", () => {
+			const evs = [
+				started(),
+				splitCarried([{ key: K2, fromKey: K1, state: "reviewed" }]),
+				state(K1, "reviewed"),
+			];
+			expect(statesOf(evs, REV)[K2]).toBeUndefined();
+		});
+
+		it("a split-carried piece is a source for the next patch set's carry", () => {
+			const evs = [
+				started(),
+				state(K1, "reviewed"),
+				splitCarried([{ key: K2, fromKey: K1, state: "reviewed" }]),
+				started(OTHER_REV, 2, 1),
+				carried([entry(K2, K2, "reviewed")]),
+			];
+			expect(statesOf(evs, OTHER_REV)[K2]).toEqual({
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			});
 		});
 	});
 

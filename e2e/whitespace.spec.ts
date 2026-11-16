@@ -25,10 +25,15 @@ const mixed = Array.from({ length: 10 }, (_, i) => `mixed ${i + 1}`);
 const text = (lines: string[]) => `${lines.join("\n")}\n`;
 
 /**
- * Ten clusters: src/indent.ts re-indented wholesale (1), src/mixed.ts with
- * lines 3–6 re-indented and line 4 really changed (1), src/crlf.txt from
- * CRLF to LF (1), src/reindent.ts a re-indent git splits over context lines
- * (5), src/wrap.ts a loop wrapped in an `if` (2).
+ * Sixteen clusters, each whitespace-only run its own (CAR-156):
+ * src/indent.ts re-indented wholesale (1, whitespace only), src/mixed.ts
+ * with lines 3–6 re-indented and line 4 really changed (3: whitespace only,
+ * the change, whitespace only), src/crlf.txt from CRLF to LF (1, whitespace
+ * only), src/reindent.ts a re-indent git splits over context lines (7: 5
+ * whitespace only, 2 whose lines' twins sit across a context line),
+ * src/wrap.ts a loop wrapped in an `if` (4: the body whitespace only, the
+ * `if`, its `}` and the `log` line that crossed one changes). Six count
+ * with Ignore whitespace on.
  */
 const fixture: PrOptions = {
 	base: {
@@ -93,7 +98,7 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const bar = progress(page);
-	await expect(bar).toContainText("0 / 10 clusters");
+	await expect(bar).toContainText("0 / 16 clusters");
 
 	// Off: plain add/del rows, as always.
 	let section = await expand(page, "src/indent.ts");
@@ -147,7 +152,15 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await expect(section.getByTestId("diff-line")).toHaveCount(0);
 	expect(await overflow(page)).toBeLessThanOrEqual(0);
 
-	// Reviewed from the collapsed row: progress moves by one cluster.
+	// With the switch on, whitespace-only clusters aren't counted: the
+	// bar says how many it leaves out.
+	await expect(bar).toContainText("0 / 6 clusters reviewed");
+	await expect(
+		page.getByRole("img", {
+			name: "10 whitespace-only clusters not counted",
+		}),
+	).toBeVisible();
+	// Reviewed from the collapsed row: the mark is stored, not counted.
 	const box = collapsed.getByRole("checkbox", {
 		name: "Mark cluster reviewed",
 	});
@@ -158,20 +171,20 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(box).toBeChecked();
 	await expect(collapsed).toHaveAttribute("data-reviewed", "true");
-	await expect(bar).toContainText("1 / 10 clusters reviewed");
+	await expect(bar).toContainText("0 / 6 clusters reviewed");
 
-	// A mixed cluster keeps its real change as add/del rows among the
-	// whitespace-only ones.
+	// Lines 3-6 re-indented with line 4 changed: three clusters, the real
+	// change as add/del rows between two collapsed whitespace-only ones.
 	section = await expand(page, "src/mixed.ts");
-	await expect(section.getByTestId("ws-cluster")).toHaveCount(0);
-	await expect(rows(section, "ws")).toHaveCount(3);
+	await expect(section.getByTestId("ws-cluster")).toHaveCount(2);
+	await expect(rows(section, "ws")).toHaveCount(0);
 	await expect(rows(section, "del")).toHaveCount(1);
 	await expect(rows(section, "del")).toContainText("mixed 4");
 	await expect(rows(section, "add")).toHaveCount(1);
 	await expect(rows(section, "add")).toContainText("mixed 4 changed");
 	await expect(
-		section.getByRole("checkbox", { name: "Mark cluster reviewed" }),
-	).toHaveCount(1);
+		section.getByRole("checkbox", { name: /cluster reviewed$/ }),
+	).toHaveCount(3);
 	await expect(section.getByTestId("change-count")).toContainText("+4");
 	await expect(section.getByTestId("change-count")).toContainText("−4");
 	expect(await overflow(page)).toBeLessThanOrEqual(0);
@@ -183,10 +196,13 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 		"Whitespace only · 6 lines",
 	);
 
-	// A re-indent git split over context lines (five clusters): nothing
-	// but whitespace, as `git diff -w` shows.
+	// A re-indent git split over context lines: nothing but whitespace, as
+	// `git diff -w` shows. Five clusters are whitespace-only runs; two hold
+	// lines whose twins sit across a context line: their `~` rows stay
+	// open, as they still count.
 	section = await expand(page, "src/reindent.ts");
 	await expect(section.getByTestId("ws-cluster")).toHaveCount(5);
+	await expect(rows(section, "ws")).toHaveCount(4);
 	await expect(rows(section, "add")).toHaveCount(0);
 	await expect(rows(section, "del")).toHaveCount(0);
 	await expect(section.getByTestId("change-count")).toContainText("+15");
@@ -204,9 +220,12 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await expect(rows(section, "del")).toContainText(
 		(WRAP_REMOVED[0] as string).trim(),
 	);
-	await expect(rows(section, "ws")).toHaveCount(6);
-	await expect(section.locator('[data-ws="pair"]')).toHaveCount(6);
-	await expect(section.getByTestId("ws-cluster")).toHaveCount(0);
+	// The body is a whitespace-only cluster of its own: one collapsed row.
+	await expect(section.getByTestId("ws-cluster")).toHaveCount(1);
+	await expect(section.getByTestId("ws-cluster")).toContainText(
+		"Whitespace only · 12 lines",
+	);
+	await expect(rows(section, "ws")).toHaveCount(0);
 
 	// Off again: the mixed file shows every line as it is.
 	await ignoreWhitespace(page, false);
@@ -214,7 +233,8 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await expect(rows(section, "del")).toHaveCount(4);
 	await expect(rows(section, "add")).toHaveCount(4);
 	await expect(rows(section, "ws")).toHaveCount(0);
-	await expect(bar).toContainText("1 / 10 clusters reviewed");
+	await expect(bar).toContainText("1 / 16 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
 });
 
 test("the Ignore whitespace switch keeps the row being read where it was", async ({
@@ -231,28 +251,25 @@ test("the Ignore whitespace switch keeps the row being read where it was", async
 	// keep it there once the rows above it change.
 	await page.addStyleTag({ content: "main { padding-bottom: 200vh; }" });
 
-	// The mixed cluster: reading the added `mixed 6`, three rows up once
-	// the whitespace-only lines pair up (it becomes the ~ row of line 6,
-	// a new row the browser's own scroll anchoring loses track of).
+	// The real change between two re-indents: reading its added
+	// `mixed 4 changed`, the whitespace-only cluster above it collapses to
+	// one row once the switch is on, and back.
 	let section = await expand(page, "src/mixed.ts");
-	const added = section.locator('[data-testid="diff-line"][data-new-no="6"]');
-	await expect(added).toHaveAttribute("data-kind", "add");
+	const added = section.locator(
+		'[data-testid="diff-line"][data-kind="add"][data-new-no="4"]',
+	);
+	await expect(added).toBeVisible();
 	await underStack(added);
 	const header = await section.locator("header").boundingBox();
 	const stack = (header?.y ?? 0) + (header?.height ?? 0);
 	const before = await rowTop(added);
 	expect(Math.abs(before - stack)).toBeLessThanOrEqual(3);
 	await ignoreWhitespace(page, true);
-	await expect(added).toHaveAttribute("data-kind", "ws");
+	await expect(section.getByTestId("ws-cluster")).toHaveCount(2);
 	expect(Math.abs((await rowTop(added)) - before)).toBeLessThan(2);
-	// And back: the ~ row of line 6 is found again as the removed line
-	// (the old number first), where the ~ row was.
 	await ignoreWhitespace(page, false);
-	const removed = section.locator(
-		'[data-testid="diff-line"][data-old-no="6"]:not([data-new-no])',
-	);
-	await expect(removed).toHaveAttribute("data-kind", "del");
-	expect(Math.abs((await rowTop(removed)) - before)).toBeLessThan(2);
+	await expect(section.getByTestId("ws-cluster")).toHaveCount(0);
+	expect(Math.abs((await rowTop(added)) - before)).toBeLessThan(2);
 
 	// A context row between clusters that collapse: put too.
 	section = await expand(page, "src/reindent.ts");
@@ -291,6 +308,11 @@ test("an expanded whitespace-only cluster's controls float below the file header
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	await ignoreWhitespace(page, true);
+	// Nothing but a whitespace-only cluster: nothing the switch counts.
+	await expect(progress(page)).toContainText("Nothing to read");
+	await expect(
+		page.getByRole("img", { name: "1 whitespace-only cluster not counted" }),
+	).toBeVisible();
 	const section = await expand(page, "src/long.ts");
 	const collapsed = section.getByTestId("ws-cluster");
 	await collapsed
@@ -315,8 +337,10 @@ test("an expanded whitespace-only cluster's controls float below the file header
 	if (isMobile) expect(target?.height).toBeGreaterThanOrEqual(40);
 	// Still operable there.
 	await checkbox.click();
-	// The file's one cluster: marked, the file is finished and closes.
+	// The file's one cluster: marked, the file is finished and closes;
+	// the mark counts once the switch is off.
 	await expect(checkbox).toHaveCount(0);
+	await ignoreWhitespace(page, false);
 	await expect(progress(page)).toContainText("1 / 1 cluster reviewed");
 	expect(await overflow(page)).toBeLessThanOrEqual(0);
 });
@@ -399,18 +423,29 @@ test("with Ignore whitespace on, a selection from a ~ row through the deleted ro
 	await openFiles(page, s.url);
 	await ignoreWhitespace(page, true);
 	const section = await expand(page, "src/mixed.ts");
+	// Line 3's re-indent is a whitespace-only cluster of its own: open it.
+	await section
+		.getByRole("button", { name: "Whitespace only · 2 lines" })
+		.click();
 	// The pair of line 3 shows ahead of the deleted `mixed 4`, which GitHub
-	// lists first: selected top down, the range is old 4 → new 3 to GitHub.
+	// lists first (its hunk's removed lines, then its added ones): selected
+	// top down, the range is old 4 → new 3 to GitHub.
 	const pair = section.locator('[data-testid="diff-line"][data-new-no="3"]');
 	await expect(pair).toHaveAttribute("data-kind", "ws");
 	const deleted = section.locator(
 		'[data-testid="diff-line"][data-kind="del"][data-old-no="4"]',
 	);
 	await expect(deleted).toBeVisible();
+	// The next diff row down, in the next cluster's rows.
 	expect(
-		await pair.evaluate((row) =>
-			row.nextElementSibling?.getAttribute("data-kind"),
-		),
+		await pair.evaluate((row) => {
+			const all = [
+				...document.querySelectorAll(
+					'[data-path="src/mixed.ts"] tr[data-testid="diff-line"]',
+				),
+			];
+			return all[all.indexOf(row) + 1]?.getAttribute("data-kind");
+		}),
 	).toBe("del");
 	await page.evaluate(() => {
 		const code = (sel: string) =>

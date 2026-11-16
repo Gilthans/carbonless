@@ -55,3 +55,38 @@ export function reviewProgress(files: FileView[]): Progress {
 function counts(): Counts {
 	return { total: 0, reviewed: 0, crossedOff: 0 };
 }
+
+/**
+ * With "Ignore whitespace" on, the file as progress counts it: its
+ * whitespace-only clusters (Cluster.whitespaceOnly) left out, whatever
+ * their marks, and its flags from the rest. The same object when it has
+ * none; no clusters at all when every one is whitespace-only. A view of
+ * the reviewer's choosing (the switch, CAR-156): the clusters stay in the
+ * review, shown and markable, and count again with the switch off.
+ */
+export function withoutWhitespaceOnly(file: FileView): FileView {
+	if (!file.clusters.some((c) => c.whitespaceOnly)) return file;
+	const clusters = file.clusters.filter((c) => !c.whitespaceOnly);
+	return { ...file, clusters, ...fileFlags(clusters) };
+}
+
+/**
+ * The review's progress with "Ignore whitespace" on: every file without
+ * its whitespace-only clusters (a file of nothing else counts nowhere,
+ * not even in files), and how many clusters that left out.
+ */
+export function countedProgress(files: FileView[]): {
+	progress: Progress;
+	leftOut: number;
+} {
+	let leftOut = 0;
+	const counted: FileView[] = [];
+	for (const file of files) {
+		const shown = withoutWhitespaceOnly(file);
+		leftOut += file.clusters.length - shown.clusters.length;
+		if (shown.clusters.length > 0 || file.clusters.length === 0) {
+			counted.push(shown);
+		}
+	}
+	return { progress: reviewProgress(counted), leftOut };
+}

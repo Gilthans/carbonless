@@ -1,5 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { splitCluster } from "../../server/diff/clusters";
 import { clusterKeys } from "../../server/diff/identity";
 import { createLineMapper, IDENTITY, type MapHunk } from "../tracer/index";
 import type { Cluster, ClusterState } from "../types";
@@ -168,6 +169,60 @@ describe("carryClusters", () => {
 		expect(r.carried).toEqual([
 			{ key: "k2b", fromKey: "k2", from: 1, rule: "exact", state: "reviewed" },
 		]);
+	});
+
+	it("pieces of a hunk cut at whitespace-only runs carry one by one, adjacent and one-sided ones too (CAR-156)", () => {
+		// Lines 10-13: a line deleted, two re-indented, a line added.
+		const pieces = (key: string, shift: number) =>
+			splitCluster({
+				oldStart: 10 + shift,
+				oldCount: 3,
+				newStart: 10 + shift,
+				newCount: 3,
+				removed: ["gone", "  b1", "  b2"],
+				added: ["b1", "b2", "new"],
+				lines: 6,
+			}).map(({ cluster: c }, i) => ({
+				...c,
+				key: `${key}${i}`,
+				kind: "lines" as const,
+			}));
+		const before = pieces("p", 0);
+		expect(
+			before.map((c) => [c.whitespaceOnly === true, c.oldCount, c.newCount]),
+		).toEqual([
+			[false, 1, 0],
+			[true, 2, 2],
+			[false, 0, 1],
+		]);
+		// The base gained 5 lines at the top; the head with it.
+		const down = mapper({ oldStart: 0, oldCount: 0, newStart: 1, newCount: 5 });
+		const r = carryClusters(
+			input(
+				[
+					ps(1, [
+						source("a.txt", before, {
+							p0: "reviewed",
+							p1: "crossed-off",
+							p2: "reviewed",
+						}),
+					]),
+				],
+				[target("a.txt", pieces("q", 5), { bd: down, ac: down })],
+			),
+		);
+		expect(r.carried).toEqual([
+			{ key: "q0", fromKey: "p0", from: 1, rule: "exact", state: "reviewed" },
+			{
+				key: "q1",
+				fromKey: "p1",
+				from: 1,
+				rule: "exact",
+				state: "crossed-off",
+			},
+			{ key: "q2", fromKey: "p2", from: 1, rule: "exact", state: "reviewed" },
+		]);
+		expect(r.reworked.size).toBe(0);
 	});
 
 	it("P3: an edited cluster is reworked, never carried", () => {

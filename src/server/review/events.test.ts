@@ -421,6 +421,49 @@ describe("re-review events", () => {
 		expect(parseEventLines(msg([empty]))).toEqual([empty]);
 	});
 
+	it("split-carried: round-trips, only by auto, and drops a malformed one whole", () => {
+		const split = newEvent(
+			"split-carried",
+			"dan",
+			{
+				patchset: "f".repeat(64),
+				states: [
+					{ key: K, fromKey: K2, state: "reviewed" },
+					{ key: K3, fromKey: K2, state: "crossed-off", from: [[2, 4]] },
+					{
+						key: `${K3}:2`,
+						fromKey: K2,
+						state: "reviewed",
+						from: [[6, 7]],
+						lines: [[1, 2]],
+					},
+				],
+			},
+			"auto",
+		);
+		expect(parseEventLines(msg([split]))).toEqual([split]);
+		expect(() => validateForWrite(split)).not.toThrow();
+		for (const by of ["human", "ai"] as const) {
+			const e = { ...split, by } as CrbEvent;
+			expect(parseEventLines(msg([e]))).toEqual([]);
+			expect(() => validateForWrite(e)).toThrow(/auto/);
+		}
+		const entry = { key: K, fromKey: K2, state: "reviewed" };
+		const bad: unknown[] = [
+			{ ...split, states: [{ ...entry, state: "unreviewed" }] },
+			{ ...split, states: [{ ...entry, fromKey: undefined }] },
+			{ ...split, states: [{ ...entry, key: "k" }] },
+			// Lines need the hunk's lines they come from, as many of them.
+			{ ...split, states: [{ ...entry, lines: [[0, 1]] }] },
+			{ ...split, states: [{ ...entry, from: [[0, 2]], lines: [[0, 1]] }] },
+			{ ...split, states: [{ ...entry, from: [] }] },
+			{ ...split, states: [{ ...entry, from: [[2, 1]] }] },
+			{ ...split, states: entry },
+			{ ...split, patchset: "" },
+		];
+		expect(parseEventLines(msg([...bad, split]))).toEqual([split]);
+	});
+
 	it("skips malformed thread-placed events", () => {
 		const bad: unknown[] = [
 			{ ...placed, thread: "" },
