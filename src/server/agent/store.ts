@@ -5,9 +5,11 @@ import {
 	type AgentIdentity,
 	type AgentMessage,
 	type AgentOrigin,
+	type AgentPostedRequest,
 	type AgentStop,
 	type AgentThread,
 	type AgentView,
+	agentCommentClientId,
 	MAX_ACTIVITY_BYTES,
 	MAX_ACTIVITY_ENTRIES,
 	MAX_AGENT_ERROR,
@@ -57,7 +59,8 @@ const isAgentEvent = (e: CrbEvent): e is AgentEvent =>
 	e.type === "agent-thread-opened" ||
 	e.type === "agent-message" ||
 	e.type === "agent-thread-resolved" ||
-	e.type === "agent-thread-seen";
+	e.type === "agent-thread-seen" ||
+	e.type === "agent-comment-posted";
 const clientIdOf = (e: CrbEvent): string | undefined => {
 	const id = e.details?.clientId;
 	return typeof id === "string" ? id : undefined;
@@ -167,6 +170,17 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 			case "agent-thread-seen":
 				if (thread) seenUpTo.set(id, [...(seenUpTo.get(id) ?? []), e.upTo]);
 				break;
+			case "agent-comment-posted": {
+				// Only onto an agent message the thread holds; a block once.
+				const m = thread?.messages.find((x) => x.id === e.message);
+				if (m?.by !== "ai") break;
+				if (m.posted?.some((p) => p.block === e.block)) break;
+				m.posted = [
+					...(m.posted ?? []),
+					{ block: e.block, url: e.github.url, at: iso(e.ts), text: e.text },
+				].sort((a, b) => a.block - b.block);
+				break;
+			}
 		}
 	}
 	const out = [...threads.values()];
@@ -497,6 +511,41 @@ export class AgentThreadStore {
 				stampAfter(events),
 			);
 			return this.#write(events, "crb: agent thread seen", event);
+		});
+	}
+
+	/**
+	 * The reviewer posted block `block` of agent message `message` to
+	 * GitHub (after GitHub took it). A block already recorded writes
+	 * nothing; a message the thread doesn't hold, or not the agent's, is
+	 * UnknownAgentMessageError.
+	 */
+	posted(thread: string, input: AgentPostedRequest): Promise<AgentThreadFold> {
+		return this.#serial(async () => {
+			const events = await this.#events();
+			const current = this.#find(events, thread);
+			const m = current.messages.find((x) => x.id === input.message);
+			if (m?.by !== "ai") throw new UnknownAgentMessageError(input.message);
+			if (m.posted?.some((p) => p.block === input.block)) return current;
+			const event = newEvent(
+				"agent-comment-posted",
+				this.slug,
+				{
+					thread: current.id,
+					message: input.message,
+					block: input.block,
+					clientId: agentCommentClientId(
+						current.id,
+						input.message,
+						input.block,
+					),
+					github: input.github,
+					text: capText(input.text).text,
+				},
+				"human",
+				stampAfter(events),
+			);
+			return this.#write(events, "crb: agent comment posted", event);
 		});
 	}
 

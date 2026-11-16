@@ -33,6 +33,12 @@ export interface PromptMessage {
 	 * (that message's text), so the agent knows why it opened this.
 	 */
 	re?: string;
+	/**
+	 * An agent message's ```comment blocks the reviewer posted to GitHub
+	 * (CAR-83): the block's index in the message and the text posted,
+	 * which the reviewer may have edited.
+	 */
+	posted?: { block: number; text: string }[];
 }
 
 export type CommentRole = "reviewer" | "pr_author" | "other";

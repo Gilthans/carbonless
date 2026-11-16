@@ -990,6 +990,41 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect(facts).toMatchObject({ title: "Cache", head: { ref: "feat-x" } });
 		});
 
+		it("an agent message's posted comment blocks reach the envelope as { block, text } (CAR-83)", async () => {
+			const x = await host.open({ clientId: "c1", text: "Why?", span });
+			const token = await approve();
+			const q = await host.sessionNext(token);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: q?.replyTo as string,
+				text: "Ask:\n```comment\nWhy one retry?\n```",
+			});
+			const answered = (await host.threads()).find((t) => t.id === x.id);
+			const ai = answered?.messages[1]?.id as string;
+			const posted = await host.posted(x.id, {
+				message: ai,
+				block: 0,
+				github: {
+					thread: "PRRT_1",
+					comment: "PRRC_1",
+					url: "https://github.com/o/r/pull/1#discussion_r1",
+				},
+				text: "Why one retry, really?",
+			});
+			expect(posted.messages[1]?.posted?.[0]).toMatchObject({
+				block: 0,
+				text: "Why one retry, really?",
+			});
+			await host.message(x.id, { clientId: "c2", text: "And?" });
+			const next = await host.sessionNext(token);
+			expect(next?.envelope.messages[1]).toMatchObject({
+				author: { role: "agent" },
+				posted: [{ block: 0, text: "Why one retry, really?" }],
+			});
+			expect(next?.envelope.messages[1]?.posted?.[0]).not.toHaveProperty("url");
+			expect(next?.envelope.messages[0]).not.toHaveProperty("posted");
+		});
+
 		it("a thread handed out and not answered still waits after every kind of leave (principle 2)", async () => {
 			const x = await host.open({ clientId: "c1", text: "Why?", span });
 			for (const leave of [

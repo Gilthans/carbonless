@@ -132,6 +132,42 @@ export interface AgentMessage {
 	 * of a thread in the same ref.
 	 */
 	origin?: AgentOrigin;
+	/**
+	 * ai only: the ```comment blocks (agentCommentBlocks) the reviewer
+	 * posted to GitHub, by block index: where, when, and the text posted.
+	 */
+	posted?: AgentPostedComment[];
+}
+
+/** A ```comment block of an agent message the reviewer posted (CAR-83). */
+export interface AgentPostedComment {
+	/** The block's index in its message (0-based). */
+	block: number;
+	/** The comment on GitHub. */
+	url: string;
+	at: string;
+	/** What the reviewer posted (the box's text, maybe edited). */
+	text: string;
+}
+
+/**
+ * The client id a ```comment block posts under: the same for the same
+ * block on every device and after a reload, so the server's dedupe
+ * (newThreads.ts, threadWrites.ts) never posts it twice. Fits the
+ * comment marker's id (server/marker.ts).
+ */
+export const agentCommentClientId = (
+	thread: string,
+	message: string,
+	block: number,
+): string => `ag.${thread}.${message}.${block}`;
+
+/** `POST /agent/threads/:tid/posted`: a block the reviewer just posted. */
+export interface AgentPostedRequest {
+	message: string;
+	block: number;
+	github: { thread: string; comment: string; url: string };
+	text: string;
 }
 
 export interface AgentThread {

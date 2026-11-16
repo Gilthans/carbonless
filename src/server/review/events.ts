@@ -274,12 +274,30 @@ export interface AgentThreadResolvedEvent extends EventBase {
 	resolved: boolean;
 }
 
+/**
+ * The reviewer posted a ```comment block of an agent message to GitHub
+ * (CAR-83): block `block` (0-based, by order in the message) of message
+ * `message`, as `text` (what the box held), under the deterministic
+ * `clientId` (agentCommentClientId). Human only: the agent can't post.
+ */
+export interface AgentCommentPostedEvent extends EventBase {
+	type: "agent-comment-posted";
+	thread: string;
+	message: string;
+	block: number;
+	clientId: string;
+	/** The GitHub thread and comment (node ids) and the comment's link. */
+	github: { thread: string; comment: string; url: string };
+	text: string;
+}
+
 /** Agent threads are a conversation: a human's or the agent's, never automatic. */
 export type AgentEvent = (
 	| AgentThreadOpenedEvent
 	| AgentMessageEvent
 	| AgentThreadResolvedEvent
 	| AgentThreadSeenEvent
+	| AgentCommentPostedEvent
 ) & { by: "human" | "ai" };
 
 export type CrbEvent =
@@ -415,6 +433,9 @@ export function validateForWrite(e: CrbEvent): void {
 	}
 	if (e.type === "agent-thread-seen" && e.by !== "human") {
 		throw new Error("agent-thread-seen events must be written by a human");
+	}
+	if (e.type === "agent-comment-posted" && e.by !== "human") {
+		throw new Error("agent-comment-posted events must be written by a human");
 	}
 	if (parseEvent(JSON.parse(JSON.stringify(e))) === null) {
 		throw new Error(`Refusing to write an invalid ${e.type} event`);
@@ -709,6 +730,7 @@ function parseEvent(raw: unknown): CrbEvent | null {
 		case "agent-message":
 		case "agent-thread-resolved":
 		case "agent-thread-seen":
+		case "agent-comment-posted":
 			// A conversation's words are a human's or the agent's, never auto's.
 			return base.by === "auto"
 				? null
@@ -763,6 +785,18 @@ function parseInboxEvent(
 	}
 }
 
+/** A comment marker's id (server/marker.ts MARKER_ID). */
+const MARKER_ID = /^[A-Za-z0-9_.:-]{1,100}$/;
+const isGithubId = (value: unknown): value is string =>
+	typeof value === "string" && /^[A-Za-z0-9_=-]{1,200}$/.test(value);
+const isHttpsUrl = (value: string): boolean => {
+	if (value.length > 2000) return false;
+	try {
+		return new URL(value).protocol === "https:";
+	} catch {
+		return false;
+	}
+};
 const isText = (value: unknown): value is string =>
 	typeof value === "string" && Buffer.byteLength(value) <= MAX_AGENT_TEXT;
 const isLine = (value: unknown): value is number =>
@@ -1061,6 +1095,32 @@ function parseAgentEvent(
 			const { upTo } = raw;
 			if (typeof upTo !== "string" || !LOWER_ULID.test(upTo)) return null;
 			return { ...base, type: "agent-thread-seen", thread, upTo };
+		}
+		case "agent-comment-posted": {
+			// Fail safe: only the reviewer posts to GitHub.
+			if (base.by !== "human") return null;
+			const { message, block, clientId, github, text } = raw;
+			if (typeof message !== "string" || !LOWER_ULID.test(message)) {
+				return null;
+			}
+			if (!Number.isSafeInteger(block) || (block as number) < 0) return null;
+			if (typeof clientId !== "string" || !MARKER_ID.test(clientId)) {
+				return null;
+			}
+			if (!isText(text) || !isObj(github)) return null;
+			const { thread: gt, comment, url } = github;
+			if (!isGithubId(gt) || !isGithubId(comment)) return null;
+			if (typeof url !== "string" || !isHttpsUrl(url)) return null;
+			return {
+				...base,
+				type: "agent-comment-posted",
+				thread,
+				message,
+				block: block as number,
+				clientId,
+				github: { thread: gt, comment, url },
+				text,
+			};
 		}
 		default:
 			return null;

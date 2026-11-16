@@ -7,6 +7,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import {
 	type AgentConfig,
 	type AgentMessageRequest,
+	type AgentPostedRequest,
 	type AgentView,
 	MAX_AGENT_TEXT,
 	type OpenAgentThreadRequest,
@@ -848,6 +849,16 @@ export async function buildApp(
 					);
 				},
 			);
+			// The reviewer posted an agent message's ```comment block (CAR-83):
+			// recorded after GitHub took it, so it shows posted and never posts twice.
+			review.post<{ Params: { tid: string } }>(
+				"/agent/threads/:tid/posted",
+				(request) =>
+					agentOf(request).posted(
+						agentThreadParam(request.params.tid),
+						parseAgentPosted(request.body),
+					),
+			);
 			review.post("/agent/cancel", async (request) => {
 				await agentOf(request).cancel();
 				return { ok: true };
@@ -1236,6 +1247,54 @@ function parseAgentMessage(body: unknown): AgentMessageRequest {
 		clientId: b.clientId as string,
 		text: b.text as string,
 		...(view ? { view } : {}),
+	};
+}
+
+/** POST agent/threads/:tid/posted's body; 400 when anything is off. */
+function parseAgentPosted(body: unknown): AgentPostedRequest {
+	const b = (typeof body === "object" && body !== null ? body : {}) as Record<
+		string,
+		unknown
+	>;
+	const { message, block, github, text } = b;
+	if (typeof message !== "string" || !AGENT_THREAD_ID.test(message)) {
+		throw new BadRequestError("message must be a message id");
+	}
+	if (!Number.isSafeInteger(block) || (block as number) < 0) {
+		throw new BadRequestError("block must be a block index");
+	}
+	if (typeof text !== "string" || !text.trim()) {
+		throw new BadRequestError("text can't be blank");
+	}
+	if (Buffer.byteLength(text) > MAX_AGENT_TEXT) {
+		throw new BadRequestError(`text is at most ${MAX_AGENT_TEXT} bytes`);
+	}
+	const g = (
+		typeof github === "object" && github !== null ? github : {}
+	) as Record<string, unknown>;
+	const id = (v: unknown) =>
+		typeof v === "string" && /^[A-Za-z0-9_=-]{1,200}$/.test(v);
+	let https = false;
+	try {
+		https =
+			typeof g.url === "string" &&
+			g.url.length <= 2000 &&
+			new URL(g.url).protocol === "https:";
+	} catch {}
+	if (!id(g.thread) || !id(g.comment) || !https) {
+		throw new BadRequestError(
+			"github must be { thread, comment, url } of the posted comment",
+		);
+	}
+	return {
+		message,
+		block: block as number,
+		github: {
+			thread: g.thread as string,
+			comment: g.comment as string,
+			url: g.url as string,
+		},
+		text,
 	};
 }
 
