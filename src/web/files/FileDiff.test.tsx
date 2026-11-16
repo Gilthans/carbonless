@@ -3213,6 +3213,24 @@ describe("FileDiff: review in the image view", () => {
 		expect(shown()).toBe("image");
 	});
 
+	it("while a find step's Text holds, the row shows Text pressed, and pressing it again stores nothing", async () => {
+		const { user, update } = setup(svg([cluster("k1")]));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		update({ find: stepped(5, 1) });
+		expect(shown()).toBe("text");
+		const bar = screen.getByTestId("view-bar");
+		const text = within(bar).getByRole("button", { name: "Text" });
+		expect(text).toHaveAttribute("aria-pressed", "true");
+		expect(within(bar).getByRole("button", { name: "Slider" })).toHaveAttribute(
+			"aria-pressed",
+			"false",
+		);
+		await user.click(text);
+		expect(shown()).toBe("text");
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+		expect(localStorage.getItem("crb.files.renderer")).toBeNull();
+	});
+
 	it("Text picked and stored stays Text after a step; picking Image stores Image", async () => {
 		rendererPicks.set(SVG, "text");
 		const { user, update } = setup(svg([cluster("k1")]));

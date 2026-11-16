@@ -102,7 +102,8 @@ export const ICON_BUTTON =
 /**
  * How the file is shown, as one segmented control of icon buttons (in the
  * image toolbar, or a row of its own over Text and Binary). Choosing only
- * changes the view (`onPick`): never a review state.
+ * changes the view (`onPick`): never a review state. The pressed one does
+ * nothing.
  */
 export function ViewSwitch(props: {
 	options: readonly ViewOption[];
@@ -128,7 +129,10 @@ export function ViewSwitch(props: {
 								{...trigger}
 								aria-label={option.label}
 								aria-pressed={props.pressed === option.id}
-								onClick={() => props.onPick(option)}
+								// The shown one again does nothing (no pick is kept).
+								onClick={() => {
+									if (props.pressed !== option.id) props.onPick(option);
+								}}
 								className={`${ICON_BUTTON} not-first:border-line-strong not-first:border-l`}
 							>
 								<ViewIcon aria-hidden size={20} />
