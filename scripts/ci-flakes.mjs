@@ -11,9 +11,9 @@
 // widest. --fail-over: exit 1 when the shortest window's flake rate is over
 // that percent. API cost: a listing per day of the window, then per run
 // with a failed attempt one artifact listing (each artifact's name carries
-// its job's verdict), the jobs only when the outcomes don't cover every
-// test job, and a download only for a flaky job's tests; it prints the
-// calls used (stderr).
+// its job's verdict), the jobs only when they can change the verdict, and a
+// download only for a flaky job's tests; it prints the calls used
+// (stderr). Runs from forks are counted apart and never read.
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -23,19 +23,8 @@ import { cell } from "./test-outcomes.mjs";
 const WORKFLOW = "ci.yml";
 /** Jobs that fail only because a test job did (`e2e` waits on the shards). */
 export const DERIVED_JOBS = new Set(["e2e"]);
-/**
- * ci.yml's test jobs, by artifact slug: a failed first attempt with an
- * outcome from each needs no jobs listing. Keep in step with ci.yml; a job
- * missing here only costs a call.
- */
-export const TEST_JOBS = [
-	"checks",
-	"windows-agent",
-	"e2e-1",
-	"e2e-2",
-	"e2e-3",
-	"e2e-4",
-];
+/** The step a summary job fails in when a shard failed (ci.yml's `e2e`). */
+export const SHARDS_FAILED_STEP = "A shard failed";
 const FAILED = new Set(["failure", "timed_out", "startup_failure"]);
 /** Worst first: an attempt takes the worst of its failed jobs' verdicts. */
 const SEVERITY = ["consistent", "non-test", "unknown", "flaky"];
@@ -145,9 +134,23 @@ export function judgeAttempt(attempt, laterPassed) {
 	const bySlug = new Map(outcomes.map((o) => [o.slug ?? slugOf(o.job), o]));
 	let failedJobs;
 	let derivedFailed = false;
+	const own = [];
 	if (attempt.jobs) {
 		const failing = attempt.jobs.filter((j) => FAILED.has(j.conclusion));
 		derivedFailed = failing.some((j) => DERIVED_JOBS.has(j.name));
+		// A summary job that failed in a step other than "a shard failed"
+		// (its trace merge or upload): a non-test failure of its own.
+		for (const j of failing) {
+			if (
+				DERIVED_JOBS.has(j.name) &&
+				Array.isArray(j.steps) &&
+				!j.steps.some(
+					(st) => st.conclusion === "failure" && st.name === SHARDS_FAILED_STEP,
+				)
+			) {
+				own.push({ job: j.name, verdict: "non-test" });
+			}
+		}
 		failedJobs = failing
 			.filter((j) => !DERIVED_JOBS.has(j.name))
 			.map((j) => slugOf(j.name));
@@ -156,15 +159,15 @@ export function judgeAttempt(attempt, laterPassed) {
 			.filter((o) => o.verdict !== "passed")
 			.map((o) => o.slug ?? slugOf(o.job));
 	}
-	if (failedJobs.length === 0) {
+	if (failedJobs.length === 0 && own.length === 0) {
 		return derivedFailed
 			? { verdict: "non-test", reason: "a summary job failed, no test job" }
 			: { verdict: "unknown", reason: "no failed test job found" };
 	}
-	const verdicts = failedJobs.map((j) => ({
-		job: j,
-		verdict: jobVerdict(bySlug.get(j)),
-	}));
+	const verdicts = [
+		...failedJobs.map((j) => ({ job: j, verdict: jobVerdict(bySlug.get(j)) })),
+		...own,
+	];
 	const worst = SEVERITY.find((s) => verdicts.some((v) => v.verdict === s));
 	return {
 		verdict: worst ?? "unknown",
@@ -183,7 +186,8 @@ export function aggregate(runs) {
 	const all = { attempts: 0, flaky: 0 };
 	const master = { attempts: 0, flaky: 0 };
 	const counts = {
-		runs: runs.length,
+		runs: runs.filter((r) => !r.fork).length,
+		forkRuns: 0,
 		attempts: 0,
 		passed: 0,
 		failed: 0,
@@ -197,6 +201,10 @@ export function aggregate(runs) {
 	const failedAttempts = [];
 	const tests = new Map();
 	for (const run of runs) {
+		if (run.fork) {
+			counts.forkRuns++;
+			continue;
+		}
 		const isMaster = run.branch === "master" && run.event === "push";
 		const attempts = [...run.attempts].sort((a, b) => a.n - b.n);
 		for (const [i, a] of attempts.entries()) {
@@ -316,6 +324,9 @@ export function render(s, { title, markdown = false }) {
 		"",
 		`Failed, not counted as flaky: ${s.consistent} consistent test failure, ${s.nonTest} non-test failure, ${s.unknown} unknown (no outcome, or not rerun)`,
 	);
+	if (s.forkRuns > 0) {
+		lines.push("", `Runs from forks, not counted: ${s.forkRuns}`);
+	}
 	if (s.topFlaky.length > 0) {
 		lines.push("");
 		if (markdown) {
@@ -385,6 +396,9 @@ const jsonLines = (out) =>
 		.filter((l) => l.trim())
 		.map((l) => JSON.parse(l));
 
+/** The largest outcome document read (bytes). */
+const MAX_DOC = 1 << 20;
+
 /** One file out of a zip (an artifact's download), or null if it isn't there. */
 export function unzipFile(buf, name) {
 	let eocd = -1;
@@ -401,6 +415,7 @@ export function unzipFile(buf, name) {
 		if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("bad zip");
 		const method = buf.readUInt16LE(p + 10);
 		const size = buf.readUInt32LE(p + 20);
+		const plain = buf.readUInt32LE(p + 24);
 		const nameLen = buf.readUInt16LE(p + 28);
 		const extraLen = buf.readUInt16LE(p + 30);
 		const commentLen = buf.readUInt16LE(p + 32);
@@ -411,9 +426,14 @@ export function unzipFile(buf, name) {
 				30 +
 				buf.readUInt16LE(local + 26) +
 				buf.readUInt16LE(local + 28);
+			// An outcome document is a few KiB: anything far larger (a zip
+			// bomb from a fork's artifact) is refused, not inflated.
+			if (plain > MAX_DOC) throw new Error(`${name}: ${plain} bytes`);
 			const data = buf.subarray(start, start + size);
 			if (method === 0) return data;
-			if (method === 8) return inflateRawSync(data);
+			if (method === 8) {
+				return inflateRawSync(data, { maxOutputLength: MAX_DOC });
+			}
 			throw new Error(`zip method ${method}`);
 		}
 		p += 46 + nameLen + extraLen + commentLen;
@@ -431,10 +451,10 @@ const RUNS_CAP = 1000;
  * answers at most 1,000 runs per filter, so a range over that is halved
  * until it fits (down to a minute, else it fails).
  */
-function listRuns({ repo, from, to, branch, gh, warn }) {
+function listRuns({ repo, from, to, branch, gh }) {
 	const runs = [];
-	const range = (a, b) => {
-		const pages = jsonLines(
+	const page = (a, b, n) =>
+		JSON.parse(
 			gh([
 				"api",
 				"-X",
@@ -444,13 +464,18 @@ function listRuns({ repo, from, to, branch, gh, warn }) {
 				`created=${iso(a)}..${iso(b)}`,
 				"-f",
 				"per_page=100",
+				"-f",
+				`page=${n}`,
 				...(branch ? ["-f", `branch=${branch}`] : []),
-				"--paginate",
 				"--jq",
-				"{total: .total_count, runs: [.workflow_runs[] | {id, run_attempt, status, conclusion, head_branch, event, html_url, created_at, run_started_at}]}",
+				"{total: .total_count, runs: [.workflow_runs[] | {id, run_attempt, status, conclusion, head_branch, head_repo: .head_repository.full_name, event, html_url, created_at, run_started_at}]}",
 			]),
 		);
-		const total = pages[0]?.total ?? 0;
+	const range = (a, b) => {
+		// The count first: a range over the cap is halved before its pages
+		// are read.
+		const first = page(a, b, 1);
+		const total = first.total ?? 0;
 		if (total > RUNS_CAP) {
 			if (b - a <= 60_000) {
 				throw new Error(`${total} runs between ${iso(a)} and ${iso(b)}`);
@@ -460,13 +485,18 @@ function listRuns({ repo, from, to, branch, gh, warn }) {
 			range(new Date(mid.getTime() + 1000), b);
 			return;
 		}
-		const got = pages.flatMap((p) => p.runs ?? []);
-		if (got.length < total) {
-			warn(
-				`runs between ${iso(a)} and ${iso(b)}: ${got.length} of ${total} listed`,
+		const got = new Map((first.runs ?? []).map((r) => [r.id, r]));
+		for (let n = 2; n <= Math.ceil(total / 100); n++) {
+			for (const r of page(a, b, n).runs ?? []) got.set(r.id, r);
+		}
+		// Missing runs would quietly leave failures out: fail instead (a
+		// run created while its range was read shifts the pages; run again).
+		if (got.size < total) {
+			throw new Error(
+				`runs between ${iso(a)} and ${iso(b)}: ${got.size} of ${total} listed; run again`,
 			);
 		}
-		runs.push(...got);
+		runs.push(...got.values());
 	};
 	for (let a = from; a < to; a = new Date(a.getTime() + DAY)) {
 		const end = new Date(Math.min(a.getTime() + DAY - 1000, to.getTime()));
@@ -500,8 +530,21 @@ export function collect({
 		to: until,
 		branch,
 		gh,
-		warn,
 	})) {
+		// A fork's PR runs the fork's own ci.yml, which can name or fail
+		// anything: counted apart, never read.
+		if (r.head_repo && r.head_repo !== repo) {
+			runs.push({
+				id: r.id,
+				branch: r.head_branch,
+				event: r.event,
+				url: r.html_url,
+				createdAt: r.created_at,
+				fork: true,
+				attempts: [],
+			});
+			continue;
+		}
 		const last = r.run_attempt ?? 1;
 		const attempts = [];
 		for (let n = 1; n <= last; n++) {
@@ -558,6 +601,12 @@ export function collect({
 							);
 						}
 						doc = doc === undefined ? null : checkDoc(doc, r.id, warn);
+						if (doc && o.verdict && doc.verdict !== o.verdict) {
+							warn(
+								`run ${r.id}: artifact ${x.name} says ${doc.verdict} inside: counted unknown`,
+							);
+							doc = null;
+						}
 						if (doc) {
 							Object.assign(o, {
 								job: doc.job,
@@ -568,25 +617,28 @@ export function collect({
 					}
 					a.outcomes.push(o);
 				}
-				const slugs = new Set(a.outcomes.map((o) => o.slug));
-				// A later attempt that passed makes it flaky whatever its jobs say.
+				// The jobs only when they can change the verdict: not when a later
+				// attempt passed (flaky whatever they say), nor when an outcome
+				// already says consistent or non-test (they can't lower that).
+				// Otherwise they show a failed job with no outcome, one that
+				// failed after its label step, or the summary job failing alone.
 				const laterPassed = attempts.some(
 					(b) =>
 						b.n > a.n && b.status === "completed" && b.conclusion === "success",
 				);
-				const covered =
+				const decided =
 					laterPassed ||
-					(a.n === 1 &&
-						TEST_JOBS.every((j) => slugs.has(j)) &&
-						a.outcomes.some((o) => o.verdict !== "passed"));
-				if (!covered) {
+					a.outcomes.some(
+						(o) => o.verdict === "consistent" || o.verdict === "non-test",
+					);
+				if (!decided) {
 					jobs ??= jsonLines(
 						gh([
 							"api",
 							`repos/${repo}/actions/runs/${r.id}/jobs?filter=all&per_page=100`,
 							"--paginate",
 							"--jq",
-							".jobs[] | {name, conclusion, run_attempt}",
+							".jobs[] | {name, conclusion, run_attempt, steps: [.steps[]? | {name, conclusion}]}",
 						]),
 					);
 					a.jobs = jobs.filter((j) => (j.run_attempt ?? 1) === a.n);

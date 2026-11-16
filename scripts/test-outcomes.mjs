@@ -197,7 +197,12 @@ export function jobVerdict({ jobStatus, testsStep, failed, otherFailed }) {
 	return jobStatus === "failure" ? "non-test" : "passed";
 }
 
-/** Steps (`toJSON(steps)`) other than the tests that failed. */
+/**
+ * Steps (`toJSON(steps)`) other than the tests that failed. GitHub's
+ * `steps` context lists only steps with an `id`: in ci.yml every step that
+ * runs after the tests and before this one has one (pack, the uploads), and
+ * a failure before the tests skips them (non-test either way).
+ */
 export function otherFailedSteps(steps) {
 	return Object.entries(steps ?? {})
 		.filter(([id, s]) => id !== "tests" && s?.outcome === "failure")
@@ -260,20 +265,20 @@ export const UNKNOWN_SOURCE = "(unknown file)";
 /** Where the unhandled-errors reporter writes, next to the JSON report. */
 export const unhandledPath = (report) => `${report}.unhandled.json`;
 
+const filesOf = (report, cwd) =>
+	(report?.testResults ?? []).map((f) => posix(relative(cwd, f.name)));
+
 /**
- * Vitest's unhandled errors (a rejection or a timer after a test ended:
- * they fail the run with every test passed) as failures of the file they
- * came from, or of UNKNOWN_SOURCE. Every file the run had, with no error
- * from it, is a pass of its UNHANDLED: so a rerun tells flaky from
- * consistent as for a test. `unhandled` null: the reporter didn't run.
+ * The first run's unhandled errors (a rejection or a timer after a test
+ * ended: they fail the run with every test passed) as failures: one per
+ * file they were traced to, or of UNKNOWN_SOURCE. `unhandled` null: the
+ * reporter didn't run.
  */
-export function unhandledResults(unhandled, report, cwd) {
+export function unhandledResults(unhandled) {
 	const failed = [];
-	const passed = [];
-	if (!unhandled) return { failed, passed };
 	const files = new Set();
-	for (const e of unhandled.errors ?? []) {
-		const file = e?.file ? posix(relative(cwd, e.file)) : UNKNOWN_SOURCE;
+	for (const e of unhandled?.errors ?? []) {
+		const file = e?.file ? String(e.file) : UNKNOWN_SOURCE;
 		if (files.has(file)) continue;
 		files.add(file);
 		failed.push({
@@ -283,18 +288,68 @@ export function unhandledResults(unhandled, report, cwd) {
 			error: errorHead(e?.message),
 		});
 	}
-	const ran = (report?.testResults ?? []).map((f) =>
-		posix(relative(cwd, f.name)),
-	);
-	for (const file of [...ran, UNKNOWN_SOURCE]) {
-		if (!files.has(file))
-			passed.push({ file, title: UNHANDLED, project: null });
+	return { failed, passed: [] };
+}
+
+/**
+ * The rerun's answer for the first run's unhandled-error failures. Vitest
+ * traces an error to its file only when the timing lets it, so the same
+ * error may be traced on one run and not the other: any unhandled error in
+ * the rerun counts against every failure it could be (an untraced one
+ * against all; a traced one against its file's and UNKNOWN_SOURCE's), so a
+ * recurring error is never flaky. A file's passes only when the rerun ran
+ * it; UNKNOWN_SOURCE's only when the rerun ran every file the first run
+ * had. No reporter output: none answered (not rerun). `unhandled` and
+ * `ranFiles` (the rerun's) are relative to the same root as the failures.
+ */
+export function rerunUnhandled(failures, unhandled, ranFiles, firstFiles) {
+	const failed = [];
+	const passed = [];
+	if (!unhandled || !ranFiles) return { failed, passed };
+	const ran = new Set(ranFiles);
+	const errors = (unhandled.errors ?? []).map((e) => ({
+		file: e?.file ? String(e.file) : UNKNOWN_SOURCE,
+		error: errorHead(e?.message),
+	}));
+	for (const t of failures) {
+		if (t.title !== UNHANDLED) continue;
+		const key = { file: t.file, title: UNHANDLED, project: null };
+		const again = errors.find(
+			(e) =>
+				e.file === UNKNOWN_SOURCE ||
+				t.file === UNKNOWN_SOURCE ||
+				e.file === t.file,
+		);
+		if (again) {
+			failed.push({ ...key, error: again.error });
+			continue;
+		}
+		const covered =
+			t.file === UNKNOWN_SOURCE
+				? firstFiles.length > 0 && firstFiles.every((f) => ran.has(f))
+				: ran.has(t.file);
+		if (covered) passed.push(key);
 	}
 	return { failed, passed };
 }
 
-/** Reads a report into its failures (and errors outside tests). */
-export function readResults(runner, report, cwd, unhandled = null) {
+/** Unhandled errors' files made relative to `cwd`, like the tests'. */
+const relativeErrors = (unhandled, cwd) =>
+	unhandled
+		? {
+				errors: (unhandled.errors ?? []).map((e) => ({
+					...e,
+					file: e?.file ? posix(relative(cwd, e.file)) : null,
+				})),
+			}
+		: null;
+
+/**
+ * Reads a report into its failures (and errors outside tests). For a
+ * Vitest rerun, pass `rerunOf` (the first run's failures and files): its
+ * unhandled errors answer those failures (rerunUnhandled).
+ */
+export function readResults(runner, report, cwd, unhandled = null, rerunOf) {
 	if (!report) return null;
 	if (runner === "playwright") {
 		return {
@@ -303,7 +358,10 @@ export function readResults(runner, report, cwd, unhandled = null) {
 		};
 	}
 	const tests = vitestResults(report, cwd);
-	const u = unhandledResults(unhandled, report, cwd);
+	const rel = relativeErrors(unhandled, cwd);
+	const u = rerunOf
+		? rerunUnhandled(rerunOf.failed, rel, filesOf(report, cwd), rerunOf.files)
+		: unhandledResults(rel);
 	return {
 		failed: [...tests.failed, ...u.failed],
 		passed: [...tests.passed, ...u.passed],
@@ -461,6 +519,7 @@ export function run({
 					readJson(jsonOut),
 					cwd,
 					readJson(unhandledPath(jsonOut)),
+					{ failed, files: filesOf(report, cwd) },
 				)
 			: null;
 		doc = write(

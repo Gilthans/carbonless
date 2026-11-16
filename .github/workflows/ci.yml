@@ -64,6 +64,7 @@ jobs:
           pnpm pack --pack-destination "$RUNNER_TEMP/pack"
           node scripts/pack-smoke.mjs "$RUNNER_TEMP"/pack/carbonless-review-*.tgz
       - if: always()
+        id: upload-traces
         uses: actions/upload-artifact@v4
         with:
           name: test-traces-unit
@@ -106,7 +107,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - id: install
+        run: pnpm install --frozen-lockfile
       - id: tests
         run: pnpm exec vitest run src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts
         env:
@@ -198,6 +200,7 @@ jobs:
           CRB_TEST_TRACE_ROOT: ${{ runner.temp }}/test-traces
           CRB_TEST_JSON: ${{ runner.temp }}/test-outcomes/report.json
       - if: always()
+        id: upload-traces
         uses: actions/upload-artifact@v4
         with:
           name: test-traces-e2e-${{ matrix.shard }}
@@ -206,6 +209,7 @@ jobs:
       # A shard's HTML report covers its own tests, failures included, so
       # the reports aren't merged.
       - if: failure()
+        id: upload-report
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report-${{ matrix.shard }}
@@ -264,7 +268,10 @@ jobs:
           name: test-traces-e2e
           path: ${{ runner.temp }}/test-traces/
           retention-days: 14
-      - if: needs.e2e-shard.result != 'success'
+      # Its name tells `pnpm ci-flakes` this job failed because a shard did
+      # (scripts/ci-flakes.mjs, SHARDS_FAILED_STEP), not on its own.
+      - name: A shard failed
+        if: needs.e2e-shard.result != 'success'
         run: |
           echo "e2e shards: ${{ needs.e2e-shard.result }}"
           exit 1

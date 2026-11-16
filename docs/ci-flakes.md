@@ -22,12 +22,16 @@ the shard's build), and labels each failure:
 Vitest's **unhandled errors** (a rejection or a timer that fires after its
 test ended) fail the run with every test passed, and its JSON report leaves
 them out. `scripts/vitest-unhandled-reporter.mjs` writes them next to the
-report, each with the test file Vitest traced it to. Each is labelled like
-a test (title `(unhandled error)`): its file reruns, and it is flaky when
-the rerun has no unhandled error from that file, consistent when it does.
-One Vitest couldn't trace (file `(unknown file)`) reruns every file the run
-had, so only a small run (windows-agent's) gets a verdict; a full unit run
-is over the cap and stays not-rerun.
+report, each with the test file Vitest traced it to (when the timing lets
+it). Each is labelled like a test (title `(unhandled error)`): its file
+reruns. Since the same error may be traced on one run and not the other,
+any unhandled error in the rerun counts against every such failure it could
+be (consistent), and one passes (flaky) only when the rerun had none that
+could be it and ran its file. One Vitest couldn't trace (file
+`(unknown file)`) reruns every file the run had, and is flaky only when the
+rerun ran all of them with no unhandled error: so only a small run
+(windows-agent's) gets a verdict; a full unit run is over the cap and stays
+not-rerun.
 
 **The job stays failed either way.** The rerun is diagnosis, not a retry:
 the tests step already failed the job, and the labelling step's own result
@@ -64,13 +68,22 @@ pnpm ci-flakes --json               # everything, for scripts
 ```
 
 It lists `ci.yml`'s runs in the window a day at a time (the API answers at
-most 1,000 runs per query; a day over that is halved until it fits, and a
-listing shorter than its count is warned about), with every attempt (the
+most 1,000 runs per query: a day whose count is over that is halved before
+its pages are read, and a listing shorter than its count fails the report), with every attempt (the
 runs API shows only a run's last attempt; a rerun that turned green would
 hide the failure). For each run with a failed attempt it lists the
 artifacts once: their names carry each job's verdict. It downloads only a
-flaky job's document (for its tests) and lists the jobs only when the
-outcomes don't cover every test job (a later attempt, a missing outcome).
+flaky job's document (for its tests; a document whose verdict disagrees
+with its name counts unknown) and lists the jobs only when they can change
+the verdict (not when a later attempt passed, nor when an outcome already
+says consistent or non-test). The jobs show a failed job with no outcome,
+one that failed after its label step (non-test), and the `e2e` summary job
+failing in a step other than "A shard failed" (non-test).
+
+**Runs from forks** (a pull request whose head is another repository) run
+the fork's own `ci.yml`, which can upload any outcome: they are counted on
+their own line and never read, so they never move the rate or the top
+flaky tests.
 
 Any read that fails (a rate limit, a 404, a 5xx after three tries) fails
 the report: missing data never counts as "unknown". Only a run with no
@@ -101,7 +114,8 @@ skipped, awaiting approval, neutral or stale ones, and running ones, aside),
 and the same for pushes to master alone. Consistent,
 non-test and unknown failures are counted apart. Then the top flaky tests:
 how often, last seen, the job, a link to the last run. The `e2e` job only
-sums up the shards, so its failure is never counted on its own.
+sums up the shards: its failure counts on its own only when it failed in
+another step than "A shard failed".
 
 ## Tracking
 

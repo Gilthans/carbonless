@@ -15,13 +15,13 @@ import {
 	labelFailures,
 	otherFailedSteps,
 	playwrightResults,
+	readResults,
 	rerunArgs,
 	run,
 	summaryMarkdown,
 	UNHANDLED,
 	UNKNOWN_SOURCE,
 	unhandledPath,
-	unhandledResults,
 	vitestResults,
 	WHOLE_FILE,
 } from "./test-outcomes.mjs";
@@ -339,36 +339,90 @@ describe("Vitest's unhandled errors", () => {
 			assertionResults: [],
 		})),
 	});
+	const first = (errors: { message: string; file?: string }[]) =>
+		readResults("vitest", report("src/a.test.ts", "src/b.test.ts"), "/repo", {
+			errors,
+		})?.failed ?? [];
+	/** The verdicts after a rerun that ran `files` and had `errors`. */
+	const afterRerun = (
+		failed: ReturnType<typeof first>,
+		files: string[],
+		errors: { message: string; file?: string }[] | null,
+	) =>
+		labelFailures(
+			failed,
+			readResults("vitest", report(...files), "/repo", errors && { errors }, {
+				failed,
+				files: ["src/a.test.ts", "src/b.test.ts"],
+			}),
+		).map((t) => [t.file, t.verdict]);
 
-	it("each is a failure of the file it came from; files without one pass", () => {
-		const r = unhandledResults(
-			{
-				errors: [
-					{ message: "Unhandled Rejection: boom", file: "/repo/src/a.test.ts" },
-					{ message: "again", file: "/repo/src/a.test.ts" },
-					{ message: "who knows" },
-				],
-			},
-			report("src/a.test.ts", "src/b.test.ts"),
-			"/repo",
-		);
-		expect(r.failed.map((t) => [t.file, t.title])).toEqual([
+	it("each is a failure of the file it was traced to, or of the unknown file", () => {
+		expect(
+			first([
+				{ message: "Unhandled Rejection: boom", file: "/repo/src/a.test.ts" },
+				{ message: "again", file: "/repo/src/a.test.ts" },
+				{ message: "who knows" },
+			]).map((t) => [t.file, t.title]),
+		).toEqual([
 			["src/a.test.ts", UNHANDLED],
 			[UNKNOWN_SOURCE, UNHANDLED],
 		]);
-		expect(r.passed.map((t) => t.file)).toEqual(["src/b.test.ts"]);
 	});
 
-	it("no errors: every file and the unknown source pass", () => {
-		const r = unhandledResults(
-			{ errors: [] },
-			report("src/a.test.ts"),
-			"/repo",
-		);
-		expect(r.failed).toEqual([]);
-		expect(r.passed.map((t) => t.file)).toEqual([
-			"src/a.test.ts",
-			UNKNOWN_SOURCE,
+	it("gone on rerun: flaky; back on rerun: consistent", () => {
+		const traced = first([{ message: "boom", file: "/repo/src/a.test.ts" }]);
+		expect(afterRerun(traced, ["src/a.test.ts"], [])).toEqual([
+			["src/a.test.ts", "flaky"],
+		]);
+		expect(
+			afterRerun(
+				traced,
+				["src/a.test.ts"],
+				[{ message: "boom", file: "/repo/src/a.test.ts" }],
+			),
+		).toEqual([["src/a.test.ts", "consistent"]]);
+	});
+
+	it("untraced first, traced on rerun: the same error came back, consistent", () => {
+		const untraced = first([{ message: "boom" }]);
+		expect(
+			afterRerun(
+				untraced,
+				["src/a.test.ts", "src/b.test.ts"],
+				[{ message: "boom", file: "/repo/src/a.test.ts" }],
+			),
+		).toEqual([[UNKNOWN_SOURCE, "consistent"]]);
+	});
+
+	it("traced first, untraced on rerun: consistent", () => {
+		const traced = first([{ message: "boom", file: "/repo/src/a.test.ts" }]);
+		expect(
+			afterRerun(traced, ["src/a.test.ts"], [{ message: "boom" }]),
+		).toEqual([["src/a.test.ts", "consistent"]]);
+	});
+
+	it("an untraced one clears only when the rerun ran every file the first run had", () => {
+		const untraced = first([{ message: "boom" }]);
+		// A rerun that found no test files (a filter that matched nothing).
+		expect(afterRerun(untraced, [], [])).toEqual([
+			[UNKNOWN_SOURCE, "not-rerun"],
+		]);
+		expect(afterRerun(untraced, ["src/a.test.ts"], [])).toEqual([
+			[UNKNOWN_SOURCE, "not-rerun"],
+		]);
+		expect(
+			afterRerun(untraced, ["src/a.test.ts", "src/b.test.ts"], []),
+		).toEqual([[UNKNOWN_SOURCE, "flaky"]]);
+	});
+
+	it("a traced one clears only when its file reran; no reporter output: not rerun", () => {
+		const traced = first([{ message: "boom", file: "/repo/src/a.test.ts" }]);
+		expect(afterRerun(traced, ["src/b.test.ts"], [])).toEqual([
+			["src/a.test.ts", "not-rerun"],
+		]);
+		expect(afterRerun(traced, ["src/a.test.ts"], null)).toEqual([
+			["src/a.test.ts", "not-rerun"],
 		]);
 	});
 });

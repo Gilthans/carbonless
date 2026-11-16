@@ -52,14 +52,17 @@ export function readResults(
 	report: unknown,
 	cwd: string,
 	unhandled?: unknown,
+	rerunOf?: { failed: Failure[]; files: string[] },
 ): (Results & { errors: string[] }) | null;
 export const UNHANDLED: string;
 export const UNKNOWN_SOURCE: string;
 export function unhandledPath(report: string): string;
-export function unhandledResults(
-	unhandled: unknown,
-	report: unknown,
-	cwd: string,
+export function unhandledResults(unhandled: unknown): Results;
+export function rerunUnhandled(
+	failures: Failure[],
+	unhandled: { errors?: { file?: string | null; message?: string }[] } | null,
+	ranFiles: string[] | null,
+	firstFiles: string[],
 ): Results;
 export function rerunFiles(
 	failed: Failure[],

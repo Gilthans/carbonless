@@ -300,7 +300,13 @@ type FakeRun = {
 	conclusion: string;
 	attempts?: Record<number, string>;
 	artifacts?: { id: number; name: string; expired?: boolean }[];
-	jobs?: { name: string; conclusion: string; run_attempt: number }[];
+	jobs?: {
+		name: string;
+		conclusion: string;
+		run_attempt: number;
+		steps?: { name: string; conclusion: string }[];
+	}[];
+	headRepo?: string;
 };
 
 /**
@@ -330,17 +336,21 @@ function fakeGitHub(
 		if (path.endsWith("/workflows/ci.yml/runs")) {
 			const created = args.find((a) => a.startsWith("created="));
 			const [from = "", to = ""] = (created ?? "").slice(8).split("..");
+			const pageNo = Number(
+				args.find((a) => a.startsWith("page="))?.slice(5) ?? "1",
+			);
 			const inRange = runs.filter(
 				(r) => r.created_at >= from && r.created_at <= to,
 			);
 			return JSON.stringify({
 				total: total?.(from, to, inRange.length) ?? inRange.length,
-				runs: inRange.map((r) => ({
+				runs: inRange.slice((pageNo - 1) * 100, pageNo * 100).map((r) => ({
 					id: r.id,
 					run_attempt: r.run_attempt ?? 1,
 					status: "completed",
 					conclusion: r.conclusion,
 					head_branch: "b",
+					head_repo: r.headRepo ?? "o/r",
 					event: "pull_request",
 					html_url: `https://example.invalid/runs/${r.id}`,
 					created_at: r.created_at,
@@ -392,7 +402,7 @@ const outcomeZip = (runId: number, job: string, failed: unknown[]) =>
 	);
 
 describe("collecting runs", () => {
-	it("reads verdicts from artifact names: a download only for a flaky job, the jobs only when the outcomes don't cover every test job", () => {
+	it("reads verdicts from artifact names: a download only for a flaky job, the jobs only when they can change the verdict", () => {
 		const flaky = {
 			file: "e2e/a.spec.ts",
 			title: "t",
@@ -412,7 +422,8 @@ describe("collecting runs", () => {
 				},
 				// Green: no artifact listing at all.
 				{ id: 11, created_at: "2026-11-15T10:00:00Z", conclusion: "success" },
-				// Only checks has an outcome: the jobs say windows-agent failed too.
+				// checks failed again: consistent whatever the jobs say, so they
+				// aren't listed.
 				{
 					id: 12,
 					created_at: "2026-11-15T11:00:00Z",
@@ -438,7 +449,6 @@ describe("collecting runs", () => {
 			"repos/o/r/actions/artifacts/103/zip",
 		]);
 		expect(calls.filter((c) => c.includes("/jobs"))).toEqual([
-			"repos/o/r/actions/runs/12/jobs?filter=all&per_page=100",
 			"repos/o/r/actions/runs/13/jobs?filter=all&per_page=100",
 		]);
 		expect(calls.some((c) => c.includes("runs/11/"))).toBe(false);
@@ -511,34 +521,129 @@ describe("collecting runs", () => {
 		expect(warnings).toHaveLength(3);
 	});
 
-	it("a range over the API's 1,000 runs is halved until it fits; fewer listed than counted is said", () => {
-		const warnings: string[] = [];
+	it("a range over the API's 1,000 runs is halved before its pages are read", () => {
 		const { gh, calls } = fakeGitHub(
 			[{ id: 40, created_at: "2026-11-14T10:00:00Z", conclusion: "success" }],
 			{
-				// The first day "has" 1,500 runs as a whole, 500 in each half.
+				// The first day "has" 1,500 runs as a whole.
 				total: (from, to, n) =>
 					from.startsWith("2026-11-14T00:00:00") &&
 					to.startsWith("2026-11-14T23:59:59")
 						? 1500
-						: from.startsWith("2026-11-14")
-							? Math.max(n, 500)
-							: n,
+						: n,
 			},
 		);
-		const runs = collect({
-			repo: "o/r",
-			since,
-			until,
-			gh,
-			warn: (m) => warnings.push(m),
-		});
+		const runs = collect({ repo: "o/r", since, until, gh });
 		expect(runs.map((r) => r.id)).toEqual([40]);
+		// The day's first page (its count), its two halves, the next day.
 		expect(calls.filter((c) => c.endsWith("/runs"))).toHaveLength(4);
-		expect(warnings).toEqual([
-			expect.stringMatching(/1 of 500 listed/),
-			expect.stringMatching(/0 of 500 listed/),
+	});
+
+	it("every page of a day is read; a listing short of its count fails the report", () => {
+		const many = Array.from({ length: 150 }, (_, i) => ({
+			id: 1000 + i,
+			created_at: "2026-11-14T10:00:00Z",
+			conclusion: "success",
+		}));
+		const ok = fakeGitHub(many);
+		expect(collect({ repo: "o/r", since, until, gh: ok.gh })).toHaveLength(150);
+		expect(ok.calls.filter((c) => c.endsWith("/runs"))).toHaveLength(3);
+		const short = fakeGitHub(many, { total: (_f, _t, n) => n + 5 });
+		expect(() => collect({ repo: "o/r", since, until, gh: short.gh })).toThrow(
+			/150 of 155 listed/,
+		);
+	});
+
+	it("runs from forks are counted apart and never read", () => {
+		const { gh, calls } = fakeGitHub([
+			{
+				id: 50,
+				created_at: "2026-11-14T10:00:00Z",
+				conclusion: "failure",
+				headRepo: "someone/fork",
+				artifacts: allJobs({ checks: "flaky" }),
+			},
+			{ id: 51, created_at: "2026-11-14T11:00:00Z", conclusion: "success" },
 		]);
+		const s = aggregate(collect({ repo: "o/r", since, until, gh }));
+		expect(calls.some((c) => c.includes("runs/50/"))).toBe(false);
+		expect(s).toMatchObject({ runs: 1, forkRuns: 1, attempts: 1, flaky: 0 });
+		expect(render(s, { title: "x" })).toContain(
+			"Runs from forks, not counted: 1",
+		);
+	});
+
+	it("an artifact whose name and document disagree: a warning, the job unknown", () => {
+		const warnings: string[] = [];
+		const { gh } = fakeGitHub(
+			[
+				{
+					id: 60,
+					created_at: "2026-11-14T10:00:00Z",
+					conclusion: "failure",
+					artifacts: allJobs({ checks: "flaky" }),
+					jobs: [{ name: "checks", conclusion: "failure", run_attempt: 1 }],
+				},
+			],
+			{
+				zips: {
+					100: zip(
+						"test-outcomes.json",
+						JSON.stringify({ runId: 60, verdict: "consistent", failed: [] }),
+					),
+				},
+			},
+		);
+		const s = aggregate(
+			collect({ repo: "o/r", since, until, gh, warn: (m) => warnings.push(m) }),
+		);
+		expect(s).toMatchObject({ flaky: 0, unknown: 1 });
+		expect(warnings).toEqual([expect.stringMatching(/says consistent inside/)]);
+	});
+
+	it("a flaky-looking attempt is checked against its jobs: a job that failed after its label step, or the summary job failing alone, is non-test", () => {
+		const flaky = {
+			file: "src/a.test.ts",
+			title: "t",
+			project: null,
+			verdict: "flaky",
+		};
+		const run = (jobs: FakeRun["jobs"]) =>
+			fakeGitHub(
+				[
+					{
+						id: 70,
+						created_at: "2026-11-14T10:00:00Z",
+						conclusion: "failure",
+						artifacts: allJobs({ checks: "flaky" }),
+						jobs,
+					},
+				],
+				{ zips: { 100: outcomeZip(70, "checks", [flaky]) } },
+			).gh;
+		const verdict = (jobs: FakeRun["jobs"]) =>
+			aggregate(collect({ repo: "o/r", since, until, gh: run(jobs) }))
+				.failedAttempts[0]?.verdict;
+		const checks = { name: "checks", conclusion: "failure", run_attempt: 1 };
+		expect(verdict([checks])).toBe("flaky");
+		// windows-agent's outcome says passed, yet the job failed (an upload
+		// after its label step).
+		expect(
+			verdict([
+				checks,
+				{ name: "windows-agent", conclusion: "failure", run_attempt: 1 },
+			]),
+		).toBe("non-test");
+		const e2e = (failedStep: string) => ({
+			name: "e2e",
+			conclusion: "failure",
+			run_attempt: 1,
+			steps: [{ name: failedStep, conclusion: "failure" }],
+		});
+		expect(verdict([checks, e2e("A shard failed")])).toBe("flaky");
+		expect(verdict([checks, e2e("Run actions/upload-artifact@v4")])).toBe(
+			"non-test",
+		);
 	});
 
 	it("artifact names, documents, zips, windows and terminal text", () => {

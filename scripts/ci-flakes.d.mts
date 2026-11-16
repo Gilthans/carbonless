@@ -17,7 +17,11 @@ export type Attempt = {
 	conclusion: string | null;
 	url?: string;
 	createdAt?: string;
-	jobs?: { name: string; conclusion: string | null }[];
+	jobs?: {
+		name: string;
+		conclusion: string | null;
+		steps?: { name: string; conclusion: string | null }[];
+	}[];
 	outcomes?: OutcomeDoc[];
 };
 export type Run = {
@@ -26,6 +30,7 @@ export type Run = {
 	event: string;
 	url?: string;
 	createdAt?: string;
+	fork?: boolean;
 	attempts: Attempt[];
 };
 export type TopFlaky = {
@@ -39,6 +44,7 @@ export type TopFlaky = {
 };
 export type Summary = {
 	runs: number;
+	forkRuns: number;
 	attempts: number;
 	passed: number;
 	failed: number;
@@ -60,7 +66,7 @@ export type Summary = {
 };
 export type Gh = (args: string[], o?: { binary?: boolean }) => string;
 export const DERIVED_JOBS: Set<string>;
-export const TEST_JOBS: string[];
+export const SHARDS_FAILED_STEP: string;
 export function slugOf(job: string): string;
 export function parseArtifactName(
 	name: string,
