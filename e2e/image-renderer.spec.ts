@@ -618,10 +618,11 @@ test("wide image on phone: no page overflow; at 1:1 a swipe scrolls, the grip dr
 		.toBeGreaterThan(50);
 });
 
-test("renamed with no content change shows the image once", async ({
+test("renamed with no content change shows the image once, and says no binary change", async ({
 	page,
 	pr,
 	startCrb,
+	isMobile,
 }) => {
 	const OLD = "img/old-name.png";
 	const NEW = "img/new-name.png";
@@ -642,6 +643,20 @@ test("renamed with no content change shows the image once", async ({
 		/^50×40\s*· \d+ B$/,
 	);
 	await expect(section.getByText(`Renamed from ${OLD}`)).toBeVisible();
+	// Only moved: nothing says its bytes changed, and it is still a unit to
+	// tick.
+	await expect(section.getByText(/binary file changed/i)).toHaveCount(0);
+	const box = section.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	await expect(box).not.toBeChecked();
+	await box.click();
+	await expect(box).toBeChecked();
+	await expect(fileProgress(section)).toHaveText(/1 \/ 1/);
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		await page.screenshot({
+			path: `${shots}/pure-rename-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
 });
 
 /*
