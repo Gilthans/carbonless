@@ -8,7 +8,7 @@ import {
 	PersonIcon,
 	SparkleFillIcon,
 } from "@primer/octicons-react";
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import { RelativeTime } from "../RelativeTime";
 import { SkeletonBar, Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
@@ -111,13 +111,52 @@ function Blurb(props: { id: string; blurb: BlurbData }) {
 }
 
 /**
+ * Brings `el` into view in the scroller that holds it (the tree's column,
+ * or the phone's sheet), below the tabs bar stuck at its top; the page
+ * itself never scrolls for it (the card's scroll is the page's).
+ */
+function revealInPanel(el: HTMLElement) {
+	let scroller = el.parentElement;
+	while (
+		scroller &&
+		scroller !== document.body &&
+		!/auto|scroll/.test(getComputedStyle(scroller).overflowY)
+	) {
+		scroller = scroller.parentElement;
+	}
+	if (!scroller || scroller === document.body) return;
+	const box = scroller.getBoundingClientRect();
+	const bar = el.closest('[role="tabpanel"]')?.previousElementSibling;
+	const top =
+		bar instanceof HTMLElement && getComputedStyle(bar).position === "sticky"
+			? Math.max(box.top, bar.getBoundingClientRect().bottom)
+			: box.top;
+	const r = el.getBoundingClientRect();
+	if (r.top < top) scroller.scrollTop -= top - r.top;
+	else if (r.bottom > box.bottom) scroller.scrollTop += r.bottom - box.bottom;
+}
+
+/**
  * One conversation: who spoke last, where it is (the file name prominent,
  * its folder muted and cut from the left), small cues, and when it last
  * moved. The row goes to the thread in Files changed; the date beside it
  * has its own exact-time tooltip.
  */
-function Row(props: { row: PanelRow; onJump: (row: PanelRow) => void }) {
-	const { row } = props;
+function Row(props: {
+	row: PanelRow;
+	/** The current row (j/k, or the last picked). */
+	current: boolean;
+	onJump: (row: PanelRow) => void;
+}) {
+	const { row, current } = props;
+	const item = useRef<HTMLLIElement>(null);
+	// Becoming current, it comes into view in the panel (not on mount: a
+	// region unfolding or the tab coming back leaves the scroll alone).
+	const was = useRef(current);
+	useEffect(() => {
+		if (current && !was.current && item.current) revealInPanel(item.current);
+		was.current = current;
+	}, [current]);
 	const where = `${row.path}${row.line === null ? "" : `:${row.line}`}`;
 	const cues = cuesOf(row);
 	const by = speakerText(row.last);
@@ -126,11 +165,14 @@ function Row(props: { row: PanelRow; onJump: (row: PanelRow) => void }) {
 	const blurbId = useId();
 	return (
 		<li
+			ref={item}
 			data-testid="threads-row"
 			data-key={row.key}
 			data-resolved={row.resolved || undefined}
 			className={`relative flex min-w-0 items-start gap-1 rounded-md pr-1 hover:bg-overlay ${
 				row.resolved ? "opacity-60 hover:opacity-100" : ""
+			} ${
+				current ? "bg-accent/12 shadow-[inset_2px_0_0_var(--color-accent)]" : ""
 			}`}
 		>
 			<Tooltip
@@ -155,6 +197,7 @@ function Row(props: { row: PanelRow; onJump: (row: PanelRow) => void }) {
 						type="button"
 						{...trigger}
 						aria-label={label}
+						aria-current={current ? "true" : undefined}
 						onClick={() => props.onJump(row)}
 						// Its area covers the whole row: a tap on the date (which
 						// takes no taps on touch) goes to the thread too.
@@ -243,6 +286,7 @@ function Region(props: {
 	folded: boolean;
 	onFold: (folded: boolean) => void;
 	showResolved: boolean;
+	current: string | null;
 	onJump: (row: PanelRow) => void;
 }) {
 	const body = useId();
@@ -296,7 +340,12 @@ function Region(props: {
 				{!props.folded && listed !== null && listed.length > 0 && (
 					<ul className="mt-0.5 mb-1">
 						{listed.map((row) => (
-							<Row key={row.key} row={row} onJump={props.onJump} />
+							<Row
+								key={row.key}
+								row={row}
+								current={row.key === props.current}
+								onJump={props.onJump}
+							/>
 						))}
 					</ul>
 				)}
@@ -321,6 +370,8 @@ export function ThreadsPanel(props: {
 	aiError: boolean;
 	state: SidebarState;
 	onState: (change: Partial<SidebarState>) => void;
+	/** The current row's key (j/k, or the last picked); null: none yet. */
+	current?: string | null;
 	onJump: (row: PanelRow) => void;
 }) {
 	const { state } = props;
@@ -335,6 +386,7 @@ export function ThreadsPanel(props: {
 				folded={state.peopleFolded}
 				onFold={(peopleFolded) => props.onState({ peopleFolded })}
 				showResolved={state.showResolved}
+				current={props.current ?? null}
 				onJump={props.onJump}
 			/>
 			<Region
@@ -346,6 +398,7 @@ export function ThreadsPanel(props: {
 				folded={state.aiFolded}
 				onFold={(aiFolded) => props.onState({ aiFolded })}
 				showResolved={state.showResolved}
+				current={props.current ?? null}
 				onJump={props.onJump}
 			/>
 		</div>
