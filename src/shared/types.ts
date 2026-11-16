@@ -724,6 +724,11 @@ export interface NewThreadRequest {
 	/** subject "line" only: the span's columns, both or neither. */
 	startCol?: number | null;
 	endCol?: number | null;
+	/**
+	 * Started from this agent conversation (its id, a lowercase ULID): once
+	 * GitHub has the thread, the conversation becomes its (agent-thread-linked).
+	 */
+	agentThread?: string;
 }
 
 /** 200: the thread as the overview read would show it (anchor with cols, code window may be null until read), and its comments. */
@@ -732,6 +737,8 @@ export interface NewThreadAnswer {
 	comments: ThreadComments;
 	/** The opening comment's link on GitHub, when GitHub gave its REST id. */
 	url?: string;
+	/** The agent conversation now on this thread (the request's `agentThread`, linked). */
+	agentThread?: string;
 }
 
 /** A verdict the reviewer can send: one submitted review (Final Verdict). */

@@ -248,7 +248,7 @@ export function NewThread(props: {
 							onChange={(e) =>
 								writer.drafts.setNew(
 									clientId,
-									targetOf(span),
+									targetOf(span, item.agentThread),
 									e.target.value,
 									props.lineTexts,
 								)
