@@ -460,10 +460,24 @@ test("threads come latest activity first, five at a time", async ({
 	const more = humans.getByRole("button", { name: /^Load \d+ more/ });
 	await expect(more).toHaveText("Load 5 more comments out of 7");
 	// A prominent button: at least 40px tall, outlined, centred under the list.
-	const box = await more.boundingBox();
-	const list = await humans
-		.getByRole("list", { name: "Unresolved threads" })
-		.boundingBox();
+	// Both boxes come from one read of one layout: the threads' rows can still
+	// grow while the page settles, and two separate reads could see the
+	// button before the growth and the list after it (CAR-179).
+	const { box, list } = await humans.evaluate((region) => {
+		const rect = (el: Element | undefined | null) => {
+			if (!el) return null;
+			const { x, y, width, height } = el.getBoundingClientRect();
+			return { x, y, width, height };
+		};
+		return {
+			box: rect(
+				[...region.querySelectorAll("button")].find((b) =>
+					/^Load \d+ more/.test(b.textContent ?? ""),
+				),
+			),
+			list: rect(region.querySelector('ul[aria-label="Unresolved threads"]')),
+		};
+	});
 	if (!box || !list) throw new Error("no layout");
 	expect(box.height).toBeGreaterThanOrEqual(40);
 	expect(box.y).toBeGreaterThanOrEqual(list.y + list.height);
