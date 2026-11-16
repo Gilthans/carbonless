@@ -718,10 +718,20 @@ export class Session {
 			asOf: this.options.asOf ?? null,
 			pinnedHead: this.pinned,
 			patchsets: this.#patchsets.map(
-				({ number, head, mergeBase, startedAt, since, shape, baseBranch }) => ({
+				({
 					number,
 					head,
 					mergeBase,
+					revision,
+					startedAt,
+					since,
+					shape,
+					baseBranch,
+				}) => ({
+					number,
+					head,
+					mergeBase,
+					revision,
 					// One started before the name was recorded: the current one
 					// (as #sinceOf takes it; a retarget before it can't be told).
 					baseBranch: baseBranch ?? this.#snapshotBase,

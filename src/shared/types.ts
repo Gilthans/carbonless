@@ -1149,6 +1149,8 @@ export interface SessionInfo {
 		number: number;
 		head: string;
 		mergeBase: string;
+		/** Its snapshot's id (a ReviewView's `revision`). */
+		revision: string;
 		/**
 		 * The base branch it was reviewed against (its own, kept after a
 		 * retarget: its card's "Against").

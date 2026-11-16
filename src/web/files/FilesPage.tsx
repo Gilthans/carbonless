@@ -612,6 +612,16 @@ function viewedHeadOf(
 	return session.patchsets.find((p) => p.number === viewing.number)?.head;
 }
 
+/** The viewed patch set's snapshot id; none for a viewed head. */
+function viewedRevisionOf(
+	comparison: Comparison,
+	session: SessionInfo | undefined,
+): string | undefined {
+	const { viewing } = comparison;
+	if (viewing?.kind !== "patchset") return undefined;
+	return session?.patchsets.find((p) => p.number === viewing.number)?.revision;
+}
+
 export function FilesPage() {
 	// The comparison (the graph's markers): which review to show.
 	const session = useQuery(sessionQuery).data;
@@ -623,7 +633,7 @@ export function FilesPage() {
 		served,
 		review.isFetching,
 		comparison.viewing,
-		viewedHeadOf(comparison, session),
+		viewedRevisionOf(comparison, session),
 	);
 	// The engine's answer for the comparison: the since view's chips and
 	// hunks, the provisional carries over a viewed head (under the

@@ -394,38 +394,45 @@ function withoutComparison(
 /**
  * The served review if it is the viewed one; when it is another's, the
  * last one served that fits, else none yet (the page shows its skeleton).
+ *
  * The session's own review (`["review"]`, the latest patch set's) is
- * cached under one key: when a comment or a verdict starts a patch set,
+ * cached under one key. When a comment or a verdict starts a patch set,
  * the session can name it (the comparison moves to it) before that read
- * answers again, and the cached answer is then the previous patch set's,
- * a snapshot of other files and revisions (CAR-194). A viewed patch set's review is the one of
- * that number; the last one served fits too when it was the same commit's
- * (the viewed head that just became the patch set). Only while the read is
- * asked again: a settled answer shows as served.
+ * answers again, and the cached answer is then the previous patch set's:
+ * another snapshot, other files and lines (CAR-194). A viewed patch set's
+ * review is the one of that number, or one of its very snapshot (by
+ * revision: the viewed head it was started on; a head's snapshot on
+ * another base is another revision and never fits). Only while the read
+ * is asked again: a settled answer (an error too) shows as served.
+ *
+ * The other order, the review read answering a patch set the session
+ * doesn't know yet (started on another device), settles: it shows under
+ * the latest number the session knows until the session read lands. Its
+ * writes go to its own revision, the latest, so nothing lands wrong.
  */
 export function useViewedReview(
 	served: ReviewView | undefined,
 	/** The served read is being read again (a settled answer is shown as is). */
 	fetching: boolean,
 	viewing: Viewing | null,
-	viewedHead: string | undefined,
+	/** The viewed patch set's snapshot (SessionInfo.patchsets' `revision`). */
+	viewedRevision: string | undefined,
 ): ReviewView | undefined {
 	const want = viewing?.kind === "patchset" ? viewing.number : null;
-	const last = useRef<{ view: ReviewView; head: string | undefined } | null>(
-		null,
-	);
+	const last = useRef<ReviewView | null>(null);
+	const fits = (v: ReviewView) =>
+		want === null ||
+		v.patchset === want ||
+		(viewedRevision !== undefined && v.revision === viewedRevision);
 	const held = last.current;
-	const fits = (v: ReviewView) => want === null || v.patchset === want;
 	const shown =
 		!served || !fetching || fits(served)
 			? served
-			: held &&
-					(fits(held.view) ||
-						(viewedHead !== undefined && held.head === viewedHead))
-				? held.view
+			: held && fits(held)
+				? held
 				: undefined;
 	useEffect(() => {
-		if (shown) last.current = { view: shown, head: viewedHead };
-	}, [shown, viewedHead]);
+		if (shown) last.current = shown;
+	}, [shown]);
 	return shown;
 }

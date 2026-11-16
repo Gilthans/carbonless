@@ -559,14 +559,27 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	expect([...perPid.values()]).toEqual([2, 1]);
 });
 
-/** The session's own review (GET /review, no target), its next read held. */
+/**
+ * The session's own review (GET /review, no target): its first read after
+ * a new thread's POST answered (the one the new thread asks for) is held.
+ */
 async function holdOwnReview(page: Page) {
 	const held = { hits: 0, release: () => {} };
 	const released = new Promise<void>((r) => {
 		held.release = r;
 	});
+	let posted = false;
+	page.on("response", (response) => {
+		const request = response.request();
+		if (
+			request.method() === "POST" &&
+			/\/api\/r\/[^/]+\/threads$/.test(request.url())
+		) {
+			posted = true;
+		}
+	});
 	await page.route(/\/api\/r\/[^/]+\/review$/, async (route) => {
-		if (route.request().method() !== "GET") return route.fallback();
+		if (route.request().method() !== "GET" || !posted) return route.fallback();
 		held.hits += 1;
 		if (held.hits === 1) await released;
 		await route.fallback();
@@ -818,8 +831,12 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	await expect(page).toHaveURL(/[?&]ps=2(&|$)/);
 	await expect.poll(() => ownRead.hits).toBeGreaterThan(0);
 	// Never PS1's cached review under PS2's name (its file closed): the
-	// viewed head's, the same commit, stays open until the read answers.
+	// viewed head's, PS2's very snapshot, stays (its file open) until the
+	// read answers.
 	const ps2 = fileSection(page, CALC);
+	await expect(
+		ps2.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
 	await expect(ps2.getByRole("button", { name: "Expand file" })).toHaveCount(0);
 	ownRead.release();
 	expect(storedThreads(p)).toMatchObject([

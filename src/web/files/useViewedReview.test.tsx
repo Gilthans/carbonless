@@ -4,8 +4,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ReviewView } from "../../shared/types";
 import { useViewedReview, type Viewing } from "./comparison";
 
-const HEAD = "f".repeat(40);
-
 const view = (revision: string, patchset: number | null): ReviewView => ({
 	revision,
 	patchset,
@@ -17,48 +15,83 @@ interface Props {
 	served: ReviewView | undefined;
 	fetching: boolean;
 	viewing: Viewing | null;
-	viewedHead: string | undefined;
+	viewedRevision: string | undefined;
 }
 
 const render = (initialProps: Props) =>
 	renderHook(
 		(p: Props) =>
-			useViewedReview(p.served, p.fetching, p.viewing, p.viewedHead),
-		{
-			initialProps,
-		},
+			useViewedReview(p.served, p.fetching, p.viewing, p.viewedRevision),
+		{ initialProps },
 	);
+
+const HEAD: Viewing = { kind: "head", oid: "f".repeat(40) };
+const PS2: Viewing = { kind: "patchset", number: 2 };
 
 afterEach(cleanup);
 
 describe("useViewedReview (CAR-194)", () => {
-	// The head viewed, then a comment on it starts PS2: the session names
-	// PS2 (the comparison moves to it) while the session's own review,
-	// cached from before, is still PS1's and read again.
+	// The head viewed (snapshot r2), then a comment on it starts PS2 on
+	// that snapshot: the session names PS2 (the comparison moves to it)
+	// while the session's own review, cached from before, is still PS1's
+	// (r1) and read again.
 	const ps1 = view("r1", 1);
 	const head = view("r2", null);
 	const ps2 = view("r2", 2);
 
-	it("never shows the previous patch set's cached review under the new one's name: the viewed head's stays until the read answers", () => {
+	it("never shows the previous patch set's cached review under the new one's name: the viewed head's snapshot stays until the read answers", () => {
 		const hook = render({
 			served: head,
 			fetching: false,
-			viewing: { kind: "head", oid: HEAD },
-			viewedHead: HEAD,
+			viewing: HEAD,
+			viewedRevision: undefined,
 		});
 		expect(hook.result.current).toBe(head);
 		hook.rerender({
 			served: ps1,
 			fetching: true,
-			viewing: { kind: "patchset", number: 2 },
-			viewedHead: HEAD,
+			viewing: PS2,
+			viewedRevision: "r2",
 		});
 		expect(hook.result.current).toBe(head);
 		hook.rerender({
 			served: ps2,
 			fetching: false,
-			viewing: { kind: "patchset", number: 2 },
-			viewedHead: HEAD,
+			viewing: PS2,
+			viewedRevision: "r2",
+		});
+		expect(hook.result.current).toBe(ps2);
+	});
+
+	it("a held view of the same head on another base (another snapshot) doesn't fit: none yet", () => {
+		const hook = render({
+			served: view("rA", null),
+			fetching: false,
+			viewing: HEAD,
+			viewedRevision: undefined,
+		});
+		// PS2 started on the head's snapshot against the moved base: rB.
+		hook.rerender({
+			served: ps1,
+			fetching: true,
+			viewing: PS2,
+			viewedRevision: "rB",
+		});
+		expect(hook.result.current).toBeUndefined();
+	});
+
+	it("the same patch set's view stays while the read answers another's", () => {
+		const hook = render({
+			served: ps2,
+			fetching: false,
+			viewing: PS2,
+			viewedRevision: "r2",
+		});
+		hook.rerender({
+			served: ps1,
+			fetching: true,
+			viewing: PS2,
+			viewedRevision: "r2",
 		});
 		expect(hook.result.current).toBe(ps2);
 	});
@@ -67,34 +100,35 @@ describe("useViewedReview (CAR-194)", () => {
 		const hook = render({
 			served: ps1,
 			fetching: true,
-			viewing: { kind: "patchset", number: 2 },
-			viewedHead: HEAD,
+			viewing: PS2,
+			viewedRevision: "r2",
 		});
 		expect(hook.result.current).toBeUndefined();
 	});
 
-	it("a held view of another commit doesn't fit", () => {
+	it("a read again that fails settles: the served view shows (with the error), never stuck", () => {
 		const hook = render({
-			served: view("r0", null),
-			fetching: false,
-			viewing: { kind: "head", oid: "a".repeat(40) },
-			viewedHead: "a".repeat(40),
-		});
-		hook.rerender({
 			served: ps1,
 			fetching: true,
-			viewing: { kind: "patchset", number: 2 },
-			viewedHead: HEAD,
+			viewing: PS2,
+			viewedRevision: "r2",
 		});
 		expect(hook.result.current).toBeUndefined();
+		hook.rerender({
+			served: ps1,
+			fetching: false,
+			viewing: PS2,
+			viewedRevision: "r2",
+		});
+		expect(hook.result.current).toBe(ps1);
 	});
 
 	it("a settled answer shows as served, whatever its patch set", () => {
 		const hook = render({
 			served: ps1,
 			fetching: false,
-			viewing: { kind: "patchset", number: 2 },
-			viewedHead: HEAD,
+			viewing: PS2,
+			viewedRevision: "r2",
 		});
 		expect(hook.result.current).toBe(ps1);
 	});
@@ -103,8 +137,8 @@ describe("useViewedReview (CAR-194)", () => {
 		const hook = render({
 			served: ps2,
 			fetching: true,
-			viewing: { kind: "head", oid: HEAD },
-			viewedHead: HEAD,
+			viewing: HEAD,
+			viewedRevision: undefined,
 		});
 		expect(hook.result.current).toBe(ps2);
 	});
