@@ -259,6 +259,23 @@ export function sinceLine(c: SinceDone): string {
 	return parts.join(" · ");
 }
 
+const COMPARING = "Comparing with your verdict";
+
+/** The since line while what changed is still on its way. */
+function SincePending() {
+	return (
+		<p
+			data-testid="verdict-since"
+			data-state="pending"
+			aria-busy="true"
+			className="flex min-h-6 items-center gap-1.5 text-sm text-muted"
+		>
+			<b className="font-semibold text-ink-soft">Since then:</b>
+			<Spinner label={COMPARING} size={14} />
+		</p>
+	);
+}
+
 /**
  * Under the reviewer's verdict, what changed since it (VerdictFacts.since):
  * a spinner while the engine computes, the counts with the target patch
@@ -270,19 +287,7 @@ function SinceVerdict(props: {
 }) {
 	const { since, review } = props;
 	const { changes } = since;
-	if (changes.status === "pending") {
-		return (
-			<p
-				data-testid="verdict-since"
-				data-state="pending"
-				aria-busy="true"
-				className="flex min-h-6 items-center gap-1.5 text-sm text-muted"
-			>
-				<b className="font-semibold text-ink-soft">Since then:</b>
-				<Spinner label="Comparing with your verdict" size={14} />
-			</p>
-		);
-	}
+	if (changes.status === "pending") return <SincePending />;
 	if (changes.status === "failed") {
 		return (
 			<p
@@ -364,19 +369,23 @@ function SinceVerdict(props: {
  * of GitHub. Against the key the answer was asked under, not the one the
  * card mounted with: a head check landing before the card shows would
  * otherwise leave an answer from before it (no since line) for good (CAR-180).
+ * True while the answer on screen is such an old one (asked again).
  */
 function useSinceFollowsHead(
 	session: SessionInfo,
 	facts: VerdictFacts | undefined,
-) {
+): boolean {
 	const client = useQueryClient();
 	const key = sinceHeadKey(session);
+	const under = facts ? verdictHeadKey(client) : undefined;
+	const stale = under !== undefined && under !== key;
+	// Again for each answer that lands under an old key (the head moved
+	// while it was asked).
 	useEffect(() => {
-		if (!facts) return;
-		const under = verdictHeadKey(client);
-		if (under === undefined || under === key) return;
-		void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
-	}, [client, key, facts]);
+		if (under !== undefined && under !== key)
+			void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
+	}, [client, under, key]);
+	return stale;
 }
 
 /**
@@ -436,9 +445,16 @@ export function VerdictCard(props: {
 	// A verdict out (a resent or discarded one too) shows as sending: the
 	// buttons wait for it, and say so.
 	const sending = writes.verdict !== null;
+	// The answer on screen predates the head (asked again): what changed
+	// since the reviewer's verdict, and so the commit a verdict goes on,
+	// is on its way. Pending, never "nothing since" (principle 8).
+	const stale =
+		useSinceFollowsHead(session, props.facts) &&
+		Boolean(props.facts?.yourVerdict);
 	const reasonOf = (event: VerdictEvent) =>
 		off ??
 		(sending ? "Sending your verdict" : null) ??
+		(stale ? COMPARING : null) ??
 		(overview.youAuthor && event !== "COMMENT" ? OWN_PR_TIP : null);
 	const standing = standingOpinion(props.facts, overview);
 	const tipOf = (event: VerdictEvent) =>
@@ -453,7 +469,6 @@ export function VerdictCard(props: {
 			VERDICT_TIPS[event]
 		);
 	const stillStands = writes.verdictStillStands;
-	useSinceFollowsHead(session, props.facts);
 	const since = props.facts?.since ?? null;
 	// With a verdict to compare, every verdict goes on the head it is
 	// compared with (the latest patch set's, or the PR's head past it,
@@ -476,6 +491,7 @@ export function VerdictCard(props: {
 			: null;
 	const older =
 		!off &&
+		!stale &&
 		!since &&
 		session.snapshotHead !== "" &&
 		session.snapshotHead !== session.currentHead;
@@ -554,8 +570,11 @@ export function VerdictCard(props: {
 					</Link>
 				)}
 			</div>
-			{since && !writes.verdict && (
-				<SinceVerdict since={since} review={review} />
+			{stale && !writes.verdict ? (
+				<SincePending />
+			) : (
+				since &&
+				!writes.verdict && <SinceVerdict since={since} review={review} />
 			)}
 			{info.length > 0 && (
 				<p data-testid="verdict-info" className="text-xs text-muted">

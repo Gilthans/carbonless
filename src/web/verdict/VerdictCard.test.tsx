@@ -10,7 +10,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { heldJson } from "../../../test/loading";
+import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type {
 	PrOverview,
 	ReviewView,
@@ -414,11 +414,13 @@ describe("the verdict card since your verdict", () => {
 		).toBeNull();
 	});
 
-	it("a head check that lands before the card shows still brings the since line (CAR-180)", async () => {
+	it("a head check that lands before the card shows still brings the since line, pending meanwhile (CAR-180)", async () => {
 		// The page opens on PS2 approved, nothing since (no since line); the
 		// head check finds NEW past it while the overview is still on its
 		// way, so the card mounts already on NEW. The answer it has was
-		// asked before NEW: it asks again, and the since line comes.
+		// asked before NEW: it asks again, the since line pending and the
+		// verdicts held meanwhile (never "nothing since", nor Approve on the
+		// old head), then the since line comes.
 		// The server answers against the head it knows: NEW once the head
 		// check has run.
 		let serverHead = PS2;
@@ -426,6 +428,7 @@ describe("the verdict card since your verdict", () => {
 		const overviewHeld = heldJson();
 		const headHeld = heldJson();
 		const asked: string[] = [];
+		const again = heldJson();
 		// Gates, not findBy's clock: the first read is in, the head landed.
 		let firstAsked = () => {};
 		const firstAsk = new Promise<void>((r) => {
@@ -436,9 +439,7 @@ describe("the verdict card since your verdict", () => {
 				const head = serverHead;
 				asked.push(head);
 				firstAsked();
-				return head === NEW
-					? facts({ ...onPs2, to: { head: NEW, patchset: null } })
-					: facts(null);
+				return head === NEW ? again.response : { ...facts(onPs2), since: null };
 			},
 			session(),
 			() => null,
@@ -467,8 +468,32 @@ describe("the verdict card since your verdict", () => {
 		await landed;
 		overviewHeld.release(overview);
 		const c = await card();
-		const since = await within(c).findByTestId("verdict-since");
-		expect(since).toHaveAttribute("data-state", "changed");
+		await expectLoadingThen({
+			loading: () =>
+				within(c).queryByRole("status", {
+					name: "Comparing with your verdict",
+				}),
+			empty: [
+				() => within(c).queryByTestId("verdict-older"),
+				() =>
+					within(c)
+						.queryAllByTestId("verdict-since")
+						.find((el) => el.dataset.state !== "pending") ?? null,
+				() =>
+					within(c)
+						.queryAllByTestId(/^verdict-(approve|comment|request_changes)$/)
+						.find((el) => el.getAttribute("aria-disabled") !== "true") ?? null,
+			],
+			release: () =>
+				again.release(facts({ ...onPs2, to: { head: NEW, patchset: null } })),
+			result: () =>
+				within(c)
+					.queryAllByTestId("verdict-since")
+					.find((el) => el.dataset.state === "changed") ?? null,
+		});
+		expect(within(c).getByTestId("verdict-approve")).not.toHaveAttribute(
+			"aria-disabled",
+		);
 		expect(asked).toEqual([PS2, NEW]);
 	});
 	it("the head moved back onto PS1's (S6): the buttons post on it, the card says the head moved back to PS1", async () => {

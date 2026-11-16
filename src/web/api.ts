@@ -785,10 +785,12 @@ export const verdictHeadKey = (client: QueryClient) =>
  */
 export const verdictQuery = queryOptions({
 	queryKey: ["verdict"],
-	queryFn: async ({ client }) => {
+	queryFn: async ({ client, signal }) => {
 		const under = sinceHeadKey(client.getQueryData(sessionQuery.queryKey));
 		const facts = await fetchVerdict();
-		verdictAskedUnder.set(client, under);
+		// A read cancelled by a newer one (the head moved again) keeps out:
+		// its answer never shows, so neither does the key it was asked under.
+		if (!signal.aborted) verdictAskedUnder.set(client, under);
 		return facts;
 	},
 	staleTime: Number.POSITIVE_INFINITY,
