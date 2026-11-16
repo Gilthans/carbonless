@@ -229,6 +229,22 @@ export function findInstalled(
 	return null;
 }
 
+/**
+ * Writes `text` (0600) so a reader finds the whole file or none: a temp
+ * file beside it, renamed over it. crb, and a test waiting for the file,
+ * read it as soon as it exists; writeFileSync creates it empty first.
+ */
+function writeAtomic(file: string, text: string): void {
+	const tmp = `${file}.${process.pid}.tmp`;
+	try {
+		writeFileSync(tmp, text, { mode: PRIVATE });
+		renameSync(tmp, file);
+	} catch (error) {
+		rmSync(tmp, { force: true });
+		throw error;
+	}
+}
+
 /** serve.log for appending (0600), moved aside first past LOG_LIMIT. */
 function openServeLog(file: string): number {
 	try {
@@ -263,9 +279,7 @@ export async function runHelper(config: HelperConfig): Promise<UpdateResult> {
 		log(`[${new Date().toISOString()}] ${text}\n`);
 	const finish = (result: UpdateResult) => {
 		try {
-			writeFileSync(config.result, `${JSON.stringify(result)}\n`, {
-				mode: PRIVATE,
-			});
+			writeAtomic(config.result, `${JSON.stringify(result)}\n`);
 		} catch (error) {
 			stamp(`could not write the result: ${(error as Error).message}`);
 		}
@@ -318,9 +332,7 @@ export async function runHelper(config: HelperConfig): Promise<UpdateResult> {
 			// server.json (a test's teardown).
 			if (child.pid) {
 				try {
-					writeFileSync(relaunchedPidFile(config.result), `${child.pid}\n`, {
-						mode: PRIVATE,
-					});
+					writeAtomic(relaunchedPidFile(config.result), `${child.pid}\n`);
 				} catch {
 					// Only a convenience.
 				}
