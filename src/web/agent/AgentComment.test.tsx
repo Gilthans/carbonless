@@ -598,6 +598,80 @@ describe("AgentComment: placement", () => {
 	});
 });
 
+describe("AgentComment: kept in the browser", () => {
+	const KEY = `crb:agent-comment:${CLIENT_ID}`;
+
+	it("another tab's press fixes the text here too (a storage event)", async () => {
+		show("Why?");
+		expect(box()).toHaveProperty("readOnly", false);
+		localStorage.setItem(
+			KEY,
+			JSON.stringify({
+				sending: {
+					attemptedAt: "2026-11-16T10:02:00.000Z",
+					body: "Sent there",
+				},
+			}),
+		);
+		act(() => {
+			window.dispatchEvent(new StorageEvent("storage", { key: KEY }));
+		});
+		expect(box()).toHaveProperty("value", "Sent there");
+		expect(box()).toHaveProperty("readOnly", true);
+	});
+
+	it("a press left in doubt where the block can't post now says it may have landed", () => {
+		localStorage.setItem(
+			KEY,
+			JSON.stringify({
+				sending: {
+					attemptedAt: "2026-11-16T10:02:00.000Z",
+					body: "Sent before",
+				},
+			}),
+		);
+		show(
+			"x",
+			lineThread({
+				anchor: {
+					subject: "thread",
+					thread: "PRRT_1",
+					path: "src/x.ts",
+					commit: OLD,
+				},
+				orphaned: true,
+			}),
+		);
+		expect(box()).toHaveProperty("value", "Sent before");
+		expect(screen.getByRole("alert").textContent).toMatch(/may have landed/i);
+		expect(button()).toHaveAccessibleDescription(THREAD_GONE);
+		expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+	});
+
+	it("a kept post whose record is in the agent ref is dropped from the browser", async () => {
+		const posted = {
+			block: 0,
+			url: "https://github.com/o/r/pull/1#discussion_r9",
+			at: "2026-11-16T10:05:00.000Z",
+			text: "Why?",
+		};
+		localStorage.setItem(
+			KEY,
+			JSON.stringify({
+				posted: {
+					...posted,
+					github: { thread: "PRRT_9", comment: "PRRC_9", url: posted.url },
+				},
+			}),
+		);
+		const msg = message({ posted: [posted] });
+		show("x", lineThread({ messages: [msg] }), msg);
+		expect(screen.getByText("Posted")).toBeTruthy();
+		await vi.waitFor(() => expect(localStorage.getItem(KEY)).toBeNull());
+		expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+	});
+});
+
 describe("AgentComment: where nothing posts", () => {
 	it("a conversation of any other kind (the whole review's) shows the read-only quote and Copy, no box", () => {
 		const review = lineThread({

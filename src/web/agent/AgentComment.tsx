@@ -47,6 +47,7 @@ import {
 	CHANGED,
 	type CommentPlace,
 	commentPlace,
+	dropKeptPosted,
 	keptOf,
 	placeLabel,
 	postAgentComment,
@@ -143,7 +144,7 @@ function usePlace(thread: AgentThread): CommentPlace {
 	useEffect(() => {
 		if (!missing || askedAt !== null) return;
 		setAskedAt(dataUpdatedAt);
-		void refetch();
+		void refetch({ cancelRefetch: false });
 	}, [missing, askedAt, dataUpdatedAt, refetch]);
 	const waiting = missing && (askedAt === null || dataUpdatedAt === askedAt);
 	const placing = isError ? "failed" : !data || waiting ? "pending" : "in";
@@ -238,8 +239,10 @@ function CommentBox(props: { text: string; block: number; at: CommentAt }) {
 	}, [posted, postable, clientId, send]);
 	// Posted on an earlier load whose record didn't land: written now.
 	useEffect(() => {
-		if (stored || !keptPosted) return;
-		void recordPosted(client, thread.id, message.id, clientId, keptPosted);
+		if (!keptPosted) return;
+		// Recorded already (its answer lost): the browser's copy has served.
+		if (stored) dropKeptPosted(clientId);
+		else void recordPosted(client, thread.id, message.id, clientId, keptPosted);
 	}, [stored, keptPosted, client, thread.id, message.id, clientId]);
 
 	if (posted) return <PostedRow posted={posted} />;
@@ -354,7 +357,7 @@ function CommentBox(props: { text: string; block: number; at: CommentAt }) {
 					{phase.why}
 				</p>
 			)}
-			{phase.kind === "doubt" && (
+			{(phase.kind === "doubt" || (sentBody !== null && !sending)) && (
 				<p
 					role="alert"
 					className="flex items-start gap-1.5 text-sm text-warn break-words"

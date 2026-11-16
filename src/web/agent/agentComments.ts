@@ -340,7 +340,35 @@ export function setDraft(clientId: string, text: string, agent: string): void {
 	setKept(clientId, text === agent ? rest : { ...rest, text });
 }
 
+const PREFIX = "crb:agent-comment:";
+let listening = false;
+
+/**
+ * Another tab's writes: its block's entry is read from storage again (a
+ * press it made fixes the text here too, a post it made shows Posted).
+ */
+function listenToOtherTabs(): void {
+	if (listening || typeof window === "undefined") return;
+	listening = true;
+	window.addEventListener("storage", (e) => {
+		if (e.key === null) memory.clear();
+		else if (e.key.startsWith(PREFIX))
+			memory.delete(e.key.slice(PREFIX.length));
+		else return;
+		for (const l of listeners) l();
+	});
+}
+
+/** Drops a block's kept post (its record is in the agent ref). */
+export function dropKeptPosted(clientId: string): void {
+	const kept = keptOf(clientId);
+	if (!kept.posted) return;
+	const { posted: _, ...rest } = kept;
+	setKept(clientId, rest);
+}
+
 export function subscribeKept(listener: () => void): () => void {
+	listenToOtherTabs();
 	listeners.add(listener);
 	return () => {
 		listeners.delete(listener);
