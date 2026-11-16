@@ -1170,6 +1170,41 @@ describe("AgentRunner: lifecycle", () => {
 		expect(spawns()).toHaveLength(1);
 	});
 
+	it("elsewhere, the status's threadsRev moves when the holder takes and answers a question between two reads (CAR-187)", async () => {
+		mkdirSync(dir(), { recursive: true });
+		writeFileSync(
+			join(dir(), "claim.json"),
+			JSON.stringify({ pid: process.ppid, port: 4801, token: "theirs" }),
+		);
+		makeRunner().poke();
+		await runner.settled();
+		const before = await runner.status();
+		expect(before).toMatchObject({ state: "elsewhere", waiting: 0 });
+		expect(before.threadsRev).toBe("");
+		// Asked, then answered by the holder (its writes reach the same ref),
+		// all between two reads of this server's status.
+		const t = await ask("why?");
+		await store.message(t.id, {
+			by: "ai",
+			text: "because",
+			agent: { name: "theirs", version: "1" },
+			stop: "end_turn",
+			activity: [],
+		});
+		const after = await runner.status();
+		expect(after).toMatchObject({
+			state: "elsewhere",
+			since: before.since,
+			waiting: 0,
+		});
+		expect(after.answering).toBeUndefined();
+		expect(after.threadsRev).not.toBe(before.threadsRev);
+		expect(after.threadsRev).not.toBe("");
+		// Nothing written: the same.
+		expect((await runner.status()).threadsRev).toBe(after.threadsRev);
+		rmSync(join(dir(), "claim.json"));
+	});
+
 	it("a config change to a new command respawns (a new admit and kickoff); to null closes", async () => {
 		makeRunner().poke();
 		await until((s) => s.state === "ready" && s.via === "acp");

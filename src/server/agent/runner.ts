@@ -420,10 +420,11 @@ export class AgentRunner {
 			}
 		}
 		let waiting = 0;
+		let threadsRev: string | undefined;
 		try {
-			waiting = (await this.#deps.store.read()).filter(
-				(t) => t.waiting && !t.resolved,
-			).length;
+			const read = await this.#deps.store.readWithRevision();
+			waiting = read.threads.filter((t) => t.waiting && !t.resolved).length;
+			threadsRev = read.revision;
 		} catch {
 			// The count is a hint; the ref may be unreadable a moment.
 		}
@@ -462,6 +463,7 @@ export class AgentRunner {
 				: {}),
 			...(this.#seenAt() ? { seen: this.#seenAt() } : {}),
 			waiting,
+			...(threadsRev !== undefined ? { threadsRev } : {}),
 		};
 	}
 

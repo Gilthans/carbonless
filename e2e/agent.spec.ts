@@ -496,16 +496,39 @@ test("elsewhere: a second server leaves the agent to the first, which answers wh
 	// Asked there, the holder's agent answers it: the one agent process on
 	// the machine is the first server's.
 	const section = await openFile(other, second.url, CALC);
+	// This page's status reads are held from the ask until the holder has
+	// answered (CAR-187): the question is taken and answered between two of
+	// them, so the next one reads "elsewhere, nothing waiting" as before,
+	// and only its threadsRev says the threads moved.
+	const held: Array<() => Promise<void>> = [];
+	let holding = true;
+	await other.route("**/agent", (route) => {
+		if (!holding || route.request().method() !== "GET") {
+			return route.continue();
+		}
+		held.push(() => route.continue());
+	});
 	const card = await ask(other, section, 3, "Who answers?");
 	// The holder sees the question on its next status poll (the first
-	// page's), then this page on its own: idle polls, which the clock moves
-	// on to rather than waits out (the agent answers in real time between).
+	// page's): idle polls, which the clock moves on to rather than waits out
+	// (the agent answers in real time between).
+	const stored = `/api${new URL(first.url).pathname}/agent/threads`;
 	await expect(async () => {
 		await page.clock.fastForward(AGENT_POLL_MS);
+		const { threads } = await page.evaluate(
+			async (u) => (await fetch(u)).json(),
+			stored,
+		);
+		expect(threads[0]?.waiting).toBe(false);
+	}).toPass({ timeout: 20_000 });
+	holding = false;
+	for (const go of held.splice(0)) await go();
+	await expect(async () => {
+		await other.clock.fastForward(AGENT_POLL_MS);
 		await expect(card).toHaveAttribute("aria-label", "Agent thread, answered", {
 			timeout: 1000,
 		});
-	}).toPass({ timeout: 20_000 });
+	}).toPass({ timeout: 10_000 });
 	await expect(card.getByTestId("agent-message-ai")).toHaveText("ok");
 	const pids = new Set(
 		acpLog(acpLogPath)

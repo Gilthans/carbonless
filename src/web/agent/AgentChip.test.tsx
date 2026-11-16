@@ -438,6 +438,53 @@ describe("the agent chip", () => {
 			exact: true,
 		});
 	});
+
+	it("on a server showing elsewhere, reads the threads again when the stored threads move, though nothing else does (CAR-187)", async () => {
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false, enabled: false } },
+		});
+		// The holder took the question and answered it between two polls:
+		// state, since and waiting read as before; only the threads moved.
+		const there = (threadsRev: string) =>
+			status({
+				state: "elsewhere",
+				elsewhere: 4748,
+				agent: undefined,
+				threadsRev,
+			});
+		client.setQueryData(agentStatusQuery.queryKey, there("3.a"));
+		client.setQueryData(overviewQuery.queryKey, {
+			writes: "on",
+		} as PrOverview);
+		const invalidate = vi.spyOn(client, "invalidateQueries");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify(there("3.a")))),
+		);
+		render(
+			<QueryClientProvider client={client}>
+				<AgentChip />
+			</QueryClientProvider>,
+		);
+		expect(screen.getByTestId("agent-chip")).toHaveAttribute(
+			"data-state",
+			"elsewhere",
+		);
+		await act(async () =>
+			client.setQueryData(agentStatusQuery.queryKey, there("3.a")),
+		);
+		expect(invalidate).not.toHaveBeenCalled();
+		await act(async () =>
+			client.setQueryData(agentStatusQuery.queryKey, there("4.b")),
+		);
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith({
+				queryKey: agentThreadsQuery.queryKey,
+				exact: true,
+			}),
+		);
+		expect(invalidate).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("the status poll", () => {
