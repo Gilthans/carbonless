@@ -108,7 +108,7 @@ describe("fileLevelCluster", () => {
 		},
 	);
 
-	it("a binary renamed with its bytes unchanged reads as a rename, never 'changed'", () => {
+	it("a binary renamed with the same blob reads as a rename, never 'changed'", () => {
 		const same = "3".repeat(40);
 		const moved = file({
 			status: "renamed",
@@ -136,6 +136,23 @@ describe("fileLevelCluster", () => {
 				false,
 			)?.label,
 		).toBe("Binary file changed");
+	});
+
+	it("a binary with the same blob and only its mode changed says the mode, not 'binary file changed'", () => {
+		const same = "5".repeat(40);
+		expect(
+			fileLevelCluster(
+				file({
+					binary: true,
+					additions: 0,
+					deletions: 0,
+					newMode: "100755",
+					oldOid: same,
+					newOid: same,
+				}),
+				false,
+			)?.label,
+		).toBe("Mode changed 100644 → 100755");
 	});
 
 	it("a rename with edits keeps the rename cluster", () => {
