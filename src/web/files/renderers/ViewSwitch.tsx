@@ -6,6 +6,7 @@ import {
 	MirrorIcon,
 	StackIcon,
 } from "@primer/octicons-react";
+import type { FileSummary } from "../../../shared/types";
 import { Tooltip } from "../../Tooltip";
 import type { CompareMode } from "./image/ImageCompare";
 import { type RendererFile, type RendererId, rendererChoices } from "./index";
@@ -67,6 +68,23 @@ export function viewOptions(file: RendererFile, modes: boolean): ViewOption[] {
 	for (const id of ["text", "binary"] as const)
 		if (choices.includes(id)) out.push(OTHERS[id]);
 	return out;
+}
+
+/**
+ * Whether Image compares two versions on one stage, so Slider and Fade
+ * apply: decided once from the file's facts (not from what has loaded), so
+ * the switch keeps its shape in every view and state.
+ */
+export function imageModesOf(
+	file: Pick<FileSummary, "status" | "sameBlob">,
+	sideBySide: boolean,
+): boolean {
+	return (
+		file.status !== "added" &&
+		file.status !== "deleted" &&
+		!file.sameBlob &&
+		!sideBySide
+	);
 }
 
 /** The pressed button: the renderer shown, and Image's mode when split. */

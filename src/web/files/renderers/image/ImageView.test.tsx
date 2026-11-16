@@ -7,6 +7,7 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { heldJson } from "../../../../../test/loading";
@@ -16,7 +17,12 @@ import { REVIEW_KEY } from "../../../api";
 import { newQueryClient } from "../../../queryClient";
 import { imageMode } from "../../../viewSettings";
 import { STALE_MESSAGE } from "../../useSetStates";
-import { pressedView, ViewSwitch, viewOptions } from "../ViewSwitch";
+import {
+	imageModesOf,
+	pressedView,
+	ViewSwitch,
+	viewOptions,
+} from "../ViewSwitch";
 import { ImageView } from "./ImageView";
 
 /** FileDiff's view switch, as the image toolbar gets it. */
@@ -90,7 +96,9 @@ function show(f: FileView, opts: { sideBySide?: boolean; from?: number } = {}) {
 				file={f}
 				revision="r1"
 				sideBySide={opts.sideBySide ?? false}
-				view={(modes) => <Switch file={f} modes={modes} />}
+				view={
+					<Switch file={f} modes={imageModesOf(f, opts.sideBySide ?? false)} />
+				}
 				{...(opts.from === undefined ? {} : { from: opts.from })}
 			/>
 		</QueryClientProvider>,
@@ -178,56 +186,62 @@ describe("ImageView", () => {
 		);
 	});
 
-	it("renamed with no content change (same blob): the image once, no label", async () => {
-		const held = heldJson();
-		fetchMock.mockImplementation(() =>
-			held.response.then(
-				() => new Response(null, { status: 200, headers: { etag: '"abc"' } }),
-			),
-		);
+	const names = () =>
+		within(screen.getByRole("group", { name: "View" }))
+			.getAllByRole("button")
+			.map((b) => b.getAttribute("aria-label"));
+
+	it("renamed with the same blob (the snapshot's flag): the image once, no label, [Image, Binary] from the start", () => {
 		show(
 			file({
 				status: "renamed",
 				oldPath: "img/old.png",
 				oldSize: 10,
 				newSize: 10,
+				sameBlob: true,
 			}),
 		);
-		// Deciding whether it changed is loading, never a fallback.
-		expect(screen.getByRole("status", { name: "Loading image" })).toBeVisible();
-		expect(screen.getByTestId("image-dims")).toHaveTextContent("10 → 10 B");
-		expect(fetchMock).toHaveBeenCalledWith(
-			"/api/files/0/blob?revision=r1&side=old",
-			{ method: "HEAD" },
-		);
-		held.release({});
-		await waitFor(() =>
-			expect(screen.getAllByRole("img", { name: "Image" })).toHaveLength(1),
-		);
+		// No probe: the snapshot says so.
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(names()).toEqual(["Image", "Binary"]);
+		expect(screen.queryByAltText("Before")).toBeNull();
+		loadImg("Image", 10, 10);
 		expect(screen.getByRole("img", { name: "Image" })).toHaveAttribute(
 			"src",
 			"/api/files/0/blob?revision=r1&side=new",
 		);
 		expect(screen.queryByText("added")).toBeNull();
-		// No modes: one Image button.
-		expect(screen.queryByRole("button", { name: "Slider" })).toBeNull();
+		expect(names()).toEqual(["Image", "Binary"]);
 	});
 
-	it("renamed and changed (different blobs): both sides compare", async () => {
-		let n = 0;
-		fetchMock.mockImplementation(async () => {
-			n += 1;
-			return new Response(null, {
-				status: 200,
-				headers: { etag: `"oid${n}"` },
-			});
-		});
+	it("renamed and changed (different blobs): both sides compare", () => {
 		show(file({ status: "renamed", oldPath: "img/old.png" }));
-		await waitFor(() =>
-			expect(screen.getByAltText("Before")).toBeInTheDocument(),
-		);
+		expect(screen.getByAltText("Before")).toBeInTheDocument();
 		expect(screen.getByAltText("After")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Slider" })).toBeVisible();
+		expect(names()).toEqual(["Slider", "Fade", "Binary"]);
+	});
+
+	it("a modified PNG behind the tap: the same switch before and after it loads, and Fade works meanwhile", () => {
+		const big = IMAGE_AUTO_LOAD_BYTES + 1;
+		show(file({ oldSize: big, newSize: big }));
+		expect(
+			screen.getByRole("button", { name: /^Load image/ }),
+		).toBeInTheDocument();
+		expect(names()).toEqual(["Slider", "Fade", "Binary"]);
+		fireEvent.click(screen.getByRole("button", { name: "Fade" }));
+		expect(imageMode.read()).toBe("fade");
+		expect(screen.getByRole("button", { name: "Fade" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		fireEvent.click(screen.getByRole("button", { name: /^Load image/ }));
+		expect(names()).toEqual(["Slider", "Fade", "Binary"]);
+		loadImg("Before", 20, 10);
+		loadImg("After", 20, 10);
+		expect(names()).toEqual(["Slider", "Fade", "Binary"]);
+		expect(
+			screen.getByRole("slider", { name: "Fade before to after" }),
+		).toBeVisible();
 	});
 
 	it("side-by-side: two single views with captions, no modes", () => {

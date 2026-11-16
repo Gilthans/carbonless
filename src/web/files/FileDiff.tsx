@@ -71,6 +71,7 @@ import {
 import { rendererChoices, rendererPicks, resolveRenderer } from "./renderers";
 import { ImageView } from "./renderers/image/ImageView";
 import {
+	imageModesOf,
 	pressedView,
 	type ViewOption,
 	ViewSwitch,
@@ -691,9 +692,10 @@ export function FileDiff(props: {
 			onPick={pickView}
 		/>
 	);
-	// Outside Image, whether Image would compare two versions on one stage.
-	const imageModes =
-		file.status !== "added" && file.status !== "deleted" && !sideBySideOn;
+	// Whether Image compares two versions on one stage (Slider and Fade
+	// apply): decided once from the file's facts, so the switch keeps its
+	// shape in every view and state (principle 8: nothing moves).
+	const imageModes = imageModesOf(file, sideBySideOn);
 	const switchRow = !linesHidden && viewOptions(file, imageModes).length > 0;
 	const hunks = useQuery({
 		...hunksQuery(revision, file.index, props.since),
@@ -1395,7 +1397,7 @@ export function FileDiff(props: {
 							revision={revision}
 							from={props.since}
 							sideBySide={sideBySideOn}
-							view={viewSwitch}
+							view={viewSwitch(imageModes)}
 						/>
 						{body(true)}
 					</>

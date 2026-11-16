@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { imageTypeOf, isImagePath } from "../../../../shared/imageTypes";
 import type { FileView } from "../../../../shared/types";
@@ -6,29 +6,10 @@ import { blobUrl } from "../../../api";
 import { imageMode } from "../../../viewSettings";
 import { reloadStale, STALE_MESSAGE } from "../../useSetStates";
 import { ImageCompare } from "./ImageCompare";
-import { dimsText, ImageSingle, Stage, type Tone } from "./ImageSingle";
+import { dimsText, ImageSingle, type Tone } from "./ImageSingle";
 import { type DimsSide, ImageToolbar } from "./ImageToolbar";
 import { bytesPair, formatBytes } from "./stage";
 import { type ImageSide, useImageSide } from "./useImageSide";
-
-/**
- * Whether two blob urls name the same blob: their ETags are the blob oids
- * (the route's HEAD reads no bytes). For a renamed file, whose two sides
- * the snapshot doesn't compare for us (git calls an unchanged binary's
- * rename binary too). Any failure answers false: both sides show, and
- * their own loads say why.
- */
-async function sameBlob(oldUrl: string, newUrl: string): Promise<boolean> {
-	try {
-		const [a, b] = await Promise.all(
-			[oldUrl, newUrl].map((url) => fetch(url, { method: "HEAD" })),
-		);
-		const tag = a?.headers.get("etag");
-		return Boolean(a?.ok && b?.ok && tag && tag === b.headers.get("etag"));
-	} catch {
-		return false;
-	}
-}
 
 /**
  * The image renderer's view (spec "Unified view", "Side-by-side view",
@@ -52,13 +33,14 @@ export function ImageView(props: {
 	from?: number;
 	sideBySide: boolean;
 	/**
-	 * The view switch for the toolbar (FileDiff): `modes` when two versions
-	 * share one stage, so Slider and Fade apply.
+	 * The view switch for the toolbar (FileDiff). Its shape is decided from
+	 * the file's facts, so it shows the same in every state here (loading,
+	 * waiting for a tap, can't show, stale, shown): nothing moves.
 	 */
-	view?: (modes: boolean) => ReactNode;
+	view?: ReactNode;
 }) {
 	const { file, revision, from } = props;
-	const view = (modes: boolean) => props.view?.(modes);
+	const view = props.view;
 	// An extension crb doesn't know, shown as Image: the server checks the bytes.
 	const sniff = !isImagePath(file.path);
 	// An SVG with no width or height has no size of its own (stage.ts).
@@ -75,26 +57,16 @@ export function ImageView(props: {
 		file.status !== "deleted"
 			? blobUrl(revision, file.index, "new", from, sniff)
 			: null;
-	// Renamed with no content change: the image shows once.
-	const renamed =
-		file.status === "renamed" && oldUrl !== null && newUrl !== null;
-	const same = useQuery({
-		queryKey: ["image-same-blob", oldUrl, newUrl],
-		queryFn: () => sameBlob(oldUrl as string, newUrl as string),
-		enabled: renamed,
-		staleTime: Number.POSITIVE_INFINITY,
-	});
-	const deciding = renamed && same.isPending;
-	const once = renamed && same.data === true;
+	// Both sides the same blob (a rename or a mode change only): the image
+	// shows once. The since view's sides are the interdiff's: both show.
+	const once = from === undefined && file.sameBlob === true;
 	// The full diff's old size isn't the interdiff's old side's.
 	const oldBytes = from === undefined ? file.oldSize : undefined;
-	const before = useImageSide(
-		once || deciding ? null : oldUrl,
-		oldBytes,
-		true,
-		{ svg, mayBeAbsent },
-	);
-	const after = useImageSide(deciding ? null : newUrl, file.newSize, true, {
+	const before = useImageSide(once ? null : oldUrl, oldBytes, true, {
+		svg,
+		mayBeAbsent,
+	});
+	const after = useImageSide(newUrl, file.newSize, true, {
 		svg,
 		mayBeAbsent,
 	});
@@ -136,33 +108,11 @@ export function ImageView(props: {
 		);
 	}
 
-	if (deciding) {
-		// Whether a renamed image changed: loading, as any image is.
-		return (
-			<div
-				data-testid="image-view"
-				data-image-state="loading"
-				className="@container border-line border-b"
-			>
-				<ImageToolbar
-					view={view(false)}
-					dims={[{ tone: "add", size: undefined }]}
-					bytes={bytesPair(oldBytes, file.newSize)}
-				/>
-				<div className="grid min-w-0 justify-items-center gap-2 p-3">
-					<Stage geometry={null} actual={false}>
-						{null}
-					</Stage>
-				</div>
-			</div>
-		);
-	}
-
 	if (failed || present.length === 0) {
 		return (
 			<div data-testid="image-view" data-image-state="fallback">
 				<ImageToolbar
-					view={view(false)}
+					view={view}
 					dims={[]}
 					bytes={bytesPair(oldBytes, file.newSize)}
 					failed={
@@ -181,7 +131,7 @@ export function ImageView(props: {
 			(after.state === "waiting-tap" ? (file.newSize ?? 0) : 0);
 		return (
 			<div data-testid="image-view" data-image-state="waiting-tap">
-				<ImageToolbar view={view(false)} dims={[]} bytes={bytes} />
+				<ImageToolbar view={view} dims={[]} bytes={bytes} />
 				<div className="flex justify-center p-3">
 					<button
 						type="button"
@@ -212,7 +162,7 @@ export function ImageView(props: {
 			className="@container border-line border-b"
 		>
 			<ImageToolbar
-				view={view(compare && !props.sideBySide)}
+				view={view}
 				dims={once ? dims.filter((d) => d.tone === "add") : dims}
 				bytes={once ? bytesPair(undefined, file.newSize) : bytes}
 				actual={actual}

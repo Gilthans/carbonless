@@ -710,6 +710,8 @@ describe("file sizes and the LFS flag", () => {
 				binary: {
 					"logo.png": png(1),
 					"before.png": bigPng(1),
+					// Only moved: the same blob on both sides.
+					"mark.png": bigPng(9, 40),
 					// Unlike added.png, so git doesn't pair them as a rename.
 					"gone.png": new Uint8Array(64).fill(0xaa),
 				},
@@ -718,7 +720,7 @@ describe("file sizes and the LFS flag", () => {
 			{
 				message: "head",
 				delete: ["gone.png"],
-				rename: { "before.png": "after.png" },
+				rename: { "before.png": "after.png", "mark.png": "brand/mark.png" },
 				files: {
 					"pointer.png": pointer,
 					"notes.txt": pointer,
@@ -758,6 +760,16 @@ describe("file sizes and the LFS flag", () => {
 			oldSize: 300,
 			newSize: pointer.length,
 		});
+	});
+
+	it("flags a file whose two sides are the same blob", () => {
+		expect(fileOf("brand/mark.png")).toMatchObject({
+			status: "renamed",
+			oldPath: "mark.png",
+			sameBlob: true,
+		});
+		for (const path of ["after.png", "logo.png", "added.png", "gone.png"])
+			expect(fileOf(path)).not.toHaveProperty("sameBlob");
 	});
 
 	it("gives a submodule no size", () => {

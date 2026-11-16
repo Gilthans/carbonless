@@ -113,6 +113,11 @@ export interface FileSummary {
 	 * whose first line is LFS's `version` line): shown as text, not as an image.
 	 */
 	lfs?: true;
+	/**
+	 * Both sides are the same blob (a rename or a mode change only): an
+	 * image shows once, with nothing to compare.
+	 */
+	sameBlob?: true;
 	clusters: Cluster[];
 }
 

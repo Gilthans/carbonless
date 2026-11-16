@@ -311,6 +311,9 @@ export async function buildSnapshot(
 			...(oldSize === undefined ? {} : { oldSize }),
 			...(newSize === undefined ? {} : { newSize }),
 			...(lfs(file) ? { lfs: true as const } : {}),
+			...(oldOid === newOid && !file.submodule
+				? { sameBlob: true as const }
+				: {}),
 			clusters,
 		};
 	});

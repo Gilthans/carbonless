@@ -31,7 +31,7 @@ import {
 	resetShowInvisibles,
 	setShowInvisibles,
 } from "../code/Invisibles";
-import { ignoreWhitespace } from "../viewSettings";
+import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import { contextRanges } from "./contextRanges";
 import type { DiffFind, DiffThreads } from "./DiffBody";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
@@ -2546,6 +2546,7 @@ describe("FileDiff: the renderer seam", () => {
 		vi.restoreAllMocks();
 		localStorage.clear();
 		rendererPicks.reset();
+		sideBySide.reset();
 		resetShowInvisibles();
 		contextRanges.reset();
 		cleanup();
@@ -2597,6 +2598,43 @@ describe("FileDiff: the renderer seam", () => {
 		expect(viewSwitch()).toBeNull();
 		expect(screen.queryByTestId("view-bar")).toBeNull();
 	});
+
+	/** The switch's buttons' names, in order. */
+	const switchNames = () =>
+		within(viewSwitch() as HTMLElement)
+			.getAllByRole("button")
+			.map((b) => b.getAttribute("aria-label"));
+
+	it.each([
+		["an added PNG", { status: "added" as const }, false],
+		["a deleted PNG", { status: "deleted" as const }, false],
+		["a PNG side by side", {}, true],
+		[
+			"a PNG renamed with the same blob",
+			{
+				status: "renamed" as const,
+				oldPath: "img/old.png",
+				sameBlob: true as const,
+			},
+			false,
+		],
+	])(
+		"%s: [Image, Binary] in Image view and on Binary's row",
+		async (_, over, sbs) => {
+			sideBySide.set(sbs);
+			const { user } = setup(png(over), undefined, binaryHunks);
+			await user.click(screen.getByRole("button", { name: "Expand file" }));
+			expect(switchNames()).toEqual(["Image", "Binary"]);
+			await pick(user, "Binary");
+			expect(shown()).toBe("binary");
+			expect(
+				within(screen.getByTestId("view-bar"))
+					.getAllByRole("button")
+					.map((b) => b.getAttribute("aria-label")),
+			).toEqual(["Image", "Binary"]);
+			sideBySide.reset();
+		},
+	);
 
 	it("Fade from Binary goes back to Image in Fade; the switch stays on Binary's own row", async () => {
 		const { user } = setup(png(), undefined, binaryHunks);

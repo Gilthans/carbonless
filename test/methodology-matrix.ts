@@ -214,12 +214,14 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 	 * A file's summary without what follows the content's bytes: the
 	 * reference repo's base differs from the PR's (that's its point), so the
 	 * old side's byte size does too, and so could an LFS flag read from the
-	 * old side. Neither is a fact about how the team uses git.
+	 * old side, or whether both sides are the same blob. None is a fact
+	 * about how the team uses git.
 	 */
 	const methodologyFacts = ({
 		oldSize: _old,
 		newSize: _new,
 		lfs: _lfs,
+		sameBlob: _same,
 		...facts
 	}: FileSummary) => facts;
 
