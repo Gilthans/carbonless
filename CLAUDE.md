@@ -90,13 +90,16 @@ loading never looking empty, checking against a real PR):
   React + Vite + TanStack Query + Tailwind (`src/web`), shared types (`src/shared`).
 - `pnpm verify` runs lint (Biome), typecheck, unit tests (Vitest), Playwright
   tests and the package smoke test (`pnpm test:pack`: packs, installs the
-  tarball into a temp dir, runs its `crb`). It takes the machine for ~20
-  minutes after a queue, so it is rare: once, right before finalizing a PR
-  (the coordinator, on the combined branch, before opening or updating the
-  PR). Everything before that uses `pnpm verify:fast` (below): implementing,
+  tarball into a temp dir, runs its `crb`). It takes the shared machine for
+  ~20 minutes after a queue, so it is rarely run locally: CI
+  (`.github/workflows/ci.yml`, free on this public repo) runs the same
+  checks on every PR (lint, typecheck, unit tests, a Windows subset, e2e
+  with the phone project in 4 shards, the pack smoke test), and is the full
+  suite's default. Run it locally only to reproduce a CI failure, or when
+  asked. Everything else uses `pnpm verify:fast` (below): implementing,
   committing, fix rounds, reviews, and an implementer's "done".
-- The phone project (Playwright's `phone`) doubles an e2e run. The final
-  pre-PR `pnpm verify` always includes it. Before that, run it only when a
+- The phone project (Playwright's `phone`) doubles an e2e run. CI always
+  includes it. Locally, run it only when a
   change touches layout: CSS or Tailwind classes that size, place or wrap
   things, breakpoints and `useMedia`/`isMobile` code, sticky or scrolling
   behaviour, touch targets, or anything in `e2e/mobile.spec.ts`'s ground.
@@ -215,6 +218,13 @@ loading never looking empty, checking against a real PR):
   `pauseAt`. No automatic retries (Playwright `retries`, Vitest `retry`):
   a flaky test fails visibly and gets fixed. Playwright's expects wait
   10 s (a reload's chained reads); a test that needs longer says why.
+- A runner killed mid-test (a Playwright worker past its teardown timeout,
+  an interrupted run) never runs its cleanup. What a test starts carries
+  `$CRB_OWNER` (`test/setup.ts`, `crbEnv` in `e2e/pr-setup.ts`): `crb serve`,
+  `queue.mjs` and the fake agent exit once that owner is gone
+  (`scripts/owner.mjs`; `crb serve` uses its copy, `src/server/owner.ts`,
+  since the build can't reach `scripts/`). A new fake or helper that can wait forever (a hold,
+  a loop on a file) does the same with `watchOwner`.
 - `pnpm flake-check <files…> [--runs N] [--load L] [-g title] [--project p]`
   runs unit files or e2e specs N times (default 5), in the queue. `--load L`
   adds L busy loops (default none: the devbox is loaded enough by other
@@ -392,7 +402,7 @@ After the first release (0.1.0) the owner adds the trusted publisher
   go back to the same implementer as fix rounds, then a scoped re-review; small
   fixes with tests that fail without them may skip the re-review.
   Implementers, fix rounds and reviewers check with `pnpm verify:fast` and
-  targeted specs, never a full `pnpm verify`: that runs once, at the end
+  targeted specs, never a full `pnpm verify`: the full suite is CI's
   (below).
 - Review checklist (every reviewer brief carries it, on top of the brief's own):
   - **Input sanitization.** Text from the reviewer, a PR, GitHub or git
@@ -403,16 +413,20 @@ After the first release (0.1.0) the owner adds the trusted publisher
     args (checked OIDs and refs, paths after `--`), with a test that fails
     without it.
 - The coordinator cherry-picks reviewed commits onto the feature branch (or has
-  the agent rebase when they conflict), runs `pnpm verify` on the combined
-  branch, (re)starts the branch's instance and sends its link ("Versions and
-  instances"). Main changes only through an RC.
+  the agent rebase when they conflict), pushes the combined branch and lets
+  CI run the full suite on its PR, (re)starts the branch's instance and sends
+  its link ("Versions and instances"). Main changes only through an RC.
 - Every change reaches `master` through a PR on Gilthans/carbonless. Agents
   may push any branch there except `master` (`--force-with-lease` only on
-  their own branch, after a rebase), and open a PR after a green local
-  `pnpm verify`: a title, and a body with what changed, what to QA (with
-  links), edge cases, and the attribution line. CI
-  (`.github/workflows/ci.yml`) must be green before asking the owner to
-  merge. A PR is merged only on the owner's explicit word for that PR (by
+  their own branch, after a rebase), and open a PR as soon as the branch
+  passes `pnpm verify:fast` and its targeted specs (a draft while work is
+  still under way: CI runs on PRs only, so this is how a branch gets the
+  full suite): a title, and a body with what changed, what to QA (with
+  links), edge cases, and the attribution line. CI must be green before
+  asking the owner to merge. A CI failure is read from its logs and traces
+  (`gh run view --log-failed`, the `test-traces-*` and `playwright-report-*`
+  artifacts), fixed and pushed; a failure that looks unrelated is rerun once
+  (`gh run rerun --failed`), and is flagged if it fails again. A PR is merged only on the owner's explicit word for that PR (by
   the owner on GitHub, or on their behalf by an agent with `gh pr merge
   --admin`, the ruleset's bypass for the owner's login). Never push
   `master` or `v*` tags.

@@ -50,6 +50,7 @@ beforeEach(() => {
 		"dist-lock.mjs",
 		"queue.mjs",
 		"queue-config.mjs",
+		"owner.mjs",
 		"queue-line.mjs",
 		"run-child.mjs",
 	]) {

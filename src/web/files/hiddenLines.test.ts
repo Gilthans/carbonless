@@ -52,7 +52,6 @@ describe("hiddenLines", () => {
 		const BOM = "\uFEFF";
 		const d = del("export const a = 1;");
 		const a1 = add(`${BOM}export const a = 1;`);
-		const a2 = add("const b = 2;");
 		// One removed, two added, nothing similar enough: no pair, no marks.
 		const lone = add("zzz qqq");
 		const bom = add(`${BOM}zzz qqq`);

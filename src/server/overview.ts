@@ -475,6 +475,26 @@ export function mapThreads(
 			if (!name || participants.some((p) => p.login === name)) continue;
 			participants.push({ login: name, avatarUrl: str(a.avatarUrl), at });
 		}
+		// Who spoke last: the latest published comment (by the cutoff, as
+		// `lastActivityAt`), the latest by creation past the listed ones;
+		// pending comments left out. The opener when nothing else is known.
+		const spoken = [
+			...comments,
+			...(!asOf && latestAt !== null
+				? [{ c: obj(latestNode), at: latestAt }]
+				: []),
+		];
+		const lastSpoken = spoken.reduce<(typeof spoken)[number] | null>(
+			(best, s) =>
+				best === null || timeOf(s.at) >= timeOf(best.at) ? s : best,
+			null,
+		);
+		const lastAuthorNode = lastSpoken ? obj(lastSpoken.c.author) : author;
+		const lastAuthor = {
+			login: str(lastAuthorNode.login),
+			avatarUrl: str(lastAuthorNode.avatarUrl),
+			bot: isBotAuthor(lastAuthorNode),
+		};
 		const attention = attentionSet({
 			comments: commenters,
 			prAuthor,
@@ -512,6 +532,7 @@ export function mapThreads(
 			bot,
 			avatarUrl: str(author.avatarUrl),
 			participants,
+			lastAuthor,
 			// The total, less pending comments (the viewer's), which don't
 			// count; past the listed ones (gh.ts pages them in when there are
 			// more than 100), only the latest can be told. As of a cutoff,

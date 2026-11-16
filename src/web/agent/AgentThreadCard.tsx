@@ -30,6 +30,11 @@ import {
 	startedBy,
 } from "../../shared/agent";
 import { sessionQuery } from "../api";
+import {
+	OUTLINE_MS,
+	useFocusCard,
+	useOutlinedMessage,
+} from "../files/threadFocus";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
@@ -52,7 +57,6 @@ import {
 	postAgentResolved,
 	withThread,
 } from "./api";
-import { useConversationLanding } from "./conversationLinks";
 import { ReRow, StartedButton } from "./ReRow";
 import { openAgentSetup } from "./setupStore";
 import { useSeenWriter, useSendView } from "./threadAgent";
@@ -445,19 +449,13 @@ export function AgentThreadCard(props: {
 		([, w]) => w.thread === thread.id,
 	);
 	const card = useRef<HTMLElement>(null);
-	// A link to this conversation (a citation, Go to your request, a list):
-	// open, in view; a message named is outlined by AgentMessageItems.
-	const { landing } = useConversationLanding(thread.id);
-	useEffect(() => {
-		if (!landing) return;
-		setExpanded(true);
-		if (!landing.message) {
-			card.current?.scrollIntoView?.({ block: "center" });
-		}
-	}, [landing]);
 	const closed = resolved && !expanded;
 	// Span threads too: an accent dot while an answer is unseen, and the
 	// same seen mark the thread panel writes, once it has been in view.
+	// Asked for (a Threads tab row, a link to this conversation: a
+	// citation, Go to your request, a list): open and in view; a message
+	// named is outlined by AgentMessageItems.
+	useFocusCard(thread.id, card, () => setExpanded(true));
 	useSeenWriter(thread, !closed, card);
 	const first = thread.messages.find((m) => m.by === "human")?.text ?? "";
 	const toggle = (
@@ -654,7 +652,7 @@ export function AgentMessageItems(props: {
 	const all =
 		useQuery({ ...agentThreadsQuery, enabled: false }).data?.threads ?? [];
 	const started = startedBy(all);
-	const lit = useLandedMessage(thread);
+	const lit = useOutlinedMessage(thread?.messages);
 	return (
 		<>
 			{thread?.messages.map((m) => {
@@ -750,34 +748,7 @@ export function AgentMessageItems(props: {
 }
 
 /** How long a message landed on keeps its outline. */
-export const LANDED_MS = 2000;
-
-/**
- * The message a link landed on, while it is outlined: scrolled into view
- * once it shows, its outline gone after LANDED_MS. Taking it here ends
- * the landing.
- */
-function useLandedMessage(thread: AgentThread | undefined): string | null {
-	const { landing, done } = useConversationLanding(thread?.id);
-	const [lit, setLit] = useState<string | null>(null);
-	const hasMessage =
-		landing?.message !== undefined &&
-		thread?.messages.some((m) => m.id === landing.message) === true;
-	useEffect(() => {
-		if (!landing) return;
-		done(landing);
-		if (!hasMessage || !landing.message) return;
-		setLit(landing.message);
-		const el = document.querySelector(`[data-message-id="${landing.message}"]`);
-		el?.scrollIntoView?.({ block: "center" });
-	}, [landing, hasMessage, done]);
-	useEffect(() => {
-		if (!lit) return;
-		const timer = setTimeout(() => setLit(null), LANDED_MS);
-		return () => clearTimeout(timer);
-	}, [lit]);
-	return lit;
-}
+export const LANDED_MS = OUTLINE_MS;
 
 /** Above the first message the reviewer hadn't seen when the conversation opened. */
 function NewDivider() {
