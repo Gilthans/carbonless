@@ -7,6 +7,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { OWNER_ENV, ownerToken } from "../scripts/owner.mjs";
 import { writeFileAtomic } from "../test/fake-gh/atomic.mjs";
 import {
 	FIXTURE_BODY_HTML,
@@ -102,9 +103,13 @@ const DEFAULT_COMMITS: FixtureCommit[] = [
 /** The built CLI. */
 export const CLI = resolve(import.meta.dirname, "../dist/cli.js");
 
+const OWNER = ownerToken(process.pid);
+
 /**
  * The environment crb runs in: the fake gh first on PATH; cache, state
- * (server.json, key) and config in `workdir`, never the reviewer's. The
+ * (server.json, key) and config in `workdir`, never the reviewer's; this
+ * process as crb's owner, so a crb it starts (a detached `crb serve` too)
+ * exits once a killed worker can no longer stop it (scripts/owner.mjs). The
  * rest is this process's env: NODE_COMPILE_CACHE among it, the run's one
  * compile cache (e2e/global-setup.ts), which a per-test XDG_CACHE_HOME
  * would leave empty for every crb.
@@ -112,6 +117,7 @@ export const CLI = resolve(import.meta.dirname, "../dist/cli.js");
 export function crbEnv(workdir: string): NodeJS.ProcessEnv {
 	return testGitEnv({
 		...fakeGhEnv(),
+		[OWNER_ENV]: OWNER,
 		CRB_FAKE_GH: join(workdir, "fake-gh-scenario.json"),
 		CRB_FAKE_GH_LOG: join(workdir, "fake-gh.log"),
 		XDG_CACHE_HOME: join(workdir, "cache"),

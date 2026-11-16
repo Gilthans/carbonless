@@ -128,11 +128,16 @@ test("the agent opens on lines and on a thread while answering; the citations, t
 	// so the outline's fade can't end before it is seen).
 	await page.clock.pauseAt(Date.now() + 1000);
 	await re.getByTestId("agent-re-go").click();
-	await expect(
-		requestCard
-			.locator('[data-landed="true"]')
-			.getByTestId("agent-message-human"),
-	).toHaveText(REQUEST);
+	const landedMessage = requestCard
+		.locator('[data-landed="true"]')
+		.getByTestId("agent-message-human");
+	await expect(landedMessage).toHaveText(REQUEST);
+	// The card's frames run (the clock holds them while paused), well
+	// within the outline: the message stays in view, centred, not the
+	// card's top scrolled under the bars.
+	await page.clock.runFor(200);
+	await expect(landedMessage).toHaveText(REQUEST);
+	await expect(landedMessage).toBeInViewport();
 	await page.clock.resume();
 
 	// From the request's list, the GitHub thread: the Overview, its panel open.

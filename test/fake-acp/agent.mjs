@@ -12,6 +12,10 @@ import {
 	StdioClientTransport,
 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { watchOwner } from "../../scripts/owner.mjs";
+
+// A held or lingering agent outlives a test runner killed mid-test.
+watchOwner(() => process.exit(0));
 
 const scenarioPath = process.env.CRB_FAKE_ACP;
 const read = () =>

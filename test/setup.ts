@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterAll, beforeEach, expect, vi } from "vitest";
+import { OWNER_ENV, ownerToken } from "../scripts/owner.mjs";
 import { traceparent, tracer } from "../src/server/trace";
 
 // No test may touch the reviewer's real clone cache (~/.cache/carbonless),
@@ -14,6 +15,9 @@ process.env.XDG_CACHE_HOME = join(xdg, "cache");
 process.env.XDG_STATE_HOME = join(xdg, "state");
 process.env.XDG_CONFIG_HOME = join(xdg, "config");
 afterAll(() => rmSync(xdg, { recursive: true, force: true }));
+
+// What a test starts stops on its own if this worker dies (scripts/owner.mjs).
+process.env[OWNER_ENV] = ownerToken(process.pid);
 
 // Names the running test for the real gh trap (test/real-gh-trap.ts): a call
 // that reaches it was started by this test or one before it in this file.

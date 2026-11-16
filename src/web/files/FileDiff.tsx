@@ -30,7 +30,6 @@ import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer } from "../agent/AgentComposer";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
-import { usePendingLanding } from "../agent/conversationLinks";
 import {
 	agentWaiting,
 	shownAgentPlaceables,
@@ -79,6 +78,7 @@ import {
 import { ThreadBubble } from "./ThreadBubble";
 import { UnplacedThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
+import { useFocusAmong } from "./threadFocus";
 import { fileThreads, placeThreads, sinceLeftToNew } from "./threadPlacement";
 import {
 	countedFile,
@@ -929,18 +929,22 @@ export function FileDiff(props: {
 	);
 	const agentLoading = agentWaitingHere.length > 0;
 	const [agentOpen, setAgentOpen] = useState(false);
-	// A link to a conversation held here (a whole file's, unplaced,
-	// outdated or gone): the header's agent threads open, so its card shows
-	// and takes the landing.
-	const landing = usePendingLanding();
-	const landsOn = agentLead.some((t) => t.id === landing?.conversation)
-		? landing
-		: null;
-	useEffect(() => {
-		// Each new landing here, even after the reviewer closed them.
-		if (landsOn) setAgentOpen(true);
-	}, [landsOn]);
 	const agentThreadsId = useId();
+	// A card asked for among the file bubble's threads, or its agent
+	// bubble's (threadFocus: a Threads tab row, a link to a conversation
+	// held here, a whole file's, unplaced, outdated or gone): that bubble
+	// opens, so the card shows and takes it.
+	useFocusAmong(
+		(id) => header.some((h) => h.thread.id === id),
+		() => {
+			collapse.toggled("file");
+			setFileOpen(true);
+		},
+	);
+	useFocusAmong(
+		(id) => agentLead.some((t) => t.id === id),
+		() => setAgentOpen(true),
+	);
 	const agentFileItems = useAgentComposers().filter(
 		(c) => c.span.subject === "file" && c.span.path === file.path,
 	);

@@ -386,6 +386,7 @@ async function update(
 		resolved: thread.resolved,
 		commentCount: thread.commentCount,
 		lastActivityAt: thread.lastActivityAt,
+		lastAuthor: thread.lastAuthor,
 		attention: thread.attention,
 		yourTurn: thread.yourTurn,
 		viewerCan: thread.viewerCan,

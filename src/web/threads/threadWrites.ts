@@ -1622,6 +1622,7 @@ export function applyThreadUpdate(
 							resolved: update.resolved,
 							commentCount: update.commentCount,
 							lastActivityAt: update.lastActivityAt,
+							lastAuthor: update.lastAuthor,
 							attention: update.attention,
 							yourTurn: update.yourTurn,
 							viewerCan: update.viewerCan,

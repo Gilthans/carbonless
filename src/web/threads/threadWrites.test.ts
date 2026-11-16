@@ -55,6 +55,7 @@ const update = (threadId: string, more: Partial<ThreadUpdate> = {}) =>
 		resolved: false,
 		commentCount: 2,
 		lastActivityAt: "2026-01-03T12:00:00Z",
+		lastAuthor: { login: "octo", avatarUrl: "", bot: false },
 		attention: ["bob"],
 		yourTurn: false,
 		viewerCan: { reply: true, resolve: true, unresolve: false },
