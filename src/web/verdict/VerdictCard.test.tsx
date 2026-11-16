@@ -178,6 +178,8 @@ function renderTab(
 	info: SessionInfo = session(),
 	/** A POST's answer before the default (a landed review); null: the default. */
 	refuse: (req: VerdictRequest) => Response | null = () => null,
+	/** The head check's answer (else none), the overview's (else at once). */
+	more: { head?: Promise<Response>; overview?: Promise<Response> } = {},
 ) {
 	posted = [];
 	const fetchMock = vi.fn(
@@ -188,7 +190,9 @@ function renderTab(
 				case "/api/session":
 					return json(info);
 				case "/api/overview":
-					return json(overview);
+					return more.overview ?? json(overview);
+				case "/api/head":
+					return more.head ?? new Response("{}", { status: 404 });
 				case "/api/review":
 					return json(review(info.patchset));
 				case "/api/threads":
@@ -230,7 +234,7 @@ function renderTab(
 			<RouterProvider router={router} />
 		</QueryClientProvider>,
 	);
-	return { fetchMock };
+	return { fetchMock, client };
 }
 
 const card = () => screen.findByTestId("verdict-card-tab");
@@ -410,6 +414,63 @@ describe("the verdict card since your verdict", () => {
 		).toBeNull();
 	});
 
+	it("a head check that lands before the card shows still brings the since line (CAR-180)", async () => {
+		// The page opens on PS2 approved, nothing since (no since line); the
+		// head check finds NEW past it while the overview is still on its
+		// way, so the card mounts already on NEW. The answer it has was
+		// asked before NEW: it asks again, and the since line comes.
+		// The server answers against the head it knows: NEW once the head
+		// check has run.
+		let serverHead = PS2;
+		const onPs2 = given({ head: PS2, patchset: 2 });
+		const overviewHeld = heldJson();
+		const headHeld = heldJson();
+		const asked: string[] = [];
+		// Gates, not findBy's clock: the first read is in, the head landed.
+		let firstAsked = () => {};
+		const firstAsk = new Promise<void>((r) => {
+			firstAsked = r;
+		});
+		const { client } = renderTab(
+			() => {
+				const head = serverHead;
+				asked.push(head);
+				firstAsked();
+				return head === NEW
+					? facts({ ...onPs2, to: { head: NEW, patchset: null } })
+					: facts(null);
+			},
+			session(),
+			() => null,
+			{ head: headHeld.response, overview: overviewHeld.response },
+		);
+		await firstAsk;
+		const landed = new Promise<void>((r) => {
+			const stop = client.getQueryCache().subscribe(() => {
+				if (client.getQueryData<SessionInfo>(["session"])?.head?.oid === NEW) {
+					stop();
+					r();
+				}
+			});
+		});
+		serverHead = NEW;
+		headHeld.release(
+			session({
+				head: {
+					oid: NEW,
+					mergeBase: "e".repeat(40),
+					baseBranch: "main",
+					commits: 1,
+				},
+			}),
+		);
+		await landed;
+		overviewHeld.release(overview);
+		const c = await card();
+		const since = await within(c).findByTestId("verdict-since");
+		expect(since).toHaveAttribute("data-state", "changed");
+		expect(asked).toEqual([PS2, NEW]);
+	});
 	it("the head moved back onto PS1's (S6): the buttons post on it, the card says the head moved back to PS1", async () => {
 		const info = session({
 			currentHead: PS1,

@@ -2100,14 +2100,16 @@ test("the since line spins while the engine computes, never says nothing or 0, t
 	const kept: unknown[] = [];
 	const p = await pr({ ...fixture, reviews: kept });
 	const s = await startCrb();
-	// The engine runs in crb: its pending answers pass, any finished one
-	// waits here until released (then read afresh), so the pending state
-	// stays on screen for as long as the test looks.
+	// The engine runs in crb: its pending answers pass, and once one has,
+	// a finished one still answers pending until released (the page asks
+	// again while pending), so the pending state stays on screen for as long
+	// as the test looks. Not a held request: the page drops an answer it is
+	// still waiting for when the head check lands (it asks again), and if
+	// that was the pending one, the next, finished and held, left nothing
+	// on screen to wait for but the test's timeout (CAR-180). A first
+	// answer already finished passes as it is: crb must say pending first.
 	let released = false;
-	let release = () => {};
-	const held = new Promise<void>((r) => {
-		release = r;
-	});
+	let sawPending = false;
 	const route = "**/api/r/*/verdict*";
 	const hold = async () => {
 		await page.route(route, async (r) => {
@@ -2116,11 +2118,11 @@ test("the since line spins while the engine computes, never says nothing or 0, t
 			const body = (await res.json()) as {
 				since: { changes: { status: string } } | null;
 			};
-			if (released || !body.since || body.since.changes.status === "pending") {
-				return r.fulfill({ response: res, json: body });
+			if (body.since?.changes.status === "pending") sawPending = true;
+			else if (body.since && sawPending && !released) {
+				body.since.changes = { status: "pending" };
 			}
-			await held;
-			return r.fulfill({ response: await r.fetch() });
+			return r.fulfill({ response: res, json: body });
 		});
 	};
 	await approvedThenPushed(page, s, p, kept, () => p.moveHead(rework), hold);
@@ -2137,7 +2139,6 @@ test("the since line spins while the engine computes, never says nothing or 0, t
 		],
 		release: () => {
 			released = true;
-			release();
 			return page.unroute(route);
 		},
 		result: card.locator('[data-testid="verdict-since"][data-state="changed"]'),

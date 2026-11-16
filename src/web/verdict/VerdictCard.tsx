@@ -28,7 +28,7 @@ import type {
 	VerdictFacts,
 	VerdictSince,
 } from "../../shared/types";
-import { verdictQuery } from "../api";
+import { sinceHeadKey, verdictHeadKey, verdictQuery } from "../api";
 import { Meter } from "../files/ProgressBar";
 import { useReviewView } from "../files/useSetStates";
 import { LabeledIcon } from "../overview/parts";
@@ -358,19 +358,25 @@ function SinceVerdict(props: {
 }
 
 /**
- * Asks for the verdict facts again when the head a verdict goes on moves
- * (the head check found a new one, a patch set started): the server works
- * out `since` when served, from its kept read of GitHub.
+ * Asks for the verdict facts again when the head a verdict goes on moved
+ * since they were asked for (the head check found a new one, a patch set
+ * started): the server works out `since` when served, from its kept read
+ * of GitHub. Against the key the answer was asked under, not the one the
+ * card mounted with: a head check landing before the card shows would
+ * otherwise leave an answer from before it (no since line) for good (CAR-180).
  */
-function useSinceFollowsHead(session: SessionInfo) {
+function useSinceFollowsHead(
+	session: SessionInfo,
+	facts: VerdictFacts | undefined,
+) {
 	const client = useQueryClient();
-	const key = `${session.head?.oid ?? ""}:${session.patchset ?? ""}`;
-	const first = useRef(key);
+	const key = sinceHeadKey(session);
 	useEffect(() => {
-		if (first.current === key) return;
-		first.current = key;
+		if (!facts) return;
+		const under = verdictHeadKey(client);
+		if (under === undefined || under === key) return;
 		void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
-	}, [client, key]);
+	}, [client, key, facts]);
 }
 
 /**
@@ -447,7 +453,7 @@ export function VerdictCard(props: {
 			VERDICT_TIPS[event]
 		);
 	const stillStands = writes.verdictStillStands;
-	useSinceFollowsHead(session);
+	useSinceFollowsHead(session, props.facts);
 	const since = props.facts?.since ?? null;
 	// With a verdict to compare, every verdict goes on the head it is
 	// compared with (the latest patch set's, or the PR's head past it,
