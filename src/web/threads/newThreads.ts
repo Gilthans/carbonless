@@ -34,19 +34,27 @@ const changed = (next: readonly Composer[]) => {
 /**
  * Opens a composer on the span (one per span: the open one again, and
  * Comment from an agent conversation adopts a plain one, carrying the
- * conversation from then on). Answers its client id.
+ * conversation from then on). With an `id`, that composer (a typed
+ * draft's) is the one opened, whatever else is open on the span. Answers
+ * its client id.
  */
 export function openComposer(
 	span: CodeSpan,
-	id = newClientId(),
+	id?: string,
 	agentThread?: string,
 ): string {
 	const onSpan = composers.filter((c) => sameSpan(c.span, span));
+	const byId =
+		id === undefined ? undefined : composers.find((c) => c.clientId === id);
 	const same =
-		agentThread === undefined
-			? onSpan[0]
-			: (onSpan.find((c) => c.agentThread === agentThread) ??
-				onSpan.find((c) => c.agentThread === undefined));
+		byId ??
+		// A typed draft's id with a conversation: that draft, nothing else.
+		(id !== undefined && agentThread !== undefined
+			? undefined
+			: agentThread === undefined
+				? onSpan[0]
+				: (onSpan.find((c) => c.agentThread === agentThread) ??
+					onSpan.find((c) => c.agentThread === undefined)));
 	if (same) {
 		changed(
 			composers.map((c) =>
@@ -57,16 +65,17 @@ export function openComposer(
 		);
 		return same.clientId;
 	}
+	const clientId = id ?? newClientId();
 	changed([
 		...composers,
 		{
-			clientId: id,
+			clientId,
 			span,
 			focus: true,
 			...(agentThread ? { agentThread } : {}),
 		},
 	]);
-	return id;
+	return clientId;
 }
 
 /** The composer is gone (posted, cancelled, or now a draft that lists it). */
