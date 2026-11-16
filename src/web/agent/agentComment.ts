@@ -5,13 +5,58 @@
  * thread's agent button from then on.
  */
 import { useQuery } from "@tanstack/react-query";
-import type { AgentAnchor, AgentThread } from "../../shared/agent";
-import type { PrOverview } from "../../shared/types";
+import { createContext, useContext } from "react";
+import type {
+	AgentAnchor,
+	AgentThread,
+	AgentViewFrom,
+} from "../../shared/agent";
+import type { DisplayHunk, PrOverview } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
-import { commentAvailable } from "../files/selectionActions";
-import { newClientId, openComposer } from "../threads/newThreads";
+import { type CodeSpan, commentAvailable } from "../files/selectionActions";
+import {
+	newThreadItems,
+	openComposer,
+	sameSpan,
+	targetOf,
+} from "../threads/newThreads";
+import { useThreadWriter } from "../threads/threadWrites";
 import { spanOfAnchor } from "./askAgentAction";
+import { clearLinkProblem } from "./linkProblems";
 import { useSendView } from "./threadAgent";
+
+/**
+ * Where Comment can open a composer that shows: a file's diff in Files
+ * changed. `headSure`: the diff on screen is the viewed head's;
+ * `inDiff`: whether a span's ends are lines of GitHub's diff (undefined
+ * while unknown, taken as yes, as the selection bar does).
+ */
+export interface CommentScope {
+	headSure: boolean;
+	inDiff: (span: CodeSpan) => boolean | undefined;
+}
+
+const CommentScopeContext = createContext<CommentScope | null>(null);
+export const CommentScopeProvider = CommentScopeContext.Provider;
+/** The scope cards are shown in; null outside Files changed's diff (no Comment). */
+export const useCommentScope = () => useContext(CommentScopeContext);
+
+/** Whether both ends of a line span are rows of `hunks` (GitHub's diff); a file span is. */
+export function spanInHunks(
+	span: CodeSpan,
+	hunks: readonly DisplayHunk[],
+): boolean {
+	if (span.subject === "file") return true;
+	const has = (side: CodeSpan["side"], n: number | undefined) =>
+		n !== undefined &&
+		hunks.some((h) =>
+			h.lines.some((l) => (side === "LEFT" ? l.oldNo : l.newNo) === n),
+		);
+	return (
+		has(span.side, span.line) &&
+		has(span.startSide ?? span.side, span.startLine ?? span.line)
+	);
+}
 
 export interface AgentCommentContext {
 	writes: PrOverview["writes"];
@@ -20,11 +65,25 @@ export interface AgentCommentContext {
 	right: string | undefined;
 	/** An earlier patch set is on screen. */
 	readOnly: boolean;
+	/** The diff on screen isn't the viewed head's yet. */
+	headUnsure?: boolean;
+	/** Both ends of the span are lines of GitHub's diff (undefined: unknown). */
+	inDiff?: boolean;
+	/**
+	 * What the conversation was asked against (its first question's view):
+	 * old lines name GitHub's base only when that was the branch.
+	 */
+	askedFrom?: AgentViewFrom;
 }
+
+const sidesOf = (a: AgentAnchor) =>
+	a.subject === "line" ? [a.side, a.startSide] : [];
 
 /**
  * Why a GitHub comment can't go on the conversation's span; true when it
- * can: the Comment action's rules, and the span must be on the head shown.
+ * can: the Comment action's rules, the span on the head shown, and old
+ * lines only when asked against the base branch (a since view's old lines
+ * are a patch set's, not GitHub's base).
  */
 export function agentCommentAvailable(
 	anchor: AgentAnchor,
@@ -36,22 +95,35 @@ export function agentCommentAvailable(
 		commentLeft: ctx.commentLeft,
 		file: { binary: false, submodule: false },
 		readOnly: ctx.readOnly,
+		headUnsure: ctx.headUnsure,
+		inDiff: ctx.inDiff,
 	});
 	if (rule !== true) return rule;
 	if (ctx.right === undefined) return "The PR's head is loading";
 	if (anchor.commit !== ctx.right) {
 		return "Asked on an earlier version: ask again on the latest";
 	}
+	if (
+		sidesOf(anchor).includes("LEFT") &&
+		!(ctx.askedFrom && "branch" in ctx.askedFrom)
+	) {
+		return "Old lines not asked against the base branch";
+	}
 	return true;
 }
 
-/** The card's Comment: whether it can run (or why not), and its start. */
-export function useAgentComment(thread: AgentThread): {
-	ok: true | string;
-	start: () => void;
-} {
+/**
+ * The card's Comment: whether it can run (or why not), and its start: the
+ * composer on the span, carrying the conversation; a plain comment
+ * already written there (open or typed) is adopted, its text kept.
+ */
+export function useAgentComment(
+	thread: AgentThread,
+	scope: CommentScope,
+): { ok: true | string; start: () => void } {
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;
+	const writer = useThreadWriter();
 	const view = useSendView();
 	const latest = session?.patchsets?.at(-1)?.number;
 	const t = view.target;
@@ -61,19 +133,39 @@ export function useAgentComment(thread: AgentThread): {
 			: session?.patchsets?.find((p) => p.number === t.patchset)?.head;
 	const readOnly =
 		"patchset" in t && latest !== undefined && t.patchset < latest;
+	const span = spanOfAnchor(thread.anchor);
 	const ok = overview
 		? agentCommentAvailable(thread.anchor, {
 				writes: overview.writes,
 				commentLeft: overview.commentLeft !== false,
 				right,
 				readOnly,
+				headUnsure: !scope.headSure,
+				inDiff: scope.inDiff(span),
+				askedFrom: thread.messages.find((m) => m.by === "human")?.view?.from,
 			})
 		: "The PR is loading";
 	return {
 		ok,
 		start: () => {
 			if (ok !== true) return;
-			openComposer(spanOfAnchor(thread.anchor), newClientId(), thread.id);
+			clearLinkProblem(thread.id);
+			// A plain comment typed on the span takes the conversation along.
+			const typed = newThreadItems(writer.drafts.get(), []).find(
+				(i) => sameSpan(i.span, span) && !i.agentThread && !i.sending,
+			);
+			const draft = typed && writer.drafts.newThread(typed.clientId);
+			if (typed && draft?.create) {
+				writer.drafts.setNew(
+					typed.clientId,
+					targetOf(typed.span, thread.id),
+					draft.text,
+					draft.create.texts,
+				);
+				openComposer(typed.span, typed.clientId, thread.id);
+				return;
+			}
+			openComposer(span, undefined, thread.id);
 		},
 	};
 }

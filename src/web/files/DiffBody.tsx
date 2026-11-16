@@ -63,6 +63,11 @@ import {
 	AgentComposer,
 	headFacts,
 } from "../agent/AgentComposer";
+import {
+	type CommentScope,
+	CommentScopeProvider,
+	spanInHunks,
+} from "../agent/agentComment";
 import { takeJustAsked } from "../agent/agentWrites";
 import { agentThreadsQuery } from "../agent/api";
 import {
@@ -3314,8 +3319,22 @@ export function DiffBody(props: {
 		hunks.data && gapRows(gapAt(hunks.data.hunks.length), takeLead);
 	// Nothing to show it on (no rows, or they failed to load): a row of its own.
 	const lead = hunks.isPending ? undefined : takeLead();
+	// Comment on an agent card here: the head's diff shown, and whether a
+	// span's ends are this diff's lines (as the selection bar asks).
+	const hunkList = hunks.data?.hunks;
+	const commentScope = useMemo<CommentScope>(
+		() => ({
+			headSure: props.headSure !== false,
+			inDiff: (span) =>
+				hunkList && span.path === file.path
+					? spanInHunks(span, hunkList)
+					: undefined,
+		}),
+		[props.headSure, hunkList, file.path],
+	);
 
 	return (
+		<CommentScopeProvider value={commentScope}>
 		<div ref={root}>
 			{hint && <LandingHint hint={hint} />}
 			{agentUnshown.length > 0 && (
@@ -3358,7 +3377,9 @@ export function DiffBody(props: {
 								<OrphanDraft
 									key={item.clientId}
 									label={`${
-										gone(item) ? "Lines gone" : "Written on an earlier version"
+											gone(item)
+												? "Lines gone"
+												: "Written on an earlier version"
 									} · ${describeSpan(item.span)}`}
 									text={item.text}
 									onDiscard={() => writer.discard(`new:${item.clientId}`)}
@@ -3476,6 +3497,7 @@ export function DiffBody(props: {
 				</div>
 			)}
 		</div>
+		</CommentScopeProvider>
 	);
 }
 

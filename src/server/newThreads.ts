@@ -17,6 +17,7 @@ import {
 } from "./gh.js";
 import { MARKER_ID, markerFor, parseMarker } from "./marker.js";
 import { mapComments, mapThreads, openerOf, withContent } from "./overview.js";
+import { isLowerUlid } from "./review/events.js";
 import { slugify } from "./slug.js";
 import {
 	commentUrl,
@@ -71,8 +72,6 @@ const obj = (v: unknown): Json =>
 
 const SIDES: readonly unknown[] = ["LEFT", "RIGHT"] satisfies DiffSide[];
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
-/** An agent conversation's id: a lowercase ULID. */
-const AGENT_THREAD = /^[0-9a-hjkmnp-tv-z]{26}$/;
 const MAX_LINE = 999_999_999;
 const MAX_PATH = 4096;
 
@@ -106,7 +105,7 @@ export function newThreadProblem(req: unknown): string | null {
 	}
 	if (
 		r.agentThread !== undefined &&
-		(typeof r.agentThread !== "string" || !AGENT_THREAD.test(r.agentThread))
+		(typeof r.agentThread !== "string" || !isLowerUlid(r.agentThread))
 	) {
 		return "agentThread must be an agent conversation's id";
 	}

@@ -1502,6 +1502,58 @@ describe("API", () => {
 			expect(there.json()).toMatchObject({ thread: opened.id });
 		});
 
+		it("POST threads whose link fails: GitHub keeps the thread (200), the conversation stays where it was, the answer says why", async () => {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: { reviewThreads: [], reviews: [] },
+					},
+				},
+			});
+			await get("/api/overview?maxAge=0");
+			const opened: AgentThread = (await ask()).json();
+			const anchors = async () =>
+				((await get("/api/agent/threads")).threads as AgentThread[]).map(
+					(t) => t.anchor,
+				);
+			const base = {
+				body: "Why a lock?",
+				attemptedAt: new Date().toISOString(),
+				retry: false,
+				path: "a.txt",
+				commit: pr.head(),
+				agentThread: opened.id,
+			};
+			// Another span than the conversation's (a whole-file comment).
+			const other = await post("/api/threads", {
+				...base,
+				clientId: "n1",
+				subject: "file",
+			});
+			expect(other.statusCode, other.body).toBe(200);
+			expect(other.json()).not.toHaveProperty("agentThread");
+			expect(other.json().agentLinkProblem).toEqual({
+				thread: opened.id,
+				reason: "The comment is on another span than the conversation",
+			});
+			expect(await anchors()).toEqual([span()]);
+			// Moved already: a second thread from it can't take it.
+			const line = { ...base, subject: "line", side: "RIGHT", line: 2 };
+			const first = await post("/api/threads", { ...line, clientId: "n2" });
+			expect(first.json().agentThread).toBe(opened.id);
+			const firstId = first.json().thread.id;
+			const second = await post("/api/threads", { ...line, clientId: "n3" });
+			expect(second.statusCode, second.body).toBe(200);
+			expect(second.json().agentLinkProblem).toEqual({
+				thread: opened.id,
+				reason: "This conversation is already on a GitHub thread",
+			});
+			expect(await anchors()).toEqual([
+				{ ...span(), subject: "thread", thread: firstId },
+			]);
+		});
+
 		it("join: Approve and Deny race, the second is 409; Detach; start", async () => {
 			const { session } = await registry.open({ pr: pr.arg });
 			const host = session.agent;

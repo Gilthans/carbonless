@@ -32,19 +32,29 @@ const changed = (next: readonly Composer[]) => {
 };
 
 /**
- * Opens a composer on the span (one per span and agent conversation: the
- * open one again). Answers its client id.
+ * Opens a composer on the span (one per span: the open one again, and
+ * Comment from an agent conversation adopts a plain one, carrying the
+ * conversation from then on). Answers its client id.
  */
 export function openComposer(
 	span: CodeSpan,
 	id = newClientId(),
 	agentThread?: string,
 ): string {
-	const same = composers.find(
-		(c) => sameSpan(c.span, span) && c.agentThread === agentThread,
-	);
+	const onSpan = composers.filter((c) => sameSpan(c.span, span));
+	const same =
+		agentThread === undefined
+			? onSpan[0]
+			: (onSpan.find((c) => c.agentThread === agentThread) ??
+				onSpan.find((c) => c.agentThread === undefined));
 	if (same) {
-		changed(composers.map((c) => (c === same ? { ...c, focus: true } : c)));
+		changed(
+			composers.map((c) =>
+				c === same
+					? { ...c, focus: true, ...(agentThread ? { agentThread } : {}) }
+					: c,
+			),
+		);
 		return same.clientId;
 	}
 	changed([
@@ -180,7 +190,8 @@ export function newThreadItems(
 		if (!span || !d.create) continue;
 		seen.add(d.create.clientId);
 		const opened = open.find((c) => c.clientId === d.create?.clientId);
-		const agentThread = d.create.agentThread ?? opened?.agentThread;
+		// Once typed in, the draft says (a head move drops the link).
+		const agentThread = d.create.agentThread;
 		items.push({
 			clientId: d.create.clientId,
 			span,

@@ -283,8 +283,9 @@ a reader drops what breaks them:
 - `agent-thread-linked` must have `by: "human"` (see "Agent threads ref").
 - Agent events (`agent-thread-opened`, `agent-message`,
   `agent-thread-resolved`, `agent-thread-seen`, `agent-comment-posted`,
-  `agent-thread-linked`) are a human's or the agent's (`by: "ai"`), never
-  `"auto"`.
+  `agent-thread-linked`) are never `"auto"`; opened and message events are
+  a human's or the agent's (`by: "ai"`), resolved, seen, comment-posted and
+  linked a human's only.
 
 ## Writing
 
@@ -657,7 +658,11 @@ folded from the origins on read (`startedBy`), never stored.
   listed). Only a human links: by ai is refused on write and skipped on
   read. The server writes it only after GitHub has the new thread (POST
   `threads` with `agentThread`, and on its resend, which writes nothing
-  new); a refused post links nothing. If the GitHub thread goes, the
+  new), and only when the posted span is the conversation's (path,
+  commit, sides and lines); a refused post links nothing, and a link the
+  server won't write leaves the conversation on its span, the answer's
+  `agentLinkProblem` saying why on its card. A draft moved to a new head
+  drops its `agentThread`. If the GitHub thread goes, the
   conversation is an orphan on its recorded span, as any thread
   conversation is. One event per link, measured 2026-11-16 with a
   28-character node id: a 241-byte commit message, a 416-byte commit
