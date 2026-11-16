@@ -1067,6 +1067,7 @@ export function FileDiff(props: {
 					clientId={c.clientId}
 					span={c.span}
 					quote={file.path}
+					comment={{ readOnly }}
 				/>
 			))}
 		</div>

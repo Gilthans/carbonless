@@ -1,13 +1,25 @@
-import { AlertIcon, SparkleFillIcon } from "@primer/octicons-react";
+import {
+	AlertIcon,
+	CommentIcon,
+	SparkleFillIcon,
+} from "@primer/octicons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useLayoutEffect, useRef } from "react";
 import { MAX_AGENT_TEXT } from "../../shared/agent";
-import { sessionQuery } from "../api";
-import { type CodeSpan, describeSpan } from "../files/selectionActions";
+import { overviewQuery, sessionQuery } from "../api";
+import {
+	type CodeSpan,
+	commentAvailable,
+	describeSpan,
+	type SelectionContext,
+} from "../files/selectionActions";
 import { Spinner } from "../Spinner";
+import { Tooltip } from "../Tooltip";
 import { commentSurface } from "../threads/Conversation";
 import type { LineTexts } from "../threads/drafts";
+import { openComposer, targetOf } from "../threads/newThreads";
 import { Avatar, usePerson } from "../threads/people";
+import { useThreadWriter } from "../threads/threadWrites";
 import { askAgent, dropAgentWrite, useAgentWrites } from "./agentWrites";
 import {
 	agentComposerFocused,
@@ -18,6 +30,16 @@ import {
 import { QuickQuestionChips } from "./QuickQuestionChips";
 import { SPAN_QUESTIONS, withQuestion } from "./quickQuestions";
 import { useSendView } from "./threadAgent";
+
+/**
+ * What Comment's availability needs beyond the overview (commentAvailable):
+ * the file's kind, whether the span's lines are GitHub's diff's, whether
+ * the diff shown is the head's, an earlier patch set. Left out: a text
+ * file, lines in the diff, the head's, the latest.
+ */
+export type AgentCommentContext = Partial<
+	Pick<SelectionContext, "file" | "inDiff" | "headUnsure" | "readOnly">
+>;
 
 /** UTF-8 bytes, as the server caps a question. */
 const bytes = (text: string) => new TextEncoder().encode(text).length;
@@ -38,6 +60,8 @@ export function AgentComposer(props: {
 	where?: string;
 	/** Kept for parity with NewThread; questions aren't drafts yet. */
 	lineTexts?: LineTexts;
+	/** For its Comment button (switching to a comment). */
+	comment?: AgentCommentContext;
 }) {
 	const { clientId, span } = props;
 	const client = useQueryClient();
@@ -91,6 +115,29 @@ export function AgentComposer(props: {
 		dropAgentWrite(clientId);
 		closeAgentComposer(clientId);
 	};
+	// The Comment button: the question becomes a comment on the same span,
+	// its text moved into the comment's draft (so no "Discard?"); nothing
+	// goes to GitHub until Comment is pressed there.
+	const writer = useThreadWriter();
+	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
+	const commentable = commentAvailable(span, {
+		writes: overview?.writes ?? "on",
+		commentLeft: overview?.commentLeft !== false,
+		file: props.comment?.file ?? { binary: false, submodule: false },
+		inDiff: props.comment?.inDiff,
+		headUnsure: props.comment?.headUnsure,
+		readOnly: props.comment?.readOnly,
+	});
+	const toComment = () => {
+		if (commentable !== true || sending) return;
+		dropAgentWrite(clientId);
+		closeAgentComposer(clientId);
+		const id = openComposer(span);
+		const before = writer.drafts.newThread(id)?.text ?? "";
+		const joined =
+			before.trim() && text ? `${before}\n\n${text}` : before || text;
+		writer.drafts.setNew(id, targetOf(span), joined, props.lineTexts);
+	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
@@ -128,6 +175,26 @@ export function AgentComposer(props: {
 				<span className="shrink-0 font-mono text-faint">
 					{props.where ?? describeSpan(span)}
 				</span>
+				{!sending && (
+					<Tooltip
+						content={commentable === true ? "Comment" : commentable}
+						describe={commentable !== true}
+					>
+						{(trigger) => (
+							<button
+								{...trigger}
+								type="button"
+								data-testid="agent-composer-comment"
+								aria-label="Comment"
+								aria-disabled={commentable !== true || undefined}
+								onClick={toComment}
+								className="-my-1 -mr-1.5 ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-line-strong text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:border-line aria-disabled:text-faint aria-disabled:hover:bg-transparent"
+							>
+								<CommentIcon size={16} aria-hidden />
+							</button>
+						)}
+					</Tooltip>
+				)}
 			</div>
 			<div className="space-y-1.5 p-2.5">
 				{sending ? (

@@ -5,6 +5,7 @@ import {
 	ASK_AGENT_ACTION,
 	anchorOf,
 	getAgentComposers,
+	openAgentComposer,
 	resetAgentComposers,
 	spanOfAnchor,
 } from "./askAgentAction";
@@ -81,6 +82,17 @@ describe("Ask agent", () => {
 		expect(getAgentComposers()).toMatchObject([{ span: span(), focus: true }]);
 		ASK_AGENT_ACTION.start(span({ line: 9 }));
 		expect(getAgentComposers()).toHaveLength(2);
+	});
+
+	it("opens with text carried over, added to an open composer's", () => {
+		const id = openAgentComposer(span(), "c1", "why <b>this</b>?");
+		expect(getAgentComposers()).toMatchObject([
+			{ clientId: id, text: "why <b>this</b>?", focus: true },
+		]);
+		openAgentComposer(span(), "c2", "and that");
+		expect(getAgentComposers()).toMatchObject([
+			{ clientId: "c1", text: "why <b>this</b>?\n\nand that" },
+		]);
 	});
 
 	it("turns a span into a stored anchor and back", () => {

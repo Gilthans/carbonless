@@ -3,13 +3,16 @@ import {
 	ClockIcon,
 	CommentIcon,
 	LinkExternalIcon,
+	SparkleFillIcon,
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import { type KeyboardEvent, useLayoutEffect, useRef } from "react";
 import { MAX_REPLY } from "../../shared/types";
-import { sessionQuery } from "../api";
+import { askAgentAvailable, openAgentComposer } from "../agent/askAgentAction";
+import { overviewQuery, sessionQuery } from "../api";
 import { type CodeSpan, describeSpan } from "../files/selectionActions";
 import { LabeledIcon } from "../overview/parts";
+import { Tooltip } from "../Tooltip";
 import { safeHref } from "../ui";
 import { COMMENT_SURFACE } from "./Conversation";
 import { useClearOfNotices } from "./clearOfNotices";
@@ -91,6 +94,8 @@ export function NewThread(props: {
 	onPosted?: () => void;
 	/** A line comment's first and last line as shown (kept with the draft). */
 	lineTexts?: LineTexts;
+	/** The diff shown isn't yet the viewed head's (askAgentAvailable). */
+	headUnsure?: boolean;
 }) {
 	const { item } = props;
 	const { clientId, span } = item;
@@ -134,6 +139,20 @@ export function NewThread(props: {
 		writer.discard(newThreadKey(clientId));
 		closeComposer(clientId);
 	};
+	// The agent button: the comment becomes a question on the same span,
+	// its text moved (so no "Discard?"), nothing sent anywhere.
+	const writes = useQuery({ ...overviewQuery, enabled: false }).data?.writes;
+	const askable = askAgentAvailable(span, {
+		writes: writes ?? "on",
+		headUnsure: props.headUnsure,
+	});
+	const toAgent = () => {
+		if (askable !== true) return;
+		const text = writer.drafts.newThread(clientId)?.text ?? item.text;
+		writer.discard(newThreadKey(clientId));
+		closeComposer(clientId);
+		openAgentComposer(span, undefined, text);
+	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
@@ -170,6 +189,26 @@ export function NewThread(props: {
 				<span className="shrink-0 font-mono text-faint">
 					{props.where ?? describeSpan(span)}
 				</span>
+				{!item.sending && (
+					<Tooltip
+						content={askable === true ? "Ask agent" : askable}
+						describe={askable !== true}
+					>
+						{(trigger) => (
+							<button
+								{...trigger}
+								type="button"
+								data-testid="new-thread-agent"
+								aria-label="Ask agent"
+								aria-disabled={askable !== true || undefined}
+								onClick={toAgent}
+								className="-my-1 -mr-1.5 ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-dashed border-agent-edge bg-agent/60 text-agent-ink hover:border-agent-ink hover:bg-agent focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:border-line aria-disabled:bg-transparent aria-disabled:text-faint"
+							>
+								<SparkleFillIcon size={14} aria-hidden />
+							</button>
+						)}
+					</Tooltip>
+				)}
 			</div>
 			<div className="space-y-1.5 p-2.5">
 				{item.sending ? (

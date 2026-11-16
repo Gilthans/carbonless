@@ -60,14 +60,28 @@ const changed = (next: readonly AgentComposerItem[]) => {
 	for (const l of listeners) l();
 };
 
-/** Opens a composer on the span (the open one again, focused); its client id. */
-export function openAgentComposer(span: CodeSpan, id = newClientId()): string {
+/**
+ * Opens a composer on the span (the open one again, focused); its client
+ * id. `text` (a comment switched to a question) starts its box, or is
+ * added after what the open one already has.
+ */
+export function openAgentComposer(
+	span: CodeSpan,
+	id = newClientId(),
+	text = "",
+): string {
 	const same = composers.find((c) => sameSpan(c.span, span));
 	if (same) {
-		changed(composers.map((c) => (c === same ? { ...c, focus: true } : c)));
+		const joined =
+			text && same.text.trim() ? `${same.text}\n\n${text}` : same.text || text;
+		changed(
+			composers.map((c) =>
+				c === same ? { ...c, text: joined, focus: true } : c,
+			),
+		);
 		return same.clientId;
 	}
-	changed([...composers, { clientId: id, span, text: "", focus: true }]);
+	changed([...composers, { clientId: id, span, text, focus: true }]);
 	return id;
 }
 
