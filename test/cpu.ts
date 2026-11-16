@@ -9,7 +9,8 @@
  * quarter: the same work in all, so linear is about 1x and quadratic 4x.
  * Their limit of 2 sits between the two: the ratios measured 0.77–1.23 on
  * the dev machine, idle and with a busy loop per core (CAR-67), and a
- * quadratic step put back (one pass per file) measured 4.6x.
+ * quadratic step put back (one pass per file) measured 4.6x. CI is noisier:
+ * a few read up to 1.88 over 78 runs, and take 2.5 instead (CAR-188).
  */
 
 /** CPU µs (user + system) this thread spends in `run`. */

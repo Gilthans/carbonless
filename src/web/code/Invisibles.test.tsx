@@ -476,13 +476,14 @@ describe("colorPieces", () => {
 		const color = ({ text, tokens }: typeof long) =>
 			colorPieces(renderInvisibles(text, 4), tokens);
 		// CPU against four lines a quarter as long (CLAUDE.md): linear is
-		// about 1x, a quadratic pass 4x.
+		// about 1x, a quadratic pass 4x. Limit 2.5: CI read up to 1.76 over
+		// 78 runs (CAR-188).
 		const { ratio } = bestCpuRatio(
 			() => color(long),
 			repeat(4, () => color(short)),
 		);
 		console.info(`colorPieces: a 4x line in ${ratio.toFixed(2)}x the CPU`);
-		expect(ratio).toBeLessThan(2);
+		expect(ratio).toBeLessThan(2.5);
 		const pieces = renderInvisibles(long.text, 4);
 		const out = colorPieces(pieces, long.tokens);
 		const joined = pieces
