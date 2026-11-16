@@ -171,11 +171,15 @@ async function until(check: () => boolean, what: string): Promise<void> {
 const helperDirs = () =>
 	readdirSync(tmp).filter((e) => e.startsWith(HELPER_DIR_PREFIX));
 
-/** A cli.js that records how it was started, and prints crb's key line. */
+/**
+ * A cli.js that records how it was started (written aside and renamed: the
+ * test reads it as soon as it exists), and prints crb's key line.
+ */
 const CLI = (
 	record: string,
-) => `import { realpathSync, writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(record)}, JSON.stringify({ cli: realpathSync(process.argv[1]), args: process.argv.slice(2), cwd: realpathSync(process.cwd()), mark: process.env.CRB_HELPER_MARK }));
+) => `import { realpathSync, renameSync, writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(`${record}.tmp`)}, JSON.stringify({ cli: realpathSync(process.argv[1]), args: process.argv.slice(2), cwd: realpathSync(process.cwd()), mark: process.env.CRB_HELPER_MARK }));
+renameSync(${JSON.stringify(`${record}.tmp`)}, ${JSON.stringify(record)});
 console.error("carbonless listening on http://127.0.0.1:4747/?key=SECRET");
 `;
 
