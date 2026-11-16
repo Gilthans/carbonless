@@ -1033,16 +1033,27 @@ export function FileDiff(props: {
 	// A card asked for among the file bubble's threads, or its agent
 	// bubble's (threadFocus: a Threads tab row, a link to a conversation
 	// held here, a whole file's, unplaced, outdated or gone): that bubble
-	// opens, so the card shows and takes it.
+	// opens, so the card shows and takes it. One held on a line of a file
+	// shown without its lines (an SVG as Image): the file shows as Text for
+	// the view (useLineTargetText), and the line's bubble takes the card, as
+	// for a find step or a thread link.
+	const onHiddenLine = (id: string) =>
+		linesHidden &&
+		asText.textable &&
+		(header.some((h) => h.reason === "unplaced" && h.thread.id === id) ||
+			agentHeader.some(
+				(h) => h.reason === "unplaced" && h.thread.thread.id === id,
+			));
+	useFocusAmong(onHiddenLine, asText.show);
 	useFocusAmong(
-		(id) => header.some((h) => h.thread.id === id),
+		(id) => !onHiddenLine(id) && header.some((h) => h.thread.id === id),
 		() => {
 			collapse.toggled("file");
 			setFileOpen(true);
 		},
 	);
 	useFocusAmong(
-		(id) => agentLead.some((t) => t.id === id),
+		(id) => !onHiddenLine(id) && agentLead.some((t) => t.id === id),
 		() => setAgentOpen(true),
 	);
 	const agentFileItems = useAgentComposers().filter(
@@ -1423,7 +1434,9 @@ export function FileDiff(props: {
  * lines (an SVG as Image: `textable`) shows that file as Text, for this
  * view only: its lines are read, and DiffBody scrolls to the line as it
  * does for any file. The stored pick (`rendererPicks`) doesn't change, so a
- * reload shows the image again; `clear` (a pick in the view switch) ends it. Each
+ * reload shows the image again; `clear` (a pick in the view switch) ends it.
+ * `show` is a Threads tab row's or a conversation link's (threadFocus) onto
+ * such a line. Each
  * step (`stepSeq`) and each landing (`seq`) that arrives after mount
  * switches once: marks changing as the reviewer types never do.
  */
@@ -1431,7 +1444,7 @@ function useLineTargetText(
 	textable: boolean,
 	find: DiffFind | undefined,
 	landing: Landing | undefined,
-): { on: boolean; clear: () => void } {
+): { on: boolean; textable: boolean; show: () => void; clear: () => void } {
 	const step = find?.current ? find.stepSeq : 0;
 	const landed = landing?.line !== undefined ? landing.seq : 0;
 	// What it was mounted with is spent: a new snapshot remounts the file
@@ -1448,7 +1461,12 @@ function useLineTargetText(
 		setSeen({ step, landed });
 		if (fresh && textable) setOn(true);
 	}
-	return { on: on && textable, clear: () => setOn(false) };
+	return {
+		on: on && textable,
+		textable,
+		show: () => setOn(true),
+		clear: () => setOn(false),
+	};
 }
 
 /**

@@ -39,6 +39,7 @@ import type { Landing } from "./landing";
 import { rendererPicks } from "./renderers";
 import { SyncNotices } from "./SyncNotices";
 import { type FileSince, unitsFile } from "./since";
+import { threadFocus } from "./threadFocus";
 import type { Placements } from "./threadPlacement";
 import type { Unit } from "./unit";
 import { stateSyncFor, useReviewView } from "./useSetStates";
@@ -2537,6 +2538,51 @@ describe("FileDiff: agent threads traced into the viewed head", () => {
 	});
 });
 
+/** A review thread on line 5 of img/icon.svg, on `head` (or on the file). */
+const svgLineThread = (
+	head: string,
+	id = "T1",
+	subject: "line" | "file" = "line",
+) =>
+	({
+		id,
+		loaded: true,
+		path: "img/icon.svg",
+		line: 5,
+		currentLine: 5,
+		excerpt: "a comment",
+		html: "<p>a comment</p>",
+		body: "a comment",
+		createdAt: "2026-01-01T00:00:00Z",
+		lastActivityAt: "2026-01-01T00:00:00Z",
+		author: "rev",
+		avatarUrl: "",
+		participants: [],
+		bot: false,
+		commentCount: 1,
+		hasReply: false,
+		outdated: false,
+		resolved: false,
+		code: null,
+		anchor:
+			subject === "file"
+				? null
+				: {
+						path: "img/icon.svg",
+						commit: head,
+						side: "RIGHT",
+						line: 5,
+						startSide: "RIGHT",
+						startLine: 5,
+						at: "2026-01-01T00:00:00Z",
+					},
+		commit: head,
+		subject,
+		attention: [],
+		yourTurn: false,
+		viewerCan: { reply: false, resolve: false, unresolve: false },
+	}) as unknown as DiffThreads["threads"][number];
+
 describe("FileDiff: the renderer seam", () => {
 	beforeEach(() => {
 		setShowInvisibles(false);
@@ -2737,41 +2783,7 @@ describe("FileDiff: the renderer seam", () => {
 
 	it("an SVG's line thread lists under the header in Image view, never dropped", async () => {
 		const head = "h".repeat(40);
-		const t = {
-			id: "T1",
-			loaded: true,
-			path: "img/icon.svg",
-			line: 5,
-			currentLine: 5,
-			excerpt: "a comment",
-			html: "<p>a comment</p>",
-			body: "a comment",
-			createdAt: "2026-01-01T00:00:00Z",
-			lastActivityAt: "2026-01-01T00:00:00Z",
-			author: "rev",
-			avatarUrl: "",
-			participants: [],
-			bot: false,
-			commentCount: 1,
-			hasReply: false,
-			outdated: false,
-			resolved: false,
-			code: null,
-			anchor: {
-				path: "img/icon.svg",
-				commit: head,
-				side: "RIGHT",
-				line: 5,
-				startSide: "RIGHT",
-				startLine: 5,
-				at: "2026-01-01T00:00:00Z",
-			},
-			commit: head,
-			subject: "line",
-			attention: [],
-			yourTurn: false,
-			viewerCan: { reply: false, resolve: false, unresolve: false },
-		} as unknown as DiffThreads["threads"][number];
+		const t = svgLineThread(head);
 		const { user, paths } = setup(
 			file([cluster("k1")], { path: "img/icon.svg" }),
 			undefined,
@@ -2900,6 +2912,7 @@ describe("FileDiff: review in the image view", () => {
 		vi.restoreAllMocks();
 		localStorage.clear();
 		rendererPicks.reset();
+		threadFocus.reset();
 		resetShowInvisibles();
 		contextRanges.reset();
 		cleanup();
@@ -3110,6 +3123,43 @@ describe("FileDiff: review in the image view", () => {
 		});
 		expect(shown()).toBe("text");
 		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+	});
+
+	it("a Threads tab row for an SVG line's thread in Image view shows Text for the view; its line's card takes it", async () => {
+		vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+			cb(0);
+			return 0;
+		});
+		vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+		const head = "h".repeat(40);
+		const { user } = setup(svg([cluster("k1")]), undefined, hunks, "clusters", {
+			threads: {
+				readId: "r",
+				snapshotHead: head,
+				threads: [svgLineThread(head), svgLineThread(head, "F1", "file")],
+			},
+		});
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(shown()).toBe("image");
+		// A file comment's row keeps the image: its card is the file bubble's.
+		act(() => {
+			threadFocus.request({ id: "F1" });
+		});
+		expect(shown()).toBe("image");
+		await waitFor(() => expect(threadFocus.get()).toBeNull());
+		// A line thread's row: Text, and the card on its line takes it.
+		act(() => {
+			threadFocus.request({ id: "T1" });
+		});
+		expect(shown()).toBe("text");
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		await waitFor(() => expect(threadFocus.get()).toBeNull());
+		expect(
+			screen.queryByRole("button", {
+				name: /line not in this diff/,
+			}),
+		).toBeNull();
 		expect(rendererPicks.get(SVG)).toBeUndefined();
 	});
 
