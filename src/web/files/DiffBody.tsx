@@ -22,7 +22,7 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { AgentThread } from "../../shared/agent";
+import type { SpanAgentThread } from "../../shared/agent";
 import { inGitOrder } from "../../shared/diffHunk";
 import {
 	contains,
@@ -1169,7 +1169,11 @@ function RowTail(props: {
 	threads?: RowThreads;
 	composers?: RowComposers;
 	/** Opened agent threads ending on the row, and Ask agent composers. */
-	agentOpened?: { endKey: LineKey; ending: AgentThread[]; side: DiffSide }[];
+	agentOpened?: {
+		endKey: LineKey;
+		ending: SpanAgentThread[];
+		side: DiffSide;
+	}[];
 	agentComposing?: { side: DiffSide; items: AgentComposerItem[] }[];
 	agent?: AgentRows;
 	shape: Shape;

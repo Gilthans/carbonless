@@ -1363,6 +1363,49 @@ describe("API", () => {
 			expect((await get("/api/agent/threads")).threads).toHaveLength(1);
 		});
 
+		it("POST agent/threads takes review: true", async () => {
+			const bad = await post("/api/agent/threads", {
+				clientId: "r0",
+				text: "Overall?",
+				review: true,
+				span: span(),
+			});
+			expect(bad.statusCode, bad.body).toBe(400);
+			for (const review of [false, "yes", 1]) {
+				const res = await post("/api/agent/threads", {
+					clientId: "r0",
+					text: "Overall?",
+					review,
+				});
+				expect(res.statusCode, JSON.stringify(review)).toBe(400);
+			}
+			expect((await get("/api/agent/threads")).threads).toHaveLength(0);
+			const res = await post("/api/agent/threads", {
+				clientId: "r1",
+				text: "Overall?",
+				review: true,
+			});
+			expect(res.statusCode, res.body).toBe(200);
+			const t: AgentThread = res.json();
+			expect(t.anchor).toEqual({ subject: "review" });
+			expect(t).toMatchObject({ openedBy: "human", resolved: false });
+			const second = await post("/api/agent/threads", {
+				clientId: "r2",
+				text: "And?",
+				review: true,
+			});
+			expect(second.statusCode).toBe(409);
+			expect(second.json()).toMatchObject({
+				error: expect.any(String),
+				thread: t.id,
+			});
+			const resolve = await post(`/api/agent/threads/${t.id}/resolved`, {
+				resolved: true,
+			});
+			expect(resolve.statusCode).toBe(409);
+			expect((await get("/api/agent/threads")).threads).toHaveLength(1);
+		});
+
 		it("400 on a bad span, a blank or too long text, a bad clientId, an unsafe path", async () => {
 			for (const bad of [
 				{ span: { ...span(), side: undefined } },
@@ -1388,7 +1431,7 @@ describe("API", () => {
 			expect(res.statusCode).toBe(404);
 		});
 
-		it("join: Approve and Deny race, the second is 409; disconnect; start", async () => {
+		it("join: Approve and Deny race, the second is 409; Detach; start", async () => {
 			const { session } = await registry.open({ pr: pr.arg });
 			const host = session.agent;
 			if (!host) throw new Error("no agent");
@@ -1418,7 +1461,7 @@ describe("API", () => {
 			});
 			expect(joined.spawned).toBeUndefined();
 			expect(joined.joinRequest).toBeUndefined();
-			const off = await post("/api/agent/disconnect");
+			const off = await post("/api/agent/detach");
 			expect(off.statusCode, off.body).toBe(200);
 			const left: AgentStatus = await get("/api/agent");
 			expect(left.left).toMatchObject({ ...who, why: "disconnected" });
@@ -1600,7 +1643,6 @@ describe("API", () => {
 				["GET", "/api/agent/threads"],
 				["GET", `/api/agent/placements?head=${pr.head()}`],
 				["POST", "/api/agent/cancel"],
-				["POST", "/api/agent/disconnect"],
 				["POST", "/api/agent/start"],
 				["POST", "/api/agent/detach"],
 			] as const) {
@@ -1622,7 +1664,6 @@ describe("API", () => {
 					"/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6",
 					{ approve: true },
 				],
-				["POST", "/api/agent/disconnect", {}],
 				["POST", "/api/agent/start", {}],
 				["POST", "/api/agent/detach", {}],
 				["PUT", "/api/config/agent", null],

@@ -23,6 +23,7 @@ import type { FilesSearch } from "../files/landing";
 import { threadFocus, usePendingFocus } from "../files/threadFocus";
 import type { OverviewSearch } from "../overview/threadLink";
 import { codeLinkSearch } from "./codeLinks";
+import { openReviewDrawer } from "./drawerStore";
 
 /** An agent thread or message id: a lowercase ULID. */
 export const ULID = /^[0-9a-hjkmnp-tv-z]{26}$/;
@@ -36,6 +37,7 @@ export function conversationLabel(
 	authorOf?: (githubThread: string) => string | undefined,
 ): string {
 	const a = thread.anchor;
+	if (a.subject === "review") return "Review";
 	if (a.subject === "thread" && !thread.orphaned) {
 		return `Thread · ${authorOf?.(a.thread) ?? a.path}`;
 	}
@@ -56,7 +58,8 @@ export type ConversationTarget =
  * goes: a live GitHub thread's conversation to the Overview's card; one on
  * code (an orphan's last known lines too) to Files changed at its lines, in
  * the comparison its anchor names (the patch set holding its commit, else
- * that commit). Null when its file isn't one of this review's.
+ * that commit). Null when its file isn't one of this review's, and for
+ * the review conversation (no place in a page).
  */
 export function conversationSearch(
 	thread: AgentThread,
@@ -69,6 +72,8 @@ export function conversationSearch(
 		...(message !== undefined && ULID.test(message) ? { message } : {}),
 	};
 	const a = thread.anchor;
+	// The review conversation has no place in a page: its drawer shows it.
+	if (a.subject === "review") return null;
 	if (a.subject === "thread" && !thread.orphaned) {
 		return { to: "/r/$id", search: { thread: a.thread, ...land } };
 	}
@@ -237,7 +242,8 @@ export function useGithubAuthors(): (id: string) => string | undefined {
 /**
  * Opens conversation `thread` (landing on `message`): navigates to its
  * page with its search, which asks for it to open there. False when it
- * can't be placed (its file isn't this review's).
+ * can't be placed (its file isn't this review's). The review conversation
+ * opens its drawer instead, on whatever page shows.
  */
 export function useOpenConversation(): (
 	thread: AgentThread,
@@ -247,6 +253,12 @@ export function useOpenConversation(): (
 	const { files, patchsets } = useLinkFacts();
 	return useCallback(
 		(thread: AgentThread, message?: string) => {
+			// The review conversation's place is its drawer, over any page.
+			if (thread.anchor.subject === "review") {
+				openReviewDrawer();
+				requestConversationOpen(thread.id, message);
+				return true;
+			}
 			const target = conversationSearch(thread, files, patchsets, message);
 			if (!target || !router) return false;
 			const id = router.state.matches

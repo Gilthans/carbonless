@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import { ThreadBubble } from "../files/ThreadBubble";
-import { AgentBubble } from "./AgentBubble";
+import { AgentBubble, agentBubbleLabel } from "./AgentBubble";
 
 afterEach(cleanup);
 
@@ -115,6 +115,22 @@ describe("an agent bubble's unread dot", () => {
 		expect(screen.queryByTestId("agent-unread-dot")).toBeNull();
 		expect(screen.getByTestId("agent-bubble")).toHaveAccessibleName(
 			"1 agent thread on line 3",
+		);
+	});
+});
+
+describe("agentBubbleLabel", () => {
+	it("leaves the review conversation out of the count, the waiting and the new", () => {
+		const whole: AgentThread = {
+			...agentThread(false),
+			id: "R",
+			anchor: { subject: "review" },
+			waiting: true,
+			unread: true,
+		};
+		const open = { ...agentThread(false), id: "A" };
+		expect(agentBubbleLabel([open, whole], "in this file")).toBe(
+			"1 agent thread in this file",
 		);
 	});
 });

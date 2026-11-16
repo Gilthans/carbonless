@@ -24,10 +24,16 @@ import {
 	verdictQuery,
 } from "./api";
 import "./agent";
-import { AgentChip, CHIP_BOX, useAgentChipPlace } from "./agent/AgentChip";
+import { AgentChip, CHIP_COLUMN, useAgentChipPlace } from "./agent/AgentChip";
 import { JoinBar } from "./agent/JoinBar";
 import { JoinToast } from "./agent/JoinToast";
+import {
+	DRAWER_WIDTH,
+	ReviewConversationDrawer,
+	useDrawerPush,
+} from "./agent/ReviewConversationDrawer";
 import { AgentSetupHost } from "./agent/setup/AgentSetup";
+import { SendViewHost } from "./agent/threadAgent";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { FindButton } from "./files/find/FindButton";
 import { findFloat, findState } from "./files/find/findState";
@@ -194,15 +200,16 @@ function useStickyHeader(
 }
 
 /**
- * Where the agent chip shows: beside the full logo at the top, and in the
- * sticky row beside the compact mark (`docked`) once its place by the logo
- * starts to leave the screen (under `above`, the find bar), so it never
- * scrolls out of sight. One chip, rendered once into `host` (`chip`) and
- * moved between the two places: it never remounts (no refetch, and what
- * holds on to it, like the agent setup giving focus back, still finds it).
- * The chip has one size (CHIP_BOX), kept for it in the other place, and
- * in both from the first paint while it may come (`place`, not as of a
- * cutoff): neither the title nor the tabs move when it loads or moves.
+ * Where the agent chip shows: in its own column pinned to the header's
+ * right (mirroring the logo on the left), and at the right end of the
+ * sticky row (`docked`) once that column starts to leave the screen
+ * (under `above`, the find bar), so it never scrolls out of sight. One
+ * chip, rendered once into `host` (`chip`) and moved between the two
+ * places: it never remounts (no refetch, and what holds on to it, like the
+ * agent setup giving focus back, still finds it). The column is always
+ * reserved (CHIP_COLUMN), so the title never moves when the chip loads or
+ * leaves; the sticky row's buttons make room for it only once it docks,
+ * so until then Settings ends at the content edge, right under the chip.
  */
 function useChipDock(hidden: boolean, above: number, asOf: boolean) {
 	const [title, setTitle] = useState<HTMLElement | null>(null);
@@ -268,16 +275,9 @@ function useChipDock(hidden: boolean, above: number, asOf: boolean) {
 	};
 }
 
-/** The chip's space where it isn't, so nothing beside it moves. */
-function ChipSpace({ shown }: { shown: boolean }) {
-	return shown ? (
-		<span aria-hidden data-chip-space className={CHIP_BOX} />
-	) : null;
-}
-
 /**
- * A chip place: out of the layout (and its gap) when it holds neither the
- * chip nor its kept space, as without an agent.
+ * The sticky row's chip place: out of the layout (and its gap) when it
+ * holds no chip (not docked, or no agent).
  */
 const chipSlotClass =
 	"flex shrink-0 items-center [&:not(:has(button,[data-chip-space]))]:hidden";
@@ -417,6 +417,9 @@ export function App() {
 		stuck,
 	} = useStickyHeader(header, row, yieldToFind, above);
 	const chip = useChipDock(yieldToFind, above, !!session.data?.asOf);
+	// The review conversation's drawer, open on a wide desktop: the whole
+	// page, header included, narrows beside it (it pushes, never covers).
+	const drawerPush = useDrawerPush();
 	// The sticky stack's top: the find bar, then the header's stuck row.
 	const stackTop = above + (yieldToFind ? 0 : compact);
 	useStackTop(stackTop, swapped);
@@ -431,324 +434,344 @@ export function App() {
 
 	return (
 		<AppHeaderHeight.Provider value={stackTop}>
-			<div className="min-h-screen bg-canvas font-sans text-ink">
-				{/*
-				 * The top of the page, pinned: a session's join request, then
-				 * Files changed's open find bar (FindSlot). Both push the page
-				 * down; the header sticks under them (`above`).
-				 */}
-				<div className="sticky z-[35]" style={{ top: "var(--vv-top, 0px)" }}>
-					{/* Like the chip, none without a PR: nothing to join. */}
-					<div ref={setJoinSlot}>{pr && <JoinBar />}</div>
-					<div ref={setSlot} data-find-slot />
-				</div>
-				<header
-					ref={header}
-					data-app-header
-					// Sticks once only the last row (and the border) is left on
-					// screen, under the find bar when it shows (which keeps to the
-					// visual viewport's top: --vv-top).
-					style={{ top: `calc(${above - offset}px + var(--vv-top, 0px))` }}
-					// Out of the layout while a phone's find bar takes its place.
-					hidden={yieldToFind}
-					className={`sticky z-30 border-b border-line bg-surface header-glow transition-shadow duration-200 motion-reduce:transition-none ${
-						stuck ? "shadow-header" : ""
-					}`}
+			<SendViewHost>
+				<div
+					data-testid="app-root"
+					style={drawerPush ? { paddingRight: DRAWER_WIDTH } : undefined}
+					className="min-h-screen bg-canvas font-sans text-ink"
 				>
-					<div className="mx-auto max-w-5xl px-4 pt-3 pb-2 sm:px-6 sm:pt-4">
-						{session.isPending && (
-							// The title's frame, where it will show (principle 8).
-							<div
-								aria-busy="true"
-								data-testid="header-loading"
-								className="flex min-h-11 items-center gap-2 sm:min-h-12 sm:gap-3"
-							>
-								<Spinner label="Loading the PR" size={20} />
-								<div className="min-w-0 flex-1 space-y-2.5">
-									<SkeletonBar className="w-2/3 max-w-sm" />
-									<SkeletonBar className="w-1/3 max-w-40" />
+					{/*
+					 * The top of the page, pinned: a session's join request, then
+					 * Files changed's open find bar (FindSlot). Both push the page
+					 * down; the header sticks under them (`above`).
+					 */}
+					<div
+						data-pinned-top
+						className="sticky z-[35]"
+						style={{ top: "var(--vv-top, 0px)" }}
+					>
+						{/* Like the chip, none without a PR: nothing to join. */}
+						<div ref={setJoinSlot}>{pr && <JoinBar />}</div>
+						<div ref={setSlot} data-find-slot />
+					</div>
+					<header
+						ref={header}
+						data-app-header
+						// Sticks once only the last row (and the border) is left on
+						// screen, under the find bar when it shows (which keeps to the
+						// visual viewport's top: --vv-top).
+						style={{ top: `calc(${above - offset}px + var(--vv-top, 0px))` }}
+						// Out of the layout while a phone's find bar takes its place.
+						hidden={yieldToFind}
+						className={`sticky z-30 border-b border-line bg-surface header-glow transition-shadow duration-200 motion-reduce:transition-none ${
+							stuck ? "shadow-header" : ""
+						}`}
+					>
+						<div className="mx-auto max-w-5xl px-4 pt-3 pb-2 sm:px-6 sm:pt-4">
+							{session.isPending && (
+								// The title's frame, where it will show (principle 8).
+								<div
+									aria-busy="true"
+									data-testid="header-loading"
+									className="flex min-h-11 items-center gap-2 sm:min-h-12 sm:gap-3"
+								>
+									<Spinner label="Loading the PR" size={20} />
+									<div className="min-w-0 flex-1 space-y-2.5">
+										<SkeletonBar className="w-2/3 max-w-sm" />
+										<SkeletonBar className="w-1/3 max-w-40" />
+									</div>
 								</div>
+							)}
+							{session.isError && <ErrorMessage error={session.error} />}
+							{pr && (
+								<div className="flex items-center gap-2 sm:gap-3">
+									<Tooltip content="Home" describe={false}>
+										{(trigger) => (
+											<Link
+												{...trigger}
+												to="/"
+												aria-label="Home"
+												data-testid="home-link"
+												className="-my-1.5 shrink-0 rounded-full focus-visible:outline-2 focus-visible:outline-accent"
+											>
+												<Logo className="h-11 w-11 sm:h-12 sm:w-12" />
+											</Link>
+										)}
+									</Tooltip>
+									<div
+										data-testid="header-title"
+										className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2"
+									>
+										<h1
+											ref={h1}
+											// Focused by the compact title's "back to top".
+											tabIndex={-1}
+											className="font-display text-xl font-bold tracking-tight break-words outline-none sm:text-2xl"
+										>
+											{pr.title}
+										</h1>
+										<span className="font-display text-xl text-muted sm:text-2xl">
+											{prUrl ? (
+												<a
+													href={prUrl}
+													target="_blank"
+													rel="noreferrer"
+													className="hover:text-link hover:underline"
+												>
+													#{pr.number}
+												</a>
+											) : (
+												`#${pr.number}`
+											)}
+										</span>
+									</div>
+									{/*
+									 * The agent chip's column, pinned right like the logo on
+									 * the left, until the chip docks in the row below; kept
+									 * (empty) without an agent too.
+									 */}
+									<span
+										ref={chip.setTitle}
+										data-testid="agent-chip-slot"
+										className={`${CHIP_COLUMN} self-center`}
+									/>
+								</div>
+							)}
+							{/* The one agent chip, placed by useChipDock; none without a PR. */}
+							{pr && chip.chip}
+							{pr && (
+								<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+									<span className="break-all">
+										{pr.owner}/{pr.repo}
+									</span>
+									{session.data?.asOf && <AsOf iso={session.data.asOf} />}
+								</div>
+							)}
+						</div>
+						{refresh.isError && (
+							<div className="mx-auto max-w-5xl px-4 pb-2 sm:px-6">
+								<ErrorMessage error={refresh.error} />
 							</div>
 						)}
-						{session.isError && <ErrorMessage error={session.error} />}
-						{pr && (
-							<div className="flex items-center gap-2 sm:gap-3">
-								<Tooltip content="Home" describe={false}>
-									{(trigger) => (
-										<Link
-											{...trigger}
-											to="/"
-											aria-label="Home"
-											data-testid="home-link"
-											className="-my-1.5 shrink-0 rounded-full focus-visible:outline-2 focus-visible:outline-accent"
-										>
-											<Logo className="h-11 w-11 sm:h-12 sm:w-12" />
-										</Link>
-									)}
-								</Tooltip>
-								{/* The agent chip by the logo, until it docks in the row below. */}
+						<div
+							ref={row}
+							data-testid="app-header-row"
+							className="mx-auto flex max-w-5xl items-center gap-0 px-2 sm:gap-2 sm:px-6"
+						>
+							{/*
+							 * The mark fades into the compact row as the header sticks
+							 * (--compact), where the full logo above has scrolled away, and
+							 * goes Home like the logo (inert until stuck). Its slot keeps
+							 * its width, so the tabs never move: the link's tap target
+							 * overflows the slot (the tabs, positioned, stay on top).
+							 */}
+							<div className="flex shrink-0 items-center self-stretch">
+								{/*
+								 * 24px on a phone (the mark's own size): the 360px row
+								 * needs the room for the docked chip at its right end.
+								 */}
 								<span
-									ref={chip.setTitle}
-									data-testid="agent-chip-slot"
-									className={chipSlotClass}
+									className="flex w-6 shrink-0 justify-center sm:w-7"
+									style={{
+										opacity: "var(--compact, 0)",
+										transform: "scale(calc(0.6 + 0.4 * var(--compact, 0)))",
+									}}
 								>
-									{chip.docked && <ChipSpace shown={chip.place} />}
+									<Tooltip content="Home" describe={false}>
+										{(trigger) => (
+											<Link
+												{...trigger}
+												to="/"
+												inert={!stuck}
+												aria-label="Home"
+												data-testid="compact-home-link"
+												className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-accent"
+											>
+												<Mark className="h-6 w-6" />
+											</Link>
+										)}
+									</Tooltip>
 								</span>
-								<div
-									data-testid="header-title"
-									className="flex min-w-0 flex-wrap items-baseline gap-x-2"
+								<nav
+									aria-label="PR pages"
+									className="flex shrink-0 self-stretch"
 								>
-									<h1
-										ref={h1}
-										// Focused by the compact title's "back to top".
-										tabIndex={-1}
-										className="font-display text-xl font-bold tracking-tight break-words outline-none sm:text-2xl"
+									<Link
+										to="/r/$id"
+										params={{ id }}
+										// Matched on the path only: a query (the first
+										// load's ?key=) must not unmark the tab.
+										activeOptions={{ exact: true, includeSearch: false }}
+										className={tabClass}
+										activeProps={{ className: activeTabClass }}
 									>
-										{pr.title}
-									</h1>
-									<span className="font-display text-xl text-muted sm:text-2xl">
+										Overview
+									</Link>
+									{/* Short labels on a phone, where the full ones don't fit. */}
+									<Link
+										to="/r/$id/files"
+										params={{ id }}
+										aria-label="Files changed"
+										activeOptions={{ includeSearch: false }}
+										className={tabClass}
+										activeProps={{ className: activeTabClass }}
+									>
+										<span className="sm:hidden">Files</span>
+										<span className="hidden sm:inline">Files changed</span>
+									</Link>
+									<Link
+										to="/r/$id/verdict"
+										params={{ id }}
+										aria-label="Final Verdict"
+										activeOptions={{ includeSearch: false }}
+										className={tabClass}
+										activeProps={{ className: activeTabClass }}
+									>
+										<span className="sm:hidden">Verdict</span>
+										<span className="hidden sm:inline">Final Verdict</span>
+									</Link>
+								</nav>
+							</div>
+							{/*
+							 * The title again, small, centered between the tabs and Find in PR
+							 * on a light pill, fading in over the last stretch before the
+							 * header sticks (--compact, scroll-linked). The title takes you
+							 * back to the top, to the full title; the number beside it goes
+							 * to the PR on GitHub. Both inert until stuck.
+							 */}
+							<div className="@container flex min-h-10 min-w-0 flex-1 items-center justify-center">
+								{pr && (
+									<span
+										data-testid="compact-title-pill"
+										style={{
+											opacity: "var(--compact, 0)",
+											transform:
+												"translateY(calc((1 - var(--compact, 0)) * 0.375rem))",
+										}}
+										className={`flex max-w-full min-w-0 items-center gap-x-1 rounded-full bg-raised px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line hover:bg-overlay hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5 ${compactPillYieldClass(chip.place)}`}
+									>
+										<Tooltip content={pr.title} describe={false}>
+											{(trigger) => (
+												<button
+													type="button"
+													{...trigger}
+													inert={!stuck}
+													aria-label={`Back to top: ${pr.title}`}
+													data-testid="compact-title"
+													onClick={toTop}
+													className={`${compactTapClass} min-w-0 rounded-full focus-visible:outline-2 focus-visible:outline-accent`}
+												>
+													{/* Two short lines on a phone, one on wider screens. */}
+													<span className="line-clamp-2 break-words sm:line-clamp-1">
+														{pr.title}
+													</span>
+												</button>
+											)}
+										</Tooltip>
 										{prUrl ? (
-											<a
-												href={prUrl}
-												target="_blank"
-												rel="noreferrer"
-												className="hover:text-link hover:underline"
+											<Tooltip content="Open on GitHub" describe={false}>
+												{(trigger) => (
+													<a
+														{...trigger}
+														href={prUrl}
+														target="_blank"
+														rel="noreferrer"
+														inert={!stuck}
+														aria-label={`#${pr.number} on GitHub`}
+														data-testid="compact-pr-link"
+														className={`${compactTapClass} ${compactNumberClass} ${compactNumberHideClass(pr.number)} hover:text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent`}
+													>
+														#{pr.number}
+													</a>
+												)}
+											</Tooltip>
+										) : (
+											<span
+												className={`${compactNumberClass} ${compactNumberHideClass(pr.number)}`}
 											>
 												#{pr.number}
-											</a>
-										) : (
-											`#${pr.number}`
+											</span>
 										)}
 									</span>
-								</div>
+								)}
 							</div>
-						)}
-						{/* The one agent chip, placed by useChipDock; none without a PR. */}
-						{pr && chip.chip}
-						{pr && (
-							<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
-								<span className="break-all">
-									{pr.owner}/{pr.repo}
-								</span>
-								{session.data?.asOf && <AsOf iso={session.data.asOf} />}
-							</div>
-						)}
-					</div>
-					{refresh.isError && (
-						<div className="mx-auto max-w-5xl px-4 pb-2 sm:px-6">
-							<ErrorMessage error={refresh.error} />
-						</div>
-					)}
-					<div
-						ref={row}
-						data-testid="app-header-row"
-						className="mx-auto flex max-w-5xl items-center gap-0 px-2 sm:gap-2 sm:px-6"
-					>
-						{/*
-						 * The mark fades into the compact row as the header sticks
-						 * (--compact), where the full logo above has scrolled away, and
-						 * goes Home like the logo (inert until stuck). Its slot keeps
-						 * its width, so the tabs never move: the link's tap target
-						 * overflows the slot (the tabs, positioned, stay on top).
-						 */}
-						<div className="flex shrink-0 items-center self-stretch">
-							<span
-								className="flex w-7 shrink-0 justify-center"
-								style={{
-									opacity: "var(--compact, 0)",
-									transform: "scale(calc(0.6 + 0.4 * var(--compact, 0)))",
-								}}
-							>
-								<Tooltip content="Home" describe={false}>
-									{(trigger) => (
-										<Link
-											{...trigger}
-											to="/"
-											inert={!stuck}
-											aria-label="Home"
-											data-testid="compact-home-link"
-											className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-accent"
-										>
-											<Mark className="h-6 w-6" />
-										</Link>
-									)}
-								</Tooltip>
-							</span>
+							<FindButton />
+							<Tooltip content="Reload the PR from GitHub" describe={false}>
+								{(trigger) => (
+									<button
+										type="button"
+										{...trigger}
+										aria-label={refresh.isPending ? "Refreshing…" : "Refresh"}
+										onClick={() => refresh.mutate()}
+										data-updating={revalidating || undefined}
+										disabled={refresh.isPending}
+										className="flex h-10 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-ink-soft transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 motion-reduce:transition-none"
+									>
+										<SyncIcon
+											aria-hidden
+											className={
+												refreshing
+													? "animate-spin motion-reduce:animate-none"
+													: ""
+											}
+										/>
+										<span className="hidden sm:inline">
+											{refresh.isPending ? "Refreshing…" : "Refresh"}
+										</span>
+									</button>
+								)}
+							</Tooltip>
+							<Settings />
 							{/*
-							 * The agent chip once its place by the logo has scrolled
-							 * away; until then its size, so the tabs never move.
-							 * Positioned, over the mark's overflowing tap target.
+							 * The agent chip, rightmost, once its column has scrolled
+							 * away. On a phone its tap target takes the row's right
+							 * padding: the 360px row has no 40px to spare beside the
+							 * buttons (its face keeps a gap to the edge).
 							 */}
 							<span
 								ref={chip.setRow}
 								data-testid="agent-chip-row-slot"
-								className={`relative ${chipSlotClass}`}
-							>
-								{!chip.docked && <ChipSpace shown={chip.place} />}
-							</span>
-							<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
-								<Link
-									to="/r/$id"
-									params={{ id }}
-									// Matched on the path only: a query (the first
-									// load's ?key=) must not unmark the tab.
-									activeOptions={{ exact: true, includeSearch: false }}
-									className={tabClass}
-									activeProps={{ className: activeTabClass }}
-								>
-									Overview
-								</Link>
-								{/* Short labels on a phone, where the full ones don't fit. */}
-								<Link
-									to="/r/$id/files"
-									params={{ id }}
-									aria-label="Files changed"
-									activeOptions={{ includeSearch: false }}
-									className={tabClass}
-									activeProps={{ className: activeTabClass }}
-								>
-									<span className="sm:hidden">Files</span>
-									<span className="hidden sm:inline">Files changed</span>
-								</Link>
-								<Link
-									to="/r/$id/verdict"
-									params={{ id }}
-									aria-label="Final Verdict"
-									activeOptions={{ includeSearch: false }}
-									className={tabClass}
-									activeProps={{ className: activeTabClass }}
-								>
-									<span className="sm:hidden">Verdict</span>
-									<span className="hidden sm:inline">Final Verdict</span>
-								</Link>
-							</nav>
+								className={`-mr-2 sm:mr-0 ${chipSlotClass}`}
+							/>
 						</div>
-						{/*
-						 * The title again, small, centered between the tabs and Find in PR
-						 * on a light pill, fading in over the last stretch before the
-						 * header sticks (--compact, scroll-linked). The title takes you
-						 * back to the top, to the full title; the number beside it goes
-						 * to the PR on GitHub. Both inert until stuck.
-						 */}
-						<div className="@container flex min-h-10 min-w-0 flex-1 items-center justify-center">
-							{pr && (
-								<span
-									data-testid="compact-title-pill"
-									style={{
-										opacity: "var(--compact, 0)",
-										transform:
-											"translateY(calc((1 - var(--compact, 0)) * 0.375rem))",
-									}}
-									className={`flex max-w-full min-w-0 items-center gap-x-1 rounded-full bg-raised px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line hover:bg-overlay hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5 ${compactPillYieldClass(chip.place)}`}
-								>
-									<Tooltip content={pr.title} describe={false}>
-										{(trigger) => (
-											<button
-												type="button"
-												{...trigger}
-												inert={!stuck}
-												aria-label={`Back to top: ${pr.title}`}
-												data-testid="compact-title"
-												onClick={toTop}
-												className={`${compactTapClass} min-w-0 rounded-full focus-visible:outline-2 focus-visible:outline-accent`}
-											>
-												{/* Two short lines on a phone, one on wider screens. */}
-												<span className="line-clamp-2 break-words sm:line-clamp-1">
-													{pr.title}
-												</span>
-											</button>
-										)}
-									</Tooltip>
-									{prUrl ? (
-										<Tooltip content="Open on GitHub" describe={false}>
-											{(trigger) => (
-												<a
-													{...trigger}
-													href={prUrl}
-													target="_blank"
-													rel="noreferrer"
-													inert={!stuck}
-													aria-label={`#${pr.number} on GitHub`}
-													data-testid="compact-pr-link"
-													className={`${compactTapClass} ${compactNumberClass} ${compactNumberHideClass(pr.number)} hover:text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent`}
-												>
-													#{pr.number}
-												</a>
-											)}
-										</Tooltip>
-									) : (
-										<span
-											className={`${compactNumberClass} ${compactNumberHideClass(pr.number)}`}
-										>
-											#{pr.number}
-										</span>
-									)}
-								</span>
-							)}
-						</div>
-						<FindButton />
-						<Tooltip content="Reload the PR from GitHub" describe={false}>
-							{(trigger) => (
-								<button
-									type="button"
-									{...trigger}
-									aria-label={refresh.isPending ? "Refreshing…" : "Refresh"}
-									onClick={() => refresh.mutate()}
-									data-updating={revalidating || undefined}
-									disabled={refresh.isPending}
-									className="flex h-10 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-ink-soft transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 motion-reduce:transition-none"
-								>
-									<SyncIcon
-										aria-hidden
-										className={
-											refreshing
-												? "animate-spin motion-reduce:animate-none"
-												: ""
-										}
-									/>
-									<span className="hidden sm:inline">
-										{refresh.isPending ? "Refreshing…" : "Refresh"}
-									</span>
-								</button>
-							)}
-						</Tooltip>
-						<Settings />
-					</div>
-				</header>
-				{/* The diff gets the whole window; the overview stays readable. */}
-				<main
-					// A phone's find bar, in the header's place, meets the page.
-					className={`mx-auto px-3 sm:px-6 sm:py-6 ${yieldToFind ? "pt-0 pb-4" : "py-4"} ${wide ? "max-w-screen-2xl" : "max-w-5xl"}`}
-				>
-					<FindSlot.Provider value={slot}>
-						<KeptPages />
-					</FindSlot.Provider>
-					{/* Only what isn't a kept page: not found. */}
-					<Outlet />
-				</main>
-				{/* Bottom padding keeps it clear of the floating Files button. */}
-				<footer
-					data-testid="app-footer"
-					className="mx-auto flex max-w-5xl items-center justify-center gap-1.5 px-4 pt-2 pb-24 text-xs text-muted sm:pb-10"
-				>
-					<span>Diff by</span>
-					<Mark className="h-4 w-4" />
-					<Wordmark className="text-sm" />
-				</footer>
-				<SyncNotices />
-				{pr && <JoinToast />}
-				{/* New commits: a toast, never a banner (nothing above the page moves). */}
-				{session.data?.head && (
-					<HeadToast
-						session={session.data}
-						onView={() => {
-							const oid = session.data?.head?.oid;
-							if (oid) void viewHead(oid);
-						}}
-					/>
-				)}
-				<AgentSetupHost />
-			</div>
+					</header>
+					{/* The diff gets the whole window; the overview stays readable. */}
+					<main
+						// A phone's find bar, in the header's place, meets the page.
+						className={`mx-auto px-3 sm:px-6 sm:py-6 ${yieldToFind ? "pt-0 pb-4" : "py-4"} ${wide ? "max-w-screen-2xl" : "max-w-5xl"}`}
+					>
+						<FindSlot.Provider value={slot}>
+							<KeptPages />
+						</FindSlot.Provider>
+						{/* Only what isn't a kept page: not found. */}
+						<Outlet />
+					</main>
+					{/* Bottom padding keeps it clear of the floating Files button. */}
+					<footer
+						data-testid="app-footer"
+						className="mx-auto flex max-w-5xl items-center justify-center gap-1.5 px-4 pt-2 pb-24 text-xs text-muted sm:pb-10"
+					>
+						<span>Diff by</span>
+						<Mark className="h-4 w-4" />
+						<Wordmark className="text-sm" />
+					</footer>
+					<SyncNotices />
+					{pr && <JoinToast />}
+					{/* New commits: a toast, never a banner (nothing above the page moves). */}
+					{session.data?.head && (
+						<HeadToast
+							session={session.data}
+							onView={() => {
+								const oid = session.data?.head?.oid;
+								if (oid) void viewHead(oid);
+							}}
+						/>
+					)}
+					{/* The whole review's conversation, from the chip; none without a PR. */}
+					{pr && <ReviewConversationDrawer key={id} />}
+					<AgentSetupHost />
+				</div>
+			</SendViewHost>
 		</AppHeaderHeight.Provider>
 	);
 }

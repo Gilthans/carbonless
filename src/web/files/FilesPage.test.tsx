@@ -19,7 +19,9 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
+import type { AgentThread } from "../../shared/agent";
 import type { FileView, ReviewView } from "../../shared/types";
+import { agentThreadsQuery } from "../agent/api";
 import { overviewQuery } from "../api";
 import { parseSearch, stringifySearch } from "../search";
 import { ShortcutsProvider } from "../shortcuts";
@@ -237,6 +239,67 @@ describe("FilesPage", () => {
 			).toHaveLength(0),
 		);
 		expect(screen.queryByTestId("threads-failed")).toBeNull();
+	});
+
+	it("never asks /agent/placements about the review conversation (no code to place); a thread on code is asked", async () => {
+		const asked: AgentThread = {
+			id: "S1",
+			anchor: { subject: "file", path: "a.txt", commit: "e".repeat(40) },
+			openedBy: "human",
+			at: "2026-11-15T10:00:00Z",
+			messages: [],
+			resolved: false,
+			waiting: false,
+			unread: false,
+		};
+		const whole: AgentThread = {
+			...asked,
+			id: "R1",
+			anchor: { subject: "review" },
+		};
+		const placementReads = async (threads: AgentThread[]) => {
+			const fetchMock = renderPage({
+				"/api/review": () => ({
+					status: 200,
+					body: { ...emptyReview, files: [oneFile] },
+				}),
+				"/api/session": () => ({ status: 200, body: session }),
+				"/api/overview": () => ({
+					status: 200,
+					body: { readId: "read1", reviews: [], writes: "on" },
+				}),
+				"/api/threads": () => ({
+					status: 200,
+					body: { threads: [], complete: true },
+				}),
+				"/api/agent/threads": () => ({ status: 200, body: { threads } }),
+				"/api/agent/placements": () => ({
+					status: 200,
+					body: { revision: "r1", threads: [] },
+				}),
+			});
+			await screen.findByRole("region", { name: "a.txt" });
+			await waitFor(() =>
+				expect(
+					lastClient.getQueryData(agentThreadsQuery.queryKey),
+				).toBeDefined(),
+			);
+			// Let the page render with the threads (placements enable then).
+			await act(async () => {
+				await new Promise((r) => setTimeout(r, 20));
+			});
+			const reads = () =>
+				fetchMock.mock.calls.filter(([input]) =>
+					String(input).includes("/agent/placements"),
+				).length;
+			return reads;
+		};
+		// The control: a thread on code asked on another head is placed.
+		const withSpan = await placementReads([asked, whole]);
+		await waitFor(() => expect(withSpan()).toBeGreaterThan(0));
+		cleanup();
+		const onlyReview = await placementReads([whole]);
+		expect(onlyReview()).toBe(0);
 	});
 
 	it("says when the PR changes no files", async () => {
