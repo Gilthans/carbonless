@@ -559,6 +559,21 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	expect([...perPid.values()]).toEqual([2, 1]);
 });
 
+/** The session's own review (GET /review, no target), its next read held. */
+async function holdOwnReview(page: Page) {
+	const held = { hits: 0, release: () => {} };
+	const released = new Promise<void>((r) => {
+		held.release = r;
+	});
+	await page.route(/\/api\/r\/[^/]+\/review$/, async (route) => {
+		if (route.request().method() !== "GET") return route.fallback();
+		held.hits += 1;
+		if (held.hits === 1) await released;
+		await route.fallback();
+	});
+	return held;
+}
+
 /** The tracer's answer (GET /agent/placements), held: the review-bound route. */
 async function holdPlacements(page: Page) {
 	const hits: string[] = [];
@@ -793,25 +808,30 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	await bar(page).getByRole("button", { name: "Comment" }).click();
 	const composer = since.getByTestId("new-thread");
 	await composer.getByRole("textbox", { name: "Comment" }).fill("On the head");
+	// The session's own review read again after the comment, held: the
+	// session names PS2 first, and the page moves to it (CAR-194).
+	const ownRead = await holdOwnReview(page);
 	await composer.getByRole("button", { name: "Comment" }).click();
 	await expect(page.getByTestId("ps-node-ps2")).toBeVisible({
 		timeout: 30_000,
 	});
+	await expect(page).toHaveURL(/[?&]ps=2(&|$)/);
+	await expect.poll(() => ownRead.hits).toBeGreaterThan(0);
+	// Never PS1's cached review under PS2's name (its file closed): the
+	// viewed head's, the same commit, stays open until the read answers.
+	const ps2 = fileSection(page, CALC);
+	await expect(ps2.getByRole("button", { name: "Expand file" })).toHaveCount(0);
+	ownRead.release();
 	expect(storedThreads(p)).toMatchObject([
 		{ path: CALC, line: 5, originalCommit: head },
 	]);
 	await expect
 		.poll(() => held.hits.slice(before).some((q) => q.includes("ps=2")))
 		.toBe(true);
-	const ps2 = fileSection(page, CALC);
-	const expand = async (section: typeof ps2) => {
-		if (
-			await section.getByRole("button", { name: "Expand file" }).isVisible()
-		) {
-			await section.getByRole("button", { name: "Expand file" }).click();
-		}
-	};
-	await expand(ps2);
+	// The file the comment was written in stays open on PS2.
+	await expect(
+		ps2.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
 	await expect(row(ps2, 5).getByTestId("agent-bubble")).toHaveAccessibleName(
 		"1 agent thread on line 5, 1 new",
 	);

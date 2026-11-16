@@ -54,7 +54,7 @@ import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
 import { FilesVerdict } from "../verdict/FilesVerdict";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
-import { type Comparison, useComparison } from "./comparison";
+import { type Comparison, useComparison, useViewedReview } from "./comparison";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff, GoneFile, UNDO_ARM_MS } from "./FileDiff";
 import { FileTree, type SidebarTab } from "./FileTree";
@@ -617,7 +617,14 @@ export function FilesPage() {
 	const session = useQuery(sessionQuery).data;
 	const comparison = useComparison(session);
 	// The reviewer's intended states over the server's (useSetStates).
-	const { review, raw: servedRaw, pending } = useReviewView(comparison.target);
+	const { review, raw: served, pending } = useReviewView(comparison.target);
+	// Never another patch set's review under this one's name (CAR-194).
+	const servedRaw = useViewedReview(
+		served,
+		review.isFetching,
+		comparison.viewing,
+		viewedHeadOf(comparison, session),
+	);
 	// The engine's answer for the comparison: the since view's chips and
 	// hunks, the provisional carries over a viewed head (under the
 	// reviewer's pending states, shownView).
@@ -1590,7 +1597,9 @@ export function FilesPage() {
 									live={live}
 								/>
 							)}
-							{review.isPending && <FilesSkeleton />}
+							{(review.isPending || (served && !servedRaw)) && (
+								<FilesSkeleton />
+							)}
 							{review.isError && <ErrorMessage error={review.error} />}
 							{data && (
 								<>

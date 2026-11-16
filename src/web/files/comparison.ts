@@ -1,6 +1,6 @@
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SessionInfo } from "../../shared/types";
+import type { ReviewView, SessionInfo } from "../../shared/types";
 import type { ReviewTarget } from "../api";
 import { usePageActive } from "../pageActive";
 import { useReviewId } from "../reviewId";
@@ -389,4 +389,43 @@ function withoutComparison(
 ): Record<string, unknown> {
 	const { ps: _ps, head: _head, from: _from, ...rest } = prev;
 	return rest;
+}
+
+/**
+ * The served review if it is the viewed one; when it is another's, the
+ * last one served that fits, else none yet (the page shows its skeleton).
+ * The session's own review (`["review"]`, the latest patch set's) is
+ * cached under one key: when a comment or a verdict starts a patch set,
+ * the session can name it (the comparison moves to it) before that read
+ * answers again, and the cached answer is then the previous patch set's,
+ * a snapshot of other files and revisions (CAR-194). A viewed patch set's review is the one of
+ * that number; the last one served fits too when it was the same commit's
+ * (the viewed head that just became the patch set). Only while the read is
+ * asked again: a settled answer shows as served.
+ */
+export function useViewedReview(
+	served: ReviewView | undefined,
+	/** The served read is being read again (a settled answer is shown as is). */
+	fetching: boolean,
+	viewing: Viewing | null,
+	viewedHead: string | undefined,
+): ReviewView | undefined {
+	const want = viewing?.kind === "patchset" ? viewing.number : null;
+	const last = useRef<{ view: ReviewView; head: string | undefined } | null>(
+		null,
+	);
+	const held = last.current;
+	const fits = (v: ReviewView) => want === null || v.patchset === want;
+	const shown =
+		!served || !fetching || fits(served)
+			? served
+			: held &&
+					(fits(held.view) ||
+						(viewedHead !== undefined && held.head === viewedHead))
+				? held.view
+				: undefined;
+	useEffect(() => {
+		if (shown) last.current = { view: shown, head: viewedHead };
+	}, [shown, viewedHead]);
+	return shown;
 }
