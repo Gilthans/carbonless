@@ -8,6 +8,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { type KeyboardEvent, useLayoutEffect, useRef } from "react";
 import { MAX_REPLY } from "../../shared/types";
+import { agentAsking } from "../agent/agentWrites";
 import { askAgentAvailable, openAgentComposer } from "../agent/askAgentAction";
 import { overviewQuery, sessionQuery } from "../api";
 import { type CodeSpan, describeSpan } from "../files/selectionActions";
@@ -67,6 +68,10 @@ export function quoteOf(span: CodeSpan, texts: readonly string[]): string {
 	const first = (cut.find((t) => t.trim()) ?? cut[0] ?? "").trim();
 	return cut.length > 1 ? `${first} …` : first;
 }
+
+const ASK_INSTEAD = "Ask agent instead";
+/** Why neither switch is on before the overview is known. */
+export const LOADING = "Loading the PR";
 
 /** The longest first comment: GitHub's limit less room for carbonless's hidden marker. */
 export const MAX_NEW_THREAD = MAX_REPLY - 200;
@@ -137,16 +142,15 @@ export function NewThread(props: {
 	// The agent button: the comment becomes a question on the same span,
 	// its text moved (so no "Discard?"), nothing sent anywhere.
 	const writes = useQuery({ ...overviewQuery, enabled: false }).data?.writes;
-	const askable = askAgentAvailable(span, {
-		writes: writes ?? "on",
-		headUnsure: props.headUnsure,
-	});
+	const askable = writes
+		? askAgentAvailable(span, { writes, headUnsure: props.headUnsure })
+		: LOADING;
 	const toAgent = () => {
 		if (askable !== true) return;
 		const text = writer.drafts.newThread(clientId)?.text ?? item.text;
 		writer.discard(newThreadKey(clientId));
 		closeComposer(clientId);
-		openAgentComposer(span, undefined, text);
+		openAgentComposer(span, undefined, text, (c) => !agentAsking(c.clientId));
 	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -186,7 +190,7 @@ export function NewThread(props: {
 				</span>
 				{!item.sending && (
 					<Tooltip
-						content={askable === true ? "Ask agent" : askable}
+						content={askable === true ? ASK_INSTEAD : askable}
 						describe={askable !== true}
 					>
 						{(trigger) => (
@@ -194,7 +198,7 @@ export function NewThread(props: {
 								{...trigger}
 								type="button"
 								data-testid="new-thread-agent"
-								aria-label="Ask agent"
+								aria-label={ASK_INSTEAD}
 								aria-disabled={askable !== true || undefined}
 								onClick={toAgent}
 								className="-my-1 -mr-1.5 ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-dashed border-agent-edge bg-agent/60 text-agent-ink hover:border-agent-ink hover:bg-agent focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:border-line aria-disabled:bg-transparent aria-disabled:text-faint"

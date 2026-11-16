@@ -956,7 +956,7 @@ export function FileDiff(props: {
 					clientId={c.clientId}
 					span={c.span}
 					quote={file.path}
-					comment={{ readOnly }}
+					comment={{ readOnly, stale: c.span.commit !== snapshotHead }}
 				/>
 			))}
 		</div>

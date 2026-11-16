@@ -59,14 +59,16 @@ const changed = (next: readonly AgentComposerItem[]) => {
 /**
  * Opens a composer on the span (the open one again, focused); its client
  * id. `text` (a comment switched to a question) starts its box, or is
- * added after what the open one already has.
+ * added after what the open one already has. `joins` says which open one
+ * may take it (not one whose question is on its way: its text is sent).
  */
 export function openAgentComposer(
 	span: CodeSpan,
 	id = newClientId(),
 	text = "",
+	joins: (open: AgentComposerItem) => boolean = () => true,
 ): string {
-	const same = composers.find((c) => sameSpan(c.span, span));
+	const same = composers.find((c) => sameSpan(c.span, span) && joins(c));
 	if (same) {
 		const joined =
 			text && same.text.trim() ? `${same.text}\n\n${text}` : same.text || text;

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { AGENT_POLL_MS } from "../src/shared/agent";
 import { acpLog, releaseAcp } from "../test/fake-acp/scenario";
+import type { Scenario } from "../test/fake-gh/scenario";
 import { testGitEnv } from "../test/git-fixture";
 import {
 	ask,
@@ -51,6 +52,13 @@ async function shot(page: Page, name: string, isMobile: boolean) {
  */
 const holdSeenMarks = (page: Page) =>
 	page.route(/\/api\/r\/[^/]+\/agent\/threads\/[^/]+\/seen$/, () => {});
+
+/** How many review threads the fake gh holds for the PR (what was posted). */
+const ghThreads = (scenarioPath: string, number: number) =>
+	(
+		(JSON.parse(readFileSync(scenarioPath, "utf8")) as Scenario).prs[number]
+			?.graphql?.reviewThreads ?? []
+	).length;
 
 const REPLY = [
 	"No: it adds **v1 and v2** only.",
@@ -318,7 +326,10 @@ test("a comment being written turns into a question: on a line and on the file, 
 	agentCrb,
 	isMobile,
 }) => {
-	await pr(fixture);
+	// Two switches and a question asked and answered: past 30 s on a loaded machine.
+	test.slow();
+	const p = await pr(fixture);
+	const before = ghThreads(p.scenarioPath, p.number);
 	const s = await agentCrb();
 	const section = await openFile(page, s.url, CALC);
 	// A line comment (a column span), typed, then the agent button.
@@ -329,7 +340,7 @@ test("a comment being written turns into a question: on a line and on the file, 
 		.getByRole("textbox", { name: "Comment" })
 		.fill("Why <b>this</b>?");
 	await shot(page, "new-thread-agent-button", isMobile);
-	await composer.getByRole("button", { name: "Ask agent" }).click();
+	await composer.getByRole("button", { name: "Ask agent instead" }).click();
 	await expect(section.getByTestId("new-thread")).toHaveCount(0);
 	const asking = section.getByTestId("agent-composer");
 	await expect(asking).toContainText("line 3, new");
@@ -342,11 +353,13 @@ test("a comment being written turns into a question: on a line and on the file, 
 		section.getByTestId("agent-thread").filter({ hasText: "Why <b>this</b>?" }),
 	).toBeVisible();
 	await expect(section.getByTestId("files-thread")).toHaveCount(0);
+	// Nothing went to GitHub.
+	expect(ghThreads(p.scenarioPath, p.number)).toBe(before);
 	// A file comment, the same.
 	await section.getByRole("button", { name: "Comment on file" }).click();
 	const onFile = section.getByTestId("new-thread");
 	await onFile.getByRole("textbox", { name: "Comment" }).fill("The file?");
-	await onFile.getByRole("button", { name: "Ask agent" }).click();
+	await onFile.getByRole("button", { name: "Ask agent instead" }).click();
 	await expect(section.getByTestId("new-thread")).toHaveCount(0);
 	const fileAsking = section.getByTestId("agent-composer");
 	await expect(fileAsking).toContainText("whole file");
@@ -361,7 +374,10 @@ test("a question being written turns into a comment: on a line and on the file, 
 	pr,
 	agentCrb,
 }) => {
-	await pr(fixture);
+	// Three switches and a reload: past 30 s on a loaded machine.
+	test.slow();
+	const p = await pr(fixture);
+	const before = ghThreads(p.scenarioPath, p.number);
 	const s = await agentCrb();
 	const section = await openFile(page, s.url, CALC);
 	await selectText(page, CALC, 3, 0, 6);
@@ -370,7 +386,7 @@ test("a question being written turns into a comment: on a line and on the file, 
 	await asking
 		.getByRole("textbox", { name: "Ask your agent" })
 		.fill("Rename <i>it</i>");
-	await asking.getByRole("button", { name: "Comment" }).click();
+	await asking.getByRole("button", { name: "Comment instead" }).click();
 	await expect(section.getByTestId("agent-composer")).toHaveCount(0);
 	const composer = section.getByTestId("new-thread");
 	await expect(composer).toContainText("line 3, new");
@@ -385,16 +401,17 @@ test("a question being written turns into a comment: on a line and on the file, 
 		again.getByTestId("new-thread").getByRole("textbox", { name: "Comment" }),
 	).toHaveValue("Rename <i>it</i>");
 	await expect(again.getByTestId("files-thread")).toHaveCount(0);
+	expect(ghThreads(p.scenarioPath, p.number)).toBe(before);
 	// The file's: Comment on file, Ask agent, then back to Comment.
 	await again.getByRole("button", { name: "Comment on file" }).click();
 	const onFile = again
 		.getByTestId("new-thread")
 		.filter({ hasText: "whole file" });
 	await onFile.getByRole("textbox", { name: "Comment" }).fill("The file?");
-	await onFile.getByRole("button", { name: "Ask agent" }).click();
+	await onFile.getByRole("button", { name: "Ask agent instead" }).click();
 	const fileAsking = again.getByTestId("agent-composer");
 	await expect(fileAsking).toContainText("whole file");
-	await fileAsking.getByRole("button", { name: "Comment" }).click();
+	await fileAsking.getByRole("button", { name: "Comment instead" }).click();
 	await expect(again.getByTestId("agent-composer")).toHaveCount(0);
 	const back = again
 		.getByTestId("new-thread")
@@ -403,6 +420,7 @@ test("a question being written turns into a comment: on a line and on the file, 
 		"The file?",
 	);
 	await expect(back.getByRole("textbox", { name: "Comment" })).toBeFocused();
+	expect(ghThreads(p.scenarioPath, p.number)).toBe(before);
 });
 
 test("the chip: starting while the handshake is held, ready, busy while answering", async ({
