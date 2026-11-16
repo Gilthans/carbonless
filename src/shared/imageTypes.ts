@@ -1,6 +1,6 @@
 /**
  * Images crb can show as images: the fixed extension table (the only source
- * of an image's type, except for an explicit "Show as Image" on an unknown
+ * of an image's type, except for an explicit pick of Image on an unknown
  * extension, which sniffs raster signatures) and the size caps.
  */
 

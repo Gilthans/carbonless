@@ -49,7 +49,7 @@ import {
 } from "../threads/newThreads";
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { useThreadWriter } from "../threads/threadWrites";
-import { ignoreWhitespace, sideBySide } from "../viewSettings";
+import { ignoreWhitespace, imageMode, sideBySide } from "../viewSettings";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import {
 	DiffBody,
@@ -70,7 +70,12 @@ import {
 } from "./ProgressBar";
 import { rendererChoices, rendererPicks, resolveRenderer } from "./renderers";
 import { ImageView } from "./renderers/image/ImageView";
-import { RendererChip } from "./renderers/RendererChip";
+import {
+	pressedView,
+	type ViewOption,
+	ViewSwitch,
+	viewOptions,
+} from "./renderers/ViewSwitch";
 import { useResolveCollapse } from "./resolveCollapse";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
 import { type FileSince, goneFileView } from "./since";
@@ -667,6 +672,29 @@ export function FileDiff(props: {
 	const linesHidden = renderer === "image";
 	// The image view's layout follows Settings' "Side by side", as code does.
 	const sideBySideOn = sideBySide.use();
+	// The view switch (renderers/ViewSwitch): in the image toolbar, or a
+	// row of its own over Text and Binary, for a file with more than one
+	// renderer. A pick only changes the view: never a review state.
+	const mode = imageMode.use();
+	const pickView = (option: ViewOption) => {
+		asText.clear();
+		// Kept per path only when it differs from what the file shows
+		// without a line target's Text: Image again after one writes nothing.
+		if (option.renderer !== resolved)
+			rendererPicks.set(file.path, option.renderer);
+		if (option.mode) imageMode.set(option.mode);
+	};
+	const viewSwitch = (modes: boolean) => (
+		<ViewSwitch
+			options={viewOptions(file, modes)}
+			pressed={pressedView(renderer, mode, modes)}
+			onPick={pickView}
+		/>
+	);
+	// Outside Image, whether Image would compare two versions on one stage.
+	const imageModes =
+		file.status !== "added" && file.status !== "deleted" && !sideBySideOn;
+	const switchRow = !linesHidden && viewOptions(file, imageModes).length > 0;
 	const hunks = useQuery({
 		...hunksQuery(revision, file.index, props.since),
 		enabled: expanded && !linesHidden,
@@ -1188,6 +1216,8 @@ export function FileDiff(props: {
 		<section
 			id={`file-${file.index}`}
 			data-file-index={file.index}
+			// How the body shows it (renderers/), open or closed.
+			data-renderer={renderer}
 			data-path={file.path}
 			aria-label={file.path}
 			// When it takes marks again (`performance.now()`), for tests to wait on.
@@ -1308,17 +1338,6 @@ export function FileDiff(props: {
 										}}
 									/>
 								)}
-								<RendererChip
-									current={renderer}
-									choices={rendererChoices(file)}
-									onPick={(id) => {
-										// Image again after a line target's Text: back to
-										// the image, the stored pick as it was.
-										const back = asText.on && id === resolved;
-										asText.clear();
-										if (!back) rendererPicks.set(file.path, id);
-									}}
-								/>
 								<FileMarkActions
 									cross={crossToggle}
 									review={reviewToggle}
@@ -1376,11 +1395,22 @@ export function FileDiff(props: {
 							revision={revision}
 							from={props.since}
 							sideBySide={sideBySideOn}
+							view={viewSwitch}
 						/>
 						{body(true)}
 					</>
 				) : (
-					body()
+					<>
+						{switchRow && (
+							<div
+								data-testid="view-bar"
+								className="flex min-h-12 flex-wrap items-center gap-2 border-line border-b bg-band px-2 py-1"
+							>
+								{viewSwitch(imageModes)}
+							</div>
+						)}
+						{body()}
+					</>
 				))}
 		</section>
 	);
@@ -1391,7 +1421,7 @@ export function FileDiff(props: {
  * lines (an SVG as Image: `textable`) shows that file as Text, for this
  * view only: its lines are read, and DiffBody scrolls to the line as it
  * does for any file. The stored pick (`rendererPicks`) doesn't change, so a
- * reload shows the image again; `clear` (a pick in the chip) ends it. Each
+ * reload shows the image again; `clear` (a pick in the view switch) ends it. Each
  * step (`stepSeq`) and each landing (`seq`) that arrives after mount
  * switches once: marks changing as the reviewer types never do.
  */

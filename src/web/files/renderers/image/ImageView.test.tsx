@@ -16,7 +16,20 @@ import { REVIEW_KEY } from "../../../api";
 import { newQueryClient } from "../../../queryClient";
 import { imageMode } from "../../../viewSettings";
 import { STALE_MESSAGE } from "../../useSetStates";
+import { pressedView, ViewSwitch, viewOptions } from "../ViewSwitch";
 import { ImageView } from "./ImageView";
+
+/** FileDiff's view switch, as the image toolbar gets it. */
+function Switch(props: { file: FileView; modes: boolean }) {
+	const mode = imageMode.use();
+	return (
+		<ViewSwitch
+			options={viewOptions(props.file, props.modes)}
+			pressed={pressedView("image", mode, props.modes)}
+			onPick={(o) => o.mode && imageMode.set(o.mode)}
+		/>
+	);
+}
 
 const file = (over: Partial<FileView> = {}): FileView => ({
 	index: 0,
@@ -77,6 +90,7 @@ function show(f: FileView, opts: { sideBySide?: boolean; from?: number } = {}) {
 				file={f}
 				revision="r1"
 				sideBySide={opts.sideBySide ?? false}
+				view={(modes) => <Switch file={f} modes={modes} />}
 				{...(opts.from === undefined ? {} : { from: opts.from })}
 			/>
 		</QueryClientProvider>,
@@ -149,7 +163,8 @@ describe("ImageView", () => {
 		show(file({ status: "added", oldSize: undefined }));
 		expect(screen.getByText("added")).toBeVisible();
 		expect(screen.queryByAltText("Before")).toBeNull();
-		expect(screen.queryByRole("group", { name: "Compare" })).toBeNull();
+		// No modes: one Image button.
+		expect(screen.queryByRole("button", { name: "Slider" })).toBeNull();
 		loadImg("Added image", 20, 10);
 		expect(screen.getByTestId("image-dims")).toHaveTextContent("20×10· 44 KB");
 	});
@@ -194,7 +209,8 @@ describe("ImageView", () => {
 			"/api/files/0/blob?revision=r1&side=new",
 		);
 		expect(screen.queryByText("added")).toBeNull();
-		expect(screen.queryByRole("group", { name: "Compare" })).toBeNull();
+		// No modes: one Image button.
+		expect(screen.queryByRole("button", { name: "Slider" })).toBeNull();
 	});
 
 	it("renamed and changed (different blobs): both sides compare", async () => {
@@ -211,7 +227,7 @@ describe("ImageView", () => {
 			expect(screen.getByAltText("Before")).toBeInTheDocument(),
 		);
 		expect(screen.getByAltText("After")).toBeInTheDocument();
-		expect(screen.getByRole("group", { name: "Compare" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Slider" })).toBeVisible();
 	});
 
 	it("side-by-side: two single views with captions, no modes", () => {
@@ -221,7 +237,8 @@ describe("ImageView", () => {
 		const sbs = screen.getByTestId("image-side-by-side");
 		expect(sbs).toHaveTextContent("before493×312 · 41 KB");
 		expect(sbs).toHaveTextContent("after493×340 · 44 KB");
-		expect(screen.queryByRole("group", { name: "Compare" })).toBeNull();
+		// No modes: one Image button.
+		expect(screen.queryByRole("button", { name: "Slider" })).toBeNull();
 	});
 
 	it("an unknown extension shown as Image asks the server to sniff", () => {

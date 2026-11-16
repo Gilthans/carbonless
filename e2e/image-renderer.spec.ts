@@ -25,24 +25,45 @@ import {
 import { BLUE, bmp as bmpImage, GREEN, png as pngImage, RED } from "./images";
 
 /*
- * Custom renderers (CAR-38, spec "Renderer switch"): an image file's header
- * has a "Show as" chip; the pick is kept per path for this viewer, and
- * only changes the view, never a review state.
+ * Custom renderers (CAR-38, spec "Renderer switch"): a file with more than
+ * one renderer has a view switch (Slider, Fade, Text, Binary) in its view's
+ * toolbar; the pick is kept per path for this viewer, and only changes the
+ * view, never a review state.
  */
 
 const PNG = "img/logo.png";
 const BMP = "img/icon.bmp";
 const TS = "src/a.ts";
 
-// Image signatures with a NUL in them: git calls them binary.
-const png = (n: number) =>
-	new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, n]);
-const bmp = (n: number) => new Uint8Array([0x42, 0x4d, 0, 0, 0, n]);
+/** The view switch in `section` (renderers/ViewSwitch). */
+const viewSwitch = (section: Locator) =>
+	section.getByRole("group", { name: "View" });
+/** A view's button; "Image" is the first image one (Slider, or Image). */
+const viewButton = (section: Locator, name: string) =>
+	viewSwitch(section).getByRole("button", {
+		name: name === "Image" ? /^(Slider|Image)$/ : name,
+		exact: name !== "Image",
+	});
+const pickView = (section: Locator, name: string) =>
+	viewButton(section, name).click();
+/** How `section`'s body shows the file (FileDiff's data-renderer). */
+const shownAs = (section: Locator, renderer: string) =>
+	expect(section).toHaveAttribute("data-renderer", renderer);
 
-const chip = (section: Locator) =>
-	section.getByRole("button", { name: /^Show as/ });
+/** The view switch's buttons' names, in order. */
+const viewNames = (section: Locator) =>
+	viewSwitch(section)
+		.getByRole("button")
+		.evaluateAll((buttons) => buttons.map((b) => b.getAttribute("aria-label")));
 
-test("renderer switch: Image ↔ Binary persists across reload; a .ts file has no chip", async ({
+/** On a phone: every button of the switch is a 40px tap target. */
+async function tapSized(section: Locator, isMobile: boolean) {
+	if (!isMobile) return;
+	for (const button of await viewSwitch(section).getByRole("button").all())
+		expect(await tapHeight(button)).toBeGreaterThanOrEqual(40);
+}
+
+test("view switch: PNG → Binary → Fade, kept across reloads; a .ts file has no switch", async ({
 	page,
 	pr,
 	startCrb,
@@ -50,79 +71,138 @@ test("renderer switch: Image ↔ Binary persists across reload; a .ts file has n
 }) => {
 	await pr({
 		base: { [TS]: "one\ntwo\n" },
-		baseBinary: { [PNG]: png(1), [BMP]: bmp(1) },
+		baseBinary: {
+			[PNG]: pngImage(120, 80, RED),
+			[BMP]: bmpImage(120, 80, RED),
+		},
 		files: [
 			{
 				message: "images changed",
-				binary: { [PNG]: png(2), [BMP]: bmp(2) },
 				files: { [TS]: "one\nTWO\n" },
+				binary: {
+					[PNG]: pngImage(120, 80, GREEN),
+					[BMP]: bmpImage(120, 80, GREEN),
+				},
 			},
 		],
 	});
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	const image = fileSection(page, PNG);
-	const other = fileSection(page, BMP);
-	await expect(chip(image)).toHaveAccessibleName("Show as: Image");
-	await expect(chip(other)).toHaveAccessibleName("Show as: Image");
-	await expect(fileSection(page, TS)).toBeVisible();
-	await expect(chip(fileSection(page, TS))).toHaveCount(0);
+	// One renderer: no switch, no row of its own.
+	const ts = fileSection(page, TS);
+	await ts.getByRole("button", { name: "Expand file" }).click();
+	await expect(ts.getByTestId("diff-line").first()).toBeVisible();
+	await shownAs(ts, "text");
+	await expect(viewSwitch(ts)).toHaveCount(0);
+	await expect(ts.getByTestId("view-bar")).toHaveCount(0);
 
-	// Image (no ImageView yet): the binary row and its box, no lines read.
-	await image.getByRole("button", { name: "Expand file" }).click();
-	await expect(
-		image.getByRole("checkbox", { name: "Mark cluster reviewed" }),
-	).toBeVisible();
-
-	await chip(image).click();
-	const menu = page.getByRole("menu", { name: "Show as" });
-	const items = menu.getByRole("menuitemradio");
-	await expect(items).toHaveText(["Image", "Binary"]);
-	await expect(
-		menu.getByRole("menuitemradio", { name: "Image" }),
-	).toHaveAttribute("aria-checked", "true");
-	if (isMobile) {
-		expect(await tapHeight(chip(image))).toBeGreaterThanOrEqual(40);
-		for (const item of await items.all()) {
-			expect(await tapHeight(item)).toBeGreaterThanOrEqual(40);
-		}
-	}
+	let image = await openImage(page, PNG);
+	await shownAs(image, "image");
+	expect(await viewNames(image)).toEqual(["Slider", "Fade", "Binary"]);
+	await expect(viewButton(image, "Slider")).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	await tapSized(image, isMobile);
 	await expectNoPageOverflow(page);
-	await menu.getByRole("menuitemradio", { name: "Binary" }).click();
-	await expect(menu).toHaveCount(0);
-	await expect(chip(image)).toHaveAccessibleName("Show as: Binary");
-	// Today's binary rows; the box is still unticked (a pick writes nothing).
-	const box = image.getByRole("checkbox", { name: "Mark cluster reviewed" });
-	await expect(box).toBeVisible();
-	await expect(box).not.toBeChecked();
+
+	await pickView(image, "Binary");
+	await shownAs(image, "binary");
+	await expect(viewButton(image, "Binary")).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	// Binary's row holds just the switch.
+	await expect(image.getByTestId("view-bar")).toBeVisible();
+	await expect(image.getByTestId("image-dims")).toHaveCount(0);
+	await expect(image.getByRole("button", { name: "Actual size" })).toHaveCount(
+		0,
+	);
+	// An edited binary still says so; a pick writes no review state.
 	await expect(image.getByText("Binary file changed")).toBeVisible();
-	await expect(chip(other)).toHaveAccessibleName("Show as: Image");
+	const box = image.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	await expect(box).not.toBeChecked();
+	await shownAs(fileSection(page, BMP), "image");
+	await tapSized(image, isMobile);
+	await expectNoPageOverflow(page);
 
 	await page.reload();
-	await expect(chip(fileSection(page, PNG))).toHaveAccessibleName(
-		"Show as: Binary",
-	);
-	await expect(chip(fileSection(page, BMP))).toHaveAccessibleName(
-		"Show as: Image",
+	image = fileSection(page, PNG);
+	await shownAs(image, "binary");
+	await shownAs(fileSection(page, BMP), "image");
+	await image.getByRole("button", { name: "Expand file" }).click();
+	// Fade from Binary: back to Image, in Fade.
+	await pickView(image, "Fade");
+	await shownAs(image, "image");
+	await expect(viewButton(image, "Fade")).toHaveAttribute(
+		"aria-pressed",
+		"true",
 	);
 	await expect(
-		fileSection(page, PNG).getByRole("progressbar", { name: "File progress" }),
-	).toHaveText(/0 \/ 1/);
+		image.getByRole("slider", { name: "Fade before to after" }),
+	).toBeVisible();
+	await page.reload();
+	image = await openImage(page, PNG);
+	await shownAs(image, "image");
+	await expect(viewButton(image, "Fade")).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+});
 
-	// And back.
-	await chip(fileSection(page, PNG)).click();
-	await page
-		.getByRole("menu", { name: "Show as" })
-		.getByRole("menuitemradio", { name: "Image" })
-		.click();
-	await expect(chip(fileSection(page, PNG))).toHaveAccessibleName(
-		"Show as: Image",
+test("view switch: SVG Image → Text → Slider, kept across a reload", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await pr(svgPr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	let section = await openImage(page, SVG);
+	expect(await viewNames(section)).toEqual(["Slider", "Fade", "Text"]);
+	await expect(viewButton(section, "Slider")).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	await tapSized(section, isMobile);
+	await expectNoPageOverflow(page);
+	const shots = process.env.DESIGN_SHOTS;
+	const shot = async (name: string) => {
+		if (!shots) return;
+		await section.scrollIntoViewIfNeeded();
+		await page.screenshot({
+			path: `${shots}/${name}-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	};
+	await shot("svg-toolbar-image");
+
+	await pickView(section, "Text");
+	await shownAs(section, "text");
+	await expect(viewButton(section, "Text")).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	await expect(svgRow(section, 3)).toBeVisible();
+	await expect(section.getByTestId("image-dims")).toHaveCount(0);
+	await tapSized(section, isMobile);
+	await expectNoPageOverflow(page);
+	await shot("svg-toolbar-text");
+
+	await page.reload();
+	section = fileSection(page, SVG);
+	await shownAs(section, "text");
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(svgRow(section, 3)).toBeVisible();
+	await pickView(section, "Slider");
+	await shownAs(section, "image");
+	await expect(stageOf(section)).toBeVisible();
+	await expect(viewButton(section, "Slider")).toHaveAttribute(
+		"aria-pressed",
+		"true",
 	);
 	await page.reload();
-	await expect(chip(fileSection(page, PNG))).toHaveAccessibleName(
-		"Show as: Image",
-	);
-	await expectNoPageOverflow(page);
+	await shownAs(fileSection(page, SVG), "image");
 });
 
 /*
@@ -266,7 +346,7 @@ test("side-by-side: two single versions, stacked on a phone", async ({
 	const section = await openImage(page, BMP);
 	const sbs = section.getByTestId("image-side-by-side");
 	await expect(sbs.getByTestId("image-stage")).toHaveCount(2);
-	await expect(section.getByRole("group", { name: "Compare" })).toHaveCount(0);
+	await expect(section.getByRole("button", { name: "Slider" })).toHaveCount(0);
 	await expect(sbs.locator("figcaption").first()).toHaveText(
 		/before\s*120×80 · 28 KB/,
 	);
@@ -305,7 +385,7 @@ test("added and deleted labels", async ({ page, pr, startCrb }) => {
 	const added = await openImage(page, ADDED);
 	await expect(added.getByText("added", { exact: true })).toBeVisible();
 	await expect(added.getByRole("img", { name: "Added image" })).toBeVisible();
-	await expect(added.getByRole("group", { name: "Compare" })).toHaveCount(0);
+	await expect(added.getByRole("button", { name: "Slider" })).toHaveCount(0);
 	await expect(added.getByTestId("image-dims")).toHaveText(
 		/^40×30\s*· \d+ (B|KB)$/,
 	);
@@ -388,7 +468,7 @@ test("size changed: stage is max w × max h, images top-left", async ({
 	await expectNoPageOverflow(page);
 });
 
-test("undecodable .tiff with Show as Image falls back to binary rows", async ({
+test("undecodable .tiff shown as Image falls back to binary rows", async ({
 	page,
 	pr,
 	startCrb,
@@ -407,14 +487,10 @@ test("undecodable .tiff with Show as Image falls back to binary rows", async ({
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const section = fileSection(page, TIFF);
-	await expect(chip(section)).toHaveAccessibleName("Show as: Binary");
+	await shownAs(section, "binary");
 	await section.getByRole("button", { name: "Expand file" }).click();
-	await chip(section).click();
-	await page
-		.getByRole("menu", { name: "Show as" })
-		.getByRole("menuitemradio", { name: "Image" })
-		.click();
-	await expect(chip(section)).toHaveAccessibleName("Show as: Image");
+	await pickView(section, "Image");
+	await shownAs(section, "image");
 	await expect(
 		section.getByRole("img", { name: "Can't show this as an image" }),
 	).toBeVisible();
@@ -424,6 +500,13 @@ test("undecodable .tiff with Show as Image falls back to binary rows", async ({
 	const box = section.getByRole("checkbox", { name: "Mark cluster reviewed" });
 	await expect(box).toBeVisible();
 	await expect(box).not.toBeChecked();
+	// The way back, in the toolbar.
+	await expect(viewButton(section, "Image")).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	await pickView(section, "Binary");
+	await shownAs(section, "binary");
 });
 
 test("loading shows a spinner, never a blank stage", async ({
@@ -635,7 +718,7 @@ test("renamed with no content change shows the image once, and says no binary ch
 	const section = await openImage(page, NEW);
 	await expect(section.getByRole("img", { name: "Image" })).toBeVisible();
 	await expect(section.getByRole("img", { name: "Before" })).toHaveCount(0);
-	await expect(section.getByRole("group", { name: "Compare" })).toHaveCount(0);
+	await expect(section.getByRole("button", { name: "Slider" })).toHaveCount(0);
 	await expect(
 		section.getByTestId("image-view").getByText(/added|deleted/),
 	).toHaveCount(0);
@@ -678,7 +761,7 @@ function stored(p: Pr) {
 	).map((t) => ({ ...t, body: t.comments.nodes[0]?.body ?? "" }));
 }
 
-/** The stored "Show as" picks (path → renderer), this viewer's. */
+/** The stored renderer picks (path → renderer), this viewer's. */
 const storedPicks = (page: Page) =>
 	page.evaluate(() => localStorage.getItem("crb.files.renderer"));
 
@@ -705,21 +788,6 @@ const svgPr = {
 };
 const svgRow = (section: Locator, n: number) =>
 	section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
-
-/**
- * Picks `name` in `section`'s "Show as" menu right after a find step or a
- * landing: the page may still scroll into place (the step's scroll on a
- * loaded machine, a phone's header compacting), and a scroll closes the
- * menu, so it is opened until it stays open.
- */
-async function showAsAfterJump(page: Page, section: Locator, name: string) {
-	const menu = page.getByRole("menu", { name: "Show as" });
-	await expect(async () => {
-		if ((await chip(section).getAttribute("aria-expanded")) !== "true")
-			await chip(section).click();
-		await menu.getByRole("menuitemradio", { name }).click({ timeout: 1000 });
-	}).toPass();
-}
 
 test("review tick on a BMP marks the file reviewed and survives reload", async ({
 	page,
@@ -807,7 +875,7 @@ test("SVG line threads show under the header in Image view and on lines in Text 
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const section = await openImage(page, SVG);
-	await expect(chip(section)).toHaveAccessibleName("Show as: Image");
+	await shownAs(section, "image");
 	// Image view: listed with the file's own threads, never dropped.
 	const bubble = section.getByRole("button", {
 		name: /^1 comment on this file.*line not in this diff/,
@@ -827,12 +895,8 @@ test("SVG line threads show under the header in Image view and on lines in Text 
 		});
 	}
 	// Text view: on its line.
-	await chip(section).click();
-	await page
-		.getByRole("menu", { name: "Show as" })
-		.getByRole("menuitemradio", { name: "Text" })
-		.click();
-	await expect(chip(section)).toHaveAccessibleName("Show as: Text");
+	await pickView(section, "Text");
+	await shownAs(section, "text");
 	await expect(
 		svgRow(section, 3).getByRole("button", { name: /^1 comment on line 3/ }),
 	).toBeVisible();
@@ -849,7 +913,7 @@ test("find in an SVG in Image view: stepping to a line hit switches that file to
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const section = fileSection(page, SVG);
-	await expect(chip(section)).toHaveAccessibleName("Show as: Image");
+	await shownAs(section, "image");
 	if (isMobile)
 		await page.getByRole("button", { name: "Find in PR", exact: true }).click();
 	else await page.keyboard.press("ControlOrMeta+f");
@@ -862,7 +926,7 @@ test("find in an SVG in Image view: stepping to a line hit switches that file to
 	});
 	await box.press("Enter");
 	// Text for this view, on the hit's line.
-	await expect(chip(section)).toHaveAccessibleName("Show as: Text");
+	await shownAs(section, "text");
 	const current = section.locator("tr[data-find-current]");
 	await expect(current).toHaveAttribute("data-new-no", "3");
 	await expect(current).toBeInViewport();
@@ -870,8 +934,8 @@ test("find in an SVG in Image view: stepping to a line hit switches that file to
 	expect(await storedPicks(page)).toBeNull();
 	await expectNoPageOverflow(page);
 	// Image again: the image, still nothing stored.
-	await showAsAfterJump(page, section, "Image");
-	await expect(chip(section)).toHaveAccessibleName("Show as: Image");
+	await pickView(section, "Image");
+	await shownAs(section, "image");
 	await expect(stageOf(section)).toBeVisible();
 	expect(await storedPicks(page)).toBeNull();
 
@@ -880,20 +944,18 @@ test("find in an SVG in Image view: stepping to a line hit switches that file to
 		reviewPage(s.url, "files", `?path=${encodeURIComponent(SVG)}&line=3`),
 	);
 	const landed = fileSection(page, SVG);
-	await expect(chip(landed)).toHaveAccessibleName("Show as: Text");
+	await shownAs(landed, "text");
 	await expect(svgRow(landed, 3)).toHaveAttribute("data-landed");
 	await expect(svgRow(landed, 3)).toBeInViewport();
 	expect(await storedPicks(page)).toBeNull();
 	// Image again: the link isn't replayed on the image (no "not in this
 	// diff" hint; the unit test checks it doesn't scroll either).
-	await showAsAfterJump(page, landed, "Image");
+	await pickView(landed, "Image");
 	await expect(stageOf(landed)).toBeVisible();
 	await expect(landed.locator('[aria-busy="true"]')).toHaveCount(0);
 	await expect(landed.getByTestId("landing-hint")).toHaveCount(0);
 	await page.reload();
-	await expect(chip(fileSection(page, SVG))).toHaveAccessibleName(
-		"Show as: Image",
-	);
+	await shownAs(fileSection(page, SVG), "image");
 });
 
 test("a tiny image's before/after tags sit above it, never over it", async ({

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { imageTypeOf, isImagePath } from "../../../../shared/imageTypes";
 import type { FileView } from "../../../../shared/types";
 import { blobUrl } from "../../../api";
@@ -51,8 +51,14 @@ export function ImageView(props: {
 	/** The since view's patch set: its interdiff's sides. */
 	from?: number;
 	sideBySide: boolean;
+	/**
+	 * The view switch for the toolbar (FileDiff): `modes` when two versions
+	 * share one stage, so Slider and Fade apply.
+	 */
+	view?: (modes: boolean) => ReactNode;
 }) {
 	const { file, revision, from } = props;
+	const view = (modes: boolean) => props.view?.(modes);
 	// An extension crb doesn't know, shown as Image: the server checks the bytes.
 	const sniff = !isImagePath(file.path);
 	// An SVG with no width or height has no size of its own (stage.ts).
@@ -139,6 +145,7 @@ export function ImageView(props: {
 				className="@container border-line border-b"
 			>
 				<ImageToolbar
+					view={view(false)}
 					dims={[{ tone: "add", size: undefined }]}
 					bytes={bytesPair(oldBytes, file.newSize)}
 				/>
@@ -155,6 +162,7 @@ export function ImageView(props: {
 		return (
 			<div data-testid="image-view" data-image-state="fallback">
 				<ImageToolbar
+					view={view(false)}
 					dims={[]}
 					bytes={bytesPair(oldBytes, file.newSize)}
 					failed={
@@ -173,7 +181,7 @@ export function ImageView(props: {
 			(after.state === "waiting-tap" ? (file.newSize ?? 0) : 0);
 		return (
 			<div data-testid="image-view" data-image-state="waiting-tap">
-				<ImageToolbar dims={[]} bytes={bytes} />
+				<ImageToolbar view={view(false)} dims={[]} bytes={bytes} />
 				<div className="flex justify-center p-3">
 					<button
 						type="button"
@@ -204,9 +212,7 @@ export function ImageView(props: {
 			className="@container border-line border-b"
 		>
 			<ImageToolbar
-				{...(compare && !props.sideBySide
-					? { mode, onMode: (m) => imageMode.set(m) }
-					: {})}
+				view={view(compare && !props.sideBySide)}
 				dims={once ? dims.filter((d) => d.tone === "add") : dims}
 				bytes={once ? bytesPair(undefined, file.newSize) : bytes}
 				actual={actual}

@@ -214,10 +214,14 @@ Mockup section 3.
 
 ### Renderer switch
 
-Mockup section 1, the chip and its menus. The file header gets an icon chip
-showing the current renderer (image icon, text icon, binary icon), with a
-tooltip and an accessible name. Tapping it opens a "Show as" menu with the
-renderers that can show this file:
+The owner, 2026-11-16 (QA of #118): "Instead of having a "show as" button
+on top, we should be able to swap into text/binary view if supported
+similar to the slider/fade buttons. Just another diff renderer". So the
+header chip of mockup section 1 is gone: the view's toolbar starts with one
+segmented control of icon buttons (Slider, Fade, then Text or Binary where
+offered; one Image button when there is a single version), and Text and
+Binary get the same control in a row of their own, so the way back is
+always there. The renderers it offers for a file:
 
 - a known image type: Image, Binary;
 - an SVG: Image, Text;

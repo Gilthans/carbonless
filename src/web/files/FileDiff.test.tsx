@@ -50,6 +50,24 @@ import { stateSyncFor, useReviewView } from "./useSetStates";
 const codeLine = (text: string) => (_: string, el: Element | null) =>
 	el?.hasAttribute("data-code") === true && el.textContent === text;
 
+/** How the file's body shows it (FileDiff's `data-renderer`). */
+const shown = () =>
+	document
+		.querySelector("section[data-renderer]")
+		?.getAttribute("data-renderer");
+/** The view switch's group (renderers/ViewSwitch), when there is one. */
+const viewSwitch = () => screen.queryByRole("group", { name: "View" });
+/** Picks a view in the switch; "Image" is its first image button. */
+async function pick(user: ReturnType<typeof userEvent.setup>, name: string) {
+	const group = viewSwitch();
+	if (!group) throw new Error("no view switch");
+	await user.click(
+		within(group).getByRole("button", {
+			name: name === "Image" ? /^(Slider|Image)$/ : name,
+		}),
+	);
+}
+
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
 	highlightLine: async () => [],
@@ -2549,38 +2567,59 @@ describe("FileDiff: the renderer seam", () => {
 			...over,
 		});
 	const binaryHunks: FileHunks = { newLineCount: 0, hunks: [] };
-	const chip = () => screen.queryByRole("button", { name: /^Show as/ });
 	const hunkReads = (paths: () => string[]) =>
 		paths().filter((p) => p.startsWith("/api/files/0/hunks"));
 
-	it("the chip shows for a PNG and not for a .ts", () => {
-		setup(png(), undefined, binaryHunks);
-		expect(chip()).toHaveAccessibleName("Show as: Image");
-		cleanup();
-		setup(file([cluster("k1")]));
-		expect(screen.getByTestId("file-path")).toHaveTextContent("src/a.ts");
-		expect(chip()).toBeNull();
-	});
-
-	it("the chip's menu lists the file's choices, the current one checked", async () => {
+	it("an open PNG shows the view switch in its toolbar; a .ts file has none, and no new row", async () => {
 		const { user } = setup(png(), undefined, binaryHunks);
-		const button = chip();
-		if (!button) throw new Error("no chip");
-		expect(button).toHaveAttribute("aria-haspopup", "menu");
-		expect(button).toHaveAttribute("aria-expanded", "false");
-		await user.click(button);
-		expect(button).toHaveAttribute("aria-expanded", "true");
-		const menu = screen.getByRole("menu", { name: "Show as" });
-		const items = within(menu).getAllByRole("menuitemradio");
-		expect(items.map((i) => i.textContent)).toEqual(["Image", "Binary"]);
-		expect(items.map((i) => i.getAttribute("aria-checked"))).toEqual([
+		expect(shown()).toBe("image");
+		// Closed: no switch (the header holds no chip any more).
+		expect(viewSwitch()).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const group = await screen.findByRole("group", { name: "View" });
+		expect(screen.getByTestId("image-view")).toContainElement(group);
+		const buttons = within(group).getAllByRole("button");
+		expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+			"Slider",
+			"Fade",
+			"Binary",
+		]);
+		expect(buttons.map((b) => b.getAttribute("aria-pressed"))).toEqual([
 			"true",
 			"false",
+			"false",
 		]);
-		// Escape closes it, focus back on the chip.
-		await user.keyboard("{Escape}");
-		expect(screen.queryByRole("menu")).toBeNull();
-		expect(button).toHaveFocus();
+		cleanup();
+		const ts = setup(file([cluster("k1")]));
+		await ts.user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(shown()).toBe("text");
+		expect(viewSwitch()).toBeNull();
+		expect(screen.queryByTestId("view-bar")).toBeNull();
+	});
+
+	it("Fade from Binary goes back to Image in Fade; the switch stays on Binary's own row", async () => {
+		const { user } = setup(png(), undefined, binaryHunks);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await pick(user, "Binary");
+		expect(shown()).toBe("binary");
+		const bar = screen.getByTestId("view-bar");
+		expect(within(bar).getByRole("button", { name: "Binary" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		// Just the control: no dimensions or fit button.
+		expect(within(bar).getAllByRole("button")).toHaveLength(3);
+		await user.click(within(bar).getByRole("button", { name: "Fade" }));
+		expect(shown()).toBe("image");
+		expect(screen.queryByTestId("view-bar")).toBeNull();
+		expect(
+			within(screen.getByTestId("image-view")).getByRole("button", {
+				name: "Fade",
+			}),
+		).toHaveAttribute("aria-pressed", "true");
+		expect(localStorage.getItem("crb.image.mode")).toContain("fade");
+		expect(rendererPicks.get("img/logo.png")).toBe("image");
 	});
 
 	it("picking Binary on a PNG renders today's binary rows and persists per path", async () => {
@@ -2591,10 +2630,9 @@ describe("FileDiff: the renderer seam", () => {
 			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
 		).toBeInTheDocument();
 		expect(hunkReads(paths)).toEqual([]);
-		await user.click(chip() as HTMLElement);
-		await user.click(screen.getByRole("menuitemradio", { name: "Binary" }));
+		await pick(user, "Binary");
 		expect(screen.queryByRole("menu")).toBeNull();
-		expect(chip()).toHaveAccessibleName("Show as: Binary");
+		expect(shown()).toBe("binary");
 		// Binary: today's DiffBody, its hunks read as before.
 		await waitFor(() =>
 			expect(hunkReads(paths)).toEqual(["/api/files/0/hunks?revision=r1"]),
@@ -2615,7 +2653,7 @@ describe("FileDiff: the renderer seam", () => {
 	it("a pick for another path leaves this file as it claims", () => {
 		rendererPicks.set("img/other.png", "binary");
 		setup(png(), undefined, binaryHunks);
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 	});
 
 	it("DiffBody linesHidden fetches no hunks and keeps the file-level checkbox", async () => {
@@ -2633,7 +2671,7 @@ describe("FileDiff: the renderer seam", () => {
 			{ path: "img/icon.svg" },
 		);
 		const { user, paths } = setup(svg);
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
 		const box = await screen.findByRole("checkbox", {
 			name: "Mark cluster reviewed",
@@ -2654,8 +2692,7 @@ describe("FileDiff: the renderer seam", () => {
 			screen.getByRole("progressbar", { name: "File progress" }),
 		).toHaveTextContent("0 / 2 clusters");
 		// Text: the lines, read as today.
-		await user.click(chip() as HTMLElement);
-		await user.click(screen.getByRole("menuitemradio", { name: "Text" }));
+		await pick(user, "Text");
 		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
 		expect(hunkReads(paths)).toEqual(["/api/files/0/hunks?revision=r1"]);
 	});
@@ -2791,9 +2828,14 @@ describe("FileDiff: the renderer seam", () => {
 		expect(hunkReads(paths)).toEqual([]);
 	});
 
-	it("an LFS pointer shows the LFS icon and no chip", () => {
-		setup(file([cluster("k1")], { path: "img/big.png", lfs: true }), undefined);
-		expect(chip()).toBeNull();
+	it("an LFS pointer shows the LFS icon and no view switch", async () => {
+		const { user } = setup(
+			file([cluster("k1")], { path: "img/big.png", lfs: true }),
+			undefined,
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(viewSwitch()).toBeNull();
 		const icon = screen.getByRole("img", { name: "Git LFS pointer" });
 		expect(icon).toBeInTheDocument();
 	});
@@ -2828,7 +2870,6 @@ describe("FileDiff: review in the image view", () => {
 
 	const SVG = "img/icon.svg";
 	const svg = (clusters: ClusterView[]) => file(clusters, { path: SVG });
-	const chip = () => screen.getByRole("button", { name: /^Show as/ });
 	const hunkReads = (paths: () => string[]) =>
 		paths().filter((p) => p.startsWith("/api/files/0/hunks"));
 
@@ -2848,7 +2889,7 @@ describe("FileDiff: review in the image view", () => {
 			body: view(f),
 		}));
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 		await user.click(
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		);
@@ -2886,9 +2927,8 @@ describe("FileDiff: review in the image view", () => {
 		rendererPicks.set(SVG, "text");
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
 		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
-		await user.click(chip());
-		await user.click(screen.getByRole("menuitemradio", { name: "Image" }));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		await pick(user, "Image");
+		expect(shown()).toBe("image");
 		// Mixed: part done, and the action still marks (no reset while
 		// anything is open).
 		expect(
@@ -2959,7 +2999,7 @@ describe("FileDiff: review in the image view", () => {
 			{ since: 1, sincePieces: [gonePiece, ownPiece] },
 		);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 		await user.click(
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		);
@@ -2993,14 +3033,14 @@ describe("FileDiff: review in the image view", () => {
 	it("a find step onto an SVG line in Image view shows it as Text for the view; the pick is unchanged, Image returns", async () => {
 		const { user, update, paths } = setup(svg([cluster("k1")]));
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 		expect(screen.getByTestId("image-view")).toBeInTheDocument();
 		// Marks alone (typing) change nothing.
 		update({ find: { ...stepped(5, 0), current: null } });
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 		// A step onto line 5: Text, its lines read, the line there.
 		update({ find: stepped(5, 1) });
-		expect(chip()).toHaveAccessibleName("Show as: Text");
+		expect(shown()).toBe("text");
 		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
 		expect(hunkReads(paths)).toEqual(["/api/files/0/hunks?revision=r1"]);
 		expect(screen.queryByTestId("image-view")).toBeNull();
@@ -3009,29 +3049,28 @@ describe("FileDiff: review in the image view", () => {
 		expect(localStorage.getItem("crb.files.renderer")).toBeNull();
 		// The same step again (a rerender) doesn't switch back or again.
 		update({ find: stepped(5, 1) });
-		expect(chip()).toHaveAccessibleName("Show as: Text");
+		expect(shown()).toBe("text");
 		// Image again: back to the image, still nothing stored.
-		await user.click(chip());
-		await user.click(screen.getByRole("menuitemradio", { name: "Image" }));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		await pick(user, "Image");
+		expect(shown()).toBe("image");
 		expect(screen.getByTestId("image-view")).toBeInTheDocument();
 		expect(rendererPicks.get(SVG)).toBeUndefined();
 		// A later step switches again.
 		update({ find: stepped(5, 2) });
-		expect(chip()).toHaveAccessibleName("Show as: Text");
+		expect(shown()).toBe("text");
 	});
 
 	it("a thread link to an SVG line in Image view shows it as Text for the view, not stored", async () => {
 		const { user, update } = setup(svg([cluster("k1")]));
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 		// A link to the file alone (no line) keeps the image.
 		update({ landing: { path: SVG, index: 0, seq: 1 } });
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 		update({
 			landing: { path: SVG, line: 5, side: "RIGHT", index: 0, seq: 2 },
 		});
-		expect(chip()).toHaveAccessibleName("Show as: Text");
+		expect(shown()).toBe("text");
 		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
 		expect(rendererPicks.get(SVG)).toBeUndefined();
 	});
@@ -3047,9 +3086,8 @@ describe("FileDiff: review in the image view", () => {
 		await waitFor(() => expect(scrolls).toHaveBeenCalled());
 		expect(screen.queryByTestId("landing-hint")).toBeNull();
 		scrolls.mockClear();
-		await user.click(chip());
-		await user.click(screen.getByRole("menuitemradio", { name: "Image" }));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		await pick(user, "Image");
+		expect(shown()).toBe("image");
 		// The same landing, still the page's, isn't replayed on the image.
 		await new Promise((r) => setTimeout(r, 20));
 		expect(screen.queryByTestId("landing-hint")).toBeNull();
@@ -3074,21 +3112,21 @@ describe("FileDiff: review in the image view", () => {
 			},
 		);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 		// A step after it mounted still switches.
 		update({ find: stepped(5, 4) });
-		expect(chip()).toHaveAccessibleName("Show as: Text");
+		expect(shown()).toBe("text");
 	});
 
 	it("a switch ended by the pick changing elsewhere doesn't come back", async () => {
 		const { update } = setup(svg([cluster("k1")]));
 		update({ find: stepped(5, 1) });
-		expect(chip()).toHaveAccessibleName("Show as: Text");
+		expect(shown()).toBe("text");
 		// Another tab picks Text, then Image: the image, not the old switch.
 		act(() => rendererPicks.set(SVG, "text"));
-		expect(chip()).toHaveAccessibleName("Show as: Text");
+		expect(shown()).toBe("text");
 		act(() => rendererPicks.set(SVG, "image"));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 	});
 
 	it("since view: a find step onto an SVG line shows Text and reads the interdiff's lines", async () => {
@@ -3100,9 +3138,9 @@ describe("FileDiff: review in the image view", () => {
 			{ since: 1, sincePieces: [] },
 		);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 		update({ find: stepped(5, 1) });
-		expect(chip()).toHaveAccessibleName("Show as: Text");
+		expect(shown()).toBe("text");
 		await waitFor(() =>
 			expect(hunkReads(paths)).toEqual([
 				"/api/files/0/hunks?revision=r1&from=1",
@@ -3111,10 +3149,11 @@ describe("FileDiff: review in the image view", () => {
 		expect(rendererPicks.get(SVG)).toBeUndefined();
 	});
 
-	it("a find step onto a .ts file changes nothing: no chip, no image", () => {
+	it("a find step onto a .ts file changes nothing: no switch, no image", () => {
 		const { update } = setup(file([cluster("k1")]));
 		update({ find: stepped(5, 1) });
-		expect(screen.queryByRole("button", { name: /^Show as/ })).toBeNull();
+		expect(shown()).toBe("text");
+		expect(viewSwitch()).toBeNull();
 		expect(screen.queryByTestId("image-view")).toBeNull();
 		expect(localStorage.getItem("crb.files.renderer")).toBeNull();
 	});
@@ -3133,17 +3172,17 @@ describe("FileDiff: review in the image view", () => {
 		);
 		const { update } = setup(png, undefined, { newLineCount: 0, hunks: [] });
 		update({ find: stepped(1, 1) });
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("image");
 	});
 
 	it("Text picked and stored stays Text after a step; picking Image stores Image", async () => {
 		rendererPicks.set(SVG, "text");
 		const { user, update } = setup(svg([cluster("k1")]));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
 		update({ find: stepped(5, 1) });
-		expect(chip()).toHaveAccessibleName("Show as: Text");
-		await user.click(chip());
-		await user.click(screen.getByRole("menuitemradio", { name: "Image" }));
-		expect(chip()).toHaveAccessibleName("Show as: Image");
+		expect(shown()).toBe("text");
+		await pick(user, "Image");
+		expect(shown()).toBe("image");
 		expect(rendererPicks.get(SVG)).toBe("image");
 	});
 });

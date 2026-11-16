@@ -59,7 +59,8 @@ export const RENDERERS: readonly Renderer[] = [
 ];
 
 /**
- * The "Show as" menu for `file`, its default first. Text is never offered
+ * The renderers that can show `file` (the view switch: ViewSwitch), its
+ * default first. Text is never offered
  * for a binary file (the server sends no lines for one); an LFS pointer or
  * a submodule shows as it does today, with no other choice.
  */

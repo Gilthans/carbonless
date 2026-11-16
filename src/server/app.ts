@@ -683,7 +683,7 @@ export async function buildApp(
 					}
 					let type = imageTypeOf(blob.path);
 					let bytes: Buffer | null = null;
-					// Only on an explicit "Show as Image", and raster types only.
+					// Only on an explicit pick of Image, and raster types only.
 					if (type === null && sniff === "1") {
 						bytes = await session.blobBytes(blob.oid);
 						type = sniffRaster(bytes.subarray(0, 16));

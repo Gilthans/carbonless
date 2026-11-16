@@ -1,25 +1,15 @@
 import {
 	AlertIcon,
-	type Icon,
-	MirrorIcon,
 	ScreenFullIcon,
 	ScreenNormalIcon,
-	StackIcon,
 } from "@primer/octicons-react";
+import type { ReactNode } from "react";
 import { LabeledIcon } from "../../../overview/parts";
 import { SkeletonBar } from "../../../Spinner";
 import { Tooltip } from "../../../Tooltip";
-import type { CompareMode } from "./ImageCompare";
+import { ICON_BUTTON } from "../ViewSwitch";
 import { dimsText, TONE_TEXT, type Tone } from "./ImageSingle";
 import type { Size } from "./stage";
-
-const MODES: { id: CompareMode; label: string; icon: Icon }[] = [
-	{ id: "slider", label: "Slider", icon: MirrorIcon },
-	{ id: "fade", label: "Fade", icon: StackIcon },
-];
-
-const ICON_BUTTON =
-	"flex h-10 w-10 items-center justify-center text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent aria-pressed:bg-pressed aria-pressed:text-ink";
 
 /** One side's dimensions in the toolbar: its size, or pending. */
 export interface DimsSide {
@@ -29,13 +19,13 @@ export interface DimsSide {
 }
 
 /**
- * The image view's toolbar: the compare mode (unified view only), the
- * dimensions (before red, after green; a skeleton until they're known)
+ * The image view's toolbar: the view switch (Slider, Fade, the other
+ * renderers: renderers/ViewSwitch), the dimensions (before red, after green; a skeleton until they're known)
  * and byte sizes, and Fit / 1:1.
  */
 export function ImageToolbar(props: {
-	mode?: CompareMode;
-	onMode?: (mode: CompareMode) => void;
+	/** The view switch (ViewSwitch), at its start. */
+	view?: ReactNode;
 	/** The sides whose dimensions show; none when no image is shown. */
 	dims: DimsSide[];
 	bytes: string;
@@ -48,31 +38,7 @@ export function ImageToolbar(props: {
 	const known = props.dims.filter((d) => dimsText(d.size) !== "");
 	return (
 		<div className="flex min-h-12 flex-wrap items-center gap-2 border-line border-b bg-band px-2 py-1">
-			{props.mode && props.onMode && (
-				// biome-ignore lint/a11y/useSemanticElements: a named group of toggle buttons; a fieldset is for form fields.
-				<div
-					role="group"
-					aria-label="Compare"
-					className="inline-flex overflow-hidden rounded-lg border border-line-strong"
-				>
-					{MODES.map(({ id, label, icon: ModeIcon }) => (
-						<Tooltip key={id} content={label} describe={false}>
-							{(trigger) => (
-								<button
-									type="button"
-									{...trigger}
-									aria-label={label}
-									aria-pressed={props.mode === id}
-									onClick={() => props.onMode?.(id)}
-									className={`${ICON_BUTTON} not-first:border-line-strong not-first:border-l`}
-								>
-									<ModeIcon aria-hidden size={20} />
-								</button>
-							)}
-						</Tooltip>
-					))}
-				</div>
-			)}
+			{props.view}
 			<span className="flex-1" />
 			{props.failed && (
 				<span className="flex h-10 w-10 items-center justify-center">
