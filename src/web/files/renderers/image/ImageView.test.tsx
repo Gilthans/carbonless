@@ -300,6 +300,8 @@ describe("ImageView", () => {
 		await waitFor(() => expect(screen.getByText(STALE_MESSAGE)).toBeVisible());
 		expect(screen.queryByTestId("image-view")).toBeNull();
 		expect(invalidate).toHaveBeenCalledWith({ queryKey: REVIEW_KEY });
+		// The way back stays: the switch, as it was.
+		expect(names()).toEqual(["Slider", "Fade", "Binary"]);
 	});
 
 	it("over 10 MB: a button loads it", () => {

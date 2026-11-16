@@ -97,13 +97,16 @@ export function ImageView(props: {
 
 	if (stale) {
 		return (
-			<div className="border-line border-b p-3">
-				<p
-					role="status"
-					className="rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-ink text-sm"
-				>
-					{STALE_MESSAGE}
-				</p>
+			<div className="border-line border-b">
+				{view && <ImageToolbar view={view} dims={[]} bytes="" />}
+				<div className="p-3">
+					<p
+						role="status"
+						className="rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-ink text-sm"
+					>
+						{STALE_MESSAGE}
+					</p>
+				</div>
 			</div>
 		);
 	}
