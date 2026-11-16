@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	type AgentAnchor,
 	type AgentView,
+	COMMENT_INSTRUCTION,
 	JOINED_PREAMBLE,
 	JOINED_THREAD_PREAMBLE,
 } from "../../shared/agent.js";
@@ -60,6 +61,18 @@ describe("the preamble and anchors", () => {
 			"only through carbonless's tools",
 		])
 			expect(JOINED_PREAMBLE).toContain(part);
+	});
+
+	it("the preambles say how to suggest a review comment, and that only the reviewer posts it (CAR-83)", () => {
+		expect(JOINED_PREAMBLE).toContain(COMMENT_INSTRUCTION);
+		for (const part of ["```comment", "four backticks", "Only the reviewer"])
+			expect(COMMENT_INSTRUCTION).toContain(part);
+		// The thread preamble: a block there is a reply the reviewer may
+		// post; the agent itself still never writes to the thread.
+		expect(JOINED_THREAD_PREAMBLE).toContain("```comment");
+		expect(JOINED_THREAD_PREAMBLE).toContain(
+			"Never resolve, unresolve, reply to or write to this thread",
+		);
 	});
 
 	it("a RIGHT anchor keeps its commit, and names no path outside the PR", () => {

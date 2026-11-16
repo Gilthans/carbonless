@@ -13,6 +13,7 @@ import { createPrFixture, type PrFixture } from "../../../test/pr-fixture";
 import {
 	type AgentStatus,
 	type AgentThread,
+	COMMENT_INSTRUCTION,
 	JOINED_PREAMBLE,
 } from "../../shared/agent";
 import { buildApp } from "../app";
@@ -164,6 +165,12 @@ describe("/mcp", () => {
 			"threads",
 		]);
 		for (const t of tools) expect(t.description).toEqual(expect.any(String));
+		// How to suggest a review comment (CAR-83), where the agent writes text.
+		for (const name of ["reply", "open"]) {
+			expect(tools.find((t) => t.name === name)?.description, name).toContain(
+				COMMENT_INSTRUCTION,
+			);
+		}
 		const fake = `${id}.${"A".repeat(43)}`;
 		for (const name of ["next", "threads", "review", "detach"]) {
 			const r = await call(client, name, { token: fake });
