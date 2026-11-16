@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rcMoveTo } from "./rc-fixup.mjs";
+import { releaseGate } from "./release-gate.mjs";
 
 // Version math and the steps behind `pnpm release` and the release and
 // release-finish workflows (docs/releasing.md). Everything that touches git, gh or
@@ -323,6 +324,82 @@ export async function status(io: Io): Promise<void> {
 	} else {
 		io.log(`warning: master's version ${next} is not a release X.Y.Z`);
 	}
+	const freeze = await freezeOf(io, next, tags, npm);
+	if (freeze) io.log(`frozen:  ${freeze}`);
+}
+
+// ---------------------------------------------------------------------------
+// The release freeze (CAR-191; docs/releasing.md, "The release freeze"):
+// once master's X.Y.Z is released, only the "next" PR may merge. CI's
+// release-gate job judges a PR with scripts/release-gate.mjs; these ask the
+// same function for `pnpm release status` and `pnpm release merge-ok`.
+
+/** The open PRs to master, every page. */
+async function openPullsToMaster(io: Io): Promise<unknown> {
+	return JSON.parse(
+		await must(io, "gh", [
+			"api",
+			"--paginate",
+			"--slurp",
+			`repos/${io.repo}/pulls?state=open&base=master&per_page=100`,
+		]),
+	);
+}
+
+/** What to merge first while master is frozen ("merge #N next: X.Y.Z first"), else null. */
+async function freezeOf(
+	io: Io,
+	version: string,
+	tags: string[],
+	npm: NpmState,
+): Promise<string | null> {
+	const v = parseVersion(version);
+	if (!v || v.rc !== undefined) return null;
+	const released =
+		tags.includes(tagOf(v)) || (npm?.versions.includes(version) ?? false);
+	if (!released) return null;
+	const gate = releaseGate({
+		version,
+		tags,
+		npmVersions: npm?.versions ?? [],
+		pulls: await openPullsToMaster(io),
+		repo: io.repo,
+	});
+	return gate.blocker;
+}
+
+/**
+ * `pnpm release merge-ok <pr>`: fails, naming the "next" PR to merge first,
+ * when master is frozen and `pr` isn't that PR. The agents' merge path
+ * (`gh pr merge --admin` skips required checks) runs it before every merge.
+ * Released counts npm's versions too, as the RC plan does.
+ */
+export async function mergeOk(io: Io, pr: string): Promise<void> {
+	const number =
+		/^#?(\d+)$/.exec(pr)?.[1] ??
+		/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)\/?$/.exec(pr)?.[1];
+	if (!number) throw new Error(`not a PR number or URL: ${pr}`);
+	const [version, tags, npm, pull, pulls] = await Promise.all([
+		masterVersion(io),
+		remoteTags(io),
+		npmState(io),
+		must(io, "gh", ["api", `repos/${io.repo}/pulls/${number}`]),
+		openPullsToMaster(io),
+	]);
+	const gate = releaseGate({
+		version,
+		tags,
+		npmVersions: npm?.versions ?? [],
+		pulls,
+		repo: io.repo,
+		pr: JSON.parse(pull),
+	});
+	if (!gate.ok) {
+		throw new Error(
+			`${gate.message}. Run pnpm release merge-ok ${number} again once it merges.`,
+		);
+	}
+	io.log(`ok: ${gate.message}`);
 }
 
 const RUN_URL = /https:\/\/github\.com\/\S+\/actions\/runs\/\d+/;

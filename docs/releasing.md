@@ -86,7 +86,36 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
    version (a kind bumps the newest release).
 
 `pnpm release status` shows master's next version, `rc` and `latest` on npm,
-the newest tags, and what the next merge will publish.
+the newest tags, what the next merge will publish and, during the freeze
+below, which PR must merge first (`frozen:  merge #N next: X.Y+1.0 first`).
+
+### The release freeze
+
+Between a release and its "next" PR's merge, master's `package.json` still
+says the released `X.Y.Z`: a PR merged then publishes no RC (release.yml
+warns and skips) and its changelog entry is missing from the "next" PR,
+which was written before it. So until "next" merges, nothing else may
+(CAR-191):
+- **CI's `release-gate` job** (`ci.yml`, on every PR to master) fails while
+  `vX.Y.Z` is on GitHub for master's version, unless the PR's head is a
+  `next/X.Y.Z` branch of this repository (a fork's `next/*` is not exempt).
+  It reads master's `package.json` at run time (not the PR's merge commit),
+  installs nothing, and has the token (read only: contents, pull requests)
+  in its one step that asks GitHub, before any of the repository's code
+  runs; `scripts/release-gate.mjs` (no dependencies) judges. Its error
+  names the open "next" PR, or says to run release-finish again when none
+  is open. It is a required check on master (Setup, step 3).
+- **Turning green:** once "next" merges, open the blocked PR's CI run and
+  **Re-run failed jobs** (or `gh run rerun <run id> --failed`): the gate
+  reads master again and passes, with no new commit. A push to the PR
+  does the same.
+- **Agents' merges:** `gh pr merge --admin` bypasses required checks, so
+  before merging any PR an agent runs `pnpm release merge-ok <pr>`, which
+  fails with the same message for any PR but the "next" PR while frozen
+  (it counts npm's versions as released too, as the RC plan does).
+- A gate that passed before the release stays green: in the window, a
+  merge on GitHub's button relies on merge-ok's habit or a look at
+  `pnpm release status`, not on the check.
 
 ### The version in a build, without a dirty tree
 
@@ -280,7 +309,7 @@ Tags and PRs created with the workflow's `GITHUB_TOKEN` start no workflows.
 So an RC tag starts no CI run (promote relies on CI's run for the push
 to master at the RC's commit instead), and the "next" PR shows no CI checks until
 someone pushes to it or closes and reopens it (a rerun of release-finish
-leaves such pushes alone). CI is a required check on master, so that PR
+leaves such pushes alone). CI (with its `release-gate`) is a required check on master, so that PR
 needs one of those before it can merge (or the workflows a token of the
 owner's).
 
@@ -516,7 +545,7 @@ machine.
    agents on the owner's approval, nobody else, whatever their access), Restrict deletions, Block force
    pushes, Require a pull request before merging (0 approvals: only the
    owner's login can merge anyway), Require status checks to pass (`checks`,
-   `windows-agent`, `e2e`). Not "Require review from Code Owners": with
+   `windows-agent`, `e2e`, `release-gate`). Not "Require review from Code Owners": with
    Restrict updates it adds nothing. Nobody pushes straight to `master`,
    the owner included; the owner can merge any PR, with or without an
    approval or green checks (GitHub's "bypass rules" box).
