@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { AgentAnchor, AgentThread } from "../../shared/agent";
+import type { AgentSpanAnchor } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import {
 	commentPlace,
 	knownBefore,
 	LINES_GONE,
+	type PostingThread,
 	placeLabel,
 	THREAD_GONE,
 	UNTRACED,
@@ -14,9 +15,9 @@ const OLD = "a".repeat(40);
 const HEAD = "b".repeat(40);
 
 const conversation = (
-	anchor: AgentAnchor,
-	more: Partial<AgentThread> = {},
-): AgentThread => ({
+	anchor: AgentSpanAnchor,
+	more: Partial<PostingThread> = {},
+): PostingThread => ({
 	id: "01k9e6m2q8x4v7c3n5b0h1j2t6",
 	anchor,
 	openedBy: "human",
@@ -28,7 +29,9 @@ const conversation = (
 	...more,
 });
 
-const line = (more: Partial<Extract<AgentAnchor, { subject: "line" }>> = {}) =>
+const line = (
+	more: Partial<Extract<AgentSpanAnchor, { subject: "line" }>> = {},
+) =>
 	conversation({
 		subject: "line",
 		path: "src/x.ts",
@@ -57,7 +60,7 @@ const placed = (
 });
 
 const at = (
-	thread: AgentThread,
+	thread: PostingThread,
 	placement: ThreadPlacement | undefined,
 	placing: "in" | "pending" | "failed" = "in",
 ) => commentPlace({ thread, head: HEAD, placement, placing });

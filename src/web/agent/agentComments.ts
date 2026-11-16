@@ -17,10 +17,10 @@
  */
 import type { QueryClient } from "@tanstack/react-query";
 import {
-	type AgentAnchor,
 	type AgentMessage,
 	type AgentPostedComment,
 	type AgentPostedRequest,
+	type AgentSpanAnchor,
 	type AgentThread,
 	agentCommentClientId,
 } from "../../shared/agent";
@@ -46,6 +46,20 @@ export const THREAD_GONE = "This GitHub thread was deleted";
 export const UNTRACED = "Couldn't trace these lines to the latest push";
 export const CHANGED = "The code here changed since the agent wrote this";
 export const WRITES_OFF = "Not writing to GitHub here";
+
+/** A conversation a block can post from: on lines, a file or a GitHub thread. */
+export type PostingThread = Omit<AgentThread, "anchor"> & {
+	anchor: AgentSpanAnchor;
+};
+
+const POSTS_FROM: ReadonlySet<string> = new Set(["line", "file", "thread"]);
+
+/**
+ * Whether the conversation has a place to post (an allowlist: the whole
+ * review's, or any kind added later, shows its blocks read-only).
+ */
+export const postsFrom = (thread: AgentThread): thread is PostingThread =>
+	POSTS_FROM.has(thread.anchor.subject);
 
 /** Where a block posts, or why it can't (yet). */
 export type CommentPlace =
@@ -88,7 +102,7 @@ const lineTarget = (
  * A GitHub-thread conversation replies to its thread, unless it's gone.
  */
 export function commentPlace(args: {
-	thread: AgentThread;
+	thread: PostingThread;
 	head: string | undefined;
 	placement: ThreadPlacement | undefined;
 	/** The placements: in (`placement` undefined: not traced), on their way, or failed. */
@@ -161,7 +175,7 @@ function shortLines(s: {
 /** The header's target: short (`L41–44`, `File`, `Reply`) and in full for its tooltip. */
 export function placeLabel(
 	place: CommentPlace,
-	anchor: AgentAnchor,
+	anchor: AgentSpanAnchor,
 ): { short: string; full: string } {
 	if (place.kind === "reply") {
 		return { short: "Reply", full: "Reply on this GitHub thread" };

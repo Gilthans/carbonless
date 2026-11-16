@@ -228,6 +228,36 @@ describe("ReviewConversationDrawer", () => {
 		).toBeNull();
 	});
 
+	it("a ```comment block in an answer is a read-only quote with Copy: nowhere to post from the whole review (CAR-83)", () => {
+		openReviewDrawer();
+		const t = review();
+		show({
+			threads: [
+				{
+					...t,
+					messages: [
+						...t.messages.slice(0, 3),
+						{
+							id: "m4",
+							by: "ai",
+							at: "2026-11-15T10:03:00Z",
+							text: "Ask:\n\n```comment\nWhy one retry?\n```",
+						},
+					],
+				},
+			],
+		});
+		const block = within(drawer()).getByTestId("agent-comment");
+		expect(block).toHaveTextContent("Why one retry?");
+		expect(
+			within(block).getByRole("button", { name: "Copy comment" }),
+		).toBeInTheDocument();
+		expect(within(block).queryByRole("textbox")).toBeNull();
+		expect(
+			within(drawer()).queryByRole("button", { name: "Add review comment" }),
+		).toBeNull();
+	});
+
 	it("with unread answers: the new rule above the first, scrolled to it", () => {
 		openReviewDrawer();
 		show({ threads: [review({ unread: true, seenUpTo: "m2" })] });

@@ -675,7 +675,7 @@ describe("AgentComment: kept in the browser", () => {
 describe("AgentComment: where nothing posts", () => {
 	it("a conversation of any other kind (the whole review's) shows the read-only quote and Copy, no box", () => {
 		const review = lineThread({
-			anchor: { subject: "review" } as unknown as AgentThread["anchor"],
+			anchor: { subject: "review" },
 		});
 		show("Ask the author why", review);
 		expect(screen.queryByRole("textbox")).toBeNull();

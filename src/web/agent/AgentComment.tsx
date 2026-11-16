@@ -49,8 +49,10 @@ import {
 	commentPlace,
 	dropKeptPosted,
 	keptOf,
+	type PostingThread,
 	placeLabel,
 	postAgentComment,
+	postsFrom,
 	recordPosted,
 	refusalText,
 	setDraft,
@@ -68,9 +70,6 @@ export interface CommentAt {
 	message: AgentMessage;
 }
 
-/** The conversation kinds a block posts from (an allowlist: any new kind is read-only). */
-const POSTS_FROM: ReadonlySet<string> = new Set(["line", "file", "thread"]);
-
 const PLACING = "Finding these lines in the latest push";
 
 const FRAME =
@@ -85,10 +84,17 @@ export function AgentComment(props: {
 }) {
 	// Only a conversation on code or a GitHub thread has a place to post;
 	// any other (the whole review's) shows the block read-only.
-	if (!props.at || !POSTS_FROM.has(props.at.thread.anchor.subject)) {
+	const at = props.at;
+	if (!at || !postsFrom(at.thread)) {
 		return <ReadOnlyComment text={props.text} />;
 	}
-	return <CommentBox text={props.text} block={props.block} at={props.at} />;
+	return (
+		<CommentBox
+			text={props.text}
+			block={props.block}
+			at={{ thread: at.thread, message: at.message }}
+		/>
+	);
 }
 
 /** A block with nowhere to post: the text as it is, to copy. */
@@ -127,7 +133,7 @@ function ReadOnlyComment(props: { text: string }) {
 }
 
 /** Where the block posts now: its conversation's place on the snapshot's head. */
-function usePlace(thread: AgentThread): CommentPlace {
+function usePlace(thread: PostingThread): CommentPlace {
 	const head = useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead;
 	const a = thread.anchor;
 	const needed = a.subject !== "thread" && !!head && a.commit !== head;
@@ -160,7 +166,11 @@ type Phase =
 	| { kind: "refused"; why: string }
 	| { kind: "doubt" };
 
-function CommentBox(props: { text: string; block: number; at: CommentAt }) {
+function CommentBox(props: {
+	text: string;
+	block: number;
+	at: { thread: PostingThread; message: AgentMessage };
+}) {
 	const { block } = props;
 	const { thread, message } = props.at;
 	const clientId = agentCommentClientId(thread.id, message.id, block);
