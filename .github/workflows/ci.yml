@@ -38,21 +38,28 @@ jobs:
           cache: pnpm
       - name: Machine
         run: echo "nproc $(nproc); $(grep -m1 'model name' /proc/cpuinfo)"
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
+      - id: install
+        run: pnpm install --frozen-lockfile
+      - id: lint
+        run: pnpm lint
+      - id: typecheck
+        run: pnpm typecheck
       # A wall-clock limit per test step, the net for a hung test: no Vitest
       # timeout can end a microtask loop (e.g. a waitFor callback that writes
       # the DOM wakes its own MutationObserver, so timers never fire). The
       # step takes 9-13 min (Nov 2026) and grows: keep headroom.
       # Test traces (docs/test-profiling.md) go to a directory uploaded below.
-      - run: pnpm test
+      # Its JSON report goes to test-outcomes (below).
+      - id: tests
+        run: pnpm test
         timeout-minutes: 25
         env:
           CRB_TEST_TRACE_ROOT: ${{ runner.temp }}/test-traces
+          CRB_TEST_JSON: ${{ runner.temp }}/test-outcomes/report.json
       # The pack smoke test as promote runs it, on a tarball packed first
       # (pnpm test:pack, in pnpm verify, packs its own).
       - name: Pack smoke test, on a packed tarball
+        id: pack
         run: |
           pnpm pack --pack-destination "$RUNNER_TEMP/pack"
           node scripts/pack-smoke.mjs "$RUNNER_TEMP"/pack/carbonless-review-*.tgz
@@ -62,6 +69,23 @@ jobs:
           name: test-traces-unit
           path: ${{ runner.temp }}/test-traces/
           retention-days: 14
+      # Each failed test rerun once and labelled flaky or consistent
+      # (docs/ci-flakes.md). Diagnosis only: the job stays failed, and this
+      # step's own result never counts (continue-on-error).
+      - name: Label failures flaky or consistent
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          JOB_STATUS: ${{ job.status }}
+        run: node scripts/test-outcomes.mjs --runner vitest --job checks --report "$RUNNER_TEMP/test-outcomes/report.json" --out "$RUNNER_TEMP/test-outcomes"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-outcomes-checks-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/test-outcomes/test-outcomes.json
+          retention-days: 90
 
   # The agent's spawn and kill differ on Windows (npm .cmd shims, no process
   # groups), and so do the update helper's wait, install and relaunch; the
@@ -80,7 +104,26 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec vitest run src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts
+      - id: tests
+        run: pnpm exec vitest run src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts
+        env:
+          CRB_TEST_JSON: ${{ runner.temp }}/test-outcomes/report.json
+      # As in checks (docs/ci-flakes.md): labels failures, never passes the job.
+      - name: Label failures flaky or consistent
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: bash
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          JOB_STATUS: ${{ job.status }}
+        run: node scripts/test-outcomes.mjs --runner vitest --job windows-agent --report "$RUNNER_TEMP/test-outcomes/report.json" --out "$RUNNER_TEMP/test-outcomes"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-outcomes-windows-agent-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/test-outcomes/test-outcomes.json
+          retention-days: 90
 
   # Playwright in parallel shards (about 15 min each at ~830 tests on a
   # 2-core runner; one runner took 35+ min and hit its limit). Each uploads
@@ -130,8 +173,10 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - id: install
+        run: pnpm install --frozen-lockfile
       - name: The image's Playwright is the locked one
+        id: playwright-version
         env:
           IMAGE_PLAYWRIGHT: ${{ matrix.playwright }}
         run: |
@@ -142,10 +187,28 @@ jobs:
           fi
       # Queued (scripts/queue.mjs): the lock is free on a runner, and a run
       # holding it gets a Playwright worker per core.
-      - run: pnpm test:e2e --shard=${{ matrix.shard }}/4
+      - id: tests
+        run: pnpm test:e2e --shard=${{ matrix.shard }}/4
         timeout-minutes: 20
         env:
           CRB_TEST_TRACE_ROOT: ${{ runner.temp }}/test-traces
+          CRB_TEST_JSON: ${{ runner.temp }}/test-outcomes/report.json
+      # As in checks (docs/ci-flakes.md): the shard's failed tests rerun once
+      # on the dist it built, unsharded; labels them, never passes the job.
+      - name: Label failures flaky or consistent
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          JOB_STATUS: ${{ job.status }}
+        run: node scripts/test-outcomes.mjs --runner playwright --job "e2e (${{ matrix.shard }}/4)" --report "$RUNNER_TEMP/test-outcomes/report.json" --out "$RUNNER_TEMP/test-outcomes"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-outcomes-e2e-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/test-outcomes/test-outcomes.json
+          retention-days: 90
       - if: always()
         uses: actions/upload-artifact@v4
         with:

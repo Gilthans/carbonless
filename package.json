@@ -33,6 +33,7 @@
 		"verify": "pnpm lint && pnpm typecheck && node scripts/queue.mjs sh -c 'pnpm test && pnpm test:e2e && pnpm test:pack'",
 		"verify:fast": "node scripts/verify-fast.mjs",
 		"flake-check": "node scripts/flake-check.mjs",
+		"ci-flakes": "node scripts/ci-flakes.mjs",
 		"icons": "tsx scripts/render-icons.ts",
 		"compare-threads": "tsx scripts/compare-threads.ts",
 		"test-profile": "tsx scripts/test-profile/main.ts",

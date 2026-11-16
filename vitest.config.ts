@@ -28,5 +28,19 @@ export default defineConfig({
 		// The slowest files start first, from Vitest's duration cache or,
 		// in a fresh tree or CI, a checked-in list (docs/test-profiling.md).
 		sequence: { sequencer: SlowFirstSequencer },
+		// CI: also a JSON report, from which scripts/test-outcomes.mjs labels
+		// each failure flaky or consistent (docs/ci-flakes.md). The other
+		// reporters are Vitest's defaults.
+		...(process.env.CRB_TEST_JSON
+			? {
+					reporters: [
+						"default",
+						...(process.env.GITHUB_ACTIONS === "true"
+							? ["github-actions"]
+							: []),
+						["json", { outputFile: process.env.CRB_TEST_JSON }],
+					],
+				}
+			: {}),
 	},
 });
