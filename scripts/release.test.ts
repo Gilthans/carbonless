@@ -21,6 +21,7 @@ import {
 	compareVersions,
 	finishPlan,
 	type Io,
+	MIN_NPM,
 	newestTag,
 	next,
 	nextRc,
@@ -1059,6 +1060,8 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 				return "";
 			},
 			tar: (args) => execFileSync("tar", args, { encoding: "utf8" }),
+			// The owner's npm has npm stage.
+			"npm --version": "12.2.1\n",
 			"npm view carbonless-review@0.1.0 dist.integrity": () => {
 				if (!published) return "";
 				return reads++ < lag
@@ -1268,6 +1271,69 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 		expect(
 			[...dirty.calls, ...changed.calls].some((c) => c.startsWith("gh ")),
 		).toBe(false);
+	});
+
+	it("refuses an npm without npm stage before anything else, saying the fix", async () => {
+		const { out } = artifact();
+		for (const old of ["10.9.2", "11.19.1", "12.1.9"]) {
+			const p = publishIo(out, { "npm --version": `${old}\n` });
+			const error = await publishRelease(p.io, "77").catch((e: Error) => e);
+			expect(error).toBeInstanceOf(Error);
+			const message = (error as Error).message;
+			expect(message).toContain(`this npm is ${old}`);
+			expect(message).toContain(`npm >= ${MIN_NPM}`);
+			expect(message).toContain("npm install -g npm@12");
+			expect(message).toContain("Node ^22.22.2 or ^24.15.0");
+			// Before any other call: no git, gh or npm, no download, no question.
+			expect(p.calls).toEqual(["npm --version"]);
+			expect(p.asked).toEqual([]);
+			expect(p.ran).toEqual([]);
+		}
+	});
+
+	it("refuses an npm whose version it can't read", async () => {
+		const { out } = artifact();
+		for (const answer of [
+			"",
+			"12.2\n",
+			"v12.2.1\n",
+			{ code: 1, stderr: "boom" },
+		] as const) {
+			const p = publishIo(out, { "npm --version": answer });
+			await expect(publishRelease(p.io, "77")).rejects.toThrow(
+				`pnpm release publish needs npm >= ${MIN_NPM}`,
+			);
+			expect(p.calls).toEqual(["npm --version"]);
+		}
+	});
+
+	it("takes npm 12.2.0 and newer", async () => {
+		const { out } = artifact();
+		for (const ok of ["12.2.0", "12.2.1", "12.10.0", "13.0.0"]) {
+			const p = publishIo(out, { "npm --version": `${ok}\n` });
+			await publishRelease(p.io, "77");
+			expect(p.calls[0]).toBe("npm --version");
+			expect(p.ran).toHaveLength(1);
+		}
+	});
+
+	it("needs the npm release.yml installs, or older", () => {
+		const wf = readFileSync(
+			join(import.meta.dirname, "../.github/workflows/release.yml"),
+			"utf8",
+		);
+		const installed = [...wf.matchAll(/npm install -g npm@(\S+)/g)].map(
+			(m) => m[1] ?? "",
+		);
+		expect(installed.length).toBeGreaterThan(0);
+		const min = v(MIN_NPM);
+		for (const version of installed) {
+			const got = v(version);
+			// The same npm line as the workflows (npm stage came in 12.2) …
+			expect([got.major, got.minor]).toEqual([min.major, min.minor]);
+			// … and never newer than what they install.
+			expect(compareVersions(got, min)).toBeGreaterThanOrEqual(0);
+		}
 	});
 
 	it("refuses a tarball swapped while the question waits", async () => {

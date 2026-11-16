@@ -50,7 +50,10 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
      the newest successful promote run of master), on their own machine,
      at a terminal, from a clean checkout of `origin/master` (it refuses
      local changes, or release code and `package.json` that differ from
-     `origin/master`). It takes only a successful, dispatched promote run of
+     `origin/master`), with npm 12.2 or newer on `PATH` (`npm stage`
+     came in 12.2: it checks `npm --version` first and refuses an older
+     one; `npm install -g npm@12`, which needs Node ^22.22.2 or ^24.15.0,
+     or newer). It takes only a successful, dispatched promote run of
      master, downloads its artifact, checks the tarball's sha256 against
      the manifest and its `build-info.json` against the version and the RC
      tag's commit (the tag's commit on GitHub, on master), downloads the
