@@ -346,7 +346,7 @@ test("side-by-side: two single versions, stacked on a phone", async ({
 	const section = await openImage(page, BMP);
 	const sbs = section.getByTestId("image-side-by-side");
 	await expect(sbs.getByTestId("image-stage")).toHaveCount(2);
-	await expect(section.getByRole("button", { name: "Slider" })).toHaveCount(0);
+	expect(await viewNames(section)).toEqual(["Image", "Binary"]);
 	await expect(sbs.locator("figcaption").first()).toHaveText(
 		/before\s*120×80 · 28 KB/,
 	);
@@ -385,7 +385,7 @@ test("added and deleted labels", async ({ page, pr, startCrb }) => {
 	const added = await openImage(page, ADDED);
 	await expect(added.getByText("added", { exact: true })).toBeVisible();
 	await expect(added.getByRole("img", { name: "Added image" })).toBeVisible();
-	await expect(added.getByRole("button", { name: "Slider" })).toHaveCount(0);
+	expect(await viewNames(added)).toEqual(["Image", "Binary"]);
 	await expect(added.getByTestId("image-dims")).toHaveText(
 		/^40×30\s*· \d+ (B|KB)$/,
 	);
@@ -397,6 +397,7 @@ test("added and deleted labels", async ({ page, pr, startCrb }) => {
 	await expect(deleted.getByTestId("image-dims")).toHaveText(
 		/^30×20\s*· \d+ (B|KB)$/,
 	);
+	expect(await viewNames(deleted)).toEqual(["Image", "Binary"]);
 	await expectNoPageOverflow(page);
 });
 
@@ -718,7 +719,7 @@ test("renamed with no content change shows the image once, and says no binary ch
 	const section = await openImage(page, NEW);
 	await expect(section.getByRole("img", { name: "Image" })).toBeVisible();
 	await expect(section.getByRole("img", { name: "Before" })).toHaveCount(0);
-	await expect(section.getByRole("button", { name: "Slider" })).toHaveCount(0);
+	expect(await viewNames(section)).toEqual(["Image", "Binary"]);
 	await expect(
 		section.getByTestId("image-view").getByText(/added|deleted/),
 	).toHaveCount(0);
