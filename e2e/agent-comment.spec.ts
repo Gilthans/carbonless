@@ -58,6 +58,8 @@ test("Comment on a line's conversation: Cancel keeps it; posted, the GitHub thre
 	agentCrb,
 	isMobile,
 }) => {
+	// An answered question, a Cancel, a post, the agent read again, a reload.
+	test.slow();
 	await pr(fixture);
 	const s = await agentCrb({
 		scenario: { agent: AGENT, answers: [{ text: "It adds v1 and v2." }] },
@@ -118,6 +120,8 @@ test("Comment on a whole file's conversation: posted on the file, the conversati
 	pr,
 	agentCrb,
 }) => {
+	// An answered question, a post GitHub takes, the agent read again.
+	test.slow();
 	const p = await pr(fixture);
 	const s = await agentCrb({
 		scenario: { agent: AGENT, answers: [{ text: "Fine as a whole." }] },

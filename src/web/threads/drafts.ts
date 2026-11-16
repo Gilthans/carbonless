@@ -298,11 +298,13 @@ export class DraftStore {
 	retarget(clientId: string, commit: string): void {
 		const key = newThreadKey(clientId);
 		this.#update((all) =>
-			all.map((d) =>
-				d.threadId === key && d.create && !d.create.sending
-					? { ...d, create: { ...d.create, commit } }
-					: d,
-			),
+			all.map((d) => {
+				if (d.threadId !== key || !d.create || d.create.sending) return d;
+				// An agent conversation was asked on the old head: it doesn't
+				// move with the comment (its card says why Comment is off there).
+				const { agentThread: _, ...create } = d.create;
+				return { ...d, create: { ...create, commit } };
+			}),
 		);
 	}
 

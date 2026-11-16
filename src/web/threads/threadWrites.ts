@@ -20,6 +20,7 @@ import type {
 	VerdictEvent,
 	VerdictRequest,
 } from "../../shared/types";
+import { setLinkProblem } from "../agent/linkProblems";
 import {
 	AGENT_PLACEMENTS_KEY,
 	AGENT_THREADS_KEY,
@@ -1682,6 +1683,9 @@ export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
 		void client.invalidateQueries({ queryKey: AGENT_THREADS_KEY });
 		void client.invalidateQueries({ queryKey: AGENT_PLACEMENTS_KEY });
 	}
+	// It didn't: the conversation stays on its span, its card says why.
+	const problem = answer.agentLinkProblem;
+	if (problem) setLinkProblem(problem.thread, problem.reason);
 }
 
 /** A thread's opener text fields, from its first comment. */

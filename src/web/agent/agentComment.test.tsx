@@ -1,21 +1,36 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentAnchor, AgentThread } from "../../shared/agent";
-import type { PrOverview, SessionInfo } from "../../shared/types";
+import type {
+	DisplayHunk,
+	PrOverview,
+	ReviewThread,
+	SessionInfo,
+} from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
+import { HEAD_UNSURE } from "../files/selectionActions";
 import {
 	getComposers,
 	newThreadItems,
+	openComposer,
 	resetComposers,
 	targetOf,
 } from "../threads/newThreads";
+import { addThread, threadWritesFor } from "../threads/threadWrites";
 import { AgentThreadCard } from "./AgentThreadCard";
-import { agentCommentAvailable } from "./agentComment";
+import {
+	agentCommentAvailable,
+	type CommentScope,
+	CommentScopeProvider,
+	spanInHunks,
+} from "./agentComment";
 import { resetAgentWrites } from "./agentWrites";
+import { spanOfAnchor } from "./askAgentAction";
+import { resetLinkProblems } from "./linkProblems";
 import { SendViewProvider } from "./threadAgent";
 
 const HEAD = "h".repeat(40);
@@ -62,9 +77,13 @@ afterEach(() => {
 	cleanup();
 	resetComposers();
 	resetAgentWrites();
+	resetLinkProblems();
 	vi.unstubAllGlobals();
 });
 
+const SCOPE: CommentScope = { headSure: true, inDiff: () => true };
+
+let client: QueryClient;
 function show(
 	t: AgentThread,
 	opts: {
@@ -72,9 +91,13 @@ function show(
 		commentLeft?: boolean;
 		patchsets?: number[];
 		wrap?: (n: ReactNode) => ReactNode;
+		/** null: outside Files changed's diff (the Overview). */
+		scope?: CommentScope | null;
+		unplaced?: boolean;
+		outdated?: string;
 	} = {},
 ) {
-	const client = new QueryClient({
+	client = new QueryClient({
 		defaultOptions: { queries: { retry: false, enabled: false } },
 	});
 	client.setQueryData(overviewQuery.queryKey, {
@@ -90,13 +113,29 @@ function show(
 			mergeBase: "b".repeat(40),
 		})),
 	} as unknown as SessionInfo);
-	const card = <AgentThreadCard thread={t} status={undefined} />;
+	const card = (
+		<AgentThreadCard
+			thread={t}
+			status={undefined}
+			unplaced={opts.unplaced}
+			outdated={opts.outdated}
+		/>
+	);
+	const scope = opts.scope === undefined ? SCOPE : opts.scope;
+	const shown = opts.wrap ? opts.wrap(card) : card;
 	return render(
 		<QueryClientProvider client={client}>
-			{opts.wrap ? opts.wrap(card) : card}
+			{scope ? (
+				<CommentScopeProvider value={scope}>{shown}</CommentScopeProvider>
+			) : (
+				shown
+			)}
 		</QueryClientProvider>,
 	);
 }
+
+const commentButton = () =>
+	screen.queryByRole("button", { name: /^Comment on GitHub/ });
 
 describe("agentCommentAvailable", () => {
 	it("is the Comment action's availability, plus the anchor's commit against the viewed head", () => {
@@ -123,6 +162,55 @@ describe("agentCommentAvailable", () => {
 		expect(agentCommentAvailable(left, { ...on, commentLeft: false })).toMatch(
 			/Old lines/,
 		);
+	});
+
+	it("waits while the head's diff isn't shown yet, and only takes lines of GitHub's diff", () => {
+		expect(agentCommentAvailable(line, { ...on, headUnsure: true })).toBe(
+			HEAD_UNSURE,
+		);
+		expect(agentCommentAvailable(line, { ...on, inDiff: false })).toMatch(
+			/only takes comments on lines in the diff/,
+		);
+		// A whole file takes one whatever its lines.
+		const file = { subject: "file" as const, path: "a", commit: HEAD };
+		expect(agentCommentAvailable(file, { ...on, inDiff: false })).toBe(true);
+	});
+
+	it("old lines only when asked against the base branch (a since view's are a patch set's)", () => {
+		const left = { ...line, side: "LEFT" as const, startSide: "LEFT" as const };
+		expect(
+			agentCommentAvailable(left, { ...on, askedFrom: { patchset: 1 } }),
+		).toMatch(/not asked against the base branch/);
+		expect(agentCommentAvailable(left, on)).toMatch(
+			/not asked against the base branch/,
+		);
+		expect(
+			agentCommentAvailable(left, { ...on, askedFrom: { branch: true } }),
+		).toBe(true);
+		// New lines are the head's whatever it was compared against.
+		expect(
+			agentCommentAvailable(line, { ...on, askedFrom: { patchset: 1 } }),
+		).toBe(true);
+	});
+});
+
+describe("spanInHunks", () => {
+	const hunks = [
+		{
+			lines: [{ oldNo: 1, newNo: 1 }, { newNo: 2 }, { oldNo: 2, newNo: 3 }],
+		},
+	] as unknown as DisplayHunk[];
+	it("both ends on the side's lines of a hunk", () => {
+		expect(spanInHunks(spanOfAnchor(line), hunks)).toBe(true);
+		expect(
+			spanInHunks(spanOfAnchor({ ...line, line: 9, startLine: 9 }), hunks),
+		).toBe(false);
+		expect(
+			spanInHunks(
+				spanOfAnchor({ ...line, side: "LEFT", startSide: "LEFT" }),
+				hunks,
+			),
+		).toBe(false);
 	});
 });
 
@@ -197,6 +285,29 @@ describe("Comment on an agent conversation", () => {
 					{},
 					/earlier patch set/,
 				],
+				[{ scope: { ...SCOPE, headSure: false } }, {}, /diff is loading/],
+				[{ scope: { ...SCOPE, inDiff: () => false } }, {}, /lines in the diff/],
+				[
+					{},
+					{
+						anchor: { ...line, side: "LEFT", startSide: "LEFT" },
+						messages: [
+							{
+								id: "m1",
+								by: "human",
+								at: "2026-11-07T10:00:00Z",
+								text: "Why?",
+								view: {
+									target: { patchset: 2 },
+									from: { patchset: 1 },
+									left: "1".repeat(40),
+									right: HEAD,
+								},
+							},
+						],
+					},
+					/not asked against the base branch/,
+				],
 			];
 		for (const [opts, more, why] of cases) {
 			show(thread(more), opts);
@@ -230,5 +341,71 @@ describe("Comment on an agent conversation", () => {
 		expect(
 			screen.queryByRole("button", { name: /Comment on GitHub/ }),
 		).toBeNull();
+	});
+
+	it("is offered only where its composer shows: not on the Overview, nor on an unplaced or outdated card", () => {
+		show(thread(), { scope: null });
+		expect(commentButton()).toBeNull();
+		cleanup();
+		show(thread(), { unplaced: true });
+		expect(commentButton()).toBeNull();
+		cleanup();
+		show(thread(), { outdated: "o".repeat(40) });
+		expect(commentButton()).toBeNull();
+		cleanup();
+		show(thread());
+		expect(commentButton()).not.toBeNull();
+	});
+
+	it("adopts a plain composer already open on the span instead of opening a second", async () => {
+		show(thread());
+		const plain = openComposer(spanOfAnchor(line), "plain1");
+		await userEvent.click(
+			screen.getByRole("button", { name: "Comment on GitHub" }),
+		);
+		expect(getComposers()).toEqual([
+			expect.objectContaining({
+				clientId: plain,
+				agentThread: thread().id,
+				focus: true,
+			}),
+		]);
+	});
+
+	it("adopts a plain comment already typed on the span, its text kept", async () => {
+		show(thread());
+		const writer = threadWritesFor(client);
+		writer.drafts.setNew("typed1", targetOf(spanOfAnchor(line)), "Half done");
+		await userEvent.click(
+			screen.getByRole("button", { name: "Comment on GitHub" }),
+		);
+		expect(writer.drafts.newThread("typed1")).toMatchObject({
+			text: "Half done",
+			create: { agentThread: thread().id },
+		});
+		expect(getComposers().map((c) => c.clientId)).toEqual(["typed1"]);
+	});
+
+	it("says on its card why a posted comment didn't take the conversation", async () => {
+		show(thread());
+		expect(screen.queryByTestId("agent-link-problem")).toBeNull();
+		act(() =>
+			addThread(client, {
+				thread: { id: "T9" } as ReviewThread,
+				comments: { threadId: "T9", comments: [] },
+				agentLinkProblem: {
+					thread: thread().id,
+					reason: "That GitHub thread already has a conversation",
+				},
+			}),
+		);
+		expect(screen.getByTestId("agent-link-problem").textContent).toContain(
+			"That GitHub thread already has a conversation",
+		);
+		// Pressed again: the old reason goes.
+		await userEvent.click(
+			screen.getByRole("button", { name: "Comment on GitHub" }),
+		);
+		expect(screen.queryByTestId("agent-link-problem")).toBeNull();
 	});
 });

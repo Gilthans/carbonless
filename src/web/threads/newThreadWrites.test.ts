@@ -218,6 +218,33 @@ describe("ThreadWrites: new threads", () => {
 		expect(created[0]?.agentThread).toBe(agentThread);
 	});
 
+	it("one from an agent conversation refused (409) keeps its draft and link, and links nothing", async () => {
+		const w = setup();
+		const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		drafts.setNew("c1", { ...TARGET, agentThread }, "Why trim?");
+		w.createThread("c1");
+		calls[0]?.reject(
+			new ApiError(409, "The PR moved on since", undefined, { code: "stale" }),
+		);
+		await flush();
+		expect(created).toEqual([]);
+		expect(drafts.newThread("c1")).toMatchObject({
+			text: "Why trim?",
+			create: { agentThread },
+		});
+	});
+
+	it("a draft moved to a new head drops its agent conversation (asked on the old one)", () => {
+		const w = setup();
+		const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		drafts.setNew("c1", { ...TARGET, agentThread }, "Why trim?");
+		drafts.retarget("c1", "head2");
+		expect(drafts.newThread("c1")?.create).toMatchObject({ commit: "head2" });
+		expect(drafts.newThread("c1")?.create).not.toHaveProperty("agentThread");
+		w.createThread("c1");
+		expect(calls[0]?.req).not.toHaveProperty("agentThread");
+	});
+
 	it("never sends a blank one, nor one already on its way", () => {
 		const w = setup();
 		w.createThread("nothing");

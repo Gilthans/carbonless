@@ -44,7 +44,11 @@ import { commentSurface } from "../threads/Conversation";
 import { newClientId } from "../threads/newThreads";
 import { Avatar, usePerson } from "../threads/people";
 import { AgentMarkdown } from "./AgentMarkdown";
-import { useAgentComment } from "./agentComment";
+import {
+	type CommentScope,
+	useAgentComment,
+	useCommentScope,
+} from "./agentComment";
 import {
 	type AgentWrite,
 	dropAgentWrite,
@@ -60,6 +64,7 @@ import {
 	postAgentResolved,
 	withThread,
 } from "./api";
+import { useLinkProblem } from "./linkProblems";
 import { ReRow, StartedButton } from "./ReRow";
 import { openAgentSetup } from "./setupStore";
 import { useSeenWriter, useSendView } from "./threadAgent";
@@ -385,23 +390,12 @@ export function agentName(
 }
 
 /**
- * A private thread with the reviewer's own agent: the agent's sparkle and
- * name at its head, the reviewer's messages in their tint and the agent's
- * in the agent tint, rendered as Markdown. While the agent answers it, its
- * text grows in place under a spinner with one collapsed activity line and
- * Stop; while it waits for an agent, a yellow dot (with no agent set up,
- * the row opens the setup). Then the reply box, and Resolve or Unresolve.
- * Resolving closes it to one row, still the agent's (its tint, edge and
- * sparkle, with the resolved check), that opens again; a resolved thread
- * starts closed, and Unresolve opens it. Nothing here reaches GitHub.
- */
-/**
  * A new GitHub thread on the conversation's span; once GitHub has it, the
  * conversation moves behind that thread's agent button. Off, with why,
  * where GitHub can't take a comment there.
  */
-function CommentOnGithub(props: { thread: AgentThread }) {
-	const { ok, start } = useAgentComment(props.thread);
+function CommentOnGithub(props: { thread: AgentThread; scope: CommentScope }) {
+	const { ok, start } = useAgentComment(props.thread, props.scope);
 	const tip = ok === true ? "Comment on GitHub" : ok;
 	return (
 		<Tooltip content={tip}>
@@ -424,6 +418,35 @@ function CommentOnGithub(props: { thread: AgentThread }) {
 	);
 }
 
+/** The conversation didn't move onto the thread posted from it: why, on its card. */
+function LinkProblem(props: { thread: string }) {
+	const reason = useLinkProblem(props.thread);
+	if (!reason) return null;
+	return (
+		<p
+			role="alert"
+			data-testid="agent-link-problem"
+			className="flex min-w-0 items-center gap-1.5 break-words px-2.5 pt-2 text-sm text-bad"
+		>
+			<AlertIcon size={14} aria-hidden className="shrink-0" />
+			{`Posted; not moved to it: ${reason}`}
+		</p>
+	);
+}
+
+/**
+ * A private thread with the reviewer's own agent: the agent's sparkle and
+ * name at its head, the reviewer's messages in their tint and the agent's
+ * in the agent tint, rendered as Markdown. While the agent answers it, its
+ * text grows in place under a spinner with one collapsed activity line and
+ * Stop; while it waits for an agent, a yellow dot (with no agent set up,
+ * the row opens the setup). Then the reply box, and Resolve or Unresolve.
+ * Resolving closes it to one row, still the agent's (its tint, edge and
+ * sparkle, with the resolved check), that opens again; a resolved thread
+ * starts closed, and Unresolve opens it. Comment (in Files changed, on a
+ * span conversation shown at its lines) starts a GitHub thread that takes
+ * the conversation.
+ */
 export function AgentThreadCard(props: {
 	thread: AgentThread;
 	status: AgentStatus | undefined;
@@ -434,6 +457,8 @@ export function AgentThreadCard(props: {
 }) {
 	const { thread, status } = props;
 	const client = useQueryClient();
+	// Only where new comments show (Files changed's diff): null elsewhere.
+	const commentScope = useCommentScope();
 	const viewer =
 		useQuery({ ...sessionQuery, enabled: false }).data?.viewer ?? "you";
 	const name = agentName(thread, status);
@@ -598,9 +623,13 @@ export function AgentThreadCard(props: {
 					/>
 				)}
 				<div className="ml-auto flex items-center gap-x-2">
-					{thread.anchor.subject !== "thread" && !thread.orphaned && (
-						<CommentOnGithub thread={thread} />
-					)}
+					{commentScope &&
+						thread.anchor.subject !== "thread" &&
+						!thread.orphaned &&
+						!props.unplaced &&
+						!props.outdated && (
+							<CommentOnGithub thread={thread} scope={commentScope} />
+						)}
 					{answering && (
 						<button
 							type="button"
@@ -616,6 +645,7 @@ export function AgentThreadCard(props: {
 					{resolved && toggle}
 				</div>
 			</div>
+			<LinkProblem thread={thread.id} />
 			<div id={bodyId} className="space-y-2 p-2.5">
 				<AgentMessageItems
 					thread={shown}

@@ -707,6 +707,8 @@ export interface NewThreadAnswer {
 	comments: ThreadComments;
 	/** The agent conversation now on this thread (the request's `agentThread`, linked). */
 	agentThread?: string;
+	/** The request's `agentThread` stayed on its span: why, in a few words. */
+	agentLinkProblem?: { thread: string; reason: string };
 }
 
 /** A verdict the reviewer can send: one submitted review (Final Verdict). */
