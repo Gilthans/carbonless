@@ -23,7 +23,7 @@ export interface UpdateInfo {
 	 * The answering crb process (`/api/version` says it too): another one
 	 * after a restart. Missing from a crb older than CAR-177.
 	 */
-	boot: string;
+	boot?: string;
 	/** The npm dist-tag followed. */
 	channel: "rc" | "latest";
 	/** The global install crb updates (null: none it knows, or checks off). */

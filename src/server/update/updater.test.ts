@@ -533,6 +533,39 @@ describe("Updater", () => {
 		u.stop();
 	});
 
+	it("while its helper starts, never restarting: one that can't start is a failure every page sees, no restarting turned idle (CAR-177)", async () => {
+		let fail: ((error: Error) => void) | null = null;
+		const { u, exits, helpers } = updater({
+			startHelper: () =>
+				new Promise<void>((_, reject) => {
+					fail = reject;
+				}),
+		});
+		await u.start();
+		await settle(u);
+		const first = u.update("0.3.0");
+		// Another tab's Update meanwhile: the same start, no second helper.
+		const second = u.update("0.3.0");
+		await vi.waitFor(() => expect(fail).not.toBeNull());
+		// Another tab's poll meanwhile: not restarting, as the start may fail.
+		expect(u.info().state).toBe("idle");
+		await expect(u.update("0.4.0")).rejects.toThrow("already under way");
+		(fail as unknown as (error: Error) => void)(new Error("EACCES"));
+		await expect(first).rejects.toThrow("EACCES");
+		await expect(second).rejects.toThrow("EACCES");
+		expect(u.info()).toMatchObject({
+			state: "idle",
+			failed: {
+				version: "0.3.0",
+				tail: "The updater could not start: EACCES",
+				command: "npm install -g carbonless-review@0.3.0",
+			},
+		});
+		expect(helpers).toEqual([]);
+		expect(exits).toEqual([]);
+		u.stop();
+	});
+
 	it("under a service manager: installs while serving, then exits for the manager to restart it", async () => {
 		let finish: (r: { code: number; output: string }) => void = () => {};
 		const ran: string[][] = [];

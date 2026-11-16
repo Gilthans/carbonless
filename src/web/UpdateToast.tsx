@@ -246,7 +246,7 @@ function Toast(props: {
 				const known = latest.current;
 				const inGrace =
 					known?.state === "restarting" &&
-					typeof known.boot === "string" &&
+					known.boot !== undefined &&
 					v.boot === known.boot;
 				if (!inGrace) {
 					const now = await fetchUpdate();
@@ -304,6 +304,8 @@ function Toast(props: {
 			return;
 		}
 		setPhase({ kind: "updating", version, since: Date.now() });
+		// A poll still out must not land after the POST's answer, over it.
+		await client.cancelQueries({ queryKey: UPDATE_KEY });
 		try {
 			const answer = await fetchJson<UpdateInfo>("/api/update", {
 				method: "POST",

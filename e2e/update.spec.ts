@@ -365,6 +365,9 @@ it("Update installs exactly that version with npm, restarts crb on its port, and
 	await page.evaluate(() => {
 		(window as unknown as { beforeUpdate: boolean }).beforeUpdate = true;
 	});
+	const before = (await (await fetch(`${url}/api/version`)).json()) as {
+		boot: string;
+	};
 	const restarted = expectConsoleError(CRB_DOWN);
 	await toast(page).getByRole("button", { name: "Update" }).click();
 	await expect(toast(page)).toHaveAttribute("data-state", "updating");
@@ -388,8 +391,13 @@ it("Update installs exactly that version with npm, restarts crb on its port, and
 	restarted();
 	const version = (await (await fetch(`${url}/api/version`)).json()) as {
 		version: string;
+		boot: string;
 	};
 	expect(version.version).toBe(NEWER);
+	// Another crb process: what tells an updating page it isn't the old one
+	// in its grace (CAR-177).
+	expect(version.boot).toEqual(expect.any(String));
+	expect(version.boot).not.toBe(before.boot);
 	expect(readFileSync(installed.npmLog, "utf8").trim().split("\n")).toEqual([
 		JSON.stringify([
 			"install",

@@ -84,6 +84,8 @@ function serve(opts: {
 	/** Which crb answers /api/version; undefined: one too old to say. */
 	boot?: () => string | undefined;
 	post?: () => Response;
+	/** Holds a GET /api/update's answer (read at its start) until it settles. */
+	hold?: () => Promise<void> | undefined;
 }) {
 	const posts: unknown[] = [];
 	const asked = { version: 0, update: 0 };
@@ -98,7 +100,9 @@ function serve(opts: {
 			}
 			if (url === "/api/update") {
 				asked.update++;
-				return json(200, opts.info());
+				const body = opts.info();
+				await opts.hold?.();
+				return json(200, body);
 			}
 			if (url === "/api/version") {
 				asked.version++;
@@ -486,6 +490,38 @@ describe("UpdateToast", () => {
 		expect(screen.getByTestId("update-output").textContent).toBe(
 			"npm error code E404",
 		);
+	});
+
+	it("a poll still out when Update is clicked never lands over the POST's answer (CAR-177)", async () => {
+		fakeTimers();
+		let release: () => void = () => {};
+		let held: Promise<void> | undefined;
+		let info: UpdateInfo = OFFER;
+		const { asked } = serve({
+			info: () => info,
+			version: () => "0.2.0",
+			hold: () => held,
+		});
+		show();
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		held = new Promise((r) => {
+			release = r;
+		});
+		void client.refetchQueries({ queryKey: ["update"] });
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		held = undefined;
+		// The poll read "idle"; Update's answer says restarting.
+		info = { ...OFFER, state: "restarting" };
+		act(() => {
+			fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		});
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		await act(async () => release());
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		const before = asked.update;
+		await act(() => vi.advanceTimersByTimeAsync(3 * BACK_POLL_MS));
+		expect(asked.update).toBe(before);
+		expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
 	});
 
 	it("crb older than boot ids: /api/update every tick, as before", async () => {
