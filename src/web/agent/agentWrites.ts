@@ -82,6 +82,12 @@ export function useAgentWrites(): AgentWriteState {
 
 export const getAgentWrites = getState;
 
+/** Whether the question of composer `clientId` is on its way (or retrying). */
+export function agentAsking(clientId: string): boolean {
+	const write = state.pending.get(clientId);
+	return write !== undefined && !write.error;
+}
+
 function send(client: QueryClient, clientId: string): void {
 	const item = state.pending.get(clientId);
 	if (!item) return;

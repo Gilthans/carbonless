@@ -380,6 +380,8 @@ interface AgentRows {
 	where: (span: CodeSpan) => string;
 	/** What an Ask agent composer's Comment button needs. */
 	comment: (span: CodeSpan) => AgentCommentContext;
+	/** Its first and last line's text (kept with a comment it turns into). */
+	texts: (span: CodeSpan) => LineTexts | undefined;
 }
 
 /** A cell's agent threads: those ending on its keys, the key, whether open. */
@@ -1293,6 +1295,7 @@ function RowTail(props: {
 									quote={agent.quote(item.span)}
 									where={agent.where(item.span)}
 									comment={agent.comment(item.span)}
+									lineTexts={agent.texts(item.span)}
 								/>
 							))}
 						</TailRow>
@@ -2627,19 +2630,17 @@ export function DiffBody(props: {
 	const textAt = new Map<LineKey, string>();
 	// GitHub's diff's own lines (a hunk's), where it takes a comment.
 	const hunkKeys = new Set<string>();
-	for (const l of hunks.data?.hunks.flatMap((h) => h.lines) ?? []) {
-		for (const side of ["LEFT", "RIGHT"] as const) {
-			const k = lineKey(side, l);
-			if (k) hunkKeys.add(k);
-		}
-	}
-	for (const l of [
-		...(hunks.data?.hunks.flatMap((h) => h.lines) ?? []),
-		...loaded.values(),
-	]) {
-		for (const side of ["LEFT", "RIGHT"] as const) {
-			const k = lineKey(side, l);
-			if (k) textAt.set(k, l.text);
+	for (const [lines, inHunk] of [
+		[hunks.data?.hunks.flatMap((h) => h.lines) ?? [], true],
+		[[...loaded.values()], false],
+	] as const) {
+		for (const l of lines) {
+			for (const side of ["LEFT", "RIGHT"] as const) {
+				const k = lineKey(side, l);
+				if (!k) continue;
+				textAt.set(k, l.text);
+				if (inHunk) hunkKeys.add(k);
+			}
 		}
 	}
 	/** A span's quote, from the texts of the rows it is on here. */
@@ -2681,6 +2682,9 @@ export function DiffBody(props: {
 		});
 		return describeSpan(rows ? { ...span, ...rows } : span);
 	};
+	/** A span's first and last line's text, on the rows it is on here (kept with a draft). */
+	const spanLineTexts = (span: CodeSpan): LineTexts | undefined =>
+		textsOf(span as SpanRange) ?? undefined;
 	const composers: RowComposers = {
 		where: (item) => whereSpan(item.span),
 		at: (keys) =>
@@ -2791,6 +2795,8 @@ export function DiffBody(props: {
 					})
 				: null;
 		return {
+			// Its comment would open on that head: an orphan draft at once.
+			stale: span.commit !== (snapshotHead ?? sessionHead),
 			file: { binary: file.binary, submodule: file.submodule },
 			inDiff:
 				hunks.data && rows
@@ -2815,6 +2821,7 @@ export function DiffBody(props: {
 				quote: quoteSpan,
 				where: whereSpan,
 				comment: commentOn,
+				texts: spanLineTexts,
 			}
 		: undefined;
 	// Asked on a row that isn't shown (a gap), or on an earlier head: above
@@ -3322,6 +3329,7 @@ export function DiffBody(props: {
 							span={c.span}
 							quote={quoteSpan(c.span)}
 							comment={commentOn(c.span)}
+							lineTexts={spanLineTexts(c.span)}
 						/>
 					))}
 				</div>

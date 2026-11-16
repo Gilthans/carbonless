@@ -17,7 +17,14 @@ import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { commentSurface } from "../threads/Conversation";
 import type { LineTexts } from "../threads/drafts";
-import { openComposer, targetOf } from "../threads/newThreads";
+import { LOADING } from "../threads/NewThread";
+import {
+	getComposers,
+	openComposer,
+	sameSpan,
+	spanOfDraft,
+	targetOf,
+} from "../threads/newThreads";
 import { Avatar, usePerson } from "../threads/people";
 import { useThreadWriter } from "../threads/threadWrites";
 import { askAgent, dropAgentWrite, useAgentWrites } from "./agentWrites";
@@ -39,7 +46,12 @@ import { useSendView } from "./threadAgent";
  */
 export type AgentCommentContext = Partial<
 	Pick<SelectionContext, "file" | "inDiff" | "headUnsure" | "readOnly">
->;
+> & {
+	/** Asked on a head other than the one the diff shows. */
+	stale?: boolean;
+};
+
+const COMMENT_INSTEAD = "Comment instead";
 
 /** UTF-8 bytes, as the server caps a question. */
 const bytes = (text: string) => new TextEncoder().encode(text).length;
@@ -120,19 +132,31 @@ export function AgentComposer(props: {
 	// goes to GitHub until Comment is pressed there.
 	const writer = useThreadWriter();
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
-	const commentable = commentAvailable(span, {
-		writes: overview?.writes ?? "on",
-		commentLeft: overview?.commentLeft !== false,
-		file: props.comment?.file ?? { binary: false, submodule: false },
-		inDiff: props.comment?.inDiff,
-		headUnsure: props.comment?.headUnsure,
-		readOnly: props.comment?.readOnly,
-	});
+	const commentable = !overview
+		? LOADING
+		: props.comment?.stale
+			? "Asked on an earlier head"
+			: commentAvailable(span, {
+					writes: overview.writes,
+					commentLeft: overview.commentLeft !== false,
+					file: props.comment?.file ?? { binary: false, submodule: false },
+					inDiff: props.comment?.inDiff,
+					headUnsure: props.comment?.headUnsure,
+					readOnly: props.comment?.readOnly,
+				});
 	const toComment = () => {
 		if (commentable !== true || sending) return;
 		dropAgentWrite(clientId);
 		closeAgentComposer(clientId);
-		const id = openComposer(span);
+		// A draft already on the span (one restored from a reload) takes it,
+		// rather than a second card; one being sent doesn't.
+		const restored = getComposers().some((c) => sameSpan(c.span, span))
+			? undefined
+			: writer.drafts.get().find((d) => {
+					const at = d.create?.sending === undefined && spanOfDraft(d);
+					return at && sameSpan(at, span);
+				})?.create?.clientId;
+		const id = openComposer(span, restored);
 		const before = writer.drafts.newThread(id)?.text ?? "";
 		const joined =
 			before.trim() && text ? `${before}\n\n${text}` : before || text;
@@ -177,7 +201,7 @@ export function AgentComposer(props: {
 				</span>
 				{!sending && (
 					<Tooltip
-						content={commentable === true ? "Comment" : commentable}
+						content={commentable === true ? COMMENT_INSTEAD : commentable}
 						describe={commentable !== true}
 					>
 						{(trigger) => (
@@ -185,7 +209,7 @@ export function AgentComposer(props: {
 								{...trigger}
 								type="button"
 								data-testid="agent-composer-comment"
-								aria-label="Comment"
+								aria-label={COMMENT_INSTEAD}
 								aria-disabled={commentable !== true || undefined}
 								onClick={toComment}
 								className="-my-1 -mr-1.5 ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-line-strong text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:border-line aria-disabled:text-faint aria-disabled:hover:bg-transparent"

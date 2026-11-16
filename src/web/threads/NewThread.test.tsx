@@ -14,11 +14,18 @@ import {
 	AgentComposer,
 } from "../agent/AgentComposer";
 import {
+	askAgent,
+	dropAgentWrite,
+	getAgentWrites,
+	resetAgentWrites,
+} from "../agent/agentWrites";
+import {
 	getAgentComposers,
 	openAgentComposer,
 	resetAgentComposers,
 	useAgentComposers,
 } from "../agent/askAgentAction";
+import { conversation } from "../agent/threadAgentFixtures";
 import { overviewQuery } from "../api";
 import type { CodeSpan } from "../files/selectionActions";
 import { useDrafts } from "./drafts";
@@ -38,7 +45,9 @@ afterEach(() => {
 	cleanup();
 	resetComposers();
 	resetAgentComposers();
+	resetAgentWrites();
 	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
 });
 
 const LINE: CodeSpan = {
@@ -58,14 +67,20 @@ const FILE: CodeSpan = { path: "src/a.ts", commit: "head1", subject: "file" };
 function show(
 	span: CodeSpan,
 	text: string,
-	opts: { writes?: PrOverview["writes"]; headUnsure?: boolean } = {},
+	opts: {
+		writes?: PrOverview["writes"];
+		headUnsure?: boolean;
+		noOverview?: boolean;
+	} = {},
 ) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false, staleTime: Infinity } },
 	});
-	client.setQueryData(overviewQuery.queryKey, {
-		writes: opts.writes ?? "on",
-	} as PrOverview);
+	if (!opts.noOverview) {
+		client.setQueryData(overviewQuery.queryKey, {
+			writes: opts.writes ?? "on",
+		} as PrOverview);
+	}
 	const writer = threadWritesFor(client);
 	const id = openComposer(span, "cid1");
 	if (text) writer.drafts.setNew(id, targetOf(span), text);
@@ -100,10 +115,48 @@ function show(
 			<Page />
 		</QueryClientProvider>,
 	);
-	return { writer, id };
+	return { writer, id, client };
 }
 
 describe("NewThread's agent button", () => {
+	it("doesn't join a question still being asked on the span: a composer of its own", async () => {
+		let land: (r: Response) => void = () => {};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise<Response>((r) => (land = r))),
+		);
+		const { client } = show(LINE, "second thought");
+		act(() => {
+			openAgentComposer(LINE, "a1", "first");
+			askAgent(client, LINE, "first", "a1");
+		});
+		expect(getAgentWrites().pending.get("a1")).toBeTruthy();
+		act(() =>
+			fireEvent.click(
+				screen.getByRole("button", { name: "Ask agent instead" }),
+			),
+		);
+		expect(getAgentComposers()).toMatchObject([
+			{ clientId: "a1", text: "first" },
+			{ span: LINE, text: "second thought" },
+		]);
+		// The first lands (its composer closes); the second's text stays.
+		await act(async () => {
+			land(new Response(JSON.stringify(conversation({ id: "N1" }))));
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		expect(getAgentComposers()).toMatchObject([
+			{ span: LINE, text: "second thought" },
+		]);
+		dropAgentWrite("a1");
+	});
+
+	it("is off until the overview is known", () => {
+		show(LINE, "x", { noOverview: true });
+		const button = screen.getByRole("button", { name: "Ask agent instead" });
+		expect(button.getAttribute("aria-disabled")).toBe("true");
+	});
+
 	it.each([
 		["a line comment", LINE],
 		["a file comment", FILE],
@@ -112,7 +165,7 @@ describe("NewThread's agent button", () => {
 		(_n, span) => {
 			const confirm = vi.spyOn(window, "confirm");
 			const { writer, id } = show(span, "why <b>this</b>?");
-			const button = screen.getByRole("button", { name: "Ask agent" });
+			const button = screen.getByRole("button", { name: "Ask agent instead" });
 			expect(button.getAttribute("aria-disabled")).toBeNull();
 			act(() => fireEvent.click(button));
 			expect(confirm).not.toHaveBeenCalled();
@@ -136,7 +189,9 @@ describe("NewThread's agent button", () => {
 	it("switches with nothing typed", () => {
 		show(LINE, "");
 		act(() =>
-			fireEvent.click(screen.getByRole("button", { name: "Ask agent" })),
+			fireEvent.click(
+				screen.getByRole("button", { name: "Ask agent instead" }),
+			),
 		);
 		expect(getComposers()).toEqual([]);
 		expect(getAgentComposers()).toMatchObject([{ span: LINE, text: "" }]);
@@ -163,7 +218,7 @@ describe("NewThread's agent button", () => {
 		],
 	])("is disabled with the reason %s", (_n, opts, span, why) => {
 		show(span, "kept", opts);
-		const button = screen.getByRole("button", { name: "Ask agent" });
+		const button = screen.getByRole("button", { name: "Ask agent instead" });
 		expect(button.getAttribute("aria-disabled")).toBe("true");
 		act(() => fireEvent.focus(button));
 		expect(screen.getByRole("tooltip")).toHaveTextContent(why);
@@ -174,7 +229,7 @@ describe("NewThread's agent button", () => {
 
 	it("takes a file comment while the head is unsure", () => {
 		show(FILE, "x", { headUnsure: true });
-		const button = screen.getByRole("button", { name: "Ask agent" });
+		const button = screen.getByRole("button", { name: "Ask agent instead" });
 		expect(button.getAttribute("aria-disabled")).toBeNull();
 	});
 });
@@ -187,16 +242,22 @@ function showAsking(
 		writes?: PrOverview["writes"];
 		commentLeft?: boolean;
 		comment?: AgentCommentContext;
+		noOverview?: boolean;
+		/** A comment draft on the span already (restored from a reload). */
+		draft?: string;
 	} = {},
 ) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false, staleTime: Infinity } },
 	});
-	client.setQueryData(overviewQuery.queryKey, {
-		writes: opts.writes ?? "on",
-		commentLeft: opts.commentLeft ?? true,
-	} as PrOverview);
+	if (!opts.noOverview) {
+		client.setQueryData(overviewQuery.queryKey, {
+			writes: opts.writes ?? "on",
+			commentLeft: opts.commentLeft ?? true,
+		} as PrOverview);
+	}
 	const writer = threadWritesFor(client);
+	if (opts.draft) writer.drafts.setNew("d1", targetOf(span), opts.draft);
 	openAgentComposer(span, "aid1", text);
 	function Page() {
 		const asking = useAgentComposers();
@@ -227,6 +288,28 @@ function showAsking(
 }
 
 describe("AgentComposer's comment button", () => {
+	it("joins a comment draft already on the span: one card", () => {
+		const { writer } = showAsking(LINE, "and this", { draft: "kept" });
+		expect(screen.getAllByTestId("new-thread")).toHaveLength(1);
+		act(() =>
+			fireEvent.click(screen.getByRole("button", { name: "Comment instead" })),
+		);
+		expect(screen.getAllByTestId("new-thread")).toHaveLength(1);
+		expect(writer.drafts.newThread("d1")?.text).toBe("kept\n\nand this");
+		expect(
+			writer.drafts.get().filter((d) => d.create !== undefined),
+		).toHaveLength(1);
+		expect(screen.getByRole("textbox", { name: "Comment" })).toHaveValue(
+			"kept\n\nand this",
+		);
+	});
+
+	it("is off until the overview is known", () => {
+		showAsking(LINE, "x", { noOverview: true });
+		const button = screen.getByRole("button", { name: "Comment instead" });
+		expect(button.getAttribute("aria-disabled")).toBe("true");
+	});
+
 	it.each([
 		["a line", LINE],
 		["a file", FILE],
@@ -235,7 +318,7 @@ describe("AgentComposer's comment button", () => {
 		(_n, span) => {
 			const confirm = vi.spyOn(window, "confirm");
 			const { writer } = showAsking(span, "why <b>this</b>?");
-			const button = screen.getByRole("button", { name: "Comment" });
+			const button = screen.getByRole("button", { name: "Comment instead" });
 			expect(button.getAttribute("aria-disabled")).toBeNull();
 			act(() => fireEvent.click(button));
 			expect(confirm).not.toHaveBeenCalled();
@@ -256,9 +339,13 @@ describe("AgentComposer's comment button", () => {
 
 	it("goes there and back with the text", () => {
 		showAsking(LINE, "round trip");
-		act(() => fireEvent.click(screen.getByRole("button", { name: "Comment" })));
 		act(() =>
-			fireEvent.click(screen.getByRole("button", { name: "Ask agent" })),
+			fireEvent.click(screen.getByRole("button", { name: "Comment instead" })),
+		);
+		act(() =>
+			fireEvent.click(
+				screen.getByRole("button", { name: "Ask agent instead" }),
+			),
 		);
 		expect(getComposers()).toEqual([]);
 		expect(screen.queryByTestId("new-thread")).toBeNull();
@@ -305,6 +392,12 @@ describe("AgentComposer's comment button", () => {
 			"No lines to comment on in this file",
 		],
 		[
+			"asked on an earlier head",
+			{ comment: { stale: true } },
+			LINE,
+			"Asked on an earlier head",
+		],
+		[
 			"on old lines with a pinned head",
 			{ commentLeft: false },
 			{ ...LINE, startSide: "LEFT" },
@@ -312,7 +405,7 @@ describe("AgentComposer's comment button", () => {
 		],
 	])("is disabled with the reason %s", (_n, opts, span, why) => {
 		showAsking(span, "kept", opts);
-		const button = screen.getByRole("button", { name: "Comment" });
+		const button = screen.getByRole("button", { name: "Comment instead" });
 		expect(button.getAttribute("aria-disabled")).toBe("true");
 		act(() => fireEvent.focus(button));
 		expect(screen.getByRole("tooltip")).toHaveTextContent(why);

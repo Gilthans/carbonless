@@ -20,7 +20,11 @@ import type {
 	ReviewThread,
 	SessionInfo,
 } from "../../shared/types";
-import { ASK_AGENT_ACTION } from "../agent/askAgentAction";
+import {
+	ASK_AGENT_ACTION,
+	openAgentComposer,
+	resetAgentComposers,
+} from "../agent/askAgentAction";
 import { ShortcutsProvider } from "../shortcuts";
 import { type LineTexts, spanTexts } from "../threads/draftMove";
 import { draftsFor, newThreadKey } from "../threads/drafts";
@@ -2854,5 +2858,98 @@ describe("the selection bar on a phone", () => {
 			}),
 		);
 		expect(window.scrollBy).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("a comment and a question switched in the diff", () => {
+	const at4 = (more: Partial<CodeSpan> = {}): CodeSpan => ({
+		path: PATH,
+		commit: HEAD,
+		subject: "line",
+		startSide: "RIGHT",
+		startLine: 4,
+		side: "RIGHT",
+		line: 4,
+		startCol: null,
+		endCol: null,
+		...more,
+	});
+	afterEach(resetAgentComposers);
+
+	/** The button's tooltip, focused (its reason when off). */
+	const reason = (name: string) => {
+		const button = screen.getByRole("button", { name });
+		const tip = button.getAttribute("aria-describedby");
+		return {
+			off: button.getAttribute("aria-disabled") === "true",
+			tip: tip ? document.getElementById(tip)?.textContent : undefined,
+		};
+	};
+
+	it("a question turned into a comment keeps its lines' text with the draft (so it moves with the head)", async () => {
+		setup();
+		await loaded();
+		act(() => {
+			openAgentComposer(at4(), "q1", "why");
+		});
+		await screen.findByRole("textbox", { name: "Ask your agent" });
+		expect(reason("Comment instead").off).toBe(false);
+		act(() =>
+			fireEvent.click(screen.getByRole("button", { name: "Comment instead" })),
+		);
+		const draft = draftsFor(client)
+			.get()
+			.find((d) => d.create);
+		expect(draft?.text).toBe("why");
+		expect(draft?.create?.texts).toEqual(
+			spanTexts(HUNKS.hunks, at4() as SpanRange),
+		);
+	});
+
+	it("Comment instead is off on a line outside GitHub's diff", async () => {
+		setup();
+		await loaded();
+		act(() => {
+			openAgentComposer(at4({ startLine: 20, line: 20 }), "q2", "why");
+		});
+		await screen.findByRole("textbox", { name: "Ask your agent" });
+		expect(reason("Comment instead")).toEqual({
+			off: true,
+			tip: "GitHub only takes comments on lines in the diff",
+		});
+	});
+
+	it("Comment instead is off on a question asked on an earlier head", async () => {
+		setup();
+		await loaded();
+		act(() => {
+			openAgentComposer(at4({ commit: "e".repeat(40) }), "q3", "why");
+		});
+		await screen.findByRole("textbox", { name: "Ask your agent" });
+		expect(reason("Comment instead")).toEqual({
+			off: true,
+			tip: "Asked on an earlier head",
+		});
+	});
+
+	it("both are off on a line while the diff shown isn't the head's yet", async () => {
+		setup({ headSure: false });
+		await loaded();
+		act(() => {
+			openComposer(at4(), "c9");
+		});
+		await screen.findByRole("textbox", { name: "Comment" });
+		expect(reason("Ask agent instead")).toEqual({
+			off: true,
+			tip: "The new head's diff is loading",
+		});
+		act(() => {
+			openAgentComposer(at4({ line: 5, startLine: 5 }), "q4", "why");
+		});
+		await screen.findByRole("textbox", { name: "Ask your agent" });
+		expect(reason("Comment instead")).toEqual({
+			off: true,
+			tip: "The new head's diff is loading",
+		});
 	});
 });
