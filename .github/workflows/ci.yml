@@ -71,8 +71,11 @@ jobs:
           retention-days: 14
       # Each failed test rerun once and labelled flaky or consistent
       # (docs/ci-flakes.md). Diagnosis only: the job stays failed, and this
-      # step's own result never counts (continue-on-error).
+      # step's own result never counts (continue-on-error). The artifact's
+      # name carries the job's verdict, so `pnpm ci-flakes` reads most
+      # without a download.
       - name: Label failures flaky or consistent
+        id: label
         if: always()
         continue-on-error: true
         timeout-minutes: 10
@@ -83,7 +86,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-outcomes-checks-${{ github.run_attempt }}
+          name: test-outcomes-checks-${{ github.run_attempt }}-${{ steps.label.outputs.verdict || 'none' }}
           path: ${{ runner.temp }}/test-outcomes/test-outcomes.json
           retention-days: 90
 
@@ -110,6 +113,7 @@ jobs:
           CRB_TEST_JSON: ${{ runner.temp }}/test-outcomes/report.json
       # As in checks (docs/ci-flakes.md): labels failures, never passes the job.
       - name: Label failures flaky or consistent
+        id: label
         if: always()
         continue-on-error: true
         timeout-minutes: 10
@@ -121,7 +125,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-outcomes-windows-agent-${{ github.run_attempt }}
+          name: test-outcomes-windows-agent-${{ github.run_attempt }}-${{ steps.label.outputs.verdict || 'none' }}
           path: ${{ runner.temp }}/test-outcomes/test-outcomes.json
           retention-days: 90
 
@@ -193,22 +197,6 @@ jobs:
         env:
           CRB_TEST_TRACE_ROOT: ${{ runner.temp }}/test-traces
           CRB_TEST_JSON: ${{ runner.temp }}/test-outcomes/report.json
-      # As in checks (docs/ci-flakes.md): the shard's failed tests rerun once
-      # on the dist it built, unsharded; labels them, never passes the job.
-      - name: Label failures flaky or consistent
-        if: always()
-        continue-on-error: true
-        timeout-minutes: 10
-        env:
-          STEPS: ${{ toJSON(steps) }}
-          JOB_STATUS: ${{ job.status }}
-        run: node scripts/test-outcomes.mjs --runner playwright --job "e2e (${{ matrix.shard }}/4)" --report "$RUNNER_TEMP/test-outcomes/report.json" --out "$RUNNER_TEMP/test-outcomes"
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-outcomes-e2e-${{ matrix.shard }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/test-outcomes/test-outcomes.json
-          retention-days: 90
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -225,6 +213,25 @@ jobs:
             playwright-report/
             test-results/
           retention-days: 14
+      # As in checks (docs/ci-flakes.md): the shard's failed tests rerun once
+      # on the dist it built, unsharded; labels them, never passes the job.
+      # After the uploads above, so a rerun near the job's time limit never
+      # costs the first run's traces or HTML report.
+      - name: Label failures flaky or consistent
+        id: label
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          JOB_STATUS: ${{ job.status }}
+        run: node scripts/test-outcomes.mjs --runner playwright --job "e2e (${{ matrix.shard }}/4)" --report "$RUNNER_TEMP/test-outcomes/report.json" --out "$RUNNER_TEMP/test-outcomes"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-outcomes-e2e-${{ matrix.shard }}-${{ github.run_attempt }}-${{ steps.label.outputs.verdict || 'none' }}
+          path: ${{ runner.temp }}/test-outcomes/test-outcomes.json
+          retention-days: 90
 
   # One result for the whole e2e run, and the shards' traces as one run
   # (artifact `test-traces-e2e`, docs/test-profiling.md).

@@ -27,7 +27,7 @@ export function reportErrors(runner: string, report: unknown): string[];
 export function rerunArgs(
 	runner: "vitest" | "playwright",
 	failed: Failure[],
-	opts: { scripts: string; outputDir: string },
+	opts: { scripts: string; outputDir: string; files?: string[] },
 ): string[];
 export function labelFailures(
 	failed: Failure[],
@@ -51,4 +51,34 @@ export function readResults(
 	runner: string,
 	report: unknown,
 	cwd: string,
+	unhandled?: unknown,
 ): (Results & { errors: string[] }) | null;
+export const UNHANDLED: string;
+export const UNKNOWN_SOURCE: string;
+export function unhandledPath(report: string): string;
+export function unhandledResults(
+	unhandled: unknown,
+	report: unknown,
+	cwd: string,
+): Results;
+export function rerunFiles(
+	failed: Failure[],
+	report: unknown,
+	cwd: string,
+): string[];
+export type OutcomeDocument = {
+	verdict: string;
+	note: string;
+	failed: Labelled[];
+	runId: number | null;
+	attempt: number;
+	job: string;
+};
+export function run(o: {
+	argv: string[];
+	env?: Record<string, string | undefined>;
+	cwd?: string;
+	spawn?: (args: string[], env: Record<string, string | undefined>) => unknown;
+	scripts?: string;
+	log?: (m: string) => void;
+}): OutcomeDocument;

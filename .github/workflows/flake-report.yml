@@ -1,8 +1,11 @@
 # CI's flake rate, weekly (docs/ci-flakes.md): `pnpm ci-flakes` over the
-# last 7 and 30 days into the job summary. Red when the 7-day rate is over
-# 2% (the owner's target: CI at least 98% green when there's no bug).
+# last 7 and 30 days, one collection for both, into the job summary. Red
+# when the 7-day rate is over 2% (the owner's target: CI at least 98% green
+# when there's no bug), or when the report can't read what it needs.
 # It runs no tests and installs nothing (scripts/ci-flakes.mjs has no
-# dependencies): the only job with a token, which only reads Actions.
+# dependencies): the only job with a token, which only reads Actions. The
+# token allows 1,000 API calls an hour; the step prints what it used.
+# Actions pinned by SHA, as in the release workflows.
 name: Flake report
 
 on:
@@ -20,19 +23,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-      - name: Last 30 days
+      - name: Last 7 and 30 days (red over 2% in 7)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
-          node scripts/ci-flakes.mjs --since 30d --markdown | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Last 7 days (red over 2%)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -o pipefail
-          node scripts/ci-flakes.mjs --since 7d --markdown --fail-over 2 | tee -a "$GITHUB_STEP_SUMMARY"
+          node scripts/ci-flakes.mjs --since 7d,30d --markdown --fail-over 2 | tee -a "$GITHUB_STEP_SUMMARY"

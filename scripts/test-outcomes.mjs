@@ -13,7 +13,9 @@
 //       --report <json> --out <dir>
 //
 // The tests step writes its JSON report to --report ($CRB_TEST_JSON, read by
-// vitest.config.ts and playwright.config.ts). From the workflow: $STEPS
+// vitest.config.ts and playwright.config.ts), and Vitest its unhandled
+// errors next to it (scripts/vitest-unhandled-reporter.mjs): each is
+// labelled like a test, by rerunning the file it came from. From the workflow: $STEPS
 // (`toJSON(steps)`, the tests step's id is `tests`), $JOB_STATUS
 // (`job.status`), and GitHub's own GITHUB_* variables.
 import { spawnSync } from "node:child_process";
@@ -120,10 +122,10 @@ export function reportErrors(runner, report) {
 }
 
 /** The rerun's command line (after `node`), for the failed tests. */
-export function rerunArgs(runner, failed, { scripts, outputDir }) {
+export function rerunArgs(runner, failed, { scripts, outputDir, files }) {
 	const queue = join(scripts, "queue.mjs");
 	if (runner === "vitest") {
-		const files = [...new Set(failed.map((t) => t.file))];
+		files ??= [...new Set(failed.map((t) => t.file))];
 		return [
 			queue,
 			process.execPath,
@@ -208,10 +210,16 @@ const VERDICT_TEXT = {
 	"not-rerun": "not rerun",
 };
 
-/** Text in a Markdown table cell: no markup, links or HTML from a title. */
+/**
+ * Text in a Markdown table cell: no markup, links or HTML from a title.
+ * Bare URLs (GFM autolinks `https://…`, `www.…`) get a zero-width space
+ * that keeps them from being links.
+ */
 export function cell(text) {
 	return String(text ?? "")
 		.replace(/[\\`*_[\]<>|#~!&]/g, (c) => `&#${c.charCodeAt(0)};`)
+		.replace(/:\/\//g, ":/\u200b/")
+		.replace(/\bwww\./gi, (w) => `${w.slice(0, 3)}\u200b.`)
 		.replace(/\s*\n\s*/g, " ");
 }
 
@@ -244,14 +252,81 @@ const readJson = (path) => {
 	}
 };
 
+/** Unhandled errors (scripts/vitest-unhandled-reporter.mjs) as failures. */
+export const UNHANDLED = "(unhandled error)";
+/** An unhandled error Vitest couldn't trace to a test file. */
+export const UNKNOWN_SOURCE = "(unknown file)";
+
+/** Where the unhandled-errors reporter writes, next to the JSON report. */
+export const unhandledPath = (report) => `${report}.unhandled.json`;
+
+/**
+ * Vitest's unhandled errors (a rejection or a timer after a test ended:
+ * they fail the run with every test passed) as failures of the file they
+ * came from, or of UNKNOWN_SOURCE. Every file the run had, with no error
+ * from it, is a pass of its UNHANDLED: so a rerun tells flaky from
+ * consistent as for a test. `unhandled` null: the reporter didn't run.
+ */
+export function unhandledResults(unhandled, report, cwd) {
+	const failed = [];
+	const passed = [];
+	if (!unhandled) return { failed, passed };
+	const files = new Set();
+	for (const e of unhandled.errors ?? []) {
+		const file = e?.file ? posix(relative(cwd, e.file)) : UNKNOWN_SOURCE;
+		if (files.has(file)) continue;
+		files.add(file);
+		failed.push({
+			file,
+			title: UNHANDLED,
+			project: null,
+			error: errorHead(e?.message),
+		});
+	}
+	const ran = (report?.testResults ?? []).map((f) =>
+		posix(relative(cwd, f.name)),
+	);
+	for (const file of [...ran, UNKNOWN_SOURCE]) {
+		if (!files.has(file))
+			passed.push({ file, title: UNHANDLED, project: null });
+	}
+	return { failed, passed };
+}
+
 /** Reads a report into its failures (and errors outside tests). */
-export function readResults(runner, report, cwd) {
+export function readResults(runner, report, cwd, unhandled = null) {
 	if (!report) return null;
-	const r =
-		runner === "vitest"
-			? vitestResults(report, cwd)
-			: playwrightResults(report);
-	return { ...r, errors: reportErrors(runner, report) };
+	if (runner === "playwright") {
+		return {
+			...playwrightResults(report),
+			errors: reportErrors(runner, report),
+		};
+	}
+	const tests = vitestResults(report, cwd);
+	const u = unhandledResults(unhandled, report, cwd);
+	return {
+		failed: [...tests.failed, ...u.failed],
+		passed: [...tests.passed, ...u.passed],
+		errors: [],
+	};
+}
+
+/**
+ * The test files a Vitest rerun takes: each failure's, and for an unhandled
+ * error of unknown source every file the first run had.
+ */
+export function rerunFiles(failed, report, cwd) {
+	const files = new Set();
+	for (const t of failed) {
+		if (t.file !== UNKNOWN_SOURCE) {
+			files.add(t.file);
+			continue;
+		}
+		for (const f of report?.testResults ?? []) {
+			files.add(posix(relative(cwd, f.name)));
+		}
+	}
+	return [...files];
 }
 
 function parseArgs(argv) {
@@ -270,10 +345,24 @@ function parseArgs(argv) {
 	return o;
 }
 
-function main() {
-	const o = parseArgs(process.argv.slice(2));
-	const cwd = process.cwd();
-	const env = process.env;
+const spawnNode = (args, env) =>
+	spawnSync(process.execPath, args, { stdio: "inherit", env });
+
+/**
+ * Labels this job's failures and writes test-outcomes.json, the job
+ * summary and the verdict (`verdict=` in $GITHUB_OUTPUT, for the artifact's
+ * name). `spawn(args, env)` runs the rerun (`node args…`); injectable for
+ * tests. Returns the outcome document.
+ */
+export function run({
+	argv,
+	env = process.env,
+	cwd = process.cwd(),
+	spawn = spawnNode,
+	scripts = import.meta.dirname,
+	log = console.log,
+}) {
+	const o = parseArgs(argv);
 	let steps = {};
 	try {
 		steps = JSON.parse(env.STEPS || "{}");
@@ -306,76 +395,89 @@ function main() {
 		writeFileSync(outFile, `${JSON.stringify(doc, null, 2)}\n`);
 		return doc;
 	};
+	const join2 = (...parts) => parts.filter(Boolean).join("; ");
 
+	const report = testsStep === "failure" ? readJson(o.report) : null;
 	const first =
 		testsStep === "failure"
-			? readResults(o.runner, readJson(o.report), cwd)
+			? readResults(o.runner, report, cwd, readJson(unhandledPath(o.report)))
 			: null;
 	const failed = first?.failed ?? [];
 	let note = "";
 	if (otherFailed.length > 0) note = `failed steps: ${otherFailed.join(", ")}`;
 	if (testsStep === "failure" && failed.length === 0) {
-		const why = first
-			? first.errors.length > 0
-				? `errors outside tests: ${first.errors.join("; ")}`
-				: "the tests step failed with no failed test"
-			: "the tests step failed and wrote no report";
-		note = note ? `${note}; ${why}` : why;
+		note = join2(
+			note,
+			first
+				? first.errors.length > 0
+					? `errors outside tests: ${first.errors.join("; ")}`
+					: "the tests step failed with no failed test"
+				: "the tests step failed and wrote no report",
+		);
 	}
 	if (testsStep === "skipped" && jobStatus === "failure" && !note) {
 		note = "the job failed before the tests ran";
 	}
-	// Written before the rerun: a rerun cut short still leaves the failures,
-	// as not rerun.
+	// Written before the rerun: a rerun cut short (the step's time limit)
+	// still leaves the failures, as not rerun.
 	let doc = write(
 		labelFailures(failed, null),
-		failed.length > 0
-			? [note, "the rerun didn't finish"].filter(Boolean).join("; ")
-			: note,
+		failed.length > 0 ? join2(note, "the rerun didn't finish") : note,
 	);
-	if (failed.length > RERUN_CAP) {
+	const files = o.runner === "vitest" ? rerunFiles(failed, report, cwd) : [];
+	if (failed.length > RERUN_CAP || files.length > RERUN_CAP) {
 		doc = write(
 			labelFailures(failed, null),
-			[note, `${failed.length} failed tests, over ${RERUN_CAP}: not rerun`]
-				.filter(Boolean)
-				.join("; "),
+			join2(
+				note,
+				failed.length > RERUN_CAP
+					? `${failed.length} failed tests, over ${RERUN_CAP}: not rerun`
+					: `${files.length} test files to rerun, over ${RERUN_CAP}: not rerun`,
+			),
 		);
 	} else if (failed.length > 0) {
 		const jsonOut = join(o.out, "rerun-report.json");
-		const outputDir = join(o.out, "rerun-results");
 		const args = rerunArgs(o.runner, failed, {
-			scripts: import.meta.dirname,
-			outputDir,
+			scripts,
+			outputDir: join(o.out, "rerun-results"),
+			files,
 		});
-		console.log(
+		log(
 			`test-outcomes: rerunning ${failed.length} failed test(s) once, to label them; the job stays failed`,
 		);
-		spawnSync(process.execPath, args, {
-			stdio: "inherit",
-			env: {
-				...env,
-				CRB_TEST_JSON: jsonOut,
-				PLAYWRIGHT_JSON_OUTPUT_FILE: jsonOut,
-				// Not into the uploaded traces: those are the first run's.
-				CRB_TEST_TRACE_ROOT: join(o.out, "rerun-traces"),
-			},
+		spawn(args, {
+			...env,
+			CRB_TEST_JSON: jsonOut,
+			PLAYWRIGHT_JSON_OUTPUT_FILE: jsonOut,
+			// Not into the uploaded traces: those are the first run's.
+			CRB_TEST_TRACE_ROOT: join(o.out, "rerun-traces"),
+			// No second set of PR annotations from Vitest's github-actions
+			// reporter (Playwright's rerun has its own reporters).
+			GITHUB_ACTIONS: "",
 		});
 		const rerun = existsSync(jsonOut)
-			? readResults(o.runner, readJson(jsonOut), cwd)
+			? readResults(
+					o.runner,
+					readJson(jsonOut),
+					cwd,
+					readJson(unhandledPath(jsonOut)),
+				)
 			: null;
 		doc = write(
 			labelFailures(failed, rerun),
-			rerun
-				? note
-				: [note, "the rerun wrote no report"].filter(Boolean).join("; "),
+			rerun ? note : join2(note, "the rerun wrote no report"),
 		);
 	}
-	console.log(
+	log(
 		`test-outcomes: ${doc.verdict}${doc.failed.length ? ` (${doc.failed.map((t) => `${t.verdict}: ${t.title}`).join("; ")})` : ""}`,
 	);
 	if (env.GITHUB_STEP_SUMMARY) {
 		appendFileSync(env.GITHUB_STEP_SUMMARY, summaryMarkdown(doc));
 	}
+	if (env.GITHUB_OUTPUT) {
+		appendFileSync(env.GITHUB_OUTPUT, `verdict=${doc.verdict}\n`);
+	}
+	return doc;
 }
 
 const isMain = (() => {
@@ -388,4 +490,4 @@ const isMain = (() => {
 		return false;
 	}
 })();
-if (isMain) main();
+if (isMain) run({ argv: process.argv.slice(2) });

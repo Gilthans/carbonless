@@ -17,7 +17,17 @@ the shard's build), and labels each failure:
 | --- | --- |
 | flaky | failed, then passed on rerun |
 | consistent | failed again: a bug, or a flake that fails twice |
-| not-rerun | the rerun never ran it, or didn't finish; over 10 failures there is no rerun (a real bug: no 20-minute rerun) |
+| not-rerun | the rerun never ran it, or didn't finish; over 10 failures (or 10 files to rerun) there is no rerun (a real bug: no 20-minute rerun) |
+
+Vitest's **unhandled errors** (a rejection or a timer that fires after its
+test ended) fail the run with every test passed, and its JSON report leaves
+them out. `scripts/vitest-unhandled-reporter.mjs` writes them next to the
+report, each with the test file Vitest traced it to. Each is labelled like
+a test (title `(unhandled error)`): its file reruns, and it is flaky when
+the rerun has no unhandled error from that file, consistent when it does.
+One Vitest couldn't trace (file `(unknown file)`) reruns every file the run
+had, so only a small run (windows-agent's) gets a verdict; a full unit run
+is over the cap and stays not-rerun.
 
 **The job stays failed either way.** The rerun is diagnosis, not a retry:
 the tests step already failed the job, and the labelling step's own result
@@ -33,10 +43,13 @@ Where to see it:
 
 - The run's **summary** page: a table per job of the failed tests, their
   verdicts and error heads.
-- Artifact `test-outcomes-<job>-<attempt>` (kept 90 days): `test-outcomes.json`
-  with the run id, attempt, job, sha, branch, event, the job's verdict and
-  each failed test's file, title, project (`chromium`/`phone`, or none for
-  Vitest), verdict, error and rerun error.
+- Artifact `test-outcomes-<job>-<attempt>-<verdict>` (kept 90 days; `<job>`
+  is `checks`, `windows-agent` or `e2e-<n>`, `<verdict>` the job's, `none`
+  when the step didn't finish): `test-outcomes.json` with the run id,
+  attempt, job, sha, branch, event, the job's verdict and each failed
+  test's file, title, project (`chromium`/`phone`, or none for Vitest),
+  verdict, error and rerun error. The verdict in the name lets
+  `pnpm ci-flakes` read most jobs without downloading anything.
 
 The tests step writes its JSON report to `$CRB_TEST_JSON`, which
 `vitest.config.ts` and `playwright.config.ts` add as a reporter when set.
@@ -45,13 +58,34 @@ The tests step writes its JSON report to `$CRB_TEST_JSON`, which
 
 ```sh
 pnpm ci-flakes                      # last 7 days
+pnpm ci-flakes --since 7d,30d       # both, from one collection
 pnpm ci-flakes --since 30d --branch master
 pnpm ci-flakes --json               # everything, for scripts
 ```
 
-It lists `ci.yml`'s runs in the window with every attempt (the runs API
-shows only a run's last attempt; a rerun that turned green would hide the
-failure), and for each failed attempt reads its jobs and outcome artifacts.
+It lists `ci.yml`'s runs in the window a day at a time (the API answers at
+most 1,000 runs per query; a day over that is halved until it fits, and a
+listing shorter than its count is warned about), with every attempt (the
+runs API shows only a run's last attempt; a rerun that turned green would
+hide the failure). For each run with a failed attempt it lists the
+artifacts once: their names carry each job's verdict. It downloads only a
+flaky job's document (for its tests) and lists the jobs only when the
+outcomes don't cover every test job (a later attempt, a missing outcome).
+
+Any read that fails (a rate limit, a 404, a 5xx after three tries) fails
+the report: missing data never counts as "unknown". Only a run with no
+outcome artifacts, or expired ones, has none. A document that is malformed
+or names another run (artifacts are a run's own data, a fork's PR too) is
+warned about and counted unknown. It prints the API calls it used
+(stderr). On 2026-11-16 one `--since 7d,30d` took 344 calls in about 4
+minutes (443 runs; most failed ones from before the outcomes existed, so
+each needed a jobs listing). Once failed attempts have outcomes, it is
+about one listing per day of the window, one artifact listing per run
+with a failed attempt, one download per flaky job, and the jobs only for
+re-run attempts that didn't pass or missing outcomes: well inside the
+weekly job's 1,000 an hour at today's pace. If it ever runs out, the
+report fails (red), it doesn't undercount.
+
 A failed attempt is:
 
 - **flaky** when each failed test job's failures all passed on rerun, or a
@@ -59,10 +93,12 @@ A failed attempt is:
 - **consistent** when a test failed again;
 - **non-test** when something other than a test failed;
 - **unknown** when a failed job left no outcome (runs from before this, a
-  lost runner, a rerun not done).
+  lost runner), or one without a verdict: not rerun (over the cap, or cut
+  short), or a malformed document.
 
-Flake rate = flaky attempts ÷ completed attempts (cancelled and running
-ones aside), and the same for pushes to master alone. Consistent,
+Flake rate = flaky attempts ÷ attempts that passed or failed (cancelled,
+skipped, awaiting approval, neutral or stale ones, and running ones, aside),
+and the same for pushes to master alone. Consistent,
 non-test and unknown failures are counted apart. Then the top flaky tests:
 how often, last seen, the job, a link to the last run. The `e2e` job only
 sums up the shards, so its failure is never counted on its own.
@@ -70,6 +106,8 @@ sums up the shards, so its failure is never counted on its own.
 ## Tracking
 
 The `Flake report` workflow (`.github/workflows/flake-report.yml`) runs
-every Monday morning (UTC) and on demand: the 30- and 7-day reports in its
-summary, and it fails when the 7-day rate is over 2%. It runs no tests and
-is the only workflow job with a token (read-only Actions).
+every Monday morning (UTC) and on demand: the 7- and 30-day reports (one
+collection) in its summary, and it fails when the 7-day rate is over 2%,
+or when the report can't read what it needs. It runs no tests and is the
+only workflow job with a token (read-only Actions, 1,000 API calls an
+hour).

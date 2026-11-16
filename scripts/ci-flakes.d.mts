@@ -1,13 +1,15 @@
-export type OutcomeDoc = {
-	job: string;
-	attempt?: number;
+export type FlakyTest = {
+	file: string;
+	title: string;
+	project?: string | null;
 	verdict: string;
-	failed?: {
-		file: string;
-		title: string;
-		project?: string | null;
-		verdict: string;
-	}[];
+};
+export type OutcomeDoc = {
+	job?: string;
+	slug?: string;
+	attempt?: number;
+	verdict: string | null;
+	failed?: FlakyTest[];
 };
 export type Attempt = {
 	n: number;
@@ -40,7 +42,7 @@ export type Summary = {
 	attempts: number;
 	passed: number;
 	failed: number;
-	cancelled: number;
+	notRun: number;
 	inProgress: number;
 	flaky: number;
 	consistent: number;
@@ -56,22 +58,38 @@ export type Summary = {
 	}[];
 	topFlaky: TopFlaky[];
 };
+export type Gh = (args: string[], o?: { binary?: boolean }) => string;
 export const DERIVED_JOBS: Set<string>;
+export const TEST_JOBS: string[];
+export function slugOf(job: string): string;
+export function parseArtifactName(
+	name: string,
+): { slug: string; attempt: number; verdict: string | null } | null;
+export function checkDoc(
+	doc: unknown,
+	runId: number,
+	warn?: (m: string) => void,
+): OutcomeDoc | null;
 export function parseSince(since: string, now?: Date): Date;
 export function judgeAttempt(
 	attempt: Attempt,
 	laterPassed: boolean,
 ): { verdict: string; reason: string };
 export function aggregate(runs: Run[]): Summary;
+export function term(text: unknown): string;
 export function render(
 	s: Summary,
 	o: { title: string; markdown?: boolean },
 ): string;
+export function transient(stderr: string): boolean;
+export function realGh(args: string[], o?: { binary?: boolean }): string;
+export function unzipFile(buf: Buffer, name: string): Buffer | null;
 export function collect(o: {
 	repo: string;
 	since: Date;
+	until?: Date;
 	branch?: string;
-	gh?: (args: string[]) => string;
-	outcomes?: (runId: number) => OutcomeDoc[];
+	gh?: Gh;
+	warn?: (m: string) => void;
 }): Run[];
-export function transient(stderr: string): boolean;
+export function within(runs: Run[], since: Date): Run[];

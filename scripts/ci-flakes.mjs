@@ -4,29 +4,99 @@
 // jobs upload (scripts/test-outcomes.mjs), and the tests behind the flakes.
 // No dependencies: `gh` does the talking (its own login, or $GH_TOKEN).
 //
-//   pnpm ci-flakes [--since 7d|12h|<date>] [--branch <b>] [--repo <o/r>]
+//   pnpm ci-flakes [--since 7d|12h|<date>[,…]] [--branch <b>] [--repo <o/r>]
 //       [--json | --markdown] [--fail-over <percent>]
 //
-// --fail-over: exit 1 when the flake rate is over that percent.
+// Several windows (`--since 7d,30d`) come from one collection of the
+// widest. --fail-over: exit 1 when the shortest window's flake rate is over
+// that percent. API cost: a listing per day of the window, then per run
+// with a failed attempt one artifact listing (each artifact's name carries
+// its job's verdict), the jobs only when the outcomes don't cover every
+// test job, and a download only for a flaky job's tests; it prints the
+// calls used (stderr).
 import { spawnSync } from "node:child_process";
-import {
-	existsSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	realpathSync,
-	rmSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { inflateRawSync } from "node:zlib";
+import { cell } from "./test-outcomes.mjs";
 
 const WORKFLOW = "ci.yml";
 /** Jobs that fail only because a test job did (`e2e` waits on the shards). */
 export const DERIVED_JOBS = new Set(["e2e"]);
-const FAILING_JOB = new Set(["failure", "timed_out", "startup_failure"]);
+/**
+ * ci.yml's test jobs, by artifact slug: a failed first attempt with an
+ * outcome from each needs no jobs listing. Keep in step with ci.yml; a job
+ * missing here only costs a call.
+ */
+export const TEST_JOBS = [
+	"checks",
+	"windows-agent",
+	"e2e-1",
+	"e2e-2",
+	"e2e-3",
+	"e2e-4",
+];
+const FAILED = new Set(["failure", "timed_out", "startup_failure"]);
 /** Worst first: an attempt takes the worst of its failed jobs' verdicts. */
 const SEVERITY = ["consistent", "non-test", "unknown", "flaky"];
+const DOC_VERDICTS = new Set([
+	"passed",
+	"flaky",
+	"consistent",
+	"non-test",
+	"not-rerun",
+	"cancelled",
+]);
+
+/** A job's artifact slug: `e2e (2/4)` → `e2e-2`; others as they are. */
+export const slugOf = (job) => {
+	const m = /^e2e \((\d+)\/\d+\)$/.exec(String(job));
+	return m ? `e2e-${m[1]}` : String(job);
+};
+
+/**
+ * `test-outcomes-<slug>-<attempt>-<verdict>` (the verdict from the label
+ * step; `none` when it didn't finish, absent on the first proof runs).
+ */
+export function parseArtifactName(name) {
+	const m =
+		/^test-outcomes-(.+?)-(\d+)(?:-(passed|flaky|consistent|non-test|not-rerun|cancelled|none))?$/.exec(
+			String(name),
+		);
+	if (!m) return null;
+	return {
+		slug: m[1],
+		attempt: Number(m[2]),
+		verdict: m[3] && m[3] !== "none" ? m[3] : null,
+	};
+}
+
+/**
+ * An outcome document from an artifact, or null with a warning when its
+ * shape is wrong or it names another run: artifacts are a run's own data,
+ * which a fork's PR can shape too.
+ */
+export function checkDoc(doc, runId, warn = () => {}) {
+	const bad = (why) => {
+		warn(`run ${runId}: an outcome document ${why}: counted unknown`);
+		return null;
+	};
+	if (!doc || typeof doc !== "object") return bad("isn't an object");
+	if (doc.runId != null && doc.runId !== runId) return bad("names another run");
+	if (!DOC_VERDICTS.has(doc.verdict)) return bad("has no known verdict");
+	if (!Array.isArray(doc.failed)) return bad("has no list of failures");
+	for (const t of doc.failed) {
+		if (
+			!t ||
+			typeof t.file !== "string" ||
+			typeof t.title !== "string" ||
+			typeof t.verdict !== "string"
+		) {
+			return bad("has a malformed failure");
+		}
+	}
+	return doc;
+}
 
 /** `7d`, `12h` or a date: the window's start. */
 export function parseSince(since, now = new Date()) {
@@ -41,17 +111,18 @@ export function parseSince(since, now = new Date()) {
 	return d;
 }
 
-/** A failed job's verdict, from its outcome document (or none). */
-function jobVerdict(doc) {
-	if (!doc) return "unknown";
-	switch (doc.verdict) {
+/** A failed job's verdict, from its outcome (or none). */
+function jobVerdict(outcome) {
+	switch (outcome?.verdict) {
 		case "flaky":
 		case "consistent":
 		case "non-test":
-			return doc.verdict;
+			return outcome.verdict;
 		// The tests passed, yet the job failed: a step after them.
 		case "passed":
 			return "non-test";
+		// No outcome, a rerun not done (over the cap, cut short) or not
+		// finished: nothing says flaky or not.
 		default:
 			return "unknown";
 	}
@@ -62,27 +133,37 @@ function jobVerdict(doc) {
  * failed only on tests that passed on rerun, or a later attempt of the run
  * (the same commit) passed; "consistent" when a test failed again;
  * "non-test" when something other than a test failed; "unknown" when a
- * failed job left no outcome (a run from before the outcomes, a runner
- * lost, a rerun not done).
+ * failed job left no outcome, or one without a verdict (not rerun).
+ * `attempt.outcomes`: [{ job or slug, verdict }]; `attempt.jobs` (when
+ * listed): [{ name, conclusion }].
  */
 export function judgeAttempt(attempt, laterPassed) {
-	if (laterPassed)
+	if (laterPassed) {
 		return { verdict: "flaky", reason: "a later attempt passed" };
+	}
 	const outcomes = attempt.outcomes ?? [];
-	const byJob = new Map(outcomes.map((d) => [d.job, d]));
-	const failedJobs = attempt.jobs
-		? attempt.jobs
-				.filter(
-					(j) => FAILING_JOB.has(j.conclusion) && !DERIVED_JOBS.has(j.name),
-				)
-				.map((j) => j.name)
-		: outcomes.filter((d) => d.verdict !== "passed").map((d) => d.job);
+	const bySlug = new Map(outcomes.map((o) => [o.slug ?? slugOf(o.job), o]));
+	let failedJobs;
+	let derivedFailed = false;
+	if (attempt.jobs) {
+		const failing = attempt.jobs.filter((j) => FAILED.has(j.conclusion));
+		derivedFailed = failing.some((j) => DERIVED_JOBS.has(j.name));
+		failedJobs = failing
+			.filter((j) => !DERIVED_JOBS.has(j.name))
+			.map((j) => slugOf(j.name));
+	} else {
+		failedJobs = outcomes
+			.filter((o) => o.verdict !== "passed")
+			.map((o) => o.slug ?? slugOf(o.job));
+	}
 	if (failedJobs.length === 0) {
-		return { verdict: "unknown", reason: "no failed test job found" };
+		return derivedFailed
+			? { verdict: "non-test", reason: "a summary job failed, no test job" }
+			: { verdict: "unknown", reason: "no failed test job found" };
 	}
 	const verdicts = failedJobs.map((j) => ({
 		job: j,
-		verdict: jobVerdict(byJob.get(j)),
+		verdict: jobVerdict(bySlug.get(j)),
 	}));
 	const worst = SEVERITY.find((s) => verdicts.some((v) => v.verdict === s));
 	return {
@@ -106,7 +187,7 @@ export function aggregate(runs) {
 		attempts: 0,
 		passed: 0,
 		failed: 0,
-		cancelled: 0,
+		notRun: 0,
 		inProgress: 0,
 		flaky: 0,
 		consistent: 0,
@@ -124,8 +205,10 @@ export function aggregate(runs) {
 				counts.inProgress++;
 				continue;
 			}
-			if (a.conclusion === "cancelled" || a.conclusion === "skipped") {
-				counts.cancelled++;
+			// Cancelled, skipped, awaiting approval (action_required), neutral,
+			// stale: the tests didn't run to an answer.
+			if (a.conclusion !== "success" && !FAILED.has(a.conclusion)) {
+				counts.notRun++;
 				continue;
 			}
 			all.attempts++;
@@ -157,12 +240,13 @@ export function aggregate(runs) {
 				reason,
 			});
 			for (const doc of a.outcomes ?? []) {
-				for (const t of doc.failed ?? []) {
+				for (const t of Array.isArray(doc.failed) ? doc.failed : []) {
 					if (t.verdict !== "flaky") continue;
 					// Unit tests have no project: Linux (checks) and Windows
 					// (windows-agent) flakes are told apart by job. An e2e test's
 					// shard varies; its project doesn't.
-					const key = `${t.file}\0${t.title}\0${t.project ?? doc.job}`;
+					const job = doc.job ?? doc.slug;
+					const key = `${t.file}\0${t.title}\0${t.project ?? job}`;
 					const seen = a.createdAt ?? run.createdAt ?? "";
 					const prev = tests.get(key);
 					if (!prev) {
@@ -171,7 +255,7 @@ export function aggregate(runs) {
 							title: t.title,
 							project: t.project ?? null,
 							count: 1,
-							job: doc.job,
+							job,
 							lastSeen: seen,
 							lastRun: a.url ?? run.url,
 						});
@@ -180,7 +264,7 @@ export function aggregate(runs) {
 					prev.count++;
 					if (seen >= prev.lastSeen) {
 						Object.assign(prev, {
-							job: doc.job,
+							job,
 							lastSeen: seen,
 							lastRun: a.url ?? run.url,
 						});
@@ -212,25 +296,25 @@ export function aggregate(runs) {
 const fmt = (n) => `${n.toFixed(1)}%`;
 const day = (iso) => (iso ? String(iso).slice(0, 10) : "");
 
-/** Text in a Markdown table cell: no markup, links or HTML from a title. */
-function cell(text) {
-	return String(text ?? "")
-		.replace(/[\\`*_[\]<>|#~!&]/g, (c) => `&#${c.charCodeAt(0)};`)
-		.replace(/\s*\n\s*/g, " ");
-}
+/** Text for a terminal: no control characters (escape sequences) from data. */
+export const term = (text) =>
+	Array.from(String(text ?? ""), (c) => {
+		const n = c.charCodeAt(0);
+		return n < 0x20 || (n >= 0x7f && n < 0xa0) ? "?" : c;
+	}).join("");
 
 /** The report, as text or Markdown (for a job summary). */
 export function render(s, { title, markdown = false }) {
+	const t = markdown ? cell : term;
 	const lines = [];
-	const h = (t) => lines.push(markdown ? `### ${t}` : t);
-	h(title);
+	lines.push(markdown ? `### ${cell(title)}` : term(title));
 	lines.push(
 		"",
-		`Runs ${s.runs}, attempts ${s.attempts}: ${s.passed} passed, ${s.failed} failed, ${s.cancelled} cancelled, ${s.inProgress} running (cancelled and running not counted)`,
+		`Runs ${s.runs}, attempts ${s.attempts}: ${s.passed} passed, ${s.failed} failed, ${s.notRun} cancelled or not run, ${s.inProgress} running (those last two not counted)`,
 		"",
 		`${markdown ? "**" : ""}Flake rate: ${fmt(s.flakeRate)}${markdown ? "**" : ""} (${s.flaky} of ${s.passed + s.failed} attempts); master: ${fmt(s.master.flakeRate)} (${s.master.flaky} of ${s.master.attempts})`,
 		"",
-		`Failed, not counted as flaky: ${s.consistent} consistent test failure, ${s.nonTest} non-test failure, ${s.unknown} unknown (no outcome)`,
+		`Failed, not counted as flaky: ${s.consistent} consistent test failure, ${s.nonTest} non-test failure, ${s.unknown} unknown (no outcome, or not rerun)`,
 	);
 	if (s.topFlaky.length > 0) {
 		lines.push("");
@@ -239,32 +323,26 @@ export function render(s, { title, markdown = false }) {
 				"| Flakes | Last seen | Job | Test | Project | Last run |",
 				"| --- | --- | --- | --- | --- | --- |",
 			);
-			for (const t of s.topFlaky.slice(0, 20)) {
-				lines.push(
-					`| ${t.count} | ${day(t.lastSeen)} | ${cell(t.job)} | ${cell(t.title)} (${cell(t.file)}) | ${cell(t.project ?? "")} | ${t.lastRun ? `[run](${encodeURI(t.lastRun)})` : ""} |`,
-				);
-			}
 		} else {
 			lines.push("Top flaky tests:");
-			for (const t of s.topFlaky.slice(0, 20)) {
-				lines.push(
-					`  ${String(t.count).padStart(3)}  ${day(t.lastSeen)}  ${t.job}  ${t.file} › ${t.title}${t.project ? ` [${t.project}]` : ""}  ${t.lastRun ?? ""}`,
-				);
-			}
+		}
+		for (const f of s.topFlaky.slice(0, 20)) {
+			lines.push(
+				markdown
+					? `| ${f.count} | ${day(f.lastSeen)} | ${t(f.job)} | ${t(f.title)} (${t(f.file)}) | ${t(f.project ?? "")} | ${f.lastRun ? `[run](${encodeURI(f.lastRun)})` : ""} |`
+					: `  ${String(f.count).padStart(3)}  ${day(f.lastSeen)}  ${t(f.job)}  ${t(f.file)} › ${t(f.title)}${f.project ? ` [${t(f.project)}]` : ""}  ${t(f.lastRun ?? "")}`,
+			);
 		}
 	}
 	const notFlaky = s.failedAttempts.filter((a) => a.verdict !== "flaky");
 	if (notFlaky.length > 0) {
-		lines.push(
-			"",
-			markdown ? "Other failed attempts:" : "Other failed attempts:",
-		);
+		lines.push("", "Other failed attempts:");
 		for (const a of notFlaky) {
 			const where = `${day(a.createdAt)} ${a.branch} run ${a.run} attempt ${a.attempt}: ${a.verdict} (${a.reason})`;
 			lines.push(
 				markdown
 					? `- ${cell(where)}${a.url ? ` [run](${encodeURI(a.url)})` : ""}`
-					: `  ${where} ${a.url ?? ""}`,
+					: `  ${term(where)} ${term(a.url ?? "")}`,
 			);
 		}
 	}
@@ -276,18 +354,19 @@ export const transient = (stderr) =>
 	/HTTP 5\d\d|ECONNRESET|ETIMEDOUT|timed out|connection reset/i.test(stderr);
 
 /**
- * Runs `gh` and returns its stdout; throws with its stderr on failure. An
- * API read that failed on GitHub's side (a 502 now and then, over hundreds
- * of calls) is tried up to three times.
+ * Runs `gh` and returns its stdout (a Buffer with `binary`); throws with
+ * its stderr on failure, whatever it is (a rate limit, a 404): a report
+ * missing data must fail, not count it unknown. A failure on GitHub's side
+ * (a 502 now and then, over hundreds of calls) is tried up to three times.
  */
-function realGh(args) {
+export function realGh(args, { binary = false } = {}) {
 	for (let attempt = 1; ; attempt++) {
 		const r = spawnSync("gh", args, {
-			encoding: "utf8",
+			encoding: binary ? "buffer" : "utf8",
 			maxBuffer: 256 * 1024 * 1024,
 		});
 		if (r.status === 0) return r.stdout;
-		const err = r.stderr || r.error?.message || "";
+		const err = String(r.stderr || r.error?.message || "");
 		if (attempt >= 3 || !transient(err)) {
 			throw new Error(`gh ${args.join(" ")}: ${err}`);
 		}
@@ -301,77 +380,133 @@ function realGh(args) {
 }
 
 const jsonLines = (out) =>
-	out
+	String(out)
 		.split("\n")
 		.filter((l) => l.trim())
 		.map((l) => JSON.parse(l));
 
-/** A run's test-outcomes documents (every attempt's), via `gh run download`. */
-function realOutcomes(repo, runId, gh) {
-	const dir = mkdtempSync(join(tmpdir(), "ci-flakes-"));
-	try {
-		try {
-			gh([
-				"run",
-				"download",
-				String(runId),
-				"-R",
-				repo,
-				"-p",
-				"test-outcomes-*",
-				"-D",
-				dir,
-			]);
-		} catch {
-			// No such artifacts (a run from before them, or expired).
-			return [];
+/** One file out of a zip (an artifact's download), or null if it isn't there. */
+export function unzipFile(buf, name) {
+	let eocd = -1;
+	for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65_557); i--) {
+		if (buf.readUInt32LE(i) === 0x06054b50) {
+			eocd = i;
+			break;
 		}
-		const docs = [];
-		for (const name of readdirSync(dir)) {
-			const f = join(dir, name, "test-outcomes.json");
-			if (!existsSync(f)) continue;
-			try {
-				docs.push(JSON.parse(readFileSync(f, "utf8")));
-			} catch {}
-		}
-		return docs;
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
 	}
+	if (eocd < 0) throw new Error("not a zip");
+	const count = buf.readUInt16LE(eocd + 10);
+	let p = buf.readUInt32LE(eocd + 16);
+	for (let k = 0; k < count; k++) {
+		if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("bad zip");
+		const method = buf.readUInt16LE(p + 10);
+		const size = buf.readUInt32LE(p + 20);
+		const nameLen = buf.readUInt16LE(p + 28);
+		const extraLen = buf.readUInt16LE(p + 30);
+		const commentLen = buf.readUInt16LE(p + 32);
+		const local = buf.readUInt32LE(p + 42);
+		if (buf.toString("utf8", p + 46, p + 46 + nameLen) === name) {
+			const start =
+				local +
+				30 +
+				buf.readUInt16LE(local + 26) +
+				buf.readUInt16LE(local + 28);
+			const data = buf.subarray(start, start + size);
+			if (method === 0) return data;
+			if (method === 8) return inflateRawSync(data);
+			throw new Error(`zip method ${method}`);
+		}
+		p += 46 + nameLen + extraLen + commentLen;
+	}
+	return null;
+}
+
+const iso = (d) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
+const DAY = 86_400_000;
+/** The runs API answers at most this many runs for one `created` filter. */
+const RUNS_CAP = 1000;
+
+/**
+ * The workflow's runs created in [from, to], a day at a time: the API
+ * answers at most 1,000 runs per filter, so a range over that is halved
+ * until it fits (down to a minute, else it fails).
+ */
+function listRuns({ repo, from, to, branch, gh, warn }) {
+	const runs = [];
+	const range = (a, b) => {
+		const pages = jsonLines(
+			gh([
+				"api",
+				"-X",
+				"GET",
+				`repos/${repo}/actions/workflows/${WORKFLOW}/runs`,
+				"-f",
+				`created=${iso(a)}..${iso(b)}`,
+				"-f",
+				"per_page=100",
+				...(branch ? ["-f", `branch=${branch}`] : []),
+				"--paginate",
+				"--jq",
+				"{total: .total_count, runs: [.workflow_runs[] | {id, run_attempt, status, conclusion, head_branch, event, html_url, created_at, run_started_at}]}",
+			]),
+		);
+		const total = pages[0]?.total ?? 0;
+		if (total > RUNS_CAP) {
+			if (b - a <= 60_000) {
+				throw new Error(`${total} runs between ${iso(a)} and ${iso(b)}`);
+			}
+			const mid = new Date(a.getTime() + Math.floor((b - a) / 2000) * 1000);
+			range(a, mid);
+			range(new Date(mid.getTime() + 1000), b);
+			return;
+		}
+		const got = pages.flatMap((p) => p.runs ?? []);
+		if (got.length < total) {
+			warn(
+				`runs between ${iso(a)} and ${iso(b)}: ${got.length} of ${total} listed`,
+			);
+		}
+		runs.push(...got);
+	};
+	for (let a = from; a < to; a = new Date(a.getTime() + DAY)) {
+		const end = new Date(Math.min(a.getTime() + DAY - 1000, to.getTime()));
+		range(a, end);
+	}
+	const seen = new Set();
+	return runs.filter((r) => !seen.has(r.id) && seen.add(r.id));
 }
 
 /**
  * The window's CI runs, every attempt of each; for a failed attempt its
- * jobs and outcome documents. `gh(args)` returns gh's stdout and
- * `outcomes(runId)` a run's documents: both injectable, for tests.
+ * test jobs' outcomes (verdicts from the artifacts' names; a flaky job's
+ * tests from its document) and, when those don't cover every test job, the
+ * jobs. `gh(args, { binary })` returns gh's stdout: injectable, for tests.
+ * Any failure to read fails the collection: data missing is never counted
+ * as an unknown outcome. Only a run with no outcome artifacts (one from
+ * before them, or expired) has none.
  */
 export function collect({
 	repo,
 	since,
+	until = new Date(),
 	branch,
 	gh = realGh,
-	outcomes = (id) => realOutcomes(repo, id, gh),
+	warn = (m) => console.error(`ci-flakes: ${m}`),
 }) {
-	const query = [
-		"api",
-		"-X",
-		"GET",
-		`repos/${repo}/actions/workflows/${WORKFLOW}/runs`,
-		"-f",
-		`created=>=${since.toISOString()}`,
-		"-f",
-		"per_page=100",
-		...(branch ? ["-f", `branch=${branch}`] : []),
-		"--paginate",
-		"--jq",
-		".workflow_runs[] | {id, run_attempt, status, conclusion, head_branch, event, html_url, created_at, run_started_at}",
-	];
 	const runs = [];
-	for (const r of jsonLines(gh(query))) {
+	for (const r of listRuns({
+		repo,
+		from: since,
+		to: until,
+		branch,
+		gh,
+		warn,
+	})) {
+		const last = r.run_attempt ?? 1;
 		const attempts = [];
-		for (let n = 1; n <= (r.run_attempt ?? 1); n++) {
+		for (let n = 1; n <= last; n++) {
 			const a =
-				n === (r.run_attempt ?? 1)
+				n === last
 					? r
 					: JSON.parse(
 							gh(["api", `repos/${repo}/actions/runs/${r.id}/attempts/${n}`]),
@@ -385,25 +520,77 @@ export function collect({
 			});
 		}
 		const failed = attempts.filter(
-			(a) =>
-				a.status === "completed" &&
-				a.conclusion !== "success" &&
-				a.conclusion !== "cancelled" &&
-				a.conclusion !== "skipped",
+			(a) => a.status === "completed" && FAILED.has(a.conclusion),
 		);
 		if (failed.length > 0) {
-			const docs = outcomes(r.id);
+			const artifacts = jsonLines(
+				gh([
+					"api",
+					`repos/${repo}/actions/runs/${r.id}/artifacts?per_page=100`,
+					"--paginate",
+					"--jq",
+					".artifacts[] | {id, name, expired}",
+				]),
+			)
+				.map((a) => ({ ...a, parsed: parseArtifactName(a.name) }))
+				.filter((a) => a.parsed);
+			let jobs = null;
 			for (const a of failed) {
-				a.outcomes = docs.filter((d) => (d.attempt ?? 1) === a.n);
-				a.jobs = jsonLines(
-					gh([
-						"api",
-						`repos/${repo}/actions/runs/${r.id}/attempts/${a.n}/jobs?per_page=100`,
-						"--paginate",
-						"--jq",
-						".jobs[] | {name, conclusion}",
-					]),
+				const mine = artifacts.filter((x) => x.parsed.attempt === a.n);
+				a.outcomes = [];
+				for (const x of mine) {
+					const o = { slug: x.parsed.slug, verdict: x.parsed.verdict };
+					// Its document only when the name can't say enough: no verdict
+					// in it, or a flaky job's tests for the top flaky list.
+					if ((o.verdict === null || o.verdict === "flaky") && !x.expired) {
+						const zip = gh(
+							["api", `repos/${repo}/actions/artifacts/${x.id}/zip`],
+							{ binary: true },
+						);
+						// undefined: unreadable (said here); else checked.
+						let doc;
+						try {
+							const file = unzipFile(Buffer.from(zip), "test-outcomes.json");
+							doc = file ? JSON.parse(file.toString("utf8")) : null;
+						} catch (e) {
+							warn(
+								`run ${r.id}: artifact ${x.name}: ${e.message}: counted unknown`,
+							);
+						}
+						doc = doc === undefined ? null : checkDoc(doc, r.id, warn);
+						if (doc) {
+							Object.assign(o, {
+								job: doc.job,
+								verdict: o.verdict ?? doc.verdict,
+								failed: doc.failed,
+							});
+						} else o.verdict = null;
+					}
+					a.outcomes.push(o);
+				}
+				const slugs = new Set(a.outcomes.map((o) => o.slug));
+				// A later attempt that passed makes it flaky whatever its jobs say.
+				const laterPassed = attempts.some(
+					(b) =>
+						b.n > a.n && b.status === "completed" && b.conclusion === "success",
 				);
+				const covered =
+					laterPassed ||
+					(a.n === 1 &&
+						TEST_JOBS.every((j) => slugs.has(j)) &&
+						a.outcomes.some((o) => o.verdict !== "passed"));
+				if (!covered) {
+					jobs ??= jsonLines(
+						gh([
+							"api",
+							`repos/${repo}/actions/runs/${r.id}/jobs?filter=all&per_page=100`,
+							"--paginate",
+							"--jq",
+							".jobs[] | {name, conclusion, run_attempt}",
+						]),
+					);
+					a.jobs = jobs.filter((j) => (j.run_attempt ?? 1) === a.n);
+				}
 			}
 		}
 		runs.push({
@@ -417,6 +604,10 @@ export function collect({
 	}
 	return runs;
 }
+
+/** The runs created at or after `since`. */
+export const within = (runs, since) =>
+	runs.filter((r) => !r.createdAt || new Date(r.createdAt) >= since);
 
 function parseArgs(argv) {
 	const o = { since: "7d", format: "text" };
@@ -435,6 +626,17 @@ function parseArgs(argv) {
 	return o;
 }
 
+/** The core API calls this token has used (rate_limit itself is free). */
+function used() {
+	try {
+		return Number(
+			realGh(["api", "rate_limit", "--jq", ".resources.core.used"]).trim(),
+		);
+	} catch {
+		return Number.NaN;
+	}
+}
+
 function main() {
 	const o = parseArgs(process.argv.slice(2));
 	const repo =
@@ -448,20 +650,56 @@ function main() {
 			"-q",
 			".nameWithOwner",
 		]).trim();
-	const since = parseSince(o.since);
-	const s = aggregate(collect({ repo, since, branch: o.branch }));
-	const title = `CI flakes since ${since.toISOString().slice(0, 16)}Z (${o.since})${o.branch ? `, ${o.branch}` : ""}`;
+	const now = new Date();
+	const windows = o.since.split(",").map((w) => ({
+		label: w.trim(),
+		since: parseSince(w.trim(), now),
+	}));
+	const widest = windows.reduce((a, b) => (b.since < a.since ? b : a));
+	const before = used();
+	const runs = collect({
+		repo,
+		since: widest.since,
+		until: now,
+		branch: o.branch,
+	});
+	const calls = used() - before;
+	const reports = windows.map((w) => ({
+		...w,
+		summary: aggregate(within(runs, w.since)),
+	}));
 	if (o.format === "json") {
 		console.log(
-			JSON.stringify({ repo, since: since.toISOString(), ...s }, null, 2),
+			JSON.stringify(
+				{
+					repo,
+					apiCalls: calls,
+					windows: reports.map((r) => ({
+						window: r.label,
+						since: r.since.toISOString(),
+						...r.summary,
+					})),
+				},
+				null,
+				2,
+			),
 		);
 	} else {
-		process.stdout.write(
-			render(s, { title, markdown: o.format === "markdown" }),
-		);
+		for (const r of reports) {
+			const title = `CI flakes since ${r.since.toISOString().slice(0, 16)}Z (${r.label})${o.branch ? `, ${o.branch}` : ""}`;
+			process.stdout.write(
+				`${render(r.summary, { title, markdown: o.format === "markdown" })}\n`,
+			);
+		}
 	}
-	if (o.failOver !== undefined && s.flakeRate > o.failOver) {
-		console.error(`flake rate ${fmt(s.flakeRate)} is over ${o.failOver}%`);
+	console.error(
+		`ci-flakes: ${Number.isNaN(calls) ? "?" : calls} GitHub API calls (core, this token)`,
+	);
+	const shortest = reports.reduce((a, b) => (b.since > a.since ? b : a));
+	if (o.failOver !== undefined && shortest.summary.flakeRate > o.failOver) {
+		console.error(
+			`flake rate ${fmt(shortest.summary.flakeRate)} (${shortest.label}) is over ${o.failOver}%`,
+		);
 		process.exit(1);
 	}
 }
