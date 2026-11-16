@@ -77,6 +77,15 @@ test("Comment on a line's conversation: Cancel keeps it; posted, the GitHub thre
 	const box = composer.getByRole("textbox", { name: "Comment" });
 	await expect(box).toBeFocused();
 	await expect(box).toHaveValue("");
+	// It says it carries the conversation; it stays a comment.
+	await expect(
+		composer.getByRole("img", {
+			name: "Moves your agent conversation to this thread",
+		}),
+	).toBeVisible();
+	await expect(
+		composer.getByRole("button", { name: "Ask agent instead" }),
+	).toHaveAttribute("aria-disabled", "true");
 	await composer.getByRole("button", { name: "Cancel" }).click();
 	await expect(composer).toHaveCount(0);
 	await expect(card).toBeVisible();
