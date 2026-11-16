@@ -214,6 +214,7 @@ describe("mapOverview", () => {
 				bot: false,
 				avatarUrl: "",
 				participants: expect.any(Array),
+				lastAuthor: expect.any(Object),
 				commentCount: 2,
 				hasReply: true,
 				outdated: false,
@@ -268,6 +269,7 @@ describe("mapOverview", () => {
 				bot: false,
 				avatarUrl: "",
 				participants: expect.any(Array),
+				lastAuthor: expect.any(Object),
 				commentCount: 2,
 				hasReply: false,
 				outdated: false,
@@ -304,6 +306,7 @@ describe("mapOverview", () => {
 				bot: false,
 				avatarUrl: "",
 				participants: expect.any(Array),
+				lastAuthor: expect.any(Object),
 				commentCount: 1,
 				hasReply: false,
 				outdated: false,
@@ -341,6 +344,7 @@ describe("mapOverview", () => {
 				bot: true,
 				avatarUrl: "",
 				participants: expect.any(Array),
+				lastAuthor: expect.any(Object),
 				commentCount: 1,
 				hasReply: false,
 				outdated: true,
@@ -976,6 +980,88 @@ describe("mapThreads: the attention set and the anchor", () => {
 			said("octo-author", 10),
 		]);
 		expect(one(node)?.attention).toEqual(["octo-author"]);
+	});
+
+	it("names who published the latest comment, as lastActivityAt dates it", () => {
+		const url = "https://avatars.githubusercontent.com/u/2?s=40";
+		const t = one(
+			reviewThread({ path: "a.ts" }, [
+				said("rev", 1),
+				said("octo-author", 3, { avatarUrl: url }),
+				said("ci", 2, { bot: true }),
+			]),
+		);
+		expect(t?.lastAuthor).toEqual({
+			login: "octo-author",
+			avatarUrl: url,
+			bot: false,
+		});
+		expect(t?.lastActivityAt).toBe(at(3));
+		// A bot can be the latest.
+		const bot = one(
+			reviewThread({ path: "a.ts" }, [
+				said("rev", 1),
+				said("ci", 2, { bot: true }),
+			]),
+		);
+		expect(bot?.lastAuthor).toEqual({ login: "ci", avatarUrl: "", bot: true });
+		// Only the opener: they spoke last.
+		expect(
+			one(reviewThread({ path: "a.ts" }, [said("rev", 1)]))?.lastAuthor.login,
+		).toBe("rev");
+	});
+
+	it("leaves the viewer's pending reply out of who spoke last", () => {
+		const t = one(
+			reviewThread({ path: "a.ts" }, [
+				said("rev", 1),
+				said("octo-author", 2),
+				said("Octo_Cat", 5, { pending: true }),
+			]),
+		);
+		expect(t?.lastAuthor.login).toBe("octo-author");
+	});
+
+	it("as of a cutoff, who spoke last by then", () => {
+		const node = reviewThread({ path: "a.ts" }, [
+			said("rev", 1),
+			said("octo-author", 2),
+			said("late", 30),
+		]);
+		const then = one(node, { asOf: at(10) });
+		expect(then?.lastAuthor.login).toBe("octo-author");
+		expect(then?.lastActivityAt).toBe(at(2));
+		expect(one(node)?.lastAuthor.login).toBe("late");
+	});
+
+	it("who spoke last is who published last: a reply drafted early, submitted late", () => {
+		const node = reviewThread({ path: "a.ts" }, [
+			said("rev", 0),
+			threadComment({
+				login: "drafter",
+				text: "drafted",
+				createdAt: at(1),
+				publishedAt: at(30),
+			}),
+			said("octo-author", 10),
+		]);
+		expect(one(node)?.lastAuthor.login).toBe("drafter");
+	});
+
+	it("past 100 not paged in, who spoke last is the latest comment's author", () => {
+		const node = reviewThread({ path: "a.ts" }, [said("rev", 1)]);
+		node.comments.totalCount = 150;
+		node.latest = {
+			nodes: [
+				{
+					...said("octo-author", 50),
+					author: { login: "octo-author", __typename: "User" },
+				},
+			],
+		};
+		expect(one(node)?.lastAuthor.login).toBe("octo-author");
+		// As of a cutoff, the unlisted latest is past it: not counted.
+		expect(one(node, { asOf: at(59) })?.lastAuthor.login).toBe("rev");
 	});
 
 	it("a bot PR author never joins the set", () => {

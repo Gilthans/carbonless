@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { OWNER_ENV, ownerToken } from "../scripts/owner.mjs";
 import { testGitEnv } from "../test/git-fixture";
 import {
 	expect,
@@ -13,6 +14,7 @@ import {
 	stopChild,
 	test,
 } from "./fixtures";
+import { crbEnv } from "./pr-setup";
 
 // How `crb <pr>` and crb serve find each other runs the built CLI.
 const cliTest = test.extend({ crbClient: "cli" as const });
@@ -139,6 +141,58 @@ ownTest(
 			);
 		} finally {
 			if (pid) process.kill(pid, "SIGTERM");
+		}
+	},
+);
+
+ownTest(
+	"a crb serve whose owner is gone shuts down, the one a client started detached too",
+	async ({ pr, workdir }) => {
+		await pr();
+		mkdirSync(join(workdir, "config", "carbonless"), { recursive: true });
+		writeFileSync(
+			join(workdir, "config", "carbonless", "config.json"),
+			JSON.stringify({ serve: { port: 0 } }),
+		);
+		const owner = spawn("sleep", ["60"]);
+		const env = {
+			...crbEnv(workdir),
+			[OWNER_ENV]: ownerToken(owner.pid as number),
+		};
+		const alive = (pid: number) => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+		let direct: Awaited<ReturnType<typeof startServe>> | undefined;
+		let detached = 0;
+		try {
+			direct = await startServe(workdir, [], env);
+			const run = await runCli(workdir, [`${OWNER_REPO}#${PR_NUMBER}`], {
+				...env,
+				XDG_STATE_HOME: join(workdir, "state-detached"),
+			});
+			expect(run.code, run.output).toBe(0);
+			detached = JSON.parse(
+				readFileSync(
+					join(workdir, "state-detached", "carbonless", "server.json"),
+					"utf8",
+				),
+			).pid;
+
+			const exited = new Promise<number | null>((done) =>
+				direct?.child.once("exit", (code) => done(code)),
+			);
+			owner.kill("SIGKILL");
+			expect(await exited).toBe(0);
+			await expect.poll(() => alive(detached)).toBe(false);
+		} finally {
+			owner.kill("SIGKILL");
+			if (direct) await stopChild(direct.child);
+			if (detached && alive(detached)) process.kill(detached, "SIGKILL");
 		}
 	},
 );

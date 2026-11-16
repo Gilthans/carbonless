@@ -1,3 +1,4 @@
+import { spawn as spawnChild } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -6,6 +7,7 @@ import type {
 	SessionUpdate,
 } from "@agentclientprotocol/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ownerToken } from "../../../scripts/owner.mjs";
 import {
 	type AcpScenario,
 	acpLog,
@@ -437,5 +439,33 @@ describe("a start stopped before it spawns", () => {
 		expect((error as AgentStartError).reason).toBe("exited");
 		expect((error as AgentStartError).message).toBe("Stopped while starting");
 		expect(spawned.count).toBe(before);
+	});
+});
+
+describe("the fake agent", () => {
+	it("exits once its owner is gone, its stdin still open", async () => {
+		// Node for both, not sleep and the sh shim: this file runs on Windows too.
+		const owner = spawnChild(process.execPath, [
+			"-e",
+			"setTimeout(() => {}, 60_000)",
+		]);
+		const agent = spawnChild(
+			process.execPath,
+			[join(FAKE_ACP_BIN, "..", "agent.mjs")],
+			{
+				env: { ...process.env, CRB_OWNER: ownerToken(owner.pid as number) },
+				stdio: ["pipe", "ignore", "ignore"],
+			},
+		);
+		try {
+			const exited = new Promise<number | null>((done) =>
+				agent.once("exit", (code) => done(code)),
+			);
+			owner.kill("SIGKILL");
+			expect(await exited).toBe(0);
+		} finally {
+			owner.kill("SIGKILL");
+			agent.kill("SIGKILL");
+		}
 	});
 });

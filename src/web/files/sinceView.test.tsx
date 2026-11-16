@@ -327,6 +327,7 @@ describe("the since view's gaps", () => {
 		author: "rev",
 		avatarUrl: "",
 		participants: [],
+		lastAuthor: { login: "octo", avatarUrl: "", bot: false },
 		bot: false,
 		commentCount: 1,
 		hasReply: false,

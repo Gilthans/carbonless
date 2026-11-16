@@ -76,6 +76,12 @@ const E2E_MAP = [
 		/^src\/web\/files\/(ThreadFate|NotInComparison|threadPlacement|ThreadRow)\.tsx?$/,
 		["rereview", "files-threads"],
 	],
+	// The tree's Threads tab: its rows, its state, the tree's tabs, and
+	// who spoke last (the server's thread summaries).
+	[
+		/^src\/web\/files\/(ThreadsPanel|threadRows|sidebarState|FileTree|FilesPage|landing)\.tsx?$|^src\/server\/overview\.ts$|^e2e\/threads-tab\.spec\.ts$/,
+		["threads-tab"],
+	],
 	// The patch set graph, the toast and the since view (the comparison).
 	[
 		/^src\/web\/files\/(PatchsetGraph|HeadToast|graphCards|comparison|FilesPage|FileDiff|DiffBody|FileTree|ProgressBar|useSetStates|landing)\.tsx?$|^src\/web\/(App|shortcuts)\.tsx$|^e2e\/pr-setup\.ts$/,

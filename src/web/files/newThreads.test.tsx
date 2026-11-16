@@ -163,6 +163,7 @@ const thread = (anchor: Partial<CodeAnchor>): ReviewThread => {
 		author: "rev",
 		avatarUrl: "",
 		participants: [],
+		lastAuthor: { login: "octo", avatarUrl: "", bot: false },
 		bot: false,
 		commentCount: 1,
 		hasReply: false,

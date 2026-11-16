@@ -1,17 +1,20 @@
 import {
+	AlertIcon,
 	ChevronDownIcon,
 	ChevronRightIcon,
+	CommentDiscussionIcon,
 	DiffRenamedIcon,
 	EyeIcon,
+	FileDirectoryIcon,
 	FoldIcon,
 	UnfoldIcon,
 } from "@primer/octicons-react";
-import { type ReactNode, useId, useMemo } from "react";
+import { type KeyboardEvent, type ReactNode, useId, useMemo } from "react";
 import type { AgentThread } from "../../shared/agent";
 import type { FileView, ReviewThread } from "../../shared/types";
 import { agentBubbleLabel } from "../agent/AgentBubble";
 import type { FindMark } from "../code/Invisibles";
-import { Spinner } from "../Spinner";
+import { Spinner, SpinnerIcon } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
 import { ignoreWhitespace } from "../viewSettings";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
@@ -853,6 +856,100 @@ function TreeAction(props: {
 	);
 }
 
+/** The sidebar's tabs: the file tree, and the PR's conversations (ThreadsPanel). */
+export type SidebarTab = "files" | "threads";
+
+/** The Threads tab's count: open conversations, or loading, or which region failed. */
+export type ThreadsCount =
+	| { state: "loading" }
+	| { state: "failed"; what: string }
+	| { state: "open"; n: number };
+
+export interface TreeTabs {
+	tab: SidebarTab;
+	onTab: (tab: SidebarTab) => void;
+	/** What the Threads tab counts (ThreadsPanel's threadsCount). */
+	count: ThreadsCount;
+	/** The Threads tab's panel. */
+	panel: ReactNode;
+	/** The Threads tab's own controls in the bar (Show resolved). */
+	controls?: ReactNode;
+}
+
+const TAB_ORDER: SidebarTab[] = ["files", "threads"];
+
+/** One sidebar tab: an icon (Threads with its open count), a tooltip, an accessible name. */
+function TabButton(props: {
+	id: string;
+	panel: string;
+	tab: SidebarTab;
+	selected: boolean;
+	count: ThreadsCount;
+	onSelect: (tab: SidebarTab) => void;
+	onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void;
+}) {
+	const files = props.tab === "files";
+	const Icon = files ? FileDirectoryIcon : CommentDiscussionIcon;
+	const { count } = props;
+	const name = files
+		? "Files"
+		: count.state === "loading"
+			? "Threads, loading"
+			: count.state === "failed"
+				? `Threads, couldn't load ${count.what}`
+				: `Threads, ${count.n} open`;
+	return (
+		<Tooltip
+			content={
+				files
+					? "Files"
+					: count.state === "failed"
+						? `Threads: couldn't load ${count.what}`
+						: "Threads"
+			}
+			describe={false}
+		>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					id={props.id}
+					role="tab"
+					aria-selected={props.selected}
+					aria-controls={props.panel}
+					aria-label={name}
+					tabIndex={props.selected ? 0 : -1}
+					data-tab={props.tab}
+					onClick={() => props.onSelect(props.tab)}
+					onKeyDown={props.onKeyDown}
+					className={`flex h-7 min-w-7 items-center justify-center gap-1 rounded-md px-1.5 text-xs transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none pointer-coarse:h-10 pointer-coarse:min-w-10 ${
+						props.selected
+							? "bg-accent/12 text-ink shadow-[inset_0_-2px_0_var(--color-accent)]"
+							: "text-muted"
+					}`}
+				>
+					<Icon size={16} aria-hidden />
+					{!files &&
+						(count.state === "loading" ? (
+							<SpinnerIcon size={12} />
+						) : count.state === "failed" ? (
+							<AlertIcon
+								size={12}
+								aria-hidden
+								data-testid="threads-tab-failed"
+								className="text-bad"
+							/>
+						) : (
+							<span data-testid="threads-open" className="tabular-nums">
+								{count.n}
+							</span>
+						))}
+				</button>
+			)}
+		</Tooltip>
+	);
+}
+
 /**
  * The changed files as a folder tree, in the page's order (fileOrder), with
  * review status; a renamed file also shows at its old path. Folders fold
@@ -894,8 +991,33 @@ export function FileTree(props: {
 	filter?: { on: boolean; onChange: (on: boolean) => void };
 	/** The find's counts and name marks (Find in PR); nothing is hidden by it. */
 	find?: TreeFind;
+	/** The Files / Threads tabs above the tree (Files changed's sidebar). */
+	tabs?: TreeTabs;
 }) {
-	const { files, current, filter } = props;
+	const { files, current, filter, tabs } = props;
+	const ids = useId();
+	const tabId = (t: SidebarTab) => `${ids}-tab-${t}`;
+	const panelId = `${ids}-panel`;
+	const shownTab: SidebarTab = tabs?.tab ?? "files";
+	// Arrow keys move between the tabs (and select them), Home and End too.
+	const onTabKey = (e: KeyboardEvent<HTMLButtonElement>) => {
+		if (!tabs) return;
+		const at = TAB_ORDER.indexOf(tabs.tab);
+		const to =
+			e.key === "ArrowRight"
+				? TAB_ORDER[(at + 1) % TAB_ORDER.length]
+				: e.key === "ArrowLeft"
+					? TAB_ORDER[(at + TAB_ORDER.length - 1) % TAB_ORDER.length]
+					: e.key === "Home"
+						? TAB_ORDER[0]
+						: e.key === "End"
+							? TAB_ORDER[TAB_ORDER.length - 1]
+							: undefined;
+		if (!to) return;
+		e.preventDefault();
+		tabs.onTab(to);
+		document.getElementById(tabId(to))?.focus();
+	};
 	const opened = props.opened ?? null;
 	const tree = useMemo(() => buildTree(files), [files]);
 	const allFolders = useMemo(() => folderPaths(tree), [tree]);
@@ -905,89 +1027,131 @@ export function FileTree(props: {
 	});
 	const pathOf = (index: number | null) =>
 		index === null ? undefined : files.find((f) => f.index === index)?.path;
+	const folderTools = (allFolders.length > 0 || filter) && (
+		<div
+			role="toolbar"
+			aria-label="Folders"
+			className="flex flex-1 items-center justify-end gap-1 pt-1"
+		>
+			{filter && (
+				<Tooltip content="Needs eyes: hide files whose every mark carried over">
+					{(trigger) => (
+						<button
+							type="button"
+							{...trigger}
+							aria-label="Needs eyes"
+							aria-pressed={filter.on}
+							data-testid="needs-eyes"
+							onClick={() => filter.onChange(!filter.on)}
+							className={`mr-auto flex h-7 items-center gap-1 rounded-md px-1.5 text-xs transition-colors hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none pointer-coarse:h-10 ${
+								filter.on ? "bg-warn/15 text-warn" : "text-muted hover:text-ink"
+							}`}
+						>
+							<EyeIcon size={16} aria-hidden />
+							needs eyes
+						</button>
+					)}
+				</Tooltip>
+			)}
+			{allFolders.length > 0 && (
+				<>
+					<TreeAction
+						label="Fold all"
+						icon={FoldIcon}
+						onClick={() => folds.setAll(allFolders)}
+					/>
+					<TreeAction
+						label="Open all"
+						icon={UnfoldIcon}
+						onClick={() => folds.setAll([])}
+					/>
+				</>
+			)}
+		</div>
+	);
+	const treeNav = (
+		<nav
+			aria-label="Files"
+			aria-busy={props.threadsLoading || props.agentLoading || undefined}
+			data-testid="file-tree"
+			className="relative"
+		>
+			{(props.threadsLoading || props.agentLoading) && (
+				// Laid over the first row's end, so the tree doesn't move when
+				// it goes; taps go through to the row under it.
+				<Spinner
+					label={
+						props.threadsLoading ? "Loading comments" : "Placing agent threads"
+					}
+					className="pointer-events-none absolute top-0 right-0 z-[5] h-6 rounded-full border border-line bg-raised px-1 shadow-control"
+				/>
+			)}
+			<Children
+				nodes={tree.children}
+				unit={props.unit}
+				depth={0}
+				current={current}
+				currentPath={pathOf(current)}
+				openedPath={pathOf(opened)}
+				onSelect={props.onSelect}
+				threadsOf={props.threadsOf ?? NONE}
+				agentThreadsOf={props.agentThreadsOf ?? NO_AGENT}
+				agentUnreadOf={props.agentUnreadOf ?? NO_UNREAD}
+				threadsLoading={props.threadsLoading === true}
+				folds={folds}
+				eyesOf={props.eyesOf ?? NO_EYES}
+				find={props.find}
+			/>
+		</nav>
+	);
+	// Stays on top while the tree scrolls under it, on the background of
+	// what holds the tree (--tree-bg).
+	const bar =
+		"sticky top-0 z-10 mb-1 flex items-center gap-1 bg-(--tree-bg,var(--color-canvas))";
+	if (!tabs) {
+		return (
+			<div>
+				{folderTools && <div className={bar}>{folderTools}</div>}
+				{treeNav}
+			</div>
+		);
+	}
 	return (
 		<div>
-			{(allFolders.length > 0 || filter) && (
-				// Stays on top while the tree scrolls under it, on the
-				// background of what holds the tree (--tree-bg).
+			<div className={bar}>
 				<div
-					role="toolbar"
-					aria-label="Folders"
-					className="sticky top-0 z-10 mb-1 flex items-center justify-end gap-1 pt-1 bg-(--tree-bg,var(--color-canvas))"
+					role="tablist"
+					aria-label="Sidebar"
+					className="flex items-center gap-0.5 pt-1"
 				>
-					{filter && (
-						<Tooltip content="Needs eyes: hide files whose every mark carried over">
-							{(trigger) => (
-								<button
-									type="button"
-									{...trigger}
-									aria-label="Needs eyes"
-									aria-pressed={filter.on}
-									data-testid="needs-eyes"
-									onClick={() => filter.onChange(!filter.on)}
-									className={`mr-auto flex h-7 items-center gap-1 rounded-md px-1.5 text-xs transition-colors hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none pointer-coarse:h-10 ${
-										filter.on
-											? "bg-warn/15 text-warn"
-											: "text-muted hover:text-ink"
-									}`}
-								>
-									<EyeIcon size={16} aria-hidden />
-									needs eyes
-								</button>
-							)}
-						</Tooltip>
-					)}
-					{allFolders.length > 0 && (
-						<>
-							<TreeAction
-								label="Fold all"
-								icon={FoldIcon}
-								onClick={() => folds.setAll(allFolders)}
-							/>
-							<TreeAction
-								label="Open all"
-								icon={UnfoldIcon}
-								onClick={() => folds.setAll([])}
-							/>
-						</>
-					)}
+					{TAB_ORDER.map((t) => (
+						<TabButton
+							key={t}
+							id={tabId(t)}
+							panel={panelId}
+							tab={t}
+							selected={shownTab === t}
+							count={tabs.count}
+							onSelect={tabs.onTab}
+							onKeyDown={onTabKey}
+						/>
+					))}
 				</div>
-			)}
-			<nav
-				aria-label="Files"
-				aria-busy={props.threadsLoading || props.agentLoading || undefined}
-				data-testid="file-tree"
-				className="relative"
-			>
-				{(props.threadsLoading || props.agentLoading) && (
-					// Laid over the first row's end, so the tree doesn't move when
-					// it goes; taps go through to the row under it.
-					<Spinner
-						label={
-							props.threadsLoading
-								? "Loading comments"
-								: "Placing agent threads"
-						}
-						className="pointer-events-none absolute top-0 right-0 z-[5] h-6 rounded-full border border-line bg-raised px-1 shadow-control"
-					/>
-				)}
-				<Children
-					nodes={tree.children}
-					unit={props.unit}
-					depth={0}
-					current={current}
-					currentPath={pathOf(current)}
-					openedPath={pathOf(opened)}
-					onSelect={props.onSelect}
-					threadsOf={props.threadsOf ?? NONE}
-					agentThreadsOf={props.agentThreadsOf ?? NO_AGENT}
-					agentUnreadOf={props.agentUnreadOf ?? NO_UNREAD}
-					threadsLoading={props.threadsLoading === true}
-					folds={folds}
-					eyesOf={props.eyesOf ?? NO_EYES}
-					find={props.find}
-				/>
-			</nav>
+				{shownTab === "files"
+					? folderTools
+					: tabs.controls && (
+							<div
+								role="toolbar"
+								aria-label="Threads"
+								className="flex flex-1 items-center justify-end gap-1 pt-1"
+							>
+								{tabs.controls}
+							</div>
+						)}
+			</div>
+			<div id={panelId} role="tabpanel" aria-labelledby={tabId(shownTab)}>
+				{shownTab === "files" ? treeNav : tabs.panel}
+			</div>
 		</div>
 	);
 }

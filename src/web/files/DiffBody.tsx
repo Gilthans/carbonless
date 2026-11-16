@@ -61,7 +61,6 @@ import {
 	type AgentComposerItem,
 	useAgentComposers,
 } from "../agent/askAgentAction";
-import { usePendingLanding } from "../agent/conversationLinks";
 import {
 	type AgentPlaceable,
 	shownAgentPlaceables,
@@ -133,10 +132,12 @@ import {
 	TailRow,
 	ThreadRow,
 } from "./ThreadRow";
+import { useFocusAmong } from "./threadFocus";
 import {
 	type FilePlacement,
 	type LineKey,
 	lineKey,
+	type Placeable,
 	type Placements,
 	placeThreads,
 	sinceLeftToNew,
@@ -2680,16 +2681,26 @@ export function DiffBody(props: {
 			});
 		}
 	}, [agentEnded]);
-	// A link to a conversation here (a citation, a Re row): its line's
-	// threads open, so its card shows and takes the landing.
-	const landing = usePendingLanding();
-	useEffect(() => {
-		if (!agentEnded || !landing) return;
-		for (const [key, list] of agentEnded) {
-			if (!list.some((p) => p.thread.id === landing.conversation)) continue;
+	// A card asked for in this file (threadFocus: a Threads tab row, a
+	// link to a conversation): its line's bubble opens, or its hidden
+	// run's (the lines stay hidden), so the card shows and takes it.
+	useFocusAmong(
+		(id) => focusKey(placement, (t) => t.id, id) !== undefined,
+		(f) => {
+			const key = focusKey(placement, (t) => t.id, f.id);
+			if (!key) return;
+			collapse.toggled(key);
+			setOpenThreads((open) => (open.has(key) ? open : new Set(open).add(key)));
+		},
+	);
+	useFocusAmong(
+		(id) => focusKey(agentPlacement, (p) => p.thread.id, id) !== undefined,
+		(f) => {
+			const key = focusKey(agentPlacement, (p) => p.thread.id, f.id);
+			if (!key) return;
 			setOpenAgent((open) => (open.has(key) ? open : new Set(open).add(key)));
-		}
-	}, [agentEnded, landing]);
+		},
+	);
 
 	const checkbox = (cluster: ClusterView, marker?: Marker) => (
 		<ClusterControls
@@ -4389,4 +4400,23 @@ function usePicker(
 		},
 		onFocus: (stop) => setFocused({ shown, stop }),
 	};
+}
+
+/**
+ * The key a thread's bubble opens under: its line's, or (in a hidden run)
+ * the line it will end on, which the run's bubble opens.
+ */
+function focusKey<T extends Placeable>(
+	placement: FilePlacement<T> | null | undefined,
+	idOf: (t: T) => string,
+	id: string,
+): LineKey | undefined {
+	if (!placement) return undefined;
+	for (const [key, list] of placement.end) {
+		if (list.some((t) => idOf(t) === id)) return key;
+	}
+	for (const [t, target] of placement.gapTargets) {
+		if (idOf(t) === id) return target.key;
+	}
+	return undefined;
 }
