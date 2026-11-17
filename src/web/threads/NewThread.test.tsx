@@ -14,6 +14,7 @@ import {
 	AgentComposer,
 	headFacts,
 } from "../agent/AgentComposer";
+import { CommentScopeProvider } from "../agent/agentComment";
 import {
 	askAgent,
 	getAgentWrites,
@@ -74,6 +75,8 @@ function show(
 		sending?: boolean;
 		/** Started from this agent conversation (Comment on its card). */
 		agentThread?: string;
+		/** Whether the span's lines are GitHub's diff's (the diff's CommentScope). */
+		inDiff?: boolean;
 	} = {},
 ) {
 	const client = new QueryClient({
@@ -120,13 +123,41 @@ function show(
 			</>
 		);
 	}
+	const inDiff = opts.inDiff;
 	render(
 		<QueryClientProvider client={client}>
-			<Page />
+			{inDiff === undefined ? (
+				<Page />
+			) : (
+				<CommentScopeProvider value={{ headSure: true, inDiff: () => inDiff }}>
+					<Page />
+				</CommentScopeProvider>
+			)}
 		</QueryClientProvider>,
 	);
 	return { writer, id, client };
 }
+
+describe("a comment carrying an agent conversation, on lines GitHub won't take", () => {
+	const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+
+	it("says why once the page shows them, and Comment stays off", () => {
+		show(LINE, "Worth a thread", { agentThread, inDiff: false });
+		expect(screen.getByTestId("new-thread-not-here")).toHaveTextContent(
+			"GitHub only takes comments on lines in the diff",
+		);
+		expect(screen.getByTestId("new-thread-post")).toBeDisabled();
+	});
+
+	it("says nothing on lines of the diff, nor on a plain comment (the bar checked it)", () => {
+		show(LINE, "Worth a thread", { agentThread, inDiff: true });
+		expect(screen.queryByTestId("new-thread-not-here")).toBeNull();
+		expect(screen.getByTestId("new-thread-post")).toBeEnabled();
+		cleanup();
+		show(LINE, "Plain", { inDiff: false });
+		expect(screen.queryByTestId("new-thread-not-here")).toBeNull();
+	});
+});
 
 describe("NewThread's agent button", () => {
 	it("doesn't join a question still being asked on the span: a composer of its own", async () => {

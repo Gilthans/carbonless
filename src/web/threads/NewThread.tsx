@@ -8,11 +8,16 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { type KeyboardEvent, useLayoutEffect, useRef } from "react";
 import { MAX_REPLY } from "../../shared/types";
+import { useCommentScope } from "../agent/agentComment";
 import { agentAsking } from "../agent/agentWrites";
 import { askAgentAvailable, openAgentComposer } from "../agent/askAgentAction";
 import { ASK_HANDLE, HANDLE, HANDLE_OFF } from "../agent/handle";
 import { overviewQuery, sessionQuery } from "../api";
-import { type CodeSpan, describeSpan } from "../files/selectionActions";
+import {
+	type CodeSpan,
+	commentAvailable,
+	describeSpan,
+} from "../files/selectionActions";
 import { LabeledIcon } from "../overview/parts";
 import { Tooltip } from "../Tooltip";
 import { safeHref } from "../ui";
@@ -116,6 +121,21 @@ export function NewThread(props: {
 	// Refused: the text and its Comment button stay above the notice.
 	useClearOfNotices(card, failed !== null && !item.sending);
 	const blank = !item.text.trim();
+	// Opened from an agent conversation on another version (Comment on its
+	// card), the page then showing that version: its lines checked as the
+	// selection bar checks them, so a span GitHub won't take says why here
+	// rather than after Comment.
+	const scope = useCommentScope();
+	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
+	const notHere =
+		item.agentThread && overview && scope?.inDiff(span) === false
+			? commentAvailable(span, {
+					writes: overview.writes,
+					commentLeft: overview.commentLeft !== false,
+					file: { binary: false, submodule: false },
+					inDiff: false,
+				})
+			: true;
 	useLayoutEffect(() => {
 		if (!item.focus) return;
 		const el = box.current;
@@ -134,7 +154,7 @@ export function NewThread(props: {
 	}, [item.text, item.sending]);
 	const post = () => {
 		const now = writer.drafts.newThread(clientId);
-		if (!now?.text.trim()) return;
+		if (!now?.text.trim() || notHere !== true) return;
 		writer.createThread(clientId);
 		closeComposer(clientId);
 		props.onPosted?.();
@@ -240,6 +260,16 @@ export function NewThread(props: {
 					</div>
 				) : (
 					<>
+						{notHere !== true && (
+							<p
+								role="alert"
+								data-testid="new-thread-not-here"
+								className="flex flex-wrap items-center gap-x-2 text-sm text-bad"
+							>
+								<AlertIcon size={14} aria-hidden className="shrink-0" />
+								{notHere}
+							</p>
+						)}
 						{failed && (
 							<p
 								role="alert"
@@ -290,7 +320,7 @@ export function NewThread(props: {
 							<button
 								type="button"
 								data-testid="new-thread-post"
-								disabled={blank}
+								disabled={blank || notHere !== true}
 								onClick={post}
 								// Keeps the box's focus on a mouse click.
 								onMouseDown={(e) => e.preventDefault()}
