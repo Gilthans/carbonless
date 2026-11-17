@@ -2,6 +2,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { askAgent, resetAgentWrites } from "../agent/agentWrites";
+import {
+	closeAgentComposer,
+	openAgentComposer,
+	resetAgentComposers,
+	setAgentComposerText,
+} from "../agent/askAgentAction";
 import { viewSaverFor } from "../home/viewSaver";
 import { draftsFor } from "../threads/drafts";
 import { threadWritesFor } from "../threads/threadWrites";
@@ -142,6 +149,95 @@ describe("useUnsavedGuard", () => {
 		expect(leave()).toBe(false);
 		act(() => drafts.setText("T1", ""));
 		expect(leave()).toBe(false);
+	});
+
+	it("asks while an Ask agent composer holds a question not yet asked: not once it is sent, cancelled or cleared", async () => {
+		localStorage.clear();
+		resetAgentComposers();
+		resetAgentWrites();
+		const answers: ((status: number) => void)[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				() =>
+					new Promise<Response>((resolve) => {
+						answers.push((status) =>
+							resolve(
+								new Response(
+									JSON.stringify(
+										status === 200
+											? {
+													id: "A1",
+													anchor: span,
+													messages: [],
+													resolved: false,
+												}
+											: { error: "No agent here" },
+									),
+									{ status },
+								),
+							),
+						);
+					}),
+			),
+		);
+		const span = {
+			path: "a.ts",
+			commit: "c".repeat(40),
+			subject: "line" as const,
+			side: "RIGHT" as const,
+			line: 3,
+		};
+		const client = new QueryClient();
+		render(
+			<QueryClientProvider client={client}>
+				<Guard />
+			</QueryClientProvider>,
+		);
+		try {
+			// Open and empty, or only spaces: nothing to lose.
+			let id = "";
+			act(() => {
+				id = openAgentComposer(span);
+			});
+			expect(leave()).toBe(false);
+			act(() => setAgentComposerText(id, "  \n"));
+			expect(leave()).toBe(false);
+			act(() => setAgentComposerText(id, "Why a lock?"));
+			expect(leave()).toBe(true);
+			// Cleared: clean again.
+			act(() => setAgentComposerText(id, ""));
+			expect(leave()).toBe(false);
+			act(() => setAgentComposerText(id, "Why a lock?"));
+			expect(leave()).toBe(true);
+			// Cancelled (the composer closed): clean.
+			act(() => closeAgentComposer(id));
+			expect(leave()).toBe(false);
+			// Asked: on its way, it isn't the page's to keep.
+			act(() => {
+				id = openAgentComposer(span, undefined, "Why a lock?");
+			});
+			expect(leave()).toBe(true);
+			act(() => askAgent(client, span, "Why a lock?", id));
+			expect(leave()).toBe(false);
+			// Refused: the text is only in the box again.
+			await act(async () => {
+				answers.shift()?.(400);
+				await new Promise((r) => setTimeout(r, 0));
+			});
+			expect(leave()).toBe(true);
+			// Asked again, and answered: the composer closes.
+			act(() => askAgent(client, span, "Why a lock?", id));
+			expect(leave()).toBe(false);
+			await act(async () => {
+				answers.shift()?.(200);
+				await new Promise((r) => setTimeout(r, 0));
+			});
+			expect(leave()).toBe(false);
+		} finally {
+			resetAgentComposers();
+			resetAgentWrites();
+		}
 	});
 
 	it("asks while drafts can't reach storage (it throws)", () => {

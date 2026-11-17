@@ -20,7 +20,11 @@ import {
 	postAgentThread,
 	withThread,
 } from "./api";
-import { anchorOf, closeAgentComposer } from "./askAgentAction";
+import {
+	anchorOf,
+	closeAgentComposer,
+	useAgentComposers,
+} from "./askAgentAction";
 
 export interface AgentWrite {
 	/** A new thread's span, or the thread a reply goes to. */
@@ -86,6 +90,21 @@ export const getAgentWrites = getState;
 export function agentAsking(clientId: string): boolean {
 	const write = state.pending.get(clientId);
 	return write !== undefined && !write.error;
+}
+
+/**
+ * Whether an Ask agent composer holds a question not yet asked: nothing
+ * keeps it past the page (it isn't a draft), so leaving would lose it
+ * (useUnsaved). One on its way, or one cleared, doesn't count; one the
+ * server refused does (its text is still only in the box).
+ */
+export function useUnaskedQuestion(): boolean {
+	const composers = useAgentComposers();
+	const { pending } = useAgentWrites();
+	return composers.some((c) => {
+		const write = pending.get(c.clientId);
+		return c.text.trim() !== "" && (write === undefined || !!write.error);
+	});
 }
 
 function send(client: QueryClient, clientId: string): void {

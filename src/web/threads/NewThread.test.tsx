@@ -71,6 +71,7 @@ function show(
 		writes?: PrOverview["writes"];
 		headUnsure?: boolean;
 		noOverview?: boolean;
+		sending?: boolean;
 	} = {},
 ) {
 	const client = new QueryClient({
@@ -91,7 +92,7 @@ function show(
 			clientId: id,
 			span,
 			text: writer.drafts.newThread(id)?.text ?? "",
-			sending: false,
+			sending: opts.sending ?? false,
 			focus: false,
 		};
 		return (
@@ -146,6 +147,28 @@ describe("NewThread's agent button", () => {
 		expect(getAgentComposers()).toMatchObject([
 			{ span: LINE, text: "second thought" },
 		]);
+	});
+
+	it("sits at the bottom row's right end, after Comment, where a thread's agent handle is", () => {
+		show(LINE, "x");
+		const button = screen.getByRole("button", { name: "Ask agent instead" });
+		const row = button.parentElement;
+		const post = screen.getByTestId("new-thread-post");
+		expect(row).toBe(post.parentElement);
+		expect(row?.lastElementChild).toBe(button);
+		// Not in the top band (the quote and span).
+		expect(button.closest("article")?.firstElementChild).not.toContainElement(
+			button,
+		);
+		expect(button.className).toContain("rounded-l-lg");
+		expect(button.className).toContain("h-10");
+	});
+
+	it("is gone while the comment is sending", () => {
+		show(LINE, "x", { sending: true });
+		expect(
+			screen.queryByRole("button", { name: "Ask agent instead" }),
+		).toBeNull();
 	});
 
 	it("is off until the overview is known", () => {
@@ -281,7 +304,7 @@ function showAsking(
 			<Page />
 		</QueryClientProvider>,
 	);
-	return { writer };
+	return { writer, client };
 }
 
 describe("AgentComposer's comment button", () => {
@@ -290,6 +313,34 @@ describe("AgentComposer's comment button", () => {
 		expect(headFacts(LINE, "head0")).toEqual({ stale: true });
 		expect(headFacts(FILE, "")).toEqual({ loading: true });
 		expect(headFacts(FILE, undefined)).toEqual({ loading: true });
+	});
+
+	it("sits at the bottom row's right end, after Ask, where a thread's agent handle is", () => {
+		showAsking(LINE, "x");
+		const button = screen.getByRole("button", { name: "Comment instead" });
+		const row = button.parentElement;
+		expect(row).toBe(screen.getByTestId("agent-composer-ask").parentElement);
+		expect(row?.lastElementChild).toBe(button);
+		expect(button.closest("article")?.firstElementChild).not.toContainElement(
+			button,
+		);
+		expect(button.className).toContain("rounded-l-lg");
+		expect(button.className).toContain("h-10");
+	});
+
+	it("is gone while the question is being asked", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise<Response>(() => {})),
+		);
+		const { client } = showAsking(LINE, "Why?");
+		expect(
+			screen.getByRole("button", { name: "Comment instead" }),
+		).toBeTruthy();
+		act(() => askAgent(client, LINE, "Why?", "aid1"));
+		expect(
+			screen.queryByRole("button", { name: "Comment instead" }),
+		).toBeNull();
 	});
 
 	it("says it is loading while the head is unknown", () => {

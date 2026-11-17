@@ -10,6 +10,7 @@ import { type KeyboardEvent, useLayoutEffect, useRef } from "react";
 import { MAX_REPLY } from "../../shared/types";
 import { agentAsking } from "../agent/agentWrites";
 import { askAgentAvailable, openAgentComposer } from "../agent/askAgentAction";
+import { ASK_HANDLE, HANDLE, HANDLE_OFF } from "../agent/handle";
 import { overviewQuery, sessionQuery } from "../api";
 import { type CodeSpan, describeSpan } from "../files/selectionActions";
 import { LabeledIcon } from "../overview/parts";
@@ -188,26 +189,6 @@ export function NewThread(props: {
 				<span className="shrink-0 font-mono text-faint">
 					{describeSpan(span)}
 				</span>
-				{!item.sending && (
-					<Tooltip
-						content={askable === true ? ASK_INSTEAD : askable}
-						describe={askable !== true}
-					>
-						{(trigger) => (
-							<button
-								{...trigger}
-								type="button"
-								data-testid="new-thread-agent"
-								aria-label={ASK_INSTEAD}
-								aria-disabled={askable !== true || undefined}
-								onClick={toAgent}
-								className="-my-1 -mr-1.5 ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-dashed border-agent-edge bg-agent/60 text-agent-ink hover:border-agent-ink hover:bg-agent focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:border-line aria-disabled:bg-transparent aria-disabled:text-faint"
-							>
-								<SparkleFillIcon size={14} aria-hidden />
-							</button>
-						)}
-					</Tooltip>
-				)}
 			</div>
 			<div className="space-y-1.5 p-2.5">
 				{item.sending ? (
@@ -290,6 +271,25 @@ export function NewThread(props: {
 								<CommentIcon size={16} aria-hidden />
 								Comment
 							</button>
+							{/* Where a thread's agent handle is: the row's right end. */}
+							<Tooltip
+								content={askable === true ? ASK_INSTEAD : askable}
+								describe={askable !== true}
+							>
+								{(trigger) => (
+									<button
+										{...trigger}
+										type="button"
+										data-testid="new-thread-agent"
+										aria-label={ASK_INSTEAD}
+										aria-disabled={askable !== true || undefined}
+										onClick={toAgent}
+										className={`${HANDLE} ${ASK_HANDLE} ${HANDLE_OFF} focus-visible:outline-2 focus-visible:outline-accent`}
+									>
+										<SparkleFillIcon size={14} aria-hidden />
+									</button>
+								)}
+							</Tooltip>
 						</div>
 					</>
 				)}
