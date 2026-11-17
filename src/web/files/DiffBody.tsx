@@ -66,6 +66,7 @@ import {
 import {
 	type CommentScope,
 	CommentScopeProvider,
+	onHeadMove,
 	spanInHunks,
 } from "../agent/agentComment";
 import { takeJustAsked } from "../agent/agentWrites";
@@ -2504,8 +2505,8 @@ export function DiffBody(props: {
 	const writer = useThreadWriter();
 
 	// The agent's side: its threads (their own read) and open composers.
-	const sessionHead = useQuery({ ...sessionQuery, enabled: false }).data
-		?.snapshotHead;
+	const sessionNow = useQuery({ ...sessionQuery, enabled: false }).data;
+	const sessionHead = sessionNow?.snapshotHead;
 	// FilesPage reads them (and the tree counts them); here, from the cache.
 	const agentThreads = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
@@ -2728,10 +2729,13 @@ export function DiffBody(props: {
 		if (!snapshotHead || !hunks.data || !props.headSure) return;
 		for (const item of orphanItems) {
 			if (item.sending) continue;
-			// One carrying an agent conversation stays on the conversation's
-			// version (Comment on it goes there; the link needs its commit).
-			if (item.agentThread) continue;
 			const draft = writer.drafts.newThread(item.clientId);
+			// One carrying an agent conversation: onHeadMove (never moved).
+			if (item.agentThread) {
+				const fate = onHeadMove(sessionNow, item.span.commit, !!draft);
+				if (fate === "close") closeComposer(item.clientId);
+				continue;
+			}
 			// Opened on the earlier head and never typed in: nothing to keep.
 			if (!draft) {
 				closeComposer(item.clientId);

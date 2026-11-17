@@ -28,6 +28,7 @@ import {
 	baseOf,
 	type CommentScope,
 	CommentScopeProvider,
+	onHeadMove,
 	ShowVersionProvider,
 	spanInHunks,
 	versionOf,
@@ -322,6 +323,42 @@ describe("the version a conversation was asked on", () => {
 		const s = session({ patchsets: [ps(1, P1)] } as never);
 		expect(viewingOf(s, P1)).toEqual({ kind: "patchset", number: 1 });
 		expect(viewingOf(s, G)).toEqual({ kind: "head", oid: G });
+	});
+});
+
+describe("a composer carrying a conversation when another head shows", () => {
+	const H1 = "1".repeat(40);
+	const H2 = "2".repeat(40);
+	const session = (more: Partial<SessionInfo>) =>
+		({ snapshotHead: H1, head: null, patchsets: [], ...more }) as SessionInfo;
+
+	it("stays while its version takes comments (Comment went there)", () => {
+		// No patch set, GitHub's head on screen: H1 is still the snapshot's.
+		expect(onHeadMove(session({ head: { oid: H2 } } as never), H1, false)).toBe(
+			"stay",
+		);
+		// PS1 the latest.
+		const ps1 = session({
+			patchsets: [{ number: 1, head: H1 }],
+			head: { oid: H2 },
+		} as never);
+		expect(onHeadMove(ps1, H1, true)).toBe("stay");
+	});
+
+	it("a Refresh to H2 (H1 no longer any version): untyped it closes, typed it stays an orphan; never moved", () => {
+		const refreshed = session({ snapshotHead: H2, head: { oid: H2 } } as never);
+		expect(onHeadMove(refreshed, H1, false)).toBe("close");
+		expect(onHeadMove(refreshed, H1, true)).toBe("orphan");
+		// An earlier patch set: read-only, the same.
+		const two = session({
+			snapshotHead: H2,
+			patchsets: [
+				{ number: 1, head: H1 },
+				{ number: 2, head: H2 },
+			],
+		} as never);
+		expect(onHeadMove(two, H1, false)).toBe("close");
+		expect(onHeadMove(undefined, H1, false)).toBeUndefined();
 	});
 });
 

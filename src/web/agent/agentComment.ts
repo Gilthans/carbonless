@@ -125,6 +125,25 @@ export function versionOf(
 }
 
 /**
+ * What another head on screen does to a composer carrying an agent
+ * conversation (its span on the conversation's commit): it stays while
+ * that version still takes comments (Comment went there; the page shows
+ * it again); else as any composer whose head is gone, closed when
+ * untyped, kept as an orphan when typed, but never moved to the new
+ * head (the link needs the conversation's commit). Undefined while the
+ * session isn't read: nothing done yet.
+ */
+export function onHeadMove(
+	session: Pick<SessionInfo, "patchsets" | "head" | "snapshotHead"> | undefined,
+	commit: string,
+	typed: boolean,
+): "stay" | "close" | "orphan" | undefined {
+	if (!session) return undefined;
+	if (versionOf(session, commit) === "commentable") return "stay";
+	return typed ? "orphan" : "close";
+}
+
+/**
  * Where the page goes to show `commit` (a version that takes comments):
  * its patch set, else the head.
  */

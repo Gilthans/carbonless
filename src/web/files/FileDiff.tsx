@@ -28,6 +28,7 @@ import type {
 } from "../../shared/types";
 import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer, headFacts } from "../agent/AgentComposer";
+import { onHeadMove } from "../agent/agentComment";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
 import {
@@ -946,18 +947,25 @@ export function FileDiff(props: {
 	const writer = useThreadWriter();
 	// The head moved under a file comment being written: it moves along (a
 	// file comment doesn't depend on lines); one only opened just closes.
-	// One carrying an agent conversation stays on the conversation's
-	// version (Comment on it goes there; the link needs its commit).
+	// One carrying an agent conversation stays on its version while that
+	// takes comments, else closes or stays an orphan (onHeadMove).
 	useEffect(() => {
 		if (!snapshotHead) return;
 		for (const item of fileItems) {
 			if (item.span.commit === snapshotHead || item.sending) continue;
-			if (item.agentThread) continue;
-			if (writer.drafts.newThread(item.clientId)) {
+			const typed = !!writer.drafts.newThread(item.clientId);
+			// One carrying an agent conversation: onHeadMove (never moved).
+			if (item.agentThread) {
+				if (onHeadMove(session, item.span.commit, typed) === "close") {
+					closeComposer(item.clientId);
+				}
+				continue;
+			}
+			if (typed) {
 				writer.drafts.retarget(item.clientId, snapshotHead);
 			} else closeComposer(item.clientId);
 		}
-	}, [fileItems, snapshotHead, writer]);
+	}, [fileItems, snapshotHead, writer, session]);
 
 	const fileComment = useFileComment(file, snapshotHead, readOnly);
 

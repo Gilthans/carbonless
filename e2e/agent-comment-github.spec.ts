@@ -252,6 +252,9 @@ test("Comment on a conversation asked on PS1, the PR's new head on screen: the p
 	// The new head on screen: the conversation traced onto its line 5.
 	const onHead = fileSection(page, CALC);
 	await onHead.getByRole("button", { name: "Expand file" }).click();
+	// The head's diff is built on its first view (git diff and placement
+	// against the new head): up to 30 s on a loaded machine, as the head
+	// check above (rereview.spec's GIT_WAIT).
 	await expect(row(onHead, 5)).toBeVisible({ timeout: 30_000 });
 	await row(onHead, 5).getByTestId("agent-bubble").click();
 	const traced = onHead
