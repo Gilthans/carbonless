@@ -66,6 +66,7 @@ import {
 	postAgentResolved,
 	withThread,
 } from "./api";
+import { HANDLE, HANDLE_OFF } from "./handle";
 import { useLinkProblem } from "./linkProblems";
 import { ReRow, StartedButton } from "./ReRow";
 import { openAgentSetup } from "./setupStore";
@@ -422,7 +423,7 @@ function CommentOnGithub(props: {
 					}
 					aria-disabled={ok !== true || undefined}
 					onClick={start}
-					className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:text-faint aria-disabled:hover:bg-transparent"
+					className={`${HANDLE} ${HANDLE_OFF} border-line-strong text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent`}
 				>
 					<CommentIcon size={16} aria-hidden />
 				</button>
@@ -636,14 +637,6 @@ export function AgentThreadCard(props: {
 					/>
 				)}
 				<div className="ml-auto flex items-center gap-x-2">
-					{commentScope &&
-						isSpanThread(thread) &&
-						thread.anchor.subject !== "thread" &&
-						!thread.orphaned &&
-						!props.unplaced &&
-						!props.outdated && (
-							<CommentOnGithub thread={thread} scope={commentScope} />
-						)}
 					{answering && (
 						<button
 							type="button"
@@ -700,6 +693,15 @@ export function AgentThreadCard(props: {
 						)}
 						{resolved ? "Unresolve" : "Resolve"}
 					</button>
+					{/* Where a GitHub thread's agent handle is: the row's right end.
+					    Asked on an earlier version, it comments there. */}
+					{commentScope &&
+						isSpanThread(thread) &&
+						thread.anchor.subject !== "thread" &&
+						!thread.orphaned &&
+						!props.unplaced && (
+							<CommentOnGithub thread={thread} scope={commentScope} />
+						)}
 				</div>
 			</div>
 		</article>
