@@ -13,6 +13,7 @@ import type {
 } from "../../shared/agent";
 import type { DisplayHunk, PrOverview, SessionInfo } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
+import type { Viewing } from "../files/comparison";
 import { type CodeSpan, commentAvailable } from "../files/selectionActions";
 import { LOADING } from "../threads/NewThread";
 import {
@@ -38,6 +39,17 @@ export interface CommentScope {
 	headSure: boolean;
 	inDiff: (span: CodeSpan) => boolean | undefined;
 }
+
+/**
+ * The Files page's move of the comparison's viewed dot (its one
+ * comparison): Comment on a conversation asked on another version than
+ * the one on screen goes there first, its file (`path`) open. Null
+ * elsewhere.
+ */
+const ShowVersionContext = createContext<
+	((v: Viewing, path: string) => void) | null
+>(null);
+export const ShowVersionProvider = ShowVersionContext.Provider;
 
 const CommentScopeContext = createContext<CommentScope | null>(null);
 export const CommentScopeProvider = CommentScopeContext.Provider;
@@ -78,10 +90,52 @@ export interface AgentCommentContext {
 	 * base branch, at the merge base it has now.
 	 */
 	asked?: AgentView;
-	/** The merge base of the head shown (GitHub's base for it); undefined if unknown. */
+	/**
+	 * Where the conversation's own head stands, when it isn't the one on
+	 * screen (versionOf): a version that takes comments today, an
+	 * earlier patch set (read-only), or neither.
+	 */
+	version?: Version;
+	/** The merge base of the conversation's head (GitHub's base for it); undefined if unknown. */
 	base?: string;
 	/** The session (where `base` comes from) isn't read yet. */
 	baseLoading?: boolean;
+}
+
+/**
+ * Where a head stands for a new comment, as the Files page and the server
+ * take one today: `commentable`, the latest patch set's head (the
+ * snapshot's before any) or GitHub's head (viewing it, a comment starts
+ * its patch set); `read-only`, an earlier patch set's; `unknown`, a
+ * commit neither names (pushed over before it became a patch set).
+ */
+export type Version = "commentable" | "read-only" | "unknown";
+
+export function versionOf(
+	session: Pick<SessionInfo, "patchsets" | "head" | "snapshotHead">,
+	commit: string,
+): Version {
+	const latest = session.patchsets.at(-1);
+	if (latest ? latest.head === commit : session.snapshotHead === commit) {
+		return "commentable";
+	}
+	if (session.head?.oid === commit) return "commentable";
+	if (session.patchsets.some((p) => p.head === commit)) return "read-only";
+	return "unknown";
+}
+
+/**
+ * Where the page goes to show `commit` (a version that takes comments):
+ * its patch set, else the head.
+ */
+export function viewingOf(
+	session: Pick<SessionInfo, "patchsets">,
+	commit: string,
+): Viewing {
+	const ps = session.patchsets.find((p) => p.head === commit);
+	return ps
+		? { kind: "patchset", number: ps.number }
+		: { kind: "head", oid: commit };
 }
 
 const sidesOf = (a: AgentSpanAnchor) =>
@@ -89,27 +143,41 @@ const sidesOf = (a: AgentSpanAnchor) =>
 
 /**
  * Why a GitHub comment can't go on the conversation's span; true when it
- * can: the Comment action's rules, the span on the head shown, and old
- * lines only when asked against the base branch (a since view's old lines
- * are a patch set's, not GitHub's base).
+ * can: the Comment action's rules on the conversation's own version (the
+ * one on screen, or the one it was asked on: Comment goes there), and
+ * old lines only when asked against the base branch (a since view's old
+ * lines are a patch set's, not GitHub's base).
  */
 export function agentCommentAvailable(
 	anchor: AgentSpanAnchor,
 	ctx: AgentCommentContext,
 ): true | string {
 	const span = spanOfAnchor(anchor);
+	if (ctx.right === undefined) {
+		const rule = commentAvailable(span, {
+			writes: ctx.writes,
+			commentLeft: ctx.commentLeft,
+			file: { binary: false, submodule: false },
+		});
+		return rule === true ? "The PR's head is loading" : rule;
+	}
+	const onScreen = anchor.commit === ctx.right;
+	// Another version than the one on screen: its own rules, as the page
+	// will show it (whether its lines are GitHub's diff isn't known here;
+	// taken as yes, as the selection bar does while unknown).
 	const rule = commentAvailable(span, {
 		writes: ctx.writes,
 		commentLeft: ctx.commentLeft,
 		file: { binary: false, submodule: false },
-		readOnly: ctx.readOnly,
-		headUnsure: ctx.headUnsure,
-		inDiff: ctx.inDiff,
+		readOnly: onScreen ? ctx.readOnly : ctx.version === "read-only",
+		headUnsure: onScreen ? ctx.headUnsure : false,
+		inDiff: onScreen ? ctx.inDiff : undefined,
 	});
 	if (rule !== true) return rule;
-	if (ctx.right === undefined) return "The PR's head is loading";
-	if (anchor.commit !== ctx.right) {
-		return "Asked on an earlier version: ask again on the latest";
+	if (!onScreen && ctx.version !== "commentable") {
+		return ctx.version === undefined
+			? LOADING
+			: "Asked on an earlier version: ask again on the latest";
 	}
 	if (sidesOf(anchor).includes("LEFT")) {
 		const asked = ctx.asked;
@@ -166,6 +234,8 @@ export function useAgentComment(
 	const readOnly =
 		"patchset" in t && latest !== undefined && t.patchset < latest;
 	const span = spanOfAnchor(thread.anchor);
+	const commit = thread.anchor.commit;
+	const showVersion = useContext(ShowVersionContext);
 	const ok = overview
 		? agentCommentAvailable(thread.anchor, {
 				writes: overview.writes,
@@ -174,8 +244,11 @@ export function useAgentComment(
 				readOnly,
 				headUnsure: !scope.headSure,
 				inDiff: scope.inDiff(span),
+				// Nowhere to go to another version: none takes the comment.
+				version:
+					session && (showVersion ? versionOf(session, commit) : "unknown"),
 				asked: thread.messages.find((m) => m.by === "human")?.view,
-				base: baseOf(session, right),
+				base: baseOf(session, commit),
 				baseLoading: session === undefined,
 			})
 		: LOADING;
@@ -184,6 +257,12 @@ export function useAgentComment(
 		start: () => {
 			if (ok !== true) return;
 			clearLinkProblem(thread.id);
+			// Asked on another version than the one on screen: the page goes
+			// there, where its lines are, and the comment is written (and
+			// posted) on it, as any comment on that version is.
+			if (session && commit !== right) {
+				showVersion?.(viewingOf(session, commit), span.path);
+			}
 			// A plain comment typed on the span takes the conversation along.
 			const typed = newThreadItems(writer.drafts.get(), []).find(
 				(i) => sameSpan(i.span, span) && !i.agentThread && !i.sending,

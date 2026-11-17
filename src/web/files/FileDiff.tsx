@@ -846,10 +846,13 @@ export function FileDiff(props: {
 	const writer = useThreadWriter();
 	// The head moved under a file comment being written: it moves along (a
 	// file comment doesn't depend on lines); one only opened just closes.
+	// One carrying an agent conversation stays on the conversation's
+	// version (Comment on it goes there; the link needs its commit).
 	useEffect(() => {
 		if (!snapshotHead) return;
 		for (const item of fileItems) {
 			if (item.span.commit === snapshotHead || item.sending) continue;
+			if (item.agentThread) continue;
 			if (writer.drafts.newThread(item.clientId)) {
 				writer.drafts.retarget(item.clientId, snapshotHead);
 			} else closeComposer(item.clientId);

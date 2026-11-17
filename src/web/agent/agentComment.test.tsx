@@ -12,6 +12,7 @@ import type {
 	SessionInfo,
 } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
+import type { Viewing } from "../files/comparison";
 import { HEAD_UNSURE } from "../files/selectionActions";
 import {
 	getComposers,
@@ -27,7 +28,10 @@ import {
 	baseOf,
 	type CommentScope,
 	CommentScopeProvider,
+	ShowVersionProvider,
 	spanInHunks,
+	versionOf,
+	viewingOf,
 } from "./agentComment";
 import { resetAgentWrites } from "./agentWrites";
 import { spanOfAnchor } from "./askAgentAction";
@@ -96,6 +100,10 @@ function show(
 		scope?: CommentScope | null;
 		unplaced?: boolean;
 		outdated?: string;
+		/** The Files page's move of the viewed dot (null: none, outside it). */
+		showVersion?: ((v: Viewing, path: string) => void) | null;
+		/** GitHub's head, when it moved on from the snapshot. */
+		githubHead?: string;
 	} = {},
 ) {
 	client = new QueryClient({
@@ -108,6 +116,7 @@ function show(
 	client.setQueryData(sessionQuery.queryKey, {
 		viewer: "dan",
 		snapshotHead: HEAD,
+		head: opts.githubHead ? { oid: opts.githubHead } : null,
 		patchsets: (opts.patchsets ?? []).map((n) => ({
 			number: n,
 			head: n === (opts.patchsets ?? []).at(-1) ? HEAD : `${n}`.repeat(40),
@@ -123,7 +132,13 @@ function show(
 		/>
 	);
 	const scope = opts.scope === undefined ? SCOPE : opts.scope;
-	const shown = opts.wrap ? opts.wrap(card) : card;
+	const wrapped = opts.wrap ? opts.wrap(card) : card;
+	const go = opts.showVersion === undefined ? vi.fn() : opts.showVersion;
+	const shown = go ? (
+		<ShowVersionProvider value={go}>{wrapped}</ShowVersionProvider>
+	) : (
+		wrapped
+	);
 	return render(
 		<QueryClientProvider client={client}>
 			{scope ? (
@@ -153,9 +168,18 @@ describe("agentCommentAvailable", () => {
 		expect(agentCommentAvailable(line, { ...on, readOnly: true })).toMatch(
 			/earlier patch set/,
 		);
+		// Asked on another version than the one on screen: that version's rules.
+		const elsewhere = { ...on, right: "o".repeat(40) };
 		expect(
-			agentCommentAvailable(line, { ...on, right: "o".repeat(40) }),
+			agentCommentAvailable(line, { ...elsewhere, version: "commentable" }),
+		).toBe(true);
+		expect(
+			agentCommentAvailable(line, { ...elsewhere, version: "read-only" }),
+		).toBe("An earlier patch set: comment on the latest");
+		expect(
+			agentCommentAvailable(line, { ...elsewhere, version: "unknown" }),
 		).toMatch(/earlier version/);
+		expect(agentCommentAvailable(line, elsewhere)).toBe("Loading the PR");
 		expect(agentCommentAvailable(line, { ...on, right: undefined })).toMatch(
 			/loading/i,
 		);
@@ -163,6 +187,26 @@ describe("agentCommentAvailable", () => {
 		expect(agentCommentAvailable(left, { ...on, commentLeft: false })).toMatch(
 			/Old lines/,
 		);
+	});
+
+	it("on another version, the screen's facts don't count: an earlier patch set shown, its diff loading, lines not in it", () => {
+		const elsewhere = {
+			...on,
+			right: "o".repeat(40),
+			version: "commentable" as const,
+		};
+		expect(
+			agentCommentAvailable(line, {
+				...elsewhere,
+				readOnly: true,
+				headUnsure: true,
+				inDiff: false,
+			}),
+		).toBe(true);
+		// The PR's own rules still hold there.
+		expect(
+			agentCommentAvailable(line, { ...elsewhere, writes: "as-of" }),
+		).toMatch(/cutoff/);
 	});
 
 	it("waits while the head's diff isn't shown yet, and only takes lines of GitHub's diff", () => {
@@ -249,6 +293,35 @@ describe("the merge base old lines are checked against", () => {
 		expect(baseOf({ ...session, head: null }, HEAD)).toBe("3".repeat(40));
 		expect(baseOf(session, "o".repeat(40))).toBeUndefined();
 		expect(baseOf(undefined, HEAD)).toBeUndefined();
+	});
+});
+
+describe("the version a conversation was asked on", () => {
+	const P1 = "1".repeat(40);
+	const P2 = "2".repeat(40);
+	const G = "g".repeat(40);
+	const ps = (n: number, head: string) => ({ number: n, head });
+	const session = (more: Partial<SessionInfo>) =>
+		({ snapshotHead: P1, head: null, patchsets: [], ...more }) as SessionInfo;
+
+	it("takes comments on the latest patch set's head, the snapshot's before any, and GitHub's head", () => {
+		expect(versionOf(session({}), P1)).toBe("commentable");
+		const two = session({ patchsets: [ps(1, P1), ps(2, P2)] } as never);
+		expect(versionOf(two, P2)).toBe("commentable");
+		expect(versionOf(two, P1)).toBe("read-only");
+		expect(versionOf(two, "o".repeat(40))).toBe("unknown");
+		const moved = session({
+			patchsets: [ps(1, P1)],
+			head: { oid: G },
+		} as never);
+		expect(versionOf(moved, P1)).toBe("commentable");
+		expect(versionOf(moved, G)).toBe("commentable");
+	});
+
+	it("is shown as its patch set, else as the head", () => {
+		const s = session({ patchsets: [ps(1, P1)] } as never);
+		expect(viewingOf(s, P1)).toEqual({ kind: "patchset", number: 1 });
+		expect(viewingOf(s, G)).toEqual({ kind: "head", oid: G });
 	});
 });
 
@@ -360,8 +433,21 @@ describe("Comment on an agent conversation", () => {
 							</SendViewProvider>
 						),
 					},
-					{},
+					// Asked on PS1, read-only since PS2 started.
+					{ anchor: { ...line, commit: "1".repeat(40) } },
 					/earlier patch set/,
+				],
+				[
+					// Asked on PS1, PS2 on screen: PS1 is read-only.
+					{ patchsets: [1, 2] },
+					{ anchor: { ...line, commit: "1".repeat(40) } },
+					/An earlier patch set: comment on the latest/,
+				],
+				[
+					// Outside the Files page: nowhere to go to its version.
+					{ showVersion: null },
+					{ anchor: { ...line, commit: "o".repeat(40) } },
+					/earlier version/,
 				],
 				[{ scope: { ...SCOPE, headSure: false } }, {}, /diff is loading/],
 				[{ scope: { ...SCOPE, inDiff: () => false } }, {}, /lines in the diff/],
@@ -450,11 +536,68 @@ describe("Comment on an agent conversation", () => {
 		show(thread(), { unplaced: true });
 		expect(commentButton()).toBeNull();
 		cleanup();
-		show(thread(), { outdated: "o".repeat(40) });
-		expect(commentButton()).toBeNull();
-		cleanup();
 		show(thread());
 		expect(commentButton()).not.toBeNull();
+	});
+
+	it("sits at the bottom row's right end, after Resolve, where a GitHub thread's agent handle is", () => {
+		show(thread());
+		const button = screen.getByRole("button", { name: "Comment on GitHub" });
+		const row = button.parentElement;
+		expect(row).toBe(screen.getByTestId("agent-resolve").parentElement);
+		expect(row?.lastElementChild).toBe(button);
+		expect(button.className).toContain("rounded-l-lg");
+		expect(button.className).toContain("h-10");
+	});
+
+	it("asked on an earlier head that takes comments: on, even on its outdated card; the page goes to that version and the composer is on its commit", async () => {
+		const P1 = HEAD;
+		const G = "g".repeat(40);
+		const go = vi.fn();
+		// PS1 is the latest patch set; GitHub's head moved on and is on screen.
+		show(thread(), {
+			patchsets: [1],
+			githubHead: G,
+			outdated: P1,
+			showVersion: go,
+			wrap: (n) => (
+				<SendViewProvider
+					value={{ target: { head: G }, from: { patchset: 1 } }}
+				>
+					{n}
+				</SendViewProvider>
+			),
+		});
+		const button = screen.getByRole("button", { name: "Comment on GitHub" });
+		expect(button.getAttribute("aria-disabled")).toBeNull();
+		await userEvent.click(button);
+		expect(go).toHaveBeenCalledWith(
+			{ kind: "patchset", number: 1 },
+			"src/math.js",
+		);
+		expect(getComposers()).toMatchObject([
+			{
+				agentThread: thread().id,
+				span: { commit: P1, path: "src/math.js", line: 3 },
+			},
+		]);
+		// The comment posts on that version's commit (NewThread sends the span's).
+		const [item] = newThreadItems([], getComposers());
+		if (!item) throw new Error("no item");
+		expect(targetOf(item.span, thread().id)).toMatchObject({
+			commit: P1,
+			agentThread: thread().id,
+		});
+	});
+
+	it("on the version on screen, the page doesn't move", async () => {
+		const go = vi.fn();
+		show(thread(), { showVersion: go });
+		await userEvent.click(
+			screen.getByRole("button", { name: "Comment on GitHub" }),
+		);
+		expect(go).not.toHaveBeenCalled();
+		expect(getComposers()).toHaveLength(1);
 	});
 
 	it("adopts a plain composer already open on the span instead of opening a second", async () => {

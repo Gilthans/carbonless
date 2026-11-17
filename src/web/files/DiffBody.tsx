@@ -2608,6 +2608,9 @@ export function DiffBody(props: {
 		if (!snapshotHead || !hunks.data || !props.headSure) return;
 		for (const item of orphanItems) {
 			if (item.sending) continue;
+			// One carrying an agent conversation stays on the conversation's
+			// version (Comment on it goes there; the link needs its commit).
+			if (item.agentThread) continue;
 			const draft = writer.drafts.newThread(item.clientId);
 			// Opened on the earlier head and never typed in: nothing to keep.
 			if (!draft) {
