@@ -880,7 +880,9 @@ export function sinceLineMarks(
 	/** Each line's rank among its key's lines. */
 	const ranks = (by: Map<string, number[]>) => {
 		const out = new Map<number, number>();
-		for (const list of by.values()) list.forEach((l, i) => out.set(l, i));
+		for (const list of by.values()) {
+			for (const [i, l] of list.entries()) out.set(l, i);
+		}
 		return out;
 	};
 	const addedBy = byKey(addedThen);
