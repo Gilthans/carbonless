@@ -787,3 +787,175 @@ describe("foldProgress", () => {
 		});
 	});
 });
+
+describe("lines-carried (CAR-195)", () => {
+	const linesCarried = (
+		states: {
+			key: string;
+			fromKey: string;
+			state: "reviewed" | "crossed-off";
+			lines: [number, number][];
+			fromLines: [number, number][];
+		}[],
+		by: "auto" | "human" = "auto",
+	) => at(newEvent("lines-carried", "dan", { from: 1, to: 2, states }, by));
+	/** PS1 on REV with `ps1` marks, PS2 on OTHER_REV, then `after`. */
+	const fold = (ps1: CrbEvent[], after: CrbEvent[]) =>
+		foldProgress([started(REV, 1), ...ps1, started(OTHER_REV, 2, 1), ...after])
+			.states;
+
+	it("carries a human mark's lines, reviewed and crossed off, into a cluster holding nothing", () => {
+		const states = fold(
+			[
+				state(K1, "unreviewed"),
+				linesReviewed(K1, [[0, 2]], { patchset: REV }),
+				linesCrossed(K1, [[2, 3]]),
+			],
+			[
+				linesCarried([
+					{
+						key: K2,
+						fromKey: K1,
+						state: "reviewed",
+						lines: [[3, 5]],
+						fromLines: [[0, 2]],
+					},
+					{
+						key: K2,
+						fromKey: K1,
+						state: "crossed-off",
+						lines: [[1, 2]],
+						fromLines: [[2, 3]],
+					},
+				]),
+			],
+		);
+		expect(states.get(K2)).toEqual({
+			state: "unreviewed",
+			lines: [[3, 5]],
+			crossed: [[1, 2]],
+			linesCarried: {
+				from: 1,
+				lines: [
+					[1, 2],
+					[3, 5],
+				],
+			},
+		});
+	});
+
+	it("a whole human mark carries any of its lines", () => {
+		const states = fold(
+			[state(K1, "reviewed")],
+			[
+				linesCarried([
+					{
+						key: K2,
+						fromKey: K1,
+						state: "reviewed",
+						lines: [[0, 1]],
+						fromLines: [[4, 5]],
+					},
+				]),
+			],
+		);
+		expect(states.get(K2)?.lines).toEqual([[0, 1]]);
+	});
+
+	it("fails closed: a source unmarked, missing, carried, marked the other way or not on those lines carries nothing", () => {
+		const entry = (
+			fromKey: string,
+			state: "reviewed" | "crossed-off" = "reviewed",
+		) =>
+			linesCarried([
+				{ key: K3, fromKey, state, lines: [[0, 1]], fromLines: [[1, 2]] },
+			]);
+		// Unmarked, and missing.
+		expect(fold([], [entry(K1)]).get(K3)).toBeUndefined();
+		// Marked the other way.
+		expect(
+			fold([state(K1, "crossed-off")], [entry(K1)]).get(K3),
+		).toBeUndefined();
+		// Marks of part that don't hold that line.
+		expect(
+			fold(
+				[state(K1, "unreviewed"), linesReviewed(K1, [[0, 1]])],
+				[entry(K1)],
+			).get(K3),
+		).toBeUndefined();
+		// A source carried itself (PS1 as a carry's target).
+		const chained = foldProgress([
+			started(REV, 1),
+			state(K1, "reviewed"),
+			started(OTHER_REV, 2, 1),
+			carried([{ key: K2, fromKey: K1, state: "reviewed" }]),
+			started(THIRD_REV, 3, 2),
+			at(
+				newEvent(
+					"lines-carried",
+					"dan",
+					{
+						from: 2,
+						to: 3,
+						states: [
+							{
+								key: K3,
+								fromKey: K2,
+								state: "reviewed",
+								lines: [[0, 1]],
+								fromLines: [[0, 1]],
+							},
+						],
+					},
+					"auto",
+				),
+			),
+		]).states;
+		expect(chained.get(K3)).toBeUndefined();
+	});
+
+	it("never over a human mark, and a human mark after it replaces it", () => {
+		const entry = linesCarried([
+			{
+				key: K2,
+				fromKey: K1,
+				state: "reviewed",
+				lines: [[0, 1]],
+				fromLines: [[0, 1]],
+			},
+		]);
+		expect(
+			fold(
+				[state(K1, "reviewed")],
+				[state(K2, "unreviewed", { patchset: OTHER_REV }), entry],
+			).get(K2),
+		).toEqual({ state: "unreviewed" });
+		expect(
+			fold(
+				[state(K1, "reviewed")],
+				[entry, state(K2, "unreviewed", { patchset: OTHER_REV })],
+			).get(K2),
+		).toEqual({ state: "unreviewed" });
+	});
+
+	it("only the engine's: a human lines-carried is dropped on parse and ignored by the fold", () => {
+		const states = fold(
+			[state(K1, "reviewed")],
+			[
+				linesCarried(
+					[
+						{
+							key: K2,
+							fromKey: K1,
+							state: "reviewed",
+							lines: [[0, 1]],
+							fromLines: [[0, 1]],
+						},
+					],
+					"human",
+				),
+			],
+		);
+		expect(states.get(K2)).toBeUndefined();
+	});
+});

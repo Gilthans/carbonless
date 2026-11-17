@@ -185,6 +185,12 @@ export interface ClusterView extends Cluster {
 	 * file does), never all of them (that is a crossed-off cluster).
 	 */
 	crossedLines?: LineRanges;
+	/**
+	 * Of its marked lines, those the engine carried from that patch set
+	 * (CAR-195): unchanged since it, where the reviewer had marked them
+	 * the same way; not re-marked by hand since.
+	 */
+	linesCarried?: { from: number; lines: LineRanges };
 }
 
 export interface FileView extends Omit<FileSummary, "clusters"> {
@@ -1080,6 +1086,12 @@ export interface RereviewAnswer {
 			/** carried: the state carried, and the rule it carried under. */
 			state?: "reviewed" | "crossed-off";
 			rule?: "exact" | "rename";
+			/**
+			 * reworked and new: its lines the since view doesn't show
+			 * (unchanged since `from` of the answer) whose counterparts the
+			 * reviewer marked there, as carried (CAR-195).
+			 */
+			lines?: { reviewed?: LineRanges; crossed?: LineRanges };
 		}[];
 		/**
 		 * The file's since-view pieces (pieces.ts SincePiece), what the since

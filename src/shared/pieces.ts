@@ -581,7 +581,12 @@ export interface SinceUnit {
 export interface UnitFile {
 	index: number;
 	path: string;
-	clusters: { key: string; kind: string }[];
+	clusters: {
+		key: string;
+		kind: string;
+		/** The line marks the engine carried into it (CAR-195). */
+		lines?: { reviewed?: LineRanges; crossed?: LineRanges };
+	}[];
 	pieces?: SincePiece[];
 }
 
@@ -600,6 +605,12 @@ export function sinceUnits(
 	const out: SinceUnit[] = [];
 	for (const file of files) {
 		const kinds = new Map(file.clusters.map((c) => [c.key, c.kind]));
+		const carriedLines = new Map(
+			file.clusters.map((c) => [
+				c.key,
+				union(c.lines?.reviewed ?? [], c.lines?.crossed ?? []),
+			]),
+		);
 		const clusters = new Map(clustersOf(file.index).map((c) => [c.key, c]));
 		const owned = new Map<string, LineRanges>();
 		const base = { index: file.index, path: file.path };
@@ -640,7 +651,16 @@ export function sinceUnits(
 						? "unticked"
 						: null;
 			if (!kind) continue;
-			const rest = subtract(all(c.lines), owned.get(c.key) ?? []);
+			// Lines the engine carried a mark into (unchanged since a line
+			// marked there, CAR-195) are not to read here while they hold a
+			// mark (carried, or the reviewer's since); unmarked again (an undo
+			// in the full diff), they count (principle 2).
+			const { reviewed: r, crossed: x } = marksOf(c);
+			const carriedHere = carriedLines.get(c.key) ?? [];
+			const rest = subtract(
+				subtract(all(c.lines), owned.get(c.key) ?? []),
+				subtract(carriedHere, subtract(carriedHere, union(r, x))),
+			);
 			if (c.lines > 0 && rest.length === 0) continue;
 			const { reviewed, crossed } = marksOf(c);
 			const state: ClusterState =

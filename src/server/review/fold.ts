@@ -1,6 +1,7 @@
 import {
 	contains,
 	type LineRanges,
+	size,
 	subtract,
 	union,
 } from "../../shared/lineRanges.js";
@@ -39,6 +40,12 @@ export interface StateEntry {
 	 */
 	lines?: LineRanges;
 	crossed?: LineRanges;
+	/**
+	 * Only on `unreviewed`: of `lines` and `crossed`, those the engine
+	 * carried from that patch set (`lines-carried`, CAR-195), no human
+	 * mark having replaced them since.
+	 */
+	linesCarried?: { from: number; lines: LineRanges };
 }
 
 export interface ProgressState {
@@ -68,7 +75,10 @@ export interface ProgressState {
  * `carried` entry sets the target's entry
  * only when, at that moment, its source cluster in `from` holds a human
  * state equal to it (CLAUDE.md principle 2: anything else leaves the
- * target unreviewed); a `split-carried` entry fills a piece of a split
+ * target unreviewed); a `lines-carried` entry marks its lines of a target
+ * cluster holding nothing but line carries, only when its source cluster
+ * holds a human mark (not carried) covering its `fromLines` in that state
+ * (CAR-195); a `split-carried` entry fills a piece of a split
  * hunk that holds nothing yet with the hunk's mark (whole, or the lines it
  * names), only when the hunk's key holds that mark at that moment, a
  * carried one staying carried; a `thread-placed` replaces the thread's
@@ -205,6 +215,75 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 						state: origin.state,
 						...(origin.reason !== undefined ? { reason: origin.reason } : {}),
 						carried: { from: e.from, rule: e.rule },
+					});
+				}
+				break;
+			}
+			case "lines-carried": {
+				// Parse enforces both; the fold holds them on its own too.
+				if (e.by !== "auto" || e.from >= e.to) break;
+				const from = byNumber.get(e.from);
+				const to = byNumber.get(e.to);
+				if (!from || !to) break;
+				const source = statesByRevision.get(from.revision);
+				const target = statesByRevision.get(to.revision);
+				if (!source || !target) break;
+				for (const entry of e.states) {
+					if (size(entry.lines) !== size(entry.fromLines)) continue;
+					const origin = source.get(entry.fromKey);
+					// Only a human mark carries (principle 2): one the engine
+					// carried, or a mark that doesn't hold every line, leaves the
+					// target alone.
+					if (
+						!origin ||
+						origin.carried !== undefined ||
+						origin.linesCarried !== undefined
+					) {
+						continue;
+					}
+					const holds =
+						origin.state === entry.state ||
+						(origin.state === "unreviewed" &&
+							contains(
+								(entry.state === "reviewed" ? origin.lines : origin.crossed) ??
+									[],
+								entry.fromLines,
+							));
+					if (!holds) continue;
+					// Only into a cluster that holds nothing but line carries.
+					const prior = target.get(entry.key);
+					if (prior && (prior.state !== "unreviewed" || !prior.linesCarried)) {
+						continue;
+					}
+					if (
+						prior &&
+						!contains(
+							prior.linesCarried?.lines ?? [],
+							union(prior.lines ?? [], prior.crossed ?? []),
+						)
+					) {
+						continue;
+					}
+					const reviewed = prior?.lines ?? [];
+					const crossed = prior?.crossed ?? [];
+					const next =
+						entry.state === "reviewed"
+							? {
+									lines: union(reviewed, subtract(entry.lines, crossed)),
+									crossed,
+								}
+							: {
+									lines: reviewed,
+									crossed: union(crossed, subtract(entry.lines, reviewed)),
+								};
+					target.set(entry.key, {
+						state: "unreviewed",
+						...(next.lines.length > 0 ? { lines: next.lines } : {}),
+						...(next.crossed.length > 0 ? { crossed: next.crossed } : {}),
+						linesCarried: {
+							from: e.from,
+							lines: union(next.lines, next.crossed),
+						},
 					});
 				}
 				break;

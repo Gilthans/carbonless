@@ -7,7 +7,6 @@ import {
 import type { SincePiece } from "../../shared/pieces";
 import type { Snapshot } from "../../shared/types";
 import { buildSnapshot } from "../diff/snapshot";
-import { reviewedLinesOf } from "../review/coverage";
 import type { StateEntry } from "../review/fold";
 import {
 	answerRereview,
@@ -86,13 +85,7 @@ async function piecesOf(reviewed: (key: string, i: number) => boolean) {
 	const target = { ...s2, baseBranch: "main" };
 	const traced = await traceRereview(g.path, since, [], target);
 	const { answer } = answerRereview(traced, since, [], target);
-	const hunks = interdiffFileHunks(
-		traced,
-		s2,
-		answer,
-		0,
-		reviewedLinesOf(s1, states),
-	);
+	const hunks = interdiffFileHunks(traced, s2, answer, 0);
 	const lines = (p: SincePiece) => {
 		const hunk = hunks.hunks[p.hunk];
 		const run = [];
@@ -102,7 +95,10 @@ async function piecesOf(reviewed: (key: string, i: number) => boolean) {
 		}
 		return run;
 	};
-	return { pieces: hunks.pieces ?? [], lines, answer };
+	/** The line marks the answer carried into a cluster (CAR-195). */
+	const carriedInto = (key: string) =>
+		answer.files[0]?.clusters.find((c) => c.key === key)?.lines;
+	return { pieces: hunks.pieces ?? [], lines, answer, carriedInto };
 }
 
 const clusterOf = (start: number) => {
@@ -112,8 +108,8 @@ const clusterOf = (start: number) => {
 };
 
 describe("the since view's pieces (engine)", () => {
-	it("a removal-only piece inside a PS2 cluster gets that cluster's key and, its lines unchanged since reviewed ones, all of it", async () => {
-		const { pieces, lines } = await piecesOf(() => true);
+	it("a removal-only piece inside a PS2 cluster gets that cluster's key and the line it shows; its lines unchanged since reviewed ones carry as reviewed", async () => {
+		const { pieces, lines, carriedInto } = await piecesOf(() => true);
 		// PS2's cluster: base 10–15 removed, "b new" added (after the block: line 20).
 		const merged = clusterOf(20);
 		expect(merged).toMatchObject({
@@ -129,17 +125,25 @@ describe("the since view's pieces (engine)", () => {
 			"-a 5",
 			"-base 14",
 		]);
-		expect(piece?.owns).toEqual([[0, 7]]);
+		expect(piece?.owns).toEqual([[4, 5]]);
 		expect(piece?.kind).toBe("removed");
+		// The rest is unchanged since lines reviewed in PS1: carried.
+		expect(carriedInto(merged.key)).toEqual({
+			reviewed: [
+				[0, 4],
+				[5, 7],
+			],
+		});
 	});
 
-	it("fails closed: the PS1 cluster those lines came from unreviewed, the piece takes only what it shows", async () => {
-		// A (PS1's second cluster) unreviewed: base 10–13 it removed are not vouched.
-		const { pieces } = await piecesOf((_, i) => i !== 1);
+	it("fails closed: the PS1 cluster those lines came from unreviewed, its lines carry nothing", async () => {
+		// A (PS1's second cluster) unreviewed: base 10–13 it removed carry nothing.
+		const { pieces, carriedInto } = await piecesOf((_, i) => i !== 1);
 		const merged = clusterOf(20);
 		const piece = pieces.find((p) => p.key === merged.key);
-		// base 14 (shown), base 15 (B removed it, reviewed), "b new" (B's line).
-		expect(piece?.owns).toEqual([[4, 7]]);
+		expect(piece?.owns).toEqual([[4, 5]]);
+		// base 15 (B removed it, reviewed), "b new" (B's line).
+		expect(carriedInto(merged.key)).toEqual({ reviewed: [[5, 7]] });
 	});
 
 	it("lines PS1 added that PS2 takes out again are a reverted piece of their own", async () => {
@@ -153,12 +157,20 @@ describe("the since view's pieces (engine)", () => {
 		expect(answer.toRead).toEqual({ files: 1, clusters: 5 });
 	});
 
-	it("a block edited in three places is one cluster in three pieces, splitting it whole", async () => {
-		const { pieces } = await piecesOf(() => true);
+	it("a block edited in three places is one cluster in three pieces; its unchanged lines carry", async () => {
+		const { pieces, carriedInto } = await piecesOf(() => true);
 		const blockCluster = clusterOf(6);
 		const own = pieces.filter((p) => p.key === blockCluster.key);
 		expect(own).toHaveLength(3);
-		expect(own.map((p) => p.owns)).toEqual([[[0, 5]], [[5, 8]], [[8, 10]]]);
+		expect(own.map((p) => p.owns)).toEqual([[[1, 2]], [[5, 6]], [[8, 9]]]);
+		expect(carriedInto(blockCluster.key)).toEqual({
+			reviewed: [
+				[0, 1],
+				[2, 5],
+				[6, 8],
+				[9, 10],
+			],
+		});
 	});
 });
 
@@ -204,13 +216,7 @@ describe("a base line removed next to a reverted line", () => {
 		const target = { ...ps2, baseBranch: "main" };
 		const traced = await traceRereview(r.path, since, [], target);
 		const { answer } = answerRereview(traced, since, [], target);
-		const hunks = interdiffFileHunks(
-			traced,
-			ps2,
-			answer,
-			0,
-			reviewedLinesOf(ps1, states),
-		);
+		const hunks = interdiffFileHunks(traced, ps2, answer, 0);
 		const k = ps2.files[0]?.clusters[0];
 		expect(k).toMatchObject({
 			removed: ["base 4", "base 5"],
@@ -224,10 +230,17 @@ describe("a base line removed next to a reverted line", () => {
 		expect(keyOf("edit 4", "add")).toBe(k?.key);
 		// The reverted line's piece is the gone PS1 cluster's, on its own.
 		expect(keyOf("edit 3", "del")).not.toBe(k?.key);
-		// K's pieces own all of it (base 5 / edit 5 unchanged since a reviewed line).
-		const owned = (hunks.pieces ?? [])
-			.filter((p) => p.key === k?.key)
-			.flatMap((p) => p.owns ?? []);
+		// K's pieces own what they show; base 5 / edit 5, unchanged since a
+		// reviewed line, carry: together, all of it.
+		const carried = answer.files[0]?.clusters.find(
+			(c) => c.key === k?.key,
+		)?.lines;
+		const owned = [
+			...(hunks.pieces ?? [])
+				.filter((p) => p.key === k?.key)
+				.flatMap((p) => p.owns ?? []),
+			...(carried?.reviewed ?? []),
+		];
 		const all = new Set<number>();
 		for (const [s, e] of owned) for (let i = s; i < e; i++) all.add(i);
 		expect([...all].sort()).toEqual([0, 1, 2, 3]);
@@ -285,10 +298,11 @@ describe("identical text: a shown removed line is placed in the base by position
 		const target = { ...b, baseBranch: "main" };
 		const traced = await traceRereview(r.path, since, [], target);
 		const { answer } = answerRereview(traced, since, [], target);
-		return (
-			interdiffFileHunks(traced, b, answer, 0, reviewedLinesOf(a, states))
-				.pieces ?? []
-		);
+		const pieces = interdiffFileHunks(traced, b, answer, 0).pieces ?? [];
+		return Object.assign(pieces, {
+			carriedInto: (key?: string) =>
+				answer.files[0]?.clusters.find((c) => c.key === key)?.lines,
+		});
 	};
 
 	it("the shown blank owns its own place, never the unshown, unvouched twin", async () => {
@@ -328,18 +342,20 @@ describe("identical text: a shown removed line is placed in the base by position
 		expect(own).toEqual([]);
 	});
 
-	it("with PS1's removal crossed off, nothing it removed is vouched either", async () => {
+	it("PS1's removal crossed off carries as crossed off; reviewed, as reviewed", async () => {
 		const states = new Map<string, StateEntry>(
 			a.files[0]?.clusters.map((c) => [c.key, { state: "crossed-off" }]) ?? [],
 		);
 		const merged = b.files[0]?.clusters.find((c) => c.removed.length === 3);
-		const own = (await piecesFor(states)).find((p) => p.key === merged?.key);
-		expect(own?.owns).toEqual([[0, 1]]);
+		const crossed = await piecesFor(states);
+		expect(crossed.find((p) => p.key === merged?.key)?.owns).toEqual([[0, 1]]);
+		expect(crossed.carriedInto(merged?.key)).toEqual({ crossed: [[1, 3]] });
 		const reviewed = new Map<string, StateEntry>(
 			a.files[0]?.clusters.map((c) => [c.key, { state: "reviewed" }]) ?? [],
 		);
-		const all = (await piecesFor(reviewed)).find((p) => p.key === merged?.key);
-		expect(all?.owns).toEqual([[0, 3]]);
+		const all = await piecesFor(reviewed);
+		expect(all.find((p) => p.key === merged?.key)?.owns).toEqual([[0, 1]]);
+		expect(all.carriedInto(merged?.key)).toEqual({ reviewed: [[1, 3]] });
 	});
 });
 

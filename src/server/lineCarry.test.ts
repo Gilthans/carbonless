@@ -190,15 +190,37 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 			view.sinceMarks,
 		).filter((u) => u.path === PATH && u.open > 0);
 
-	it("reproduces: every piece ticked, the grown cluster is reviewed (its unchanged blank was reviewed in PS1)", async () => {
+	/** The view's marks on the grown cluster, as compared. */
+	const marksOfGrown = (view: ReviewView) => {
+		const { state, reviewedLines, crossedLines, linesCarried } = grown(view);
+		return { state, reviewedLines, crossedLines, linesCarried };
+	};
+
+	it("reproduces: the blank reviewed in PS1 carries as reviewed without a tick; ticking the shown pieces finishes the cluster", async () => {
 		const { s, view, since, answer } = await toPs2(wholeFile);
 		expect(grown(view).added).toEqual(PS2_ADDED);
+		// Before any mark on PS2 (provisional): the blank, index 1, carried.
+		expect(marksOfGrown(view)).toEqual({
+			state: "unreviewed",
+			reviewedLines: [[1, 2]],
+			crossedLines: undefined,
+			linesCarried: { from: 1, lines: [[1, 2]] },
+		});
+		// No piece owns it: it is no unit of the since view.
+		const owned = (since.pieces ?? []).flatMap((p) =>
+			p.key === grown(view).key ? (p.owns ?? []) : [],
+		);
+		expect(owned).toEqual([
+			[0, 1],
+			[2, 4],
+		]);
 		const after = await tickEveryPiece(s, view, since.pieces ?? []);
 		expect(openUnits(answer, after)).toEqual([]);
-		const { state, reviewedLines } = grown(after);
-		expect({ state, reviewedLines }).toEqual({
+		expect(marksOfGrown(after)).toEqual({
 			state: "reviewed",
 			reviewedLines: undefined,
+			crossedLines: undefined,
+			linesCarried: undefined,
 		});
 		expect(after.progress.clusters.reviewed).toBe(
 			after.progress.clusters.total,
@@ -208,7 +230,54 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 		expect(grown(await again.review()).state).toBe("reviewed");
 	});
 
-	it("a line not reviewed in PS1 stays unreviewed: the since view leaves it to read, the full diff marks it", async () => {
+	it("the carry is stored when PS2 starts: kept with no tick of its own, and undone by a mark in the full diff", async () => {
+		// PS1 marks the cluster and another file; PS2's first mark is on the
+		// other file, so the grown cluster holds nothing but the carry.
+		const { s, view, answer } = await toPs2(
+			(v) =>
+				[...fileOf(v).clusters, ...fileOf(v, "other.txt").clusters].map(
+					(c) => ({ key: c.key, state: "reviewed" }),
+				),
+			(_, ps1) => commitOn(ps1, { [PATH]: PS2, "other.txt": "other, again\n" }),
+			{ "other.txt": "other\n" },
+		);
+		const started = await s.setStates(view.revision, [
+			{
+				key: fileOf(view, "other.txt").clusters[0]?.key ?? "",
+				state: "reviewed",
+			},
+		]);
+		expect(started.patchset).toBe(2);
+		const carried = {
+			state: "unreviewed",
+			reviewedLines: [[1, 2]],
+			crossedLines: undefined,
+			linesCarried: { from: 1, lines: [[1, 2]] },
+		};
+		expect(marksOfGrown(started)).toEqual(carried);
+		const again = await Session.open(pr.arg, process.cwd());
+		expect(marksOfGrown(await again.review())).toEqual(carried);
+		// Undo in the full diff: the box (mixed) marks all, then none.
+		const all = await s.setStates(started.revision, [
+			{ key: grown(started).key, state: "reviewed" },
+		]);
+		expect(grown(all).linesCarried).toBeUndefined();
+		const none = await s.setStates(all.revision, [
+			{ key: grown(all).key, state: "unreviewed" },
+		]);
+		expect(marksOfGrown(none)).toEqual({
+			state: "unreviewed",
+			reviewedLines: undefined,
+			crossedLines: undefined,
+			linesCarried: undefined,
+		});
+		// The blank is to read again in the since view (principle 2).
+		expect(openUnits(answer, none).filter((u) => u.rest === true)).toEqual([
+			expect.objectContaining({ lines: 1, open: 1 }),
+		]);
+	});
+
+	it("a line not marked in PS1 doesn't carry: the since view leaves it to read, the full diff marks it", async () => {
 		// PS1 marks only another file: nothing of the cluster was reviewed.
 		const { s, view, since, answer } = await toPs2(
 			(v) =>
@@ -219,8 +288,8 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 			undefined,
 			{ "other.txt": "other\n" },
 		);
+		expect(grown(view).linesCarried).toBeUndefined();
 		const after = await tickEveryPiece(s, view, since.pieces ?? []);
-		// The blank's twin was never reviewed: it is in no piece.
 		expect(grown(after)).toMatchObject({
 			state: "unreviewed",
 			reviewedLines: [
@@ -254,23 +323,28 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 
 	it("carries line by line: the blank reviewed in a mark of part of PS1's cluster carries", async () => {
 		const { s, view, since } = await toPs2(ps1Lines([[1, 3]], [[0, 1]]));
+		expect(grown(view).linesCarried).toEqual({ from: 1, lines: [[1, 2]] });
 		const after = await tickEveryPiece(s, view, since.pieces ?? []);
 		expect(grown(after).state).toBe("reviewed");
 	});
 
-	it("a line crossed off in PS1 never carries as reviewed: the blank's twin stays to read", async () => {
+	it("a line crossed off in PS1 carries as crossed off: ticking the shown pieces leaves it crossed, the file done", async () => {
 		const { s, view, since, answer } = await toPs2(
 			ps1Lines([[0, 2]], [[2, 3]]),
 		);
-		const after = await tickEveryPiece(s, view, since.pieces ?? []);
-		expect(grown(after)).toMatchObject({
+		expect(marksOfGrown(view)).toEqual({
 			state: "unreviewed",
-			reviewedLines: [
-				[0, 1],
-				[2, 4],
-			],
+			reviewedLines: undefined,
+			crossedLines: [[1, 2]],
+			linesCarried: { from: 1, lines: [[1, 2]] },
 		});
-		expect(openUnits(answer, after)).toHaveLength(1);
+		const after = await tickEveryPiece(s, view, since.pieces ?? []);
+		// Done with a line crossed off: it counts as reviewed, as a file does.
+		expect(grown(after)).toMatchObject({
+			state: "reviewed",
+			crossedLines: [[1, 2]],
+		});
+		expect(openUnits(answer, after)).toEqual([]);
 	});
 
 	it("carries across a rebase: the base moved on between PS1 and PS2", async () => {
@@ -282,6 +356,7 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 		});
 		expect(answer.shape.code).not.toBe("S1");
 		expect(grown(view).added).toEqual(PS2_ADDED);
+		expect(grown(view).linesCarried).toEqual({ from: 1, lines: [[1, 2]] });
 		const after = await tickEveryPiece(s, view, since.pieces ?? []);
 		expect(grown(after).state).toBe("reviewed");
 		expect(openUnits(answer, after)).toEqual([]);

@@ -1,5 +1,5 @@
-import type { LineRanges } from "../../shared/lineRanges.js";
-import { reviewedLines, viewOfLines } from "../../shared/pieces.js";
+import { type LineRanges, subtract, union } from "../../shared/lineRanges.js";
+import { marksOf, viewOfLines } from "../../shared/pieces.js";
 import { fileFlags, reviewProgress } from "../../shared/progress.js";
 import type {
 	Cluster,
@@ -83,28 +83,57 @@ export function clusterView(c: Cluster, stored?: StateEntry): ClusterView {
 	// range past them voids the marks (forged or stale: fail closed).
 	if (stored?.state === "unreviewed" && (stored.lines || stored.crossed)) {
 		const shown = viewOfLines(c, stored.lines ?? [], stored.crossed ?? []);
-		if (shown) return shown;
+		if (shown) return withLinesCarried(shown, stored.linesCarried);
 	}
 	return { ...c, state: "unreviewed" };
 }
 
 /**
- * The lines the reviewer marked reviewed on each cluster of a patch set
- * (its snapshot and folded states), by cluster key, under the coverage
- * join's rules (clusters sharing a key: none). A crossed-off line is not
- * one. What a since view may take as unchanged since a reviewed line.
+ * A view of a cluster marked by lines, with the lines the engine carried
+ * (CAR-195): only lines it has, and only while they are marked.
  */
-export function reviewedLinesOf(
+export function withLinesCarried(
+	view: ClusterView,
+	carried: { from: number; lines: LineRanges } | undefined,
+): ClusterView {
+	if (!carried) return view;
+	const { reviewed, crossed } = marksOf(view);
+	const marked = union(reviewed, crossed);
+	const lines = subtract(carried.lines, subtract(carried.lines, marked));
+	return lines.length > 0
+		? { ...view, linesCarried: { from: carried.from, lines } }
+		: view;
+}
+
+/** A cluster of a patch set and the lines the reviewer marked on it, by hand. */
+export interface HumanMarks {
+	cluster: Cluster;
+	reviewed: LineRanges;
+	crossed: LineRanges;
+}
+
+/**
+ * The lines the reviewer marked reviewed and crossed off by hand on each
+ * cluster of a patch set (its snapshot and folded states), by cluster
+ * key, under the coverage join's rules (clusters sharing a key: none). A
+ * mark the engine carried (a cluster's, or lines') is no one's here: only
+ * a human mark carries on (principle 2, as the `carried` guard). What a
+ * later since view's line carry reads (CAR-195).
+ */
+export function humanMarksOf(
 	snapshot: Snapshot,
 	states: ReadonlyMap<string, StateEntry>,
-): Map<string, { cluster: Cluster; reviewed: LineRanges }> {
-	const out = new Map<string, { cluster: Cluster; reviewed: LineRanges }>();
+): Map<string, HumanMarks> {
+	const out = new Map<string, HumanMarks>();
 	const twice = new Set<string>();
 	for (const file of snapshot.files) {
 		for (const c of file.clusters) {
 			if (out.has(c.key)) twice.add(c.key);
-			const reviewed = reviewedLines(clusterView(c, states.get(c.key)));
-			out.set(c.key, { cluster: c, reviewed });
+			const stored = states.get(c.key);
+			const human =
+				stored && !stored.carried && !stored.linesCarried ? stored : undefined;
+			const { reviewed, crossed } = marksOf(clusterView(c, human));
+			out.set(c.key, { cluster: c, reviewed, crossed });
 		}
 	}
 	for (const key of twice) out.delete(key);
