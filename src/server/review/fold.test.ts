@@ -958,4 +958,66 @@ describe("lines-carried (CAR-195)", () => {
 		);
 		expect(states.get(K2)).toBeUndefined();
 	});
+
+	/** A `lines-carried` event from patch set `from` to `to`, one entry. */
+	const hop = (from: number, to: number, key: string, fromKey: string) =>
+		at(
+			newEvent(
+				"lines-carried",
+				"dan",
+				{
+					from,
+					to,
+					states: [
+						{
+							key,
+							fromKey,
+							state: "reviewed" as const,
+							lines: [[0, 1] as [number, number]],
+							fromLines: [[0, 1] as [number, number]],
+						},
+					],
+				},
+				"auto",
+			),
+		);
+
+	it("a source that is itself a line carry carries nothing further", () => {
+		const states = foldProgress([
+			started(REV, 1),
+			state(K1, "reviewed"),
+			started(OTHER_REV, 2, 1),
+			hop(1, 2, K2, K1),
+			started(THIRD_REV, 3, 2),
+			hop(2, 3, K3, K2),
+		]).statesByRevision;
+		expect(states.get(OTHER_REV)?.get(K2)?.linesCarried).toEqual({
+			from: 1,
+			lines: [[0, 1]],
+		});
+		expect(states.get(THIRD_REV)?.get(K3)).toBeUndefined();
+	});
+
+	it("never over a human line mark already there", () => {
+		const states = fold(
+			[state(K1, "reviewed")],
+			[
+				state(K2, "unreviewed", { patchset: OTHER_REV }),
+				linesReviewed(K2, [[3, 4]], { patchset: OTHER_REV }),
+				hop(1, 2, K2, K1),
+			],
+		);
+		expect(states.get(K2)).toEqual({ state: "unreviewed", lines: [[3, 4]] });
+	});
+
+	it("only from the patch set the target follows: a hop past one is ignored", () => {
+		const states = foldProgress([
+			started(REV, 1),
+			state(K1, "reviewed"),
+			started(OTHER_REV, 2, 1),
+			started(THIRD_REV, 3, 2),
+			hop(1, 3, K3, K1),
+		]).statesByRevision;
+		expect(states.get(THIRD_REV)?.get(K3)).toBeUndefined();
+	});
 });

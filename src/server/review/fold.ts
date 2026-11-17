@@ -225,6 +225,9 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 				const from = byNumber.get(e.from);
 				const to = byNumber.get(e.to);
 				if (!from || !to) break;
+				// Lines are unchanged since the patch set the target follows,
+				// and only that one (unlike a cluster's carry, never one before).
+				if (to.since !== e.from) break;
 				const source = statesByRevision.get(from.revision);
 				const target = statesByRevision.get(to.revision);
 				if (!source || !target) break;

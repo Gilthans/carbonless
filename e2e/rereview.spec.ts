@@ -2956,9 +2956,10 @@ test("a cluster grown since PS1 around a line reviewed then: the line carries re
 	// The full diff before any tick: the blank reviewed by the carry, its chip.
 	await toFullDiff(page);
 	const full = fileSection(page, GROWN);
-	if (await full.getByRole("button", { name: "Expand file" }).isVisible()) {
-		await full.getByRole("button", { name: "Expand file" }).click();
-	}
+	// Not finished yet: the full diff has the file open.
+	await expect(
+		full.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
 	await expect(boxes(full)).toHaveAttribute("aria-checked", "mixed");
 	await expect(blankRow(full)).toHaveAttribute("data-reviewed", "true");
 	await expect(full.getByTestId("lines-carried")).toHaveText("1 carried");
@@ -2980,9 +2981,8 @@ test("a cluster grown since PS1 around a line reviewed then: the line carries re
 	// The full diff: the grown cluster reviewed whole, never mixed.
 	await toFullDiff(page);
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
-	if (await full.getByRole("button", { name: "Expand file" }).isVisible()) {
-		await full.getByRole("button", { name: "Expand file" }).click();
-	}
+	// Finished: the full diff has the file closed; open it.
+	await full.getByRole("button", { name: "Expand file" }).click();
 	await expect(boxes(full)).toHaveCount(1);
 	await expect(boxes(full)).toBeChecked();
 	// Undone there: nothing of it reviewed, the blank to read again.
@@ -3014,9 +3014,10 @@ test("a line crossed off in PS1 stays crossed off in a grown cluster: ticking th
 	).toContainText("3 / 3 clusters");
 	await toFullDiff(page);
 	const full = fileSection(page, GROWN);
-	if (await full.getByRole("button", { name: "Expand file" }).isVisible()) {
-		await full.getByRole("button", { name: "Expand file" }).click();
-	}
+	// The file stays open (it was open in the since view).
+	await expect(
+		full.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
 	await expect(blankRow(full)).toHaveAttribute("data-crossed", "true");
 	await expect(blankRow(full)).not.toHaveAttribute("data-reviewed");
 	await expect(

@@ -1321,6 +1321,49 @@ describe("patch set n+1", () => {
 		expect(different.packed).toBeLessThan(20 * 1024);
 	});
 
+	it("storage: a start carrying lines into 200 clusters is one small commit (CAR-195)", async () => {
+		const hex = (i: number) =>
+			createHash("sha256").update(`cluster ${i}`).digest("hex");
+		// A grown cluster's usual carry: a few unchanged lines, from another
+		// key (a carried cluster would have kept its own), in two ranges.
+		const states = Array.from({ length: 200 }, (_, i) => ({
+			key: hex(i),
+			fromKey: hex(1000 + i),
+			state: i % 3 === 0 ? ("crossed-off" as const) : ("reviewed" as const),
+			lines: [
+				[1, 2],
+				[5, 9],
+			] as [number, number][],
+			fromLines: [
+				[2, 3],
+				[6, 10],
+			] as [number, number][],
+		}));
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		await svc.ensurePatchset(
+			id,
+			"dan",
+			otherSnap,
+			start({ linesCarried: { from: 1, states } }),
+		);
+		const tip = (await store.tip(progressRef("dan"))) as string;
+		const raw = await runGit(repo, ["cat-file", "commit", tip]);
+		const size = Number((await runGit(repo, ["cat-file", "-s", tip])).trim());
+		const packed = deflateSync(Buffer.from(raw, "utf8")).length;
+		const events = await store.readEvents(progressRef("dan"));
+		const carried = events.filter((e) => e.type === "lines-carried");
+		expect(carried).toHaveLength(1);
+		expect(
+			carried[0]?.type === "lines-carried" && carried[0].states,
+		).toHaveLength(200);
+		// Measured for docs/review-data-storage.md.
+		console.log(
+			`lines-carried commit, 200 entries: ${size} bytes raw, ${packed} deflated`,
+		);
+		expect(size).toBeLessThan(60 * 1024);
+		expect(packed).toBeLessThan(30 * 1024);
+	});
+
 	it("storage: marks per piece, one commit each and a heavy review's worth", async () => {
 		const hex = (i: number) =>
 			createHash("sha256").update(`cluster ${i}`).digest("hex");

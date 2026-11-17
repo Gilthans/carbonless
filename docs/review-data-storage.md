@@ -389,8 +389,13 @@ crossed off, with no tick: as a carried cluster does, line by line
   (itself or one twin, whichever is asked first).
 
 The earlier marks are read through the coverage join, by hand only
-(`humanMarksOf`: a carried mark, a cluster's or lines', carries no
-further, as with `carried`). A line with no counterpart, or one whose
+(`humanMarksOf`: a mark still the engine's, a cluster's or lines', carries
+no further, as with `carried`). A hand mark of part of the cluster (a
+since piece's tick) writes the cluster's whole set of marks, carried lines
+included, so it **adopts** them: from then on they are the reviewer's own
+marks, and they carry on to a later patch set like any hand mark (each hop
+is a line unchanged since a line marked by hand, so content-equivalent).
+Only the "N carried" chip goes with that. A line with no counterpart, or one whose
 counterpart wasn't marked, gets nothing: it stays the cluster's "rest",
 to read in the since view until marked in the full diff (principle 2).
 Stored as one `lines-carried` event in the start's commit, beside
@@ -400,7 +405,9 @@ cluster's `lines`). The view marks the lines and names them
 (`ClusterView.linesCarried`); the full diff shows "N carried" on the
 cluster, and its box undoes them like any mark (a human `cluster-state`
 replaces the entry). The since view doesn't count a carried line while it
-holds a mark; unmarked again, it counts (`sinceUnits`).
+holds a mark; unmarked again, it counts (`sinceUnits`). The fold takes an
+event only from the patch set its target follows (`since`), and, as with
+`carried`, trusts the ref's writer for the source cluster's size.
 
 **`lines-state`.** A piece's mark is written as one commit: a
 `cluster-state` `unreviewed` for the whole cluster, then a `lines-state`
@@ -921,6 +928,16 @@ asserts under 20 KiB raw and 10 KiB deflated for the first case and 40 KiB
 and 20 KiB for the second. A review's cost still depends only on its own
 size: one such commit per patch set start per reviewer, nothing per
 cluster.
+
+**A line carry**, measured 2026-11-17 in
+`src/server/review/reviews.test.ts` ("storage: a start carrying lines
+into 200 clusters"): the start's commit with one `lines-carried` event of
+200 entries, each two 64-hex keys, a state and two ranges of two pairs
+(`lines`, `fromLines`): 44,937 bytes raw, 15,675 deflated (about 225 bytes
+an entry raw). The test asserts under 60 KiB raw and 30 KiB deflated. It
+is written only in a start's commit, once per patch set per reviewer, one
+entry per (cluster, earlier cluster, state): a grown cluster's few
+unchanged lines, never one per line.
 
 **A split carry**, measured 2026-11-15 in
 `src/server/review/reviews.test.ts` ("storage: a split carry is one small
