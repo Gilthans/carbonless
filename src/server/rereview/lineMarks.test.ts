@@ -72,13 +72,77 @@ describe("sinceLineMarks (CAR-195)", () => {
 
 	it("slides down and on: each line further takes the twin of the line it stands in for", () => {
 		// Run "x" at 1; below it "x", "x": both twins of line 1.
+		const marks = () =>
+			sinceLineMarks(
+				new Map([then("K", ["x"], [[0, 1]])]),
+				keyed("K", 1, 2),
+				{},
+				["x", "x", "x", "y"],
+			);
+		expect([2, 3, 4].map((l) => marks().added(l))).toEqual([true, true, false]);
+	});
+
+	it("slides up over two lines: each twin takes the mark of the line it stands in for", () => {
+		// K adds "a", "b" at 4-5; above them "a", "b" again: line 3 is the
+		// twin of 5, line 2 of 4.
+		const marks = (reviewed: LineRanges) =>
+			sinceLineMarks(
+				new Map([then("K", ["a", "b"], reviewed)]),
+				keyed("K", 4, 6),
+				{},
+				["q", "a", "b", "a", "b"],
+			);
+		expect(marks([[1, 2]]).added(3)).toBe(true);
+		expect(marks([[1, 2]]).added(2)).toBe(false);
+		expect(marks([[0, 1]]).added(2)).toBe(true);
+		expect(marks([[0, 1]]).added(3)).toBe(false);
+		// "q" reads unlike "b": the slide stops there.
+		expect(marks([[0, 2]]).added(1)).toBe(false);
+	});
+
+	it("never by text alone: the same text one line away from the run vouches for nothing", () => {
+		// K adds "// c", "set", "" at 3-5; a blank at 1, "z" between.
 		const marks = sinceLineMarks(
-			new Map([then("K", ["x"], [[0, 1]])]),
-			keyed("K", 1, 2),
+			new Map([then("K", K, [[0, 3]])]),
+			keyed("K", 3, 6),
 			{},
-			["x", "x", "x", "y"],
+			["", "z", "// c", "set", ""],
 		);
-		expect([2, 3, 4].map(marks.added)).toEqual([true, true, false]);
+		expect(marks.added(1)).toBe(false);
+	});
+
+	it("one to one: a reviewed line vouches once, never for two lines", () => {
+		// K adds one blank at 6, under four unchanged blanks: each is its twin.
+		const old = ["a", "", "", "", "", "", "b"];
+		const marks = sinceLineMarks(
+			new Map([then("K", [""], [[0, 1]])]),
+			keyed("K", 6, 7),
+			{},
+			old,
+		);
+		expect([2, 3, 4, 5, 6].map(marks.added)).toEqual([
+			true,
+			false,
+			false,
+			false,
+			false,
+		]);
+		// The line itself and its twin: whichever is asked first takes it.
+		const direct = sinceLineMarks(
+			new Map([then("K", [""], [[0, 1]])]),
+			keyed("K", 6, 7),
+			{},
+			old,
+		);
+		expect([6, 5].map(direct.added)).toEqual([true, false]);
+		// A removed base line vouches once too.
+		const removed = sinceLineMarks(
+			new Map([then("R", [], [[0, 1]], ["gone"])]),
+			{},
+			keyed("R", 10, 11),
+			[],
+		);
+		expect([10, 10].map(removed.removed)).toEqual([true, false]);
 	});
 
 	it("a line two runs claim needs both twins reviewed", () => {

@@ -375,7 +375,9 @@ engine computes it for the since view's hunks, `interdiffFileHunks`):
   first; and on, line by line, as git's slider would move it), is that
   line's twin, and is unchanged since a reviewed line when its twin is
   reviewed (every twin, when two runs claim it). Only that adjacency
-  counts, never text alone.
+  counts, never text alone. One to one: each earlier line vouches for at
+  most one line of the file (itself or one twin, whichever is asked
+  first); a second claim on it joins no piece.
 - **Fails closed.** A line unchanged since a line that was *not* reviewed
   (or one the engine can't map) joins no piece. Ticking every piece then
   leaves the cluster partly reviewed (mixed in the full diff), and the
@@ -404,9 +406,10 @@ marked, some crossed off, counts as reviewed (as a file does) and shows its
 crossed lines; one partly marked is unreviewed, with its marked lines in
 the line counts (`ClusterView.reviewedLines`, `crossedLines`). A cluster
 marked piece by piece never carries, even once every line is marked, and
-vouches only for its reviewed lines (its stored entry stays line marks; the carry takes whole
-human states only), so a later push asks for it again even when its change
-is identical; a `cluster-state` written by the full diff's box ends that.
+vouches only for its reviewed lines (its stored entry stays line marks; the
+carry takes whole human states only), so a later push asks for it again
+even when its change is identical; a `cluster-state` written by the full
+diff's box ends that.
 
 **Since-only pieces and `since-lines-state`.** A piece that owns no line
 of the snapshot (lines the earlier patch set had that are gone, or base

@@ -855,7 +855,11 @@ export interface SinceReviewed {
  * A line's place in its cluster is its rank among the cluster's lines in
  * the map, only when the map holds all of them; else only a whole review
  * vouches (fails closed). A crossed-off line never vouches: ticking a
- * piece marks what it owns reviewed.
+ * piece marks what it owns reviewed. One to one: each earlier line
+ * vouches once, for the first line asked about that it answers for (the
+ * line itself or one of its twins); a later ask that would take it again
+ * is refused (fails closed), so one reviewed line never covers two. Make
+ * one per file of the since view, and ask each line once.
  */
 export function sinceLineMarks(
 	reviewedThen: ReadonlyMap<string, SinceReviewed>,
@@ -873,11 +877,20 @@ export function sinceLineMarks(
 		for (const list of out.values()) list.sort((a, b) => a - b);
 		return out;
 	};
+	/** Each line's rank among its key's lines. */
+	const ranks = (by: Map<string, number[]>) => {
+		const out = new Map<number, number>();
+		for (const list of by.values()) list.forEach((l, i) => out.set(l, i));
+		return out;
+	};
 	const addedBy = byKey(addedThen);
 	const removedBy = byKey(removedThen);
+	const addedRank = ranks(addedBy);
+	const removedRank = ranks(removedBy);
 	const marked = (
 		map: Readonly<Record<number, string>>,
 		lines: Map<string, number[]>,
+		rankOf: Map<number, number>,
 		side: "removed" | "added",
 		line: number,
 	): boolean => {
@@ -891,12 +904,12 @@ export function sinceLineMarks(
 		if (list.length !== (side === "removed" ? removed : cluster.added.length)) {
 			return false;
 		}
-		const rank = list.indexOf(line);
-		if (rank < 0) return false;
+		const rank = rankOf.get(line);
+		if (rank === undefined) return false;
 		return has(reviewed, side === "removed" ? rank : removed + rank);
 	};
 	const addedMarked = (line: number) =>
-		marked(addedThen, addedBy, "added", line);
+		marked(addedThen, addedBy, addedRank, "added", line);
 
 	// Slider twins of each run [s, e) of one cluster's added lines: up,
 	// line s - 1 when it reads as line e - 1; down, line e when it reads as
@@ -930,11 +943,27 @@ export function sinceLineMarks(
 			}
 		}
 	}
+	// The earlier lines that have vouched already, by side.
+	const usedAdded = new Set<number>();
+	const usedRemoved = new Set<number>();
 	return {
 		added: (line) => {
-			if (addedThen[line] !== undefined) return addedMarked(line);
-			return twins.get(line)?.every(addedMarked) === true;
+			const from =
+				addedThen[line] !== undefined ? [line] : (twins.get(line) ?? []);
+			if (from.length === 0 || from.some((l) => usedAdded.has(l))) {
+				return false;
+			}
+			if (!from.every(addedMarked)) return false;
+			for (const l of from) usedAdded.add(l);
+			return true;
 		},
-		removed: (line) => marked(removedThen, removedBy, "removed", line),
+		removed: (line) => {
+			if (usedRemoved.has(line)) return false;
+			if (!marked(removedThen, removedBy, removedRank, "removed", line)) {
+				return false;
+			}
+			usedRemoved.add(line);
+			return true;
+		},
 	};
 }
