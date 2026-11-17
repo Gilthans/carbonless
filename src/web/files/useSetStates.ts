@@ -155,7 +155,8 @@ export function useReviewView(target: ReviewTarget = CURRENT_REVIEW) {
  * - drafts and their writes (replies, edits, new threads) only while
  *   storage can't keep them (DraftStore.durable): kept, a reload brings
  *   them back and resends what was sent (ThreadWrites.resume);
- * - a question typed in an Ask agent composer, not yet asked: it isn't a
+ * - a question typed in an Ask agent composer, or a follow-up in a
+ *   conversation's reply box, not yet sent: it isn't a
  *   draft, nothing keeps it (owner: "it should mark the page dirty so the
  *   user confirms before refreshing, but no need to save it"). One on
  *   its way doesn't count (useUnaskedQuestion).

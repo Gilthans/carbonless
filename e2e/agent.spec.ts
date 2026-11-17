@@ -53,7 +53,6 @@ async function shot(page: Page, name: string, isMobile: boolean) {
 const holdSeenMarks = (page: Page) =>
 	page.route(/\/api\/r\/[^/]+\/agent\/threads\/[^/]+\/seen$/, () => {});
 
-/** How many review threads the fake gh holds for the PR (what was posted). */
 /**
  * A composer's switch sits where a thread's agent handle does: at its
  * bottom row's right end, under the box, a 40px target.
@@ -70,6 +69,7 @@ async function expectAtBottomRight(composer: Locator, button: Locator) {
 	expect(b.width).toBeGreaterThanOrEqual(40);
 }
 
+/** How many review threads the fake gh holds for the PR (what was posted). */
 const ghThreads = (scenarioPath: string, number: number) =>
 	(
 		(JSON.parse(readFileSync(scenarioPath, "utf8")) as Scenario).prs[number]

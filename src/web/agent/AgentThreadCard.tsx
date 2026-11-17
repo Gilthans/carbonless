@@ -48,6 +48,7 @@ import {
 	dropAgentWrite,
 	replyAgent,
 	retryAgentWrite,
+	setReplyTyped,
 	useAgentWrites,
 } from "./agentWrites";
 import {
@@ -833,6 +834,10 @@ function AgentReplyBox(props: { thread: string }) {
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text]);
+	// Typed and not sent: leaving the page asks (useUnsaved); not saved.
+	const typed = text.trim() !== "";
+	useEffect(() => setReplyTyped(id, typed), [id, typed]);
+	useEffect(() => () => setReplyTyped(id, false), [id]);
 	const tooLong = new TextEncoder().encode(text).length > MAX_AGENT_TEXT;
 	const view = useSendView();
 	const send = () => {
