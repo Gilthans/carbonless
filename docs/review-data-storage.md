@@ -356,8 +356,26 @@ engine computes it for the since view's hunks, `interdiffFileHunks`):
   piece for those before any), a removed one to the first piece. Marking the
   piece may cover it because it reads the same as a line the reviewer
   marked reviewed on the earlier patch set, and nothing about it changed.
-  Only a whole `reviewed` mark vouches: a crossed-off or partly marked
-  earlier cluster vouches for nothing.
+  It goes **line by line** (CAR-195, `sinceLineMarks` in
+  `src/server/rereview/engine.ts`): a whole `reviewed` mark vouches for
+  every line of the earlier cluster, a mark of part of it for the lines
+  it reviewed (a line's place in the earlier cluster is its rank among
+  that cluster's mapped lines, only when all of them map; else only a
+  whole mark vouches). A crossed-off line vouches for nothing: ticking the
+  piece would mark it reviewed. The earlier marks are read through the
+  coverage join (`reviewedLinesOf`), so a mark it drops vouches for nothing.
+- **Slider twins** (CAR-195). git may show the same insertion with a
+  different one of two identical neighbouring lines as the added one
+  (`blank, comment, set` after a blank, or `comment, set, blank` before
+  it): the earlier patch set's diff took one, this one's the other, so the
+  line this cluster adds was the base's line then, and the line the
+  reviewer reviewed is now the base's. On the earlier side, a line no
+  earlier cluster added, right next to a run of one cluster's added lines
+  and reading as the run's far end (above: its last line; below: its
+  first; and on, line by line, as git's slider would move it), is that
+  line's twin, and is unchanged since a reviewed line when its twin is
+  reviewed (every twin, when two runs claim it). Only that adjacency
+  counts, never text alone.
 - **Fails closed.** A line unchanged since a line that was *not* reviewed
   (or one the engine can't map) joins no piece. Ticking every piece then
   leaves the cluster partly reviewed (mixed in the full diff), and the
@@ -385,8 +403,8 @@ past its lines or it is a file-level cluster. A cluster whose lines are all
 marked, some crossed off, counts as reviewed (as a file does) and shows its
 crossed lines; one partly marked is unreviewed, with its marked lines in
 the line counts (`ClusterView.reviewedLines`, `crossedLines`). A cluster
-marked piece by piece never carries and never vouches, even once every
-line is marked (its stored entry stays line marks; the carry takes whole
+marked piece by piece never carries, even once every line is marked, and
+vouches only for its reviewed lines (its stored entry stays line marks; the carry takes whole
 human states only), so a later push asks for it again even when its change
 is identical; a `cluster-state` written by the full diff's box ends that.
 

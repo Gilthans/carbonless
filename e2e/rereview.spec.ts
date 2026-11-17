@@ -2857,3 +2857,96 @@ test("in the since view, finishing a gone file moves on; a file with only a reve
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 });
+
+/**
+ * CAR-195: a cluster PS1 added (a comment, a set, a blank: git takes the
+ * second of two blanks as the added one) that PS2 grows by a constant
+ * above it and edits: PS2's diff takes the first blank as added, a line
+ * unchanged since PS1 that the since view never shows.
+ */
+const GROWN = "src/Kinds.cs";
+const kinds = (...body: string[]) =>
+	text([
+		"class Kinds",
+		"{",
+		'    private const string Name = "kinds";',
+		...body,
+		"",
+		"    public static bool IsPlain(string kind)",
+		"    {",
+		'        return kind == "a";',
+		"    }",
+		"}",
+	]);
+
+test("a cluster grown since PS1 around a line reviewed then: ticking every since piece finishes the file and the counts (CAR-195)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		base: { [GROWN]: kinds() },
+		files: [
+			{
+				message: "PS1",
+				files: {
+					[GROWN]: kinds(
+						"",
+						"    // The plain kinds, any case.",
+						'    private static readonly HashSet<string> Plain = new(["a", "b"]);',
+					),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, GROWN);
+	await boxes(first).click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({
+		message: "PS2",
+		files: {
+			[GROWN]: kinds(
+				'    private const string Extra = "c";',
+				"",
+				"    // The plain kinds and the extra one, any case.",
+				'    private static readonly HashSet<string> Plain = new(["a", "b", Extra]);',
+			),
+		},
+	});
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	// Three pieces: the constant, the edited comment and set, PS1's lines
+	// they replace. Nothing else is to read: the blank was reviewed in PS1.
+	await expect(toRead(page)).toHaveText(/3 to read/, GIT_WAIT);
+	await expect(progress(page)).toContainText("0 / 3 clusters reviewed");
+	const since = await expand(page, GROWN);
+	const all = boxes(since);
+	await expect(all).toHaveCount(3, GIT_WAIT);
+	for (let i = 0; i < 2; i++) {
+		await all.nth(i).click();
+		await expect(all.nth(i)).toBeChecked();
+	}
+	// The last piece finishes the file, which closes.
+	await all.nth(2).click();
+	await expect(
+		since.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
+
+	// The full diff: the grown cluster reviewed whole, never mixed.
+	await toFullDiff(page);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	const full = await expand(page, GROWN);
+	await expect(boxes(full)).toHaveCount(1);
+	await expect(boxes(full)).toBeChecked();
+	await expect(boxes(full)).not.toHaveAttribute("aria-checked", "mixed");
+});

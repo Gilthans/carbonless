@@ -7,6 +7,7 @@ import {
 import type { SincePiece } from "../../shared/pieces";
 import type { Snapshot } from "../../shared/types";
 import { buildSnapshot } from "../diff/snapshot";
+import { reviewedLinesOf } from "../review/coverage";
 import type { StateEntry } from "../review/fold";
 import {
 	answerRereview,
@@ -85,7 +86,13 @@ async function piecesOf(reviewed: (key: string, i: number) => boolean) {
 	const target = { ...s2, baseBranch: "main" };
 	const traced = await traceRereview(g.path, since, [], target);
 	const { answer } = answerRereview(traced, since, [], target);
-	const hunks = interdiffFileHunks(traced, s2, answer, 0, states);
+	const hunks = interdiffFileHunks(
+		traced,
+		s2,
+		answer,
+		0,
+		reviewedLinesOf(s1, states),
+	);
 	const lines = (p: SincePiece) => {
 		const hunk = hunks.hunks[p.hunk];
 		const run = [];
@@ -197,7 +204,13 @@ describe("a base line removed next to a reverted line", () => {
 		const target = { ...ps2, baseBranch: "main" };
 		const traced = await traceRereview(r.path, since, [], target);
 		const { answer } = answerRereview(traced, since, [], target);
-		const hunks = interdiffFileHunks(traced, ps2, answer, 0, states);
+		const hunks = interdiffFileHunks(
+			traced,
+			ps2,
+			answer,
+			0,
+			reviewedLinesOf(ps1, states),
+		);
 		const k = ps2.files[0]?.clusters[0];
 		expect(k).toMatchObject({
 			removed: ["base 4", "base 5"],
@@ -272,7 +285,10 @@ describe("identical text: a shown removed line is placed in the base by position
 		const target = { ...b, baseBranch: "main" };
 		const traced = await traceRereview(r.path, since, [], target);
 		const { answer } = answerRereview(traced, since, [], target);
-		return interdiffFileHunks(traced, b, answer, 0, states).pieces ?? [];
+		return (
+			interdiffFileHunks(traced, b, answer, 0, reviewedLinesOf(a, states))
+				.pieces ?? []
+		);
 	};
 
 	it("the shown blank owns its own place, never the unshown, unvouched twin", async () => {

@@ -6,8 +6,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prView } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
-import { type SincePiece, toggleChange } from "../shared/pieces";
-import type { ClusterView, ReviewView, StateChange } from "../shared/types";
+import {
+	type SincePiece,
+	sinceOnlyPieces,
+	sinceToggleChange,
+	sinceUnits,
+	toggleChange,
+} from "../shared/pieces";
+import type {
+	ClusterView,
+	RereviewAnswer,
+	ReviewView,
+	StateChange,
+} from "../shared/types";
 import { Session } from "./session";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
@@ -140,7 +151,11 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 		return { s, view, since, answer };
 	}
 
-	/** Ticks every since-view piece of the grown cluster, as the page does. */
+	/**
+	 * Ticks every since-view piece of the file, as the page does: the grown
+	 * cluster's pieces on its lines, the rest (PS1's lines PS2 changed) on
+	 * the file's since mark.
+	 */
 	async function tickEveryPiece(
 		s: Session,
 		start: ReviewView,
@@ -155,16 +170,31 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 				toggleChange(grown(view), p.owns ?? []),
 			]);
 		}
+		const keys = new Set(fileOf(view).clusters.map((c) => c.key));
+		for (const p of sinceOnlyPieces(pieces, keys)) {
+			view = await s.setStates(view.revision, [
+				sinceToggleChange(view.sinceMarks, 1, PATH, p),
+			]);
+		}
 		return view;
 	}
 
 	const wholeFile = (view: ReviewView): StateChange[] =>
 		fileOf(view).clusters.map((c) => ({ key: c.key, state: "reviewed" }));
+	/** The since view's units of the file still to read (what its counts and "done" go by). */
+	const openUnits = (answer: RereviewAnswer, view: ReviewView) =>
+		sinceUnits(
+			answer.files,
+			1,
+			(i) => view.files.find((f) => f.index === i)?.clusters ?? [],
+			view.sinceMarks,
+		).filter((u) => u.path === PATH && u.open > 0);
 
 	it("reproduces: every piece ticked, the grown cluster is reviewed (its unchanged blank was reviewed in PS1)", async () => {
-		const { s, view, since } = await toPs2(wholeFile);
+		const { s, view, since, answer } = await toPs2(wholeFile);
 		expect(grown(view).added).toEqual(PS2_ADDED);
 		const after = await tickEveryPiece(s, view, since.pieces ?? []);
+		expect(openUnits(answer, after)).toEqual([]);
 		const { state, reviewedLines } = grown(after);
 		expect({ state, reviewedLines }).toEqual({
 			state: "reviewed",
@@ -176,5 +206,84 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 		// A fresh open reads the same.
 		const again = await Session.open(pr.arg, process.cwd());
 		expect(grown(await again.review()).state).toBe("reviewed");
+	});
+
+	it("a line not reviewed in PS1 stays unreviewed: the since view leaves it to read, the full diff marks it", async () => {
+		// PS1 marks only another file: nothing of the cluster was reviewed.
+		const { s, view, since, answer } = await toPs2(
+			(v) =>
+				fileOf(v, "other.txt").clusters.map((c) => ({
+					key: c.key,
+					state: "reviewed",
+				})),
+			undefined,
+			{ "other.txt": "other\n" },
+		);
+		const after = await tickEveryPiece(s, view, since.pieces ?? []);
+		// The blank's twin was never reviewed: it is in no piece.
+		expect(grown(after)).toMatchObject({
+			state: "unreviewed",
+			reviewedLines: [
+				[0, 1],
+				[2, 4],
+			],
+		});
+		// The since view doesn't read done: the rest of the cluster is to read.
+		expect(openUnits(answer, after)).toEqual([
+			expect.objectContaining({ rest: true, lines: 1, open: 1 }),
+		]);
+		// The full diff marks it.
+		const done = await s.setStates(after.revision, [
+			{ key: grown(after).key, state: "reviewed" },
+		]);
+		expect(grown(done).state).toBe("reviewed");
+		expect(openUnits(answer, done)).toEqual([]);
+	});
+
+	/** PS1's one cluster: comment (0), set (1), blank (2), marked line by line. */
+	const ps1Lines =
+		(reviewedLines: [number, number][], crossedLines: [number, number][]) =>
+		(v: ReviewView): StateChange[] => [
+			{
+				key: (fileOf(v).clusters[0] as ClusterView).key,
+				state: "unreviewed",
+				reviewedLines,
+				crossedLines,
+			},
+		];
+
+	it("carries line by line: the blank reviewed in a mark of part of PS1's cluster carries", async () => {
+		const { s, view, since } = await toPs2(ps1Lines([[1, 3]], [[0, 1]]));
+		const after = await tickEveryPiece(s, view, since.pieces ?? []);
+		expect(grown(after).state).toBe("reviewed");
+	});
+
+	it("a line crossed off in PS1 never carries as reviewed: the blank's twin stays to read", async () => {
+		const { s, view, since, answer } = await toPs2(
+			ps1Lines([[0, 2]], [[2, 3]]),
+		);
+		const after = await tickEveryPiece(s, view, since.pieces ?? []);
+		expect(grown(after)).toMatchObject({
+			state: "unreviewed",
+			reviewedLines: [
+				[0, 1],
+				[2, 4],
+			],
+		});
+		expect(openUnits(answer, after)).toHaveLength(1);
+	});
+
+	it("carries across a rebase: the base moved on between PS1 and PS2", async () => {
+		const later = (text: string) => text.replace('kind == "a"', 'kind == "b"');
+		const { s, view, since, answer } = await toPs2(wholeFile, (base) => {
+			const moved = commitOn(base, { [PATH]: later(BASE) });
+			pr.moveMain(moved);
+			return commitOn(moved, { [PATH]: later(PS2) });
+		});
+		expect(answer.shape.code).not.toBe("S1");
+		expect(grown(view).added).toEqual(PS2_ADDED);
+		const after = await tickEveryPiece(s, view, since.pieces ?? []);
+		expect(grown(after).state).toBe("reviewed");
+		expect(openUnits(answer, after)).toEqual([]);
 	});
 });

@@ -1,3 +1,4 @@
+import { covers, has, type LineRanges } from "../../shared/lineRanges.js";
 import { clusterAt, sincePieces, sinceUnits } from "../../shared/pieces.js";
 import {
 	type CarriedState,
@@ -28,6 +29,7 @@ import type {
 import { buildAllClusters } from "../diff/clusters.js";
 import { listChangedFiles } from "../diff/files.js";
 import { buildDisplayHunks, contextLines } from "../diff/hunks.js";
+import { reviewedLinesOf } from "../review/coverage.js";
 import type { PatchsetRecord, StateEntry } from "../review/fold.js";
 import type { PatchsetStart } from "../review/reviews.js";
 import {
@@ -542,13 +544,14 @@ export function answerRereview(
 	// sinceUnits), with the since patch set's states for what they own; to
 	// read is every unit, as nothing of the target is marked yet.
 	if (interdiff.status === "available") {
+		const reviewedThen = reviewedLinesOf(ps.snapshot, ps.states);
 		for (const f of files) {
 			const { pieces = [] } = interdiffFileHunks(
 				traced,
 				target,
 				answer,
 				f.index,
-				ps.states,
+				reviewedThen,
 			);
 			if (pieces.length > 0) f.pieces = pieces;
 		}
@@ -694,8 +697,11 @@ export function interdiffFileHunks(
 	target: Snapshot,
 	answer: RereviewAnswer,
 	index: number,
-	/** The compared patch set's states (which of its lines were reviewed); none: nothing vouched. */
-	states: Map<string, StateEntry> = new Map(),
+	/**
+	 * The compared patch set's reviewed lines, by its cluster
+	 * (reviewedLinesOf); none: nothing vouched.
+	 */
+	reviewedThen: ReadonlyMap<string, SinceReviewed> = new Map(),
 ): FileHunks {
 	const { entry, file } = interdiffFileAt(traced, answer, index);
 	if (!file) return { hunks: [], newLineCount: 0 };
@@ -802,23 +808,133 @@ export function interdiffFileHunks(
 		}
 	}
 	// Each run of changed lines is a piece (pieces.ts). An unshown line of
-	// a target cluster joins one only when unchanged since a line reviewed
-	// on the compared patch set (`vouched`); a removed line shown is one
-	// of the cluster's only when it isn't a line the patch set added.
-	const reviewed = (key: string | undefined) =>
-		key !== undefined && states.get(key)?.state === "reviewed";
+	// a target cluster joins one only when unchanged since a line the
+	// reviewer marked reviewed on the compared patch set, line by line
+	// (`vouched`, CAR-195); a removed line shown is one of the cluster's
+	// only when it isn't a line the patch set added.
 	const removedThen = traced.lineKeys.base?.[entry.path] ?? {};
 	const interdiff = createLineMapper(
 		file.clusters.filter((c) => c.kind === "lines"),
+	);
+	const marked = sinceLineMarks(
+		reviewedThen,
+		addedThen,
+		removedThen,
+		file.oldLines,
 	);
 	const pieces = sincePieces(hunks, targetClusters, (c) => ({
 		baseNo,
 		vouched: (i) => {
 			if (file.conflict) return false;
-			if (i < c.removed.length) return reviewed(removedThen[c.oldStart + i]);
+			if (i < c.removed.length) return marked.removed(c.oldStart + i);
 			const h1 = interdiff.newToOld(c.newStart + i - c.removed.length);
-			return h1 !== null && reviewed(addedThen[h1]);
+			return h1 !== null && marked.added(h1);
 		},
 	}));
 	return { hunks, newLineCount: file.newLines.length, pieces };
+}
+
+/** A cluster of the compared patch set and the lines the reviewer marked reviewed on it. */
+export interface SinceReviewed {
+	cluster: Cluster;
+	reviewed: LineRanges;
+}
+
+/**
+ * Which lines the reviewer marked reviewed on the compared patch set,
+ * one line at a time (CAR-195), for the since view's `vouched`.
+ * `added(line)`: a line of the since view's old side (the virtual
+ * rebase) that a cluster of that patch set added (`addedThen`, by key),
+ * that line of the cluster reviewed (a whole mark, or the line in a mark
+ * of part of it); or a line none added that is such a line's twin by
+ * git's slider: the same text right next to a run of one cluster's added
+ * lines, so the same diff could show either as the added one (PS1's diff
+ * took the second of two blank lines, PS2's the first). Every twin a
+ * line has must be reviewed. `removed(line)`: a line of the new merge
+ * base that a cluster removed (`removedThen`), that line of it reviewed.
+ * A line's place in its cluster is its rank among the cluster's lines in
+ * the map, only when the map holds all of them; else only a whole review
+ * vouches (fails closed). A crossed-off line never vouches: ticking a
+ * piece marks what it owns reviewed.
+ */
+export function sinceLineMarks(
+	reviewedThen: ReadonlyMap<string, SinceReviewed>,
+	addedThen: Readonly<Record<number, string>>,
+	removedThen: Readonly<Record<number, string>>,
+	oldLines: readonly string[],
+): { added: (line: number) => boolean; removed: (line: number) => boolean } {
+	const byKey = (map: Readonly<Record<number, string>>) => {
+		const out = new Map<string, number[]>();
+		for (const [line, key] of Object.entries(map)) {
+			const list = out.get(key) ?? [];
+			list.push(Number(line));
+			out.set(key, list);
+		}
+		for (const list of out.values()) list.sort((a, b) => a - b);
+		return out;
+	};
+	const addedBy = byKey(addedThen);
+	const removedBy = byKey(removedThen);
+	const marked = (
+		map: Readonly<Record<number, string>>,
+		lines: Map<string, number[]>,
+		side: "removed" | "added",
+		line: number,
+	): boolean => {
+		const key = map[line];
+		const then = key === undefined ? undefined : reviewedThen.get(key);
+		if (key === undefined || !then) return false;
+		const { cluster, reviewed } = then;
+		if (covers(reviewed, cluster.lines)) return true;
+		const list = lines.get(key) ?? [];
+		const removed = cluster.removed.length;
+		if (list.length !== (side === "removed" ? removed : cluster.added.length)) {
+			return false;
+		}
+		const rank = list.indexOf(line);
+		if (rank < 0) return false;
+		return has(reviewed, side === "removed" ? rank : removed + rank);
+	};
+	const addedMarked = (line: number) =>
+		marked(addedThen, addedBy, "added", line);
+
+	// Slider twins of each run [s, e) of one cluster's added lines: up,
+	// line s - 1 when it reads as line e - 1; down, line e when it reads as
+	// line s; slid on, each further line stands in for the line its twin
+	// did (`origin`).
+	const twins = new Map<number, number[]>();
+	const text = (line: number) => oldLines[line - 1];
+	const free = (line: number) =>
+		line >= 1 && line <= oldLines.length && addedThen[line] === undefined;
+	for (const list of addedBy.values()) {
+		for (let i = 0; i < list.length; ) {
+			let j = i + 1;
+			while (j < list.length && list[j] === (list[j - 1] as number) + 1) j++;
+			const s = list[i] as number;
+			const e = (list[j - 1] as number) + 1;
+			i = j;
+			const origin = new Map<number, number>();
+			for (let l = s; l < e; l++) origin.set(l, l);
+			for (let a = s, b = e; free(a - 1) && text(a - 1) === text(b - 1); ) {
+				origin.set(a - 1, origin.get(b - 1) as number);
+				a--;
+				b--;
+			}
+			for (let a = s, b = e; free(b) && text(b) === text(a); ) {
+				origin.set(b, origin.get(a) as number);
+				a++;
+				b++;
+			}
+			for (const [l, from] of origin) {
+				if (l < s || l >= e) twins.set(l, [...(twins.get(l) ?? []), from]);
+			}
+		}
+	}
+	return {
+		added: (line) => {
+			if (addedThen[line] !== undefined) return addedMarked(line);
+			return twins.get(line)?.every(addedMarked) === true;
+		},
+		removed: (line) => marked(removedThen, removedBy, "removed", line),
+	};
 }
