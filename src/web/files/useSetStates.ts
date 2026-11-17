@@ -5,6 +5,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { ReviewView, StateChange } from "../../shared/types";
+import { useUnaskedQuestion } from "../agent/agentWrites";
 import {
 	CURRENT_REVIEW,
 	postStates,
@@ -171,7 +172,11 @@ export function useReviewView(target: ReviewTarget = CURRENT_REVIEW) {
  *   reload (refusals.ts), but leaving shouldn't pass it by unnoticed;
  * - drafts and their writes (replies, edits, new threads) only while
  *   storage can't keep them (DraftStore.durable): kept, a reload brings
- *   them back and resends what was sent (ThreadWrites.resume).
+ *   them back and resends what was sent (ThreadWrites.resume);
+ * - a question typed in an Ask agent composer, not yet asked: it isn't a
+ *   draft, nothing keeps it (owner: "it should mark the page dirty so the
+ *   user confirms before refreshing, but no need to save it"). One on
+ *   its way doesn't count (useUnaskedQuestion).
  */
 export function useUnsavedGuard() {
 	const unsaved = useUnsaved();
@@ -206,7 +211,13 @@ export function useUnsaved(): boolean {
 	const saver = viewSaverFor(useQueryClient());
 	const view =
 		useSyncExternalStore(saver.subscribe, saver.snapshot).intended !== null;
+	const question = useUnaskedQuestion();
 	return (
-		states || view || lost || verdictUnsaved || (!durable && (drafts || busy))
+		states ||
+		view ||
+		lost ||
+		verdictUnsaved ||
+		question ||
+		(!durable && (drafts || busy))
 	);
 }

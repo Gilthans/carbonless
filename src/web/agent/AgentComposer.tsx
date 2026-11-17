@@ -34,6 +34,7 @@ import {
 	setAgentComposerText,
 	useAgentComposers,
 } from "./askAgentAction";
+import { HANDLE, HANDLE_OFF } from "./handle";
 import { QuickQuestionChips } from "./QuickQuestionChips";
 import { SPAN_QUESTIONS, withQuestion } from "./quickQuestions";
 import { useSendView } from "./threadAgent";
@@ -210,26 +211,6 @@ export function AgentComposer(props: {
 				<span className="shrink-0 font-mono text-faint">
 					{props.where ?? describeSpan(span)}
 				</span>
-				{!sending && (
-					<Tooltip
-						content={commentable === true ? COMMENT_INSTEAD : commentable}
-						describe={commentable !== true}
-					>
-						{(trigger) => (
-							<button
-								{...trigger}
-								type="button"
-								data-testid="agent-composer-comment"
-								aria-label={COMMENT_INSTEAD}
-								aria-disabled={commentable !== true || undefined}
-								onClick={toComment}
-								className="-my-1 -mr-1.5 ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-line-strong text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:border-line aria-disabled:text-faint aria-disabled:hover:bg-transparent"
-							>
-								<CommentIcon size={16} aria-hidden />
-							</button>
-						)}
-					</Tooltip>
-				)}
 			</div>
 			<div className="space-y-1.5 p-2.5">
 				{sending ? (
@@ -293,6 +274,25 @@ export function AgentComposer(props: {
 								<SparkleFillIcon size={16} aria-hidden />
 								Ask
 							</button>
+							{/* Where a thread's agent handle is: the row's right end. */}
+							<Tooltip
+								content={commentable === true ? COMMENT_INSTEAD : commentable}
+								describe={commentable !== true}
+							>
+								{(trigger) => (
+									<button
+										{...trigger}
+										type="button"
+										data-testid="agent-composer-comment"
+										aria-label={COMMENT_INSTEAD}
+										aria-disabled={commentable !== true || undefined}
+										onClick={toComment}
+										className={`${HANDLE} ${HANDLE_OFF} border-line-strong text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent`}
+									>
+										<CommentIcon size={16} aria-hidden />
+									</button>
+								)}
+							</Tooltip>
 						</div>
 					</>
 				)}
