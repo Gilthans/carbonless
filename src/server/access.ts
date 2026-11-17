@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import fastifyCookie from "@fastify/cookie";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 
 /**
  * Cookies ignore ports, so every crb instance on a host would share one
@@ -45,8 +45,9 @@ export async function registerAccessKey(
 		if (matches(query?.key)) {
 			// Lax, not Strict: a browser holds a Strict cookie back when the
 			// reviewer clicks a link to a review on another site (GitHub),
-			// which registerHostCheck allows on purpose. Cross-site writes and
-			// opens without a click are refused there.
+			// which registerHostCheck allows on purpose. Every other request
+			// from another site (no click: a script's navigation, a redirect
+			// it started, a frame, a write) is refused there, on any path.
 			reply.setCookie(cookie, key, {
 				httpOnly: true,
 				sameSite: "lax",
@@ -65,8 +66,8 @@ export async function registerAccessKey(
  * (`loopback`), the Host header must name loopback and the listening port, so
  * a page on another origin that resolves its name to 127.0.0.1 can't read the
  * API. In every mode, a write that carries an Origin must come from this
- * server's own origin, and neither a write nor an open of a review
- * (`/pr/...`) may come from another site's page (Sec-Fetch-Site).
+ * server's own origin, and nothing may come from another site's page
+ * (Sec-Fetch-Site) but a link the reviewer clicked (`clickedFromAnotherSite`).
  * `publicUrl` (an origin, e.g. a `tailscale serve` HTTPS proxy in front)
  * counts as the server's own: its Host and its Origin are accepted too.
  */
@@ -101,25 +102,38 @@ export function registerHostCheck(
 		) {
 			return reply.code(403).send(forbidden);
 		}
-		// What another site's page sets off: a write, or a GET that opens a
-		// review (/pr/..., which clones and writes refs). Allowed: typed or
-		// bookmarked (none), the server's own pages, and a link the reviewer
-		// clicked elsewhere (a top-level navigation with a user's activation).
+		// Another site's page (or another port on this host: same-site) gets
+		// nothing but a link the reviewer clicked, on any path: whatever its
+		// spelling (/PR/, /%70r/), a client route that acts on load can't be
+		// set off by a script, a redirect or a frame. Typed or bookmarked
+		// (none), the server's own pages (same-origin) and clients without
+		// Fetch Metadata (crb, an agent's MCP, older browsers) pass.
 		const site = request.headers["sec-fetch-site"];
-		const opens = request.method === "GET" && /^\/pr\//.test(request.url);
 		if (
-			(write || opens) &&
 			site !== undefined &&
 			site !== "none" &&
-			site !== "same-origin"
+			site !== "same-origin" &&
+			!clickedFromAnotherSite(request)
 		) {
-			const h = request.headers;
-			const clicked =
-				opens &&
-				h["sec-fetch-mode"] === "navigate" &&
-				h["sec-fetch-dest"] === "document" &&
-				h["sec-fetch-user"] === "?1";
-			if (!clicked) return reply.code(403).send(forbidden);
+			return reply.code(403).send(forbidden);
 		}
 	});
+}
+
+/**
+ * A top-level GET navigation the user set off (a click, Enter, a middle
+ * click): what the Lax key cookie lets through from another site. A
+ * script's `location = ...`, a redirect it started, a frame, a form post
+ * or a fetch lacks one of these. The browser keeps them on a redirect, a
+ * reload and back/forward of the page the click opened (Chromium,
+ * measured).
+ */
+function clickedFromAnotherSite(request: FastifyRequest): boolean {
+	const h = request.headers;
+	return (
+		request.method === "GET" &&
+		h["sec-fetch-mode"] === "navigate" &&
+		h["sec-fetch-dest"] === "document" &&
+		h["sec-fetch-user"] === "?1"
+	);
 }

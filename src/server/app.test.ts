@@ -3181,6 +3181,116 @@ describe("API", () => {
 			expect(api.statusCode).toBe(200);
 		});
 
+		it("with the cookie, another site's page opens nothing without a click, on any path, and writes nothing", async () => {
+			const cookies = { crb_key: "k3y" };
+			const open = vi.spyOn(registry, "open");
+			try {
+				// A script's `location = ...` (or a redirect it started): a
+				// top-level navigation the Lax cookie rides along with, no click.
+				const nav = {
+					"sec-fetch-site": "cross-site",
+					"sec-fetch-mode": "navigate",
+					"sec-fetch-dest": "document",
+				};
+				const paths = [
+					"/pr/acme/widget/12",
+					"/PR/acme/widget/12",
+					"/Pr/acme/widget/12",
+					"/%70r/acme/widget/12",
+					"/%2fpr/acme/widget/12",
+					`/r/${id}`,
+					`/r/${id}/files`,
+					"/",
+					"/settings",
+					r("/api/head"),
+				];
+				for (const site of ["cross-site", "same-site"]) {
+					for (const url of paths) {
+						const res = await keyed.inject({
+							url,
+							cookies,
+							headers: { ...nav, "sec-fetch-site": site },
+						});
+						expect(res.statusCode, `${site} ${url}`).toBe(403);
+						expect(res.body, url).not.toContain("spa");
+					}
+				}
+				// Neither a frame, an image or a fetch, even with a click.
+				for (const [mode, dest] of [
+					["navigate", "iframe"],
+					["no-cors", "image"],
+					["cors", "empty"],
+				]) {
+					const res = await keyed.inject({
+						url: "/pr/acme/widget/12",
+						cookies,
+						headers: {
+							"sec-fetch-site": "cross-site",
+							"sec-fetch-mode": mode,
+							"sec-fetch-dest": dest,
+							"sec-fetch-user": "?1",
+						},
+					});
+					expect(res.statusCode, dest).toBe(403);
+				}
+				// A link the reviewer clicked on GitHub: the page.
+				for (const url of ["/pr/acme/widget/12", `/r/${id}`, "/"]) {
+					const res = await keyed.inject({
+						url,
+						cookies,
+						headers: { ...nav, "sec-fetch-user": "?1" },
+					});
+					expect(res.statusCode, url).toBe(200);
+					expect(res.body, url).toContain("spa");
+				}
+				// The setup line's key stays same-origin only, click or not.
+				const setup = await keyed.inject({
+					url: "/api/mcp/setup",
+					cookies,
+					headers: { ...nav, "sec-fetch-user": "?1" },
+				});
+				expect(setup.statusCode).toBe(403);
+				expect(setup.body).not.toContain("k3y");
+				// A form post or fetch from another site: refused, nothing opens.
+				for (const headers of [
+					{ "sec-fetch-site": "cross-site", origin: "https://evil.example" },
+					{ ...nav, "sec-fetch-user": "?1" },
+				]) {
+					const post = await keyed.inject({
+						method: "POST",
+						url: "/api/reviews",
+						cookies,
+						headers,
+						payload: { pr: "acme/widget#12" },
+					});
+					expect(post.statusCode, JSON.stringify(headers)).toBe(403);
+				}
+				expect(open).not.toHaveBeenCalled();
+				// The reviewer's own: typed or bookmarked, the page's own
+				// requests, and clients without Fetch Metadata (crb, an agent).
+				for (const headers of [
+					{ "sec-fetch-site": "none" },
+					{ "sec-fetch-site": "same-origin" },
+					{},
+				]) {
+					const page = await keyed.inject({
+						url: `/r/${id}`,
+						cookies,
+						headers,
+					});
+					expect(page.statusCode, JSON.stringify(headers)).toBe(200);
+					const api = await keyed.inject({
+						url: r("/api/session"),
+						cookies,
+						headers,
+					});
+					expect(api.statusCode, JSON.stringify(headers)).toBe(200);
+				}
+			} finally {
+				open.mockRestore();
+			}
+		});
+
 		it("sends security headers on static, 401 and SPA responses", async () => {
 			const cookies = { crb_key: "k3y" };
 			const responses = [
