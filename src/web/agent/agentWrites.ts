@@ -93,18 +93,56 @@ export function agentAsking(clientId: string): boolean {
 }
 
 /**
- * Whether an Ask agent composer holds a question not yet asked: nothing
- * keeps it past the page (it isn't a draft), so leaving would lose it
+ * Whether an Ask agent composer holds a question not yet asked, or a
+ * conversation's reply box a follow-up not yet sent: nothing keeps them
+ * past the page (they aren't drafts), so leaving would lose them
  * (useUnsaved). One on its way, or one cleared, doesn't count; one the
  * server refused does (its text is still only in the box).
  */
 export function useUnaskedQuestion(): boolean {
 	const composers = useAgentComposers();
 	const { pending } = useAgentWrites();
-	return composers.some((c) => {
-		const write = pending.get(c.clientId);
-		return c.text.trim() !== "" && (write === undefined || !!write.error);
-	});
+	const replies = useSyncExternalStore(
+		subscribeReplies,
+		getRepliesTyped,
+		getRepliesTyped,
+	);
+	return (
+		replies > 0 ||
+		composers.some((c) => {
+			const write = pending.get(c.clientId);
+			return c.text.trim() !== "" && (write === undefined || !!write.error);
+		})
+	);
+}
+
+// --- Follow-ups typed in a conversation's reply box --------------------------
+// Kept in the box only (no draft): the boxes holding text, so leaving asks.
+
+let typedReplies: ReadonlySet<string> = new Set();
+const replyListeners = new Set<() => void>();
+const getRepliesTyped = () => typedReplies.size;
+const subscribeReplies = (l: () => void) => {
+	replyListeners.add(l);
+	return () => {
+		replyListeners.delete(l);
+	};
+};
+
+/** Reply box `box` holds a follow-up not yet sent (`typed`), or not. */
+export function setReplyTyped(box: string, typed: boolean): void {
+	if (typedReplies.has(box) === typed) return;
+	const next = new Set(typedReplies);
+	if (typed) next.add(box);
+	else next.delete(box);
+	typedReplies = next;
+	for (const l of replyListeners) l();
+}
+
+/** Forgets every typed reply (tests). */
+export function resetRepliesTyped(): void {
+	typedReplies = new Set();
+	for (const l of replyListeners) l();
 }
 
 function send(client: QueryClient, clientId: string): void {
