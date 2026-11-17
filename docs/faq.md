@@ -318,6 +318,28 @@ installs the update and exits, and the container starts again. The
 update lives in the container's filesystem, so it lasts only as long as
 that container: rebuild the image to keep it.
 
+## Why does a link to crb on another site open, but its script can't?
+
+The access key's cookie (`crb_key_<port>`) is `SameSite=Lax`, so a review
+link the reviewer clicks on GitHub (or in Slack, an email) arrives with it
+and opens; under `Strict` it was a 401. Lax also sends the cookie on any
+other top-level navigation from another site, so the server's host check
+lets another site (`Sec-Fetch-Site` neither `none` nor `same-origin`,
+including another port on this host) through only on a GET that is a
+top-level page load the user set off (`Sec-Fetch-Mode: navigate`,
+`Sec-Fetch-Dest: document`, `Sec-Fetch-User: ?1`), on any path. A
+script's `location = …`, a redirect it starts, a frame, an image, a fetch
+or a form post gets a 403, whatever the path's spelling (`/PR/…`,
+`/%70r/…`). A reload or Back of the page a click opened keeps the click's
+headers, so it stays open. `/api/mcp/setup`, which hands out the key, is
+stricter still: same-origin (or typed) only.
+
+Not covered: any click on another site's page can be a navigation to crb
+(a hostile page's button can open a PR in crb, as a link on GitHub
+does), and a browser without Fetch Metadata (Safari before 16.4) sends no
+`Sec-Fetch-*`, so it is let through as crb and an agent's MCP calls are;
+its cross-site writes still lack the cookie and fail the Origin check.
+
 ## Setting up an agent
 
 Ask agent sends your question about a span of the diff to your own coding

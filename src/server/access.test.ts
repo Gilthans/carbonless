@@ -43,7 +43,7 @@ describe("registerAccessKey", () => {
 		const cookie = String(withKey.headers["set-cookie"]);
 		expect(cookie).toContain(`${cookieName(a)}=s3cret`);
 		expect(cookie).toContain("HttpOnly");
-		expect(cookie).toContain("SameSite=Strict");
+		expect(cookie).toContain("SameSite=Lax");
 		expect(cookie).toContain("Path=/");
 
 		const withCookie = await a.inject({

@@ -190,6 +190,9 @@ const routeTree = rootRoute.addChildren([
 export function createAppRouter(options: { initialPath?: string } = {}) {
 	return createRouter({
 		routeTree,
+		// As the server's routes: `/PR/...` is no address of a PR, so no
+		// spelling the server didn't serve as one opens a review here.
+		caseSensitive: true,
 		history: options.initialPath
 			? createMemoryHistory({ initialEntries: [options.initialPath] })
 			: createBrowserHistory(),
