@@ -1138,7 +1138,11 @@ export interface SessionInfo {
 	viewer: string;
 	/** Head of the snapshot being reviewed (the patch set's, once started). */
 	snapshotHead: string;
-	/** The snapshot's merge base (its left side against the base branch). */
+	/**
+	 * The snapshot's merge base (its left side against the base branch).
+	 * snapshotCommits is counted over it: the page keys the count by base
+	 * and head, so a retarget asks anew.
+	 */
 	snapshotBase?: string;
 	/** The PR's head on GitHub, as last fetched or checked. */
 	currentHead: string;
@@ -1184,11 +1188,6 @@ export interface SessionInfo {
 	 * once a patch set exists (its own count stands for it).
 	 */
 	snapshotCommits?: number | null | { error: string };
-	/**
-	 * The merge base snapshotCommits is counted over, sent with it: the
-	 * page keys the count by base and head, so a retarget asks anew.
-	 */
-	snapshotBase?: string;
 	/**
 	 * The PR's head when this crb last opened the review, before this open
 	 * (the toast's "since you last looked"); null on the first open.

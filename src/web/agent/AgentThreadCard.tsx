@@ -27,7 +27,9 @@ import {
 	type AgentStop,
 	type AgentThread,
 	type AgentView,
+	isSpanThread,
 	MAX_AGENT_TEXT,
+	type SpanAgentThread,
 	startedBy,
 } from "../../shared/agent";
 import { sessionQuery } from "../api";
@@ -394,7 +396,10 @@ export function agentName(
  * conversation moves behind that thread's agent button. Off, with why,
  * where GitHub can't take a comment there.
  */
-function CommentOnGithub(props: { thread: AgentThread; scope: CommentScope }) {
+function CommentOnGithub(props: {
+	thread: SpanAgentThread;
+	scope: CommentScope;
+}) {
 	const { ok, start } = useAgentComment(props.thread, props.scope);
 	const tip = ok === true ? "Comment on GitHub" : ok;
 	return (
@@ -624,6 +629,7 @@ export function AgentThreadCard(props: {
 				)}
 				<div className="ml-auto flex items-center gap-x-2">
 					{commentScope &&
+						isSpanThread(thread) &&
 						thread.anchor.subject !== "thread" &&
 						!thread.orphaned &&
 						!props.unplaced &&
