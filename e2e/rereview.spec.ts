@@ -1366,6 +1366,9 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 	await expect(
 		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
+	// That mark finishes core.ts, which closes: core 30's deletion carried
+	// PS1's mark on that base line (CAR-195). Open it again.
+	await coreS.getByRole("button", { name: "Expand file" }).click();
 	const row = unplacedRows(coreS);
 	const handle = row.getByTestId("place-handle");
 	await expect(handle).toBeVisible(GIT_WAIT);

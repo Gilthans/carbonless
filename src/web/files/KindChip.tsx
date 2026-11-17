@@ -55,6 +55,7 @@ export function KindChip(props: {
 	className?: string;
 	/** The tooltip, in place of the kind's own. */
 	tip?: string;
+	/** Its test id and data-kind, in place of the kind chip's own (a chip of lines). */
 	testId?: string;
 }) {
 	const text =
@@ -65,7 +66,7 @@ export function KindChip(props: {
 				<span
 					{...trigger}
 					data-testid={props.testId ?? "kind-chip"}
-					data-kind={props.kind}
+					data-kind={props.testId ?? props.kind}
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
 					tabIndex={0}
 					className={`inline-flex h-5 items-center rounded-full border px-2 font-sans text-[11px] leading-none whitespace-nowrap select-none focus-visible:outline-2 focus-visible:outline-accent ${TONE[props.kind]} ${props.className ?? ""}`}
