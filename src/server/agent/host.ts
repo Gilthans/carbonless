@@ -327,7 +327,7 @@ export interface PostedSpan {
 
 /** Whether a conversation's span anchor is the posted span (columns aside: GitHub has none). */
 export function sameSpan(a: AgentAnchor, s: PostedSpan): boolean {
-	if (a.subject === "thread") return false;
+	if (a.subject === "thread" || a.subject === "review") return false;
 	if (a.path !== s.path || a.commit !== s.commit || a.subject !== s.subject) {
 		return false;
 	}

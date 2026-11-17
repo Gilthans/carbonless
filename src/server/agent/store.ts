@@ -89,7 +89,8 @@ export function linkedAnchor(a: AgentAnchor, github: string): AgentAnchor {
 			commit: a.commit,
 		};
 	}
-	if (a.subject === "thread") return a;
+	// A GitHub thread's already; the review conversation has no span.
+	if (a.subject === "thread" || a.subject === "review") return a;
 	return {
 		subject: "thread",
 		thread: github,

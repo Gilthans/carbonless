@@ -6,7 +6,11 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext } from "react";
-import type { AgentAnchor, AgentThread, AgentView } from "../../shared/agent";
+import type {
+	AgentSpanAnchor,
+	AgentView,
+	SpanAgentThread,
+} from "../../shared/agent";
 import type { DisplayHunk, PrOverview, SessionInfo } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import { type CodeSpan, commentAvailable } from "../files/selectionActions";
@@ -80,7 +84,7 @@ export interface AgentCommentContext {
 	baseLoading?: boolean;
 }
 
-const sidesOf = (a: AgentAnchor) =>
+const sidesOf = (a: AgentSpanAnchor) =>
 	a.subject === "line" ? [a.side, a.startSide] : [];
 
 /**
@@ -90,7 +94,7 @@ const sidesOf = (a: AgentAnchor) =>
  * are a patch set's, not GitHub's base).
  */
 export function agentCommentAvailable(
-	anchor: AgentAnchor,
+	anchor: AgentSpanAnchor,
 	ctx: AgentCommentContext,
 ): true | string {
 	const span = spanOfAnchor(anchor);
@@ -146,7 +150,7 @@ export function baseOf(
  * already written there (open or typed) is adopted, its text kept.
  */
 export function useAgentComment(
-	thread: AgentThread,
+	thread: SpanAgentThread,
 	scope: CommentScope,
 ): { ok: true | string; start: () => void } {
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;

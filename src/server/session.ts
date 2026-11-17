@@ -760,7 +760,6 @@ export class Session {
 			),
 			...(this.#patchsets.length === 0
 				? {
-						snapshotBase: this.#snapshot.base,
 						snapshotCommits: this.#commitsOf(
 							this.#snapshot.base,
 							this.#snapshot.head,
