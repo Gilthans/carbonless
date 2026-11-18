@@ -824,6 +824,7 @@ describe("moves (CAR-139)", () => {
 					on: { head: H2 },
 					at: expect.any(String),
 					here: true,
+					path: "a.ts",
 				},
 			},
 		]);

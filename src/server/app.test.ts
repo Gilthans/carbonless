@@ -3254,7 +3254,7 @@ describe("API", () => {
 		});
 
 		it("an old thread-placed reads as a move with Undo, followed into a later head; reading writes nothing (CAR-139)", async () => {
-			const { h2, readId } = await setup();
+			const { h1, h2, readId } = await setup();
 			await startPs2(h2);
 			const clone = await cacheClone();
 			const git = (...args: string[]) =>
@@ -3307,6 +3307,7 @@ describe("API", () => {
 			lines[1] = "line 2 reworked";
 			lines[25] = "line 26 changed";
 			const h3 = pr.moveHead({ "a.txt": `top\n${lines.join("\n")}\n` });
+			withThreads(threadsOn(h1, true));
 			const read3 = (await get("/api/overview?maxAge=0")).readId as string;
 			const later = await placementsOf(`read=${read3}&head=${h3}`);
 			expect(
