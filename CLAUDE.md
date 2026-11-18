@@ -429,8 +429,20 @@ After the first release (0.1.0) the owner adds the trusted publisher
   (`gh run rerun --failed`), and is flagged if it fails again. A PR is merged only on the owner's explicit word for that PR (by
   the owner on GitHub, or on their behalf by an agent with `gh pr merge
   --admin`, the ruleset's bypass for the owner's login). Before merging
-  any PR, `pnpm release merge-ok <pr>` must pass (the release freeze:
-  `docs/releasing.md`). Never push `master` or `v*` tags.
+  any PR, `pnpm release merge-ok <pr>` must pass (the release freeze, and
+  the PR's release notes: `docs/releasing.md`). Never push `master` or
+  `v*` tags.
+- **A release note before merge.** Every ticket says, before its PR
+  merges, the note for the changelog or explicitly that it needs none.
+  The implementer drafts it in its report (`Release note (new|improved|fixed):
+  <text>` in the UI's words, for a reviewer who uses crb, or `Release note:
+  none (<why>)` for tests, tooling, refactors); the owner reads it with the
+  PR; when they approve the merge, the coordinator posts it with `pnpm
+  release note CAR-N "<text>" [--kind k]` or `pnpm release note CAR-N
+  --none "<why>"` (also before moving a ticket to Done by hand). A PR with
+  no ticket carries the line in its description. After a batch of merges,
+  `pnpm release notes check`; before a promote, `pnpm release notes --pr`
+  and its "notes: X.Y.Z" PR (`docs/releasing.md`, "Release notes").
 - On the owner's word only: `pnpm release promote` (starts the promote run,
   which checks, packs and stages; nothing goes live) and `pnpm release
   next` (pushes a `next/*` branch, opens its PR) on Gilthans/carbonless.

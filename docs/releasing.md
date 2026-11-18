@@ -78,9 +78,11 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
      version with that very tarball (waiting up to 5 minutes), tags
      `vX.Y.Z` on the RC's commit, has `release.yml` move `rc` up to it
      (mode `fixup`), and opens the PR **"next: X.Y+1.0"** (or the `--next`
-     bump) that sets master's version and adds the release's merged PRs to
-     `docs/changelog.md`. It is merged on the owner's approval like any other; its
-     merge publishes `X.Y+1.0-rc.1`.
+     bump) that sets master's version, adds the release's notes (and every
+     PR, folded) to `docs/changelog.md` and dates `release-notes/X.Y.Z.json`.
+     It also creates the GitHub release `vX.Y.Z` with that section as its
+     text (once; a rerun leaves it alone). The "next" PR is merged on the
+     owner's approval like any other; its merge publishes `X.Y+1.0-rc.1`.
 4. **A different next version** (a fix release instead of a minor, say):
    `pnpm release next <patch|minor|major|X.Y.Z>` opens a PR setting master's
    version (a kind bumps the newest release).
@@ -123,6 +125,70 @@ which was written before it. So until "next" merges, nothing else may
   before merging any PR an agent runs `pnpm release merge-ok <pr>`, which
   fails with the same message for any PR but the "next" PR while frozen
   (it counts npm's versions as released too, as the RC plan does).
+  It then checks the PR's release notes (below).
+
+### Release notes
+
+Each version's notes come from the Linear tickets in it (CAR-192; spec:
+`docs/superpowers/specs/2026-11-16-release-notes-design.md`). Linear is
+read only where its key is (`$LINEAR_API_KEY`, else
+`~/.config/linear/api-key`): never in CI, which checks the committed
+snapshot from git alone.
+
+- **A ticket's note** is a comment on it whose first line starts with
+  `Release note`; the newest such comment wins (by `updatedAt`, so an edit
+  counts):
+  `Release note (new|improved|fixed): <text>` (the kind defaults from the
+  ticket's Feature, Improvement or Bug label), any number of such lines in
+  one comment, or `Release note: none (<why>)`. The text: plain, one line,
+  any number of sentences (the first is the summary), at most 600
+  characters, starting with a capital, `code` in backticks the only markup,
+  no ticket ids or PR numbers (the tools add them), no control or bidi
+  characters (`src/shared/releaseNotes.ts`, `noteTextProblems`).
+  `pnpm release note CAR-N "<text>" [--kind k]` or
+  `pnpm release note CAR-N --none "<why>"` checks it and posts the comment
+  (its only Linear write). The implementer drafts the note in its report;
+  the coordinator posts it once the owner approves the merge.
+- **A PR without a ticket** carries the same line in its description
+  (`Release note: none (test tooling)`; a kind is required there).
+- **Which PRs and tickets a release has:** master's first-parent commits
+  after the previous release's tag (each a PR's squash or merge commit,
+  its subject ending `(#N)`), and every `CAR-N` in their titles. `next:
+  X.Y.Z` and `notes: X.Y.Z` PRs need none. A ticket an older version's
+  notes file covers counts as covered; `pnpm release notes` lists it again
+  only when its note changed since.
+- **The gate is at merge:** `pnpm release merge-ok <pr>` refuses while a
+  ticket in the PR's title has no note (or a broken one), a ticket-less
+  PR's description has no `Release note` line, a `car-N-*` branch's title
+  names no ticket, or the description's `Fixes`/`Part of` tickets differ
+  from the title's; without a Linear key it refuses, saying so. Linear
+  moves a ticket to Done on merge by itself, so the check can't wait for
+  that. `pnpm release notes check` lists what has no note (the release so
+  far, and tickets done in the last 30 days) for merges no script saw;
+  the coordinator runs it after a batch of merges.
+- **The snapshot:** `pnpm release notes [X.Y.Z] [--pr]` (default:
+  master's next release) reads the notes up to `origin/master` and writes
+  `release-notes/X.Y.Z.json`; with `--pr` it puts the file on a
+  `notes/X.Y.Z` branch from `origin/master` (replacing an earlier one) and
+  opens **"notes: X.Y.Z"**. It prints each note, what is missing (with the
+  command to fix it) and warnings (Linear PR attachments a title doesn't
+  name, commits that aren't PRs). The owner approves the wording by
+  merging that PR; a wording change goes back to Linear (`pnpm release
+  note`) and the file is written again. Run it before every promote, and
+  whenever RCs should carry fresher notes.
+- **At promote:** `pnpm release promote` refuses before starting the run
+  unless the RC's `release-notes/X.Y.Z.json` covers every ticket and
+  ticket-less PR of the release (and, with a Linear key, warns when Linear
+  changed since the file was written); `promote-check` checks the same,
+  in CI, with no token (`release.ts ci:notes-check`).
+- **What ships:** `ci:set-version` writes the notes into the runner's
+  `package.json` as `crbReleaseNotes`: this version's (undated on an RC,
+  with `uncovered`, the range's PRs no note covers yet; dated on a
+  release) and the earlier released versions', newest first, at most 10
+  versions and 64 KB (oldest dropped first; the build fails if this
+  version alone is over). npm keeps the field in each version's manifest
+  (`npm view carbonless-review@<v> crbReleaseNotes`), and the build copies
+  it to `dist/release-notes.json`. A local build has neither.
 
 ### The version in a build, without a dirty tree
 
@@ -162,7 +228,8 @@ all, where the suite took 10–15.
 2. **`promote-check`: the release tarball itself** (after `promote-ci`,
    with no token at all). It plans the RC again with `release.ts` (on
    master, not released) and fails unless that is the tag and commit
-   `promote-ci` checked. Then the RC packed as `X.Y.Z` (its
+   `promote-ci` checked, and unless the RC's release notes cover the
+   release (`ci:notes-check`, above). Then the RC packed as `X.Y.Z` (its
    `build-info.json` must say that version and the RC's commit, and its
    sha256 is recorded), and master's `node scripts/pack-smoke.mjs "$TGZ"`
    on that very tarball: installed globally into a temp dir, its `crb
