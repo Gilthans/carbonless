@@ -43,7 +43,13 @@ import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { commentSurface } from "../threads/Conversation";
-import { newClientId } from "../threads/newThreads";
+import { useDrafts } from "../threads/drafts";
+import { NewThread } from "../threads/NewThread";
+import {
+	newClientId,
+	newThreadItems,
+	useComposers,
+} from "../threads/newThreads";
 import { Avatar, usePerson } from "../threads/people";
 import { AgentMarkdown } from "./AgentMarkdown";
 import {
@@ -68,6 +74,7 @@ import {
 } from "./api";
 import { HANDLE, HANDLE_OFF } from "./handle";
 import { useLinkProblem } from "./linkProblems";
+import { useHoldComposer, usePendingComposers } from "./pendingThread";
 import { ReRow, StartedButton } from "./ReRow";
 import { openAgentSetup } from "./setupStore";
 import { useSeenWriter, useSendView } from "./threadAgent";
@@ -453,14 +460,63 @@ function LinkProblem(props: { thread: string }) {
  * span conversation shown at its lines) starts a GitHub thread that takes
  * the conversation.
  */
-export function AgentThreadCard(props: {
+export function AgentThreadCard(props: AgentCardProps) {
+	const pending = usePendingComment(props);
+	return pending ?? <AgentCard {...props} />;
+}
+
+interface AgentCardProps {
 	thread: AgentThread;
 	status: AgentStatus | undefined;
 	/** Its line isn't in this diff: shown in the file's header instead. */
 	unplaced?: boolean;
 	/** Asked on this earlier head (its commit): marked outdated. */
 	outdated?: string;
-}) {
+}
+
+/**
+ * Comment pressed on the card (a composer carrying its conversation, on
+ * the head on screen): the card is the GitHub thread it will be, in its
+ * place (NewThread with the conversation as its agent's); Cancel brings
+ * the card back. Only where Comment is offered (Files changed's diff, a
+ * card on its line); there the composer shows nowhere else
+ * (useHoldComposer).
+ */
+function usePendingComment(props: AgentCardProps): ReactNode | null {
+	const { thread } = props;
+	const scope = useCommentScope();
+	const diff = usePendingComposers();
+	const here =
+		scope !== null &&
+		diff !== null &&
+		diff.head !== undefined &&
+		isSpanThread(thread) &&
+		thread.anchor.subject !== "thread" &&
+		thread.anchor.commit === diff.head &&
+		!thread.orphaned &&
+		!props.unplaced &&
+		!props.outdated;
+	useHoldComposer(here ? thread.id : null);
+	const drafts = useDrafts();
+	const composers = useComposers();
+	if (!here || !diff) return null;
+	const item = newThreadItems(drafts, composers).find(
+		(i) => i.agentThread === thread.id && i.span.commit === diff.head,
+	);
+	if (!item) return null;
+	return (
+		<NewThread
+			item={item}
+			quote={diff.quote(item.span)}
+			lineTexts={diff.texts?.(item.span)}
+			onPosted={() => diff.onPosted?.(item)}
+			headUnsure={diff.headUnsure}
+			inCard
+		/>
+	);
+}
+
+function AgentCard(props: AgentCardProps) {
 	const { thread, status } = props;
 	const client = useQueryClient();
 	// Only where new comments show (Files changed's diff): null elsewhere.

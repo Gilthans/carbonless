@@ -72,35 +72,59 @@ test("Comment on a line's conversation: Cancel keeps it; posted, the GitHub thre
 		"It adds v1 and v2.",
 	);
 	const comment = card.getByRole("button", { name: "Comment on GitHub" });
+	// One box on the line through it all: the card, the thread it turns
+	// into in its place, then GitHub's thread there.
+	const boxes = section.locator(
+		'[data-testid="agent-thread"], [data-testid="new-thread"], [data-testid="files-thread"]',
+	);
+	// Measured from line 3's row: the page may scroll the box into view.
+	const top = async (l: Locator) =>
+		((await l.boundingBox())?.y ?? Number.NaN) -
+		((await row(section, 3).boundingBox())?.y ?? Number.NaN);
+	await expect(boxes).toHaveCount(1);
+	const cardTop = await top(card);
 	// Cancel: nothing changes.
 	await comment.click();
 	const composer = section.getByTestId("new-thread");
 	const box = composer.getByRole("textbox", { name: "Comment" });
 	await expect(box).toBeFocused();
 	await expect(box).toHaveValue("");
-	// It says it carries the conversation; it stays a comment.
-	await expect(
-		composer.getByRole("img", {
-			name: "Moves your agent conversation to this thread",
-		}),
-	).toBeVisible();
+	await expect(boxes).toHaveCount(1);
+	await expect(card).toHaveCount(0);
+	expect(Math.abs((await top(composer)) - cardTop)).toBeLessThan(4);
+	// The conversation is the new thread's, open behind its agent handle;
+	// it stays a comment (no switch to the agent).
+	const pendingPanel = composer.getByTestId("thread-agent-panel");
+	await expect(pendingPanel).toHaveAttribute("data-open", "true");
+	await expect(pendingPanel.getByTestId("agent-message-ai")).toHaveText(
+		"It adds v1 and v2.",
+	);
+	await expect(composer.getByTestId("thread-agent-button")).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
 	await expect(
 		composer.getByRole("button", { name: "Ask agent instead" }),
-	).toHaveAttribute("aria-disabled", "true");
+	).toHaveCount(0);
+	if (isMobile) await expectNoPageOverflow(page);
 	await composer.getByRole("button", { name: "Cancel" }).click();
 	await expect(composer).toHaveCount(0);
 	await expect(card).toBeVisible();
+	await expect(boxes).toHaveCount(1);
 	// Posted: GitHub's thread on line 3, the conversation behind its agent button.
 	await comment.click();
 	await expect(box).toBeFocused();
 	await box.fill("Shouldn't total add v3 too?");
 	if (isMobile) await expectNoPageOverflow(page);
+	const pendingTop = await top(composer);
 	await composer.getByTestId("new-thread-post").click();
 	const thread = section
 		.getByTestId("files-thread")
 		.filter({ hasText: "Shouldn't total add v3 too?" });
 	await expect(thread).toBeVisible();
 	await expect(section.getByTestId("agent-thread")).toHaveCount(0);
+	await expect(boxes).toHaveCount(1);
+	expect(Math.abs((await top(thread)) - pendingTop)).toBeLessThan(4);
 	const panel = await openConversation(thread);
 	await expect(panel.getByTestId("agent-message-human")).toHaveText([
 		"Does total add everything?",
@@ -156,6 +180,12 @@ test("Comment on a whole file's conversation: posted on the file, the conversati
 	await card.getByRole("button", { name: "Comment on GitHub" }).click();
 	const composer = section.getByTestId("new-thread");
 	await expect(composer).toContainText("whole file");
+	// In the card's place, the conversation on it: one box, not two.
+	await expect(card).toHaveCount(0);
+	await expect(composer).toHaveCount(1);
+	await expect(
+		composer.getByTestId("thread-agent-panel").getByTestId("agent-message-ai"),
+	).toHaveText("Fine as a whole.");
 	const box = composer.getByRole("textbox", { name: "Comment" });
 	await expect(box).toBeFocused();
 	await box.fill("Do we need this file?");

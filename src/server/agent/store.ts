@@ -8,6 +8,7 @@ import {
 	type AgentStop,
 	type AgentThread,
 	type AgentView,
+	linkedAnchor,
 	MAX_ACTIVITY_BYTES,
 	MAX_ACTIVITY_ENTRIES,
 	MAX_AGENT_ERROR,
@@ -76,29 +77,6 @@ const isAgentEvent = (e: CrbEvent): e is AgentEvent =>
 	e.type === "agent-thread-seen" ||
 	e.type === "agent-thread-linked";
 
-/** A span anchor as the GitHub thread started on it: the same span, no columns. */
-export function linkedAnchor(a: AgentAnchor, github: string): AgentAnchor {
-	if (a.subject === "file") {
-		return {
-			subject: "thread",
-			thread: github,
-			path: a.path,
-			commit: a.commit,
-		};
-	}
-	// A GitHub thread's already; the review conversation has no span.
-	if (a.subject === "thread" || a.subject === "review") return a;
-	return {
-		subject: "thread",
-		thread: github,
-		path: a.path,
-		commit: a.commit,
-		side: a.side,
-		line: a.line,
-		startSide: a.startSide,
-		startLine: a.startLine,
-	};
-}
 const clientIdOf = (e: CrbEvent): string | undefined => {
 	const id = e.details?.clientId;
 	return typeof id === "string" ? id : undefined;
