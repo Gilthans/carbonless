@@ -89,16 +89,22 @@ describe("Release note lines", () => {
 		expect(kindFromLabels([])).toBeNull();
 	});
 
-	it("a comment counts when its first line is a Release note line; every other line is an error", () => {
+	it("a comment counts when its first line is a Release note line; text after a blank line is free, a line right under a note is an error", () => {
 		expect(commentNoteLines("Looks done.\nRelease note: none (x)")).toBeNull();
 		expect(
 			commentNoteLines(
-				"\nRelease note (new): One thing.\n\nRelease note (fixed): Another.",
+				"\nRelease note (new): One thing.\nRelease note (fixed): Another.",
 			),
 		).toEqual([
 			{ kind: "new", text: "One thing." },
 			{ kind: "fixed", text: "Another." },
 		]);
+		// As agents write them: the note, then the merge report.
+		expect(
+			commentNoteLines(
+				"Release note: Opens the review.\n\nMerged 2026-11-17 as PR #140 (a61f36b3). Follow-ups: ask the owner.",
+			),
+		).toEqual([{ kind: null, text: "Opens the review." }]);
 		expect(
 			commentNoteLines(
 				"Release note (new): A long note that\nwraps onto a second line.",
@@ -107,7 +113,7 @@ describe("Release note lines", () => {
 			{ kind: "new", text: "A long note that" },
 			{
 				error: expect.stringMatching(
-					/isn't a Release note line \(a note is one line/,
+					/continues a Release note line: a note is one line/,
 				),
 			},
 		]);

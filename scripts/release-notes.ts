@@ -147,23 +147,40 @@ function statusOf(
 }
 
 /**
- * A Linear comment's lines when it is a release-note comment (its first
- * non-blank line starts with `Release note`), else null. Every other
- * non-blank line is an error: a note is one line, so a wrapped one would
- * otherwise be cut short without a word.
+ * The `Release note` lines of a text, parsed. Other text may follow after a
+ * blank line (agents add a merge report), but a line right under a note,
+ * with no blank line between, is an error: it reads as the note wrapped
+ * onto a second line, which would otherwise be cut short without a word.
+ */
+function markedLines(text: string): (NoteLine | { error: string })[] {
+	const out: (NoteLine | { error: string })[] = [];
+	let afterNote = false;
+	for (const line of text.split(/\r?\n/)) {
+		if (MARKER.test(line)) {
+			out.push(parseNoteLine(line));
+			afterNote = true;
+		} else if (line.trim() === "") {
+			afterNote = false;
+		} else if (afterNote) {
+			out.push({
+				error: `"${clip(line)}" continues a Release note line: a note is one line (leave a blank line before other text)`,
+			});
+			afterNote = false;
+		}
+	}
+	return out;
+}
+
+/**
+ * A Linear comment's note lines when it is a release-note comment (its
+ * first non-blank line starts with `Release note`), else null.
  */
 export function commentNoteLines(
 	body: string,
 ): (NoteLine | { error: string })[] | null {
-	const lines = body.split(/\r?\n/).filter((l) => l.trim() !== "");
-	if (!lines[0] || !MARKER.test(lines[0])) return null;
-	return lines.map((l) =>
-		MARKER.test(l)
-			? parseNoteLine(l)
-			: {
-					error: `"${clip(l)}" isn't a Release note line (a note is one line; a comment holds only Release note lines)`,
-				},
-	);
+	const first = body.split(/\r?\n/).find((l) => l.trim() !== "");
+	if (!first || !MARKER.test(first)) return null;
+	return markedLines(body);
 }
 
 export type LinearComment = { body: string; updatedAt: string };
@@ -184,11 +201,7 @@ export function ticketNote(
 
 /** A ticket-less PR's note: its description's `Release note` lines, anywhere in it. */
 export function prBodyNote(body: string | null | undefined): NoteStatus {
-	const lines = (body ?? "")
-		.split(/\r?\n/)
-		.filter((l) => MARKER.test(l))
-		.map(parseNoteLine);
-	return statusOf(lines, null, "a PR without a ticket");
+	return statusOf(markedLines(body ?? ""), null, "a PR without a ticket");
 }
 
 // ---------------------------------------------------------------------------

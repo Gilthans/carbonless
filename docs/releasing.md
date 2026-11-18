@@ -140,7 +140,9 @@ snapshot from git alone.
   counts):
   `Release note (new|improved|fixed): <text>` (the kind defaults from the
   ticket's Feature, Improvement or Bug label), any number of such lines in
-  one comment, or `Release note: none (<why>)`. The text: plain, one line,
+  one comment, or `Release note: none (<why>)`. Other text may follow after
+  a blank line (a merge report, say); a line right under a note is refused
+  as a wrapped note. The text: plain, one line,
   any number of sentences (the first is the summary), at most 600
   characters, starting with a capital, `code` in backticks the only markup,
   no ticket ids or PR numbers (the tools add them), no control or bidi
