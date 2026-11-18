@@ -21,6 +21,9 @@
 //                                             starts release-finish; agents never run it
 //   pnpm release next <patch|minor|major|X.Y.Z>
 //                                             a branch and PR setting master's next release
+//   pnpm release merge-ok <pr>                fails while master is frozen (its version is
+//                                             released, the "next" PR not merged) unless <pr>
+//                                             is that "next" PR; run before every merge
 //
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
 // ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
@@ -44,6 +47,7 @@ import {
 	type Io,
 	KINDS,
 	type Kind,
+	mergeOk,
 	next,
 	type PublishIo,
 	parseManifest,
@@ -113,7 +117,7 @@ const publishIo: PublishIo = {
 
 function usage(): never {
 	console.error(
-		"usage: pnpm release local [--out <dir>] [--no-install] | status | promote [<rc tag>] [--next patch|minor|major] | publish [<run-id>] | next <patch|minor|major|X.Y.Z>",
+		"usage: pnpm release local [--out <dir>] [--no-install] | status | promote [<rc tag>] [--next patch|minor|major] | publish [<run-id>] | next <patch|minor|major|X.Y.Z> | merge-ok <pr>",
 	);
 	process.exit(2);
 }
@@ -234,6 +238,11 @@ async function main(argv: string[]) {
 			if (rest.length !== 1 || !rest[0]) usage();
 			const dir = mkdtempSync(join(tmpdir(), "crb-next-"));
 			await next(io, rest[0], join(dir, "worktree"));
+			return;
+		}
+		case "merge-ok": {
+			if (rest.length !== 1 || !rest[0]) usage();
+			await mergeOk(io, rest[0]);
 			return;
 		}
 		case "ci:rc-version": {

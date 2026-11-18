@@ -428,8 +428,9 @@ After the first release (0.1.0) the owner adds the trusted publisher
   artifacts), fixed and pushed; a failure that looks unrelated is rerun once
   (`gh run rerun --failed`), and is flagged if it fails again. A PR is merged only on the owner's explicit word for that PR (by
   the owner on GitHub, or on their behalf by an agent with `gh pr merge
-  --admin`, the ruleset's bypass for the owner's login). Never push
-  `master` or `v*` tags.
+  --admin`, the ruleset's bypass for the owner's login). Before merging
+  any PR, `pnpm release merge-ok <pr>` must pass (the release freeze:
+  `docs/releasing.md`). Never push `master` or `v*` tags.
 - On the owner's word only: `pnpm release promote` (starts the promote run,
   which checks, packs and stages; nothing goes live) and `pnpm release
   next` (pushes a `next/*` branch, opens its PR) on Gilthans/carbonless.
