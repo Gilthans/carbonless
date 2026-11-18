@@ -59,7 +59,12 @@ import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
 import { FilesVerdict } from "../verdict/FilesVerdict";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
-import { type Comparison, useComparison, useViewedReview } from "./comparison";
+import {
+	type Comparison,
+	useComparison,
+	useHeldPlacements,
+	useViewedReview,
+} from "./comparison";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff, GoneFile, UNDO_ARM_MS } from "./FileDiff";
 import { FileTree, type SidebarTab } from "./FileTree";
@@ -366,7 +371,26 @@ function useDiffThreads(
 				? ["data", "error", "isFetching"]
 				: ["data", "error"],
 	});
-	const answer = asked && placed.data ? placed.data : null;
+	const served = asked && placed.data ? placed.data : null;
+	// A failure stays until an answer lands: a Retry (whose refetch clears
+	// the query's error, then may poll a pending job) keeps the list, with a
+	// spinner in its slot, rather than dropping it for a plain pending state.
+	const placingKey = asked ? JSON.stringify([readId, to]) : "";
+	const [lastFailure, setLastFailure] = useState<{
+		key: string;
+		error: Error;
+	} | null>(null);
+	// Never the threads leaving and coming back while a patch set started
+	// on the viewed head is placed again (CAR-208).
+	const answer = useHeldPlacements(
+		served,
+		asked && !placed.error && lastFailure?.key !== placingKey,
+		readId,
+		to && "patchset" in to ? { kind: "patchset", number: to.patchset } : null,
+		to && "patchset" in to
+			? session.data?.patchsets.find((p) => p.number === to.patchset)?.revision
+			: undefined,
+	);
 	const placements = usePlacementMap(answer);
 	const visible = useMemo(
 		() =>
@@ -397,18 +421,10 @@ function useDiffThreads(
 		() => (visible ? outsideThreads(visible, placements) : []),
 		[visible, placements],
 	);
-	// A failure stays until an answer lands: a Retry (whose refetch clears
-	// the query's error, then may poll a pending job) keeps the list, with a
-	// spinner in its slot, rather than dropping it for a plain pending state.
-	const placingKey = asked ? JSON.stringify([readId, to]) : "";
-	const [lastFailure, setLastFailure] = useState<{
-		key: string;
-		error: Error;
-	} | null>(null);
 	useEffect(() => {
 		if (placed.error) setLastFailure({ key: placingKey, error: placed.error });
-		else if (answer !== null) setLastFailure(null);
-	}, [placed.error, answer, placingKey]);
+		else if (served !== null) setLastFailure(null);
+	}, [placed.error, served, placingKey]);
 	const failedPlacing =
 		asked && answer === null
 			? (placed.error ??

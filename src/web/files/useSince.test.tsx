@@ -107,10 +107,28 @@ describe("useSince: a snapshot answered under another name (CAR-208)", () => {
 			comparison: comparison(HEAD),
 			session: session(["r1"]),
 		});
-		// The base moves to PS0's place… here: compared from 2 to PS3 = r2.
+		// Compared from PS2 instead, to PS3 of the same snapshot r2.
 		hook.rerender({
 			comparison: comparison({ kind: "patchset", number: 3 }, 2),
 			session: session(["r1", "rX", "r2"]),
+		});
+		expect(hook.result.current.answer).toBeNull();
+		expect(hook.result.current.pending).toBe(true);
+	});
+
+	it("a held answer is never used for a viewed head (no patch set's revision to match)", () => {
+		client.setQueryData(
+			rereviewQuery(1, { patchset: 2 }).queryKey,
+			answer("r2"),
+		);
+		const hook = render({
+			comparison: comparison(PS2),
+			session: session(["r1", "r2"]),
+		});
+		expect(hook.result.current.answer).not.toBeNull();
+		hook.rerender({
+			comparison: comparison(HEAD),
+			session: session(["r1", "r2"]),
 		});
 		expect(hook.result.current.answer).toBeNull();
 		expect(hook.result.current.pending).toBe(true);

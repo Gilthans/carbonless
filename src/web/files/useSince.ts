@@ -18,6 +18,11 @@ export interface SinceView {
 	from: number | null;
 	/** Whether the engine is asked at all for this comparison. */
 	asked: boolean;
+	/**
+	 * The engine's answer for the comparison; while a new name's read is
+	 * out (PS2 started on the viewed head), the last answer of the same two
+	 * snapshots (CAR-208).
+	 */
 	answer: RereviewAnswer | null;
 	/** Asked and not answered yet (a spinner in every slot that waits on it). */
 	pending: boolean;
@@ -68,7 +73,7 @@ export function useSince(
 	const served =
 		asked && query.data && !("pending" in query.data) ? query.data : null;
 	const error = asked ? (query.error ?? null) : null;
-	// Never a spinner, and a shift, for a snapshot already answered under
+	// Neither a spinner nor a shift for a snapshot already answered under
 	// another name (CAR-208): a mark on the viewed head starts a patch set
 	// of that very snapshot, the comparison moves to it (another query
 	// key), and its answer is the head's (the server's job is keyed by the
