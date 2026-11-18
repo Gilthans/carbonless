@@ -31,7 +31,8 @@ import {
 type Pr = SearchResult["prs"][number];
 type Option =
 	| { kind: "repo"; repo: SearchResult["repos"][number] }
-	| { kind: "pr"; pr: Pr }
+	// `numbered`: a bare number's row, its repo up front (the group says the number).
+	| { kind: "pr"; pr: Pr; numbered?: boolean }
 	| { kind: "open"; owner: string; repo: string; number: number };
 
 type Group = SuggestionGroup<Option>;
@@ -96,6 +97,14 @@ function groupsOf(
 		};
 	}
 	const groups: Group[] = [];
+	const numbered = data.numbered;
+	if (numbered && (numbered.prs.length > 0 || numbered.pending)) {
+		groups.push({
+			label: `#${numbered.number}`,
+			options: numbered.prs.map((pr) => ({ kind: "pr", pr, numbered: true })),
+			loading: numbered.pending && !data.error,
+		});
+	}
 	if (data.repos.length > 0 || data.reposPending) {
 		groups.push({
 			label: "Repos",
@@ -123,7 +132,8 @@ const STATE_ICON: Record<Pr["state"], ReactNode> = {
 
 /**
  * Open any PR from one box: a pasted URL or `owner/repo#n` opens at once;
- * other text searches repos and PR titles together; a repo chosen with Tab
+ * a bare number lists that PR in each of the view's and recent reviews'
+ * repos; other text searches repos and PR titles together; a repo chosen with Tab
  * or Enter fills `owner/repo ` and lists its PRs, ready for title words.
  * An ARIA combobox: arrows move, Enter picks, Escape closes, `/` focuses.
  */
@@ -230,7 +240,7 @@ export function OpenBox(props: { className?: string }) {
 								? `${optionId}-${current}`
 								: undefined
 						}
-						placeholder="PR URL, owner/repo#123 or search"
+						placeholder="PR URL, #123 or search"
 						value={q}
 						onChange={(e) => {
 							setQ(e.target.value);
@@ -329,7 +339,13 @@ function OptionBody(props: {
 	const { pr } = option;
 	return (
 		<>
-			<span className="shrink-0 text-muted tabular-nums">#{pr.number}</span>
+			{option.numbered ? (
+				<span className="max-w-[45%] shrink-0 truncate text-muted">
+					{pr.owner}/{pr.repo}
+				</span>
+			) : (
+				<span className="shrink-0 text-muted tabular-nums">#{pr.number}</span>
+			)}
 			<span className="min-w-0 flex-1 truncate">
 				<Marked text={pr.title} words={words} />
 			</span>
@@ -339,9 +355,11 @@ function OptionBody(props: {
 				</span>
 			)}
 			<span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-muted">
-				<span className="hidden sm:inline">
-					{pr.owner}/{pr.repo}
-				</span>
+				{!option.numbered && (
+					<span className="hidden sm:inline">
+						{pr.owner}/{pr.repo}
+					</span>
+				)}
 				{STATE_ICON[pr.state]}
 				<Avatar person={pr.author} size={16} />
 				<RelativeTime iso={pr.updatedAt} />

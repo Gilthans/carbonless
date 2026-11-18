@@ -1,11 +1,13 @@
 /**
  * What the open box's text asks for, read on every keystroke: a PR to open
  * at once (a URL, `owner/repo#n`, or a number after a chosen repo), a title
- * search inside a repo (`owner/repo ` and words), or free text.
+ * search inside a repo (`owner/repo ` and words), a bare number (`123`,
+ * `#123`: that PR in the view's and recent reviews' repos), or free text.
  */
 export type OpenInput =
 	| { kind: "pr"; owner: string; repo: string; number: number }
 	| { kind: "scoped"; repo: string; words: string }
+	| { kind: "number"; number: number; text: string }
 	| { kind: "text"; text: string };
 
 const NAME = "[A-Za-z0-9][A-Za-z0-9-]*";
@@ -38,6 +40,11 @@ export function parseOpenInput(input: string): OpenInput {
 		const number = /^#?(\d+)$/.exec(words);
 		if (number) return pr(owner, repo, number[1]);
 		return { kind: "scoped", repo: `${owner}/${repo}`, words };
+	}
+	// As the server's parseQuery: up to 9 digits, from 1.
+	const bare = /^#?(\d{1,9})$/.exec(trimmed);
+	if (bare && Number(bare[1]) >= 1) {
+		return { kind: "number", number: Number(bare[1]), text: trimmed };
 	}
 	return { kind: "text", text: trimmed };
 }
