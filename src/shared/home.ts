@@ -108,6 +108,8 @@ export interface SearchResult {
 		hidden: HomeRow["hidden"];
 	}[];
 	scope: string | null; // "owner/repo" when the query named one
+	/** A bare number (`123`, `#123`): that PR in each candidate repo, shown first. */
+	numbered?: { number: number; prs: SearchResult["prs"]; pending: boolean };
 	pending: boolean; // a GitHub search is still running; ask again
 	reposPending: boolean; // the viewer's repo list isn't in yet: Repos shows a spinner (pending too)
 	error?: string; // the GitHub search failed (not pending); the rest still shows
