@@ -225,7 +225,9 @@ export function OpenBox(props: { className?: string }) {
 				return;
 			}
 		}
-		seen.current = { q, sig, key: keyOf(options[current]) };
+		// An older text's answer (still shown) gives no key: the new text's
+		// answer starts at its own first option.
+		seen.current = { q, sig, key: coming ? null : keyOf(options[current]) };
 	});
 
 	const choose = (option: Option | undefined) => {
