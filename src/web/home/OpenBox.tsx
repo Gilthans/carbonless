@@ -10,6 +10,7 @@ import {
 	type KeyboardEvent,
 	type ReactNode,
 	useId,
+	useLayoutEffect,
 	useRef,
 	useState,
 } from "react";
@@ -79,6 +80,13 @@ function groupsOf(
 		};
 	}
 	if (!data || !q.trim()) return { groups: [], words: [] };
+	// A bare number shows only its own answer: an older text's (kept while
+	// the new one comes) could open another number's PR on Enter.
+	const numbered =
+		parsed.kind === "number" && data.numbered?.number === parsed.number
+			? data.numbered
+			: undefined;
+	if (parsed.kind === "number" && !numbered) return { groups: [], words: [] };
 	const words = (parsed.kind === "scoped" ? parsed.words : parsed.text).split(
 		/\s+/,
 	);
@@ -97,12 +105,12 @@ function groupsOf(
 		};
 	}
 	const groups: Group[] = [];
-	const numbered = data.numbered;
-	if (numbered && (numbered.prs.length > 0 || numbered.pending)) {
+	const numberPending = !!numbered?.pending && !data.error;
+	if (numbered && (numbered.prs.length > 0 || numberPending)) {
 		groups.push({
 			label: `#${numbered.number}`,
 			options: numbered.prs.map((pr) => ({ kind: "pr", pr, numbered: true })),
-			loading: numbered.pending && !data.error,
+			loading: numberPending,
 		});
 	}
 	if (data.repos.length > 0 || data.reposPending) {
@@ -112,9 +120,22 @@ function groupsOf(
 			loading: data.reposPending,
 		});
 	}
-	if (prs.length > 0) groups.push({ label: "Pull requests", options: prs });
+	// Title matches wait for the number's PRs: Enter never takes one while
+	// the PR typed may still come, and none moves when it does.
+	if (prs.length > 0 && !numberPending)
+		groups.push({ label: "Pull requests", options: prs });
 	return { groups, words };
 }
+
+/** An option's identity across answers. */
+const keyOf = (o: Option | undefined): string | null =>
+	!o
+		? null
+		: o.kind === "repo"
+			? `repo:${o.repo.name}`
+			: o.kind === "pr"
+				? `pr:${o.pr.owner}/${o.pr.repo}#${o.pr.number}`
+				: `open:${o.owner}/${o.repo}#${o.number}`;
 
 const STATE_ICON: Record<Pr["state"], ReactNode> = {
 	OPEN: null,
@@ -185,6 +206,27 @@ export function OpenBox(props: { className?: string }) {
 		onClose: () => setOpen(false),
 	});
 	const current = keys.current;
+	// Rows that come in for the same text (a pending group filling in above)
+	// keep the highlight on its option, never on whatever moved under it.
+	// Before paint, so Enter never sees the moved index.
+	const sig = options.map(keyOf).join("\n");
+	const seen = useRef<{ q: string; sig: string; key: string | null }>({
+		q: "",
+		sig: "",
+		key: null,
+	});
+	useLayoutEffect(() => {
+		const before = seen.current;
+		if (before.q === q && before.sig !== sig && before.key !== null) {
+			const i = options.findIndex((o) => keyOf(o) === before.key);
+			if (i >= 0 && i !== current) {
+				seen.current = { q, sig, key: before.key };
+				keys.setActive(i);
+				return;
+			}
+		}
+		seen.current = { q, sig, key: keyOf(options[current]) };
+	});
 
 	const choose = (option: Option | undefined) => {
 		if (!option) return;

@@ -436,6 +436,100 @@ describe("OpenBox", () => {
 		expect(group).toHaveAttribute("aria-busy", "false");
 	});
 
+	it("a bare number never shows, nor opens on Enter, an older number's answer", async () => {
+		const api = setup((q) => ({
+			repos: [],
+			prs: [],
+			scope: null,
+			numbered: {
+				number: Number(q.replace("#", "")),
+				prs: q === "12" ? [pr("acme/api", 12, "Twelve")] : [],
+				pending: q !== "12",
+			},
+			pending: q !== "12",
+			reposPending: false,
+		}));
+		await userEvent.type(box(), "12");
+		await screen.findByRole("option", { name: /Twelve/ });
+		// "123" isn't asked yet (the debounce): "12"'s answer is the only one.
+		await userEvent.type(box(), "3{Enter}");
+		expect(goTo).not.toHaveBeenCalled();
+		expect(screen.queryByRole("option", { name: /Twelve/ })).toBeNull();
+		await screen.findByRole("group", { name: "#123" });
+		expect(searches(api)).toContain("123");
+	});
+
+	it("while a bare number's PRs are read, title matches wait: Enter opens nothing else", async () => {
+		let calls = 0;
+		setup(() => {
+			calls++;
+			const loading = calls <= 2;
+			return {
+				repos: [],
+				prs: [pr("acme/api", 9, "Bump to v40")],
+				scope: null,
+				numbered: {
+					number: 40,
+					prs: loading ? [] : [pr("acme/web", 40, "Forty")],
+					pending: loading,
+				},
+				pending: loading,
+				reposPending: false,
+			};
+		});
+		await userEvent.type(box(), "40");
+		const group = await screen.findByRole("group", { name: "#40" });
+		expect(group).toHaveAttribute("aria-busy", "true");
+		expect(screen.queryByRole("option", { name: /Bump to v40/ })).toBeNull();
+		await userEvent.keyboard("{Enter}");
+		expect(goTo).not.toHaveBeenCalled();
+		// In: the number's PR first and highlighted, the title match below.
+		const forty = await screen.findByRole(
+			"option",
+			{ name: /Forty/ },
+			{ timeout: 3000 },
+		);
+		await screen.findByRole("option", { name: /Bump to v40/ });
+		expect(box()).toHaveAttribute("aria-activedescendant", forty.id);
+		await userEvent.keyboard("{Enter}");
+		expect(goTo).toHaveBeenLastCalledWith("/pr/acme/web/40");
+	});
+
+	it("a bare number's rows coming in above the highlighted one leave the highlight where it was", async () => {
+		let calls = 0;
+		setup(() => {
+			calls++;
+			const loading = calls <= 2;
+			return {
+				repos: [],
+				prs: [],
+				scope: null,
+				numbered: {
+					number: 7,
+					prs: [
+						...(loading ? [] : [pr("acme/web", 7, "Fetched later")]),
+						pr("other/tool", 7, "Known at once"),
+					],
+					pending: loading,
+				},
+				pending: loading,
+				reposPending: false,
+			};
+		});
+		await userEvent.type(box(), "7");
+		const known = await screen.findByRole("option", { name: /Known at once/ });
+		expect(box()).toHaveAttribute("aria-activedescendant", known.id);
+		await screen.findByRole(
+			"option",
+			{ name: /Fetched later/ },
+			{ timeout: 3000 },
+		);
+		const knownNow = screen.getByRole("option", { name: /Known at once/ });
+		expect(box()).toHaveAttribute("aria-activedescendant", knownNow.id);
+		await userEvent.keyboard("{Enter}");
+		expect(goTo).toHaveBeenLastCalledWith("/pr/other/tool/7");
+	});
+
 	it("/ focuses the box and Escape closes the list", async () => {
 		setup(mixed);
 		await userEvent.keyboard("/");
