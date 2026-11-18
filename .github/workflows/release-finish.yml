@@ -2,8 +2,9 @@
 # publish` starts this; after approving on npmjs.com, start it by hand with
 # the same inputs): checks npm has X.Y.Z with the promote run's tarball,
 # tags vX.Y.Z on the RC's commit, starts release.yml's fixup (rc up to the
-# release; npm's trusted publisher is release.yml, not this file), opens
-# the "next" PR with docs/changelog.md, and reruns the release gate of open
+# release; npm's trusted publisher is release.yml, not this file), creates
+# the GitHub release with the version's notes, opens the "next" PR with
+# docs/changelog.md, and reruns the release gate of open
 # PRs. Every step skips what is already done, so it can run again after a
 # failure. No npm credentials at all.
 # docs/releasing.md.
@@ -105,7 +106,9 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          next="$(pnpm exec tsx scripts/release.ts ci:bump "$VERSION" "$NEXT_KIND" | sed -n 's/^next=//p')"
+          # The repository's code runs without the token or git's auth header.
+          crb_release() { env -u GH_TOKEN -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 pnpm exec tsx scripts/release.ts "$@"; }
+          next="$(crb_release ci:bump "$VERSION" "$NEXT_KIND" | sed -n 's/^next=//p')"
           branch="next/$next"
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
@@ -117,9 +120,11 @@ jobs:
             echo "$branch is already on origin: not pushed again"
           else
             git switch -c "$branch"
-            pnpm exec tsx scripts/release.ts ci:write-version "$next"
-            pnpm exec tsx scripts/release.ts ci:changelog "$VERSION" "$SHA"
+            crb_release ci:write-version "$next"
+            crb_release ci:changelog "$VERSION" "$SHA"
             git add package.json docs/changelog.md
+            # ci:changelog dates the version's notes file (CAR-192).
+            [[ ! -d release-notes ]] || git add release-notes
             git commit -m "next: $next" -m "Released $VERSION ($RC_TAG); merges to master now publish $next-rc.N."
             git push origin "$branch"
           fi
@@ -151,6 +156,25 @@ jobs:
                 echo "::warning::#$pr: could not rerun release-gate run $run (still running?): rerun it by hand"
               fi
             done
+      - name: The GitHub release's text
+        # CAR-192: the version's changelog section, from its release notes
+        # file at the RC's commit. git only, no token. Last but the summary,
+        # with the GitHub release: a failure here holds up neither rc, the
+        # "next" PR nor the freeze, and a rerun redoes only what's missing.
+        env:
+          SHA: ${{ steps.plan.outputs.sha }}
+        run: pnpm exec tsx scripts/release.ts ci:release-body "$VERSION" "$SHA" >"$RUNNER_TEMP/release-body.md"
+      - name: GitHub release
+        # vX.Y.Z's page on GitHub, which the update toast links to. Once: a
+        # rerun leaves an existing release alone. gh only.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$VERSION has its GitHub release already"
+          else
+            gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-body.md"
+          fi
       - name: Summary
         env:
           TAG_DONE: ${{ steps.plan.outputs.push_tag == 'true' && 'pushed' || 'already there' }}

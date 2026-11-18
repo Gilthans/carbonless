@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rcMoveTo } from "./rc-fixup.mjs";
 import { isReleased, releaseGate } from "./release-gate.mjs";
+import type { PullForNotes } from "./release-notes.js";
 
 // Version math and the steps behind `pnpm release` and the release and
 // release-finish workflows (docs/releasing.md). Everything that touches git, gh or
@@ -162,33 +163,6 @@ export function tagNames(output: string): string[] {
 		.map((ref) => ref.replace(/^refs\/tags\//, "").replace(/\^\{\}$/, ""));
 }
 
-export type MergedPr = { number: number; title: string; mergedAt: string };
-
-/**
- * docs/changelog.md with the section for `version` (dated `date`) on top,
- * replacing an older section of that version (a promote run again).
- */
-export function renderChangelog(
-	existing: string | null,
-	version: string,
-	date: string,
-	prs: readonly MergedPr[],
-): string {
-	const heading = `## ${version} (${date})`;
-	const items = [...prs]
-		.sort((a, b) => a.mergedAt.localeCompare(b.mergedAt) || a.number - b.number)
-		.map((pr) => `- ${pr.title.trim()} (#${pr.number})`);
-	const section = [heading, "", ...(items.length ? items : ["- No PRs."])].join(
-		"\n",
-	);
-	const sections = (existing ?? "")
-		.replace(/^# Changelog\s*/, "")
-		.split(/^(?=## )/m)
-		.map((s) => s.trim())
-		.filter((s) => s !== "" && !s.startsWith(`## ${version} (`));
-	return `# Changelog\n\n${[section, ...sections].join("\n\n")}\n`;
-}
-
 /** package.json's text with `version` replaced, its formatting kept. */
 export function withVersion(packageJson: string, version: string): string {
 	const re = /^(\t"version": )"[^"]*"/m;
@@ -222,7 +196,7 @@ export type Io = {
 	sleep: (ms: number) => Promise<void>;
 };
 
-async function must(
+export async function must(
 	io: Io,
 	cmd: string,
 	args: readonly string[],
@@ -238,9 +212,11 @@ async function must(
 }
 
 /** The tags on GitHub: origin's, without fetching, or the checkout's (Io.tags). */
-export async function remoteTags(io: Io): Promise<string[]> {
+export async function remoteTags(io: Io, cwd?: string): Promise<string[]> {
 	if (io.tags === "local") {
-		return tagNames(await must(io, "git", ["tag", "-l", "v*"]));
+		return tagNames(
+			await must(io, "git", ["tag", "-l", "v*"], cwd ? { cwd } : undefined),
+		);
 	}
 	return tagNames(
 		await must(io, "git", ["ls-remote", "--tags", "--refs", "origin", "v*"]),
@@ -370,9 +346,15 @@ async function freezeOf(
  * `pnpm release merge-ok <pr>`: fails, naming the "next" PR to merge first,
  * when master is frozen and `pr` isn't that PR. The agents' merge path
  * (`gh pr merge --admin` skips required checks) runs it before every merge.
- * Released counts npm's versions too, as the RC plan does.
+ * Released counts npm's versions too, as the RC plan does. Then `notes`
+ * (CAR-192: scripts/release-notes.ts, prNotesOk) checks the PR's release
+ * notes, throwing when one is missing.
  */
-export async function mergeOk(io: Io, pr: string): Promise<void> {
+export async function mergeOk(
+	io: Io,
+	pr: string,
+	notes: (pull: PullForNotes) => Promise<string>,
+): Promise<void> {
 	const url = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/.exec(
 		pr,
 	);
@@ -401,16 +383,23 @@ export async function mergeOk(io: Io, pr: string): Promise<void> {
 			`${gate.message}. Run pnpm release merge-ok ${number} again once it merges.`,
 		);
 	}
+	const notesOk = await notes(JSON.parse(pull) as PullForNotes);
+	io.log(`notes: ${notesOk}`);
 	io.log(`ok: ${gate.message}`);
 }
 
 const RUN_URL = /https:\/\/github\.com\/\S+\/actions\/runs\/\d+/;
 
-/** `pnpm release promote [<rc tag>] [--next kind]`. */
+/**
+ * `pnpm release promote [<rc tag>] [--next kind]`. `check` runs before the
+ * dispatch (the release notes, CAR-192: promoteNotesCheck) and throws to
+ * stop it.
+ */
 export async function promote(
 	io: Io,
 	rcTag: string | undefined,
 	next: Kind,
+	check: (tag: string, release: string) => Promise<void>,
 ): Promise<string> {
 	const tags = await remoteTags(io);
 	const tag = rcTag ?? newestTag(tags, true)?.tag;
@@ -424,6 +413,7 @@ export async function promote(
 	if (tags.includes(release)) {
 		throw new Error(`${release} is already released`);
 	}
+	await check(tag, formatVersion(releaseOf(version)));
 	const started = io.now().getTime();
 	const out = await must(io, "gh", [
 		"workflow",
@@ -738,49 +728,6 @@ export async function resolvePromote(
 		);
 	}
 	return { tag, release: formatVersion(release) };
-}
-
-/**
- * The PRs merged into master that `to` (the promoted RC's commit) has and
- * the previous release's tag doesn't, by ancestry of each PR's merge commit
- * (a merge, squash or rebase merge all leave theirs on master).
- */
-export async function releasePrs(
-	io: Io,
-	version: string,
-	to: string,
-	cwd: string,
-): Promise<MergedPr[]> {
-	const v = parseVersion(version);
-	if (!v || v.rc !== undefined) throw new Error(`not a release: ${version}`);
-	const prev = previousRelease(await remoteTags(io), v);
-	const prs = JSON.parse(
-		await must(io, "gh", [
-			"pr",
-			"list",
-			"--repo",
-			io.repo,
-			"--state",
-			"merged",
-			"--base",
-			"master",
-			"--limit",
-			"1000",
-			"--json",
-			"number,title,mergedAt,mergeCommit",
-		]),
-	) as (MergedPr & { mergeCommit: { oid: string } | null })[];
-	const isAncestor = async (sha: string, ref: string) =>
-		(await io.run("git", ["merge-base", "--is-ancestor", sha, ref], { cwd }))
-			.code === 0;
-	const picked: MergedPr[] = [];
-	for (const pr of prs) {
-		const sha = pr.mergeCommit?.oid;
-		if (!sha || !(await isAncestor(sha, to))) continue;
-		if (prev && (await isAncestor(sha, prev))) continue;
-		picked.push({ number: pr.number, title: pr.title, mergedAt: pr.mergedAt });
-	}
-	return picked;
 }
 
 // ---------------------------------------------------------------------------

@@ -23,20 +23,42 @@
 //                                             a branch and PR setting master's next release
 //   pnpm release merge-ok <pr>                fails while master is frozen (its version is
 //                                             released, the "next" PR not merged) unless <pr>
-//                                             is that "next" PR; run before every merge
+//                                             is that "next" PR, or while the PR's tickets have
+//                                             no Release note in Linear (a ticket-less PR: no
+//                                             "Release note:" line in its description); run
+//                                             before every merge
+//   pnpm release note <CAR-N> "<text>" [--kind new|improved|fixed]
+//   pnpm release note <CAR-N> --none "<why>"  checks the note and posts it on the ticket as a
+//                                             "Release note" comment (the kind defaults from
+//                                             the ticket's labels)
+//   pnpm release notes [X.Y.Z] [--pr]         writes release-notes/X.Y.Z.json (default: master's
+//                                             next release) from Linear and the PRs merged up to
+//                                             origin/master; prints what is missing; --pr puts
+//                                             it on notes/X.Y.Z with a "notes: X.Y.Z" PR instead.
+//                                             Never writes to Linear
+//   pnpm release notes check                  fails listing what has no note: the release so
+//                                             far, and tickets done in the last 30 days
 //
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
 // ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
-// ci:check-run, ci:finish-plan, ci:changelog, ci:bump. (CI passed on the
+// ci:check-run, ci:finish-plan, ci:notes-check, ci:changelog,
+// ci:release-body, ci:bump. (CI passed on the
 // RC's commit: scripts/ci-passed.mjs, with no dependencies.) They print KEY=value
 // lines for $GITHUB_OUTPUT and read the checkout's tags. (The rc fix-up is
 // scripts/rc-fixup.mjs, with no dependencies, for the jobs that hold npm's
 // OIDC credential.)
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { NOTE_KINDS, type NoteKind } from "../src/shared/releaseNotes.js";
 import {
 	bump,
 	checkPromoteRun,
@@ -48,6 +70,7 @@ import {
 	KINDS,
 	type Kind,
 	mergeOk,
+	must,
 	next,
 	type PublishIo,
 	parseManifest,
@@ -56,8 +79,6 @@ import {
 	publishRelease,
 	type Runner,
 	rcToPublish,
-	releasePrs,
-	renderChangelog,
 	resolvePromote,
 	status,
 	tarballDigests,
@@ -65,6 +86,30 @@ import {
 	withVersion,
 } from "./release-lib.js";
 import { localCommand } from "./release-local.js";
+import {
+	auditNotes,
+	capLocal,
+	capShipped,
+	formatNotesFile,
+	type Linear,
+	LOCAL_NOTES_GIT_PATH,
+	linearClient,
+	linearKey,
+	noLinearKey,
+	notesCheck,
+	notesFilesAt,
+	notesPath,
+	postNote,
+	prNotesOk,
+	promoteNotesCheck,
+	readNotesFile,
+	releaseRange,
+	renderNotesBody,
+	shippedNotes,
+	withChangelogSection,
+	withReleaseNotes,
+	writeNotes,
+} from "./release-notes.js";
 
 const runner: Runner = (cmd, args, opts) =>
 	new Promise((resolve, reject) => {
@@ -117,7 +162,7 @@ const publishIo: PublishIo = {
 
 function usage(): never {
 	console.error(
-		"usage: pnpm release local [--out <dir>] [--no-install] | status | promote [<rc tag>] [--next patch|minor|major] | publish [<run-id>] | next <patch|minor|major|X.Y.Z> | merge-ok <pr>",
+		'usage: pnpm release local [--out <dir>] [--no-install] | status | promote [<rc tag>] [--next patch|minor|major] | publish [<run-id>] | next <patch|minor|major|X.Y.Z> | merge-ok <pr> | note <CAR-N> "<text>" [--kind new|improved|fixed] | note <CAR-N> --none "<why>" | notes [X.Y.Z] [--pr] | notes check',
 	);
 	process.exit(2);
 }
@@ -125,6 +170,32 @@ function usage(): never {
 function kindArg(value: string | undefined): Kind {
 	if (!value || !(KINDS as readonly string[]).includes(value)) usage();
 	return value as Kind;
+}
+
+/** Linear with the key on this machine, or null without one (never in CI), and where it looked. */
+function findLinear(): { linear: Linear | null; tried: string[] } {
+	const { key, tried } = linearKey();
+	return { linear: key ? linearClient(key) : null, tried };
+}
+
+const linearOrNull = () => findLinear().linear;
+
+function mustLinear(): Linear {
+	const { linear, tried } = findLinear();
+	if (!linear) throw new Error(noLinearKey(tried));
+	return linear;
+}
+
+/** A PR's changed files, from GitHub. */
+async function prFiles(number: number): Promise<string[]> {
+	const out = await must(io, "gh", [
+		"api",
+		"--paginate",
+		`repos/${io.repo}/pulls/${number}/files?per_page=100`,
+		"--jq",
+		".[].filename",
+	]);
+	return out.split("\n").filter((f) => f !== "");
 }
 
 /** package.json's version in `dir`. */
@@ -141,7 +212,7 @@ const packageVersion = (dir: string) =>
  * stays empty and scripts/build-info.mjs records the commit, not `-dirty`.
  * Works on any commit, also one whose build-info.mjs predates this.
  */
-function setVersion(version: string, dir: string) {
+async function setVersion(version: string, dir: string) {
 	if (!parseVersion(version)) throw new Error(`not a version: ${version}`);
 	const file = join(dir, "package.json");
 	const git = (...args: string[]) =>
@@ -150,9 +221,27 @@ function setVersion(version: string, dir: string) {
 	// told from a master build of the same version (`crb --version` shows the
 	// commit, and a machine following npm can compare it).
 	const head = git("rev-parse", "HEAD").trim();
+	// The release notes it ships (CAR-192): npm keeps the field, capped, in
+	// the version's manifest; the build (scripts/build-info.mjs) writes
+	// every version into dist/release-notes.json from the git dir's file.
+	const notes = await shippedNotes(io, version, dir);
 	writeFileSync(
 		file,
-		withGitHead(withVersion(readFileSync(file, "utf8"), version), head),
+		withReleaseNotes(
+			withGitHead(withVersion(readFileSync(file, "utf8"), version), head),
+			capShipped(notes),
+		),
+	);
+	const local = git(
+		"rev-parse",
+		"--path-format=absolute",
+		"--git-path",
+		LOCAL_NOTES_GIT_PATH,
+	).trim();
+	// For this version and commit only: build-info.mjs ignores it otherwise.
+	writeFileSync(
+		local,
+		`${JSON.stringify({ version, commit: head, notes: capLocal(notes) })}\n`,
 	);
 	git("update-index", "--skip-worktree", "package.json");
 	const dirty = git("status", "--porcelain");
@@ -177,7 +266,9 @@ async function main(argv: string[]) {
 				else if (!tag && !a.startsWith("-")) tag = a;
 				else usage();
 			}
-			await promote(io, tag, kind);
+			await promote(io, tag, kind, (rc, release) =>
+				promoteNotesCheck(io, release, rc, linearOrNull()),
+			);
 			return;
 		}
 		case "publish": {
@@ -242,7 +333,79 @@ async function main(argv: string[]) {
 		}
 		case "merge-ok": {
 			if (rest.length !== 1 || !rest[0]) usage();
-			await mergeOk(io, rest[0]);
+			await mergeOk(io, rest[0], (pull) =>
+				prNotesOk(pull, findLinear, () => prFiles(pull.number)),
+			);
+			return;
+		}
+		case "note": {
+			const [id, ...args] = rest;
+			if (!id) usage();
+			let kind: NoteKind | undefined;
+			let none: string | undefined;
+			let text: string | undefined;
+			for (let i = 0; i < args.length; i++) {
+				const a = args[i] ?? "";
+				if (a === "--kind") {
+					const k = args[++i] ?? "";
+					if (!(NOTE_KINDS as readonly string[]).includes(k)) usage();
+					kind = k as NoteKind;
+				} else if (a === "--none") {
+					none = args[++i];
+					if (none === undefined) usage();
+				} else if (text === undefined) text = a;
+				else usage();
+			}
+			if ((text === undefined) === (none === undefined)) usage();
+			if (none !== undefined && kind) usage();
+			await postNote(
+				io,
+				mustLinear(),
+				id,
+				none !== undefined ? { none } : { text: text ?? "", kind },
+			);
+			return;
+		}
+		case "notes": {
+			if (rest[0] === "check") {
+				if (rest.length !== 1) usage();
+				await auditNotes(io, mustLinear());
+				return;
+			}
+			let version: string | undefined;
+			let pr = false;
+			for (const a of rest) {
+				if (a === "--pr") pr = true;
+				else if (!version && parseVersion(a)) version = a;
+				else usage();
+			}
+			const dir = mkdtempSync(join(tmpdir(), "crb-notes-"));
+			await writeNotes(io, mustLinear(), {
+				version,
+				pr,
+				root: process.cwd(),
+				worktree: join(dir, "worktree"),
+				write: (path, text) => {
+					mkdirSync(dirname(path), { recursive: true });
+					writeFileSync(path, text);
+				},
+			});
+			return;
+		}
+		case "ci:notes-check": {
+			// ci:notes-check <X.Y.Z> <sha>: release-notes/X.Y.Z.json at sha covers the release.
+			const [version, sha] = rest;
+			if (!version || !sha || !/^[0-9a-f]{40}$/.test(sha)) usage();
+			console.log(await notesCheck(io, version, sha));
+			return;
+		}
+		case "ci:release-body": {
+			// ci:release-body <X.Y.Z> <sha>: the GitHub release's text.
+			const [version, sha] = rest;
+			if (!version || !sha) usage();
+			const files = await notesFilesAt(io, sha);
+			const range = await releaseRange(io, version, sha);
+			console.log(renderNotesBody(files.get(version) ?? null, range));
 			return;
 		}
 		case "ci:rc-version": {
@@ -259,7 +422,7 @@ async function main(argv: string[]) {
 		case "ci:set-version": {
 			const [version, dir = process.cwd()] = rest;
 			if (!version) usage();
-			setVersion(version, dir);
+			await setVersion(version, dir);
 			return;
 		}
 		case "ci:check-publish": {
@@ -285,15 +448,27 @@ async function main(argv: string[]) {
 			return;
 		}
 		case "ci:changelog": {
-			// ci:changelog <X.Y.Z> <ref the release was built from>
+			// ci:changelog <X.Y.Z> <the RC's commit>: the version's section in
+			// docs/changelog.md from its notes file at that commit (git only),
+			// and the file in this checkout dated.
 			const [version, to] = rest;
 			if (!version || !to) usage();
-			const prs = await releasePrs(io, version, to, process.cwd());
+			const files = await notesFilesAt(io, to);
+			const range = await releaseRange(io, version, to);
+			const date = io.now().toISOString().slice(0, 10);
 			const file = join(process.cwd(), "docs/changelog.md");
 			const existing = existsSync(file) ? readFileSync(file, "utf8") : null;
-			const date = io.now().toISOString().slice(0, 10);
-			writeFileSync(file, renderChangelog(existing, version, date, prs));
-			console.log(`prs=${prs.length}`);
+			const section = `## ${version} (${date})\n\n${renderNotesBody(files.get(version) ?? null, range)}`;
+			writeFileSync(file, withChangelogSection(existing, version, section));
+			const notesFile = join(process.cwd(), notesPath(version));
+			if (existsSync(notesFile)) {
+				const notes = readNotesFile(
+					readFileSync(notesFile, "utf8"),
+					notesPath(version),
+				);
+				writeFileSync(notesFile, formatNotesFile({ ...notes, date }));
+			}
+			console.log(`prs=${range.prs.length}`);
 			return;
 		}
 		case "ci:bump": {

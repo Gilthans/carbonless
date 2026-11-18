@@ -138,6 +138,8 @@ jobs:
           echo "::warning::$REASON"
           echo "No RC: $REASON" >>"$GITHUB_STEP_SUMMARY"
       - name: Set the version and gitHead (the tree stays clean)
+        # And crbReleaseNotes (CAR-192): the notes so far, and the PRs with
+        # none yet, from release-notes/*.json and git.
         if: steps.version.outputs.publish == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -409,12 +411,21 @@ jobs:
             exit 1
           fi
           echo "RC_SHA=$sha" >>"$GITHUB_ENV"
+      - name: Release notes cover the release
+        # CAR-192: release-notes/X.Y.Z.json at the RC's commit accounts for
+        # every ticket and ticket-less PR since the previous release (notes
+        # or an explicit none). git only: no Linear, no token. Else: run
+        # `pnpm release notes X.Y.Z --pr`, merge it, promote its RC.
+        env:
+          RELEASE: ${{ steps.plan.outputs.release }}
+        run: pnpm exec tsx scripts/release.ts ci:notes-check "$RELEASE" "$RC_SHA"
       - name: Install the RC
         # What builds the tarball (prepack); nothing of the suite runs.
         working-directory: ${{ runner.temp }}/rc
         run: pnpm install --frozen-lockfile
       - name: Set the version and gitHead (the tree stays clean)
-        # master's release.ts: the RC's commit may predate it.
+        # master's release.ts: the RC's commit may predate it. It also sets
+        # crbReleaseNotes (CAR-192), which the build copies into dist.
         env:
           RELEASE: ${{ steps.plan.outputs.release }}
         run: pnpm exec tsx scripts/release.ts ci:set-version "$RELEASE" "$RC_DIR"

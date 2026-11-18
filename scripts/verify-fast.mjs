@@ -66,6 +66,9 @@ const E2E_MAP = [
 	],
 	// Pure (hunks in, placements out); its unit tests are the coverage.
 	[/^src\/shared\/tracer\//, []],
+	// Release notes' formats and text rule (CAR-192): pure, its unit tests
+	// and the release scripts' are the coverage.
+	[/^src\/shared\/releaseNotes\.ts$/, []],
 	// The re-review engine (shape, interdiff, carry): the methodology
 	// matrix drives it end to end, the Files page's graph and since view
 	// read its answers.
