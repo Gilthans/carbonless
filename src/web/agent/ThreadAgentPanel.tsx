@@ -56,6 +56,7 @@ export function AgentCover(props: { children: ReactNode; className?: string }) {
 				thread={agent.thread}
 				conversation={agent.conversation}
 				open={agent.open}
+				shown={shown}
 				onClose={agent.close}
 				stripWidth={AGENT_STRIP_PX}
 			/>
@@ -119,11 +120,15 @@ export function ThreadAgentPanel(props: {
 	thread: ReviewThread;
 	conversation: AgentThread | undefined;
 	open: boolean;
+	/**
+	 * Drawn (useShown): the cover's own, so the panel goes and the cover
+	 * gives up its height in one render, never a frame apart.
+	 */
+	shown: boolean;
 	onClose: () => void;
 	stripWidth: number;
 }) {
-	const { thread, conversation, open } = props;
-	const shown = useShown(open);
+	const { thread, conversation, open, shown } = props;
 	const entered = useEntered(shown && open);
 	const scroller = useRef<HTMLDivElement>(null);
 	useSeenWriter(conversation, open, scroller);
