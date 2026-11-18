@@ -1,11 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import type {
 	Cluster,
 	ClusterState,
 	FileSummary,
 	Snapshot,
 } from "../../shared/types.js";
-import { buildReviewView } from "./coverage.js";
+import { buildReviewView, humanMarksOf } from "./coverage.js";
 import type { PatchsetRecord, ProgressState, StateEntry } from "./fold.js";
 
 const REV = "a".repeat(64);
@@ -449,5 +449,106 @@ describe("buildReviewView", () => {
 			expect.objectContaining({ state: "unreviewed" }),
 		);
 		expect(view.files[0]?.clusters[0]).not.toHaveProperty("carried");
+	});
+});
+
+describe("humanMarksOf (CAR-195)", () => {
+	it("reads a hand mark's lines, never a carried mark's", () => {
+		const snap = snapshot([
+			file(0, "a.ts", [cluster("k1", 3), cluster("k2", 3), cluster("k3", 3)]),
+		]);
+		const marks = humanMarksOf(
+			snap,
+			new Map<string, StateEntry>([
+				["k1", { state: "unreviewed", lines: [[0, 1]], crossed: [[2, 3]] }],
+				[
+					"k2",
+					{
+						state: "unreviewed",
+						lines: [[0, 1]],
+						linesCarried: { from: 1, lines: [[0, 1]] },
+					},
+				],
+				["k3", { state: "reviewed", carried: { from: 1, rule: "exact" } }],
+			]),
+		);
+		expect(marks.get("k1")).toMatchObject({
+			reviewed: [[0, 1]],
+			crossed: [[2, 3]],
+		});
+		expect(marks.get("k2")).toMatchObject({ reviewed: [], crossed: [] });
+		expect(marks.get("k3")).toMatchObject({ reviewed: [], crossed: [] });
+	});
+});
+
+/*
+ * Custom renderers (CAR-38): a renderer only changes how a file is shown.
+ * Coverage is computed from the snapshot's clusters and the stored states
+ * alone: no renderer, no path type, no "whole file" shortcut.
+ */
+describe("buildReviewView and renderers", () => {
+	const fileCluster = (key: string): Cluster => ({
+		key,
+		kind: "file",
+		oldStart: 0,
+		oldCount: 0,
+		newStart: 0,
+		newCount: 0,
+		removed: [],
+		added: [],
+		lines: 0,
+		label: "Binary file changed",
+	});
+	const png = (index: number, path = "img/logo.png"): FileSummary => ({
+		...file(index, path, [fileCluster(`bin${index}`)]),
+		binary: true,
+		additions: 0,
+	});
+	const svg = (index: number, path = "img/icon.svg") =>
+		file(index, path, [cluster(`s${index}a`, 2), cluster(`s${index}b`, 3)]);
+
+	it("a file with a forged or missing cluster stays unreviewed whatever the renderer", () => {
+		// Nothing renderer-side can feed it: the snapshot and the states
+		// only, not even an optional third parameter.
+		expectTypeOf(buildReviewView).parameters.toEqualTypeOf<
+			[Snapshot, ProgressState]
+		>();
+		const snap = snapshot([png(0), svg(1)]);
+		// Forged: states for a whole file, a path, a renderer's own key; and
+		// one SVG cluster's state missing.
+		const view = buildReviewView(
+			snap,
+			progress({
+				"img/logo.png": "reviewed",
+				"file:img/logo.png": "reviewed",
+				"image:0": "reviewed",
+				"img/icon.svg": "reviewed",
+				s1a: "reviewed",
+			}),
+		);
+		const [image, vector] = view.files;
+		expect(image?.clusters.map((c) => c.state)).toEqual(["unreviewed"]);
+		expect(image?.done).toBe(false);
+		expect(vector?.clusters.map((c) => c.state)).toEqual([
+			"reviewed",
+			"unreviewed",
+		]);
+		expect(vector?.done).toBe(false);
+		expect(view.progress.files.done).toBe(0);
+		expect(JSON.stringify(view)).not.toContain("image:0");
+
+		// The same files at non-image paths fold the same: the path's type
+		// (what picks a renderer) plays no part.
+		const plain = buildReviewView(
+			snapshot([png(0, "bin/logo.dat"), svg(1, "src/icon.xml")]),
+			progress({ s1a: "reviewed" }),
+		);
+		const strip = (v: typeof view) => v.files.map(({ path, ...rest }) => rest);
+		expect(strip(plain)).toEqual(
+			strip(buildReviewView(snap, progress({ s1a: "reviewed" }))),
+		);
+		expect(plain.progress).toEqual(
+			buildReviewView(snap, progress({ s1a: "reviewed" })).progress,
+		);
 	});
 });

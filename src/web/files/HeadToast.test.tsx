@@ -29,6 +29,7 @@ const info: SessionInfo = {
 			number: 1,
 			head: oid("1"),
 			mergeBase: oid("0"),
+			revision: "r1",
 			baseBranch: "main",
 			startedAt: 1,
 			since: null,

@@ -104,6 +104,20 @@ export interface FileSummary {
 	 * a numeric `indent_size`) when it sets one for this path.
 	 */
 	tabWidth?: number;
+	/** Byte size of the old side's blob (none for an added file or a submodule). */
+	oldSize?: number;
+	/** Byte size of the new side's blob (none for a deleted file or a submodule). */
+	newSize?: number;
+	/**
+	 * A Git LFS pointer with an image path (text, a side under 200 bytes
+	 * whose first line is LFS's `version` line): shown as text, not as an image.
+	 */
+	lfs?: true;
+	/**
+	 * Both sides are the same blob (a rename or a mode change only): an
+	 * image shows once, with nothing to compare.
+	 */
+	sameBlob?: true;
 	clusters: Cluster[];
 }
 
@@ -185,6 +199,12 @@ export interface ClusterView extends Cluster {
 	 * file does), never all of them (that is a crossed-off cluster).
 	 */
 	crossedLines?: LineRanges;
+	/**
+	 * Of its marked lines, those the engine carried from that patch set
+	 * (CAR-195): unchanged since it, where the reviewer had marked them
+	 * the same way; not re-marked by hand since.
+	 */
+	linesCarried?: { from: number; lines: LineRanges };
 }
 
 export interface FileView extends Omit<FileSummary, "clusters"> {
@@ -1080,6 +1100,12 @@ export interface RereviewAnswer {
 			/** carried: the state carried, and the rule it carried under. */
 			state?: "reviewed" | "crossed-off";
 			rule?: "exact" | "rename";
+			/**
+			 * reworked and new: its lines the since view doesn't show
+			 * (unchanged since `from` of the answer) whose counterparts the
+			 * reviewer marked there, as carried (CAR-195).
+			 */
+			lines?: { reviewed?: LineRanges; crossed?: LineRanges };
 		}[];
 		/**
 		 * The file's since-view pieces (pieces.ts SincePiece), what the since
@@ -1149,6 +1175,8 @@ export interface SessionInfo {
 		number: number;
 		head: string;
 		mergeBase: string;
+		/** Its snapshot's id (a ReviewView's `revision`). */
+		revision: string;
 		/**
 		 * The base branch it was reviewed against (its own, kept after a
 		 * retarget: its card's "Against").
@@ -1166,6 +1194,18 @@ export interface SessionInfo {
 		 */
 		commits: number | null | { error: string };
 	}[];
+	/**
+	 * Before any patch set, the snapshot's commits over its merge base (the
+	 * graph's branch → snapshot connector), as a patch set's `commits`: null
+	 * while counted in the background, why not once failed for good. Absent
+	 * once a patch set exists (its own count stands for it).
+	 */
+	snapshotCommits?: number | null | { error: string };
+	/**
+	 * The merge base snapshotCommits is counted over, sent with it: the
+	 * page keys the count by base and head, so a retarget asks anew.
+	 */
+	snapshotBase?: string;
 	/**
 	 * The PR's head when this crb last opened the review, before this open
 	 * (the toast's "since you last looked"); null on the first open.

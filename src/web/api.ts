@@ -201,6 +201,27 @@ export const fetchHunks = (revision: string, index: number, from?: number) =>
 		})}`,
 	);
 
+/**
+ * One side's bytes of file `index` (the blob route), for an `<img>`: the
+ * since view's interdiff with `from`; `sniff` for an extension crb doesn't
+ * know, shown as Image (the server checks raster signatures).
+ */
+export const blobUrl = (
+	revision: string,
+	index: number,
+	side: "old" | "new",
+	from?: number,
+	sniff?: boolean,
+): string =>
+	reviewApiPath(
+		`/api/files/${index}/blob?${new URLSearchParams({
+			revision,
+			side,
+			...(from === undefined ? {} : { from: String(from) }),
+			...(sniff ? { sniff: "1" } : {}),
+		})}`,
+	);
+
 /** The engine's answer for patch set `from` to a patch set or a head (RereviewAnswer). */
 export const fetchRereview = (from: number, to: RereviewTo) =>
 	request<RereviewAnswer | { pending: true }>(
@@ -337,8 +358,14 @@ export const sessionQuery = queryOptions({
 	staleTime: Number.POSITIVE_INFINITY,
 });
 
+/** The snapshot's count's key: by base and head, as the server counts it. */
+export const snapshotKey = (
+	info: Pick<SessionInfo, "snapshotBase" | "snapshotHead">,
+) => `snapshot ${info.snapshotBase} ${info.snapshotHead}`;
+
 /**
- * The patch sets' commit counts (`SessionInfo.patchsets[].commits`), which
+ * The patch sets' commit counts (`SessionInfo.patchsets[].commits`, and
+ * `snapshotCommits` before any patch set, under snapshotKey), which
  * the server counts in the background: the session read again every
  * REREVIEW_POLL_MS until every count is in, under its own key, so the
  * polls never touch the session the page runs on (the graph merges them).
@@ -349,9 +376,16 @@ export const patchsetCommitsQuery = (missing: string[]) =>
 		queryKey: ["patchset-commits", ...missing],
 		queryFn: async () => {
 			const info = await fetchSession();
-			return Object.fromEntries(
-				info.patchsets.map((p) => [`${p.number} ${p.head}`, p.commits]),
-			) as Record<string, SessionInfo["patchsets"][number]["commits"]>;
+			// Before any patch set, the snapshot's count too, by base and head
+			// (snapshotKey): a retarget asks anew.
+			const snapshot =
+				info.snapshotCommits === undefined
+					? []
+					: [[snapshotKey(info), info.snapshotCommits]];
+			return Object.fromEntries([
+				...info.patchsets.map((p) => [`${p.number} ${p.head}`, p.commits]),
+				...snapshot,
+			]) as Record<string, SessionInfo["patchsets"][number]["commits"]>;
 		},
 		staleTime: Number.POSITIVE_INFINITY,
 		refetchInterval: (query) => {

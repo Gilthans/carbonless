@@ -531,16 +531,26 @@ principle 2). Marks made on a hunk before it split carry onto its pieces
 Settings' "Ignore whitespace" is the reviewer's own choice of what progress
 counts. With it on, whitespace-only clusters are left out of every count
 on the Files page (the bar, the tree's file and folder rows, each file's
-header and its finished state; a file of nothing else counts nowhere on
-the bar), whatever their marks. They still show, collapsed to one quiet
-`~` row, and can still be ticked and crossed off: the mark is stored as
-usual and counts again when the switch is off, which counts everything
-exactly as before. While any is left out, the bar shows a `~` whose name
-and tooltip say how many ("3 whitespace-only clusters not counted"). This
-is no AI decision: nothing is marked reviewed, and turning the switch off
-shows what is still unreviewed. The Overview's progress counts the same
-way, with the same `~`; the since view, Home and the verdict count every
-cluster.
+header and its finished state, the move-on; a file of nothing else counts
+nowhere on the bar but keeps its own row and header counts), whatever
+their marks. They still show, collapsed to one quiet `~` row, and can
+still be ticked and crossed off: the mark is stored as usual and counts
+again when the switch is off, which counts everything exactly as before.
+While any is left out, the bar shows a `~` whose name and tooltip say how
+many ("3 whitespace-only clusters not counted"); so does each file
+header that left one out (a file without any never shows it; a header
+that reads done because of one always does). The tree's rows count the
+same way but show no `~`: the header's is enough (owner 2026-11-18).
+This is no AI decision: nothing is marked reviewed, and turning the
+switch off shows what is still unreviewed. The Overview's progress, the
+verdict (its "You reviewed" line and its meter of what changed since your
+verdict) and the since view (its bar, each file's header, chips and dot,
+"Nothing to read since", the move-on; its units of whitespace-only
+clusters, `SinceUnit.whitespaceOnly`; whether a file is nothing else is
+decided by its clusters, and the `~` counts clusters, not their pieces)
+count the same way, with the same `~` (CAR-184). Home doesn't: it never reads a review's view settings
+(owner 2026-11-16: "Home shouldn't probe for specific review settings"),
+so it counts every cluster.
 
 The view still pairs whitespace-equal lines as quiet `~` rows
 (`src/web/files/whitespace.ts`), over the whole display hunk, context

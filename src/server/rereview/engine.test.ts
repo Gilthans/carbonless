@@ -10,6 +10,7 @@ import {
 	testGitEnv,
 } from "../../../test/git-fixture";
 import {
+	aTxt,
 	createRereviewHistory,
 	type RereviewHistory,
 } from "../../../test/rereview-fixture";
@@ -21,6 +22,7 @@ import {
 	answerRereview,
 	computeRereview,
 	type EarlierPatchset,
+	interdiffBlobName,
 	interdiffFileHunks,
 	rereviewKey,
 	type SincePatchset,
@@ -603,6 +605,155 @@ describe("the engine", () => {
 				controller.signal,
 			),
 		).rejects.toThrow(/stopped/);
+	});
+
+	describe("interdiffBlobName", () => {
+		/** The traced result and answer of PS1 → `r`. */
+		const compare = async (ps1: Snapshot, r: Snapshot) => {
+			const sincePs = since(1, ps1, marked(ps1));
+			const traced = await traceRereview(h.path, sincePs, [], targetOf(r));
+			const { answer } = answerRereview(traced, sincePs, [], targetOf(r));
+			const index = (path: string) => {
+				const f = answer.files.find((x) => x.path === path);
+				if (!f) throw new Error(`no ${path}`);
+				return f.index;
+			};
+			return { traced, answer, index };
+		};
+		const show = (name: string) =>
+			execFileSync("git", ["cat-file", "-p", name], {
+				cwd: h.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			});
+
+		it("clean file after the base moved: old is the virtual rebase's, new the head's", async () => {
+			const ps1 = await snap(h.b0, h.p2);
+			const r = await snap(h.b1, h.amended);
+			const { traced, answer, index } = await compare(ps1, r);
+			if (traced.interdiff.status !== "available")
+				throw new Error("no interdiff");
+			const a = index("a.txt");
+			const old = interdiffBlobName(traced, r, answer, a, "old");
+			expect(old).toBe(`${traced.interdiff.virtualHead}:a.txt`);
+			// H1': PS1's lines on the moved base, never PS1's own commit.
+			expect(show(old as string)).toBe(
+				aTxt({ 2: "two", 15: "fifteen", 30: "thirty" }),
+			);
+			expect(interdiffBlobName(traced, r, answer, a, "new")).toBe(
+				`${h.amended}:a.txt`,
+			);
+		});
+
+		it("conflicted file: old is the target's merge base", async () => {
+			const ps1 = await snap(h.b0, h.p2);
+			const r = await snap(h.b1c, h.resolvedPlus);
+			const { traced, answer, index } = await compare(ps1, r);
+			const a = index("a.txt");
+			expect(interdiffBlobName(traced, r, answer, a, "old")).toBe(
+				`${h.b1c}:a.txt`,
+			);
+			expect(interdiffBlobName(traced, r, answer, a, "new")).toBe(
+				`${h.resolvedPlus}:a.txt`,
+			);
+			// new.txt rebased cleanly: the virtual rebase's.
+			if (traced.interdiff.status !== "available")
+				throw new Error("no interdiff");
+			expect(
+				interdiffBlobName(traced, r, answer, index("new.txt"), "old"),
+			).toBe(`${traced.interdiff.virtualHead}:new.txt`);
+		});
+
+		it("a file the interdiff doesn't list is the head's on both sides; added has no old, deleted no new", async () => {
+			const ps1 = await snap(h.b0, h.p2);
+			const r = await snap(h.b0, h.p3);
+			const { traced, answer, index } = await compare(ps1, r);
+			const n = index("new.txt");
+			expect(interdiffBlobName(traced, r, answer, n, "old")).toBe(
+				`${h.p3}:new.txt`,
+			);
+			expect(interdiffBlobName(traced, r, answer, n, "new")).toBe(
+				`${h.p3}:new.txt`,
+			);
+			const extra = index("extra.txt");
+			expect(interdiffBlobName(traced, r, answer, extra, "old")).toBeNull();
+			expect(interdiffBlobName(traced, r, answer, extra, "new")).toBe(
+				`${h.p3}:extra.txt`,
+			);
+			// PS3 had extra.txt; the revert deletes it since.
+			const ps3 = await snap(h.b0, h.p3);
+			const back = await snap(h.b0, h.reverted);
+			const gone = await compare(ps3, back);
+			if (gone.traced.interdiff.status !== "available") {
+				throw new Error("no interdiff");
+			}
+			const e = gone.index("extra.txt");
+			expect(interdiffBlobName(gone.traced, back, gone.answer, e, "old")).toBe(
+				`${gone.traced.interdiff.virtualHead}:extra.txt`,
+			);
+			expect(
+				interdiffBlobName(gone.traced, back, gone.answer, e, "new"),
+			).toBeNull();
+			expect(() => interdiffBlobName(traced, r, answer, 99, "old")).toThrow(
+				/No file 99/,
+			);
+		});
+
+		it("a file renamed and edited since: old is the virtual rebase's at its old path", async () => {
+			const lines = (changes: Record<number, string>) =>
+				`${[1, 2, 3, 4, 5, 6, 7, 8].map((n) => changes[n] ?? `pic ${n}`).join("\n")}\n`;
+			const fx = createGitFixture([
+				{ message: "base", files: { "pic.txt": lines({}) } },
+				{ message: "PS1", files: { "pic.txt": lines({ 2: "two" }) } },
+				{
+					message: "PS2: rename and edit",
+					rename: { "pic.txt": "moved.txt" },
+					files: { "moved.txt": lines({ 2: "two", 7: "seven" }) },
+				},
+			]);
+			try {
+				const [b0 = "", p1 = "", p2 = ""] = fx.shas;
+				const ps1 = await buildSnapshot(fx.path, b0, p1);
+				const r = await buildSnapshot(fx.path, b0, p2);
+				const sincePs = since(1, ps1, marked(ps1));
+				const traced = await traceRereview(fx.path, sincePs, [], targetOf(r));
+				const { answer } = answerRereview(traced, sincePs, [], targetOf(r));
+				if (traced.interdiff.status !== "available") {
+					throw new Error("no interdiff");
+				}
+				expect(traced.interdiff.files[0]).toMatchObject({
+					path: "moved.txt",
+					oldPath: "pic.txt",
+				});
+				const moved = answer.files.find((f) => f.path === "moved.txt");
+				if (!moved) throw new Error("no moved.txt");
+				const old = interdiffBlobName(traced, r, answer, moved.index, "old");
+				expect(old).toBe(`${traced.interdiff.virtualHead}:pic.txt`);
+				expect(
+					execFileSync("git", ["cat-file", "-p", old as string], {
+						cwd: fx.path,
+						encoding: "utf8",
+						env: testGitEnv(),
+					}),
+				).toBe(lines({ 2: "two" }));
+				expect(interdiffBlobName(traced, r, answer, moved.index, "new")).toBe(
+					`${p2}:moved.txt`,
+				);
+			} finally {
+				fx.cleanup();
+			}
+		});
+
+		it("an unavailable interdiff has no old side", async () => {
+			const ps1 = await snap(h.b0, h.p2);
+			const r = await snap(h.orphan, h.orphanHead);
+			const { traced, answer, index } = await compare(ps1, r);
+			const z = index("z.txt");
+			expect(interdiffBlobName(traced, r, answer, z, "old")).toBeNull();
+			expect(interdiffBlobName(traced, r, answer, z, "new")).toBe(
+				`${h.orphanHead}:z.txt`,
+			);
+		});
 	});
 });
 

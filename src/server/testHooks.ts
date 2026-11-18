@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { IMAGE_MAX_BYTES } from "../shared/imageTypes.js";
 import { clearSnapshotCaches } from "./diff/snapshot.js";
 import { ghRunning } from "./gh.js";
 import { gitChildren } from "./git.js";
@@ -25,6 +26,9 @@ import { tracer } from "./trace.js";
  *   Writes the trace spans buffered so far.
  * GET /api/_test/state: open sessions, Home's cached repos, RSS, and what
  *   gh and git run now. Writes the trace spans buffered so far too.
+ * POST /api/_test/limits `{ imageMaxBytes: n | null }`: lowers the blob
+ *   route's size cap (so a test needs no 50 MB fixture); null, or a reset,
+ *   puts the default back. Answers the limits now in force.
  */
 
 export const TEST_HOOKS_ENV = "CRB_TEST_HOOKS";
@@ -51,6 +55,16 @@ export interface ResetAnswer {
 	/** What was still running when the wait ran out: `gh …`, `git …`. */
 	leftovers: string[];
 }
+
+/** Limits a test may lower (POST /api/_test/limits); one object per server. */
+export interface ServerLimits {
+	/** The blob route refuses a larger blob (413). */
+	imageMaxBytes: number;
+}
+
+export const defaultLimits = (): ServerLimits => ({
+	imageMaxBytes: IMAGE_MAX_BYTES,
+});
 
 export interface TestState {
 	sessions: string[];
@@ -89,8 +103,14 @@ export async function registerTestHooks(
 		registry: SessionRegistry;
 		home?: HomeService;
 		settleMs?: number;
+		/** The server's limits, which /api/_test/limits changes in place. */
+		limits?: ServerLimits;
 	},
 ): Promise<void> {
+	const limits = options.limits;
+	const resetLimits = () => {
+		if (limits) Object.assign(limits, defaultLimits());
+	};
 	const expected = Buffer.from(options.token);
 	const allowed = (request: FastifyRequest) => {
 		const raw = request.headers[TEST_HOOK_HEADER];
@@ -112,6 +132,7 @@ export async function registerTestHooks(
 			options.home?.reset();
 			// Per snapshot, not content alone: a fresh process has none.
 			clearSnapshotCaches();
+			resetLimits();
 			const left = await settle(deadline);
 			// Again: a read that was past an await when they were cleared
 			// (Home's config read, a blob's cat-file) may have written since.
@@ -133,6 +154,28 @@ export async function registerTestHooks(
 				],
 			};
 		});
+		scope.post<{ Body: unknown }>(
+			"/api/_test/limits",
+			async (request, reply) => {
+				const body = request.body as { imageMaxBytes?: unknown } | null;
+				const max = body?.imageMaxBytes;
+				if (!limits) return reply.status(404).send({ error: "No limits" });
+				if (max === null) {
+					resetLimits();
+				} else if (
+					typeof max === "number" &&
+					Number.isSafeInteger(max) &&
+					max >= 0
+				) {
+					limits.imageMaxBytes = max;
+				} else {
+					return reply
+						.status(400)
+						.send({ error: "imageMaxBytes must be a byte count or null" });
+				}
+				return { ...limits };
+			},
+		);
 		scope.get("/api/_test/state", async (): Promise<TestState> => {
 			tracer().flush();
 			const gh = ghRunning();
