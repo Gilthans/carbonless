@@ -168,6 +168,34 @@ describe("AgentOverviewRow", () => {
 		);
 	});
 
+	it("leaves the review conversation out of the counts", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise(() => {})),
+		);
+		const c = client();
+		const whole: AgentThread = {
+			...thread("R1", "x", HEAD),
+			anchor: { subject: "review" },
+			waiting: true,
+			unread: true,
+		};
+		c.setQueryData(agentThreadsQuery.queryKey, {
+			threads: [thread("A1", "src/kept.ts", HEAD), whole],
+		});
+		render(
+			<QueryClientProvider client={c}>
+				{inRouter(() => (
+					<AgentOverviewRow />
+				))}
+			</QueryClientProvider>,
+		);
+		expect(
+			await screen.findByTestId("agent-overview-counts"),
+		).toHaveTextContent("1 open · 1 waiting");
+		expect(screen.queryByTestId("agent-overview-unread")).toBeNull();
+	});
+
 	it("counts thread conversations with span threads; unread links to the first unread", async () => {
 		vi.stubGlobal(
 			"fetch",

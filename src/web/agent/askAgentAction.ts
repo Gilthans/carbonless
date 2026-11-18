@@ -5,7 +5,7 @@
  */
 import { SparkleFillIcon } from "@primer/octicons-react";
 import { useSyncExternalStore } from "react";
-import type { AgentAnchor } from "../../shared/agent";
+import type { AgentSpanAnchor } from "../../shared/agent";
 import {
 	type CodeSpan,
 	HEAD_UNSURE,
@@ -104,7 +104,7 @@ export function useAgentComposers(): readonly AgentComposerItem[] {
 }
 
 /** The span as the server stores it; null when a line span lacks its ends. */
-export function anchorOf(span: CodeSpan): AgentAnchor | null {
+export function anchorOf(span: CodeSpan): AgentSpanAnchor | null {
 	if (span.subject === "file") {
 		return { subject: "file", path: span.path, commit: span.commit };
 	}
@@ -125,7 +125,7 @@ export function anchorOf(span: CodeSpan): AgentAnchor | null {
 }
 
 /** A stored anchor as a span (to place and quote a thread). */
-export function spanOfAnchor(anchor: AgentAnchor): CodeSpan {
+export function spanOfAnchor(anchor: AgentSpanAnchor): CodeSpan {
 	if (anchor.subject === "file") {
 		return { path: anchor.path, commit: anchor.commit, subject: "file" };
 	}

@@ -19,6 +19,7 @@ import type {
 	AgentThread,
 } from "../../../shared/agent";
 import { mcpLine } from "../api";
+import { closeReviewDrawer, isReviewDrawerOpen } from "../drawerStore";
 import {
 	closeAgentSetup,
 	openAgentSetup,
@@ -983,6 +984,50 @@ describe("AgentSetup: Review Agent (connected)", () => {
 		expect(count).toHaveAttribute("title", "2 threads waiting for the agent");
 	});
 
+	it("answering the review conversation shows 'Whole review' and the question; Whole review opens the drawer and closes the modal", async () => {
+		current = status({
+			state: "busy",
+			spawned: true,
+			agent: { name: "A", version: "1" },
+			answering: { thread: "R1", text: "", activity: [] },
+			waiting: 1,
+		});
+		threads = [
+			{
+				...thread("R1", "x", 1),
+				anchor: { subject: "review" },
+				messages: [
+					{
+						id: "R1m",
+						by: "human",
+						at: SINCE,
+						text: "Were all comments resolved?",
+					},
+				],
+			},
+		];
+		const { user, dialog } = await opened();
+		const row = await within(dialog).findByTestId("agent-answering-review");
+		expect(row).toHaveTextContent(/^Whole review$/);
+		// A 40px tap target (principle 5), inline in the sentence.
+		expect(row.className).toContain("min-h-10");
+		expect(
+			within(dialog).getByTestId("agent-answering-question"),
+		).toHaveTextContent(/^“Were all comments resolved\?”$/);
+		expect(
+			within(dialog).queryByRole("status", { name: "Loading the thread" }),
+		).toBeNull();
+		expect(isReviewDrawerOpen()).toBe(false);
+		await user.click(
+			within(dialog).getByRole("button", { name: "Whole review" }),
+		);
+		expect(isReviewDrawerOpen()).toBe(true);
+		await waitFor(() =>
+			expect(screen.getByTestId("agent-setup")).not.toHaveAttribute("open"),
+		);
+		closeReviewDrawer();
+	});
+
 	it("the thread link names path:line and the question, and closes the modal", async () => {
 		current = status({
 			state: "busy",
@@ -996,6 +1041,7 @@ describe("AgentSetup: Review Agent (connected)", () => {
 		const link = await within(dialog).findByRole("link", {
 			name: /host\.ts:234/,
 		});
+		expect(link.className).toContain("min-h-10");
 		expect(
 			within(dialog).getByTestId("agent-answering-question"),
 		).toHaveTextContent(/^“Why is the backlog never awaited\?”$/);

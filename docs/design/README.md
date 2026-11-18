@@ -185,6 +185,38 @@ counts sit beside the path, so a phone's second row keeps room for the
 actions and the progress; the header's progress summary names them ("3 lines
 added, 2 deleted · 2 clusters").
 
+## Image files
+
+An image shown as Image (`src/web/files/renderers/image/`) gets a `band`
+toolbar under its header and a stage above its review rows:
+
+- **View switch:** one segmented control of icon buttons at the toolbar's
+  start (`ViewSwitch`): Slider and Fade (two versions in the unified view;
+  else one Image button), then Text where offered (SVG), then Binary.
+  The shown one is pressed. A file with more than one renderer gets the
+  same control in a `band` row of its own over Text and Binary, so the way
+  back is always there; a file with one renderer gets none, and its layout
+  doesn't change. There is no "Show as" chip in the header.
+- **Toolbar:** after the switch (Image only), dimensions before → after
+  (`del-ink` → `add-ink`; a `SkeletonBar` until both sides load) with the
+  byte sizes, and Fit / 1:1. Every control is an icon with a tooltip,
+  40px tall.
+- **Stage:** a `checker` checkerboard (`checker-a`/`checker-b`, behind
+  images only, never text) the larger width by the larger height of the two
+  images, each pinned top-left. Fit never enlarges; 1:1 scrolls inside the
+  stage's frame, never the page. While loading: the shared `Spinner` over a
+  4:3 stage with `aria-busy`.
+- **Slider:** a 2px `ink` handle; `before`/`after` tags in `del-ink`/`add-ink`
+  on `canvas/85` in the top corners (above the stage, in a row of their own,
+  when it shows smaller than 240 × 96). The range over the stage is invisible;
+  its focus rings the stage in `accent`.
+- **Single versions** (side-by-side, added, deleted): a 2px `bad/55` or
+  `ok/55` inner edge; side-by-side stacks below the `@lg` container width.
+  Added and deleted get an uppercase label, `add-ink` on `add` or `del-ink`
+  on `del`.
+- **Can't show it:** no stage; a `warn` alert icon in the toolbar beside
+  the byte sizes, and the binary rows below as for any binary file.
+
 ## Finished files
 
 A file the progress counts done (`FileView.done`: every cluster reviewed or

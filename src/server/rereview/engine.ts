@@ -1,4 +1,17 @@
-import { clusterAt, sincePieces, sinceUnits } from "../../shared/pieces.js";
+import {
+	all,
+	fromIndexes,
+	has,
+	type LineRanges,
+	subtract,
+	union,
+} from "../../shared/lineRanges.js";
+import {
+	clusterAt,
+	type SincePiece,
+	sincePieces,
+	sinceUnits,
+} from "../../shared/pieces.js";
 import {
 	type CarriedState,
 	type CarryResult,
@@ -9,6 +22,7 @@ import {
 	type TracedCluster,
 	traceClusters,
 } from "../../shared/rereview/carry.js";
+import { linesCarriedView } from "../../shared/rereview/overlay.js";
 import {
 	createLineMapper,
 	IDENTITY,
@@ -28,6 +42,8 @@ import type {
 import { buildAllClusters } from "../diff/clusters.js";
 import { listChangedFiles } from "../diff/files.js";
 import { buildDisplayHunks, contextLines } from "../diff/hunks.js";
+import { type HumanMarks, humanMarksOf } from "../review/coverage.js";
+import type { LinesCarriedEntry } from "../review/events.js";
 import type { PatchsetRecord, StateEntry } from "../review/fold.js";
 import type { PatchsetStart } from "../review/reviews.js";
 import {
@@ -541,16 +557,44 @@ export function answerRereview(
 	// The since view's pieces, every one of them (its counts count them:
 	// sinceUnits), with the since patch set's states for what they own; to
 	// read is every unit, as nothing of the target is marked yet.
+	// The line carries (CAR-195): a reworked or new cluster's lines no
+	// piece shows take the mark their counterparts held on the since patch
+	// set (by hand), one to one.
+	const linesCarried: LinesCarriedEntry[] = [];
 	if (interdiff.status === "available") {
+		const sources = humanMarksOf(ps.snapshot, ps.states);
 		for (const f of files) {
 			const { pieces = [] } = interdiffFileHunks(
 				traced,
 				target,
 				answer,
 				f.index,
-				ps.states,
 			);
 			if (pieces.length > 0) f.pieces = pieces;
+			const carries = sinceLineCarries(
+				traced,
+				target,
+				answer,
+				f.index,
+				pieces,
+				sources,
+			);
+			for (const c of f.clusters) {
+				if (c.kind !== "reworked" && c.kind !== "new") continue;
+				const mine = carries.filter((e) => e.key === c.key);
+				if (mine.length === 0) continue;
+				const of = (state: LinesCarriedEntry["state"]) =>
+					mine
+						.filter((e) => e.state === state)
+						.reduce<LineRanges>((all, e) => union(all, e.lines), []);
+				const reviewedLines = of("reviewed");
+				const crossedLines = of("crossed-off");
+				c.lines = {
+					...(reviewedLines.length > 0 ? { reviewed: reviewedLines } : {}),
+					...(crossedLines.length > 0 ? { crossed: crossedLines } : {}),
+				};
+				linesCarried.push(...mine);
+			}
 		}
 		// The target as the carries leave it: a carried cluster holds its
 		// mark (not to read), every other is unmarked.
@@ -560,16 +604,26 @@ export function answerRereview(
 		for (const t of target.files) {
 			if (!targetAt.has(t.index)) targetAt.set(t.index, t);
 		}
+		const linesOf = new Map(
+			files.flatMap((f) =>
+				f.clusters.flatMap((c) => (c.lines ? [[c.key, c.lines] as const] : [])),
+			),
+		);
 		const unmarked = (index: number): ClusterView[] =>
 			(targetAt.get(index)?.clusters ?? []).map((c): ClusterView => {
 				const carry = carriedByKey.get(c.key);
-				return carry
-					? {
-							...c,
-							state: carry.state,
-							carried: { from: carry.from, rule: carry.rule },
-						}
-					: { ...c, state: "unreviewed" };
+				if (carry) {
+					return {
+						...c,
+						state: carry.state,
+						carried: { from: carry.from, rule: carry.rule },
+					};
+				}
+				return linesCarriedView(
+					{ ...c, state: "unreviewed" },
+					linesOf.get(c.key),
+					ps.number,
+				);
 			});
 		const units = sinceUnits(files, ps.number, unmarked, undefined);
 		const byFile = new Set(units.map((u) => u.index));
@@ -593,6 +647,9 @@ export function answerRereview(
 		baseBranch: target.baseBranch,
 		interdiff: interdiff.status,
 		carried: [...events.values()],
+		...(linesCarried.length > 0
+			? { linesCarried: { from: ps.number, states: linesCarried } }
+			: {}),
 	};
 	return { answer, start, absorbed };
 }
@@ -641,6 +698,39 @@ function interdiffFileAt(
 			? (traced.interdiff.files.find((f) => f.path === entry.path) ?? null)
 			: null;
 	return { entry, file };
+}
+
+/**
+ * The `<treeish>:<path>` name of one side of the since view's file at
+ * `index`, from the same interdiff its hunks come from, so the two can't
+ * drift apart: the old side is the virtual rebase's (`H1'`), or for a
+ * conflicted file the target's merge base (`B2`), never the patch set's
+ * own commit; the new side is the target head's. A file the interdiff
+ * doesn't list is the head's on both sides. Null for a side the file
+ * hasn't (an added file's old, a deleted file's new) and for the old side
+ * without an interdiff. RangeError for an index the answer hasn't.
+ */
+export function interdiffBlobName(
+	traced: Traced,
+	target: Snapshot,
+	answer: RereviewAnswer,
+	index: number,
+	side: "old" | "new",
+): string | null {
+	const { entry, file } = interdiffFileAt(traced, answer, index);
+	if (traced.interdiff.status !== "available") {
+		return side === "old" ? null : `${target.head}:${entry.path}`;
+	}
+	if (!file) {
+		const own = target.files.find((f) => f.path === entry.path);
+		return own?.status === "deleted" ? null : `${target.head}:${entry.path}`;
+	}
+	if (side === "new") {
+		return file.status === "deleted" ? null : `${target.head}:${file.path}`;
+	}
+	if (file.status === "added") return null;
+	const tree = file.conflict ? target.base : traced.interdiff.virtualHead;
+	return `${tree}:${file.oldPath ?? file.path}`;
 }
 
 /**
@@ -694,8 +784,6 @@ export function interdiffFileHunks(
 	target: Snapshot,
 	answer: RereviewAnswer,
 	index: number,
-	/** The compared patch set's states (which of its lines were reviewed); none: nothing vouched. */
-	states: Map<string, StateEntry> = new Map(),
 ): FileHunks {
 	const { entry, file } = interdiffFileAt(traced, answer, index);
 	if (!file) return { hunks: [], newLineCount: 0 };
@@ -737,7 +825,6 @@ export function interdiffFileHunks(
 		);
 	};
 	const targetClusters = targetFile?.clusters ?? [];
-	const addedThen = traced.lineKeys.old[file.oldPath ?? file.path] ?? {};
 	// A removed line's line in the new base, by position: a conflicted
 	// file's old side is the new base; else the engine's map (none for a
 	// line the patch set added, one it can't map, or a file it has no map
@@ -801,24 +888,234 @@ export function interdiffFileHunks(
 			}
 		}
 	}
-	// Each run of changed lines is a piece (pieces.ts). An unshown line of
-	// a target cluster joins one only when unchanged since a line reviewed
-	// on the compared patch set (`vouched`); a removed line shown is one
-	// of the cluster's only when it isn't a line the patch set added.
-	const reviewed = (key: string | undefined) =>
-		key !== undefined && states.get(key)?.state === "reviewed";
-	const removedThen = traced.lineKeys.base?.[entry.path] ?? {};
-	const interdiff = createLineMapper(
-		file.clusters.filter((c) => c.kind === "lines"),
-	);
-	const pieces = sincePieces(hunks, targetClusters, (c) => ({
-		baseNo,
-		vouched: (i) => {
-			if (file.conflict) return false;
-			if (i < c.removed.length) return reviewed(removedThen[c.oldStart + i]);
-			const h1 = interdiff.newToOld(c.newStart + i - c.removed.length);
-			return h1 !== null && reviewed(addedThen[h1]);
-		},
-	}));
+	// Each run of changed lines is a piece (pieces.ts): it owns the lines it
+	// shows; a removed line shown is one of the cluster's only when it isn't
+	// a line the patch set added. A line no piece shows is unchanged since
+	// the compared patch set: it takes its mark there, if any, as a carry
+	// (sinceLineCarries), never through a piece.
+	const pieces = sincePieces(hunks, targetClusters, () => ({ baseNo }));
 	return { hunks, newLineCount: file.newLines.length, pieces };
+}
+
+/** A line of a cluster of the compared patch set (its own line index). */
+export interface LineSource {
+	key: string;
+	index: number;
+}
+
+/**
+ * Which line of the compared patch set each line the since view doesn't
+ * show stands for (CAR-195). `added(line)`: a line of the since view's
+ * old side (the virtual rebase) that a cluster of that patch set added
+ * (`addedThen`, by key); or a line none added that is the twin of one
+ * such line by git's slider: the same text right next to a run of one
+ * cluster's added lines, so the same diff could show either as the added
+ * one (PS1's diff took the second of two blank lines, PS2's the first);
+ * a line two runs claim stands for none. `removed(line)`: a line of the
+ * new merge base that a cluster removed (`removedThen`). A line's place
+ * in its cluster is its rank among the cluster's lines in the map, only
+ * when the map holds all of them (else none: fails closed). One to one:
+ * each earlier line stands for one line at most, the first asked about
+ * (itself or one of its twins); a later ask gets none. Make one per file
+ * of the since view, and ask each line once.
+ */
+export function sinceLineSources(
+	sources: ReadonlyMap<string, { cluster: Cluster }>,
+	addedThen: Readonly<Record<number, string>>,
+	removedThen: Readonly<Record<number, string>>,
+	oldLines: readonly string[],
+): {
+	added: (line: number) => LineSource | null;
+	removed: (line: number) => LineSource | null;
+} {
+	const byKey = (map: Readonly<Record<number, string>>) => {
+		const out = new Map<string, number[]>();
+		for (const [line, key] of Object.entries(map)) {
+			const list = out.get(key) ?? [];
+			list.push(Number(line));
+			out.set(key, list);
+		}
+		for (const list of out.values()) list.sort((a, b) => a - b);
+		return out;
+	};
+	/** Each line's rank among its key's lines. */
+	const ranks = (by: Map<string, number[]>) => {
+		const out = new Map<number, number>();
+		for (const list of by.values()) {
+			for (const [i, l] of list.entries()) out.set(l, i);
+		}
+		return out;
+	};
+	const addedBy = byKey(addedThen);
+	const removedBy = byKey(removedThen);
+	const addedRank = ranks(addedBy);
+	const removedRank = ranks(removedBy);
+	const sourceOf = (
+		map: Readonly<Record<number, string>>,
+		lines: Map<string, number[]>,
+		rankOf: Map<number, number>,
+		side: "removed" | "added",
+		line: number,
+	): LineSource | null => {
+		const key = map[line];
+		const then = key === undefined ? undefined : sources.get(key);
+		const rank = rankOf.get(line);
+		if (key === undefined || !then || rank === undefined) return null;
+		const { cluster } = then;
+		const removed = cluster.removed.length;
+		const count = side === "removed" ? removed : cluster.added.length;
+		if ((lines.get(key) ?? []).length !== count) return null;
+		return { key, index: side === "removed" ? rank : removed + rank };
+	};
+
+	// Slider twins of each run [s, e) of one cluster's added lines: up,
+	// line s - 1 when it reads as line e - 1; down, line e when it reads as
+	// line s; slid on, each further line stands in for the line its twin
+	// did (`origin`).
+	const twins = new Map<number, number[]>();
+	const text = (line: number) => oldLines[line - 1];
+	const free = (line: number) =>
+		line >= 1 && line <= oldLines.length && addedThen[line] === undefined;
+	for (const list of addedBy.values()) {
+		for (let i = 0; i < list.length; ) {
+			let j = i + 1;
+			while (j < list.length && list[j] === (list[j - 1] as number) + 1) j++;
+			const s = list[i] as number;
+			const e = (list[j - 1] as number) + 1;
+			i = j;
+			const origin = new Map<number, number>();
+			for (let l = s; l < e; l++) origin.set(l, l);
+			for (let a = s, b = e; free(a - 1) && text(a - 1) === text(b - 1); ) {
+				origin.set(a - 1, origin.get(b - 1) as number);
+				a--;
+				b--;
+			}
+			for (let a = s, b = e; free(b) && text(b) === text(a); ) {
+				origin.set(b, origin.get(a) as number);
+				a++;
+				b++;
+			}
+			for (const [l, from] of origin) {
+				if (l < s || l >= e) twins.set(l, [...(twins.get(l) ?? []), from]);
+			}
+		}
+	}
+	// The earlier lines taken already, by side.
+	const usedAdded = new Set<number>();
+	const usedRemoved = new Set<number>();
+	return {
+		added: (line) => {
+			const of = twins.get(line);
+			const from =
+				addedThen[line] !== undefined
+					? line
+					: of?.length === 1
+						? of[0]
+						: undefined;
+			if (from === undefined || usedAdded.has(from)) return null;
+			usedAdded.add(from);
+			return sourceOf(addedThen, addedBy, addedRank, "added", from);
+		},
+		removed: (line) => {
+			if (usedRemoved.has(line)) return null;
+			usedRemoved.add(line);
+			return sourceOf(removedThen, removedBy, removedRank, "removed", line);
+		},
+	};
+}
+
+/**
+ * The line carries into one file of the target (CAR-195): each line of a
+ * reworked or new cluster that no piece of the since view owns (so
+ * unchanged since the compared patch set), whose counterpart there
+ * (sinceLineSources) the reviewer marked by hand (`sources`, humanMarksOf)
+ * reviewed or crossed off, takes that mark: one entry per (cluster,
+ * cluster it came from, state). A line with no counterpart, or one not
+ * marked then, gets nothing (principle 2: it stays to read). A conflicted
+ * file carries nothing.
+ */
+export function sinceLineCarries(
+	traced: Traced,
+	target: Snapshot,
+	answer: RereviewAnswer,
+	index: number,
+	pieces: readonly SincePiece[],
+	sources: ReadonlyMap<string, HumanMarks>,
+): LinesCarriedEntry[] {
+	if (traced.interdiff.status !== "available") return [];
+	const { entry, file } = interdiffFileAt(traced, answer, index);
+	if (file?.conflict) return [];
+	const targetFile = target.files.find((f) => f.path === entry.path);
+	if (!targetFile) return [];
+	const kinds = new Map(entry.clusters.map((c) => [c.key, c.kind]));
+	const owned = new Map<string, LineRanges>();
+	for (const p of pieces) {
+		if (p.key === undefined || !p.owns) continue;
+		owned.set(p.key, union(owned.get(p.key) ?? [], p.owns));
+	}
+	const primePath = file ? (file.oldPath ?? file.path) : entry.path;
+	const lines = sinceLineSources(
+		sources,
+		traced.lineKeys.old[primePath] ?? {},
+		traced.lineKeys.base?.[entry.path] ?? {},
+		file?.oldLines ?? [],
+	);
+	// A file the interdiff doesn't touch: its old side is the new head.
+	const interdiff = file
+		? createLineMapper(file.clusters.filter((c) => c.kind === "lines"))
+		: IDENTITY;
+	const pairs = new Map<
+		string,
+		{
+			key: string;
+			fromKey: string;
+			state: LinesCarriedEntry["state"];
+			to: number[];
+			from: number[];
+		}
+	>();
+	for (const c of targetFile.clusters) {
+		if (c.kind !== "lines") continue;
+		const kind = kinds.get(c.key);
+		if (kind !== "reworked" && kind !== "new") continue;
+		const rest = subtract(all(c.lines), owned.get(c.key) ?? []);
+		const removed = c.removed.length;
+		for (const [start, end] of rest) {
+			for (let i = start; i < end; i++) {
+				let source: LineSource | null = null;
+				if (i < removed) source = lines.removed(c.oldStart + i);
+				else {
+					const h1 = interdiff.newToOld(c.newStart + i - removed);
+					source = h1 === null ? null : lines.added(h1);
+				}
+				if (!source) continue;
+				const then = sources.get(source.key);
+				if (!then) continue;
+				const state = has(then.reviewed, source.index)
+					? "reviewed"
+					: has(then.crossed, source.index)
+						? "crossed-off"
+						: null;
+				if (!state) continue;
+				const id = `${c.key}:${source.key}:${state}`;
+				const pair = pairs.get(id) ?? {
+					key: c.key,
+					fromKey: source.key,
+					state,
+					to: [],
+					from: [],
+				};
+				pair.to.push(i);
+				pair.from.push(source.index);
+				pairs.set(id, pair);
+			}
+		}
+	}
+	return [...pairs.values()].map((p) => ({
+		key: p.key,
+		fromKey: p.fromKey,
+		state: p.state,
+		lines: fromIndexes(p.to),
+		fromLines: fromIndexes(p.from),
+	}));
 }

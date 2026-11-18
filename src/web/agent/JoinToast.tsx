@@ -106,7 +106,7 @@ export function JoinToast() {
 		<div
 			aria-live="polite"
 			data-testid="join-toast-region"
-			className="pointer-events-none fixed inset-x-3 z-40 flex justify-end sm:left-auto"
+			className="pointer-events-none fixed inset-x-3 z-40 flex justify-end sm:right-[calc(0.75rem+var(--drawer-push,0px))] sm:left-auto"
 			style={{ top: "calc(var(--app-header, 0px) + 0.5rem)" }}
 		>
 			{shown && (

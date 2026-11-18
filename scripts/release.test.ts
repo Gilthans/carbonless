@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Script } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { GIT_TEST_TIMEOUTS } from "../test/git-fixture";
 import { checkCiPassed } from "./ci-passed.mjs";
 import { rcMoveTo } from "./rc-fixup.mjs";
 import {
@@ -21,6 +22,8 @@ import {
 	compareVersions,
 	finishPlan,
 	type Io,
+	MIN_NPM,
+	mergeOk,
 	newestTag,
 	next,
 	nextRc,
@@ -210,6 +213,14 @@ const NPM_404 = {
 	stderr:
 		"npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/carbonless-review",
 };
+/** A PR to master as GitHub's REST API answers it. */
+const pullOf = (number: number, ref: string, repo = "owner/repo") => ({
+	number,
+	title: ref.startsWith("next/") ? `next: ${ref.slice(5)}` : `pr ${number}`,
+	html_url: `https://github.com/owner/repo/pull/${number}`,
+	base: { ref: "master" },
+	head: { ref, repo: { full_name: repo } },
+});
 const contents = (version: string) =>
 	Buffer.from(JSON.stringify({ name: "carbonless-review", version })).toString(
 		"base64",
@@ -768,14 +779,101 @@ describe("pnpm release", () => {
 
 	it("status says when a merge publishes nothing: the release is out, the next PR isn't merged", async () => {
 		const { io, lines } = fakeIo({
-			"gh api": contents("0.1.0"),
+			"gh api repos/owner/repo/contents": contents("0.1.0"),
+			"gh api --paginate --slurp repos/owner/repo/pulls?state=open&base=master":
+				JSON.stringify([[pullOf(9, "car-9-x"), pullOf(12, "next/0.2.0")]]),
 			"git ls-remote": lsRemote("v0.1.0-rc.5", "v0.1.0"),
 			"npm view": npmView({ latest: "0.1.0", rc: "0.1.0" }, ["0.1.0"]),
 		});
 		await status(io);
-		expect(lines.at(-1)).toMatch(
+		expect(lines.at(-2)).toMatch(
 			/^next merge to master publishes nothing: 0\.1\.0 is released/,
 		);
+		// The freeze (CAR-191): which PR must merge first.
+		expect(lines.at(-1)).toBe(
+			"frozen:  merge #12 next: 0.2.0 (https://github.com/owner/repo/pull/12) first",
+		);
+	});
+
+	it("status shows no freeze while master's version isn't released, and doesn't list PRs", async () => {
+		const { io, lines, calls } = fakeIo({
+			"gh api repos/owner/repo/contents": contents("0.2.0"),
+			"git ls-remote": lsRemote("v0.1.0", "v0.2.0-rc.1"),
+			"npm view": npmView({ latest: "0.1.0", rc: "0.2.0-rc.1" }, ["0.1.0"]),
+		});
+		await status(io);
+		expect(lines.some((l) => l.startsWith("frozen:"))).toBe(false);
+		expect(calls.some((c) => c.includes("/pulls"))).toBe(false);
+	});
+
+	describe("merge-ok (CAR-191: the agents' merge path)", () => {
+		const frozen = (
+			extra: Record<string, string> = {},
+			tags = lsRemote("v0.1.0-rc.5", "v0.1.0"),
+		) =>
+			fakeIo({
+				"gh api repos/owner/repo/contents": contents("0.1.0"),
+				"gh api --paginate --slurp repos/owner/repo/pulls?state=open&base=master":
+					JSON.stringify([[pullOf(9, "car-9-x"), pullOf(12, "next/0.2.0")]]),
+				"gh api repos/owner/repo/pulls/9": JSON.stringify(pullOf(9, "car-9-x")),
+				"gh api repos/owner/repo/pulls/12": JSON.stringify(
+					pullOf(12, "next/0.2.0"),
+				),
+				"git ls-remote": tags,
+				"npm view": npmView({ latest: "0.1.0" }, ["0.1.0"]),
+				...extra,
+			});
+
+		it("refuses any PR but the next PR while frozen, naming it", async () => {
+			const { io } = frozen();
+			await expect(mergeOk(io, "9")).rejects.toThrow(
+				"frozen: 0.1.0 is released and master's version is still 0.1.0 (a merge now publishes no RC and misses the changelog): merge #12 next: 0.2.0 (https://github.com/owner/repo/pull/12) first. Run pnpm release merge-ok 9 again once it merges.",
+			);
+		});
+
+		it("passes the next PR (by number, #number or URL) while frozen", async () => {
+			for (const pr of ["12", "#12", "https://github.com/owner/repo/pull/12"]) {
+				const { io, lines } = frozen();
+				await mergeOk(io, pr);
+				expect(lines.at(-1)).toMatch(/^ok: .*#12 is the "next" PR/);
+			}
+		});
+
+		it("passes any PR once master's version moved on", async () => {
+			const { io, lines } = frozen({
+				"gh api repos/owner/repo/contents": contents("0.2.0"),
+			});
+			await mergeOk(io, "9");
+			expect(lines.at(-1)).toBe(
+				"ok: 0.2.0 is not released yet: merges to master are open",
+			);
+		});
+
+		it("counts npm's version as released before the tag is pushed", async () => {
+			const { io } = frozen({}, lsRemote("v0.1.0-rc.5"));
+			await expect(mergeOk(io, "9")).rejects.toThrow(/^frozen: /);
+		});
+
+		it("with no open next PR, says to run release-finish again", async () => {
+			const { io } = frozen({
+				"gh api --paginate --slurp repos/owner/repo/pulls?state=open&base=master":
+					JSON.stringify([[pullOf(9, "car-9-x")]]),
+			});
+			await expect(mergeOk(io, "9")).rejects.toThrow(
+				/no "next" PR is open: run release-finish/,
+			);
+		});
+
+		it("refuses what isn't a PR, or another repository's PR, asking nothing", async () => {
+			const { io, calls } = frozen();
+			await expect(mergeOk(io, "main")).rejects.toThrow(/not a PR number/);
+			await expect(
+				mergeOk(io, "https://github.com/owner/other/pull/12"),
+			).rejects.toThrow(
+				"not a PR of owner/repo: https://github.com/owner/other/pull/12",
+			);
+			expect(calls).toEqual([]);
+		});
 	});
 
 	it("promote dispatches the workflow for the newest RC and prints the run's URL", async () => {
@@ -1059,6 +1157,8 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 				return "";
 			},
 			tar: (args) => execFileSync("tar", args, { encoding: "utf8" }),
+			// The owner's npm has npm stage.
+			"npm --version": "12.2.1\n",
 			"npm view carbonless-review@0.1.0 dist.integrity": () => {
 				if (!published) return "";
 				return reads++ < lag
@@ -1268,6 +1368,69 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 		expect(
 			[...dirty.calls, ...changed.calls].some((c) => c.startsWith("gh ")),
 		).toBe(false);
+	});
+
+	it("refuses an npm without npm stage before anything else, saying the fix", async () => {
+		const { out } = artifact();
+		for (const old of ["10.9.2", "11.19.1", "12.1.9"]) {
+			const p = publishIo(out, { "npm --version": `${old}\n` });
+			const error = await publishRelease(p.io, "77").catch((e: Error) => e);
+			expect(error).toBeInstanceOf(Error);
+			const message = (error as Error).message;
+			expect(message).toContain(`this npm is ${old}`);
+			expect(message).toContain(`npm >= ${MIN_NPM}`);
+			expect(message).toContain("npm install -g npm@12");
+			expect(message).toContain("Node ^22.22.2 or ^24.15.0");
+			// Before any other call: no git, gh or npm, no download, no question.
+			expect(p.calls).toEqual(["npm --version"]);
+			expect(p.asked).toEqual([]);
+			expect(p.ran).toEqual([]);
+		}
+	});
+
+	it("refuses an npm whose version it can't read", async () => {
+		const { out } = artifact();
+		for (const answer of [
+			"",
+			"12.2\n",
+			"v12.2.1\n",
+			{ code: 1, stderr: "boom" },
+		] as const) {
+			const p = publishIo(out, { "npm --version": answer });
+			await expect(publishRelease(p.io, "77")).rejects.toThrow(
+				`pnpm release publish needs npm >= ${MIN_NPM}`,
+			);
+			expect(p.calls).toEqual(["npm --version"]);
+		}
+	});
+
+	it("takes npm 12.2.0 and newer", async () => {
+		const { out } = artifact();
+		for (const ok of ["12.2.0", "12.2.1", "12.10.0", "13.0.0"]) {
+			const p = publishIo(out, { "npm --version": `${ok}\n` });
+			await publishRelease(p.io, "77");
+			expect(p.calls[0]).toBe("npm --version");
+			expect(p.ran).toHaveLength(1);
+		}
+	});
+
+	it("needs the npm release.yml installs, or older", () => {
+		const wf = readFileSync(
+			join(import.meta.dirname, "../.github/workflows/release.yml"),
+			"utf8",
+		);
+		const installed = [...wf.matchAll(/npm install -g npm@(\S+)/g)].map(
+			(m) => m[1] ?? "",
+		);
+		expect(installed.length).toBeGreaterThan(0);
+		const min = v(MIN_NPM);
+		for (const version of installed) {
+			const got = v(version);
+			// The same npm line as the workflows (npm stage came in 12.2) …
+			expect([got.major, got.minor]).toEqual([min.major, min.minor]);
+			// … and never newer than what they install.
+			expect(compareVersions(got, min)).toBeGreaterThanOrEqual(0);
+		}
 	});
 
 	it("refuses a tarball swapped while the question waits", async () => {
@@ -2117,6 +2280,214 @@ describe("release-finish: each step only once", () => {
 		}
 	});
 
+	it("the release gate (CAR-191): its own workflow, PRs to master only, installs nothing, the token in one step before any repository code; its steps as the runner runs them", {
+		timeout: GIT_TEST_TIMEOUTS.testTimeout,
+	}, () => {
+		const wf = workflow("release-gate.yml");
+		const on = code(
+			wf.slice(
+				wf.indexOf("\non:\n"),
+				wf.search(/\n(permissions|concurrency|jobs):/),
+			),
+		);
+		// edited: a PR retargeted to master (its base merged) runs it too.
+		expect(on.trim()).toBe(
+			"on:\n  pull_request:\n    types: [opened, synchronize, reopened, edited]\n    branches: [master]",
+		);
+		expect(code(wf)).toMatch(/^permissions:\n {2}contents: read\n/m);
+		const all = new Map(jobs(wf));
+		expect([...all.keys()]).toEqual(["release-gate"]);
+		const gate = all.get("release-gate") ?? "";
+		expect(ifOf(gate)).toBe("github.base_ref == 'master'");
+		expect(code(gate)).toMatch(
+			/^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\b/m,
+		);
+		expect(code(wf)).not.toMatch(DEPENDENCY_CODE);
+		expect(code(wf)).not.toMatch(
+			/setup-node|action-setup|: write\b|id-token|environment:/,
+		);
+		for (const uses of wf.match(/uses: \S+/g) ?? []) {
+			expect(uses).toMatch(/@[0-9a-f]{40}$/);
+		}
+		expect(gate).toContain("persist-credentials: false");
+		const steps = code(gate)
+			.split(/\n(?= {6}- )/)
+			.slice(1);
+		const withToken = steps.filter((st) => /github\.token|GH_TOKEN/.test(st));
+		expect(withToken).toHaveLength(1);
+		const tokenAt = steps.indexOf(withToken[0] ?? "");
+		const nodeAt = steps.findIndex((st) => /\bnode /.test(st));
+		expect(tokenAt).toBeGreaterThan(-1);
+		expect(nodeAt).toBeGreaterThan(tokenAt);
+		// The head reaches the script through env, never pasted into run:.
+		for (const run of runValues(gate)) expect(run).not.toContain("${{");
+		// CI's jobs still get no token (the note at the top of ci.yml).
+		for (const [name, job] of jobs(workflow("ci.yml"))) {
+			expect(code(job), name).not.toMatch(
+				/github\.token|GH_TOKEN|GITHUB_TOKEN/,
+			);
+		}
+
+		// Both steps' scripts, with a fake gh answering from fixtures.
+		const script = (st: string) =>
+			(runValues(st)[0] ?? "")
+				.replace(/^\s*(?:- )?run: (\|\n)?/, "")
+				.replace(/^ {10}/gm, "");
+		const [ask, judge] = [
+			script(withToken[0] ?? ""),
+			script(steps[nodeAt] ?? ""),
+		];
+		const dir = mkdtempSync(join(tmpdir(), "crb-gate-wf-"));
+		try {
+			const bin = join(dir, "bin");
+			mkdirSync(bin);
+			writeFileSync(
+				join(bin, "gh"),
+				`#!/usr/bin/env bash
+echo "$*" >>"${dir}/calls"
+case "$*" in
+  *contents/package.json?ref=master) cat "${dir}/package.json" ;;
+  *matching-refs/tags/v) cat "${dir}/tags.json" ;;
+  *"/pulls?state=open&base=master&per_page=100") cat "${dir}/pulls.json" ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`,
+				{ mode: 0o755 },
+			);
+			const temp = join(dir, "runner");
+			mkdirSync(temp);
+			const env = {
+				...process.env,
+				PATH: `${bin}:${process.env.PATH}`,
+				RUNNER_TEMP: temp,
+				GITHUB_REPOSITORY: "owner/repo",
+				GH_TOKEN: "x",
+			};
+			const bash = (text: string, more: Record<string, string> = {}) => {
+				try {
+					execFileSync(
+						"bash",
+						["--noprofile", "--norc", "-eo", "pipefail", "-c", text],
+						{
+							cwd: join(import.meta.dirname, ".."),
+							stdio: "pipe",
+							env: { ...env, ...more },
+						},
+					);
+					return 0;
+				} catch (error) {
+					return (error as { status?: number }).status ?? -1;
+				}
+			};
+			const answers = (version: string, ...tags: string[]) => {
+				writeFileSync(join(dir, "package.json"), JSON.stringify({ version }));
+				writeFileSync(
+					join(dir, "tags.json"),
+					JSON.stringify([tags.map((t) => ({ ref: `refs/tags/${t}` }))]),
+				);
+				writeFileSync(
+					join(dir, "pulls.json"),
+					JSON.stringify([[pullOf(9, "car-9-x"), pullOf(12, "next/0.2.0")]]),
+				);
+			};
+			const pr = (n: string, ref: string, repo = "owner/repo") => ({
+				PR_NUMBER: n,
+				HEAD_REF: ref,
+				HEAD_REPO: repo,
+			});
+			answers("0.1.0", "v0.1.0-rc.5", "v0.1.0");
+			expect(bash(ask)).toBe(0);
+			expect(bash(judge, pr("9", "car-9-x"))).toBe(1);
+			expect(bash(judge, pr("12", "next/0.2.0"))).toBe(0);
+			expect(bash(judge, pr("30", "next/0.2.0", "fork/repo"))).toBe(1);
+			// The next PR merged: asking again (a rerun) passes the same PR.
+			answers("0.2.0", "v0.1.0");
+			expect(bash(ask)).toBe(0);
+			expect(bash(judge, pr("9", "car-9-x"))).toBe(0);
+			expect(readFileSync(join(dir, "calls"), "utf8")).toContain(
+				"api --paginate --slurp repos/owner/repo/git/matching-refs/tags/v",
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("release-finish reruns every open PR's newest release-gate run once the next PR is open (CAR-191: no green from before the release)", {
+		timeout: GIT_TEST_TIMEOUTS.testTimeout,
+	}, () => {
+		const finish =
+			new Map(jobs(workflow("release-finish.yml"))).get("finish") ?? "";
+		const steps = finish.split(/\n(?= {6}- )/);
+		const at = steps.findIndex((st) =>
+			st.includes("name: Rerun open PRs' release gate"),
+		);
+		expect(at).toBeGreaterThan(
+			steps.findIndex((st) =>
+				st.includes("name: Next version and changelog PR"),
+			),
+		);
+		const step = steps[at] ?? "";
+		// Every time (a rerun of release-finish too), with the job's token.
+		expect(step).not.toMatch(/^ {8}if:/m);
+		expect(step).toMatch(/GH_TOKEN: \$\{\{ github\.token \}\}/);
+		expect(code(workflow("release-finish.yml"))).toMatch(
+			/^ {2}actions: write\b/m,
+		);
+		const script = (runValues(step)[0] ?? "")
+			.replace(/^\s*run: \|\n/, "")
+			.replace(/^ {10}/gm, "");
+		const A = "a".repeat(40);
+		const B = "b".repeat(40);
+		const C = "c".repeat(40);
+		const dir = mkdtempSync(join(tmpdir(), "crb-gate-rerun-"));
+		try {
+			writeFileSync(
+				join(dir, "gh"),
+				`#!/usr/bin/env bash
+echo "$*" >>"${dir}/calls"
+case "$*" in
+  *"/pulls?state=open&base=master&per_page=100"*) printf '9 ${A}\\n12 ${B}\\n13 ${C}\\n14 not-a-sha\\n' ;;
+  *"head_sha=${A}"*) echo 111 ;;
+  *"head_sha=${B}"*) echo ;;
+  *"head_sha=${C}"*) echo 333 ;;
+  *"runs/111/rerun") echo '{}' ;;
+  *"runs/333/rerun") echo "HTTP 403: This workflow is already running" >&2; exit 1 ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`,
+				{ mode: 0o755 },
+			);
+			const out = execFileSync(
+				"bash",
+				["--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+				{
+					encoding: "utf8",
+					stdio: "pipe",
+					env: {
+						...process.env,
+						PATH: `${dir}:${process.env.PATH}`,
+						GITHUB_REPOSITORY: "owner/repo",
+						GH_TOKEN: "x",
+					},
+				},
+			);
+			expect(out.trim().split("\n")).toEqual([
+				"#9: release-gate rerun (111)",
+				"#12: no release-gate run",
+				"::warning::#13: could not rerun release-gate run 333 (still running?): rerun it by hand",
+			]);
+			const calls = readFileSync(join(dir, "calls"), "utf8").trim().split("\n");
+			expect(calls.filter((c) => c.startsWith("api -X POST"))).toEqual([
+				"api -X POST repos/owner/repo/actions/runs/111/rerun",
+				"api -X POST repos/owner/repo/actions/runs/333/rerun",
+			]);
+			// A malformed answer reaches no URL.
+			expect(calls.some((c) => c.includes("not-a-sha"))).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("public repository: fork PRs reach no credential, no OIDC, no `npm` environment", () => {
 		const files = readdirSync(
 			join(import.meta.dirname, "../.github/workflows"),
@@ -2125,6 +2496,7 @@ describe("release-finish: each step only once", () => {
 			"ci.yml",
 			"flake-report.yml",
 			"release-finish.yml",
+			"release-gate.yml",
 			"release.yml",
 		]);
 		/** A workflow's `on:` block. */
@@ -2144,12 +2516,19 @@ describe("release-finish: each step only once", () => {
 			// npm makes provenance itself (trusted publishing, public repo).
 			expect(text, file).not.toContain("--provenance");
 		}
-		// CI is the only workflow a pull request (a fork's too) runs: read-only,
-		// no environment, no OIDC, no write anywhere.
-		const ci = code(workflow("ci.yml"));
-		expect(triggers(ci)).toMatch(/^ {2}pull_request:$/m);
-		expect(ci).toMatch(/^permissions:\n {2}contents: read\n/m);
-		expect(ci).not.toMatch(/: write\b|id-token|environment:/);
+		// CI and the release gate are the only workflows a pull request (a
+		// fork's too) runs: read-only, no environment, no OIDC, no write
+		// anywhere.
+		for (const file of ["ci.yml", "release-gate.yml"]) {
+			const text = code(workflow(file));
+			expect(triggers(text), file).toMatch(/^ {2}pull_request:$/m);
+			expect(text, file).toMatch(/^permissions:\n {2}contents: read\n/m);
+			expect(text, file).not.toMatch(/: write\b|id-token|environment:/);
+		}
+		for (const file of files) {
+			if (file === "ci.yml" || file === "release-gate.yml") continue;
+			expect(triggers(workflow(file)), file).not.toMatch(/pull_request/);
+		}
 		// The flake report (docs/ci-flakes.md): a schedule or a dispatch, never
 		// a PR; its token only reads.
 		const flakes = code(workflow("flake-report.yml"));
@@ -2388,6 +2767,7 @@ esac
 			"/scripts/release*.ts",
 			"/scripts/rc-fixup.mjs",
 			"/scripts/ci-passed.mjs",
+			"/scripts/release-gate.mjs",
 			"/scripts/pack-smoke.mjs",
 			"/.npmrc",
 			"/.nvmrc",

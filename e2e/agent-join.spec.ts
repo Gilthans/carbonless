@@ -9,7 +9,9 @@ import {
 	chip,
 	expect,
 	fixture,
+	openAgentModal,
 	openFile,
+	reviewDrawer,
 	setupDialog,
 	spawnAgent,
 	statusDialog,
@@ -296,13 +298,14 @@ test("a session asks to join: the bar on every page of the review pushes the hea
 	await expect(chip(page)).toHaveAttribute("data-via", "mcp");
 	await expect(chip(page).getByTestId("agent-chip-plug")).toBeVisible();
 	await expect(chip(page)).toHaveAccessibleName(
-		new RegExp(`^Your agent: ${SESSION.name} · `),
+		new RegExp(`^Review conversation · Your agent: ${SESSION.name} · `),
 	);
 	await expectNoPageOverflow(page);
 });
 
-test("Disconnect from the chip: the toast says it left, the question waits, the ACP buddy stays off", async ({
+test("Detach in the status modal: the toast says it left, the question waits, the ACP buddy stays off", async ({
 	page,
+	isMobile,
 	pr,
 	agentCrb,
 	acpLogPath,
@@ -326,21 +329,36 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	// Asked while joined: the session (this test) doesn't answer.
 	const card = await ask(page, section, 3, "Why total?");
 	await expect(card.getByTestId("agent-waiting")).toBeVisible();
+	// A joined session's chip toggles the review conversation's drawer (no
+	// popover); Detach is in the status modal.
 	await chip(page).click();
-	const pop = page.getByTestId("agent-popover");
-	await expect(pop.getByTestId("agent-pop-name")).toHaveText(SESSION.name);
-	await expect(pop).toContainText(SESSION.machine);
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "true");
+	await expect(statusDialog(page)).toHaveCount(0);
+	// Closed again: the chip on a desktop; on a phone the full-screen
+	// drawer covers it, so its own Close.
+	if (isMobile) {
+		await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
+	} else await chip(page).click();
+	await openAgentModal(page);
+	const status = statusDialog(page);
+	await expect(status.getByTestId("agent-status-card")).toContainText(
+		SESSION.name,
+	);
 	// Agents spawned so far (the one from setup, replaced by the session).
 	const spawns = () =>
 		acpLog(acpLogPath).filter((e) => e.method === "spawn").length;
 	const spawnedBefore = spawns();
-	await pop.getByTestId("agent-disconnect").click();
+	await status.getByRole("button", { name: "Detach" }).click();
 	const toast = page.getByTestId("join-toast");
 	await expect(toast).toContainText(`${SESSION.name} left`);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
+	// Back to the card: the modal (now the setup) closed, Files changed.
+	await page.keyboard.press("Escape");
+	await expect(setupDialog(page)).toHaveCount(0);
+	await page.getByRole("link", { name: "Files changed" }).click();
 	// Two status polls later the ACP buddy is still off (the approved join
-	// cleared this review's spawn flag, and Disconnect doesn't set it): the
+	// cleared this review's spawn flag, and Detach doesn't set it): the
 	// question waits, no agent was started, and the spawned agent (replaced
 	// right after its kickoff) was never woken for it. The polls' answers,
 	// not the chip: each poll would start an agent left on.
@@ -352,7 +370,7 @@ test("Disconnect from the chip: the toast says it left, the question waits, the 
 	expect(spawns()).toBe(spawnedBefore);
 	expect(wakes(acpLogPath)).toHaveLength(0);
 	// Spawn brings it back, and it answers. With no session joined the chip
-	// opens the modal (no popover Start), so the Spawn goes through the API.
+	// can't Spawn from the chip, so the Spawn goes through the API.
 	await spawnAgent(s.url);
 	// The page sees it on a poll once the agent is starting (it then polls
 	// every second on its own) or already back to ready (a moved since).
@@ -483,7 +501,7 @@ test("a join request shows in step 3 and in the bar; Approve in the modal connec
 	const s = await agentCrb({ spawn: false });
 	await page.goto(s.url);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
-	await chip(page).click();
+	await openAgentModal(page);
 	const setup = setupDialog(page);
 	await expect(setup.getByRole("tab", { name: "Invite" })).toHaveAttribute(
 		"aria-selected",
@@ -545,7 +563,7 @@ test("once a join is approved, Invite's one-time setup is folded (after a reload
 	await pr(fixture);
 	const s = await agentCrb({ spawn: false });
 	await page.goto(s.url);
-	await chip(page).click();
+	await openAgentModal(page);
 	const setup = setupDialog(page);
 	const fold = setup.getByRole("button", { name: /^One-time setup/ });
 	// Never approved here: step 1 open, no fold.
@@ -569,7 +587,7 @@ test("once a join is approved, Invite's one-time setup is folded (after a reload
 	await expect(fold).toHaveAttribute("aria-expanded", "false");
 	await page.reload();
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
-	await chip(page).click();
+	await openAgentModal(page);
 	await expect(fold).toHaveAttribute("aria-expanded", "false");
 	await expect(setup.getByTestId("join-setup-line")).toHaveCount(0);
 	await expect(setup.getByRole("button", { name: "Codex" })).toHaveCount(0);
@@ -595,7 +613,7 @@ test("Decline in step 3: the bar goes, and the session hears denied", async ({
 	await pr(fixture);
 	const s = await agentCrb({ spawn: false });
 	await page.goto(s.url);
-	await chip(page).click();
+	await openAgentModal(page);
 	const setup = setupDialog(page);
 	await expect(setup.getByTestId("join-request-none")).toBeVisible();
 	const request = await attach(s.url);
@@ -624,7 +642,7 @@ test("Approve from the bar in another tab: the open modal's step 3 moves on to t
 	await pr(fixture);
 	const s = await agentCrb({ spawn: false });
 	await page.goto(s.url);
-	await chip(page).click();
+	await openAgentModal(page);
 	const setup = setupDialog(page);
 	await expect(setup.getByTestId("join-request-none")).toBeVisible();
 	const other = await context.newPage();

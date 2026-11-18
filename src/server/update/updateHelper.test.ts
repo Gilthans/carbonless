@@ -171,11 +171,15 @@ async function until(check: () => boolean, what: string): Promise<void> {
 const helperDirs = () =>
 	readdirSync(tmp).filter((e) => e.startsWith(HELPER_DIR_PREFIX));
 
-/** A cli.js that records how it was started, and prints crb's key line. */
+/**
+ * A cli.js that records how it was started (written aside and renamed: the
+ * test reads it as soon as it exists), and prints crb's key line.
+ */
 const CLI = (
 	record: string,
-) => `import { realpathSync, writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(record)}, JSON.stringify({ cli: realpathSync(process.argv[1]), args: process.argv.slice(2), cwd: realpathSync(process.cwd()), mark: process.env.CRB_HELPER_MARK }));
+) => `import { realpathSync, renameSync, writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(`${record}.tmp`)}, JSON.stringify({ cli: realpathSync(process.argv[1]), args: process.argv.slice(2), cwd: realpathSync(process.cwd()), mark: process.env.CRB_HELPER_MARK }));
+renameSync(${JSON.stringify(`${record}.tmp`)}, ${JSON.stringify(record)});
 console.error("carbonless listening on http://127.0.0.1:4747/?key=SECRET");
 `;
 
@@ -289,10 +293,12 @@ describe("update helper", () => {
 			() => readFileSync(join(dir, "serve.log"), "utf8").includes("listening"),
 			"crb's output",
 		);
-		// Its pid, for whoever must stop it before it writes server.json.
-		expect(
-			Number(readFileSync(join(dir, "update-relaunched.pid"), "utf8")),
-		).toBeGreaterThan(0);
+		// Its pid, for whoever must stop it before it writes server.json:
+		// written once spawn returns, which crb's first line can beat
+		// (whole once it exists: written aside and renamed).
+		const pidFile = join(dir, "update-relaunched.pid");
+		await until(() => existsSync(pidFile), "the relaunched pid");
+		expect(Number(readFileSync(pidFile, "utf8"))).toBeGreaterThan(0);
 		// crb's key line goes to serve.log, never update.log.
 		const log = readFileSync(c.log, "utf8");
 		expect(log).toContain("running pnpm add -g carbonless-review@0.3.0");

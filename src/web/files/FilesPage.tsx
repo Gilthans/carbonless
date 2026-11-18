@@ -14,7 +14,7 @@ import {
 	useState,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
-import type { AgentThread } from "../../shared/agent";
+import { type AgentThread, isSpanThread } from "../../shared/agent";
 import { sinceOnlyPieces } from "../../shared/pieces";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { ReviewThread, SessionInfo } from "../../shared/types";
@@ -27,10 +27,15 @@ import {
 import {
 	AgentPlacingProvider,
 	agentOutside,
+	agentPlacementIds,
 	agentWaiting,
 	shownAgentPlaceables,
 } from "../agent/placeable";
-import { comparisonView, SendViewProvider } from "../agent/threadAgent";
+import {
+	comparisonView,
+	SendViewProvider,
+	usePublishSendView,
+} from "../agent/threadAgent";
 import {
 	ApiError,
 	hunksQuery,
@@ -54,7 +59,7 @@ import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
 import { FilesVerdict } from "../verdict/FilesVerdict";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
-import { type Comparison, useComparison } from "./comparison";
+import { type Comparison, useComparison, useViewedReview } from "./comparison";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff, GoneFile, UNDO_ARM_MS } from "./FileDiff";
 import { FileTree, type SidebarTab } from "./FileTree";
@@ -75,7 +80,7 @@ import {
 } from "./landing";
 import { NotInComparison } from "./NotInComparison";
 import { PatchsetGraph } from "./PatchsetGraph";
-import { ProgressBar } from "./ProgressBar";
+import { ProgressBar, WhitespaceLeftOut } from "./ProgressBar";
 import { SelectionBar } from "./SelectionBar";
 import {
 	captureAnchor,
@@ -85,6 +90,8 @@ import {
 import { sidebarKey, useSidebarState } from "./sidebarState";
 import {
 	carriedCount,
+	countedFileUnits,
+	countedUnits,
 	eyesOf,
 	goneFiles,
 	goneFileView,
@@ -612,12 +619,29 @@ function viewedHeadOf(
 	return session.patchsets.find((p) => p.number === viewing.number)?.head;
 }
 
+/** The viewed patch set's snapshot id; none for a viewed head. */
+function viewedRevisionOf(
+	comparison: Comparison,
+	session: SessionInfo | undefined,
+): string | undefined {
+	const { viewing } = comparison;
+	if (viewing?.kind !== "patchset") return undefined;
+	return session?.patchsets.find((p) => p.number === viewing.number)?.revision;
+}
+
 export function FilesPage() {
 	// The comparison (the graph's markers): which review to show.
 	const session = useQuery(sessionQuery).data;
 	const comparison = useComparison(session);
 	// The reviewer's intended states over the server's (useSetStates).
-	const { review, raw: servedRaw, pending } = useReviewView(comparison.target);
+	const { review, raw: served, pending } = useReviewView(comparison.target);
+	// Never another patch set's review under this one's name (CAR-194).
+	const servedRaw = useViewedReview(
+		served,
+		review.isFetching,
+		comparison.viewing,
+		viewedRevisionOf(comparison, session),
+	);
 	// The engine's answer for the comparison: the since view's chips and
 	// hunks, the provisional carries over a viewed head (under the
 	// reviewer's pending states, shownView).
@@ -897,7 +921,7 @@ export function FilesPage() {
 		const next = nextFile(candidates, index, (f) =>
 			fileLeft(
 				// "Ignore whitespace" on: whitespace-only clusters aren't left.
-				ignoreWs && since === null
+				ignoreWs
 					? f.clusters.filter(
 							(c: { whitespaceOnly?: true }) => !c.whitespaceOnly,
 						)
@@ -1183,8 +1207,9 @@ export function FilesPage() {
 	const agentThreads = agentThreadsRead.data?.threads;
 	// Where the tracer puts them in the viewed snapshot, as GitHub's are;
 	// until it answers (or if it fails) each shows where it was asked.
+	// The review conversation has no code to place: never asked about.
 	const agentIds = useMemo(
-		() => (agentThreads ?? []).map((t) => t.id),
+		() => agentPlacementIds(agentThreads),
 		[agentThreads],
 	);
 	const agentPlacingState = useAgentPlacementsFor({
@@ -1322,7 +1347,9 @@ export function FilesPage() {
 				? agentThreads
 				: agentThreads.filter(
 						(t) =>
-							t.anchor.commit === agentHead || Date.parse(t.at) < threadsCutoff,
+							!isSpanThread(t) ||
+							t.anchor.commit === agentHead ||
+							Date.parse(t.at) < threadsCutoff,
 					);
 		return agentRows(
 			listedConversations(
@@ -1479,19 +1506,27 @@ export function FilesPage() {
 		[sinceAnswer, data],
 	);
 	// "Ignore whitespace" on: the full diff counts without whitespace-only
-	// clusters (countedProgress), and the bar says how many it left out.
+	// clusters (countedProgress), the since view without their units
+	// (countedUnits), and the bar says how many it left out.
 	const counted = useMemo(
 		() =>
 			ignoreWs && data && !sinceAnswer ? countedProgress(data.files) : null,
 		[ignoreWs, data, sinceAnswer],
 	);
+	const sinceCounted = useMemo(
+		() => countedUnits(units, ignoreWs),
+		[units, ignoreWs],
+	);
 	const viewProgress = useMemo(
 		() =>
 			sinceAnswer
-				? sinceProgress(units)
+				? sinceProgress(sinceCounted.units)
 				: (counted?.progress ?? data?.progress ?? null),
-		[sinceAnswer, units, data, counted],
+		[sinceAnswer, sinceCounted, data, counted],
 	);
+	const whitespaceLeftOut = sinceAnswer
+		? sinceCounted.leftOut
+		: counted?.leftOut;
 	// The since view never shows the full diff's numbers: its own empty
 	// state, or its failure.
 	const progressInstead =
@@ -1500,7 +1535,7 @@ export function FilesPage() {
 				counted && counted.progress.clusters.total === 0 && counted.leftOut > 0
 				? ("empty" as const)
 				: undefined
-			: sinceAnswer && units.length === 0
+			: sinceAnswer && sinceCounted.units.length === 0
 				? ("empty" as const)
 				: sinceView.error
 					? ("failed" as const)
@@ -1512,11 +1547,27 @@ export function FilesPage() {
 			new Map((sinceAnswer?.files ?? []).map((f) => [f.index, f.pieces ?? []])),
 		[sinceAnswer],
 	);
+	// Each file's units as its header counts them ("Ignore whitespace" on:
+	// countedFileUnits), and how many whitespace-only ones that left out.
 	const unitsByFile = useMemo(() => {
-		const out = new Map<number, typeof units>();
-		for (const u of units) out.set(u.index, [...(out.get(u.index) ?? []), u]);
+		const all = new Map<number, (typeof units)[number][]>();
+		for (const u of units) {
+			const list = all.get(u.index);
+			if (list) list.push(u);
+			else all.set(u.index, [u]);
+		}
+		const clustersAt = new Map(
+			(data?.files ?? []).map((f) => [f.index, f.clusters]),
+		);
+		const out = new Map<number, ReturnType<typeof countedFileUnits>>();
+		for (const [index, list] of all) {
+			out.set(
+				index,
+				countedFileUnits(list, ignoreWs, clustersAt.get(index) ?? []),
+			);
+		}
 		return out;
-	}, [units]);
+	}, [units, ignoreWs, data]);
 	const progressPending = since !== null && sinceView.pending;
 	// The connector of the comparison on screen counts what is left here.
 	const live =
@@ -1528,7 +1579,11 @@ export function FilesPage() {
 		sinceView.answer &&
 		byFile &&
 		data &&
-		nothingSince(sinceView.answer, byFile)
+		nothingSince(
+			sinceView.answer,
+			byFile,
+			sinceCounted.leftOut > 0 ? sinceCounted.units : undefined,
+		)
 			? `Nothing to read since PS${since} · ${carriedCount(data)} carried`
 			: null;
 
@@ -1572,6 +1627,8 @@ export function FilesPage() {
 		() => comparisonView(comparison.viewing, comparison.base),
 		[comparison.viewing, comparison.base],
 	);
+	// And the review conversation's drawer's, from any tab (kept while hidden).
+	usePublishSendView(sendView);
 	return (
 		<PeopleProvider threads={allThreads}>
 			<PlacementProvider value={placementInfo}>
@@ -1590,7 +1647,9 @@ export function FilesPage() {
 									live={live}
 								/>
 							)}
-							{review.isPending && <FilesSkeleton />}
+							{(review.isPending || (served && !servedRaw)) && (
+								<FilesSkeleton />
+							)}
 							{review.isError && <ErrorMessage error={review.error} />}
 							{data && (
 								<>
@@ -1621,7 +1680,7 @@ export function FilesPage() {
 									<ProgressBar
 										ref={bar}
 										progress={viewProgress ?? data.progress}
-										whitespaceLeftOut={counted?.leftOut}
+										whitespaceLeftOut={whitespaceLeftOut}
 										pending={progressPending}
 										instead={progressInstead}
 										unit={unit}
@@ -1725,6 +1784,9 @@ export function FilesPage() {
 											className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-ok/30 bg-ok/10 px-3 text-sm text-ink"
 										>
 											{emptySince}
+											{(whitespaceLeftOut ?? 0) > 0 && (
+												<WhitespaceLeftOut count={whitespaceLeftOut ?? 0} />
+											)}
 										</p>
 									)}
 									{data.files.length === 0 && gone.length === 0 ? (
@@ -1796,8 +1858,13 @@ export function FilesPage() {
 															sinceAnswer
 																? unitsFile(
 																		file,
-																		unitsByFile.get(file.index) ?? [],
+																		unitsByFile.get(file.index)?.units ?? [],
 																	)
+																: undefined
+														}
+														countedLeftOut={
+															sinceAnswer
+																? (unitsByFile.get(file.index)?.leftOut ?? 0)
 																: undefined
 														}
 														readOnly={readOnly}
@@ -1856,7 +1923,7 @@ export function FilesPage() {
 												aria-label="Files"
 												aria-haspopup="dialog"
 												onClick={() => setSheetOpen(true)}
-												className="fixed right-4 bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+												className="fixed right-[calc(1rem+var(--drawer-push,0px))] bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 											>
 												<span aria-hidden>☰</span>
 												Files

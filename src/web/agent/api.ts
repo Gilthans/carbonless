@@ -189,11 +189,6 @@ export async function answerJoin(
 	throw new ApiError(response.status, error);
 }
 
-/** Ends the joined session's attachment (the reviewer's Disconnect). */
-export const postAgentDisconnect = async (): Promise<void> => {
-	await review<{ ok: true }>("agent/disconnect", json("POST"));
-};
-
 /** Spawns this review's ACP buddy (sets its spawn flag; a joined session leaves). */
 export const postAgentStart = async (): Promise<void> => {
 	await review<{ ok: true }>("agent/start", json("POST"));

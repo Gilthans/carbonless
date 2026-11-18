@@ -89,6 +89,33 @@ export async function spawnAgent(url: string): Promise<void> {
 	}
 }
 
+/**
+ * Opens the review conversation in the review at `url` with the reviewer's
+ * `text` (POST /agent/threads with `review: true`, as the drawer's first
+ * message does).
+ */
+export async function askReviewByApi(url: string, text: string): Promise<void> {
+	const u = new URL(url);
+	const id = /^\/r\/([^/]+)/.exec(u.pathname)?.[1];
+	if (!id) throw new Error(`Not a review link: ${url}`);
+	const key = u.searchParams.get("key");
+	const res = await fetch(
+		`${u.origin}/api/r/${id}/agent/threads${key ? `?${new URLSearchParams({ key })}` : ""}`,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ clientId: "e2e-review-1", text, review: true }),
+		},
+	);
+	if (!res.ok) {
+		throw new Error(`Asking answered ${res.status}: ${await res.text()}`);
+	}
+}
+
+/** The header chip's accessible name for the agent status `tip`. */
+export const chipName = (tip: string) =>
+	`Review conversation · Your agent: ${tip}`;
+
 export const DEFAULT_SCENARIO: AcpScenario = {
 	agent: { name: "Fake Agent", version: "9.9.9" },
 	answers: [{ text: "ok" }],
@@ -285,6 +312,32 @@ export async function ask(
 
 /** The header's agent chip. */
 export const chip = (page: Page) => page.getByTestId("agent-chip");
+
+/** The review conversation's drawer. */
+export const reviewDrawer = (page: Page) =>
+	page
+		.getByRole("complementary", { name: "Whole review conversation" })
+		.or(page.getByRole("dialog", { name: "Whole review conversation" }));
+
+/**
+ * Opens the agent modal (setup or status): once an agent is configured or
+ * joined, the chip toggles the review conversation's drawer, whose status
+ * button opens it; otherwise the chip opens the setup itself.
+ */
+export async function openAgentModal(page: Page): Promise<void> {
+	const c = chip(page);
+	// The first status read in: the chip says which it does.
+	await expect(c).not.toHaveAttribute("aria-busy", "true");
+	const expanded = await c.getAttribute("aria-expanded");
+	if (expanded === null) {
+		await c.click();
+		return;
+	}
+	if (expanded === "false") await c.click();
+	await reviewDrawer(page)
+		.getByRole("button", { name: "Agent status" })
+		.click();
+}
 
 /** The agent modal's setup view (no agent connected): Invite and Spawn. */
 export const setupDialog = (page: Page) =>

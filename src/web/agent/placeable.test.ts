@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { AgentThread } from "../../shared/agent";
+import type { AgentThread, SpanAgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import { placeThreads } from "../files/threadPlacement";
 import {
 	agentOutside,
 	agentPlaceable,
+	agentPlacementIds,
 	agentWaiting,
 	shownAgentPlaceables,
 	tracedAgentPlaceables,
@@ -16,8 +17,8 @@ const H2 = "2".repeat(40);
 const asked = (
 	id: string,
 	line: number,
-	more: Partial<AgentThread["anchor"]> = {},
-): AgentThread => ({
+	more: Partial<SpanAgentThread["anchor"]> = {},
+): SpanAgentThread => ({
 	id,
 	anchor: {
 		subject: "line",
@@ -30,7 +31,7 @@ const asked = (
 		startCol: 2,
 		endCol: 5,
 		...more,
-	} as AgentThread["anchor"],
+	} as SpanAgentThread["anchor"],
 	openedBy: "human",
 	at: "2026-11-07T10:00:00Z",
 	messages: [],
@@ -116,7 +117,7 @@ describe("tracedAgentPlaceables", () => {
 	});
 
 	it("a file question follows its file", () => {
-		const t: AgentThread = {
+		const t: SpanAgentThread = {
 			...asked("F", 1),
 			anchor: { subject: "file", path: "old.ts", commit: H1 },
 		};
@@ -150,6 +151,24 @@ describe("tracedAgentPlaceables", () => {
 });
 
 describe("shownAgentPlaceables", () => {
+	it("the review conversation has no code: never a placeable, never waiting for a place", () => {
+		const span = asked("S", 3);
+		const whole: AgentThread = {
+			...asked("R", 3),
+			anchor: { subject: "review" },
+			waiting: true,
+		};
+		expect(
+			shownAgentPlaceables([whole, span], H1, {
+				placements: null,
+				until: null,
+			}).map((p) => p.id),
+		).toEqual(["S"]);
+		expect(
+			agentWaiting([whole, span], H2, { until: null }).map((p) => p.id),
+		).toEqual(["S"]);
+	});
+
 	it("a live thread conversation is never a span placeable (it is its GitHub thread's)", () => {
 		const span = asked("S", 3);
 		const onThread: AgentThread = {
@@ -260,5 +279,23 @@ describe("shownAgentPlaceables while the placements load", () => {
 		expect(
 			agentWaiting([earlier, here], H2, { until: null }).map((p) => p.id),
 		).toEqual(["E"]);
+	});
+});
+
+describe("agentPlacementIds", () => {
+	it("asks /agent/placements for every thread on code, never the review conversation", () => {
+		const whole: AgentThread = {
+			...asked("R", 3),
+			anchor: { subject: "review" },
+		};
+		const onThread: AgentThread = {
+			...asked("C", 3),
+			anchor: { subject: "thread", thread: "RT1", path: "a.ts", commit: H1 },
+		};
+		expect(agentPlacementIds([asked("S", 3), whole, onThread])).toEqual([
+			"S",
+			"C",
+		]);
+		expect(agentPlacementIds(undefined)).toEqual([]);
 	});
 });

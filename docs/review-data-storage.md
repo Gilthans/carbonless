@@ -237,6 +237,7 @@ Initial event types:
 | progress | `patchset-started` | patch set number, snapshot id (`revision`), merge base, head; optional, from re-review on: `since` (the patch set it follows, a smaller number), `shape` (`S1`, `S3`, `S4a`, `S4b`, `S4c`, `S5`, `S6`, `S7`), `baseBranch` (GitHub's base branch name then), `interdiff` (`available` or `unavailable`) |
 | progress | `cluster-state` | snapshot id (`patchset`), cluster identity hash, file path, state (`unreviewed`, `reviewed`, `crossed-off`), optional reason for crossed off |
 | progress | `carried` | `from` and `to` (patch set numbers, `from < to`), `rule` (`exact` or `rename`), `states`: a list of `{ key, fromKey, state }`, one per cluster carried under that rule, `state` being `reviewed` or `crossed-off`; `fromKey` is written only when it differs from `key` (absent means equal: the reader fills it in) |
+| progress | `lines-carried` | `from` and `to` (patch set numbers, `from < to`), `states`: a list of `{ key, fromKey, state, lines, fromLines }`, `lines` of cluster `key` in `to` taking `state` (`reviewed` or `crossed-off`) from as many `fromLines` of cluster `fromKey` in `from`; see "Line carries" |
 | progress | `lines-state` | snapshot id (`patchset`), cluster identity hash, file path, `state` (`reviewed` or `crossed-off`), `lines`: line ranges of the cluster (see "Marks on part of a cluster") |
 | progress | `split-carried` | snapshot id (`patchset`), `states`: a list of `{ key, fromKey, state, from?, lines? }`, one per piece of a hunk cut at its whitespace-only runs (or two, one per state), `fromKey` the whole hunk's key before, `state` `reviewed` or `crossed-off`, `from` the hunk's line ranges it takes (for a hunk marked by lines), `lines` the piece's (only for part of it, as many as `from`); see "Split carries" |
 | progress | `since-lines-state` | snapshot id (`patchset`), `since` (an earlier patch set's number), file `path`, `reviewed` and `crossed`: each `{ old, new }` line ranges on the since view's sides; the whole set for that (since, path) |
@@ -265,6 +266,10 @@ a reader drops what breaks them:
   are cluster keys, its state `reviewed` or `crossed-off`; `from` and
   `lines` parse as ranges, non-empty, and `lines` comes only with a `from`
   of as many lines. One bad entry drops the event.
+- `lines-carried` must have `by: "auto"`; every entry's `key` and `fromKey`
+  are cluster keys, its state `reviewed` or `crossed-off`, and `lines` and
+  `fromLines` parse as non-empty ranges of as many lines. One bad entry
+  drops the event.
 - `thread-placed` must have `by: "human"` or `"ai"`, never `"auto"`.
 - `lines-state` and `since-lines-state` must have `by: "human"`; their
   ranges must parse (pairs of integers, `0 <= start < end`).
@@ -272,6 +277,8 @@ a reader drops what breaks them:
   can only carry one that a human already set (the fold checks, see
   "Reading").
 - `agent-thread-resolved` must have `by: "human"` (see "Agent threads ref").
+- An `agent-thread-opened` with a `review` anchor (the review conversation)
+  must have `by: "human"`.
 - Agent events (`agent-thread-opened`, `agent-message`,
   `agent-thread-resolved`, `agent-thread-seen`) are a human's or the agent's (`by: "ai"`), never
   `"auto"`.
@@ -346,26 +353,61 @@ engine computes it for the since view's hunks, `interdiffFileHunks`):
   is another line. A line the earlier patch set added, or one that can't
   be mapped, is none of the cluster's.
 - A cluster line no piece shows is unchanged since the earlier patch set.
-  It joins a piece only when it is unchanged since a line the reviewer
-  **reviewed** there: an added line that is the same line as one a reviewed
-  earlier cluster added (through the interdiff's line map), or a removed
-  base line a reviewed earlier cluster removed too (through the bases' line
-  map). Such an added line goes to the piece shown before it (the first
-  piece for those before any), a removed one to the first piece. Marking the
-  piece may cover it because it reads the same as a line the reviewer
-  marked reviewed on the earlier patch set, and nothing about it changed.
-  Only a whole `reviewed` mark vouches: a crossed-off or partly marked
-  earlier cluster vouches for nothing.
-- **Fails closed.** A line unchanged since a line that was *not* reviewed
-  (or one the engine can't map) joins no piece. Ticking every piece then
-  leaves the cluster partly reviewed (mixed in the full diff), and the
-  since view counts it under "only in the full diff". Tested in
-  `src/server/rereview/pieces.test.ts` and `src/shared/pieces.test.ts`.
+  It joins no piece: ticking the pieces marks only what they show.
+  Instead it **carries** the mark its counterpart held there (owner,
+  2026-11-17: a crossed-off line "should work exactly like marking as
+  reviewed"), see "Line carries" below.
+
 - A removed base line is keyed to the snapshot's cluster that removes that
   base line (by position); a removal with no key of its own otherwise to the
   snapshot's cluster at its place (`clusterAt`): the author changed that
   place again, so its lines are that cluster's piece (the gallery's
   `rr-pieces`, second section).
+
+**Line carries** (CAR-195). When the next patch set starts, each line of
+a reworked or new cluster that no piece of the since view shows takes the
+mark its counterpart on the earlier patch set held by hand, reviewed or
+crossed off, with no tick: as a carried cluster does, line by line
+(`sinceLineCarries`, `src/server/rereview/engine.ts`). The counterpart
+(`sinceLineSources`):
+
+- an added line: the earlier cluster's added line it is, through the
+  interdiff's line map; a removed base line: the earlier cluster's removed
+  line at the same place in the new base (the bases' line map). A line's
+  place in its earlier cluster is its rank among that cluster's mapped
+  lines, only when all of them map (else none).
+- **Slider twins.** git may show the same insertion with a different one of
+  two identical neighbouring lines as the added one (`blank, comment, set`
+  after a blank, or `comment, set, blank` before it): the earlier patch
+  set's diff took one, this one's the other. On the earlier side, a line no
+  earlier cluster added, right next to a run of one cluster's added lines
+  and reading as the run's far end (above: its last line; below: its first;
+  and on, line by line, as git's slider would move it), stands for that
+  line. Only that adjacency counts, never text alone; a line two runs claim
+  stands for neither.
+- **One to one.** Each earlier line stands for at most one line of the file
+  (itself or one twin, whichever is asked first).
+
+The earlier marks are read through the coverage join, by hand only
+(`humanMarksOf`: a mark still the engine's, a cluster's or lines', carries
+no further, as with `carried`). A hand mark of part of the cluster (a
+since piece's tick) writes the cluster's whole set of marks, carried lines
+included, so it **adopts** them: from then on they are the reviewer's own
+marks, and they carry on to a later patch set like any hand mark (each hop
+is a line unchanged since a line marked by hand, so content-equivalent).
+Only the "N carried" chip goes with that. A line with no counterpart, or one whose
+counterpart wasn't marked, gets nothing: it stays the cluster's "rest",
+to read in the since view until marked in the full diff (principle 2).
+Stored as one `lines-carried` event in the start's commit, beside
+`carried`; the viewed head shows the same carries before that
+(`overlayCarries`, from the engine's answer: each reworked or new
+cluster's `lines`). The view marks the lines and names them
+(`ClusterView.linesCarried`); the full diff shows "N carried" on the
+cluster, and its box undoes them like any mark (a human `cluster-state`
+replaces the entry). The since view doesn't count a carried line while it
+holds a mark; unmarked again, it counts (`sinceUnits`). The fold takes an
+event only from the patch set its target follows (`since`), and, as with
+`carried`, trusts the ref's writer for the source cluster's size.
 
 **`lines-state`.** A piece's mark is written as one commit: a
 `cluster-state` `unreviewed` for the whole cluster, then a `lines-state`
@@ -383,10 +425,11 @@ past its lines or it is a file-level cluster. A cluster whose lines are all
 marked, some crossed off, counts as reviewed (as a file does) and shows its
 crossed lines; one partly marked is unreviewed, with its marked lines in
 the line counts (`ClusterView.reviewedLines`, `crossedLines`). A cluster
-marked piece by piece never carries and never vouches, even once every
-line is marked (its stored entry stays line marks; the carry takes whole
+marked piece by piece never carries whole, even once every line is
+marked (its stored entry stays line marks; the cluster carry takes whole
 human states only), so a later push asks for it again even when its change
-is identical; a `cluster-state` written by the full diff's box ends that.
+is identical (its unchanged lines carry by line); a `cluster-state`
+written by the full diff's box ends that.
 
 **Since-only pieces and `since-lines-state`.** A piece that owns no line
 of the snapshot (lines the earlier patch set had that are gone, or base
@@ -514,7 +557,7 @@ tree, slug identities, compare-and-swap). Written by
 
 | Type | By | Payload |
 |---|---|---|
-| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; `file`: path, commit; or `thread`: GitHub thread node id `thread` (1 to 200 characters, not a ULID), path, commit, and optionally side, line, startSide, startLine), `text`, optional `truncated`; `agent` `{name, version, via?, machine?}` (required by ai; `via` `acp` or `mcp`, and a joined session's `machine`: optional, a bad value is dropped and the event kept; a few dozen bytes, this ref is never pushed); ai only: `origin` (below); human only: `view` (below); a human's carries `details.clientId`, an ai one opened with the agent's idempotency key `details.key` |
+| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; `file`: path, commit; `thread`: GitHub thread node id `thread` (1 to 200 characters, not a ULID), path, commit, and optionally side, line, startSide, startLine; or `review`: the review conversation, no other key (any other is dropped on read), human only), `text`, optional `truncated`; `agent` `{name, version, via?, machine?}` (required by ai; `via` `acp` or `mcp`, and a joined session's `machine`: optional, a bad value is dropped and the event kept; a few dozen bytes, this ref is never pushed); ai only: `origin` (below); human only: `view` (below); a human's carries `details.clientId`, an ai one opened with the agent's idempotency key `details.key` |
 | `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent` (as above; a joined session's `name` is how it named itself, `version` its harness string, `via` `mcp`, and `machine`; a spawned agent's, written by its MCP `reply` too since 2026-11-13, `via` `acp` with its `agentInfo` name and version), `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the answer replies to: `reply`'s `replyTo`, or the question a stopped or failed hand-out ends; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); ai only: `head` (the OID of the checkout the answer came from; older ACP answers only, none since 2026-11-13), `suggests` (`"resolve"`), `origin` (below; an origin message has `stop: "end_turn"`, empty `activity`, no `replyTo`, and `details.key` when the agent gave one); human only: `view`; a human's carries `details.clientId` |
 | `agent-thread-resolved` | human | `thread`, `resolved` (`false` reopens) |
 | `agent-thread-seen` | human | `thread`, `upTo` (the id of the last message the reviewer has seen; a lowercase ULID) |
@@ -543,7 +586,20 @@ folded from the origins on read (`startedBy`), never stored.
   by ai is skipped by readers, and so is an ai-opened thread without its
   `agent`. Only a human has seen a thread: `agent-thread-seen` by ai is
   refused on write and skipped on read, so nothing automatic can make an
-  answer look seen.
+  answer look seen. The review conversation is the reviewer's to open: an
+  `agent-thread-opened` by ai with a `review` anchor is refused on write
+  and skipped on read.
+- **The review conversation** (`anchor: {subject: "review"}`, spec
+  `docs/superpowers/specs/2026-11-13-review-conversation-design.md`): one
+  agent conversation about the whole review, with no path or commit. At
+  most one per review: the store refuses a second opening (the route
+  answers 409 naming the one there; a resend of the same `clientId`
+  returns it), and on read later review openings fold into the first, as
+  for a GitHub thread (below), so a race or a hand-edited ref never shows
+  two. Never resolved: the host refuses the resolve (409) and the fold
+  ignores any `agent-thread-resolved` for it, so it always counts as open
+  for the waiting rules (`isAgentQuestion`). Placement, the code window
+  and the GitHub join skip it.
 - **Fold:** deduplicate by `id`, sort by `(ts, id)`. Threads in the order
   they were opened; the opening text is the first message. A thread waits
   while a human message has no answer: one comes after the last answer's
@@ -557,8 +613,9 @@ folded from the origins on read (`startedBy`), never stored.
   restarts; resolved is the last `agent-thread-resolved`'s
   word, false before any. Messages and resolves of a thread never opened
   are dropped. New events are stamped after the ref's newest.
-  **One conversation per GitHub thread:** openings whose `thread` anchors
-  name the same GitHub thread fold into the first one (its `id` stays): a
+  **One conversation per GitHub thread, one review conversation:** openings
+  whose `thread` anchors name the same GitHub thread, and openings with a
+  `review` anchor, fold into the first one (its `id` stays): a
   later opening's text joins as a message in `(ts, id)` order, and
   messages, seen marks and resolves written under its own thread id join
   too. `seenUpTo` is the `upTo` furthest along in the thread's messages (an
@@ -607,6 +664,22 @@ folded from the origins on read (`startedBy`), never stored.
   messages; moving long ones to tree blobs (GitDB 6) is the fallback. No
   compaction, as for review refs. The 100 seen events add 100 commits' worth
   of git objects (loose size) but little packed.
+
+  The review conversation, measured 2026-11-15 (`pnpm tsx
+  scripts/measure-agent-ref.ts --review`, same 4-core machine under load
+  ~23, so the times are pessimistic): one conversation of 20 messages of
+  2 KiB of prose (10 human with a `view`, 10 answers through MCP, no
+  `head`) and one seen per answer, 30 commits, 40 KiB of text:
+
+  | Measure | Value |
+  |---|---|
+  | Loose size | 124 KiB |
+  | Packed size (`git gc`) | 30 KiB |
+  | One append (median of 9) | 21 ms wall; CPU 9 ms + 10 ms git |
+  | Cold `read()`, loose or packed (median of 9) | 7 ms wall; CPU 4 ms |
+
+  It adds to a review what one long agent thread does; the format (one
+  more anchor subject, no new event kind, no new ref) changes nothing else.
 
 ## Split carries
 
@@ -696,7 +769,11 @@ read forever, would spread the old cut through every reader of states.
    a `carried` entry sets the `to`
    patch set's entry as `{ state, carried: { from, rule } }`, a
    `split-carried` entry fills a piece that holds nothing yet with its
-   hunk's mark ("Split carries"), and a
+   hunk's mark ("Split carries"), a `lines-carried` entry marks its `lines`
+   of a cluster that holds nothing but line carries, as `{ state:
+   unreviewed, lines, crossed, linesCarried: { from, lines } }`, only when
+   its source cluster holds a human mark (not carried, whole or by lines)
+   covering `fromLines` in that state (the carried guard, by line), and a
    `thread-placed` replaces the thread's placement in its patch set. For
    each `(patch set, cluster)`, the last event wins, so a human mark after a
    carry overrides it.
@@ -851,6 +928,16 @@ asserts under 20 KiB raw and 10 KiB deflated for the first case and 40 KiB
 and 20 KiB for the second. A review's cost still depends only on its own
 size: one such commit per patch set start per reviewer, nothing per
 cluster.
+
+**A line carry**, measured 2026-11-17 in
+`src/server/review/reviews.test.ts` ("storage: a start carrying lines
+into 200 clusters"): the start's commit with one `lines-carried` event of
+200 entries, each two 64-hex keys, a state and two ranges of two pairs
+(`lines`, `fromLines`): 44,937 bytes raw, 15,675 deflated (about 225 bytes
+an entry raw). The test asserts under 60 KiB raw and 30 KiB deflated. It
+is written only in a start's commit, once per patch set per reviewer, one
+entry per (cluster, earlier cluster, state): a grown cluster's few
+unchanged lines, never one per line.
 
 **A split carry**, measured 2026-11-15 in
 `src/server/review/reviews.test.ts` ("storage: a split carry is one small

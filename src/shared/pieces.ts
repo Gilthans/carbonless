@@ -575,13 +575,27 @@ export interface SinceUnit {
 	open: number;
 	/** The rest of a cluster no piece owns: only the full diff shows those lines. */
 	rest?: true;
+	/**
+	 * Of a whitespace-only cluster of the viewed snapshot
+	 * (Cluster.whitespaceOnly): "Ignore whitespace" on leaves it out of the
+	 * counts (src/web/files/since.ts countedUnits). A piece no cluster owns
+	 * never is.
+	 */
+	whitespaceOnly?: true;
+	/** The viewed snapshot's cluster it belongs to, if any (a cluster's pieces share it). */
+	cluster?: string;
 }
 
 /** What sinceUnits reads of one file of the engine's answer. */
 export interface UnitFile {
 	index: number;
 	path: string;
-	clusters: { key: string; kind: string }[];
+	clusters: {
+		key: string;
+		kind: string;
+		/** The line marks the engine carried into it (CAR-195). */
+		lines?: { reviewed?: LineRanges; crossed?: LineRanges };
+	}[];
 	pieces?: SincePiece[];
 }
 
@@ -600,6 +614,12 @@ export function sinceUnits(
 	const out: SinceUnit[] = [];
 	for (const file of files) {
 		const kinds = new Map(file.clusters.map((c) => [c.key, c.kind]));
+		const carriedLines = new Map(
+			file.clusters.map((c) => [
+				c.key,
+				union(c.lines?.reviewed ?? [], c.lines?.crossed ?? []),
+			]),
+		);
 		const clusters = new Map(clustersOf(file.index).map((c) => [c.key, c]));
 		const owned = new Map<string, LineRanges>();
 		const base = { index: file.index, path: file.path };
@@ -611,7 +631,15 @@ export function sinceUnits(
 				const kind = kinds.get(p.key) === "new" ? "new" : "reworked";
 				const state = pieceState(cluster, p.owns);
 				const open = state === "unreviewed" ? lines : 0;
-				out.push({ ...base, kind, lines, state, open });
+				out.push({
+					...base,
+					kind,
+					lines,
+					state,
+					open,
+					cluster: p.key,
+					...(cluster.whitespaceOnly ? { whitespaceOnly: true } : {}),
+				});
 				continue;
 			}
 			const kind =
@@ -640,7 +668,16 @@ export function sinceUnits(
 						? "unticked"
 						: null;
 			if (!kind) continue;
-			const rest = subtract(all(c.lines), owned.get(c.key) ?? []);
+			// Lines the engine carried a mark into (unchanged since a line
+			// marked there, CAR-195) are not to read here while they hold a
+			// mark (carried, or the reviewer's since); unmarked again (an undo
+			// in the full diff), they count (principle 2).
+			const { reviewed: r, crossed: x } = marksOf(c);
+			const carriedHere = carriedLines.get(c.key) ?? [];
+			const rest = subtract(
+				subtract(all(c.lines), owned.get(c.key) ?? []),
+				subtract(carriedHere, subtract(carriedHere, union(r, x))),
+			);
 			if (c.lines > 0 && rest.length === 0) continue;
 			const { reviewed, crossed } = marksOf(c);
 			const state: ClusterState =
@@ -655,7 +692,16 @@ export function sinceUnits(
 				state === "unreviewed"
 					? size(subtract(rest, union(reviewed, crossed)))
 					: 0;
-			out.push({ ...base, kind, lines: size(rest), state, open, rest: true });
+			out.push({
+				...base,
+				kind,
+				lines: size(rest),
+				state,
+				open,
+				rest: true,
+				cluster: c.key,
+				...(c.whitespaceOnly ? { whitespaceOnly: true } : {}),
+			});
 		}
 	}
 	return out;

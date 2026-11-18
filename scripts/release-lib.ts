@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rcMoveTo } from "./rc-fixup.mjs";
+import { isReleased, releaseGate } from "./release-gate.mjs";
 
 // Version math and the steps behind `pnpm release` and the release and
 // release-finish workflows (docs/releasing.md). Everything that touches git, gh or
@@ -323,6 +324,84 @@ export async function status(io: Io): Promise<void> {
 	} else {
 		io.log(`warning: master's version ${next} is not a release X.Y.Z`);
 	}
+	const freeze = await freezeOf(io, next, tags, npm);
+	if (freeze) io.log(`frozen:  ${freeze}`);
+}
+
+// ---------------------------------------------------------------------------
+// The release freeze (CAR-191; docs/releasing.md, "The release freeze"):
+// once master's X.Y.Z is released, only the "next" PR may merge. CI's
+// release-gate job judges a PR with scripts/release-gate.mjs; these ask the
+// same function for `pnpm release status` and `pnpm release merge-ok`.
+
+/** The open PRs to master, every page. */
+async function openPullsToMaster(io: Io): Promise<unknown> {
+	return JSON.parse(
+		await must(io, "gh", [
+			"api",
+			"--paginate",
+			"--slurp",
+			`repos/${io.repo}/pulls?state=open&base=master&per_page=100`,
+		]),
+	);
+}
+
+/** What to merge first while master is frozen ("merge #N next: X.Y.Z first"), else null. */
+async function freezeOf(
+	io: Io,
+	version: string,
+	tags: string[],
+	npm: NpmState,
+): Promise<string | null> {
+	const v = parseVersion(version);
+	if (!v || v.rc !== undefined) return null;
+	if (!isReleased(version, tags, npm?.versions ?? [])) return null;
+	const gate = releaseGate({
+		version,
+		tags,
+		npmVersions: npm?.versions ?? [],
+		pulls: await openPullsToMaster(io),
+		repo: io.repo,
+	});
+	return gate.blocker;
+}
+
+/**
+ * `pnpm release merge-ok <pr>`: fails, naming the "next" PR to merge first,
+ * when master is frozen and `pr` isn't that PR. The agents' merge path
+ * (`gh pr merge --admin` skips required checks) runs it before every merge.
+ * Released counts npm's versions too, as the RC plan does.
+ */
+export async function mergeOk(io: Io, pr: string): Promise<void> {
+	const url = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/.exec(
+		pr,
+	);
+	if (url && url[1]?.toLowerCase() !== io.repo.toLowerCase()) {
+		throw new Error(`not a PR of ${io.repo}: ${pr}`);
+	}
+	const number = /^#?(\d+)$/.exec(pr)?.[1] ?? url?.[2];
+	if (!number) throw new Error(`not a PR number or URL: ${pr}`);
+	const [version, tags, npm, pull, pulls] = await Promise.all([
+		masterVersion(io),
+		remoteTags(io),
+		npmState(io),
+		must(io, "gh", ["api", `repos/${io.repo}/pulls/${number}`]),
+		openPullsToMaster(io),
+	]);
+	const gate = releaseGate({
+		version,
+		tags,
+		npmVersions: npm?.versions ?? [],
+		pulls,
+		repo: io.repo,
+		pr: JSON.parse(pull),
+	});
+	if (!gate.ok) {
+		throw new Error(
+			`${gate.message}. Run pnpm release merge-ok ${number} again once it merges.`,
+		);
+	}
+	io.log(`ok: ${gate.message}`);
 }
 
 const RUN_URL = /https:\/\/github\.com\/\S+\/actions\/runs\/\d+/;
@@ -543,8 +622,8 @@ export async function rcToPublish(
 		historyVersions(io, historyRef),
 	]);
 	const release = formatVersion(next);
-	const released =
-		tags.includes(tagOf(next)) || (npm?.versions.includes(release) ?? false);
+	// The same test as the release freeze's (scripts/release-gate.mjs).
+	const released = isReleased(release, tags, npm?.versions ?? []);
 	return {
 		version: formatVersion(
 			nextRc(next, tags, [...(npm?.versions ?? []), ...history]),
@@ -942,6 +1021,32 @@ export async function waitForIntegrity(
 }
 
 /**
+ * The oldest npm `pnpm release publish` works with: npm stage (list,
+ * download, approve) came in 12.2. In step with the npm release.yml
+ * installs (`npm install -g npm@12.2.1`; a test checks).
+ */
+export const MIN_NPM = "12.2.0";
+
+/**
+ * Fails unless this machine's npm is MIN_NPM or newer: an older one answers
+ * `npm stage` with "Unknown command" halfway through. Says the fix.
+ */
+async function checkNpmVersion(io: Io): Promise<void> {
+	const r = await io.run("npm", ["--version"]);
+	const found = r.code === 0 ? r.stdout.trim() : "";
+	const have = /^\d+\.\d+\.\d+$/.test(found) ? parseVersion(found) : null;
+	const min = parseVersion(MIN_NPM);
+	if (have && min && compareVersions(have, min) >= 0) return;
+	const what =
+		r.code !== 0
+			? `npm --version failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`
+			: `this npm is ${found || "(no version)"}`;
+	throw new Error(
+		`pnpm release publish needs npm >= ${MIN_NPM} (npm stage); ${what}. Fix: npm install -g npm@12 (npm 12 needs Node ^22.22.2 or ^24.15.0, or newer)`,
+	);
+}
+
+/**
  * Fails unless the checkout `pnpm release publish` runs from is clean and
  * its release code and package.json are origin/master's: the OTP approves
  * whatever this code publishes.
@@ -1085,6 +1190,8 @@ export async function publishRelease(
 	if (runId !== undefined && !/^\d+$/.test(runId)) {
 		throw new Error(`not a run id: ${runId}`);
 	}
+	// First: an npm without npm stage would fail only after the downloads.
+	await checkNpmVersion(io);
 	await checkPublishingCheckout(io);
 	const run = runId ?? (await newestPromoteRun(io));
 	await checkPromoteRun(io, run);
