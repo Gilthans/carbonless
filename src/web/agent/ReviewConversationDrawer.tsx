@@ -31,6 +31,12 @@ import {
 	toggleReviewDrawer,
 	useReviewDrawerOpen,
 } from "./drawerStore";
+import { QuickQuestionChips } from "./QuickQuestionChips";
+import {
+	reviewQuestions,
+	viewedPatchset,
+	withQuestion,
+} from "./quickQuestions";
 import { useReviewConversation } from "./reviewConversation";
 import { openAgentSetup } from "./setupStore";
 import {
@@ -454,6 +460,23 @@ function Composer(props: {
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text]);
+	// The one-tap questions: PS2 or later looked at, the re-review's.
+	const patchsets = useQuery({ ...sessionQuery, enabled: false }).data
+		?.patchsets.length;
+	const questions = reviewQuestions(viewedPatchset(view.target, patchsets));
+	const caretToEnd = useRef(false);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs once the tapped question is in the box.
+	useLayoutEffect(() => {
+		const el = box.current;
+		if (!caretToEnd.current || !el) return;
+		caretToEnd.current = false;
+		el.focus({ preventScroll: true });
+		el.setSelectionRange(el.value.length, el.value.length);
+	}, [text]);
+	const pick = (question: string) => {
+		caretToEnd.current = true;
+		setText(withQuestion(text, question));
+	};
 	const send = () => {
 		if (blank || tooLong) return;
 		if (props.thread) {
@@ -472,32 +495,35 @@ function Composer(props: {
 		}
 	};
 	return (
-		<div className="flex shrink-0 items-end gap-2 border-t border-line px-4 pt-3 pb-4">
-			<textarea
-				ref={box}
-				aria-label="Ask agent"
-				placeholder="Ask agent…"
-				rows={2}
-				value={text}
-				onChange={(e) => setText(e.target.value)}
-				onKeyDown={onKeyDown}
-				className="block max-h-60 min-h-16 w-full min-w-0 flex-1 resize-none rounded-md border border-agent-edge bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent"
-			/>
-			<Tooltip content="Send to agent" describe={false}>
-				{(trigger) => (
-					<button
-						type="button"
-						{...trigger}
-						aria-label="Send to agent"
-						disabled={blank || tooLong}
-						onClick={send}
-						onMouseDown={(e) => e.preventDefault()}
-						className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-agent-ink hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint disabled:hover:bg-transparent"
-					>
-						<SparkleFillIcon size={18} aria-hidden />
-					</button>
-				)}
-			</Tooltip>
+		<div className="shrink-0 space-y-2 border-t border-line px-4 pt-3 pb-4">
+			<QuickQuestionChips questions={questions} onPick={pick} />
+			<div className="flex items-end gap-2">
+				<textarea
+					ref={box}
+					aria-label="Ask agent"
+					placeholder="Ask agent…"
+					rows={2}
+					value={text}
+					onChange={(e) => setText(e.target.value)}
+					onKeyDown={onKeyDown}
+					className="block max-h-60 min-h-16 w-full min-w-0 flex-1 resize-none rounded-md border border-agent-edge bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent"
+				/>
+				<Tooltip content="Send to agent" describe={false}>
+					{(trigger) => (
+						<button
+							type="button"
+							{...trigger}
+							aria-label="Send to agent"
+							disabled={blank || tooLong}
+							onClick={send}
+							onMouseDown={(e) => e.preventDefault()}
+							className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-agent-ink hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint disabled:hover:bg-transparent"
+						>
+							<SparkleFillIcon size={18} aria-hidden />
+						</button>
+					)}
+				</Tooltip>
+			</div>
 		</div>
 	);
 }

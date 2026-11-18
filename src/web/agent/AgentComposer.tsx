@@ -15,6 +15,8 @@ import {
 	setAgentComposerText,
 	useAgentComposers,
 } from "./askAgentAction";
+import { QuickQuestionChips } from "./QuickQuestionChips";
+import { SPAN_QUESTIONS, withQuestion } from "./quickQuestions";
 import { useSendView } from "./threadAgent";
 
 /** UTF-8 bytes, as the server caps a question. */
@@ -61,6 +63,20 @@ export function AgentComposer(props: {
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text, sending]);
+	// A tapped question: the box takes focus, the caret after the text.
+	const caretToEnd = useRef(false);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs once the tapped question is in the box.
+	useLayoutEffect(() => {
+		const el = box.current;
+		if (!caretToEnd.current || !el) return;
+		caretToEnd.current = false;
+		el.focus({ preventScroll: true });
+		el.setSelectionRange(el.value.length, el.value.length);
+	}, [text]);
+	const pick = (question: string) => {
+		caretToEnd.current = true;
+		setAgentComposerText(clientId, withQuestion(text, question));
+	};
 	const tooLong = bytes(text) > MAX_AGENT_TEXT;
 	const blank = !text.trim();
 	const view = useSendView();
@@ -143,6 +159,7 @@ export function AgentComposer(props: {
 								{tooLong ? "Too long to ask" : write?.error?.message}
 							</p>
 						)}
+						<QuickQuestionChips questions={SPAN_QUESTIONS} onPick={pick} />
 						<textarea
 							ref={box}
 							aria-label="Ask your agent"

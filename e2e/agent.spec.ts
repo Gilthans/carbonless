@@ -113,6 +113,58 @@ test("ask from a selection: the spawned agent takes it through MCP, its activity
 	await shot(page, "agent-answered", isMobile);
 });
 
+test("one-tap questions (CAR-203): select lines, tap What calls this?, the box holds it, then Ask sends it", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: { name: "Fake Agent", version: "9.9.9" }, answers: [] },
+	});
+	const asks: string[] = [];
+	page.on("request", (r) => {
+		if (
+			r.method() === "POST" &&
+			/\/agent\/threads$/.test(new URL(r.url()).pathname)
+		) {
+			asks.push(r.postData() ?? "");
+		}
+	});
+	const section = await openFile(page, s.url, CALC);
+	await selectText(page, CALC, 3, 13, 18);
+	await bar(page).getByRole("button", { name: "Ask agent" }).click();
+	const composer = section.getByTestId("agent-composer");
+	const questions = composer.getByTestId("agent-quick-question");
+	await expect(questions).toHaveText([
+		"Explain this code please",
+		"Why this change?",
+		"What calls this?",
+		"Is this tested?",
+	]);
+	for (const b of await questions.all()) {
+		expect((await b.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+	}
+	await expectNoPageOverflow(page);
+	await shot(page, "agent-quick-questions", isMobile);
+	await composer.getByRole("button", { name: "What calls this?" }).click();
+	const box = composer.getByRole("textbox", { name: "Ask your agent" });
+	await expect(box).toHaveValue("What calls this?");
+	await expect(box).toBeFocused();
+	await composer.getByTestId("agent-composer-ask").click();
+	await expect(composer).toHaveCount(0);
+	await expect(
+		section.getByTestId("agent-thread").filter({ hasText: "What calls this?" }),
+	).toHaveCount(1);
+	// The thread is in, so Ask's POST is answered: it was the only one.
+	// The tap sent nothing.
+	expect(asks).toHaveLength(1);
+	expect(JSON.parse(asks[0] ?? "{}")).toMatchObject({
+		text: "What calls this?",
+	});
+});
+
 test("an agent without MCP over HTTP: it reaches crb through the built crb mcp-bridge (stdio), from Spawn to an answered question", async ({
 	page,
 	pr,

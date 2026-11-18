@@ -126,6 +126,8 @@ function show(
 		filesView?: SendView;
 		/** The agent status as read; null: not read yet. */
 		status?: AgentStatus | null;
+		/** The session's patch sets; null: the session not read yet. */
+		session?: Partial<SessionInfo> | null;
 	} = {},
 ) {
 	const client = new QueryClient({
@@ -136,14 +138,17 @@ function show(
 		writes: "on",
 		pendingReview: null,
 	} as PrOverview);
-	client.setQueryData(sessionQuery.queryKey, {
-		viewer: "octo",
-		snapshotHead: "h2",
-		patchsets: [
-			{ number: 1, head: "h1" },
-			{ number: 2, head: "h2" },
-		],
-	} as unknown as SessionInfo);
+	if (opts.session !== null) {
+		client.setQueryData(sessionQuery.queryKey, {
+			viewer: "octo",
+			snapshotHead: "h2",
+			patchsets: [
+				{ number: 1, head: "h1" },
+				{ number: 2, head: "h2" },
+			],
+			...opts.session,
+		} as unknown as SessionInfo);
+	}
 	if (opts.status !== null) {
 		client.setQueryData(agentStatusQuery.queryKey, opts.status ?? status);
 	}
@@ -602,5 +607,133 @@ describe("ReviewConversationDrawer", () => {
 		expect(within(drawer()).getAllByTestId("agent-message-human")).toHaveLength(
 			1,
 		);
+	});
+});
+
+describe("the review conversation's one-tap questions (CAR-203)", () => {
+	const chips = () =>
+		within(drawer())
+			.queryAllByTestId("agent-quick-question")
+			.map((b) => b.textContent);
+	const firstReview = {
+		snapshotHead: "h1",
+		head: null,
+		patchsets: [{ number: 1, head: "h1" }],
+	} as unknown as SessionInfo;
+	const reReview = {
+		snapshotHead: "h2",
+		head: null,
+		patchsets: [
+			{ number: 1, head: "h1" },
+			{ number: 2, head: "h2" },
+		],
+	} as unknown as SessionInfo;
+
+	it("looking at PS1: the new PR questions", () => {
+		openReviewDrawer();
+		show({ threads: [], session: firstReview });
+		expect(chips()).toEqual([
+			"Please summarize the changes",
+			"Please highlight all decisions made in code that I might object to",
+			"Please highlight all code that can't be tested directly",
+		]);
+	});
+
+	it("before any patch set: the new PR questions", () => {
+		openReviewDrawer();
+		show({
+			threads: [],
+			session: { snapshotHead: "h1", head: null, patchsets: [] },
+		});
+		expect(chips()).toContain("Please summarize the changes");
+	});
+
+	it("looking at PS2: the re-review questions, also after the first message", () => {
+		openReviewDrawer();
+		show({ threads: [review()], session: reReview });
+		expect(chips()).toEqual([
+			"Please summarize what changed",
+			"Please confirm all comments I wrote have been addressed and highlight those that haven't",
+			"Please highlight any change that isn't related to a comment I've made",
+		]);
+	});
+
+	it("Files changed looking at PS1 of two: the new PR questions; at the head after PS1: the re-review's", () => {
+		openReviewDrawer();
+		show({
+			threads: [],
+			session: reReview,
+			filesView: { target: { patchset: 1 }, from: { branch: true } },
+		});
+		expect(chips()).toContain("Please summarize the changes");
+		cleanup();
+		openReviewDrawer();
+		show({
+			threads: [],
+			session: firstReview,
+			filesView: { target: { head: "h2" }, from: { patchset: 1 } },
+		});
+		expect(chips()).toContain("Please summarize what changed");
+	});
+
+	it("while the patch set looked at is unknown (no session yet): a spinner in their place, neither list", async () => {
+		openReviewDrawer();
+		const { client } = show({ threads: [], session: null });
+		const busy = within(drawer()).getByTestId("agent-quick-questions-loading");
+		expect(busy).toHaveAttribute("aria-busy", "true");
+		expect(
+			within(busy).getByRole("status", { name: "Loading suggested questions" }),
+		).toBeInTheDocument();
+		expect(chips()).toEqual([]);
+		act(() => client.setQueryData(sessionQuery.queryKey, firstReview));
+		await waitFor(() =>
+			expect(chips()).toContain("Please summarize the changes"),
+		);
+		expect(
+			within(drawer()).queryByTestId("agent-quick-questions-loading"),
+		).toBeNull();
+	});
+
+	it("a tap fills an empty box, appends to a typed one, focuses it with the caret at the end, and sends nothing", async () => {
+		openReviewDrawer();
+		const { user } = show({ threads: [], session: firstReview });
+		const box = composer() as HTMLTextAreaElement;
+		await user.click(
+			within(drawer()).getByRole("button", {
+				name: "Please summarize the changes",
+			}),
+		);
+		expect(box).toHaveValue("Please summarize the changes");
+		expect(box).toHaveFocus();
+		expect(box.selectionStart).toBe(box.value.length);
+		await user.clear(box);
+		await user.type(box, "Hi.  ");
+		await user.click(
+			within(drawer()).getByRole("button", {
+				name: "Please highlight all code that can't be tested directly",
+			}),
+		);
+		expect(box).toHaveValue(
+			"Hi.\nPlease highlight all code that can't be tested directly",
+		);
+		expect(box).toHaveFocus();
+		expect(box.selectionEnd).toBe(box.value.length);
+		expect(posts).toEqual([]);
+	});
+
+	it("no agent connected: the questions still show and fill the box", async () => {
+		openReviewDrawer();
+		const { user } = show({
+			threads: [],
+			session: firstReview,
+			status: { ...status, state: "off", connected: false } as AgentStatus,
+		});
+		await user.click(
+			within(drawer()).getByRole("button", {
+				name: "Please summarize the changes",
+			}),
+		);
+		expect(composer()).toHaveValue("Please summarize the changes");
+		expect(posts).toEqual([]);
 	});
 });
