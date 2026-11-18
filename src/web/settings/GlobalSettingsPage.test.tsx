@@ -540,6 +540,50 @@ describe("GlobalSettingsPage", () => {
 			expect(texts()).toHaveLength(3);
 		});
 
+		it("an RC with changes but no notes yet: the count shows folded, never 'No user-facing changes'", async () => {
+			serve({
+				get: () => INFO,
+				own: () => ({
+					...OWN,
+					running: {
+						...(OWN.running as NonNullable<OwnNotes["running"]>),
+						notes: [],
+						uncovered: [131, 129, 140],
+					},
+					earlier: [],
+				}),
+			});
+			show();
+			await section();
+			expect(await screen.findByTestId("notes-uncovered")).toHaveTextContent(
+				"3 more changes, no notes yet",
+			);
+			expect(screen.queryByText("No user-facing changes")).toBeNull();
+		});
+
+		it("What's new opens after a failed Update, on a click, and only then", async () => {
+			serve({
+				get: () => ({ ...INFO, ...OFFER }),
+				post: () => json(409, { error: "An update is already under way" }),
+			});
+			show();
+			await section();
+			const r = await screen.findByTestId("update-result");
+			await userEvent.click(within(r).getByRole("button", { name: "Update" }));
+			await waitFor(() =>
+				expect(screen.getByTestId("update-toast")).toHaveAttribute(
+					"data-state",
+					"failed",
+				),
+			);
+			const modal = screen.getByTestId("whats-new");
+			expect(modal.hasAttribute("open")).toBe(false);
+			await userEvent.click(
+				within(r).getByRole("button", { name: "What's new" }),
+			);
+			expect(modal.hasAttribute("open")).toBe(true);
+		});
+
 		it("a local build (no notes file) shows none; a version without notes says so", async () => {
 			serve({ get: () => INFO });
 			show();

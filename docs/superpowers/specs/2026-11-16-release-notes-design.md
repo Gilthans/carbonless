@@ -340,9 +340,11 @@ Mockups: `release-notes-mockups.html`.
   (a local build) shows nothing there. Long notes show their first
   sentence until expanded, in the modal too (the rest behind the same
   in-place Show more per note).
-- **Shape**: as the agent modal, a centred `<dialog>` on a desktop
-  (`min(34rem, 100vw - 2rem)`, `surface` inside `edge`, `shadow-float`), a
-  bottom sheet on a phone (`shadow-sheet`). Escape, the backdrop and ✕
+- **Shape**: as the agent modal, a `<dialog>` on a desktop
+  (`min(34rem, 100vw - 2rem)`, `surface` inside `edge`, `shadow-float`),
+  near the top, so nothing moves when notes arrive (it grows downwards);
+  a bottom sheet on a phone (`shadow-sheet`), of a fixed height for the
+  same reason. Escape, the backdrop and ✕
   (40px, tooltip "Close") close it; Tab stays inside; focus goes back
   where it was. The toast stays dismissible per version as now.
 - **Header**: the download icon (`accent`), "What's new" (20px bold), the

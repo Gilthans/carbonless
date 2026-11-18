@@ -31,10 +31,10 @@ import {
 	type UpdateNotes,
 } from "../shared/whatsNew";
 import { fetchJson } from "./api";
-import { RelativeTime } from "./RelativeTime";
+import { RelativeTime, useNow } from "./RelativeTime";
 import { SkeletonBar, Spinner } from "./Spinner";
 import { Tooltip, TooltipLayer } from "./Tooltip";
-import { ByHandWhy } from "./UpdateByHand";
+import { ByHandWhy, byHandWhy } from "./UpdateByHand";
 import { Command } from "./UpdateCommand";
 import { NOT_PHONE, useMedia } from "./useMedia";
 
@@ -121,7 +121,7 @@ export function NoteRow(props: {
 		<li
 			data-testid="release-note"
 			data-kind={note.kind}
-			className="flex gap-2.5 py-0.5"
+			className="flex gap-2.5 py-0.5 pl-3"
 		>
 			<Tooltip content={label} describe={false}>
 				{(trigger) => (
@@ -129,7 +129,10 @@ export function NoteRow(props: {
 						{...trigger}
 						role="img"
 						aria-label={label}
-						className="flex h-10 w-4 shrink-0 items-center text-muted"
+						// Focusable so a tap or a key opens its name, as RelativeTime.
+						// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+						tabIndex={0}
+						className="-mx-3 flex size-10 shrink-0 items-center justify-center rounded-md text-muted focus-visible:outline-2 focus-visible:outline-accent"
 					>
 						<Icon size={16} aria-hidden />
 					</span>
@@ -157,7 +160,7 @@ export function NoteRow(props: {
 								href={href}
 								target="_blank"
 								rel="noreferrer"
-								className="inline-flex min-h-10 items-center text-xs text-faint underline hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+								className="-mr-1 inline-flex min-h-10 min-w-10 items-center justify-end rounded-md px-1 text-xs text-faint underline hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
 							>
 								#{pr}
 							</a>
@@ -187,6 +190,61 @@ export function Uncovered(props: { count: number; href: string }) {
 	);
 }
 
+const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * A release's date: a calendar day (`YYYY-MM-DD`), so short relative text
+ * in days ("3 days ago", "yesterday", "today") and the day itself on hover
+ * or focus ("2026 Nov 15"), never a clock time it doesn't have. A full
+ * timestamp falls back to RelativeTime.
+ */
+export function ReleaseDate(props: { date: string; className?: string }) {
+	const now = useNow();
+	const m = DAY.exec(props.date);
+	if (!m) return <RelativeTime iso={props.date} className={props.className} />;
+	const day = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+	const today = new Date(now);
+	const todayUtc = Date.UTC(
+		today.getFullYear(),
+		today.getMonth(),
+		today.getDate(),
+	);
+	// A day ahead of this clock (another zone, skew) is today.
+	const days = Math.max(0, Math.round((todayUtc - day) / 86_400_000));
+	const rel = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+	const text =
+		days < 26
+			? rel.format(-days, "day")
+			: days < 335
+				? rel.format(-Math.max(1, Math.round(days / 30.44)), "month")
+				: rel.format(-Math.max(1, Math.round(days / 365.25)), "year");
+	const parts = new Intl.DateTimeFormat("en", {
+		year: "numeric",
+		month: "short",
+		day: "numeric",
+		timeZone: "UTC",
+	}).formatToParts(day);
+	const part = (t: Intl.DateTimeFormatPartTypes) =>
+		parts.find((p) => p.type === t)?.value ?? "";
+	const exact = `${part("year")} ${part("month")} ${part("day")}`;
+	return (
+		<Tooltip content={exact}>
+			{(trigger) => (
+				<time
+					{...trigger}
+					dateTime={props.date}
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					data-testid="release-date"
+					className={`cursor-help rounded-sm underline decoration-faint decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-accent ${props.className ?? ""}`}
+				>
+					{text}
+				</time>
+			)}
+		</Tooltip>
+	);
+}
+
 /** A version's heading: the version, its date, and its release on GitHub. */
 export function VersionHead(props: { section: NotesSection }) {
 	const { section } = props;
@@ -196,7 +254,7 @@ export function VersionHead(props: { section: NotesSection }) {
 				v{section.version}
 			</span>
 			{section.date && (
-				<RelativeTime iso={section.date} className="text-xs text-faint" />
+				<ReleaseDate date={section.date} className="text-xs text-faint" />
 			)}
 			<span className="flex-1" />
 			{section.released && (
@@ -271,7 +329,9 @@ function range(current: string, available: string): string {
 /**
  * What's new (CAR-201): every version between the running crb and the one
  * on offer, newest first, from the notes the offered version carries;
- * Update below. A centred dialog on a desktop, a bottom sheet on a phone;
+ * Update below. On a desktop a dialog anchored near the top (8dvh), so
+ * notes arriving grow it downwards and nothing above them moves; on a
+ * phone a bottom sheet of a fixed height, for the same reason;
  * Escape, the backdrop and ✕ close it, focus going back where it was.
  * Notes never gate the update: Update works while they load and after
  * they fail.
@@ -295,6 +355,8 @@ export function WhatsNewModal(props: {
 		staleTime: Number.POSITIVE_INFINITY,
 		refetchOnWindowFocus: false,
 	});
+	// Retry asks crb to load them again; the notes query alone says what
+	// shows: the answer goes into it, a failure is read again through it.
 	const retry = useMutation({
 		mutationFn: () =>
 			fetchJson<UpdateNotes>("/api/update/notes", {
@@ -303,6 +365,7 @@ export function WhatsNewModal(props: {
 			}),
 		onSuccess: (answer) =>
 			client.setQueryData(notesKey(answer.available), answer),
+		onError: () => void notes.refetch(),
 	});
 	const dialog = useRef<HTMLDialogElement | null>(null);
 	const [layer, setLayer] = useState<HTMLDialogElement | null>(null);
@@ -310,7 +373,8 @@ export function WhatsNewModal(props: {
 		dialog.current = el;
 		setLayer(el);
 	}, []);
-	const closeButton = useRef<HTMLButtonElement | null>(null);
+	// Focus starts on the title: a button focused by script would open its tooltip.
+	const heading = useRef<HTMLHeadingElement | null>(null);
 	const returnTo = useRef<Element | null>(null);
 	const titleId = useId();
 	const shown = open && version !== null;
@@ -330,7 +394,7 @@ export function WhatsNewModal(props: {
 		returnTo.current = document.activeElement;
 		if (typeof d.showModal === "function") d.showModal();
 		else d.setAttribute("open", "");
-		closeButton.current?.focus();
+		heading.current?.focus();
 	}, [shown]);
 	const trap = (e: KeyboardEvent<HTMLDialogElement>) => {
 		if (e.key === "Escape") {
@@ -357,10 +421,11 @@ export function WhatsNewModal(props: {
 			first.focus();
 		}
 	};
-	const loading = shown && (notes.isPending || retry.isPending);
-	const failure =
-		!loading &&
-		(retry.isError ? retry.error : notes.isError ? notes.error : null);
+	// An error read again (a reopen, after Retry) is loading, not the old error.
+	const loading =
+		shown &&
+		(notes.isPending || retry.isPending || (notes.isError && notes.isFetching));
+	const failure = !loading && notes.isError ? notes.error : null;
 	const data = !loading && !failure ? notes.data : undefined;
 	let body: ReactNode = null;
 	if (shown && version) {
@@ -484,7 +549,16 @@ export function WhatsNewModal(props: {
 						aria-hidden
 						className="shrink-0 text-accent"
 					/>
-					<h2 id={titleId} className="shrink-0 text-xl font-bold text-ink">
+					<h2
+						id={titleId}
+						ref={(el) => {
+							heading.current = el;
+							// The dialog's own first focus lands here, not on a button.
+							el?.setAttribute("autofocus", "");
+						}}
+						tabIndex={-1}
+						className="shrink-0 text-xl font-bold text-ink outline-none"
+					>
 						What's new
 					</h2>
 					{info && version && (
@@ -512,10 +586,6 @@ export function WhatsNewModal(props: {
 						{(trigger) => (
 							<button
 								{...trigger}
-								ref={(el) => {
-									closeButton.current = el;
-									trigger.ref(el);
-								}}
 								type="button"
 								aria-label="Close"
 								onClick={onClose}
@@ -533,41 +603,43 @@ export function WhatsNewModal(props: {
 				>
 					{body}
 				</div>
-				{shown && info && version && (
-					<div
-						data-testid="whats-new-footer"
-						className={`flex shrink-0 gap-2 border-t border-line ${
-							wide
-								? "items-center py-2 pr-2 pl-4"
-								: "flex-col items-stretch px-3 pt-2 pb-3"
-						}`}
-					>
-						{info.oneClick ? (
-							<>
-								{wide && <span className="flex-1" />}
-								<Tooltip
-									content={`Install v${version} and restart crb`}
-									describe={false}
-								>
-									{(trigger) => (
-										<button
-											{...trigger}
-											type="button"
-											onClick={() => {
-												onClose();
-												props.onUpdate(version);
-											}}
-											className={`cta flex shrink-0 items-center justify-center rounded-md px-[18px] text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
-												wide ? "h-10" : "h-11 w-full"
-											}`}
-										>
-											Update to v{version}
-										</button>
-									)}
-								</Tooltip>
-							</>
-						) : (
-							info.command && (
+				{shown &&
+					info &&
+					version &&
+					(info.oneClick || info.command || byHandWhy(info)) && (
+						<div
+							data-testid="whats-new-footer"
+							className={`flex shrink-0 gap-2 border-t border-line ${
+								wide
+									? "items-center py-2 pr-2 pl-4"
+									: "flex-col items-stretch px-3 pt-2 pb-3"
+							}`}
+						>
+							{info.oneClick ? (
+								<>
+									{wide && <span className="flex-1" />}
+									<Tooltip
+										content={`Install v${version} and restart crb`}
+										describe={false}
+									>
+										{(trigger) => (
+											<button
+												{...trigger}
+												type="button"
+												onClick={() => {
+													onClose();
+													props.onUpdate(version);
+												}}
+												className={`cta flex shrink-0 items-center justify-center rounded-md px-[18px] text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+													wide ? "h-10" : "h-11 w-full"
+												}`}
+											>
+												Update to v{version}
+											</button>
+										)}
+									</Tooltip>
+								</>
+							) : (
 								<div className="min-w-0 flex-1">
 									{info.byHand && (
 										<ByHandWhy
@@ -576,12 +648,11 @@ export function WhatsNewModal(props: {
 											className="text-muted"
 										/>
 									)}
-									<Command command={info.command} />
+									{info.command && <Command command={info.command} />}
 								</div>
-							)
-						)}
-					</div>
-				)}
+							)}
+						</div>
+					)}
 			</TooltipLayer.Provider>
 		</dialog>
 	);

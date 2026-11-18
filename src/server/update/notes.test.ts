@@ -155,7 +155,9 @@ describe("fetchOfferedNotes", () => {
 		const got = await fetchOfferedNotes("0.5.0", { registry: r.url });
 		expect(got.entries.map((x) => x.version)).toEqual(["0.5.0"]);
 		expect(got.entries[0]?.notes.map((n) => n.id)).toEqual(["CAR-1"]);
-		expect(got.dropped).toBe(6);
+		// The bad version whole; the bad notes by their version.
+		expect(got.dropped).toBe(1);
+		expect(got.droppedIn).toEqual({ "0.5.0": 5 });
 	});
 });
 
@@ -183,6 +185,35 @@ describe("prepareUpdateNotes", () => {
 		expect(got.sections.every((s) => s.released)).toBe(true);
 		expect(got.older).toBe(false);
 		expect(got.dropped).toBe(2);
+	});
+
+	it("couldn't be read: only the versions shown, and entries whose version is unknown", () => {
+		const got = prepareUpdateNotes(
+			"0.3.0",
+			"0.5.0",
+			{
+				entries: [v("0.5.0"), v("0.4.0"), v("0.3.0"), v("0.2.0")],
+				dropped: 1,
+				droppedIn: { "0.5.0": 2, "0.4.0": 1, "0.3.0": 4, "0.2.0": 8 },
+			},
+			null,
+		);
+		expect(got.dropped).toBe(4);
+	});
+
+	it("a release's own entry without a date (written after the tarball): released, no date", () => {
+		const got = prepareUpdateNotes(
+			"0.3.0",
+			"0.4.0",
+			parsed([v("0.4.0", { date: null }), v("0.3.0")]),
+			null,
+		);
+		expect(got.sections).toMatchObject([
+			{ version: "0.4.0", date: null, released: true },
+		]);
+		expect(
+			prepareOwnNotes("0.4.0", parsed([v("0.4.0", { date: null })])).running,
+		).toMatchObject({ date: null, released: true });
 	});
 
 	it("older: the offered list doesn't reach the running version", () => {

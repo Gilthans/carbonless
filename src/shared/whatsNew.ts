@@ -4,12 +4,12 @@ import type { ReleaseNote } from "./releaseNotes.js";
 export interface NotesSection {
 	/** The version shown: a release, or the offered RC for the upcoming release's notes. */
 	version: string;
-	/** When it was released (ISO); null: not released yet (an RC). */
+	/** When it was released (`YYYY-MM-DD`); null: not known (an RC, or a release's own build). */
 	date: string | null;
 	notes: ReleaseNote[];
 	/** PRs merged with no note yet (an RC's build); empty for a release. */
 	uncovered: number[];
-	/** It has a GitHub release to link (a release, not an RC). */
+	/** It has a GitHub release to link (a release, not an RC), dated or not. */
 	released: boolean;
 }
 

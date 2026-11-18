@@ -610,17 +610,21 @@ config). Answering:
 - **The What's new modal** (`WhatsNewModal`, `src/web/WhatsNew.tsx`):
   opened from the update toast's one action, What's new (it replaced the
   toast's version link and Update), and from Global settings' "available"
-  row (What's new beside Update). Shaped as the agent modal: a centred
-  dialog on a desktop (`min(34rem, 100vw - 2rem)`), a bottom sheet with a
-  grab bar on a phone. Header: the download icon in `accent`, "What's
+  row (What's new beside Update). Styled as the agent modal, but a desktop
+  dialog anchored near the top (8dvh, `min(34rem, 100vw - 2rem)`), so
+  notes arriving grow it downwards and nothing moves; a bottom sheet of a
+  fixed height (86dvh) with a grab bar on a phone, for the same reason.
+  Focus starts on the title (no tooltip pops); ✕ is 40px. Header: the download icon in `accent`, "What's
   new", the range in monospace `muted` ("v0.3.0 → v0.5.0", "rc.3 →
   v0.4.0-rc.5"; below 400px only "→ v0.5.0"), a kept 40px spinner slot,
   ✕. The body scrolls: a section per version, newest first (monospace
-  bold version, `RelativeTime`, ↗ to its GitHub release for a release),
+  bold version, its release day in days, "3 days ago", the day itself on
+  hover or focus, no clock time; ↗ to its GitHub release for a release),
   a row per note: the kind's octicon in `muted` (New, Improved, Fixed;
-  tooltip and name; no colour, a kind is no review state), the text in
+  a 40px target with its name in a tooltip on hover, focus or tap; no
+  colour, a kind is no review state), the text in
   `ink` (`code` spans as `<code>`, never HTML), `#N` in `faint` linking
-  the PR. A note's first sentence shows, the rest behind its own 40px
+  the PR (a 40px target). A note's first sentence shows, the rest behind its own 40px
   Show more. "No user-facing changes" in `muted`; on an RC "N more
   changes, no notes yet" (plus icon) linking GitHub's compare view.
   Footer, pinned: "Update to vX" (`cta`; full width, 44px on a phone),

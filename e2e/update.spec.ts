@@ -1075,6 +1075,11 @@ it("What's new while the registry holds the notes: skeleton and spinner in place
 	await page.goto(`${url}/`);
 	await expect(toast(page)).toHaveAttribute("data-state", "available");
 	const m = await openWhatsNew(page);
+	// Focus on the title: no button's tooltip pops over the notes.
+	await expect(m.getByRole("heading", { name: "What's new" })).toBeFocused();
+	await expect(
+		page.locator('[role="tooltip"]:not([hidden])', { hasText: "Close" }),
+	).toHaveCount(0);
 	await expect(m).toHaveAttribute("data-state", "loading");
 	await expect(m.getByTestId("whats-new-body")).toHaveAttribute(
 		"aria-busy",
@@ -1117,9 +1122,10 @@ it("What's new while the registry holds the notes: skeleton and spinner in place
 		m.getByRole("link", { name: "#118" }),
 		long.getByRole("button", { name: /Show less/ }),
 	];
-	for (const t of targets) {
+	for (const t of [...targets, m.getByRole("img", { name: "New" }).first()]) {
 		const box = await t.boundingBox();
 		expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+		expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
 	}
 	const update = await m
 		.getByRole("button", { name: `Update to v${NEWER}` })

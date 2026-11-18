@@ -255,7 +255,6 @@ function RunningNotes() {
 	const more =
 		running.notes.length > NOTES_FOLDED ||
 		running.notes.some((n) => splitNote(n.text).rest !== "") ||
-		running.uncovered.length > 0 ||
 		data.earlier.length > 0;
 	return (
 		<div data-testid="running-notes" className={`${box} min-w-0`}>
@@ -267,20 +266,23 @@ function RunningNotes() {
 					))}
 				</ul>
 			) : (
-				<p className="flex min-h-10 items-center text-muted">
-					No user-facing changes
-				</p>
+				running.uncovered.length === 0 && (
+					<p className="flex min-h-10 items-center text-muted">
+						No user-facing changes
+					</p>
+				)
 			)}
+			{/* Folded too: changes without notes are never left out. */}
+			<Uncovered
+				count={running.uncovered.length}
+				href={
+					data.earlier[0]
+						? compareUrl(data.earlier[0].version, data.current)
+						: RELEASES_URL
+				}
+			/>
 			{open && (
 				<>
-					<Uncovered
-						count={running.uncovered.length}
-						href={
-							data.earlier[0]
-								? compareUrl(data.earlier[0].version, data.current)
-								: RELEASES_URL
-						}
-					/>
 					{data.earlier.map((s) => (
 						<section
 							key={s.version}

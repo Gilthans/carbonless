@@ -124,6 +124,12 @@ function show() {
 	);
 }
 
+/** The text of every tooltip showing now. */
+const shownTips = () =>
+	[...document.querySelectorAll<HTMLElement>('[role="tooltip"]')]
+		.filter((t) => !t.hidden)
+		.map((t) => t.textContent ?? "");
+
 async function openModal() {
 	await userEvent.click(
 		await screen.findByRole("button", { name: "What's new" }),
@@ -344,17 +350,109 @@ describe("What's new", () => {
 		expect((window as unknown as { pwned?: number }).pwned).toBeUndefined();
 	});
 
-	it("Escape closes it and focus goes back to What's new", async () => {
+	it("opens with focus on its title (no tooltip pops); Escape closes it and focus goes back to What's new", async () => {
 		serve({ notes: () => json(200, NOTES) });
 		show();
 		const modal = await openModal();
 		expect(document.activeElement).toBe(
-			within(modal).getByRole("button", { name: "Close" }),
+			within(modal).getByRole("heading", { name: "What's new" }),
 		);
+		expect(shownTips()).not.toContain("Close");
 		await userEvent.keyboard("{Escape}");
 		expect(modal.hasAttribute("open")).toBe(false);
 		expect(document.activeElement).toBe(
 			screen.getByRole("button", { name: "What's new" }),
+		);
+	});
+
+	it("a failed Retry never sticks: closed, the notes loaded meanwhile, reopened shows them", async () => {
+		let notesOk = false;
+		serve({
+			notes: () =>
+				notesOk
+					? json(200, NOTES)
+					: json(502, { error: "Registry unreachable" }),
+			retry: () => json(502, { error: "Registry unreachable" }),
+		});
+		show();
+		const modal = await openModal();
+		const alert = await within(modal).findByRole("alert");
+		await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+		await waitFor(() =>
+			expect(within(modal).getByRole("alert").textContent).toContain(
+				"Registry unreachable",
+			),
+		);
+		await userEvent.click(within(modal).getByRole("button", { name: "Close" }));
+		// The next check loaded them on the server.
+		notesOk = true;
+		await openModal();
+		await within(modal).findAllByTestId("notes-version");
+		expect(within(modal).queryByRole("alert")).toBeNull();
+	});
+
+	it("a kind's name: a 40px target that focus (or a tap) opens", async () => {
+		serve({ notes: () => json(200, NOTES) });
+		show();
+		const modal = await openModal();
+		const kind = (await within(modal).findAllByRole("img", { name: "New" }))[0];
+		if (!kind) throw new Error("no kind icon");
+		expect(kind.tabIndex).toBe(0);
+		expect(kind.className).toContain("size-10");
+		kind.focus();
+		await waitFor(() => expect(shownTips()).toContain("New"));
+	});
+
+	it("a release day: in days, the day itself on focus, no clock time", async () => {
+		const day = new Date(Date.now() - 3 * 86_400_000);
+		const iso = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+		serve({
+			notes: () =>
+				json(200, {
+					...NOTES,
+					sections: [{ ...NOTES.sections[0], date: iso }],
+				}),
+		});
+		show();
+		const modal = await openModal();
+		const date = await within(modal).findByTestId("release-date");
+		expect(date.textContent).toBe("3 days ago");
+		date.focus();
+		await waitFor(() => expect(shownTips()).toHaveLength(1));
+		expect(shownTips()[0]).toMatch(/^\d{4} [A-Z][a-z]{2} \d{1,2}$/);
+	});
+
+	it("no footer when there is nothing to put in it", async () => {
+		serve({
+			info: { ...OFFER, oneClick: false, command: null, byHand: false },
+			notes: () => json(200, NOTES),
+		});
+		show();
+		const modal = await openModal();
+		await within(modal).findAllByTestId("notes-version");
+		expect(within(modal).queryByTestId("whats-new-footer")).toBeNull();
+	});
+
+	it("a release without a date yet: no date at all (never 'Invalid date' or 'now'), its release still linked", async () => {
+		serve({
+			notes: () =>
+				json(200, {
+					...NOTES,
+					sections: [{ ...NOTES.sections[0], date: null, released: true }],
+				}),
+		});
+		show();
+		const modal = await openModal();
+		const section = (await within(modal).findAllByTestId("notes-version"))[0];
+		if (!section) throw new Error("no section");
+		expect(within(section).queryByTestId("release-date")).toBeNull();
+		expect(section.querySelector("time")).toBeNull();
+		expect(section.textContent).not.toMatch(/Invalid|now|ago/);
+		expect(
+			within(section).getByRole("link", { name: "Release on GitHub" }),
+		).toHaveAttribute(
+			"href",
+			"https://github.com/Gilthans/carbonless/releases/tag/v0.5.0",
 		);
 	});
 });

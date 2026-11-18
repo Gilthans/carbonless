@@ -103,6 +103,12 @@ export function UpdateToast(props: { children?: ReactNode }) {
 		() => (version: string) => update.current(version),
 	);
 	const [whatsNew] = useState(() => () => setWhatsNewOpen(true));
+	// Updating (or back, waiting for a reload): no notes to read, and an
+	// ask made then never opens later by itself.
+	const busy = phase.kind === "updating" || phase.kind === "back";
+	useEffect(() => {
+		if (busy) setWhatsNewOpen(false);
+	}, [busy]);
 	const info = useQuery({
 		queryKey: UPDATE_KEY,
 		queryFn: fetchUpdate,
@@ -118,7 +124,7 @@ export function UpdateToast(props: { children?: ReactNode }) {
 				whatsNew={whatsNew}
 			/>
 			<WhatsNewModal
-				open={whatsNewOpen && phase.kind === "idle"}
+				open={whatsNewOpen && !busy}
 				onClose={() => setWhatsNewOpen(false)}
 				info={info.data}
 				onUpdate={(version) => void flowUpdate(version)}

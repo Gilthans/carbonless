@@ -18,7 +18,36 @@ export const MAX_MANIFEST = 256 * 1024;
 /** A package's notes, read and checked (parseShippedReleaseNotes). */
 export interface ParsedNotes {
 	entries: ShippedReleaseNotes[];
+	/** Entries dropped whole (their version unknown: counted wherever shown). */
 	dropped: number;
+	/** Notes dropped inside a version's entry, by version. */
+	droppedIn?: Record<string, number>;
+}
+
+/** The most entries read (CAR-200's reader reads as many). */
+const MAX_ENTRIES = 100;
+
+/**
+ * `raw` read with CAR-200's parseShippedReleaseNotes an entry at a time,
+ * so what was dropped is known per version (the modal counts only the
+ * versions it shows). Null when `raw` isn't a list.
+ */
+export function parseNotes(raw: unknown): ParsedNotes | null {
+	if (!Array.isArray(raw)) return null;
+	const out: Required<ParsedNotes> = { entries: [], dropped: 0, droppedIn: {} };
+	for (const item of raw.slice(0, MAX_ENTRIES)) {
+		const one = parseShippedReleaseNotes([item]);
+		const entry = one?.entries[0];
+		if (!one || !entry) {
+			out.dropped += one?.dropped ?? 1;
+			continue;
+		}
+		out.entries.push(entry);
+		out.droppedIn[entry.version] =
+			(out.droppedIn[entry.version] ?? 0) + one.dropped;
+	}
+	out.dropped += Math.max(0, raw.length - MAX_ENTRIES);
+	return out;
 }
 
 /**
@@ -70,7 +99,7 @@ export async function fetchOfferedNotes(
 			? (manifest as Record<string, unknown>).crbReleaseNotes
 			: undefined;
 	if (field === undefined) throw new RegistryError("No notes in this version");
-	const parsed = parseShippedReleaseNotes(field);
+	const parsed = parseNotes(field);
 	if (!parsed) throw new RegistryError("Notes unreadable");
 	return parsed;
 }
@@ -88,9 +117,7 @@ export async function readOwnNotes(file: string): Promise<ParsedNotes | null> {
 		return null;
 	}
 	try {
-		return (
-			parseShippedReleaseNotes(JSON.parse(text)) ?? { entries: [], dropped: 1 }
-		);
+		return parseNotes(JSON.parse(text)) ?? { entries: [], dropped: 1 };
 	} catch {
 		return { entries: [], dropped: 1 };
 	}
@@ -113,7 +140,9 @@ function section(
 		date: entry.date,
 		notes,
 		uncovered,
-		released: shown !== null && !isPre(shown) && entry.date !== null,
+		// A release has its tag's page; its date may still be unknown (null:
+		// the publish day is written after the tarball).
+		released: shown !== null && !isPre(shown),
 	};
 }
 
@@ -176,7 +205,11 @@ export function prepareUpdateNotes(
 		available,
 		sections,
 		older: !reaches,
-		dropped: offered.dropped,
+		// Only what's missing from the versions shown (and entries whose
+		// version couldn't be read: they might be among them).
+		dropped:
+			offered.dropped +
+			[...seen].reduce((n, v) => n + (offered.droppedIn?.[v] ?? 0), 0),
 	};
 }
 
@@ -210,7 +243,9 @@ export function prepareOwnNotes(
 		file: true,
 		running: entry ? section(entry, current) : null,
 		earlier,
-		dropped: own.dropped,
+		dropped:
+			own.dropped +
+			Object.values(own.droppedIn ?? {}).reduce((n, d) => n + d, 0),
 	};
 }
 
