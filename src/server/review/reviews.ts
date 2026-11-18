@@ -22,7 +22,6 @@ import {
 	parseEventLines,
 	type ReviewCreatedEvent,
 	type ShapeCode,
-	type ThreadAnchorRef,
 } from "./events.js";
 import { foldProgress, type ProgressState } from "./fold.js";
 import { RefConflictError, RefStore } from "./refStore.js";
@@ -575,46 +574,6 @@ export class ReviewService {
 				}
 			}
 		}
-	}
-
-	/**
-	 * Appends the reviewer's placement of a thread in patch set `patchset`
-	 * (a thread-placed event by them; the anchor was checked against the
-	 * patch set's snapshot by the caller).
-	 */
-	async recordPlacement(
-		reviewId: string,
-		slug: string,
-		patchset: number,
-		thread: string,
-		anchor: ThreadAnchorRef,
-		engine: number,
-	): Promise<ProgressState> {
-		checkReviewId(reviewId);
-		checkSlug(slug);
-		checkPatchsetNumber(patchset);
-		const ref = progressRef(reviewId, slug);
-		const existing = await this.store.readEvents(ref);
-		const progress = foldProgress(existing);
-		if (!progress.patchsets.some((p) => p.number === patchset)) {
-			throw new StaleSnapshotError(
-				`No patch set ${patchset}; reload the review`,
-			);
-		}
-		const event = newEvent(
-			"thread-placed",
-			slug,
-			{ thread, patchset, anchor, engine },
-			"human",
-			stamper(existing)(),
-		);
-		await this.store.appendEvent(
-			ref,
-			`crb: placed thread in ${anchor.path} on PS${patchset}`,
-			event,
-			slug,
-		);
-		return this.getProgress(reviewId, slug);
 	}
 
 	/**

@@ -462,6 +462,111 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		expect((await rows(s)).reverse()).toEqual(want);
 	});
 
+	it("a review thread and an agent thread moved to a.txt line 2 on the opened stage are followed from that line to the updated stage, and survive gc (CAR-139)", async () => {
+		const threads = [
+			reviewThread({ path: "a.txt", line: 30, diffSide: "RIGHT" }, [
+				threadComment({
+					login: "rev1",
+					text: "On 30",
+					commit: repo.heads.opened,
+					createdAt: TIMES.review,
+				}),
+			]),
+		];
+		const withThreads = (st: Stage) => {
+			repo.setStage(st);
+			const entry = repo.prEntry(st);
+			process.env.CRB_FAKE_GH = writeScenario(tmp, {
+				repoPath: repo.path,
+				user: { login: "Octo_Cat" },
+				nameWithOwner: "acme/widget",
+				prs: {
+					[NUMBER]: {
+						...entry,
+						graphql: { ...entry.graphql, reviewThreads: threads },
+					},
+				},
+			});
+		};
+		withThreads("opened");
+		const s = await open();
+		const ps1 = s.snapshot();
+		const key = ps1.files[0]?.clusters[0]?.key ?? "";
+		await s.setStates(ps1.revision, [{ key, state: "reviewed" }]);
+		const readId = (await s.overview(0)).readId;
+		const [github] = (await s.threads(readId, "summary")).threads;
+		const agent = s.agent;
+		if (!github || !agent) throw new Error("no thread or no agent");
+		const asked = await agent.open({
+			clientId: "q1",
+			text: "Why?",
+			span: {
+				subject: "line",
+				path: "a.txt",
+				commit: repo.heads.opened,
+				side: "RIGHT",
+				line: 30,
+				startSide: "RIGHT",
+				startLine: 30,
+			},
+		});
+		const line2 = {
+			path: "a.txt",
+			startSide: "RIGHT" as const,
+			startLine: 2,
+			side: "RIGHT" as const,
+			line: 2,
+		};
+		for (const thread of [
+			{ source: "github" as const, id: github.id },
+			{ source: "agent" as const, id: asked.id },
+		]) {
+			await s.moveThread({ thread, to: { patchset: 1 }, anchor: line2 });
+		}
+		withThreads("updated");
+		await s.refresh();
+		const placed = async (session: Session) => {
+			const read = (await session.overview(0)).readId;
+			const to = { head: repo.heads.updated };
+			let answer = await session.placements(to, read);
+			while ("pending" in answer) {
+				await new Promise((r) => setTimeout(r, 20));
+				answer = await session.placements(to, read);
+			}
+			const agentAnswer = await session.agentPlacements(
+				session.agent as NonNullable<typeof session.agent>,
+				to,
+			);
+			// The updated stage's snapshot is PS1's own when neither its head
+			// nor its merge base moved: the moves are then made on it (rule 1).
+			const here = answer.revision === ps1.revision;
+			return [
+				answer.threads.find((t) => t.id === github.id),
+				agentAnswer.threads.find((t) => t.id === asked.id),
+			].map((t) => ({
+				placement: t?.placement,
+				here: t?.moved?.here === here,
+			}));
+		};
+		// However the branch was kept current, line 2 is the same text on
+		// the updated head (for base-absorbs it is the base's own by then,
+		// context in the comparison): both are followed onto it, from PS1's
+		// snapshot (or placed as moved, on PS1's own snapshot).
+		const want = {
+			placement: { kind: "placed", anchor: line2, changed: false },
+			here: true,
+		};
+		expect(await placed(s)).toEqual([want, want]);
+		// PS1's pins keep the move's snapshot through gc.
+		const clone = clonePath("acme", "widget");
+		const git = (...args: string[]) =>
+			execFileSync("git", ["-C", clone, ...args], { env: testGitEnv() });
+		git("reflog", "expire", "--expire=now", "--all");
+		git("gc", "--quiet", "--prune=now");
+		await Session.closeAll();
+		expect(await placed(await open())).toEqual([want, want]);
+	});
+
 	it("orders the timeline by GitHub's facts: a rebase's commits by their new times, then its force-push; the merge, not the close", async () => {
 		const shape = async (s: Session) =>
 			(await s.timeline((await s.overview(0)).readId)).events.map((e) =>

@@ -1,3 +1,4 @@
+import type { MovedInfo } from "./rereview/moves.js";
 import type { ThreadPlacement } from "./rereview/placement.js";
 import type { CodeWindow, DiffSide } from "./types.js";
 
@@ -217,7 +218,8 @@ export const isSpanThread = (t: AgentThread): t is SpanAgentThread =>
 export interface AgentPlacementsAnswer {
 	/** The snapshot id placed into. */
 	revision: string;
-	threads: { id: string; placement: ThreadPlacement }[];
+	/** Each thread's place; `moved`: the reviewer's move it stands on (CAR-139). */
+	threads: { id: string; placement: ThreadPlacement; moved?: MovedInfo }[];
 }
 
 /**

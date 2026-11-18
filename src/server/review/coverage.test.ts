@@ -88,6 +88,7 @@ function progressOf(
 		statesByRevision,
 		sinceMarks: new Map(sets.map(([, revision]) => [revision, []])),
 		placements: new Map(),
+		placed: [],
 	};
 }
 

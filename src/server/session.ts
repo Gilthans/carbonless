@@ -3,13 +3,23 @@ import type {
 	AgentView,
 	AgentViewTarget,
 } from "../shared/agent.js";
+import {
+	foldMoves,
+	liveMove,
+	type MoveAnswer,
+	movedInfo,
+	type ThreadMove,
+	type ThreadRef,
+	threadKey,
+	type UndoMoveAnswer,
+	visibleBefore,
+} from "../shared/rereview/moves.js";
 import { overlayCarries } from "../shared/rereview/overlay.js";
 import {
 	type ThreadInput,
 	type ThreadPlacement,
 	validAnchor,
 } from "../shared/rereview/placement.js";
-import { TRACER_VERSION } from "../shared/tracer/index.js";
 import type {
 	CommentsView,
 	DeleteAnswer,
@@ -38,6 +48,7 @@ import type {
 	VerdictRequest,
 } from "../shared/types.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
+import { AgentThreadStore } from "./agent/store.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import { contextLines } from "./diff/hunks.js";
 import {
@@ -90,10 +101,13 @@ import {
 } from "./rereview/engine.js";
 import { checkOid, commitsOver, commitsSince } from "./rereview/shape.js";
 import {
+	DeadMoveError,
 	InvalidPlacementError,
+	legacyMoves,
 	type PlacedThread,
 	placeAgentThreads,
 	ThreadPlacer,
+	UnknownMoveThreadError,
 } from "./rereview/threads.js";
 import { buildReviewView } from "./review/coverage.js";
 import type { PatchsetRecord, ProgressState } from "./review/fold.js";
@@ -370,12 +384,21 @@ export class Session {
 		if (head) this.#fetched(meta, head.mergeBase);
 		this.#threadCode = new ThreadCodeSource(repo);
 		this.#placer = new ThreadPlacer(repo, this.#threadCode);
+		// The reviewer's private ref: agent threads and every thread move
+		// (CAR-139), opened whether or not there is an agent host.
+		this.#threadStore = new AgentThreadStore(
+			new RefStore(repo),
+			reviewId,
+			viewer,
+		);
 		this.#agent = this.writes() === "on" ? this.#makeAgent() : null;
 		Session.#open.add(this);
 	}
 
 	/** The reviewer's agent; none as of a cutoff or as --viewer someone else. */
 	readonly #agent: AgentHost | null;
+	/** The reviewer's agent threads ref's store (the agent host's too). */
+	readonly #threadStore: AgentThreadStore;
 
 	get agent(): AgentHost | null {
 		return this.#agent;
@@ -383,6 +406,7 @@ export class Session {
 
 	#makeAgent(): AgentHost {
 		return reviewAgentHost({
+			store: this.#threadStore,
 			repo: this.repo,
 			reviewId: this.reviewId,
 			viewer: this.viewer,
@@ -918,14 +942,27 @@ export class Session {
 		agent: AgentHost,
 		to: { patchset: number } | { head: string },
 	): Promise<AgentPlacementsAnswer> {
+		return this.#agentPlaced(to, agent);
+	}
+
+	async #agentPlaced(
+		to: { patchset: number } | { head: string },
+		agent: AgentHost | null = this.#agent,
+	): Promise<AgentPlacementsAnswer> {
 		if (this.#closed) throw new SessionClosedError("The session is closed");
+		const progress = await this.#progress();
 		let target: Snapshot;
+		let record: PatchsetRecord | undefined;
 		if ("patchset" in to) {
-			const record = this.#patchsets.find((p) => p.number === to.patchset);
+			record = this.#patchsets.find((p) => p.number === to.patchset);
 			if (!record) throw new RangeError(`No patch set ${to.patchset}`);
 			target = await this.#snapshotOf(record);
-		} else target = await this.#headSnapshot(checkOid(to.head));
-		const threads = await agent.asked();
+		} else {
+			target = await this.#headSnapshot(checkOid(to.head));
+			record = progress.patchsets.find((p) => p.revision === target.revision);
+		}
+		const threads = agent ? await agent.asked() : [];
+		const folded = await this.#foldedMoves(progress);
 		return {
 			revision: target.revision,
 			threads: await placeAgentThreads(
@@ -933,6 +970,8 @@ export class Session {
 				target,
 				threads,
 				this.#diffBase(),
+				(id) => folded.get(threadKey({ source: "agent", id })),
+				this.#visibleAt(progress, record),
 			),
 		};
 	}
@@ -997,7 +1036,10 @@ export class Session {
 		};
 	}
 
-	/** Placements of `inputs` with the reviewer's stored ones of the target's patch set. */
+	/**
+	 * Placements of `inputs` with the reviewer's moves laid over (CAR-139):
+	 * their `thread-moved` events and their old `thread-placed` ones.
+	 */
 	async #placedFor(
 		target: Snapshot,
 		inputs: readonly ThreadInput[],
@@ -1007,52 +1049,132 @@ export class Session {
 		const record = progress.patchsets.find(
 			(p) => p.revision === target.revision,
 		);
-		const stored = new Map<string, ThreadAnchorRef>();
-		for (const [id, e] of record
-			? (progress.placements.get(record.number) ?? new Map())
-			: new Map()) {
-			stored.set(id, e.anchor);
-		}
+		const folded = await this.#foldedMoves(progress);
 		return {
 			readId,
 			revision: target.revision,
 			patchset: record?.number ?? null,
-			threads: await this.#placer.place(target, inputs, stored),
+			threads: await this.#placer.placeMoved(
+				target,
+				inputs,
+				(id) => folded.get(threadKey({ source: "github", id })),
+				this.#diffBase(),
+				this.#visibleAt(progress, record),
+			),
 		};
 	}
 
+	/** Every live move of the reviewer's, by thread (threadKey). */
+	async #foldedMoves(
+		progress?: ProgressState,
+	): Promise<Map<string, ThreadMove[]>> {
+		const p = progress ?? (await this.#progress());
+		const { moves, undos } = await this.#threadStore.moves();
+		return foldMoves([...moves, ...legacyMoves(p)], undos);
+	}
+
 	/**
-	 * The reviewer places thread `threadId` on `anchor` in their latest
-	 * patch set `patchset` (a drag): checked against that patch set's
-	 * snapshot first (an InvalidPlacementError for an unknown patch set, a
-	 * path that is no file of it or lines outside the file; a
-	 * ReadOnlyPatchsetError for an earlier one), then a `thread-placed`
-	 * event. Answers the thread's new placement.
+	 * Which moves count on a target: on an earlier patch set those made
+	 * before the next one started; all on the latest or a head.
 	 */
-	placeThread(
-		threadId: string,
-		patchset: number,
-		anchor: ThreadAnchorRef,
-	): Promise<PlacedThread> {
-		return this.#exclusive(async () => {
-			const progress = await this.#progress();
-			const record = progress.patchsets.find((p) => p.number === patchset);
-			if (!record) {
-				throw new InvalidPlacementError(`No patch set ${patchset}`);
-			}
-			if (progress.patchset && record.number !== progress.patchset.number) {
+	#visibleAt(
+		progress: ProgressState,
+		record: PatchsetRecord | undefined,
+	): (m: ThreadMove) => boolean {
+		const next = record
+			? progress.patchsets.find((p) => p.number === record.number + 1)
+			: undefined;
+		return visibleBefore(next?.startedAt ?? null);
+	}
+
+	/**
+	 * The snapshot a move writes into: the latest patch set, or a head that
+	 * is no earlier patch set (409, ReadOnlyPatchsetError; an unknown patch
+	 * set is a 400). Its number when it is one of the reviewer's.
+	 */
+	async #moveTarget(
+		to: { patchset: number } | { head: string },
+		progress: ProgressState,
+	): Promise<{ target: Snapshot; patchset: number | null }> {
+		const latest = progress.patchset?.number ?? null;
+		if ("patchset" in to) {
+			const record = progress.patchsets.find((p) => p.number === to.patchset);
+			if (!record)
+				throw new InvalidPlacementError(`No patch set ${to.patchset}`);
+			if (record.number !== latest) {
 				throw new ReadOnlyPatchsetError(
-					`Patch set ${patchset} is read-only: a later one exists`,
+					`Patch set ${to.patchset} is read-only: a later one exists`,
 				);
 			}
-			const target = await this.#snapshotOf(record);
+			return {
+				target: await this.#snapshotOf(record),
+				patchset: record.number,
+			};
+		}
+		const target = await this.#headSnapshot(checkOid(to.head));
+		const record = progress.patchsets.find(
+			(p) => p.revision === target.revision,
+		);
+		if (record && record.number !== latest) {
+			throw new ReadOnlyPatchsetError(
+				`Patch set ${record.number} is read-only: a later one exists`,
+			);
+		}
+		return { target, patchset: record?.number ?? null };
+	}
+
+	/**
+	 * Checks that the reviewer has thread `ref` and that it can be moved: an
+	 * agent thread of theirs opened on lines, or a GitHub thread the
+	 * newest read lists, with an id, not deleted and on lines. 404 for an
+	 * unknown one, 400 (InvalidPlacementError) for a file thread, a thread
+	 * conversation or the review conversation. Never calls gh.
+	 */
+	async #movable(ref: ThreadRef): Promise<void> {
+		if (ref.source === "agent") {
+			const thread = await this.#threadStore.find(ref.id).catch(() => null);
+			if (!thread || thread.id !== ref.id) {
+				throw new UnknownMoveThreadError(`No thread ${ref.id}`);
+			}
+			if (thread.anchor.subject !== "line") {
+				throw new InvalidPlacementError("Only a thread on lines moves");
+			}
+			return;
+		}
+		const read = this.#reads.findLast((r) => !this.#superseded.has(r));
+		const found = read
+			? (await read.threads("summary")).threads.find((t) => t.id === ref.id)
+			: undefined;
+		if (!found || found.id === "" || found.unavailable === "deleted") {
+			throw new UnknownMoveThreadError(`No thread ${ref.id}`);
+		}
+		if (!found.anchor) {
+			throw new InvalidPlacementError("Only a thread on lines moves");
+		}
+	}
+
+	/**
+	 * The reviewer moves thread `req.thread` to `req.anchor` in the target
+	 * they view (CAR-139): checked (the thread, the target, the lines
+	 * against its snapshot), then a `thread-moved` in their private ref,
+	 * `on` filled in from the session's snapshot. Never calls gh, never
+	 * starts a patch set. Answers the move and the thread's placement.
+	 */
+	moveThread(req: {
+		thread: ThreadRef;
+		to: { patchset: number } | { head: string };
+		anchor: ThreadAnchorRef;
+	}): Promise<MoveAnswer> {
+		return this.#exclusive(async () => {
+			const progress = await this.#progress();
+			await this.#movable(req.thread);
+			const { target, patchset } = await this.#moveTarget(req.to, progress);
+			const { anchor } = req;
 			const counts = new Map<string, number | null>();
 			for (const side of ["LEFT", "RIGHT"] as const) {
 				counts.set(
 					side,
-					typeof anchor.path === "string"
-						? await this.#placer.lineCount(target, anchor.path, side)
-						: null,
+					await this.#placer.lineCount(target, anchor.path, side),
 				);
 			}
 			if (
@@ -1061,26 +1183,76 @@ export class Session {
 				)
 			) {
 				throw new InvalidPlacementError(
-					"The place is not a line of a file in this patch set",
+					"The place is not a line of a file in this snapshot",
 				);
 			}
 			const { path, startSide, startLine, side, line } = anchor;
 			const clean = { path, startSide, startLine, side, line };
-			this.#noted(
-				await this.reviews.recordPlacement(
-					this.reviewId,
-					this.viewer,
-					patchset,
-					threadId,
-					clean,
-					TRACER_VERSION,
-				),
-			);
+			const move = await this.#threadStore.move({
+				thread: req.thread,
+				on: {
+					base: target.base,
+					head: target.head,
+					...(patchset !== null ? { patchset } : {}),
+				},
+				anchor: clean,
+			});
 			return {
-				id: threadId,
+				move: move.id,
+				thread: req.thread,
 				placement: { kind: "placed", anchor: clean, changed: false },
+				moved: movedInfo(move, true),
 			};
 		});
+	}
+
+	/**
+	 * The reviewer takes back move `id` (a `thread-moved`, or a legacy
+	 * `thread-placed`): a `thread-move-undone` naming it. A move that isn't
+	 * live is a DeadMoveError (409) and writes nothing. With `to` (the
+	 * target viewed), the thread's placement there now, when known
+	 * without waiting. Never calls gh.
+	 */
+	undoMove(
+		id: string,
+		to?: { patchset: number } | { head: string },
+	): Promise<UndoMoveAnswer> {
+		return this.#exclusive(async () => {
+			const progress = await this.#progress();
+			if (to) await this.#moveTarget(to, progress);
+			const move = liveMove(await this.#foldedMoves(progress), id);
+			if (!move) throw new DeadMoveError(`No live move ${id}`);
+			await this.#threadStore.undoMove(move.thread, id);
+			const placed = to
+				? await this.#placedThread(move.thread, to).catch(() => undefined)
+				: undefined;
+			return {
+				undone: id,
+				thread: move.thread,
+				...(placed
+					? {
+							placement: placed.placement,
+							...(placed.moved ? { moved: placed.moved } : {}),
+						}
+					: {}),
+			};
+		});
+	}
+
+	/** A thread's placement in `to` as it stands, when known without waiting. */
+	async #placedThread(
+		ref: ThreadRef,
+		to: { patchset: number } | { head: string },
+	): Promise<PlacedThread | undefined> {
+		if (ref.source === "agent") {
+			const answer = await this.#agentPlaced(to);
+			return answer.threads.find((t) => t.id === ref.id);
+		}
+		const read = this.#reads.findLast((r) => !this.#superseded.has(r));
+		if (!read) return undefined;
+		const answer = await this.placements(to, read.id);
+		if ("pending" in answer) return undefined;
+		return answer.threads.find((t) => t.id === ref.id);
 	}
 
 	/**
