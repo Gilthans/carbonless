@@ -67,6 +67,10 @@ describe("parseQuery", () => {
 		}
 		expect(parseQuery("0")).toMatchObject({ kind: "free" });
 		expect(parseQuery("1234567890")).toMatchObject({ kind: "free" });
+		// Only digits reach gh: anything else is free text.
+		for (const q of ["#12a", "12 a", "1) { x }", "#-1", "1.5", "１２"]) {
+			expect(parseQuery(q), q).toMatchObject({ kind: "free" });
+		}
 		expect(parseQuery("acme/api#5")).toEqual({
 			kind: "pr",
 			owner: "acme",
@@ -174,8 +178,9 @@ async function setup(
 			{ name: "acme/api", relation: "ORGANIZATION_MEMBER" },
 		],
 	});
+	const repos = options.viewRepos ?? ["acme/api"];
 	const config: HomeConfig = {
-		views: [{ name: "My PRs", repos: options.viewRepos ?? ["acme/api"] }],
+		views: [{ name: "My PRs", repos }],
 		refresh: { minutes: 2 },
 	};
 	const home = new HomeService({
@@ -187,8 +192,17 @@ async function setup(
 	});
 	await home.view();
 	await home.repo("acme", "api", { fresh: true });
+	viewsOf.set(home, repos);
 	return { home, search: new HomeSearch(home, options) };
 }
+
+/** Each setup's view repos, which a test may change (read on every view). */
+const viewsOf = new WeakMap<HomeService, string[]>();
+const viewOf = (home: HomeService) => {
+	const repos = viewsOf.get(home);
+	if (!repos) throw new Error("not a setup home");
+	return repos;
+};
 
 /** Asks until the GitHub search is in. */
 async function settle(search: HomeSearch, q: string): Promise<SearchResult> {
@@ -538,6 +552,28 @@ describe("HomeSearch, a bare number", () => {
 		});
 		const r = await search.search("1");
 		expect(r.numbered?.prs[0]?.hidden).toBe("snoozed");
+	});
+
+	it("a PR read in the background comes flagged too", async () => {
+		// Snoozed while acme/web was in the view, then the view drops it: a
+		// recent review's repo, read in the background.
+		const { home, search } = await setup([started("acme/web", T0)], {
+			viewRepos: ["acme/api", "acme/web"],
+		});
+		await home.repo("acme", "web", { fresh: true });
+		await home.annotate("acme", "web", 1, {
+			op: "snooze",
+			until: iso(T0 + 3_600_000),
+			wakeOnActivity: false,
+		});
+		viewOf(home).splice(1);
+		await home.view();
+		expect(home.knownPrs().some((f) => f.repo === "web")).toBe(false);
+		const first = await search.search("1");
+		expect(first.numbered?.pending).toBe(true);
+		const r = await settle(search, "1");
+		expect(numberedIds(r)).toEqual(["acme/api#1", "acme/web#1"]);
+		expect(r.numbered?.prs.map((p) => p.hidden)).toEqual([null, "snoozed"]);
 	});
 
 	it("a failed read ends pending, with the error", async () => {
