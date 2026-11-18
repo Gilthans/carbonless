@@ -1007,14 +1007,16 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 		.poll(() => held.hits.slice(before).some((q) => q.includes("ps=2")))
 		.toBe(true);
 	const ps2 = fileSection(page, CALC);
-	const expand = async (section: typeof ps2) => {
-		if (
-			await section.getByRole("button", { name: "Expand file" }).isVisible()
-		) {
-			await section.getByRole("button", { name: "Expand file" }).click();
-		}
-	};
-	await expand(ps2);
+	// Open, by itself (the posted thread's file opens where it lands) or
+	// by a click: whichever comes first. A bare isVisible-then-click lost
+	// the race when the file opened itself in between (the click then
+	// waited for a button that was gone).
+	const opened = row(ps2, 5);
+	const toggle = ps2.getByRole("button", { name: "Expand file" });
+	await expect(opened.or(toggle).first()).toBeVisible();
+	if (await toggle.isVisible())
+		await toggle.click({ timeout: 5000 }).catch(() => {});
+	await expect(opened).toBeVisible();
 	await expect(row(ps2, 5).getByTestId("agent-bubble")).toHaveAccessibleName(
 		"1 agent thread on line 5, 1 new",
 	);

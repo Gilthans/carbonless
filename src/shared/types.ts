@@ -694,12 +694,21 @@ export interface NewThreadRequest {
 	/** subject "line" only: the span's columns, both or neither. */
 	startCol?: number | null;
 	endCol?: number | null;
+	/**
+	 * Started from this agent conversation (its id, a lowercase ULID): once
+	 * GitHub has the thread, the conversation becomes its (agent-thread-linked).
+	 */
+	agentThread?: string;
 }
 
 /** 200: the thread as the overview read would show it (anchor with cols, code window may be null until read), and its comments. */
 export interface NewThreadAnswer {
 	thread: ReviewThread;
 	comments: ThreadComments;
+	/** The agent conversation now on this thread (the request's `agentThread`, linked). */
+	agentThread?: string;
+	/** The request's `agentThread` stayed on its span: why, in a few words. */
+	agentLinkProblem?: { thread: string; reason: string };
 }
 
 /** A verdict the reviewer can send: one submitted review (Final Verdict). */
@@ -1129,6 +1138,12 @@ export interface SessionInfo {
 	viewer: string;
 	/** Head of the snapshot being reviewed (the patch set's, once started). */
 	snapshotHead: string;
+	/**
+	 * The snapshot's merge base (its left side against the base branch).
+	 * snapshotCommits is counted over it: the page keys the count by base
+	 * and head, so a retarget asks anew.
+	 */
+	snapshotBase?: string;
 	/** The PR's head on GitHub, as last fetched or checked. */
 	currentHead: string;
 	headMoved: boolean;
@@ -1173,11 +1188,6 @@ export interface SessionInfo {
 	 * once a patch set exists (its own count stands for it).
 	 */
 	snapshotCommits?: number | null | { error: string };
-	/**
-	 * The merge base snapshotCommits is counted over, sent with it: the
-	 * page keys the count by base and head, so a retarget asks anew.
-	 */
-	snapshotBase?: string;
 	/**
 	 * The PR's head when this crb last opened the review, before this open
 	 * (the toast's "since you last looked"); null on the first open.

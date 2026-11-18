@@ -3,6 +3,7 @@ import {
 	CheckCircleIcon,
 	ChevronDownIcon,
 	ChevronUpIcon,
+	CommentIcon,
 	HistoryIcon,
 	IssueReopenedIcon,
 	SparkleFillIcon,
@@ -26,7 +27,9 @@ import {
 	type AgentStop,
 	type AgentThread,
 	type AgentView,
+	isSpanThread,
 	MAX_AGENT_TEXT,
+	type SpanAgentThread,
 	startedBy,
 } from "../../shared/agent";
 import { sessionQuery } from "../api";
@@ -40,16 +43,28 @@ import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { commentSurface } from "../threads/Conversation";
-import { newClientId } from "../threads/newThreads";
+import { useDrafts } from "../threads/drafts";
+import { NewThread } from "../threads/NewThread";
+import {
+	newClientId,
+	newThreadItems,
+	useComposers,
+} from "../threads/newThreads";
 import { Avatar, usePerson } from "../threads/people";
 import { AgentMarkdown } from "./AgentMarkdown";
+import {
+	type CommentScope,
+	useAgentComment,
+	useCommentScope,
+} from "./agentComment";
 import {
 	type AgentWrite,
 	dropAgentWrite,
 	replyAgent,
 	retryAgentWrite,
-	setReplyTyped,
+	setCardReply,
 	useAgentWrites,
+	useCardReply,
 } from "./agentWrites";
 import {
 	agentStatusQuery,
@@ -58,6 +73,9 @@ import {
 	postAgentResolved,
 	withThread,
 } from "./api";
+import { HANDLE, HANDLE_OFF } from "./handle";
+import { useLinkProblem } from "./linkProblems";
+import { useHoldComposer, usePendingComposers } from "./pendingThread";
 import { ReRow, StartedButton } from "./ReRow";
 import { openAgentSetup } from "./setupStore";
 import { useSeenWriter, useSendView } from "./threadAgent";
@@ -383,6 +401,54 @@ export function agentName(
 }
 
 /**
+ * A new GitHub thread on the conversation's span; once GitHub has it, the
+ * conversation moves behind that thread's agent button. Off, with why,
+ * where GitHub can't take a comment there.
+ */
+function CommentOnGithub(props: {
+	thread: SpanAgentThread;
+	scope: CommentScope;
+}) {
+	const { ok, start } = useAgentComment(props.thread, props.scope);
+	const tip = ok === true ? "Comment on GitHub" : ok;
+	return (
+		<Tooltip content={tip}>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					data-testid="agent-comment"
+					aria-label={
+						ok === true ? "Comment on GitHub" : `Comment on GitHub — ${ok}`
+					}
+					aria-disabled={ok !== true || undefined}
+					onClick={start}
+					className={`${HANDLE} ${HANDLE_OFF} border-line-strong text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent`}
+				>
+					<CommentIcon size={16} aria-hidden />
+				</button>
+			)}
+		</Tooltip>
+	);
+}
+
+/** The conversation didn't move onto the thread posted from it: why, on its card. */
+function LinkProblem(props: { thread: string }) {
+	const reason = useLinkProblem(props.thread);
+	if (!reason) return null;
+	return (
+		<p
+			role="alert"
+			data-testid="agent-link-problem"
+			className="flex min-w-0 items-center gap-1.5 break-words px-2.5 pt-2 text-sm text-bad"
+		>
+			<AlertIcon size={14} aria-hidden className="shrink-0" />
+			{`Posted; not moved to it: ${reason}`}
+		</p>
+	);
+}
+
+/**
  * A private thread with the reviewer's own agent: the agent's sparkle and
  * name at its head, the reviewer's messages in their tint and the agent's
  * in the agent tint, rendered as Markdown. While the agent answers it, its
@@ -391,18 +457,72 @@ export function agentName(
  * the row opens the setup). Then the reply box, and Resolve or Unresolve.
  * Resolving closes it to one row, still the agent's (its tint, edge and
  * sparkle, with the resolved check), that opens again; a resolved thread
- * starts closed, and Unresolve opens it. Nothing here reaches GitHub.
+ * starts closed, and Unresolve opens it. Comment (in Files changed, on a
+ * span conversation shown at its lines) starts a GitHub thread that takes
+ * the conversation.
  */
-export function AgentThreadCard(props: {
+export function AgentThreadCard(props: AgentCardProps) {
+	const pending = usePendingComment(props);
+	return pending ?? <AgentCard {...props} />;
+}
+
+interface AgentCardProps {
 	thread: AgentThread;
 	status: AgentStatus | undefined;
 	/** Its line isn't in this diff: shown in the file's header instead. */
 	unplaced?: boolean;
 	/** Asked on this earlier head (its commit): marked outdated. */
 	outdated?: string;
-}) {
+}
+
+/**
+ * Comment pressed on the card (a composer carrying its conversation, on
+ * the head on screen): the card is the GitHub thread it will be, in its
+ * place (NewThread with the conversation as its agent's); Cancel brings
+ * the card back. Only where Comment is offered (Files changed's diff, a
+ * card on its line); there the composer shows nowhere else
+ * (useHoldComposer).
+ */
+function usePendingComment(props: AgentCardProps): ReactNode | null {
+	const { thread } = props;
+	const scope = useCommentScope();
+	const diff = usePendingComposers();
+	const here =
+		scope !== null &&
+		diff !== null &&
+		diff.head !== undefined &&
+		isSpanThread(thread) &&
+		thread.anchor.subject !== "thread" &&
+		thread.anchor.commit === diff.head &&
+		!thread.orphaned &&
+		!props.unplaced &&
+		!props.outdated;
+	useHoldComposer(here ? thread.id : null);
+	const drafts = useDrafts();
+	const composers = useComposers();
+	if (!here || !diff) return null;
+	const item = newThreadItems(drafts, composers).find(
+		(i) => i.agentThread === thread.id && i.span.commit === diff.head,
+	);
+	if (!item) return null;
+	return (
+		<NewThread
+			item={item}
+			quote={diff.quote(item.span)}
+			lineTexts={diff.texts?.(item.span)}
+			onPosted={() => diff.onPosted?.(item)}
+			headUnsure={diff.headUnsure}
+			inCard
+			focusId={thread.id}
+		/>
+	);
+}
+
+function AgentCard(props: AgentCardProps) {
 	const { thread, status } = props;
 	const client = useQueryClient();
+	// Only where new comments show (Files changed's diff): null elsewhere.
+	const commentScope = useCommentScope();
 	const viewer =
 		useQuery({ ...sessionQuery, enabled: false }).data?.viewer ?? "you";
 	const name = agentName(thread, status);
@@ -421,6 +541,8 @@ export function AgentThreadCard(props: {
 		onMutate: (next) => {
 			setResolvedNow(next);
 			setExpanded(!next);
+			// Resolved, its reply box goes: a follow-up typed there with it.
+			if (next) setCardReply(thread.id, "");
 		},
 		onSuccess: (saved) => {
 			client.setQueryData(agentThreadsQuery.queryKey, (list) =>
@@ -566,20 +688,23 @@ export function AgentThreadCard(props: {
 						className="text-warn"
 					/>
 				)}
-				{answering && (
-					<button
-						type="button"
-						data-testid="agent-stop"
-						disabled={stop.isPending}
-						onClick={() => stop.mutate()}
-						className="ml-auto flex h-10 items-center gap-1.5 rounded-md border border-line-strong px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint"
-					>
-						<SquareFillIcon size={12} aria-hidden />
-						Stop
-					</button>
-				)}
-				{resolved && toggle}
+				<div className="ml-auto flex items-center gap-x-2">
+					{answering && (
+						<button
+							type="button"
+							data-testid="agent-stop"
+							disabled={stop.isPending}
+							onClick={() => stop.mutate()}
+							className="flex h-10 items-center gap-1.5 rounded-md border border-line-strong px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint"
+						>
+							<SquareFillIcon size={12} aria-hidden />
+							Stop
+						</button>
+					)}
+					{resolved && toggle}
+				</div>
 			</div>
+			<LinkProblem thread={thread.id} />
 			<div id={bodyId} className="space-y-2 p-2.5">
 				<AgentMessageItems
 					thread={shown}
@@ -620,6 +745,15 @@ export function AgentThreadCard(props: {
 						)}
 						{resolved ? "Unresolve" : "Resolve"}
 					</button>
+					{/* Where a GitHub thread's agent handle is: the row's right end.
+					    Asked on an earlier version, it comments there. */}
+					{commentScope &&
+						isSpanThread(thread) &&
+						thread.anchor.subject !== "thread" &&
+						!thread.orphaned &&
+						!props.unplaced && (
+							<CommentOnGithub thread={thread} scope={commentScope} />
+						)}
 				</div>
 			</div>
 		</article>
@@ -824,7 +958,10 @@ function PendingReply(props: {
 /** The box for a follow-up question; Ctrl/Cmd+Enter or Ask sends it. */
 function AgentReplyBox(props: { thread: string }) {
 	const client = useQueryClient();
-	const [text, setText] = useState("");
+	// Kept by the conversation, not the box: Comment swaps the card for the
+	// thread it will be, and Cancel brings it back with the text. Counted
+	// as typed (leaving the page asks) for as long as it is kept.
+	const [text, setText] = useCardReply(props.thread);
 	const box = useRef<HTMLTextAreaElement>(null);
 	const id = useId();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes.
@@ -834,10 +971,6 @@ function AgentReplyBox(props: { thread: string }) {
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text]);
-	// Typed and not sent: leaving the page asks (useUnsaved); not saved.
-	const typed = text.trim() !== "";
-	useEffect(() => setReplyTyped(id, typed), [id, typed]);
-	useEffect(() => () => setReplyTyped(id, false), [id]);
 	const tooLong = new TextEncoder().encode(text).length > MAX_AGENT_TEXT;
 	const view = useSendView();
 	const send = () => {

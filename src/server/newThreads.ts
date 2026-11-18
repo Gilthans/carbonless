@@ -17,6 +17,7 @@ import {
 } from "./gh.js";
 import { MARKER_ID, markerFor, parseMarker } from "./marker.js";
 import { mapComments, mapThreads, openerOf, withContent } from "./overview.js";
+import { isLowerUlid } from "./review/events.js";
 import { slugify } from "./slug.js";
 import {
 	gone,
@@ -100,6 +101,12 @@ export function newThreadProblem(req: unknown): string | null {
 	}
 	if (typeof r.commit !== "string" || !OID.test(r.commit)) {
 		return "commit must be a commit id";
+	}
+	if (
+		r.agentThread !== undefined &&
+		(typeof r.agentThread !== "string" || !isLowerUlid(r.agentThread))
+	) {
+		return "agentThread must be an agent conversation's id";
 	}
 	const lineFields = [r.startSide, r.startLine, r.side, r.line];
 	const cols = [r.startCol, r.endCol];

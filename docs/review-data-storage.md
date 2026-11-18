@@ -274,9 +274,11 @@ a reader drops what breaks them:
 - `agent-thread-resolved` must have `by: "human"` (see "Agent threads ref").
 - An `agent-thread-opened` with a `review` anchor (the review conversation)
   must have `by: "human"`.
+- `agent-thread-linked` must have `by: "human"` (see "Agent threads ref").
 - Agent events (`agent-thread-opened`, `agent-message`,
-  `agent-thread-resolved`, `agent-thread-seen`) are a human's or the agent's (`by: "ai"`), never
-  `"auto"`.
+  `agent-thread-resolved`, `agent-thread-seen`, `agent-thread-linked`) are
+  never `"auto"`; opened and message events are a human's or the agent's
+  (`by: "ai"`), resolved, seen and linked a human's only.
 
 ## Writing
 
@@ -520,6 +522,7 @@ tree, slug identities, compare-and-swap). Written by
 | `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent` (as above; a joined session's `name` is how it named itself, `version` its harness string, `via` `mcp`, and `machine`; a spawned agent's, written by its MCP `reply` too since 2026-11-13, `via` `acp` with its `agentInfo` name and version), `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the answer replies to: `reply`'s `replyTo`, or the question a stopped or failed hand-out ends; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); ai only: `head` (the OID of the checkout the answer came from; older ACP answers only, none since 2026-11-13), `suggests` (`"resolve"`), `origin` (below; an origin message has `stop: "end_turn"`, empty `activity`, no `replyTo`, and `details.key` when the agent gave one); human only: `view`; a human's carries `details.clientId` |
 | `agent-thread-resolved` | human | `thread`, `resolved` (`false` reopens) |
 | `agent-thread-seen` | human | `thread`, `upTo` (the id of the last message the reviewer has seen; a lowercase ULID) |
+| `agent-thread-linked` | human | `thread`, `github` (a GitHub thread node id, 1 to 200 characters): the reviewer posted a GitHub thread from this span conversation (its card's Comment; since 2026-11-16) |
 
 `view` is the comparison on screen when a human message was sent:
 `target` (`{patchset}` or `{head}`), `from` (`{branch: true}` or
@@ -547,7 +550,8 @@ folded from the origins on read (`startedBy`), never stored.
   refused on write and skipped on read, so nothing automatic can make an
   answer look seen. The review conversation is the reviewer's to open: an
   `agent-thread-opened` by ai with a `review` anchor is refused on write
-  and skipped on read.
+  and skipped on read. Only a human links one to a GitHub thread
+  (`agent-thread-linked`, the same rule).
 - **The review conversation** (`anchor: {subject: "review"}`, spec
   `docs/superpowers/specs/2026-11-13-review-conversation-design.md`): one
   agent conversation about the whole review, with no path or commit. At
@@ -584,6 +588,27 @@ folded from the origins on read (`startedBy`), never stored.
   seen; the store writes no `agent-thread-seen` when the thread is already
   seen up to there or later. `agent-thread-resolved` folds as ever for a
   thread anchor; whether it counts is the GitHub join's call.
+  **Links:** an `agent-thread-linked` turns a span conversation (`line` or
+  `file`) into that GitHub thread's: its anchor becomes a `thread` anchor
+  on the same span (path, commit, sides and lines; no columns), folded on
+  read, never stored as state. Its id and every message stay; later
+  openings on that GitHub thread join it as above. The fold drops a link
+  of a thread never opened, a second link of a conversation (the first
+  wins), and a link onto a GitHub thread that already has a conversation
+  (that conversation came first; the linked one stays on its span, still
+  listed). Only a human links: by ai is refused on write and skipped on
+  read. The server writes it only after GitHub has the new thread (POST
+  `threads` with `agentThread`, and on its resend, which writes nothing
+  new), and only when the posted span is the conversation's (path,
+  commit, sides and lines); a refused post links nothing, and a link the
+  server won't write leaves the conversation on its span, the answer's
+  `agentLinkProblem` saying why on its card. A draft moved to a new head
+  drops its `agentThread`. If the GitHub thread goes, the
+  conversation is an orphan on its recorded span, as any thread
+  conversation is. One event per link, measured 2026-11-16 with a
+  28-character node id: a 241-byte commit message, a 416-byte commit
+  object (uncompressed; the tree is the shared empty one). Nothing else
+  is stored: the new anchor is folded from the old one.
 - **Resends:** a human's question carries the page's `clientId` in
   `details` (informational: the fold ignores it). The store remembers the
   ones in the ref and the ones it wrote, so Ask pressed twice, or resent

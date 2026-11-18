@@ -14,11 +14,13 @@ import {
 	AgentComposer,
 	headFacts,
 } from "../agent/AgentComposer";
+import { CommentScopeProvider } from "../agent/agentComment";
 import {
 	askAgent,
 	getAgentWrites,
 	resetAgentWrites,
 } from "../agent/agentWrites";
+import { agentThreadsQuery } from "../agent/api";
 import {
 	getAgentComposers,
 	openAgentComposer,
@@ -72,6 +74,10 @@ function show(
 		headUnsure?: boolean;
 		noOverview?: boolean;
 		sending?: boolean;
+		/** Started from this agent conversation (Comment on its card). */
+		agentThread?: string;
+		/** Whether the span's lines are GitHub's diff's (the diff's CommentScope). */
+		inDiff?: boolean;
 	} = {},
 ) {
 	const client = new QueryClient({
@@ -82,18 +88,31 @@ function show(
 			writes: opts.writes ?? "on",
 		} as PrOverview);
 	}
+	// The conversation a composer carries (Comment on its card).
+	client.setQueryData(agentThreadsQuery.queryKey, {
+		threads: opts.agentThread
+			? [conversation({ id: opts.agentThread, anchor: { ...span } as never })]
+			: [],
+	});
 	const writer = threadWritesFor(client);
-	const id = openComposer(span, "cid1");
-	if (text) writer.drafts.setNew(id, targetOf(span), text);
+	const id = openComposer(span, "cid1", opts.agentThread);
+	if (text) {
+		writer.drafts.setNew(id, targetOf(span, opts.agentThread), text);
+	}
 	function Page() {
-		const open = useComposers().some((c) => c.clientId === id);
+		const composers = useComposers();
+		const open = composers.some((c) => c.clientId === id);
 		const asking = useAgentComposers();
+		const listed = newThreadItems(useDrafts(), composers).find(
+			(i) => i.clientId === id,
+		);
 		const item: NewThreadItem = {
 			clientId: id,
 			span,
 			text: writer.drafts.newThread(id)?.text ?? "",
 			sending: opts.sending ?? false,
 			focus: false,
+			...(listed?.agentThread ? { agentThread: listed.agentThread } : {}),
 		};
 		return (
 			<>
@@ -111,13 +130,41 @@ function show(
 			</>
 		);
 	}
+	const inDiff = opts.inDiff;
 	render(
 		<QueryClientProvider client={client}>
-			<Page />
+			{inDiff === undefined ? (
+				<Page />
+			) : (
+				<CommentScopeProvider value={{ headSure: true, inDiff: () => inDiff }}>
+					<Page />
+				</CommentScopeProvider>
+			)}
 		</QueryClientProvider>,
 	);
 	return { writer, id, client };
 }
+
+describe("a comment carrying an agent conversation, on lines GitHub won't take", () => {
+	const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+
+	it("says why once the page shows them, and Comment stays off", () => {
+		show(LINE, "Worth a thread", { agentThread, inDiff: false });
+		expect(screen.getByTestId("new-thread-not-here")).toHaveTextContent(
+			"GitHub only takes comments on lines in the diff",
+		);
+		expect(screen.getByTestId("new-thread-post")).toBeDisabled();
+	});
+
+	it("says nothing on lines of the diff, nor on a plain comment (the bar checked it)", () => {
+		show(LINE, "Worth a thread", { agentThread, inDiff: true });
+		expect(screen.queryByTestId("new-thread-not-here")).toBeNull();
+		expect(screen.getByTestId("new-thread-post")).toBeEnabled();
+		cleanup();
+		show(LINE, "Plain", { inDiff: false });
+		expect(screen.queryByTestId("new-thread-not-here")).toBeNull();
+	});
+});
 
 describe("NewThread's agent button", () => {
 	it("doesn't join a question still being asked on the span: a composer of its own", async () => {
@@ -169,6 +216,26 @@ describe("NewThread's agent button", () => {
 		expect(
 			screen.queryByRole("button", { name: "Ask agent instead" }),
 		).toBeNull();
+	});
+
+	it("on a comment carrying an agent conversation, that conversation's handle takes its place: it folds the panel, nothing moves, the link stays", () => {
+		const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		const { writer, id } = show(LINE, "Worth a thread", { agentThread });
+		expect(
+			screen.queryByRole("button", { name: "Ask agent instead" }),
+		).toBeNull();
+		const button = screen.getByTestId("thread-agent-button");
+		const post = screen.getByTestId("new-thread-post");
+		expect(post.parentElement?.lastElementChild).toBe(button);
+		act(() => fireEvent.click(button));
+		expect(
+			screen.getByTestId("thread-agent-panel").getAttribute("data-open"),
+		).toBe("false");
+		expect(getAgentComposers()).toEqual([]);
+		expect(writer.drafts.newThread(id)).toMatchObject({
+			text: "Worth a thread",
+			create: { agentThread },
+		});
 	});
 
 	it("is off until the overview is known", () => {
@@ -265,6 +332,8 @@ function showAsking(
 		noOverview?: boolean;
 		/** A comment draft on the span already (restored from a reload). */
 		draft?: string;
+		/** That draft carries this agent conversation. */
+		draftCarries?: string;
 	} = {},
 ) {
 	const client = new QueryClient({
@@ -276,8 +345,15 @@ function showAsking(
 			commentLeft: opts.commentLeft ?? true,
 		} as PrOverview);
 	}
+	client.setQueryData(agentThreadsQuery.queryKey, {
+		threads: opts.draftCarries
+			? [conversation({ id: opts.draftCarries, anchor: { ...span } as never })]
+			: [],
+	});
 	const writer = threadWritesFor(client);
-	if (opts.draft) writer.drafts.setNew("d1", targetOf(span), opts.draft);
+	if (opts.draft) {
+		writer.drafts.setNew("d1", targetOf(span, opts.draftCarries), opts.draft);
+	}
 	openAgentComposer(span, "aid1", text);
 	function Page() {
 		const asking = useAgentComposers();
@@ -365,6 +441,26 @@ describe("AgentComposer's comment button", () => {
 		expect(screen.getByRole("textbox", { name: "Comment" })).toHaveValue(
 			"kept\n\nand this",
 		);
+	});
+
+	it("joining a comment that carries an agent conversation keeps the link (and the conversation on it)", () => {
+		const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		const { writer } = showAsking(LINE, "and this", {
+			draft: "kept",
+			draftCarries: agentThread,
+		});
+		act(() =>
+			fireEvent.click(screen.getByRole("button", { name: "Comment instead" })),
+		);
+		expect(writer.drafts.newThread("d1")).toMatchObject({
+			text: "kept\n\nand this",
+			create: { agentThread },
+		});
+		expect(
+			screen
+				.getByTestId("new-thread")
+				.querySelector("[data-testid=thread-agent-button]"),
+		).not.toBeNull();
 	});
 
 	it("is off until the overview is known", () => {
@@ -475,5 +571,55 @@ describe("AgentComposer's comment button", () => {
 		act(() => fireEvent.click(button));
 		expect(getComposers()).toEqual([]);
 		expect(getAgentComposers()).toHaveLength(1);
+	});
+});
+
+describe("NewThread carrying an agent conversation", () => {
+	const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+	const handle = () =>
+		screen
+			.getByTestId("new-thread")
+			.querySelector<HTMLElement>("[data-testid=thread-agent-button]");
+
+	it("is the thread it will be: the conversation behind its agent handle at the row's end, its panel open; no Ask agent switch, no mark", () => {
+		show(LINE, "x", { agentThread });
+		const card = screen.getByTestId("new-thread");
+		expect(handle()?.getAttribute("aria-pressed")).toBe("true");
+		expect(
+			card
+				.querySelector("[data-testid=thread-agent-panel]")
+				?.getAttribute("data-open"),
+		).toBe("true");
+		expect(
+			card.querySelectorAll("[data-testid=agent-message-human]"),
+		).toHaveLength(2);
+		expect(
+			screen.queryByRole("button", { name: "Ask agent instead" }),
+		).toBeNull();
+		expect(screen.queryByRole("img", { name: /agent/i })).toBeNull();
+		// A plain comment: the switch, no conversation.
+		cleanup();
+		resetComposers();
+		show(LINE, "x");
+		expect(handle()).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "Ask agent instead" }),
+		).toBeTruthy();
+	});
+
+	it("also before anything is typed (the composer carries it)", () => {
+		show(LINE, "", { agentThread });
+		expect(handle()).not.toBeNull();
+	});
+
+	it("a plain composer again when a head move drops the link", () => {
+		const { writer, id } = show(LINE, "x", { agentThread });
+		expect(handle()).not.toBeNull();
+		act(() => writer.drafts.retarget(id, "head2"));
+		expect(handle()).toBeNull();
+		expect(screen.getByTestId("new-thread")).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "Ask agent instead" }),
+		).toBeTruthy();
 	});
 });

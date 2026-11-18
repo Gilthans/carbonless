@@ -8,6 +8,7 @@ import {
 	type AgentStop,
 	type AgentThread,
 	type AgentView,
+	linkedAnchor,
 	MAX_ACTIVITY_BYTES,
 	MAX_ACTIVITY_ENTRIES,
 	MAX_AGENT_ERROR,
@@ -62,12 +63,20 @@ export class UnknownAgentThreadError extends Error {
 	}
 }
 
+/**
+ * A link the store won't write (the app answers 409): the conversation is
+ * already a GitHub thread's, or that GitHub thread already has one.
+ */
+export class AgentLinkError extends Error {}
+
 const iso = (ms: number) => new Date(ms).toISOString();
 const isAgentEvent = (e: CrbEvent): e is AgentEvent =>
 	e.type === "agent-thread-opened" ||
 	e.type === "agent-message" ||
 	e.type === "agent-thread-resolved" ||
-	e.type === "agent-thread-seen";
+	e.type === "agent-thread-seen" ||
+	e.type === "agent-thread-linked";
+
 const clientIdOf = (e: CrbEvent): string | undefined => {
 	const id = e.details?.clientId;
 	return typeof id === "string" ? id : undefined;
@@ -188,6 +197,15 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 				break;
 			case "agent-thread-seen":
 				if (thread) seenUpTo.set(id, [...(seenUpTo.get(id) ?? []), e.upTo]);
+				break;
+			case "agent-thread-linked":
+				// A span conversation becomes the GitHub thread's, once; a link
+				// onto a GitHub thread that has a conversation already is
+				// dropped (the conversation stays on its span, still listed).
+				if (!thread || thread.anchor.subject === "thread") break;
+				if (byGithub.has(e.github)) break;
+				thread.anchor = linkedAnchor(thread.anchor, e.github);
+				byGithub.set(e.github, id);
 				break;
 		}
 	}
@@ -535,6 +553,46 @@ export class AgentThreadStore {
 				stampAfter(events),
 			);
 			return this.#write(events, "crb: agent thread seen", event);
+		});
+	}
+
+	/**
+	 * The reviewer started GitHub thread `github` from this span
+	 * conversation: it becomes that thread's conversation. Already linked
+	 * to it: nothing written. Refused (AgentLinkError) when the
+	 * conversation is another GitHub thread's, or `github` has one.
+	 */
+	link(thread: string, github: string): Promise<AgentThreadFold> {
+		return this.#serial(async () => {
+			const events = await this.#events();
+			const { threads } = foldWithAliases(events);
+			const current = this.#find(events, thread);
+			if (current.anchor.subject === "thread") {
+				if (current.anchor.thread === github) return current;
+				throw new AgentLinkError(
+					"This conversation is already on a GitHub thread",
+				);
+			}
+			const taken = threads.find(
+				(t) => t.anchor.subject === "thread" && t.anchor.thread === github,
+			);
+			if (taken) {
+				throw new AgentLinkError(
+					"That GitHub thread already has a conversation",
+				);
+			}
+			const event = newEvent(
+				"agent-thread-linked",
+				this.slug,
+				{ thread: current.id, github },
+				"human",
+				stampAfter(events),
+			);
+			return this.#write(
+				events,
+				"crb: agent thread linked to a GitHub thread",
+				event,
+			);
 		});
 	}
 

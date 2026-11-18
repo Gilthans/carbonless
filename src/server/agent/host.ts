@@ -38,6 +38,7 @@ import type {
 	CodeWindow,
 	Counts,
 	DiffLine,
+	DiffSide,
 	FileStatus,
 	FileView,
 	ReviewThread,
@@ -311,6 +312,32 @@ export interface SessionProgress {
 
 /** A request the agent host refuses as made (the app answers 400). */
 export class AgentRequestError extends Error {}
+
+/** A new comment's span as posted (NewThreadRequest's fields). */
+export interface PostedSpan {
+	path: string;
+	commit: string;
+	subject: "line" | "file";
+	side?: DiffSide;
+	line?: number;
+	startSide?: DiffSide;
+	startLine?: number;
+}
+
+/** Whether a conversation's span anchor is the posted span (columns aside: GitHub has none). */
+export function sameSpan(a: AgentAnchor, s: PostedSpan): boolean {
+	if (a.subject === "thread" || a.subject === "review") return false;
+	if (a.path !== s.path || a.commit !== s.commit || a.subject !== s.subject) {
+		return false;
+	}
+	if (a.subject === "file") return true;
+	return (
+		a.side === s.side &&
+		a.line === s.line &&
+		a.startSide === (s.startSide ?? s.side) &&
+		a.startLine === (s.startLine ?? s.line)
+	);
+}
 
 /**
  * A request that conflicts with what is there (the app answers 409): a
@@ -687,6 +714,32 @@ export class AgentHost {
 			}
 		}
 		const t = await this.store.setResolved(thread, resolved);
+		return this.#view(await this.#joinedOne(t));
+	}
+
+	/**
+	 * The reviewer posted GitHub thread `github` on `span` from span
+	 * conversation `thread` (POST threads' `agentThread`): the
+	 * conversation becomes that thread's (store.link). A comment on
+	 * another span than the conversation's (file, commit, sides, lines)
+	 * is refused (AgentRequestError); a resend links nothing new.
+	 */
+	async link(
+		thread: string,
+		github: string,
+		span: PostedSpan,
+	): Promise<AgentThread> {
+		const current = await this.store.find(thread);
+		// On a GitHub thread already (a resend, or another): store.link decides.
+		if (
+			current.anchor.subject !== "thread" &&
+			!sameSpan(current.anchor, span)
+		) {
+			throw new AgentRequestError(
+				"The comment is on another span than the conversation",
+			);
+		}
+		const t = await this.store.link(current.id, github);
 		return this.#view(await this.#joinedOne(t));
 	}
 
