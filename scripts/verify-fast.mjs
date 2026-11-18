@@ -217,9 +217,10 @@ const E2E_MAP = [
 		/^src\/web\/(Settings\.tsx|viewSettings\.ts)$/,
 		["settings", "invisibles", "whitespace", "sideBySide", "shortcuts"],
 	],
-	// crb's self-update: the toast, Global settings, the gear's row to it.
+	// crb's self-update: the toast, What's new, Global settings, the gear's
+	// row to it, the release notes they read.
 	[
-		/^src\/(server|shared)\/update|^src\/web\/(UpdateToast|UpdateByHand|Settings)\.tsx$|^src\/web\/settings\/|^src\/web\/home\/HomePage\.tsx$/,
+		/^src\/(server|shared)\/update|^src\/shared\/(whatsNew|releaseNotes)\.ts$|^src\/web\/(UpdateToast|UpdateCommand|UpdateByHand|WhatsNew|Settings)\.tsx$|^src\/web\/settings\/|^src\/web\/home\/HomePage\.tsx$/,
 		["update"],
 	],
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],

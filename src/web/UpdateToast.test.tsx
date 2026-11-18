@@ -152,6 +152,33 @@ function show() {
 
 const toast = () => screen.findByTestId("update-toast");
 
+/** The toast's What's new, then the modal's Update (the toast has none of its own). */
+/**
+ * clickUpdate under fake timers: the toast's button, then the modal's
+ * Update, each in its own act (never inside another: the modal must render
+ * between the two).
+ */
+function clickUpdateNow(version = "0.3.0") {
+	fireEvent.click(screen.getByTestId("update-open"));
+	// The dialog opens in an effect; read the button by its text, at once.
+	const update = screen
+		.getByTestId("whats-new")
+		.querySelector<HTMLButtonElement>("[data-testid=whats-new-footer] button");
+	if (update?.textContent !== `Update to v${version}`) {
+		throw new Error(`no Update to v${version} in What's new`);
+	}
+	fireEvent.click(update);
+}
+
+async function clickUpdate(version = "0.3.0") {
+	await userEvent.click(
+		screen.getByRole("button", { name: /^Update available/ }),
+	);
+	await userEvent.click(
+		await screen.findByRole("button", { name: `Update to v${version}` }),
+	);
+}
+
 describe("UpdateToast", () => {
 	it("nothing on offer: nothing shown", async () => {
 		const fetch = serve({
@@ -169,16 +196,26 @@ describe("UpdateToast", () => {
 		expect(fetch.posts).toEqual([]);
 	});
 
-	it("an offer: the version linking to its release, Update and a dismiss, in the toast stack", async () => {
+	it("an offer: the version, What's new (no Update of its own) and a dismiss, in the toast stack", async () => {
 		serve({ info: () => OFFER });
 		show();
 		const t = await toast();
 		expect(t.dataset.state).toBe("available");
 		expect(t.textContent).toContain("Update available");
+		expect(t.textContent).toContain("v0.3.0");
+		expect(within(t).queryByRole("link")).toBeNull();
+		// The offer itself is the one button (What's new); no Update of its own.
+		const open = within(t).getByRole("button", {
+			name: "Update available v0.3.0",
+		});
+		expect(open.dataset.testid).toBe("update-open");
 		expect(
-			screen.getByRole("link", { name: "v0.3.0" }).getAttribute("href"),
-		).toBe(OFFER.releaseUrl);
-		expect(screen.getByRole("button", { name: "Update" })).toBeTruthy();
+			within(t)
+				.getAllByRole("button")
+				.map((b) => b.getAttribute("aria-label") ?? b.textContent),
+		).toEqual(["Update available v0.3.0", "Dismiss"]);
+		await userEvent.click(open);
+		expect(screen.getByTestId("whats-new").hasAttribute("open")).toBe(true);
 		expect(screen.getByTestId("toast-stack").contains(t)).toBe(true);
 		expect(screen.queryByTestId("update-command")).toBeNull();
 	});
@@ -202,11 +239,16 @@ describe("UpdateToast", () => {
 		expect((await toast()).textContent).toContain("Update available");
 	});
 
-	it("crb can't update itself: the command to copy, no Update", async () => {
+	it("crb can't update itself: the command to copy in What's new, none in the toast, no Update", async () => {
 		serve({ info: () => ({ ...OFFER, oneClick: false }) });
 		show();
-		await toast();
-		expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
+		const t = await toast();
+		expect(within(t).queryByTestId("update-command")).toBeNull();
+		await userEvent.click(
+			screen.getByRole("button", { name: /^Update available/ }),
+		);
+		await screen.findByTestId("update-command");
+		expect(screen.queryByRole("button", { name: /^Update( to|$)/ })).toBeNull();
 		expect(screen.getByTestId("update-command").textContent).toBe(
 			OFFER.command,
 		);
@@ -244,14 +286,21 @@ describe("UpdateToast", () => {
 			});
 			show();
 			const t = await toast();
-			expect(within(t).getByTestId("update-by-hand")).toHaveTextContent(text);
+			expect(within(t).queryByTestId("update-by-hand")).toBeNull();
+			await userEvent.click(
+				within(t).getByRole("button", { name: /^Update available/ }),
+			);
+			const m = await screen.findByTestId("whats-new-footer");
+			expect(within(m).getByTestId("update-by-hand")).toHaveTextContent(text);
 			expect(
-				within(t).getByRole("link", { name: "How to set up updates" }),
+				within(m).getByRole("link", { name: "How to set up updates" }),
 			).toHaveAttribute("href", `${FAQ}#${anchor}`);
-			expect(within(t).getByTestId("update-command")).toHaveTextContent(
+			expect(within(m).getByTestId("update-command")).toHaveTextContent(
 				OFFER.command ?? "",
 			);
-			expect(within(t).queryByRole("button", { name: "Update" })).toBeNull();
+			expect(
+				within(m).queryByRole("button", { name: /^Update( to|$)/ }),
+			).toBeNull();
 			cleanup();
 			vi.unstubAllGlobals();
 		}
@@ -259,6 +308,10 @@ describe("UpdateToast", () => {
 		serve({ info: () => OFFER });
 		show();
 		await toast();
+		await userEvent.click(
+			screen.getByRole("button", { name: /^Update available/ }),
+		);
+		await screen.findByRole("button", { name: "Update to v0.3.0" });
 		expect(screen.queryByTestId("update-by-hand")).toBeNull();
 	});
 
@@ -266,6 +319,10 @@ describe("UpdateToast", () => {
 		serve({ info: () => ({ ...OFFER, oneClick: false }) });
 		show();
 		await toast();
+		await userEvent.click(
+			screen.getByRole("button", { name: /^Update available/ }),
+		);
+		await screen.findByTestId("update-command");
 		copied.ok = true;
 		copied.texts = [];
 		await userEvent.click(screen.getByRole("button", { name: "Copy command" }));
@@ -286,7 +343,7 @@ describe("UpdateToast", () => {
 		});
 		show();
 		await toast();
-		await userEvent.click(screen.getByRole("button", { name: "Update" }));
+		await clickUpdate();
 		const t = await toast();
 		await waitFor(() => expect(t.dataset.state).toBe("updating"));
 		expect(t.textContent).toContain("Updating to v0.3.0");
@@ -328,12 +385,12 @@ describe("UpdateToast", () => {
 		vi.stubGlobal("confirm", confirm);
 		show();
 		await toast();
-		await userEvent.click(screen.getByRole("button", { name: "Update" }));
+		await clickUpdate();
 		expect(confirm).toHaveBeenCalledTimes(1);
 		expect(posts).toEqual([]);
 		expect((await toast()).dataset.state).toBe("available");
 		confirm.mockReturnValue(true);
-		await userEvent.click(screen.getByRole("button", { name: "Update" }));
+		await clickUpdate();
 		expect(posts).toEqual([{ version: "0.3.0" }]);
 		version = "0.3.0";
 		// Edits made while crb was down are as unsaved as any: no reload
@@ -437,9 +494,7 @@ describe("UpdateToast", () => {
 		});
 		show();
 		await act(() => vi.advanceTimersByTimeAsync(0));
-		act(() => {
-			fireEvent.click(screen.getByRole("button", { name: "Update" }));
-		});
+		clickUpdateNow();
 		await act(() => vi.advanceTimersByTimeAsync(0));
 		expect(posts).toEqual([{ version: "0.3.0" }]);
 		// The old crb again, its install failed (never seen down).
@@ -512,9 +567,7 @@ describe("UpdateToast", () => {
 		held = undefined;
 		// The poll read "idle"; Update's answer says restarting.
 		info = { ...OFFER, state: "restarting" };
-		act(() => {
-			fireEvent.click(screen.getByRole("button", { name: "Update" }));
-		});
+		clickUpdateNow();
 		await act(() => vi.advanceTimersByTimeAsync(0));
 		await act(async () => release());
 		await act(() => vi.advanceTimersByTimeAsync(0));
@@ -553,9 +606,7 @@ describe("UpdateToast", () => {
 		});
 		show();
 		await act(() => vi.advanceTimersByTimeAsync(0));
-		act(() => {
-			fireEvent.click(screen.getByRole("button", { name: "Update" }));
-		});
+		clickUpdateNow();
 		await act(() => vi.advanceTimersByTimeAsync(0));
 		expect(posts).toEqual([{ version: "0.3.0" }]);
 		expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
@@ -582,9 +633,7 @@ describe("UpdateToast", () => {
 			});
 			show();
 			await act(() => vi.advanceTimersByTimeAsync(0));
-			act(() => {
-				fireEvent.click(screen.getByRole("button", { name: "Update" }));
-			});
+			clickUpdateNow();
 			await act(() => vi.advanceTimersByTimeAsync(0));
 			const before = asked.update;
 			await act(() => vi.advanceTimersByTimeAsync(2 * BACK_POLL_MS));
@@ -606,7 +655,7 @@ describe("UpdateToast", () => {
 		});
 		show();
 		await toast();
-		await userEvent.click(screen.getByRole("button", { name: "Update" }));
+		await clickUpdate();
 		await waitFor(async () =>
 			expect((await toast()).dataset.state).toBe("failed"),
 		);

@@ -325,24 +325,52 @@ the RC's commit as it is.
 
 Mockups: `release-notes-mockups.html`.
 
-- **Opened** from the toast's **What's new** (it replaces both the
-  version link and the toast's Update; owner decision D3), and from
-  Global settings ("Update available" row: What's new beside Update).
+- **Opened** from the toast, whose whole "Update available vX" (icon
+  and text) is one button that opens it (owner, QA 2026-11-18: "The toast
+  should be just the 'update available vxxx' text, which is more clearly a
+  button. When pressing, it shows the what's new view"): styled as a
+  button (a `line-strong` border on `pressed`, an `accent` border and
+  brighter on hover, pressed down on press), 40px, its accessible name
+  its text, tooltip "What's new in vX"; Dismiss stays beside it. It
+  replaces the version link and the toast's Update (owner decision D3).
+  Also from Global settings ("Update available" row: What's new beside
+  Update).
 - **Global settings shows the running version's notes inline** (owner,
   2026-11-18: "include the release notes in the global settings page,
-  below the version, a few lines with a 'show more' section"): under the
-  Version row, the first 3 notes of the running version (from its own
-  `dist/release-notes.json`, no network), each with its kind icon and
-  `#N`, each note's first sentence only; **Show more** (40px, a chevron
-  that turns) expands in place to every note in full and the version's
-  earlier releases kept in the file, and turns into Show less. A version
-  with no notes says "No user-facing changes"; a build without the file
-  (a local build) shows nothing there. Long notes show their first
-  sentence until expanded, in the modal too (the rest behind the same
-  in-place Show more per note).
-- **Shape**: as the agent modal, a centred `<dialog>` on a desktop
-  (`min(34rem, 100vw - 2rem)`, `surface` inside `edge`, `shadow-float`), a
-  bottom sheet on a phone (`shadow-sheet`). Escape, the backdrop and ✕
+  below the version, a few lines with a 'show more' section"), all from
+  the running build's own `dist/release-notes.json` (every released
+  version, uncapped; no network):
+  - Folded: under the Version row, the first 3 notes of the running
+    version, each with its kind icon and `#N`, each note's first sentence
+    only. Changes without notes yet (an RC) show as their line even
+    folded.
+  - **Show more** (40px, a chevron that turns) expands in place (owner,
+    QA 2026-11-18: "after pressing show more, it should show up to 5
+    older versions, each with their own 'show more' button to see their
+    full release notes, and a 'show more versions' button to load even
+    further all the way back"): the running version's notes in full, then
+    up to 5 older versions, newest first, each with its version and day,
+    its first 3 notes folded and its own Show more for all of them in
+    full; then **Show more versions**, which adds the next 5, until there
+    are no more. Show less folds it all back (to 5 again on the next
+    Show more).
+    Show more versions and Show less share one wrapping row, so they
+    never overlap.
+  - Version numbers link their GitHub release (owner, QA 2026-11-18: "The
+    version numbers on the global settings page should link to the
+    github release. No need to keep the link to the specific commit"):
+    the running version (an RC to its tag) and each older version's
+    header; the commit is gone. A local build shows its version as plain
+    text.
+  - A version with no notes says "No user-facing changes"; a build
+    without the file (a local build) shows nothing there. Long notes
+    show their first sentence until expanded, in the modal too (the rest
+    behind the same in-place Show more per note).
+- **Shape**: as the agent modal, a `<dialog>` on a desktop
+  (`min(34rem, 100vw - 2rem)`, `surface` inside `edge`, `shadow-float`),
+  near the top, so nothing moves when notes arrive (it grows downwards);
+  a bottom sheet on a phone (`shadow-sheet`), of a fixed height for the
+  same reason. Escape, the backdrop and ✕
   (40px, tooltip "Close") close it; Tab stays inside; focus goes back
   where it was. The toast stays dismissible per version as now.
 - **Header**: the download icon (`accent`), "What's new" (20px bold), the

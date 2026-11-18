@@ -18,6 +18,7 @@ import {
 	type UpdateFailure,
 	type UpdateInfo,
 } from "../../shared/update.js";
+import type { UpdateNotes } from "../../shared/whatsNew.js";
 import { cacheDir, stateDir } from "../paths.js";
 import { BOOT_ID, type BuildInfo } from "../version.js";
 import {
@@ -29,6 +30,14 @@ import {
 	restartArgs,
 	showCommand,
 } from "./install.js";
+import {
+	fetchOfferedNotes,
+	NotesCache,
+	NotesError,
+	type ParsedNotes,
+	prepareUpdateNotes,
+	runningBuildNotes,
+} from "./notes.js";
 import { checkRegistry, RegistryError, registryUrl } from "./registry.js";
 import { channelOf, isNewer } from "./semver.js";
 import { detectService, type Service } from "./service.js";
@@ -89,6 +98,14 @@ export interface UpdaterOptions {
 	 * the registry can't be asked.
 	 */
 	check?: (current: string, channel: Channel) => Promise<string | null>;
+	/**
+	 * The notes a version carries (fetchOfferedNotes); rejects with a
+	 * RegistryError. Default: the registry's, unless `check` is faked (a
+	 * test that fakes the check fakes the notes too, or has none).
+	 */
+	notes?: (version: string) => Promise<ParsedNotes>;
+	/** The running build's own notes (default: its package's file). */
+	ownNotes?: () => Promise<ParsedNotes | null>;
 	/** config.json's `updates.channel`: over the remembered one. */
 	channel?: Channel;
 	/** Where the channel is remembered (`update-channel` in the state dir). */
@@ -150,10 +167,20 @@ export class Updater {
 	#checkError: string | null = null;
 	readonly #o: UpdaterOptions;
 	readonly #now: () => Date;
+	readonly #notes: NotesCache;
 
 	constructor(options: UpdaterOptions) {
 		this.#o = options;
 		this.#now = options.now ?? (() => new Date());
+		const load =
+			options.notes ??
+			(options.check
+				? async () => {
+						throw new RegistryError("No notes in this version");
+					}
+				: (version: string) =>
+						fetchOfferedNotes(version, { registry: registryUrl(options.env) }));
+		this.#notes = new NotesCache(load);
 		// Until start() reads the remembered one: the version's own.
 		this.#channel = options.channel ?? channelOf(options.build.version);
 	}
@@ -217,6 +244,9 @@ export class Updater {
 				if (newer !== null && newer.length <= 64 && isNewer(newer, current)) {
 					this.#available = newer;
 				}
+				// Fetched when an update is found, so What's new opens with
+				// its notes in place (a failure: once more per check).
+				if (this.#available) this.#notes.afterCheck(this.#available);
 				// A failed check (or none newer) keeps what an earlier one found.
 			} finally {
 				this.#checking = null;
@@ -322,6 +352,32 @@ export class Updater {
 			checkError: this.#checkError,
 			checksOff: this.#o.enabled ? null : (this.#o.off ?? "local-build"),
 		};
+	}
+
+	/**
+	 * What's new from the running version to the one on offer, from the
+	 * notes it carries on the registry (loaded once per offered version;
+	 * `retry` loads again after a failure). UpdateRefusedError when nothing
+	 * is on offer, NotesError with the reason when the notes didn't load.
+	 */
+	async notes(retry = false): Promise<UpdateNotes> {
+		const version = this.#available;
+		if (!this.#o.enabled || !version) {
+			throw new UpdateRefusedError("No update on offer");
+		}
+		const result = await (retry
+			? this.#notes.retry(version)
+			: this.#notes.get(version));
+		if (!result.ok) throw new NotesError(result.reason);
+		const own = await (this.#o.ownNotes ?? runningBuildNotes)().catch(
+			() => null,
+		);
+		return prepareUpdateNotes(
+			this.#o.build.version,
+			version,
+			result.notes,
+			own,
+		);
 	}
 
 	/**

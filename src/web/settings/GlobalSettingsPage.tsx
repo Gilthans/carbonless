@@ -1,21 +1,25 @@
 import {
 	AlertIcon,
 	CheckCircleIcon,
+	ChevronDownIcon,
 	CircleSlashIcon,
 	DownloadIcon,
 	GitCommitIcon,
-	LinkExternalIcon,
 	PackageIcon,
 	SyncIcon,
 } from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useState } from "react";
+import type { ReleaseNote } from "../../shared/releaseNotes";
+import type { ChecksOff, UpdateInfo } from "../../shared/update";
 import {
-	type ChecksOff,
-	commitUrl,
-	type UpdateInfo,
-} from "../../shared/update";
+	compareUrl,
+	type NotesSection,
+	type OwnNotes,
+	RELEASES_URL,
+	splitNote,
+} from "../../shared/whatsNew";
 import { fetchJson } from "../api";
 import { Logo } from "../brand/Brand";
 import { RelativeTime } from "../RelativeTime";
@@ -28,6 +32,14 @@ import {
 	UPDATE_KEY,
 	useUpdateFlow,
 } from "../UpdateToast";
+import {
+	Dropped,
+	MoreToggle,
+	NoteRow,
+	Uncovered,
+	VersionHead,
+	VersionLink,
+} from "../WhatsNew";
 
 /** Why crb never checks, in a few words. */
 export const OFF_REASON: Record<ChecksOff, string> = {
@@ -128,25 +140,22 @@ function CheckResult(props: {
 					icon={<DownloadIcon className="text-accent" />}
 					label="Update available"
 				>
-					{info.releaseUrl ? (
-						<Tooltip content="What's new" describe={false}>
+					<span className="font-mono font-semibold">v{version}</span>
+					<span className="text-muted">available</span>
+					{flow && (
+						<Tooltip content={`What's new in v${version}`} describe={false}>
 							{(trigger) => (
-								<a
+								<button
+									type="button"
 									{...trigger}
-									href={info.releaseUrl ?? undefined}
-									target="_blank"
-									rel="noreferrer"
-									className="inline-flex min-h-10 items-center gap-1 font-mono text-link underline"
+									onClick={flow.whatsNew}
+									className={`${BUTTON} ml-auto`}
 								>
-									v{version}
-									<LinkExternalIcon size={12} aria-hidden />
-								</a>
+									What's new
+								</button>
 							)}
 						</Tooltip>
-					) : (
-						<span className="font-mono">v{version}</span>
 					)}
-					<span className="text-muted">available</span>
 					{info.oneClick &&
 						flow &&
 						(updating ? (
@@ -194,7 +203,163 @@ function CheckResult(props: {
 	);
 }
 
-/** The running crb: its version and commit, its channel, and updates. */
+/** The running build's own notes (its package's file, no network). */
+const ownNotesQuery = {
+	queryKey: ["release-notes"],
+	queryFn: () => fetchJson<OwnNotes>("/api/release-notes"),
+	retry: false,
+	staleTime: Number.POSITIVE_INFINITY,
+	refetchOnWindowFocus: false,
+} as const;
+
+/** How many of a version's notes show before its Show more. */
+export const NOTES_FOLDED = 3;
+/** How many earlier releases Show more opens, and Show more versions adds. */
+export const OLDER_STEP = 5;
+
+/** Notes that show more once unfolded: past NOTES_FOLDED, or a note past its first sentence. */
+const foldable = (notes: ReleaseNote[]) =>
+	notes.length > NOTES_FOLDED ||
+	notes.some((n) => splitNote(n.text).rest !== "");
+
+/**
+ * An earlier release under the running version's notes: its version and
+ * day, its first notes folded, its own Show more for all of them in full.
+ */
+function OlderVersion(props: { section: NotesSection }) {
+	const { section } = props;
+	const [open, setOpen] = useState(false);
+	const notes = open ? section.notes : section.notes.slice(0, NOTES_FOLDED);
+	return (
+		<section
+			data-testid="notes-version"
+			data-version={section.version}
+			className="border-t border-line pt-1"
+		>
+			<VersionHead section={section} linkVersion />
+			{notes.length > 0 ? (
+				<ul className="m-0 list-none p-0">
+					{notes.map((n) => (
+						<NoteRow key={`${n.id}:${n.text}`} note={n} summary={!open} />
+					))}
+				</ul>
+			) : (
+				<p className="flex min-h-10 items-center text-muted">
+					No user-facing changes
+				</p>
+			)}
+			{foldable(section.notes) && (
+				<MoreToggle open={open} onToggle={() => setOpen((o) => !o)} />
+			)}
+		</section>
+	);
+}
+
+/**
+ * The running version's notes, under Version (from its own package, no
+ * network): the first NOTES_FOLDED, first sentence each; Show more
+ * expands in place to every note in full and the earlier releases. A
+ * build without notes (a local build) shows nothing here.
+ */
+function RunningNotes() {
+	const [open, setOpen] = useState(false);
+	// How many earlier releases show once open: OLDER_STEP more per press.
+	const [shown, setShown] = useState(OLDER_STEP);
+	const own = useQuery(ownNotesQuery);
+	const box = "pl-6";
+	if (own.isPending) {
+		return (
+			<div
+				data-testid="running-notes"
+				aria-busy
+				className={`${box} space-y-2 py-1`}
+			>
+				<Spinner label="Loading the release notes" className="sr-only" />
+				<SkeletonBar className="w-64 max-w-full" />
+				<SkeletonBar className="w-52 max-w-full" />
+			</div>
+		);
+	}
+	if (own.isError) {
+		return (
+			<p
+				data-testid="running-notes"
+				role="alert"
+				className={`${box} flex min-h-10 items-center gap-2 text-warn`}
+			>
+				<AlertIcon size={16} aria-hidden className="shrink-0" />
+				Notes didn't load: {own.error.message}
+			</p>
+		);
+	}
+	const data = own.data;
+	if (!data.file || !data.running) return null;
+	const running = data.running;
+	const notes = open ? running.notes : running.notes.slice(0, NOTES_FOLDED);
+	const more = foldable(running.notes) || data.earlier.length > 0;
+	return (
+		<div data-testid="running-notes" className={`${box} min-w-0`}>
+			<Dropped count={data.dropped} />
+			{notes.length > 0 ? (
+				<ul className="m-0 list-none p-0">
+					{notes.map((n) => (
+						<NoteRow key={`${n.id}:${n.text}`} note={n} summary={!open} />
+					))}
+				</ul>
+			) : (
+				running.uncovered.length === 0 && (
+					<p className="flex min-h-10 items-center text-muted">
+						No user-facing changes
+					</p>
+				)
+			)}
+			{/* Folded too: changes without notes are never left out. */}
+			<Uncovered
+				count={running.uncovered.length}
+				href={
+					data.earlier[0]
+						? compareUrl(data.earlier[0].version, data.current)
+						: RELEASES_URL
+				}
+			/>
+			{open && (
+				<>
+					{data.earlier.slice(0, shown).map((s) => (
+						<OlderVersion key={s.version} section={s} />
+					))}
+				</>
+			)}
+			{/* One wrapping row: the two never overlap, at any width. */}
+			{(more || (open && data.earlier.length > shown)) && (
+				<div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+					{open && data.earlier.length > shown && (
+						<button
+							type="button"
+							data-testid="more-versions"
+							onClick={() => setShown((n) => n + OLDER_STEP)}
+							className="inline-flex min-h-10 items-center gap-1 rounded-md text-sm font-semibold text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+						>
+							<ChevronDownIcon size={16} aria-hidden />
+							Show more versions
+						</button>
+					)}
+					{more && (
+						<MoreToggle
+							testId="running-notes-toggle"
+							open={open}
+							onToggle={() => {
+								setOpen((o) => !o);
+								setShown(OLDER_STEP);
+							}}
+						/>
+					)}
+				</div>
+			)}
+		</div>
+	);
+}
+
+/** The running crb: its version (linking its release), its channel, and updates. */
 function VersionSection() {
 	const client = useQueryClient();
 	const flow = useUpdateFlow();
@@ -207,6 +372,7 @@ function VersionSection() {
 		retry: false,
 		refetchOnWindowFocus: false,
 	});
+	const own = useQuery(ownNotesQuery);
 	const check = useMutation({
 		mutationFn: () =>
 			fetchJson<UpdateInfo>("/api/update/check", {
@@ -239,39 +405,28 @@ function VersionSection() {
 		check.isError && info.dataUpdatedAt <= failedAt
 			? check.error.message
 			: null;
-	const commit = commitUrl(data.commit);
-	const short = data.commit.replace(/-dirty$/, "").slice(0, 7);
-	const dirty = data.commit.endsWith("-dirty") ? "-dirty" : "";
+	// A build npm served (or one with its notes: CI's) has a release on
+	// GitHub; a local build has none: its version is plain text.
+	const released =
+		data.checksOff === null ||
+		data.checksOff === "env" ||
+		data.checksOff === "config" ||
+		own.data?.file === true;
 	const how = data.install ? `${data.install} global` : null;
 	return (
 		<Section title="Version" busy={check.isPending}>
 			<Row icon={<GitCommitIcon />} label="Running" testId="version-current">
-				<span className="font-mono font-semibold">{data.current}</span>
-				<span aria-hidden className="text-faint">
-					·
-				</span>
-				{commit ? (
-					<Tooltip content="Commit on GitHub" describe={false}>
-						{(trigger) => (
-							<a
-								{...trigger}
-								href={commit}
-								target="_blank"
-								rel="noreferrer"
-								className="inline-flex min-h-10 items-center gap-1 font-mono text-link underline"
-							>
-								{short}
-								<LinkExternalIcon size={12} aria-hidden />
-							</a>
-						)}
-					</Tooltip>
+				{released ? (
+					<VersionLink
+						version={data.current}
+						testId="version-link"
+						className="font-semibold"
+					/>
 				) : (
-					<span className="font-mono text-muted">
-						{short}
-						{dirty}
-					</span>
+					<span className="font-mono font-semibold">{data.current}</span>
 				)}
 			</Row>
+			<RunningNotes />
 			<Row icon={<PackageIcon />} label="Install" testId="version-install">
 				<span>
 					channel <b className="font-mono font-semibold">{data.channel}</b>

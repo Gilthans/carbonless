@@ -7,14 +7,17 @@ export const PACKAGE = "carbonless-review";
 export const registryUrl = (env: NodeJS.ProcessEnv = process.env): string =>
 	(env.CRB_NPM_REGISTRY || "https://registry.npmjs.org").replace(/\/+$/, "");
 
-const TIMEOUT_MS = 10_000;
+export const TIMEOUT_MS = 10_000;
 /** The largest answer read. */
 const MAX_ANSWER = 64 * 1024;
 /** The longest version taken (it reaches the page and a command line). */
 const MAX_VERSION = 64;
 
 /** The body as text, or null past `max` bytes (read no further). */
-async function readCapped(res: Response, max: number): Promise<string | null> {
+export async function readCapped(
+	res: Response,
+	max: number,
+): Promise<string | null> {
 	if (Number(res.headers.get("content-length") ?? 0) > max) {
 		await res.body?.cancel().catch(() => {});
 		return null;

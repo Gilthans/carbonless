@@ -79,6 +79,12 @@ import {
 import { defaultLimits, registerTestHooks } from "./testHooks.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
 import { parseTraceparent, type Span, type Tracer, tracer } from "./trace.js";
+import {
+	NotesError,
+	type ParsedNotes,
+	prepareOwnNotes,
+	runningBuildNotes,
+} from "./update/notes.js";
 import { channelOf } from "./update/semver.js";
 import { UpdateRefusedError, type Updater } from "./update/updater.js";
 import { verdictProblem } from "./verdict.js";
@@ -126,6 +132,8 @@ export interface AppOptions {
 	tracer?: Tracer;
 	/** crb's self-update (`/api/update`); omit: no update is ever offered. */
 	updater?: Updater;
+	/** The running build's own release notes (default: its package's file). */
+	ownNotes?: () => Promise<ParsedNotes | null>;
 }
 
 /** What a server without an updater answers: nothing to offer. */
@@ -316,6 +324,7 @@ export async function buildApp(
 		}
 		if (error instanceof BadRequestError) return send(400, error.message);
 		if (error instanceof UpdateRefusedError) return send(409, error.message);
+		if (error instanceof NotesError) return send(502, error.message);
 		if (error instanceof InvalidPlacementError) {
 			return send(400, error.message);
 		}
@@ -404,6 +413,29 @@ export async function buildApp(
 		}
 		if (!options.updater) throw new UpdateRefusedError("No updates here");
 		return reply.status(202).send(await options.updater.update(body.version));
+	});
+	// What's new up to the version on offer (the toast's and Global
+	// settings' modal): loaded when the update was found, kept per version.
+	app.get("/api/update/notes", async (_request, reply) => {
+		reply.header("cache-control", "no-store");
+		if (!options.updater) throw new UpdateRefusedError("No update on offer");
+		return options.updater.notes();
+	});
+	// Retry: loads them again after a failure.
+	app.post("/api/update/notes", async (_request, reply) => {
+		reply.header("cache-control", "no-store");
+		if (!options.updater) throw new UpdateRefusedError("No update on offer");
+		return options.updater.notes(true);
+	});
+	// The running version's own notes, from its package (Global settings).
+	app.get("/api/release-notes", async () => {
+		const own = await (options.ownNotes ?? runningBuildNotes)().catch(
+			() => null,
+		);
+		return prepareOwnNotes(
+			options.updater?.info().current ?? BUILD.version,
+			own,
+		);
 	});
 	// Global settings' "Check for updates": a check now (sharing one under
 	// way), its answer the fresh info. The hourly timer keeps its times.

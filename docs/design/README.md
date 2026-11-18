@@ -607,6 +607,46 @@ config). Answering:
   Command, Leash), Activity (the thread answered or Idle, "N waiting",
   Stop current) and a red Detach (Restart too after a crash). Spec:
   `docs/superpowers/specs/2026-11-12-agent-setup-modal-design.md`.
+- **The What's new modal** (`WhatsNewModal`, `src/web/WhatsNew.tsx`):
+  opened from the update toast, whose whole "Update available vX" is one
+  button (a `line-strong` border on `pressed`, `accent` on hover, 40px; it
+  replaced the toast's version link and Update), and from Global settings' "available"
+  row (What's new beside Update). Styled as the agent modal, but a desktop
+  dialog anchored near the top (8dvh, `min(34rem, 100vw - 2rem)`), so
+  notes arriving grow it downwards and nothing moves; a bottom sheet of a
+  fixed height (86dvh) with a grab bar on a phone, for the same reason.
+  Focus starts on the title (no tooltip pops); ✕ is 40px. Header: the download icon in `accent`, "What's
+  new", the range in monospace `muted` ("v0.3.0 → v0.5.0", "rc.3 →
+  v0.4.0-rc.5"; below 400px only "→ v0.5.0"), a kept 40px spinner slot,
+  ✕. The body scrolls: a section per version, newest first (monospace
+  bold version, its release day in days, "3 days ago", the day itself on
+  hover or focus, no clock time; ↗ to its GitHub release for a release),
+  a row per note: the kind's octicon in `muted` (New, Improved, Fixed;
+  a 40px target with its name in a tooltip on hover, focus or tap; no
+  colour, a kind is no review state), the text in
+  `ink` (`code` spans as `<code>`, never HTML), `#N` in `faint` linking
+  the PR (a 40px target). A note's first sentence shows, the rest behind its own 40px
+  Show more. "No user-facing changes" in `muted`; on an RC "N more
+  changes, no notes yet" (plus icon) linking GitHub's compare view.
+  Footer, pinned: "Update to vX" (`cta`; full width, 44px on a phone),
+  which closes the modal and runs the toast's update; by hand,
+  `ByHandWhy` and the command instead. Loading: skeleton bars,
+  `aria-busy`, the spinner in its slot, Update already enabled. Failed: a
+  `warn` notice (reason; in its tooltip on a phone), Retry, ↗. Spec:
+  `docs/superpowers/specs/2026-11-16-release-notes-design.md`.
+- **Global settings' version**: the running version links its release on
+  GitHub (`releases/tag/vX.Y.Z`, an RC to its tag; `VersionLink`, 40px,
+  tooltip "Release on GitHub"), no commit beside it; a local build shows
+  its version as plain text.
+- **Global settings' release notes**: under the Version row, the running
+  version's notes from its own package (no network), the first three,
+  first sentence each; Show more (40px, chevron that turns) expands in
+  place to the running version's notes in full, then up to 5 older
+  versions (version, day, first 3 notes folded, each its own Show more),
+  then "Show more versions" adding 5 more at a time, all the way back;
+  Show less folds it all (the two on one wrapping row, never
+  overlapping). Each older version's number links its release. Nothing for a build without notes (a local
+  build).
 - **Overview**: an "Agent threads" band after the thread groups in "Is it
   ready": "N open · N waiting" (a skeleton while they load) and the chip's
   dot, or "Set up an agent" when none is; "N new" (an `accent` dot) links
@@ -728,3 +768,9 @@ earlier events" (the Load more button's style) sits above the rail.
   - Reviewed lines no longer use opacity.
   - The compact mark sits in a fixed 28px slot that fades and scales, so the tabs don't shift.
   - Find in PR: `find-mark` (`--color-find`) and `find-current` (orange, `canvas` text) paint search hits; contrast-tested like `span-mark`.
+- **What's new (CAR-201).** The update toast's version link and Update
+  became one What's new button; the modal holds the notes and Update.
+  Global settings shows the running version's notes under Version.
+- **What's new, owner QA.** The toast's "Update available vX" is one
+  button opening What's new; Global settings' Show more lists older
+  versions 5 at a time, each with its own Show more.

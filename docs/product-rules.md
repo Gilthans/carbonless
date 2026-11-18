@@ -742,3 +742,15 @@ question would be on someone else's behalf, or about a past moment.
   reviewer's press resolves, through the same GitHub write as Resolve. A
   thread conversation has no resolved state of its own: it folds and
   reopens with its GitHub thread, whoever resolves it, on GitHub too.
+
+## Release notes never gate an update
+
+What's new shows the notes of every version between the running crb and
+the one on offer (from the offered version's npm manifest, read by crb's
+server). Update works while they load and after they fail: notes are
+information, never a condition. A failure is a `warn` notice with its
+reason and Retry, never an empty list; notes crb couldn't read are
+counted ("1 note couldn't be read"), and an RC's merged changes that
+have no note yet show as "N more changes, no notes yet", never hidden.
+Note text is plain text from the registry: rendered as React text, links
+built by crb from validated PR numbers and versions only.
