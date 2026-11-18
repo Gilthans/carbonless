@@ -7,18 +7,16 @@ import {
 	DiffRemovedIcon,
 	FileRemovedIcon,
 	GitCompareIcon,
-	GrabberIcon,
 	HistoryIcon,
 	type Icon,
 	QuestionIcon,
 	VersionsIcon,
 } from "@primer/octicons-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
 	createContext,
 	type ReactNode,
-	type PointerEvent as ReactPointerEvent,
 	useCallback,
 	useContext,
 	useId,
@@ -34,17 +32,11 @@ import type {
 	DiffSide,
 	PlacementsAnswer,
 	ReviewThread,
-	ThreadAnchorRef,
 } from "../../shared/types";
 import { CentredWithHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
-import {
-	ApiError,
-	placementsQuery,
-	type RereviewTo,
-	sessionQuery,
-} from "../api";
+import { placementsQuery, type RereviewTo, sessionQuery } from "../api";
 import { Badge, BotIcon, Chip, SkeletonBar } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { useReviewId } from "../reviewId";

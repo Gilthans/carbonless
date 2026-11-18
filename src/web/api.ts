@@ -21,7 +21,6 @@ import {
 	type ReviewView,
 	type SessionInfo,
 	type StateChange,
-	type ThreadAnchorRef,
 	type ThreadComment,
 	type ThreadComments,
 	type ThreadGone,

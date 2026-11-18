@@ -458,6 +458,7 @@ export function MoveHandle(props: {
 	const [ghost, setGhost] = useState<{ x: number; y: number } | null>(null);
 	const card = () => button.current?.closest<HTMLElement>("[data-thread]");
 	// The card being moved: outlined while move mode is on for it.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `card` reads the DOM; on `mine` only.
 	useEffect(() => {
 		const el = card();
 		if (!el) return;
@@ -683,8 +684,7 @@ export function MoveBar() {
 	useEffect(() => () => endMoveMode(), []);
 	if (!current) return null;
 	const bar = (
-		<div
-			role="region"
+		<section
 			aria-label="Move thread"
 			data-testid="move-bar"
 			className="border-b border-line bg-surface shadow-header"
@@ -715,7 +715,7 @@ export function MoveBar() {
 					)}
 				</Tooltip>
 			</div>
-		</div>
+		</section>
 	);
 	return slot ? createPortal(bar, slot) : bar;
 }
