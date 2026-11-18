@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 import {
+	notifyManager,
 	QueryClient,
 	QueryClientProvider,
+	QueryObserver,
 	useQuery,
 } from "@tanstack/react-query";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AgentAnchor,
@@ -19,6 +22,7 @@ import type {
 	SessionInfo,
 } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
+import { threadFocus } from "../files/threadFocus";
 import { useDrafts } from "../threads/drafts";
 import { NewThread } from "../threads/NewThread";
 import {
@@ -30,15 +34,23 @@ import {
 import { threadWritesFor } from "../threads/threadWrites";
 import { AgentThreadCard } from "./AgentThreadCard";
 import { type CommentScope, CommentScopeProvider } from "./agentComment";
-import { resetAgentWrites } from "./agentWrites";
+import {
+	cardReplyText,
+	resetAgentWrites,
+	resetRepliesTyped,
+	useUnaskedQuestion,
+} from "./agentWrites";
 import { agentThreadsQuery } from "./api";
 import { spanOfAnchor } from "./askAgentAction";
 import { resetLinkProblems } from "./linkProblems";
 import {
+	noteLanding,
 	type PendingComposers,
 	PendingComposersProvider,
 	resetHeldComposers,
+	shownOutsideCard,
 	useHeldByCard,
+	useLandWhere,
 } from "./pendingThread";
 import { AgentHandle } from "./ThreadAgentButton";
 import { ThreadAgentContext, useThreadAgent } from "./threadAgent";
@@ -114,6 +126,9 @@ afterEach(() => {
 	resetComposers();
 	resetHeldComposers();
 	resetAgentWrites();
+	resetRepliesTyped();
+	threadFocus.reset();
+	vi.restoreAllMocks();
 	resetLinkProblems();
 	vi.unstubAllGlobals();
 });
@@ -150,8 +165,10 @@ function Line() {
 	const items = newThreadItems(useDrafts(), useComposers()).filter(
 		(i) => !held(i),
 	);
+	const dirty = useUnaskedQuestion();
 	return (
 		<>
+			<span data-testid="dirty">{String(dirty)}</span>
 			<div data-testid="threads">
 				{threads.map((t) => (
 					<GithubThread key={t.id} thread={t} />
@@ -389,5 +406,164 @@ describe("Comment turns the agent card into the thread it will be", () => {
 		);
 		expect(within(region("cards")).getByTestId("agent-thread")).toBeTruthy();
 		expect(within(region("composers")).getByTestId("new-thread")).toBeTruthy();
+	});
+});
+
+describe("fix round 1", () => {
+	const typeComment = async (text: string) => {
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Comment" }),
+			text,
+		);
+	};
+
+	it("a follow-up typed in the card's reply box survives Comment and Cancel, and keeps the page dirty meanwhile", async () => {
+		show();
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Reply to your agent" }),
+			"and v3?",
+		);
+		expect(region("dirty").textContent).toBe("true");
+		await pressComment();
+		expect(
+			screen.queryByRole("textbox", { name: "Reply to your agent" }),
+		).toBeNull();
+		expect(region("dirty").textContent).toBe("true");
+		await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(
+			screen.getByRole("textbox", { name: "Reply to your agent" }),
+		).toHaveProperty("value", "and v3?");
+		expect(region("dirty").textContent).toBe("true");
+	});
+
+	it("posted, that follow-up is in the thread's agent box (its draft), no longer the card's", async () => {
+		show();
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Reply to your agent" }),
+			"and v3?",
+		);
+		await pressComment();
+		await typeComment("Add v3?");
+		await userEvent.click(screen.getByTestId("new-thread-post"));
+		await vi.waitFor(() =>
+			expect(screen.queryByTestId("new-thread")).toBeNull(),
+		);
+		expect(cardReplyText(ID)).toBe("");
+		const { agentDraftText } = await import("./threadAgent");
+		expect(agentDraftText("T9")).toBe("and v3?");
+	});
+
+	it("posting hands over in one notify: when the draft goes, the thread list's observers already have the thread", async () => {
+		show();
+		await pressComment();
+		await typeComment("Add v3?");
+		const writer = threadWritesFor(client);
+		const seen: string[][] = [];
+		const observer = new QueryObserver<{ threads: ReviewThread[] }>(client, {
+			queryKey: THREADS_KEY,
+			enabled: false,
+		});
+		let lastSeen: string[] = [];
+		// As React's useQuery hears it: through the notify batch.
+		const unsubscribe = observer.subscribe(
+			notifyManager.batchCalls((r) => {
+				lastSeen = (r.data?.threads ?? []).map((t) => t.id);
+			}),
+		);
+		let hadDraft = true;
+		const stop = writer.drafts.subscribe(() => {
+			const has = writer.drafts.get().some((d) => d.create !== undefined);
+			if (hadDraft && !has) seen.push(lastSeen);
+			hadDraft = has;
+		});
+		await userEvent.click(screen.getByTestId("new-thread-post"));
+		await vi.waitFor(() => expect(seen).toHaveLength(1));
+		expect(seen[0]).toEqual(["T9"]);
+		stop();
+		unsubscribe();
+	});
+
+	it("the posted thread shows where the pending one was: the page scrolls by what moved above it", () => {
+		const scrollBy = vi.fn();
+		vi.stubGlobal("scrollBy", scrollBy);
+		const at = (top: number) =>
+			({
+				top,
+				bottom: top + 10,
+				left: 0,
+				right: 0,
+				width: 0,
+				height: 10,
+			}) as DOMRect;
+		function Landed(props: { top: number }) {
+			const ref = useRef<HTMLElement>(null);
+			useLandWhere(ID, ref);
+			return (
+				<section
+					ref={(el) => {
+						if (el) el.getBoundingClientRect = () => at(0);
+					}}
+				>
+					<article
+						ref={(el) => {
+							ref.current = el;
+							if (el) el.getBoundingClientRect = () => at(props.top);
+						}}
+					/>
+				</section>
+			);
+		}
+		const pending = document.createElement("section");
+		pending.getBoundingClientRect = () => at(0);
+		const box = document.createElement("article");
+		box.getBoundingClientRect = () => at(300);
+		pending.append(box);
+		document.body.append(pending);
+		noteLanding(ID, box);
+		pending.remove();
+		// Drawn 180px higher (above a thread the pending one was below).
+		render(<Landed top={120} />);
+		expect(scrollBy).toHaveBeenCalledWith(0, -180);
+		// Once: a later mount of the thread doesn't scroll.
+		cleanup();
+		render(<Landed top={50} />);
+		expect(scrollBy).toHaveBeenCalledTimes(1);
+	});
+
+	it("a link to the conversation while it is pending finds the pending thread", async () => {
+		show();
+		await pressComment();
+		act(() => {
+			threadFocus.request({ id: ID });
+		});
+		await vi.waitFor(() => expect(threadFocus.get()).toBeNull());
+	});
+
+	it("the frame fades from the card's only right after Comment, not when drawn again later", async () => {
+		show();
+		await pressComment();
+		expect(screen.getByTestId("new-thread").className).toContain(
+			"frame-from-agent",
+		);
+		cleanup();
+		// The same pending thread drawn again later (the bubble reopened).
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5000);
+		show();
+		expect(screen.getByTestId("new-thread").className).not.toContain(
+			"frame-from-agent",
+		);
+	});
+});
+
+describe("composers a card holds", () => {
+	it("one on another head than the card's shows where composers do, held or not: never nowhere", () => {
+		const held = () => true;
+		const on = (commit: string) => ({
+			agentThread: ID,
+			span: { ...spanOfAnchor(line), commit },
+		});
+		expect(shownOutsideCard(on(HEAD), HEAD, held)).toBe(false);
+		expect(shownOutsideCard(on("o".repeat(40)), HEAD, held)).toBe(true);
+		expect(shownOutsideCard(on(HEAD), HEAD, () => false)).toBe(true);
 	});
 });

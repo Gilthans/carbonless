@@ -126,7 +126,7 @@ const leave = () => {
 };
 
 describe("a follow-up typed in the reply box", () => {
-	it("makes leaving ask while it holds text: not once cleared, sent, or the card gone; nothing saved", async () => {
+	it("makes leaving ask while it holds text, the card gone or not: not once cleared or sent; nothing saved", async () => {
 		localStorage.clear();
 		fetchMock.mockImplementation(() => new Promise<Response>(() => {}));
 		const client = new QueryClient({
@@ -154,8 +154,18 @@ describe("a follow-up typed in the reply box", () => {
 		expect(leave()).toBe(false);
 		await userEvent.type(box, "One more");
 		expect(leave()).toBe(true);
-		// The card gone (its box with it): nothing left to lose.
+		// The card gone a while (its bubble closed; Comment turning it into
+		// the thread it will be): the text is kept by its conversation, so
+		// leaving still asks, and the card back has it.
 		rerender(ui(false));
+		expect(leave()).toBe(true);
+		rerender(ui(true));
+		expect(
+			screen.getByRole("textbox", { name: "Reply to your agent" }),
+		).toHaveValue("One more");
+		await userEvent.clear(
+			screen.getByRole("textbox", { name: "Reply to your agent" }),
+		);
 		expect(leave()).toBe(false);
 		expect(JSON.stringify({ ...localStorage })).not.toContain("One more");
 	});

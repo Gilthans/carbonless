@@ -11,6 +11,7 @@ import {
 	createContext,
 	createElement,
 	type ReactNode,
+	type RefObject,
 	useCallback,
 	useContext,
 	useEffect,
@@ -76,9 +77,42 @@ export function useHeldByCard(): (
 	);
 }
 
+/**
+ * Whether a new thread shows where composers do (not in a card): a card
+ * draws only one on the head shown, so one on another head always shows
+ * here, held or not; never nowhere.
+ */
+export function shownOutsideCard(
+	item: Pick<NewThreadItem, "agentThread" | "span">,
+	head: string | undefined,
+	held: (item: Pick<NewThreadItem, "agentThread">) => boolean,
+): boolean {
+	return !(item.span.commit === head && held(item));
+}
+
 /** Forgets every hold (tests). */
 export function resetHeldComposers(): void {
 	changed(new Map());
+	fromCard.clear();
+	landing.clear();
+}
+
+// --- The frame's fade: only right after Comment ---------------------------
+
+/** Conversation id → when its card's Comment was pressed. */
+const fromCard = new Map<string, number>();
+/** How long after Comment a pending thread drawn counts as the card turning into it. */
+const TURNING_MS = 1000;
+
+/** Comment pressed on conversation `id`'s card: its pending thread fades in from the card's frame. */
+export function commentedFromCard(id: string): void {
+	fromCard.set(id, Date.now());
+}
+
+/** Whether the pending thread of `id` is the card turning into it just now (not a later remount). */
+export function turnedFromCard(id: string | undefined): boolean {
+	const at = id === undefined ? undefined : fromCard.get(id);
+	return at !== undefined && Date.now() - at < TURNING_MS;
 }
 
 // --- What a composer drawn in a card needs from the diff ------------------
@@ -198,4 +232,81 @@ export function usePendingAgent(item: NewThreadItem): ThreadAgent | null {
 				: null,
 		[on, id, gone, thread, conversation, open, item.sending, toggle, close],
 	);
+}
+
+// --- Where a posted pending thread lands -----------------------------------
+
+/**
+ * Conversation id → where its pending thread was when posted: its top
+ * against its file's section (so scrolling meanwhile doesn't count).
+ */
+const landing = new Map<string, number>();
+
+const topInSection = (el: Element) =>
+	el.getBoundingClientRect().top -
+	(el.closest("section")?.getBoundingClientRect().top ?? 0);
+
+/** How long a landing is waited for before the browser's own anchoring is back. */
+const LANDING_MS = 30_000;
+let anchoringOff: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * The browser's scroll anchoring off (its own adjustment when the line's
+ * boxes change would add to useLandWhere's), until the thread lands.
+ */
+function holdAnchoring(on: boolean): void {
+	const root = document.scrollingElement as HTMLElement | null;
+	if (!root) return;
+	clearTimeout(anchoringOff);
+	anchoringOff = undefined;
+	if (on) {
+		root.style.overflowAnchor = "none";
+		anchoringOff = setTimeout(() => holdAnchoring(false), LANDING_MS);
+	} else root.style.removeProperty("overflow-anchor");
+}
+
+/** The pending thread carrying `conversation` is posted from `el`. */
+export function noteLanding(conversation: string, el: Element): void {
+	landing.set(conversation, topInSection(el));
+	holdAnchoring(true);
+}
+
+/** The page's scroller around `el`: the nearest that scrolls up and down, else the window. */
+function scrollerOf(el: Element): { scrollBy: (x: number, y: number) => void } {
+	for (let p = el.parentElement; p; p = p.parentElement) {
+		const y = getComputedStyle(p).overflowY;
+		if ((y === "auto" || y === "scroll") && p.scrollHeight > p.clientHeight) {
+			return p;
+		}
+	}
+	return window;
+}
+
+/**
+ * The GitHub thread a pending thread became (its conversation's): drawn
+ * where the line's threads go, which may be above other threads or cards
+ * the pending one was below. Before it is painted, the page scrolls by
+ * the difference, so it shows where the pending thread was and what was
+ * above it moves instead.
+ */
+export function useLandWhere(
+	conversation: string | undefined,
+	ref: RefObject<Element | null>,
+): void {
+	useLayoutEffect(() => {
+		const el = ref.current;
+		if (!conversation || !el) return;
+		const was = landing.get(conversation);
+		if (was === undefined) return;
+		landing.delete(conversation);
+		const delta = topInSection(el) - was;
+		if (Math.abs(delta) >= 1) scrollerOf(el).scrollBy(0, delta);
+		if (landing.size === 0) holdAnchoring(false);
+	}, [conversation, ref]);
+}
+
+/** Forgets where pending threads were posted from (tests). */
+export function resetLanding(): void {
+	landing.clear();
+	holdAnchoring(false);
 }

@@ -8,7 +8,7 @@
  * GitHub's writes and their unions stay closed.
  */
 import type { QueryClient } from "@tanstack/react-query";
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import type { AgentThread, AgentView } from "../../shared/agent";
 import { ApiError } from "../api";
 import type { CodeSpan } from "../files/selectionActions";
@@ -142,7 +142,38 @@ export function setReplyTyped(box: string, typed: boolean): void {
 /** Forgets every typed reply (tests). */
 export function resetRepliesTyped(): void {
 	typedReplies = new Set();
+	cardReplies = new Map();
 	for (const l of replyListeners) l();
+}
+
+// The text in a span conversation's reply box, by conversation id: it
+// outlives the card (Comment turns the card into the thread it will be;
+// Cancel brings it back with the text), and counts as typed meanwhile.
+let cardReplies: ReadonlyMap<string, string> = new Map();
+const typedKey = (conversation: string) => `card:${conversation}`;
+
+/** What is typed in conversation `id`'s card's reply box ("" for nothing). */
+export const cardReplyText = (id: string): string => cardReplies.get(id) ?? "";
+
+export function setCardReply(id: string, text: string): void {
+	if ((cardReplies.get(id) ?? "") === text) return;
+	const next = new Map(cardReplies);
+	if (text) next.set(id, text);
+	else next.delete(id);
+	cardReplies = next;
+	setReplyTyped(typedKey(id), text.trim() !== "");
+	for (const l of replyListeners) l();
+}
+
+/** A card's reply box text, kept by its conversation's id. */
+export function useCardReply(id: string): [string, (text: string) => void] {
+	const text = useSyncExternalStore(
+		subscribeReplies,
+		() => cardReplyText(id),
+		() => cardReplyText(id),
+	);
+	const set = useCallback((t: string) => setCardReply(id, t), [id]);
+	return [text, set];
 }
 
 function send(client: QueryClient, clientId: string): void {

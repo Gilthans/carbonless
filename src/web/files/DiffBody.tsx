@@ -74,6 +74,7 @@ import {
 import {
 	type PendingComposers,
 	PendingComposersProvider,
+	shownOutsideCard,
 	useHeldByCard,
 } from "../agent/pendingThread";
 import {
@@ -2436,7 +2437,9 @@ export function DiffBody(props: {
 	// in that card (pendingThread.ts), not again here.
 	const heldByCard = useHeldByCard();
 	const lineItems = mineNew.filter(
-		(i) => i.span.commit === snapshotHead && !heldByCard(i),
+		(i) =>
+			i.span.commit === snapshotHead &&
+			shownOutsideCard(i, snapshotHead, heldByCard),
 	);
 	const orphanItems = snapshotHead
 		? mineNew.filter((i) => i.span.commit !== snapshotHead)
@@ -3221,13 +3224,25 @@ export function DiffBody(props: {
 	);
 
 	// A composer drawn in its conversation's card: what this diff gives one.
-	const pendingComposers: PendingComposers = {
-		head: snapshotHead,
-		quote: quoteSpan,
-		texts: spanLineTexts,
+	// Its functions read this render's (a ref), so the value changes only
+	// with the head: the file's cards don't all re-render with the diff.
+	const latest = useRef({
+		quoteSpan,
+		spanLineTexts,
 		onPosted: composers.onPosted,
-		headUnsure: composers.headUnsure,
-	};
+	});
+	latest.current = { quoteSpan, spanLineTexts, onPosted: composers.onPosted };
+	const headUnsure = composers.headUnsure;
+	const pendingComposers = useMemo<PendingComposers>(
+		() => ({
+			head: snapshotHead,
+			quote: (span) => latest.current.quoteSpan(span),
+			texts: (span) => latest.current.spanLineTexts(span),
+			onPosted: (item) => latest.current.onPosted(item),
+			headUnsure,
+		}),
+		[snapshotHead, headUnsure],
+	);
 
 	return (
 		<CommentScopeProvider value={commentScope}>

@@ -62,8 +62,8 @@ import {
 	dropAgentWrite,
 	replyAgent,
 	retryAgentWrite,
-	setReplyTyped,
 	useAgentWrites,
+	useCardReply,
 } from "./agentWrites";
 import {
 	agentStatusQuery,
@@ -512,6 +512,7 @@ function usePendingComment(props: AgentCardProps): ReactNode | null {
 			onPosted={() => diff.onPosted?.(item)}
 			headUnsure={diff.headUnsure}
 			inCard
+			focusId={thread.id}
 		/>
 	);
 }
@@ -954,7 +955,10 @@ function PendingReply(props: {
 /** The box for a follow-up question; Ctrl/Cmd+Enter or Ask sends it. */
 function AgentReplyBox(props: { thread: string }) {
 	const client = useQueryClient();
-	const [text, setText] = useState("");
+	// Kept by the conversation, not the box: Comment swaps the card for the
+	// thread it will be, and Cancel brings it back with the text. Counted
+	// as typed (leaving the page asks) for as long as it is kept.
+	const [text, setText] = useCardReply(props.thread);
 	const box = useRef<HTMLTextAreaElement>(null);
 	const id = useId();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes.
@@ -964,10 +968,6 @@ function AgentReplyBox(props: { thread: string }) {
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text]);
-	// Typed and not sent: leaving the page asks (useUnsaved); not saved.
-	const typed = text.trim() !== "";
-	useEffect(() => setReplyTyped(id, typed), [id, typed]);
-	useEffect(() => () => setReplyTyped(id, false), [id]);
 	const tooLong = new TextEncoder().encode(text).length > MAX_AGENT_TEXT;
 	const view = useSendView();
 	const send = () => {

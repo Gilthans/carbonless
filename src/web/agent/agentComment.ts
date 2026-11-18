@@ -27,6 +27,7 @@ import {
 import { useThreadWriter } from "../threads/threadWrites";
 import { spanOfAnchor } from "./askAgentAction";
 import { clearLinkProblem } from "./linkProblems";
+import { commentedFromCard } from "./pendingThread";
 import { useSendView } from "./threadAgent";
 
 /**
@@ -276,6 +277,7 @@ export function useAgentComment(
 		start: () => {
 			if (ok !== true) return;
 			clearLinkProblem(thread.id);
+			commentedFromCard(thread.id);
 			// Asked on another version than the one on screen: the page goes
 			// there, where its lines are, and the comment is written (and
 			// posted) on it, as any comment on that version is.

@@ -11,13 +11,18 @@ import {
 	type ReactNode,
 	useLayoutEffect,
 	useRef,
+	useState,
 } from "react";
 import { MAX_REPLY } from "../../shared/types";
 import { useCommentScope } from "../agent/agentComment";
 import { agentAsking } from "../agent/agentWrites";
 import { askAgentAvailable, openAgentComposer } from "../agent/askAgentAction";
 import { ASK_HANDLE, HANDLE, HANDLE_OFF } from "../agent/handle";
-import { usePendingAgent } from "../agent/pendingThread";
+import {
+	noteLanding,
+	turnedFromCard,
+	usePendingAgent,
+} from "../agent/pendingThread";
 import { AgentHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext } from "../agent/threadAgent";
@@ -27,6 +32,7 @@ import {
 	commentAvailable,
 	describeSpan,
 } from "../files/selectionActions";
+import { useFocusCard } from "../files/threadFocus";
 import { LabeledIcon } from "../overview/parts";
 import { Tooltip } from "../Tooltip";
 import { safeHref } from "../ui";
@@ -115,6 +121,8 @@ export function NewThread(props: {
 	headUnsure?: boolean;
 	/** Drawn in place of its agent conversation's card (Comment on it). */
 	inCard?: boolean;
+	/** The card's id for links to it (threadFocus): they find it here meanwhile. */
+	focusId?: string;
 }) {
 	const { item } = props;
 	const { clientId, span } = item;
@@ -160,9 +168,19 @@ export function NewThread(props: {
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [item.text, item.sending]);
+	// Links to the conversation it carries find it while it is pending.
+	useFocusCard(props.focusId, card);
+	// The card's frame becomes the thread's: right after Comment only.
+	const [fade] = useState(
+		() => props.inCard === true && turnedFromCard(item.agentThread),
+	);
 	const post = () => {
 		const now = writer.drafts.newThread(clientId);
 		if (!now?.text.trim() || notHere !== true) return;
+		// Its thread lands where it is now (useLandWhere).
+		if (item.agentThread && card.current) {
+			noteLanding(item.agentThread, card.current);
+		}
 		writer.createThread(clientId);
 		closeComposer(clientId);
 		props.onPosted?.();
@@ -336,7 +354,7 @@ export function NewThread(props: {
 			data-agent-thread={agent ? item.agentThread : undefined}
 			// Carrying a conversation, as wide as its card was and its thread
 			// will be; else a line comment keeps a readable width.
-			className={`min-w-0 ${span.subject === "file" || agent ? "" : "max-w-[40rem]"} ${props.inCard ? "frame-from-agent" : ""} overflow-hidden rounded-lg border border-edge bg-surface`}
+			className={`min-w-0 ${span.subject === "file" || agent ? "" : "max-w-[40rem]"} ${fade ? "frame-from-agent" : ""} overflow-hidden rounded-lg border border-edge bg-surface`}
 		>
 			<div className="flex min-h-8 min-w-0 items-center gap-2 border-b border-line bg-band px-2.5 py-1 text-xs">
 				{props.quote && (
