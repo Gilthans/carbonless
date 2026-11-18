@@ -140,6 +140,22 @@ describe("parseOpenInput", () => {
 		});
 		expect(parseOpenInput("  con ")).toEqual({ kind: "text", text: "con" });
 	});
+
+	it("a bare number, with or without #, is a number; 0 or 10 digits stay text", () => {
+		for (const q of ["123", "#123", "  123 ", " #123"]) {
+			expect(parseOpenInput(q), q).toEqual({
+				kind: "number",
+				number: 123,
+				text: q.trim(),
+			});
+		}
+		expect(parseOpenInput("0")).toEqual({ kind: "text", text: "0" });
+		expect(parseOpenInput("1234567890")).toMatchObject({ kind: "text" });
+		expect(parseOpenInput("#12a")).toMatchObject({ kind: "text" });
+		// The kinds that open at once are unchanged.
+		expect(parseOpenInput("acme/api#123")).toMatchObject({ kind: "pr" });
+		expect(parseOpenInput("acme/api 123")).toMatchObject({ kind: "pr" });
+	});
 });
 
 describe("OpenBox", () => {
@@ -354,6 +370,70 @@ describe("OpenBox", () => {
 			"aria-activedescendant",
 			within(prs).getByRole("option").id,
 		);
+	});
+
+	it("a bare number lists that PR per repo under its own heading, first; Enter opens the first", async () => {
+		const api = setup(() => ({
+			repos: [],
+			prs: [pr("acme/api", 9, "Bump to 123")],
+			scope: null,
+			numbered: {
+				number: 123,
+				prs: [
+					pr("acme/api", 123, "Side diff"),
+					pr("acme/web", 123, "Dark mode", { state: "MERGED" }),
+				],
+				pending: false,
+			},
+			pending: false,
+			reposPending: false,
+		}));
+		await userEvent.type(box(), "#123");
+		const list = await screen.findByRole("listbox");
+		const groups = within(list).getAllByRole("group");
+		expect(groups).toHaveLength(2);
+		const numbered = within(list).getByRole("group", { name: "#123" });
+		expect(groups[0]).toBe(numbered);
+		const rows = within(numbered).getAllByRole("option");
+		expect(rows.map((r) => r.textContent)).toEqual([
+			expect.stringContaining("acme/apiSide diff"),
+			expect.stringContaining("acme/webDark mode"),
+		]);
+		within(list).getByRole("group", { name: "Pull requests" });
+		expect(box()).toHaveAttribute("aria-activedescendant", rows[0]?.id);
+		await userEvent.keyboard("{Enter}");
+		expect(goTo).toHaveBeenLastCalledWith("/pr/acme/api/123");
+		await userEvent.keyboard("{ArrowDown}{Enter}");
+		expect(goTo).toHaveBeenLastCalledWith("/pr/acme/web/123");
+		expect(searches(api)).toContain("#123");
+	});
+
+	it("a bare number's group spins while its PRs are read, never empty", async () => {
+		let calls = 0;
+		setup(() => {
+			calls++;
+			const loading = calls === 1;
+			return {
+				repos: [],
+				prs: [],
+				scope: null,
+				numbered: {
+					number: 7,
+					prs: loading ? [] : [pr("acme/web", 7, "Found later")],
+					pending: loading,
+				},
+				pending: loading,
+				reposPending: false,
+			};
+		});
+		await userEvent.type(box(), "7");
+		const list = await screen.findByRole("listbox");
+		const group = within(list).getByRole("group", { name: "#7" });
+		expect(group).toHaveAttribute("aria-busy", "true");
+		expect(group.querySelector(".animate-spin")).not.toBeNull();
+		expect(screen.queryByTestId("suggestions-empty")).toBeNull();
+		await within(group).findByText("Found later", undefined, { timeout: 3000 });
+		expect(group).toHaveAttribute("aria-busy", "false");
 	});
 
 	it("/ focuses the box and Escape closes the list", async () => {
