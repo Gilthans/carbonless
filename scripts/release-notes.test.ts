@@ -617,6 +617,85 @@ describe("against a repository", {
 			expect(shipped[1]?.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 		});
 
+		it("dist/release-notes.json keeps every released version (over 10) while crbReleaseNotes stays capped; a list left for another commit is ignored", () => {
+			const tsx = join(import.meta.dirname, "../node_modules/.bin/tsx");
+			const setVersion = (v: string) =>
+				execFileSync(
+					tsx,
+					[join(import.meta.dirname, "release.ts"), "ci:set-version", v, repo],
+					{ encoding: "utf8" },
+				);
+			commit("Build info (no PR)", {
+				"scripts/build-info.mjs": readFileSync(
+					join(import.meta.dirname, "build-info.mjs"),
+					"utf8",
+				),
+				".gitignore": "dist/\n",
+			});
+			// 0.4.0 to 0.15.0 released, each with its notes: 12 versions, and
+			// 0.3.0 before them without a file.
+			for (let minor = 4; minor <= 15; minor++) {
+				const v = `0.${minor}.0`;
+				commit(`Feature ${minor} (CAR-${minor}) (#${minor})`);
+				commit(`notes: ${v} (#${100 + minor})`, {
+					[`release-notes/${v}.json`]: notesFile({
+						version: v,
+						date: `2026-01-${String(minor).padStart(2, "0")}`,
+						notes: [
+							{
+								id: `CAR-${minor}`,
+								kind: "new",
+								prs: [minor],
+								text: `Feature ${minor}.`,
+							},
+						],
+					}),
+				});
+				git("tag", `v${v}`);
+			}
+			commit("notes: 0.16.0 (#200)", {
+				"release-notes/0.16.0.json": notesFile({ version: "0.16.0" }),
+			});
+			setVersion("0.16.0-rc.1");
+			const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+			const field = pkg.crbReleaseNotes as ShippedReleaseNotes[];
+			expect(field.map((e) => e.version)).toEqual([
+				"0.16.0",
+				...Array.from({ length: 9 }, (_, i) => `0.${15 - i}.0`),
+			]);
+			expect(git("status", "--porcelain")).toBe("");
+			execFileSync("node", ["scripts/build-info.mjs"], { cwd: repo });
+			const dist = (): ShippedReleaseNotes[] =>
+				JSON.parse(readFileSync(join(repo, "dist/release-notes.json"), "utf8"));
+			const all = [
+				"0.16.0",
+				...Array.from({ length: 12 }, (_, i) => `0.${15 - i}.0`),
+			];
+			expect(dist().map((e) => e.version)).toEqual(all);
+			expect(dist()[12]).toEqual({
+				version: "0.4.0",
+				date: "2026-01-04",
+				notes: [{ id: "CAR-4", kind: "new", prs: [4], text: "Feature 4." }],
+			});
+			expect(dist().slice(0, 10)).toEqual(field);
+			// The list is for that version and commit: a build of another
+			// commit (the field set by hand here) falls back to the field.
+			git("update-index", "--no-skip-worktree", "package.json");
+			git("checkout", "--", "package.json");
+			commit("Later (CAR-300) (#300)");
+			writeFileSync(
+				join(repo, "package.json"),
+				JSON.stringify({
+					name: "carbonless-review",
+					version: "0.16.0-rc.1",
+					crbReleaseNotes: field,
+				}),
+			);
+			git("update-index", "--skip-worktree", "package.json");
+			execFileSync("node", ["scripts/build-info.mjs"], { cwd: repo });
+			expect(dist()).toEqual(field);
+		});
+
 		it("ci:set-version writes crbReleaseNotes and the build copies it to dist/release-notes.json; the tree stays clean", () => {
 			commit("Build info (no PR)", {
 				"scripts/build-info.mjs": readFileSync(

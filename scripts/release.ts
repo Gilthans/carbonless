@@ -88,8 +88,11 @@ import {
 import { localCommand } from "./release-local.js";
 import {
 	auditNotes,
+	capLocal,
+	capShipped,
 	formatNotesFile,
 	type Linear,
+	LOCAL_NOTES_GIT_PATH,
 	linearClient,
 	linearKey,
 	noLinearKey,
@@ -218,15 +221,27 @@ async function setVersion(version: string, dir: string) {
 	// told from a master build of the same version (`crb --version` shows the
 	// commit, and a machine following npm can compare it).
 	const head = git("rev-parse", "HEAD").trim();
-	// The release notes it ships (CAR-192): npm keeps the field in the
-	// version's manifest, and the build copies it to dist/release-notes.json.
+	// The release notes it ships (CAR-192): npm keeps the field, capped, in
+	// the version's manifest; the build (scripts/build-info.mjs) writes
+	// every version into dist/release-notes.json from the git dir's file.
 	const notes = await shippedNotes(io, version, dir);
 	writeFileSync(
 		file,
 		withReleaseNotes(
 			withGitHead(withVersion(readFileSync(file, "utf8"), version), head),
-			notes,
+			capShipped(notes),
 		),
+	);
+	const local = git(
+		"rev-parse",
+		"--path-format=absolute",
+		"--git-path",
+		LOCAL_NOTES_GIT_PATH,
+	).trim();
+	// For this version and commit only: build-info.mjs ignores it otherwise.
+	writeFileSync(
+		local,
+		`${JSON.stringify({ version, commit: head, notes: capLocal(notes) })}\n`,
 	);
 	git("update-index", "--skip-worktree", "package.json");
 	const dirty = git("status", "--porcelain");

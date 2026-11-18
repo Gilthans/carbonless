@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
 	compareReleaseVersions,
+	MAX_LOCAL_BYTES,
 	MAX_SHIPPED_BYTES,
 	MAX_SHIPPED_VERSIONS,
 	NOTE_KINDS,
@@ -463,29 +464,52 @@ export async function notesCheck(
 }
 
 // ---------------------------------------------------------------------------
-// What ships: crbReleaseNotes in package.json, dist/release-notes.json.
+// What ships: crbReleaseNotes in package.json (capped, for npm's
+// manifest), dist/release-notes.json (every version, local).
 
-/** Newest first, at most MAX_SHIPPED_VERSIONS and MAX_SHIPPED_BYTES (oldest dropped first). */
-export function capShipped(
+/** Newest first, the oldest dropped while over `maxBytes`; refused when the newest alone is. */
+function capBytes(
 	entries: ShippedReleaseNotes[],
+	maxBytes: number,
 ): ShippedReleaseNotes[] {
-	const out = entries.slice(0, MAX_SHIPPED_VERSIONS);
+	const out = [...entries];
 	const size = () => Buffer.byteLength(JSON.stringify(out));
-	while (out.length > 1 && size() > MAX_SHIPPED_BYTES) out.pop();
-	if (size() > MAX_SHIPPED_BYTES) {
+	while (out.length > 1 && size() > maxBytes) out.pop();
+	if (size() > maxBytes) {
 		throw new Error(
-			`${out[0]?.version}'s notes alone are ${size()} bytes, over ${MAX_SHIPPED_BYTES}`,
+			`${out[0]?.version}'s notes alone are ${size()} bytes, over ${maxBytes}`,
 		);
 	}
 	return out;
 }
 
+/** crbReleaseNotes: newest first, at most MAX_SHIPPED_VERSIONS and MAX_SHIPPED_BYTES (oldest dropped first). */
+export function capShipped(
+	entries: ShippedReleaseNotes[],
+): ShippedReleaseNotes[] {
+	return capBytes(entries.slice(0, MAX_SHIPPED_VERSIONS), MAX_SHIPPED_BYTES);
+}
+
+/** dist/release-notes.json: every version, newest first, within MAX_LOCAL_BYTES. */
+export function capLocal(
+	entries: ShippedReleaseNotes[],
+): ShippedReleaseNotes[] {
+	return capBytes(entries, MAX_LOCAL_BYTES);
+}
+
+/**
+ * Where ci:set-version leaves the full list for the build
+ * (scripts/build-info.mjs): in the checkout's own git dir, so the tree
+ * stays clean and nothing of it reaches the package's manifest.
+ */
+export const LOCAL_NOTES_GIT_PATH = "crb-release-notes.json";
+
 /**
  * The notes a build of `version` (X.Y.Z-rc.N or X.Y.Z) at `dir`'s HEAD
- * ships: its release's notes (dated today for a release, undated for an
- * RC, which also lists the range's PRs no note covers yet) and the
- * earlier released versions' (dated by their file, else their tag),
- * newest first, capped.
+ * ships: its release's notes (undated; an RC also lists the range's PRs
+ * no note covers yet) and every earlier released version's (dated by
+ * their file, else their tag), newest first, uncapped: `capShipped` for
+ * the manifest, `capLocal` for dist.
  */
 export async function shippedNotes(
 	io: Io,
@@ -539,7 +563,7 @@ export async function shippedNotes(
 		}
 		entries.push({ version: f.version, date, notes: f.notes });
 	}
-	return capShipped(entries);
+	return entries;
 }
 
 /** package.json's text with `crbReleaseNotes` set (re-serialized with tabs). */

@@ -248,10 +248,15 @@ the RC's commit as it is.
 - **In the package, two places** (both written by the build from the
   `release-notes/*.json` at that commit, so an RC and its release carry
   the same notes):
-  - `dist/release-notes.json`: this version and earlier releases, newest
-    first. crb reads its own from here (Global settings), offline.
-  - **A field in `package.json`**, `crbReleaseNotes`, with the same data
-    capped at the last 10 versions and 64 KB (oldest dropped first; the
+  - `dist/release-notes.json`: this version and every earlier release,
+    newest first, with no version cap (owner, 2026-11-18: Global settings
+    pages back through every older release, "all the way back"; local, so
+    size is no concern; a 1 MB backstop). crb reads its own from here
+    (Global settings), offline. `ci:set-version` leaves the full list in
+    the checkout's git dir for the build, so it never reaches npm's
+    manifest.
+  - **A field in `package.json`**, `crbReleaseNotes`, with the newest of
+    that data capped at the last 10 versions and 64 KB (oldest dropped first; the
     build fails if this version alone is over). `ci:set-version`, which
     already sets `version` and `gitHead` in the runner's checkout, writes
     it. npm keeps unknown `package.json` fields in each version's manifest
@@ -426,7 +431,8 @@ Unit (Vitest):
 - `pnpm release notes`: file written from faked Linear answers; missing
   notes listed; never a Linear write (the fake fails on any mutation).
 - Build: `dist/release-notes.json` and the `package.json` field written,
-  capped at 10 versions and 32 KB, oldest dropped; `uncovered` on an RC.
+  `crbReleaseNotes` capped at 10 versions and 64 KB, oldest dropped,
+  `dist/release-notes.json` every version; `uncovered` on an RC.
 - `renderChangelog` from a notes file: groups, the PR list, "No
   user-facing changes"; older sections kept.
 - `scripts/release.test.ts`: no workflow gains a secret (a Linear key or

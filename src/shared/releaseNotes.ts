@@ -5,10 +5,13 @@
  * - `release-notes/X.Y.Z.json` (committed, one per version):
  *   `ReleaseNotesFile`.
  * - `dist/release-notes.json` (built): `ShippedReleaseNotes[]`, this
- *   version and the earlier releases, newest first.
+ *   version and every earlier release, newest first, with no version cap
+ *   (local: Global settings pages back through all of them), bounded only
+ *   by `MAX_LOCAL_BYTES`.
  * - `crbReleaseNotes` in the packed `package.json` (so in npm's manifest
- *   of each version): the same list capped at `MAX_SHIPPED_VERSIONS`
- *   versions and `MAX_SHIPPED_BYTES` of JSON.
+ *   of each version, which a running crb fetches): the same list's newest
+ *   part, capped at `MAX_SHIPPED_VERSIONS` versions and
+ *   `MAX_SHIPPED_BYTES` of JSON.
  *
  * Everything read from a file, the registry or Linear is untrusted:
  * `noteTextProblems` is the text rule, `parseShippedReleaseNotes` the
@@ -27,6 +30,8 @@ export const MAX_NONE_WHY_CHARS = 120;
 export const MAX_SHIPPED_VERSIONS = 10;
 /** ... and at most this many bytes of JSON (oldest versions dropped first). */
 export const MAX_SHIPPED_BYTES = 64 * 1024;
+/** `dist/release-notes.json`: every version, up to this many bytes (a generous backstop). */
+export const MAX_LOCAL_BYTES = 1024 * 1024;
 
 /** One user-facing note: a ticket's (`CAR-183`) or a ticket-less PR's (`#125`). */
 export interface ReleaseNote {
@@ -316,7 +321,7 @@ export function parseShippedReleaseNotes(
 	if (!Array.isArray(value)) return null;
 	const entries: ShippedReleaseNotes[] = [];
 	let dropped = 0;
-	for (const e of value.slice(0, 100)) {
+	for (const e of value.slice(0, 2000)) {
 		if (
 			!isRecord(e) ||
 			typeof e.version !== "string" ||

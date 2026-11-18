@@ -195,14 +195,21 @@ alone.
   ticket-less PR of the release (and, with a Linear key, warns when Linear
   changed since the file was written); `promote-check` checks the same,
   in CI, with no token (`release.ts ci:notes-check`).
-- **What ships:** `ci:set-version` writes the notes into the runner's
-  `package.json` as `crbReleaseNotes`: this version's (undated; on an RC
-  with `uncovered`, the range's PRs no note covers yet) and the earlier
-  released versions', dated, newest first, at most 10
-  versions and 64 KB (oldest dropped first; the build fails if this
-  version alone is over). npm keeps the field in each version's manifest
-  (`npm view carbonless-review@<v> crbReleaseNotes`), and the build copies
-  it to `dist/release-notes.json`. A local build has neither.
+- **What ships:** `ci:set-version` gathers this version's notes (undated;
+  on an RC with `uncovered`, the range's PRs no note covers yet) and every
+  earlier released version's, dated, newest first, into two lists:
+  - `crbReleaseNotes` in the runner's `package.json`, capped at 10
+    versions and 64 KB (oldest dropped first; the build fails if this
+    version alone is over). npm keeps the field in each version's manifest
+    (`npm view carbonless-review@<v> crbReleaseNotes`): what a running crb
+    fetches to show a newer version's notes.
+  - Every version, uncapped (a 1 MB backstop), in the checkout's git dir
+    (`crb-release-notes.json`, for that version and commit, so the tree
+    stays clean and npm's manifest stays small); the build
+    (`scripts/build-info.mjs`) writes it to `dist/release-notes.json`,
+    which Global settings pages back through, all the way back. Without
+    it, the build uses the field.
+  A local build has neither.
 - **One date per release:** the day it is published. release-finish
   writes it into `docs/changelog.md` and `release-notes/X.Y.Z.json` (in
   the "next" PR), and every later build ships it from there (a file that
