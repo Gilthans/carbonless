@@ -32,7 +32,11 @@ import { AgentComposer, headFacts } from "../agent/AgentComposer";
 import { onHeadMove } from "../agent/agentComment";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
-import { PendingPosted, useHeldByCard } from "../agent/pendingThread";
+import {
+	PendingPosted,
+	shownOutsideCard,
+	useHeldByCard,
+} from "../agent/pendingThread";
 import {
 	agentWaiting,
 	shownAgentPlaceables,
@@ -949,7 +953,10 @@ export function FileDiff(props: {
 	// One carrying an agent conversation whose card is on screen: drawn in
 	// that card (pendingThread.ts), not again here.
 	const heldByCard = useHeldByCard();
-	const shownFileItems = fileItems.filter((i) => !heldByCard(i));
+	// As DiffBody's: only one on the head shown (the one a card draws).
+	const shownFileItems = fileItems.filter((i) =>
+		shownOutsideCard(i, snapshotHead, heldByCard),
+	);
 	const writer = useThreadWriter();
 	// The head moved under a file comment being written: it moves along (a
 	// file comment doesn't depend on lines); one only opened just closes.

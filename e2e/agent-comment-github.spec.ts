@@ -1,6 +1,16 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
-import { ask, CALC, expect, fixture, openFile, row, test } from "./agent-ui";
+import {
+	ask,
+	bar,
+	CALC,
+	expect,
+	fixture,
+	openFile,
+	row,
+	selectText,
+	test,
+} from "./agent-ui";
 import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
 
 // Its own crb serve: the agent's config, its fake ACP env and checkouts.
@@ -26,6 +36,39 @@ async function openConversation(thread: Locator) {
 	await expect(panel).toHaveAttribute("data-open", "true");
 	return panel;
 }
+
+const BOXES =
+	'[data-testid="agent-thread"], [data-testid="new-thread"], [data-testid="files-thread"]';
+
+/**
+ * Records the fewest thread boxes `section` holds at any DOM change from
+ * now (each commit, before it is painted) until minBoxes reads it.
+ */
+const watchBoxes = (section: Locator) =>
+	section.evaluate((el, sel) => {
+		const w = window as unknown as {
+			__minBoxes: number;
+			__boxes?: MutationObserver;
+		};
+		const count = () => el.querySelectorAll(sel).length;
+		w.__boxes?.disconnect();
+		w.__minBoxes = count();
+		w.__boxes = new MutationObserver(() => {
+			w.__minBoxes = Math.min(w.__minBoxes, count());
+		});
+		w.__boxes.observe(el, { childList: true, subtree: true });
+	}, BOXES);
+const minBoxes = (section: Locator) =>
+	section.evaluate(() => {
+		const w = window as unknown as {
+			__minBoxes: number;
+			__boxes?: MutationObserver;
+		};
+		w.__boxes?.disconnect();
+		return w.__minBoxes;
+	});
+const viewportTop = async (l: Locator) =>
+	(await l.boundingBox())?.y ?? Number.NaN;
 
 /** Asks about the whole of `path` through the API (no page entry for it yet). */
 async function askOnFile(
@@ -117,11 +160,14 @@ test("Comment on a line's conversation: Cancel keeps it; posted, the GitHub thre
 	await box.fill("Shouldn't total add v3 too?");
 	if (isMobile) await expectNoPageOverflow(page);
 	const pendingTop = await top(composer);
+	// Never a moment with no box on the line while it is handed over.
+	await watchBoxes(section);
 	await composer.getByTestId("new-thread-post").click();
 	const thread = section
 		.getByTestId("files-thread")
 		.filter({ hasText: "Shouldn't total add v3 too?" });
 	await expect(thread).toBeVisible();
+	expect(await minBoxes(section)).toBe(1);
 	await expect(section.getByTestId("agent-thread")).toHaveCount(0);
 	await expect(boxes).toHaveCount(1);
 	expect(Math.abs((await top(thread)) - pendingTop)).toBeLessThan(4);
@@ -199,6 +245,102 @@ test("Comment on a whole file's conversation: posted on the file, the conversati
 	await expect(
 		(await openConversation(thread)).getByTestId("agent-message-human"),
 	).toHaveText(["Is this file needed?"]);
+});
+
+/**
+ * Comment on a card, type, post: the GitHub thread shows where the pending
+ * one was on screen, though the line lists it first (above what was above
+ * the pending thread), and no box on the line ever goes missing.
+ */
+async function postInPlace(page: Page, section: Locator, card: Locator) {
+	await card.getByRole("button", { name: "Comment on GitHub" }).click();
+	const composer = section.getByTestId("new-thread");
+	const box = composer.getByRole("textbox", { name: "Comment" });
+	await expect(box).toBeFocused();
+	await box.fill("Posted from the card");
+	const before = await section.locator(BOXES).count();
+	const pendingTop = await viewportTop(composer);
+	await watchBoxes(section);
+	// From the keyboard: a click would scroll the button into view first.
+	await box.press("Control+Enter");
+	const thread = section
+		.getByTestId("files-thread")
+		.filter({ hasText: "Posted from the card" });
+	await expect(thread).toBeVisible();
+	await expect(composer).toHaveCount(0);
+	expect(await minBoxes(section)).toBeGreaterThanOrEqual(before);
+	await expect(section.locator(BOXES)).toHaveCount(before);
+	expect(Math.abs((await viewportTop(thread)) - pendingTop)).toBeLessThan(4);
+	if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+		await expectNoPageOverflow(page);
+	}
+	return thread;
+}
+
+test("Comment on a conversation below an open GitHub thread on its line: posted, it stays where the pending thread was", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// A comment, an answered question, a post.
+	test.slow();
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "It adds v1 and v2." }] },
+	});
+	await holdSeen(page);
+	const section = await openFile(page, s.url, CALC);
+	await selectText(page, CALC, 3, 0, 6);
+	await bar(page).getByRole("button", { name: "Comment" }).click();
+	const first = section.getByTestId("new-thread");
+	await first.getByRole("textbox", { name: "Comment" }).fill("Already here");
+	await first.getByTestId("new-thread-post").click();
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Already here" }),
+	).toBeVisible();
+	const card = await ask(page, section, 3, "Does total add everything?");
+	await expect(card.getByTestId("agent-message-ai")).toHaveText(
+		"It adds v1 and v2.",
+	);
+	const thread = await postInPlace(page, section, card);
+	await expect(section.getByTestId("agent-thread")).toHaveCount(0);
+	await expect(
+		(await openConversation(thread)).getByTestId("agent-message-human"),
+	).toHaveText(["Does total add everything?"]);
+});
+
+test("Comment on the second of two conversations on a line: posted, it stays where the pending thread was, the other card untouched", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// Two answered questions, a post.
+	test.slow();
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: {
+			agent: AGENT,
+			answers: [
+				{ match: "First", text: "First answer." },
+				{ match: "Second", text: "Second answer." },
+			],
+		},
+	});
+	await holdSeen(page);
+	const section = await openFile(page, s.url, CALC);
+	const one = await ask(page, section, 3, "First question");
+	await expect(one.getByTestId("agent-message-ai")).toHaveText("First answer.");
+	const two = await ask(page, section, 3, "Second question", [0, 6]);
+	await expect(two.getByTestId("agent-message-ai")).toHaveText(
+		"Second answer.",
+	);
+	// The one drawn lower on the line.
+	const [a, b] = [await viewportTop(one), await viewportTop(two)];
+	const lower = a > b ? one : two;
+	const other = a > b ? two : one;
+	await postInPlace(page, section, lower);
+	await expect(section.getByTestId("agent-thread")).toHaveCount(1);
+	await expect(other).toBeVisible();
 });
 
 /** GitHub's threads in the fake gh's scenario: where each was posted. */

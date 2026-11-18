@@ -1,4 +1,5 @@
 import {
+	notifyManager,
 	type QueryClient,
 	useQuery,
 	useQueryClient,
@@ -21,7 +22,9 @@ import type {
 	VerdictEvent,
 	VerdictRequest,
 } from "../../shared/types";
+import { cardReplyText, setCardReply } from "../agent/agentWrites";
 import { setLinkProblem } from "../agent/linkProblems";
+import { agentDraftText, setAgentDraft } from "../agent/threadAgent";
 import {
 	AGENT_PLACEMENTS_KEY,
 	AGENT_THREADS_KEY,
@@ -281,6 +284,13 @@ export interface ThreadWritesDeps {
 	create?: (req: NewThreadRequest) => Promise<NewThreadAnswer>;
 	/** A new thread's answer: into every thread list and its comments. */
 	created?: (answer: NewThreadAnswer) => void;
+	/**
+	 * Runs `created` and drops the new thread's draft as one change the
+	 * page sees at once (TanStack's notify batch: its lists tell the page a
+	 * task later, so a draft dropped at once would leave the spot empty
+	 * in between). Default: both now.
+	 */
+	landTogether?: (created: () => void, dropDraft: () => void) => void;
 	/** Where refusals are kept across reloads (none: memory only). */
 	refusals?: RefusalStore;
 	/** Submits a verdict (`POST /api/verdict`). */
@@ -1250,12 +1260,19 @@ export class ThreadWrites {
 		}
 		lane.sending = false;
 		this.#inFlight--;
-		try {
-			this.#deps.created?.(answer);
-		} catch {
-			// Showing it failed; GitHub has it all the same.
+		const created = () => {
+			try {
+				this.#deps.created?.(answer);
+			} catch {
+				// Showing it failed; GitHub has it all the same.
+			}
+		};
+		const drop = () => drafts.discard(laneId);
+		if (this.#deps.landTogether) this.#deps.landTogether(created, drop);
+		else {
+			created();
+			drop();
 		}
-		drafts.discard(laneId);
 		if (op.again) this.#settle(laneId, lane, "create");
 		if (!op.retry) {
 			this.#pendingReview = null;
@@ -1700,6 +1717,13 @@ export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
 		);
 		void client.invalidateQueries({ queryKey: AGENT_THREADS_KEY });
 		void client.invalidateQueries({ queryKey: AGENT_PLACEMENTS_KEY });
+		// A follow-up typed in its card's reply box goes along: the box
+		// that asks it on the thread (its agent panel's) has it.
+		const typed = cardReplyText(moved);
+		if (typed) {
+			if (!agentDraftText(thread.id)) setAgentDraft(thread.id, typed);
+			setCardReply(moved, "");
+		}
 	}
 	// It didn't: the conversation stays on its span, its card says why.
 	const problem = answer.agentLinkProblem;
@@ -1855,6 +1879,13 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			remove: deleteComment,
 			create: postThread,
 			created: (answer) => addThread(client, answer),
+			// The draft goes in the same notify as the lists that show the
+			// thread: one render swaps the one for the other.
+			landTogether: (created, drop) =>
+				notifyManager.batch(() => {
+					created();
+					notifyManager.schedule(drop);
+				}),
 			applied: (update) => applyThreadUpdate(client, update),
 			gone: (threadId) => dropThread(client, threadId),
 			theirs: (threadId, comment) => applyComment(client, threadId, comment),
