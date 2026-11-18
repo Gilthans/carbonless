@@ -496,6 +496,7 @@ export class AgentHost {
 		const { answering: _, error: __, elsewhere: ___, ...rest } = out;
 		return {
 			...rest,
+			connected: true,
 			state:
 				presence === "listening"
 					? "ready"

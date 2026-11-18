@@ -16,9 +16,11 @@ import {
 	useEffect,
 	useId,
 	useLayoutEffect,
+	useMemo,
 	useRef,
 	useState,
 } from "react";
+import { countedProgress } from "../../shared/progress";
 import type {
 	PrOverview,
 	ReviewThread,
@@ -29,7 +31,7 @@ import type {
 	VerdictSince,
 } from "../../shared/types";
 import { verdictQuery } from "../api";
-import { Meter } from "../files/ProgressBar";
+import { Meter, WhitespaceLeftOut } from "../files/ProgressBar";
 import { useReviewView } from "../files/useSetStates";
 import { LabeledIcon } from "../overview/parts";
 import { WriteWarnings } from "../overview/WriteWarnings";
@@ -39,6 +41,7 @@ import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { useThreadWriter, useThreadWrites } from "../threads/threadWrites";
 import { safeHref } from "../ui";
+import { ignoreWhitespace } from "../viewSettings";
 import { isViewer } from "./blockers";
 import { verdictCommitOf } from "./verdictCommit";
 import { useVerdictDraft, verdictDraftFor } from "./verdictDraft";
@@ -259,6 +262,28 @@ export function sinceLine(c: SinceDone): string {
 	return parts.join(" · ");
 }
 
+type Counted = ReturnType<typeof countedProgress>;
+
+/**
+ * The review's progress as the verdict shows it: with "Ignore whitespace"
+ * on, without whitespace-only clusters (countedProgress), as the Files
+ * page's bar counts; and how many that left out. Null without a review.
+ */
+function useCountedReview(
+	review: ReturnType<typeof useReviewView>["data"],
+): Counted | null {
+	const ignoreWs = ignoreWhitespace.use();
+	return useMemo(
+		() =>
+			!review
+				? null
+				: ignoreWs
+					? countedProgress(review.files)
+					: { progress: review.progress, leftOut: 0 },
+		[review, ignoreWs],
+	);
+}
+
 /**
  * Under the reviewer's verdict, what changed since it (VerdictFacts.since):
  * a spinner while the engine computes, the counts with the target patch
@@ -267,6 +292,8 @@ export function sinceLine(c: SinceDone): string {
 function SinceVerdict(props: {
 	since: VerdictSince;
 	review: ReturnType<typeof useReviewView>["data"];
+	/** The review's progress as counted ("Ignore whitespace": countedReview). */
+	counted: Counted | null;
 }) {
 	const { since, review } = props;
 	const { changes } = since;
@@ -316,10 +343,9 @@ function SinceVerdict(props: {
 		);
 	}
 	const target = since.to.patchset;
-	const counts =
-		target !== null && review?.patchset === target
-			? review.progress.clusters
-			: null;
+	const onTarget = target !== null && review?.patchset === target;
+	const counts = onTarget ? (props.counted?.progress.clusters ?? null) : null;
+	const leftOut = onTarget ? (props.counted?.leftOut ?? 0) : 0;
 	const left = counts ? counts.total - counts.crossedOff : 0;
 	return (
 		<div
@@ -353,6 +379,7 @@ function SinceVerdict(props: {
 					)}
 				</Tooltip>
 			)}
+			{counts && leftOut > 0 && <WhitespaceLeftOut count={leftOut} />}
 		</div>
 	);
 }
@@ -503,21 +530,23 @@ export function VerdictCard(props: {
 
 	// Information only: never a condition.
 	const { data: review } = useReviewView();
-	const lines = review?.progress.lines;
+	const counted = useCountedReview(review);
+	const lines = counted?.progress.lines;
 	const mine = (props.threads ?? []).filter(
 		(t) => isViewer(t.author, session.viewer) && t.unavailable === undefined,
 	);
 	const open = mine.filter((t) => !t.resolved).length;
-	const info: string[] = [];
-	if (lines && lines.total > 0) {
-		info.push(
-			`You reviewed ${lines.reviewed} of ${lines.total - lines.crossedOff} lines`,
-		);
-	}
-	if (mine.length > 0) {
-		info.push(`${open} of your threads ${open === 1 ? "is" : "are"} open`);
-	}
-
+	const reviewedText =
+		lines && lines.total > 0
+			? `You reviewed ${lines.reviewed} of ${lines.total - lines.crossedOff} lines`
+			: null;
+	// The `~` follows the lines it is about, and shows whenever anything was
+	// left out, even when that is everything (no lines to count).
+	const leftOut = counted?.leftOut ?? 0;
+	const threadsText =
+		mine.length > 0
+			? `${open} of your threads ${open === 1 ? "is" : "are"} open`
+			: null;
 	return (
 		<section
 			aria-labelledby={headingId}
@@ -549,11 +578,23 @@ export function VerdictCard(props: {
 				)}
 			</div>
 			{since && !writes.verdict && (
-				<SinceVerdict since={since} review={review} />
+				<SinceVerdict since={since} review={review} counted={counted} />
 			)}
-			{info.length > 0 && (
-				<p data-testid="verdict-info" className="text-xs text-muted">
-					{info.join(" · ")}
+			{(reviewedText || leftOut > 0 || threadsText) && (
+				<p
+					data-testid="verdict-info"
+					className="flex flex-wrap items-center text-xs text-muted"
+				>
+					{reviewedText}
+					{leftOut > 0 && <WhitespaceLeftOut count={leftOut} />}
+					{threadsText && (
+						<span>
+							{(reviewedText || leftOut > 0) && (
+								<span className="whitespace-pre"> · </span>
+							)}
+							{threadsText}
+						</span>
+					)}
 				</p>
 			)}
 			{overview.writes === "on" && overview.state === "OPEN" && (

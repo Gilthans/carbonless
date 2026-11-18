@@ -16,7 +16,12 @@ import {
 	type Scenario,
 	writeScenario,
 } from "./fake-gh/scenario";
-import { createGitFixture, type GitFixture, testGitEnv } from "./git-fixture";
+import {
+	createGitFixture,
+	type FixtureCommit,
+	type GitFixture,
+	testGitEnv,
+} from "./git-fixture";
 import { settleGh } from "./settle-gh";
 import { fixtureGit } from "./trace-run";
 
@@ -49,17 +54,32 @@ const NUMBER = 12;
  * the PR changes two separate places in it and adds new.txt. PATH,
  * CRB_FAKE_GH and XDG_CACHE_HOME point at throwaway locations until cleanup.
  */
-export function createPrFixture(): PrFixture {
+export function createPrFixture(
+	/** More for the base's commit and the PR's (binary files, renames). */
+	extra: {
+		base?: Partial<Omit<FixtureCommit, "message">>;
+		pr?: Partial<Omit<FixtureCommit, "message">>;
+	} = {},
+): PrFixture {
 	const tmp = mkdtempSync(join(tmpdir(), "crb-pr-"));
 	const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
 	const changed = [...lines];
 	changed[1] = "line 2 changed";
 	changed[25] = "line 26 changed";
 	const repo = createGitFixture([
-		{ message: "base", files: { "a.txt": `${lines.join("\n")}\n` } },
 		{
+			...extra.base,
+			message: "base",
+			files: { "a.txt": `${lines.join("\n")}\n`, ...extra.base?.files },
+		},
+		{
+			...extra.pr,
 			message: "PR change",
-			files: { "a.txt": `${changed.join("\n")}\n`, "new.txt": "new\n" },
+			files: {
+				"a.txt": `${changed.join("\n")}\n`,
+				"new.txt": "new\n",
+				...extra.pr?.files,
+			},
 		},
 	]);
 	const git = (...args: string[]) =>

@@ -41,12 +41,14 @@ import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import { contextLines } from "./diff/hunks.js";
 import {
+	blobName,
 	buildSnapshot,
 	loadContext,
 	loadFileHunks,
 	loadHunksBatch,
 	loadNewText,
 	snapshotId,
+	statBlob,
 } from "./diff/snapshot.js";
 import { WriteRefusedError } from "./errors.js";
 import {
@@ -61,7 +63,7 @@ import {
 	type PrRef,
 	resolvePrRef,
 } from "./gh.js";
-import { runGit } from "./git.js";
+import { runGit, runGitBuffer } from "./git.js";
 import {
 	type NewThreadTarget,
 	type StartedRecord,
@@ -77,6 +79,7 @@ import { RereviewCache } from "./rereview/cache.js";
 import {
 	answerRereview,
 	type EarlierPatchset,
+	interdiffBlobName,
 	interdiffFileContext,
 	interdiffFileHunks,
 	rereviewKey,
@@ -731,10 +734,20 @@ export class Session {
 			asOf: this.options.asOf ?? null,
 			pinnedHead: this.pinned,
 			patchsets: this.#patchsets.map(
-				({ number, head, mergeBase, startedAt, since, shape, baseBranch }) => ({
+				({
 					number,
 					head,
 					mergeBase,
+					revision,
+					startedAt,
+					since,
+					shape,
+					baseBranch,
+				}) => ({
+					number,
+					head,
+					mergeBase,
+					revision,
 					// One started before the name was recorded: the current one
 					// (as #sinceOf takes it; a retarget before it can't be told).
 					baseBranch: baseBranch ?? this.#snapshotBase,
@@ -744,6 +757,15 @@ export class Session {
 					commits: this.#commitsOf(mergeBase, head),
 				}),
 			),
+			...(this.#patchsets.length === 0
+				? {
+						snapshotBase: this.#snapshot.base,
+						snapshotCommits: this.#commitsOf(
+							this.#snapshot.base,
+							this.#snapshot.head,
+						),
+					}
+				: {}),
 			lastSeen: this.#lastSeen,
 			head: this.#head,
 		};
@@ -1099,6 +1121,55 @@ export class Session {
 	}
 
 	/**
+	 * One side's blob of file `index` of the snapshot with this `revision`
+	 * (the blob route's: its oid, the path it is at, its byte size), or null
+	 * for a side the file hasn't. Without `from`, the full diff's sides (the
+	 * old one at the merge base); with `from`, the since view's from patch
+	 * set `from`, named by the same interdiff its hunks come from
+	 * (engine.ts, interdiffBlobName). Never reads the bytes.
+	 */
+	async blob(
+		revision: string,
+		index: number,
+		side: "old" | "new",
+		from?: number,
+	): Promise<{ oid: string; path: string; size: number } | null> {
+		const name =
+			from === undefined
+				? blobName(this.#current(revision), index, side)
+				: await this.#interdiffBlobName(from, revision, index, side);
+		if (name === null) return null;
+		// A missing side or a submodule's gitlink: null.
+		const blob = await statBlob(this.repo, name);
+		// The path is after the first ':' (a tree or commit id has none).
+		return blob && { ...blob, path: name.slice(name.indexOf(":") + 1) };
+	}
+
+	/**
+	 * A blob's bytes, by the oid `blob` gave: on their own, never through
+	 * the text blobs' cache (an image would push the text out of it).
+	 */
+	async blobBytes(oid: string): Promise<Buffer> {
+		return runGitBuffer(this.repo, ["cat-file", "blob", checkOid(oid)]);
+	}
+
+	async #interdiffBlobName(
+		from: number,
+		revision: string,
+		index: number,
+		side: "old" | "new",
+	): Promise<string | null> {
+		const snapshot = this.#current(revision);
+		const since = (await this.#progress()).patchsets.find(
+			(p) => p.number === from,
+		);
+		if (!since) throw new RangeError(`No patch set ${from}`);
+		const traced = await this.#traced(since, snapshot);
+		const { answer } = await this.#answerFor(since, snapshot, traced);
+		return interdiffBlobName(traced, snapshot, answer, index, side);
+	}
+
+	/**
 	 * The since view's hunks of several files, for the search's prefetch:
 	 * the engine's answer computed once for the batch. As fileHunksBatch, a
 	 * file that fails answers with `error`; an unknown patch set, or an
@@ -1147,10 +1218,6 @@ export class Session {
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		const traced = await this.#traced(since, snapshot);
 		const { answer } = await this.#answerFor(since, snapshot, traced);
-		// Its states say which unshown lines a piece may take (vouched).
-		const states =
-			(await this.#progress()).statesByRevision.get(since.revision) ??
-			new Map();
 		const known = new Set([
 			...snapshot.files.map((f) => f.index),
 			...answer.files.map((f) => f.index),
@@ -1158,13 +1225,7 @@ export class Session {
 		return {
 			has: (index) => known.has(index),
 			hunks: async (index) => {
-				const hunks = interdiffFileHunks(
-					traced,
-					snapshot,
-					answer,
-					index,
-					states,
-				);
+				const hunks = interdiffFileHunks(traced, snapshot, answer, index);
 				if (hunks.hunks.length > 0) return hunks;
 				// A file the interdiff doesn't change (or only renames): its
 				// lines are one gap, so they and the threads on them can be opened.

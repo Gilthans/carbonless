@@ -102,7 +102,10 @@ const tick = async (ms: number) => {
 	await vi.advanceTimersByTimeAsync(ms);
 };
 
-function start(agent: { prompt: unknown }) {
+function start(
+	agent: { prompt: unknown },
+	config: () => AgentConfig | null = () => AGENT,
+) {
 	vi.mocked(AcpAgent.spawn).mockImplementation(async (opts) => {
 		secret = opts.mcp?.headers[0]?.value ?? "";
 		return agent as unknown as AcpAgent;
@@ -110,7 +113,7 @@ function start(agent: { prompt: unknown }) {
 	stored = vi.fn(async () => {});
 	runner = new AgentRunner({
 		reviewId: "01k9e6m2q8x4v7c3n5b0h1j2t6",
-		config: async () => ({ agent: AGENT, problems: [] }),
+		config: async () => ({ agent: config(), problems: [] }),
 		now: () => clock,
 		store: {
 			read: async () => questions,
@@ -233,6 +236,36 @@ describe("every turn has a time limit, whatever it holds", () => {
 		await vi.advanceTimersByTimeAsync(CANCEL_GRACE_MS);
 		expect((await runner.status()).error).toContain("didn't attach");
 		expect(agent.close).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("connected", () => {
+	it("a config change while a turn runs: the old process stays connected until it stops", async () => {
+		const agent = fakeAgent(false);
+		let config: AgentConfig = AGENT;
+		start(agent, () => config);
+		await vi.waitFor(async () => {
+			await flush();
+			expect(agent.prompts).toBe(1);
+		});
+		expect(await runner.status()).toMatchObject({
+			state: "busy",
+			connected: true,
+		});
+		config = { ...AGENT, args: ["--again"] };
+		// The change is read: the turn is cancelled (and ignored), the process
+		// still up and answering.
+		const changed = await runner.status();
+		expect(agent.cancel).toHaveBeenCalled();
+		expect(changed.connected).toBe(true);
+		await flush();
+		expect((await runner.status()).connected).toBe(true);
+		// The process stops: no longer connected.
+		await agent.close();
+		await vi.waitFor(async () => {
+			await flush();
+			expect((await runner.status()).connected).toBeUndefined();
+		});
 	});
 });
 

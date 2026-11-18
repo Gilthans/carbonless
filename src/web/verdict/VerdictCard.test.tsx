@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import {
+	act,
 	cleanup,
 	render,
 	screen,
@@ -11,7 +12,11 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { heldJson } from "../../../test/loading";
+import { fileFlags, reviewProgress } from "../../shared/progress";
 import type {
+	ClusterState,
+	ClusterView,
+	FileView,
 	PrOverview,
 	ReviewView,
 	SessionInfo,
@@ -20,6 +25,7 @@ import type {
 	VerdictSince,
 } from "../../shared/types";
 import { createAppRouter } from "../router";
+import { ignoreWhitespace } from "../viewSettings";
 import { nothingToReread, sinceLine } from "./VerdictCard";
 
 /*
@@ -38,6 +44,7 @@ const patchset = (number: number, head: string) => ({
 	number,
 	head,
 	mergeBase: "e".repeat(40),
+	revision: `r${number}`,
 	baseBranch: "main",
 	startedAt: Date.parse("2026-11-05T10:00:00Z"),
 	since: number === 1 ? null : number - 1,
@@ -178,6 +185,8 @@ function renderTab(
 	info: SessionInfo = session(),
 	/** A POST's answer before the default (a landed review); null: the default. */
 	refuse: (req: VerdictRequest) => Response | null = () => null,
+	/** GET /api/review's answer for the session's patch set. */
+	reviewOf: (patchset: number | null) => ReviewView = review,
 ) {
 	posted = [];
 	const fetchMock = vi.fn(
@@ -190,7 +199,7 @@ function renderTab(
 				case "/api/overview":
 					return json(overview);
 				case "/api/review":
-					return json(review(info.patchset));
+					return json(reviewOf(info.patchset));
 				case "/api/threads":
 					return json({ threads: [], complete: true });
 				case "/api/timeline":
@@ -239,6 +248,7 @@ afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
 	localStorage.clear();
+	ignoreWhitespace.reset();
 });
 
 describe("sinceLine and nothingToReread", () => {
@@ -534,5 +544,118 @@ describe("the verdict card since your verdict", () => {
 		await userEvent.click(within(c).getByRole("button", { name: "Approve" }));
 		await waitFor(() => expect(posted).toHaveLength(1));
 		expect(posted[0]).toMatchObject({ commit: PS2 });
+	});
+});
+
+describe('the verdict card follows "Ignore whitespace" (CAR-184)', () => {
+	const c = (
+		key: string,
+		state: ClusterState,
+		lines: number,
+		whitespaceOnly = false,
+	): ClusterView => ({
+		key,
+		kind: "lines",
+		oldStart: 1,
+		oldCount: 1,
+		newStart: 1,
+		newCount: 1,
+		removed: [],
+		added: [],
+		lines,
+		state,
+		...(whitespaceOnly ? { whitespaceOnly: true as const } : {}),
+	});
+	// A reviewed change (4 lines) and an unreviewed whitespace-only cluster (2).
+	const clusters = [c("a", "reviewed", 4), c("w", "unreviewed", 2, true)];
+	const files: FileView[] = [
+		{
+			index: 0,
+			path: "src/a.ts",
+			status: "modified",
+			binary: false,
+			submodule: false,
+			additions: 3,
+			deletions: 3,
+			clusters,
+			...fileFlags(clusters),
+		},
+	];
+	const wsReview = (patchsetNo: number | null): ReviewView => ({
+		revision: "r2",
+		patchset: patchsetNo,
+		files,
+		progress: reviewProgress(files),
+	});
+	const leftOut = (el: HTMLElement) =>
+		within(el).queryByRole("img", {
+			name: "1 whitespace-only cluster not counted",
+		});
+
+	it("off: every cluster counts, no `~`", async () => {
+		renderTab(
+			() => facts(given()),
+			session(),
+			() => null,
+			wsReview,
+		);
+		const card_ = await card();
+		const info = await within(card_).findByTestId("verdict-info");
+		expect(info).toHaveTextContent("You reviewed 4 of 6 lines");
+		expect(
+			await within(card_).findByTestId("verdict-since-meter"),
+		).toHaveTextContent("1 / 2 on PS2");
+		expect(leftOut(card_)).toBeNull();
+	});
+
+	it("on, every cluster whitespace-only: no lines to count, but the `~` still says one was left out", async () => {
+		ignoreWhitespace.set(true);
+		const only = [c("w", "unreviewed", 2, true)];
+		const onlyFiles: FileView[] = [
+			{ ...(files[0] as FileView), clusters: only, ...fileFlags(only) },
+		];
+		renderTab(
+			() => facts(given()),
+			session(),
+			() => null,
+			(patchsetNo) => ({
+				revision: "r2",
+				patchset: patchsetNo,
+				files: onlyFiles,
+				progress: reviewProgress(onlyFiles),
+			}),
+		);
+		const card_ = await card();
+		const info = await within(card_).findByTestId("verdict-info");
+		expect(info).not.toHaveTextContent("You reviewed");
+		expect(leftOut(info)).not.toBeNull();
+	});
+
+	it("on: the whitespace-only cluster is left out, all reads reviewed, with the `~`", async () => {
+		ignoreWhitespace.set(true);
+		renderTab(
+			() => facts(given()),
+			session(),
+			() => null,
+			wsReview,
+		);
+		const card_ = await card();
+		const info = await within(card_).findByTestId("verdict-info");
+		expect(info).toHaveTextContent("You reviewed 4 of 4 lines");
+		expect(leftOut(info)).not.toBeNull();
+		const since = await within(card_).findByTestId("verdict-since");
+		expect(
+			await within(since).findByTestId("verdict-since-meter"),
+		).toHaveTextContent("1 / 1 on PS2");
+		expect(leftOut(since)).not.toBeNull();
+		// Off again: counted again, unreviewed.
+		act(() => ignoreWhitespace.set(false));
+		await waitFor(() =>
+			expect(info).toHaveTextContent("You reviewed 4 of 6 lines"),
+		);
+		expect(within(card_).getByTestId("verdict-since-meter")).toHaveTextContent(
+			"1 / 2 on PS2",
+		);
+		expect(leftOut(card_)).toBeNull();
 	});
 });

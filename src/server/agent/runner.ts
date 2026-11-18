@@ -453,6 +453,15 @@ export class AgentRunner {
 					? this.#problems.join("; ")
 					: undefined;
 		const hand = this.#liveHand();
+		// The current process up and usable, whatever its last turn did (a
+		// failed turn keeps it) and whatever config it was started with (one
+		// replaced by a config change is connected until it stops).
+		const connected =
+			!stopping &&
+			!this.#closed &&
+			!this.#off() &&
+			!this.#proc?.stopping &&
+			Boolean(this.#proc?.agent?.alive);
 		return {
 			state: stopping ? "off" : this.#state,
 			configured: this.#configured,
@@ -464,6 +473,7 @@ export class AgentRunner {
 				? { elsewhere: this.#elsewhere }
 				: {}),
 			...(this.#seenAt() ? { seen: this.#seenAt() } : {}),
+			...(connected ? { connected: true } : {}),
 			waiting,
 		};
 	}

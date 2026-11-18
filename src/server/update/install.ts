@@ -361,12 +361,15 @@ export function installCommand(
 	const bin = exists(p.join(install.home, "bin"))
 		? p.join(install.home, "bin")
 		: install.home;
+	// Windows: a shim (pnpm.cmd), or the standalone installer's pnpm.exe with
+	// no shim beside it. Missing both falls back to PATH's pnpm.cmd, which may
+	// be another major with another global dir.
+	const names = platform === "win32" ? ["pnpm.cmd", "pnpm.exe"] : ["pnpm"];
 	return {
 		command: first(
-			[
-				p.join(install.home, "bin", `pnpm${ext}`),
-				p.join(install.home, `pnpm${ext}`),
-			],
+			[p.join(install.home, "bin"), install.home].flatMap((dir) =>
+				names.map((name) => p.join(dir, name)),
+			),
 			`pnpm${ext}`,
 		),
 		args: [

@@ -108,6 +108,53 @@ describe("fileLevelCluster", () => {
 		},
 	);
 
+	it("a binary renamed with the same blob reads as a rename, never 'changed'", () => {
+		const same = "3".repeat(40);
+		const moved = file({
+			status: "renamed",
+			oldPath: "assets/mark.png",
+			path: "assets/brand/mark.png",
+			binary: true,
+			additions: 0,
+			deletions: 0,
+			oldOid: same,
+			newOid: same,
+		});
+		// Still a unit of its own (principle 2): only its text says less.
+		expect(fileLevelCluster(moved, false)).toMatchObject({
+			kind: "file",
+			label: "Renamed from assets/mark.png",
+		});
+		// Renamed and edited: both said.
+		expect(
+			fileLevelCluster({ ...moved, newOid: "4".repeat(40) }, false)?.label,
+		).toBe("Renamed from assets/mark.png, binary file changed");
+		// Added or deleted binaries still say changed.
+		expect(
+			fileLevelCluster(
+				file({ status: "added", binary: true, oldOid: "0".repeat(40) }),
+				false,
+			)?.label,
+		).toBe("Binary file changed");
+	});
+
+	it("a binary with the same blob and only its mode changed says the mode, not 'binary file changed'", () => {
+		const same = "5".repeat(40);
+		expect(
+			fileLevelCluster(
+				file({
+					binary: true,
+					additions: 0,
+					deletions: 0,
+					newMode: "100755",
+					oldOid: same,
+					newOid: same,
+				}),
+				false,
+			)?.label,
+		).toBe("Mode changed 100644 → 100755");
+	});
+
 	it("a rename with edits keeps the rename cluster", () => {
 		const renamed = file({ status: "renamed", oldPath: "a.ts", path: "b.ts" });
 		expect(fileLevelCluster(renamed, true)?.label).toBe("Renamed from a.ts");

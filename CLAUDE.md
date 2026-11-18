@@ -126,7 +126,7 @@ loading never looking empty, checking against a real PR):
   restart. Interactive `pnpm test:watch` never queues. Waiting can take
   longer than a foreground command may: run tests in the background
   (`run_in_background`); a signal ends the wait. A run in a slot gets the
-  cores divided by `slots` as workers. `CRB_NO_QUEUE=1` skips the queue for
+  cores but one divided by `slots` as workers (at least one). `CRB_NO_QUEUE=1` skips the queue for
   one command. No file (CI, a machine of one's own): nothing queues.
 - A tree's `dist` lock (`scripts/dist-lock.mjs`, `flock` on
   `node_modules/.crb-dist.lock`) keeps any build (`pnpm build`, so prepack,
@@ -428,8 +428,9 @@ After the first release (0.1.0) the owner adds the trusted publisher
   artifacts), fixed and pushed; a failure that looks unrelated is rerun once
   (`gh run rerun --failed`), and is flagged if it fails again. A PR is merged only on the owner's explicit word for that PR (by
   the owner on GitHub, or on their behalf by an agent with `gh pr merge
-  --admin`, the ruleset's bypass for the owner's login). Never push
-  `master` or `v*` tags.
+  --admin`, the ruleset's bypass for the owner's login). Before merging
+  any PR, `pnpm release merge-ok <pr>` must pass (the release freeze:
+  `docs/releasing.md`). Never push `master` or `v*` tags.
 - On the owner's word only: `pnpm release promote` (starts the promote run,
   which checks, packs and stages; nothing goes live) and `pnpm release
   next` (pushes a `next/*` branch, opens its PR) on Gilthans/carbonless.

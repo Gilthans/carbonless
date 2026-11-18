@@ -173,11 +173,22 @@ const E2E_MAP = [
 		/^src\/web\/verdict\/|^src\/server\/verdict\.ts$|^src\/web\/(App|pages|router)\.tsx?$|^src\/web\/files\/(FilesPage|RefusedWrites)\.tsx$|^src\/web\/threads\/(threadWrites|refusals)\.ts$/,
 		["verdict"],
 	],
+	// The verdict and the since view follow Ignore whitespace (CAR-184).
+	[
+		/^src\/web\/verdict\/VerdictCard\.tsx$|^src\/shared\/pieces\.ts$/,
+		["ws-split"],
+	],
 	// The markable invariant: whatever renders units, keys their lines or
 	// saves their states (docs/product-rules.md).
 	[
 		/^src\/web\/files\/(DiffBody|FileDiff|FilesPage|whitespace|sideBySide|since|useSince|useSetStates|stateSync)\.tsx?$|^src\/server\/(rereview\/engine|diff\/hunks)\.ts$|^test\/markable(-harness)?\.tsx?$|^src\/shared\/pieces\.ts$/,
 		["markable"],
+	],
+	// Custom renderers (CAR-38): the seam, the "Show as" chip, the image
+	// type table; FileDiff and DiffBody hold the seam.
+	[
+		/^src\/web\/files\/renderers\/|^src\/shared\/imageTypes|^src\/web\/files\/(FileDiff|DiffBody)\.tsx$/,
+		["image-renderer"],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	// Unit-test data (wordBlocks.fixture.test.ts); inlineDiff.spec.ts reads

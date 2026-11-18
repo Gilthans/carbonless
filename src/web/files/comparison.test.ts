@@ -20,6 +20,7 @@ const patchset = (number: number, head: string) => ({
 	number,
 	head,
 	mergeBase: oid("0"),
+	revision: `r${number}`,
 	baseBranch: "main",
 	startedAt: 1,
 	since: number === 1 ? null : number - 1,

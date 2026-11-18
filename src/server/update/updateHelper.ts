@@ -5,6 +5,7 @@
 // next crb reads it, and starts crb again with the same arguments, directory
 // and environment. Node built-ins only: nothing beside it resolves.
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
 	appendFileSync,
 	chmodSync,
@@ -229,6 +230,65 @@ export function findInstalled(
 	return null;
 }
 
+/**
+ * Codes a rename fails with on Windows while another process (a virus
+ * scanner on the fresh temp file, an indexer) holds the file a moment.
+ * Elsewhere they are real permission errors.
+ */
+const BUSY = new Set(["EPERM", "EACCES", "EBUSY"]);
+/** Waits before each retry of a busy rename on Windows, in ms: ~3 s in all. */
+export const RENAME_BACKOFF = Object.freeze([
+	5, 10, 20, 40, 80, 160, 320, 640, 1000, 1000,
+]);
+
+const pause = new Int32Array(new SharedArrayBuffer(4));
+const sleepSync = (ms: number) => {
+	Atomics.wait(pause, 0, 0, ms);
+};
+
+/**
+ * Writes `text` (0600) so a reader finds the whole file or none: a temp
+ * file beside it, renamed over it. crb, and a test waiting for the file,
+ * read it as soon as it exists; writeFileSync creates it empty first. On
+ * Windows a busy rename is retried (RENAME_BACKOFF); a rename that still
+ * fails falls back to writing the file in place, since a result written
+ * non-atomically beats one lost (crb shows nothing for an unparsable
+ * one). `rename`, `sleep` and `windows` are for tests.
+ */
+export function writeAtomic(
+	file: string,
+	text: string,
+	{
+		rename = renameSync,
+		sleep = sleepSync,
+		windows = process.platform === "win32",
+	}: {
+		rename?: (from: string, to: string) => void;
+		sleep?: (ms: number) => void;
+		windows?: boolean;
+	} = {},
+): void {
+	const tmp = `${file}.${randomUUID()}.tmp`;
+	writeFileSync(tmp, text, { mode: PRIVATE, flag: "wx" });
+	for (let attempt = 0; ; attempt++) {
+		try {
+			rename(tmp, file);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code ?? "";
+			if (!windows || !BUSY.has(code) || attempt >= RENAME_BACKOFF.length)
+				break;
+			sleep(RENAME_BACKOFF[attempt] ?? 0);
+		}
+	}
+	try {
+		rmSync(tmp, { force: true });
+	} catch {
+		// Left beside it (Windows: still held).
+	}
+	writeFileSync(file, text, { mode: PRIVATE });
+}
+
 /** serve.log for appending (0600), moved aside first past LOG_LIMIT. */
 function openServeLog(file: string): number {
 	try {
@@ -263,14 +323,19 @@ export async function runHelper(config: HelperConfig): Promise<UpdateResult> {
 		log(`[${new Date().toISOString()}] ${text}\n`);
 	const finish = (result: UpdateResult) => {
 		try {
-			writeFileSync(config.result, `${JSON.stringify(result)}\n`, {
-				mode: PRIVATE,
-			});
+			writeAtomic(config.result, `${JSON.stringify(result)}\n`);
 		} catch (error) {
 			stamp(`could not write the result: ${(error as Error).message}`);
 		}
 		return result;
 	};
+	// A pid file an earlier update left (the crb it started can remove it
+	// before the helper writes it): never this update's.
+	try {
+		rmSync(relaunchedPidFile(config.result), { force: true });
+	} catch {
+		// Only a convenience.
+	}
 	stamp(`update to ${config.version}: waiting for crb (pid ${config.pid})`);
 	if (!(await waitExit(config.pid, config.waitMs))) {
 		stamp("crb did not exit; nothing installed");
@@ -318,9 +383,7 @@ export async function runHelper(config: HelperConfig): Promise<UpdateResult> {
 			// server.json (a test's teardown).
 			if (child.pid) {
 				try {
-					writeFileSync(relaunchedPidFile(config.result), `${child.pid}\n`, {
-						mode: PRIVATE,
-					});
+					writeAtomic(relaunchedPidFile(config.result), `${child.pid}\n`);
 				} catch {
 					// Only a convenience.
 				}

@@ -45,6 +45,7 @@ const status: AgentStatus = {
 	agent: { name: "Fake Agent", version: "1" },
 	since: "2026-11-15T10:00:00Z",
 	waiting: 0,
+	connected: true,
 };
 
 const review = (more: Partial<AgentThread> = {}): AgentThread => ({
@@ -395,18 +396,82 @@ describe("ReviewConversationDrawer", () => {
 	it("nothing set up, a review conversation already there: Shift+A opens the setup, never the drawer", async () => {
 		const { user } = show({
 			threads: [review({ unread: true })],
-			status: { ...status, state: "off", configured: false, agent: undefined },
+			status: {
+				...status,
+				state: "off",
+				configured: false,
+				agent: undefined,
+				connected: false,
+			},
 		});
 		await user.keyboard("{Shift>}A{/Shift}");
 		expect(screen.getByTestId("setup")).toHaveTextContent("open");
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
 	});
 
+	it.each<[string, Partial<AgentStatus>]>([
+		["configured, none spawned or joined", { state: "off", connected: false }],
+		[
+			"configured, crashed",
+			{ state: "error", spawned: true, connected: false },
+		],
+		[
+			"configured, an error, none live",
+			{ error: "the agent exited", connected: false },
+		],
+	])(
+		"no agent connected (%s): Shift+A opens the setup, never the drawer",
+		async (_n, more) => {
+			const { user } = show({
+				threads: [review({ unread: true })],
+				status: { ...status, ...more },
+			});
+			await user.keyboard("{Shift>}A{/Shift}");
+			expect(screen.getByTestId("setup")).toHaveTextContent("open");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		},
+	);
+
+	it.each<[string, Partial<AgentStatus>]>([
+		["starting", { state: "starting", spawned: true, connected: false }],
+		["reconnecting", { state: "reconnecting", connected: false }],
+		[
+			"a failed turn, still connected",
+			{ state: "error", error: "Rate limited; retry later" },
+		],
+		[
+			"a joined session",
+			{
+				configured: false,
+				via: "mcp",
+				joined: {
+					name: "carbonless · main",
+					machine: "devbox",
+					since: "2026-11-10T10:00:00Z",
+				},
+			},
+		],
+	])("an agent connected (%s): Shift+A opens the drawer", async (_n, more) => {
+		const { user } = show({
+			threads: [review()],
+			status: { ...status, ...more },
+		});
+		await user.keyboard("{Shift>}A{/Shift}");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+	});
+
 	it("open while the agent has gone (nothing set up now): Shift+A closes it, no setup", async () => {
 		openReviewDrawer();
 		const { user } = show({
 			threads: [review()],
-			status: { ...status, state: "off", configured: false, agent: undefined },
+			status: {
+				...status,
+				state: "off",
+				configured: false,
+				agent: undefined,
+				connected: false,
+			},
 		});
 		expect(drawer()).toHaveFocus();
 		await user.keyboard("{Shift>}A{/Shift}");
