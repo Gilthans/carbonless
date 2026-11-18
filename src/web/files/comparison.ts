@@ -1,6 +1,10 @@
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReviewView, SessionInfo } from "../../shared/types";
+import type {
+	PlacementsAnswer,
+	ReviewView,
+	SessionInfo,
+} from "../../shared/types";
 import type { ReviewTarget } from "../api";
 import { usePageActive } from "../pageActive";
 import { useReviewId } from "../reviewId";
@@ -434,5 +438,52 @@ export function useViewedReview(
 	useEffect(() => {
 		if (shown) last.current = shown;
 	}, [shown]);
+	return shown;
+}
+
+/**
+ * The threads' placements to show: the served answer, else (while the
+ * viewed patch set's answer is on its way) the last one of the same read
+ * placed into that very snapshot (CAR-208).
+ *
+ * The first mark on a viewed head starts a patch set of that snapshot: the
+ * comparison moves to it, its placements are asked under another key, and
+ * the server places them again (another job). Meanwhile the threads traced
+ * from earlier commits would leave the diff and come back, moving the rows
+ * under the reviewer's pointer. The held answer is the head's, laid into
+ * the same snapshot; it carries the viewed patch set's number, where a
+ * drag stores. Another snapshot (a moved base), another read, a viewed
+ * head, or a read that failed (`holding` false) never gets it.
+ */
+export function useHeldPlacements(
+	served: PlacementsAnswer | null,
+	/** Asked, and no failure on the read (a failure shows as one). */
+	holding: boolean,
+	readId: string | undefined,
+	viewing: Viewing | null,
+	/** The viewed patch set's snapshot (SessionInfo.patchsets' `revision`). */
+	viewedRevision: string | undefined,
+): PlacementsAnswer | null {
+	const last = useRef<PlacementsAnswer | null>(null);
+	const held = last.current;
+	const number = viewing?.kind === "patchset" ? viewing.number : null;
+	const fits =
+		served === null &&
+		holding &&
+		held !== null &&
+		number !== null &&
+		viewedRevision !== undefined &&
+		held.readId === readId &&
+		held.revision === viewedRevision;
+	// One object per held answer and number: the placement map keeps.
+	const relabelled = useMemo(
+		() =>
+			fits && held && number !== null ? { ...held, patchset: number } : null,
+		[fits, held, number],
+	);
+	const shown = served ?? relabelled;
+	useEffect(() => {
+		if (served) last.current = served;
+	}, [served]);
 	return shown;
 }

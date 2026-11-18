@@ -3079,3 +3079,126 @@ test("a line crossed off in PS1 stays crossed off in a grown cluster: ticking th
 		full.locator('[data-testid="diff-line"][data-new-no="4"]'),
 	).toHaveAttribute("data-reviewed", "true");
 });
+
+test("the first tick on the viewed head starts PS2 of that snapshot: the since view's chips stay while PS2's answer is read, so no row moves under the pointer (CAR-208)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const since = await grownSince(page, pr, startCrb, "cross");
+	// Hold the engine's answer under PS2's name (the head's is in).
+	let release = () => {};
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
+	let asked = 0;
+	let passed = 0;
+	const ps2Answer = (url: URL) =>
+		url.pathname.endsWith("/rereview") && url.searchParams.has("to");
+	await page.route(ps2Answer, async (route) => {
+		asked++;
+		await held;
+		await route.continue();
+		passed++;
+	});
+	const all = boxes(since);
+	const chips = since.getByTestId("cluster-kind");
+	const chipsBefore = await chips.count();
+	expect(chipsBefore).toBeGreaterThan(0);
+	const yOf = async () => (await all.nth(1).boundingBox())?.y;
+	const before = await yOf();
+	expect(before).toBeDefined();
+	await all.nth(0).click();
+	await expect(all.nth(0)).toBeChecked();
+	// The tick started PS2 on the head's snapshot: the page compares to it
+	// now, its answer held.
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
+	).toBeVisible(GIT_WAIT);
+	await expect
+		.poll(() => asked, { message: "the hold saw PS2's rereview call" })
+		.toBeGreaterThan(0);
+	// Held: the chips stay and the rows don't move.
+	await expect(chips).toHaveCount(chipsBefore);
+	expect(await yOf()).toBe(before);
+	release();
+	await expect.poll(() => passed).toBe(asked);
+	await page.unroute(ps2Answer);
+	await expect(chips).toHaveCount(chipsBefore);
+	expect(await yOf()).toBe(before);
+	for (let i = 1; i < 3; i++) {
+		await all.nth(i).click();
+		await expect(all.nth(i)).toBeChecked();
+	}
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
+});
+
+test("the first tick on the viewed head starts PS2 of that snapshot: a thread traced from PS1 stays on its line while PS2's placements are read, so no row moves under the pointer (CAR-208)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const threads: ReturnType<typeof reviewThread>[] = [];
+	const p = await pr({ ...fixture, threads });
+	threads.push(threadOn(p.head(), "src/core.ts", 5, "Why change core 5?"));
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (graph) graph.reviewThreads = threads;
+	});
+	const s = await startCrb();
+	await pushed(page, s, p, rewriteAndDelete);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "head").getByRole("button", { name: "comparison target" }),
+	).toBeVisible();
+	const coreS = fileSection(page, "src/core.ts");
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	const bubble = coreS
+		.getByTestId("diff-line")
+		.filter({ hasText: "core 5 reworked" })
+		.getByRole("button", { name: /1 comment/ });
+	await expect(bubble).toBeVisible(GIT_WAIT);
+	if ((await bubble.getAttribute("aria-expanded")) !== "true") {
+		await bubble.click();
+	}
+	const card = coreS
+		.getByTestId("files-thread")
+		.filter({ hasText: "Why change core 5?" });
+	await expect(card).toBeVisible();
+	// Hold the placements under PS2's name (the head's are in).
+	let release = () => {};
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
+	let asked = 0;
+	let passed = 0;
+	const ps2Placements = (url: URL) =>
+		url.pathname.endsWith("/placements") && url.searchParams.has("ps");
+	await page.route(ps2Placements, async (route) => {
+		asked++;
+		await held;
+		await route.continue();
+		passed++;
+	});
+	const all = boxes(coreS);
+	const yOf = async () => (await all.last().boundingBox())?.y;
+	const before = await yOf();
+	expect(before).toBeDefined();
+	await all.first().click();
+	await expect(all.first()).toBeChecked();
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
+	).toBeVisible(GIT_WAIT);
+	await expect
+		.poll(() => asked, { message: "the hold saw PS2's placements call" })
+		.toBeGreaterThan(0);
+	// Held: the thread stays on its line and the rows don't move.
+	await expect(card).toBeVisible();
+	expect(await yOf()).toBe(before);
+	release();
+	await expect.poll(() => passed).toBe(asked);
+	await page.unroute(ps2Placements);
+	await expect(card).toBeVisible();
+	expect(await yOf()).toBe(before);
+});
