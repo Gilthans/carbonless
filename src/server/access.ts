@@ -17,9 +17,19 @@ function cookieName(app: FastifyInstance): string {
 const digest = (value: string) => createHash("sha256").update(value).digest();
 
 /**
+ * How long the key cookie lasts since the last request that carried the key
+ * (in the URL or the cookie). Without one it was a session cookie: a phone
+ * closing the browser or a home-screen app in the background dropped it, and
+ * the next reload (the page strips `?key=`) was a 401.
+ */
+export const KEY_COOKIE_MAX_AGE_S = 7 * 24 * 60 * 60;
+
+/**
  * Requires `key` on every request (API and static) when it's set: as
  * `?key=<key>`, which also sets an HttpOnly cookie (named per listening
- * port) for the page's later requests, or as that cookie. Used when crb listens beyond loopback.
+ * port) for the page's later requests, or as that cookie. Every request the
+ * key lets through sets the cookie again, so it lasts a week from the last
+ * visit. Used when crb listens beyond loopback.
  */
 export async function registerAccessKey(
 	app: FastifyInstance,
@@ -42,22 +52,21 @@ export async function registerAccessKey(
 	app.addHook("onRequest", async (request, reply) => {
 		const cookie = cookieName(app);
 		const query = request.query as Record<string, unknown> | undefined;
-		if (matches(query?.key)) {
-			// Lax, not Strict: a browser holds a Strict cookie back when the
-			// reviewer clicks a link to a review on another site (GitHub),
-			// which registerHostCheck allows on purpose. Every other request
-			// from another site (no click: a script's navigation, a redirect
-			// it started, a frame, a write) is refused there, on any path.
-			reply.setCookie(cookie, key, {
-				httpOnly: true,
-				sameSite: "lax",
-				path: "/",
-				secure: (request.headers.host ?? "").toLowerCase() === secureHost,
-			});
-			return;
+		if (!matches(query?.key) && !matches(request.cookies[cookie])) {
+			return reply.code(401).send({ error: "Missing or wrong access key" });
 		}
-		if (matches(request.cookies[cookie])) return;
-		return reply.code(401).send({ error: "Missing or wrong access key" });
+		// Lax, not Strict: a browser holds a Strict cookie back when the
+		// reviewer clicks a link to a review on another site (GitHub),
+		// which registerHostCheck allows on purpose. Every other request
+		// from another site (no click: a script's navigation, a redirect
+		// it started, a frame, a write) is refused there, on any path.
+		reply.setCookie(cookie, key, {
+			httpOnly: true,
+			sameSite: "lax",
+			path: "/",
+			maxAge: KEY_COOKIE_MAX_AGE_S,
+			secure: (request.headers.host ?? "").toLowerCase() === secureHost,
+		});
 	});
 }
 
