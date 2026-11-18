@@ -286,13 +286,14 @@ a reader drops what breaks them:
 
 ## Writing
 
-- **One commit per write.** Each write (one reviewer action: a mark, or
-  every cluster state a "Mark remaining reviewed" or a file reset changes)
-  is committed right away as one commit, so nothing is lost if the server
-  crashes and no separate journal is needed. A write's events share that
-  commit, so a reader (a reload, another tab) sees all of them or none:
-  never a reset half done (CAR-215). Starting a patch set is its own commit
-  before the marks; read between the two, the patch set is there with
+- **One commit per write.** Each states request (one or several reviewer
+  actions, such as a mark, or every cluster a "Mark remaining reviewed" or a
+  file reset changes; an action over 1000 clusters spans requests,
+  `MAX_CHANGES`) is committed right away as one commit, so nothing is lost if
+  the server crashes and no separate journal is needed. A request's events
+  share that commit, so a reader (a reload, another tab) sees all of them or
+  none: never a reset half done (CAR-215). Starting a patch set is its own
+  commit before the marks; read between the two, the patch set is there with
   nothing marked, which only looks less reviewed.
 - **Squash before push.** Every 5 minutes, and when the page closes or the
   server shuts down, the tool takes the events in local commits that aren't on
@@ -919,7 +920,7 @@ pessimistic side.
 | One flat state file | 221 KiB | 73 KiB |
 | **Events in messages, empty tree (chosen)** | 105 KiB | **37 KiB** |
 
-With one commit per event and squash before push, a review's local copy sits
+With at most one commit per event and squash before push, a review's local copy sits
 near the 105 KiB column until squashed and garbage-collected. Squashes happen
 every several events or more, so what reaches the remote should land at or
 below the 37 KiB column.

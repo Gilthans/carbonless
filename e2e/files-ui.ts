@@ -134,35 +134,6 @@ export async function resetFile(page: Page, section: Locator, name: string) {
 	await armed.click();
 }
 
-/**
- * The server's answer to the next cluster states write whose every change
- * is `state`, once stored. The page shows a change at once and saves it
- * after; a reload before the save is the reviewer leaving unsaved (the page
- * asks first), so a test that reloads to see a change kept waits for this.
- */
-export function statesStored(
-	page: Page,
-	state: "reviewed" | "unreviewed" | "crossed-off",
-) {
-	return page.waitForResponse((response) => {
-		const request = response.request();
-		if (
-			request.method() !== "POST" ||
-			!new URL(response.url()).pathname.endsWith("/review/states")
-		) {
-			return false;
-		}
-		const { changes = [] } = request.postDataJSON() as {
-			changes?: { state: string }[];
-		};
-		return (
-			response.ok() &&
-			changes.length > 0 &&
-			changes.every((c) => c.state === state)
-		);
-	});
-}
-
 export const fileProgress = (section: Locator) =>
 	section.getByRole("progressbar", { name: "File progress" });
 

@@ -33,12 +33,14 @@ import {
 	findReviewById,
 	InvalidChangeError,
 	listReviews,
+	MAX_SUBJECT,
 	type PatchsetStart,
 	prKey,
 	ReadOnlyPatchsetError,
 	type ReviewPr,
 	ReviewService,
 	StaleSnapshotError,
+	subjectOf,
 	UnknownClusterError,
 } from "./reviews.js";
 
@@ -285,6 +287,25 @@ describe("recordStates", () => {
 			`crb: reviewed 1 cluster, crossed off 1 cluster in ${where}`,
 		);
 		expect((await log())[1]).toContain("crb: started PS1");
+	});
+
+	it("a write's subject counts alike parts, partial marks without line counts, capped", () => {
+		const reviewed = { verb: "reviewed", clusters: true };
+		const partial = (n: number) => ({
+			verb: "marked lines of",
+			clusters: true,
+			alone: `marked ${n} of 9 lines of 1 cluster`,
+		});
+		expect(subjectOf([partial(3)], ["a.ts"])).toBe(
+			"crb: marked 3 of 9 lines of 1 cluster in a.ts",
+		);
+		expect(
+			subjectOf([reviewed, partial(3), reviewed, partial(4)], ["a.ts", "b.ts"]),
+		).toBe("crb: reviewed 2 clusters, marked lines of 2 clusters in 2 files");
+		const long = subjectOf([reviewed], [`${"d/".repeat(200)}x.ts`]);
+		expect(long).toHaveLength(MAX_SUBJECT);
+		expect(long.endsWith("…")).toBe(true);
+		expect(long.startsWith("crb: reviewed 1 cluster in d/d/")).toBe(true);
 	});
 
 	it("a reset of several clusters lands whole: no reader sees it half done", async () => {

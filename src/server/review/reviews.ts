@@ -110,23 +110,47 @@ const VERBS = {
 	"crossed-off": "crossed off",
 } as const;
 
+/** One part of a write, for its commit's subject (subjectOf). */
+interface SummaryPart {
+	/** What it did: "reviewed", "marked lines of", "marked pieces since PS1". */
+	verb: string;
+	/** Whether the verb is said of clusters ("reviewed 2 clusters"). */
+	clusters: boolean;
+	/** Its own wording when it is the write's only part. */
+	alone?: string;
+}
+
+/** The longest commit subject subjectOf writes, "…" included. */
+export const MAX_SUBJECT = 200;
+
 /**
- * A commit's summary of its parts, alike ones counted ("reviewed 2
- * clusters, reset 1 cluster"; informational only: readers use the JSON
- * lines). A part is a verb, or a verb and what it did to 1 cluster.
+ * A write's commit subject: its parts, alike ones counted ("crb: reviewed
+ * 2 clusters, reset 1 cluster in src/a.ts"), at most MAX_SUBJECT
+ * characters. Informational only: readers use the JSON lines.
  */
-function summaryOf(parts: string[]): string {
-	const counts = new Map<string, number>();
-	for (const part of parts) counts.set(part, (counts.get(part) ?? 0) + 1);
-	return [...counts]
-		.map(([part, n]) => {
-			if (n === 1) return part;
-			const one = " 1 cluster";
-			return part.endsWith(one)
-				? `${part.slice(0, -one.length)} ${n} clusters`
-				: `${part} (${n} times)`;
-		})
-		.join(", ");
+export function subjectOf(parts: SummaryPart[], paths: string[]): string {
+	const [only] = parts;
+	let summary: string;
+	if (parts.length === 1 && only?.alone) summary = only.alone;
+	else {
+		const counts = new Map<string, { part: SummaryPart; n: number }>();
+		for (const part of parts) {
+			const seen = counts.get(part.verb);
+			if (seen) seen.n++;
+			else counts.set(part.verb, { part, n: 1 });
+		}
+		summary = [...counts.values()]
+			.map(({ part, n }) => {
+				if (part.clusters)
+					return `${part.verb} ${n} cluster${n === 1 ? "" : "s"}`;
+				return n === 1 ? part.verb : `${part.verb} (${n} times)`;
+			})
+			.join(", ");
+	}
+	const subject = `crb: ${summary} in ${whereOf(paths)}`;
+	return subject.length <= MAX_SUBJECT
+		? subject
+		: `${subject.slice(0, MAX_SUBJECT - 1)}…`;
 }
 
 /** Where a commit's changes are: the one path, or how many files. */
@@ -474,7 +498,7 @@ export class ReviewService {
 		// Every change of the call in one commit: a reader (a reload, another
 		// tab) sees all of them or none, never a reset half done (CAR-215).
 		const events: CrbEvent[] = [];
-		const parts: string[] = [];
+		const parts: SummaryPart[] = [];
 		for (const { cluster, lines, payload } of payloads) {
 			if (lines === null) {
 				const event: ClusterStateEvent = newEvent(
@@ -485,7 +509,7 @@ export class ReviewService {
 					stamp(),
 				);
 				events.push(event);
-				parts.push(`${VERBS[event.state]} 1 cluster`);
+				parts.push({ verb: VERBS[event.state], clusters: true });
 				continue;
 			}
 			// Part of it: the whole cluster unreviewed, then its marked lines
@@ -516,9 +540,11 @@ export class ReviewService {
 					),
 				);
 			}
-			parts.push(
-				`marked ${size(lines.reviewed) + size(lines.crossed)} of ${cluster.lines} lines of 1 cluster`,
-			);
+			parts.push({
+				verb: "marked lines of",
+				clusters: true,
+				alone: `marked ${size(lines.reviewed) + size(lines.crossed)} of ${cluster.lines} lines of 1 cluster`,
+			});
 		}
 		const paths = payloads.map((p) => p.payload.path);
 		for (const change of marks) {
@@ -538,16 +564,14 @@ export class ReviewService {
 					stamp(),
 				),
 			);
-			parts.push(`marked pieces since PS${mark.since}`);
+			parts.push({
+				verb: `marked pieces since PS${mark.since}`,
+				clusters: false,
+			});
 			paths.push(mark.path);
 		}
 		if (events.length > 0) {
-			await this.store.appendEvents(
-				ref,
-				`crb: ${summaryOf(parts)} in ${whereOf(paths)}`,
-				events,
-				slug,
-			);
+			await this.store.appendEvents(ref, subjectOf(parts, paths), events, slug);
 		}
 		return this.getProgress(reviewId, slug);
 	}
