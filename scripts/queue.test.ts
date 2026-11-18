@@ -74,13 +74,16 @@ describe("queue config and guard", () => {
 		expect(() => requireQueue("pnpm test")).not.toThrow();
 	});
 
-	it("a queued run gets the cores divided among the slots", () => {
+	it("a queued run gets the cores but one divided among the slots", () => {
 		expect(queuedWorkers(8)).toBeUndefined();
 		process.env.CRB_QUEUE_HELD = "/tmp/holder";
 		process.env.CRB_QUEUE_SLOTS = "1";
-		expect(queuedWorkers(8)).toBe(8);
+		expect(queuedWorkers(8)).toBe(7);
+		expect(queuedWorkers(1)).toBe(1);
 		process.env.CRB_QUEUE_SLOTS = "3";
 		expect(queuedWorkers(8)).toBe(2);
+		process.env.CRB_QUEUE_SLOTS = "2";
+		expect(queuedWorkers(4)).toBe(1);
 		process.env.CRB_QUEUE_SLOTS = "16";
 		expect(queuedWorkers(8)).toBe(1);
 	});
