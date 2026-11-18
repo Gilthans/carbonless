@@ -15,6 +15,8 @@ export type LastSpeaker =
 export interface PanelRow {
 	/** "gh:<id>" or "ai:<id>": unique across both regions. */
 	key: string;
+	/** The panel's region it's listed in: People (GitHub's) or AI. */
+	region: "people" | "ai";
 	id: string;
 	/** Where it shows in the viewed snapshot (where it was made when it shows nowhere). */
 	path: string;
@@ -140,6 +142,7 @@ export function githubRows(
 ): PanelRow[] {
 	return threads.map((t) => ({
 		key: `gh:${t.id}`,
+		region: "people" as const,
 		id: t.id,
 		...githubPlace(t, shown),
 		focus: { id: t.id },
@@ -198,6 +201,7 @@ export function agentRows(
 				: { id: t.id };
 		return {
 			key: `ai:${t.id}`,
+			region: "ai" as const,
 			id: t.id,
 			...place,
 			focus,
@@ -261,8 +265,8 @@ export interface RowPlace {
 	ms: number;
 }
 
-/** In the AI region: its key says so (agentRows). */
-const regionOf = (row: PanelRow) => (row.key.startsWith("ai:") ? 1 : 0);
+/** The region's place in the panel: People above AI. */
+const regionOf = (row: PanelRow) => (row.region === "ai" ? 1 : 0);
 
 export const placeOf = (row: PanelRow): RowPlace => ({
 	key: row.key,
@@ -273,9 +277,10 @@ export const placeOf = (row: PanelRow): RowPlace => ({
 /**
  * The row a step goes to in `order` (panelOrder) from `at`: the next one
  * (`dir` 1) or the previous (-1); with no current row the first or the
- * last. At an end, none (no wrap). A current row no longer listed is
- * stepped from where it stood: the next is the first row not above it
- * (People before AI, newer above), the previous the last row above it.
+ * last. At an end, none (no wrap). A current row no longer listed, or
+ * listed elsewhere since (new activity sorts it to its region's top), is
+ * stepped from where it stood: the next is the first other row not above
+ * it (People before AI, newer above), the previous the last one above it.
  */
 export function stepRow(
 	order: readonly PanelRow[],
@@ -285,13 +290,17 @@ export function stepRow(
 	if (order.length === 0) return null;
 	if (at === null) return (dir === 1 ? order[0] : order.at(-1)) ?? null;
 	const i = order.findIndex((r) => r.key === at.key);
-	if (i !== -1) return order[i + dir] ?? null;
+	const row = order[i];
+	if (row && regionOf(row) === at.region && timeOf(row.at) === at.ms) {
+		return order[i + dir] ?? null;
+	}
 	const above = (r: PanelRow) => {
 		const region = regionOf(r);
 		return region !== at.region ? region < at.region : timeOf(r.at) > at.ms;
 	};
-	if (dir === 1) return order.find((r) => !above(r)) ?? null;
-	return order.findLast(above) ?? null;
+	const others = order.filter((r) => r.key !== at.key);
+	if (dir === 1) return others.find((r) => !above(r)) ?? null;
+	return others.findLast(above) ?? null;
 }
 
 /** What the page knows of where conversations' cards are (FilesPage). */
@@ -321,7 +330,7 @@ export interface FocusPlan {
 
 export function focusPlan(row: PanelRow, w: FocusWorld): FocusPlan {
 	const none = { open: null, unhide: false, request: null };
-	const onGithub = row.key.startsWith("gh:") || !!row.focus.conversation;
+	const onGithub = row.region === "people" || !!row.focus.conversation;
 	const after = onGithub ? w.githubAfter : w.agentAfter;
 	if (after.has(row.focus.id)) return { ...none, request: row.focus };
 	const file = w.fileOf(row.path);

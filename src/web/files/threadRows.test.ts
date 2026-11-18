@@ -261,6 +261,7 @@ describe("j/k: panelOrder and stepRow", () => {
 	const row = (key: string, day: number, resolved = false): PanelRow => ({
 		...base,
 		key,
+		region: key.startsWith("ai:") ? "ai" : "people",
 		id: key,
 		at: `2026-01-${String(day).padStart(2, "0")}T00:00:00Z`,
 		resolved,
@@ -275,6 +276,11 @@ describe("j/k: panelOrder and stepRow", () => {
 		from: PanelRow | null,
 		dir: 1 | -1,
 	) => stepRow(rows, from && placeOf(from), dir)?.key ?? null;
+	const find2 = (rows: readonly PanelRow[], key: string) => {
+		const r = rows.find((x) => x.key === key);
+		if (!r) throw new Error(key);
+		return r;
+	};
 	const find = (key: string) => {
 		const r = [...people, ...ai].find((x) => x.key === key);
 		if (!r) throw new Error(key);
@@ -327,6 +333,33 @@ describe("j/k: panelOrder and stepRow", () => {
 		const peopleOnly = panelOrder(people, ai, { ...open, aiFolded: true });
 		expect(step(peopleOnly, find("ai:a2"), -1)).toBe("gh:p1");
 		expect(step(peopleOnly, find("ai:a2"), 1)).toBeNull();
+	});
+
+	it("steps from where the current row was when new activity sorts it to the top", () => {
+		const rows = [
+			row("gh:A", 9),
+			row("gh:B", 8),
+			row("gh:C", 7),
+			row("gh:D", 6),
+		];
+		const C = find2(rows, "gh:C");
+		const at = placeOf(C);
+		// A reply on C: it sorts first.
+		const replied = rows.map((r) =>
+			r.key === "gh:C" ? { ...r, at: row("x", 10).at } : r,
+		);
+		const now = panelOrder(replied, [], open);
+		expect(keys(now)).toEqual(["gh:C", "gh:A", "gh:B", "gh:D"]);
+		expect(stepRow(now, at, 1)?.key).toBe("gh:D");
+		expect(stepRow(now, at, -1)?.key).toBe("gh:B");
+		// The last row replied to: j stops, k goes on up.
+		const D = placeOf(find2(rows, "gh:D"));
+		const dReplied = rows.map((r) =>
+			r.key === "gh:D" ? { ...r, at: row("x", 10).at } : r,
+		);
+		const dNow = panelOrder(dReplied, [], open);
+		expect(stepRow(dNow, D, 1)).toBeNull();
+		expect(stepRow(dNow, D, -1)?.key).toBe("gh:C");
 	});
 
 	it("an undated current row that left steps from the bottom of its region", () => {
