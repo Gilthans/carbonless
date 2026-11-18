@@ -520,6 +520,8 @@ const overlaps = (a: Box, b: Box) =>
  * Waits for the card's agent panel to rest: open and slid in, or closed
  * and gone with the cover's height (which it keeps until the slide out
  * ends, then the card shrinks). Geometry read before that mixes layouts.
+ * It waits on the state, not the page clock (installClock): this spec's
+ * agent polls and held answers would stall under a fake clock.
  */
 async function expectPanelAtRest(card: Locator) {
 	const p = panel(card);
@@ -543,21 +545,24 @@ async function boxesIn<K extends string>(
 	card: Locator,
 	selectors: Record<K, string>,
 ): Promise<{ card: Box } & Record<K, Box | null>> {
-	return card.evaluate(
-		(el, sel) => {
+	const boxes = await card.evaluate(
+		(el, sel): Record<string, Box | null> => {
 			const box = (n: Element): Box => {
 				const r = n.getBoundingClientRect();
 				return { x: r.x, y: r.y, width: r.width, height: r.height };
 			};
 			const out: Record<string, Box | null> = { card: box(el) };
 			for (const [k, s] of Object.entries(sel)) {
-				const n = [...el.querySelectorAll(s)].find((m) => m.checkVisibility());
+				const n = [...el.querySelectorAll(s)].find((m) =>
+					m.checkVisibility({ visibilityProperty: true }),
+				);
 				out[k] = n ? box(n) : null;
 			}
 			return out;
 		},
 		selectors as Record<string, string>,
-	) as Promise<{ card: Box } & Record<K, Box | null>>;
+	);
+	return boxes as { card: Box } & Record<K, Box | null>;
 }
 
 /**
@@ -587,13 +592,15 @@ async function expectBottomHandle(card: Locator, page: Page) {
 				"[data-testid=thread-comment-body], [data-testid=thread-counter], textarea, button:not([data-testid=thread-agent-button])",
 			),
 		]
-			.filter((o) => o.checkVisibility())
+			.filter((o) => o.checkVisibility({ visibilityProperty: true }))
 			.map((o) => ({ box: box(o), html: o.outerHTML.slice(0, 80) }));
 		return {
 			c: box(el),
 			t: t && box(t),
 			cover: cover && box(cover),
-			r: resolve?.checkVisibility() ? box(resolve) : null,
+			r: resolve?.checkVisibility({ visibilityProperty: true })
+				? box(resolve)
+				: null,
 			others,
 		};
 	});

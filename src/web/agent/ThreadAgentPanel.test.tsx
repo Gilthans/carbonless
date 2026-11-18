@@ -183,6 +183,7 @@ describe("ThreadAgentPanel", () => {
 		expect(screen.queryByRole("button", { name: "3 comments" })).toBeNull();
 	});
 
+	// A guard against the panel's own timer coming back, not a reproduction: it passes on the old code too.
 	it("closing, the panel goes and the cover gives up its height in one render (CAR-206)", () => {
 		vi.useFakeTimers({
 			toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame"],
