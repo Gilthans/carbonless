@@ -80,14 +80,18 @@ Release note: none (flaky test fix)
   defaults from the ticket's labels (Feature → new, Improvement →
   improved, Bug → fixed), else the tool asks.
 - `none` takes a short reason in parentheses (required: "explicitly say").
-- Up to three `Release note` lines in one comment, for a ticket that
-  shipped more than one user-visible thing (CAR-38's renderers, say).
+- Any number of `Release note` lines in one comment, for a ticket that
+  shipped more than one user-visible thing (CAR-38's renderers, say), or
+  a complex change that needs explaining (owner, 2026-11-18: "don't limit
+  it. We might want to explain complex changes in the release notes").
 - **The newest such comment wins** (by `updatedAt`, so an edited comment
   counts). Changing a note is a new comment or an edit; the old one stays
   as history of who said what.
-- **Text rules**, checked wherever a note is read: one line, plain text
-  (`code` in backticks is the only markup), at most 160 characters, no
-  control or bidi characters, starts with a capital, no ticket ids or PR
+- **Text rules**, checked wherever a note is read: plain text (`code` in
+  backticks is the only markup), one or more sentences on one line (a
+  first sentence that stands alone as the summary, then any explanation;
+  at most 600 characters per note, as a sanity bound, not a style limit),
+  no control or bidi characters, starts with a capital, no ticket ids or PR
   numbers in the text (the tools add those). Written for a reviewer who
   uses crb, not for us: what they can now do or no longer suffer, in the
   UI's words.
@@ -247,7 +251,7 @@ the RC's commit as it is.
   - `dist/release-notes.json`: this version and earlier releases, newest
     first. crb reads its own from here (Global settings), offline.
   - **A field in `package.json`**, `crbReleaseNotes`, with the same data
-    capped at the last 10 versions and 32 KB (oldest dropped first; the
+    capped at the last 10 versions and 64 KB (oldest dropped first; the
     build fails if this version alone is over). `ci:set-version`, which
     already sets `version` and `gitHead` in the runner's checkout, writes
     it. npm keeps unknown `package.json` fields in each version's manifest
@@ -318,9 +322,19 @@ Mockups: `release-notes-mockups.html`.
 
 - **Opened** from the toast's **What's new** (it replaces both the
   version link and the toast's Update; owner decision D3), and from
-  Global settings ("Update available" row: What's new beside Update; the
-  running version's row: a notes icon, tooltip "What's in vX", opening the
-  same modal for its own version from the local file, with no Update).
+  Global settings ("Update available" row: What's new beside Update).
+- **Global settings shows the running version's notes inline** (owner,
+  2026-11-18: "include the release notes in the global settings page,
+  below the version, a few lines with a 'show more' section"): under the
+  Version row, the first 3 notes of the running version (from its own
+  `dist/release-notes.json`, no network), each with its kind icon and
+  `#N`, each note's first sentence only; **Show more** (40px, a chevron
+  that turns) expands in place to every note in full and the version's
+  earlier releases kept in the file, and turns into Show less. A version
+  with no notes says "No user-facing changes"; a build without the file
+  (a local build) shows nothing there. Long notes show their first
+  sentence until expanded, in the modal too (the rest behind the same
+  in-place Show more per note).
 - **Shape**: as the agent modal, a centred `<dialog>` on a desktop
   (`min(34rem, 100vw - 2rem)`, `surface` inside `edge`, `shadow-float`), a
   bottom sheet on a phone (`shadow-sheet`). Escape, the backdrop and ✕
@@ -397,8 +411,8 @@ wording.
 
 Unit (Vitest):
 - Note parsing: marker forms, kinds and the label defaults, `none` with
-  and without a reason (without: refused), up to three lines, newest
-  comment wins (by `updatedAt`), every text rule (length, one line,
+  and without a reason (without: refused), many lines in one comment, newest
+  comment wins (by `updatedAt`), every text rule (the 600-character bound, one line, the first sentence as the summary,
   control and bidi characters, ids in the text).
 - Release range from git: first-parent subjects → PRs and tickets, several
   tickets in one title, `CAR-113:` prefixes, exempt `next:`/`notes:`, a
@@ -437,8 +451,10 @@ specs use):
 - By hand: reason, FAQ link and command in the modal; no command in the
   toast.
 - RC: "since rc.N" entries only, and the "more changes" line.
-- Global settings: What's new opens the same modal; the version row's
-  notes icon opens its own version's notes with no Update.
+- Global settings: What's new opens the same modal; the running
+  version's notes show under Version (3 first sentences), Show more
+  expands to all of them and earlier releases, Show less folds back;
+  a local build shows none; 360px fit.
 - Phone: 360px, no horizontal page scroll, sheet's Update 44px, every
   control ≥ 40px.
 - `pnpm flake-check` on the new specs (they hold answers).
@@ -493,7 +509,15 @@ notes yet").
   changes without notes.
 - A ticket spanning releases shows once, unless it gets a newer note.
 
-## Owner decisions, most important first
+## Owner decisions (answered 2026-11-18)
+
+All seven taken as recommended. D4: "Let's support it though I don't
+expect ticketless PRs to be a common thing". D2: "gating at the PR level
+makes the most sense". Two changes from the review: no limit on note
+lines or length beyond a sanity bound (section 1), and Global settings
+shows the running version's notes with Show more (section 7).
+
+### As asked
 
 1. **D1: where the note lives in Linear.** Recommended: a comment starting
    `Release note (kind): …` or `Release note: none (why)`, newest wins.
