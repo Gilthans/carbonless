@@ -97,6 +97,7 @@ import {
 	LOCAL_NOTES_GIT_PATH,
 	linearClient,
 	linearKey,
+	mergeOkNotes,
 	noLinearKey,
 	notesCheck,
 	notesFilesAt,
@@ -108,7 +109,6 @@ import {
 	readNotesFile,
 	releaseRange,
 	renderNotesBody,
-	rerunRedNoteCheck,
 	shippedNotes,
 	withChangelogSection,
 	withReleaseNotes,
@@ -338,14 +338,11 @@ async function main(argv: string[]) {
 		}
 		case "merge-ok": {
 			if (rest.length !== 1 || !rest[0]) usage();
-			await mergeOk(io, rest[0], async (pull) => {
-				const found = await prNotesOk(pull, findLinear, () =>
-					prFiles(pull.number),
-				);
-				// GitHub's release-note check, red from before the note: rerun it.
-				await rerunRedNoteCheck(io, pull);
-				return found;
-			});
+			// The PR's notes, then a red release-note check from before the
+			// note is rerun.
+			await mergeOk(io, rest[0], (pull) =>
+				mergeOkNotes(io, pull, findLinear, () => prFiles(pull.number)),
+			);
 			return;
 		}
 		case "note": {

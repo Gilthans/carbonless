@@ -50,8 +50,9 @@ what they'd get.
 ## Anti-goals
 
 - **A Linear secret in CI.** (Revised by CAR-211, 2026-11-18: GitHub's
-  `release-note` check gets a read-only Linear key, team CAR only, in its
-  one step that runs master's code; no other workflow gets one, and
+  `release-note` check gets a read-only Linear key, team CAR only, from
+  an environment only master may use, in its one step (pull_request_target,
+  master's code only); no other workflow gets one, and
   promote still checks the snapshot from git alone.) No workflow gets a
   Linear key. Today CI's
   only credentials are GitHub's own token and npm's OIDC, and the release

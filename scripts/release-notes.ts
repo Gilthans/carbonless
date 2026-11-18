@@ -120,11 +120,14 @@ export function kindFromLabels(labels: readonly string[]): NoteKind | null {
 	return kinds.size === 1 ? ([...kinds][0] ?? null) : null;
 }
 
-/** The status of a set of parsed lines, kinds defaulting to `defaultKind`. */
+/**
+ * The status of a set of parsed lines, kinds defaulting to `defaultKind`;
+ * `noKind` says why a line without one has none to take.
+ */
 function statusOf(
 	lines: (NoteLine | { error: string })[],
 	defaultKind: NoteKind | null,
-	where: string,
+	noKind: string,
 ): NoteStatus {
 	if (lines.length === 0) return { status: "missing" };
 	const errors: string[] = [];
@@ -137,7 +140,7 @@ function statusOf(
 			notes.push({ kind: (l.kind ?? defaultKind) as NoteKind, text: l.text });
 		} else {
 			errors.push(
-				`"${clip(l.text)}": no kind, and ${where} doesn't say (write "Release note (new|improved|fixed): …")`,
+				`"${clip(l.text)}": no kind, and ${noKind} (write "Release note (new|improved|fixed): …")`,
 			);
 		}
 	}
@@ -200,21 +203,39 @@ export function ticketNote(
 		.sort((a, b) => b.c.updatedAt.localeCompare(a.c.updatedAt));
 	const newest = marked[0];
 	if (!newest?.lines) return { status: "missing" };
-	return statusOf(newest.lines, kindFromLabels(labels), "its labels");
+	return statusOf(newest.lines, kindFromLabels(labels), "its labels don't say");
 }
 
 /**
  * A PR description's note: its `Release note` lines, anywhere in it. A
- * ticket-less PR's note, or a ticket PR's when the ticket has none in
- * Linear (CAR-211); `labels` (its ticket's, when known) give the default kind.
+ * ticket-less PR's note (`ticket` undefined), or a ticket PR's when the
+ * ticket has none in Linear (CAR-211): its labels give the default kind,
+ * or "unread" when there's no Linear key to read them.
  */
 export function prBodyNote(
 	body: string | null | undefined,
-	labels?: readonly string[],
+	ticket?: { labels: readonly string[] } | "unread",
 ): NoteStatus {
-	return labels
-		? statusOf(markedLines(body ?? ""), kindFromLabels(labels), "its ticket")
-		: statusOf(markedLines(body ?? ""), null, "a PR without a ticket");
+	const lines = markedLines(body ?? "");
+	if (ticket === undefined) {
+		return statusOf(
+			lines,
+			null,
+			"a PR without a ticket has no labels to take it from",
+		);
+	}
+	if (ticket === "unread") {
+		return statusOf(
+			lines,
+			null,
+			"there's no Linear key here to read the ticket's labels: state the kind",
+		);
+	}
+	return statusOf(
+		lines,
+		kindFromLabels(ticket.labels),
+		"its ticket's labels don't say",
+	);
 }
 
 /**
@@ -967,7 +988,9 @@ export async function collectNotes(
 			if (status.status === "missing") {
 				const statuses: NoteStatus[] = [];
 				for (const n of prs) {
-					statuses.push(prBodyNote(await prBody(io, n), issue.labels));
+					statuses.push(
+						prBodyNote(await prBody(io, n), { labels: issue.labels }),
+					);
 				}
 				status = descriptionsNote(statuses);
 			}
@@ -1194,6 +1217,31 @@ async function notesPr(
 	io.log(url);
 }
 
+/** This repository's PR numbers among a ticket's Linear attachments. */
+function attachedPrs(io: Io, issue: LinearIssue): number[] {
+	const out: number[] = [];
+	for (const url of issue.attachments) {
+		const m = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(url);
+		if (m && m[1]?.toLowerCase() === io.repo.toLowerCase()) {
+			const n = Number(m[2]);
+			if (!out.includes(n)) out.push(n);
+		}
+	}
+	return out;
+}
+
+/** A ticket's note from its attached PRs' descriptions (missing when it has none). */
+async function attachedPrsNote(
+	io: Io,
+	issue: LinearIssue,
+): Promise<NoteStatus> {
+	const statuses: NoteStatus[] = [];
+	for (const n of attachedPrs(io, issue)) {
+		statuses.push(prBodyNote(await prBody(io, n), { labels: issue.labels }));
+	}
+	return descriptionsNote(statuses);
+}
+
 /**
  * `pnpm release notes check`: what has no note yet: the release so far
  * (up to origin/master), which fails it, and the tickets done in the last
@@ -1212,7 +1260,12 @@ export async function auditNotes(io: Io, linear: Linear): Promise<string[]> {
 	const seen = new Set(neededIds(range).keys());
 	for (const issue of await doneSince(linear, since)) {
 		if (seen.has(issue.identifier)) continue;
-		const s = ticketNote(issue.comments, issue.labels);
+		let s = ticketNote(issue.comments, issue.labels);
+		if (s.status === "missing") {
+			// Its PRs' descriptions (Linear's PR attachments), as collectNotes
+			// and the release-note check take them (CAR-211).
+			s = await attachedPrsNote(io, issue);
+		}
 		if (s.status === "missing") {
 			warnings.push(
 				`warning: done: ${issue.identifier} ${clip(issue.title)}: no Release note: ${noteCommand(issue.identifier)}`,
@@ -1310,10 +1363,11 @@ export async function prNotesOk(
 	}
 	// A ticket PR: each ticket's note in Linear, else the description's
 	// (CAR-211: "either through the PR description or through the ticket").
-	const own = (labels?: readonly string[]) => prBodyNote(body, labels);
+	const own = (ticket: { labels: readonly string[] } | "unread") =>
+		prBodyNote(body, ticket);
 	const { linear: client, tried } = linear();
 	if (!client) {
-		const s = own();
+		const s = own("unread");
 		if (s.status === "notes" || s.status === "none") {
 			return `#${pull.number}: ${decided(s)} in its description (no Linear key here: ${tickets.join(", ")}'s notes unread)`;
 		}
@@ -1349,7 +1403,7 @@ export async function prNotesOk(
 			found.push(`${id}: ${decided(t)}`);
 			continue;
 		}
-		const d = own(issue.labels);
+		const d = own({ labels: issue.labels });
 		if (d.status === "invalid") {
 			problems.push(
 				`${id} has no Release note, and the description's is broken: ${d.errors.join("; ")}`,
@@ -1381,7 +1435,9 @@ const decided = (s: NoteStatus) =>
 // runs prNotesOk (release.ts ci:pr-note). A note posted in Linear after it
 // ran turns it green only on a rerun: `pnpm release note` and merge-ok do it.
 
-export const NOTE_WORKFLOW = "release-note.yml";
+/** The check (job) and workflow names of release-note.yml. */
+export const NOTE_CHECK = "release-note";
+export const NOTE_WORKFLOW_NAME = "Release note";
 
 /** Text for a workflow command (`::error::…`): one line, as GitHub escapes it. */
 export const workflowText = (s: string) =>
@@ -1389,31 +1445,51 @@ export const workflowText = (s: string) =>
 
 type NoteRun = {
 	databaseId: number;
-	status: string;
-	conclusion: string;
-	url?: string;
+	/** gh's bucket: pass, fail, pending, skipping or cancel. */
+	bucket: string;
+	url: string;
 };
 
-/** A branch's newest release-note run, null when none. */
-async function newestNoteRun(io: Io, branch: string): Promise<NoteRun | null> {
-	const out = await must(io, "gh", [
-		"run",
-		"list",
+/**
+ * A PR's release-note check, from the PR's own checks (a
+ * pull_request_target run's branch is master, so a run list by branch
+ * can't find it); null when it has none yet.
+ */
+async function noteCheckRun(io: Io, pr: number): Promise<NoteRun | null> {
+	const r = await io.run("gh", [
+		"pr",
+		"checks",
+		String(pr),
 		"--repo",
 		io.repo,
-		"--workflow",
-		NOTE_WORKFLOW,
-		"--event",
-		"pull_request",
-		"--branch",
-		branch,
-		"--limit",
-		"1",
 		"--json",
-		"databaseId,status,conclusion,url",
+		"name,workflow,bucket,link",
 	]);
-	const runs = JSON.parse(out) as NoteRun[];
-	return runs[0] ?? null;
+	// gh exits 1 when a check failed and 8 while one is pending: the JSON
+	// is the answer either way.
+	if (r.stdout.trim() === "" && /no checks reported/i.test(r.stderr)) {
+		return null;
+	}
+	let checks: {
+		name: string;
+		workflow: string;
+		bucket: string;
+		link: string;
+	}[];
+	try {
+		if (![0, 1, 8].includes(r.code)) throw new Error();
+		checks = JSON.parse(r.stdout);
+	} catch {
+		throw new Error(
+			`gh pr checks ${pr} failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`,
+		);
+	}
+	const check = checks.find(
+		(c) => c.name === NOTE_CHECK && c.workflow === NOTE_WORKFLOW_NAME,
+	);
+	const id = /\/actions\/runs\/(\d+)/.exec(check?.link ?? "")?.[1];
+	if (!check || !id) return null;
+	return { databaseId: Number(id), bucket: check.bucket, url: check.link };
 }
 
 /**
@@ -1422,7 +1498,7 @@ async function newestNoteRun(io: Io, branch: string): Promise<NoteRun | null> {
  * new note. Never throws: a failure only warns (the note is posted).
  */
 export async function rerunNoteChecks(io: Io, ticket: string): Promise<void> {
-	let pulls: { number: number; title: string; headRefName: string }[];
+	let pulls: { number: number; title: string }[];
 	try {
 		pulls = JSON.parse(
 			await must(io, "gh", [
@@ -1437,7 +1513,7 @@ export async function rerunNoteChecks(io: Io, ticket: string): Promise<void> {
 				"--limit",
 				"200",
 				"--json",
-				"number,title,headRefName",
+				"number,title",
 			]),
 		);
 	} catch (error) {
@@ -1448,12 +1524,12 @@ export async function rerunNoteChecks(io: Io, ticket: string): Promise<void> {
 	}
 	for (const p of pulls.filter((p) => titleTickets(p.title).includes(ticket))) {
 		try {
-			const run = await newestNoteRun(io, p.headRefName);
+			const run = await noteCheckRun(io, p.number);
 			if (!run) {
 				io.log(
 					`#${p.number}: no release-note run yet: it reads the note when it runs`,
 				);
-			} else if (run.status !== "completed") {
+			} else if (run.bucket === "pending") {
 				io.log(
 					`#${p.number}: its release-note check is running (it may have read Linear before the note): if it ends red, gh run rerun ${run.databaseId}`,
 				);
@@ -1466,7 +1542,7 @@ export async function rerunNoteChecks(io: Io, ticket: string): Promise<void> {
 					io.repo,
 				]);
 				io.log(
-					`#${p.number}: reran its release-note check (run ${run.databaseId}${run.url ? `, ${run.url}` : ""})`,
+					`#${p.number}: reran its release-note check (run ${run.databaseId}, ${run.url})`,
 				);
 			}
 		} catch (error) {
@@ -1478,6 +1554,21 @@ export async function rerunNoteChecks(io: Io, ticket: string): Promise<void> {
 }
 
 /**
+ * merge-ok's note step: prNotesOk, then (only once it passed) the rerun of
+ * a red release-note check. Throws what prNotesOk throws, rerunning nothing.
+ */
+export async function mergeOkNotes(
+	io: Io,
+	pull: PullForNotes,
+	linear: () => { linear: Linear | null; tried: string[] },
+	files: () => Promise<string[]>,
+): Promise<string> {
+	const found = await prNotesOk(pull, linear, files);
+	await rerunRedNoteCheck(io, pull);
+	return found;
+}
+
+/**
  * merge-ok, once its own note check passed: reruns the PR's release-note
  * check when its newest run is red (it ran before the note), and says to
  * wait for it. Never throws.
@@ -1486,11 +1577,9 @@ export async function rerunRedNoteCheck(
 	io: Io,
 	pull: PullForNotes,
 ): Promise<void> {
-	const branch = pull.head?.ref;
-	if (!branch) return;
 	try {
-		const run = await newestNoteRun(io, branch);
-		if (run?.status !== "completed" || run.conclusion !== "failure") return;
+		const run = await noteCheckRun(io, pull.number);
+		if (run?.bucket !== "fail" && run?.bucket !== "cancel") return;
 		await must(io, "gh", [
 			"run",
 			"rerun",
@@ -1499,7 +1588,7 @@ export async function rerunRedNoteCheck(
 			io.repo,
 		]);
 		io.log(
-			`#${pull.number}'s release-note check was red (it ran before the note): reran it (run ${run.databaseId}${run.url ? `, ${run.url}` : ""}); wait for it to turn green before merging`,
+			`#${pull.number}'s release-note check was red (it ran before the note): reran it (run ${run.databaseId}, ${run.url}); wait for it to turn green before merging`,
 		);
 	} catch (error) {
 		io.log(
