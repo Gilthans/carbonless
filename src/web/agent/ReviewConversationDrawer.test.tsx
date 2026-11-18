@@ -372,6 +372,48 @@ describe("ReviewConversationDrawer", () => {
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
 	});
 
+	it.each<[string, Partial<AgentStatus>]>([
+		["configured, none spawned or joined", { state: "off" }],
+		["configured, failed", { state: "error", spawned: true }],
+		["configured, an error", { error: "the agent exited" }],
+	])(
+		"no agent connected (%s): Shift+A opens the setup, never the drawer",
+		async (_n, more) => {
+			const { user } = show({
+				threads: [review({ unread: true })],
+				status: { ...status, ...more },
+			});
+			await user.keyboard("{Shift>}A{/Shift}");
+			expect(screen.getByTestId("setup")).toHaveTextContent("open");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		},
+	);
+
+	it.each<[string, Partial<AgentStatus>]>([
+		["starting", { state: "starting", spawned: true }],
+		["reconnecting", { state: "reconnecting" }],
+		[
+			"a joined session",
+			{
+				configured: false,
+				via: "mcp",
+				joined: {
+					name: "carbonless · main",
+					machine: "devbox",
+					since: "2026-11-10T10:00:00Z",
+				},
+			},
+		],
+	])("an agent connected (%s): Shift+A opens the drawer", async (_n, more) => {
+		const { user } = show({
+			threads: [review()],
+			status: { ...status, ...more },
+		});
+		await user.keyboard("{Shift>}A{/Shift}");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+	});
+
 	it("open while the agent has gone (nothing set up now): Shift+A closes it, no setup", async () => {
 		openReviewDrawer();
 		const { user } = show({

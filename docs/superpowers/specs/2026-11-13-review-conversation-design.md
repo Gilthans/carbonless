@@ -126,13 +126,25 @@ green ready, red failing) and its tooltip (`agentTip`). It gains:
 
 Tap:
 
-| Agent | Tap |
+| Agent (`chipOpensDrawer`) | Tap |
 |---|---|
-| an ACP agent is configured, or a session is joined | toggles the drawer |
-| neither (even with a review conversation already there) | opens agent setup |
+| a session joined (not failing) | toggles the drawer |
+| starting, ready, busy or reconnecting | toggles the drawer |
+| elsewhere (another crb server answers) | toggles the drawer |
+| spawned and configured, the runner not up yet | toggles the drawer |
+| failed (`error` state, or an error) | opens the agent modal (setup, or its status with the error and Restart once spawned) |
+| off with no spawn under way (stopped, or none ever joined), configured or not | opens agent setup |
+| spawned with nothing configured | opens agent setup |
+| no status | opens agent setup |
+
+Even with a review conversation already there, the rule holds. An open
+drawer always closes from the chip or Shift+A, whatever the agent.
 
 Owner QA 2026-11-16: "if there's no agent associated, it should open the
-setup modal instead of the side bar"; Shift+A does the same. A tap before
+setup modal instead of the side bar"; Shift+A does the same. 2026-11-18:
+"It should open it if there is no agent connected to the review. If it's
+starting or lagging that's fine, but it failed, stopped, or none ever
+joined, it should open the setup modal". A tap before
 the first status read is held (the chip's spinner) and acted on once the
 status lands, so the drawer never opens only to be swapped for the setup;
 a second tap cancels it and a failed read spends it. Today a joined
@@ -360,8 +372,8 @@ Unit:
 - the MCP read tools added for it: scoped to the agent's review,
   third-party text sanitised (a hostile comment body is fenced), GitHub
   unreadable said as such, never an empty list.
-- web: chip states (not configured → setup; configured → toggles the
-  drawer; unread count; pressed; accessible name); the drawer
+- web: chip states (no agent connected: failed, stopped, none joined →
+  setup; connected or on its way → toggles the drawer; unread count; pressed; accessible name); the drawer
   (empty state focuses the composer, opens at the end / at "new", marks
   seen, status button opens the modal, Escape closes; while the read is
   held: spinner, no empty composer state, no 0 count); the review thread
@@ -372,7 +384,9 @@ Playwright (desktop and phone), with the fake ACP agent:
   unread count on the chip after a later answer → reopen at "new";
 - a code link in the answer jumps to Files changed with the drawer open
   (desktop) / closed (phone);
-- status button opens Your agent; not configured: chip opens setup;
+- status button opens Your agent; not configured: chip opens setup; a
+  configured agent that failed: chip opens the agent modal (its error,
+  Restart), never the drawer;
 - 360px: no horizontal page scroll, tap targets ≥40px;
 - coverage: after a conversation, the unreviewed counts are unchanged.
 

@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { releaseAcp } from "../test/fake-acp/scenario";
 import {
+	ask,
 	askReviewByApi,
 	bar,
 	CALC,
@@ -158,51 +159,60 @@ test("tap the chip, ask, the answer streams in; closed, a later answer lights th
 	await expect(chip(page)).toBeFocused();
 });
 
-test("no agent attached: the drawer still opens, the question waits, and is answered once one is spawned", async ({
+test("configured, none spawned: the chip opens the setup; a question asked meanwhile is answered once one is spawned, then the chip opens the drawer", async ({
 	page,
 	pr,
 	agentCrb,
-	isMobile,
 }) => {
 	await pr(fixture);
 	const s = await agentCrb({
 		spawn: false,
 		scenario: { agent: AGENT, answers: [{ text: "Here now." }] },
 	});
+	await askReviewByApi(s.url, "Is this PR ready?");
 	await page.goto(s.url);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
+	// None ever joined: nothing connected to the review, so the setup.
+	await expect(chip(page)).not.toHaveAttribute("aria-busy", "true");
+	await expect(chip(page)).not.toHaveAttribute("aria-expanded");
 	await chip(page).click();
-	await send(page, "Is this PR ready?", isMobile);
-	const drawer = reviewDrawer(page);
-	const waiting = drawer.getByTestId("agent-waiting");
-	await expect(waiting).toBeVisible();
-	await expect(waiting).toContainText("Spawn or invite an agent");
+	await expect(setupDialog(page)).toBeVisible();
+	await expect(reviewDrawer(page)).toHaveCount(0);
+	await page.keyboard.press("Escape");
+	await expect(setupDialog(page)).toHaveCount(0);
 	await spawnAgent(s.url);
-	await expect(drawer.getByTestId("agent-message-ai")).toHaveText([
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
+	await chip(page).click();
+	await expect(reviewDrawer(page).getByTestId("agent-message-ai")).toHaveText([
 		"Here now.",
 	]);
-	await expect(drawer.getByTestId("agent-waiting")).toHaveCount(0);
+	await expect(setupDialog(page)).toHaveCount(0);
 });
 
-test("no agent, a review conversation already there: the chip and Shift+A open the setup, never the drawer", async ({
+test("a configured agent that failed: the chip and Shift+A open the agent modal (its error, Restart), never the drawer", async ({
 	page,
 	pr,
 	agentCrb,
 	isMobile,
 }) => {
 	await pr(fixture);
-	const s = await agentCrb({ configured: false });
-	await askReviewByApi(s.url, "What is the risk in this PR?");
-	await page.goto(s.url);
-	await expect(chip(page)).toHaveAttribute("data-state", "off");
+	const s = await agentCrb({ scenario: { agent: AGENT, crashOnPrompt: true } });
+	// Asked on a line, the agent exits: the review's agent failed.
+	const section = await openFile(page, s.url, CALC);
+	await ask(page, section, 3, "Crash?");
+	await expect(chip(page)).toHaveAttribute("data-state", "error");
+	await expect(chip(page)).not.toHaveAttribute("aria-expanded");
 	await chip(page).click();
-	await expect(setupDialog(page)).toBeVisible();
+	// Spawned, so the modal opens on its status: the error, Restart.
+	const modal = statusDialog(page);
+	await expect(modal.getByRole("alert")).toContainText("exited with code 70");
+	await expect(modal.getByRole("button", { name: "Restart" })).toBeVisible();
 	await expect(reviewDrawer(page)).toHaveCount(0);
 	if (isMobile) return;
 	await page.keyboard.press("Escape");
-	await expect(setupDialog(page)).toHaveCount(0);
+	await expect(modal).toHaveCount(0);
 	await page.locator("body").press("Shift+A");
-	await expect(setupDialog(page)).toBeVisible();
+	await expect(modal.getByRole("alert")).toContainText("exited with code 70");
 	await expect(reviewDrawer(page)).toHaveCount(0);
 });
 

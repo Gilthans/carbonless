@@ -116,11 +116,20 @@ export function useAgentSync(
 
 /**
  * Whether pressing the chip (or Shift+A) toggles the review conversation's
- * drawer: an ACP agent configured or a session joined. Otherwise (no agent,
- * even with a conversation already there) it opens the agent setup.
+ * drawer: an agent is connected to this review, or on its way. A joined
+ * session; an agent starting, ready, busy or reconnecting; another server
+ * answering (elsewhere); a spawn whose runner isn't up yet. Otherwise it
+ * opens the agent setup: an agent that failed (an error), stopped or never
+ * joined (off, no spawn under way), configured or not; a spawn with nothing
+ * configured; no status. Even with a conversation already there.
  */
-export const chipOpensDrawer = (status: AgentStatus | undefined): boolean =>
-	Boolean(status?.configured) || Boolean(status?.joined);
+export function chipOpensDrawer(status: AgentStatus | undefined): boolean {
+	if (!status) return false;
+	if (status.state === "error" || status.error) return false;
+	if (status.joined) return true;
+	if (status.state === "off") return spawnGap(status) === "starting";
+	return true;
+}
 
 /**
  * A press (the chip's tap or Shift+A) before the first status read: held

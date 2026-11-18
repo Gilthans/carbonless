@@ -25,6 +25,7 @@ import {
 	agentInk,
 	agentTip,
 	CHIP_COLUMN,
+	chipOpensDrawer,
 } from "./AgentChip";
 import {
 	AGENT_BUSY_POLL_MS,
@@ -150,16 +151,24 @@ const named = (rest: string) => `Review conversation · Your agent: ${rest}`;
 
 describe("the chip's tap", () => {
 	it.each<[string, Partial<AgentStatus>, AgentThread[]]>([
+		["a spawned agent, ready", { state: "ready", spawned: true }, []],
+		["an agent starting", { state: "starting", spawned: true }, []],
+		["an agent busy", { state: "busy", waiting: 1 }, []],
+		["an agent reconnecting", { state: "reconnecting" }, []],
+		["another server answering", { state: "elsewhere", elsewhere: 4747 }, []],
 		[
-			"an ACP agent configured, none spawned",
-			{ state: "off", agent: undefined },
+			"spawned, the runner not up yet",
+			{ state: "off", spawned: true, agent: undefined },
 			[],
 		],
-		["a spawned agent", { state: "ready", spawned: true }, []],
-		["a crashed spawned agent", { state: "error", spawned: true }, []],
 		[
 			"a joined session, nothing configured",
 			{ ...joined(), configured: false },
+			[],
+		],
+		[
+			"a joined session reconnecting",
+			joined({ state: "reconnecting", configured: false }),
 			[],
 		],
 	])("%s: toggles the drawer, never the setup", async (_n, more, threads) => {
@@ -175,6 +184,67 @@ describe("the chip's tap", () => {
 		await user.click(chip);
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
 		expect(chip).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it.each<[string, Partial<AgentStatus>]>([
+		[
+			"an agent configured, none spawned or joined",
+			{ state: "off", agent: undefined },
+		],
+		[
+			"an agent configured, stopped",
+			{ state: "off", spawned: false, agent: undefined },
+		],
+		["an agent that failed", { state: "error", spawned: true }],
+		[
+			"an agent with an error, still ready",
+			{ state: "ready", error: "the agent exited" },
+		],
+		[
+			"a joined session failing",
+			joined({ state: "error", error: "lost the session" }),
+		],
+		[
+			"spawned, nothing configured",
+			{ state: "off", configured: false, spawned: true, agent: undefined },
+		],
+	])(
+		"no agent connected, %s: opens the agent setup, no drawer",
+		async (_n, more) => {
+			const { user } = chipOver(status(more), vi.fn(), [
+				review(2, { unread: true }),
+			]);
+			const chip = screen.getByTestId("agent-chip");
+			expect(chip).not.toHaveAttribute("aria-expanded");
+			expect(chip).not.toHaveAttribute("aria-controls");
+			expect(face().className).not.toContain("bg-agent");
+			await user.click(chip);
+			expect(screen.getByTestId("setup")).not.toHaveTextContent("closed");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		},
+	);
+
+	it.each<[string, AgentStatus | undefined, boolean]>([
+		["no status", undefined, false],
+		["off, configured", status({ state: "off" }), false],
+		["off, configured, spawned", status({ state: "off", spawned: true }), true],
+		[
+			"off, nothing configured, spawned",
+			status({ state: "off", configured: false, spawned: true }),
+			false,
+		],
+		["starting", status({ state: "starting" }), true],
+		["ready", status(), true],
+		["busy", status({ state: "busy" }), true],
+		["reconnecting", status({ state: "reconnecting" }), true],
+		["elsewhere", status({ state: "elsewhere", elsewhere: 4747 }), true],
+		["error", status({ state: "error" }), false],
+		["ready with an error", status({ error: "boom" }), false],
+		["joined", status(joined({ configured: false })), true],
+		["joined, off", status(joined({ state: "off", configured: false })), true],
+		["joined, error", status(joined({ state: "error" })), false],
+	])("chipOpensDrawer, %s: %s", (_n, s, drawer) => {
+		expect(chipOpensDrawer(s)).toBe(drawer);
 	});
 
 	it.each<[string, AgentThread[]]>([

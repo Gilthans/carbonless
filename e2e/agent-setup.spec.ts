@@ -65,7 +65,6 @@ const statusPoll = (page: Page) =>
 
 test("a new review opens on Setup Review Agent", async ({
 	page,
-	isMobile,
 	pr,
 	agentCrb,
 	acpLogPath,
@@ -78,18 +77,12 @@ test("a new review opens on Setup Review Agent", async ({
 	await expect(chip(page)).toHaveAccessibleName(
 		chipName("No agent · spawn or invite"),
 	);
-	// Configured: the chip toggles the review conversation's drawer, not
-	// the setup (the Overview's agent row opens it).
+	// Configured, but no agent connected to the review: the chip opens the
+	// setup, not the review conversation's drawer.
+	await expect(chip(page)).not.toHaveAttribute("aria-busy", "true");
+	await expect(chip(page)).not.toHaveAttribute("aria-expanded");
 	await chip(page).click();
-	await expect(chip(page)).toHaveAttribute("aria-expanded", "true");
-	await expect(setupDialog(page)).toHaveCount(0);
-	// Closed again: the chip on a desktop; on a phone the full-screen
-	// drawer covers it, so its own Close.
-	if (isMobile) {
-		await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
-	} else await chip(page).click();
-	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
-	await openAgentModal(page);
+	await expect(reviewDrawer(page)).toHaveCount(0);
 	const d = setupDialog(page);
 	await expect(d).toBeVisible();
 	await expect(d.getByRole("tab", { name: "Invite" })).toHaveAttribute(
