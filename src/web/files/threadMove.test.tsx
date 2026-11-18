@@ -333,6 +333,32 @@ describe("the moved chip", () => {
 	});
 });
 
+describe("an unplaced moved thread", () => {
+	it("shows its chip and Undo, and the lines it was moved to as its Original Reviewed Change, as text", async () => {
+		const old = {
+			side: "RIGHT" as const,
+			startLine: 7,
+			line: 7,
+			text: [HOSTILE],
+		};
+		show(
+			info({
+				placements: new Map([["T1", { ...unplaced, old }]]),
+				moves: new Map([["T1", moved({ here: false, path: "src/b.ts" })]]),
+			}),
+			row(),
+		);
+		const r = await screen.findByTestId("unplaced-thread");
+		expect(r.querySelector('[data-testid="moved-chip"]')).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Undo move" })).toBeTruthy();
+		expect(screen.getByTestId("original-code-label").textContent).toBe(
+			"PS2 · src/b.ts · line 7",
+		);
+		expect(r.textContent).toContain(HOSTILE);
+		expect(r.querySelector("img")).toBeNull();
+	});
+});
+
 describe("Undo", () => {
 	const answer = (m?: MovedInfo): PlacementsAnswer => ({
 		readId: "r1",

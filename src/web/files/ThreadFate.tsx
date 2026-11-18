@@ -723,7 +723,17 @@ export function UnplacedShell(props: {
 					</Tooltip>
 				)}
 			</div>
-			<OriginalCode thread={thread} />
+			{props.moved && (
+				<div className="flex flex-wrap items-center gap-2 empty:hidden">
+					{props.moved}
+				</div>
+			)}
+			{props.failure}
+			<OriginalCode
+				thread={thread}
+				fallback={props.original?.old}
+				moved={props.original}
+			/>
 			{props.children}
 		</li>
 	);
