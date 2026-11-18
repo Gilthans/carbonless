@@ -105,6 +105,20 @@ async function openOn(section: Locator, page: Page, n: number) {
 	return card(page);
 }
 
+/**
+ * Views the PR's new head `oid`: a reload, then the toast's View once it
+ * names that head (never a toast still about an earlier one).
+ */
+async function viewHead(page: Page, oid: string) {
+	await page.reload();
+	const toast = page.getByTestId("head-toast");
+	await expect(toast).toContainText(oid.slice(0, 7), GIT_WAIT);
+	await toast.getByRole("button", { name: "View" }).click();
+	await expect(
+		page.getByRole("button", { name: `head ${oid.slice(0, 7)}` }),
+	).toBeVisible(GIT_WAIT);
+}
+
 /** Drags `handle` onto `target` with the mouse. */
 async function drag(page: Page, handle: Locator, target: Locator) {
 	const from = await handle.boundingBox();
@@ -253,7 +267,7 @@ test("the next pushes follow a moved thread from its moved line; once that line 
 	await expect(bubbleOn(section, 30)).toBeVisible();
 	// Push: two lines on top. The page's head is the one it opened on
 	// until the reviewer views the new one.
-	p.moveHead({
+	const h2 = p.moveHead({
 		message: "two on top",
 		files: {
 			[CORE]: text([
@@ -265,11 +279,7 @@ test("the next pushes follow a moved thread from its moved line; once that line 
 			]),
 		},
 	});
-	await page.reload();
-	await page
-		.getByTestId("head-toast")
-		.getByRole("button", { name: "View" })
-		.click(GIT_WAIT);
+	await viewHead(page, h2);
 	const pushed = fileSection(page, CORE);
 	await pushed.getByRole("button", { name: "Expand file" }).click();
 	const followed = await openOn(pushed, page, 32);
@@ -299,7 +309,7 @@ test("the next pushes follow a moved thread from its moved line; once that line 
 		new RegExp(`-X POST repos/[^ ]+/pulls/${p.number}/comments/\\d+/replies `),
 	);
 	// Push: the moved-to line deleted.
-	p.moveHead({
+	const h3 = p.moveHead({
 		message: "drop core 30",
 		files: {
 			[CORE]: text([
@@ -309,11 +319,7 @@ test("the next pushes follow a moved thread from its moved line; once that line 
 			]),
 		},
 	});
-	await page.reload();
-	await page
-		.getByTestId("head-toast")
-		.getByRole("button", { name: "View" })
-		.click(GIT_WAIT);
+	await viewHead(page, h3);
 	const gone = fileSection(page, CORE);
 	await gone.getByRole("button", { name: "Expand file" }).click();
 	const unplaced = gone
