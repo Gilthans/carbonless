@@ -264,6 +264,12 @@ export const UNKNOWN_SOURCE = "(unknown file)";
 
 /** Where the unhandled-errors reporter writes, next to the JSON report. */
 export const unhandledPath = (report) => `${report}.unhandled.json`;
+/**
+ * The error of the failure that stands for a Vitest run whose
+ * unhandled-errors reporter wrote no file (it always writes one, if empty):
+ * unhandled errors may be lost, so the job is never flaky or passed.
+ */
+export const UNHANDLED_LOST = "the unhandled-errors reporter wrote no file";
 
 const filesOf = (report, cwd) =>
 	(report?.testResults ?? []).map((f) => posix(relative(cwd, f.name)));
@@ -443,7 +449,10 @@ export function run({
 	};
 	mkdirSync(o.out, { recursive: true });
 	const outFile = join(o.out, "test-outcomes.json");
-	const write = (failed, note) => {
+	// Set below: a Vitest report with no unhandled-errors file.
+	let lost = [];
+	const write = (labelled, note) => {
+		const failed = [...labelled, ...lost];
 		const doc = {
 			...base,
 			verdict: jobVerdict({ jobStatus, testsStep, failed, otherFailed }),
@@ -456,13 +465,30 @@ export function run({
 	const join2 = (...parts) => parts.filter(Boolean).join("; ");
 
 	const report = testsStep === "failure" ? readJson(o.report) : null;
+	const unhandled =
+		testsStep === "failure" ? readJson(unhandledPath(o.report)) : null;
 	const first =
 		testsStep === "failure"
-			? readResults(o.runner, report, cwd, readJson(unhandledPath(o.report)))
+			? readResults(o.runner, report, cwd, unhandled)
 			: null;
 	const failed = first?.failed ?? [];
 	let note = "";
 	if (otherFailed.length > 0) note = `failed steps: ${otherFailed.join(", ")}`;
+	// The reporter always writes its file: none means it failed to, and an
+	// unhandled error may be lost. Not one to rerun (nothing says what to
+	// rerun), so it stays not-rerun and the job can't read as flaky.
+	if (o.runner === "vitest" && report && !unhandled) {
+		lost = [
+			{
+				file: UNKNOWN_SOURCE,
+				title: UNHANDLED,
+				project: null,
+				error: UNHANDLED_LOST,
+				verdict: "not-rerun",
+			},
+		];
+		note = join2(note, UNHANDLED_LOST);
+	}
 	if (testsStep === "failure" && failed.length === 0) {
 		note = join2(
 			note,
