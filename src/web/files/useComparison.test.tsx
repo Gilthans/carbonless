@@ -33,6 +33,7 @@ const session = (patchsets: number[]): SessionInfo => ({
 		number,
 		head: i === patchsets.length - 1 && number > 1 ? HEAD : oid(String(number)),
 		mergeBase: oid("0"),
+		revision: `r${number}`,
 		baseBranch: "main",
 		startedAt: 1,
 		since: number === 1 ? null : number - 1,
