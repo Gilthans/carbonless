@@ -330,7 +330,7 @@ const modal = (page: Page) => page.getByTestId("whats-new");
 
 /** The toast's What's new: the modal, open. */
 async function openWhatsNew(page: Page) {
-	await toast(page).getByRole("button", { name: "What's new" }).click();
+	await toast(page).getByTestId("update-open").click();
 	await expect(modal(page)).toHaveAttribute("open", "");
 	return modal(page);
 }
@@ -448,14 +448,37 @@ it("an update on offer: on Home and on a review, linking to the release; dismiss
 	await expect(toast(page)).toContainText(`v${NEWER}`);
 	// What's new is the toast's one action: no release link, no Update.
 	await expect(toast(page).getByRole("link")).toHaveCount(0);
-	await expect(toast(page).getByRole("button", { name: /Update/ })).toHaveCount(
-		0,
-	);
+	await expect(
+		toast(page).getByRole("button", { name: /^Update( to|$)/ }),
+	).toHaveCount(0);
 	await expectNoPageOverflow(page);
 	await shot(page, "update-home", isMobile);
-	for (const name of ["What's new", "Dismiss"]) {
-		const box = await toast(page).getByRole("button", { name }).boundingBox();
+	// The offer is one button, named by its text, opening What's new.
+	await expect(toast(page).getByRole("button")).toHaveCount(2);
+	await expect(toast(page).getByTestId("update-open")).toHaveAccessibleName(
+		`Update available v${NEWER}`,
+	);
+	for (const target of [
+		toast(page).getByTestId("update-open"),
+		toast(page).getByRole("button", { name: "Dismiss" }),
+	]) {
+		const box = await target.boundingBox();
 		expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+		expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
+	}
+	// Looks pressable: a button's border, and the tooltip on hover (not on a phone).
+	const open = toast(page).getByTestId("update-open");
+	expect(
+		await open.evaluate((el) => getComputedStyle(el).borderTopWidth),
+	).not.toBe("0px");
+	if (!isMobile) {
+		await open.hover();
+		await expect(
+			page.locator('[role="tooltip"]:not([hidden])', {
+				hasText: `What's new in v${NEWER}`,
+			}),
+		).toBeVisible();
+		await page.mouse.move(0, 0);
 	}
 	const review = await openReview(url);
 	await page.goto(review);
@@ -791,7 +814,7 @@ it("by hand (a folder crb can't write): the toast says why with the FAQ's sectio
 			`npm install -g carbonless-review@${NEWER}`,
 		);
 		await expect(
-			modal(page).getByRole("button", { name: /^Update/ }),
+			modal(page).getByRole("button", { name: /^Update( to|$)/ }),
 		).toHaveCount(0);
 		await expectNoPageOverflow(page);
 		for (const target of [
@@ -1140,9 +1163,7 @@ it("What's new while the registry holds the notes: skeleton and spinner in place
 	// Escape closes it; focus back on the toast's What's new.
 	await page.keyboard.press("Escape");
 	await expect(m).not.toHaveAttribute("open", "");
-	await expect(
-		toast(page).getByRole("button", { name: "What's new" }),
-	).toBeFocused();
+	await expect(toast(page).getByTestId("update-open")).toBeFocused();
 	// Opened again: the kept notes, no second read of the registry.
 	await openWhatsNew(page);
 	await expect(m).toHaveAttribute("data-state", "loaded");
@@ -1270,7 +1291,7 @@ it("What's new on rc: only what the running RC didn't have, under the offered RC
 	await shot(page, "whats-new-rc", isMobile);
 });
 
-it("Global settings: the running version's notes under Version, Show more and less; What's new beside Update opens the same modal", async ({
+it("Global settings: the running version's notes under Version; Show more opens older versions 5 at a time, each with its own Show more; What's new beside Update opens the same modal", async ({
 	page,
 	pr,
 	installed,
@@ -1300,12 +1321,17 @@ it("Global settings: the running version's notes under Version, Show more and le
 			],
 			none: [],
 		},
-		{
-			version: "0.1.0",
+		// Seven earlier releases (the file carries every one), newest first.
+		...Array.from({ length: 7 }, (_, i) => ({
+			version: `0.1.${6 - i}`,
 			date: "2026-10-01",
-			notes: [note("CAR-10", 10, "The first release.")],
-			none: [],
-		},
+			notes: [
+				note("CAR-10", 10 + i, `Release 0.1.${6 - i}, first. Its detail.`),
+				note("CAR-11", 20 + i, "Second note."),
+				note("CAR-12", 30 + i, "Third note."),
+				note("CAR-13", 40 + i, "Fourth note."),
+			],
+		})),
 	]);
 	const { url } = await installed.start();
 	const version = await openGlobalSettings(page, url);
@@ -1317,24 +1343,50 @@ it("Global settings: the running version's notes under Version, Show more and le
 	]);
 	await expectNoPageOverflow(page);
 	await shot(page, "global-settings-notes", isMobile);
-	const more = notes.getByRole("button", { name: /Show more/ });
+	const more = notes.getByTestId("running-notes-toggle");
 	expect((await more.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
 	await more.click();
-	await expect(notes.getByTestId("release-note-text")).toHaveText([
+	// The running version in full, then 5 older versions, folded.
+	await expect(notes.getByTestId("release-note-text").first()).toHaveText(
 		"Files changed has a Threads tab. Every conversation, newest first.",
-		"One agent conversation about the whole review.",
-		"Ignore whitespace applies to the verdict.",
-		"A fourth note.",
-		"The first release.",
-	]);
-	await expect(notes.getByTestId("notes-version")).toHaveAttribute(
-		"data-version",
-		"0.1.0",
 	);
+	const versions = notes.getByTestId("notes-version");
+	await expect(versions).toHaveCount(5);
+	expect(
+		await versions.evaluateAll((els) =>
+			els.map((e) => (e as HTMLElement).dataset.version),
+		),
+	).toEqual(["0.1.6", "0.1.5", "0.1.4", "0.1.3", "0.1.2"]);
+	const older = versions.first();
+	await expect(older.getByTestId("release-note-text")).toHaveText([
+		"Release 0.1.6, first.",
+		"Second note.",
+		"Third note.",
+	]);
+	await expect(older.getByTestId("release-date")).toBeVisible();
 	await expectNoPageOverflow(page);
 	await shot(page, "global-settings-notes-more", isMobile);
-	await notes.getByRole("button", { name: /Show less/ }).click();
+	// Its own Show more: all its notes, in full.
+	await older.getByRole("button", { name: /Show more/ }).click();
+	await expect(older.getByTestId("release-note-text")).toHaveText([
+		"Release 0.1.6, first. Its detail.",
+		"Second note.",
+		"Third note.",
+		"Fourth note.",
+	]);
+	// Show more versions: the next ones, until there are no more.
+	const moreVersions = notes.getByTestId("more-versions");
+	expect(
+		(await moreVersions.boundingBox())?.height ?? 0,
+	).toBeGreaterThanOrEqual(40);
+	await moreVersions.click();
+	await expect(versions).toHaveCount(7);
+	await expect(moreVersions).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	await shot(page, "global-settings-notes-all", isMobile);
+	await notes.getByTestId("running-notes-toggle").click();
 	await expect(notes.getByTestId("release-note-text")).toHaveCount(3);
+	await expect(versions).toHaveCount(0);
 	// The update on offer: What's new beside Update, the same modal.
 	const result = version.getByTestId("update-result");
 	await expect(result).toHaveAttribute("data-state", "available");

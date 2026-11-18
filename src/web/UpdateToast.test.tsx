@@ -162,7 +162,9 @@ function clickUpdateNow(version = "0.3.0") {
 }
 
 async function clickUpdate(version = "0.3.0") {
-	await userEvent.click(screen.getByRole("button", { name: "What's new" }));
+	await userEvent.click(
+		screen.getByRole("button", { name: /^Update available/ }),
+	);
 	await userEvent.click(
 		await screen.findByRole("button", { name: `Update to v${version}` }),
 	);
@@ -193,8 +195,18 @@ describe("UpdateToast", () => {
 		expect(t.textContent).toContain("Update available");
 		expect(t.textContent).toContain("v0.3.0");
 		expect(within(t).queryByRole("link")).toBeNull();
-		expect(within(t).getByRole("button", { name: "What's new" })).toBeTruthy();
-		expect(within(t).queryByRole("button", { name: /Update/ })).toBeNull();
+		// The offer itself is the one button (What's new); no Update of its own.
+		const open = within(t).getByRole("button", {
+			name: "Update available v0.3.0",
+		});
+		expect(open.dataset.testid).toBe("update-open");
+		expect(
+			within(t)
+				.getAllByRole("button")
+				.map((b) => b.getAttribute("aria-label") ?? b.textContent),
+		).toEqual(["Update available v0.3.0", "Dismiss"]);
+		await userEvent.click(open);
+		expect(screen.getByTestId("whats-new").hasAttribute("open")).toBe(true);
 		expect(screen.getByTestId("toast-stack").contains(t)).toBe(true);
 		expect(screen.queryByTestId("update-command")).toBeNull();
 	});
@@ -223,9 +235,11 @@ describe("UpdateToast", () => {
 		show();
 		const t = await toast();
 		expect(within(t).queryByTestId("update-command")).toBeNull();
-		await userEvent.click(screen.getByRole("button", { name: "What's new" }));
+		await userEvent.click(
+			screen.getByRole("button", { name: /^Update available/ }),
+		);
 		await screen.findByTestId("update-command");
-		expect(screen.queryByRole("button", { name: /^Update/ })).toBeNull();
+		expect(screen.queryByRole("button", { name: /^Update( to|$)/ })).toBeNull();
 		expect(screen.getByTestId("update-command").textContent).toBe(
 			OFFER.command,
 		);
@@ -265,7 +279,7 @@ describe("UpdateToast", () => {
 			const t = await toast();
 			expect(within(t).queryByTestId("update-by-hand")).toBeNull();
 			await userEvent.click(
-				within(t).getByRole("button", { name: "What's new" }),
+				within(t).getByRole("button", { name: /^Update available/ }),
 			);
 			const m = await screen.findByTestId("whats-new-footer");
 			expect(within(m).getByTestId("update-by-hand")).toHaveTextContent(text);
@@ -275,7 +289,9 @@ describe("UpdateToast", () => {
 			expect(within(m).getByTestId("update-command")).toHaveTextContent(
 				OFFER.command ?? "",
 			);
-			expect(within(m).queryByRole("button", { name: /^Update/ })).toBeNull();
+			expect(
+				within(m).queryByRole("button", { name: /^Update( to|$)/ }),
+			).toBeNull();
 			cleanup();
 			vi.unstubAllGlobals();
 		}
@@ -283,7 +299,9 @@ describe("UpdateToast", () => {
 		serve({ info: () => OFFER });
 		show();
 		await toast();
-		await userEvent.click(screen.getByRole("button", { name: "What's new" }));
+		await userEvent.click(
+			screen.getByRole("button", { name: /^Update available/ }),
+		);
 		await screen.findByRole("button", { name: "Update to v0.3.0" });
 		expect(screen.queryByTestId("update-by-hand")).toBeNull();
 	});
@@ -292,7 +310,9 @@ describe("UpdateToast", () => {
 		serve({ info: () => ({ ...OFFER, oneClick: false }) });
 		show();
 		await toast();
-		await userEvent.click(screen.getByRole("button", { name: "What's new" }));
+		await userEvent.click(
+			screen.getByRole("button", { name: /^Update available/ }),
+		);
 		await screen.findByTestId("update-command");
 		copied.ok = true;
 		copied.texts = [];

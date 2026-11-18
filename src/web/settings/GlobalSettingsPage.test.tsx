@@ -519,11 +519,11 @@ describe("GlobalSettingsPage", () => {
 			]);
 		});
 
-		it("Show more: every note in full and the earlier releases; Show less folds back", async () => {
+		it("Show more: the running version in full, then 5 older versions folded, each with its own Show more; Show less folds back", async () => {
 			serve({ get: () => INFO, own: () => OWN });
 			show();
 			await section();
-			const more = await screen.findByRole("button", { name: /Show more/ });
+			const more = await screen.findByTestId("running-notes-toggle");
 			expect(more).toHaveAttribute("aria-expanded", "false");
 			await userEvent.click(more);
 			expect(texts()).toEqual([
@@ -536,8 +536,77 @@ describe("GlobalSettingsPage", () => {
 			expect(
 				screen.getAllByTestId("notes-version").map((s) => s.dataset.version),
 			).toEqual(["0.2.0"]);
-			await userEvent.click(screen.getByRole("button", { name: /Show less/ }));
+			// One earlier version: no Show more versions.
+			expect(screen.queryByTestId("more-versions")).toBeNull();
+			await userEvent.click(screen.getByTestId("running-notes-toggle"));
 			expect(texts()).toHaveLength(3);
+		});
+
+		it("Show more versions: 5 at a time, all the way back; an older version's own Show more opens its notes in full", async () => {
+			// Twelve earlier releases, newest first, as the package's file
+			// carries them (uncapped); each with four notes, the first long.
+			const earlier = Array.from({ length: 12 }, (_, i) => {
+				const v = `0.1.${11 - i}`;
+				return {
+					version: v,
+					date: "2026-10-01",
+					released: true,
+					uncovered: [],
+					notes: [
+						note("CAR-1", `Note one of ${v}. More of it.`),
+						note("CAR-2", `Note two of ${v}.`),
+						note("CAR-3", `Note three of ${v}.`),
+						note("CAR-4", `Note four of ${v}.`),
+					],
+				};
+			});
+			serve({ get: () => INFO, own: () => ({ ...OWN, earlier }) });
+			show();
+			await section();
+			await userEvent.click(await screen.findByTestId("running-notes-toggle"));
+			const versions = () =>
+				screen.getAllByTestId("notes-version").map((s) => s.dataset.version);
+			expect(versions()).toEqual([
+				"0.1.11",
+				"0.1.10",
+				"0.1.9",
+				"0.1.8",
+				"0.1.7",
+			]);
+			// Each older version folded: its first 3 notes, first sentence each.
+			const first = screen.getAllByTestId("notes-version")[0] as HTMLElement;
+			expect(
+				within(first)
+					.getAllByTestId("release-note-text")
+					.map((t) => t.textContent),
+			).toEqual([
+				"Note one of 0.1.11.",
+				"Note two of 0.1.11.",
+				"Note three of 0.1.11.",
+			]);
+			await userEvent.click(
+				within(first).getByRole("button", { name: /Show more/ }),
+			);
+			expect(
+				within(first)
+					.getAllByTestId("release-note-text")
+					.map((t) => t.textContent),
+			).toEqual([
+				"Note one of 0.1.11. More of it.",
+				"Note two of 0.1.11.",
+				"Note three of 0.1.11.",
+				"Note four of 0.1.11.",
+			]);
+			await userEvent.click(screen.getByTestId("more-versions"));
+			expect(versions()).toHaveLength(10);
+			await userEvent.click(screen.getByTestId("more-versions"));
+			expect(versions()).toHaveLength(12);
+			expect(versions().at(-1)).toBe("0.1.0");
+			expect(screen.queryByTestId("more-versions")).toBeNull();
+			// Folded and opened again: back to the first 5.
+			await userEvent.click(screen.getByTestId("running-notes-toggle"));
+			await userEvent.click(screen.getByTestId("running-notes-toggle"));
+			expect(versions()).toHaveLength(5);
 		});
 
 		it("an RC with changes but no notes yet: the count shows folded, never 'No user-facing changes'", async () => {

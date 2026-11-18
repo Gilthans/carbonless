@@ -24,8 +24,11 @@ export interface ParsedNotes {
 	droppedIn?: Record<string, number>;
 }
 
-/** The most entries read (CAR-200's reader reads as many). */
-const MAX_ENTRIES = 100;
+/**
+ * The most entries read: a sanity bound only. The package's own file
+ * carries every release, uncapped (the manifest's field, at most ten).
+ */
+const MAX_ENTRIES = 10_000;
 
 /**
  * `raw` read with CAR-200's parseShippedReleaseNotes an entry at a time,

@@ -608,8 +608,9 @@ config). Answering:
   Stop current) and a red Detach (Restart too after a crash). Spec:
   `docs/superpowers/specs/2026-11-12-agent-setup-modal-design.md`.
 - **The What's new modal** (`WhatsNewModal`, `src/web/WhatsNew.tsx`):
-  opened from the update toast's one action, What's new (it replaced the
-  toast's version link and Update), and from Global settings' "available"
+  opened from the update toast, whose whole "Update available vX" is one
+  button (a `line-strong` border on `pressed`, `accent` on hover, 40px; it
+  replaced the toast's version link and Update), and from Global settings' "available"
   row (What's new beside Update). Styled as the agent modal, but a desktop
   dialog anchored near the top (8dvh, `min(34rem, 100vw - 2rem)`), so
   notes arriving grow it downwards and nothing moves; a bottom sheet of a
@@ -636,8 +637,11 @@ config). Answering:
 - **Global settings' release notes**: under the Version row, the running
   version's notes from its own package (no network), the first three,
   first sentence each; Show more (40px, chevron that turns) expands in
-  place to every note in full and the earlier releases, then Show less.
-  Nothing for a build without notes (a local build).
+  place to the running version's notes in full, then up to 5 older
+  versions (version, day, first 3 notes folded, each its own Show more),
+  then "Show more versions" adding 5 more at a time, all the way back;
+  Show less folds it all. Nothing for a build without notes (a local
+  build).
 - **Overview**: an "Agent threads" band after the thread groups in "Is it
   ready": "N open · N waiting" (a skeleton while they load) and the chip's
   dot, or "Set up an agent" when none is; "N new" (an `accent` dot) links
@@ -762,3 +766,6 @@ earlier events" (the Load more button's style) sits above the rail.
 - **What's new (CAR-201).** The update toast's version link and Update
   became one What's new button; the modal holds the notes and Update.
   Global settings shows the running version's notes under Version.
+- **What's new, owner QA.** The toast's "Update available vX" is one
+  button opening What's new; Global settings' Show more lists older
+  versions 5 at a time, each with its own Show more.

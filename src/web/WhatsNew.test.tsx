@@ -132,7 +132,7 @@ const shownTips = () =>
 
 async function openModal() {
 	await userEvent.click(
-		await screen.findByRole("button", { name: "What's new" }),
+		await screen.findByRole("button", { name: /^Update available/ }),
 	);
 	return screen.getByTestId("whats-new");
 }
@@ -268,7 +268,7 @@ describe("What's new", () => {
 			OFFER.command,
 		);
 		expect(
-			within(footer).queryByRole("button", { name: /^Update/ }),
+			within(footer).queryByRole("button", { name: /^Update( to|$)/ }),
 		).toBeNull();
 	});
 
@@ -361,7 +361,7 @@ describe("What's new", () => {
 		await userEvent.keyboard("{Escape}");
 		expect(modal.hasAttribute("open")).toBe(false);
 		expect(document.activeElement).toBe(
-			screen.getByRole("button", { name: "What's new" }),
+			screen.getByRole("button", { name: /^Update available/ }),
 		);
 	});
 

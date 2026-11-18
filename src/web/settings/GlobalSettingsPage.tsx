@@ -1,6 +1,7 @@
 import {
 	AlertIcon,
 	CheckCircleIcon,
+	ChevronDownIcon,
 	CircleSlashIcon,
 	DownloadIcon,
 	GitCommitIcon,
@@ -11,6 +12,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useState } from "react";
+import type { ReleaseNote } from "../../shared/releaseNotes";
 import {
 	type ChecksOff,
 	commitUrl,
@@ -18,6 +20,7 @@ import {
 } from "../../shared/update";
 import {
 	compareUrl,
+	type NotesSection,
 	type OwnNotes,
 	RELEASES_URL,
 	splitNote,
@@ -204,8 +207,48 @@ function CheckResult(props: {
 	);
 }
 
-/** How many of the running version's notes show before Show more. */
+/** How many of a version's notes show before its Show more. */
 export const NOTES_FOLDED = 3;
+/** How many earlier releases Show more opens, and Show more versions adds. */
+export const OLDER_STEP = 5;
+
+/** Notes that show more once unfolded: past NOTES_FOLDED, or a note past its first sentence. */
+const foldable = (notes: ReleaseNote[]) =>
+	notes.length > NOTES_FOLDED ||
+	notes.some((n) => splitNote(n.text).rest !== "");
+
+/**
+ * An earlier release under the running version's notes: its version and
+ * day, its first notes folded, its own Show more for all of them in full.
+ */
+function OlderVersion(props: { section: NotesSection }) {
+	const { section } = props;
+	const [open, setOpen] = useState(false);
+	const notes = open ? section.notes : section.notes.slice(0, NOTES_FOLDED);
+	return (
+		<section
+			data-testid="notes-version"
+			data-version={section.version}
+			className="border-t border-line pt-1"
+		>
+			<VersionHead section={section} />
+			{notes.length > 0 ? (
+				<ul className="m-0 list-none p-0">
+					{notes.map((n) => (
+						<NoteRow key={`${n.id}:${n.text}`} note={n} summary={!open} />
+					))}
+				</ul>
+			) : (
+				<p className="flex min-h-10 items-center text-muted">
+					No user-facing changes
+				</p>
+			)}
+			{foldable(section.notes) && (
+				<MoreToggle open={open} onToggle={() => setOpen((o) => !o)} />
+			)}
+		</section>
+	);
+}
 
 /**
  * The running version's notes, under Version (from its own package, no
@@ -215,6 +258,8 @@ export const NOTES_FOLDED = 3;
  */
 function RunningNotes() {
 	const [open, setOpen] = useState(false);
+	// How many earlier releases show once open: OLDER_STEP more per press.
+	const [shown, setShown] = useState(OLDER_STEP);
 	const own = useQuery({
 		queryKey: ["release-notes"],
 		queryFn: () => fetchJson<OwnNotes>("/api/release-notes"),
@@ -252,10 +297,7 @@ function RunningNotes() {
 	if (!data.file || !data.running) return null;
 	const running = data.running;
 	const notes = open ? running.notes : running.notes.slice(0, NOTES_FOLDED);
-	const more =
-		running.notes.length > NOTES_FOLDED ||
-		running.notes.some((n) => splitNote(n.text).rest !== "") ||
-		data.earlier.length > 0;
+	const more = foldable(running.notes) || data.earlier.length > 0;
 	return (
 		<div data-testid="running-notes" className={`${box} min-w-0`}>
 			<Dropped count={data.dropped} />
@@ -283,30 +325,32 @@ function RunningNotes() {
 			/>
 			{open && (
 				<>
-					{data.earlier.map((s) => (
-						<section
-							key={s.version}
-							data-testid="notes-version"
-							data-version={s.version}
-							className="border-t border-line pt-1"
-						>
-							<VersionHead section={s} />
-							{s.notes.length > 0 ? (
-								<ul className="m-0 list-none p-0">
-									{s.notes.map((n) => (
-										<NoteRow key={`${n.id}:${n.text}`} note={n} />
-									))}
-								</ul>
-							) : (
-								<p className="flex min-h-10 items-center text-muted">
-									No user-facing changes
-								</p>
-							)}
-						</section>
+					{data.earlier.slice(0, shown).map((s) => (
+						<OlderVersion key={s.version} section={s} />
 					))}
+					{data.earlier.length > shown && (
+						<button
+							type="button"
+							data-testid="more-versions"
+							onClick={() => setShown((n) => n + OLDER_STEP)}
+							className="inline-flex min-h-10 items-center gap-1 rounded-md text-sm font-semibold text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+						>
+							<ChevronDownIcon size={16} aria-hidden />
+							Show more versions
+						</button>
+					)}
 				</>
 			)}
-			{more && <MoreToggle open={open} onToggle={() => setOpen((o) => !o)} />}
+			{more && (
+				<MoreToggle
+					testId="running-notes-toggle"
+					open={open}
+					onToggle={() => {
+						setOpen((o) => !o);
+						setShown(OLDER_STEP);
+					}}
+				/>
+			)}
 		</div>
 	);
 }

@@ -1,6 +1,7 @@
 import {
 	AlertIcon,
 	CheckCircleIcon,
+	ChevronRightIcon,
 	DownloadIcon,
 	XIcon,
 } from "@primer/octicons-react";
@@ -425,29 +426,31 @@ function Toast(props: {
 				data-state="available"
 				className={`${CARD} min-h-12 justify-center`}
 			>
-				<div className="flex items-center gap-2">
-					<Tooltip content="Update available" describe={false}>
-						{(trigger) => (
-							<span {...trigger} className="flex shrink-0 text-accent">
-								<DownloadIcon size={16} aria-hidden />
-							</span>
-						)}
-					</Tooltip>
-					{/* A phone has room for the icon and the version only. */}
-					<b className="min-w-0 truncate font-semibold max-sm:sr-only">
-						Update available
-					</b>
-					<span className="shrink-0 font-mono text-muted">v{version}</span>
-					<span className="flex-1" />
+				<div className="flex items-center gap-1">
+					{/* The whole offer is the one button: it opens What's new. */}
 					<Tooltip content={`What's new in v${version}`} describe={false}>
 						{(trigger) => (
 							<button
 								type="button"
 								{...trigger}
+								data-testid="update-open"
 								onClick={props.whatsNew}
-								className={TEXT_BUTTON}
+								className="-ml-2 flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md border border-line-strong bg-pressed px-3 text-left hover:border-accent hover:brightness-125 focus-visible:outline-2 focus-visible:outline-accent active:translate-y-px active:brightness-100 motion-reduce:active:translate-y-0"
 							>
-								What's new
+								<DownloadIcon
+									size={16}
+									aria-hidden
+									className="shrink-0 text-accent"
+								/>
+								<span className="min-w-0 truncate">
+									<b className="font-semibold">Update available</b>{" "}
+									<span className="font-mono text-ink-soft">v{version}</span>
+								</span>
+								<ChevronRightIcon
+									size={16}
+									aria-hidden
+									className="ml-auto shrink-0 text-muted"
+								/>
 							</button>
 						)}
 					</Tooltip>

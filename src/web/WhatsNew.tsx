@@ -84,10 +84,12 @@ export function MoreToggle(props: {
 	open: boolean;
 	onToggle: () => void;
 	className?: string;
+	testId?: string;
 }) {
 	return (
 		<button
 			type="button"
+			data-testid={props.testId}
 			aria-expanded={props.open}
 			onClick={props.onToggle}
 			className={`inline-flex min-h-10 shrink-0 items-center gap-1 rounded-md text-sm font-semibold text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent ${props.className ?? ""}`}
