@@ -504,7 +504,7 @@ export function AgentThreadCard(props: {
 				aria-label={`Agent thread, ${state}`}
 				className="min-w-0 overflow-hidden rounded-lg border border-agent-edge bg-agent"
 			>
-				<div className="flex min-h-10 min-w-0 items-center gap-x-2 px-2.5 text-xs text-muted">
+				<div className="flex min-h-10 min-w-0 flex-wrap items-center gap-x-2 px-2.5 text-xs text-muted">
 					{props.handle && <span className="-ml-2 flex">{props.handle}</span>}
 					<SparkleFillIcon
 						size={14}

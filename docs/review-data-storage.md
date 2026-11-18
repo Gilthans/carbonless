@@ -730,10 +730,11 @@ ref** (above), which is never pushed.
   written on read. An Undo of one is a `thread-move-undone` naming its id.
   Such a placement now also anchors later patch sets (decision 2).
 - **Fold** (`foldMoves`, `src/shared/rereview/moves.ts`): moves and legacy
-  moves in `(ts, id)` order, deduplicated by id, keyed `source:id`; at most
-  200 a thread (later ones dropped); minus those an undo of the same thread
-  names (an undo naming another thread's move or an unknown id does
-  nothing). An agent thread's move is dropped unless that thread was opened
+  moves in `(ts, id)` order, deduplicated by id, keyed `source:id`; minus
+  those an undo of the same thread names (an undo naming another thread's
+  move or an unknown id does nothing); at most 200 live moves a thread
+  (later ones dropped; the server refuses a 201st with a 409, so none it
+  acknowledged is ever dropped). An agent thread's move is dropped unless that thread was opened
   on lines (`movesOf`, `src/server/agent/store.ts`): never a file thread, a
   thread conversation or the review conversation. A GitHub thread's is kept
   and used only for a thread GitHub lists. Two tabs: both writes are

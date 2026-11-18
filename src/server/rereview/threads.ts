@@ -50,6 +50,9 @@ export class UnknownMoveThreadError extends Error {}
 /** An undo of a move that isn't live (409): nothing changes. */
 export class DeadMoveError extends Error {}
 
+/** A move of a thread that already has MAX_MOVES_PER_THREAD live moves (409). */
+export class MoveCapError extends Error {}
+
 export interface PlacedThread {
 	id: string;
 	placement: ThreadPlacement;
@@ -494,32 +497,34 @@ export class ThreadPlacer {
 		base: DiffBase,
 		visible: (m: ThreadMove) => boolean = () => true,
 	): Promise<PlacedWithMove[]> {
-		const counts = new Map<string, number | null>();
-		const count = async (path: string, side: DiffSide) => {
-			const key = `${side}:${path}`;
-			if (!counts.has(key)) {
-				counts.set(key, null);
-				counts.set(key, await this.lineCount(target, path, side));
-			}
-		};
-		const lineCount = (path: string, side: DiffSide) =>
-			counts.get(`${side}:${path}`) ?? null;
 		const here = (m: ThreadMove) =>
 			m.on.base === target.base && m.on.head === target.head;
+		// Every line count a move made here needs, all in before any is
+		// read: a count still on its way never reads as "no such file".
+		const wanted = new Map<string, { path: string; side: DiffSide }>();
+		for (const input of inputs) {
+			for (const m of movesOf(input.id) ?? []) {
+				if (!here(m) || !visible(m)) continue;
+				for (const side of [m.anchor.side, m.anchor.startSide]) {
+					wanted.set(`${side}:${m.anchor.path}`, { path: m.anchor.path, side });
+				}
+			}
+		}
+		const counts = new Map<string, number | null>(
+			await Promise.all(
+				[...wanted].map(
+					async ([key, { path, side }]) =>
+						[key, await this.lineCount(target, path, side)] as const,
+				),
+			),
+		);
+		const lineCount = (path: string, side: DiffSide) =>
+			counts.get(`${side}:${path}`) ?? null;
 		const choices = new Map<string, MoveChoice>();
 		await Promise.all(
 			inputs.map(async (input) => {
 				const moves = movesOf(input.id);
 				if (!moves || moves.length === 0) return;
-				await Promise.all(
-					moves
-						.filter((m) => here(m) && visible(m))
-						.flatMap((m) =>
-							[m.anchor.side, m.anchor.startSide].map((side) =>
-								count(m.anchor.path, side),
-							),
-						),
-				);
 				const chosen = effectiveMove(moves, target, {
 					visible,
 					fits: (m) => validAnchor(m.anchor, lineCount),
@@ -552,38 +557,5 @@ export class ThreadPlacer {
 		return placeWithMoves(inputs, choices, lineCount, (input) =>
 			placeThread(input, lineCount),
 		);
-	}
-
-	/**
-	 * The placements of `inputs` in `target` with the reviewer's stored
-	 * ones (by thread id) laid over, each checked against the target.
-	 */
-	async place(
-		target: Snapshot,
-		inputs: readonly ThreadInput[],
-		stored: ReadonlyMap<string, ThreadAnchorRef>,
-	): Promise<PlacedThread[]> {
-		const counts = new Map<string, number | null>();
-		await Promise.all(
-			[...stored.values()].flatMap((a) =>
-				[a.side, a.startSide].map(async (side) => {
-					const key = `${side}:${a.path}`;
-					if (!counts.has(key)) {
-						counts.set(key, null);
-						counts.set(key, await this.lineCount(target, a.path, side));
-					}
-				}),
-			),
-		);
-		return inputs.map((input) => {
-			const s = stored.get(input.id);
-			return {
-				id: input.id,
-				placement: placeThread(
-					s ? { ...input, stored: s } : input,
-					(path, side) => counts.get(`${side}:${path}`) ?? null,
-				),
-			};
-		});
 	}
 }

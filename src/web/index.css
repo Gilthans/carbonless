@@ -507,14 +507,14 @@ tr[data-drop-line] {
 	opacity: 0.5;
 }
 
-/* A card just placed by a move: the landing's wash, fading. */
+/* A card just placed by a move: mark-tint's wash (accent 8%), fading. */
 [data-thread][data-move-landed] {
 	animation: move-landed 1.5s ease-out;
 }
 @keyframes move-landed {
 	from {
 		box-shadow: inset 0 0 0 100vmax
-			color-mix(in srgb, var(--color-accent) 16%, transparent);
+			color-mix(in srgb, var(--color-accent) 8%, transparent);
 	}
 	to {
 		box-shadow: inset 0 0 0 100vmax transparent;

@@ -267,13 +267,11 @@ export const postMove = (req: MoveRequest) =>
 	post<MoveAnswer>("/api/moves", req);
 
 /** The reviewer takes a move back; with `to`, the thread's placement there. */
-export const deleteMove = (id: string, to?: RereviewTo) =>
+export const deleteMove = (id: string, to: RereviewTo) =>
 	request<UndoMoveAnswer>(
-		`/api/moves/${encodeURIComponent(id)}${
-			to
-				? `?${new URLSearchParams("patchset" in to ? { ps: String(to.patchset) } : { head: to.head })}`
-				: ""
-		}`,
+		`/api/moves/${encodeURIComponent(id)}?${new URLSearchParams(
+			"patchset" in to ? { ps: String(to.patchset) } : { head: to.head },
+		)}`,
 		{ method: "DELETE" },
 	);
 

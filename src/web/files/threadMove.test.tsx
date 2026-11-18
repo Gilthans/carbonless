@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import fc from "fast-check";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../test/in-router";
@@ -9,7 +10,11 @@ import type { SpanAgentThread } from "../../shared/agent";
 import type { MovedInfo } from "../../shared/rereview/moves";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { PlacementsAnswer, ReviewThread } from "../../shared/types";
-import { AgentPlacingProvider } from "../agent/placeable";
+import {
+	AgentPlacingProvider,
+	agentOutside,
+	tracedAgentPlaceables,
+} from "../agent/placeable";
 import { placementsQuery } from "../api";
 import {
 	PlacementChip,
@@ -26,6 +31,7 @@ import {
 	useAgentMove,
 	useMoveWritesHost,
 } from "./threadMove";
+import { outsideThreads, shownThreads } from "./threadPlacement";
 import { githubRows } from "./threadRows";
 
 vi.mock("./highlight", () => ({
@@ -518,6 +524,247 @@ describe("Undo", () => {
 		const undone = client.getQueryData(queryKey) as PlacementsAnswer;
 		expect(undone.threads[0]?.moved).toBeUndefined();
 		expect(undone.threads[0]?.placement).toMatchObject({ anchor: { line: 9 } });
+	});
+});
+
+describe("on the page, moves never drop or double a thread", () => {
+	it("property: every review thread shows once (in a file or not in the comparison), every agent thread once, whatever is moved", () => {
+		const kinds = ["placed", "changed", "unplaced", "outside"] as const;
+		const placementOf = (
+			kind: (typeof kinds)[number],
+			line: number,
+		): ThreadPlacement => {
+			const anchor = {
+				path: "src/a.ts",
+				startSide: "RIGHT" as const,
+				startLine: line,
+				side: "RIGHT" as const,
+				line,
+			};
+			if (kind === "placed") return { kind, anchor, changed: false };
+			if (kind === "changed")
+				return {
+					kind,
+					anchor,
+					old: { side: "RIGHT", startLine: 1, line: 1, text: [] },
+					now: [],
+				};
+			if (kind === "unplaced")
+				return { kind, fate: "deleted", path: "src/a.ts", nearest: null };
+			return { kind, path: "src/gone.ts", fate: "file-gone" };
+		};
+		fc.assert(
+			fc.property(
+				fc.array(
+					fc.record({
+						kind: fc.constantFrom(...kinds),
+						placed: fc.boolean(),
+						moved: fc.boolean(),
+						onHead: fc.boolean(),
+						line: fc.integer({ min: 1, max: 30 }),
+					}),
+					{ maxLength: 10 },
+				),
+				(list) => {
+					const threads = list.map((x, i) =>
+						thread({ id: `T${i}`, commit: x.onHead ? H2 : H1 }),
+					);
+					const placements = new Map(
+						list.flatMap((x, i) =>
+							x.placed ? [[`T${i}`, placementOf(x.kind, x.line)] as const] : [],
+						),
+					);
+					const moves = new Map(
+						list.flatMap((x, i) =>
+							x.moved && x.placed ? [[`T${i}`, moved()] as const] : [],
+						),
+					);
+					const shown = shownThreads(threads, H2, placements, moves);
+					const outside = outsideThreads(threads, placements);
+					const ids = [
+						...shown.map((t) => t.id),
+						...outside.map((o) => o.thread.id),
+					];
+					// Each once at most; every placed one exactly once; an
+					// unplaced-yet one only where it was made (the head).
+					expect(new Set(ids).size).toBe(ids.length);
+					list.forEach((x, i) => {
+						const n = ids.filter((id) => id === `T${i}`).length;
+						expect(n).toBe(x.placed || x.onHead ? 1 : 0);
+					});
+					// The same with no moves: moves change places, never which threads show.
+					const bare = [
+						...shownThreads(threads, H2, placements, null).map((t) => t.id),
+						...outside.map((o) => o.thread.id),
+					];
+					expect([...ids].sort()).toEqual([...bare].sort());
+					// Agent threads: one placeable each, moved or not.
+					const spans = list.map(
+						(x, i): SpanAgentThread =>
+							({
+								id: `A${i}`,
+								anchor: {
+									subject: "line",
+									path: "src/a.ts",
+									commit: x.onHead ? H2 : H1,
+									side: "RIGHT",
+									line: 3,
+									startSide: "RIGHT",
+									startLine: 3,
+								},
+								openedBy: "human",
+								at: "2026-01-01T00:00:00Z",
+								messages: [],
+								resolved: false,
+								waiting: false,
+								unread: false,
+							}) as SpanAgentThread,
+					);
+					const agentPlacements = new Map(
+						[...placements].map(([id, p]) => [id.replace("T", "A"), p]),
+					);
+					const agentMoves = new Map(
+						[...moves].map(([id, m]) => [id.replace("T", "A"), m]),
+					);
+					const agent = tracedAgentPlaceables(
+						spans,
+						H2,
+						agentPlacements,
+						agentMoves,
+					);
+					expect(agent.map((a) => a.id)).toEqual(spans.map((t) => t.id));
+				},
+			),
+			{ numRuns: 300 },
+		);
+	});
+});
+
+describe("dragging", () => {
+	it("drops on the rows of the file the card is shown in now, not the one it was asked in", async () => {
+		const fetch = vi.fn(
+			async () =>
+				new Response("{}", {
+					status: 500,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetch);
+		const agentId = "01jagent000000000000000001";
+		function Probe() {
+			const move = useAgentMove(
+				{
+					id: agentId,
+					anchor: {
+						subject: "line",
+						path: "src/a.ts",
+						commit: H1,
+						side: "RIGHT",
+						line: 3,
+						startSide: "RIGHT",
+						startLine: 3,
+					},
+					openedBy: "human",
+					at: "2026-01-01T00:00:00Z",
+					messages: [],
+					resolved: false,
+					waiting: false,
+					unread: false,
+				} as SpanAgentThread,
+				"src/a.ts",
+			);
+			// Moved to src/b.ts: its card sits in that file's section.
+			return (
+				<section data-path="src/b.ts">
+					<table>
+						<tbody>
+							<tr data-testid="diff-line" data-new-no="4" data-old-no="">
+								<td>line 4</td>
+							</tr>
+						</tbody>
+					</table>
+					<div data-thread={agentId}>{move.handle}</div>
+				</section>
+			);
+		}
+		show(info(), <Probe />, {
+			placements: new Map([[agentId, unplaced]]),
+			moves: new Map([[agentId, moved({ path: "src/b.ts" })]]),
+			until: null,
+		} as never);
+		const handle = await screen.findByTestId("move-handle");
+		const target = document.querySelector('tr[data-testid="diff-line"]');
+		const original = document.elementFromPoint;
+		document.elementFromPoint = () => target;
+		try {
+			const at = { clientX: 100, clientY: 100, button: 0, pointerId: 1 };
+			act(() => {
+				handle.dispatchEvent(
+					new MouseEvent("pointerdown", {
+						...at,
+						clientX: 0,
+						clientY: 0,
+						bubbles: true,
+					}),
+				);
+			});
+			act(() => {
+				handle.dispatchEvent(
+					new MouseEvent("pointermove", { ...at, bubbles: true }),
+				);
+			});
+			act(() => {
+				handle.dispatchEvent(
+					new MouseEvent("pointerup", { ...at, bubbles: true }),
+				);
+			});
+		} finally {
+			document.elementFromPoint = original;
+		}
+		await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+		const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+		expect(JSON.parse(String(init.body)).anchor).toEqual({
+			path: "src/b.ts",
+			startSide: "RIGHT",
+			startLine: 4,
+			side: "RIGHT",
+			line: 4,
+		});
+	});
+});
+
+describe("a moved agent thread whose file left the comparison", () => {
+	it("is listed with the threads not in this comparison, never in a file", () => {
+		const t = {
+			id: "01jagent000000000000000002",
+			anchor: {
+				subject: "line",
+				path: "src/a.ts",
+				commit: H2,
+				side: "RIGHT",
+				line: 3,
+				startSide: "RIGHT",
+				startLine: 3,
+			},
+			openedBy: "human",
+			at: "2026-01-01T00:00:00Z",
+			messages: [],
+			resolved: false,
+			waiting: false,
+			unread: false,
+		} as SpanAgentThread;
+		const placements = new Map<string, ThreadPlacement>([
+			[t.id, { kind: "outside", path: "src/gone.ts", fate: "file-gone" }],
+		]);
+		const shown = tracedAgentPlaceables(
+			[t],
+			H2,
+			placements,
+			new Map([[t.id, moved({ path: "src/gone.ts" })]]),
+		);
+		expect(
+			agentOutside(shown, new Set(["src/a.ts"]), placements).map((p) => p.id),
+		).toEqual([t.id]);
 	});
 });
 

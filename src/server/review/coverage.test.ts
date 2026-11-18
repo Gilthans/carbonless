@@ -87,7 +87,6 @@ function progressOf(
 		states: (patchset && statesByRevision.get(patchset.revision)) ?? new Map(),
 		statesByRevision,
 		sinceMarks: new Map(sets.map(([, revision]) => [revision, []])),
-		placements: new Map(),
 		placed: [],
 	};
 }

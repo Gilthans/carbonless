@@ -3209,11 +3209,11 @@ describe("API", () => {
 			expect(t?.moved).toBeUndefined();
 			expect(t?.placement.kind).toBe("changed");
 			// A second undo of the same move: 409, nothing written.
-			const again = await inject(`/api/moves/${moved.move}`, {
+			const again = await inject(`/api/moves/${moved.move}?ps=2`, {
 				method: "DELETE",
 			});
 			expect(again.statusCode).toBe(409);
-			const nope = await inject("/api/moves/nope", { method: "DELETE" });
+			const nope = await inject("/api/moves/nope?ps=2", { method: "DELETE" });
 			expect(nope.statusCode).toBe(400);
 			expect(pr.ghLog()).toBe(log);
 		});
@@ -3247,6 +3247,21 @@ describe("API", () => {
 			const ps1 = await get("/api/session");
 			const h1 = ps1.patchsets[0]?.head as string;
 			await refused({ ...ok, to: { head: h1 } }, 409);
+			// A GitHub thread on a file has no lines to move: 400.
+			withThreads([
+				...threadsOn(h1, true),
+				reviewThread({ path: "a.txt", subjectType: "FILE", line: null }, [
+					threadComment({
+						login: "rev",
+						text: "File",
+						commit: h1,
+						diffHunk: "",
+					}),
+				]),
+			]);
+			const fileRead = (await get("/api/overview?maxAge=0")).readId as string;
+			await get(`/api/threads?read=${fileRead}&stage=summary`);
+			await refused({ ...ok, thread: { source: "github", id: "T12-2" } }, 400);
 			const after = await placementsOf(`read=${readId}&ps=2`);
 			expect(
 				after.threads.find((t: { id: string }) => t.id === "T12-0")?.moved,
@@ -3319,7 +3334,7 @@ describe("API", () => {
 			// Reading wrote nothing.
 			expect(tips()).toBe(before);
 			// Undo names the legacy event's id.
-			const undone = await inject(`/api/moves/${human.id}`, {
+			const undone = await inject(`/api/moves/${human.id}?head=${h3}`, {
 				method: "DELETE",
 			});
 			expect(undone.statusCode, undone.body).toBe(200);
@@ -3327,6 +3342,128 @@ describe("API", () => {
 			expect(
 				back.threads.find((t: { id: string }) => t.id === "T12-0")?.moved,
 			).toBeUndefined();
+		});
+
+		it("an undo names the target viewed: none is a 400, an earlier patch set a 409, nothing written", async () => {
+			const { h2, readId } = await setup();
+			await startPs2(h2);
+			await placementsOf(`read=${readId}&ps=2`);
+			const moved = (
+				await post("/api/moves", {
+					thread: gh,
+					to: { patchset: 2 },
+					anchor: line(20),
+				})
+			).json();
+			for (const [query, status] of [
+				["", 400],
+				["?ps=1", 409],
+			] as const) {
+				const res = await inject(`/api/moves/${moved.move}${query}`, {
+					method: "DELETE",
+				});
+				expect(res.statusCode, query).toBe(status);
+			}
+			const after = await placementsOf(`read=${readId}&ps=2`);
+			expect(
+				after.threads.find((t: { id: string }) => t.id === "T12-0")?.moved?.id,
+			).toBe(moved.move);
+		});
+
+		it("a thread with 200 live moves refuses another (409, saying why); an undo makes room", async () => {
+			const { h1, h2, readId } = await setup();
+			await startPs2(h2);
+			await placementsOf(`read=${readId}&ps=2`);
+			const clone = await cacheClone();
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: clone,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const progressRef = git(
+				"for-each-ref",
+				"--format=%(refname)",
+				`refs/crb/reviews/${id}/reviewers/`,
+			)
+				.split("\n")
+				.find((r) => r.endsWith("/progress")) as string;
+			const agentRef = progressRef.replace(/progress$/, "agent/threads");
+			const slug = progressRef.split("/").at(-2) as string;
+			const base = git("merge-base", h1, h2);
+			const many = Array.from({ length: 200 }, () =>
+				newEvent("thread-moved", slug, {
+					thread: { source: "github", id: "T12-0" },
+					on: { base, head: h2, patchset: 2 },
+					anchor: line(20),
+					engine: 1,
+				}),
+			);
+			await new RefStore(clone).appendEvents(
+				agentRef,
+				"crb: moves",
+				many,
+				slug,
+			);
+			const body = { thread: gh, to: { patchset: 2 }, anchor: line(21) };
+			const full = await post("/api/moves", body);
+			expect(full.statusCode).toBe(409);
+			expect(full.json().error).toMatch(/moved 200 times: undo a move first/);
+			const last = many.at(-1)?.id ?? "";
+			const undo = await inject(`/api/moves/${last}?ps=2`, {
+				method: "DELETE",
+			});
+			expect(undo.statusCode, undo.body).toBe(200);
+			const room = await post("/api/moves", body);
+			expect(room.statusCode, room.body).toBe(200);
+			const after = await placementsOf(`read=${readId}&ps=2`);
+			expect(
+				after.threads.find((t: { id: string }) => t.id === "T12-0"),
+			).toMatchObject({
+				placement: { anchor: line(21) },
+				moved: { id: room.json().move },
+			});
+		});
+
+		it("a move never holds marks up while it waits on GitHub's threads", async () => {
+			const { h2, readId } = await setup();
+			await startPs2(h2);
+			await placementsOf(`read=${readId}&ps=2`);
+			// A newer read whose summary is held: the move waits on it.
+			const scenario = process.env.CRB_FAKE_GH ?? "";
+			const sc = JSON.parse(readFileSync(scenario, "utf8"));
+			writeFileSync(scenario, JSON.stringify({ ...sc, hold: ["threads"] }));
+			const summaries = () =>
+				pr
+					.ghLog()
+					.split("\n")
+					.filter((l) => l.includes("reviewThreads")).length;
+			const before = summaries();
+			void inject("/api/overview?maxAge=0");
+			await vi.waitFor(() => expect(summaries()).toBeGreaterThan(before), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			let settled = false;
+			const move = post("/api/moves", {
+				thread: gh,
+				to: { patchset: 2 },
+				anchor: line(20),
+			}).finally(() => {
+				settled = true;
+			});
+			// A mark goes through while the move waits.
+			const view: ReviewView = await get("/api/review");
+			const mark = await post("/api/review/states", {
+				revision: view.revision,
+				changes: [
+					{ key: view.files[0]?.clusters[0]?.key ?? "", state: "unreviewed" },
+				],
+			});
+			expect(mark.statusCode, mark.body).toBe(200);
+			expect(settled).toBe(false);
+			release(scenario, "threads");
+			expect((await move).statusCode).toBe(200);
 		});
 
 		it("a head that is no patch set yet takes a move without starting one", async () => {

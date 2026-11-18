@@ -442,7 +442,7 @@ export function MoveHandle(props: {
 	thread: ThreadRef;
 	/** The thread's first words: the ghost's and move mode's text. */
 	words: string;
-	/** The file it is shown in: a drag's drop targets. */
+	/** Its file, when the card sits in no file's section: a drag's drop targets. */
 	path: string;
 	/** The author's avatar, or the sparkle for an agent thread. */
 	avatar?: ReactNode;
@@ -457,6 +457,11 @@ export function MoveHandle(props: {
 	const over = useRef<HTMLElement | null>(null);
 	const [ghost, setGhost] = useState<{ x: number; y: number } | null>(null);
 	const card = () => button.current?.closest<HTMLElement>("[data-thread]");
+	// The file the card is shown in now (a thread moved to another file
+	// sits in that one), else the one given.
+	const dropPath = () =>
+		button.current?.closest<HTMLElement>("[data-path]")?.dataset.path ??
+		props.path;
 	// The card being moved: outlined while move mode is on for it.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `card` reads the DOM; on `mine` only.
 	useEffect(() => {
@@ -498,7 +503,7 @@ export function MoveHandle(props: {
 			return;
 		if (!dragging) card()?.setAttribute("data-move-dragging", "");
 		setGhost({ x: e.clientX, y: e.clientY });
-		mark(lineAt(e.clientX, e.clientY, props.path)?.row ?? null);
+		mark(lineAt(e.clientX, e.clientY, dropPath())?.row ?? null);
 		// Near the top or bottom edge, the page scrolls on.
 		if (e.clientY < EDGE) window.scrollBy(0, -16);
 		else if (e.clientY > window.innerHeight - EDGE) window.scrollBy(0, 16);
@@ -506,7 +511,7 @@ export function MoveHandle(props: {
 	const onUp = (e: ReactPointerEvent) => {
 		if (!start.current) return;
 		const wasDrag = dragging;
-		const hit = wasDrag ? lineAt(e.clientX, e.clientY, props.path) : null;
+		const hit = wasDrag ? lineAt(e.clientX, e.clientY, dropPath()) : null;
 		stop();
 		if (!wasDrag) return;
 		dragged.current = true;

@@ -81,9 +81,9 @@ const byTsId = (a: { ts: number; id: string }, b: { ts: number; id: string }) =>
 
 /**
  * Each thread's live moves (by threadKey), oldest first: every move in
- * `(ts, id)` order, deduplicated by id, the first MAX_MOVES_PER_THREAD
- * of a thread kept, minus those an undo of the same thread names. An
- * undo naming another thread's move, or an unknown id, does nothing.
+ * `(ts, id)` order, deduplicated by id, minus those an undo of the same
+ * thread names, the first MAX_MOVES_PER_THREAD of them kept. An undo
+ * naming another thread's move, or an unknown id, does nothing.
  */
 export function foldMoves(
 	moves: readonly ThreadMove[],
@@ -95,14 +95,13 @@ export function foldMoves(
 		.sort(byTsId);
 	const undone = new Set(undos.map((u) => `${threadKey(u.thread)} ${u.move}`));
 	const out = new Map<string, ThreadMove[]>();
-	const counted = new Map<string, number>();
 	for (const m of sorted) {
 		const key = threadKey(m.thread);
-		const n = counted.get(key) ?? 0;
-		if (n >= MAX_MOVES_PER_THREAD) continue;
-		counted.set(key, n + 1);
 		if (undone.has(`${key} ${m.id}`)) continue;
 		const list = out.get(key);
+		// Live moves only count: past the cap a move is dropped (the
+		// server refuses to write one, MoveCapError).
+		if (list && list.length >= MAX_MOVES_PER_THREAD) continue;
 		if (list) list.push(m);
 		else out.set(key, [m]);
 	}
