@@ -6,6 +6,7 @@ import type {
 	SessionInfo,
 } from "../../shared/types";
 import { type RereviewTo, rereviewQuery } from "../api";
+import { ignoreWhitespace } from "../viewSettings";
 import type { Comparison } from "./comparison";
 import { type FileSince, shownView, sinceByFile } from "./since";
 import type { PendingChange } from "./stateSync";
@@ -27,7 +28,10 @@ export interface SinceView {
 	 * reviewer's pending states over that (shownView).
 	 */
 	shown: ReviewView | undefined;
-	/** What the engine says per file index, once answered. */
+	/**
+	 * What the engine says per file index, once answered ("Ignore
+	 * whitespace" on: without each file's whitespace-only units).
+	 */
 	byFile: Map<number, FileSince> | null;
 }
 
@@ -71,9 +75,11 @@ export function useSince(
 			raw ? shownView(raw, overlay ? answer : null, pendingStates) : undefined,
 		[raw, answer, overlay, pendingStates],
 	);
+	// "Ignore whitespace" on: each file's counts without its whitespace-only units.
+	const ignoreWs = ignoreWhitespace.use();
 	const byFile = useMemo(
-		() => (answer && shown ? sinceByFile(answer, shown) : null),
-		[answer, shown],
+		() => (answer && shown ? sinceByFile(answer, shown, ignoreWs) : null),
+		[answer, shown, ignoreWs],
 	);
 	return { since, from, asked, answer, pending, error, shown, byFile };
 }

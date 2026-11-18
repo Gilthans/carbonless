@@ -63,7 +63,11 @@ import { MarkedText } from "./find/MarkedText";
 import { displayPath } from "./find/pathMarks";
 import { KindChip } from "./KindChip";
 import type { Landing } from "./landing";
-import { Meter } from "./ProgressBar";
+import {
+	Meter,
+	WhitespaceLeftOut,
+	whitespaceLeftOutLabel,
+} from "./ProgressBar";
 import { useResolveCollapse } from "./resolveCollapse";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
 import { type FileSince, goneFileView } from "./since";
@@ -520,7 +524,12 @@ function FileProgress(props: {
  */
 function opensFile(event: MouseEvent<HTMLElement>): boolean {
 	const target = event.target as Element | null;
-	if (target?.closest("button, a, input, select, textarea, label")) {
+	// The `~` is a control of its own: its tooltip.
+	if (
+		target?.closest(
+			'button, a, input, select, textarea, label, [data-testid="ws-left-out"]',
+		)
+	) {
 		return false;
 	}
 	const selection = window.getSelection();
@@ -577,6 +586,11 @@ export function FileDiff(props: {
 	 * for the header's meter and sentence; the full diff counts clusters.
 	 */
 	counted?: FileView;
+	/**
+	 * The since view, "Ignore whitespace" on: how many whitespace-only
+	 * units `counted` leaves out (since.ts countedFileUnits).
+	 */
+	countedLeftOut?: number;
 	/** The engine is still computing: the chips' slot spins. */
 	sincePending?: boolean;
 	/** An earlier patch set, as reviewed: the marks are locked. */
@@ -623,10 +637,18 @@ export function FileDiff(props: {
 	const save = (changes: StateChange[]) =>
 		saveStates(revision, file.path, changes);
 	// The file as its state reads (status, finished, closing): with "Ignore
-	// whitespace" on, without its whitespace-only clusters (countedFile).
-	// The since view keeps its own.
+	// whitespace" on, without its whitespace-only clusters (countedFile),
+	// in the since view too (its meter counts its units: `counted`).
 	const ignoreWs = ignoreWhitespace.use();
-	const shown = props.counted ? file : countedFile(file, ignoreWs);
+	const shown = countedFile(file, ignoreWs);
+	// How many whitespace-only clusters the header's counts leave out: its
+	// `~`. In the since view its units' count, and never less than its
+	// state leaves out: a header that reads done without them says so.
+	const clustersLeftOut = file.clusters.length - shown.clusters.length;
+	const leftOut =
+		props.counted !== undefined
+			? Math.max(props.countedLeftOut ?? 0, clustersLeftOut)
+			: clustersLeftOut;
 	/**
 	 * A mark that leaves nothing unreviewed (a cluster's, or the rest of the
 	 * file's) finishes the file: an open one closes at once and the page
@@ -763,6 +785,7 @@ export function FileDiff(props: {
 		lineCount(file),
 		clusterCount(file),
 		sentence,
+		leftOut > 0 ? whitespaceLeftOutLabel(leftOut) : null,
 	]
 		.filter(Boolean)
 		.join(" · ");
@@ -1228,6 +1251,16 @@ export function FileDiff(props: {
 									}
 								/>
 							</div>
+							{leftOut > 0 && (
+								// A slot as wide as its touch target on a phone, so the
+								// target never lies over the buttons or the meter.
+								<span
+									data-testid="ws-left-out-slot"
+									className="flex shrink-0 items-center justify-center pointer-coarse:size-10 @lg:order-6"
+								>
+									<WhitespaceLeftOut count={leftOut} slot />
+								</span>
+							)}
 							<FileProgress
 								file={props.counted ?? shown}
 								unit={props.unit}

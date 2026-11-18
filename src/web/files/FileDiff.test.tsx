@@ -2181,6 +2181,58 @@ describe("FileDiff", () => {
 			).toHaveTextContent("1 / 2 clusters"),
 		);
 	});
+
+	const LEFT_OUT = "1 whitespace-only cluster not counted";
+
+	it("the header's `~` (CAR-184): a tap shows its tooltip and leaves a closed file closed; the header elsewhere still opens it", async () => {
+		ignoreWhitespace.set(true);
+		const ws = { whitespaceOnly: true as const };
+		const other = cluster("k2", { newStart: 40, oldStart: 40 });
+		const { paths, user } = setup(file([cluster("k1", ws), other]));
+		const header = screen.getByTestId("file-path").closest("header");
+		if (!header) throw new Error("no header");
+		const tilde = within(header).getByRole("img", { name: LEFT_OUT });
+		await user.click(tilde);
+		expect(screen.getByRole("button", { name: "Expand file" })).toBeVisible();
+		expect(paths()).toEqual([]);
+		await user.click(header);
+		expect(
+			await screen.findByRole("button", { name: "Collapse file" }),
+		).toBeVisible();
+		// Off: nothing left out, no `~`.
+		act(() => ignoreWhitespace.set(false));
+		await waitFor(() =>
+			expect(within(header).queryByRole("img", { name: LEFT_OUT })).toBeNull(),
+		);
+	});
+
+	it("a file without whitespace-only clusters never shows the `~`", () => {
+		ignoreWhitespace.set(true);
+		setup(file([cluster("k1")]));
+		expect(screen.queryByRole("img", { name: LEFT_OUT })).toBeNull();
+	});
+
+	it("in the since view, a header that reads done because a whitespace-only cluster is left out shows the `~` (B1)", () => {
+		ignoreWhitespace.set(true);
+		const ws = { whitespaceOnly: true as const };
+		// A carried, reviewed change; the re-indent the only thing since.
+		const f = file([
+			cluster("k1", {
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			}),
+			cluster("k2", { newStart: 40, oldStart: 40, ...ws }),
+		]);
+		// Its units with the whitespace-only one left out: none.
+		setup(f, undefined, undefined, "clusters", {
+			counted: unitsFile(f, []),
+			since: 1,
+		});
+		const header = screen.getByTestId("file-path").closest("header");
+		if (!header) throw new Error("no header");
+		expect(header).toHaveAttribute("data-finished");
+		expect(within(header).getByRole("img", { name: LEFT_OUT })).toBeVisible();
+	});
 });
 
 describe("FileDiff: agent threads asked on an earlier head", () => {
