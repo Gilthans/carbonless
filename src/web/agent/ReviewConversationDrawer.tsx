@@ -37,7 +37,11 @@ import {
 	withQuestion,
 } from "./quickQuestions";
 import { useReviewConversation } from "./reviewConversation";
-import { isAgentSetupOpen, openAgentSetup } from "./setupStore";
+import {
+	isAgentSetupOpen,
+	openAgentSetup,
+	useAgentSetupOpen,
+} from "./setupStore";
 import {
 	unseenMessages,
 	useAgentDraft,
@@ -235,7 +239,9 @@ function Drawer() {
 	});
 	const scroller = useRef<HTMLDivElement>(null);
 	const box = useRef<HTMLTextAreaElement>(null);
-	useSeenWriter(thread, true, scroller);
+	// Under the setup's modal the answers aren't read: none is marked seen.
+	const setupOpen = useAgentSetupOpen();
+	useSeenWriter(thread, !setupOpen, scroller);
 	// The first answer unseen as it opened: the rule stays there.
 	const [divider, setDivider] = useState<string | undefined>(undefined);
 	const firstUnseen = thread?.unread
@@ -260,8 +266,12 @@ function Drawer() {
 	// the drawer itself (no keyboard popping up over the answers).
 	const focused = useRef<"panel" | "composer" | null>(null);
 	useEffect(() => {
-		// The setup over it has focus; closed, it sends focus here.
-		if (isAgentSetupOpen()) return;
+		// The setup over it has focus; closed, it sends focus to the
+		// composer (openSetupOverDrawer), which counts as the open's focus.
+		if (isAgentSetupOpen()) {
+			focused.current ??= "composer";
+			return;
+		}
 		if (empty && pending.length === 0 && focused.current !== "composer") {
 			focused.current = "composer";
 			box.current?.focus({ preventScroll: true });

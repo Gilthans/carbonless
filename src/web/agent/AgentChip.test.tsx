@@ -41,6 +41,7 @@ import {
 import { ReviewConversationDrawer } from "./ReviewConversationDrawer";
 import {
 	closeAgentSetup,
+	resetSetupReturnFocus,
 	useAgentSetupOpen,
 	useAgentSetupTab,
 } from "./setupStore";
@@ -80,6 +81,7 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 	closeAgentSetup();
 	closeReviewDrawer();
+	resetSetupReturnFocus();
 });
 
 function DrawerState() {

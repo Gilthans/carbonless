@@ -17,7 +17,7 @@ import type { AgentStatus, AgentThread } from "../../shared/agent";
 import type { PrOverview, SessionInfo } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import { ShortcutsProvider } from "../shortcuts";
-import { resetAgentChipPress } from "./AgentChip";
+import { openSetupOverDrawer, resetAgentChipPress } from "./AgentChip";
 import { resetAgentWrites } from "./agentWrites";
 import { agentStatusQuery, agentThreadsQuery } from "./api";
 import {
@@ -28,9 +28,14 @@ import {
 } from "./drawerStore";
 import { ReviewConversationDrawer } from "./ReviewConversationDrawer";
 import { AgentSetupHost } from "./setup/AgentSetup";
-import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
+import {
+	closeAgentSetup,
+	resetSetupReturnFocus,
+	useAgentSetupOpen,
+} from "./setupStore";
 import {
 	resetAgentDrafts,
+	SEEN_AFTER_MS,
 	type SendView,
 	SendViewHost,
 	usePublishSendView,
@@ -102,6 +107,7 @@ afterEach(() => {
 	resetAgentWrites();
 	resetAgentDrafts();
 	resetAgentChipPress();
+	resetSetupReturnFocus();
 	vi.unstubAllGlobals();
 });
 
@@ -653,6 +659,46 @@ describe("the agent setup over the drawer (CAR-210)", () => {
 			expect(screen.getByTestId("agent-chip")).toHaveFocus();
 		},
 	);
+
+	it("closed, the setup leaves focus in the composer through a send (no jump to the panel)", async () => {
+		const { user } = show({ threads: [], status: none, setup: true });
+		await user.keyboard("{Shift>}A{/Shift}");
+		await user.keyboard("{Escape}");
+		expect(composer()).toHaveFocus();
+		await user.type(composer() as HTMLElement, "Ready?");
+		await user.keyboard("{Control>}{Enter}{/Control}");
+		await waitFor(() => expect(posts).toHaveLength(1));
+		expect(posts[0]?.path).toMatch(/\/agent\/threads$/);
+		expect(composer()).toHaveValue("");
+		expect(composer()).toHaveFocus();
+	});
+
+	it("an unread answer under the setup is not marked seen; once the setup closes, it is", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		stubIntersection(true);
+		try {
+			openReviewDrawer();
+			openSetupOverDrawer();
+			show({
+				threads: [review({ unread: true, seenUpTo: "m2" })],
+				status: none,
+				setup: true,
+			});
+			await act(async () => {
+				vi.advanceTimersByTime(SEEN_AFTER_MS * 3);
+			});
+			const seen = () => posts.filter((p) => p.path.endsWith("/seen"));
+			expect(seen()).toHaveLength(0);
+			act(() => closeAgentSetup());
+			await act(async () => {
+				vi.advanceTimersByTime(SEEN_AFTER_MS);
+			});
+			expect(seen()).toHaveLength(1);
+			expect(seen()[0]?.body).toEqual({ upTo: "m4" });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 
 	it("the setup's Close leaves the drawer open, focus in its composer", async () => {
 		const { user } = show({ threads: [], status: none, setup: true });

@@ -76,6 +76,11 @@ export function takeSetupReturnFocus(): HTMLElement | null {
 	return el?.isConnected ? el : null;
 }
 
+/** Forgets a pending return target (tests: it outlives a harness without the modal). */
+export const resetSetupReturnFocus = (): void => {
+	returnFocus = null;
+};
+
 /** Whether the setup is open now (outside React). */
 export const isAgentSetupOpen = (): boolean => state.open;
 export const setAgentSetupTab = (tab: SetupTab): void => {

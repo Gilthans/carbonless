@@ -507,28 +507,38 @@ test("the agent chip sits in its column pinned right, and stays in sight and in 
 			path: `${shots}/chip-stuck-${isMobile ? "phone" : "desktop"}.png`,
 		});
 
-	// In reach: it opens the agent setup, and focus comes back to it.
+	// In reach: it opens the agent setup over the review conversation;
+	// Escape closes the setup (focus into the conversation), then the
+	// conversation, and focus comes back to the chip.
 	await chip.click();
 	const setup = page.getByRole("dialog", {
 		name: "Setup Review Agent",
 		exact: true,
 	});
+	const conversation = page.getByTestId("review-conversation");
+	const closeBoth = async () => {
+		await page.keyboard.press("Escape");
+		await expect(setup).toHaveCount(0);
+		await expect(
+			conversation.getByRole("textbox", { name: "Ask agent" }),
+		).toBeFocused();
+		await page.keyboard.press("Escape");
+		await expect(conversation).toHaveCount(0);
+	};
 	await expect(setup).toBeVisible();
-	await page.keyboard.press("Escape");
-	await expect(setup).toHaveCount(0);
+	await closeBoth();
 	await expect(chip).toBeFocused();
 
 	// The setup open from the docked chip, the page behind it scrolled to
-	// the top (the chip back in its column): closing it still gives the chip
-	// its focus back.
+	// the top (the chip back in its column): closing it and the
+	// conversation still gives the chip its focus back.
 	await chip.click();
 	await expect(setup).toBeVisible();
 	await page.evaluate(() => window.scrollTo(0, 0));
 	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toHaveCount(
 		1,
 	);
-	await page.keyboard.press("Escape");
-	await expect(setup).toHaveCount(0);
+	await closeBoth();
 	await expect(chip).toBeFocused();
 
 	// Docked again with focus on it, then back at the top: in its column

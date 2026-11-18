@@ -232,10 +232,13 @@ test("no agent connected (CAR-210): the chip opens the drawer with the setup ove
 		"Here now.",
 	]);
 	await send(page, "Do the tests pass?", isMobile);
+	// The send keeps focus in the composer (desktop: sent by its keys).
+	if (!isMobile) await expect(composer).toBeFocused();
 	await expect(reviewDrawer(page).getByTestId("agent-message-ai")).toHaveText([
 		"Here now.",
 		"They pass.",
 	]);
+	if (!isMobile) await expect(composer).toBeFocused();
 	await expect(setupDialog(page)).toHaveCount(0);
 	// Open: the chip closes it (a phone's full-screen drawer covers the chip: its Close).
 	if (isMobile) {
