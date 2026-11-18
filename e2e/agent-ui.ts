@@ -320,23 +320,27 @@ export const reviewDrawer = (page: Page) =>
 		.or(page.getByRole("dialog", { name: "Whole review conversation" }));
 
 /**
- * Opens the agent modal (setup or status): once an agent is configured or
- * joined, the chip toggles the review conversation's drawer, whose status
- * button opens it; otherwise the chip opens the setup itself.
+ * Opens the agent modal (setup or status): the chip opens the review
+ * conversation's drawer, with the setup over it when no agent is
+ * connected; else the drawer's status button opens it.
  */
 export async function openAgentModal(page: Page): Promise<void> {
 	const c = chip(page);
-	// The first status read in: the chip says which it does.
+	// The first status read in: the chip opens the drawer.
 	await expect(c).not.toHaveAttribute("aria-busy", "true");
-	const expanded = await c.getAttribute("aria-expanded");
-	if (expanded === null) {
+	await expect(c).toHaveAttribute("aria-expanded", /true|false/);
+	// Open: its view is set in the same render as the drawer's (never one before the other).
+	const modal = page.locator('[data-testid="agent-setup"][data-view]');
+	const statusButton = reviewDrawer(page).getByRole("button", {
+		name: "Agent status",
+	});
+	if ((await c.getAttribute("aria-expanded")) === "false") {
 		await c.click();
-		return;
+		// No agent connected: the setup comes with the drawer; else the drawer alone.
+		await expect(modal.or(statusButton).first()).toBeAttached();
+		if ((await modal.count()) > 0) return;
 	}
-	if (expanded === "false") await c.click();
-	await reviewDrawer(page)
-		.getByRole("button", { name: "Agent status" })
-		.click();
+	await statusButton.click();
 }
 
 /** The agent modal's setup view (no agent connected): Invite and Spawn. */
