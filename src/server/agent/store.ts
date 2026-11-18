@@ -380,6 +380,20 @@ export class AgentThreadStore {
 		return foldAgentThreads(await this.#events());
 	}
 
+	/**
+	 * The threads, and a revision that changes with every write to the ref
+	 * (any server's): the tip commit the threads were read from, "" before
+	 * the first write.
+	 */
+	async readWithRevision(): Promise<{
+		threads: AgentThreadFold[];
+		revision: string;
+	}> {
+		const { tip, events } = await this.store.readEventsAt(this.#ref);
+		for (const e of events) this.#remember(e);
+		return { threads: foldAgentThreads(events), revision: tip ?? "" };
+	}
+
 	/** The thread with this id (a later opening's id finds the first's); UnknownAgentThreadError if none. */
 	async find(thread: string): Promise<AgentThreadFold> {
 		return this.#find(await this.#events(), thread);

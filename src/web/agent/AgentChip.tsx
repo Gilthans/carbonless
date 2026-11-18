@@ -97,9 +97,12 @@ export function useAgentSync(
 	status: AgentStatus | undefined,
 ): void {
 	// `since` moves on every state change: a turn that began and ended
-	// between two polls still shows.
+	// between two polls still shows. `threadsRev` moves on every stored
+	// write: on a server showing `elsewhere`, the holder's turns move
+	// nothing else (a question it took and answered between two polls,
+	// or two answers folded into one render, leaves `waiting` as it was).
 	const key = status
-		? `${status.state}|${status.since}|${status.answering?.thread ?? ""}|${status.waiting}`
+		? `${status.state}|${status.since}|${status.answering?.thread ?? ""}|${status.waiting}|${status.threadsRev ?? ""}`
 		: "";
 	const last = useRef(key);
 	useEffect(() => {

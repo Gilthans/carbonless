@@ -259,6 +259,12 @@ export interface AgentStatus {
 	elsewhere?: number;
 	/** threads whose last message is a human's */
 	waiting: number;
+	/**
+	 * Changes with every write to the review's agent threads, whichever
+	 * server made it: the page reads them again (useAgentSync). Absent
+	 * while they can't be read.
+	 */
+	threadsRev?: string;
 	/** Who answers: the ACP buddy, or a session joined through MCP. */
 	via?: "acp" | "mcp";
 	/** The session joined through MCP. */

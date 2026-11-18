@@ -22,6 +22,7 @@ import {
 	JOINED_PREAMBLE,
 	type JoinIdentity,
 } from "../../shared/agent.js";
+import { GitError } from "../git.js";
 import { AcpAgent, AgentStartError, agentEnv } from "./acp.js";
 import { agentsDir, type Checkout, createCheckout } from "./checkout.js";
 import { type ReviewClaim, takeClaim } from "./claim.js";
@@ -421,14 +422,19 @@ export class AgentRunner {
 			}
 		}
 		let waiting = 0;
+		let threadsRev: string | undefined;
 		try {
+			const read = await this.#deps.store.readWithRevision();
 			// The raw fold, not GitHub-joined: an orphan still has subject "thread"
 			// here, so its own resolve counts (isAgentQuestion would ignore it).
-			waiting = (await this.#deps.store.read()).filter(
+			waiting = read.threads.filter(
 				(t) => t.waiting && (t.anchor.subject === "review" || !t.resolved),
 			).length;
-		} catch {
-			// The count is a hint; the ref may be unreadable a moment.
+			threadsRev = read.revision;
+		} catch (error) {
+			// The count is a hint; the ref may be unreadable a moment. Only
+			// git's failures: anything else is a bug, not an empty ref.
+			if (!(error instanceof GitError)) throw error;
 		}
 		// The ignored-wake warning ends once nothing waits.
 		if (
@@ -475,6 +481,7 @@ export class AgentRunner {
 			...(this.#seenAt() ? { seen: this.#seenAt() } : {}),
 			...(connected ? { connected: true } : {}),
 			waiting,
+			...(threadsRev !== undefined ? { threadsRev } : {}),
 		};
 	}
 
