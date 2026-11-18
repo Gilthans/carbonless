@@ -27,7 +27,7 @@ import type {
 	StateChange,
 } from "../../shared/types";
 import { AgentBubble } from "../agent/AgentBubble";
-import { AgentComposer } from "../agent/AgentComposer";
+import { AgentComposer, headFacts } from "../agent/AgentComposer";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
 import {
@@ -956,6 +956,7 @@ export function FileDiff(props: {
 					clientId={c.clientId}
 					span={c.span}
 					quote={file.path}
+					comment={{ readOnly, ...headFacts(c.span, snapshotHead) }}
 				/>
 			))}
 		</div>
