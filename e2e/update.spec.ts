@@ -45,6 +45,15 @@ const ROOT = resolve(import.meta.dirname, "..");
 const CURRENT = "0.2.0";
 const NEWER = "0.3.0";
 
+/**
+ * A request while crb restarts: refused while it is down, or cut off as it
+ * stops (it force-closes every socket; Chromium logs a reset or, on a
+ * reused socket, not connected). Expected only for the restart's window
+ * (expectConsoleError's end): from Update to the page seeing the outcome.
+ */
+const CRB_DOWN =
+	/net::ERR_(CONNECTION_REFUSED|CONNECTION_RESET|SOCKET_NOT_CONNECTED)/;
+
 interface Installed {
 	pkg: string;
 	cli: string;
@@ -350,14 +359,16 @@ it("Update installs exactly that version with npm, restarts crb on its port, and
 	expectConsoleError,
 }) => {
 	test.skip(isMobile, "no layout of its own");
-	// The page's requests while crb stops (one may be cut off) and is down.
-	expectConsoleError(/ERR_CONNECTION_(REFUSED|RESET)/);
 	await pr();
 	const { url } = await installed.start();
 	await page.goto(`${url}/`);
 	await page.evaluate(() => {
 		(window as unknown as { beforeUpdate: boolean }).beforeUpdate = true;
 	});
+	const before = (await (await fetch(`${url}/api/version`)).json()) as {
+		boot: string;
+	};
+	const restarted = expectConsoleError(CRB_DOWN);
 	await toast(page).getByRole("button", { name: "Update" }).click();
 	await expect(toast(page)).toHaveAttribute("data-state", "updating");
 	await expect(toast(page)).toContainText(`Updating to v${NEWER}`);
@@ -377,10 +388,16 @@ it("Update installs exactly that version with npm, restarts crb on its port, and
 			{ timeout: 90_000 },
 		)
 		.toBe(false);
+	restarted();
 	const version = (await (await fetch(`${url}/api/version`)).json()) as {
 		version: string;
+		boot: string;
 	};
 	expect(version.version).toBe(NEWER);
+	// Another crb process: what tells an updating page it isn't the old one
+	// in its grace (CAR-177).
+	expect(version.boot).toEqual(expect.any(String));
+	expect(version.boot).not.toBe(before.boot);
 	expect(readFileSync(installed.npmLog, "utf8").trim().split("\n")).toEqual([
 		JSON.stringify([
 			"install",
@@ -407,17 +424,17 @@ it("a failed install: a distinct error with npm's output and the command; the ol
 }) => {
 	await pr();
 	if (isMobile) await page.setViewportSize({ width: 360, height: 740 });
-	// The page's polls while crb stops (one may be cut off) and is down.
-	expectConsoleError(/ERR_CONNECTION_(REFUSED|RESET)/);
 	writeFileSync(installed.failFile, "");
 	const { url } = await installed.start();
 	await page.goto(`${url}/`);
+	const restarted = expectConsoleError(CRB_DOWN);
 	await toast(page).getByRole("button", { name: "Update" }).click();
 	await expect(toast(page)).toHaveAttribute("data-state", "updating");
 	await shot(page, "update-updating", isMobile);
 	await expect(toast(page)).toHaveAttribute("data-state", "failed", {
 		timeout: 90_000,
 	});
+	restarted();
 	await expect(toast(page)).toContainText(`Update to v${NEWER} failed`);
 	await expect(toast(page).getByTestId("update-output")).toContainText(
 		"npm error 404 Not Found",
@@ -441,7 +458,6 @@ it("unsaved work: Update asks first; crb back, Reload, and leaving asks as alway
 	expectConsoleError,
 }) => {
 	test.skip(isMobile, "no layout of its own");
-	expectConsoleError(/ERR_CONNECTION_(REFUSED|RESET)/);
 	await pr();
 	// Storage refuses: a typed message is kept nowhere but the page.
 	await page.addInitScript(() => {
@@ -468,6 +484,7 @@ it("unsaved work: Update asks first; crb back, Reload, and leaving asks as alway
 		asked.push(d.type());
 		void d.accept();
 	});
+	const restarted = expectConsoleError(CRB_DOWN);
 	await toast(page).getByRole("button", { name: "Update" }).click();
 	await expect(toast(page)).toHaveAttribute("data-state", "updating");
 	await expect
@@ -490,6 +507,7 @@ it("unsaved work: Update asks first; crb back, Reload, and leaving asks as alway
 	await expect(toast(page)).toHaveAttribute("data-state", "back", {
 		timeout: 20_000,
 	});
+	restarted();
 	await expect(card.getByRole("textbox", { name: "Message" })).toHaveValue(
 		"Half a thought",
 	);
@@ -509,7 +527,6 @@ it("an rc install under a service manager: stays on rc past a release; installs 
 	expectConsoleError,
 }) => {
 	test.skip(isMobile, "no layout of its own");
-	expectConsoleError(/ERR_CONNECTION_(REFUSED|RESET)/);
 	await pr();
 	// An RC user; rc has just moved onto the release.
 	installed.setCurrent("0.3.0-rc.1");
@@ -529,6 +546,7 @@ it("an rc install under a service manager: stays on rc past a release; installs 
 	await page.evaluate(() => {
 		(window as unknown as { beforeUpdate: boolean }).beforeUpdate = true;
 	});
+	const restarted = expectConsoleError(CRB_DOWN);
 	await toast(page).getByRole("button", { name: "Update" }).click();
 	await expect(toast(page)).toHaveAttribute("data-state", "updating");
 	// Installed while it still served, then exited for the manager.
@@ -561,6 +579,7 @@ it("an rc install under a service manager: stays on rc past a release; installs 
 			{ timeout: 60_000 },
 		)
 		.toBe(false);
+	restarted();
 	// A release now, still on rc: the next RC is offered, never latest's.
 	await expect(
 		toast(page).getByRole("link", { name: "v0.4.0-rc.1" }),
@@ -762,8 +781,6 @@ it("Global settings: the running version; Check for updates offers the newer one
 	isMobile,
 	expectConsoleError,
 }) => {
-	// The page's requests while crb stops (one may be cut off) and is down.
-	expectConsoleError(/ERR_CONNECTION_(REFUSED|RESET)/);
 	await pr();
 	if (isMobile) await page.setViewportSize({ width: 360, height: 740 });
 	// Nothing newer yet.
@@ -831,6 +848,7 @@ it("Global settings: the running version; Check for updates offers the newer one
 	await page.evaluate(() => {
 		(window as unknown as { beforeUpdate: boolean }).beforeUpdate = true;
 	});
+	const restarted = expectConsoleError(CRB_DOWN);
 	await result.getByRole("button", { name: "Update" }).click();
 	await expect(toast(page)).toHaveAttribute("data-state", "updating");
 	await expect(
@@ -851,6 +869,7 @@ it("Global settings: the running version; Check for updates offers the newer one
 			{ timeout: 90_000 },
 		)
 		.toBe(false);
+	restarted();
 	expect(readFileSync(installed.npmLog, "utf8").trim().split("\n")).toEqual([
 		JSON.stringify([
 			"install",

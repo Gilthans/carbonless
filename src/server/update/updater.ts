@@ -19,7 +19,7 @@ import {
 	type UpdateInfo,
 } from "../../shared/update.js";
 import { cacheDir, stateDir } from "../paths.js";
-import type { BuildInfo } from "../version.js";
+import { BOOT_ID, type BuildInfo } from "../version.js";
 import {
 	detectInstall,
 	type Install,
@@ -135,6 +135,12 @@ export interface UpdaterOptions {
 export class Updater {
 	#available: string | null = null;
 	#state: UpdateInfo["state"] = "idle";
+	/**
+	 * The helper being started (state still idle): "restarting" only once
+	 * it runs, never one that turns back to idle in this process, which a
+	 * page waiting on this crb's boot would wait on for good (CAR-177).
+	 */
+	#starting: { version: string; done: Promise<UpdateInfo> } | null = null;
 	#failed: UpdateFailure | null = null;
 	#service: Service | null = null;
 	#timer: NodeJS.Timeout | null = null;
@@ -305,6 +311,7 @@ export class Updater {
 			state: this.#state,
 			failed: this.#failed,
 			commit: this.#o.build.commit,
+			boot: BOOT_ID,
 			channel: this.#channel,
 			install: this.#o.enabled ? (this.#o.install?.pm ?? null) : null,
 			byHand: reason !== null,
@@ -324,6 +331,10 @@ export class Updater {
 	 * has exited and starts it again. Resolves once under way.
 	 */
 	async update(version: string): Promise<UpdateInfo> {
+		if (this.#starting) {
+			if (version === this.#starting.version) return this.#starting.done;
+			throw new UpdateRefusedError("An update is already under way");
+		}
 		if (this.#state !== "idle") {
 			if (version === this.#available) return this.info();
 			throw new UpdateRefusedError("An update is already under way");
@@ -390,17 +401,29 @@ export class Updater {
 			result: this.#resultFile,
 		};
 		this.#failed = null;
-		this.#state = "restarting";
-		try {
-			await mkdir(stateDir(), { recursive: true });
-			await mkdir(cacheDir(), { recursive: true });
-			await (this.#o.startHelper ?? startHelper)(config);
-		} catch (error) {
-			this.#state = "idle";
-			throw error;
-		}
-		this.#exitSoon(0);
-		return this.info();
+		const done = (async () => {
+			try {
+				await mkdir(stateDir(), { recursive: true });
+				await mkdir(cacheDir(), { recursive: true });
+				await (this.#o.startHelper ?? startHelper)(config);
+			} catch (error) {
+				// Nothing installed: the failure, for every page (the toast's).
+				const why = error instanceof Error ? error.message : String(error);
+				this.#failed = {
+					version,
+					tail: `The updater could not start: ${why}`,
+					command: display,
+				};
+				throw error;
+			} finally {
+				this.#starting = null;
+			}
+			this.#state = "restarting";
+			this.#exitSoon(0);
+			return this.info();
+		})();
+		this.#starting = { version, done };
+		return done;
 	}
 
 	#exitSoon(code: number): void {

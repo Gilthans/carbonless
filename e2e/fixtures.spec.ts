@@ -57,6 +57,23 @@ test("an undeclared console error is reported", async ({ context }) => {
 	await expect.poll(() => watch.unexpected()).toEqual(["surprise", "uncaught"]);
 });
 
+test("a console error declared for a window is expected only inside it", async ({
+	context,
+}) => {
+	const other = await context.newPage();
+	const watch = watchConsoleErrors(other);
+	await other.evaluate(() => console.error("boom before"));
+	await expect.poll(() => watch.unexpected()).toEqual(["boom before"]);
+	const end = watch.expect(/boom/);
+	await other.evaluate(() => console.error("boom during"));
+	await expect.poll(() => watch.unexpected()).toEqual(["boom before"]);
+	end();
+	await other.evaluate(() => console.error("boom after"));
+	await expect
+		.poll(() => watch.unexpected())
+		.toEqual(["boom before", "boom after"]);
+});
+
 // Test traces (docs/test-profiling.md): what a test starts lands under its
 // span, whose ids the reporter derives the same way. The reporter's own
 // spans (the test, its setup phases) come after the test: see

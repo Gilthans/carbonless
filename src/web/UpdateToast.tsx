@@ -228,26 +228,39 @@ function Toast(props: {
 		const tick = async () => {
 			if (stopped) return;
 			try {
-				const v = await fetchJson<{ version: string }>("/api/version", {
-					cache: "no-store",
-				});
+				const v = await fetchJson<{ version: string; boot?: string }>(
+					"/api/version",
+					{ cache: "no-store" },
+				);
 				if (stopped) return;
 				if (v.version === target) {
 					back(target);
 					return;
 				}
-				// The old crb answers: still stopping, or back after a failure.
-				const now = await fetchUpdate();
-				if (stopped) return;
-				client.setQueryData(UPDATE_KEY, now);
-				if (now.state === "idle" && now.failed?.version === target) {
-					setPhase({
-						kind: "failed",
-						version: target,
-						tail: now.failed.tail,
-						command: now.failed.command,
-					});
-					return;
+				// The crb that announced its restart, in its grace: it stops
+				// any moment, cutting off whatever is in flight (CAR-177), so
+				// only /api/version (which waits for the new one anyway)
+				// crosses that moment. Another crb (back after a failed
+				// install), one still installing, or one too old to say which
+				// it is: /api/update tells.
+				const known = latest.current;
+				const inGrace =
+					known?.state === "restarting" &&
+					known.boot !== undefined &&
+					v.boot === known.boot;
+				if (!inGrace) {
+					const now = await fetchUpdate();
+					if (stopped) return;
+					client.setQueryData(UPDATE_KEY, now);
+					if (now.state === "idle" && now.failed?.version === target) {
+						setPhase({
+							kind: "failed",
+							version: target,
+							tail: now.failed.tail,
+							command: now.failed.command,
+						});
+						return;
+					}
 				}
 			} catch {
 				// Down while it installs: ask again.
@@ -291,6 +304,8 @@ function Toast(props: {
 			return;
 		}
 		setPhase({ kind: "updating", version, since: Date.now() });
+		// A poll still out must not land after the POST's answer, over it.
+		await client.cancelQueries({ queryKey: UPDATE_KEY });
 		try {
 			const answer = await fetchJson<UpdateInfo>("/api/update", {
 				method: "POST",

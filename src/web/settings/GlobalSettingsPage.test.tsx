@@ -37,6 +37,7 @@ const INFO: UpdateInfo = {
 	state: "idle",
 	failed: null,
 	commit: SHA,
+	boot: "boot-1",
 	channel: "rc",
 	install: "pnpm",
 	byHand: false,

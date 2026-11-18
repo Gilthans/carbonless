@@ -40,7 +40,7 @@ import { ThreadPlacer } from "./rereview/threads";
 import { RefStore } from "./review/refStore";
 import { Session } from "./session";
 import { TEST_HOOK_HEADER } from "./testHooks";
-import { BUILD, VERSION_HEADER } from "./version";
+import { BOOT_ID, BUILD, VERSION_HEADER } from "./version";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -2385,7 +2385,7 @@ describe("API", () => {
 		});
 
 		it("GET /api/version is this build", async () => {
-			expect(await get("/api/version")).toEqual(BUILD);
+			expect(await get("/api/version")).toEqual({ ...BUILD, boot: BOOT_ID });
 		});
 
 		it("refuses a crb of another build, naming both; takes its own", async () => {
