@@ -26,6 +26,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import type { MovedInfo } from "../../shared/rereview/moves";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { Fate, ThreadPlacement } from "../../shared/rereview/placement";
 import type {
@@ -41,7 +42,6 @@ import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import {
 	ApiError,
 	placementsQuery,
-	postPlacement,
 	type RereviewTo,
 	sessionQuery,
 } from "../api";
@@ -63,6 +63,14 @@ import {
 import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
 import { Avatar, usePerson } from "../threads/people";
 import { type ThreadFocus, useFocusCard } from "./threadFocus";
+import {
+	firstWords,
+	MovedChip,
+	MoveFailureLine,
+	MoveHandle,
+	movesOf,
+	useMovable,
+} from "./threadMove";
 import type { Placements } from "./threadPlacement";
 
 /**
@@ -80,11 +88,21 @@ export interface PlacementInfo {
 	retry: () => void;
 	/** A retry after an error is under way. */
 	retrying?: boolean;
-	/** The read and target they are for (a placement write updates them). */
+	/** The read and target they are for (a move updates them). */
 	readId: string | null;
 	to: RereviewTo | null;
-	/** The patch set a drag stores into; null: none (a head, an earlier patch set). */
-	placeOn: number | null;
+	/**
+	 * The reviewer's moves the threads stand on (CAR-139), by thread id;
+	 * null until the placements are in.
+	 */
+	moves?: ReadonlyMap<string, MovedInfo> | null;
+	/**
+	 * Where a move writes (the latest patch set, or a head that is no
+	 * earlier patch set, in the full diff); null: moves are off here.
+	 */
+	moveTo: RereviewTo | null;
+	/** The head of the snapshot viewed (a thread opened on it isn't moved). */
+	viewedHead?: string | null;
 	/** The patch set a thread was opened on (openedOn); null without patch sets. */
 	openedOn: (t: Pick<ReviewThread, "createdAt">) => number | null;
 }
@@ -96,7 +114,7 @@ const PlacementContext = createContext<PlacementInfo>({
 	retry: () => {},
 	readId: null,
 	to: null,
-	placeOn: null,
+	moveTo: null,
 	openedOn: () => null,
 });
 
@@ -196,6 +214,20 @@ const psLabel = (n: number | null) => (n === null ? "" : `PS${n}`);
  * as it was.
  */
 export function PlacementChip({ thread }: { thread: ReviewThread }) {
+	const placement = usePlacementInfo().placements?.get(thread.id);
+	return (
+		<>
+			<MovedChip
+				thread={{ source: "github", id: thread.id }}
+				github={{ line: thread.currentLine, outdated: thread.outdated }}
+			/>
+			{placement || !thread.resolved ? <FateChip thread={thread} /> : null}
+		</>
+	);
+}
+
+/** The tracer's word on a thread's place (PlacementChip). */
+function FateChip({ thread }: { thread: ReviewThread }) {
 	const info = usePlacementInfo();
 	const placement = info.placements?.get(thread.id);
 	if (!placement && info.error && !thread.resolved) {
@@ -270,20 +302,26 @@ export function ChangedSince({
 	thread,
 	placement,
 	lines = true,
+	moved,
 }: {
 	/** A review thread, or an agent thread seen the same way. */
 	thread: Pick<ReviewThread, "createdAt" | "path" | "code">;
 	placement: Extract<ThreadPlacement, { kind: "changed" }>;
 	/** Its original code too (the Overview's card shows its own). */
 	lines?: boolean;
+	/** The reviewer's move it was followed from (CAR-139): the moved-to lines are its original. */
+	moved?: MovedInfo;
 }) {
 	const info = usePlacementInfo();
-	const ps = info.openedOn(thread);
+	const movedOriginal = moved ? movedOriginalOf(moved) : undefined;
+	const ps = movedOriginal ? movedOriginal.ps : info.openedOn(thread);
 	const id = useReviewId();
 	const { old } = placement;
 	return (
 		<div data-testid="placement-changed-pane" className="space-y-1">
-			{lines && <OriginalCode thread={thread} fallback={old} />}
+			{lines && (
+				<OriginalCode thread={thread} fallback={old} moved={movedOriginal} />
+			)}
 			<p
 				data-testid="placement-fate-line"
 				className="flex min-h-10 flex-wrap items-center gap-x-2 text-xs text-muted"
@@ -295,7 +333,8 @@ export function ChangedSince({
 						params={{ id }}
 						search={{
 							ps,
-							path: thread.code?.anchor.path ?? thread.path,
+							path:
+								movedOriginal?.path ?? thread.code?.anchor.path ?? thread.path,
 							line: old.line,
 							side: old.side,
 						}}
@@ -307,6 +346,22 @@ export function ChangedSince({
 			</p>
 		</div>
 	);
+}
+
+/** Where a moved thread's original lines are: the move's patch set (none for a head) and file. */
+export const movedOriginalOf = (m: MovedInfo) => ({
+	ps: "patchset" in m.on ? m.on.patchset : null,
+	path: m.path,
+});
+
+/** A moved, unplaced thread's original: the lines it was moved to, when known. */
+export function movedOriginalFor(
+	moved: MovedInfo | undefined,
+	placement: ThreadPlacement | undefined,
+): { old: OldLines; ps: number | null; path: string } | undefined {
+	if (!moved || placement?.kind !== "unplaced" || !placement.old)
+		return undefined;
+	return { old: placement.old, ...movedOriginalOf(moved) };
 }
 
 /** A changed placement's commented lines as the tracer read them in the thread's own patch set. */
@@ -323,14 +378,21 @@ export type OldLines = Extract<ThreadPlacement, { kind: "changed" }>["old"];
 export function OriginalCode({
 	thread,
 	fallback,
+	moved,
 }: {
 	/** A review thread, or an agent thread seen the same way. */
 	thread: Pick<ReviewThread, "code" | "path" | "createdAt">;
 	fallback?: OldLines;
+	/**
+	 * Moved by the reviewer (CAR-139): the lines it was moved to
+	 * (`fallback`) are its original, on the move's patch set and path.
+	 */
+	moved?: { ps: number | null; path: string };
 }) {
 	const info = usePlacementInfo();
-	const code = thread.code;
-	const path = code?.anchor.path ?? thread.path;
+	const own = moved && oldRows(fallback) ? null : thread.code;
+	const code = own;
+	const path = moved && !own ? moved.path : (code?.anchor.path ?? thread.path);
 	if (code?.source === "pending") {
 		return (
 			<div
@@ -356,7 +418,7 @@ export function OriginalCode({
 	const b = nums.at(-1);
 	const lines =
 		a === undefined ? "" : a === b ? ` · line ${a}` : ` · lines ${a}–${b}`;
-	const ps = psLabel(info.openedOn(thread));
+	const ps = psLabel(moved && !own ? moved.ps : info.openedOn(thread));
 	const label = [ps, path].filter(Boolean).join(" · ") + lines;
 	return (
 		<figure
@@ -437,14 +499,25 @@ export function UnplacedRow(props: {
 	movedTo?: string;
 	/** A link beside the row ("near 88"). */
 	link?: ReactNode;
-	/** A drag handle, when the thread can be placed by hand. */
-	handle?: ReactNode;
+	/** The file it is listed in (a drag's drop targets); none outside the comparison. */
+	dropPath?: string;
 }) {
 	const { thread, readId } = props;
 	const [more, setMore] = useState(false);
 	const showMore = useCallback(() => setMore(true), []);
 	// Its agent conversation: opening it shows the composer row too.
 	const agent = useThreadAgent(thread, { onOpen: showMore });
+	const ref = { source: "github" as const, id: thread.id };
+	const movable = useMovable({
+		thread: ref,
+		commit: thread.madeOn ?? thread.commit,
+		lines: thread.anchor !== null,
+	});
+	const info = usePlacementInfo();
+	const original = movedOriginalFor(
+		info.moves?.get(thread.id),
+		info.placements?.get(thread.id),
+	);
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<UnplacedShell
@@ -457,7 +530,30 @@ export function UnplacedRow(props: {
 				path={props.path}
 				movedTo={props.movedTo}
 				link={props.link}
-				handle={props.handle}
+				handle={
+					movable && (
+						<MoveHandle
+							thread={ref}
+							words={firstWords(thread.excerpt)}
+							path={props.dropPath ?? thread.path}
+							avatar={
+								<Avatar
+									login={thread.author}
+									url={thread.avatarUrl}
+									size={16}
+								/>
+							}
+						/>
+					)
+				}
+				moved={
+					<MovedChip
+						thread={ref}
+						github={{ line: thread.currentLine, outdated: thread.outdated }}
+					/>
+				}
+				failure={<MoveFailureLine thread={ref} />}
+				original={original}
 			>
 				<UnplacedReplies
 					thread={thread}
@@ -489,6 +585,12 @@ export function UnplacedShell(props: {
 	movedTo?: string;
 	link?: ReactNode;
 	handle?: ReactNode;
+	/** The `moved` chip and its Undo (threadMove.tsx), on a line of their own. */
+	moved?: ReactNode;
+	/** A moved thread's original: the lines it was moved to (CAR-139). */
+	original?: { old: OldLines; ps: number | null; path: string };
+	/** A move refused, under the header. */
+	failure?: ReactNode;
 	testId?: string;
 	/** Whether it can serve a request yet (useFocusCard's `ready`). */
 	ready?: (focus: ThreadFocus) => boolean;
@@ -739,131 +841,10 @@ function Opener({ thread }: { thread: ReviewThread }) {
 	);
 }
 
-/** The row a point is over, in this file's diff, as a one-line anchor. */
-function lineAt(
-	x: number,
-	y: number,
-	section: Element | null,
-	path: string,
-): { row: HTMLElement; anchor: ThreadAnchorRef } | null {
-	const row = document
-		.elementFromPoint(x, y)
-		?.closest<HTMLElement>('tr[data-testid="diff-line"]');
-	if (!row || !section?.contains(row)) return null;
-	const newNo = Number(row.dataset.newNo);
-	const oldNo = Number(row.dataset.oldNo);
-	const [side, line] =
-		Number.isInteger(newNo) && newNo > 0
-			? (["RIGHT", newNo] as const)
-			: Number.isInteger(oldNo) && oldNo > 0
-				? (["LEFT", oldNo] as const)
-				: [null, 0];
-	if (!side) return null;
-	return {
-		row,
-		anchor: { path, startSide: side, startLine: line, side, line },
-	};
-}
-
-/**
- * Writes a placement (POST /threads/:id/placement), shown at once on the
- * placements it updates, and rolled back when refused (400, 409).
- */
-export function usePlaceThread() {
-	const info = usePlacementInfo();
-	const client = useQueryClient();
-	return useMutation({
-		mutationFn: (v: { threadId: string; anchor: ThreadAnchorRef }) => {
-			if (info.placeOn === null) throw new Error("No patch set to place in");
-			return postPlacement(v.threadId, info.placeOn, v.anchor);
-		},
-		onMutate: async (v) => {
-			if (!info.readId || !info.to) return undefined;
-			const { queryKey } = placementsQuery(info.readId, info.to);
-			await client.cancelQueries({ queryKey });
-			const before = client.getQueryData(queryKey);
-			client.setQueryData(queryKey, (old) => {
-				if (!old || "pending" in old) return old;
-				const placed: PlacementsAnswer["threads"][number] = {
-					id: v.threadId,
-					placement: { kind: "placed", anchor: v.anchor, changed: false },
-				};
-				return {
-					...old,
-					threads: old.threads.map((t) => (t.id === v.threadId ? placed : t)),
-				};
-			});
-			return { queryKey, before };
-		},
-		onError: (_error, _v, context) => {
-			if (context) client.setQueryData(context.queryKey, context.before);
-		},
-		onSettled: () => client.invalidateQueries({ queryKey: ["placements"] }),
-	});
-}
-
-/**
- * The handle that places a thread by dragging it onto a line of its file
- * (pointer capture: a mouse and a finger alike). The row under the
- * pointer is outlined while dragging.
- */
-function DragHandle(props: {
-	thread: ReviewThread;
-	path: string;
-	sectionId: string;
-	onPlace: (anchor: ThreadAnchorRef) => void;
-}) {
-	const over = useRef<HTMLElement | null>(null);
-	const [dragging, setDragging] = useState(false);
-	const mark = (row: HTMLElement | null) => {
-		if (over.current === row) return;
-		over.current?.removeAttribute("data-drop-line");
-		over.current = row;
-		row?.setAttribute("data-drop-line", "true");
-	};
-	const section = () => document.getElementById(props.sectionId);
-	const end = (e: ReactPointerEvent, place: boolean) => {
-		if (!dragging) return;
-		setDragging(false);
-		const hit = lineAt(e.clientX, e.clientY, section(), props.path);
-		mark(null);
-		if (place && hit) props.onPlace(hit.anchor);
-	};
-	return (
-		<Tooltip content="Drag onto a line to place it there" describe={false}>
-			{(trigger) => (
-				<button
-					{...trigger}
-					type="button"
-					aria-label="Place on a line (drag)"
-					data-testid="place-handle"
-					onPointerDown={(e) => {
-						e.preventDefault();
-						e.currentTarget.setPointerCapture(e.pointerId);
-						setDragging(true);
-					}}
-					onPointerMove={(e) => {
-						if (!dragging) return;
-						mark(
-							lineAt(e.clientX, e.clientY, section(), props.path)?.row ?? null,
-						);
-					}}
-					onPointerUp={(e) => end(e, true)}
-					onPointerCancel={(e) => end(e, false)}
-					className={`flex h-10 w-10 shrink-0 touch-none items-center justify-center rounded text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
-				>
-					<GrabberIcon size={16} aria-hidden />
-				</button>
-			)}
-		</Tooltip>
-	);
-}
-
 /**
  * The threads the tracer couldn't place in this file, under its header,
  * fate first; each shows its original code, a "near N" link to the
- * closest surviving line and, on the reviewer's latest patch set, a
- * handle to drag it onto a line.
+ * closest surviving line and, where moves go, the handle to move it.
  */
 export function UnplacedThreads(props: {
 	fates: {
@@ -874,9 +855,6 @@ export function UnplacedThreads(props: {
 	path: string;
 	fileIndex: number;
 }) {
-	const info = usePlacementInfo();
-	const place = usePlaceThread();
-	const sectionId = `file-${props.fileIndex}`;
 	if (props.fates.length === 0) return null;
 	// Resolved ones last, quiet, and counted nowhere.
 	const fates = resolvedLast(props.fates);
@@ -891,14 +869,6 @@ export function UnplacedThreads(props: {
 					<Badge tone="red" icon={CircleSlashIcon}>
 						{open} unplaced
 					</Badge>
-				</p>
-			)}
-			{place.isError && (
-				<p role="alert" className="text-xs text-bad">
-					Couldn't place it:{" "}
-					{place.error instanceof ApiError
-						? place.error.message
-						: String(place.error)}
 				</p>
 			)}
 			<ul className="space-y-1.5">
@@ -918,18 +888,7 @@ export function UnplacedThreads(props: {
 								/>
 							)
 						}
-						handle={
-							info.placeOn !== null && (
-								<DragHandle
-									thread={thread}
-									path={props.path}
-									sectionId={sectionId}
-									onPlace={(anchor) =>
-										place.mutate({ threadId: thread.id, anchor })
-									}
-								/>
-							)
-						}
+						dropPath={props.path}
 					/>
 				))}
 			</ul>
@@ -1015,6 +974,7 @@ export function useSessionPlacements(
 	const answer =
 		asked && query.data && !("pending" in query.data) ? query.data : null;
 	const placements = usePlacementMap(answer);
+	const moves = useMemo(() => movesOf(answer), [answer]);
 	const patchsets = session?.patchsets;
 	const toKey = to ? JSON.stringify(to) : "";
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `to` by value.
@@ -1026,11 +986,24 @@ export function useSessionPlacements(
 			retry: () => void query.refetch(),
 			readId: readId ?? null,
 			to,
-			placeOn: null,
+			moves,
+			// The Overview shows that a thread is moved, never the controls.
+			moveTo: null,
+			viewedHead: session?.snapshotHead ?? null,
 			openedOn: (t: Pick<ReviewThread, "createdAt">) =>
 				openedOn(t.createdAt, patchsets ?? []),
 		}),
-		[placements, asked, answer, query, readId, toKey, patchsets],
+		[
+			placements,
+			moves,
+			asked,
+			answer,
+			query,
+			readId,
+			toKey,
+			patchsets,
+			session,
+		],
 	);
 }
 

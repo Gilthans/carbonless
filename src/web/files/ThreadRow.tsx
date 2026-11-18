@@ -16,6 +16,7 @@ import { useAgentPlacing } from "../agent/placeable";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
+import { Avatar } from "../threads/people";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import { StackControls } from "./stickyControls";
 import {
@@ -26,6 +27,13 @@ import {
 	usePlacementInfo,
 } from "./ThreadFate";
 import { useFocusCard } from "./threadFocus";
+import {
+	firstWords,
+	MoveFailureLine,
+	MoveHandle,
+	useAgentMove,
+	useMovable,
+} from "./threadMove";
 
 /**
  * One thread opened in Files changed: a header with its state (resolved in
@@ -42,7 +50,8 @@ export function ThreadBlock(props: {
 	onResolved?: (thread: ReviewThread, from: Element) => void;
 }) {
 	const { thread, onResolved } = props;
-	const placement = usePlacementInfo().placements?.get(thread.id);
+	const { placements, moves } = usePlacementInfo();
+	const placement = placements?.get(thread.id);
 	const onToggle =
 		onResolved &&
 		((resolved: boolean, from: Element) => {
@@ -55,6 +64,12 @@ export function ThreadBlock(props: {
 	useFocusCard(thread.id, card, undefined, {
 		ready: (f) => !f.conversation || agent?.conversation?.id === f.conversation,
 	});
+	const ref = { source: "github" as const, id: thread.id };
+	const movable = useMovable({
+		thread: ref,
+		commit: thread.madeOn ?? thread.commit,
+		lines: thread.anchor !== null,
+	});
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<article
@@ -65,6 +80,22 @@ export function ThreadBlock(props: {
 				className="min-w-0 overflow-hidden rounded-lg border border-edge bg-surface"
 			>
 				<div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-band px-2.5 py-1 text-xs text-muted">
+					{movable && (
+						<span className="-my-1 -ml-2 flex">
+							<MoveHandle
+								thread={ref}
+								words={firstWords(thread.excerpt)}
+								path={thread.path}
+								avatar={
+									<Avatar
+										login={thread.author}
+										url={thread.avatarUrl}
+										size={16}
+									/>
+								}
+							/>
+						</span>
+					)}
 					{thread.resolved ? (
 						<CheckCircleIcon
 							size={14}
@@ -107,8 +138,13 @@ export function ThreadBlock(props: {
 					</span>
 				</div>
 				<div className="space-y-2 p-2.5">
+					<MoveFailureLine thread={ref} />
 					{placement?.kind === "changed" && (
-						<ChangedSince thread={thread} placement={placement} />
+						<ChangedSince
+							thread={thread}
+							placement={placement}
+							moved={moves?.get(thread.id)}
+						/>
 					)}
 					<Conversation
 						readId={props.readId}
@@ -269,6 +305,7 @@ export function AgentThreadRow(props: {
 								thread={t}
 								fate={fate?.fate ?? null}
 								movedTo={fate?.movedTo}
+								dropPath={fate?.path}
 								link={
 									fate?.nearest && (
 										<NearLink
@@ -285,7 +322,7 @@ export function AgentThreadRow(props: {
 			) : (
 				props.threads.map((t) => {
 					const card = (
-						<AgentThreadCard
+						<AgentLineCard
 							key={t.id}
 							thread={t}
 							status={status}
@@ -309,6 +346,29 @@ export function AgentThreadRow(props: {
 
 type UnplacedPlacement = Extract<ThreadPlacement, { kind: "unplaced" }>;
 
+/** An agent thread's card on its line, with its move controls (CAR-139). */
+function AgentLineCard(props: {
+	thread: SpanAgentThread;
+	status: Parameters<typeof AgentThreadCard>[0]["status"];
+	unplaced?: boolean;
+	outdated?: string;
+}) {
+	const move = useAgentMove(props.thread, props.thread.anchor.path);
+	return (
+		<div className="min-w-0 space-y-1">
+			<AgentThreadCard
+				thread={props.thread}
+				status={props.status}
+				unplaced={props.unplaced}
+				outdated={props.outdated}
+				handle={move.handle}
+				moved={move.moved}
+			/>
+			{move.failure}
+		</div>
+	);
+}
+
 /** An agent thread as the placement pieces read it (a review thread's fields). */
 const asThread = (t: SpanAgentThread) => ({
 	createdAt: t.at,
@@ -328,6 +388,7 @@ function AgentChanged(props: {
 	children: ReactNode;
 }) {
 	const thread = asThread(props.thread);
+	const { moves } = useAgentPlacing();
 	return (
 		<div
 			data-testid="agent-changed"
@@ -337,7 +398,11 @@ function AgentChanged(props: {
 			<p className="flex min-h-10 items-center">
 				<ChangedChip thread={thread} />
 			</p>
-			<ChangedSince thread={thread} placement={props.placement} />
+			<ChangedSince
+				thread={thread}
+				placement={props.placement}
+				moved={moves?.get(props.thread.id)}
+			/>
 			{props.children}
 		</div>
 	);

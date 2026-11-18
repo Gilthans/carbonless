@@ -86,6 +86,12 @@ const E2E_MAP = [
 		/^src\/web\/files\/(ThreadFate|NotInComparison|threadPlacement|ThreadRow)\.tsx?$/,
 		["rereview", "files-threads"],
 	],
+	// Thread moves (CAR-139): the handle, move mode and "Place here", the
+	// `moved` chip and Undo, the routes, the fold in the agent threads ref.
+	[
+		/^src\/web\/files\/(threadMove|SelectionBar|ThreadFate|ThreadRow|NotInComparison|ThreadsPanel|threadRows|threadPlacement)\.tsx?$|^src\/web\/agent\/(AgentThreadCard|AgentUnplaced|placeable)\.tsx?$|^src\/web\/sticky\.ts$|^src\/shared\/rereview\/moves\.ts$|^src\/server\/rereview\/(threads|moveBody)\.ts$|^src\/server\/agent\/store\.ts$|^e2e\/thread-move\.spec\.ts$/,
+		["thread-move"],
+	],
 	// The tree's Threads tab: its rows, its state, the tree's tabs, and
 	// who spoke last (the server's thread summaries).
 	[
