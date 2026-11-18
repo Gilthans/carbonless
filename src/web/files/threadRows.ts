@@ -15,6 +15,8 @@ export type LastSpeaker =
 export interface PanelRow {
 	/** "gh:<id>" or "ai:<id>": unique across both regions. */
 	key: string;
+	/** The panel's region it's listed in: People (GitHub's) or AI. */
+	region: "people" | "ai";
 	id: string;
 	/** Where it shows in the viewed snapshot (where it was made when it shows nowhere). */
 	path: string;
@@ -140,6 +142,7 @@ export function githubRows(
 ): PanelRow[] {
 	return threads.map((t) => ({
 		key: `gh:${t.id}`,
+		region: "people" as const,
 		id: t.id,
 		...githubPlace(t, shown),
 		focus: { id: t.id },
@@ -198,6 +201,7 @@ export function agentRows(
 				: { id: t.id };
 		return {
 			key: `ai:${t.id}`,
+			region: "ai" as const,
 			id: t.id,
 			...place,
 			focus,
@@ -233,6 +237,72 @@ export function listedRows(
 		.map(({ r }) => r);
 }
 
+/**
+ * The rows the panel shows, top to bottom: People, then AI, each as
+ * listedRows lists it; a folded region's rows (and one still loading) are
+ * left out, as they aren't on screen.
+ */
+export function panelOrder(
+	people: readonly PanelRow[] | null,
+	ai: readonly PanelRow[] | null,
+	view: { peopleFolded: boolean; aiFolded: boolean; showResolved: boolean },
+): PanelRow[] {
+	const region = (rows: readonly PanelRow[] | null, folded: boolean) =>
+		rows === null || folded ? [] : listedRows(rows, view.showResolved);
+	return [...region(people, view.peopleFolded), ...region(ai, view.aiFolded)];
+}
+
+/**
+ * Where the current row (j/k) is in the panel's order: its key, and its
+ * region and activity, so a step still knows where it was once the row
+ * leaves the list (resolved and hidden, its region folded).
+ */
+export interface RowPlace {
+	key: string;
+	/** 0 in People, 1 in AI. */
+	region: number;
+	/** Its activity (ms); -Infinity undated, as listedRows sorts it. */
+	ms: number;
+}
+
+/** The region's place in the panel: People above AI. */
+const regionOf = (row: PanelRow) => (row.region === "ai" ? 1 : 0);
+
+export const placeOf = (row: PanelRow): RowPlace => ({
+	key: row.key,
+	region: regionOf(row),
+	ms: timeOf(row.at),
+});
+
+/**
+ * The row a step goes to in `order` (panelOrder) from `at`: the next one
+ * (`dir` 1) or the previous (-1); with no current row the first or the
+ * last. At an end, none (no wrap). A current row no longer listed, or
+ * listed elsewhere since (new activity sorts it to its region's top), is
+ * stepped from where it stood: the next is the first other row not above
+ * it (People before AI, newer above), the previous the last one above it.
+ */
+export function stepRow(
+	order: readonly PanelRow[],
+	at: RowPlace | null,
+	dir: 1 | -1,
+): PanelRow | null {
+	if (order.length === 0) return null;
+	if (at === null) return (dir === 1 ? order[0] : order.at(-1)) ?? null;
+	const i = order.findIndex((r) => r.key === at.key);
+	const row = order[i];
+	if (row && regionOf(row) === at.region && timeOf(row.at) === at.ms) {
+		return order[i + dir] ?? null;
+	}
+	const above = (r: PanelRow) => {
+		const region = regionOf(r);
+		return region !== at.region ? region < at.region : timeOf(r.at) > at.ms;
+	};
+	const others = order.filter((r) => r.key !== at.key);
+	if (dir === 1) return others.find((r) => !above(r)) ?? null;
+	return others.findLast(above) ?? null;
+}
+
 /** What the page knows of where conversations' cards are (FilesPage). */
 export interface FocusWorld {
 	/** The diff's file at `path` (old paths too), by index; undefined: none. */
@@ -260,7 +330,7 @@ export interface FocusPlan {
 
 export function focusPlan(row: PanelRow, w: FocusWorld): FocusPlan {
 	const none = { open: null, unhide: false, request: null };
-	const onGithub = row.key.startsWith("gh:") || !!row.focus.conversation;
+	const onGithub = row.region === "people" || !!row.focus.conversation;
 	const after = onGithub ? w.githubAfter : w.agentAfter;
 	if (after.has(row.focus.id)) return { ...none, request: row.focus };
 	const file = w.fileOf(row.path);
