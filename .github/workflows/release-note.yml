@@ -1,0 +1,71 @@
+# Every PR to master has a release note (CAR-211; docs/releasing.md,
+# "Release notes"): its tickets' `Release note` comments in Linear, or a
+# `Release note` line in its description (a ticket's note wins). The same
+# rules as `pnpm release merge-ok` (scripts/release-notes.ts, prNotesOk),
+# for merges no script sees (GitHub's UI).
+#
+# The Linear key (LINEAR_READ_API_KEY: read only, team CAR) is a secret of
+# the environment `release-note`, whose deployment branches are master
+# only: a branch's own workflow (pull_request or push, which runs the
+# branch's copy of any workflow file) is refused it. This one runs on
+# pull_request_target: GitHub takes this file from master, and the run's
+# ref is master, so the environment lets it in, a fork's PR included. It
+# never runs the PR's code: it checks out master, installs master's
+# lockfile without scripts, and reads the PR's title, body and files from
+# GitHub at run time (so a rerun sees the current description) into files,
+# never pasted into a script. Only its last step has the key. A note
+# posted in Linear after a run turns it green on a rerun: `pnpm release
+# note` reruns the open PRs' checks, merge-ok reruns a red one, and editing
+# the description runs it again (`edited`).
+name: Release note
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+    branches: [master]
+
+permissions:
+  contents: read
+
+# Only the newest run of a PR matters (an edit of the description runs it
+# again). By PR: under pull_request_target github.ref is master for all.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  release-note:
+    if: github.base_ref == 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Holds the Linear key; deployment branches: master only.
+    environment: release-note
+    permissions:
+      contents: read
+      pull-requests: read # the PR's text and files
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          # No cache: a pull_request_target run would write master's scope.
+      # master's lockfile, no install scripts, before the key is in any env.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Ask GitHub (the PR, its files)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/note"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" >"$RUNNER_TEMP/note/pull.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" >"$RUNNER_TEMP/note/files.json"
+      - name: Release note
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_READ_API_KEY }}
+        run: pnpm exec tsx scripts/release.ts ci:pr-note "$RUNNER_TEMP/note/pull.json" "$RUNNER_TEMP/note/files.json"
