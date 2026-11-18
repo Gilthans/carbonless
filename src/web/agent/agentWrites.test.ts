@@ -6,6 +6,7 @@ import { RETRY_DELAYS_MS } from "../files/stateSync";
 import {
 	askAgent,
 	askAgentOnThread,
+	askReview,
 	dropAgentWrite,
 	getAgentWrites,
 	replyAgent,
@@ -252,5 +253,130 @@ describe("agent writes", () => {
 		expect(getAgentWrites().pending.get("o1")?.error?.message).toBe(
 			"GitHub couldn't be read",
 		);
+	});
+
+	it("askReview opens the review conversation with review: true", async () => {
+		const whole: AgentThread = {
+			...thread("R1", "all ok?"),
+			anchor: { subject: "review" },
+		};
+		fetchMock.mockResolvedValue(answer(200, whole));
+		const view = { target: { patchset: 2 }, from: { branch: true as const } };
+		const got = askReview(client, "all ok?", "c1", view);
+		await vi.runAllTimersAsync();
+		await expect(got).resolves.toEqual(whole);
+		expect(bodies()).toEqual([
+			{
+				url: "/api/agent/threads",
+				method: "POST",
+				body: { clientId: "c1", text: "all ok?", review: true, view },
+			},
+		]);
+		expect(client.getQueryData(agentThreadsQuery.queryKey)).toEqual({
+			threads: [whole],
+		});
+		expect(getAgentWrites().pending.size).toBe(0);
+	});
+
+	it("askReview on 409 (another tab opened it) posts the text once to that conversation, same clientId", async () => {
+		const existing: AgentThread = {
+			...thread("R0", "first tab"),
+			anchor: { subject: "review" },
+		};
+		const joined: AgentThread = {
+			...existing,
+			messages: [
+				...existing.messages,
+				{ id: "m2", by: "human", at: "2026-11-07T10:01:00Z", text: "mine" },
+			],
+		};
+		fetchMock
+			.mockResolvedValueOnce(
+				answer(409, { error: "There is one already", thread: "R0" }),
+			)
+			.mockResolvedValue(answer(200, joined));
+		const got = askReview(client, "mine", "c2");
+		await vi.runAllTimersAsync();
+		await expect(got).resolves.toEqual(joined);
+		expect(bodies()).toEqual([
+			{
+				url: "/api/agent/threads",
+				method: "POST",
+				body: { clientId: "c2", text: "mine", review: true },
+			},
+			{
+				url: "/api/agent/threads/R0/messages",
+				method: "POST",
+				body: { clientId: "c2", text: "mine" },
+			},
+		]);
+		expect(client.getQueryData(agentThreadsQuery.queryKey)).toEqual({
+			threads: [joined],
+		});
+		expect(getAgentWrites().pending.size).toBe(0);
+	});
+
+	it("askReview: a refusal stays on the item and rejects; a second press while out sends nothing", async () => {
+		fetchMock.mockResolvedValue(answer(400, { error: "text is too long" }));
+		const first = askReview(client, "x", "c1");
+		const second = askReview(client, "x", "c1");
+		const caught = Promise.allSettled([first, second]);
+		await vi.runAllTimersAsync();
+		const [a, b] = await caught;
+		expect(a.status).toBe("rejected");
+		expect(b.status).toBe("rejected");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(getAgentWrites().pending.get("c1")?.error?.message).toBe(
+			"text is too long",
+		);
+	});
+
+	it("askReview: a 409 that names no conversation is a visible refusal; nothing else is posted", async () => {
+		fetchMock.mockResolvedValue(answer(409, { error: "There is one already" }));
+		const got = askReview(client, "mine", "c1");
+		const settled = got.then(
+			() => "resolved",
+			(e: unknown) => e,
+		);
+		await vi.runAllTimersAsync();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const item = getAgentWrites().pending.get("c1");
+		expect(item?.retrying).toBe(false);
+		expect((item?.error as { status?: number } | undefined)?.status).toBe(409);
+		expect(await settled).toBe(item?.error);
+	});
+
+	it("askReview: a transient failure on the joining message resends under the same clientId, never a second conversation", async () => {
+		const existing: AgentThread = {
+			...thread("R0", "first tab"),
+			anchor: { subject: "review" },
+		};
+		fetchMock
+			.mockResolvedValueOnce(answer(409, { error: "exists", thread: "R0" }))
+			.mockResolvedValueOnce(answer(503, { error: "busy" }))
+			.mockResolvedValueOnce(answer(409, { error: "exists", thread: "R0" }))
+			.mockResolvedValue(answer(200, existing));
+		const got = askReview(client, "mine", "c2");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(getAgentWrites().pending.get("c2")?.retrying).toBe(true);
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0] ?? 0);
+		await expect(got).resolves.toEqual(existing);
+		const sent = bodies();
+		expect(sent.map((b) => b.url)).toEqual([
+			"/api/agent/threads",
+			"/api/agent/threads/R0/messages",
+			"/api/agent/threads",
+			"/api/agent/threads/R0/messages",
+		]);
+		expect(new Set(sent.map((b) => b.body.clientId))).toEqual(new Set(["c2"]));
+		// Every open names the review: none is a fresh span or thread open.
+		for (const b of sent.filter((x) => x.url === "/api/agent/threads")) {
+			expect(b.body).toEqual({ clientId: "c2", text: "mine", review: true });
+		}
+		expect(client.getQueryData(agentThreadsQuery.queryKey)).toEqual({
+			threads: [existing],
+		});
+		expect(getAgentWrites().pending.size).toBe(0);
 	});
 });

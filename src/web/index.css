@@ -134,6 +134,10 @@
 	/* A find hit (find-mark): an opaque tone of the accent's hue, apart from span. */
 	--color-find: #101c8e;
 
+	/* The image stage's checkerboard (transparency): behind images, never text. */
+	--color-checker-a: #2a2d3e;
+	--color-checker-b: #343852;
+
 	/* Shadows: black at the strength each layer needs. */
 	--color-shade: #000000;
 	--shadow-float: 0 8px 24px -6px
@@ -152,6 +156,22 @@
  * background (added, deleted, gutters), under the text. A shadow, so it can
  * fade out (theme.test.ts checks the text on it).
  */
+/* The image stage's background: a checkerboard of the two checker tokens. */
+@utility checker {
+	background-color: var(--color-checker-a);
+	background-image:
+		linear-gradient(45deg, var(--color-checker-b) 25%, transparent 25%),
+		linear-gradient(-45deg, var(--color-checker-b) 25%, transparent 25%),
+		linear-gradient(45deg, transparent 75%, var(--color-checker-b) 75%),
+		linear-gradient(-45deg, transparent 75%, var(--color-checker-b) 75%);
+	background-size: 16px 16px;
+	background-position:
+		0 0,
+		0 8px,
+		8px -8px,
+		-8px 0;
+}
+
 @utility mark-tint {
 	& > td {
 		--wash: color-mix(in srgb, var(--color-accent) 8%, transparent);

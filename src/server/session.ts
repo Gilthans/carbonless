@@ -1,4 +1,8 @@
-import type { AgentPlacementsAnswer, AgentView } from "../shared/agent.js";
+import type {
+	AgentPlacementsAnswer,
+	AgentView,
+	AgentViewTarget,
+} from "../shared/agent.js";
 import { overlayCarries } from "../shared/rereview/overlay.js";
 import {
 	type ThreadInput,
@@ -37,12 +41,14 @@ import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import { contextLines } from "./diff/hunks.js";
 import {
+	blobName,
 	buildSnapshot,
 	loadContext,
 	loadFileHunks,
 	loadHunksBatch,
 	loadNewText,
 	snapshotId,
+	statBlob,
 } from "./diff/snapshot.js";
 import { WriteRefusedError } from "./errors.js";
 import {
@@ -57,7 +63,7 @@ import {
 	type PrRef,
 	resolvePrRef,
 } from "./gh.js";
-import { runGit } from "./git.js";
+import { runGit, runGitBuffer } from "./git.js";
 import {
 	type NewThreadTarget,
 	type StartedRecord,
@@ -73,6 +79,7 @@ import { RereviewCache } from "./rereview/cache.js";
 import {
 	answerRereview,
 	type EarlierPatchset,
+	interdiffBlobName,
 	interdiffFileContext,
 	interdiffFileHunks,
 	rereviewKey,
@@ -291,6 +298,8 @@ export class Session {
 	#reads: OverviewRead[] = [];
 	/** Every read not settled yet, kept or not: close() stops them all. */
 	readonly #live = new Set<OverviewRead>();
+	/** The read overview() last served the page (its route): never pushed out by newer reads. */
+	#served: OverviewRead | null = null;
 	/** Reads a Refresh replaced: their threads still serve, their overview not. */
 	readonly #superseded = new WeakSet<OverviewRead>();
 	/** Serializes everything that writes or swaps the snapshot. */
@@ -392,9 +401,13 @@ export class Session {
 					},
 					async () => "",
 				),
-			threads: async () => (await this.#agentGithub()).threads,
-			thread: async (id) => {
-				const { read, threads } = await this.#agentGithub();
+			threads: async (maxAgeMs) => (await this.#agentGithub(maxAgeMs)).threads,
+			threadsAt: async (maxAgeMs) => {
+				const { read, threads } = await this.#agentGithub(maxAgeMs);
+				return { threads, at: new Date(read.started).toISOString() };
+			},
+			thread: async (id, maxAgeMs) => {
+				const { read, threads } = await this.#agentGithub(maxAgeMs);
 				const found = threads.find((t) => t.id === id);
 				if (!found) return null;
 				// Deleted since the list was read: its comments say so.
@@ -409,8 +422,8 @@ export class Session {
 				await this.checkHead();
 			},
 			prAuthor: async () => (await this.overview()).author,
-			comments: async (ids) => {
-				const { read } = await this.#agentGithub();
+			comments: async (ids, maxAgeMs) => {
+				const { read } = await this.#agentGithub(maxAgeMs);
 				const out = new Map<string, { author: string; body: string }[]>();
 				for (const t of (await read.comments(ids)).threads) {
 					if (t.unavailable) continue;
@@ -421,6 +434,7 @@ export class Session {
 				}
 				return out;
 			},
+			coverage: (target) => this.coverage(target),
 			githubThread: async (id, view) => {
 				const { read, threads } = await this.#agentGithub();
 				const thread = threads.find((t) => t.id === id);
@@ -468,15 +482,17 @@ export class Session {
 	}
 
 	/**
-	 * The review threads of the read the overview serves (their summaries,
-	 * this session's own writes applied), as the agent joins them.
+	 * The review threads of a read at most `maxAgeMs` old (their summaries,
+	 * this session's own writes applied), as the agent joins them; by
+	 * default the read the overview serves, of any age.
 	 */
-	async #agentGithub(): Promise<{
+	async #agentGithub(maxAgeMs = Number.POSITIVE_INFINITY): Promise<{
 		read: OverviewRead;
 		threads: ReviewThread[];
 	}> {
 		if (this.#closed) throw new SessionClosedError("The session is closed");
-		const read = this.#pickRead(Number.POSITIVE_INFINITY);
+		// A recent or running read is reused (#pickRead): a burst reads once.
+		const read = this.#pickRead(maxAgeMs);
 		return { read, threads: (await read.threads("summary")).threads };
 	}
 
@@ -718,10 +734,20 @@ export class Session {
 			asOf: this.options.asOf ?? null,
 			pinnedHead: this.pinned,
 			patchsets: this.#patchsets.map(
-				({ number, head, mergeBase, startedAt, since, shape, baseBranch }) => ({
+				({
 					number,
 					head,
 					mergeBase,
+					revision,
+					startedAt,
+					since,
+					shape,
+					baseBranch,
+				}) => ({
+					number,
+					head,
+					mergeBase,
+					revision,
 					// One started before the name was recorded: the current one
 					// (as #sinceOf takes it; a retarget before it can't be told).
 					baseBranch: baseBranch ?? this.#snapshotBase,
@@ -731,6 +757,15 @@ export class Session {
 					commits: this.#commitsOf(mergeBase, head),
 				}),
 			),
+			...(this.#patchsets.length === 0
+				? {
+						snapshotBase: this.#snapshot.base,
+						snapshotCommits: this.#commitsOf(
+							this.#snapshot.base,
+							this.#snapshot.head,
+						),
+					}
+				: {}),
 			lastSeen: this.#lastSeen,
 			head: this.#head,
 		};
@@ -1086,6 +1121,55 @@ export class Session {
 	}
 
 	/**
+	 * One side's blob of file `index` of the snapshot with this `revision`
+	 * (the blob route's: its oid, the path it is at, its byte size), or null
+	 * for a side the file hasn't. Without `from`, the full diff's sides (the
+	 * old one at the merge base); with `from`, the since view's from patch
+	 * set `from`, named by the same interdiff its hunks come from
+	 * (engine.ts, interdiffBlobName). Never reads the bytes.
+	 */
+	async blob(
+		revision: string,
+		index: number,
+		side: "old" | "new",
+		from?: number,
+	): Promise<{ oid: string; path: string; size: number } | null> {
+		const name =
+			from === undefined
+				? blobName(this.#current(revision), index, side)
+				: await this.#interdiffBlobName(from, revision, index, side);
+		if (name === null) return null;
+		// A missing side or a submodule's gitlink: null.
+		const blob = await statBlob(this.repo, name);
+		// The path is after the first ':' (a tree or commit id has none).
+		return blob && { ...blob, path: name.slice(name.indexOf(":") + 1) };
+	}
+
+	/**
+	 * A blob's bytes, by the oid `blob` gave: on their own, never through
+	 * the text blobs' cache (an image would push the text out of it).
+	 */
+	async blobBytes(oid: string): Promise<Buffer> {
+		return runGitBuffer(this.repo, ["cat-file", "blob", checkOid(oid)]);
+	}
+
+	async #interdiffBlobName(
+		from: number,
+		revision: string,
+		index: number,
+		side: "old" | "new",
+	): Promise<string | null> {
+		const snapshot = this.#current(revision);
+		const since = (await this.#progress()).patchsets.find(
+			(p) => p.number === from,
+		);
+		if (!since) throw new RangeError(`No patch set ${from}`);
+		const traced = await this.#traced(since, snapshot);
+		const { answer } = await this.#answerFor(since, snapshot, traced);
+		return interdiffBlobName(traced, snapshot, answer, index, side);
+	}
+
+	/**
 	 * The since view's hunks of several files, for the search's prefetch:
 	 * the engine's answer computed once for the batch. As fileHunksBatch, a
 	 * file that fails answers with `error`; an unknown patch set, or an
@@ -1134,10 +1218,6 @@ export class Session {
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		const traced = await this.#traced(since, snapshot);
 		const { answer } = await this.#answerFor(since, snapshot, traced);
-		// Its states say which unshown lines a piece may take (vouched).
-		const states =
-			(await this.#progress()).statesByRevision.get(since.revision) ??
-			new Map();
 		const known = new Set([
 			...snapshot.files.map((f) => f.index),
 			...answer.files.map((f) => f.index),
@@ -1145,13 +1225,7 @@ export class Session {
 		return {
 			has: (index) => known.has(index),
 			hunks: async (index) => {
-				const hunks = interdiffFileHunks(
-					traced,
-					snapshot,
-					answer,
-					index,
-					states,
-				);
+				const hunks = interdiffFileHunks(traced, snapshot, answer, index);
 				if (hunks.hunks.length > 0) return hunks;
 				// A file the interdiff doesn't change (or only renames): its
 				// lines are one gap, so they and the threads on them can be opened.
@@ -1451,6 +1525,8 @@ export class Session {
 	 */
 	overview(
 		maxAgeMs = Number.POSITIVE_INFINITY,
+		/** The page asks (its route): the read is kept while newer ones come. */
+		forPage = false,
 	): Promise<Omit<PrOverview, "servedAt">> {
 		if (this.#closed) {
 			return Promise.reject(new SessionClosedError("The session is closed"));
@@ -1458,7 +1534,9 @@ export class Session {
 		// Asked at once, never waited for: it is in by the time GitHub's
 		// overview is, or the next one says (true until it is known).
 		this.#commentLeftNow();
-		return this.#pickRead(maxAgeMs).overview.then((o) => ({
+		const read = this.#pickRead(maxAgeMs);
+		if (forPage) this.#served = read;
+		return read.overview.then((o) => ({
 			...o,
 			commentLeft: this.#commentLeftNow(),
 		}));
@@ -1951,8 +2029,14 @@ export class Session {
 		// Until it has settled, whether kept or not (close() stops it).
 		this.#live.add(read);
 		void read.settled.then(() => this.#live.delete(read));
-		// The newest few, so a page still showing an older one gets its threads.
-		this.#reads = [...this.#reads, read].slice(-KEPT_READS);
+		// The newest few, so a page still showing an older one gets its threads;
+		// and the one the page was last served, which an agent's fresh reads
+		// (a burst every 30 s) must not push out.
+		const all = [...this.#reads, read];
+		const kept = all.slice(-KEPT_READS);
+		const page = this.#served;
+		if (page && all.includes(page) && !kept.includes(page)) kept.unshift(page);
+		this.#reads = kept;
 		read.overview.catch(() => {
 			this.#reads = this.#reads.filter((r) => r !== read);
 		});
@@ -1973,6 +2057,38 @@ export class Session {
 		const view = buildReviewView(snapshot, await this.#progress());
 		if (snapshot === this.#snapshot) this.#patchset = view.patchset;
 		return view;
+	}
+
+	/**
+	 * The coverage the page shows for a comparison, with its merge base and
+	 * head (the agent's `progress`): patch set `target.patchset` as reviewAt
+	 * reads it, head `target.head` as viewHead does, else the review as
+	 * review() does. It writes nothing: no patch set starts.
+	 */
+	async coverage(
+		target?: AgentViewTarget,
+	): Promise<{ base: string; head: string; view: ReviewView }> {
+		if (target && "patchset" in target) {
+			const progress = await this.#progress();
+			const record = progress.patchsets.find(
+				(p) => p.number === target.patchset,
+			);
+			if (!record) throw new RangeError(`No patch set ${target.patchset}`);
+			const snapshot = await this.#snapshotOf(record);
+			const view = buildReviewView(snapshot, progress);
+			return { base: snapshot.base, head: snapshot.head, view };
+		}
+		if (target) {
+			const snapshot = await this.#headSnapshot(target.head);
+			const view = await this.viewHead(target.head);
+			if (view.revision !== snapshot.revision) {
+				throw new Error("The head's comparison moved while it was read");
+			}
+			return { base: snapshot.base, head: snapshot.head, view };
+		}
+		const snapshot = this.#snapshot;
+		const view = buildReviewView(snapshot, await this.#progress());
+		return { base: snapshot.base, head: snapshot.head, view };
 	}
 
 	/**

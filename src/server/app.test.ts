@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -21,6 +22,7 @@ import {
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { AgentStatus, AgentThread } from "../shared/agent";
+import { IMAGE_MAX_BYTES } from "../shared/imageTypes";
 import type {
 	CommentsView,
 	DiffLine,
@@ -31,10 +33,13 @@ import type {
 } from "../shared/types";
 import { agentConfigSaveCount, setServerMcp } from "./agent/host";
 import { buildApp, prTitle, withPrTitle } from "./app";
+import { GitError } from "./git";
 import type { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
 import { ThreadPlacer } from "./rereview/threads";
 import { RefStore } from "./review/refStore";
+import { Session } from "./session";
+import { TEST_HOOK_HEADER } from "./testHooks";
 import { BOOT_ID, BUILD, VERSION_HEADER } from "./version";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
@@ -1363,6 +1368,49 @@ describe("API", () => {
 			expect((await get("/api/agent/threads")).threads).toHaveLength(1);
 		});
 
+		it("POST agent/threads takes review: true", async () => {
+			const bad = await post("/api/agent/threads", {
+				clientId: "r0",
+				text: "Overall?",
+				review: true,
+				span: span(),
+			});
+			expect(bad.statusCode, bad.body).toBe(400);
+			for (const review of [false, "yes", 1]) {
+				const res = await post("/api/agent/threads", {
+					clientId: "r0",
+					text: "Overall?",
+					review,
+				});
+				expect(res.statusCode, JSON.stringify(review)).toBe(400);
+			}
+			expect((await get("/api/agent/threads")).threads).toHaveLength(0);
+			const res = await post("/api/agent/threads", {
+				clientId: "r1",
+				text: "Overall?",
+				review: true,
+			});
+			expect(res.statusCode, res.body).toBe(200);
+			const t: AgentThread = res.json();
+			expect(t.anchor).toEqual({ subject: "review" });
+			expect(t).toMatchObject({ openedBy: "human", resolved: false });
+			const second = await post("/api/agent/threads", {
+				clientId: "r2",
+				text: "And?",
+				review: true,
+			});
+			expect(second.statusCode).toBe(409);
+			expect(second.json()).toMatchObject({
+				error: expect.any(String),
+				thread: t.id,
+			});
+			const resolve = await post(`/api/agent/threads/${t.id}/resolved`, {
+				resolved: true,
+			});
+			expect(resolve.statusCode).toBe(409);
+			expect((await get("/api/agent/threads")).threads).toHaveLength(1);
+		});
+
 		it("400 on a bad span, a blank or too long text, a bad clientId, an unsafe path", async () => {
 			for (const bad of [
 				{ span: { ...span(), side: undefined } },
@@ -1388,7 +1436,7 @@ describe("API", () => {
 			expect(res.statusCode).toBe(404);
 		});
 
-		it("join: Approve and Deny race, the second is 409; disconnect; start", async () => {
+		it("join: Approve and Deny race, the second is 409; Detach; start", async () => {
 			const { session } = await registry.open({ pr: pr.arg });
 			const host = session.agent;
 			if (!host) throw new Error("no agent");
@@ -1418,7 +1466,7 @@ describe("API", () => {
 			});
 			expect(joined.spawned).toBeUndefined();
 			expect(joined.joinRequest).toBeUndefined();
-			const off = await post("/api/agent/disconnect");
+			const off = await post("/api/agent/detach");
 			expect(off.statusCode, off.body).toBe(200);
 			const left: AgentStatus = await get("/api/agent");
 			expect(left.left).toMatchObject({ ...who, why: "disconnected" });
@@ -1600,7 +1648,6 @@ describe("API", () => {
 				["GET", "/api/agent/threads"],
 				["GET", `/api/agent/placements?head=${pr.head()}`],
 				["POST", "/api/agent/cancel"],
-				["POST", "/api/agent/disconnect"],
 				["POST", "/api/agent/start"],
 				["POST", "/api/agent/detach"],
 			] as const) {
@@ -1622,7 +1669,6 @@ describe("API", () => {
 					"/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6",
 					{ approve: true },
 				],
-				["POST", "/api/agent/disconnect", {}],
 				["POST", "/api/agent/start", {}],
 				["POST", "/api/agent/detach", {}],
 				["PUT", "/api/config/agent", null],
@@ -3140,6 +3186,116 @@ describe("API", () => {
 			expect(api.statusCode).toBe(200);
 		});
 
+		it("with the cookie, another site's page opens nothing without a click, on any path, and writes nothing", async () => {
+			const cookies = { crb_key: "k3y" };
+			const open = vi.spyOn(registry, "open");
+			try {
+				// A script's `location = ...` (or a redirect it started): a
+				// top-level navigation the Lax cookie rides along with, no click.
+				const nav = {
+					"sec-fetch-site": "cross-site",
+					"sec-fetch-mode": "navigate",
+					"sec-fetch-dest": "document",
+				};
+				const paths = [
+					"/pr/acme/widget/12",
+					"/PR/acme/widget/12",
+					"/Pr/acme/widget/12",
+					"/%70r/acme/widget/12",
+					"/%2fpr/acme/widget/12",
+					`/r/${id}`,
+					`/r/${id}/files`,
+					"/",
+					"/settings",
+					r("/api/head"),
+				];
+				for (const site of ["cross-site", "same-site"]) {
+					for (const url of paths) {
+						const res = await keyed.inject({
+							url,
+							cookies,
+							headers: { ...nav, "sec-fetch-site": site },
+						});
+						expect(res.statusCode, `${site} ${url}`).toBe(403);
+						expect(res.body, url).not.toContain("spa");
+					}
+				}
+				// Neither a frame, an image or a fetch, even with a click.
+				for (const [mode, dest] of [
+					["navigate", "iframe"],
+					["no-cors", "image"],
+					["cors", "empty"],
+				]) {
+					const res = await keyed.inject({
+						url: "/pr/acme/widget/12",
+						cookies,
+						headers: {
+							"sec-fetch-site": "cross-site",
+							"sec-fetch-mode": mode,
+							"sec-fetch-dest": dest,
+							"sec-fetch-user": "?1",
+						},
+					});
+					expect(res.statusCode, dest).toBe(403);
+				}
+				// A link the reviewer clicked on GitHub: the page.
+				for (const url of ["/pr/acme/widget/12", `/r/${id}`, "/"]) {
+					const res = await keyed.inject({
+						url,
+						cookies,
+						headers: { ...nav, "sec-fetch-user": "?1" },
+					});
+					expect(res.statusCode, url).toBe(200);
+					expect(res.body, url).toContain("spa");
+				}
+				// The setup line's key stays same-origin only, click or not.
+				const setup = await keyed.inject({
+					url: "/api/mcp/setup",
+					cookies,
+					headers: { ...nav, "sec-fetch-user": "?1" },
+				});
+				expect(setup.statusCode).toBe(403);
+				expect(setup.body).not.toContain("k3y");
+				// A form post or fetch from another site: refused, nothing opens.
+				for (const headers of [
+					{ "sec-fetch-site": "cross-site", origin: "https://evil.example" },
+					{ ...nav, "sec-fetch-user": "?1" },
+				]) {
+					const post = await keyed.inject({
+						method: "POST",
+						url: "/api/reviews",
+						cookies,
+						headers,
+						payload: { pr: "acme/widget#12" },
+					});
+					expect(post.statusCode, JSON.stringify(headers)).toBe(403);
+				}
+				expect(open).not.toHaveBeenCalled();
+				// The reviewer's own: typed or bookmarked, the page's own
+				// requests, and clients without Fetch Metadata (crb, an agent).
+				for (const headers of [
+					{ "sec-fetch-site": "none" },
+					{ "sec-fetch-site": "same-origin" },
+					{},
+				]) {
+					const page = await keyed.inject({
+						url: `/r/${id}`,
+						cookies,
+						headers,
+					});
+					expect(page.statusCode, JSON.stringify(headers)).toBe(200);
+					const api = await keyed.inject({
+						url: r("/api/session"),
+						cookies,
+						headers,
+					});
+					expect(api.statusCode, JSON.stringify(headers)).toBe(200);
+				}
+			} finally {
+				open.mockRestore();
+			}
+		});
+
 		it("sends security headers on static, 401 and SPA responses", async () => {
 			const cookies = { crb_key: "k3y" };
 			const responses = [
@@ -3290,5 +3446,308 @@ describe("the opening page's title", () => {
 			null,
 		);
 		expect(prTitle(undefined, { owner: "a", repo: "b", number: 1 })).toBe(null);
+	});
+});
+
+describe("blob route", () => {
+	const TOKEN = "0123456789abcdef0123456789abcdef";
+	/**
+	 * PNG-signed bytes, `n` varying one of them: the same `fill`, similar
+	 * enough to be a rename; another, not.
+	 */
+	const png = (n: number, fill = n) =>
+		Buffer.concat([
+			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, n]),
+			Buffer.alloc(200, fill),
+		]);
+	const SVG =
+		'<svg xmlns="http://www.w3.org/2000/svg"><script>x()</script></svg>\n';
+	let pr: PrFixture;
+	let registry: SessionRegistry;
+	let id: string;
+	let app: FastifyInstance;
+	let host: string;
+	let revision: string;
+	let files: ReviewView["files"];
+
+	beforeEach(async () => {
+		pr = createPrFixture({
+			base: { binary: { "pic.png": png(1), "old.png": png(2, 42) } },
+			pr: {
+				rename: { "old.png": "moved.png" },
+				binary: {
+					"pic.png": png(3),
+					"moved.png": png(4, 42),
+					"added.png": png(5),
+					"sig.dat": png(6),
+				},
+				files: {
+					"logo.svg": SVG,
+					"svg.dat": SVG,
+					"page.dat": "<!DOCTYPE html><html><body>hi</body></html>\n",
+				},
+			},
+		});
+		registry = new SessionRegistry();
+		({ id } = await registry.open({ pr: pr.arg }));
+		app = await buildApp(registry, { accessKey: null, testHooks: TOKEN });
+		await app.listen({ port: 0, host: "127.0.0.1" });
+		const address = app.server.address();
+		if (!address || typeof address === "string") throw new Error("no port");
+		host = `127.0.0.1:${address.port}`;
+		const view: ReviewView = (await inject("/review")).json();
+		revision = view.revision;
+		files = view.files;
+	});
+	afterEach(async () => {
+		await app.close();
+		await registry.closeAll();
+		await pr.cleanup();
+	});
+
+	const inject = (
+		url: string,
+		extra: { method?: "GET" | "HEAD"; headers?: Record<string, string> } = {},
+	) =>
+		app.inject({
+			method: extra.method ?? "GET",
+			url: `/api/r/${id}${url}`,
+			headers: { host, ...extra.headers },
+		});
+	const indexOf = (path: string) => {
+		const f = files.find((x) => x.path === path);
+		if (!f) throw new Error(`no ${path}`);
+		return f.index;
+	};
+	const blob = (path: string, query = "side=new", extra = {}) =>
+		inject(`/files/${indexOf(path)}/blob?revision=${revision}&${query}`, extra);
+	const oid = (rev: string) =>
+		execFileSync("git", ["rev-parse", rev], {
+			cwd: pr.repo.path,
+			encoding: "utf8",
+		}).trim();
+
+	it("serves a modified PNG's old and new bytes with type, nosniff, ETag and immutable cache", async () => {
+		for (const [side, bytes, rev] of [
+			["old", png(1), `${pr.mergeBase}:pic.png`],
+			["new", png(3), `${pr.head()}:pic.png`],
+		] as const) {
+			const res = await blob("pic.png", `side=${side}`);
+			expect(res.statusCode, res.body).toBe(200);
+			expect(res.rawPayload.equals(bytes)).toBe(true);
+			expect(res.headers).toMatchObject({
+				"content-type": "image/png",
+				"x-content-type-options": "nosniff",
+				etag: `"${oid(rev)}"`,
+				"cache-control": "private, max-age=31536000, immutable",
+				"content-length": String(bytes.length),
+				// The app-wide CSP stays on a raster image.
+				"content-security-policy": "frame-ancestors 'none'",
+				"x-frame-options": "DENY",
+				"referrer-policy": "no-referrer",
+			});
+		}
+	});
+
+	it("HEAD answers the headers without reading the bytes", async () => {
+		const read = vi.spyOn(Session.prototype, "blobBytes");
+		try {
+			const head = await blob("pic.png", "side=new", { method: "HEAD" });
+			expect(head.statusCode).toBe(200);
+			expect(head.headers).toMatchObject({
+				"content-type": "image/png",
+				"content-length": String(png(3).length),
+				etag: `"${oid(`${pr.head()}:pic.png`)}"`,
+				"cache-control": "private, max-age=31536000, immutable",
+				"x-content-type-options": "nosniff",
+			});
+			expect(head.body).toBe("");
+			expect(read).not.toHaveBeenCalled();
+			// A stale tab's probe: 409, as a GET.
+			const stale = await inject(
+				`/files/${indexOf("pic.png")}/blob?revision=old-one&side=new`,
+				{ method: "HEAD" },
+			);
+			expect(stale.statusCode).toBe(409);
+			expect(read).not.toHaveBeenCalled();
+		} finally {
+			read.mockRestore();
+		}
+	});
+
+	it("an error after the blob is found is never cached", async () => {
+		const read = vi
+			.spyOn(Session.prototype, "blobBytes")
+			.mockRejectedValue(new GitError("cat-file failed"));
+		try {
+			for (const query of ["side=new", "side=new&sniff=1"]) {
+				const res = await blob(
+					query.includes("sniff") ? "sig.dat" : "pic.png",
+					query,
+				);
+				expect(res.statusCode, query).toBe(500);
+				expect(res.headers["cache-control"], query).toBeUndefined();
+				expect(res.headers.etag, query).toBeUndefined();
+				expect(res.headers["content-type"], query).toContain(
+					"application/json",
+				);
+				expect(res.headers["x-content-type-options"]).toBe("nosniff");
+			}
+			const svg = await blob("logo.svg");
+			expect(svg.statusCode).toBe(500);
+			// The app-wide CSP, not the image's.
+			expect(svg.headers["content-security-policy"]).toBe(
+				"frame-ancestors 'none'",
+			);
+		} finally {
+			read.mockRestore();
+		}
+	});
+
+	it("blob: renamed file reads old side at oldPath", async () => {
+		const file = files.find((f) => f.path === "moved.png");
+		expect(file?.oldPath).toBe("old.png");
+		const old = await blob("moved.png", "side=old");
+		expect(old.statusCode, old.body).toBe(200);
+		expect(old.rawPayload.equals(png(2, 42))).toBe(true);
+		const fresh = await blob("moved.png", "side=new");
+		expect(fresh.rawPayload.equals(png(4, 42))).toBe(true);
+	});
+
+	it("svg gets the sandbox CSP", async () => {
+		const res = await blob("logo.svg");
+		expect(res.statusCode, res.body).toBe(200);
+		expect(res.headers["content-type"]).toBe("image/svg+xml");
+		// Replaces the app-wide one: one header, not two.
+		expect(res.headers["content-security-policy"]).toBe(
+			"default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'",
+		);
+		expect(res.headers["x-frame-options"]).toBe("DENY");
+		expect(res.headers["referrer-policy"]).toBe("no-referrer");
+		expect(res.headers["x-content-type-options"]).toBe("nosniff");
+		expect(res.body).toBe(SVG);
+	});
+
+	it("unknown extension: 415 without sniff=1; with sniff=1 a PNG signature serves image/png; an SVG or HTML body is 415 even with sniff=1", async () => {
+		expect((await blob("sig.dat")).statusCode).toBe(415);
+		const sniffed = await blob("sig.dat", "side=new&sniff=1");
+		expect(sniffed.statusCode, sniffed.body).toBe(200);
+		expect(sniffed.headers["content-type"]).toBe("image/png");
+		expect(sniffed.rawPayload.equals(png(6))).toBe(true);
+		for (const path of ["svg.dat", "page.dat"]) {
+			const res = await blob(path, "side=new&sniff=1");
+			expect(res.statusCode, path).toBe(415);
+			expect(res.headers["content-type"]).toContain("application/json");
+			expect(res.headers["x-content-type-options"]).toBe("nosniff");
+		}
+		expect((await blob("sig.dat", "side=new&sniff=yes")).statusCode).toBe(400);
+	});
+
+	it("If-None-Match with the oid answers 304 with no body", async () => {
+		const etag = `"${oid(`${pr.head()}:pic.png`)}"`;
+		for (const sent of [etag, `W/${etag}`, `"x", ${etag}`]) {
+			const res = await blob("pic.png", "side=new", {
+				headers: { "if-none-match": sent },
+			});
+			expect(res.statusCode, sent).toBe(304);
+			expect(res.body).toBe("");
+			expect(res.headers.etag).toBe(etag);
+		}
+		const other = await blob("pic.png", "side=new", {
+			headers: { "if-none-match": '"nope"' },
+		});
+		expect(other.statusCode).toBe(200);
+	});
+
+	it('stale revision answers 409 {error:"stale"}', async () => {
+		const res = await inject(
+			`/files/${indexOf("pic.png")}/blob?revision=old-one&side=new`,
+		);
+		expect(res.statusCode).toBe(409);
+		expect(res.json()).toEqual({ error: "stale" });
+		expect(res.headers["x-content-type-options"]).toBe("nosniff");
+	});
+
+	it("no old side for an added file is 404; bad side is 400", async () => {
+		const added = await blob("added.png", "side=old");
+		expect(added.statusCode).toBe(404);
+		expect(added.headers["x-content-type-options"]).toBe("nosniff");
+		expect(added.headers["cache-control"]).toBeUndefined();
+		for (const query of [
+			"side=both",
+			"",
+			"side=new&from=x",
+			"side=new&from=0",
+		]) {
+			expect((await blob("pic.png", query)).statusCode, query).toBe(400);
+		}
+		expect(
+			(await inject(`/files/999/blob?revision=${revision}&side=new`))
+				.statusCode,
+		).toBe(404);
+		expect(
+			(await inject(`/files/x/blob?revision=${revision}&side=new`)).statusCode,
+		).toBe(400);
+		// No patch set 1 yet.
+		expect((await blob("pic.png", "side=new&from=1")).statusCode).toBe(404);
+	});
+
+	it("over IMAGE_MAX_BYTES is 413", async () => {
+		const limits = (body: unknown) =>
+			app.inject({
+				method: "POST",
+				url: "/api/_test/limits",
+				headers: { host, [TEST_HOOK_HEADER]: TOKEN },
+				payload: body as object,
+			});
+		const size = png(3).length;
+		const set = await limits({ imageMaxBytes: size - 1 });
+		expect(set.statusCode, set.body).toBe(200);
+		expect(set.json()).toEqual({ imageMaxBytes: size - 1 });
+		const res = await blob("pic.png");
+		expect(res.statusCode).toBe(413);
+		expect(res.headers["x-content-type-options"]).toBe("nosniff");
+		// Exactly the cap is served.
+		await limits({ imageMaxBytes: size });
+		expect((await blob("pic.png")).statusCode).toBe(200);
+		// Bad bodies; null puts the default back, and so does a reset.
+		for (const bad of [{ imageMaxBytes: -1 }, { imageMaxBytes: "1" }, {}]) {
+			expect((await limits(bad)).statusCode, JSON.stringify(bad)).toBe(400);
+		}
+		expect((await limits({ imageMaxBytes: null })).json()).toEqual({
+			imageMaxBytes: IMAGE_MAX_BYTES,
+		});
+		await limits({ imageMaxBytes: 1 });
+		const reset = await app.inject({
+			method: "POST",
+			url: "/api/_test/reset",
+			headers: { host, [TEST_HOOK_HEADER]: TOKEN },
+		});
+		expect(reset.statusCode).toBe(200);
+		({ id } = await registry.open({ pr: pr.arg }));
+		revision = ((await inject("/review")).json() as ReviewView).revision;
+		expect((await blob("pic.png")).statusCode).toBe(200);
+	});
+
+	it("the path is never read from the request", async () => {
+		const res = await blob("pic.png", "side=new&path=../a.txt&oid=x");
+		expect(res.statusCode).toBe(200);
+		expect(res.rawPayload.equals(png(3))).toBe(true);
+	});
+
+	it("with an access key, the route answers 401 without the cookie", async () => {
+		const keyed = await buildApp(registry, { accessKey: "k3y" });
+		try {
+			const url = `/api/r/${id}/files/${indexOf("pic.png")}/blob?revision=${revision}&side=new`;
+			const refused = await keyed.inject({ url });
+			expect(refused.statusCode).toBe(401);
+			// Answered before any handler, still nosniff.
+			expect(refused.headers["x-content-type-options"]).toBe("nosniff");
+			const res = await keyed.inject({ url, cookies: { crb_key: "k3y" } });
+			expect(res.statusCode).toBe(200);
+			expect(res.rawPayload.equals(png(3))).toBe(true);
+		} finally {
+			await keyed.close();
+		}
 	});
 });

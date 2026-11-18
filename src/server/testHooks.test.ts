@@ -92,6 +92,7 @@ describe("test hooks", () => {
 		await registry.open({ pr: pr.arg });
 		expect((await call("POST", "/api/_test/reset")).statusCode).toBe(404);
 		expect((await call("GET", "/api/_test/state")).statusCode).toBe(404);
+		expect((await call("POST", "/api/_test/limits")).statusCode).toBe(404);
 		expect(registry.openIds()).toHaveLength(1);
 	});
 
@@ -102,6 +103,7 @@ describe("test hooks", () => {
 			for (const [method, url] of [
 				["POST", "/api/_test/reset"],
 				["GET", "/api/_test/state"],
+				["POST", "/api/_test/limits"],
 			] as const) {
 				const res = await call(method, url, token);
 				expect(res.statusCode, `${method} ${url} ${token}`).toBe(403);

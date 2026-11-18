@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isImagePath } from "../../shared/imageTypes.js";
 import type {
 	Cluster,
 	ClusterSplit,
@@ -149,6 +150,71 @@ async function resolveBlobs(repo: string, names: string[]): Promise<string[]> {
 	});
 }
 
+/**
+ * The blob a `<rev>:<path>` name resolves to, with its byte size (one
+ * `git cat-file --batch-check`, any path); null when the name is missing
+ * or isn't a blob (a submodule's gitlink, a tree).
+ */
+export async function statBlob(
+	repo: string,
+	name: string,
+): Promise<{ oid: string; size: number } | null> {
+	const out = await runGit(
+		repo,
+		[
+			"cat-file",
+			"-z",
+			"--batch-check=%(objectname) %(objecttype) %(objectsize)",
+		],
+		{ input: `${name}\0` },
+	);
+	const match = /^([0-9a-f]+) blob (\d+)$/.exec(out.split("\n")[0] ?? "");
+	return match ? { oid: match[1] as string, size: Number(match[2]) } : null;
+}
+
+/**
+ * Byte sizes of blobs by OID, with one `git cat-file --batch-check` for all.
+ * An OID that isn't a blob here (a gitlink's commit, a missing object) has
+ * no size.
+ */
+export async function readBlobSizes(
+	repo: string,
+	oids: string[],
+): Promise<Map<string, number>> {
+	const sizes = new Map<string, number>();
+	const wanted = [...new Set(oids)];
+	if (wanted.length === 0) return sizes;
+	const out = await runGit(
+		repo,
+		["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+		{ input: `${wanted.join("\n")}\n` },
+	);
+	for (const line of out.split("\n")) {
+		const match = /^([0-9a-f]+) blob (\d+)$/.exec(line);
+		if (match) sizes.set(match[1] as string, Number(match[2]));
+	}
+	return sizes;
+}
+
+/** The first line of a Git LFS pointer file. */
+const LFS_POINTER_LINE = "version https://git-lfs.github.com/spec/v1";
+/** A side this size or larger is never taken for an LFS pointer. */
+const LFS_POINTER_MAX_BYTES = 200;
+
+/**
+ * Whether `bytes` (a missing side when empty) look like an LFS pointer: under
+ * 200 bytes, and a first line of exactly LFS's `version` line. A CRLF pointer
+ * (`...v1\r`) deliberately doesn't count: the spec says "exactly".
+ */
+function isLfsPointer(bytes: Buffer): boolean {
+	if (bytes.length === 0 || bytes.length >= LFS_POINTER_MAX_BYTES) return false;
+	const eol = bytes.indexOf(0x0a);
+	return (
+		bytes.toString("latin1", 0, eol < 0 ? bytes.length : eol) ===
+		LFS_POINTER_LINE
+	);
+}
+
 /** Old and new text of a file, decoded the same way on both sides. */
 export interface FileText {
 	encoding: TextEncoding;
@@ -185,14 +251,24 @@ export async function buildSnapshot(
 	// Started now, beside the clusters' run: ready by the first file's hunks.
 	void snapshotHeadings(repo, base, head, changed);
 	const isText = (f: ChangedFile) => !f.binary && !f.submodule;
-	const blobs = await readBlobs(
-		repo,
-		changed
-			.filter(isText)
-			.flatMap((f) => [f.oldOid, f.newOid])
-			.filter((oid) => !isZeroOid(oid)),
-	);
+	const oidsOf = (files: ChangedFile[]) =>
+		files.flatMap((f) => [f.oldOid, f.newOid]).filter((oid) => !isZeroOid(oid));
+	// Text files' sizes are their bytes' length. The other sides' (binary,
+	// and gitlinks, which aren't blobs and get none) come from one read
+	// beside the blobs': none at all without such files, and opening a
+	// review waits no longer.
+	const [blobs, sizes] = await Promise.all([
+		readBlobs(repo, oidsOf(changed.filter(isText))),
+		readBlobSizes(repo, oidsOf(changed.filter((f) => !isText(f)))),
+	]);
 	const bytesOf = (oid: string) => blobs.get(oid) ?? EMPTY;
+	const sizeOf = (oid: string) =>
+		isZeroOid(oid) ? undefined : (blobs.get(oid)?.length ?? sizes.get(oid));
+	// Only text files with an image path: the bytes are already read.
+	const lfs = (f: ChangedFile) =>
+		isText(f) &&
+		isImagePath(f.path) &&
+		(isLfsPointer(bytesOf(f.oldOid)) || isLfsPointer(bytesOf(f.newOid)));
 	const texts = changed.map((f) =>
 		isText(f) ? fileText(bytesOf(f.oldOid), bytesOf(f.newOid)) : null,
 	);
@@ -226,10 +302,18 @@ export async function buildSnapshot(
 			});
 		const clusters = cutClusters(hunks, keysOf);
 		const tabWidth = tabWidths[index];
+		const oldSize = sizeOf(oldOid);
+		const newSize = sizeOf(newOid);
 		return {
 			index,
 			...summary,
 			...(tabWidth === undefined ? {} : { tabWidth }),
+			...(oldSize === undefined ? {} : { oldSize }),
+			...(newSize === undefined ? {} : { newSize }),
+			...(lfs(file) ? { lfs: true as const } : {}),
+			...(oldOid === newOid && !file.submodule
+				? { sameBlob: true as const }
+				: {}),
 			clusters,
 		};
 	});
@@ -292,6 +376,27 @@ function fileAt(snapshot: Snapshot, index: number): FileSummary {
 		throw new RangeError(`No file ${index} in this snapshot`);
 	}
 	return file;
+}
+
+/**
+ * The `<rev>:<path>` name of one side of file `index` of the snapshot, as
+ * its text is read (loadText): the old side at the merge base and the old
+ * path, the new side at the head. Null for a side the file hasn't (an
+ * added file's old, a deleted file's new) and for a submodule.
+ */
+export function blobName(
+	snapshot: Snapshot,
+	index: number,
+	side: "old" | "new",
+): string | null {
+	const file = fileAt(snapshot, index);
+	if (file.submodule) return null;
+	if (side === "old") {
+		return file.status === "added"
+			? null
+			: `${snapshot.base}:${file.oldPath ?? file.path}`;
+	}
+	return file.status === "deleted" ? null : `${snapshot.head}:${file.path}`;
 }
 
 /** Old and new text of a file in the snapshot (empty for a missing side). */

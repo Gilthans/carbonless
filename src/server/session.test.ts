@@ -34,7 +34,7 @@ import { ghIdle } from "./gh";
 import { registerMcp } from "./mcp/routes";
 import { parseHead } from "./pinnedHead";
 import type { SessionRegistry } from "./registry";
-import { answerRereview } from "./rereview/engine";
+import { answerRereview, traceRereview } from "./rereview/engine";
 import { RefStore } from "./review/refStore";
 import { ReviewService, StaleSnapshotError } from "./review/reviews";
 import { refusal, Session, UnknownReadError } from "./session";
@@ -43,7 +43,11 @@ import { ThreadCodeSource } from "./threadCode";
 // The engine as is, its answer counted (a batch computes it once).
 vi.mock("./rereview/engine", async (original) => {
 	const engine = await original<typeof import("./rereview/engine")>();
-	return { ...engine, answerRereview: vi.fn(engine.answerRereview) };
+	return {
+		...engine,
+		answerRereview: vi.fn(engine.answerRereview),
+		traceRereview: vi.fn(engine.traceRereview),
+	};
 });
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
@@ -148,6 +152,9 @@ describe("Session", () => {
 			asOf: null,
 			pinnedHead: null,
 			patchsets: [],
+			// Counted in the background: unknown on the first read.
+			snapshotBase: pr.mergeBase,
+			snapshotCommits: null,
 			lastSeen: null,
 			head: {
 				oid: pr.head(),
@@ -1649,9 +1656,50 @@ describe("Session", () => {
 			const expected = [count(ps1.head), count(newHead)];
 			expect(expected[0]).toBeGreaterThan(0);
 			expect(expected[1]).toBe((expected[0] as number) + 1);
-			await vi.waitFor(() =>
-				expect(again.info().patchsets.map((p) => p.commits)).toEqual(expected),
+			// A real git process: up to 10 s on a loaded machine.
+			await vi.waitFor(
+				() =>
+					expect(again.info().patchsets.map((p) => p.commits)).toEqual(
+						expected,
+					),
+				{ timeout: 10_000 },
 			);
+		});
+
+		it("before any patch set, counts the snapshot's commits over its merge base in the background, null until known", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			// The page read never waits for git: unknown at first.
+			expect(s.info().patchsets).toEqual([]);
+			expect(s.info().snapshotCommits).toBeNull();
+			// Sent with its base: the page keys the count by both.
+			expect(s.info().snapshotBase).toBe(pr.mergeBase);
+			const clone = clonePath("acme", "widget");
+			const expected = Number(
+				execFileSync(
+					"git",
+					[
+						"-C",
+						clone,
+						"rev-list",
+						"--count",
+						`${pr.mergeBase}..${s.snapshot().head}`,
+					],
+					{ env: testGitEnv() },
+				)
+					.toString()
+					.trim(),
+			);
+			expect(expected).toBeGreaterThan(0);
+			// A real git process: up to 10 s on a loaded machine.
+			await vi.waitFor(() => expect(s.info().snapshotCommits).toBe(expected), {
+				timeout: 10_000,
+			});
+			// Once a patch set exists, its own count stands for it.
+			await s.setStates(s.snapshot().revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			expect(s.info().snapshotCommits).toBeUndefined();
+			expect(s.info().snapshotBase).toBeUndefined();
 		});
 
 		it("rebuilds an earlier patch set from its pins, with the recorded merge base when -base is missing", async () => {
@@ -2190,6 +2238,150 @@ describe("Session", () => {
 			expect(await s.context(view.revision, a, 30, 30)).toEqual([
 				{ kind: "context", oldNo: 30, newNo: 30, text: "line 25" },
 			]);
+		});
+
+		describe("blob", () => {
+			/** A commit on main (the GitHub-side repo's checkout) with `files`. */
+			const commitMain = (files: Record<string, string | Buffer>) => {
+				for (const [name, content] of Object.entries(files)) {
+					writeFileSync(join(pr.repo.path, name), content);
+				}
+				git(pr.repo.path, "add", "--all");
+				git(pr.repo.path, "commit", "--quiet", "-m", "main");
+				return git(pr.repo.path, "rev-parse", "HEAD");
+			};
+			/** A push on `from` that merges `base` in (resolving to `files`), then commits `files`. */
+			const mergeAndCommit = (
+				from: string,
+				base: string,
+				files: Record<string, string | Buffer>,
+			) =>
+				pushByHand(
+					from,
+					(w, dir) => {
+						try {
+							w("merge", "--quiet", "--no-edit", base);
+						} catch {
+							// A conflict: `files` resolve it.
+						}
+						for (const [name, content] of Object.entries(files)) {
+							writeFileSync(join(dir, name), content);
+						}
+						w("add", "--all");
+						w("commit", "--quiet", "--no-edit", "-m", "update");
+					},
+					base,
+				);
+			const hashOf = (content: string | Buffer) =>
+				execFileSync("git", ["hash-object", "--stdin"], {
+					input: content,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const svg = (changes: Record<number, string>) =>
+				`${[1, 2, 3, 4, 5, 6].map((n) => changes[n] ?? `<!-- ${n} -->`).join("\n")}\n`;
+
+			it("since: old side is the virtual rebase's blob", async () => {
+				const main1 = commitMain({ "logo.svg": svg({}) });
+				const ps1 = mergeAndCommit(pr.head(), main1, {
+					"logo.svg": svg({ 2: "<!-- pr -->" }),
+				});
+				const { s, view, index } = await sinceAfter(() => {
+					const main2 = commitMain({ "logo.svg": svg({ 5: "<!-- base -->" }) });
+					return mergeAndCommit(ps1, main2, {
+						"logo.svg": svg({
+							2: "<!-- pr -->",
+							3: "<!-- pr 2 -->",
+							5: "<!-- base -->",
+						}),
+					});
+				});
+				const logo = index("logo.svg");
+				// H1': PS1's change on the moved base.
+				const rebased = svg({ 2: "<!-- pr -->", 5: "<!-- base -->" });
+				expect(await s.blob(view.revision, logo, "old", 1)).toEqual({
+					oid: hashOf(rebased),
+					path: "logo.svg",
+					size: Buffer.byteLength(rebased),
+				});
+				expect(hashOf(rebased)).not.toBe(
+					git(pr.repo.path, "rev-parse", `${ps1}:logo.svg`),
+				);
+				const head = svg({
+					2: "<!-- pr -->",
+					3: "<!-- pr 2 -->",
+					5: "<!-- base -->",
+				});
+				expect(await s.blob(view.revision, logo, "new", 1)).toMatchObject({
+					oid: hashOf(head),
+				});
+				// The full diff's old side is the merge base's.
+				expect(await s.blob(view.revision, logo, "old")).toMatchObject({
+					oid: hashOf(svg({ 5: "<!-- base -->" })),
+				});
+			});
+
+			it("since: a conflicted image's old side is the target's merge base blob", async () => {
+				const png = (n: number) =>
+					Buffer.from([
+						0x89,
+						0x50,
+						0x4e,
+						0x47,
+						0x0d,
+						0x0a,
+						0x1a,
+						0x0a,
+						0,
+						0,
+						n,
+					]);
+				const main1 = commitMain({ "img.png": png(1) });
+				const ps1 = mergeAndCommit(pr.head(), main1, { "img.png": png(2) });
+				let main2 = "";
+				let ps2 = "";
+				const { s, view, index } = await sinceAfter(() => {
+					main2 = commitMain({ "img.png": png(3) });
+					ps2 = mergeAndCommit(ps1, main2, { "img.png": png(4) });
+					return ps2;
+				});
+				const answer = await settled(s, 1, { head: ps2 });
+				const img = index("img.png");
+				expect(answer.files.find((f) => f.path === "img.png")?.conflict).toBe(
+					true,
+				);
+				expect(await s.blob(view.revision, img, "old", 1)).toEqual({
+					oid: git(pr.repo.path, "rev-parse", `${main2}:img.png`),
+					path: "img.png",
+					size: 11,
+				});
+				expect(await s.blob(view.revision, img, "new", 1)).toMatchObject({
+					oid: hashOf(png(4)),
+				});
+			});
+
+			it("since: interdiff unavailable gives no old side", async () => {
+				const real = vi.mocked(traceRereview).getMockImplementation();
+				if (!real) throw new Error("traceRereview isn't wrapped");
+				vi.mocked(traceRereview).mockImplementationOnce(async (...args) => ({
+					...(await real(...args)),
+					interdiff: { status: "unavailable", reason: "shallow" },
+				}));
+				const s = await Session.open(pr.arg, process.cwd());
+				const ps1 = s.snapshot();
+				await s.setStates(ps1.revision, [
+					{ key: firstKey(s), state: "reviewed" },
+				]);
+				const newHead = pr.moveHead({ "later.txt": "later\n" });
+				await s.checkHead();
+				const answer = await settled(s, 1, { head: newHead });
+				expect(answer.interdiff).toBe("unavailable");
+				const view = await s.viewHead(newHead);
+				expect(await s.blob(view.revision, 0, "old", 1)).toBeNull();
+				expect(await s.blob(view.revision, 0, "new", 1)).toMatchObject({
+					path: "a.txt",
+				});
+			});
 		});
 
 		it("a new thread and a verdict start a patch set; a reply, a resolve and an unresolve never do", async () => {

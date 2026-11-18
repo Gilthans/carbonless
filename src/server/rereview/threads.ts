@@ -9,7 +9,7 @@
  * session; only the reviewer's stored placements are read each time.
  */
 
-import type { AgentAnchor } from "../../shared/agent.js";
+import type { AgentSpanAnchor } from "../../shared/agent.js";
 import {
 	placeThread,
 	type ThreadInput,
@@ -70,7 +70,7 @@ export const placeable = <T extends TraceableThread>(threads: readonly T[]) =>
 /** What placeAgentThreads reads of an agent thread (its stored fold). */
 export interface AgentAsked {
 	id: string;
-	anchor: AgentAnchor;
+	anchor: AgentSpanAnchor;
 	at: string;
 }
 

@@ -1,5 +1,6 @@
 import {
 	type AgentAnchor,
+	type AgentSpanAnchor,
 	type AgentView,
 	SUGGEST_RESOLVE,
 } from "../../shared/agent.js";
@@ -69,7 +70,8 @@ export interface PromptGithub {
 	}[];
 }
 
-export interface PromptEnvelope {
+/** A span or GitHub thread conversation's envelope: the review and the code. */
+export interface PromptCodeEnvelope {
 	kind: "agent_thread" | "github_thread_conversation";
 	review: PromptReview;
 	thread: { id: string; anchor: AgentAnchor };
@@ -86,6 +88,20 @@ export interface PromptEnvelope {
 	notice?: string;
 	pr?: { title: string; body: string; files: string[] };
 }
+
+/**
+ * The review conversation's envelope: only its own messages, no review
+ * data (owner, 2026-11-15); the agent reads the review through crb's tools.
+ */
+export interface PromptReviewEnvelope {
+	kind: "review_conversation";
+	thread: { id: string; anchor: { subject: "review" } };
+	messages: PromptMessage[];
+	/** Not about the review: e.g. why the agent's last tool call was refused. */
+	notice?: string;
+}
+
+export type PromptEnvelope = PromptCodeEnvelope | PromptReviewEnvelope;
 
 /**
  * GitHub's thread as the runner reads it for a turn (RunnerFacts.github):
@@ -125,13 +141,24 @@ export function isSafePath(path: string): boolean {
  * on: the merge base (the diff's left side) for a LEFT anchor. A thread
  * anchor's commit is the one its comment was made on: on the LEFT, the
  * merge base of the patch set with that head, else the review's, as for
- * a line anchor.
+ * a line anchor. The review conversation's anchor has no commit: as is.
  */
+export function anchorFor(
+	anchor: AgentSpanAnchor,
+	review: PromptReview,
+	patchsets?: readonly { head: string; mergeBase: string }[],
+): AgentSpanAnchor;
+export function anchorFor(
+	anchor: AgentAnchor,
+	review: PromptReview,
+	patchsets?: readonly { head: string; mergeBase: string }[],
+): AgentAnchor;
 export function anchorFor(
 	anchor: AgentAnchor,
 	review: PromptReview,
 	patchsets: readonly { head: string; mergeBase: string }[] = [],
 ): AgentAnchor {
+	if (anchor.subject === "review") return { subject: "review" };
 	if (anchor.subject === "file" || anchor.side !== "LEFT") {
 		return { ...anchor };
 	}
@@ -158,8 +185,8 @@ export function threadEnvelope(input: {
 	patchsets: readonly PromptPatchset[];
 	messages: PromptMessage[];
 	notice?: string;
-	pr?: PromptEnvelope["pr"];
-}): PromptEnvelope {
+	pr?: PromptCodeEnvelope["pr"];
+}): PromptCodeEnvelope {
 	const { review, thread, github: g, view, patchsets } = input;
 	const numberOf = (head: string) =>
 		patchsets.find((p) => p.head === head)?.number;
@@ -295,8 +322,18 @@ export function oneLine(text: string, max: number): string {
  * logins and bodies, the placement's paths, and the notice (it may name a
  * path or an error from GitHub). The reviewer's and the agent's messages stay.
  */
+export function sanitizeEnvelope<E extends PromptEnvelope>(env: E): E;
 export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 	const s = sanitizeThirdParty;
+	if (env.kind === "review_conversation") {
+		// Its own messages as written, like every envelope's; nothing else.
+		return {
+			kind: env.kind,
+			thread: { id: env.thread.id, anchor: { subject: "review" } },
+			messages: env.messages,
+			...(env.notice !== undefined ? { notice: s(env.notice) } : {}),
+		};
+	}
 	const { review, thread, pr, github, placement, notice } = env;
 	return {
 		...env,
@@ -307,10 +344,10 @@ export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 		},
 		thread: {
 			...thread,
-			anchor: {
-				...thread.anchor,
-				path: s(thread.anchor.path),
-			},
+			anchor:
+				thread.anchor.subject === "review"
+					? { subject: "review" }
+					: { ...thread.anchor, path: s(thread.anchor.path) },
 		},
 		...(pr
 			? {

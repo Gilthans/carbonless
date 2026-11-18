@@ -83,10 +83,61 @@ export function unitsOf(answer: RereviewAnswer, view: ReviewView): SinceUnit[] {
 	);
 }
 
-/** What the engine says, by file index, over the view's files and marks. */
+/** How many distinct clusters `units` belong to (a cluster may be several pieces). */
+function clustersOf(units: readonly SinceUnit[]): number {
+	return new Set(units.map((u) => `${u.index}:${u.cluster ?? ""}`)).size;
+}
+
+/**
+ * The since view's units as its bar counts them: with "Ignore whitespace"
+ * on, without those of whitespace-only clusters (SinceUnit.whitespaceOnly),
+ * as countedProgress leaves them out of the full diff's; and how many
+ * whitespace-only clusters that left out (not pieces: the `~` says
+ * clusters, as the tree and the full diff count them). The same list with
+ * the switch off.
+ */
+export function countedUnits(
+	units: readonly SinceUnit[],
+	ignoreWhitespace: boolean,
+): { units: readonly SinceUnit[]; leftOut: number } {
+	if (!ignoreWhitespace || !units.some((u) => u.whitespaceOnly)) {
+		return { units, leftOut: 0 };
+	}
+	const counted = units.filter((u) => !u.whitespaceOnly);
+	return {
+		units: counted,
+		leftOut: clustersOf(units.filter((u) => u.whitespaceOnly)),
+	};
+}
+
+/**
+ * One file's units as its header, chips and dot count them: as
+ * countedUnits, unless the file is nothing but whitespace-only clusters
+ * (decided by its clusters, as countedFile decides it, so the header's
+ * finished state and its counts never disagree): then they all count, its
+ * own marks shown.
+ */
+export function countedFileUnits(
+	units: readonly SinceUnit[],
+	ignoreWhitespace: boolean,
+	clusters: readonly { whitespaceOnly?: true }[],
+): { units: readonly SinceUnit[]; leftOut: number } {
+	const nothingElse =
+		clusters.length > 0 && clusters.every((c) => c.whitespaceOnly);
+	return nothingElse
+		? { units, leftOut: 0 }
+		: countedUnits(units, ignoreWhitespace);
+}
+
+/**
+ * What the engine says, by file index, over the view's files and marks.
+ * With "Ignore whitespace" on, a file's counts leave its whitespace-only
+ * units out (countedFileUnits).
+ */
 export function sinceByFile(
 	answer: RereviewAnswer,
 	view: ReviewView,
+	ignoreWhitespace = false,
 ): Map<number, FileSince> {
 	const out = new Map<number, FileSince>();
 	const viewFiles = new Map(view.files.map((f) => [f.index, f]));
@@ -108,7 +159,21 @@ export function sinceByFile(
 			left: { units: 0, lines: 0 },
 		});
 	}
+	const byIndex = new Map<number, SinceUnit[]>();
 	for (const u of unitsOf(answer, view)) {
+		const list = byIndex.get(u.index);
+		if (list) list.push(u);
+		else byIndex.set(u.index, [u]);
+	}
+	const counted = [...byIndex.entries()].flatMap(
+		([index, list]) =>
+			countedFileUnits(
+				list,
+				ignoreWhitespace,
+				viewFiles.get(index)?.clusters ?? [],
+			).units,
+	);
+	for (const u of counted) {
 		const info = out.get(u.index);
 		if (!info || u.state !== "unreviewed") continue;
 		info.counts[u.kind]++;
@@ -287,12 +352,25 @@ export function eyesOf(
 	return "carried";
 }
 
-/** Everything is carried: nothing to read and nothing gone, anywhere. */
+/**
+ * Everything is carried: nothing to read and nothing gone, anywhere. With
+ * "Ignore whitespace" leaving some units out, `counted` is what is left
+ * (countedUnits): the engine's to-read is every unit as nothing was
+ * marked, so nothing to read is none of them (any marks the reviewer made
+ * since only add units: an untick).
+ */
 export function nothingSince(
 	answer: RereviewAnswer,
 	since: Map<number, FileSince>,
+	counted?: readonly SinceUnit[],
 ): boolean {
-	if (answer.toRead.clusters > 0 || answer.toRead.files > 0) return false;
+	if (
+		counted
+			? counted.length > 0
+			: answer.toRead.clusters > 0 || answer.toRead.files > 0
+	) {
+		return false;
+	}
 	if (answer.files.some((f) => f.clusters.some((c) => c.kind === "gone"))) {
 		return false;
 	}

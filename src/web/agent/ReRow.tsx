@@ -50,10 +50,13 @@ export function ReRow(props: {
 	const started = (startedBy(threads).get(message.id) ?? [])
 		.map((id) => threads.find((t) => t.id === id))
 		.filter((t): t is AgentThread => t !== undefined);
-	const go = linkState(request, facts, message.id).state;
+	// The review conversation's place is its drawer: always reachable.
+	const inReview = request.anchor.subject === "review";
+	const go = inReview ? "ready" : linkState(request, facts, message.id).state;
 	const reachable = go === "ready";
-	const goTip =
-		go === "none"
+	const goTip = inReview
+		? "In the review conversation"
+		: go === "none"
 			? "Not in this review's files"
 			: go === "error"
 				? LINK_ERROR
