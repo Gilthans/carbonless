@@ -680,10 +680,12 @@ describe("the review conversation's one-tap questions (CAR-203)", () => {
 		).toBeInTheDocument();
 		expect(chips()).toEqual([]);
 		act(() => client.setQueryData(sessionQuery.queryKey, firstReview));
+		await waitFor(() =>
+			expect(chips()).toContain("Please summarize the changes"),
+		);
 		expect(
 			within(drawer()).queryByTestId("agent-quick-questions-loading"),
 		).toBeNull();
-		expect(chips()).toContain("Please summarize the changes");
 	});
 
 	it("a tap fills an empty box, appends to a typed one, focuses it with the caret at the end, and sends nothing", async () => {
