@@ -237,6 +237,13 @@ export interface AgentStatus {
 	spawnedAt?: string;
 	/** When carbonless last heard from the agent (ISO): an ACP message, an MCP tool call or watcher. */
 	seen?: string;
+	/**
+	 * An agent is connected to this review: a spawned agent's process is up
+	 * and usable, whatever its last turn did (a failed turn leaves it
+	 * connected), or a session is joined through MCP. Absent otherwise: off,
+	 * crashed, failed to start, stopped, never spawned or joined.
+	 */
+	connected?: boolean;
 }
 
 /** Exactly one of `span`, `thread` and `review`. */

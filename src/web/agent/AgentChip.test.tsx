@@ -25,6 +25,7 @@ import {
 	agentInk,
 	agentTip,
 	CHIP_COLUMN,
+	chipOpensDrawer,
 } from "./AgentChip";
 import {
 	AGENT_BUSY_POLL_MS,
@@ -50,12 +51,14 @@ const status = (more: Partial<AgentStatus> = {}): AgentStatus => ({
 	agent: { name: "Claude Agent", version: "0.100.0" },
 	since: "2026-11-07T10:00:00Z",
 	waiting: 0,
+	connected: true,
 	...more,
 });
 
 /** A session joined through MCP, as the host's overlay shows it. */
 const joined = (more: Partial<AgentStatus> = {}): Partial<AgentStatus> => ({
 	state: "ready",
+	connected: true,
 	via: "mcp",
 	agent: {
 		name: "carbonless · main",
@@ -150,16 +153,37 @@ const named = (rest: string) => `Review conversation · Your agent: ${rest}`;
 
 describe("the chip's tap", () => {
 	it.each<[string, Partial<AgentStatus>, AgentThread[]]>([
+		["a spawned agent, ready", { state: "ready", spawned: true }, []],
 		[
-			"an ACP agent configured, none spawned",
-			{ state: "off", agent: undefined },
+			"an agent starting",
+			{ state: "starting", spawned: true, connected: false },
 			[],
 		],
-		["a spawned agent", { state: "ready", spawned: true }, []],
-		["a crashed spawned agent", { state: "error", spawned: true }, []],
+		["an agent busy", { state: "busy", waiting: 1 }, []],
+		[
+			"an agent whose last turn failed, still connected",
+			{ state: "error", spawned: true, error: "Rate limited; retry later" },
+			[],
+		],
+		["an agent reconnecting", { state: "reconnecting", connected: false }, []],
+		[
+			"another server answering",
+			{ state: "elsewhere", elsewhere: 4747, connected: false },
+			[],
+		],
+		[
+			"spawned, the runner not up yet",
+			{ state: "off", spawned: true, agent: undefined, connected: false },
+			[],
+		],
 		[
 			"a joined session, nothing configured",
 			{ ...joined(), configured: false },
+			[],
+		],
+		[
+			"a joined session reconnecting",
+			joined({ state: "reconnecting", configured: false }),
 			[],
 		],
 	])("%s: toggles the drawer, never the setup", async (_n, more, threads) => {
@@ -177,6 +201,130 @@ describe("the chip's tap", () => {
 		expect(chip).toHaveAttribute("aria-expanded", "false");
 	});
 
+	it.each<[string, Partial<AgentStatus>]>([
+		[
+			"an agent configured, none spawned or joined",
+			{ state: "off", agent: undefined, connected: false },
+		],
+		[
+			"an agent that crashed",
+			{
+				state: "error",
+				spawned: true,
+				error: "exited with code 70",
+				connected: false,
+			},
+		],
+		[
+			"an agent with an error, not connected",
+			{ state: "ready", error: "the agent exited", connected: false },
+		],
+		[
+			"spawned, nothing configured",
+			{
+				state: "off",
+				configured: false,
+				spawned: true,
+				agent: undefined,
+				connected: false,
+			},
+		],
+	])(
+		"no agent connected, %s: opens the agent setup, no drawer",
+		async (_n, more) => {
+			const { user } = chipOver(status(more), vi.fn(), [
+				review(2, { unread: true }),
+			]);
+			const chip = screen.getByTestId("agent-chip");
+			expect(chip).not.toHaveAttribute("aria-expanded");
+			expect(chip).not.toHaveAttribute("aria-controls");
+			expect(face().className).not.toContain("bg-agent");
+			await user.click(chip);
+			expect(screen.getByTestId("setup")).not.toHaveTextContent("closed");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		},
+	);
+
+	const left = {
+		name: "old session",
+		machine: "devbox",
+		why: "detached" as const,
+		at: "2026-11-10T09:00:00Z",
+	};
+	it.each<[string, AgentStatus | undefined, boolean]>([
+		["no status", undefined, false],
+		["off, configured", status({ state: "off", connected: false }), false],
+		[
+			"off, configured, spawned",
+			status({ state: "off", spawned: true, connected: false }),
+			true,
+		],
+		[
+			"off, nothing configured, spawned",
+			status({
+				state: "off",
+				configured: false,
+				spawned: true,
+				connected: false,
+			}),
+			false,
+		],
+		["starting", status({ state: "starting", connected: false }), true],
+		["ready, connected", status(), true],
+		["ready, not connected", status({ connected: false }), false],
+		["busy", status({ state: "busy" }), true],
+		["reconnecting", status({ state: "reconnecting", connected: false }), true],
+		[
+			"elsewhere",
+			status({ state: "elsewhere", elsewhere: 4747, connected: false }),
+			true,
+		],
+		[
+			"elsewhere with an error",
+			status({
+				state: "elsewhere",
+				elsewhere: 4747,
+				error: "boom",
+				connected: false,
+			}),
+			false,
+		],
+		["error, connected (a failed turn)", status({ state: "error" }), true],
+		[
+			"error, not connected (crashed)",
+			status({ state: "error", connected: false }),
+			false,
+		],
+		[
+			"an error, not connected",
+			status({ error: "boom", connected: false }),
+			false,
+		],
+		["joined", status(joined({ configured: false })), true],
+		["joined, a session left before", status(joined({ left })), true],
+		[
+			"a session left, none joined",
+			status({ state: "off", connected: false, left }),
+			false,
+		],
+		[
+			"a session asking to join, none joined",
+			status({
+				state: "off",
+				connected: false,
+				joinRequest: {
+					name: "s",
+					machine: "devbox",
+					id: "j1",
+					at: "2026-11-10T09:00:00Z",
+				},
+			}),
+			false,
+		],
+	])("chipOpensDrawer, %s: %s", (_n, s, drawer) => {
+		expect(chipOpensDrawer(s)).toBe(drawer);
+	});
+
 	it.each<[string, AgentThread[]]>([
 		["no conversation", [spanThread()]],
 		["a review conversation already there", [review(2, { unread: true })]],
@@ -184,7 +332,12 @@ describe("the chip's tap", () => {
 		"nothing set up, %s: opens the agent setup, no drawer",
 		async (_n, threads) => {
 			const { user } = chipOver(
-				status({ state: "off", configured: false, agent: undefined }),
+				status({
+					state: "off",
+					configured: false,
+					agent: undefined,
+					connected: false,
+				}),
 				vi.fn(),
 				threads,
 			);
@@ -198,10 +351,27 @@ describe("the chip's tap", () => {
 	);
 
 	it.each<[string, AgentStatus, string, string]>([
-		["a configured agent", status(), "open", "closed"],
+		["an agent ready", status(), "open", "closed"],
 		[
 			"nothing set up",
-			status({ state: "off", configured: false, agent: undefined }),
+			status({
+				state: "off",
+				configured: false,
+				agent: undefined,
+				connected: false,
+			}),
+			"closed",
+			"invite",
+		],
+		[
+			"an agent configured, none spawned",
+			status({ state: "off", connected: false }),
+			"closed",
+			"invite",
+		],
+		[
+			"an agent that crashed",
+			status({ state: "error", spawned: true, connected: false }),
 			"closed",
 			"invite",
 		],
@@ -298,10 +468,23 @@ describe("the chip's tap", () => {
 	}
 
 	it.each<[string, AgentStatus]>([
-		["a configured agent", status()],
+		["an agent ready", status()],
 		[
 			"nothing set up",
-			status({ state: "off", configured: false, agent: undefined }),
+			status({
+				state: "off",
+				configured: false,
+				agent: undefined,
+				connected: false,
+			}),
+		],
+		[
+			"an agent configured, none spawned",
+			status({ state: "off", connected: false }),
+		],
+		[
+			"an agent that crashed",
+			status({ state: "error", spawned: true, connected: false }),
 		],
 	])(
 		"tapped twice while the status is read, %s: the second cancels the first, nothing opens",
@@ -353,7 +536,12 @@ describe("the chip's tap", () => {
 		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
 		await act(async () =>
 			held.release(
-				status({ state: "off", configured: false, agent: undefined }),
+				status({
+					state: "off",
+					configured: false,
+					agent: undefined,
+					connected: false,
+				}),
 			),
 		);
 		await waitFor(() =>
@@ -370,7 +558,12 @@ describe("the chip's tap", () => {
 		act(() =>
 			client.setQueryData(
 				agentStatusQuery.queryKey,
-				status({ state: "off", configured: false, agent: undefined }),
+				status({
+					state: "off",
+					configured: false,
+					agent: undefined,
+					connected: false,
+				}),
 			),
 		);
 		await waitFor(() => expect(chip).toHaveAttribute("data-state", "off"));
@@ -407,7 +600,12 @@ describe("the chip's tap", () => {
 		held.release(status());
 		await act(async () =>
 			again.release(
-				status({ state: "off", configured: false, agent: undefined }),
+				status({
+					state: "off",
+					configured: false,
+					agent: undefined,
+					connected: false,
+				}),
 			),
 		);
 		await waitFor(() =>
@@ -428,7 +626,12 @@ describe("the chip's tap", () => {
 		await act(async () =>
 			client.setQueryData(
 				agentStatusQuery.queryKey,
-				status({ state: "off", configured: false, agent: undefined }),
+				status({
+					state: "off",
+					configured: false,
+					agent: undefined,
+					connected: false,
+				}),
 			),
 		);
 		await waitFor(() =>
@@ -634,7 +837,7 @@ describe("the agent chip", () => {
 	it.each<[string, Partial<AgentStatus>, string, string]>([
 		[
 			"off",
-			{ state: "off", configured: false, agent: undefined },
+			{ state: "off", configured: false, agent: undefined, connected: false },
 			"bg-unreviewed",
 			"No agent · set one up",
 		],

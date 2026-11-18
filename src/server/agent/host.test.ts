@@ -1001,6 +1001,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			state: "ready",
 			via: "mcp",
 			joined: WHO,
+			connected: true,
 			agent: {
 				name: WHO.name,
 				version: WHO.harness,
@@ -1101,6 +1102,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		expect(s.joined).toBeUndefined();
 		expect(s.left).toMatchObject({ ...WHO, why: "disconnected" });
 		expect(s.state).toBe("off");
+		expect(s.connected).toBeUndefined();
 		expect(s.spawned).toBeUndefined();
 		expect(runner.asked).not.toHaveBeenCalled();
 	});
@@ -1415,6 +1417,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			state: "reconnecting",
 			via: "mcp",
 			joined: WHO,
+			connected: true,
 		});
 		expect(again.join.check(token)).toBe(true);
 		host = again;
