@@ -285,6 +285,29 @@ describe("ThreadPlacer", () => {
 		expect(of(ts.file)).toEqual({ kind: "file", path: "new.ts" });
 	});
 
+	it("threads on one file share one bd mapper (the tracer's pairings are memoized on it); another file has its own", async () => {
+		const p = placer();
+		const [one, two, other] = await p.inputs(
+			target,
+			[
+				thread("a.ts", { line: 5 }),
+				thread("a.ts", { line: 10 }),
+				thread("c.ts", { line: 4 }),
+			],
+			base(),
+		);
+		expect(one?.diffs?.bd).toBeDefined();
+		expect(two?.diffs?.bd).toBe(one?.diffs?.bd);
+		expect(other?.diffs?.bd).not.toBe(one?.diffs?.bd);
+		// Asked again, the same placer still hands out the same mapper.
+		const [again] = await p.inputs(
+			target,
+			[thread("a.ts", { line: 7 })],
+			base(),
+		);
+		expect(again?.diffs?.bd).toBe(one?.diffs?.bd);
+	});
+
 	it("an old-side thread dated before the base branch's history still traces from its merge base", async () => {
 		// The code pane can't vouch for its old side (no base commit by
 		// then); placement takes the merge base and follows the base's changes.

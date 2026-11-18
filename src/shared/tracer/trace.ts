@@ -41,7 +41,8 @@ export interface TraceDiffs {
 	/**
 	 * Old head to new head, this file (through its rename pair). The
 	 * pairings of its replaced hunks are memoized on this object, shared by
-	 * every thread traced through it: one mapper, one pair of texts.
+	 * every thread traced through it; a memo read from other texts than the
+	 * caller's is dropped, never answered from.
 	 */
 	bd: LineMapper;
 	/** The new snapshot's own diff, this file. */
@@ -172,23 +173,80 @@ type Region =
 type Partner = number | null | "unknown";
 
 /**
- * Per `bd` mapper (TraceDiffs.bd: one mapper, one pair of texts), shared
- * by every thread traced through it: each hunk's pairings, and each old
- * line's partner.
+ * Per `bd` mapper (TraceDiffs.bd), shared by every thread traced through
+ * it: each hunk's pairings with the texts they read, and each old line's
+ * partner.
  */
 interface Memo {
 	regions: Map<MapHunk, Region[]>;
+	/** Per hunk, the texts its pairings read: checked on every lookup. */
+	read: Map<MapHunk, Read>;
 	partners: Map<number, Partner>;
 }
 const memos = new WeakMap<LineMapper, Memo>();
 
+/** The texts a hunk's pairings read: old lines from `from`, new from `newFrom`. */
+interface Read {
+	from: number;
+	old: (string | null)[];
+	newFrom: number;
+	fresh: (string | null)[];
+}
+
 function memoOf(diffs: TraceDiffs): Memo {
 	let memo = memos.get(diffs.bd);
 	if (!memo) {
-		memo = { regions: new Map(), partners: new Map() };
+		memo = { regions: new Map(), read: new Map(), partners: new Map() };
 		memos.set(diffs.bd, memo);
 	}
 	return memo;
+}
+
+/**
+ * The texts `hunk`'s pairings depend on: its joined run's old lines with
+ * REGION_GAP more on each side (the gaps `joins` reads) and its new lines.
+ */
+function readFor(
+	all: readonly MapHunk[],
+	first: number,
+	last: number,
+	diffs: TraceDiffs,
+): Read {
+	const a = all[first] as MapHunk;
+	const b = all[last] as MapHunk;
+	const from = Math.max(1, a.oldStart - REGION_GAP);
+	const to = b.oldStart + Math.max(b.oldCount, 1) + REGION_GAP;
+	const old: (string | null)[] = [];
+	for (let n = from; n <= to; n++) old.push(read(diffs.oldLineText, n));
+	const fresh: (string | null)[] = [];
+	for (let n = a.newStart; n < b.newStart + b.newCount; n++) {
+		fresh.push(read(diffs.newLineText, n));
+	}
+	return { from, old, newFrom: a.newStart, fresh };
+}
+
+/** Whether `diffs` still reads the texts `r` was read from. */
+function sameTexts(r: Read, diffs: TraceDiffs): boolean {
+	for (let i = 0; i < r.old.length; i++) {
+		if (read(diffs.oldLineText, r.from + i) !== r.old[i]) return false;
+	}
+	for (let i = 0; i < r.fresh.length; i++) {
+		if (read(diffs.newLineText, r.newFrom + i) !== r.fresh[i]) return false;
+	}
+	return true;
+}
+
+/**
+ * The memo of `diffs.bd`, unless `hunk`'s pairings in it were read from
+ * other texts (the mapper reused with another pair of files): then a fresh
+ * one, so a memo never answers for texts it didn't read.
+ */
+function checkedMemo(hunk: MapHunk, diffs: TraceDiffs): Memo {
+	const memo = memoOf(diffs);
+	const r = memo.read.get(hunk);
+	if (!r || sameTexts(r, diffs)) return memo;
+	memos.delete(diffs.bd);
+	return memoOf(diffs);
 }
 
 const read = (
@@ -258,8 +316,8 @@ function linesOf(hunks: readonly MapHunk[], diffs: TraceDiffs): Region {
  * the line from its own hunk), then with its joined neighbours.
  */
 function regionsOf(hunk: MapHunk, diffs: TraceDiffs): Region[] {
-	const memo = memoOf(diffs).regions;
-	const known = memo.get(hunk);
+	const memo = memoOf(diffs);
+	const known = memo.regions.get(hunk);
 	if (known) return known;
 	const all = diffs.bd.hunks;
 	const i = all.indexOf(hunk);
@@ -277,7 +335,8 @@ function regionsOf(hunk: MapHunk, diffs: TraceDiffs): Region[] {
 		last++;
 	const out = [linesOf([hunk], diffs)];
 	if (first !== last) out.push(linesOf(all.slice(first, last + 1), diffs));
-	memo.set(hunk, out);
+	memo.regions.set(hunk, out);
+	memo.read.set(hunk, readFor(all, first, last, diffs));
 	return out;
 }
 
@@ -296,7 +355,7 @@ function scoreIn(
  * memoized per line for every thread on the same diff.
  */
 function partnerIn(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
-	const memo = memoOf(diffs).partners;
+	const memo = checkedMemo(hunk, diffs).partners;
 	let partner = memo.get(line);
 	if (partner === undefined) {
 		partner = findPartner(hunk, line, diffs);

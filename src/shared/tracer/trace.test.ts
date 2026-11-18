@@ -170,6 +170,27 @@ describe("tracePosition", () => {
 		});
 	});
 
+	it("C2: a mapper reused with other texts never answers from what it paired before", () => {
+		const bd = createLineMapper([
+			{ oldStart: 1, oldCount: 1, newStart: 1, newCount: 2 },
+		]);
+		const texts = { "RIGHT:1": "\tsave(x)" };
+		const first = diffs({
+			bd,
+			texts,
+			now: rows(1, ["\tsave(x, y)", "\tother()"]),
+		});
+		expect(tracePosition(R(1), first)).toMatchObject({ line: 1 });
+		const second = diffs({
+			bd,
+			texts,
+			now: rows(1, ["\tother()", "\tsave(x, y)"]),
+		});
+		expect(tracePosition(R(1), second)).toMatchObject({ line: 2 });
+		// And back: the first texts again.
+		expect(tracePosition(R(1), first)).toMatchObject({ line: 1 });
+	});
+
 	it("C2: without the texts to pair, a replaced line is rewritten, never guessed", () => {
 		const bd = createLineMapper([
 			{ oldStart: 5, oldCount: 1, newStart: 5, newCount: 1 },
