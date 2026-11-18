@@ -51,7 +51,7 @@ import { Settings } from "./Settings";
 import { SkeletonBar, Spinner } from "./Spinner";
 import { useShortcutHelp } from "./shortcuts";
 import { useStackTop } from "./stackTop";
-import { AppHeaderHeight, FindSlot, useHeight } from "./sticky";
+import { AppHeaderHeight, FindSlot, MoveSlot, useHeight } from "./sticky";
 import { Tooltip } from "./Tooltip";
 import { EDITOR_KEYS } from "./threads/ReplyBox";
 import { useThreadWritesSetup } from "./threads/threadWrites";
@@ -387,7 +387,10 @@ export function App() {
 	// A session's join request, above everything (and the find bar).
 	const [joinSlot, setJoinSlot] = useState<HTMLDivElement | null>(null);
 	const joinBar = useHeight(() => joinSlot, joinSlot);
-	const above = joinBar + (swapped ? findBar : 0);
+	// Move mode's bar (CAR-139), under the find bar's.
+	const [moveSlot, setMoveSlot] = useState<HTMLDivElement | null>(null);
+	const moveBar = useHeight(() => moveSlot, moveSlot);
+	const above = joinBar + (swapped ? findBar : 0) + moveBar;
 	const id = useReviewId();
 	const navigate = useNavigate();
 	/** The toast's View: the Files page with the comparison target on the head. */
@@ -453,6 +456,7 @@ export function App() {
 						{/* Like the chip, none without a PR: nothing to join. */}
 						<div ref={setJoinSlot}>{pr && <JoinBar />}</div>
 						<div ref={setSlot} data-find-slot />
+						<div ref={setMoveSlot} data-move-slot />
 					</div>
 					<header
 						ref={header}
@@ -741,7 +745,9 @@ export function App() {
 						className={`mx-auto px-3 sm:px-6 sm:py-6 ${yieldToFind ? "pt-0 pb-4" : "py-4"} ${wide ? "max-w-screen-2xl" : "max-w-5xl"}`}
 					>
 						<FindSlot.Provider value={slot}>
-							<KeptPages />
+							<MoveSlot.Provider value={moveSlot}>
+								<KeptPages />
+							</MoveSlot.Provider>
 						</FindSlot.Provider>
 						{/* Only what isn't a kept page: not found. */}
 						<Outlet />

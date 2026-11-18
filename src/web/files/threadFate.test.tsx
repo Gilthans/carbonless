@@ -90,7 +90,7 @@ const info = (over: Partial<PlacementInfo> = {}): PlacementInfo => ({
 	retry: () => {},
 	readId: "r1",
 	to: { patchset: 2 },
-	placeOn: null,
+	moveTo: null,
 	openedOn: () => 1,
 	...over,
 });

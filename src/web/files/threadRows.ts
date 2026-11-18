@@ -32,6 +32,8 @@ export interface PanelRow {
 	unread: boolean;
 	/** A reviewer's message no answer has seen yet. */
 	waiting: boolean;
+	/** The reviewer moved it (CAR-139): listed at its moved place. */
+	moved?: boolean;
 	/**
 	 * The card the row shows (threadFocus): a review thread's, or an agent
 	 * thread's; a conversation on a review thread is that thread's card
@@ -135,8 +137,11 @@ function githubPlace(
 export function githubRows(
 	threads: readonly ReviewThread[],
 	shown: ReadonlyMap<string, ReviewThread>,
-	/** The read that brings the threads' text failed. */
-	opts: { contentFailed?: boolean } = {},
+	/** The read that brings the threads' text failed; the threads the reviewer moved. */
+	opts: {
+		contentFailed?: boolean;
+		moved?: ReadonlyMap<string, unknown> | null;
+	} = {},
 ): PanelRow[] {
 	return threads.map((t) => ({
 		key: `gh:${t.id}`,
@@ -156,6 +161,7 @@ export function githubRows(
 		outdated: t.outdated,
 		unread: false,
 		waiting: false,
+		...(opts.moved?.has(t.id) ? { moved: true } : {}),
 	}));
 }
 
@@ -179,6 +185,8 @@ export function agentRows(
 	threads: readonly AgentThread[],
 	shown: ReadonlyMap<string, AgentPlaceable>,
 	githubShown: ReadonlyMap<string, ReviewThread>,
+	/** The agent threads the reviewer moved (CAR-139). */
+	moved?: ReadonlyMap<string, unknown> | null,
 ): PanelRow[] {
 	return threads.filter(isSpanThread).map((t) => {
 		const lastMessage = t.messages.at(-1);
@@ -209,6 +217,7 @@ export function agentRows(
 			outdated: false,
 			unread: t.unread,
 			waiting: t.waiting,
+			...(moved?.has(t.id) ? { moved: true } : {}),
 		};
 	});
 }
