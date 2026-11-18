@@ -134,7 +134,7 @@ threads go to the private ref instead:
 - What is given up: the 2026-11-07 plan to share hand placements with
   other reviewers once sync exists. Sharing wasn't built (sync doesn't
   exist), so nothing works differently today; if sharing is wanted, it
-  becomes a publish step from this record when sync is built (Question 1).
+  is decided when sync is designed (see "Sharing").
 - The ref keeps its name, `agent/threads`, though it now holds moves of
   review threads too: renaming would move every reviewer's existing
   agent threads for no reader's benefit (call C1).
@@ -541,7 +541,7 @@ trace from the thread's own anchor.
   a README row.
 - **Docs in the same change:** `docs/review-data-storage.md` (the events,
   write rules, legacy reading, the size table; `thread-placed` marked read
-  only; the "Deferred" item on sharing it updated per Question 1),
+  only; the "Deferred" item on sharing it: decided when sync is designed),
   `docs/product-rules.md` ("Agent threads are traced like comments": drop
   "no drag, no storage change"; a new rule "A move is the reviewer's view"
   with the rules above), `docs/design/README.md` (the handle, move mode,
@@ -594,12 +594,9 @@ for review threads as well. I'd like the two to use the same mechanism."
 - **C7. `snapshotId` not stored** in `on`: it is derived from `base` and
   `head`, saving 80 bytes a move.
 
-## Questions
+## Sharing (left for later)
 
-1. **Sharing hand placements later.** On 2026-11-07 you said hand
-   placements would be shared with other reviewers through `meta` once
-   sync exists. With moves in the private ref, they are never shared
-   unless the reviewer turns on sync of their agent ref. Recommend: drop
-   the deferred item (a move is the reviewer's own view; others keep
-   GitHub's line). The alternative: keep it, as a publish step from this
-   record built with sync.
+The owner, 2026-11-18, on sharing hand placements once sync exists: "Let's
+not think about syncing or sharing, as we're not there quite yet. We'll
+handle it when we get there." This spec makes no promise either way: moves
+live in the private ref, and sharing them is decided when sync is designed.
