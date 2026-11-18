@@ -106,7 +106,8 @@ why Gerrit reserves sequence numbers in batches.
 
 ### 10. Write locally right away, publish compactly
 
-**Why:** one local commit per event (about 2.6 ms each, measured) means nothing
+**Why:** one local commit per write (about 2.6 ms each, measured; the events
+of one action share it, so readers never see the action half done) means nothing
 is lost if the process dies. Squashing unpushed commits into one before pushing
 keeps the remote's history small.
 

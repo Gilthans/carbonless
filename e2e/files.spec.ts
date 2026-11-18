@@ -16,6 +16,7 @@ import {
 	progress,
 	resetFile,
 	sideBySide,
+	statesStored,
 	treeNumbers,
 	withTree,
 } from "./files-ui";
@@ -1119,11 +1120,14 @@ test("a finished file resets after asking, each button its own kind", async ({
 	await expect(armed).toHaveCount(0);
 
 	// Asked and answered: every reviewed cluster back to unreviewed, saved.
+	const reset = statesStored(page, "unreviewed");
 	await resetFile(page, section, "Unmark reviewed");
 	await expect(bar).toContainText("0 / 4 clusters reviewed");
 	await expect(
 		fileActionButton(section, "Mark remaining reviewed"),
 	).toBeEnabled();
+	// Shown at once, stored after: reloading sooner leaves it unsaved.
+	await reset;
 	await page.reload();
 	await expect(progress(page)).toContainText("0 / 4 clusters reviewed");
 

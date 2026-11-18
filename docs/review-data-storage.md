@@ -286,8 +286,14 @@ a reader drops what breaks them:
 
 ## Writing
 
-- **One commit per event.** Each event is written as its own commit right away,
-  so nothing is lost if the server crashes and no separate journal is needed.
+- **One commit per write.** Each write (one reviewer action: a mark, or
+  every cluster state a "Mark remaining reviewed" or a file reset changes)
+  is committed right away as one commit, so nothing is lost if the server
+  crashes and no separate journal is needed. A write's events share that
+  commit, so a reader (a reload, another tab) sees all of them or none:
+  never a reset half done (CAR-215). Starting a patch set is its own commit
+  before the marks; read between the two, the patch set is there with
+  nothing marked, which only looks less reviewed.
 - **Squash before push.** Every 5 minutes, and when the page closes or the
   server shuts down, the tool takes the events in local commits that aren't on
   the remote yet, writes them as **one** commit on top of the remote tip, moves
@@ -846,7 +852,7 @@ unreadable or malformed file reads as none.
 **Not in the first milestone** (reviewer's decision, 2026-10-23). The PR review
 parity milestone keeps all refs in carbonless's private clone and pushes
 nothing, so it has no squash before push, no fetch of review refs, no "who else
-started" check and no compaction. Writing there is: one commit per event,
+started" check and no compaction. Writing there is: one commit per write,
 compare-and-swap, no push. The format below stays ready for sync.
 
 - **On by default** (once sync exists). Review refs are pushed to the PR's remote, so a reviewer's

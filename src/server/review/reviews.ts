@@ -110,6 +110,34 @@ const VERBS = {
 	"crossed-off": "crossed off",
 } as const;
 
+/**
+ * A commit's summary of its parts, alike ones counted ("reviewed 2
+ * clusters, reset 1 cluster"; informational only: readers use the JSON
+ * lines). A part is a verb, or a verb and what it did to 1 cluster.
+ */
+function summaryOf(parts: string[]): string {
+	const counts = new Map<string, number>();
+	for (const part of parts) counts.set(part, (counts.get(part) ?? 0) + 1);
+	return [...counts]
+		.map(([part, n]) => {
+			if (n === 1) return part;
+			const one = " 1 cluster";
+			return part.endsWith(one)
+				? `${part.slice(0, -one.length)} ${n} clusters`
+				: `${part} (${n} times)`;
+		})
+		.join(", ");
+}
+
+/** Where a commit's changes are: the one path, or how many files. */
+function whereOf(paths: string[]): string {
+	const unique = new Set(paths);
+	const [only] = unique;
+	return unique.size === 1 && only !== undefined
+		? only
+		: `${unique.size} files`;
+}
+
 /** Which view of a PR a review is of (dev and pinned modes; see prKey). */
 export interface PrView {
 	/** As of this cutoff (canonical ISO). */
@@ -443,6 +471,10 @@ export class ReviewService {
 		}
 		const stamp = stamper(existing);
 
+		// Every change of the call in one commit: a reader (a reload, another
+		// tab) sees all of them or none, never a reset half done (CAR-215).
+		const events: CrbEvent[] = [];
+		const parts: string[] = [];
 		for (const { cluster, lines, payload } of payloads) {
 			if (lines === null) {
 				const event: ClusterStateEvent = newEvent(
@@ -452,19 +484,15 @@ export class ReviewService {
 					"human",
 					stamp(),
 				);
-				await this.store.appendEvent(
-					ref,
-					`crb: ${VERBS[event.state]} 1 cluster in ${event.path}`,
-					event,
-					slug,
-				);
+				events.push(event);
+				parts.push(`${VERBS[event.state]} 1 cluster`);
 				continue;
 			}
-			// Part of it: the whole cluster unreviewed, then its marked lines,
-			// in one commit (a reader that predates lines-state sees it
-			// unreviewed, never more reviewed than the reviewer marked).
+			// Part of it: the whole cluster unreviewed, then its marked lines
+			// (a reader that predates lines-state sees it unreviewed, never
+			// more reviewed than the reviewer marked).
 			const { patchset, path } = payload;
-			const events: CrbEvent[] = [
+			events.push(
 				newEvent(
 					"cluster-state",
 					slug,
@@ -472,7 +500,7 @@ export class ReviewService {
 					"human",
 					stamp(),
 				),
-			];
+			);
 			for (const [state, ranges] of [
 				["reviewed", lines.reviewed],
 				["crossed-off", lines.crossed],
@@ -488,32 +516,36 @@ export class ReviewService {
 					),
 				);
 			}
-			await this.store.appendEvents(
-				ref,
-				`crb: marked ${size(lines.reviewed) + size(lines.crossed)} of ${cluster.lines} lines of 1 cluster in ${path}`,
-				events,
-				slug,
+			parts.push(
+				`marked ${size(lines.reviewed) + size(lines.crossed)} of ${cluster.lines} lines of 1 cluster`,
 			);
 		}
+		const paths = payloads.map((p) => p.payload.path);
 		for (const change of marks) {
 			const mark = change.sinceMark as SinceMark;
-			const event = newEvent(
-				"since-lines-state",
-				slug,
-				{
-					patchset: snapshot.revision,
-					since: mark.since,
-					path: mark.path,
-					reviewed: sides(mark.reviewed),
-					crossed: sides(mark.crossed),
-				},
-				"human",
-				stamp(),
+			events.push(
+				newEvent(
+					"since-lines-state",
+					slug,
+					{
+						patchset: snapshot.revision,
+						since: mark.since,
+						path: mark.path,
+						reviewed: sides(mark.reviewed),
+						crossed: sides(mark.crossed),
+					},
+					"human",
+					stamp(),
+				),
 			);
-			await this.store.appendEvent(
+			parts.push(`marked pieces since PS${mark.since}`);
+			paths.push(mark.path);
+		}
+		if (events.length > 0) {
+			await this.store.appendEvents(
 				ref,
-				`crb: marked pieces since PS${mark.since} in ${mark.path}`,
-				event,
+				`crb: ${summaryOf(parts)} in ${whereOf(paths)}`,
+				events,
 				slug,
 			);
 		}
