@@ -31,9 +31,17 @@ export default defineConfig({
 	// No retries, in CI either: a flaky test must fail visibly to get fixed.
 	retries: 0,
 	// CI: annotations, a log, and an HTML report the workflow uploads on failure.
-	reporter: process.env.CI
-		? [["github"], ["list"], ["html", { open: "never" }], TRACE_REPORTER]
-		: [["list"], TRACE_REPORTER],
+	// CRB_TEST_JSON: also a JSON report, from which scripts/test-outcomes.mjs
+	// labels each failure flaky or consistent (docs/ci-flakes.md).
+	reporter: [
+		...(process.env.CI
+			? ([["github"], ["list"], ["html", { open: "never" }]] as const)
+			: ([["list"]] as const)),
+		TRACE_REPORTER,
+		...(process.env.CRB_TEST_JSON
+			? ([["json", { outputFile: process.env.CRB_TEST_JSON }]] as const)
+			: []),
+	],
 	// An expect waits for what the page brings: often a chain of requests
 	// (a reload reads the overview, then the threads, then the comments),
 	// which a machine running several suites stretches past the 5 s default.

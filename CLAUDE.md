@@ -216,7 +216,9 @@ loading never looking empty, checking against a real PR):
   `page.route` count). `fastForward` for one-shot timers, `runFor` when a
   chain must fire in order; don't assert "just before the timer" without
   `pauseAt`. No automatic retries (Playwright `retries`, Vitest `retry`):
-  a flaky test fails visibly and gets fixed. Playwright's expects wait
+  a flaky test fails visibly and gets fixed. CI reruns a failed test once
+  only to label it flaky or consistent; that rerun never turns a job
+  green (`docs/ci-flakes.md`). Playwright's expects wait
   10 s (a reload's chained reads); a test that needs longer says why.
 - A runner killed mid-test (a Playwright worker past its teardown timeout,
   an interrupted run) never runs its cleanup. What a test starts carries
@@ -231,6 +233,11 @@ loading never looking empty, checking against a real PR):
   agents, and the loops slow their runs too). Run it on every test you add
   or change that involves timing, concurrency, a spinner or a gate, and on
   a test you saw fail once.
+- `pnpm ci-flakes [--since 7d] [--branch b] [--json]`: CI's flake rate
+  (failed attempts whose every failure passed on its rerun, over all
+  attempts) and the flaky tests behind it, from each test job's
+  `test-outcomes` artifact; the weekly `Flake report` workflow goes red
+  over 2% (`docs/ci-flakes.md`).
 - Every test run traces itself (spans per test, setup phase, crb request,
   git and gh call) into `~/.cache/carbonless/test-traces/<run>/`, kept 7
   days. `pnpm test-profile [run|latest] [--compare <run>] [--jaeger]`

@@ -2557,6 +2557,7 @@ esac
 		).filter((f) => f.endsWith(".yml"));
 		expect(files.sort()).toEqual([
 			"ci.yml",
+			"flake-report.yml",
 			"release-finish.yml",
 			"release-gate.yml",
 			"release.yml",
@@ -2591,6 +2592,17 @@ esac
 			if (file === "ci.yml" || file === "release-gate.yml") continue;
 			expect(triggers(workflow(file)), file).not.toMatch(/pull_request/);
 		}
+		// The flake report (docs/ci-flakes.md): a schedule or a dispatch, never
+		// a PR; its token only reads.
+		const flakes = code(workflow("flake-report.yml"));
+		expect(triggers(flakes).match(/^ {2}\w+:$/gm)).toEqual([
+			"  schedule:",
+			"  workflow_dispatch:",
+		]);
+		expect(flakes).toMatch(
+			/^permissions:\n {2}actions: read\n {2}contents: read\n(?! )/m,
+		);
+		expect(flakes).not.toMatch(/: write\b|id-token|environment:/);
 		// The release workflows: a completed CI on master, or a dispatch (which
 		// needs write access to the repository); never a PR or a push.
 		expect(triggers(workflow("release-finish.yml")).trim()).toBe(
