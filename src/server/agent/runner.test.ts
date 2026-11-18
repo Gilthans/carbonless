@@ -416,6 +416,7 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		expect(status).toMatchObject({
 			via: "acp",
 			agent: { name: "fake-acp", via: "acp" },
+			connected: true,
 		});
 		expect(status.joinRequest).toBeUndefined();
 	});
@@ -801,7 +802,10 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		const error = await until((s) => s.state === "error");
 		expect(error.error).toContain("exited with code 70");
 		expect(error.via).toBeUndefined();
+		// Crashed: no agent connected to the review (the chip opens the setup).
+		expect(error.connected).toBeUndefined();
 		await runner.settled();
+		expect((await runner.status()).connected).toBeUndefined();
 		expect(spawns()).toHaveLength(1);
 		expect(prompts()).toHaveLength(1);
 
@@ -855,6 +859,13 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		});
 		const failed = await runnerUntil((s) => s.state === "error");
 		expect(failed.error).toBe("Internal error: Rate limited");
+		// A failed turn, the process up: still connected (the chip opens the
+		// conversation, to ask again), through the host too.
+		expect(failed.connected).toBe(true);
+		expect(await host?.status()).toMatchObject({
+			state: "error",
+			connected: true,
+		});
 		await ask("and now?", 2);
 		await answered(2);
 		expect(spawns()).toHaveLength(1);
@@ -886,11 +897,23 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		const failed = await until((s) => s.state === "error");
 		expect(failed.error).toBe("The agent didn't attach to the review");
 		expect(failed.via).toBeUndefined();
+		expect(failed.connected).toBeUndefined();
 		await runner.settled();
 		const pid = spawns()[0]?.pid as number;
 		await wait(() => expect(() => process.kill(pid, 0)).toThrow());
 		expect((await threads())[0]?.waiting).toBe(true);
 		expect(prompts()).toHaveLength(1);
+	});
+
+	it("an agent that fails to start: an error, never connected", async () => {
+		scenario({ initializeError: "Not logged in" });
+		await ask("why?");
+		makeRunner().poke();
+		const failed = await until((s) => s.state === "error");
+		expect(failed.error).toContain("Not logged in");
+		expect(failed.connected).toBeUndefined();
+		await runner.settled();
+		expect((await runner.status()).connected).toBeUndefined();
 	});
 
 	it("each handed-out question has its own time limit: past it, the question fails and the turn is cancelled", async () => {

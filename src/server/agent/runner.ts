@@ -453,6 +453,9 @@ export class AgentRunner {
 					? this.#problems.join("; ")
 					: undefined;
 		const hand = this.#liveHand();
+		// Up and usable, whatever its last turn did (a failed turn keeps it).
+		const connected =
+			!stopping && Boolean(this.#proc?.agent && this.#usable(this.#proc.agent));
 		return {
 			state: stopping ? "off" : this.#state,
 			configured: this.#configured,
@@ -464,6 +467,7 @@ export class AgentRunner {
 				? { elsewhere: this.#elsewhere }
 				: {}),
 			...(this.#seenAt() ? { seen: this.#seenAt() } : {}),
+			...(connected ? { connected: true } : {}),
 			waiting,
 		};
 	}

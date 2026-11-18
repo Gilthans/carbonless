@@ -116,19 +116,24 @@ export function useAgentSync(
 
 /**
  * Whether pressing the chip (or Shift+A) toggles the review conversation's
- * drawer: an agent is connected to this review, or on its way. A joined
- * session; an agent starting, ready, busy or reconnecting; another server
- * answering (elsewhere); a spawn whose runner isn't up yet. Otherwise it
- * opens the agent setup: an agent that failed (an error), stopped or never
- * joined (off, no spawn under way), configured or not; a spawn with nothing
- * configured; no status. Even with a conversation already there.
+ * drawer: an agent is connected to this review (`connected`: a spawned
+ * agent's process up, even after a failed turn, or a joined session), or on
+ * its way (starting, reconnecting, another server answering, a spawn whose
+ * runner isn't up yet). Otherwise it opens the agent setup: an agent that
+ * failed with none live (crashed, failed to start), stopped or never joined,
+ * configured or not; a spawn with nothing configured; no status. Even with a
+ * conversation already there.
  */
 export function chipOpensDrawer(status: AgentStatus | undefined): boolean {
 	if (!status) return false;
+	if (status.connected) return true;
 	if (status.state === "error" || status.error) return false;
-	if (status.joined) return true;
 	if (status.state === "off") return spawnGap(status) === "starting";
-	return true;
+	return (
+		status.state === "starting" ||
+		status.state === "reconnecting" ||
+		status.state === "elsewhere"
+	);
 }
 
 /**

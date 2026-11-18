@@ -128,11 +128,9 @@ Tap:
 
 | Agent (`chipOpensDrawer`) | Tap |
 |---|---|
-| a session joined (not failing) | toggles the drawer |
-| starting, ready, busy or reconnecting | toggles the drawer |
-| elsewhere (another crb server answers) | toggles the drawer |
-| spawned and configured, the runner not up yet | toggles the drawer |
-| failed (`error` state, or an error) | opens the agent modal (setup, or its status with the error and Restart once spawned) |
+| connected (`connected`: a spawned agent's process up, even after a failed turn such as a rate limit or a time limit; or a joined session) | toggles the drawer |
+| on its way: starting, reconnecting, elsewhere (another crb server answers), or spawned and configured with the runner not up yet | toggles the drawer |
+| failed with no live agent (crashed, failed to start, didn't attach) | opens the agent modal (setup, or its status with the error and Restart once spawned) |
 | off with no spawn under way (stopped, or none ever joined), configured or not | opens agent setup |
 | spawned with nothing configured | opens agent setup |
 | no status | opens agent setup |

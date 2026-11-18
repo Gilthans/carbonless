@@ -12,7 +12,6 @@ import {
 	reviewDrawer,
 	selectText,
 	setupDialog,
-	spawnAgent,
 	statusDialog,
 	test,
 } from "./agent-ui";
@@ -176,11 +175,17 @@ test("configured, none spawned: the chip opens the setup; a question asked meanw
 	await expect(chip(page)).not.toHaveAttribute("aria-busy", "true");
 	await expect(chip(page)).not.toHaveAttribute("aria-expanded");
 	await chip(page).click();
-	await expect(setupDialog(page)).toBeVisible();
+	const setup = setupDialog(page);
+	await expect(setup).toBeVisible();
 	await expect(reviewDrawer(page)).toHaveCount(0);
+	// Spawned from the setup (the configured command): connected, so the
+	// chip now opens the conversation.
+	await setup.getByRole("tab", { name: "Spawn" }).click();
+	await setup.getByTestId("agent-spawn").click();
+	const status = statusDialog(page);
+	await expect(status).toBeVisible();
 	await page.keyboard.press("Escape");
-	await expect(setupDialog(page)).toHaveCount(0);
-	await spawnAgent(s.url);
+	await expect(status).toHaveCount(0);
 	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
 	await chip(page).click();
 	await expect(reviewDrawer(page).getByTestId("agent-message-ai")).toHaveText([
@@ -197,7 +202,10 @@ test("a configured agent that failed: the chip and Shift+A open the agent modal 
 }) => {
 	await pr(fixture);
 	const s = await agentCrb({ scenario: { agent: AGENT, crashOnPrompt: true } });
-	// Asked on a line, the agent exits: the review's agent failed.
+	// Asked on a line, the agent exits: the review's agent failed, no
+	// process left (not connected). It isn't restarted here: after a crash
+	// only a human asking again (or Restart) respawns it, never a poll, so
+	// "error" holds while the test taps.
 	const section = await openFile(page, s.url, CALC);
 	await ask(page, section, 3, "Crash?");
 	await expect(chip(page)).toHaveAttribute("data-state", "error");
@@ -214,6 +222,35 @@ test("a configured agent that failed: the chip and Shift+A open the agent modal 
 	await page.locator("body").press("Shift+A");
 	await expect(modal.getByRole("alert")).toContainText("exited with code 70");
 	await expect(reviewDrawer(page)).toHaveCount(0);
+});
+
+test("a failed turn, the agent still connected: the chip opens the conversation, to ask again", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: {
+			agent: AGENT,
+			answers: [
+				{ match: "Rate", text: "", stop: "error", error: "Rate limited" },
+				{ text: "Fine now." },
+			],
+		},
+	});
+	const section = await openFile(page, s.url, CALC);
+	await ask(page, section, 3, "Rate?");
+	await expect(chip(page)).toHaveAttribute("data-state", "error");
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
+	await chip(page).click();
+	await expect(reviewDrawer(page)).toBeVisible();
+	await expect(statusDialog(page)).toHaveCount(0);
+	await send(page, "Again?", isMobile);
+	await expect(reviewDrawer(page).getByTestId("agent-message-ai")).toHaveText([
+		"Fine now.",
+	]);
 });
 
 test("a hostile answer renders inert and never leaves the review", async ({

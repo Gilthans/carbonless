@@ -51,12 +51,14 @@ const status = (more: Partial<AgentStatus> = {}): AgentStatus => ({
 	agent: { name: "Claude Agent", version: "0.100.0" },
 	since: "2026-11-07T10:00:00Z",
 	waiting: 0,
+	connected: true,
 	...more,
 });
 
 /** A session joined through MCP, as the host's overlay shows it. */
 const joined = (more: Partial<AgentStatus> = {}): Partial<AgentStatus> => ({
 	state: "ready",
+	connected: true,
 	via: "mcp",
 	agent: {
 		name: "carbonless · main",
@@ -152,13 +154,26 @@ const named = (rest: string) => `Review conversation · Your agent: ${rest}`;
 describe("the chip's tap", () => {
 	it.each<[string, Partial<AgentStatus>, AgentThread[]]>([
 		["a spawned agent, ready", { state: "ready", spawned: true }, []],
-		["an agent starting", { state: "starting", spawned: true }, []],
+		[
+			"an agent starting",
+			{ state: "starting", spawned: true, connected: false },
+			[],
+		],
 		["an agent busy", { state: "busy", waiting: 1 }, []],
-		["an agent reconnecting", { state: "reconnecting" }, []],
-		["another server answering", { state: "elsewhere", elsewhere: 4747 }, []],
+		[
+			"an agent whose last turn failed, still connected",
+			{ state: "error", spawned: true, error: "Rate limited; retry later" },
+			[],
+		],
+		["an agent reconnecting", { state: "reconnecting", connected: false }, []],
+		[
+			"another server answering",
+			{ state: "elsewhere", elsewhere: 4747, connected: false },
+			[],
+		],
 		[
 			"spawned, the runner not up yet",
-			{ state: "off", spawned: true, agent: undefined },
+			{ state: "off", spawned: true, agent: undefined, connected: false },
 			[],
 		],
 		[
@@ -189,24 +204,30 @@ describe("the chip's tap", () => {
 	it.each<[string, Partial<AgentStatus>]>([
 		[
 			"an agent configured, none spawned or joined",
-			{ state: "off", agent: undefined },
+			{ state: "off", agent: undefined, connected: false },
 		],
 		[
-			"an agent configured, stopped",
-			{ state: "off", spawned: false, agent: undefined },
+			"an agent that crashed",
+			{
+				state: "error",
+				spawned: true,
+				error: "exited with code 70",
+				connected: false,
+			},
 		],
-		["an agent that failed", { state: "error", spawned: true }],
 		[
-			"an agent with an error, still ready",
-			{ state: "ready", error: "the agent exited" },
-		],
-		[
-			"a joined session failing",
-			joined({ state: "error", error: "lost the session" }),
+			"an agent with an error, not connected",
+			{ state: "ready", error: "the agent exited", connected: false },
 		],
 		[
 			"spawned, nothing configured",
-			{ state: "off", configured: false, spawned: true, agent: undefined },
+			{
+				state: "off",
+				configured: false,
+				spawned: true,
+				agent: undefined,
+				connected: false,
+			},
 		],
 	])(
 		"no agent connected, %s: opens the agent setup, no drawer",
@@ -224,25 +245,82 @@ describe("the chip's tap", () => {
 		},
 	);
 
+	const left = {
+		name: "old session",
+		machine: "devbox",
+		why: "detached" as const,
+		at: "2026-11-10T09:00:00Z",
+	};
 	it.each<[string, AgentStatus | undefined, boolean]>([
 		["no status", undefined, false],
-		["off, configured", status({ state: "off" }), false],
-		["off, configured, spawned", status({ state: "off", spawned: true }), true],
+		["off, configured", status({ state: "off", connected: false }), false],
+		[
+			"off, configured, spawned",
+			status({ state: "off", spawned: true, connected: false }),
+			true,
+		],
 		[
 			"off, nothing configured, spawned",
-			status({ state: "off", configured: false, spawned: true }),
+			status({
+				state: "off",
+				configured: false,
+				spawned: true,
+				connected: false,
+			}),
 			false,
 		],
-		["starting", status({ state: "starting" }), true],
-		["ready", status(), true],
+		["starting", status({ state: "starting", connected: false }), true],
+		["ready, connected", status(), true],
+		["ready, not connected", status({ connected: false }), false],
 		["busy", status({ state: "busy" }), true],
-		["reconnecting", status({ state: "reconnecting" }), true],
-		["elsewhere", status({ state: "elsewhere", elsewhere: 4747 }), true],
-		["error", status({ state: "error" }), false],
-		["ready with an error", status({ error: "boom" }), false],
+		["reconnecting", status({ state: "reconnecting", connected: false }), true],
+		[
+			"elsewhere",
+			status({ state: "elsewhere", elsewhere: 4747, connected: false }),
+			true,
+		],
+		[
+			"elsewhere with an error",
+			status({
+				state: "elsewhere",
+				elsewhere: 4747,
+				error: "boom",
+				connected: false,
+			}),
+			false,
+		],
+		["error, connected (a failed turn)", status({ state: "error" }), true],
+		[
+			"error, not connected (crashed)",
+			status({ state: "error", connected: false }),
+			false,
+		],
+		[
+			"an error, not connected",
+			status({ error: "boom", connected: false }),
+			false,
+		],
 		["joined", status(joined({ configured: false })), true],
-		["joined, off", status(joined({ state: "off", configured: false })), true],
-		["joined, error", status(joined({ state: "error" })), false],
+		["joined, a session left before", status(joined({ left })), true],
+		[
+			"a session left, none joined",
+			status({ state: "off", connected: false, left }),
+			false,
+		],
+		[
+			"a session asking to join, none joined",
+			status({
+				state: "off",
+				connected: false,
+				joinRequest: {
+					name: "s",
+					machine: "devbox",
+					id: "j1",
+					at: "2026-11-10T09:00:00Z",
+				},
+			}),
+			false,
+		],
 	])("chipOpensDrawer, %s: %s", (_n, s, drawer) => {
 		expect(chipOpensDrawer(s)).toBe(drawer);
 	});
@@ -254,7 +332,12 @@ describe("the chip's tap", () => {
 		"nothing set up, %s: opens the agent setup, no drawer",
 		async (_n, threads) => {
 			const { user } = chipOver(
-				status({ state: "off", configured: false, agent: undefined }),
+				status({
+					state: "off",
+					configured: false,
+					agent: undefined,
+					connected: false,
+				}),
 				vi.fn(),
 				threads,
 			);
@@ -268,10 +351,27 @@ describe("the chip's tap", () => {
 	);
 
 	it.each<[string, AgentStatus, string, string]>([
-		["a configured agent", status(), "open", "closed"],
+		["an agent ready", status(), "open", "closed"],
 		[
 			"nothing set up",
-			status({ state: "off", configured: false, agent: undefined }),
+			status({
+				state: "off",
+				configured: false,
+				agent: undefined,
+				connected: false,
+			}),
+			"closed",
+			"invite",
+		],
+		[
+			"an agent configured, none spawned",
+			status({ state: "off", connected: false }),
+			"closed",
+			"invite",
+		],
+		[
+			"an agent that crashed",
+			status({ state: "error", spawned: true, connected: false }),
 			"closed",
 			"invite",
 		],
@@ -368,10 +468,23 @@ describe("the chip's tap", () => {
 	}
 
 	it.each<[string, AgentStatus]>([
-		["a configured agent", status()],
+		["an agent ready", status()],
 		[
 			"nothing set up",
-			status({ state: "off", configured: false, agent: undefined }),
+			status({
+				state: "off",
+				configured: false,
+				agent: undefined,
+				connected: false,
+			}),
+		],
+		[
+			"an agent configured, none spawned",
+			status({ state: "off", connected: false }),
+		],
+		[
+			"an agent that crashed",
+			status({ state: "error", spawned: true, connected: false }),
 		],
 	])(
 		"tapped twice while the status is read, %s: the second cancels the first, nothing opens",
@@ -423,7 +536,12 @@ describe("the chip's tap", () => {
 		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
 		await act(async () =>
 			held.release(
-				status({ state: "off", configured: false, agent: undefined }),
+				status({
+					state: "off",
+					configured: false,
+					agent: undefined,
+					connected: false,
+				}),
 			),
 		);
 		await waitFor(() =>
@@ -440,7 +558,12 @@ describe("the chip's tap", () => {
 		act(() =>
 			client.setQueryData(
 				agentStatusQuery.queryKey,
-				status({ state: "off", configured: false, agent: undefined }),
+				status({
+					state: "off",
+					configured: false,
+					agent: undefined,
+					connected: false,
+				}),
 			),
 		);
 		await waitFor(() => expect(chip).toHaveAttribute("data-state", "off"));
@@ -477,7 +600,12 @@ describe("the chip's tap", () => {
 		held.release(status());
 		await act(async () =>
 			again.release(
-				status({ state: "off", configured: false, agent: undefined }),
+				status({
+					state: "off",
+					configured: false,
+					agent: undefined,
+					connected: false,
+				}),
 			),
 		);
 		await waitFor(() =>
@@ -498,7 +626,12 @@ describe("the chip's tap", () => {
 		await act(async () =>
 			client.setQueryData(
 				agentStatusQuery.queryKey,
-				status({ state: "off", configured: false, agent: undefined }),
+				status({
+					state: "off",
+					configured: false,
+					agent: undefined,
+					connected: false,
+				}),
 			),
 		);
 		await waitFor(() =>
@@ -704,7 +837,7 @@ describe("the agent chip", () => {
 	it.each<[string, Partial<AgentStatus>, string, string]>([
 		[
 			"off",
-			{ state: "off", configured: false, agent: undefined },
+			{ state: "off", configured: false, agent: undefined, connected: false },
 			"bg-unreviewed",
 			"No agent · set one up",
 		],
