@@ -1,4 +1,4 @@
-import { CommentIcon } from "@primer/octicons-react";
+import { CommentIcon, DatabaseIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import {
 	type MouseEvent,
@@ -49,7 +49,7 @@ import {
 } from "../threads/newThreads";
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { useThreadWriter } from "../threads/threadWrites";
-import { ignoreWhitespace } from "../viewSettings";
+import { ignoreWhitespace, imageMode, sideBySide } from "../viewSettings";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import {
 	DiffBody,
@@ -68,6 +68,15 @@ import {
 	WhitespaceLeftOut,
 	whitespaceLeftOutLabel,
 } from "./ProgressBar";
+import { rendererChoices, rendererPicks, resolveRenderer } from "./renderers";
+import { ImageView } from "./renderers/image/ImageView";
+import {
+	imageModesOf,
+	pressedView,
+	type ViewOption,
+	ViewSwitch,
+	viewOptions,
+} from "./renderers/ViewSwitch";
 import { useResolveCollapse } from "./resolveCollapse";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
 import { type FileSince, goneFileView } from "./since";
@@ -509,6 +518,30 @@ function FileProgress(props: {
 	);
 }
 
+const LFS_LABEL = "Git LFS pointer";
+
+/** Beside the path: the file is a Git LFS pointer, shown as its text. */
+function LfsIcon() {
+	return (
+		<Tooltip content={LFS_LABEL} describe={false}>
+			{({ ref, onMouseEnter, onMouseLeave }) => (
+				// Hover only: on touch and keyboard the path's tooltip says it.
+				<span
+					ref={ref}
+					onMouseEnter={onMouseEnter}
+					onMouseLeave={onMouseLeave}
+					role="img"
+					aria-label={LFS_LABEL}
+					data-testid="lfs-pointer"
+					className="inline-flex shrink-0 cursor-help items-center text-muted"
+				>
+					<DatabaseIcon size={12} aria-hidden className="block" />
+				</span>
+			)}
+		</Tooltip>
+	);
+}
+
 /**
  * One file of the diff: header with review status and bulk actions, and the
  * diff once expanded. Every file starts collapsed; collapsing is only a view
@@ -625,13 +658,56 @@ export function FileDiff(props: {
 	const toggleButton = useRef<HTMLButtonElement>(null);
 	const otherOpenNow = useRef(props.otherOpen ?? false);
 	otherOpenNow.current = props.otherOpen ?? false;
+	// How the body shows the file (renderers/): the reviewer's pick for
+	// its path, else the renderer that claims it. Only the view: never a
+	// review state.
+	const resolved = resolveRenderer(file, rendererPicks.use(file.path));
+	const asText = useLineTargetText(
+		resolved === "image" && rendererChoices(file).includes("text"),
+		props.find,
+		props.landing,
+	);
+	const renderer = asText.on ? "text" : resolved;
+	// The image renderer reads no lines: its review rows and threads are
+	// DiffBody's, with the lines hidden.
+	const linesHidden = renderer === "image";
+	// The image view's layout follows Settings' "Side by side", as code does.
+	const sideBySideOn = sideBySide.use();
+	// The view switch (renderers/ViewSwitch): in the image toolbar, or a
+	// row of its own over Text and Binary, for a file with more than one
+	// renderer. A pick only changes the view: never a review state.
+	const mode = imageMode.use();
+	const pickView = (option: ViewOption) => {
+		asText.clear();
+		// Kept per path only when it differs from what the file shows
+		// without a line target's Text: Image again after one writes nothing.
+		if (option.renderer !== resolved)
+			rendererPicks.set(file.path, option.renderer);
+		if (option.mode) imageMode.set(option.mode);
+	};
+	const viewSwitch = (modes: boolean) => (
+		<ViewSwitch
+			options={viewOptions(file, modes)}
+			pressed={pressedView(renderer, mode, modes)}
+			onPick={pickView}
+		/>
+	);
+	// Whether Image compares two versions on one stage (Slider and Fade
+	// apply): decided once from the file's facts, so the switch keeps its
+	// shape in every view and state (principle 8: nothing moves).
+	const imageModes = imageModesOf(file, sideBySideOn);
+	const switchRow = !linesHidden && viewOptions(file, imageModes).length > 0;
 	const hunks = useQuery({
 		...hunksQuery(revision, file.index, props.since),
-		enabled: expanded,
+		enabled: expanded && !linesHidden,
 	});
+	const hunksPending = !linesHidden && hunks.isPending;
+	const hunkData = linesHidden ? null : (hunks.data ?? null);
+	// Opened by a move-on, its lines (or what shows instead) arrive under the
+	// pointer once read: just as unseen, so they restart the wait for marks.
 	const ignoreMarksUntil = useMarksWait(
 		props.ignoreMarksUntil,
-		expanded && !hunks.isPending,
+		expanded && !hunksPending,
 	);
 	const { save: saveStates } = useSetStates();
 	const save = (changes: StateChange[]) =>
@@ -786,6 +862,7 @@ export function FileDiff(props: {
 		clusterCount(file),
 		sentence,
 		leftOut > 0 ? whitespaceLeftOutLabel(leftOut) : null,
+		file.lfs ? LFS_LABEL : null,
 	]
 		.filter(Boolean)
 		.join(" · ");
@@ -808,9 +885,9 @@ export function FileDiff(props: {
 				threads: props.threads.threads,
 				path: file.path,
 				snapshotHead: props.threads.snapshotHead,
-				hunks: hunks.data ?? null,
+				hunks: hunkData,
 				loadedContext: [],
-				noLines: file.binary || file.submodule,
+				noLines: file.binary || file.submodule || linesHidden,
 				placements: props.threads.placements,
 				// The since view: as its DiffBody places them (LEFT through
 				// the full diff), so the header holds what no row can.
@@ -829,7 +906,7 @@ export function FileDiff(props: {
 	// has threads, and focus it (the header's count is gone).
 	const [fromHeader, setFromHeader] = useState(false);
 	const [focusFile, setFocusFile] = useState(false);
-	const hunksSettled = !expanded || !hunks.isPending;
+	const hunksSettled = !expanded || !hunksPending;
 	useEffect(() => {
 		if (!fromHeader || !expanded || !hunksSettled) return;
 		setFromHeader(false);
@@ -912,9 +989,9 @@ export function FileDiff(props: {
 				threads: agentPlaceables,
 				path: file.path,
 				snapshotHead,
-				hunks: hunks.data ?? null,
+				hunks: hunkData,
 				loadedContext: [],
-				noLines: file.binary || file.submodule,
+				noLines: file.binary || file.submodule || linesHidden,
 				placements: agentPlacements,
 				...(props.since === undefined
 					? {}
@@ -956,16 +1033,27 @@ export function FileDiff(props: {
 	// A card asked for among the file bubble's threads, or its agent
 	// bubble's (threadFocus: a Threads tab row, a link to a conversation
 	// held here, a whole file's, unplaced, outdated or gone): that bubble
-	// opens, so the card shows and takes it.
+	// opens, so the card shows and takes it. One held on a line of a file
+	// shown without its lines (an SVG as Image): the file shows as Text for
+	// the view (useLineTargetText), and the line's bubble takes the card, as
+	// for a find step or a thread link.
+	const onHiddenLine = (id: string) =>
+		linesHidden &&
+		asText.textable &&
+		(header.some((h) => h.reason === "unplaced" && h.thread.id === id) ||
+			agentHeader.some(
+				(h) => h.reason === "unplaced" && h.thread.thread.id === id,
+			));
+	useFocusAmong(onHiddenLine, asText.show);
 	useFocusAmong(
-		(id) => header.some((h) => h.thread.id === id),
+		(id) => !onHiddenLine(id) && header.some((h) => h.thread.id === id),
 		() => {
 			collapse.toggled("file");
 			setFileOpen(true);
 		},
 	);
 	useFocusAmong(
-		(id) => agentLead.some((t) => t.id === id),
+		(id) => !onHiddenLine(id) && agentLead.some((t) => t.id === id),
 		() => setAgentOpen(true),
 	);
 	const agentFileItems = useAgentComposers().filter(
@@ -1116,10 +1204,33 @@ export function FileDiff(props: {
 		),
 	};
 
+	// Today's body (text, binary), or with its lines hidden (an image).
+	const body = (linesHidden?: true) => (
+		<DiffBody
+			lead={lead}
+			file={file}
+			revision={revision}
+			onToggle={toggle}
+			onCrossOff={crossOff}
+			landing={props.landing}
+			threads={props.threads}
+			headSure={props.headSure}
+			find={props.find}
+			from={props.since}
+			kinds={props.sinceInfo?.kinds}
+			onSinceMark={sinceMark}
+			sinceMarks={props.sinceMarks}
+			readOnly={readOnly}
+			linesHidden={linesHidden}
+		/>
+	);
+
 	return (
 		<section
 			id={`file-${file.index}`}
 			data-file-index={file.index}
+			// How the body shows it (renderers/), open or closed.
+			data-renderer={renderer}
 			data-path={file.path}
 			aria-label={file.path}
 			// When it takes marks again (`performance.now()`), for tests to wait on.
@@ -1173,6 +1284,7 @@ export function FileDiff(props: {
 											: changeKindLabel(file)
 									}
 								/>
+								{file.lfs && <LfsIcon />}
 								{/* Beside the path, so a phone's second row keeps its room. */}
 								<ChangeCount file={file} hover={summaryTrigger} />
 							</div>
@@ -1288,26 +1400,73 @@ export function FileDiff(props: {
 					{agentComposers}
 				</div>
 			)}
-			{expanded && (
-				<DiffBody
-					lead={lead}
-					file={file}
-					revision={revision}
-					onToggle={toggle}
-					onCrossOff={crossOff}
-					landing={props.landing}
-					threads={props.threads}
-					headSure={props.headSure}
-					find={props.find}
-					from={props.since}
-					kinds={props.sinceInfo?.kinds}
-					onSinceMark={sinceMark}
-					sinceMarks={props.sinceMarks}
-					readOnly={readOnly}
-				/>
-			)}
+			{expanded &&
+				(linesHidden ? (
+					<>
+						<ImageView
+							file={file}
+							revision={revision}
+							from={props.since}
+							sideBySide={sideBySideOn}
+							view={viewSwitch(imageModes)}
+						/>
+						{body(true)}
+					</>
+				) : (
+					<>
+						{switchRow && (
+							<div
+								data-testid="view-bar"
+								className="flex min-h-12 flex-wrap items-center gap-2 border-line border-b bg-band px-2 py-1"
+							>
+								{viewSwitch(imageModes)}
+							</div>
+						)}
+						{body()}
+					</>
+				))}
 		</section>
 	);
+}
+
+/**
+ * A find's step or a thread link onto a line of a file shown without its
+ * lines (an SVG as Image: `textable`) shows that file as Text, for this
+ * view only: its lines are read, and DiffBody scrolls to the line as it
+ * does for any file. The stored pick (`rendererPicks`) doesn't change, so a
+ * reload shows the image again; `clear` (a pick in the view switch) ends it.
+ * `show` is a Threads tab row's or a conversation link's (threadFocus) onto
+ * such a line. Each
+ * step (`stepSeq`) and each landing (`seq`) that arrives after mount
+ * switches once: marks changing as the reviewer types never do.
+ */
+function useLineTargetText(
+	textable: boolean,
+	find: DiffFind | undefined,
+	landing: Landing | undefined,
+): { on: boolean; textable: boolean; show: () => void; clear: () => void } {
+	const step = find?.current ? find.stepSeq : 0;
+	const landed = landing?.line !== undefined ? landing.seq : 0;
+	// What it was mounted with is spent: a new snapshot remounts the file
+	// with the page's last step or landing, which mustn't switch it again.
+	const [seen, setSeen] = useState({ step, landed });
+	const [on, setOn] = useState(false);
+	// Ended once the file isn't one Text can take over (another pick, from
+	// this tab or another): a later Image pick shows the image.
+	if (on && !textable) setOn(false);
+	if (step !== seen.step || landed !== seen.landed) {
+		const fresh =
+			(step !== 0 && step !== seen.step) ||
+			(landed !== 0 && landed !== seen.landed);
+		setSeen({ step, landed });
+		if (fresh && textable) setOn(true);
+	}
+	return {
+		on: on && textable,
+		textable,
+		show: () => setOn(true),
+		clear: () => setOn(false),
+	};
 }
 
 /**

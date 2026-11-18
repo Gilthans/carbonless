@@ -106,6 +106,12 @@ describe("the marker", () => {
 		expect(stripMarkerHtml("<p>Hi &lt;!-- crb:v1 id=a --&gt;")).toBe("<p>Hi");
 		expect(stripMarkerHtml("<p>Hi</p>")).toBe("<p>Hi</p>");
 	});
+
+	it("skips unknown key=value words, so later fields can't break this build", () => {
+		expect(
+			parseMarker("x\n\n<!-- crb:v1 id=c-1 region=new@abc:1,2,3,4 -->"),
+		).toEqual({ id: "c-1", span: null });
+	});
 });
 
 describe("reads strip the marker and take the span from it", () => {

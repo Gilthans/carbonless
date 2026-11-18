@@ -201,6 +201,27 @@ export const fetchHunks = (revision: string, index: number, from?: number) =>
 		})}`,
 	);
 
+/**
+ * One side's bytes of file `index` (the blob route), for an `<img>`: the
+ * since view's interdiff with `from`; `sniff` for an extension crb doesn't
+ * know, shown as Image (the server checks raster signatures).
+ */
+export const blobUrl = (
+	revision: string,
+	index: number,
+	side: "old" | "new",
+	from?: number,
+	sniff?: boolean,
+): string =>
+	reviewApiPath(
+		`/api/files/${index}/blob?${new URLSearchParams({
+			revision,
+			side,
+			...(from === undefined ? {} : { from: String(from) }),
+			...(sniff ? { sniff: "1" } : {}),
+		})}`,
+	);
+
 /** The engine's answer for patch set `from` to a patch set or a head (RereviewAnswer). */
 export const fetchRereview = (from: number, to: RereviewTo) =>
 	request<RereviewAnswer | { pending: true }>(

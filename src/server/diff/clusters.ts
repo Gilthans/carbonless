@@ -150,7 +150,9 @@ export function fileLevelCluster(
 		add(`Submodule moved ${short(file.oldOid)} → ${short(file.newOid)}`);
 	} else {
 		if (file.status === "renamed") add(`Renamed from ${file.oldPath}`);
-		if (file.binary) add("Binary file changed");
+		// A binary whose two sides are the same blob (only renamed, or only
+		// its mode changed) says what changed, never that its bytes did.
+		if (file.binary && file.oldOid !== file.newOid) add("Binary file changed");
 		if (modeChanged) add(`Mode changed ${file.oldMode} → ${file.newMode}`);
 	}
 	if (parts.length === 0 && !hasLineClusters) {

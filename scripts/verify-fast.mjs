@@ -184,6 +184,12 @@ const E2E_MAP = [
 		/^src\/web\/files\/(DiffBody|FileDiff|FilesPage|whitespace|sideBySide|since|useSince|useSetStates|stateSync)\.tsx?$|^src\/server\/(rereview\/engine|diff\/hunks)\.ts$|^test\/markable(-harness)?\.tsx?$|^src\/shared\/pieces\.ts$/,
 		["markable"],
 	],
+	// Custom renderers (CAR-38): the seam, the "Show as" chip, the image
+	// type table; FileDiff and DiffBody hold the seam.
+	[
+		/^src\/web\/files\/renderers\/|^src\/shared\/imageTypes|^src\/web\/files\/(FileDiff|DiffBody)\.tsx$/,
+		["image-renderer"],
+	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	// Unit-test data (wordBlocks.fixture.test.ts); inlineDiff.spec.ts reads
 	// a few of its cases.
