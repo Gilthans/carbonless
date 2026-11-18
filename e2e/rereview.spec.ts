@@ -3079,3 +3079,57 @@ test("a line crossed off in PS1 stays crossed off in a grown cluster: ticking th
 		full.locator('[data-testid="diff-line"][data-new-no="4"]'),
 	).toHaveAttribute("data-reviewed", "true");
 });
+
+test("the first tick on the viewed head starts PS2 of that snapshot: the since view's chips stay while PS2's answer is read, so no row moves under the pointer (CAR-208)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const since = await grownSince(page, pr, startCrb, "cross");
+	// Hold the engine's answer under PS2's name (the head's is in).
+	let release = () => {};
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
+	let asked = 0;
+	let passed = 0;
+	const ps2Answer = (url: URL) =>
+		url.pathname.endsWith("/rereview") && url.searchParams.has("to");
+	await page.route(ps2Answer, async (route) => {
+		asked++;
+		await held;
+		await route.continue();
+		passed++;
+	});
+	const all = boxes(since);
+	const chips = since.getByTestId("cluster-kind");
+	const chipsBefore = await chips.count();
+	expect(chipsBefore).toBeGreaterThan(0);
+	const yOf = async () => (await all.nth(1).boundingBox())?.y;
+	const before = await yOf();
+	expect(before).toBeDefined();
+	await all.nth(0).click();
+	await expect(all.nth(0)).toBeChecked();
+	// The tick started PS2 on the head's snapshot: the page compares to it
+	// now, its answer held.
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
+	).toBeVisible(GIT_WAIT);
+	await expect
+		.poll(() => asked, { message: "the hold saw PS2's rereview call" })
+		.toBeGreaterThan(0);
+	// Held: the chips stay and the rows don't move.
+	await expect(chips).toHaveCount(chipsBefore);
+	expect(await yOf()).toBe(before);
+	release();
+	await expect.poll(() => passed).toBe(asked);
+	await page.unroute(ps2Answer);
+	await expect(chips).toHaveCount(chipsBefore);
+	expect(await yOf()).toBe(before);
+	for (let i = 1; i < 3; i++) {
+		await all.nth(i).click();
+		await expect(all.nth(i)).toBeChecked();
+	}
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
+});

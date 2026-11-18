@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type {
 	RereviewAnswer,
 	ReviewView,
@@ -65,9 +65,36 @@ export function useSince(
 		...rereviewQuery(from ?? 1, to ?? { patchset: 1 }),
 		enabled: asked,
 	});
-	const answer =
+	const served =
 		asked && query.data && !("pending" in query.data) ? query.data : null;
 	const error = asked ? (query.error ?? null) : null;
+	// Never a spinner, and a shift, for a snapshot already answered under
+	// another name (CAR-208): a mark on the viewed head starts a patch set
+	// of that very snapshot, the comparison moves to it (another query
+	// key), and its answer is the head's (the server's job is keyed by the
+	// two snapshots). While it is read, the last answer of the same two
+	// snapshots stays: same `from`, the viewed patch set's revision. The
+	// chips it holds never go and come back, so the rows under the
+	// reviewer's pointer never move. Another snapshot never fits.
+	const last = useRef<RereviewAnswer | null>(null);
+	const viewedRevision =
+		viewing?.kind === "patchset"
+			? session?.patchsets.find((p) => p.number === viewing.number)?.revision
+			: undefined;
+	const held = last.current;
+	const answer =
+		served ??
+		(asked &&
+		error === null &&
+		held !== null &&
+		held.from === from &&
+		viewedRevision !== undefined &&
+		held.toRevision === viewedRevision
+			? held
+			: null);
+	useEffect(() => {
+		if (answer) last.current = answer;
+	}, [answer]);
 	const pending = asked && answer === null && error === null;
 	const overlay = viewing?.kind === "head";
 	const shown = useMemo(
