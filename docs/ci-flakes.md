@@ -23,7 +23,9 @@ Vitest's **unhandled errors** (a rejection or a timer that fires after its
 test ended) fail the run with every test passed, and its JSON report leaves
 them out. `scripts/vitest-unhandled-reporter.mjs` writes them next to the
 report, each with the test file Vitest traced it to (when the timing lets
-it). Each is labelled like a test (title `(unhandled error)`): its file
+it). It makes the report's folder itself (Vitest may call it before the
+JSON reporter has), and a write it can't make is logged, never thrown: it
+is diagnostics, and a throw would fail a green run (CAR-214). Each is labelled like a test (title `(unhandled error)`): its file
 reruns. Since the same error may be traced on one run and not the other,
 any unhandled error in the rerun counts against every such failure it could
 be (consistent), and one passes (flaky) only when the rerun had none that
