@@ -23,6 +23,7 @@ import {
 } from "react";
 import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
+import { stickyBottom } from "../files/scrollAnchor";
 import type { CodeSpan } from "../files/selectionActions";
 import type { LineTexts } from "../threads/drafts";
 import type { NewThreadItem } from "../threads/newThreads";
@@ -94,7 +95,7 @@ export function shownOutsideCard(
 export function resetHeldComposers(): void {
 	changed(new Map());
 	fromCard.clear();
-	landing.clear();
+	endLanding();
 }
 
 // --- The frame's fade: only right after Comment ---------------------------
@@ -237,57 +238,116 @@ export function usePendingAgent(item: NewThreadItem): ThreadAgent | null {
 // --- Where a posted pending thread lands -----------------------------------
 
 /**
- * Conversation id → where its pending thread was when posted: its top
- * against its file's section (so scrolling meanwhile doesn't count).
+ * Conversation id → what to keep still as GitHub's thread takes its
+ * pending thread's place, measured right before the swap:
+ * - `thread`: the pending thread was in view; the new thread shows where
+ *   it was (its top against its file's section, as the swap moves it);
+ * - `view`: it was above the viewport (the reader scrolled on); what they
+ *   are looking at (`el`, at the viewport's middle) stays where it is.
  */
-const landing = new Map<string, number>();
+type Landing =
+	| { kind: "thread"; top: number }
+	| { kind: "view"; el: Element; top: number };
+const landing = new Map<string, Landing>();
 
 const topInSection = (el: Element) =>
 	el.getBoundingClientRect().top -
 	(el.closest("section")?.getBoundingClientRect().top ?? 0);
 
-/** How long a landing is waited for before the browser's own anchoring is back. */
-const LANDING_MS = 30_000;
-let anchoringOff: ReturnType<typeof setTimeout> | undefined;
+/**
+ * How long after the handover a landing is waited for: the swap is the
+ * next task; past this the entry is dropped (never applied late) and the
+ * browser's anchoring is back.
+ */
+export const LANDING_MS = 2000;
+let expiry: ReturnType<typeof setTimeout> | undefined;
 
 /**
- * The browser's scroll anchoring off (its own adjustment when the line's
- * boxes change would add to useLandWhere's), until the thread lands.
+ * The browser's scroll anchoring off on the page's scroller (its own
+ * adjustment when the line's boxes change would add to useLandWhere's),
+ * or back on.
  */
-function holdAnchoring(on: boolean): void {
-	const root = document.scrollingElement as HTMLElement | null;
-	if (!root) return;
-	clearTimeout(anchoringOff);
-	anchoringOff = undefined;
-	if (on) {
-		root.style.overflowAnchor = "none";
-		anchoringOff = setTimeout(() => holdAnchoring(false), LANDING_MS);
-	} else root.style.removeProperty("overflow-anchor");
+function holdAnchoring(off: boolean): void {
+	// index.css: html[data-landing] { overflow-anchor: none }.
+	const root = document.documentElement;
+	if (off) root.dataset.landing = "";
+	else delete root.dataset.landing;
 }
 
-/** The pending thread carrying `conversation` is posted from `el`. */
-export function noteLanding(conversation: string, el: Element): void {
-	landing.set(conversation, topInSection(el));
-	holdAnchoring(true);
+function endLanding(conversation?: string): void {
+	if (conversation === undefined) landing.clear();
+	else landing.delete(conversation);
+	if (landing.size > 0) return;
+	clearTimeout(expiry);
+	expiry = undefined;
+	holdAnchoring(false);
 }
 
-/** The page's scroller around `el`: the nearest that scrolls up and down, else the window. */
-function scrollerOf(el: Element): { scrollBy: (x: number, y: number) => void } {
-	for (let p = el.parentElement; p; p = p.parentElement) {
-		const y = getComputedStyle(p).overflowY;
-		if ((y === "auto" || y === "scroll") && p.scrollHeight > p.clientHeight) {
-			return p;
+/** The pending thread carrying `conversation`, as drawn now. */
+const pendingBox = (conversation: string) =>
+	document.querySelector(
+		`[data-testid="new-thread"][data-agent-thread="${CSS.escape(conversation)}"]`,
+	);
+
+/** Whether `el` is (partly) in sight: in the viewport, below the sticky stack over it. */
+function inView(el: Element): boolean {
+	const r = el.getBoundingClientRect();
+	return (
+		r.bottom > stickyBottom(el) && r.top < window.innerHeight && r.height > 0
+	);
+}
+
+/**
+ * What the reader is looking at: the first element from the top of what
+ * is in sight (below the sticky stack, from `top`) that is smaller than
+ * the viewport, so its top moves with what changes above it (a page-wide
+ * container's wouldn't).
+ */
+function readingAt(top: number): Element | null {
+	const x = window.innerWidth / 2;
+	for (const f of [0, 0.25, 0.5, 0.75]) {
+		const y = top + 1 + (window.innerHeight - top) * f;
+		const el = document.elementFromPoint?.(x, y);
+		if (el && el.getBoundingClientRect().height < window.innerHeight) {
+			return el;
 		}
 	}
-	return window;
+	return null;
+}
+
+/**
+ * GitHub took the thread of the pending thread carrying `conversation`,
+ * and it is about to take its place (the same task's notify): what to
+ * keep still then. In view, the pending thread's spot; above the
+ * viewport, what is in the viewport's middle (the browser's own anchoring
+ * doesn't reach into the diff's scroller); below it, nothing above the
+ * reader changes.
+ */
+export function prepareLanding(conversation: string): void {
+	const box = pendingBox(conversation);
+	if (!box) return;
+	let at: Landing | undefined;
+	if (inView(box)) {
+		at = { kind: "thread", top: topInSection(box) };
+	} else if (box.getBoundingClientRect().bottom <= stickyBottom(box)) {
+		const el = readingAt(stickyBottom(box));
+		if (el && !box.contains(el)) {
+			at = { kind: "view", el, top: el.getBoundingClientRect().top };
+		}
+	}
+	if (!at) return;
+	landing.set(conversation, at);
+	holdAnchoring(true);
+	clearTimeout(expiry);
+	expiry = setTimeout(() => endLanding(), LANDING_MS);
 }
 
 /**
  * The GitHub thread a pending thread became (its conversation's): drawn
  * where the line's threads go, which may be above other threads or cards
- * the pending one was below. Before it is painted, the page scrolls by
- * the difference, so it shows where the pending thread was and what was
- * above it moves instead.
+ * the pending one was below. Before it is painted, the page scrolls so
+ * that what prepareLanding kept is where it was: the new thread where the
+ * pending one showed, or what the reader is looking at, unmoved.
  */
 export function useLandWhere(
 	conversation: string | undefined,
@@ -296,17 +356,24 @@ export function useLandWhere(
 	useLayoutEffect(() => {
 		const el = ref.current;
 		if (!conversation || !el) return;
-		const was = landing.get(conversation);
-		if (was === undefined) return;
-		landing.delete(conversation);
-		const delta = topInSection(el) - was;
-		if (Math.abs(delta) >= 1) scrollerOf(el).scrollBy(0, delta);
-		if (landing.size === 0) holdAnchoring(false);
+		const at = landing.get(conversation);
+		if (at === undefined) return;
+		const delta =
+			at.kind === "thread"
+				? topInSection(el) - at.top
+				: at.el.isConnected
+					? at.el.getBoundingClientRect().top - at.top
+					: 0;
+		if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
+		endLanding(conversation);
 	}, [conversation, ref]);
 }
 
-/** Forgets where pending threads were posted from (tests). */
+/** Whether a landing is waited for (tests). */
+export const landingFor = (conversation: string): Landing | undefined =>
+	landing.get(conversation);
+
+/** Forgets every landing (tests). */
 export function resetLanding(): void {
-	landing.clear();
-	holdAnchoring(false);
+	endLanding();
 }

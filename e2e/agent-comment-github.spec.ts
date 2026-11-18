@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import { release } from "../test/fake-gh/scenario";
 import {
 	ask,
 	bar,
@@ -341,6 +342,67 @@ test("Comment on the second of two conversations on a line: posted, it stays whe
 	await postInPlace(page, section, lower);
 	await expect(section.getByTestId("agent-thread")).toHaveCount(1);
 	await expect(other).toBeVisible();
+});
+
+test("Posted while scrolled on past the line: what the reader is looking at stays still as the thread lands", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// A comment, an answered question, a held post.
+	test.slow();
+	const p = await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "It adds v1 and v2." }] },
+	});
+	await holdSeen(page);
+	const section = await openFile(page, s.url, CALC);
+	// An open GitHub thread above: the new one lands above it.
+	await selectText(page, CALC, 3, 0, 6);
+	await bar(page).getByRole("button", { name: "Comment" }).click();
+	const first = section.getByTestId("new-thread");
+	await first.getByRole("textbox", { name: "Comment" }).fill("Already here");
+	await first.getByTestId("new-thread-post").click();
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Already here" }),
+	).toBeVisible();
+	const card = await ask(page, section, 3, "Does total add everything?");
+	await expect(card.getByTestId("agent-message-ai")).toHaveText(
+		"It adds v1 and v2.",
+	);
+	await card.getByRole("button", { name: "Comment on GitHub" }).click();
+	const composer = section.getByTestId("new-thread");
+	const box = composer.getByRole("textbox", { name: "Comment" });
+	await box.fill("Posted, then read on");
+	p.editScenario((sc) => {
+		sc.hold = ["comment"];
+	});
+	await box.press("Control+Enter");
+	await expect(composer.getByTestId("new-thread-sending")).toBeVisible();
+	// Its panel folded away (the sent comment shows), the box at its size.
+	await expect(composer.getByTestId("thread-agent-panel")).toBeHidden();
+	// Read on: the pending thread scrolled out above (room below the short
+	// file to scroll that far), line 4 in view.
+	await page.evaluate(() => {
+		document.body.style.paddingBottom = "200vh";
+	});
+	const at = await composer.boundingBox();
+	await page.evaluate(
+		(by) => window.scrollBy(0, by),
+		(at?.y ?? 0) + (at?.height ?? 0) + 1,
+	);
+	await expect(composer).not.toBeInViewport();
+	const reading = row(section, 4);
+	await expect(reading).toBeInViewport();
+	const before = await viewportTop(reading);
+	release(p.scenarioPath, "comment");
+	await expect(
+		section
+			.getByTestId("files-thread")
+			.filter({ hasText: "Posted, then read on" }),
+	).toHaveCount(1);
+	await expect(composer).toHaveCount(0);
+	expect(Math.abs((await viewportTop(reading)) - before)).toBeLessThan(4);
 });
 
 /** GitHub's threads in the fake gh's scenario: where each was posted. */

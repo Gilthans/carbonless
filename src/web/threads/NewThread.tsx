@@ -18,11 +18,7 @@ import { useCommentScope } from "../agent/agentComment";
 import { agentAsking } from "../agent/agentWrites";
 import { askAgentAvailable, openAgentComposer } from "../agent/askAgentAction";
 import { ASK_HANDLE, HANDLE, HANDLE_OFF } from "../agent/handle";
-import {
-	noteLanding,
-	turnedFromCard,
-	usePendingAgent,
-} from "../agent/pendingThread";
+import { turnedFromCard, usePendingAgent } from "../agent/pendingThread";
 import { AgentHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext } from "../agent/threadAgent";
@@ -182,10 +178,6 @@ export function NewThread(props: {
 	const post = () => {
 		const now = writer.drafts.newThread(clientId);
 		if (!now?.text.trim() || notHere !== true) return;
-		// Its thread lands where it is now (useLandWhere).
-		if (item.agentThread && card.current) {
-			noteLanding(item.agentThread, card.current);
-		}
 		writer.createThread(clientId);
 		closeComposer(clientId);
 		props.onPosted?.();

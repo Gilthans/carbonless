@@ -22,9 +22,9 @@ import type {
 	VerdictEvent,
 	VerdictRequest,
 } from "../../shared/types";
-import { cardReplyText, setCardReply } from "../agent/agentWrites";
+import { moveCardReply } from "../agent/agentWrites";
 import { setLinkProblem } from "../agent/linkProblems";
-import { agentDraftText, setAgentDraft } from "../agent/threadAgent";
+import { prepareLanding } from "../agent/pendingThread";
 import {
 	AGENT_PLACEMENTS_KEY,
 	AGENT_THREADS_KEY,
@@ -290,7 +290,11 @@ export interface ThreadWritesDeps {
 	 * task later, so a draft dropped at once would leave the spot empty
 	 * in between). Default: both now.
 	 */
-	landTogether?: (created: () => void, dropDraft: () => void) => void;
+	landTogether?: (
+		answer: NewThreadAnswer,
+		created: () => void,
+		dropDraft: () => void,
+	) => void;
 	/** Where refusals are kept across reloads (none: memory only). */
 	refusals?: RefusalStore;
 	/** Submits a verdict (`POST /api/verdict`). */
@@ -1268,8 +1272,9 @@ export class ThreadWrites {
 			}
 		};
 		const drop = () => drafts.discard(laneId);
-		if (this.#deps.landTogether) this.#deps.landTogether(created, drop);
-		else {
+		if (this.#deps.landTogether) {
+			this.#deps.landTogether(answer, created, drop);
+		} else {
 			created();
 			drop();
 		}
@@ -1719,11 +1724,7 @@ export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
 		void client.invalidateQueries({ queryKey: AGENT_PLACEMENTS_KEY });
 		// A follow-up typed in its card's reply box goes along: the box
 		// that asks it on the thread (its agent panel's) has it.
-		const typed = cardReplyText(moved);
-		if (typed) {
-			if (!agentDraftText(thread.id)) setAgentDraft(thread.id, typed);
-			setCardReply(moved, "");
-		}
+		moveCardReply(moved, thread.id);
 	}
 	// It didn't: the conversation stays on its span, its card says why.
 	const problem = answer.agentLinkProblem;
@@ -1881,11 +1882,15 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			created: (answer) => addThread(client, answer),
 			// The draft goes in the same notify as the lists that show the
 			// thread: one render swaps the one for the other.
-			landTogether: (created, drop) =>
+			landTogether: (answer, created, drop) => {
+				// Where its pending thread is right before the swap (one that
+				// carried a conversation GitHub's thread now holds).
+				if (answer.agentThread) prepareLanding(answer.agentThread);
 				notifyManager.batch(() => {
 					created();
 					notifyManager.schedule(drop);
-				}),
+				});
+			},
 			applied: (update) => applyThreadUpdate(client, update),
 			gone: (threadId) => dropThread(client, threadId),
 			theirs: (threadId, comment) => applyComment(client, threadId, comment),

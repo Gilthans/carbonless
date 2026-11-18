@@ -511,6 +511,15 @@ html[data-resizing] * {
 	}
 }
 
+/*
+ * A pending thread in view is about to become its GitHub thread
+ * (pendingThread.ts prepareLanding): useLandWhere keeps it in place, so
+ * the browser's own scroll anchoring stays out until it has.
+ */
+html[data-landing] {
+	overflow-anchor: none;
+}
+
 /* The diff row a thread is being dragged onto (ThreadFate.tsx, DragHandle). */
 tr[data-drop-line] {
 	outline: 2px solid var(--color-accent);
