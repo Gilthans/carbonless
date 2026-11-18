@@ -571,14 +571,15 @@ export async function expectEveryUnitMarkable(
 		const before = statesOf(now);
 		const unit = now[i];
 		if (!unit) throw new Error(`no unit ${i}`);
-		await unitBody(scope, unit)
-			.locator(
-				control === "box"
-					? 'input[type="checkbox"]'
-					: 'button[aria-label="Cross off cluster"]',
-			)
-			.first()
-			.click();
+		await clickPlaced(
+			unitBody(scope, unit)
+				.locator(
+					control === "box"
+						? 'input[type="checkbox"]'
+						: 'button[aria-label="Cross off cluster"]',
+				)
+				.first(),
+		);
 		// A mark that finished the file closed it (the page moved on): open
 		// it again to read its units.
 		const expandFile = scope.getByRole("button", { name: "Expand file" });
@@ -634,6 +635,31 @@ export async function expectEveryUnitMarkable(
 	await page.reload();
 	await opts.reopen();
 	await expect.poll(states).toEqual(left);
+}
+
+/**
+ * Clicks a cluster's checkbox or cross-off once it rests where the page
+ * places it. The controls float (stickyControls.ts), placed a frame after
+ * each scroll: right after the click's own scroll they still sit where the
+ * old scroll put them, and they move under the pointer between the press
+ * and the release (the release lands on the row, so no click reaches the
+ * control; CAR-205). Scrolled into view first, their box must hold still
+ * across two frames before the click, so the click scrolls no more.
+ */
+export async function clickPlaced(control: Locator): Promise<void> {
+	const page = control.page();
+	await expect(async () => {
+		await control.scrollIntoViewIfNeeded();
+		const before = await control.boundingBox();
+		await page.evaluate(
+			() =>
+				new Promise<void>((done) =>
+					requestAnimationFrame(() => requestAnimationFrame(() => done())),
+				),
+		);
+		expect(await control.boundingBox()).toEqual(before);
+	}).toPass();
+	await control.click();
 }
 
 /**
