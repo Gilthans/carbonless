@@ -76,8 +76,9 @@ const NOTE_ID = /^(CAR-[1-9]\d*|#[1-9]\d*)$/;
 
 // C0 and C1 controls and DEL (so also newlines and tabs: a note is one
 // line), and the bidi marks, embeddings, overrides and isolates.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: that's the point
-const CONTROL_OR_BIDI = /[\u0000-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/;
+const CONTROL_OR_BIDI =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: that's the point
+	/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
 const TICKET_ID = /\bCAR-\d+/i;
 // `#12`, and the references GitHub links elsewhere: `repo#12`,
 // `owner/repo#12`, `GH-12`, `/pull/12`.

@@ -571,7 +571,7 @@ export function mdText(text: string): string {
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
-		.replace(/@(?=[\w-])/g, "@​");
+		.replace(/@(?=[\w-])/g, "@\u200b");
 }
 
 /**

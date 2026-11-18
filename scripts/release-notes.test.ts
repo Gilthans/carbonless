@@ -730,7 +730,7 @@ describe("against a repository", {
 					"- Test processes stop (#125)",
 					"- e2e: keepalive (CAR-171, CAR-172) (#126)",
 					"- Threads tab, phone (CAR-183) (#127)",
-					"- A &lt;/details&gt;&lt;img src=x onerror=alert(1)&gt; title for @​someone (#130)",
+					"- A &lt;/details&gt;&lt;img src=x onerror=alert(1)&gt; title for @\u200bsomeone (#130)",
 					"</details>",
 				].join("\n"),
 			);
