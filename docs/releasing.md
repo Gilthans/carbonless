@@ -196,7 +196,13 @@ promote checks the committed snapshot from git alone.
   key (`LINEAR_READ_API_KEY`, read only, team CAR) as `$LINEAR_API_KEY`.
   Runs are grouped by PR number (`github.ref` is master for all). Without
   the key (not set up yet) it passes only on a description note, and its
-  failure says so. A ticket note posted after the check ran needs a rerun:
+  failure says so. Linear is read only for PRs whose author GitHub
+  reports (`author_association` of the PR from `gh api`, not the event's)
+  as OWNER, MEMBER or COLLABORATOR, and for at most 5 tickets a PR (more
+  fails, saying so): anyone else's PR (a fork's) passes only on a
+  description note, so it can't make the key look up tickets for the
+  public log or spend Linear's rate limit with edits. merge-ok applies
+  the same rules. A ticket note posted after the check ran needs a rerun:
   `pnpm release note CAR-N …` reruns the release-note check of every open
   PR to master whose title names CAR-N, found from the PR's checks (`gh
   pr checks`; a run still in progress is named instead; a failed rerun
@@ -434,7 +440,12 @@ and none of it reaches a credential.
   branch's copy; and a PR branch's own `pull_request` workflow naming the
   environment was refused, while one without it got an empty secret.
   What's left: anyone can open or edit PRs to trigger runs (each a short,
-  read-only job; GitHub's rate limits apply), a minor cost.
+  read-only job; GitHub's rate limits apply), a minor cost; such a PR's
+  run never reads Linear (only OWNER, MEMBER or COLLABORATOR authors'
+  do, at most 5 tickets each). Not used: `environment: { deployment:
+  false }` (no deployment entry per run): GitHub's docs don't say
+  whether the deployment-branch rule, this key's boundary, still applies
+  then.
 - A fork's CI completing also starts `release.yml` (`workflow_run` fires
   for any CI on a branch called `master`, a fork's too). Both RC jobs
   check in their own `if` that CI ran for a push of this repository

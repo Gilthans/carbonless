@@ -228,7 +228,7 @@ export function prBodyNote(
 		return statusOf(
 			lines,
 			null,
-			"there's no Linear key here to read the ticket's labels: state the kind",
+			"the ticket's labels aren't read here: state the kind",
 		);
 	}
 	return statusOf(
@@ -1294,7 +1294,15 @@ export type PullForNotes = {
 	title: string;
 	body?: string | null;
 	head?: { ref?: string };
+	/** GitHub's: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, … */
+	author_association?: string;
 };
+
+/** Whose PRs may have Linear read for them (the rest: description notes only). */
+export const LINEAR_AUTHORS = ["OWNER", "MEMBER", "COLLABORATOR"];
+
+/** At most this many tickets read from Linear for one PR. */
+export const MAX_PR_TICKETS = 5;
 
 /**
  * Refuses (throws) a PR whose tickets have no Release note in Linear nor
@@ -1365,17 +1373,34 @@ export async function prNotesOk(
 	// (CAR-211: "either through the PR description or through the ticket").
 	const own = (ticket: { labels: readonly string[] } | "unread") =>
 		prBodyNote(body, ticket);
-	const { linear: client, tried } = linear();
+	if (tickets.length > MAX_PR_TICKETS) {
+		throw new Error(
+			`#${pull.number}'s title names ${tickets.length} tickets: at most ${MAX_PR_TICKETS} (split the PR, or name fewer)`,
+		);
+	}
+	// Linear is read only for the repository's own people's PRs: anyone
+	// else's (a fork's) can't make the key look up tickets for the public
+	// log, or spend Linear's rate limit with edits. The association is the
+	// one GitHub reports for the PR (gh api), never the event's.
+	const trusted = LINEAR_AUTHORS.includes(pull.author_association ?? "");
+	const { linear: client, tried } = trusted
+		? linear()
+		: { linear: null, tried: [] };
 	if (!client) {
+		const why = trusted
+			? `no Linear key here: ${tickets.join(", ")}'s notes unread`
+			: `its author isn't the repository's (${clip(pull.author_association ?? "unknown")}): Linear isn't read for it`;
 		const s = own("unread");
 		if (s.status === "notes" || s.status === "none") {
-			return `#${pull.number}: ${decided(s)} in its description (no Linear key here: ${tickets.join(", ")}'s notes unread)`;
+			return `#${pull.number}: ${decided(s)} in its description (${why})`;
 		}
 		const fix = `add a "Release note (new|improved|fixed): …" or "Release note: none (why)" line to the PR's description`;
 		throw new Error(
 			s.status === "invalid"
 				? `#${pull.number}'s Release note: ${s.errors.join("; ")}`
-				: `${noLinearKey(tried)}; so ${tickets.join(", ")}'s Release note can't be read here: ${fix}`,
+				: trusted
+					? `${noLinearKey(tried)}; so ${tickets.join(", ")}'s Release note can't be read here: ${fix}`
+					: `#${pull.number}: ${why}, so ${tickets.join(", ")}'s Release note there doesn't count: ${fix}`,
 		);
 	}
 	const problems: string[] = [];
@@ -1443,6 +1468,9 @@ export const NOTE_WORKFLOW_NAME = "Release note";
 export const workflowText = (s: string) =>
 	s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 
+const notListed = (pr: number) =>
+	`warning: #${pr}'s checks have no "${NOTE_CHECK}" of workflow "${NOTE_WORKFLOW_NAME}" (not reported yet, or renamed in release-note.yml?): rerun it by hand if it's red`;
+
 type NoteRun = {
 	databaseId: number;
 	/** gh's bucket: pass, fail, pending, skipping or cancel. */
@@ -1455,7 +1483,10 @@ type NoteRun = {
  * pull_request_target run's branch is master, so a run list by branch
  * can't find it); null when it has none yet.
  */
-async function noteCheckRun(io: Io, pr: number): Promise<NoteRun | null> {
+async function noteCheckRun(
+	io: Io,
+	pr: number,
+): Promise<NoteRun | "no checks" | "not listed"> {
 	const r = await io.run("gh", [
 		"pr",
 		"checks",
@@ -1468,7 +1499,7 @@ async function noteCheckRun(io: Io, pr: number): Promise<NoteRun | null> {
 	// gh exits 1 when a check failed and 8 while one is pending: the JSON
 	// is the answer either way.
 	if (r.stdout.trim() === "" && /no checks reported/i.test(r.stderr)) {
-		return null;
+		return "no checks";
 	}
 	let checks: {
 		name: string;
@@ -1488,7 +1519,9 @@ async function noteCheckRun(io: Io, pr: number): Promise<NoteRun | null> {
 		(c) => c.name === NOTE_CHECK && c.workflow === NOTE_WORKFLOW_NAME,
 	);
 	const id = /\/actions\/runs\/(\d+)/.exec(check?.link ?? "")?.[1];
-	if (!check || !id) return null;
+	// Other checks, but not this one: a renamed job or workflow (NOTE_CHECK,
+	// NOTE_WORKFLOW_NAME), or a run not reported yet.
+	if (!check || !id) return "not listed";
 	return { databaseId: Number(id), bucket: check.bucket, url: check.link };
 }
 
@@ -1525,10 +1558,12 @@ export async function rerunNoteChecks(io: Io, ticket: string): Promise<void> {
 	for (const p of pulls.filter((p) => titleTickets(p.title).includes(ticket))) {
 		try {
 			const run = await noteCheckRun(io, p.number);
-			if (!run) {
+			if (run === "no checks") {
 				io.log(
 					`#${p.number}: no release-note run yet: it reads the note when it runs`,
 				);
+			} else if (run === "not listed") {
+				io.log(notListed(p.number));
 			} else if (run.bucket === "pending") {
 				io.log(
 					`#${p.number}: its release-note check is running (it may have read Linear before the note): if it ends red, gh run rerun ${run.databaseId}`,
@@ -1579,7 +1614,12 @@ export async function rerunRedNoteCheck(
 ): Promise<void> {
 	try {
 		const run = await noteCheckRun(io, pull.number);
-		if (run?.bucket !== "fail" && run?.bucket !== "cancel") return;
+		if (run === "not listed") {
+			io.log(notListed(pull.number));
+			return;
+		}
+		if (run === "no checks") return;
+		if (run.bucket !== "fail" && run.bucket !== "cancel") return;
 		await must(io, "gh", [
 			"run",
 			"rerun",
