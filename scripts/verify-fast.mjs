@@ -64,8 +64,15 @@ const E2E_MAP = [
 		/^src\/server\/review\/(splitCarry|fold|events|reviews)\.ts$|^src\/server\/home\/started\.ts$|^e2e\/ws-split\.spec\.ts$/,
 		["ws-split", "whitespace"],
 	],
-	// Pure (hunks in, placements out); its unit tests are the coverage.
-	[/^src\/shared\/tracer\//, []],
+	// Pure (hunks and texts in, placements out), but where threads sit on
+	// the re-review and agent pages follows it (CAR-95).
+	[/^src\/shared\/tracer\//, ["rereview", "agent"]],
+	// The similarity pairing: the side-by-side view's pairs and the
+	// tracer's (CAR-95).
+	[
+		/^src\/shared\/(linePairing|tokenize)\.ts$/,
+		["linePairing", "inlineDiff", "rereview", "agent"],
+	],
 	// Release notes' formats and text rule (CAR-192): pure, its unit tests
 	// and the release scripts' are the coverage.
 	[/^src\/shared\/releaseNotes\.ts$/, []],
@@ -194,6 +201,8 @@ const E2E_MAP = [
 		["image-renderer"],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
+	// score-carry.test.ts's example corpus.
+	[/^test\/fixtures\/score-carry\//, []],
 	// Unit-test data (wordBlocks.fixture.test.ts); inlineDiff.spec.ts reads
 	// a few of its cases.
 	[/^test\/fixtures\/inline-diff\//, ["inlineDiff"]],
