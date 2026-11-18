@@ -299,12 +299,15 @@ test("the next pushes follow a moved thread from its moved line; once that line 
 		.getByRole("button", { name: "Reply" })
 		.click();
 	await expect(followed.getByText("Still here")).toBeVisible(GIT_WAIT);
-	const sent = p
-		.ghLog()
-		.slice(log.length)
-		.split("\n")
-		.filter((l) => /mutation|-X (POST|PATCH|PUT|DELETE)/.test(l));
-	expect(sent).toHaveLength(1);
+	// The card shows the reply at once; the gh call may log a moment later.
+	const writes = () =>
+		p
+			.ghLog()
+			.slice(log.length)
+			.split("\n")
+			.filter((l) => /mutation|-X (POST|PATCH|PUT|DELETE)/.test(l));
+	await expect.poll(() => writes().length, GIT_WAIT).toBe(1);
+	const sent = writes();
 	expect(sent[0]).toMatch(
 		new RegExp(`-X POST repos/[^ ]+/pulls/${p.number}/comments/\\d+/replies `),
 	);
