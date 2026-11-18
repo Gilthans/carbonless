@@ -2476,13 +2476,16 @@ esac
 		}
 	});
 
-	it("release notes (CAR-192): no Linear in any workflow; promote-check checks the notes with no token; release-finish's GitHub release has the token only where it calls gh", () => {
+	it("release notes (CAR-192): no Linear in any workflow but the release-note check's; promote-check checks the notes with no token; release-finish's GitHub release has the token only where it calls gh", () => {
 		const files = readdirSync(
 			join(import.meta.dirname, "../.github/workflows"),
 		).filter((f) => f.endsWith(".yml"));
 		for (const file of files) {
-			// Linear is read only where its key is: never a key in CI, and
-			// no workflow gains a secret of any kind.
+			// Linear is read only where its key is: no key in CI but the
+			// release-note check's (CAR-211: read only, one step, master's
+			// code; scripts/release-notes.test.ts checks that workflow), and
+			// no other workflow gains a secret of any kind.
+			if (file === "release-note.yml") continue;
 			expect(code(workflow(file)), file).not.toMatch(/linear/i);
 			expect(code(workflow(file)), file).not.toMatch(/\bsecrets\./);
 		}
@@ -2560,6 +2563,7 @@ esac
 			"flake-report.yml",
 			"release-finish.yml",
 			"release-gate.yml",
+			"release-note.yml",
 			"release.yml",
 		]);
 		/** A workflow's `on:` block. */
@@ -2573,23 +2577,29 @@ esac
 		for (const file of files) {
 			const text = code(workflow(file));
 			// pull_request_target runs with the base's token and secrets on a
-			// fork's code; no workflow uses repository secrets at all.
+			// fork's code; no workflow uses repository secrets but the
+			// release-note check its read-only Linear key, which a fork's
+			// pull_request run doesn't get.
 			expect(text, file).not.toContain("pull_request_target");
-			expect(text, file).not.toMatch(/\bsecrets\./);
+			expect(
+				[...text.matchAll(/\bsecrets\.(\w+)/g)].map((m) => m[1]),
+				file,
+			).toEqual(file === "release-note.yml" ? ["LINEAR_READ_API_KEY"] : []);
 			// npm makes provenance itself (trusted publishing, public repo).
 			expect(text, file).not.toContain("--provenance");
 		}
-		// CI and the release gate are the only workflows a pull request (a
-		// fork's too) runs: read-only, no environment, no OIDC, no write
-		// anywhere.
-		for (const file of ["ci.yml", "release-gate.yml"]) {
+		// CI, the release gate and the release-note check are the only
+		// workflows a pull request (a fork's too) runs: read-only, no
+		// environment, no OIDC, no write anywhere.
+		const onPr = ["ci.yml", "release-gate.yml", "release-note.yml"];
+		for (const file of onPr) {
 			const text = code(workflow(file));
 			expect(triggers(text), file).toMatch(/^ {2}pull_request:$/m);
 			expect(text, file).toMatch(/^permissions:\n {2}contents: read\n/m);
 			expect(text, file).not.toMatch(/: write\b|id-token|environment:/);
 		}
 		for (const file of files) {
-			if (file === "ci.yml" || file === "release-gate.yml") continue;
+			if (onPr.includes(file)) continue;
 			expect(triggers(workflow(file)), file).not.toMatch(/pull_request/);
 		}
 		// The flake report (docs/ci-flakes.md): a schedule or a dispatch, never

@@ -49,7 +49,11 @@ what they'd get.
 
 ## Anti-goals
 
-- **A Linear secret in CI.** No workflow gets a Linear key. Today CI's
+- **A Linear secret in CI.** (Revised by CAR-211, 2026-11-18: GitHub's
+  `release-note` check gets a read-only Linear key, team CAR only, in its
+  one step that runs master's code; no other workflow gets one, and
+  promote still checks the snapshot from git alone.) No workflow gets a
+  Linear key. Today CI's
   only credentials are GitHub's own token and npm's OIDC, and the release
   jobs are audited around that (`docs/releasing.md`, "Trusted
   publishing"). A Linear key in CI would be one more secret for every
@@ -136,6 +140,14 @@ Owner decision D2: keep Linear's automatic Done and gate at merge
 (recommended: nothing changes in how tickets move), or turn the
 automation off and have `pnpm release done CAR-NNN` move tickets after
 checking the note.
+
+D2 as built, extended by CAR-211 (2026-11-18): merge-ok's gate also runs
+on GitHub, as the required `release-note` check on every PR to master
+(`.github/workflows/release-note.yml`), so a merge from GitHub's UI is
+gated too. A ticket PR also passes on a `Release note` line in its own
+description when the ticket has none in Linear (the owner: "either
+through the PR description or through the ticket"); `pnpm release
+notes` takes that line the same way.
 
 ## 3. Which tickets are in a release
 

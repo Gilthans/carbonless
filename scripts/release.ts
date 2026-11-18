@@ -24,13 +24,15 @@
 //   pnpm release merge-ok <pr>                fails while master is frozen (its version is
 //                                             released, the "next" PR not merged) unless <pr>
 //                                             is that "next" PR, or while the PR's tickets have
-//                                             no Release note in Linear (a ticket-less PR: no
-//                                             "Release note:" line in its description); run
-//                                             before every merge
+//                                             no Release note in Linear nor in its description
+//                                             (a ticket-less PR: no "Release note:" line in its
+//                                             description); reruns the PR's red release-note
+//                                             check once its notes pass; run before every merge
 //   pnpm release note <CAR-N> "<text>" [--kind new|improved|fixed]
 //   pnpm release note <CAR-N> --none "<why>"  checks the note and posts it on the ticket as a
 //                                             "Release note" comment (the kind defaults from
-//                                             the ticket's labels)
+//                                             the ticket's labels), then reruns the release-note
+//                                             check of each open PR whose title names CAR-N
 //   pnpm release notes [X.Y.Z] [--pr]         writes release-notes/X.Y.Z.json (default: master's
 //                                             next release) from Linear and the PRs merged up to
 //                                             origin/master; prints what is missing; --pr puts
@@ -42,7 +44,7 @@
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
 // ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
 // ci:check-run, ci:finish-plan, ci:notes-check, ci:changelog,
-// ci:release-body, ci:bump. (CI passed on the
+// ci:release-body, ci:bump, ci:pr-note. (CI passed on the
 // RC's commit: scripts/ci-passed.mjs, with no dependencies.) They print KEY=value
 // lines for $GITHUB_OUTPUT and read the checkout's tags. (The rc fix-up is
 // scripts/rc-fixup.mjs, with no dependencies, for the jobs that hold npm's
@@ -99,15 +101,18 @@ import {
 	notesCheck,
 	notesFilesAt,
 	notesPath,
+	type PullForNotes,
 	postNote,
 	prNotesOk,
 	promoteNotesCheck,
 	readNotesFile,
 	releaseRange,
 	renderNotesBody,
+	rerunRedNoteCheck,
 	shippedNotes,
 	withChangelogSection,
 	withReleaseNotes,
+	workflowText,
 	writeNotes,
 } from "./release-notes.js";
 
@@ -333,9 +338,14 @@ async function main(argv: string[]) {
 		}
 		case "merge-ok": {
 			if (rest.length !== 1 || !rest[0]) usage();
-			await mergeOk(io, rest[0], (pull) =>
-				prNotesOk(pull, findLinear, () => prFiles(pull.number)),
-			);
+			await mergeOk(io, rest[0], async (pull) => {
+				const found = await prNotesOk(pull, findLinear, () =>
+					prFiles(pull.number),
+				);
+				// GitHub's release-note check, red from before the note: rerun it.
+				await rerunRedNoteCheck(io, pull);
+				return found;
+			});
 			return;
 		}
 		case "note": {
@@ -390,6 +400,30 @@ async function main(argv: string[]) {
 					writeFileSync(path, text);
 				},
 			});
+			return;
+		}
+		case "ci:pr-note": {
+			// ci:pr-note <pull.json> <files.json>: the release-note check
+			// (CAR-211). The PR and its files as GitHub's REST API gave them
+			// (files: `gh api --paginate --slurp`); Linear from $LINEAR_API_KEY
+			// when the run has it. Fails with an annotation, never printing
+			// the key.
+			const [pullFile, filesFile] = rest;
+			if (!pullFile || !filesFile || rest.length !== 2) usage();
+			const pull = JSON.parse(readFileSync(pullFile, "utf8")) as PullForNotes;
+			const pages = JSON.parse(readFileSync(filesFile, "utf8")) as unknown;
+			if (!Array.isArray(pages)) throw new Error("the PR's files: not a list");
+			const files = pages
+				.flatMap((p) => (Array.isArray(p) ? p : [p]))
+				.map((f) => String((f as { filename?: unknown })?.filename ?? ""));
+			try {
+				console.log(await prNotesOk(pull, findLinear, async () => files));
+			} catch (error) {
+				console.log(
+					`::error title=Release note::${workflowText((error as Error).message)}`,
+				);
+				process.exit(1);
+			}
 			return;
 		}
 		case "ci:notes-check": {

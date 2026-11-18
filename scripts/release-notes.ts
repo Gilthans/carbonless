@@ -2,10 +2,11 @@
 // docs/releasing.md, "Release notes"). Linear is the source: each ticket has
 // a `Release note` comment. `pnpm release notes` snapshots a version's notes
 // into release-notes/X.Y.Z.json (reviewed in a "notes: X.Y.Z" PR), CI checks
-// that file covers the release from git alone (no Linear key in CI, ever),
-// and the build ships it (crbReleaseNotes in package.json,
-// dist/release-notes.json). Linear and git go through injected clients, so
-// tests drive everything with fakes.
+// that file covers the release from git alone, and the build ships it (crbReleaseNotes in package.json,
+// dist/release-notes.json). The one Linear key in CI is the release-note
+// check's (CAR-211: read only, in that one step, running master's code).
+// Linear and git go through injected clients, so tests drive everything
+// with fakes.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -202,9 +203,40 @@ export function ticketNote(
 	return statusOf(newest.lines, kindFromLabels(labels), "its labels");
 }
 
-/** A ticket-less PR's note: its description's `Release note` lines, anywhere in it. */
-export function prBodyNote(body: string | null | undefined): NoteStatus {
-	return statusOf(markedLines(body ?? ""), null, "a PR without a ticket");
+/**
+ * A PR description's note: its `Release note` lines, anywhere in it. A
+ * ticket-less PR's note, or a ticket PR's when the ticket has none in
+ * Linear (CAR-211); `labels` (its ticket's, when known) give the default kind.
+ */
+export function prBodyNote(
+	body: string | null | undefined,
+	labels?: readonly string[],
+): NoteStatus {
+	return labels
+		? statusOf(markedLines(body ?? ""), kindFromLabels(labels), "its ticket")
+		: statusOf(markedLines(body ?? ""), null, "a PR without a ticket");
+}
+
+/**
+ * One decision from the descriptions of a ticket's PRs (a ticket with no
+ * note in Linear): every note any of them gives, else a none, else
+ * missing; a broken line anywhere makes it invalid.
+ */
+export function descriptionsNote(statuses: readonly NoteStatus[]): NoteStatus {
+	const errors = statuses.flatMap((s) =>
+		s.status === "invalid" ? s.errors : [],
+	);
+	if (errors.length > 0) return { status: "invalid", errors };
+	const notes: { kind: NoteKind; text: string }[] = [];
+	for (const s of statuses) {
+		if (s.status !== "notes") continue;
+		for (const n of s.notes) {
+			if (!notes.some((m) => m.text === n.text)) notes.push(n);
+		}
+	}
+	if (notes.length > 0) return { status: "notes", notes };
+	const none = statuses.find((s) => s.status === "none");
+	return none ?? { status: "missing" };
 }
 
 // ---------------------------------------------------------------------------
@@ -663,7 +695,8 @@ export function withChangelogSection(
 }
 
 // ---------------------------------------------------------------------------
-// Linear (only where its key is: never in CI).
+// Linear (where its key is: the owner's machine, and the release-note check's
+// one step, read only).
 
 export type Linear = {
 	query: <T>(query: string, variables?: Record<string, unknown>) => Promise<T>;
@@ -871,6 +904,7 @@ export async function postNote(
 	const url = await postComment(linear, issue.id, line);
 	io.log(`${ticket}: ${line}`);
 	if (url) io.log(url);
+	await rerunNoteChecks(io, ticket);
 	return line;
 }
 
@@ -928,6 +962,15 @@ export async function collectNotes(
 				continue;
 			}
 			status = ticketNote(issue.comments, issue.labels);
+			// No note in Linear: its PRs' descriptions may carry one (CAR-211,
+			// as the release-note check accepts). Linear's wins when both do.
+			if (status.status === "missing") {
+				const statuses: NoteStatus[] = [];
+				for (const n of prs) {
+					statuses.push(prBodyNote(await prBody(io, n), issue.labels));
+				}
+				status = descriptionsNote(statuses);
+			}
 			// Linear's PR attachments, cross-checked against the titles.
 			for (const url of issue.attachments) {
 				const m = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(
@@ -944,7 +987,7 @@ export async function collectNotes(
 		}
 		const how = id.startsWith("#")
 			? `add a "Release note (kind): …" or "Release note: none (why)" line to #${id.slice(1)}'s description`
-			: noteCommand(id);
+			: `${noteCommand(id)} (or a "Release note" line in ${prList(prs)}'s description)`;
 		if (status.status === "missing") {
 			missing.push(`${id} (${prList(prs)}): no Release note: ${how}`);
 			continue;
@@ -1201,11 +1244,14 @@ export type PullForNotes = {
 };
 
 /**
- * Refuses (throws) a PR whose tickets have no Release note in Linear, a
- * ticket-less PR without a `Release note:` line in its description, a
- * `car-NNN-*` branch whose title names no ticket, a description whose
- * `Fixes`/`Part of` tickets differ from the title's, and a ticket PR with
- * no Linear key. Returns what it found, for the log.
+ * Refuses (throws) a PR whose tickets have no Release note in Linear nor
+ * in its description (the ticket's wins when both have one), a ticket-less
+ * PR without a `Release note:` line in its description, a `car-NNN-*`
+ * branch whose title names no ticket, a description whose `Fixes`/`Part
+ * of` tickets differ from the title's, and, with no Linear key, a ticket
+ * PR whose description has no note. A failed Linear read throws, never
+ * passes. Returns what it found, for the log. merge-ok and GitHub's
+ * release-note check (CAR-211) both judge with it.
  */
 export async function prNotesOk(
 	pull: PullForNotes,
@@ -1262,28 +1308,57 @@ export async function prNotesOk(
 		}
 		return `#${pull.number}: ${s.status === "none" ? `no note (${s.why})` : `${s.notes.length} note(s)`} in its description`;
 	}
+	// A ticket PR: each ticket's note in Linear, else the description's
+	// (CAR-211: "either through the PR description or through the ticket").
+	const own = (labels?: readonly string[]) => prBodyNote(body, labels);
 	const { linear: client, tried } = linear();
-	if (!client)
+	if (!client) {
+		const s = own();
+		if (s.status === "notes" || s.status === "none") {
+			return `#${pull.number}: ${decided(s)} in its description (no Linear key here: ${tickets.join(", ")}'s notes unread)`;
+		}
+		const fix = `add a "Release note (new|improved|fixed): …" or "Release note: none (why)" line to the PR's description`;
 		throw new Error(
-			`${noLinearKey(tried)}; merge-ok reads ${tickets.join(", ")}'s Release note there`,
+			s.status === "invalid"
+				? `#${pull.number}'s Release note: ${s.errors.join("; ")}`
+				: `${noLinearKey(tried)}; so ${tickets.join(", ")}'s Release note can't be read here: ${fix}`,
 		);
+	}
 	const problems: string[] = [];
 	const found: string[] = [];
 	for (const id of tickets) {
-		const issue = await linearIssue(client, id);
+		let issue: LinearIssue | null;
+		try {
+			issue = await linearIssue(client, id);
+		} catch (error) {
+			// Never a pass on a failed read.
+			throw new Error(
+				`couldn't read ${id} from Linear (${clip((error as Error).message)}): try again`,
+			);
+		}
 		if (!issue) {
 			problems.push(`${id}: Linear has no such ticket`);
 			continue;
 		}
-		const s = ticketNote(issue.comments, issue.labels);
-		if (s.status === "missing")
-			problems.push(`${id} has no Release note: ${noteCommand(id)}`);
-		else if (s.status === "invalid")
-			problems.push(`${id}'s Release note: ${s.errors.join("; ")}`);
-		else
-			found.push(
-				`${id}: ${s.status === "none" ? `no note (${s.why})` : `${s.notes.length} note(s)`}`,
+		const t = ticketNote(issue.comments, issue.labels);
+		if (t.status === "invalid") {
+			problems.push(`${id}'s Release note: ${t.errors.join("; ")}`);
+			continue;
+		}
+		if (t.status !== "missing") {
+			found.push(`${id}: ${decided(t)}`);
+			continue;
+		}
+		const d = own(issue.labels);
+		if (d.status === "invalid") {
+			problems.push(
+				`${id} has no Release note, and the description's is broken: ${d.errors.join("; ")}`,
 			);
+		} else if (d.status === "missing") {
+			problems.push(
+				`${id} has no Release note: ${noteCommand(id)}, or a "Release note" line in the PR's description`,
+			);
+		} else found.push(`${id}: ${decided(d)} in the PR's description`);
 	}
 	if (problems.length > 0) {
 		throw new Error(
@@ -1291,6 +1366,146 @@ export async function prNotesOk(
 		);
 	}
 	return found.join(", ");
+}
+
+/** A decision, for the log. */
+const decided = (s: NoteStatus) =>
+	s.status === "none"
+		? `no note (${s.why})`
+		: s.status === "notes"
+			? `${s.notes.length} note(s)`
+			: s.status;
+
+// ---------------------------------------------------------------------------
+// The release-note check on GitHub (CAR-211): `.github/workflows/release-note.yml`
+// runs prNotesOk (release.ts ci:pr-note). A note posted in Linear after it
+// ran turns it green only on a rerun: `pnpm release note` and merge-ok do it.
+
+export const NOTE_WORKFLOW = "release-note.yml";
+
+/** Text for a workflow command (`::error::…`): one line, as GitHub escapes it. */
+export const workflowText = (s: string) =>
+	s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+
+type NoteRun = {
+	databaseId: number;
+	status: string;
+	conclusion: string;
+	url?: string;
+};
+
+/** A branch's newest release-note run, null when none. */
+async function newestNoteRun(io: Io, branch: string): Promise<NoteRun | null> {
+	const out = await must(io, "gh", [
+		"run",
+		"list",
+		"--repo",
+		io.repo,
+		"--workflow",
+		NOTE_WORKFLOW,
+		"--event",
+		"pull_request",
+		"--branch",
+		branch,
+		"--limit",
+		"1",
+		"--json",
+		"databaseId,status,conclusion,url",
+	]);
+	const runs = JSON.parse(out) as NoteRun[];
+	return runs[0] ?? null;
+}
+
+/**
+ * After `pnpm release note CAR-N`: reruns the newest release-note run of
+ * every open PR to master whose title names CAR-N, so the check reads the
+ * new note. Never throws: a failure only warns (the note is posted).
+ */
+export async function rerunNoteChecks(io: Io, ticket: string): Promise<void> {
+	let pulls: { number: number; title: string; headRefName: string }[];
+	try {
+		pulls = JSON.parse(
+			await must(io, "gh", [
+				"pr",
+				"list",
+				"--repo",
+				io.repo,
+				"--base",
+				"master",
+				"--state",
+				"open",
+				"--limit",
+				"200",
+				"--json",
+				"number,title,headRefName",
+			]),
+		);
+	} catch (error) {
+		io.log(
+			`warning: couldn't list open PRs to rerun their release-note check: ${clip((error as Error).message)}`,
+		);
+		return;
+	}
+	for (const p of pulls.filter((p) => titleTickets(p.title).includes(ticket))) {
+		try {
+			const run = await newestNoteRun(io, p.headRefName);
+			if (!run) {
+				io.log(
+					`#${p.number}: no release-note run yet: it reads the note when it runs`,
+				);
+			} else if (run.status !== "completed") {
+				io.log(
+					`#${p.number}: its release-note check is running (it may have read Linear before the note): if it ends red, gh run rerun ${run.databaseId}`,
+				);
+			} else {
+				await must(io, "gh", [
+					"run",
+					"rerun",
+					String(run.databaseId),
+					"--repo",
+					io.repo,
+				]);
+				io.log(
+					`#${p.number}: reran its release-note check (run ${run.databaseId}${run.url ? `, ${run.url}` : ""})`,
+				);
+			}
+		} catch (error) {
+			io.log(
+				`warning: couldn't rerun #${p.number}'s release-note check: ${clip((error as Error).message)}: rerun it by hand (Re-run jobs)`,
+			);
+		}
+	}
+}
+
+/**
+ * merge-ok, once its own note check passed: reruns the PR's release-note
+ * check when its newest run is red (it ran before the note), and says to
+ * wait for it. Never throws.
+ */
+export async function rerunRedNoteCheck(
+	io: Io,
+	pull: PullForNotes,
+): Promise<void> {
+	const branch = pull.head?.ref;
+	if (!branch) return;
+	try {
+		const run = await newestNoteRun(io, branch);
+		if (run?.status !== "completed" || run.conclusion !== "failure") return;
+		await must(io, "gh", [
+			"run",
+			"rerun",
+			String(run.databaseId),
+			"--repo",
+			io.repo,
+		]);
+		io.log(
+			`#${pull.number}'s release-note check was red (it ran before the note): reran it (run ${run.databaseId}${run.url ? `, ${run.url}` : ""}); wait for it to turn green before merging`,
+		);
+	} catch (error) {
+		io.log(
+			`warning: couldn't check #${pull.number}'s release-note check: ${clip((error as Error).message)}`,
+		);
+	}
 }
 
 /**
