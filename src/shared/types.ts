@@ -1,5 +1,6 @@
 import type { LineRanges } from "./lineRanges.js";
 import type { SincePiece } from "./pieces.js";
+import type { MovedInfo } from "./rereview/moves.js";
 import type { ThreadPlacement } from "./rereview/placement.js";
 
 export type FileStatus =
@@ -530,6 +531,12 @@ export interface ReviewThread {
 	 * commit, so never on the one viewed).
 	 */
 	commit: string;
+	/**
+	 * Page only: `commit` as GitHub gave it, on a copy Files changed shows
+	 * re-anchored on the viewed head (shownThread), whose `commit` is that
+	 * head's (CAR-139: a thread made on the viewed head isn't moved).
+	 */
+	madeOn?: string;
 	/** On lines (`anchor`, null when the host gave no line) or on the whole file. */
 	subject: "line" | "file";
 	/**
@@ -1145,9 +1152,10 @@ export interface PlacementsAnswer {
 	readId: string;
 	/** The snapshot id placed into. */
 	revision: string;
-	/** Its patch set (where a drag stores one); null for a head that is none yet. */
+	/** Its patch set; null for a head that is none yet. */
 	patchset: number | null;
-	threads: { id: string; placement: ThreadPlacement }[];
+	/** Each thread's place; `moved`: the reviewer's move it stands on (CAR-139). */
+	threads: { id: string; placement: ThreadPlacement; moved?: MovedInfo }[];
 	/**
 	 * Every thread is in: unresolved threads are placed first and answered
 	 * at once, resolved ones join later (false until then; ask again).

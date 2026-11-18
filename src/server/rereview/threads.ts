@@ -11,9 +11,18 @@
 
 import type { AgentSpanAnchor } from "../../shared/agent.js";
 import {
+	effectiveMove,
+	type MoveChoice,
+	type MovedInfo,
+	type PlacedWithMove,
+	placeWithMoves,
+	type ThreadMove,
+} from "../../shared/rereview/moves.js";
+import {
 	placeThread,
 	type ThreadInput,
 	type ThreadPlacement,
+	validAnchor,
 } from "../../shared/rereview/placement.js";
 import {
 	createLineMapper,
@@ -35,9 +44,52 @@ import { type DiffEntry, diffMap, linesMapper, NONE } from "./engine.js";
 /** A placement the reviewer asked for that doesn't fit the patch set (400). */
 export class InvalidPlacementError extends Error {}
 
+/** A move of a thread the reviewer doesn't have (404). */
+export class UnknownMoveThreadError extends Error {}
+
+/** An undo of a move that isn't live (409): nothing changes. */
+export class DeadMoveError extends Error {}
+
 export interface PlacedThread {
 	id: string;
 	placement: ThreadPlacement;
+	/** The reviewer's move it stands on (CAR-139). */
+	moved?: MovedInfo;
+}
+
+/**
+ * The reviewer's `thread-placed` events (their progress ref) read as moves
+ * of GitHub threads (CAR-139), on their patch set's snapshot (pinned by
+ * `patchsets/<n>` and `-base`); one naming an unknown patch set is
+ * dropped. Nothing is written: they stay as they are.
+ */
+export function legacyMoves(progress: {
+	patchsets: readonly { number: number; mergeBase: string; head: string }[];
+	placed: readonly {
+		id: string;
+		ts: number;
+		by: string;
+		thread: string;
+		patchset: number;
+		anchor: ThreadAnchorRef;
+		engine: number;
+	}[];
+}): ThreadMove[] {
+	const out: ThreadMove[] = [];
+	for (const e of progress.placed) {
+		if (e.by !== "human") continue;
+		const ps = progress.patchsets.find((p) => p.number === e.patchset);
+		if (!ps) continue;
+		out.push({
+			id: e.id,
+			ts: e.ts,
+			thread: { source: "github", id: e.thread },
+			on: { base: ps.mergeBase, head: ps.head, patchset: ps.number },
+			anchor: e.anchor,
+			engine: e.engine,
+		});
+	}
+	return out;
 }
 
 /**
@@ -56,6 +108,11 @@ export type TraceableThread = Pick<
 	currentHead?: string;
 	/** GitHub marks it outdated (review threads only). */
 	outdated?: boolean;
+	/**
+	 * The snapshot to trace from instead of the one its commit's code
+	 * pane finds (a move's, CAR-139): its base and head as given.
+	 */
+	ends?: { base: string; head: string };
 };
 
 /**
@@ -99,31 +156,58 @@ export function agentTraceable(t: AgentAsked): TraceableThread {
 
 /**
  * The reviewer's agent threads placed into `target` by the same tracer as
- * review threads (no stored placements: a drag places review threads
- * only). Each is traced on its own, so one whose tracing fails is left
- * out, never the rest: the page then shows it where it was asked (on an
- * earlier head, its file's lead, outdated), never nowhere. A thread
- * conversation (a `thread` anchor) is never traced: it goes where its
- * GitHub thread goes (AgentHost.asked() gives an orphan its span anchor).
+ * review threads, with the reviewer's moves laid over (`movesOf`, by
+ * thread id; ThreadPlacer.placeMoved). Each is traced on its own, so one
+ * whose tracing fails is left out, never the rest: the page then shows it
+ * where it was asked (on an earlier head, its file's lead, outdated),
+ * never nowhere. A thread conversation (a `thread` anchor) is never
+ * traced: it goes where its GitHub thread goes (AgentHost.asked() gives
+ * an orphan its span anchor).
  */
 export async function placeAgentThreads(
 	placer: ThreadPlacer,
 	target: Snapshot,
 	threads: readonly AgentAsked[],
 	base: DiffBase,
+	movesOf: (id: string) => readonly ThreadMove[] | undefined = () => undefined,
+	visible: (m: ThreadMove) => boolean = () => true,
 ): Promise<PlacedThread[]> {
 	const spans = threads.filter((t) => t.anchor.subject !== "thread");
 	const placed = await Promise.all(
 		spans.map(async (t) => {
 			try {
 				const inputs = await placer.inputs(target, [agentTraceable(t)], base);
-				return await placer.place(target, inputs, new Map());
+				return await placer.placeMoved(target, inputs, movesOf, base, visible);
 			} catch {
 				return [];
 			}
 		}),
 	);
 	return placed.flat();
+}
+
+/**
+ * A moved thread as the tracer reads it: on the move's lines, traced from
+ * the move's own snapshot (never from GitHub's line).
+ */
+export function movedTraceable(id: string, m: ThreadMove): TraceableThread {
+	const at = new Date(m.ts).toISOString();
+	return {
+		id,
+		path: m.anchor.path,
+		commit: m.on.head,
+		createdAt: at,
+		anchor: {
+			path: m.anchor.path,
+			commit: m.on.head,
+			side: m.anchor.side,
+			line: m.anchor.line,
+			startSide: m.anchor.startSide,
+			startLine: m.anchor.startLine,
+			at,
+		},
+		ends: { base: m.on.base, head: m.on.head },
+	};
 }
 
 const EMPTY = Buffer.alloc(0);
@@ -301,6 +385,8 @@ export class ThreadPlacer {
 		const own = await Promise.all(
 			list.map(async (t): Promise<Source | null> => {
 				const anchor = anchorOf(t);
+				// A move's own snapshot: traced from it alone.
+				if (t.ends) return { anchor: t.anchor && anchor, ends: t.ends };
 				const ends = await this.code.endpoints(anchor, base);
 				if (ends) return { anchor: t.anchor && anchor, ends };
 				const github = githubAnchor(t, at);
@@ -407,6 +493,81 @@ export class ThreadPlacer {
 					},
 				};
 			}),
+		);
+	}
+
+	/**
+	 * The placements of `inputs` in `target` with the reviewer's moves laid
+	 * over (moves.ts: a move made on the target, else the last visible one
+	 * traced from its snapshot, else the thread's own trace). `movesOf`
+	 * gives a thread's live moves, oldest first. A move's trace that git
+	 * can't make (its commits gone) leaves the thread `rewritten`; every
+	 * input is placed exactly once.
+	 */
+	async placeMoved(
+		target: Snapshot,
+		inputs: readonly ThreadInput[],
+		movesOf: (id: string) => readonly ThreadMove[] | undefined,
+		base: DiffBase,
+		visible: (m: ThreadMove) => boolean = () => true,
+	): Promise<PlacedWithMove[]> {
+		const counts = new Map<string, number | null>();
+		const count = async (path: string, side: DiffSide) => {
+			const key = `${side}:${path}`;
+			if (!counts.has(key)) {
+				counts.set(key, null);
+				counts.set(key, await this.lineCount(target, path, side));
+			}
+		};
+		const lineCount = (path: string, side: DiffSide) =>
+			counts.get(`${side}:${path}`) ?? null;
+		const here = (m: ThreadMove) =>
+			m.on.base === target.base && m.on.head === target.head;
+		const choices = new Map<string, MoveChoice>();
+		await Promise.all(
+			inputs.map(async (input) => {
+				const moves = movesOf(input.id);
+				if (!moves || moves.length === 0) return;
+				await Promise.all(
+					moves
+						.filter((m) => here(m) && visible(m))
+						.flatMap((m) =>
+							[m.anchor.side, m.anchor.startSide].map((side) =>
+								count(m.anchor.path, side),
+							),
+						),
+				);
+				const chosen = effectiveMove(moves, target, {
+					visible,
+					fits: (m) => validAnchor(m.anchor, lineCount),
+				});
+				if (!chosen) return;
+				if (chosen.here) {
+					choices.set(input.id, { move: chosen.move, here: true });
+					return;
+				}
+				const m = chosen.move;
+				const inComparison = target.files.some(
+					(f) => f.path === m.anchor.path || f.oldPath === m.anchor.path,
+				);
+				const traced = await this.inputs(
+					target,
+					[movedTraceable(input.id, m)],
+					base,
+				)
+					.then((list) => list[0] ?? null)
+					// git can't read the move's snapshot: its commits are gone.
+					.catch(() => null);
+				choices.set(input.id, {
+					move: m,
+					here: false,
+					input: traced,
+					inComparison,
+				});
+			}),
+		);
+		return placeWithMoves(inputs, choices, lineCount, (input) =>
+			placeThread(input, lineCount),
 		);
 	}
 

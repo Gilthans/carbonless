@@ -61,6 +61,11 @@ export interface ProgressState {
 	sinceMarks: Map<string, SinceMark[]>;
 	/** Patch set number → thread id → its last placement. */
 	placements: Map<number, Map<string, ThreadPlacedEvent>>;
+	/**
+	 * Every `thread-placed` by the reviewer, in order: read as moves
+	 * (CAR-139), never written again.
+	 */
+	placed: ThreadPlacedEvent[];
 }
 
 /**
@@ -102,6 +107,7 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 	const byNumber = new Map<number, PatchsetRecord>();
 	const statesByRevision: ProgressState["statesByRevision"] = new Map();
 	const placements: ProgressState["placements"] = new Map();
+	const placed: ThreadPlacedEvent[] = [];
 	const sinceMarks: ProgressState["sinceMarks"] = new Map();
 
 	// Patch sets first, whatever their events' timestamps: a state stamped
@@ -355,6 +361,7 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 					placements.set(e.patchset, threads);
 				}
 				threads.set(e.thread, e);
+				if (e.by === "human") placed.push(e);
 				break;
 			}
 			default:
@@ -370,6 +377,7 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 		statesByRevision,
 		sinceMarks,
 		placements,
+		placed,
 	};
 }
 

@@ -191,6 +191,7 @@ describe("foldProgress", () => {
 			statesByRevision: new Map(),
 			sinceMarks: new Map(),
 			placements: new Map(),
+			placed: [],
 		});
 	});
 
