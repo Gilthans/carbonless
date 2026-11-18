@@ -260,11 +260,11 @@ async function tildeClear(head: Locator, isMobile: boolean) {
 	});
 	expect(overlaps).toEqual([]);
 }
-/** A tree row's `~` (inside the row's button: its name says it too). */
+/** A file's tree row. */
 const rowOf = (tree: Locator, name: RegExp) =>
 	tree.getByRole("button", { name });
 
-test("Ignore whitespace on: the file row, folder row, header and verdict read done with a `~`; off counts the whitespace-only cluster again; a plain file never shows one", async ({
+test("Ignore whitespace on: the file row reads done, the header and verdict with a `~`; off counts the whitespace-only cluster again; a plain file never shows one", async ({
 	page,
 	pr,
 	startCrb,
@@ -301,15 +301,15 @@ test("Ignore whitespace on: the file row, folder row, header and verdict read do
 	await expect(leftOut(page)).toBeVisible();
 	await withTree(page, async (tree) => {
 		const split = rowOf(tree, /split\.ts/);
+		// Its row counts as the header does, done; the `~` is the header's
+		// alone (owner 2026-11-18), on no file or folder row.
 		await expect(split).toHaveAttribute("data-finished");
-		await expect(split.getByTestId("ws-left-out")).toHaveText("~");
-		await expect(split).toHaveAccessibleName(new RegExp(LEFT_OUT));
+		await expect(split.getByTestId("ws-left-out")).toHaveCount(0);
+		await expect(split).not.toHaveAccessibleName(new RegExp(LEFT_OUT));
 		const plainRow = rowOf(tree, /plain\.ts/);
 		await expect(plainRow).toHaveAttribute("data-finished");
 		await expect(plainRow.getByTestId("ws-left-out")).toHaveCount(0);
-		// The folder holding both says so too.
-		await expect(folderRow(tree).getByTestId("ws-left-out")).toHaveText("~");
-		await expect(folderRow(tree)).toHaveAccessibleName(new RegExp(LEFT_OUT));
+		await expect(folderRow(tree).getByTestId("ws-left-out")).toHaveCount(0);
 	});
 
 	// The verdict: everything counted is reviewed, with the `~`.

@@ -537,9 +537,10 @@ their marks. They still show, collapsed to one quiet `~` row, and can
 still be ticked and crossed off: the mark is stored as usual and counts
 again when the switch is off, which counts everything exactly as before.
 While any is left out, the bar shows a `~` whose name and tooltip say how
-many ("3 whitespace-only clusters not counted"); so does each file row,
-folder row and file header that left one out (a file without any never
-shows it; a header that reads done because of one always does).
+many ("3 whitespace-only clusters not counted"); so does each file
+header that left one out (a file without any never shows it; a header
+that reads done because of one always does). The tree's rows count the
+same way but show no `~`: the header's is enough (owner 2026-11-18).
 This is no AI decision: nothing is marked reviewed, and turning the
 switch off shows what is still unreviewed. The Overview's progress, the
 verdict (its "You reviewed" line and its meter of what changed since your

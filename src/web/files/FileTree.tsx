@@ -27,11 +27,7 @@ import {
 } from "./fileOrder";
 import { MarkedText } from "./find/MarkedText";
 import { type Folds, useFolds } from "./folderFold";
-import {
-	Meter,
-	WhitespaceLeftOut,
-	whitespaceLeftOutLabel,
-} from "./ProgressBar";
+import { Meter } from "./ProgressBar";
 import {
 	ChangeCount,
 	type Changes,
@@ -268,13 +264,6 @@ function legendProgress(
 	return numbers === "done" || numbers === "crossed off" ? null : numbers;
 }
 
-/** The `~` in a row's tooltip (the row's own glyph carries the name). */
-const WS_TIP_ICON = (
-	<span aria-hidden className="font-mono text-faint">
-		~
-	</span>
-);
-
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
@@ -368,8 +357,6 @@ function FileItem(props: {
 	// Its progress and state as counted: "Ignore whitespace" on leaves its
 	// whitespace-only clusters out (countedFile). The change count is all of it.
 	const file = countedFile(raw, ignoreWhitespace.use());
-	// How many it left out: the row's `~`.
-	const leftOut = raw.clusters.length - file.clusters.length;
 	const agentThreads = props.agentThreads ?? [];
 	const asked =
 		agentThreads.length > 0
@@ -442,11 +429,6 @@ function FileItem(props: {
 							{found && (
 								<TipLine kind="find" icon={FIND_SWATCH}>
 									{capital(found)}
-								</TipLine>
-							)}
-							{leftOut > 0 && (
-								<TipLine kind="ws-left-out" icon={WS_TIP_ICON}>
-									{capital(whitespaceLeftOutLabel(leftOut))}
 								</TipLine>
 							)}
 							<TipProgressLines
@@ -537,7 +519,6 @@ function FileItem(props: {
 						)}
 						{props.agentUnread && AGENT_UNREAD}
 						<ChangeCount file={raw} />
-						{leftOut > 0 && <WhitespaceLeftOut count={leftOut} inRow />}
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
 						</span>
@@ -583,14 +564,10 @@ function FolderItem(props: Level & { folder: Folder }) {
 	const ghost = files.length === 0;
 	// Counted as the page's bar counts (countedFolder); the change count is
 	// all of it.
-	const countedFiles = countedFolder(files, ignoreWhitespace.use());
-	const counted = folderUnitProgress(countedFiles, unit);
-	// How many whitespace-only clusters that left out: the row's `~`.
-	const leftOut =
-		countedFiles === files
-			? 0
-			: files.reduce((n, f) => n + f.clusters.length, 0) -
-				countedFiles.reduce((n, f) => n + f.clusters.length, 0);
+	const counted = folderUnitProgress(
+		countedFolder(files, ignoreWhitespace.use()),
+		unit,
+	);
 	const p = {
 		...counted,
 		clusters: files.flatMap((f) => f.clusters),
@@ -640,11 +617,6 @@ function FolderItem(props: Level & { folder: Folder }) {
 							{waiting && (
 								<TipLine kind="threads" icon={<ThreadDot tone="bg-warn" />}>
 									{capital(waiting)}
-								</TipLine>
-							)}
-							{leftOut > 0 && (
-								<TipLine kind="ws-left-out" icon={WS_TIP_ICON}>
-									{capital(whitespaceLeftOutLabel(leftOut))}
 								</TipLine>
 							)}
 							{found > 0 && (
@@ -718,7 +690,6 @@ function FolderItem(props: Level & { folder: Folder }) {
 						{!ghost && (
 							<>
 								<ChangeCount file={p} />
-								{leftOut > 0 && <WhitespaceLeftOut count={leftOut} inRow />}
 								<span data-testid="tree-numbers" className="sr-only">
 									{numbers}
 								</span>

@@ -111,33 +111,17 @@ export const whitespaceLeftOutLabel = (count: number) =>
 
 /**
  * The `~` after the counts while "Ignore whitespace" leaves whitespace-only
- * clusters out of them: its name and tooltip say how many. `inRow`: inside
- * a control that is its own target and tooltip (a tree row), the named
- * glyph alone, nothing focusable of its own.
+ * clusters out of them: its name and tooltip say how many.
  */
 export function WhitespaceLeftOut({
 	count,
-	inRow,
 	slot,
 }: {
 	count: number;
-	inRow?: boolean;
 	/** In a slot of its own (a file header's): no margin of its own. */
 	slot?: boolean;
 }) {
 	const label = whitespaceLeftOutLabel(count);
-	if (inRow) {
-		return (
-			<span
-				role="img"
-				aria-label={label}
-				data-testid="ws-left-out"
-				className="inline-flex h-4 w-3 shrink-0 items-center justify-center font-mono text-xs text-faint"
-			>
-				~
-			</span>
-		);
-	}
 	return (
 		<Tooltip content={label} describe={false}>
 			{(trigger) => (
