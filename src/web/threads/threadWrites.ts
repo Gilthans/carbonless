@@ -4,6 +4,7 @@ import {
 	useQueryClient,
 } from "@tanstack/react-query";
 import { useEffect, useRef, useSyncExternalStore } from "react";
+import { type AgentThread, linkedAnchor } from "../../shared/agent";
 import type {
 	EditRequest,
 	NewThreadAnswer,
@@ -1680,6 +1681,23 @@ export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
 	// An agent conversation moved onto it: its card leaves the code for the
 	// thread's agent button.
 	if (answer.agentThread) {
+		// At once, as the server folds it (no frame where the card is back
+		// on the code before the read lands), then read again.
+		const moved = answer.agentThread;
+		client.setQueryData<{ threads: AgentThread[] }>(
+			AGENT_THREADS_KEY,
+			(list) =>
+				list
+					? {
+							...list,
+							threads: list.threads.map((t) =>
+								t.id === moved
+									? { ...t, anchor: linkedAnchor(t.anchor, thread.id) }
+									: t,
+							),
+						}
+					: list,
+		);
 		void client.invalidateQueries({ queryKey: AGENT_THREADS_KEY });
 		void client.invalidateQueries({ queryKey: AGENT_PLACEMENTS_KEY });
 	}

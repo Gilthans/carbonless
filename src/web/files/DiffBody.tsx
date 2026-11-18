@@ -76,6 +76,11 @@ import {
 	useAgentComposers,
 } from "../agent/askAgentAction";
 import {
+	type PendingComposers,
+	PendingComposersProvider,
+	useHeldByCard,
+} from "../agent/pendingThread";
+import {
 	type AgentPlaceable,
 	shownAgentPlaceables,
 	useAgentPlacing,
@@ -2498,7 +2503,12 @@ export function DiffBody(props: {
 	const mineNew = allItems.filter(
 		(i) => i.span.path === file.path && i.span.subject === "line",
 	);
-	const lineItems = mineNew.filter((i) => i.span.commit === snapshotHead);
+	// One carrying an agent conversation whose card is on screen: drawn
+	// in that card (pendingThread.ts), not again here.
+	const heldByCard = useHeldByCard();
+	const lineItems = mineNew.filter(
+		(i) => i.span.commit === snapshotHead && !heldByCard(i),
+	);
 	const orphanItems = snapshotHead
 		? mineNew.filter((i) => i.span.commit !== snapshotHead)
 		: [];
@@ -3340,8 +3350,18 @@ export function DiffBody(props: {
 		[props.headSure, hunkList, file.path],
 	);
 
+	// A composer drawn in its conversation's card: what this diff gives one.
+	const pendingComposers: PendingComposers = {
+		head: snapshotHead,
+		quote: quoteSpan,
+		texts: spanLineTexts,
+		onPosted: composers.onPosted,
+		headUnsure: composers.headUnsure,
+	};
+
 	return (
 		<CommentScopeProvider value={commentScope}>
+			<PendingComposersProvider value={pendingComposers}>
 		<div ref={root}>
 			{hint && <LandingHint hint={hint} />}
 			{agentUnshown.length > 0 && (
@@ -3504,6 +3524,7 @@ export function DiffBody(props: {
 				</div>
 			)}
 		</div>
+			</PendingComposersProvider>
 		</CommentScopeProvider>
 	);
 }

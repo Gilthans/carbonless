@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
 	type MouseEvent,
 	type ReactNode,
+	useCallback,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -31,6 +32,7 @@ import { AgentComposer, headFacts } from "../agent/AgentComposer";
 import { onHeadMove } from "../agent/agentComment";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
+import { PendingPosted, useHeldByCard } from "../agent/pendingThread";
 import {
 	agentWaiting,
 	shownAgentPlaceables,
@@ -944,6 +946,10 @@ export function FileDiff(props: {
 			),
 		[drafts, composers, file.path],
 	);
+	// One carrying an agent conversation whose card is on screen: drawn in
+	// that card (pendingThread.ts), not again here.
+	const heldByCard = useHeldByCard();
+	const shownFileItems = fileItems.filter((i) => !heldByCard(i));
 	const writer = useThreadWriter();
 	// The head moved under a file comment being written: it moves along (a
 	// file comment doesn't depend on lines); one only opened just closes.
@@ -968,6 +974,7 @@ export function FileDiff(props: {
 	}, [fileItems, snapshotHead, writer, session]);
 
 	const fileComment = useFileComment(file, snapshotHead, readOnly);
+	const openFileThreads = useCallback(() => setFileOpen(true), []);
 
 	// The reviewer's agent threads on the file (FilesPage reads them): those
 	// on the whole file, and lines the diff can't show, beside the file's
@@ -1086,7 +1093,7 @@ export function FileDiff(props: {
 	// File comments being written, and drafts from an earlier head.
 	const newItems = (
 		<div data-testid="file-new-threads" className="space-y-2">
-			{fileItems.map((item) =>
+			{shownFileItems.map((item) =>
 				item.span.commit === snapshotHead ? (
 					<NewThread
 						key={item.clientId}
@@ -1157,7 +1164,7 @@ export function FileDiff(props: {
 		row: (columns, rail) => (
 			<>
 				{(fileOpen && (header.length > 0 || fileComment.ok !== true)) ||
-				fileItems.length > 0 ? (
+				shownFileItems.length > 0 ? (
 					<FileThreadsRow
 						id={fileThreadsId}
 						columns={columns}
@@ -1182,9 +1189,9 @@ export function FileDiff(props: {
 									))
 								: null
 						}
-						composers={fileItems.length > 0 ? newItems : null}
+						composers={shownFileItems.length > 0 ? newItems : null}
 						comment={
-							fileOpen && fileItems.length === 0 ? (
+							fileOpen && shownFileItems.length === 0 ? (
 								<FileCommentButton
 									file={file}
 									commit={snapshotHead}
@@ -1194,19 +1201,23 @@ export function FileDiff(props: {
 						}
 					/>
 				) : null}
-				{agentOpen &&
-					agentGroups.map((g, i) => (
-						<AgentThreadRow
-							key={g.reason}
-							id={i === 0 ? agentThreadsId : undefined}
-							threads={g.threads}
-							place={{ columns }}
-							rail={rail}
-							unplaced={g.reason === "unplaced"}
-							outdated={g.reason === "outdated"}
-							fates={g.reason === "fate" ? agentFates : undefined}
-						/>
-					))}
+				{agentOpen && (
+					// Comment on a file conversation's card: its thread opens in the bubble.
+					<PendingPosted onPosted={openFileThreads}>
+						{agentGroups.map((g, i) => (
+							<AgentThreadRow
+								key={g.reason}
+								id={i === 0 ? agentThreadsId : undefined}
+								threads={g.threads}
+								place={{ columns }}
+								rail={rail}
+								unplaced={g.reason === "unplaced"}
+								outdated={g.reason === "outdated"}
+								fates={g.reason === "fate" ? agentFates : undefined}
+							/>
+						))}
+					</PendingPosted>
+				)}
 				{agentComposers && (
 					<TailRow testId="agent-composer-row" place={{ columns }} rail={rail}>
 						{agentComposers}
@@ -1395,7 +1406,7 @@ export function FileDiff(props: {
 					)}
 				</Tooltip>
 			</header>
-			{!expanded && fileItems.length > 0 && (
+			{!expanded && shownFileItems.length > 0 && (
 				// Closed: a file comment being written stays in sight.
 				<div className="border-b border-line bg-canvas p-2">{newItems}</div>
 			)}
