@@ -407,6 +407,10 @@ export function AgentThreadCard(props: {
 	unplaced?: boolean;
 	/** Asked on this earlier head (its commit): marked outdated. */
 	outdated?: string;
+	/** The move handle, first in the header (Files changed; threadMove.tsx). */
+	handle?: ReactNode;
+	/** The `moved` chip and its Undo, in the header. */
+	moved?: ReactNode;
 }) {
 	const { thread, status } = props;
 	const client = useQueryClient();
@@ -500,7 +504,8 @@ export function AgentThreadCard(props: {
 				aria-label={`Agent thread, ${state}`}
 				className="min-w-0 overflow-hidden rounded-lg border border-agent-edge bg-agent"
 			>
-				<div className="flex min-h-10 min-w-0 items-center gap-x-2 px-2.5 text-xs text-muted">
+				<div className="flex min-h-10 min-w-0 flex-wrap items-center gap-x-2 px-2.5 text-xs text-muted">
+					{props.handle && <span className="-ml-2 flex">{props.handle}</span>}
 					<SparkleFillIcon
 						size={14}
 						aria-hidden
@@ -523,6 +528,7 @@ export function AgentThreadCard(props: {
 						</span>
 					)}
 					<span className="min-w-0 truncate text-ink-soft">{first}</span>
+					{props.moved}
 					{toggle}
 				</div>
 			</article>
@@ -537,6 +543,7 @@ export function AgentThreadCard(props: {
 			className="min-w-0 overflow-hidden rounded-lg border border-agent-edge bg-surface"
 		>
 			<div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-band px-2.5 py-0.5 text-xs text-muted">
+				{props.handle && <span className="-ml-2 flex">{props.handle}</span>}
 				<SparkleFillIcon
 					size={14}
 					aria-hidden
@@ -573,6 +580,7 @@ export function AgentThreadCard(props: {
 						className="text-warn"
 					/>
 				)}
+				{props.moved}
 				{answering && (
 					<button
 						type="button"

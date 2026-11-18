@@ -91,6 +91,8 @@ export function shownThread(
 	t: ReviewThread,
 	snapshotHead: string,
 	placements: Placements | null,
+	/** Threads the reviewer moved (CAR-139): their columns don't hold. */
+	moved?: ReadonlyMap<string, unknown> | null,
 ): ReviewThread | null {
 	const p = placements?.get(t.id);
 	if (!p) return t.commit !== "" && t.commit === snapshotHead ? t : null;
@@ -105,9 +107,10 @@ export function shownThread(
 	let shown: ReviewThread;
 	if (p.kind === "placed" || p.kind === "changed") {
 		const a = p.anchor;
-		// A rewritten line's columns no longer hold: whole lines.
+		// A rewritten line's columns no longer hold, nor a moved thread's:
+		// whole lines.
 		const cols =
-			p.kind === "placed" && t.anchor
+			p.kind === "placed" && t.anchor && !moved?.has(t.id)
 				? {
 						startCol: t.anchor.startCol ?? null,
 						endCol: t.anchor.endCol ?? null,
@@ -115,6 +118,7 @@ export function shownThread(
 				: { startCol: null, endCol: null };
 		shown = {
 			...t,
+			madeOn: t.madeOn ?? t.commit,
 			path: a.path,
 			commit: snapshotHead,
 			subject: "line",
@@ -130,7 +134,12 @@ export function shownThread(
 			},
 		};
 	} else {
-		shown = { ...t, path: p.path, commit: snapshotHead };
+		shown = {
+			...t,
+			madeOn: t.madeOn ?? t.commit,
+			path: p.path,
+			commit: snapshotHead,
+		};
 	}
 	copies.set(p, shown);
 	return shown;
@@ -141,9 +150,10 @@ export function shownThreads(
 	threads: readonly ReviewThread[],
 	snapshotHead: string,
 	placements: Placements | null,
+	moved?: ReadonlyMap<string, unknown> | null,
 ): ReviewThread[] {
 	return threads.flatMap((t) => {
-		const shown = shownThread(t, snapshotHead, placements);
+		const shown = shownThread(t, snapshotHead, placements, moved);
 		return shown ? [shown] : [];
 	});
 }

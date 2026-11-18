@@ -241,16 +241,16 @@ Initial event types:
 | progress | `lines-state` | snapshot id (`patchset`), cluster identity hash, file path, `state` (`reviewed` or `crossed-off`), `lines`: line ranges of the cluster (see "Marks on part of a cluster") |
 | progress | `split-carried` | snapshot id (`patchset`), `states`: a list of `{ key, fromKey, state, from?, lines? }`, one per piece of a hunk cut at its whitespace-only runs (or two, one per state), `fromKey` the whole hunk's key before, `state` `reviewed` or `crossed-off`, `from` the hunk's line ranges it takes (for a hunk marked by lines), `lines` the piece's (only for part of it, as many as `from`); see "Split carries" |
 | progress | `since-lines-state` | snapshot id (`patchset`), `since` (an earlier patch set's number), file `path`, `reviewed` and `crossed`: each `{ old, new }` line ranges on the since view's sides; the whole set for that (since, path) |
-| progress | `thread-placed` | `thread` (the thread's id), `patchset` (number), `anchor` (`path`, `startSide`, `startLine`, `side`, `line`), `engine` (the tracer's version, a positive integer) |
+| progress | `thread-placed` | **read only since CAR-139** (never written again; read as a move, see "Thread moves"): `thread` (the thread's id), `patchset` (number), `anchor` (`path`, `startSide`, `startLine`, `side`, `line`), `engine` (the tracer's version, a positive integer) |
 
 `carried` holds many clusters in one event, so a move costs one event per
 rule, not one per cluster (see "Measurements"). It is written by the engine
 only, once, in the same commit as the `patchset-started` it carries into. A
-`thread-placed` is the reviewer's own placement of a thread in a patch set
-(an AI's later), overriding the engine's; computed placements are never
-stored. It lives in the reviewer's progress ref; once sync exists it is
-shared through `meta` only when it was placed or moved by hand (owner,
-2026-11-07).
+`thread-placed` was the reviewer's own placement of a thread in a patch set,
+overriding the engine's; computed placements are never stored. Since
+CAR-139 nothing writes it: a placement by hand is a `thread-moved` in the
+reviewer's agent threads ref (see "Thread moves"), and the old events in
+progress refs are read as moves, never migrated.
 
 Later features (AI groupings, the reviewer's corrections to them) add their
 own types.
@@ -270,7 +270,10 @@ a reader drops what breaks them:
   are cluster keys, its state `reviewed` or `crossed-off`, and `lines` and
   `fromLines` parse as non-empty ranges of as many lines. One bad entry
   drops the event.
-- `thread-placed` must have `by: "human"` or `"ai"`, never `"auto"`.
+- `thread-placed` must have `by: "human"` or `"ai"`, never `"auto"`; only
+  a human's is read as a move.
+- `thread-moved` and `thread-move-undone` must have `by: "human"` (see
+  "Thread moves").
 - `lines-state` and `since-lines-state` must have `by: "human"`; their
   ranges must parse (pairs of integers, `0 <= start < end`).
 - `by: "ai"` events can never change a cluster's state; `by: "auto"` ones
@@ -690,6 +693,79 @@ folded from the origins on read (`startedBy`), never stored.
   It adds to a review what one long agent thread does; the format (one
   more anchor subject, no new event kind, no new ref) changes nothing else.
 
+## Thread moves
+
+The reviewer puts a thread (a GitHub review thread or one of their agent
+threads) on other lines of the snapshot they view (CAR-139; spec
+`docs/superpowers/specs/2026-11-18-thread-placement-design.md`). A move is
+the reviewer's view: GitHub keeps its own line, and nothing about a move is
+ever sent. Both kinds share one record, in the reviewer's **agent threads
+ref** (above), which is never pushed.
+
+| Type | By | Payload |
+|---|---|---|
+| `thread-moved` | human | `thread` `{source, id}`: `source` `agent` (`id` the agent thread's lowercase ULID) or `github` (`id` GitHub's thread node id, 1 to 200 characters); `on` `{base, head, patchset?}`: the snapshot it was moved in, filled in by the server from the target the page names (never from the request), `patchset` when that snapshot is one of the reviewer's; `anchor` `{path, startSide, startLine, side, line}` in that snapshot; `engine` (`TRACER_VERSION`) |
+| `thread-move-undone` | human | `thread` (as above), `move` (the id of the move it takes back: a `thread-moved`, or a legacy `thread-placed`) |
+
+- **Write rules**, enforced on write and on read (`validateForWrite`,
+  `parseEvent`): both `by: "human"` only (an agent never moves a thread);
+  `source` one of the two (a reader skips an unknown one, so a future
+  source never breaks an old reader); the anchor's sides `LEFT`/`RIGHT`,
+  positive lines, start not after end on one side, its path at most 4 KiB;
+  `on.base` and `on.head` full OIDs, `on.patchset` a positive integer;
+  `move` a lowercase ULID. An older reader skips both types (GitDB 8) and
+  shows the tracer's placement, which hides nothing: no version bump.
+- **Departure from GitDB, stated:** a review thread's hand placement lived
+  in the progress ref, to be shared through `meta` once sync exists (owner,
+  2026-11-07). Its moves now go to the private agent threads ref instead
+  (owner's decision 1, 2026-11-18): one writer either way (GitDB 3); no
+  other reader needs the reviewer's view of where a thread sits, and an
+  agent thread's id must not reach a pushed ref (GitDB 20). Sharing moves
+  is decided when sync is designed. The ref keeps its name.
+- **Legacy `thread-placed`:** read as moves (`legacyMoves`,
+  `src/server/rereview/threads.ts`): each human one becomes a move of a
+  GitHub thread on its patch set's snapshot (`base`, `head` from that patch
+  set's `patchset-started`, pinned by `patchsets/<n>` and `-base`); one
+  naming an unknown patch set is dropped, an ai one ignored. Nothing is
+  written on read. An Undo of one is a `thread-move-undone` naming its id.
+  Such a placement now also anchors later patch sets (decision 2).
+- **Fold** (`foldMoves`, `src/shared/rereview/moves.ts`): moves and legacy
+  moves in `(ts, id)` order, deduplicated by id, keyed `source:id`; minus
+  those an undo of the same thread names (an undo naming another thread's
+  move or an unknown id does nothing); at most 200 live moves a thread
+  (later ones dropped; the server refuses a 201st with a 409, so none it
+  acknowledged is ever dropped). An agent thread's move is dropped unless that thread was opened
+  on lines (`movesOf`, `src/server/agent/store.ts`): never a file thread, a
+  thread conversation or the review conversation. A GitHub thread's is kept
+  and used only for a thread GitHub lists. Two tabs: both writes are
+  compare-and-swap appends; the later `(ts, id)` wins.
+- **Which lines a snapshot uses** (`effectiveMove`): a move made on the
+  target itself (the last that fits it) is placed as chosen; else the last
+  move visible there (on an earlier patch set, made before the next one
+  started) is traced from its own snapshot by the tracer; else the
+  thread's own anchor, traced as before. A move on the target that doesn't
+  fit is skipped. A move whose commits are gone (a head pruned by hand)
+  leaves the thread unplaced as `rewritten`, never the older trace.
+- **Size**, measured 2026-11-18 (`pnpm tsx scripts/measure-agent-ref.ts
+  --moves`, on top of the 50-thread ref above; git 2.53, a shared machine
+  under load; every move with its own random base and head, which compress
+  worse than real ones sharing a patch set's). A size test keeps one move
+  commit under 1 KiB raw and 512 B deflated (`store.test.ts`):
+
+  | Measure | Value |
+  |---|---|
+  | One `thread-moved` commit, GitHub thread | 638 B raw, 432 B deflated |
+  | One `thread-moved` commit, agent thread | 637 B raw, 423 B deflated |
+  | One `thread-move-undone` commit | 415 B raw, 303 B deflated |
+  | Realistic: 2 agent + 5 GitHub threads moved once, 1 undone (8 commits) | +2 KiB packed |
+  | Heavy, mixed: 50 agent + 100 GitHub threads moved on 3 patch sets, every 6th undone (525 commits) | +133 KiB packed (300 KiB) |
+  | Cold `moves()` of the mixed heavy ref, packed (median of 9) | 30 ms wall; CPU 16 ms + 20 ms git |
+
+  A realistic review adds a few KiB to a ref that is never pushed or
+  fetched; everyday git never sees it (GitDB 14). Reading legacy
+  `thread-placed` costs nothing new: placements already read the progress
+  ref.
+
 ## Split carries
 
 Added 2026-11-15 (CAR-156, owner: "treating whitespace-only change as a
@@ -783,7 +859,8 @@ read forever, would spread the old cut through every reader of states.
    unreviewed, lines, crossed, linesCarried: { from, lines } }`, only when
    its source cluster holds a human mark (not carried, whole or by lines)
    covering `fromLines` in that state (the carried guard, by line), and a
-   `thread-placed` replaces the thread's placement in its patch set. For
+   human `thread-placed` is kept for reading as a move ("Thread moves").
+   For
    each `(patch set, cluster)`, the last event wins, so a human mark after a
    carry overrides it.
    **The carried guard** (principle 2): an entry counts only when `from`
@@ -893,8 +970,9 @@ Tracked in `docs/todo.md`.
 
 ## Deferred
 
-- Sharing `thread-placed` through `meta` once sync exists, for placements
-  made or moved by hand only (owner, 2026-11-07).
+- Sharing hand placements (moves, and old `thread-placed`) with other
+  reviewers: decided when sync is designed (owner, 2026-11-18: "Let's not
+  think about syncing or sharing, as we're not there quite yet").
 - Earlier patch sets are read-only in this round (owner, 2026-11-07).
 
 ## Measurements

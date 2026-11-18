@@ -1393,10 +1393,11 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 		).toHaveAttribute("data-marked", "true");
 		await expect(row.getByTestId("original-code-line")).toHaveCount(5);
 		await expect(row.getByTestId("near-line")).toHaveText("near 29");
-		// No handle on a head that is no patch set yet.
-		await expect(row.getByTestId("place-handle")).toHaveCount(0);
 	};
 	await checkCore();
+	// The since view numbers its old side by the interdiff, no file's: no
+	// move there.
+	await expect(unplacedRows(coreS).getByTestId("move-handle")).toHaveCount(0);
 	await expectNoPageOverflow(page);
 	if (isMobile) {
 		// At 360px: no page overflow, the sentence on one line.
@@ -1413,6 +1414,10 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 		node(page, "branch").getByRole("button", { name: "comparison base" }),
 	).toBeVisible();
 	await checkCore();
+	// A head that is no patch set yet takes moves too (CAR-139).
+	await expect(unplacedRows(coreS).getByTestId("move-handle")).toBeVisible(
+		GIT_WAIT,
+	);
 
 	// The first mark starts PS2; a drag puts the deleted line's thread on
 	// core 4, written, and a reload keeps it there.
@@ -1424,14 +1429,14 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 	// PS1's mark on that base line (CAR-195). Open it again.
 	await coreS.getByRole("button", { name: "Expand file" }).click();
 	const row = unplacedRows(coreS);
-	const handle = row.getByTestId("place-handle");
+	const handle = row.getByTestId("move-handle");
 	await expect(handle).toBeVisible(GIT_WAIT);
 	// The since view numbers its old side by the interdiff, no file's: no
 	// drag there (the row stays, its handle goes); back in the full diff.
 	await baseOn(page, "ps1", "]");
 	await expect(row).toHaveCount(1);
 	await expect(row).toContainText("Is core 30 needed?");
-	await expect(row.getByTestId("place-handle")).toHaveCount(0);
+	await expect(row.getByTestId("move-handle")).toHaveCount(0);
 	await baseOn(page, "branch", "[");
 	await expect(handle).toBeVisible();
 	if (isMobile) {

@@ -2,9 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { SpanAgentThread } from "../../shared/agent";
 import type { Fate } from "../../shared/rereview/placement";
-import { UnplacedShell } from "../files/ThreadFate";
+import { movedOriginalFor, UnplacedShell } from "../files/ThreadFate";
+import { useAgentMove } from "../files/threadMove";
 import { AgentThreadCard } from "./AgentThreadCard";
 import { agentStatusQuery } from "./api";
+import { useAgentPlacing } from "./placeable";
 
 /**
  * An agent thread the tracer couldn't place, in the review threads' own
@@ -23,9 +25,17 @@ export function AgentUnplaced(props: {
 	/** Asked on this earlier head: its card says so. */
 	outdated?: string;
 	testId?: string;
+	/** The file it is listed in (a drag's drop targets); none outside the comparison. */
+	dropPath?: string;
 }) {
 	const { thread } = props;
 	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
+	const move = useAgentMove(thread, props.dropPath ?? thread.anchor.path);
+	const placing = useAgentPlacing();
+	const original = movedOriginalFor(
+		placing.moves?.get(thread.id),
+		placing.placements?.get(thread.id),
+	);
 	return (
 		<UnplacedShell
 			thread={{
@@ -40,6 +50,10 @@ export function AgentUnplaced(props: {
 			path={props.path}
 			movedTo={props.movedTo}
 			link={props.link}
+			handle={move.handle}
+			moved={move.moved}
+			failure={move.failure}
+			original={original}
 			testId={props.testId ?? "agent-unplaced"}
 		>
 			<AgentThreadCard

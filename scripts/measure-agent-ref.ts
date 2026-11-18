@@ -7,11 +7,17 @@
  * a cold read() (a new store, nothing cached), loose and after `git gc`.
  * With `--review`: one review conversation of 20 messages instead (no
  * `head` on answers: every agent answers through MCP since 2026-11-13).
+ * With `--moves` (CAR-139): then thread moves on top: one move and one
+ * undo commit's size (raw, deflated), a realistic review's moves (2 agent
+ * and 5 GitHub threads moved once, 1 undone) and the mixed heavy case
+ * (50 agent and 100 GitHub threads moved on 3 patch sets, every 6th
+ * undone), each as packed growth, and a cold read of the ref's moves.
  *
- *   pnpm tsx scripts/measure-agent-ref.ts [--review]
+ *   pnpm tsx scripts/measure-agent-ref.ts [--review] [--moves]
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 import { AgentThreadStore } from "../src/server/agent/store";
 import { RefStore } from "../src/server/review/refStore";
 import type { AgentAnchor, AgentView } from "../src/shared/agent";
@@ -20,6 +26,7 @@ import { createBareRepo, testGitEnv } from "../test/git-fixture";
 /** A review id as the server makes one (a lowercase ULID). */
 const REVIEW = "01k9e6m2q8x4v7c3n5b0h1j2t6";
 const REVIEW_MODE = process.argv.includes("--review");
+const MOVES_MODE = process.argv.includes("--moves");
 const THREADS = REVIEW_MODE ? 1 : 50;
 const MESSAGES = REVIEW_MODE ? 20 : 4;
 const TEXT_BYTES = 2048;
@@ -115,6 +122,110 @@ function sizeKiB(repo: string): { loose: number; packed: number } {
 	return { loose: field("size"), packed: field("size-pack") };
 }
 
+/** Random hex: every move gets its own base and head (they compress worse than real ones). */
+const oid = () =>
+	Array.from({ length: 40 }, () => Math.floor(rand() * 16).toString(16)).join(
+		"",
+	);
+const ghId = (i: number) => `PRRT_kwDOKx${String(i).padStart(6, "0")}Hq1AbCdEf`;
+
+/** A commit's bytes: raw, and as git keeps it loose (zlib). */
+function commitSize(repo: string, ref: string): string {
+	const git = (...args: string[]) =>
+		execFileSync("git", args, { cwd: repo, env: testGitEnv() });
+	const tip = git("rev-parse", ref).toString().trim();
+	const body = git("cat-file", "commit", tip);
+	const object = Buffer.concat([Buffer.from(`commit ${body.length}\0`), body]);
+	return `${body.length} B raw, ${deflateSync(object).length} B deflated`;
+}
+
+async function measureMoves(
+	store: AgentThreadStore,
+	agentIds: readonly string[],
+): Promise<string[][]> {
+	const ref = `refs/crb/reviews/${REVIEW}/reviewers/dan/agent/threads`;
+	const gc = () =>
+		execFileSync("git", ["gc", "--quiet", "--prune=now"], {
+			cwd: repo,
+			env: testGitEnv(),
+		});
+	const at = (i: number) => ({
+		path: `src/module${i}/service.ts`,
+		startSide: "RIGHT" as const,
+		startLine: 40 + i,
+		side: "RIGHT" as const,
+		line: 42 + i,
+	});
+	const move = (
+		thread: { source: "github" | "agent"; id: string },
+		i: number,
+		ps: number,
+	) =>
+		store.move({
+			thread,
+			on: { base: oid(), head: oid(), patchset: ps },
+			anchor: at(i),
+		});
+	gc();
+	const before = sizeKiB(repo).packed;
+	const one = await move({ source: "github", id: ghId(1) }, 1, 2);
+	const ghCommit = commitSize(repo, ref);
+	await move({ source: "agent", id: agentIds[0] ?? "" }, 2, 2);
+	const agentCommit = commitSize(repo, ref);
+	await store.undoMove(one.thread, one.id);
+	const undoCommit = commitSize(repo, ref);
+	// Realistic: 2 agent + 5 GitHub threads moved once, 1 undone (8 commits).
+	await move({ source: "agent", id: agentIds[1] ?? "" }, 3, 2);
+	for (let i = 2; i < 6; i++)
+		await move({ source: "github", id: ghId(i) }, i, 2);
+	gc();
+	const realistic = sizeKiB(repo).packed - before;
+	// Heavy, mixed: 50 agent + 100 GitHub threads moved on 3 patch sets,
+	// every 6th undone.
+	const threads = [
+		...agentIds.map((id) => ({ source: "agent" as const, id })),
+		...Array.from({ length: 100 }, (_, i) => ({
+			source: "github" as const,
+			id: ghId(100 + i),
+		})),
+	];
+	let k = 0;
+	let commits = 0;
+	for (let ps = 2; ps <= 4; ps++) {
+		for (const [i, t] of threads.entries()) {
+			const m = await move(t, i, ps);
+			commits++;
+			if (++k % 6 === 0) {
+				await store.undoMove(t, m.id);
+				commits++;
+			}
+		}
+	}
+	gc();
+	const heavy = sizeKiB(repo);
+	const coldMoves = await medianOf(() =>
+		new AgentThreadStore(new RefStore(repo), REVIEW, "dan").moves(),
+	);
+	const ms = (x: number) => `${x.toFixed(1)} ms`;
+	return [
+		["One `thread-moved` commit, GitHub thread", ghCommit],
+		["One `thread-moved` commit, agent thread", agentCommit],
+		["One `thread-move-undone` commit", undoCommit],
+		[
+			"Realistic: 2 agent + 5 GitHub threads moved once, 1 undone (8 commits)",
+			`+${realistic} KiB packed`,
+		],
+		[
+			`Heavy, mixed: ${agentIds.length} agent + 100 GitHub threads moved on 3 patch sets, every 6th undone (${commits} commits)`,
+			`+${heavy.packed - before} KiB packed (${heavy.packed} KiB)`,
+		],
+		[
+			"Cold moves() of the mixed heavy ref, packed (median of 9)",
+			`${ms(coldMoves.wall)} wall; CPU ${ms(coldMoves.self)} carbonless + ${ms(coldMoves.children)} git`,
+		],
+	];
+}
+
 const { path: repo, cleanup } = createBareRepo();
 try {
 	const store = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
@@ -192,6 +303,7 @@ try {
 			`${ms(coldPacked.wall)} wall; CPU ${ms(coldPacked.self)} carbonless + ${ms(coldPacked.children)} git`,
 		],
 	];
+	if (MOVES_MODE) rows.push(...(await measureMoves(store, ids)));
 	console.log("| Measure | Value |\n|---|---|");
 	for (const [k, v] of rows) console.log(`| ${k} | ${v} |`);
 } finally {
