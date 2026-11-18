@@ -15,7 +15,7 @@ import {
 	useState,
 } from "react";
 import { type AgentThread, MAX_AGENT_TEXT } from "../../shared/agent";
-import { headQuery, sessionQuery } from "../api";
+import { sessionQuery } from "../api";
 import { Spinner } from "../Spinner";
 import { useShortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
@@ -32,7 +32,11 @@ import {
 	useReviewDrawerOpen,
 } from "./drawerStore";
 import { QuickQuestionChips } from "./QuickQuestionChips";
-import { reviewQuestions, withQuestion } from "./quickQuestions";
+import {
+	reviewQuestions,
+	viewedPatchset,
+	withQuestion,
+} from "./quickQuestions";
 import { useReviewConversation } from "./reviewConversation";
 import { openAgentSetup } from "./setupStore";
 import {
@@ -457,13 +461,10 @@ function Composer(props: {
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text]);
 	// The one-tap questions: a first review's or a re-review's (the session says).
-	// Patch sets on one head wait for the page's head check (App runs it).
-	const session = useQuery({ ...sessionQuery, enabled: false }).data;
-	const headCheck = useQuery({ ...headQuery, enabled: false });
-	const questions = reviewQuestions(
-		session,
-		headCheck.data !== undefined || headCheck.isError,
-	);
+	// The one-tap questions: PS2 or later looked at, the re-review's.
+	const patchsets = useQuery({ ...sessionQuery, enabled: false }).data
+		?.patchsets.length;
+	const questions = reviewQuestions(viewedPatchset(view.target, patchsets));
 	const caretToEnd = useRef(false);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs once the tapped question is in the box.
 	useLayoutEffect(() => {

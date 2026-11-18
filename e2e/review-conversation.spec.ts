@@ -634,7 +634,7 @@ function agentAsks(page: Page): string[] {
 	return sent;
 }
 
-test("one-tap questions (CAR-203): a first review's fill the box; after a mark and a push, a spinner until the head check answers, then the re-review's", async ({
+test("one-tap questions (CAR-203): a first review's fill the box; PS1 the new PR's; the push viewed, the re-review's", async ({
 	page,
 	pr,
 	agentCrb,
@@ -679,37 +679,28 @@ test("one-tap questions (CAR-203): a first review's fill the box; after a mark a
 		message: "more",
 		files: { [CALC]: "export const total = 0;\n" },
 	});
-	// The page's head check held: the session still knows only PS1's head.
-	let release = () => {};
-	const released = new Promise<void>((r) => {
-		release = r;
-	});
-	await page.route(/\/api\/r\/[^/]+\/head$/, async (route) => {
-		await released;
-		await route.continue();
-	});
 	await page.reload();
+	// Still looking at PS1: the new PR's.
 	await chip(page).click();
-	const again = reviewDrawer(page);
 	await expect(
-		again.getByTestId("agent-quick-questions-loading"),
-	).toBeVisible();
-	await expect(
-		again.getByRole("button", { name: "Please summarize the changes" }),
-	).toHaveCount(0);
-	release();
-	await expect(again.getByTestId("agent-quick-question")).toHaveText(
-		[
-			"Please summarize what changed",
-			"Please confirm all comments I wrote have been addressed and highlight those that haven't",
-			"Please highlight any change that isn't related to a comment I've made",
-		],
+		reviewDrawer(page).getByTestId("agent-quick-question").first(),
+	).toHaveText("Please summarize the changes");
+	await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
+	// The push viewed (the head, the next patch set): the re-review's.
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
 		// The head check's fetch on a loaded machine (rereview.spec's GIT_WAIT).
-		{ timeout: 30_000 },
-	);
-	await expect(again.getByTestId("agent-quick-questions-loading")).toHaveCount(
-		0,
-	);
+		.click({ timeout: 30_000 });
+	await expect(page).toHaveURL(/[?&]head=/);
+	await chip(page).click();
+	await expect(
+		reviewDrawer(page).getByTestId("agent-quick-question"),
+	).toHaveText([
+		"Please summarize what changed",
+		"Please confirm all comments I wrote have been addressed and highlight those that haven't",
+		"Please highlight any change that isn't related to a comment I've made",
+	]);
 	await expectNoPageOverflow(page);
 	await shot(page, "review-conversation-rereview-questions", isMobile);
 	// Long past the tap (a reload and a head check later): nothing was sent.

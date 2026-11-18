@@ -1,4 +1,4 @@
-import type { SessionInfo } from "../../shared/types";
+import type { AgentViewTarget } from "../../shared/agent";
 
 /**
  * The one-tap questions that fill an Ask agent box (CAR-203). The owner's
@@ -36,48 +36,29 @@ export function withQuestion(text: string, question: string): string {
 	return typed.trim() ? `${typed}\n${question}` : question;
 }
 
-/** What isRereview reads of the session. */
-export type RereviewFacts = Pick<
-	SessionInfo,
-	"snapshotHead" | "currentHead" | "head" | "asOf" | "pinnedHead" | "patchsets"
->;
-
 /**
- * Whether the reviewer is re-reviewing: they have a patch set of this PR
- * on another head than the PR's latest. So a push after their review
- * already makes it one, before a new patch set starts. No patch set: a
- * new PR; patch sets on two heads or more: a re-review, whatever GitHub
- * says now. Patch sets on one head: it takes the PR's latest head, so
- * undefined (a spinner) until the page's head check has answered once
- * (`headChecked`; a long-lived session's head may be a night old). The
- * latest head: GitHub's as checked; without one (a merged or closed PR)
- * the head GitHub last gave (currentHead); in an as-of view or on a
- * pinned head, the snapshot's. Undefined while the session isn't known.
- * A base retarget on the same head counts as the same round.
+ * The number of the patch set being looked at (the comparison target the
+ * patch set graph shows): a patch set's own; the head, which is none yet,
+ * the next one after the reviewer's (`patchsets`, their count; undefined
+ * while the session isn't known). Undefined while unknown.
  */
-export function isRereview(
-	session: RereviewFacts | undefined,
-	headChecked: boolean,
-): boolean | undefined {
-	if (!session) return undefined;
-	const heads = new Set(session.patchsets.map((p) => p.head));
-	if (heads.size === 0) return false;
-	if (heads.size > 1) return true;
-	if (!headChecked) return undefined;
-	const latest =
-		session.head?.oid ??
-		(session.asOf || session.pinnedHead
-			? session.snapshotHead
-			: session.currentHead);
-	return !heads.has(latest);
+export function viewedPatchset(
+	target: AgentViewTarget,
+	patchsets: number | undefined,
+): number | undefined {
+	if ("patchset" in target) return target.patchset;
+	return patchsets === undefined ? undefined : patchsets + 1;
 }
 
-/** The review conversation's questions; null while it isn't known which. */
+/**
+ * The review conversation's questions: the re-review's when the patch set
+ * looked at is PS2 or later (the owner, 2026-11-18: "Re-review means
+ * we're looking at Patch Set > 1"), else the new PR's; null while its
+ * number isn't known.
+ */
 export function reviewQuestions(
-	session: RereviewFacts | undefined,
-	headChecked: boolean,
+	viewed: number | undefined,
 ): readonly string[] | null {
-	const again = isRereview(session, headChecked);
-	if (again === undefined) return null;
-	return again ? REREVIEW_QUESTIONS : NEW_PR_QUESTIONS;
+	if (viewed === undefined) return null;
+	return viewed > 1 ? REREVIEW_QUESTIONS : NEW_PR_QUESTIONS;
 }
