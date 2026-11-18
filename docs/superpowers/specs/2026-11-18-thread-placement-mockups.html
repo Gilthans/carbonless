@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent Thread Moves</title>
+<title>Thread Moves</title>
 <style>
 :root {
 	--canvas: #0b0d16; --surface: #12141f; --raised: #191c2b; --band: #161927;
@@ -15,6 +15,7 @@
 	--add: #0f2b22; --add-gutter: #153a2d; --add-ink: #74e8ac;
 	--del: #2d1221; --del-gutter: #3e172c; --del-ink: #ff94aa;
 	--hunk: #151936; --hunk-ink: #a7b0e8;
+	--p1: #1f2947; --p1-edge: #2e458a; --p2: #18353f; --p2-edge: #266b82;
 	--agent: #0f3534; --agent-edge: #1f7a76; --agent-ink: #5fd6cf;
 	--mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 	--sans: "Atkinson Hyperlegible Next", ui-sans-serif, system-ui, sans-serif;
@@ -59,8 +60,8 @@ tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; fon
 .phone table.d td.n { width: 30px; }
 
 /* Agent card */
-.card { border: 1px solid var(--agent-edge); border-radius: 8px; background: var(--surface); overflow: hidden; min-width: 0; }
-.card.moving { outline: 2px solid var(--accent); outline-offset: 2px; }
+article.card { border: 1px solid var(--agent-edge); border-radius: 8px; background: var(--surface); overflow: hidden; min-width: 0; }
+article.card.moving { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ch { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0 4px 0 10px; min-height: 40px; background: var(--band); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .ch .name { font-weight: 600; color: var(--ink-soft); }
 .ch .spark { color: var(--agent-ink); }
@@ -105,6 +106,26 @@ tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; fon
 .orig { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .orig .t { font-size: 11px; color: var(--label); letter-spacing: .08em; text-transform: uppercase; padding: 4px 8px; background: var(--band); border-bottom: 1px solid var(--line); }
 .legendless { display: none; }
+/* Review (GitHub) thread card */
+.rcard { border: 1px solid var(--edge); border-radius: 8px; background: var(--surface); overflow: hidden; min-width: 0; }
+.rcard.moving { outline: 2px solid var(--accent); outline-offset: 2px; }
+.st { display: inline-flex; align-items: center; gap: 4px; color: var(--warn); font-weight: 600; }
+.av { width: 20px; height: 20px; border-radius: 50%; background: var(--p1-edge); color: var(--ink); font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.cm { border-radius: 6px; padding: 6px 8px; font-size: 13px; background: var(--p1); border: 1px solid var(--p1-edge); }
+.cm.p2 { background: var(--p2); border-color: var(--p2-edge); }
+.reply { display: flex; gap: 6px; align-items: center; }
+.reply .box { flex: 1; min-width: 0; min-height: 40px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--canvas); color: var(--faint); font-size: 13px; padding: 9px 10px; }
+.reply .send { width: 40px; height: 40px; border-radius: 6px; background: var(--overlay); color: var(--ink); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.muted { color: var(--muted); }
+/* Threads tab */
+.tlist { padding: 6px; display: grid; gap: 2px; background: var(--surface); }
+.trow { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 2px 6px; border-radius: 6px; font-size: 13px; color: var(--ink-soft); }
+.trow.cur { background: var(--overlay); }
+.trow .path { font-family: var(--mono); font-size: 12px; }
+.trow .ln { color: var(--muted); }
+.trow .blurb { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.trow .cue { color: var(--muted); }
+
 @media (max-width: 400px) { body { padding: 16px 8px 48px; } }
 </style>
 </head>
@@ -118,18 +139,20 @@ tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; fon
 	<symbol id="x" viewBox="0 0 16 16"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.749.749 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.749.749 0 1 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></symbol>
 	<symbol id="removed" viewBox="0 0 16 16"><path d="M13.25 1c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 13.25 15H2.75A1.75 1.75 0 0 1 1 13.25V2.75C1 1.784 1.784 1 2.75 1ZM2.75 2.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25Zm8.5 6.25h-6.5a.75.75 0 0 1 0-1.5h6.5a.75.75 0 0 1 0 1.5Z"/></symbol>
 	<symbol id="chev" viewBox="0 0 16 16"><path d="M3.22 10.53a.749.749 0 0 1 0-1.06l4.25-4.25a.749.749 0 0 1 1.06 0l4.25 4.25a.749.749 0 1 1-1.06 1.06L8 6.811 4.28 10.53a.749.749 0 0 1-1.06 0Z"/></symbol>
+	<symbol id="comment" viewBox="0 0 16 16"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></symbol>
+	<symbol id="send" viewBox="0 0 16 16"><path d="M.989 8 .064 2.68a1.342 1.342 0 0 1 1.85-1.462l13.402 5.744a1.13 1.13 0 0 1 0 2.076L1.913 14.782a1.343 1.343 0 0 1-1.85-1.463L.99 8Zm.603-5.288L2.38 7.25h4.87a.75.75 0 0 1 0 1.5H2.38l-.788 4.538L13.929 8Z"/></symbol>
 	<symbol id="cursor" viewBox="0 0 16 16"><path d="M2 1l11 7-5 1-2 5z" stroke="#0b0d16" stroke-width="1"/></symbol>
 </svg>
 
-<h1>Agent thread moves</h1>
-<p class="lead">CAR-139 mockups. Desktop A–D, phone E–H. Spec: <code>2026-11-12-agent-thread-placement-design.md</code>. Example: the agent was asked about <code>release()</code> on PS2; after a push the tracer put it on the twin <code>release()</code> at line 88 instead of 52.</p>
+<h1>Thread moves</h1>
+<p class="lead">CAR-139 mockups, revised 2026-11-18: one mechanism for review threads and agent threads. Desktop A–E, phone F–I. Spec: <code>2026-11-18-thread-placement-design.md</code>. Example: a reviewer asked about <code>release()</code> on PS2, line 52; after a push the tracer put the thread on the twin <code>release()</code> at line 88.</p>
 
 <h2>Desktop</h2>
 <div class="frames">
 
-<!-- A: tracer's place, handle -->
+<!-- A: tracer's place, GitHub thread -->
 <section class="frame desk">
-	<div class="cap"><b>A · The tracer's place</b> handle in the card header</div>
+	<div class="cap"><b>A · The tracer's place</b> a GitHub review thread, handle in the card header</div>
 	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
 	<div class="diff"><table class="d">
 		<tr class="hunk"><td class="n"></td><td class="n"></td><td class="sg"></td><td>@@ -48,8 +48,10 @@ export class Pool {</td></tr>
@@ -140,23 +163,24 @@ tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; fon
 		<tr><td class="n">86</td><td class="n">87</td><td class="sg"></td><td>  drain() {</td></tr>
 		<tr class="add"><td class="n"></td><td class="n">88</td><td class="sg">+</td><td>    for (const t of this.held) this.release(t);</td></tr>
 		<tr class="card"><td colspan="4">
-			<article class="card">
+			<article class="rcard">
 				<div class="ch">
-					<svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span>
+					<span class="st"><svg class="i s14"><use href="#comment"/></svg>Unresolved</span>
+					<span class="av">MK</span><span class="name">mkline</span>
 					<span class="chip yellow"><svg class="i s12"><use href="#compare"/></svg>changed since</span>
 					<span class="grow"></span>
 					<span class="btn grab hot" title="Drag to a line, or press to pick one" aria-label="Move thread"><svg class="i"><use href="#grabber"/></svg></span>
 					<span class="btn"><svg class="i"><use href="#chev"/></svg></span>
 				</div>
 				<div class="cb">
-					<div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div>
-					<div class="msg ai"><div class="who">Claude</div>Yes: <code>finally</code> calls <code>release(token)</code> on every path.</div>
+					<div class="cm"><div class="who">mkline · PS2</div>Is the token released if <code>fn</code> throws?</div>
+					<div class="cm p2"><div class="who">author</div>Yes, the <code>finally</code> covers it.</div>
 				</div>
 			</article>
 			<p style="margin:6px 0 0"><span class="tip">Drag to a line, or press to pick one</span></p>
 		</td></tr>
 	</table></div>
-	<div class="note">Wrong twin: the question is about line 52. The tracer's placement looks as today; the Grabber (40×40) is the only addition.</div>
+	<div class="note">Wrong twin: the comment is about line 52. The tracer's placement looks as today; the Grabber (40×40) is the only addition, on review and agent cards alike.</div>
 </section>
 
 <!-- B: dragging -->
@@ -172,27 +196,28 @@ tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; fon
 		<tr><td class="n">86</td><td class="n">87</td><td class="sg"></td><td>  drain() {</td></tr>
 		<tr class="add"><td class="n"></td><td class="n">88</td><td class="sg">+</td><td>    for (const t of this.held) this.release(t);</td></tr>
 		<tr class="card"><td colspan="4">
-			<article class="card" style="opacity:.55">
+			<article class="rcard" style="opacity:.55">
 				<div class="ch">
-					<svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span>
+					<span class="st"><svg class="i s14"><use href="#comment"/></svg>Unresolved</span>
+					<span class="av">MK</span><span class="name">mkline</span>
 					<span class="chip yellow"><svg class="i s12"><use href="#compare"/></svg>changed since</span>
 					<span class="grow"></span>
 					<span class="btn grabbing"><svg class="i"><use href="#grabber"/></svg></span>
 					<span class="btn"><svg class="i"><use href="#chev"/></svg></span>
 				</div>
-				<div class="cb"><div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div></div>
+				<div class="cb"><div class="cm"><div class="who">mkline · PS2</div>Is the token released if <code>fn</code> throws?</div></div>
 			</article>
 		</td></tr>
 	</table>
-	<div class="ghost" style="left:420px; top:66px"><svg class="i s14 spark"><use href="#sparkle"/></svg>Is the lock released if fn throws?</div>
+	<div class="ghost" style="left:420px; top:66px; border-color:var(--p1-edge); background:var(--p1)"><span class="av">MK</span>Is the token released if fn throws?</div>
 	<svg class="cursor" style="left:408px; top:62px"><use href="#cursor"/></svg>
 	</div>
-	<div class="note">The card stays put (dimmed); a slim ghost follows the pointer. Drop on a row of this file to place; Escape or a drop elsewhere cancels. Nothing is written until the drop.</div>
+	<div class="note">The card stays put (dimmed); a slim ghost (avatar, or the sparkle for an agent thread) follows the pointer. Drop on a row of this file to place; Escape or a drop elsewhere cancels. Nothing is written until the drop.</div>
 </section>
 
-<!-- C: placed by you -->
+<!-- C: moved GitHub thread -->
 <section class="frame desk">
-	<div class="cap"><b>C · Placed by you</b> pin chip + Undo</div>
+	<div class="cap"><b>C · Moved by you</b> a GitHub thread: pin chip, Undo, GitHub's words kept</div>
 	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
 	<div class="diff"><table class="d">
 		<tr class="hunk"><td class="n"></td><td class="n"></td><td class="sg"></td><td>@@ -48,8 +48,10 @@ export class Pool {</td></tr>
@@ -200,32 +225,35 @@ tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; fon
 		<tr><td class="n">51</td><td class="n">51</td><td class="sg"></td><td>    const token = await this.take();</td></tr>
 		<tr class="add tint"><td class="n"></td><td class="n">52</td><td class="sg">+</td><td>    try { return await fn(); } finally { this.release(token); }</td></tr>
 		<tr class="card"><td colspan="4">
-			<article class="card">
+			<article class="rcard">
 				<div class="ch">
-					<svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span>
-					<span class="chip gray" title="Moved here by you on PS3"><svg class="i s12"><use href="#pin"/></svg>moved</span>
-					<span class="btn focus" title="Back to the tracer's place" aria-label="Back to the tracer's place"><svg class="i"><use href="#undo"/></svg></span>
+					<span class="st"><svg class="i s14"><use href="#comment"/></svg>Unresolved</span>
+					<span class="av">MK</span><span class="name">mkline</span>
+					<span class="muted">outdated</span>
+					<span class="chip gray" title="Moved here by you on PS3 · GitHub: outdated"><svg class="i s12"><use href="#pin"/></svg>moved</span>
+					<span class="btn focus" title="Undo move" aria-label="Undo move"><svg class="i"><use href="#undo"/></svg></span>
 					<span class="grow"></span>
 					<span class="btn grab"><svg class="i"><use href="#grabber"/></svg></span>
 					<span class="btn"><svg class="i"><use href="#chev"/></svg></span>
 				</div>
 				<div class="cb">
-					<div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div>
-					<div class="msg ai"><div class="who">Claude</div>Yes: <code>finally</code> calls <code>release(token)</code> on every path.</div>
+					<div class="cm"><div class="who">mkline · PS2</div>Is the token released if <code>fn</code> throws?</div>
+					<div class="cm p2"><div class="who">author</div>Yes, the <code>finally</code> covers it.</div>
+					<div class="reply"><span class="box">Reply…</span><span class="send" title="Reply" aria-label="Reply"><svg class="i"><use href="#send"/></svg></span></div>
 				</div>
 			</article>
-			<p style="margin:6px 0 0"><span class="tip">Moved here by you on PS3</span></p>
+			<p style="margin:6px 0 0"><span class="tip">Moved here by you on PS3 · GitHub: outdated</span></p>
 		</td></tr>
 		<tr class="hunk"><td class="n"></td><td class="n"></td><td class="sg"></td><td>@@ -84,4 +86,6 @@ export class Pool {</td></tr>
 		<tr><td class="n">86</td><td class="n">87</td><td class="sg"></td><td>  drain() {</td></tr>
 		<tr class="add"><td class="n"></td><td class="n">88</td><td class="sg">+</td><td>    for (const t of this.held) this.release(t);</td></tr>
 	</table></div>
-	<div class="note">Gray chip: a fact, not a state. Line 52 gets the landing tint (fades); focus lands on Undo. "changed since" is gone: the line is the one chosen, in this snapshot.</div>
+	<div class="note">Gray chip: a fact, not a state. "outdated" is GitHub's word and stays; the chip's tooltip says where GitHub shows it. The reply box is unchanged: a reply goes to the GitHub thread, and nothing about the move is sent. Line 52 gets the landing tint (fades); focus lands on Undo.</div>
 </section>
 
-<!-- D: next push, moved-to line deleted -->
+<!-- D: agent thread, next push deleted the moved-to line -->
 <section class="frame desk">
-	<div class="cap"><b>D · A later push deleted the line it was moved to</b> unplaced, still yours</div>
+	<div class="cap"><b>D · A later push deleted the line it was moved to</b> an agent thread: unplaced, still yours</div>
 	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+9</span><span class="minus">−11</span></div>
 	<div class="unpl">
 		<div class="top">
@@ -233,9 +261,9 @@ tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; fon
 			<span>The line it was on was deleted.</span>
 			<span class="link">near 50</span>
 			<span class="chip gray" title="Moved by you on PS3, followed here"><svg class="i s12"><use href="#pin"/></svg>moved</span>
-			<span class="btn" title="Back to the tracer's place"><svg class="i"><use href="#undo"/></svg></span>
+			<span class="btn" title="Undo move" aria-label="Undo move"><svg class="i"><use href="#undo"/></svg></span>
 			<span class="grow" style="flex:1"></span>
-			<span class="btn grab" title="Drag to a line, or press to pick one"><svg class="i"><use href="#grabber"/></svg></span>
+			<span class="btn grab" title="Drag to a line, or press to pick one" aria-label="Move thread"><svg class="i"><use href="#grabber"/></svg></span>
 		</div>
 		<div class="orig">
 			<div class="t">Original Reviewed Change</div>
@@ -255,43 +283,55 @@ tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; fon
 		<tr class="del"><td class="n">52</td><td class="n"></td><td class="sg">−</td><td>    try { return await fn(); } finally { this.release(token); }</td></tr>
 		<tr class="add"><td class="n"></td><td class="n">51</td><td class="sg">+</td><td>    return this.lock.run(fn);</td></tr>
 	</table></div>
-	<div class="note">Followed from the move (PS3), not from where it was asked. Original box: the moved-to lines. Undo goes back one move.</div>
+	<div class="note">Followed from the move (PS3), not from where it was asked. Original box: the moved-to lines. Undo goes back one move. A review thread looks the same here, with its own card.</div>
+</section>
+
+<!-- E: Threads tab -->
+<section class="frame desk" style="width:420px">
+	<div class="cap"><b>E · Threads tab</b> a moved thread is listed at its moved line</div>
+	<div class="tlist">
+		<div class="trow cur"><span class="av">MK</span><span class="path">pool.ts<span class="ln">:52</span></span><svg class="i s14 cue" aria-label="moved by you"><use href="#pin"/></svg><span class="blurb">Is the token released if fn throws?</span></div>
+		<div class="trow"><svg class="i s14 spark" style="color:var(--agent-ink)"><use href="#sparkle"/></svg><span class="path">pool.ts<span class="ln">:50</span></span><svg class="i s14 cue" aria-label="moved by you"><use href="#pin"/></svg><span class="blurb">Is the lock released if fn throws?</span></div>
+		<div class="trow"><span class="av" style="background:var(--p2-edge)">AU</span><span class="path">queue.ts<span class="ln">:14</span></span><span class="blurb">Why a second retry here?</span></div>
+	</div>
+	<div class="note">The pin joins the row's cues ("moved by you" in its name and tooltip). The Overview's cards show the <code>moved</code> chip; the handle and Undo are in Files changed only.</div>
 </section>
 </div>
 
 <h2>Phone · 360px</h2>
 <div class="frames">
 
-<!-- E -->
+<!-- F -->
 <section class="frame phone">
-	<div class="cap"><b>E · Handle</b> tap it</div>
+	<div class="cap"><b>F · Handle</b> tap it</div>
 	<div class="appbar"><b>#412</b><span>Files</span></div>
 	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
 	<div class="diff"><table class="d">
 		<tr><td class="n">87</td><td class="sg"></td><td>  drain() {</td></tr>
 		<tr class="add"><td class="n">88</td><td class="sg">+</td><td>    for (const t of this.held)…</td></tr>
 		<tr class="card"><td colspan="3">
-			<article class="card">
+			<article class="rcard">
 				<div class="ch">
-					<svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span>
+					<span class="st"><svg class="i s14"><use href="#comment"/></svg></span>
+					<span class="av">MK</span><span class="name">mkline</span>
 					<span class="grow"></span>
-					<span class="btn grab hot"><svg class="i"><use href="#grabber"/></svg></span>
+					<span class="btn grab hot" aria-label="Move thread"><svg class="i"><use href="#grabber"/></svg></span>
 					<span class="btn"><svg class="i"><use href="#chev"/></svg></span>
 					<span class="chip yellow"><svg class="i s12"><use href="#compare"/></svg>changed since</span>
 				</div>
-				<div class="cb"><div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div></div>
+				<div class="cb"><div class="cm"><div class="who">mkline · PS2</div>Is the token released if <code>fn</code> throws?</div></div>
 			</article>
 		</td></tr>
 	</table></div>
 	<div class="note">Chips wrap to a second row. Drag may work; a tap is always enough.</div>
 </section>
 
-<!-- F -->
+<!-- G -->
 <section class="frame phone">
-	<div class="cap"><b>F · Move mode</b> bar pushes the page down</div>
+	<div class="cap"><b>G · Move mode</b> bar pushes the page down</div>
 	<div class="movebar">
 		<svg class="i pin"><use href="#pin"/></svg><b>Pick a line</b>
-		<span class="what">Is the lock released if fn throws?</span>
+		<span class="what">Is the token released if fn throws?</span>
 		<span class="btn" title="Cancel" aria-label="Cancel"><svg class="i"><use href="#x"/></svg></span>
 	</div>
 	<div class="appbar"><b>#412</b><span>Files</span></div>
@@ -303,21 +343,21 @@ tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; fon
 		<tr><td class="n">87</td><td class="sg"></td><td>  drain() {</td></tr>
 		<tr class="add"><td class="n">88</td><td class="sg">+</td><td>    for (const t of this.held)…</td></tr>
 		<tr class="card"><td colspan="3">
-			<article class="card moving">
-				<div class="ch"><svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span><span class="grow"></span><span class="btn grabbing"><svg class="i"><use href="#grabber"/></svg></span><span class="btn"><svg class="i"><use href="#chev"/></svg></span></div>
+			<article class="rcard moving">
+				<div class="ch"><span class="st"><svg class="i s14"><use href="#comment"/></svg></span><span class="av">MK</span><span class="name">mkline</span><span class="grow"></span><span class="btn grabbing"><svg class="i"><use href="#grabber"/></svg></span><span class="btn"><svg class="i"><use href="#chev"/></svg></span></div>
 			</article>
 		</td></tr>
 	</table></div>
-	<div class="note">The card being moved is outlined. Line numbers in any file are targets (48×20, the picker's own).</div>
+	<div class="note">The card being moved is outlined. Line numbers in any file are targets (the picker's own).</div>
 </section>
 
-<!-- G -->
+<!-- H -->
 <section class="frame phone">
-	<div class="cap"><b>G · Picked</b> one button: Place here</div>
+	<div class="cap"><b>H · Picked</b> one button: Place here</div>
 	<div class="movebar">
 		<svg class="i pin"><use href="#pin"/></svg><b>Pick a line</b>
-		<span class="what">Is the lock released if fn throws?</span>
-		<span class="btn"><svg class="i"><use href="#x"/></svg></span>
+		<span class="what">Is the token released if fn throws?</span>
+		<span class="btn" aria-label="Cancel"><svg class="i"><use href="#x"/></svg></span>
 	</div>
 	<div class="appbar"><b>#412</b><span>Files</span></div>
 	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
@@ -331,35 +371,36 @@ tr.card > td { padding: 8px; background: var(--canvas); white-space: normal; fon
 	<div style="position:absolute; left:40px; top:64px"><span class="selbar"><span class="btn place" title="Place here" aria-label="Place here"><svg class="i"><use href="#pin"/></svg></span></span> <span class="tip" style="vertical-align:top;margin-top:8px">Place here</span></div>
 	<div style="height:40px"></div>
 	</div>
-	<div class="note">Drag down the numbers for a range. Escape / ✕ leaves with nothing written.</div>
+	<div class="note">Drag down the numbers for a range. ✕ leaves with nothing written.</div>
 </section>
 
-<!-- H -->
+<!-- I -->
 <section class="frame phone">
-	<div class="cap"><b>H · Placed by you</b></div>
+	<div class="cap"><b>I · Moved by you</b></div>
 	<div class="appbar"><b>#412</b><span>Files</span></div>
 	<div class="fh"><span class="dot"></span>src/db/pool.ts<span class="plus">+14</span><span class="minus">−6</span></div>
 	<div class="diff"><table class="d">
 		<tr><td class="n">51</td><td class="sg"></td><td>    const token = await…</td></tr>
 		<tr class="add tint"><td class="n">52</td><td class="sg">+</td><td>    try { return await fn…</td></tr>
 		<tr class="card"><td colspan="3">
-			<article class="card">
+			<article class="rcard">
 				<div class="ch">
-					<svg class="i s14 spark"><use href="#sparkle"/></svg><span class="name">Claude</span>
+					<span class="st"><svg class="i s14"><use href="#comment"/></svg></span>
+					<span class="av">MK</span><span class="name">mkline</span><span class="muted">outdated</span>
 					<span class="grow"></span>
-					<span class="btn grab"><svg class="i"><use href="#grabber"/></svg></span>
+					<span class="btn grab" aria-label="Move thread"><svg class="i"><use href="#grabber"/></svg></span>
 					<span class="btn"><svg class="i"><use href="#chev"/></svg></span>
 					<span class="chip gray"><svg class="i s12"><use href="#pin"/></svg>moved</span>
-					<span class="btn focus"><svg class="i"><use href="#undo"/></svg></span>
+					<span class="btn focus" aria-label="Undo move"><svg class="i"><use href="#undo"/></svg></span>
 				</div>
 				<div class="cb">
-					<div class="msg me"><div class="who">you</div>Is the lock released if <code>fn</code> throws?</div>
-					<div class="msg ai"><div class="who">Claude</div>Yes: <code>finally</code> releases it.</div>
+					<div class="cm"><div class="who">mkline · PS2</div>Is the token released if <code>fn</code> throws?</div>
+					<div class="reply"><span class="box">Reply…</span><span class="send" aria-label="Reply"><svg class="i"><use href="#send"/></svg></span></div>
 				</div>
 			</article>
 		</td></tr>
 	</table></div>
-	<div class="note">Bar gone, page back in place; chip and 40px Undo on the header's second row.</div>
+	<div class="note">Bar gone, page back in place; "outdated", the chip and a 40px Undo on the header's second row. An agent card shows the same controls.</div>
 </section>
 </div>
 </body>
