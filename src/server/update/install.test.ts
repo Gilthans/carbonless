@@ -717,6 +717,30 @@ describe("commands", () => {
 		});
 	});
 
+	it("pnpm on Windows: the standalone installer's pnpm.exe in PNPM_HOME, not PATH's pnpm.cmd", () => {
+		// @pnpm/exe puts pnpm.exe in PNPM_HOME with no pnpm.cmd beside it;
+		// PATH's pnpm.cmd may be an old npm-installed pnpm 9 that installs
+		// into global\5, where pnpm 12 (global\v11) never looks.
+		const command = (files: string[]) =>
+			installCommand({ pm: "pnpm", home: "C:\\pnpm" }, "0.4.0-rc.3", {
+				platform: "win32",
+				execPath: "C:\\node\\node.exe",
+				exists: (f) => files.includes(f),
+				env: { Path: "C:\\Users\\me\\AppData\\Roaming\\npm" },
+			}).command;
+		expect(command(["C:\\pnpm\\pnpm.exe"])).toBe("C:\\pnpm\\pnpm.exe");
+		expect(command(["C:\\pnpm\\bin", "C:\\pnpm\\bin\\pnpm.exe"])).toBe(
+			"C:\\pnpm\\bin\\pnpm.exe",
+		);
+		// A shim wins in the same dir; PNPM_HOME\bin's wins over PNPM_HOME's.
+		expect(command(["C:\\pnpm\\pnpm.cmd", "C:\\pnpm\\pnpm.exe"])).toBe(
+			"C:\\pnpm\\pnpm.cmd",
+		);
+		expect(command(["C:\\pnpm\\bin\\pnpm.cmd", "C:\\pnpm\\pnpm.exe"])).toBe(
+			"C:\\pnpm\\bin\\pnpm.cmd",
+		);
+	});
+
 	it("shown as the reviewer would type it", () => {
 		expect(showCommand("npm", "0.3.0")).toBe(
 			"npm install -g carbonless-review@0.3.0",

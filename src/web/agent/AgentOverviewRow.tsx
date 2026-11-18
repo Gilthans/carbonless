@@ -1,7 +1,11 @@
 import { AlertIcon, SparkleFillIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { AgentThread } from "../../shared/agent";
+import {
+	type AgentThread,
+	isSpanThread,
+	type SpanAgentThread,
+} from "../../shared/agent";
 import { ApiError, reviewQuery, sessionQuery } from "../api";
 import type { FilesSearch } from "../files/landing";
 import { useReviewId } from "../reviewId";
@@ -27,7 +31,8 @@ export function AgentOverviewRow() {
 	const head = useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead;
 	// A thread conversation shows with its GitHub thread, never as a card here.
 	const earlier = (threads.data?.threads ?? []).filter(
-		(t) =>
+		(t): t is SpanAgentThread =>
+			isSpanThread(t) &&
 			t.anchor.subject !== "thread" &&
 			head !== undefined &&
 			t.anchor.commit !== head,
@@ -45,8 +50,10 @@ export function AgentOverviewRow() {
 		return null;
 	}
 	const list = threads.data?.threads;
-	const open = list?.filter((t) => !t.resolved).length ?? 0;
-	const waiting = list?.filter((t) => !t.resolved && t.waiting).length ?? 0;
+	// The review conversation is the chip's, never counted here.
+	const spans = list?.filter(isSpanThread);
+	const open = spans?.filter((t) => !t.resolved).length ?? 0;
+	const waiting = spans?.filter((t) => !t.resolved && t.waiting).length ?? 0;
 	const s = status.data;
 	return (
 		<div className="space-y-2">
@@ -153,7 +160,7 @@ export function AgentOverviewRow() {
 }
 
 /** Where an agent thread's lines are in Files changed (a file's top without lines). */
-export function landingOf(thread: AgentThread): FilesSearch {
+export function landingOf(thread: SpanAgentThread): FilesSearch {
 	const a = thread.anchor;
 	if (a.subject === "file" || a.line === undefined || a.side === undefined) {
 		return { path: a.path };
@@ -167,13 +174,14 @@ export function landingOf(thread: AgentThread): FilesSearch {
  * first of them. Nothing while none does.
  */
 function UnreadLink(props: { threads: readonly AgentThread[] }) {
-	const unread = props.threads.filter((t) => t.unread);
+	// The review conversation has no line in Files changed to link to.
+	const unread = props.threads.filter(isSpanThread).filter((t) => t.unread);
 	const first = unread[0];
 	if (!first) return null;
 	return <UnreadLinkTo first={first} n={unread.length} />;
 }
 
-function UnreadLinkTo({ first, n }: { first: AgentThread; n: number }) {
+function UnreadLinkTo({ first, n }: { first: SpanAgentThread; n: number }) {
 	const id = useReviewId();
 	return (
 		<Link

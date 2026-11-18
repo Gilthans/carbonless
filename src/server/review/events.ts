@@ -152,6 +152,35 @@ export interface CarriedEvent extends EventBase {
 }
 
 /**
+ * Line marks carried into one cluster of the `to` patch set (CAR-195):
+ * `lines` of it (its own line index) take `state` because the since view
+ * doesn't show them (unchanged since the `from` patch set) and their
+ * counterparts there, `fromLines` of cluster `fromKey` (as many, one to
+ * one), held that human mark.
+ */
+export interface LinesCarriedEntry {
+	key: string;
+	fromKey: string;
+	state: "reviewed" | "crossed-off";
+	lines: LineRanges;
+	fromLines: LineRanges;
+}
+
+/**
+ * The engine's carry of line marks from patch set `from` to patch set
+ * `to`: one event per start. Only `by: "auto"`. The fold trusts an entry
+ * only when its source cluster holds a human mark (not itself carried)
+ * that covers `fromLines` in that state, and fills only a target cluster
+ * holding nothing but such carries (fold.ts).
+ */
+export interface LinesCarriedEvent extends EventBase {
+	type: "lines-carried";
+	from: number;
+	to: number;
+	states: LinesCarriedEntry[];
+}
+
+/**
  * One mark carried from a git hunk's key, as it was when the hunk was one
  * cluster, onto one of the pieces it is cut into now (CAR-156). Without
  * `from`, the hunk's whole mark; with `from` (the hunk's lines, in its own
@@ -321,6 +350,7 @@ export type CrbEvent =
 	| LinesStateEvent
 	| SinceLinesStateEvent
 	| CarriedEvent
+	| LinesCarriedEvent
 	| SplitCarriedEvent
 	| ThreadPlacedEvent
 	| ReviewClosedEvent
@@ -437,7 +467,12 @@ export function validateForWrite(e: CrbEvent): void {
 	if (INBOX_TYPES.includes(e.type) && e.by !== "human") {
 		throw new Error(`${e.type} events must be written by a human`);
 	}
-	if ((e.type === "carried" || e.type === "split-carried") && e.by !== "auto") {
+	if (
+		(e.type === "carried" ||
+			e.type === "split-carried" ||
+			e.type === "lines-carried") &&
+		e.by !== "auto"
+	) {
 		throw new Error(`${e.type} events must be written by auto (the engine)`);
 	}
 	if (e.type === "thread-placed" && e.by === "auto") {
@@ -620,6 +655,42 @@ function parseEvent(raw: unknown): CrbEvent | null {
 				});
 			}
 			return { ...base, type: "carried", from, to, rule, states: entries };
+		}
+		case "lines-carried": {
+			// Fail safe: only the engine carries, and only human marks.
+			if (base.by !== "auto") return null;
+			const { from, to, states } = raw;
+			if (!isPosInt(from) || !isPosInt(to) || from >= to) return null;
+			if (!Array.isArray(states)) return null;
+			const entries: LinesCarriedEntry[] = [];
+			for (const entry of states) {
+				if (!isObj(entry)) return null;
+				const { key, fromKey, state } = entry;
+				const lines = parseRanges(entry.lines);
+				const fromLines = parseRanges(entry.fromLines);
+				if (
+					typeof key !== "string" ||
+					!CLUSTER_KEY.test(key) ||
+					typeof fromKey !== "string" ||
+					!CLUSTER_KEY.test(fromKey) ||
+					typeof state !== "string" ||
+					!CARRIED_STATES.includes(state) ||
+					!lines ||
+					!fromLines ||
+					lines.length === 0 ||
+					size(lines) !== size(fromLines)
+				) {
+					return null;
+				}
+				entries.push({
+					key,
+					fromKey,
+					state: state as LinesCarriedEntry["state"],
+					lines,
+					fromLines,
+				});
+			}
+			return { ...base, type: "lines-carried", from, to, states: entries };
 		}
 		case "split-carried": {
 			// Fail safe: only the engine carries, and only marks a hunk had.
@@ -848,6 +919,8 @@ const isCol = (value: unknown): boolean =>
 function parseAnchor(raw: unknown): AgentAnchor | null {
 	if (!isObj(raw)) return null;
 	const { subject, path, commit } = raw;
+	// The review conversation has no path: any other key is dropped.
+	if (subject === "review") return { subject };
 	if (!isStr(path) || typeof commit !== "string") return null;
 	if (commit !== "" && !COMMIT.test(commit)) return null;
 	if (subject === "file") return { subject, path, commit };
@@ -1026,6 +1099,8 @@ function parseAgentEvent(
 			if (!anchor || !extras || !isText(raw.text)) return null;
 			// An agent-opened thread names its agent.
 			if (base.by === "ai" && !extras.agent) return null;
+			// The review conversation is opened by the reviewer, never the agent.
+			if (base.by === "ai" && anchor.subject === "review") return null;
 			const { origin, view } = raw;
 			// Fail safe: an origin is the agent's, a view the human's.
 			let parsedOrigin: AgentOrigin | undefined;

@@ -45,6 +45,16 @@ export class UnknownAgentMessageError extends Error {
 	}
 }
 
+/** Thrown for a second review conversation, or one the agent opens; `thread` names the one there. */
+export class ReviewConversationError extends Error {
+	constructor(
+		message: string,
+		readonly thread?: string,
+	) {
+		super(message);
+	}
+}
+
 /** Thrown for a thread id the ref doesn't hold (the app answers 404). */
 export class UnknownAgentThreadError extends Error {
 	constructor(readonly thread: string) {
@@ -100,8 +110,9 @@ function messageOf(
  * sorted by (ts, id). A thread's opening text is its first message; it waits
  * while a human message has no answer (isWaiting); resolved is the last resolve's word.
  * Messages and resolves of a thread never opened are dropped. Openings that
- * anchor the same GitHub thread fold into the first: later openings and
- * everything written under their ids join it. `seenUpTo` is the latest seen
+ * anchor the same GitHub thread fold into the first, and so do review
+ * openings (one review conversation): later openings and everything written
+ * under their ids join it. A resolve of the review conversation is ignored. `seenUpTo` is the latest seen
  * message by position; `unread` is an ai message after it.
  */
 export function foldAgentThreads(
@@ -112,7 +123,7 @@ export function foldAgentThreads(
 
 interface Folded {
 	threads: AgentThreadFold[];
-	/** A later opening's thread id → the first opening's, for one GitHub thread. */
+	/** A later opening's thread id → the first opening's, for one GitHub thread or the review. */
 	alias: ReadonlyMap<string, string>;
 }
 
@@ -126,6 +137,8 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 	const alias = new Map<string, string>();
 	/** GitHub thread id → the folded thread that anchors it. */
 	const byGithub = new Map<string, string>();
+	/** The review conversation's thread: later review openings join it. */
+	let byReview: string | undefined;
 	const seenUpTo = new Map<string, string[]>();
 	for (const e of sorted) {
 		const id = alias.get(e.thread) ?? e.thread;
@@ -136,7 +149,12 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 				if (thread) continue;
 				const github =
 					e.anchor.subject === "thread" ? e.anchor.thread : undefined;
-				const first = github !== undefined ? byGithub.get(github) : undefined;
+				const first =
+					github !== undefined
+						? byGithub.get(github)
+						: e.anchor.subject === "review"
+							? byReview
+							: undefined;
 				const into = first !== undefined ? threads.get(first) : undefined;
 				if (into && first !== undefined) {
 					alias.set(e.thread, first);
@@ -156,13 +174,17 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 					...(clientId !== undefined ? { clientId } : {}),
 				});
 				if (github !== undefined) byGithub.set(github, e.thread);
+				if (e.anchor.subject === "review") byReview = e.thread;
 				break;
 			}
 			case "agent-message":
 				thread?.messages.push(messageOf(e));
 				break;
 			case "agent-thread-resolved":
-				if (thread) thread.resolved = e.resolved;
+				// The review conversation is never resolved.
+				if (thread && thread.anchor.subject !== "review") {
+					thread.resolved = e.resolved;
+				}
 				break;
 			case "agent-thread-seen":
 				if (thread) seenUpTo.set(id, [...(seenUpTo.get(id) ?? []), e.upTo]);
@@ -372,6 +394,22 @@ export class AgentThreadStore {
 						? this.#aiKeys.get(aiKey(input.origin, input.key))?.thread
 						: undefined;
 			if (known !== undefined) return this.#find(events, known);
+			if (input.anchor.subject === "review") {
+				if (input.by !== "human") {
+					throw new ReviewConversationError(
+						"The review conversation is opened by the reviewer",
+					);
+				}
+				const existing = foldAgentThreads(events).find(
+					(t) => t.anchor.subject === "review",
+				);
+				if (existing) {
+					throw new ReviewConversationError(
+						"The review already has a conversation",
+						existing.id,
+					);
+				}
+			}
 			const { text, truncated } = capText(input.text);
 			const event = newEvent(
 				"agent-thread-opened",

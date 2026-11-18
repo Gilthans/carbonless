@@ -28,8 +28,8 @@ export function liveGithubThreads(
  * conversation is resolved exactly when its GitHub thread is (its own
  * agent-thread-resolved events count for nothing); one whose GitHub
  * thread is gone (not listed, or deleted) is an orphan: a span thread on
- * its recorded lines, resolved by its own events. Span threads pass
- * through unchanged.
+ * its recorded lines, resolved by its own events. Span threads and the
+ * review conversation pass through unchanged.
  */
 export function joinGithub(
 	folds: readonly AgentThreadFold[],

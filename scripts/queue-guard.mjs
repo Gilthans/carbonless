@@ -17,12 +17,12 @@ export function requireQueue(how) {
 }
 
 /**
- * Workers for a run holding a slot: the cores shared among the slots
- * (CRB_QUEUE_SLOTS, set by queue.mjs). undefined outside the queue: the
- * runner's own default.
+ * Workers for a run holding a slot: the cores but one (left for the
+ * machine's other work) shared among the slots (CRB_QUEUE_SLOTS, set by
+ * queue.mjs). undefined outside the queue: the runner's own default.
  */
 export function queuedWorkers(cores) {
 	if (!process.env.CRB_QUEUE_HELD) return undefined;
 	const slots = Number(process.env.CRB_QUEUE_SLOTS) || 1;
-	return Math.max(1, Math.floor(cores / slots));
+	return Math.max(1, Math.floor((cores - 1) / slots));
 }

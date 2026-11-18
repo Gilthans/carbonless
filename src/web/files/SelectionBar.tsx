@@ -117,10 +117,19 @@ export function placeBar(
  */
 export function currentView(): BarView {
 	const vv = window.visualViewport;
+	const left = vv?.offsetLeft ?? 0;
+	let w = vv?.width ?? document.documentElement.clientWidth;
+	// The review conversation's drawer docked on the right (not a phone's
+	// full screen) takes that much of it: the bar stays left of it.
+	const drawer = document.getElementById("review-conversation");
+	if (drawer && drawer.dataset.mode !== "phone") {
+		const x = drawer.getBoundingClientRect().left;
+		if (x > left) w = Math.min(w, x - left);
+	}
 	return {
-		left: vv?.offsetLeft ?? 0,
+		left,
 		top: vv?.offsetTop ?? 0,
-		w: vv?.width ?? document.documentElement.clientWidth,
+		w,
 		h: vv?.height ?? window.innerHeight,
 	};
 }

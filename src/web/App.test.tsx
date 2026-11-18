@@ -2302,7 +2302,7 @@ describe("App header", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("puts the agent chip right by the logo, before the title: one chip in the header", async () => {
+	it("puts the agent chip in its own column after the title, pinned right: one chip in the header", async () => {
 		renderApp({
 			"/api/agent": ok({
 				state: "ready",
@@ -2313,19 +2313,23 @@ describe("App header", () => {
 			}),
 		});
 		await screen.findByRole("heading", { level: 1 });
-		const chip = await headerChip("Your agent: Claude Agent 0.100.0");
+		const chip = await headerChip(
+			"Review conversation · Your agent: Claude Agent 0.100.0",
+		);
 		expect(screen.getAllByTestId("agent-chip")).toEqual([chip]);
 		const slot = screen.getByTestId("agent-chip-slot");
 		expect(slot).toContainElement(chip);
-		// Logo, chip, title: side by side in the title row.
+		// Logo, title, chip: side by side in the title row, the chip's
+		// 40px column last; the title takes the space between.
 		const logo = screen.getByTestId("home-link");
 		const title = screen.getByTestId("header-title");
 		expect(slot.parentElement).toBe(title.parentElement);
 		expect(logo.parentElement).toBe(slot.parentElement);
-		expect(
-			logo.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING,
-		).toBeTruthy();
-		expect(slot.nextElementSibling).toBe(title);
+		expect(logo.nextElementSibling).toBe(title);
+		expect(title.nextElementSibling).toBe(slot);
+		expect(slot.nextElementSibling).toBeNull();
+		expect(slot.className).toContain("w-10");
+		expect(title.className).toContain("flex-1");
 		// Not in the meta line under the title any more.
 		expect(screen.getByText("acme/widget").parentElement).not.toContainElement(
 			chip,
@@ -2334,9 +2338,14 @@ describe("App header", () => {
 		// until it docks there.
 		const row = screen.getByTestId("agent-chip-row-slot");
 		expect(row.querySelector("button, [aria-label]")).toBeNull();
+		// The sticky row's rightmost item, after Settings.
+		expect(row.nextElementSibling).toBeNull();
+		expect(row.previousElementSibling).toContainElement(
+			screen.getByRole("button", { name: "Settings" }),
+		);
 	});
 
-	it("leaves no chip and no kept space without an agent (the layout itself: e2e/sticky.spec.ts)", async () => {
+	it("leaves no chip without an agent, its column kept empty and nothing in the row (the layout itself: e2e/sticky.spec.ts)", async () => {
 		renderApp({ "/api/overview": ok({ ...overview, writes: "viewer" }) });
 		await screen.findByRole("heading", { level: 1 });
 		await screen.findByRole("region", { name: "Bot reviews" });
@@ -2345,6 +2354,7 @@ describe("App header", () => {
 			const slot = screen.getByTestId(id);
 			expect(slot.querySelector("button, [data-chip-space]")).toBeNull();
 		}
+		expect(screen.getByTestId("agent-chip-slot").className).toContain("w-10");
 	});
 
 	it("mounts no chip, and reads no agent, without a PR (session failed)", async () => {
@@ -2396,7 +2406,9 @@ describe("App header", () => {
 					waiting: 0,
 				}),
 			});
-			const chip = await headerChip("Your agent: Claude Agent 0.100.0");
+			const chip = await headerChip(
+				"Review conversation · Your agent: Claude Agent 0.100.0",
+			);
 			// Its tooltip (always there, hidden while closed), opened by a hover.
 			const tip = () =>
 				[...document.querySelectorAll("[role=tooltip]")].find(
@@ -2456,7 +2468,9 @@ describe("App header", () => {
 					waiting: 0,
 				}),
 			});
-			const chip = await headerChip("Your agent: Claude Agent 0.100.0");
+			const chip = await headerChip(
+				"Review conversation · Your agent: Claude Agent 0.100.0",
+			);
 			expect(screen.getByTestId("agent-chip-slot")).toContainElement(chip);
 			const reads = calls("/api/agent");
 			expect(reads).toBe(1);

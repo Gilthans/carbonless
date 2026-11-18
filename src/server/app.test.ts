@@ -1363,6 +1363,49 @@ describe("API", () => {
 			expect((await get("/api/agent/threads")).threads).toHaveLength(1);
 		});
 
+		it("POST agent/threads takes review: true", async () => {
+			const bad = await post("/api/agent/threads", {
+				clientId: "r0",
+				text: "Overall?",
+				review: true,
+				span: span(),
+			});
+			expect(bad.statusCode, bad.body).toBe(400);
+			for (const review of [false, "yes", 1]) {
+				const res = await post("/api/agent/threads", {
+					clientId: "r0",
+					text: "Overall?",
+					review,
+				});
+				expect(res.statusCode, JSON.stringify(review)).toBe(400);
+			}
+			expect((await get("/api/agent/threads")).threads).toHaveLength(0);
+			const res = await post("/api/agent/threads", {
+				clientId: "r1",
+				text: "Overall?",
+				review: true,
+			});
+			expect(res.statusCode, res.body).toBe(200);
+			const t: AgentThread = res.json();
+			expect(t.anchor).toEqual({ subject: "review" });
+			expect(t).toMatchObject({ openedBy: "human", resolved: false });
+			const second = await post("/api/agent/threads", {
+				clientId: "r2",
+				text: "And?",
+				review: true,
+			});
+			expect(second.statusCode).toBe(409);
+			expect(second.json()).toMatchObject({
+				error: expect.any(String),
+				thread: t.id,
+			});
+			const resolve = await post(`/api/agent/threads/${t.id}/resolved`, {
+				resolved: true,
+			});
+			expect(resolve.statusCode).toBe(409);
+			expect((await get("/api/agent/threads")).threads).toHaveLength(1);
+		});
+
 		it("400 on a bad span, a blank or too long text, a bad clientId, an unsafe path", async () => {
 			for (const bad of [
 				{ span: { ...span(), side: undefined } },
@@ -1388,7 +1431,7 @@ describe("API", () => {
 			expect(res.statusCode).toBe(404);
 		});
 
-		it("join: Approve and Deny race, the second is 409; disconnect; start", async () => {
+		it("join: Approve and Deny race, the second is 409; Detach; start", async () => {
 			const { session } = await registry.open({ pr: pr.arg });
 			const host = session.agent;
 			if (!host) throw new Error("no agent");
@@ -1418,7 +1461,7 @@ describe("API", () => {
 			});
 			expect(joined.spawned).toBeUndefined();
 			expect(joined.joinRequest).toBeUndefined();
-			const off = await post("/api/agent/disconnect");
+			const off = await post("/api/agent/detach");
 			expect(off.statusCode, off.body).toBe(200);
 			const left: AgentStatus = await get("/api/agent");
 			expect(left.left).toMatchObject({ ...who, why: "disconnected" });
@@ -1600,7 +1643,6 @@ describe("API", () => {
 				["GET", "/api/agent/threads"],
 				["GET", `/api/agent/placements?head=${pr.head()}`],
 				["POST", "/api/agent/cancel"],
-				["POST", "/api/agent/disconnect"],
 				["POST", "/api/agent/start"],
 				["POST", "/api/agent/detach"],
 			] as const) {
@@ -1622,7 +1664,6 @@ describe("API", () => {
 					"/api/agent/join/01k9e6m2q8x4v7c3n5b0h1j2t6",
 					{ approve: true },
 				],
-				["POST", "/api/agent/disconnect", {}],
 				["POST", "/api/agent/start", {}],
 				["POST", "/api/agent/detach", {}],
 				["PUT", "/api/config/agent", null],
@@ -3138,6 +3179,116 @@ describe("API", () => {
 			expect(page.body).toBe("js();");
 			const api = await keyed.inject({ url: r("/api/session"), cookies });
 			expect(api.statusCode).toBe(200);
+		});
+
+		it("with the cookie, another site's page opens nothing without a click, on any path, and writes nothing", async () => {
+			const cookies = { crb_key: "k3y" };
+			const open = vi.spyOn(registry, "open");
+			try {
+				// A script's `location = ...` (or a redirect it started): a
+				// top-level navigation the Lax cookie rides along with, no click.
+				const nav = {
+					"sec-fetch-site": "cross-site",
+					"sec-fetch-mode": "navigate",
+					"sec-fetch-dest": "document",
+				};
+				const paths = [
+					"/pr/acme/widget/12",
+					"/PR/acme/widget/12",
+					"/Pr/acme/widget/12",
+					"/%70r/acme/widget/12",
+					"/%2fpr/acme/widget/12",
+					`/r/${id}`,
+					`/r/${id}/files`,
+					"/",
+					"/settings",
+					r("/api/head"),
+				];
+				for (const site of ["cross-site", "same-site"]) {
+					for (const url of paths) {
+						const res = await keyed.inject({
+							url,
+							cookies,
+							headers: { ...nav, "sec-fetch-site": site },
+						});
+						expect(res.statusCode, `${site} ${url}`).toBe(403);
+						expect(res.body, url).not.toContain("spa");
+					}
+				}
+				// Neither a frame, an image or a fetch, even with a click.
+				for (const [mode, dest] of [
+					["navigate", "iframe"],
+					["no-cors", "image"],
+					["cors", "empty"],
+				]) {
+					const res = await keyed.inject({
+						url: "/pr/acme/widget/12",
+						cookies,
+						headers: {
+							"sec-fetch-site": "cross-site",
+							"sec-fetch-mode": mode,
+							"sec-fetch-dest": dest,
+							"sec-fetch-user": "?1",
+						},
+					});
+					expect(res.statusCode, dest).toBe(403);
+				}
+				// A link the reviewer clicked on GitHub: the page.
+				for (const url of ["/pr/acme/widget/12", `/r/${id}`, "/"]) {
+					const res = await keyed.inject({
+						url,
+						cookies,
+						headers: { ...nav, "sec-fetch-user": "?1" },
+					});
+					expect(res.statusCode, url).toBe(200);
+					expect(res.body, url).toContain("spa");
+				}
+				// The setup line's key stays same-origin only, click or not.
+				const setup = await keyed.inject({
+					url: "/api/mcp/setup",
+					cookies,
+					headers: { ...nav, "sec-fetch-user": "?1" },
+				});
+				expect(setup.statusCode).toBe(403);
+				expect(setup.body).not.toContain("k3y");
+				// A form post or fetch from another site: refused, nothing opens.
+				for (const headers of [
+					{ "sec-fetch-site": "cross-site", origin: "https://evil.example" },
+					{ ...nav, "sec-fetch-user": "?1" },
+				]) {
+					const post = await keyed.inject({
+						method: "POST",
+						url: "/api/reviews",
+						cookies,
+						headers,
+						payload: { pr: "acme/widget#12" },
+					});
+					expect(post.statusCode, JSON.stringify(headers)).toBe(403);
+				}
+				expect(open).not.toHaveBeenCalled();
+				// The reviewer's own: typed or bookmarked, the page's own
+				// requests, and clients without Fetch Metadata (crb, an agent).
+				for (const headers of [
+					{ "sec-fetch-site": "none" },
+					{ "sec-fetch-site": "same-origin" },
+					{},
+				]) {
+					const page = await keyed.inject({
+						url: `/r/${id}`,
+						cookies,
+						headers,
+					});
+					expect(page.statusCode, JSON.stringify(headers)).toBe(200);
+					const api = await keyed.inject({
+						url: r("/api/session"),
+						cookies,
+						headers,
+					});
+					expect(api.statusCode, JSON.stringify(headers)).toBe(200);
+				}
+			} finally {
+				open.mockRestore();
+			}
 		});
 
 		it("sends security headers on static, 401 and SPA responses", async () => {

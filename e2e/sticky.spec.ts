@@ -300,7 +300,7 @@ test("the tabs and the title never move as the agent loads: the chip's place is 
 	expect(await at()).toEqual(first);
 });
 
-test("a long title wrapping over several lines: the chip stays by the logo, then in sight as the header sticks", async ({
+test("a long title wrapping over several lines: the chip stays in its column, then in sight as the header sticks", async ({
 	page,
 	pr,
 	startCrb,
@@ -367,7 +367,7 @@ test("with Find in PR open above the header, the chip docks under the bar, and t
 	await expect(appRow(page).locator(chip)).toBeInViewport();
 });
 
-test("with no agent (--viewer): no chip and no space for it, by the logo or in the row; the compact title as before", async ({
+test("with no agent (--viewer): no chip; its column at the right kept, empty, none in the row; the compact title as before", async ({
 	page,
 	pr,
 	startCrb,
@@ -381,7 +381,8 @@ test("with no agent (--viewer): no chip and no space for it, by the logo or in t
 		page.getByRole("region", { name: "What it does" }),
 	).toBeVisible();
 	await expect(page.getByTestId("agent-chip")).toHaveCount(0);
-	await expect(page.getByTestId("agent-chip-slot")).toBeHidden();
+	// The column stays reserved at the right, like the logo on the left.
+	expect((await box(page.getByTestId("agent-chip-slot"))).width).toBe(40);
 	await expect(page.getByTestId("agent-chip-row-slot")).toBeHidden();
 	// The title right after the logo, one gap between them.
 	const logo = await page.getByTestId("home-link").boundingBox();
@@ -393,7 +394,7 @@ test("with no agent (--viewer): no chip and no space for it, by the logo or in t
 	const rowX = (await appRow(page).boundingBox())?.x ?? 0;
 	const overviewX =
 		(await page.getByRole("link", { name: "Overview" }).boundingBox())?.x ?? 0;
-	expect(overviewX - rowX).toBe((isMobile ? 8 : 24) + 28);
+	expect(overviewX - rowX).toBe(isMobile ? 8 + 24 : 24 + 28);
 	expect(row.height).toBeGreaterThan(0);
 	// Stuck at 360px, the compact title shows: no chip to give way to.
 	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -405,7 +406,7 @@ test("with no agent (--viewer): no chip and no space for it, by the logo or in t
 	await expectNoPageOverflow(page);
 });
 
-test("the agent chip sits by the logo, and stays in sight and in reach as the header sticks", async ({
+test("the agent chip sits in its column pinned right, and stays in sight and in reach as the header sticks", async ({
 	page,
 	pr,
 	startCrb,
@@ -420,15 +421,22 @@ test("the agent chip sits by the logo, and stays in sight and in reach as the he
 	).toBeVisible();
 	const chip = page.getByTestId("agent-chip");
 	const overview = page.getByRole("link", { name: "Overview" });
-	// At the top: right after the logo, centred on it, before the title.
+	// At the top: in its column after the title, at the content's right
+	// edge (Settings' below on desktop), centred on the logo.
 	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toBeVisible();
 	const logo = await page.getByTestId("home-link").boundingBox();
 	const at = await chip.boundingBox();
 	const title = await page.getByTestId("header-title").boundingBox();
-	if (!logo || !at || !title) throw new Error("not rendered");
-	expect(at.x).toBeGreaterThanOrEqual(logo.x + logo.width);
-	expect(at.x - (logo.x + logo.width)).toBeLessThanOrEqual(12);
-	expect(at.x + at.width).toBeLessThanOrEqual(title.x);
+	const settings = await appRow(page)
+		.getByRole("button", { name: "Settings" })
+		.boundingBox();
+	if (!logo || !at || !title || !settings) throw new Error("not rendered");
+	expect(title.x).toBeGreaterThanOrEqual(logo.x + logo.width);
+	expect(at.x).toBeGreaterThanOrEqual(title.x + title.width);
+	if (!isMobile)
+		expect(
+			Math.abs(at.x + at.width - (settings.x + settings.width)),
+		).toBeLessThanOrEqual(1);
 	expect(
 		Math.abs(at.y + at.height / 2 - (logo.y + logo.height / 2)),
 	).toBeLessThanOrEqual(2);
@@ -443,23 +451,29 @@ test("the agent chip sits by the logo, and stays in sight and in reach as the he
 	// screen, the tabs never moving.
 	await scrollToStick(page, tabX);
 
-	// Stuck: beside the compact mark, in the row at the top.
+	// Stuck: the row's rightmost item, after Settings.
 	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
 	await expect(page.getByTestId("compact-home-link")).not.toHaveAttribute(
 		"inert",
 	);
 	await expect(appRow(page).locator(chip)).toBeVisible();
 	expect((await box(appRow(page))).top).toBe(0);
-	const mark = await page.getByTestId("compact-home-link").boundingBox();
+	const settingsStuck = await appRow(page)
+		.getByRole("button", { name: "Settings" })
+		.boundingBox();
 	const docked = await chip.boundingBox();
-	if (!mark || !docked) throw new Error("not rendered");
-	expect(docked.x).toBeGreaterThan(mark.x);
+	if (!settingsStuck || !docked) throw new Error("not rendered");
+	expect(docked.x).toBeGreaterThanOrEqual(
+		settingsStuck.x + settingsStuck.width,
+	);
 	expect(docked.x + docked.width).toBeLessThanOrEqual(
-		(await overview.boundingBox())?.x ?? 0,
+		page.viewportSize()?.width ?? 0,
 	);
 	expect((await overview.boundingBox())?.x).toBe(tabX);
-	await expect(chip).toHaveAccessibleName(/^Your agent: /);
-	// It reads as a button: a 28px circle with a control's border, the
+	await expect(chip).toHaveAccessibleName(
+		/^Review conversation · Your agent: /,
+	);
+	// It reads as a button: a 32px circle with a control's border, the
 	// sparkle inside; a 40px tap target.
 	const face = page.getByTestId("agent-chip-face");
 	const ring = await face.evaluate((el) => {
@@ -472,7 +486,7 @@ test("the agent chip sits by the logo, and stays in sight and in reach as the he
 			color: c.borderTopColor,
 		};
 	});
-	expect(ring).toMatchObject({ width: 28, height: 28, border: "1px" });
+	expect(ring).toMatchObject({ width: 32, height: 32, border: "1px" });
 	expect(ring.color).not.toMatch(/^(transparent|rgba\(0, 0, 0, 0\))$/);
 	expect(
 		(await page.getByTestId("agent-chip-icon").locator("svg").boundingBox())
@@ -505,7 +519,7 @@ test("the agent chip sits by the logo, and stays in sight and in reach as the he
 	await expect(chip).toBeFocused();
 
 	// The setup open from the docked chip, the page behind it scrolled to
-	// the top (the chip back by the logo): closing it still gives the chip
+	// the top (the chip back in its column): closing it still gives the chip
 	// its focus back.
 	await chip.click();
 	await expect(setup).toBeVisible();
@@ -517,7 +531,7 @@ test("the agent chip sits by the logo, and stays in sight and in reach as the he
 	await expect(setup).toHaveCount(0);
 	await expect(chip).toBeFocused();
 
-	// Docked again with focus on it, then back at the top: by the logo
+	// Docked again with focus on it, then back at the top: in its column
 	// again; still one, still focused.
 	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
 	await expect(appRow(page).locator(chip)).toBeVisible();
@@ -531,7 +545,7 @@ test("the agent chip sits by the logo, and stays in sight and in reach as the he
 });
 
 ownTest(
-	"the compact row's keyboard order: mark, agent chip, tabs, title, number, Find in PR, Refresh",
+	"the compact row's keyboard order: mark, tabs, title, number, Find in PR, Refresh, Settings, agent chip",
 	async ({ page, pr, startCrb, isMobile }) => {
 		// Wide enough for the number (the narrower floors are the test above's).
 		if (isMobile) await page.setViewportSize({ width: 460, height: 780 });
@@ -548,8 +562,6 @@ ownTest(
 		await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText(
 			"Home",
 		);
-		await page.keyboard.press("Tab");
-		await expect(page.getByTestId("agent-chip")).toBeFocused();
 		for (const name of ["Overview", "Files changed", "Final Verdict"]) {
 			await page.keyboard.press("Tab");
 			await expect(page.getByRole("link", { name })).toBeFocused();
@@ -567,6 +579,12 @@ ownTest(
 		).toBeFocused();
 		await page.keyboard.press("Tab");
 		await expect(page.getByRole("button", { name: "Refresh" })).toBeFocused();
+		await page.keyboard.press("Tab");
+		await expect(
+			appRow(page).getByRole("button", { name: "Settings" }),
+		).toBeFocused();
+		await page.keyboard.press("Tab");
+		await expect(page.getByTestId("agent-chip")).toBeFocused();
 		// None of that moved the page: the row is stuck.
 		expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
 		await expect(compactPill(page)).toHaveCSS("opacity", "1");

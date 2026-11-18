@@ -91,7 +91,20 @@ const E2E_MAP = [
 	// agent (a conversation per GitHub thread), web and server.
 	[
 		/^src\/(web|server)\/agent\/|^test\/fake-acp\//,
-		["agent", "agent-setup", "thread-agent", "agent-join", "agent-open"],
+		[
+			"agent",
+			"agent-setup",
+			"thread-agent",
+			"agent-join",
+			"agent-open",
+			"review-conversation",
+		],
+	],
+	// The review conversation's drawer: mounted and pushing the page in App,
+	// the comparison it sends published by Files changed.
+	[
+		/^src\/web\/(App|shortcuts)\.tsx$|^src\/web\/files\/(FilesPage|SyncNotices)\.tsx$|^src\/server\/mcp\/|^e2e\/agent-ui\.ts$/,
+		["review-conversation"],
 	],
 	// The join bar sits above the header (App), the setup line's key (app.ts).
 	[/^src\/web\/App\.tsx$|^src\/server\/app\.ts$/, ["agent-join"]],
