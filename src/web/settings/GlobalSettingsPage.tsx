@@ -5,7 +5,6 @@ import {
 	CircleSlashIcon,
 	DownloadIcon,
 	GitCommitIcon,
-	LinkExternalIcon,
 	PackageIcon,
 	SyncIcon,
 } from "@primer/octicons-react";
@@ -13,11 +12,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useState } from "react";
 import type { ReleaseNote } from "../../shared/releaseNotes";
-import {
-	type ChecksOff,
-	commitUrl,
-	type UpdateInfo,
-} from "../../shared/update";
+import type { ChecksOff, UpdateInfo } from "../../shared/update";
 import {
 	compareUrl,
 	type NotesSection,
@@ -43,6 +38,7 @@ import {
 	NoteRow,
 	Uncovered,
 	VersionHead,
+	VersionLink,
 } from "../WhatsNew";
 
 /** Why crb never checks, in a few words. */
@@ -207,6 +203,15 @@ function CheckResult(props: {
 	);
 }
 
+/** The running build's own notes (its package's file, no network). */
+const ownNotesQuery = {
+	queryKey: ["release-notes"],
+	queryFn: () => fetchJson<OwnNotes>("/api/release-notes"),
+	retry: false,
+	staleTime: Number.POSITIVE_INFINITY,
+	refetchOnWindowFocus: false,
+} as const;
+
 /** How many of a version's notes show before its Show more. */
 export const NOTES_FOLDED = 3;
 /** How many earlier releases Show more opens, and Show more versions adds. */
@@ -231,7 +236,7 @@ function OlderVersion(props: { section: NotesSection }) {
 			data-version={section.version}
 			className="border-t border-line pt-1"
 		>
-			<VersionHead section={section} />
+			<VersionHead section={section} linkVersion />
 			{notes.length > 0 ? (
 				<ul className="m-0 list-none p-0">
 					{notes.map((n) => (
@@ -260,13 +265,7 @@ function RunningNotes() {
 	const [open, setOpen] = useState(false);
 	// How many earlier releases show once open: OLDER_STEP more per press.
 	const [shown, setShown] = useState(OLDER_STEP);
-	const own = useQuery({
-		queryKey: ["release-notes"],
-		queryFn: () => fetchJson<OwnNotes>("/api/release-notes"),
-		retry: false,
-		staleTime: Number.POSITIVE_INFINITY,
-		refetchOnWindowFocus: false,
-	});
+	const own = useQuery(ownNotesQuery);
 	const box = "pl-6";
 	if (own.isPending) {
 		return (
@@ -328,7 +327,12 @@ function RunningNotes() {
 					{data.earlier.slice(0, shown).map((s) => (
 						<OlderVersion key={s.version} section={s} />
 					))}
-					{data.earlier.length > shown && (
+				</>
+			)}
+			{/* One wrapping row: the two never overlap, at any width. */}
+			{(more || (open && data.earlier.length > shown)) && (
+				<div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+					{open && data.earlier.length > shown && (
 						<button
 							type="button"
 							data-testid="more-versions"
@@ -339,23 +343,23 @@ function RunningNotes() {
 							Show more versions
 						</button>
 					)}
-				</>
-			)}
-			{more && (
-				<MoreToggle
-					testId="running-notes-toggle"
-					open={open}
-					onToggle={() => {
-						setOpen((o) => !o);
-						setShown(OLDER_STEP);
-					}}
-				/>
+					{more && (
+						<MoreToggle
+							testId="running-notes-toggle"
+							open={open}
+							onToggle={() => {
+								setOpen((o) => !o);
+								setShown(OLDER_STEP);
+							}}
+						/>
+					)}
+				</div>
 			)}
 		</div>
 	);
 }
 
-/** The running crb: its version and commit, its channel, and updates. */
+/** The running crb: its version (linking its release), its channel, and updates. */
 function VersionSection() {
 	const client = useQueryClient();
 	const flow = useUpdateFlow();
@@ -368,6 +372,7 @@ function VersionSection() {
 		retry: false,
 		refetchOnWindowFocus: false,
 	});
+	const own = useQuery(ownNotesQuery);
 	const check = useMutation({
 		mutationFn: () =>
 			fetchJson<UpdateInfo>("/api/update/check", {
@@ -400,37 +405,25 @@ function VersionSection() {
 		check.isError && info.dataUpdatedAt <= failedAt
 			? check.error.message
 			: null;
-	const commit = commitUrl(data.commit);
-	const short = data.commit.replace(/-dirty$/, "").slice(0, 7);
-	const dirty = data.commit.endsWith("-dirty") ? "-dirty" : "";
+	// A build npm served (or one with its notes: CI's) has a release on
+	// GitHub; a local build has none: its version is plain text.
+	const released =
+		data.checksOff === null ||
+		data.checksOff === "env" ||
+		data.checksOff === "config" ||
+		own.data?.file === true;
 	const how = data.install ? `${data.install} global` : null;
 	return (
 		<Section title="Version" busy={check.isPending}>
 			<Row icon={<GitCommitIcon />} label="Running" testId="version-current">
-				<span className="font-mono font-semibold">{data.current}</span>
-				<span aria-hidden className="text-faint">
-					·
-				</span>
-				{commit ? (
-					<Tooltip content="Commit on GitHub" describe={false}>
-						{(trigger) => (
-							<a
-								{...trigger}
-								href={commit}
-								target="_blank"
-								rel="noreferrer"
-								className="inline-flex min-h-10 items-center gap-1 font-mono text-link underline"
-							>
-								{short}
-								<LinkExternalIcon size={12} aria-hidden />
-							</a>
-						)}
-					</Tooltip>
+				{released ? (
+					<VersionLink
+						version={data.current}
+						testId="version-link"
+						className="font-semibold"
+					/>
 				) : (
-					<span className="font-mono text-muted">
-						{short}
-						{dirty}
-					</span>
+					<span className="font-mono font-semibold">{data.current}</span>
 				)}
 			</Row>
 			<RunningNotes />

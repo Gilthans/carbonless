@@ -247,19 +247,77 @@ export function ReleaseDate(props: { date: string; className?: string }) {
 	);
 }
 
+/** Whether `text` is a version crb links (`0.4.0`, `0.4.0-rc.5`). */
+export const isVersion = (text: string): boolean =>
+	text.length <= 64 &&
+	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/.test(
+		text,
+	);
+
+/**
+ * A version linking to its release on GitHub (an RC to its tag), with the
+ * tooltip "Release on GitHub"; plain text when it isn't a version.
+ */
+export function VersionLink(props: {
+	version: string;
+	className?: string;
+	testId?: string;
+}) {
+	if (!isVersion(props.version)) {
+		return (
+			<span
+				data-testid={props.testId}
+				className={`font-mono ${props.className ?? ""}`}
+			>
+				v{props.version}
+			</span>
+		);
+	}
+	return (
+		<Tooltip content="Release on GitHub" describe={false}>
+			{(trigger) => (
+				<a
+					{...trigger}
+					data-testid={props.testId}
+					href={releaseUrl(props.version)}
+					target="_blank"
+					rel="noreferrer"
+					aria-label={`Release v${props.version} on GitHub`}
+					className={`inline-flex min-h-10 min-w-10 items-center gap-1 rounded-sm font-mono text-link underline hover:text-ink focus-visible:outline-2 focus-visible:outline-accent ${props.className ?? ""}`}
+				>
+					v{props.version}
+					<LinkExternalIcon size={12} aria-hidden />
+				</a>
+			)}
+		</Tooltip>
+	);
+}
+
 /** A version's heading: the version, its date, and its release on GitHub. */
-export function VersionHead(props: { section: NotesSection }) {
+export function VersionHead(props: {
+	section: NotesSection;
+	/** The version itself links to its release (Global settings), no ↗. */
+	linkVersion?: boolean;
+}) {
 	const { section } = props;
+	const linked = props.linkVersion && section.released;
 	return (
 		<div className="flex min-h-10 items-center gap-2">
-			<span className="font-mono text-[15px] font-bold">
-				v{section.version}
-			</span>
+			{linked ? (
+				<VersionLink
+					version={section.version}
+					className="text-[15px] font-bold"
+				/>
+			) : (
+				<span className="font-mono text-[15px] font-bold">
+					v{section.version}
+				</span>
+			)}
 			{section.date && (
 				<ReleaseDate date={section.date} className="text-xs text-faint" />
 			)}
 			<span className="flex-1" />
-			{section.released && (
+			{section.released && !linked && (
 				<Tooltip content="Release on GitHub" describe={false}>
 					{(trigger) => (
 						<a

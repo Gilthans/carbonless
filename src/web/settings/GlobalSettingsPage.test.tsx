@@ -175,15 +175,20 @@ describe("GlobalSettingsPage", () => {
 		});
 	});
 
-	it("the running version, its commit, channel, install and last check", async () => {
+	it("the running version linking its release (an RC to its tag), no commit; channel, install and last check", async () => {
 		serve({ get: () => INFO });
 		show();
 		const s = await section();
-		expect(await within(s).findByText("0.3.0-rc.4")).toBeInTheDocument();
-		expect(within(s).getByRole("link", { name: /282f365/ })).toHaveAttribute(
+		const link = await within(s).findByRole("link", {
+			name: "Release v0.3.0-rc.4 on GitHub",
+		});
+		expect(link).toHaveAttribute(
 			"href",
-			`https://github.com/Gilthans/carbonless/commit/${SHA}`,
+			"https://github.com/Gilthans/carbonless/releases/tag/v0.3.0-rc.4",
 		);
+		expect(link.className).toContain("min-h-10");
+		expect(s.textContent).not.toContain("282f365");
+		expect(within(s).queryByRole("link", { name: /282f365/ })).toBeNull();
 		expect(screen.getByTestId("version-install")).toHaveTextContent(
 			"channel rc· pnpm global",
 		);
@@ -378,7 +383,9 @@ describe("GlobalSettingsPage", () => {
 			expect(await screen.findByTestId("updates-off")).toHaveTextContent(
 				`updates off: ${why}`,
 			);
-			expect(screen.getByText("0.3.0-rc.4")).toBeInTheDocument();
+			expect(screen.getByTestId("version-current")).toHaveTextContent(
+				"0.3.0-rc.4",
+			);
 			expect(
 				screen.queryByRole("button", { name: "Check for updates" }),
 			).toBeNull();
@@ -442,21 +449,26 @@ describe("GlobalSettingsPage", () => {
 		expect(screen.queryByTestId("check-failed")).toBeNull();
 	});
 
-	it("a -dirty build: shown as dirty, never linked to the clean commit", async () => {
-		serve({ get: () => ({ ...INFO, commit: `${SHA}-dirty` }) });
-		show();
-		const row = await screen.findByTestId("version-current");
-		expect(row).toHaveTextContent("282f365-dirty");
-		expect(within(row).queryByRole("link")).toBeNull();
-	});
-
-	it("a commit that isn't a SHA: shown, not linked", async () => {
+	it("a local build: its version as plain text, no release link, no commit", async () => {
 		serve({
-			get: () => ({ ...INFO, commit: "unknown", checksOff: "local-build" }),
+			get: () => ({
+				...INFO,
+				commit: `${SHA}-dirty`,
+				checksOff: "local-build",
+			}),
 		});
 		show();
 		const row = await screen.findByTestId("version-current");
-		expect(row).toHaveTextContent("unknown");
+		expect(row).toHaveTextContent("0.3.0-rc.4");
+		expect(row.textContent).not.toContain("282f365");
+		expect(within(row).queryByRole("link")).toBeNull();
+	});
+
+	it("a version that isn't one is never linked", async () => {
+		serve({ get: () => ({ ...INFO, current: "0.3.0/../../x" }) });
+		show();
+		const row = await screen.findByTestId("version-current");
+		expect(row).toHaveTextContent("0.3.0/../../x");
 		expect(within(row).queryByRole("link")).toBeNull();
 	});
 
@@ -573,6 +585,17 @@ describe("GlobalSettingsPage", () => {
 				"0.1.8",
 				"0.1.7",
 			]);
+			// Each older version's number links its release (no separate ↗).
+			const first0 = screen.getAllByTestId("notes-version")[0] as HTMLElement;
+			expect(
+				within(first0).getByRole("link", { name: "Release v0.1.11 on GitHub" }),
+			).toHaveAttribute(
+				"href",
+				"https://github.com/Gilthans/carbonless/releases/tag/v0.1.11",
+			);
+			expect(
+				within(first0).getAllByRole("link", { name: /Release/ }),
+			).toHaveLength(1);
 			// Each older version folded: its first 3 notes, first sentence each.
 			const first = screen.getAllByTestId("notes-version")[0] as HTMLElement;
 			expect(

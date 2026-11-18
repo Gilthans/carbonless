@@ -354,6 +354,14 @@ Mockups: `release-notes-mockups.html`.
     full; then **Show more versions**, which adds the next 5, until there
     are no more. Show less folds it all back (to 5 again on the next
     Show more).
+    Show more versions and Show less share one wrapping row, so they
+    never overlap.
+  - Version numbers link their GitHub release (owner, QA 2026-11-18: "The
+    version numbers on the global settings page should link to the
+    github release. No need to keep the link to the specific commit"):
+    the running version (an RC to its tag) and each older version's
+    header; the commit is gone. A local build shows its version as plain
+    text.
   - A version with no notes says "No user-facing changes"; a build
     without the file (a local build) shows nothing there. Long notes
     show their first sentence until expanded, in the modal too (the rest

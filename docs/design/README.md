@@ -634,13 +634,18 @@ config). Answering:
   `aria-busy`, the spinner in its slot, Update already enabled. Failed: a
   `warn` notice (reason; in its tooltip on a phone), Retry, ↗. Spec:
   `docs/superpowers/specs/2026-11-16-release-notes-design.md`.
+- **Global settings' version**: the running version links its release on
+  GitHub (`releases/tag/vX.Y.Z`, an RC to its tag; `VersionLink`, 40px,
+  tooltip "Release on GitHub"), no commit beside it; a local build shows
+  its version as plain text.
 - **Global settings' release notes**: under the Version row, the running
   version's notes from its own package (no network), the first three,
   first sentence each; Show more (40px, chevron that turns) expands in
   place to the running version's notes in full, then up to 5 older
   versions (version, day, first 3 notes folded, each its own Show more),
   then "Show more versions" adding 5 more at a time, all the way back;
-  Show less folds it all. Nothing for a build without notes (a local
+  Show less folds it all (the two on one wrapping row, never
+  overlapping). Each older version's number links its release. Nothing for a build without notes (a local
   build).
 - **Overview**: an "Agent threads" band after the thread groups in "Is it
   ready": "N open · N waiting" (a skeleton while they load) and the chip's

@@ -153,12 +153,21 @@ function show() {
 const toast = () => screen.findByTestId("update-toast");
 
 /** The toast's What's new, then the modal's Update (the toast has none of its own). */
-/** clickUpdate under fake timers: the toast's button, then the modal's Update, at once. */
+/**
+ * clickUpdate under fake timers: the toast's button, then the modal's
+ * Update, each in its own act (never inside another: the modal must render
+ * between the two).
+ */
 function clickUpdateNow(version = "0.3.0") {
 	fireEvent.click(screen.getByTestId("update-open"));
-	fireEvent.click(
-		screen.getByRole("button", { name: `Update to v${version}` }),
-	);
+	// The dialog opens in an effect; read the button by its text, at once.
+	const update = screen
+		.getByTestId("whats-new")
+		.querySelector<HTMLButtonElement>("[data-testid=whats-new-footer] button");
+	if (update?.textContent !== `Update to v${version}`) {
+		throw new Error(`no Update to v${version} in What's new`);
+	}
+	fireEvent.click(update);
 }
 
 async function clickUpdate(version = "0.3.0") {
@@ -485,9 +494,7 @@ describe("UpdateToast", () => {
 		});
 		show();
 		await act(() => vi.advanceTimersByTimeAsync(0));
-		act(() => {
-			clickUpdateNow();
-		});
+		clickUpdateNow();
 		await act(() => vi.advanceTimersByTimeAsync(0));
 		expect(posts).toEqual([{ version: "0.3.0" }]);
 		// The old crb again, its install failed (never seen down).
@@ -560,9 +567,7 @@ describe("UpdateToast", () => {
 		held = undefined;
 		// The poll read "idle"; Update's answer says restarting.
 		info = { ...OFFER, state: "restarting" };
-		act(() => {
-			clickUpdateNow();
-		});
+		clickUpdateNow();
 		await act(() => vi.advanceTimersByTimeAsync(0));
 		await act(async () => release());
 		await act(() => vi.advanceTimersByTimeAsync(0));
@@ -601,9 +606,7 @@ describe("UpdateToast", () => {
 		});
 		show();
 		await act(() => vi.advanceTimersByTimeAsync(0));
-		act(() => {
-			clickUpdateNow();
-		});
+		clickUpdateNow();
 		await act(() => vi.advanceTimersByTimeAsync(0));
 		expect(posts).toEqual([{ version: "0.3.0" }]);
 		expect(screen.getByTestId("update-toast").dataset.state).toBe("updating");
@@ -630,9 +633,7 @@ describe("UpdateToast", () => {
 			});
 			show();
 			await act(() => vi.advanceTimersByTimeAsync(0));
-			act(() => {
-				clickUpdateNow();
-			});
+			clickUpdateNow();
 			await act(() => vi.advanceTimersByTimeAsync(0));
 			const before = asked.update;
 			await act(() => vi.advanceTimersByTimeAsync(2 * BACK_POLL_MS));

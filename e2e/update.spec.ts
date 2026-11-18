@@ -959,10 +959,26 @@ it("Global settings: the running version; Check for updates offers the newer one
 	const { url } = await installed.start();
 	const version = await openGlobalSettings(page, url);
 	await expect(version.getByTestId("version-current")).toContainText(CURRENT);
-	await expect(version.getByRole("link", { name: /^ccccccc/ })).toHaveAttribute(
+	// The version links its release on GitHub; no commit beside it.
+	const release = version.getByRole("link", {
+		name: `Release v${CURRENT} on GitHub`,
+	});
+	await expect(release).toHaveAttribute(
 		"href",
-		`https://github.com/Gilthans/carbonless/commit/${"c".repeat(40)}`,
+		`https://github.com/Gilthans/carbonless/releases/tag/v${CURRENT}`,
 	);
+	await expect(version.getByTestId("version-current")).not.toContainText(
+		"ccccccc",
+	);
+	if (!isMobile) {
+		await release.hover();
+		await expect(
+			page.locator('[role="tooltip"]:not([hidden])', {
+				hasText: "Release on GitHub",
+			}),
+		).toBeVisible();
+		await page.mouse.move(0, 0);
+	}
 	await expect(version.getByTestId("version-install")).toHaveText(
 		/channel latest\s*· npm global/,
 	);
@@ -995,10 +1011,11 @@ it("Global settings: the running version; Check for updates offers the newer one
 	for (const target of [
 		check,
 		page.getByRole("link", { name: "Home" }),
-		version.getByRole("link", { name: /^ccccccc/ }),
+		release,
 	]) {
 		const box = await target.boundingBox();
 		expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+		expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
 	}
 	await shot(page, "global-settings-current", isMobile);
 
@@ -1374,6 +1391,23 @@ it("Global settings: the running version's notes under Version; Show more opens 
 		"Third note.",
 		"Fourth note.",
 	]);
+	// Its number links its release.
+	await expect(
+		older.getByRole("link", { name: "Release v0.1.6 on GitHub" }),
+	).toHaveAttribute(
+		"href",
+		"https://github.com/Gilthans/carbonless/releases/tag/v0.1.6",
+	);
+	// Show more versions and Show less never overlap, at any width.
+	const lessBox = await notes.getByTestId("running-notes-toggle").boundingBox();
+	const moreBox = await notes.getByTestId("more-versions").boundingBox();
+	if (!lessBox || !moreBox) throw new Error("no boxes");
+	const apart =
+		lessBox.x >= moreBox.x + moreBox.width ||
+		moreBox.x >= lessBox.x + lessBox.width ||
+		lessBox.y >= moreBox.y + moreBox.height ||
+		moreBox.y >= lessBox.y + lessBox.height;
+	expect(apart).toBe(true);
 	// Show more versions: the next ones, until there are no more.
 	const moreVersions = notes.getByTestId("more-versions");
 	expect(
