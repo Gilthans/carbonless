@@ -44,16 +44,23 @@ import { agentThreadsQuery } from "./api";
 import { spanOfAnchor } from "./askAgentAction";
 import { resetLinkProblems } from "./linkProblems";
 import {
-	noteLanding,
+	LANDING_MS,
+	landingFor,
 	type PendingComposers,
 	PendingComposersProvider,
+	prepareLanding,
 	resetHeldComposers,
+	resetLanding,
 	shownOutsideCard,
 	useHeldByCard,
 	useLandWhere,
 } from "./pendingThread";
 import { AgentHandle } from "./ThreadAgentButton";
-import { ThreadAgentContext, useThreadAgent } from "./threadAgent";
+import {
+	setAgentDraft,
+	ThreadAgentContext,
+	useThreadAgent,
+} from "./threadAgent";
 import { reviewThread, stubIntersection } from "./threadAgentFixtures";
 
 const HEAD = "h".repeat(40);
@@ -128,6 +135,8 @@ afterEach(() => {
 	resetAgentWrites();
 	resetRepliesTyped();
 	threadFocus.reset();
+	resetLanding();
+	document.body.innerHTML = "";
 	vi.restoreAllMocks();
 	resetLinkProblems();
 	vi.unstubAllGlobals();
@@ -227,6 +236,32 @@ function show(c: AgentThread = conversation()) {
 const region = (id: string) => screen.getByTestId(id);
 const pressComment = () =>
 	userEvent.click(screen.getByRole("button", { name: "Comment on GitHub" }));
+
+const rect = (top: number) =>
+	({
+		top,
+		bottom: top + 10,
+		left: 0,
+		right: 0,
+		width: 0,
+		height: 10,
+		x: 0,
+		y: top,
+		toJSON: () => ({}),
+	}) as DOMRect;
+/** `el` drawn with its top at `top` in the viewport. */
+const placeAt = (el: Element, top: number) => {
+	el.getBoundingClientRect = () => rect(top);
+};
+/** A pending thread of conversation ID drawn at `top` (no section: its tops are the viewport's). */
+function pendingBoxAt(top: number): HTMLElement {
+	const box = document.createElement("article");
+	box.dataset.testid = "new-thread";
+	box.dataset.agentThread = ID;
+	placeAt(box, top);
+	document.body.append(box);
+	return box;
+}
 
 describe("Comment turns the agent card into the thread it will be", () => {
 	it("in the card's place: one pending thread holding the composer and the conversation's messages; no card, no second composer", async () => {
@@ -483,51 +518,213 @@ describe("fix round 1", () => {
 		unsubscribe();
 	});
 
-	it("the posted thread shows where the pending one was: the page scrolls by what moved above it", () => {
+	it("the posted thread shows where the pending one was: the page scrolls by what moved above it, once", () => {
 		const scrollBy = vi.fn();
 		vi.stubGlobal("scrollBy", scrollBy);
-		const at = (top: number) =>
-			({
-				top,
-				bottom: top + 10,
-				left: 0,
-				right: 0,
-				width: 0,
-				height: 10,
-			}) as DOMRect;
 		function Landed(props: { top: number }) {
 			const ref = useRef<HTMLElement>(null);
 			useLandWhere(ID, ref);
 			return (
 				<section
 					ref={(el) => {
-						if (el) el.getBoundingClientRect = () => at(0);
+						if (el) placeAt(el, 0);
 					}}
 				>
 					<article
 						ref={(el) => {
 							ref.current = el;
-							if (el) el.getBoundingClientRect = () => at(props.top);
+							if (el) placeAt(el, props.top);
 						}}
 					/>
 				</section>
 			);
 		}
-		const pending = document.createElement("section");
-		pending.getBoundingClientRect = () => at(0);
-		const box = document.createElement("article");
-		box.getBoundingClientRect = () => at(300);
-		pending.append(box);
-		document.body.append(pending);
-		noteLanding(ID, box);
+		const pending = pendingBoxAt(300);
+		prepareLanding(ID);
+		expect(document.documentElement.dataset.landing).toBe("");
 		pending.remove();
 		// Drawn 180px higher (above a thread the pending one was below).
 		render(<Landed top={120} />);
 		expect(scrollBy).toHaveBeenCalledWith(0, -180);
+		expect(document.documentElement.dataset.landing).toBeUndefined();
 		// Once: a later mount of the thread doesn't scroll.
 		cleanup();
 		render(<Landed top={50} />);
 		expect(scrollBy).toHaveBeenCalledTimes(1);
+	});
+
+	it("scrolled on past it at the handover: what the reader is looking at stays still, not the thread's spot", () => {
+		const scrollBy = vi.fn();
+		vi.stubGlobal("scrollBy", scrollBy);
+		const reading = document.createElement("p");
+		placeAt(reading, 400);
+		document.body.append(reading);
+		const fromPoint = vi.fn(() => reading);
+		Object.defineProperty(document, "elementFromPoint", {
+			value: fromPoint,
+			configurable: true,
+		});
+		try {
+			const pending = pendingBoxAt(-400);
+			prepareLanding(ID);
+			expect(landingFor(ID)).toMatchObject({ kind: "view", top: 400 });
+			pending.remove();
+			// The swap above grew the page by 90px: the paragraph moved down.
+			placeAt(reading, 490);
+			function Landed() {
+				const ref = useRef<HTMLElement>(null);
+				useLandWhere(ID, ref);
+				return <article ref={ref} />;
+			}
+			render(<Landed />);
+			expect(scrollBy).toHaveBeenCalledWith(0, 90);
+		} finally {
+			Reflect.deleteProperty(document, "elementFromPoint");
+		}
+	});
+
+	it("below the viewport at the handover: nothing above the reader changes, nothing noted", () => {
+		pendingBoxAt(window.innerHeight + 50);
+		prepareLanding(ID);
+		expect(landingFor(ID)).toBeUndefined();
+		expect(document.documentElement.dataset.landing).toBeUndefined();
+	});
+
+	it("measured right before the swap, not when posted: what moved meanwhile doesn't count", async () => {
+		let release: (a: NewThreadAnswer) => void = () => {};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				(url: string, init?: RequestInit) =>
+					new Promise<Response>((resolve) => {
+						if (
+							String(url).endsWith("/api/threads") &&
+							init?.method === "POST"
+						) {
+							release = (a) =>
+								resolve(new Response(JSON.stringify(a), { status: 200 }));
+						} else if (!String(url).endsWith("/agent/threads")) {
+							resolve(new Response("{}", { status: 200 }));
+						}
+					}),
+			),
+		);
+		show();
+		await pressComment();
+		const article = screen.getByTestId("new-thread");
+		placeAt(article, 100);
+		await typeComment("Add v3?");
+		await userEvent.click(screen.getByTestId("new-thread-post"));
+		// Nothing noted at post.
+		expect(landingFor(ID)).toBeUndefined();
+		// Something above grew while it was sent.
+		placeAt(article, 160);
+		await act(async () => release(answer));
+		await vi.waitFor(() =>
+			expect(screen.queryByTestId("new-thread")).toBeNull(),
+		);
+		expect(landingFor(ID)).toEqual({ kind: "thread", top: 160 });
+	});
+
+	it("a post GitHub refuses notes nothing and leaves the anchoring alone", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string, init?: RequestInit) =>
+				String(url).endsWith("/api/threads") && init?.method === "POST"
+					? new Response(JSON.stringify({ error: "no" }), { status: 422 })
+					: new Response("{}", { status: 200 }),
+			),
+		);
+		show();
+		await pressComment();
+		placeAt(screen.getByTestId("new-thread"), 100);
+		await typeComment("Add v3?");
+		await userEvent.click(screen.getByTestId("new-thread-post"));
+		await vi.waitFor(() =>
+			expect(screen.getByTestId("new-thread-error")).toBeTruthy(),
+		);
+		expect(landingFor(ID)).toBeUndefined();
+		expect(document.documentElement.dataset.landing).toBeUndefined();
+	});
+
+	it("an answer whose link failed notes nothing", async () => {
+		answer = {
+			...answer,
+			agentThread: undefined,
+			agentLinkProblem: { thread: ID, reason: "Taken" },
+		};
+		show();
+		await pressComment();
+		placeAt(screen.getByTestId("new-thread"), 100);
+		await typeComment("Add v3?");
+		await userEvent.click(screen.getByTestId("new-thread-post"));
+		await vi.waitFor(() =>
+			expect(screen.queryByTestId("new-thread")).toBeNull(),
+		);
+		expect(landingFor(ID)).toBeUndefined();
+		expect(document.documentElement.dataset.landing).toBeUndefined();
+	});
+
+	it("a landing nothing takes expires: dropped, never applied late, the anchoring back", () => {
+		vi.useFakeTimers();
+		try {
+			pendingBoxAt(300);
+			prepareLanding(ID);
+			expect(landingFor(ID)).toEqual({ kind: "thread", top: 300 });
+			vi.advanceTimersByTime(LANDING_MS);
+			expect(landingFor(ID)).toBeUndefined();
+			expect(document.documentElement.dataset.landing).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a kept follow-up stops counting as unsaved once Resolve hides its box (dropped), or once its conversation is gone", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) =>
+				String(url).endsWith("/resolved")
+					? new Response(JSON.stringify(conversation({ resolved: true })), {
+							status: 200,
+						})
+					: new Response("{}", { status: 200 }),
+			),
+		);
+		show();
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Reply to your agent" }),
+			"and v3?",
+		);
+		expect(region("dirty").textContent).toBe("true");
+		await userEvent.click(screen.getByTestId("agent-resolve"));
+		expect(cardReplyText(ID)).toBe("");
+		expect(region("dirty").textContent).toBe("false");
+		cleanup();
+		resetRepliesTyped();
+		show();
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Reply to your agent" }),
+			"and v3?",
+		);
+		act(() => client.setQueryData(agentThreadsQuery.queryKey, { threads: [] }));
+		await vi.waitFor(() => expect(region("dirty").textContent).toBe("false"));
+	});
+
+	it("a follow-up moved onto the posted thread's agent box keeps the page unsaved until cleared there", async () => {
+		show();
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Reply to your agent" }),
+			"and v3?",
+		);
+		await pressComment();
+		await typeComment("Add v3?");
+		await userEvent.click(screen.getByTestId("new-thread-post"));
+		await vi.waitFor(() =>
+			expect(screen.queryByTestId("new-thread")).toBeNull(),
+		);
+		expect(region("dirty").textContent).toBe("true");
+		act(() => setAgentDraft("T9", ""));
+		expect(region("dirty").textContent).toBe("false");
 	});
 
 	it("a link to the conversation while it is pending finds the pending thread", async () => {

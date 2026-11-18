@@ -62,6 +62,7 @@ import {
 	dropAgentWrite,
 	replyAgent,
 	retryAgentWrite,
+	setCardReply,
 	useAgentWrites,
 	useCardReply,
 } from "./agentWrites";
@@ -540,6 +541,8 @@ function AgentCard(props: AgentCardProps) {
 		onMutate: (next) => {
 			setResolvedNow(next);
 			setExpanded(!next);
+			// Resolved, its reply box goes: a follow-up typed there with it.
+			if (next) setCardReply(thread.id, "");
 		},
 		onSuccess: (saved) => {
 			client.setQueryData(agentThreadsQuery.queryKey, (list) =>

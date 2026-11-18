@@ -132,6 +132,8 @@ describe("a follow-up typed in the reply box", () => {
 		const client = new QueryClient({
 			defaultOptions: { queries: { retry: false, enabled: false } },
 		});
+		// The conversation is listed (a kept follow-up counts while it is).
+		client.setQueryData(agentThreadsQuery.queryKey, { threads: [answered()] });
 		const ui = (card: boolean) => (
 			<QueryClientProvider client={client}>
 				{card && <AgentThreadCard thread={answered()} status={status()} />}
