@@ -21,14 +21,13 @@ import { useShortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { newClientId } from "../threads/newThreads";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { chipOpensDrawer, pressAgentChip } from "./AgentChip";
+import { pressAgentChip } from "./AgentChip";
 import { AgentMessageItems, agentName, useAnswering } from "./AgentThreadCard";
 import { askReview, replyAgent, useAgentWrites } from "./agentWrites";
 import { agentStatusQuery, postAgentCancel, useAgentOn } from "./api";
 import {
 	closeReviewDrawer,
 	isReviewDrawerOpen,
-	toggleReviewDrawer,
 	useReviewDrawerOpen,
 } from "./drawerStore";
 import { QuickQuestionChips } from "./QuickQuestionChips";
@@ -38,7 +37,7 @@ import {
 	withQuestion,
 } from "./quickQuestions";
 import { useReviewConversation } from "./reviewConversation";
-import { openAgentSetup } from "./setupStore";
+import { isAgentSetupOpen, openAgentSetup } from "./setupStore";
 import {
 	unseenMessages,
 	useAgentDraft,
@@ -170,13 +169,16 @@ const focusChip = () =>
  * Files changed shows. While the agent threads are read, a spinner; a
  * failed read, an error with Retry; an empty conversation, the composer
  * alone, focused. Escape, Close or the chip close it, focus back on the
- * chip. It opens only on the reviewer's tap or key.
+ * chip. It opens only on the reviewer's tap or key; with no agent
+ * connected, the agent setup opens over it (a native modal dialog, in the
+ * top layer: above the docked drawer and a phone's full-screen one), and
+ * Escape closes the setup first, focus going into the drawer, then the
+ * drawer. Its status button opens the setup over it too, focus back on the button.
  */
 export function ReviewConversationDrawer() {
 	const open = useReviewDrawerOpen();
 	const on = useAgentOn();
 	const status = useQuery({ ...agentStatusQuery, enabled: false });
-	const opensDrawer = chipOpensDrawer(status.data);
 	useShortcut({
 		keys: DRAWER_KEYS,
 		label: "Whole review conversation",
@@ -184,8 +186,9 @@ export function ReviewConversationDrawer() {
 		when: () => on,
 		run: (e) => {
 			e.preventDefault();
-			if (!isReviewDrawerOpen() && (status.isPending || !opensDrawer)) {
-				// The chip's press: the setup, or held for the first status read.
+			if (!isReviewDrawerOpen()) {
+				// The chip's press: the drawer (the setup over it with no agent
+				// connected), or held for the first status read.
 				pressAgentChip(status.data, status.isPending);
 				return;
 			}
@@ -193,7 +196,7 @@ export function ReviewConversationDrawer() {
 			const inside = document
 				.getElementById("review-conversation")
 				?.contains(document.activeElement);
-			toggleReviewDrawer();
+			closeReviewDrawer();
 			if (inside) focusChip();
 		},
 	});
@@ -257,6 +260,8 @@ function Drawer() {
 	// the drawer itself (no keyboard popping up over the answers).
 	const focused = useRef<"panel" | "composer" | null>(null);
 	useEffect(() => {
+		// The setup over it has focus; closed, it sends focus here.
+		if (isAgentSetupOpen()) return;
 		if (empty && pending.length === 0 && focused.current !== "composer") {
 			focused.current = "composer";
 			box.current?.focus({ preventScroll: true });
@@ -347,11 +352,9 @@ function Drawer() {
 							{...trigger}
 							aria-label="Agent status"
 							data-testid="review-conversation-status"
-							onClick={() => {
-								// A phone shows one layer at a time: the modal takes the drawer's place.
-								if (phone) closeReviewDrawer();
-								openAgentSetup();
-							}}
+							// Over the drawer, which stays open behind it (a phone's
+							// full-screen one too): closed, the conversation is there.
+							onClick={openAgentSetup}
 							className={`ml-auto ${ICON_BUTTON}`}
 						>
 							<PulseIcon size={18} aria-hidden />

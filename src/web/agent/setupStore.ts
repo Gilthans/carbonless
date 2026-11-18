@@ -2,7 +2,8 @@
  * Whether the agent setup modal is open, and on which tab: one modal per
  * page (AgentSetupHost), opened from the chip, the Overview's row or a
  * waiting thread's button. The modal itself gives focus back to what
- * opened it. The tab is remembered in localStorage (`crb.agentSetup.tab`),
+ * opened it, or, opened over the review conversation's drawer
+ * (openAgentSetupOver), to where that says (the drawer's composer). The tab is remembered in localStorage (`crb.agentSetup.tab`),
  * and in memory when storage throws.
  */
 import { useSyncExternalStore } from "react";
@@ -45,9 +46,38 @@ const set = (open: boolean, tab: SetupTab = state.tab) => {
 	for (const l of listeners) l();
 };
 
+/** Where focus goes once the setup closes, when not back to what opened it. */
+let returnFocus: (() => HTMLElement | null | undefined) | null = null;
+
 /** Opens the setup on the stored tab (an onClick handler: takes no argument). */
-export const openAgentSetup = (): void => set(true, storedTab());
+export const openAgentSetup = (): void => {
+	if (!state.open) returnFocus = null;
+	set(true, storedTab());
+};
+
+/**
+ * Opens the setup over something that opened with it (the review
+ * conversation's drawer): once it closes, focus goes to what `back`
+ * finds then, else back to what opened it.
+ */
+export const openAgentSetupOver = (
+	back: () => HTMLElement | null | undefined,
+): void => {
+	returnFocus = back;
+	set(true, storedTab());
+};
 export const closeAgentSetup = (): void => set(false);
+
+/** Where focus goes as the setup closes (AgentSetup): `back`'s element, once. */
+export function takeSetupReturnFocus(): HTMLElement | null {
+	const back = returnFocus;
+	returnFocus = null;
+	const el = back?.() ?? null;
+	return el?.isConnected ? el : null;
+}
+
+/** Whether the setup is open now (outside React). */
+export const isAgentSetupOpen = (): boolean => state.open;
 export const setAgentSetupTab = (tab: SetupTab): void => {
 	store(tab);
 	set(state.open, tab);

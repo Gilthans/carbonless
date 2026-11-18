@@ -230,18 +230,26 @@ describe("the chip's tap", () => {
 			},
 		],
 	])(
-		"no agent connected, %s: opens the agent setup, no drawer",
+		"no agent connected, %s: opens the drawer with the agent setup over it; the setup closed, the drawer stays",
 		async (_n, more) => {
 			const { user } = chipOver(status(more), vi.fn(), [
 				review(2, { unread: true }),
 			]);
 			const chip = screen.getByTestId("agent-chip");
-			expect(chip).not.toHaveAttribute("aria-expanded");
-			expect(chip).not.toHaveAttribute("aria-controls");
+			expect(chip).toHaveAttribute("aria-expanded", "false");
+			expect(chip).toHaveAttribute("aria-controls", "review-conversation");
 			expect(face().className).not.toContain("bg-agent");
 			await user.click(chip);
 			expect(screen.getByTestId("setup")).not.toHaveTextContent("closed");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+			expect(chip).toHaveAttribute("aria-expanded", "true");
+			act(() => closeAgentSetup());
+			expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+			// Open: the chip closes it, no setup.
+			await user.click(chip);
 			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+			expect(screen.getByTestId("setup")).toHaveTextContent("closed");
 		},
 	);
 
@@ -329,7 +337,7 @@ describe("the chip's tap", () => {
 		["no conversation", [spanThread()]],
 		["a review conversation already there", [review(2, { unread: true })]],
 	])(
-		"nothing set up, %s: opens the agent setup, no drawer",
+		"nothing set up, %s: opens the drawer and the agent setup over it",
 		async (_n, threads) => {
 			const { user } = chipOver(
 				status({
@@ -342,16 +350,15 @@ describe("the chip's tap", () => {
 				threads,
 			);
 			const chip = screen.getByTestId("agent-chip");
-			expect(chip).not.toHaveAttribute("aria-expanded");
-			expect(chip).not.toHaveAttribute("aria-controls");
+			expect(chip).toHaveAttribute("aria-expanded", "false");
 			await user.click(chip);
 			expect(screen.getByTestId("setup")).not.toHaveTextContent("closed");
-			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("open");
 		},
 	);
 
-	it.each<[string, AgentStatus, string, string]>([
-		["an agent ready", status(), "open", "closed"],
+	it.each<[string, AgentStatus, string]>([
+		["an agent ready", status(), "closed"],
 		[
 			"nothing set up",
 			status({
@@ -360,24 +367,21 @@ describe("the chip's tap", () => {
 				agent: undefined,
 				connected: false,
 			}),
-			"closed",
 			"invite",
 		],
 		[
 			"an agent configured, none spawned",
 			status({ state: "off", connected: false }),
-			"closed",
 			"invite",
 		],
 		[
 			"an agent that crashed",
 			status({ state: "error", spawned: true, connected: false }),
-			"closed",
 			"invite",
 		],
 	])(
-		"tapped before the first status read, %s: nothing while it is read, then what the status says",
-		async (_n, answer, drawer, setup) => {
+		"tapped before the first status read, %s: nothing while it is read, then the drawer, the setup over it with no agent connected",
+		async (_n, answer, setup) => {
 			const held = heldJson();
 			vi.stubGlobal(
 				"fetch",
@@ -409,16 +413,20 @@ describe("the chip's tap", () => {
 			const user = userEvent.setup();
 			const chip = screen.getByTestId("agent-chip");
 			expect(chip).toHaveAttribute("aria-busy", "true");
-			// Every drawer state seen: one swapped for the setup never shows.
+			// Every state seen: the drawer never shows without the setup it opens with.
 			const seen = new Set<string>();
 			const watch = new MutationObserver(() =>
-				seen.add(screen.getByTestId("drawer").textContent ?? ""),
+				seen.add(
+					`${screen.getByTestId("drawer").textContent}|${screen.getByTestId("setup").textContent}`,
+				),
 			);
-			watch.observe(screen.getByTestId("drawer"), {
-				childList: true,
-				characterData: true,
-				subtree: true,
-			});
+			for (const id of ["drawer", "setup"]) {
+				watch.observe(screen.getByTestId(id), {
+					childList: true,
+					characterData: true,
+					subtree: true,
+				});
+			}
 			await user.click(chip);
 			// Held: neither opens before the status says which.
 			expect(screen.getByTestId("setup")).toHaveTextContent("closed");
@@ -429,10 +437,10 @@ describe("the chip's tap", () => {
 				expect(screen.getByTestId("setup")).toHaveTextContent(setup),
 			);
 			await waitFor(() =>
-				expect(screen.getByTestId("drawer")).toHaveTextContent(drawer),
+				expect(screen.getByTestId("drawer")).toHaveTextContent("open"),
 			);
 			watch.disconnect();
-			if (drawer === "closed") expect(seen.has("open")).toBe(false);
+			if (setup !== "closed") expect(seen.has("open|closed")).toBe(false);
 		},
 	);
 
@@ -500,7 +508,7 @@ describe("the chip's tap", () => {
 		},
 	);
 
-	it("Shift+A before the first status read, nothing set up: held like a tap, then the setup, never the drawer", async () => {
+	it("Shift+A before the first status read, nothing set up: held like a tap, then the drawer and the setup over it", async () => {
 		const held = heldJson();
 		vi.stubGlobal(
 			"fetch",
@@ -547,10 +555,10 @@ describe("the chip's tap", () => {
 		await waitFor(() =>
 			expect(screen.getByTestId("setup")).toHaveTextContent("open"),
 		);
-		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
 	});
 
-	it("open while the joined session leaves: still pressed, and the tap closes it, no setup", async () => {
+	it("open while the joined session leaves: still pressed, the tap closes it, no setup; the next opens both", async () => {
 		const { client, user } = chipOver(status(joined({ configured: false })));
 		const chip = screen.getByTestId("agent-chip");
 		await user.click(chip);
@@ -573,11 +581,11 @@ describe("the chip's tap", () => {
 		await user.click(chip);
 		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
 		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
-		// Closed, with no agent: the next tap is the setup's.
-		expect(chip).not.toHaveAttribute("aria-expanded");
+		// Closed, with no agent: the next tap opens it with the setup over it.
+		expect(chip).toHaveAttribute("aria-expanded", "false");
 		await user.click(chip);
 		expect(screen.getByTestId("setup")).not.toHaveTextContent("closed");
-		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
 	});
 
 	it("an early tap is replayed as an open: a drawer opened meanwhile stays open", async () => {

@@ -78,13 +78,13 @@ test("a new review opens on Setup Review Agent", async ({
 		chipName("No agent · spawn or invite"),
 	);
 	// Configured, but no agent connected to the review: the chip opens the
-	// setup, not the review conversation's drawer.
+	// review conversation's drawer with the setup over it.
 	await expect(chip(page)).not.toHaveAttribute("aria-busy", "true");
-	await expect(chip(page)).not.toHaveAttribute("aria-expanded");
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
 	await chip(page).click();
-	await expect(reviewDrawer(page)).toHaveCount(0);
 	const d = setupDialog(page);
 	await expect(d).toBeVisible();
+	await expect(page.getByTestId("review-conversation")).toBeVisible();
 	await expect(d.getByRole("tab", { name: "Invite" })).toHaveAttribute(
 		"aria-selected",
 		"true",
@@ -166,10 +166,12 @@ test("Spawn shows the Review Agent status, Detach returns to setup", async ({
 	await expect(setupDialog(page)).toBeVisible();
 	expect(spawns(acpLogPath)).toBe(started);
 	await expectNoPageOverflow(page);
-	// Close gives focus back to the chip.
+	// Close: the review conversation it opened over is there, focus in its composer.
 	await closeButton(setupDialog(page)).click();
 	await expect(setupDialog(page)).toBeHidden();
-	await expect(chip(page)).toBeFocused();
+	await expect(
+		reviewDrawer(page).getByRole("textbox", { name: "Ask agent" }),
+	).toBeFocused();
 });
 
 test("a failed Spawn shows the error and saves nothing", async ({

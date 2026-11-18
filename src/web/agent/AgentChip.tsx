@@ -18,7 +18,7 @@ import {
 	useReviewDrawerOpen,
 } from "./drawerStore";
 import { useReviewConversation } from "./reviewConversation";
-import { openAgentSetup } from "./setupStore";
+import { openAgentSetupOver } from "./setupStore";
 import { unseenMessages } from "./threadAgent";
 
 /**
@@ -118,14 +118,15 @@ export function useAgentSync(
 }
 
 /**
- * Whether pressing the chip (or Shift+A) toggles the review conversation's
- * drawer: an agent is connected to this review (`connected`: a spawned
- * agent's process up, even after a failed turn, or a joined session), or on
- * its way (starting, reconnecting, another server answering, a spawn whose
- * runner isn't up yet). Otherwise it opens the agent setup: an agent that
- * failed with none live (crashed, failed to start), stopped or never joined,
- * configured or not; a spawn with nothing configured; no status. Even with a
- * conversation already there.
+ * Whether pressing the chip (or Shift+A) opens the review conversation's
+ * drawer alone: an agent is connected to this review (`connected`: a
+ * spawned agent's process up, even after a failed turn, or a joined
+ * session), or on its way (starting, reconnecting, another server
+ * answering, a spawn whose runner isn't up yet). Otherwise the drawer
+ * opens with the agent setup on top of it, so that once the setup is done
+ * the conversation is there: an agent that failed with none live
+ * (crashed, failed to start), stopped or never joined, configured or not;
+ * a spawn with nothing configured; no status.
  */
 export function chipOpensDrawer(status: AgentStatus | undefined): boolean {
 	if (!status) return false;
@@ -141,22 +142,40 @@ export function chipOpensDrawer(status: AgentStatus | undefined): boolean {
 
 /**
  * A press (the chip's tap or Shift+A) before the first status read: held
- * until the status lands, then the drawer or the setup (chipOpensDrawer),
- * never one swapped for the other. A second press cancels it, and a failed
- * read spends it: nothing opens later, out of the blue.
+ * until the status lands, then the drawer, with the setup over it when no
+ * agent is connected (chipOpensDrawer), never the drawer without the setup
+ * it comes with. A second press cancels it, and a failed read spends it:
+ * nothing opens later, out of the blue.
  */
 let earlyPress = false;
 
-/** Opens what the status says: the drawer, else the setup. */
+/** The drawer's composer (else the drawer): where focus goes as the setup over it closes. */
+export const drawerFocusTarget = (): HTMLElement | null => {
+	const drawer = document.getElementById("review-conversation");
+	return (
+		drawer?.querySelector<HTMLElement>('textarea[aria-label="Ask agent"]') ??
+		drawer
+	);
+};
+
+/**
+ * Opens the setup over the open drawer: Escape, Close or the backdrop
+ * close the setup alone, focus going into the drawer.
+ */
+export const openSetupOverDrawer = (): void =>
+	openAgentSetupOver(drawerFocusTarget);
+
+/** Opens what the status says: the drawer, with the setup over it when no agent is connected. */
 const openForStatus = (status: AgentStatus | undefined): void => {
-	if (chipOpensDrawer(status)) openReviewDrawer();
-	else openAgentSetup();
+	openReviewDrawer();
+	if (!chipOpensDrawer(status)) openSetupOverDrawer();
 };
 
 /**
  * Presses the chip: an open drawer closes, whatever the agent (it may have
- * left while it was open); else the drawer or the setup; before the first
- * status read, the press is held.
+ * left while it was open); else the drawer opens, with the setup over it
+ * when no agent is connected; before the first status read, the press is
+ * held.
  */
 export function pressAgentChip(
 	status: AgentStatus | undefined,
@@ -237,9 +256,9 @@ export function useAgentChipPlace(asOf: boolean): boolean {
  * The number of the conversation's unseen answers sits on the lower right
  * while there are any (a joined session's plug inside it, before the
  * number; the plug alone otherwise), and it looks pressed while the drawer
- * is open. Pressing it toggles the drawer (chipOpensDrawer), else opens
- * the agent setup; a press before the first status read waits for it
- * (pressAgentChip). Until the overview says whether there is an agent, and
+ * is open. Pressing it toggles the drawer, opening the agent setup over
+ * it when no agent is connected (chipOpensDrawer); a press before the
+ * first status read waits for it (pressAgentChip). Until the overview says whether there is an agent, and
  * on its first read, a spinner in the icon's place; no number until the
  * threads are read (never a 0). None where the review has no agent
  * (--viewer, --as-of).
@@ -305,10 +324,10 @@ export function AgentChip({
 	// The agent's answers not yet seen; only once the threads are read
 	// (never a 0 while they load), and only while unseen.
 	const count = thread?.unread ? unseenMessages(thread).length : 0;
-	// An open drawer is the chip's to close, whatever the agent; until the
+	// The chip opens and closes the drawer, whatever the agent; until the
 	// first status read, neither (a press is held, above).
-	const drawer = drawerOpen || (!status.isPending && chipOpensDrawer(data));
-	const pressed = drawerOpen && drawer;
+	const drawer = drawerOpen || !status.isPending;
+	const pressed = drawerOpen;
 	// Both jobs (the conversation, the agent), then the status.
 	const name = [
 		"Review conversation",
