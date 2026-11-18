@@ -942,6 +942,32 @@ export async function waitForIntegrity(
 }
 
 /**
+ * The oldest npm `pnpm release publish` works with: npm stage (list,
+ * download, approve) came in 12.2. In step with the npm release.yml
+ * installs (`npm install -g npm@12.2.1`; a test checks).
+ */
+export const MIN_NPM = "12.2.0";
+
+/**
+ * Fails unless this machine's npm is MIN_NPM or newer: an older one answers
+ * `npm stage` with "Unknown command" halfway through. Says the fix.
+ */
+async function checkNpmVersion(io: Io): Promise<void> {
+	const r = await io.run("npm", ["--version"]);
+	const found = r.code === 0 ? r.stdout.trim() : "";
+	const have = /^\d+\.\d+\.\d+$/.test(found) ? parseVersion(found) : null;
+	const min = parseVersion(MIN_NPM);
+	if (have && min && compareVersions(have, min) >= 0) return;
+	const what =
+		r.code !== 0
+			? `npm --version failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`
+			: `this npm is ${found || "(no version)"}`;
+	throw new Error(
+		`pnpm release publish needs npm >= ${MIN_NPM} (npm stage); ${what}. Fix: npm install -g npm@12 (npm 12 needs Node ^22.22.2 or ^24.15.0, or newer)`,
+	);
+}
+
+/**
  * Fails unless the checkout `pnpm release publish` runs from is clean and
  * its release code and package.json are origin/master's: the OTP approves
  * whatever this code publishes.
@@ -1085,6 +1111,8 @@ export async function publishRelease(
 	if (runId !== undefined && !/^\d+$/.test(runId)) {
 		throw new Error(`not a run id: ${runId}`);
 	}
+	// First: an npm without npm stage would fail only after the downloads.
+	await checkNpmVersion(io);
 	await checkPublishingCheckout(io);
 	const run = runId ?? (await newestPromoteRun(io));
 	await checkPromoteRun(io, run);
