@@ -15,7 +15,12 @@ import {
 	statusDialog,
 	test,
 } from "./agent-ui";
-import { expectNoPageOverflow, openFiles, progress } from "./files-ui";
+import {
+	expectNoPageOverflow,
+	marksReady,
+	openFiles,
+	progress,
+} from "./files-ui";
 
 // Its own crb serve: the agent config, its fake ACP env and checkouts.
 test.use({ crbServer: "own" });
@@ -613,4 +618,68 @@ test("at 700px a toast ends left of the overlaid drawer", async ({
 		})
 		.toBeLessThanOrEqual(d);
 	await toast.getByRole("button", { name: "View" }).click({ trial: true });
+});
+
+test("one-tap questions (CAR-203): a first review's fill the box; after a mark and a push, the re-review's", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	// A mark, a push and the head check's fetch on a loaded machine.
+	test.slow();
+	const p = await pr(fixture);
+	const s = await agentCrb({ scenario: { agent: AGENT, answers: [] } });
+	const section = await openFile(page, s.url, CALC);
+	await chip(page).click();
+	const drawer = reviewDrawer(page);
+	const questions = drawer.getByTestId("agent-quick-question");
+	await expect(questions).toHaveText([
+		"Please summarize the changes",
+		"Please highlight all decisions made in code that I might object to",
+		"Please highlight all code that can't be tested directly",
+	]);
+	for (const b of await questions.all()) {
+		expect((await b.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+	}
+	await expectNoPageOverflow(page);
+	await shot(page, "review-conversation-questions", isMobile);
+	// A tap fills the box; nothing is sent.
+	const box = drawer.getByRole("textbox", { name: "Ask agent" });
+	await questions.first().click();
+	await expect(box).toHaveValue("Please summarize the changes");
+	await expect(box).toBeFocused();
+	await expect(drawer.getByTestId("agent-message-human")).toHaveCount(0);
+	await drawer.getByRole("button", { name: "Close" }).click();
+	await expect(reviewDrawer(page)).toHaveCount(0);
+	// A mark starts PS1; a push after it makes this a re-review.
+	await marksReady(page, section);
+	await section
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.first()
+		.click();
+	await expect(
+		section.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	p.moveHead({
+		message: "more",
+		files: { [CALC]: "export const total = 0;\n" },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		// The head check's fetch on a loaded machine (rereview.spec's GIT_WAIT).
+		{ timeout: 30_000 },
+	);
+	await chip(page).click();
+	await expect(
+		reviewDrawer(page).getByTestId("agent-quick-question"),
+	).toHaveText([
+		"Please summarize what changed",
+		"Please confirm all comments I wrote have been addressed and highlight those that haven't",
+		"Please highlight any change that isn't related to a comment I've made",
+	]);
+	await expectNoPageOverflow(page);
+	await shot(page, "review-conversation-rereview-questions", isMobile);
 });
