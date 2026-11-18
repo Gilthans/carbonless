@@ -17,8 +17,8 @@ verdict changed, with both placements. Verdicts:
 
 | Verdict | Meaning |
 | --- | --- |
-| `right` | placed or changed onto an expected or also-acceptable line (a range counts when it touches one); a file comment on its file |
-| `wrong-line` | placed somewhere else |
+| `right` | placed or changed on the new side with every line of its range expected or also acceptable, and at least one expected (also acceptable, for `"gone"`); a file comment on its file |
+| `wrong-line` | placed somewhere else, or a range spread past those lines |
 | `unplaced-ok` | expected `gone`, and listed under its file or outside the comparison |
 | `unplaced-wrong` | expected on a line, but unplaced |
 
@@ -56,6 +56,9 @@ verdict changed, with both placements. Verdicts:
   no longer exists) or `"file"` (a file comment, on its file).
 - `alsoAcceptable`: other lines that count as right, also for `"gone"`.
 - `tags`: optional labels to break the score down by.
+
+A malformed corpus is refused before anything runs, each problem named
+(exit 2).
 
 `test/fixtures/score-carry/corpus.json` is a synthetic example on a throwaway
 repo (`scripts/score-carry.test.ts` builds it). Corpora from real reviews

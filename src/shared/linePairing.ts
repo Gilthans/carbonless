@@ -1,4 +1,4 @@
-import { tokenize, WORD_DIFF_MAX } from "./tokenize.js";
+import { HAS_WORD, tokenize, WORD_DIFF_MAX } from "./tokenize.js";
 
 /**
  * Pairing the removed and added lines of one diff cluster by similarity
@@ -42,8 +42,6 @@ export type AlignBudget = { left: number };
 /** Two scores this close are a tie. */
 const EPS = 1e-9;
 
-/** A letter, combining mark, digit or `_`. */
-const HAS_WORD = /[\p{L}\p{M}\p{N}_]/u;
 const BLANK = /^\s+$/u;
 
 /** `arr[i]`, known to be there. */
@@ -202,6 +200,34 @@ function score(a: Scored, b: Scored, shared = Infinity): number {
 export function lineSimilarity(oldText: string, newText: string): number {
 	const codes: Codes = new Map();
 	return score(prepare(oldText, codes), prepare(newText, codes));
+}
+
+/**
+ * `lineSimilarity` of any old line against the added lines `adds` (by
+ * index), each line prepared once however many times it is scored: the
+ * tracer scores one old line against many added ones (CAR-95).
+ */
+export function similarityTo(
+	adds: readonly string[],
+): (oldText: string, j: number) => number {
+	const codes: Codes = new Map();
+	const fresh: (Scored | undefined)[] = [];
+	const old = new Map<string, Scored>();
+	return (oldText, j) => {
+		const text = adds[j];
+		if (text === undefined) return 0;
+		let a = old.get(oldText);
+		if (!a) {
+			a = prepare(oldText, codes);
+			old.set(oldText, a);
+		}
+		let b = fresh[j];
+		if (!b) {
+			b = prepare(text, codes);
+			fresh[j] = b;
+		}
+		return score(a, b);
+	};
 }
 
 /** A chosen set of pairs, as a persistent list (earliest pair first). */

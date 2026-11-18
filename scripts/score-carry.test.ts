@@ -170,6 +170,41 @@ describe("score-carry", () => {
 			err.mockRestore();
 		}
 	});
+
+	it("names each problem of a malformed corpus, before running git", async () => {
+		const bad = join(out, "malformed.json");
+		writeFileSync(
+			bad,
+			JSON.stringify({
+				version: 1,
+				entries: [
+					{ id: "a", madeAt: { path: "a.go" }, expected: [3] },
+					{
+						id: "a",
+						madeAt: { commit: "ps1", path: "a.go", line: 0 },
+						target: { commit: "ps2" },
+						expected: "gone",
+						alsoAcceptable: [{ path: "a.go", lines: ["x"] }],
+					},
+				],
+			}),
+		);
+		const err = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			expect(await main([bad, "--repo", repo.path])).toBe(2);
+			const said = err.mock.calls.map((c) => String(c[0]));
+			expect(said).toEqual([
+				`${bad}: entries[0] (a): madeAt needs a commit and a path`,
+				`${bad}: entries[0] (a): target needs a commit`,
+				`${bad}: entries[0] (a): expected: "gone", "file" or lines (no path)`,
+				`${bad}: entries[1] (a): duplicate id`,
+				`${bad}: entries[1] (a): madeAt.line must be a line number`,
+				`${bad}: entries[1] (a): alsoAcceptable: lines must be line numbers`,
+			]);
+		} finally {
+			err.mockRestore();
+		}
+	});
 });
 
 describe("verdictOf", () => {
@@ -192,16 +227,27 @@ describe("verdictOf", () => {
 			changed: false,
 		}) as const;
 
-	it("counts a range that touches an expected line", () => {
-		expect(verdictOf(entry({ path: "a.go", lines: [5] }), placed(4, 6))).toBe(
-			"right",
-		);
-		expect(verdictOf(entry({ path: "a.go", lines: [5] }), placed(6, 7))).toBe(
-			"wrong-line",
-		);
+	it("counts a range right only within the expected and also-acceptable lines, touching an expected one", () => {
+		const e = {
+			...entry({ path: "a.go", lines: [5, 6] }),
+			alsoAcceptable: [{ path: "a.go", lines: [4] }],
+		};
+		expect(verdictOf(e, placed(4, 6))).toBe("right");
+		expect(verdictOf(e, placed(5, 5))).toBe("right");
+		// Spread past them, though it touches 5 and 6.
+		expect(verdictOf(e, placed(3, 7))).toBe("wrong-line");
+		// Only also-acceptable lines: no expected one touched.
+		expect(verdictOf(e, placed(4, 4))).toBe("wrong-line");
 		expect(verdictOf(entry({ path: "b.go", lines: [5] }), placed(5, 5))).toBe(
 			"wrong-line",
 		);
+		// Expected gone: an also-acceptable line is right.
+		const gone = {
+			...entry("gone"),
+			alsoAcceptable: [{ path: "a.go", lines: [9] }],
+		};
+		expect(verdictOf(gone, placed(9, 9))).toBe("right");
+		expect(verdictOf(gone, placed(8, 9))).toBe("wrong-line");
 	});
 
 	it("an unplaced thread is right only when expected gone", () => {

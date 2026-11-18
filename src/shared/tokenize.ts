@@ -7,6 +7,9 @@
  */
 export const WORD_DIFF_MAX = 1024;
 
+/** A line with a word: a letter, combining mark, digit or `_` in it. */
+export const HAS_WORD = /[\p{L}\p{M}\p{N}_]/u;
+
 /** A letter, combining mark, digit or `_`: what a word run is made of. */
 const WORD = /^[\p{L}\p{M}\p{N}_]$/u;
 

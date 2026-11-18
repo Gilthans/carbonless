@@ -646,3 +646,44 @@ describe("tracePosition property", () => {
 		);
 	});
 });
+
+describe("traceRange property", () => {
+	it("never yields an inverted range: a new-side start before an old-side end, or an end above its start", () => {
+		fc.assert(
+			fc.property(worldArb, (w) => {
+				const d: TraceDiffs = {
+					...w.diffs,
+					oldLineText: (pos) =>
+						textAt(pos.side === "LEFT" ? w.base1 : w.head1, pos.line),
+					newLineText: (pos) =>
+						textAt(pos.side === "LEFT" ? w.base2 : w.head2, pos.line),
+					newLineCount: { LEFT: w.base2.length, RIGHT: w.head2.length },
+				};
+				const ranges: [Position, Position][] = [];
+				for (let a = 1; a <= w.head1.length; a++) {
+					for (let b = a; b <= Math.min(a + 4, w.head1.length); b++) {
+						ranges.push([R(a), R(b)]);
+					}
+				}
+				for (let a = 1; a <= w.base1.length; a++) {
+					for (let b = a; b <= Math.min(a + 4, w.base1.length); b++) {
+						ranges.push([L(a), L(b)]);
+					}
+					// GitHub's one mixed range: an old-side start, a new-side end.
+					for (let b = 1; b <= w.head1.length; b += 3)
+						ranges.push([L(a), R(b)]);
+				}
+				for (const [start, end] of ranges) {
+					const r = traceRange(start, end, d);
+					if (r.start.kind === "unplaced" || r.end.kind === "unplaced") {
+						continue;
+					}
+					expect(r.start.side === "RIGHT" && r.end.side === "LEFT").toBe(false);
+					if (r.start.side === r.end.side) {
+						expect(r.start.line).toBeLessThanOrEqual(r.end.line);
+					}
+				}
+			}),
+		);
+	});
+});

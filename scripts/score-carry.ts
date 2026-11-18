@@ -99,20 +99,39 @@ export interface ScoreRun {
 	entries: Scored[];
 }
 
-/** Whether a placed range touches any of the lines. */
-const touches = (
-	anchor: { path: string; startLine: number; line: number; side: DiffSide },
-	want: CorpusLines,
-) =>
-	anchor.path === want.path &&
-	anchor.side === "RIGHT" &&
-	want.lines.some((n) => n >= anchor.startLine && n <= anchor.line);
+/**
+ * Whether a placed range is right: on the new side of the entry's path,
+ * every line of it expected or also acceptable, and at least one expected
+ * (also acceptable, for "gone"). A range spread past them is wrong, even
+ * when it touches one.
+ */
+function rightRange(
+	e: CorpusEntry,
+	anchor: { path: string; side: DiffSide; startLine: number; line: number },
+): boolean {
+	const on = (sets: readonly CorpusLines[]) => {
+		const lines = new Set<number>();
+		for (const w of sets) {
+			if (w.path === anchor.path) for (const n of w.lines) lines.add(n);
+		}
+		return lines;
+	};
+	const also = e.alsoAcceptable ?? [];
+	const must = on(typeof e.expected === "object" ? [e.expected] : also);
+	const may = on([
+		...(typeof e.expected === "object" ? [e.expected] : []),
+		...also,
+	]);
+	if (anchor.side !== "RIGHT") return false;
+	let touched = false;
+	for (let n = anchor.startLine; n <= anchor.line; n++) {
+		if (!may.has(n)) return false;
+		if (must.has(n)) touched = true;
+	}
+	return touched;
+}
 
 export function verdictOf(e: CorpusEntry, p: ThreadPlacement): Verdict {
-	const ok = [
-		...(typeof e.expected === "object" ? [e.expected] : []),
-		...(e.alsoAcceptable ?? []),
-	];
 	if (e.expected === "file") {
 		return p.kind === "file" && p.path === e.madeAt.path
 			? "right"
@@ -127,10 +146,96 @@ export function verdictOf(e: CorpusEntry, p: ThreadPlacement): Verdict {
 			startLine: a.startSide === a.side ? a.startLine : a.line,
 			line: a.line,
 		};
-		return ok.some((w) => touches(anchor, w)) ? "right" : "wrong-line";
+		return rightRange(e, anchor) ? "right" : "wrong-line";
 	}
 	if (p.kind === "file") return "wrong-line";
 	return e.expected === "gone" ? "unplaced-ok" : "unplaced-wrong";
+}
+
+const isLine = (n: unknown) => Number.isInteger(n) && (n as number) >= 1;
+const isText = (v: unknown) => typeof v === "string" && v !== "";
+const isSide = (v: unknown) => v === undefined || v === "LEFT" || v === "RIGHT";
+
+function linesProblem(v: unknown): string | null {
+	const w = v as Partial<CorpusLines> | null;
+	if (!w || typeof w !== "object") return "not an object";
+	if (!isText(w.path)) return "no path";
+	if (
+		!Array.isArray(w.lines) ||
+		w.lines.length === 0 ||
+		!w.lines.every(isLine)
+	) {
+		return "lines must be line numbers";
+	}
+	return null;
+}
+
+/** What is wrong with a parsed corpus file, one message per problem. */
+export function corpusProblems(value: unknown): string[] {
+	const c = value as Partial<Corpus> | null;
+	if (!c || typeof c !== "object") return ["not a JSON object"];
+	if (c.version !== 1)
+		return [`version must be 1, not ${JSON.stringify(c.version)}`];
+	if (!Array.isArray(c.entries)) return ["entries must be an array"];
+	const out: string[] = [];
+	if (c.repo !== undefined && !isText(c.repo)) out.push("repo must be a path");
+	if (c.base !== undefined && !isText(c.base))
+		out.push("base must be a revision");
+	const ids = new Set<string>();
+	c.entries.forEach((raw, i) => {
+		const e = raw as Partial<CorpusEntry> | null;
+		const at = `entries[${i}]${e && isText(e.id) ? ` (${e.id})` : ""}`;
+		const bad = (what: string) => out.push(`${at}: ${what}`);
+		if (!e || typeof e !== "object") {
+			bad("not an object");
+			return;
+		}
+		if (!isText(e.id)) bad("no id");
+		else if (ids.has(e.id as string)) bad("duplicate id");
+		else ids.add(e.id as string);
+		const m = e.madeAt;
+		if (!m || !isText(m.commit) || !isText(m.path)) {
+			bad("madeAt needs a commit and a path");
+		} else {
+			if (!isSide(m.side) || !isSide(m.startSide))
+				bad("madeAt's sides are LEFT or RIGHT");
+			if (m.line !== undefined && !isLine(m.line))
+				bad("madeAt.line must be a line number");
+			if (
+				m.startLine !== undefined &&
+				(m.line === undefined || !isLine(m.startLine))
+			) {
+				bad("madeAt.startLine needs a line, both line numbers");
+			}
+			if (m.base !== undefined && !isText(m.base))
+				bad("madeAt.base must be a revision");
+		}
+		if (!e.target || !isText(e.target.commit)) bad("target needs a commit");
+		else if (e.target.base !== undefined && !isText(e.target.base)) {
+			bad("target.base must be a revision");
+		}
+		if (e.expected !== "gone" && e.expected !== "file") {
+			const p = linesProblem(e.expected);
+			if (p) bad(`expected: "gone", "file" or lines (${p})`);
+		}
+		if (e.alsoAcceptable !== undefined) {
+			if (!Array.isArray(e.alsoAcceptable))
+				bad("alsoAcceptable must be an array");
+			else {
+				for (const w of e.alsoAcceptable) {
+					const p = linesProblem(w);
+					if (p) bad(`alsoAcceptable: ${p}`);
+				}
+			}
+		}
+		if (
+			e.tags !== undefined &&
+			!(Array.isArray(e.tags) && e.tags.every(isText))
+		) {
+			bad("tags must be strings");
+		}
+	});
+	return out;
 }
 
 /** A placement in a few words, for the comparison's lines. */
@@ -155,14 +260,18 @@ export function describePlacement(p: ThreadPlacement): string {
 }
 
 function revParse(repo: string, rev: string): string {
-	return execFileSync("git", ["rev-parse", "--verify", `${rev}^{commit}`], {
-		cwd: repo,
-		encoding: "utf8",
-	}).trim();
+	return execFileSync(
+		"git",
+		["rev-parse", "--verify", "--end-of-options", `${rev}^{commit}`],
+		{
+			cwd: repo,
+			encoding: "utf8",
+		},
+	).trim();
 }
 
 function mergeBase(repo: string, a: string, b: string): string {
-	return execFileSync("git", ["merge-base", a, b], {
+	return execFileSync("git", ["merge-base", "--end-of-options", a, b], {
 		cwd: repo,
 		encoding: "utf8",
 	}).trim();
@@ -317,11 +426,21 @@ export async function main(argv: string[]): Promise<number> {
 		console.error(USAGE);
 		return 2;
 	}
-	const corpus = JSON.parse(readFileSync(file, "utf8")) as Corpus;
-	if (corpus.version !== 1 || !Array.isArray(corpus.entries)) {
-		console.error(`${file}: not a version 1 corpus`);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(readFileSync(file, "utf8"));
+	} catch (error) {
+		console.error(
+			`${file}: ${error instanceof Error ? error.message : String(error)}`,
+		);
 		return 2;
 	}
+	const problems = corpusProblems(parsed);
+	if (problems.length) {
+		for (const p of problems) console.error(`${file}: ${p}`);
+		return 2;
+	}
+	const corpus = parsed as Corpus;
 	const repoDir = values.repo ?? corpus.repo;
 	if (!repoDir) {
 		console.error("no repository: give --repo or the corpus's repo");

@@ -1,5 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { bestCpuRatio } from "../../../test/cpu";
 import {
 	createLineMapper,
 	IDENTITY,
@@ -601,10 +602,72 @@ describe("a replaced line follows its likeness (CAR-95)", () => {
 		expect(place(rewrite(old, now, [h(1, 2, 1, 1)], at(2)))).toBe("changed 1");
 	});
 
-	it("a line without a word never follows by likeness", () => {
-		const old = ["\tfoo()", "\t}"];
-		const now = ["\tbar(1)", "\t\t}"];
-		expect(place(rewrite(old, now, [h(1, 2, 1, 2)], at(2)))).toBe("deleted");
+	it("a line without a word never follows by likeness, nor reads as deleted: rewritten", () => {
+		const old = ["\tfoo()", "\t}", ""];
+		const now = ["\tbar(1)", "\t\t}", "  "];
+		const hunks = [h(1, 3, 1, 3)];
+		expect(place(rewrite(old, now, hunks, at(2)))).toBe("rewritten");
+		expect(place(rewrite(old, now, hunks, at(3)))).toBe("rewritten");
+		// Nothing replacing it at all: deleted.
+		expect(place(rewrite(old, ["\tbar(1)"], [h(2, 2, 1, 0)], at(2)))).toBe(
+			"deleted near 1",
+		);
+	});
+
+	it("never joins hunks across a line opening a block: a generic line stays out of the next function", () => {
+		// A's early `return nil` gave way to logIt(); B's do() became
+		// `return nil`. Between the two hunks: `}`, `}`, blank, `func B() {`.
+		const old = [
+			"func A() {",
+			"\tif x {",
+			"\t\treturn nil",
+			"\t}",
+			"}",
+			"",
+			"func B() {",
+			"\tdo()",
+			"}",
+		];
+		const now = [
+			"func A() {",
+			"\tif x {",
+			"\t\tlogIt()",
+			"\t}",
+			"}",
+			"",
+			"func B() {",
+			"\treturn nil",
+			"}",
+		];
+		const hunks = [h(3, 1, 3, 1), h(8, 1, 8, 1)];
+		expect(place(rewrite(old, now, hunks, at(3)))).toBe("deleted near 2");
+		// One word line that opens nothing still joins (a kept call).
+		const kept = [...old.slice(0, 6), "\tkeep()", ...old.slice(7)];
+		const keptNow = [...now.slice(0, 6), "\tkeep()", ...now.slice(7)];
+		expect(place(rewrite(kept, keptNow, hunks, at(3)))).toBe("changed 8");
+	});
+
+	it("a joined region with two lines as like it as its partner: rewritten, never a pick", () => {
+		const old = ["\tlogIt()", "\treturn nil", "\t}", "\tfinish()"];
+		const now = [
+			"\tlogIt()",
+			"\tlogAgain()",
+			"\t}",
+			"\treturn nil",
+			"\treturn nil",
+		];
+		// Old 2 deleted (its hunk adds logAgain()); two `return nil` added
+		// past the `}`.
+		const hunks = [h(2, 1, 2, 1), h(4, 1, 4, 2)];
+		expect(place(rewrite(old, now, hunks, at(2)))).toBe("rewritten near 1");
+	});
+
+	it("a pure deletion next to a region too large to pair is rewritten, not deleted", () => {
+		const big = Array.from({ length: 60 }, (_, i) => `value ${i}`);
+		const old = ["\tgone()", "\t}", ...big];
+		const now = ["\t}", ...big.map((t) => `${t} changed`)];
+		const hunks = [h(1, 1, 0, 0), h(3, 60, 2, 60)];
+		expect(place(rewrite(old, now, hunks, at(1)))).toBe("rewritten");
 	});
 
 	it("a hunk too large to pair is rewritten, never guessed", () => {
@@ -620,6 +683,64 @@ describe("a replaced line follows its likeness (CAR-95)", () => {
 			path: "a.ts",
 			nearest: null,
 		});
+	});
+});
+
+describe("a replaced hunk's CPU (CAR-95)", () => {
+	// A 49 x 49 replaced hunk of unrelated lines of ~90 tokens (under every
+	// pairing cap): no line has a partner, so every line of a range is
+	// looked up, and the share step scores each against the whole hunk.
+	const N = 49;
+	const lineOf = (prefix: string, seed: number) =>
+		`\t${Array.from({ length: 45 }, (_, k) => `${prefix}${(seed * 45 + k * 7) % 211}`).join(" + ")}`;
+	const old = Array.from({ length: N }, (_, i) => lineOf("a", i));
+	const now = Array.from({ length: N }, (_, i) => lineOf("b", i));
+	/** A fresh input (its own mapper: nothing memoized from the last run). */
+	const thread = (
+		end: number,
+		start = end,
+		bd = createLineMapper([h(1, N, 1, N)]),
+	) =>
+		input({
+			anchor: at(end, "RIGHT", start),
+			diffs: {
+				ac: IDENTITY,
+				bd,
+				cd: IDENTITY,
+				oldLineText: (p) => old[p.line - 1] ?? null,
+				newLineCount: { LEFT: N, RIGHT: N },
+			},
+			newLineText: (p) => now[p.line - 1] ?? null,
+		});
+
+	it("a range of the whole hunk costs about one line of it, not one per line", () => {
+		expect(placeThread(thread(N, 1), () => N).kind).toBe("unplaced");
+		const { best, ref, ratio } = bestCpuRatio(
+			() => placeThread(thread(N, 1), () => N),
+			() => placeThread(thread(25), () => N),
+		);
+		console.info(
+			`range 1-${N}: ${best} µs, ${ratio.toFixed(2)}x one line (${ref} µs)`,
+		);
+		// Measured 1.4x on the devbox; with no memo per line, both ends
+		// walked and each line re-tokenized per score: 24x.
+		expect(ratio).toBeLessThan(5);
+	});
+
+	it("threads on one diff share its pairings: eight cost about one", () => {
+		const { best, ref, ratio } = bestCpuRatio(
+			() => {
+				const bd = createLineMapper([h(1, N, 1, N)]);
+				for (let i = 0; i < 8; i++)
+					placeThread(thread(i * 6 + 1, i * 6 + 1, bd), () => N);
+			},
+			() => placeThread(thread(25), () => N),
+		);
+		console.info(
+			`8 threads on one hunk: ${best} µs, ${ratio.toFixed(2)}x one (${ref} µs)`,
+		);
+		// Measured 1.1x; the pairings memoized per thread instead: 8.9x.
+		expect(ratio).toBeLessThan(3);
 	});
 });
 

@@ -18,8 +18,8 @@
  * Pure: no git, no I/O, nothing from `src/server/`.
  */
 
-import { alignOrOver, lineSimilarity } from "../linePairing.js";
-import { WORD_DIFF_MAX } from "../tokenize.js";
+import { alignOrOver, similarityTo } from "../linePairing.js";
+import { HAS_WORD, WORD_DIFF_MAX } from "../tokenize.js";
 import type { DiffSide } from "../types.js";
 import type { LineMapper, MapHunk } from "./lineMapper.js";
 
@@ -38,7 +38,11 @@ export interface Position {
 export interface TraceDiffs {
 	/** Old base to new base, this file. */
 	ac: LineMapper;
-	/** Old head to new head, this file (through its rename pair). */
+	/**
+	 * Old head to new head, this file (through its rename pair). The
+	 * pairings of its replaced hunks are memoized on this object, shared by
+	 * every thread traced through it: one mapper, one pair of texts.
+	 */
 	bd: LineMapper;
 	/** The new snapshot's own diff, this file. */
 	cd: LineMapper;
@@ -121,10 +125,15 @@ function traceRight(pos: Position, diffs: TraceDiffs): Placement {
 /**
  * A run of hunks the tracer pairs as one replacement: neighbours with at
  * most `REGION_GAP` old lines between them, at most `REGION_GAP_WORDS` of
- * those with a word (the rest a `}`, a blank line). git's diff often
- * splits one rewritten block at such a line, leaving a statement's new
- * place in the hunk next door. Wider runs measured no better on real
- * reviews: they hit the pairing's caps (CAR-95).
+ * those with a word and none of those opening a block (the rest a `}`, a
+ * blank line). git's diff often splits one rewritten block at such a line,
+ * leaving a statement's new place in the hunk next door. One word line lets
+ * a run join across a kept statement inside the block (the corpus's
+ * rewrites split around one kept call or log line); a line opening a block
+ * (`func b() {`, `def b():`) is a boundary between two pieces of code, so
+ * it never joins: a generic line (`return nil`) would find its twin in the
+ * next function. Wider runs, or more word lines, measured no better on a
+ * real review's threads: they hit the pairing's caps (CAR-95).
  */
 export const REGION_GAP = 5;
 export const REGION_GAP_WORDS = 1;
@@ -132,12 +141,19 @@ export const REGION_GAP_WORDS = 1;
 /**
  * A line the pairing left without a partner still goes to the replacing
  * line it most resembles, between its neighbours' partners (shared with
- * them: two lines merged into one), when they are this alike.
+ * them: two lines merged into one), when they are this alike. Below the
+ * pairing's own PAIR_MIN_SIMILARITY: a line merged into another keeps only
+ * part of its tokens, and the window between the neighbours' partners is
+ * narrow. Above every unrelated replacing line measured on a real review's
+ * threads (CAR-95), with a margin.
  */
 export const SHARE_MIN_SIMILARITY = 0.45;
 
-/** A letter, combining mark, digit or `_`. */
-const HAS_WORD = /[\p{L}\p{M}\p{N}_]/u;
+/** Two scores this close are a tie (a wider region's partner isn't unique). */
+const EPS = 1e-9;
+
+/** A line that opens a block: never a line two hunks join across. */
+const OPENS_BLOCK = /[{([:]\s*$/u;
 
 /** One region's lines and their pairing; "unknown": it can't be paired. */
 type Region =
@@ -148,11 +164,32 @@ type Region =
 			adds: string[];
 			/** Index in `dels` to index in `adds`. */
 			partner: Map<number, number>;
+			/** lineSimilarity of an old text to `adds[j]` (made when first needed). */
+			scorer?: (oldText: string, j: number) => number;
 	  }
 	| "unknown";
 
-/** Per diffs: each hunk's pairings, alone and with its joined neighbours. */
-const regions = new WeakMap<TraceDiffs, Map<MapHunk, Region[]>>();
+type Partner = number | null | "unknown";
+
+/**
+ * Per `bd` mapper (TraceDiffs.bd: one mapper, one pair of texts), shared
+ * by every thread traced through it: each hunk's pairings, and each old
+ * line's partner.
+ */
+interface Memo {
+	regions: Map<MapHunk, Region[]>;
+	partners: Map<number, Partner>;
+}
+const memos = new WeakMap<LineMapper, Memo>();
+
+function memoOf(diffs: TraceDiffs): Memo {
+	let memo = memos.get(diffs.bd);
+	if (!memo) {
+		memo = { regions: new Map(), partners: new Map() };
+		memos.set(diffs.bd, memo);
+	}
+	return memo;
+}
 
 const read = (
 	reader: ((pos: Position) => string | null) | undefined,
@@ -174,7 +211,9 @@ function joins(a: MapHunk, b: MapHunk, diffs: TraceDiffs): boolean {
 	for (let n = from; n <= to; n++) {
 		const t = read(diffs.oldLineText, n);
 		if (t === null) return false;
-		if (HAS_WORD.test(t)) words++;
+		if (!HAS_WORD.test(t)) continue;
+		if (OPENS_BLOCK.test(t)) return false;
+		words++;
 	}
 	return words <= REGION_GAP_WORDS;
 }
@@ -219,11 +258,7 @@ function linesOf(hunks: readonly MapHunk[], diffs: TraceDiffs): Region {
  * the line from its own hunk), then with its joined neighbours.
  */
 function regionsOf(hunk: MapHunk, diffs: TraceDiffs): Region[] {
-	let memo = regions.get(diffs);
-	if (!memo) {
-		memo = new Map();
-		regions.set(diffs, memo);
-	}
+	const memo = memoOf(diffs).regions;
 	const known = memo.get(hunk);
 	if (known) return known;
 	const all = diffs.bd.hunks;
@@ -246,57 +281,94 @@ function regionsOf(hunk: MapHunk, diffs: TraceDiffs): Region[] {
 	return out;
 }
 
+/** lineSimilarity of the region's old line `k` to its added line `j`. */
+function scoreIn(
+	region: Exclude<Region, "unknown">,
+	k: number,
+	j: number,
+): number {
+	region.scorer ??= similarityTo(region.adds);
+	return region.scorer(region.dels[k] as string, j);
+}
+
 /**
- * The replacing line that carries old line `line` (removed by `hunk`): its
- * partner in the similarity pairing of the region's old and new lines
- * (whitespace doesn't count, so a re-indented line is its own partner),
- * else the line it most resembles between its neighbours' partners at
- * SHARE_MIN_SIMILARITY or more. null: nothing replacing it resembles it;
- * "unknown": the region is too large to pair, a text is missing, or the
- * line is past the pairing's length cut.
+ * The replacing line that carries old line `line` (removed by `hunk`),
+ * memoized per line for every thread on the same diff.
  */
-function partnerIn(
-	hunk: MapHunk,
-	line: number,
-	diffs: TraceDiffs,
-): number | null | "unknown" {
-	// A line without a word (a `}`, a blank line) is like every other
-	// one: its likeness says nothing about where it went.
+function partnerIn(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
+	const memo = memoOf(diffs).partners;
+	let partner = memo.get(line);
+	if (partner === undefined) {
+		partner = findPartner(hunk, line, diffs);
+		memo.set(line, partner);
+	}
+	return partner;
+}
+
+/**
+ * The replacing line that carries old line `line`: its partner in the
+ * similarity pairing of the hunk's old and new lines (whitespace doesn't
+ * count, so a re-indented line is its own partner), or of the hunk with its
+ * joined neighbours when that partner is closer ("unknown" when another
+ * line there is as close); else the line it most resembles between its neighbours'
+ * partners at SHARE_MIN_SIMILARITY or more. null: nothing replacing it
+ * resembles it; "unknown": it can't be told (a pairing too large, a text
+ * missing, a line past the pairing's length cut, a line without a word).
+ */
+function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
+	const regions = regionsOf(hunk, diffs);
+	// Nothing at all replaced it: deleted, whatever its text.
+	if (regions.every((r) => r !== "unknown" && r.newLines.length === 0)) {
+		return null;
+	}
+	// A line without a word (a `}`, a blank line) is like every other one:
+	// its likeness says nothing about where it went, nor whether it did.
 	const own = read(diffs.oldLineText, line);
-	if (own !== null && !HAS_WORD.test(own)) return null;
+	if (own === null || !HAS_WORD.test(own)) return "unknown";
 	let widest: Exclude<Region, "unknown"> | null = null;
 	let best: { line: number; score: number } | null = null;
-	for (const region of regionsOf(hunk, diffs)) {
-		if (region === "unknown") continue;
+	let twins = false;
+	regions.forEach((region, i) => {
+		if (region === "unknown") return;
 		widest = region;
 		const k = region.oldLines.indexOf(line);
 		const partner = region.partner.get(k);
-		if (partner === undefined) continue;
-		const score = lineSimilarity(
-			region.dels[k] as string,
-			region.adds[partner] as string,
-		);
-		// Nearest first: a wider region wins only with a closer likeness.
-		if (!best || score > best.score) {
-			best = { line: region.newLines[partner] as number, score };
+		if (partner === undefined) return;
+		const score = scoreIn(region, k, partner);
+		// Nearest first: a wider region wins only with a closer likeness,
+		// and only when its partner is the one line there that close.
+		if (best && score <= best.score) return;
+		if (i > 0) {
+			for (let j = 0; j < region.adds.length; j++) {
+				if (j !== partner && scoreIn(region, k, j) >= score - EPS) {
+					twins = true;
+					return;
+				}
+			}
 		}
-	}
-	if (best) return best.line;
-	if (!widest) return "unknown";
-	return shared(widest, line);
+		best = { line: region.newLines[partner] as number, score };
+	});
+	const found = best as { line: number } | null;
+	if (found) return found.line;
+	// Two lines as like it, past its own hunk: which one carries it can't
+	// be told.
+	if (twins) return "unknown";
+	const shared = widest ? sharedIn(widest, line) : null;
+	if (shared !== null) return shared;
+	// No likeness here, but a pairing that couldn't be made might have one.
+	return regions.includes("unknown") ? "unknown" : null;
 }
 
 /** SHARE_MIN_SIMILARITY's step: the unpaired line's likeliest replacement. */
-function shared(
+function sharedIn(
 	region: Exclude<Region, "unknown">,
 	line: number,
-): number | null | "unknown" {
+): number | "unknown" | null {
 	if (region.newLines.length === 0) return null;
 	const k = region.oldLines.indexOf(line);
-	const text = region.dels[k] ?? "";
 	// A line the pairing can't score never pairs: that says nothing about
 	// whether it survived.
-	if (text.length >= WORD_DIFF_MAX) return "unknown";
+	if ((region.dels[k] ?? "").length >= WORD_DIFF_MAX) return "unknown";
 	let lo = 0;
 	let hi = region.adds.length - 1;
 	for (const [d, a] of region.partner) {
@@ -306,7 +378,7 @@ function shared(
 	let best = -1;
 	let score = SHARE_MIN_SIMILARITY;
 	for (let j = lo; j <= hi; j++) {
-		const s = lineSimilarity(text, region.adds[j] as string);
+		const s = scoreIn(region, k, j);
 		if (s > score || (s === score && best === -1)) {
 			best = j;
 			score = s;
@@ -378,8 +450,9 @@ function inward(
  * Both ends of a range. An end that doesn't place, on a one-side range,
  * moves inwards to the nearest line of the range that does (marked
  * changed): a range maps to the span its surviving lines landed on. When
- * the traced end precedes the start on the same side, the range collapses:
- * both ends are the end line, marked changed.
+ * the traced end precedes the start on the same side, or the start landed
+ * on the new side and the end on the old one, the range collapses: both
+ * ends are the end line, marked changed.
  */
 export function traceRange(
 	start: Position,
@@ -389,14 +462,19 @@ export function traceRange(
 	let first = tracePosition(start, diffs);
 	let last = tracePosition(end, diffs);
 	if (start.side === end.side && start.line < end.line) {
-		if (first.kind === "unplaced") first = inward(start, end, diffs) ?? first;
-		if (last.kind === "unplaced") last = inward(end, start, diffs) ?? last;
+		const lost = first.kind === "unplaced";
+		if (lost) first = inward(start, end, diffs) ?? first;
+		// When no line from the start on placed, none from the end does.
+		if (last.kind === "unplaced" && !(lost && first.kind === "unplaced")) {
+			last = inward(end, start, diffs) ?? last;
+		}
 	}
 	if (
 		first.kind !== "unplaced" &&
 		last.kind !== "unplaced" &&
-		first.side === last.side &&
-		last.line < first.line
+		((first.side === last.side && last.line < first.line) ||
+			// A new-side start can't precede an old-side end.
+			(first.side === "RIGHT" && last.side === "LEFT"))
 	) {
 		const collapsed: Placement = {
 			kind: "changed",

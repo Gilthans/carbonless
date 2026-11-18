@@ -39,7 +39,7 @@
 			},
 			"target": { "commit": "ps2" },
 			"expected": { "path": "a.go", "lines": [12] },
-			"alsoAcceptable": [{ "path": "a.go", "lines": [10] }],
+			"alsoAcceptable": [{ "path": "a.go", "lines": [10, 11] }],
 			"tags": ["rewritten"]
 		},
 		{
