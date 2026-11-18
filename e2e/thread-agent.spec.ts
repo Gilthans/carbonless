@@ -250,12 +250,19 @@ test("opens scrolled to its end; closes from the strip, the comment counter and 
 		scrolls: el.scrollHeight > el.clientHeight,
 	}));
 	expect(fits.scrolls).toBe(true);
-	const box = await scroller.boundingBox();
-	const end = await panel(thread).getByText("The end.").boundingBox();
-	const first = await panel(thread)
-		.getByTestId("agent-message-human")
-		.boundingBox();
-	if (!box || !end || !first) throw new Error("no boxes");
+	// The three boxes in one layout.
+	const { box, end, first } = await scroller.evaluate((el) => {
+		const ai = [
+			...el.querySelectorAll("[data-testid=agent-message-ai] *"),
+		].find((n) => n.childElementCount === 0 && n.textContent === "The end.");
+		const human = el.querySelector("[data-testid=agent-message-human]");
+		const y = (n: Element | null | undefined) => {
+			if (!n) throw new Error("no box");
+			const r = n.getBoundingClientRect();
+			return { y: r.y, height: r.height };
+		};
+		return { box: y(el), end: y(ai), first: y(human) };
+	});
 	// The end inside the scroller's box, the question above it (scrolled past).
 	expect(end.y + end.height).toBeLessThanOrEqual(box.y + box.height + 1);
 	expect(end.y).toBeGreaterThanOrEqual(box.y - 1);
@@ -510,25 +517,90 @@ const overlaps = (a: Box, b: Box) =>
 	b.y < a.y + a.height;
 
 /**
+ * Waits for the card's agent panel to rest: open and slid in, or closed
+ * and gone with the cover's height (which it keeps until the slide out
+ * ends, then the card shrinks). Geometry read before that mixes layouts.
+ */
+async function expectPanelAtRest(card: Locator) {
+	const p = panel(card);
+	if ((await p.count()) === 0) return;
+	if ((await p.getAttribute("data-open")) === "true") {
+		await expect(p).toHaveClass(/(^|\s)translate-x-0(\s|$)/);
+		await expect
+			.poll(() => p.evaluate((el) => el.getAnimations().length))
+			.toBe(0);
+	} else {
+		await expect(p).toBeHidden();
+	}
+}
+
+/**
+ * The boxes of `card` and of what each selector finds in it (the first
+ * visible match, null for none), read in one layout: one evaluate, so a
+ * reflow between reads can't put two boxes in different frames.
+ */
+async function boxesIn<K extends string>(
+	card: Locator,
+	selectors: Record<K, string>,
+): Promise<{ card: Box } & Record<K, Box | null>> {
+	return card.evaluate(
+		(el, sel) => {
+			const box = (n: Element): Box => {
+				const r = n.getBoundingClientRect();
+				return { x: r.x, y: r.y, width: r.width, height: r.height };
+			};
+			const out: Record<string, Box | null> = { card: box(el) };
+			for (const [k, s] of Object.entries(sel)) {
+				const n = [...el.querySelectorAll(s)].find((m) => m.checkVisibility());
+				out[k] = n ? box(n) : null;
+			}
+			return out;
+		},
+		selectors as Record<string, string>,
+	) as Promise<{ card: Box } & Record<K, Box | null>>;
+}
+
+/**
  * Asserts the agent opener is the card's bottom handle: at the right end of
  * the actions row beside Resolve (at the card's bottom when that row is
  * closed), a finger's size, covering nothing, and the thread keeping its
- * full width (no gutter kept for it).
+ * full width (no gutter kept for it). Read once the panel rests, every box
+ * in one layout.
  */
 async function expectBottomHandle(card: Locator, page: Page) {
 	const handle = agentButton(card);
+	await expectPanelAtRest(card);
 	await handle.scrollIntoViewIfNeeded();
 	await expect(handle).toBeInViewport();
-	const t = await handle.boundingBox();
-	const c = await card.boundingBox();
-	if (!t || !c) throw new Error("no boxes");
-	const resolve = card.getByTestId("thread-actions").getByRole("button", {
-		name: /^(Resolve|Unresolve)/,
+	const g = await card.evaluate((el) => {
+		const box = (n: Element) => {
+			const r = n.getBoundingClientRect();
+			return { x: r.x, y: r.y, width: r.width, height: r.height };
+		};
+		const t = el.querySelector("[data-testid=thread-agent-button]");
+		const cover = el.querySelector("[data-testid=agent-cover]");
+		const resolve = el.querySelector(
+			"[data-testid=thread-actions] [data-testid=resolve-button]",
+		);
+		const others = [
+			...el.querySelectorAll(
+				"[data-testid=thread-comment-body], [data-testid=thread-counter], textarea, button:not([data-testid=thread-agent-button])",
+			),
+		]
+			.filter((o) => o.checkVisibility())
+			.map((o) => ({ box: box(o), html: o.outerHTML.slice(0, 80) }));
+		return {
+			c: box(el),
+			t: t && box(t),
+			cover: cover && box(cover),
+			r: resolve?.checkVisibility() ? box(resolve) : null,
+			others,
+		};
 	});
-	if (await resolve.isVisible()) {
+	const { c, t, r, cover } = g;
+	if (!t) throw new Error("no handle");
+	if (r) {
 		// On Resolve's row, just right of it.
-		const r = await resolve.boundingBox();
-		if (!r) throw new Error("no Resolve box");
 		expect(
 			Math.abs(t.y + t.height / 2 - (r.y + r.height / 2)),
 		).toBeLessThanOrEqual(4);
@@ -545,21 +617,12 @@ async function expectBottomHandle(card: Locator, page: Page) {
 	expect(t.height).toBeGreaterThanOrEqual(40);
 	if (phone) expect(t.width).toBeGreaterThanOrEqual(40);
 	// No width kept for it: the comments reach the card's right as without an agent.
-	const cover = await card.getByTestId("agent-cover").boundingBox();
 	if (!cover) throw new Error("no agent cover");
 	expect(c.x + c.width - (cover.x + cover.width)).toBeLessThanOrEqual(16);
 	// It covers no comment, reply box or other button.
-	const others = card.locator(
-		"[data-testid=thread-comment-body], [data-testid=thread-counter], textarea, button:not([data-testid=thread-agent-button])",
-	);
-	for (const o of await others.all()) {
-		if (!(await o.isVisible())) continue;
-		const b = await o.boundingBox();
-		if (!b) continue;
-		expect(
-			overlaps(t, b),
-			await o.evaluate((n) => n.outerHTML.slice(0, 80)),
-		).toBe(false);
+	for (const o of g.others) {
+		if (o.box.width === 0 && o.box.height === 0) continue;
+		expect(overlaps(t, o.box), o.html).toBe(false);
 	}
 }
 
@@ -588,8 +651,10 @@ test("the agent opener is a handle at the card's bottom beside Resolve, the pane
 	await expect(panel(card).getByTestId("agent-answering")).toBeVisible();
 	// Open: beside Resolve, under the panel's right edge, pressed.
 	await expectBottomHandle(card, page);
-	const handleBox = await agentButton(card).boundingBox();
-	const panelBox = await panel(card).boundingBox();
+	const { handle: handleBox, panel: panelBox } = await boxesIn(card, {
+		handle: "[data-testid=thread-agent-button]",
+		panel: "[data-testid=thread-agent-panel]",
+	});
 	if (!handleBox || !panelBox) throw new Error("no boxes");
 	expect(
 		Math.abs(handleBox.x + handleBox.width - (panelBox.x + panelBox.width)),
@@ -613,12 +678,13 @@ test("the agent opener is a handle at the card's bottom beside Resolve, the pane
 	await expectBottomHandle(fresh, page);
 	const moreRow = fresh.getByTestId("thread-more-row");
 	await expect(moreRow.getByTestId("thread-agent-button")).toBeVisible();
-	const above = await moreRow.evaluate(
-		(el) => el.previousElementSibling?.getBoundingClientRect().bottom ?? 0,
-	);
-	const dot = await fresh.getByTestId("agent-unread-dot").boundingBox();
-	const h = await agentButton(fresh).boundingBox();
-	const toggle = await fresh.getByTestId("thread-more").boundingBox();
+	const { above, dot, h, toggle } = await boxesIn(fresh, {
+		// What is right above the Show more row.
+		above: ":has(+ [data-testid=thread-more-row])",
+		dot: "[data-testid=agent-unread-dot]",
+		h: "[data-testid=thread-agent-button]",
+		toggle: "[data-testid=thread-more]",
+	}).then((b) => ({ ...b, above: (b.above?.y ?? 0) + (b.above?.height ?? 0) }));
 	if (!dot || !h || !toggle) throw new Error("no boxes");
 	expect(h.y).toBeGreaterThanOrEqual(above);
 	expect(dot.y).toBeGreaterThanOrEqual(above);
@@ -707,8 +773,10 @@ test("at 360px a long Show more toggle and a two-digit handle share their row wi
 	const handle = agentButton(card);
 	await expect(handle).toHaveText("12");
 	await expectBottomHandle(card, page);
-	const t = await toggle.boundingBox();
-	const h = await handle.boundingBox();
+	const { toggle: t, handle: h } = await boxesIn(card, {
+		toggle: "[data-testid=thread-more]",
+		handle: "[data-testid=thread-agent-button]",
+	});
 	if (!t || !h) throw new Error("no boxes");
 	// Side by side on the row's bottom, the toggle clear of the handle.
 	expect(t.x + t.width).toBeLessThanOrEqual(h.x);
