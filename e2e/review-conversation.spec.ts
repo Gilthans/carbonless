@@ -703,6 +703,44 @@ test("one-tap questions (CAR-203): a first review's fill the box; PS1 the new PR
 	]);
 	await expectNoPageOverflow(page);
 	await shot(page, "review-conversation-rereview-questions", isMobile);
+	// A long question is one line with Show more (the owner, 2026-11-18),
+	// on the narrowest phone too; unfolding it only reads.
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const rr = reviewDrawer(page);
+	const long = rr.getByRole("listitem").filter({ hasText: "Please confirm" });
+	const longChip = long.getByTestId("agent-quick-question");
+	const more = long.getByRole("button", { name: "Show more" });
+	await expect(more).toBeVisible();
+	await expect(longChip).toHaveAccessibleName(
+		"Please confirm all comments I wrote have been addressed and highlight those that haven't",
+	);
+	const oneLine = (await longChip.boundingBox())?.height ?? 0;
+	expect(oneLine).toBeLessThan(48);
+	for (const b of [longChip, more]) {
+		const box = await b.boundingBox();
+		expect(box?.height).toBeGreaterThanOrEqual(40);
+		expect(box?.width).toBeGreaterThanOrEqual(40);
+	}
+	await expectNoPageOverflow(page);
+	await shot(page, "review-conversation-long-question", isMobile);
+	const rrBox = rr.getByRole("textbox", { name: "Ask agent" });
+	// The first tap's draft may still be there.
+	await rrBox.fill("");
+	await more.click();
+	const less = long.getByRole("button", { name: "Show less" });
+	await expect(less).toHaveAttribute("aria-expanded", "true");
+	await expect
+		.poll(async () => (await longChip.boundingBox())?.height ?? 0)
+		.toBeGreaterThan(oneLine);
+	await expect(rrBox).toHaveValue("");
+	await expectNoPageOverflow(page);
+	await shot(page, "review-conversation-long-question-open", isMobile);
+	await less.click();
+	await expect(more).toBeVisible();
+	await longChip.click();
+	await expect(rrBox).toHaveValue(
+		"Please confirm all comments I wrote have been addressed and highlight those that haven't",
+	);
 	// Long past the tap (a reload and a head check later): nothing was sent.
 	expect(asks).toEqual([]);
 });
