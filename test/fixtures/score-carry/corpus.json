@@ -1,0 +1,71 @@
+{
+	"version": 1,
+	"base": "base",
+	"entries": [
+		{
+			"id": "unchanged@ps2",
+			"madeAt": { "commit": "ps1", "path": "a.go", "side": "RIGHT", "line": 4 },
+			"target": { "commit": "ps2" },
+			"expected": { "path": "a.go", "lines": [4] },
+			"tags": ["unchanged"]
+		},
+		{
+			"id": "loop-gone@ps2",
+			"madeAt": { "commit": "ps1", "path": "a.go", "side": "RIGHT", "line": 9 },
+			"target": { "commit": "ps2" },
+			"expected": "gone",
+			"tags": ["rewritten"]
+		},
+		{
+			"id": "log-moved@ps2",
+			"madeAt": {
+				"commit": "ps1",
+				"path": "a.go",
+				"side": "RIGHT",
+				"line": 12
+			},
+			"target": { "commit": "ps2" },
+			"expected": { "path": "a.go", "lines": [10] },
+			"tags": ["rewritten"]
+		},
+		{
+			"id": "return-range@ps2",
+			"madeAt": {
+				"commit": "ps1",
+				"path": "a.go",
+				"side": "RIGHT",
+				"startLine": 12,
+				"line": 13
+			},
+			"target": { "commit": "ps2" },
+			"expected": { "path": "a.go", "lines": [12] },
+			"alsoAcceptable": [{ "path": "a.go", "lines": [10] }],
+			"tags": ["rewritten"]
+		},
+		{
+			"id": "file@ps2",
+			"madeAt": { "commit": "ps1", "path": "a.go" },
+			"target": { "commit": "ps2" },
+			"expected": "file"
+		},
+		{
+			"id": "expects-the-old-loop@ps2",
+			"madeAt": {
+				"commit": "ps1",
+				"path": "a.go",
+				"side": "RIGHT",
+				"line": 10
+			},
+			"target": { "commit": "ps2" },
+			"expected": { "path": "a.go", "lines": [9] },
+			"tags": ["disputed"]
+		},
+		{
+			"id": "expects-gone-but-kept@ps2",
+			"madeAt": { "commit": "ps1", "path": "a.go", "side": "RIGHT", "line": 3 },
+			"target": { "commit": "ps2" },
+			"expected": "gone",
+			"tags": ["disputed"]
+		}
+	]
+}

@@ -1,10 +1,10 @@
-import type { DiffLine } from "../../shared/types";
-import type { Mark } from "../code/Invisibles";
 import {
 	type AlignBudget,
 	alignCluster,
 	HUNK_ALIGN_WORD_OPS,
-} from "./linePairing";
+} from "../../shared/linePairing";
+import type { DiffLine } from "../../shared/types";
+import type { Mark } from "../code/Invisibles";
 import type { DiffRow } from "./whitespace";
 import { wordMarks } from "./wordDiff";
 
