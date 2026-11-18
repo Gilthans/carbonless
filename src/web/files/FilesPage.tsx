@@ -1486,6 +1486,7 @@ export function FilesPage() {
 						state={sidebar}
 						onState={setSidebar}
 						current={threadAt?.key ?? null}
+						shown={wide ? "column" : sheetOpen ? "sheet" : "closed"}
 						onJump={jumpTo}
 					/>
 				),

@@ -124,7 +124,9 @@ function revealInPanel(el: HTMLElement) {
 	) {
 		scroller = scroller.parentElement;
 	}
-	if (!scroller || scroller === document.body) return;
+	// Not laid out (the phone's sheet closed): nothing to show it in.
+	if (!scroller || scroller === document.body || scroller.clientHeight === 0)
+		return;
 	const box = scroller.getBoundingClientRect();
 	const bar = el.closest('[role="tabpanel"]')?.previousElementSibling;
 	const top =
@@ -149,14 +151,6 @@ function Row(props: {
 	onJump: (row: PanelRow) => void;
 }) {
 	const { row, current } = props;
-	const item = useRef<HTMLLIElement>(null);
-	// Becoming current, it comes into view in the panel (not on mount: a
-	// region unfolding or the tab coming back leaves the scroll alone).
-	const was = useRef(current);
-	useEffect(() => {
-		if (current && !was.current && item.current) revealInPanel(item.current);
-		was.current = current;
-	}, [current]);
 	const where = `${row.path}${row.line === null ? "" : `:${row.line}`}`;
 	const cues = cuesOf(row);
 	const by = speakerText(row.last);
@@ -165,7 +159,6 @@ function Row(props: {
 	const blurbId = useId();
 	return (
 		<li
-			ref={item}
 			data-testid="threads-row"
 			data-key={row.key}
 			data-resolved={row.resolved || undefined}
@@ -372,11 +365,40 @@ export function ThreadsPanel(props: {
 	onState: (change: Partial<SidebarState>) => void;
 	/** The current row's key (j/k, or the last picked); null: none yet. */
 	current?: string | null;
+	/**
+	 * Where the panel shows (the column, the sheet open or closed): a
+	 * change brings the current row back into view.
+	 */
+	shown?: string;
 	onJump: (row: PanelRow) => void;
 }) {
 	const { state } = props;
+	const panel = useRef<HTMLDivElement>(null);
+	const current = props.current ?? null;
+	// The current row in view in the panel, if it isn't: once it's current,
+	// and whenever the list around it or the panel itself shows anew (a
+	// region unfolds, resolved rows show, the sheet opens). A frame later:
+	// the sheet opens after its contents' effects.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the folds, the toggle and where it shows are when to look again.
+	useEffect(() => {
+		if (current === null) return;
+		const frame = requestAnimationFrame(() => {
+			const rows = panel.current?.querySelectorAll<HTMLElement>(
+				'[data-testid="threads-row"]',
+			);
+			const el = [...(rows ?? [])].find((r) => r.dataset.key === current);
+			if (el) revealInPanel(el);
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [
+		current,
+		state.peopleFolded,
+		state.aiFolded,
+		state.showResolved,
+		props.shown,
+	]);
 	return (
-		<div data-testid="threads-panel" className="space-y-1">
+		<div ref={panel} data-testid="threads-panel" className="space-y-1">
 			<Region
 				label="People"
 				icon={PersonIcon}
