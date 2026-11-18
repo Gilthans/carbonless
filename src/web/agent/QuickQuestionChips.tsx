@@ -1,5 +1,5 @@
 import { ChevronDownIcon, ChevronUpIcon } from "@primer/octicons-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import { SkeletonBar, Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 
@@ -23,7 +23,8 @@ export function QuickQuestionChips(props: {
 }) {
 	if (props.questions === null) {
 		// As tall as the list it stands for (a one-line chip per row at
-		// most), so nothing moves when it arrives.
+		// most, 40px: the chip's edge is a ring, no border), so nothing
+		// moves when it arrives.
 		return (
 			<div
 				data-testid="agent-quick-questions-loading"
@@ -57,11 +58,20 @@ export function QuickQuestionChips(props: {
 }
 
 /**
- * Whether `el`'s one line cuts its text off (tests stand in for the
- * widths: jsdom has no layout).
+ * What the chevron takes from the text while it shows: its 40px less the
+ * 12px end padding the text gives up for it.
  */
-function overflows(el: HTMLElement): boolean {
-	return el.scrollWidth > el.clientWidth;
+const CHEVRON_ROOM = 28;
+
+/**
+ * Whether `el`'s one line cuts its text off, measured as if the chevron
+ * weren't there (`withChevron`: it is, so its room counts as free), so a
+ * chip that fits once unfolded and resized never stays cut. A pixel's
+ * rounding is no cut. Tests stand in for the widths: jsdom has no layout.
+ */
+function overflows(el: HTMLElement, withChevron: boolean): boolean {
+	const free = el.clientWidth + (withChevron ? CHEVRON_ROOM : 0);
+	return el.scrollWidth - free > 1;
 }
 
 function QuestionChip(props: {
@@ -69,14 +79,19 @@ function QuestionChip(props: {
 	onPick: (question: string) => void;
 }) {
 	const text = useRef<HTMLSpanElement>(null);
+	const textId = useId();
 	const [cut, setCut] = useState(false);
+	const cutNow = useRef(false);
 	const [expanded, setExpanded] = useState(false);
 	// Measured on one line only (unfolded, it wraps and never overflows), on
 	// every resize: a chip can be cut on a phone and fit on a desktop.
 	useLayoutEffect(() => {
 		const el = text.current;
 		if (!el || expanded) return;
-		const measure = () => setCut(overflows(el));
+		const measure = () => {
+			cutNow.current = overflows(el, cutNow.current);
+			setCut(cutNow.current);
+		};
 		measure();
 		if (typeof ResizeObserver === "undefined") return;
 		const ro = new ResizeObserver(measure);
@@ -86,7 +101,7 @@ function QuestionChip(props: {
 	const label = expanded ? "Show less" : "Show more";
 	return (
 		<li
-			className={`flex min-w-0 max-w-full items-start rounded-[20px] border border-agent-edge bg-agent/60 text-xs leading-snug text-ink-soft hover:border-agent-ink hover:bg-agent ${expanded ? "" : "min-h-10"}`}
+			className={`flex min-w-0 max-w-full items-start rounded-[20px] bg-agent/60 text-xs leading-snug text-ink-soft ring-1 ring-agent-edge ring-inset hover:bg-agent hover:ring-agent-ink ${expanded ? "" : "min-h-10"}`}
 		>
 			<button
 				type="button"
@@ -98,6 +113,7 @@ function QuestionChip(props: {
 			>
 				<span
 					ref={text}
+					id={textId}
 					data-testid="agent-quick-question-text"
 					className={`min-w-0 ${expanded ? "break-words" : "truncate"}`}
 				>
@@ -113,6 +129,7 @@ function QuestionChip(props: {
 							data-testid="agent-quick-question-more"
 							aria-label={label}
 							aria-expanded={expanded}
+							aria-controls={textId}
 							onClick={() => setExpanded(!expanded)}
 							// Unfolding only reads: the box keeps focus, as a pick does.
 							onMouseDown={(e) => e.preventDefault()}

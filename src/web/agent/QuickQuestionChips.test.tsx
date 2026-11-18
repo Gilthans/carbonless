@@ -15,9 +15,15 @@ const SHORT = "Why this change?";
 const LONG =
 	"Please confirm all comments I wrote have been addressed and highlight those that haven't";
 
-// jsdom has no layout: a chip's text is 6px a character on a line `width`
-// wide, and a resize tells every observer.
+// jsdom has no layout: a chip's text is 6px a character (plus `rounding`)
+// on a line `width` wide, less the chevron's 28px while it shows, and a
+// resize tells every observer.
 let width = 200;
+let rounding = 0;
+const chevron = (el: HTMLElement) =>
+	el.closest("li")?.querySelector("[data-testid=agent-quick-question-more]")
+		? 28
+		: 0;
 const observers = new Set<() => void>();
 function resize(to: number) {
 	width = to;
@@ -28,14 +34,18 @@ function resize(to: number) {
 
 beforeEach(() => {
 	width = 200;
+	rounding = 0;
 	vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(
 		function (this: HTMLElement) {
-			return (this.textContent ?? "").length * 6;
+			return (this.textContent ?? "").length * 6 + rounding;
 		},
 	);
 	vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
 		function (this: HTMLElement) {
-			return Math.min(width, (this.textContent ?? "").length * 6);
+			return Math.min(
+				width - chevron(this),
+				(this.textContent ?? "").length * 6,
+			);
 		},
 	);
 	vi.stubGlobal(
@@ -62,9 +72,9 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function show() {
+function show(questions = [SHORT, LONG]) {
 	const onPick = vi.fn();
-	render(<QuickQuestionChips questions={[SHORT, LONG]} onPick={onPick} />);
+	render(<QuickQuestionChips questions={questions} onPick={onPick} />);
 	return { onPick, user: userEvent.setup() };
 }
 const chip = (q: string) =>
@@ -130,5 +140,26 @@ describe("long question chips (CAR-203 follow-up)", () => {
 		expect(more(LONG)).toBeNull();
 		resize(200);
 		expect(more(LONG)).not.toBeNull();
+	});
+
+	it("a chip that fits once its chevron's room is free is whole again: no cut kept by the chevron itself", () => {
+		// 180px of text: cut on a 150px line; whole on a 200px one, though
+		// the chevron, while it shows, leaves the text only 172px.
+		const MID = "x".repeat(30);
+		width = 150;
+		show([MID]);
+		expect(more(MID)).not.toBeNull();
+		resize(200);
+		expect(more(MID)).toBeNull();
+		expect(
+			within(chip(MID)).getByTestId("agent-quick-question-text"),
+		).toHaveClass("truncate");
+	});
+
+	it("a pixel's rounding is no cut", () => {
+		rounding = 1;
+		width = 2000;
+		show();
+		expect(more(LONG)).toBeNull();
 	});
 });
