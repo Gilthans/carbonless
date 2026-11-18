@@ -620,7 +620,21 @@ test("at 700px a toast ends left of the overlaid drawer", async ({
 	await toast.getByRole("button", { name: "View" }).click({ trial: true });
 });
 
-test("one-tap questions (CAR-203): a first review's fill the box; after a mark and a push, the re-review's", async ({
+/** Every POST that asks or replies to the agent, from here on. */
+function agentAsks(page: Page): string[] {
+	const sent: string[] = [];
+	page.on("request", (r) => {
+		if (
+			r.method() === "POST" &&
+			/\/agent\/threads(\/[^/]+\/messages)?$/.test(new URL(r.url()).pathname)
+		) {
+			sent.push(r.postData() ?? "");
+		}
+	});
+	return sent;
+}
+
+test("one-tap questions (CAR-203): a first review's fill the box; after a mark and a push, a spinner until the head check answers, then the re-review's", async ({
 	page,
 	pr,
 	agentCrb,
@@ -630,6 +644,7 @@ test("one-tap questions (CAR-203): a first review's fill the box; after a mark a
 	test.slow();
 	const p = await pr(fixture);
 	const s = await agentCrb({ scenario: { agent: AGENT, answers: [] } });
+	const asks = agentAsks(page);
 	const section = await openFile(page, s.url, CALC);
 	await chip(page).click();
 	const drawer = reviewDrawer(page);
@@ -644,12 +659,11 @@ test("one-tap questions (CAR-203): a first review's fill the box; after a mark a
 	}
 	await expectNoPageOverflow(page);
 	await shot(page, "review-conversation-questions", isMobile);
-	// A tap fills the box; nothing is sent.
+	// A tap fills the box (what was sent is checked at the end).
 	const box = drawer.getByRole("textbox", { name: "Ask agent" });
 	await questions.first().click();
 	await expect(box).toHaveValue("Please summarize the changes");
 	await expect(box).toBeFocused();
-	await expect(drawer.getByTestId("agent-message-human")).toHaveCount(0);
 	await drawer.getByRole("button", { name: "Close" }).click();
 	await expect(reviewDrawer(page)).toHaveCount(0);
 	// A mark starts PS1; a push after it makes this a re-review.
@@ -665,21 +679,39 @@ test("one-tap questions (CAR-203): a first review's fill the box; after a mark a
 		message: "more",
 		files: { [CALC]: "export const total = 0;\n" },
 	});
+	// The page's head check held: the session still knows only PS1's head.
+	let release = () => {};
+	const released = new Promise<void>((r) => {
+		release = r;
+	});
+	await page.route(/\/api\/r\/[^/]+\/head$/, async (route) => {
+		await released;
+		await route.continue();
+	});
 	await page.reload();
-	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
-		"data-state",
-		"head",
+	await chip(page).click();
+	const again = reviewDrawer(page);
+	await expect(
+		again.getByTestId("agent-quick-questions-loading"),
+	).toBeVisible();
+	await expect(
+		again.getByRole("button", { name: "Please summarize the changes" }),
+	).toHaveCount(0);
+	release();
+	await expect(again.getByTestId("agent-quick-question")).toHaveText(
+		[
+			"Please summarize what changed",
+			"Please confirm all comments I wrote have been addressed and highlight those that haven't",
+			"Please highlight any change that isn't related to a comment I've made",
+		],
 		// The head check's fetch on a loaded machine (rereview.spec's GIT_WAIT).
 		{ timeout: 30_000 },
 	);
-	await chip(page).click();
-	await expect(
-		reviewDrawer(page).getByTestId("agent-quick-question"),
-	).toHaveText([
-		"Please summarize what changed",
-		"Please confirm all comments I wrote have been addressed and highlight those that haven't",
-		"Please highlight any change that isn't related to a comment I've made",
-	]);
+	await expect(again.getByTestId("agent-quick-questions-loading")).toHaveCount(
+		0,
+	);
 	await expectNoPageOverflow(page);
 	await shot(page, "review-conversation-rereview-questions", isMobile);
+	// Long past the tap (a reload and a head check later): nothing was sent.
+	expect(asks).toEqual([]);
 });

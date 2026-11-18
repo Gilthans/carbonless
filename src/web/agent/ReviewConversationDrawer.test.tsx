@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	QueryClient,
+	QueryClientProvider,
+	useQuery,
+} from "@tanstack/react-query";
 import {
 	act,
 	cleanup,
@@ -11,10 +15,10 @@ import {
 import userEvent from "@testing-library/user-event";
 import { Profiler, useMemo } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { heldJson } from "../../../test/loading";
+import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { AgentStatus, AgentThread } from "../../shared/agent";
 import type { PrOverview, SessionInfo } from "../../shared/types";
-import { overviewQuery, sessionQuery } from "../api";
+import { headQuery, overviewQuery, sessionQuery } from "../api";
 import { ShortcutsProvider } from "../shortcuts";
 import { resetAgentChipPress } from "./AgentChip";
 import { resetAgentWrites } from "./agentWrites";
@@ -70,11 +74,14 @@ let posts: { path: string; body: Record<string, unknown> }[];
 let answer: (path: string, body: Record<string, unknown>) => Promise<Response>;
 /** The agent threads read's answer, per call. */
 let threadsRead: () => Promise<Response>;
+/** The head check's answer (GET /api/head); never answered unless a test says. */
+let headRead: () => Promise<Response>;
 
 beforeEach(() => {
 	posts = [];
 	answer = () => new Promise(() => {});
 	threadsRead = () => new Promise(() => {});
+	headRead = () => new Promise(() => {});
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: string, init?: RequestInit) => {
@@ -82,6 +89,7 @@ beforeEach(() => {
 			const method = init?.method ?? "GET";
 			if (method === "GET") {
 				if (url.pathname.endsWith("/agent/threads")) return threadsRead();
+				if (url.pathname === "/api/head") return headRead();
 				return new Promise<Response>(() => {});
 			}
 			const body = JSON.parse(String(init?.body ?? "null"));
@@ -119,6 +127,12 @@ function FilesComparison(props: { view: SendView }) {
 	return null;
 }
 
+/** The page's head check, as App runs it. */
+function HeadCheck() {
+	useQuery(headQuery);
+	return null;
+}
+
 function show(
 	opts: {
 		/** The agent threads as read; undefined: the read is asked (fetch). */
@@ -128,6 +142,8 @@ function show(
 		status?: AgentStatus | null;
 		/** The session's patch sets; null: the session not read yet. */
 		session?: Partial<SessionInfo> | null;
+		/** The page's head check: answered (default), or run as App does (its fetch). */
+		headCheck?: "answered" | "app";
 	} = {},
 ) {
 	const client = new QueryClient({
@@ -148,6 +164,12 @@ function show(
 			],
 			...opts.session,
 		} as unknown as SessionInfo);
+		if (opts.headCheck !== "app") {
+			client.setQueryData(
+				headQuery.queryKey,
+				client.getQueryData(sessionQuery.queryKey),
+			);
+		}
 	}
 	if (opts.status !== null) {
 		client.setQueryData(agentStatusQuery.queryKey, opts.status ?? status);
@@ -163,6 +185,7 @@ function show(
 					<button type="button" data-testid="agent-chip">
 						chip
 					</button>
+					{opts.headCheck === "app" && <HeadCheck />}
 					<ReviewConversationDrawer key={review} />
 					<States />
 				</SendViewHost>
@@ -617,11 +640,13 @@ describe("the review conversation's one-tap questions (CAR-203)", () => {
 			.map((b) => b.textContent);
 	const firstReview = {
 		snapshotHead: "h1",
+		currentHead: "h1",
 		head: null,
 		patchsets: [{ number: 1, head: "h1" }],
 	} as unknown as SessionInfo;
 	const reReview = {
 		snapshotHead: "h2",
+		currentHead: "h2",
 		head: null,
 		patchsets: [
 			{ number: 1, head: "h1" },
@@ -679,13 +704,64 @@ describe("the review conversation's one-tap questions (CAR-203)", () => {
 			within(busy).getByRole("status", { name: "Loading suggested questions" }),
 		).toBeInTheDocument();
 		expect(chips()).toEqual([]);
-		act(() => client.setQueryData(sessionQuery.queryKey, firstReview));
+		act(() => {
+			client.setQueryData(sessionQuery.queryKey, firstReview);
+			client.setQueryData(headQuery.queryKey, firstReview);
+		});
 		await waitFor(() =>
 			expect(chips()).toContain("Please summarize the changes"),
 		);
 		expect(
 			within(drawer()).queryByTestId("agent-quick-questions-loading"),
 		).toBeNull();
+	});
+
+	it("patch sets on one head: a spinner until the head check answers (a push overnight), then the re-review questions; two heads never wait", async () => {
+		const held = heldJson();
+		headRead = () => held.response;
+		openReviewDrawer();
+		// The session as the server last knew it: PS1 on h1, the PR's head h1.
+		const stale = {
+			...firstReview,
+			head: { oid: "h1", mergeBase: "b", baseBranch: "main", commits: 0 },
+		};
+		show({ threads: [], session: stale, headCheck: "app" });
+		await expectLoadingThen({
+			loading: () =>
+				within(drawer()).queryByTestId("agent-quick-questions-loading"),
+			empty: [
+				() =>
+					within(drawer()).queryByRole("button", {
+						name: "Please summarize the changes",
+					}),
+			],
+			release: () =>
+				held.release({
+					...stale,
+					viewer: "octo",
+					head: { oid: "h2", mergeBase: "b", baseBranch: "main", commits: 1 },
+				}),
+			result: () =>
+				within(drawer()).queryByRole("button", {
+					name: "Please summarize what changed",
+				}),
+		});
+		expect(chips()).not.toContain("Please summarize the changes");
+		cleanup();
+		// Two heads: a re-review whatever the check says, never held.
+		headRead = () => new Promise(() => {});
+		openReviewDrawer();
+		show({ threads: [], session: reReview, headCheck: "app" });
+		expect(chips()).toContain("Please summarize what changed");
+	});
+
+	it("a failed head check: the session's last answer", async () => {
+		headRead = async () => json({ error: "gh down" }, 502);
+		openReviewDrawer();
+		show({ threads: [], session: firstReview, headCheck: "app" });
+		await waitFor(() =>
+			expect(chips()).toContain("Please summarize the changes"),
+		);
 	});
 
 	it("a tap fills an empty box, appends to a typed one, focuses it with the caret at the end, and sends nothing", async () => {

@@ -15,7 +15,7 @@ import {
 	useState,
 } from "react";
 import { type AgentThread, MAX_AGENT_TEXT } from "../../shared/agent";
-import { sessionQuery } from "../api";
+import { headQuery, sessionQuery } from "../api";
 import { Spinner } from "../Spinner";
 import { useShortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
@@ -457,8 +457,13 @@ function Composer(props: {
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text]);
 	// The one-tap questions: a first review's or a re-review's (the session says).
+	// Patch sets on one head wait for the page's head check (App runs it).
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;
-	const questions = reviewQuestions(session);
+	const headCheck = useQuery({ ...headQuery, enabled: false });
+	const questions = reviewQuestions(
+		session,
+		headCheck.data !== undefined || headCheck.isError,
+	);
 	const caretToEnd = useRef(false);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs once the tapped question is in the box.
 	useLayoutEffect(() => {

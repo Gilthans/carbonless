@@ -123,6 +123,15 @@ test("one-tap questions (CAR-203): select lines, tap What calls this?, the box h
 	const s = await agentCrb({
 		scenario: { agent: { name: "Fake Agent", version: "9.9.9" }, answers: [] },
 	});
+	const asks: string[] = [];
+	page.on("request", (r) => {
+		if (
+			r.method() === "POST" &&
+			/\/agent\/threads$/.test(new URL(r.url()).pathname)
+		) {
+			asks.push(r.postData() ?? "");
+		}
+	});
 	const section = await openFile(page, s.url, CALC);
 	await selectText(page, CALC, 3, 13, 18);
 	await bar(page).getByRole("button", { name: "Ask agent" }).click();
@@ -143,13 +152,17 @@ test("one-tap questions (CAR-203): select lines, tap What calls this?, the box h
 	const box = composer.getByRole("textbox", { name: "Ask your agent" });
 	await expect(box).toHaveValue("What calls this?");
 	await expect(box).toBeFocused();
-	// Nothing sent by the tap: no thread yet.
-	await expect(section.getByTestId("agent-thread")).toHaveCount(0);
 	await composer.getByTestId("agent-composer-ask").click();
 	await expect(composer).toHaveCount(0);
 	await expect(
 		section.getByTestId("agent-thread").filter({ hasText: "What calls this?" }),
 	).toHaveCount(1);
+	// The thread is in, so Ask's POST is answered: it was the only one.
+	// The tap sent nothing.
+	expect(asks).toHaveLength(1);
+	expect(JSON.parse(asks[0] ?? "{}")).toMatchObject({
+		text: "What calls this?",
+	});
 });
 
 test("an agent without MCP over HTTP: it reaches crb through the built crb mcp-bridge (stdio), from Spawn to an answered question", async ({
