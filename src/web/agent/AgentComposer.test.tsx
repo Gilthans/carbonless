@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../../shared/types";
@@ -111,5 +118,13 @@ describe("the Ask agent composer's one-tap questions (CAR-203)", () => {
 		await user.click(chip("Why this change?"));
 		expect(box()).toHaveValue("Hmm.\nWhy this change?");
 		expect(posts).toEqual([]);
+	});
+
+	it("a chip's mousedown is prevented: the box keeps focus (no phone keyboard bounce)", () => {
+		show(lineSpan);
+		box().focus();
+		const chipEl = chip("Why this change?");
+		expect(fireEvent.mouseDown(chipEl)).toBe(false);
+		expect(box()).toHaveFocus();
 	});
 });

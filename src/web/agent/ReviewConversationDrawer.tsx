@@ -460,7 +460,6 @@ function Composer(props: {
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text]);
-	// The one-tap questions: a first review's or a re-review's (the session says).
 	// The one-tap questions: PS2 or later looked at, the re-review's.
 	const patchsets = useQuery({ ...sessionQuery, enabled: false }).data
 		?.patchsets.length;
