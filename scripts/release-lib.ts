@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rcMoveTo } from "./rc-fixup.mjs";
 import { isReleased, releaseGate } from "./release-gate.mjs";
+import type { PullForNotes } from "./release-notes.js";
 
 // Version math and the steps behind `pnpm release` and the release and
 // release-finish workflows (docs/releasing.md). Everything that touches git, gh or
@@ -160,33 +161,6 @@ export function tagNames(output: string): string[] {
 		.map((line) => line.trim().split(/\s+/).at(-1) ?? "")
 		.filter((ref) => ref !== "")
 		.map((ref) => ref.replace(/^refs\/tags\//, "").replace(/\^\{\}$/, ""));
-}
-
-export type MergedPr = { number: number; title: string; mergedAt: string };
-
-/**
- * docs/changelog.md with the section for `version` (dated `date`) on top,
- * replacing an older section of that version (a promote run again).
- */
-export function renderChangelog(
-	existing: string | null,
-	version: string,
-	date: string,
-	prs: readonly MergedPr[],
-): string {
-	const heading = `## ${version} (${date})`;
-	const items = [...prs]
-		.sort((a, b) => a.mergedAt.localeCompare(b.mergedAt) || a.number - b.number)
-		.map((pr) => `- ${pr.title.trim()} (#${pr.number})`);
-	const section = [heading, "", ...(items.length ? items : ["- No PRs."])].join(
-		"\n",
-	);
-	const sections = (existing ?? "")
-		.replace(/^# Changelog\s*/, "")
-		.split(/^(?=## )/m)
-		.map((s) => s.trim())
-		.filter((s) => s !== "" && !s.startsWith(`## ${version} (`));
-	return `# Changelog\n\n${[section, ...sections].join("\n\n")}\n`;
 }
 
 /** package.json's text with `version` replaced, its formatting kept. */
@@ -379,7 +353,7 @@ async function freezeOf(
 export async function mergeOk(
 	io: Io,
 	pr: string,
-	notes: (pull: never) => Promise<string>,
+	notes: (pull: PullForNotes) => Promise<string>,
 ): Promise<void> {
 	const url = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/.exec(
 		pr,
@@ -409,7 +383,7 @@ export async function mergeOk(
 			`${gate.message}. Run pnpm release merge-ok ${number} again once it merges.`,
 		);
 	}
-	const notesOk = await notes(JSON.parse(pull) as never);
+	const notesOk = await notes(JSON.parse(pull) as PullForNotes);
 	io.log(`notes: ${notesOk}`);
 	io.log(`ok: ${gate.message}`);
 }
@@ -754,49 +728,6 @@ export async function resolvePromote(
 		);
 	}
 	return { tag, release: formatVersion(release) };
-}
-
-/**
- * The PRs merged into master that `to` (the promoted RC's commit) has and
- * the previous release's tag doesn't, by ancestry of each PR's merge commit
- * (a merge, squash or rebase merge all leave theirs on master).
- */
-export async function releasePrs(
-	io: Io,
-	version: string,
-	to: string,
-	cwd: string,
-): Promise<MergedPr[]> {
-	const v = parseVersion(version);
-	if (!v || v.rc !== undefined) throw new Error(`not a release: ${version}`);
-	const prev = previousRelease(await remoteTags(io), v);
-	const prs = JSON.parse(
-		await must(io, "gh", [
-			"pr",
-			"list",
-			"--repo",
-			io.repo,
-			"--state",
-			"merged",
-			"--base",
-			"master",
-			"--limit",
-			"1000",
-			"--json",
-			"number,title,mergedAt,mergeCommit",
-		]),
-	) as (MergedPr & { mergeCommit: { oid: string } | null })[];
-	const isAncestor = async (sha: string, ref: string) =>
-		(await io.run("git", ["merge-base", "--is-ancestor", sha, ref], { cwd }))
-			.code === 0;
-	const picked: MergedPr[] = [];
-	for (const pr of prs) {
-		const sha = pr.mergeCommit?.oid;
-		if (!sha || !(await isAncestor(sha, to))) continue;
-		if (prev && (await isAncestor(sha, prev))) continue;
-		picked.push({ number: pr.number, title: pr.title, mergedAt: pr.mergedAt });
-	}
-	return picked;
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ import {
 	noneWhyProblems,
 	noteTextProblems,
 	parseReleaseNotesFile,
+	printable,
 	type ReleaseNoneEntry,
 	type ReleaseNote,
 	type ReleaseNotesFile,
@@ -95,8 +96,9 @@ export function parseNoteLine(line: string): NoteLine | { error: string } {
 	return { kind, text: rest };
 }
 
+/** Text from a PR or Linear, shortened and safe to print (no control or bidi characters). */
 const clip = (s: string) => {
-	const t = s.trim();
+	const t = printable(s.trim());
 	return t.length > 60 ? `${t.slice(0, 57)}...` : t;
 };
 
@@ -225,8 +227,23 @@ export function titleTickets(title: string): string[] {
 	return out;
 }
 
+/** A release PR's title: `next: X.Y.Z` (release-finish) or `notes: X.Y.Z`. */
 export const isExemptTitle = (title: string) =>
 	/^(next|notes): \d+\.\d+\.\d+$/.test(title.trim());
+
+/**
+ * Whether a release PR's changes make it one: only package.json,
+ * docs/changelog.md and release-notes/. A PR with such a title that
+ * changes anything else needs a note like any other (the title alone is
+ * anyone's to write).
+ */
+export const releasePrFiles = (files: readonly string[]) =>
+	files.every(
+		(f) =>
+			f === "package.json" ||
+			f === "docs/changelog.md" ||
+			/^release-notes\/[^/]+$/.test(f),
+	);
 
 /** A first-parent subject's PR: the title and `(#N)` at its end; null when it isn't a PR. */
 export function subjectPr(subject: string): RangePr | null {
@@ -237,6 +254,7 @@ export function subjectPr(subject: string): RangePr | null {
 		number: Number(m[2]),
 		title,
 		tickets: titleTickets(title),
+		// releaseRange also checks what the commit changes.
 		exempt: isExemptTitle(title),
 	};
 }
@@ -271,7 +289,7 @@ export async function releaseRange(
 			"log",
 			"--first-parent",
 			"--reverse",
-			"--format=%s",
+			"--format=%H %s",
 			from ? `refs/tags/${from}..${to}` : to,
 			"--",
 		],
@@ -279,11 +297,26 @@ export async function releaseRange(
 	);
 	const prs: RangePr[] = [];
 	const other: string[] = [];
-	for (const subject of log.split("\n")) {
-		if (subject.trim() === "") continue;
+	for (const line of log.split("\n")) {
+		if (line.trim() === "") continue;
+		const sha = line.slice(0, line.indexOf(" "));
+		const subject = line.slice(sha.length + 1);
 		const pr = subjectPr(subject);
-		if (pr) prs.push(pr);
-		else other.push(subject);
+		if (!pr) {
+			other.push(subject);
+			continue;
+		}
+		if (pr.exempt) {
+			// What the merge (or squash) brought onto master.
+			const files = await must(
+				io,
+				"git",
+				["diff", "--name-only", `${sha}^1`, sha, "--"],
+				{ cwd },
+			);
+			pr.exempt = releasePrFiles(files.split("\n").filter((f) => f !== ""));
+		}
+		prs.push(pr);
 	}
 	return { from, prs, other };
 }
@@ -474,7 +507,10 @@ export async function shippedNotes(
 	const entries: ShippedReleaseNotes[] = [];
 	const top: ShippedReleaseNotes = {
 		version: release,
-		date: rc ? null : io.now().toISOString().slice(0, 10),
+		// Undated in its own build: its date is the day it is published,
+		// which release-finish writes into its notes file (and the
+		// changelog) after the owner approves; later builds ship that.
+		date: null,
 		notes: own?.notes ?? [],
 	};
 	if (rc) {
@@ -538,6 +574,20 @@ export function mdText(text: string): string {
 		.replace(/@(?=[\w-])/g, "@​");
 }
 
+/**
+ * A note's text for GitHub markdown: the prose as `mdText` makes it, the
+ * `code` spans as they are (markdown shows them verbatim, entities and
+ * all). The notes are checked against these already (noteTextProblems);
+ * this holds even for a file edited by hand. Not `escapeTags`: it keeps
+ * the tags GitHub keeps (`<details>`, `<a>`, ...), to preserve what a
+ * reviewer typed; here nothing of the kind is wanted.
+ */
+export function mdNoteText(text: string): string {
+	const parts = text.split("`");
+	if (parts.length % 2 === 0) return mdText(text);
+	return parts.map((p, i) => (i % 2 === 1 ? p : mdText(p))).join("`");
+}
+
 /** A version's changelog body (no heading): its notes by kind, then every PR. */
 export function renderNotesBody(
 	file: ReleaseNotesFile | null,
@@ -555,7 +605,7 @@ export function renderNotesBody(
 				"",
 				...of.map(
 					(n) =>
-						`- ${n.text} (${[n.id, ...n.prs.map((p) => `#${p}`)].filter((x, i, a) => a.indexOf(x) === i).join(", ")})`,
+						`- ${mdNoteText(n.text)} (${[n.id, ...n.prs.map((p) => `#${p}`)].filter((x, i, a) => a.indexOf(x) === i).join(", ")})`,
 				),
 			].join("\n"),
 		);
@@ -595,23 +645,34 @@ export type Linear = {
 	query: <T>(query: string, variables?: Record<string, unknown>) => Promise<T>;
 };
 
-/** The Linear key: $LINEAR_API_KEY, else the key file in the user's config dir; null without one. */
+/**
+ * The Linear key: $LINEAR_API_KEY, else `linear/api-key` in
+ * $XDG_CONFIG_HOME, else in ~/.config (a worktree's .envrc points
+ * XDG_CONFIG_HOME at its own dir); `tried` names each place, for the error.
+ */
 export function linearKey(
 	env: NodeJS.ProcessEnv = process.env,
 	home = homedir(),
-): string | null {
+): { key: string | null; tried: string[] } {
+	const tried = ["$LINEAR_API_KEY"];
 	const fromEnv = env.LINEAR_API_KEY?.trim();
-	if (fromEnv) return fromEnv;
-	const file = join(
-		env.XDG_CONFIG_HOME || join(home, ".config"),
-		"linear/api-key",
+	if (fromEnv) return { key: fromEnv, tried };
+	const dirs = [env.XDG_CONFIG_HOME, join(home, ".config")].filter(
+		(d): d is string => !!d,
 	);
-	if (!existsSync(file)) return null;
-	return readFileSync(file, "utf8").trim() || null;
+	for (const dir of [...new Set(dirs)]) {
+		const file = join(dir, "linear/api-key");
+		tried.push(file);
+		if (!existsSync(file)) continue;
+		const key = readFileSync(file, "utf8").trim();
+		if (key) return { key, tried };
+	}
+	return { key: null, tried };
 }
 
-export const NO_LINEAR_KEY =
-	"no Linear key: set $LINEAR_API_KEY or put it in ~/.config/linear/api-key (release notes live in Linear)";
+/** Why there's no Linear client: every place the key was looked for. */
+export const noLinearKey = (tried: readonly string[]) =>
+	`no Linear key (tried ${tried.join(", ")}): set $LINEAR_API_KEY or put it in ~/.config/linear/api-key (release notes live in Linear)`;
 
 /** A Linear GraphQL client over fetch. */
 export function linearClient(
@@ -895,7 +956,9 @@ export async function collectNotes(
 			for (const n of status.notes)
 				notes.push({ id, kind: n.kind, prs, text: n.text });
 	}
-	for (const s of range.other) warnings.push(`not a PR (no "(#N)"): ${s}`);
+	for (const s of range.other) {
+		warnings.push(`not a PR (no "(#N)"): ${clip(s)}`);
+	}
 	return {
 		file: {
 			version,
@@ -1066,8 +1129,9 @@ async function notesPr(
 
 /**
  * `pnpm release notes check`: what has no note yet: the release so far
- * (up to origin/master) and the tickets done in the last 30 days. For
- * merges no script saw (the owner's, in GitHub's UI). Fails when any.
+ * (up to origin/master), which fails it, and the tickets done in the last
+ * 30 days outside that range, which only warn (most predate the rule).
+ * For merges no script saw (the owner's, in GitHub's UI).
  */
 export async function auditNotes(io: Io, linear: Linear): Promise<string[]> {
 	await must(io, "git", ["fetch", "origin", "master", "--tags"]);
@@ -1076,26 +1140,28 @@ export async function auditNotes(io: Io, linear: Linear): Promise<string[]> {
 	const files = await notesFilesAt(io, "origin/master");
 	const { missing } = await collectNotes(io, linear, version, range, files);
 	const problems = missing.map((m) => `${version}: ${m}`);
+	const warnings: string[] = [];
 	const since = new Date(io.now().getTime() - 30 * 86_400_000).toISOString();
 	const seen = new Set(neededIds(range).keys());
 	for (const issue of await doneSince(linear, since)) {
 		if (seen.has(issue.identifier)) continue;
 		const s = ticketNote(issue.comments, issue.labels);
 		if (s.status === "missing") {
-			problems.push(
-				`done: ${issue.identifier} ${issue.title}: no Release note: ${noteCommand(issue.identifier)}`,
+			warnings.push(
+				`warning: done: ${issue.identifier} ${clip(issue.title)}: no Release note: ${noteCommand(issue.identifier)}`,
 			);
 		} else if (s.status === "invalid") {
-			problems.push(`done: ${issue.identifier}: ${s.errors.join("; ")}`);
+			warnings.push(
+				`warning: done: ${issue.identifier}: ${s.errors.join("; ")}`,
+			);
 		}
 	}
+	for (const w of warnings) io.log(w);
 	for (const p of problems) io.log(p);
 	if (problems.length > 0) {
 		throw new Error(`${problems.length} without a release note`);
 	}
-	io.log(
-		`ok: every ticket and PR of ${version} so far, and every ticket done since ${since.slice(0, 10)}, has a release note`,
-	);
+	io.log(`ok: every ticket and PR of ${version} so far has a release note`);
 	return problems;
 }
 
@@ -1119,16 +1185,26 @@ export type PullForNotes = {
  */
 export async function prNotesOk(
 	pull: PullForNotes,
-	linear: () => Linear | null,
+	linear: () => { linear: Linear | null; tried: string[] },
+	files: () => Promise<string[]>,
 ): Promise<string> {
 	const title = pull.title ?? "";
-	if (isExemptTitle(title))
-		return `#${pull.number} is "${title}": no note needed`;
-	const tickets = titleTickets(title);
 	const branch = pull.head?.ref ?? "";
+	// A release PR: its title, its own branch (next/X.Y.Z, notes/X.Y.Z), and
+	// only release files changed.
+	const kind = /^(next|notes): (\d+\.\d+\.\d+)$/.exec(title.trim());
+	if (
+		kind &&
+		isExemptTitle(title) &&
+		branch === `${kind[1]}/${kind[2]}` &&
+		releasePrFiles(await files())
+	) {
+		return `#${pull.number} is "${title}": no note needed`;
+	}
+	const tickets = titleTickets(title);
 	if (tickets.length === 0 && /^car-\d+/i.test(branch)) {
 		throw new Error(
-			`#${pull.number}'s branch ${branch} is a ticket's, but its title names none: add (CAR-NNN) to the title`,
+			`#${pull.number}'s branch ${clip(branch)} is a ticket's, but its title names none: add (CAR-NNN) to the title`,
 		);
 	}
 	const body = pull.body ?? "";
@@ -1162,10 +1238,10 @@ export async function prNotesOk(
 		}
 		return `#${pull.number}: ${s.status === "none" ? `no note (${s.why})` : `${s.notes.length} note(s)`} in its description`;
 	}
-	const client = linear();
+	const { linear: client, tried } = linear();
 	if (!client)
 		throw new Error(
-			`${NO_LINEAR_KEY}; merge-ok reads ${tickets.join(", ")}'s Release note there`,
+			`${noLinearKey(tried)}; merge-ok reads ${tickets.join(", ")}'s Release note there`,
 		);
 	const problems: string[] = [];
 	const found: string[] = [];

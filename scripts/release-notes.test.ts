@@ -3,6 +3,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -34,6 +35,7 @@ import {
 	prBodyNote,
 	prNotesOk,
 	promoteNotesCheck,
+	readNotesFile,
 	releaseRange,
 	renderNotesBody,
 	shippedNotes,
@@ -71,7 +73,7 @@ describe("Release note lines", () => {
 			["Release note (huge): Big.", /new, improved or fixed, not huge/],
 			[
 				"Release note (new): fixes CAR-12.",
-				/doesn't start with a capital.*names a ticket/,
+				/starts with a lowercase letter.*names a ticket/,
 			],
 			["Release note (new): A <b>bold</b> claim.", /has HTML/],
 			["Release note new: x", /isn't "Release note/],
@@ -402,6 +404,30 @@ describe("against a repository", {
 		).toEqual([50, 51]);
 	});
 
+	it("a next: or notes: title exempts a PR only when it changes nothing but package.json, docs/changelog.md and release-notes/", async () => {
+		commit("next: 0.4.0 (#60)", {
+			"package.json":
+				'{\n\t"name": "carbonless-review",\n\t"version": "0.4.0"\n}\n',
+			"docs/changelog.md": "# Changelog\n",
+		});
+		commit("notes: 0.4.0 (#61)", { "release-notes/0.4.0.json": "{}\n" });
+		commit("notes: 0.4.0 (#62)", {
+			"release-notes/0.4.0.json": "{ }\n",
+			"src/sneaky.ts": "export {};\n",
+		});
+		const { io } = repoIo(repo);
+		expect(
+			(await releaseRange(io, "0.4.0", "HEAD")).prs.map((p) => [
+				p.number,
+				p.exempt,
+			]),
+		).toEqual([
+			[60, true],
+			[61, true],
+			[62, false],
+		]);
+	});
+
 	it("a merged-in branch's own commits are not PRs of the release (first parent only)", async () => {
 		git("switch", "-q", "-c", "side");
 		commit("Side work (CAR-999) (#999)");
@@ -569,7 +595,7 @@ describe("against a repository", {
 			]);
 		});
 
-		it("a release: dated today, no uncovered list; refused without its file; an older release undated in its file takes its tag's date", async () => {
+		it("a release: undated (release-finish dates it when published), no uncovered list; refused without its file; an older release undated in its file takes its tag's date", async () => {
 			commit("notes: 0.3.0 (#52)", {
 				"release-notes/0.3.0.json": notesFile({ version: "0.3.0" }),
 			});
@@ -584,7 +610,7 @@ describe("against a repository", {
 			const shipped = await shippedNotes(io, "0.4.0", repo);
 			expect(shipped[0]).toEqual({
 				version: "0.4.0",
-				date: "2026-11-20",
+				date: null,
 				notes: [],
 			});
 			expect(shipped[1]?.version).toBe("0.3.0");
@@ -592,13 +618,15 @@ describe("against a repository", {
 		});
 
 		it("ci:set-version writes crbReleaseNotes and the build copies it to dist/release-notes.json; the tree stays clean", () => {
-			history();
-			commit("notes: 0.4.0 (#140)", {
+			commit("Build info (no PR)", {
 				"scripts/build-info.mjs": readFileSync(
 					join(import.meta.dirname, "build-info.mjs"),
 					"utf8",
 				),
 				".gitignore": "dist/\n",
+			});
+			history();
+			commit("notes: 0.4.0 (#140)", {
 				"release-notes/0.4.0.json": notesFile({
 					version: "0.4.0",
 					notes: [
@@ -705,6 +733,28 @@ describe("against a repository", {
 					"- A &lt;/details&gt;&lt;img src=x onerror=alert(1)&gt; title for @​someone (#130)",
 					"</details>",
 				].join("\n"),
+			);
+			// A file edited by hand past the rules: the prose is escaped,
+			// `code` left as markdown shows it.
+			expect(
+				renderNotesBody(
+					{
+						version: "0.4.0",
+						date: null,
+						none: [],
+						notes: [
+							{
+								id: "CAR-1",
+								kind: "new",
+								prs: [1],
+								text: "A <b>bold</b> one for @alice and upstream/lib#3, `<i>` kept.",
+							},
+						],
+					},
+					{ from: null, prs: [], other: [] },
+				),
+			).toBe(
+				"### New\n\n- A &lt;b&gt;bold&lt;/b&gt; one for @\u200balice and upstream/lib#3, `<i>` kept. (CAR-1, #1)",
 			);
 			expect(renderNotesBody(null, { from: null, prs: [], other: [] })).toBe(
 				"No user-facing changes.",
@@ -963,17 +1013,29 @@ describe("against a repository", {
 				"CAR-172": { comments: [note("none (x)")] },
 				"CAR-190": { title: "Release tooling" },
 			});
+			// Only the release's gap fails; a done ticket outside it (most
+			// predate the rule) warns.
 			await expect(auditNotes(io, linear)).rejects.toThrow(
-				"2 without a release note",
+				"1 without a release note",
 			);
 			expect(lines).toEqual([
 				expect.stringMatching(
-					/^0\.4\.0: #125 \(#125\): no Release note: add a "Release note \(kind\)/,
+					/^warning: done: CAR-190 Release tooling: no Release note: pnpm release note CAR-190/,
 				),
 				expect.stringMatching(
-					/^done: CAR-190 Release tooling: no Release note: pnpm release note CAR-190/,
+					/^0\.4\.0: #125 \(#125\): no Release note: add a "Release note \(kind\)/,
 				),
 			]);
+			// With the release covered, the warning alone passes.
+			const covered = repoIo(
+				repo,
+				{ "api repos/owner/repo/pulls/125": "Release note: none (tests)" },
+				"origin",
+			);
+			await auditNotes(covered.io, linear);
+			expect(covered.lines.at(-1)).toBe(
+				"ok: every ticket and PR of 0.4.0 so far has a release note",
+			);
 		});
 
 		it("promote refuses before dispatching while the RC's file doesn't cover it, and warns when Linear moved on", async () => {
@@ -1083,8 +1145,22 @@ describe("merge-ok's note check", () => {
 		body,
 		head: { ref },
 	});
-	const linearWith = (issues: Record<string, RawIssue>) => () =>
-		fakeLinear(issues).linear;
+	const TRIED = ["$LINEAR_API_KEY", "/x/.config/linear/api-key"];
+	const linearWith = (issues: Record<string, RawIssue>) => () => ({
+		linear: fakeLinear(issues).linear,
+		tried: TRIED,
+	});
+	const noKey = () => ({ linear: null, tried: TRIED });
+	const never = () => {
+		throw new Error("no Linear here");
+	};
+	const files =
+		(...names: string[]) =>
+		async () =>
+			names;
+	const noFiles = async (): Promise<string[]> => {
+		throw new Error("no files asked here");
+	};
 
 	it("passes a ticket with a note or an explicit none", async () => {
 		expect(
@@ -1097,6 +1173,7 @@ describe("merge-ok's note check", () => {
 					"CAR-183": { labels: ["Feature"], comments: [note("Threads.")] },
 					"CAR-184": { comments: [note("none (refactor)")] },
 				}),
+				noFiles,
 			),
 		).toBe("CAR-183: 1 note(s), CAR-184: no note (refactor)");
 	});
@@ -1110,6 +1187,7 @@ describe("merge-ok's note check", () => {
 						comments: [{ body: "LGTM", updatedAt: "2026-11-15T00:00:00Z" }],
 					},
 				}),
+				noFiles,
 			),
 		).rejects.toThrow(
 			/^#9 can't merge without its release notes: CAR-183 has no Release note: pnpm release note CAR-183 "<text>"/,
@@ -1118,69 +1196,102 @@ describe("merge-ok's note check", () => {
 			prNotesOk(
 				pull("Threads tab (CAR-183)"),
 				linearWith({ "CAR-183": { comments: [note("Threads.")] } }),
+				noFiles,
 			),
 		).rejects.toThrow(/CAR-183's Release note: .*no kind/);
-		await expect(prNotesOk(pull("x (CAR-1)"), linearWith({}))).rejects.toThrow(
-			/CAR-1: Linear has no such ticket/,
-		);
+		await expect(
+			prNotesOk(pull("x (CAR-1)"), linearWith({}), noFiles),
+		).rejects.toThrow(/CAR-1: Linear has no such ticket/);
 	});
 
-	it("refuses without a Linear key", async () => {
+	it("refuses without a Linear key, naming every place it looked", async () => {
 		await expect(
-			prNotesOk(pull("Threads tab (CAR-183)"), () => null),
+			prNotesOk(pull("Threads tab (CAR-183)"), noKey, noFiles),
 		).rejects.toThrow(
-			/^no Linear key: set \$LINEAR_API_KEY .*merge-ok reads CAR-183's Release note there/,
+			"no Linear key (tried $LINEAR_API_KEY, /x/.config/linear/api-key): set $LINEAR_API_KEY or put it in ~/.config/linear/api-key (release notes live in Linear); merge-ok reads CAR-183's Release note there",
 		);
 	});
 
 	it("a ticket-less PR needs a Release note line in its description", async () => {
-		const never = () => {
-			throw new Error("no Linear for a ticket-less PR");
-		};
 		expect(
 			await prNotesOk(
 				pull("Test processes stop", "Release note: none (test tooling)"),
 				never,
+				noFiles,
 			),
 		).toBe("#9: no note (test tooling) in its description");
 		await expect(
-			prNotesOk(pull("Test processes stop", "Just a fix."), never),
+			prNotesOk(pull("Test processes stop", "Just a fix."), never, noFiles),
 		).rejects.toThrow(/^#9 has no ticket and no "Release note/);
 		await expect(
 			prNotesOk(
 				pull("Test processes stop", "Release note (new): see #12."),
 				never,
+				noFiles,
 			),
 		).rejects.toThrow(/#9's Release note: .*names a PR/);
 	});
 
 	it("refuses a car-NNN branch whose title names no ticket, and a description linking other tickets", async () => {
-		const never = () => null;
 		await expect(
-			prNotesOk(pull("Threads tab", "", "car-183-threads"), never),
+			prNotesOk(pull("Threads tab", "", "car-183-threads"), noKey, noFiles),
 		).rejects.toThrow(
 			"#9's branch car-183-threads is a ticket's, but its title names none: add (CAR-NNN) to the title",
 		);
 		await expect(
-			prNotesOk(pull("Threads (CAR-183)", "Fixes CAR-184"), never),
+			prNotesOk(pull("Threads (CAR-183)", "Fixes CAR-184"), noKey, noFiles),
 		).rejects.toThrow(
 			"#9's title names CAR-183 but its description links CAR-184: make them agree",
 		);
 		await expect(
-			prNotesOk(pull("Threads", "Fixes CAR-184"), never),
+			prNotesOk(pull("Threads", "Fixes CAR-184"), noKey, noFiles),
 		).rejects.toThrow(
 			/title names no ticket but its description links CAR-184/,
 		);
 	});
 
-	it("next and notes PRs need none", async () => {
-		const never = () => null;
+	it("prints no control characters from a PR's text", async () => {
+		const err = await prNotesOk(
+			pull("Threads", "Release note: \u001b]8;;x\u0007Hi.", "car-1-\u001b[2Jx"),
+			noKey,
+			noFiles,
+		).catch((e: Error) => e.message);
+		expect(err).toMatch(/branch car-1-\?\[2Jx/);
+		expect(err).not.toContain("\u001b");
+		const line = await prNotesOk(
+			pull("Threads", "Release note: \u001b]8;;x\u0007Hi."),
+			never,
+			noFiles,
+		).catch((e: Error) => e.message);
+		expect(line).toMatch(/"Release note: \?\]8;;x\?Hi\."/);
+	});
+
+	it("next and notes PRs need none: their title, their own branch, only release files", async () => {
 		expect(
-			await prNotesOk(pull("next: 0.5.0", "", "next/0.5.0"), never),
+			await prNotesOk(
+				pull("next: 0.5.0", "", "next/0.5.0"),
+				never,
+				files("package.json", "docs/changelog.md", "release-notes/0.4.0.json"),
+			),
 		).toMatch(/no note needed/);
 		expect(
-			await prNotesOk(pull("notes: 0.4.0", "", "notes/0.4.0"), never),
+			await prNotesOk(
+				pull("notes: 0.4.0", "", "notes/0.4.0"),
+				never,
+				files("release-notes/0.4.0.json"),
+			),
 		).toMatch(/no note needed/);
+		// The title alone exempts nothing: another branch, or code changed.
+		for (const [ref, changed] of [
+			["car-9-sneaky", ["release-notes/0.4.0.json"]],
+			["next/0.4.0", ["release-notes/0.4.0.json"]],
+			["notes/0.4.0", ["release-notes/0.4.0.json", "src/server/app.ts"]],
+		] as const) {
+			await expect(
+				prNotesOk(pull("notes: 0.4.0", "", ref), noKey, files(...changed)),
+				`${ref} ${changed.join(" ")}`,
+			).rejects.toThrow(/^#9( has no ticket|'s branch)/);
+		}
 	});
 });
 
@@ -1269,17 +1380,30 @@ describe("pnpm release note (posts one comment)", () => {
 });
 
 describe("Linear access", () => {
-	it("reads the key from $LINEAR_API_KEY, else the config dir's file, else none", () => {
+	it("reads the key from $LINEAR_API_KEY, else $XDG_CONFIG_HOME's file, else ~/.config's, naming each place tried", () => {
 		const home = mkdtempSync(join(tmpdir(), "crb-linear-"));
 		try {
-			expect(linearKey({}, home)).toBeNull();
+			const conf = join(home, ".config/linear/api-key");
+			expect(linearKey({}, home)).toEqual({
+				key: null,
+				tried: ["$LINEAR_API_KEY", conf],
+			});
 			mkdirSync(join(home, ".config/linear"), { recursive: true });
-			writeFileSync(join(home, ".config/linear/api-key"), "lin_file\n");
-			expect(linearKey({}, home)).toBe("lin_file");
-			expect(linearKey({ LINEAR_API_KEY: "lin_env" }, home)).toBe("lin_env");
-			expect(
-				linearKey({ XDG_CONFIG_HOME: join(home, "none") }, home),
-			).toBeNull();
+			writeFileSync(conf, "lin_file\n");
+			expect(linearKey({}, home).key).toBe("lin_file");
+			expect(linearKey({ LINEAR_API_KEY: "lin_env" }, home).key).toBe(
+				"lin_env",
+			);
+			// A worktree's .envrc points XDG_CONFIG_HOME at its own dir: the
+			// key in ~/.config is still found, after that dir's.
+			const own = join(home, "wt/.crb-dev/config");
+			expect(linearKey({ XDG_CONFIG_HOME: own }, home)).toEqual({
+				key: "lin_file",
+				tried: ["$LINEAR_API_KEY", join(own, "linear/api-key"), conf],
+			});
+			mkdirSync(join(own, "linear"), { recursive: true });
+			writeFileSync(join(own, "linear/api-key"), "lin_own");
+			expect(linearKey({ XDG_CONFIG_HOME: own }, home).key).toBe("lin_own");
 		} finally {
 			rmSync(home, { recursive: true, force: true });
 		}
@@ -1336,5 +1460,24 @@ describe("coverage", () => {
 			],
 			uncoveredPrs: [1, 2],
 		});
+	});
+});
+
+describe("the committed release notes", () => {
+	// A bad file breaks every RC build (ci:set-version reads them all) and
+	// biome skips release-notes/: CI checks them here instead.
+	const dir = join(import.meta.dirname, "../release-notes");
+
+	it("every release-notes/*.json parses strictly and is named for its version", () => {
+		const names = existsSync(dir) ? readdirSync(dir) : [];
+		expect(names.length).toBeGreaterThan(0);
+		for (const name of names) {
+			expect(name, name).toMatch(/^\d+\.\d+\.\d+\.json$/);
+			const file = readNotesFile(
+				readFileSync(join(dir, name), "utf8"),
+				`release-notes/${name}`,
+			);
+			expect(`${file.version}.json`, name).toBe(name);
+		}
 	});
 });

@@ -38,8 +38,7 @@ describe("noteTextProblems", () => {
 		["A tab\there.", "has a line break, control or bidi character"],
 		["Bidi ‮override.", "has a line break, control or bidi character"],
 		["Isolate ⁦here.", "has a line break, control or bidi character"],
-		["lowercase start.", "doesn't start with a capital letter"],
-		["`code` first.", "doesn't start with a capital letter"],
+		["lowercase start.", "starts with a lowercase letter"],
 		["Unpaired `tick.", "has an unpaired backtick"],
 		[
 			"An <img src=x onerror=alert(1)> tag.",
@@ -50,13 +49,39 @@ describe("noteTextProblems", () => {
 		["Some **bold** text.", "has markdown (only `code` is allowed)"],
 		["Fixes CAR-183 for good.", "names a ticket (the tools add the ids)"],
 		["Fixes car-12 too.", "names a ticket (the tools add the ids)"],
-		["Landed in #110.", "names a PR (the tools add the numbers)"],
+		["Landed in #110.", "names a PR or issue (the tools add the numbers)"],
 		[
 			"See github.com/a/b/pull/12 there.",
-			"names a PR (the tools add the numbers)",
+			"names a PR or issue (the tools add the numbers)",
 		],
 	])("refuses %j", (text, problem) => {
 		expect(noteTextProblems(text)).toContain(problem);
+	});
+
+	it.each([
+		[
+			"Thanks @alice for this.",
+			"mentions someone (@name notifies them on GitHub)",
+		],
+		["@team gets it too.", "mentions someone (@name notifies them on GitHub)"],
+		[
+			"Fixes upstream/lib#3 too.",
+			"names a PR or issue (the tools add the numbers)",
+		],
+		["Fixes lib#3 too.", "names a PR or issue (the tools add the numbers)"],
+		["Same as GH-12.", "names a PR or issue (the tools add the numbers)"],
+	])("refuses GitHub's mentions and references %j", (text, problem) => {
+		expect(noteTextProblems(text)).toContain(problem);
+	});
+
+	it("starts with a capital, `code` or a digit; mail addresses and code may hold @ and #", () => {
+		expect(noteTextProblems("`crb serve` starts faster.")).toEqual([]);
+		expect(noteTextProblems("2x faster diffs.")).toEqual([]);
+		expect(
+			noteTextProblems(
+				"Mail a@example.com works; `@x` and `a/b#1` in code too.",
+			),
+		).toEqual([]);
 	});
 
 	it("doesn't take an id inside code, or an entity, for a ticket or PR", () => {

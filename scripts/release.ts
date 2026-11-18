@@ -70,6 +70,7 @@ import {
 	KINDS,
 	type Kind,
 	mergeOk,
+	must,
 	next,
 	type PublishIo,
 	parseManifest,
@@ -91,7 +92,7 @@ import {
 	type Linear,
 	linearClient,
 	linearKey,
-	NO_LINEAR_KEY,
+	noLinearKey,
 	notesCheck,
 	notesFilesAt,
 	notesPath,
@@ -168,16 +169,30 @@ function kindArg(value: string | undefined): Kind {
 	return value as Kind;
 }
 
-/** Linear with the key on this machine, or null without one (never in CI). */
-function linearOrNull(): Linear | null {
-	const key = linearKey();
-	return key ? linearClient(key) : null;
+/** Linear with the key on this machine, or null without one (never in CI), and where it looked. */
+function findLinear(): { linear: Linear | null; tried: string[] } {
+	const { key, tried } = linearKey();
+	return { linear: key ? linearClient(key) : null, tried };
 }
 
+const linearOrNull = () => findLinear().linear;
+
 function mustLinear(): Linear {
-	const linear = linearOrNull();
-	if (!linear) throw new Error(NO_LINEAR_KEY);
+	const { linear, tried } = findLinear();
+	if (!linear) throw new Error(noLinearKey(tried));
 	return linear;
+}
+
+/** A PR's changed files, from GitHub. */
+async function prFiles(number: number): Promise<string[]> {
+	const out = await must(io, "gh", [
+		"api",
+		"--paginate",
+		`repos/${io.repo}/pulls/${number}/files?per_page=100`,
+		"--jq",
+		".[].filename",
+	]);
+	return out.split("\n").filter((f) => f !== "");
 }
 
 /** package.json's version in `dir`. */
@@ -303,7 +318,9 @@ async function main(argv: string[]) {
 		}
 		case "merge-ok": {
 			if (rest.length !== 1 || !rest[0]) usage();
-			await mergeOk(io, rest[0], (pull) => prNotesOk(pull, linearOrNull));
+			await mergeOk(io, rest[0], (pull) =>
+				prNotesOk(pull, findLinear, () => prFiles(pull.number)),
+			);
 			return;
 		}
 		case "note": {

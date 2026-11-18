@@ -79,7 +79,16 @@ const NOTE_ID = /^(CAR-[1-9]\d*|#[1-9]\d*)$/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: that's the point
 const CONTROL_OR_BIDI = /[\u0000-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/;
 const TICKET_ID = /\bCAR-\d+/i;
-const PR_NUMBER = /(^|[^\w&])#\d+\b|\/pull\/\d+/;
+// `#12`, and the references GitHub links elsewhere: `repo#12`,
+// `owner/repo#12`, `GH-12`, `/pull/12`.
+const PR_NUMBER = /#\d|\bGH-\d|\/pull\/\d+/i;
+// `@name`: GitHub notifies that user wherever the text is posted.
+const MENTION = /(^|[^\w`])@[A-Za-z0-9-]/;
+
+/** `text` with control and bidi characters as `?`: safe to print to a terminal. */
+export function printable(text: string): string {
+	return text.replace(new RegExp(CONTROL_OR_BIDI.source, "g"), "?");
+}
 
 /** The text with every `code` span blanked (same length), or null when a backtick is unpaired. */
 function withoutCode(text: string): string | null {
@@ -93,9 +102,9 @@ function withoutCode(text: string): string | null {
 
 /**
  * Why `text` can't be a release note (empty: it can). Plain text, one
- * line, at most `MAX_NOTE_CHARS`, starts with a capital, no control or
+ * line, at most `MAX_NOTE_CHARS`, no lowercase first letter, no control or
  * bidi characters, no markup but `code` in backticks, no ticket ids or
- * PR numbers (the tools add those).
+ * PR or issue references (the tools add those), no @mentions.
  */
 export function noteTextProblems(text: string): string[] {
 	const problems: string[] = [];
@@ -105,8 +114,8 @@ export function noteTextProblems(text: string): string[] {
 		problems.push(`is over ${MAX_NOTE_CHARS} characters`);
 	if (CONTROL_OR_BIDI.test(text))
 		problems.push("has a line break, control or bidi character");
-	if (!/^\p{Lu}/u.test(text))
-		problems.push("doesn't start with a capital letter");
+	// A capital, or `code` or a digit; never a lowercase letter.
+	if (/^\p{Ll}/u.test(text)) problems.push("starts with a lowercase letter");
 	const prose = withoutCode(text);
 	if (prose === null) {
 		problems.push("has an unpaired backtick");
@@ -125,7 +134,9 @@ export function noteTextProblems(text: string): string[] {
 	if (TICKET_ID.test(prose))
 		problems.push("names a ticket (the tools add the ids)");
 	if (PR_NUMBER.test(prose))
-		problems.push("names a PR (the tools add the numbers)");
+		problems.push("names a PR or issue (the tools add the numbers)");
+	if (MENTION.test(prose))
+		problems.push("mentions someone (@name notifies them on GitHub)");
 	return problems;
 }
 

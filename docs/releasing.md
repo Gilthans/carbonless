@@ -131,9 +131,11 @@ which was written before it. So until "next" merges, nothing else may
 
 Each version's notes come from the Linear tickets in it (CAR-192; spec:
 `docs/superpowers/specs/2026-11-16-release-notes-design.md`). Linear is
-read only where its key is (`$LINEAR_API_KEY`, else
-`~/.config/linear/api-key`): never in CI, which checks the committed
-snapshot from git alone.
+read only where its key is (`$LINEAR_API_KEY`, else `linear/api-key` in
+`$XDG_CONFIG_HOME`, then in `~/.config`, so a worktree whose `.envrc`
+moves `XDG_CONFIG_HOME` still finds it; a missing key's error names each
+place tried): never in CI, which checks the committed snapshot from git
+alone.
 
 - **A ticket's note** is a comment on it whose first line starts with
   `Release note`; the newest such comment wins (by `updatedAt`, so an edit
@@ -144,19 +146,28 @@ snapshot from git alone.
   a blank line (a merge report, say); a line right under a note is refused
   as a wrapped note. The text: plain, one line,
   any number of sentences (the first is the summary), at most 600
-  characters, starting with a capital, `code` in backticks the only markup,
-  no ticket ids or PR numbers (the tools add them), no control or bidi
-  characters (`src/shared/releaseNotes.ts`, `noteTextProblems`).
+  characters, not starting with a lowercase letter (`code` or a digit may
+  start it), `code` in backticks the only markup, no ticket ids, PR or
+  issue references (`#12`, `repo#12`, `owner/repo#12`, `GH-12`: the tools
+  add the links) and no `@name` (GitHub would notify them), no control or
+  bidi characters (`src/shared/releaseNotes.ts`, `noteTextProblems`). Where
+  notes reach GitHub (the changelog, the GitHub release), their prose is
+  escaped again (`mdNoteText`), so a file edited by hand can't add HTML or
+  a mention either.
   `pnpm release note CAR-N "<text>" [--kind k]` or
   `pnpm release note CAR-N --none "<why>"` checks it and posts the comment
   (its only Linear write). The implementer drafts the note in its report;
   the coordinator posts it once the owner approves the merge.
-- **A PR without a ticket** carries the same line in its description
-  (`Release note: none (test tooling)`; a kind is required there).
+- **A PR without a ticket** carries the line in its description. A note
+  there must name its kind, as there are no labels to take it from
+  (`Release note (fixed): …`); or `Release note: none (test tooling)`.
 - **Which PRs and tickets a release has:** master's first-parent commits
   after the previous release's tag (each a PR's squash or merge commit,
   its subject ending `(#N)`), and every `CAR-N` in their titles. `next:
-  X.Y.Z` and `notes: X.Y.Z` PRs need none. A ticket an older version's
+  X.Y.Z` and `notes: X.Y.Z` PRs need none, when they change only
+  `package.json`, `docs/changelog.md` and `release-notes/` (merge-ok also
+  wants their own `next/X.Y.Z` or `notes/X.Y.Z` branch); with such a title
+  and anything else changed, a PR needs a note like any other. A ticket an older version's
   notes file covers counts as covered; `pnpm release notes` lists it again
   only when its note changed since.
 - **The gate is at merge:** `pnpm release merge-ok <pr>` refuses while a
@@ -165,9 +176,10 @@ snapshot from git alone.
   names no ticket, or the description's `Fixes`/`Part of` tickets differ
   from the title's; without a Linear key it refuses, saying so. Linear
   moves a ticket to Done on merge by itself, so the check can't wait for
-  that. `pnpm release notes check` lists what has no note (the release so
-  far, and tickets done in the last 30 days) for merges no script saw;
-  the coordinator runs it after a batch of merges.
+  that. `pnpm release notes check` fails listing what in the release so
+  far has no note, for merges no script saw, and warns about tickets done
+  in the last 30 days outside the release (most predate the rule); the
+  coordinator runs it after a batch of merges.
 - **The snapshot:** `pnpm release notes [X.Y.Z] [--pr]` (default:
   master's next release) reads the notes up to `origin/master` and writes
   `release-notes/X.Y.Z.json`; with `--pr` it puts the file on a
@@ -184,13 +196,25 @@ snapshot from git alone.
   changed since the file was written); `promote-check` checks the same,
   in CI, with no token (`release.ts ci:notes-check`).
 - **What ships:** `ci:set-version` writes the notes into the runner's
-  `package.json` as `crbReleaseNotes`: this version's (undated on an RC,
-  with `uncovered`, the range's PRs no note covers yet; dated on a
-  release) and the earlier released versions', newest first, at most 10
+  `package.json` as `crbReleaseNotes`: this version's (undated; on an RC
+  with `uncovered`, the range's PRs no note covers yet) and the earlier
+  released versions', dated, newest first, at most 10
   versions and 64 KB (oldest dropped first; the build fails if this
   version alone is over). npm keeps the field in each version's manifest
   (`npm view carbonless-review@<v> crbReleaseNotes`), and the build copies
   it to `dist/release-notes.json`. A local build has neither.
+- **One date per release:** the day it is published. release-finish
+  writes it into `docs/changelog.md` and `release-notes/X.Y.Z.json` (in
+  the "next" PR), and every later build ships it from there (a file that
+  never got one ships its tag's commit date). The release's own tarball
+  can't carry it: promote packs it before the owner approves, and the
+  tarball must not change after the check, so its own entry is undated.
+- **The GitHub release** `vX.Y.Z` is release-finish's last step but the
+  summary, after rc, the "next" PR and the gate reruns: a failure there
+  holds up none of them, and a rerun creates only what is missing.
+- **CI checks the committed files:** a unit test parses every
+  `release-notes/*.json` strictly (biome skips them) and checks each is
+  named for its version, so a bad hand edit fails its PR, not the next RC.
 
 ### The version in a build, without a dirty tree
 

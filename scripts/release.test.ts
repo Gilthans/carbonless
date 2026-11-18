@@ -37,8 +37,6 @@ import {
 	type RunResult,
 	rcBehindLatest,
 	rcToPublish,
-	releasePrs,
-	renderChangelog,
 	resolvePromote,
 	stagedIds,
 	status,
@@ -125,32 +123,6 @@ describe("version math", () => {
 			pkg.replace('"0.1.0-rc.1"', '"0.2.0"'),
 		);
 		expect(() => withVersion("{}", "1.0.0")).toThrow();
-	});
-});
-
-describe("renderChangelog", () => {
-	const prs = [
-		{ number: 7, title: "Second ", mergedAt: "2026-11-03T00:00:00Z" },
-		{ number: 5, title: "First", mergedAt: "2026-11-02T00:00:00Z" },
-	];
-
-	it("starts the file, PRs in merge order", () => {
-		expect(renderChangelog(null, "0.1.0", "2026-11-04", prs)).toBe(
-			"# Changelog\n\n## 0.1.0 (2026-11-04)\n\n- First (#5)\n- Second (#7)\n",
-		);
-	});
-
-	it("puts a new release on top and replaces a rerun's section", () => {
-		const first = renderChangelog(null, "0.1.0", "2026-11-04", prs);
-		const second = renderChangelog(first, "0.2.0", "2026-12-01", []);
-		expect(second).toBe(
-			"# Changelog\n\n## 0.2.0 (2026-12-01)\n\n- No PRs.\n\n## 0.1.0 (2026-11-04)\n\n- First (#5)\n- Second (#7)\n",
-		);
-		expect(
-			renderChangelog(second, "0.2.0", "2026-12-02", prs.slice(0, 1)),
-		).toBe(
-			"# Changelog\n\n## 0.2.0 (2026-12-02)\n\n- Second (#7)\n\n## 0.1.0 (2026-11-04)\n\n- First (#5)\n- Second (#7)\n",
-		);
 	});
 });
 
@@ -683,63 +655,6 @@ describe("promote: CI passed on the RC's commit", () => {
 			'import { readFileSync, realpathSync } from "node:fs";',
 			'import { fileURLToPath } from "node:url";',
 		]);
-	});
-});
-
-describe("releasePrs", () => {
-	let repo: string;
-	const git = (...args: string[]) =>
-		execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
-	const commit = (message: string) => {
-		git("commit", "--allow-empty", "-q", "-m", message);
-		return git("rev-parse", "HEAD");
-	};
-
-	beforeEach(() => {
-		repo = mkdtempSync(join(tmpdir(), "crb-release-"));
-		git("init", "-q", "-b", "master");
-		git("config", "user.email", "t@example.com");
-		git("config", "user.name", "t");
-	});
-	afterEach(() => rmSync(repo, { recursive: true, force: true }));
-
-	it("picks the PRs merged after the previous release up to the RC", async () => {
-		const old = commit("old");
-		git("tag", "v0.1.0");
-		const a = commit("a");
-		const b = commit("b");
-		git("tag", "v0.2.0-rc.1");
-		const later = commit("later");
-		const pr = (number: number, oid: string | null) => ({
-			number,
-			title: `PR ${number}`,
-			mergedAt: `2026-11-0${number}T00:00:00Z`,
-			mergeCommit: oid ? { oid } : null,
-		});
-		const { io, calls } = fakeIo({
-			"git ls-remote": lsRemote("v0.1.0", "v0.2.0-rc.1"),
-			"gh pr list": JSON.stringify([
-				pr(1, old),
-				pr(2, a),
-				pr(3, b),
-				pr(4, later),
-				pr(5, null),
-				pr(6, "f".repeat(40)),
-			]),
-			"git merge-base": (args) => {
-				try {
-					execFileSync("git", args, { cwd: repo, stdio: "ignore" });
-					return "";
-				} catch {
-					return { code: 1 };
-				}
-			},
-		});
-		const prs = await releasePrs(io, "0.2.0", "v0.2.0-rc.1", repo);
-		expect(prs.map((p) => p.number)).toEqual([2, 3]);
-		expect(calls).toContain(
-			"gh pr list --repo owner/repo --state merged --base master --limit 1000 --json number,title,mergedAt,mergeCommit",
-		);
 	});
 });
 
@@ -2566,8 +2481,10 @@ esac
 			join(import.meta.dirname, "../.github/workflows"),
 		).filter((f) => f.endsWith(".yml"));
 		for (const file of files) {
-			// Linear is read only where its key is: never a key in CI.
+			// Linear is read only where its key is: never a key in CI, and
+			// no workflow gains a secret of any kind.
 			expect(code(workflow(file)), file).not.toMatch(/linear/i);
+			expect(code(workflow(file)), file).not.toMatch(/\bsecrets\./);
 		}
 		const check = code(
 			new Map(jobs(workflow("release.yml"))).get("promote-check") ?? "",
@@ -2610,6 +2527,24 @@ esac
 		// The tag is on origin first (--verify-tag), the body before the release.
 		expect(at("Tag")).toBeLessThan(at("The GitHub release's text"));
 		expect(at("The GitHub release's text")).toBeLessThan(at("GitHub release"));
+		// After what the freeze waits on (rc, the "next" PR, the gate
+		// reruns): a failure there holds none of it up.
+		for (const before of [
+			"rc up to the release",
+			"Next version and changelog PR",
+			"Rerun open PRs' release gate",
+		]) {
+			expect(at(before), before).toBeGreaterThan(-1);
+			expect(at(before), before).toBeLessThan(at("The GitHub release's text"));
+		}
+		expect(at("GitHub release")).toBe(at("Summary") - 1);
+		// The next PR step runs the repository's code without the token or
+		// git's auth header.
+		const nextPr = finish[at("Next version and changelog PR")] ?? "";
+		expect(nextPr).toContain(
+			'crb_release() { env -u GH_TOKEN -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 pnpm exec tsx scripts/release.ts "$@"; }',
+		);
+		expect(nextPr.split("pnpm exec tsx").length - 1).toBe(1);
 		// The next PR commits the dated notes file.
 		expect(finish[at("Next version and changelog PR")]).toContain(
 			"[[ ! -d release-notes ]] || git add release-notes",
