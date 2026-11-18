@@ -1420,6 +1420,9 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 	await expect(
 		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
+	// That mark finishes core.ts, which closes: core 30's deletion carried
+	// PS1's mark on that base line (CAR-195). Open it again.
+	await coreS.getByRole("button", { name: "Expand file" }).click();
 	const row = unplacedRows(coreS);
 	const handle = row.getByTestId("place-handle");
 	await expect(handle).toBeVisible(GIT_WAIT);
@@ -2910,4 +2913,168 @@ test("in the since view, finishing a gone file moves on; a file with only a reve
 	).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+});
+
+/**
+ * CAR-195: a cluster PS1 added (a comment, a set, a blank: git takes the
+ * second of two blanks as the added one) that PS2 grows by a constant
+ * above it and edits: PS2's diff takes the first blank as added, a line
+ * unchanged since PS1 that the since view never shows. Its mark in PS1
+ * carries to it, line by line.
+ */
+const GROWN = "src/Kinds.cs";
+const kinds = (...body: string[]) =>
+	text([
+		"class Kinds",
+		"{",
+		'    private const string Name = "kinds";',
+		...body,
+		"",
+		"    public static bool IsPlain(string kind)",
+		"    {",
+		'        return kind == "a";',
+		"    }",
+		"}",
+	]);
+
+/**
+ * PS1 marked (`mark`: its box, or ⊘), PS2 pushed, the since view open on
+ * the file with its three pieces: the constant, the edited comment and
+ * set, PS1's lines they replace.
+ */
+async function grownSince(
+	page: Page,
+	pr: (o: PrOptions) => Promise<Pr>,
+	startCrb: () => Promise<{ url: string }>,
+	mark: "review" | "cross",
+) {
+	const p = await pr({
+		base: { [GROWN]: kinds() },
+		files: [
+			{
+				message: "PS1",
+				files: {
+					[GROWN]: kinds(
+						"",
+						"    // The plain kinds, any case.",
+						'    private static readonly HashSet<string> Plain = new(["a", "b"]);',
+					),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, GROWN);
+	if (mark === "review") await boxes(first).click();
+	else {
+		await first.getByRole("button", { name: "Cross off cluster" }).click();
+	}
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({
+		message: "PS2",
+		files: {
+			[GROWN]: kinds(
+				'    private const string Extra = "c";',
+				"",
+				"    // The plain kinds and the extra one, any case.",
+				'    private static readonly HashSet<string> Plain = new(["a", "b", Extra]);',
+			),
+		},
+	});
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	// Three pieces; the blank, unchanged since PS1, carried its mark there:
+	// nothing else to read.
+	await expect(toRead(page)).toHaveText(/3 to read/, GIT_WAIT);
+	await expect(progress(page)).toContainText("0 / 3 clusters reviewed");
+	const since = await expand(page, GROWN);
+	await expect(boxes(since)).toHaveCount(3, GIT_WAIT);
+	return since;
+}
+
+/** The grown cluster's blank row in the full diff (new line 5). */
+const blankRow = (section: Locator) =>
+	section.locator('[data-testid="diff-line"][data-new-no="5"]');
+
+test("a cluster grown since PS1 around a line reviewed then: the line carries reviewed with no tick; ticking the shown pieces finishes the file; the full diff shows the carry and undoes it (CAR-195)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const since = await grownSince(page, pr, startCrb, "review");
+	// The full diff before any tick: the blank reviewed by the carry, its chip.
+	await toFullDiff(page);
+	const full = fileSection(page, GROWN);
+	// Not finished yet: the full diff has the file open.
+	await expect(
+		full.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(boxes(full)).toHaveAttribute("aria-checked", "mixed");
+	await expect(blankRow(full)).toHaveAttribute("data-reviewed", "true");
+	await expect(full.getByTestId("lines-carried")).toHaveText("1 carried");
+	await toSince(page);
+	const all = boxes(since);
+	for (let i = 0; i < 2; i++) {
+		await all.nth(i).click();
+		await expect(all.nth(i)).toBeChecked();
+	}
+	// The last piece finishes the file, which closes.
+	await all.nth(2).click();
+	await expect(
+		since.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
+
+	// The full diff: the grown cluster reviewed whole, never mixed.
+	await toFullDiff(page);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	// Finished: the full diff has the file closed; open it.
+	await full.getByRole("button", { name: "Expand file" }).click();
+	await expect(boxes(full)).toHaveCount(1);
+	await expect(boxes(full)).toBeChecked();
+	// Undone there: nothing of it reviewed, the blank to read again.
+	await boxes(full).click();
+	await expect(boxes(full)).not.toBeChecked();
+	await expect(boxes(full)).not.toHaveAttribute("aria-checked", "mixed");
+	await expect(blankRow(full)).not.toHaveAttribute("data-reviewed");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await toSince(page);
+	await expect(toRead(page)).toHaveText(/3 to read/, GIT_WAIT);
+	await expect(progress(page)).toContainText("1 / 4 clusters reviewed");
+});
+
+test("a line crossed off in PS1 stays crossed off in a grown cluster: ticking the shown pieces finishes the file (CAR-195)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const since = await grownSince(page, pr, startCrb, "cross");
+	const all = boxes(since);
+	for (let i = 0; i < 3; i++) {
+		await all.nth(i).click();
+		await expect(all.nth(i)).toBeChecked();
+	}
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
+	await expect(
+		since.getByRole("progressbar", { name: "File progress" }),
+	).toContainText("3 / 3 clusters");
+	await toFullDiff(page);
+	const full = fileSection(page, GROWN);
+	// The file stays open (it was open in the since view).
+	await expect(
+		full.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(blankRow(full)).toHaveAttribute("data-crossed", "true");
+	await expect(blankRow(full)).not.toHaveAttribute("data-reviewed");
+	await expect(
+		full.locator('[data-testid="diff-line"][data-new-no="4"]'),
+	).toHaveAttribute("data-reviewed", "true");
 });

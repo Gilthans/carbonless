@@ -1156,10 +1156,6 @@ export class Session {
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		const traced = await this.#traced(since, snapshot);
 		const { answer } = await this.#answerFor(since, snapshot, traced);
-		// Its states say which unshown lines a piece may take (vouched).
-		const states =
-			(await this.#progress()).statesByRevision.get(since.revision) ??
-			new Map();
 		const known = new Set([
 			...snapshot.files.map((f) => f.index),
 			...answer.files.map((f) => f.index),
@@ -1167,13 +1163,7 @@ export class Session {
 		return {
 			has: (index) => known.has(index),
 			hunks: async (index) => {
-				const hunks = interdiffFileHunks(
-					traced,
-					snapshot,
-					answer,
-					index,
-					states,
-				);
+				const hunks = interdiffFileHunks(traced, snapshot, answer, index);
 				if (hunks.hunks.length > 0) return hunks;
 				// A file the interdiff doesn't change (or only renames): its
 				// lines are one gap, so they and the threads on them can be opened.

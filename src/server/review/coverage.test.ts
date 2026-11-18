@@ -5,7 +5,7 @@ import type {
 	FileSummary,
 	Snapshot,
 } from "../../shared/types.js";
-import { buildReviewView } from "./coverage.js";
+import { buildReviewView, humanMarksOf } from "./coverage.js";
 import type { PatchsetRecord, ProgressState, StateEntry } from "./fold.js";
 
 const REV = "a".repeat(64);
@@ -449,5 +449,34 @@ describe("buildReviewView", () => {
 			expect.objectContaining({ state: "unreviewed" }),
 		);
 		expect(view.files[0]?.clusters[0]).not.toHaveProperty("carried");
+	});
+});
+
+describe("humanMarksOf (CAR-195)", () => {
+	it("reads a hand mark's lines, never a carried mark's", () => {
+		const snap = snapshot([
+			file(0, "a.ts", [cluster("k1", 3), cluster("k2", 3), cluster("k3", 3)]),
+		]);
+		const marks = humanMarksOf(
+			snap,
+			new Map<string, StateEntry>([
+				["k1", { state: "unreviewed", lines: [[0, 1]], crossed: [[2, 3]] }],
+				[
+					"k2",
+					{
+						state: "unreviewed",
+						lines: [[0, 1]],
+						linesCarried: { from: 1, lines: [[0, 1]] },
+					},
+				],
+				["k3", { state: "reviewed", carried: { from: 1, rule: "exact" } }],
+			]),
+		);
+		expect(marks.get("k1")).toMatchObject({
+			reviewed: [[0, 1]],
+			crossed: [[2, 3]],
+		});
+		expect(marks.get("k2")).toMatchObject({ reviewed: [], crossed: [] });
+		expect(marks.get("k3")).toMatchObject({ reviewed: [], crossed: [] });
 	});
 });

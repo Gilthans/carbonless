@@ -17,6 +17,7 @@ import {
 	type CrbEvent,
 	type EventBase,
 	isSlug,
+	type LinesCarriedEvent,
 	newEvent,
 	parseEventLines,
 	type ReviewCreatedEvent,
@@ -85,6 +86,8 @@ export interface PatchsetStart {
 	baseBranch: string | null;
 	interdiff: "available" | "unavailable" | null;
 	carried: Omit<CarriedEvent, keyof EventBase | "to">[];
+	/** The line carries (CAR-195), one event; none: nothing carried by line. */
+	linesCarried?: Pick<LinesCarriedEvent, "from" | "states">;
 }
 
 /** PS1's start: nothing before it, nothing carried. */
@@ -670,15 +673,40 @@ export class ReviewService {
 				stamp(),
 			),
 		);
+		const lineEvents = start.linesCarried
+			? [
+					newEvent(
+						"lines-carried",
+						slug,
+						{
+							from: start.linesCarried.from,
+							to: number,
+							states: start.linesCarried.states,
+						},
+						"auto",
+						stamp(),
+					),
+				]
+			: [];
 		const total = carried.reduce((n, e) => n + e.states.length, 0);
+		const lineTotal = (start.linesCarried?.states ?? []).reduce(
+			(n, e) => n + size(e.lines),
+			0,
+		);
+		const what = [
+			...(total > 0 ? [`${total} cluster${total === 1 ? "" : "s"}`] : []),
+			...(lineTotal > 0
+				? [`${lineTotal} line${lineTotal === 1 ? "" : "s"}`]
+				: []),
+		];
 		const summary =
-			total > 0
-				? `crb: started PS${number}, carried ${total} cluster${total === 1 ? "" : "s"} from PS${since ?? "?"}`
+			what.length > 0
+				? `crb: started PS${number}, carried ${what.join(" and ")} from PS${since ?? "?"}`
 				: `crb: started PS${number}`;
 		const commit = await this.store.commit(
 			tip,
 			summary,
-			[started, ...carried],
+			[started, ...carried, ...lineEvents],
 			slug,
 		);
 		const refs = patchsetRefs(reviewerRef(reviewId, slug), number);

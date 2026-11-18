@@ -1369,6 +1369,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-kind={line.kind}
 				data-ws={line.kind === "ws" ? wsSide(line) : undefined}
 				data-reviewed={reviewed || undefined}
+				data-crossed={state === "crossed-off" || undefined}
 				data-old-no={line.oldNo}
 				data-new-no={line.newNo}
 				data-landed={landed === "on" || undefined}
@@ -1962,6 +1963,8 @@ function KindRow(props: {
 	gone?: boolean;
 	entry?: KindEntry;
 	carried?: ClusterView["carried"];
+	/** Lines whose mark the engine carried (CAR-195): a chip of their own. */
+	linesCarried?: ClusterView["linesCarried"];
 	/** A piece that owns no line of this snapshot: reverted, or removed. */
 	sinceOnly?: "reverted" | "removed";
 	from?: number;
@@ -1974,7 +1977,8 @@ function KindRow(props: {
 				: props.carried
 					? "carried"
 					: null;
-	if (!kind && !props.sinceOnly) return null;
+	const lines = props.linesCarried ? size(props.linesCarried.lines) : 0;
+	if (!kind && !props.sinceOnly && lines === 0) return null;
 	return (
 		<tr
 			data-testid="cluster-kind"
@@ -1995,6 +1999,14 @@ function KindRow(props: {
 					)}
 					{props.sinceOnly && (
 						<KindChip kind={props.sinceOnly} from={props.from} />
+					)}
+					{lines > 0 && (
+						<KindChip
+							kind="carried"
+							count={lines}
+							testId="lines-carried"
+							tip={`${lines} line${lines === 1 ? "" : "s"} unchanged since PS${props.linesCarried?.from}: your marks carried over`}
+						/>
 					)}
 				</span>
 			</td>
@@ -3918,6 +3930,9 @@ function HunkRows(props: {
 							piece?.owns === null && entry?.kind !== "gone" ? undefined : entry
 						}
 						carried={cluster?.carried}
+						// The carried lines are the full diff's to show: the since
+						// view never shows them.
+						linesCarried={props.pieces ? undefined : cluster?.linesCarried}
 						sinceOnly={sinceOnly}
 						from={props.from}
 					/>
