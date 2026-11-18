@@ -45,8 +45,15 @@ describe("startServer", () => {
 			version: BUILD,
 		});
 		expect(state?.port).toBe(Number(new URL(s.url).port));
+		// The build alone: the boot id is the process's, never on disk.
+		expect(state?.version).toEqual(BUILD);
 		const res = await fetch(`${s.url}/api/version`);
-		expect(await res.json()).toEqual(BUILD);
+		// This build, and which crb process answers (CAR-177).
+		const { boot, ...build } = (await res.json()) as typeof BUILD & {
+			boot: unknown;
+		};
+		expect(build).toEqual(BUILD);
+		expect(boot).toEqual(expect.stringMatching(/./));
 		await s.close();
 		expect(await readLiveServerState()).toBeNull();
 	});
