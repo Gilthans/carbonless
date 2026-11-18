@@ -798,13 +798,35 @@ export const revalidateOverviewQuery = (fetchedAt: string, maxAge: number) =>
 	});
 
 /**
+ * The head a verdict goes on, as the page knows it (the head check's head,
+ * the patch set): the server works out VerdictFacts.since against its own,
+ * so an answer asked under another key may be out of date.
+ */
+export const sinceHeadKey = (session: SessionInfo | undefined) =>
+	`${session?.head?.oid ?? ""}:${session?.patchset ?? ""}`;
+
+/** Per client, the sinceHeadKey its last verdict answer was asked under. */
+const verdictAskedUnder = new WeakMap<QueryClient, string>();
+
+/** The sinceHeadKey the verdict answer in `client` was asked under. */
+export const verdictHeadKey = (client: QueryClient) =>
+	verdictAskedUnder.get(client);
+
+/**
  * What GitHub says about merging, for the Final Verdict tab: read the first
  * time something shows it (never on first open), again on Refresh and once
  * a verdict lands.
  */
 export const verdictQuery = queryOptions({
 	queryKey: ["verdict"],
-	queryFn: fetchVerdict,
+	queryFn: async ({ client, signal }) => {
+		const under = sinceHeadKey(client.getQueryData(sessionQuery.queryKey));
+		const facts = await fetchVerdict();
+		// A read cancelled by a newer one (the head moved again) keeps out:
+		// its answer never shows, so neither does the key it was asked under.
+		if (!signal.aborted) verdictAskedUnder.set(client, under);
+		return facts;
+	},
 	staleTime: Number.POSITIVE_INFINITY,
 	// What changed since the reviewer's verdict comes from the engine:
 	// asked again while it computes (the server keeps its GitHub read).

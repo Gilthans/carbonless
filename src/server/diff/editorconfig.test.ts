@@ -73,7 +73,10 @@ describe("compileGlob", () => {
 			const glob_ = compileGlob(glob);
 			// CPU time against four matches of a path a quarter as long, the
 			// same characters in all (CLAUDE.md): linear is about 1x, a
-			// quadratic match 4x, a backtracking one far more.
+			// quadratic match 4x, a backtracking one far more. Limit 2.25 (CAR-188):
+			// CI read up to 1.88 over 78 runs (before the sides were sized
+			// warm), the devbox 0.93-1.09; a probe re-reading the path at each
+			// position (quadratic) read 2.90-3.83, too close to 2.5.
 			const { ratio } = bestCpuRatio(
 				() => glob_.test(long),
 				repeat(4, () => glob_.test(short)),
@@ -81,7 +84,7 @@ describe("compileGlob", () => {
 			console.info(
 				`glob ${glob}: 4x the path in ${ratio.toFixed(2)}x four short matches' CPU`,
 			);
-			expect(ratio, glob).toBeLessThan(2);
+			expect(ratio, glob).toBeLessThan(2.25);
 		}
 	});
 

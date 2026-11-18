@@ -279,10 +279,15 @@ describe("alignCluster", () => {
 			// the same removed line against the same added lines in 50 clusters
 			// of 50: the same lines read and the same cells, and each cluster
 			// keeps the removed line's table. Linear in the lines both ways, so
-			// it reads about 1x (1.0-1.1); a cost per cell that grows with the
-			// cluster's width would read above 2. (Not mutation-tested: this
-			// shape's cost is mostly reading the lines, scoring one removed
-			// line against each added line.)
+			// it reads about 1x: 0.98-1.14 on the devbox under load, 0.86-1.23
+			// on CI where both sides took 20 ms or more (CAR-188; CI's 1.4-2.06
+			// came from sides of 11-18 ms, before bestCpuRatio sized them
+			// warm). A cost per cell that grows with the cluster's width reads
+			// above 2: one compare per cell against the rest of its row (the
+			// cheapest quadratic step but one) measured 2.39-3.04. Reading the
+			// lines is most of the cost, so the cheapest, the rest of the row
+			// copied per cell (3 million pointers), reads 1.13-1.28: below
+			// what this can see.
 			const del = "w1 x2 y z q0 (3);";
 			const adds = Array.from({ length: 2500 }, (_, i) =>
 				`w${i % 7} x${i % 5} y z q${i % 3} (${i % 11}); // item ${i}`

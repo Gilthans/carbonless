@@ -11,7 +11,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { heldJson } from "../../../test/loading";
+import { expectLoadingThen, heldJson } from "../../../test/loading";
 import { fileFlags, reviewProgress } from "../../shared/progress";
 import type {
 	ClusterState,
@@ -185,8 +185,15 @@ function renderTab(
 	info: SessionInfo = session(),
 	/** A POST's answer before the default (a landed review); null: the default. */
 	refuse: (req: VerdictRequest) => Response | null = () => null,
-	/** GET /api/review's answer for the session's patch set. */
-	reviewOf: (patchset: number | null) => ReviewView = review,
+	/**
+	 * The head check's answer (else none), the overview's (else at once),
+	 * GET /api/review's for the session's patch set (else `review`).
+	 */
+	more: {
+		head?: Promise<Response>;
+		overview?: Promise<Response>;
+		reviewOf?: (patchset: number | null) => ReviewView;
+	} = {},
 ) {
 	posted = [];
 	const fetchMock = vi.fn(
@@ -197,9 +204,11 @@ function renderTab(
 				case "/api/session":
 					return json(info);
 				case "/api/overview":
-					return json(overview);
+					return more.overview ?? json(overview);
+				case "/api/head":
+					return more.head ?? new Response("{}", { status: 404 });
 				case "/api/review":
-					return json(reviewOf(info.patchset));
+					return json((more.reviewOf ?? review)(info.patchset));
 				case "/api/threads":
 					return json({ threads: [], complete: true });
 				case "/api/timeline":
@@ -239,7 +248,7 @@ function renderTab(
 			<RouterProvider router={router} />
 		</QueryClientProvider>,
 	);
-	return { fetchMock };
+	return { fetchMock, client };
 }
 
 const card = () => screen.findByTestId("verdict-card-tab");
@@ -420,6 +429,88 @@ describe("the verdict card since your verdict", () => {
 		).toBeNull();
 	});
 
+	it("a head check that lands before the card shows still brings the since line, pending meanwhile (CAR-180)", async () => {
+		// The page opens on PS2 approved, nothing since (no since line); the
+		// head check finds NEW past it while the overview is still on its
+		// way, so the card mounts already on NEW. The answer it has was
+		// asked before NEW: it asks again, the since line pending and the
+		// verdicts held meanwhile (never "nothing since", nor Approve on the
+		// old head), then the since line comes.
+		// The server answers against the head it knows: NEW once the head
+		// check has run.
+		let serverHead = PS2;
+		const onPs2 = given({ head: PS2, patchset: 2 });
+		const overviewHeld = heldJson();
+		const headHeld = heldJson();
+		const asked: string[] = [];
+		const again = heldJson();
+		// Gates, not findBy's clock: the first read is in, the head landed.
+		let firstAsked = () => {};
+		const firstAsk = new Promise<void>((r) => {
+			firstAsked = r;
+		});
+		const { client } = renderTab(
+			() => {
+				const head = serverHead;
+				asked.push(head);
+				firstAsked();
+				return head === NEW ? again.response : { ...facts(onPs2), since: null };
+			},
+			session(),
+			() => null,
+			{ head: headHeld.response, overview: overviewHeld.response },
+		);
+		await firstAsk;
+		const landed = new Promise<void>((r) => {
+			const stop = client.getQueryCache().subscribe(() => {
+				if (client.getQueryData<SessionInfo>(["session"])?.head?.oid === NEW) {
+					stop();
+					r();
+				}
+			});
+		});
+		serverHead = NEW;
+		headHeld.release(
+			session({
+				head: {
+					oid: NEW,
+					mergeBase: "e".repeat(40),
+					baseBranch: "main",
+					commits: 1,
+				},
+			}),
+		);
+		await landed;
+		overviewHeld.release(overview);
+		const c = await card();
+		await expectLoadingThen({
+			loading: () =>
+				within(c).queryByRole("status", {
+					name: "Comparing with your verdict",
+				}),
+			empty: [
+				() => within(c).queryByTestId("verdict-older"),
+				() =>
+					within(c)
+						.queryAllByTestId("verdict-since")
+						.find((el) => el.dataset.state !== "pending") ?? null,
+				() =>
+					within(c)
+						.queryAllByTestId(/^verdict-(approve|comment|request_changes)$/)
+						.find((el) => el.getAttribute("aria-disabled") !== "true") ?? null,
+			],
+			release: () =>
+				again.release(facts({ ...onPs2, to: { head: NEW, patchset: null } })),
+			result: () =>
+				within(c)
+					.queryAllByTestId("verdict-since")
+					.find((el) => el.dataset.state === "changed") ?? null,
+		});
+		expect(within(c).getByTestId("verdict-approve")).not.toHaveAttribute(
+			"aria-disabled",
+		);
+		expect(asked).toEqual([PS2, NEW]);
+	});
 	it("the head moved back onto PS1's (S6): the buttons post on it, the card says the head moved back to PS1", async () => {
 		const info = session({
 			currentHead: PS1,
@@ -597,7 +688,7 @@ describe('the verdict card follows "Ignore whitespace" (CAR-184)', () => {
 			() => facts(given()),
 			session(),
 			() => null,
-			wsReview,
+			{ reviewOf: wsReview },
 		);
 		const card_ = await card();
 		const info = await within(card_).findByTestId("verdict-info");
@@ -618,12 +709,14 @@ describe('the verdict card follows "Ignore whitespace" (CAR-184)', () => {
 			() => facts(given()),
 			session(),
 			() => null,
-			(patchsetNo) => ({
-				revision: "r2",
-				patchset: patchsetNo,
-				files: onlyFiles,
-				progress: reviewProgress(onlyFiles),
-			}),
+			{
+				reviewOf: (patchsetNo) => ({
+					revision: "r2",
+					patchset: patchsetNo,
+					files: onlyFiles,
+					progress: reviewProgress(onlyFiles),
+				}),
+			},
 		);
 		const card_ = await card();
 		const info = await within(card_).findByTestId("verdict-info");
@@ -637,7 +730,7 @@ describe('the verdict card follows "Ignore whitespace" (CAR-184)', () => {
 			() => facts(given()),
 			session(),
 			() => null,
-			wsReview,
+			{ reviewOf: wsReview },
 		);
 		const card_ = await card();
 		const info = await within(card_).findByTestId("verdict-info");

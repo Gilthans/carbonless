@@ -202,6 +202,14 @@ describe("escapeTags", () => {
 	// Each body as a function of `k`: k = 4 is the full body, about 64 KB,
 	// and k = 1 holds about a quarter of its characters. CPU against four
 	// quarter bodies (CLAUDE.md): linear is about 1x, quadratic 4x.
+	// Limit 2.5 (CAR-188): CI read up to 1.87 over 78 runs (URLs; 1.69-1.77
+	// for four others; before the sides were sized warm), the devbox
+	// 0.79-1.24. Probes: terminators looked for again from each `<`
+	// (#find unmemoized) read 3.91-3.98 on processing instructions (1.25-1.84
+	// on declarations and CDATA, which neither 2 nor 2.5 sees); the bare-URL
+	// word scanned again from its start at each `<` didn't finish in 10
+	// minutes.
+	const LINEAR_LIMIT = 2.5;
 	const linear = (body: (k: number) => string, run: (text: string) => void) => {
 		const full = body(4);
 		const quarter = body(1);
@@ -263,7 +271,7 @@ describe("escapeTags", () => {
 		console.info(
 			`markdownEscape ${name}: 4x the body in ${ratio.toFixed(2)}x the CPU`,
 		);
-		expect(ratio).toBeLessThan(2);
+		expect(ratio).toBeLessThan(LINEAR_LIMIT);
 	});
 
 	it("stays linear on a long body", () => {
@@ -274,7 +282,7 @@ describe("escapeTags", () => {
 		console.info(
 			`markdownEscape long body: 4x the body in ${ratio.toFixed(2)}x the CPU`,
 		);
-		expect(ratio).toBeLessThan(2);
+		expect(ratio).toBeLessThan(LINEAR_LIMIT);
 	});
 });
 

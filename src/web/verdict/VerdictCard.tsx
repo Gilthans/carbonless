@@ -30,7 +30,7 @@ import type {
 	VerdictFacts,
 	VerdictSince,
 } from "../../shared/types";
-import { verdictQuery } from "../api";
+import { sinceHeadKey, verdictHeadKey, verdictQuery } from "../api";
 import { Meter, WhitespaceLeftOut } from "../files/ProgressBar";
 import { useReviewView } from "../files/useSetStates";
 import { LabeledIcon } from "../overview/parts";
@@ -262,6 +262,23 @@ export function sinceLine(c: SinceDone): string {
 	return parts.join(" · ");
 }
 
+const COMPARING = "Comparing with your verdict";
+
+/** The since line while what changed is still on its way. */
+function SincePending() {
+	return (
+		<p
+			data-testid="verdict-since"
+			data-state="pending"
+			aria-busy="true"
+			className="flex min-h-6 items-center gap-1.5 text-sm text-muted"
+		>
+			<b className="font-semibold text-ink-soft">Since then:</b>
+			<Spinner label={COMPARING} size={14} />
+		</p>
+	);
+}
+
 type Counted = ReturnType<typeof countedProgress>;
 
 /**
@@ -297,19 +314,7 @@ function SinceVerdict(props: {
 }) {
 	const { since, review } = props;
 	const { changes } = since;
-	if (changes.status === "pending") {
-		return (
-			<p
-				data-testid="verdict-since"
-				data-state="pending"
-				aria-busy="true"
-				className="flex min-h-6 items-center gap-1.5 text-sm text-muted"
-			>
-				<b className="font-semibold text-ink-soft">Since then:</b>
-				<Spinner label="Comparing with your verdict" size={14} />
-			</p>
-		);
-	}
+	if (changes.status === "pending") return <SincePending />;
 	if (changes.status === "failed") {
 		return (
 			<p
@@ -385,19 +390,29 @@ function SinceVerdict(props: {
 }
 
 /**
- * Asks for the verdict facts again when the head a verdict goes on moves
- * (the head check found a new one, a patch set started): the server works
- * out `since` when served, from its kept read of GitHub.
+ * Asks for the verdict facts again when the head a verdict goes on moved
+ * since they were asked for (the head check found a new one, a patch set
+ * started): the server works out `since` when served, from its kept read
+ * of GitHub. Against the key the answer was asked under, not the one the
+ * card mounted with: a head check landing before the card shows would
+ * otherwise leave an answer from before it (no since line) for good (CAR-180).
+ * True while the answer on screen is such an old one (asked again).
  */
-function useSinceFollowsHead(session: SessionInfo) {
+function useSinceFollowsHead(
+	session: SessionInfo,
+	facts: VerdictFacts | undefined,
+): boolean {
 	const client = useQueryClient();
-	const key = `${session.head?.oid ?? ""}:${session.patchset ?? ""}`;
-	const first = useRef(key);
+	const key = sinceHeadKey(session);
+	const under = facts ? verdictHeadKey(client) : undefined;
+	const stale = under !== undefined && under !== key;
+	// Again for each answer that lands under an old key (the head moved
+	// while it was asked).
 	useEffect(() => {
-		if (first.current === key) return;
-		first.current = key;
-		void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
-	}, [client, key]);
+		if (under !== undefined && under !== key)
+			void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
+	}, [client, under, key]);
+	return stale;
 }
 
 /**
@@ -457,9 +472,16 @@ export function VerdictCard(props: {
 	// A verdict out (a resent or discarded one too) shows as sending: the
 	// buttons wait for it, and say so.
 	const sending = writes.verdict !== null;
+	// The answer on screen predates the head (asked again): what changed
+	// since the reviewer's verdict, and so the commit a verdict goes on,
+	// is on its way. Pending, never "nothing since" (principle 8).
+	const stale =
+		useSinceFollowsHead(session, props.facts) &&
+		Boolean(props.facts?.yourVerdict);
 	const reasonOf = (event: VerdictEvent) =>
 		off ??
 		(sending ? "Sending your verdict" : null) ??
+		(stale ? COMPARING : null) ??
 		(overview.youAuthor && event !== "COMMENT" ? OWN_PR_TIP : null);
 	const standing = standingOpinion(props.facts, overview);
 	const tipOf = (event: VerdictEvent) =>
@@ -474,7 +496,6 @@ export function VerdictCard(props: {
 			VERDICT_TIPS[event]
 		);
 	const stillStands = writes.verdictStillStands;
-	useSinceFollowsHead(session);
 	const since = props.facts?.since ?? null;
 	// With a verdict to compare, every verdict goes on the head it is
 	// compared with (the latest patch set's, or the PR's head past it,
@@ -497,6 +518,7 @@ export function VerdictCard(props: {
 			: null;
 	const older =
 		!off &&
+		!stale &&
 		!since &&
 		session.snapshotHead !== "" &&
 		session.snapshotHead !== session.currentHead;
@@ -577,8 +599,13 @@ export function VerdictCard(props: {
 					</Link>
 				)}
 			</div>
-			{since && !writes.verdict && (
-				<SinceVerdict since={since} review={review} counted={counted} />
+			{stale && !writes.verdict ? (
+				<SincePending />
+			) : (
+				since &&
+				!writes.verdict && (
+					<SinceVerdict since={since} review={review} counted={counted} />
+				)
 			)}
 			{(reviewedText || leftOut > 0 || threadsText) && (
 				<p

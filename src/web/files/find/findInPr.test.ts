@@ -318,7 +318,9 @@ describe("caret", () => {
 		const long = of(20_000);
 		const short = of(5_000);
 		// CPU against four runs a quarter the size (CLAUDE.md): one pass is
-		// about 1x, one per file 4x.
+		// about 1x, one per file 4x. Limit 2.5 (CAR-188): CI read up to 1.84
+		// over 78 runs (before the sides were sized warm), the devbox
+		// 1.06-1.14; a search per file read 4.1-4.75.
 		const { ratio } = bestCpuRatio(
 			() => caretAfterTyping(long.hits, long.order, 1),
 			repeat(4, () => caretAfterTyping(short.hits, short.order, 1)),
@@ -326,7 +328,7 @@ describe("caret", () => {
 		console.info(
 			`caretAfterTyping: 4x the hits in ${ratio.toFixed(2)}x the CPU`,
 		);
-		expect(ratio).toBeLessThan(2);
+		expect(ratio).toBeLessThan(2.5);
 		expect(caretAfterTyping(long.hits, long.order, 1)?.pos).toMatchObject({
 			index: 0,
 			line: 1,
