@@ -1397,9 +1397,7 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 	await checkCore();
 	// The since view numbers its old side by the interdiff, no file's: no
 	// move there.
-	await expect(
-		unplacedRows(coreS).getByTestId("move-handle"),
-	).toHaveCount(0);
+	await expect(unplacedRows(coreS).getByTestId("move-handle")).toHaveCount(0);
 	await expectNoPageOverflow(page);
 	if (isMobile) {
 		// At 360px: no page overflow, the sentence on one line.
@@ -1417,9 +1415,9 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 	).toBeVisible();
 	await checkCore();
 	// A head that is no patch set yet takes moves too (CAR-139).
-	await expect(
-		unplacedRows(coreS).getByTestId("move-handle"),
-	).toBeVisible(GIT_WAIT);
+	await expect(unplacedRows(coreS).getByTestId("move-handle")).toBeVisible(
+		GIT_WAIT,
+	);
 
 	// The first mark starts PS2; a drag puts the deleted line's thread on
 	// core 4, written, and a reload keeps it there.
