@@ -234,8 +234,9 @@ test("by keyboard and by tap: move mode places on the picked lines; Escape and â
 	}
 	await expect(page.getByTestId("move-bar")).toHaveCount(0);
 	await expect(bubbleOn(section, 5)).toBeVisible();
-	await placeByPick(page, card(page), section, 22);
-	await expect(bubbleOn(section, 22)).toBeVisible();
+	// Line 32: context beside core 30's hunk, shown without expanding.
+	await placeByPick(page, card(page), section, 32);
+	await expect(bubbleOn(section, 32)).toBeVisible();
 	await expect(card(page).getByTestId("moved-chip")).toBeVisible();
 	expect(p.ghLog().slice(log.length)).not.toMatch(/mutation|-X POST/);
 });
@@ -278,8 +279,8 @@ test("the next pushes follow a moved thread from its moved line; once that line 
 	await expect(page.getByRole("tooltip")).toContainText(
 		"followed here Â· GitHub: line",
 	);
-	// A reply goes to that thread, as on any thread, and only that.
-	const id = await followed.getAttribute("data-thread");
+	// A reply goes to that thread (GitHub's reply to its first comment), as
+	// on any thread, and nothing else is sent.
 	const log = p.ghLog();
 	const box = followed.getByRole("textbox", { name: "Reply" });
 	await box.fill("Still here");
@@ -293,8 +294,10 @@ test("the next pushes follow a moved thread from its moved line; once that line 
 		.slice(log.length)
 		.split("\n")
 		.filter((l) => /mutation|-X (POST|PATCH|PUT|DELETE)/.test(l));
-	expect(sent.length).toBeGreaterThan(0);
-	for (const l of sent) expect(l).toContain(id ?? "none");
+	expect(sent).toHaveLength(1);
+	expect(sent[0]).toMatch(
+		new RegExp(`-X POST repos/[^ ]+/pulls/${p.number}/comments/\\d+/replies `),
+	);
 	// Push: the moved-to line deleted.
 	p.moveHead({
 		message: "drop core 30",
