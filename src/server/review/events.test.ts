@@ -879,6 +879,43 @@ describe("agent events", () => {
 		).toEqual([]);
 	});
 
+	it("parses agent-comment-posted by a human only, with a sound block, ids and url", () => {
+		const posted = newEvent("agent-comment-posted", "dan", {
+			thread,
+			message: reply.id,
+			block: 0,
+			clientId: `ag.${thread}.${reply.id}.0`,
+			github: {
+				thread: "PRRT_1",
+				comment: "PRRC_1",
+				url: "https://github.com/o/r/pull/1#discussion_r11",
+			},
+			text: "Why one retry?",
+		});
+		expect(parseEventLines(msg([posted]))).toEqual([posted]);
+		expect(() => validateForWrite(posted)).not.toThrow();
+		const ai = { ...posted, by: "ai" } as unknown as CrbEvent;
+		expect(parseEventLines(msg([ai]))).toEqual([]);
+		expect(() => validateForWrite(ai)).toThrow();
+		const auto = { ...posted, by: "auto" } as unknown as CrbEvent;
+		expect(parseEventLines(msg([auto]))).toEqual([]);
+		expect(
+			parseEventLines(
+				msg([
+					{ ...posted, message: "NOT-A-ULID" },
+					{ ...posted, block: -1 },
+					{ ...posted, block: 1.5 },
+					{ ...posted, block: "0" },
+					{ ...posted, clientId: "has space" },
+					{ ...posted, github: { ...posted.github, url: "javascript:x" } },
+					{ ...posted, github: { ...posted.github, thread: "" } },
+					{ ...posted, github: undefined },
+					{ ...posted, text: 3 },
+				]),
+			),
+		).toEqual([]);
+	});
+
 	it("drops an anchor with a bad side, line or commit", () => {
 		const bad = [
 			{ ...anchor, side: "BOTH" },

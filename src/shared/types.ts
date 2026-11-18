@@ -632,6 +632,8 @@ export interface ThreadUpdate {
 	 * blanked to "[deleted]".
 	 */
 	comment?: ThreadComment;
+	/** `comment`'s link on GitHub, when GitHub gave its REST id. */
+	url?: string;
 }
 
 /** `PATCH /api/threads/:threadId/comments/:commentId` (commentId = ThreadComment.id, the GraphQL node id). */
@@ -720,6 +722,8 @@ export interface NewThreadRequest {
 export interface NewThreadAnswer {
 	thread: ReviewThread;
 	comments: ThreadComments;
+	/** The opening comment's link on GitHub, when GitHub gave its REST id. */
+	url?: string;
 }
 
 /** A verdict the reviewer can send: one submitted review (Final Verdict). */

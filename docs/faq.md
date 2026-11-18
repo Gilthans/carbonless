@@ -410,6 +410,18 @@ Started N, with the unread ones counted. The answer cites each by a
 conversation is this review's. Reply in one and it is a question like
 any other; the agent gets your request's text with it (`re`).
 
+**Can the agent post comments?** No: it suggests, you post. It can put a
+comment for the PR's author in a ```` ```comment ```` block; crb shows it as
+an editable box under the answer, with Add review comment. Only your
+press posts it, exactly what the box holds (your edits included), as you,
+where the conversation sits: a new thread on its lines or file at the
+latest push, or a reply to its GitHub thread. Once posted the box links
+to the comment, and a second press, here or on another device, never
+posts it again. If the lines are gone in the latest push the button is
+off and says so; the text stays, to copy. The agent has no tool that
+writes to GitHub. In a conversation with nowhere to post, a block is a
+read-only quote with a copy button.
+
 How it differs from a joined session:
 - **Waking up.** It runs no watch command: when a question waits and it
   isn't working, crb sends it a short prompt ("a question waits: call

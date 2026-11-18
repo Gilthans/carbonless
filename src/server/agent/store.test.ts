@@ -8,6 +8,7 @@ import {
 import {
 	type AgentActivity,
 	type AgentAnchor,
+	agentCommentClientId,
 	MAX_ACTIVITY_BYTES,
 	MAX_AGENT_TEXT,
 	startedBy,
@@ -20,6 +21,7 @@ import {
 	capActivity,
 	capText,
 	foldAgentThreads,
+	UnknownAgentMessageError,
 	UnknownAgentThreadError,
 } from "./store.js";
 
@@ -847,6 +849,127 @@ describe("origins: an agent message from a request", () => {
 		});
 		const found = (await store.read()).find((t) => t.id === q.id);
 		expect(found?.messages).toHaveLength(2);
+	});
+});
+
+describe("agent-comment-posted (CAR-83)", () => {
+	const github = (n: number) => ({
+		thread: "PRRT_1",
+		comment: `PRRC_${n}`,
+		url: `https://github.com/o/r/pull/1#discussion_r${n}`,
+	});
+
+	it("the client id is ag.<thread>.<message>.<block>", () => {
+		const id = agentCommentClientId(
+			"01k9e6m2q8x4v7c3n5b0h1j2t6",
+			"01k9e6m2q8x4v7c3n5b0h1j2t7",
+			2,
+		);
+		expect(id).toBe(
+			"ag.01k9e6m2q8x4v7c3n5b0h1j2t6.01k9e6m2q8x4v7c3n5b0h1j2t7.2",
+		);
+		// It fits the comment marker's id (server/marker.ts).
+		expect(id).toMatch(/^[A-Za-z0-9_.:-]{1,100}$/);
+	});
+
+	it("folds onto its ai message as posted, by block; a fresh store folds the same", async () => {
+		const t = await ask("Why?", "c1");
+		const a = await answer(t.id, "Ask:\n```comment\nWhy one?\n```");
+		const message = a.messages[1]?.id as string;
+		const after = await store.posted(t.id, {
+			message,
+			block: 1,
+			github: github(11),
+			text: "Why two?",
+		});
+		expect(after.messages[1]?.posted).toEqual([
+			{
+				block: 1,
+				url: github(11).url,
+				at: expect.any(String),
+				text: "Why two?",
+			},
+		]);
+		await store.posted(t.id, {
+			message,
+			block: 0,
+			github: github(10),
+			text: "Why one?",
+		});
+		const fresh = await new AgentThreadStore(
+			new RefStore(repo),
+			REVIEW,
+			"dan",
+		).read();
+		expect(fresh[0]?.messages[1]?.posted?.map((p) => p.block)).toEqual([0, 1]);
+		// Never on the human message.
+		expect(fresh[0]?.messages[0]?.posted).toBeUndefined();
+	});
+
+	it("a block posted already writes nothing again; the first stays", async () => {
+		const t = await ask("Why?", "c1");
+		const a = await answer(t.id, "```comment\nx\n```");
+		const message = a.messages[1]?.id as string;
+		await store.posted(t.id, {
+			message,
+			block: 0,
+			github: github(1),
+			text: "x",
+		});
+		const count = () => Number(git("rev-list", "--count", ref));
+		const before = count();
+		const again = await store.posted(t.id, {
+			message,
+			block: 0,
+			github: github(2),
+			text: "y",
+		});
+		expect(count()).toBe(before);
+		expect(again.messages[1]?.posted).toEqual([
+			expect.objectContaining({ url: github(1).url, text: "x" }),
+		]);
+	});
+
+	it("refuses an unknown message or a human one; the fold ignores them and ai-written ones", async () => {
+		const t = await ask("Why?", "c1");
+		const a = await answer(t.id, "```comment\nx\n```");
+		const human = a.messages[0]?.id as string;
+		const ai = a.messages[1]?.id as string;
+		await expect(
+			store.posted(t.id, {
+				message: "x".repeat(26),
+				block: 0,
+				github: github(1),
+				text: "x",
+			}),
+		).rejects.toBeInstanceOf(UnknownAgentMessageError);
+		await expect(
+			store.posted(t.id, {
+				message: human,
+				block: 0,
+				github: github(1),
+				text: "x",
+			}),
+		).rejects.toBeInstanceOf(UnknownAgentMessageError);
+		// Written by hand: an unknown message, a human one, and one the agent wrote.
+		const event = (message: string) =>
+			newEvent("agent-comment-posted", "dan", {
+				thread: t.id,
+				message,
+				block: 0,
+				clientId: agentCommentClientId(t.id, message, 0),
+				github: github(1),
+				text: "x",
+			});
+		await refs.appendEvent(ref, "p", event("0".repeat(26)), "dan");
+		await refs.appendEvent(ref, "p", event(human), "dan");
+		const raw = { ...event(ai), by: "ai" };
+		// validateForWrite refuses it, so it goes in as a raw commit message.
+		await expect(
+			refs.appendEvent(ref, "p", raw as never, "dan"),
+		).rejects.toThrow();
+		const read = (await store.read())[0];
+		expect(read?.messages.every((m) => m.posted === undefined)).toBe(true);
 	});
 });
 

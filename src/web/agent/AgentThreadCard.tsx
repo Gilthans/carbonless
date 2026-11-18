@@ -247,6 +247,8 @@ function TruncatedChip() {
 
 function AiMessage(props: {
 	message: AgentMessage;
+	/** The conversation it's in: where its ```comment blocks post. */
+	thread?: AgentThread;
 	name: string;
 	/** The last part of the reply, inside its box (the suggestion's button). */
 	footer?: ReactNode;
@@ -292,7 +294,13 @@ function AiMessage(props: {
 				className={`${AGENT_SURFACE} text-sm`}
 			>
 				{message.text || !reason ? (
-					<AgentMarkdown text={message.text} head={message.head} />
+					<AgentMarkdown
+						text={message.text}
+						head={message.head}
+						{...(props.thread
+							? { comment: { thread: props.thread, message } }
+							: {})}
+					/>
 				) : (
 					<p
 						data-testid="agent-message-error"
@@ -677,7 +685,12 @@ export function AgentMessageItems(props: {
 							{m.by === "human" ? (
 								<HumanMessage message={m} viewer={viewer} />
 							) : (
-								<AiMessage message={m} name={name} footer={props.footer?.(m)} />
+								<AiMessage
+									message={m}
+									thread={thread}
+									name={name}
+									footer={props.footer?.(m)}
+								/>
 							)}
 							{m.by === "human" && from.length > 0 && (
 								<StartedButton request={m.id} threads={from} />

@@ -1880,6 +1880,53 @@ describe("API", () => {
 				appends.mockRestore();
 			});
 
+			it("POST agent/threads/:tid/posted records a posted comment block once; bad bodies are 400", async () => {
+				await github();
+				const t: AgentThread = (await askThread()).json();
+				const [answered] = await answeredThreads(1);
+				const ai = answered?.messages.find((m) => m.by === "ai");
+				const body = {
+					message: ai?.id,
+					block: 0,
+					github: {
+						thread: "PRRT_1",
+						comment: "PRRC_1",
+						url: "https://github.com/o/r/pull/1#discussion_r1",
+					},
+					text: "Why one retry?",
+				};
+				const appends = vi.spyOn(RefStore.prototype, "appendEvent");
+				const res = await post(`/api/agent/threads/${t.id}/posted`, body);
+				expect(res.statusCode, res.body).toBe(200);
+				const msg = (res.json() as AgentThread).messages.find(
+					(m) => m.id === ai?.id,
+				);
+				expect(msg?.posted).toEqual([
+					{
+						block: 0,
+						url: body.github.url,
+						at: expect.any(String),
+						text: "Why one retry?",
+					},
+				]);
+				const again = await post(`/api/agent/threads/${t.id}/posted`, body);
+				expect(again.statusCode).toBe(200);
+				expect(appends).toHaveBeenCalledTimes(1);
+				for (const bad of [
+					{ ...body, message: "nope" },
+					{ ...body, message: "01k9e6m2q8x4v7c3n5b0h1j2t6" },
+					{ ...body, block: -1 },
+					{ ...body, block: "0" },
+					{ ...body, github: { ...body.github, url: "http://x" } },
+					{ ...body, github: undefined },
+					{ ...body, text: "" },
+				]) {
+					const r = await post(`/api/agent/threads/${t.id}/posted`, bad);
+					expect(r.statusCode, JSON.stringify(bad)).toBe(400);
+				}
+				appends.mockRestore();
+			});
+
 			it("POST agent/threads/:tid/resolved answers 409 for a live thread conversation and works for an orphan", async () => {
 				await github();
 				const t: AgentThread = (await askThread()).json();

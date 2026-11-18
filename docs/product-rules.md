@@ -218,12 +218,33 @@ switch wouldn't happen.
 
 - **One explicit action, one write.** Every write is one click (or the send
   shortcut) on one thread. Nothing posts, resolves or retries a refused write
-  on its own, nothing is written as a side effect of review progress, and no
-  AI-written text is posted. Resolving never changes review progress. The
+  on its own, nothing is written as a side effect of review progress, and
+  no AI-written text is posted without explicit user approval of the exact
+  content (the owner's wording, 2026-11-16). Resolving never changes review
+  progress. The
   one exception is Comment over the viewer's own standing approval or
   request for changes: that one press makes two writes, the comment and
   then the dismissal of that review, since that is what Comment means
   (below). Its tooltip says so before the press.
+- **AI-suggested comments (CAR-83).** The reviewer's agent may suggest a
+  review comment as a ```` ```comment ```` block in its answer; crb shows it
+  as an editable box with **Add review comment**. Only the reviewer's press
+  posts it, exactly the box's text (their edits included), as the reviewer,
+  where the conversation sits: a new thread on its lines or file at the
+  snapshot's head (through the conversation's placement there: a changed
+  line keeps its lines, not its columns; lines gone leave the button off,
+  saying why), or a reply to its GitHub thread. Nothing marks it as the
+  agent's: once posted it is the reviewer's comment. It goes through the
+  same REST paths as the reviewer's own (escaped tags, the marker), always
+  as a retry under the block's own client id
+  (`ag.<conversation>.<message>.<block>`), so GitHub is checked first and
+  it never posts twice, across reloads and devices. Once a press is out, its
+  text is fixed (the box reads only) until GitHub answers: a retry looks for
+  exactly what may have landed. Posted shows only after GitHub's answer, and
+  is kept in the agent ref (`agent-comment-posted`); until that record is
+  written, the browser keeps the post, shows it Posted and writes the record
+  on a later load.
+  The agent has no tool to post; a refusal is never retried by itself.
 - **Resolve in Files changed closes the thread to its bubble** (the owner,
   2026-11-09), on the press. Once none of the bubble's threads shows, it
   closes and takes the focus (a bubble above the view comes down to just

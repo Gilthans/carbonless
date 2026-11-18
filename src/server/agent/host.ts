@@ -6,6 +6,7 @@ import {
 	type AgentMessage,
 	type AgentMessageRequest,
 	type AgentOrigin,
+	type AgentPostedRequest,
 	type AgentSpanAnchor,
 	type AgentStatus,
 	type AgentThread,
@@ -697,6 +698,15 @@ export class AgentHost {
 		return this.#view(await this.#joinedOne(t));
 	}
 
+	/**
+	 * The reviewer posted a ```comment block of an agent message (after
+	 * GitHub took it): recorded once per block.
+	 */
+	async posted(thread: string, req: AgentPostedRequest): Promise<AgentThread> {
+		const t = await this.store.posted(thread, req);
+		return this.#view(await this.#joinedOne(t));
+	}
+
 	cancel(): Promise<void> {
 		return this.runner.cancel();
 	}
@@ -906,6 +916,14 @@ export class AgentHost {
 							text: m.text,
 							...(m.origin && requestText(m.origin) !== undefined
 								? { re: requestText(m.origin) as string }
+								: {}),
+							...(m.posted?.length
+								? {
+										posted: m.posted.map((p) => ({
+											block: p.block,
+											text: p.text,
+										})),
+									}
 								: {}),
 						}
 					: {

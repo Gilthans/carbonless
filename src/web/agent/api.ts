@@ -17,6 +17,7 @@ import {
 	type AgentConfig,
 	type AgentMessageRequest,
 	type AgentPlacementsAnswer,
+	type AgentPostedRequest,
 	type AgentResolvedRequest,
 	type AgentSeenRequest,
 	type AgentSetupDone,
@@ -358,6 +359,32 @@ export const postAgentResolved = (thread: string, resolved: boolean) =>
 		`agent/threads/${encodeURIComponent(thread)}/resolved`,
 		json("POST", { resolved } satisfies AgentResolvedRequest),
 	);
+
+/** Records a ```comment block the reviewer posted to GitHub (once per block). */
+export const postAgentPosted = (thread: string, req: AgentPostedRequest) =>
+	review<AgentThread>(
+		`agent/threads/${encodeURIComponent(thread)}/posted`,
+		json("POST", req),
+	);
+
+/**
+ * Every span conversation placed into the snapshot of `head` (GET
+ * /agent/placements?head=), whatever is viewed: where a ```comment
+ * block posts (agentComments.ts). Under the placements' key, so what
+ * retraces them retraces these.
+ */
+export const agentPlacementsOnHeadQuery = (head: string) =>
+	queryOptions({
+		// By head alone: the answer covers every conversation.
+		queryKey: [...AGENT_PLACEMENTS_KEY, `head:${head}`, "post"],
+		queryFn: () =>
+			review<AgentPlacementsAnswer>(
+				`agent/placements?${new URLSearchParams({ head })}`,
+			),
+		staleTime: Number.POSITIVE_INFINITY,
+		retry: 3,
+		retryDelay: (attempt) => Math.min(500 * 2 ** attempt, 4000),
+	});
 
 /** Marks a conversation seen up to the message `upTo` (a no-op when it already is). */
 export const postAgentSeen = (thread: string, upTo: string) =>

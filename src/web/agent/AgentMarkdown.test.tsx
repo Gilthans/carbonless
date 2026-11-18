@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentMarkdown } from "./AgentMarkdown";
+import { AgentMarkdown, agentParts } from "./AgentMarkdown";
 
 afterEach(cleanup);
 
@@ -97,5 +97,62 @@ describe("AgentMarkdown", () => {
 		const el = show("No. The loop starts at **index 1** and\n\n```ts\nfor (");
 		expect(el.querySelector("strong")?.textContent).toBe("index 1");
 		expect(el.textContent).toContain("for (");
+	});
+});
+
+describe("```comment blocks (CAR-83)", () => {
+	const comments = (text: string) =>
+		agentParts(text).filter((p) => p.kind === "comment");
+
+	it("a top-level block is a comment part with its raw text and index 0", () => {
+		expect(
+			comments("Ask:\n\n```comment\nWhy <b>one</b> retry?\n```\n"),
+		).toEqual([{ kind: "comment", block: 0, text: "Why <b>one</b> retry?" }]);
+	});
+
+	it("several blocks are numbered in order, prose kept between them", () => {
+		const parts = agentParts(
+			"One:\n\n```comment\nfirst\n```\n\nTwo:\n\n```comment\nsecond\n```",
+		);
+		expect(parts.map((p) => p.kind)).toEqual([
+			"html",
+			"comment",
+			"html",
+			"comment",
+		]);
+		expect(comments("```comment\na\n```\n\n```comment\nb\n```")).toEqual([
+			{ kind: "comment", block: 0, text: "a" },
+			{ kind: "comment", block: 1, text: "b" },
+		]);
+	});
+
+	it("a four-backtick fence holds a fence inside", () => {
+		expect(
+			comments("````comment\nTry:\n```ts\nconst a = 1;\n```\n````"),
+		).toEqual([
+			{ kind: "comment", block: 0, text: "Try:\n```ts\nconst a = 1;\n```" },
+		]);
+	});
+
+	it("only a top-level fence whose info is exactly `comment` counts", () => {
+		expect(comments("- item\n\n  ```comment\n  in a list\n  ```")).toEqual([]);
+		expect(comments("> ```comment\n> in a quote\n> ```")).toEqual([]);
+		expect(comments("```comment x\nno\n```")).toEqual([]);
+		expect(comments("```Comment\nno\n```")).toEqual([]);
+		expect(comments("    indented code\n")).toEqual([]);
+	});
+
+	it("with nowhere to post, a block is a read-only quote with a copy button; its text stays text", () => {
+		const el = show('```comment\n<img src=x onerror="window.pwned = 4">\n```');
+		const block = el.querySelector('[data-testid="agent-comment"]');
+		expect(block).not.toBeNull();
+		expect(block?.textContent).toContain(
+			'<img src=x onerror="window.pwned = 4">',
+		);
+		expect(block?.querySelector("img, textarea")).toBeNull();
+		expect(
+			el.querySelector('button[aria-label="Copy comment"]'),
+		).not.toBeNull();
+		expect((window as { pwned?: number }).pwned).toBeUndefined();
 	});
 });

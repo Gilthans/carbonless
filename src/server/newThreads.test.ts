@@ -134,7 +134,7 @@ describe("new threads", () => {
 
 	it("a span on one line: REST line + side only, the marker on the body, and the thread GitHub reads back carries the span", async () => {
 		const req = request({ startCol: 5, endCol: 12 });
-		const { thread, comments } = await session.startThread(req);
+		const { thread, comments, url } = await session.startThread(req);
 		expect(posts()).toHaveLength(1);
 		const [t] = stored().slice(-1);
 		// What was sent: one line, no start.
@@ -182,6 +182,10 @@ describe("new threads", () => {
 			thread.code?.rows.filter((r) => r.marked).map((r) => r.newNo),
 		).toEqual([2]);
 		expect(comments.comments.map((c) => c.body)).toEqual(["Why not a map?"]);
+		// The opener's link on GitHub (an agent-suggested comment shows it, CAR-83).
+		expect(url).toMatch(
+			/^https:\/\/github\.com\/acme\/widget\/pull\/12#discussion_r\d+$/,
+		);
 		expect(comments.comments[0]?.viewerCan).toEqual({
 			update: true,
 			delete: true,
@@ -466,6 +470,8 @@ describe("new threads", () => {
 		const restarted = await Session.open(pr.arg, process.cwd());
 		const third = await restarted.startThread({ ...req, retry: true });
 		expect(third.thread.id).toBe("T12-1");
+		expect(third.url).toBe(again.url);
+		expect(again.url).toEqual(expect.any(String));
 		expect(posts()).toHaveLength(1);
 		expect(stored()).toHaveLength(2);
 	});

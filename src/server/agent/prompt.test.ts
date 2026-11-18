@@ -3,6 +3,7 @@ import {
 	type AgentAnchor,
 	type AgentSpanAnchor,
 	type AgentView,
+	COMMENT_INSTRUCTION,
 	JOINED_PREAMBLE,
 	JOINED_THREAD_PREAMBLE,
 	REVIEW_PREAMBLE,
@@ -64,6 +65,18 @@ describe("the preamble and anchors", () => {
 			"only through carbonless's tools",
 		])
 			expect(JOINED_PREAMBLE).toContain(part);
+	});
+
+	it("the preambles say how to suggest a review comment, and that only the reviewer posts it (CAR-83)", () => {
+		expect(JOINED_PREAMBLE).toContain(COMMENT_INSTRUCTION);
+		for (const part of ["```comment", "four backticks", "Only the reviewer"])
+			expect(COMMENT_INSTRUCTION).toContain(part);
+		// The thread preamble: a block there is a reply the reviewer may
+		// post; the agent itself still never writes to the thread.
+		expect(JOINED_THREAD_PREAMBLE).toContain("```comment");
+		expect(JOINED_THREAD_PREAMBLE).toContain(
+			"Never resolve, unresolve, reply to or write to this thread",
+		);
 	});
 
 	it("the review preamble names crb's read tools, reply and path:line, and no review", () => {
