@@ -28,6 +28,8 @@ export interface AgentWrite {
 	thread?: string;
 	/** A new conversation on this GitHub review thread (its id). */
 	githubThread?: string;
+	/** Opens the review conversation (the whole review's). */
+	review?: true;
 	/** The comparison on screen when it was sent. */
 	view?: Omit<AgentView, "left" | "right">;
 	text: string;
@@ -45,6 +47,11 @@ let state: AgentWriteState = { pending: new Map() };
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const attempts = new Map<string, number>();
 const listeners = new Set<() => void>();
+/** Who waits for a write to land (askReview's promise), by clientId. */
+const waiters = new Map<
+	string,
+	{ resolve: (t: AgentThread) => void; reject: (e: Error) => void }[]
+>();
 /** Threads opened by a question from this page, until their row opens them. */
 const justAsked = new Set<string>();
 
@@ -86,14 +93,19 @@ function send(client: QueryClient, clientId: string): void {
 			text: item.text,
 			...view,
 		});
-	} else if (item.githubThread !== undefined) {
+	} else if (item.githubThread !== undefined || item.review) {
+		const which =
+			item.githubThread !== undefined
+				? { thread: item.githubThread }
+				: { review: true as const };
 		write = postAgentThread({
 			clientId,
 			text: item.text,
-			thread: item.githubThread,
+			...which,
 			...view,
 		}).catch((error: unknown) => {
-			// Opened meanwhile (the other device): the question joins it.
+			// Opened meanwhile (the other device or tab): the question joins
+			// it, under the same clientId (one message however many tries).
 			const tid = conversationOf(error);
 			if (tid === null || state.pending.get(clientId) !== item) throw error;
 			return postAgentMessage(tid, { clientId, text: item.text, ...view });
@@ -119,6 +131,7 @@ function send(client: QueryClient, clientId: string): void {
 			);
 			void client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
 			if (state.pending.get(clientId) === item) set(clientId, null);
+			settle(clientId, (w) => w.resolve(thread));
 			if (item.span) {
 				justAsked.add(thread.id);
 				closeAgentComposer(clientId);
@@ -141,14 +154,24 @@ function send(client: QueryClient, clientId: string): void {
 				);
 				return;
 			}
-			set(clientId, {
-				...item,
-				retrying: false,
-				error:
-					error instanceof Error ? error : new Error(String(error ?? "Failed")),
-			});
+			const refused =
+				error instanceof Error ? error : new Error(String(error ?? "Failed"));
+			set(clientId, { ...item, retrying: false, error: refused });
+			settle(clientId, (w) => w.reject(refused));
 		},
 	);
+}
+
+function settle(
+	clientId: string,
+	how: (w: {
+		resolve: (t: AgentThread) => void;
+		reject: (e: Error) => void;
+	}) => void,
+): void {
+	const list = waiters.get(clientId);
+	waiters.delete(clientId);
+	for (const w of list ?? []) how(w);
 }
 
 /** The conversation a 409 on opening one names (it exists already). */
@@ -208,6 +231,33 @@ export function askAgentOnThread(
 	start(client, clientId, { githubThread, text, view, retrying: false });
 }
 
+/**
+ * Opens the review conversation with the reviewer's first message, as one
+ * write (resent like the others). When it exists already (another tab or
+ * device opened it: 409 names it), the text goes to it as a message under
+ * the same clientId: one conversation, both messages. Resolves with the
+ * conversation once the write lands; rejects on a refusal, which also
+ * stays on the item (retryAgentWrite sends it again), or on a drop.
+ */
+export function askReview(
+	client: QueryClient,
+	text: string,
+	clientId: string,
+	view?: Omit<AgentView, "left" | "right">,
+): Promise<AgentThread> {
+	const landed = new Promise<AgentThread>((resolve, reject) => {
+		waiters.set(clientId, [
+			...(waiters.get(clientId) ?? []),
+			{ resolve, reject },
+		]);
+	});
+	// The item shows a refusal; a caller that doesn't await isn't an
+	// unhandled rejection.
+	landed.catch(() => {});
+	start(client, clientId, { review: true, text, view, retrying: false });
+	return landed;
+}
+
 /** Adds the reviewer's reply to an agent thread. */
 export function replyAgent(
 	client: QueryClient,
@@ -237,6 +287,7 @@ export function dropAgentWrite(clientId: string): void {
 	if (timer) clearTimeout(timer);
 	timers.delete(clientId);
 	attempts.delete(clientId);
+	settle(clientId, (w) => w.reject(new Error("Dropped")));
 	if (state.pending.has(clientId)) set(clientId, null);
 }
 
@@ -246,6 +297,7 @@ export function resetAgentWrites(): void {
 	timers.clear();
 	attempts.clear();
 	justAsked.clear();
+	waiters.clear();
 	state = { pending: new Map() };
 	for (const l of listeners) l();
 }

@@ -1,5 +1,5 @@
 import { CheckIcon, SparkleFillIcon } from "@primer/octicons-react";
-import type { AgentThread } from "../../shared/agent";
+import { type AgentThread, isSpanThread } from "../../shared/agent";
 import { plural } from "../overview/parts";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
@@ -13,11 +13,12 @@ export function agentBubbleCount(threads: readonly AgentThread[]): number {
 	return open > 0 ? open : threads.length;
 }
 
-/** "2 agent threads on line 16, 1 waiting". */
-export function agentBubbleLabel(
-	threads: AgentThread[],
-	where?: string,
-): string {
+/**
+ * "2 agent threads on line 16, 1 waiting". The review conversation (no
+ * code) is never one of them.
+ */
+export function agentBubbleLabel(all: AgentThread[], where?: string): string {
+	const threads = all.filter(isSpanThread);
 	const n = agentBubbleCount(threads);
 	const head = `${plural(n, "agent thread")}${where ? ` ${where}` : ""}`;
 	const waiting = threads.filter((t) => t.waiting && !t.resolved).length;

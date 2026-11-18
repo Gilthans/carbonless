@@ -2,7 +2,10 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	choiceSetting,
 	ignoreWhitespace,
+	imageMode,
+	mapSetting,
 	matchCase,
 	numberSetting,
 	showInvisibles,
@@ -213,5 +216,155 @@ describe("numberSetting", () => {
 		expect(seen).toEqual([300]);
 		s.reset();
 		expect(s.read()).toBe(310);
+	});
+});
+
+/** Storage that throws on every read and write, for `run`. */
+function blockedStorage(run: () => void) {
+	const getItem = Storage.prototype.getItem;
+	const setItem = Storage.prototype.setItem;
+	Storage.prototype.getItem = () => {
+		throw new Error("blocked");
+	};
+	Storage.prototype.setItem = () => {
+		throw new Error("blocked");
+	};
+	try {
+		run();
+	} finally {
+		Storage.prototype.getItem = getItem;
+		Storage.prototype.setItem = setItem;
+	}
+}
+
+describe("choiceSetting", () => {
+	afterEach(() => {
+		localStorage.clear();
+		imageMode.reset();
+	});
+
+	it("reads the default until set, then remembers the choice", () => {
+		const s = choiceSetting("crb.test.c", "a", ["a", "b"] as const);
+		expect(s.read()).toBe("a");
+		const { result } = renderHook(() => s.use());
+		act(() => s.set("b"));
+		expect(result.current).toBe("b");
+		expect(localStorage.getItem("crb.test.c")).toBe("b");
+		expect(choiceSetting("crb.test.c", "a", ["a", "b"] as const).read()).toBe(
+			"b",
+		);
+	});
+
+	it("rejects a stored value it doesn't know", () => {
+		for (const junk of ["", "c", "B", "null", '"b"']) {
+			localStorage.setItem("crb.test.cj", junk);
+			expect(
+				choiceSetting("crb.test.cj", "a", ["a", "b"] as const).read(),
+				junk,
+			).toBe("a");
+		}
+	});
+
+	it("falls back to the default when storage is unavailable", () => {
+		blockedStorage(() => {
+			const s = choiceSetting("crb.test.cb", "a", ["a", "b"] as const);
+			expect(s.read()).toBe("a");
+			expect(() => s.set("b")).not.toThrow();
+		});
+	});
+
+	it("image mode is the slider unless the fade was picked", () => {
+		expect(imageMode.key).toBe("crb.image.mode");
+		expect(imageMode.read()).toBe("slider");
+		localStorage.setItem("crb.image.mode", "fade");
+		expect(imageMode.read()).toBe("fade");
+		localStorage.setItem("crb.image.mode", "onion");
+		expect(imageMode.read()).toBe("slider");
+	});
+});
+
+describe("mapSetting", () => {
+	afterEach(() => localStorage.clear());
+	const ids = ["x", "y"] as const;
+
+	it("round-trips a value per key, each on its own", () => {
+		const s = mapSetting("crb.test.m", ids);
+		expect(s.get("a.png")).toBeUndefined();
+		const a = renderHook(() => s.use("a.png"));
+		const b = renderHook(() => s.use("b.png"));
+		act(() => s.set("a.png", "y"));
+		expect(a.result.current).toBe("y");
+		expect(b.result.current).toBeUndefined();
+		act(() => s.set("b.png", "x"));
+		expect(b.result.current).toBe("x");
+		expect(JSON.parse(localStorage.getItem("crb.test.m") ?? "")).toEqual({
+			"a.png": "y",
+			"b.png": "x",
+		});
+		// A fresh store (a reload) reads what was stored.
+		const fresh = mapSetting("crb.test.m", ids);
+		expect(fresh.get("a.png")).toBe("y");
+		expect(fresh.get("b.png")).toBe("x");
+	});
+
+	it("reads a corrupt stored value as empty, and drops values it doesn't know", () => {
+		for (const junk of ["", "{", "null", "[]", '"x"', "42"]) {
+			localStorage.setItem("crb.test.mj", junk);
+			expect(mapSetting("crb.test.mj", ids).get("a"), junk).toBeUndefined();
+		}
+		localStorage.setItem(
+			"crb.test.mj",
+			JSON.stringify({ a: "x", b: "z", c: 3 }),
+		);
+		const s = mapSetting("crb.test.mj", ids);
+		expect(s.get("a")).toBe("x");
+		expect(s.get("b")).toBeUndefined();
+		expect(s.get("c")).toBeUndefined();
+		// Not a key of every object.
+		expect(s.get("toString")).toBeUndefined();
+		expect(s.get("constructor")).toBeUndefined();
+	});
+
+	it("keeps a stored __proto__ name as a name, never a prototype", () => {
+		localStorage.setItem("crb.test.mp", '{"__proto__":"y","a":"x"}');
+		const s = mapSetting("crb.test.mp", ids);
+		expect(s.get("__proto__")).toBe("y");
+		expect(s.get("a")).toBe("x");
+		s.set("b", "x");
+		expect(JSON.parse(localStorage.getItem("crb.test.mp") ?? "")).toEqual(
+			JSON.parse('{"__proto__":"y","a":"x","b":"x"}'),
+		);
+		expect(Object.getPrototypeOf({})).toBe(Object.prototype);
+		expect(({} as Record<string, unknown>).a).toBeUndefined();
+		expect(Object.hasOwn(Object.prototype, "a")).toBe(false);
+	});
+
+	it("a pick merges onto what another tab stored since, never over it", () => {
+		const s = mapSetting("crb.test.tabs", ids);
+		const { result } = renderHook(() => s.use("a"));
+		act(() => s.set("a", "x"));
+		// Another tab, with its own copy, picks for b.
+		localStorage.setItem("crb.test.tabs", JSON.stringify({ a: "x", b: "y" }));
+		act(() => s.set("c", "y"));
+		expect(JSON.parse(localStorage.getItem("crb.test.tabs") ?? "")).toEqual({
+			a: "x",
+			b: "y",
+			c: "y",
+		});
+		expect(s.get("b")).toBe("y");
+		expect(result.current).toBe("x");
+	});
+
+	it("keeps a pick in memory when storage is unavailable", () => {
+		blockedStorage(() => {
+			const s = mapSetting("crb.test.mb", ids);
+			expect(s.get("a")).toBeUndefined();
+			const { result } = renderHook(() => s.use("a"));
+			expect(() => act(() => s.set("a", "y"))).not.toThrow();
+			expect(result.current).toBe("y");
+			act(() => s.set("b", "x"));
+			expect(result.current).toBe("y");
+			expect(s.get("b")).toBe("x");
+		});
 	});
 });

@@ -2,9 +2,10 @@
 # publish` starts this; after approving on npmjs.com, start it by hand with
 # the same inputs): checks npm has X.Y.Z with the promote run's tarball,
 # tags vX.Y.Z on the RC's commit, starts release.yml's fixup (rc up to the
-# release; npm's trusted publisher is release.yml, not this file), and opens
-# the "next" PR with docs/changelog.md. Every step skips what is already
-# done, so it can run again after a failure. No npm credentials at all.
+# release; npm's trusted publisher is release.yml, not this file), opens
+# the "next" PR with docs/changelog.md, and reruns the release gate of open
+# PRs. Every step skips what is already done, so it can run again after a
+# failure. No npm credentials at all.
 # docs/releasing.md.
 name: Release finish
 run-name: Finish release ${{ inputs.version }}
@@ -22,7 +23,7 @@ on:
 permissions:
   contents: write # the vX.Y.Z tag and the next/* branch
   pull-requests: write # the "next" PR
-  actions: write # the promote run's artifact; starting release.yml's fixup
+  actions: write # the promote run's artifact; starting release.yml's fixup; rerunning PRs' release gate
 
 concurrency:
   group: release-finish
@@ -128,6 +129,28 @@ jobs:
             gh pr create --base master --head "$branch" --title "next: $next" \
               --body "Released **$VERSION** from $RC_TAG (npm \`latest\`). This sets master's next release to $next and adds $VERSION to docs/changelog.md."
           fi
+      - name: Rerun open PRs' release gate
+        # The release freeze (CAR-191): a PR whose release-gate passed before
+        # the release would stay green and could be merged with the button.
+        # Rerun each open PR's newest release-gate run: it reads master again
+        # and now fails, except on the "next" PR. Harmless once master moved
+        # on (they pass). A run still in progress can't be rerun; it is
+        # reported and left (it may have read master before the tag).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&base=master&per_page=100" --jq '.[] | "\(.number) \(.head.sha)"' |
+            while read -r pr sha; do
+              [[ "$pr" =~ ^[0-9]+$ && "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
+              run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-gate.yml/runs?event=pull_request&head_sha=$sha&per_page=1" --jq '.workflow_runs[0].id // ""')"
+              if [[ -z "$run" ]]; then
+                echo "#$pr: no release-gate run"
+              elif gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/rerun" >/dev/null; then
+                echo "#$pr: release-gate rerun ($run)"
+              else
+                echo "::warning::#$pr: could not rerun release-gate run $run (still running?): rerun it by hand"
+              fi
+            done
       - name: Summary
         env:
           TAG_DONE: ${{ steps.plan.outputs.push_tag == 'true' && 'pushed' || 'already there' }}

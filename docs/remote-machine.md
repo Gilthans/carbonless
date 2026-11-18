@@ -10,7 +10,10 @@ Tailscale):
 2. Bind it, in `~/.config/carbonless/config.json`:
    `{ "serve": { "host": "<the machine's Tailscale IP>", "port": 4747 } }`.
    Off loopback, pages need the access key (`~/.local/state/carbonless/key`);
-   the printed link carries it as `?key=`. The key is like an SSH key: whoever
+   the printed link carries it as `?key=`, which sets a `SameSite=Lax`
+   cookie, so a review link clicked on GitHub opens; another site's page
+   gets nothing else ([FAQ](faq.md#why-does-a-link-to-crb-on-another-site-open-but-its-script-cant)).
+   The key is like an SSH key: whoever
    holds it can set (and Check) the agent's command, which the server runs
    as your user. On loopback with no key (and no `publicUrl`, below), so can
    any local process.

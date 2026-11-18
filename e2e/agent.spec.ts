@@ -7,15 +7,19 @@ import { acpLog, releaseAcp } from "../test/fake-acp/scenario";
 import { testGitEnv } from "../test/git-fixture";
 import {
 	ask,
+	askReviewByApi,
 	bar,
 	CALC,
 	chip,
+	chipName,
 	expect,
 	fixture,
+	openAgentModal,
 	openFile,
 	row,
 	selectText,
 	setupDialog,
+	spawnAgent,
 	statusDialog,
 	test,
 } from "./agent-ui";
@@ -326,7 +330,7 @@ test("the chip: starting while the handshake is held, ready, busy while answerin
 	await expect(chip(page)).toHaveAccessibleName(/starting/i);
 	releaseAcp(acpScenario, "initialize");
 	await expect(chip(page)).toHaveAttribute("data-state", "ready");
-	await expect(chip(page)).toHaveAccessibleName("Your agent: Fake Agent 9.9.9");
+	await expect(chip(page)).toHaveAccessibleName(chipName("Fake Agent 9.9.9"));
 	// Ready: the sparkle green (shots for the design review).
 	await expect(page.getByTestId("agent-chip-icon")).toHaveClass(/text-ok/);
 	const shots = process.env.DESIGN_SHOTS;
@@ -491,7 +495,7 @@ test("elsewhere: a second server leaves the agent to the first, which answers wh
 	await other.goto(second.url);
 	await expect(chip(other)).toHaveAttribute("data-state", "elsewhere");
 	await expect(chip(other)).toHaveAccessibleName(
-		`Your agent: answered by the server on :${port}`,
+		chipName(`answered by the server on :${port}`),
 	);
 	// Asked there, the holder's agent answers it: the one agent process on
 	// the machine is the first server's.
@@ -584,6 +588,34 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	for (const p of prompts) perPid.set(p.pid, (perPid.get(p.pid) ?? 0) + 1);
 	expect([...perPid.values()]).toEqual([2, 1]);
 });
+
+/**
+ * The session's own review (GET /review, no target): its first read after
+ * a new thread's POST answered (the one the new thread asks for) is held.
+ */
+async function holdOwnReview(page: Page) {
+	const held = { hits: 0, release: () => {} };
+	const released = new Promise<void>((r) => {
+		held.release = r;
+	});
+	let posted = false;
+	page.on("response", (response) => {
+		const request = response.request();
+		if (
+			request.method() === "POST" &&
+			/\/api\/r\/[^/]+\/threads$/.test(request.url())
+		) {
+			posted = true;
+		}
+	});
+	await page.route(/\/api\/r\/[^/]+\/review$/, async (route) => {
+		if (route.request().method() !== "GET" || !posted) return route.fallback();
+		held.hits += 1;
+		if (held.hits === 1) await released;
+		await route.fallback();
+	});
+	return held;
+}
 
 /** The tracer's answer (GET /agent/placements), held: the review-bound route. */
 async function holdPlacements(page: Page) {
@@ -819,25 +851,34 @@ test("on a patch set and in the since view: traced from PS1 into the head (a rew
 	await bar(page).getByRole("button", { name: "Comment" }).click();
 	const composer = since.getByTestId("new-thread");
 	await composer.getByRole("textbox", { name: "Comment" }).fill("On the head");
+	// The session's own review read again after the comment, held: the
+	// session names PS2 first, and the page moves to it (CAR-194).
+	const ownRead = await holdOwnReview(page);
 	await composer.getByRole("button", { name: "Comment" }).click();
 	await expect(page.getByTestId("ps-node-ps2")).toBeVisible({
 		timeout: 30_000,
 	});
+	await expect(page).toHaveURL(/[?&]ps=2(&|$)/);
+	await expect.poll(() => ownRead.hits).toBeGreaterThan(0);
+	// Never PS1's cached review under PS2's name (its file closed): the
+	// viewed head's, PS2's very snapshot, stays (its file open) until the
+	// read answers.
+	const ps2 = fileSection(page, CALC);
+	await expect(
+		ps2.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(ps2.getByRole("button", { name: "Expand file" })).toHaveCount(0);
+	ownRead.release();
 	expect(storedThreads(p)).toMatchObject([
 		{ path: CALC, line: 5, originalCommit: head },
 	]);
 	await expect
 		.poll(() => held.hits.slice(before).some((q) => q.includes("ps=2")))
 		.toBe(true);
-	const ps2 = fileSection(page, CALC);
-	const expand = async (section: typeof ps2) => {
-		if (
-			await section.getByRole("button", { name: "Expand file" }).isVisible()
-		) {
-			await section.getByRole("button", { name: "Expand file" }).click();
-		}
-	};
-	await expand(ps2);
+	// The file the comment was written in stays open on PS2.
+	await expect(
+		ps2.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
 	await expect(row(ps2, 5).getByTestId("agent-bubble")).toHaveAccessibleName(
 		"1 agent thread on line 5, 1 new",
 	);
@@ -1119,6 +1160,10 @@ test("--viewer: no agent, Ask agent off with why", async ({
 		"Your agent is off when viewing as someone else",
 	);
 	await expect(chip(page)).toHaveCount(0);
+	// Its column stays reserved at the header's right, empty.
+	expect((await page.getByTestId("agent-chip-slot").boundingBox())?.width).toBe(
+		40,
+	);
 });
 
 test("--as-of: no agent, Ask agent off with why", async ({
@@ -1162,6 +1207,90 @@ test("--as-of: no agent, Ask agent off with why", async ({
 		"Your agent is off as of a cutoff",
 	);
 	await expect(chip(page)).toHaveCount(0);
+	// Its column stays reserved at the header's right, empty.
+	expect((await page.getByTestId("agent-chip-slot").boundingBox())?.width).toBe(
+		40,
+	);
+});
+
+test("the chip has its own column pinned right: right of the number, its right edge on Settings's, centred on the logo; 40px and no sideways scroll at 360px", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 760 });
+	const p = await pr(fixture);
+	const s = await agentCrb();
+	await page.goto(s.url);
+	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	const box = async (l: ReturnType<Page["locator"]>) => {
+		const b = await l.boundingBox();
+		if (!b) throw new Error("not rendered");
+		return b;
+	};
+	const c = await box(chip(page));
+	const number = await box(
+		page
+			.getByTestId("header-title")
+			.getByRole("link", { name: `#${p.number}`, exact: true }),
+	);
+	expect(c.x).toBeGreaterThanOrEqual(number.x + number.width);
+	// In its column, mirroring the logo: vertically centred like it.
+	await expect(
+		page.getByTestId("agent-chip-slot").locator(chip(page)),
+	).toBeVisible();
+	const logo = await box(page.getByTestId("home-link"));
+	expect(
+		Math.abs(c.y + c.height / 2 - (logo.y + logo.height / 2)),
+	).toBeLessThanOrEqual(1);
+	expect(c.width).toBeGreaterThanOrEqual(40);
+	expect(c.height).toBeGreaterThanOrEqual(40);
+	if (!isMobile) {
+		// Right-aligned with the content edge: the Settings button below.
+		const settings = await box(
+			page.getByRole("button", { name: "Settings", exact: true }),
+		);
+		expect(
+			Math.abs(c.x + c.width - (settings.x + settings.width)),
+		).toBeLessThanOrEqual(1);
+	}
+	await expectNoPageOverflow(page);
+	await shot(page, "agent-chip-header", isMobile);
+});
+
+test("at 360px with an unread answer, the chip's count badge stays on screen, at the top and docked: no sideways scroll", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await page.setViewportSize({ width: 360, height: 760 });
+	await pr(fixture);
+	// Asked, then answered while no one looks: one unread answer.
+	const s = await agentCrb({ spawn: false });
+	await askReviewByApi(s.url, "What is the risk in this PR?");
+	await spawnAgent(s.url);
+	await page.goto(s.url);
+	const badge = page.getByTestId("agent-chip-count");
+	await expect(badge).toHaveText("1");
+	const inside = async () => {
+		const b = await badge.boundingBox();
+		if (!b) throw new Error("not rendered");
+		expect(b.x + b.width).toBeLessThanOrEqual(360);
+	};
+	await expect(
+		page.getByTestId("agent-chip-slot").locator(chip(page)),
+	).toBeVisible();
+	await inside();
+	await expectNoPageOverflow(page);
+	// Docked: the compact row's rightmost item, at the screen's edge.
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await expect(
+		page.getByTestId("app-header-row").locator(chip(page)),
+	).toBeVisible();
+	await expect(badge).toHaveText("1");
+	await inside();
+	await expectNoPageOverflow(page);
 });
 
 test("no sideways scroll at 360 px with a card, a composer and the setup open", async ({
@@ -1192,7 +1321,7 @@ test("no sideways scroll at 360 px with a card, a composer and the setup open", 
 	await expectNoPageOverflow(page);
 	await shot(page, "agent-360-card", isMobile);
 	// The modal's both views: the agent's status, then (Detach) the setup.
-	await chip(page).click();
+	await openAgentModal(page);
 	const status = statusDialog(page);
 	await expect(status.getByTestId("agent-state")).toHaveText("Ready");
 	await expectNoPageOverflow(page);

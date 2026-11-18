@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentThread } from "../../shared/agent";
+import type { AgentThread, SpanAgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import { agentPlaceable } from "../agent/placeable";
 import { conversation, reviewThread } from "../agent/threadAgentFixtures";
@@ -15,7 +15,7 @@ import {
 	plainText,
 } from "./threadRows";
 
-const span = (more: Partial<AgentThread> = {}): AgentThread =>
+const span = (more: Partial<AgentThread> = {}): SpanAgentThread =>
 	conversation({
 		id: "S1",
 		anchor: {
@@ -28,7 +28,7 @@ const span = (more: Partial<AgentThread> = {}): AgentThread =>
 			startLine: 9,
 		},
 		...more,
-	});
+	}) as SpanAgentThread;
 
 describe("githubRows", () => {
 	it("names who spoke last, with their avatar, and dates the row by the last activity", () => {
@@ -106,6 +106,15 @@ describe("githubRows", () => {
 });
 
 describe("agentRows", () => {
+	it("leaves the review conversation out: it lives in its drawer, not the diff", () => {
+		const rows = agentRows(
+			[conversation({ id: "R1", anchor: { subject: "review" } }), span()],
+			new Map(),
+			new Map(),
+		);
+		expect(rows.map((r) => r.id)).toEqual(["S1"]);
+	});
+
 	it("dates by the last message, else the thread's own time; says who spoke last", () => {
 		const [answered, asked] = agentRows(
 			[

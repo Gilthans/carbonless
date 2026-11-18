@@ -11,6 +11,7 @@ import {
 	MAX_AGENT_TEXT,
 	type OpenAgentThreadRequest,
 } from "../shared/agent.js";
+import { imageTypeOf, sniffRaster } from "../shared/imageTypes.js";
 import { type LineRanges, parseRanges } from "../shared/lineRanges.js";
 import {
 	type ClusterState,
@@ -74,7 +75,7 @@ import {
 	SessionClosedError,
 	UnknownReadError,
 } from "./session.js";
-import { registerTestHooks } from "./testHooks.js";
+import { defaultLimits, registerTestHooks } from "./testHooks.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
 import { parseTraceparent, type Span, type Tracer, tracer } from "./trace.js";
 import { channelOf } from "./update/semver.js";
@@ -161,8 +162,30 @@ const sessionOf = (request: FastifyRequest): Session => {
 
 const VIEWER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
 
-/** No framing (clickjacking) and no Referer leaking the access key. */
+/**
+ * An SVG's (blob route): no script, no fetch, no navigation, whatever the
+ * file holds; it replaces the app-wide policy, never adds to it.
+ */
+const SVG_CSP =
+	"default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'";
+/** A blob is named by its oid: its bytes never change. */
+const IMMUTABLE = "private, max-age=31536000, immutable";
+
+/** Whether an If-None-Match header names the strong ETag `etag`. */
+function etagMatches(header: string | string[] | undefined, etag: string) {
+	const value = Array.isArray(header) ? header.join(",") : (header ?? "");
+	return value
+		.split(",")
+		.map((tag) => tag.trim().replace(/^W\//, ""))
+		.some((tag) => tag === "*" || tag === etag);
+}
+
+/**
+ * No framing (clickjacking), no Referer leaking the access key, and no
+ * content sniffing (a blob is only ever the type the server says).
+ */
 const SECURITY_HEADERS = {
+	"x-content-type-options": "nosniff",
 	"x-frame-options": "DENY",
 	"content-security-policy": "frame-ancestors 'none'",
 	"referrer-policy": "no-referrer",
@@ -244,6 +267,8 @@ export async function buildApp(
 		forceCloseConnections: true,
 	});
 	traceRequests(app, options.tracer ?? tracer());
+	// Lowered only by a test (/api/_test/limits).
+	const limits = defaultLimits();
 	// First hook, so even the access checks' 401/403 replies carry them.
 	app.addHook("onRequest", async (_request, reply) => {
 		reply.headers(SECURITY_HEADERS);
@@ -477,6 +502,7 @@ export async function buildApp(
 					}
 					const overview = await sessionOf(request).overview(
 						maxAge === undefined ? undefined : Number(maxAge),
+						true,
 					);
 					// The server's clock: the page judges the age by it, not its own.
 					return { ...overview, servedAt: new Date().toISOString() };
@@ -615,6 +641,78 @@ export async function buildApp(
 					);
 				}
 				return sessionOf(request).fileHunks(revision, index);
+			});
+			// One side's bytes of a file, for the image view. Which blob, and
+			// the path its type comes from, are the snapshot's (with
+			// `from=<n>`, the since view's interdiff's: Session.blob), never
+			// the request's. HEAD is its own (Fastify's would answer
+			// content-length 0) and reads no bytes.
+			review.route<{
+				Params: { index: string };
+				Querystring: {
+					revision?: unknown;
+					side?: unknown;
+					from?: unknown;
+					sniff?: unknown;
+				};
+			}>({
+				method: ["GET", "HEAD"],
+				url: "/files/:index/blob",
+				handler: async (request, reply) => {
+					const revision = revisionParam(request.query.revision);
+					const index = fileIndex(request.params.index);
+					const { side, from, sniff } = request.query;
+					if (side !== "old" && side !== "new") {
+						throw new BadRequestError("side must be old or new");
+					}
+					if (sniff !== undefined && sniff !== "1") {
+						throw new BadRequestError("sniff must be 1");
+					}
+					const session = sessionOf(request);
+					const blob = await session.blob(
+						revision,
+						index,
+						side,
+						from === undefined ? undefined : patchsetParam(from),
+					);
+					if (!blob) {
+						return reply.status(404).send({ error: `No ${side} side` });
+					}
+					if (blob.size > limits.imageMaxBytes) {
+						return reply.status(413).send({ error: "Too large to show" });
+					}
+					let type = imageTypeOf(blob.path);
+					let bytes: Buffer | null = null;
+					// Only on an explicit pick of Image, and raster types only.
+					if (type === null && sniff === "1") {
+						bytes = await session.blobBytes(blob.oid);
+						type = sniffRaster(bytes.subarray(0, 16));
+					}
+					if (type === null) {
+						return reply.status(415).send({ error: "Not an image" });
+					}
+					const etag = `"${blob.oid}"`;
+					// Only a 200 or 304 carries them: an error must never be cached.
+					const found = {
+						etag,
+						"cache-control": IMMUTABLE,
+						"content-type": type,
+						...(type === "image/svg+xml"
+							? { "content-security-policy": SVG_CSP }
+							: {}),
+					};
+					if (etagMatches(request.headers["if-none-match"], etag)) {
+						return reply.status(304).headers(found).send();
+					}
+					// HEAD (the web's stale probe on an <img> error) reads no bytes.
+					if (request.method === "HEAD" && bytes === null) {
+						return reply
+							.headers({ ...found, "content-length": blob.size })
+							.send();
+					}
+					bytes ??= await session.blobBytes(blob.oid);
+					return reply.headers(found).send(bytes);
+				},
 			});
 			review.get<{
 				Params: { index: string };
@@ -870,11 +968,6 @@ export async function buildApp(
 					return { ok: true };
 				},
 			);
-			// The reviewer's Disconnect of a joined session.
-			review.post("/agent/disconnect", async (request) => {
-				await agentOf(request).disconnect();
-				return { ok: true };
-			});
 			// The reviewer's Spawn (Start): this review's ACP buddy on.
 			review.post("/agent/start", async (request) => {
 				await agentOf(request).startAcp();
@@ -961,6 +1054,7 @@ export async function buildApp(
 			token: options.testHooks,
 			registry,
 			home: options.home,
+			limits,
 		});
 	}
 
@@ -1170,8 +1264,11 @@ function parseAgentOpen(body: unknown): OpenAgentThreadRequest {
 	>;
 	const problem = clientIdProblem(b.clientId) ?? agentTextProblem(b.text);
 	if (problem) throw new BadRequestError(problem);
-	if ((b.span === undefined) === (b.thread === undefined)) {
-		throw new BadRequestError("span or thread, one of them");
+	const given = [b.span, b.thread, b.review].filter(
+		(x) => x !== undefined,
+	).length;
+	if (given !== 1) {
+		throw new BadRequestError("span, thread or review, one of them");
 	}
 	const view = parseAgentView(b.view);
 	const common = {
@@ -1179,6 +1276,10 @@ function parseAgentOpen(body: unknown): OpenAgentThreadRequest {
 		text: b.text as string,
 		...(view ? { view } : {}),
 	};
+	if (b.review !== undefined) {
+		if (b.review !== true) throw new BadRequestError("review must be true");
+		return { ...common, review: true };
+	}
 	if (b.thread !== undefined) {
 		const thread = b.thread;
 		// GitHub node ids; the stored anchor takes at most 200 characters.

@@ -13,7 +13,12 @@ import {
 import { createPortal } from "react-dom";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { RereviewAnswer, SessionInfo, Shape } from "../../shared/types";
-import { overviewQuery, patchsetCommitsQuery, rereviewQuery } from "../api";
+import {
+	overviewQuery,
+	patchsetCommitsQuery,
+	rereviewQuery,
+	snapshotKey,
+} from "../api";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
 import { useShortcut } from "../shortcuts";
@@ -134,14 +139,16 @@ export function railDots(
 	];
 	const numbers = session.patchsets.map((p) => p.number);
 	// Before any patch set, the snapshot being reviewed is a dot of its
-	// own; so is a viewed head that is neither it nor the PR's head.
+	// own, even when it is the PR's head (owner, 2026-11-16: the rail
+	// always shows where the PR is, with no patch set made for it); so is
+	// a viewed head that is neither it nor the PR's head.
 	const snapshotOid =
 		viewing?.kind === "head" && viewing.oid !== session.head?.oid
 			? viewing.oid
 			: session.patchsets.length === 0
 				? session.snapshotHead
 				: null;
-	if (snapshotOid !== null && snapshotOid !== session.head?.oid) {
+	if (snapshotOid !== null) {
 		dots.push({
 			id: "snapshot",
 			kind: "snapshot",
@@ -370,7 +377,11 @@ function DotCard(props: { dot: Dot; session: SessionInfo }) {
 			return (
 				<DotCardLayout
 					title="Snapshot"
-					subtitle="Not reviewed yet"
+					subtitle={
+						dot.oid === session.head?.oid
+							? "PR head · not reviewed yet"
+							: "Not reviewed yet"
+					}
 					rows={[
 						<Commit key="c" oid={dot.oid} />,
 						<Against
@@ -736,9 +747,13 @@ function DotPopover(props: {
  * missing).
  */
 function useWithCommits(session: SessionInfo): SessionInfo {
-	const missing = session.patchsets
-		.filter((p) => p.commits === null)
-		.map((p) => `${p.number} ${p.head}`);
+	const snapshot = snapshotKey(session);
+	const missing = [
+		...session.patchsets
+			.filter((p) => p.commits === null)
+			.map((p) => `${p.number} ${p.head}`),
+		...(session.snapshotCommits === null ? [snapshot] : []),
+	];
 	const counted = useQuery({
 		...patchsetCommitsQuery(missing),
 		enabled: missing.length > 0,
@@ -750,12 +765,32 @@ function useWithCommits(session: SessionInfo): SessionInfo {
 			...p,
 			commits: p.commits ?? counted[`${p.number} ${p.head}`] ?? null,
 		})),
+		...(session.snapshotCommits === null
+			? { snapshotCommits: counted[snapshot] ?? null }
+			: {}),
 	};
 }
 
 /**
+ * A dot's commits over its merge base, for its connector from the branch:
+ * a patch set's, or the snapshot's before any patch set; undefined for
+ * one with none to show.
+ */
+function countOf(
+	dot: Dot,
+	session: SessionInfo,
+): number | null | { error: string } | undefined {
+	if (dot.patchset) return dot.patchset.commits;
+	if (dot.kind === "snapshot" && dot.oid === session.snapshotHead)
+		return session.snapshotCommits;
+	return undefined;
+}
+
+/**
  * The patch set graph (design doc, "Patch set graph"): one rail with the
- * base branch dot, one dot per patch set of the reviewer, and a last slot
+ * base branch dot, one dot per patch set of the reviewer (before any patch
+ * set, a dot for the snapshot being reviewed, even when it is the PR's
+ * head: where the PR is, nothing stored for it), and a last slot
  * that is always rendered at one width (TAIL_WIDTH): "up to date" when the
  * PR's head is the newest dot, else a dashed connector with its commit
  * count and the hollow head dot (nothing below the rail moves when a push
@@ -805,6 +840,9 @@ export function PatchsetGraph(props: {
 	const connectors: Connector[] = all.slice(1).map((to, i) => {
 		const from = all[i] as Dot;
 		const at = pairs.findIndex((p) => p.from === from && p.to === to);
+		// From the branch: the dot's own commit count (a patch set's, or the
+		// snapshot's before any patch set).
+		const count = from.kind === "branch" ? countOf(to, session) : undefined;
 		return {
 			from,
 			to,
@@ -817,19 +855,12 @@ export function PatchsetGraph(props: {
 			commits:
 				to.kind === "head" && session.head
 					? session.head.commits
-					: from.kind === "branch" && typeof to.patchset?.commits === "number"
-						? to.patchset.commits
+					: typeof count === "number"
+						? count
 						: null,
-			counting:
-				from.kind === "branch" &&
-				to.patchset !== undefined &&
-				to.patchset.commits === null,
+			counting: count === null,
 			countError:
-				from.kind === "branch" &&
-				to.patchset?.commits !== null &&
-				typeof to.patchset?.commits === "object"
-					? to.patchset.commits.error
-					: null,
+				count !== null && typeof count === "object" ? count.error : null,
 			shape: to.patchset?.shape ?? null,
 			dashed: to.kind === "head",
 			...(props.live &&
@@ -1174,7 +1205,7 @@ export function PatchsetGraph(props: {
 					</>
 				) : upToDate ? (
 					<Tooltip
-						content="The PR's head is this patch set: nothing new was pushed"
+						content={`The PR's head is this ${session.patchsets.length ? "patch set" : "snapshot"}: nothing new was pushed`}
 						describe={false}
 					>
 						{(trigger) => (

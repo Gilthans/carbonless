@@ -849,3 +849,119 @@ describe("origins: an agent message from a request", () => {
 		expect(found?.messages).toHaveLength(2);
 	});
 });
+
+describe("the review conversation", () => {
+	const review: AgentAnchor = { subject: "review" };
+	const t1 = "01k9e6m2q8x4v7c3n5b0h1j2a1";
+	const t2 = "01k9e6m2q8x4v7c3n5b0h1j2a2";
+	const opening = (thread: string, text: string, ts: number) =>
+		newEvent(
+			"agent-thread-opened",
+			"dan",
+			{ thread, anchor: review, text, details: { clientId: thread } },
+			"human",
+			ts,
+		);
+
+	it("two review openings fold into the first", () => {
+		const events = [
+			opening(t2, "second", 2000),
+			newEvent(
+				"agent-message",
+				"dan",
+				{ thread: t2, text: "more" },
+				"human",
+				3000,
+			),
+			opening(t1, "first", 1000),
+		];
+		const folded = foldAgentThreads(events);
+		expect(folded).toHaveLength(1);
+		expect(folded[0]?.id).toBe(t1);
+		expect(folded[0]?.anchor).toEqual(review);
+		expect(folded[0]?.messages.map((m) => m.text)).toEqual([
+			"first",
+			"second",
+			"more",
+		]);
+	});
+
+	it("a resolve on a review thread is ignored on read", () => {
+		const events = [
+			opening(t1, "q", 1000),
+			newEvent(
+				"agent-message",
+				"dan",
+				{ thread: t1, text: "a", agent, stop: "end_turn", activity: [] },
+				"ai",
+				2000,
+			),
+			newEvent(
+				"agent-thread-resolved",
+				"dan",
+				{ thread: t1, resolved: true },
+				"human",
+				3000,
+			),
+		];
+		const resolved = foldAgentThreads(events);
+		expect(resolved[0]?.resolved).toBe(false);
+		expect(resolved[0]?.waiting).toBe(false);
+		const later = foldAgentThreads([
+			...events,
+			newEvent(
+				"agent-message",
+				"dan",
+				{ thread: t1, text: "again" },
+				"human",
+				4000,
+			),
+		]);
+		expect(later[0]).toMatchObject({ resolved: false, waiting: true });
+	});
+
+	it("store.open refuses a second review opening and an ai one, resend returns the first", async () => {
+		const first = await store.open({
+			anchor: review,
+			text: "q",
+			by: "human",
+			clientId: "c1",
+		});
+		await expect(
+			store.open({ anchor: review, text: "q2", by: "human", clientId: "c2" }),
+		).rejects.toMatchObject({ thread: first.id });
+		expect(
+			(
+				await store.open({
+					anchor: review,
+					text: "q",
+					by: "human",
+					clientId: "c1",
+				})
+			).id,
+		).toBe(first.id);
+		await expect(
+			store.open({ anchor: review, text: "hi", by: "ai", agent }),
+		).rejects.toBeInstanceOf(Error);
+		expect(await store.read()).toHaveLength(1);
+	});
+
+	it("two review openings at once: one written, the other refused naming it", async () => {
+		const [a, b] = await Promise.allSettled([
+			store.open({ anchor: review, text: "q1", by: "human", clientId: "c1" }),
+			store.open({ anchor: review, text: "q2", by: "human", clientId: "c2" }),
+		]);
+		const won = [a, b].filter((x) => x.status === "fulfilled");
+		const lost = [a, b].filter((x) => x.status === "rejected");
+		expect(won).toHaveLength(1);
+		expect(lost).toHaveLength(1);
+		const id = (won[0] as PromiseFulfilledResult<{ id: string }>).value.id;
+		expect((lost[0] as PromiseRejectedResult).reason).toMatchObject({
+			thread: id,
+		});
+		const all = await store.read();
+		expect(all).toHaveLength(1);
+		expect(all[0]?.id).toBe(id);
+		expect(all[0]?.messages).toHaveLength(1);
+	});
+});

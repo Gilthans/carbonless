@@ -43,10 +43,12 @@ describe("persistHome", () => {
 		const at = Date.now() - 60_000;
 		before.setQueryData(VIEW, { view: "v" }, { updatedAt: at });
 		before.setQueryData(repoKey("acme/api"), { rows: ["r"] });
-		before.setQueryData(["session"], { id: "review" });
+		// A word no path or key holds: the buster names this file's path, which
+		// may contain "review" (a worktree's name).
+		before.setQueryData(["session"], { id: "session-sentinel-q7" });
 		before.setQueryData(["home-search", "x", "all"], { repos: [] });
 		await until(() => stored().includes('"rows"'));
-		expect(stored()).not.toContain("review");
+		expect(stored()).not.toContain("session-sentinel-q7");
 		expect(stored()).not.toContain("home-search");
 
 		const after = await page();

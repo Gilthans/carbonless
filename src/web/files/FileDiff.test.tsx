@@ -31,11 +31,15 @@ import {
 	resetShowInvisibles,
 	setShowInvisibles,
 } from "../code/Invisibles";
-import { ignoreWhitespace } from "../viewSettings";
+import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import { contextRanges } from "./contextRanges";
+import type { DiffFind, DiffThreads } from "./DiffBody";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
+import type { Landing } from "./landing";
+import { rendererPicks } from "./renderers";
 import { SyncNotices } from "./SyncNotices";
-import { unitsFile } from "./since";
+import { type FileSince, unitsFile } from "./since";
+import { threadFocus } from "./threadFocus";
 import type { Placements } from "./threadPlacement";
 import type { Unit } from "./unit";
 import { stateSyncFor, useReviewView } from "./useSetStates";
@@ -46,6 +50,24 @@ import { stateSyncFor, useReviewView } from "./useSetStates";
  */
 const codeLine = (text: string) => (_: string, el: Element | null) =>
 	el?.hasAttribute("data-code") === true && el.textContent === text;
+
+/** How the file's body shows it (FileDiff's `data-renderer`). */
+const shown = () =>
+	document
+		.querySelector("section[data-renderer]")
+		?.getAttribute("data-renderer");
+/** The view switch's group (renderers/ViewSwitch), when there is one. */
+const viewSwitch = () => screen.queryByRole("group", { name: "View" });
+/** Picks a view in the switch; "Image" is its first image button. */
+async function pick(user: ReturnType<typeof userEvent.setup>, name: string) {
+	const group = viewSwitch();
+	if (!group) throw new Error("no view switch");
+	await user.click(
+		within(group).getByRole("button", {
+			name: name === "Image" ? /^(Slider|Image)$/ : name,
+		}),
+	);
+}
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -144,6 +166,14 @@ type Extra = {
 	/** The since view: the compared patch set, and the file's pieces. */
 	since?: number;
 	sincePieces?: readonly SincePiece[];
+	/** The PR's review threads. */
+	threads?: DiffThreads;
+	/** The engine's answer for the file (its chips; the since view's kinds). */
+	sinceInfo?: FileSince;
+	/** The find's view of the file's diff (a step bumps its stepSeq). */
+	find?: DiffFind;
+	/** A thread link landing in the file. */
+	landing?: Landing;
 };
 
 function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
@@ -170,6 +200,10 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 						since={extra.since}
 						sincePieces={extra.sincePieces}
 						sinceMarks={data?.sinceMarks}
+						threads={extra.threads}
+						sinceInfo={extra.sinceInfo}
+						find={extra.find}
+						landing={extra.landing}
 					/>
 				</AgentPlacingProvider>
 			)}
@@ -221,12 +255,17 @@ function setup(
 		staleTime: Number.POSITIVE_INFINITY,
 	});
 	queryClient.setQueryData(reviewQuery().queryKey, view(f));
-	const shown = () => (
+	const shown = (props: Extra = extra) => (
 		<QueryClientProvider client={queryClient}>
-			<Shown unit={unit} {...extra} />
+			<Shown unit={unit} {...props} />
 		</QueryClientProvider>
 	);
 	const rendered = render(extra.router ? inRouter(shown) : shown());
+	/** New props from the page (a find's step, a landing), as it rerenders. */
+	const update = (next: Partial<Extra>) => {
+		Object.assign(extra, next);
+		rendered.rerender(shown({ ...extra }));
+	};
 	/** Shows `next` as the server's file, like a reread does. */
 	const rerender = (next: FileView) =>
 		act(async () => {
@@ -251,6 +290,7 @@ function setup(
 		posts,
 		paths,
 		rerender,
+		update,
 		user: userEvent.setup(),
 	};
 }
@@ -2181,6 +2221,58 @@ describe("FileDiff", () => {
 			).toHaveTextContent("1 / 2 clusters"),
 		);
 	});
+
+	const LEFT_OUT = "1 whitespace-only cluster not counted";
+
+	it("the header's `~` (CAR-184): a tap shows its tooltip and leaves a closed file closed; the header elsewhere still opens it", async () => {
+		ignoreWhitespace.set(true);
+		const ws = { whitespaceOnly: true as const };
+		const other = cluster("k2", { newStart: 40, oldStart: 40 });
+		const { paths, user } = setup(file([cluster("k1", ws), other]));
+		const header = screen.getByTestId("file-path").closest("header");
+		if (!header) throw new Error("no header");
+		const tilde = within(header).getByRole("img", { name: LEFT_OUT });
+		await user.click(tilde);
+		expect(screen.getByRole("button", { name: "Expand file" })).toBeVisible();
+		expect(paths()).toEqual([]);
+		await user.click(header);
+		expect(
+			await screen.findByRole("button", { name: "Collapse file" }),
+		).toBeVisible();
+		// Off: nothing left out, no `~`.
+		act(() => ignoreWhitespace.set(false));
+		await waitFor(() =>
+			expect(within(header).queryByRole("img", { name: LEFT_OUT })).toBeNull(),
+		);
+	});
+
+	it("a file without whitespace-only clusters never shows the `~`", () => {
+		ignoreWhitespace.set(true);
+		setup(file([cluster("k1")]));
+		expect(screen.queryByRole("img", { name: LEFT_OUT })).toBeNull();
+	});
+
+	it("in the since view, a header that reads done because a whitespace-only cluster is left out shows the `~` (B1)", () => {
+		ignoreWhitespace.set(true);
+		const ws = { whitespaceOnly: true as const };
+		// A carried, reviewed change; the re-indent the only thing since.
+		const f = file([
+			cluster("k1", {
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			}),
+			cluster("k2", { newStart: 40, oldStart: 40, ...ws }),
+		]);
+		// Its units with the whitespace-only one left out: none.
+		setup(f, undefined, undefined, "clusters", {
+			counted: unitsFile(f, []),
+			since: 1,
+		});
+		const header = screen.getByTestId("file-path").closest("header");
+		if (!header) throw new Error("no header");
+		expect(header).toHaveAttribute("data-finished");
+		expect(within(header).getByRole("img", { name: LEFT_OUT })).toBeVisible();
+	});
 });
 
 describe("FileDiff: agent threads asked on an earlier head", () => {
@@ -2443,5 +2535,760 @@ describe("FileDiff: agent threads traced into the viewed head", () => {
 				name: "Asked on an earlier version (eeeeeee)",
 			}),
 		).toBeTruthy();
+	});
+});
+
+/** A review thread on line 5 of img/icon.svg, on `head` (or on the file). */
+const svgLineThread = (
+	head: string,
+	id = "T1",
+	subject: "line" | "file" = "line",
+) =>
+	({
+		id,
+		loaded: true,
+		path: "img/icon.svg",
+		line: 5,
+		currentLine: 5,
+		excerpt: "a comment",
+		html: "<p>a comment</p>",
+		body: "a comment",
+		createdAt: "2026-01-01T00:00:00Z",
+		lastActivityAt: "2026-01-01T00:00:00Z",
+		author: "rev",
+		avatarUrl: "",
+		participants: [],
+		bot: false,
+		commentCount: 1,
+		hasReply: false,
+		outdated: false,
+		resolved: false,
+		code: null,
+		anchor:
+			subject === "file"
+				? null
+				: {
+						path: "img/icon.svg",
+						commit: head,
+						side: "RIGHT",
+						line: 5,
+						startSide: "RIGHT",
+						startLine: 5,
+						at: "2026-01-01T00:00:00Z",
+					},
+		commit: head,
+		subject,
+		attention: [],
+		yourTurn: false,
+		viewerCan: { reply: false, resolve: false, unresolve: false },
+	}) as unknown as DiffThreads["threads"][number];
+
+describe("FileDiff: the renderer seam", () => {
+	beforeEach(() => {
+		setShowInvisibles(false);
+		vi.spyOn(performance, "now").mockImplementation(() => 1000);
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		localStorage.clear();
+		rendererPicks.reset();
+		sideBySide.reset();
+		resetShowInvisibles();
+		contextRanges.reset();
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	const binaryCluster = (): ClusterView => ({
+		...cluster("bin"),
+		kind: "file",
+		label: "Binary file changed",
+		lines: 0,
+	});
+	const png = (over: Partial<FileView> = {}) =>
+		file([binaryCluster()], {
+			path: "img/logo.png",
+			binary: true,
+			additions: 0,
+			deletions: 0,
+			...over,
+		});
+	const binaryHunks: FileHunks = { newLineCount: 0, hunks: [] };
+	const hunkReads = (paths: () => string[]) =>
+		paths().filter((p) => p.startsWith("/api/files/0/hunks"));
+
+	it("an open PNG shows the view switch in its toolbar; a .ts file has none, and no new row", async () => {
+		const { user } = setup(png(), undefined, binaryHunks);
+		expect(shown()).toBe("image");
+		// Closed: no switch (the header holds no chip any more).
+		expect(viewSwitch()).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const group = await screen.findByRole("group", { name: "View" });
+		expect(screen.getByTestId("image-view")).toContainElement(group);
+		const buttons = within(group).getAllByRole("button");
+		expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+			"Slider",
+			"Fade",
+			"Binary",
+		]);
+		expect(buttons.map((b) => b.getAttribute("aria-pressed"))).toEqual([
+			"true",
+			"false",
+			"false",
+		]);
+		cleanup();
+		const ts = setup(file([cluster("k1")]));
+		await ts.user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(shown()).toBe("text");
+		expect(viewSwitch()).toBeNull();
+		expect(screen.queryByTestId("view-bar")).toBeNull();
+	});
+
+	/** The switch's buttons' names, in order. */
+	const switchNames = () =>
+		within(viewSwitch() as HTMLElement)
+			.getAllByRole("button")
+			.map((b) => b.getAttribute("aria-label"));
+
+	it.each([
+		["an added PNG", { status: "added" as const }, false],
+		["a deleted PNG", { status: "deleted" as const }, false],
+		["a PNG side by side", {}, true],
+		[
+			"a PNG renamed with the same blob",
+			{
+				status: "renamed" as const,
+				oldPath: "img/old.png",
+				sameBlob: true as const,
+			},
+			false,
+		],
+	])(
+		"%s: [Image, Binary] in Image view and on Binary's row",
+		async (_, over, sbs) => {
+			sideBySide.set(sbs);
+			const { user } = setup(png(over), undefined, binaryHunks);
+			await user.click(screen.getByRole("button", { name: "Expand file" }));
+			expect(switchNames()).toEqual(["Image", "Binary"]);
+			await pick(user, "Binary");
+			expect(shown()).toBe("binary");
+			expect(
+				within(screen.getByTestId("view-bar"))
+					.getAllByRole("button")
+					.map((b) => b.getAttribute("aria-label")),
+			).toEqual(["Image", "Binary"]);
+			sideBySide.reset();
+		},
+	);
+
+	it("Fade from Binary goes back to Image in Fade; the switch stays on Binary's own row", async () => {
+		const { user } = setup(png(), undefined, binaryHunks);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await pick(user, "Binary");
+		expect(shown()).toBe("binary");
+		const bar = screen.getByTestId("view-bar");
+		expect(within(bar).getByRole("button", { name: "Binary" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		// Just the control: no dimensions or fit button.
+		expect(within(bar).getAllByRole("button")).toHaveLength(3);
+		await user.click(within(bar).getByRole("button", { name: "Fade" }));
+		expect(shown()).toBe("image");
+		expect(screen.queryByTestId("view-bar")).toBeNull();
+		expect(
+			within(screen.getByTestId("image-view")).getByRole("button", {
+				name: "Fade",
+			}),
+		).toHaveAttribute("aria-pressed", "true");
+		expect(localStorage.getItem("crb.image.mode")).toContain("fade");
+		expect(rendererPicks.get("img/logo.png")).toBe("image");
+	});
+
+	it("picking Binary on a PNG renders today's binary rows and persists per path", async () => {
+		const { user, paths, posts } = setup(png(), undefined, binaryHunks);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		// Image: the file-level row, and no lines read.
+		expect(
+			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
+		).toBeInTheDocument();
+		expect(hunkReads(paths)).toEqual([]);
+		await pick(user, "Binary");
+		expect(screen.queryByRole("menu")).toBeNull();
+		expect(shown()).toBe("binary");
+		// Binary: today's DiffBody, its hunks read as before.
+		await waitFor(() =>
+			expect(hunkReads(paths)).toEqual(["/api/files/0/hunks?revision=r1"]),
+		);
+		expect(
+			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
+		).not.toBeChecked();
+		expect(screen.getByText("Binary file changed")).toBeInTheDocument();
+		// Kept per path, as data; no review state written.
+		expect(
+			JSON.parse(localStorage.getItem("crb.files.renderer") ?? ""),
+		).toEqual({ "img/logo.png": "binary" });
+		expect(rendererPicks.get("img/logo.png")).toBe("binary");
+		expect(rendererPicks.get("img/other.png")).toBeUndefined();
+		expect(posts()).toEqual([]);
+	});
+
+	it("a pick for another path leaves this file as it claims", () => {
+		rendererPicks.set("img/other.png", "binary");
+		setup(png(), undefined, binaryHunks);
+		expect(shown()).toBe("image");
+	});
+
+	it("DiffBody linesHidden fetches no hunks and keeps the file-level checkbox", async () => {
+		// An SVG: text, line clusters, a file-level one (its mode changed).
+		const svg = file(
+			[
+				cluster("k1"),
+				{
+					...cluster("mode"),
+					kind: "file",
+					label: "Mode 100644 → 100755",
+					lines: 0,
+				},
+			],
+			{ path: "img/icon.svg" },
+		);
+		const { user, paths } = setup(svg);
+		expect(shown()).toBe("image");
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(box.closest("tr")).toHaveTextContent("Mode 100644 → 100755");
+		// One box: the line cluster has no row here (the header's action
+		// covers it), and no line, spinner or error stands in.
+		expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+		expect(screen.queryByText(codeLine("new five"))).toBeNull();
+		// The only busy region is the image's own stage (ImageView).
+		expect(screen.queryByRole("status", { name: "Loading diff" })).toBeNull();
+		for (const busy of document.querySelectorAll('[aria-busy="true"]')) {
+			expect(busy).toHaveAttribute("data-testid", "image-stage");
+		}
+		expect(hunkReads(paths)).toEqual([]);
+		// The header's action still counts the line cluster.
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("0 / 2 clusters");
+		// Text: the lines, read as today.
+		await pick(user, "Text");
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(hunkReads(paths)).toEqual(["/api/files/0/hunks?revision=r1"]);
+	});
+
+	it("an SVG's line thread lists under the header in Image view, never dropped", async () => {
+		const head = "h".repeat(40);
+		const t = svgLineThread(head);
+		const { user, paths } = setup(
+			file([cluster("k1")], { path: "img/icon.svg" }),
+			undefined,
+			undefined,
+			"clusters",
+			{ threads: { readId: "r", snapshotHead: head, threads: [t] } },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		// The file's bubble holds it, flagged as not on a line.
+		const bubble = await screen.findByRole("button", {
+			name: /^1 comment on this file.*line not in this diff/,
+		});
+		await user.click(bubble);
+		expect(bubble).toHaveAttribute("aria-expanded", "true");
+		expect(hunkReads(paths)).toEqual([]);
+	});
+
+	it("since view, lines hidden: an SVG with nothing left to read says so, never an empty table", async () => {
+		const svg = file(
+			[
+				cluster("k1", {
+					state: "reviewed",
+					carried: { from: 1, rule: "exact" },
+				}),
+			],
+			{
+				path: "img/icon.svg",
+			},
+		);
+		const { user, paths } = setup(svg, undefined, undefined, "clusters", {
+			since: 1,
+			sincePieces: [],
+		});
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(await screen.findByTestId("since-empty")).toHaveTextContent(
+			"Nothing to read since PS1",
+		);
+		expect(hunkReads(paths)).toEqual([]);
+	});
+
+	it("since view, lines hidden: no lines note, and the header still counts the unshown clusters and pieces", async () => {
+		const svg = file([cluster("k1")], { path: "img/icon.svg" });
+		const gone: SincePiece = {
+			hunk: 0,
+			line: 0,
+			key: "g1",
+			owns: null,
+			old: [[10, 12]],
+			new: [],
+			kind: "removed",
+		};
+		const unit = (state: "unreviewed" | "reviewed") => ({
+			index: 0,
+			path: "img/icon.svg",
+			kind: "reworked" as const,
+			lines: 2,
+			state,
+			open: state === "unreviewed" ? 2 : 0,
+		});
+		// k1 (reworked) and the removed piece: two units, both open.
+		const counted = unitsFile(svg, [unit("unreviewed"), unit("unreviewed")]);
+		const sinceInfo: FileSince = {
+			kinds: new Map([["k1", { key: "k1", kind: "reworked" }]]),
+			conflict: false,
+			counts: {
+				reworked: 1,
+				new: 0,
+				gone: 0,
+				carried: 0,
+				reverted: 0,
+				removed: 1,
+				unticked: 0,
+			},
+			left: { units: 2, lines: 4 },
+		};
+		const { user, paths } = setup(svg, undefined, undefined, "clusters", {
+			since: 1,
+			sincePieces: [gone],
+			counted,
+			sinceInfo,
+		});
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("0 / 2");
+		// The header's action covers them: Mark remaining reviewed is live.
+		expect(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		).toBeEnabled();
+		expect(screen.queryByTestId("since-unshown")).toBeNull();
+		expect(screen.queryByTestId("since-empty")).toBeNull();
+		expect(hunkReads(paths)).toEqual([]);
+	});
+
+	it("an LFS pointer shows the LFS icon and no view switch", async () => {
+		const { user } = setup(
+			file([cluster("k1")], { path: "img/big.png", lfs: true }),
+			undefined,
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(viewSwitch()).toBeNull();
+		const icon = screen.getByRole("img", { name: "Git LFS pointer" });
+		expect(icon).toBeInTheDocument();
+	});
+
+	it("a plain file shows no LFS icon", () => {
+		setup(png());
+		expect(screen.queryByRole("img", { name: "Git LFS pointer" })).toBeNull();
+	});
+});
+
+/*
+ * Review and comments in the image view (CAR-38 task 5). The image view's
+ * review control is the header's existing action (FileMarkActions): no new
+ * write path. An SVG keeps its line clusters; in Image view one press
+ * covers every unit the view shows.
+ */
+describe("FileDiff: review in the image view", () => {
+	beforeEach(() => {
+		setShowInvisibles(false);
+		clock = 1000;
+		vi.spyOn(performance, "now").mockImplementation(() => clock);
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		localStorage.clear();
+		rendererPicks.reset();
+		threadFocus.reset();
+		resetShowInvisibles();
+		contextRanges.reset();
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	const SVG = "img/icon.svg";
+	const svg = (clusters: ClusterView[]) => file(clusters, { path: SVG });
+	const hunkReads = (paths: () => string[]) =>
+		paths().filter((p) => p.startsWith("/api/files/0/hunks"));
+
+	it("SVG in Image view: Mark remaining reviewed ticks every shown line cluster, and nothing else", async () => {
+		const f = svg([
+			cluster("k1"),
+			cluster("k2", { newStart: 10, state: "reviewed" }),
+			cluster("k3", {
+				newStart: 20,
+				state: "crossed-off",
+				reason: "generated",
+			}),
+			cluster("k4", { newStart: 30 }),
+		]);
+		const { posts, user, paths } = setup(f, () => ({
+			status: 200,
+			body: view(f),
+		}));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(shown()).toBe("image");
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+		// The open ones only: what's reviewed or crossed off stays as it is.
+		expect(posts()[0]).toEqual({
+			path: "/api/review/states",
+			body: {
+				revision: "r1",
+				changes: [
+					{ key: "k1", state: "reviewed" },
+					{ key: "k4", state: "reviewed" },
+				],
+			},
+		});
+		// Image view read no lines to do it.
+		expect(hunkReads(paths)).toEqual([]);
+	});
+
+	it("SVG with some clusters ticked in Text view: the header shows the mixed state and a press ticks only the open ones", async () => {
+		const mixed = svg([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { newStart: 20 }),
+		]);
+		const done = svg([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { newStart: 20, state: "reviewed" }),
+		]);
+		let answer = done;
+		const { posts, user, rerender } = setup(mixed, () => ({
+			status: 200,
+			body: view(answer),
+		}));
+		// Ticked line by line in Text view first.
+		rendererPicks.set(SVG, "text");
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		await pick(user, "Image");
+		expect(shown()).toBe("image");
+		// Mixed: part done, and the action still marks (no reset while
+		// anything is open).
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("1 / 2 clusters");
+		expect(
+			screen.queryByRole("button", { name: "Unmark reviewed" }),
+		).toBeNull();
+		const markButton = screen.getByRole("button", {
+			name: "Mark remaining reviewed",
+		});
+		expect(markButton).toHaveAttribute("aria-pressed", "false");
+		await user.click(markButton);
+		await waitFor(() =>
+			expect(posts()[0]?.body.changes).toEqual([
+				{ key: "k2", state: "reviewed" },
+			]),
+		);
+		// All reviewed: the press unticks them all (asking first).
+		await rerender(done);
+		answer = mixed;
+		tick();
+		const undo = await screen.findByRole("button", {
+			name: "Unmark reviewed",
+		});
+		expect(undo).toHaveAttribute("aria-pressed", "true");
+		await confirmClick(user, undo);
+		await waitFor(() =>
+			expect(posts()[1]?.body.changes).toEqual([
+				{ key: "k1", state: "unreviewed" },
+				{ key: "k2", state: "unreviewed" },
+			]),
+		);
+	});
+
+	it("since view: an image's header action writes the since units only", async () => {
+		// A gone cluster's removed lines (no cluster owns them), and k2's
+		// own piece; k1 was reviewed (carried) and isn't in the interdiff.
+		const gonePiece: SincePiece = {
+			hunk: 0,
+			line: 0,
+			key: "g1",
+			owns: null,
+			old: [[10, 12]],
+			new: [],
+			kind: "removed",
+		};
+		const ownPiece: SincePiece = {
+			hunk: 0,
+			line: 3,
+			key: "k2",
+			owns: [[0, 2]],
+			old: [[5, 6]],
+			new: [[5, 6]],
+		};
+		const f = svg([
+			cluster("k1", {
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			}),
+			cluster("k2"),
+		]);
+		const { posts, user, paths } = setup(
+			f,
+			() => ({ status: 200, body: view(f) }),
+			hunks,
+			"clusters",
+			{ since: 1, sincePieces: [gonePiece, ownPiece] },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(shown()).toBe("image");
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await waitFor(() =>
+			expect(posts()[0]?.body.changes).toEqual([
+				{ key: "k2", state: "reviewed" },
+				{
+					key: `since:1:${SVG}`,
+					state: "reviewed",
+					sinceMark: {
+						since: 1,
+						path: SVG,
+						reviewed: { old: [[10, 12]], new: [] },
+						crossed: { old: [], new: [] },
+					},
+				},
+			]),
+		);
+		expect(posts()).toHaveLength(1);
+		expect(hunkReads(paths)).toEqual([]);
+	});
+
+	/** The find's view of the file with its current hit on new `line`. */
+	const stepped = (line: number, stepSeq: number): DiffFind => ({
+		marksOf: () => [],
+		current: { old: false, line },
+		shown: true,
+		stepSeq,
+	});
+
+	it("a find step onto an SVG line in Image view shows it as Text for the view; the pick is unchanged, Image returns", async () => {
+		const { user, update, paths } = setup(svg([cluster("k1")]));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(shown()).toBe("image");
+		expect(screen.getByTestId("image-view")).toBeInTheDocument();
+		// Marks alone (typing) change nothing.
+		update({ find: { ...stepped(5, 0), current: null } });
+		expect(shown()).toBe("image");
+		// A step onto line 5: Text, its lines read, the line there.
+		update({ find: stepped(5, 1) });
+		expect(shown()).toBe("text");
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(hunkReads(paths)).toEqual(["/api/files/0/hunks?revision=r1"]);
+		expect(screen.queryByTestId("image-view")).toBeNull();
+		// The stored pick is untouched.
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+		expect(localStorage.getItem("crb.files.renderer")).toBeNull();
+		// The same step again (a rerender) doesn't switch back or again.
+		update({ find: stepped(5, 1) });
+		expect(shown()).toBe("text");
+		// Image again: back to the image, still nothing stored.
+		await pick(user, "Image");
+		expect(shown()).toBe("image");
+		expect(screen.getByTestId("image-view")).toBeInTheDocument();
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+		// A later step switches again.
+		update({ find: stepped(5, 2) });
+		expect(shown()).toBe("text");
+	});
+
+	it("a thread link to an SVG line in Image view shows it as Text for the view, not stored", async () => {
+		const { user, update } = setup(svg([cluster("k1")]));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(shown()).toBe("image");
+		// A link to the file alone (no line) keeps the image.
+		update({ landing: { path: SVG, index: 0, seq: 1 } });
+		expect(shown()).toBe("image");
+		update({
+			landing: { path: SVG, line: 5, side: "RIGHT", index: 0, seq: 2 },
+		});
+		expect(shown()).toBe("text");
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+	});
+
+	it("a Threads tab row for an SVG line's thread in Image view shows Text for the view; its line's card takes it", async () => {
+		vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+			cb(0);
+			return 0;
+		});
+		vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+		const head = "h".repeat(40);
+		const { user } = setup(svg([cluster("k1")]), undefined, hunks, "clusters", {
+			threads: {
+				readId: "r",
+				snapshotHead: head,
+				threads: [svgLineThread(head), svgLineThread(head, "F1", "file")],
+			},
+		});
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(shown()).toBe("image");
+		// A file comment's row keeps the image: its card is the file bubble's.
+		act(() => {
+			threadFocus.request({ id: "F1" });
+		});
+		expect(shown()).toBe("image");
+		await waitFor(() => expect(threadFocus.get()).toBeNull());
+		// A line thread's row: Text, and the card on its line takes it.
+		act(() => {
+			threadFocus.request({ id: "T1" });
+		});
+		expect(shown()).toBe("text");
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		await waitFor(() => expect(threadFocus.get()).toBeNull());
+		expect(
+			screen.queryByRole("button", {
+				name: /line not in this diff/,
+			}),
+		).toBeNull();
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+	});
+
+	it("picking Image after a thread link's Text shows no hint and doesn't scroll", async () => {
+		const scrolls = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+		const { user, update } = setup(svg([cluster("k1")]));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		update({
+			landing: { path: SVG, line: 5, side: "RIGHT", index: 0, seq: 1 },
+		});
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
+		await waitFor(() => expect(scrolls).toHaveBeenCalled());
+		expect(screen.queryByTestId("landing-hint")).toBeNull();
+		scrolls.mockClear();
+		await pick(user, "Image");
+		expect(shown()).toBe("image");
+		// The same landing, still the page's, isn't replayed on the image.
+		await new Promise((r) => setTimeout(r, 20));
+		expect(screen.queryByTestId("landing-hint")).toBeNull();
+		expect(scrolls).not.toHaveBeenCalled();
+		// Nor after closing and reopening the file there.
+		await user.click(screen.getByRole("button", { name: "Collapse file" }));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await new Promise((r) => setTimeout(r, 20));
+		expect(screen.queryByTestId("landing-hint")).toBeNull();
+		expect(scrolls).not.toHaveBeenCalled();
+	});
+
+	it("mounted with a step or a landing already given (a new snapshot), it stays Image", async () => {
+		const { user, update } = setup(
+			svg([cluster("k1")]),
+			undefined,
+			hunks,
+			"clusters",
+			{
+				find: stepped(5, 3),
+				landing: { path: SVG, line: 5, side: "RIGHT", index: 0, seq: 2 },
+			},
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(shown()).toBe("image");
+		// A step after it mounted still switches.
+		update({ find: stepped(5, 4) });
+		expect(shown()).toBe("text");
+	});
+
+	it("a switch ended by the pick changing elsewhere doesn't come back", async () => {
+		const { update } = setup(svg([cluster("k1")]));
+		update({ find: stepped(5, 1) });
+		expect(shown()).toBe("text");
+		// Another tab picks Text, then Image: the image, not the old switch.
+		act(() => rendererPicks.set(SVG, "text"));
+		expect(shown()).toBe("text");
+		act(() => rendererPicks.set(SVG, "image"));
+		expect(shown()).toBe("image");
+	});
+
+	it("since view: a find step onto an SVG line shows Text and reads the interdiff's lines", async () => {
+		const { user, update, paths } = setup(
+			svg([cluster("k1")]),
+			undefined,
+			hunks,
+			"clusters",
+			{ since: 1, sincePieces: [] },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(shown()).toBe("image");
+		update({ find: stepped(5, 1) });
+		expect(shown()).toBe("text");
+		await waitFor(() =>
+			expect(hunkReads(paths)).toEqual([
+				"/api/files/0/hunks?revision=r1&from=1",
+			]),
+		);
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+	});
+
+	it("a find step onto a .ts file changes nothing: no switch, no image", () => {
+		const { update } = setup(file([cluster("k1")]));
+		update({ find: stepped(5, 1) });
+		expect(shown()).toBe("text");
+		expect(viewSwitch()).toBeNull();
+		expect(screen.queryByTestId("image-view")).toBeNull();
+		expect(localStorage.getItem("crb.files.renderer")).toBeNull();
+	});
+
+	it("a find step onto a PNG changes nothing (no Text for a binary)", async () => {
+		const png = file(
+			[
+				{
+					...cluster("bin"),
+					kind: "file",
+					label: "Binary file changed",
+					lines: 0,
+				},
+			],
+			{ path: "img/logo.png", binary: true, additions: 0, deletions: 0 },
+		);
+		const { update } = setup(png, undefined, { newLineCount: 0, hunks: [] });
+		update({ find: stepped(1, 1) });
+		expect(shown()).toBe("image");
+	});
+
+	it("while a find step's Text holds, the row shows Text pressed, and pressing it again stores nothing", async () => {
+		const { user, update } = setup(svg([cluster("k1")]));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		update({ find: stepped(5, 1) });
+		expect(shown()).toBe("text");
+		const bar = screen.getByTestId("view-bar");
+		const text = within(bar).getByRole("button", { name: "Text" });
+		expect(text).toHaveAttribute("aria-pressed", "true");
+		expect(within(bar).getByRole("button", { name: "Slider" })).toHaveAttribute(
+			"aria-pressed",
+			"false",
+		);
+		await user.click(text);
+		expect(shown()).toBe("text");
+		expect(rendererPicks.get(SVG)).toBeUndefined();
+		expect(localStorage.getItem("crb.files.renderer")).toBeNull();
+	});
+
+	it("Text picked and stored stays Text after a step; picking Image stores Image", async () => {
+		rendererPicks.set(SVG, "text");
+		const { user, update } = setup(svg([cluster("k1")]));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		update({ find: stepped(5, 1) });
+		expect(shown()).toBe("text");
+		await pick(user, "Image");
+		expect(shown()).toBe("image");
+		expect(rendererPicks.get(SVG)).toBe("image");
 	});
 });

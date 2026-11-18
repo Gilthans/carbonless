@@ -67,6 +67,26 @@ describe("review routes", () => {
 		}
 	});
 
+	it("matches its addresses case-sensitively, as the server does: /PR/... opens nothing", async () => {
+		const routeOf = (path: string) =>
+			createAppRouter({ initialPath: path })
+				.matchRoutes(path)
+				.map((match) => match.routeId);
+		expect(routeOf("/pr/acme/widget/12")).toContain("/pr/$owner/$repo/$number");
+		for (const path of ["/PR/acme/widget/12", "/Pr/acme/widget/12"]) {
+			expect(routeOf(path), path).not.toContain("/pr/$owner/$repo/$number");
+		}
+		expect(routeOf("/R/01aaaaaaaaaaaaaaaaaaaaaaaa")).not.toContain("/r/$id");
+		renderAt("/PR/acme/widget/12");
+		expect(await screen.findByTestId("not-found")).toHaveTextContent(
+			"No such page.",
+		);
+		const fetch = globalThis.fetch as ReturnType<typeof vi.fn>;
+		for (const [url, init] of fetch.mock.calls) {
+			expect(`${init?.method ?? "GET"} ${url}`).not.toMatch(/^POST .*reviews/);
+		}
+	});
+
 	it("any other unknown address: no such page", async () => {
 		renderAt("/nope");
 		expect(await screen.findByTestId("not-found")).toHaveTextContent(

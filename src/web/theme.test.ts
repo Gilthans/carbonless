@@ -946,6 +946,48 @@ describe("literal colors that mirror tokens", () => {
 		expect(meta?.[1]?.toLowerCase()).toBe(token("surface"));
 	});
 
+	it("the image view's labels, tags and dimensions read at 4.5:1", () => {
+		// "added"/"deleted" labels: the row tint behind the row ink.
+		expect(contrast(token("add-ink"), token("add"))).toBeGreaterThanOrEqual(
+			4.5,
+		);
+		expect(contrast(token("del-ink"), token("del"))).toBeGreaterThanOrEqual(
+			4.5,
+		);
+		// The stage's "before"/"after" tags: canvas at 85% over whatever the
+		// image is there, from white to black, and the checkerboard.
+		for (const under of [
+			"#ffffff",
+			"#000000",
+			token("checker-a"),
+			token("checker-b"),
+		]) {
+			const back = over(token("canvas"), 0.85, under);
+			for (const fg of ["add-ink", "del-ink"]) {
+				expect(
+					contrast(token(fg), back),
+					`${fg} tag over ${under}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+		}
+		// The toolbar's dimensions (band) and the captions and fade keys (surface).
+		for (const bg of ["band", "surface"]) {
+			for (const fg of ["add-ink", "del-ink", "faint"]) {
+				expect(
+					contrast(token(fg), token(bg)),
+					`${fg} on ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+		}
+	});
+
+	it("the checkerboard's two greys differ, and stay darker than the surfaces' text", () => {
+		expect(token("checker-a")).not.toBe(token("checker-b"));
+		for (const c of ["checker-a", "checker-b"]) {
+			expect(luminance(token(c))).toBeLessThan(luminance(token("faint")));
+		}
+	});
+
 	it("the syntax theme's background is the code background", () => {
 		expect(syntaxTheme.colors?.["editor.background"]).toBe(token("code"));
 	});

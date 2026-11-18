@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
 	type AgentAnchor,
+	type AgentSpanAnchor,
 	type AgentView,
 	JOINED_PREAMBLE,
 	JOINED_THREAD_PREAMBLE,
+	REVIEW_PREAMBLE,
+	REVIEW_TOOLS,
 } from "../../shared/agent.js";
 import {
 	anchorFor,
 	type GithubThreadFacts,
 	isSafePath,
+	type PromptCodeEnvelope,
 	type PromptEnvelope,
 	type PromptReview,
 	sanitizeEnvelope,
@@ -25,7 +29,7 @@ const review: PromptReview = {
 	head: { ref: "feature", commit: "h".repeat(40) },
 	mergeBase: "m".repeat(40),
 };
-const right: AgentAnchor = {
+const right: AgentSpanAnchor = {
 	subject: "line",
 	path: "src/x.ts",
 	commit: "h".repeat(40),
@@ -34,7 +38,7 @@ const right: AgentAnchor = {
 	startSide: "RIGHT",
 	startLine: 40,
 };
-const envelope = (anchor: AgentAnchor): PromptEnvelope => ({
+const envelope = (anchor: AgentAnchor): PromptCodeEnvelope => ({
 	kind: "agent_thread",
 	review,
 	thread: {
@@ -60,6 +64,22 @@ describe("the preamble and anchors", () => {
 			"only through carbonless's tools",
 		])
 			expect(JOINED_PREAMBLE).toContain(part);
+	});
+
+	it("the review preamble names crb's read tools, reply and path:line, and no review", () => {
+		for (const tool of [
+			"`review`",
+			"`threads`",
+			"`progress`",
+			"`open`",
+			"`reply`",
+			"`path:line`",
+		])
+			expect(REVIEW_PREAMBLE).toContain(tool);
+		for (const tool of REVIEW_TOOLS) expect(REVIEW_PREAMBLE).toContain(tool);
+		expect(REVIEW_PREAMBLE).toContain("refs/crb/*");
+		expect(REVIEW_PREAMBLE).not.toContain("hunk");
+		expect(REVIEW_PREAMBLE).not.toContain("anchoredFile");
 	});
 
 	it("a RIGHT anchor keeps its commit, and names no path outside the PR", () => {
@@ -132,7 +152,7 @@ describe("sanitizeThirdParty", () => {
 
 describe("sanitizeEnvelope", () => {
 	const dirty = `x${ch(0x202e)}${ch(0xe0041)}y`;
-	const env: PromptEnvelope = {
+	const env: PromptCodeEnvelope = {
 		...envelope(right),
 		review: {
 			...review,
@@ -142,12 +162,12 @@ describe("sanitizeEnvelope", () => {
 		pr: { title: dirty, body: dirty, files: [dirty] },
 		notice: `The GitHub thread (${dirty}) is gone`,
 	};
-	env.thread.anchor = { ...env.thread.anchor, path: dirty };
+	env.thread.anchor = { ...right, path: dirty };
 	const clean = sanitizeEnvelope(env);
 	it("cleans the base ref", () => expect(clean.review.base.ref).toBe("xy"));
 	it("cleans the head ref", () => expect(clean.review.head.ref).toBe("xy"));
 	it("cleans the anchor's path", () => {
-		expect(clean.thread.anchor.path).toBe("xy");
+		expect(clean.thread.anchor).toMatchObject({ path: "xy" });
 	});
 	it("cleans the PR's title, body and files", () =>
 		expect(clean.pr).toEqual({ title: "xy", body: "xy", files: ["xy"] }));
@@ -155,6 +175,45 @@ describe("sanitizeEnvelope", () => {
 		expect(clean.notice).toBe("The GitHub thread (xy) is gone"));
 	it("leaves the messages as written", () =>
 		expect(clean.messages).toEqual(env.messages));
+});
+
+describe("sanitizeEnvelope: the review conversation", () => {
+	const messages = [
+		{
+			author: { login: "dan", role: "reviewer" as const },
+			at: "2026-11-15T10:00:00.000Z",
+			text: "Were the comments truly resolved? <!-- x -->",
+		},
+		{
+			author: { role: "agent" as const },
+			at: "2026-11-15T10:01:00.000Z",
+			text: "Yes: see `src/x.ts:42`.",
+		},
+	];
+	const env: PromptEnvelope = {
+		kind: "review_conversation",
+		thread: { id: "01k9e6m2q8x4v7c3n5b0h1j2t7", anchor: { subject: "review" } },
+		messages,
+	};
+	it("keeps its messages as written and adds nothing it doesn't own", () => {
+		expect(sanitizeEnvelope(env)).toEqual(env);
+	});
+	it("cleans its notice and drops extra anchor keys", () => {
+		const dirty = `x${ch(0x202e)}y`;
+		const clean = sanitizeEnvelope({
+			...env,
+			thread: {
+				id: env.thread.id,
+				anchor: { subject: "review", path: "a.txt" } as never,
+			},
+			notice: dirty,
+		});
+		expect(clean).toEqual({
+			...env,
+			thread: { id: env.thread.id, anchor: { subject: "review" } },
+			notice: "xy",
+		});
+	});
 });
 
 describe("isSafePath", () => {
@@ -284,8 +343,8 @@ describe("thread conversations", () => {
 			startSide: "LEFT" as const,
 		};
 		expect(
-			env({ thread: { id: "t", anchor: left } }).thread.anchor.commit,
-		).toBe(oid("a"));
+			env({ thread: { id: "t", anchor: left } }).thread.anchor,
+		).toMatchObject({ commit: oid("a") });
 		// On a commit no patch set has: the review's merge base, as for a line anchor.
 		const elsewhere = { ...left, commit: oid("9") };
 		expect(anchorFor(elsewhere, review).commit).toBe(review.mergeBase);

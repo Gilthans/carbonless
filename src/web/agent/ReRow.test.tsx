@@ -37,6 +37,7 @@ import {
 	resetConversationLanding,
 	usePendingLanding,
 } from "./conversationLinks";
+import { closeReviewDrawer, isReviewDrawerOpen } from "./drawerStore";
 import { ReRow } from "./ReRow";
 import { stubIntersection } from "./threadAgentFixtures";
 
@@ -320,6 +321,22 @@ describe("ReRow", () => {
 			conversation: REQ,
 			message: REQ_MSG,
 		});
+	});
+
+	it("a request in the review conversation: Go to your request opens the drawer at that message, the page stays", async () => {
+		const user = userEvent.setup();
+		const list = threads();
+		const request = list[0] as AgentThread;
+		list[0] = { ...request, anchor: { subject: "review" } };
+		const router = show(<ReRow origin={origin} current={A} threads={list} />);
+		const go = await screen.findByTestId("agent-re-go");
+		expect(go).not.toHaveAttribute("aria-disabled");
+		expect(go).toHaveAccessibleName("In the review conversation");
+		expect(isReviewDrawerOpen()).toBe(false);
+		await user.click(go);
+		expect(isReviewDrawerOpen()).toBe(true);
+		expect(router.state.location.pathname).toBe("/r/RV1");
+		closeReviewDrawer();
 	});
 
 	it("the list: one row per conversation the request started, in order, unread dots, this one marked, an unplaceable one disabled", async () => {

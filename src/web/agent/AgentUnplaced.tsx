@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { AgentThread } from "../../shared/agent";
+import type { SpanAgentThread } from "../../shared/agent";
 import type { Fate } from "../../shared/rereview/placement";
 import { UnplacedShell } from "../files/ThreadFate";
 import { AgentThreadCard } from "./AgentThreadCard";
@@ -13,7 +13,7 @@ import { agentStatusQuery } from "./api";
  * agent's card.
  */
 export function AgentUnplaced(props: {
-	thread: AgentThread;
+	thread: SpanAgentThread;
 	/** Its fate; null: unknown (the placements couldn't be computed). */
 	fate: Fate | null;
 	/** Under the fate: the original path (the trailing groups). */

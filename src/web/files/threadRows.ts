@@ -1,4 +1,8 @@
-import type { AgentThread } from "../../shared/agent";
+import {
+	type AgentThread,
+	isSpanThread,
+	type SpanAgentThread,
+} from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import type { AgentPlaceable } from "../agent/placeable";
 
@@ -156,7 +160,7 @@ export function githubRows(
 }
 
 /** Where an agent thread was asked. */
-function askedPlace(t: AgentThread): { path: string; line: number | null } {
+function askedPlace(t: SpanAgentThread): { path: string; line: number | null } {
 	const a = t.anchor;
 	return {
 		path: a.path,
@@ -168,14 +172,15 @@ function askedPlace(t: AgentThread): { path: string; line: number | null } {
  * The reviewer's agent conversations as rows, every one (resolved too),
  * unsorted. One on a GitHub thread goes where that thread shows; a span
  * question where Files changed shows it (`shown`, by id:
- * shownAgentPlaceables); else where it was asked.
+ * shownAgentPlaceables); else where it was asked. The review conversation
+ * has no place in the diff: it lives in its drawer, never a row.
  */
 export function agentRows(
 	threads: readonly AgentThread[],
 	shown: ReadonlyMap<string, AgentPlaceable>,
 	githubShown: ReadonlyMap<string, ReviewThread>,
 ): PanelRow[] {
-	return threads.map((t) => {
+	return threads.filter(isSpanThread).map((t) => {
 		const lastMessage = t.messages.at(-1);
 		const a = t.anchor;
 		const onGithub =

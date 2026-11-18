@@ -1,15 +1,19 @@
 import { createContext, useContext } from "react";
-import type { AgentThread } from "../../shared/agent";
+import {
+	type AgentThread,
+	isSpanThread,
+	type SpanAgentThread,
+} from "../../shared/agent";
 import type { Placeable, Placements } from "../files/threadPlacement";
 
 /** An agent thread as placeThreads sees it, carrying the thread. */
 export interface AgentPlaceable extends Placeable {
 	id: string;
-	thread: AgentThread;
+	thread: SpanAgentThread;
 }
 
 /** An agent thread where it was asked: its own commit, path and range. */
-export function agentPlaceable(thread: AgentThread): AgentPlaceable {
+export function agentPlaceable(thread: SpanAgentThread): AgentPlaceable {
 	const a = thread.anchor;
 	const base = { id: thread.id, path: a.path, commit: a.commit, thread };
 	if (a.subject === "line") {
@@ -61,7 +65,7 @@ export function agentPlaceable(thread: AgentThread): AgentPlaceable {
  * it was asked: on an earlier head, its file's lead, outdated; never gone.
  */
 export function tracedAgentPlaceables(
-	threads: readonly AgentThread[],
+	threads: readonly SpanAgentThread[],
 	snapshotHead: string,
 	placements: Placements | null,
 ): AgentPlaceable[] {
@@ -131,6 +135,17 @@ export const AgentPlacingProvider = AgentPlacingContext.Provider;
 export const useAgentPlacing = () => useContext(AgentPlacingContext);
 
 /**
+ * The agent threads whose place the tracer is asked for (GET
+ * /agent/placements): every thread on code; the review conversation has
+ * none, so it is never sent.
+ */
+export function agentPlacementIds(
+	threads: readonly AgentThread[] | undefined,
+): string[] {
+	return (threads ?? []).filter(isSpanThread).map((t) => t.id);
+}
+
+/**
  * The agent threads Files changed shows in the viewed head (span threads
  * only; a GitHub thread's conversation is its card's): on an earlier
  * patch set only those asked before the next one started (as review
@@ -147,7 +162,10 @@ export function shownAgentPlaceables(
 	// A live thread conversation goes where its GitHub thread goes (on its
 	// card's agent button): never an agent card or bubble of its own. An
 	// orphan reaches here with a span anchor (the GitHub join).
-	const spans = threads.filter((t) => t.anchor.subject !== "thread");
+	// The review conversation has no code to place on.
+	const spans = threads
+		.filter(isSpanThread)
+		.filter((t) => t.anchor.subject !== "thread");
 	const kept =
 		until === null
 			? spans
