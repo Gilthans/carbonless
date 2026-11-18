@@ -222,7 +222,7 @@ export type Io = {
 	sleep: (ms: number) => Promise<void>;
 };
 
-async function must(
+export async function must(
 	io: Io,
 	cmd: string,
 	args: readonly string[],
@@ -238,9 +238,11 @@ async function must(
 }
 
 /** The tags on GitHub: origin's, without fetching, or the checkout's (Io.tags). */
-export async function remoteTags(io: Io): Promise<string[]> {
+export async function remoteTags(io: Io, cwd?: string): Promise<string[]> {
 	if (io.tags === "local") {
-		return tagNames(await must(io, "git", ["tag", "-l", "v*"]));
+		return tagNames(
+			await must(io, "git", ["tag", "-l", "v*"], cwd ? { cwd } : undefined),
+		);
 	}
 	return tagNames(
 		await must(io, "git", ["ls-remote", "--tags", "--refs", "origin", "v*"]),
@@ -370,9 +372,15 @@ async function freezeOf(
  * `pnpm release merge-ok <pr>`: fails, naming the "next" PR to merge first,
  * when master is frozen and `pr` isn't that PR. The agents' merge path
  * (`gh pr merge --admin` skips required checks) runs it before every merge.
- * Released counts npm's versions too, as the RC plan does.
+ * Released counts npm's versions too, as the RC plan does. Then `notes`
+ * (CAR-192: scripts/release-notes.ts, prNotesOk) checks the PR's release
+ * notes, throwing when one is missing.
  */
-export async function mergeOk(io: Io, pr: string): Promise<void> {
+export async function mergeOk(
+	io: Io,
+	pr: string,
+	notes: (pull: never) => Promise<string>,
+): Promise<void> {
 	const url = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/.exec(
 		pr,
 	);
@@ -401,16 +409,23 @@ export async function mergeOk(io: Io, pr: string): Promise<void> {
 			`${gate.message}. Run pnpm release merge-ok ${number} again once it merges.`,
 		);
 	}
+	const notesOk = await notes(JSON.parse(pull) as never);
+	io.log(`notes: ${notesOk}`);
 	io.log(`ok: ${gate.message}`);
 }
 
 const RUN_URL = /https:\/\/github\.com\/\S+\/actions\/runs\/\d+/;
 
-/** `pnpm release promote [<rc tag>] [--next kind]`. */
+/**
+ * `pnpm release promote [<rc tag>] [--next kind]`. `check` runs before the
+ * dispatch (the release notes, CAR-192: promoteNotesCheck) and throws to
+ * stop it.
+ */
 export async function promote(
 	io: Io,
 	rcTag: string | undefined,
 	next: Kind,
+	check: (tag: string, release: string) => Promise<void>,
 ): Promise<string> {
 	const tags = await remoteTags(io);
 	const tag = rcTag ?? newestTag(tags, true)?.tag;
@@ -424,6 +439,7 @@ export async function promote(
 	if (tags.includes(release)) {
 		throw new Error(`${release} is already released`);
 	}
+	await check(tag, formatVersion(releaseOf(version)));
 	const started = io.now().getTime();
 	const out = await must(io, "gh", [
 		"workflow",

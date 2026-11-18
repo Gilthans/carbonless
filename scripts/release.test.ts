@@ -204,6 +204,9 @@ function fakeIo(
 	return { io, calls, lines };
 }
 
+/** merge-ok's release-notes check and promote's, passed (their own tests: release-notes.test.ts). */
+const NO_NOTES = async () => "not checked here";
+const NO_CHECK = async () => {};
 const lsRemote = (...tags: string[]) =>
 	tags.map((t, i) => `${String(i).repeat(40)}\trefs/tags/${t}`).join("\n");
 const npmView = (distTags: Record<string, string>, versions: string[]) =>
@@ -826,7 +829,7 @@ describe("pnpm release", () => {
 
 		it("refuses any PR but the next PR while frozen, naming it", async () => {
 			const { io } = frozen();
-			await expect(mergeOk(io, "9")).rejects.toThrow(
+			await expect(mergeOk(io, "9", NO_NOTES)).rejects.toThrow(
 				"frozen: 0.1.0 is released and master's version is still 0.1.0 (a merge now publishes no RC and misses the changelog): merge #12 next: 0.2.0 (https://github.com/owner/repo/pull/12) first. Run pnpm release merge-ok 9 again once it merges.",
 			);
 		});
@@ -834,7 +837,7 @@ describe("pnpm release", () => {
 		it("passes the next PR (by number, #number or URL) while frozen", async () => {
 			for (const pr of ["12", "#12", "https://github.com/owner/repo/pull/12"]) {
 				const { io, lines } = frozen();
-				await mergeOk(io, pr);
+				await mergeOk(io, pr, NO_NOTES);
 				expect(lines.at(-1)).toMatch(/^ok: .*#12 is the "next" PR/);
 			}
 		});
@@ -843,7 +846,7 @@ describe("pnpm release", () => {
 			const { io, lines } = frozen({
 				"gh api repos/owner/repo/contents": contents("0.2.0"),
 			});
-			await mergeOk(io, "9");
+			await mergeOk(io, "9", NO_NOTES);
 			expect(lines.at(-1)).toBe(
 				"ok: 0.2.0 is not released yet: merges to master are open",
 			);
@@ -851,7 +854,7 @@ describe("pnpm release", () => {
 
 		it("counts npm's version as released before the tag is pushed", async () => {
 			const { io } = frozen({}, lsRemote("v0.1.0-rc.5"));
-			await expect(mergeOk(io, "9")).rejects.toThrow(/^frozen: /);
+			await expect(mergeOk(io, "9", NO_NOTES)).rejects.toThrow(/^frozen: /);
 		});
 
 		it("with no open next PR, says to run release-finish again", async () => {
@@ -859,16 +862,52 @@ describe("pnpm release", () => {
 				"gh api --paginate --slurp repos/owner/repo/pulls?state=open&base=master":
 					JSON.stringify([[pullOf(9, "car-9-x")]]),
 			});
-			await expect(mergeOk(io, "9")).rejects.toThrow(
+			await expect(mergeOk(io, "9", NO_NOTES)).rejects.toThrow(
 				/no "next" PR is open: run release-finish/,
 			);
 		});
 
+		it("checks the PR's release notes once the freeze lets it through, and refuses when they're missing (CAR-192)", async () => {
+			const seen: unknown[] = [];
+			const { io, lines } = frozen({
+				"gh api repos/owner/repo/contents": contents("0.2.0"),
+			});
+			await mergeOk(io, "9", async (pull) => {
+				seen.push(pull);
+				return "CAR-9: 1 note(s)";
+			});
+			expect(seen).toEqual([pullOf(9, "car-9-x")]);
+			expect(lines.slice(-2)).toEqual([
+				"notes: CAR-9: 1 note(s)",
+				"ok: 0.2.0 is not released yet: merges to master are open",
+			]);
+			const refused = frozen({
+				"gh api repos/owner/repo/contents": contents("0.2.0"),
+			});
+			await expect(
+				mergeOk(refused.io, "9", async () => {
+					throw new Error("#9 can't merge without its release notes");
+				}),
+			).rejects.toThrow("#9 can't merge without its release notes");
+			expect(refused.lines.some((l) => l.startsWith("ok:"))).toBe(false);
+			// Frozen: the freeze answers first, the notes aren't read.
+			let asked = false;
+			await expect(
+				mergeOk(frozen().io, "9", async () => {
+					asked = true;
+					return "";
+				}),
+			).rejects.toThrow(/^frozen: /);
+			expect(asked).toBe(false);
+		});
+
 		it("refuses what isn't a PR, or another repository's PR, asking nothing", async () => {
 			const { io, calls } = frozen();
-			await expect(mergeOk(io, "main")).rejects.toThrow(/not a PR number/);
+			await expect(mergeOk(io, "main", NO_NOTES)).rejects.toThrow(
+				/not a PR number/,
+			);
 			await expect(
-				mergeOk(io, "https://github.com/owner/other/pull/12"),
+				mergeOk(io, "https://github.com/owner/other/pull/12", NO_NOTES),
 			).rejects.toThrow(
 				"not a PR of owner/repo: https://github.com/owner/other/pull/12",
 			);
@@ -882,7 +921,7 @@ describe("pnpm release", () => {
 			"gh workflow run":
 				"✓ Created workflow_dispatch event for release.yml at master\nhttps://github.com/owner/repo/actions/runs/42\n",
 		});
-		const url = await promote(io, undefined, "minor");
+		const url = await promote(io, undefined, "minor", NO_CHECK);
 		expect(url).toBe("https://github.com/owner/repo/actions/runs/42");
 		expect(calls).toContain(
 			"gh workflow run release.yml --repo owner/repo --ref master -f mode=promote -f rc=v0.1.0-rc.3 -f next=minor",
@@ -903,7 +942,7 @@ describe("pnpm release", () => {
 							{ url: "old", createdAt: "2026-11-01T00:00:00Z" },
 						]),
 		});
-		expect(await promote(io, "v0.1.0-rc.2", "patch")).toBe("new");
+		expect(await promote(io, "v0.1.0-rc.2", "patch", NO_CHECK)).toBe("new");
 		expect(polls).toBe(3);
 	});
 
@@ -911,14 +950,39 @@ describe("pnpm release", () => {
 		const { io, calls } = fakeIo({
 			"git ls-remote": lsRemote("v0.1.0-rc.2", "v0.1.0"),
 		});
-		await expect(promote(io, "v0.1.0-rc.2", "minor")).rejects.toThrow(
+		await expect(promote(io, "v0.1.0-rc.2", "minor", NO_CHECK)).rejects.toThrow(
 			/already released/,
 		);
-		await expect(promote(io, "v0.2.0-rc.1", "minor")).rejects.toThrow(
+		await expect(promote(io, "v0.2.0-rc.1", "minor", NO_CHECK)).rejects.toThrow(
 			/not on origin/,
 		);
-		await expect(promote(io, "main", "minor")).rejects.toThrow(/not an RC/);
+		await expect(promote(io, "main", "minor", NO_CHECK)).rejects.toThrow(
+			/not an RC/,
+		);
 		expect(calls.some((c) => c.startsWith("gh workflow"))).toBe(false);
+	});
+
+	it("promote checks the release notes before dispatching, and a refusal dispatches nothing (CAR-192)", async () => {
+		const { io, calls } = fakeIo({
+			"git ls-remote": lsRemote("v0.1.0-rc.2", "v0.1.0-rc.3"),
+			"gh workflow run": "https://github.com/owner/repo/actions/runs/42\n",
+		});
+		const checked: string[] = [];
+		await promote(io, undefined, "minor", async (tag, release) => {
+			checked.push(`${tag} ${release}`);
+			expect(calls.some((c) => c.startsWith("gh workflow"))).toBe(false);
+		});
+		expect(checked).toEqual(["v0.1.0-rc.3 0.1.0"]);
+		expect(calls.some((c) => c.startsWith("gh workflow run"))).toBe(true);
+		const refused = fakeIo({
+			"git ls-remote": lsRemote("v0.1.0-rc.3"),
+		});
+		await expect(
+			promote(refused.io, undefined, "minor", async () => {
+				throw new Error("release-notes/0.1.0.json doesn't cover CAR-1");
+			}),
+		).rejects.toThrow("doesn't cover CAR-1");
+		expect(refused.calls.some((c) => c.startsWith("gh workflow"))).toBe(false);
 	});
 
 	describe("next", () => {
@@ -1033,16 +1097,25 @@ describe("ci:set-version", { timeout: 30_000 }, () => {
 		// npm records the commit as gitHead: an RC or release is told apart
 		// from a master build of the same version.
 		const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+		// And the release notes it ships (CAR-192; none yet here, and no PR
+		// in the history): scripts/release-notes.test.ts has the rest.
+		const shipped = [
+			{ version: "0.1.0", date: null, notes: [], uncovered: [] },
+		];
 		expect(pkg).toEqual({
 			name: "carbonless-review",
 			version: "0.1.0-rc.2",
 			gitHead: git("rev-parse", "HEAD"),
+			crbReleaseNotes: shipped,
 		});
 		expect(git("status", "--porcelain")).toBe("");
 		execFileSync("node", ["scripts/build-info.mjs"], { cwd: repo });
 		expect(
 			JSON.parse(readFileSync(join(repo, "dist/build-info.json"), "utf8")),
 		).toEqual({ version: "0.1.0-rc.2", commit: git("rev-parse", "HEAD") });
+		expect(
+			JSON.parse(readFileSync(join(repo, "dist/release-notes.json"), "utf8")),
+		).toEqual(shipped);
 	});
 
 	it("refuses a tree that is dirty anyway", () => {
@@ -2486,6 +2559,61 @@ esac
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	it("release notes (CAR-192): no Linear in any workflow; promote-check checks the notes with no token; release-finish's GitHub release has the token only where it calls gh", () => {
+		const files = readdirSync(
+			join(import.meta.dirname, "../.github/workflows"),
+		).filter((f) => f.endsWith(".yml"));
+		for (const file of files) {
+			// Linear is read only where its key is: never a key in CI.
+			expect(code(workflow(file)), file).not.toMatch(/linear/i);
+		}
+		const check = code(
+			new Map(jobs(workflow("release.yml"))).get("promote-check") ?? "",
+		);
+		const steps = check.split(/\n(?= {6}- )/);
+		const notes = steps.find((st) =>
+			st.includes("name: Release notes cover the release"),
+		);
+		expect(notes).toContain(
+			'pnpm exec tsx scripts/release.ts ci:notes-check "$RELEASE" "$RC_SHA"',
+		);
+		// After the RC it checks is planned and pinned, before anything is built.
+		expect(check.indexOf("ci:notes-check")).toBeGreaterThan(
+			check.indexOf(
+				'if [[ "$TAG" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
+			),
+		);
+		expect(check.indexOf("ci:notes-check")).toBeLessThan(
+			check.indexOf("name: Install the RC"),
+		);
+		const finish = code(
+			new Map(jobs(workflow("release-finish.yml"))).get("finish") ?? "",
+		).split(/\n(?= {6}- )/);
+		const at = (name: string) =>
+			finish.findIndex((st) => st.includes(`name: ${name}`));
+		const body = finish[at("The GitHub release's text")] ?? "";
+		const release = finish[at("GitHub release")] ?? "";
+		expect(body).toContain(
+			'pnpm exec tsx scripts/release.ts ci:release-body "$VERSION" "$SHA" >"$RUNNER_TEMP/release-body.md"',
+		);
+		expect(body).not.toMatch(/token|GH_TOKEN/i);
+		expect(release).toMatch(/GH_TOKEN: \$\{\{ github\.token \}\}/);
+		// gh only: no repository or dependency code with the token.
+		expect(release).not.toMatch(/pnpm|tsx|node |scripts\//);
+		expect(release).toContain(
+			'gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-body.md"',
+		);
+		// A rerun leaves the release alone.
+		expect(release).toContain('if gh release view "v$VERSION"');
+		// The tag is on origin first (--verify-tag), the body before the release.
+		expect(at("Tag")).toBeLessThan(at("The GitHub release's text"));
+		expect(at("The GitHub release's text")).toBeLessThan(at("GitHub release"));
+		// The next PR commits the dated notes file.
+		expect(finish[at("Next version and changelog PR")]).toContain(
+			"[[ ! -d release-notes ]] || git add release-notes",
+		);
 	});
 
 	it("public repository: fork PRs reach no credential, no OIDC, no `npm` environment", () => {
