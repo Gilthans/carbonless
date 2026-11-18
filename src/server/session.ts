@@ -6,6 +6,7 @@ import type {
 import {
 	foldMoves,
 	liveMove,
+	MAX_MOVES_PER_THREAD,
 	type MoveAnswer,
 	movedInfo,
 	type ThreadMove,
@@ -104,6 +105,7 @@ import {
 	DeadMoveError,
 	InvalidPlacementError,
 	legacyMoves,
+	MoveCapError,
 	type PlacedThread,
 	placeAgentThreads,
 	ThreadPlacer,
@@ -1160,15 +1162,25 @@ export class Session {
 	 * `on` filled in from the session's snapshot. Never calls gh, never
 	 * starts a patch set. Answers the move and the thread's placement.
 	 */
-	moveThread(req: {
+	async moveThread(req: {
 		thread: ThreadRef;
 		to: { patchset: number } | { head: string };
 		anchor: ThreadAnchorRef;
 	}): Promise<MoveAnswer> {
+		// Checked before the lock: finding a GitHub thread may wait on the
+		// read's summary, and marks must never queue behind that.
+		await this.#movable(req.thread);
 		return this.#exclusive(async () => {
 			const progress = await this.#progress();
-			await this.#movable(req.thread);
 			const { target, patchset } = await this.#moveTarget(req.to, progress);
+			const live =
+				(await this.#foldedMoves(progress)).get(threadKey(req.thread))
+					?.length ?? 0;
+			if (live >= MAX_MOVES_PER_THREAD) {
+				throw new MoveCapError(
+					`This thread has been moved ${MAX_MOVES_PER_THREAD} times: undo a move first`,
+				);
+			}
 			const { anchor } = req;
 			const counts = new Map<string, number | null>();
 			for (const side of ["LEFT", "RIGHT"] as const) {
@@ -1213,30 +1225,33 @@ export class Session {
 	 * target viewed), the thread's placement there now, when known
 	 * without waiting. Never calls gh.
 	 */
-	undoMove(
+	async undoMove(
 		id: string,
-		to?: { patchset: number } | { head: string },
+		to: { patchset: number } | { head: string },
 	): Promise<UndoMoveAnswer> {
-		return this.#exclusive(async () => {
+		const move = await this.#exclusive(async () => {
 			const progress = await this.#progress();
-			if (to) await this.#moveTarget(to, progress);
-			const move = liveMove(await this.#foldedMoves(progress), id);
-			if (!move) throw new DeadMoveError(`No live move ${id}`);
-			await this.#threadStore.undoMove(move.thread, id);
-			const placed = to
-				? await this.#placedThread(move.thread, to).catch(() => undefined)
-				: undefined;
-			return {
-				undone: id,
-				thread: move.thread,
-				...(placed
-					? {
-							placement: placed.placement,
-							...(placed.moved ? { moved: placed.moved } : {}),
-						}
-					: {}),
-			};
+			await this.#moveTarget(to, progress);
+			const live = liveMove(await this.#foldedMoves(progress), id);
+			if (!live) throw new DeadMoveError(`No live move ${id}`);
+			await this.#threadStore.undoMove(live.thread, id);
+			return live;
 		});
+		// The thread's place now, after the lock: a trace of the review's
+		// threads never holds marks up.
+		const placed = await this.#placedThread(move.thread, to).catch(
+			() => undefined,
+		);
+		return {
+			undone: id,
+			thread: move.thread,
+			...(placed
+				? {
+						placement: placed.placement,
+						...(placed.moved ? { moved: placed.moved } : {}),
+					}
+				: {}),
+		};
 	}
 
 	/** A thread's placement in `to` as it stands, when known without waiting. */

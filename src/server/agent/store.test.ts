@@ -14,6 +14,7 @@ import {
 	MAX_AGENT_TEXT,
 	startedBy,
 } from "../../shared/agent.js";
+import { foldMoves } from "../../shared/rereview/moves.js";
 import { newEvent } from "../review/events.js";
 import { RefStore } from "../review/refStore.js";
 import {
@@ -1167,8 +1168,15 @@ describe("thread moves in the agent threads ref (CAR-139)", () => {
 			store.move({ thread: gh, on, anchor: to(3) }),
 			other.move({ thread: gh, on, anchor: to(4) }),
 		]);
-		const { moves } = await store.moves();
+		const { moves, undos } = await store.moves();
 		expect(new Set(moves.map((m) => m.id))).toEqual(new Set([a.id, b.id]));
+		// The later (ts, id) is the one the thread stands on.
+		const later = [a, b].sort(
+			(x, y) => x.ts - y.ts || (x.id < y.id ? -1 : 1),
+		)[1];
+		expect(foldMoves(moves, undos).get("github:PRRT_kwDOabc")?.at(-1)?.id).toBe(
+			later?.id,
+		);
 	});
 });
 

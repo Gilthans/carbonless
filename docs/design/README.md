@@ -513,8 +513,8 @@ full diff:
   changed; the Overview's card shows the chip alone. On a phone they wrap
   to the header's second row. With `changed since` when the moved-to line
   changed later.
-- After a place: the card scrolls in on its new line with a fading
-  `accent` wash, focus on its Undo. A refused move or undo rolls back and
+- After a place: the card scrolls in on its new line with `mark-tint`'s
+  wash, fading, focus on its Undo. A refused move or undo rolls back and
   says so under the card in `bad`, with a 40px Retry when trying again can
   help.
 - **Threads tab:** a moved thread's row has a muted pin among its cues

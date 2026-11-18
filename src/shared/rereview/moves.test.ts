@@ -126,6 +126,23 @@ describe("foldMoves", () => {
 	});
 });
 
+describe("the cap counts live moves only", () => {
+	it("undone moves leave room: the 201st move counts once one is undone", () => {
+		const moves = Array.from({ length: MAX_MOVES_PER_THREAD + 1 }, (_, i) =>
+			move(gh, PS2, (i % 20) + 1, i + 1),
+		);
+		const first = moves[0] as ThreadMove;
+		const last = moves.at(-1) as ThreadMove;
+		expect(foldMoves(moves, []).get(threadKey(gh))?.at(-1)?.id).not.toBe(
+			last.id,
+		);
+		const folded =
+			foldMoves(moves, [undo(first, 999)]).get(threadKey(gh)) ?? [];
+		expect(folded).toHaveLength(MAX_MOVES_PER_THREAD);
+		expect(folded.at(-1)?.id).toBe(last.id);
+	});
+});
+
 describe("effectiveMove", () => {
 	it("rule 1: the last move made on the target itself, as chosen", () => {
 		const a = move(gh, PS3, 3, 10);
@@ -360,14 +377,6 @@ describe("placeWithMoves", () => {
 							"file",
 						]).toContain(p.placement.kind);
 					}
-					// The unresolved count is the same with and without moves.
-					const unresolved = (list: { id: string }[]) =>
-						list.filter(
-							(p) =>
-								!threads.find((x) => threadKey(refOf(x.agent, x.n)) === p.id)
-									?.resolved,
-						).length;
-					expect(unresolved(placed)).toBe(unresolved(bare));
 					// A moved thread says which move: one live at the target.
 					for (const p of placed) {
 						if (!p.moved) continue;

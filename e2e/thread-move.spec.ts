@@ -334,12 +334,15 @@ test("the next pushes follow a moved thread from its moved line; once that line 
 	await expect(unplaced.getByTestId("move-handle")).toBeVisible();
 });
 
-test("no handle and no chip while the placements are on their way; then they land", async ({
+test("no handle and no chip while the placements are on their way, for a moved thread too; then they land", async ({
 	page,
 	pr,
 	startCrb,
 }) => {
 	test.setTimeout(90_000);
+	const { section } = await setup(page, pr, startCrb);
+	await placeByPick(page, await openOn(section, page, 5), section, 30);
+	await expect(card(page).getByTestId("moved-chip")).toBeVisible();
 	let release = () => {};
 	const held = new Promise<void>((r) => {
 		release = r;
@@ -348,25 +351,29 @@ test("no handle and no chip while the placements are on their way; then they lan
 		await held;
 		await route.continue();
 	});
-	const { section } = await setup(page, pr, startCrb);
+	await page.reload();
+	const again = fileSection(page, CORE);
+	await again.getByRole("button", { name: "Expand file" }).click();
 	try {
 		await expectLoadingThen({
 			loading: page.getByRole("status", { name: "Placing threads" }).first(),
 			empty: [
 				page.getByTestId("move-handle"),
 				page.getByTestId("moved-chip"),
-				bubbleOn(section, 5),
+				bubbleOn(again, 30),
+				bubbleOn(again, 5),
 			],
 			release: async () => {
-				await expect(row(section, 5)).toBeVisible();
+				await expect(row(again, 30)).toBeVisible();
 				release();
 			},
-			result: bubbleOn(section, 5),
+			result: bubbleOn(again, 30),
 			...GIT_WAIT,
 		});
 	} finally {
 		release();
 	}
-	const c = await openOn(section, page, 5);
+	const c = await openOn(again, page, 30);
 	await expect(c.getByTestId("move-handle")).toBeVisible();
+	await expect(c.getByTestId("moved-chip")).toBeVisible();
 });

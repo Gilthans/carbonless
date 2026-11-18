@@ -190,7 +190,6 @@ describe("foldProgress", () => {
 			states: new Map(),
 			statesByRevision: new Map(),
 			sinceMarks: new Map(),
-			placements: new Map(),
 			placed: [],
 		});
 	});
@@ -766,16 +765,16 @@ describe("foldProgress", () => {
 	});
 
 	describe("thread placements", () => {
-		it("keep the last per thread per patch set", () => {
+		it("keeps every human one in order, for reading as moves (CAR-139); an ai one is left out", () => {
 			const a = placed("t1", 1, 3);
 			const b = placed("t1", 1, 7);
 			const c = placed("t2", 1, 2);
 			const d = placed("t1", 2, 9);
-			const progress = foldProgress(shuffle([started(), b, a, c, d]));
-			expect(progress.placements.get(1)?.get("t1")).toEqual(b);
-			expect(progress.placements.get(1)?.get("t2")).toEqual(c);
-			expect(progress.placements.get(2)?.get("t1")).toEqual(d);
-			expect(progress.placements.get(3)).toBeUndefined();
+			const ai = { ...placed("t3", 1, 4), by: "ai" as const };
+			const progress = foldProgress(shuffle([started(), b, a, c, d, ai]));
+			expect(progress.placed.map((e) => e.id).sort()).toEqual(
+				[a, b, c, d].map((e) => e.id).sort(),
+			);
 		});
 
 		it("never touch cluster states", () => {

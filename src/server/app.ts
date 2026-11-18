@@ -67,6 +67,7 @@ import { parseMoveBody } from "./rereview/moveBody.js";
 import {
 	DeadMoveError,
 	InvalidPlacementError,
+	MoveCapError,
 	UnknownMoveThreadError,
 } from "./rereview/threads.js";
 import { isLowerUlid } from "./review/events.js";
@@ -335,7 +336,9 @@ export async function buildApp(
 		}
 		if (error instanceof UnknownMoveThreadError)
 			return send(404, error.message);
-		if (error instanceof DeadMoveError) return send(409, error.message);
+		if (error instanceof DeadMoveError || error instanceof MoveCapError) {
+			return send(409, error.message);
+		}
 		if (error instanceof NoAgentError) {
 			return reply.status(404).send({ error: error.message, code: "no-agent" });
 		}
@@ -927,17 +930,19 @@ export async function buildApp(
 			}>("/moves/:move", (request) => {
 				const id = request.params.move;
 				if (!isLowerUlid(id)) throw new BadRequestError("Not a move id");
+				// The target viewed, as for a move: an earlier patch set is
+				// read-only, its moves too.
 				const { ps, head } = request.query;
-				if (ps !== undefined && head !== undefined) {
-					throw new BadRequestError("ps or head, not both");
+				if ((ps === undefined) === (head === undefined)) {
+					throw new BadRequestError(
+						"ps (a patch set) or head (a commit id), one of them",
+					);
 				}
 				return sessionOf(request).undoMove(
 					id,
 					ps !== undefined
 						? { patchset: patchsetParam(ps) }
-						: head !== undefined
-							? { head: oidParam("head", head) }
-							: undefined,
+						: { head: oidParam("head", head) },
 				);
 			});
 			// The reviewer's own agent (review buddy): status, private threads.
