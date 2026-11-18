@@ -16,12 +16,14 @@ import {
 } from "react";
 import type { UpdateInfo } from "../shared/update";
 import { ApiError, fetchJson } from "./api";
-import { type Copied, CopyMark, copyInto, copyWord } from "./CopyMark";
 import { useUnsaved } from "./files/useSetStates";
 import { SpinnerIcon } from "./Spinner";
 import { ToastSlot } from "./Toasts";
 import { Tooltip } from "./Tooltip";
-import { ByHandWhy } from "./UpdateByHand";
+import { Command, IconButton } from "./UpdateCommand";
+import { WhatsNewModal } from "./WhatsNew";
+
+export { Command };
 
 /** How often the page asks whether an update is on offer, when none is. */
 export const UPDATE_POLL_MS = 10 * 60_000;
@@ -70,61 +72,13 @@ const CARD =
 	"pointer-events-auto flex w-full flex-col rounded-lg border border-edge bg-overlay py-1 pr-1 pl-3 text-sm text-ink shadow-float";
 const TEXT_BUTTON =
 	"flex h-10 shrink-0 items-center rounded-md px-3 text-sm font-semibold text-ink hover:bg-pressed focus-visible:outline-2 focus-visible:outline-accent";
-const ICON_BUTTON =
-	"flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-faint hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent";
-
-function IconButton(props: {
-	label: string;
-	onClick: () => void;
-	children: React.ReactNode;
-}) {
-	return (
-		<Tooltip content={props.label} describe={false}>
-			{(trigger) => (
-				<button
-					type="button"
-					{...trigger}
-					aria-label={props.label}
-					onClick={props.onClick}
-					className={ICON_BUTTON}
-				>
-					{props.children}
-				</button>
-			)}
-		</Tooltip>
-	);
-}
-
-/** A command to run by hand, with a copy button. */
-export function Command(props: { command: string }) {
-	const [copied, setCopied] = useState<Copied>(null);
-	const shown = useRef<HTMLElement>(null);
-	return (
-		<div className="flex min-w-0 items-center gap-1">
-			<code
-				ref={shown}
-				data-testid="update-command"
-				className="min-w-0 flex-1 overflow-x-auto rounded bg-code px-2 py-1 font-mono text-xs whitespace-nowrap text-code-ink select-all"
-			>
-				{props.command}
-			</code>
-			<IconButton
-				label={copyWord(copied, "Copy command")}
-				onClick={() => {
-					void copyInto(props.command, shown.current, setCopied);
-				}}
-			>
-				<CopyMark copied={copied} />
-			</IconButton>
-		</div>
-	);
-}
-
 /** What a page shares with the update toast: its phase, and Update itself. */
 export interface UpdateFlow {
 	phase: Phase;
 	/** The toast's Update: asks about unsaved work, installs, restarts, reloads. */
 	update: (version: string) => Promise<void>;
+	/** Opens What's new (the modal with the notes, and Update below). */
+	whatsNew: () => void;
 }
 
 const FlowContext = createContext<UpdateFlow | null>(null);
@@ -142,15 +96,33 @@ export const useUpdateFlow = (): UpdateFlow | null => useContext(FlowContext);
  */
 export function UpdateToast(props: { children?: ReactNode }) {
 	const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+	const [whatsNewOpen, setWhatsNewOpen] = useState(false);
 	const update = useRef<UpdateFlow["update"]>(async () => {});
 	// One stable function for the pages: the latest Update behind it.
 	const [flowUpdate] = useState(
 		() => (version: string) => update.current(version),
 	);
+	const [whatsNew] = useState(() => () => setWhatsNewOpen(true));
+	const info = useQuery({
+		queryKey: UPDATE_KEY,
+		queryFn: fetchUpdate,
+		enabled: false,
+	});
 	return (
-		<FlowContext.Provider value={{ phase, update: flowUpdate }}>
+		<FlowContext.Provider value={{ phase, update: flowUpdate, whatsNew }}>
 			{props.children}
-			<Toast phase={phase} setPhase={setPhase} updateRef={update} />
+			<Toast
+				phase={phase}
+				setPhase={setPhase}
+				updateRef={update}
+				whatsNew={whatsNew}
+			/>
+			<WhatsNewModal
+				open={whatsNewOpen && phase.kind === "idle"}
+				onClose={() => setWhatsNewOpen(false)}
+				info={info.data}
+				onUpdate={(version) => void flowUpdate(version)}
+			/>
 		</FlowContext.Provider>
 	);
 }
@@ -159,6 +131,7 @@ function Toast(props: {
 	phase: Phase;
 	setPhase: (phase: Phase) => void;
 	updateRef: { current: UpdateFlow["update"] };
+	whatsNew: () => void;
 }) {
 	const { phase, setPhase } = props;
 	const client = useQueryClient();
@@ -458,53 +431,24 @@ function Toast(props: {
 					<b className="min-w-0 truncate font-semibold max-sm:sr-only">
 						Update available
 					</b>
-					{data.releaseUrl && (
-						<Tooltip content="What's new" describe={false}>
-							{(trigger) => (
-								<a
-									{...trigger}
-									href={data.releaseUrl ?? undefined}
-									target="_blank"
-									rel="noreferrer"
-									className="flex h-10 shrink-0 items-center rounded-md px-1 font-mono text-link underline hover:bg-pressed focus-visible:outline-2 focus-visible:outline-accent"
-								>
-									v{version}
-								</a>
-							)}
-						</Tooltip>
-					)}
+					<span className="shrink-0 font-mono text-muted">v{version}</span>
 					<span className="flex-1" />
-					{data.oneClick && (
-						<Tooltip
-							content={`Install v${version} and restart crb`}
-							describe={false}
-						>
-							{(trigger) => (
-								<button
-									type="button"
-									{...trigger}
-									onClick={() => void update(version)}
-									className="flex h-10 shrink-0 items-center rounded-md px-3 text-sm font-semibold text-ink hover:bg-pressed focus-visible:outline-2 focus-visible:outline-accent"
-								>
-									Update
-								</button>
-							)}
-						</Tooltip>
-					)}
+					<Tooltip content={`What's new in v${version}`} describe={false}>
+						{(trigger) => (
+							<button
+								type="button"
+								{...trigger}
+								onClick={props.whatsNew}
+								className={TEXT_BUTTON}
+							>
+								What's new
+							</button>
+						)}
+					</Tooltip>
 					<IconButton label="Dismiss" onClick={() => dismiss(version)}>
 						<XIcon size={16} aria-hidden />
 					</IconButton>
 				</div>
-				{!data.oneClick && data.command && (
-					<div className="pb-1">
-						<ByHandWhy
-							info={data}
-							prefix="No auto-update"
-							className="text-muted"
-						/>
-						<Command command={data.command} />
-					</div>
-				)}
 			</div>
 		</ToastSlot>
 	);

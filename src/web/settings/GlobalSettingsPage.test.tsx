@@ -19,7 +19,9 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
+import type { ReleaseNote } from "../../shared/releaseNotes";
 import type { UpdateInfo } from "../../shared/update";
+import type { OwnNotes } from "../../shared/whatsNew";
 import { ToastStack } from "../Toasts";
 import { UpdateToast } from "../UpdateToast";
 import { GlobalSettingsPage } from "./GlobalSettingsPage";
@@ -66,6 +68,10 @@ function serve(opts: {
 	check?: () => Response | Promise<Response>;
 	/** POST /api/update's answer (default: restarting). */
 	post?: () => Response;
+	/** GET /api/release-notes (default: a build without notes). */
+	own?: () => OwnNotes | Promise<Response>;
+	/** GET /api/update/notes (default: 404). */
+	notes?: () => Response;
 }) {
 	const calls: string[] = [];
 	vi.stubGlobal(
@@ -86,6 +92,17 @@ function serve(opts: {
 				const answer = opts.get();
 				return answer instanceof Promise ? answer : json(200, answer);
 			}
+			if (url === "/api/release-notes") {
+				const answer = opts.own?.() ?? {
+					current: INFO.current,
+					file: false,
+					running: null,
+					earlier: [],
+					dropped: 0,
+				};
+				return answer instanceof Promise ? answer : json(200, answer);
+			}
+			if (url === "/api/update/notes") return opts.notes?.() ?? json(404, {});
 			if (url === "/api/version") throw new TypeError("Failed to fetch");
 			return json(404, {});
 		}),
@@ -200,7 +217,7 @@ describe("GlobalSettingsPage", () => {
 		expect(calls).toContain("POST /api/update/check");
 	});
 
-	it("a newer version: linked to its release, with Update doing what the toast's does", async () => {
+	it("a newer version: What's new opens the modal, and Update does what the toast's does", async () => {
 		let now: UpdateInfo = INFO;
 		const calls = serve({
 			get: () => now,
@@ -214,9 +231,16 @@ describe("GlobalSettingsPage", () => {
 		await userEvent.click(checkButton());
 		const r = await screen.findByTestId("update-result");
 		await waitFor(() => expect(r).toHaveAttribute("data-state", "available"));
+		expect(r).toHaveTextContent("v0.3.0-rc.7available");
+		await userEvent.click(
+			within(r).getByRole("button", { name: "What's new" }),
+		);
+		const modal = screen.getByTestId("whats-new");
+		expect(modal.hasAttribute("open")).toBe(true);
 		expect(
-			within(r).getByRole("link", { name: /v0\.3\.0-rc\.7/ }),
-		).toHaveAttribute("href", OFFER.releaseUrl);
+			within(modal).getByRole("button", { name: "Update to v0.3.0-rc.7" }),
+		).toBeInTheDocument();
+		await userEvent.click(within(modal).getByRole("button", { name: "Close" }));
 		// The toast offers it too.
 		expect(await screen.findByTestId("update-toast")).toHaveAttribute(
 			"data-state",
@@ -434,5 +458,115 @@ describe("GlobalSettingsPage", () => {
 		const row = await screen.findByTestId("version-current");
 		expect(row).toHaveTextContent("unknown");
 		expect(within(row).queryByRole("link")).toBeNull();
+	});
+
+	describe("the running version's notes", () => {
+		const note = (
+			id: string,
+			text: string,
+			kind: ReleaseNote["kind"] = "new",
+		) => ({
+			id,
+			kind,
+			prs: [Number(id.replace(/\D/g, ""))],
+			text,
+		});
+		const OWN: OwnNotes = {
+			current: INFO.current,
+			file: true,
+			dropped: 0,
+			running: {
+				version: INFO.current,
+				date: null,
+				released: false,
+				uncovered: [],
+				notes: [
+					note("CAR-1", "Threads tab. Every conversation, newest first."),
+					note("CAR-2", "One agent conversation."),
+					note("CAR-3", "Whitespace fix.", "fixed"),
+					note("CAR-4", "A fourth note."),
+				],
+			},
+			earlier: [
+				{
+					version: "0.2.0",
+					date: "2026-11-01T10:00:00.000Z",
+					released: true,
+					uncovered: [],
+					notes: [note("CAR-0", "An earlier one.")],
+				},
+			],
+		};
+		const texts = () =>
+			screen.queryAllByTestId("release-note-text").map((t) => t.textContent);
+
+		it("loading: skeletons, never 'No user-facing changes'; then the first three, first sentence each", async () => {
+			const held = heldJson();
+			serve({ get: () => INFO, own: () => held.response });
+			show();
+			await section();
+			await expectLoadingThen({
+				loading: () =>
+					screen.queryByRole("status", { name: "Loading the release notes" }),
+				empty: [() => screen.queryByText("No user-facing changes")],
+				release: () => held.release(OWN),
+				result: () => screen.queryAllByTestId("release-note")[0] ?? null,
+			});
+			expect(texts()).toEqual([
+				"Threads tab.",
+				"One agent conversation.",
+				"Whitespace fix.",
+			]);
+		});
+
+		it("Show more: every note in full and the earlier releases; Show less folds back", async () => {
+			serve({ get: () => INFO, own: () => OWN });
+			show();
+			await section();
+			const more = await screen.findByRole("button", { name: /Show more/ });
+			expect(more).toHaveAttribute("aria-expanded", "false");
+			await userEvent.click(more);
+			expect(texts()).toEqual([
+				"Threads tab. Every conversation, newest first.",
+				"One agent conversation.",
+				"Whitespace fix.",
+				"A fourth note.",
+				"An earlier one.",
+			]);
+			expect(
+				screen.getAllByTestId("notes-version").map((s) => s.dataset.version),
+			).toEqual(["0.2.0"]);
+			await userEvent.click(screen.getByRole("button", { name: /Show less/ }));
+			expect(texts()).toHaveLength(3);
+		});
+
+		it("a local build (no notes file) shows none; a version without notes says so", async () => {
+			serve({ get: () => INFO });
+			show();
+			await section();
+			await waitFor(() =>
+				expect(screen.queryByTestId("running-notes")).toBeNull(),
+			);
+			expect(screen.queryByText("No user-facing changes")).toBeNull();
+			cleanup();
+			vi.unstubAllGlobals();
+			serve({
+				get: () => INFO,
+				own: () => ({
+					...OWN,
+					running: {
+						...(OWN.running as NonNullable<OwnNotes["running"]>),
+						notes: [],
+					},
+					earlier: [],
+				}),
+			});
+			show();
+			await section();
+			expect(
+				await screen.findByText("No user-facing changes"),
+			).toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: /Show more/ })).toBeNull();
+		});
 	});
 });

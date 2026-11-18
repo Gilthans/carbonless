@@ -607,6 +607,33 @@ config). Answering:
   Command, Leash), Activity (the thread answered or Idle, "N waiting",
   Stop current) and a red Detach (Restart too after a crash). Spec:
   `docs/superpowers/specs/2026-11-12-agent-setup-modal-design.md`.
+- **The What's new modal** (`WhatsNewModal`, `src/web/WhatsNew.tsx`):
+  opened from the update toast's one action, What's new (it replaced the
+  toast's version link and Update), and from Global settings' "available"
+  row (What's new beside Update). Shaped as the agent modal: a centred
+  dialog on a desktop (`min(34rem, 100vw - 2rem)`), a bottom sheet with a
+  grab bar on a phone. Header: the download icon in `accent`, "What's
+  new", the range in monospace `muted` ("v0.3.0 → v0.5.0", "rc.3 →
+  v0.4.0-rc.5"; below 400px only "→ v0.5.0"), a kept 40px spinner slot,
+  ✕. The body scrolls: a section per version, newest first (monospace
+  bold version, `RelativeTime`, ↗ to its GitHub release for a release),
+  a row per note: the kind's octicon in `muted` (New, Improved, Fixed;
+  tooltip and name; no colour, a kind is no review state), the text in
+  `ink` (`code` spans as `<code>`, never HTML), `#N` in `faint` linking
+  the PR. A note's first sentence shows, the rest behind its own 40px
+  Show more. "No user-facing changes" in `muted`; on an RC "N more
+  changes, no notes yet" (plus icon) linking GitHub's compare view.
+  Footer, pinned: "Update to vX" (`cta`; full width, 44px on a phone),
+  which closes the modal and runs the toast's update; by hand,
+  `ByHandWhy` and the command instead. Loading: skeleton bars,
+  `aria-busy`, the spinner in its slot, Update already enabled. Failed: a
+  `warn` notice (reason; in its tooltip on a phone), Retry, ↗. Spec:
+  `docs/superpowers/specs/2026-11-16-release-notes-design.md`.
+- **Global settings' release notes**: under the Version row, the running
+  version's notes from its own package (no network), the first three,
+  first sentence each; Show more (40px, chevron that turns) expands in
+  place to every note in full and the earlier releases, then Show less.
+  Nothing for a build without notes (a local build).
 - **Overview**: an "Agent threads" band after the thread groups in "Is it
   ready": "N open · N waiting" (a skeleton while they load) and the chip's
   dot, or "Set up an agent" when none is; "N new" (an `accent` dot) links
@@ -728,3 +755,6 @@ earlier events" (the Load more button's style) sits above the rail.
   - Reviewed lines no longer use opacity.
   - The compact mark sits in a fixed 28px slot that fades and scales, so the tabs don't shift.
   - Find in PR: `find-mark` (`--color-find`) and `find-current` (orange, `canvas` text) paint search hits; contrast-tested like `span-mark`.
+- **What's new (CAR-201).** The update toast's version link and Update
+  became one What's new button; the modal holds the notes and Update.
+  Global settings shows the running version's notes under Version.

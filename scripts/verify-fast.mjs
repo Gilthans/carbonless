@@ -64,6 +64,12 @@ const E2E_MAP = [
 		/^src\/server\/review\/(splitCarry|fold|events|reviews)\.ts$|^src\/server\/home\/started\.ts$|^e2e\/ws-split\.spec\.ts$/,
 		["ws-split", "whitespace"],
 	],
+	// crb's self-update: the toast, What's new, Global settings, the
+	// routes and the registry reads (CAR-108, CAR-201).
+	[
+		/^src\/web\/(UpdateToast|UpdateCommand|UpdateByHand|WhatsNew)\.tsx$|^src\/web\/settings\/|^src\/server\/update\/|^src\/shared\/(update|whatsNew|releaseNotes)\.ts$|^src\/server\/app\.ts$/,
+		["update"],
+	],
 	// Pure (hunks in, placements out); its unit tests are the coverage.
 	[/^src\/shared\/tracer\//, []],
 	// Release notes' formats and text rule (CAR-192): pure, its unit tests

@@ -16,6 +16,12 @@ import {
 	commitUrl,
 	type UpdateInfo,
 } from "../../shared/update";
+import {
+	compareUrl,
+	type OwnNotes,
+	RELEASES_URL,
+	splitNote,
+} from "../../shared/whatsNew";
 import { fetchJson } from "../api";
 import { Logo } from "../brand/Brand";
 import { RelativeTime } from "../RelativeTime";
@@ -28,6 +34,13 @@ import {
 	UPDATE_KEY,
 	useUpdateFlow,
 } from "../UpdateToast";
+import {
+	Dropped,
+	MoreToggle,
+	NoteRow,
+	Uncovered,
+	VersionHead,
+} from "../WhatsNew";
 
 /** Why crb never checks, in a few words. */
 export const OFF_REASON: Record<ChecksOff, string> = {
@@ -128,25 +141,22 @@ function CheckResult(props: {
 					icon={<DownloadIcon className="text-accent" />}
 					label="Update available"
 				>
-					{info.releaseUrl ? (
-						<Tooltip content="What's new" describe={false}>
+					<span className="font-mono font-semibold">v{version}</span>
+					<span className="text-muted">available</span>
+					{flow && (
+						<Tooltip content={`What's new in v${version}`} describe={false}>
 							{(trigger) => (
-								<a
+								<button
+									type="button"
 									{...trigger}
-									href={info.releaseUrl ?? undefined}
-									target="_blank"
-									rel="noreferrer"
-									className="inline-flex min-h-10 items-center gap-1 font-mono text-link underline"
+									onClick={flow.whatsNew}
+									className={`${BUTTON} ml-auto`}
 								>
-									v{version}
-									<LinkExternalIcon size={12} aria-hidden />
-								</a>
+									What's new
+								</button>
 							)}
 						</Tooltip>
-					) : (
-						<span className="font-mono">v{version}</span>
 					)}
-					<span className="text-muted">available</span>
 					{info.oneClick &&
 						flow &&
 						(updating ? (
@@ -190,6 +200,111 @@ function CheckResult(props: {
 					<span>Up to date</span>
 				</Row>
 			)}
+		</div>
+	);
+}
+
+/** How many of the running version's notes show before Show more. */
+export const NOTES_FOLDED = 3;
+
+/**
+ * The running version's notes, under Version (from its own package, no
+ * network): the first NOTES_FOLDED, first sentence each; Show more
+ * expands in place to every note in full and the earlier releases. A
+ * build without notes (a local build) shows nothing here.
+ */
+function RunningNotes() {
+	const [open, setOpen] = useState(false);
+	const own = useQuery({
+		queryKey: ["release-notes"],
+		queryFn: () => fetchJson<OwnNotes>("/api/release-notes"),
+		retry: false,
+		staleTime: Number.POSITIVE_INFINITY,
+		refetchOnWindowFocus: false,
+	});
+	const box = "pl-6";
+	if (own.isPending) {
+		return (
+			<div
+				data-testid="running-notes"
+				aria-busy
+				className={`${box} space-y-2 py-1`}
+			>
+				<Spinner label="Loading the release notes" className="sr-only" />
+				<SkeletonBar className="w-64 max-w-full" />
+				<SkeletonBar className="w-52 max-w-full" />
+			</div>
+		);
+	}
+	if (own.isError) {
+		return (
+			<p
+				data-testid="running-notes"
+				role="alert"
+				className={`${box} flex min-h-10 items-center gap-2 text-warn`}
+			>
+				<AlertIcon size={16} aria-hidden className="shrink-0" />
+				Notes didn't load: {own.error.message}
+			</p>
+		);
+	}
+	const data = own.data;
+	if (!data.file || !data.running) return null;
+	const running = data.running;
+	const notes = open ? running.notes : running.notes.slice(0, NOTES_FOLDED);
+	const more =
+		running.notes.length > NOTES_FOLDED ||
+		running.notes.some((n) => splitNote(n.text).rest !== "") ||
+		running.uncovered.length > 0 ||
+		data.earlier.length > 0;
+	return (
+		<div data-testid="running-notes" className={`${box} min-w-0`}>
+			<Dropped count={data.dropped} />
+			{notes.length > 0 ? (
+				<ul className="m-0 list-none p-0">
+					{notes.map((n) => (
+						<NoteRow key={`${n.id}:${n.text}`} note={n} summary={!open} />
+					))}
+				</ul>
+			) : (
+				<p className="flex min-h-10 items-center text-muted">
+					No user-facing changes
+				</p>
+			)}
+			{open && (
+				<>
+					<Uncovered
+						count={running.uncovered.length}
+						href={
+							data.earlier[0]
+								? compareUrl(data.earlier[0].version, data.current)
+								: RELEASES_URL
+						}
+					/>
+					{data.earlier.map((s) => (
+						<section
+							key={s.version}
+							data-testid="notes-version"
+							data-version={s.version}
+							className="border-t border-line pt-1"
+						>
+							<VersionHead section={s} />
+							{s.notes.length > 0 ? (
+								<ul className="m-0 list-none p-0">
+									{s.notes.map((n) => (
+										<NoteRow key={`${n.id}:${n.text}`} note={n} />
+									))}
+								</ul>
+							) : (
+								<p className="flex min-h-10 items-center text-muted">
+									No user-facing changes
+								</p>
+							)}
+						</section>
+					))}
+				</>
+			)}
+			{more && <MoreToggle open={open} onToggle={() => setOpen((o) => !o)} />}
 		</div>
 	);
 }
@@ -272,6 +387,7 @@ function VersionSection() {
 					</span>
 				)}
 			</Row>
+			<RunningNotes />
 			<Row icon={<PackageIcon />} label="Install" testId="version-install">
 				<span>
 					channel <b className="font-mono font-semibold">{data.channel}</b>
