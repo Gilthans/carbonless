@@ -509,6 +509,76 @@ describe("the engine", () => {
 		expect(others.every((l) => !("baseNo" in l))).toBe(true);
 	});
 
+	it("rebased between patch sets, a since-view removed line carries its number in the new base: master inserted lines above it, or changed the line itself (CAR-217)", async () => {
+		const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+		const text = (ls: string[]) => `${ls.join("\n")}\n`;
+		const fx = createGitFixture([
+			{ message: "base", files: { "a.txt": text(lines) } },
+		]);
+		try {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: fx.path,
+					encoding: "utf8",
+					stdio: "pipe",
+					env: testGitEnv(),
+				}).trim();
+			const commit = (message: string, content: string[]) => {
+				writeFileSync(join(fx.path, "a.txt"), text(content));
+				git("commit", "--quiet", "-am", message);
+				return git("rev-parse", "HEAD");
+			};
+			const b1 = fx.shas[0] as string;
+			// PS1 on B1: line 5 changed.
+			const ps1Lines = lines.map((l) => (l === "line 5" ? "five" : l));
+			const h1 = commit("PR: five", ps1Lines);
+			// B2: master inserts three lines on top and changes line 30.
+			git("checkout", "--quiet", "--detach", b1);
+			const masterLines = [
+				"master 1",
+				"master 2",
+				"master 3",
+				...lines.map((l) => (l === "line 30" ? "thirty on master" : l)),
+			];
+			const b2 = commit("base: three on top, line 30", masterLines);
+			// PS2, rebased on B2: PS1's change, then lines 20 and 30 dropped.
+			const h2 = commit(
+				"PR: five, rebased; lines 20 and 30 dropped",
+				masterLines
+					.map((l) => (l === "line 5" ? "five" : l))
+					.filter((l) => l !== "line 20" && l !== "thirty on master"),
+			);
+			const ps1 = await buildSnapshot(fx.path, b1, h1);
+			const r = await buildSnapshot(fx.path, b2, h2);
+			const traced = await traceRereview(
+				fx.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const { answer } = answerRereview(
+				traced,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const removed = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
+				(hk) =>
+					hk.lines
+						.filter((l) => l.kind === "del")
+						.map((l) => [l.text, l.baseNo]),
+			);
+			// B2's numbers (three lines down), never B1's: "line 20" is B2's 23.
+			// "thirty on master" is B2's 33, though PS1 never had that text.
+			expect(removed).toEqual([
+				["line 20", 23],
+				["thirty on master", 33],
+			]);
+		} finally {
+			fx.cleanup();
+		}
+	});
+
 	it("a deletion the author restored: gone, its restored line keyed to it", async () => {
 		const ps1 = await snap(h.b0, h.deletesLine);
 		const r = await snap(h.b0, h.restoresLine);

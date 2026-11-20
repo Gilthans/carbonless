@@ -8,6 +8,7 @@ import {
 	commentAvailable,
 	describeSpan,
 	EARLIER_ONLY,
+	NO_GITHUB_LINE,
 	registerSelectionAction,
 	type SelectionContext,
 	selectionActions,
@@ -130,19 +131,31 @@ describe("commentAvailable: GitHub's diff", () => {
 describe("commentAvailable: a line only an earlier patch set had (CAR-217)", () => {
 	it("is off with the reason, on lines; a file comment stays on", () => {
 		const left = span({ startSide: "LEFT", side: "LEFT" });
-		expect(commentAvailable(left, ctx({ earlier: true }))).toBe(EARLIER_ONLY);
+		expect(commentAvailable(left, ctx({ noLine: "earlier" }))).toBe(
+			EARLIER_ONLY,
+		);
 		expect(EARLIER_ONLY).toBe(
 			"Only in an earlier patch set: not in GitHub's diff",
 		);
 		expect(
-			commentAvailable(span({ subject: "file" }), ctx({ earlier: true })),
+			commentAvailable(span({ subject: "file" }), ctx({ noLine: "earlier" })),
 		).toBe(true);
-		expect(commentAvailable(left, ctx({ earlier: false }))).toBe(true);
+		expect(commentAvailable(left, ctx())).toBe(true);
+		// A line whose base line the view doesn't know: off, with its own reason.
+		expect(commentAvailable(left, ctx({ noLine: "unknown" }))).toBe(
+			NO_GITHUB_LINE,
+		);
+		expect(NO_GITHUB_LINE).toBe("Can't place this line on GitHub's diff");
+		expect(askAgentAvailable(left, ctx({ noLine: "unknown" }))).toBe(
+			NO_GITHUB_LINE,
+		);
 	});
 
 	it("Ask agent is off there too (the agent reads a LEFT line in the base)", () => {
 		const left = span({ startSide: "LEFT", side: "LEFT" });
-		expect(askAgentAvailable(left, ctx({ earlier: true }))).toBe(EARLIER_ONLY);
+		expect(askAgentAvailable(left, ctx({ noLine: "earlier" }))).toBe(
+			EARLIER_ONLY,
+		);
 		expect(askAgentAvailable(left, ctx())).toBe(true);
 	});
 });

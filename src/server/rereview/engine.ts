@@ -54,7 +54,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-export const ENGINE_VERSION = 3;
+export const ENGINE_VERSION = 4;
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {
@@ -103,6 +103,16 @@ export interface Traced {
 		 * the new base); a file with no entry maps nothing (fails closed).
 		 */
 		baseLine?: Record<string, Record<number, number>>;
+		/**
+		 * By the virtual rebase's path, for each clean file of the
+		 * interdiff: an interdiff removed line (its old-side number) → the
+		 * line of the new merge base it is, by the virtual rebase's own diff
+		 * against that base: GitHub's LEFT line on the head (CAR-217).
+		 * Absent for a line the virtual rebase adds to the base (only the
+		 * patch sets had it). Unlike `baseLine` it never goes through the
+		 * old base, so a line the base move changed still maps.
+		 */
+		githubLeft?: Record<string, Record<number, number>>;
 	};
 }
 
@@ -352,6 +362,35 @@ export async function traceRereview(
 		placed[primePath] = same;
 		lineKeys.baseLine = placed;
 	}
+	// GitHub's LEFT line of each removed line the since view shows: the
+	// virtual rebase against the new base (the patch set's own diff when
+	// the base didn't move).
+	const rebaseDiff = sinceBase
+		? null
+		: await diffMap(repo, target.base, interdiff.virtualHead, primePaths);
+	const githubLeft: Record<string, Record<number, number>> = {};
+	for (const f of interdiff.files) {
+		if (f.conflict) continue;
+		const primePath = f.oldPath ?? f.path;
+		let toBase: LineMapper = IDENTITY;
+		if (rebaseDiff) {
+			const entry = rebaseDiff.get(primePath);
+			if (entry) toBase = createLineMapper(entry.hunks);
+		} else {
+			const own = ps.snapshot.files.find((x) => x.path === primePath);
+			if (own) toBase = linesMapper(own.clusters);
+		}
+		const lines: Record<number, number> = {};
+		for (const ic of f.clusters) {
+			if (ic.kind !== "lines") continue;
+			for (let i = 0; i < ic.oldCount; i++) {
+				const b = toBase.newToOld(ic.oldStart + i);
+				if (b !== null) lines[ic.oldStart + i] = b;
+			}
+		}
+		githubLeft[primePath] = lines;
+	}
+	lineKeys.githubLeft = githubLeft;
 	for (const file of ps.snapshot.files) {
 		const toPrime = primeByOld.get(file.path);
 		const primePath = toPrime?.path ?? file.path;
@@ -895,10 +934,18 @@ export function interdiffFileHunks(
 	// (sinceLineCarries), never through a piece.
 	const pieces = sincePieces(hunks, targetClusters, () => ({ baseNo }));
 	// A removed line's GitHub line on the head (LEFT, in the base): what a
-	// comment on it posts with, never its number here (CAR-217).
+	// comment on it posts with, never its number here (CAR-217). A
+	// conflicted file's old side is the base; else the virtual rebase's
+	// diff against it (null: a line only the patch sets had). A file with
+	// no such map leaves it unset, which the page refuses (fails closed).
+	const left = file.conflict
+		? undefined
+		: traced.lineKeys.githubLeft?.[file.oldPath ?? file.path];
 	for (const hunk of hunks) {
 		for (const line of hunk.lines) {
-			if (line.kind === "del") line.baseNo = baseNo(line) ?? null;
+			if (line.kind !== "del" || line.oldNo === undefined) continue;
+			if (file.conflict) line.baseNo = line.oldNo;
+			else if (left) line.baseNo = left[line.oldNo] ?? null;
 		}
 	}
 	return { hunks, newLineCount: file.newLines.length, pieces };

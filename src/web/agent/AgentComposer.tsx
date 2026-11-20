@@ -34,6 +34,8 @@ export function AgentComposer(props: {
 	span: CodeSpan;
 	/** The span's text (quoteOf). */
 	quote: string;
+	/** Where it is, as the view numbers its rows (NewThread's `where`). */
+	where?: string;
 	/** Kept for parity with NewThread; questions aren't drafts yet. */
 	lineTexts?: LineTexts;
 }) {
@@ -124,7 +126,7 @@ export function AgentComposer(props: {
 					</code>
 				)}
 				<span className="shrink-0 font-mono text-faint">
-					{describeSpan(span)}
+					{props.where ?? describeSpan(span)}
 				</span>
 			</div>
 			<div className="space-y-1.5 p-2.5">

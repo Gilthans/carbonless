@@ -39,18 +39,35 @@ export interface CellLine {
 	path: string;
 	/**
 	 * A LEFT cell of the since view (`data-base-no`): GitHub's number for
-	 * its line (in the base), or null when GitHub has none (a line only
-	 * the earlier patch set had). Absent elsewhere: `line` is GitHub's.
+	 * its line (in the base), null when GitHub has none (a line only the
+	 * earlier patch set had), "unknown" when the row doesn't say (never
+	 * its own number then: fails closed). Absent elsewhere: `line` is
+	 * GitHub's.
 	 */
-	base?: number | null;
+	base?: number | null | "unknown";
 }
+
+/** Why a since-view line has no GitHub line: only an earlier patch set's, or not known. */
+export type NoLine = "earlier" | "unknown";
 
 /** The line GitHub knows a cell's line by: its base number in the since view. */
 const githubLine = (c: Pick<CellLine, "line" | "base">) =>
 	typeof c.base === "number" ? c.base : c.line;
 
-/** Whether a cell's line is one only an earlier patch set had (no GitHub line). */
-export const onlyEarlier = (c: Pick<CellLine, "base">) => c.base === null;
+/** Why a cell's line has no GitHub line (codeSpan's NoLine), or null when it has one. */
+export const noLineOf = (c: Pick<CellLine, "base">): NoLine | null =>
+	c.base === null ? "earlier" : c.base === "unknown" ? "unknown" : null;
+
+/** Why some line among `cells` has no GitHub line (the first one's), or null. */
+export function noLineIn(
+	cells: readonly Pick<CellLine, "base">[],
+): NoLine | null {
+	for (const c of cells) {
+		const why = noLineOf(c);
+		if (why) return why;
+	}
+	return null;
+}
 
 export function cellLine(cell: Element): CellLine | null {
 	// A context line's left cell (side by side) is the same line as its right one.
@@ -63,6 +80,11 @@ export function cellLine(cell: Element): CellLine | null {
 		row?.getAttribute(side === "LEFT" ? "data-old-no" : "data-new-no"),
 	);
 	const baseAttr = side === "LEFT" ? row?.getAttribute("data-base-no") : null;
+	// The since view's LEFT line without a base number: not known (CAR-217).
+	const unknown =
+		side === "LEFT" &&
+		baseAttr == null &&
+		cell.closest("[data-since]") !== null;
 	const path = cell.closest("[data-path]")?.getAttribute("data-path");
 	if ((side !== "LEFT" && side !== "RIGHT") || !line || path == null) {
 		return null;
@@ -77,9 +99,11 @@ export function cellLine(cell: Element): CellLine | null {
 		hunk: hunk ?? "",
 		...(order !== null && order !== "" ? { order: Number(order) } : {}),
 		path,
-		...(baseAttr == null
-			? {}
-			: { base: baseAttr === "" ? null : Number(baseAttr) }),
+		...(unknown
+			? { base: "unknown" as const }
+			: baseAttr == null
+				? {}
+				: { base: baseAttr === "" ? null : Number(baseAttr) }),
 	};
 }
 
@@ -210,8 +234,8 @@ export function spanOfRange(
 ): {
 	span: CodeSpan;
 	inDiff: boolean;
-	/** One of its lines is only an earlier patch set's: GitHub has no line for it. */
-	earlier: boolean;
+	/** Why one of its lines has no GitHub line (the since view), or null. */
+	noLine: NoLine | null;
 	/** The code cells of its first and last line, as shown (SelectionBar's geometry). */
 	cells: { head: Element; last: Element };
 } | null {
@@ -256,7 +280,7 @@ export function spanOfRange(
 					endCol: end.col,
 				}),
 		inDiff: inHunk(head) && inHunk(last),
-		earlier: cells.some(onlyEarlier),
+		noLine: noLineIn(cells),
 		cells: { head: head.cell, last: last.cell },
 	};
 }

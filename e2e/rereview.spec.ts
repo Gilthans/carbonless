@@ -3296,6 +3296,8 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 		await pick(old);
 		await bar.getByRole("button", { name: "Comment" }).click();
 		const composer = since.getByTestId("new-thread");
+		// It names the row as this view numbers it (GitHub's number is sent).
+		await expect(composer).toContainText(`line ${old}, old`);
 		await composer.getByRole("textbox", { name: "Comment" }).fill(body);
 		await composer.getByRole("button", { name: "Comment" }).click();
 		await expect(since.getByTestId("new-thread")).toHaveCount(0);

@@ -373,6 +373,8 @@ interface AgentRows {
 	idOf: (key: LineKey) => string;
 	composersAt: (keys: LineKey[]) => AgentComposerItem[];
 	quote: (span: CodeSpan) => string;
+	/** Where a span is, by this view's row numbers (describeSpan). */
+	where: (span: CodeSpan) => string;
 }
 
 /** A cell's agent threads: those ending on its keys, the key, whether open. */
@@ -743,6 +745,8 @@ const stopOf = (column: DiffSide, key: string) => `${column} ${key}`;
 interface RowComposers {
 	at: (keys: LineKey[]) => NewThreadItem[];
 	quote: (item: NewThreadItem) => string;
+	/** Where it is, by this view's row numbers (describeSpan). */
+	where: (item: NewThreadItem) => string;
 	/** Its first and last line's text as shown (kept with its draft). */
 	texts: (item: NewThreadItem) => LineTexts | undefined;
 	onPosted: (item: NewThreadItem) => void;
@@ -1280,6 +1284,7 @@ function RowTail(props: {
 									clientId={item.clientId}
 									span={item.span}
 									quote={agent.quote(item.span)}
+									where={agent.where(item.span)}
 								/>
 							))}
 						</TailRow>
@@ -1302,6 +1307,7 @@ function NewThreadRow(props: {
 					key={item.clientId}
 					item={item}
 					quote={props.composers.quote(item)}
+					where={props.composers.where(item)}
 					lineTexts={props.composers.texts(item)}
 					onPosted={() => props.composers.onPosted(item)}
 				/>
@@ -2641,7 +2647,25 @@ export function DiffBody(props: {
 		const rows = hunks.data && onRows(span);
 		return hunks.data && rows ? spanTexts(hunks.data.hunks, rows) : null;
 	};
+	/**
+	 * Where a span is, as this view numbers its rows: in the since view a
+	 * removed line by its own old number there, not GitHub's base number
+	 * (the span keeps that one, CAR-217).
+	 */
+	const whereSpan = (span: CodeSpan) => {
+		if (span.subject !== "line" || !span.side || span.line === undefined) {
+			return describeSpan(span);
+		}
+		const rows = onRows({
+			startSide: span.startSide ?? span.side,
+			startLine: span.startLine ?? span.line,
+			side: span.side,
+			line: span.line,
+		});
+		return describeSpan(rows ? { ...span, ...rows } : span);
+	};
 	const composers: RowComposers = {
+		where: (item) => whereSpan(item.span),
 		at: (keys) =>
 			lineItems.filter((i) => {
 				const k = endKey(i.span);
@@ -2748,6 +2772,7 @@ export function DiffBody(props: {
 						return k !== null && keys.includes(k);
 					}),
 				quote: quoteSpan,
+				where: whereSpan,
 			}
 		: undefined;
 	// Asked on a row that isn't shown (a gap), or on an earlier head: above
@@ -3304,6 +3329,7 @@ export function DiffBody(props: {
 				<table
 					ref={table}
 					data-view={view}
+					data-since={props.from !== undefined || undefined}
 					data-tight={tight || undefined}
 					onPointerDown={onPointerDown}
 					style={

@@ -16,7 +16,8 @@ import { NOT_PHONE, useMedia } from "../useMedia";
 import {
 	CODE_CELL,
 	inHunk,
-	onlyEarlier,
+	type NoLine,
+	noLineIn,
 	spanOfCells,
 	spanOfRange,
 } from "./codeSpan";
@@ -34,8 +35,8 @@ export interface BarTarget {
 	span: CodeSpan;
 	/** Both ends are lines of GitHub's diff. */
 	inDiff: boolean;
-	/** A line of it is only an earlier patch set's (codeSpan.ts onlyEarlier). */
-	earlier: boolean;
+	/** Why a line of it has no GitHub line (codeSpan.ts noLineIn), or null. */
+	noLine: NoLine | null;
 	/** Viewport rects: the selection's first and last line, and all of it. */
 	first: DOMRect;
 	last: DOMRect;
@@ -318,7 +319,7 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 	return {
 		span,
 		inDiff: inHunk(head) && inHunk(tail),
-		earlier: picks.lines.some(onlyEarlier),
+		noLine: noLineIn(picks.lines),
 		first,
 		last,
 		box: new DOMRect(
@@ -580,7 +581,7 @@ export function SelectionBar(props: {
 						submodule: file?.submodule ?? false,
 					},
 					inDiff: target.inDiff,
-					earlier: target.earlier,
+					noLine: target.noLine ?? undefined,
 					headUnsure: props.headSure === false,
 					readOnly: props.readOnly === true,
 				}

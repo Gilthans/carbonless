@@ -134,7 +134,7 @@ alone at the updated stage, for `base-absorbs` the first commit → the head
 
 Every permutation proves:
 
-- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 9 tests × 28):
+- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 10 tests × 28):
   - the snapshot equals the stage's reference (same files, same clusters
     and keys) at the opened and the updated stage, through a refresh and a
     fresh open;
@@ -152,6 +152,11 @@ Every permutation proves:
     nothing gone); viewing the updated head
     writes nothing; the first action on
     it starts PS2 with the carries, which a fresh open shows;
+  - the since view (opened → updated head, PS1 marked): each removed line
+    names its line in the head's merge base (GitHub's LEFT line on the
+    head, where a comment on it goes), whose text it is; only a line PS1
+    alone had names none (`rebase-amend`'s amended line 30), which Comment
+    refuses (CAR-217);
   - once landed: a running unstarted session keeps its snapshot on refresh;
     a new open refuses when merged, still shows the PR when open;
   - a review started at the opened stage stays pinned through the update and
