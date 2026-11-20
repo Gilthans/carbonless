@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { SincePiece } from "../../shared/pieces";
 import type {
 	ClusterView,
@@ -13,6 +13,13 @@ import type {
 	ReviewThread,
 	SinceMark,
 } from "../../shared/types";
+import {
+	CODE_CELL,
+	cellLine,
+	onlyEarlier,
+	spanOfCells,
+	spanOfRange,
+} from "./codeSpan";
 import { contextRanges } from "./contextRanges";
 import { DiffBody, type DiffThreads } from "./DiffBody";
 import { GoneFile } from "./FileDiff";
@@ -308,6 +315,55 @@ describe("DiffBody in the since view", () => {
 			"Nothing to read since PS1 · 2 carried",
 		);
 		expect(screen.queryAllByTestId("diff-line")).toHaveLength(0);
+	});
+
+	it("a removed row's span names its base line, GitHub's LEFT line on the head; a line only PS1 had has none (CAR-217)", async () => {
+		const withBase: FileHunks = {
+			...sinceHunks,
+			hunks: sinceHunks.hunks.map((h) => ({
+				...h,
+				lines: h.lines.map((l) =>
+					l.kind !== "del" ? l : { ...l, baseNo: l.oldNo === 2 ? 7 : null },
+				),
+			})),
+		};
+		renderBody({
+			clusters: [cluster("k1", "unreviewed")],
+			hunks: withBase,
+			from: 1,
+			kinds,
+		});
+		await screen.findAllByTestId("diff-line");
+		// The page's file section names the path (FileDiff's); here, the body.
+		document.body.setAttribute("data-path", "src/a.ts");
+		onTestFinished(() => document.body.removeAttribute("data-path"));
+		const leftCell = (oldNo: number) =>
+			document.querySelector(
+				`tr[data-old-no="${oldNo}"] > [${CODE_CELL}][data-side="LEFT"]`,
+			) as Element;
+		const rework = cellLine(leftCell(2));
+		expect(rework).toMatchObject({ side: "LEFT", line: 2, base: 7 });
+		const only = cellLine(leftCell(4));
+		expect(only).toMatchObject({ side: "LEFT", line: 4, base: null });
+		if (!rework || !only) throw new Error("no cells");
+		expect(spanOfCells(rework, rework, "h")).toMatchObject({
+			startSide: "LEFT",
+			startLine: 7,
+			side: "LEFT",
+			line: 7,
+		});
+		expect(onlyEarlier(rework)).toBe(false);
+		expect(onlyEarlier(only)).toBe(true);
+		// A context row has no base number: its line is RIGHT, the head's.
+		const context = document.querySelector('tr[data-new-no="3"]');
+		expect(context?.hasAttribute("data-base-no")).toBe(false);
+		// A selection over both removed rows is flagged, its ends in base numbers.
+		const range = document.createRange();
+		range.setStart(leftCell(2), 0);
+		range.setEnd(leftCell(4), leftCell(4).childNodes.length);
+		const found = spanOfRange(range, "h");
+		expect(found?.earlier).toBe(true);
+		expect(found?.span).toMatchObject({ startSide: "LEFT", startLine: 7 });
 	});
 });
 

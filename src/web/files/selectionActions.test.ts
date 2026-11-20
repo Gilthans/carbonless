@@ -1,11 +1,13 @@
 import { ZapIcon } from "@primer/octicons-react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { askAgentAvailable } from "../agent/askAgentAction";
 import { getComposers, resetComposers } from "../threads/newThreads";
 import {
 	COMMENT_ACTION,
 	type CodeSpan,
 	commentAvailable,
 	describeSpan,
+	EARLIER_ONLY,
 	registerSelectionAction,
 	type SelectionContext,
 	selectionActions,
@@ -122,6 +124,26 @@ describe("commentAvailable: GitHub's diff", () => {
 		expect(
 			commentAvailable(span({ subject: "file" }), ctx({ inDiff: false })),
 		).toBe(true);
+	});
+});
+
+describe("commentAvailable: a line only an earlier patch set had (CAR-217)", () => {
+	it("is off with the reason, on lines; a file comment stays on", () => {
+		const left = span({ startSide: "LEFT", side: "LEFT" });
+		expect(commentAvailable(left, ctx({ earlier: true }))).toBe(EARLIER_ONLY);
+		expect(EARLIER_ONLY).toBe(
+			"Only in an earlier patch set: not in GitHub's diff",
+		);
+		expect(
+			commentAvailable(span({ subject: "file" }), ctx({ earlier: true })),
+		).toBe(true);
+		expect(commentAvailable(left, ctx({ earlier: false }))).toBe(true);
+	});
+
+	it("Ask agent is off there too (the agent reads a LEFT line in the base)", () => {
+		const left = span({ startSide: "LEFT", side: "LEFT" });
+		expect(askAgentAvailable(left, ctx({ earlier: true }))).toBe(EARLIER_ONLY);
+		expect(askAgentAvailable(left, ctx())).toBe(true);
 	});
 });
 

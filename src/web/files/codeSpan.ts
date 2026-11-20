@@ -11,7 +11,10 @@ import type { CodeSpan } from "./selectionActions";
  *   it is in, `h<i>`, or the gap of expanded context, `g<i>`), `data-order`
  *   (in a hunk: its line's index in GitHub's order of it); its line is
  *   its row's number on that side (`data-old-no` / `data-new-no`), never
- *   read from the row otherwise. Side by side, a context line is shown in
+ *   read from the row otherwise. The since view numbers its old side in
+ *   the earlier patch set: its removed rows also carry `data-base-no`,
+ *   the base line GitHub knows a LEFT line by on the head (empty: a line
+ *   only that patch set had, which GitHub has no line for; CAR-217). Side by side, a context line is shown in
  *   a cell on each side (`data-kind="context"`, `data-side` the cell's
  *   column): it is one line, RIGHT from either cell;
  * - inside it, `[data-code]` holds exactly the line's characters (CodeLine):
@@ -34,7 +37,20 @@ export interface CellLine {
 	/** Its line's place in its hunk as GitHub lists it (`data-order`); none in a gap. */
 	order?: number;
 	path: string;
+	/**
+	 * A LEFT cell of the since view (`data-base-no`): GitHub's number for
+	 * its line (in the base), or null when GitHub has none (a line only
+	 * the earlier patch set had). Absent elsewhere: `line` is GitHub's.
+	 */
+	base?: number | null;
 }
+
+/** The line GitHub knows a cell's line by: its base number in the since view. */
+const githubLine = (c: Pick<CellLine, "line" | "base">) =>
+	typeof c.base === "number" ? c.base : c.line;
+
+/** Whether a cell's line is one only an earlier patch set had (no GitHub line). */
+export const onlyEarlier = (c: Pick<CellLine, "base">) => c.base === null;
 
 export function cellLine(cell: Element): CellLine | null {
 	// A context line's left cell (side by side) is the same line as its right one.
@@ -42,11 +58,11 @@ export function cellLine(cell: Element): CellLine | null {
 		cell.getAttribute("data-kind") === "context"
 			? "RIGHT"
 			: cell.getAttribute("data-side");
+	const row = cell.closest("tr");
 	const line = Number(
-		cell
-			.closest("tr")
-			?.getAttribute(side === "LEFT" ? "data-old-no" : "data-new-no"),
+		row?.getAttribute(side === "LEFT" ? "data-old-no" : "data-new-no"),
 	);
+	const baseAttr = side === "LEFT" ? row?.getAttribute("data-base-no") : null;
 	const path = cell.closest("[data-path]")?.getAttribute("data-path");
 	if ((side !== "LEFT" && side !== "RIGHT") || !line || path == null) {
 		return null;
@@ -61,6 +77,9 @@ export function cellLine(cell: Element): CellLine | null {
 		hunk: hunk ?? "",
 		...(order !== null && order !== "" ? { order: Number(order) } : {}),
 		path,
+		...(baseAttr == null
+			? {}
+			: { base: baseAttr === "" ? null : Number(baseAttr) }),
 	};
 }
 
@@ -92,7 +111,11 @@ function pointIn(
 /** Whether the cell's line is in GitHub's diff (a hunk's, not expanded context). */
 export const inHunk = (c: Pick<CellLine, "hunk">) => c.hunk.startsWith("h");
 
-/** A span over cells `start`..`end` (in the order shown), whole lines unless cols are given. */
+/**
+ * A span over cells `start`..`end` (in the order shown), whole lines unless
+ * cols are given; each end by GitHub's number for it (`base` in the since
+ * view).
+ */
 export function spanOfCells(
 	start: CellLine,
 	end: CellLine,
@@ -105,9 +128,9 @@ export function spanOfCells(
 		commit,
 		subject: "line",
 		startSide: start.side,
-		startLine: start.line,
+		startLine: githubLine(start),
 		side: end.side,
-		line: end.line,
+		line: githubLine(end),
 		startCol: whole ? null : (cols?.startCol ?? null),
 		endCol: whole ? null : (cols?.endCol ?? null),
 	};
@@ -187,6 +210,8 @@ export function spanOfRange(
 ): {
 	span: CodeSpan;
 	inDiff: boolean;
+	/** One of its lines is only an earlier patch set's: GitHub has no line for it. */
+	earlier: boolean;
 	/** The code cells of its first and last line, as shown (SelectionBar's geometry). */
 	cells: { head: Element; last: Element };
 } | null {
@@ -231,6 +256,7 @@ export function spanOfRange(
 					endCol: end.col,
 				}),
 		inDiff: inHunk(head) && inHunk(last),
+		earlier: cells.some(onlyEarlier),
 		cells: { head: head.cell, last: last.cell },
 	};
 }

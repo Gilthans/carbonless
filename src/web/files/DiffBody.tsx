@@ -141,10 +141,11 @@ import {
 	type FilePlacement,
 	type LineKey,
 	lineKey,
+	onSinceRows,
 	type Placeable,
 	type Placements,
 	placeThreads,
-	sinceLeftToNew,
+	sinceLeft,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
 import { type DiffRow, hunkView } from "./whitespace";
@@ -417,6 +418,8 @@ interface WsLine {
 	newNo?: number;
 	text: string;
 	noNewline?: boolean;
+	/** Its removed line's, in the since view (DiffLine.baseNo). */
+	baseNo?: number | null;
 }
 
 /** What a diff row shows: a line as it is, or a whitespace-only pair. */
@@ -431,6 +434,7 @@ const rowLine = (row: DiffRow): RowLine => {
 		newNo: row.add?.newNo,
 		text: shown.text,
 		noNewline: shown.noNewline,
+		...(row.del?.baseNo === undefined ? {} : { baseNo: row.del.baseNo }),
 	};
 };
 
@@ -443,8 +447,17 @@ const sideLine = (line: DiffLine, ws: boolean): RowLine =>
 				newNo: line.newNo,
 				text: line.text,
 				noNewline: line.noNewline,
+				...(line.baseNo === undefined ? {} : { baseNo: line.baseNo }),
 			}
 		: line;
+
+/**
+ * A since-view removed row's `data-base-no` (codeSpan.ts cellLine): its
+ * base number, empty for a line only the earlier patch set had; none on
+ * any other row.
+ */
+const baseAttr = (baseNo: number | null | undefined) =>
+	baseNo === undefined ? undefined : baseNo === null ? "" : baseNo;
 
 /** Which side(s) a whitespace-only row shows (tests). */
 const wsSide = (line: WsLine) =>
@@ -1376,6 +1389,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-crossed={state === "crossed-off" || undefined}
 				data-old-no={line.oldNo}
 				data-new-no={line.newNo}
+				data-base-no={baseAttr(line.baseNo)}
 				data-landed={landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -1706,6 +1720,7 @@ function PairRow(
 				data-reviewed={reviewed || undefined}
 				data-old-no={left?.line.oldNo}
 				data-new-no={right?.line.newNo}
+				data-base-no={baseAttr(left?.line.baseNo)}
 				data-landed={phase === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -2494,13 +2509,30 @@ export function DiffBody(props: {
 		: [];
 
 	// The since view numbers its old side in the compared patch set; a
-	// LEFT anchor counts in the base, so it goes through the full diff
+	// LEFT anchor or span counts in the base, so it goes to the removed row
+	// that shows it (the row's base number), else through the full diff
 	// (its clusters) to the head line it became (threadPlacement.ts).
-	const leftToNew = useMemo(
+	const left = useMemo(
 		() =>
-			props.from === undefined ? undefined : sinceLeftToNew(file.clusters),
-		[props.from, file.clusters],
+			props.from === undefined
+				? undefined
+				: sinceLeft(file.clusters, hunks.data?.hunks),
+		[props.from, file.clusters, hunks.data],
 	);
+	/** A span (GitHub's numbers) on this view's rows; null when none shows it. */
+	const onRows = <A extends SpanRange>(span: A): A | null =>
+		onSinceRows(span, left);
+	/** The key of the row a span ends on, as this view numbers it. */
+	const endKey = (span: CodeSpan): LineKey | null => {
+		if (span.side === undefined || span.line === undefined) return null;
+		const rows = onRows({
+			startSide: span.startSide ?? span.side,
+			startLine: span.startLine ?? span.line,
+			side: span.side,
+			line: span.line,
+		});
+		return rows && `${rows.side}:${rows.line}`;
+	};
 	// Where the file's threads sit (all start closed). Opening one only
 	// shows it: no review state changes.
 	const placement = props.threads
@@ -2513,7 +2545,7 @@ export function DiffBody(props: {
 				noLines: file.binary || file.submodule || linesHidden,
 				spans: lineItems.map((i) => i.span as SpanRange),
 				placements: props.threads.placements,
-				leftToNew,
+				sinceLeft: left,
 			})
 		: null;
 	// Written on a row that isn't shown (a gap): above the diff, never lost.
@@ -2587,28 +2619,40 @@ export function DiffBody(props: {
 			if (k) textAt.set(k, l.text);
 		}
 	}
+	/** A span's quote, from the texts of the rows it is on here. */
+	const quoteSpan = (span: CodeSpan) => {
+		const rows =
+			span.subject === "line" && span.side && span.line !== undefined
+				? onRows({
+						startSide: span.startSide ?? span.side,
+						startLine: span.startLine ?? span.line,
+						side: span.side,
+						line: span.line,
+					})
+				: null;
+		const start = rows && textAt.get(`${rows.startSide}:${rows.startLine}`);
+		const end = rows && textAt.get(`${rows.side}:${rows.line}`);
+		const same =
+			!rows || (rows.startSide === rows.side && rows.startLine === rows.line);
+		return quoteOf(span, same ? [end ?? ""] : [start ?? "", end ?? ""]);
+	};
+	/** A span's lines in the hunks, on the rows it is on here (draftMove.ts). */
+	const textsOf = (span: SpanRange) => {
+		const rows = hunks.data && onRows(span);
+		return hunks.data && rows ? spanTexts(hunks.data.hunks, rows) : null;
+	};
 	const composers: RowComposers = {
 		at: (keys) =>
-			lineItems.filter((i) =>
-				keys.includes(`${i.span.side}:${i.span.line}` as LineKey),
-			),
-		quote: (item) => {
-			const { span } = item;
-			const start = textAt.get(
-				`${span.startSide}:${span.startLine}` as LineKey,
-			);
-			const end = textAt.get(`${span.side}:${span.line}` as LineKey);
-			const same = span.startSide === span.side && span.startLine === span.line;
-			return quoteOf(span, same ? [end ?? ""] : [start ?? "", end ?? ""]);
-		},
-		texts: (item) =>
-			hunks.data
-				? (spanTexts(hunks.data.hunks, item.span as SpanRange) ?? undefined)
-				: undefined,
+			lineItems.filter((i) => {
+				const k = endKey(i.span);
+				return k !== null && keys.includes(k);
+			}),
+		quote: (item) => quoteSpan(item.span),
+		texts: (item) => textsOf(item.span as SpanRange) ?? undefined,
 		// The thread opens where it lands.
 		onPosted: (item) => {
-			const key = `${item.span.side}:${item.span.line}` as LineKey;
-			setOpenThreads((open) => new Set(open).add(key));
+			const key = endKey(item.span);
+			if (key) setOpenThreads((open) => new Set(open).add(key));
 		},
 	};
 
@@ -2641,7 +2685,7 @@ export function DiffBody(props: {
 			const span = item.span as SpanRange;
 			const left = span.startSide === "LEFT" || span.side === "LEFT";
 			if (left && commentLeft === false) continue;
-			if (canMove(draft.create?.texts, spanTexts(hunks.data.hunks, span))) {
+			if (canMove(draft.create?.texts, textsOf(span))) {
 				writer.drafts.retarget(item.clientId, snapshotHead);
 			}
 		}
@@ -2679,7 +2723,7 @@ export function DiffBody(props: {
 				loadedContext: [...loaded.values()],
 				noLines: file.binary || file.submodule || linesHidden,
 				spans: agentLineItems.map((c) => c.span as SpanRange),
-				leftToNew,
+				sinceLeft: left,
 			})
 		: null;
 	const [openAgent, setOpenAgent] = useState<ReadonlySet<LineKey>>(
@@ -2692,12 +2736,6 @@ export function DiffBody(props: {
 			else next.add(key);
 			return next;
 		});
-	const quoteSpan = (span: CodeSpan) => {
-		const start = textAt.get(`${span.startSide}:${span.startLine}` as LineKey);
-		const end = textAt.get(`${span.side}:${span.line}` as LineKey);
-		const same = span.startSide === span.side && span.startLine === span.line;
-		return quoteOf(span, same ? [end ?? ""] : [start ?? "", end ?? ""]);
-	};
 	const agentRows: AgentRows | undefined = agentPlacement
 		? {
 				placement: agentPlacement,
@@ -2705,9 +2743,10 @@ export function DiffBody(props: {
 				toggle: toggleAgent,
 				idOf: (key) => `${idBase}-agent-${key}`,
 				composersAt: (keys) =>
-					agentLineItems.filter((c) =>
-						keys.includes(`${c.span.side}:${c.span.line}` as LineKey),
-					),
+					agentLineItems.filter((c) => {
+						const k = endKey(c.span);
+						return k !== null && keys.includes(k);
+					}),
 				quote: quoteSpan,
 			}
 		: undefined;

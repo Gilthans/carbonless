@@ -578,6 +578,7 @@ describe("Ignore whitespace and GitHub's order", () => {
 				endCol: null,
 			},
 			inDiff: true,
+			earlier: false,
 			cells: { head: pair, last: cell("LEFT", 4) },
 		});
 		expect(

@@ -279,7 +279,14 @@ describe("the engine", () => {
 					newStart: 0,
 					newCount: 0,
 					lines: [
-						{ kind: "del", oldNo: 1, text: "extra", clusterKey: extraKey },
+						{
+							kind: "del",
+							oldNo: 1,
+							text: "extra",
+							clusterKey: extraKey,
+							// Only PS1 had it: no line on the head (CAR-217).
+							baseNo: null,
+						},
 					],
 				},
 			],
@@ -453,7 +460,14 @@ describe("the engine", () => {
 					{ kind: "context", oldNo: 27, newNo: 27, text: "line 27" },
 					{ kind: "context", oldNo: 28, newNo: 28, text: "line 28" },
 					{ kind: "context", oldNo: 29, newNo: 29, text: "line 29" },
-					{ kind: "del", oldNo: 30, text: "thirty", clusterKey: k30 },
+					{
+						kind: "del",
+						oldNo: 30,
+						text: "thirty",
+						clusterKey: k30,
+						// PS1's own line, in neither base nor head (CAR-217).
+						baseNo: null,
+					},
 					{ kind: "add", newNo: 30, text: "thirty!", clusterKey: k30 },
 					{ kind: "context", oldNo: 31, newNo: 31, text: "line 31" },
 					{ kind: "context", oldNo: 32, newNo: 32, text: "line 32" },
@@ -465,6 +479,34 @@ describe("the engine", () => {
 			hunks: [],
 			newLineCount: 0,
 		});
+	});
+
+	it("a removed line of the since view carries its base number, GitHub's LEFT line on the head; one only the earlier patch set had carries null (CAR-217)", async () => {
+		const ps1 = await snap(h.b0, h.p2);
+		const r = await snap(h.b0, h.deletesLine);
+		const traced = await traceRereview(
+			h.path,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		const { answer } = answerRereview(
+			traced,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		const removed = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
+			(hk) => hk.lines.filter((l) => l.kind === "del"),
+		);
+		expect(removed).toEqual([
+			expect.objectContaining({ oldNo: 20, text: "line 20", baseNo: 20 }),
+		]);
+		// No other line carries one: added and context lines are the head's.
+		const others = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
+			(hk) => hk.lines.filter((l) => l.kind !== "del"),
+		);
+		expect(others.every((l) => !("baseNo" in l))).toBe(true);
 	});
 
 	it("a deletion the author restored: gone, its restored line keyed to it", async () => {

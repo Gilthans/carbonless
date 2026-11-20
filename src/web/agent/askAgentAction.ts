@@ -8,6 +8,7 @@ import { useSyncExternalStore } from "react";
 import type { AgentSpanAnchor } from "../../shared/agent";
 import {
 	type CodeSpan,
+	EARLIER_ONLY,
 	HEAD_UNSURE,
 	type SelectionAction,
 	type SelectionContext,
@@ -17,13 +18,16 @@ import { newClientId, sameSpan } from "../threads/newThreads";
 /** Why the agent can't be asked here; true when it can. */
 export function askAgentAvailable(
 	span: CodeSpan,
-	ctx: Pick<SelectionContext, "writes" | "headUnsure">,
+	ctx: Pick<SelectionContext, "writes" | "headUnsure" | "earlier">,
 ): true | string {
 	if (ctx.writes === "as-of") return "Your agent is off as of a cutoff";
 	if (ctx.writes === "viewer") {
 		return "Your agent is off when viewing as someone else";
 	}
 	if (ctx.headUnsure && span.subject !== "file") return HEAD_UNSURE;
+	// The agent reads a LEFT line in the base: a line only an earlier
+	// patch set had isn't there (CAR-217).
+	if (ctx.earlier && span.subject !== "file") return EARLIER_ONLY;
 	// Any line (expanded context, old lines) or file: no GitHub rule applies,
 	// and with no agent attached the thread waits.
 	return true;

@@ -894,6 +894,13 @@ export function interdiffFileHunks(
 	// the compared patch set: it takes its mark there, if any, as a carry
 	// (sinceLineCarries), never through a piece.
 	const pieces = sincePieces(hunks, targetClusters, () => ({ baseNo }));
+	// A removed line's GitHub line on the head (LEFT, in the base): what a
+	// comment on it posts with, never its number here (CAR-217).
+	for (const hunk of hunks) {
+		for (const line of hunk.lines) {
+			if (line.kind === "del") line.baseNo = baseNo(line) ?? null;
+		}
+	}
 	return { hunks, newLineCount: file.newLines.length, pieces };
 }
 
