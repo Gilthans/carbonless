@@ -118,7 +118,7 @@ const RE_REVIEW: Record<
 		conflicts: [],
 		carried: 2,
 		reworked: 1,
-		fresh: 0,
+		fresh: 1,
 		gone: 0,
 		absorbed: 0,
 	},
@@ -152,6 +152,20 @@ const RE_REVIEW: Record<
 		gone: 0,
 		absorbed: 2,
 	},
+};
+
+/**
+ * The lines the since view (opened → updated head) shows removed: how many
+ * name a line of the head's merge base (`based`), and how many only PS1
+ * had (`earlier`: in neither that base nor the head). `rebase-amend`
+ * amends PS1's line 30 (PS1's own) and changes base line 35 after the
+ * rebase; a conflicted file's are its base's own lines.
+ */
+const SINCE_REMOVED: Partial<
+	Record<Update, { based: number; earlier: number }>
+> = {
+	"rebase-amend": { based: 1, earlier: 1 },
+	"merge-base-in-conflict": { based: 2, earlier: 0 },
 };
 
 function matrix(m: (typeof METHODOLOGIES)[number]) {
@@ -518,6 +532,50 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		const beforeLanding = await open(BEFORE_LANDING);
 		expect(beforeLanding.info().snapshotHead).toBe(repo.heads.updated);
 		expectPrOwnChanges(beforeLanding, "updated");
+	});
+
+	it("the since view's removed lines name their line in the head's merge base, GitHub's LEFT line on the head; a line only PS1 had names none (CAR-217)", async () => {
+		const s = await open();
+		const ps1 = s.snapshot();
+		await s.setStates(
+			ps1.revision,
+			ps1.files.flatMap((f) =>
+				f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+			),
+		);
+		stage("updated");
+		await s.refresh();
+		const mergeBase = execFileSync(
+			"git",
+			["merge-base", "main", repo.heads.updated],
+			{ cwd: repo.path, env: testGitEnv(), encoding: "utf8" },
+		).trim();
+		const view = await s.viewHead(repo.heads.updated);
+		const baseText = (path: string) =>
+			execFileSync("git", ["show", `${mergeBase}:${path}`], {
+				cwd: repo.path,
+				env: testGitEnv(),
+				encoding: "utf8",
+			}).split("\n");
+		const removed: { path: string; text: string; baseNo: number | null }[] = [];
+		for (const f of view.files) {
+			const { hunks } = await s.interdiffHunks(1, view.revision, f.index);
+			for (const l of hunks.flatMap((h) => h.lines)) {
+				if (l.kind !== "del") continue;
+				// Never left unset: the page would refuse it (fails closed).
+				expect(l.baseNo).not.toBeUndefined();
+				removed.push({ path: f.path, text: l.text, baseNo: l.baseNo ?? null });
+			}
+		}
+		for (const r of removed) {
+			if (r.baseNo === null) continue;
+			// The base's own line, the one GitHub shows on the head's LEFT.
+			expect(baseText(r.path)[r.baseNo - 1]).toBe(r.text);
+		}
+		expect({
+			based: removed.filter((r) => r.baseNo !== null).length,
+			earlier: removed.filter((r) => r.baseNo === null).length,
+		}).toEqual(SINCE_REMOVED[m.update] ?? { based: 0, earlier: 0 });
 	});
 
 	it("re-review from the opened head to the updated one: the shape, the interdiff and the carry; the first action on the viewed head starts PS2 with them", async () => {

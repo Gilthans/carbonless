@@ -13,7 +13,14 @@ import { overviewQuery, sessionQuery } from "../api";
 import { useShortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { CODE_CELL, inHunk, spanOfCells, spanOfRange } from "./codeSpan";
+import {
+	CODE_CELL,
+	inHunk,
+	type NoLine,
+	noLineIn,
+	spanOfCells,
+	spanOfRange,
+} from "./codeSpan";
 import { getPicks, type Picks, setPicks, usePicks } from "./linePicks";
 import {
 	type CodeSpan,
@@ -28,6 +35,8 @@ export interface BarTarget {
 	span: CodeSpan;
 	/** Both ends are lines of GitHub's diff. */
 	inDiff: boolean;
+	/** Why a line of it has no GitHub line (codeSpan.ts noLineIn), or null. */
+	noLine: NoLine | null;
 	/** Viewport rects: the selection's first and last line, and all of it. */
 	first: DOMRect;
 	last: DOMRect;
@@ -310,6 +319,7 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 	return {
 		span,
 		inDiff: inHunk(head) && inHunk(tail),
+		noLine: noLineIn(picks.lines),
 		first,
 		last,
 		box: new DOMRect(
@@ -571,6 +581,7 @@ export function SelectionBar(props: {
 						submodule: file?.submodule ?? false,
 					},
 					inDiff: target.inDiff,
+					noLine: target.noLine ?? undefined,
 					headUnsure: props.headSure === false,
 					readOnly: props.readOnly === true,
 				}

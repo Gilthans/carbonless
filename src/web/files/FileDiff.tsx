@@ -92,7 +92,7 @@ import { ThreadBubble } from "./ThreadBubble";
 import { UnplacedThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
 import { useFocusAmong } from "./threadFocus";
-import { fileThreads, placeThreads, sinceLeftToNew } from "./threadPlacement";
+import { fileThreads, placeThreads, sinceLeft } from "./threadPlacement";
 import {
 	countedFile,
 	describeFileProgress,
@@ -893,7 +893,7 @@ export function FileDiff(props: {
 				// the full diff), so the header holds what no row can.
 				...(props.since === undefined
 					? {}
-					: { leftToNew: sinceLeftToNew(file.clusters) }),
+					: { sinceLeft: sinceLeft(file.clusters, hunkData?.hunks) }),
 			})
 		: null;
 	const header = filePlacement?.header ?? [];
@@ -995,7 +995,7 @@ export function FileDiff(props: {
 				placements: agentPlacements,
 				...(props.since === undefined
 					? {}
-					: { leftToNew: sinceLeftToNew(file.clusters) }),
+					: { sinceLeft: sinceLeft(file.clusters, hunkData?.hunks) }),
 			})
 		: null;
 	const agentHeader = agentPlaced?.header ?? [];
