@@ -579,6 +579,68 @@ describe("the engine", () => {
 		}
 	});
 
+	it("a renamed file the head's diff pairs with another base file than the since view's map does: no base numbers, so no comment lands in the wrong file (CAR-217)", async () => {
+		const block = (name: string) =>
+			`${Array.from({ length: 30 }, (_, i) => `${name} ${i + 1}`).join("\n")}\n`;
+		const fx = createGitFixture([
+			{
+				message: "base",
+				files: { "x.txt": block("ex"), "y.txt": block("why") },
+			},
+		]);
+		try {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: fx.path,
+					encoding: "utf8",
+					stdio: "pipe",
+					env: testGitEnv(),
+				}).trim();
+			const b0 = fx.shas[0] as string;
+			// PS1: x.txt renamed to z.txt (its base file is x.txt).
+			git("mv", "x.txt", "z.txt");
+			git("commit", "--quiet", "-m", "PR: x.txt as z.txt");
+			const h1 = git("rev-parse", "HEAD");
+			// PS2: z.txt now reads as y.txt, which goes: the head's diff
+			// pairs z.txt with y.txt, and x.txt is deleted.
+			writeFileSync(
+				join(fx.path, "z.txt"),
+				block("why").replace("why 30", "why thirty"),
+			);
+			git("rm", "--quiet", "y.txt");
+			git("commit", "--quiet", "-am", "PR: z.txt from y.txt");
+			const h2 = git("rev-parse", "HEAD");
+			const ps1 = await buildSnapshot(fx.path, b0, h1);
+			const r = await buildSnapshot(fx.path, b0, h2);
+			const z = r.files.find((f) => f.path === "z.txt");
+			expect(z?.oldPath).toBe("y.txt");
+			const traced = await traceRereview(
+				fx.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const { answer } = answerRereview(
+				traced,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const removed = interdiffFileHunks(
+				traced,
+				r,
+				answer,
+				z?.index ?? -1,
+			).hunks.flatMap((hk) => hk.lines.filter((l) => l.kind === "del"));
+			// z.txt's removed lines are x.txt's ("ex …"): no number in y.txt.
+			expect(removed.length).toBeGreaterThan(0);
+			expect(removed.every((l) => l.text.startsWith("ex "))).toBe(true);
+			expect(removed.every((l) => l.baseNo === undefined)).toBe(true);
+		} finally {
+			fx.cleanup();
+		}
+	});
+
 	it("a deletion the author restored: gone, its restored line keyed to it", async () => {
 		const ps1 = await snap(h.b0, h.deletesLine);
 		const r = await snap(h.b0, h.restoresLine);

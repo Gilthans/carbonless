@@ -329,9 +329,14 @@ export async function traceRereview(
 		primePaths.add(f.path);
 		if (f.oldPath !== undefined) primePaths.add(f.oldPath);
 	}
-	const prime = sinceBase
-		? new Map<string, DiffEntry>()
-		: await diffMap(repo, ps.head, interdiff.virtualHead, primePaths);
+	// The virtual rebase against the new base too (GitHub's LEFT lines of
+	// the since view's removed ones, below), alongside.
+	const [prime, rebaseDiff] = sinceBase
+		? [new Map<string, DiffEntry>(), null]
+		: await Promise.all([
+				diffMap(repo, ps.head, interdiff.virtualHead, primePaths),
+				diffMap(repo, target.base, interdiff.virtualHead, primePaths),
+			]);
 	const primeByOld = new Map<string, { path: string; mapper: LineMapper }>();
 	for (const [path, entry] of prime) {
 		primeByOld.set(entry.oldPath ?? path, {
@@ -365,21 +370,32 @@ export async function traceRereview(
 	// GitHub's LEFT line of each removed line the since view shows: the
 	// virtual rebase against the new base (the patch set's own diff when
 	// the base didn't move).
-	const rebaseDiff = sinceBase
-		? null
-		: await diffMap(repo, target.base, interdiff.virtualHead, primePaths);
 	const githubLeft: Record<string, Record<number, number>> = {};
 	for (const f of interdiff.files) {
 		if (f.conflict) continue;
 		const primePath = f.oldPath ?? f.path;
 		let toBase: LineMapper = IDENTITY;
+		// The base file this map counts in (the path it had there).
+		let basePath = primePath;
 		if (rebaseDiff) {
 			const entry = rebaseDiff.get(primePath);
-			if (entry) toBase = createLineMapper(entry.hunks);
+			if (entry) {
+				toBase = createLineMapper(entry.hunks);
+				basePath = entry.oldPath ?? primePath;
+			}
 		} else {
 			const own = ps.snapshot.files.find((x) => x.path === primePath);
-			if (own) toBase = linesMapper(own.clusters);
+			if (own) {
+				toBase = linesMapper(own.clusters);
+				basePath = own.oldPath ?? primePath;
+			}
 		}
+		// GitHub pairs the head's file with its base file over the whole
+		// tree; this diff, over the PR's paths, may pair it with another.
+		// Then no map: its removed lines are refused, never named in the
+		// wrong file.
+		const headFile = target.files.find((t) => t.path === f.path);
+		if (headFile && (headFile.oldPath ?? headFile.path) !== basePath) continue;
 		const lines: Record<number, number> = {};
 		for (const ic of f.clusters) {
 			if (ic.kind !== "lines") continue;

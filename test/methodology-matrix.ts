@@ -118,7 +118,7 @@ const RE_REVIEW: Record<
 		conflicts: [],
 		carried: 2,
 		reworked: 1,
-		fresh: 0,
+		fresh: 1,
 		gone: 0,
 		absorbed: 0,
 	},
@@ -155,12 +155,17 @@ const RE_REVIEW: Record<
 };
 
 /**
- * How many lines the since view (opened → updated head) shows removed that
- * only PS1 had (in neither the head's merge base nor the head): PS1's
- * line 30, amended on the way.
+ * The lines the since view (opened → updated head) shows removed: how many
+ * name a line of the head's merge base (`based`), and how many only PS1
+ * had (`earlier`: in neither that base nor the head). `rebase-amend`
+ * amends PS1's line 30 (PS1's own) and changes base line 35 after the
+ * rebase; a conflicted file's are its base's own lines.
  */
-const EARLIER_ONLY_REMOVED: Partial<Record<Update, number>> = {
-	"rebase-amend": 1,
+const SINCE_REMOVED: Partial<
+	Record<Update, { based: number; earlier: number }>
+> = {
+	"rebase-amend": { based: 1, earlier: 1 },
+	"merge-base-in-conflict": { based: 2, earlier: 0 },
 };
 
 function matrix(m: (typeof METHODOLOGIES)[number]) {
@@ -567,9 +572,10 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 			// The base's own line, the one GitHub shows on the head's LEFT.
 			expect(baseText(r.path)[r.baseNo - 1]).toBe(r.text);
 		}
-		expect(removed.filter((r) => r.baseNo === null).length).toBe(
-			EARLIER_ONLY_REMOVED[m.update] ?? 0,
-		);
+		expect({
+			based: removed.filter((r) => r.baseNo !== null).length,
+			earlier: removed.filter((r) => r.baseNo === null).length,
+		}).toEqual(SINCE_REMOVED[m.update] ?? { based: 0, earlier: 0 });
 	});
 
 	it("re-review from the opened head to the updated one: the shape, the interdiff and the carry; the first action on the viewed head starts PS2 with them", async () => {
