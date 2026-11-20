@@ -3202,3 +3202,136 @@ test("the first tick on the viewed head starts PS2 of that snapshot: a thread tr
 	await expect(card).toBeVisible();
 	expect(await yOf()).toBe(before);
 });
+
+/**
+ * CAR-217: a comment on a line the since view shows removed. That view
+ * numbers its old side in PS1, but GitHub reads a LEFT line of the head's
+ * diff in the base. PS1 inserts ten lines at the top (base k is PS1 k+10),
+ * changes base 30 and adds a line of its own after base 50; PS2 removes
+ * base 20 (PS1 30: inside the head diff's hunk around base 30, so PS1's
+ * number would land on the wrong line, silently), base 36 (PS1 46: outside
+ * every hunk, so PS1's number is refused) and PS1's own line (in neither
+ * base nor head).
+ */
+const REMOVED = "src/removed.txt";
+const numbered = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`);
+const ps1Lines = [
+	"line 1",
+	...Array.from({ length: 10 }, (_, i) => `top ${i + 1}`),
+	...numbered
+		.slice(1, 50)
+		.map((l) => (l === "line 30" ? "line 30 changed" : l)),
+	"only in PS1",
+	...numbered.slice(50),
+];
+const ps2Lines = ps1Lines.filter(
+	(l) => l !== "line 20" && l !== "line 36" && l !== "only in PS1",
+);
+
+/** The GitHub threads the fake holds: where each landed. */
+const postedThreads = (p: Pr) =>
+	(
+		(
+			JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {
+				prs: Record<
+					number,
+					{
+						graphql?: {
+							reviewThreads?: {
+								line: number;
+								diffSide: string;
+								comments: { nodes: { body: string }[] };
+							}[];
+						};
+					}
+				>;
+			}
+		).prs[p.number]?.graphql?.reviewThreads ?? []
+	).map((t) => ({
+		line: t.line,
+		diffSide: t.diffSide,
+		body: t.comments.nodes[0]?.body ?? "",
+	}));
+
+test("a comment on a line the since view shows removed goes on its base line: GitHub takes it there and it shows on its row; a line only PS1 had can't take one (CAR-217)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [REMOVED]: text(numbered) },
+		files: [{ message: "PS1", files: { [REMOVED]: text(ps1Lines) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, REMOVED);
+	await boxes(first).first().click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [REMOVED]: text(ps2Lines) } });
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, REMOVED);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	const removedRow = (old: number) =>
+		since.locator(
+			`tr[data-testid="diff-line"][data-kind="del"][data-old-no="${old}"]`,
+		);
+	await expect(removedRow(46)).toBeVisible(GIT_WAIT);
+	const bar = page.getByTestId("selection-bar");
+	const pick = async (old: number) => {
+		const number = removedRow(old).getByTestId("old");
+		await removedRow(old).evaluate((el) =>
+			el.scrollIntoView({ block: "center" }),
+		);
+		if (isMobile) await number.tap();
+		else await number.click();
+		await expect(bar).toBeVisible();
+	};
+	const comment = async (old: number, body: string) => {
+		await pick(old);
+		await bar.getByRole("button", { name: "Comment" }).click();
+		const composer = since.getByTestId("new-thread");
+		await composer.getByRole("textbox", { name: "Comment" }).fill(body);
+		await composer.getByRole("button", { name: "Comment" }).click();
+		await expect(since.getByTestId("new-thread")).toHaveCount(0);
+		// It shows on the row it was written on.
+		await expect(
+			since.getByTestId("files-thread").filter({ hasText: body }),
+		).toBeVisible();
+		await expect(removedRow(old)).toHaveAttribute("data-commented", "");
+	};
+
+	// PS1 30 is base 20: LEFT 20, never LEFT 30 (base 30, another line,
+	// which GitHub would take silently).
+	await comment(30, "Why drop line 20?");
+	// PS1 46 is base 36: GitHub takes LEFT 36 (LEFT 46 is outside its diff).
+	await comment(46, "Why drop line 36?");
+	expect(postedThreads(p)).toEqual([
+		expect.objectContaining({
+			line: 20,
+			diffSide: "LEFT",
+			body: expect.stringContaining("Why drop line 20?"),
+		}),
+		expect.objectContaining({
+			line: 36,
+			diffSide: "LEFT",
+			body: expect.stringContaining("Why drop line 36?"),
+		}),
+	]);
+
+	// PS1's own line is in neither the base nor the head: no line on GitHub.
+	await pick(61);
+	const off = bar.getByRole("button", { name: "Comment" });
+	await expect(off).toHaveAttribute("aria-disabled", "true");
+	await expect(off).toHaveAccessibleDescription(
+		"Only in an earlier patch set: not in GitHub's diff",
+	);
+	await off.click({ force: true });
+	await expect(since.getByTestId("new-thread")).toHaveCount(0);
+	expect(postedThreads(p)).toHaveLength(2);
+});

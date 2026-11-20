@@ -353,6 +353,21 @@ describe("new threads", () => {
 		expect(between.code).toBe("gone");
 	});
 
+	it("a LEFT line counts in the base: one in a hunk is taken, one between hunks is GitHub's 422 → gone (CAR-217)", async () => {
+		// a.txt's base line 26 is removed (inside a hunk); base 15 is between hunks.
+		const { thread } = await session.startThread(
+			request({ side: "LEFT", line: 26 }),
+		);
+		expect(thread.anchor).toMatchObject({ side: "LEFT", line: 26 });
+		expect(stored().at(-1)).toMatchObject({ line: 26, diffSide: "LEFT" });
+		const before = stored().length;
+		const between = await refused(
+			session.startThread(request({ side: "LEFT", line: 15 })),
+		);
+		expect(between.code).toBe("gone");
+		expect(stored()).toHaveLength(before);
+	});
+
 	it("a file comment: subject_type file, no lines, on any file of the diff", async () => {
 		const { thread } = await session.startThread(
 			request({
