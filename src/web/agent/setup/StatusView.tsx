@@ -18,6 +18,7 @@ import { RelativeTime } from "../../RelativeTime";
 import { useReviewId } from "../../reviewId";
 import { SkeletonBar, SpinnerIcon } from "../../Spinner";
 import { Tooltip } from "../../Tooltip";
+import { NOT_PHONE, useMedia } from "../../useMedia";
 import { landingOf } from "../AgentOverviewRow";
 import { ActivityLine } from "../AgentThreadCard";
 import {
@@ -29,7 +30,7 @@ import {
 	postAgentStart,
 } from "../api";
 import { formatArgs } from "../args";
-import { openReviewDrawer } from "../drawerStore";
+import { closeReviewDrawer, openReviewDrawer } from "../drawerStore";
 import { BUTTON, CloseButton, ErrorLine, Footer, SECTION } from "./parts";
 
 /** Stop current's tooltip for a joined session: carbonless can't interrupt its turn. */
@@ -443,9 +444,13 @@ function Activity(props: { status: AgentStatus; onClose(): void }) {
 	);
 }
 
-/** The thread answered, as `file:line`, going to it in Files changed (the modal closes). */
+/**
+ * The thread answered, as `file:line`, going to it in Files changed (the
+ * modal closes; on a phone, the full-screen drawer it may be over too).
+ */
 function ThreadLink(props: { thread: SpanAgentThread; onClose(): void }) {
 	const id = useReviewId();
+	const phone = !useMedia(NOT_PHONE);
 	const a = props.thread.anchor;
 	const line = "line" in a && a.line !== undefined ? `:${a.line}` : "";
 	return (
@@ -453,7 +458,10 @@ function ThreadLink(props: { thread: SpanAgentThread; onClose(): void }) {
 			to="/r/$id/files"
 			params={{ id }}
 			search={landingOf(props.thread)}
-			onClick={props.onClose}
+			onClick={() => {
+				if (phone) closeReviewDrawer();
+				props.onClose();
+			}}
 			aria-label={`${a.path}${line}`}
 			className="inline-flex min-h-10 items-center align-middle font-mono text-[13px] text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 		>
