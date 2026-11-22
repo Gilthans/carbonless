@@ -186,6 +186,18 @@ function disjoint(blocks: MdBlock[]): MdBlock[] {
 	return out;
 }
 
+/**
+ * Whether marked may be given these lines: within the size, line length and
+ * nesting caps. Beyond them its cost grows too fast (hostile input).
+ */
+export function parseable(lines: readonly string[]): boolean {
+	const size = lines.reduce((n, l) => n + l.length + 1, 0);
+	return (
+		size <= MAX_CHARS &&
+		lines.every((l) => l.length <= MAX_LINE && nestingOf(l) <= MAX_NESTING)
+	);
+}
+
 /** Hostile or oversized input: one paragraph per run of non-blank lines. */
 function fallbackBlocks(lines: readonly string[], offset: number): MdBlock[] {
 	const out: MdBlock[] = [];
@@ -210,11 +222,7 @@ export function markdownBlocks(lines: readonly string[]): MdBlock[] {
 	const fm = frontMatterEnd(clean);
 	if (fm > 0) out.push({ kind: "front-matter", from: 1, to: fm, depth: 0 });
 	const rest = clean.slice(fm);
-	const size = rest.reduce((n, l) => n + l.length + 1, 0);
-	if (
-		size <= MAX_CHARS &&
-		rest.every((l) => l.length <= MAX_LINE && nestingOf(l) <= MAX_NESTING)
-	) {
+	if (parseable(rest)) {
 		try {
 			// Block structure only: no inline tokens (they cost, and are not needed).
 			walk(new Lexer().blockTokens(rest.join("\n")), fm + 1, 0, out);
