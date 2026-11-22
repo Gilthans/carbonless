@@ -1,6 +1,6 @@
 # Whitespace-only across git hunks (CAR-218)
 
-Status: draft, 2026-11-22. Ticket: CAR-218.
+Status: approved by the owner 2026-11-22 (no carry). Ticket: CAR-218.
 
 ## Why
 
@@ -112,21 +112,11 @@ in 36 of 4,656 changed files (0.8%), 144 of 18,896 git hunks. It adds
 pair inside the hunk gives way to a better one across it; the safe
 direction).
 
-**Owner decision:** carry marks from the old pieces onto the new ones
-(recommended), or let them read unreviewed with a release note. Carrying
-generalizes the split carry: today it maps a whole hunk's key onto its
-pieces; here an old piece's mark goes onto each new piece by line (a new
-piece wholly inside a marked old piece takes its mark; one only partly
-inside takes line marks for the lines it shares), once, with the same
-fold guard (applied only while the old key still holds that mark).
-*My call:* a mark is carried only onto lines that stay whitespace-only or
-become whitespace-only, never onto the lines that go back to being a
-change: the reviewer may have marked them collapsed, as a `~` row, without
-reading them (principle 2). The carry needs the old cut alongside the new
-one to rebuild the old keys, and a new shape for the carry event (today's
-names only a whole hunk's key), so it goes through
-`docs/gitdb-design-principles.md`. Without the carry the change is the
-cut, the docs and a release note.
+**Owner decision (2026-11-22): no carry.** "I'm fine with letting the
+affected clusters reset. It's an error in the correct direction." Marks on
+clusters the new cut re-keys read unreviewed; the release note says so
+(the cut is part of cluster identity: a key format change, said in the
+release). No new event, no change to the split carry.
 
 ### The since view (interdiff), with the same rule
 
@@ -151,15 +141,29 @@ at:
 - the same shared matching runs once per interdiff display hunk; it gives
   both the since view's `~` rows and which of the interdiff's changed
   lines are whitespace-only;
-- a since piece (the lines it shows) is whitespace-only when every one of
-  its lines is; `SinceUnit.whitespaceOnly` comes from that, not from the
-  snapshot's cluster;
+- since pieces are cut where whitespace-only runs start and end, as the
+  base cut cuts git hunks (*my call*, parity: otherwise a piece mixing
+  both would draw `~` rows while counting as a change); `sincePieces`'
+  ranges and numbering change accordingly, and marks, stored by line,
+  survive;
+- a since piece is whitespace-only when every one of its lines is
+  whitespace-only on the interdiff **and** every one of them held a mark
+  (reviewed or crossed off) at the earlier patch set, as the line tracing
+  behind the since view's carries (`sinceLineCarries`) sees it (*my call*,
+  principle 2: a line nobody read in patch set 1 that patch set 2 only
+  re-indented is still unread, so it still counts);
+  `SinceUnit.whitespaceOnly` comes from that, not from the snapshot's
+  cluster;
 - a unit that is the rest of a cluster no piece shows (only the full diff
   has those lines) keeps its cluster's flag, as today, because those lines
   are read against the base;
 - with "Ignore whitespace" on, the since bar, file headers, chips and
-  move-on leave whitespace-only units out, with the same `~` count, as
-  CAR-184 already does for them.
+  move-on leave whitespace-only units out, as CAR-184 already does for
+  them; a file is "nothing but whitespace" in the since view when all its
+  since units are (not its snapshot clusters), and the `~` counts the
+  units left out, a cluster's pieces as one and each unit without a
+  cluster on its own (*my call*: the same reading as the base view's
+  "clusters not counted").
 
 Since marks are stored by line ranges (`since-lines-state`), not by
 cluster key, so the since view's own marks don't move. The same caps apply
@@ -172,8 +176,8 @@ rows follow).
 - `docs/product-rules.md`, "Whitespace-only runs are clusters": drop
   "Only within a git hunk: a re-indented block whose two sides git puts
   in two hunks stays two changes", say the span is the display hunk.
-- `docs/review-data-storage.md`, "Split carries": the new cut, and the
-  carry if chosen.
+- `docs/review-data-storage.md`, "Split carries": the new cut, and that
+  marks on re-keyed clusters reset (no carry, owner 2026-11-22).
 - `docs/product-rules.md`, the since view's "Ignore whitespace" counts:
   whitespace-only is judged on the interdiff.
 - `docs/faq.md`, if it explains why whitespace-only counts differ from
@@ -192,9 +196,8 @@ rows follow).
   and vice versa.
 - Keys: `snapshot.test.ts`'s pinned keys move only for hunks that span an
   accidental unchanged line.
-- Carry (if chosen): a review marked under the old cut opens under the
-  new one with its marks on the new pieces; a forged or stale entry
-  changes nothing.
+- Reset: a review marked under the old cut opens under the new one with
+  the re-keyed clusters unreviewed and every other mark kept.
 - CPU: the cut's cost per display hunk against a reference workload
   (`test/cpu.ts`), the cap's worst case included.
 - e2e: on the gallery case, with Ignore whitespace on, the whole block
@@ -205,6 +208,9 @@ rows follow).
   since bar, and the `~` count says how many. And the reverse: a real edit
   since patch set 1 inside a cluster that's whitespace-only against the
   base counts.
+- Since view: patch set 1 changes a line, left unreviewed; patch set 2
+  only re-indents it: since patch set 1 with Ignore whitespace on, it
+  still counts (principle 2).
 - Property: in the since view too, every `~` row's line is in a
   whitespace-only unit and every whitespace-only unit's lines are `~`
   rows.
