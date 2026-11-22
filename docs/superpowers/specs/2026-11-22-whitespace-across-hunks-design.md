@@ -211,9 +211,9 @@ rows follow).
 - Since view: patch set 1 changes a line, left unreviewed; patch set 2
   only re-indents it: since patch set 1 with Ignore whitespace on, it
   still counts (principle 2).
-- Property: in the since view too, every `~` row's line is in a
-  whitespace-only unit and every whitespace-only unit's lines are `~`
-  rows.
+- Property: in the since view too, every whitespace-only unit's lines
+  are `~` rows, and every `~` row's line is in a whitespace-only unit
+  unless it wasn't marked at the earlier patch set (then its unit counts).
 
 ## Gallery
 
