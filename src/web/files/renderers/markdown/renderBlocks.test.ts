@@ -1,7 +1,16 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { markdownBlocks } from "../../../../shared/markdownBlocks";
-import { type RenderedBlock, renderBlocks, renderSource } from "./renderBlocks";
+import { bestCpuRatio, repeat } from "../../../../../test/cpu";
+import {
+	type MdBlock,
+	markdownBlocks,
+} from "../../../../shared/markdownBlocks";
+import {
+	type RenderedBlock,
+	renderBlocks,
+	renderSource,
+	tableHeaders,
+} from "./renderBlocks";
 
 const local = (src: string) => `/blob?path=${encodeURIComponent(src)}`;
 const opts = {
@@ -245,9 +254,26 @@ describe("sanitizing", () => {
 	});
 
 	it("a javascript: link has no href", () => {
-		const a = only("[x](javascript:alert(1))").querySelector("a");
-		expect(a).not.toBeNull();
-		expect(a?.hasAttribute("href")).toBe(false);
+		// Defense in depth: DOMPurify and safeHref each drop a javascript:
+		// href, so this fails only with both taken out. Each guard is pinned
+		// alone below (the handler on the link; "only absolute http(s)").
+		for (const text of [
+			"[x](javascript:alert(1))",
+			'x <a href="javascript:alert(1)" onclick="alert(1)">y</a>',
+		]) {
+			const a = only(text).querySelector("a");
+			expect(a, text).not.toBeNull();
+			expect(a?.hasAttribute("href"), text).toBe(false);
+		}
+	});
+
+	it("a link's own event handlers are gone (DOMPurify)", () => {
+		const a = only(
+			'x <a href="https://example.com/" onclick="alert(1)" onmouseover="alert(2)">y</a>',
+		).querySelector("a");
+		expect(a?.getAttribute("href")).toBe("https://example.com/");
+		expect(a?.hasAttribute("onclick")).toBe(false);
+		expect(a?.hasAttribute("onmouseover")).toBe(false);
 	});
 
 	it("only absolute http(s) links keep an href (safeHref)", () => {
@@ -317,6 +343,41 @@ describe("sanitizing", () => {
 		expect(image).not.toHaveBeenCalled();
 	});
 
+	it("a src the URL parser reads as another host is a placeholder", () => {
+		// The browser trims C0 controls and spaces, drops tabs and newlines
+		// and reads \\ as /: each of these resolves to evil.example.
+		const image = vi.fn(local);
+		for (const text of [
+			'x <img src="/&#9;/evil.example/p.png">',
+			'x <img src="/&#10;/evil.example">',
+			'x <img src="/&#13;/evil.example/p.png">',
+			'x <img src="&#1;//evil.example/p.png">',
+			'x <img src="\u0001//evil.example/p.png">',
+			'x <img src=" \\\\evil.example/p.png">',
+			'x <img src="/%2F/evil.example/p.png">',
+			"![a](</\t/evil.example/p.png>)",
+			"![a](\\\\\\\\evil.example/p.png)",
+			"![a](%2F%2Fevil.example/p.png)",
+		]) {
+			const d = only(text, { image });
+			expect(d.querySelector("img"), text).toBeNull();
+			expect(d.querySelector("button[data-remote-src]"), text).not.toBeNull();
+		}
+		expect(image).not.toHaveBeenCalled();
+	});
+
+	it("image() gets the path as the browser reads it, percent-decoded", () => {
+		const image = vi.fn(local);
+		only("![a](img/a%20b.png)", { image });
+		only('x <img src=" img/c&#9;d.png ">', { image });
+		only("![a](img\\e.png)", { image });
+		expect(image.mock.calls).toEqual([
+			["img/a b.png"],
+			["img/cd.png"],
+			["img/e.png"],
+		]);
+	});
+
 	it("a relative image gets the image() URL", () => {
 		const image = vi.fn(local);
 		const img = only("![a](img/p.png)", { image }).querySelector("img");
@@ -331,6 +392,53 @@ describe("sanitizing", () => {
 		expect(d.querySelector("button")?.getAttribute("data-remote-src")).toBe(
 			"img/p.png",
 		);
+	});
+});
+
+describe("tableHeaders", () => {
+	const table = (rows: number): MdBlock[] => [
+		{ kind: "paragraph", from: 1, to: 1, depth: 0 },
+		{ kind: "table-row", from: 3, to: 4, depth: 0 },
+		...Array.from(
+			{ length: rows },
+			(_, i): MdBlock => ({
+				kind: "table-row",
+				from: 5 + i,
+				to: 5 + i,
+				depth: 0,
+			}),
+		),
+	];
+
+	it("each row's header, nothing for other blocks", () => {
+		const bs = [
+			...table(2),
+			{ kind: "paragraph", from: 8, to: 8, depth: 0 },
+			{ kind: "table-row", from: 10, to: 11, depth: 0 },
+			{ kind: "table-row", from: 12, to: 12, depth: 0 },
+		] satisfies MdBlock[];
+		const h = tableHeaders(bs);
+		expect(h).toEqual([
+			undefined,
+			bs[1],
+			bs[1],
+			bs[1],
+			undefined,
+			bs[5],
+			bs[5],
+		]);
+	});
+
+	it("a long table costs linear CPU, not a walk back per row", () => {
+		// Scaling check (test/cpu.ts): 4x the rows against four runs of a
+		// quarter; linear reads about 1x, a walk back per row 4x.
+		const big = table(16_000);
+		const quarter = table(4_000);
+		const { ratio } = bestCpuRatio(
+			() => tableHeaders(big),
+			repeat(4, () => tableHeaders(quarter)),
+		);
+		expect(ratio).toBeLessThan(2);
 	});
 });
 

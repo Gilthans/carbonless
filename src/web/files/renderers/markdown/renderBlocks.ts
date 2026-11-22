@@ -110,8 +110,48 @@ const ALLOWED_ATTR = [
 /** Only a code block's language class survives: content can't borrow the app's classes. */
 const KEPT_CLASS = /^language-[\w+#-]+$/;
 
-/** A src that names its own host or scheme: never loaded (a placeholder). */
-const REMOTE = /^(?:[a-z][a-z0-9+.-]*:|[\\/]{2})/i;
+/** Where a relative src is resolved to tell it from a remote one. */
+const PROBE_BASE = "http://local.invalid/a/b/";
+const PROBE_ORIGIN = "http://local.invalid";
+
+/**
+ * As the URL parser reads a src: C0 controls and spaces trimmed, tabs and
+ * newlines dropped, backslashes as slashes (http(s) URLs).
+ */
+const normalizeSrc = (s: string): string =>
+	s
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: the URL parser's own trim
+		.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "")
+		.replace(/[\t\n\r]/g, "")
+		.replace(/\\/g, "/");
+
+/** No scheme, and resolved against a page it stays on that page's origin. */
+function isLocalSrc(s: string): boolean {
+	if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return false;
+	try {
+		return new URL(s, PROBE_BASE).origin === PROBE_ORIGIN;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * A src as a path relative to the Markdown file, or null when it is remote
+ * (any scheme, another host however spelled) or doesn't parse. Decided the
+ * way the browser will read it, both as written and percent-decoded, so the
+ * path handed to `image()` can't turn remote when the view resolves it.
+ */
+function localSrc(raw: string): string | null {
+	const clean = normalizeSrc(raw);
+	if (!clean || !isLocalSrc(clean)) return null;
+	let decoded = clean;
+	try {
+		decoded = normalizeSrc(decodeURIComponent(clean));
+	} catch {
+		// A malformed escape: the src as written.
+	}
+	return decoded && isLocalSrc(decoded) ? decoded : null;
+}
 
 const marked = new Marked({ gfm: true, async: false });
 
@@ -174,13 +214,8 @@ function sanitize(html: string, opts: RenderOptions): HTMLElement {
 	}
 	for (const img of body.querySelectorAll("img")) {
 		const raw = img.getAttribute("src") ?? "";
-		let src = raw;
-		try {
-			src = decodeURI(raw);
-		} catch {
-			// A malformed escape: hand on the src as written.
-		}
-		const url = raw && !REMOTE.test(raw.trim()) ? opts.image(src) : null;
+		const src = localSrc(raw);
+		const url = src === null ? null : opts.image(src);
 		if (url) {
 			img.setAttribute("src", url);
 			img.setAttribute("referrerpolicy", "no-referrer");
@@ -324,14 +359,19 @@ function fileLinks(
 	return links;
 }
 
-/** The nearest table header block (header + delimiter lines) before `i`. */
-function headerOf(blocks: readonly MdBlock[], i: number): MdBlock | undefined {
-	for (let j = i - 1; j >= 0; j--) {
-		const b = blocks[j] as MdBlock;
-		if (b.kind !== "table-row") return undefined;
-		if (b.to > b.from) return b;
-	}
-	return undefined;
+/**
+ * Each table row's header block (header + delimiter lines), in one forward
+ * pass: a walk back per row would make a long table quadratic.
+ */
+export function tableHeaders(
+	blocks: readonly MdBlock[],
+): (MdBlock | undefined)[] {
+	let header: MdBlock | undefined;
+	return blocks.map((b) => {
+		if (b.kind !== "table-row") header = undefined;
+		else if (b.to > b.from) header = b;
+		return header;
+	});
 }
 
 function renderBlock(
@@ -340,6 +380,7 @@ function renderBlock(
 	i: number,
 	opts: RenderOptions,
 	links: Links,
+	header: MdBlock | undefined,
 ): string {
 	const b = blocks[i] as MdBlock;
 	const { lines: own, quotes } = unwrap(lines, b);
@@ -354,7 +395,6 @@ function renderBlock(
 		return requote(sourcePre(src), quotes);
 	}
 	if (kind === "table-row" && b.to === b.from) {
-		const header = headerOf(blocks, i);
 		if (header) {
 			const head = unwrap(lines, header).lines.join("\n");
 			const html = renderMarkdown(`${head}\n${src}`, opts, links, (body) => {
@@ -378,9 +418,18 @@ export function renderBlocks(
 	opts: RenderOptions,
 ): RenderedBlock[] {
 	const links = fileLinks(lines, blocks);
+	const headers = tableHeaders(blocks);
 	return blocks.map((b, index) => {
 		try {
-			return { index, html: renderBlock(lines, blocks, index, opts, links) };
+			const html = renderBlock(
+				lines,
+				blocks,
+				index,
+				opts,
+				links,
+				headers[index],
+			);
+			return { index, html };
 		} catch {
 			const src = lines
 				.slice(b.from - 1, b.to)
