@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { bestCpuRatio } from "../../test/cpu.js";
 import type { DiffLine } from "./types.js";
 import {
+	cutByLines,
 	type HunkPiece,
+	hunkCut,
+	hunkCuts,
 	matchDisplayHunk,
 	SPLIT_CELLS,
 	splitHunk,
@@ -534,5 +537,312 @@ describe("matchDisplayHunk", () => {
 		// Both are one O(n·m) DP of the same cells; a second pass or a
 		// quadratic step on top would read well over 3x.
 		expect(ratio).toBeLessThan(3);
+	});
+});
+
+/** `cutByLines`' pieces as a trace: `~`/`*`, then each side's line indexes. */
+const cutTrace = (pieces: HunkPiece[]) =>
+	pieces.map(
+		(p) =>
+			`${p.whitespaceOnly ? "~" : "*"}${p.removedFrom}-${p.removedTo}|${p.addedFrom}-${p.addedTo}`,
+	);
+
+/**
+ * Principle 2 for `cutByLines`: the pieces cover every removed and added
+ * line exactly once, in order, none empty; a whitespace-only piece holds
+ * only flagged lines and a change piece at least one unflagged line (a
+ * flag never makes a change read whitespace-only, an unflagged line never
+ * hides in a whitespace-only piece); neighbours differ (runs are whole).
+ */
+function expectCut(
+	pieces: HunkPiece[],
+	removedWs: readonly boolean[],
+	addedWs: readonly boolean[],
+) {
+	let r = 0;
+	let a = 0;
+	let last: boolean | null = null;
+	for (const p of pieces) {
+		expect(p.removedFrom).toBe(r);
+		expect(p.addedFrom).toBe(a);
+		expect(p.removedTo).toBeGreaterThanOrEqual(p.removedFrom);
+		expect(p.addedTo).toBeGreaterThanOrEqual(p.addedFrom);
+		expect(
+			p.removedTo - p.removedFrom + p.addedTo - p.addedFrom,
+		).toBeGreaterThan(0);
+		const flags = [
+			...removedWs.slice(p.removedFrom, p.removedTo),
+			...addedWs.slice(p.addedFrom, p.addedTo),
+		];
+		if (p.whitespaceOnly) expect(flags.every(Boolean)).toBe(true);
+		else expect(flags.some((f) => !f)).toBe(true);
+		if (pieces.length > 1) expect(p.whitespaceOnly).not.toBe(last);
+		last = p.whitespaceOnly;
+		r = p.removedTo;
+		a = p.addedTo;
+	}
+	expect(r).toBe(removedWs.length);
+	expect(a).toBe(addedWs.length);
+}
+
+describe("cutByLines (CAR-218)", () => {
+	const T = true;
+	const F = false;
+	const cut = (
+		removedWs: boolean[],
+		addedWs: boolean[],
+		pairs: [number, number][],
+	) => {
+		const pieces = cutByLines(removedWs, addedWs, pairs);
+		expectCut(pieces, removedWs, addedWs);
+		return cutTrace(pieces);
+	};
+
+	it("in-hunk pairs give two-sided whitespace-only pieces, as splitHunk did", () => {
+		// change / whitespace only / change.
+		expect(
+			cut(
+				[F, F, T, T, F, F],
+				[F, F, T, T, F, F],
+				[
+					[2, 2],
+					[3, 3],
+				],
+			),
+		).toEqual(["*0-2|0-2", "~2-4|2-4", "*4-6|4-6"]);
+		// A deletion, a re-indent, an addition.
+		expect(
+			cut(
+				[F, T, T],
+				[T, T, F],
+				[
+					[1, 0],
+					[2, 1],
+				],
+			),
+		).toEqual(["*0-1|0-0", "~1-3|0-2", "*3-3|2-3"]);
+		// Nothing flagged: one change.
+		expect(cut([F, F], [F], [])).toEqual(["*0-2|0-1"]);
+		// All paired: one whitespace-only piece.
+		expect(
+			cut(
+				[T, T],
+				[T, T],
+				[
+					[0, 0],
+					[1, 1],
+				],
+			),
+		).toEqual(["~0-2|0-2"]);
+	});
+
+	it("cuts a gap's removed runs first, then its added runs, one-sided whitespace-only pieces too", () => {
+		// Removed lines whose twins are elsewhere, then a real addition.
+		expect(cut([T, T], [F], [])).toEqual(["~0-2|0-0", "*2-2|0-1"]);
+		// A real deletion, then added lines whose twins are elsewhere.
+		expect(cut([F], [T, T], [])).toEqual(["*0-1|0-0", "~1-1|0-2"]);
+		// Removed: twin elsewhere, change; added: change, twin elsewhere.
+		// The gap's change lines on both sides are one change piece.
+		expect(cut([T, F], [F, T], [])).toEqual([
+			"~0-1|0-0",
+			"*1-2|0-1",
+			"~2-2|1-2",
+		]);
+		// A pure addition or deletion, flagged or not.
+		expect(cut([], [T, F, T], [])).toEqual([
+			"~0-0|0-1",
+			"*0-0|1-2",
+			"~0-0|2-3",
+		]);
+		expect(cut([F, F], [], [])).toEqual(["*0-2|0-0"]);
+	});
+
+	it("keeps a run of whitespace-only lines one piece across a pair and the gap beside it", () => {
+		// Added lines with twins elsewhere, a pair, more such added lines:
+		// every line whitespace-only, so the hunk is one piece.
+		expect(cut([T], [T, T, T, T, T], [[0, 2]])).toEqual(["~0-1|0-5"]);
+		expect(cut([T, F], [T, T, F], [[0, 1]])).toEqual(["~0-1|0-2", "*1-2|2-3"]);
+	});
+
+	it("never trusts a pair against the flags or out of order: those lines go by their flags", () => {
+		// A pair on an unflagged line is no pair.
+		expect(cut([F], [F], [[0, 0]])).toEqual(["*0-1|0-1"]);
+		// Out of order or out of range: skipped.
+		expect(
+			cut(
+				[T, T],
+				[T, T],
+				[
+					[1, 0],
+					[0, 1],
+					[5, 5],
+				],
+			),
+		).toEqual(["~0-2|0-2"]);
+		expect(
+			cut(
+				[T, F],
+				[F, T],
+				[
+					[1, 1],
+					[0, 0],
+				],
+			),
+		).toEqual(["~0-1|0-0", "*1-2|0-1", "~2-2|1-2"]);
+	});
+
+	it("covers every line once, in order, for any flags and pairs", () => {
+		let seed = 4211;
+		const rand = (n: number) => {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			return seed % n;
+		};
+		for (let n = 0; n < 2000; n++) {
+			const removedWs = Array.from({ length: rand(7) }, () => rand(2) === 0);
+			const addedWs = Array.from({ length: rand(7) }, () => rand(2) === 0);
+			const pairs: [number, number][] = Array.from(
+				{ length: rand(5) },
+				() => [rand(8), rand(8)] as [number, number],
+			);
+			if (rand(2) === 0) pairs.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+			const pieces = cutByLines(removedWs, addedWs, pairs);
+			if (removedWs.length + addedWs.length === 0) {
+				expect(pieces.length).toBeLessThanOrEqual(1);
+				continue;
+			}
+			expectCut(pieces, removedWs, addedWs);
+		}
+	});
+
+	it("gives splitHunk's pieces for the pairs splitHunk finds", () => {
+		const removed = ["a", "  x", "b", "  y", "  z"];
+		const added = ["x", "B", "y", "z", "c"];
+		const { removedWs, addedWs, pairs } = hunkCut(removed, added);
+		expect(cutByLines(removedWs, addedWs, pairs)).toEqual(
+			splitHunk(removed, added),
+		);
+	});
+});
+
+describe("the cut over a display hunk (CAR-218)", () => {
+	/**
+	 * Each git hunk of a display hunk (its lines' `clusterKey`) cut by the
+	 * display hunk's matching, as the server cuts it: every changed line
+	 * as `~` or `*` with its text.
+	 */
+	const cutLines = (lines: DiffLine[]) => {
+		const out = new Map<DiffLine, boolean>();
+		for (const [key, c] of hunkCuts(lines)) {
+			const dels = lines.filter(
+				(l) => l.kind === "del" && l.clusterKey === key,
+			);
+			const adds = lines.filter(
+				(l) => l.kind === "add" && l.clusterKey === key,
+			);
+			const pieces = cutByLines(c.removedWs, c.addedWs, c.pairs);
+			expectCut(pieces, c.removedWs, c.addedWs);
+			for (const p of pieces) {
+				for (const l of dels.slice(p.removedFrom, p.removedTo))
+					out.set(l, p.whitespaceOnly);
+				for (const l of adds.slice(p.addedFrom, p.addedTo))
+					out.set(l, p.whitespaceOnly);
+			}
+		}
+		return out;
+	};
+
+	it("re-indent across an accidental unchanged line: only the wrapper's lines are changes", () => {
+		// A page's markup wrapped one level deeper in a new <Provider>. The
+		// inner `<div>` and `</div>` at the old depth equal the outer ones
+		// at the new depth byte for byte, so git keeps them as unchanged
+		// lines and cuts the block into three hunks (git diff -U0's shape).
+		const lines: DiffLine[] = [
+			ctx(1, 1, "export function Page() {"),
+			ctx(2, 2, "  return ("),
+			del(3, "    <div>", { clusterKey: "A" }),
+			del(4, "      <Header />", { clusterKey: "A" }),
+			add(3, "    <Provider>", { clusterKey: "A" }),
+			ctx(5, 4, "      <div>"),
+			del(6, "        <Title />", { clusterKey: "B" }),
+			add(5, "        <Header />", { clusterKey: "B" }),
+			add(6, "        <div>", { clusterKey: "B" }),
+			add(7, "          <Title />", { clusterKey: "B" }),
+			add(8, "        </div>", { clusterKey: "B" }),
+			add(9, "        <Footer />", { clusterKey: "B" }),
+			ctx(7, 10, "      </div>"),
+			del(8, "      <Footer />", { clusterKey: "C" }),
+			del(9, "    </div>", { clusterKey: "C" }),
+			add(11, "    </Provider>", { clusterKey: "C" }),
+			ctx(10, 12, "  );"),
+			ctx(11, 13, "}"),
+		];
+		const cut = cutLines(lines);
+		expect(
+			[...cut].filter(([, ws]) => !ws).map(([l]) => l.text.trim()),
+		).toEqual(["<Provider>", "</Provider>"]);
+		const changed = lines.filter((l) => l.kind !== "context");
+		expect(cut.size).toBe(changed.length);
+		// The accidental lines stay unchanged lines, and the cut agrees with
+		// the view's `~` rows line for line.
+		expect(lines[5]?.kind).toBe("context");
+		for (const l of changed)
+			expect(cut.get(l)).toBe(whitespaceLines(lines).has(l));
+		// Hunk B is all whitespace: one piece, though only one pair is its own.
+		const b = hunkCuts(lines).get("B");
+		expect(b && cutTrace(cutByLines(b.removedWs, b.addedWs, b.pairs))).toEqual([
+			"~0-1|0-5",
+		]);
+	});
+
+	it("a block moved across a change stays a change", () => {
+		// Swapped and re-indented: only one of the two can pair in order.
+		const swapped = [
+			del(1, "first();"),
+			del(2, "second();"),
+			add(1, "  second();"),
+			add(2, "  first();"),
+		];
+		const cut = cutLines(swapped);
+		expect([...cut.values()].filter((ws) => !ws)).toHaveLength(2);
+		// Moved below an unchanged line: its twin is across it, so no twin.
+		const moved: DiffLine[] = [
+			del(1, "moved();", { clusterKey: "A" }),
+			ctx(2, 1, "keep();"),
+			add(2, "  moved();", { clusterKey: "B" }),
+		];
+		expect([...cutLines(moved).values()]).toEqual([false, false]);
+	});
+
+	it("over the cap, cuts each git hunk as splitHunk does", () => {
+		const size = 300;
+		const hunk = (key: string, from: number) => {
+			const removed = Array.from({ length: size }, (_, i) =>
+				i === 5 ? `${key} gone` : `${key} ${i % 40}`,
+			);
+			const added = removed.map((t, i) => (i === 9 ? `${key} new` : `  ${t}`));
+			return {
+				removed,
+				added,
+				lines: [
+					...removed.map((t, i) => del(from + i, t, { clusterKey: key })),
+					...added.map((t, i) => add(from + i, t, { clusterKey: key })),
+				],
+			};
+		};
+		const a = hunk("A", 1);
+		const b = hunk("B", size + 2);
+		const lines = [...a.lines, ctx(size + 1, size + 1, "}"), ...b.lines];
+		const old = lines.filter((l) => l.kind !== "add").length;
+		expect(old * old).toBeGreaterThan(SPLIT_CELLS);
+		const cuts = hunkCuts(lines);
+		for (const [key, h] of [
+			["A", a],
+			["B", b],
+		] as const) {
+			const c = cuts.get(key);
+			expect(c && cutByLines(c.removedWs, c.addedWs, c.pairs)).toEqual(
+				splitHunk(h.removed, h.added),
+			);
+		}
 	});
 });

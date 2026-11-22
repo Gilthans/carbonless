@@ -66,8 +66,10 @@ export interface Cluster {
 	/** The last added line has no newline at end of file. */
 	noNewlineNew?: boolean;
 	/**
-	 * Every line is whitespace-only change, side for side (git's `-w`:
-	 * src/shared/whitespace.ts splitHunk). With "Ignore whitespace" on, such
+	 * Every line is whitespace-only change: the display hunk's matching
+	 * gave each a `-w`-equal twin, maybe outside this cluster, so it may
+	 * have lines on one side only (src/shared/whitespace.ts hunkCuts,
+	 * cutByLines; CAR-218). With "Ignore whitespace" on, such
 	 * a cluster is shown as one quiet row and left out of progress.
 	 */
 	whitespaceOnly?: true;

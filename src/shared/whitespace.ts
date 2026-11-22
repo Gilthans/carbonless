@@ -5,7 +5,7 @@ import type { DiffLine } from "./types.js";
  * Whitespace-only change, as git's `-w` sees it: two lines are equal once
  * every ASCII whitespace character is removed. Shared by the server, which
  * cuts a hunk's whitespace-only runs into clusters of their own
- * (`splitHunk`, CAR-156), and the view, which draws whitespace-equal lines
+ * (`hunkCuts`, `cutByLines`; CAR-156), and the view, which draws whitespace-equal lines
  * as quiet `~` rows with "Ignore whitespace" on (src/web/files/whitespace.ts);
  * both read one matching per display hunk (`matchDisplayHunk`, CAR-218).
  */
@@ -35,8 +35,8 @@ export interface Side {
 }
 
 /**
- * Shared by the view's `~` rows and the server's cut (splitHunk): a change
- * here moves cluster keys, see splitHunk.
+ * Shared by the view's `~` rows and the server's cut (hunkCuts,
+ * splitHunk): a change here moves cluster keys, see splitHunk.
  *
  * The heaviest common subsequence of `a` and `b` under key equality, as
  * index pairs in order. A context side weighs P = n + m + 1 (more than
@@ -117,8 +117,11 @@ export function matchSides(
 
 /**
  * A piece of a `-U0` hunk: its removed lines `[removedFrom, removedTo)`
- * and added lines `[addedFrom, addedTo)`. A whitespace-only piece pairs
- * them side for side, every pair `-w`-equal.
+ * and added lines `[addedFrom, addedTo)`. A whitespace-only piece holds
+ * only lines the matching gave a `-w`-equal twin; splitHunk's (matched
+ * within the hunk alone) pair side for side, while a piece of the display
+ * hunk's cut (cutByLines) may hold lines whose twins sit outside it, and
+ * may have lines on one side only.
  */
 export interface HunkPiece {
 	removedFrom: number;
@@ -139,7 +142,10 @@ export interface HunkPiece {
 export const SPLIT_CELLS = 250_000;
 
 /**
- * A `-U0` hunk cut at its whitespace-only runs (CAR-156): the longest
+ * A `-U0` hunk cut at its whitespace-only runs as matched on its own
+ * (CAR-156; the server now cuts by the display hunk's matching, hunkCuts,
+ * CAR-218, and falls back to this cut per hunk only where it has no display
+ * hunk, as the cap's fallback matches it): the longest
  * order-preserving matching of its removed lines to its added ones under
  * `-w` equality (`matchSides`, every side a change), each maximal run of
  * pairs that follow each other on both sides a whitespace-only piece, and
@@ -154,10 +160,11 @@ export const SPLIT_CELLS = 250_000;
  * SPLIT_CELLS removed × added lines and not the same keys line for line,
  * is one change piece; an all-whitespace hunk is one whitespace-only piece.
  *
- * **Part of cluster identity.** Where this cuts decides the clusters and
- * so their keys (docs/review-data-storage.md, "Split carries"): any change
- * here or in `matchSides` (weights, tie-breaks, the fast path, the caps,
- * `whitespaceKey`) moves cuts, and marks on pieces cut the old way would no
+ * **Part of cluster identity.** Where the cut falls decides the clusters
+ * and so their keys (docs/review-data-storage.md, "Split carries"): any
+ * change here, in cutByLines, hunkCuts, matchDisplayHunk or `matchSides`
+ * (weights, tie-breaks, the fast path, the caps, `whitespaceKey`) moves
+ * cuts, and marks on pieces cut the old way would no
  * longer match (fail safe, but the reviewer loses them). Treat it as a key
  * format change; `snapshot.test.ts` pins the keys of a few fixed hunks.
  */
@@ -167,16 +174,44 @@ export function splitHunk(
 	noNewlineOld = false,
 	noNewlineNew = false,
 ): HunkPiece[] {
+	const { removedWs, addedWs, pairs } = hunkCut(
+		removed,
+		added,
+		noNewlineOld,
+		noNewlineNew,
+	);
+	return cutByLines(removedWs, addedWs, pairs);
+}
+
+/**
+ * Which lines of a `-U0` hunk are whitespace-only, and which of them pair
+ * with each other inside it (index pairs, removed → added, in order): the
+ * input `cutByLines` cuts a hunk by.
+ */
+export interface HunkCut {
+	removedWs: boolean[];
+	addedWs: boolean[];
+	pairs: [number, number][];
+}
+
+/**
+ * A `-U0` hunk's cut matched on its own (splitHunk's matching, every side
+ * a change): the server's cut where it has no display hunk to match over.
+ */
+export function hunkCut(
+	removed: readonly string[],
+	added: readonly string[],
+	noNewlineOld = false,
+	noNewlineNew = false,
+): HunkCut {
 	const n = removed.length;
 	const m = added.length;
-	const whole: HunkPiece = {
-		removedFrom: 0,
-		removedTo: n,
-		addedFrom: 0,
-		addedTo: m,
-		whitespaceOnly: false,
+	const cut: HunkCut = {
+		removedWs: Array(n).fill(false),
+		addedWs: Array(m).fill(false),
+		pairs: [],
 	};
-	if (n === 0 || m === 0) return [whole];
+	if (n === 0 || m === 0) return cut;
 	const side = (lines: readonly string[], noNewline: boolean) =>
 		lines.map(
 			(text, i): Side => ({
@@ -188,52 +223,128 @@ export function splitHunk(
 	const b = side(added, noNewlineNew);
 	const same = n === m && a.every((s, i) => s.key === (b[i] as Side).key);
 	if (!same) {
-		if (n * m > SPLIT_CELLS) return [whole];
+		if (n * m > SPLIT_CELLS) return cut;
 		const keys = new Set(a.map((s) => s.key));
-		if (!b.some((s) => keys.has(s.key))) return [whole];
+		if (!b.some((s) => keys.has(s.key))) return cut;
 	}
+	cut.pairs = matchSides(a, b);
+	for (const [i, j] of cut.pairs) {
+		cut.removedWs[i] = true;
+		cut.addedWs[j] = true;
+	}
+	return cut;
+}
+
+/**
+ * A `-U0` hunk cut into pieces of its own lines, in order, every line
+ * exactly once (CAR-156, CAR-218), from which lines are whitespace-only
+ * (`removedWs`, `addedWs`: the display hunk's matching matched them) and
+ * which of those pair with each other inside the hunk (`pairs`, removed →
+ * added index pairs in order). The lines are walked as splitHunk walks
+ * them: each pair, and between two pairs (a gap) the gap's removed lines,
+ * then its added lines. Each maximal run of whitespace-only lines on that
+ * walk is one whitespace-only piece, each maximal run of the others one
+ * change piece. So pairs that follow each other on both sides are one
+ * two-sided piece, as splitHunk cut them; a whitespace-only line whose
+ * twin is outside the hunk (in another git hunk, or an unchanged line)
+ * joins the run it sits in, which may leave a piece with lines on one
+ * side only; and a gap with no whitespace-only line is one change piece,
+ * both sides, as before.
+ *
+ * Principle 2: a pair counts only when both its lines are flagged and it
+ * comes after the last one taken, inside the hunk; any other is skipped,
+ * its lines going by their flags. A whitespace-only piece holds only
+ * flagged lines, a change piece at least one unflagged line.
+ *
+ * **Part of cluster identity**: see splitHunk.
+ */
+export function cutByLines(
+	removedWs: readonly boolean[],
+	addedWs: readonly boolean[],
+	pairs: readonly (readonly [number, number])[],
+): HunkPiece[] {
+	const n = removedWs.length;
+	const m = addedWs.length;
 	const pieces: HunkPiece[] = [];
 	let i = 0;
 	let j = 0;
-	const change = (toI: number, toJ: number) => {
-		if (toI > i || toJ > j) {
+	/** The lines up to removed `toI`, added `toJ`, as one step of the walk. */
+	const step = (toI: number, toJ: number, ws: boolean) => {
+		const prev = pieces.at(-1);
+		if (prev && prev.whitespaceOnly === ws) {
+			prev.removedTo = toI;
+			prev.addedTo = toJ;
+		} else {
 			pieces.push({
 				removedFrom: i,
 				removedTo: toI,
 				addedFrom: j,
 				addedTo: toJ,
-				whitespaceOnly: false,
+				whitespaceOnly: ws,
 			});
 		}
 		i = toI;
 		j = toJ;
 	};
-	for (const [mi, mj] of matchSides(a, b)) {
-		const prev = pieces.at(-1);
-		if (
-			prev?.whitespaceOnly &&
-			prev.removedTo === mi &&
-			prev.addedTo === mj &&
-			i === mi &&
-			j === mj
-		) {
-			prev.removedTo++;
-			prev.addedTo++;
-		} else {
-			change(mi, mj);
-			pieces.push({
-				removedFrom: mi,
-				removedTo: mi + 1,
-				addedFrom: mj,
-				addedTo: mj + 1,
-				whitespaceOnly: true,
-			});
-		}
-		i = mi + 1;
-		j = mj + 1;
+	const gap = (toI: number, toJ: number) => {
+		while (i < toI) step(i + 1, j, removedWs[i] === true);
+		while (j < toJ) step(i, j + 1, addedWs[j] === true);
+	};
+	for (const [mi, mj] of pairs) {
+		if (mi < i || mj < j || mi >= n || mj >= m) continue;
+		if (removedWs[mi] !== true || addedWs[mj] !== true) continue;
+		gap(mi, mj);
+		step(mi + 1, mj + 1, true);
 	}
-	change(n, m);
+	gap(n, m);
+	if (pieces.length === 0) {
+		pieces.push({
+			removedFrom: 0,
+			removedTo: 0,
+			addedFrom: 0,
+			addedTo: 0,
+			whitespaceOnly: false,
+		});
+	}
 	return pieces;
+}
+
+/**
+ * Each git hunk of a display hunk (its lines' `clusterKey`) as `cutByLines`
+ * cuts it, by the display hunk's one matching (`matchDisplayHunk`): its
+ * removed and added lines in order, which are whitespace-only, and the
+ * twins that are both in it. The server's cut (CAR-218): it agrees with
+ * the view's `~` rows line for line, the cap's per-hunk fallback included.
+ */
+export function hunkCuts(lines: readonly DiffLine[]): Map<string, HunkCut> {
+	const ws = whitespaceLines(lines);
+	const twins = matchDisplayHunk(lines);
+	const byKey = new Map<string, { dels: DiffLine[]; adds: DiffLine[] }>();
+	for (const line of lines) {
+		if (line.kind === "context" || line.clusterKey === undefined) continue;
+		let hunk = byKey.get(line.clusterKey);
+		if (!hunk) {
+			hunk = { dels: [], adds: [] };
+			byKey.set(line.clusterKey, hunk);
+		}
+		(line.kind === "del" ? hunk.dels : hunk.adds).push(line);
+	}
+	const out = new Map<string, HunkCut>();
+	for (const [key, { dels, adds }] of byKey) {
+		const addAt = new Map(adds.map((l, k) => [l, k]));
+		const pairs: [number, number][] = [];
+		dels.forEach((d, k) => {
+			const twin = twins.get(d);
+			const at = twin && addAt.get(twin);
+			if (at !== undefined) pairs.push([k, at]);
+		});
+		out.set(key, {
+			removedWs: dels.map((l) => ws.has(l)),
+			addedWs: adds.map((l) => ws.has(l)),
+			pairs,
+		});
+	}
+	return out;
 }
 
 /** A line's matching key (whitespaceKey), with its final-newline flag. */

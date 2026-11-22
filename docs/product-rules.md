@@ -569,20 +569,35 @@ A whitespace-only change is its own cluster in every view (CAR-156, owner
 2026-11-15: "treating whitespace-only change as a separate cluster in all
 views sounds like a good idea regardless. Clusters are too big
 currently"). The server cuts each git hunk at its whitespace-only runs
-(`splitHunk`, `src/shared/whitespace.ts`, git's `-w`: lines equal once
-every ASCII whitespace character is removed): the longest order-preserving
-matching of the hunk's removed lines to its added ones, each maximal run
-of pairs a whitespace-only cluster (`Cluster.whitespaceOnly`), the lines
-between runs change clusters. Two changed lines, two re-indented ones and
-two more changed lines are three clusters, with the switch on or off. A
-single whitespace-only line between two changes counts; a pure addition or
-deletion never does, an added blank line included (as `git diff -w` shows
-it); a blank line paired with one of only whitespace does. A line moved
-across others stays a change. Only within a git hunk: a re-indented block
-whose two sides git puts in two hunks stays two changes. The pieces cover
-every changed line of the hunk exactly once (checked for any input,
-principle 2). Marks made on a hunk before it split carry onto its pieces
-(`docs/review-data-storage.md`, "Split carries").
+(git's `-w`: lines equal once every ASCII whitespace character is
+removed). Which lines are whitespace-only is decided once per display
+hunk (git hunks up to 6 unchanged lines apart, with 3 lines of context),
+by the same matching the view's `~` rows read (`matchDisplayHunk`,
+`hunkCuts`, `cutByLines`, `src/shared/whitespace.ts`; CAR-218): the
+heaviest order-preserving matching of the display hunk's old side to its
+new side, unchanged lines kept matched. A changed line it matched is
+whitespace-only; each maximal run of them in a git hunk is a
+whitespace-only cluster (`Cluster.whitespaceOnly`), the lines between runs
+change clusters. So a cluster is whitespace-only exactly where the view
+draws `~` rows. Two changed lines, two re-indented ones and two more
+changed lines are three clusters, with the switch on or off. A single
+whitespace-only line between two changes counts; a pure addition or
+deletion with no twin anywhere in the display hunk never does, an added
+blank line included (as `git diff -w` shows it); a blank line paired with
+one of only whitespace does. A line moved across others (an unchanged
+line, or out of order across a change) stays a change. A block that only
+moved one level deeper is whitespace-only all through, even where git cuts
+it into several hunks around a line that happens to equal one at the new
+depth (that line stays unchanged); a whitespace-only cluster may then have
+lines on one side only, its twins being in another git hunk or unchanged
+lines. A display hunk of more than 250,000 old × new lines (`SPLIT_CELLS`,
+context included), unless both sides are the same keys line for line, is
+matched one git hunk at a time instead, rows and clusters alike. The
+pieces cover every changed line of the hunk exactly once (checked for any
+input, principle 2). Marks made on a hunk before it split carry onto its
+pieces (`docs/review-data-storage.md`, "Split carries"); marks on a
+cluster the CAR-218 cut re-keyed read unreviewed (no carry, owner
+2026-11-22).
 
 Settings' "Ignore whitespace" is the reviewer's own choice of what progress
 counts. With it on, whitespace-only clusters are left out of every count

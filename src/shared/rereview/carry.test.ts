@@ -4,6 +4,7 @@ import { splitCluster } from "../../server/diff/clusters";
 import { clusterKeys } from "../../server/diff/identity";
 import { createLineMapper, IDENTITY, type MapHunk } from "../tracer/index";
 import type { Cluster, ClusterState } from "../types";
+import { hunkCut } from "../whitespace";
 import {
 	type CarryInput,
 	carryClusters,
@@ -174,15 +175,18 @@ describe("carryClusters", () => {
 	it("pieces of a hunk cut at whitespace-only runs carry one by one, adjacent and one-sided ones too (CAR-156)", () => {
 		// Lines 10-13: a line deleted, two re-indented, a line added.
 		const pieces = (key: string, shift: number) =>
-			splitCluster({
-				oldStart: 10 + shift,
-				oldCount: 3,
-				newStart: 10 + shift,
-				newCount: 3,
-				removed: ["gone", "  b1", "  b2"],
-				added: ["b1", "b2", "new"],
-				lines: 6,
-			}).map(({ cluster: c }, i) => ({
+			splitCluster(
+				{
+					oldStart: 10 + shift,
+					oldCount: 3,
+					newStart: 10 + shift,
+					newCount: 3,
+					removed: ["gone", "  b1", "  b2"],
+					added: ["b1", "b2", "new"],
+					lines: 6,
+				},
+				hunkCut(["gone", "  b1", "  b2"], ["b1", "b2", "new"]),
+			).map(({ cluster: c }, i) => ({
 				...c,
 				key: `${key}${i}`,
 				kind: "lines" as const,

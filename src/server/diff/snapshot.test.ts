@@ -630,8 +630,25 @@ describe("the cut is part of cluster identity (CAR-156)", () => {
 			...c,
 			kind: "lines" as const,
 		}));
-		const pieces = cutClusters(hunks, (cs) =>
-			clusterKeys("pin.ts", cs, newLines),
+		const oldLines = [
+			"x",
+			"a",
+			"b",
+			"  c",
+			"  d",
+			"e",
+			"f",
+			"y",
+			"z",
+			"gone",
+			"  b1",
+			"  b2",
+			"w",
+		];
+		const pieces = cutClusters(
+			hunks,
+			(cs) => clusterKeys("pin.ts", cs, newLines),
+			{ oldLines, newLines, noNewlineAtEnd: false },
 		);
 		const H1 =
 			"35dd0fb1a6d7c6027046a57f11edac073159a6af469e26d654a851c390431c67";
@@ -673,6 +690,123 @@ describe("the cut is part of cluster identity (CAR-156)", () => {
 		]);
 		// The whole hunks' keys are what they were as one cluster each.
 		expect(clusterKeys("pin.ts", hunks, newLines)).toEqual([H1, H2]);
+	});
+});
+
+describe("the cut over display hunks (CAR-218)", () => {
+	// A page's markup wrapped one level deeper in a new <Provider>: the inner
+	// `<div>` and `</div>` at the old depth equal the outer ones at the new
+	// depth, so git cuts the block into three hunks around them.
+	const oldText = [
+		"export function Page() {",
+		"  return (",
+		"    <div>",
+		"      <Header />",
+		"      <div>",
+		"        <Title />",
+		"      </div>",
+		"      <Footer />",
+		"    </div>",
+		"  );",
+		"}",
+	];
+	const newText = [
+		"export function Page() {",
+		"  return (",
+		"    <Provider>",
+		"      <div>",
+		"        <Header />",
+		"        <div>",
+		"          <Title />",
+		"        </div>",
+		"        <Footer />",
+		"      </div>",
+		"    </Provider>",
+		"  );",
+		"}",
+	];
+	const patch =
+		"@@ -3,2 +3 @@\n-    <div>\n-      <Header />\n+    <Provider>\n@@ -6 +5,5 @@\n-        <Title />\n+        <Header />\n+        <div>\n+          <Title />\n+        </div>\n+        <Footer />\n@@ -8,2 +11 @@\n-      <Footer />\n-    </div>\n+    </Provider>\n";
+	const hunks = parseU0Patch(patch).map((c) => ({
+		...c,
+		kind: "lines" as const,
+	}));
+	const keysOf = (cs: Omit<Cluster, "key">[]) =>
+		clusterKeys("page.tsx", cs, newText);
+
+	it("re-indent across an accidental unchanged line: only the wrapper's lines are changes", () => {
+		const pieces = cutClusters(hunks, keysOf, {
+			oldLines: oldText,
+			newLines: newText,
+			noNewlineAtEnd: false,
+		});
+		expect(
+			pieces.map(
+				(c) =>
+					`${c.whitespaceOnly ? "~" : "*"}${c.oldStart},${c.oldCount} ${c.newStart},${c.newCount}`,
+			),
+		).toEqual(["~3,2 2,0", "*4,0 3,1", "~6,1 5,5", "~8,2 10,0", "*9,0 11,1"]);
+		const changes = pieces.filter((c) => !c.whitespaceOnly);
+		expect(changes.flatMap((c) => [...c.removed, ...c.added])).toEqual([
+			"    <Provider>",
+			"    </Provider>",
+		]);
+	});
+
+	it("pins the new keys of a hunk that spans an accidental unchanged line", () => {
+		const pieces = cutClusters(hunks, keysOf, {
+			oldLines: oldText,
+			newLines: newText,
+			noNewlineAtEnd: false,
+		});
+		const H1 =
+			"126047072c2c74b1b572adc747f99175a6211ac8359d49468fa90a6b578d43c8";
+		const H2 =
+			"492161214fe8f491f0ce9766365d9121b07ad27e6cc811d0d8aea59f91edf510";
+		const H3 =
+			"1bb11a33c795bb5783bee2c701b5c960b74f59aabd53a6df9480b51160c59bd2";
+		// Hunk 1 and 3 split into removed-only whitespace and an added-only
+		// change; hunk 2, all whitespace, is one cluster with the whole
+		// hunk's key.
+		expect(
+			pieces.map((c) => [c.key, c.whitespaceOnly ?? false, c.split?.key]),
+		).toEqual([
+			[
+				"2044005d8a46e7d0c0dc245ef5308da6be3308c0698e214f1217c5283b8e825a",
+				true,
+				H1,
+			],
+			[
+				"426bd982b901c18f93092c3bd89663b5988429eaca01278a92e025e69b9531cd",
+				false,
+				H1,
+			],
+			[H2, true, undefined],
+			[
+				"7c9094044ca843d6a27075db5e5a9a08f25195dc11eb9fcf719f1dbf79eef459",
+				true,
+				H3,
+			],
+			[
+				"4669e698766b2d3a1bb0eeafd293c8aa7324d0a27026dfb575e935e7d394e97d",
+				false,
+				H3,
+			],
+		]);
+		// The whole hunks' keys are what they were as one cluster each.
+		expect(keysOf(hunks)).toEqual([H1, H2, H3]);
+	});
+
+	it("falls back to each hunk on its own when the hunks don't fit the text", () => {
+		const own = cutClusters(hunks, keysOf, {
+			oldLines: [],
+			newLines: [],
+			noNewlineAtEnd: false,
+		});
+		// As splitHunk cut them before CAR-218: only <Title /> pairs.
+		expect(own.map((c) => `${c.whitespaceOnly ? "~" : "*"}${c.lines}`)).toEqual(
+			["*3", "*2", "~2", "*2", "*3"],
+		);
 	});
 });
 
