@@ -752,3 +752,28 @@ describe('the verdict card follows "Ignore whitespace" (CAR-184)', () => {
 		expect(leftOut(card_)).toBeNull();
 	});
 });
+
+describe("the verdict's message: Write / Preview (CAR-202)", () => {
+	it("opens in Write; previewed, Comment posts the text as typed", async () => {
+		renderTab(() => facts(null));
+		const c = await card();
+		await userEvent.click(within(c).getByTestId("verdict-include"));
+		const box = within(c).getByRole("textbox", { name: "Message" });
+		expect(within(c).queryByRole("button", { name: "Preview" })).toBeNull();
+		await userEvent.type(box, "Looks **good**");
+		expect(within(c).getByRole("button", { name: "Write" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		await userEvent.click(within(c).getByRole("button", { name: "Preview" }));
+		const preview = within(c).getByTestId("comment-preview");
+		expect(within(preview).getByText("good").tagName).toBe("STRONG");
+		expect(within(c).queryByRole("textbox", { name: "Message" })).toBeNull();
+		await userEvent.click(within(c).getByRole("button", { name: "Comment" }));
+		await waitFor(() => expect(posted).toHaveLength(1));
+		expect(posted[0]).toMatchObject({
+			event: "COMMENT",
+			body: "Looks **good**",
+		});
+	});
+});

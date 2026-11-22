@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -114,7 +121,12 @@ function show(
 	return { client, view };
 }
 
-const box = () => screen.getByRole("textbox", { name: "Review comment" });
+/** The box, in Write (it opens in Preview: switched first). */
+const box = () => {
+	const write = screen.queryByRole("button", { name: "Write" });
+	if (write?.getAttribute("aria-pressed") === "false") fireEvent.click(write);
+	return screen.getByRole("textbox", { name: "Review comment" });
+};
 const button = () => screen.getByRole("button", { name: "Add review comment" });
 
 const newThreadAnswer = (body: string): NewThreadAnswer =>
@@ -128,9 +140,53 @@ const newThreadAnswer = (body: string): NewThreadAnswer =>
 	}) as unknown as NewThreadAnswer;
 
 describe("AgentComment: the box", () => {
+	it("opens in Preview: the agent's markdown rendered, Write shows the raw text", async () => {
+		const user = userEvent.setup();
+		show("**Why** one retry?\n\n- a\n- b");
+		const preview = screen.getByTestId("comment-preview");
+		expect(within(preview).getByText("Why").tagName).toBe("STRONG");
+		expect(within(preview).getAllByRole("listitem")).toHaveLength(2);
+		expect(screen.getByRole("button", { name: "Preview" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		expect(
+			screen.queryByRole("textbox", { name: "Review comment" }),
+		).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Write" }));
+		const text = screen.getByRole("textbox", { name: "Review comment" });
+		expect(text).toHaveProperty("value", "**Why** one retry?\n\n- a\n- b");
+		expect(text).toHaveFocus();
+		await user.type(text, "\n- c");
+		await user.click(screen.getByRole("button", { name: "Preview" }));
+		expect(
+			within(screen.getByTestId("comment-preview")).getAllByRole("listitem"),
+		).toHaveLength(3);
+	});
+
+	it("posts from Preview: the text as edited", async () => {
+		const user = userEvent.setup();
+		answer = () => new Promise(() => {});
+		show("Why one retry?");
+		await user.type(box(), " Really?");
+		await user.click(screen.getByRole("button", { name: "Preview" }));
+		await user.click(button());
+		const post = await vi.waitFor(() => {
+			const p = calls.find((c) => c.path.endsWith("/threads"));
+			if (!p) throw new Error("not posted yet");
+			return p;
+		});
+		expect(post.body).toMatchObject({ body: "Why one retry? Really?" });
+	});
+
 	it("shows the agent's raw text as the textarea's value, never as HTML", () => {
 		const hostile = '<img src=x onerror="window.pwned = 5">';
 		const { view } = show(hostile);
+		// Preview: sanitized (no handler, no http image).
+		expect(screen.getByTestId("comment-preview").innerHTML).not.toMatch(
+			/onerror/,
+		);
+		expect(view.container.querySelector("img")).toBeNull();
 		expect(box()).toHaveProperty("value", hostile);
 		expect(view.container.querySelector("img")).toBeNull();
 		expect((window as { pwned?: number }).pwned).toBeUndefined();

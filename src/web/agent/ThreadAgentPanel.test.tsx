@@ -206,6 +206,21 @@ describe("ThreadAgentPanel", () => {
 		expect([drawn(), tall()]).toEqual([false, false]);
 	});
 
+	it("Ask agent has no Write / Preview: the box goes back to Write", async () => {
+		show(reviewThread(), [conversation()]);
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Reply" }),
+			"**hi**",
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Preview" }));
+		expect(screen.getByTestId("comment-preview")).toBeInTheDocument();
+		await userEvent.click(agentButton());
+		const ask = screen.getByRole("textbox", { name: "Ask agent" });
+		await userEvent.type(ask, "why?");
+		expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
+		expect(screen.queryByTestId("comment-preview")).toBeNull();
+	});
+
 	it("placeholder reads Ask agent… when open and Reply… when closed", async () => {
 		show(reviewThread(), [conversation()]);
 		expect(screen.getByRole("textbox", { name: "Reply" })).toHaveAttribute(

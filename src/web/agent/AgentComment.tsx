@@ -16,9 +16,9 @@ import {
 	UndoIcon,
 } from "@primer/octicons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Marked } from "marked";
 import {
 	type KeyboardEvent,
+	type RefObject,
 	useCallback,
 	useEffect,
 	useLayoutEffect,
@@ -33,10 +33,14 @@ import {
 	type AgentThread,
 	agentCommentClientId,
 } from "../../shared/agent";
-import { escapeTags } from "../../shared/markdownEscape";
 import { sessionQuery } from "../api";
+import {
+	CommentHtml,
+	CommentPreview,
+	PreviewToggle,
+	useWritePreview,
+} from "../CommentPreview";
 import { type Copied, CopyMark, copyInto, copyWord } from "../CopyMark";
-import { GithubHtml } from "../GithubHtml";
 import { RelativeTime } from "../RelativeTime";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
@@ -61,8 +65,6 @@ import {
 	WRITES_OFF,
 } from "./agentComments";
 import { agentPlacementsOnHeadQuery } from "./api";
-
-const md = new Marked({ gfm: true, breaks: false, async: false });
 
 /** Where an agent message's comment blocks post from. */
 export interface CommentAt {
@@ -200,6 +202,9 @@ function CommentBox(props: {
 	const writes = useWritesOn();
 	const [phase, setPhase] = useState<Phase>({ kind: "ready" });
 	const sending = phase.kind === "sending";
+	// Markdown the reviewer didn't write: read first (CAR-202).
+	const box = useRef<HTMLTextAreaElement>(null);
+	const view = useWritePreview({ initial: "preview", text, box });
 
 	const send = useCallback(
 		(
@@ -285,6 +290,7 @@ function CommentBox(props: {
 		</button>
 	);
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+		view.onKeyDown(e);
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
 			press();
@@ -336,6 +342,7 @@ function CommentBox(props: {
 					</Tooltip>
 				)}
 				<span className="flex-1" />
+				{view.toggle && <PreviewToggle {...view.toggleProps} />}
 				{draft !== null && sentBody === null && !sending && (
 					<Tooltip content="Back to the agent's text" describe={false}>
 						{(trigger) => (
@@ -353,11 +360,20 @@ function CommentBox(props: {
 				)}
 			</div>
 			<CommentText
+				box={box}
 				value={text}
+				hidden={view.mode === "preview"}
 				readOnly={sending || sentBody !== null}
 				onChange={(v) => setDraft(clientId, v, props.text)}
 				onKeyDown={onKeyDown}
 			/>
+			{view.mode === "preview" && (
+				<CommentPreview
+					text={text}
+					{...view.previewProps}
+					className="max-h-64 min-h-16"
+				/>
+			)}
 			{phase.kind === "refused" && (
 				<p
 					role="alert"
@@ -387,24 +403,28 @@ function CommentBox(props: {
 
 /** The box: monospace like the reply box, growing to about 12 lines, then scrolling. */
 function CommentText(props: {
+	box: RefObject<HTMLTextAreaElement | null>;
 	value: string;
+	/** Previewing: kept mounted, so Write brings the cursor back. */
+	hidden: boolean;
 	readOnly: boolean;
 	onChange: (value: string) => void;
 	onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
 }) {
-	const box = useRef<HTMLTextAreaElement>(null);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes.
+	const { box } = props;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes, and once it shows.
 	useLayoutEffect(() => {
 		const el = box.current;
-		if (!el) return;
+		if (!el || props.hidden) return;
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
-	}, [props.value]);
+	}, [props.value, props.hidden]);
 	return (
 		<textarea
 			ref={box}
 			aria-label="Review comment"
 			rows={3}
+			hidden={props.hidden}
 			value={props.value}
 			readOnly={props.readOnly}
 			onChange={(e) => props.onChange(e.target.value)}
@@ -417,10 +437,6 @@ function CommentText(props: {
 /** Posted: one row (when, a link to it), then the text as GitHub comments render. */
 function PostedRow(props: { posted: AgentPostedComment }) {
 	const { posted } = props;
-	const html = useMemo(
-		() => md.parse(escapeTags(posted.text)) as string,
-		[posted.text],
-	);
 	const href = safeHref(posted.url);
 	return (
 		<div data-testid="agent-comment" data-posted className={FRAME}>
@@ -446,9 +462,9 @@ function PostedRow(props: { posted: AgentPostedComment }) {
 					</Tooltip>
 				)}
 			</div>
-			<GithubHtml
-				html={html}
-				className="border-l-2 border-ok-fill pl-2.5 text-sm"
+			<CommentHtml
+				text={posted.text}
+				className="border-l-2 border-ok-fill pl-2.5"
 			/>
 		</div>
 	);

@@ -31,6 +31,11 @@ import type {
 	VerdictSince,
 } from "../../shared/types";
 import { sinceHeadKey, verdictHeadKey, verdictQuery } from "../api";
+import {
+	CommentPreview,
+	PreviewToggle,
+	useWritePreview,
+} from "../CommentPreview";
 import { Meter, WhitespaceLeftOut } from "../files/ProgressBar";
 import { useReviewView } from "../files/useSetStates";
 import { LabeledIcon } from "../overview/parts";
@@ -460,9 +465,15 @@ export function VerdictCard(props: {
 	useEffect(() => {
 		if (focusAsk > 0) editor.current?.focus();
 	}, [focusAsk]);
+	const view = useWritePreview({
+		initial: "write",
+		text: checked ? draft.text : "",
+		box: editor,
+	});
+	const previewing = view.mode === "preview";
 	useLayoutEffect(() => {
 		const el = editor.current;
-		if (!el) return;
+		if (!el || previewing) return;
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
 	});
@@ -544,6 +555,7 @@ export function VerdictCard(props: {
 		}
 	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+		view.onKeyDown(e);
 		if (e.key === "Escape") {
 			e.preventDefault();
 			e.currentTarget.blur();
@@ -659,33 +671,46 @@ export function VerdictCard(props: {
 				</p>
 			)}
 			{/* Tick, type, press: the message comes before the buttons. */}
-			<label className="inline-flex min-h-10 cursor-pointer items-center gap-2.5 text-sm text-ink-soft">
-				<input
-					type="checkbox"
-					data-testid="verdict-include"
-					checked={checked}
-					aria-controls={checked ? boxId : undefined}
-					onChange={(e) => {
-						if (!early()) setChecked(e.target.checked);
-					}}
-					className="h-4.5 w-4.5 accent-accent"
-				/>
-				Include a message
-			</label>
+			<div className="flex items-center justify-between gap-2">
+				<label className="inline-flex min-h-10 cursor-pointer items-center gap-2.5 text-sm text-ink-soft">
+					<input
+						type="checkbox"
+						data-testid="verdict-include"
+						checked={checked}
+						aria-controls={checked ? boxId : undefined}
+						onChange={(e) => {
+							if (!early()) setChecked(e.target.checked);
+						}}
+						className="h-4.5 w-4.5 accent-accent"
+					/>
+					Include a message
+				</label>
+				{view.toggle && <PreviewToggle {...view.toggleProps} />}
+			</div>
 			{checked && (
-				<textarea
-					ref={editor}
-					id={boxId}
-					aria-label="Message"
-					data-testid="verdict-message"
-					placeholder="Message…"
-					rows={3}
-					value={draft.text}
-					disabled={Boolean(off)}
-					onChange={(e) => store.setText(e.target.value)}
-					onKeyDown={onKeyDown}
-					className="block max-h-80 min-h-20 w-full resize-none rounded-md border border-line-strong bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60"
-				/>
+				<div>
+					<textarea
+						ref={editor}
+						hidden={previewing}
+						id={boxId}
+						aria-label="Message"
+						data-testid="verdict-message"
+						placeholder="Message…"
+						rows={3}
+						value={draft.text}
+						disabled={Boolean(off)}
+						onChange={(e) => store.setText(e.target.value)}
+						onKeyDown={onKeyDown}
+						className="block max-h-80 min-h-20 w-full resize-none rounded-md border border-line-strong bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60"
+					/>
+					{previewing && (
+						<CommentPreview
+							text={draft.text}
+							{...view.previewProps}
+							className="max-h-80 min-h-20"
+						/>
+					)}
+				</div>
 			)}
 			<div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
 				{BUTTONS.map((b) => {
