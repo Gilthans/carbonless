@@ -135,13 +135,15 @@ export function tickets(dir) {
 }
 
 /**
- * What a ticket says of its run; no kind (an older queue.mjs): full.
- * `workers`: what its runner took (writeWorkers); undefined until then.
+ * What a ticket says of its run; no kind: an older queue.mjs's (`old`),
+ * counted as full. `workers`: what its runner took (writeWorkers);
+ * undefined until then.
  */
 export function ticketKind(content) {
 	const [, , , kind, held, workers] = content.trim().split(" ");
 	const n = Number(workers);
 	return {
+		old: kind !== "full" && kind !== "short",
 		full: kind !== "short",
 		held: held === "held",
 		workers: Number.isInteger(n) && n > 0 ? n : undefined,
@@ -191,6 +193,8 @@ export const MANY_FLAKE_RUNS = 10;
  * - Playwright with no spec and no --grep, or filters matching more than
  *   MANY_SPECS specs;
  * - flake-check with --load, or more than MANY_FLAKE_RUNS files × runs;
+ * - but `-g`/`--grep`, `--last-failed` and `--only-changed` count as short
+ *   whatever they may match: the worker budget bounds their load;
  * - anything else (`pnpm verify`'s sh -c, an unknown command), and any
  *   argument it can't read (an unknown option's value): full, so a mistake
  *   only makes a run wait.

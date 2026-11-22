@@ -4,11 +4,12 @@
 //   ~/.config/carbonless/queue.json   {"slots": 1, "shortSlots": 1}
 //
 // No file: no queue. `slots`: how many test runs go at once (default 1),
-// full or short. `shortSlots` (default 0): more slots for short runs only,
-// read by this queue alone (an older queue.mjs reads `slots`), so
-// raising it never lets an older copy run beside a full run (queue.mjs).
+// full or short. Keep it at 1: older copies of queue.mjs read it, and only
+// slot 0 keeps them from running beside a full run. `shortSlots` (default
+// 0): more slots for short runs only, read by this queue alone; with
+// `slots`, at most half the cores but one (so every run gets a worker).
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { availableParallelism, homedir } from "node:os";
 import { join } from "node:path";
 
 /** $HOME as this thread sees it (a Vitest worker's own env too). */
@@ -41,8 +42,13 @@ export function queueSlots() {
 	return Number.isInteger(slots) && slots >= 1 ? slots : 1;
 }
 
-/** Slots for short runs only (`shortSlots`); 0 when none or no queue. */
-export function shortSlots() {
+/**
+ * Slots for short runs only (`shortSlots`); 0 when none or no queue. With
+ * `slots`, at most half the budget (`cores` - 1), at least the one slot.
+ */
+export function shortSlots(cores = availableParallelism()) {
 	const n = config()?.shortSlots ?? 0;
-	return Number.isInteger(n) && n >= 0 ? n : 0;
+	if (!Number.isInteger(n) || n < 0) return 0;
+	const most = Math.max(1, Math.floor((cores - 1) / 2));
+	return Math.max(0, Math.min(n, most - queueSlots()));
 }

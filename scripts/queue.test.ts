@@ -62,6 +62,7 @@ describe("queue config and guard", () => {
 		delete process.env.CRB_QUEUE_MY_TICKET;
 		delete process.env.CRB_QUEUE_SLOTS;
 		delete process.env.TEST_WORKER_INDEX;
+		delete process.env.CRB_QUEUE_LOAD;
 	});
 
 	it("no file: no queue, any run goes", () => {
@@ -81,14 +82,25 @@ describe("queue config and guard", () => {
 	});
 
 	it("short slots come from the file: 0 when missing or not a whole number", () => {
-		expect(shortSlots()).toBe(0);
+		expect(shortSlots(8)).toBe(0);
 		configure('{"slots": 1, "shortSlots": 1}');
 		expect(queueSlots()).toBe(1);
-		expect(shortSlots()).toBe(1);
+		expect(shortSlots(8)).toBe(1);
 		configure('{"shortSlots": -1}');
-		expect(shortSlots()).toBe(0);
+		expect(shortSlots(8)).toBe(0);
 		configure("not json");
-		expect(shortSlots()).toBe(0);
+		expect(shortSlots(8)).toBe(0);
+	});
+
+	it("slots and short slots together stay within half the budget, so every run gets a worker", () => {
+		configure('{"slots": 1, "shortSlots": 5}');
+		// 8 cores: budget 7, at most 3 slots.
+		expect(shortSlots(8)).toBe(2);
+		expect(shortSlots(16)).toBe(5);
+		// 4 cores: budget 3, one slot only.
+		expect(shortSlots(4)).toBe(0);
+		configure('{"slots": 3, "shortSlots": 1}');
+		expect(shortSlots(8)).toBe(0);
 	});
 
 	it("with a queue, refuses a run outside it", () => {
@@ -193,6 +205,44 @@ describe("queue config and guard", () => {
 		}
 	});
 
+	it("an older queue.mjs's ticket (no kind) counts as holding the whole budget: a short run beside it gets 1", {
+		timeout: 30_000,
+	}, () => {
+		configure('{"slots": 1, "shortSlots": 1}');
+		const dir = join(home, ".cache", "carbonless-queue");
+		const other = spawn("sleep", ["30"]);
+		try {
+			const pid = other.pid as number;
+			// As an older queue.mjs writes it: pid and start time, no kind.
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(
+				join(dir, `${"1".padStart(20, "0")}-${pid}`),
+				`${pid} ${startTime(pid)}\n`,
+			);
+			const me = holding(dir, false);
+			expect(queuedWorkers(8, 64 * GB)).toBe(1);
+			me.leave();
+		} finally {
+			other.kill("SIGKILL");
+		}
+	});
+
+	it("flake-check's busy loops come out of the run's share: the runner gets the rest, its ticket says the whole", {
+		timeout: 30_000,
+	}, () => {
+		configure('{"slots": 1, "shortSlots": 1}');
+		const dir = join(home, ".cache", "carbonless-queue");
+		const me = holding(dir, true);
+		process.env.CRB_QUEUE_LOAD = "2";
+		expect(queuedWorkers(8, 64 * GB)).toBe(3);
+		expect(workersIn(me.path)).toBe(5);
+		// More loops than the share: one worker still, the ticket says all.
+		process.env.CRB_QUEUE_LOAD = "9";
+		expect(queuedWorkers(8, 64 * GB)).toBe(1);
+		expect(workersIn(me.path)).toBe(10);
+		me.leave();
+	});
+
 	it("Playwright's workers load the config too, but only the main process writes the count", {
 		timeout: 30_000,
 	}, () => {
@@ -210,7 +260,7 @@ describe("queue config and guard", () => {
 			cores: number,
 			slots: number,
 			full: boolean,
-			others: { full: boolean; workers?: number }[] = [],
+			others: { full: boolean; old?: boolean; workers?: number }[] = [],
 			gb = 30,
 		) => workersFor({ cores, slots, full, others, freeBytes: gb * GB });
 		// One slot: the whole budget, full or short.
@@ -238,6 +288,29 @@ describe("queue config and guard", () => {
 				expect(first + second).toBeLessThanOrEqual(cores - 1);
 			}
 		}
+		// Three slots: each run leaves one worker per slot nobody holds, so
+		// every order fills them within the budget, from 7 cores (budget 6,
+		// the least that allows 3 slots).
+		for (const cores of [7, 8, 12, 16, 32]) {
+			for (const kinds of [
+				[true, false, false],
+				[false, true, false],
+				[false, false, true],
+				[false, false, false],
+			]) {
+				const held: { full: boolean; workers: number }[] = [];
+				for (const full of kinds) {
+					held.push({ full, workers: w(cores, 3, full, [...held]) });
+				}
+				const sum = held.reduce((n, t) => n + t.workers, 0);
+				expect(sum, `${cores} cores, ${kinds}`).toBeLessThanOrEqual(cores - 1);
+			}
+		}
+		// 8 cores, 3 slots: full 5, then 1 and 1.
+		expect(w(8, 3, true)).toBe(5);
+		expect(w(8, 3, false, [{ full: true, workers: 5 }])).toBe(1);
+		// An older queue.mjs's ticket: the whole budget.
+		expect(w(8, 2, false, [{ full: true, old: true }])).toBe(1);
 		// Memory: no more than it holds, never none.
 		expect(w(8, 1, true, [], 6)).toBe(Math.floor((6 * GB) / WORKER_BYTES));
 		expect(w(8, 1, true, [], 0)).toBe(1);
@@ -459,18 +532,18 @@ describe("full runs", () => {
 		try {
 			const me = joinLine(dir, { full: false });
 			expect(lineTickets(dir)).toEqual([
-				{ name: me.name, full: false, held: false },
+				{ name: me.name, old: false, full: false, held: false },
 			]);
 			markHeld(me.path);
 			markHeld(me.path);
 			expect(lineTickets(dir)).toEqual([
-				{ name: me.name, full: false, held: true },
+				{ name: me.name, old: false, full: false, held: true },
 			]);
 			expect(ticketState(readFileSync(me.path, "utf8"))).toBe("live");
 			me.leave();
 
 			const old = `${process.pid} ${startTime(process.pid)} pid:[1]`;
-			expect(ticketKind(old)).toEqual({ full: true, held: false });
+			expect(ticketKind(old)).toEqual({ old: true, full: true, held: false });
 			expect(joinLine(dir).turn(2)).toEqual({ go: true, ahead: 0 });
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

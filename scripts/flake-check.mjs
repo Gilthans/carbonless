@@ -48,6 +48,8 @@ if (!process.env.CRB_QUEUE_HELD && !process.env.CRB_NO_QUEUE) {
 async function check() {
 	const { runs, load, grep, projects, units, specs } = parsed;
 
+	// The loops come out of the runs' share of the machine (queue-guard.mjs).
+	if (load) process.env.CRB_QUEUE_LOAD = String(load);
 	const loops = Array.from({ length: load }, () =>
 		spawn(process.execPath, ["-e", "for(;;){}"], { stdio: "ignore" }),
 	);

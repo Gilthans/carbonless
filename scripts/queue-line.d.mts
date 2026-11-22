@@ -5,12 +5,14 @@ export function ticketState(
 export function line(dir: string): string[];
 export type Ticket = {
 	name: string;
+	old?: boolean;
 	full: boolean;
 	held: boolean;
 	workers?: number;
 };
 export function tickets(dir: string): Ticket[];
 export function ticketKind(content: string): {
+	old: boolean;
 	full: boolean;
 	held: boolean;
 	workers: number | undefined;

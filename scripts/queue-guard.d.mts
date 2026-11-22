@@ -10,5 +10,5 @@ export function workersFor(machine: {
 	freeBytes: number;
 	slots: number;
 	full: boolean;
-	others: { full: boolean; workers?: number }[];
+	others: { full: boolean; old?: boolean; workers?: number }[];
 }): number;

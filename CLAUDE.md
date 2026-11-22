@@ -108,9 +108,10 @@ loading never looking empty, checking against a real PR):
   include the phone.
 - Test queue (for a machine shared by several agents): when
   `~/.config/carbonless/queue.json` exists (`{"slots": 1, "shortSlots":
-  1}`), every Vitest and Playwright run (`pnpm test`, `test:changed`,
-  `test:e2e` with or without spec files, `verify:fast`'s test steps,
-  `pnpm verify`, `pnpm flake-check`) waits for one of `slots` +
+  1}`; keep `slots` at 1, older copies read it), every Vitest and
+  Playwright run (`pnpm test`, `test:changed`, `test:e2e` with or without
+  spec files, `verify:fast`'s test steps, `pnpm verify`,
+  `pnpm flake-check`) waits for one of `slots` +
   `shortSlots` machine-wide locks (`scripts/queue.mjs`, `flock` on
   `~/.cache/carbonless-verify.lock*`), first come, first served, printing
   whose runs it waits for, so runs never overload the machine together.
@@ -130,8 +131,9 @@ loading never looking empty, checking against a real PR):
   longer than a foreground command may: run tests in the background
   (`run_in_background`); a signal ends the wait. Workers: never more than
   cores − 1 in total across the runs holding a slot, and 1.5 GB of
-  available memory each; one slot: all of them; two on 8 cores: full 5,
-  short 2 beside it (3 alone, then a full one 4). `CRB_NO_QUEUE=1` skips
+  available memory each (flake-check's `--load` loops count in it); one
+  slot: all of them; two on 8 cores: full 5, short 2 beside it (3 alone,
+  then a full one 4); at most half the budget in slots. `CRB_NO_QUEUE=1` skips
   the queue for one command. No file (CI, a machine of one's own): nothing
   queues.
 - A tree's `dist` lock (`scripts/dist-lock.mjs`, `flock` on
