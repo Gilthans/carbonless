@@ -1,4 +1,4 @@
-import { marked, type Token, type Tokens } from "marked";
+import { Lexer, type Token, type Tokens } from "marked";
 
 // The rendered blocks of a Markdown file as exact source line ranges. Shared by
 // the server (it cuts review clusters at block edges) and the web renderer (it
@@ -98,12 +98,16 @@ function walkItem(
 				.join("")
 				.replace(/\n+$/, ""),
 		) + 1;
-	out.push({
-		kind: "list-item",
-		from: start,
-		to: Math.min(end, start + ownLines - 1),
-		depth,
-	});
+	// `- - a`: the nested item starts on the item's own first line, so the
+	// item owns no line of its own (each line belongs to the innermost block).
+	if (before.some((t) => t.type !== "space")) {
+		out.push({
+			kind: "list-item",
+			from: start,
+			to: Math.min(end, start + ownLines - 1),
+			depth,
+		});
+	}
 	const mark = out.length;
 	// A nested list starts on the line after the item's own lines and any blank lines.
 	const beforeRaw = before.map((t) => t.raw).join("");
@@ -113,8 +117,9 @@ function walkItem(
 		depth + 1,
 		out,
 	);
+	// Blocks are in document order, so the last one ends the nested list.
 	const nestedEnd =
-		out.length > mark ? Math.max(...out.slice(mark).map((b) => b.to)) : start;
+		out.length > mark ? (out[out.length - 1] as MdBlock).to : start;
 	const after = item.tokens.slice(nested + 1);
 	if (
 		after.some((t) => t.type !== "space" && t.type !== "list") &&
@@ -140,7 +145,9 @@ function frontMatterEnd(lines: readonly string[]): number {
 /** Deepest quote/list/indent nesting a line may open before the parse is skipped. */
 const MAX_NESTING = 64;
 /** Largest document (characters) the parser is given. */
-const MAX_CHARS = 4_000_000;
+const MAX_CHARS = 1_000_000;
+/** Longest line (characters) the parser is given. */
+const MAX_LINE = 10_000;
 
 /** Nesting a line opens: `>` quotes, list markers, and indent in steps of 4. */
 function nestingOf(line: string): number {
@@ -161,6 +168,22 @@ function nestingOf(line: string): number {
 		depth++;
 		i += marker[0].length;
 	}
+}
+
+/**
+ * Backstop for the order and no-overlap contract: a block never starts at or
+ * before the previous one's end. Trimming keeps every line covered.
+ */
+function disjoint(blocks: MdBlock[]): MdBlock[] {
+	const out: MdBlock[] = [];
+	let end = 0;
+	for (const b of blocks) {
+		const from = Math.max(b.from, end + 1);
+		if (from > b.to) continue;
+		out.push(from === b.from ? b : { ...b, from });
+		end = b.to;
+	}
+	return out;
 }
 
 /** Hostile or oversized input: one paragraph per run of non-blank lines. */
@@ -188,10 +211,14 @@ export function markdownBlocks(lines: readonly string[]): MdBlock[] {
 	if (fm > 0) out.push({ kind: "front-matter", from: 1, to: fm, depth: 0 });
 	const rest = clean.slice(fm);
 	const size = rest.reduce((n, l) => n + l.length + 1, 0);
-	if (size <= MAX_CHARS && rest.every((l) => nestingOf(l) <= MAX_NESTING)) {
+	if (
+		size <= MAX_CHARS &&
+		rest.every((l) => l.length <= MAX_LINE && nestingOf(l) <= MAX_NESTING)
+	) {
 		try {
-			walk(marked.lexer(rest.join("\n")), fm + 1, 0, out);
-			return out;
+			// Block structure only: no inline tokens (they cost, and are not needed).
+			walk(new Lexer().blockTokens(rest.join("\n")), fm + 1, 0, out);
+			return disjoint(out);
 		} catch {
 			out.length = fm > 0 ? 1 : 0;
 		}

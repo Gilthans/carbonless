@@ -133,6 +133,16 @@ describe("markdownBlocks", () => {
 			);
 			expect(ratio).toBeLessThan(3);
 		});
+		it("one very long line costs about a plain line of the same size", () => {
+			const emphasis = [`${"a*".repeat(500_000)}`];
+			const plain = ["a".repeat(1_000_000)];
+			fallbackOk(emphasis);
+			const { ratio } = bestCpuRatio(
+				() => markdownBlocks(emphasis),
+				() => markdownBlocks(plain),
+			);
+			expect(ratio).toBeLessThan(3);
+		});
 		it("runs split at blank lines and keep front matter", () => {
 			const deep = "- ".repeat(5000);
 			expect(
@@ -145,6 +155,20 @@ describe("markdownBlocks", () => {
 				{ kind: "paragraph", from: 7, to: 7 },
 			]);
 		});
+	});
+
+	it("nested markers on one line give sorted, non-overlapping blocks", () => {
+		const lines = Array.from({ length: 2000 }, () => "- ".repeat(60));
+		const bs = markdownBlocks(lines);
+		bs.forEach((b, i) => {
+			expect(b.from).toBeLessThanOrEqual(b.to);
+			if (i > 0) expect(b.from).toBeGreaterThan(bs[i - 1]?.to ?? 0);
+		});
+		expect(bs.length).toBeLessThanOrEqual(lines.length);
+		expect(blocks("- - a\n- - b")).toEqual([
+			{ kind: "list-item", from: 1, to: 1 },
+			{ kind: "list-item", from: 2, to: 2 },
+		]);
 	});
 
 	it("blockOfLine", () => {
@@ -172,6 +196,9 @@ describe("markdownBlocks", () => {
 			"1. x\n2. y",
 			"- item\n\n  more",
 			"- p\n  - n1\n  - n2\n- q",
+			"- - a\n  - b\n- c",
+			"1. - x\n   - y",
+			"> - > a",
 			"> quote\n>\n> - li",
 			"> a\n> b",
 			"| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |",
