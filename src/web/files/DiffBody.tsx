@@ -607,10 +607,28 @@ interface Marker {
 	crossOff: () => void;
 }
 
-/** A piece shown as a cluster of its own: reviewed or crossed off when every line it owns is. */
-function pieceView(whole: ClusterView, piece: LineRanges): ClusterView {
-	const { reviewedLines: _, crossedLines: __, reason: ___, ...rest } = whole;
-	return { ...rest, state: pieceState(whole, piece) };
+/**
+ * A piece shown as a cluster of its own: reviewed or crossed off when every
+ * line it owns is; whitespace only as the piece is (`whitespaceOnly`, judged
+ * on the interdiff, CAR-218), never as its cluster is against the base.
+ */
+function pieceView(
+	whole: ClusterView,
+	piece: LineRanges,
+	whitespaceOnly: boolean,
+): ClusterView {
+	const {
+		reviewedLines: _,
+		crossedLines: __,
+		reason: ___,
+		whitespaceOnly: ____,
+		...rest
+	} = whole;
+	return {
+		...rest,
+		state: pieceState(whole, piece),
+		...(whitespaceOnly ? { whitespaceOnly: true } : {}),
+	};
 }
 
 /** A line of a cluster marked one piece at a time: its own mark. */
@@ -2397,7 +2415,9 @@ export function DiffBody(props: {
 			const whole = piece.key ? clusters.get(piece.key) : undefined;
 			if (!whole) return undefined;
 			return {
-				cluster: pieceView(whole, owns),
+				// Whitespace only as the piece is (judged on the interdiff,
+				// CAR-218), not as its cluster is against the base.
+				cluster: pieceView(whole, owns, piece.whitespaceOnly === true),
 				marker: {
 					toggle: () => props.onToggle(whole, owns),
 					crossOff: () => props.onCrossOff(whole, owns),
@@ -2418,6 +2438,7 @@ export function DiffBody(props: {
 				added: [],
 				lines: size(piece.old) + size(piece.new),
 				state: sinceOnlyState(props.sinceMarks, since, file.path, piece),
+				...(piece.whitespaceOnly ? { whitespaceOnly: true } : {}),
 			},
 			marker: {
 				toggle: () => props.onSinceMark?.(piece, false),
@@ -4264,7 +4285,8 @@ function HunkRows(props: {
 				}
 				// Whitespace only: the server's flag (a git hunk's whitespace-only
 				// run is a cluster of its own, CAR-156), the clusters progress
-				// leaves out with the switch on. A change cluster whose lines'
+				// leaves out with the switch on; in the since view the piece's
+				// (markOf: judged on the interdiff, CAR-218), as its counts are. A change cluster whose lines'
 				// twins sit elsewhere (a context line, another hunk) shows its `~`
 				// rows open: it still counts.
 				if (state && ignoreWhitespace && cluster?.whitespaceOnly) {
