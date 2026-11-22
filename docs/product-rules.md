@@ -616,10 +616,16 @@ This is no AI decision: nothing is marked reviewed, and turning the
 switch off shows what is still unreviewed. The Overview's progress, the
 verdict (its "You reviewed" line and its meter of what changed since your
 verdict) and the since view (its bar, each file's header, chips and dot,
-"Nothing to read since", the move-on; its units of whitespace-only
-clusters, `SinceUnit.whitespaceOnly`; whether a file is nothing else is
-decided by its clusters, and the `~` counts clusters, not their pieces)
-count the same way, with the same `~` (CAR-184). Home doesn't: it never reads a review's view settings
+"Nothing to read since", the move-on; `SinceUnit.whitespaceOnly`)
+count the same way, with the same `~` (CAR-184). The since view judges
+whitespace-only on its own diff, the interdiff (CAR-218): a piece is
+whitespace-only when every line is a `~` row there and every line was
+read (reviewed or crossed off) at the earlier patch set, since a line
+nobody read there that this patch set only re-indented is still unread;
+the rest of a cluster that no piece shows keeps its cluster's flag. A
+file is nothing else when all its since units are whitespace-only (not
+its snapshot clusters), and then counts them all. The `~` counts a
+cluster's units as one and each unit without a cluster on its own. Home doesn't: it never reads a review's view settings
 (owner 2026-11-16: "Home shouldn't probe for specific review settings"),
 so it counts every cluster.
 

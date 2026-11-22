@@ -83,18 +83,29 @@ export function unitsOf(answer: RereviewAnswer, view: ReviewView): SinceUnit[] {
 	);
 }
 
-/** How many distinct clusters `units` belong to (a cluster may be several pieces). */
-function clustersOf(units: readonly SinceUnit[]): number {
-	return new Set(units.map((u) => `${u.index}:${u.cluster ?? ""}`)).size;
+/**
+ * How many whitespace-only changes `units` are, for the `~`: a cluster's
+ * units (its old and new pieces) as one, each unit without a cluster (a
+ * piece of an earlier patch set's cluster this one no longer has) on its
+ * own.
+ */
+function leftOutOf(units: readonly SinceUnit[]): number {
+	const clusters = new Set<string>();
+	let alone = 0;
+	for (const u of units) {
+		if (u.cluster === undefined) alone++;
+		else clusters.add(`${u.index}:${u.cluster}`);
+	}
+	return clusters.size + alone;
 }
 
 /**
  * The since view's units as its bar counts them: with "Ignore whitespace"
- * on, without those of whitespace-only clusters (SinceUnit.whitespaceOnly),
- * as countedProgress leaves them out of the full diff's; and how many
- * whitespace-only clusters that left out (not pieces: the `~` says
- * clusters, as the tree and the full diff count them). The same list with
- * the switch off.
+ * on, without the whitespace-only ones (SinceUnit.whitespaceOnly, judged
+ * on the interdiff, CAR-218), as countedProgress leaves them out of the
+ * full diff's; and how many that left out for the `~` (a cluster's units
+ * as one, each unit without a cluster on its own). The same list with the
+ * switch off.
  */
 export function countedUnits(
 	units: readonly SinceUnit[],
@@ -106,24 +117,21 @@ export function countedUnits(
 	const counted = units.filter((u) => !u.whitespaceOnly);
 	return {
 		units: counted,
-		leftOut: clustersOf(units.filter((u) => u.whitespaceOnly)),
+		leftOut: leftOutOf(units.filter((u) => u.whitespaceOnly)),
 	};
 }
 
 /**
  * One file's units as its header, chips and dot count them: as
- * countedUnits, unless the file is nothing but whitespace-only clusters
- * (decided by its clusters, as countedFile decides it, so the header's
- * finished state and its counts never disagree): then they all count, its
- * own marks shown.
+ * countedUnits, unless the file is nothing but whitespace-only units
+ * (decided by its since units, not its snapshot clusters): then they all
+ * count, its own marks shown.
  */
 export function countedFileUnits(
 	units: readonly SinceUnit[],
 	ignoreWhitespace: boolean,
-	clusters: readonly { whitespaceOnly?: true }[],
 ): { units: readonly SinceUnit[]; leftOut: number } {
-	const nothingElse =
-		clusters.length > 0 && clusters.every((c) => c.whitespaceOnly);
+	const nothingElse = units.length > 0 && units.every((u) => u.whitespaceOnly);
 	return nothingElse
 		? { units, leftOut: 0 }
 		: countedUnits(units, ignoreWhitespace);
@@ -166,12 +174,7 @@ export function sinceByFile(
 		else byIndex.set(u.index, [u]);
 	}
 	const counted = [...byIndex.entries()].flatMap(
-		([index, list]) =>
-			countedFileUnits(
-				list,
-				ignoreWhitespace,
-				viewFiles.get(index)?.clusters ?? [],
-			).units,
+		([, list]) => countedFileUnits(list, ignoreWhitespace).units,
 	);
 	for (const u of counted) {
 		const info = out.get(u.index);
