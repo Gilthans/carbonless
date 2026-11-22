@@ -1,10 +1,10 @@
-import type { Cluster } from "../../shared/types.js";
+import type { Cluster, HunkPart, LineCluster } from "../../shared/types.js";
 import { splitHunk } from "../../shared/whitespace.js";
 import { GitError, runGitBuffer } from "../git.js";
 import { type ChangedFile, DIFF_ARGS } from "./files.js";
 import { chooseEncoding, type TextEncoding } from "./text.js";
 
-export type LineCluster = Omit<Cluster, "key" | "kind" | "label">;
+export type { HunkPart, LineCluster } from "../../shared/types.js";
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
@@ -61,13 +61,6 @@ export function parseU0Patch(patch: string): LineCluster[] {
 		}
 	}
 	return clusters;
-}
-
-/** One piece of a split hunk, and where its lines sit in the hunk. */
-export interface HunkPart<C> {
-	cluster: C;
-	removedAt: number;
-	addedAt: number;
 }
 
 /**

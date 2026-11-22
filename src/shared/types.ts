@@ -80,6 +80,16 @@ export interface Cluster {
 	split?: ClusterSplit;
 }
 
+/** A line cluster before it is keyed and labelled. */
+export type LineCluster = Omit<Cluster, "key" | "kind" | "label">;
+
+/** One piece of a split hunk, and where its lines sit in the hunk. */
+export interface HunkPart<C> {
+	cluster: C;
+	removedAt: number;
+	addedAt: number;
+}
+
 /** Where a piece of a split hunk sits in it (Cluster.split). */
 export interface ClusterSplit {
 	key: string;
