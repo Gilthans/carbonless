@@ -3205,11 +3205,17 @@ test("a changed line unchanged since PS1 but never reviewed there has a box of i
 	await expect(
 		node(page, "ps1").getByRole("button", { name: "comparison base" }),
 	).toBeVisible();
+	// The engine's answer is in (its carries laid over): five boxes to read,
+	// line 10's among them.
+	await expect(toRead(page)).toHaveText(/5 to read/, GIT_WAIT);
+	await expect(progress(page)).toContainText("0 / 5 clusters reviewed");
 	const since = await expand(page, RESULT);
 	// Line 10: an added row with a box and a chip of its own.
 	const line10 = since.locator('[data-testid="diff-line"][data-new-no="10"]');
 	await expect(line10).toHaveAttribute("data-kind", "add", GIT_WAIT);
-	const run = since.locator("tbody").filter({ has: line10 });
+	const run = since.locator("tbody", {
+		has: page.locator('[data-testid="diff-line"][data-new-no="10"]'),
+	});
 	const chip = run.getByTestId("kind-chip");
 	await expect(chip).toHaveText("not reviewed in PS1");
 	await expect(chip).toBeVisible();
@@ -3232,7 +3238,10 @@ test("a changed line unchanged since PS1 but never reviewed there has a box of i
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 	await chooseUnit(page, "Lines");
 	await expect(progress(page)).toContainText(/\b(\d+) \/ \1 lines reviewed/);
-	await expect(fileProgress(since)).toContainText(/\b(\d+) \/ \1 lines/);
+	await expect(fileProgress(since)).toHaveAttribute(
+		"aria-valuetext",
+		/\b(\d+) of \1 lines reviewed/,
+	);
 	await withTree(page, (tree) =>
 		expect(treeNumbers(tree, /result\.py/)).toHaveText("9 of 9 lines reviewed"),
 	);
