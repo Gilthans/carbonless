@@ -164,6 +164,13 @@ export interface DiffLine {
 	 * no line for it). CAR-217.
 	 */
 	baseNo?: number | null;
+	/**
+	 * The since view's Markdown cut only (CAR-167, pieces.ts
+	 * cutRunsAtBlocks): the line's piece among those its run of one
+	 * cluster's lines was cut into at the file's blocks, so pieces of one
+	 * cluster side by side stay runs of their own (lineRuns).
+	 */
+	blockPiece?: number;
 }
 
 export interface DisplayHunk {
@@ -185,6 +192,8 @@ export interface FileHunks {
 	newLineCount: number;
 	/** The since view's only: its pieces, each markable (pieces.ts). */
 	pieces?: SincePiece[];
+	/** The since view's only: its pieces are cut at its Markdown blocks (CAR-167). */
+	markdownBlocks?: true;
 	/**
 	 * The since view's only: the interdiff doesn't change the file's
 	 * lines, so all `newLineCount` of them are one gap (gaps.ts).
@@ -1144,6 +1153,12 @@ export interface RereviewAnswer {
 		 * view marks and counts (sinceUnits); absent without an interdiff.
 		 */
 		pieces?: SincePiece[];
+		/**
+		 * A Markdown file whose since-view pieces are cut at its blocks
+		 * (CAR-167): both sides text under the cap, as the full diff's
+		 * FileSummary.markdownBlocks.
+		 */
+		markdownBlocks?: true;
 	}[];
 	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
 	toRead: { files: number; clusters: number };

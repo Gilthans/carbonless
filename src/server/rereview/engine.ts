@@ -6,8 +6,10 @@ import {
 	subtract,
 	union,
 } from "../../shared/lineRanges.js";
+import { markdownBlocks } from "../../shared/markdownBlocks.js";
 import {
 	clusterAt,
+	cutRunsAtBlocks,
 	type SincePiece,
 	sincePieces,
 	sinceUnits,
@@ -54,7 +56,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-export const ENGINE_VERSION = 5;
+export const ENGINE_VERSION = 6;
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {
@@ -620,13 +622,14 @@ export function answerRereview(
 	if (interdiff.status === "available") {
 		const sources = humanMarksOf(ps.snapshot, ps.states);
 		for (const f of files) {
-			const { pieces = [] } = interdiffFileHunks(
+			const { pieces = [], markdownBlocks: cut } = interdiffFileHunks(
 				traced,
 				target,
 				answer,
 				f.index,
 			);
 			if (pieces.length > 0) f.pieces = pieces;
+			if (cut) f.markdownBlocks = true;
 			const carries = sinceLineCarries(
 				traced,
 				target,
@@ -949,7 +952,15 @@ export function interdiffFileHunks(
 	// a line the patch set added. A line no piece shows is unchanged since
 	// the compared patch set: it takes its mark there, if any, as a carry
 	// (sinceLineCarries), never through a piece.
-	const pieces = sincePieces(hunks, targetClusters, () => ({ baseNo }));
+	// A Markdown file's runs are cut at its blocks first (CAR-167), each
+	// side's blocks from the since view's own lines (no other read).
+	const shown = file.markdown
+		? cutRunsAtBlocks(hunks, {
+				old: markdownBlocks(file.oldLines),
+				new: markdownBlocks(file.newLines),
+			})
+		: hunks;
+	const pieces = sincePieces(shown, targetClusters, () => ({ baseNo }));
 	// A removed line's GitHub line on the head (LEFT, in the base): what a
 	// comment on it posts with, never its number here (CAR-217). A
 	// conflicted file's old side is the base; else the virtual rebase's
@@ -958,14 +969,19 @@ export function interdiffFileHunks(
 	const left = file.conflict
 		? undefined
 		: traced.lineKeys.githubLeft?.[file.oldPath ?? file.path];
-	for (const hunk of hunks) {
+	for (const hunk of shown) {
 		for (const line of hunk.lines) {
 			if (line.kind !== "del" || line.oldNo === undefined) continue;
 			if (file.conflict) line.baseNo = line.oldNo;
 			else if (left) line.baseNo = left[line.oldNo] ?? null;
 		}
 	}
-	return { hunks, newLineCount: file.newLines.length, pieces };
+	return {
+		hunks: shown,
+		newLineCount: file.newLines.length,
+		pieces,
+		...(file.markdown ? { markdownBlocks: true as const } : {}),
+	};
 }
 
 /** A line of a cluster of the compared patch set (its own line index). */

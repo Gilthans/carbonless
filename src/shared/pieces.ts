@@ -1,3 +1,5 @@
+import { groupByBlocks } from "./blockCut.js";
+import { HUNK_ALIGN_WORD_OPS } from "./linePairing.js";
 import {
 	all,
 	contains,
@@ -10,6 +12,7 @@ import {
 	union,
 	within,
 } from "./lineRanges.js";
+import { blockOfLine, type MdBlock } from "./markdownBlocks.js";
 import type {
 	Cluster,
 	ClusterState,
@@ -251,8 +254,9 @@ export function fitRanges(
 
 /**
  * A hunk's lines in runs: context runs, and runs of changed lines with one
- * cluster key (or none). A changed run is never merged into context, so
- * an unkeyed removal shows, and is marked, as a piece of its own.
+ * cluster key (or none) and one `blockPiece` (cutRunsAtBlocks). A changed
+ * run is never merged into context, so an unkeyed removal shows, and is
+ * marked, as a piece of its own.
  */
 export function lineRuns(
 	lines: readonly DiffLine[],
@@ -262,7 +266,12 @@ export function lineRuns(
 		const change = line.kind !== "context";
 		const key = change ? line.clusterKey : undefined;
 		const last = out.at(-1);
-		if (last && last.change === change && last.key === key) {
+		if (
+			last &&
+			last.change === change &&
+			last.key === key &&
+			last.lines[0]?.blockPiece === line.blockPiece
+		) {
 			last.lines.push(line);
 		} else {
 			out.push({
@@ -273,6 +282,55 @@ export function lineRuns(
 		}
 	}
 	return out;
+}
+
+/**
+ * The since view's hunks of a Markdown file cut at its blocks (CAR-167),
+ * as the full diff's clusters are (blockCut.ts): each run of one
+ * cluster's changed lines (lineRuns) is grouped by `groupByBlocks`, its
+ * removed lines by their block on the since view's old side
+ * (`blocks.old`, by `oldNo`), its added lines by theirs on the new side
+ * (`blocks.new`, by `newNo`), with a pairing budget of its own (a run's
+ * cut never depends on another's). A run cut in several has its lines
+ * laid out group by group, each group's removals before its additions as
+ * git shows a hunk, and tagged with the group's `blockPiece`, so each
+ * group is a run, and a piece (sincePieces), of its own. The same lines,
+ * only regrouped: every line stays in exactly one run. A run whose
+ * removals don't all come before its additions isn't cut (one piece, as
+ * without the cut). Hunks with nothing to cut are returned as they are.
+ */
+export function cutRunsAtBlocks<H extends { lines: readonly DiffLine[] }>(
+	hunks: readonly H[],
+	blocks: { old: readonly MdBlock[]; new: readonly MdBlock[] },
+): H[] {
+	return hunks.map((hunk) => {
+		let cut = false;
+		const lines = lineRuns(hunk.lines).flatMap((run) => {
+			if (!run.change) return run.lines;
+			const removed = run.lines.filter((l) => l.kind === "del");
+			const added = run.lines.filter((l) => l.kind === "add");
+			const sorted = run.lines.every((l, i) =>
+				i < removed.length ? l.kind === "del" : l.kind === "add",
+			);
+			if (!sorted || removed.length + added.length < 2) return run.lines;
+			const groups = groupByBlocks(
+				removed.map((l) => l.text),
+				added.map((l) => l.text),
+				(i) => blockOfLine(blocks.old, removed[i]?.oldNo ?? 0),
+				(i) => blockOfLine(blocks.new, added[i]?.newNo ?? 0),
+				{ left: HUNK_ALIGN_WORD_OPS },
+			);
+			if (groups.length <= 1) return run.lines;
+			cut = true;
+			return groups.flatMap(({ removed: [rf, rt], added: [af, at] }, g) =>
+				[...removed.slice(rf, rt), ...added.slice(af, at)].map((l) => ({
+					...l,
+					blockPiece: g,
+				})),
+			);
+		});
+		return cut ? { ...hunk, lines } : hunk;
+	});
 }
 
 /**

@@ -307,14 +307,7 @@ export async function buildSnapshot(
 		// both sides are text under the cap, neither a symlink nor an LFS
 		// pointer (not Markdown); the Rendered view needs the cut.
 		const markdown =
-			text &&
-			isMarkdownPath(file.path) &&
-			file.oldMode !== SYMLINK_MODE &&
-			file.newMode !== SYMLINK_MODE &&
-			!isLfsPointer(bytesOf(oldOid)) &&
-			!isLfsPointer(bytesOf(newOid)) &&
-			bytesOf(oldOid).length <= MARKDOWN_CUT_MAX_BYTES &&
-			bytesOf(newOid).length <= MARKDOWN_CUT_MAX_BYTES
+			text && cutsMarkdown(file, bytesOf(oldOid), bytesOf(newOid))
 				? { oldLines: text.oldLines, newLines: text.newLines }
 				: undefined;
 		const clusters = cutClusters(hunks, keysOf, markdown);
@@ -361,6 +354,28 @@ export const MARKDOWN_CUT_MAX_BYTES = 512 * 1024;
 
 /** A symlink's mode: its blob is a target path, not Markdown. */
 const SYMLINK_MODE = "120000";
+
+/**
+ * Whether a text file's lines are cut at its Markdown blocks (CAR-167):
+ * a Markdown path, neither side a symlink or an LFS pointer, both sides'
+ * bytes (empty for a missing side) under MARKDOWN_CUT_MAX_BYTES. The full
+ * diff's clusters and the since view's pieces both ask it.
+ */
+export function cutsMarkdown(
+	file: Pick<ChangedFile, "path" | "oldMode" | "newMode">,
+	oldBytes: Buffer,
+	newBytes: Buffer,
+): boolean {
+	return (
+		isMarkdownPath(file.path) &&
+		file.oldMode !== SYMLINK_MODE &&
+		file.newMode !== SYMLINK_MODE &&
+		!isLfsPointer(oldBytes) &&
+		!isLfsPointer(newBytes) &&
+		oldBytes.length <= MARKDOWN_CUT_MAX_BYTES &&
+		newBytes.length <= MARKDOWN_CUT_MAX_BYTES
+	);
+}
 
 /**
  * One file's git hunks (and its file-level cluster) as its clusters: each

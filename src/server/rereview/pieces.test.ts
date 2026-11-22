@@ -405,3 +405,92 @@ describe("a file the since patch set didn't touch", () => {
 		expect(pieces.find((p) => p.key === k?.key)?.owns).toEqual([[0, 2]]);
 	});
 });
+
+describe("a Markdown file's since view: pieces cut at its blocks (CAR-167)", () => {
+	// PS1 adds a list; PS2 edits two adjacent items of it. The same text as
+	// .md and .txt: only the Markdown file's pieces are cut at its items.
+	const ps1 = ["# Title", "", "- one", "- two", "- three", "", "end"];
+	const ps2 = ["# Title", "", "- one!", "- two!", "- three", "", "end"];
+	const baseText = text(["# Title", "", "end"]);
+	let r: GitFixture;
+	let a: Snapshot;
+	let b: Snapshot;
+	beforeAll(async () => {
+		r = createGitFixture([
+			{ message: "base", files: { "list.md": baseText, "list.txt": baseText } },
+			{
+				message: "ps1",
+				files: { "list.md": text(ps1), "list.txt": text(ps1) },
+			},
+			{
+				message: "ps2",
+				files: { "list.md": text(ps2), "list.txt": text(ps2) },
+			},
+		]);
+		const [b0, h1, h2] = r.shas as [string, string, string];
+		a = await buildSnapshot(r.path, b0, h1);
+		b = await buildSnapshot(r.path, b0, h2);
+	});
+	afterAll(() => r.cleanup());
+
+	async function sinceOf(path: string) {
+		const since: SincePatchset = {
+			number: 1,
+			revision: a.revision,
+			mergeBase: a.base,
+			head: a.head,
+			startedAt: 0,
+			since: null,
+			shape: null,
+			baseBranch: "main",
+			interdiff: null,
+			snapshot: a,
+			states: new Map(),
+		};
+		const target = { ...b, baseBranch: "main" };
+		const traced = await traceRereview(r.path, since, [], target);
+		const { answer } = answerRereview(traced, since, [], target);
+		const index = b.files.findIndex((f) => f.path === path);
+		const hunks = interdiffFileHunks(traced, b, answer, index);
+		/** Each piece's lines, as its run in the hunk shows them. */
+		const shown = (hunks.pieces ?? []).map((p) => {
+			const lines = hunks.hunks[p.hunk]?.lines ?? [];
+			const first = lines[p.line];
+			const out: string[] = [];
+			for (const l of lines.slice(p.line)) {
+				if (
+					l.kind === "context" ||
+					l.clusterKey !== first?.clusterKey ||
+					l.blockPiece !== first?.blockPiece
+				) {
+					break;
+				}
+				out.push(`${l.kind === "add" ? "+" : "-"}${l.text}`);
+			}
+			return out;
+		});
+		return { entry: answer.files[index], hunks, shown };
+	}
+
+	it("a .md file's since answer has no piece across two list items, and says so", async () => {
+		const { entry, hunks, shown } = await sinceOf("list.md");
+		expect(entry?.markdownBlocks).toBe(true);
+		expect(hunks.markdownBlocks).toBe(true);
+		expect(entry?.pieces).toEqual(hunks.pieces);
+		// The interdiff's removals are keyed by its first added line's
+		// cluster (the first item's): "- two" is cut off that piece, and
+		// "- two!" is the second item's cluster's (the full diff cut it).
+		expect(shown).toEqual([["-- one", "+- one!"], ["-- two"], ["+- two!"]]);
+		const [one, two, twoNew] = hunks.pieces ?? [];
+		expect(two?.key).toBe(one?.key);
+		expect(two).toMatchObject({ owns: null, kind: "removed" });
+		expect(twoNew?.key).not.toBe(one?.key);
+	});
+
+	it("a .txt file with the same text isn't cut", async () => {
+		const { entry, hunks, shown } = await sinceOf("list.txt");
+		expect(entry?.markdownBlocks).toBeUndefined();
+		expect(hunks.markdownBlocks).toBeUndefined();
+		expect(shown).toEqual([["-- one", "-- two", "+- one!", "+- two!"]]);
+	});
+});

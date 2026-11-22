@@ -1,8 +1,12 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { blockOfLine, markdownBlocks } from "./markdownBlocks";
+import type { SincePiece } from "./pieces";
 import {
 	changeFor,
 	clusterAt,
 	crossOffChange,
+	cutRunsAtBlocks,
 	fitRanges,
 	lineIndex,
 	lineRuns,
@@ -510,5 +514,340 @@ describe("the since view's pieces", () => {
 			sinceOnlyPieces([own, goneKey, notInView, reverted], new Set(["k1"])),
 		).toEqual([goneKey, notInView, reverted]);
 		expect(sinceOnlyPieces([own], new Set())).toEqual([own]);
+	});
+});
+
+describe("the since view's pieces of a Markdown file, cut at its blocks (CAR-167)", () => {
+	const line = (
+		kind: DiffLine["kind"],
+		oldNo: number | undefined,
+		newNo: number | undefined,
+		text: string,
+		clusterKey?: string,
+	): DiffLine => ({
+		kind,
+		...(oldNo === undefined ? {} : { oldNo }),
+		...(newNo === undefined ? {} : { newNo }),
+		text,
+		...(clusterKey === undefined ? {} : { clusterKey }),
+	});
+	const sides = (oldLines: string[], newLines: string[]) => ({
+		old: markdownBlocks(oldLines),
+		new: markdownBlocks(newLines),
+	});
+	/** A piece's lines in its hunk: its run (lineRuns) from its first line. */
+	const textOf = (
+		hunks: readonly { lines: readonly DiffLine[] }[],
+		p: { hunk: number; line: number },
+	) => {
+		const lines = hunks[p.hunk]?.lines ?? [];
+		const run = lineRuns(lines.slice(p.line))[0];
+		return run?.lines.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`);
+	};
+
+	// The viewed snapshot's one cluster: two list items edited (old 3–4 → new 3–4).
+	const oldLines = ["# Title", "", "- one", "- two", ""];
+	const newLines = ["# Title", "", "- one!", "- two!", ""];
+	const list: Cluster = {
+		key: "l".repeat(64),
+		kind: "lines",
+		oldStart: 3,
+		oldCount: 2,
+		newStart: 3,
+		newCount: 2,
+		removed: ["- one", "- two"],
+		added: ["- one!", "- two!"],
+		lines: 4,
+	};
+	const k = list.key;
+	const listHunk = {
+		newStart: 1,
+		lines: [
+			line("context", 1, 1, "# Title"),
+			line("context", 2, 2, ""),
+			line("del", 3, undefined, "- one", k),
+			line("del", 4, undefined, "- two", k),
+			line("add", undefined, 3, "- one!", k),
+			line("add", undefined, 4, "- two!", k),
+			line("context", 5, 5, ""),
+		],
+	};
+	const facts = () => ({ baseNo: (l: DiffLine) => l.oldNo });
+
+	it("a run across two list items of one cluster is two pieces, each owning only its item's lines", () => {
+		const whole = sincePieces([listHunk], [list], facts);
+		expect(whole.map((p) => p.owns)).toEqual([[[0, 4]]]);
+		const hunks = cutRunsAtBlocks([listHunk], sides(oldLines, newLines));
+		const pieces = sincePieces(hunks, [list], facts);
+		expect(pieces.map((p) => textOf(hunks, p))).toEqual([
+			["-- one", "+- one!"],
+			["-- two", "+- two!"],
+		]);
+		expect(pieces).toEqual([
+			{
+				hunk: 0,
+				line: 2,
+				key: k,
+				owns: [
+					[0, 1],
+					[2, 3],
+				],
+				old: [[3, 4]],
+				new: [[3, 4]],
+			},
+			{
+				hunk: 0,
+				line: 4,
+				key: k,
+				owns: [
+					[1, 2],
+					[3, 4],
+				],
+				old: [[4, 5]],
+				new: [[4, 5]],
+			},
+		]);
+		// The context stays where it was; only the run's lines are regrouped.
+		expect(hunks[0]?.lines.filter((l) => l.kind === "context")).toEqual(
+			listHunk.lines.filter((l) => l.kind === "context"),
+		);
+	});
+
+	it("a run marked before the cut reads the same per line: every block piece of it is marked", () => {
+		const [whole] = sincePieces([listHunk], [list], facts);
+		const cut = sincePieces(
+			cutRunsAtBlocks([listHunk], sides(oldLines, newLines)),
+			[list],
+			facts,
+		);
+		const marked = toggleChange(
+			{ ...list, state: "unreviewed" },
+			whole?.owns ?? undefined,
+		);
+		const after: ClusterView = {
+			...list,
+			state: marked.state,
+			...(marked.reviewedLines ? { reviewedLines: marked.reviewedLines } : {}),
+		};
+		expect(cut).toHaveLength(2);
+		for (const p of cut) {
+			expect(pieceState(after, p.owns ?? [])).toBe("reviewed");
+		}
+		// A piece of its own (lines the compared patch set had, gone): its
+		// file mark holds each block piece's lines too.
+		const goneHunk = {
+			newStart: 1,
+			lines: [
+				line("context", 1, 1, "# Title"),
+				line("context", 2, 2, ""),
+				line("del", 3, undefined, "- one"),
+				line("del", 4, undefined, "- two"),
+				line("context", 5, 3, ""),
+			],
+		};
+		const [gone] = sincePieces([goneHunk], []);
+		const tick = sinceToggleChange(undefined, 1, "a.md", gone as SincePiece);
+		const marks = [tick.sinceMark as SinceMark];
+		const goneCut = sincePieces(
+			cutRunsAtBlocks([goneHunk], sides(oldLines, ["# Title", "", ""])),
+			[],
+		);
+		expect(goneCut.map((p) => p.old)).toEqual([[[3, 4]], [[4, 5]]]);
+		for (const p of goneCut) {
+			expect(sinceOnlyState(marks, 1, "a.md", p)).toBe("reviewed");
+		}
+	});
+
+	it("a whitespace-only change inside a paragraph keeps one piece per cluster, as without the cut", () => {
+		const para: Cluster = {
+			key: "p".repeat(64),
+			kind: "lines",
+			oldStart: 1,
+			oldCount: 1,
+			newStart: 1,
+			newCount: 1,
+			removed: ["Some text here."],
+			added: ["Some  text here."],
+			lines: 2,
+			whitespaceOnly: true,
+		};
+		const hunk = {
+			newStart: 1,
+			lines: [
+				line("del", 1, undefined, "Some text here.", para.key),
+				line("add", undefined, 1, "Some  text here.", para.key),
+				line("context", 2, 2, "more words."),
+			],
+		};
+		const hunks = cutRunsAtBlocks(
+			[hunk],
+			sides(
+				["Some text here.", "more words."],
+				["Some  text here.", "more words."],
+			),
+		);
+		expect(hunks[0]).toBe(hunk);
+		expect(sincePieces(hunks, [para], facts)).toEqual(
+			sincePieces([hunk], [para], facts),
+		);
+	});
+
+	it("a run whose removals don't all come before its additions isn't cut", () => {
+		const hunk = {
+			newStart: 1,
+			lines: [
+				line("add", undefined, 3, "- one!", k),
+				line("del", 3, undefined, "- one", k),
+				line("del", 4, undefined, "- two", k),
+				line("add", undefined, 4, "- two!", k),
+			],
+		};
+		expect(cutRunsAtBlocks([hunk], sides(oldLines, newLines))[0]).toBe(hunk);
+	});
+
+	/** A line diff of two texts (LCS), each run of changes its removals first. */
+	const diffLines = (a: string[], b: string[]): DiffLine[] => {
+		const n = a.length;
+		const m = b.length;
+		const table = new Array<number>((n + 1) * (m + 1)).fill(0);
+		const lcs = (i: number, j: number) => table[i * (m + 1) + j] as number;
+		for (let i = n - 1; i >= 0; i--) {
+			for (let j = m - 1; j >= 0; j--) {
+				table[i * (m + 1) + j] =
+					a[i] === b[j]
+						? lcs(i + 1, j + 1) + 1
+						: Math.max(lcs(i + 1, j), lcs(i, j + 1));
+			}
+		}
+		const out: DiffLine[] = [];
+		let dels: DiffLine[] = [];
+		let adds: DiffLine[] = [];
+		const flush = () => {
+			out.push(...dels, ...adds);
+			dels = [];
+			adds = [];
+		};
+		let i = 0;
+		let j = 0;
+		while (i < n || j < m) {
+			if (i < n && j < m && a[i] === b[j]) {
+				flush();
+				out.push(line("context", i + 1, j + 1, a[i] as string));
+				i++;
+				j++;
+			} else if (j >= m || (i < n && lcs(i + 1, j) >= lcs(i, j + 1))) {
+				dels.push(line("del", i + 1, undefined, a[i] as string));
+				i++;
+			} else {
+				adds.push(line("add", undefined, j + 1, b[j] as string));
+				j++;
+			}
+		}
+		flush();
+		return out;
+	};
+	const LINE = fc.constantFrom(
+		"",
+		"# Title",
+		"## Section",
+		"- item one",
+		"- item two",
+		"  - nested",
+		"1. first",
+		"> quoted",
+		"```",
+		"code()",
+		"| a | b |",
+		"| - | - |",
+		"| x | y |",
+		"plain text",
+		"more words here",
+	);
+	/** An edit of `lines`: `count` lines at `at` replaced by `put`. */
+	const EDIT = fc.record({
+		at: fc.nat(),
+		count: fc.nat({ max: 6 }),
+		put: fc.array(LINE, { maxLength: 6 }),
+	});
+	const apply = (
+		lines: string[],
+		edits: { at: number; count: number; put: string[] }[],
+	) => {
+		const out = [...lines];
+		for (const e of edits) {
+			const at = e.at % (out.length + 1);
+			out.splice(at, e.count, ...e.put);
+		}
+		return out;
+	};
+
+	it("every changed line is in exactly one piece, each piece one run (random edits on both patch sets)", () => {
+		fc.assert(
+			fc.property(
+				fc.array(LINE, { maxLength: 25 }),
+				fc.array(EDIT, { maxLength: 4 }),
+				fc.array(EDIT, { maxLength: 4 }),
+				fc.array(fc.constantFrom("a", "b", undefined), {
+					minLength: 1,
+					maxLength: 5,
+				}),
+				(base, edits1, edits2, keys) => {
+					const ps1 = apply(base, edits1);
+					const ps2 = apply(base, edits2);
+					const lines = diffLines(ps1, ps2).map((l, i) => {
+						const key = keys[i % keys.length];
+						return l.kind === "context" || key === undefined
+							? l
+							: { ...l, clusterKey: key };
+					});
+					const hunk = { newStart: 1, lines };
+					const [cut] = cutRunsAtBlocks([hunk], sides(ps1, ps2));
+					const id = (l: DiffLine) => `${l.kind}:${l.oldNo}:${l.newNo}`;
+					// The same lines, context in place, keys kept.
+					expect(
+						cut?.lines.map((l) => `${id(l)}:${l.clusterKey}`).sort(),
+					).toEqual(lines.map((l) => `${id(l)}:${l.clusterKey}`).sort());
+					cut?.lines.forEach((l, i) => {
+						if (l.kind === "context" || lines[i]?.kind === "context") {
+							expect(l).toEqual(lines[i]);
+						}
+					});
+					const pieces = sincePieces([cut as typeof hunk], []);
+					const dels = lines.flatMap((l) =>
+						l.kind === "del" ? [l.oldNo as number] : [],
+					);
+					const adds = lines.flatMap((l) =>
+						l.kind === "add" ? [l.newNo as number] : [],
+					);
+					const olds = pieces.flatMap((p) =>
+						p.old.flatMap(([f, t]) =>
+							Array.from({ length: t - f }, (_, i) => f + i),
+						),
+					);
+					const news = pieces.flatMap((p) =>
+						p.new.flatMap(([f, t]) =>
+							Array.from({ length: t - f }, (_, i) => f + i),
+						),
+					);
+					expect(olds.sort((x, y) => x - y)).toEqual(dels);
+					expect(news.sort((x, y) => x - y)).toEqual(adds);
+					// Each piece is a run of its own, with its first line.
+					const runs = lineRuns(cut?.lines ?? []).filter((r) => r.change);
+					expect(pieces).toHaveLength(runs.length);
+					// A cut piece's added lines lie in one block of the new side.
+					const newBlocks = markdownBlocks(ps2);
+					for (const r of runs) {
+						if (r.lines[0]?.blockPiece === undefined) continue;
+						const blocks = new Set(
+							r.lines.flatMap((l) =>
+								l.newNo === undefined ? [] : [blockOfLine(newBlocks, l.newNo)],
+							),
+						);
+						expect(blocks.size).toBeLessThanOrEqual(1);
+					}
+				},
+			),
+			{ numRuns: 300 },
+		);
 	});
 });
