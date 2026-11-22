@@ -6,8 +6,9 @@ import {
 	threadComment,
 } from "../test/fake-gh/scenario";
 import { ask, CALC, expect, fixture, openFile, row, test } from "./agent-ui";
-import { expectNoPageOverflow } from "./files-ui";
+import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
 import type { Pr } from "./fixtures";
+import { reviewPage } from "./fixtures";
 
 // Its own crb serve: the agent's config, its fake ACP env and checkouts.
 test.use({ crbServer: "own" });
@@ -493,4 +494,259 @@ test("the joined thread deleted on GitHub: the conversation shows on its lines a
 	const back = await reopenLine3(page, s.url);
 	await expect(back).toContainText("Anything to ask the author?");
 	await expect(box(back)).toContainText("Posted");
+});
+
+/** crb's new-thread POST (`/api/r/<id>/threads`), held until released. */
+async function holdNewThread(page: Page) {
+	let release = () => {};
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
+	let hits = 0;
+	await page.route(/\/api\/r\/[^/]+\/threads$/, async (route) => {
+		if (route.request().method() !== "POST") return route.fallback();
+		hits++;
+		await held;
+		await route.fallback();
+	});
+	return { release, hits: () => hits };
+}
+
+test("two blocks pressed back to back: the second waits for the first, then replies to its thread; one new thread", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: TWO }] },
+	});
+	const { section, card } = await askLine3(page, s.url);
+	const held = await holdNewThread(page);
+	await addButton(card).first().click();
+	await expect.poll(held.hits).toBe(1);
+	// The first on its way: the second can't start a thread of its own.
+	const second = box(card).nth(1);
+	const button = second.getByRole("button", { name: "Add review comment" });
+	await expect(button).toHaveAttribute("aria-disabled", "true");
+	await expect(button).toHaveAttribute("aria-busy", "true");
+	await expect(button).toHaveAccessibleDescription(
+		"Waiting for this conversation's other comment",
+	);
+	await button.click({ force: true });
+	held.release();
+	// Joined: the second replies to the first's thread.
+	const panel = section
+		.getByTestId("files-thread")
+		.getByTestId("thread-agent-panel");
+	await expect(panel).toHaveAttribute("data-open", "true");
+	await expect(box(panel).nth(0)).toContainText("Posted");
+	await expect(
+		box(panel).nth(1).getByTestId("agent-comment-target"),
+	).toHaveText("Reply");
+	await addButton(panel).click();
+	await expect(box(panel).nth(1)).toContainText("Posted");
+	expect(held.hits()).toBe(1);
+	expect(newThreadPosts(p)).toHaveLength(1);
+	expect(replyPosts(p)).toHaveLength(1);
+	expect(storedThreads(p)).toHaveLength(1);
+});
+
+test("the first post's record lost: the next block replies to its thread, never a second one; then they join", async ({
+	page,
+	pr,
+	agentCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/500|Failed to load/);
+	const p = await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: TWO }] },
+	});
+	const { section, card } = await askLine3(page, s.url);
+	const RECORD = "**/api/r/*/agent/threads/*/posted";
+	await page.route(RECORD, (route) =>
+		route.fulfill({ status: 500, body: '{"error":"down"}' }),
+	);
+	await addButton(card).first().click();
+	// Posted, kept in the browser: still on its line, its card not opened.
+	await expect(box(card).nth(0)).toContainText("Posted");
+	await expect(
+		section.getByTestId("files-thread").getByTestId("thread-agent-panel"),
+	).toHaveCount(0);
+	await page.unroute(RECORD);
+	const second = box(card).nth(1);
+	await expect(second.getByTestId("agent-comment-target")).toHaveText("Reply");
+	await second.getByRole("button", { name: "Add review comment" }).click();
+	// Recorded: the conversation is the thread's, its card open with both.
+	const panel = section
+		.getByTestId("files-thread")
+		.getByTestId("thread-agent-panel");
+	await expect(panel).toHaveAttribute("data-open", "true");
+	await expect(box(panel).nth(0)).toContainText("Posted");
+	await expect(box(panel).nth(1)).toContainText("Posted");
+	expect(newThreadPosts(p)).toHaveLength(1);
+	expect(replyPosts(p)).toHaveLength(1);
+	expect(storedThreads(p)).toHaveLength(1);
+	expect(storedThreads(p)[0]?.bodies).toHaveLength(2);
+});
+
+test("the Threads tab after a post: one People row for the thread, one AI row that opens the same card with the conversation", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: ANSWER }] },
+	});
+	const { section, card } = await askLine3(page, s.url);
+	await addButton(card).click();
+	const thread = section.getByTestId("files-thread");
+	const panel = thread.getByTestId("thread-agent-panel");
+	await expect(panel).toHaveAttribute("data-open", "true");
+	// The conversation closed; the Threads tab's AI row opens it again.
+	await thread.getByTestId("thread-agent-button").click();
+	await expect(panel).toHaveAttribute("data-open", "false");
+	const narrow = (page.viewportSize()?.width ?? 1280) < 768;
+	let side = page.locator("body");
+	if (narrow) {
+		await page.getByRole("button", { name: "Files", exact: true }).click();
+		side = page.getByRole("dialog", { name: "Files" });
+	}
+	await side
+		.getByRole("tablist", { name: "Sidebar" })
+		.getByRole("tab", { name: /^Threads/ })
+		.click();
+	const people = side.getByRole("region", { name: "People", exact: true });
+	const ai = side.getByRole("region", { name: "AI", exact: true });
+	await expect(people.getByTestId("threads-count")).toHaveText("1");
+	await expect(ai.getByTestId("threads-count")).toHaveText("1");
+	await expect(ai.getByTestId("threads-row-blurb")).toHaveText(
+		"Anything to ask the author?",
+	);
+	await ai.getByRole("button", { name: /^src\/calc\.ts:3/ }).click();
+	await expect(thread).toHaveCount(1);
+	await expect(panel).toHaveAttribute("data-open", "true");
+	await expect(panel).toContainText("Anything to ask the author?");
+});
+
+test("the page can't read GitHub's threads: the joined conversation shows on its lines, its blocks and box off", async ({
+	page,
+	pr,
+	agentCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/502|Failed to load/);
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: TWO }] },
+	});
+	const { section, card } = await askLine3(page, s.url);
+	await addButton(card).first().click();
+	await expect(
+		section.getByTestId("files-thread").getByTestId("thread-agent-panel"),
+	).toHaveAttribute("data-open", "true");
+	await page.route("**/api/r/*/threads?*", (route) =>
+		route.fulfill({ status: 502, body: '{"error":"GitHub is down"}' }),
+	);
+	await page.reload();
+	const back = await reopenLine3(page, s.url);
+	await expect(back).toContainText("Anything to ask the author?");
+	await expect(box(back).nth(0)).toContainText("Posted");
+	const off = box(back)
+		.nth(1)
+		.getByRole("button", { name: "Add review comment" });
+	await expect(off).toHaveAttribute("aria-disabled", "true");
+	await expect(off).toHaveAccessibleDescription(
+		"Couldn't read GitHub's threads",
+	);
+	await expect(
+		back.getByRole("textbox", { name: "Reply to your agent" }),
+	).toBeDisabled();
+});
+
+test("an earlier patch set that doesn't list the joined thread shows the conversation where it was asked", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	test.slow();
+	const p = await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: ANSWER }] },
+	});
+	const section = await openFile(page, s.url, CALC);
+	const asked = await ask(page, section, 3, "Anything to ask the author?");
+	await expect(box(asked)).toHaveCount(1);
+	// A mark starts PS1.
+	await marksReady(page, section);
+	await section
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.first()
+		.click();
+	await expect(
+		section.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	// A push that leaves calc.ts alone, viewed: a comment there starts PS2.
+	const NEW = "src/new.ts";
+	p.moveHead({
+		message: "new file",
+		files: { [NEW]: "export const n = 1;\n" },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		{ timeout: 30_000 },
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	const since = fileSection(page, NEW);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	const number = row(since, 1).getByTestId("new");
+	if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+		await number.tap();
+	} else await number.click();
+	await page
+		.getByTestId("selection-bar")
+		.getByRole("button", { name: "Comment" })
+		.click();
+	const composer = since.getByTestId("new-thread");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("Starts PS2");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(page.getByTestId("ps-node-ps2")).toBeVisible({
+		timeout: 30_000,
+	});
+	// Now the block: a new thread on calc.ts's line 3, after PS2 started.
+	// calc.ts has no change in this view: the hidden lines' bubble holds it.
+	const calc = fileSection(page, CALC);
+	await calc
+		.getByRole("button", { name: /^1 agent thread in this file/ })
+		.click();
+	await calc
+		.getByRole("button", { name: /^1 agent thread on hidden lines/ })
+		.click();
+	const onHead = calc
+		.getByTestId("agent-thread")
+		.filter({ hasText: "Anything to ask the author?" });
+	await expect(onHead).toBeVisible();
+	await addButton(onHead).click();
+	await expect.poll(() => newThreadPosts(p).length).toBe(2);
+	// PS1 lists only threads published before PS2 started: not the joined
+	// one, so the conversation shows where it was asked, Posted.
+	await page.goto(reviewPage(s.url, "files", "ps=1"));
+	const ps1 = fileSection(page, CALC);
+	await ps1.getByRole("button", { name: "Expand file" }).click();
+	await expect(
+		row(ps1, 3).getByRole("button", { name: /comments? on line 3/ }),
+	).toHaveCount(0);
+	await row(ps1, 3).getByTestId("agent-bubble").click();
+	const card = ps1
+		.getByTestId("agent-thread")
+		.filter({ hasText: "Anything to ask the author?" });
+	await expect(card).toBeVisible();
+	await expect(box(card)).toContainText("Posted");
 });
