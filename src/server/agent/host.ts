@@ -58,7 +58,9 @@ import { ReviewClaim } from "./claim.js";
 import { joinRead, liveGithubThreads, resolveView } from "./githubJoin.js";
 import { JoinBroker, type WatchLease } from "./join.js";
 import {
+	type AnchorPatchset,
 	anchorFor,
+	anchorOpened,
 	type CommentRole,
 	type GithubThreadFacts,
 	isSafePath,
@@ -1537,9 +1539,10 @@ export class AgentHost {
 function threadForAgent(
 	t: AgentThread,
 	review: Pick<PromptReview, "mergeBase">,
-	patchsets: readonly { head: string; mergeBase: string }[],
+	patchsets: readonly AnchorPatchset[],
 ): AgentThread {
-	const anchor = anchorFor(t.anchor, review, patchsets);
+	const opened = anchorOpened(t);
+	const anchor = anchorFor(t.anchor, review, patchsets, opened);
 	if (!t.code) return { ...t, anchor };
 	const a = t.code.anchor;
 	const { commit } = anchorFor(
@@ -1554,6 +1557,7 @@ function threadForAgent(
 		},
 		review,
 		patchsets,
+		opened,
 	);
 	return { ...t, anchor, code: { ...t.code, anchor: { ...a, commit } } };
 }
@@ -1597,6 +1601,13 @@ async function sessionSpanTurn(
 ): Promise<SessionTurn> {
 	const review = facts.review();
 	const a = thread.anchor as AgentSpanAnchor;
+	// As the agent is told: a LEFT side on its patch set's merge base.
+	const told = anchorFor(
+		a,
+		review,
+		facts.views().patchsets,
+		anchorOpened(thread),
+	);
 	const notice = joinNotices([
 		thread.orphaned
 			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${a.path} at ${a.commit || "an unknown commit"}).`
@@ -1608,14 +1619,14 @@ async function sessionSpanTurn(
 		review,
 		thread: {
 			id: thread.id,
-			anchor: anchorFor(thread.anchor, review, facts.views().patchsets),
+			anchor: told,
 		},
 		messages,
 		...(notice ? { notice } : {}),
 		...(pr ? { pr } : {}),
 	});
 	const [anchored, hunk] = await Promise.all([
-		facts.anchored(a).catch(() => null),
+		facts.anchored(told).catch(() => null),
 		facts.hunk(a).catch(() => null),
 	]);
 	return { envelope, anchored, hunk };
@@ -1670,7 +1681,7 @@ async function sessionThreadTurn(
 	const env = sanitizeEnvelope(
 		threadEnvelope({
 			review,
-			thread: { id: thread.id, anchor },
+			thread: { id: thread.id, anchor, opened: anchorOpened(thread) },
 			github,
 			view,
 			current,
@@ -1681,7 +1692,9 @@ async function sessionThreadTurn(
 		}),
 	);
 	const envelope: PromptCodeEnvelope = env;
-	const anchored = await facts.anchored(anchor).catch(() => null);
+	// The file at the commit the envelope names (anchorFor, as there).
+	const told = anchorFor(anchor, review, patchsets, anchorOpened(thread));
+	const anchored = await facts.anchored(told).catch(() => null);
 	return { envelope, anchored, hunk: github?.code ?? null };
 }
 
@@ -2102,27 +2115,19 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 }
 
 /**
- * The anchored file's text at the anchor's commit (the merge base for a
- * LEFT anchor), read from the clone with a checked OID and a relative
- * path; null when it can't be read, is binary or large, and for the
- * review conversation (no path).
+ * The anchored file's text at the anchor's commit, read from the clone
+ * with a checked OID and a relative path; null when it can't be read, is
+ * binary or large, and for the review conversation (no path). The anchor
+ * is the one the agent is told (anchorFor: a LEFT side's merge base
+ * already), so the file is the one its commit names.
  */
 export async function anchoredFile(
-	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
-		Partial<Pick<ReviewAgentSource, "patchsets">>,
+	src: Pick<ReviewAgentSource, "repo">,
 	anchor: AgentAnchor,
 ): Promise<{ text: string } | null> {
 	// The review conversation has no file.
 	if (anchor.subject === "review" || !isSafePath(anchor.path)) return null;
-	// The commit the agent is told (anchorFor): a LEFT side's merge base.
-	const commit =
-		anchor.subject !== "file" && anchor.side === "LEFT"
-			? anchorFor(
-					anchor,
-					{ mergeBase: src.snapshot().base },
-					src.patchsets?.() ?? [],
-				).commit
-			: anchor.commit;
+	const commit = anchor.commit;
 	if (!OID.test(commit)) return null;
 	const blob = await runGitBuffer(
 		src.repo,
