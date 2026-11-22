@@ -112,6 +112,32 @@ export function tracedAgentPlaceables(
 }
 
 /**
+ * The agent threads as a view shows them (CAR-236): a conversation joined
+ * to the GitHub thread its comment started shows in that thread's card,
+ * so where the view doesn't list that thread (an earlier patch set, which
+ * leaves out threads published after it), it shows where it was asked,
+ * never nowhere; where the view's threads couldn't be read (`listed`
+ * null), there too, flagged `githubUnknown` (its blocks off: never a second
+ * thread). `listed` undefined: not known yet, as they are.
+ */
+export function unjoinUnlisted(
+	threads: readonly AgentThread[],
+	listed: ReadonlySet<string> | null | undefined,
+): AgentThread[] {
+	if (listed === undefined) return threads as AgentThread[];
+	return threads.map((t) => {
+		const a = t.anchor;
+		if (!t.joined || a.subject !== "thread") return t;
+		if (listed?.has(a.thread)) return t;
+		return {
+			...t,
+			anchor: t.joined.asked,
+			...(listed === null ? { githubUnknown: true } : {}),
+		};
+	});
+}
+
+/**
  * What the page knows to show the agent threads by (FilesPage): the
  * tracer's placements in the viewed snapshot, and on an earlier patch set
  * the moment the next one started (ms; null: no cutoff).
@@ -131,6 +157,12 @@ export interface AgentPlacing {
 	 * failure group with an unknown fate (as review threads), never in a lead.
 	 */
 	failed?: boolean;
+	/**
+	 * The GitHub threads the view lists (null: they failed; undefined: not
+	 * known yet): a joined conversation whose thread isn't among them
+	 * shows where it was asked (unjoinUnlisted).
+	 */
+	listed?: ReadonlySet<string> | null;
 }
 
 const AgentPlacingContext = createContext<AgentPlacing>({
@@ -165,11 +197,12 @@ export function shownAgentPlaceables(
 	placing: AgentPlacing,
 ): AgentPlaceable[] {
 	const { until } = placing;
+	const all = unjoinUnlisted(threads, placing.listed);
 	// A live thread conversation goes where its GitHub thread goes (on its
 	// card's agent button): never an agent card or bubble of its own. An
 	// orphan reaches here with a span anchor (the GitHub join).
 	// The review conversation has no code to place on.
-	const spans = threads
+	const spans = all
 		.filter(isSpanThread)
 		.filter((t) => t.anchor.subject !== "thread");
 	const kept =
@@ -219,10 +252,11 @@ export function agentOutside(
 export function agentWaiting(
 	threads: readonly AgentThread[],
 	snapshotHead: string,
-	placing: Pick<AgentPlacing, "until">,
+	placing: Pick<AgentPlacing, "until" | "listed">,
 ): AgentPlaceable[] {
 	return shownAgentPlaceables(threads, snapshotHead, {
 		placements: null,
 		until: placing.until,
+		...(placing.listed !== undefined ? { listed: placing.listed } : {}),
 	}).filter((p) => p.commit !== snapshotHead);
 }

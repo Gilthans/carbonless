@@ -289,8 +289,13 @@ switch wouldn't happen.
   would, never as a second thread on the line; its later blocks reply to
   that thread. Two threads started before this: the first posted is the
   one. The thread deleted on GitHub, it shows on its own lines again; while
-  GitHub's threads can't be read it shows there too, its blocks off (it
-  may have a thread: never a second one).
+  GitHub's threads can't be read it shows there too, its blocks and its
+  reply box off (it may have a thread: never a second one). A view that
+  doesn't list its thread (an earlier patch set) shows it where it was
+  asked, its blocks replying to its thread. Until the first post's record
+  is in, this browser knows it: another block of the conversation waits
+  while one is on its way or in doubt, and replies to the thread one
+  started once GitHub took it.
 - **Write / Preview on every box that posts to GitHub (CAR-202).** The
   reply, new-thread, edit and verdict-message boxes and the agent's
   suggested comment each have a pencil/eye toggle (Ctrl/Cmd+Shift+P).
