@@ -43,6 +43,7 @@ import {
 import { Chip } from "../overview/parts";
 import { MoveSlot } from "../sticky";
 import { Tooltip } from "../Tooltip";
+import type { NoLine } from "./codeSpan";
 import { setPicks } from "./linePicks";
 import { usePlacementInfo } from "./ThreadFate";
 import { threadFocus } from "./threadFocus";
@@ -459,9 +460,8 @@ function numbersOf(row: HTMLElement): RowNumbers {
 	};
 }
 
-/** The row shows the since view's interdiff (DiffBody's table says so). */
-const inInterdiff = (row: Element) =>
-	row.closest("table")?.hasAttribute("data-interdiff") ?? false;
+/** The row shows the since view's interdiff (DiffBody's table: `data-since`). */
+const inInterdiff = (row: Element) => row.closest("[data-since]") !== null;
 
 /** The row a point is over, in this file's diff, as a one-line anchor. */
 export function lineAt(
@@ -496,43 +496,36 @@ export function lineAt(
 }
 
 /**
- * Move mode's picked lines (a span of the view's numbers) as the anchor a
- * move stores (moveEnd): the full diff's as they are; the since view's
- * old lines through their base line. Null when either end stands for no
- * line of the full diff (the span isn't a place, Place here is off).
- * `interdiff`: the page shows the since view (the caller knows the
- * comparison; never guessed from the DOM). A number no row shows is taken
- * as picked in the full diff only; in the since view it is none.
+ * Move mode's picked lines as the anchor a move stores: the span as the
+ * selection names it, which is already GitHub's (the full diff's) lines:
+ * in the since view a removed row's LEFT line is its base number
+ * (codeSpan.ts, `data-base-no`, CAR-217). Null when a line of it has no
+ * such line (`noLine`: only an earlier patch set had it, or the row
+ * doesn't say: fails closed), or it isn't on lines: Place here is off.
  */
 export function moveAnchorOf(
 	span: {
 		path: string;
-		startSide: "LEFT" | "RIGHT";
-		startLine: number;
-		side: "LEFT" | "RIGHT";
-		line: number;
+		subject: "line" | "file";
+		startSide?: "LEFT" | "RIGHT";
+		startLine?: number;
+		side?: "LEFT" | "RIGHT";
+		line?: number;
 	},
-	interdiff: boolean,
+	noLine: NoLine | null,
 ): ThreadAnchorRef | null {
-	const file = document.querySelector(`[data-path="${CSS.escape(span.path)}"]`);
-	const endOf = (side: "LEFT" | "RIGHT", line: number) => {
-		const row = file?.querySelector<HTMLElement>(
-			`tr[data-testid="diff-line"][data-${side === "LEFT" ? "old" : "new"}-no="${line}"]`,
-		);
-		if (!row) return interdiff ? null : { side, line };
-		return moveEnd(numbersOf(row), side, interdiff);
-	};
-	const start = endOf(span.startSide, span.startLine);
-	const end = endOf(span.side, span.line);
-	if (!start || !end) return null;
+	if (noLine !== null || span.subject !== "line") return null;
+	const { side, line } = span;
+	if (side === undefined || line === undefined) return null;
+	const startSide = span.startSide ?? side;
+	const startLine = span.startLine ?? line;
 	return {
 		path: span.path,
-		startSide: start.side,
+		startSide,
 		// One side: never a start after its end.
-		startLine:
-			start.side === end.side ? Math.min(start.line, end.line) : start.line,
-		side: end.side,
-		line: end.line,
+		startLine: startSide === side ? Math.min(startLine, line) : startLine,
+		side,
+		line,
 	};
 }
 

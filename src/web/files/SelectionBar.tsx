@@ -371,11 +371,6 @@ export function SelectionBar(props: {
 	headSure?: boolean;
 	/** An earlier patch set: Comment off (Ask agent stays). */
 	readOnly?: boolean;
-	/**
-	 * The since view (an earlier patch set as the comparison base): its old
-	 * numbers are the interdiff's, so a move goes through their base lines.
-	 */
-	interdiff: boolean;
 }) {
 	const sessionHead =
 		useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead ?? "";
@@ -650,21 +645,9 @@ export function SelectionBar(props: {
 			span.subject === "line" &&
 			span.side !== undefined &&
 			span.line !== undefined;
-		// The full diff's lines (the since view's old ones through their
-		// base line; none for a line of neither the base nor the head).
-		const anchor =
-			picked && span.side !== undefined && span.line !== undefined
-				? moveAnchorOf(
-						{
-							path: span.path,
-							startSide: span.startSide ?? span.side,
-							startLine: span.startLine ?? span.line,
-							side: span.side,
-							line: span.line,
-						},
-						props.interdiff,
-					)
-				: null;
+		// GitHub's (the full diff's) lines, as the span names them; none
+		// for a line of neither the base nor the head (target.noLine).
+		const anchor = moveAnchorOf(span, target.noLine);
 		const ok = anchor !== null && moveWrites?.to != null;
 		return (
 			<div

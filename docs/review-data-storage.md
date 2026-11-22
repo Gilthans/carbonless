@@ -362,9 +362,7 @@ engine computes it for the since view's hunks, `interdiffFileHunks`):
   own diff and the bases' diff (`lineKeys.baseLine`); its text must match
   as a guard. Never by text alone: a twin elsewhere (a blank line, a `}`)
   is another line. A line the earlier patch set added, or one that can't
-  be mapped, is none of the cluster's. The since hunks carry that base
-  line on each removed line as `baseNo` (when the full diff removes it
-  too, reading the same): what a thread move dropped there stores.
+  be mapped, is none of the cluster's.
 - A cluster line no piece shows is unchanged since the earlier patch set.
   It joins no piece: ticking the pieces marks only what they show.
   Instead it **carries** the mark its counterpart held there (owner,

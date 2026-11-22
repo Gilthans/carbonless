@@ -723,17 +723,25 @@ describe("the engine", () => {
 		expect(await removedSince(ps1, r, "a.txt")).toEqual([["line 35", 37, 38]]);
 	});
 
-	it("a removed line the full diff keeps gets no baseNo (the guard), though its place maps to a base line (CAR-139)", async () => {
+	it("twins git aligns differently: a removed line's baseNo still names a base line that reads the same, never a twin's place by number alone (CAR-139, on CAR-217's map)", async () => {
 		// PS1 adds a second "}" (git: after the first); the head adds "Y" on
 		// top instead. The since view removes the *first* "}" (git trims the
-		// common end), whose place is the base's own "}" — a line the full
-		// diff keeps: no move may be stored there.
+		// common end). Its base number comes from the virtual rebase's own
+		// diff against the base, so it names the base's "}" (line 1), the
+		// line the head kept: a move or comment there lands on a "}", never
+		// on another line that merely has that number.
 		const base = commitOn(h.b0, { "g.txt": "}\nb\n" });
 		const ps = commitOn(base, { "g.txt": "}\n}\nb\n" });
 		const head = commitOn(base, { "g.txt": "Y\n}\nb\n" });
 		const ps1 = await snap(base, ps);
 		const r = await snap(base, head);
-		expect(await removedSince(ps1, r, "g.txt")).toEqual([["}", 1, null]]);
+		const removed = await removedSince(ps1, r, "g.txt");
+		expect(removed).toEqual([["}", 1, 1]]);
+		// The text guarantee: the base line it names reads as the row does.
+		const baseLines = h.git("show", `${base}:g.txt`).split("\n");
+		for (const [text, , b] of removed) {
+			expect(baseLines[(b as number) - 1]).toBe(text);
+		}
 	});
 
 	it("a deletion the author restored: gone, its restored line keyed to it", async () => {

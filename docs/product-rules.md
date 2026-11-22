@@ -743,9 +743,9 @@ question would be on someone else's behalf, or about a past moment.
   file thread or a conversation; no handle or chip until the placements
   answer. Sharing moves with other reviewers waits for sync. A move always
   stores the target's full-diff lines: in the since view a new or context
-  row is the target's line, and a removed row its base line (the engine's
-  `baseNo`); a removed row that is no base line (the branch added it
-  before the compared patch set, gone since) is no drop target and Place
+  row is the target's line, and a removed row its base line (CAR-217's
+  `baseNo`, the same one a comment there posts with); a removed row that
+  is no base line (only the earlier patch set had it) is no drop target and Place
   here is off on it, never stored under the interdiff's own number. A
   thread on a removed base line shows on that removed row in the since
   view when it shows one.

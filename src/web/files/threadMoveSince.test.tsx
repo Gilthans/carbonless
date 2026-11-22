@@ -22,6 +22,13 @@ import type {
 } from "../../shared/types";
 import { AgentPlacingProvider } from "../agent/placeable";
 import type { RereviewTo } from "../api";
+import {
+	type CellLine,
+	CODE_CELL,
+	cellLine,
+	noLineIn,
+	spanOfCells,
+} from "./codeSpan";
 import { contextRanges } from "./contextRanges";
 import { DiffBody } from "./DiffBody";
 import { type PlacementInfo, PlacementProvider } from "./ThreadFate";
@@ -34,7 +41,7 @@ import {
 	moveTargetOf,
 	useMoveWritesHost,
 } from "./threadMove";
-import { placeThreads, shownThreads, sinceLeftToNew } from "./threadPlacement";
+import { placeThreads, shownThreads, sinceLeft } from "./threadPlacement";
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -85,7 +92,10 @@ const sinceHunks: FileHunks = {
 			newCount: 4,
 			lines: [
 				line("context", 1, 1, "one"),
-				line("del", 2, undefined, "branch's own", { clusterKey: "k1" }),
+				line("del", 2, undefined, "branch's own", {
+					clusterKey: "k1",
+					baseNo: null,
+				}),
 				line("context", 3, 2, "two"),
 				line("del", 5, undefined, "three", { clusterKey: "k1", baseNo: 3 }),
 				line("add", undefined, 3, "new three", { clusterKey: "k1" }),
@@ -400,48 +410,64 @@ describe("the since view: the handle, a drop and Place here", () => {
 		expect(screen.queryByTestId("move-failure")).toBeNull();
 	});
 
-	it("Place here's anchor: picked numbers through the same rows (moveAnchorOf)", async () => {
+	/** A row's code cell on `side`, as the line picker reads it (codeSpan's cellLine). */
+	const cellOf = (attr: "old" | "new", n: number, side: "LEFT" | "RIGHT") => {
+		const cell = rowOf(attr, n).querySelector(
+			`[${CODE_CELL}][data-side="${side}"]`,
+		);
+		const line = cell ? cellLine(cell) : null;
+		if (!line) throw new Error(`no ${side} cell on ${attr} ${n}`);
+		return line;
+	};
+	/** Place here's anchor for the picked rows `a`..`b` (SelectionBar's path). */
+	const placeOn = (a: CellLine, b: CellLine) =>
+		moveAnchorOf(spanOfCells(a, b, H2), noLineIn([a, b]));
+
+	it("Place here's anchor: the picked rows by GitHub's lines (CAR-217's base numbers)", async () => {
 		renderSince();
 		await screen.findAllByTestId("diff-line");
-		const span = (
+		const anchor = (
 			startSide: "LEFT" | "RIGHT",
 			startLine: number,
 			side: "LEFT" | "RIGHT",
 			l: number,
 		) => ({ path: PATH, startSide, startLine, side, line: l });
-		expect(moveAnchorOf(span("RIGHT", 3, "RIGHT", 4), true)).toEqual(
-			span("RIGHT", 3, "RIGHT", 4),
-		);
-		expect(moveAnchorOf(span("LEFT", 5, "LEFT", 5), true)).toEqual(
-			span("LEFT", 3, "LEFT", 3),
-		);
-		expect(moveAnchorOf(span("LEFT", 2, "LEFT", 2), true)).toBeNull();
+		expect(
+			placeOn(cellOf("new", 3, "RIGHT"), cellOf("new", 4, "RIGHT")),
+		).toEqual(anchor("RIGHT", 3, "RIGHT", 4));
+		// The removed row old 5 is base line 3: never 5.
+		const removed = cellOf("old", 5, "LEFT");
+		expect(placeOn(removed, removed)).toEqual(anchor("LEFT", 3, "LEFT", 3));
+		// Old 2 only PS1 had: no line of the base or the head.
+		const own = cellOf("old", 2, "LEFT");
+		expect(placeOn(own, own)).toBeNull();
 		// A range starting on such a line isn't a place either.
-		expect(moveAnchorOf(span("LEFT", 2, "RIGHT", 3), true)).toBeNull();
-		// A number no row shows: never taken as the base's.
-		expect(moveAnchorOf(span("LEFT", 9, "LEFT", 9), true)).toBeNull();
+		expect(placeOn(own, cellOf("new", 3, "RIGHT"))).toBeNull();
 	});
 
-	it("the since view with its file's section gone: nothing (never the picked numbers as the base's)", () => {
-		// No section, no rows: only the caller's word says which view it is.
-		const s = {
-			path: "src/elsewhere.ts",
-			startSide: "LEFT" as const,
-			startLine: 5,
-			side: "LEFT" as const,
-			line: 5,
-		};
-		expect(moveAnchorOf(s, true)).toBeNull();
-		expect(
-			moveAnchorOf({ ...s, startSide: "RIGHT", side: "RIGHT" }, true),
-		).toBeNull();
-		// The full diff's numbers are the anchor's: as picked.
-		expect(moveAnchorOf(s, false)).toEqual(s);
+	it("a since-view removed row that doesn't say its base line: no drop, no Place here (fails closed)", () => {
+		document.body.innerHTML = `<section data-path="${PATH}"><table data-since="true"><tbody>
+			<tr data-testid="diff-line" data-kind="del" data-old-no="9"><td ${CODE_CELL} data-side="LEFT">x</td></tr>
+		</tbody></table></section>`;
+		const cell = cellLine(
+			document.querySelector(`[${CODE_CELL}]`) as Element,
+		) as CellLine;
+		expect(cell.base).toBe("unknown");
+		expect(placeOn(cell, cell)).toBeNull();
+		const row = document.querySelector("tr") as HTMLElement;
+		const original = document.elementFromPoint;
+		document.elementFromPoint = () => row;
+		try {
+			expect(lineAt(0, 0, PATH)).toBeNull();
+		} finally {
+			document.elementFromPoint = original;
+		}
+		document.body.innerHTML = "";
 	});
 
 	it("the full diff's rows: as picked (no interdiff to map through)", () => {
 		document.body.innerHTML = `<section data-path="${PATH}"><table><tbody>
-			<tr data-testid="diff-line" data-old-no="7"><td>x</td></tr>
+			<tr data-testid="diff-line" data-kind="del" data-old-no="7"><td ${CODE_CELL} data-side="LEFT">x</td></tr>
 		</tbody></table></section>`;
 		const s = {
 			path: PATH,
@@ -450,7 +476,10 @@ describe("the since view: the handle, a drop and Place here", () => {
 			side: "LEFT" as const,
 			line: 7,
 		};
-		expect(moveAnchorOf(s, false)).toEqual(s);
+		const cell = cellLine(
+			document.querySelector(`[${CODE_CELL}]`) as Element,
+		) as CellLine;
+		expect(placeOn(cell, cell)).toEqual(s);
 		const row = document.querySelector("tr") as HTMLElement;
 		const original = document.elementFromPoint;
 		document.elementFromPoint = () => row;
@@ -479,10 +508,15 @@ describe("the since view: the handle, a drop and Place here", () => {
 	});
 });
 
-describe("placements in the since view (placeThreads, leftToNew)", () => {
+describe("placements in the since view (placeThreads, sinceLeft)", () => {
 	it("property: each thread lands once; a RIGHT line on its row, a removed base line on the row that is it", () => {
-		const rows = sinceHunks.hunks.flatMap((h) => h.lines);
-		const leftToNew = sinceLeftToNew(file.clusters);
+		// Base lines 1 and 2 are head lines 1 and 2; base line 3 the full
+		// diff removed is the since view's removed row old 5 (its baseNo).
+		const leftAt: Record<number, string> = {
+			1: "RIGHT:1",
+			2: "RIGHT:2",
+			3: "LEFT:5",
+		};
 		fc.assert(
 			fc.property(
 				fc.array(
@@ -515,7 +549,7 @@ describe("placements in the since view (placeThreads, leftToNew)", () => {
 						snapshotHead: H2,
 						hunks: sinceHunks,
 						loadedContext: [],
-						leftToNew,
+						sinceLeft: sinceLeft(file.clusters, sinceHunks.hunks),
 					});
 					const where = new Map<string, string[]>();
 					const add = (id: string | undefined, at: string) =>
@@ -532,15 +566,7 @@ describe("placements in the since view (placeThreads, leftToNew)", () => {
 						if (x.side === "RIGHT" && x.line <= 4) {
 							expect(key).toBe(`RIGHT:${x.line}`);
 						} else if (x.side === "LEFT" && x.line <= 3) {
-							const head = leftToNew(x.line);
-							const removed = rows.find((r) => r.baseNo === x.line);
-							expect(key).toBe(
-								head !== null
-									? `RIGHT:${head}`
-									: removed
-										? `LEFT:${removed.oldNo}`
-										: "header",
-							);
+							expect(key).toBe(leftAt[x.line]);
 						}
 					});
 				},
