@@ -1395,9 +1395,8 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 		await expect(row.getByTestId("near-line")).toHaveText("near 29");
 	};
 	await checkCore();
-	// The since view numbers its old side by the interdiff, no file's: no
-	// move there.
-	await expect(unplacedRows(coreS).getByTestId("move-handle")).toHaveCount(0);
+	// Moves work in the since view too (principle 9): the handle is there.
+	await expect(unplacedRows(coreS).getByTestId("move-handle")).toHaveCount(1);
 	await expectNoPageOverflow(page);
 	if (isMobile) {
 		// At 360px: no page overflow, the sentence on one line.
@@ -1431,12 +1430,12 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 	const row = unplacedRows(coreS);
 	const handle = row.getByTestId("move-handle");
 	await expect(handle).toBeVisible(GIT_WAIT);
-	// The since view numbers its old side by the interdiff, no file's: no
-	// drag there (the row stays, its handle goes); back in the full diff.
+	// The since view keeps the row and its handle (principle 9: moves work
+	// there too); back in the full diff.
 	await baseOn(page, "ps1", "]");
 	await expect(row).toHaveCount(1);
 	await expect(row).toContainText("Is core 30 needed?");
-	await expect(row.getByTestId("move-handle")).toHaveCount(0);
+	await expect(row.getByTestId("move-handle")).toHaveCount(1);
 	await baseOn(page, "branch", "[");
 	await expect(handle).toBeVisible();
 	if (isMobile) {
