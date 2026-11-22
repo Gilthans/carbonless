@@ -72,6 +72,31 @@ async function askLine3(page: Page, url: string) {
 	return { section, card };
 }
 
+/**
+ * Line 3's GitHub thread in Files changed, opened from its comment bubble,
+ * and its agent panel (where a conversation that posted a block lives,
+ * CAR-236), opened.
+ */
+async function joinedPanel(page: Page, url: string) {
+	const section = await openFile(page, url, CALC);
+	await row(section, 3)
+		.getByRole("button", { name: /^\d+ comments? on line 3/ })
+		.click();
+	const thread = section.getByTestId("files-thread");
+	await expect(thread).toBeVisible();
+	// Its agent button names the conversation's messages, never "Ask agent".
+	await expect(thread.getByTestId("thread-agent-button")).toHaveAccessibleName(
+		/^\d+ agent messages/,
+	);
+	await thread.getByTestId("thread-agent-button").click();
+	const panel = thread.getByTestId("thread-agent-panel");
+	await expect(panel).toHaveAttribute("data-open", "true");
+	// No agent card or bubble of its own on the line.
+	await expect(section.getByTestId("agent-thread")).toHaveCount(0);
+	await expect(row(section, 3).getByTestId("agent-bubble")).toHaveCount(0);
+	return { section, thread, panel };
+}
+
 /** The agent card on calc's line 3, opened from its bubble after a reload. */
 async function reopenLine3(page: Page, url: string) {
 	const section = await openFile(page, url, CALC);
@@ -106,11 +131,16 @@ test("a line conversation: edit the suggestion, post it as a new thread on those
 	).toBeGreaterThanOrEqual(40);
 	if (isMobile) await expectNoPageOverflow(page);
 	await addButton(card).click();
-	await expect(box(card)).toContainText("Posted");
+	// Posted, the conversation is the new thread's (CAR-236): its panel opens.
+	const joined = section
+		.getByTestId("files-thread")
+		.getByTestId("thread-agent-panel");
+	await expect(joined).toHaveAttribute("data-open", "true");
+	await expect(box(joined)).toContainText("Posted");
 	await expect(
-		box(card).getByRole("link", { name: "Open on GitHub" }),
+		box(joined).getByRole("link", { name: "Open on GitHub" }),
 	).toHaveAttribute("href", /#discussion_r\d+$/);
-	await expect(box(card)).toContainText("A List<String> would do.");
+	await expect(box(joined)).toContainText("A List<String> would do.");
 	// The fake gh got one new thread on line 3, with the edited text, escaped.
 	expect(newThreadPosts(p)).toHaveLength(1);
 	const [t] = storedThreads(p);
@@ -125,9 +155,10 @@ test("a line conversation: edit the suggestion, post it as a new thread on those
 	).toBeVisible();
 	if (isMobile) await expectNoPageOverflow(page);
 	await page.reload();
-	const again = await reopenLine3(page, s.url);
-	await expect(box(again)).toContainText("Posted");
-	await expect(box(again).getByRole("textbox")).toHaveCount(0);
+	// The conversation is that thread's now (CAR-236).
+	const { panel } = await joinedPanel(page, s.url);
+	await expect(box(panel)).toContainText("Posted");
+	await expect(box(panel).getByRole("textbox")).toHaveCount(0);
 	expect(newThreadPosts(p)).toHaveLength(1);
 });
 
@@ -160,10 +191,14 @@ test("the record of a post lost: Posted holds across a reload and the record is 
 	await expect(box(again)).toContainText("Posted");
 	await recorded;
 	expect(newThreadPosts(p)).toHaveLength(1);
+	// Recorded: the conversation is its thread's now (CAR-236).
+	await expect(again).toHaveCount(0);
 	// Another device: nothing kept there, Posted from the record alone.
 	await page.evaluate(() => localStorage.clear());
 	await page.reload();
-	await expect(box(await reopenLine3(page, s.url))).toContainText("Posted");
+	await expect(box((await joinedPanel(page, s.url)).panel)).toContainText(
+		"Posted",
+	);
 	expect(newThreadPosts(p)).toHaveLength(1);
 	expect(storedThreads(p)).toHaveLength(1);
 });
@@ -365,4 +400,82 @@ test("Write / Preview: the box opens on the agent's markdown rendered; an edit s
 	await expect(box(card)).toContainText("Posted");
 	const [t] = storedThreads(p);
 	expect(t?.bodies[0]).toContain("Short _one_");
+});
+
+const SECOND = "And is v3 dropped on purpose?";
+const TWO = `Two to ask:\n\n\`\`\`comment\n${SUGGESTED}\n\`\`\`\n\nAnd:\n\n\`\`\`comment\n${SECOND}\n\`\`\``;
+
+test("a posted block joins its conversation to the new thread: one thread on the line, the next block replies, one after a reload", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	const p = await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: TWO }] },
+	});
+	const { section, card } = await askLine3(page, s.url);
+	await expect(box(card)).toHaveCount(2);
+	await addButton(card).first().click();
+	// One thread on line 3: GitHub's, opened with the conversation in it.
+	const thread = section.getByTestId("files-thread");
+	await expect(thread).toHaveCount(1);
+	const panel = thread.getByTestId("thread-agent-panel");
+	await expect(panel).toHaveAttribute("data-open", "true");
+	await expect(panel).toContainText("Anything to ask the author?");
+	await expect(section.getByTestId("agent-thread")).toHaveCount(0);
+	await expect(row(section, 3).getByTestId("agent-bubble")).toHaveCount(0);
+	await expect(box(panel).first()).toContainText("Posted");
+	if (isMobile) await expectNoPageOverflow(page);
+	// The second block replies to that thread.
+	const second = box(panel).filter({ has: page.getByRole("textbox") });
+	await expect(second.getByTestId("agent-comment-target")).toHaveText("Reply");
+	await addButton(panel).click();
+	await expect(box(panel).nth(1)).toContainText("Posted");
+	expect(newThreadPosts(p)).toHaveLength(1);
+	expect(replyPosts(p)).toHaveLength(1);
+	const stored = storedThreads(p);
+	expect(stored).toHaveLength(1);
+	expect(stored[0]?.bodies).toHaveLength(2);
+	expect(stored[0]?.bodies[1]).toBe(SECOND);
+	await page.reload();
+	const again = await joinedPanel(page, s.url);
+	await expect(again.thread).toHaveCount(1);
+	await expect(box(again.panel)).toHaveCount(2);
+	await expect(box(again.panel).nth(0)).toContainText("Posted");
+	await expect(box(again.panel).nth(1)).toContainText("Posted");
+	expect(newThreadPosts(p)).toHaveLength(1);
+	expect(replyPosts(p)).toHaveLength(1);
+});
+
+test("the joined thread deleted on GitHub: the conversation shows on its lines again", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: ANSWER }] },
+	});
+	const { section, card } = await askLine3(page, s.url);
+	await addButton(card).click();
+	await expect(
+		section.getByTestId("files-thread").getByTestId("thread-agent-panel"),
+	).toHaveAttribute("data-open", "true");
+	await expect(row(section, 3).getByTestId("agent-bubble")).toHaveCount(0);
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [];
+	});
+	await page.getByRole("button", { name: "Refresh" }).first().click();
+	await expect(section.getByTestId("files-thread")).toHaveCount(0);
+	await expect(
+		row(section, 3).getByRole("button", { name: /comments? on line 3/ }),
+	).toHaveCount(0);
+	// Back on line 3, its messages and its Posted box kept.
+	const back = await reopenLine3(page, s.url);
+	await expect(back).toContainText("Anything to ask the author?");
+	await expect(box(back)).toContainText("Posted");
 });
