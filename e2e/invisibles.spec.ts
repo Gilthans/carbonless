@@ -6,6 +6,9 @@ import { expect, type PrOptions, test } from "./fixtures";
 const shots = process.env.DESIGN_SHOTS;
 
 const base = Array.from({ length: 6 }, (_, i) => `const v${i} = ${i};`);
+/** A context line and a removed one, each with marks and a comment. */
+const KEPT = "\tconst kept = 1;  // kept  ";
+const GONE = "\tconst gone = 2;  // gone  ";
 /** Added lines, by what they show off. */
 const FIND: Record<string, string | RegExp> = {
 	tabs: "if (a)",
@@ -27,13 +30,13 @@ const ADDED = {
 const fixture: PrOptions = {
 	base: {
 		".editorconfig": "root = true\n[*.ts]\ntab_width = 8\n",
-		"src/inv.ts": `${base.join("\n")}\n`,
+		"src/inv.ts": `${[KEPT, GONE, ...base].join("\n")}\n`,
 	},
 	files: [
 		{
 			message: "Invisible characters",
 			files: {
-				"src/inv.ts": `${[...base.slice(0, 3), ...Object.values(ADDED), ...base.slice(3)].join("\n")}\n`,
+				"src/inv.ts": `${[KEPT, ...base.slice(0, 3), ...Object.values(ADDED), ...base.slice(3)].join("\n")}\n`,
 			},
 		},
 	],
@@ -176,6 +179,52 @@ test("code shows invisible characters, and copying gives back the original", asy
 		await page.evaluate(() => window.getSelection()?.removeAllRanges());
 		await section.scrollIntoViewIfNeeded();
 		await page.screenshot({ path: `${shots}/inv-${device}-on.png` });
+		await section.screenshot({ path: `${shots}/inv-${device}-on-file.png` });
+	}
+
+	// Marks have their own quiet color, upright: never the comments' italic
+	// blue-grey, on context, removed and added rows alike.
+	const invisible = await page.evaluate(() => {
+		const probe = document.createElement("span");
+		probe.className = "text-invisible";
+		document.body.append(probe);
+		const color = getComputedStyle(probe).color;
+		probe.remove();
+		return color;
+	});
+	for (const text of ["kept", "gone", "if (a)"]) {
+		const cell = codeCell(section, text).first();
+		await expect(cell.locator("[data-inv]").first()).toBeVisible();
+		// The comment is highlighted (italic) once the highlighting arrives.
+		await expect(
+			cell.locator('span[style*="italic"]', { hasText: "//" }).first(),
+		).toBeVisible();
+		const look = await cell.evaluate((td) => {
+			const comment = [
+				...td.querySelectorAll<HTMLElement>('span[style*="italic"]'),
+			].find((s) => s.textContent?.includes("//"));
+			return {
+				marks: [...td.querySelectorAll('[data-inv="space"], [data-inv="tab"]')]
+					.filter((m) => getComputedStyle(m, "::before").content !== "none")
+					.map((m) => {
+						const s = getComputedStyle(m, "::before");
+						return { color: s.color, italic: s.fontStyle === "italic" };
+					}),
+				comment: comment && {
+					color: getComputedStyle(comment).color,
+					italic: getComputedStyle(comment).fontStyle === "italic",
+				},
+			};
+		});
+		expect(look.comment, text).toEqual({
+			color: expect.any(String),
+			italic: true,
+		});
+		expect(look.marks.length, text).toBeGreaterThan(0);
+		for (const mark of look.marks) {
+			expect(mark, text).toEqual({ color: invisible, italic: false });
+			expect(mark.color, text).not.toBe(look.comment?.color);
+		}
 	}
 
 	// Hidden characters off: whitespace and endings go, what would print as nothing stays.

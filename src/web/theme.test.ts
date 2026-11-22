@@ -686,13 +686,61 @@ describe("diff colors", () => {
 		}
 	});
 
-	it("invisible-character markers read at 4.5:1 on every code line", () => {
-		// Muted markers and escapes (src/web/code); bidi controls on a warn tint.
+	it("hidden-character marks are quieter than code and apart from comments, yet show on every line", () => {
+		// The owner (2026-11-22): "the hidden characters have the same design
+		// as comments. I'd like them to be more subtle, and distinct from code
+		// comments". Marks (src/web/code/Invisibles.tsx) take `invisible`:
+		// non-text glyphs, so 3:1 (WCAG 1.4.11) on every row under every wash,
+		// and under the comment color and `faint` on each.
+		const mark = token("invisible");
 		for (const bg of CODE_BGS) {
+			for (const wash of [0, 0.08, 0.1]) {
+				const back = wash ? over(token("accent"), wash, token(bg)) : token(bg);
+				expect(
+					contrast(mark, back),
+					`invisible on ${bg} under accent/${wash * 100}`,
+				).toBeGreaterThanOrEqual(3);
+			}
+			for (const louder of [SYNTAX.comment, token("faint"), token("code-ink")])
+				expect(
+					contrast(mark, token(bg)),
+					`invisible quieter than ${louder} on ${bg}`,
+				).toBeLessThan(contrast(louder, token(bg)));
+			// An escape's chip (invisible/15) keeps its label at 3:1.
+			const chip = over(mark, 0.15, token(bg));
 			expect(
-				contrast(token("faint"), token(bg)),
-				`faint on ${bg}`,
-			).toBeGreaterThanOrEqual(4.5);
+				contrast(mark, chip),
+				`invisible on its chip over ${bg}`,
+			).toBeGreaterThanOrEqual(3);
+		}
+		// A changed blank inside a word mark still shows through the tint.
+		for (const word of [
+			"add-word",
+			"del-word",
+			"add-word-done",
+			"del-word-done",
+		])
+			expect(
+				contrast(mark, token(word)),
+				`invisible on ${word}`,
+			).toBeGreaterThanOrEqual(2);
+		// Not the comment's (or faint's) blue-grey: a near-neutral stone of
+		// another hue, so a mark never reads as commented code.
+		for (const other of [SYNTAX.comment, token("faint")]) {
+			expect(chroma(mark)).toBeLessThan(chroma(other) / 2);
+			expect(hueGap(mark, other), `hue apart from ${other}`).toBeGreaterThan(
+				90,
+			);
+		}
+		// Comments are italic in the syntax theme; marks stay upright (not-italic).
+		const comment = syntaxTheme.settings?.find((s) =>
+			[s.scope ?? []].flat().includes("comment"),
+		);
+		expect(comment?.settings.fontStyle).toBe("italic");
+	});
+
+	it("bidi controls read at 4.5:1 on their warn tint on every code line", () => {
+		for (const bg of CODE_BGS) {
 			const tint = over(token("warn"), 0.15, token(bg));
 			expect(
 				contrast(token("warn"), tint),
