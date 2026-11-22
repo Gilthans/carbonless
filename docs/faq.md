@@ -324,6 +324,15 @@ installs the update and exits, and the container starts again. The
 update lives in the container's filesystem, so it lasts only as long as
 that container: rebuild the image to keep it.
 
+## How long does a browser keep the access key?
+
+A week since its last visit. The page strips `?key=` from its address and
+keeps the key in an HttpOnly cookie (`crb_key_<port>`) with a one-week
+`Max-Age`, set again on every request the key lets through, so a browser
+or home-screen app used at least weekly stays in, across browser and phone
+restarts. After a week away, open the link with `?key=` again (crb prints
+it at start).
+
 ## Why does a link to crb on another site open, but its script can't?
 
 The access key's cookie (`crb_key_<port>`) is `SameSite=Lax`, so a review

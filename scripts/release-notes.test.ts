@@ -21,14 +21,19 @@ import type { Io, RunResult } from "./release-lib.js";
 import {
 	auditNotes,
 	capShipped,
+	collectNotes,
 	commentNoteLines,
 	coverage,
+	descriptionsNote,
 	formatNotesFile,
 	kindFromLabels,
 	type Linear,
 	linearClient,
 	linearKey,
 	mdText,
+	mergeOkNotes,
+	NOTE_CHECK,
+	NOTE_WORKFLOW_NAME,
 	notesCheck,
 	parseNoteLine,
 	postNote,
@@ -38,11 +43,14 @@ import {
 	readNotesFile,
 	releaseRange,
 	renderNotesBody,
+	rerunNoteChecks,
+	rerunRedNoteCheck,
 	shippedNotes,
 	subjectPr,
 	ticketNote,
 	titleTickets,
 	withChangelogSection,
+	workflowText,
 	writeNotes,
 } from "./release-notes.js";
 
@@ -933,6 +941,8 @@ describe("against a repository", {
 				{
 					"api repos/owner/repo/pulls/125":
 						"Release note: none (test tooling)\n",
+					// CAR-172 has no note in Linear: its PR's description is asked.
+					"api repos/owner/repo/pulls/126": "Fixes CAR-172\n",
 				},
 				"origin",
 			);
@@ -983,6 +993,7 @@ describe("against a repository", {
 			expect(queries.some((q) => /mutation/.test(q))).toBe(false);
 			expect(calls.filter((c) => c.startsWith("gh"))).toEqual([
 				'gh api repos/owner/repo/pulls/125 --jq .body // ""',
+				'gh api repos/owner/repo/pulls/126 --jq .body // ""',
 			]);
 		});
 
@@ -1038,6 +1049,7 @@ describe("against a repository", {
 				repo,
 				{
 					"api repos/owner/repo/pulls/125": "Release note: none (test tooling)",
+					"api repos/owner/repo/pulls/126": "",
 					"pr list": "",
 					"pr create": "https://github.com/owner/repo/pull/140\n",
 				},
@@ -1115,6 +1127,42 @@ describe("against a repository", {
 			expect(covered.lines.at(-1)).toBe(
 				"ok: every ticket and PR of 0.4.0 so far has a release note",
 			);
+		});
+
+		it("notes check takes a done ticket's note from its attached PR's description (CAR-211)", async () => {
+			history();
+			const { io, lines, calls } = repoIo(
+				repo,
+				{
+					"api repos/owner/repo/pulls/125": "Release note: none (tests)",
+					"api repos/owner/repo/pulls/150":
+						"Fixes CAR-190\n\nRelease note: none (release tooling)",
+					"api repos/owner/repo/pulls/151": "Fixes CAR-191",
+				},
+				"origin",
+			);
+			const { linear } = fakeLinear({
+				"CAR-183": { labels: ["Feature"], comments: [note("Threads.")] },
+				"CAR-66": { comments: [note("none (x)")] },
+				"CAR-171": { comments: [note("none (x)")] },
+				"CAR-172": { comments: [note("none (x)")] },
+				"CAR-190": {
+					title: "Release tooling",
+					attachments: [
+						"https://github.com/owner/repo/pull/150",
+						"https://github.com/other/repo/pull/7",
+					],
+				},
+				"CAR-191": {
+					title: "Gate",
+					attachments: ["https://github.com/owner/repo/pull/151"],
+				},
+			});
+			await auditNotes(io, linear);
+			expect(lines.filter((l) => l.startsWith("warning:"))).toEqual([
+				expect.stringMatching(/^warning: done: CAR-191 Gate: no Release note/),
+			]);
+			expect(calls.some((c) => c.includes("other/repo"))).toBe(false);
 		});
 
 		it("promote refuses before dispatching while the RC's file doesn't cover it, and warns when Linear moved on", async () => {
@@ -1223,6 +1271,7 @@ describe("merge-ok's note check", () => {
 		title,
 		body,
 		head: { ref },
+		author_association: "OWNER",
 	});
 	const TRIED = ["$LINEAR_API_KEY", "/x/.config/linear/api-key"];
 	const linearWith = (issues: Record<string, RawIssue>) => () => ({
@@ -1287,7 +1336,7 @@ describe("merge-ok's note check", () => {
 		await expect(
 			prNotesOk(pull("Threads tab (CAR-183)"), noKey, noFiles),
 		).rejects.toThrow(
-			"no Linear key (tried $LINEAR_API_KEY, /x/.config/linear/api-key): set $LINEAR_API_KEY or put it in ~/.config/linear/api-key (release notes live in Linear); merge-ok reads CAR-183's Release note there",
+			"no Linear key (tried $LINEAR_API_KEY, /x/.config/linear/api-key): set $LINEAR_API_KEY or put it in ~/.config/linear/api-key (release notes live in Linear); so CAR-183's Release note can't be read here: add a",
 		);
 	});
 
@@ -1558,5 +1607,732 @@ describe("the committed release notes", () => {
 			);
 			expect(`${file.version}.json`, name).toBe(name);
 		}
+	});
+});
+
+describe("the release-note check (CAR-211): the ticket's note, else the PR's description", () => {
+	const pull = (title: string, body = "", ref = "car-183-x") => ({
+		number: 9,
+		title,
+		body,
+		head: { ref },
+		author_association: "OWNER",
+	});
+	const TRIED = ["$LINEAR_API_KEY"];
+	const linearWith = (issues: Record<string, RawIssue>) => () => ({
+		linear: fakeLinear(issues).linear,
+		tried: TRIED,
+	});
+	const noKey = () => ({ linear: null, tried: TRIED });
+	const noFiles = async (): Promise<string[]> => {
+		throw new Error("no files asked here");
+	};
+	const empty = {
+		comments: [{ body: "LGTM", updatedAt: "2026-11-15T00:00:00Z" }],
+	};
+
+	it("passes a ticket with no note in Linear on its description's note, the kind from the ticket's labels", async () => {
+		expect(
+			await prNotesOk(
+				pull(
+					"Threads (CAR-183)",
+					"Fixes CAR-183\n\nRelease note: Threads tab.",
+				),
+				linearWith({ "CAR-183": { labels: ["Feature"], ...empty } }),
+				noFiles,
+			),
+		).toBe("CAR-183: 1 note(s) in the PR's description");
+		expect(
+			await prNotesOk(
+				pull("Threads (CAR-183)", "Release note: none (refactor)"),
+				linearWith({ "CAR-183": empty }),
+				noFiles,
+			),
+		).toBe("CAR-183: no note (refactor) in the PR's description");
+	});
+
+	it("the ticket's note wins over the description's, even a broken one there", async () => {
+		expect(
+			await prNotesOk(
+				pull("Threads (CAR-183)", "Release note: see #12."),
+				linearWith({
+					"CAR-183": { comments: [note("none (refactor)")] },
+				}),
+				noFiles,
+			),
+		).toBe("CAR-183: no note (refactor)");
+		// And a broken ticket note isn't saved by the description's.
+		await expect(
+			prNotesOk(
+				pull("Threads (CAR-183)", "Release note (new): Threads."),
+				linearWith({ "CAR-183": { comments: [note("Threads.")] } }),
+				noFiles,
+			),
+		).rejects.toThrow(/CAR-183's Release note: .*no kind/);
+	});
+
+	it("refuses neither, or a broken description note, naming both ways to fix it", async () => {
+		await expect(
+			prNotesOk(
+				pull("Threads (CAR-183)"),
+				linearWith({ "CAR-183": empty }),
+				noFiles,
+			),
+		).rejects.toThrow(
+			/CAR-183 has no Release note: pnpm release note CAR-183 .*, or a "Release note" line in the PR's description/,
+		);
+		await expect(
+			prNotesOk(
+				pull("Threads (CAR-183)", "Release note (new): see #12."),
+				linearWith({ "CAR-183": empty }),
+				noFiles,
+			),
+		).rejects.toThrow(
+			/CAR-183 has no Release note, and the description's is broken: .*names a PR/,
+		);
+		// No kind: the description of a ticket without a type label must say it.
+		await expect(
+			prNotesOk(
+				pull("Threads (CAR-183)", "Release note: Threads."),
+				linearWith({ "CAR-183": empty }),
+				noFiles,
+			),
+		).rejects.toThrow(/no kind, and its ticket's labels don't say/);
+	});
+
+	it("with no key, passes only on a description note, and says why otherwise", async () => {
+		expect(
+			await prNotesOk(
+				pull("Threads (CAR-183)", "Release note (new): Threads tab."),
+				noKey,
+				noFiles,
+			),
+		).toBe(
+			"#9: 1 note(s) in its description (no Linear key here: CAR-183's notes unread)",
+		);
+		await expect(
+			prNotesOk(pull("Threads (CAR-183)", "Fixes CAR-183"), noKey, noFiles),
+		).rejects.toThrow(
+			/^no Linear key \(tried \$LINEAR_API_KEY\).*; so CAR-183's Release note can't be read here: add a "Release note \(new\|improved\|fixed\): …" or "Release note: none \(why\)" line to the PR's description$/,
+		);
+		await expect(
+			prNotesOk(
+				pull("Threads (CAR-183)", "Release note: Threads."),
+				noKey,
+				noFiles,
+			),
+		).rejects.toThrow(
+			`#9's Release note: "Threads.": no kind, and the ticket's labels aren't read here: state the kind (write "Release note (new|improved|fixed): …")`,
+		);
+		// A ticket-less PR's says so for itself.
+		await expect(
+			prNotesOk(pull("Threads", "Release note: Threads.", "x"), noKey, noFiles),
+		).rejects.toThrow(
+			/no kind, and a PR without a ticket has no labels to take it from/,
+		);
+	});
+
+	it("reads Linear only for the repository's own people's PRs: anyone else's passes only on a description note", async () => {
+		const never = () => {
+			throw new Error("Linear must not be asked for this PR");
+		};
+		for (const association of [
+			"CONTRIBUTOR",
+			"FIRST_TIME_CONTRIBUTOR",
+			"NONE",
+			undefined,
+		]) {
+			const pr = (body: string) => ({
+				...pull("Threads (CAR-183)", body),
+				author_association: association,
+			});
+			expect(
+				await prNotesOk(pr("Release note (new): Threads tab."), never, noFiles),
+				String(association),
+			).toBe(
+				`#9: 1 note(s) in its description (its author isn't the repository's (${association ?? "unknown"}): Linear isn't read for it)`,
+			);
+			await expect(
+				prNotesOk(pr("Fixes CAR-183"), never, noFiles),
+				String(association),
+			).rejects.toThrow(
+				`#9: its author isn't the repository's (${association ?? "unknown"}): Linear isn't read for it, so CAR-183's Release note there doesn't count: add a "Release note (new|improved|fixed): …" or "Release note: none (why)" line to the PR's description`,
+			);
+		}
+		for (const association of ["OWNER", "MEMBER", "COLLABORATOR"]) {
+			expect(
+				await prNotesOk(
+					{ ...pull("Threads (CAR-183)"), author_association: association },
+					linearWith({ "CAR-183": { comments: [note("none (refactor)")] } }),
+					noFiles,
+				),
+				association,
+			).toBe("CAR-183: no note (refactor)");
+		}
+	});
+
+	it("reads at most 5 tickets from Linear for one PR", async () => {
+		const ids = [1, 2, 3, 4, 5, 6].map((n) => `CAR-${n}`);
+		const issues = Object.fromEntries(
+			ids.map((id) => [id, { comments: [note("none (x)")] }]),
+		);
+		const { linear, queries } = fakeLinear(issues);
+		await expect(
+			prNotesOk(
+				pull(`Many (${ids.join(", ")})`),
+				() => ({ linear, tried: TRIED }),
+				noFiles,
+			),
+		).rejects.toThrow(
+			"#9's title names 6 tickets: at most 5 (split the PR, or name fewer)",
+		);
+		expect(queries).toEqual([]);
+		expect(
+			await prNotesOk(
+				pull(`Five (${ids.slice(0, 5).join(", ")})`),
+				linearWith(issues),
+				noFiles,
+			),
+		).toBe(
+			ids
+				.slice(0, 5)
+				.map((id) => `${id}: no note (x)`)
+				.join(", "),
+		);
+	});
+
+	it("fails, never passes, when Linear can't be read", async () => {
+		const failing = () => ({
+			linear: {
+				query: async () => {
+					throw new Error("Linear answered 503: no data");
+				},
+			} satisfies Linear,
+			tried: TRIED,
+		});
+		await expect(
+			prNotesOk(
+				pull("Threads (CAR-183)", "Release note (new): Threads tab."),
+				failing,
+				noFiles,
+			),
+		).rejects.toThrow(
+			"couldn't read CAR-183 from Linear (Linear answered 503: no data): try again",
+		);
+	});
+
+	it("a title and description naming different tickets still fails, and release PRs still pass", async () => {
+		await expect(
+			prNotesOk(
+				pull(
+					"Threads (CAR-183)",
+					"Fixes CAR-184\n\nRelease note (new): Threads.",
+				),
+				noKey,
+				noFiles,
+			),
+		).rejects.toThrow(/title names CAR-183 but its description links CAR-184/);
+		expect(
+			await prNotesOk(
+				pull("notes: 0.4.0", "", "notes/0.4.0"),
+				noKey,
+				async () => ["release-notes/0.4.0.json"],
+			),
+		).toMatch(/no note needed/);
+	});
+
+	it("one decision from several PRs' descriptions", () => {
+		const n = (text: string) => ({
+			status: "notes" as const,
+			notes: [{ kind: "new" as const, text }],
+		});
+		expect(descriptionsNote([])).toEqual({ status: "missing" });
+		expect(
+			descriptionsNote([n("A."), { status: "missing" }, n("A."), n("B.")]),
+		).toEqual({
+			status: "notes",
+			notes: [
+				{ kind: "new", text: "A." },
+				{ kind: "new", text: "B." },
+			],
+		});
+		expect(
+			descriptionsNote([{ status: "none", why: "x" }, { status: "missing" }]),
+		).toEqual({ status: "none", why: "x" });
+		expect(
+			descriptionsNote([n("A."), { status: "invalid", errors: ["bad"] }]),
+		).toEqual({ status: "invalid", errors: ["bad"] });
+	});
+
+	it("collectNotes takes a ticket's PR description note when Linear has none, the ticket's otherwise", async () => {
+		const asked: string[] = [];
+		const io: Io = {
+			repo: "owner/repo",
+			log: () => {},
+			now: () => new Date(),
+			sleep: async () => {},
+			run: async (_cmd, args) => {
+				asked.push(args.join(" "));
+				const n = /pulls\/(\d+)$/.exec(args[1] ?? "")?.[1];
+				const bodies: Record<string, string> = {
+					"5": "Fixes CAR-1\n\nRelease note: From the description.",
+					"6": "Release note (fixed): Ignored, the ticket has one.",
+					"7": "Nothing here.",
+				};
+				return { code: 0, stdout: bodies[n ?? ""] ?? "", stderr: "" };
+			},
+		};
+		const { linear } = fakeLinear({
+			"CAR-1": { labels: ["Improvement"], ...empty },
+			"CAR-2": { labels: ["Bug"], comments: [note("From Linear.")] },
+			"CAR-3": empty,
+		});
+		const pr = (number: number, ticket: string) => ({
+			number,
+			title: `x (${ticket})`,
+			tickets: [ticket],
+			exempt: false,
+		});
+		const r = await collectNotes(
+			io,
+			linear,
+			"0.5.0",
+			{
+				from: null,
+				prs: [pr(5, "CAR-1"), pr(6, "CAR-2"), pr(7, "CAR-3")],
+				other: [],
+			},
+			new Map(),
+		);
+		expect(r.file.notes).toEqual(
+			expect.arrayContaining([
+				{
+					id: "CAR-1",
+					kind: "improved",
+					prs: [5],
+					text: "From the description.",
+				},
+				{ id: "CAR-2", kind: "fixed", prs: [6], text: "From Linear." },
+			]),
+		);
+		expect(r.file.notes).toHaveLength(2);
+		expect(r.missing).toEqual([
+			expect.stringMatching(
+				/^CAR-3 \(#7\): no Release note: pnpm release note CAR-3 .* \(or a "Release note" line in #7's description\)$/,
+			),
+		]);
+		// Only the PRs of tickets with no note in Linear are asked for.
+		expect(asked.some((a) => a.endsWith("pulls/6"))).toBe(false);
+	});
+});
+
+describe("rerunning the release-note check after a note (CAR-211)", () => {
+	const ghIo = (
+		handlers: Record<
+			string,
+			(args: string[]) => { code: number; stdout?: string; stderr?: string }
+		>,
+	) => {
+		const calls: string[] = [];
+		const lines: string[] = [];
+		const io: Io = {
+			repo: "owner/repo",
+			log: (l) => lines.push(l),
+			now: () => new Date(),
+			sleep: async () => {},
+			run: async (cmd, args) => {
+				const line = [cmd, ...args].join(" ");
+				calls.push(line);
+				const key = Object.keys(handlers).find((k) => line.startsWith(k));
+				const r = key ? handlers[key]?.([...args]) : undefined;
+				return r
+					? { stdout: "", stderr: "", ...r }
+					: { code: 127, stdout: "", stderr: `unexpected: ${line}` };
+			},
+		};
+		return { io, calls, lines };
+	};
+	const prs = JSON.stringify([
+		{ number: 9, title: "Threads (CAR-183)" },
+		{ number: 10, title: "Other (CAR-1830)" },
+		{ number: 11, title: "More (CAR-183, CAR-7)" },
+		{ number: 12, title: "New (CAR-183)" },
+	]);
+	const link = (run: number) =>
+		`https://github.com/owner/repo/actions/runs/${run}/job/${run}0`;
+	// gh pr checks: the PR's checks (exit 1 with a failed one, 8 while one
+	// is pending), or "no checks reported" on stderr.
+	const checks = (pr: string) =>
+		({
+			"9": {
+				code: 1,
+				stdout: JSON.stringify([
+					{ name: "checks", workflow: "CI", bucket: "pass", link: link(400) },
+					// Another workflow's job of the same name is not it.
+					{
+						name: "release-note",
+						workflow: "Other",
+						bucket: "fail",
+						link: link(499),
+					},
+					{
+						name: "release-note",
+						workflow: "Release note",
+						bucket: "fail",
+						link: link(501),
+					},
+				]),
+			},
+			"11": {
+				code: 8,
+				stdout: JSON.stringify([
+					{
+						name: "release-note",
+						workflow: "Release note",
+						bucket: "pending",
+						link: link(502),
+					},
+				]),
+			},
+			"12": { code: 1, stderr: "no checks reported on the 'x' branch" },
+			// Checks, but none is the release-note check (renamed, or not yet reported).
+			"14": {
+				code: 0,
+				stdout: JSON.stringify([
+					{ name: "checks", workflow: "CI", bucket: "pass", link: link(600) },
+					{
+						name: "release-note",
+						workflow: "Release notes",
+						bucket: "fail",
+						link: link(601),
+					},
+				]),
+			},
+			"13": {
+				code: 0,
+				stdout: JSON.stringify([
+					{
+						name: "release-note",
+						workflow: "Release note",
+						bucket: "pass",
+						link: link(503),
+					},
+				]),
+			},
+		})[pr] ?? { code: 1, stderr: "HTTP 502" };
+
+	it("pnpm release note reruns the release-note check of each open PR naming the ticket", async () => {
+		const writes: Record<string, unknown>[] = [];
+		const { linear } = fakeLinear(
+			{ "CAR-183": { labels: ["Feature"] } },
+			writes,
+		);
+		const { io, calls, lines } = ghIo({
+			"gh pr list": () => ({ code: 0, stdout: prs }),
+			"gh pr checks": (a) => checks(a[2] ?? ""),
+			"gh run rerun": () => ({ code: 0 }),
+		});
+		await postNote(io, linear, "CAR-183", { text: "Threads tab." });
+		expect(calls).toContain(
+			"gh pr list --repo owner/repo --base master --state open --limit 200 --json number,title",
+		);
+		expect(calls).toContain(
+			"gh pr checks 9 --repo owner/repo --json name,workflow,bucket,link",
+		);
+		expect(calls.filter((c) => c.startsWith("gh run rerun"))).toEqual([
+			"gh run rerun 501 --repo owner/repo",
+		]);
+		expect(calls.some((c) => c.startsWith("gh pr checks 10 "))).toBe(false);
+		expect(lines).toEqual([
+			"CAR-183: Release note (new): Threads tab.",
+			"https://linear.app/c/1",
+			`#9: reran its release-note check (run 501, ${link(501)})`,
+			"#11: its release-note check is running (it may have read Linear before the note): if it ends red, gh run rerun 502",
+			"#12: no release-note run yet: it reads the note when it runs",
+		]);
+		expect(writes).toHaveLength(1);
+	});
+
+	it("a failed lookup or rerun only warns: the note is posted", async () => {
+		const writes: Record<string, unknown>[] = [];
+		const { linear } = fakeLinear(
+			{ "CAR-183": { labels: ["Feature"] } },
+			writes,
+		);
+		const { io, lines } = ghIo({
+			"gh pr list": () => ({
+				code: 0,
+				stdout: JSON.stringify([
+					{ number: 9, title: "x (CAR-183)" },
+					{ number: 77, title: "y (CAR-183)" },
+				]),
+			}),
+			"gh pr checks": (a) => checks(a[2] ?? ""),
+			"gh run rerun": () => ({ code: 1, stderr: "HTTP 403: no" }),
+		});
+		await expect(
+			postNote(io, linear, "CAR-183", { text: "Threads tab." }),
+		).resolves.toBe("Release note (new): Threads tab.");
+		expect(lines.filter((l) => l.startsWith("warning:"))).toEqual([
+			expect.stringMatching(
+				/^warning: couldn't rerun #9's release-note check: .*HTTP 403/,
+			),
+			expect.stringMatching(
+				/^warning: couldn't rerun #77's release-note check: gh pr checks 77 failed \(1\): HTTP 502/,
+			),
+		]);
+		const listFails = ghIo({
+			"gh pr list": () => ({ code: 1, stderr: "offline" }),
+		});
+		await rerunNoteChecks(listFails.io, "CAR-183");
+		expect(listFails.lines).toEqual([
+			expect.stringMatching(/^warning: couldn't list open PRs/),
+		]);
+	});
+
+	it("merge-ok reruns only a red check, and says to wait for it", async () => {
+		const pull = (number: number) => ({ number, title: "x" });
+		const mk = () =>
+			ghIo({
+				"gh pr checks": (a) => checks(a[2] ?? ""),
+				"gh run rerun": () => ({ code: 0 }),
+			});
+		const red = mk();
+		await rerunRedNoteCheck(red.io, pull(9));
+		expect(red.calls.at(-1)).toBe("gh run rerun 501 --repo owner/repo");
+		expect(red.lines).toEqual([
+			`#9's release-note check was red (it ran before the note): reran it (run 501, ${link(501)}); wait for it to turn green before merging`,
+		]);
+		for (const n of [11, 12, 13]) {
+			const other = mk();
+			await rerunRedNoteCheck(other.io, pull(n));
+			expect(
+				other.calls.some((c) => c.startsWith("gh run rerun")),
+				`#${n}`,
+			).toBe(false);
+			expect(other.lines, `#${n}`).toEqual([]);
+		}
+		const broken = mk();
+		await rerunRedNoteCheck(broken.io, pull(77));
+		expect(broken.lines).toEqual([expect.stringMatching(/^warning: /)]);
+	});
+
+	it('says so when the PR\'s checks list no release-note check, rather than "no run yet"', async () => {
+		const mk = () =>
+			ghIo({
+				"gh pr list": () => ({
+					code: 0,
+					stdout: JSON.stringify([{ number: 14, title: "x (CAR-183)" }]),
+				}),
+				"gh pr checks": (a) => checks(a[2] ?? ""),
+				"gh run rerun": () => ({ code: 0 }),
+			});
+		const expected = `warning: #14's checks have no "${NOTE_CHECK}" of workflow "${NOTE_WORKFLOW_NAME}" (not reported yet, or renamed in release-note.yml?): rerun it by hand if it's red`;
+		const note = mk();
+		await rerunNoteChecks(note.io, "CAR-183");
+		expect(note.lines).toEqual([expected]);
+		const merge = mk();
+		await rerunRedNoteCheck(merge.io, { number: 14, title: "x" });
+		expect(merge.lines).toEqual([expected]);
+		for (const m of [note, merge]) {
+			expect(m.calls.some((c) => c.startsWith("gh run rerun"))).toBe(false);
+		}
+	});
+
+	it("merge-ok's note step reruns the check only after its own note check passed", async () => {
+		const mk = () =>
+			ghIo({
+				"gh pr checks": (a) => checks(a[2] ?? ""),
+				"gh run rerun": () => ({ code: 0 }),
+			});
+		const noKey = () => ({ linear: null, tried: ["$LINEAR_API_KEY"] });
+		const noFiles = async (): Promise<string[]> => [];
+		const refused = mk();
+		await expect(
+			mergeOkNotes(
+				refused.io,
+				{
+					number: 9,
+					title: "Threads (CAR-183)",
+					body: "",
+					author_association: "OWNER",
+				},
+				noKey,
+				noFiles,
+			),
+		).rejects.toThrow(/no Linear key/);
+		expect(refused.calls).toEqual([]);
+		const passed = mk();
+		expect(
+			await mergeOkNotes(
+				passed.io,
+				{
+					number: 9,
+					title: "Threads (CAR-183)",
+					body: "Release note: none (tooling)",
+					author_association: "OWNER",
+				},
+				noKey,
+				noFiles,
+			),
+		).toMatch(/^#9: no note \(tooling\) in its description/);
+		expect(passed.calls).toEqual([
+			"gh pr checks 9 --repo owner/repo --json name,workflow,bucket,link",
+			"gh run rerun 501 --repo owner/repo",
+		]);
+	});
+});
+
+describe("the release-note workflow (CAR-211)", () => {
+	const text = readFileSync(
+		join(import.meta.dirname, "../.github/workflows/release-note.yml"),
+		"utf8",
+	);
+	const code = text
+		.split("\n")
+		.filter((l) => !l.trim().startsWith("#"))
+		.join("\n");
+	const steps = code.split(/^ {6}- /m).slice(1);
+
+	it("runs on every PR to master (pull_request_target: this file and ref from master), as the job release-note, one run per PR", () => {
+		expect(code).toMatch(
+			/^on:\n {2}pull_request_target:\n {4}types: \[opened, synchronize, reopened, edited\]\n {4}branches: \[master\]\n/m,
+		);
+		expect(code).not.toMatch(/^ {2}pull_request:$/m);
+		// The names the reruns look for (NOTE_CHECK, NOTE_WORKFLOW_NAME).
+		expect(code).toMatch(new RegExp(`^jobs:\n {2}${NOTE_CHECK}:$`, "m"));
+		expect(code).toMatch(new RegExp(`^name: ${NOTE_WORKFLOW_NAME}$`, "m"));
+		expect(code.match(/^name: .*$/m)?.[0]).toBe(`name: ${NOTE_WORKFLOW_NAME}`);
+		// github.ref is master for every PR's run: grouped by the PR.
+		expect(code).toMatch(
+			/^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \}\}\n {2}cancel-in-progress: true$/m,
+		);
+	});
+
+	it("runs in the environment release-note (master only), read-only, no cache", () => {
+		expect(code).toMatch(/^ {4}environment: release-note$/m);
+		expect(code.match(/environment:/g)).toHaveLength(1);
+		expect(code).toMatch(/^permissions:\n {2}contents: read\n(?! )/m);
+		expect(code).not.toMatch(/: write\b|id-token/);
+		expect(code).not.toMatch(/cache:/);
+	});
+
+	it("checks out master, without credentials, and pins every action by SHA", () => {
+		const checkout = steps.filter((s) => s.includes("actions/checkout@"));
+		expect(checkout).toHaveLength(1);
+		expect(checkout[0]).toMatch(/ref: master\n/);
+		expect(checkout[0]).toMatch(/persist-credentials: false/);
+		for (const m of code.matchAll(/uses: (\S+)/g)) {
+			expect(m[1]).toMatch(/@[0-9a-f]{40}$/);
+		}
+	});
+
+	it("gives the Linear key to one step only, the last, after the install", () => {
+		const withKey = steps.filter((s) => s.includes("secrets."));
+		expect(withKey).toHaveLength(1);
+		expect(withKey[0]).toContain(
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+			"LINEAR_API_KEY: ${{ secrets.LINEAR_READ_API_KEY }}",
+		);
+		expect(steps.at(-1)).toBe(withKey[0]);
+		expect(code.split("LINEAR").length - 1).toBe(2);
+		expect(code).not.toMatch(/^env:/m);
+		const install = steps.findIndex((s) => s.includes("pnpm install"));
+		expect(steps[install]).toContain("--frozen-lockfile --ignore-scripts");
+		expect(install).toBeLessThan(steps.indexOf(withKey[0] ?? ""));
+	});
+
+	it("never checks out or runs the PR: only master, and nothing of the PR's head", () => {
+		expect(code).not.toMatch(
+			/pull_request\.head|head_ref|head\.sha|refs\/pull/,
+		);
+		expect(code).not.toMatch(/github\.head_ref/);
+		const refs = [...code.matchAll(/^\s+ref: (.*)$/gm)].map((m) => m[1]);
+		expect(refs).toEqual(["master"]);
+	});
+
+	it("never pastes the PR's text into a script: run lines name no event field but the number, via env", () => {
+		for (const s of steps) {
+			const run = /run: ([\s\S]*)$/.exec(s)?.[1] ?? "";
+			expect(run, s).not.toContain("${{");
+		}
+		expect(code).not.toMatch(/pull_request\.(title|body|head)/);
+		expect(code).toContain(
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+			"PR_NUMBER: ${{ github.event.pull_request.number }}",
+		);
+	});
+});
+
+describe("ci:pr-note, as the workflow runs it (CAR-211)", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "crb-pr-note-"));
+	});
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+	const ciPrNote = (pull: object) => {
+		writeFileSync(join(dir, "pull.json"), JSON.stringify(pull));
+		writeFileSync(
+			join(dir, "files.json"),
+			JSON.stringify([[{ filename: "src/a.ts" }]]),
+		);
+		try {
+			const out = execFileSync(
+				join(import.meta.dirname, "../node_modules/.bin/tsx"),
+				[
+					join(import.meta.dirname, "release.ts"),
+					"ci:pr-note",
+					join(dir, "pull.json"),
+					join(dir, "files.json"),
+				],
+				{
+					encoding: "utf8",
+					// No key, as on a fork's PR: nowhere to find one.
+					env: {
+						...process.env,
+						LINEAR_API_KEY: "",
+						HOME: dir,
+						XDG_CONFIG_HOME: dir,
+					},
+				},
+			);
+			return { code: 0, out };
+		} catch (e) {
+			const err = e as { status: number; stdout: string };
+			return { code: err.status, out: err.stdout };
+		}
+	};
+
+	it("with no key, passes a ticket PR on its description's note, fails one without, as an annotation", {
+		timeout: 30_000,
+	}, () => {
+		expect(
+			ciPrNote({
+				number: 9,
+				title: "Threads (CAR-183)",
+				body: "Release note: none (test tooling)",
+				head: { ref: "car-183-x" },
+				author_association: "MEMBER",
+			}),
+		).toEqual({
+			code: 0,
+			out: "#9: no note (test tooling) in its description (no Linear key here: CAR-183's notes unread)\n",
+		});
+		const failed = ciPrNote({
+			number: 9,
+			title: "Threads (CAR-183)",
+			body: "Fixes CAR-183",
+			head: { ref: "car-183-x" },
+			author_association: "MEMBER",
+		});
+		expect(failed.code).toBe(1);
+		expect(failed.out).toMatch(
+			/^::error title=Release note::no Linear key .*line to the PR's description\n$/,
+		);
+	});
+
+	it("keeps a PR's text to one printable annotation line", () => {
+		expect(workflowText("a%b\r\n::warning::x")).toBe("a%25b%0D%0A::warning::x");
 	});
 });

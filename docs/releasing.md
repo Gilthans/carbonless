@@ -134,8 +134,9 @@ Each version's notes come from the Linear tickets in it (CAR-192; spec:
 read only where its key is (`$LINEAR_API_KEY`, else `linear/api-key` in
 `$XDG_CONFIG_HOME`, then in `~/.config`, so a worktree whose `.envrc`
 moves `XDG_CONFIG_HOME` still finds it; a missing key's error names each
-place tried): never in CI, which checks the committed snapshot from git
-alone.
+place tried). In CI the only Linear key is the `release-note` check's
+(below): read only, in that check's one step, running master's code;
+promote checks the committed snapshot from git alone.
 
 - **A ticket's note** is a comment on it whose first line starts with
   `Release note`; the newest such comment wins (by `updatedAt`, so an edit
@@ -161,6 +162,11 @@ alone.
 - **A PR without a ticket** carries the line in its description. A note
   there must name its kind, as there are no labels to take it from
   (`Release note (fixed): …`); or `Release note: none (test tooling)`.
+- **A ticket PR's description** may carry the line too (CAR-211): it
+  counts for each of the PR's tickets that has no note in Linear (the
+  ticket's note wins when both exist; the kind defaults from that
+  ticket's labels). `pnpm release notes` takes it the same way, from
+  every PR of such a ticket.
 - **Which PRs and tickets a release has:** master's first-parent commits
   after the previous release's tag (each a PR's squash or merge commit,
   its subject ending `(#N)`), and every `CAR-N` in their titles. `next:
@@ -171,10 +177,39 @@ alone.
   notes file covers counts as covered; `pnpm release notes` lists it again
   only when its note changed since.
 - **The gate is at merge:** `pnpm release merge-ok <pr>` refuses while a
-  ticket in the PR's title has no note (or a broken one), a ticket-less
-  PR's description has no `Release note` line, a `car-N-*` branch's title
-  names no ticket, or the description's `Fixes`/`Part of` tickets differ
-  from the title's; without a Linear key it refuses, saying so. Linear
+  ticket in the PR's title has no note (or a broken one) in Linear nor in
+  the PR's description, a ticket-less PR's description has no `Release
+  note` line, a `car-N-*` branch's title names no ticket, or the
+  description's `Fixes`/`Part of` tickets differ from the title's; without
+  a Linear key it passes a ticket PR only on its description's note,
+  saying so otherwise. A Linear read that fails fails it, never passes.
+- **The `release-note` check** (`.github/workflows/release-note.yml`,
+  workflow "Release note", on every PR to master: opened, pushed to,
+  reopened or edited) runs the same rules (`release.ts ci:pr-note`, the
+  same `prNotesOk`), for merges no script sees (GitHub's UI). It runs on
+  `pull_request_target`, in the environment `release-note` that holds
+  the Linear key (security: "Fork pull requests" below). It checks out
+  master, never the PR, installs master's lockfile with `--ignore-scripts`
+  (no cache), asks GitHub for the PR and its files at run time (so a
+  rerun reads the current description; the text reaches the script as
+  files, never pasted into a `run:`), and only its last step gets the
+  key (`LINEAR_READ_API_KEY`, read only, team CAR) as `$LINEAR_API_KEY`.
+  Runs are grouped by PR number (`github.ref` is master for all). Without
+  the key (not set up yet) it passes only on a description note, and its
+  failure says so. Linear is read only for PRs whose author GitHub
+  reports (`author_association` of the PR from `gh api`, not the event's)
+  as OWNER, MEMBER or COLLABORATOR, and for at most 5 tickets a PR (more
+  fails, saying so): anyone else's PR (a fork's) passes only on a
+  description note, so it can't make the key look up tickets for the
+  public log or spend Linear's rate limit with edits. merge-ok applies
+  the same rules. A ticket note posted after the check ran needs a rerun:
+  `pnpm release note CAR-N …` reruns the release-note check of every open
+  PR to master whose title names CAR-N, found from the PR's checks (`gh
+  pr checks`; a run still in progress is named instead; a failed rerun
+  only warns), merge-ok reruns a red one once its own check passes and
+  says to wait for it, and editing the description runs it again. It
+  only blocks a merge once it is a required check of the `master` ruleset
+  (Setup, step 3; the environment and key: step 11). Linear
   moves a ticket to Done on merge by itself, so the check can't wait for
   that. `pnpm release notes check` fails listing what in the release so
   far has no note, for merges no script saw, and warns about tickets done
@@ -381,12 +416,36 @@ any version and any tag, `latest` included. So:
 
 **Fork pull requests** (the repository is public): anyone can open one,
 and none of it reaches a credential.
-- A PR runs only CI and the release gate (`pull_request`, never
-  `pull_request_target`): a
-  read-only `GITHUB_TOKEN`, no secrets (no workflow uses any), no
-  environment, no OIDC. With approval required for all external
+- A PR runs CI and the release gate on its own code (`pull_request`): a
+  read-only `GITHUB_TOKEN`, no secrets, no environment, no OIDC. With
+  approval required for all external
   contributors (setup, step 5), a fork's runs wait for the owner unless
   its author is a collaborator.
+- The release-note check is the one `pull_request_target` workflow, and
+  the one with a secret (CAR-211). `pull_request_target` takes the
+  workflow file from master and runs with master as its ref, for any PR,
+  a fork's included (no approval wait). That is safe here because it
+  never runs the PR's code: it checks out master, installs master's
+  lockfile without scripts and without a cache, and reads the PR only as
+  data (`gh api` into JSON files, never into a `run:`); its token only
+  reads; the key is only in its last step. The key lives in the
+  environment `release-note`, whose deployment branches are master only,
+  not in the repository's secrets: a branch's own workflow (`pull_request`
+  or `push`, which runs that branch's copy of every workflow file) gets
+  no repository secret, and its job naming the environment is refused
+  ("not allowed to deploy"). Checked on the playground repository
+  (2026-11-18): such a job got the environment's secret and reported its
+  check on the PR's head commit, which satisfied a ruleset's required
+  status check; a PR editing the workflow file still ran the default
+  branch's copy; and a PR branch's own `pull_request` workflow naming the
+  environment was refused, while one without it got an empty secret.
+  What's left: anyone can open or edit PRs to trigger runs (each a short,
+  read-only job; GitHub's rate limits apply), a minor cost; such a PR's
+  run never reads Linear (only OWNER, MEMBER or COLLABORATOR authors'
+  do, at most 5 tickets each). Not used: `environment: { deployment:
+  false }` (no deployment entry per run): GitHub's docs don't say
+  whether the deployment-branch rule, this key's boundary, still applies
+  then.
 - A fork's CI completing also starts `release.yml` (`workflow_run` fires
   for any CI on a branch called `master`, a fork's too). Both RC jobs
   check in their own `if` that CI ran for a push of this repository
@@ -653,8 +712,9 @@ machine.
    agents on the owner's approval, nobody else, whatever their access), Restrict deletions, Block force
    pushes, Require a pull request before merging (0 approvals: only the
    owner's login can merge anyway), Require status checks to pass (`checks`,
-   `windows-agent`, `e2e`, and `release-gate`, the release freeze's check:
-   add it by hand, nothing sets it). Not "Require review from Code Owners": with
+   `windows-agent`, `e2e`, `release-gate`, the release freeze's check, and
+   `release-note`, the release notes' check: add them by hand, nothing
+   sets them). Not "Require review from Code Owners": with
    Restrict updates it adds nothing. Nobody pushes straight to `master`,
    the owner included; the owner can merge any PR, with or without an
    approval or green checks (GitHub's "bypass rules" box).
@@ -697,6 +757,17 @@ machine.
     (machine-specific steps: CLAUDE.local.md). On the first staged release
     (0.2.0), after approving it: `npm view carbonless-review@0.2.0
     dist.attestations` shows a `provenance` too.
+11. **The release-note check's environment and Linear key** (CAR-211):
+    on GitHub, Settings → Environments → New environment
+    **`release-note`**: Deployment branches and tags → Selected branches
+    → add `master` (only). No reviewers. Check its page shows that rule
+    (as for `npm`, step 2). In Linear, Settings → Security & access →
+    Personal API keys → New key, with permission **Read** only and access
+    to team **CAR** only; add it as that environment's secret
+    **`LINEAR_READ_API_KEY`** (Environment secrets, not a repository
+    secret). Then add `release-note` to the `master` ruleset's required
+    checks (step 3). Without the key the check still runs, passing only
+    PRs whose description has a note.
 
 From then on a release is: `pnpm release promote` (CI stages it), then
 `pnpm release publish` (the owner approves it with the OTP). Promoting the
