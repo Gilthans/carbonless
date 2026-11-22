@@ -29,9 +29,9 @@ import type {
 } from "../../shared/types";
 import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer, headFacts } from "../agent/AgentComposer";
-import { onHeadMove } from "../agent/agentComment";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
+import { onHeadMove } from "../agent/commentOnGithub";
 import {
 	PendingPosted,
 	shownOutsideCard,

@@ -14,7 +14,6 @@ import {
 	AgentComposer,
 	headFacts,
 } from "../agent/AgentComposer";
-import { CommentScopeProvider } from "../agent/agentComment";
 import {
 	askAgent,
 	getAgentWrites,
@@ -27,6 +26,7 @@ import {
 	resetAgentComposers,
 	useAgentComposers,
 } from "../agent/askAgentAction";
+import { CommentScopeProvider } from "../agent/commentOnGithub";
 import { conversation } from "../agent/threadAgentFixtures";
 import { overviewQuery } from "../api";
 import type { CodeSpan } from "../files/selectionActions";

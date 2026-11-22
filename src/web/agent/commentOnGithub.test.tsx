@@ -23,6 +23,8 @@ import {
 } from "../threads/newThreads";
 import { addThread, threadWritesFor } from "../threads/threadWrites";
 import { AgentThreadCard } from "./AgentThreadCard";
+import { resetAgentWrites } from "./agentWrites";
+import { spanOfAnchor } from "./askAgentAction";
 import {
 	agentCommentAvailable,
 	baseOf,
@@ -33,9 +35,7 @@ import {
 	spanInHunks,
 	versionOf,
 	viewingOf,
-} from "./agentComment";
-import { resetAgentWrites } from "./agentWrites";
-import { spanOfAnchor } from "./askAgentAction";
+} from "./commentOnGithub";
 import { resetLinkProblems } from "./linkProblems";
 import { SendViewProvider } from "./threadAgent";
 

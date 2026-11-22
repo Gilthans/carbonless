@@ -14,9 +14,9 @@ import {
 	useState,
 } from "react";
 import { MAX_REPLY } from "../../shared/types";
-import { useCommentScope } from "../agent/agentComment";
 import { agentAsking } from "../agent/agentWrites";
 import { askAgentAvailable, openAgentComposer } from "../agent/askAgentAction";
+import { useCommentScope } from "../agent/commentOnGithub";
 import { ASK_HANDLE, HANDLE, HANDLE_OFF } from "../agent/handle";
 import { turnedFromCard, usePendingAgent } from "../agent/pendingThread";
 import { AgentHandle } from "../agent/ThreadAgentButton";

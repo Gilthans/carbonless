@@ -33,7 +33,6 @@ import {
 } from "../threads/newThreads";
 import { threadWritesFor } from "../threads/threadWrites";
 import { AgentThreadCard } from "./AgentThreadCard";
-import { type CommentScope, CommentScopeProvider } from "./agentComment";
 import {
 	cardReplyText,
 	resetAgentWrites,
@@ -42,6 +41,7 @@ import {
 } from "./agentWrites";
 import { agentThreadsQuery } from "./api";
 import { spanOfAnchor } from "./askAgentAction";
+import { type CommentScope, CommentScopeProvider } from "./commentOnGithub";
 import { resetLinkProblems } from "./linkProblems";
 import {
 	LANDING_MS,

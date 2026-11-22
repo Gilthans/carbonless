@@ -1442,7 +1442,7 @@ function parseAgentPosted(body: unknown): AgentPostedRequest {
 		unknown
 	>;
 	const { message, block, github, text } = b;
-	if (typeof message !== "string" || !AGENT_THREAD_ID.test(message)) {
+	if (typeof message !== "string" || !isLowerUlid(message)) {
 		throw new BadRequestError("message must be a message id");
 	}
 	if (!Number.isSafeInteger(block) || (block as number) < 0) {

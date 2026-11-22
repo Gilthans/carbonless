@@ -53,11 +53,6 @@ import {
 import { Avatar, usePerson } from "../threads/people";
 import { AgentMarkdown } from "./AgentMarkdown";
 import {
-	type CommentScope,
-	useAgentComment,
-	useCommentScope,
-} from "./agentComment";
-import {
 	type AgentWrite,
 	dropAgentWrite,
 	replyAgent,
@@ -73,6 +68,11 @@ import {
 	postAgentResolved,
 	withThread,
 } from "./api";
+import {
+	type CommentScope,
+	useAgentComment,
+	useCommentScope,
+} from "./commentOnGithub";
 import { HANDLE, HANDLE_OFF } from "./handle";
 import { useLinkProblem } from "./linkProblems";
 import { useHoldComposer, usePendingComposers } from "./pendingThread";
@@ -425,7 +425,7 @@ function CommentOnGithub(props: {
 				<button
 					type="button"
 					{...trigger}
-					data-testid="agent-comment"
+					data-testid="agent-comment-on-github"
 					aria-label={
 						ok === true ? "Comment on GitHub" : `Comment on GitHub — ${ok}`
 					}

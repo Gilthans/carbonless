@@ -19,12 +19,12 @@ import { sinceOnlyPieces } from "../../shared/pieces";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { ReviewThread, SessionInfo } from "../../shared/types";
 import { AgentNotInComparison } from "../agent/AgentNotInComparison";
-import { ShowVersionProvider } from "../agent/agentComment";
 import {
 	agentThreadsQuery,
 	useAgentOn,
 	useAgentPlacementsFor,
 } from "../agent/api";
+import { ShowVersionProvider } from "../agent/commentOnGithub";
 import {
 	AgentPlacingProvider,
 	agentOutside,
