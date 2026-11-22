@@ -1534,7 +1534,7 @@ describe("a posted block joins its GitHub thread (CAR-236)", () => {
 			startSide: "RIGHT",
 			startLine: 10,
 		});
-		expect(t?.joined).toEqual({ asked: anchor, threads: ["PRRT_new"] });
+		expect(t?.joins).toEqual({ asked: anchor, threads: ["PRRT_new"] });
 		// Nothing else changes: messages, posted.
 		expect(t?.messages).toHaveLength(2);
 		expect(t?.messages[1]?.posted?.map((p) => p.block)).toEqual([0]);
@@ -1557,7 +1557,7 @@ describe("a posted block joins its GitHub thread (CAR-236)", () => {
 	it("nothing posted: on its lines as asked", () => {
 		const [t] = foldAgentThreads([opened(T, anchor, 1000), said(T, A, 2000)]);
 		expect(t?.anchor).toEqual(anchor);
-		expect(t).not.toHaveProperty("joined");
+		expect(t).not.toHaveProperty("joins");
 	});
 
 	it("two posted threads: the earliest posted is the one, the other kept as a fallback", () => {
@@ -1575,7 +1575,31 @@ describe("a posted block joins its GitHub thread (CAR-236)", () => {
 			subject: "thread",
 			thread: "PRRT_early",
 		});
-		expect(t?.joined?.threads).toEqual(["PRRT_early", "PRRT_late"]);
+		expect(t?.joins?.threads).toEqual(["PRRT_early", "PRRT_late"]);
+	});
+
+	it("several posted threads: ordered by when GitHub took the comment, not by when the record was written", () => {
+		const late = (gt: string, n: number, ts: number) => ({
+			...posted(T, A, n, gt, ts),
+			github: {
+				thread: gt,
+				comment: `PRRC_${n}`,
+				url: `https://github.com/o/r/pull/1#discussion_r${n === 0 ? 900 : 100}`,
+			},
+		});
+		const [t] = foldAgentThreads([
+			opened(T, anchor, 1000),
+			said(T, A, 2000),
+			// Block 0's comment (id 900) was recorded first, but GitHub took
+			// block 1's (id 100) earlier: its record failed and came later.
+			late("PRRT_second", 0, 3000),
+			late("PRRT_first", 1, 4000),
+		]);
+		expect(t?.anchor).toMatchObject({
+			subject: "thread",
+			thread: "PRRT_first",
+		});
+		expect(t?.joins?.threads).toEqual(["PRRT_first", "PRRT_second"]);
 	});
 
 	it("the review conversation and a thread conversation never change", () => {
@@ -1595,7 +1619,7 @@ describe("a posted block joins its GitHub thread (CAR-236)", () => {
 			posted(T2, A2, 0, "PRRT_old", 3100),
 		]);
 		expect(folded.map((t) => t.anchor)).toEqual([review, onThread]);
-		expect(folded.every((t) => t.joined === undefined)).toBe(true);
+		expect(folded.every((t) => t.joins === undefined)).toBe(true);
 	});
 
 	it("a later Ask agent on the joined GitHub thread folds into the conversation", () => {

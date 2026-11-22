@@ -696,6 +696,35 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect((await host.asked()).map((a) => a.id)).toEqual([x.id]);
 		});
 
+		it("a conversation whose comment started a thread: on that thread, with where it was asked; placed there too (CAR-236)", async () => {
+			listGh(false);
+			const x = await host.open({ clientId: "c2", text: "Why?", span });
+			const a = await store.message(x.id, {
+				by: "ai",
+				text: "```comment\nx\n```",
+				agent: { name: "fake-acp", version: "1.0.0" },
+				stop: "end_turn",
+				activity: [],
+			});
+			await host.posted(x.id, {
+				message: a.messages[1]?.id as string,
+				block: 0,
+				github: {
+					thread: "PRRT_1",
+					comment: "PRRC_1",
+					url: "https://github.com/o/r/pull/1#discussion_r1",
+				},
+				text: "x",
+			});
+			const [t] = await host.threads();
+			expect(t?.anchor).toMatchObject({ subject: "thread", thread: "PRRT_1" });
+			expect(t?.joined).toEqual({ thread: "PRRT_1", asked: span });
+			expect(t).not.toHaveProperty("joins");
+			expect(await host.asked()).toEqual([
+				{ id: x.id, anchor: span, at: x.at },
+			]);
+		});
+
 		it("an ai review opening is refused", async () => {
 			await expect(
 				store.open({

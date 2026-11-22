@@ -601,16 +601,23 @@ export class AgentHost {
 	/**
 	 * Each span thread's id, anchor and when it was asked (what placement
 	 * reads): a live thread conversation goes where its GitHub thread goes,
-	 * so it is left out; an orphan comes with its span anchor. The review
+	 * so it is left out (one joined to the thread its comment started is
+	 * in, where it was asked: CAR-236); an orphan comes with its span anchor. The review
 	 * conversation has no code to place on: left out.
 	 */
 	async asked(): Promise<
 		{ id: string; anchor: AgentSpanAnchor; at: string }[]
 	> {
 		const out: { id: string; anchor: AgentSpanAnchor; at: string }[] = [];
-		for (const { id, anchor, at } of await this.#joined(
+		for (const { id, anchor, at, joins } of await this.#joined(
 			await this.store.read(),
 		)) {
+			// One joined to a thread (CAR-236) is placed where it was asked
+			// too: a view that doesn't list its thread shows it there.
+			if (anchor.subject === "thread" && joins) {
+				out.push({ id, anchor: joins.asked, at });
+				continue;
+			}
 			if (anchor.subject === "thread" || anchor.subject === "review") continue;
 			out.push({ id, anchor, at });
 		}
@@ -1576,7 +1583,21 @@ export class AgentHost {
 	}
 
 	async #view(t: AgentThreadFold): Promise<AgentThread> {
-		const { clientId: _, joined: __, ...thread } = t;
+		const { clientId: _, joins, ...rest } = t;
+		// Joined (CAR-236): the thread it's on and where it was asked, so the
+		// page shows it there when that thread isn't in its view.
+		const thread: AgentThread = joins
+			? {
+					...rest,
+					joined: {
+						thread:
+							t.anchor.subject === "thread"
+								? t.anchor.thread
+								: (joins.threads[0] as string),
+						asked: joins.asked,
+					},
+				}
+			: rest;
 		if (t.anchor.subject !== "line") return thread;
 		const code = await this.code(t.anchor, t.at).catch(() => undefined);
 		return code ? { ...thread, code } : thread;
@@ -1619,7 +1640,7 @@ function threadForAgent(
  * or for one joined to the threads its comments started (CAR-236), those.
  */
 function githubThreadsOf(t: AgentThreadFold): string[] {
-	if (t.joined) return t.joined.threads;
+	if (t.joins) return t.joins.threads;
 	return t.anchor.subject === "thread" ? [t.anchor.thread] : [];
 }
 

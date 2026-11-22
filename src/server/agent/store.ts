@@ -54,9 +54,21 @@ export interface AgentThreadFold extends Omit<AgentThread, "code"> {
 	 * `asked` is where it was asked (it shows there again if no thread of
 	 * `threads` is still on GitHub, or GitHub can't be read); `threads` the
 	 * GitHub threads its blocks started, in the order recorded. Derived on
-	 * read from `agent-comment-posted`: nothing more is stored.
+	 * read from `agent-comment-posted`: nothing more is stored. Ordered by
+	 * when GitHub took the comment (its `#discussion_r<id>`, GitHub's
+	 * increasing database id), not when the record was written (a record
+	 * that failed is written on a later load).
 	 */
-	joined?: { asked: SpanAskedAnchor; threads: string[] };
+	joins?: { asked: SpanAskedAnchor; threads: string[] };
+}
+
+/**
+ * GitHub's id of a review comment, from its link (`…#discussion_r<id>`):
+ * increasing with the time GitHub took it. Unknown: last.
+ */
+export function discussionId(url: string): number {
+	const m = /#discussion_r(\d+)$/.exec(url);
+	return m ? Number(m[1]) : Number.POSITIVE_INFINITY;
 }
 
 /** Where a conversation that can join a GitHub thread was asked: lines or a file. */
@@ -197,6 +209,8 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 	/** The review conversation's thread: later review openings join it. */
 	let byReview: string | undefined;
 	const seenUpTo = new Map<string, string[]>();
+	/** A joined conversation's GitHub threads, with their comment's id. */
+	const joinOrder = new Map<string, { thread: string; n: number }[]>();
 	for (const e of sorted) {
 		const id = alias.get(e.thread) ?? e.thread;
 		const thread = threads.get(id);
@@ -262,13 +276,16 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 				if (!thread) break;
 				const gt = e.github.thread;
 				const a = thread.anchor;
+				const order = { thread: gt, n: discussionId(e.github.url) };
 				if (a.subject === "line" || a.subject === "file") {
 					if (byGithub.has(gt)) break;
-					thread.joined = { asked: a, threads: [gt] };
+					thread.joins = { asked: a, threads: [gt] };
 					thread.anchor = joinedAnchor(a, gt);
+					joinOrder.set(id, [order]);
 					byGithub.set(gt, id);
-				} else if (thread.joined && !byGithub.has(gt)) {
-					thread.joined.threads.push(gt);
+				} else if (thread.joins && !byGithub.has(gt)) {
+					thread.joins.threads.push(gt);
+					joinOrder.get(id)?.push(order);
 					byGithub.set(gt, id);
 				}
 				break;
@@ -285,6 +302,14 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 		}
 	}
 	const out = [...threads.values()];
+	// A joined conversation is on the thread GitHub took first.
+	for (const t of out) {
+		const order = joinOrder.get(t.id);
+		if (!t.joins || !order || order.length < 2) continue;
+		const sorted = [...order].sort((a, b) => a.n - b.n).map((o) => o.thread);
+		t.joins.threads = sorted;
+		t.anchor = joinedAnchor(t.joins.asked, sorted[0] as string);
+	}
 	// A message `open` wrote answers nothing, even when its origin is dropped
 	// below (fail safe: a bad origin never makes a question look answered).
 	const fromOpen = new Set<string>();

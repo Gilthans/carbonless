@@ -29,7 +29,7 @@ export function liveGithubThreads(
  * agent-thread-resolved events count for nothing); one whose GitHub
  * thread is gone (not listed, or deleted) is an orphan: a span thread on
  * its recorded lines, resolved by its own events. A conversation joined
- * to the thread its posted comment started (`joined`, CAR-236) is on the
+ * to the thread its posted comment started (`joins`, CAR-236) is on the
  * first of its threads still live; with none, an orphan back where it was
  * asked. Span threads and the review conversation pass through unchanged.
  */
@@ -40,9 +40,9 @@ export function joinGithub(
 	const live = liveGithubThreads(threads);
 	return folds.map((f) => {
 		if (f.anchor.subject !== "thread") return f;
-		if (f.joined) {
-			const { asked } = f.joined;
-			const on = f.joined.threads.find((id) => live.has(id));
+		if (f.joins) {
+			const { asked } = f.joins;
+			const on = f.joins.threads.find((id) => live.has(id));
 			const rt = on !== undefined ? live.get(on) : undefined;
 			if (on === undefined || !rt) {
 				return { ...f, anchor: asked, orphaned: true };
@@ -72,7 +72,7 @@ export async function joinRead(
 	if (threads) return joinGithub(folds, threads);
 	return folds.map((f) => {
 		if (f.anchor.subject !== "thread") return f;
-		if (f.joined) return { ...f, anchor: f.joined.asked, githubUnknown: true };
+		if (f.joins) return { ...f, anchor: f.joins.asked, githubUnknown: true };
 		return { ...f, githubUnknown: true };
 	});
 }

@@ -664,7 +664,13 @@ folded from the origins on read (`startedBy`), never stored.
   back where it was asked when none is (an orphan) or while GitHub can't
   be read (`githubUnknown`). A thread another conversation was already
   opened on stays that one's. Derived on read only: no event records the
-  join, so conversations posted before it join too.
+  join, so conversations posted before it join too. Its threads are
+  ordered by when GitHub took each comment (the link's
+  `#discussion_r<id>`, GitHub's increasing id), not by when the record was
+  written: a record that failed is written on a later load. The page gets
+  the thread it's on and where it was asked (`joined`), and placements
+  trace it where it was asked, so a view that doesn't list its thread
+  (an earlier patch set, or GitHub's threads failed) shows it there.
 
   **Links:** an `agent-thread-linked` turns a span conversation (`line` or
   `file`) into that GitHub thread's: its anchor becomes a `thread` anchor

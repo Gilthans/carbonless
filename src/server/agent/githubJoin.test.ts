@@ -164,7 +164,7 @@ describe("a conversation joined to its posted comment's thread (CAR-236)", () =>
 	};
 	const joined = (threads: string[], over: Partial<AgentThreadFold> = {}) =>
 		fold(threadAnchor({ thread: threads[0] as string }), {
-			joined: { asked, threads },
+			joins: { asked, threads },
 			...over,
 		});
 
