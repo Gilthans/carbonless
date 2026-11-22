@@ -1,6 +1,211 @@
 {
 	"version": "0.4.0",
 	"date": null,
-	"notes": [],
-	"none": []
+	"notes": [
+		{
+			"id": "CAR-183",
+			"kind": "new",
+			"prs": [110],
+			"text": "Files changed has a Threads tab beside the file tree, listing every conversation on the PR newest first, with where it is, who spoke last and a one-line excerpt."
+		},
+		{
+			"id": "CAR-38",
+			"kind": "new",
+			"prs": [118],
+			"text": "Changed images show as images: compare before and after with a slider or a fade, or side by side. View buttons switch a file between Image, Text and Binary. A renamed binary file no longer says \"Binary file changed\"."
+		},
+		{
+			"id": "CAR-163",
+			"kind": "new",
+			"prs": [120],
+			"text": "Ask your agent about the whole review. The header's agent chip opens a review-wide conversation in a side drawer (Shift+A). Your agent reads the PR, its GitHub threads and your progress through crb's tools, and can open conversations on the lines it points to. The chip's badge counts unread answers; with no agent set up, it opens the agent setup."
+		},
+		{
+			"id": "CAR-83",
+			"kind": "new",
+			"prs": [132],
+			"text": "The review agent can suggest a review comment: it appears in its conversation as an editable box with Add review comment, which posts your edited text as you, on the conversation's lines or as a reply to its GitHub thread."
+		},
+		{
+			"id": "CAR-201",
+			"kind": "new",
+			"prs": [144],
+			"text": "The update toast opens What's new: every version's notes up to the one on offer, with Update below. Global settings shows the running version's notes and earlier releases, each version linking to its release on GitHub."
+		},
+		{
+			"id": "CAR-203",
+			"kind": "new",
+			"prs": [146],
+			"text": "Tapping one of the agent's suggested questions fills the Ask agent box."
+		},
+		{
+			"id": "#126",
+			"kind": "improved",
+			"prs": [126],
+			"text": "On a first review, the patch set graph now shows a dot for the PR's current position, with the commit count from the base branch."
+		},
+		{
+			"id": "CAR-184",
+			"kind": "improved",
+			"prs": [130],
+			"text": "With Ignore whitespace on, whitespace-only changes also drop out of the verdict's \"You reviewed X of Y lines\"."
+		},
+		{
+			"id": "#141",
+			"kind": "improved",
+			"prs": [141],
+			"text": "Your browser keeps the access key for a week after your last visit, instead of losing it when the browser closes."
+		},
+		{
+			"id": "CAR-95",
+			"kind": "improved",
+			"prs": [150],
+			"text": "A comment whose line was rewritten now follows the line that resembles it, and is listed under its file as deleted when nothing does, instead of landing on whatever code took its place."
+		},
+		{
+			"id": "CAR-209",
+			"kind": "improved",
+			"prs": [154],
+			"text": "Type a PR number (`123` or `#123`) in Home's open box to list that PR in your view's repos and your recent reviews' repos, and open it with Enter."
+		},
+		{
+			"id": "CAR-129",
+			"kind": "fixed",
+			"prs": [121],
+			"text": "The update helper always writes its result file whole, so a restarting crb never reads a half-written result."
+		},
+		{
+			"id": "CAR-187",
+			"kind": "fixed",
+			"prs": [133],
+			"text": "A second crb server that sees the agent running elsewhere now shows the agent's answer straight away, not after the next poll."
+		},
+		{
+			"id": "CAR-177",
+			"kind": "fixed",
+			"prs": [134],
+			"text": "While crb restarts onto a new version, the page no longer reports a connection error, and a restart that fails quickly shows its failure."
+		},
+		{
+			"id": "#135",
+			"kind": "fixed",
+			"prs": [135],
+			"text": "On Windows, one-click Update finds pnpm installed by pnpm's standalone installer, instead of an older pnpm on PATH that left crb on its old version."
+		},
+		{
+			"id": "CAR-180",
+			"kind": "fixed",
+			"prs": [136],
+			"text": "The verdict card asks again when the PR's head moves before it loads, showing a spinner with its buttons disabled instead of the older head's answer."
+		},
+		{
+			"id": "CAR-194",
+			"kind": "fixed",
+			"prs": [137],
+			"text": "A new patch set never briefly shows the previous patch set's review under its name."
+		},
+		{
+			"id": "CAR-195",
+			"kind": "fixed",
+			"prs": [138],
+			"text": "In the since view, a cluster that grew around unchanged lines now keeps the marks you gave those lines in the earlier patch set, both reviewed and crossed off, so the file can finish there."
+		},
+		{
+			"id": "CAR-199",
+			"kind": "fixed",
+			"prs": [140],
+			"text": "A link to a review clicked on another site (a GitHub PR page, Slack, email) now opens the review instead of \"Missing or wrong access key\"; crb answers another site's page only for a link the reviewer clicked."
+		},
+		{
+			"id": "CAR-208",
+			"kind": "fixed",
+			"prs": [151],
+			"text": "In the since view, the first tick on a new push no longer makes the new and gone chips and the comment threads vanish and reappear, so the rows no longer jump under your pointer."
+		},
+		{
+			"id": "CAR-210",
+			"kind": "fixed",
+			"prs": [153],
+			"text": "With no agent connected, the agent button opens the whole-review conversation with the setup on top, so it is there once setup is done."
+		},
+		{
+			"id": "CAR-215",
+			"kind": "fixed",
+			"prs": [157],
+			"text": "Resetting a file, or any mark that covers several clusters, could briefly read back with some clusters still reviewed, for example after a reload during the save."
+		},
+		{
+			"id": "CAR-217",
+			"kind": "fixed",
+			"prs": [158],
+			"text": "In the since view, a comment on a removed line now goes on that line on GitHub; it used to be refused, or posted on another line. A line only an earlier patch set had can't take a comment, and Comment says why. A draft saved on a removed line in a since view before this version may hold the wrong line: check it before posting."
+		}
+	],
+	"none": [
+		{
+			"id": "CAR-190",
+			"prs": [123],
+			"why": "release tooling"
+		},
+		{
+			"id": "#124",
+			"prs": [124],
+			"why": "CI tooling"
+		},
+		{
+			"id": "#125",
+			"prs": [125],
+			"why": "test tooling"
+		},
+		{
+			"id": "CAR-191",
+			"prs": [128],
+			"why": "release tooling"
+		},
+		{
+			"id": "#131",
+			"prs": [131],
+			"why": "test tooling"
+		},
+		{
+			"id": "CAR-179",
+			"prs": [136],
+			"why": "flaky test fix"
+		},
+		{
+			"id": "CAR-188",
+			"prs": [136],
+			"why": "flaky test fix"
+		},
+		{
+			"id": "#142",
+			"prs": [142],
+			"why": "part of CAR-163"
+		},
+		{
+			"id": "CAR-200",
+			"prs": [143],
+			"why": "release tooling"
+		},
+		{
+			"id": "CAR-205",
+			"prs": [147],
+			"why": "flaky test fix"
+		},
+		{
+			"id": "CAR-206",
+			"prs": [148],
+			"why": "flaky test fix"
+		},
+		{
+			"id": "CAR-211",
+			"prs": [155],
+			"why": "release tooling"
+		},
+		{
+			"id": "CAR-214",
+			"prs": [156],
+			"why": "CI test tooling"
+		}
+	]
 }
