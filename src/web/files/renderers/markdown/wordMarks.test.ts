@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
+import { bestCpuRatio, repeat } from "../../../../../test/cpu";
 import { tokenize } from "../../../../shared/tokenize";
 import { renderMerged, renderSource } from "./renderBlocks";
 import {
@@ -131,6 +132,21 @@ describe("mergedSource", () => {
 		expect(mergedSource("| a | b |", "| a | b | c |", "table-row")).toBeNull();
 		expect(mergedSource("# Title", "## Title", "heading")).toBeNull();
 		expect(mergedSource("Title\n===", "Title\n---", "heading")).toBeNull();
+	});
+
+	it("an escaped backslash before the closing pipe still closes the row", () => {
+		// `\\|` ends `| a | b \\|` with a real pipe: two cells, as `| a | b |`.
+		expect(
+			mergedSource("| a | b \\\\|", "| a | c |", "table-row"),
+		).not.toBeNull();
+		// `\|` is an escaped pipe, cell text: still two cells, no closing pipe.
+		expect(
+			mergedSource("| a | b \\|", "| a | c |", "table-row"),
+		).not.toBeNull();
+		// A real third cell is a change of shape.
+		expect(
+			mergedSource("| a | b \\\\| c |", "| a | c |", "table-row"),
+		).toBeNull();
 	});
 
 	it("marks a table row with the same cell count, and a heading at the same level", () => {
@@ -268,20 +284,40 @@ describe("renderMerged", () => {
 		]);
 	});
 
-	it("a run across cells never puts a mark where the parser would move it", () => {
-		// Defence in depth behind the side check (which already says null here):
-		// whatever comes back reparses to itself, with no mark in a row.
+	it("a word removed or added at a cell's end, or moved to the next cell, is marked cell by cell", () => {
+		const header = "| h1 | h2 |\n|---|---|";
+		for (const [a, b, want] of [
+			[
+				"| alpha beta | gamma |",
+				"| alpha | gamma |",
+				"| alpha[- beta-] | gamma |",
+			],
+			[
+				"| alpha | gamma |",
+				"| alpha | gamma delta |",
+				"| alpha | gamma{+ delta+} |",
+			],
+			["| a b | c |", "| a | b c |", "| a[- b-] | {+b +}c |"],
+		] as const) {
+			const merged = mergedSource(a, b, "table-row") as string;
+			expect(show(merged)).toBe(want);
+			const html = renderMerged(merged, { ...opts, header });
+			expect(html).not.toBeNull();
+			expect(
+				dom(html as string).querySelectorAll(".md-del, .md-ins"),
+			).toHaveLength(want.split("[-").length + want.split("{+").length - 2);
+		}
+	});
+
+	it("a run across cells, its pipe struck, is null: never a mark in a row", () => {
+		// The side check says null; reparse stability of every table row that
+		// does take marks is the property test's.
 		const header = "| h1 | h2 |\n|---|---|";
 		for (const merged of [
 			`| a ${DEL_OPEN}b | c${DEL_CLOSE} |`,
 			`| a ${DEL_OPEN}b | c${DEL_CLOSE}${INS_OPEN}d | e${INS_CLOSE} |`,
 		]) {
-			const html = renderMerged(merged, { ...opts, header });
-			if (html === null) continue;
-			const t = document.createElement("table");
-			t.innerHTML = html;
-			expect(t.innerHTML).toBe(html);
-			expect(t.querySelector("tr > del, tr > ins, tbody > del")).toBeNull();
+			expect(renderMerged(merged, { ...opts, header })).toBeNull();
 		}
 	});
 
@@ -372,10 +408,23 @@ describe("property: random word edits", () => {
 			const merged = mergedSource(oldSrc, newSrc, shape.kind);
 			if (merged === null) continue;
 			expect(merged).not.toContain("\uFFFD");
-			const html = renderMerged(merged, opts);
+			const table = shape.kind === "table-row";
+			const html = renderMerged(merged, {
+				...opts,
+				header: table ? "| h1 | h2 |\n|---|---|" : undefined,
+			});
 			if (html === null) continue;
 			rendered++;
 			expect(html).not.toMatch(ANY_SENTINEL);
+			// What the view will set as innerHTML parses back to itself: no mark
+			// the HTML parser would move (out of a row, say).
+			const host = document.createElement("div");
+			host.innerHTML = html;
+			expect(host.innerHTML).toBe(html);
+			if (table) {
+				expect(host.querySelectorAll("td")).toHaveLength(2);
+				expect(host.querySelector(":is(tr, tbody) > :is(del, ins)")).toBeNull();
+			}
 			const el = dom(html);
 			// The old side: everything but the insertions; the new: but the deletions.
 			const side = (drop: string) => {
@@ -402,5 +451,38 @@ describe("property: random word edits", () => {
 		// Every shape here takes marks (measured: 300 of 300); a null is the
 		// safe fallback, never the norm.
 		expect(rendered).toBe(300);
+	});
+});
+
+describe("cost", () => {
+	/** `lines` lines of `unit` repeated (each under the line view's cut). */
+	const block = (unit: string, lines: number): string =>
+		Array.from({ length: lines }, () =>
+			unit.repeat(Math.floor(300 / unit.length)),
+		).join("\n");
+
+	// Openers that never close, unclosed code spans, quoted attributes, long
+	// e-mail local parts and paren runs after a URL: each scanned to the end of
+	// the block per opener would make a block quadratic. A scaling check
+	// (test/cpu.ts): 4x the block against four runs of the quarter.
+	it.each([
+		"*a ",
+		"[a ",
+		"(a [b] ",
+		"`a ``b ",
+		'<a b="',
+		"<!-- ",
+		"a.",
+		"http://x/)",
+	])("tokenizing stays linear in the block: %j", (unit) => {
+		const quarter = block(unit, 3);
+		const full = block(unit, 12);
+		expect(full.length).toBeLessThan(BLOCK_DIFF_MAX);
+		expect(mergedSource(full, `${full} x`, "paragraph")).not.toBeNull();
+		const { ratio } = bestCpuRatio(
+			() => mergedSource(full, `${full} x`, "paragraph"),
+			repeat(4, () => mergedSource(quarter, `${quarter} x`, "paragraph")),
+		);
+		expect(ratio).toBeLessThan(2);
 	});
 });

@@ -49,9 +49,12 @@ const EMAIL_AUTOLINK = /<[^\s<>@\\]+@[^\s<>\\]+>/y;
 const HTML_TAG =
 	/<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*\s*\/?>/y;
 const BARE_URL = /(?:(?:https?|ftp):\/\/|www\.)[^\s<]*/iy;
-const BARE_EMAIL =
-	/[A-Za-z0-9._+-]+@[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![-_])/y;
+/** A bare e-mail's domain, from just after its `@`. */
+const EMAIL_DOMAIN = /[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![-_])/y;
+/** What a bare e-mail's local part is made of. */
+const EMAIL_LOCAL = /[A-Za-z0-9._+-]/;
 const WORDISH = /[\p{L}\p{M}\p{N}_]/u;
+const SPACE = /\s/;
 
 /** `re` (sticky) matched at `i`: its end, or -1. */
 function stickyEnd(re: RegExp, text: string, i: number): number {
@@ -60,132 +63,228 @@ function stickyEnd(re: RegExp, text: string, i: number): number {
 	return m ? i + m[0].length : -1;
 }
 
+/**
+ * A raw HTML tag, comment or autolink at `i` (a `<`): its end, or -1. Only
+ * within the line: every `<` of a block tried to the block's end would make
+ * the block quadratic, and the line is under the line view's cut.
+ */
+function angleEnd(text: string, i: number): number {
+	const nl = text.indexOf("\n", i);
+	const line = text.slice(i, nl === -1 ? text.length : nl);
+	for (const re of [HTML_COMMENT, AUTOLINK, EMAIL_AUTOLINK, HTML_TAG]) {
+		const end = stickyEnd(re, line, 0);
+		if (end !== -1) return i + end;
+	}
+	return -1;
+}
+
 /** A bare URL's end, its trailing punctuation left out as GFM does. */
 function bareUrlEnd(text: string, i: number): number {
 	let end = stickyEnd(BARE_URL, text, i);
 	if (end === -1) return -1;
+	let open = 0;
+	let close = 0;
+	for (let j = i; j < end; j++) {
+		if (text[j] === "(") open++;
+		else if (text[j] === ")") close++;
+	}
 	for (;;) {
 		const c = text[end - 1] as string;
 		if (/[?!.,:;*_'"~]/.test(c)) end--;
-		else if (c === ")") {
-			const url = text.slice(i, end);
-			const open = url.split("(").length - 1;
-			const close = url.split(")").length - 1;
-			if (close > open) end--;
-			else break;
+		else if (c === ")" && close > open) {
+			end--;
+			close--;
 		} else break;
 	}
 	return end > i ? end : -1;
 }
 
-/** After the bracket at `i` (`[` or `(`), the index past its match, or -1. */
-function closeOf(text: string, i: number, open: string, close: string): number {
-	let depth = 0;
-	for (let j = i; j < text.length; j++) {
-		const c = text[j];
-		if (c === "\\") j++;
-		else if (c === "`") {
-			// A code span inside is opaque.
-			const end = codeSpanEnd(text, j);
-			if (end > j + 1) j = end - 1;
-		} else if (c === open) depth++;
-		else if (c === close && --depth === 0) return j + 1;
-		else if (c === "\n" && text[j + 1] === "\n") return -1;
-	}
-	return -1;
+/**
+ * Where each span of one block ends, found in a few linear passes, so a
+ * token's end is a lookup: an opener that never closes costs nothing more
+ * (scanning to the block's end per opener made a block quadratic).
+ */
+interface Spans {
+	/** A backtick run's start → the end of its code span, or of the run alone. */
+	code: Map<number, number>;
+	/** A `[` or `(` → just past its match (escapes, code spans and paragraph breaks respected). */
+	close: Map<number, number>;
+	/** An emphasis run that can open → the end of the first same run that can close. */
+	emphasis: Map<number, number>;
+	/** Each index → the end of the e-mail local-part run from it (0 outside one). */
+	local: Int32Array;
+	/** An `@` → the end of the bare e-mail domain after it, or -1 (memo). */
+	domain: Map<number, number>;
 }
 
-/** A code span (or a lone backtick run) starting at `i`: its end. */
-function codeSpanEnd(text: string, i: number): number {
-	let k = i;
-	while (text[k] === "`") k++;
-	const n = k - i;
-	for (let j = k; j < text.length; ) {
-		if (text[j] !== "`") {
-			j++;
+const escapeAt = (text: string, i: number): boolean =>
+	text[i] === "\\" && ASCII_PUNCT.test(text[i + 1] ?? "");
+
+const breakAt = (text: string, i: number): boolean =>
+	text[i] === "\n" && text[i + 1] === "\n";
+
+function spansOf(text: string): Spans {
+	const n = text.length;
+	// Code spans: a backtick run closes at the next run of its length.
+	const runs: { at: number; len: number }[] = [];
+	for (let i = 0; i < n; i++) {
+		if (escapeAt(text, i)) i++;
+		else if (text[i] === "`") {
+			let e = i;
+			while (text[e] === "`") e++;
+			runs.push({ at: i, len: e - i });
+			i = e - 1;
+		}
+	}
+	const nextSame = new Int32Array(runs.length).fill(-1);
+	const lastOf = new Map<number, number>();
+	for (let r = runs.length - 1; r >= 0; r--) {
+		const { len } = runs[r] as { len: number };
+		nextSame[r] = lastOf.get(len) ?? -1;
+		lastOf.set(len, r);
+	}
+	const code = new Map<number, number>();
+	const inCode = new Uint8Array(n);
+	for (let r = 0; r < runs.length; ) {
+		const { at, len } = runs[r] as { at: number; len: number };
+		const c = nextSame[r] as number;
+		if (c === -1) {
+			code.set(at, at + len);
+			r++;
 			continue;
 		}
-		let e = j;
-		while (text[e] === "`") e++;
-		if (e - j === n) return e;
-		j = e;
+		const closer = runs[c] as { at: number; len: number };
+		code.set(at, closer.at + closer.len);
+		inCode.fill(1, at, closer.at + closer.len);
+		r = c + 1;
 	}
-	return k;
+	// Brackets and parens, matched on stacks; emphasis runs collected.
+	const close = new Map<number, number>();
+	const squares: number[] = [];
+	const parens: number[] = [];
+	const ems: {
+		at: number;
+		end: number;
+		key: string;
+		para: number;
+		opens: boolean;
+		closes: boolean;
+	}[] = [];
+	let para = 0;
+	for (let i = 0; i < n; i++) {
+		if (inCode[i]) continue;
+		const c = text[i];
+		if (c === "\\") {
+			i++;
+			continue;
+		}
+		if (breakAt(text, i)) {
+			squares.length = 0;
+			parens.length = 0;
+			para++;
+			continue;
+		}
+		if (c === "[") squares.push(i);
+		else if (c === "(") parens.push(i);
+		else if (c === "]" || c === ")") {
+			const open = (c === "]" ? squares : parens).pop();
+			if (open !== undefined) close.set(open, i + 1);
+		} else if (c === "*" || c === "_" || c === "~") {
+			let e = i;
+			while (text[e] === c) e++;
+			ems.push({
+				at: i,
+				end: e,
+				key: c + (e - i),
+				para,
+				opens: e < n && !SPACE.test(text[e] as string),
+				closes: i > 0 && !SPACE.test(text[i - 1] as string),
+			});
+			i = e - 1;
+		}
+	}
+	// Each opener's closer: the nearest closing run of the same kind to its
+	// right in the same paragraph, found walking right to left.
+	const emphasis = new Map<number, number>();
+	const nearest = new Map<string, number>();
+	let seen = para;
+	for (let r = ems.length - 1; r >= 0; r--) {
+		const run = ems[r] as (typeof ems)[number];
+		if (run.para !== seen) {
+			nearest.clear();
+			seen = run.para;
+		}
+		const end = run.opens ? nearest.get(run.key) : undefined;
+		if (end !== undefined) emphasis.set(run.at, end);
+		if (run.closes) nearest.set(run.key, run.end);
+	}
+	// E-mail local-part runs, right to left.
+	const local = new Int32Array(n + 1);
+	for (let i = n - 1; i >= 0; i--) {
+		if (EMAIL_LOCAL.test(text[i] as string)) {
+			local[i] = local[i + 1] || i + 1;
+		}
+	}
+	return { code, close, emphasis, local, domain: new Map() };
 }
 
 /** A link or image (`[` at `i`): its end, or -1. */
-function linkEnd(text: string, i: number): number {
-	const label = closeOf(text, i, "[", "]");
-	if (label === -1) return -1;
-	if (text[label] === "(") {
-		const dest = closeOf(text, label, "(", ")");
-		if (dest !== -1) return dest;
-	} else if (text[label] === "[") {
-		const ref = closeOf(text, label, "[", "]");
-		if (ref !== -1) return ref;
-	}
+function linkEnd(s: Spans, text: string, i: number): number {
+	const label = s.close.get(i);
+	if (label === undefined) return -1;
+	const next = text[label];
+	if (next === "(" || next === "[") return s.close.get(label) ?? label;
 	return label;
 }
 
-/**
- * An emphasis, strong or strikethrough span (a `*`, `_` or `~` run at `i`
- * that can open): its end at the first run of the same length that can
- * close, or -1.
- */
-function emphasisEnd(text: string, i: number): number {
-	const c = text[i] as string;
-	let k = i;
-	while (text[k] === c) k++;
-	const n = k - i;
-	if (k >= text.length || /\s/.test(text[k] as string)) return -1;
-	for (let j = k; j < text.length; ) {
-		const d = text[j];
-		if (d === "\\") {
-			j += 2;
-			continue;
-		}
-		if (d === "`") {
-			j = Math.max(codeSpanEnd(text, j), j + 1);
-			continue;
-		}
-		if (d === "\n" && text[j + 1] === "\n") return -1;
-		if (d !== c) {
-			j++;
-			continue;
-		}
-		let e = j;
-		while (text[e] === c) e++;
-		if (e - j === n && !/\s/.test(text[j - 1] as string)) return e;
-		j = e;
+/** A bare e-mail at `i`: its end, or -1. */
+function emailEnd(s: Spans, text: string, i: number): number {
+	const at = s.local[i] ?? 0;
+	if (at <= i || text[at] !== "@") return -1;
+	let end = s.domain.get(at);
+	if (end === undefined) {
+		end = stickyEnd(EMAIL_DOMAIN, text, at + 1);
+		s.domain.set(at, end);
 	}
-	return -1;
+	return end;
 }
 
 /**
- * Where the Markdown token at `i` ends: a span whole, else the line view's
- * token (a word run, or one code point).
+ * The Markdown tokens of `text`: where the token at `i` ends, a span whole,
+ * else the line view's token (a word run, or one code point). Linear over
+ * the text: the spans are found once, up front.
  */
-export function mdTokenEnd(text: string, i: number): number {
-	const c = text[i] as string;
-	const prev = i > 0 ? (text[i - 1] as string) : "";
-	let end = -1;
-	if (c === "\\" && ASCII_PUNCT.test(text[i + 1] ?? "")) return i + 2;
-	if (c === "`") return codeSpanEnd(text, i);
-	if (c === "&") end = stickyEnd(ENTITY, text, i);
-	else if (c === "<") {
-		for (const re of [HTML_COMMENT, AUTOLINK, EMAIL_AUTOLINK, HTML_TAG]) {
-			end = stickyEnd(re, text, i);
-			if (end !== -1) break;
+export function mdTokenizer(text: string): (i: number) => number {
+	const s = spansOf(text);
+	return (i) => {
+		const c = text[i] as string;
+		let end = -1;
+		if (escapeAt(text, i)) return i + 2;
+		if (c === "`") {
+			end = s.code.get(i) ?? -1;
+			if (end === -1) {
+				end = i;
+				while (text[end] === "`") end++;
+			}
+			return end;
 		}
-	} else if (c === "!" && text[i + 1] === "[") end = linkEnd(text, i + 1);
-	else if (c === "[") end = linkEnd(text, i);
-	else if (c === "*" || c === "_" || c === "~") end = emphasisEnd(text, i);
-	else if (!WORDISH.test(prev)) {
-		end = bareUrlEnd(text, i);
-		if (end === -1) end = stickyEnd(BARE_EMAIL, text, i);
-	}
-	return end > i ? end : tokenEnd(text, i);
+		if (c === "&") end = stickyEnd(ENTITY, text, i);
+		else if (c === "<") end = angleEnd(text, i);
+		else if (c === "!" && text[i + 1] === "[") end = linkEnd(s, text, i + 1);
+		else if (c === "[") end = linkEnd(s, text, i);
+		else if (c === "*" || c === "_" || c === "~") {
+			end = s.emphasis.get(i) ?? -1;
+		} else if (!WORDISH.test(i > 0 ? (text[i - 1] as string) : "")) {
+			end = bareUrlEnd(text, i);
+			if (end === -1) end = emailEnd(s, text, i);
+		}
+		return end > i ? end : tokenEnd(text, i);
+	};
 }
+
+/** The Markdown token at `i`'s end (one-off; `mdTokenizer` for a whole text). */
+export const mdTokenEnd = (text: string, i: number): number =>
+	mdTokenizer(text)(i);
 
 /** A segment of the merged block: shared text, or one change. */
 type Seg = { eq: string } | { del: string; ins: string };
@@ -246,8 +345,9 @@ function bridge(segs: Seg[]): Seg[] {
 /** Rewrites a bare scheme URL as `<url>`, so a mark right after it can't join its link. */
 function fenceUrls(s: string): string {
 	let out = "";
+	const tokenAt = mdTokenizer(s);
 	for (let i = 0; i < s.length; ) {
-		const end = mdTokenEnd(s, i);
+		const end = tokenAt(i);
 		const t = s.slice(i, end);
 		const bare =
 			end === bareUrlEnd(s, i) &&
@@ -259,9 +359,50 @@ function fenceUrls(s: string): string {
 	return out;
 }
 
+/** What may follow a cell's content: spaces, then a pipe, a line end or the end. */
+const CELL_END = /^[ \t]*(?:\||\n|$)/;
+
+/**
+ * A one-sided change that ends in a space right before a cell's (or the
+ * line's) end slides left over the equal space before it: `a [-b -]|`
+ * becomes `a[- b-] |`. GFM trims a cell's edges, and a mark between the
+ * content and its trailing space keeps that space in the cell, so the side
+ * rendered without the change would differ (and `renderMerged` says null).
+ * The two spellings are the same diff.
+ */
+function keepCellEdges(segs: Seg[]): Seg[] {
+	for (let i = 1; i < segs.length; i++) {
+		const s = segs[i] as Seg;
+		const prev = segs[i - 1] as Seg;
+		if (!("del" in s) || (s.del && s.ins) || !("eq" in prev)) continue;
+		let next = segs[i + 1];
+		if (next && !("eq" in next)) continue;
+		const side = s.del ? "del" : "ins";
+		for (;;) {
+			const run = s[side];
+			const c = run.at(-1) as string;
+			if (
+				(c !== " " && c !== "\t") ||
+				!prev.eq.endsWith(c) ||
+				!CELL_END.test(next && "eq" in next ? next.eq : "")
+			) {
+				break;
+			}
+			prev.eq = prev.eq.slice(0, -1);
+			s[side] = c + run.slice(0, -1);
+			if (!next) {
+				next = { eq: "" };
+				segs.push(next);
+			}
+			(next as { eq: string }).eq = c + (next as { eq: string }).eq;
+		}
+	}
+	return segs;
+}
+
 /** The changes, in order, as segments (deletions before insertions at a spot). */
 function segments(a: string, b: string): Seg[] {
-	const marks = tokenMarks(a, b, { end: mdTokenEnd, max: BLOCK_DIFF_MAX });
+	const marks = tokenMarks(a, b, { tokens: mdTokenizer, max: BLOCK_DIFF_MAX });
 	const o = split(a, marks.old);
 	const n = split(b, marks.new);
 	// The text outside the marks is the same on both sides: the unchanged
@@ -282,19 +423,64 @@ function segments(a: string, b: string): Seg[] {
 		segs.push({ del, ins });
 	}
 	if (pos < kept.length) segs.push({ eq: kept.slice(pos) });
-	return bridge(segs);
+	return keepCellEdges(bridge(segs));
+}
+
+/** A row line split at its unescaped pipes (the pipes dropped). */
+function pipeSplit(line: string): string[] {
+	const out: string[] = [];
+	let from = 0;
+	for (let i = 0; i < line.length; i++) {
+		if (line[i] === "\\") i++;
+		else if (line[i] === "|") {
+			out.push(line.slice(from, i));
+			from = i + 1;
+		}
+	}
+	out.push(line.slice(from));
+	return out;
+}
+
+/**
+ * A table row diffed cell by cell, its pipes kept equal, so a word that
+ * moved to the next cell shows removed from one and added to the other
+ * rather than a struck pipe (which can't render). Null when the lines or
+ * pipes don't line up: the whole row is diffed instead.
+ */
+function rowSegments(a: string, b: string): Seg[] | null {
+	const la = a.split("\n");
+	const lb = b.split("\n");
+	if (la.length !== lb.length) return null;
+	const out: Seg[] = [];
+	for (let k = 0; k < la.length; k++) {
+		const pa = pipeSplit(la[k] as string);
+		const pb = pipeSplit(lb[k] as string);
+		if (pa.length !== pb.length) return null;
+		if (k) out.push({ eq: "\n" });
+		for (let j = 0; j < pa.length; j++) {
+			if (j) out.push({ eq: "|" });
+			out.push(...segments(pa[j] as string, pb[j] as string));
+		}
+	}
+	return out;
 }
 
 /** Cells in a GFM table row: unescaped pipes, less an outer pair. */
 function cellCount(line: string): number {
 	const t = line.trim();
 	let pipes = 0;
+	let last = -1;
 	for (let i = 0; i < t.length; i++) {
 		if (t[i] === "\\") i++;
-		else if (t[i] === "|") pipes++;
+		else if (t[i] === "|") {
+			pipes++;
+			last = i;
+		}
 	}
 	const lead = t.startsWith("|") ? 1 : 0;
-	const trail = t.length > 1 && t.endsWith("|") && !t.endsWith("\\|") ? 1 : 0;
+	// The closing pipe as the loop read it: `\\|` is an escaped backslash
+	// before a real pipe, `\|` an escaped pipe.
+	const trail = t.length > 1 && last === t.length - 1 ? 1 : 0;
 	return pipes + 1 - lead - trail;
 }
 
@@ -354,7 +540,9 @@ export function mergedSource(
 		s.split("\n").some((l) => l.length >= WORD_DIFF_MAX);
 	if (long(a) || long(b)) return null;
 	let out = "";
-	for (const s of segments(a, b)) {
+	const segs =
+		(kind === "table-row" ? rowSegments(a, b) : null) ?? segments(a, b);
+	for (const s of segs) {
 		if ("eq" in s) out += fenceUrls(s.eq);
 		else {
 			if (s.del) out += DEL_OPEN + fenceUrls(s.del) + DEL_CLOSE;

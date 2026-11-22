@@ -26,7 +26,7 @@ const BLANK = /^\s$/u;
  */
 function encode(
 	text: string,
-	end: (text: string, i: number) => number,
+	tokens: (text: string) => (i: number) => number,
 ): {
 	chars: string;
 	ends: number[];
@@ -37,8 +37,9 @@ function encode(
 	const ends: number[] = [];
 	const at: number[] = [];
 	const words: number[] = [];
+	const end = tokens(text);
 	for (let i = 0; i < text.length; ) {
-		const to = end(text, i);
+		const to = end(i);
 		const t = text.slice(i, to);
 		let c = codes.get(t);
 		if (c === undefined) {
@@ -62,12 +63,19 @@ function encode(
 	};
 }
 
-/** Another caller's tokens (`end`: where the token at `i` ends) and length cut. */
+/** Another caller's tokens and length cut. */
 export interface TokenRules {
-	end?: (text: string, i: number) => number;
+	/** A text's tokenizer: where the token at `i` ends. */
+	tokens?: (text: string) => (i: number) => number;
 	/** A side this long or longer (UTF-16) gets no marks. */
 	max?: number;
 }
+
+/** The line view's tokens. */
+const lineTokens =
+	(text: string) =>
+	(i: number): number =>
+		tokenEnd(text, i);
 
 /** A plain pair. */
 const none = (): { old: Mark[]; new: Mark[] } => ({ old: [], new: [] });
@@ -170,7 +178,7 @@ export function tokenMarks(
 	tokens: TokenRules = {},
 ): { old: Mark[]; new: Mark[] } {
 	const max = tokens.max ?? WORD_DIFF_MAX;
-	const end = tokens.end ?? tokenEnd;
+	const tokenizer = tokens.tokens ?? lineTokens;
 	if (oldText.length >= max || newText.length >= max) {
 		return none();
 	}
@@ -186,8 +194,8 @@ export function tokenMarks(
 	// well under 0xD700 / 2).
 	codes.clear();
 	blanks.clear();
-	const ta = encode(a, end);
-	const tb = encode(b, end);
+	const ta = encode(a, tokenizer);
+	const tb = encode(b, tokenizer);
 	const changedA = new Uint8Array(ta.ends.length);
 	const changedB = new Uint8Array(tb.ends.length);
 	// Pass 1: the words. Their equal tokens are the anchors.
