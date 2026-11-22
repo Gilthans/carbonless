@@ -289,7 +289,7 @@ function CommentBox(props: {
 			Add review comment
 		</button>
 	);
-	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
 		view.onKeyDown(e);
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
@@ -371,6 +371,7 @@ function CommentBox(props: {
 				<CommentPreview
 					text={text}
 					{...view.previewProps}
+					onKeyDown={onKeyDown}
 					className="max-h-64 min-h-16"
 				/>
 			)}
@@ -409,7 +410,7 @@ function CommentText(props: {
 	hidden: boolean;
 	readOnly: boolean;
 	onChange: (value: string) => void;
-	onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
+	onKeyDown: (e: KeyboardEvent<HTMLElement>) => void;
 }) {
 	const { box } = props;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes, and once it shows.

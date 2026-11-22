@@ -95,9 +95,10 @@ export function ReplyBox(props: {
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes.
 	useLayoutEffect(() => {
 		const el = box.current;
-		if (!el) return;
+		// Previewing, the hidden box keeps its height (re-measured on Write).
+		if (!el || previewing) return;
 		el.style.height = "auto";
-		if (open && !previewing) el.style.height = `${el.scrollHeight + 2}px`;
+		if (open) el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text, open, previewing]);
 	const composer = agent?.composerRef;
 	useEffect(() => {
@@ -124,7 +125,7 @@ export function ReplyBox(props: {
 		if (!now.trim()) return;
 		writer.reply(thread.id, now);
 	};
-	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
 		write.onKeyDown(e);
 		if (e.defaultPrevented) return;
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -151,8 +152,9 @@ export function ReplyBox(props: {
 					onFocus={() => setFocused(true)}
 					onBlur={() => setFocused(false)}
 					onKeyDown={onKeyDown}
-					// Open, it's at least as tall as the toggle above Send (40 + 4 + 40).
-					className={`block max-h-80 w-full ${open && !asking ? "min-h-[84px]" : "min-h-10"} min-w-0 resize-none rounded-md border bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-transparent focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 ${
+					// Open, it's at least as tall as the toggle above Send (40 + 4 + 40),
+					// asking the agent too, so switching never changes its height.
+					className={`block max-h-80 w-full ${open ? "min-h-[84px]" : "min-h-10"} min-w-0 resize-none rounded-md border bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-transparent focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 ${
 						asking ? "border-agent-edge" : "border-line-strong"
 					}`}
 				/>
@@ -160,6 +162,7 @@ export function ReplyBox(props: {
 					<CommentPreview
 						text={text}
 						{...write.previewProps}
+						onKeyDown={onKeyDown}
 						className="max-h-80 min-h-[84px]"
 					/>
 				)}
@@ -189,8 +192,13 @@ export function ReplyBox(props: {
 				data-testid="reply-side"
 				className="flex shrink-0 flex-col items-end justify-end gap-1 self-stretch"
 			>
-				{write.toggle && (
-					<PreviewToggle {...write.toggleProps} className="mb-auto" />
+				{/* Open, its slot is kept (unseen while empty): typing never narrows the box. */}
+				{open && !asking && (
+					<PreviewToggle
+						{...write.toggleProps}
+						unseen={!write.toggle}
+						className="mb-auto"
+					/>
 				)}
 				<Tooltip content={sendLabel} describe={false}>
 					{(trigger) => (

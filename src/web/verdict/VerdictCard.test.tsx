@@ -769,6 +769,13 @@ describe("the verdict's message: Write / Preview (CAR-202)", () => {
 		const preview = within(c).getByTestId("comment-preview");
 		expect(within(preview).getByText("good").tagName).toBe("STRONG");
 		expect(within(c).queryByRole("textbox", { name: "Message" })).toBeNull();
+		// The checkbox controls what shows: the preview while previewing.
+		const controls = within(c)
+			.getByTestId("verdict-include")
+			.getAttribute("aria-controls");
+		expect(controls && document.getElementById(controls)).toContainElement(
+			preview,
+		);
 		await userEvent.click(within(c).getByRole("button", { name: "Comment" }));
 		await waitFor(() => expect(posted).toHaveLength(1));
 		expect(posted[0]).toMatchObject({

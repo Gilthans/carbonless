@@ -219,6 +219,17 @@ describe("ThreadAgentPanel", () => {
 		await userEvent.type(ask, "why?");
 		expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
 		expect(screen.queryByTestId("comment-preview")).toBeNull();
+		// Open, it is as tall as the reply's (toggle over Send): no jump.
+		expect(ask.className).toContain("min-h-[84px]");
+		// Back to the reply: in Write, not the Preview it left.
+		await userEvent.click(agentButton());
+		const reply = screen.getByRole("textbox", { name: "Reply" });
+		expect(reply).toHaveValue("**hi**");
+		expect(screen.queryByTestId("comment-preview")).toBeNull();
+		expect(screen.getByRole("button", { name: "Write" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
 	});
 
 	it("placeholder reads Ask agent… when open and Reply… when closed", async () => {

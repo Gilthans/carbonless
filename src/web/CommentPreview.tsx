@@ -24,7 +24,7 @@ import {
 	useState,
 } from "react";
 import { escapeTags } from "../shared/markdownEscape";
-import { GithubHtml } from "./GithubHtml";
+import { GithubHtml, ImageErrorContext } from "./GithubHtml";
 import { Tooltip } from "./Tooltip";
 
 export type WriteMode = "write" | "preview";
@@ -36,18 +36,22 @@ export function commentHtml(text: string): string {
 	return md.parse(escapeTags(text)) as string;
 }
 
-/** Ctrl/Cmd+Shift+P: switches a box between Write and Preview. */
+/**
+ * Ctrl/Cmd+Shift+P: switches a box between Write and Preview. By the
+ * letter printed (`key`), as the app's shortcuts match letters, so another
+ * layout's physical P (Dvorak's "l") doesn't.
+ */
 export function isPreviewKey(
 	e: Pick<
 		globalThis.KeyboardEvent,
-		"ctrlKey" | "metaKey" | "shiftKey" | "altKey" | "key" | "code"
+		"ctrlKey" | "metaKey" | "shiftKey" | "altKey" | "key"
 	>,
 ): boolean {
 	return (
 		(e.ctrlKey || e.metaKey) &&
 		e.shiftKey &&
 		!e.altKey &&
-		(e.code === "KeyP" || e.key.toLowerCase() === "p")
+		e.key.toLowerCase() === "p"
 	);
 }
 
@@ -61,7 +65,8 @@ export function CommentPreview(props: {
 	/** At least this tall (px): the textarea it replaces. */
 	minHeight?: number;
 	previewRef?: RefObject<HTMLElement | null>;
-	onKeyDown?: (e: KeyboardEvent) => void;
+	/** The box's own keys (Ctrl+Enter, Escape) and the toggle's. */
+	onKeyDown?: (e: KeyboardEvent<HTMLElement>) => void;
 }) {
 	return (
 		<section
@@ -82,11 +87,17 @@ export function CommentPreview(props: {
 	);
 }
 
-/** The text as GitHub comments render, sanitized, bare (a posted comment). */
+/**
+ * The text as GitHub comments render, sanitized, bare (a posted comment).
+ * Its images are the reviewer's or the agent's links, never GitHub's
+ * expiring signed ones: one that fails doesn't ask the page to refresh.
+ */
 export function CommentHtml(props: { text: string; className?: string }) {
 	const html = useMemo(() => commentHtml(props.text), [props.text]);
 	return (
-		<GithubHtml html={html} className={`text-sm ${props.className ?? ""}`} />
+		<ImageErrorContext value={undefined}>
+			<GithubHtml html={html} className={`text-sm ${props.className ?? ""}`} />
+		</ImageErrorContext>
 	);
 }
 
@@ -96,6 +107,8 @@ export function PreviewToggle(props: {
 	onChange: (mode: WriteMode) => void;
 	onKeyDown?: (e: KeyboardEvent) => void;
 	className?: string;
+	/** Its slot kept, unseen (not focusable, not announced). */
+	unseen?: boolean;
 }) {
 	const item = (mode: WriteMode, label: string, Icon: typeof PencilIcon) => (
 		<Tooltip content={label} describe={false}>
@@ -120,6 +133,7 @@ export function PreviewToggle(props: {
 			aria-label="Write or preview"
 			data-testid="preview-toggle"
 			onKeyDown={props.onKeyDown}
+			style={props.unseen ? { visibility: "hidden" } : undefined}
 			// An outline, not a border: the pair is exactly 40px tall (84px with
 			// Send), and it draws over the pressed half.
 			className={`m-0 flex shrink-0 overflow-hidden rounded-md border-0 p-0 outline outline-line -outline-offset-1 ${props.className ?? ""}`}
@@ -132,12 +146,13 @@ export function PreviewToggle(props: {
 
 /**
  * A box's mode. Blank text or `off` (the box isn't posting to GitHub:
- * Ask agent) is always Write, with no toggle. Preview measures the
+ * Ask agent) is always Write, with no toggle, and resets the choice to
+ * Write. Preview measures the
  * textarea first, so the preview takes its place at least at its height;
  * Write focuses it again (its selection kept: it stayed mounted). A
  * switch by keys from the box moves the focus to the preview, so the
- * same keys switch back. `onKeyDown` goes on the textarea too (in its
- * own handler).
+ * same keys switch back. `onKeyDown` goes on the textarea and on the
+ * preview too, inside the box's own key handler (Ctrl+Enter, Escape).
  */
 export function useWritePreview(opts: {
 	initial: WriteMode;
@@ -150,6 +165,9 @@ export function useWritePreview(opts: {
 	const [height, setHeight] = useState<number | undefined>();
 	const preview = useRef<HTMLElement>(null);
 	const toggle = !opts.off && opts.text.trim() !== "";
+	// Hidden (emptied, or Ask agent), the box forgets Preview: the next
+	// text is typed in Write, never flipped away from under the cursor.
+	if (!toggle && chosen !== "write") setChosen("write");
 	const mode: WriteMode = toggle ? chosen : "write";
 	const focusNext = useRef<WriteMode | null>(null);
 	const choose = useCallback(

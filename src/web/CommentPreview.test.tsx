@@ -1,8 +1,14 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef, useState } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CommentPreview,
 	commentHtml,
@@ -11,6 +17,7 @@ import {
 	useWritePreview,
 	type WriteMode,
 } from "./CommentPreview";
+import { ImageErrorContext } from "./GithubHtml";
 
 afterEach(cleanup);
 
@@ -78,6 +85,19 @@ describe("CommentPreview", () => {
 		}
 	});
 
+	it("a broken image in a preview never asks the page to refresh its images", () => {
+		const refresh = vi.fn();
+		render(
+			<ImageErrorContext value={refresh}>
+				<CommentPreview text="![x](https://example.com/typo.png)" />
+			</ImageErrorContext>,
+		);
+		const img = screen.getByTestId("comment-preview").querySelector("img");
+		if (!img) throw new Error("no image");
+		fireEvent.error(img);
+		expect(refresh).not.toHaveBeenCalled();
+	});
+
 	it("the unsanitized HTML would carry the javascript: link (the sanitizer is what strips it)", () => {
 		// Guards the test above: marked alone keeps it.
 		expect(commentHtml("[x](javascript:alert(3))")).toMatch(/javascript:/);
@@ -94,6 +114,17 @@ describe("isPreviewKey", () => {
 			true,
 		);
 		expect(isPreviewKey(key({ ctrlKey: true }))).toBe(false);
+		// By the letter printed, not the physical key (Dvorak's KeyP is "l").
+		expect(
+			isPreviewKey(
+				key({ ctrlKey: true, shiftKey: true, key: "L", code: "KeyP" }),
+			),
+		).toBe(false);
+		expect(
+			isPreviewKey(
+				key({ ctrlKey: true, shiftKey: true, key: "P", code: "KeyR" }),
+			),
+		).toBe(true);
 		expect(isPreviewKey(key({ shiftKey: true }))).toBe(false);
 		expect(
 			isPreviewKey(
@@ -114,6 +145,9 @@ function Box(props: { initial: WriteMode; text?: string; off?: boolean }) {
 	});
 	return (
 		<div>
+			<button type="button" onClick={() => setText("")}>
+				Clear
+			</button>
 			{p.toggle && <PreviewToggle {...p.toggleProps} />}
 			<textarea
 				ref={box}
@@ -171,6 +205,19 @@ describe("useWritePreview", () => {
 		await userEvent.keyboard("{Meta>}{Shift>}P{/Shift}{/Meta}");
 		expect(screen.queryByTestId("comment-preview")).toBeNull();
 		expect(box).toHaveFocus();
+	});
+
+	it("an emptied box forgets Preview: the next text is typed in Write", async () => {
+		render(<Box initial="write" text="first" />);
+		await userEvent.click(screen.getByRole("button", { name: "Preview" }));
+		expect(screen.getByTestId("comment-preview")).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Clear" }));
+		const box = screen.getByRole("textbox", { name: "Comment" });
+		await userEvent.click(box);
+		await userEvent.keyboard("next");
+		expect(screen.queryByTestId("comment-preview")).toBeNull();
+		expect(screen.getByRole("textbox", { name: "Comment" })).toHaveFocus();
+		expect(box).toHaveValue("next");
 	});
 
 	it("has no toggle on blank text, and stays in Write there", () => {

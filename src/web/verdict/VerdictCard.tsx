@@ -554,7 +554,7 @@ export function VerdictCard(props: {
 			setChecked(false);
 		}
 	};
-	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
 		view.onKeyDown(e);
 		if (e.key === "Escape") {
 			e.preventDefault();
@@ -688,11 +688,10 @@ export function VerdictCard(props: {
 				{view.toggle && <PreviewToggle {...view.toggleProps} />}
 			</div>
 			{checked && (
-				<div>
+				<div id={boxId}>
 					<textarea
 						ref={editor}
 						hidden={previewing}
-						id={boxId}
 						aria-label="Message"
 						data-testid="verdict-message"
 						placeholder="Message…"
@@ -707,6 +706,7 @@ export function VerdictCard(props: {
 						<CommentPreview
 							text={draft.text}
 							{...view.previewProps}
+							onKeyDown={onKeyDown}
 							className="max-h-80 min-h-20"
 						/>
 					)}

@@ -398,7 +398,7 @@ export function EditForm(props: {
 		const changed = writer.drafts.edit(comment.id) !== undefined;
 		if (!changed || window.confirm("Discard your edit?")) cancel();
 	};
-	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
 		view.onKeyDown(e);
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
@@ -451,10 +451,12 @@ export function EditForm(props: {
 				<CommentPreview
 					text={text}
 					{...view.previewProps}
+					onKeyDown={onKeyDown}
 					className="max-h-96 min-h-10"
 				/>
 			)}
-			<div className="flex justify-end gap-2">
+			{/* Wraps when narrow (a phone's card in a thread in the diff). */}
+			<div className="flex flex-wrap justify-end gap-2">
 				{view.toggle && (
 					<PreviewToggle {...view.toggleProps} className="mr-auto" />
 				)}
