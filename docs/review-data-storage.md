@@ -756,6 +756,26 @@ are the same keys line for line: the matching costs about 4 ms of CPU at
 the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on the server as the
 snapshot is built.
 
+**Markdown blocks** (CAR-167, 2026-11-22). A Markdown file's pieces
+(`.md`, `.markdown`, both sides under `MARKDOWN_CUT_MAX_BYTES`,
+`src/server/diff/snapshot.ts`) are cut again at its rendered blocks
+(`cutAtBlocks`, `src/shared/blockCut.ts`), so no cluster mixes lines of
+two blocks on either side. The block cut is part of cluster identity as
+the whitespace cut is: `markdownBlocks` (the parser, its limits) and the
+block pairing decide which clusters exist. Each block piece's `split`
+points at the **git hunk's** key, with its places in the git hunk (the
+whitespace piece's place plus the block piece's in it), as when the
+whitespace cut alone splits a hunk, so marks on the uncut hunk carry onto
+the block pieces. A piece the block cut leaves whole keeps its key, and so
+its marks. A whitespace piece (CAR-156) the block cut splits again loses
+its own marks (the safe direction): the split carry maps whole-hunk keys
+only, and a chained carry would change the `split-carried` format. Its
+block pieces take what the git hunk's key itself holds, as any piece does
+(a hunk marked before CAR-156), else read unreviewed. That
+reaches only Markdown files marked between CAR-156 (2026-11-15) and this
+cut. A larger file keeps the whitespace cut alone (and isn't offered the
+Rendered view); `FileSummary.markdownBlocks` says which files were cut.
+
 **Mixed versions.** Once progress refs sync, an older crb that unticks the
 whole hunk (its key still a cluster there) leaves pieces already
 split-carried as they were: they still show a mark the reviewer made,

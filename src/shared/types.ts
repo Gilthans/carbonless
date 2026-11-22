@@ -128,6 +128,8 @@ export interface FileSummary {
 	 * image shows once, with nothing to compare.
 	 */
 	sameBlob?: true;
+	/** The clusters are cut at Markdown blocks (CAR-167): the Rendered view is offered. */
+	markdownBlocks?: true;
 	clusters: Cluster[];
 }
 

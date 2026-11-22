@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
+import { cutAtBlocks } from "../../shared/blockCut.js";
 import { isImagePath } from "../../shared/imageTypes.js";
+import { HUNK_ALIGN_WORD_OPS } from "../../shared/linePairing.js";
+import { isMarkdownPath, markdownBlocks } from "../../shared/markdownBlocks.js";
 import type {
 	Cluster,
 	ClusterSplit,
 	DiffLine,
 	FileHunks,
 	FileSummary,
+	HunkPart,
 	HunksBatch,
 	Snapshot,
 } from "../../shared/types.js";
@@ -300,7 +304,16 @@ export async function buildSnapshot(
 						? [oldOid, newOid]
 						: undefined,
 			});
-		const clusters = cutClusters(hunks, keysOf);
+		// A Markdown file's clusters are cut at its blocks too (CAR-167), when
+		// both sides are text under the cap; the Rendered view needs the cut.
+		const markdown =
+			text &&
+			isMarkdownPath(file.path) &&
+			bytesOf(oldOid).length <= MARKDOWN_CUT_MAX_BYTES &&
+			bytesOf(newOid).length <= MARKDOWN_CUT_MAX_BYTES
+				? { oldLines: text.oldLines, newLines: text.newLines }
+				: undefined;
+		const clusters = cutClusters(hunks, keysOf, markdown);
 		const tabWidth = tabWidths[index];
 		const oldSize = sizeOf(oldOid);
 		const newSize = sizeOf(newOid);
@@ -311,6 +324,7 @@ export async function buildSnapshot(
 			...(oldSize === undefined ? {} : { oldSize }),
 			...(newSize === undefined ? {} : { newSize }),
 			...(lfs(file) ? { lfs: true as const } : {}),
+			...(markdown ? { markdownBlocks: true as const } : {}),
 			...(oldOid === newOid && !file.submodule
 				? { sameBlob: true as const }
 				: {}),
@@ -321,23 +335,68 @@ export async function buildSnapshot(
 }
 
 /**
+ * The largest Markdown blob (either side, bytes) whose clusters are cut at
+ * its blocks (CAR-167); a larger file keeps the whitespace cut alone and
+ * isn't offered the Rendered view. Its cost is linear in the file's size,
+ * on the server as the snapshot is built (so on a review's first open).
+ * Measured on the devbox (2026-11-22, CPU of `markdownBlocks` of both sides
+ * plus `cutClusters`, best of 3), generated READMEs of headings,
+ * paragraphs, lists, tables and fences: at 300 KiB 100 ms with every 7th
+ * line edited, 220 ms with most lines edited; at 512 KiB 155 and 340 ms.
+ * Costlier shapes: every section one hunk across three list items and a
+ * table row, edited (the CPU test's, snapshot.test.ts), 330 ms at 300 KiB;
+ * runs of 50 changed list items of ~190 words (each piece's pairing at its
+ * budget), 285 ms at 300 KiB and 430 ms at 512 KiB.
+ * 512 KiB also stays under `markdownBlocks`' 1,000,000-character lex limit,
+ * so a cut file is always cut at its real blocks.
+ */
+export const MARKDOWN_CUT_MAX_BYTES = 512 * 1024;
+
+/**
  * One file's git hunks (and its file-level cluster) as its clusters: each
- * hunk cut at its whitespace-only runs (splitCluster, CAR-156), keyed by
- * `keysOf` (clusterKeys over the file's clusters). A piece of a hunk that
- * split remembers the key the whole hunk had (`keysOf` over the hunks, as
- * before the cut) and where its lines sit in it, so marks on the hunk
- * carry onto the pieces (splitCarry.ts).
+ * hunk cut at its whitespace-only runs (splitCluster, CAR-156), and for a
+ * Markdown file (`markdown`, its old and new lines) each piece cut again at
+ * its blocks (cutAtBlocks, CAR-167), keyed by `keysOf` (clusterKeys over
+ * the file's clusters). A piece of a hunk that split, by either cut,
+ * remembers the key the whole git hunk had (`keysOf` over the hunks, as
+ * before any cut) and where its lines sit in it, so marks on the hunk
+ * carry onto the pieces (splitCarry.ts). A piece the block cut leaves whole
+ * keeps the key it had with the whitespace cut alone.
  */
 export function cutClusters(
 	hunks: Omit<Cluster, "key">[],
 	keysOf: (clusters: Omit<Cluster, "key">[]) => string[],
+	markdown?: { oldLines: string[]; newLines: string[] },
 ): Cluster[] {
+	// Parsed once per side, and only with lines to cut (not a pure rename).
+	const blocks =
+		markdown && hunks.some((h) => h.kind === "lines")
+			? {
+					old: markdownBlocks(markdown.oldLines),
+					new: markdownBlocks(markdown.newLines),
+				}
+			: undefined;
 	const clusters: Omit<Cluster, "key">[] = [];
 	const parts: { hunk: number; removedAt: number; addedAt: number }[] = [];
+	// Each whitespace piece cut at the blocks with its own pairing budget (a
+	// piece's cut, and so its keys, never depends on another's cost), its
+	// pieces' places made the git hunk's.
+	const atBlocks = (
+		p: HunkPart<Omit<Cluster, "key">>,
+	): HunkPart<Omit<Cluster, "key">>[] =>
+		blocks
+			? cutAtBlocks(p.cluster, blocks.old, blocks.new, {
+					left: HUNK_ALIGN_WORD_OPS,
+				}).map((q) => ({
+					cluster: q.cluster,
+					removedAt: p.removedAt + q.removedAt,
+					addedAt: p.addedAt + q.addedAt,
+				}))
+			: [p];
 	hunks.forEach((hunk, h) => {
 		const pieces =
 			hunk.kind === "lines"
-				? splitCluster(hunk)
+				? splitCluster(hunk).flatMap(atBlocks)
 				: [{ cluster: hunk, removedAt: 0, addedAt: 0 }];
 		for (const piece of pieces) {
 			clusters.push(piece.cluster);
