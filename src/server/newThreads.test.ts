@@ -18,7 +18,7 @@ import { postThread } from "./gh";
 import { newThreadProblem, placeOf, postedBody } from "./newThreads";
 import { mapThreads } from "./overview";
 import { parseHead } from "./pinnedHead";
-import { Session } from "./session";
+import { placingHooks, Session } from "./session";
 import { writeWaits } from "./threadWrites";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
@@ -389,23 +389,43 @@ describe("new threads", () => {
 		const key = review.files[0]?.clusters[0]?.key ?? "";
 		await session.setStates(review.revision, [{ key, state: "reviewed" }]);
 		const ps1 = pr.head();
-		pr.moveHead({ "later.txt": "one\ntwo\n" });
 		const { readId } = await session.overview();
-		// Started (pending), then the post: the running job read the threads
-		// before this one joined them.
-		await session.placements({ patchset: 1 }, readId);
-		const { thread } = await session.startThread(
-			request({ earlier: true, commit: ps1, line: 2 }),
-		);
-		await vi.waitFor(
-			async () => {
-				const answer = await session.placements({ patchset: 1 }, readId);
-				expect("pending" in answer).toBe(false);
-				if ("pending" in answer) return;
-				expect(answer.threads.map((t) => t.id)).toContain(thread.id);
-			},
-			{ timeout: 20_000, interval: 50 },
-		);
+		// The job is held once it has read the threads: provably running,
+		// without the new one, when the post lands.
+		const ps1Revision = session.info().patchsets[0]?.revision;
+		let entered = false;
+		let open = () => {};
+		const gate = new Promise<void>((r) => {
+			open = r;
+		});
+		placingHooks.afterRead = async (job) => {
+			if (job.revision !== ps1Revision || job.readId !== readId) return;
+			entered = true;
+			await gate;
+		};
+		try {
+			expect(await session.placements({ patchset: 1 }, readId)).toEqual({
+				pending: true,
+			});
+			await vi.waitFor(() => expect(entered).toBe(true));
+			const { thread } = await session.startThread(
+				request({ earlier: true, commit: ps1, line: 2 }),
+			);
+			placingHooks.afterRead = null;
+			open();
+			await vi.waitFor(
+				async () => {
+					const answer = await session.placements({ patchset: 1 }, readId);
+					expect("pending" in answer).toBe(false);
+					if ("pending" in answer) return;
+					expect(answer.threads.map((t) => t.id)).toContain(thread.id);
+				},
+				{ timeout: 20_000, interval: 50 },
+			);
+		} finally {
+			placingHooks.afterRead = null;
+			open();
+		}
 	});
 
 	for (const earlier of [false, true]) {

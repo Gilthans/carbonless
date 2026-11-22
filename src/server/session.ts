@@ -195,6 +195,19 @@ const SPLIT_CARRY_TRIES = 2;
 
 export class SessionClosedError extends Error {}
 
+/**
+ * Test hook: awaited by every placement job once it has taken its
+ * threads, before it traces them, so a test can hold a job provably running
+ * (CAR-233). Null outside tests.
+ */
+export const placingHooks: {
+	afterRead:
+		| ((job: { revision: string; readId: string }) => Promise<void>)
+		| null;
+} = {
+	afterRead: null,
+};
+
 /** crb --head and the hidden dev options (--as-of, --viewer). */
 export interface SessionOptions {
 	/**
@@ -1008,6 +1021,11 @@ export class Session {
 					snapshot(),
 					read.threads("summary"),
 				]);
+				// The threads as read now: the tracing below takes them as they
+				// are (a thread joining the read meanwhile isn't among them).
+				const unresolvedThreads = view.threads.filter((t) => !t.resolved);
+				const resolvedThreads = view.threads.filter((t) => t.resolved);
+				await placingHooks.afterRead?.({ revision: target.revision, readId });
 				// Filed under its snapshot id too: a head and its patch set share it.
 				if (!job.stale) this.#placing.set(`${target.revision}|${readId}`, job);
 				// When GitHub gave the threads' current lines (each with the
@@ -1015,7 +1033,7 @@ export class Session {
 				const at = new Date(read.started).toISOString();
 				const open = await this.#placer.inputs(
 					target,
-					view.threads.filter((t) => !t.resolved),
+					unresolvedThreads,
 					this.#diffBase(),
 					at,
 				);
@@ -1023,12 +1041,7 @@ export class Session {
 				// The resolved threads join after; their failure never takes
 				// the unresolved placements back (they then show where made).
 				const resolved = await this.#placer
-					.inputs(
-						target,
-						view.threads.filter((t) => t.resolved),
-						this.#diffBase(),
-						at,
-					)
+					.inputs(target, resolvedThreads, this.#diffBase(), at)
 					.catch(() => []);
 				job.done = { target, inputs: [...open, ...resolved], complete: true };
 			} catch (error) {
