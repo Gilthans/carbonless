@@ -21,6 +21,12 @@
 			"text": "Ask your agent about the whole review. The header's agent chip opens a review-wide conversation in a side drawer (Shift+A). Your agent reads the PR, its GitHub threads and your progress through crb's tools, and can open conversations on the lines it points to. The chip's badge counts unread answers; with no agent set up, it opens the agent setup."
 		},
 		{
+			"id": "CAR-197",
+			"kind": "new",
+			"prs": [127],
+			"text": "A new comment has an Ask agent button that moves your text into an agent question, and the Ask agent box has one that moves it back. Text typed in Ask agent now asks before you leave the page."
+		},
+		{
 			"id": "CAR-83",
 			"kind": "new",
 			"prs": [132],
@@ -31,6 +37,12 @@
 			"kind": "new",
 			"prs": [144],
 			"text": "The update toast opens What's new: every version's notes up to the one on offer, with Update below. Global settings shows the running version's notes and earlier releases, each version linking to its release on GitHub."
+		},
+		{
+			"id": "CAR-193",
+			"kind": "new",
+			"prs": [145],
+			"text": "On the Threads tab, j and k step to the next and previous conversation."
 		},
 		{
 			"id": "CAR-203",
