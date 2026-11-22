@@ -26,13 +26,27 @@ export function QuickQuestionChips(props: {
 	onPick: (question: string) => void;
 }) {
 	const list = useRef<HTMLUListElement>(null);
+	// Whether the reader is at the bottom (within 2px), kept on every scroll:
+	// a reflow re-pins the list only then, never yanking one who scrolled up.
+	const pinned = useRef(true);
 	// The questions' content, not the array's identity: a parent's rerender
 	// with the same questions never scrolls the reader back down.
 	const key = props.questions?.join("\n");
 	// Before paint, so the list never shows its top first.
 	useLayoutEffect(() => {
 		const el = list.current;
-		if (el && key !== undefined) el.scrollTop = el.scrollHeight;
+		if (!el || key === undefined) return;
+		el.scrollTop = el.scrollHeight;
+		pinned.current = true;
+		// A reflow while shown (a phone's rotation, the drawer's width): the
+		// list and its chips change size, and a pinned list stays at its bottom.
+		if (typeof ResizeObserver === "undefined") return;
+		const ro = new ResizeObserver(() => {
+			if (pinned.current) el.scrollTop = el.scrollHeight;
+		});
+		ro.observe(el);
+		for (const li of el.children) ro.observe(li);
+		return () => ro.disconnect();
 	}, [key]);
 	if (props.questions === null) {
 		// Capped like the list, so nothing moves when an overflowing list
@@ -59,9 +73,13 @@ export function QuickQuestionChips(props: {
 	return (
 		<ul
 			ref={list}
+			onScroll={(e) => {
+				const el = e.currentTarget;
+				pinned.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+			}}
 			data-testid="agent-quick-questions"
 			aria-label="Suggested questions"
-			className={`flex min-w-0 flex-wrap gap-1.5 overflow-y-auto [scrollbar-width:thin] ${CAP}`}
+			className={`flex min-w-0 flex-wrap gap-1.5 overflow-y-auto overscroll-contain [scrollbar-width:thin] ${CAP}`}
 		>
 			{props.questions.map((q) => (
 				<li
@@ -74,7 +92,7 @@ export function QuickQuestionChips(props: {
 						onClick={() => props.onPick(q)}
 						// The box keeps focus (no phone keyboard bounce), as Ask and Send do.
 						onMouseDown={(e) => e.preventDefault()}
-						className="flex min-h-10 min-w-0 flex-1 items-center rounded-[20px] px-3 py-1.5 text-left break-words hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+						className="flex min-h-10 min-w-0 flex-1 items-center rounded-[20px] px-3 py-1.5 text-left hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
 					>
 						<span className="min-w-0 break-words">{q}</span>
 					</button>
