@@ -52,6 +52,8 @@ function hunkRanges(c: Cluster): {
  * snapshot: once written (or once the reviewer marks the piece), a piece
  * is left alone, so this is empty on every later read. Never more than
  * the hunk had: an unmarked hunk, or lines it didn't mark, give nothing.
+ * Nothing either for a piece the Markdown block cut made of a CAR-156
+ * piece (`split.piece`) that holds a state: those lines read unreviewed.
  */
 export function splitCarries(
 	snapshot: Snapshot,
@@ -65,6 +67,9 @@ export function splitCarries(
 		for (const c of file.clusters) {
 			const split = c.split;
 			if (!split || states.has(c.key) || keys.has(split.key)) continue;
+			// The reviewer's own word on the CAR-156 piece the block cut split
+			// again (CAR-167), even an untick, outranks the hunk's older mark.
+			if (split.piece !== undefined && states.has(split.piece)) continue;
 			const origin = states.get(split.key);
 			if (!origin) continue;
 			if (origin.state !== "unreviewed") {

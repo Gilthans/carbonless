@@ -9,7 +9,6 @@ import type {
 	DiffLine,
 	FileHunks,
 	FileSummary,
-	HunkPart,
 	HunksBatch,
 	Snapshot,
 } from "../../shared/types.js";
@@ -305,10 +304,15 @@ export async function buildSnapshot(
 						: undefined,
 			});
 		// A Markdown file's clusters are cut at its blocks too (CAR-167), when
-		// both sides are text under the cap; the Rendered view needs the cut.
+		// both sides are text under the cap, neither a symlink nor an LFS
+		// pointer (not Markdown); the Rendered view needs the cut.
 		const markdown =
 			text &&
 			isMarkdownPath(file.path) &&
+			file.oldMode !== SYMLINK_MODE &&
+			file.newMode !== SYMLINK_MODE &&
+			!isLfsPointer(bytesOf(oldOid)) &&
+			!isLfsPointer(bytesOf(newOid)) &&
 			bytesOf(oldOid).length <= MARKDOWN_CUT_MAX_BYTES &&
 			bytesOf(newOid).length <= MARKDOWN_CUT_MAX_BYTES
 				? { oldLines: text.oldLines, newLines: text.newLines }
@@ -337,8 +341,11 @@ export async function buildSnapshot(
 /**
  * The largest Markdown blob (either side, bytes) whose clusters are cut at
  * its blocks (CAR-167); a larger file keeps the whitespace cut alone and
- * isn't offered the Rendered view. Its cost is linear in the file's size,
- * on the server as the snapshot is built (so on a review's first open).
+ * isn't offered the Rendered view. The cap is part of cluster identity: a
+ * file growing past it, or a changed cap, changes the cut (marks on the
+ * pieces reset: the safe direction). Its cost is per file, linear in the
+ * file's size, on the server as the snapshot is built (a review's first
+ * open).
  * Measured on the devbox (2026-11-22, CPU of `markdownBlocks` of both sides
  * plus `cutClusters`, best of 3), generated READMEs of headings,
  * paragraphs, lists, tables and fences: at 300 KiB 100 ms with every 7th
@@ -352,6 +359,9 @@ export async function buildSnapshot(
  */
 export const MARKDOWN_CUT_MAX_BYTES = 512 * 1024;
 
+/** A symlink's mode: its blob is a target path, not Markdown. */
+const SYMLINK_MODE = "120000";
+
 /**
  * One file's git hunks (and its file-level cluster) as its clusters: each
  * hunk cut at its whitespace-only runs (splitCluster, CAR-156), and for a
@@ -361,7 +371,8 @@ export const MARKDOWN_CUT_MAX_BYTES = 512 * 1024;
  * remembers the key the whole git hunk had (`keysOf` over the hunks, as
  * before any cut) and where its lines sit in it, so marks on the hunk
  * carry onto the pieces (splitCarry.ts). A piece the block cut leaves whole
- * keeps the key it had with the whitespace cut alone.
+ * keeps the key it had with the whitespace cut alone; one it splits names
+ * that CAR-156 piece's key (`split.piece`) when the hunk had several.
  */
 export function cutClusters(
 	hunks: Omit<Cluster, "key">[],
@@ -377,38 +388,51 @@ export function cutClusters(
 				}
 			: undefined;
 	const clusters: Omit<Cluster, "key">[] = [];
-	const parts: { hunk: number; removedAt: number; addedAt: number }[] = [];
-	// Each whitespace piece cut at the blocks with its own pairing budget (a
-	// piece's cut, and so its keys, never depends on another's cost), its
-	// pieces' places made the git hunk's.
-	const atBlocks = (
-		p: HunkPart<Omit<Cluster, "key">>,
-	): HunkPart<Omit<Cluster, "key">>[] =>
-		blocks
-			? cutAtBlocks(p.cluster, blocks.old, blocks.new, {
-					left: HUNK_ALIGN_WORD_OPS,
-				}).map((q) => ({
-					cluster: q.cluster,
-					removedAt: p.removedAt + q.removedAt,
-					addedAt: p.addedAt + q.addedAt,
-				}))
-			: [p];
+	const parts: {
+		hunk: number;
+		removedAt: number;
+		addedAt: number;
+		/** Its CAR-156 piece's index in `wsClusters`, when the block cut split that piece of a split hunk. */
+		piece: number;
+	}[] = [];
+	// The file's clusters as the whitespace cut alone makes them (CAR-156),
+	// keyed only when a block piece needs its CAR-156 piece's key.
+	const wsClusters: Omit<Cluster, "key">[] = [];
 	hunks.forEach((hunk, h) => {
-		const pieces =
+		const ws =
 			hunk.kind === "lines"
-				? splitCluster(hunk).flatMap(atBlocks)
+				? splitCluster(hunk)
 				: [{ cluster: hunk, removedAt: 0, addedAt: 0 }];
+		const pieces = ws.flatMap((p) => {
+			const at = wsClusters.push(p.cluster) - 1;
+			if (!blocks || hunk.kind !== "lines") return [{ ...p, piece: -1 }];
+			// Each CAR-156 piece cut at the blocks with its own pairing budget
+			// (a piece's cut, and so its keys, never depends on another's
+			// cost), its pieces' places made the git hunk's.
+			const cut = cutAtBlocks(p.cluster, blocks.old, blocks.new, {
+				left: HUNK_ALIGN_WORD_OPS,
+			});
+			const piece = cut.length > 1 && ws.length > 1 ? at : -1;
+			return cut.map((q) => ({
+				cluster: q.cluster,
+				removedAt: p.removedAt + q.removedAt,
+				addedAt: p.addedAt + q.addedAt,
+				piece,
+			}));
+		});
 		for (const piece of pieces) {
 			clusters.push(piece.cluster);
 			parts.push({
 				hunk: pieces.length > 1 ? h : -1,
 				removedAt: piece.removedAt,
 				addedAt: piece.addedAt,
+				piece: piece.piece,
 			});
 		}
 	});
 	const keys = keysOf(clusters);
 	const hunkKeys = parts.some((p) => p.hunk >= 0) ? keysOf(hunks) : [];
+	const wsKeys = parts.some((p) => p.piece >= 0) ? keysOf(wsClusters) : [];
 	return clusters.map((c, i) => {
 		const part = parts[i];
 		const split: ClusterSplit | undefined =
@@ -418,6 +442,7 @@ export function cutClusters(
 						removedAt: part.removedAt,
 						addedAt: part.addedAt,
 						removed: (hunks[part.hunk] as Omit<Cluster, "key">).removed.length,
+						...(part.piece >= 0 ? { piece: wsKeys[part.piece] as string } : {}),
 					}
 				: undefined;
 		return { ...c, key: keys[i] as string, ...(split ? { split } : {}) };

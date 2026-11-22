@@ -71,7 +71,8 @@ export interface Cluster {
 	 */
 	whitespaceOnly?: true;
 	/**
-	 * A piece of a git hunk cut at its whitespace-only runs (CAR-156): the
+	 * A piece of a git hunk cut at its whitespace-only runs (CAR-156), and
+	 * for a Markdown file at its blocks (CAR-167): the
 	 * key the whole hunk had as one cluster before, and where this piece's
 	 * lines sit in it (its first removed and added line's index there, and
 	 * the whole hunk's removed count), so a mark on the whole hunk carries
@@ -96,6 +97,13 @@ export interface ClusterSplit {
 	removedAt: number;
 	addedAt: number;
 	removed: number;
+	/**
+	 * The key of the CAR-156 piece (the hunk cut at its whitespace-only runs
+	 * alone) this piece was cut from, when the Markdown block cut (CAR-167)
+	 * split that piece again: a state on it is the reviewer's later word on
+	 * these lines, so the hunk's older mark doesn't carry (splitCarry.ts).
+	 */
+	piece?: string;
 }
 
 export interface FileSummary {

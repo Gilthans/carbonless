@@ -842,6 +842,8 @@ describe("Markdown files are cut at their blocks (CAR-167)", () => {
 	).join("\n");
 	const NOTES = `${LIST}\n${filler}\n`;
 	const NOTES2 = `${LIST2}\n${filler}\n`;
+	const lfsPointer = (oid: string) =>
+		`version https://git-lfs.github.com/spec/v1\noid sha256:${oid.repeat(32)}\nsize 12345\n`;
 	// Over the cap by a paragraph, the same edit at its top.
 	const para = `${"x".repeat(99)}\n\n`;
 	const pad = para.repeat(Math.ceil(MARKDOWN_CUT_MAX_BYTES / para.length));
@@ -866,11 +868,13 @@ describe("Markdown files are cut at their blocks (CAR-167)", () => {
 					"gone.md": LIST,
 					"big.md": `${LIST}\n${pad}`,
 					"other.ts": "a\n",
+					"pointer.md": lfsPointer("aa"),
+					"readme.md": NOTES,
 				},
 			},
 			{
 				message: "head",
-				rename: { "notes.txt": "notes.md" },
+				rename: { "notes.txt": "notes.md", "readme.md": "readme.txt" },
 				delete: ["gone.md"],
 				files: {
 					"list.md": LIST2,
@@ -878,6 +882,8 @@ describe("Markdown files are cut at their blocks (CAR-167)", () => {
 					"notes.md": NOTES2,
 					"big.md": `${LIST2}\n${pad}`,
 					"other.ts": "b\n",
+					"pointer.md": lfsPointer("bb"),
+					"readme.txt": NOTES2,
 				},
 			},
 			// Only another file moves on.
@@ -948,6 +954,54 @@ describe("Markdown files are cut at their blocks (CAR-167)", () => {
 		]);
 	});
 
+	it("doesn't cut a file renamed from .md to another extension", () => {
+		expect(fileOf(snap, "readme.txt")).toMatchObject({
+			status: "renamed",
+			oldPath: "readme.md",
+		});
+		expect(fileOf(snap, "readme.txt")).not.toHaveProperty("markdownBlocks");
+		expect(shape(snap, "readme.txt")).toEqual(["-0,0+0,0", "-6,2+6,2"]);
+	});
+
+	it("doesn't cut or flag an LFS pointer named .md", () => {
+		expect(fileOf(snap, "pointer.md")).not.toHaveProperty("markdownBlocks");
+	});
+
+	it("doesn't cut or flag a symlink named .md", async () => {
+		const links = createGitFixture([
+			{ message: "base", files: { "keep.txt": "k\n" } },
+		]);
+		try {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: links.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			// A symlink whose target text is Markdown blocks: two list items.
+			const link = (target: string) => {
+				const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+					cwd: links.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+					input: target,
+				}).trim();
+				git("update-index", "--add", "--cacheinfo", `120000,${blob},link.md`);
+				git("commit", "-q", "-m", target);
+				return git("rev-parse", "HEAD");
+			};
+			const from = link("- a\n- b");
+			const to = link("- A\n- B");
+			const s = await buildSnapshot(links.path, from, to);
+			const f = fileOf(s, "link.md");
+			expect(f.newMode).toBe("120000");
+			expect(f).not.toHaveProperty("markdownBlocks");
+			expect(f.clusters.filter((c) => c.kind === "lines")).toHaveLength(1);
+		} finally {
+			links.cleanup();
+		}
+	});
+
 	it("doesn't cut or flag a .md over MARKDOWN_CUT_MAX_BYTES", () => {
 		expect(MARKDOWN_CUT_MAX_BYTES).toBeGreaterThanOrEqual(300 * 1024);
 		const big = fileOf(snap, "big.md");
@@ -957,7 +1011,7 @@ describe("Markdown files are cut at their blocks (CAR-167)", () => {
 	});
 
 	it("keeps every key of a .md unchanged elsewhere, across snapshots", () => {
-		for (const path of ["list.md", "notes.md", "gone.md"]) {
+		for (const path of ["list.md", "notes.md", "gone.md", "readme.txt"]) {
 			expect(fileOf(again, path).clusters).toEqual(fileOf(snap, path).clusters);
 		}
 		expect(fileOf(again, "other.ts").clusters[0]?.key).not.toBe(
@@ -992,7 +1046,7 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 		for (const c of after) expect(c).not.toHaveProperty("split");
 	});
 
-	it("points a whitespace piece's block pieces at the git hunk, with their places in it", () => {
+	it("points a CAR-156 piece's block pieces at the git hunk, with their places in it, naming that piece", () => {
 		// change / whitespace only across two items / change, in one hunk.
 		const oldLines = ["- x", "- a ", "- b ", "- y"];
 		const newLines = ["- X", "- a", "- b", "- Y"];
@@ -1027,10 +1081,16 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 				hunk.added.slice(split.addedAt, split.addedAt + c.added.length),
 			).toEqual(c.added);
 		}
-		// The pieces the block cut leaves whole keep their keys; the
-		// whitespace piece it cuts again gets new ones.
+		// The CAR-156 pieces the block cut leaves whole keep their keys; the
+		// one it cuts again gets new ones, and its pieces name it.
 		expect([md[0]?.key, md[3]?.key]).toEqual([ws[0]?.key, ws[2]?.key]);
 		expect(md.map((c) => c.key)).not.toContain(ws[1]?.key);
+		expect(md.map((c) => c.split?.piece)).toEqual([
+			undefined,
+			ws[1]?.key,
+			ws[1]?.key,
+			undefined,
+		]);
 	});
 
 	it("costs linear CPU in the file's size: 300 KiB against four cuts of its quarter", () => {
