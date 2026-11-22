@@ -623,11 +623,15 @@ whitespace-only when every line is a `~` row there and every line was
 read (reviewed or crossed off) at the earlier patch set, since a line
 nobody read there that this patch set only re-indented is still unread;
 the rest of a cluster that no piece shows keeps its cluster's flag. A
-file is nothing else when all its since units are whitespace-only (not
-its snapshot clusters), and its header then counts them all, with no
-`~`. The `~` counts a cluster's units as one and each unit without a cluster on its own. Home doesn't: it never reads a review's view settings
-(owner 2026-11-16: "Home shouldn't probe for specific review settings"),
-so it counts every cluster.
+piece collapses by its own flag, not its cluster's: a real edit since,
+in a cluster whitespace-only against the base, stays open. A file is
+nothing else when all its since units are whitespace-only (not its
+snapshot clusters), and its header then counts them all, with no `~`,
+while the bar, its "to read" and the move-on leave it out (the full
+diff's bar and move-on do too). The `~` counts a cluster's units as
+one and each unit without a cluster on its own. Home doesn't: it never
+reads a review's view settings (owner 2026-11-16: "Home shouldn't probe
+for specific review settings"), so it counts every cluster.
 
 The view still pairs whitespace-equal lines as quiet `~` rows
 (`src/web/files/whitespace.ts`), over the whole display hunk, context

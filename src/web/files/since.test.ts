@@ -172,10 +172,9 @@ describe("goneFiles", () => {
 
 describe("toReadCount", () => {
 	it("counts unreviewed reworked and new clusters, in each unit", () => {
-		const since = sinceByFile(a, v);
-		expect(toReadCount(since, v, "clusters")).toBe(2);
-		expect(toReadCount(since, v, "lines")).toBe(3);
-		expect(toReadCount(since, v, "files")).toBe(2);
+		expect(toReadCount(unitsOf(a, v), "clusters")).toBe(2);
+		expect(toReadCount(unitsOf(a, v), "lines")).toBe(3);
+		expect(toReadCount(unitsOf(a, v), "files")).toBe(2);
 	});
 	it("a cluster marked meanwhile is read; a carried one the reviewer unticked is to read again", () => {
 		const marked = view([
@@ -188,11 +187,10 @@ describe("toReadCount", () => {
 				cluster("d", "unreviewed"),
 			]),
 		]);
-		const since = sinceByFile(a, marked);
 		// b is carried per the engine, but the reviewer unticked it: to read
 		// (principle 2), beside d, new.
-		expect(toReadCount(since, marked, "clusters")).toBe(2);
-		expect(toReadCount(since, marked, "files")).toBe(2);
+		expect(toReadCount(unitsOf(a, marked), "clusters")).toBe(2);
+		expect(toReadCount(unitsOf(a, marked), "files")).toBe(2);
 	});
 });
 
@@ -205,9 +203,9 @@ describe("toReadCount, a partly reviewed cluster", () => {
 			file(1, "util.ts", [cluster("d", "unreviewed", false, 1)]),
 		]);
 		const since = sinceByFile(a, partly);
-		expect(toReadCount(since, partly, "clusters")).toBe(2);
-		expect(toReadCount(since, partly, "lines")).toBe(2);
-		expect(toReadCount(since, partly, "files")).toBe(2);
+		expect(toReadCount(unitsOf(a, partly), "clusters")).toBe(2);
+		expect(toReadCount(unitsOf(a, partly), "lines")).toBe(2);
+		expect(toReadCount(unitsOf(a, partly), "files")).toBe(2);
 		expect(eyesOf(partly.files[0] as FileView, since.get(0))).toBe("read");
 	});
 });
@@ -247,9 +245,9 @@ describe("since-only pieces", () => {
 
 	it("count in to-read until marked, in each unit; a file only they hold is listed as gone", () => {
 		const since = sinceByFile(withRevert, plain);
-		expect(toReadCount(since, plain, "clusters")).toBe(3);
-		expect(toReadCount(since, plain, "lines")).toBe(6 + 3 + 3);
-		expect(toReadCount(since, plain, "files")).toBe(2);
+		expect(toReadCount(unitsOf(withRevert, plain), "clusters")).toBe(3);
+		expect(toReadCount(unitsOf(withRevert, plain), "lines")).toBe(6 + 3 + 3);
+		expect(toReadCount(unitsOf(withRevert, plain), "files")).toBe(2);
 		expect(since.get(0)?.counts).toMatchObject({ removed: 1, reverted: 1 });
 		expect(goneFiles(withRevert, plain).map((f) => f.path)).toEqual([
 			"reverted.ts",
@@ -266,7 +264,7 @@ describe("since-only pieces", () => {
 			],
 		};
 		const after = sinceByFile(withRevert, marked);
-		expect(toReadCount(after, marked, "clusters")).toBe(1);
+		expect(toReadCount(unitsOf(withRevert, marked), "clusters")).toBe(1);
 		expect(after.get(0)?.left).toEqual({ units: 0, lines: 0 });
 		expect(after.get(0)?.counts).toMatchObject({ removed: 0, reverted: 0 });
 		// A mark that holds part of a piece's lines leaves it to read.
@@ -366,8 +364,8 @@ describe("counts follow the since view (its pieces)", () => {
 		const one = at(ten({ reviewedLines: [[5, 8]] }));
 		const after = sinceByFile(ans, one);
 		expect(sinceProgress(unitsOf(ans, one)).clusters.reviewed).toBe(1);
-		expect(toReadCount(after, one, "clusters")).toBe(
-			toReadCount(before, at(), "clusters") - 1,
+		expect(toReadCount(unitsOf(ans, one), "clusters")).toBe(
+			toReadCount(unitsOf(ans, at()), "clusters") - 1,
 		);
 		expect(after.get(0)?.counts.reworked).toBe(
 			(before.get(0)?.counts.reworked ?? 0) - 1,
@@ -630,7 +628,7 @@ describe("an unticked carried cluster in the since view (principle 2)", () => {
 			file(0, "core.ts", [cluster("c", "reviewed", true, 4)]),
 		]);
 		const before = sinceByFile(carriedAnswer, carried);
-		expect(toReadCount(before, carried, "clusters")).toBe(0);
+		expect(toReadCount(unitsOf(carriedAnswer, carried), "clusters")).toBe(0);
 		expect(sinceProgress(unitsOf(carriedAnswer, carried)).clusters.total).toBe(
 			0,
 		);
@@ -640,8 +638,8 @@ describe("an unticked carried cluster in the since view (principle 2)", () => {
 			file(0, "core.ts", [cluster("c", "unreviewed", false, 4)]),
 		]);
 		const after = sinceByFile(carriedAnswer, unticked);
-		expect(toReadCount(after, unticked, "clusters")).toBe(1);
-		expect(toReadCount(after, unticked, "lines")).toBe(4);
+		expect(toReadCount(unitsOf(carriedAnswer, unticked), "clusters")).toBe(1);
+		expect(toReadCount(unitsOf(carriedAnswer, unticked), "lines")).toBe(4);
 		expect(sinceProgress(unitsOf(carriedAnswer, unticked)).clusters).toEqual({
 			total: 1,
 			reviewed: 0,
@@ -721,6 +719,23 @@ describe('"Ignore whitespace" in the since view (CAR-184)', () => {
 			crossedOff: 0,
 		});
 		expect(sinceProgress(on.units).files.done).toBe(1);
+	});
+
+	it("switch on, the bar's to-read reads the bar's own units: a file of nothing else counts nowhere on it, though its row keeps its count", () => {
+		const on = countedUnits(unitsOf(wa, wv), true);
+		const bar = sinceProgress(on.units);
+		// The bar: core.ts's change, reviewed; util.ts (nothing else) is out.
+		expect(bar.clusters.total - bar.clusters.reviewed).toBe(0);
+		expect(toReadCount(on.units, "clusters")).toBe(0);
+		expect(toReadCount(on.units, "lines")).toBe(0);
+		expect(toReadCount(on.units, "files")).toBe(0);
+		// util.ts's row still counts its unit.
+		expect(sinceByFile(wa, wv, true).get(1)?.left.units).toBe(1);
+		// Off: both whitespace-only units are to read, in two files.
+		const off = countedUnits(unitsOf(wa, wv), false);
+		expect(toReadCount(off.units, "clusters")).toBe(2);
+		expect(toReadCount(off.units, "lines")).toBe(4);
+		expect(toReadCount(off.units, "files")).toBe(2);
 	});
 
 	it("a file's header leaves them out, but a file of nothing else keeps its own", () => {

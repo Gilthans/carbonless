@@ -223,20 +223,20 @@ export function goneFileView(file: { index: number; path: string }): FileView {
 /**
  * How much is still to read in the unit: the since view's units not
  * marked yet (pieces, and the rest of a reworked or new cluster only the
- * full diff shows). Files: those with any.
+ * full diff shows). Files: those with any. `units` are the bar's own
+ * (countedUnits): with "Ignore whitespace" on, a file of nothing else
+ * counts nowhere on the bar, its "to read" included, though its row and
+ * header keep their counts (sinceByFile).
  */
-export function toReadCount(
-	since: Map<number, FileSince>,
-	_view: ReviewView,
-	unit: Unit,
-): number {
+export function toReadCount(units: readonly SinceUnit[], unit: Unit): number {
 	let n = 0;
-	for (const info of since.values()) {
-		const { units, lines } = info.left;
-		n +=
-			unit === "files" ? (units > 0 ? 1 : 0) : unit === "lines" ? lines : units;
+	const files = new Set<number>();
+	for (const u of units) {
+		if (u.state !== "unreviewed") continue;
+		files.add(u.index);
+		n += unit === "lines" ? u.open : 1;
 	}
-	return n;
+	return unit === "files" ? files.size : n;
 }
 
 /**
