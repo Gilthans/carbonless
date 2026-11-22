@@ -584,6 +584,38 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 		expect(p.end.size).toBe(0);
 	});
 
+	it("twins: a base line the full diff keeps is its head line in the since view too, never a removed twin's row that names it (CAR-139)", () => {
+		// Base "}\nb"; PS1 "}\n}\nb"; head "Y\n}\nb". The full diff adds Y
+		// on top: base 1 ("}") is head 2. The interdiff removes PS1's *first*
+		// "}" (old 1), whose base number is 1 too (git aligns the twins
+		// otherwise there).
+		const twinsFull = [
+			{
+				kind: "lines" as const,
+				oldStart: 0,
+				oldCount: 0,
+				newStart: 1,
+				newCount: 1,
+			},
+		];
+		const twins: FileHunks = {
+			hunks: [hunk([{ ...del(1), baseNo: 1 }, add(1), ctx(2, 2), ctx(3, 3)])],
+			newLineCount: 3,
+		};
+		const t = thread({ side: "LEFT", line: 1 });
+		const p = placeThreads({
+			threads: [t],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: twins,
+			loadedContext: [],
+			sinceLeft: sinceLeft(twinsFull, twins.hunks),
+		});
+		// Where the full diff shows it (head line 2), not the removed row.
+		expect([...p.end]).toEqual([["RIGHT:2", [t]]]);
+		expect(p.end.has("LEFT:1")).toBe(false);
+	});
+
 	it("outside the since view (no mapper) LEFT stays by number", () => {
 		const t = thread({ side: "LEFT", line: 30 });
 		const p = place([t], { hunks: whole });

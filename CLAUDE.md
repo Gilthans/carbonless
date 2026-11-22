@@ -79,9 +79,17 @@ These guide every feature. If a change conflicts with one of them, stop and rais
    of the empty one, release, assert the result (`expectLoadingThen` in
    `e2e/fixtures.ts` and `test/loading.ts`). More: `docs/product-rules.md`.
 
+9. **Interdiffs are first-class.** Reviewing what changed since an earlier
+   patch set (an interdiff) is as natural and usable as reviewing the whole
+   change against the base (the owner: "reviewing interdiffs should be as
+   natural and usable as reviewing a basediff"). Every feature of the full
+   diff works in the since view too, unless the interdiff can't carry it,
+   and then the view says so where the feature would be. A feature that
+   ships full-diff-only is a gap with a ticket, not a design.
+
 More product rules learned while building (GitHub as one comment source among
 several, flagging uncertainty, dating by visibility, first-open performance,
-loading never looking empty, checking against a real PR):
+loading never looking empty, interdiffs first-class, checking against a real PR):
 `docs/product-rules.md`.
 
 ## Development

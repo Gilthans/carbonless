@@ -1853,6 +1853,8 @@ const HUNK_CONTEXT = 20;
 
 /** What a Session hands its agent: its clone, its review and its live views. */
 export interface ReviewAgentSource {
+	/** The reviewer's agent threads store, when the session holds one (one per review and reviewer). */
+	store?: AgentThreadStore;
 	repo: string;
 	reviewId: string;
 	viewer: string;
@@ -2008,11 +2010,9 @@ export async function agentConfig(): Promise<{
 
 /** The review's agent host: one thread store, one runner, the session's facts. */
 export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
-	const store = new AgentThreadStore(
-		new RefStore(src.repo),
-		src.reviewId,
-		src.viewer,
-	);
+	const store =
+		src.store ??
+		new AgentThreadStore(new RefStore(src.repo), src.reviewId, src.viewer);
 	/** The PR author's login; "" when it can't be read (nobody is then). */
 	const prAuthor = () => src.prAuthor().catch(() => "");
 	const facts: RunnerFacts = {

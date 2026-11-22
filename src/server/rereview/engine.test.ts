@@ -641,6 +641,110 @@ describe("the engine", () => {
 		}
 	});
 
+	it("a since removed line names its line in the full diff's old side (baseNo); one the patch set added names none (CAR-139)", async () => {
+		const ps1 = await snap(h.b0, h.p2);
+		const removed = async (head: string, base = h.b0) => {
+			const r = await snap(base, head);
+			const traced = await traceRereview(
+				h.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const { answer } = answerRereview(
+				traced,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const a = answer.files.find((f) => f.path === "a.txt");
+			if (!a) throw new Error("no a.txt");
+			return interdiffFileHunks(traced, r, answer, a.index)
+				.hunks.flatMap((hk) => hk.lines)
+				.filter((l) => l.kind === "del")
+				.map((l) => [l.text, l.oldNo, l.baseNo ?? null]);
+		};
+		// Line 35 is the base's, unchanged in PS1: the base's line 35.
+		expect(await removed(h.h3)).toEqual([["line 35", 35, 35]]);
+		// "thirty" is PS1's own line: no line of the base.
+		expect(await removed(h.reworked)).toEqual([["thirty", 30, null]]);
+	});
+
+	/** Commits `files` on top of `parent` (detached) in the history's repo. */
+	const commitOn = (parent: string, files: Record<string, string>) => {
+		h.git("checkout", "--quiet", "--detach", parent);
+		for (const [name, content] of Object.entries(files)) {
+			writeFileSync(join(h.path, name), content);
+		}
+		h.git("add", "--all");
+		h.git("commit", "--quiet", "-m", "fixture");
+		const sha = h.git("rev-parse", "HEAD");
+		h.git("checkout", "--quiet", "main");
+		return sha;
+	};
+	/** The since view's removed lines of `path`: text, own number, baseNo. */
+	const removedSince = async (
+		ps1: Awaited<ReturnType<typeof snap>>,
+		r: Awaited<ReturnType<typeof snap>>,
+		path: string,
+	) => {
+		const traced = await traceRereview(
+			h.path,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		const { answer } = answerRereview(
+			traced,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		const f = answer.files.find((x) => x.path === path);
+		if (!f) throw new Error(`no ${path}`);
+		return interdiffFileHunks(traced, r, answer, f.index)
+			.hunks.flatMap((hk) => hk.lines)
+			.filter((l) => l.kind === "del")
+			.map((l) => [l.text, l.oldNo, l.baseNo ?? null]);
+	};
+
+	it("the base moved on (three lines on top): baseNo is the new base's line, neither the since view's number nor the old base's (CAR-139)", async () => {
+		// PS1 dropped line 20, so its line 35 is the since view's 34 + 3.
+		const ps1 = await snap(h.b0, h.deletesLine);
+		const top = "top 1\ntop 2\ntop 3\n";
+		const moved = commitOn(h.b0, { "a.txt": `${top}${aTxt({})}` });
+		const head = commitOn(moved, {
+			"a.txt": `${top}${aTxt({ 2: "two", 30: "thirty", 35: "thirty-five" }).replace("line 20\n", "")}`,
+			"new.txt": "new\n",
+		});
+		const r = await snap(moved, head);
+		// Old base: 35; the since view (PS1 rebased on the new base): 37;
+		// the new base: 38.
+		expect(await removedSince(ps1, r, "a.txt")).toEqual([["line 35", 37, 38]]);
+	});
+
+	it("twins git aligns differently: a removed line's baseNo names the base line that reads the same, not the line its own number names (CAR-139, on CAR-217's map)", async () => {
+		// Base "x q } b". PS1 drops x and adds a second "}" (git: after the
+		// first): "q } } b". The head turns x into Y instead: "q Y } b". The
+		// since view removes PS1's *first* "}" (its old 2; git trims the
+		// common ends), which is base line 3. Its number (2) names base "q":
+		// a map by number would put a move or comment on another line.
+		const base = commitOn(h.b0, { "g.txt": "x\nq\n}\nb\n" });
+		const ps = commitOn(base, { "g.txt": "q\n}\n}\nb\n" });
+		const head = commitOn(base, { "g.txt": "q\nY\n}\nb\n" });
+		const ps1 = await snap(base, ps);
+		const r = await snap(base, head);
+		const removed = await removedSince(ps1, r, "g.txt");
+		expect(removed).toEqual([["}", 2, 3]]);
+		// The text guarantee: the base line it names reads as the row does
+		// (base 2, the row's own number, is "q").
+		const baseLines = h.git("show", `${base}:g.txt`).split("\n");
+		expect(baseLines[1]).toBe("q");
+		for (const [text, , b] of removed) {
+			expect(baseLines[(b as number) - 1]).toBe(text);
+		}
+	});
+
 	it("a deletion the author restored: gone, its restored line keyed to it", async () => {
 		const ps1 = await snap(h.b0, h.deletesLine);
 		const r = await snap(h.b0, h.restoresLine);

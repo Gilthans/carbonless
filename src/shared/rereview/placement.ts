@@ -93,6 +93,11 @@ export type ThreadPlacement =
 			path: string;
 			nearest: Position | null;
 			movedTo?: string;
+			/**
+			 * A moved thread's (CAR-139): the lines it was moved to, in the
+			 * move's snapshot, and their text (the Original Reviewed Change).
+			 */
+			old?: { side: DiffSide; startLine: number; line: number; text: string[] };
 	  }
 	/** A file comment, on its file (through a rename). */
 	| { kind: "file"; path: string }
@@ -171,6 +176,27 @@ export function validAnchor(
 		line <= endCount &&
 		startLine <= startCount
 	);
+}
+
+/**
+ * A range's lines in the thread's own snapshot, with their text (empty
+ * when unknown): what a changed placement's `old` holds.
+ */
+export function oldLines(
+	diffs: TraceDiffs,
+	anchor: Pick<CodeAnchor, "side" | "line" | "startSide" | "startLine">,
+): { side: DiffSide; startLine: number; line: number; text: string[] } {
+	const o = oldText(
+		diffs,
+		{ side: anchor.startSide, line: anchor.startLine },
+		{ side: anchor.side, line: anchor.line },
+	);
+	return {
+		side: anchor.side,
+		startLine: o.startLine,
+		line: anchor.line,
+		text: o.text,
+	};
 }
 
 /** The old text of a range, line by line (one side), else its end alone. */

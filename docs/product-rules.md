@@ -109,6 +109,19 @@ touched is reworked or new, and unreviewed. A carry is stored as a
 carried event that doesn't check out (an unknown patch set, a source that
 isn't reviewed) is ignored, leaving the cluster unreviewed (principle 2).
 
+## Interdiffs are first-class
+
+Reviewing what changed since an earlier patch set is as natural as
+reviewing the whole change (principle 9; owner, 2026-11-22: "I want
+interdiff and basediff comparisons to have feature parity as much as
+possible"). A feature built for the full diff works in the since view
+in the same change, or the since view says why not where the feature
+would be; a full-diff-only feature is a gap with a ticket. Numbers the since
+view shows on its old side are the compared patch set's: anything stored
+or sent (a move, a comment, a link) goes through the full diff's lines,
+never the interdiff's own numbers (thread moves: `moveEnd`,
+`src/web/files/threadMove.tsx`).
+
 ## Re-review never hides a change
 
 The since view, the "needs eyes" filter, carried marks, thread placement
@@ -702,8 +715,40 @@ question would be on someone else's behalf, or about a past moment.
   group as its agent card (with its fate when known): never gone. An
   earlier patch set shows only those asked before the next one started,
   as review threads, except those asked on its own commit (asked there). Placements are for the viewed snapshot (a moved base
-  asks again), retried on failure, computed and never stored: no drag, no
-  storage change. Bubbles count unresolved agent threads only.
+  asks again), retried on failure, computed and never stored; the
+  reviewer moves one as a review thread (next rule). Bubbles count
+  unresolved agent threads only.
+- **A move is the reviewer's view (owner, 2026-11-18, CAR-139).** Any traced
+  thread on lines, a GitHub review thread or an agent thread, can be put on
+  other lines of the target viewed (the latest patch set or a head; never
+  an earlier patch set), in the full diff or the since view alike: drag its handle onto a line
+  of its file, or press the handle for move mode (a bar at the top, "Pick a
+  line", the line picker, "Place here": a range, any file of the
+  comparison). One mechanism for both kinds: `thread-moved` in the
+  reviewer's private agent threads ref, undone by `thread-move-undone`;
+  old `thread-placed` events read as moves. The move is the thread's new
+  truth: later snapshots trace from the moved lines; a move made on the
+  viewed snapshot places it as chosen. It shows as a gray `moved` chip
+  (pin) whose tooltip says where it was made ("Moved here by you on PS3",
+  "Moved by you on PS2, followed here") and, for a GitHub thread, where
+  GitHub shows it ("GitHub: line 88", "GitHub: outdated"), with a 40px
+  Undo in Files changed; the Threads tab lists it at its moved place with
+  a pin cue, the Overview shows the chip only. A move never writes to
+  GitHub (a reply goes to the thread as ever, with nothing added), never
+  starts a patch set, never touches coverage, counts or bubbles' totals,
+  and never hides a thread: every thread keeps exactly one placement, and
+  a move that can't be followed (its commits gone) shows the thread
+  unplaced as `rewritten`, never the tracer's older guess. A thread opened
+  on the viewed snapshot has no handle (no guess to correct), nor does a
+  file thread or a conversation; no handle or chip until the placements
+  answer. Sharing moves with other reviewers waits for sync. A move always
+  stores the target's full-diff lines: in the since view a new or context
+  row is the target's line, and a removed row its base line (CAR-217's
+  `baseNo`, the same one a comment there posts with); a removed row that
+  is no base line (only the earlier patch set had it) is no drop target and Place
+  here is off on it, never stored under the interdiff's own number. A
+  thread on a removed base line shows on that removed row in the since
+  view when it shows one.
 - **The agent opens conversations only while answering, and they answer
   nothing (spec 2026-11-15, CAR-80).** While it holds a question `next`
   handed it, the agent may call MCP `open` to put a conversation on the

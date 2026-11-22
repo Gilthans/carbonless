@@ -6,6 +6,7 @@ import {
 	HistoryIcon,
 	type Icon,
 	PersonIcon,
+	PinIcon,
 	SparkleFillIcon,
 } from "@primer/octicons-react";
 import { useEffect, useId, useRef } from "react";
@@ -62,6 +63,7 @@ function cuesOf(row: PanelRow): { key: string; text: string }[] {
 		cues.push({ key: "waiting", text: "waiting for the agent" });
 	if (row.unread) cues.push({ key: "unread", text: "new agent message" });
 	if (row.outdated) cues.push({ key: "outdated", text: "outdated" });
+	if (row.moved) cues.push({ key: "moved", text: "moved by you" });
 	if (row.resolved) cues.push({ key: "resolved", text: "resolved" });
 	return cues;
 }
@@ -238,6 +240,14 @@ function Row(props: {
 									size={12}
 									aria-hidden
 									data-cue="outdated"
+									className="shrink-0 text-muted"
+								/>
+							)}
+							{row.moved && (
+								<PinIcon
+									size={12}
+									aria-hidden
+									data-cue="moved"
 									className="shrink-0 text-muted"
 								/>
 							)}

@@ -64,8 +64,13 @@ import {
 	type SessionRegistry,
 	UnknownReviewError,
 } from "./registry.js";
-import { parsePlacementBody } from "./rereview/placementBody.js";
-import { InvalidPlacementError } from "./rereview/threads.js";
+import { parseMoveBody } from "./rereview/moveBody.js";
+import {
+	DeadMoveError,
+	InvalidPlacementError,
+	MoveCapError,
+	UnknownMoveThreadError,
+} from "./rereview/threads.js";
 import { isLowerUlid } from "./review/events.js";
 import {
 	InvalidChangeError,
@@ -329,6 +334,11 @@ export async function buildApp(
 		if (error instanceof NotesError) return send(502, error.message);
 		if (error instanceof InvalidPlacementError) {
 			return send(400, error.message);
+		}
+		if (error instanceof UnknownMoveThreadError)
+			return send(404, error.message);
+		if (error instanceof DeadMoveError || error instanceof MoveCapError) {
+			return send(409, error.message);
 		}
 		if (error instanceof NoAgentError) {
 			return reply.status(404).send({ error: error.message, code: "no-agent" });
@@ -893,19 +903,6 @@ export async function buildApp(
 					);
 				},
 			);
-			// The reviewer places a thread on lines of their latest patch set
-			// (a drag): `thread-placed`, checked against the patch set first.
-			review.post<{ Params: { threadId: string } }>(
-				"/threads/:threadId/placement",
-				(request) => {
-					const { patchset, anchor } = parsePlacementBody(request.body);
-					return sessionOf(request).placeThread(
-						threadIdParam(request.params.threadId),
-						patchset,
-						anchor,
-					);
-				},
-			);
 			review.patch<{ Params: { threadId: string; commentId: string } }>(
 				"/threads/:threadId/comments/:commentId",
 				(request) => {
@@ -955,6 +952,33 @@ export async function buildApp(
 					attemptedAt: r.attemptedAt,
 					retry: r.retry,
 				});
+			});
+			// The reviewer moves a thread (a review or agent thread) to lines
+			// of the target they view, and takes a move back (CAR-139):
+			// their private ref only, never GitHub.
+			review.post("/moves", (request) =>
+				sessionOf(request).moveThread(parseMoveBody(request.body)),
+			);
+			review.delete<{
+				Params: { move: string };
+				Querystring: { ps?: unknown; head?: unknown };
+			}>("/moves/:move", (request) => {
+				const id = request.params.move;
+				if (!isLowerUlid(id)) throw new BadRequestError("Not a move id");
+				// The target viewed, as for a move: an earlier patch set is
+				// read-only, its moves too.
+				const { ps, head } = request.query;
+				if ((ps === undefined) === (head === undefined)) {
+					throw new BadRequestError(
+						"ps (a patch set) or head (a commit id), one of them",
+					);
+				}
+				return sessionOf(request).undoMove(
+					id,
+					ps !== undefined
+						? { patchset: patchsetParam(ps) }
+						: { head: oidParam("head", head) },
+				);
 			});
 			// The reviewer's own agent (review buddy): status, private threads.
 			review.get("/agent", (request) => agentOf(request).status());

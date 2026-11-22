@@ -19,7 +19,7 @@ import {
 	type Scenario,
 	threadComment,
 } from "../../test/fake-gh/scenario";
-import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
+import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { AgentStatus, AgentThread } from "../shared/agent";
 import { IMAGE_MAX_BYTES } from "../shared/imageTypes";
@@ -33,10 +33,12 @@ import type {
 } from "../shared/types";
 import { agentConfigSaveCount, setServerMcp } from "./agent/host";
 import { buildApp, prTitle, withPrTitle } from "./app";
+import { clonePath } from "./clone";
 import { GitError } from "./git";
 import type { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
 import { ThreadPlacer } from "./rereview/threads";
+import { newEvent } from "./review/events";
 import { RefStore } from "./review/refStore";
 import { Session } from "./session";
 import { TEST_HOOK_HEADER } from "./testHooks";
@@ -3244,9 +3246,8 @@ describe("API", () => {
 			}
 		});
 
-		it("POST /threads/:id/placement writes thread-placed on the latest patch set; the placements then have it; refuses what doesn't fit", async () => {
-			const { h2, readId } = await setup();
-			// PS2 on the new head (a mark starts it).
+		/** PS2 started on `h2` (a mark starts it). */
+		const startPs2 = async (h2: string) => {
 			const view: ReviewView = await get(`/api/review?head=${h2}`);
 			const started = await post("/api/review/states", {
 				revision: view.revision,
@@ -3255,65 +3256,401 @@ describe("API", () => {
 				],
 			});
 			expect(started.statusCode, started.body).toBe(200);
-			const anchor = {
-				path: "a.txt",
-				startSide: "RIGHT",
-				startLine: 20,
-				side: "RIGHT",
-				line: 20,
-			};
-			const ok = await post("/api/threads/T12-0/placement", {
-				patchset: 2,
+		};
+		const line = (n: number, path = "a.txt") => ({
+			path,
+			startSide: "RIGHT" as const,
+			startLine: n,
+			side: "RIGHT" as const,
+			line: n,
+		});
+		const gh = { source: "github", id: "T12-0" };
+		/** carbonless's own clone of the PR's repo (where review data lives). */
+		const cacheClone = async () => {
+			const info: SessionInfo = await get("/api/session");
+			return clonePath(info.pr.owner, info.pr.repo);
+		};
+
+		it("POST /moves writes a thread-moved on the target viewed, `on` from the session; the placements then have it with `moved`; DELETE /moves/:id takes it back; neither calls gh", async () => {
+			const { h1, h2, readId } = await setup();
+			await startPs2(h2);
+			await placementsOf(`read=${readId}&ps=2`);
+			const log = pr.ghLog();
+			const anchor = line(20);
+			const ok = await post("/api/moves", {
+				thread: gh,
+				to: { patchset: 2 },
 				anchor,
+				// Never taken from the body.
+				on: { base: h1, head: h1, patchset: 1 },
 			});
 			expect(ok.statusCode, ok.body).toBe(200);
-			expect(ok.json()).toEqual({
+			const moved = ok.json();
+			expect(moved).toMatchObject({
+				thread: gh,
+				placement: { kind: "placed", anchor, changed: false },
+				moved: { id: moved.move, on: { patchset: 2 }, here: true },
+			});
+			const after = await placementsOf(`read=${readId}&ps=2`);
+			expect(
+				after.threads.find((t: { id: string }) => t.id === "T12-0"),
+			).toEqual({
 				id: "T12-0",
 				placement: { kind: "placed", anchor, changed: false },
+				moved: moved.moved,
 			});
-			expect(byId(await placementsOf(`read=${readId}&ps=2`))["T12-0"]).toEqual({
-				kind: "placed",
+			// The event in the reviewer's private ref, on PS2's own snapshot.
+			const raw = execFileSync(
+				"git",
+				["log", "--format=%B", "--all", "--grep=moved a thread"],
+				{ cwd: await cacheClone(), encoding: "utf8", env: testGitEnv() },
+			);
+			const event = JSON.parse(
+				raw.split("\n").find((l) => l.startsWith("{")) ?? "{}",
+			);
+			expect(event).toMatchObject({
+				type: "thread-moved",
+				by: "human",
+				thread: gh,
+				on: { head: h2, patchset: 2 },
 				anchor,
-				changed: false,
 			});
-			const refused = async (body: unknown, status = 400) => {
-				const res = await post("/api/threads/T12-0/placement", body);
+			expect(event.on.head).not.toBe(h1);
+			// Undo: back to the tracer's place, the move gone.
+			const undone = await inject(`/api/moves/${moved.move}?ps=2`, {
+				method: "DELETE",
+			});
+			expect(undone.statusCode, undone.body).toBe(200);
+			expect(undone.json()).toMatchObject({ undone: moved.move, thread: gh });
+			const back = await placementsOf(`read=${readId}&ps=2`);
+			const t = back.threads.find((x: { id: string }) => x.id === "T12-0");
+			expect(t?.moved).toBeUndefined();
+			expect(t?.placement.kind).toBe("changed");
+			// A second undo of the same move: 409, nothing written.
+			const again = await inject(`/api/moves/${moved.move}?ps=2`, {
+				method: "DELETE",
+			});
+			expect(again.statusCode).toBe(409);
+			const nope = await inject("/api/moves/nope?ps=2", { method: "DELETE" });
+			expect(nope.statusCode).toBe(400);
+			expect(pr.ghLog()).toBe(log);
+		});
+
+		it("refuses what doesn't fit: 404 an unknown thread, 400 a file thread or bad lines, 409 an earlier patch set; nothing lands", async () => {
+			const { h2, readId } = await setup();
+			await startPs2(h2);
+			await placementsOf(`read=${readId}&ps=2`);
+			const refused = async (body: unknown, status: number) => {
+				const res = await post("/api/moves", body);
 				expect(res.statusCode, JSON.stringify(body)).toBe(status);
 			};
-			// Each check on its own: the patch set, every anchor field, the
-			// path and lines against the patch set's files.
-			await refused({ patchset: 9, anchor });
-			await refused({ patchset: 0, anchor });
-			await refused({ patchset: "2", anchor });
-			await refused({ patchset: 2 });
-			await refused({ patchset: 2, anchor: { ...anchor, side: "UP" } });
-			await refused({ patchset: 2, anchor: { ...anchor, startSide: 1 } });
-			await refused({ patchset: 2, anchor: { ...anchor, line: 0 } });
-			await refused({ patchset: 2, anchor: { ...anchor, startLine: 1.5 } });
-			await refused({ patchset: 2, anchor: { ...anchor, path: "" } });
-			await refused({ patchset: 2, anchor: { ...anchor, path: "nope.txt" } });
-			await refused({
-				patchset: 2,
-				anchor: { ...anchor, path: "<b>x</b>.txt" },
+			const ok = { thread: gh, to: { patchset: 2 }, anchor: line(20) };
+			await refused({ ...ok, thread: { source: "github", id: "T99" } }, 404);
+			await refused(
+				{
+					...ok,
+					thread: { source: "agent", id: "01jzzzzzzzzzzzzzzzzzzzzzzz" },
+				},
+				404,
+			);
+			await refused({ ...ok, to: { patchset: 9 } }, 400);
+			await refused({ ...ok, to: { patchset: 1 } }, 409);
+			await refused({ ...ok, anchor: line(2, "nope.txt") }, 400);
+			await refused({ ...ok, anchor: line(2, "<b>x</b>.txt") }, 400);
+			await refused({ ...ok, anchor: line(31) }, 400);
+			await refused({ ...ok, anchor: { ...line(20), startLine: 25 } }, 400);
+			await refused({ ...ok, anchor: { ...line(20), side: "UP" } }, 400);
+			await refused({ thread: gh, anchor: line(20) }, 400);
+			// A head that is an earlier patch set's snapshot is read-only too.
+			const ps1 = await get("/api/session");
+			const h1 = ps1.patchsets[0]?.head as string;
+			await refused({ ...ok, to: { head: h1 } }, 409);
+			// A GitHub thread on a file has no lines to move: 400.
+			withThreads([
+				...threadsOn(h1, true),
+				reviewThread({ path: "a.txt", subjectType: "FILE", line: null }, [
+					threadComment({
+						login: "rev",
+						text: "File",
+						commit: h1,
+						diffHunk: "",
+					}),
+				]),
+			]);
+			const fileRead = (await get("/api/overview?maxAge=0")).readId as string;
+			await get(`/api/threads?read=${fileRead}&stage=summary`);
+			await refused({ ...ok, thread: { source: "github", id: "T12-2" } }, 400);
+			const after = await placementsOf(`read=${readId}&ps=2`);
+			expect(
+				after.threads.find((t: { id: string }) => t.id === "T12-0")?.moved,
+			).toBeUndefined();
+		});
+
+		it("an old thread-placed reads as a move with Undo, followed into a later head; reading writes nothing (CAR-139)", async () => {
+			const { h1, h2, readId } = await setup();
+			await startPs2(h2);
+			const clone = await cacheClone();
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: clone,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const progressRef = git(
+				"for-each-ref",
+				"--format=%(refname)",
+				`refs/crb/reviews/${id}/reviewers/`,
+			)
+				.split("\n")
+				.find((r) => r.endsWith("/progress")) as string;
+			const slug = progressRef.split("/").at(-2) as string;
+			const placed = (by: "human" | "ai", patchset: number, n: number) =>
+				newEvent(
+					"thread-placed",
+					slug,
+					{ thread: "T12-0", patchset, anchor: line(n), engine: 1 },
+					by,
+				);
+			const human = placed("human", 2, 20);
+			await new RefStore(clone).appendEvents(
+				progressRef,
+				"crb: placed",
+				[placed("ai", 2, 21), placed("human", 9, 22), human],
+				slug,
+			);
+			const tips = () =>
+				git("for-each-ref", "--format=%(objectname) %(refname)", "refs/crb");
+			const before = tips();
+			const answer = await placementsOf(`read=${readId}&ps=2`);
+			expect(
+				answer.threads.find((t: { id: string }) => t.id === "T12-0"),
+			).toEqual({
+				id: "T12-0",
+				placement: { kind: "placed", anchor: line(20), changed: false },
+				moved: {
+					id: human.id,
+					on: { patchset: 2 },
+					at: new Date(human.ts).toISOString(),
+					here: true,
+					path: "a.txt",
+				},
 			});
-			await refused({
-				patchset: 2,
-				anchor: { ...anchor, line: 31, startLine: 31 },
+			// Followed into a later head: from PS2's line 20.
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 reworked";
+			lines[25] = "line 26 changed";
+			const h3 = pr.moveHead({ "a.txt": `top\n${lines.join("\n")}\n` });
+			withThreads(threadsOn(h1, true));
+			const read3 = (await get("/api/overview?maxAge=0")).readId as string;
+			const later = await placementsOf(`read=${read3}&head=${h3}`);
+			expect(
+				later.threads.find((t: { id: string }) => t.id === "T12-0"),
+			).toMatchObject({
+				placement: { kind: "placed", anchor: line(21) },
+				moved: { id: human.id, here: false },
 			});
-			await refused({ patchset: 2, anchor: { ...anchor, startLine: 25 } });
-			// An earlier patch set is read-only.
-			await refused({ patchset: 1, anchor }, 409);
-			const bad = await post("/api/threads/no%20id/placement", {
-				patchset: 2,
-				anchor,
+			// Reading wrote nothing.
+			expect(tips()).toBe(before);
+			// Undo names the legacy event's id.
+			const undone = await inject(`/api/moves/${human.id}?head=${h3}`, {
+				method: "DELETE",
 			});
-			expect(bad.statusCode).toBe(400);
-			// Nothing of the refused ones landed.
-			expect(byId(await placementsOf(`read=${readId}&ps=2`))["T12-0"]).toEqual({
-				kind: "placed",
-				anchor,
-				changed: false,
+			expect(undone.statusCode, undone.body).toBe(200);
+			const back = await placementsOf(`read=${read3}&head=${h3}`);
+			expect(
+				back.threads.find((t: { id: string }) => t.id === "T12-0")?.moved,
+			).toBeUndefined();
+		});
+
+		it("an undo names the target viewed: none is a 400, an earlier patch set a 409, nothing written", async () => {
+			const { h2, readId } = await setup();
+			await startPs2(h2);
+			await placementsOf(`read=${readId}&ps=2`);
+			const moved = (
+				await post("/api/moves", {
+					thread: gh,
+					to: { patchset: 2 },
+					anchor: line(20),
+				})
+			).json();
+			for (const [query, status] of [
+				["", 400],
+				["?ps=1", 409],
+			] as const) {
+				const res = await inject(`/api/moves/${moved.move}${query}`, {
+					method: "DELETE",
+				});
+				expect(res.statusCode, query).toBe(status);
+			}
+			const after = await placementsOf(`read=${readId}&ps=2`);
+			expect(
+				after.threads.find((t: { id: string }) => t.id === "T12-0")?.moved?.id,
+			).toBe(moved.move);
+		});
+
+		it("a thread with 200 live moves refuses another (409, saying why); an undo makes room", async () => {
+			const { h1, h2, readId } = await setup();
+			await startPs2(h2);
+			await placementsOf(`read=${readId}&ps=2`);
+			const clone = await cacheClone();
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: clone,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const progressRef = git(
+				"for-each-ref",
+				"--format=%(refname)",
+				`refs/crb/reviews/${id}/reviewers/`,
+			)
+				.split("\n")
+				.find((r) => r.endsWith("/progress")) as string;
+			const agentRef = progressRef.replace(/progress$/, "agent/threads");
+			const slug = progressRef.split("/").at(-2) as string;
+			const base = git("merge-base", h1, h2);
+			const many = Array.from({ length: 200 }, () =>
+				newEvent("thread-moved", slug, {
+					thread: { source: "github", id: "T12-0" },
+					on: { base, head: h2, patchset: 2 },
+					anchor: line(20),
+					engine: 1,
+				}),
+			);
+			await new RefStore(clone).appendEvents(
+				agentRef,
+				"crb: moves",
+				many,
+				slug,
+			);
+			const body = { thread: gh, to: { patchset: 2 }, anchor: line(21) };
+			const full = await post("/api/moves", body);
+			expect(full.statusCode).toBe(409);
+			expect(full.json().error).toMatch(/moved 200 times: undo a move first/);
+			const last = many.at(-1)?.id ?? "";
+			const undo = await inject(`/api/moves/${last}?ps=2`, {
+				method: "DELETE",
 			});
+			expect(undo.statusCode, undo.body).toBe(200);
+			const room = await post("/api/moves", body);
+			expect(room.statusCode, room.body).toBe(200);
+			const after = await placementsOf(`read=${readId}&ps=2`);
+			expect(
+				after.threads.find((t: { id: string }) => t.id === "T12-0"),
+			).toMatchObject({
+				placement: { anchor: line(21) },
+				moved: { id: room.json().move },
+			});
+		});
+
+		it("a move never holds marks up while it waits on GitHub's threads", async () => {
+			const { h2, readId } = await setup();
+			await startPs2(h2);
+			await placementsOf(`read=${readId}&ps=2`);
+			// A newer read whose summary is held: the move waits on it.
+			const scenario = process.env.CRB_FAKE_GH ?? "";
+			const sc = JSON.parse(readFileSync(scenario, "utf8"));
+			writeFileSync(scenario, JSON.stringify({ ...sc, hold: ["threads"] }));
+			const summaries = () =>
+				pr
+					.ghLog()
+					.split("\n")
+					.filter((l) => l.includes("reviewThreads")).length;
+			const before = summaries();
+			void inject("/api/overview?maxAge=0");
+			await vi.waitFor(() => expect(summaries()).toBeGreaterThan(before), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			let settled = false;
+			const move = post("/api/moves", {
+				thread: gh,
+				to: { patchset: 2 },
+				anchor: line(20),
+			}).finally(() => {
+				settled = true;
+			});
+			// A mark goes through while the move waits.
+			const view: ReviewView = await get("/api/review");
+			const mark = await post("/api/review/states", {
+				revision: view.revision,
+				changes: [
+					{ key: view.files[0]?.clusters[0]?.key ?? "", state: "unreviewed" },
+				],
+			});
+			expect(mark.statusCode, mark.body).toBe(200);
+			expect(settled).toBe(false);
+			release(scenario, "threads");
+			expect((await move).statusCode).toBe(200);
+		});
+
+		it("a head that is no patch set yet takes a move without starting one", async () => {
+			const { h2, readId } = await setup();
+			await placementsOf(`read=${readId}&head=${h2}`);
+			const res = await post("/api/moves", {
+				thread: gh,
+				to: { head: h2 },
+				anchor: line(20),
+			});
+			expect(res.statusCode, res.body).toBe(200);
+			expect(res.json().moved.on).toEqual({ head: h2 });
+			const session = await get("/api/session");
+			expect(session.patchsets).toHaveLength(1);
+			const answer = await placementsOf(`read=${readId}&head=${h2}`);
+			expect(
+				answer.threads.find((t: { id: string }) => t.id === "T12-0")?.placement,
+			).toEqual({ kind: "placed", anchor: line(20), changed: false });
+		});
+
+		it("agent threads: a line thread moves; a file thread is refused (400)", async () => {
+			const { h2, readId } = await setup();
+			await placementsOf(`read=${readId}&head=${h2}`);
+			const ask = async (span: Record<string, unknown>, clientId: string) => {
+				const res = await post("/api/agent/threads", {
+					clientId,
+					text: "Why?",
+					span,
+				});
+				expect(res.statusCode, res.body).toBe(200);
+				return res.json().id as string;
+			};
+			const onLine = await ask(
+				{
+					subject: "line",
+					path: "a.txt",
+					commit: pr.head(),
+					side: "RIGHT",
+					line: 2,
+					startSide: "RIGHT",
+					startLine: 2,
+				},
+				"q1",
+			);
+			const onFile = await ask(
+				{ subject: "file", path: "a.txt", commit: pr.head() },
+				"q2",
+			);
+			const log = pr.ghLog();
+			const moved = await post("/api/moves", {
+				thread: { source: "agent", id: onLine },
+				to: { head: h2 },
+				anchor: line(7),
+			});
+			expect(moved.statusCode, moved.body).toBe(200);
+			const placed = await get(`/api/agent/placements?head=${h2}`);
+			expect(
+				placed.threads.find((t: { id: string }) => t.id === onLine),
+			).toMatchObject({
+				placement: { kind: "placed", anchor: line(7) },
+				moved: { id: moved.json().move, here: true },
+			});
+			const file = await post("/api/moves", {
+				thread: { source: "agent", id: onFile },
+				to: { head: h2 },
+				anchor: line(7),
+			});
+			expect(file.statusCode).toBe(400);
+			expect(pr.ghLog()).toBe(log);
 		});
 	});
 

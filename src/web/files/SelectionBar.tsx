@@ -1,3 +1,4 @@
+import { PinIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import {
 	type CSSProperties,
@@ -29,6 +30,13 @@ import {
 	selectionActions,
 	subscribeSelectionActions,
 } from "./selectionActions";
+import {
+	endMoveMode,
+	getMoving,
+	moveAnchorOf,
+	useMoveMode,
+	useMoveWrites,
+} from "./threadMove";
 
 /** What the bar acts on: a span, where it ends on screen, and its text. */
 export interface BarTarget {
@@ -370,6 +378,9 @@ export function SelectionBar(props: {
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
 	const picks = usePicks();
 	const wide = useMedia(NOT_PHONE);
+	// Move mode (CAR-139): the bar offers "Place here" alone.
+	const moving = useMoveMode();
+	const moveWrites = useMoveWrites();
 	const actions = useSyncExternalStore(
 		subscribeSelectionActions,
 		selectionActions,
@@ -601,6 +612,7 @@ export function SelectionBar(props: {
 		const action = selectionActions().find((a) => a.shortcut === key);
 		return (
 			wide &&
+			getMoving() === null &&
 			cur !== null &&
 			action !== undefined &&
 			action.available(cur.target.span, cur.ctx) === true
@@ -627,6 +639,65 @@ export function SelectionBar(props: {
 		run: runKey("a"),
 	});
 	if (!target || hidden || !ctx) return null;
+	if (moving) {
+		const span = target.span;
+		const picked =
+			span.subject === "line" &&
+			span.side !== undefined &&
+			span.line !== undefined;
+		// GitHub's (the full diff's) lines, as the span names them; none
+		// for a line of neither the base nor the head (target.noLine).
+		const anchor = moveAnchorOf(span, target.noLine);
+		const ok = anchor !== null && moveWrites?.to != null;
+		return (
+			<div
+				ref={bar}
+				role="toolbar"
+				aria-label="Move thread"
+				data-testid="selection-bar"
+				data-move-mode
+				onPointerDown={() => {
+					pressing.current = true;
+					setTimeout(() => {
+						pressing.current = false;
+					}, 600);
+				}}
+				onMouseDown={(e) => e.preventDefault()}
+				style={(place ?? { top: -9999, left: -9999 }) satisfies CSSProperties}
+				className="fixed z-40 flex gap-0.5 rounded-lg border border-edge bg-overlay p-0.5 shadow-float"
+			>
+				<Tooltip
+					content={
+						ok
+							? "Place here"
+							: picked
+								? "Not a line of the base or the head"
+								: "Pick lines to place it on"
+					}
+				>
+					{(trigger) => (
+						<button
+							type="button"
+							{...trigger}
+							aria-label="Place here"
+							aria-disabled={!ok || undefined}
+							data-action="place-here"
+							onClick={() => {
+								if (!ok || !anchor || !moveWrites) return;
+								moveWrites.move(moving.thread, anchor);
+								endMoveMode();
+								clear();
+							}}
+							className="flex h-10 items-center justify-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-ink hover:bg-pressed focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:text-faint"
+						>
+							<PinIcon size={16} aria-hidden className="text-accent" />
+							Place here
+						</button>
+					)}
+				</Tooltip>
+			</div>
+		);
+	}
 	return (
 		<div
 			ref={bar}

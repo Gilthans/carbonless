@@ -176,6 +176,13 @@ Every permutation proves:
     head's merge base moved since the comment), and one on the updated head
     next to the base's own change shows that change as context on both
     sides;
+  - thread moves (CAR-139): a review thread and an agent thread made on the
+    opened stage, moved to `a.txt` line 2 on PS1, are followed from that
+    line onto line 2 of the updated stage (for `base-absorbs`, the base's
+    own line by then, context in the comparison; for `none`, the updated
+    snapshot is PS1's own, so the move is placed as made), and still are
+    after `reflog expire` + `gc --prune=now` and a fresh open (PS1's pins
+    keep the move's snapshot);
   - the Overview's timeline follows GitHub's facts: after a force-push
     (`rebase`, `rebase-amend`, `stacked-squash`), the rebased commits
     (GitHub lists only those) sort by their new commit times, after the

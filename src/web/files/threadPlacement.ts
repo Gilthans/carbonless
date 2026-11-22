@@ -91,6 +91,8 @@ export function shownThread(
 	t: ReviewThread,
 	snapshotHead: string,
 	placements: Placements | null,
+	/** Threads the reviewer moved (CAR-139): their columns don't hold. */
+	moved?: ReadonlyMap<string, unknown> | null,
 ): ReviewThread | null {
 	const p = placements?.get(t.id);
 	if (!p) return t.commit !== "" && t.commit === snapshotHead ? t : null;
@@ -105,9 +107,10 @@ export function shownThread(
 	let shown: ReviewThread;
 	if (p.kind === "placed" || p.kind === "changed") {
 		const a = p.anchor;
-		// A rewritten line's columns no longer hold: whole lines.
+		// A rewritten line's columns no longer hold, nor a moved thread's:
+		// whole lines.
 		const cols =
-			p.kind === "placed" && t.anchor
+			p.kind === "placed" && t.anchor && !moved?.has(t.id)
 				? {
 						startCol: t.anchor.startCol ?? null,
 						endCol: t.anchor.endCol ?? null,
@@ -115,6 +118,7 @@ export function shownThread(
 				: { startCol: null, endCol: null };
 		shown = {
 			...t,
+			madeOn: t.madeOn ?? t.commit,
 			path: a.path,
 			commit: snapshotHead,
 			subject: "line",
@@ -130,7 +134,12 @@ export function shownThread(
 			},
 		};
 	} else {
-		shown = { ...t, path: p.path, commit: snapshotHead };
+		shown = {
+			...t,
+			madeOn: t.madeOn ?? t.commit,
+			path: p.path,
+			commit: snapshotHead,
+		};
 	}
 	copies.set(p, shown);
 	return shown;
@@ -141,9 +150,10 @@ export function shownThreads(
 	threads: readonly ReviewThread[],
 	snapshotHead: string,
 	placements: Placements | null,
+	moved?: ReadonlyMap<string, unknown> | null,
 ): ReviewThread[] {
 	return threads.flatMap((t) => {
-		const shown = shownThread(t, snapshotHead, placements);
+		const shown = shownThread(t, snapshotHead, placements, moved);
 		return shown ? [shown] : [];
 	});
 }
@@ -267,10 +277,12 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
 
 /**
  * The since view's row for a LEFT line GitHub names (a base line on the
- * head): the removed row the since view shows it on (its `baseNo`, keyed
- * by its own old number there), else, through the full diff's line
- * clusters (base → head), the head line it became; null when neither (the
- * full diff deleted it and the since view doesn't show it).
+ * head): through the full diff's line clusters (base → head), the head
+ * line it became, as the full diff shows it; only when the full diff
+ * deleted it, the removed row the since view shows it on (its `baseNo`,
+ * keyed by its own old number there); null when neither. Never a removed
+ * row for a base line the full diff keeps (a twin git aligns otherwise in
+ * the interdiff): both views put a thread on the same line.
  */
 export type SinceLeft = (n: number) => { side: DiffSide; line: number } | null;
 
@@ -292,10 +304,10 @@ export function sinceLeft(
 		}
 	}
 	return (n) => {
-		const old = removed.get(n);
-		if (old !== undefined) return { side: "LEFT", line: old };
 		const line = full.oldToNew(n);
-		return line === null ? null : { side: "RIGHT", line };
+		if (line !== null) return { side: "RIGHT", line };
+		const old = removed.get(n);
+		return old === undefined ? null : { side: "LEFT", line: old };
 	};
 }
 
