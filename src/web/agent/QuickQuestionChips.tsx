@@ -1,38 +1,50 @@
-import { ChevronDownIcon, ChevronUpIcon } from "@primer/octicons-react";
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { SkeletonBar, Spinner } from "../Spinner";
-import { Tooltip } from "../Tooltip";
 
 /**
  * One-tap questions above an Ask agent box (quickQuestions.ts): a tap puts
- * the question in the box (`onPick`), never sends. A question too long for
- * one line shows one line with an ellipsis and a chevron (Show more) that
- * unfolds it, without picking it (the owner, 2026-11-18: "You don't have to
- * click it to select the prompt, but you should be able to, to see what it
- * is exactly before picking"). The chip's name is the whole question,
- * truncated or not. While it isn't known which questions apply
- * (`questions` null), a spinner and chip-shaped skeletons hold their
+ * the question in the box (`onPick`), never sends. Each chip shows its whole
+ * question, wrapping, so a long one can be read before picking it (the
+ * owner, 2026-11-18). The list is capped in height and scrolls, starting
+ * scrolled all the way down (the owner, 2026-11-22: "Still limit the height
+ * of the box, but instead of "Show more", it should have a scroll bar and
+ * start scrolled all the way down"). While it isn't known which questions
+ * apply (`questions` null), a spinner and chip-shaped skeletons hold their
  * place, never the wrong list.
  */
 /** Skeleton chips: three, the drawer's lists' length. */
 const SKELETON_WIDTHS = ["w-40", "w-64", "w-56"];
 
+/**
+ * The list's cap: two 40px rows and a peek of the third, so it visibly
+ * scrolls. The padding keeps a chip's focus ring inside the scroller.
+ */
+const CAP = "max-h-28 p-0.5";
+
 export function QuickQuestionChips(props: {
 	questions: readonly string[] | null;
 	onPick: (question: string) => void;
 }) {
+	const list = useRef<HTMLUListElement>(null);
+	// The questions' content, not the array's identity: a parent's rerender
+	// with the same questions never scrolls the reader back down.
+	const key = props.questions?.join("\n");
+	// Before paint, so the list never shows its top first.
+	useLayoutEffect(() => {
+		const el = list.current;
+		if (el && key !== undefined) el.scrollTop = el.scrollHeight;
+	}, [key]);
 	if (props.questions === null) {
-		// As tall as the list it stands for (a one-line chip per row at
-		// most, 40px: the chip's edge is a ring, no border), so nothing
-		// moves when it arrives.
+		// Capped like the list, so nothing moves when an overflowing list
+		// arrives.
 		return (
 			<div
 				data-testid="agent-quick-questions-loading"
 				aria-busy="true"
-				className="relative flex flex-col gap-1.5"
+				className={`relative flex flex-col gap-1.5 overflow-hidden ${CAP}`}
 			>
 				{SKELETON_WIDTHS.map((w) => (
-					<div key={w} className="flex min-h-10 items-center">
+					<div key={w} className="flex min-h-10 shrink-0 items-center">
 						<SkeletonBar className={`h-8 ${w} max-w-full rounded-full`} />
 					</div>
 				))}
@@ -46,104 +58,28 @@ export function QuickQuestionChips(props: {
 	}
 	return (
 		<ul
+			ref={list}
 			data-testid="agent-quick-questions"
 			aria-label="Suggested questions"
-			className="flex min-w-0 flex-wrap gap-1.5"
+			className={`flex min-w-0 flex-wrap gap-1.5 overflow-y-auto [scrollbar-width:thin] ${CAP}`}
 		>
 			{props.questions.map((q) => (
-				<QuestionChip key={q} question={q} onPick={props.onPick} />
+				<li
+					key={q}
+					className="flex min-w-0 max-w-full rounded-[20px] bg-agent/60 text-xs leading-snug text-ink-soft ring-1 ring-agent-edge ring-inset hover:bg-agent hover:ring-agent-ink"
+				>
+					<button
+						type="button"
+						data-testid="agent-quick-question"
+						onClick={() => props.onPick(q)}
+						// The box keeps focus (no phone keyboard bounce), as Ask and Send do.
+						onMouseDown={(e) => e.preventDefault()}
+						className="flex min-h-10 min-w-0 flex-1 items-center rounded-[20px] px-3 py-1.5 text-left break-words hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						<span className="min-w-0 break-words">{q}</span>
+					</button>
+				</li>
 			))}
 		</ul>
-	);
-}
-
-/**
- * What the chevron takes from the text while it shows: its 40px less the
- * 12px end padding the text gives up for it.
- */
-const CHEVRON_ROOM = 28;
-
-/**
- * Whether `el`'s one line cuts its text off, measured as if the chevron
- * weren't there (`withChevron`: it is, so its room counts as free), so a
- * chip that fits once unfolded and resized never stays cut. A pixel's
- * rounding is no cut. Tests stand in for the widths: jsdom has no layout.
- */
-function overflows(el: HTMLElement, withChevron: boolean): boolean {
-	const free = el.clientWidth + (withChevron ? CHEVRON_ROOM : 0);
-	return el.scrollWidth - free > 1;
-}
-
-function QuestionChip(props: {
-	question: string;
-	onPick: (question: string) => void;
-}) {
-	const text = useRef<HTMLSpanElement>(null);
-	const textId = useId();
-	const [cut, setCut] = useState(false);
-	const cutNow = useRef(false);
-	const [expanded, setExpanded] = useState(false);
-	// Measured on one line only (unfolded, it wraps and never overflows), on
-	// every resize: a chip can be cut on a phone and fit on a desktop.
-	useLayoutEffect(() => {
-		const el = text.current;
-		if (!el || expanded) return;
-		const measure = () => {
-			cutNow.current = overflows(el, cutNow.current);
-			setCut(cutNow.current);
-		};
-		measure();
-		if (typeof ResizeObserver === "undefined") return;
-		const ro = new ResizeObserver(measure);
-		ro.observe(el);
-		return () => ro.disconnect();
-	}, [expanded]);
-	const label = expanded ? "Show less" : "Show more";
-	return (
-		<li
-			className={`flex min-w-0 max-w-full items-start rounded-[20px] bg-agent/60 text-xs leading-snug text-ink-soft ring-1 ring-agent-edge ring-inset hover:bg-agent hover:ring-agent-ink ${expanded ? "" : "min-h-10"}`}
-		>
-			<button
-				type="button"
-				data-testid="agent-quick-question"
-				onClick={() => props.onPick(props.question)}
-				// The box keeps focus (no phone keyboard bounce), as Ask and Send do.
-				onMouseDown={(e) => e.preventDefault()}
-				className={`flex min-h-10 min-w-0 flex-1 items-center rounded-[20px] py-1.5 pl-3 text-left hover:text-ink focus-visible:outline-2 focus-visible:outline-accent ${cut || expanded ? "pr-0" : "pr-3"}`}
-			>
-				<span
-					ref={text}
-					id={textId}
-					data-testid="agent-quick-question-text"
-					className={`min-w-0 ${expanded ? "break-words" : "truncate"}`}
-				>
-					{props.question}
-				</span>
-			</button>
-			{(cut || expanded) && (
-				<Tooltip content={label} describe={false} dismissKey={expanded}>
-					{(trigger) => (
-						<button
-							type="button"
-							{...trigger}
-							data-testid="agent-quick-question-more"
-							aria-label={label}
-							aria-expanded={expanded}
-							aria-controls={textId}
-							onClick={() => setExpanded(!expanded)}
-							// Unfolding only reads: the box keeps focus, as a pick does.
-							onMouseDown={(e) => e.preventDefault()}
-							className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-ink-soft hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-						>
-							{expanded ? (
-								<ChevronUpIcon size={16} aria-hidden />
-							) : (
-								<ChevronDownIcon size={16} aria-hidden />
-							)}
-						</button>
-					)}
-				</Tooltip>
-			)}
-		</li>
 	);
 }
