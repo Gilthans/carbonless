@@ -136,6 +136,14 @@ export interface DiffLine {
 	clusterKey?: string;
 	/** Git's "\\ No newline at end of file" follows this line. */
 	noNewline?: boolean;
+	/**
+	 * The since view's removed lines only (its old side is numbered in the
+	 * earlier patch set): the line's number in the head's merge base, the
+	 * LEFT line GitHub knows it by on the head; null for a line only the
+	 * earlier patch set had (in neither the base nor the head: GitHub has
+	 * no line for it). CAR-217.
+	 */
+	baseNo?: number | null;
 }
 
 export interface DisplayHunk {

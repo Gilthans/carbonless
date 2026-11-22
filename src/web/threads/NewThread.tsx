@@ -82,6 +82,11 @@ export function NewThread(props: {
 	item: NewThreadItem;
 	/** The span's text (quoteOf). */
 	quote: string;
+	/**
+	 * Where it is, as the view numbers its rows (the since view's own
+	 * old numbers, CAR-217); describeSpan of the span when not given.
+	 */
+	where?: string;
 	/** Posted (the thread will open where it lands). */
 	onPosted?: () => void;
 	/** A line comment's first and last line as shown (kept with the draft). */
@@ -163,7 +168,7 @@ export function NewThread(props: {
 					</code>
 				)}
 				<span className="shrink-0 font-mono text-faint">
-					{describeSpan(span)}
+					{props.where ?? describeSpan(span)}
 				</span>
 			</div>
 			<div className="space-y-1.5 p-2.5">

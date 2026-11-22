@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { SincePiece } from "../../shared/pieces";
 import type {
 	ClusterView,
@@ -13,6 +13,14 @@ import type {
 	ReviewThread,
 	SinceMark,
 } from "../../shared/types";
+import { ignoreWhitespace, sideBySide } from "../viewSettings";
+import {
+	CODE_CELL,
+	cellLine,
+	noLineOf,
+	spanOfCells,
+	spanOfRange,
+} from "./codeSpan";
 import { contextRanges } from "./contextRanges";
 import { DiffBody, type DiffThreads } from "./DiffBody";
 import { GoneFile } from "./FileDiff";
@@ -308,6 +316,154 @@ describe("DiffBody in the since view", () => {
 			"Nothing to read since PS1 · 2 carried",
 		);
 		expect(screen.queryAllByTestId("diff-line")).toHaveLength(0);
+	});
+
+	it("a removed row's span names its base line, GitHub's LEFT line on the head; a line only PS1 had has none (CAR-217)", async () => {
+		const withBase: FileHunks = {
+			...sinceHunks,
+			hunks: sinceHunks.hunks.map((h) => ({
+				...h,
+				lines: h.lines.map((l) =>
+					l.kind !== "del" ? l : { ...l, baseNo: l.oldNo === 2 ? 7 : null },
+				),
+			})),
+		};
+		renderBody({
+			clusters: [cluster("k1", "unreviewed")],
+			hunks: withBase,
+			from: 1,
+			kinds,
+		});
+		await screen.findAllByTestId("diff-line");
+		// The page's file section names the path (FileDiff's); here, the body.
+		document.body.setAttribute("data-path", "src/a.ts");
+		onTestFinished(() => document.body.removeAttribute("data-path"));
+		const leftCell = (oldNo: number) =>
+			document.querySelector(
+				`tr[data-old-no="${oldNo}"] > [${CODE_CELL}][data-side="LEFT"]`,
+			) as Element;
+		const rework = cellLine(leftCell(2));
+		expect(rework).toMatchObject({ side: "LEFT", line: 2, base: 7 });
+		const only = cellLine(leftCell(4));
+		expect(only).toMatchObject({ side: "LEFT", line: 4, base: null });
+		if (!rework || !only) throw new Error("no cells");
+		expect(spanOfCells(rework, rework, "h")).toMatchObject({
+			startSide: "LEFT",
+			startLine: 7,
+			side: "LEFT",
+			line: 7,
+		});
+		expect(noLineOf(rework)).toBeNull();
+		expect(noLineOf(only)).toBe("earlier");
+		// A context row has no base number: its line is RIGHT, the head's.
+		const context = document.querySelector('tr[data-new-no="3"]');
+		expect(context?.hasAttribute("data-base-no")).toBe(false);
+		// A selection over both removed rows is flagged, its ends in base numbers.
+		const range = document.createRange();
+		range.setStart(leftCell(2), 0);
+		range.setEnd(leftCell(4), leftCell(4).childNodes.length);
+		const found = spanOfRange(range, "h");
+		expect(found?.noLine).toBe("earlier");
+		expect(found?.span).toMatchObject({ startSide: "LEFT", startLine: 7 });
+	});
+});
+
+describe("the since view's removed rows: GitHub's line in every layout (CAR-217)", () => {
+	/** The interdiff's k1 (old 2 → new 2) with its removed line's base number 7. */
+	const based: FileHunks = {
+		...sinceHunks,
+		hunks: sinceHunks.hunks.map((h) => ({
+			...h,
+			lines: h.lines.map((l) =>
+				l.kind !== "del" ? l : { ...l, baseNo: l.oldNo === 2 ? 7 : null },
+			),
+		})),
+	};
+	const leftCell = (oldNo: number) =>
+		document.querySelector(
+			`tr[data-old-no="${oldNo}"] > [${CODE_CELL}][data-side="LEFT"]`,
+		) as Element;
+	const rightCell = (newNo: number) =>
+		document.querySelector(
+			`tr[data-new-no="${newNo}"] > [${CODE_CELL}][data-side="RIGHT"]`,
+		) as Element;
+	/** The hunks in the since view from PS1, or in the full diff (`since` false). */
+	async function shown(hunks: FileHunks, since = true) {
+		renderBody({
+			clusters: [cluster("k1", "unreviewed")],
+			hunks,
+			...(since ? { from: 1, kinds } : {}),
+		});
+		await screen.findAllByTestId("diff-line");
+		document.body.setAttribute("data-path", "src/a.ts");
+		onTestFinished(() => document.body.removeAttribute("data-path"));
+	}
+
+	it("a range from a removed row to an added one: LEFT at the base line, RIGHT at the head line", async () => {
+		await shown(based);
+		const range = document.createRange();
+		range.setStart(leftCell(2), 0);
+		range.setEnd(rightCell(2), rightCell(2).childNodes.length);
+		const found = spanOfRange(range, "h");
+		expect(found?.noLine).toBeNull();
+		expect(found?.span).toMatchObject({
+			startSide: "LEFT",
+			startLine: 7,
+			side: "RIGHT",
+			line: 2,
+		});
+	});
+
+	it("side by side: the removed line's cell carries its base number", async () => {
+		sideBySide.set(true);
+		onTestFinished(() => sideBySide.set(false));
+		await shown(based);
+		const cell = leftCell(2);
+		expect(cell.closest("tr")?.querySelectorAll(`[${CODE_CELL}]`)).toHaveLength(
+			2,
+		);
+		expect(cellLine(cell)).toMatchObject({ side: "LEFT", line: 2, base: 7 });
+		expect(cellLine(leftCell(4))).toMatchObject({ line: 4, base: null });
+	});
+
+	it("Ignore whitespace: a whitespace-only pair's row keeps its removed line's base number", async () => {
+		ignoreWhitespace.set(true);
+		onTestFinished(() => ignoreWhitespace.set(false));
+		const reindented: FileHunks = {
+			newLineCount: 3,
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 3,
+					newStart: 1,
+					newCount: 3,
+					lines: [
+						line("context", 1, 1, "a"),
+						{ ...line("del", 2, undefined, "  b", "k1"), baseNo: 9 },
+						line("add", undefined, 2, "b", "k1"),
+						line("context", 3, 3, "c"),
+					],
+				},
+			],
+		};
+		await shown(reindented);
+		const row = document.querySelector('tr[data-old-no="2"]');
+		expect(row?.getAttribute("data-kind")).toBe("ws");
+		expect(row?.getAttribute("data-base-no")).toBe("9");
+	});
+
+	it("a removed row with no base number is never named by its own number: not known, off (fails closed)", async () => {
+		// sinceHunks' removed lines carry no baseNo.
+		await shown(sinceHunks);
+		const c = cellLine(leftCell(2));
+		expect(c).toMatchObject({ line: 2, base: "unknown" });
+		if (!c) throw new Error("no cell");
+		expect(noLineOf(c)).toBe("unknown");
+		// The full diff's removed rows are GitHub's own numbers.
+		cleanup();
+		await shown(sinceHunks, false);
+		const full = cellLine(leftCell(2));
+		expect(full?.base).toBeUndefined();
 	});
 });
 

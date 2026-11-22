@@ -31,6 +31,12 @@ export interface SelectionContext {
 	 */
 	inDiff?: boolean;
 	/**
+	 * The since view: one of the span's lines has no GitHub line on the
+	 * head: only an earlier patch set had it (in neither the base nor the
+	 * head), or the view doesn't know its base line (CAR-217).
+	 */
+	noLine?: "earlier" | "unknown";
+	/**
 	 * The diff on screen is not yet the viewed head's (a Refresh moved the
 	 * head first): its lines would be named on the wrong commit.
 	 */
@@ -38,6 +44,17 @@ export interface SelectionContext {
 	/** An earlier patch set (read-only): GitHub's comments go on the latest. */
 	readOnly?: boolean;
 }
+
+/** Why nothing can start on a span with a line only an earlier patch set had. */
+export const EARLIER_ONLY =
+	"Only in an earlier patch set: not in GitHub's diff";
+
+/** Why nothing can start on a span with a line whose GitHub line isn't known. */
+export const NO_GITHUB_LINE = "Can't place this line on GitHub's diff";
+
+/** The reason for a span's line with no GitHub line (SelectionContext.noLine). */
+export const noLineReason = (why: "earlier" | "unknown") =>
+	why === "earlier" ? EARLIER_ONLY : NO_GITHUB_LINE;
 
 /** Why nothing can start on a span while the diff shown isn't the head's. */
 export const HEAD_UNSURE = "The new head's diff is loading";
@@ -82,6 +99,7 @@ export function commentAvailable(
 	if (ctx.file.binary || ctx.file.submodule) {
 		return "No lines to comment on in this file";
 	}
+	if (ctx.noLine) return noLineReason(ctx.noLine);
 	if (!ctx.commentLeft && sides(span).includes("LEFT")) {
 		return "Old lines can't take comments with this pinned head";
 	}
