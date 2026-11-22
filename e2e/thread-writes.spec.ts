@@ -277,12 +277,16 @@ test("reply with Write / Preview: the toggle above Send, level with the box; pre
 		return b;
 	};
 	const toggle = c.getByTestId("preview-toggle");
-	// Empty, focused or not: nothing to preview.
-	await box.click();
+	// Empty, focused or not: nothing to preview. Open, the toggle's slot is
+	// kept (unseen), so typing never narrows the box.
 	await expect(toggle).toHaveCount(0);
+	await box.click();
+	await expect(toggle).toBeHidden();
+	const emptyWidth = (await rect(box)).width;
 	const text = "Kept **on purpose**";
 	await box.fill(text);
 	await expect(toggle).toBeVisible();
+	expect(Math.abs((await rect(box)).width - emptyWidth)).toBeLessThanOrEqual(1);
 	const write = toggle.getByRole("button", { name: "Write" });
 	const preview = toggle.getByRole("button", { name: "Preview" });
 	await expect(write).toHaveAttribute("aria-pressed", "true");
