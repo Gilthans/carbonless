@@ -1,11 +1,6 @@
 import { lineRuns } from "../../shared/pieces";
 import type { DiffLine } from "../../shared/types";
-import {
-	matchSides,
-	PAIR_CAP,
-	type Side,
-	whitespaceKey,
-} from "../../shared/whitespace";
+import { matchDisplayHunk, whitespaceKey } from "../../shared/whitespace";
 import { orderRun, type Partners } from "./pairOrder";
 import { hunkPairs, type LinePair } from "./wordBlocks";
 
@@ -15,15 +10,14 @@ import { hunkPairs, type LinePair } from "./wordBlocks";
  * as quiet rows. A view only: nothing here changes clusters, keys, counts
  * or review state, and every removed and added line of the hunk is in the
  * rows exactly once (whitespace.test.ts checks that for any input). The
- * server already cuts each git hunk's whitespace-only runs into clusters of
- * their own (src/shared/whitespace.ts splitHunk); the matching here is over
- * the whole display hunk, context included, so a line's twin may also be a
+ * server cuts whitespace-only runs into clusters of their own by the same
+ * matching (src/shared/whitespace.ts matchDisplayHunk, CAR-218): over the
+ * whole display hunk, context included, so a line's twin may also be a
  * context line or sit in another cluster (a one-sided `~` row).
  */
 
 export {
 	matchSides,
-	PAIR_CAP,
 	type Side,
 	stripWhitespace,
 	whitespaceEqual,
@@ -62,60 +56,14 @@ export function runs(lines: DiffLine[]): { key?: string; lines: DiffLine[] }[] {
 
 /**
  * Each removed or added line of a hunk that has a whitespace-equal twin on
- * the other side, by the matching over the hunk's whole old side (context
- * and removed lines) and new side (context and added lines): the twin is a
- * line added or removed anywhere in the hunk, or a context line.
- *
- * The rows are sound: dropping the lines left unmatched (shown as add/del)
- * from both sides leaves whitespace-equal sequences. The weights (`matchSides`)
- * see to it that every context side is matched, to its own other side or
- * to a change (two context lines of one key may also match each other
- * across, with their other sides taken by changes: the same thing along a
- * chain), so the matched lines on each side are one sequence of equal
- * keys. Should a context side ever be left unmatched, nothing pairs: all
- * plain rows are always sound. Empty too when no change can match at all
- * (then there is no O(n·m) work). A hunk with a side over PAIR_CAP is
- * matched run by run instead (a big re-indented file keeps its rows); a
- * run over the cap on its own isn't matched.
+ * the other side: the display hunk's one matching, shared with the
+ * server's cut (`matchDisplayHunk`, src/shared/whitespace.ts: the
+ * soundness, the weights and the cap are described there). Cached per
+ * `lines` array: the diff (HunkRows) and Find in PR (findInPr) share one
+ * O(n·m) matching per hunk.
  */
 export function matchHunk(lines: DiffLine[]): ReadonlyMap<DiffLine, DiffLine> {
-	const twins = new Map<DiffLine, DiffLine>();
-	const old = lines.filter((l) => l.kind !== "add");
-	const young = lines.filter((l) => l.kind !== "del");
-	if (old.length > PAIR_CAP || young.length > PAIR_CAP) {
-		// A whole hunk, not one run already: match its cluster runs apart.
-		if (runs(lines).length > 1) {
-			for (const run of runs(lines)) {
-				if (run.key === undefined) continue;
-				for (const [line, twin] of matchHunk(run.lines)) twins.set(line, twin);
-			}
-		}
-		return twins;
-	}
-	const side = (l: DiffLine): Side => ({
-		key: keyOf(l),
-		context: l.kind === "context",
-	});
-	const a = old.map(side);
-	const b = young.map(side);
-	const oldKeys = new Set(a.map((s) => s.key));
-	const newKeys = new Set(b.map((s) => s.key));
-	const can =
-		old.some((l, i) => l.kind === "del" && newKeys.has((a[i] as Side).key)) ||
-		young.some((l, j) => l.kind === "add" && oldKeys.has((b[j] as Side).key));
-	if (!can) return twins;
-	let contextSides = 0;
-	for (const [i, j] of matchSides(a, b)) {
-		const o = old[i] as DiffLine;
-		const n = young[j] as DiffLine;
-		if (o.kind === "context") contextSides++;
-		if (n.kind === "context") contextSides++;
-		if (o.kind === "del") twins.set(o, n);
-		if (n.kind === "add") twins.set(n, o);
-	}
-	const contexts = lines.filter((l) => l.kind === "context").length;
-	if (contextSides !== 2 * contexts) twins.clear();
-	return twins;
+	return matchDisplayHunk(lines);
 }
 
 /**
@@ -169,21 +117,6 @@ export function pairRun(
 	return rows;
 }
 
-/**
- * matchHunk, once per hunk's lines (the hunks query's arrays: callers must
- * never change `lines` in place): the diff (HunkRows) and Find in PR (findInPr) share
- * one O(n·m) matching per hunk.
- */
-const twinsByHunk = new WeakMap<DiffLine[], ReadonlyMap<DiffLine, DiffLine>>();
-function hunkTwins(lines: DiffLine[]): ReadonlyMap<DiffLine, DiffLine> {
-	let twins = twinsByHunk.get(lines);
-	if (!twins) {
-		twins = matchHunk(lines);
-		twinsByHunk.set(lines, twins);
-	}
-	return twins;
-}
-
 /** A hunk's run and the rows the view shows for it. */
 export interface ViewRun {
 	key?: string;
@@ -223,7 +156,7 @@ export function hunkView(
 	const slot = ignoreWhitespace ? 1 : 0;
 	const cached = viewsByHunk.get(lines);
 	if (cached?.[slot]) return cached[slot];
-	const twins = ignoreWhitespace ? hunkTwins(lines) : null;
+	const twins = ignoreWhitespace ? matchHunk(lines) : null;
 	const git = runs(lines).map((run) => ({
 		...run,
 		rows:

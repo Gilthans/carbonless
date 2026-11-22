@@ -1,9 +1,13 @@
+import { lineRuns } from "./pieces.js";
+import type { DiffLine } from "./types.js";
+
 /**
  * Whitespace-only change, as git's `-w` sees it: two lines are equal once
  * every ASCII whitespace character is removed. Shared by the server, which
  * cuts a hunk's whitespace-only runs into clusters of their own
  * (`splitHunk`, CAR-156), and the view, which draws whitespace-equal lines
- * as quiet `~` rows with "Ignore whitespace" on (src/web/files/whitespace.ts).
+ * as quiet `~` rows with "Ignore whitespace" on (src/web/files/whitespace.ts);
+ * both read one matching per display hunk (`matchDisplayHunk`, CAR-218).
  */
 
 /** ASCII whitespace, as git's `-w` ignores it. Unicode blanks are content. */
@@ -23,13 +27,6 @@ export const whitespaceEqual = (a: string, b: string): boolean =>
  */
 export const whitespaceKey = (text: string, noNewline = false): string =>
 	`${stripWhitespace(text)}${noNewline ? "\0" : ""}`;
-
-/**
- * A matching with more old-side or more new-side lines than this isn't
- * done (the matching is O(n·m)), unless both sides are the same keys line
- * for line (`matchSides`' fast path).
- */
-export const PAIR_CAP = 2000;
 
 /** One side of a line as the matching sees it. */
 export interface Side {
@@ -80,7 +77,8 @@ export function matchSides(
 	const weight = (i: number, j: number) =>
 		((a[i] as Side).context ? P : 0) + ((b[j] as Side).context ? P : 0) || 1;
 	// best[i * w + j]: the best weight over a[i..] and b[j..]; up to
-	// 2P × PAIR_CAP ≈ 1.6e7, so 32 bits (16 MB at the cap, once per hunk).
+	// 2P × min(n, m), about 1e6 within SPLIT_CELLS (n × m ≤ 250,000), so 32
+	// bits (1 MB at the cap, once per hunk).
 	const best = new Uint32Array((n + 1) * w);
 	for (let i = n - 1; i >= 0; i--) {
 		for (let j = m - 1; j >= 0; j--) {
@@ -236,4 +234,128 @@ export function splitHunk(
 	}
 	change(n, m);
 	return pieces;
+}
+
+/** A line's matching key (whitespaceKey), with its final-newline flag. */
+const lineKey = (line: DiffLine): string =>
+	whitespaceKey(line.text, line.noNewline === true);
+
+const twinsByHunk = new WeakMap<
+	readonly DiffLine[],
+	ReadonlyMap<DiffLine, DiffLine>
+>();
+const wsByHunk = new WeakMap<readonly DiffLine[], ReadonlySet<DiffLine>>();
+
+/**
+ * One whitespace matching per display hunk (CAR-218), shared by the view's
+ * `~` rows and the server's cut: each removed or added line that has a
+ * whitespace-equal twin on the other side, by `matchSides` over the hunk's
+ * whole old side (context and removed lines) and new side (context and
+ * added lines). The twin is a line added or removed anywhere in the hunk,
+ * or a context line.
+ *
+ * Sound: dropping the lines left unmatched from both sides leaves
+ * whitespace-equal sequences. The weights see to it that every context
+ * side is matched, to its own other side or to a change (two context lines
+ * of one key may also match each other across, their other sides taken by
+ * changes: the same thing along a chain), so the matched
+ * lines on each side are one sequence of equal keys; should a context side
+ * ever be left unmatched, nothing pairs (all changes: the safe direction).
+ *
+ * Cap: a hunk of more than SPLIT_CELLS old × new lines (context included),
+ * unless both sides are the same keys line for line (matchSides' fast
+ * path), is matched per git hunk instead (each run of one cluster's lines,
+ * `lineRuns`), changes only, as `splitHunk` cuts it: so a twin never
+ * crosses a git hunk there, and a git hunk over the cap on its own has no
+ * twins (one change). Cached per `lines` array: callers must never change
+ * it in place.
+ */
+export function matchDisplayHunk(
+	lines: readonly DiffLine[],
+): ReadonlyMap<DiffLine, DiffLine> {
+	let twins = twinsByHunk.get(lines);
+	if (!twins) {
+		twins = matchLines(lines);
+		twinsByHunk.set(lines, twins);
+	}
+	return twins;
+}
+
+/** The changed lines `matchDisplayHunk` matched: the whitespace-only lines. */
+export function whitespaceLines(
+	lines: readonly DiffLine[],
+): ReadonlySet<DiffLine> {
+	let ws = wsByHunk.get(lines);
+	if (!ws) {
+		ws = new Set(matchDisplayHunk(lines).keys());
+		wsByHunk.set(lines, ws);
+	}
+	return ws;
+}
+
+function matchLines(lines: readonly DiffLine[]): Map<DiffLine, DiffLine> {
+	const twins = new Map<DiffLine, DiffLine>();
+	const old = lines.filter((l) => l.kind !== "add");
+	const young = lines.filter((l) => l.kind !== "del");
+	const side = (l: DiffLine): Side => ({
+		key: lineKey(l),
+		context: l.kind === "context",
+	});
+	const a = old.map(side);
+	const b = young.map(side);
+	const same =
+		a.length === b.length &&
+		a.every(
+			(s, i) =>
+				s.key === (b[i] as Side).key && s.context === (b[i] as Side).context,
+		);
+	if (!same && a.length * b.length > SPLIT_CELLS) {
+		for (const run of lineRuns(lines)) {
+			if (run.change) matchChanges(run.lines, twins);
+		}
+		return twins;
+	}
+	const oldKeys = new Set(a.map((s) => s.key));
+	const newKeys = new Set(b.map((s) => s.key));
+	const can =
+		old.some((l, i) => l.kind === "del" && newKeys.has((a[i] as Side).key)) ||
+		young.some((l, j) => l.kind === "add" && oldKeys.has((b[j] as Side).key));
+	if (!can) return twins;
+	let contextSides = 0;
+	for (const [i, j] of matchSides(a, b)) {
+		const o = old[i] as DiffLine;
+		const n = young[j] as DiffLine;
+		if (o.kind === "context") contextSides++;
+		if (n.kind === "context") contextSides++;
+		if (o.kind === "del") twins.set(o, n);
+		if (n.kind === "add") twins.set(n, o);
+	}
+	const contexts = lines.filter((l) => l.kind === "context").length;
+	if (contextSides !== 2 * contexts) twins.clear();
+	return twins;
+}
+
+/**
+ * One git hunk's removed lines matched to its added ones, every side a
+ * change, under splitHunk's cap: the pairs splitHunk's whitespace-only
+ * pieces hold.
+ */
+function matchChanges(
+	run: readonly DiffLine[],
+	twins: Map<DiffLine, DiffLine>,
+): void {
+	const dels = run.filter((l) => l.kind === "del");
+	const adds = run.filter((l) => l.kind === "add");
+	const side = (l: DiffLine): Side => ({ key: lineKey(l), context: false });
+	const a = dels.map(side);
+	const b = adds.map(side);
+	const same =
+		a.length === b.length && a.every((s, i) => s.key === (b[i] as Side).key);
+	if (!same && a.length * b.length > SPLIT_CELLS) return;
+	for (const [i, j] of matchSides(a, b)) {
+		const d = dels[i] as DiffLine;
+		const n = adds[j] as DiffLine;
+		twins.set(d, n);
+		twins.set(n, d);
+	}
 }
