@@ -24,7 +24,10 @@ const BLANK = /^\s$/u;
  * The line's tokens as one character each (`codes`), each one's end, and
  * its non-whitespace tokens alone: their indices (`at`) and characters.
  */
-function encode(text: string): {
+function encode(
+	text: string,
+	end: (text: string, i: number) => number,
+): {
 	chars: string;
 	ends: number[];
 	at: number[];
@@ -35,8 +38,8 @@ function encode(text: string): {
 	const at: number[] = [];
 	const words: number[] = [];
 	for (let i = 0; i < text.length; ) {
-		const end = tokenEnd(text, i);
-		const t = text.slice(i, end);
+		const to = end(text, i);
+		const t = text.slice(i, to);
 		let c = codes.get(t);
 		if (c === undefined) {
 			c = 0x100 + codes.size;
@@ -48,8 +51,8 @@ function encode(text: string): {
 			words.push(c);
 		}
 		units.push(c);
-		ends.push(end);
-		i = end;
+		ends.push(to);
+		i = to;
 	}
 	return {
 		chars: String.fromCharCode(...units),
@@ -57,6 +60,13 @@ function encode(text: string): {
 		at,
 		words: String.fromCharCode(...words),
 	};
+}
+
+/** Another caller's tokens (`end`: where the token at `i` ends) and length cut. */
+export interface TokenRules {
+	end?: (text: string, i: number) => number;
+	/** A side this long or longer (UTF-16) gets no marks. */
+	max?: number;
 }
 
 /** A plain pair. */
@@ -150,12 +160,18 @@ function ranges(changed: Uint8Array, ends: number[]): Mark[] {
  * 2026-11-04). A trailing `\r` is marked only when one line alone ends in
  * it. No marks when either line is too long. Before bridging: `wordMarks`
  * is what the view shows.
+ *
+ * `tokens` swaps the tokens and the length cut for another caller (the
+ * Markdown renderer's word marks: spans as one token, a whole block).
  */
 export function tokenMarks(
 	oldText: string,
 	newText: string,
+	tokens: TokenRules = {},
 ): { old: Mark[]; new: Mark[] } {
-	if (oldText.length >= WORD_DIFF_MAX || newText.length >= WORD_DIFF_MAX) {
+	const max = tokens.max ?? WORD_DIFF_MAX;
+	const end = tokens.end ?? tokenEnd;
+	if (oldText.length >= max || newText.length >= max) {
 		return none();
 	}
 	// A trailing `\r` both lines end in is never marked; one only one line
@@ -166,11 +182,12 @@ export function tokenMarks(
 	const b = cr ? newText.slice(0, -1) : newText;
 	if (a === b) return none();
 	// Each distinct token as one character (from U+0100, far below the
-	// surrogates: a pair has at most 2,046 tokens).
+	// surrogates: a pair has fewer than 2 * `max` tokens, and `max` stays
+	// well under 0xD700 / 2).
 	codes.clear();
 	blanks.clear();
-	const ta = encode(a);
-	const tb = encode(b);
+	const ta = encode(a, end);
+	const tb = encode(b, end);
 	const changedA = new Uint8Array(ta.ends.length);
 	const changedB = new Uint8Array(tb.ends.length);
 	// Pass 1: the words. Their equal tokens are the anchors.

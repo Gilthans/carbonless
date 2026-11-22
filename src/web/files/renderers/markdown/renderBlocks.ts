@@ -2,6 +2,15 @@ import DOMPurify from "dompurify";
 import { Lexer, type Links, Marked, Parser } from "marked";
 import { type MdBlock, parseable } from "../../../../shared/markdownBlocks";
 import { safeHref } from "../../../ui";
+import {
+	DEL_CLOSE,
+	DEL_OPEN,
+	INS_CLOSE,
+	INS_OPEN,
+	newSide,
+	oldSide,
+	SENTINEL,
+} from "./wordMarks";
 
 /**
  * A Markdown file's blocks (`markdownBlocks`) as sanitized HTML, one entry per
@@ -261,6 +270,184 @@ function renderMarkdown(
 /** A block's (or several merged blocks') source → sanitized HTML. */
 export function renderSource(src: string, opts: RenderOptions): string {
 	return renderMarkdown(src, opts, {});
+}
+
+export interface MergedOptions extends RenderOptions {
+	/** The file's reference definitions (`[a]: url`), as `renderBlocks` resolves them. */
+	links?: Links;
+	/**
+	 * A table row's header block source (header + delimiter lines): the row is
+	 * rendered under it and the header dropped, as `renderBlocks` does.
+	 */
+	header?: string;
+}
+
+/** Elements a mark never wraps: it goes inside them (a run split at each). */
+const BLOCK_TAGS = new Set([
+	"BLOCKQUOTE",
+	"DD",
+	"DETAILS",
+	"DIV",
+	"DL",
+	"DT",
+	"H1",
+	"H2",
+	"H3",
+	"H4",
+	"H5",
+	"H6",
+	"HR",
+	"LI",
+	"OL",
+	"P",
+	"PRE",
+	"SUMMARY",
+	"TABLE",
+	"TBODY",
+	"TD",
+	"TFOOT",
+	"TH",
+	"THEAD",
+	"TR",
+	"UL",
+]);
+
+/** Parents whose text the HTML parser moves out: no mark goes in them. */
+const NO_TEXT = new Set(["OL", "UL", "TABLE", "TBODY", "TFOOT", "THEAD", "TR"]);
+
+/** The node after `n` and its subtree, in document order. */
+function nextAfter(n: Node | null): Node | null {
+	while (n && !n.nextSibling) n = n.parentNode;
+	return n?.nextSibling ?? null;
+}
+
+/**
+ * Wraps everything strictly between the sentinel nodes `open` and `close`
+ * in mark elements: inline nodes in maximal sibling groups, block elements
+ * entered rather than wrapped, so a run crossing a cell or item splits at
+ * its edge. Nothing is copied or dropped: nodes only move into wrappers.
+ */
+function wrapBetween(open: Node, close: Node, make: () => HTMLElement) {
+	let group: Node[] = [];
+	const flush = () => {
+		const first = group[0];
+		const parent = first?.parentNode;
+		if (first && parent && !NO_TEXT.has(parent.nodeName)) {
+			const w = make();
+			parent.insertBefore(w, first);
+			for (const g of group) w.appendChild(g);
+		}
+		group = [];
+	};
+	let n = nextAfter(open);
+	while (n && n !== close) {
+		if (n.contains(close) || BLOCK_TAGS.has(n.nodeName)) {
+			flush();
+			n = n.firstChild ?? nextAfter(n);
+			continue;
+		}
+		if (group.length && group[group.length - 1]?.nextSibling !== n) flush();
+		group.push(n);
+		n = nextAfter(n);
+	}
+	flush();
+	if (n !== close) throw new Error("mark not closed");
+}
+
+/**
+ * Turns the sentinels in `body`'s text into `del.md-del` / `ins.md-ins`.
+ * Throws when they don't pair up in order (the caller then shows no marks).
+ */
+function applyMarks(body: HTMLElement) {
+	const doc = body.ownerDocument;
+	const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+	const marks: Text[] = [];
+	for (let t = walker.nextNode() as Text | null; t; ) {
+		const k = t.data.search(SENTINEL);
+		if (k === -1) {
+			t = walker.nextNode() as Text | null;
+			continue;
+		}
+		const mark = k === 0 ? t : t.splitText(k);
+		const rest = mark.data.length > 1 ? mark.splitText(1) : null;
+		marks.push(mark);
+		walker.currentNode = mark;
+		t = rest ?? (walker.nextNode() as Text | null);
+	}
+	if (marks.length % 2) throw new Error("unpaired mark");
+	for (let i = 0; i < marks.length; i += 2) {
+		const open = (marks[i] as Text).data;
+		const close = (marks[i + 1] as Text).data;
+		const del = open === DEL_OPEN && close === DEL_CLOSE;
+		if (!del && !(open === INS_OPEN && close === INS_CLOSE)) {
+			throw new Error("crossed marks");
+		}
+		wrapBetween(marks[i] as Text, marks[i + 1] as Text, () => {
+			const el = doc.createElement(del ? "del" : "ins");
+			el.className = del ? "md-del" : "md-ins";
+			return el;
+		});
+	}
+	for (const m of marks) m.remove();
+}
+
+/** `body` with one side's marks: the other side's dropped, this side's unwrapped. */
+function sideOf(body: HTMLElement, keep: "del" | "ins"): string {
+	const copy = body.cloneNode(true) as HTMLElement;
+	const drop = keep === "del" ? "ins.md-ins" : "del.md-del";
+	for (const el of copy.querySelectorAll(drop)) el.remove();
+	for (const el of copy.querySelectorAll(
+		keep === "del" ? "del.md-del" : "ins.md-ins",
+	)) {
+		el.replaceWith(...el.childNodes);
+	}
+	copy.normalize();
+	return copy.innerHTML;
+}
+
+/**
+ * A merged source (`mergedSource`, wordMarks.ts) → sanitized HTML with the
+ * removed words in `del.md-del` and the added ones in `ins.md-ins`, or null
+ * when the marks can't be shown faithfully: the view then shows the old
+ * block struck above the new.
+ *
+ * The marks are elements the renderer adds after DOMPurify, from the
+ * sentinels, so content can't forge one (its own `<del>`/`<ins>` render
+ * but lose every class). The result is checked against both sides: with
+ * the `md-ins` marks dropped it must equal the old side rendered alone, and
+ * with the `md-del` ones dropped, the new side. So a mark that moved syntax
+ * (a split link, emphasis across a mark, a pipe in a struck run) gives null,
+ * never a wrong picture; and no sentinel survives into the output.
+ */
+export function renderMerged(src: string, opts: MergedOptions): string | null {
+	if (!parseable(src.split("\n"))) return null;
+	const links = opts.links ?? {};
+	const body = (s: string): HTMLElement | null => {
+		const full = opts.header === undefined ? s : `${opts.header}\n${s}`;
+		const el = sanitize(toHtml(full, links), opts);
+		if (opts.header !== undefined) {
+			const heads = el.querySelectorAll("thead");
+			if (!heads.length) return null;
+			for (const thead of heads) thead.remove();
+		}
+		return el;
+	};
+	try {
+		const merged = body(src);
+		const oldBody = body(oldSide(src));
+		const newBody = body(newSide(src));
+		if (!merged || !oldBody || !newBody) return null;
+		applyMarks(merged);
+		const html = merged.innerHTML;
+		if (!html.trim() || SENTINEL.test(html)) return null;
+		oldBody.normalize();
+		newBody.normalize();
+		if (sideOf(merged, "del") !== oldBody.innerHTML) return null;
+		if (sideOf(merged, "ins") !== newBody.innerHTML) return null;
+		return html;
+	} catch {
+		return null;
+	}
 }
 
 const cleanLine = (l: string): string =>
