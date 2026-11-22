@@ -305,7 +305,11 @@ test("a bare number lists that PR in each view repo; Enter opens the chosen one;
 	workdir,
 	pr,
 	startCrb,
+	expectConsoleError,
 }) => {
+	// GitHub has no PR view of acme/api#40 here: the server refuses to open
+	// it (409, "not found") and the page says why.
+	expectConsoleError(/409/);
 	const made = await setup(workdir, pr, { widgetInView: true });
 	made.editScenario((s) => {
 		s.repos?.["acme/api"]?.prs.push(
@@ -360,6 +364,9 @@ test("a bare number lists that PR in each view repo; Enter opens the chosen one;
 	});
 	await box.press("Enter");
 	await expect(page).toHaveURL(/\/pr\/acme\/api\/40$/);
+	// Wait for the open's answer, its refusal: a test that ends with it in
+	// flight fails whenever the 409 lands before the console check.
+	await expect(page.getByTestId("not-found")).toContainText("not found");
 });
 
 test("a PR chosen in the open box shows at once, loading, then becomes its review", async ({
