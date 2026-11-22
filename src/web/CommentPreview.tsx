@@ -205,9 +205,14 @@ export function useWritePreview(opts: {
 		},
 		[toggle, mode, choose, box],
 	);
+	/** Once back in Write (the box sent and cleared), the box takes the focus. */
+	const focusOnWrite = useCallback(() => {
+		focusNext.current = "write";
+	}, []);
 	return {
 		mode,
 		choose,
+		focusOnWrite,
 		/** Whether the toggle shows. */
 		toggle,
 		onKeyDown,

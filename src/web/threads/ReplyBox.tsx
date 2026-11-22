@@ -130,6 +130,9 @@ export function ReplyBox(props: {
 		if (e.defaultPrevented) return;
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
+			// Sent by keys from Preview: the cleared box takes the focus back,
+			// as when sent from Write, for the next reply.
+			if (previewing) write.focusOnWrite();
 			send();
 		} else if (e.key === "Escape") {
 			e.preventDefault();
@@ -192,11 +195,12 @@ export function ReplyBox(props: {
 				data-testid="reply-side"
 				className="flex shrink-0 flex-col items-end justify-end gap-1 self-stretch"
 			>
-				{/* Open, its slot is kept (unseen while empty): typing never narrows the box. */}
-				{open && !asking && (
+				{/* Open, its slot is kept (unseen while empty or asking the agent):
+				    typing or switching to Ask agent never changes the box's width. */}
+				{open && (
 					<PreviewToggle
 						{...write.toggleProps}
-						unseen={!write.toggle}
+						unseen={asking || !write.toggle}
 						className="mb-auto"
 					/>
 				)}

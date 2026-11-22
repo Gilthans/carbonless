@@ -590,6 +590,9 @@ describe("replying", () => {
 		preview.focus();
 		await userEvent.keyboard("{Control>}{Enter}{/Control}");
 		expect(writeCalls[0]?.body).toMatchObject({ body: "Looks right" });
+		// Sent by keys from Preview: the cleared box has the focus back.
+		expect(box).toHaveValue("");
+		expect(box).toHaveFocus();
 	});
 
 	it("open, the box keeps the toggle's slot (unseen while empty), so typing never narrows it", async () => {
@@ -919,6 +922,24 @@ describe("editing a comment", () => {
 		expect(within(preview).getByText("new").tagName).toBe("EM");
 		await userEvent.click(screen.getByRole("button", { name: "Save" }));
 		expect(writeCalls[0]?.body).toMatchObject({ body: "Old **text** _new_" });
+	});
+
+	it("an emptied edit keeps the toggle's slot, unseen: the row never changes shape while typing", async () => {
+		const own = mine("c2", "Old text");
+		serve({ T1: { comments: [comment("c1", "rev1", "First"), own] } });
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		const slot = screen.getByTestId("preview-toggle");
+		expect(slot).toBeVisible();
+		await userEvent.clear(
+			screen.getByRole("textbox", { name: "Edit comment" }),
+		);
+		expect(screen.getByTestId("preview-toggle")).toBe(slot);
+		expect(slot).not.toBeVisible();
+		expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
 	});
 
 	it("Escape in an edit's Preview cancels it, as in Write", async () => {

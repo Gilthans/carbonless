@@ -457,9 +457,13 @@ export function EditForm(props: {
 			)}
 			{/* Wraps when narrow (a phone's card in a thread in the diff). */}
 			<div className="flex flex-wrap justify-end gap-2">
-				{view.toggle && (
-					<PreviewToggle {...view.toggleProps} className="mr-auto" />
-				)}
+				{/* Its slot kept (unseen while empty): a narrow row wraps when the box
+				    opens, never on the first character. */}
+				<PreviewToggle
+					{...view.toggleProps}
+					unseen={!view.toggle}
+					className="mr-auto"
+				/>
 				<button
 					type="button"
 					onClick={ask}

@@ -219,8 +219,10 @@ describe("ThreadAgentPanel", () => {
 		await userEvent.type(ask, "why?");
 		expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
 		expect(screen.queryByTestId("comment-preview")).toBeNull();
-		// Open, it is as tall as the reply's (toggle over Send): no jump.
+		// Open, it is as tall as the reply's (toggle over Send), and as wide:
+		// the toggle's slot stays, unseen. No jump either way.
 		expect(ask.className).toContain("min-h-[84px]");
+		expect(screen.getByTestId("preview-toggle")).not.toBeVisible();
 		// Back to the reply: in Write, not the Preview it left.
 		await userEvent.click(agentButton());
 		const reply = screen.getByRole("textbox", { name: "Reply" });

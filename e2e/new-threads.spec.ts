@@ -228,7 +228,12 @@ test("pick lines by their numbers and comment on them", async ({
 	await expect(section.locator("tr[data-picked]")).toHaveCount(0);
 	const composer = section.getByTestId("new-thread");
 	await expect(composer).toContainText("lines 10–12, new");
+	// The toggle's slot is kept while empty: the first character never
+	// reflows the composer (a narrow row wraps when it opens).
+	const before = (await composer.boundingBox())?.height ?? 0;
 	await composer.getByRole("textbox", { name: "Comment" }).fill("Three?");
+	const after = (await composer.boundingBox())?.height ?? 0;
+	expect(Math.abs(after - before)).toBeLessThanOrEqual(1);
 	// Previewed (CAR-202), then sent from Preview as typed.
 	const toggle = composer.getByTestId("preview-toggle");
 	await expect(toggle.getByRole("button", { name: "Write" })).toHaveAttribute(
