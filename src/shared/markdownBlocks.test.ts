@@ -1,5 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { bestCpuRatio } from "../../test/cpu";
 import { blockOfLine, isMarkdownPath, markdownBlocks } from "./markdownBlocks";
 
 const blocks = (text: string) =>
@@ -81,6 +82,69 @@ describe("markdownBlocks", () => {
 		expect(markdownBlocks(doc.split("\n").map((l) => `${l}\r`))).toEqual(
 			markdownBlocks(doc.split("\n")),
 		);
+	});
+
+	it("a lone \\r inside a line does not shift later ranges", () => {
+		expect(
+			markdownBlocks(["a\rb", "", "c"]).map(({ kind, from, to }) => ({
+				kind,
+				from,
+				to,
+			})),
+		).toEqual([
+			{ kind: "paragraph", from: 1, to: 1 },
+			{ kind: "paragraph", from: 3, to: 3 },
+		]);
+	});
+
+	it("a list item's tail after a nested list starts at its first text line", () => {
+		expect(blocks("- a\n  - b\n\n  cont\n- c")).toEqual([
+			{ kind: "list-item", from: 1, to: 1 },
+			{ kind: "list-item", from: 2, to: 2 },
+			{ kind: "list-item", from: 4, to: 4 },
+			{ kind: "list-item", from: 5, to: 5 },
+		]);
+	});
+
+	describe("hostile input falls back to a paragraph per run of lines", () => {
+		const fallbackOk = (lines: string[]) => {
+			const bs = markdownBlocks(lines);
+			expect(bs).toEqual([
+				{ kind: "paragraph", from: 1, to: lines.length, depth: 0 },
+			]);
+		};
+		it("deeply nested list markers", () =>
+			fallbackOk([`${"- ".repeat(5000)}x`]));
+		it("deeply nested quotes", () => fallbackOk([`${"> ".repeat(5000)}x`]));
+		it("a staircase of indented items costs about a flat document of the same size", () => {
+			const stairs = Array.from(
+				{ length: 2000 },
+				(_, i) => `${" ".repeat(i * 2)}- a`,
+			);
+			fallbackOk(stairs);
+			// Same line count and indents, no nesting: the cost of the same-sized input.
+			const flat = Array.from(
+				{ length: 2000 },
+				(_, i) => `${" ".repeat(i * 2)}a`,
+			);
+			const { ratio } = bestCpuRatio(
+				() => markdownBlocks(stairs),
+				() => markdownBlocks(flat),
+			);
+			expect(ratio).toBeLessThan(3);
+		});
+		it("runs split at blank lines and keep front matter", () => {
+			const deep = "- ".repeat(5000);
+			expect(
+				markdownBlocks(["---", "t: 1", "---", deep, "x", "", deep]).map(
+					({ kind, from, to }) => ({ kind, from, to }),
+				),
+			).toEqual([
+				{ kind: "front-matter", from: 1, to: 3 },
+				{ kind: "paragraph", from: 4, to: 5 },
+				{ kind: "paragraph", from: 7, to: 7 },
+			]);
+		});
 	});
 
 	it("blockOfLine", () => {
