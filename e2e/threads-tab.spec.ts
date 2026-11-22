@@ -6,6 +6,7 @@ import {
 	expect,
 	expectLoadingThen,
 	installClock,
+	type Pr,
 	type PrOptions,
 } from "./fixtures";
 
@@ -247,6 +248,271 @@ test.describe("on GitHub's threads", () => {
 				.locator('tr[data-testid="diff-line"][data-new-no="3"]')
 				.getByRole("button", { name: /^2 comments on line 3/ }),
 		).toHaveAttribute("aria-expanded", "true");
+	});
+});
+
+test.describe("j and k on the Threads tab", () => {
+	test("step through the rows as a click does, marked; not on the Files tab, nor while typing; listed in the help", async ({
+		page,
+		pr,
+		startCrb,
+		isMobile,
+	}) => {
+		test.skip(isMobile, "keyboard shortcuts: desktop");
+		const p = await pr(fixture);
+		const on = { commit: p.head(), diffHunk: "" };
+		p.editScenario((sc) => {
+			const graph = sc.prs[p.number]?.graphql;
+			if (!graph) throw new Error("no PR in the scenario");
+			graph.reviewThreads = [
+				reviewThread({ path: A, line: 2, subjectType: "LINE" }, [
+					threadComment({
+						login: "rev2",
+						text: "Older one",
+						createdAt: "2026-01-04T10:00:00Z",
+						...on,
+					}),
+				]),
+				reviewThread({ path: B, line: 3, subjectType: "LINE" }, [
+					threadComment({
+						login: "rev1",
+						text: "Newer one",
+						createdAt: "2026-01-04T12:00:00Z",
+						...on,
+					}),
+				]),
+			];
+		});
+		const s = await startCrb();
+		await installClock(page);
+		await openFiles(page, s.url);
+		const side = page.locator("body");
+		const threadsTab = tabs(side).getByRole("tab", { name: /^Threads/ });
+		const filesTab = tabs(side).getByRole("tab", { name: /^Files/ });
+		const people = region(side, "People");
+		const rows = people.getByTestId("threads-row");
+		const current = people.locator('button[aria-current="true"]');
+		const card = (words: string) =>
+			page.getByTestId("files-thread").filter({ hasText: words });
+
+		// On the Files tab, j does nothing.
+		await page.keyboard.press("j");
+		await expect(card("Newer one")).toHaveCount(0);
+		await threadsTab.click();
+		await expect(rows).toHaveCount(2);
+		await expect(current).toHaveCount(0);
+
+		// j: the first row, as a click on it: its card open, in view.
+		await page.keyboard.press("j");
+		await expect(current).toHaveAccessibleName(/^src\/deep\/b\.ts:3/);
+		await expect(current).toHaveCount(1);
+		await expectShown(card("Newer one"));
+		// j again: the next.
+		await page.keyboard.press("j");
+		await expect(current).toHaveAccessibleName(/^a\.ts:2/);
+		await expectShown(card("Older one"));
+		// At the end it stops.
+		await page.keyboard.press("j");
+		await expect(current).toHaveAccessibleName(/^a\.ts:2/);
+		// k: back.
+		await page.keyboard.press("k");
+		await expect(current).toHaveAccessibleName(/^src\/deep\/b\.ts:3/);
+		await expectShown(card("Newer one"));
+
+		// Typing j in a reply box types it.
+		const box = card("Newer one").getByRole("textbox", { name: "Reply" });
+		await box.click();
+		await box.pressSequentially("jk");
+		await expect(box).toHaveValue("jk");
+		await expect(current).toHaveAccessibleName(/^src\/deep\/b\.ts:3/);
+		await box.fill("");
+		await box.blur();
+
+		// On the Files tab: nothing moves.
+		await filesTab.click();
+		await page.keyboard.press("j");
+		await threadsTab.click();
+		await expect(current).toHaveAccessibleName(/^src\/deep\/b\.ts:3/);
+
+		// A click sets the current row too.
+		await people.getByRole("button", { name: /^a\.ts:2/ }).click();
+		await expect(current).toHaveAccessibleName(/^a\.ts:2/);
+		await page.keyboard.press("k");
+		await expect(current).toHaveAccessibleName(/^src\/deep\/b\.ts:3/);
+
+		// In the help, under Files changed.
+		await page.keyboard.press("Shift+Slash");
+		const group = page
+			.getByRole("dialog", { name: "Keyboard shortcuts" })
+			.getByRole("region", { name: "Files changed" });
+		await expect(
+			group.getByRole("listitem").filter({ hasText: "Next conversation" }),
+		).toContainText("j");
+		await expect(
+			group.getByRole("listitem").filter({ hasText: "Previous conversation" }),
+		).toContainText("k");
+	});
+});
+
+test.describe("the current row stays in view in the panel", () => {
+	const MANY = "many.ts";
+	const manyLines = Array.from({ length: 20 }, (_, i) => `m ${i + 1}`);
+	const manyFixture: PrOptions = {
+		base: { [MANY]: text(manyLines) },
+		files: [
+			{
+				message: "change every line",
+				files: { [MANY]: text(manyLines.map((l) => `${l} changed`)) },
+			},
+		],
+	};
+	/** 15 threads on lines 1–15, the higher the line the newer: line 15 lists first. */
+	async function manyThreads(pr: (opts?: PrOptions) => Promise<Pr>) {
+		const p = await pr(manyFixture);
+		const on = { commit: p.head(), diffHunk: "" };
+		p.editScenario((sc) => {
+			const graph = sc.prs[p.number]?.graphql;
+			if (!graph) throw new Error("no PR in the scenario");
+			graph.reviewThreads = Array.from({ length: 15 }, (_, i) =>
+				reviewThread({ path: MANY, line: i + 1, subjectType: "LINE" }, [
+					threadComment({
+						login: "rev1",
+						text: `Note ${i + 1}`,
+						createdAt: `2026-01-04T10:${String(i + 10).padStart(2, "0")}:00Z`,
+						...on,
+					}),
+				]),
+			);
+		});
+	}
+
+	/**
+	 * The panel's scroller: the tree's column (its aside) on desktop, the
+	 * sheet's body on a phone.
+	 */
+	const SCROLLER = 'aside, dialog [class*="overflow-y-auto"]';
+
+	/**
+	 * How far the row is inside its scroller's view, under the sticky tabs
+	 * bar: both ≥ 0 when in view; and the scroller's scrollTop.
+	 */
+	const placement = (row: Locator) =>
+		row.evaluate((el, sel) => {
+			const scroller = el.closest(sel);
+			if (!scroller) throw new Error("no scroller");
+			const box = scroller.getBoundingClientRect();
+			const bar = el.closest('[role="tabpanel"]')?.previousElementSibling;
+			const top = Math.max(box.top, bar?.getBoundingClientRect().bottom ?? 0);
+			const r = el.getBoundingClientRect();
+			return {
+				top: Math.round(r.top - top),
+				bottom: Math.round(box.bottom - r.bottom),
+				scrollTop: scroller.scrollTop,
+			};
+		}, SCROLLER);
+	const inView = async (row: Locator) => {
+		await expect
+			.poll(async () => {
+				const p = await placement(row);
+				return p.top >= -1 && p.bottom >= -1;
+			})
+			.toBe(true);
+	};
+	const scrollPanel = (row: Locator, to: "top" | "bottom") =>
+		row.evaluate(
+			(el, [sel, where]) => {
+				const s = el.closest(sel);
+				if (!s) throw new Error("no scroller");
+				s.scrollTop = where === "top" ? 0 : s.scrollHeight;
+			},
+			[SCROLLER, to] as const,
+		);
+
+	test("j and k bring the row into view in the tree's column, below its tabs, without scrolling the page; so does showing resolved ones", async ({
+		page,
+		pr,
+		startCrb,
+		isMobile,
+	}) => {
+		test.skip(isMobile, "keyboard shortcuts: desktop");
+		await page.setViewportSize({ width: 1280, height: 520 });
+		await manyThreads(pr);
+		const s = await startCrb();
+		await installClock(page);
+		await openFiles(page, s.url);
+		const side = page.locator("body");
+		await tabs(side)
+			.getByRole("tab", { name: /^Threads/ })
+			.click();
+		const rows = region(side, "People").getByTestId("threads-row");
+		await expect(rows).toHaveCount(15);
+		const first = rows.first();
+		const last = rows.last();
+
+		// Scrolled to the bottom, the first row is above; j shows it below the tabs.
+		await scrollPanel(first, "bottom");
+		expect((await placement(first)).top).toBeLessThan(0);
+		await page.keyboard.press("j");
+		await expect(first.locator('button[aria-current="true"]')).toHaveCount(1);
+		await inView(first);
+
+		// A fresh page (no current row): k goes to the last, scrolled into view.
+		await page.reload();
+		await expect(rows).toHaveCount(15);
+		expect((await placement(last)).bottom).toBeLessThan(0);
+		await page.keyboard.press("k");
+		await expect(last.locator('button[aria-current="true"]')).toHaveCount(1);
+		await inView(last);
+		expect((await placement(last)).scrollTop).toBeGreaterThan(0);
+		await expectShown(
+			page.getByTestId("files-thread").filter({ hasText: "Note 1" }),
+		);
+
+		// Scrolled away, then resolved ones shown: back in view, the page still.
+		await scrollPanel(last, "top");
+		expect((await placement(last)).bottom).toBeLessThan(0);
+		const y = await page.evaluate(() => window.scrollY);
+		// Dispatched: a click would scroll the page to the toggle itself.
+		await side
+			.getByRole("button", { name: "Show resolved" })
+			.dispatchEvent("click");
+		await inView(last);
+		expect(await page.evaluate(() => window.scrollY)).toBe(y);
+	});
+
+	test("on a phone, the sheet opening shows the current row", async ({
+		page,
+		pr,
+		startCrb,
+		isMobile,
+	}) => {
+		test.skip(!isMobile, "the sheet: phone");
+		await manyThreads(pr);
+		const s = await startCrb();
+		await installClock(page);
+		await openFiles(page, s.url);
+		let side = await sidebar(page);
+		await tabs(side)
+			.getByRole("tab", { name: /^Threads/ })
+			.click();
+		const rows = () => region(side, "People").getByTestId("threads-row");
+		await expect(rows()).toHaveCount(15);
+		// A tap on the last row makes it current (and closes the sheet).
+		await rows().last().getByRole("button").first().click();
+		await expect(page.getByRole("dialog", { name: "Files" })).toBeHidden();
+		side = await sidebar(page);
+		const last = rows().last();
+		await expect(last.locator('button[aria-current="true"]')).toHaveCount(1);
+		// Scrolled away and closed; opened again, it shows.
+		await scrollPanel(last, "top");
+		expect((await placement(last)).bottom).toBeLessThan(0);
+		await page
+			.getByRole("dialog", { name: "Files" })
+			.getByRole("button", { name: "Close" })
+			.click();
+		await expect(page.getByRole("dialog", { name: "Files" })).toBeHidden();
+		side = await sidebar(page);
+		await inView(rows().last());
 	});
 });
 

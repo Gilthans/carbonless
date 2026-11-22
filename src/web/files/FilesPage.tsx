@@ -124,6 +124,10 @@ import {
 	githubRows,
 	listedConversations,
 	type PanelRow,
+	panelOrder,
+	placeOf,
+	type RowPlace,
+	stepRow,
 } from "./threadRows";
 import { useSince } from "./useSince";
 
@@ -1421,8 +1425,17 @@ export function FilesPage() {
 		placementInfo.pending,
 		agentPending,
 	]);
+	// The Threads tab's current row (j/k, or the last picked), per PR: where
+	// it stood, so a step goes on from there once it leaves the list.
+	const cursorKey = pr ? sidebarKey(pr) : null;
+	const [cursor, setCursor] = useState<{
+		pr: string | null;
+		at: RowPlace;
+	} | null>(null);
+	const threadAt = cursor?.pr === cursorKey ? cursor.at : null;
 	/** A row picked: its conversation's card, open and in view. */
 	const jumpTo = (row: PanelRow) => {
+		setCursor({ pr: cursorKey, at: placeOf(row) });
 		setMovedOn(null);
 		if (sheetOpen) setSheetOpen(false);
 		// Its file opens (as a pick does); the card opens wherever it is (a
@@ -1437,6 +1450,25 @@ export function FilesPage() {
 			threadFocus.request({ ...plan.request, scope: comparisonKey });
 		}
 	};
+	/** j/k on the Threads tab: the next or previous row, as a click on it. */
+	const stepThreads = (dir: 1 | -1) => {
+		const to = stepRow(panelOrder(peopleRows, aiRows, sidebar), threadAt, dir);
+		if (to) jumpTo(to);
+	};
+	useShortcut({
+		keys: "j",
+		label: "Next conversation",
+		group: "Files changed",
+		when: () => sidebar.tab === "threads",
+		run: () => stepThreads(1),
+	});
+	useShortcut({
+		keys: "k",
+		label: "Previous conversation",
+		group: "Files changed",
+		when: () => sidebar.tab === "threads",
+		run: () => stepThreads(-1),
+	});
 	const tree = data && (
 		<FileTree
 			files={files}
@@ -1469,6 +1501,8 @@ export function FilesPage() {
 						aiError={aiFailed}
 						state={sidebar}
 						onState={setSidebar}
+						current={threadAt?.key ?? null}
+						shown={wide ? "column" : sheetOpen ? "sheet" : "closed"}
 						onJump={jumpTo}
 					/>
 				),

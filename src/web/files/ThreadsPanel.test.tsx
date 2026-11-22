@@ -53,6 +53,7 @@ function Panel(props: {
 	ai: PanelRow[] | null;
 	onJump?: (row: PanelRow) => void;
 	peopleError?: boolean;
+	current?: string | null;
 }) {
 	const [state, setState] = useState<SidebarState>(SIDEBAR_DEFAULT);
 	return (
@@ -68,6 +69,7 @@ function Panel(props: {
 				aiError={false}
 				state={state}
 				onState={(c) => setState((s) => ({ ...s, ...c }))}
+				current={props.current}
 				onJump={props.onJump ?? (() => {})}
 			/>
 		</>
@@ -340,5 +342,20 @@ describe("the sidebar's state", () => {
 		await user.click(screen.getByRole("button", { name: "files" }));
 		expect(screen.getByRole("button", { name: "threads" })).toBeTruthy();
 		expect(readSidebar(key).tab).toBe("threads");
+	});
+});
+
+describe("the current row (j/k)", () => {
+	it("is marked current, and no other", () => {
+		const { rerender } = render(<Panel people={people} ai={ai} />);
+		expect(document.querySelectorAll("[aria-current]")).toHaveLength(0);
+		rerender(<Panel people={people} ai={ai} current="gh:old" />);
+		const marked = document.querySelectorAll('[aria-current="true"]');
+		expect(marked).toHaveLength(1);
+		expect(marked[0]?.getAttribute("aria-label")).toMatch(
+			/^src\/deep\/dir\/old\.ts:3/,
+		);
+		rerender(<Panel people={people} ai={ai} current="gh:gone" />);
+		expect(document.querySelectorAll("[aria-current]")).toHaveLength(0);
 	});
 });
