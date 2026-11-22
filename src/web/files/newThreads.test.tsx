@@ -255,7 +255,7 @@ function setup(
 					/>
 				</section>
 				{opts.children}
-				<SelectionBar files={[file()]} {...opts.bar} />
+				<SelectionBar files={[file()]} interdiff={false} {...opts.bar} />
 			</ShortcutsProvider>
 		</QueryClientProvider>
 	);

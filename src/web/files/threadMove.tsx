@@ -500,27 +500,27 @@ export function lineAt(
  * move stores (moveEnd): the full diff's as they are; the since view's
  * old lines through their base line. Null when either end stands for no
  * line of the full diff (the span isn't a place, Place here is off).
+ * `interdiff`: the page shows the since view (the caller knows the
+ * comparison; never guessed from the DOM). A number no row shows is taken
+ * as picked in the full diff only; in the since view it is none.
  */
-export function moveAnchorOf(span: {
-	path: string;
-	startSide: "LEFT" | "RIGHT";
-	startLine: number;
-	side: "LEFT" | "RIGHT";
-	line: number;
-}): ThreadAnchorRef | null {
+export function moveAnchorOf(
+	span: {
+		path: string;
+		startSide: "LEFT" | "RIGHT";
+		startLine: number;
+		side: "LEFT" | "RIGHT";
+		line: number;
+	},
+	interdiff: boolean,
+): ThreadAnchorRef | null {
 	const file = document.querySelector(`[data-path="${CSS.escape(span.path)}"]`);
 	const endOf = (side: "LEFT" | "RIGHT", line: number) => {
 		const row = file?.querySelector<HTMLElement>(
 			`tr[data-testid="diff-line"][data-${side === "LEFT" ? "old" : "new"}-no="${line}"]`,
 		);
-		// Not on screen: as picked in the full diff (its numbers are the
-		// anchor's); never in the since view (they are the interdiff's).
-		if (!row) {
-			return file?.querySelector("table[data-interdiff]")
-				? null
-				: { side, line };
-		}
-		return moveEnd(numbersOf(row), side, inInterdiff(row));
+		if (!row) return interdiff ? null : { side, line };
+		return moveEnd(numbersOf(row), side, interdiff);
 	};
 	const start = endOf(span.startSide, span.startLine);
 	const end = endOf(span.side, span.line);

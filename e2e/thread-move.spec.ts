@@ -388,7 +388,10 @@ test("in the since view (PS1 → head) too: the handle on a carried thread, a dr
 	startCrb,
 	isMobile,
 }) => {
-	test.setTimeout(150_000);
+	// Past the 30 s default: a push, then up to six GIT_WAIT (30 s) waits on
+	// crb's git (the new head, the engine's since view, the tracer) on a
+	// loaded machine, as the other push tests here. It ran in 7 to 8 s here.
+	test.setTimeout(120_000);
 	const { p, section } = await setup(page, pr, startCrb);
 	// PS1: the first mark starts it on this head.
 	await expect(bubbleOn(section, 5)).toBeVisible(GIT_WAIT);
@@ -398,8 +401,9 @@ test("in the since view (PS1 → head) too: the handle on a carried thread, a dr
 	await box.click();
 	await expect(box).toBeChecked();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
-	// Push: core 7 changed, so the since view shows lines 4 to 10 (core 5,
-	// the thread's line, as context).
+	// Push: core 7 changed too. Core 5 and 30 read as PS1 had them, so the
+	// since view's one hunk is core 7's, its context lines 4 to 10: the
+	// thread's line 5 among them, unchanged since PS1.
 	const h2 = p.moveHead({
 		message: "core 7",
 		files: {

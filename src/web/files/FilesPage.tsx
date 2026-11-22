@@ -1957,6 +1957,7 @@ export function FilesPage() {
 											commit={agentHead}
 											headSure={headSure}
 											readOnly={readOnly}
+											interdiff={since !== null}
 										/>
 										{!wide && (data.files.length > 0 || gone.length > 0) && (
 											<>

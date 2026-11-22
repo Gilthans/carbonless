@@ -371,6 +371,11 @@ export function SelectionBar(props: {
 	headSure?: boolean;
 	/** An earlier patch set: Comment off (Ask agent stays). */
 	readOnly?: boolean;
+	/**
+	 * The since view (an earlier patch set as the comparison base): its old
+	 * numbers are the interdiff's, so a move goes through their base lines.
+	 */
+	interdiff: boolean;
 }) {
 	const sessionHead =
 		useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead ?? "";
@@ -649,13 +654,16 @@ export function SelectionBar(props: {
 		// base line; none for a line of neither the base nor the head).
 		const anchor =
 			picked && span.side !== undefined && span.line !== undefined
-				? moveAnchorOf({
-						path: span.path,
-						startSide: span.startSide ?? span.side,
-						startLine: span.startLine ?? span.line,
-						side: span.side,
-						line: span.line,
-					})
+				? moveAnchorOf(
+						{
+							path: span.path,
+							startSide: span.startSide ?? span.side,
+							startLine: span.startLine ?? span.line,
+							side: span.side,
+							line: span.line,
+						},
+						props.interdiff,
+					)
 				: null;
 		const ok = anchor !== null && moveWrites?.to != null;
 		return (

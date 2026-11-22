@@ -670,6 +670,72 @@ describe("the engine", () => {
 		expect(await removed(h.reworked)).toEqual([["thirty", 30, null]]);
 	});
 
+	/** Commits `files` on top of `parent` (detached) in the history's repo. */
+	const commitOn = (parent: string, files: Record<string, string>) => {
+		h.git("checkout", "--quiet", "--detach", parent);
+		for (const [name, content] of Object.entries(files)) {
+			writeFileSync(join(h.path, name), content);
+		}
+		h.git("add", "--all");
+		h.git("commit", "--quiet", "-m", "fixture");
+		const sha = h.git("rev-parse", "HEAD");
+		h.git("checkout", "--quiet", "main");
+		return sha;
+	};
+	/** The since view's removed lines of `path`: text, own number, baseNo. */
+	const removedSince = async (
+		ps1: Awaited<ReturnType<typeof snap>>,
+		r: Awaited<ReturnType<typeof snap>>,
+		path: string,
+	) => {
+		const traced = await traceRereview(
+			h.path,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		const { answer } = answerRereview(
+			traced,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		const f = answer.files.find((x) => x.path === path);
+		if (!f) throw new Error(`no ${path}`);
+		return interdiffFileHunks(traced, r, answer, f.index)
+			.hunks.flatMap((hk) => hk.lines)
+			.filter((l) => l.kind === "del")
+			.map((l) => [l.text, l.oldNo, l.baseNo ?? null]);
+	};
+
+	it("the base moved on (three lines on top): baseNo is the new base's line, neither the since view's number nor the old base's (CAR-139)", async () => {
+		// PS1 dropped line 20, so its line 35 is the since view's 34 + 3.
+		const ps1 = await snap(h.b0, h.deletesLine);
+		const top = "top 1\ntop 2\ntop 3\n";
+		const moved = commitOn(h.b0, { "a.txt": `${top}${aTxt({})}` });
+		const head = commitOn(moved, {
+			"a.txt": `${top}${aTxt({ 2: "two", 30: "thirty", 35: "thirty-five" }).replace("line 20\n", "")}`,
+			"new.txt": "new\n",
+		});
+		const r = await snap(moved, head);
+		// Old base: 35; the since view (PS1 rebased on the new base): 37;
+		// the new base: 38.
+		expect(await removedSince(ps1, r, "a.txt")).toEqual([["line 35", 37, 38]]);
+	});
+
+	it("a removed line the full diff keeps gets no baseNo (the guard), though its place maps to a base line (CAR-139)", async () => {
+		// PS1 adds a second "}" (git: after the first); the head adds "Y" on
+		// top instead. The since view removes the *first* "}" (git trims the
+		// common end), whose place is the base's own "}" — a line the full
+		// diff keeps: no move may be stored there.
+		const base = commitOn(h.b0, { "g.txt": "}\nb\n" });
+		const ps = commitOn(base, { "g.txt": "}\n}\nb\n" });
+		const head = commitOn(base, { "g.txt": "Y\n}\nb\n" });
+		const ps1 = await snap(base, ps);
+		const r = await snap(base, head);
+		expect(await removedSince(ps1, r, "g.txt")).toEqual([["}", 1, null]]);
+	});
+
 	it("a deletion the author restored: gone, its restored line keyed to it", async () => {
 		const ps1 = await snap(h.b0, h.deletesLine);
 		const r = await snap(h.b0, h.restoresLine);

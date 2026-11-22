@@ -366,7 +366,8 @@ describe("the since view: the handle, a drop and Place here", () => {
 		const posts = renderSince();
 		const handle = await openCard();
 		expect(dragOnto(handle, rowOf("new", 4))).toBe(true);
-		await waitFor(() => expect(posts).toHaveLength(1));
+		// Sent as the drop lands (no wait): what "nothing sent" checks below.
+		expect(posts).toHaveLength(1);
 		expect(posts[0]).toMatchObject({
 			anchor: {
 				path: PATH,
@@ -394,10 +395,9 @@ describe("the since view: the handle, a drop and Place here", () => {
 		const posts = renderSince();
 		const handle = await openCard();
 		expect(dragOnto(handle, rowOf("old", 2))).toBe(false);
-		await act(async () => {
-			await new Promise((r) => setTimeout(r, 20));
-		});
+		// A move is sent as the drop lands (the test above): none here.
 		expect(posts).toEqual([]);
+		expect(screen.queryByTestId("move-failure")).toBeNull();
 	});
 
 	it("Place here's anchor: picked numbers through the same rows (moveAnchorOf)", async () => {
@@ -409,17 +409,34 @@ describe("the since view: the handle, a drop and Place here", () => {
 			side: "LEFT" | "RIGHT",
 			l: number,
 		) => ({ path: PATH, startSide, startLine, side, line: l });
-		expect(moveAnchorOf(span("RIGHT", 3, "RIGHT", 4))).toEqual(
+		expect(moveAnchorOf(span("RIGHT", 3, "RIGHT", 4), true)).toEqual(
 			span("RIGHT", 3, "RIGHT", 4),
 		);
-		expect(moveAnchorOf(span("LEFT", 5, "LEFT", 5))).toEqual(
+		expect(moveAnchorOf(span("LEFT", 5, "LEFT", 5), true)).toEqual(
 			span("LEFT", 3, "LEFT", 3),
 		);
-		expect(moveAnchorOf(span("LEFT", 2, "LEFT", 2))).toBeNull();
+		expect(moveAnchorOf(span("LEFT", 2, "LEFT", 2), true)).toBeNull();
 		// A range starting on such a line isn't a place either.
-		expect(moveAnchorOf(span("LEFT", 2, "RIGHT", 3))).toBeNull();
+		expect(moveAnchorOf(span("LEFT", 2, "RIGHT", 3), true)).toBeNull();
 		// A number no row shows: never taken as the base's.
-		expect(moveAnchorOf(span("LEFT", 9, "LEFT", 9))).toBeNull();
+		expect(moveAnchorOf(span("LEFT", 9, "LEFT", 9), true)).toBeNull();
+	});
+
+	it("the since view with its file's section gone: nothing (never the picked numbers as the base's)", () => {
+		// No section, no rows: only the caller's word says which view it is.
+		const s = {
+			path: "src/elsewhere.ts",
+			startSide: "LEFT" as const,
+			startLine: 5,
+			side: "LEFT" as const,
+			line: 5,
+		};
+		expect(moveAnchorOf(s, true)).toBeNull();
+		expect(
+			moveAnchorOf({ ...s, startSide: "RIGHT", side: "RIGHT" }, true),
+		).toBeNull();
+		// The full diff's numbers are the anchor's: as picked.
+		expect(moveAnchorOf(s, false)).toEqual(s);
 	});
 
 	it("the full diff's rows: as picked (no interdiff to map through)", () => {
@@ -433,7 +450,7 @@ describe("the since view: the handle, a drop and Place here", () => {
 			side: "LEFT" as const,
 			line: 7,
 		};
-		expect(moveAnchorOf(s)).toEqual(s);
+		expect(moveAnchorOf(s, false)).toEqual(s);
 		const row = document.querySelector("tr") as HTMLElement;
 		const original = document.elementFromPoint;
 		document.elementFromPoint = () => row;
