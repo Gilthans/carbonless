@@ -624,8 +624,8 @@ read (reviewed or crossed off) at the earlier patch set, since a line
 nobody read there that this patch set only re-indented is still unread;
 the rest of a cluster that no piece shows keeps its cluster's flag. A
 file is nothing else when all its since units are whitespace-only (not
-its snapshot clusters), and then counts them all. The `~` counts a
-cluster's units as one and each unit without a cluster on its own. Home doesn't: it never reads a review's view settings
+its snapshot clusters), and its header then counts them all, with no
+`~`. The `~` counts a cluster's units as one and each unit without a cluster on its own. Home doesn't: it never reads a review's view settings
 (owner 2026-11-16: "Home shouldn't probe for specific review settings"),
 so it counts every cluster.
 

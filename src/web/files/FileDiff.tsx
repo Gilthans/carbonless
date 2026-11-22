@@ -723,15 +723,25 @@ export function FileDiff(props: {
 	// whitespace" on, without its whitespace-only clusters (countedFile),
 	// in the since view too (its meter counts its units: `counted`).
 	const ignoreWs = ignoreWhitespace.use();
-	const shown = countedFile(file, ignoreWs);
-	// How many whitespace-only clusters the header's counts leave out: its
-	// `~`. In the since view its units' count, and never less than its
-	// state leaves out: a header that reads done without them says so.
-	const clustersLeftOut = file.clusters.length - shown.clusters.length;
+	const byClusters = countedFile(file, ignoreWs);
+	// The since view: the header follows its units (CAR-218), not the
+	// snapshot's clusters, so its state, meter and `~` agree. With units to
+	// count, their state is the file's; with none, nothing is left to read.
+	const shown: FileView =
+		props.counted !== undefined && props.counted.clusters.length > 0
+			? {
+					...byClusters,
+					done: props.counted.done,
+					reviewed: props.counted.reviewed,
+					crossedOff: props.counted.crossedOff,
+				}
+			: byClusters;
+	// How many whitespace-only changes the header's counts leave out: its
+	// `~`. In the since view its units' count alone (countedFileUnits).
 	const leftOut =
 		props.counted !== undefined
-			? Math.max(props.countedLeftOut ?? 0, clustersLeftOut)
-			: clustersLeftOut;
+			? (props.countedLeftOut ?? 0)
+			: file.clusters.length - byClusters.clusters.length;
 	/**
 	 * A mark that leaves nothing unreviewed (a cluster's, or the rest of the
 	 * file's) finishes the file: an open one closes at once and the page

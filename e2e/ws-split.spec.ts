@@ -515,7 +515,7 @@ const sinceLeftOut = (page: Page) =>
 		.locator("[data-page-bar]")
 		.locator(`[data-testid="ws-left-out"][aria-label="${SINCE_LEFT_OUT}"]`);
 
-test("the since view: a change carried, only the indent reworked: the header reads done with the `~`, never without (B1)", async ({
+test("the since view: a change carried, only the indent reworked: the file is nothing else, so its header counts the re-indent, unfinished, with no `~` (B1)", async ({
 	page,
 	pr,
 	startCrb,
@@ -566,21 +566,26 @@ test("the since view: a change carried, only the indent reworked: the header rea
 	const since = fileSection(page, PATH);
 	await expect(header(since)).not.toHaveAttribute("data-finished");
 
-	// On: the re-indent is left out. The header reads done, with the `~`.
+	// On: the file's only since unit is the re-indent (the carried change
+	// is none), so the file is nothing else: its header counts it, reads
+	// unfinished and shows no `~`; the page bar leaves it out as a whole.
 	await ignoreWhitespace(page, true);
 	await expect(progress(page)).toContainText("Nothing to read");
 	await expect(leftOut(page)).toBeVisible();
-	await expect(header(since)).toHaveAttribute("data-finished");
-	await expect(
-		header(since).getByRole("img", { name: LEFT_OUT }),
-	).toBeVisible();
-
-	// Off: to read again.
-	await ignoreWhitespace(page, false);
 	await expect(header(since)).not.toHaveAttribute("data-finished");
+	await expect(
+		header(since).getByRole("progressbar", { name: "File progress" }),
+	).toContainText(/0 \/ \d+ clusters?/);
 	await expect(header(since).getByRole("img", { name: LEFT_OUT })).toHaveCount(
 		0,
 	);
+
+	// Off: the same header, counting the same unit.
+	await ignoreWhitespace(page, false);
+	await expect(header(since)).not.toHaveAttribute("data-finished");
+	await expect(
+		header(since).getByRole("progressbar", { name: "File progress" }),
+	).toContainText(/0 \/ \d+ clusters?/);
 });
 
 test.describe("Home", () => {
