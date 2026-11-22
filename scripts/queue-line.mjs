@@ -3,12 +3,14 @@
 // arrival to its end:
 //
 //   <arrival ns, 20 digits>-<pid>
-//   containing "<pid> <start time> <pid ns> <full|short>[ held]"
+//   containing "<pid> <start time> <pid ns> <full|short>[ held[ <workers>]]"
 //
 // Arrival is the system-wide monotonic clock, so tickets sort in arrival
 // order. `full` is a whole suite (isFullRun); `held` is added once the run
-// holds a slot (markHeld, by the process holding it). A ticket without a
-// kind (an older queue.mjs) counts as full and waiting. A ticket whose pid is gone, a zombie, or now another process (a
+// holds a slot (markHeld, by the process holding it), and the workers its
+// test runner took once it starts (writeWorkers, queue-guard.mjs). A ticket
+// without a kind (an older queue.mjs) counts as full and waiting. A ticket
+// whose pid is gone, a zombie, or now another process (a
 // different start time in /proc/<pid>/stat) is a run killed with SIGKILL:
 // whoever reads it removes it. A stopped run (Ctrl-Z) keeps its ticket but
 // isn't counted until it runs again. A ticket from another pid namespace (a
@@ -25,6 +27,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { parseFlakeArgs } from "./flake-check-args.mjs";
 
 const TICKET = /^(\d{20})-(\d+)$/;
 /** A foreign ticket older than this is left over: removed. */
@@ -131,10 +134,18 @@ export function tickets(dir) {
 	return live;
 }
 
-/** What a ticket says of its run; no kind (an older queue.mjs): full. */
+/**
+ * What a ticket says of its run; no kind (an older queue.mjs): full.
+ * `workers`: what its runner took (writeWorkers); undefined until then.
+ */
 export function ticketKind(content) {
-	const [, , , kind, held] = content.trim().split(" ");
-	return { full: kind !== "short", held: held === "held" };
+	const [, , , kind, held, workers] = content.trim().split(" ");
+	const n = Number(workers);
+	return {
+		full: kind !== "short",
+		held: held === "held",
+		workers: Number.isInteger(n) && n > 0 ? n : undefined,
+	};
 }
 
 /**
@@ -163,28 +174,39 @@ export function mayTry(line, slots) {
 	return go;
 }
 
-/** The runs holding a slot in the line in `dir` now. */
-export function sharing(dir) {
-	return tickets(dir).filter((t) => t.held).length;
-}
+/** More test files than this make a Vitest run full (of ~290). */
+export const MANY_UNIT_FILES = 40;
+/** More specs than this make a Playwright run full (of ~50). */
+export const MANY_SPECS = 10;
+/** flake-check: more test files × runs than this make it full. */
+export const MANY_FLAKE_RUNS = 10;
 
 /**
- * Whether `cmd args` runs a whole suite: Vitest with no file filter and no
- * --changed, Playwright with no spec (or more than MANY_SPECS), filter or
- * --grep, or a command that
- * is neither (`pnpm verify`'s sh -c, anything unknown: counted as full, so
- * a mistake only makes a run wait). flake-check names its tests: short.
+ * Whether `cmd args` runs a whole suite, or near enough to load the
+ * machine like one (`cwd`: the tree the run is in, for counting the test
+ * files its filters match):
+ * - CRB_QUEUE_FULL=1 in `env` (verify:fast, when Vitest will rerun all);
+ * - Vitest with no file filter and no --changed, or filters matching more
+ *   than MANY_UNIT_FILES test files;
+ * - Playwright with no spec and no --grep, or filters matching more than
+ *   MANY_SPECS specs;
+ * - flake-check with --load, or more than MANY_FLAKE_RUNS files × runs;
+ * - anything else (`pnpm verify`'s sh -c, an unknown command), and any
+ *   argument it can't read (an unknown option's value): full, so a mistake
+ *   only makes a run wait.
  */
-export function isFullRun(cmd, args) {
+export function isFullRun(cmd, args, { env = process.env, cwd = "." } = {}) {
+	if (env.CRB_QUEUE_FULL === "1") return true;
 	const argv = [cmd, ...args];
 	const base = (a) => a.slice(a.lastIndexOf("/") + 1);
 	const vitest = argv.findIndex((a) => /^vitest(\.mjs)?$/.test(base(a)));
-	if (vitest >= 0) return vitestFull(argv.slice(vitest + 1));
+	if (vitest >= 0) return vitestFull(argv.slice(vitest + 1), cwd);
 	const pw = argv.findIndex(
 		(a) => base(a) === "playwright" || /@playwright\/test\/cli\.js$/.test(a),
 	);
-	if (pw >= 0) return playwrightFull(argv.slice(pw + 1));
-	if (argv.some((a) => base(a) === "flake-check.mjs")) return false;
+	if (pw >= 0) return playwrightFull(argv.slice(pw + 1), cwd);
+	const flake = argv.findIndex((a) => base(a) === "flake-check.mjs");
+	if (flake >= 0) return flakeFull(argv.slice(flake + 1));
 	return true;
 }
 
@@ -244,45 +266,104 @@ function positionals(args, valued) {
 	return out;
 }
 
-function vitestFull(args) {
-	const [sub, ...rest] = args;
-	if (sub === "related") return false;
-	const opts = sub === "run" || sub === "watch" ? rest : args;
-	if (opts.some((a) => a === "--changed" || a.startsWith("--changed=")))
-		return false;
-	return positionals(opts, VITEST_VALUED).length === 0;
+/** Files under `dir` (relative to `cwd`, "/"-separated) whose names match `re`. */
+function testFiles(cwd, dir, re) {
+	const out = [];
+	const walk = (rel) => {
+		let entries;
+		try {
+			entries = readdirSync(join(cwd, rel), { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const e of entries) {
+			if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+			const path = `${rel}/${e.name}`;
+			if (e.isDirectory()) walk(path);
+			else if (re.test(e.name)) out.push(path);
+		}
+	};
+	walk(dir);
+	return out;
 }
 
-function playwrightFull(args) {
+/**
+ * How many of `files` the `filters` pick (each a substring of the path, as
+ * Vitest and Playwright read a file filter; `:line` dropped); Infinity when
+ * a filter neither looks like a test path nor matches a file: an argument
+ * we can't read (an unknown option's value, say).
+ */
+function picked(filters, files, testPath) {
+	const chosen = new Set();
+	for (const raw of filters) {
+		const f = raw.replace(/^\.\//, "").replace(/:\d+(:\d+)?$/, "");
+		const hits = files.filter(
+			(file) => file.includes(f) || f.endsWith(`/${file}`),
+		);
+		if (!hits.length && !testPath.test(f) && !f.includes("/")) {
+			return Number.POSITIVE_INFINITY;
+		}
+		for (const h of hits) chosen.add(h);
+	}
+	return chosen.size;
+}
+
+function vitestFull(args, cwd) {
+	const [sub, ...rest] = args;
+	const opts =
+		sub === "run" || sub === "watch" || sub === "related" ? rest : args;
+	if (opts.some((a) => a === "--changed" || a.startsWith("--changed=")))
+		return false;
+	const filters = positionals(opts, VITEST_VALUED);
+	if (!filters.length) return sub !== "related";
+	const files = ["src", "scripts", "test"].flatMap((d) =>
+		testFiles(cwd, d, /\.test\.tsx?$/),
+	);
+	return picked(filters, files, /\.test\.tsx?$/) > MANY_UNIT_FILES;
+}
+
+function playwrightFull(args, cwd) {
 	const [sub, ...rest] = args;
 	if (sub !== "test") return true;
 	const short = ["-g", "--grep", "--last-failed", "--only-changed"];
 	if (rest.some((a) => short.some((s) => a === s || a.startsWith(`${s}=`))))
 		return false;
-	const specs = positionals(rest, PLAYWRIGHT_VALUED).length;
-	return specs === 0 || specs > MANY_SPECS;
+	const filters = positionals(rest, PLAYWRIGHT_VALUED);
+	if (!filters.length) return true;
+	const specs = testFiles(cwd, "e2e", /\.spec\.ts$/);
+	return picked(filters, specs, /\.spec\.ts$/) > MANY_SPECS;
 }
 
-/**
- * More specs than this make a full run: verify:fast after a change to
- * widely used code lists most of the suite's ~50 specs one by one.
- */
-const MANY_SPECS = 10;
+function flakeFull(args) {
+	const parsed = parseFlakeArgs(args);
+	if ("error" in parsed) return true;
+	const files = parsed.units.length + parsed.specs.length;
+	return parsed.load > 0 || files * parsed.runs > MANY_FLAKE_RUNS;
+}
+
+/** Rewrites the ticket at `path` with `change` applied to its fields. */
+function rewrite(path, change) {
+	try {
+		const parts = readFileSync(path, "utf8").trim().split(" ");
+		while (parts.length < 4) parts.push(parts.length === 3 ? "full" : "-");
+		const next = change(parts).join(" ");
+		const tmp = join(dirname(path), `.${basename(path)}.tmp`);
+		writeFileSync(tmp, `${next}\n`);
+		renameSync(tmp, path);
+	} catch {}
+}
 
 /**
  * Marks the ticket at `path` as holding a slot (from the process holding
  * it: the ticket stays its waiter's). Whole before it appears, as written.
  */
 export function markHeld(path) {
-	try {
-		const content = readFileSync(path, "utf8").trim();
-		if (ticketKind(content).held) return;
-		const parts = content.split(" ");
-		while (parts.length < 4) parts.push(parts.length === 3 ? "full" : "-");
-		const tmp = join(dirname(path), `.${basename(path)}.tmp`);
-		writeFileSync(tmp, `${parts.join(" ")} held\n`);
-		renameSync(tmp, path);
-	} catch {}
+	rewrite(path, (p) => (p[4] === "held" ? p : [...p.slice(0, 4), "held"]));
+}
+
+/** Writes into the held ticket at `path` the workers its runner took. */
+export function writeWorkers(path, workers) {
+	rewrite(path, (p) => [...p.slice(0, 4), "held", String(workers)]);
 }
 
 /** Whether ticket `name`'s file is older than FOREIGN_MAX_AGE_MS. */

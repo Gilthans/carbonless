@@ -4,8 +4,11 @@ export function queuedWorkers(
 	freeBytes?: number,
 ): number | undefined;
 export const WORKER_BYTES: number;
+export const SHORT_MAX: number;
 export function workersFor(machine: {
 	cores: number;
-	sharing: number;
 	freeBytes: number;
+	slots: number;
+	full: boolean;
+	others: { full: boolean; workers?: number }[];
 }): number;

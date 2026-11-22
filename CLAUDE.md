@@ -107,36 +107,33 @@ loading never looking empty, checking against a real PR):
   Playwright run (`verify:fast`, `test:e2e`, `flake-check`). When unsure,
   include the phone.
 - Test queue (for a machine shared by several agents): when
-  `~/.config/carbonless/queue.json` exists (`{"slots": 2}`), every Vitest
-  and Playwright run (`pnpm test`, `test:changed`, `test:e2e` with or
-  without spec files, `verify:fast`'s test steps, `pnpm verify`,
-  `pnpm flake-check`) waits for one of `slots` (default 1) machine-wide locks
-  (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock*`),
-  printing whose runs it waits for, so runs never overload the machine
-  together. At most one of them is a full run: a whole suite (`pnpm test`
-  or `test:e2e` with no files or more than 10 specs, `verify:fast` running
-  every spec, `pnpm verify`; anything the queue can't tell counts as full), which also holds
-  `~/.cache/carbonless-verify.lock.full`, so a second full run waits while
-  a short one may take the free slot. Runs go first come, first served:
-  each has a ticket in `~/.cache/carbonless-queue`
-  (`scripts/queue-line.mjs`) from arrival to end, saying full or short and
-  whether it holds a slot, and tries a slot only when the line ahead of it
-  leaves one (`mayTry`); whoever
-  reads a ticket whose pid died, is a zombie or was reused drops it, and a
-  stopped run (Ctrl-Z) lets the ones behind it pass. A run nested in a held
-  slot never queues again.
+  `~/.config/carbonless/queue.json` exists (`{"slots": 1, "shortSlots":
+  1}`), every Vitest and Playwright run (`pnpm test`, `test:changed`,
+  `test:e2e` with or without spec files, `verify:fast`'s test steps,
+  `pnpm verify`, `pnpm flake-check`) waits for one of `slots` +
+  `shortSlots` machine-wide locks (`scripts/queue.mjs`, `flock` on
+  `~/.cache/carbonless-verify.lock*`), first come, first served, printing
+  whose runs it waits for, so runs never overload the machine together.
+  At most one is a full run, on lock 0: a whole suite (`pnpm test`,
+  `test:e2e` with no or more than 10 specs, `pnpm verify`, `verify:fast`
+  when Vitest reruns everything or every spec runs, `flake-check` with
+  `--load` or more than 10 files × runs), and anything the queue can't
+  tell. A second full run waits while a short one takes a free lock.
+  Tickets in `~/.cache/carbonless-queue` (`scripts/queue-line.mjs`) keep
+  the order; a dead run's ticket is dropped, a stopped one (Ctrl-Z) lets
+  the ones behind it pass. A run nested in a held slot never queues again.
   `vitest.config.ts`/`playwright.config.ts` refuse a run outside it
   (`scripts/queue-guard.mjs`): use the package scripts, or wrap a direct
   call as `node scripts/queue.mjs pnpm exec playwright test ...`. The file
   is read on every run and while waiting: a change applies at once, no
   restart. Interactive `pnpm test:watch` never queues. Waiting can take
   longer than a foreground command may: run tests in the background
-  (`run_in_background`); a signal ends the wait. A run in a slot picks its
-  workers when its runner starts, from the machine then: the cores but one
-  divided among the runs holding a slot at that moment, and no more than
-  the available memory holds at 1.5 GB a worker (at least one). So a full
-  run that starts alone keeps 7 of 8 cores, and a short one joining it gets
-  3 (measured: CAR-232). `CRB_NO_QUEUE=1` skips the queue for one command. No file (CI, a machine of one's own): nothing queues.
+  (`run_in_background`); a signal ends the wait. Workers: never more than
+  cores − 1 in total across the runs holding a slot, and 1.5 GB of
+  available memory each; one slot: all of them; two on 8 cores: full 5,
+  short 2 beside it (3 alone, then a full one 4). `CRB_NO_QUEUE=1` skips
+  the queue for one command. No file (CI, a machine of one's own): nothing
+  queues.
 - A tree's `dist` lock (`scripts/dist-lock.mjs`, `flock` on
   `node_modules/.crb-dist.lock`) keeps any build (`pnpm build`, so prepack,
   `test:pack`) from changing a `dist` that a Playwright run in the same tree
