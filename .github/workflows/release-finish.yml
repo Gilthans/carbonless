@@ -150,7 +150,10 @@ jobs:
         # Rerun each open PR's newest release-gate run: it reads master again
         # and now fails, except on the "next" PR. Harmless once master moved
         # on (they pass). A run still in progress can't be rerun; it is
-        # reported and left (it may have read master before the tag).
+        # reported and left (it may have read master before the tag). Even
+        # when a step before failed (the published notes, the next PR): a
+        # PR green from before the tag must not stay mergeable meanwhile.
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

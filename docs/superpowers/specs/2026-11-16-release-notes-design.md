@@ -1,5 +1,7 @@
 # Release notes per version, and "What's new" from the update toast
 
+> Superseded in part by CAR-242 (2026-11-22): promote collects the notes itself and the committed notes file is no longer required before a promote (no `ci:notes-check`); see `docs/releasing.md`, "Release notes".
+
 CAR-192. Draft, 2026-11-16, for the owner's review. Depends on CAR-191
 (the release freeze, PR #128), which touches the same release scripts.
 

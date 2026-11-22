@@ -500,7 +500,7 @@ describe("against a repository", {
 			const sha = commit("Late one (CAR-200) (#141)");
 			const { io } = repoIo(repo);
 			await expect(notesCheck(io, "0.4.0", sha)).rejects.toThrow(
-				"release-notes/0.4.0.json doesn't cover #125 (#125), CAR-172 (#126), CAR-200 (#141): give each a Release note (pnpm release note), then run pnpm release notes 0.4.0 --pr again",
+				"release-notes/0.4.0.json doesn't cover #125 (#125), CAR-172 (#126), CAR-200 (#141): give each a Release note (pnpm release note), then set up the Linear key ($LINEAR_API_KEY or ~/.config/linear/api-key) and promote again (it collects the notes itself); else run pnpm release notes 0.4.0 --pr again",
 			);
 		});
 
@@ -509,7 +509,7 @@ describe("against a repository", {
 			const none = git("rev-parse", "HEAD");
 			const { io } = repoIo(repo);
 			await expect(notesCheck(io, "0.4.0", none)).rejects.toThrow(
-				/^no release-notes\/0\.4\.0\.json at [0-9a-f]{40}: run pnpm release notes 0\.4\.0 --pr/,
+				/^no release-notes\/0\.4\.0\.json at [0-9a-f]{40}: set up the Linear key \(\$LINEAR_API_KEY or ~\/\.config\/linear\/api-key\) and promote again \(it collects the notes itself\); else run pnpm release notes 0\.4\.0 --pr/,
 			);
 			const other = commit("x (#2)", {
 				"release-notes/0.4.0.json": notesFile({ ...covered, version: "0.5.0" }),
@@ -620,7 +620,7 @@ describe("against a repository", {
 			await expect(
 				notesFromInput(io, "0.4.0", sha, encodeNotesInput(late)),
 			).rejects.toThrow(
-				/entries outside 0\.4\.0's PRs up to [0-9a-f]{40}: CAR-200/,
+				/entries outside 0\.4\.0's PRs up to [0-9a-f]{40}: CAR-200 \(the notes input\)/,
 			);
 			await expect(
 				notesFromInput(
@@ -650,6 +650,31 @@ describe("against a repository", {
 				notesFromInput(io, "0.4.0", sha, encodeNotesInput(html)),
 			).rejects.toThrow(
 				/the notes input is malformed: notes\[0\] CAR-183: text .*has HTML/,
+			);
+		});
+
+		it("refuses an out-of-range entry kept from the file at the commit too, with or without an input", async () => {
+			history();
+			// A hand-edited file naming a PR the release doesn't have.
+			const sha = commit("notes: 0.4.0 (#140)", {
+				"release-notes/0.4.0.json": notesFile(
+					file({
+						none: [
+							...file().none,
+							{ id: "CAR-999", prs: [999], why: "elsewhere" },
+						],
+					}),
+				),
+			});
+			const { io } = repoIo(repo);
+			const outside =
+				/entries outside 0\.4\.0's PRs up to [0-9a-f]{40}: CAR-999 \(release-notes\/0\.4\.0\.json\)/;
+			// The input doesn't name CAR-999: the file's entry is kept, and refused.
+			await expect(
+				notesFromInput(io, "0.4.0", sha, encodeNotesInput(file())),
+			).rejects.toThrow(outside);
+			await expect(notesFromInput(io, "0.4.0", sha, "")).rejects.toThrow(
+				outside,
 			);
 		});
 
@@ -1624,7 +1649,9 @@ describe("against a repository", {
 					linear: null,
 					tried: ["$LINEAR_API_KEY", "/home/x/.config/linear/api-key"],
 				}),
-			).rejects.toThrow(/^no release-notes\/0\.4\.0\.json at [0-9a-f]{40}/);
+			).rejects.toThrow(
+				/^no release-notes\/0\.4\.0\.json at [0-9a-f]{40}: set up the Linear key \(\$LINEAR_API_KEY or ~\/\.config\/linear\/api-key\)/,
+			);
 			expect(lines[0]).toMatch(
 				/^warning: no Linear key \(tried \$LINEAR_API_KEY, \/home\/x\/\.config\/linear\/api-key\).*so the run takes release-notes\/0\.4\.0\.json at v0\.4\.0-rc\.1$/,
 			);

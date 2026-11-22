@@ -27,6 +27,7 @@ import {
 	newestTag,
 	next,
 	nextRc,
+	notesLines,
 	type PublishIo,
 	parseManifest,
 	parseTag,
@@ -1203,6 +1204,55 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 		expect(p.calls).toContain(
 			"gh workflow run release-finish.yml --repo owner/repo --ref master -f version=0.1.0 -f run=77",
 		);
+	});
+
+	it("shows the package's release notes before asking (CAR-242), terminal-safe", async () => {
+		const notesFile = {
+			version: "0.1.0",
+			date: null,
+			notes: [
+				{ id: "CAR-1", kind: "new", prs: [1], text: "Threads tab." },
+				{ id: "#2", kind: "fixed", prs: [2], text: "Uses `<dialog>`." },
+			],
+			none: [{ id: "CAR-3", prs: [3], why: "test tooling" }],
+		};
+		const { out } = artifact({
+			packageJson: {
+				name: "carbonless-review",
+				version: "0.1.0",
+				crbReleaseNotesFile: notesFile,
+			},
+		});
+		let shown: string[] = [];
+		const p = publishIo(out, {}, { onAsk: () => (shown = [...p.lines]) });
+		await publishRelease(p.io, "77");
+		expect(shown).toEqual(
+			expect.arrayContaining([
+				"  notes: 2 note(s), 1 without one (none)",
+				"    new: Threads tab. (CAR-1)",
+				"    fixed: Uses `<dialog>`. (#2)",
+			]),
+		);
+		// A package from before CAR-242 says so; a bad field is named, and
+		// nothing of it reaches the terminal raw.
+		expect(notesLines(undefined, "0.1.0")).toEqual([
+			"  notes: none in the package (promoted before CAR-242)",
+		]);
+		const bad = notesLines(
+			{
+				...notesFile,
+				notes: [{ id: "CAR-1", kind: "new", prs: [1], text: "Red \u001b[31m‮" }],
+			},
+			"0.1.0",
+		);
+		expect(bad).toHaveLength(1);
+		expect(bad[0]).toMatch(/^ {2}notes: unreadable \(/);
+		expect(
+			[...(bad[0] ?? "")].some((c) => c.charCodeAt(0) < 32 || c === "‮"),
+		).toBe(false);
+		expect(notesLines(notesFile, "0.2.0")).toEqual([
+			"  notes: unreadable (for 0.1.0)",
+		]);
 	});
 
 	it("refuses a tarball whose sha256 isn't the manifest's", async () => {
@@ -2419,8 +2469,16 @@ esac
 			),
 		);
 		const step = steps[at] ?? "";
-		// Every time (a rerun of release-finish too), with the job's token.
-		expect(step).not.toMatch(/^ {8}if:/m);
+		// Every time (a rerun of release-finish too), with the job's token,
+		// even when a step before it failed (CAR-242: the published notes,
+		// the next PR): only a cancel skips it.
+		expect(at).toBeGreaterThan(
+			steps.findIndex((st) => st.includes("name: The published release notes")),
+		);
+		expect(step.match(/^ {8}if:.*$/gm)).toEqual([
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+			"        if: ${{ !cancelled() }}",
+		]);
 		expect(step).toMatch(/GH_TOKEN: \$\{\{ github\.token \}\}/);
 		expect(code(workflow("release-finish.yml"))).toMatch(
 			/^ {2}actions: write\b/m,

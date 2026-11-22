@@ -495,6 +495,10 @@ export function coverage(
 
 const prList = (prs: number[]) => prs.map((n) => `#${n}`).join(", ");
 
+/** The real fix when promote has no Linear key to collect the notes with. */
+const KEY_FIX =
+	"set up the Linear key ($LINEAR_API_KEY or ~/.config/linear/api-key) and promote again (it collects the notes itself)";
+
 /**
  * A committed notes file alone (`pnpm release promote` without a Linear
  * key; git only): fails unless release-notes/X.Y.Z.json at `sha` is well formed, is for
@@ -511,14 +515,14 @@ export async function notesCheck(
 	const file = files.get(version);
 	if (!file) {
 		throw new Error(
-			`no ${path} at ${sha}: run pnpm release notes ${version} --pr and merge its "notes: ${version}" PR, then promote that RC`,
+			`no ${path} at ${sha}: ${KEY_FIX}; else run pnpm release notes ${version} --pr and merge its "notes: ${version}" PR, then promote that RC`,
 		);
 	}
 	const range = await releaseRange(io, version, sha, cwd);
 	const { missing } = coverage(range, file, files, version);
 	if (missing.length > 0) {
 		throw new Error(
-			`${path} doesn't cover ${missing.map((m) => `${m.id} (${prList(m.prs)})`).join(", ")}: give each a Release note (pnpm release note), then run pnpm release notes ${version} --pr again`,
+			`${path} doesn't cover ${missing.map((m) => `${m.id} (${prList(m.prs)})`).join(", ")}: give each a Release note (pnpm release note), then ${KEY_FIX}; else run pnpm release notes ${version} --pr again`,
 		);
 	}
 	const prs = range.prs.filter((p) => !p.exempt).length;
@@ -660,27 +664,29 @@ export async function notesFromInput(
 		);
 	}
 	const range = await releaseRange(io, version, sha, cwd);
-	if (input) {
-		// Collected for exactly this range: an entry of another PR means
-		// the notes were collected for another RC.
-		const needed = neededIds(range);
-		const prs = new Set(
-			range.prs.filter((p) => !p.exempt).map((p) => p.number),
-		);
-		const foreign = [
-			...new Set(
-				[...input.notes, ...input.none]
-					.filter((e) => !needed.has(e.id) || e.prs.some((n) => !prs.has(n)))
-					.map((e) => e.id),
-			),
-		];
-		if (foreign.length > 0) {
-			throw new Error(
-				`the notes input has entries outside ${version}'s PRs up to ${sha}: ${foreign.join(", ")} (collected for another RC?): promote again with pnpm release promote`,
-			);
-		}
-	}
 	const merged = mergeNotes(input, atCommit);
+	// Exactly this range, whatever the notes came from (the input, or
+	// entries kept from the file): an entry of another PR would ship a
+	// note of a change the release doesn't have (notes collected for
+	// another RC, or a file edited by hand).
+	const needed = neededIds(range);
+	const inRange = new Set(
+		range.prs.filter((p) => !p.exempt).map((p) => p.number),
+	);
+	const foreign = [
+		...new Set(
+			[...merged.file.notes, ...merged.file.none]
+				.filter((e) => !needed.has(e.id) || e.prs.some((n) => !inRange.has(n)))
+				.map((e) => e.id),
+		),
+	];
+	if (foreign.length > 0) {
+		const fromInput = input ? entryIds(input) : new Set<string>();
+		const from = (id: string) => (fromInput.has(id) ? "the notes input" : path);
+		throw new Error(
+			`the release notes have entries outside ${version}'s PRs up to ${sha}: ${foreign.map((id) => `${id} (${from(id)})`).join(", ")}: collected for another RC, or edited by hand? Promote again with pnpm release promote, or fix ${path}`,
+		);
+	}
 	const { missing } = coverage(range, merged.file, files, version);
 	if (missing.length > 0) {
 		throw new Error(
