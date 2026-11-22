@@ -537,8 +537,7 @@ async function call(io) {
 	 * line numbers.
 	 */
 	/** PR `n`'s commits as GitHub lists them now: its base's merge base..head, oldest first. */
-	async function prCommits(n) {
-		const head = s.prs[n]?.view?.headRefOid;
+	async function prCommits(n, head = s.prs[n]?.view?.headRefOid) {
 		if (!head) return [];
 		const mb = await mergeBaseOf(n, head);
 		return (await repoGit("rev-list", "--reverse", `${mb}..${head}`))
@@ -674,11 +673,16 @@ async function call(io) {
 		// commit_id that is no longer one of the PR's commits (a head a
 		// force-push dropped) isn't refused: the comment goes on the PR's
 		// head instead, at the same line numbers, silently.
-		const head = pr.view?.headRefOid;
+		// The head as it is now: a test may move it (a force-push) while
+		// this post is held; kept in what this write saves.
+		const head =
+			JSON.parse(readFileSync(scenarioPath, "utf8")).prs?.[n]?.view?.headRefOid ??
+			pr.view?.headRefOid;
+		if (head && pr.view) pr.view.headRefOid = head;
 		if (head && req.commit_id !== head) {
 			// A scenario whose merge base git can't range from (a made-up
 			// one) lists no commits: nothing is moved then.
-			const commits = await prCommits(n).catch(() => null);
+			const commits = await prCommits(n, head).catch(() => null);
 			if (commits && !commits.includes(req.commit_id)) req.commit_id = head;
 		}
 		const file = req.subject_type === "file";

@@ -12,6 +12,7 @@ import {
 	fetchReviewComments,
 	findThreadOf,
 	type PostedComment,
+	PR_COMMITS_LISTED,
 	postThread,
 	type ThreadPlace,
 } from "./gh.js";
@@ -285,12 +286,18 @@ export async function startThread(
 	// GitHub doesn't refuse a commit_id that is no longer one of the PR's
 	// commits (a head a force-push dropped): it puts the comment on the
 	// PR's head at the same numbers, silently (probed, CAR-233). So that
-	// commit must still be one of them, as GitHub lists them now.
-	if (!record && earlier && !(await target.prCommits()).includes(req.commit)) {
-		throw new WriteRefusedError(
-			"That patch set's commit is no longer in the PR: GitHub would put the comment on the head",
-			"invalid",
-		);
+	// commit must still be one of them, as GitHub lists them now. GitHub
+	// lists at most PR_COMMITS_LISTED: past that a commit not among them
+	// may still be one, so it goes, and the post's own check (postThread:
+	// where GitHub put it) removes it again if GitHub moved it.
+	if (!record && earlier) {
+		const commits = await target.prCommits();
+		if (commits.length < PR_COMMITS_LISTED && !commits.includes(req.commit)) {
+			throw new WriteRefusedError(
+				"That patch set's commit is no longer in the PR: GitHub would put the comment on the head",
+				"invalid",
+			);
+		}
 	}
 	if (!record) {
 		// The patch set first, in its own transaction: the thread then lands

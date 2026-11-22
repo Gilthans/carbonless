@@ -248,6 +248,11 @@ interface PlacingJob {
 	done: { target: Snapshot; inputs: ThreadInput[]; complete: boolean } | null;
 	error: Error | null;
 	settled: Promise<void>;
+	/**
+	 * Started before a thread on another commit joined the read (CAR-233):
+	 * its answer lacks it, so it is filed nowhere; the next ask starts anew.
+	 */
+	stale?: boolean;
 }
 
 /**
@@ -362,6 +367,8 @@ export class Session {
 	readonly #placer: ThreadPlacer;
 	/** Placement jobs, by `${target}|${readId}` (placements). */
 	readonly #placing = new Map<string, PlacingJob>();
+	/** Placement jobs placeAgain left running (stale): close waits for them. */
+	readonly #retiredPlacing = new Set<PlacingJob>();
 
 	private constructor(
 		private readonly repo: string,
@@ -544,6 +551,7 @@ export class Session {
 				...[...this.#live].map((r) => r.settled),
 				...[...this.#jobs.values()].map((j) => j.settled),
 				...[...this.#placing.values()].map((j) => j.settled),
+				...[...this.#retiredPlacing].map((j) => j.settled),
 				this.#queue,
 				// Its process, checkout and claim.
 				this.#agent?.close(),
@@ -1001,7 +1009,7 @@ export class Session {
 					read.threads("summary"),
 				]);
 				// Filed under its snapshot id too: a head and its patch set share it.
-				this.#placing.set(`${target.revision}|${readId}`, job);
+				if (!job.stale) this.#placing.set(`${target.revision}|${readId}`, job);
 				// When GitHub gave the threads' current lines (each with the
 				// head it counts on): one time per read.
 				const at = new Date(read.started).toISOString();
@@ -2164,14 +2172,20 @@ export class Session {
 			patchsetHeads: () => this.#patchsets.map((p) => p.head),
 			prCommits: () => fetchPrCommits(this.#ref()),
 			placeAgain: () => {
-				// Started again on the next ask; the page keeps what it shows
-				// meanwhile (placementsQuery).
+				// Started again on the next ask, a running one too (it read
+				// the threads before this one joined); the page keeps what it
+				// shows meanwhile (placementsQuery).
 				const reads = new Set(this.#reads.map((r) => r.id));
 				for (const [k, job] of this.#placing) {
 					const readId = k.slice(k.lastIndexOf("|") + 1);
-					if (reads.has(readId) && (job.done || job.error)) {
-						this.#placing.delete(k);
+					if (!reads.has(readId)) continue;
+					if (!job.done && !job.error) {
+						// Still running: waited for on close all the same.
+						job.stale = true;
+						this.#retiredPlacing.add(job);
+						void job.settled.finally(() => this.#retiredPlacing.delete(job));
 					}
+					this.#placing.delete(k);
 				}
 			},
 			commentLeft: () => this.commentLeft(snapshot),

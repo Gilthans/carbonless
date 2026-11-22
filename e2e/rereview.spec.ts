@@ -1457,9 +1457,9 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 	const row = unplacedRows(coreS);
 	const handle = row.getByTestId("move-handle");
 	await expect(handle).toBeVisible(GIT_WAIT);
-	// The since view numbers its old side by the interdiff, no file's: no
-	// drag there; the thread sits on the removed row of its line (CAR-233).
-	// Back in the full diff.
+	// In the since view the thread sits on the removed row of its line
+	// (CAR-233), its move handle with it (principle 9: moves work there
+	// too); back in the full diff.
 	await baseOn(page, "ps1", "]");
 	await expect(row).toHaveCount(0);
 	await expect(
@@ -1467,6 +1467,19 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 			.locator('tr[data-testid="diff-line"][data-kind="del"]')
 			.filter({ hasText: "core 30 changed" }),
 	).toHaveAttribute("data-commented", "");
+	const removedBubble = coreS
+		.locator('tr[data-testid="diff-line"][data-kind="del"]')
+		.filter({ hasText: "core 30 changed" })
+		.getByRole("button", { name: /comments? on old line/ });
+	if ((await removedBubble.getAttribute("aria-expanded")) !== "true") {
+		await removedBubble.click();
+	}
+	await expect(
+		coreS
+			.getByTestId("files-thread")
+			.filter({ hasText: "Is core 30 needed?" })
+			.getByTestId("move-handle"),
+	).toHaveCount(1);
 	await baseOn(page, "branch", "[");
 	await expect(handle).toBeVisible();
 	if (isMobile) {
