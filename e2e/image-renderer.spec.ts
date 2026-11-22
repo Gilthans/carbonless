@@ -675,19 +675,28 @@ test("wide image on phone: no page overflow; at 1:1 a swipe scrolls, the grip dr
 		// The swipe's fling keeps scrolling the frame after the finger
 		// lifts, and can outlast any scroll into view (CAR-238): listen for
 		// its end before it starts.
+		type Flagged = HTMLElement & { scrollEnded?: boolean };
 		await frame.evaluate((el) => {
-			(el as HTMLElement & { scrollEnded?: Promise<void> }).scrollEnded =
-				new Promise<void>((done) =>
-					el.addEventListener("scrollend", () => done(), { once: true }),
-				);
+			el.addEventListener(
+				"scrollend",
+				() => {
+					(el as Flagged).scrollEnded = true;
+				},
+				{ once: true },
+			);
 		});
 		await touch("touchStart", x0, y);
 		for (let step = 1; step <= 10; step++)
 			await touch("touchMove", x0 - step * 25, y);
 		await touch("touchEnd", x0 - 250, y);
-		await frame.evaluate(
-			(el) => (el as HTMLElement & { scrollEnded?: Promise<void> }).scrollEnded,
-		);
+		await expect
+			.poll(
+				() => frame.evaluate((el) => (el as Flagged).scrollEnded === true),
+				{
+					message: "the swipe's fling never ended (no scrollend)",
+				},
+			)
+			.toBe(true);
 		expect(await frame.evaluate((el) => el.scrollLeft)).toBeGreaterThan(50);
 		await expect(split).toHaveValue("50");
 		await expectNoPageOverflow(page);
