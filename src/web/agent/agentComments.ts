@@ -47,7 +47,7 @@ export const UNTRACED = "Couldn't trace these lines to the latest push";
 export const CHANGED = "The code here changed since the agent wrote this";
 export const WRITES_OFF = "Not writing to GitHub here";
 export const GITHUB_UNKNOWN = "Couldn't read GitHub's threads";
-export const SIBLING_SENDING = "Waiting for this conversation's other comment";
+export const SIBLING_SENDING = "Waiting for the other comment";
 
 /**
  * Another block of the same conversation, as this browser has it
@@ -127,7 +127,33 @@ export function commentPlace(args: {
 	/** Another block of the conversation this browser posted or is posting (siblingOf). */
 	sibling?: Sibling;
 }): CommentPlace {
-	const { thread, head, placement, placing, sibling } = args;
+	const { sibling } = args;
+	const base = ownPlace(args);
+	// Its record not in yet (CAR-236): the thread another block started (a
+	// reply needs no lines, so it wins over an off); while another is on
+	// its way, a block that would start a thread waits. An off keeps its
+	// reason: a sibling left in doubt where it can't be pressed never
+	// spins this one forever.
+	if (sibling?.kind === "reply" && base.kind !== "reply") {
+		if (base.kind !== "off" || !args.thread.githubUnknown) return sibling;
+	}
+	if (
+		sibling?.kind === "pending" &&
+		(base.kind === "new" || base.kind === "pending")
+	) {
+		return { kind: "pending", why: SIBLING_SENDING };
+	}
+	return base;
+}
+
+/** Where a block posts, from its own conversation alone (commentPlace without siblings). */
+function ownPlace(args: {
+	thread: PostingThread;
+	head: string | undefined;
+	placement: ThreadPlacement | undefined;
+	placing: "in" | "pending" | "failed";
+}): CommentPlace {
+	const { thread, head, placement, placing } = args;
 	const a = thread.anchor;
 	if (a.subject === "thread") {
 		return thread.orphaned
@@ -137,11 +163,10 @@ export function commentPlace(args: {
 	// Joined (CAR-236), shown where it was asked: its thread isn't in this
 	// view (an earlier patch set), or GitHub's threads couldn't be read.
 	if (thread.githubUnknown) return { kind: "off", why: GITHUB_UNKNOWN };
-	if (thread.joined) return { kind: "reply", thread: thread.joined.thread };
-	// Its record not in yet: the thread another block started, or wait.
-	if (sibling?.kind === "reply") return sibling;
-	if (sibling?.kind === "pending") {
-		return { kind: "pending", why: SIBLING_SENDING };
+	// Back on its lines because its thread is gone: a new thread, as
+	// before the post (the fold adds it; the join moves it there).
+	if (thread.joined && !thread.orphaned) {
+		return { kind: "reply", thread: thread.joined.thread };
 	}
 	if (!head) return { kind: "pending" };
 	if (a.commit === head) {
@@ -249,7 +274,7 @@ export function knownBefore(
 /**
  * What a reply of block `message` may not take for itself on a retry:
  * knownBefore the agent's message, and always the thread's opener (the
- * first comment by publishedAt, else the first listed). A reply is never
+ * first listed). A reply is never
  * the opener, so it never hides a real send; a thread younger than the
  * message (one its conversation's block started, CAR-236) has it known.
  */
@@ -258,16 +283,8 @@ export function knownForReply(
 	message: Pick<AgentMessage, "at">,
 ): string[] {
 	const known = knownBefore(comments, message.at);
-	const published = comments.filter((c) => c.id && c.publishedAt !== null);
-	const opener =
-		published.length > 0
-			? published.reduce((a, b) =>
-					Date.parse(b.publishedAt as string) <
-					Date.parse(a.publishedAt as string)
-						? b
-						: a,
-				)
-			: comments.find((c) => c.id);
+	// GitHub lists a thread's comments in order: the first is its opener.
+	const opener = comments.find((c) => c.id);
 	if (opener && !known.includes(opener.id)) known.unshift(opener.id);
 	return known;
 }

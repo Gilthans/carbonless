@@ -531,7 +531,7 @@ test("two blocks pressed back to back: the second waits for the first, then repl
 	await expect(button).toHaveAttribute("aria-disabled", "true");
 	await expect(button).toHaveAttribute("aria-busy", "true");
 	await expect(button).toHaveAccessibleDescription(
-		"Waiting for this conversation's other comment",
+		"Waiting for the other comment",
 	);
 	await button.click({ force: true });
 	held.release();

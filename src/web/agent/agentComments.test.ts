@@ -244,6 +244,54 @@ describe("commentPlace: a conversation joined to its comment's thread (CAR-236)"
 		});
 	});
 
+	it("its joined thread deleted (back on its lines, orphaned): a new thread, as before the post, never a reply to the gone one", () => {
+		const back = line({ commit: HEAD });
+		expect(
+			at(
+				{
+					...back,
+					orphaned: true,
+					joined: { thread: "PRRT_gone", asked: back.anchor },
+				},
+				undefined,
+			),
+		).toMatchObject({ kind: "new", changed: false });
+	});
+
+	it("another block in doubt, this block's lines gone: off with its reason, never waiting forever", () => {
+		expect(
+			commentPlace({
+				thread: line(),
+				head: HEAD,
+				placement: { kind: "unplaced" } as unknown as ThreadPlacement,
+				placing: "in",
+				sibling: { kind: "pending" },
+			}),
+		).toEqual({ kind: "off", why: LINES_GONE });
+		// A placement failed: off too.
+		expect(
+			commentPlace({
+				thread: line(),
+				head: HEAD,
+				placement: undefined,
+				placing: "failed",
+				sibling: { kind: "pending" },
+			}),
+		).toEqual({ kind: "off", why: UNTRACED });
+	});
+
+	it("another block posted, this block's lines gone: a reply needs no lines, so it replies", () => {
+		expect(
+			commentPlace({
+				thread: line(),
+				head: HEAD,
+				placement: undefined,
+				placing: "failed",
+				sibling: { kind: "reply", thread: "PRRT_9" },
+			}),
+		).toEqual({ kind: "reply", thread: "PRRT_9" });
+	});
+
 	it("shown where it was asked while GitHub can't be read: off, never a second new thread", () => {
 		const unknown = line({ commit: HEAD });
 		expect(
@@ -409,6 +457,15 @@ describe("knownForReply: what a reply's retry may not take for itself", () => {
 		const known = knownForReply(comments, message);
 		expect(known).not.toContain("block1");
 		expect(known).not.toContain("block2");
+	});
+
+	it("the opener is the first listed, even when it isn't published (pending): a published reply is never taken for it", () => {
+		expect(
+			knownForReply(
+				[c("opener", null), c("mine", "2026-11-16T10:02:00Z")],
+				message,
+			),
+		).toEqual(["opener"]);
 	});
 
 	it("an older thread: what knownBefore gives, the opener among them", () => {
