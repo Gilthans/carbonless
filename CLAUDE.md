@@ -447,7 +447,9 @@ After the first release (0.1.0) the owner adds the trusted publisher
   PR; when they approve the merge, the coordinator posts it with `pnpm
   release note CAR-N "<text>" [--kind k]` or `pnpm release note CAR-N
   --none "<why>"` (also before moving a ticket to Done by hand). A PR with
-  no ticket carries the line in its description. After a batch of merges,
+  no ticket carries the line in its description. GitHub's required
+  `release-note` check enforces it on every PR (the ticket's note, else a
+  `Release note` line in the PR's description). After a batch of merges,
   `pnpm release notes check`; before a promote, `pnpm release notes --pr`
   and its "notes: X.Y.Z" PR (`docs/releasing.md`, "Release notes").
 - On the owner's word only: `pnpm release promote` (starts the promote run,
