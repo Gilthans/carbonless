@@ -495,13 +495,22 @@ test("the since view: a run mixing a re-indent read in PS1 and a real edit is on
 	await pieceBox("Line 11").click();
 	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
 	// On: the re-indents are left out; still each with its box, to tick.
+	// PS2's is a collapsed whitespace-only row (its own flag, CAR-218);
+	// PS1's, gone, shows its lines until marked, then is quiet too.
 	await ignoreWhitespace(page, true);
 	await expect(progress(page)).toContainText("2 / 2 clusters reviewed");
 	await expect(boxes(since)).toHaveCount(4);
+	const quiet = since.getByTestId("ws-cluster");
+	await expect(quiet).toHaveCount(1);
 	await pieceBox("Old line 9").click();
-	await expect(pieceBox("Old line 9")).toBeChecked();
+	await expect(quiet).toHaveCount(2);
+	await expect(
+		since.getByRole("checkbox", { name: /cluster reviewed$/, checked: true }),
+	).toHaveCount(3);
 	// The last box: the file is done and the move-on folds it.
-	await pieceBox("Line 9").click();
+	await since
+		.getByRole("checkbox", { name: /cluster reviewed$/, checked: false })
+		.click();
 	// Off: all four marked, the gone PS1 run's two pieces among them.
 	await ignoreWhitespace(page, false);
 	await expect(progress(page)).toContainText("4 / 4 clusters reviewed");
@@ -619,8 +628,20 @@ const cardAt = (depth: number | null) =>
 				]),
 		"}",
 	]);
+/** The card's since pieces in the test below (one per run, git's three hunks). */
+const CARD_PIECES = 3;
 const note = (two: string, seven: string) =>
 	text(["one", two, "three", "four", "five", "six", seven]);
+
+/** Opens a file's section, unless the move-on did (it may still be landing). */
+async function opened(section: Locator) {
+	const expandFile = section.getByRole("button", { name: "Expand file" });
+	// The move-on may still be landing: open it until it stays open.
+	await expect(async () => {
+		if (await expandFile.isVisible()) await expandFile.click();
+		await expect(section.locator("table")).toBeVisible({ timeout: 1_000 });
+	}).toPass();
+}
 
 /**
  * PS1 opened and the given files' clusters ticked, then PS2 pushed and
@@ -648,9 +669,7 @@ async function sinceReindent(
 	for (const path of mark) {
 		const section = fileSection(page, path);
 		// The move-on may have opened it already.
-		if (!(await section.locator("table").isVisible()))
-			await section.getByRole("button", { name: "Expand file" }).click();
-		await expect(section.locator("table")).toBeVisible();
+		await opened(section);
 		await marksReady(page, section);
 		// One cluster per file: ticking it finishes the file.
 		await expect(boxes(section)).toHaveCount(1);
@@ -697,6 +716,9 @@ test("the since view: a re-indent across an accidental unchanged line of markup 
 	// left out. The card is nothing else, so its header counts them
 	// all, with no `~` of its own.
 	await expect(bar).toContainText("0 / 1 cluster reviewed");
+	// Its "to read" is the bar's own: the note's edit alone (the card,
+	// nothing else, counts nowhere on the bar).
+	await expect(page.getByTestId("to-read")).toHaveText(/(^|\s)1 to read$/);
 	await expect(
 		page
 			.locator("[data-page-bar]")
@@ -706,11 +728,13 @@ test("the since view: a re-indent across an accidental unchanged line of markup 
 	).toBeVisible();
 	const cardSection = fileSection(page, CARD);
 	await expect(header(cardSection).getByTestId("ws-left-out")).toHaveCount(0);
-	// The block reads quiet: no added or removed rows, across the hunks
-	// git cut.
-	if (!(await cardSection.locator("table").isVisible()))
-		await cardSection.getByRole("button", { name: "Expand file" }).click();
-	await expect(cardSection.locator("table")).toBeVisible();
+	// The block reads quiet across the hunks git cut: each since piece,
+	// a re-indent read in PS1, a collapsed whitespace-only row; no added
+	// or removed rows.
+	await opened(cardSection);
+	const quiet = cardSection.getByTestId("ws-cluster");
+	await expect(quiet).toHaveCount(CARD_PIECES);
+	await expect(quiet.first()).not.toHaveAttribute("data-expanded");
 	await expect(
 		cardSection.locator('[data-testid="diff-line"][data-kind="add"]'),
 	).toHaveCount(0);
@@ -718,9 +742,25 @@ test("the since view: a re-indent across an accidental unchanged line of markup 
 		cardSection.locator('[data-testid="diff-line"][data-kind="del"]'),
 	).toHaveCount(0);
 
+	// The note's edit, the last unit the bar counts: the move-on skips the
+	// card (nothing else, as the full diff skips one) and the verdict rises.
+	await cardSection.getByRole("button", { name: "Collapse file" }).click();
+	await expect(cardSection.locator("table")).toHaveCount(0);
+	const noteSection = fileSection(page, NOTE);
+	await opened(noteSection);
+	await marksReady(page, noteSection);
+	await expect(boxes(noteSection)).toHaveCount(1);
+	await boxes(noteSection).first().click();
+	await expect(bar).toContainText("1 / 1 cluster reviewed");
+	await expect(page.getByTestId("to-read")).toHaveText(/(^|\s)0 to read$/);
+	await expect(page.getByTestId("verdict-card-files")).toBeInViewport();
+	await expect(page.getByRole("button", { name: "Collapse file" })).toHaveCount(
+		0,
+	);
+
 	// Off: they count again.
 	await ignoreWhitespace(page, false);
-	await expect(bar).toContainText("0 / 4 clusters reviewed");
+	await expect(bar).toContainText("1 / 4 clusters reviewed");
 	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
 });
 
@@ -748,10 +788,75 @@ test("the since view: a re-indent of markup nobody marked in PS1 still counts wi
 				'[data-testid="ws-left-out"][aria-label="1 whitespace-only cluster not counted"]',
 			),
 	).toBeVisible();
+	// Nor are they collapsed: they show, `~` rows open, never a
+	// whitespace-only row.
+	const cardSection = fileSection(page, CARD);
+	await opened(cardSection);
+	await expect(
+		cardSection.locator('[data-testid="diff-line"][data-kind="ws"]').first(),
+	).toBeVisible();
+	await expect(cardSection.getByTestId("ws-cluster")).toHaveCount(0);
 	// Off: everything counts.
 	await ignoreWhitespace(page, false);
 	await expect(bar).toContainText("0 / 5 clusters reviewed");
 	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+});
+
+test("the since view: a real edit since PS1, in a cluster whitespace-only against the base, is never collapsed with the switch on: its lines show, and count", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 changes `load()` for real, reviewed; PS2 only re-indents the
+	// base's line: whitespace only against the base, a real edit since.
+	const path = "src/loader.ts";
+	const at = (line: string) =>
+		text(["export function start() {", "  ready();", line, "}"]);
+	const p = await pr({
+		base: { [path]: at("load();") },
+		files: [{ message: "Unload", files: { [path]: at("unload();") } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, path);
+	await opened(section);
+	await marksReady(page, section);
+	await expect(boxes(section)).toHaveCount(1);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({ message: "Load, indented", files: { [path]: at("  load();") } });
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	const bar = progress(page);
+	// One piece since PS1: the edit's run, `unload()` gone, `  load()` new.
+	await expect(bar).toContainText("0 / 1 cluster reviewed");
+
+	// On: the edit still counts, and its lines show.
+	await ignoreWhitespace(page, true);
+	await expect(bar).toContainText("0 / 1 cluster reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+	const since = fileSection(page, path);
+	await opened(since);
+	const del = since.locator('[data-testid="diff-line"][data-kind="del"]');
+	const add = since.locator('[data-testid="diff-line"][data-kind="add"]');
+	await expect(del).toHaveCount(1);
+	await expect(del).toContainText("unload();");
+	await expect(add).toHaveCount(1);
+	await expect(add).toContainText("load();");
+	await expect(since.getByTestId("ws-cluster")).toHaveCount(0);
+	await expect(boxes(since)).toHaveCount(1);
 });
 
 test.describe("Home", () => {

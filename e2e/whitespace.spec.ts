@@ -584,7 +584,10 @@ test("a block wrapped one level deeper across an accidental unchanged line reads
 	}
 	await expect(rows(section, "del")).toHaveCount(0);
 	await expect(rows(section, "add")).toHaveCount(2);
-	await expect(rows(section, "ws")).not.toHaveCount(0);
+	// The block's ten re-indented lines: Title's pair, in one git hunk,
+	// is one `~` row; the other eight (twins in another hunk or a context
+	// line) are one-sided `~` rows.
+	await expect(rows(section, "ws")).toHaveCount(9);
 
 	// Ticking the two Provider lines reaches 100%, the `~` clusters unticked.
 	const boxOf = (line: string) =>
