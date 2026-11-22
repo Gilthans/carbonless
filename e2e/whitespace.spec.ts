@@ -495,3 +495,111 @@ test("with Ignore whitespace on, a selection from a ~ row through the deleted ro
 		},
 	]);
 });
+
+/*
+ * CAR-218: a page's markup wrapped one level deeper in a new <Provider>.
+ * The inner `<div>` and `</div>` at the old depth equal the outer ones at
+ * the new depth, so git cuts the block into three hunks around them;
+ * `git diff -w` shows only the two Provider lines.
+ */
+const PAGE_OLD = [
+	"export function Page() {",
+	"  return (",
+	"    <div>",
+	"      <Header />",
+	"      <div>",
+	"        <Title />",
+	"      </div>",
+	"      <Footer />",
+	"    </div>",
+	"  );",
+	"}",
+];
+const PAGE_NEW = [
+	"export function Page() {",
+	"  return (",
+	"    <Provider>",
+	"      <div>",
+	"        <Header />",
+	"        <div>",
+	"          <Title />",
+	"        </div>",
+	"        <Footer />",
+	"      </div>",
+	"    </Provider>",
+	"  );",
+	"}",
+];
+
+test("a block wrapped one level deeper across an accidental unchanged line reads quiet all through; the bar counts only the Provider lines", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const path = "src/page.tsx";
+	await pr({
+		base: { [path]: text(PAGE_OLD) },
+		files: [
+			{ message: "Wrap in a provider", files: { [path]: text(PAGE_NEW) } },
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bar = progress(page);
+	// Off: every cluster counts.
+	await expect(bar).toContainText("0 / 5 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+	const section = await expand(page, path);
+	const boxes = section.getByRole("checkbox", { name: /cluster reviewed$/ });
+	await expect(boxes).toHaveCount(5);
+	await expect(rows(section, "ws")).toHaveCount(0);
+	await expect(rows(section, "del")).toHaveCount(5);
+	await expect(rows(section, "add")).toHaveCount(7);
+
+	// On: the block is quiet `~` all through, each of its clusters a
+	// collapsed row; only the two Provider lines are changes, and counted.
+	await ignoreWhitespace(page, true);
+	await expect(bar).toContainText("0 / 2 clusters reviewed");
+	await expect(
+		page
+			.locator("[data-page-bar]")
+			.locator(
+				'[data-testid="ws-left-out"][aria-label="3 whitespace-only clusters not counted"]',
+			),
+	).toBeVisible();
+	await expect(boxes).toHaveCount(5);
+	await expect(rows(section, "del")).toHaveCount(0);
+	await expect(rows(section, "add")).toHaveCount(2);
+	await expect(rows(section, "add").nth(0)).toContainText("<Provider>");
+	await expect(rows(section, "add").nth(1)).toContainText("</Provider>");
+	const quiet = section.getByTestId("ws-cluster");
+	await expect(quiet).toHaveCount(3);
+	// Opened, each shows `~` rows only.
+	for (let i = 0; i < 3; i++) {
+		await quiet
+			.nth(i)
+			.getByRole("button", { name: /^Whitespace only/ })
+			.click();
+		await expect(quiet.nth(i)).toHaveAttribute("data-expanded", "true");
+	}
+	await expect(rows(section, "del")).toHaveCount(0);
+	await expect(rows(section, "add")).toHaveCount(2);
+	await expect(rows(section, "ws")).not.toHaveCount(0);
+
+	// Ticking the two Provider lines reaches 100%, the `~` clusters unticked.
+	const boxOf = (line: string) =>
+		section
+			.getByRole("row")
+			.filter({ has: page.getByRole("button", { name: line, exact: true }) })
+			.getByRole("checkbox", { name: /cluster reviewed$/ });
+	await boxOf("Line 3").click();
+	await expect(bar).toContainText("1 / 2 clusters reviewed");
+	await boxOf("Line 11").click();
+	await expect(bar).toContainText("2 / 2 clusters reviewed");
+	await expect(bar).toContainText("100%");
+
+	// Off: the three whitespace-only clusters count again, unreviewed.
+	await ignoreWhitespace(page, false);
+	await expect(bar).toContainText("2 / 5 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+});

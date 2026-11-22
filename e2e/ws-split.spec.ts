@@ -17,9 +17,11 @@ import {
 	withTree,
 } from "./files-ui";
 import {
+	type Crb,
 	expect,
 	OWNER_REPO,
 	PR_NUMBER,
+	type Pr,
 	type PrOptions,
 	reviewPage,
 	test,
@@ -586,6 +588,170 @@ test("the since view: a change carried, only the indent reworked: the file is no
 	await expect(
 		header(since).getByRole("progressbar", { name: "File progress" }),
 	).toContainText(/0 \/ \d+ clusters?/);
+});
+
+/*
+ * CAR-218, the since view: PS2 only re-indents a card's markup by two, and
+ * the inner `<div>` and `</div>` at PS1's depth equal the outer ones at
+ * PS2's, so git cuts the interdiff into three hunks around them. A note's
+ * line changes in PS1 and gets a real edit in PS2.
+ */
+const CARD = "src/card.tsx";
+const NOTE = "src/note.ts";
+const MARKUP = [
+	"<div>",
+	"  <div>",
+	"    <Title />",
+	"  </div>",
+	"  <Body />",
+	"</div>",
+];
+/** The card returning its markup at `depth` spaces, or `null`. */
+const cardAt = (depth: number | null) =>
+	text([
+		"export function Card() {",
+		...(depth === null
+			? ["  return null;"]
+			: [
+					"  return (",
+					...MARKUP.map((l) => `${" ".repeat(depth)}${l}`),
+					"  );",
+				]),
+		"}",
+	]);
+const note = (two: string, seven: string) =>
+	text(["one", two, "three", "four", "five", "six", seven]);
+
+/**
+ * PS1 opened and the given files' clusters ticked, then PS2 pushed and
+ * viewed since PS1.
+ */
+async function sinceReindent(
+	page: Page,
+	pr: (o: PrOptions) => Promise<Pr>,
+	startCrb: () => Promise<Crb>,
+	card: { base: number | null; ps1: number; ps2: number },
+	mark: string[],
+) {
+	const p = await pr({
+		base: { [CARD]: cardAt(card.base), [NOTE]: note("two", "seven") },
+		files: [
+			{
+				message: "Card markup, note",
+				files: { [CARD]: cardAt(card.ps1), [NOTE]: note("two!", "seven") },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await expect(progress(page)).toContainText(/0 \/ \d+ clusters reviewed/);
+	for (const path of mark) {
+		const section = fileSection(page, path);
+		// The move-on may have opened it already.
+		if (!(await section.locator("table").isVisible()))
+			await section.getByRole("button", { name: "Expand file" }).click();
+		await expect(section.locator("table")).toBeVisible();
+		await marksReady(page, section);
+		// One cluster per file: ticking it finishes the file.
+		await expect(boxes(section)).toHaveCount(1);
+		await boxes(section).first().click();
+		await expect(header(section)).toHaveAttribute("data-finished");
+	}
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({
+		message: "Re-indent the card, edit the note",
+		files: { [CARD]: cardAt(card.ps2), [NOTE]: note("two!", "seven!") },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+}
+
+test("the since view: a re-indent across an accidental unchanged line of markup read in PS1 is quiet with the switch on, its units off the bar, the `~` saying how many", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 adds the markup (one change against the base), reviewed.
+	await sinceReindent(page, pr, startCrb, { base: null, ps1: 4, ps2: 6 }, [
+		CARD,
+		NOTE,
+	]);
+	const bar = progress(page);
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+
+	await ignoreWhitespace(page, true);
+	// On: the card's units, each a re-indent of lines read in PS1, leave
+	// the bar; only the note's edit counts, and the `~` says three are
+	// left out. The card is nothing else, so its header counts them
+	// all, with no `~` of its own.
+	await expect(bar).toContainText("0 / 1 cluster reviewed");
+	await expect(
+		page
+			.locator("[data-page-bar]")
+			.locator(
+				'[data-testid="ws-left-out"][aria-label="3 whitespace-only clusters not counted"]',
+			),
+	).toBeVisible();
+	const cardSection = fileSection(page, CARD);
+	await expect(header(cardSection).getByTestId("ws-left-out")).toHaveCount(0);
+	// The block reads quiet: no added or removed rows, across the hunks
+	// git cut.
+	if (!(await cardSection.locator("table").isVisible()))
+		await cardSection.getByRole("button", { name: "Expand file" }).click();
+	await expect(cardSection.locator("table")).toBeVisible();
+	await expect(
+		cardSection.locator('[data-testid="diff-line"][data-kind="add"]'),
+	).toHaveCount(0);
+	await expect(
+		cardSection.locator('[data-testid="diff-line"][data-kind="del"]'),
+	).toHaveCount(0);
+
+	// Off: they count again.
+	await ignoreWhitespace(page, false);
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+});
+
+test("the since view: a re-indent of markup nobody marked in PS1 still counts with the switch on (principle 2)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 only re-indents the markup (whitespace only against the base),
+	// left unmarked; the note's change is reviewed.
+	await sinceReindent(page, pr, startCrb, { base: 2, ps1: 4, ps2: 6 }, [NOTE]);
+	const bar = progress(page);
+	await expect(bar).toContainText("0 / 5 clusters reviewed");
+	await ignoreWhitespace(page, true);
+	// On: only the card's line no piece shows (a re-indent against the
+	// base, read in the full diff) is left out; its three since pieces,
+	// re-indents of lines nobody marked in PS1, still count with the note.
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
+	await expect(
+		page
+			.locator("[data-page-bar]")
+			.locator(
+				'[data-testid="ws-left-out"][aria-label="1 whitespace-only cluster not counted"]',
+			),
+	).toBeVisible();
+	// Off: everything counts.
+	await ignoreWhitespace(page, false);
+	await expect(bar).toContainText("0 / 5 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
 });
 
 test.describe("Home", () => {
