@@ -1,5 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { bestCpuRatio } from "../../test/cpu.js";
 import { cutAtBlocks, groupByBlocks } from "./blockCut.js";
 import { blockOfLine, markdownBlocks } from "./markdownBlocks.js";
 import type { LineCluster } from "./types.js";
@@ -235,6 +236,36 @@ describe("cutAtBlocks (CAR-167)", () => {
 		]);
 	});
 
+	it("keeps a new block's old blocks adjacent: A→X, B unpaired, C→X makes C removal-only", () => {
+		const { parts } = cut(
+			"# T\n\nalpha beta gamma\n\nzzz qqq\n\ndelta epsilon zeta\n\nend",
+			"# T\n\nalpha beta gamma!\ndelta epsilon zeta!\n\nend",
+		);
+		expect(parts.map(shape)).toEqual([
+			{
+				old: [3, 2],
+				new: [3, 2],
+				removed: ["alpha beta gamma", ""],
+				added: ["alpha beta gamma!", "delta epsilon zeta!"],
+				at: [0, 0],
+			},
+			{
+				old: [5, 2],
+				new: [4, 0],
+				removed: ["zzz qqq", ""],
+				added: [],
+				at: [2, 2],
+			},
+			{
+				old: [7, 1],
+				new: [4, 0],
+				removed: ["delta epsilon zeta"],
+				added: [],
+				at: [4, 2],
+			},
+		]);
+	});
+
 	it("pairs by position when nothing pairs and the counts match, else not at all", () => {
 		const same = cut("# A\n\nold text\n\nz", "# B\n\nnew words\n\nz");
 		expect(same.parts.map(shape)).toEqual([
@@ -438,5 +469,41 @@ describe("cutAtBlocks properties", () => {
 			),
 			{ numRuns: 500 },
 		);
+	});
+});
+
+describe("cutAtBlocks cost", () => {
+	it("grows linearly with a cluster's lines and blocks", () => {
+		// A new file of list items: one block per line, every line changed. The
+		// 4x file against four runs of the quarter does the same work, so a
+		// linear cut reads about 1x and a per-line scan of the blocks 4x (it
+		// read 203 ms for 16,754 items before blockOfLine was a binary search;
+		// with the scan put back this test read 3.22x, with the search 0.78-1.22x).
+		const file = (n: number) => {
+			const lines = Array.from({ length: n }, (_, i) => `- item ${i}`);
+			const c: LineCluster = {
+				oldStart: 0,
+				oldCount: 0,
+				newStart: 1,
+				newCount: n,
+				removed: [],
+				added: lines,
+				lines: n,
+			};
+			return { c, blocks: markdownBlocks(lines) };
+		};
+		const big = file(16_000);
+		const quarter = file(4_000);
+		expect(cutAtBlocks(big.c, [], big.blocks)).toHaveLength(16_000);
+		const { best, ref, ratio } = bestCpuRatio(
+			() => cutAtBlocks(big.c, [], big.blocks),
+			() => {
+				for (let i = 0; i < 4; i++) cutAtBlocks(quarter.c, [], quarter.blocks);
+			},
+		);
+		console.info(
+			`cutAtBlocks 16,000 items: ${best} µs, ${ratio.toFixed(2)}x four runs of 4,000 (${ref} µs)`,
+		);
+		expect(ratio).toBeLessThan(2);
 	});
 });

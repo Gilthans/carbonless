@@ -1,7 +1,12 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { bestCpuRatio } from "../../test/cpu";
-import { blockOfLine, isMarkdownPath, markdownBlocks } from "./markdownBlocks";
+import {
+	blockOfLine,
+	isMarkdownPath,
+	type MdBlock,
+	markdownBlocks,
+} from "./markdownBlocks";
 
 const blocks = (text: string) =>
 	markdownBlocks(text.split("\n")).map(({ kind, from, to }) => ({
@@ -177,6 +182,25 @@ describe("markdownBlocks", () => {
 		expect(blockOfLine(bs, 3)).toBe(1);
 		expect(blockOfLine(markdownBlocks("\n\na".split("\n")), 1)).toBe(0);
 		expect(blockOfLine([], 1)).toBe(-1);
+	});
+
+	it("blockOfLine finds the last block starting at or before a line, else the first", () => {
+		const linear = (bs: readonly MdBlock[], line: number) => {
+			if (bs.length === 0) return -1;
+			let found = 0;
+			bs.forEach((b, i) => {
+				if (b.from <= line) found = i;
+			});
+			return found;
+		};
+		const doc =
+			"x\n\n# h\n\n- a\n- b\n\n> q\n>\n\n```\nc\n```\n\n| a |\n| - |\n| b |\n\nend".split(
+				"\n",
+			);
+		const bs = markdownBlocks(doc);
+		for (let line = 0; line <= doc.length + 1; line++) {
+			expect(blockOfLine(bs, line)).toBe(linear(bs, line));
+		}
 	});
 
 	it("isMarkdownPath", () => {

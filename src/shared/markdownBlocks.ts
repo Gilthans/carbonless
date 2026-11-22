@@ -227,13 +227,20 @@ export function markdownBlocks(lines: readonly string[]): MdBlock[] {
 	return out;
 }
 
+/**
+ * The index of the block `line` falls in: the last block starting at or
+ * before it (a blank or bare `>` line goes to the block before it), else the
+ * first block; -1 with no blocks. A binary search: the block cut asks this
+ * for every changed line.
+ */
 export function blockOfLine(blocks: readonly MdBlock[], line: number): number {
 	if (blocks.length === 0) return -1;
-	let found = -1;
-	for (let i = 0; i < blocks.length; i++) {
-		const b = blocks[i] as MdBlock;
-		if (b.from > line) break;
-		found = i;
+	let lo = 0;
+	let hi = blocks.length - 1;
+	while (lo < hi) {
+		const mid = (lo + hi + 1) >>> 1;
+		if ((blocks[mid] as MdBlock).from <= line) lo = mid;
+		else hi = mid - 1;
 	}
-	return found === -1 ? 0 : found;
+	return lo;
 }

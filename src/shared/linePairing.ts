@@ -5,6 +5,16 @@ import { HAS_WORD, tokenize, WORD_DIFF_MAX } from "./tokenize.js";
  * (spec: docs/superpowers/specs/2026-11-08-inline-diff-step2-design.md).
  */
 
+/**
+ * **Part of cluster identity in Markdown files.** The block cut
+ * (src/shared/blockCut.ts, CAR-167) pairs old blocks with new ones by these
+ * pairs, and so decides where a Markdown hunk is cut and its pieces' keys:
+ * any change here (the threshold, the scoring, tie-breaks, the caps) moves
+ * cuts, and marks on pieces cut the old way would no longer match (fail
+ * safe, but the reviewer loses them). Treat it as a key format change, as
+ * splitHunk's comment says for the whitespace cut.
+ */
+
 /** The least `lineSimilarity` at which two lines may be a pair. */
 export const PAIR_MIN_SIMILARITY = 0.5;
 
