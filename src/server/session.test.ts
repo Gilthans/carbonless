@@ -2118,8 +2118,8 @@ describe("Session", () => {
 			expect(await s.interdiffHunks(1, view.revision, 0)).toEqual({
 				hunks: [
 					{
-						oldStart: 26,
-						oldCount: 1,
+						oldStart: 25,
+						oldCount: 0,
 						newStart: 26,
 						newCount: 1,
 						lines: [

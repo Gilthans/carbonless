@@ -1073,7 +1073,10 @@ export function orphanLines(
 
 /**
  * Hunks of nothing but orphans (a file the interdiff doesn't touch): a
- * hunk per run of them, no context (the gaps load it).
+ * hunk per run of them, no context (the gaps load it). The old side is
+ * the new head's: an orphan has no line there of its own (an added one's
+ * line is its new one, unchanged since), so a hunk's old span is empty,
+ * at its place.
  */
 function orphanHunks(orphans: readonly Orphan[]): DisplayHunk[] {
 	const hunks: DisplayHunk[] = [];
@@ -1096,50 +1099,78 @@ function orphanHunks(orphans: readonly Orphan[]): DisplayHunk[] {
 			if (hunk.newCount === 0) hunk.newStart = line.newNo as number;
 			hunk.newCount++;
 			end = line.newNo as number;
-		} else {
-			if (hunk.oldCount === 0) hunk.oldStart = place + 1;
-			hunk.oldCount++;
-			end = place;
-		}
+		} else end = place;
 	}
 	return hunks;
 }
 
 /**
- * Places the orphans in hunks that hold their places (with the lines
- * around them: sinceFileHunks's anchors): an added one stands for the
- * context row at its new number, a removed one goes in before the first
- * row below its place. Throws when a place isn't there (the caller falls
+ * Places the orphans (in file order, orphanLines) in hunks that hold
+ * their places (with the lines around them: sinceFileHunks's anchors):
+ * an added one stands for the context row at its new number, a removed
+ * one goes in before the first row below its place. One pass over the
+ * rows and one over the orphans (a file of thousands is common: a whole
+ * file never reviewed). Throws when a place isn't there (the caller falls
  * back to none: fail closed).
+ *
+ * The hunks' spans stay as they are: an added orphan's new line is the
+ * row it stands for, and its old line (the interdiff's context) is still
+ * in the old span, only not shown; a removed orphan is no line of the
+ * since view's old side (it has a base number, no old one), so it
+ * counts in neither.
  */
-function placeOrphans(hunks: DisplayHunk[], orphans: readonly Orphan[]) {
+export function placeOrphans(
+	hunks: DisplayHunk[],
+	orphans: readonly Orphan[],
+): void {
+	// Each new line's row: its hunk and its index there.
+	const rowOf = new Map<number, { hunk: number; index: number }>();
+	hunks.forEach((hunk, h) => {
+		hunk.lines.forEach((line, index) => {
+			if (line.newNo !== undefined) rowOf.set(line.newNo, { hunk: h, index });
+		});
+	});
+	// The removed ones to insert, by hunk, before the row at an index.
+	const inserts = new Map<number, Map<number, DiffLine[]>>();
 	for (const { place, line } of orphans) {
 		if (line.kind === "add") {
-			const hunk = hunks.find((h) =>
-				h.lines.some((l) => l.newNo === line.newNo),
-			);
-			const i = hunk?.lines.findIndex((l) => l.newNo === line.newNo) ?? -1;
-			const row = hunk?.lines[i];
-			if (!hunk || row?.kind !== "context") {
+			const at = rowOf.get(line.newNo as number);
+			const row = at && hunks[at.hunk]?.lines[at.index];
+			if (!at || row?.kind !== "context") {
 				throw new Error(`No unchanged row for line ${line.newNo}`);
 			}
 			if (row.noNewline) line.noNewline = true;
 			else delete line.noNewline;
-			hunk.lines[i] = line;
+			(hunks[at.hunk] as DisplayHunk).lines[at.index] = line;
 			continue;
 		}
-		const hunk = hunks.find((h) =>
-			place === 0 ? h.newStart <= 1 : h.lines.some((l) => l.newNo === place),
-		);
-		if (!hunk) throw new Error(`No place after line ${place}`);
-		const below = hunk.lines.findIndex(
-			(l) => l.newNo !== undefined && l.newNo > place,
-		);
-		hunk.lines.splice(below < 0 ? hunk.lines.length : below, 0, line);
+		// The hunk with the line above (the first line's, at the top).
+		const above = rowOf.get(place === 0 ? 1 : place);
+		if (!above) throw new Error(`No place after line ${place}`);
+		const below = rowOf.get(place + 1);
+		const index =
+			below && below.hunk === above.hunk
+				? below.index
+				: (hunks[above.hunk] as DisplayHunk).lines.length;
+		const ofHunk = inserts.get(above.hunk) ?? new Map<number, DiffLine[]>();
+		inserts.set(above.hunk, ofHunk);
+		const list = ofHunk.get(index) ?? [];
+		list.push(line);
+		ofHunk.set(index, list);
 	}
-	for (const hunk of hunks) {
-		hunk.oldCount = hunk.lines.filter((l) => l.kind !== "add").length;
-		hunk.newCount = hunk.lines.filter((l) => l.kind !== "del").length;
+	for (const [h, ofHunk] of inserts) {
+		const hunk = hunks[h] as DisplayHunk;
+		const lines: DiffLine[] = [];
+		// A loop, not a spread: thousands of them can sit at one place.
+		const add = (index: number) => {
+			for (const line of ofHunk.get(index) ?? []) lines.push(line);
+		};
+		hunk.lines.forEach((line, index) => {
+			add(index);
+			lines.push(line);
+		});
+		add(hunk.lines.length);
+		hunk.lines = lines;
 	}
 }
 
