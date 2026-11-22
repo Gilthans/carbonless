@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import UnhandledReporter from "./vitest-unhandled-reporter.mjs";
 
 // The reporter leans on Vitest's reporter API (`onTestRunEnd`'s unhandled
@@ -43,6 +43,39 @@ describe("vitest-unhandled-reporter", () => {
 				{ message: "a string", file: null },
 			],
 		});
+	});
+
+	it("creates the report's folder when the JSON reporter hasn't yet (CAR-214)", () => {
+		dir = mkdtempSync(join(tmpdir(), "unhandled-"));
+		// Vitest may end this reporter before the JSON one made the folder.
+		process.env.CRB_TEST_JSON = join(dir, "test-outcomes", "report.json");
+		expect(() =>
+			new UnhandledReporter().onTestRunEnd([], [new Error("late")]),
+		).not.toThrow();
+		expect(
+			JSON.parse(
+				readFileSync(
+					join(dir, "test-outcomes", "report.json.unhandled.json"),
+					"utf8",
+				),
+			),
+		).toEqual({ errors: [{ message: "late", file: null }] });
+	});
+
+	it("a failed write is logged, never thrown: diagnostics don't fail a run", () => {
+		dir = mkdtempSync(join(tmpdir(), "unhandled-"));
+		// A file where the folder should be: no mkdir or write can succeed.
+		writeFileSync(join(dir, "blocked"), "");
+		process.env.CRB_TEST_JSON = join(dir, "blocked", "report.json");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(() => new UnhandledReporter().onTestRunEnd([], [])).not.toThrow();
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("vitest-unhandled-reporter"),
+			);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	it("a real Vitest run with a late rejection: the error and its file", () => {

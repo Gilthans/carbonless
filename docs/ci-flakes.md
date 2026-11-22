@@ -19,19 +19,26 @@ the shard's build), and labels each failure:
 | consistent | failed again: a bug, or a flake that fails twice |
 | not-rerun | the rerun never ran it, or didn't finish; over 10 failures (or 10 files to rerun) there is no rerun (a real bug: no 20-minute rerun) |
 
-Vitest's **unhandled errors** (a rejection or a timer that fires after its
-test ended) fail the run with every test passed, and its JSON report leaves
-them out. `scripts/vitest-unhandled-reporter.mjs` writes them next to the
-report, each with the test file Vitest traced it to (when the timing lets
-it). Each is labelled like a test (title `(unhandled error)`): its file
-reruns. Since the same error may be traced on one run and not the other,
-any unhandled error in the rerun counts against every such failure it could
-be (consistent), and one passes (flaky) only when the rerun had none that
-could be it and ran its file. One Vitest couldn't trace (file
-`(unknown file)`) reruns every file the run had, and is flaky only when the
-rerun ran all of them with no unhandled error: so only a small run
-(windows-agent's) gets a verdict; a full unit run is over the cap and stays
-not-rerun.
+Vitest's **unhandled errors** (a rejection or a timer that fires after
+its test ended) fail the run with every test passed, and its JSON report
+leaves them out. `scripts/vitest-unhandled-reporter.mjs` writes them
+next to the report, each with the test file Vitest traced it to (when
+the timing lets it). It makes the report's folder itself (Vitest may
+call it before the JSON reporter has), and a write it can't make is
+logged, never thrown: it is diagnostics, and a throw would fail a green
+run (CAR-214). Each is labelled like a test (title `(unhandled error)`):
+its file reruns. Since the same error may be traced on one run and not
+the other, any unhandled error in the rerun counts against every such
+failure it could be (consistent), and one passes (flaky) only when the
+rerun had none that could be it and ran its file. One Vitest couldn't
+trace (file `(unknown file)`) reruns every file the run had, and is
+flaky only when the rerun ran all of them with no unhandled error: so
+only a small run (windows-agent's) gets a verdict; a full unit run is
+over the cap and stays not-rerun. The reporter always writes its file,
+if empty: a Vitest report with none next to it means the write failed
+and an error may be lost, so the job gets one more failure,
+`(unhandled error)` of `(unknown file)`, not rerun, and can't read as
+flaky or passed.
 
 **The job stays failed either way.** The rerun is diagnosis, not a retry:
 the tests step already failed the job, and the labelling step's own result

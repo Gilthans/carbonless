@@ -56,6 +56,7 @@ export function readResults(
 ): (Results & { errors: string[] }) | null;
 export const UNHANDLED: string;
 export const UNKNOWN_SOURCE: string;
+export const UNHANDLED_LOST: string;
 export function unhandledPath(report: string): string;
 export function unhandledResults(unhandled: unknown): Results;
 export function rerunUnhandled(
