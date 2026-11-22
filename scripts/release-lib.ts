@@ -392,14 +392,14 @@ const RUN_URL = /https:\/\/github\.com\/\S+\/actions\/runs\/\d+/;
 
 /**
  * `pnpm release promote [<rc tag>] [--next kind]`. `check` runs before the
- * dispatch (the release notes, CAR-192: promoteNotesCheck) and throws to
- * stop it.
+ * dispatch (the release notes, CAR-192/CAR-242: promoteNotes) and throws to
+ * stop it; what it returns, when not empty, is the run's `notes` input.
  */
 export async function promote(
 	io: Io,
 	rcTag: string | undefined,
 	next: Kind,
-	check: (tag: string, release: string) => Promise<void>,
+	check: (tag: string, release: string) => Promise<string | undefined>,
 ): Promise<string> {
 	const tags = await remoteTags(io);
 	const tag = rcTag ?? newestTag(tags, true)?.tag;
@@ -413,7 +413,7 @@ export async function promote(
 	if (tags.includes(release)) {
 		throw new Error(`${release} is already released`);
 	}
-	await check(tag, formatVersion(releaseOf(version)));
+	const notes = await check(tag, formatVersion(releaseOf(version)));
 	const started = io.now().getTime();
 	const out = await must(io, "gh", [
 		"workflow",
@@ -429,6 +429,7 @@ export async function promote(
 		`rc=${tag}`,
 		"-f",
 		`next=${next}`,
+		...(notes ? ["-f", `notes=${notes}`] : []),
 	]);
 	io.log(
 		`Promoting ${tag}: checks ${release}, packs and stages it on npm; then the owner approves it: pnpm release publish (npm OTP)`,

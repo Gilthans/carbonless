@@ -458,8 +458,9 @@ After the first release (0.1.0) the owner adds the trusted publisher
   no ticket carries the line in its description. GitHub's required
   `release-note` check enforces it on every PR (the ticket's note, else a
   `Release note` line in the PR's description). After a batch of merges,
-  `pnpm release notes check`; before a promote, `pnpm release notes --pr`
-  and its "notes: X.Y.Z" PR (`docs/releasing.md`, "Release notes").
+  `pnpm release notes check`. Promote collects the RC's notes from Linear
+  itself and refuses while one is missing; no "notes: X.Y.Z" PR is needed
+  (`docs/releasing.md`, "Release notes").
 - On the owner's word only: `pnpm release promote` (starts the promote run,
   which checks, packs and stages; nothing goes live) and `pnpm release
   next` (pushes a `next/*` branch, opens its PR) on Gilthans/carbonless.
