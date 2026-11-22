@@ -303,6 +303,10 @@ function matchLines(lines: readonly DiffLine[]): Map<DiffLine, DiffLine> {
 	});
 	const a = old.map(side);
 	const b = young.map(side);
+	// matchSides' fast-path test, repeated here on purpose: a wholesale
+	// re-indent (same keys and context line for line) costs O(n) there, so
+	// it must skip the cap and keep its rows however big; without this
+	// check a big re-indented file would fall back per git hunk.
 	const same =
 		a.length === b.length &&
 		a.every(

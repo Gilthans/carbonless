@@ -467,6 +467,48 @@ describe("matchDisplayHunk", () => {
 		}
 	});
 
+	it("over the cap costs what its git hunks do apart: a display hunk of four costs four of one", () => {
+		// The scaling check (test/cpu.ts): a display hunk of 4 git hunks,
+		// each well under the cap, 4x the cap together (about 995 × 999
+		// lines), against 4 runs of one of them alone. Matched per git
+		// hunk, as the cap says, it is the same work (about 1x); matched
+		// whole (the fallback missing), a 1e6-cell DP against 4 × 62e3,
+		// about 4x.
+		const removed = 248;
+		const gitHunk = (key: string, oldFrom: number, newFrom: number) => [
+			...Array.from({ length: removed }, (_, i) =>
+				del(oldFrom + i, `${key}${i % 30}`, { clusterKey: key }),
+			),
+			...Array.from({ length: removed + 1 }, (_, i) =>
+				add(newFrom + i, ` ${key}${(i + 7) % 31}`, { clusterKey: key }),
+			),
+		];
+		const lines: DiffLine[] = [];
+		for (let h = 0; h < 4; h++) {
+			if (h > 0) {
+				const at = h * (removed + 1);
+				lines.push(ctx(at, at + h, `between ${h}`));
+			}
+			lines.push(
+				...gitHunk(`g${h}`, h * (removed + 1) + 1, h * (removed + 2) + 1),
+			);
+		}
+		const one = gitHunk("g0", 1, 1);
+		const old = lines.filter((l) => l.kind !== "add").length;
+		const young = lines.filter((l) => l.kind !== "del").length;
+		expect(old * young).toBeGreaterThan(4 * SPLIT_CELLS * 0.95);
+		expect(removed * (removed + 1)).toBeLessThan(SPLIT_CELLS);
+		const { ratio } = bestCpuRatio(
+			// Fresh arrays each time: no cache hit.
+			() => matchDisplayHunk([...lines]),
+			() => {
+				for (let k = 0; k < 4; k++) matchDisplayHunk([...one]);
+			},
+		);
+		// test/cpu.ts's limit: linear about 1x, the whole-hunk DP about 4x.
+		expect(ratio).toBeLessThan(2);
+	});
+
 	it("costs at the cap about what the matching's own DP of that size does", () => {
 		// A display hunk just under the cap (500 × 500 sides), lines that
 		// differ everywhere but share keys, so the DP runs in full.
