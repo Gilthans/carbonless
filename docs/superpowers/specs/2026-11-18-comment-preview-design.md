@@ -40,7 +40,10 @@ Not covered: boxes whose text goes only to the agent, never to GitHub
 - **The toggle:** a segmented pair of icon buttons, pencil (**Write**) and eye
   (**Preview**), each with a tooltip and an accessible name, each at least
   40px. It sits in the box's own button row:
-  - beside the send button in the reply row;
+  - in the reply box, stacked above the send button (the owner,
+    2026-11-22): the toggle is level with the textarea's top edge, Send
+    with its bottom. Whenever the toggle shows, the box is open and at
+    least as tall as the two together (40 + 4 + 40px);
   - in the header row of the agent's box, left of the reset button;
   - in the action row of the new-thread, edit and verdict boxes.
 - **Toggle on a closed reply box** (one line, nothing typed): hidden (my
@@ -103,6 +106,8 @@ One shared component, e.g. `src/web/CommentPreview.tsx`:
 - a reply typed in Write, previewed, then sent: the fake gh gets the text;
 - switching doesn't move the content below (the box's bottom edge stays
   put, ±1px, when Preview content is shorter);
+- reply box: the toggle's top matches the textarea's top and Send's bottom
+  matches its bottom (±1px), in both modes;
 - 360px: no horizontal scroll, and the toggle is 40px.
 
 ## Docs
