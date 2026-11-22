@@ -514,9 +514,11 @@ html[data-resizing] * {
 /*
  * A pending thread in view is about to become its GitHub thread
  * (pendingThread.ts prepareLanding): useLandWhere keeps it in place, so
- * the browser's own scroll anchoring stays out until it has.
+ * the browser's own scroll anchoring stays out until it has. So while a
+ * card asked for is kept where it landed (threadFocus.ts keepInPlace).
  */
-html[data-landing] {
+html[data-landing],
+html[data-focus-hold] {
 	overflow-anchor: none;
 }
 

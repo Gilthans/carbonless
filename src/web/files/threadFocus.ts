@@ -246,6 +246,22 @@ function scrollUnder(el: Element, margin = 8) {
 	});
 }
 
+/** How many keepInPlace holds are on: the browser's scroll anchoring is off while any is. */
+let anchoringHolds = 0;
+
+/**
+ * The browser's scroll anchoring off on the page's scroller while a card is
+ * held in place (index.css: html[data-focus-hold] { overflow-anchor: none }),
+ * or back on with the last hold. Its own attribute: a pending thread's
+ * landing (pendingThread.ts, data-landing) turns it off and on by itself.
+ */
+function holdAnchoring(off: boolean): void {
+	anchoringHolds = Math.max(0, anchoringHolds + (off ? 1 : -1));
+	const root = document.documentElement;
+	if (anchoringHolds > 0) root.dataset.focusHold = "";
+	else delete root.dataset.focusHold;
+}
+
 /** What the reviewer does that ends keepInPlace: they move the page themselves. */
 const REVIEWER_INPUT = [
 	"wheel",
@@ -260,8 +276,10 @@ const REVIEWER_INPUT = [
  * tracer's placements answering move a thread out of the file bubble
  * above it to the list under the header; the stack sticks or wraps), the
  * page scrolls by as much, so the card asked for never ends up under the
- * stack or out of view (CAR-239). It lasts until the reviewer acts (a
- * wheel, a touch, a click, a key), the page scrolls by anything else,
+ * stack or out of view (CAR-239). The browser's scroll anchoring is off
+ * meanwhile (its adjustments would add to these). It lasts until the
+ * reviewer acts (a wheel, a touch, a click, a key), the page scrolls by
+ * anything else,
  * `wanted` turns false (a newer request, a cancel, the card gone) or the
  * returned stop is called. Checked in the frame after it starts and after
  * each change to the document, never on a timer.
@@ -287,11 +305,13 @@ export function keepInPlace(el: Element, wanted: () => boolean): () => void {
 	const changed = () => {
 		if (!stopped && frame === 0) frame = requestAnimationFrame(check);
 	};
-	// A scroll with no change to follow (one pending is checked first) and
-	// not to where it left the page: someone else moved it (the scrollbar
-	// dragged, the page's own code); it lets go.
+	// The browser's own scroll anchoring stays out while it holds, so the
+	// page moves only by its scrolls or someone else's: any scroll not to
+	// where it left the page is someone else's (the scrollbar dragged, a
+	// find step, a screen reader, a status-bar tap), and it lets go.
+	holdAnchoring(true);
 	const scrolled = () => {
-		if (frame === 0 && Math.abs(window.scrollY - leftAt) >= 1) stop();
+		if (Math.abs(window.scrollY - leftAt) >= 1) stop();
 	};
 	window.addEventListener("scroll", scrolled, { passive: true });
 	const mutations = new MutationObserver(changed);
@@ -316,6 +336,7 @@ export function keepInPlace(el: Element, wanted: () => boolean): () => void {
 		sizes?.disconnect();
 		unsubscribe();
 		window.removeEventListener("scroll", scrolled);
+		holdAnchoring(false);
 		for (const type of REVIEWER_INPUT) {
 			window.removeEventListener(type, stop, options);
 		}

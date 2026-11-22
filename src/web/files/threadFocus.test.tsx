@@ -509,7 +509,7 @@ describe("threadFocus", () => {
 			}
 		});
 
-		it("a scroll it didn't make, with nothing changed (the scrollbar, the page's code): it lets go", async () => {
+		it("a scroll it didn't make (the scrollbar, the page's code): it lets go", async () => {
 			render(<Card id="T1" />);
 			act(() => {
 				threadFocus.request({ id: "T1" });
@@ -530,26 +530,112 @@ describe("threadFocus", () => {
 			}
 		});
 
-		it("a newer request, a cancel, or the card gone: it lets go", async () => {
-			const one = render(<Card id="T1" />);
-			render(<Card id="T2" />);
+		it("a newer request lets go of the card held", async () => {
+			render(<Card id="T1" />);
+			act(() => {
+				threadFocus.request({ id: "T1" });
+			});
+			// For a card not drawn yet: nothing takes it, T1 is no longer asked for.
+			act(() => {
+				threadFocus.request({ id: "T2" });
+			});
+			await shift(-50);
+			expect(scrollBy).not.toHaveBeenCalled();
+		});
+
+		it("a cancel lets go", async () => {
+			render(<Card id="T1" />);
 			act(() => {
 				threadFocus.request({ id: "T1" });
 			});
 			act(() => threadFocus.cancel());
-			scrollBy.mockClear();
 			await shift(-50);
 			expect(scrollBy).not.toHaveBeenCalled();
-			one.unmount();
-			// Unmounted after taking: let go too.
-			top = 8;
-			const three = render(<Card id="T3" />);
+		});
+
+		it("the card unmounted lets go", async () => {
+			const view = render(<Card id="T1" />);
 			act(() => {
-				threadFocus.request({ id: "T3" });
+				threadFocus.request({ id: "T1" });
 			});
-			three.unmount();
+			view.unmount();
 			await shift(-50);
 			expect(scrollBy).not.toHaveBeenCalled();
+		});
+
+		it("the card gone off screen (a hidden part) lets go", async () => {
+			const view = render(
+				<div data-testid="wrap">
+					<Card id="T1" />
+				</div>,
+			);
+			act(() => {
+				threadFocus.request({ id: "T1" });
+			});
+			const wrap = view.getByTestId("wrap");
+			await act(async () => {
+				wrap.hidden = true;
+				await Promise.resolve();
+			});
+			await shift(-50);
+			expect(scrollBy).not.toHaveBeenCalled();
+		});
+
+		it("the browser's scroll anchoring is off while it holds, and back on after", () => {
+			const root = document.documentElement;
+			const view = render(<Card id="T1" />);
+			act(() => {
+				threadFocus.request({ id: "T1" });
+			});
+			expect(root.hasAttribute("data-focus-hold")).toBe(true);
+			// A pending thread's landing has its own switch: neither clears the other.
+			root.dataset.landing = "";
+			act(() => threadFocus.cancel());
+			expect(root.hasAttribute("data-focus-hold")).toBe(false);
+			expect(root.hasAttribute("data-landing")).toBe(true);
+			delete root.dataset.landing;
+			view.unmount();
+		});
+
+		it("a scroll from elsewhere in the same frame as a change (one pending) still lets go", async () => {
+			const queue: FrameRequestCallback[] = [];
+			vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+				queue.push(cb);
+				return queue.length;
+			});
+			vi.stubGlobal("cancelAnimationFrame", () => {});
+			const flush = () => {
+				for (const cb of queue.splice(0)) cb(0);
+			};
+			render(<Card id="T1" />);
+			act(() => {
+				threadFocus.request({ id: "T1" });
+			});
+			// The landing's two frames, then its first check.
+			act(flush);
+			act(flush);
+			act(flush);
+			// A change: its check waits for the next frame...
+			await shift(-100);
+			expect(queue.length).toBeGreaterThan(0);
+			// ...and a scroll from elsewhere comes first (a scrollbar drag).
+			Object.defineProperty(window, "scrollY", {
+				value: 300,
+				configurable: true,
+			});
+			try {
+				window.dispatchEvent(new Event("scroll"));
+				act(flush);
+				expect(scrollBy).not.toHaveBeenCalled();
+				expect(document.documentElement.hasAttribute("data-focus-hold")).toBe(
+					false,
+				);
+			} finally {
+				Object.defineProperty(window, "scrollY", {
+					value: 0,
+					configurable: true,
+				});
+			}
 		});
 
 		it("keepInPlace on its own: stop ends it", async () => {
