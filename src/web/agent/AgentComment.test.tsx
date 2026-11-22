@@ -449,6 +449,58 @@ describe("AgentComment: posting", () => {
 		});
 	});
 
+	it("a joined conversation's reply (its thread younger than the message) knows the opener only: a later block's post never hides this block's own landed reply (CAR-236)", async () => {
+		const user = userEvent.setup();
+		const later: AgentMessage = {
+			id: "01k9e6m2q8x4v7c3n5b0h1j2t8",
+			by: "ai",
+			at: "2026-11-16T10:02:00.000Z",
+			text: "```comment\nOther\n```",
+			// Recorded after this block's own reply landed (its record lost).
+			posted: [
+				{
+					block: 0,
+					url: "https://github.com/o/r/pull/1#discussion_r4",
+					at: "2026-11-16T10:30:00.000Z",
+					text: "Other",
+				},
+			],
+		};
+		const thread = lineThread({
+			anchor: {
+				subject: "thread",
+				thread: "PRRT_1",
+				path: "src/x.ts",
+				commit: OLD,
+			},
+			messages: [message(), later],
+		});
+		answer = async (_m, path) =>
+			path.includes("/replies")
+				? json({
+						threadId: "PRRT_1",
+						comment: { id: "PRRC_2" },
+						comments: { threadId: "PRRT_1", comments: [] },
+						url: "https://github.com/o/r/pull/1#discussion_r2",
+					})
+				: json({ error: "down" }, 500);
+		const { client } = show("Thanks!", thread);
+		client.setQueryData(["comments", "r1", "PRRT_1"], {
+			threadId: "PRRT_1",
+			comments: [
+				// The opener: the block that started the thread, after the message.
+				{ id: "PRRC_1", publishedAt: "2026-11-16T10:05:00Z" },
+				// This block's own reply, landed on an earlier press.
+				{ id: "PRRC_2", publishedAt: "2026-11-16T10:20:00Z" },
+				{ id: "PRRC_4", publishedAt: "2026-11-16T10:25:00Z" },
+			],
+		});
+		await user.click(button());
+		await screen.findByText("Posted");
+		const post = calls.find((c) => c.path.includes("/replies"));
+		expect(post?.body).toMatchObject({ knownCommentIds: ["PRRC_1"] });
+	});
+
 	it("in doubt, the text is fixed: the box can't be edited, a press resends what was sent, Posted shows GitHub's text", async () => {
 		const user = userEvent.setup();
 		const thread = lineThread({
@@ -505,12 +557,10 @@ describe("AgentComment: posting", () => {
 				commit: OLD,
 			},
 		});
-		const { client } = show("Thanks!", thread);
-		// The thread's comments came, but all after the agent wrote (clocks apart).
-		client.setQueryData(["comments", "r1", "PRRT_1"], {
-			threadId: "PRRT_1",
-			comments: [{ id: "PRRC_1", publishedAt: "2026-11-16T11:00:00Z" }],
-		});
+		// The thread's comments can't be read. (All of them after the agent
+		// wrote no longer refuses: the opener is always known, CAR-236.)
+		answer = async () => json({ error: "down" }, 500);
+		show("Thanks!", thread);
 		await user.click(button());
 		const alert = await screen.findByRole("alert");
 		expect(alert.textContent).toContain("Couldn't read the thread's comments");

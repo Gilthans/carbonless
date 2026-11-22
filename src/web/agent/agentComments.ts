@@ -47,6 +47,15 @@ export const UNTRACED = "Couldn't trace these lines to the latest push";
 export const CHANGED = "The code here changed since the agent wrote this";
 export const WRITES_OFF = "Not writing to GitHub here";
 export const GITHUB_UNKNOWN = "Couldn't read GitHub's threads";
+export const SIBLING_SENDING = "Waiting for this conversation's other comment";
+
+/**
+ * Another block of the same conversation, as this browser has it
+ * (siblingOf): one GitHub took as a new thread, its record not in yet
+ * (the conversation is that thread's: reply to it), or one on its way or
+ * in doubt (wait: it may start the thread).
+ */
+export type Sibling = { kind: "reply"; thread: string } | { kind: "pending" };
 
 /** A conversation a block can post from: on lines, a file or a GitHub thread. */
 export type PostingThread = Omit<AgentThread, "anchor"> & {
@@ -68,8 +77,11 @@ export type CommentPlace =
 	| { kind: "reply"; thread: string }
 	/** A new thread; `changed`: on the lines that replaced the asked ones. */
 	| { kind: "new"; target: NewTarget; changed: boolean }
-	/** The placement is on its way: a spinner, never "gone" (principle 8). */
-	| { kind: "pending" }
+	/**
+	 * The placement is on its way, or another block of the conversation is
+	 * (`why`): a spinner, never "gone" (principle 8).
+	 */
+	| { kind: "pending"; why?: string }
 	| { kind: "off"; why: string };
 
 const lineTarget = (
@@ -112,15 +124,25 @@ export function commentPlace(args: {
 	placement: ThreadPlacement | undefined;
 	/** The placements: in (`placement` undefined: not traced), on their way, or failed. */
 	placing: "in" | "pending" | "failed";
+	/** Another block of the conversation this browser posted or is posting (siblingOf). */
+	sibling?: Sibling;
 }): CommentPlace {
-	const { thread, head, placement, placing } = args;
+	const { thread, head, placement, placing, sibling } = args;
 	const a = thread.anchor;
 	if (a.subject === "thread") {
 		return thread.orphaned
 			? { kind: "off", why: THREAD_GONE }
 			: { kind: "reply", thread: a.thread };
 	}
+	// Joined (CAR-236), shown where it was asked: its thread isn't in this
+	// view (an earlier patch set), or GitHub's threads couldn't be read.
 	if (thread.githubUnknown) return { kind: "off", why: GITHUB_UNKNOWN };
+	if (thread.joined) return { kind: "reply", thread: thread.joined.thread };
+	// Its record not in yet: the thread another block started, or wait.
+	if (sibling?.kind === "reply") return sibling;
+	if (sibling?.kind === "pending") {
+		return { kind: "pending", why: SIBLING_SENDING };
+	}
 	if (!head) return { kind: "pending" };
 	if (a.commit === head) {
 		return {
@@ -225,20 +247,29 @@ export function knownBefore(
 }
 
 /**
- * What a reply's known comments are taken up to (knownBefore): the
- * agent's message, or the conversation's latest recorded post when later.
- * A conversation joined to the thread one of its blocks started (CAR-236)
- * has a thread younger than the message: its opener (and earlier
- * replies) were published by then, so a retry never takes them for itself.
+ * What a reply of block `message` may not take for itself on a retry:
+ * knownBefore the agent's message, and always the thread's opener (the
+ * first comment by publishedAt, else the first listed). A reply is never
+ * the opener, so it never hides a real send; a thread younger than the
+ * message (one its conversation's block started, CAR-236) has it known.
  */
-export function knownSince(thread: AgentThread, message: AgentMessage): string {
-	let since = message.at;
-	for (const m of thread.messages) {
-		for (const p of m.posted ?? []) {
-			if (Date.parse(p.at) > Date.parse(since)) since = p.at;
-		}
-	}
-	return since;
+export function knownForReply(
+	comments: readonly { id: string; publishedAt: string | null }[],
+	message: Pick<AgentMessage, "at">,
+): string[] {
+	const known = knownBefore(comments, message.at);
+	const published = comments.filter((c) => c.id && c.publishedAt !== null);
+	const opener =
+		published.length > 0
+			? published.reduce((a, b) =>
+					Date.parse(b.publishedAt as string) <
+					Date.parse(a.publishedAt as string)
+						? b
+						: a,
+				)
+			: comments.find((c) => c.id);
+	if (opener && !known.includes(opener.id)) known.unshift(opener.id);
+	return known;
 }
 
 /** Why GitHub (or crb) refused the post, in a few words. */
@@ -396,6 +427,51 @@ function listenToOtherTabs(): void {
 	});
 }
 
+/** The client ids this browser keeps anything for that start with `prefix`. */
+function keptIds(prefix: string): string[] {
+	const ids = new Set<string>();
+	for (const id of memory.keys()) if (id.startsWith(prefix)) ids.add(id);
+	try {
+		const s = storage();
+		for (let i = 0; s && i < s.length; i++) {
+			const key = s.key(i);
+			if (key?.startsWith(PREFIX + prefix)) ids.add(key.slice(PREFIX.length));
+		}
+	} catch {
+		// Memory only.
+	}
+	return [...ids];
+}
+
+/**
+ * Another block of conversation `thread` than `clientId`, as this browser
+ * keeps it (CAR-236): GitHub took one as a new thread and its record isn't
+ * in (the earliest such: reply to its thread), else one is on its way or
+ * in doubt (pending: it may start the thread). Encoded as a string
+ * (`reply:<thread>`, `pending`, ""), for useSyncExternalStore.
+ */
+export function siblingKey(thread: string, clientId: string): string {
+	let first: KeptPosted | undefined;
+	let sending = false;
+	for (const id of keptIds(`ag.${thread}.`)) {
+		if (id === clientId) continue;
+		const kept = keptOf(id);
+		if (kept.posted) {
+			if (!first || Date.parse(kept.posted.at) < Date.parse(first.at)) {
+				first = kept.posted;
+			}
+		} else if (kept.sending) sending = true;
+	}
+	if (first) return `reply:${first.github.thread}`;
+	return sending ? "pending" : "";
+}
+
+/** The Sibling a siblingKey names. */
+export function siblingOf(key: string): Sibling | undefined {
+	if (key.startsWith("reply:")) return { kind: "reply", thread: key.slice(6) };
+	return key === "pending" ? { kind: "pending" } : undefined;
+}
+
 /** Drops a block's kept post (its record is in the agent ref). */
 export function dropKeptPosted(clientId: string): void {
 	const kept = keptOf(clientId);
@@ -460,7 +536,7 @@ async function threadCommentIds(
 	const cached = client.getQueryData<ThreadComments>(q.queryKey);
 	const comments = cached ?? (await client.fetchQuery(q).catch(() => null));
 	if (!comments) return null;
-	const known = knownBefore(comments.comments, at);
+	const known = knownForReply(comments.comments, { at });
 	return known.length ? known : null;
 }
 
@@ -478,8 +554,8 @@ export async function recordPosted(
 	message: string,
 	clientId: string,
 	posted: KeptPosted,
-): Promise<void> {
-	if (recording.has(clientId)) return;
+): Promise<boolean> {
+	if (recording.has(clientId)) return false;
 	recording.add(clientId);
 	try {
 		const t = await postAgentPosted(thread, {
@@ -493,8 +569,10 @@ export async function recordPosted(
 		);
 		const { posted: _, ...rest } = keptOf(clientId);
 		setKept(clientId, rest);
+		return true;
 	} catch {
 		// Posted all the same: kept here, recorded on a later load.
+		return false;
 	} finally {
 		recording.delete(clientId);
 	}
@@ -520,7 +598,7 @@ export async function postAgentComment(
 		/** A resend of a press cut short by a reload: as it was sent. */
 		resend?: NonNullable<Kept["sending"]>;
 	},
-): Promise<AgentPostedComment & { githubThread: string }> {
+): Promise<AgentPostedComment & { githubThread: string; recorded: boolean }> {
 	const { thread, message, block, place } = args;
 	const clientId = agentCommentClientId(thread.id, message.id, block);
 	const sending = args.resend ??
@@ -536,11 +614,7 @@ export async function postAgentComment(
 		if (place.kind === "reply") {
 			const known =
 				sending.known ??
-				(await threadCommentIds(
-					client,
-					place.thread,
-					knownSince(thread, message),
-				));
+				(await threadCommentIds(client, place.thread, message.at));
 			// Nothing sent: a refusal, never "may have landed".
 			if (!known) throw new Error("Couldn't read the thread's comments");
 			setKept(clientId, {
@@ -611,7 +685,26 @@ export async function postAgentComment(
 	};
 	// Kept until the record is in: a reload shows Posted, never the box.
 	setKept(clientId, { posted });
-	await recordPosted(client, thread.id, message.id, clientId, posted);
+	const recorded = await recordPosted(
+		client,
+		thread.id,
+		message.id,
+		clientId,
+		posted,
+	);
 	const { github: _, ...shown } = posted;
-	return { ...shown, githubThread: github.thread };
+	return { ...shown, githubThread: github.thread, recorded };
+}
+
+/**
+ * Whether a post's GitHub thread card should open with the conversation:
+ * the conversation sat on lines or a file and the record is in, so it is
+ * that thread's now (CAR-236) and leaves the card it was pressed in. A
+ * record that failed joins nothing this load: no request left waiting.
+ */
+export function opensThreadCard(
+	thread: Pick<AgentThread, "anchor">,
+	recorded: boolean,
+): boolean {
+	return recorded && thread.anchor.subject !== "thread";
 }

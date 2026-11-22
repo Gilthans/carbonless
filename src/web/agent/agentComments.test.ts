@@ -1,14 +1,20 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it } from "vitest";
 import type { AgentSpanAnchor } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import {
 	commentPlace,
 	GITHUB_UNKNOWN,
 	knownBefore,
-	knownSince,
+	knownForReply,
 	LINES_GONE,
+	opensThreadCard,
 	type PostingThread,
 	placeLabel,
+	resetAgentComments,
+	SIBLING_SENDING,
+	siblingKey,
+	siblingOf,
 	THREAD_GONE,
 	UNTRACED,
 } from "./agentComments";
@@ -203,30 +209,120 @@ describe("commentPlace: where a ```comment block posts", () => {
 });
 
 describe("commentPlace: a conversation joined to its comment's thread (CAR-236)", () => {
-	it("a line conversation on the thread its first block started: later blocks reply to it", () => {
-		// What the server serves once a block posted (the fold's join).
-		const joined = conversation({
-			subject: "thread",
-			thread: "PRRT_9",
-			path: "src/x.ts",
-			commit: OLD,
-			side: "RIGHT",
-			line: 44,
-			startSide: "RIGHT",
-			startLine: 41,
-		});
-		expect(at(joined, undefined, "pending")).toEqual({
+	it("another block posted as a new thread, its record not in: this one replies to that thread, never a second one", () => {
+		expect(
+			commentPlace({
+				thread: line({ commit: HEAD }),
+				head: HEAD,
+				placement: undefined,
+				placing: "in",
+				sibling: { kind: "reply", thread: "PRRT_9" },
+			}),
+		).toEqual({ kind: "reply", thread: "PRRT_9" });
+	});
+
+	it("another block on its way or in doubt: this one waits (it may start the thread)", () => {
+		expect(
+			commentPlace({
+				thread: line({ commit: HEAD }),
+				head: HEAD,
+				placement: undefined,
+				placing: "in",
+				sibling: { kind: "pending" },
+			}),
+		).toEqual({ kind: "pending", why: SIBLING_SENDING });
+	});
+
+	it("shown where it was asked because its thread isn't in this view: replies to its thread", () => {
+		const shown = {
+			...line(),
+			joined: { thread: "PRRT_9", asked: line().anchor },
+		};
+		expect(at(shown, undefined, "pending")).toEqual({
 			kind: "reply",
 			thread: "PRRT_9",
 		});
 	});
 
-	it("shown on its lines while GitHub can't be read: never a second new thread", () => {
+	it("shown where it was asked while GitHub can't be read: off, never a second new thread", () => {
 		const unknown = line({ commit: HEAD });
-		expect(at({ ...unknown, githubUnknown: true }, undefined)).toEqual({
-			kind: "off",
-			why: GITHUB_UNKNOWN,
+		expect(
+			at(
+				{
+					...unknown,
+					githubUnknown: true,
+					joined: { thread: "PRRT_9", asked: unknown.anchor },
+				},
+				undefined,
+			),
+		).toEqual({ kind: "off", why: GITHUB_UNKNOWN });
+	});
+});
+
+describe("siblingKey: the conversation's other blocks in this browser (CAR-236)", () => {
+	const T = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+	const M = "01k9e6m2q8x4v7c3n5b0h1j2t7";
+	const id = (block: number) => `ag.${T}.${M}.${block}`;
+	const keep = (block: number, kept: unknown) =>
+		localStorage.setItem(
+			`crb:agent-comment:${id(block)}`,
+			JSON.stringify(kept),
+		);
+	const posted = (thread: string, at: string) => ({
+		posted: {
+			block: 0,
+			url: "https://x",
+			at,
+			text: "x",
+			github: { thread, comment: "C", url: "https://x" },
+		},
+	});
+	beforeEach(() => {
+		localStorage.clear();
+		resetAgentComments();
+	});
+
+	it("nothing kept: none; this block's own state never counts", () => {
+		expect(siblingKey(T, id(0))).toBe("");
+		keep(0, { sending: { attemptedAt: "2026-11-16T10:00:00Z", body: "x" } });
+		expect(siblingKey(T, id(0))).toBe("");
+	});
+
+	it("another on its way: pending; another posted (record not in): reply to the earliest's thread", () => {
+		keep(1, { sending: { attemptedAt: "2026-11-16T10:00:00Z", body: "x" } });
+		expect(siblingKey(T, id(0))).toBe("pending");
+		expect(siblingOf("pending")).toEqual({ kind: "pending" });
+		keep(2, posted("PRRT_late", "2026-11-16T10:09:00Z"));
+		keep(3, posted("PRRT_first", "2026-11-16T10:05:00Z"));
+		resetAgentComments();
+		expect(siblingKey(T, id(0))).toBe("reply:PRRT_first");
+		expect(siblingOf("reply:PRRT_first")).toEqual({
+			kind: "reply",
+			thread: "PRRT_first",
 		});
+	});
+
+	it("another conversation's blocks count for nothing", () => {
+		localStorage.setItem(
+			`crb:agent-comment:ag.01k9e6m2q8x4v7c3n5b0h1j2z9.${M}.1`,
+			JSON.stringify(posted("PRRT_x", "2026-11-16T10:05:00Z")),
+		);
+		expect(siblingKey(T, id(0))).toBe("");
+	});
+});
+
+describe("opensThreadCard", () => {
+	it("only a conversation on lines or a file whose post was recorded (it joined): never on a failed record", () => {
+		const onLines = line();
+		expect(opensThreadCard(onLines, true)).toBe(true);
+		expect(opensThreadCard(onLines, false)).toBe(false);
+		const onThread = conversation({
+			subject: "thread",
+			thread: "PRRT_1",
+			path: "src/x.ts",
+			commit: OLD,
+		});
+		expect(opensThreadCard(onThread, true)).toBe(false);
 	});
 });
 
@@ -286,35 +382,46 @@ describe("placeLabel", () => {
 	});
 });
 
-describe("knownSince: the time a reply's known comments are taken up to", () => {
-	it("the agent's message, or a later post of its conversation (the thread a joined conversation started, CAR-236)", () => {
-		const message = {
-			id: "01k9e6m2q8x4v7c3n5b0h1j2m1",
-			by: "ai" as const,
-			at: "2026-11-16T10:00:00.000Z",
-			text: "",
-		};
-		const t = conversation({
-			subject: "thread",
-			thread: "PRRT_9",
-			path: "src/x.ts",
-			commit: OLD,
-		});
-		expect(knownSince({ ...t, messages: [message] }, message)).toBe(message.at);
-		const posted = {
-			...message,
-			posted: [
-				{
-					block: 0,
-					url: "https://x",
-					at: "2026-11-16T10:05:00.000Z",
-					text: "x",
-				},
-			],
-		};
-		expect(knownSince({ ...t, messages: [posted] }, posted)).toBe(
-			"2026-11-16T10:05:00.000Z",
-		);
+describe("knownForReply: what a reply's retry may not take for itself", () => {
+	const c = (id: string, publishedAt: string | null) => ({ id, publishedAt });
+	const message = { at: "2026-11-16T10:00:00.000Z" };
+
+	it("a thread younger than the message (its block started it, CAR-236): the opener is known, nothing else", () => {
+		expect(
+			knownForReply(
+				[
+					c("opener", "2026-11-16T10:01:00Z"),
+					c("mine", "2026-11-16T10:02:00Z"),
+				],
+				message,
+			),
+		).toEqual(["opener"]);
+	});
+
+	it("a later block's recorded post never makes an earlier block's own reply known (it is found, not posted twice)", () => {
+		// Block 1's reply landed (its record lost), block 2's was recorded
+		// after it: block 1 pressed again on another device must find its own.
+		const comments = [
+			c("opener", "2026-11-16T10:01:00Z"),
+			c("block1", "2026-11-16T10:02:00Z"),
+			c("block2", "2026-11-16T10:03:00Z"),
+		];
+		const known = knownForReply(comments, message);
+		expect(known).not.toContain("block1");
+		expect(known).not.toContain("block2");
+	});
+
+	it("an older thread: what knownBefore gives, the opener among them", () => {
+		expect(
+			knownForReply(
+				[
+					c("b", "2026-11-16T09:30:00Z"),
+					c("a", "2026-11-16T09:00:00Z"),
+					c("late", "2026-11-16T10:30:00Z"),
+				],
+				message,
+			),
+		).toEqual(["b", "a"]);
 	});
 });
 
