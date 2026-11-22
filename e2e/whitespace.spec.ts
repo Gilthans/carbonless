@@ -25,14 +25,15 @@ const mixed = Array.from({ length: 10 }, (_, i) => `mixed ${i + 1}`);
 const text = (lines: string[]) => `${lines.join("\n")}\n`;
 
 /**
- * Sixteen clusters, each whitespace-only run its own (CAR-156):
+ * Fourteen clusters, each whitespace-only run its own (CAR-156):
  * src/indent.ts re-indented wholesale (1, whitespace only), src/mixed.ts
  * with lines 3–6 re-indented and line 4 really changed (3: whitespace only,
  * the change, whitespace only), src/crlf.txt from CRLF to LF (1, whitespace
- * only), src/reindent.ts a re-indent git splits over context lines (7: 5
- * whitespace only, 2 whose lines' twins sit across a context line),
+ * only), src/reindent.ts a re-indent git splits over context lines (5,
+ * all whitespace only, though some lines' twins sit across a context
+ * line: the cut matches over the display hunk, CAR-218),
  * src/wrap.ts a loop wrapped in an `if` (4: the body whitespace only, the
- * `if`, its `}` and the `log` line that crossed one changes). Six count
+ * `if`, its `}` and the `log` line that crossed one changes). Four count
  * with Ignore whitespace on.
  */
 const fixture: PrOptions = {
@@ -98,7 +99,7 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const bar = progress(page);
-	await expect(bar).toContainText("0 / 16 clusters");
+	await expect(bar).toContainText("0 / 14 clusters");
 
 	// Off: plain add/del rows, as always.
 	let section = await expand(page, "src/indent.ts");
@@ -154,7 +155,7 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 
 	// With the switch on, whitespace-only clusters aren't counted: the
 	// bar says how many it leaves out.
-	await expect(bar).toContainText("0 / 6 clusters reviewed");
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
 	// The bar's (file headers that left one out have their own).
 	await expect(
 		page
@@ -174,7 +175,7 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(box).toBeChecked();
 	await expect(collapsed).toHaveAttribute("data-reviewed", "true");
-	await expect(bar).toContainText("0 / 6 clusters reviewed");
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
 
 	// Lines 3-6 re-indented with line 4 changed: three clusters, the real
 	// change as add/del rows between two collapsed whitespace-only ones.
@@ -200,12 +201,12 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	);
 
 	// A re-indent git split over context lines: nothing but whitespace, as
-	// `git diff -w` shows. Five clusters are whitespace-only runs; two hold
-	// lines whose twins sit across a context line: their `~` rows stay
-	// open, as they still count.
+	// `git diff -w` shows. Every cluster is a whitespace-only run, those
+	// whose lines' twins sit across a context line too (CAR-218): all
+	// collapsed, none counted.
 	section = await expand(page, "src/reindent.ts");
 	await expect(section.getByTestId("ws-cluster")).toHaveCount(5);
-	await expect(rows(section, "ws")).toHaveCount(4);
+	await expect(rows(section, "ws")).toHaveCount(0);
 	await expect(rows(section, "add")).toHaveCount(0);
 	await expect(rows(section, "del")).toHaveCount(0);
 	await expect(section.getByTestId("change-count")).toContainText("+15");
@@ -236,7 +237,7 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await expect(rows(section, "del")).toHaveCount(4);
 	await expect(rows(section, "add")).toHaveCount(4);
 	await expect(rows(section, "ws")).toHaveCount(0);
-	await expect(bar).toContainText("1 / 16 clusters reviewed");
+	await expect(bar).toContainText("1 / 14 clusters reviewed");
 	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
 });
 
