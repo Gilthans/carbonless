@@ -69,7 +69,7 @@ export function ResolveButton(props: {
 		</button>
 	);
 	return props.compact ? (
-		<Tooltip content={label} describe={false}>
+		<Tooltip content={label} describe={false} dismissKey={thread.resolved}>
 			{button}
 		</Tooltip>
 	) : (

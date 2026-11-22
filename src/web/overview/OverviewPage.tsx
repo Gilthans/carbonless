@@ -1580,11 +1580,23 @@ function ThreadItem({
 			(replies.n > 0 || canAct || can.update || can.delete));
 	const writesOn = useWritesOn();
 	const resolvable = canToggle(thread, writesOn);
+	const session = useQuery(sessionQuery);
+	const viewer = session.data?.viewer;
+	// The opener's own Edit and Delete live behind the toggle. Until its
+	// comments are known (prefetching, or the read failed), the viewer's own
+	// opener counts as editable: a toggle that turns up late, or never,
+	// would leave them out of reach.
+	const editable = first
+		? can.update || can.delete
+		: writesOn &&
+			!thread.unavailable &&
+			viewer !== undefined &&
+			thread.author.toLowerCase() === viewer.toLowerCase();
 	const kind = toggleKind({
 		clipped: codeMore || commentMore,
 		replies: replies.n,
 		canReply: writesOn && thread.viewerCan.reply,
-		editable: can.update || can.delete,
+		editable,
 		canResolve: resolvable,
 	});
 	const commentClipped = commentMore && !open;
@@ -1723,7 +1735,6 @@ function ThreadItem({
 	);
 	// The composer row: never under the agent's panel.
 	const actions = (open || agent?.open === true) && !thread.unavailable;
-	const session = useQuery(sessionQuery);
 	const target = threadTarget(thread, session.data, line);
 	const status = thread.resolved ? "Resolved" : "Unresolved";
 	// Resolve on the closed card, where the eye expects it: the bottom row's
@@ -1732,6 +1743,18 @@ function ThreadItem({
 	// Closed, a toggle opening only to Resolve has nothing left behind it.
 	const toggle = more && (kind !== "resolve" || open);
 	const moreRow = toggle || closedResolve;
+	// "Hide" on a card that opens only to Resolve goes with the card's
+	// opening: the focus it had moves to the card's one Resolve (the closed
+	// card's, or the actions row's while the agent's panel keeps it open),
+	// never to the page.
+	const refocusResolve = useRef(false);
+	useEffect(() => {
+		if (open || !refocusResolve.current) return;
+		refocusResolve.current = false;
+		cardRef.current
+			?.querySelector<HTMLElement>("[data-testid=resolve-button]")
+			?.focus();
+	}, [open]);
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<li
@@ -1904,7 +1927,11 @@ function ThreadItem({
 							{toggle && (
 								<MoreToggle
 									open={open}
-									onClick={() => setOpen((o) => !o)}
+									onClick={() => {
+										// Closing a toggle that then goes: its focus to Resolve.
+										refocusResolve.current = open && kind === "resolve";
+										setOpen((o) => !o);
+									}}
 									controls={[
 										rows.length ? codeId : "",
 										commentId,
