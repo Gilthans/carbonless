@@ -284,7 +284,7 @@ export function OpenBox(props: { className?: string }) {
 								? `${optionId}-${current}`
 								: undefined
 						}
-						placeholder="PR URL, #123 or search"
+						placeholder="PR URL, #123, repo_name, PR title..."
 						value={q}
 						onChange={(e) => {
 							setQ(e.target.value);
