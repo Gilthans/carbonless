@@ -350,16 +350,23 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 }) => {
 	// A review, a push, the engine's answer and four marks: past the default budget on a loaded machine.
 	test.slow();
-	// PS1: line 2 changed (one cluster), reviewed.
-	const ps1 = lines.map((l, i) => (i === 1 ? `${l} changed` : l));
+	// PS1: line 2 changed, lines 6-7 re-indented, both reviewed. A
+	// re-indent since PS1 is whitespace-only only where the reviewer read
+	// those lines in PS1 (CAR-218): PS2 indents 6-7 deeper.
+	const ps1 = lines.map((l, i) =>
+		i === 1 ? `${l} changed` : i === 5 || i === 6 ? `  ${l}` : l,
+	);
 	const p = await pr({
 		base: { [PATH]: text(lines) },
-		files: [{ message: "Line 2", files: { [PATH]: text(ps1) } }],
+		files: [{ message: "Line 2, re-indent", files: { [PATH]: text(ps1) } }],
 	});
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const section = await expand(page);
+	await expect(boxes(section)).toHaveCount(2);
 	await boxes(section).first().click();
+	await expect(boxes(section).first()).toBeChecked();
+	await boxes(section).last().click();
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	// PS2: line 2 as it was (carried), and change / re-indent / change.
@@ -389,8 +396,8 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 		.click();
 	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
 	// Each changed run is two pieces here (its old lines and its new
-	// ones): six, two of them the whitespace-only cluster's (one cluster,
-	// as the `~` says).
+	// ones): six, two of them whitespace-only since PS1 (the re-indent
+	// the reviewer read there).
 	await expect(progress(page)).toContainText("0 / 6 clusters reviewed");
 	await expect(sinceLeftOut(page)).toHaveCount(0);
 
@@ -428,8 +435,14 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 	).toHaveCount(0);
 });
 
-const SINCE_LEFT_OUT = LEFT_OUT;
-const sinceLeftOut = leftOut;
+// The since view's `~` in the test above: the whitespace-only cluster's
+// new lines, and its old ones, a piece of PS1's re-indent (gone in PS2:
+// no cluster of PS2's, so a unit of its own; CAR-218).
+const SINCE_LEFT_OUT = "2 whitespace-only clusters not counted";
+const sinceLeftOut = (page: Page) =>
+	page
+		.locator("[data-page-bar]")
+		.locator(`[data-testid="ws-left-out"][aria-label="${SINCE_LEFT_OUT}"]`);
 
 test("the since view: a change carried, only the indent reworked: the header reads done with the `~`, never without (B1)", async ({
 	page,
