@@ -143,25 +143,29 @@ export function isSafePath(path: string): boolean {
 }
 
 /**
- * The anchor as the envelope gives it: `commit` the commit its side is
- * on: the merge base (the diff's left side) for a LEFT anchor. A thread
- * anchor's commit is the one its comment was made on: on the LEFT, the
- * merge base of the patch set with that head, else the review's, as for
- * a line anchor. The review conversation's anchor has no commit: as is.
+ * The anchor as an agent gets it (every tool: `next`'s envelope, `threads`,
+ * a thread's code window): `commit` the commit its side is on. Stored, a
+ * span or thread anchor names the head it was opened on, whatever its
+ * side (the code window derives the left side from that head); an agent
+ * reading `{commit: head, side: LEFT, line: n}` would read line n of the
+ * head, another line (CAR-222). So a LEFT anchor names the merge base of
+ * the patch set whose head it was opened on, else the review's merge
+ * base. RIGHT and file anchors as they are; the review conversation's
+ * anchor has no commit. The one place this rule lives.
  */
 export function anchorFor(
 	anchor: AgentSpanAnchor,
-	review: PromptReview,
+	review: Pick<PromptReview, "mergeBase">,
 	patchsets?: readonly { head: string; mergeBase: string }[],
 ): AgentSpanAnchor;
 export function anchorFor(
 	anchor: AgentAnchor,
-	review: PromptReview,
+	review: Pick<PromptReview, "mergeBase">,
 	patchsets?: readonly { head: string; mergeBase: string }[],
 ): AgentAnchor;
 export function anchorFor(
 	anchor: AgentAnchor,
-	review: PromptReview,
+	review: Pick<PromptReview, "mergeBase">,
 	patchsets: readonly { head: string; mergeBase: string }[] = [],
 ): AgentAnchor {
 	if (anchor.subject === "review") return { subject: "review" };
@@ -169,10 +173,8 @@ export function anchorFor(
 		return { ...anchor };
 	}
 	const commit =
-		anchor.subject === "thread"
-			? (patchsets.find((p) => p.head === anchor.commit)?.mergeBase ??
-				review.mergeBase)
-			: review.mergeBase;
+		patchsets.find((p) => p.head === anchor.commit)?.mergeBase ??
+		review.mergeBase;
 	return { ...anchor, commit };
 }
 

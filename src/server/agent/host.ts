@@ -65,6 +65,7 @@ import {
 	type PromptCodeEnvelope,
 	type PromptEnvelope,
 	type PromptMessage,
+	type PromptReview,
 	type PromptReviewEnvelope,
 	sanitizeEnvelope,
 	sanitizeThirdParty,
@@ -1432,10 +1433,19 @@ export class AgentHost {
 			?.messages.findLast((m) => m.by === "human")?.view;
 	}
 
-	/** Every thread, for a joined session. */
+	/**
+	 * Every thread, for a joined session: each anchor (and its code
+	 * window's) as an agent gets it, a LEFT one on its patch set's merge
+	 * base (anchorFor; the stored anchors keep their head).
+	 */
 	async sessionThreads(secret: string): Promise<AgentThread[]> {
 		await this.#token(secret);
-		return this.threads();
+		const { facts } = this.#facts();
+		const review = facts.review();
+		const { patchsets } = facts.views();
+		return (await this.threads()).map((t) =>
+			threadForAgent(t, review, patchsets),
+		);
 	}
 
 	/**
@@ -1519,6 +1529,35 @@ export class AgentHost {
 	}
 }
 
+/**
+ * A thread as a joined session's `threads` gives it: its anchor, and its
+ * code window's, through anchorFor (a LEFT one on the merge base of the
+ * patch set it was opened on), the rest as stored.
+ */
+function threadForAgent(
+	t: AgentThread,
+	review: Pick<PromptReview, "mergeBase">,
+	patchsets: readonly { head: string; mergeBase: string }[],
+): AgentThread {
+	const anchor = anchorFor(t.anchor, review, patchsets);
+	if (!t.code) return { ...t, anchor };
+	const a = t.code.anchor;
+	const { commit } = anchorFor(
+		{
+			subject: "line",
+			path: a.path,
+			commit: a.commit,
+			side: a.side,
+			line: a.line,
+			startSide: a.startSide,
+			startLine: a.startLine,
+		},
+		review,
+		patchsets,
+	);
+	return { ...t, anchor, code: { ...t.code, anchor: { ...a, commit } } };
+}
+
 /** A joined session's turn: the envelope, the anchored file and the code block. */
 interface SessionTurn {
 	envelope: PromptCodeEnvelope;
@@ -1569,7 +1608,7 @@ async function sessionSpanTurn(
 		review,
 		thread: {
 			id: thread.id,
-			anchor: anchorFor(thread.anchor, review),
+			anchor: anchorFor(thread.anchor, review, facts.views().patchsets),
 		},
 		messages,
 		...(notice ? { notice } : {}),
@@ -2075,14 +2114,15 @@ export async function anchoredFile(
 ): Promise<{ text: string } | null> {
 	// The review conversation has no file.
 	if (anchor.subject === "review" || !isSafePath(anchor.path)) return null;
-	let commit = anchor.commit;
-	if (anchor.subject !== "file" && anchor.side === "LEFT") {
-		// A thread's LEFT side: its patch set's merge base, as the prompt says.
-		commit =
-			(anchor.subject === "thread"
-				? src.patchsets?.().find((p) => p.head === anchor.commit)?.mergeBase
-				: undefined) ?? src.snapshot().base;
-	}
+	// The commit the agent is told (anchorFor): a LEFT side's merge base.
+	const commit =
+		anchor.subject !== "file" && anchor.side === "LEFT"
+			? anchorFor(
+					anchor,
+					{ mergeBase: src.snapshot().base },
+					src.patchsets?.() ?? [],
+				).commit
+			: anchor.commit;
 	if (!OID.test(commit)) return null;
 	const blob = await runGitBuffer(
 		src.repo,

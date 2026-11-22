@@ -110,6 +110,27 @@ describe("the preamble and anchors", () => {
 			commit: review.mergeBase,
 		});
 	});
+
+	it("a LEFT line anchor opened on an earlier patch set names that patch set's merge base, not the review's (CAR-222)", () => {
+		const left = {
+			...right,
+			commit: "e".repeat(40),
+			side: "LEFT" as const,
+			startSide: "LEFT" as const,
+		};
+		const patchsets = [
+			{ head: "e".repeat(40), mergeBase: "f".repeat(40) },
+			{ head: review.head.commit, mergeBase: review.mergeBase },
+		];
+		expect(anchorFor(left, review, patchsets)).toEqual({
+			...left,
+			commit: "f".repeat(40),
+		});
+		// RIGHT keeps the head it was opened on.
+		expect(
+			anchorFor({ ...right, commit: "e".repeat(40) }, review, patchsets),
+		).toMatchObject({ commit: "e".repeat(40) });
+	});
 });
 
 /** A character by code point: invisible ones stay visible in the source. */

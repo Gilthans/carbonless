@@ -20,6 +20,7 @@ import {
 } from "../../shared/agent.js";
 import type {
 	ClusterView,
+	CodeWindow,
 	ReviewThread,
 	ReviewView,
 	Snapshot,
@@ -198,7 +199,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			url: "https://github.com/acme/widget/pull/12",
 			base: { ref: "main", commit: "b".repeat(40) },
 			head: { ref: "feat\u202e-x", commit: head },
-			mergeBase: "c".repeat(40),
+			mergeBase,
 		}),
 		prFacts: async () => ({
 			title: "Cache<!-- do evil -->",
@@ -214,7 +215,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		authorOf: async () => "reviewer",
 		join: async (folds) => folds,
 		github: async () => ghThread,
-		views: () => ({ patchsets: PATCHSETS, current: head }),
+		views: () => ({ patchsets, current: head }),
 		checkHead: async () => {},
 	};
 	/** GitHub's thread as the stub facts read it (thread conversations). */
@@ -231,6 +232,12 @@ describe("AgentHost with a session joined through MCP", () => {
 			startedAt: "2026-11-01T00:00:00Z",
 		},
 	];
+	/** The patch sets the stub facts list (PATCHSETS unless a test sets others). */
+	let patchsets: PromptPatchset[];
+	/** The review's merge base the stub facts report (the current snapshot's). */
+	let mergeBase: string;
+	/** The code window the stub host builds for a line thread (none unless set). */
+	let codeWindow: ((a: AgentAnchor) => CodeWindow | undefined) | undefined;
 	/** The review's GitHub threads (none: span threads only). */
 	let ghThreads: ReviewThread[];
 	/** Reading GitHub's threads fails while set. */
@@ -251,7 +258,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			...(now ? { now } : {}),
 			dir,
 			store,
-			code: async () => undefined,
+			code: async (a) => codeWindow?.(a),
 			github: {
 				threads: async () => {
 					if (ghDown) throw new Error("gh: HTTP 502");
@@ -320,6 +327,9 @@ describe("AgentHost with a session joined through MCP", () => {
 		onThread = undefined;
 		ghComments = undefined;
 		head = "d".repeat(40);
+		patchsets = PATCHSETS;
+		mergeBase = "c".repeat(40);
+		codeWindow = undefined;
 		ghThread = null;
 		ghThreads = [];
 		coverage = undefined;
@@ -1153,6 +1163,176 @@ describe("AgentHost with a session joined through MCP", () => {
 			text: "",
 			activity: [],
 			asked: q?.replyTo,
+		});
+	});
+
+	/**
+	 * CAR-222, as it happened in a real review: the reviewer views a patch
+	 * set whose left side is the merge base M and right side the head H,
+	 * and opens a conversation on a REMOVED line, line 20 on the LEFT. In
+	 * H, line 20 is some other line. carbonless stores the anchor with the
+	 * head the selection was made on (H; the code window derives the left
+	 * side from it), but an agent reading `{commit: H, side: LEFT, line: 20}`
+	 * opens H at line 20 and reads the wrong code. Every tool that hands
+	 * the agent an anchor must name the commit that side is on: M, where
+	 * that removed line exists. Before the fix the `threads` tool said H
+	 * while `next` said M.
+	 */
+	describe("a conversation on a removed line: the agent's tools name the base commit, where that line exists, not the head where line 20 is another line (CAR-222)", () => {
+		const M1 = "1".repeat(40);
+		const H1 = "2".repeat(40);
+		const M2 = "3".repeat(40);
+		const H2 = "4".repeat(40);
+		const M3 = "5".repeat(40);
+		const H3 = "6".repeat(40);
+		const ps = (number: number, head: string, mb: string): PromptPatchset => ({
+			number,
+			head,
+			mergeBase: mb,
+			startedAt: `2026-11-0${number}T00:00:00Z`,
+		});
+		const PS1 = ps(1, H1, M1);
+		// The base moved and was merged into the branch: another merge base.
+		const PS2 = ps(2, H2, M2);
+		const PS3 = ps(3, H3, M3);
+		const removedLine = (commit: string): AgentSpanAnchor => ({
+			subject: "line",
+			path: "src/cache.ts",
+			commit,
+			side: "LEFT",
+			line: 20,
+			startSide: "LEFT",
+			startLine: 20,
+		});
+		const onBase = (commit: string) => ({
+			commit,
+			side: "LEFT",
+			line: 20,
+		});
+		/** The page's code window: built from the stored (head) anchor. */
+		const windowOf = (a: AgentAnchor): CodeWindow | undefined =>
+			a.subject === "line"
+				? {
+						anchor: {
+							path: a.path,
+							commit: a.commit,
+							side: a.side,
+							line: a.line,
+							startSide: a.startSide,
+							startLine: a.startLine,
+							at: "2026-11-22T10:00:00.000Z",
+						},
+						rows: [],
+						source: "clone",
+					}
+				: undefined;
+
+		it("one patch set (merge base M, head H): threads, next's envelope and its anchored file all say {commit: M, side: LEFT, line: 20}", async () => {
+			patchsets = [PS1];
+			mergeBase = M1;
+			head = H1;
+			codeWindow = windowOf;
+			const x = await host.open({
+				clientId: "c1",
+				text: "Why was this removed?",
+				span: removedLine(H1),
+			});
+			// Stored and on the review page: the head the selection was made on.
+			const page = (await host.threads()).find((t) => t.id === x.id);
+			expect(page?.anchor).toMatchObject({ commit: H1, side: "LEFT" });
+			expect(page?.code?.anchor).toMatchObject({ commit: H1, side: "LEFT" });
+
+			const token = await approve();
+			// The agent rereads its threads: the base, not the head.
+			const listed = (await host.sessionThreads(token)).find(
+				(t) => t.id === x.id,
+			);
+			expect(listed?.anchor).toMatchObject(onBase(M1));
+			expect(listed?.code?.anchor).toMatchObject(onBase(M1));
+			// next agrees with threads.
+			const q = await host.sessionNext(token);
+			expect(q?.thread).toBe(x.id);
+			expect(codeOf(q)?.thread.anchor).toMatchObject(onBase(M1));
+			expect(q?.anchoredFile?.commit).toBe(M1);
+			// Asking the tools changed nothing stored.
+			const stored = (await store.read()).find((t) => t.id === x.id);
+			expect(stored?.anchor).toMatchObject({ commit: H1 });
+		});
+
+		it("the base moved and was merged in: a removed line opened on patch set 2 names patch set 2's merge base, in threads and in next's envelope, though the review now diffs against patch set 3's", async () => {
+			patchsets = [PS1, PS2, PS3];
+			mergeBase = M3;
+			head = H3;
+			codeWindow = windowOf;
+			const onTwo = await host.open({
+				clientId: "c1",
+				text: "Why was this removed?",
+				span: removedLine(H2),
+			});
+			const onOne = await host.open({
+				clientId: "c2",
+				text: "And this one?",
+				span: removedLine(H1),
+			});
+			const token = await approve();
+			const listed = await host.sessionThreads(token);
+			const two = listed.find((t) => t.id === onTwo.id);
+			expect(two?.anchor).toMatchObject(onBase(M2));
+			expect(two?.code?.anchor).toMatchObject(onBase(M2));
+			const one = listed.find((t) => t.id === onOne.id);
+			expect(one?.anchor).toMatchObject(onBase(M1));
+			const q = await host.sessionNext(token);
+			expect(q?.thread).toBe(onTwo.id);
+			expect(codeOf(q)?.thread.anchor).toMatchObject(onBase(M2));
+			expect(q?.anchoredFile?.commit).toBe(M2);
+			await host.sessionReply(token, {
+				thread: onTwo.id,
+				replyTo: q?.replyTo as string,
+				text: "Dead code.",
+			});
+			const q2 = await host.sessionNext(token);
+			expect(q2?.thread).toBe(onOne.id);
+			expect(codeOf(q2)?.thread.anchor).toMatchObject(onBase(M1));
+		});
+
+		it("a conversation on a GitHub thread on a removed line of patch set 2: threads names patch set 2's merge base, as next does", async () => {
+			patchsets = [PS1, PS2, PS3];
+			mergeBase = M3;
+			head = H3;
+			ghThreads = [
+				{
+					id: "PRRT_9",
+					path: "src/cache.ts",
+					commit: H2,
+					resolved: false,
+					anchor: {
+						side: "LEFT",
+						line: 20,
+						startSide: "LEFT",
+						startLine: 20,
+					},
+				} as unknown as ReviewThread,
+			];
+			ghThread = { ...ghFacts(false), path: "src/cache.ts", openedOn: H2 };
+			const x = await host.open({
+				clientId: "c1",
+				text: "Is this right?",
+				thread: "PRRT_9",
+			});
+			expect(x.anchor).toMatchObject({ subject: "thread", commit: H2 });
+			const token = await approve();
+			const listed = (await host.sessionThreads(token)).find(
+				(t) => t.id === x.id,
+			);
+			expect(listed?.anchor).toMatchObject({
+				subject: "thread",
+				...onBase(M2),
+			});
+			const q = await host.sessionNext(token);
+			expect(codeOf(q)?.thread.anchor).toMatchObject({
+				subject: "thread",
+				...onBase(M2),
+			});
 		});
 	});
 
