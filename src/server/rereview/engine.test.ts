@@ -723,22 +723,23 @@ describe("the engine", () => {
 		expect(await removedSince(ps1, r, "a.txt")).toEqual([["line 35", 37, 38]]);
 	});
 
-	it("twins git aligns differently: a removed line's baseNo still names a base line that reads the same, never a twin's place by number alone (CAR-139, on CAR-217's map)", async () => {
-		// PS1 adds a second "}" (git: after the first); the head adds "Y" on
-		// top instead. The since view removes the *first* "}" (git trims the
-		// common end). Its base number comes from the virtual rebase's own
-		// diff against the base, so it names the base's "}" (line 1), the
-		// line the head kept: a move or comment there lands on a "}", never
-		// on another line that merely has that number.
-		const base = commitOn(h.b0, { "g.txt": "}\nb\n" });
-		const ps = commitOn(base, { "g.txt": "}\n}\nb\n" });
-		const head = commitOn(base, { "g.txt": "Y\n}\nb\n" });
+	it("twins git aligns differently: a removed line's baseNo names the base line that reads the same, not the line its own number names (CAR-139, on CAR-217's map)", async () => {
+		// Base "x q } b". PS1 drops x and adds a second "}" (git: after the
+		// first): "q } } b". The head turns x into Y instead: "q Y } b". The
+		// since view removes PS1's *first* "}" (its old 2; git trims the
+		// common ends), which is base line 3. Its number (2) names base "q":
+		// a map by number would put a move or comment on another line.
+		const base = commitOn(h.b0, { "g.txt": "x\nq\n}\nb\n" });
+		const ps = commitOn(base, { "g.txt": "q\n}\n}\nb\n" });
+		const head = commitOn(base, { "g.txt": "q\nY\n}\nb\n" });
 		const ps1 = await snap(base, ps);
 		const r = await snap(base, head);
 		const removed = await removedSince(ps1, r, "g.txt");
-		expect(removed).toEqual([["}", 1, 1]]);
-		// The text guarantee: the base line it names reads as the row does.
+		expect(removed).toEqual([["}", 2, 3]]);
+		// The text guarantee: the base line it names reads as the row does
+		// (base 2, the row's own number, is "q").
 		const baseLines = h.git("show", `${base}:g.txt`).split("\n");
+		expect(baseLines[1]).toBe("q");
 		for (const [text, , b] of removed) {
 			expect(baseLines[(b as number) - 1]).toBe(text);
 		}

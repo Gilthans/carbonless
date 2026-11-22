@@ -277,10 +277,12 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
 
 /**
  * The since view's row for a LEFT line GitHub names (a base line on the
- * head): the removed row the since view shows it on (its `baseNo`, keyed
- * by its own old number there), else, through the full diff's line
- * clusters (base → head), the head line it became; null when neither (the
- * full diff deleted it and the since view doesn't show it).
+ * head): through the full diff's line clusters (base → head), the head
+ * line it became, as the full diff shows it; only when the full diff
+ * deleted it, the removed row the since view shows it on (its `baseNo`,
+ * keyed by its own old number there); null when neither. Never a removed
+ * row for a base line the full diff keeps (a twin git aligns otherwise in
+ * the interdiff): both views put a thread on the same line.
  */
 export type SinceLeft = (n: number) => { side: DiffSide; line: number } | null;
 
@@ -302,10 +304,10 @@ export function sinceLeft(
 		}
 	}
 	return (n) => {
-		const old = removed.get(n);
-		if (old !== undefined) return { side: "LEFT", line: old };
 		const line = full.oldToNew(n);
-		return line === null ? null : { side: "RIGHT", line };
+		if (line !== null) return { side: "RIGHT", line };
+		const old = removed.get(n);
+		return old === undefined ? null : { side: "LEFT", line: old };
 	};
 }
 
