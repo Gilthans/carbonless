@@ -211,6 +211,15 @@ test("pick lines by their numbers and comment on them", async ({
 	const composer = section.getByTestId("new-thread");
 	await expect(composer).toContainText("lines 10–12, new");
 	await composer.getByRole("textbox", { name: "Comment" }).fill("Three?");
+	// Previewed (CAR-202), then sent from Preview as typed.
+	const toggle = composer.getByTestId("preview-toggle");
+	await expect(toggle.getByRole("button", { name: "Write" })).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	await toggle.getByRole("button", { name: "Preview" }).click();
+	await expect(composer.getByTestId("comment-preview")).toHaveText("Three?");
+	await expect(composer.getByRole("textbox", { name: "Comment" })).toBeHidden();
 	await composer.getByRole("button", { name: "Comment" }).click();
 	await expect(
 		section.getByTestId("files-thread").filter({ hasText: "Three?" }),

@@ -259,6 +259,80 @@ test("a short card's toggle says Reply; on a phone the closed box, Resolve and t
 	expect((await rect(resolve)).y).toBe(r.y);
 });
 
+test("reply with Write / Preview: the toggle above Send, level with the box; previewed, then sent as typed", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await setup(pr);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "new.txt");
+	const box = await openReply(c);
+	const rect = async (l: Locator) => {
+		const b = await l.boundingBox();
+		if (!b) throw new Error("not laid out");
+		return b;
+	};
+	const toggle = c.getByTestId("preview-toggle");
+	// Empty, focused or not: nothing to preview.
+	await box.click();
+	await expect(toggle).toHaveCount(0);
+	const text = "Kept **on purpose**";
+	await box.fill(text);
+	await expect(toggle).toBeVisible();
+	const write = toggle.getByRole("button", { name: "Write" });
+	const preview = toggle.getByRole("button", { name: "Preview" });
+	await expect(write).toHaveAttribute("aria-pressed", "true");
+	for (const b of [write, preview]) {
+		const r = await rect(b);
+		expect(r.width).toBeGreaterThanOrEqual(40);
+		expect(r.height).toBeGreaterThanOrEqual(40);
+	}
+	/** The toggle's top at the box's top, Send's bottom at its bottom (±1px). */
+	const aligned = async (field: Locator) => {
+		const f = await rect(field);
+		const t = await rect(toggle);
+		const sb = await rect(send(c));
+		expect(f.height).toBeGreaterThanOrEqual(84);
+		expect(Math.abs(t.y - f.y)).toBeLessThanOrEqual(1);
+		expect(Math.abs(sb.y + sb.height - (f.y + f.height))).toBeLessThanOrEqual(
+			1,
+		);
+		return f;
+	};
+	const inWrite = await aligned(box);
+	const overflow = () =>
+		page.evaluate(
+			() => document.documentElement.scrollWidth - window.innerWidth,
+		);
+	expect(await overflow()).toBeLessThanOrEqual(0);
+	await preview.click();
+	const shown = c.getByTestId("comment-preview");
+	await expect(shown.locator("strong")).toHaveText("on purpose");
+	await expect(box).toBeHidden();
+	const inPreview = await aligned(shown);
+	// Shorter content than the box: nothing below moves.
+	expect(
+		Math.abs(inPreview.y + inPreview.height - (inWrite.y + inWrite.height)),
+	).toBeLessThanOrEqual(1);
+	expect(await overflow()).toBeLessThanOrEqual(0);
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		await c.scrollIntoViewIfNeeded();
+		await page.screenshot({
+			path: `${shots}/reply-preview-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
+	await send(c).click();
+	await expect(
+		c.getByTestId("thread-comment").filter({ hasText: "on purpose" }),
+	).toHaveCount(1);
+	await expect.poll(() => storedReplies(p, text)).toBe(1);
+});
+
 test("reply and resolve from Files changed", async ({ page, pr, startCrb }) => {
 	const p = await setup(pr);
 	const s = await startCrb();

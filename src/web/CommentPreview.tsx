@@ -120,7 +120,9 @@ export function PreviewToggle(props: {
 			aria-label="Write or preview"
 			data-testid="preview-toggle"
 			onKeyDown={props.onKeyDown}
-			className={`m-0 flex shrink-0 overflow-hidden rounded-md border border-line p-0 ${props.className ?? ""}`}
+			// An outline, not a border: the pair is exactly 40px tall (84px with
+			// Send), and it draws over the pressed half.
+			className={`m-0 flex shrink-0 overflow-hidden rounded-md border-0 p-0 outline outline-line -outline-offset-1 ${props.className ?? ""}`}
 		>
 			{item("write", "Write", PencilIcon)}
 			{item("preview", "Preview", EyeIcon)}

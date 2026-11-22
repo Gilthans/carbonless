@@ -57,13 +57,18 @@ const box = (scope: Locator) => scope.getByTestId("agent-comment");
 const addButton = (scope: Locator) =>
 	box(scope).getByRole("button", { name: "Add review comment" });
 
-/** Asks about calc's line 3 and waits for the answer's box. */
+/** The box in Write (it opens in Preview, CAR-202). */
+async function write(scope: Locator) {
+	await box(scope).getByRole("button", { name: "Write" }).click();
+	return box(scope).getByRole("textbox", { name: "Review comment" });
+}
+
+/** Asks about calc's line 3 and waits for the answer's box, in Write. */
 async function askLine3(page: Page, url: string) {
 	const section = await openFile(page, url, CALC);
 	const card = await ask(page, section, 3, "Anything to ask the author?");
-	await expect(
-		box(card).getByRole("textbox", { name: "Review comment" }),
-	).toHaveValue(SUGGESTED);
+	await expect(box(card).getByTestId("comment-preview")).toHaveText(SUGGESTED);
+	await expect(await write(card)).toHaveValue(SUGGESTED);
 	return { section, card };
 }
 
@@ -292,7 +297,7 @@ test("lines gone in a new push: the button is off and says why; the box stays", 
 	await expect(addButton(card)).toHaveAccessibleDescription(
 		"These lines are gone in the latest push",
 	);
-	const text = box(card).getByRole("textbox", { name: "Review comment" });
+	const text = await write(card);
 	await expect(text).toHaveValue(SUGGESTED);
 	await expect(text).toBeEditable();
 	// A press on the off button sends nothing: past a reload (a post it
@@ -313,4 +318,51 @@ test("lines gone in a new push: the button is off and says why; the box stays", 
 	).toBeVisible();
 	expect(posts).toBe(0);
 	expect(newThreadPosts(p)).toHaveLength(0);
+});
+
+test("Write / Preview: the box opens on the agent's markdown rendered; an edit shows in Preview, and Add posts it", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	const p = await pr(fixture);
+	const md = "Why **only** v1 and v2?\n\n- `v3` missing";
+	const s = await agentCrb({
+		scenario: {
+			agent: AGENT,
+			answers: [{ text: `Ask:\n\n\`\`\`comment\n${md}\n\`\`\`` }],
+		},
+	});
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 3, "Anything to ask the author?");
+	const preview = box(card).getByTestId("comment-preview");
+	await expect(preview.locator("strong")).toHaveText("only");
+	await expect(preview.locator("li code")).toHaveText("v3");
+	const toggle = box(card).getByTestId("preview-toggle");
+	for (const name of ["Write", "Preview"]) {
+		const b = toggle.getByRole("button", { name });
+		const r = await b.boundingBox();
+		expect(r?.width ?? 0).toBeGreaterThanOrEqual(40);
+		expect(r?.height ?? 0).toBeGreaterThanOrEqual(40);
+	}
+	await expect(toggle.getByRole("button", { name: "Preview" })).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	if (isMobile) await expectNoPageOverflow(page);
+	// Short content: switching never moves what's below (the button).
+	const text = await write(card);
+	await expect(text).toHaveValue(md);
+	await text.fill("Short _one_");
+	const before = await addButton(card).boundingBox();
+	await toggle.getByRole("button", { name: "Preview" }).click();
+	await expect(preview.locator("em")).toHaveText("one");
+	const after = await addButton(card).boundingBox();
+	expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeLessThanOrEqual(1);
+	if (isMobile) await expectNoPageOverflow(page);
+	await addButton(card).click();
+	await expect(box(card)).toContainText("Posted");
+	const [t] = storedThreads(p);
+	expect(t?.bodies[0]).toContain("Short _one_");
 });
