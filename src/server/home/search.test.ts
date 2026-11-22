@@ -56,6 +56,30 @@ describe("parseQuery", () => {
 		expect(parseQuery("acme/api 7")).toEqual(pr);
 	});
 
+	it("a bare number, # or not, is a number; 0 or 10 digits are free text", () => {
+		for (const q of ["123", "#123", " 123 "]) {
+			expect(parseQuery(q), q).toEqual({
+				kind: "number",
+				number: 123,
+				text: q.trim(),
+				words: [q.trim()],
+			});
+		}
+		expect(parseQuery("0")).toMatchObject({ kind: "free" });
+		expect(parseQuery("1234567890")).toMatchObject({ kind: "free" });
+		// Only digits reach gh: anything else is free text.
+		for (const q of ["#12a", "12 a", "1) { x }", "#-1", "1.5", "１２"]) {
+			expect(parseQuery(q), q).toMatchObject({ kind: "free" });
+		}
+		expect(parseQuery("acme/api#5")).toEqual({
+			kind: "pr",
+			owner: "acme",
+			repo: "api",
+			number: 5,
+		});
+		expect(parseQuery("acme/api 5")).toMatchObject({ kind: "pr", number: 5 });
+	});
+
 	it("anything else is free text; a repo without the space too", () => {
 		expect(parseQuery("Login fix")).toEqual({
 			kind: "free",
@@ -81,7 +105,12 @@ afterEach(async () => {
 
 async function setup(
 	started: StartedReview[] = [],
-	options: { now?: () => number; maxRepoPages?: number } = {},
+	options: {
+		now?: () => number;
+		maxRepoPages?: number;
+		/** The view's repos (acme/api, the one Home reads, by default). */
+		viewRepos?: string[];
+	} = {},
 ) {
 	fx = createHomeFixture({
 		repos: {
@@ -118,6 +147,17 @@ async function setup(
 					}),
 				],
 			},
+			"acme/web": {
+				prs: [
+					homePr({
+						repo: "acme/web",
+						number: 1,
+						title: "Web one",
+						author: "dana",
+						updatedAt: iso(T0 - 2000),
+					}),
+				],
+			},
 			"other/tool": {
 				prs: [
 					homePr({
@@ -138,8 +178,9 @@ async function setup(
 			{ name: "acme/api", relation: "ORGANIZATION_MEMBER" },
 		],
 	});
+	const repos = options.viewRepos ?? ["acme/api"];
 	const config: HomeConfig = {
-		views: [{ name: "My PRs", repos: ["acme/api"] }],
+		views: [{ name: "My PRs", repos }],
 		refresh: { minutes: 2 },
 	};
 	const home = new HomeService({
@@ -151,8 +192,17 @@ async function setup(
 	});
 	await home.view();
 	await home.repo("acme", "api", { fresh: true });
+	viewsOf.set(home, repos);
 	return { home, search: new HomeSearch(home, options) };
 }
+
+/** Each setup's view repos, which a test may change (read on every view). */
+const viewsOf = new WeakMap<HomeService, string[]>();
+const viewOf = (home: HomeService) => {
+	const repos = viewsOf.get(home);
+	if (!repos) throw new Error("not a setup home");
+	return repos;
+};
 
 /** Asks until the GitHub search is in. */
 async function settle(search: HomeSearch, q: string): Promise<SearchResult> {
@@ -398,6 +448,143 @@ describe("HomeSearch", () => {
 		);
 		expect(prIds(outside)).toEqual(["other/tool#9"]);
 		expect(outside.scope).toBe("other/tool");
+	});
+});
+
+const started = (repo: string, at: number): StartedReview => {
+	const [owner = "", name = ""] = repo.split("/");
+	return {
+		owner,
+		repo: name,
+		number: 1,
+		id: "01jbaaaaaaaaaaaaaaaaaaaaaa",
+		pinnedHead: null,
+		head: "1".padStart(40, "0"),
+		asOf: null,
+		coverage: { done: 0, total: 1, unit: "lines" },
+		lastActedAt: iso(at),
+	};
+};
+const numberedIds = (r: SearchResult) =>
+	(r.numbered?.prs ?? []).map((p) => `${p.owner}/${p.repo}#${p.number}`);
+/** The repos of each PR-details read in `log` (a query spans lines), in query order. */
+const detailReads = (log: string) =>
+	log
+		.split(/^(?=api graphql)/m)
+		.map((call) =>
+			[
+				...call.matchAll(
+					/\br\d+: repository\(owner: "([^"]*)", name: "([^"]*)"\)/g,
+				),
+			].map((m) => `${m[1]}/${m[2]}`),
+		)
+		.filter((repos) => repos.length > 0);
+
+describe("HomeSearch, a bare number", () => {
+	it("a known PR answers at once; the other repos are one background read; a repo without it shows nothing", async () => {
+		const { search } = await setup([started("other/tool", T0)], {
+			viewRepos: ["acme/api", "acme/web"],
+		});
+		const before = fx?.ghLog().length ?? 0;
+		const first = await search.search("1");
+		expect(first.numbered).toMatchObject({ number: 1, pending: true });
+		expect(numberedIds(first)).toEqual(["acme/api#1"]);
+		expect(first.pending).toBe(true);
+		expect(first.repos).toEqual([]);
+		const done = await settle(search, "1");
+		expect(done.numbered?.pending).toBe(false);
+		// In repo order; other/tool has no #1.
+		expect(numberedIds(done)).toEqual(["acme/api#1", "acme/web#1"]);
+		expect(done.numbered?.prs[1]).toMatchObject({
+			title: "Web one",
+			author: { login: "dana" },
+			state: "OPEN",
+		});
+		expect(done.error).toBeUndefined();
+		const reads = detailReads(fx?.ghLog().slice(before) ?? "");
+		expect(reads).toEqual([["acme/web", "other/tool"]]);
+		// Asked again: cached, no new read.
+		await search.search("#1");
+		expect(detailReads(fx?.ghLog().slice(before) ?? "")).toHaveLength(1);
+		// Never GitHub's search, never the viewer's repos.
+		expect(fx?.ghLog().slice(before)).not.toMatch(/search prs|repositories\(/);
+	});
+
+	it("#n and n alike; title matches below, without the numbered PRs", async () => {
+		const { search } = await setup();
+		for (const q of ["2", "#2"]) {
+			const r = await search.search(q);
+			expect(numberedIds(r), q).toEqual(["acme/api#2"]);
+			expect(r.numbered?.pending, q).toBe(false);
+			expect(r.pending, q).toBe(false);
+		}
+		// No title holds "#2": nothing below.
+		expect(prIds(await search.search("#2"))).toEqual([]);
+	});
+
+	it("candidates: the view's repos, then recent reviews' newest first, deduplicated, at most 10", async () => {
+		const reviews = [
+			started("acme/api", T0),
+			...Array.from({ length: 12 }, (_, i) =>
+				started(`r/x${i}`, T0 - (i + 1) * 1000),
+			).reverse(),
+		];
+		const { search } = await setup(reviews, {
+			viewRepos: ["acme/api", "acme/web"],
+		});
+		const before = fx?.ghLog().length ?? 0;
+		await settle(search, "77");
+		const reads = detailReads(fx?.ghLog().slice(before) ?? "");
+		expect(reads).toHaveLength(1);
+		expect(reads[0]).toEqual([
+			"acme/api",
+			"acme/web",
+			...Array.from({ length: 8 }, (_, i) => `r/x${i}`),
+		]);
+	});
+
+	it("a snoozed PR comes flagged", async () => {
+		const { home, search } = await setup();
+		await home.annotate("acme", "api", 1, {
+			op: "snooze",
+			until: iso(T0 + 3_600_000),
+			wakeOnActivity: false,
+		});
+		const r = await search.search("1");
+		expect(r.numbered?.prs[0]?.hidden).toBe("snoozed");
+	});
+
+	it("a PR read in the background comes flagged too", async () => {
+		// Snoozed while acme/web was in the view, then the view drops it: a
+		// recent review's repo, read in the background.
+		const { home, search } = await setup([started("acme/web", T0)], {
+			viewRepos: ["acme/api", "acme/web"],
+		});
+		await home.repo("acme", "web", { fresh: true });
+		await home.annotate("acme", "web", 1, {
+			op: "snooze",
+			until: iso(T0 + 3_600_000),
+			wakeOnActivity: false,
+		});
+		viewOf(home).splice(1);
+		await home.view();
+		expect(home.knownPrs().some((f) => f.repo === "web")).toBe(false);
+		const first = await search.search("1");
+		expect(first.numbered?.pending).toBe(true);
+		const r = await settle(search, "1");
+		expect(numberedIds(r)).toEqual(["acme/api#1", "acme/web#1"]);
+		expect(r.numbered?.prs.map((p) => p.hidden)).toEqual([null, "snoozed"]);
+	});
+
+	it("a failed read ends pending, with the error", async () => {
+		const { search } = await setup([], {
+			viewRepos: ["acme/api", "acme/web"],
+		});
+		fx?.scenario({ failGraphql: "pullRequest(number: 3)" });
+		const r = await settle(search, "3");
+		expect(r.numbered?.pending).toBe(false);
+		expect(r.error).toMatch(/went wrong/);
+		expect(numberedIds(r)).toEqual(["acme/api#3"]);
 	});
 });
 

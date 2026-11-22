@@ -15,6 +15,7 @@ import { fetchPrDetails, fetchViewerRepos } from "./prFacts.js";
 export type ParsedQuery =
 	| { kind: "pr"; owner: string; repo: string; number: number }
 	| { kind: "scoped"; owner: string; repo: string; words: string[] }
+	| { kind: "number"; number: number; text: string; words: string[] }
 	| { kind: "free"; text: string; words: string[] };
 
 const SCOPE =
@@ -31,6 +32,15 @@ export function parseQuery(q: string): ParsedQuery {
 		if ("owner" in pr) return { kind: "pr", ...pr };
 	} catch {
 		// Not a PR on its own.
+	}
+	const n = NUMBER.exec(text);
+	if (n && Number(n[1]) >= 1) {
+		return {
+			kind: "number",
+			number: Number(n[1]),
+			text: text.toLowerCase(),
+			words: wordsOf(text),
+		};
 	}
 	const scoped = SCOPE.exec(q.trimStart());
 	if (scoped) {
@@ -207,12 +217,63 @@ export class HomeSearch {
 	 * from one inbox read per repo (never one per match).
 	 */
 	async #finish(prs: Pr[], known: ReadonlyMap<string, PrFacts>): Promise<Pr[]> {
-		const shown = prs.sort(byRank).slice(0, MAX_PRS);
+		return this.#flag(prs.sort(byRank).slice(0, MAX_PRS), known);
+	}
+
+	/** `shown` flagged hidden from one inbox read per repo. */
+	async #flag(shown: Pr[], known: ReadonlyMap<string, PrFacts>): Promise<Pr[]> {
 		const facts = shown
 			.map((p) => known.get(prSlug(p)))
 			.filter((f): f is PrFacts => f !== undefined);
 		const hidden = await this.#home.hiddenOfMany(facts);
 		return shown.map((p) => ({ ...p, hidden: hidden.get(prSlug(p)) ?? null }));
+	}
+
+	/**
+	 * Where a bare number is looked for: the view's repos, then those of
+	 * recent reviews (newest first), MAX_REPOS of them. Never the viewer's
+	 * whole repo list (a read per repo) nor GitHub's public search.
+	 */
+	#numberRepos(viewRepos: readonly string[]): string[] {
+		const recent = [...this.#home.startedReviews()]
+			.sort((a, b) => Date.parse(b.lastActedAt) - Date.parse(a.lastActedAt))
+			.map((st) => `${st.owner}/${st.repo}`.toLowerCase());
+		return [...new Set([...viewRepos, ...recent])].slice(0, MAX_REPOS);
+	}
+
+	/**
+	 * PR `number` in each candidate repo: known ones at once, the rest in
+	 * one background read; a repo without it shows nothing. In repo order.
+	 */
+	async #numbered(
+		number: number,
+		viewRepos: readonly string[],
+		known: Map<string, PrFacts>,
+	): Promise<{ prs: Pr[]; pending: boolean; error?: string }> {
+		const repos = this.#numberRepos(viewRepos);
+		const unknown = repos.filter((r) => !known.has(`${r}#${number}`));
+		let pending = false;
+		let error: string | undefined;
+		if (unknown.length > 0) {
+			const ids = unknown.map((r) => {
+				const [owner = "", repo = ""] = r.split("/");
+				return { owner, repo, number };
+			});
+			const read = this.#background(`num:${number}:${unknown.join(",")}`, () =>
+				fetchPrDetails(ids),
+			);
+			pending = read.pending;
+			error = read.error;
+			for (const f of read.result ?? []) {
+				const slug = prSlug(f);
+				if (!known.has(slug)) known.set(slug, f);
+			}
+		}
+		const prs = repos
+			.map((r) => known.get(`${r}#${number}`))
+			.filter((f): f is PrFacts => f !== undefined)
+			.map(asPr);
+		return { prs: await this.#flag(prs, known), pending, error };
 	}
 
 	/**
@@ -283,6 +344,32 @@ export class HomeSearch {
 			return withError(
 				{ repos: [], prs, scope, pending, reposPending: false },
 				error,
+			);
+		}
+		if (parsed.kind === "number") {
+			// The number's PRs first; title matches below (a title may say
+			// "123"). No Repos group: a repo name holding a number is rarely
+			// what a bare number means.
+			const { number, words } = parsed;
+			const found = await this.#numbered(number, viewRepos, known);
+			const shown = new Set(found.prs.map(prSlug));
+			const prs = await this.#finish(
+				all
+					.filter((f) => matches(f.title, words))
+					.map(asPr)
+					.filter((p) => !shown.has(prSlug(p))),
+				known,
+			);
+			return withError(
+				{
+					repos: [],
+					prs,
+					scope: null,
+					numbered: { number, prs: found.prs, pending: found.pending },
+					pending: found.pending,
+					reposPending: false,
+				},
+				found.error,
 			);
 		}
 		const { text, words } = parsed;
