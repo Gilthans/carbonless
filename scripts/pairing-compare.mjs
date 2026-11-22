@@ -37,7 +37,7 @@ const { buildSnapshot, loadFileHunks } = await load(
 );
 const { hunkView } = await load("../src/web/files/whitespace.ts");
 const { layoutRows } = await load("../src/web/files/sideBySide.ts");
-const { lineSimilarity } = await load("../src/web/files/linePairing.ts");
+const { lineSimilarity } = await load("../src/shared/linePairing.ts");
 const { wordMarks } = await load("../src/web/files/wordDiff.ts");
 const lib = await load("./pairing-compare-lib.ts");
 const { esc, markup } = lib;

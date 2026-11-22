@@ -128,6 +128,28 @@ patch set's lines in the "Original Reviewed Change" box, never the lines
 it sits on now (those are the diff's own row); while that code loads, its
 frame.
 
+## A carried thread follows its statement, or says it can't
+
+When the lines a thread was written on were replaced since (a hunk of
+the trace's diff removes them and adds others), the thread goes to the
+replacing line that resembles it: the side-by-side view's similarity
+pairing (`src/shared/linePairing.ts`, whitespace not counted, so a
+re-indented line is the same line) of the hunk's removed and added lines,
+then of the hunk with its neighbours across a few lines that git cut it
+at (a `}`, a blank line, one other line, never a line opening a block such
+as a function header). A line the pairing leaves alone still goes to the
+replacing line it most resembles between its neighbours' partners, when
+that is close (two lines merged into one). It shows as "changed since the
+review". Nothing replacing it resembles it: it is listed under its file as
+`deleted`, with the nearest line above, never put on whatever line took
+its place. When it can't be told, it is `rewritten`, also under its file:
+a pairing too large, a text that can't be read, a line with no word (a
+`}`, a blank line: its likeness says nothing), or two lines past its own
+hunk as like it as each other. A range maps to the span its surviving
+lines landed on. Owner, 2026-11-18 (CAR-95): reuse the side-by-side
+similarity; measured on a real review's threads with `pnpm score-carry`
+(`docs/thread-carry-corpus.md`).
+
 ## A thread with nothing to trace from sits on GitHub's line
 
 Thread placement traces each thread from the commit it was written on

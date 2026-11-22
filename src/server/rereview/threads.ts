@@ -197,12 +197,29 @@ function entryFrom(
 	return entry ? { path, entry } : null;
 }
 
-const mapperOf = (entry: DiffEntry | undefined): LineMapper =>
-	entry === undefined
-		? IDENTITY
-		: entry.status === "deleted"
-			? NONE
-			: createLineMapper(entry.hunks);
+/**
+ * One mapper per diff entry and old path, so every thread traced through
+ * the same diff shares the tracer's pairings (memoized on the mapper,
+ * CAR-95): an entry is one file between two commits, and with the path
+ * the thread reads it from, its texts are the same for every thread.
+ */
+const mappers = new WeakMap<DiffEntry, Map<string, LineMapper>>();
+
+function mapperOf(entry: DiffEntry | undefined, path = ""): LineMapper {
+	if (entry === undefined) return IDENTITY;
+	if (entry.status === "deleted") return NONE;
+	let byPath = mappers.get(entry);
+	if (!byPath) {
+		byPath = new Map();
+		mappers.set(entry, byPath);
+	}
+	let mapper = byPath.get(path);
+	if (!mapper) {
+		mapper = createLineMapper(entry.hunks);
+		byPath.set(path, mapper);
+	}
+	return mapper;
+}
 
 /**
  * One session's placer: memos of git's answers by OIDs (diffs between two
@@ -378,7 +395,7 @@ export class ThreadPlacer {
 						(pos.side === "RIGHT" ? newRight : newLeft)?.[pos.line - 1] ?? null,
 					diffs: {
 						ac: mapperOf(baseEntry?.entry),
-						bd: mapperOf(head?.entry),
+						bd: mapperOf(head?.entry, t.path),
 						cd: targetFile ? linesMapper(targetFile.clusters) : IDENTITY,
 						oldLineText: (pos) =>
 							(pos.side === "RIGHT" ? oldRight : oldLeft)?.[pos.line - 1] ??

@@ -121,6 +121,7 @@ export const NONE: LineMapper = {
 	newToOld: () => null,
 	hunkRemovingOld: () => null,
 	hunkAddingNew: () => null,
+	hunks: [],
 };
 
 export interface DiffEntry {
