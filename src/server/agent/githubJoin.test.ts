@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { AgentAnchor } from "../../shared/agent.js";
 import type { ReviewThread } from "../../shared/types.js";
-import { joinGithub, orphanAnchor, resolveView } from "./githubJoin.js";
+import {
+	joinGithub,
+	joinRead,
+	orphanAnchor,
+	resolveView,
+} from "./githubJoin.js";
 import type { AgentThreadFold } from "./store.js";
 
 const H1 = "1".repeat(40);
@@ -142,6 +147,61 @@ describe("joinGithub", () => {
 		);
 		const out = joinGithub([line, file], [gh("T1", { resolved: true })]);
 		expect(out).toEqual([line, file]);
+	});
+});
+
+describe("a conversation joined to its posted comment's thread (CAR-236)", () => {
+	const asked: AgentAnchor = {
+		subject: "line",
+		path: "src/a.ts",
+		commit: H1,
+		side: "RIGHT",
+		line: 12,
+		startSide: "RIGHT",
+		startLine: 10,
+		startCol: 4,
+		endCol: 9,
+	};
+	const joined = (threads: string[], over: Partial<AgentThreadFold> = {}) =>
+		fold(threadAnchor({ thread: threads[0] as string }), {
+			joined: { asked, threads },
+			...over,
+		});
+
+	it("on its live GitHub thread: resolved as GitHub says", () => {
+		const t = joined(["T1"], { resolved: false });
+		const [out] = joinGithub([t], [gh("T1", { resolved: true })]);
+		expect(out).toMatchObject({
+			anchor: threadAnchor({ thread: "T1" }),
+			resolved: true,
+		});
+		expect(out).not.toHaveProperty("orphaned");
+	});
+
+	it("its GitHub thread gone: back on the lines it was asked on, exactly", () => {
+		const t = joined(["T1"], { resolved: true });
+		for (const threads of [[], [gh("T1", { unavailable: "deleted" })]]) {
+			const [out] = joinGithub([t], threads);
+			expect(out?.anchor).toEqual(asked);
+			// Its own resolved state, as before it joined.
+			expect(out).toMatchObject({ orphaned: true, resolved: true });
+		}
+	});
+
+	it("the first gone, a later posted thread live: on that one", () => {
+		const t = joined(["T1", "T2"]);
+		const [out] = joinGithub([t], [gh("T2", { resolved: true })]);
+		expect(out?.anchor).toEqual(threadAnchor({ thread: "T2" }));
+		expect(out).toMatchObject({ resolved: true });
+		expect(out).not.toHaveProperty("orphaned");
+	});
+
+	it("GitHub unreadable: shown on the lines it was asked on, flagged unknown", async () => {
+		const t = joined(["T1"]);
+		const [out] = await joinRead([t], () => Promise.reject(new Error("502")));
+		expect(out?.anchor).toEqual(asked);
+		expect(out?.githubUnknown).toBe(true);
+		expect(out).not.toHaveProperty("orphaned");
 	});
 });
 

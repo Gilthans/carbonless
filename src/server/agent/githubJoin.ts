@@ -1,6 +1,6 @@
 import type { AgentAnchor, AgentView } from "../../shared/agent.js";
 import type { ReviewThread } from "../../shared/types.js";
-import type { AgentThreadFold } from "./store.js";
+import { type AgentThreadFold, joinedAnchor } from "./store.js";
 
 /**
  * Thread conversations (an agent thread on a GitHub review thread) as the
@@ -28,8 +28,10 @@ export function liveGithubThreads(
  * conversation is resolved exactly when its GitHub thread is (its own
  * agent-thread-resolved events count for nothing); one whose GitHub
  * thread is gone (not listed, or deleted) is an orphan: a span thread on
- * its recorded lines, resolved by its own events. Span threads and the
- * review conversation pass through unchanged.
+ * its recorded lines, resolved by its own events. A conversation joined
+ * to the thread its posted comment started (`joined`, CAR-236) is on the
+ * first of its threads still live; with none, an orphan back where it was
+ * asked. Span threads and the review conversation pass through unchanged.
  */
 export function joinGithub(
 	folds: readonly AgentThreadFold[],
@@ -38,6 +40,15 @@ export function joinGithub(
 	const live = liveGithubThreads(threads);
 	return folds.map((f) => {
 		if (f.anchor.subject !== "thread") return f;
+		if (f.joined) {
+			const { asked } = f.joined;
+			const on = f.joined.threads.find((id) => live.has(id));
+			const rt = on !== undefined ? live.get(on) : undefined;
+			if (on === undefined || !rt) {
+				return { ...f, anchor: asked, orphaned: true };
+			}
+			return { ...f, anchor: joinedAnchor(asked, on), resolved: rt.resolved };
+		}
 		const rt = live.get(f.anchor.thread);
 		if (rt) return { ...f, resolved: rt.resolved };
 		return { ...f, anchor: orphanAnchor(f.anchor), orphaned: true };
@@ -48,7 +59,9 @@ export function joinGithub(
  * The folds joined with the threads `read` gives, read only when a thread
  * conversation is among them. When GitHub can't be read, thread
  * conversations stay live (where their thread is), flagged
- * `githubUnknown`, with their own stored `resolved`: never a made-up one.
+ * `githubUnknown`, with their own stored `resolved`: never a made-up one;
+ * a joined one (CAR-236) shows where it was asked meanwhile, flagged too,
+ * so it shows somewhere and never posts a second thread (commentPlace).
  */
 export async function joinRead(
 	folds: AgentThreadFold[],
@@ -57,9 +70,11 @@ export async function joinRead(
 	if (!folds.some((f) => f.anchor.subject === "thread")) return folds;
 	const threads = await read().catch(() => null);
 	if (threads) return joinGithub(folds, threads);
-	return folds.map((f) =>
-		f.anchor.subject === "thread" ? { ...f, githubUnknown: true } : f,
-	);
+	return folds.map((f) => {
+		if (f.anchor.subject !== "thread") return f;
+		if (f.joined) return { ...f, anchor: f.joined.asked, githubUnknown: true };
+		return { ...f, githubUnknown: true };
+	});
 }
 
 /** The span anchor an orphan falls back to: line anchor on the recorded lines at `commit`, else a file anchor. */

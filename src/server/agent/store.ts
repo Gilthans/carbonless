@@ -47,6 +47,43 @@ export const agentThreadsRef = (reviewId: string, slug: string): string =>
 export interface AgentThreadFold extends Omit<AgentThread, "code"> {
 	/** The reviewer's clientId of the opening question. */
 	clientId?: string;
+	/**
+	 * A conversation asked on lines or a file that posted a ```comment block
+	 * as a new GitHub thread (CAR-236): it is that thread's conversation
+	 * (`anchor` is a thread anchor on the first, by when it was recorded).
+	 * `asked` is where it was asked (it shows there again if no thread of
+	 * `threads` is still on GitHub, or GitHub can't be read); `threads` the
+	 * GitHub threads its blocks started, in the order recorded. Derived on
+	 * read from `agent-comment-posted`: nothing more is stored.
+	 */
+	joined?: { asked: SpanAskedAnchor; threads: string[] };
+}
+
+/** Where a conversation that can join a GitHub thread was asked: lines or a file. */
+export type SpanAskedAnchor = Extract<
+	AgentAnchor,
+	{ subject: "line" | "file" }
+>;
+
+/** The thread anchor a conversation asked at `asked` has once it joins GitHub thread `thread`. */
+export function joinedAnchor(
+	asked: SpanAskedAnchor,
+	thread: string,
+): Extract<AgentAnchor, { subject: "thread" }> {
+	const { path, commit } = asked;
+	if (asked.subject === "file")
+		return { subject: "thread", thread, path, commit };
+	const { side, line, startSide, startLine } = asked;
+	return {
+		subject: "thread",
+		thread,
+		path,
+		commit,
+		side,
+		line,
+		startSide,
+		startLine,
+	};
 }
 
 /** Thrown for a seen mark on a message the thread doesn't hold (the app answers 400). */
@@ -218,6 +255,22 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 					...(m.posted ?? []),
 					{ block: e.block, url: e.github.url, at: iso(e.ts), text: e.text },
 				].sort((a, b) => a.block - b.block);
+				// Asked on lines or a file, its block started a GitHub thread:
+				// the conversation is that thread's (the first one's; a later
+				// one is a fallback should the first be gone). One another
+				// conversation already holds stays that one's.
+				if (!thread) break;
+				const gt = e.github.thread;
+				const a = thread.anchor;
+				if (a.subject === "line" || a.subject === "file") {
+					if (byGithub.has(gt)) break;
+					thread.joined = { asked: a, threads: [gt] };
+					thread.anchor = joinedAnchor(a, gt);
+					byGithub.set(gt, id);
+				} else if (thread.joined && !byGithub.has(gt)) {
+					thread.joined.threads.push(gt);
+					byGithub.set(gt, id);
+				}
 				break;
 			}
 			case "agent-thread-linked":
