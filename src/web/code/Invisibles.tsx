@@ -33,8 +33,12 @@ export const useShowInvisibles = (): boolean => showInvisibles.use();
 const GLYPH =
 	"not-italic before:content-[attr(data-glyph)_/_''] [&>span]:text-[0px] [&>span]:leading-[0] [&>span]:[unicode-bidi:isolate]";
 const MARK = `text-invisible ${GLYPH}`;
-/** An escape (a character that prints as nothing) sits on a chip of its color: a mark, not text. */
-const ESCAPE = "rounded-sm bg-invisible/15 text-invisible";
+/**
+ * An escape (a character that prints as nothing) sits on a faint chip: a
+ * mark, not text. Its label is `muted`, never harder to see than the
+ * `faint` it had (principle 2; theme.test.ts).
+ */
+const ESCAPE = "rounded-sm bg-invisible/8 text-muted";
 const BIDI = "rounded-sm bg-warn/15 text-warn";
 
 function Marker(props: { piece: Exclude<Piece, { kind: "text" }> }): ReactNode {

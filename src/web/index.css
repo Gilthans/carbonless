@@ -40,11 +40,11 @@
 	--color-faint: #9396b9;
 	--color-label: #a397f7;
 	/*
-	 * Hidden-character marks in code (src/web/code/Invisibles.tsx): a quiet
-	 * stone grey, under faint and the comment color, and of no hue of theirs
-	 * (theme.test.ts). Not for text.
+	 * Whitespace marks in code (src/web/code/Invisibles.tsx): a quiet stone
+	 * grey, under faint and the comment color, and of no hue of theirs
+	 * (theme.test.ts); an escape's chip at 8%. Not for text.
 	 */
-	--color-invisible: #827f79;
+	--color-invisible: #938f89;
 
 	/* Interaction: links, focus rings, the pointer's cluster. */
 	--color-accent: #8fa6ff;

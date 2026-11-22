@@ -184,14 +184,16 @@ test("code shows invisible characters, and copying gives back the original", asy
 
 	// Marks have their own quiet color, upright: never the comments' italic
 	// blue-grey, on context, removed and added rows alike.
-	const invisible = await page.evaluate(() => {
-		const probe = document.createElement("span");
-		probe.className = "text-invisible";
-		document.body.append(probe);
-		const color = getComputedStyle(probe).color;
-		probe.remove();
-		return color;
-	});
+	const colorOf = (className: string) =>
+		page.evaluate((name) => {
+			const probe = document.createElement("span");
+			probe.className = name;
+			document.body.append(probe);
+			const color = getComputedStyle(probe).color;
+			probe.remove();
+			return color;
+		}, className);
+	const invisible = await colorOf("text-invisible");
 	for (const text of ["kept", "gone", "if (a)"]) {
 		const cell = codeCell(section, text).first();
 		await expect(cell.locator("[data-inv]").first()).toBeVisible();
@@ -204,7 +206,11 @@ test("code shows invisible characters, and copying gives back the original", asy
 				...td.querySelectorAll<HTMLElement>('span[style*="italic"]'),
 			].find((s) => s.textContent?.includes("//"));
 			return {
-				marks: [...td.querySelectorAll('[data-inv="space"], [data-inv="tab"]')]
+				marks: [
+					...td.querySelectorAll(
+						'[data-inv="space"], [data-inv="tab"], [data-inv="eol"]',
+					),
+				]
 					.filter((m) => getComputedStyle(m, "::before").content !== "none")
 					.map((m) => {
 						const s = getComputedStyle(m, "::before");
@@ -226,6 +232,27 @@ test("code shows invisible characters, and copying gives back the original", asy
 			expect(mark.color, text).not.toBe(look.comment?.color);
 		}
 	}
+
+	// An escape (prints as nothing) stays easy to see: a muted label, upright,
+	// on a chip; a bidi control keeps its warn.
+	const muted = await colorOf("text-muted");
+	const warn = await colorOf("text-warn");
+	const look = (kind: string) =>
+		section
+			.locator(`[data-inv="${kind}"]`)
+			.first()
+			.evaluate((el) => {
+				const s = getComputedStyle(el, "::before");
+				return {
+					color: s.color,
+					italic: s.fontStyle === "italic",
+					chip: getComputedStyle(el).backgroundColor,
+				};
+			});
+	const escaped = await look("escape");
+	expect(escaped).toMatchObject({ color: muted, italic: false });
+	expect(escaped.chip).not.toBe("rgba(0, 0, 0, 0)");
+	expect((await look("bidi")).color).toBe(warn);
 
 	// Hidden characters off: whitespace and endings go, what would print as nothing stays.
 	await (await hiddenChars(page)).click();

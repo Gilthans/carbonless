@@ -689,41 +689,49 @@ describe("diff colors", () => {
 	it("hidden-character marks are quieter than code and apart from comments, yet show on every line", () => {
 		// The owner (2026-11-22): "the hidden characters have the same design
 		// as comments. I'd like them to be more subtle, and distinct from code
-		// comments". Marks (src/web/code/Invisibles.tsx) take `invisible`:
-		// non-text glyphs, so 3:1 (WCAG 1.4.11) on every row under every wash,
-		// and under the comment color and `faint` on each.
+		// comments". Whitespace marks (spaces, tabs, line endings;
+		// src/web/code/Invisibles.tsx) take `invisible`: non-text glyphs, so
+		// 3:1 (WCAG 1.4.11) on every background a mark sits on, under every
+		// wash; inside a word tint (which itself says "changed") 2.5:1, 2:1
+		// under a wash. And under the comment color and `faint` on each row.
 		const mark = token("invisible");
-		for (const bg of CODE_BGS) {
-			for (const wash of [0, 0.08, 0.1]) {
-				const back = wash ? over(token("accent"), wash, token(bg)) : token(bg);
-				expect(
-					contrast(mark, back),
-					`invisible on ${bg} under accent/${wash * 100}`,
-				).toBeGreaterThanOrEqual(3);
-			}
+		/** Every background a mark can sit on, under no wash, a thread's and a pick's. */
+		const PLAIN = [...CODE_BGS, "span", "find"];
+		const WORD = ["add-word", "del-word", "add-word-done", "del-word-done"];
+		const backs = (names: string[]) =>
+			names.flatMap((bg) =>
+				WASHES.map((wash) => ({
+					name: `${bg} under accent/${wash * 100}`,
+					wash,
+					color: washed(token(bg), wash),
+				})),
+			);
+		for (const back of backs(PLAIN))
+			expect(
+				contrast(mark, back.color),
+				`invisible on ${back.name}`,
+			).toBeGreaterThanOrEqual(3);
+		for (const back of backs(WORD))
+			expect(
+				contrast(mark, back.color),
+				`invisible on ${back.name}`,
+			).toBeGreaterThanOrEqual(back.wash ? 2 : 2.5);
+		for (const bg of CODE_BGS)
 			for (const louder of [SYNTAX.comment, token("faint"), token("code-ink")])
 				expect(
 					contrast(mark, token(bg)),
 					`invisible quieter than ${louder} on ${bg}`,
 				).toBeLessThan(contrast(louder, token(bg)));
-			// An escape's chip (invisible/15) keeps its label at 3:1.
-			const chip = over(mark, 0.15, token(bg));
+		// An escape (a character that prints as nothing: principle 2) never
+		// gets easier to miss: its `muted` label on its invisible/8 chip reads
+		// at least as well as the `faint` label it had, on every background.
+		for (const back of backs([...PLAIN, ...WORD])) {
+			const chip = over(mark, 0.08, back.color);
 			expect(
-				contrast(mark, chip),
-				`invisible on its chip over ${bg}`,
-			).toBeGreaterThanOrEqual(3);
+				contrast(token("muted"), chip),
+				`escape on its chip over ${back.name}`,
+			).toBeGreaterThanOrEqual(contrast(token("faint"), back.color));
 		}
-		// A changed blank inside a word mark still shows through the tint.
-		for (const word of [
-			"add-word",
-			"del-word",
-			"add-word-done",
-			"del-word-done",
-		])
-			expect(
-				contrast(mark, token(word)),
-				`invisible on ${word}`,
-			).toBeGreaterThanOrEqual(2);
 		// Not the comment's (or faint's) blue-grey: a near-neutral stone of
 		// another hue, so a mark never reads as commented code.
 		for (const other of [SYNTAX.comment, token("faint")]) {
