@@ -47,6 +47,11 @@ export interface StartedRecord {
 export interface NewThreadTarget extends ThreadWriteTarget {
 	/** The snapshot's head: what a new comment's `commit` must be. */
 	head: string;
+	/**
+	 * The heads of the review's patch sets: an `earlier` comment's
+	 * `commit` must be one of them (CAR-233).
+	 */
+	patchsetHeads: () => readonly string[];
 	/** Whether LEFT lines take comments (PrOverview.commentLeft). */
 	commentLeft: () => Promise<boolean>;
 	started: (clientId: string) => StartedRecord | undefined;
@@ -108,6 +113,17 @@ export function newThreadProblem(req: unknown): string | null {
 		(typeof r.agentThread !== "string" || !isLowerUlid(r.agentThread))
 	) {
 		return "agentThread must be an agent conversation's id";
+	}
+	if (!absent(r.earlier) && typeof r.earlier !== "boolean") {
+		return "earlier must be true or false";
+	}
+	if (
+		r.earlier === true &&
+		(r.subject !== "line" ||
+			r.side !== "RIGHT" ||
+			(!absent(r.startSide) && r.startSide !== "RIGHT"))
+	) {
+		return "A comment on an earlier patch set is on its new lines";
 	}
 	const lineFields = [r.startSide, r.startLine, r.side, r.line];
 	const cols = [r.startCol, r.endCol];
@@ -224,7 +240,17 @@ export async function startThread(
 			"invalid",
 		);
 	}
-	if (!record) {
+	// On an earlier patch set's commit on purpose (CAR-233): one of the
+	// review's patch sets, RIGHT lines (newThreadProblem); GitHub checks
+	// the lines are in that commit's diff. It starts no patch set.
+	const earlier = req.earlier === true;
+	if (!record && earlier && !target.patchsetHeads().includes(req.commit)) {
+		throw new WriteRefusedError(
+			"Not a patch set of this review: refresh to comment",
+			"stale",
+		);
+	}
+	if (!record && !earlier) {
 		if (req.commit !== target.head) {
 			throw new WriteRefusedError(
 				"The PR moved on since: refresh to comment on its new head",
@@ -248,10 +274,17 @@ export async function startThread(
 			);
 		}
 	}
+	if (!record && earlier && body.length > MAX_REPLY) {
+		const room = MAX_REPLY - (body.length - req.body.length);
+		throw new WriteRefusedError(
+			`A comment is at most ${room} characters`,
+			"invalid",
+		);
+	}
 	if (!record) {
 		// The patch set first, in its own transaction: the thread then lands
-		// on a started snapshot.
-		await target.startPatchset?.();
+		// on a started snapshot. Not for a comment on an earlier one.
+		if (!earlier) await target.startPatchset?.();
 		let posted: PostedComment;
 		try {
 			posted = await postThread(

@@ -286,6 +286,8 @@ describe("the engine", () => {
 							clusterKey: extraKey,
 							// Only PS1 had it: no line on the head (CAR-217).
 							baseNo: null,
+							// Its line on PS1's commit, where a comment on it goes (CAR-233).
+							psNo: 1,
 						},
 					],
 				},
@@ -467,6 +469,8 @@ describe("the engine", () => {
 						clusterKey: k30,
 						// PS1's own line, in neither base nor head (CAR-217).
 						baseNo: null,
+						// Its line on PS1's commit (CAR-233).
+						psNo: 30,
 					},
 					{ kind: "add", newNo: 30, text: "thirty!", clusterKey: k30 },
 					{ kind: "context", oldNo: 31, newNo: 31, text: "line 31" },
@@ -742,6 +746,71 @@ describe("the engine", () => {
 		expect(baseLines[1]).toBe("q");
 		for (const [text, , b] of removed) {
 			expect(baseLines[(b as number) - 1]).toBe(text);
+		}
+	});
+
+	it("rebased between patch sets, a since-view removed line only PS1 had carries its line on PS1's commit, an added line of PS1's diff (CAR-233)", async () => {
+		const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+		const text = (ls: string[]) => `${ls.join("\n")}\n`;
+		const fx = createGitFixture([
+			{ message: "base", files: { "a.txt": text(lines) } },
+		]);
+		try {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: fx.path,
+					encoding: "utf8",
+					stdio: "pipe",
+					env: testGitEnv(),
+				}).trim();
+			const commit = (message: string, content: string[]) => {
+				writeFileSync(join(fx.path, "a.txt"), text(content));
+				git("commit", "--quiet", "-am", message);
+				return git("rev-parse", "HEAD");
+			};
+			const b1 = fx.shas[0] as string;
+			// PS1 on B1: a line of its own after line 20 (PS1's line 21).
+			const ps1Lines = lines.flatMap((l) =>
+				l === "line 20" ? [l, "PS1's own"] : [l],
+			);
+			const h1 = commit("PR: its own line", ps1Lines);
+			// B2: master inserts three lines on top.
+			git("checkout", "--quiet", "--detach", b1);
+			const masterLines = ["master 1", "master 2", "master 3", ...lines];
+			const b2 = commit("base: three on top", masterLines);
+			// PS2 on B2: PS1's line dropped again, line 30 changed.
+			const h2 = commit(
+				"PR: line 30 instead",
+				masterLines.map((l) => (l === "line 30" ? "thirty" : l)),
+			);
+			const ps1 = await buildSnapshot(fx.path, b1, h1);
+			const r = await buildSnapshot(fx.path, b2, h2);
+			const traced = await traceRereview(
+				fx.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const { answer } = answerRereview(
+				traced,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const removed = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
+				(hk) =>
+					hk.lines
+						.filter((l) => l.kind === "del")
+						.map((l) => [l.text, l.oldNo, l.baseNo, l.psNo]),
+			);
+			// The virtual rebase numbers it 24 (three lines down); on PS1's
+			// commit it is 21. A base line carries no psNo.
+			expect(removed).toEqual([
+				["PS1's own", 24, null, 21],
+				["line 30", 34, 33, undefined],
+			]);
+		} finally {
+			fx.cleanup();
 		}
 	});
 

@@ -465,6 +465,61 @@ describe("the since view's removed rows: GitHub's line in every layout (CAR-217)
 		const full = cellLine(leftCell(2));
 		expect(full?.base).toBeUndefined();
 	});
+
+	/**
+	 * k1's removed line is a base line (7); g1's (old 4) only PS1 had, its
+	 * line on PS1's commit 14 (`psNo`, CAR-233).
+	 */
+	const earlierHunks: FileHunks = {
+		...sinceHunks,
+		hunks: sinceHunks.hunks.map((h) => ({
+			...h,
+			lines: h.lines.map((l) =>
+				l.kind !== "del"
+					? l
+					: l.oldNo === 2
+						? { ...l, baseNo: 7 }
+						: { ...l, baseNo: null, psNo: 14 },
+			),
+		})),
+	};
+	const PS1 = "e".repeat(40);
+
+	it("a line only PS1 had, in PS1's diff: its span is PS1's commit, RIGHT, its line there; mixed with a head line it is off (CAR-233)", async () => {
+		await shown(earlierHunks);
+		const only = cellLine(leftCell(4));
+		expect(only).toMatchObject({ line: 4, base: null, ps: 14 });
+		if (!only) throw new Error("no cell");
+		expect(noLineOf(only)).toBeNull();
+		expect(spanOfCells(only, only, "h", undefined, PS1)).toEqual({
+			path: "src/a.ts",
+			commit: PS1,
+			subject: "line",
+			startSide: "RIGHT",
+			startLine: 14,
+			side: "RIGHT",
+			line: 14,
+			startCol: null,
+			endCol: null,
+			earlier: true,
+		});
+		const whole = (from: Element, to: Element) => {
+			const r = document.createRange();
+			r.setStart(from, 0);
+			r.setEnd(to, to.childNodes.length);
+			return r;
+		};
+		const alone = spanOfRange(whole(leftCell(4), leftCell(4)), "h", PS1);
+		expect(alone?.noLine).toBeNull();
+		expect(alone?.span).toMatchObject({ commit: PS1, earlier: true, line: 14 });
+		// With a head line (k1's removed base line): off, "mixed".
+		const mixed = spanOfRange(whole(leftCell(2), leftCell(4)), "h", PS1);
+		expect(mixed?.noLine).toBe("mixed");
+		// PS1's head not known: off, never the head's commit.
+		expect(spanOfRange(whole(leftCell(4), leftCell(4)), "h")?.noLine).toBe(
+			"unknown",
+		);
+	});
 });
 
 describe("the since view's gaps", () => {

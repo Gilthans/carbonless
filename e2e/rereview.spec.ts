@@ -1327,10 +1327,12 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 	).toBeVisible();
 
 	// The since view (PS1 → the head): core.ts's rewritten line carries its
-	// thread, changed; the deleted line's thread is listed under the header.
+	// thread, changed; the deleted line's thread (on a line only PS1 had)
+	// sits on the removed row that shows that line (CAR-233). The full
+	// diff, which has no such row, lists it under the header.
 	const coreS = fileSection(page, "src/core.ts");
 	await coreS.getByRole("button", { name: "Expand file" }).click();
-	const checkCore = async () => {
+	const checkCore = async (since: boolean) => {
 		const rewritten = coreS
 			.getByTestId("diff-line")
 			.filter({ hasText: "core 5 reworked" });
@@ -1362,6 +1364,24 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 		);
 		await expect(card.getByRole("link", { name: "See on PS1" })).toBeVisible();
 		const row = unplacedRows(coreS);
+		if (since) {
+			await expect(row).toHaveCount(0);
+			const removed = coreS
+				.locator('tr[data-testid="diff-line"][data-kind="del"]')
+				.filter({ hasText: "core 30 changed" });
+			await expect(removed).toHaveAttribute("data-commented", "");
+			const on = removed.getByRole("button", { name: /comments? on old line/ });
+			await expect(on).toBeVisible();
+			if ((await on.getAttribute("aria-expanded")) !== "true") {
+				await on.click();
+			}
+			await expect(
+				coreS
+					.getByTestId("files-thread")
+					.filter({ hasText: "Is core 30 needed?" }),
+			).toBeVisible();
+			return;
+		}
 		await expect(row).toHaveCount(1);
 		await expect(row).toHaveAttribute("data-fate", "deleted");
 		// The fate in a sentence on the top row.
@@ -1394,10 +1414,23 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 		await expect(row.getByTestId("original-code-line")).toHaveCount(5);
 		await expect(row.getByTestId("near-line")).toHaveText("near 29");
 	};
-	await checkCore();
-	// Moves work in the since view too (principle 9): the handle is there.
-	await expect(unplacedRows(coreS).getByTestId("move-handle")).toHaveCount(1);
+	await checkCore(true);
+	// Moves work in the since view too (principle 9): the thread on its
+	// removed row has its handle.
+	await expect(
+		coreS
+			.getByTestId("files-thread")
+			.filter({ hasText: "Is core 30 needed?" })
+			.getByTestId("move-handle"),
+	).toHaveCount(1);
 	await expectNoPageOverflow(page);
+	// The full diff shows the rewritten one the same way, the deleted one
+	// under the header.
+	await page.keyboard.press("Control+Shift+[");
+	await expect(
+		node(page, "branch").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await checkCore(false);
 	if (isMobile) {
 		// At 360px: no page overflow, the sentence on one line.
 		const size = page.viewportSize();
@@ -1407,12 +1440,6 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 		expect((await fate.boundingBox())?.height ?? 99).toBeLessThan(24);
 		if (size) await page.setViewportSize(size);
 	}
-	// The full diff shows them the same way.
-	await page.keyboard.press("Control+Shift+[");
-	await expect(
-		node(page, "branch").getByRole("button", { name: "comparison base" }),
-	).toBeVisible();
-	await checkCore();
 	// A head that is no patch set yet takes moves too (CAR-139).
 	await expect(unplacedRows(coreS).getByTestId("move-handle")).toBeVisible(
 		GIT_WAIT,
@@ -1430,12 +1457,16 @@ test("threads: a rewritten line is changed with the code it was written on, a de
 	const row = unplacedRows(coreS);
 	const handle = row.getByTestId("move-handle");
 	await expect(handle).toBeVisible(GIT_WAIT);
-	// The since view keeps the row and its handle (principle 9: moves work
-	// there too); back in the full diff.
+	// The since view numbers its old side by the interdiff, no file's: no
+	// drag there; the thread sits on the removed row of its line (CAR-233).
+	// Back in the full diff.
 	await baseOn(page, "ps1", "]");
-	await expect(row).toHaveCount(1);
-	await expect(row).toContainText("Is core 30 needed?");
-	await expect(row.getByTestId("move-handle")).toHaveCount(1);
+	await expect(row).toHaveCount(0);
+	await expect(
+		coreS
+			.locator('tr[data-testid="diff-line"][data-kind="del"]')
+			.filter({ hasText: "core 30 changed" }),
+	).toHaveAttribute("data-commented", "");
 	await baseOn(page, "branch", "[");
 	await expect(handle).toBeVisible();
 	if (isMobile) {
@@ -3244,6 +3275,7 @@ const postedThreads = (p: Pr) =>
 							reviewThreads?: {
 								line: number;
 								diffSide: string;
+								first: { nodes: { originalCommit: { oid: string } }[] };
 								comments: { nodes: { body: string }[] };
 							}[];
 						};
@@ -3254,10 +3286,11 @@ const postedThreads = (p: Pr) =>
 	).map((t) => ({
 		line: t.line,
 		diffSide: t.diffSide,
+		commit: t.first.nodes[0]?.originalCommit.oid,
 		body: t.comments.nodes[0]?.body ?? "",
 	}));
 
-test("a comment on a line the since view shows removed goes on its base line: GitHub takes it there and it shows on its row; a line only PS1 had can't take one (CAR-217)", async ({
+test("a comment on a line the since view shows removed goes on its base line: GitHub takes it there and it shows on its row; one on a line only PS1 had goes on PS1's commit (CAR-217, CAR-233)", async ({
 	page,
 	pr,
 	startCrb,
@@ -3272,7 +3305,9 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 	const first = await expand(page, REMOVED);
 	await boxes(first).first().click();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	const ps1Head = p.head();
 	p.moveHead({ message: "PS2", files: { [REMOVED]: text(ps2Lines) } });
+	const head = p.head();
 	await page.reload();
 	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	await toast(page).getByRole("button", { name: "View" }).click();
@@ -3317,27 +3352,38 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 	await comment(30, "Why drop line 20?");
 	// PS1 46 is base 36: GitHub takes LEFT 36 (LEFT 46 is outside its diff).
 	await comment(46, "Why drop line 36?");
+	// PS1's own line is in neither the base nor the head: it goes on PS1's
+	// commit, its line there (RIGHT 61, an added line of PS1's diff).
+	await comment(61, "Why add this, then drop it?");
 	expect(postedThreads(p)).toEqual([
 		expect.objectContaining({
 			line: 20,
 			diffSide: "LEFT",
+			commit: head,
 			body: expect.stringContaining("Why drop line 20?"),
 		}),
 		expect.objectContaining({
 			line: 36,
 			diffSide: "LEFT",
+			commit: head,
 			body: expect.stringContaining("Why drop line 36?"),
 		}),
+		expect.objectContaining({
+			line: 61,
+			diffSide: "RIGHT",
+			commit: ps1Head,
+			body: expect.stringContaining("Why add this, then drop it?"),
+		}),
 	]);
-
-	// PS1's own line is in neither the base nor the head: no line on GitHub.
-	await pick(61);
-	const off = bar.getByRole("button", { name: "Comment" });
-	await expect(off).toHaveAttribute("aria-disabled", "true");
-	await expect(off).toHaveAccessibleDescription(
-		"Only in an earlier patch set: not in GitHub's diff",
+	// After a reload too, on its row.
+	await page.reload();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible(GIT_WAIT);
+	const again = fileSection(page, REMOVED);
+	await again.getByRole("button", { name: "Expand file" }).click();
+	const row61 = again.locator(
+		'tr[data-testid="diff-line"][data-kind="del"][data-old-no="61"]',
 	);
-	await off.click({ force: true });
-	await expect(since.getByTestId("new-thread")).toHaveCount(0);
-	expect(postedThreads(p)).toHaveLength(2);
+	await expect(row61).toHaveAttribute("data-commented", "", GIT_WAIT);
 });

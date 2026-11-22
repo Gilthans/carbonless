@@ -8,6 +8,7 @@ import {
 	commentAvailable,
 	describeSpan,
 	EARLIER_ONLY,
+	MIXED_COMMITS,
 	NO_GITHUB_LINE,
 	registerSelectionAction,
 	type SelectionContext,
@@ -134,9 +135,23 @@ describe("commentAvailable: a line only an earlier patch set had (CAR-217)", () 
 		expect(commentAvailable(left, ctx({ noLine: "earlier" }))).toBe(
 			EARLIER_ONLY,
 		);
-		expect(EARLIER_ONLY).toBe(
-			"Only in an earlier patch set: not in GitHub's diff",
+		expect(EARLIER_ONLY).toBe("Not in the earlier patch set's diff on GitHub");
+		// The earlier patch set's lines mixed with the head's (CAR-233).
+		expect(commentAvailable(left, ctx({ noLine: "mixed" }))).toBe(
+			MIXED_COMMITS,
 		);
+		expect(askAgentAvailable(left, ctx({ noLine: "mixed" }))).toBe(
+			MIXED_COMMITS,
+		);
+		// A span on the earlier patch set's commit (RIGHT lines there): on.
+		const onEarlier = span({
+			commit: "e".repeat(40),
+			earlier: true,
+			startSide: "RIGHT",
+			side: "RIGHT",
+		});
+		expect(commentAvailable(onEarlier, ctx({ commentLeft: false }))).toBe(true);
+		expect(askAgentAvailable(onEarlier, ctx())).toBe(true);
 		expect(
 			commentAvailable(span({ subject: "file" }), ctx({ noLine: "earlier" })),
 		).toBe(true);

@@ -145,6 +145,42 @@ export function shownThread(
 	return shown;
 }
 
+/** Copies of threads made on the since view's compared patch set's head (CAR-233). */
+const earlierCopies = new WeakMap<ReviewThread, ReviewThread>();
+
+/**
+ * The since view's threads made on its compared patch set's head
+ * (`earlierHead`) that the tracer hasn't placed yet (one just posted
+ * there, CAR-233): RIGHT line threads, as made on the viewed head (their
+ * anchor keeps their commit). placeThreads' `earlierPending` puts each on
+ * the removed row of its line, if it has one; none goes anywhere else.
+ */
+export function earlierPending(
+	threads: readonly ReviewThread[],
+	snapshotHead: string,
+	placements: Placements | null,
+	earlierHead: string | undefined,
+): ReviewThread[] {
+	if (earlierHead === undefined || earlierHead === snapshotHead) return [];
+	return threads.flatMap((t) => {
+		if (
+			t.commit !== earlierHead ||
+			t.subject !== "line" ||
+			t.anchor?.side !== "RIGHT" ||
+			t.anchor.startSide !== "RIGHT" ||
+			placements?.get(t.id) !== undefined
+		) {
+			return [];
+		}
+		let copy = earlierCopies.get(t);
+		if (copy?.commit !== snapshotHead) {
+			copy = { ...t, commit: snapshotHead };
+			earlierCopies.set(t, copy);
+		}
+		return [copy];
+	});
+}
+
 /** Every thread Files changed shows in the viewed snapshot's files (shownThread). */
 export function shownThreads(
 	threads: readonly ReviewThread[],
@@ -312,15 +348,57 @@ export function sinceLeft(
 }
 
 /**
+ * The since view's lines only the compared patch set had, on its commit
+ * (CAR-233): its head, and the since view's removed row (its own old
+ * number) of that commit's RIGHT line `n`, or null.
+ */
+export interface SinceEarlier {
+	head: string;
+	row: (n: number) => number | null;
+}
+
+/** The since view's SinceEarlier, from its hunks' removed rows (`psNo`). */
+export function sinceEarlier(
+	head: string,
+	hunks: readonly DisplayHunk[] | null | undefined,
+): SinceEarlier {
+	const rows = new Map<number, number>();
+	for (const h of hunks ?? []) {
+		for (const l of h.lines) {
+			if (l.psNo !== undefined && l.oldNo !== undefined) {
+				rows.set(l.psNo, l.oldNo);
+			}
+		}
+	}
+	return { head, row: (n) => rows.get(n) ?? null };
+}
+
+/**
  * A span as GitHub names it (LEFT in the base), on the since view's rows
  * through `left` (SinceLeft); null when its end line has no row there. A
  * start line with none starts the range at its end. Without `left` (any
- * other view), the span as it is.
+ * other view), the span as it is. A span on the compared patch set's
+ * commit (`earlier`, CAR-233) is its RIGHT lines there, on the removed
+ * rows that show them (`early`); none without them.
  */
-export function onSinceRows<A extends SpanRange>(
+export function onSinceRows<A extends SpanRange & { earlier?: boolean }>(
 	span: A,
 	left: SinceLeft | undefined,
+	early?: SinceEarlier,
 ): A | null {
+	if (span.earlier) {
+		if (!left || !early) return null;
+		const end = span.side === "RIGHT" ? early.row(span.line) : null;
+		if (end === null) return null;
+		const start = span.startSide === "RIGHT" ? early.row(span.startLine) : null;
+		return {
+			...span,
+			side: "LEFT",
+			line: end,
+			startSide: "LEFT",
+			startLine: start === null || start > end ? end : start,
+		};
+	}
 	if (!left) return span;
 	const at = (side: DiffSide, line: number) =>
 		side === "LEFT" ? left(line) : { side, line };
@@ -374,6 +452,20 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	 * shares its number.
 	 */
 	sinceLeft?: SinceLeft;
+	/**
+	 * The since view's lines only the compared patch set had (CAR-233):
+	 * spans marked `earlier`, and threads made on that patch set's head on
+	 * such a line (the tracer can't place them in the head), go on the
+	 * removed rows that show them.
+	 */
+	sinceEarlier?: SinceEarlier;
+	/**
+	 * The since view: threads made on its compared patch set's head that
+	 * the tracer hasn't placed (no placement yet), as made on the viewed
+	 * head (their anchor keeps their commit). Each goes on the removed row
+	 * of its RIGHT line, when it has one; else it isn't shown here.
+	 */
+	earlierPending?: readonly T[];
 }): FilePlacement<T> {
 	const placement: FilePlacement<T> = {
 		end: new Map(),
@@ -436,7 +528,7 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 
 	if (hunks && !args.noLines) {
 		spans.forEach((asked, i) => {
-			const span = onSinceRows(asked, args.sinceLeft);
+			const span = onSinceRows(asked, args.sinceLeft, args.sinceEarlier);
 			if (!span) return;
 			const endRow = rowAt.get(`${span.side}:${span.line}`);
 			if (endRow === undefined) return;
@@ -445,9 +537,49 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 		});
 	}
 
+	/**
+	 * Where a RIGHT thread made on the since view's compared patch set's
+	 * head goes (CAR-233): the removed row that shows its line, or null
+	 * (no such row: it goes as any other thread would).
+	 */
+	const earlierRow = (t: T) => {
+		const early = args.sinceEarlier;
+		const made = t.anchor as (SpanRange & { commit?: string }) | null;
+		if (!early || !hunks || args.noLines) return null;
+		if (made?.commit !== early.head || made.side !== "RIGHT") return null;
+		if (made.startSide !== "RIGHT") return null;
+		const range = onSinceRows(
+			{ ...made, earlier: true },
+			args.sinceLeft,
+			early,
+		);
+		if (!range) return null;
+		const key: LineKey = `${range.side}:${range.line}`;
+		const row = rowAt.get(key);
+		return row === undefined ? null : { key, row, range };
+	};
+	// Threads made on the compared patch set's head that the tracer hasn't
+	// placed yet (one just posted there): on their removed rows when they
+	// have one; else not shown here until placed, as before (never as
+	// unplaced while that is pending).
+	for (const t of args.earlierPending ?? []) {
+		if (t.path !== args.path) continue;
+		const at = earlierRow(t);
+		if (!at) continue;
+		push(placement.end, at.key, t);
+		paint(at.range, at.row);
+	}
 	for (const t of mine) {
 		const traced = t.id === undefined ? undefined : args.placements?.get(t.id);
 		if (traced?.kind === "unplaced") {
+			// Made on the compared patch set's head on a line only it had
+			// (CAR-233): on the since view's removed row that shows it.
+			const at = earlierRow(t);
+			if (at) {
+				push(placement.end, at.key, t);
+				paint(at.range, at.row);
+				continue;
+			}
 			placement.fates.push({ thread: t, placement: traced });
 			continue;
 		}

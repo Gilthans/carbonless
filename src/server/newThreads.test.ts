@@ -353,6 +353,68 @@ describe("new threads", () => {
 		expect(between.code).toBe("gone");
 	});
 
+	it("on an earlier patch set's commit on purpose: RIGHT lines of that commit's diff, a patch set's head only, starting none (CAR-233)", async () => {
+		// No patch set yet: no commit is one.
+		const none = await refused(session.startThread(request({ earlier: true })));
+		expect(none.code).toBe("stale");
+		// PS1 on the head; then a comment marked earlier on it is taken.
+		const review = await session.review();
+		const key = review.files[0]?.clusters[0]?.key ?? "";
+		await session.setStates(review.revision, [{ key, state: "reviewed" }]);
+		expect(session.info().patchsets).toHaveLength(1);
+		// The PR moves on: PS1's head is an older commit of it now.
+		const ps1 = pr.head();
+		const later = pr.moveHead({ "later.txt": "one\ntwo\n" });
+		const { thread } = await session.startThread(
+			request({ earlier: true, commit: ps1, line: 2 }),
+		);
+		expect(thread.anchor).toMatchObject({ side: "RIGHT", line: 2 });
+		expect(stored().at(-1)).toMatchObject({
+			line: 2,
+			diffSide: "RIGHT",
+			first: {
+				nodes: [expect.objectContaining({ originalCommit: { oid: ps1 } })],
+			},
+		});
+		expect(session.info().patchsets).toHaveLength(1);
+		// Not in that commit's diff against its base, though in the head's
+		// (later.txt), or between its hunks: GitHub's 422 (the fake checks
+		// it) → gone.
+		for (const req of [
+			request({ earlier: true, commit: ps1, path: "later.txt", line: 1 }),
+			request({ earlier: true, commit: ps1, line: 15 }),
+		]) {
+			expect((await refused(session.startThread(req))).code).toBe("gone");
+		}
+		// The new head isn't a patch set: no earlier comment goes there.
+		expect(
+			(
+				await refused(
+					session.startThread(
+						request({
+							earlier: true,
+							commit: later,
+							path: "later.txt",
+							line: 1,
+						}),
+					),
+				)
+			).code,
+		).toBe("stale");
+		// Old lines, or not a patch set's head: refused, nothing posted.
+		const sent = posts().length;
+		const left = await refused(
+			session.startThread(request({ earlier: true, side: "LEFT", line: 26 })),
+		);
+		expect(left.code).toBe("invalid");
+		const stray = await refused(
+			session.startThread(request({ earlier: true, commit: pr.mergeBase })),
+		);
+		expect(stray.code).toBe("stale");
+		expect(posts()).toHaveLength(sent);
+		expect(none.code).toBe("stale");
+	});
+
 	it("a LEFT line counts in the base: one in a hunk is taken, one between hunks is GitHub's 422 → gone (CAR-217)", async () => {
 		// a.txt's base line 26 is removed (inside a hunk); base 15 is between hunks.
 		const { thread } = await session.startThread(

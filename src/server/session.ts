@@ -2155,6 +2155,7 @@ export class Session {
 		return {
 			...this.#writeTarget(),
 			head: snapshot.head,
+			patchsetHeads: () => this.#patchsets.map((p) => p.head),
 			commentLeft: () => this.commentLeft(snapshot),
 			startPatchset: this.#startHook(snapshot),
 			started: (clientId) => this.#started.get(clientId),

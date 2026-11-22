@@ -161,6 +161,7 @@ import {
 	type Placeable,
 	type Placements,
 	placeThreads,
+	sinceEarlier,
 	sinceLeft,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
@@ -178,6 +179,11 @@ export interface DiffThreads {
 	threads: ReviewThread[];
 	/** The tracer's placements by thread id; null (or none) until they are in. */
 	placements?: Placements | null;
+	/**
+	 * The since view: threads on its compared patch set's head not placed
+	 * yet (earlierPending, CAR-233), each on its removed row if it has one.
+	 */
+	earlierPending?: ReviewThread[];
 }
 
 /** The find's view of this file (FilesPage): marks per line, the current hit, and steps onto it. */
@@ -442,6 +448,8 @@ interface WsLine {
 	noNewline?: boolean;
 	/** Its removed line's, in the since view (DiffLine.baseNo). */
 	baseNo?: number | null;
+	/** Its removed line's, in the since view (DiffLine.psNo). */
+	psNo?: number;
 }
 
 /** What a diff row shows: a line as it is, or a whitespace-only pair. */
@@ -457,6 +465,7 @@ const rowLine = (row: DiffRow): RowLine => {
 		text: shown.text,
 		noNewline: shown.noNewline,
 		...(row.del?.baseNo === undefined ? {} : { baseNo: row.del.baseNo }),
+		...(row.del?.psNo === undefined ? {} : { psNo: row.del.psNo }),
 	};
 };
 
@@ -470,6 +479,7 @@ const sideLine = (line: DiffLine, ws: boolean): RowLine =>
 				text: line.text,
 				noNewline: line.noNewline,
 				...(line.baseNo === undefined ? {} : { baseNo: line.baseNo }),
+				...(line.psNo === undefined ? {} : { psNo: line.psNo }),
 			}
 		: line;
 
@@ -1421,6 +1431,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-old-no={line.oldNo}
 				data-new-no={line.newNo}
 				data-base-no={baseAttr(line.baseNo)}
+				data-ps-no={line.psNo}
 				data-landed={landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -1752,6 +1763,7 @@ function PairRow(
 				data-old-no={left?.line.oldNo}
 				data-new-no={right?.line.newNo}
 				data-base-no={baseAttr(left?.line.baseNo)}
+				data-ps-no={left?.line.psNo}
 				data-landed={phase === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -2504,21 +2516,34 @@ export function DiffBody(props: {
 	const mineNew = allItems.filter(
 		(i) => i.span.path === file.path && i.span.subject === "line",
 	);
+	// The since view's compared patch set's head: a comment on a line
+	// only it had goes there (CAR-233), shown on that line's removed row.
+	const sessionData = useQuery({ ...sessionQuery, enabled: false }).data;
+	const earlierHead =
+		props.from === undefined
+			? undefined
+			: sessionData?.patchsets.find((p) => p.number === props.from)?.head;
+	const onEarlier = (span: CodeSpan) =>
+		span.earlier === true &&
+		earlierHead !== undefined &&
+		span.commit === earlierHead;
 	// One carrying an agent conversation whose card is on screen: drawn
 	// in that card (pendingThread.ts), not again here.
 	const heldByCard = useHeldByCard();
 	const lineItems = mineNew.filter(
 		(i) =>
-			i.span.commit === snapshotHead &&
+			(i.span.commit === snapshotHead || onEarlier(i.span)) &&
 			shownOutsideCard(i, snapshotHead, heldByCard),
 	);
 	const orphanItems = snapshotHead
-		? mineNew.filter((i) => i.span.commit !== snapshotHead)
+		? mineNew.filter(
+				(i) => i.span.commit !== snapshotHead && !onEarlier(i.span),
+			)
 		: [];
 	const writer = useThreadWriter();
 
 	// The agent's side: its threads (their own read) and open composers.
-	const sessionNow = useQuery({ ...sessionQuery, enabled: false }).data;
+	const sessionNow = sessionData;
 	const sessionHead = sessionNow?.snapshotHead;
 	// FilesPage reads them (and the tree counts them); here, from the cache.
 	const agentThreads = useQuery({ ...agentThreadsQuery, enabled: false }).data
@@ -2540,10 +2565,12 @@ export function DiffBody(props: {
 		(c) => c.span.path === file.path && c.span.subject === "line",
 	);
 	const agentLineItems = agentMine.filter(
-		(c) => c.span.commit === agentHeadNow,
+		(c) => c.span.commit === agentHeadNow || onEarlier(c.span),
 	);
 	const agentOrphans = agentHeadNow
-		? agentMine.filter((c) => c.span.commit !== agentHeadNow)
+		? agentMine.filter(
+				(c) => c.span.commit !== agentHeadNow && !onEarlier(c.span),
+			)
 		: [];
 
 	// The since view numbers its old side in the compared patch set; a
@@ -2557,13 +2584,22 @@ export function DiffBody(props: {
 				: sinceLeft(file.clusters, hunks.data?.hunks),
 		[props.from, file.clusters, hunks.data],
 	);
+	const early = useMemo(
+		() =>
+			earlierHead === undefined
+				? undefined
+				: sinceEarlier(earlierHead, hunks.data?.hunks),
+		[earlierHead, hunks.data],
+	);
 	/** A span (GitHub's numbers) on this view's rows; null when none shows it. */
-	const onRows = <A extends SpanRange>(span: A): A | null =>
-		onSinceRows(span, left);
+	const onRows = <A extends SpanRange & { earlier?: boolean }>(
+		span: A,
+	): A | null => onSinceRows(span, left, early);
 	/** The key of the row a span ends on, as this view numbers it. */
 	const endKey = (span: CodeSpan): LineKey | null => {
 		if (span.side === undefined || span.line === undefined) return null;
 		const rows = onRows({
+			earlier: span.earlier,
 			startSide: span.startSide ?? span.side,
 			startLine: span.startLine ?? span.line,
 			side: span.side,
@@ -2584,6 +2620,8 @@ export function DiffBody(props: {
 				spans: lineItems.map((i) => i.span as SpanRange),
 				placements: props.threads.placements,
 				sinceLeft: left,
+				sinceEarlier: early,
+				earlierPending: props.threads.earlierPending,
 			})
 		: null;
 	// Written on a row that isn't shown (a gap): above the diff, never lost.
@@ -2668,6 +2706,7 @@ export function DiffBody(props: {
 		const rows =
 			span.subject === "line" && span.side && span.line !== undefined
 				? onRows({
+						earlier: span.earlier,
 						startSide: span.startSide ?? span.side,
 						startLine: span.startLine ?? span.line,
 						side: span.side,
@@ -2695,6 +2734,7 @@ export function DiffBody(props: {
 			return describeSpan(span);
 		}
 		const rows = onRows({
+			earlier: span.earlier,
 			startSide: span.startSide ?? span.side,
 			startLine: span.startLine ?? span.line,
 			side: span.side,
@@ -2796,6 +2836,7 @@ export function DiffBody(props: {
 				noLines: file.binary || file.submodule || linesHidden,
 				spans: agentLineItems.map((c) => c.span as SpanRange),
 				sinceLeft: left,
+				sinceEarlier: early,
 			})
 		: null;
 	const [openAgent, setOpenAgent] = useState<ReadonlySet<LineKey>>(
