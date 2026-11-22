@@ -941,6 +941,143 @@ describe("a cluster in pieces", () => {
 	});
 });
 
+describe("orphan lines: changed, unchanged since PS1, never reviewed there (CAR-216)", () => {
+	/**
+	 * k: base line 2 ("old") removed, new lines 2–3 added. The interdiff
+	 * shows new line 2; base line 2 and new line 3 are the orphans, each
+	 * a run of its own: base line 2 before line 2, line 3 after it.
+	 */
+	const k: ClusterView = {
+		key: "k",
+		kind: "lines",
+		oldStart: 2,
+		oldCount: 1,
+		newStart: 2,
+		newCount: 2,
+		removed: ["old"],
+		added: ["x", ""],
+		lines: 3,
+		state: "unreviewed",
+	};
+	const orphan = (l: DiffLine): DiffLine => ({ ...l, orphan: true });
+	const orphanHunks: FileHunks = {
+		newLineCount: 4,
+		hunks: [
+			{
+				oldStart: 1,
+				oldCount: 3,
+				newStart: 1,
+				newCount: 4,
+				lines: [
+					line("context", 1, 1, "a"),
+					orphan({
+						...line("del", undefined, undefined, "old", "k"),
+						baseNo: 2,
+					}),
+					line("add", undefined, 2, "x", "k"),
+					orphan(line("add", undefined, 3, "", "k")),
+					line("context", 2, 4, "d"),
+				],
+			},
+		],
+		pieces: [
+			{
+				hunk: 0,
+				line: 1,
+				key: "k",
+				owns: [[0, 1]],
+				old: [],
+				new: [],
+				orphan: true,
+			},
+			{ hunk: 0, line: 2, key: "k", owns: [[1, 2]], old: [], new: [[2, 3]] },
+			{
+				hunk: 0,
+				line: 3,
+				key: "k",
+				owns: [[2, 3]],
+				old: [],
+				new: [[3, 4]],
+				orphan: true,
+			},
+		],
+	};
+	const kindsOfK = new Map<string, KindEntry>([
+		["k", { key: "k", kind: "new" }],
+	]);
+
+	it("shows each as the change it is, at its place, with a box of its own and a chip naming the patch set", async () => {
+		renderBody({ clusters: [k], hunks: orphanHunks, from: 1, kinds: kindsOfK });
+		const boxes = await screen.findAllByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(boxes).toHaveLength(3);
+		const rows = [
+			...document.querySelectorAll<HTMLElement>('tr[data-testid="diff-line"]'),
+		].map((r) => `${r.dataset.kind} ${r.dataset.newNo ?? r.dataset.baseNo}`);
+		expect(rows).toEqual(["context 1", "del 2", "add 2", "add 3", "context 4"]);
+		const chips = screen
+			.getAllByTestId("kind-chip")
+			.filter((c) => c.dataset.kind === "unreviewed");
+		expect(chips).toHaveLength(2);
+		for (const chip of chips) {
+			expect(chip).toHaveTextContent("not reviewed in PS1");
+			expect(chip).toHaveAccessibleDescription(
+				"Unchanged since PS1, not reviewed there",
+			);
+		}
+		// The added orphan: its own run, chipped, under the shown line 2.
+		const added = document.querySelector('tr[data-new-no="3"]');
+		expect(added?.getAttribute("data-kind")).toBe("add");
+		const run = added?.closest("tbody") as HTMLElement;
+		expect(within(run).getByTestId("kind-chip")).toHaveTextContent(
+			"not reviewed in PS1",
+		);
+		expect(within(run).queryByText("x")).toBeNull();
+		// Every line has a box: nothing is "only in the full diff".
+		expect(screen.queryByTestId("since-unshown")).toBeNull();
+	});
+
+	it("ticking an orphan's box marks its lines alone, through its cluster's line marks", async () => {
+		const { onToggle, onSinceMark } = renderBody({
+			clusters: [k],
+			hunks: orphanHunks,
+			from: 1,
+			kinds: kindsOfK,
+		});
+		await screen.findAllByRole("checkbox", { name: "Mark cluster reviewed" });
+		const run = document
+			.querySelector('tr[data-new-no="3"]')
+			?.closest("tbody") as HTMLElement;
+		const user = userEvent.setup();
+		await user.click(within(run).getByRole("checkbox"));
+		expect(onToggle).toHaveBeenLastCalledWith(k, [[2, 3]]);
+		const removed = document
+			.querySelector('tr[data-base-no="2"]')
+			?.closest("tbody") as HTMLElement;
+		await user.click(within(removed).getByRole("checkbox"));
+		expect(onToggle).toHaveBeenLastCalledWith(k, [[0, 1]]);
+		expect(onSinceMark).not.toHaveBeenCalled();
+	});
+
+	it("a ticked orphan reads reviewed; the rest of its cluster stays as it is", async () => {
+		renderBody({
+			clusters: [{ ...k, reviewedLines: [[2, 3]] }],
+			hunks: orphanHunks,
+			from: 1,
+			kinds: kindsOfK,
+		});
+		const boxes = await screen.findAllByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(boxes.map((b) => (b as HTMLInputElement).checked)).toEqual([
+			false,
+			false,
+			true,
+		]);
+	});
+});
+
 describe("ProgressBar's to-read slot", () => {
 	const sample: Progress = {
 		clusters: { total: 4, reviewed: 2, crossedOff: 0 },

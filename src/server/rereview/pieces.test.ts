@@ -341,10 +341,18 @@ describe("identical text: a shown removed line is placed in the base by position
 		const { baseLine: _, ...keys } = traced.lineKeys;
 		const stale = { ...traced, lineKeys: keys };
 		const merged = b.files[0]?.clusters.find((c) => c.removed.length === 3);
-		const own = (interdiffFileHunks(stale, b, answer, 0).pieces ?? []).filter(
-			(p) => p.key === merged?.key && p.owns,
+		const pieces = interdiffFileHunks(stale, b, answer, 0).pieces ?? [];
+		const own = pieces.filter(
+			(p) => p.key === merged?.key && p.owns && !p.orphan,
 		);
 		expect(own).toEqual([]);
+		// Those lines are orphans then (CAR-216): boxes of their own, by the
+		// cluster's own base numbers, so still markable.
+		expect(
+			pieces
+				.filter((p) => p.key === merged?.key && p.orphan)
+				.flatMap((p) => p.owns ?? []),
+		).not.toEqual([]);
 	});
 
 	it("PS1's removal crossed off carries as crossed off; reviewed, as reviewed", async () => {

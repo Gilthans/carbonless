@@ -252,22 +252,36 @@ export function fitRanges(
 /**
  * A hunk's lines in runs: context runs, and runs of changed lines with one
  * cluster key (or none). A changed run is never merged into context, so
- * an unkeyed removal shows, and is marked, as a piece of its own.
+ * an unkeyed removal shows, and is marked, as a piece of its own; nor are
+ * orphan lines (DiffLine.orphan, CAR-216) merged with other changed lines
+ * of their cluster: a run of them is a piece of its own.
  */
 export function lineRuns(
 	lines: readonly DiffLine[],
-): { key?: string; change: boolean; lines: DiffLine[] }[] {
-	const out: { key?: string; change: boolean; lines: DiffLine[] }[] = [];
+): { key?: string; change: boolean; orphan?: true; lines: DiffLine[] }[] {
+	const out: {
+		key?: string;
+		change: boolean;
+		orphan?: true;
+		lines: DiffLine[];
+	}[] = [];
 	for (const line of lines) {
 		const change = line.kind !== "context";
 		const key = change ? line.clusterKey : undefined;
+		const orphan = change && line.orphan === true;
 		const last = out.at(-1);
-		if (last && last.change === change && last.key === key) {
+		if (
+			last &&
+			last.change === change &&
+			last.key === key &&
+			(last.orphan === true) === orphan
+		) {
 			last.lines.push(line);
 		} else {
 			out.push({
 				...(key === undefined ? {} : { key }),
 				change,
+				...(orphan ? { orphan: true as const } : {}),
 				lines: [line],
 			});
 		}
@@ -324,6 +338,12 @@ export interface SincePiece {
 	 * (principle 2: it counts).
 	 */
 	whitespaceOnly?: true;
+	/**
+	 * A run of orphan lines (DiffLine.orphan, CAR-216): changed lines of
+	 * its cluster unchanged since the compared patch set but no change
+	 * reviewed there, nothing carried; it owns exactly them.
+	 */
+	orphan?: true;
 }
 
 /**
@@ -365,6 +385,7 @@ export function sincePieces(
 					hunk: h,
 					line: at,
 					...(run.key === undefined ? {} : { key: run.key }),
+					...(run.orphan ? { orphan: true as const } : {}),
 					owns: null,
 					old: fromIndexes(
 						run.lines.flatMap((l) =>
@@ -410,13 +431,16 @@ export function sincePieces(
 		});
 	}
 	// A cluster's own piece is chipped only when it shows nothing but
-	// removals (the author took lines out there): "removed".
+	// removals (the author took lines out there): "removed"; an orphan
+	// piece by a chip of its own.
 	for (const piece of out) {
 		if (!piece.owns) continue;
-		if (piece.new.length === 0) piece.kind = "removed";
+		if (piece.new.length === 0 && !piece.orphan) piece.kind = "removed";
 		else delete piece.kind;
 	}
-	return out;
+	// An orphan piece that owns none of its cluster's lines would mark
+	// nothing: none (its lines stay to read, in the full diff).
+	return out.filter((piece) => !piece.orphan || piece.owns);
 }
 
 /**
@@ -691,7 +715,9 @@ export function sinceUnits(
 		const owned = new Map<string, LineRanges>();
 		const base = { index: file.index, path: file.path };
 		for (const p of file.pieces ?? []) {
-			const lines = size(p.old) + size(p.new);
+			// An orphan's removed lines have no number here: its own lines.
+			const lines =
+				p.orphan && p.owns ? size(p.owns) : size(p.old) + size(p.new);
 			const cluster = p.key === undefined ? undefined : clusters.get(p.key);
 			if (p.owns && cluster && p.key !== undefined) {
 				owned.set(p.key, union(owned.get(p.key) ?? [], p.owns));

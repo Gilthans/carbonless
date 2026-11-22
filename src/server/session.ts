@@ -1461,10 +1461,21 @@ export class Session {
 					index,
 					sources,
 				);
-				if (hunks.hunks.length > 0) return hunks;
+				if (hunks.hunks.length > 0 && hunks.newLineCount > 0) return hunks;
 				// A file the interdiff doesn't change (or only renames): its
 				// lines are one gap, so they and the threads on them can be opened.
 				const context = interdiffFileContext(traced, answer, index, 1, 1);
+				if (hunks.hunks.length > 0) {
+					// Lines no piece shows of a file the interdiff doesn't touch
+					// (CAR-216): their hunks, the rest gaps around them.
+					return context === "untouched"
+						? {
+								...hunks,
+								newLineCount: (await loadNewText(this.repo, snapshot, index))
+									.newLines.length,
+							}
+						: hunks;
+				}
 				if (context === "none") return hunks;
 				const newLineCount =
 					context === "untouched"

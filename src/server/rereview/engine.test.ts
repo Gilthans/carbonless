@@ -570,13 +570,17 @@ describe("the engine", () => {
 				(hk) =>
 					hk.lines
 						.filter((l) => l.kind === "del")
-						.map((l) => [l.text, l.baseNo]),
+						.map((l) => [l.text, l.baseNo, l.orphan === true]),
 			);
 			// B2's numbers (three lines down), never B1's: "line 20" is B2's 23.
 			// "thirty on master" is B2's 33, though PS1 never had that text.
+			// The engine can't place that shown row in the base through the
+			// old one (baseLine), so the cluster's line no piece owns is an
+			// orphan too, a row of its own (CAR-216: shown twice, never hidden).
 			expect(removed).toEqual([
-				["line 20", 23],
-				["thirty on master", 33],
+				["line 20", 23, false],
+				["thirty on master", 33, false],
+				["thirty on master", 33, true],
 			]);
 		} finally {
 			fx.cleanup();

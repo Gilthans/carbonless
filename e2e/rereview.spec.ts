@@ -4,9 +4,11 @@ import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { type FixtureCommit, testGitEnv } from "../test/git-fixture";
 import {
+	chooseUnit,
 	clicksReady,
 	expectNoPageOverflow,
 	fileActionButton,
+	fileProgress,
 	fileSection,
 	marksReady,
 	openFiles,
@@ -15,6 +17,7 @@ import {
 	rowTop,
 	sideBySide,
 	tapHeight,
+	treeNumbers,
 	withTree,
 } from "./files-ui";
 import {
@@ -3133,6 +3136,109 @@ test("a line crossed off in PS1 stays crossed off in a grown cluster: ticking th
 	await expect(
 		full.locator('[data-testid="diff-line"][data-new-no="4"]'),
 	).toHaveAttribute("data-reviewed", "true");
+});
+
+/**
+ * CAR-216 (gallery #58): the base's blank after `count: int` is PS1's
+ * line 6, context there. PS2 inserts `Totals`, which starts like the old
+ * `Result`: PS2's diff matches the base's blank to its line 3, so its
+ * line 10 (PS1's line 6, unchanged since) is an added line nobody
+ * reviewed, which no since piece showed.
+ */
+const RESULT = "src/result.py";
+const resultBase = text([
+	"class Result:",
+	"    count: int",
+	"",
+	"    def total(self):",
+	"        return self.count",
+]);
+const resultPs1 = text([
+	"class Result(Base):",
+	"    count: int = 0",
+	"",
+	"    def add(self):",
+	"        return 2",
+	"",
+	"    def total(self):",
+	"        return self.count",
+]);
+const resultPs2 = text([
+	"class Totals:",
+	"    count: int",
+	"",
+	"",
+	"class Result(Base):",
+	"    count: int = 0",
+	"",
+	"    def add(self):",
+	"        return 3",
+	"",
+	"    def total(self):",
+	"        return self.count",
+]);
+
+test("a changed line unchanged since PS1 but never reviewed there has a box of its own: ticking every box finishes the file, every count full (CAR-216)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		base: { [RESULT]: resultBase },
+		files: [{ message: "PS1", files: { [RESULT]: resultPs1 } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// PS1 reviewed whole: its last box closes the file.
+	const first = await expand(page, RESULT);
+	const ps1 = boxes(first);
+	const n = await ps1.count();
+	for (let i = 0; i < n; i++) await ps1.nth(i).click();
+	await expect(
+		first.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [RESULT]: resultPs2 } });
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = await expand(page, RESULT);
+	// Line 10: an added row with a box and a chip of its own.
+	const line10 = since.locator('[data-testid="diff-line"][data-new-no="10"]');
+	await expect(line10).toHaveAttribute("data-kind", "add", GIT_WAIT);
+	const run = since.locator("tbody").filter({ has: line10 });
+	const chip = run.getByTestId("kind-chip");
+	await expect(chip).toHaveText("not reviewed in PS1");
+	await expect(chip).toBeVisible();
+	await expect(boxes(run)).toHaveCount(1);
+	await expect(since.getByTestId("since-unshown")).toHaveCount(0);
+	await expectNoPageOverflow(page);
+
+	// Every box ticked: the last finishes the file, which closes.
+	const all = boxes(since);
+	const count = await all.count();
+	for (let i = 0; i < count - 1; i++) {
+		await all.nth(i).click();
+		await expect(all.nth(i)).toBeChecked();
+	}
+	await all.nth(count - 1).click();
+	await expect(
+		since.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await chooseUnit(page, "Lines");
+	await expect(progress(page)).toContainText(/\b(\d+) \/ \1 lines reviewed/);
+	await expect(fileProgress(since)).toContainText(/\b(\d+) \/ \1 lines/);
+	await withTree(page, (tree) =>
+		expect(treeNumbers(tree, /result\.py/)).toHaveText("9 of 9 lines reviewed"),
+	);
+	await expect(
+		page.locator("#files-verdict").getByTestId("verdict-info"),
+	).toContainText("You reviewed 9 of 9 lines");
 });
 
 test("the first tick on the viewed head starts PS2 of that snapshot: the since view's chips stay while PS2's answer is read, so no row moves under the pointer (CAR-208)", async ({
