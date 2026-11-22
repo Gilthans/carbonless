@@ -67,8 +67,12 @@ async function write(scope: Locator) {
 async function askLine3(page: Page, url: string) {
 	const section = await openFile(page, url, CALC);
 	const card = await ask(page, section, 3, "Anything to ask the author?");
-	await expect(box(card).getByTestId("comment-preview")).toHaveText(SUGGESTED);
-	await expect(await write(card)).toHaveValue(SUGGESTED);
+	const first = box(card).first();
+	await expect(first.getByTestId("comment-preview")).toHaveText(SUGGESTED);
+	await first.getByRole("button", { name: "Write" }).click();
+	await expect(
+		first.getByRole("textbox", { name: "Review comment" }),
+	).toHaveValue(SUGGESTED);
 	return { section, card };
 }
 
@@ -182,14 +186,25 @@ test("the record of a post lost: Posted holds across a reload and the record is 
 	await addButton(card).click();
 	await expect(box(card)).toContainText("Posted");
 	await page.unroute(RECORD);
-	// Reloaded: still Posted (the browser's copy), and the record is written.
+	// Reloaded: still Posted (the browser's copy, the record held a moment
+	// so it shows on its line first), and the record is written.
+	let release = () => {};
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
+	await page.route(RECORD, async (route) => {
+		await held;
+		await route.continue();
+	});
 	const recorded = page.waitForResponse(
 		(r) => /\/agent\/threads\/[^/]+\/posted$/.test(r.url()) && r.ok(),
 	);
 	await page.reload();
 	const again = await reopenLine3(page, s.url);
 	await expect(box(again)).toContainText("Posted");
+	release();
 	await recorded;
+	await page.unroute(RECORD);
 	expect(newThreadPosts(p)).toHaveLength(1);
 	// Recorded: the conversation is its thread's now (CAR-236).
 	await expect(again).toHaveCount(0);
