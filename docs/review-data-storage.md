@@ -862,11 +862,16 @@ whole-hunk keys. Treat such a change as a key format change (carry it, or
 say so in the release); `snapshot.test.ts` pins the keys of a few fixed
 hunks. CAR-218's own move is not carried (owner, 2026-11-22: "I'm fine
 with letting the affected clusters reset. It's an error in the correct
-direction"): only hunks that span a whitespace twin across hunks or an
-unchanged line change (36 of 4,656 changed files on this repo's last 506
-merges); marks on a whole hunk that now splits still carry onto its
-pieces, as above, while marks on pieces of the old cut read unreviewed,
-and the release says so. No new event. A display hunk over `SPLIT_CELLS`
+direction"). Keys move where a hunk's whitespace-only lines have twins
+across hunks or in unchanged lines, and also where several equally good
+matchings exist and the display hunk's matching picks other twins inside
+a hunk than splitHunk's matching of the hunk alone did (the context lines
+around it change which optimum the traceback takes), so a hunk with no
+twin outside it may be cut differently too. On this repo's last 506
+merges the cut moved in 36 of 4,656 changed files. Either way it fails
+safe: marks on a whole hunk that now splits still carry onto its pieces,
+as above, while marks on pieces of the old cut read unreviewed, and the
+release says so. No new event. A display hunk over `SPLIT_CELLS`
 (old × new lines, context included, 250,000) is matched one git hunk at a
 time, as before CAR-218, and a git hunk over it on its own isn't cut
 unless both sides are the same keys line for line: the matching costs

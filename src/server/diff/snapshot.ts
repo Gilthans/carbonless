@@ -4,6 +4,7 @@ import type {
 	Cluster,
 	ClusterSplit,
 	DiffLine,
+	DisplayHunk,
 	FileHunks,
 	FileSummary,
 	HunksBatch,
@@ -21,7 +22,11 @@ import {
 	type HeadingFile,
 	withHeadings,
 } from "./headings.js";
-import { buildDisplayHunks, contextLines } from "./hunks.js";
+import {
+	buildDisplayHunks,
+	contextLines,
+	HunksMismatchError,
+} from "./hunks.js";
 import { clusterKeys } from "./identity.js";
 import { chooseEncoding, decodeLines, type TextEncoding } from "./text.js";
 
@@ -392,8 +397,11 @@ export function cutClusters(
 
 /**
  * Each line hunk's cut (by its index in `hunks`, as a string) from its
- * display hunk's matching; null when the display hunks don't build (hunks
- * that don't fit the text: buildDisplayHunks refuses them).
+ * display hunk's matching; null only when the display hunks don't build
+ * because the hunks don't fit the text (HunksMismatchError). Any other
+ * error, the matching's included, is thrown: a silent fall back to the
+ * per-hunk cut could leave the clusters and the view's `~` rows
+ * disagreeing.
  */
 function displayCuts(
 	hunks: Omit<Cluster, "key">[],
@@ -403,21 +411,24 @@ function displayCuts(
 		hunk.kind === "lines" ? [{ ...hunk, key: String(h) }] : [],
 	);
 	if (lines.length === 0) return null;
+	let displays: DisplayHunk[];
 	try {
-		const cuts = new Map<string, HunkCut>();
-		for (const display of buildDisplayHunks(
+		displays = buildDisplayHunks(
 			text.oldLines,
 			text.newLines,
 			lines,
 			3,
 			text.noNewlineAtEnd,
-		)) {
-			for (const [key, cut] of hunkCuts(display.lines)) cuts.set(key, cut);
-		}
-		return cuts;
-	} catch {
-		return null;
+		);
+	} catch (error) {
+		if (error instanceof HunksMismatchError) return null;
+		throw error;
 	}
+	const cuts = new Map<string, HunkCut>();
+	for (const display of displays) {
+		for (const [key, cut] of hunkCuts(display.lines)) cuts.set(key, cut);
+	}
+	return cuts;
 }
 
 /** The snapshot id of the comparison `base` → `head` (`Snapshot.revision`). */

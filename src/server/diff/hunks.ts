@@ -34,8 +34,16 @@ function spans(clusters: Cluster[]): Span[] {
 }
 
 /**
- * An unchanged line. Throws if the old side differs, which means the clusters
- * don't belong to these blobs: showing it as unchanged would hide a change.
+ * The clusters don't belong to these lines (an unchanged line differs
+ * between the two sides, or isn't there): a caller that can do without
+ * display hunks (the snapshot's cut) tells it from any other error.
+ */
+export class HunksMismatchError extends Error {}
+
+/**
+ * An unchanged line. Throws HunksMismatchError if the old side differs, which
+ * means the clusters don't belong to these blobs: showing it as unchanged
+ * would hide a change.
  */
 function context(
 	oldLines: string[],
@@ -47,7 +55,7 @@ function context(
 	const oldNo = newNo - shift;
 	const text = newLines[newNo - 1];
 	if (text === undefined || oldLines[oldNo - 1] !== text) {
-		throw new Error(
+		throw new HunksMismatchError(
 			`Unchanged line ${newNo} (old ${oldNo}) differs between the two sides`,
 		);
 	}
