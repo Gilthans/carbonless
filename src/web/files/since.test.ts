@@ -811,6 +811,8 @@ describe('"Ignore whitespace" in the since view (CAR-184)', () => {
 							owns: [[0, 1]],
 							old: [[1, 2]],
 							new: [],
+							// Judged on the interdiff (CAR-218): the engine's flag.
+							whitespaceOnly: true,
 						},
 						{
 							hunk: 0,
@@ -819,6 +821,7 @@ describe('"Ignore whitespace" in the since view (CAR-184)', () => {
 							owns: [[1, 2]],
 							old: [],
 							new: [[1, 2]],
+							whitespaceOnly: true,
 						},
 					] satisfies SincePiece[],
 				},
