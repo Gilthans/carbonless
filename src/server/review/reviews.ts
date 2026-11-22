@@ -457,8 +457,7 @@ export class ReviewService {
 		});
 
 		const ref = progressRef(reviewId, slug);
-		let existing = await this.store.readEvents(ref);
-		let progress = foldProgress(existing);
+		let progress = foldProgress(await this.store.readEvents(ref));
 		const known = progress.patchsets.some(
 			(p) => p.revision === snapshot.revision,
 		);
@@ -488,91 +487,95 @@ export class ReviewService {
 			if (!how) checkWritable(progress, snapshot);
 			else {
 				await this.ensurePatchset(reviewId, slug, snapshot, how);
-				existing = await this.store.readEvents(ref);
-				progress = foldProgress(existing);
+				progress = foldProgress(await this.store.readEvents(ref));
 				checkWritable(progress, snapshot);
 			}
 		}
-		const stamp = stamper(existing);
-
-		// Every change of the call in one commit: a reader (a reload, another
-		// tab) sees all of them or none, never a reset half done (CAR-215).
-		const events: CrbEvent[] = [];
-		const parts: SummaryPart[] = [];
-		for (const { cluster, lines, payload } of payloads) {
-			if (lines === null) {
-				const event: ClusterStateEvent = newEvent(
-					"cluster-state",
-					slug,
-					payload,
-					"human",
-					stamp(),
-				);
-				events.push(event);
-				parts.push({ verb: VERBS[event.state], clusters: true });
-				continue;
-			}
-			// Part of it: the whole cluster unreviewed, then its marked lines
-			// (a reader that predates lines-state sees it unreviewed, never
-			// more reviewed than the reviewer marked).
-			const { patchset, path } = payload;
-			events.push(
-				newEvent(
-					"cluster-state",
-					slug,
-					{ patchset, cluster: cluster.key, path, state: "unreviewed" },
-					"human",
-					stamp(),
-				),
-			);
-			for (const [state, ranges] of [
-				["reviewed", lines.reviewed],
-				["crossed-off", lines.crossed],
-			] as const) {
-				if (ranges.length === 0) continue;
+		if (changes.length === 0) return this.getProgress(reviewId, slug);
+		// Built again on every try: if another writer moved the ref in between
+		// (another tab or process started a patch set), the target must still
+		// take writes and the stamps must follow the new tip's events. A mark
+		// never lands silently on a patch set that became read-only (CAR-229).
+		await this.store.appendBuilt(ref, slug, (current) => {
+			checkWritable(foldProgress(current), snapshot);
+			const stamp = stamper(current);
+			// Every change of the call in one commit: a reader (a reload, another
+			// tab) sees all of them or none, never a reset half done (CAR-215).
+			const events: CrbEvent[] = [];
+			const parts: SummaryPart[] = [];
+			for (const { cluster, lines, payload } of payloads) {
+				if (lines === null) {
+					const event: ClusterStateEvent = newEvent(
+						"cluster-state",
+						slug,
+						payload,
+						"human",
+						stamp(),
+					);
+					events.push(event);
+					parts.push({ verb: VERBS[event.state], clusters: true });
+					continue;
+				}
+				// Part of it: the whole cluster unreviewed, then its marked lines
+				// (a reader that predates lines-state sees it unreviewed, never
+				// more reviewed than the reviewer marked).
+				const { patchset, path } = payload;
 				events.push(
 					newEvent(
-						"lines-state",
+						"cluster-state",
 						slug,
-						{ patchset, cluster: cluster.key, path, state, lines: ranges },
+						{ patchset, cluster: cluster.key, path, state: "unreviewed" },
 						"human",
 						stamp(),
 					),
 				);
+				for (const [state, ranges] of [
+					["reviewed", lines.reviewed],
+					["crossed-off", lines.crossed],
+				] as const) {
+					if (ranges.length === 0) continue;
+					events.push(
+						newEvent(
+							"lines-state",
+							slug,
+							{ patchset, cluster: cluster.key, path, state, lines: ranges },
+							"human",
+							stamp(),
+						),
+					);
+				}
+				parts.push({
+					verb: "marked lines of",
+					clusters: true,
+					alone: `marked ${size(lines.reviewed) + size(lines.crossed)} of ${cluster.lines} lines of 1 cluster`,
+				});
 			}
-			parts.push({
-				verb: "marked lines of",
-				clusters: true,
-				alone: `marked ${size(lines.reviewed) + size(lines.crossed)} of ${cluster.lines} lines of 1 cluster`,
-			});
-		}
-		const paths = payloads.map((p) => p.payload.path);
-		for (const change of marks) {
-			const mark = change.sinceMark as SinceMark;
-			events.push(
-				newEvent(
-					"since-lines-state",
-					slug,
-					{
-						patchset: snapshot.revision,
-						since: mark.since,
-						path: mark.path,
-						reviewed: sides(mark.reviewed),
-						crossed: sides(mark.crossed),
-					},
-					"human",
-					stamp(),
-				),
-			);
-			parts.push({
-				verb: `marked pieces since PS${mark.since}`,
-				clusters: false,
-			});
-			paths.push(mark.path);
-		}
-		if (events.length > 0) {
-			await this.store.appendEvents(ref, subjectOf(parts, paths), events, slug);
-		}
+			const paths = payloads.map((p) => p.payload.path);
+			for (const change of marks) {
+				const mark = change.sinceMark as SinceMark;
+				events.push(
+					newEvent(
+						"since-lines-state",
+						slug,
+						{
+							patchset: snapshot.revision,
+							since: mark.since,
+							path: mark.path,
+							reviewed: sides(mark.reviewed),
+							crossed: sides(mark.crossed),
+						},
+						"human",
+						stamp(),
+					),
+				);
+				parts.push({
+					verb: `marked pieces since PS${mark.since}`,
+					clusters: false,
+				});
+				paths.push(mark.path);
+			}
+			return { summary: subjectOf(parts, paths), events };
+		});
 		return this.getProgress(reviewId, slug);
 	}
 

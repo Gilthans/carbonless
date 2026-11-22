@@ -191,11 +191,45 @@ export class RefStore {
 	}
 
 	/** appendEvent for several events in one commit (all or none land). */
-	async appendEvents(
+	appendEvents(
 		ref: string,
 		summary: string,
 		events: CrbEvent[],
 		author: string,
+	): Promise<string> {
+		return this.#append(ref, author, async () => ({
+			tip: await this.tip(ref),
+			summary,
+			events,
+		}));
+	}
+
+	/**
+	 * Appends the commit `build` makes from the ref's events, as appendEvents.
+	 * Each try reads the events again and calls `build` on them, so a writer
+	 * whose events depend on what is there (a check, a stamp) never lands
+	 * events computed against a tip another writer has since moved. `build`
+	 * throws to refuse the write.
+	 */
+	appendBuilt(
+		ref: string,
+		author: string,
+		build: (existing: CrbEvent[]) => { summary: string; events: CrbEvent[] },
+	): Promise<string> {
+		return this.#append(ref, author, async () => {
+			const { tip, events } = await this.readEventsAt(ref);
+			return { tip, ...build(events) };
+		});
+	}
+
+	async #append(
+		ref: string,
+		author: string,
+		prepare: () => Promise<{
+			tip: string | null;
+			summary: string;
+			events: CrbEvent[];
+		}>,
 	): Promise<string> {
 		checkRef(ref);
 		let lastError: unknown;
@@ -205,7 +239,7 @@ export class RefStore {
 		for (;;) {
 			attempt++;
 			const started = now();
-			const tip = await this.tip(ref);
+			const { tip, summary, events } = await prepare();
 			const oid = await this.commit(tip, summary, events, author);
 			try {
 				await this.transaction([{ ref, newOid: oid, oldOid: tip }]);
