@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requestConversationOpen } from "../agent/conversationLinks";
 import { PageActive } from "../pageActive";
 import {
+	keepInPlace,
 	threadFocus,
 	useFocusAmong,
 	useFocusCard,
@@ -451,5 +452,117 @@ describe("threadFocus", () => {
 		act(flush);
 		act(flush);
 		expect(scrollTo).not.toHaveBeenCalled();
+	});
+
+	describe("a card scrolled in stays where it landed as the page settles (CAR-239)", () => {
+		/** The card's viewport top, as the test moves it. */
+		let top = 8;
+		let scrollBy: ReturnType<typeof vi.fn>;
+		beforeEach(() => {
+			top = 8;
+			vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+				function (this: Element) {
+					const t = this.hasAttribute("data-card") ? top : 0;
+					return { top: t, bottom: t, left: 0, right: 0 } as DOMRect;
+				},
+			);
+			scrollBy = vi.fn((_x: number, y: number) => {
+				top -= y;
+			});
+			vi.stubGlobal("scrollBy", scrollBy);
+		});
+		/** Something above the card changes (the placements answer), moving it by `by`. */
+		const shift = async (by: number) => {
+			top += by;
+			await act(async () => {
+				document.body.append(document.createElement("p"));
+				// The mutation observer's callback, then its frame.
+				await Promise.resolve();
+			});
+		};
+
+		it("content above it changing after the scroll: the page follows, the card stays", async () => {
+			render(<Card id="T1" />);
+			act(() => {
+				threadFocus.request({ id: "T1" });
+			});
+			await shift(-183);
+			expect(scrollBy).toHaveBeenCalledWith(0, -183);
+			expect(top).toBe(8);
+			await shift(40);
+			expect(top).toBe(8);
+		});
+
+		it("once the reviewer acts (a wheel, a touch, a click, a key), it moves with the page", async () => {
+			for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) {
+				threadFocus.reset();
+				const view = render(<Card id="T1" />);
+				act(() => {
+					threadFocus.request({ id: "T1" });
+				});
+				window.dispatchEvent(new Event(type));
+				scrollBy.mockClear();
+				await shift(-100);
+				expect(scrollBy, type).not.toHaveBeenCalled();
+				top = 8;
+				view.unmount();
+			}
+		});
+
+		it("a scroll it didn't make, with nothing changed (the scrollbar, the page's code): it lets go", async () => {
+			render(<Card id="T1" />);
+			act(() => {
+				threadFocus.request({ id: "T1" });
+			});
+			Object.defineProperty(window, "scrollY", {
+				value: 300,
+				configurable: true,
+			});
+			try {
+				window.dispatchEvent(new Event("scroll"));
+				await shift(-100);
+				expect(scrollBy).not.toHaveBeenCalled();
+			} finally {
+				Object.defineProperty(window, "scrollY", {
+					value: 0,
+					configurable: true,
+				});
+			}
+		});
+
+		it("a newer request, a cancel, or the card gone: it lets go", async () => {
+			const one = render(<Card id="T1" />);
+			render(<Card id="T2" />);
+			act(() => {
+				threadFocus.request({ id: "T1" });
+			});
+			act(() => threadFocus.cancel());
+			scrollBy.mockClear();
+			await shift(-50);
+			expect(scrollBy).not.toHaveBeenCalled();
+			one.unmount();
+			// Unmounted after taking: let go too.
+			top = 8;
+			const three = render(<Card id="T3" />);
+			act(() => {
+				threadFocus.request({ id: "T3" });
+			});
+			three.unmount();
+			await shift(-50);
+			expect(scrollBy).not.toHaveBeenCalled();
+		});
+
+		it("keepInPlace on its own: stop ends it", async () => {
+			const el = document.createElement("div");
+			el.setAttribute("data-card", "x");
+			document.body.append(el);
+			const stop = keepInPlace(el, () => true);
+			await shift(-20);
+			expect(scrollBy).toHaveBeenCalledTimes(1);
+			stop();
+			await shift(-20);
+			expect(scrollBy).toHaveBeenCalledTimes(1);
+			el.remove();
+		});
 	});
 });
