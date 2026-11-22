@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `.md` files are reviewed rendered, with one cluster per rendered block (cut on the server, so the Text view shows the same clusters), a box per cluster on its block, and Text one tap away.
+**Goal:** `.md` files are reviewed rendered, with one cluster per rendered block (cut on the server, so the Text view shows the same clusters), a box per cluster on its block, and Text one tap away, in the full diff and in the since view (interdiff) alike.
 
 **Architecture:** A shared block parser (`src/shared/markdownBlocks.ts`) gives each side's blocks as line ranges. The server cuts each `.md` hunk at block boundaries after CAR-156's whitespace cut (`cutClusters`), pairing old and new blocks with the existing line pairing, and keeps `Cluster.split` so marks carry. The web gets a `markdown` renderer on CAR-38's seam that renders the document from both sides' text, tags each block with its index, and puts the clusters' existing review controls on the blocks.
 
@@ -21,6 +21,7 @@
 - Sanitize: DOMPurify, no `script`/`style`/`iframe`/event handlers, `safeHref` (`src/web/ui.tsx`) on every link; remote images not loaded until clicked; relative images through `blobUrl` (`src/web/api.ts`); raw HTML blocks, front matter, math, Mermaid shown as source.
 - UI: tokens only, icon-first, 40px taps, 360px phone with no page scroll, loading never looks empty (`Spinner`/`SkeletonBar`, `aria-busy`).
 - No fading of unchanged or removed blocks; colors: green added, red struck removed, amber changed.
+- **Interdiff is first class** (owner, 2026-11-22: "everything that works on basediff should work on interdiff as well"): every task that adds behaviour to the full diff adds it to the since view in the same task, with tests in both.
 - Tests: CPU guards as ratios (`test/cpu.ts`), never wall-clock; no retries; held answers for loading states.
 
 ## Review Focus
@@ -28,7 +29,7 @@
 1. **CRLF and no-newline-at-end `.md` files**: block line ranges must match git's line numbers exactly; a CRLF file or one ending without a newline cuts the same as its LF twin (Task 1, Task 2 tests).
 2. **A rename between `.md` and another extension** (`notes.txt` → `notes.md`, or the reverse): the cut follows the new path; both sides are still parsed as Markdown when the new path is `.md` (Task 3 test).
 3. **Ignore whitespace on, in Rendered**: whitespace-only clusters drop out of the rendered view exactly as from the line view, and their block shows no stray box (Task 6 test).
-4. **The since view (a later patch set compared to an earlier one) and read-only earlier patch sets**: Rendered is not offered in the since view (interdiff pieces, v1); read-only shows locked boxes (Task 6 test).
+4. **The since view on a file whose compared patch set wasn't Markdown-cut** (a `.md` file renamed since, or over the cap on one patch set): pieces still cover every changed line, and Rendered falls back to Text only when either side is over the cap; read-only earlier patch sets show locked boxes (Task 3b, Task 6 tests).
 5. **Nested structures**: a list item with a continuation paragraph, a list inside a blockquote, a table inside a list: every line still lands in exactly one block, and the renderer tags the same blocks the server cut by (Task 1 property test, Task 4 test).
 
 ---
@@ -75,13 +76,20 @@
 ### Task 2: The block cut of one cluster (server)
 
 **Files:**
-- Create: `src/server/diff/blockCut.ts`
-- Test: `src/server/diff/blockCut.test.ts`
+- Create: `src/shared/blockCut.ts` (shared: the server's cut and the since view's pieces use it)
+- Test: `src/shared/blockCut.test.ts`
 
 **Interfaces:**
-- Consumes: `MdBlock`, `blockOfLine` (Task 1); `alignCluster`, `AlignBudget` (`src/shared/linePairing.ts`); `HunkPart`, `LineCluster` (`src/server/diff/clusters.ts`).
+- Consumes: `MdBlock`, `blockOfLine` (Task 1); `alignCluster`, `AlignBudget` (`src/shared/linePairing.ts`). `HunkPart` and `LineCluster` move from `src/server/diff/clusters.ts` to `src/shared/` (re-exported there) so the shared module can name them.
 - Produces:
   ```ts
+  /** The block cut's grouping, shared with the since view's pieces (Task 3b). Index ranges into removed/added, in order. */
+  export interface BlockGroup { removed: [from: number, to: number]; added: [from: number, to: number] }
+  export function groupByBlocks(
+    removed: readonly string[], added: readonly string[],
+    oldBlockOf: (i: number) => number, newBlockOf: (i: number) => number,
+    budget?: AlignBudget,
+  ): BlockGroup[] // one group = nothing cuts
   export function cutAtBlocks<C extends LineCluster>(
     c: C,
     oldBlocks: readonly MdBlock[],
@@ -102,9 +110,9 @@
   - pieces keep `noNewlineOld/New` only on the piece holding the last line (as `splitCluster`);
   - Property: over random Markdown edits, the pieces' removed lines concatenate to `c.removed`, added to `c.added`, in order; each piece's lines lie in one block per side; removed ranges and added ranges are each non-decreasing.
 
-- [ ] **Step 2: Run** `pnpm test src/server/diff/blockCut.test.ts` — expected FAIL.
+- [ ] **Step 2: Run** `pnpm test src/shared/blockCut.test.ts` — expected FAIL.
 
-- [ ] **Step 3: Implement.** Group removed lines by old block (`blockOfLine` on `oldStart + i`), added by new block. One group each side → return `c` whole. Else `alignCluster(removed, added, budget)`; each old group's target is the new group holding most of its pairs (ties: the earlier). No pairs at all: position if counts match, else none. Then enforce order and contiguity:
+- [ ] **Step 3: Implement** `groupByBlocks`, then `cutAtBlocks` as a thin wrapper numbering the groups' pieces. Group removed lines by old block (`blockOfLine` on `oldStart + i`), added by new block. One group each side → return `c` whole. Else `alignCluster(removed, added, budget)`; each old group's target is the new group holding most of its pairs (ties: the earlier). No pairs at all: position if counts match, else none. Then enforce order and contiguity:
   ```
   last = -1; prevTarget = undefined
   for each old group g in order:
@@ -117,7 +125,7 @@
 
 - [ ] **Step 4: Run** — PASS.
 
-- [ ] **Step 5: Commit** `git commit --only -- src/server/diff/blockCut.ts src/server/diff/blockCut.test.ts -m "Block cut: one cluster per Markdown block, pairing in order (CAR-167)"`
+- [ ] **Step 5: Commit** `git commit --only -- src/shared/blockCut.ts src/shared/blockCut.test.ts -m "Block cut: one cluster per Markdown block, pairing in order (CAR-167)"`
 
 ---
 
@@ -156,6 +164,36 @@
 - [ ] **Step 4: Run** — PASS; `pnpm verify:fast` clean (methodology and coverage tests in its map).
 
 - [ ] **Step 5: Commit** the five paths with `git commit --only -- …` "Markdown files: clusters cut at blocks on the server (CAR-167)".
+
+---
+
+### Task 3b: Since view pieces cut at Markdown blocks
+
+**Files:**
+- Modify: `src/shared/pieces.ts` (`sincePieces`)
+- Modify: `src/server/rereview/engine.ts:952` (passes the blocks)
+- Modify: `src/shared/types.ts` (the since answer's file entry: `markdownBlocks?: true`)
+- Test: `src/shared/pieces.test.ts`, `src/server/rereview/engine.test.ts` (or the since-view test file that covers `sincePieces` from the engine)
+
+**Interfaces:**
+- Consumes: `groupByBlocks` (Task 2), `markdownBlocks`, `isMarkdownPath`, `MARKDOWN_CUT_MAX_BYTES` (Tasks 1, 3).
+- Produces:
+  ```ts
+  export function sincePieces(
+    hunks, clusters, facts?,
+    blocks?: { old: readonly MdBlock[]; new: readonly MdBlock[] }, // the since view's two sides, for a Markdown file under the cap
+  ): SincePiece[]
+  ```
+
+- [ ] **Step 1: Write the failing tests:** in `pieces.test.ts`, a since hunk whose one run spans two list items (one cluster) gives two pieces, each owning only its item's lines; a run across a whitespace-only change inside a paragraph keeps one piece per cluster as before; without `blocks`, output is unchanged (every existing test still passes); every changed line of the hunks is in exactly one piece (property, random Markdown edits on both patch sets). In the engine test, a `.md` file's since answer has block-cut pieces and `markdownBlocks: true`; a `.txt` file's doesn't.
+
+- [ ] **Step 2: Run** `pnpm test src/shared/pieces.test.ts` and the engine test — FAIL.
+
+- [ ] **Step 3: Implement:** in `sincePieces`, after a run is formed, split it with `groupByBlocks` (the run's del lines by old-side block, add lines by new-side block); each group a piece with its own `owns`, `old`, `new`. The engine reads both sides' texts it already has for the interdiff and passes their blocks when the path is Markdown and both are under the cap.
+
+- [ ] **Step 4: Run** — PASS; `pnpm verify:fast` (re-review and methodology specs are in its map).
+
+- [ ] **Step 5: Commit** "Since view: pieces of a Markdown file cut at its blocks (CAR-167)".
 
 ---
 
@@ -241,19 +279,21 @@
     view: ReactNode; // the view switch
     onShowText: () => void; // whole-file failure, or a find hit not rendered
   }): JSX.Element
-  // renderers: markdown claims files with `markdownBlocks` (and not binary/lfs/submodule); choices ["markdown","text"]; never in the since view.
+  // MarkdownView also takes the since view's: from?: number; kinds?: Map<string, KindEntry>; onSinceMark?; sinceMarks? (as DiffBody)
+  // renderers: markdown claims files with `markdownBlocks` (and not binary/lfs/submodule); choices ["markdown","text"], in the full diff and the since view alike.
   ```
 
 - [ ] **Step 1: Write the failing tests:**
-  - `resolve.test.ts`: a `README.md` with `markdownBlocks` resolves to `markdown`, choices `["markdown","text"]`; without the flag (over the cap) → `text` only; a pick of `text` is kept per path; `markdown` is not offered when `from` (since view) is set.
+  - `resolve.test.ts`: a `README.md` with `markdownBlocks` resolves to `markdown`, choices `["markdown","text"]`; without the flag (over the cap) → `text` only; a pick of `text` is kept per path; in the since view `markdown` is offered when the since answer's file has `markdownBlocks`.
   - `MarkdownView.test.tsx` (fake hunks + texts): each cluster's box sits on the block(s) holding its lines (`data-block`), one box per cluster, a block with two clusters shows two boxes in source order; an added block has the green bar, a removal-only block red and struck where it was, a changed block amber with `<ins>/<del>`; a code fence change shows old struck above new; a run of more than 3 unchanged blocks folds into a row naming its headings and expands in place; a fold never holds a changed block; whitespace-only clusters show a small extra box with the `~` mark, and none with Ignore whitespace on; read-only shows locked boxes; a whole-file render failure calls `onShowText`.
   - an added file renders its new side with every block green and boxed; a deleted file its old side, red and struck;
+  - since view: texts read with `from`; one box per since piece on its block (`onToggle(cluster, piece)`); kind chips (reworked/new) as the line view's; a reverted or removed piece shows struck, red, with its since-only box (`onSinceMark`); ticking a piece in Rendered ticks the same piece in Text.
   - **Coverage invariant:** for every fixture, the set of cluster keys with a box equals `file.clusters` keys (minus whitespace-only ones under Ignore whitespace).
-  - e2e (desktop + phone, `e2e/markdown-renderer.spec.ts`): opens in Rendered; tick a block's box, switch to Text, the same cluster is ticked; switch back keeps it; a reload keeps the Text pick for that path only; loading shows the skeleton while the hunks are held (`expectLoadingThen`), never an empty document; at 360px no page scroll and boxes are 40px.
+  - e2e (desktop + phone, `e2e/markdown-renderer.spec.ts`): opens in Rendered; tick a block's box, switch to Text, the same cluster is ticked; switch back keeps it; a reload keeps the Text pick for that path only; the same tick-and-switch check in the since view of a second patch set (`e2e/rereview` helpers); loading shows the skeleton while the hunks are held (`expectLoadingThen`), never an empty document; at 360px no page scroll and boxes are 40px.
 
 - [ ] **Step 2: Run** `pnpm test src/web/files/renderers` and `pnpm test:e2e e2e/markdown-renderer.spec.ts` — FAIL.
 
-- [ ] **Step 3: Implement.** Texts of both sides through `blobUrl` at the revision (as the image renderer's `useImageSide`), hunks through `hunksQuery`. Unified: the new document's blocks in order, with removal-only blocks inserted before the new block that follows their old position; side-by-side on desktop shows old and new columns, stacked under 640px (`NOT_PHONE`). Fold threshold: more than 3 unchanged blocks. Boxes are `ClusterControls` with the same callbacks as DiffBody, on a bar colored from tokens (`--added`, `--removed`, `--pending`-family as `docs/design/README.md` names them).
+- [ ] **Step 3: Implement.** One component for both diffs: units are `file.clusters` in the full diff, `hunks.data.pieces` in the since view. Texts of both sides through `blobUrl(revision, index, side, from)` (as the image renderer's `useImageSide`), hunks through `hunksQuery`. Unified: the new document's blocks in order, with removal-only blocks inserted before the new block that follows their old position; side-by-side on desktop shows old and new columns, stacked under 640px (`NOT_PHONE`). Fold threshold: more than 3 unchanged blocks. Boxes are `ClusterControls` with the same callbacks as DiffBody, on a bar colored from tokens (`--added`, `--removed`, `--pending`-family as `docs/design/README.md` names them).
 
 - [ ] **Step 4: Run** — PASS; `pnpm verify:fast` (with the phone project: this is layout).
 
@@ -276,6 +316,7 @@
   - Threads: a line thread on new line 13 shows under the block holding line 13; in Text it shows on line 13.
   - Find: stepping to a hit in a rendered block scrolls to that block; a hit inside a link URL switches the view to Text (`useLineTargetText`), the stored pick unchanged.
   - Coverage pin: renderer state (`rendererPicks`, `markdown`) never reaches `buildReviewView` (extend CAR-38's pin with `"markdown"`).
+  - since view: `blockCommentSpan` over pieces; a comment on a removal-only block posts on its base line (CAR-217's mapping), as the since line view does; threads show under their block in the since view.
   - e2e: a comment on a block posts `start_line..line` to the fake gh (`p.ghLog()` shows `start_line: 12, line: 14, side: "RIGHT"`); an unchanged block has no comment button; the file comment stays in the header.
 
 - [ ] **Step 2: Run** — FAIL.
@@ -294,7 +335,7 @@
 - carbonless-gallery: `base/markdown-readme` and `case/markdown-readme` branches, a README row
 - Modify: nothing in the repo beyond earlier tasks
 
-- [ ] **Step 1:** Push the gallery case: a README with list item edits, a table row change, a split paragraph, a code fence change, a deleted section, a paragraph with two separate edits, a whitespace-only change, a relative and a remote image. Open its PR with what to look at.
-- [ ] **Step 2:** Run `crb` on it from a branch instance and check every case in Rendered and Text (screenshots desktop + phone to the scratchpad).
+- [ ] **Step 1:** Push the gallery case: a README with list item edits, a table row change, a split paragraph, a code fence change, a deleted section, a paragraph with two separate edits, a whitespace-only change, a relative and a remote image; then a second push reworking two of those blocks, so the since view has something to show. Open its PR with what to look at.
+- [ ] **Step 2:** Run `crb` on it from a branch instance and check every case in Rendered and Text, in the full diff and the since view (screenshots desktop + phone to the scratchpad).
 - [ ] **Step 3:** Draft the release note in the report: `Release note (new): Markdown files open rendered, with a review box on each changed block; Text is one tap away.`
 - [ ] **Step 4:** Open the PR on Gilthans/carbonless (`Fixes CAR-167`), what to QA with gallery links, edge cases; CI green.

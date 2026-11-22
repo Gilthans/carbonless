@@ -26,6 +26,9 @@ The owner's words:
   always improve the pairing."
 - 2026-11-18, on comments: a comment on a block goes "on all the changed
   lines in the last cluster of the block".
+- 2026-11-22, on the since view (the interdiff between two patch sets):
+  "Interdiff should be a first class citizen in carbonless - everything
+  that works on basediff should work on interdiff as well."
 - 2026-11-22, on a block with two separate edits (unchanged lines between
   them): "Definitely show two separate edits whenever possible", so each
   edit keeps its own cluster and box.
@@ -50,7 +53,10 @@ hiding a change).
    with two separate edits has two), a colored bar, and its changes marked.
 3. **Rendered and Text** switch with the view buttons CAR-38 added. A `.md`
    file opens in Rendered; the pick per file is remembered like images'.
-4. **Carries, re-review and comments work as for any cluster.** Ticks made
+4. **The since view (interdiff) works the same.** Rendered is offered
+   there too, its pieces cut at blocks as the full diff's clusters are,
+   with a box per piece on its block.
+5. **Carries, re-review and comments work as for any cluster.** Ticks made
    before this change carry onto the new pieces; nothing resets.
 
 ## Non-goals
@@ -227,6 +233,30 @@ A renderer `markdown` on the seam (`src/web/files/renderers/`):
   source that isn't rendered (a link's URL) switches to Text for the view,
   as CAR-38's `useLineTargetText` does for SVG.
 - **Loading**: as the Text view (principle 8).
+
+### The since view (interdiff)
+
+The since view compares the viewed patch set with an earlier one; what it
+marks are pieces (`src/shared/pieces.ts`, `sincePieces`): runs of changed
+lines, each owning lines of one full-diff cluster. Marks are stored by
+line (`lines-reviewed`), so cutting a piece needs no carry.
+
+- **The cut:** for a Markdown file, `sincePieces` cuts each run at block
+  boundaries the same way (blocks of the compared patch set's text on the
+  old side, the viewed head's on the new), with the same pairing, order and
+  contiguity rules. One function does the grouping for both cuts. A piece
+  already never spans two clusters; now it never spans two blocks either.
+- **The view:** the Rendered view reads the since view's two sides
+  (the blob route with `from`) and its pieces, and shows a box per piece on
+  its block, with the since view's kinds (reworked, new, reverted, removed)
+  as the line view shows them; a piece of the compared patch set only (red,
+  gone) shows struck with its since-only box. Unchanged-since text renders
+  at full strength and folds like the full diff's.
+- **Comments, threads, find:** as in the full diff; a comment on a removed
+  line posts on its base line, as the since line view does (CAR-217).
+
+Anything later built for the full diff's Rendered view is built for the
+since view too.
 
 ### Sanitizing
 
