@@ -353,9 +353,12 @@ test("Detach in the status modal: the toast says it left, the question waits, th
 	await expect(toast).toContainText(`${SESSION.name} left`);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
 	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
-	// Back to the card: the modal (now the setup) closed, Files changed.
+	// Back to the card: the modal (now the setup) closed, then the drawer
+	// it was over (the status button opened it), Files changed.
 	await page.keyboard.press("Escape");
 	await expect(setupDialog(page)).toHaveCount(0);
+	await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
+	await expect(reviewDrawer(page)).toHaveCount(0);
 	await page.getByRole("link", { name: "Files changed" }).click();
 	// Two status polls later the ACP buddy is still off (the approved join
 	// cleared this review's spawn flag, and Detach doesn't set it): the

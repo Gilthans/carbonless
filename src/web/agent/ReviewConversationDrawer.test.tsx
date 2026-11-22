@@ -11,12 +11,13 @@ import {
 import userEvent from "@testing-library/user-event";
 import { Profiler, useMemo } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { inRouter } from "../../../test/in-router";
 import { heldJson } from "../../../test/loading";
 import type { AgentStatus, AgentThread } from "../../shared/agent";
 import type { PrOverview, SessionInfo } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import { ShortcutsProvider } from "../shortcuts";
-import { resetAgentChipPress } from "./AgentChip";
+import { openSetupOverDrawer, resetAgentChipPress } from "./AgentChip";
 import { resetAgentWrites } from "./agentWrites";
 import { agentStatusQuery, agentThreadsQuery } from "./api";
 import {
@@ -26,9 +27,15 @@ import {
 	useReviewDrawerOpen,
 } from "./drawerStore";
 import { ReviewConversationDrawer } from "./ReviewConversationDrawer";
-import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
+import { AgentSetupHost } from "./setup/AgentSetup";
+import {
+	closeAgentSetup,
+	resetSetupReturnFocus,
+	useAgentSetupOpen,
+} from "./setupStore";
 import {
 	resetAgentDrafts,
+	SEEN_AFTER_MS,
 	type SendView,
 	SendViewHost,
 	usePublishSendView,
@@ -100,6 +107,7 @@ afterEach(() => {
 	resetAgentWrites();
 	resetAgentDrafts();
 	resetAgentChipPress();
+	resetSetupReturnFocus();
 	vi.unstubAllGlobals();
 });
 
@@ -128,6 +136,8 @@ function show(
 		status?: AgentStatus | null;
 		/** The session's patch sets; null: the session not read yet. */
 		session?: Partial<SessionInfo> | null;
+		/** The page's agent setup modal too (AgentSetupHost, in a router). */
+		setup?: boolean;
 	} = {},
 ) {
 	const client = new QueryClient({
@@ -165,6 +175,7 @@ function show(
 					</button>
 					<ReviewConversationDrawer key={review} />
 					<States />
+					{opts.setup && inRouter(() => <AgentSetupHost />)}
 				</SendViewHost>
 			</ShortcutsProvider>
 		</QueryClientProvider>
@@ -286,7 +297,7 @@ describe("ReviewConversationDrawer", () => {
 		expect(screen.getByTestId("setup")).toHaveTextContent("open");
 	});
 
-	it("on a phone: full screen, and the status button swaps it for the agent modal", async () => {
+	it("on a phone: full screen, and the status button opens the agent modal over it, which stays open", async () => {
 		vi.stubGlobal("matchMedia", (query: string) => ({
 			matches: false,
 			media: query,
@@ -310,7 +321,11 @@ describe("ReviewConversationDrawer", () => {
 		expect(d.contains(document.activeElement)).toBe(true);
 		await user.click(within(d).getByRole("button", { name: "Agent status" }));
 		expect(screen.getByTestId("setup")).toHaveTextContent("open");
-		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+		act(() => closeAgentSetup());
+		expect(
+			screen.getByRole("dialog", { name: "Whole review conversation" }),
+		).toBeVisible();
 	});
 
 	it("overlaid, it follows the header on scroll without re-rendering (its top set on the element)", async () => {
@@ -398,7 +413,7 @@ describe("ReviewConversationDrawer", () => {
 		expect(screen.getByTestId("agent-chip")).toHaveFocus();
 	});
 
-	it("nothing set up, a review conversation already there: Shift+A opens the setup, never the drawer", async () => {
+	it("nothing set up, a review conversation already there: Shift+A opens the drawer and the setup over it", async () => {
 		const { user } = show({
 			threads: [review({ unread: true })],
 			status: {
@@ -411,7 +426,9 @@ describe("ReviewConversationDrawer", () => {
 		});
 		await user.keyboard("{Shift>}A{/Shift}");
 		expect(screen.getByTestId("setup")).toHaveTextContent("open");
-		expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+		act(() => closeAgentSetup());
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
 	});
 
 	it.each<[string, Partial<AgentStatus>]>([
@@ -425,7 +442,7 @@ describe("ReviewConversationDrawer", () => {
 			{ error: "the agent exited", connected: false },
 		],
 	])(
-		"no agent connected (%s): Shift+A opens the setup, never the drawer",
+		"no agent connected (%s): Shift+A opens the drawer and the setup over it",
 		async (_n, more) => {
 			const { user } = show({
 				threads: [review({ unread: true })],
@@ -433,7 +450,7 @@ describe("ReviewConversationDrawer", () => {
 			});
 			await user.keyboard("{Shift>}A{/Shift}");
 			expect(screen.getByTestId("setup")).toHaveTextContent("open");
-			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("open");
 		},
 	);
 
@@ -607,6 +624,115 @@ describe("ReviewConversationDrawer", () => {
 		expect(within(drawer()).getAllByTestId("agent-message-human")).toHaveLength(
 			1,
 		);
+	});
+});
+
+describe("the agent setup over the drawer (CAR-210)", () => {
+	const none: AgentStatus = {
+		...status,
+		state: "off",
+		agent: undefined,
+		connected: false,
+	};
+	const setupDialog = () => screen.getByTestId("agent-setup");
+
+	it.each<[string, AgentThread[]]>([
+		["an empty conversation", []],
+		["a conversation there", [review()]],
+	])(
+		"no agent connected, %s: Shift+A opens both, focus in the setup; Escape closes the setup alone, focus into the drawer's composer; a second Escape closes the drawer",
+		async (_n, threads) => {
+			const { user } = show({ threads, status: none, setup: true });
+			await user.keyboard("{Shift>}A{/Shift}");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+			expect(screen.getByTestId("setup")).toHaveTextContent("open");
+			expect(drawer()).toBeVisible();
+			await waitFor(() =>
+				expect(setupDialog().contains(document.activeElement)).toBe(true),
+			);
+			await user.keyboard("{Escape}");
+			expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+			expect(composer()).toHaveFocus();
+			await user.keyboard("{Escape}");
+			expect(screen.getByTestId("drawer")).toHaveTextContent("closed");
+			expect(screen.getByTestId("agent-chip")).toHaveFocus();
+		},
+	);
+
+	it("closed, the setup leaves focus in the composer through a send (no jump to the panel)", async () => {
+		const { user } = show({ threads: [], status: none, setup: true });
+		await user.keyboard("{Shift>}A{/Shift}");
+		await user.keyboard("{Escape}");
+		expect(composer()).toHaveFocus();
+		await user.type(composer() as HTMLElement, "Ready?");
+		await user.keyboard("{Control>}{Enter}{/Control}");
+		await waitFor(() => expect(posts).toHaveLength(1));
+		expect(posts[0]?.path).toMatch(/\/agent\/threads$/);
+		expect(composer()).toHaveValue("");
+		expect(composer()).toHaveFocus();
+	});
+
+	it("an unread answer under the setup is not marked seen; once the setup closes, it is", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		stubIntersection(true);
+		try {
+			openReviewDrawer();
+			openSetupOverDrawer();
+			show({
+				threads: [review({ unread: true, seenUpTo: "m2" })],
+				status: none,
+				setup: true,
+			});
+			await act(async () => {
+				vi.advanceTimersByTime(SEEN_AFTER_MS * 3);
+			});
+			const seen = () => posts.filter((p) => p.path.endsWith("/seen"));
+			expect(seen()).toHaveLength(0);
+			act(() => closeAgentSetup());
+			await act(async () => {
+				vi.advanceTimersByTime(SEEN_AFTER_MS);
+			});
+			expect(seen()).toHaveLength(1);
+			expect(seen()[0]?.body).toEqual({ upTo: "m4" });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("the setup's Close leaves the drawer open, focus in its composer", async () => {
+		const { user } = show({ threads: [], status: none, setup: true });
+		await user.keyboard("{Shift>}A{/Shift}");
+		await user.click(
+			within(setupDialog()).getAllByRole("button", {
+				name: "Close",
+			})[0] as HTMLElement,
+		);
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+		expect(composer()).toHaveFocus();
+	});
+
+	it("an agent connected: Shift+A opens the drawer alone", async () => {
+		const { user } = show({ threads: [], setup: true });
+		await user.keyboard("{Shift>}A{/Shift}");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+		expect(composer()).toHaveFocus();
+	});
+
+	it("the status button: the setup over the drawer, closed back onto the button", async () => {
+		openReviewDrawer();
+		const { user } = show({ threads: [review()], setup: true });
+		const button = within(drawer()).getByRole("button", {
+			name: "Agent status",
+		});
+		await user.click(button);
+		expect(screen.getByTestId("setup")).toHaveTextContent("open");
+		await user.keyboard("{Escape}");
+		expect(screen.getByTestId("setup")).toHaveTextContent("closed");
+		expect(screen.getByTestId("drawer")).toHaveTextContent("open");
+		expect(button).toHaveFocus();
 	});
 });
 
