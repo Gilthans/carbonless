@@ -3,6 +3,7 @@ import type { AgentSpanAnchor } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import {
 	commentPlace,
+	GITHUB_UNKNOWN,
 	knownBefore,
 	LINES_GONE,
 	type PostingThread,
@@ -196,6 +197,34 @@ describe("commentPlace: where a ```comment block posts", () => {
 		expect(at({ ...gh, orphaned: true }, undefined)).toEqual({
 			kind: "off",
 			why: THREAD_GONE,
+		});
+	});
+});
+
+describe("commentPlace: a conversation joined to its comment's thread (CAR-236)", () => {
+	it("a line conversation on the thread its first block started: later blocks reply to it", () => {
+		// What the server serves once a block posted (the fold's join).
+		const joined = conversation({
+			subject: "thread",
+			thread: "PRRT_9",
+			path: "src/x.ts",
+			commit: OLD,
+			side: "RIGHT",
+			line: 44,
+			startSide: "RIGHT",
+			startLine: 41,
+		});
+		expect(at(joined, undefined, "pending")).toEqual({
+			kind: "reply",
+			thread: "PRRT_9",
+		});
+	});
+
+	it("shown on its lines while GitHub can't be read: never a second new thread", () => {
+		const unknown = line({ commit: HEAD });
+		expect(at({ ...unknown, githubUnknown: true }, undefined)).toEqual({
+			kind: "off",
+			why: GITHUB_UNKNOWN,
 		});
 	});
 });

@@ -280,6 +280,17 @@ switch wouldn't happen.
   written, the browser keeps the post, shows it Posted and writes the record
   on a later load.
   The agent has no tool to post; a refusal is never retried by itself.
+  **A posted comment ties the conversation to its thread** (the owner,
+  2026-11-22: "I'd like it to be tied together, instead of just another
+  github thread over the same line"; CAR-236). Once a block from a
+  conversation on lines or a file starts a new GitHub thread, the
+  conversation is that thread's: it shows in the thread's agent panel (its
+  card opens with it on the press), as one asked with Ask agent there
+  would, never as a second thread on the line; its later blocks reply to
+  that thread. Two threads started before this: the first posted is the
+  one. The thread deleted on GitHub, it shows on its own lines again; while
+  GitHub's threads can't be read it shows there too, its blocks off (it
+  may have a thread: never a second one).
 - **Write / Preview on every box that posts to GitHub (CAR-202).** The
   reply, new-thread, edit and verdict-message boxes and the agent's
   suggested comment each have a pencil/eye toggle (Ctrl/Cmd+Shift+P).

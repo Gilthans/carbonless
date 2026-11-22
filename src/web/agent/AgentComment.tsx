@@ -41,6 +41,7 @@ import {
 	useWritePreview,
 } from "../CommentPreview";
 import { type Copied, CopyMark, copyInto, copyWord } from "../CopyMark";
+import { threadFocus } from "../files/threadFocus";
 import { RelativeTime } from "../RelativeTime";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
@@ -221,9 +222,14 @@ function CommentBox(props: {
 				place,
 				...(resend ? { resend } : {}),
 			}).then(
-				(p) => {
+				({ githubThread, ...p }) => {
 					setPostedNow(p);
 					setPhase({ kind: "ready" });
+					// A new thread: the conversation is that thread's now
+					// (CAR-236), so its card opens with it, once it's in.
+					if (place.kind === "new") {
+						threadFocus.request({ id: githubThread, conversation: thread.id });
+					}
 				},
 				(error: unknown) => {
 					if (error instanceof AgentCommentError && error.inDoubt) {

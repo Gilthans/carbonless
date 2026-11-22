@@ -46,6 +46,7 @@ export const THREAD_GONE = "This GitHub thread was deleted";
 export const UNTRACED = "Couldn't trace these lines to the latest push";
 export const CHANGED = "The code here changed since the agent wrote this";
 export const WRITES_OFF = "Not writing to GitHub here";
+export const GITHUB_UNKNOWN = "Couldn't read GitHub's threads";
 
 /** A conversation a block can post from: on lines, a file or a GitHub thread. */
 export type PostingThread = Omit<AgentThread, "anchor"> & {
@@ -99,7 +100,11 @@ const lineTarget = (
  * conversation's placement there (GET agent/placements?head=): an anchor
  * already on the head as it is; placed keeps lines and columns, changed
  * the lines only, a file comment its file; unplaced or outside are gone.
- * A GitHub-thread conversation replies to its thread, unless it's gone.
+ * A GitHub-thread conversation replies to its thread, unless it's gone;
+ * so does one whose comment started its thread (CAR-236: the server
+ * serves it on that thread). Shown on its lines only because GitHub
+ * couldn't be read (`githubUnknown`), it is off: it may have a thread,
+ * and a second one is never started.
  */
 export function commentPlace(args: {
 	thread: PostingThread;
@@ -115,6 +120,7 @@ export function commentPlace(args: {
 			? { kind: "off", why: THREAD_GONE }
 			: { kind: "reply", thread: a.thread };
 	}
+	if (thread.githubUnknown) return { kind: "off", why: GITHUB_UNKNOWN };
 	if (!head) return { kind: "pending" };
 	if (a.commit === head) {
 		return {
@@ -484,6 +490,7 @@ export async function recordPosted(
  * its way or in doubt: then the body it was sent with, so a retry looks
  * for exactly what may have landed. Then records it (recordPosted); until
  * the record is in, the post is kept in the browser and shows Posted.
+ * Answers what was posted and the GitHub thread it's on.
  */
 export async function postAgentComment(
 	client: QueryClient,
@@ -496,7 +503,7 @@ export async function postAgentComment(
 		/** A resend of a press cut short by a reload: as it was sent. */
 		resend?: NonNullable<Kept["sending"]>;
 	},
-): Promise<AgentPostedComment> {
+): Promise<AgentPostedComment & { githubThread: string }> {
 	const { thread, message, block, place } = args;
 	const clientId = agentCommentClientId(thread.id, message.id, block);
 	const sending = args.resend ??
@@ -585,5 +592,5 @@ export async function postAgentComment(
 	setKept(clientId, { posted });
 	await recordPosted(client, thread.id, message.id, clientId, posted);
 	const { github: _, ...shown } = posted;
-	return shown;
+	return { ...shown, githubThread: github.thread };
 }
