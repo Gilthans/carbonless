@@ -655,22 +655,27 @@ export async function clickPlaced(control: Locator): Promise<void> {
 	await control.click();
 }
 
+type Box = { x: number; y: number; width: number; height: number };
+
 /**
- * `control`'s box once it rests in view: the same across three animation
- * frames (see clickPlaced), its center inside the viewport. Two reads with
- * no frame between them agree even while a scroll or fling still moves
- * the control, so the frames are what make "still" mean still; and a
- * fling that outlasts the scroll into view can come to rest with the
- * control off screen (CAR-238), so it scrolls again until it rests in
- * view. Real animation frames: not for a page with a paused clock.
+ * `control`'s box once it rests where a press reaches it: scrolled into
+ * view, the same across three animation frames (see clickPlaced), and the
+ * point a press will land on (`pressAt`, the box's center by default) hits
+ * the control or a child of it. Two reads with no frame between them agree
+ * even while a scroll still moves the control, and a fling that outlasts
+ * the scroll into view can come to rest with the control off screen
+ * (CAR-238): the hit test catches both, and each try scrolls it into view
+ * again. Real animation frames: not for a page with a paused clock.
  */
 export async function placedBox(
 	control: Locator,
-): Promise<{ x: number; y: number; width: number; height: number }> {
+	pressAt: (box: Box) => { x: number; y: number } = (b) => ({
+		x: b.x + b.width / 2,
+		y: b.y + b.height / 2,
+	}),
+): Promise<Box> {
 	const page = control.page();
-	const placed: {
-		box: { x: number; y: number; width: number; height: number } | null;
-	} = { box: null };
+	const placed: { box: Box | null } = { box: null };
 	await expect(async () => {
 		await control.scrollIntoViewIfNeeded();
 		const before = await control.boundingBox();
@@ -686,14 +691,14 @@ export async function placedBox(
 		);
 		placed.box = await control.boundingBox();
 		expect(placed.box).toEqual(before);
-		const view = page.viewportSize();
-		if (placed.box && view) {
-			const cx = placed.box.x + placed.box.width / 2;
-			const cy = placed.box.y + placed.box.height / 2;
-			expect(cx >= 0 && cx < view.width && cy >= 0 && cy < view.height).toBe(
-				true,
-			);
-		}
+		if (!placed.box) return;
+		const at = pressAt(placed.box);
+		expect(
+			await control.evaluate((el, { x, y }) => {
+				const hit = document.elementFromPoint(x, y);
+				return hit !== null && el.contains(hit);
+			}, at),
+		).toBe(true);
 	}).toPass({ timeout: 10_000 });
 	if (!placed.box) throw new Error("no box");
 	return placed.box;
