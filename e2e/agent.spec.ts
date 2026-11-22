@@ -459,6 +459,10 @@ test("a question being written turns into a comment: on a line and on the file, 
 	const toComment = asking.getByRole("button", { name: "Comment instead" });
 	await expectAtBottomRight(asking, toComment);
 	await expectNoPageOverflow(page);
+	// Clear of the phone's floating Files button, which sits over the
+	// bottom right of the viewport (the quick questions make the composer
+	// tall enough to end there).
+	await toComment.evaluate((el) => el.scrollIntoView({ block: "center" }));
 	await toComment.click();
 	await expect(section.getByTestId("agent-composer")).toHaveCount(0);
 	const composer = section.getByTestId("new-thread");
@@ -484,7 +488,11 @@ test("a question being written turns into a comment: on a line and on the file, 
 	await onFile.getByRole("button", { name: "Ask agent instead" }).click();
 	const fileAsking = again.getByTestId("agent-composer");
 	await expect(fileAsking).toContainText("whole file");
-	await fileAsking.getByRole("button", { name: "Comment instead" }).click();
+	const fileToComment = fileAsking.getByRole("button", {
+		name: "Comment instead",
+	});
+	await fileToComment.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	await fileToComment.click();
 	await expect(again.getByTestId("agent-composer")).toHaveCount(0);
 	const back = again
 		.getByTestId("new-thread")
