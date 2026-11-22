@@ -4,6 +4,7 @@ import {
 	isSpanThread,
 	type SpanAgentThread,
 } from "../../shared/agent";
+import type { MovedInfo } from "../../shared/rereview/moves";
 import type { Placeable, Placements } from "../files/threadPlacement";
 
 /** An agent thread as placeThreads sees it, carrying the thread. */
@@ -68,16 +69,19 @@ export function tracedAgentPlaceables(
 	threads: readonly SpanAgentThread[],
 	snapshotHead: string,
 	placements: Placements | null,
+	/** Threads the reviewer moved (CAR-139): placed by their move wherever asked. */
+	moved?: ReadonlyMap<string, unknown> | null,
 ): AgentPlaceable[] {
 	return threads.map((thread) => {
 		const own = agentPlaceable(thread);
-		if (own.commit === snapshotHead) return own;
+		const isMoved = moved?.has(thread.id) === true;
+		if (own.commit === snapshotHead && !isMoved) return own;
 		const p = placements?.get(thread.id);
 		if (!p || p.kind === "outside") return own;
 		if (p.kind === "placed" || p.kind === "changed") {
 			const a = p.anchor;
 			const cols =
-				p.kind === "placed" && own.anchor
+				p.kind === "placed" && own.anchor && !isMoved
 					? { startCol: own.anchor.startCol, endCol: own.anchor.endCol }
 					: { startCol: null, endCol: null };
 			return {
@@ -114,6 +118,8 @@ export function tracedAgentPlaceables(
  */
 export interface AgentPlacing {
 	placements: Placements | null;
+	/** The reviewer's moves the threads stand on (CAR-139), by thread id. */
+	moves?: ReadonlyMap<string, MovedInfo> | null;
 	until: number | null;
 	/**
 	 * Asked and not in yet: one asked on another head waits for its place
@@ -177,7 +183,12 @@ export function shownAgentPlaceables(
 		placing.pending || placing.failed
 			? kept.filter((t) => t.anchor.commit === snapshotHead)
 			: kept;
-	const shown = tracedAgentPlaceables(placed, snapshotHead, placing.placements);
+	const shown = tracedAgentPlaceables(
+		placed,
+		snapshotHead,
+		placing.placements,
+		placing.moves,
+	);
 	return [
 		...shown.filter((p) => !p.thread.resolved),
 		...shown.filter((p) => p.thread.resolved),

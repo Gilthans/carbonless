@@ -16,6 +16,7 @@ import {
 	closeAgentSetup,
 	type SetupTab,
 	setAgentSetupTab,
+	takeSetupReturnFocus,
 	useAgentSetupOpen,
 	useAgentSetupTab,
 } from "../setupStore";
@@ -40,7 +41,10 @@ const TABS = [
  * Review Agent (its status and activity, Stop current, Detach) while one
  * is. A spinner until the status is in. A centred dialog on a desktop, a
  * bottom sheet on a phone; Escape, the backdrop and Close close it, focus
- * going back to what opened it. The page's shortcuts don't fire under it
+ * going back to what opened it (or into the review conversation's drawer
+ * when opened over it, setupStore's openAgentSetupOver). A native modal
+ * dialog: in the top layer, above the drawer (a phone's full-screen one
+ * too), the rest inert while it is open. The page's shortcuts don't fire under it
  * (they skip `:modal`).
  */
 export function AgentSetup(props: {
@@ -75,7 +79,8 @@ export function AgentSetup(props: {
 			if (!d.hasAttribute("open")) return;
 			if (typeof d.close === "function") d.close();
 			else d.removeAttribute("open");
-			const back = returnTo.current;
+			// Opened over the drawer: into it, else what opened it.
+			const back = takeSetupReturnFocus() ?? returnTo.current;
 			returnTo.current = null;
 			if (back instanceof HTMLElement && back.isConnected) back.focus();
 			return;

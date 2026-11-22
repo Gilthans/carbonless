@@ -3,15 +3,36 @@ import {
 	ClockIcon,
 	CommentIcon,
 	LinkExternalIcon,
+	SparkleFillIcon,
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
-import { type KeyboardEvent, useLayoutEffect, useRef } from "react";
+import {
+	type KeyboardEvent,
+	type ReactNode,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import { MAX_REPLY } from "../../shared/types";
-import { sessionQuery } from "../api";
-import { type CodeSpan, describeSpan } from "../files/selectionActions";
+import { agentAsking } from "../agent/agentWrites";
+import { askAgentAvailable, openAgentComposer } from "../agent/askAgentAction";
+import { useCommentScope } from "../agent/commentOnGithub";
+import { ASK_HANDLE, HANDLE, HANDLE_OFF } from "../agent/handle";
+import { turnedFromCard, usePendingAgent } from "../agent/pendingThread";
+import { AgentHandle } from "../agent/ThreadAgentButton";
+import { AgentCover } from "../agent/ThreadAgentPanel";
+import { ThreadAgentContext } from "../agent/threadAgent";
+import { overviewQuery, sessionQuery } from "../api";
+import {
+	type CodeSpan,
+	commentAvailable,
+	describeSpan,
+} from "../files/selectionActions";
+import { useFocusCard } from "../files/threadFocus";
 import { LabeledIcon } from "../overview/parts";
+import { Tooltip } from "../Tooltip";
 import { safeHref } from "../ui";
-import { COMMENT_SURFACE } from "./Conversation";
+import { AgentHandleRow, COMMENT_SURFACE } from "./Conversation";
 import { useClearOfNotices } from "./clearOfNotices";
 import { type LineTexts, newThreadKey } from "./drafts";
 import {
@@ -65,6 +86,12 @@ export function quoteOf(span: CodeSpan, texts: readonly string[]): string {
 	return cut.length > 1 ? `${first} …` : first;
 }
 
+const ASK_INSTEAD = "Ask agent instead";
+/** Why Ask agent instead is off on such a comment. */
+const CARRIES = "Carries your agent conversation: ask there";
+/** Why neither switch is on before the overview is known. */
+export const LOADING = "Loading the PR";
+
 /** The longest first comment: GitHub's limit less room for carbonless's hidden marker. */
 export const MAX_NEW_THREAD = MAX_REPLY - 200;
 
@@ -82,10 +109,21 @@ export function NewThread(props: {
 	item: NewThreadItem;
 	/** The span's text (quoteOf). */
 	quote: string;
+	/**
+	 * Where it is, as the view numbers its rows (the since view's own
+	 * old numbers, CAR-217); describeSpan of the span when not given.
+	 */
+	where?: string;
 	/** Posted (the thread will open where it lands). */
 	onPosted?: () => void;
 	/** A line comment's first and last line as shown (kept with the draft). */
 	lineTexts?: LineTexts;
+	/** The diff shown isn't yet the viewed head's (askAgentAvailable). */
+	headUnsure?: boolean;
+	/** Drawn in place of its agent conversation's card (Comment on it). */
+	inCard?: boolean;
+	/** The card's id for links to it (threadFocus): they find it here meanwhile. */
+	focusId?: string;
 }) {
 	const { item } = props;
 	const { clientId, span } = item;
@@ -100,6 +138,21 @@ export function NewThread(props: {
 	// Refused: the text and its Comment button stay above the notice.
 	useClearOfNotices(card, failed !== null && !item.sending);
 	const blank = !item.text.trim();
+	// Opened from an agent conversation on another version (Comment on its
+	// card), the page then showing that version: its lines checked as the
+	// selection bar checks them, so a span GitHub won't take says why here
+	// rather than after Comment.
+	const scope = useCommentScope();
+	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
+	const notHere =
+		item.agentThread && overview && scope?.inDiff(span) === false
+			? commentAvailable(span, {
+					writes: overview.writes,
+					commentLeft: overview.commentLeft !== false,
+					file: { binary: false, submodule: false },
+					inDiff: false,
+				})
+			: true;
 	useLayoutEffect(() => {
 		if (!item.focus) return;
 		const el = box.current;
@@ -116,9 +169,15 @@ export function NewThread(props: {
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
 	}, [item.text, item.sending]);
+	// Links to the conversation it carries find it while it is pending.
+	useFocusCard(props.focusId, card);
+	// The card's frame becomes the thread's: right after Comment only.
+	const [fade] = useState(
+		() => props.inCard === true && turnedFromCard(item.agentThread),
+	);
 	const post = () => {
 		const now = writer.drafts.newThread(clientId);
-		if (!now?.text.trim()) return;
+		if (!now?.text.trim() || notHere !== true) return;
 		writer.createThread(clientId);
 		closeComposer(clientId);
 		props.onPosted?.();
@@ -128,6 +187,23 @@ export function NewThread(props: {
 		if (typed && !window.confirm("Discard your comment?")) return;
 		writer.discard(newThreadKey(clientId));
 		closeComposer(clientId);
+	};
+	// The agent button: the comment becomes a question on the same span,
+	// its text moved (so no "Discard?"), nothing sent anywhere.
+	const writes = useQuery({ ...overviewQuery, enabled: false }).data?.writes;
+	// Carrying an agent conversation (Comment on its card), it stays a
+	// comment: the conversation is one already, nothing to lose by switching.
+	const askable = item.agentThread
+		? CARRIES
+		: writes
+			? askAgentAvailable(span, { writes, headUnsure: props.headUnsure })
+			: LOADING;
+	const toAgent = () => {
+		if (askable !== true) return;
+		const text = writer.drafts.newThread(clientId)?.text ?? item.text;
+		writer.discard(newThreadKey(clientId));
+		closeComposer(clientId);
+		openAgentComposer(span, undefined, text, (c) => !agentAsking(c.clientId));
 	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -141,13 +217,141 @@ export function NewThread(props: {
 	};
 	const href =
 		failed?.code === "pending-review" ? safeHref(failed.url) : undefined;
+	// Carrying an agent conversation: the thread it will be, that
+	// conversation its agent's (pendingThread.ts).
+	const agent = usePendingAgent(item);
+	const composerRef = agent?.composerRef;
+	const setBox = (el: HTMLTextAreaElement | null) => {
+		box.current = el;
+		if (composerRef) composerRef.current = el;
+	};
+	const sendingComment = (
+		<div data-testid="new-thread-sending" className="min-w-0 space-y-1">
+			<div className="flex min-h-5 items-center gap-x-1.5 px-0.5 text-xs text-muted">
+				<Avatar login={viewer ?? "you"} url="" />
+				<span className="font-semibold text-ink-soft">{viewer ?? "you"}</span>
+				<LabeledIcon icon={ClockIcon} label="Sending" className="text-warn" />
+			</div>
+			<p
+				className={`${COMMENT_SURFACE} text-sm whitespace-pre-wrap break-words`}
+			>
+				{item.text}
+			</p>
+		</div>
+	);
+	// Where a thread's agent handle is: the row's right end.
+	const askInstead = (
+		<Tooltip
+			content={askable === true ? ASK_INSTEAD : askable}
+			describe={askable !== true}
+		>
+			{(trigger) => (
+				<button
+					{...trigger}
+					type="button"
+					data-testid="new-thread-agent"
+					aria-label={ASK_INSTEAD}
+					aria-disabled={askable !== true || undefined}
+					onClick={toAgent}
+					className={`${HANDLE} ${ASK_HANDLE} ${HANDLE_OFF} focus-visible:outline-2 focus-visible:outline-accent`}
+				>
+					<SparkleFillIcon size={14} aria-hidden />
+				</button>
+			)}
+		</Tooltip>
+	);
+	const editor = (end: ReactNode) => (
+		<div className="space-y-1.5">
+			{notHere !== true && (
+				<p
+					role="alert"
+					data-testid="new-thread-not-here"
+					className="flex flex-wrap items-center gap-x-2 text-sm text-bad"
+				>
+					<AlertIcon size={14} aria-hidden className="shrink-0" />
+					{notHere}
+				</p>
+			)}
+			{failed && (
+				<p
+					role="alert"
+					data-testid="new-thread-error"
+					className="flex flex-wrap items-center gap-x-2 text-sm text-bad"
+				>
+					<AlertIcon size={14} aria-hidden className="shrink-0" />
+					{newThreadError(failed, span)}
+					{href && (
+						<a
+							href={href}
+							target="_blank"
+							rel="noreferrer"
+							className="inline-flex min-h-10 items-center gap-1 font-semibold text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+						>
+							Open on GitHub
+							<LinkExternalIcon size={14} aria-hidden />
+						</a>
+					)}
+				</p>
+			)}
+			{agent && (
+				// The thread's first comment being written: its author, as posted.
+				<div className="flex min-h-5 items-center gap-x-1.5 px-0.5 text-xs text-muted">
+					<Avatar login={viewer ?? "you"} url="" />
+					<span className="font-semibold text-ink-soft">{viewer ?? "you"}</span>
+				</div>
+			)}
+			<textarea
+				ref={setBox}
+				aria-label="Comment"
+				placeholder="Comment…"
+				rows={3}
+				maxLength={MAX_NEW_THREAD}
+				value={item.text}
+				onChange={(e) =>
+					writer.drafts.setNew(
+						clientId,
+						targetOf(span, item.agentThread),
+						e.target.value,
+						props.lineTexts,
+					)
+				}
+				onKeyDown={onKeyDown}
+				className="block max-h-96 min-h-16 w-full min-w-0 resize-none rounded-md border border-line-strong bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent"
+			/>
+			<div className="flex items-center justify-end gap-2">
+				<button
+					type="button"
+					onClick={cancel}
+					className="flex h-10 items-center rounded-md px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					data-testid="new-thread-post"
+					disabled={blank || notHere !== true}
+					onClick={post}
+					// Keeps the box's focus on a mouse click.
+					onMouseDown={(e) => e.preventDefault()}
+					className="flex h-10 items-center gap-1.5 rounded-md border border-accent/60 bg-accent/15 px-4 text-sm font-semibold text-link hover:bg-accent/25 focus-visible:outline-2 focus-visible:outline-accent disabled:border-line disabled:bg-transparent disabled:text-faint"
+				>
+					<CommentIcon size={16} aria-hidden />
+					Comment
+				</button>
+				{end}
+			</div>
+		</div>
+	);
 	return (
 		<article
 			ref={card}
 			data-testid="new-thread"
 			data-sending={item.sending || undefined}
 			aria-label="New comment"
-			className={`min-w-0 ${span.subject === "file" ? "" : "max-w-[40rem]"} overflow-hidden rounded-lg border border-edge bg-surface`}
+			data-agent-thread={agent ? item.agentThread : undefined}
+			// Carrying a conversation, as wide as its card was and its thread
+			// will be; else a line comment keeps a readable width.
+			className={`min-w-0 ${span.subject === "file" || agent ? "" : "max-w-[40rem]"} ${fade ? "frame-from-agent" : ""} overflow-hidden rounded-lg border border-edge bg-surface`}
 		>
 			<div className="flex min-h-8 min-w-0 items-center gap-2 border-b border-line bg-band px-2.5 py-1 text-xs">
 				{props.quote && (
@@ -163,94 +367,24 @@ export function NewThread(props: {
 					</code>
 				)}
 				<span className="shrink-0 font-mono text-faint">
-					{describeSpan(span)}
+					{props.where ?? describeSpan(span)}
 				</span>
 			</div>
-			<div className="space-y-1.5 p-2.5">
-				{item.sending ? (
-					<div data-testid="new-thread-sending" className="min-w-0 space-y-1">
-						<div className="flex min-h-5 items-center gap-x-1.5 px-0.5 text-xs text-muted">
-							<Avatar login={viewer ?? "you"} url="" />
-							<span className="font-semibold text-ink-soft">
-								{viewer ?? "you"}
-							</span>
-							<LabeledIcon
-								icon={ClockIcon}
-								label="Sending"
-								className="text-warn"
-							/>
-						</div>
-						<p
-							className={`${COMMENT_SURFACE} text-sm whitespace-pre-wrap break-words`}
-						>
-							{item.text}
-						</p>
+			{agent ? (
+				// The thread it will be: the conversation behind its agent
+				// handle (its panel over where the comments go), the comment
+				// being written below, as a thread's reply box is.
+				<ThreadAgentContext.Provider value={agent}>
+					<div className="space-y-2 p-2.5">
+						<AgentCover>{item.sending ? sendingComment : null}</AgentCover>
+						{item.sending ? <AgentHandleRow /> : editor(<AgentHandle />)}
 					</div>
-				) : (
-					<>
-						{failed && (
-							<p
-								role="alert"
-								data-testid="new-thread-error"
-								className="flex flex-wrap items-center gap-x-2 text-sm text-bad"
-							>
-								<AlertIcon size={14} aria-hidden className="shrink-0" />
-								{newThreadError(failed, span)}
-								{href && (
-									<a
-										href={href}
-										target="_blank"
-										rel="noreferrer"
-										className="inline-flex min-h-10 items-center gap-1 font-semibold text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-									>
-										Open on GitHub
-										<LinkExternalIcon size={14} aria-hidden />
-									</a>
-								)}
-							</p>
-						)}
-						<textarea
-							ref={box}
-							aria-label="Comment"
-							placeholder="Comment…"
-							rows={3}
-							maxLength={MAX_NEW_THREAD}
-							value={item.text}
-							onChange={(e) =>
-								writer.drafts.setNew(
-									clientId,
-									targetOf(span),
-									e.target.value,
-									props.lineTexts,
-								)
-							}
-							onKeyDown={onKeyDown}
-							className="block max-h-96 min-h-16 w-full min-w-0 resize-none rounded-md border border-line-strong bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent"
-						/>
-						<div className="flex items-center justify-end gap-2">
-							<button
-								type="button"
-								onClick={cancel}
-								className="flex h-10 items-center rounded-md px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-							>
-								Cancel
-							</button>
-							<button
-								type="button"
-								data-testid="new-thread-post"
-								disabled={blank}
-								onClick={post}
-								// Keeps the box's focus on a mouse click.
-								onMouseDown={(e) => e.preventDefault()}
-								className="flex h-10 items-center gap-1.5 rounded-md border border-accent/60 bg-accent/15 px-4 text-sm font-semibold text-link hover:bg-accent/25 focus-visible:outline-2 focus-visible:outline-accent disabled:border-line disabled:bg-transparent disabled:text-faint"
-							>
-								<CommentIcon size={16} aria-hidden />
-								Comment
-							</button>
-						</div>
-					</>
-				)}
-			</div>
+				</ThreadAgentContext.Provider>
+			) : (
+				<div className="space-y-1.5 p-2.5">
+					{item.sending ? sendingComment : editor(askInstead)}
+				</div>
+			)}
 		</article>
 	);
 }

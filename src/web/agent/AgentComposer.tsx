@@ -1,13 +1,32 @@
-import { AlertIcon, SparkleFillIcon } from "@primer/octicons-react";
+import {
+	AlertIcon,
+	CommentIcon,
+	SparkleFillIcon,
+} from "@primer/octicons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useLayoutEffect, useRef } from "react";
 import { MAX_AGENT_TEXT } from "../../shared/agent";
-import { sessionQuery } from "../api";
-import { type CodeSpan, describeSpan } from "../files/selectionActions";
+import { overviewQuery, sessionQuery } from "../api";
+import {
+	type CodeSpan,
+	commentAvailable,
+	describeSpan,
+	type SelectionContext,
+} from "../files/selectionActions";
 import { Spinner } from "../Spinner";
+import { Tooltip } from "../Tooltip";
 import { commentSurface } from "../threads/Conversation";
 import type { LineTexts } from "../threads/drafts";
+import { LOADING } from "../threads/NewThread";
+import {
+	getComposers,
+	openComposer,
+	sameSpan,
+	spanOfDraft,
+	targetOf,
+} from "../threads/newThreads";
 import { Avatar, usePerson } from "../threads/people";
+import { useThreadWriter } from "../threads/threadWrites";
 import { askAgent, dropAgentWrite, useAgentWrites } from "./agentWrites";
 import {
 	agentComposerFocused,
@@ -15,9 +34,35 @@ import {
 	setAgentComposerText,
 	useAgentComposers,
 } from "./askAgentAction";
+import { HANDLE, HANDLE_OFF } from "./handle";
 import { QuickQuestionChips } from "./QuickQuestionChips";
 import { SPAN_QUESTIONS, withQuestion } from "./quickQuestions";
 import { useSendView } from "./threadAgent";
+
+/**
+ * What Comment's availability needs beyond the overview (commentAvailable):
+ * the file's kind, whether the span's lines are GitHub's diff's, whether
+ * the diff shown is the head's, an earlier patch set. Left out: a text
+ * file, lines in the diff, the head's, the latest.
+ */
+export type AgentCommentContext = Partial<
+	Pick<SelectionContext, "file" | "inDiff" | "headUnsure" | "readOnly">
+> & {
+	/** Asked on a head other than the one the diff shows. */
+	stale?: boolean;
+	/** The head shown isn't known yet. */
+	loading?: boolean;
+};
+
+/** Where a question stands to the head shown (`head`, "" or undefined while unknown). */
+export function headFacts(
+	span: CodeSpan,
+	head: string | undefined,
+): Pick<AgentCommentContext, "stale" | "loading"> {
+	return head ? { stale: span.commit !== head } : { loading: true };
+}
+
+const COMMENT_INSTEAD = "Comment instead";
 
 /** UTF-8 bytes, as the server caps a question. */
 const bytes = (text: string) => new TextEncoder().encode(text).length;
@@ -34,8 +79,12 @@ export function AgentComposer(props: {
 	span: CodeSpan;
 	/** The span's text (quoteOf). */
 	quote: string;
+	/** Where it is, as the view numbers its rows (NewThread's `where`). */
+	where?: string;
 	/** Kept for parity with NewThread; questions aren't drafts yet. */
 	lineTexts?: LineTexts;
+	/** For its Comment button (switching to a comment). */
+	comment?: AgentCommentContext;
 }) {
 	const { clientId, span } = props;
 	const client = useQueryClient();
@@ -89,6 +138,46 @@ export function AgentComposer(props: {
 		dropAgentWrite(clientId);
 		closeAgentComposer(clientId);
 	};
+	// The Comment button: the question becomes a comment on the same span,
+	// its text moved into the comment's draft (so no "Discard?"); nothing
+	// goes to GitHub until Comment is pressed there.
+	const writer = useThreadWriter();
+	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
+	const commentable =
+		!overview || props.comment?.loading
+			? LOADING
+			: props.comment?.stale
+				? "Asked on an earlier head"
+				: commentAvailable(span, {
+						writes: overview.writes,
+						commentLeft: overview.commentLeft !== false,
+						file: props.comment?.file ?? { binary: false, submodule: false },
+						inDiff: props.comment?.inDiff,
+						headUnsure: props.comment?.headUnsure,
+						readOnly: props.comment?.readOnly,
+					});
+	const toComment = () => {
+		if (commentable !== true || sending) return;
+		dropAgentWrite(clientId);
+		closeAgentComposer(clientId);
+		// A draft already on the span (one restored from a reload) takes it,
+		// rather than a second card; one being sent doesn't.
+		const restored = getComposers().some((c) => sameSpan(c.span, span))
+			? undefined
+			: writer.drafts.get().find((d) => {
+					const at = d.create?.sending === undefined && spanOfDraft(d);
+					return at && sameSpan(at, span);
+				})?.create?.clientId;
+		const id = openComposer(span, restored);
+		const before = writer.drafts.newThread(id)?.text ?? "";
+		const joined =
+			before.trim() && text ? `${before}\n\n${text}` : before || text;
+		// A comment there carrying an agent conversation keeps carrying it.
+		const carries =
+			writer.drafts.newThread(id)?.create?.agentThread ??
+			getComposers().find((c) => c.clientId === id)?.agentThread;
+		writer.drafts.setNew(id, targetOf(span, carries), joined, props.lineTexts);
+	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
@@ -124,7 +213,7 @@ export function AgentComposer(props: {
 					</code>
 				)}
 				<span className="shrink-0 font-mono text-faint">
-					{describeSpan(span)}
+					{props.where ?? describeSpan(span)}
 				</span>
 			</div>
 			<div className="space-y-1.5 p-2.5">
@@ -189,6 +278,25 @@ export function AgentComposer(props: {
 								<SparkleFillIcon size={16} aria-hidden />
 								Ask
 							</button>
+							{/* Where a thread's agent handle is: the row's right end. */}
+							<Tooltip
+								content={commentable === true ? COMMENT_INSTEAD : commentable}
+								describe={commentable !== true}
+							>
+								{(trigger) => (
+									<button
+										{...trigger}
+										type="button"
+										data-testid="agent-composer-comment"
+										aria-label={COMMENT_INSTEAD}
+										aria-disabled={commentable !== true || undefined}
+										onClick={toComment}
+										className={`${HANDLE} ${HANDLE_OFF} border-line-strong text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent`}
+									>
+										<CommentIcon size={16} aria-hidden />
+									</button>
+								)}
+							</Tooltip>
 						</div>
 					</>
 				)}

@@ -28,6 +28,8 @@ export interface LineMapper {
 	hunkRemovingOld(n: number): MapHunk | null;
 	/** The hunk whose new range contains `n` (the one adding it). */
 	hunkAddingNew(n: number): MapHunk | null;
+	/** Every hunk, in old-side order (the objects the lookups return). */
+	readonly hunks: readonly MapHunk[];
 }
 
 /** One side of a hunk list: ranges on that side, with the shift after each. */
@@ -126,6 +128,7 @@ export function createLineMapper(hunks: readonly MapHunk[]): LineMapper {
 		newToOld: (n) => map(fresh, n),
 		hunkRemovingOld: (n) => containing(old, n),
 		hunkAddingNew: (n) => containing(fresh, n),
+		hunks: old.hunks,
 	};
 }
 

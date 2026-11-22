@@ -20,6 +20,7 @@ import {
 	run,
 	summaryMarkdown,
 	UNHANDLED,
+	UNHANDLED_LOST,
 	UNKNOWN_SOURCE,
 	unhandledPath,
 	vitestResults,
@@ -433,8 +434,12 @@ describe("labelling a job (run)", () => {
 		if (dir) rmSync(dir, { recursive: true, force: true });
 	});
 
-	/** A failed tests step whose Vitest report has `failed` failing tests. */
-	const setup = (failed: number, unhandled?: unknown) => {
+	/**
+	 * A failed tests step whose Vitest report has `failed` failing tests,
+	 * and the unhandled-errors reporter's file (it always writes one; null:
+	 * none).
+	 */
+	const setup = (failed: number, unhandled: unknown = { errors: [] }) => {
 		if (dir) rmSync(dir, { recursive: true, force: true });
 		dir = mkdtempSync(join(tmpdir(), "test-outcomes-"));
 		const reportPath = join(dir, "report.json");
@@ -480,7 +485,7 @@ describe("labelling a job (run)", () => {
 	};
 	/** A rerun that writes `report` as its JSON report. */
 	const rerunWriting =
-		(report: unknown, unhandled?: unknown) =>
+		(report: unknown, unhandled: unknown = { errors: [] }) =>
 		(_args: string[], env: Record<string, string | undefined>) => {
 			const path = env.CRB_TEST_JSON ?? "";
 			writeFileSync(path, JSON.stringify(report));
@@ -561,6 +566,50 @@ describe("labelling a job (run)", () => {
 			verdict: "consistent",
 			failed: [{ verdict: "consistent", rerunError: "again" }],
 		});
+	});
+
+	it("no unhandled-errors file next to the report: a lost error keeps the job from flaky (CAR-214)", () => {
+		const s = setup(1, null);
+		const pass = {
+			testResults: [
+				{
+					name: join(dir, "src/a.test.ts"),
+					status: "passed",
+					assertionResults: [
+						{ ancestorTitles: [], title: "t0", status: "passed" },
+					],
+				},
+			],
+		};
+		let args: string[] = [];
+		const doc = run({
+			...s,
+			cwd: dir,
+			log,
+			spawn: (a, e) => {
+				args = a;
+				rerunWriting(pass)(a, e);
+			},
+		});
+		// Only the failed test's file reruns, not every file.
+		expect(args.slice(4)).toEqual(["src/a.test.ts"]);
+		expect(doc).toMatchObject({
+			verdict: "not-rerun",
+			note: UNHANDLED_LOST,
+			failed: [
+				{ title: "t0", verdict: "flaky" },
+				{
+					file: UNKNOWN_SOURCE,
+					title: UNHANDLED,
+					error: UNHANDLED_LOST,
+					verdict: "not-rerun",
+				},
+			],
+		});
+		// Every test passed: not-rerun, never passed.
+		expect(
+			run({ ...setup(0, null), cwd: dir, log, spawn: () => {} }),
+		).toMatchObject({ verdict: "not-rerun" });
 	});
 
 	it("the rerun goes to its own report, without GitHub annotations", () => {

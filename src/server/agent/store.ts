@@ -10,11 +10,20 @@ import {
 	type AgentThread,
 	type AgentView,
 	agentCommentClientId,
+	linkedAnchor,
 	MAX_ACTIVITY_BYTES,
 	MAX_ACTIVITY_ENTRIES,
 	MAX_AGENT_ERROR,
 	MAX_AGENT_TEXT,
 } from "../../shared/agent.js";
+import type {
+	MoveSnapshot,
+	MoveUndo,
+	ThreadMove,
+	ThreadRef,
+} from "../../shared/rereview/moves.js";
+import { TRACER_VERSION } from "../../shared/tracer/index.js";
+import type { ThreadAnchorRef } from "../../shared/types.js";
 import {
 	type AgentEvent,
 	type CrbEvent,
@@ -64,13 +73,21 @@ export class UnknownAgentThreadError extends Error {
 	}
 }
 
+/**
+ * A link the store won't write (the app answers 409): the conversation is
+ * already a GitHub thread's, or that GitHub thread already has one.
+ */
+export class AgentLinkError extends Error {}
+
 const iso = (ms: number) => new Date(ms).toISOString();
 const isAgentEvent = (e: CrbEvent): e is AgentEvent =>
 	e.type === "agent-thread-opened" ||
 	e.type === "agent-message" ||
 	e.type === "agent-thread-resolved" ||
 	e.type === "agent-thread-seen" ||
-	e.type === "agent-comment-posted";
+	e.type === "agent-comment-posted" ||
+	e.type === "agent-thread-linked";
+
 const clientIdOf = (e: CrbEvent): string | undefined => {
 	const id = e.details?.clientId;
 	return typeof id === "string" ? id : undefined;
@@ -203,6 +220,15 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 				].sort((a, b) => a.block - b.block);
 				break;
 			}
+			case "agent-thread-linked":
+				// A span conversation becomes the GitHub thread's, once; a link
+				// onto a GitHub thread that has a conversation already is
+				// dropped (the conversation stays on its span, still listed).
+				if (!thread || thread.anchor.subject === "thread") break;
+				if (byGithub.has(e.github)) break;
+				thread.anchor = linkedAnchor(thread.anchor, e.github);
+				byGithub.set(e.github, id);
+				break;
 		}
 	}
 	const out = [...threads.values()];
@@ -601,6 +627,122 @@ export class AgentThreadStore {
 		});
 	}
 
+	/**
+	 * The thread moves in the ref (`thread-moved`, `thread-move-undone`),
+	 * as read: an agent thread's move is dropped unless that thread was
+	 * opened on lines (a file thread, a thread conversation and the review
+	 * conversation are never moved); a GitHub thread's is kept (the
+	 * caller uses it only for a thread GitHub lists). Folding is the
+	 * caller's (foldMoves), with the legacy moves it holds.
+	 */
+	async moves(): Promise<{ moves: ThreadMove[]; undos: MoveUndo[] }> {
+		return movesOf(await this.#events());
+	}
+
+	/** Writes a `thread-moved` (by the reviewer); returns the move. */
+	move(input: {
+		thread: ThreadRef;
+		on: MoveSnapshot;
+		anchor: ThreadAnchorRef;
+	}): Promise<ThreadMove> {
+		return this.#serial(async () => {
+			const events = await this.#events();
+			const { path, startSide, startLine, side, line } = input.anchor;
+			const event = newEvent(
+				"thread-moved",
+				this.slug,
+				{
+					thread: { source: input.thread.source, id: input.thread.id },
+					on: input.on,
+					anchor: { path, startSide, startLine, side, line },
+					engine: TRACER_VERSION,
+				},
+				"human",
+				stampAfter(events),
+			);
+			const where = `${oneLinePath(path)}:${line}`;
+			const on =
+				input.on.patchset !== undefined
+					? `PS${input.on.patchset}`
+					: input.on.head.slice(0, 7);
+			await this.store.appendEvent(
+				this.#ref,
+				`crb: moved a thread to ${where} on ${on}`,
+				event,
+				this.slug,
+			);
+			return {
+				id: event.id,
+				ts: event.ts,
+				thread: event.thread,
+				on: event.on,
+				anchor: event.anchor,
+				engine: event.engine,
+			};
+		});
+	}
+
+	/** Writes a `thread-move-undone` taking back move `move` of `thread`. */
+	undoMove(thread: ThreadRef, move: string): Promise<MoveUndo> {
+		return this.#serial(async () => {
+			const events = await this.#events();
+			const event = newEvent(
+				"thread-move-undone",
+				this.slug,
+				{ thread: { source: thread.source, id: thread.id }, move },
+				"human",
+				stampAfter(events),
+			);
+			await this.store.appendEvent(
+				this.#ref,
+				"crb: undid a thread move",
+				event,
+				this.slug,
+			);
+			return { id: event.id, ts: event.ts, thread: event.thread, move };
+		});
+	}
+
+	/**
+	 * The reviewer started GitHub thread `github` from this span
+	 * conversation: it becomes that thread's conversation. Already linked
+	 * to it: nothing written. Refused (AgentLinkError) when the
+	 * conversation is another GitHub thread's, or `github` has one.
+	 */
+	link(thread: string, github: string): Promise<AgentThreadFold> {
+		return this.#serial(async () => {
+			const events = await this.#events();
+			const { threads } = foldWithAliases(events);
+			const current = this.#find(events, thread);
+			if (current.anchor.subject === "thread") {
+				if (current.anchor.thread === github) return current;
+				throw new AgentLinkError(
+					"This conversation is already on a GitHub thread",
+				);
+			}
+			const taken = threads.find(
+				(t) => t.anchor.subject === "thread" && t.anchor.thread === github,
+			);
+			if (taken) {
+				throw new AgentLinkError(
+					"That GitHub thread already has a conversation",
+				);
+			}
+			const event = newEvent(
+				"agent-thread-linked",
+				this.slug,
+				{ thread: current.id, github },
+				"human",
+				stampAfter(events),
+			);
+			return this.#write(
+				events,
+				"crb: agent thread linked to a GitHub thread",
+				event,
+			);
+		});
+	}
+
 	/** The ref's events; every human clientId in them is remembered. */
 	async #events(): Promise<CrbEvent[]> {
 		const events = await this.store.readEvents(this.#ref);
@@ -679,6 +821,41 @@ export class AgentThreadStore {
 		this.#writes = next.catch(() => {});
 		return next;
 	}
+}
+
+/** A path on one line, for a commit's summary. */
+const oneLinePath = (path: string) =>
+	path.replace(/[\r\n]+/g, " ").slice(0, 200);
+
+/** The moves and undos of a ref's events (AgentThreadStore.moves). */
+export function movesOf(events: readonly CrbEvent[]): {
+	moves: ThreadMove[];
+	undos: MoveUndo[];
+} {
+	const lines = new Set(
+		foldAgentThreads(events)
+			.filter((t) => t.anchor.subject === "line")
+			.map((t) => t.id),
+	);
+	const movable = (t: ThreadRef) => t.source === "github" || lines.has(t.id);
+	const moves: ThreadMove[] = [];
+	const undos: MoveUndo[] = [];
+	for (const e of events) {
+		if (e.by !== "human") continue;
+		if (e.type === "thread-moved" && movable(e.thread)) {
+			moves.push({
+				id: e.id,
+				ts: e.ts,
+				thread: e.thread,
+				on: e.on,
+				anchor: e.anchor,
+				engine: e.engine,
+			});
+		} else if (e.type === "thread-move-undone") {
+			undos.push({ id: e.id, ts: e.ts, thread: e.thread, move: e.move });
+		}
+	}
+	return { moves, undos };
 }
 
 const aiKey = (origin: AgentOrigin, key: string) => `${origin.message} ${key}`;

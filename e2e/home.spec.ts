@@ -11,6 +11,7 @@ import {
 } from "./files-ui";
 import {
 	expect,
+	expectLoadingThen,
 	installClock,
 	OWNER_REPO,
 	PR_NUMBER,
@@ -297,6 +298,68 @@ test("opens a PR by URL, by owner/repo#n and by repo then title words", async ({
 	).toBeVisible();
 	await box.press("Enter");
 	await expect(page).toHaveURL(new RegExp(`${reviewPath}$`));
+});
+
+test("a bare number lists that PR in each view repo; Enter opens the chosen one; an unknown one spins, then shows", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const made = await setup(workdir, pr, { widgetInView: true });
+	made.editScenario((s) => {
+		s.repos?.["acme/api"]?.prs.push(
+			homePr({
+				repo: "acme/api",
+				number: PR_NUMBER,
+				title: "Same number, other repo",
+				author: "alice",
+				updatedAt: iso(40),
+			}),
+			// Closed a month ago: Home doesn't know it, search reads it.
+			homePr({
+				repo: "acme/api",
+				number: 40,
+				title: "Old cleanup",
+				author: "alice",
+				state: "CLOSED",
+				closedAt: iso(60 * 24 * 30),
+			}),
+		);
+	});
+	const crb = await startCrb();
+	const reviewPath = new URL(crb.url).pathname;
+	const box = page.getByRole("combobox", { name: "Open a pull request" });
+
+	await goHome(page, crb.url);
+	await box.click();
+	await box.pressSequentially(`#${PR_NUMBER}`);
+	const group = page.getByRole("group", { name: `#${PR_NUMBER}` });
+	const rows = group.getByRole("option");
+	await expect(rows).toHaveCount(2);
+	await expect(rows.nth(0)).toContainText("acme/api");
+	await expect(rows.nth(0)).toContainText("Same number, other repo");
+	await expect(rows.nth(1)).toContainText(OWNER_REPO);
+	await expect(rows.nth(1)).toContainText("Add widget cache");
+	await box.press("ArrowDown");
+	await box.press("Enter");
+	await expect(page).toHaveURL(new RegExp(`${reviewPath}$`));
+
+	await goHome(page, crb.url);
+	made.editScenario((s) => {
+		s.hold = ["home:acme/api"];
+	});
+	await box.click();
+	await box.pressSequentially("40");
+	const numbered = page.getByRole("group", { name: "#40" });
+	await expectLoadingThen({
+		loading: numbered.and(page.locator("[aria-busy=true]")),
+		empty: [page.getByTestId("suggestions-empty")],
+		release: () => release(made.scenarioPath, "home:acme/api"),
+		result: numbered.getByRole("option", { name: /Old cleanup/ }),
+	});
+	await box.press("Enter");
+	await expect(page).toHaveURL(/\/pr\/acme\/api\/40$/);
 });
 
 test("a PR chosen in the open box shows at once, loading, then becomes its review", async ({

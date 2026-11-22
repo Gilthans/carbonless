@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.4.0 (2026-11-22)
+
+### New
+
+- Files changed has a Threads tab beside the file tree, listing every conversation on the PR newest first, with where it is, who spoke last and a one-line excerpt. (CAR-183, #110)
+- Changed images show as images: compare before and after with a slider or a fade, or side by side. View buttons switch a file between Image, Text and Binary. A renamed binary file no longer says "Binary file changed". (CAR-38, #118)
+- Ask your agent about the whole review. The header's agent chip opens a review-wide conversation in a side drawer (Shift+A). Your agent reads the PR, its GitHub threads and your progress through crb's tools, and can open conversations on the lines it points to. The chip's badge counts unread answers; with no agent set up, it opens the agent setup. (CAR-163, #120)
+- A new comment has an Ask agent button that moves your text into an agent question, and the Ask agent box has one that moves it back. Text typed in Ask agent now asks before you leave the page. (CAR-197, #127)
+- An agent conversation on code can become a GitHub comment: press Comment and the conversation turns into the new thread in place, with the agent conversation attached behind its agent button. (CAR-198, #129)
+- The review agent can suggest a review comment: it appears in its conversation as an editable box with Add review comment, which posts your edited text as you, on the conversation's lines or as a reply to its GitHub thread. (CAR-83, #132)
+- The update toast opens What's new: every version's notes up to the one on offer, with Update below. Global settings shows the running version's notes and earlier releases, each version linking to its release on GitHub. (CAR-201, #144)
+- On the Threads tab, j and k step to the next and previous conversation. (CAR-193, #145)
+- Tapping one of the agent's suggested questions fills the Ask agent box. (CAR-203, #146)
+
+### Improved
+
+- On a first review, the patch set graph now shows a dot for the PR's current position, with the commit count from the base branch. (#126)
+- With Ignore whitespace on, whitespace-only changes also drop out of the verdict's "You reviewed X of Y lines". (CAR-184, #130)
+- Your browser keeps the access key for a week after your last visit, instead of losing it when the browser closes. (#141)
+- A comment whose line was rewritten now follows the line that resembles it, and is listed under its file as deleted when nothing does, instead of landing on whatever code took its place. (CAR-95, #150)
+- Type a PR number (`123` or `#123`) in Home's open box to list that PR in your view's repos and your recent reviews' repos, and open it with Enter. (CAR-209, #154)
+
+### Fixed
+
+- The update helper always writes its result file whole, so a restarting crb never reads a half-written result. (CAR-129, #121)
+- A second crb server that sees the agent running elsewhere now shows the agent's answer straight away, not after the next poll. (CAR-187, #133)
+- While crb restarts onto a new version, the page no longer reports a connection error, and a restart that fails quickly shows its failure. (CAR-177, #134)
+- On Windows, one-click Update finds pnpm installed by pnpm's standalone installer, instead of an older pnpm on PATH that left crb on its old version. (#135)
+- The verdict card asks again when the PR's head moves before it loads, showing a spinner with its buttons disabled instead of the older head's answer. (CAR-180, #136)
+- A new patch set never briefly shows the previous patch set's review under its name. (CAR-194, #137)
+- In the since view, a cluster that grew around unchanged lines now keeps the marks you gave those lines in the earlier patch set, both reviewed and crossed off, so the file can finish there. (CAR-195, #138)
+- A link to a review clicked on another site (a GitHub PR page, Slack, email) now opens the review instead of "Missing or wrong access key"; crb answers another site's page only for a link the reviewer clicked. (CAR-199, #140)
+- In the since view, the first tick on a new push no longer makes the new and gone chips and the comment threads vanish and reappear, so the rows no longer jump under your pointer. (CAR-208, #151)
+- With no agent connected, the agent button opens the whole-review conversation with the setup on top, so it is there once setup is done. (CAR-210, #153)
+- Resetting a file, or any mark that covers several clusters, could briefly read back with some clusters still reviewed, for example after a reload during the save. (CAR-215, #157)
+- In the since view, a comment on a removed line now goes on that line on GitHub; it used to be refused, or posted on another line. A line only an earlier patch set had can't take a comment, and Comment says why. A draft saved on a removed line in a since view before this version may hold the wrong line: check it before posting. (CAR-217, #158)
+
+<details><summary>Every PR (37)</summary>
+
+- Files changed: a Threads tab beside the file tree (CAR-183) (#110)
+- Test processes stop once the test that started them is gone (#125)
+- One agent conversation about the whole review, in a drawer from the header chip (CAR-163) (#120)
+- One-click update finds the standalone pnpm.exe in PNPM_HOME on Windows (#135)
+- Patch set graph: a dot for the PR's current position on a first review (#126)
+- Key cookie SameSite=Lax, so a review link clicked on GitHub opens (CAR-199) (#140)
+- Queued test runs leave one core free (#131)
+- Since view: a grown cluster's unchanged lines carry their earlier marks, reviewed or crossed off (CAR-195) (#138)
+- pnpm release publish checks npm &gt;= 12.2 before anything else (CAR-190) (#123)
+- Release freeze: no merge between a release and its next PR (CAR-191) (#128)
+- Ignore whitespace: the verdict and the since view follow the switch; ~ on file and folder rows and headers (CAR-184) (#130)
+- Image renderer: changed images shown before/after, with Slider/Fade/Text/Binary view buttons (CAR-38) (#118)
+- Update helper writes its result whole; its test waits for the pid file (CAR-129) (#121)
+- Files: never the previous patch set's cached review under a new patch set's name (CAR-194) (#137)
+- Agent chip: the setup, not the conversation, when no agent is connected to the review (#142)
+- Release notes per version from Linear tickets: checked before merge and at promote, shipped in the package (CAR-200) (#143)
+- CI: label each failure flaky or consistent, and track the flake rate (#124)
+- The agent suggests a review comment: an editable box that posts it as the reviewer (CAR-83) (#132)
+- Update: the page stops asking for the update's state while the old crb shuts down; a fast failed restart still shows its failure (CAR-177) (#134)
+- Agent threads: a server showing elsewhere sees the holder's answer even between two polls (CAR-187) (#133)
+- Flaky fixes: CPU ratios sized on a warm reference; one layout read; the verdict card catches a head that moved before it mounted (CAR-188, CAR-179, CAR-180) (#136)
+- What's new: the update toast opens the notes up to the offered version, with Update below; Global settings shows the running version's notes (CAR-201) (#144)
+- One-tap agent questions fill the Ask agent box (CAR-203) (#146)
+- e2e: the markable walk clicks a cluster's box only once it stays put after a scroll (CAR-205) (#147)
+- e2e: the thread agent's handle checks read one settled layout (CAR-206) (#148)
+- Since view: the first tick on a new push keeps the chips and threads in place while PS2 is read (CAR-208) (#151)
+- Key cookie lasts a week from the last visit, not the browser session (#141)
+- Release note: a required check on every PR, from its ticket or its description (CAR-211) (#155)
+- Home's open box: a bare PR number (123 or #123) lists and opens that PR (CAR-209) (#154)
+- Tracer: a rewritten line follows the line that resembles it, else unplaced; pnpm score-carry (CAR-95) (#150)
+- CI labels: the unhandled-errors reporter never fails a green run; a lost file can't read as flaky (CAR-214) (#156)
+- Review marks: one action's states land in one commit, never half a reset (CAR-215) (#157)
+- Since view: a comment on a removed line posts on its base line (CAR-217) (#158)
+- No agent connected: the review conversation opens behind the agent setup (CAR-210) (#153)
+- Threads tab: j and k step through conversations (CAR-193) (#145)
+- New comment ⇄ Ask agent: a button on each composer moves the text to the other (CAR-197) (#127)
+- Agent conversations: Comment on GitHub moves a span conversation onto the new thread (CAR-198) (#129)
+</details>
+
 ## 0.3.0 (2026-11-16)
 
 - next: 0.3.0 (#74)

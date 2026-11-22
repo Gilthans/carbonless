@@ -118,7 +118,7 @@ const RE_REVIEW: Record<
 		conflicts: [],
 		carried: 2,
 		reworked: 1,
-		fresh: 0,
+		fresh: 1,
 		gone: 0,
 		absorbed: 0,
 	},
@@ -152,6 +152,20 @@ const RE_REVIEW: Record<
 		gone: 0,
 		absorbed: 2,
 	},
+};
+
+/**
+ * The lines the since view (opened → updated head) shows removed: how many
+ * name a line of the head's merge base (`based`), and how many only PS1
+ * had (`earlier`: in neither that base nor the head). `rebase-amend`
+ * amends PS1's line 30 (PS1's own) and changes base line 35 after the
+ * rebase; a conflicted file's are its base's own lines.
+ */
+const SINCE_REMOVED: Partial<
+	Record<Update, { based: number; earlier: number }>
+> = {
+	"rebase-amend": { based: 1, earlier: 1 },
+	"merge-base-in-conflict": { based: 2, earlier: 0 },
 };
 
 function matrix(m: (typeof METHODOLOGIES)[number]) {
@@ -462,6 +476,111 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		expect((await rows(s)).reverse()).toEqual(want);
 	});
 
+	it("a review thread and an agent thread moved to a.txt line 2 on the opened stage are followed from that line to the updated stage, and survive gc (CAR-139)", async () => {
+		const threads = [
+			reviewThread({ path: "a.txt", line: 30, diffSide: "RIGHT" }, [
+				threadComment({
+					login: "rev1",
+					text: "On 30",
+					commit: repo.heads.opened,
+					createdAt: TIMES.review,
+				}),
+			]),
+		];
+		const withThreads = (st: Stage) => {
+			repo.setStage(st);
+			const entry = repo.prEntry(st);
+			process.env.CRB_FAKE_GH = writeScenario(tmp, {
+				repoPath: repo.path,
+				user: { login: "Octo_Cat" },
+				nameWithOwner: "acme/widget",
+				prs: {
+					[NUMBER]: {
+						...entry,
+						graphql: { ...entry.graphql, reviewThreads: threads },
+					},
+				},
+			});
+		};
+		withThreads("opened");
+		const s = await open();
+		const ps1 = s.snapshot();
+		const key = ps1.files[0]?.clusters[0]?.key ?? "";
+		await s.setStates(ps1.revision, [{ key, state: "reviewed" }]);
+		const readId = (await s.overview(0)).readId;
+		const [github] = (await s.threads(readId, "summary")).threads;
+		const agent = s.agent;
+		if (!github || !agent) throw new Error("no thread or no agent");
+		const asked = await agent.open({
+			clientId: "q1",
+			text: "Why?",
+			span: {
+				subject: "line",
+				path: "a.txt",
+				commit: repo.heads.opened,
+				side: "RIGHT",
+				line: 30,
+				startSide: "RIGHT",
+				startLine: 30,
+			},
+		});
+		const line2 = {
+			path: "a.txt",
+			startSide: "RIGHT" as const,
+			startLine: 2,
+			side: "RIGHT" as const,
+			line: 2,
+		};
+		for (const thread of [
+			{ source: "github" as const, id: github.id },
+			{ source: "agent" as const, id: asked.id },
+		]) {
+			await s.moveThread({ thread, to: { patchset: 1 }, anchor: line2 });
+		}
+		withThreads("updated");
+		await s.refresh();
+		const placed = async (session: Session) => {
+			const read = (await session.overview(0)).readId;
+			const to = { head: repo.heads.updated };
+			let answer = await session.placements(to, read);
+			while ("pending" in answer) {
+				await new Promise((r) => setTimeout(r, 20));
+				answer = await session.placements(to, read);
+			}
+			const agentAnswer = await session.agentPlacements(
+				session.agent as NonNullable<typeof session.agent>,
+				to,
+			);
+			// The updated stage's snapshot is PS1's own when neither its head
+			// nor its merge base moved: the moves are then made on it (rule 1).
+			const here = answer.revision === ps1.revision;
+			return [
+				answer.threads.find((t) => t.id === github.id),
+				agentAnswer.threads.find((t) => t.id === asked.id),
+			].map((t) => ({
+				placement: t?.placement,
+				here: t?.moved?.here === here,
+			}));
+		};
+		// However the branch was kept current, line 2 is the same text on
+		// the updated head (for base-absorbs it is the base's own by then,
+		// context in the comparison): both are followed onto it, from PS1's
+		// snapshot (or placed as moved, on PS1's own snapshot).
+		const want = {
+			placement: { kind: "placed", anchor: line2, changed: false },
+			here: true,
+		};
+		expect(await placed(s)).toEqual([want, want]);
+		// PS1's pins keep the move's snapshot through gc.
+		const clone = clonePath("acme", "widget");
+		const git = (...args: string[]) =>
+			execFileSync("git", ["-C", clone, ...args], { env: testGitEnv() });
+		git("reflog", "expire", "--expire=now", "--all");
+		git("gc", "--quiet", "--prune=now");
+		await Session.closeAll();
+		expect(await placed(await open())).toEqual([want, want]);
+	});
+
 	it("orders the timeline by GitHub's facts: a rebase's commits by their new times, then its force-push; the merge, not the close", async () => {
 		const shape = async (s: Session) =>
 			(await s.timeline((await s.overview(0)).readId)).events.map((e) =>
@@ -518,6 +637,50 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		const beforeLanding = await open(BEFORE_LANDING);
 		expect(beforeLanding.info().snapshotHead).toBe(repo.heads.updated);
 		expectPrOwnChanges(beforeLanding, "updated");
+	});
+
+	it("the since view's removed lines name their line in the head's merge base, GitHub's LEFT line on the head; a line only PS1 had names none (CAR-217)", async () => {
+		const s = await open();
+		const ps1 = s.snapshot();
+		await s.setStates(
+			ps1.revision,
+			ps1.files.flatMap((f) =>
+				f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+			),
+		);
+		stage("updated");
+		await s.refresh();
+		const mergeBase = execFileSync(
+			"git",
+			["merge-base", "main", repo.heads.updated],
+			{ cwd: repo.path, env: testGitEnv(), encoding: "utf8" },
+		).trim();
+		const view = await s.viewHead(repo.heads.updated);
+		const baseText = (path: string) =>
+			execFileSync("git", ["show", `${mergeBase}:${path}`], {
+				cwd: repo.path,
+				env: testGitEnv(),
+				encoding: "utf8",
+			}).split("\n");
+		const removed: { path: string; text: string; baseNo: number | null }[] = [];
+		for (const f of view.files) {
+			const { hunks } = await s.interdiffHunks(1, view.revision, f.index);
+			for (const l of hunks.flatMap((h) => h.lines)) {
+				if (l.kind !== "del") continue;
+				// Never left unset: the page would refuse it (fails closed).
+				expect(l.baseNo).not.toBeUndefined();
+				removed.push({ path: f.path, text: l.text, baseNo: l.baseNo ?? null });
+			}
+		}
+		for (const r of removed) {
+			if (r.baseNo === null) continue;
+			// The base's own line, the one GitHub shows on the head's LEFT.
+			expect(baseText(r.path)[r.baseNo - 1]).toBe(r.text);
+		}
+		expect({
+			based: removed.filter((r) => r.baseNo !== null).length,
+			earlier: removed.filter((r) => r.baseNo === null).length,
+		}).toEqual(SINCE_REMOVED[m.update] ?? { based: 0, earlier: 0 });
 	});
 
 	it("re-review from the opened head to the updated one: the shape, the interdiff and the carry; the first action on the viewed head starts PS2 with them", async () => {

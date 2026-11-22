@@ -128,23 +128,37 @@ Tap:
 
 | Agent (`chipOpensDrawer`) | Tap |
 |---|---|
-| connected (`connected`: a spawned agent's process up, even after a failed turn such as a rate limit or a time limit; or a joined session) | toggles the drawer |
-| on its way: starting, reconnecting, elsewhere (another crb server answers), or spawned and configured with the runner not up yet | toggles the drawer |
-| failed with no live agent (crashed, failed to start, didn't attach) | opens the agent modal (setup, or its status with the error and Restart once spawned) |
-| off with no spawn under way (stopped, or none ever joined), configured or not | opens agent setup |
-| spawned with nothing configured | opens agent setup |
-| no status | opens agent setup |
+| connected (`connected`: a spawned agent's process up, even after a failed turn such as a rate limit or a time limit; or a joined session) | opens the drawer |
+| on its way: starting, reconnecting, elsewhere (another crb server answers), or spawned and configured with the runner not up yet | opens the drawer |
+| failed with no live agent (crashed, failed to start, didn't attach) | opens the drawer with the agent modal over it (setup, or its status with the error and Restart once spawned) |
+| off with no spawn under way (stopped, or none ever joined), configured or not | opens the drawer with agent setup over it |
+| spawned with nothing configured | opens the drawer with agent setup over it |
+| no status | opens the drawer with agent setup over it |
 
 Even with a review conversation already there, the rule holds. An open
-drawer always closes from the chip or Shift+A, whatever the agent.
+drawer always closes from the chip or Shift+A, whatever the agent (the
+modal over it, a native modal dialog, takes every tap and key while it is
+open).
+
+Layers (CAR-210): the setup is a native modal `<dialog>` in the top layer,
+above the drawer however it shows (pushing the page at ≥1024px, over it
+at 640–1023px, full screen on a phone), the rest inert under it. Focus is
+in the setup while it is open; closed (done, Close, Escape, the
+backdrop), the drawer stays open and focus goes into its composer.
+Escape closes only the top layer: the setup, then the drawer on a
+second Escape. The drawer's status button opens the modal over it the
+same way on desktop and phone, focus back on the button once it closes.
 
 Owner QA 2026-11-16: "if there's no agent associated, it should open the
 setup modal instead of the side bar"; Shift+A does the same. 2026-11-18:
 "It should open it if there is no agent connected to the review. If it's
 starting or lagging that's fine, but it failed, stopped, or none ever
-joined, it should open the setup modal". A tap before
+joined, it should open the setup modal". Later on 2026-11-18 (CAR-210):
+"when clicking the top right agent button, it should open the whole
+review conversation dialog *along with* the setup modal. So that once the
+setup is complete, I see the whole review conversation sidebar". A tap before
 the first status read is held (the chip's spinner) and acted on once the
-status lands, so the drawer never opens only to be swapped for the setup;
+status lands, so the drawer never opens without the setup it comes with;
 a second tap cancels it and a failed read spends it. Today a joined
 session's chip opens a popover with Disconnect (`chipPopover`); the drawer
 replaces it, and Disconnect stays one tap away as the modal's Detach, via
@@ -371,7 +385,8 @@ Unit:
   third-party text sanitised (a hostile comment body is fenced), GitHub
   unreadable said as such, never an empty list.
 - web: chip states (no agent connected: failed, stopped, none joined →
-  setup; connected or on its way → toggles the drawer; unread count; pressed; accessible name); the drawer
+  the drawer with the setup over it, which closes alone; connected or on
+  its way → the drawer alone; open → closes; unread count; pressed; accessible name); the drawer
   (empty state focuses the composer, opens at the end / at "new", marks
   seen, status button opens the modal, Escape closes; while the read is
   held: spinner, no empty composer state, no 0 count); the review thread
@@ -382,9 +397,11 @@ Playwright (desktop and phone), with the fake ACP agent:
   unread count on the chip after a later answer → reopen at "new";
 - a code link in the answer jumps to Files changed with the drawer open
   (desktop) / closed (phone);
-- status button opens Your agent; not configured: chip opens setup; a
-  configured agent that failed: chip opens the agent modal (its error,
-  Restart), never the drawer;
+- status button opens Your agent over the drawer (phone too), which stays
+  open; no agent connected: chip opens the setup over the drawer, spawned
+  and closed the drawer is there to ask; Escape closes the setup, then the
+  drawer; a configured agent that failed: chip opens the agent modal (its
+  error, Restart) over the drawer;
 - 360px: no horizontal page scroll, tap targets ≥40px;
 - coverage: after a conversation, the unreviewed counts are unchanged.
 

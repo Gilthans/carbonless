@@ -233,7 +233,9 @@ GitHub shows them on no line, they are listed under their file:
 GitHub's line isn't the same text in the patch set you are viewing, and
 for a line on the old side, which GitHub counts against its own merge
 base).
-`rewritten` means a real trace found the lines gone.
+`rewritten` means a real trace found the lines replaced but can't tell
+where they went (too large to pair, a line with no word, two equally
+likely places), or past the end of the file.
 `docs/product-rules.md`, "A thread with nothing to trace from sits on
 GitHub's line".
 
@@ -321,6 +323,15 @@ container a restart policy (`docker run --restart unless-stopped`, or
 installs the update and exits, and the container starts again. The
 update lives in the container's filesystem, so it lasts only as long as
 that container: rebuild the image to keep it.
+
+## How long does a browser keep the access key?
+
+A week since its last visit. The page strips `?key=` from its address and
+keeps the key in an HttpOnly cookie (`crb_key_<port>`) with a one-week
+`Max-Age`, set again on every request the key lets through, so a browser
+or home-screen app used at least weekly stays in, across browser and phone
+restarts. After a week away, open the link with `?key=` again (crb prints
+it at start).
 
 ## Why does a link to crb on another site open, but its script can't?
 

@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
-import { registerAccessKey } from "./access";
+import { KEY_COOKIE_MAX_AGE_S, registerAccessKey } from "./access";
 
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
@@ -51,6 +51,32 @@ describe("registerAccessKey", () => {
 			cookies: { [cookieName(a)]: "s3cret" },
 		});
 		expect(withCookie.statusCode).toBe(200);
+	});
+
+	it("keeps the cookie a week from the last visit, not just the browser session", async () => {
+		const a = await app("s3cret");
+		const week = `Max-Age=${7 * 24 * 60 * 60}`;
+		expect(KEY_COOKIE_MAX_AGE_S).toBe(7 * 24 * 60 * 60);
+		const withKey = await a.inject("/api/x?key=s3cret");
+		expect(String(withKey.headers["set-cookie"])).toContain(week);
+		// A visit on the cookie alone (a reload: the page strips ?key=) sets
+		// it again, for another week.
+		const withCookie = await a.inject({
+			url: "/api/x",
+			cookies: { [cookieName(a)]: "s3cret" },
+		});
+		const again = String(withCookie.headers["set-cookie"]);
+		expect(again).toContain(`${cookieName(a)}=s3cret`);
+		expect(again).toContain(week);
+		expect(again).toContain("HttpOnly");
+		expect(again).toContain("SameSite=Lax");
+		// A refused request sets nothing.
+		const wrong = await a.inject({
+			url: "/api/x",
+			cookies: { [cookieName(a)]: "nope" },
+		});
+		expect(wrong.statusCode).toBe(401);
+		expect(wrong.headers["set-cookie"]).toBeUndefined();
 	});
 
 	it("marks the cookie Secure when it comes over an HTTPS public URL", async () => {

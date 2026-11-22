@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { deflateSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createBareRepo,
@@ -13,9 +14,12 @@ import {
 	MAX_AGENT_TEXT,
 	startedBy,
 } from "../../shared/agent.js";
-import { newEvent } from "../review/events.js";
+import { foldMoves } from "../../shared/rereview/moves.js";
+import { TRACER_VERSION } from "../../shared/tracer/trace.js";
+import { type CrbEvent, newEvent } from "../review/events.js";
 import { RefStore } from "../review/refStore.js";
 import {
+	AgentLinkError,
 	AgentThreadStore,
 	agentThreadsRef,
 	capActivity,
@@ -640,6 +644,173 @@ describe("GitHub thread conversations", () => {
 	});
 });
 
+describe("linking a conversation to a new GitHub thread (agent-thread-linked)", () => {
+	const gh = (thread: string): AgentAnchor => ({
+		subject: "thread",
+		thread,
+		path: "src/lock.ts",
+		commit: "a".repeat(40),
+		side: "RIGHT",
+		line: 12,
+		startSide: "RIGHT",
+		startLine: 10,
+	});
+	const forge = (events: CrbEvent[]) =>
+		refs.appendEvents(ref, "crb: forged", events, "dan");
+
+	it("a linked line conversation becomes that GitHub thread's, history and id kept, across a fresh store", async () => {
+		const t = await ask("Why a lock?", "c1");
+		await answer(t.id, "Two writers.");
+		const linked = await store.link(t.id, "PRRT_new");
+		expect(linked.id).toBe(t.id);
+		// The span GitHub was given, without columns (a thread anchor has none).
+		expect(linked.anchor).toEqual(gh("PRRT_new"));
+		expect(linked.messages.map((m) => m.text)).toEqual([
+			"Why a lock?",
+			"Two writers.",
+		]);
+		const fresh = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
+		expect(await fresh.read()).toEqual([linked]);
+		// One small commit, readable with plain git.
+		expect(git("log", "-1", "--format=%s", ref)).toBe(
+			"crb: agent thread linked to a GitHub thread",
+		);
+		expect(
+			Buffer.byteLength(git("log", "-1", "--format=%B", ref)),
+		).toBeLessThan(300);
+	});
+
+	it("a file conversation links with a file-wide thread anchor", async () => {
+		const t = await store.open({
+			anchor: { subject: "file", path: "README.md", commit: "b".repeat(40) },
+			text: "Is this current?",
+			by: "human",
+			clientId: "c1",
+		});
+		const linked = await store.link(t.id, "PRRT_file");
+		expect(linked.anchor).toEqual({
+			subject: "thread",
+			thread: "PRRT_file",
+			path: "README.md",
+			commit: "b".repeat(40),
+		});
+	});
+
+	it("a later question on that GitHub thread joins the linked conversation", async () => {
+		const t = await ask("Why a lock?", "c1");
+		await store.link(t.id, "PRRT_new");
+		const asked = await store.open({
+			anchor: gh("PRRT_new"),
+			text: "And now?",
+			by: "human",
+			clientId: "c2",
+		});
+		expect(asked.id).toBe(t.id);
+		expect((await store.read()).map((x) => x.messages.length)).toEqual([2]);
+	});
+
+	it("linking again to the same GitHub thread writes nothing; to another, or onto a thread with a conversation, is refused", async () => {
+		const t = await ask("Why?", "c1");
+		await store.link(t.id, "PRRT_new");
+		const count = () => Number(git("rev-list", "--count", ref));
+		const before = count();
+		expect((await store.link(t.id, "PRRT_new")).id).toBe(t.id);
+		expect(count()).toBe(before);
+		await expect(store.link(t.id, "PRRT_other")).rejects.toBeInstanceOf(
+			AgentLinkError,
+		);
+		expect(count()).toBe(before);
+		const other = await ask("Elsewhere?", "c2");
+		const asked = count();
+		await expect(store.link(other.id, "PRRT_new")).rejects.toBeInstanceOf(
+			AgentLinkError,
+		);
+		await expect(store.link("0".repeat(26), "PRRT_x")).rejects.toBeInstanceOf(
+			UnknownAgentThreadError,
+		);
+		expect(count()).toBe(asked);
+	});
+
+	it("the fold drops a forged ai link, a link of a thread never opened, a second link, and a link onto a thread with a conversation", async () => {
+		const t = await ask("Why?", "c1");
+		const onGithub = await store.open({
+			anchor: gh("PRRT_taken"),
+			text: "Here?",
+			by: "human",
+			clientId: "c2",
+		});
+		const u = await ask("Other?", "c3");
+		// by: ai is never a link; written raw, as validateForWrite refuses it.
+		const aiLink = {
+			...newEvent("agent-thread-linked", "dan", {
+				thread: t.id,
+				github: "PRRT_ai",
+			}),
+			by: "ai",
+		};
+		const tree = execFileSync("git", ["mktree"], {
+			cwd: repo,
+			input: "",
+			encoding: "utf8",
+			env: testGitEnv(),
+		}).trim();
+		const commit = execFileSync(
+			"git",
+			["commit-tree", tree, "-p", git("rev-parse", ref)],
+			{
+				cwd: repo,
+				input: `crb: forged\n\n${JSON.stringify(aiLink)}\n`,
+				encoding: "utf8",
+				env: {
+					...testGitEnv(),
+					GIT_AUTHOR_NAME: "dan",
+					GIT_AUTHOR_EMAIL: "dan@crb",
+					GIT_COMMITTER_NAME: "dan",
+					GIT_COMMITTER_EMAIL: "dan@crb",
+				},
+			},
+		).trim();
+		git("update-ref", ref, commit);
+		expect((await store.read()).find((x) => x.id === t.id)?.anchor).toEqual(
+			anchor,
+		);
+		await forge([
+			newEvent("agent-thread-linked", "dan", {
+				thread: "0".repeat(26),
+				github: "PRRT_ghost",
+			}),
+			newEvent("agent-thread-linked", "dan", {
+				thread: u.id,
+				github: "PRRT_taken",
+			}),
+		]);
+		let all = await store.read();
+		expect(all.find((x) => x.id === t.id)?.anchor).toEqual(anchor);
+		expect(all.find((x) => x.id === u.id)?.anchor).toEqual(anchor);
+		expect(all.find((x) => x.id === onGithub.id)?.messages).toHaveLength(1);
+		// First link wins; a second one on the same conversation is dropped.
+		await forge([
+			newEvent("agent-thread-linked", "dan", {
+				thread: t.id,
+				github: "PRRT_1",
+			}),
+		]);
+		await forge([
+			newEvent("agent-thread-linked", "dan", {
+				thread: t.id,
+				github: "PRRT_2",
+			}),
+		]);
+		all = await store.read();
+		const linked = all.find((x) => x.id === t.id);
+		expect(linked?.anchor.subject === "thread" && linked.anchor.thread).toBe(
+			"PRRT_1",
+		);
+		// Nothing is lost: every conversation is still listed.
+		expect(all).toHaveLength(3);
+	});
+});
+
 describe("origins: an agent message from a request", () => {
 	const fileAnchor: AgentAnchor = {
 		subject: "file",
@@ -1086,5 +1257,202 @@ describe("the review conversation", () => {
 		expect(all).toHaveLength(1);
 		expect(all[0]?.id).toBe(id);
 		expect(all[0]?.messages).toHaveLength(1);
+	});
+});
+
+describe("thread moves in the agent threads ref (CAR-139)", () => {
+	const on = { base: "b".repeat(40), head: "c".repeat(40), patchset: 2 };
+	const to = (line: number) => ({
+		path: "src/lock.ts",
+		startSide: "RIGHT" as const,
+		startLine: line,
+		side: "RIGHT" as const,
+		line,
+	});
+	const gh = { source: "github" as const, id: "PRRT_kwDOabc" };
+
+	it("writes a thread-moved and a thread-move-undone by the reviewer; reading them back writes nothing", async () => {
+		const t = await ask("Why a lock?", "c1");
+		const m = await store.move({
+			thread: { source: "agent", id: t.id },
+			on,
+			anchor: to(14),
+		});
+		const g = await store.move({ thread: gh, on, anchor: to(3) });
+		const u = await store.undoMove(gh, g.id);
+		const tip = git("rev-parse", ref);
+		const { moves, undos } = await store.moves();
+		expect(moves.map((x) => x.id)).toEqual([m.id, g.id]);
+		expect(moves[0]).toMatchObject({
+			thread: { source: "agent", id: t.id },
+			on,
+			anchor: to(14),
+			engine: TRACER_VERSION,
+		});
+		expect(undos).toEqual([{ id: u.id, ts: u.ts, thread: gh, move: g.id }]);
+		expect(git("rev-parse", ref)).toBe(tip);
+		const subject = git("log", "-3", "--format=%s", ref);
+		expect(subject).toContain("crb: moved a thread to src/lock.ts:14 on PS2");
+		expect(subject).toContain("crb: undid a thread move");
+		// The threads fold is untouched by moves.
+		expect((await store.read()).map((x) => x.id)).toEqual([t.id]);
+	});
+
+	it("drops a move of an agent thread never opened, a file thread, a thread conversation or the review conversation", async () => {
+		const line = await ask("Why a lock?", "c1");
+		const file = await store.open({
+			anchor: { subject: "file", path: "src/lock.ts", commit: "a".repeat(40) },
+			text: "This file?",
+			by: "human",
+			clientId: "c2",
+		});
+		const conv = await store.open({
+			anchor: {
+				subject: "thread",
+				thread: "PRRT_x",
+				path: "src/lock.ts",
+				commit: "a".repeat(40),
+			},
+			text: "Is it fixed?",
+			by: "human",
+			clientId: "c3",
+		});
+		const review = await store.open({
+			anchor: { subject: "review" },
+			text: "Overall?",
+			by: "human",
+			clientId: "c4",
+		});
+		const never = "01jzzzzzzzzzzzzzzzzzzzzzzz";
+		for (const id of [line.id, file.id, conv.id, review.id, never]) {
+			await store.move({ thread: { source: "agent", id }, on, anchor: to(5) });
+		}
+		const { moves } = await store.moves();
+		expect(moves.map((m) => m.thread.id)).toEqual([line.id]);
+	});
+
+	it("two tabs moving at once both land", async () => {
+		const other = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
+		const [a, b] = await Promise.all([
+			store.move({ thread: gh, on, anchor: to(3) }),
+			other.move({ thread: gh, on, anchor: to(4) }),
+		]);
+		const { moves, undos } = await store.moves();
+		expect(new Set(moves.map((m) => m.id))).toEqual(new Set([a.id, b.id]));
+		// The later (ts, id) is the one the thread stands on.
+		const later = [a, b].sort(
+			(x, y) => x.ts - y.ts || (x.id < y.id ? -1 : 1),
+		)[1];
+		expect(foldMoves(moves, undos).get("github:PRRT_kwDOabc")?.at(-1)?.id).toBe(
+			later?.id,
+		);
+	});
+});
+
+describe("a move's size (principle 3, CAR-139)", () => {
+	/** A commit object's bytes, raw and as git stores it loose (zlib). */
+	const sizes = (oid: string) => {
+		const body = execFileSync("git", ["cat-file", "commit", oid], {
+			cwd: repo,
+			env: testGitEnv(),
+		});
+		const object = Buffer.concat([
+			Buffer.from(`commit ${body.length}\0`),
+			body,
+		]);
+		return { raw: body.length, deflated: deflateSync(object).length };
+	};
+	const on = {
+		base: "0123456789abcdef0123456789abcdef01234567",
+		head: "89abcdef0123456789abcdef0123456789abcdef",
+		patchset: 3,
+	};
+	const anchor = {
+		path: "src/module12/service/pool.ts",
+		startSide: "RIGHT" as const,
+		startLine: 52,
+		side: "RIGHT" as const,
+		line: 58,
+	};
+
+	it("one move commit (a GitHub thread's, an agent thread's) is under 1 KiB raw and 512 B deflated; an undo too", async () => {
+		const t = await ask("Why a lock?", "c1");
+		await store.move({
+			thread: { source: "github", id: "PRRT_kwDOKx000012Hq1AbCdEf" },
+			on,
+			anchor,
+		});
+		const gh = sizes(git("rev-parse", ref));
+		const m = await store.move({
+			thread: { source: "agent", id: t.id },
+			on,
+			anchor,
+		});
+		const ai = sizes(git("rev-parse", ref));
+		await store.undoMove({ source: "agent", id: t.id }, m.id);
+		const undone = sizes(git("rev-parse", ref));
+		for (const s of [gh, ai, undone]) {
+			expect(s.raw).toBeLessThan(1024);
+			expect(s.deflated).toBeLessThan(512);
+		}
+	});
+});
+
+describe("moves stay private (CAR-139)", () => {
+	it("a default clone, and a fetch of the review's shared refs, never carry the agent threads ref that holds the moves", async () => {
+		const on = { base: "b".repeat(40), head: "c".repeat(40) };
+		await store.move({
+			thread: { source: "github", id: "PRRT_1" },
+			on,
+			anchor: {
+				path: "a.ts",
+				startSide: "RIGHT",
+				startLine: 1,
+				side: "RIGHT",
+				line: 1,
+			},
+		});
+		const progress = `refs/crb/reviews/${REVIEW}/reviewers/dan/progress`;
+		await refs.appendEvents(
+			progress,
+			"crb: x",
+			[
+				newEvent("cluster-state", "dan", {
+					patchset: "f".repeat(64),
+					cluster: "c1",
+					path: "a.ts",
+					state: "reviewed",
+				}),
+			],
+			"dan",
+		);
+		const { path: other, cleanup: done } = createBareRepo();
+		try {
+			const run = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: other,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			// What a default clone fetches: branches and tags.
+			run(
+				"fetch",
+				"--quiet",
+				"--tags",
+				`file://${repo}`,
+				"+refs/heads/*:refs/remotes/origin/*",
+			);
+			run(
+				"fetch",
+				"--quiet",
+				`file://${repo}`,
+				`refs/crb/reviews/${REVIEW}/reviewers/dan/progress:${progress}`,
+			);
+			const listed = run("for-each-ref", "--format=%(refname)", "refs/crb");
+			expect(listed).toBe(progress);
+			expect(listed).not.toContain("agent");
+		} finally {
+			done();
+		}
 	});
 });

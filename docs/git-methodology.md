@@ -106,7 +106,7 @@ history.
 | `none`: the base moves on, the PR doesn't | `open`: not landed |
 | `rebase`: rebased onto the moved base, force-pushed | `merge-commit` |
 | `merge-base-in`: the base merged into the PR branch | `squash` |
-| `rebase-amend`: rebased, with line 30 amended on the way | `rebase-merge`: the PR's own commits replayed onto the base |
+| `rebase-amend`: rebased, with line 30 amended and line 35 changed on the way | `rebase-merge`: the PR's own commits replayed onto the base |
 | `merge-base-in-conflict`: the base also changed line 30; merged in, the conflict resolved by hand | |
 | `stacked-squash`: the PR sat on a parent PR (line 10, `parent.txt`); the parent landed by squash, the PR rebased onto that | |
 | `base-absorbs`: the base merged in the PR's first commit (line 2, `new.txt`; same sha), the head unchanged | |
@@ -134,7 +134,7 @@ alone at the updated stage, for `base-absorbs` the first commit → the head
 
 Every permutation proves:
 
-- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 9 tests × 28):
+- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 10 tests × 28):
   - the snapshot equals the stage's reference (same files, same clusters
     and keys) at the opened and the updated stage, through a refresh and a
     fresh open;
@@ -144,7 +144,7 @@ Every permutation proves:
     gone clusters and the commit count are the update's
     (`none`: S1, nothing new, all carried; `rebase`: S4a, 2 commits, all
     carried; `merge-base-in`: S3, 1 commit, all carried; `rebase-amend`:
-    S4c, line 30 reworked, the rest carried; `merge-base-in-conflict`: S3
+    S4c, line 30 reworked, line 35 new, the rest carried; `merge-base-in-conflict`: S3
     with `a.txt` conflicted, both its clusters new, `new.txt` carried;
     `stacked-squash`: S4a, the PR's three clusters carried, the parent's
     two absorbed into the base, nothing gone; `base-absorbs`: S3, 0
@@ -152,6 +152,13 @@ Every permutation proves:
     nothing gone); viewing the updated head
     writes nothing; the first action on
     it starts PS2 with the carries, which a fresh open shows;
+  - the since view (opened → updated head, PS1 marked): each removed line
+    names its line in the head's merge base (GitHub's LEFT line on the
+    head, where a comment on it goes), whose text it is; only a line PS1
+    alone had names none, which Comment refuses (CAR-217). How many of
+    each is the update's: `rebase-amend` one of each (base line 35, after
+    the rebase; PS1's own line 30), `merge-base-in-conflict` two based
+    (the conflicted file's own base lines), none elsewhere;
   - once landed: a running unstarted session keeps its snapshot on refresh;
     a new open refuses when merged, still shows the PR when open;
   - a review started at the opened stage stays pinned through the update and
@@ -169,6 +176,13 @@ Every permutation proves:
     head's merge base moved since the comment), and one on the updated head
     next to the base's own change shows that change as context on both
     sides;
+  - thread moves (CAR-139): a review thread and an agent thread made on the
+    opened stage, moved to `a.txt` line 2 on PS1, are followed from that
+    line onto line 2 of the updated stage (for `base-absorbs`, the base's
+    own line by then, context in the comparison; for `none`, the updated
+    snapshot is PS1's own, so the move is placed as made), and still are
+    after `reflog expire` + `gc --prune=now` and a fresh open (PS1's pins
+    keep the move's snapshot);
   - the Overview's timeline follows GitHub's facts: after a force-push
     (`rebase`, `rebase-amend`, `stacked-squash`), the rebased commits
     (GitHub lists only those) sort by their new commit times, after the

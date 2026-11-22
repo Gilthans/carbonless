@@ -64,8 +64,15 @@ const E2E_MAP = [
 		/^src\/server\/review\/(splitCarry|fold|events|reviews)\.ts$|^src\/server\/home\/started\.ts$|^e2e\/ws-split\.spec\.ts$/,
 		["ws-split", "whitespace"],
 	],
-	// Pure (hunks in, placements out); its unit tests are the coverage.
-	[/^src\/shared\/tracer\//, []],
+	// Pure (hunks and texts in, placements out), but where threads sit on
+	// the re-review and agent pages follows it (CAR-95).
+	[/^src\/shared\/tracer\//, ["rereview", "agent"]],
+	// The similarity pairing: the side-by-side view's pairs and the
+	// tracer's (CAR-95).
+	[
+		/^src\/shared\/(linePairing|tokenize)\.ts$/,
+		["linePairing", "inlineDiff", "rereview", "agent"],
+	],
 	// Release notes' formats and text rule (CAR-192): pure, its unit tests
 	// and the release scripts' are the coverage.
 	[/^src\/shared\/releaseNotes\.ts$/, []],
@@ -78,6 +85,12 @@ const E2E_MAP = [
 	[
 		/^src\/web\/files\/(ThreadFate|NotInComparison|threadPlacement|ThreadRow)\.tsx?$/,
 		["rereview", "files-threads"],
+	],
+	// Thread moves (CAR-139): the handle, move mode and "Place here", the
+	// `moved` chip and Undo, the routes, the fold in the agent threads ref.
+	[
+		/^src\/web\/files\/(threadMove|SelectionBar|ThreadFate|ThreadRow|NotInComparison|ThreadsPanel|threadRows|threadPlacement)\.tsx?$|^src\/web\/agent\/(AgentThreadCard|AgentUnplaced|placeable)\.tsx?$|^src\/web\/sticky\.ts$|^src\/shared\/rereview\/moves\.ts$|^src\/server\/rereview\/(threads|moveBody)\.ts$|^src\/server\/agent\/store\.ts$|^e2e\/thread-move(-agent)?\.spec\.ts$/,
+		["thread-move", "thread-move-agent"],
 	],
 	// The tree's Threads tab: its rows, its state, the tree's tabs, and
 	// who spoke last (the server's thread summaries).
@@ -101,6 +114,8 @@ const E2E_MAP = [
 			"agent-join",
 			"agent-open",
 			"review-conversation",
+			"agent-comment",
+			"agent-comment-github",
 		],
 	],
 	// The review conversation's drawer: mounted and pushing the page in App,
@@ -122,7 +137,10 @@ const E2E_MAP = [
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
 	],
-	[/^src\/web\/threads\//, ["files-threads", "thread-people"]],
+	[
+		/^src\/web\/threads\//,
+		["files-threads", "thread-people", "agent-comment", "agent-comment-github"],
+	],
 	[
 		/^src\/web\/files\/(ThreadRow|FilesPage)\.tsx$|^src\/web\/overview\/OverviewPage\.tsx$|^test\/fake-gh\/(demo-threads|showcase)\.ts$|^src\/web\/index\.css$/,
 		["thread-people"],
@@ -194,6 +212,8 @@ const E2E_MAP = [
 		["image-renderer"],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
+	// score-carry.test.ts's example corpus.
+	[/^test\/fixtures\/score-carry\//, []],
 	// Unit-test data (wordBlocks.fixture.test.ts); inlineDiff.spec.ts reads
 	// a few of its cases.
 	[/^test\/fixtures\/inline-diff\//, ["inlineDiff"]],

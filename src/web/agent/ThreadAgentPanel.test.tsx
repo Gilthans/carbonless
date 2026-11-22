@@ -183,6 +183,29 @@ describe("ThreadAgentPanel", () => {
 		expect(screen.queryByRole("button", { name: "3 comments" })).toBeNull();
 	});
 
+	// A guard against the panel's own timer coming back, not a reproduction: it passes on the old code too.
+	it("closing, the panel goes and the cover gives up its height in one render (CAR-206)", () => {
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame"],
+		});
+		show(reviewThread(), [conversation()]);
+		const cover = screen.getByTestId("agent-cover");
+		const tall = () => cover.className.includes("min-h-64");
+		const drawn = () => !panel().className.split(" ").includes("hidden");
+		fireEvent.click(agentButton());
+		act(() => vi.advanceTimersToNextTimer());
+		expect(isOpen()).toBe(true);
+		expect([drawn(), tall()]).toEqual([true, true]);
+		fireEvent.click(agentButton());
+		expect(isOpen()).toBe(false);
+		// Through the slide out, timer by timer: never one without the other.
+		for (let i = 0; i < 5 && vi.getTimerCount() > 0; i++) {
+			expect(tall()).toBe(drawn());
+			act(() => vi.advanceTimersToNextTimer());
+		}
+		expect([drawn(), tall()]).toEqual([false, false]);
+	});
+
 	it("placeholder reads Ask agent… when open and Reply… when closed", async () => {
 		show(reviewThread(), [conversation()]);
 		expect(screen.getByRole("textbox", { name: "Reply" })).toHaveAttribute(

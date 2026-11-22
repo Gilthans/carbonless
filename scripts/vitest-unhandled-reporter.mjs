@@ -4,7 +4,12 @@
 // each with the test file it came from when Vitest knows it, next to the
 // JSON report ($CRB_TEST_JSON + ".unhandled.json"), for
 // scripts/test-outcomes.mjs. vitest.config.ts adds it with the JSON reporter.
-import { writeFileSync } from "node:fs";
+//
+// Vitest may call this before the JSON reporter has made the report's
+// folder, so it makes it (CAR-214). It is diagnostics only: a failed write
+// is logged, never thrown, as Vitest would fail a green run over it.
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 export default class UnhandledReporter {
 	onTestRunEnd(_modules, errors) {
@@ -14,6 +19,14 @@ export default class UnhandledReporter {
 			message: String(e?.message ?? e),
 			file: e?.VITEST_TEST_PATH ?? null,
 		}));
-		writeFileSync(`${report}.unhandled.json`, JSON.stringify({ errors: out }));
+		const file = `${report}.unhandled.json`;
+		try {
+			mkdirSync(dirname(file), { recursive: true });
+			writeFileSync(file, JSON.stringify({ errors: out }));
+		} catch (e) {
+			console.warn(
+				`vitest-unhandled-reporter: couldn't write ${file}: ${e?.message ?? e}`,
+			);
+		}
 	}
 }

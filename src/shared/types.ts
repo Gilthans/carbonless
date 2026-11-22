@@ -1,5 +1,6 @@
 import type { LineRanges } from "./lineRanges.js";
 import type { SincePiece } from "./pieces.js";
+import type { MovedInfo } from "./rereview/moves.js";
 import type { ThreadPlacement } from "./rereview/placement.js";
 
 export type FileStatus =
@@ -136,6 +137,14 @@ export interface DiffLine {
 	clusterKey?: string;
 	/** Git's "\\ No newline at end of file" follows this line. */
 	noNewline?: boolean;
+	/**
+	 * The since view's removed lines only (its old side is numbered in the
+	 * earlier patch set): the line's number in the head's merge base, the
+	 * LEFT line GitHub knows it by on the head; null for a line only the
+	 * earlier patch set had (in neither the base nor the head: GitHub has
+	 * no line for it). CAR-217.
+	 */
+	baseNo?: number | null;
 }
 
 export interface DisplayHunk {
@@ -522,6 +531,12 @@ export interface ReviewThread {
 	 * commit, so never on the one viewed).
 	 */
 	commit: string;
+	/**
+	 * Page only: `commit` as GitHub gave it, on a copy Files changed shows
+	 * re-anchored on the viewed head (shownThread), whose `commit` is that
+	 * head's (CAR-139: a thread made on the viewed head isn't moved).
+	 */
+	madeOn?: string;
 	/** On lines (`anchor`, null when the host gave no line) or on the whole file. */
 	subject: "line" | "file";
 	/**
@@ -716,6 +731,11 @@ export interface NewThreadRequest {
 	/** subject "line" only: the span's columns, both or neither. */
 	startCol?: number | null;
 	endCol?: number | null;
+	/**
+	 * Started from this agent conversation (its id, a lowercase ULID): once
+	 * GitHub has the thread, the conversation becomes its (agent-thread-linked).
+	 */
+	agentThread?: string;
 }
 
 /** 200: the thread as the overview read would show it (anchor with cols, code window may be null until read), and its comments. */
@@ -724,6 +744,10 @@ export interface NewThreadAnswer {
 	comments: ThreadComments;
 	/** The opening comment's link on GitHub, when GitHub gave its REST id. */
 	url?: string;
+	/** The agent conversation now on this thread (the request's `agentThread`, linked). */
+	agentThread?: string;
+	/** The request's `agentThread` stayed on its span: why, in a few words. */
+	agentLinkProblem?: { thread: string; reason: string };
 }
 
 /** A verdict the reviewer can send: one submitted review (Final Verdict). */
@@ -1137,9 +1161,10 @@ export interface PlacementsAnswer {
 	readId: string;
 	/** The snapshot id placed into. */
 	revision: string;
-	/** Its patch set (where a drag stores one); null for a head that is none yet. */
+	/** Its patch set; null for a head that is none yet. */
 	patchset: number | null;
-	threads: { id: string; placement: ThreadPlacement }[];
+	/** Each thread's place; `moved`: the reviewer's move it stands on (CAR-139). */
+	threads: { id: string; placement: ThreadPlacement; moved?: MovedInfo }[];
 	/**
 	 * Every thread is in: unresolved threads are placed first and answered
 	 * at once, resolved ones join later (false until then; ask again).
@@ -1159,6 +1184,12 @@ export interface SessionInfo {
 	viewer: string;
 	/** Head of the snapshot being reviewed (the patch set's, once started). */
 	snapshotHead: string;
+	/**
+	 * The snapshot's merge base (its left side against the base branch).
+	 * snapshotCommits is counted over it: the page keys the count by base
+	 * and head, so a retarget asks anew.
+	 */
+	snapshotBase?: string;
 	/** The PR's head on GitHub, as last fetched or checked. */
 	currentHead: string;
 	headMoved: boolean;
@@ -1205,11 +1236,6 @@ export interface SessionInfo {
 	 * once a patch set exists (its own count stands for it).
 	 */
 	snapshotCommits?: number | null | { error: string };
-	/**
-	 * The merge base snapshotCommits is counted over, sent with it: the
-	 * page keys the count by base and head, so a retarget asks anew.
-	 */
-	snapshotBase?: string;
 	/**
 	 * The PR's head when this crb last opened the review, before this open
 	 * (the toast's "since you last looked"); null on the first open.

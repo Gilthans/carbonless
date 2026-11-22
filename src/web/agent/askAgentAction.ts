@@ -9,21 +9,27 @@ import type { AgentSpanAnchor } from "../../shared/agent";
 import {
 	type CodeSpan,
 	HEAD_UNSURE,
+	noLineReason,
 	type SelectionAction,
 	type SelectionContext,
 } from "../files/selectionActions";
 import { newClientId, sameSpan } from "../threads/newThreads";
+// A cycle (agentWrites closes composers), used only inside functions.
+import { agentAsking } from "./agentWrites";
 
 /** Why the agent can't be asked here; true when it can. */
 export function askAgentAvailable(
 	span: CodeSpan,
-	ctx: Pick<SelectionContext, "writes" | "headUnsure">,
+	ctx: Pick<SelectionContext, "writes" | "headUnsure" | "noLine">,
 ): true | string {
 	if (ctx.writes === "as-of") return "Your agent is off as of a cutoff";
 	if (ctx.writes === "viewer") {
 		return "Your agent is off when viewing as someone else";
 	}
 	if (ctx.headUnsure && span.subject !== "file") return HEAD_UNSURE;
+	// The agent reads a LEFT line in the base: a line only an earlier
+	// patch set had isn't there (CAR-217).
+	if (ctx.noLine && span.subject !== "file") return noLineReason(ctx.noLine);
 	// Any line (expanded context, old lines) or file: no GitHub rule applies,
 	// and with no agent attached the thread waits.
 	return true;
@@ -37,7 +43,13 @@ export const ASK_AGENT_ACTION: SelectionAction = {
 	shortcut: "a",
 	available: askAgentAvailable,
 	start: (span) => {
-		openAgentComposer(span);
+		// The span's composer that can still be typed in, if any: one whose
+		// question is on its way has no box to focus.
+		const free = (c: AgentComposerItem) => !agentAsking(c.clientId);
+		const any = getAgentComposers().some(
+			(c) => sameSpan(c.span, span) && free(c),
+		);
+		openAgentComposer(span, undefined, "", any ? free : undefined);
 	},
 };
 
@@ -56,14 +68,30 @@ const changed = (next: readonly AgentComposerItem[]) => {
 	for (const l of listeners) l();
 };
 
-/** Opens a composer on the span (the open one again, focused); its client id. */
-export function openAgentComposer(span: CodeSpan, id = newClientId()): string {
-	const same = composers.find((c) => sameSpan(c.span, span));
+/**
+ * Opens a composer on the span (the open one again, focused); its client
+ * id. `text` (a comment switched to a question) starts its box, or is
+ * added after what the open one already has. `joins` says which open one
+ * may take it (not one whose question is on its way: its text is sent).
+ */
+export function openAgentComposer(
+	span: CodeSpan,
+	id = newClientId(),
+	text = "",
+	joins: (open: AgentComposerItem) => boolean = () => true,
+): string {
+	const same = composers.find((c) => sameSpan(c.span, span) && joins(c));
 	if (same) {
-		changed(composers.map((c) => (c === same ? { ...c, focus: true } : c)));
+		const joined =
+			text && same.text.trim() ? `${same.text}\n\n${text}` : same.text || text;
+		changed(
+			composers.map((c) =>
+				c === same ? { ...c, text: joined, focus: true } : c,
+			),
+		);
 		return same.clientId;
 	}
-	changed([...composers, { clientId: id, span, text: "", focus: true }]);
+	changed([...composers, { clientId: id, span, text, focus: true }]);
 	return id;
 }
 

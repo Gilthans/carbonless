@@ -16,8 +16,9 @@ import type {
 	AgentThread,
 	AgentView,
 } from "../../shared/agent";
+import { useUnsavedGuard } from "../files/useSetStates";
 import { AgentThreadCard, activitySummary } from "./AgentThreadCard";
-import { resetAgentWrites } from "./agentWrites";
+import { resetAgentWrites, resetRepliesTyped } from "./agentWrites";
 import { agentThreadsQuery } from "./api";
 import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
 import { SEEN_AFTER_MS } from "./threadAgent";
@@ -92,6 +93,7 @@ beforeEach(() => {
 afterEach(() => {
 	cleanup();
 	resetAgentWrites();
+	resetRepliesTyped();
 	closeAgentSetup();
 	vi.unstubAllGlobals();
 });
@@ -111,6 +113,65 @@ function show(t: AgentThread, s: AgentStatus | undefined) {
 		</QueryClientProvider>,
 	);
 }
+
+function Guard() {
+	useUnsavedGuard();
+	return null;
+}
+
+const leave = () => {
+	const event = new Event("beforeunload", { cancelable: true });
+	window.dispatchEvent(event);
+	return event.defaultPrevented;
+};
+
+describe("a follow-up typed in the reply box", () => {
+	it("makes leaving ask while it holds text, the card gone or not: not once cleared or sent; nothing saved", async () => {
+		localStorage.clear();
+		fetchMock.mockImplementation(() => new Promise<Response>(() => {}));
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false, enabled: false } },
+		});
+		// The conversation is listed (a kept follow-up counts while it is).
+		client.setQueryData(agentThreadsQuery.queryKey, { threads: [answered()] });
+		const ui = (card: boolean) => (
+			<QueryClientProvider client={client}>
+				{card && <AgentThreadCard thread={answered()} status={status()} />}
+				<Guard />
+			</QueryClientProvider>
+		);
+		const { rerender } = render(ui(true));
+		const box = screen.getByRole("textbox", { name: "Reply to your agent" });
+		expect(leave()).toBe(false);
+		await userEvent.type(box, "   ");
+		expect(leave()).toBe(false);
+		await userEvent.type(box, "And the last one?");
+		expect(leave()).toBe(true);
+		await userEvent.clear(box);
+		expect(leave()).toBe(false);
+		await userEvent.type(box, "And the last one?");
+		expect(leave()).toBe(true);
+		// Sent: the box empties, the reply is on its way.
+		await userEvent.click(screen.getByTestId("agent-reply-ask"));
+		expect(leave()).toBe(false);
+		await userEvent.type(box, "One more");
+		expect(leave()).toBe(true);
+		// The card gone a while (its bubble closed; Comment turning it into
+		// the thread it will be): the text is kept by its conversation, so
+		// leaving still asks, and the card back has it.
+		rerender(ui(false));
+		expect(leave()).toBe(true);
+		rerender(ui(true));
+		expect(
+			screen.getByRole("textbox", { name: "Reply to your agent" }),
+		).toHaveValue("One more");
+		await userEvent.clear(
+			screen.getByRole("textbox", { name: "Reply to your agent" }),
+		);
+		expect(leave()).toBe(false);
+		expect(JSON.stringify({ ...localStorage })).not.toContain("One more");
+	});
+});
 
 describe("AgentThreadCard", () => {
 	it("waiting: a yellow dot, no reply yet, named by the agent", () => {

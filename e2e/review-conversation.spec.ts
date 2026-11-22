@@ -163,43 +163,118 @@ test("tap the chip, ask, the answer streams in; closed, a later answer lights th
 	await expect(chip(page)).toBeFocused();
 });
 
-test("configured, none spawned: the chip opens the setup; a question asked meanwhile is answered once one is spawned, then the chip opens the drawer", async ({
+test("no agent connected (CAR-210): the chip opens the drawer with the setup over it; spawned and closed, the drawer is there to ask, and a question asked meanwhile is answered", async ({
 	page,
 	pr,
 	agentCrb,
+	isMobile,
 }) => {
 	await pr(fixture);
 	const s = await agentCrb({
 		spawn: false,
-		scenario: { agent: AGENT, answers: [{ text: "Here now." }] },
+		scenario: {
+			agent: AGENT,
+			answers: [
+				{ match: "ready", text: "Here now." },
+				{ match: "tests", text: "They pass." },
+			],
+		},
 	});
 	await askReviewByApi(s.url, "Is this PR ready?");
 	await page.goto(s.url);
 	await expect(chip(page)).toHaveAttribute("data-state", "off");
-	// None ever joined: nothing connected to the review, so the setup.
+	// None ever joined: nothing connected to the review, so the setup over the drawer.
 	await expect(chip(page)).not.toHaveAttribute("aria-busy", "true");
-	await expect(chip(page)).not.toHaveAttribute("aria-expanded");
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
 	await chip(page).click();
 	const setup = setupDialog(page);
 	await expect(setup).toBeVisible();
-	await expect(reviewDrawer(page)).toHaveCount(0);
-	// Spawned from the setup (the configured command): connected, so the
-	// chip now opens the conversation.
+	const drawer = page.getByTestId("review-conversation");
+	await expect(drawer).toBeVisible();
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "true");
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() =>
+					document
+						.querySelector('[data-testid="agent-setup"]')
+						?.contains(document.activeElement) ?? false,
+			),
+		)
+		.toBe(true);
+	// The setup is on top: at its centre, the setup, not the drawer.
+	const box = await setup.boundingBox();
+	if (!box) throw new Error("no setup box");
+	expect(
+		await page.evaluate(
+			({ x, y }) =>
+				document
+					.elementFromPoint(x, y)
+					?.closest('[data-testid="agent-setup"]') != null,
+			{ x: box.x + box.width / 2, y: box.y + box.height / 2 },
+		),
+	).toBe(true);
+	await shot(page, "review-conversation-setup-over-drawer", isMobile);
+	// Spawned from the setup (the configured command): connected.
 	await setup.getByRole("tab", { name: "Spawn" }).click();
 	await setup.getByTestId("agent-spawn").click();
 	const status = statusDialog(page);
 	await expect(status).toBeVisible();
 	await page.keyboard.press("Escape");
 	await expect(status).toHaveCount(0);
-	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
-	await chip(page).click();
+	// The conversation is there, focus in its composer, the question answered.
+	await expect(reviewDrawer(page)).toBeVisible();
+	const composer = reviewDrawer(page).getByRole("textbox", {
+		name: "Ask agent",
+	});
+	await expect(composer).toBeFocused();
 	await expect(reviewDrawer(page).getByTestId("agent-message-ai")).toHaveText([
 		"Here now.",
 	]);
+	await send(page, "Do the tests pass?", isMobile);
+	// The send keeps focus in the composer (desktop: sent by its keys).
+	if (!isMobile) await expect(composer).toBeFocused();
+	await expect(reviewDrawer(page).getByTestId("agent-message-ai")).toHaveText([
+		"Here now.",
+		"They pass.",
+	]);
+	if (!isMobile) await expect(composer).toBeFocused();
 	await expect(setupDialog(page)).toHaveCount(0);
+	// Open: the chip closes it (a phone's full-screen drawer covers the chip: its Close).
+	if (isMobile) {
+		await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
+	} else await chip(page).click();
+	await expect(reviewDrawer(page)).toHaveCount(0);
 });
 
-test("a configured agent that failed: the chip and Shift+A open the agent modal (its error, Restart), never the drawer", async ({
+test("no agent connected: Escape closes the setup first, then the drawer; Shift+A opens both again", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({ spawn: false });
+	await page.goto(s.url);
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
+	await chip(page).click();
+	await expect(setupDialog(page)).toBeVisible();
+	await page.keyboard.press("Escape");
+	await expect(setupDialog(page)).toHaveCount(0);
+	await expect(reviewDrawer(page)).toBeVisible();
+	await expect(
+		reviewDrawer(page).getByRole("textbox", { name: "Ask agent" }),
+	).toBeFocused();
+	await page.keyboard.press("Escape");
+	await expect(reviewDrawer(page)).toHaveCount(0);
+	await expect(chip(page)).toBeFocused();
+	if (isMobile) return;
+	await page.locator("body").press("Shift+A");
+	await expect(setupDialog(page)).toBeVisible();
+	await expect(reviewDrawer(page)).toBeVisible();
+});
+
+test("a configured agent that failed: the chip and Shift+A open the drawer with the agent modal over it (its error, Restart)", async ({
 	page,
 	pr,
 	agentCrb,
@@ -214,19 +289,22 @@ test("a configured agent that failed: the chip and Shift+A open the agent modal 
 	const section = await openFile(page, s.url, CALC);
 	await ask(page, section, 3, "Crash?");
 	await expect(chip(page)).toHaveAttribute("data-state", "error");
-	await expect(chip(page)).not.toHaveAttribute("aria-expanded");
+	await expect(chip(page)).toHaveAttribute("aria-expanded", "false");
 	await chip(page).click();
 	// Spawned, so the modal opens on its status: the error, Restart.
 	const modal = statusDialog(page);
 	await expect(modal.getByRole("alert")).toContainText("exited with code 70");
 	await expect(modal.getByRole("button", { name: "Restart" })).toBeVisible();
-	await expect(reviewDrawer(page)).toHaveCount(0);
-	if (isMobile) return;
+	await expect(page.getByTestId("review-conversation")).toBeVisible();
 	await page.keyboard.press("Escape");
 	await expect(modal).toHaveCount(0);
+	await expect(reviewDrawer(page)).toBeVisible();
+	if (isMobile) return;
+	await page.keyboard.press("Escape");
+	await expect(reviewDrawer(page)).toHaveCount(0);
 	await page.locator("body").press("Shift+A");
 	await expect(modal.getByRole("alert")).toContainText("exited with code 70");
-	await expect(reviewDrawer(page)).toHaveCount(0);
+	await expect(page.getByTestId("review-conversation")).toBeVisible();
 });
 
 test("a failed turn, the agent still connected: the chip opens the conversation, to ask again", async ({
@@ -398,7 +476,7 @@ test("the agent cites a conversation it opened: tapping the cite lands on it (de
 	}
 });
 
-test("the status button opens Your agent; the shortcut toggles the drawer; coverage is untouched by a conversation", async ({
+test("the status button opens Your agent over the drawer, which stays open; the shortcut toggles the drawer; coverage is untouched by a conversation", async ({
 	page,
 	pr,
 	agentCrb,
@@ -422,8 +500,14 @@ test("the status button opens Your agent; the shortcut toggles the drawer; cover
 	const status = statusDialog(page);
 	await expect(status).toBeVisible();
 	await shot(page, "review-conversation-status", isMobile);
+	// Over the drawer (a phone's full-screen one too): closed, the conversation is there.
+	await expect(page.getByTestId("review-conversation")).toBeVisible();
 	await status.getByRole("button", { name: "Close" }).first().click();
 	await expect(status).toHaveCount(0);
+	await expect(reviewDrawer(page)).toBeVisible();
+	await expect(
+		reviewDrawer(page).getByRole("button", { name: "Agent status" }),
+	).toBeFocused();
 	// Coverage: the same after a reload (the server's marks).
 	await page.reload();
 	await expect(progress(page)).toBeVisible();

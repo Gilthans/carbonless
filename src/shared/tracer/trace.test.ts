@@ -7,12 +7,14 @@
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { lineSimilarity } from "../linePairing";
 import type { DiffSide } from "../types";
 import * as tracer from "./index";
 import { createLineMapper, IDENTITY, type MapHunk } from "./lineMapper";
 import {
 	type Placement,
 	type Position,
+	SHARE_MIN_SIMILARITY,
 	TRACER_VERSION,
 	type TraceDiffs,
 	tracePosition,
@@ -28,10 +30,14 @@ const ALL_ADDED = createLineMapper([
 	{ oldStart: 0, oldCount: 0, newStart: 1, newCount: 50 },
 ]);
 
+/** `texts`: the old snapshot's lines by "SIDE:line"; `now`: the new one's. */
 function diffs(
-	over: Partial<TraceDiffs> & { texts?: Record<string, string> },
+	over: Partial<TraceDiffs> & {
+		texts?: Record<string, string>;
+		now?: Record<string, string>;
+	},
 ): TraceDiffs {
-	const { texts, ...rest } = over;
+	const { texts, now, ...rest } = over;
 	return {
 		ac: IDENTITY,
 		bd: IDENTITY,
@@ -39,14 +45,21 @@ function diffs(
 		oldLineText: texts
 			? (pos) => texts[`${pos.side}:${pos.line}`] ?? null
 			: undefined,
+		newLineText: now
+			? (pos) => now[`${pos.side}:${pos.line}`] ?? null
+			: undefined,
 		...rest,
 	};
 }
 
+/** Lines `from`.. of a side as "SIDE:line" keys, for `texts` and `now`. */
+const rows = (from: number, lines: string[], side: DiffSide = "RIGHT") =>
+	Object.fromEntries(lines.map((t, i) => [`${side}:${from + i}`, t]));
+
 describe("tracePosition", () => {
-	it("exports TRACER_VERSION 1 from the index", () => {
-		expect(TRACER_VERSION).toBe(1);
-		expect(tracer.TRACER_VERSION).toBe(1);
+	it("exports TRACER_VERSION 2 from the index", () => {
+		expect(TRACER_VERSION).toBe(2);
+		expect(tracer.TRACER_VERSION).toBe(2);
 		expect(tracer.createLineMapper).toBe(createLineMapper);
 		expect(tracer.tracePosition).toBe(tracePosition);
 	});
@@ -115,7 +128,14 @@ describe("tracePosition", () => {
 			{ oldStart: 5, oldCount: 1, newStart: 5, newCount: 1 },
 		]);
 		expect(
-			tracePosition(R(5), diffs({ bd, texts: { "RIGHT:5": "const x = 1;" } })),
+			tracePosition(
+				R(5),
+				diffs({
+					bd,
+					texts: { "RIGHT:5": "const x = 1;" },
+					now: { "RIGHT:5": "const x = 2;" },
+				}),
+			),
 		).toStrictEqual({
 			kind: "changed",
 			side: "RIGHT",
@@ -124,37 +144,67 @@ describe("tracePosition", () => {
 		});
 	});
 
-	it("C2: the i-th removed line lands on the i-th replacement, clamped to the last one", () => {
+	it("C2: a replaced line lands on the replacing line that resembles it, not at its offset", () => {
 		// Old lines 5-8 became new lines 6-7 (one line inserted above too).
 		const bd = createLineMapper([
 			{ oldStart: 0, oldCount: 0, newStart: 1, newCount: 1 },
 			{ oldStart: 5, oldCount: 4, newStart: 6, newCount: 2 },
 		]);
-		const d = diffs({ bd, texts: { "RIGHT:6": "b", "RIGHT:8": "d" } });
-		expect(tracePosition(R(6), d)).toStrictEqual({
-			kind: "changed",
-			side: "RIGHT",
-			line: 7,
-			oldText: "b",
+		const d = diffs({
+			bd,
+			texts: rows(5, ["let a = 1;", "let b = 2;", "let c = 3;", "log(d);"]),
+			now: rows(6, ["let c = 4;", "trace(d, e);"]),
 		});
-		expect(tracePosition(R(8), d)).toStrictEqual({
+		// Offset 2 of the old hunk is offset 0 of the new one.
+		expect(tracePosition(R(7), d)).toStrictEqual({
 			kind: "changed",
 			side: "RIGHT",
-			line: 7,
-			oldText: "d",
+			line: 6,
+			oldText: "let c = 3;",
+		});
+		// Nothing replacing `let b` resembles it: deleted, not on `trace(d, e)`.
+		expect(tracePosition(R(6), d)).toStrictEqual({
+			kind: "unplaced",
+			reason: "deleted",
+			nearest: { side: "RIGHT", line: 5 },
 		});
 	});
 
-	it("C2: without an old-text source, changed carries null", () => {
+	it("C2: a mapper reused with other texts never answers from what it paired before", () => {
+		const bd = createLineMapper([
+			{ oldStart: 1, oldCount: 1, newStart: 1, newCount: 2 },
+		]);
+		const texts = { "RIGHT:1": "\tsave(x)" };
+		const first = diffs({
+			bd,
+			texts,
+			now: rows(1, ["\tsave(x, y)", "\tother()"]),
+		});
+		expect(tracePosition(R(1), first)).toMatchObject({ line: 1 });
+		const second = diffs({
+			bd,
+			texts,
+			now: rows(1, ["\tother()", "\tsave(x, y)"]),
+		});
+		expect(tracePosition(R(1), second)).toMatchObject({ line: 2 });
+		// And back: the first texts again.
+		expect(tracePosition(R(1), first)).toMatchObject({ line: 1 });
+	});
+
+	it("C2: without the texts to pair, a replaced line is rewritten, never guessed", () => {
 		const bd = createLineMapper([
 			{ oldStart: 5, oldCount: 1, newStart: 5, newCount: 1 },
 		]);
 		expect(tracePosition(R(5), diffs({ bd }))).toStrictEqual({
-			kind: "changed",
-			side: "RIGHT",
-			line: 5,
-			oldText: null,
+			kind: "unplaced",
+			reason: "rewritten",
+			nearest: { side: "RIGHT", line: 4 },
 		});
+		// A pure deletion needs no text: nothing replaced it.
+		const cut = createLineMapper([
+			{ oldStart: 5, oldCount: 1, newStart: 4, newCount: 0 },
+		]);
+		expect(tracePosition(R(5), diffs({ bd: cut })).kind).toBe("unplaced");
 	});
 
 	it("C3: a deleted line is unplaced with the nearest surviving line above", () => {
@@ -226,7 +276,12 @@ describe("tracePosition", () => {
 		expect(
 			tracePosition(
 				R(12),
-				diffs({ bd, cd: IDENTITY, texts: { "RIGHT:12": "  return a;" } }),
+				diffs({
+					bd,
+					cd: IDENTITY,
+					texts: { "RIGHT:12": "  return a;" },
+					now: { "RIGHT:12": "  return a + b;" },
+				}),
 			),
 		).toStrictEqual({
 			kind: "changed",
@@ -241,7 +296,13 @@ describe("tracePosition", () => {
 		const h1ToH2 = createLineMapper([
 			{ oldStart: 5, oldCount: 1, newStart: 5, newCount: 1 },
 		]);
-		expect(tracePosition(R(5), diffs({ bd: h1ToH2 })).kind).toBe("changed");
+		const texts = { "RIGHT:5": "x = 1" };
+		expect(
+			tracePosition(
+				R(5),
+				diffs({ bd: h1ToH2, texts, now: { "RIGHT:5": "x = 2" } }),
+			).kind,
+		).toBe("changed");
 		const h1ToH3 = IDENTITY;
 		expect(tracePosition(R(5), diffs({ bd: h1ToH3 }))).toStrictEqual({
 			kind: "placed",
@@ -276,7 +337,14 @@ describe("tracePosition", () => {
 			{ oldStart: 4, oldCount: 1, newStart: 4, newCount: 1 },
 		]);
 		expect(
-			tracePosition(R(4), diffs({ bd, texts: { "RIGHT:4": "\tfoo( a )" } })),
+			tracePosition(
+				R(4),
+				diffs({
+					bd,
+					texts: { "RIGHT:4": "\tfoo( a )" },
+					now: { "RIGHT:4": "    foo(a)" },
+				}),
+			),
 		).toStrictEqual({
 			kind: "changed",
 			side: "RIGHT",
@@ -338,11 +406,14 @@ describe("traceRange", () => {
 		const bd = createLineMapper([
 			{ oldStart: 7, oldCount: 2, newStart: 7, newCount: 3 },
 		]);
-		expect(
-			traceRange(R(5), R(8), diffs({ bd, texts: { "RIGHT:8": "end" } })),
-		).toStrictEqual({
+		const d = diffs({
+			bd,
+			texts: rows(7, ["middle()", "end()"]),
+			now: rows(7, ["middle(1)", "added()", "end(2)"]),
+		});
+		expect(traceRange(R(5), R(8), d)).toStrictEqual({
 			start: { kind: "placed", side: "RIGHT", line: 5 },
-			end: { kind: "changed", side: "RIGHT", line: 8, oldText: "end" },
+			end: { kind: "changed", side: "RIGHT", line: 9, oldText: "end()" },
 			collapsed: false,
 		});
 	});
@@ -377,7 +448,7 @@ describe("traceRange", () => {
 		});
 	});
 
-	it("does not collapse ends on different sides or an unplaced end", () => {
+	it("does not collapse ends on different sides or an unplaced end; a deleted end moves inwards", () => {
 		const bd = createLineMapper([
 			{ oldStart: 6, oldCount: 1, newStart: 5, newCount: 0 },
 		]);
@@ -390,10 +461,17 @@ describe("traceRange", () => {
 			end: { kind: "placed", side: "RIGHT", line: 4, became: "context" },
 			collapsed: false,
 		});
+		// The deleted end moves inwards to the range's last surviving line.
 		expect(traceRange(R(4), R(6), d)).toStrictEqual({
 			start: { kind: "placed", side: "RIGHT", line: 4, became: "context" },
-			end: { kind: "unplaced", reason: "deleted", nearest: R(5) },
+			end: { kind: "changed", side: "RIGHT", line: 5, oldText: null },
 			collapsed: false,
+		});
+		// With no line of the range left, the end stays unplaced.
+		expect(traceRange(R(6), R(6), d).end).toStrictEqual({
+			kind: "unplaced",
+			reason: "deleted",
+			nearest: R(5),
 		});
 	});
 });
@@ -528,7 +606,7 @@ const textAt = (file: readonly string[], line: number): string | null =>
 	file[line - 1] ?? null;
 
 describe("tracePosition property", () => {
-	it("never places a position on a line whose text differs from the old one", () => {
+	it("never places a position on a line whose text differs from the old one, nor changed onto one unlike it", () => {
 		fc.assert(
 			fc.property(worldArb, (w) => {
 				const oldFile = (side: DiffSide) =>
@@ -538,6 +616,7 @@ describe("tracePosition property", () => {
 				const d: TraceDiffs = {
 					...w.diffs,
 					oldLineText: (pos) => textAt(oldFile(pos.side), pos.line),
+					newLineText: (pos) => textAt(newFile(pos.side), pos.line),
 					newLineCount: { LEFT: w.base2.length, RIGHT: w.head2.length },
 				};
 				const positions: Position[] = [];
@@ -554,16 +633,18 @@ describe("tracePosition property", () => {
 							break;
 						case "changed": {
 							expect(placement.oldText).toBe(oldText);
-							// A RIGHT line lands in the hunk that replaced it, i-th on
-							// i-th, clamped to the hunk's last line.
+							// A replaced RIGHT line lands on a line the diff added,
+							// one that resembles it, never by its offset alone.
 							expect(placement.side).toBe("RIGHT");
-							const hunk = d.bd.hunkRemovingOld(pos.line);
-							expect(hunk).not.toBeNull();
-							const h = hunk as MapHunk;
-							expect(placement.line).toBe(
-								h.newStart + Math.min(pos.line - h.oldStart, h.newCount - 1),
-							);
-							expect(d.bd.hunkAddingNew(placement.line)).toStrictEqual(h);
+							expect(d.bd.hunkRemovingOld(pos.line)).not.toBeNull();
+							expect(d.bd.hunkAddingNew(placement.line)).not.toBeNull();
+							expect(oldText).toMatch(/\w/);
+							expect(
+								lineSimilarity(
+									oldText as string,
+									textAt(w.head2, placement.line) as string,
+								),
+							).toBeGreaterThanOrEqual(SHARE_MIN_SIMILARITY);
 							break;
 						}
 						case "unplaced":
@@ -580,6 +661,47 @@ describe("tracePosition property", () => {
 								);
 							}
 							break;
+					}
+				}
+			}),
+		);
+	});
+});
+
+describe("traceRange property", () => {
+	it("never yields an inverted range: a new-side start before an old-side end, or an end above its start", () => {
+		fc.assert(
+			fc.property(worldArb, (w) => {
+				const d: TraceDiffs = {
+					...w.diffs,
+					oldLineText: (pos) =>
+						textAt(pos.side === "LEFT" ? w.base1 : w.head1, pos.line),
+					newLineText: (pos) =>
+						textAt(pos.side === "LEFT" ? w.base2 : w.head2, pos.line),
+					newLineCount: { LEFT: w.base2.length, RIGHT: w.head2.length },
+				};
+				const ranges: [Position, Position][] = [];
+				for (let a = 1; a <= w.head1.length; a++) {
+					for (let b = a; b <= Math.min(a + 4, w.head1.length); b++) {
+						ranges.push([R(a), R(b)]);
+					}
+				}
+				for (let a = 1; a <= w.base1.length; a++) {
+					for (let b = a; b <= Math.min(a + 4, w.base1.length); b++) {
+						ranges.push([L(a), L(b)]);
+					}
+					// GitHub's one mixed range: an old-side start, a new-side end.
+					for (let b = 1; b <= w.head1.length; b += 3)
+						ranges.push([L(a), R(b)]);
+				}
+				for (const [start, end] of ranges) {
+					const r = traceRange(start, end, d);
+					if (r.start.kind === "unplaced" || r.end.kind === "unplaced") {
+						continue;
+					}
+					expect(r.start.side === "RIGHT" && r.end.side === "LEFT").toBe(false);
+					if (r.start.side === r.end.side) {
+						expect(r.start.line).toBeLessThanOrEqual(r.end.line);
 					}
 				}
 			}),

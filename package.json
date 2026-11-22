@@ -1,6 +1,6 @@
 {
 	"name": "carbonless-review",
-	"version": "0.4.0",
+	"version": "0.5.0",
 	"description": "Local, AI-assisted tool for reading the changes between two git commits",
 	"license": "MIT",
 	"repository": {
@@ -36,6 +36,7 @@
 		"ci-flakes": "node scripts/ci-flakes.mjs",
 		"icons": "tsx scripts/render-icons.ts",
 		"compare-threads": "tsx scripts/compare-threads.ts",
+		"score-carry": "tsx scripts/score-carry.ts",
 		"test-profile": "tsx scripts/test-profile/main.ts",
 		"release": "tsx scripts/release.ts",
 		"prepack": "pnpm build"

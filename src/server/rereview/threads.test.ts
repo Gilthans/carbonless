@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	createGitFixture,
@@ -9,6 +10,7 @@ import {
 	testGitEnv,
 } from "../../../test/git-fixture";
 import type { AgentSpanAnchor } from "../../shared/agent";
+import { foldMoves, type ThreadMove } from "../../shared/rereview/moves";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type {
 	CodeAnchor,
@@ -18,7 +20,13 @@ import type {
 } from "../../shared/types";
 import { buildSnapshot } from "../diff/snapshot";
 import { ThreadCodeSource } from "../threadCode";
-import { placeAgentThreads, placeable, ThreadPlacer } from "./threads";
+import {
+	legacyMoves,
+	type PlacedThread,
+	placeAgentThreads,
+	placeable,
+	ThreadPlacer,
+} from "./threads";
 
 vi.setConfig(GIT_TEST_TIMEOUTS);
 
@@ -197,7 +205,23 @@ async function placeAll(
 ): Promise<Map<string, ThreadPlacement>> {
 	const p = placer();
 	const inputs = await p.inputs(target, threads, base());
-	const placed = await p.place(target, inputs, stored);
+	// A stored placement is a move made on the target (rule 1).
+	const moves = [...stored].map(
+		([id, anchor], i): ThreadMove => ({
+			id: `01jstored${String(i).padStart(17, "0")}`,
+			ts: i + 1,
+			thread: { source: "github", id },
+			on: { base: B2, head: H2 },
+			anchor,
+			engine: 1,
+		}),
+	);
+	const placed = await p.placeMoved(
+		target,
+		inputs,
+		(id) => moves.filter((m) => m.thread.id === id),
+		base(),
+	);
 	return new Map(placed.map((x) => [x.id, x.placement]));
 }
 
@@ -285,6 +309,29 @@ describe("ThreadPlacer", () => {
 		expect(of(ts.file)).toEqual({ kind: "file", path: "new.ts" });
 	});
 
+	it("threads on one file share one bd mapper (the tracer's pairings are memoized on it); another file has its own", async () => {
+		const p = placer();
+		const [one, two, other] = await p.inputs(
+			target,
+			[
+				thread("a.ts", { line: 5 }),
+				thread("a.ts", { line: 10 }),
+				thread("c.ts", { line: 4 }),
+			],
+			base(),
+		);
+		expect(one?.diffs?.bd).toBeDefined();
+		expect(two?.diffs?.bd).toBe(one?.diffs?.bd);
+		expect(other?.diffs?.bd).not.toBe(one?.diffs?.bd);
+		// Asked again, the same placer still hands out the same mapper.
+		const [again] = await p.inputs(
+			target,
+			[thread("a.ts", { line: 7 })],
+			base(),
+		);
+		expect(again?.diffs?.bd).toBe(one?.diffs?.bd);
+	});
+
 	it("an old-side thread dated before the base branch's history still traces from its merge base", async () => {
 		// The code pane can't vouch for its old side (no base commit by
 		// then); placement takes the merge base and follows the base's changes.
@@ -334,10 +381,11 @@ describe("ThreadPlacer", () => {
 			repo.path,
 			new ThreadCodeSource(repo.path, async () => false),
 		);
-		const [placed] = await p.place(
+		const [placed] = await p.placeMoved(
 			target,
 			await p.inputs(target, [lost], base()),
-			new Map(),
+			() => undefined,
+			base(),
 		);
 		expect(placed?.placement).toEqual({
 			kind: "unplaced",
@@ -370,7 +418,12 @@ describe("ThreadPlacer", () => {
 				githubHead ? { ...t, currentHead: githubHead } : t,
 			);
 			const inputs = await p.inputs(target, read, base());
-			const placed = await p.place(target, inputs, new Map());
+			const placed = await p.placeMoved(
+				target,
+				inputs,
+				() => undefined,
+				base(),
+			);
 			return new Map(placed.map((x) => [x.id, x.placement]));
 		}
 
@@ -487,7 +540,7 @@ describe("ThreadPlacer", () => {
 		});
 	});
 
-	it("a stored placement wins when it fits the snapshot; a stale one is ignored", async () => {
+	it("a move made on the snapshot wins when it fits it; a stale one is ignored", async () => {
 		const t = thread("a.ts", { line: 10 });
 		const fits: ThreadAnchorRef = {
 			path: "c.ts",
@@ -646,5 +699,359 @@ describe("placeAgentThreads", () => {
 			base(),
 		);
 		expect(got.map((p) => p.id)).toEqual(["OK"]);
+	});
+});
+
+describe("moves (CAR-139)", () => {
+	const at = (line: number, path = "a.ts"): ThreadAnchorRef => ({
+		path,
+		startSide: "RIGHT",
+		startLine: line,
+		side: "RIGHT",
+		line,
+	});
+	let n = 0;
+	const mv = (
+		id: string,
+		on: { base: string; head: string; patchset?: number },
+		anchor: ThreadAnchorRef,
+		source: "github" | "agent" = "github",
+	): ThreadMove => {
+		n += 1;
+		return {
+			id: `01jmove${String(n).padStart(19, "0")}`,
+			ts: 1000 + n,
+			thread: { source, id },
+			on,
+			anchor,
+			engine: 1,
+		};
+	};
+	async function placeMoved(
+		threads: ReviewThread[],
+		moves: ThreadMove[],
+	): Promise<Map<string, PlacedThread>> {
+		const p = placer();
+		const inputs = await p.inputs(target, threads, base());
+		const placed = await p.placeMoved(
+			target,
+			inputs,
+			(id) => moves.filter((m) => m.thread.id === id),
+			base(),
+		);
+		return new Map(placed.map((x) => [x.id, x]));
+	}
+	const t15 = () => thread("a.ts", { line: 15 }, { id: "T15" });
+
+	it("no move: the tracer's own place, no `moved`", async () => {
+		const got = await placeMoved([t15()], []);
+		expect(got.get("T15")).toEqual({
+			id: "T15",
+			placement: { kind: "placed", anchor: at(16), changed: false },
+		});
+	});
+
+	it("rule 1: a move made on the target is placed as chosen, not traced", async () => {
+		const m = mv("T15", { base: B2, head: H2, patchset: 2 }, at(3));
+		const got = (await placeMoved([t15()], [m])).get("T15");
+		expect(got?.placement).toEqual({
+			kind: "placed",
+			anchor: at(3),
+			changed: false,
+		});
+		expect(got?.moved).toMatchObject({
+			id: m.id,
+			on: { patchset: 2 },
+			here: true,
+		});
+	});
+
+	it("a move on the target outside its file is skipped: the next one down, else the thread's own trace", async () => {
+		const bad = mv("T15", { base: B2, head: H2 }, at(999));
+		const got = (await placeMoved([t15()], [bad])).get("T15");
+		expect(got).toEqual({
+			id: "T15",
+			placement: { kind: "placed", anchor: at(16), changed: false },
+		});
+		const earlier = mv("T15", { base: B1, head: H1, patchset: 1 }, at(2));
+		const bad2 = mv("T15", { base: B2, head: H2 }, at(2, "nope.ts"));
+		const next = (await placeMoved([t15()], [earlier, bad2])).get("T15");
+		// a.ts 2 on H1 is a.ts 4 on H2 (two lines on top).
+		expect(next?.placement).toEqual({
+			kind: "placed",
+			anchor: at(4),
+			changed: false,
+		});
+		expect(next?.moved).toMatchObject({ id: earlier.id, here: false });
+	});
+
+	it("rule 2: a GitHub thread with no commit of its own, moved on PS1, is traced from the move, no longer GitHub's line", async () => {
+		const untraceable = thread(
+			"a.ts",
+			{ line: 3, commit: "" },
+			{ id: "G", commit: "", currentLine: 3, currentHead: H2 },
+		);
+		const before = (await placeMoved([untraceable], [])).get("G");
+		expect(before?.placement).toMatchObject({ source: "github" });
+		const m = mv("G", { base: B1, head: H1, patchset: 1 }, at(15));
+		const got = (await placeMoved([untraceable], [m])).get("G");
+		expect(got?.placement).toEqual({
+			kind: "placed",
+			anchor: at(16),
+			changed: false,
+		});
+		expect(got?.moved).toMatchObject({ here: false, on: { patchset: 1 } });
+	});
+
+	it("a move followed onto a deleted line is unplaced with its fate and nearest line", async () => {
+		// a.ts 10 on H1 was deleted in H2.
+		const m = mv("T15", { base: B1, head: H1 }, at(10));
+		const got = (await placeMoved([t15()], [m])).get("T15");
+		expect(got?.placement).toMatchObject({
+			kind: "unplaced",
+			fate: "deleted",
+			path: "a.ts",
+			nearest: { side: "RIGHT", line: 11 },
+		});
+		expect(got?.moved?.on).toEqual({ head: H1 });
+	});
+
+	it("a move whose head is gone (pruned) is rewritten, never the tracer's older guess", async () => {
+		const m = mv("T15", { base: B1, head: "f".repeat(40) }, at(15));
+		const got = (await placeMoved([t15()], [m])).get("T15");
+		expect(got?.placement).toEqual({
+			kind: "unplaced",
+			fate: "rewritten",
+			path: "a.ts",
+			nearest: null,
+		});
+		expect(got?.moved?.id).toBe(m.id);
+		const gone = mv(
+			"T15",
+			{ base: B1, head: "f".repeat(40) },
+			at(2, "gone.ts"),
+		);
+		expect((await placeMoved([t15()], [gone])).get("T15")?.placement).toEqual({
+			kind: "outside",
+			path: "gone.ts",
+			fate: "rewritten",
+		});
+	});
+
+	it("an agent thread's move places it like a review thread's", async () => {
+		const m = mv("A1", { base: B2, head: H2 }, at(7), "agent");
+		const got = await placeAgentThreads(
+			placer(),
+			target,
+			[
+				{
+					id: "A1",
+					at: "2026-01-01T00:00:00Z",
+					anchor: {
+						subject: "line",
+						path: "a.ts",
+						commit: H1,
+						side: "RIGHT",
+						line: 15,
+						startSide: "RIGHT",
+						startLine: 15,
+					},
+				},
+			],
+			base(),
+			(id) => (id === "A1" ? [m] : undefined),
+		);
+		expect(got).toEqual([
+			{
+				id: "A1",
+				placement: { kind: "placed", anchor: at(7), changed: false },
+				moved: {
+					id: m.id,
+					on: { head: H2 },
+					at: expect.any(String),
+					here: true,
+					path: "a.ts",
+				},
+			},
+		]);
+	});
+});
+
+describe("legacyMoves", () => {
+	const anchor: ThreadAnchorRef = {
+		path: "a.ts",
+		startSide: "RIGHT",
+		startLine: 2,
+		side: "RIGHT",
+		line: 2,
+	};
+	it("reads a human thread-placed on a known patch set as a move of a GitHub thread on its snapshot; an ai one and one on an unknown patch set are dropped", () => {
+		const ev = (id: string, by: string, patchset: number) => ({
+			id,
+			ts: 5,
+			by,
+			thread: "PRRT_1",
+			patchset,
+			anchor,
+			engine: 1,
+		});
+		expect(
+			legacyMoves({
+				patchsets: [{ number: 2, mergeBase: B1, head: H1 }],
+				placed: [ev("e1", "human", 2), ev("e2", "ai", 2), ev("e3", "human", 7)],
+			}),
+		).toEqual([
+			{
+				id: "e1",
+				ts: 5,
+				thread: { source: "github", id: "PRRT_1" },
+				on: { base: B1, head: H1, patchset: 2 },
+				anchor,
+				engine: 1,
+			},
+		]);
+	});
+});
+
+describe("placeMoved on a cold cache (CAR-139 fix round 1)", () => {
+	const at = (line: number, path = "a.ts"): ThreadAnchorRef => ({
+		path,
+		startSide: "RIGHT",
+		startLine: line,
+		side: "RIGHT",
+		line,
+	});
+	const mv = (
+		n: number,
+		id: string,
+		on: { base: string; head: string },
+		anchor: ThreadAnchorRef,
+		ts = n,
+	): ThreadMove => ({
+		id: `01jcold${String(n).padStart(19, "0")}`,
+		ts,
+		thread: { source: "github", id },
+		on,
+		anchor,
+		engine: 1,
+	});
+
+	it("two threads moved on the target into one file, placed together by a new placer, both stand on their moves", async () => {
+		const a = thread("a.ts", { line: 15 }, { id: "CA" });
+		const b = thread("a.ts", { line: 5 }, { id: "CB" });
+		// Into c.ts: a file the threads' own trace never read (a cold count).
+		const moves = [
+			mv(1, "CA", { base: B2, head: H2 }, at(3, "c.ts")),
+			mv(2, "CB", { base: B2, head: H2 }, at(9, "c.ts")),
+		];
+		const p = placer();
+		const placed = await p.placeMoved(
+			target,
+			await p.inputs(target, [a, b], base()),
+			(id) => moves.filter((m) => m.thread.id === id),
+			base(),
+		);
+		expect(placed.map((x) => [x.id, x.placement, x.moved?.here])).toEqual([
+			["CA", { kind: "placed", anchor: at(3, "c.ts"), changed: false }, true],
+			["CB", { kind: "placed", anchor: at(9, "c.ts"), changed: false }, true],
+		]);
+	});
+
+	it("property: random review threads, moves (here, followed, lost, off the file), undos and legacy moves: one placement per thread, each where its effective move says", async () => {
+		// a.ts has 21 lines on H2, c.ts 10: a move here past that, or on no
+		// file, doesn't fit. c.ts is no thread's own file: its count is cold.
+		const LINES_H2 = 21;
+		const ON = [
+			{ base: B2, head: H2 },
+			{ base: B1, head: H1, patchset: 1 },
+			{ base: B1, head: "f".repeat(40) },
+		];
+		await fc.assert(
+			fc.asyncProperty(
+				fc.uniqueArray(fc.integer({ min: 0, max: 5 }), {
+					minLength: 1,
+					maxLength: 5,
+				}),
+				fc.array(
+					fc.record({
+						n: fc.integer({ min: 0, max: 7 }),
+						on: fc.integer({ min: 0, max: 2 }),
+						line: fc.integer({ min: 1, max: 25 }),
+						file: fc.constantFrom("a.ts", "c.ts", "nope.ts"),
+						legacy: fc.boolean(),
+					}),
+					{ maxLength: 10 },
+				),
+				fc.array(fc.nat(), { maxLength: 4 }),
+				async (ids, ms, undoPicks) => {
+					const threads = ids.map((i) =>
+						thread("a.ts", { line: 2 + i * 3 }, { id: `PT${i}` }),
+					);
+					const moves = ms.map((m, k) =>
+						mv(
+							100 + k,
+							`PT${m.n}`,
+							// Legacy moves are on a patch set (PS1's snapshot).
+							m.legacy
+								? (ON[1] as (typeof ON)[1])
+								: (ON[m.on] as (typeof ON)[0]),
+							at(m.line, m.file),
+						),
+					);
+					const undos = undoPicks.flatMap((k, i) => {
+						const m = moves[k % Math.max(1, moves.length)];
+						return m
+							? [
+									{
+										id: `01jundo${String(i).padStart(19, "0")}`,
+										ts: 900 + i,
+										thread: m.thread,
+										move: m.id,
+									},
+								]
+							: [];
+					});
+					const folded = foldMoves(moves, undos);
+					const movesOf = (id: string) => folded.get(`github:${id}`);
+					const p = placer();
+					const inputs = await p.inputs(target, threads, base());
+					const placed = await p.placeMoved(target, inputs, movesOf, base());
+					// Exactly one placement per thread, in order.
+					expect(placed.map((x) => x.id)).toEqual(threads.map((t) => t.id));
+					const bare = new Map(
+						(
+							await placer().placeMoved(target, inputs, () => undefined, base())
+						).map((x) => [x.id, x.placement]),
+					);
+					for (const x of placed) {
+						const live = movesOf(x.id) ?? [];
+						const fits = (m: ThreadMove) =>
+							(m.anchor.path === "a.ts" && m.anchor.line <= LINES_H2) ||
+							(m.anchor.path === "c.ts" && m.anchor.line <= 10);
+						const isHere = (m: ThreadMove) =>
+							m.on.base === B2 && m.on.head === H2;
+						const here = [...live].reverse().find((m) => isHere(m) && fits(m));
+						const elsewhere = [...live].reverse().find((m) => !isHere(m));
+						if (here) {
+							expect(x.moved).toMatchObject({ id: here.id, here: true });
+							expect(x.placement).toEqual({
+								kind: "placed",
+								anchor: here.anchor,
+								changed: false,
+							});
+						} else if (elsewhere) {
+							expect(x.moved).toMatchObject({ id: elsewhere.id, here: false });
+							if (elsewhere.on.head === ON[2]?.head) {
+								expect(x.placement).toMatchObject({ fate: "rewritten" });
+							}
+						} else {
+							expect(x.moved).toBeUndefined();
+							expect(x.placement).toEqual(bare.get(x.id));
+						}
+					}
+				},
+			),
+			{ numRuns: 15 },
+		);
 	});
 });

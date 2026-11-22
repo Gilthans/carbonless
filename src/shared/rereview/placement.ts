@@ -1,8 +1,9 @@
 /**
  * Where an unresolved thread sits in a target snapshot: the tracer's
  * three-diff trace of its range (src/shared/tracer/), turned into what the
- * page shows. Placed, on the same text; changed, on the lines that replaced
- * it, with the text as it was; unplaced, under its file with a fate; or
+ * page shows. Placed, on the same text; changed, on the replacing lines
+ * that resemble it (the side-by-side view's similarity pairing), with the
+ * text as it was; deleted when nothing replacing it does; unplaced, under its file with a fate; or
  * outside, when its file is not in the comparison at all (the page's
  * trailing "Not in this comparison" group). Every thread gets one: none is
  * dropped.
@@ -36,8 +37,10 @@ import {
 import type { CodeAnchor, DiffSide, ThreadAnchorRef } from "../types.js";
 
 /**
- * What became of a thread's lines: deleted (nothing replaced them);
- * rewritten (a trace lost them: past the end of the file); outdated
+ * What became of a thread's lines: deleted (nothing replaced them, or nothing that replaced them resembles
+ * them);
+ * rewritten (a trace lost them: past the end of the file, or replaced
+ * where which replacing line carries them can't be told); outdated
  * (never traced: no commit of its own to trace from, and GitHub marks it
  * outdated); untraced (never traced, and GitHub gives no line it still
  * sits on here); file-gone (the file was deleted);
@@ -90,6 +93,11 @@ export type ThreadPlacement =
 			path: string;
 			nearest: Position | null;
 			movedTo?: string;
+			/**
+			 * A moved thread's (CAR-139): the lines it was moved to, in the
+			 * move's snapshot, and their text (the Original Reviewed Change).
+			 */
+			old?: { side: DiffSide; startLine: number; line: number; text: string[] };
 	  }
 	/** A file comment, on its file (through a rename). */
 	| { kind: "file"; path: string }
@@ -123,7 +131,10 @@ export interface ThreadInput {
 	 * line the PR added, for `reverted`.
 	 */
 	own?: LineMapper;
-	/** Text in the target snapshot, for a changed thread's new lines. */
+	/**
+	 * Text in the target snapshot, for a changed thread's new lines and for
+	 * the tracer's pairing of a replaced hunk (`TraceDiffs.newLineText`).
+	 */
 	newLineText?: (pos: Position) => string | null;
 	/**
 	 * "github": `anchor`, `diffs` and `own` are GitHub's current line on
@@ -165,6 +176,27 @@ export function validAnchor(
 		line <= endCount &&
 		startLine <= startCount
 	);
+}
+
+/**
+ * A range's lines in the thread's own snapshot, with their text (empty
+ * when unknown): what a changed placement's `old` holds.
+ */
+export function oldLines(
+	diffs: TraceDiffs,
+	anchor: Pick<CodeAnchor, "side" | "line" | "startSide" | "startLine">,
+): { side: DiffSide; startLine: number; line: number; text: string[] } {
+	const o = oldText(
+		diffs,
+		{ side: anchor.startSide, line: anchor.startLine },
+		{ side: anchor.side, line: anchor.line },
+	);
+	return {
+		side: anchor.side,
+		startLine: o.startLine,
+		line: anchor.line,
+		text: o.text,
+	};
 }
 
 /** The old text of a range, line by line (one side), else its end alone. */
@@ -304,8 +336,8 @@ function traced(t: ThreadInput): ThreadPlacement {
 		return { kind: "unplaced", fate: "file-gone", path, nearest: null };
 	}
 	if (!t.anchor) return { kind: "file", path };
-	const diffs = t.diffs;
-	if (!diffs) {
+	const given = t.diffs;
+	if (!given) {
 		return {
 			kind: "unplaced",
 			fate: t.untraced ?? "untraced",
@@ -313,6 +345,12 @@ function traced(t: ThreadInput): ThreadPlacement {
 			nearest: null,
 		};
 	}
+	// The target's text pairs a replaced hunk's lines (the tracer's
+	// similarity step); the caller's own reader, when it gave one, wins.
+	const diffs: TraceDiffs =
+		given.newLineText || !t.newLineText
+			? given
+			: { ...given, newLineText: t.newLineText };
 	const startPos: Position = {
 		side: t.anchor.startSide,
 		line: t.anchor.startLine,

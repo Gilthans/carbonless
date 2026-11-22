@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { createLineMapper } from "../../shared/tracer/lineMapper";
 import type {
 	CodeAnchor,
 	DiffLine,
@@ -8,15 +7,18 @@ import type {
 	FileHunks,
 	ReviewThread,
 } from "../../shared/types";
+import type { SpanRange } from "../threads/spanMarks";
 import {
 	fileThreads,
 	type LineKey,
 	lineKey,
+	onSinceRows,
 	outsideThreads,
 	type Placements,
 	placeThreads,
 	shownThread,
 	shownThreads,
+	sinceLeft,
 	threadOrder,
 } from "./threadPlacement";
 
@@ -428,14 +430,27 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 	 * The full diff (base → head): PS1 inserted 10 lines at the top and
 	 * deleted base line 30. Base 20 is head 30; base 30 is gone.
 	 */
-	const full = createLineMapper([
-		{ oldStart: 0, oldCount: 0, newStart: 1, newCount: 10 },
-		{ oldStart: 30, oldCount: 1, newStart: 39, newCount: 0 },
-	]);
+	const clusters = [
+		{
+			kind: "lines" as const,
+			oldStart: 0,
+			oldCount: 0,
+			newStart: 1,
+			newCount: 10,
+		},
+		{
+			kind: "lines" as const,
+			oldStart: 30,
+			oldCount: 1,
+			newStart: 39,
+			newCount: 0,
+		},
+	];
 	const sincePlace = (
 		threads: ReviewThread[],
 		hunks: FileHunks,
 		loadedContext: DiffLine[] = [],
+		spans: SpanRange[] = [],
 	) =>
 		placeThreads({
 			threads,
@@ -443,7 +458,8 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 			snapshotHead: HEAD,
 			hunks,
 			loadedContext,
-			leftToNew: (n) => full.oldToNew(n),
+			spans,
+			sinceLeft: sinceLeft(clusters, hunks.hunks),
 		});
 	const whole: FileHunks = { hunks: [], newLineCount: 49, wholeGap: true };
 
@@ -485,6 +501,119 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 		// Base 5 is head 15: the added row, by its new number.
 		expect([...p.end]).toEqual([["RIGHT:15", [t]]]);
 		expect(p.end.has("LEFT:5")).toBe(false);
+	});
+
+	/**
+	 * CAR-217: the since view's hunk removes PS1 40 (base 30, the line the
+	 * full diff deletes: `baseNo` 30) and PS1 41, a line only PS1 had
+	 * (`baseNo` null). PS1 numbers base k as k+10 here.
+	 */
+	const removedSince: FileHunks = {
+		hunks: [
+			hunk([
+				ctx(39, 38),
+				{ ...del(40), baseNo: 30 },
+				{ ...del(41), baseNo: null },
+				ctx(42, 39),
+			]),
+		],
+		newLineCount: 49,
+	};
+
+	it("a LEFT line the full diff deleted lands on the since view's removed row that shows it, by its base number (CAR-217)", () => {
+		const t = thread({ side: "LEFT", line: 30 });
+		const p = sincePlace([t], removedSince);
+		expect([...p.end]).toEqual([["LEFT:40", [t]]]);
+		expect(p.header).toEqual([]);
+	});
+
+	it("a new thread's LEFT span in base numbers paints the removed row it was written on; a range from it to a head line keeps both sides (CAR-217)", () => {
+		const one = {
+			startSide: "LEFT",
+			startLine: 30,
+			side: "LEFT",
+			line: 30,
+		} as const;
+		const p = sincePlace([], removedSince, [], [one]);
+		expect([...p.spansShown]).toEqual([0]);
+		expect([...p.covered]).toEqual(["LEFT:40"]);
+		expect(onSinceRows(one, sinceLeft(clusters, removedSince.hunks))).toEqual({
+			...one,
+			line: 40,
+			startLine: 40,
+		});
+		// Base 30 to head 39 (base 31): LEFT 40 → RIGHT 39 on the since rows.
+		const range = {
+			startSide: "LEFT",
+			startLine: 30,
+			side: "RIGHT",
+			line: 39,
+		} as const;
+		expect(onSinceRows(range, sinceLeft(clusters, removedSince.hunks))).toEqual(
+			{
+				startSide: "LEFT",
+				startLine: 40,
+				side: "RIGHT",
+				line: 39,
+			},
+		);
+	});
+
+	it("a LEFT line no row shows (deleted in the full diff, not removed since) goes to the header, never to a row only PS1 had (CAR-217)", () => {
+		// Base 41 is in neither: the row PS1 41 (only PS1's) is never it.
+		const fullGone = [
+			...clusters,
+			{
+				kind: "lines" as const,
+				oldStart: 41,
+				oldCount: 1,
+				newStart: 49,
+				newCount: 0,
+			},
+		];
+		const t = thread({ side: "LEFT", line: 41 });
+		const p = placeThreads({
+			threads: [t],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: removedSince,
+			loadedContext: [],
+			sinceLeft: sinceLeft(fullGone, removedSince.hunks),
+		});
+		expect(p.header).toEqual([{ thread: t, reason: "unplaced" }]);
+		expect(p.end.size).toBe(0);
+	});
+
+	it("twins: a base line the full diff keeps is its head line in the since view too, never a removed twin's row that names it (CAR-139)", () => {
+		// Base "}\nb"; PS1 "}\n}\nb"; head "Y\n}\nb". The full diff adds Y
+		// on top: base 1 ("}") is head 2. The interdiff removes PS1's *first*
+		// "}" (old 1), whose base number is 1 too (git aligns the twins
+		// otherwise there).
+		const twinsFull = [
+			{
+				kind: "lines" as const,
+				oldStart: 0,
+				oldCount: 0,
+				newStart: 1,
+				newCount: 1,
+			},
+		];
+		const twins: FileHunks = {
+			hunks: [hunk([{ ...del(1), baseNo: 1 }, add(1), ctx(2, 2), ctx(3, 3)])],
+			newLineCount: 3,
+		};
+		const t = thread({ side: "LEFT", line: 1 });
+		const p = placeThreads({
+			threads: [t],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: twins,
+			loadedContext: [],
+			sinceLeft: sinceLeft(twinsFull, twins.hunks),
+		});
+		// Where the full diff shows it (head line 2), not the removed row.
+		expect([...p.end]).toEqual([["RIGHT:2", [t]]]);
+		expect(p.end.has("LEFT:1")).toBe(false);
 	});
 
 	it("outside the since view (no mapper) LEFT stays by number", () => {

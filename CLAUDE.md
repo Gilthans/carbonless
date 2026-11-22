@@ -79,9 +79,17 @@ These guide every feature. If a change conflicts with one of them, stop and rais
    of the empty one, release, assert the result (`expectLoadingThen` in
    `e2e/fixtures.ts` and `test/loading.ts`). More: `docs/product-rules.md`.
 
+9. **Interdiffs are first-class.** Reviewing what changed since an earlier
+   patch set (an interdiff) is as natural and usable as reviewing the whole
+   change against the base (the owner: "reviewing interdiffs should be as
+   natural and usable as reviewing a basediff"). Every feature of the full
+   diff works in the since view too, unless the interdiff can't carry it,
+   and then the view says so where the feature would be. A feature that
+   ships full-diff-only is a gap with a ticket, not a design.
+
 More product rules learned while building (GitHub as one comment source among
 several, flagging uncertainty, dating by visibility, first-open performance,
-loading never looking empty, checking against a real PR):
+loading never looking empty, interdiffs first-class, checking against a real PR):
 `docs/product-rules.md`.
 
 ## Development
@@ -447,7 +455,9 @@ After the first release (0.1.0) the owner adds the trusted publisher
   PR; when they approve the merge, the coordinator posts it with `pnpm
   release note CAR-N "<text>" [--kind k]` or `pnpm release note CAR-N
   --none "<why>"` (also before moving a ticket to Done by hand). A PR with
-  no ticket carries the line in its description. After a batch of merges,
+  no ticket carries the line in its description. GitHub's required
+  `release-note` check enforces it on every PR (the ticket's note, else a
+  `Release note` line in the PR's description). After a batch of merges,
   `pnpm release notes check`; before a promote, `pnpm release notes --pr`
   and its "notes: X.Y.Z" PR (`docs/releasing.md`, "Release notes").
 - On the owner's word only: `pnpm release promote` (starts the promote run,

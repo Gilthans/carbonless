@@ -1,3 +1,4 @@
+import type { MovedInfo } from "./rereview/moves.js";
 import type { ThreadPlacement } from "./rereview/placement.js";
 import type { CodeWindow, DiffSide } from "./types.js";
 
@@ -89,6 +90,29 @@ export type AgentAnchor =
 	/** The review conversation: the whole review, no path (one per review, never resolved, opened by a human). */
 	| { subject: "review" };
 
+/** A span anchor as the GitHub thread started on it: the same span, no columns. */
+export function linkedAnchor(a: AgentAnchor, github: string): AgentAnchor {
+	if (a.subject === "file") {
+		return {
+			subject: "thread",
+			thread: github,
+			path: a.path,
+			commit: a.commit,
+		};
+	}
+	// A GitHub thread's already; the review conversation has no span.
+	if (a.subject === "thread" || a.subject === "review") return a;
+	return {
+		subject: "thread",
+		thread: github,
+		path: a.path,
+		commit: a.commit,
+		side: a.side,
+		line: a.line,
+		startSide: a.startSide,
+		startLine: a.startLine,
+	};
+}
 /** An anchor on code: every subject but the path-less review conversation. */
 export type AgentSpanAnchor = Exclude<AgentAnchor, { subject: "review" }>;
 
@@ -217,7 +241,8 @@ export const isSpanThread = (t: AgentThread): t is SpanAgentThread =>
 export interface AgentPlacementsAnswer {
 	/** The snapshot id placed into. */
 	revision: string;
-	threads: { id: string; placement: ThreadPlacement }[];
+	/** Each thread's place; `moved`: the reviewer's move it stands on (CAR-139). */
+	threads: { id: string; placement: ThreadPlacement; moved?: MovedInfo }[];
 }
 
 /**

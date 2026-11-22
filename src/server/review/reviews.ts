@@ -22,7 +22,6 @@ import {
 	parseEventLines,
 	type ReviewCreatedEvent,
 	type ShapeCode,
-	type ThreadAnchorRef,
 } from "./events.js";
 import { foldProgress, type ProgressState } from "./fold.js";
 import { RefConflictError, RefStore } from "./refStore.js";
@@ -109,6 +108,58 @@ const VERBS = {
 	reviewed: "reviewed",
 	"crossed-off": "crossed off",
 } as const;
+
+/** One part of a write, for its commit's subject (subjectOf). */
+interface SummaryPart {
+	/** What it did: "reviewed", "marked lines of", "marked pieces since PS1". */
+	verb: string;
+	/** Whether the verb is said of clusters ("reviewed 2 clusters"). */
+	clusters: boolean;
+	/** Its own wording when it is the write's only part. */
+	alone?: string;
+}
+
+/** The longest commit subject subjectOf writes, "…" included. */
+export const MAX_SUBJECT = 200;
+
+/**
+ * A write's commit subject: its parts, alike ones counted ("crb: reviewed
+ * 2 clusters, reset 1 cluster in src/a.ts"), at most MAX_SUBJECT
+ * characters. Informational only: readers use the JSON lines.
+ */
+export function subjectOf(parts: SummaryPart[], paths: string[]): string {
+	const [only] = parts;
+	let summary: string;
+	if (parts.length === 1 && only?.alone) summary = only.alone;
+	else {
+		const counts = new Map<string, { part: SummaryPart; n: number }>();
+		for (const part of parts) {
+			const seen = counts.get(part.verb);
+			if (seen) seen.n++;
+			else counts.set(part.verb, { part, n: 1 });
+		}
+		summary = [...counts.values()]
+			.map(({ part, n }) => {
+				if (part.clusters)
+					return `${part.verb} ${n} cluster${n === 1 ? "" : "s"}`;
+				return n === 1 ? part.verb : `${part.verb} (${n} times)`;
+			})
+			.join(", ");
+	}
+	const subject = `crb: ${summary} in ${whereOf(paths)}`;
+	return subject.length <= MAX_SUBJECT
+		? subject
+		: `${subject.slice(0, MAX_SUBJECT - 1)}…`;
+}
+
+/** Where a commit's changes are: the one path, or how many files. */
+function whereOf(paths: string[]): string {
+	const unique = new Set(paths);
+	const [only] = unique;
+	return unique.size === 1 && only !== undefined
+		? only
+		: `${unique.size} files`;
+}
 
 /** Which view of a PR a review is of (dev and pinned modes; see prKey). */
 export interface PrView {
@@ -443,6 +494,10 @@ export class ReviewService {
 		}
 		const stamp = stamper(existing);
 
+		// Every change of the call in one commit: a reader (a reload, another
+		// tab) sees all of them or none, never a reset half done (CAR-215).
+		const events: CrbEvent[] = [];
+		const parts: SummaryPart[] = [];
 		for (const { cluster, lines, payload } of payloads) {
 			if (lines === null) {
 				const event: ClusterStateEvent = newEvent(
@@ -452,19 +507,15 @@ export class ReviewService {
 					"human",
 					stamp(),
 				);
-				await this.store.appendEvent(
-					ref,
-					`crb: ${VERBS[event.state]} 1 cluster in ${event.path}`,
-					event,
-					slug,
-				);
+				events.push(event);
+				parts.push({ verb: VERBS[event.state], clusters: true });
 				continue;
 			}
-			// Part of it: the whole cluster unreviewed, then its marked lines,
-			// in one commit (a reader that predates lines-state sees it
-			// unreviewed, never more reviewed than the reviewer marked).
+			// Part of it: the whole cluster unreviewed, then its marked lines
+			// (a reader that predates lines-state sees it unreviewed, never
+			// more reviewed than the reviewer marked).
 			const { patchset, path } = payload;
-			const events: CrbEvent[] = [
+			events.push(
 				newEvent(
 					"cluster-state",
 					slug,
@@ -472,7 +523,7 @@ export class ReviewService {
 					"human",
 					stamp(),
 				),
-			];
+			);
 			for (const [state, ranges] of [
 				["reviewed", lines.reviewed],
 				["crossed-off", lines.crossed],
@@ -488,34 +539,38 @@ export class ReviewService {
 					),
 				);
 			}
-			await this.store.appendEvents(
-				ref,
-				`crb: marked ${size(lines.reviewed) + size(lines.crossed)} of ${cluster.lines} lines of 1 cluster in ${path}`,
-				events,
-				slug,
-			);
+			parts.push({
+				verb: "marked lines of",
+				clusters: true,
+				alone: `marked ${size(lines.reviewed) + size(lines.crossed)} of ${cluster.lines} lines of 1 cluster`,
+			});
 		}
+		const paths = payloads.map((p) => p.payload.path);
 		for (const change of marks) {
 			const mark = change.sinceMark as SinceMark;
-			const event = newEvent(
-				"since-lines-state",
-				slug,
-				{
-					patchset: snapshot.revision,
-					since: mark.since,
-					path: mark.path,
-					reviewed: sides(mark.reviewed),
-					crossed: sides(mark.crossed),
-				},
-				"human",
-				stamp(),
+			events.push(
+				newEvent(
+					"since-lines-state",
+					slug,
+					{
+						patchset: snapshot.revision,
+						since: mark.since,
+						path: mark.path,
+						reviewed: sides(mark.reviewed),
+						crossed: sides(mark.crossed),
+					},
+					"human",
+					stamp(),
+				),
 			);
-			await this.store.appendEvent(
-				ref,
-				`crb: marked pieces since PS${mark.since} in ${mark.path}`,
-				event,
-				slug,
-			);
+			parts.push({
+				verb: `marked pieces since PS${mark.since}`,
+				clusters: false,
+			});
+			paths.push(mark.path);
+		}
+		if (events.length > 0) {
+			await this.store.appendEvents(ref, subjectOf(parts, paths), events, slug);
 		}
 		return this.getProgress(reviewId, slug);
 	}
@@ -575,46 +630,6 @@ export class ReviewService {
 				}
 			}
 		}
-	}
-
-	/**
-	 * Appends the reviewer's placement of a thread in patch set `patchset`
-	 * (a thread-placed event by them; the anchor was checked against the
-	 * patch set's snapshot by the caller).
-	 */
-	async recordPlacement(
-		reviewId: string,
-		slug: string,
-		patchset: number,
-		thread: string,
-		anchor: ThreadAnchorRef,
-		engine: number,
-	): Promise<ProgressState> {
-		checkReviewId(reviewId);
-		checkSlug(slug);
-		checkPatchsetNumber(patchset);
-		const ref = progressRef(reviewId, slug);
-		const existing = await this.store.readEvents(ref);
-		const progress = foldProgress(existing);
-		if (!progress.patchsets.some((p) => p.number === patchset)) {
-			throw new StaleSnapshotError(
-				`No patch set ${patchset}; reload the review`,
-			);
-		}
-		const event = newEvent(
-			"thread-placed",
-			slug,
-			{ thread, patchset, anchor, engine },
-			"human",
-			stamper(existing)(),
-		);
-		await this.store.appendEvent(
-			ref,
-			`crb: placed thread in ${anchor.path} on PS${patchset}`,
-			event,
-			slug,
-		);
-		return this.getProgress(reviewId, slug);
 	}
 
 	/**

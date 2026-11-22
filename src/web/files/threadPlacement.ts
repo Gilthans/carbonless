@@ -91,6 +91,8 @@ export function shownThread(
 	t: ReviewThread,
 	snapshotHead: string,
 	placements: Placements | null,
+	/** Threads the reviewer moved (CAR-139): their columns don't hold. */
+	moved?: ReadonlyMap<string, unknown> | null,
 ): ReviewThread | null {
 	const p = placements?.get(t.id);
 	if (!p) return t.commit !== "" && t.commit === snapshotHead ? t : null;
@@ -105,9 +107,10 @@ export function shownThread(
 	let shown: ReviewThread;
 	if (p.kind === "placed" || p.kind === "changed") {
 		const a = p.anchor;
-		// A rewritten line's columns no longer hold: whole lines.
+		// A rewritten line's columns no longer hold, nor a moved thread's:
+		// whole lines.
 		const cols =
-			p.kind === "placed" && t.anchor
+			p.kind === "placed" && t.anchor && !moved?.has(t.id)
 				? {
 						startCol: t.anchor.startCol ?? null,
 						endCol: t.anchor.endCol ?? null,
@@ -115,6 +118,7 @@ export function shownThread(
 				: { startCol: null, endCol: null };
 		shown = {
 			...t,
+			madeOn: t.madeOn ?? t.commit,
 			path: a.path,
 			commit: snapshotHead,
 			subject: "line",
@@ -130,7 +134,12 @@ export function shownThread(
 			},
 		};
 	} else {
-		shown = { ...t, path: p.path, commit: snapshotHead };
+		shown = {
+			...t,
+			madeOn: t.madeOn ?? t.commit,
+			path: p.path,
+			commit: snapshotHead,
+		};
 	}
 	copies.set(p, shown);
 	return shown;
@@ -141,9 +150,10 @@ export function shownThreads(
 	threads: readonly ReviewThread[],
 	snapshotHead: string,
 	placements: Placements | null,
+	moved?: ReadonlyMap<string, unknown> | null,
 ): ReviewThread[] {
 	return threads.flatMap((t) => {
-		const shown = shownThread(t, snapshotHead, placements);
+		const shown = shownThread(t, snapshotHead, placements, moved);
 		return shown ? [shown] : [];
 	});
 }
@@ -266,42 +276,67 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
 }
 
 /**
- * The since view's `leftToNew` for placeThreads: through the full diff's
- * line clusters (base → head), the head line a base line became; null
- * when the full diff deleted it.
+ * The since view's row for a LEFT line GitHub names (a base line on the
+ * head): through the full diff's line clusters (base → head), the head
+ * line it became, as the full diff shows it; only when the full diff
+ * deleted it, the removed row the since view shows it on (its `baseNo`,
+ * keyed by its own old number there); null when neither. Never a removed
+ * row for a base line the full diff keeps (a twin git aligns otherwise in
+ * the interdiff): both views put a thread on the same line.
  */
-export function sinceLeftToNew(
+export type SinceLeft = (n: number) => { side: DiffSide; line: number } | null;
+
+/** The since view's SinceLeft, from the full diff's clusters and its hunks' removed rows. */
+export function sinceLeft(
 	clusters: readonly Pick<
 		Cluster,
 		"kind" | "oldStart" | "oldCount" | "newStart" | "newCount"
 	>[],
-): (n: number) => number | null {
+	hunks: readonly DisplayHunk[] | null | undefined,
+): SinceLeft {
 	const full = createLineMapper(clusters.filter((c) => c.kind === "lines"));
-	return (n) => full.oldToNew(n);
+	const removed = new Map<number, number>();
+	for (const h of hunks ?? []) {
+		for (const l of h.lines) {
+			if (typeof l.baseNo === "number" && l.oldNo !== undefined) {
+				removed.set(l.baseNo, l.oldNo);
+			}
+		}
+	}
+	return (n) => {
+		const line = full.oldToNew(n);
+		if (line !== null) return { side: "RIGHT", line };
+		const old = removed.get(n);
+		return old === undefined ? null : { side: "LEFT", line: old };
+	};
 }
 
 /**
- * An anchor with its LEFT lines moved to the new side through `leftToNew`
- * (the since view, placeThreads); null when its end line was deleted. A
- * deleted start line starts the range at its end.
+ * A span as GitHub names it (LEFT in the base), on the since view's rows
+ * through `left` (SinceLeft); null when its end line has no row there. A
+ * start line with none starts the range at its end. Without `left` (any
+ * other view), the span as it is.
  */
-function onNewSide<A extends SpanRange>(
-	anchor: A | null | undefined,
-	leftToNew: (n: number) => number | null,
-): A | null | undefined {
-	if (!anchor) return anchor;
-	const line = anchor.side === "LEFT" ? leftToNew(anchor.line) : anchor.line;
-	if (line === null) return null;
-	const start =
-		anchor.startSide === "LEFT"
-			? leftToNew(anchor.startLine)
-			: anchor.startLine;
+export function onSinceRows<A extends SpanRange>(
+	span: A,
+	left: SinceLeft | undefined,
+): A | null {
+	if (!left) return span;
+	const at = (side: DiffSide, line: number) =>
+		side === "LEFT" ? left(line) : { side, line };
+	const end = at(span.side, span.line);
+	if (end === null) return null;
+	const start = at(span.startSide, span.startLine);
+	const from =
+		start === null || (start.side === end.side && start.line > end.line)
+			? end
+			: start;
 	return {
-		...anchor,
-		side: "RIGHT",
-		line,
-		startSide: "RIGHT",
-		startLine: start === null || start > line ? line : start,
+		...span,
+		side: end.side,
+		line: end.line,
+		startSide: from.side,
+		startLine: from.line,
 	};
 }
 
@@ -333,12 +368,12 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	placements?: Placements | null;
 	/**
 	 * The since view: its old side is the compared patch set's, not the
-	 * base a LEFT anchor counts in. The head line base line `n` became in
-	 * the full diff (null: the full diff deleted it); a LEFT anchor is
-	 * placed there, on the new side, and one on a deleted line goes to the
-	 * header, never onto a row that merely shares its number.
+	 * base a LEFT anchor (or span) counts in. Where base line `n` shows
+	 * there (SinceLeft): its removed row, else the head line it became;
+	 * one with neither goes to the header, never onto a row that merely
+	 * shares its number.
 	 */
-	leftToNew?: (n: number) => number | null;
+	sinceLeft?: SinceLeft;
 }): FilePlacement<T> {
 	const placement: FilePlacement<T> = {
 		end: new Map(),
@@ -400,7 +435,9 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	};
 
 	if (hunks && !args.noLines) {
-		spans.forEach((span, i) => {
+		spans.forEach((asked, i) => {
+			const span = onSinceRows(asked, args.sinceLeft);
+			if (!span) return;
 			const endRow = rowAt.get(`${span.side}:${span.line}`);
 			if (endRow === undefined) return;
 			paint(span, endRow);
@@ -414,11 +451,10 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 			placement.fates.push({ thread: t, placement: traced });
 			continue;
 		}
-		const anchor = args.leftToNew
-			? onNewSide(t.anchor, args.leftToNew)
-			: t.anchor;
+		const anchor = t.anchor && onSinceRows(t.anchor, args.sinceLeft);
 		if (anchor === null && t.anchor) {
-			// A LEFT line the full diff deleted: no row of the since view is it.
+			// A LEFT line the full diff deleted that the since view doesn't
+			// show: no row of it is that line.
 			placement.header.push({ thread: t, reason: "unplaced" });
 			continue;
 		}

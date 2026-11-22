@@ -1,7 +1,7 @@
 /**
  * Yardsticks for the similarity pairing's CPU tests (linePairing.test.ts,
  * wordBlocks.test.ts, findInPr.test.ts): they share no code with the LCS
- * (src/web/files/linePairing.ts), so replacing the LCS by another algorithm
+ * (src/shared/linePairing.ts), so replacing the LCS by another algorithm
  * changes the cost under test and not the yardstick.
  */
 

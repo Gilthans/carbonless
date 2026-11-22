@@ -287,6 +287,8 @@ export function createMethodologyRepo(
 		checkout(b1);
 		run(["cherry-pick", p1a], TIMES.updated);
 		const p1aRebased = head();
+		// Line 35 too: a base line the since view shows removed after the
+		// rebase (its GitHub line, CAR-217).
 		updated = commit(
 			"PR: line 30 (amended)",
 			{
@@ -294,6 +296,7 @@ export function createMethodologyRepo(
 					2: "line 2 changed",
 					15: "line 15 base",
 					30: "line 30 amended",
+					35: "line 35 amended",
 				}),
 			},
 			TIMES.updated,
@@ -394,7 +397,13 @@ export function createMethodologyRepo(
 		);
 		const amendedRef = commit(
 			"reference: line 30 amended",
-			{ "a.txt": aTxt({ 2: "line 2 changed", 30: "line 30 amended" }) },
+			{
+				"a.txt": aTxt({
+					2: "line 2 changed",
+					30: "line 30 amended",
+					35: "line 35 amended",
+				}),
+			},
 			TIMES.pr,
 		);
 		updatedRef = { base: b0, head: amendedRef, paths: ["a.txt", "new.txt"] };
