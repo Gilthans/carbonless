@@ -492,6 +492,34 @@ html[data-resizing] * {
 	}
 }
 
+/*
+ * Comment on an agent conversation's card: the card's frame (the agent's
+ * edge) becomes the GitHub thread's in place (NewThread drawn in the
+ * card). Colour only, nothing moves; with reduced motion it just is.
+ */
+@keyframes frame-from-agent {
+	from {
+		border-color: var(--color-agent-edge);
+	}
+}
+.frame-from-agent {
+	animation: frame-from-agent 300ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+	.frame-from-agent {
+		animation: none;
+	}
+}
+
+/*
+ * A pending thread in view is about to become its GitHub thread
+ * (pendingThread.ts prepareLanding): useLandWhere keeps it in place, so
+ * the browser's own scroll anchoring stays out until it has.
+ */
+html[data-landing] {
+	overflow-anchor: none;
+}
+
 /* The diff row a thread is being dragged onto (ThreadFate.tsx, DragHandle). */
 tr[data-drop-line] {
 	outline: 2px solid var(--color-accent);

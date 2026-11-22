@@ -172,7 +172,11 @@ export function AgentComposer(props: {
 		const before = writer.drafts.newThread(id)?.text ?? "";
 		const joined =
 			before.trim() && text ? `${before}\n\n${text}` : before || text;
-		writer.drafts.setNew(id, targetOf(span), joined, props.lineTexts);
+		// A comment there carrying an agent conversation keeps carrying it.
+		const carries =
+			writer.drafts.newThread(id)?.create?.agentThread ??
+			getComposers().find((c) => c.clientId === id)?.agentThread;
+		writer.drafts.setNew(id, targetOf(span, carries), joined, props.lineTexts);
 	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {

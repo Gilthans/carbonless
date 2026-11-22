@@ -70,6 +70,18 @@ import {
 	useAgentComposers,
 } from "../agent/askAgentAction";
 import {
+	type CommentScope,
+	CommentScopeProvider,
+	onHeadMove,
+	spanInHunks,
+} from "../agent/commentOnGithub";
+import {
+	type PendingComposers,
+	PendingComposersProvider,
+	shownOutsideCard,
+	useHeldByCard,
+} from "../agent/pendingThread";
+import {
 	type AgentPlaceable,
 	shownAgentPlaceables,
 	useAgentPlacing,
@@ -2492,15 +2504,22 @@ export function DiffBody(props: {
 	const mineNew = allItems.filter(
 		(i) => i.span.path === file.path && i.span.subject === "line",
 	);
-	const lineItems = mineNew.filter((i) => i.span.commit === snapshotHead);
+	// One carrying an agent conversation whose card is on screen: drawn
+	// in that card (pendingThread.ts), not again here.
+	const heldByCard = useHeldByCard();
+	const lineItems = mineNew.filter(
+		(i) =>
+			i.span.commit === snapshotHead &&
+			shownOutsideCard(i, snapshotHead, heldByCard),
+	);
 	const orphanItems = snapshotHead
 		? mineNew.filter((i) => i.span.commit !== snapshotHead)
 		: [];
 	const writer = useThreadWriter();
 
 	// The agent's side: its threads (their own read) and open composers.
-	const sessionHead = useQuery({ ...sessionQuery, enabled: false }).data
-		?.snapshotHead;
+	const sessionNow = useQuery({ ...sessionQuery, enabled: false }).data;
+	const sessionHead = sessionNow?.snapshotHead;
 	// FilesPage reads them (and the tree counts them); here, from the cache.
 	const agentThreads = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
@@ -2724,6 +2743,12 @@ export function DiffBody(props: {
 		for (const item of orphanItems) {
 			if (item.sending) continue;
 			const draft = writer.drafts.newThread(item.clientId);
+			// One carrying an agent conversation: onHeadMove (never moved).
+			if (item.agentThread) {
+				const fate = onHeadMove(sessionNow, item.span.commit, !!draft);
+				if (fate === "close") closeComposer(item.clientId);
+				continue;
+			}
 			// Opened on the earlier head and never typed in: nothing to keep.
 			if (!draft) {
 				closeComposer(item.clientId);
@@ -3314,168 +3339,208 @@ export function DiffBody(props: {
 		hunks.data && gapRows(gapAt(hunks.data.hunks.length), takeLead);
 	// Nothing to show it on (no rows, or they failed to load): a row of its own.
 	const lead = hunks.isPending ? undefined : takeLead();
+	// Comment on an agent card here: the head's diff shown, and whether a
+	// span's ends are this diff's lines (as the selection bar asks).
+	const hunkList = hunks.data?.hunks;
+	const commentScope = useMemo<CommentScope>(
+		() => ({
+			headSure: props.headSure !== false,
+			inDiff: (span) =>
+				hunkList && span.path === file.path
+					? spanInHunks(span, hunkList)
+					: undefined,
+		}),
+		[props.headSure, hunkList, file.path],
+	);
+
+	// A composer drawn in its conversation's card: what this diff gives one.
+	// Its functions read this render's (a ref), so the value changes only
+	// with the head: the file's cards don't all re-render with the diff.
+	const latest = useRef({
+		quoteSpan,
+		spanLineTexts,
+		onPosted: composers.onPosted,
+	});
+	latest.current = { quoteSpan, spanLineTexts, onPosted: composers.onPosted };
+	const headUnsure = composers.headUnsure;
+	const pendingComposers = useMemo<PendingComposers>(
+		() => ({
+			head: snapshotHead,
+			quote: (span) => latest.current.quoteSpan(span),
+			texts: (span) => latest.current.spanLineTexts(span),
+			onPosted: (item) => latest.current.onPosted(item),
+			headUnsure,
+		}),
+		[snapshotHead, headUnsure],
+	);
 
 	return (
-		<div ref={root}>
-			{hint && <LandingHint hint={hint} />}
-			{agentUnshown.length > 0 && (
-				<div
-					data-testid="agent-composers-unshown"
-					className="space-y-2 border-b border-line bg-canvas p-2"
-				>
-					{agentUnshown.map((c) => (
-						<AgentComposer
-							key={c.clientId}
-							clientId={c.clientId}
-							span={c.span}
-							quote={quoteSpan(c.span)}
-							comment={commentOn(c.span)}
-							lineTexts={spanLineTexts(c.span)}
-						/>
-					))}
-				</div>
-			)}
-			{(unshown.length > 0 || orphanItems.length > 0) && (
-				<div
-					data-testid="new-threads-unshown"
-					className="space-y-2 border-b border-line bg-canvas p-2"
-				>
-					{unshown.map((item) => (
-						<NewThread
-							key={item.clientId}
-							item={item}
-							quote={composers.quote(item)}
-							lineTexts={composers.texts(item)}
-							headUnsure={composers.headUnsure}
-						/>
-					))}
-					{orphanItems.length > 0 && (
-						<ul
-							aria-label="Drafts written on an earlier version"
-							className="space-y-2"
+		<CommentScopeProvider value={commentScope}>
+			<PendingComposersProvider value={pendingComposers}>
+				<div ref={root}>
+					{hint && <LandingHint hint={hint} />}
+					{agentUnshown.length > 0 && (
+						<div
+							data-testid="agent-composers-unshown"
+							className="space-y-2 border-b border-line bg-canvas p-2"
 						>
-							{orphanItems.map((item) => (
-								<OrphanDraft
-									key={item.clientId}
-									label={`${
-										gone(item) ? "Lines gone" : "Written on an earlier version"
-									} · ${describeSpan(item.span)}`}
-									text={item.text}
-									onDiscard={() => writer.discard(`new:${item.clientId}`)}
+							{agentUnshown.map((c) => (
+								<AgentComposer
+									key={c.clientId}
+									clientId={c.clientId}
+									span={c.span}
+									quote={quoteSpan(c.span)}
+									comment={commentOn(c.span)}
+									lineTexts={spanLineTexts(c.span)}
 								/>
 							))}
-						</ul>
+						</div>
 					)}
-				</div>
-			)}
-			{/* Its own bar is hidden: the proxy below is the one bar (useScrollbarProxy). */}
-			<div
-				ref={scroller}
-				className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-			>
-				{/*
-				 * Unified, the table is as wide as its longest line and scrolls in
-				 * the div; side by side it is the div's width, its two code columns
-				 * equal (the fixed layout with the other columns' widths), and the
-				 * lines wrap in their cells.
-				 */}
-				<table
-					ref={table}
-					data-view={view}
-					data-since={props.from !== undefined || undefined}
-					data-tight={tight || undefined}
-					onPointerDown={onPointerDown}
-					style={
-						{
-							"--num-w": `calc(${numberDigits(hunks.data)}ch + var(--num-pad, 1rem))`,
-						} as CSSProperties
-					}
-					className={`group/diff ${TABLE_VARS} border-collapse bg-code font-mono text-xs leading-5 text-code-ink ${
-						view === "side-by-side" ? "w-full table-fixed" : "min-w-full"
-					}`}
-				>
-					{view === "side-by-side" && (
-						<colgroup>
-							<col className="w-1" />
-							<col className={CONTROLS_W} />
-							<col className={NUMBER_W} />
-							<col />
-							<col className={NUMBER_W} />
-							<col />
-						</colgroup>
+					{(unshown.length > 0 || orphanItems.length > 0) && (
+						<div
+							data-testid="new-threads-unshown"
+							className="space-y-2 border-b border-line bg-canvas p-2"
+						>
+							{unshown.map((item) => (
+								<NewThread
+									key={item.clientId}
+									item={item}
+									quote={composers.quote(item)}
+									lineTexts={composers.texts(item)}
+									headUnsure={composers.headUnsure}
+								/>
+							))}
+							{orphanItems.length > 0 && (
+								<ul
+									aria-label="Drafts written on an earlier version"
+									className="space-y-2"
+								>
+									{orphanItems.map((item) => (
+										<OrphanDraft
+											key={item.clientId}
+											label={`${
+												gone(item)
+													? "Lines gone"
+													: "Written on an earlier version"
+											} · ${describeSpan(item.span)}`}
+											text={item.text}
+											onDiscard={() => writer.discard(`new:${item.clientId}`)}
+										/>
+									))}
+								</ul>
+							)}
+						</div>
 					)}
-					{lead && (
-						<tbody>
-							<LeadRow lead={lead} columns={columns} centred={centred} />
-						</tbody>
+					{/* Its own bar is hidden: the proxy below is the one bar (useScrollbarProxy). */}
+					<div
+						ref={scroller}
+						className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+					>
+						{/*
+						 * Unified, the table is as wide as its longest line and scrolls in
+						 * the div; side by side it is the div's width, its two code columns
+						 * equal (the fixed layout with the other columns' widths), and the
+						 * lines wrap in their cells.
+						 */}
+						<table
+							ref={table}
+							data-view={view}
+							data-since={props.from !== undefined || undefined}
+							data-tight={tight || undefined}
+							onPointerDown={onPointerDown}
+							style={
+								{
+									"--num-w": `calc(${numberDigits(hunks.data)}ch + var(--num-pad, 1rem))`,
+								} as CSSProperties
+							}
+							className={`group/diff ${TABLE_VARS} border-collapse bg-code font-mono text-xs leading-5 text-code-ink ${
+								view === "side-by-side" ? "w-full table-fixed" : "min-w-full"
+							}`}
+						>
+							{view === "side-by-side" && (
+								<colgroup>
+									<col className="w-1" />
+									<col className={CONTROLS_W} />
+									<col className={NUMBER_W} />
+									<col />
+									<col className={NUMBER_W} />
+									<col />
+								</colgroup>
+							)}
+							{lead && (
+								<tbody>
+									<LeadRow lead={lead} columns={columns} centred={centred} />
+								</tbody>
+							)}
+							{clusterRows}
+							{hunkRows}
+							{tailRows}
+						</table>
+					</div>
+					{overflow !== null && (
+						// Stuck to the viewport's bottom while the diff's end is below it,
+						// clear of what floats there (the phone's Files button below md,
+						// the save notices, the selection bar: FilesPage's paddingBottom).
+						<div
+							ref={proxy}
+							data-testid="diff-scrollbar"
+							aria-hidden
+							// Chrome makes a scroller with nothing focusable in it a Tab
+							// stop: not this one (the pointer scrolls it; the keyboard
+							// has the lines).
+							tabIndex={-1}
+							className="sticky bottom-[max(5rem,var(--sync-notices,0px),var(--selection-room,0px))] z-[6] overflow-x-auto [scrollbar-width:thin] data-[overlay]:h-2.5 md:bottom-[max(var(--sync-notices,0px),var(--selection-room,0px))]"
+						>
+							<div style={{ width: overflow }} className="h-px" />
+						</div>
 					)}
-					{clusterRows}
-					{hunkRows}
-					{tailRows}
-				</table>
-			</div>
-			{overflow !== null && (
-				// Stuck to the viewport's bottom while the diff's end is below it,
-				// clear of what floats there (the phone's Files button below md,
-				// the save notices, the selection bar: FilesPage's paddingBottom).
-				<div
-					ref={proxy}
-					data-testid="diff-scrollbar"
-					aria-hidden
-					// Chrome makes a scroller with nothing focusable in it a Tab
-					// stop: not this one (the pointer scrolls it; the keyboard
-					// has the lines).
-					tabIndex={-1}
-					className="sticky bottom-[max(5rem,var(--sync-notices,0px),var(--selection-room,0px))] z-[6] overflow-x-auto [scrollbar-width:thin] data-[overlay]:h-2.5 md:bottom-[max(var(--sync-notices,0px),var(--selection-room,0px))]"
-				>
-					<div style={{ width: overflow }} className="h-px" />
-				</div>
-			)}
-			{/* Lines hidden (an image): the view says nothing of lines; the
+					{/* Lines hidden (an image): the view says nothing of lines; the
 			    header's counts and action still hold every unit. */}
-			{props.from !== undefined &&
-				!linesHidden &&
-				hunks.data &&
-				unshownToRead > 0 && (
-					// Clusters the engine says are to read (reworked or new) with no
-					// line in these hunks (unreviewed on the compared patch set and
-					// unchanged since): never "nothing to read"; the full diff has them.
-					<p
-						data-testid="since-unshown"
-						className="flex min-h-10 items-center gap-2 px-3 text-xs text-warn"
-					>
-						{unshownToRead} to read · only in the full diff ·{" "}
-						<span className="text-muted">{carriedHere} carried</span>
-					</p>
-				)}
-			{/* Lines hidden too: with no file-level row, nothing else shows. */}
-			{props.from !== undefined &&
-				hunks.data &&
-				hunks.data.hunks.length === 0 &&
-				fileClusters.length === 0 &&
-				unshownToRead === 0 && (
-					// The since view of a file the author left alone: say so (never
-					// an empty table that reads as "nothing changed" by mistake).
-					<p
-						data-testid="since-empty"
-						className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
-					>
-						Nothing to read since PS{props.from} · {carriedHere} carried
-					</p>
-				)}
-			{hunks.isPending && (
-				// A screen tall while loading, so a file picked in the tree can
-				// scroll its header to the top before its lines arrive.
-				<div aria-busy="true" className="min-h-[100dvh] px-3 py-2">
-					<Spinner label="Loading diff" />
+					{props.from !== undefined &&
+						!linesHidden &&
+						hunks.data &&
+						unshownToRead > 0 && (
+							// Clusters the engine says are to read (reworked or new) with no
+							// line in these hunks (unreviewed on the compared patch set and
+							// unchanged since): never "nothing to read"; the full diff has them.
+							<p
+								data-testid="since-unshown"
+								className="flex min-h-10 items-center gap-2 px-3 text-xs text-warn"
+							>
+								{unshownToRead} to read · only in the full diff ·{" "}
+								<span className="text-muted">{carriedHere} carried</span>
+							</p>
+						)}
+					{/* Lines hidden too: with no file-level row, nothing else shows. */}
+					{props.from !== undefined &&
+						hunks.data &&
+						hunks.data.hunks.length === 0 &&
+						fileClusters.length === 0 &&
+						unshownToRead === 0 && (
+							// The since view of a file the author left alone: say so (never
+							// an empty table that reads as "nothing changed" by mistake).
+							<p
+								data-testid="since-empty"
+								className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
+							>
+								Nothing to read since PS{props.from} · {carriedHere} carried
+							</p>
+						)}
+					{hunks.isPending && (
+						// A screen tall while loading, so a file picked in the tree can
+						// scroll its header to the top before its lines arrive.
+						<div aria-busy="true" className="min-h-[100dvh] px-3 py-2">
+							<Spinner label="Loading diff" />
+						</div>
+					)}
+					{hunks.isError && hunks.error && (
+						<div className="p-2">
+							<ErrorMessage error={hunks.error} />
+						</div>
+					)}
 				</div>
-			)}
-			{hunks.isError && hunks.error && (
-				<div className="p-2">
-					<ErrorMessage error={hunks.error} />
-				</div>
-			)}
-		</div>
+			</PendingComposersProvider>
+		</CommentScopeProvider>
 	);
 }
 

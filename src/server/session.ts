@@ -727,6 +727,7 @@ export class Session {
 			pr: { owner, repo, number, title, url },
 			viewer: this.viewer,
 			snapshotHead: this.#snapshot.head,
+			snapshotBase: this.#snapshot.base,
 			currentHead: headOid,
 			// As of a cutoff the PR has obviously moved on since: never say so.
 			headMoved: !this.options.asOf && headOid !== this.#snapshot.head,
@@ -759,7 +760,6 @@ export class Session {
 			),
 			...(this.#patchsets.length === 0
 				? {
-						snapshotBase: this.#snapshot.base,
 						snapshotCommits: this.#commitsOf(
 							this.#snapshot.base,
 							this.#snapshot.head,
