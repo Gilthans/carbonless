@@ -450,6 +450,8 @@ interface WsLine {
 	baseNo?: number | null;
 	/** Its removed line's, in the since view (DiffLine.psNo). */
 	psNo?: number;
+	/** Its removed line's, in the since view (DiffLine.psMoved). */
+	psMoved?: true;
 }
 
 /** What a diff row shows: a line as it is, or a whitespace-only pair. */
@@ -466,6 +468,7 @@ const rowLine = (row: DiffRow): RowLine => {
 		noNewline: shown.noNewline,
 		...(row.del?.baseNo === undefined ? {} : { baseNo: row.del.baseNo }),
 		...(row.del?.psNo === undefined ? {} : { psNo: row.del.psNo }),
+		...(row.del?.psMoved ? { psMoved: true as const } : {}),
 	};
 };
 
@@ -480,6 +483,7 @@ const sideLine = (line: DiffLine, ws: boolean): RowLine =>
 				noNewline: line.noNewline,
 				...(line.baseNo === undefined ? {} : { baseNo: line.baseNo }),
 				...(line.psNo === undefined ? {} : { psNo: line.psNo }),
+				...(line.psMoved ? { psMoved: true as const } : {}),
 			}
 		: line;
 
@@ -1432,6 +1436,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-new-no={line.newNo}
 				data-base-no={baseAttr(line.baseNo)}
 				data-ps-no={line.psNo}
+				data-ps-moved={line.psMoved || undefined}
 				data-landed={landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -1764,6 +1769,7 @@ function PairRow(
 				data-new-no={right?.line.newNo}
 				data-base-no={baseAttr(left?.line.baseNo)}
 				data-ps-no={left?.line.psNo}
+				data-ps-moved={left?.line.psMoved || undefined}
 				data-landed={phase === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}

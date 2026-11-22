@@ -479,7 +479,13 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	};
 	const mine = fileThreads(args.threads, args.path, args.snapshotHead);
 	const spans = args.spans ?? [];
-	if (mine.length === 0 && spans.length === 0) return placement;
+	if (
+		mine.length === 0 &&
+		spans.length === 0 &&
+		(args.earlierPending ?? []).length === 0
+	) {
+		return placement;
+	}
 	const { hunks } = args;
 	const rows = hunks ? shownRows(hunks.hunks, args.loadedContext) : [];
 	const rowAt = new Map<LineKey, number>();

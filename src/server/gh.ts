@@ -2042,6 +2042,28 @@ export interface ListedComment {
  * Every review comment of PR `ref` by REST (no GraphQL lag after a
  * write), oldest first, pages and all.
  */
+/**
+ * The PR's commits as GitHub lists them now (REST, every page; GitHub
+ * lists at most 250): their oids, oldest first. A comment's commit_id
+ * outside them GitHub puts on the head instead (CAR-233).
+ */
+export async function fetchPrCommits(ref: PrRef): Promise<string[]> {
+	const out = await runGh(
+		[
+			"api",
+			`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/commits`,
+			"--paginate",
+			"--jq",
+			".[].sha",
+		],
+		{ what: "the PR's commits" },
+	);
+	return out
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(l));
+}
+
 export async function fetchReviewComments(
 	ref: PrRef,
 ): Promise<ListedComment[]> {

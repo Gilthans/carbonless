@@ -41,7 +41,7 @@ export interface SelectionContext {
 	 * view doesn't know (CAR-217), or the earlier patch set's lines mixed
 	 * with the head's (CAR-233).
 	 */
-	noLine?: "earlier" | "unknown" | "mixed";
+	noLine?: "earlier" | "unknown" | "mixed" | "renamed" | "split";
 	/**
 	 * The diff on screen is not yet the viewed head's (a Refresh moved the
 	 * head first): its lines would be named on the wrong commit.
@@ -66,12 +66,24 @@ export const MIXED_COMMITS =
 export const NO_GITHUB_LINE = "Can't place this line on GitHub's diff";
 
 /** The reason for a span's line with no GitHub line (SelectionContext.noLine). */
-export const noLineReason = (why: "earlier" | "unknown" | "mixed") =>
+/** Why nothing can start on an earlier patch set's line whose file was renamed since. */
+export const RENAMED_SINCE = "Renamed since the earlier patch set";
+
+/** Why nothing can start on an earlier patch set's lines that aren't one run there. */
+export const SPLIT_EARLIER = "Not one range on the earlier patch set";
+
+export const noLineReason = (
+	why: "earlier" | "unknown" | "mixed" | "renamed" | "split",
+) =>
 	why === "earlier"
 		? EARLIER_ONLY
 		: why === "mixed"
 			? MIXED_COMMITS
-			: NO_GITHUB_LINE;
+			: why === "renamed"
+				? RENAMED_SINCE
+				: why === "split"
+					? SPLIT_EARLIER
+					: NO_GITHUB_LINE;
 
 /** Why nothing can start on a span while the diff shown isn't the head's. */
 export const HEAD_UNSURE = "The new head's diff is loading";

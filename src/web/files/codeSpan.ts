@@ -53,6 +53,12 @@ export interface CellLine {
 	 * (GitHub's RIGHT line there, CAR-233). Absent when that diff hasn't it.
 	 */
 	ps?: number;
+	/**
+	 * A since-view LEFT cell with `base` null whose line that patch set's
+	 * diff adds at another path than this file's (`data-ps-moved`): no
+	 * comment can name it (CAR-233).
+	 */
+	psMoved?: boolean;
 }
 
 /**
@@ -61,7 +67,7 @@ export interface CellLine {
  * ("unknown"), or lines of the earlier patch set's commit mixed with the
  * head's ("mixed").
  */
-export type NoLine = "earlier" | "unknown" | "mixed";
+export type NoLine = "earlier" | "unknown" | "mixed" | "renamed" | "split";
 
 /** A line only the compared patch set had, on its commit (CAR-233). */
 export const onEarlier = (c: Pick<CellLine, "base" | "ps">) =>
@@ -72,11 +78,15 @@ const githubLine = (c: Pick<CellLine, "line" | "base">) =>
 	typeof c.base === "number" ? c.base : c.line;
 
 /** Why a cell's line has no GitHub line (codeSpan's NoLine), or null when it has one. */
-export const noLineOf = (c: Pick<CellLine, "base" | "ps">): NoLine | null =>
+export const noLineOf = (
+	c: Pick<CellLine, "base" | "ps" | "psMoved">,
+): NoLine | null =>
 	c.base === null
-		? c.ps === undefined
-			? "earlier"
-			: null
+		? c.ps !== undefined
+			? null
+			: c.psMoved
+				? "renamed"
+				: "earlier"
 		: c.base === "unknown"
 			? "unknown"
 			: null;
@@ -88,7 +98,7 @@ export const noLineOf = (c: Pick<CellLine, "base" | "ps">): NoLine | null =>
  * (`earlier`), "unknown".
  */
 export function noLineIn(
-	cells: readonly Pick<CellLine, "base" | "ps">[],
+	cells: readonly Pick<CellLine, "base" | "ps" | "psMoved">[],
 	earlier?: string,
 ): NoLine | null {
 	for (const c of cells) {
@@ -98,7 +108,13 @@ export function noLineIn(
 	const on = cells.filter(onEarlier).length;
 	if (on === 0) return null;
 	if (on < cells.length) return "mixed";
-	return earlier ? null : "unknown";
+	if (!earlier) return "unknown";
+	// One run of lines on that commit: else its range would hold lines the
+	// view never showed (a base change between them since).
+	const ps = cells.map((c) => c.ps as number).sort((a, b) => a - b);
+	return ps.every((n, i) => i === 0 || n === (ps[i - 1] as number) + 1)
+		? null
+		: "split";
 }
 
 export function cellLine(cell: Element): CellLine | null {
@@ -138,6 +154,9 @@ export function cellLine(cell: Element): CellLine | null {
 				? {}
 				: { base: baseAttr === "" ? null : Number(baseAttr) }),
 		...(psAttr ? { ps: Number(psAttr) } : {}),
+		...(baseAttr === "" && row?.hasAttribute("data-ps-moved")
+			? { psMoved: true }
+			: {}),
 	};
 }
 

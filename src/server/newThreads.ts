@@ -52,6 +52,14 @@ export interface NewThreadTarget extends ThreadWriteTarget {
 	 * `commit` must be one of them (CAR-233).
 	 */
 	patchsetHeads: () => readonly string[];
+	/** The PR's commits as GitHub lists them now (fetchPrCommits). */
+	prCommits: () => Promise<readonly string[]>;
+	/**
+	 * A thread made on another commit than the snapshot's joined the
+	 * reads: their placements are computed again, so it is placed (shown)
+	 * in every view, not only in the since view (CAR-233).
+	 */
+	placeAgain?: () => void;
 	/** Whether LEFT lines take comments (PrOverview.commentLeft). */
 	commentLeft: () => Promise<boolean>;
 	started: (clientId: string) => StartedRecord | undefined;
@@ -266,18 +274,21 @@ export async function startThread(
 				"invalid",
 			);
 		}
-		if (body.length > MAX_REPLY) {
-			const room = MAX_REPLY - (body.length - req.body.length);
-			throw new WriteRefusedError(
-				`A comment is at most ${room} characters`,
-				"invalid",
-			);
-		}
 	}
-	if (!record && earlier && body.length > MAX_REPLY) {
+	if (!record && body.length > MAX_REPLY) {
 		const room = MAX_REPLY - (body.length - req.body.length);
 		throw new WriteRefusedError(
 			`A comment is at most ${room} characters`,
+			"invalid",
+		);
+	}
+	// GitHub doesn't refuse a commit_id that is no longer one of the PR's
+	// commits (a head a force-push dropped): it puts the comment on the
+	// PR's head at the same numbers, silently (probed, CAR-233). So that
+	// commit must still be one of them, as GitHub lists them now.
+	if (!record && earlier && !(await target.prCommits()).includes(req.commit)) {
+		throw new WriteRefusedError(
+			"That patch set's commit is no longer in the PR: GitHub would put the comment on the head",
 			"invalid",
 		);
 	}
@@ -313,7 +324,10 @@ export async function startThread(
 		// It posted: no pending review stands in the way (any more).
 		target.setPendingReview(null);
 	}
-	return answer(target, req.clientId, record);
+	const out = await answer(target, req.clientId, record);
+	// In the reads now: placed anew from here on.
+	if (earlier) target.placeAgain?.();
+	return out;
 }
 
 /**

@@ -10,10 +10,11 @@ import {
 	type Scenario,
 	threadComment,
 } from "../../test/fake-gh/scenario";
-import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
+import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { NewThreadRequest } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
+import { postThread } from "./gh";
 import { newThreadProblem, placeOf, postedBody } from "./newThreads";
 import { mapThreads } from "./overview";
 import { parseHead } from "./pinnedHead";
@@ -351,6 +352,60 @@ describe("new threads", () => {
 			session.startThread(request({ side: "RIGHT", line: 15 })),
 		);
 		expect(between.code).toBe("gone");
+	});
+
+	it("an earlier patch set's commit a force-push dropped from the PR: refused before GitHub, which would silently put it on the head (CAR-233)", async () => {
+		const review = await session.review();
+		const key = review.files[0]?.clusters[0]?.key ?? "";
+		await session.setStates(review.revision, [{ key, state: "reviewed" }]);
+		const ps1 = pr.head();
+		// A force-push: the PR's head is a new commit on the merge base, so
+		// PS1's head is no longer one of the PR's commits.
+		const repoGit = (...args: string[]) =>
+			execFileSync("git", args, {
+				cwd: pr.repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim();
+		const rewritten = repoGit(
+			"commit-tree",
+			`${ps1}^{tree}`,
+			"-p",
+			pr.mergeBase,
+			"-m",
+			"rewritten",
+		);
+		repoGit("update-ref", "refs/pull/12/head", rewritten);
+		const path = process.env.CRB_FAKE_GH ?? "";
+		const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+		const pr12 = s.prs[12];
+		if (!pr12?.view) throw new Error("no PR 12");
+		pr12.view = { ...pr12.view, headRefOid: rewritten };
+		writeFileAtomic(path, JSON.stringify(s, null, "\t"));
+		const sent = posts().length;
+		const gone = await refused(
+			session.startThread(request({ earlier: true, commit: ps1, line: 2 })),
+		);
+		expect(gone.code).toBe("invalid");
+		expect(gone.message).toMatch(/no longer in the PR/);
+		expect(posts()).toHaveLength(sent);
+		// What GitHub does with such a commit_id (the fake models it): the
+		// comment lands on the head, not on PS1's commit.
+		const posted = await postThread(
+			{ owner: "acme", repo: "widget", number: 12 },
+			ps1,
+			{ subject: "line", path: "a.txt", side: "RIGHT", line: 2 },
+			"direct",
+			"https://github.com/acme/widget/pull/12",
+		);
+		expect(posted).toBeTruthy();
+		expect(stored().at(-1)).toMatchObject({
+			first: {
+				nodes: [
+					expect.objectContaining({ originalCommit: { oid: rewritten } }),
+				],
+			},
+		});
 	});
 
 	it("on an earlier patch set's commit on purpose: RIGHT lines of that commit's diff, a patch set's head only, starting none (CAR-233)", async () => {

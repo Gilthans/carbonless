@@ -536,6 +536,15 @@ async function call(io) {
 	 * when the diff hasn't it) and its hunks' rows, with their old and new
 	 * line numbers.
 	 */
+	/** PR `n`'s commits as GitHub lists them now: its base's merge base..head, oldest first. */
+	async function prCommits(n) {
+		const head = s.prs[n]?.view?.headRefOid;
+		if (!head) return [];
+		const mb = await mergeBaseOf(n, head);
+		return (await repoGit("rev-list", "--reverse", `${mb}..${head}`))
+			.split("\n")
+			.filter(Boolean);
+	}
 	async function diffAt(n, commit, path) {
 		const mb = await mergeBaseOf(n, commit);
 		const status = (await repoGit("-c", "core.quotePath=false", "diff", "-M", "--name-status", "-z", mb, commit)).split("\0");
@@ -660,6 +669,17 @@ async function call(io) {
 			httpFail(422, "Unprocessable Entity", [
 				"user_id can only have one pending review per pull request",
 			]);
+		}
+		// GitHub's own behaviour (probed on a scratch repo, CAR-233): a
+		// commit_id that is no longer one of the PR's commits (a head a
+		// force-push dropped) isn't refused: the comment goes on the PR's
+		// head instead, at the same line numbers, silently.
+		const head = pr.view?.headRefOid;
+		if (head && req.commit_id !== head) {
+			// A scenario whose merge base git can't range from (a made-up
+			// one) lists no commits: nothing is moved then.
+			const commits = await prCommits(n).catch(() => null);
+			if (commits && !commits.includes(req.commit_id)) req.commit_id = head;
 		}
 		const file = req.subject_type === "file";
 		const unresolved = (field) =>
@@ -1146,6 +1166,21 @@ async function call(io) {
 		save();
 		if (f) failAs(f);
 		// GitHub's 204: no body.
+		exit(0);
+	}
+
+	// REST: `api repos/<owner>/<repo>/pulls/<n>/commits --paginate --jq .[].sha`:
+	// the PR's commits as GitHub lists them now (merge base..head), one oid
+	// per line (CAR-233).
+	const restCommits = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/commits$/.exec(
+		args[1] ?? "",
+	);
+	if (restCommits && args[0] === "api" && !s.loggedOut) {
+		if (args.slice(2).join(" ") !== "--paginate --jq .[].sha") unsupported();
+		const n = restCommits[1];
+		if (!s.prs[n]) fail("gh: Not Found (HTTP 404)");
+		const oids = await prCommits(n);
+		writeOut(oids.map((o) => `${o}\n`).join(""));
 		exit(0);
 	}
 

@@ -130,6 +130,16 @@ describe("commentAvailable: GitHub's diff", () => {
 });
 
 describe("commentAvailable: a line only an earlier patch set had (CAR-217)", () => {
+	it("a renamed file's or a split run's earlier lines are off with their reasons (CAR-233)", () => {
+		const left = span({ startSide: "LEFT", side: "LEFT" });
+		expect(commentAvailable(left, ctx({ noLine: "renamed" }))).toBe(
+			"Renamed since the earlier patch set",
+		);
+		expect(commentAvailable(left, ctx({ noLine: "split" }))).toBe(
+			"Not one range on the earlier patch set",
+		);
+	});
+
 	it("is off with the reason, on lines; a file comment stays on", () => {
 		const left = span({ startSide: "LEFT", side: "LEFT" });
 		expect(commentAvailable(left, ctx({ noLine: "earlier" }))).toBe(

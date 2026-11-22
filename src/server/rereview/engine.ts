@@ -122,6 +122,13 @@ export interface Traced {
 		 * Absent when the file has another path there.
 		 */
 		earlierRight?: Record<string, Record<number, number>>;
+		/**
+		 * By the virtual rebase's path: removed lines the since patch set's
+		 * diff adds, but at another path than the head's (a rename between
+		 * that patch set and the head): no comment can name them by the
+		 * head's path on that commit (CAR-233).
+		 */
+		earlierMoved?: Record<string, number[]>;
 	};
 }
 
@@ -382,6 +389,7 @@ export async function traceRereview(
 	// the base didn't move).
 	const githubLeft: Record<string, Record<number, number>> = {};
 	const earlierRight: Record<string, Record<number, number>> = {};
+	const earlierMoved: Record<string, number[]> = {};
 	for (const f of interdiff.files) {
 		if (f.conflict) continue;
 		const primePath = f.oldPath ?? f.path;
@@ -412,10 +420,9 @@ export async function traceRereview(
 		const own = ps.snapshot.files.find(
 			(x) => (primeByOld.get(x.path)?.path ?? x.path) === primePath,
 		);
-		const toHead =
-			own && own.path === primePath
-				? (primeByOld.get(own.path)?.mapper ?? IDENTITY)
-				: null;
+		const toHead = own ? (primeByOld.get(own.path)?.mapper ?? IDENTITY) : null;
+		// The same path on that commit and in the head: a comment names it.
+		const samePath = own?.path === primePath && f.path === primePath;
 		const added = (h1: number) =>
 			own?.clusters.some(
 				(c) =>
@@ -425,6 +432,7 @@ export async function traceRereview(
 			) === true;
 		const lines: Record<number, number> = {};
 		const earlier: Record<number, number> = {};
+		const moved: number[] = [];
 		for (const ic of f.clusters) {
 			if (ic.kind !== "lines") continue;
 			for (let i = 0; i < ic.oldCount; i++) {
@@ -435,14 +443,18 @@ export async function traceRereview(
 					continue;
 				}
 				const h1 = toHead?.newToOld(n) ?? null;
-				if (h1 !== null && added(h1)) earlier[n] = h1;
+				if (h1 === null || !added(h1)) continue;
+				if (samePath) earlier[n] = h1;
+				else moved.push(n);
 			}
 		}
 		githubLeft[primePath] = lines;
 		earlierRight[primePath] = earlier;
+		if (moved.length > 0) earlierMoved[primePath] = moved;
 	}
 	lineKeys.githubLeft = githubLeft;
 	lineKeys.earlierRight = earlierRight;
+	lineKeys.earlierMoved = earlierMoved;
 	for (const file of ps.snapshot.files) {
 		const toPrime = primeByOld.get(file.path);
 		const primePath = toPrime?.path ?? file.path;
@@ -996,6 +1008,11 @@ export function interdiffFileHunks(
 	const earlier = file.conflict
 		? undefined
 		: traced.lineKeys.earlierRight?.[file.oldPath ?? file.path];
+	const moved = new Set(
+		file.conflict
+			? []
+			: (traced.lineKeys.earlierMoved?.[file.oldPath ?? file.path] ?? []),
+	);
 	for (const hunk of hunks) {
 		for (const line of hunk.lines) {
 			if (line.kind !== "del" || line.oldNo === undefined) continue;
@@ -1006,6 +1023,9 @@ export function interdiffFileHunks(
 				// set's commit, when that commit's diff adds it (CAR-233).
 				const ps = line.baseNo === null ? earlier?.[line.oldNo] : undefined;
 				if (ps !== undefined) line.psNo = ps;
+				else if (line.baseNo === null && moved.has(line.oldNo)) {
+					line.psMoved = true;
+				}
 			}
 		}
 	}

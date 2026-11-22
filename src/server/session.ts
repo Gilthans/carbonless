@@ -67,6 +67,7 @@ import {
 	fetchHeadAsOf,
 	fetchMergeBase,
 	fetchPinnedHead,
+	fetchPrCommits,
 	fetchPrMeta,
 	fetchRuleReads,
 	fetchVerdict,
@@ -2152,10 +2153,27 @@ export class Session {
 		// the session's, or a viewed head's), even if a Refresh moves the
 		// session's while it runs.
 		const snapshot = this.#snapshotForWrite(commit);
+		// A patch set's head (a comment on an earlier one, CAR-233): its own
+		// merge base, whatever snapshot is kept for it.
+		const codeBase =
+			this.#patchsets.find((p) => p.head === commit)?.mergeBase ??
+			snapshot.base;
 		return {
 			...this.#writeTarget(),
 			head: snapshot.head,
 			patchsetHeads: () => this.#patchsets.map((p) => p.head),
+			prCommits: () => fetchPrCommits(this.#ref()),
+			placeAgain: () => {
+				// Started again on the next ask; the page keeps what it shows
+				// meanwhile (placementsQuery).
+				const reads = new Set(this.#reads.map((r) => r.id));
+				for (const [k, job] of this.#placing) {
+					const readId = k.slice(k.lastIndexOf("|") + 1);
+					if (reads.has(readId) && (job.done || job.error)) {
+						this.#placing.delete(k);
+					}
+				}
+			},
 			commentLeft: () => this.commentLeft(snapshot),
 			startPatchset: this.#startHook(snapshot),
 			started: (clientId) => this.#started.get(clientId),
@@ -2170,7 +2188,7 @@ export class Session {
 				this.#threadCode.code(
 					anchor,
 					{
-						snapshot: snapshot.base,
+						snapshot: codeBase,
 						ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
 					},
 					async () => hunk,

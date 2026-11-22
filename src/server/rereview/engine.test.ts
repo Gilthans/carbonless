@@ -814,6 +814,63 @@ describe("the engine", () => {
 		}
 	});
 
+	it("a file renamed between PS1 and the head: PS1's own removed line has no line to name on PS1's commit by the head's path (psMoved, no psNo; CAR-233)", async () => {
+		const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+		const text = (ls: string[]) => `${ls.join("\n")}\n`;
+		const fx = createGitFixture([
+			{ message: "base", files: { "old.txt": text(lines) } },
+		]);
+		try {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: fx.path,
+					encoding: "utf8",
+					stdio: "pipe",
+					env: testGitEnv(),
+				}).trim();
+			const b0 = fx.shas[0] as string;
+			writeFileSync(
+				join(fx.path, "old.txt"),
+				text(lines.flatMap((l) => (l === "line 20" ? [l, "PS1's own"] : [l]))),
+			);
+			git("commit", "--quiet", "-am", "PR: its own line");
+			const h1 = git("rev-parse", "HEAD");
+			git("mv", "old.txt", "new.txt");
+			writeFileSync(join(fx.path, "new.txt"), text(lines));
+			git("commit", "--quiet", "-am", "PR: renamed, the line dropped");
+			const h2 = git("rev-parse", "HEAD");
+			const ps1 = await buildSnapshot(fx.path, b0, h1);
+			const r = await buildSnapshot(fx.path, b0, h2);
+			const traced = await traceRereview(
+				fx.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const { answer } = answerRereview(
+				traced,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const file = r.files.find((f) => f.path === "new.txt");
+			if (!file) throw new Error("no new.txt");
+			const removed = interdiffFileHunks(traced, r, answer, file.index)
+				.hunks.flatMap((hk) => hk.lines)
+				.filter((l) => l.kind === "del");
+			expect(removed).toEqual([
+				expect.objectContaining({
+					text: "PS1's own",
+					baseNo: null,
+					psMoved: true,
+				}),
+			]);
+			expect(removed[0]?.psNo).toBeUndefined();
+		} finally {
+			fx.cleanup();
+		}
+	});
+
 	it("a deletion the author restored: gone, its restored line keyed to it", async () => {
 		const ps1 = await snap(h.b0, h.deletesLine);
 		const r = await snap(h.b0, h.restoresLine);

@@ -152,6 +152,12 @@ export interface DiffLine {
 	 * that commit's RIGHT side (CAR-233). Absent when that diff hasn't it.
 	 */
 	psNo?: number;
+	/**
+	 * The since view's removed lines with `baseNo` null only: the compared
+	 * patch set's diff adds it, but at another path than the head's (a
+	 * rename since): no comment can go there by this file's path (CAR-233).
+	 */
+	psMoved?: true;
 }
 
 export interface DisplayHunk {

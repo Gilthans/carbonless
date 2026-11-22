@@ -3375,6 +3375,23 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 			body: expect.stringContaining("Why add this, then drop it?"),
 		}),
 	]);
+	// The full diff has no row for that line: the thread is listed under
+	// the file's header there, without a Refresh (placed anew).
+	await toFullDiff(page);
+	const full = fileSection(page, REMOVED);
+	const expandFull = full.getByRole("button", { name: "Expand file" });
+	await expect(
+		full.getByTestId("diff-line").first().or(expandFull),
+	).toBeVisible(GIT_WAIT);
+	if (await expandFull.isVisible()) {
+		await full.getByRole("button", { name: "Expand file" }).click();
+	}
+	await expect(
+		full
+			.getByTestId("unplaced-thread")
+			.filter({ hasText: "Why add this, then drop it?" }),
+	).toBeVisible(GIT_WAIT);
+	await toSince(page);
 	// After a reload too, on its row.
 	await page.reload();
 	await expect(

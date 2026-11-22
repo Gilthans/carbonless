@@ -17,6 +17,7 @@ import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import {
 	CODE_CELL,
 	cellLine,
+	noLineIn,
 	noLineOf,
 	spanOfCells,
 	spanOfRange,
@@ -484,6 +485,48 @@ describe("the since view's removed rows: GitHub's line in every layout (CAR-217)
 		})),
 	};
 	const PS1 = "e".repeat(40);
+
+	it("a line only PS1 had, in a file renamed since: off as renamed; PS1 lines that aren't one run on PS1: off as split (CAR-233)", async () => {
+		const moved: FileHunks = {
+			...sinceHunks,
+			hunks: sinceHunks.hunks.map((h) => ({
+				...h,
+				lines: h.lines.map((l) =>
+					l.kind !== "del"
+						? l
+						: l.oldNo === 2
+							? { ...l, baseNo: 7 }
+							: { ...l, baseNo: null, psMoved: true as const },
+				),
+			})),
+		};
+		await shown(moved);
+		const c = cellLine(leftCell(4));
+		expect(c).toMatchObject({ line: 4, base: null, psMoved: true });
+		if (!c) throw new Error("no cell");
+		expect(noLineOf(c)).toBe("renamed");
+		expect(c.ps).toBeUndefined();
+		// Two PS1 lines adjacent here but not on PS1 (a base line between).
+		const PS1_HEAD = "e".repeat(40);
+		expect(
+			noLineIn(
+				[
+					{ base: null, ps: 14 },
+					{ base: null, ps: 16 },
+				],
+				PS1_HEAD,
+			),
+		).toBe("split");
+		expect(
+			noLineIn(
+				[
+					{ base: null, ps: 14 },
+					{ base: null, ps: 15 },
+				],
+				PS1_HEAD,
+			),
+		).toBeNull();
+	});
 
 	it("a line only PS1 had, in PS1's diff: its span is PS1's commit, RIGHT, its line there; mixed with a head line it is off (CAR-233)", async () => {
 		await shown(earlierHunks);
