@@ -435,6 +435,77 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 	).toHaveCount(0);
 });
 
+test("the since view: a run mixing a re-indent read in PS1 and a real edit is one piece per stretch, each with its box, the switch off and on", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine's answer and four marks: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 adds three lines after line 8 (one cluster), reviewed. PS2
+	// re-indents two of them and edits the third: since PS1, each run (the
+	// gone PS1 lines, the new ones) is a re-indent piece and an edit piece.
+	const ps1 = [...lines.slice(0, 8), "one();", "two();", "three();"];
+	ps1.push(...lines.slice(8));
+	const p = await pr({
+		base: { [PATH]: text(lines) },
+		files: [{ message: "Three lines", files: { [PATH]: text(ps1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({
+		message: "Re-indent two, edit one",
+		files: {
+			[PATH]: text(
+				ps1.map((l) =>
+					l === "three();" ? "three!();" : l.endsWith("();") ? `  ${l}` : l,
+				),
+			),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	await expect(progress(page)).toContainText("0 / 4 clusters reviewed");
+	const since = await expand(page);
+	// Every piece has its box (each its own run of the view).
+	await expect(boxes(since)).toHaveCount(4);
+	const pieceBox = (line: string) =>
+		since
+			.getByRole("row")
+			.filter({ has: page.getByRole("button", { name: line, exact: true }) })
+			.getByRole("checkbox", { name: /cluster reviewed$/ });
+	// Off: the edits, PS1's line and PS2's.
+	await pieceBox("Old line 11").click();
+	await expect(progress(page)).toContainText("1 / 4 clusters reviewed");
+	await pieceBox("Line 11").click();
+	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
+	// On: the re-indents are left out; still each with its box, to tick.
+	await ignoreWhitespace(page, true);
+	await expect(progress(page)).toContainText("2 / 2 clusters reviewed");
+	await expect(boxes(since)).toHaveCount(4);
+	await pieceBox("Old line 9").click();
+	await expect(pieceBox("Old line 9")).toBeChecked();
+	// The last box: the file is done and the move-on folds it.
+	await pieceBox("Line 9").click();
+	// Off: all four marked, the gone PS1 run's two pieces among them.
+	await ignoreWhitespace(page, false);
+	await expect(progress(page)).toContainText("4 / 4 clusters reviewed");
+	await expect(header(since)).toHaveAttribute("data-finished");
+});
+
 // The since view's `~` in the test above: the whitespace-only cluster's
 // new lines, and its old ones, a piece of PS1's re-indent (gone in PS2:
 // no cluster of PS2's, so a unit of its own; CAR-218).

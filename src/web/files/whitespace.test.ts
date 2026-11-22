@@ -637,6 +637,62 @@ describe("hunkView's runs", () => {
 	});
 });
 
+describe("hunkView's runs cut at the since view's pieces (CAR-218)", () => {
+	const lines: DiffLine[] = [
+		ctx(1, 1, "a"),
+		del(2, "b"),
+		del(3, "c"),
+		add(2, "  b"),
+		add(3, "d"),
+		ctx(4, 4, "e"),
+	];
+	// The since view's pieces here: -b, -c, then +b, then +d.
+	const starts = new Set([
+		lines[1],
+		lines[2],
+		lines[3],
+		lines[4],
+	] as DiffLine[]);
+
+	it("each piece's first line starts a run, keeping the key; the full diff's runs stay", () => {
+		for (const on of [false, true]) {
+			const out = hunkView(lines, on, starts).runs;
+			expect(out.map((r) => [r.key, r.lines.map((l) => l.text)])).toEqual([
+				[undefined, ["a"]],
+				["k", ["b"]],
+				["k", ["c"]],
+				["k", ["  b"]],
+				["k", ["d"]],
+				[undefined, ["e"]],
+			]);
+			expect(hunkView(lines, on).runs.map((r) => r.lines.length)).toEqual([
+				1, 4, 1,
+			]);
+		}
+	});
+
+	it("a pair the cut straddles is two one-sided `~` rows; every line once", () => {
+		const out = hunkView(lines, true, starts);
+		expect(trace(out.runs.flatMap((r) => r.rows))).toEqual([
+			" 1/1",
+			"~2/",
+			"-3",
+			"~/2",
+			"+3",
+			" 4/4",
+		]);
+		expectCoverage(lines, out.gitRows);
+	});
+
+	it("a part of a run of another shape stays plain, as the whole run does", () => {
+		// An added line before a removed one: pairRun leaves the run plain.
+		const odd: DiffLine[] = [add(2, "  b"), del(2, "b"), del(3, "c")];
+		const cut = new Set([odd[1]] as DiffLine[]);
+		const rows = hunkView(odd, true, cut).runs.flatMap((r) => r.rows);
+		expect(rows.every((r) => r.kind === "line")).toBe(true);
+	});
+});
+
 describe("matchSides' equal-keys fast path", () => {
 	it("gives exactly what the DP gives, and the DP is still asked when the keys differ", () => {
 		let s = 7;

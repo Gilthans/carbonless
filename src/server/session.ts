@@ -111,7 +111,7 @@ import {
 	ThreadPlacer,
 	UnknownMoveThreadError,
 } from "./rereview/threads.js";
-import { buildReviewView, humanMarksOf } from "./review/coverage.js";
+import { buildReviewView } from "./review/coverage.js";
 import type { PatchsetRecord, ProgressState } from "./review/fold.js";
 import { RefStore } from "./review/refStore.js";
 import {
@@ -1404,14 +1404,9 @@ export class Session {
 		);
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		const traced = await this.#traced(since, snapshot);
-		const { answer } = await this.#answerFor(since, snapshot, traced);
-		// The patch set's human marks: which re-indents since it the
-		// reviewer read there (the pieces' whitespace flag, as the answer's).
-		const { snapshot: sinceSnapshot, states } = await this.#sinceOf(
-			since,
-			await this.#progress(),
-		);
-		const sources = humanMarksOf(sinceSnapshot, states);
+		// `sources`: the patch set's human marks the answer judged its pieces'
+		// whitespace by; the page's pieces take the same, so they agree.
+		const { answer, sources } = await this.#answerFor(since, snapshot, traced);
 		const known = new Set([
 			...snapshot.files.map((f) => f.index),
 			...answer.files.map((f) => f.index),

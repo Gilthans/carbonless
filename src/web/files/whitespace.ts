@@ -46,12 +46,41 @@ export type DiffRow =
 	| { kind: "ws"; del: DiffLine; add?: DiffLine }
 	| { kind: "ws"; del?: DiffLine; add: DiffLine };
 
-/** Splits a hunk into runs of context lines and runs of one cluster's lines. */
-export function runs(lines: DiffLine[]): { key?: string; lines: DiffLine[] }[] {
+/**
+ * Splits a hunk into runs of context lines and runs of one cluster's
+ * lines. `starts` (the since view's pieces' first lines, CAR-218): a
+ * changed run is also cut before each line in it, keeping its key, so
+ * every piece is a run of its own with its own controls. `shaped`: the
+ * run it was cut from is its removed lines, then its added ones (what
+ * pairRun pairs; a part of a run of another shape stays plain, as the
+ * whole run would, so the rows follow the server's cut).
+ */
+export function runs(
+	lines: DiffLine[],
+	starts?: ReadonlySet<DiffLine>,
+): { key?: string; lines: DiffLine[]; shaped: boolean }[] {
+	const out: { key?: string; lines: DiffLine[]; shaped: boolean }[] = [];
 	// A changed run without a key stays apart from context (pieces.ts).
-	return lineRuns(lines).map(({ key, lines }) =>
-		key === undefined ? { lines } : { key, lines },
-	);
+	for (const { key, change, lines: all } of lineRuns(lines)) {
+		const firstAdd = all.findIndex((l) => l.kind === "add");
+		const shaped =
+			change &&
+			all.every((l, i) =>
+				firstAdd < 0 || i < firstAdd ? l.kind === "del" : l.kind === "add",
+			);
+		let part: DiffLine[] = [];
+		const flush = () => {
+			if (part.length === 0) return;
+			out.push({ ...(key === undefined ? {} : { key }), lines: part, shaped });
+			part = [];
+		};
+		for (const line of all) {
+			if (change && starts?.has(line)) flush();
+			part.push(line);
+		}
+		flush();
+	}
+	return out;
 }
 
 /**
@@ -137,7 +166,7 @@ export interface HunkView {
 	partners: Partners;
 }
 
-const viewsByHunk = new WeakMap<DiffLine[], [HunkView?, HunkView?]>();
+const viewsByHunk = new WeakMap<DiffLine[], Map<string, HunkView>>();
 
 /**
  * A hunk as the view shows it (HunkRows, Find in PR, the fixture test, so
@@ -147,20 +176,31 @@ const viewsByHunk = new WeakMap<DiffLine[], [HunkView?, HunkView?]>();
  * hunk's twins); otherwise, and for context runs, every line is a row as it
  * is. `pairs` come from the rows in git's order (a stretch ends at a
  * context or `~` row); then each cluster run's rows are put in unified B's
- * order (orderRun): a pair reads together.
+ * order (orderRun): a pair reads together. `starts`: the since view's
+ * pieces' first lines (runs), cut before pairing, so a pair that would
+ * straddle two pieces is two one-sided `~` rows; the full diff and Find
+ * pass none.
  */
 export function hunkView(
 	lines: DiffLine[],
 	ignoreWhitespace: boolean,
+	starts?: ReadonlySet<DiffLine>,
 ): HunkView {
-	const slot = ignoreWhitespace ? 1 : 0;
+	let at = "";
+	if (starts && starts.size > 0) {
+		lines.forEach((l, i) => {
+			if (starts.has(l)) at += `,${i}`;
+		});
+	}
+	const slot = `${ignoreWhitespace ? 1 : 0}${at}`;
 	const cached = viewsByHunk.get(lines);
-	if (cached?.[slot]) return cached[slot];
+	const hit = cached?.get(slot);
+	if (hit) return hit;
 	const twins = ignoreWhitespace ? matchHunk(lines) : null;
-	const git = runs(lines).map((run) => ({
+	const git = runs(lines, starts).map(({ shaped, ...run }) => ({
 		...run,
 		rows:
-			twins && run.key !== undefined
+			twins && run.key !== undefined && shaped
 				? pairRun(run.lines, twins)
 				: run.lines.map((line): DiffRow => ({ kind: "line", line })),
 	}));
@@ -181,8 +221,8 @@ export function hunkView(
 		pairs,
 		partners,
 	};
-	const entry = cached ?? [];
-	entry[slot] = view;
+	const entry = cached ?? new Map<string, HunkView>();
+	entry.set(slot, view);
 	viewsByHunk.set(lines, entry);
 	return view;
 }

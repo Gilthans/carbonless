@@ -4049,15 +4049,21 @@ function HunkRows(props: {
 	// rows with a pair on one (sideBySide.ts, by the hunk's partners), so the
 	// whitespace and pairing compose. A pair whose lines sit in two runs
 	// gets its marks only: neither row moves.
+	// The since view: each piece is a run of its own (its first line starts
+	// one), so every piece has its controls (CAR-218).
+	const sincePieces = props.pieces;
 	const { hunkRuns, pairs } = useMemo(() => {
-		const shown = hunkView(hunk.lines, ignoreWhitespace);
+		const starts = sincePieces
+			? new Set(hunk.lines.filter((l) => sincePieces.has(l)))
+			: undefined;
+		const shown = hunkView(hunk.lines, ignoreWhitespace, starts);
 		const runs = shown.runs.map((run) => ({
 			...run,
 			side:
 				view === "side-by-side" ? layoutRows(run.rows, shown.partners) : null,
 		}));
 		return { hunkRuns: runs, pairs: shown.pairs };
-	}, [hunk, ignoreWhitespace, view]);
+	}, [hunk, ignoreWhitespace, view, sincePieces]);
 	// The word marks of the hunk's pairs: those done before and those the
 	// render budget allows now; the rest are marked off the render path and
 	// come in with `marked`, chunk by chunk (wordWork.ts, CAR-135). Their

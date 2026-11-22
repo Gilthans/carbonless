@@ -520,6 +520,11 @@ export function answerRereview(
 	answer: RereviewAnswer;
 	start: PatchsetStart;
 	absorbed: CarryResult["absorbed"];
+	/**
+	 * The since patch set's human marks the answer's pieces were judged by
+	 * (humanMarksOf): the page's hunks take the same (Session.#interdiffOf).
+	 */
+	sources: ReadonlyMap<string, HumanMarks>;
 } {
 	const { shape, interdiff } = traced;
 	const { carried, reworked, gone, absorbed } = carryTraced(
@@ -619,8 +624,8 @@ export function answerRereview(
 	// piece shows take the mark their counterparts held on the since patch
 	// set (by hand), one to one.
 	const linesCarried: LinesCarriedEntry[] = [];
+	const sources = humanMarksOf(ps.snapshot, ps.states);
 	if (interdiff.status === "available") {
-		const sources = humanMarksOf(ps.snapshot, ps.states);
 		for (const f of files) {
 			const { pieces = [] } = interdiffFileHunks(
 				traced,
@@ -710,7 +715,7 @@ export function answerRereview(
 			? { linesCarried: { from: ps.number, states: linesCarried } }
 			: {}),
 	};
-	return { answer, start, absorbed };
+	return { answer, start, absorbed, sources };
 }
 
 const entryOf = (c: CarriedState) => ({
@@ -997,7 +1002,9 @@ export function interdiffFileHunks(
  * counterpart is itself; an added line's, its twin in the matching (a
  * removed or context line). No counterpart, one no cluster of that patch
  * set added (a base line it left alone), one already taken, a conflicted
- * file, or no `sources`: not marked (principle 2: it counts).
+ * file, or no `sources`: not marked (principle 2: it counts). A file
+ * nothing of which was marked there skips the matching: no lines, so its
+ * pieces aren't cut at whitespace runs either (they all count).
  */
 function sinceWhitespace(
 	traced: Traced,
@@ -1007,6 +1014,16 @@ function sinceWhitespace(
 	sources: ReadonlyMap<string, HumanMarks> | undefined,
 ): { lines: ReadonlySet<DiffLine>; marked: (line: DiffLine) => boolean } {
 	const lines = new Set<DiffLine>();
+	const none = { lines, marked: () => false };
+	if (!sources || file.conflict) return none;
+	const addedThen = traced.lineKeys.old[file.oldPath ?? file.path] ?? {};
+	// Nothing of this file marked at the compared patch set: no piece can
+	// be whitespace-only, so no matching and no cut (its pieces count).
+	const anyMarked = [...new Set(Object.values(addedThen))].some((key) => {
+		const marks = sources.get(key);
+		return !!marks && (marks.reviewed.length > 0 || marks.crossed.length > 0);
+	});
+	if (!anyMarked) return none;
 	const twins = new Map<DiffLine, DiffLine>();
 	for (const hunk of hunks) {
 		const ws = whitespaceLines(hunk.lines);
@@ -1025,12 +1042,10 @@ function sinceWhitespace(
 			for (const l of run.lines) if (ws.has(l)) lines.add(l);
 		}
 	}
-	if (!sources || file.conflict || lines.size === 0) {
-		return { lines, marked: () => false };
-	}
+	if (lines.size === 0) return none;
 	const then = sinceLineSources(
 		sources,
-		traced.lineKeys.old[file.oldPath ?? file.path] ?? {},
+		addedThen,
 		traced.lineKeys.base?.[path] ?? {},
 		file.oldLines,
 	);
