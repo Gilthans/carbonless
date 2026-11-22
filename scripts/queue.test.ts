@@ -11,11 +11,11 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ownerToken } from "./owner.mjs";
-import { queueSlots, shortSlots } from "./queue-config.mjs";
+import { queueCores, queueSlots, shortSlots } from "./queue-config.mjs";
 import {
 	queuedWorkers,
 	requireQueue,
@@ -63,6 +63,7 @@ describe("queue config and guard", () => {
 		delete process.env.CRB_QUEUE_SLOTS;
 		delete process.env.TEST_WORKER_INDEX;
 		delete process.env.CRB_QUEUE_LOAD;
+		delete process.env.CRB_QUEUE_CORES;
 	});
 
 	it("no file: no queue, any run goes", () => {
@@ -101,6 +102,21 @@ describe("queue config and guard", () => {
 		expect(shortSlots(4)).toBe(0);
 		configure('{"slots": 3, "shortSlots": 1}');
 		expect(shortSlots(8)).toBe(0);
+	});
+
+	it("the cores the slots go by: the machine's, or CRB_QUEUE_CORES when a test pins them", () => {
+		configure('{"slots": 1, "shortSlots": 1}');
+		expect(queueCores()).toBe(availableParallelism());
+		process.env.CRB_QUEUE_CORES = "4";
+		expect(queueCores()).toBe(4);
+		// 4 cores: budget 3, so slot 0 alone; 8: the short slot too.
+		expect(shortSlots()).toBe(0);
+		process.env.CRB_QUEUE_CORES = "8";
+		expect(shortSlots()).toBe(1);
+		for (const bad of ["0", "-2", "2.5", "many", ""]) {
+			process.env.CRB_QUEUE_CORES = bad;
+			expect(queueCores()).toBe(availableParallelism());
+		}
 	});
 
 	it("with a queue, refuses a run outside it", () => {
@@ -744,6 +760,9 @@ describe.skipIf(!hasFlock)("queue", () => {
 		delete childEnv.CRB_QUEUE_SLOTS;
 		delete childEnv.CRB_QUEUE_MY_TICKET;
 		delete childEnv.CRB_QUEUE_FULL;
+		// The slots these tests count on are 8 cores' (CI's runners have 4):
+		// a test of another machine passes its own.
+		childEnv.CRB_QUEUE_CORES = "8";
 		Object.assign(childEnv, env);
 		if (short) childEnv.CRB_TEST_SCRIPT = script;
 		const command = short
@@ -784,13 +803,18 @@ describe.skipIf(!hasFlock)("queue", () => {
 	 * A run that holds its slot until `release` is touched; a full run
 	 * unless `short`.
 	 */
-	const holdUntil = (name: string, pollMs?: number, short = false) => {
+	const holdUntil = (
+		name: string,
+		pollMs?: number,
+		short = false,
+		env: NodeJS.ProcessEnv = {},
+	) => {
 		const held = join(home, `${name}.held`);
 		const release = join(home, `${name}.go`);
 		const run = queue(
 			`touch ${held}; while [ ! -e ${release} ]; do sleep 0.05; done`,
 			pollMs ? { name, pollMs } : undefined,
-			{},
+			env,
 			short,
 		);
 		return {
@@ -815,6 +839,7 @@ describe.skipIf(!hasFlock)("queue", () => {
 					HOME: home,
 					CRB_NO_QUEUE: "",
 					CRB_QUEUE_SINCE: "",
+					CRB_QUEUE_CORES: "8",
 					...env,
 				},
 				timeout: 20_000,
@@ -1024,6 +1049,26 @@ describe.skipIf(!hasFlock)("queue", () => {
 		s1.release();
 		s2.release();
 		for (const r of [s1, s2]) expect(await exited(r.child)).toBe(0);
+	});
+
+	it("on 4 cores the short slot doesn't fit the budget: a short run waits for the full one in slot 0", {
+		timeout: 30_000,
+	}, async () => {
+		configure('{"slots": 1, "shortSlots": 1}');
+		const four = { CRB_QUEUE_CORES: "4" };
+		const f = holdUntil("f", undefined, false, four);
+		await until(f.held);
+		const s = holdUntil("s", 20, true, four);
+		await until(() => s.out().includes("queue: waiting for"));
+		expect(s.held()).toBe(false);
+		// There is no slot 1: no run ever opened its lock.
+		expect(existsSync(lock(1))).toBe(false);
+		f.release();
+		await until(s.held);
+		expect(free(0)).toBe(false);
+		s.release();
+		for (const r of [f, s]) expect(await exited(r.child)).toBe(0);
+		expect(tickets()).toEqual([]);
 	});
 
 	/** Until `name` has tried the slots `n` more times. */
