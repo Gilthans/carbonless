@@ -299,7 +299,11 @@ describe("ImageView", () => {
 		await act(async () => held.release({ error: "stale" }, 409));
 		await waitFor(() => expect(screen.getByText(STALE_MESSAGE)).toBeVisible());
 		expect(screen.queryByTestId("image-view")).toBeNull();
-		expect(invalidate).toHaveBeenCalledWith({ queryKey: REVIEW_KEY });
+		// The re-read starts in an effect, which React may run after the
+		// message is on screen (a passive effect on a scheduler task): wait.
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith({ queryKey: REVIEW_KEY }),
+		);
 		// The way back stays: the switch, as it was.
 		expect(names()).toEqual(["Slider", "Fade", "Binary"]);
 	});
@@ -356,6 +360,12 @@ describe("ImageView", () => {
 		await waitFor(() =>
 			expect(screen.getAllByText(STALE_MESSAGE)).toHaveLength(3),
 		);
+		// The re-read starts in ImageView's effect, which React may run after
+		// the messages are on screen (a passive effect on a scheduler task):
+		// wait for it. The three went stale in one render, so their effects
+		// run in one flush, and invalidateQueries calls the queryFn at once:
+		// a second read would already be counted.
+		await waitFor(() => expect(reviewFetch).toHaveBeenCalled());
 		expect(reviewFetch).toHaveBeenCalledTimes(1);
 		await act(async () => read.release({ revision: "r1" }));
 	});
