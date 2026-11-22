@@ -146,6 +146,7 @@ describe("Session", () => {
 			},
 			viewer: "octo-cat",
 			snapshotHead: pr.head(),
+			snapshotBase: pr.mergeBase,
 			currentHead: pr.head(),
 			headMoved: false,
 			patchset: null,
@@ -153,7 +154,6 @@ describe("Session", () => {
 			pinnedHead: null,
 			patchsets: [],
 			// Counted in the background: unknown on the first read.
-			snapshotBase: pr.mergeBase,
 			snapshotCommits: null,
 			lastSeen: null,
 			head: {
@@ -1747,7 +1747,8 @@ describe("Session", () => {
 				{ key: firstKey(s), state: "reviewed" },
 			]);
 			expect(s.info().snapshotCommits).toBeUndefined();
-			expect(s.info().snapshotBase).toBeUndefined();
+			// The base stays: the snapshot's merge base, always sent.
+			expect(s.info().snapshotBase).toBe(pr.mergeBase);
 		});
 
 		it("rebuilds an earlier patch set from its pins, with the recorded merge base when -base is missing", async () => {

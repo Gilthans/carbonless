@@ -378,6 +378,16 @@ export interface AgentCommentPostedEvent extends EventBase {
 	text: string;
 }
 
+/**
+ * The reviewer started a GitHub thread from a span conversation: it becomes
+ * that GitHub thread's conversation (`github`, its node id). Human only.
+ */
+export interface AgentThreadLinkedEvent extends EventBase {
+	type: "agent-thread-linked";
+	thread: string;
+	github: string;
+}
+
 /** Agent threads are a conversation: a human's or the agent's, never automatic. */
 export type AgentEvent = (
 	| AgentThreadOpenedEvent
@@ -385,6 +395,7 @@ export type AgentEvent = (
 	| AgentThreadResolvedEvent
 	| AgentThreadSeenEvent
 	| AgentCommentPostedEvent
+	| AgentThreadLinkedEvent
 ) & { by: "human" | "ai" };
 
 export type CrbEvent =
@@ -538,6 +549,9 @@ export function validateForWrite(e: CrbEvent): void {
 	}
 	if (e.type === "agent-comment-posted" && e.by !== "human") {
 		throw new Error("agent-comment-posted events must be written by a human");
+	}
+	if (e.type === "agent-thread-linked" && e.by !== "human") {
+		throw new Error("agent-thread-linked events must be written by a human");
 	}
 	if (parseEvent(JSON.parse(JSON.stringify(e))) === null) {
 		throw new Error(`Refusing to write an invalid ${e.type} event`);
@@ -913,6 +927,7 @@ function parseEvent(raw: unknown): CrbEvent | null {
 		case "agent-thread-resolved":
 		case "agent-thread-seen":
 		case "agent-comment-posted":
+		case "agent-thread-linked":
 			// A conversation's words are a human's or the agent's, never auto's.
 			return base.by === "auto"
 				? null
@@ -1087,6 +1102,10 @@ function parseAnchor(raw: unknown): AgentAnchor | null {
 /** A joined session's machine as read back from a ref: one line, capped (join.ts writes it so). */
 const MAX_MACHINE = 80;
 
+/** A GitHub review thread's node id as stored: 1 to 200 characters. */
+export const isGithubThreadId = (value: unknown): value is string =>
+	typeof value === "string" && value !== "" && value.length <= 200;
+
 function parseThreadAnchor(
 	raw: Obj,
 	path: string,
@@ -1094,9 +1113,7 @@ function parseThreadAnchor(
 ): AgentAnchor | null {
 	const { thread, side, line, startSide, startLine } = raw;
 	// GitHub node ids are not ULIDs.
-	if (typeof thread !== "string" || thread === "" || thread.length > 200) {
-		return null;
-	}
+	if (!isGithubThreadId(thread)) return null;
 	if (
 		side !== undefined &&
 		(typeof side !== "string" || !SIDES.includes(side))
@@ -1366,6 +1383,13 @@ function parseAgentEvent(
 				github: { thread: gt, comment, url },
 				text,
 			};
+		}
+		case "agent-thread-linked": {
+			// Fail safe: only the reviewer's own Comment press links a conversation.
+			if (base.by !== "human") return null;
+			const { github } = raw;
+			if (!isGithubThreadId(github)) return null;
+			return { ...base, type: "agent-thread-linked", thread, github };
 		}
 		default:
 			return null;

@@ -12,6 +12,8 @@ export interface Composer {
 	span: CodeSpan;
 	/** Opened by the reviewer just now: its box takes focus once shown. */
 	focus: boolean;
+	/** Started from this agent conversation: once posted, it moves to the thread. */
+	agentThread?: string;
 }
 
 /** A random id for a new thread; unique enough where randomUUID is missing. */
@@ -29,15 +31,55 @@ const changed = (next: readonly Composer[]) => {
 	for (const l of listeners) l();
 };
 
-/** Opens a composer on the span (one per span: the open one again). Answers its client id. */
-export function openComposer(span: CodeSpan, id = newClientId()): string {
-	const same = composers.find((c) => sameSpan(c.span, span));
+/**
+ * Opens a composer on the span (one per span: the open one again, and
+ * Comment from an agent conversation adopts a plain one, carrying the
+ * conversation from then on). With an `id`, that composer (a typed
+ * draft's) is the one opened, whatever else is open on the span. Answers
+ * its client id.
+ */
+export function openComposer(
+	span: CodeSpan,
+	id?: string,
+	agentThread?: string,
+): string {
+	const onSpan = composers.filter((c) => sameSpan(c.span, span));
+	const byId =
+		id === undefined ? undefined : onSpan.find((c) => c.clientId === id);
+	const same =
+		byId ??
+		// A typed draft's id with a conversation: that draft, nothing else.
+		(id !== undefined && agentThread !== undefined
+			? undefined
+			: agentThread === undefined
+				? onSpan[0]
+				: (onSpan.find((c) => c.agentThread === agentThread) ??
+					onSpan.find((c) => c.agentThread === undefined)));
 	if (same) {
-		changed(composers.map((c) => (c === same ? { ...c, focus: true } : c)));
+		changed(
+			composers.map((c) =>
+				c === same
+					? { ...c, focus: true, ...(agentThread ? { agentThread } : {}) }
+					: c,
+			),
+		);
 		return same.clientId;
 	}
-	changed([...composers, { clientId: id, span, focus: true }]);
-	return id;
+	// An id already open on another span (a wrong call): never two with one id.
+	const clientId =
+		id !== undefined && !composers.some((c) => c.clientId === id)
+			? id
+			: newClientId();
+	changed([
+		...composers,
+		{
+			clientId,
+			span,
+			focus: true,
+			...(agentThread ? { agentThread } : {}),
+		},
+	]);
+	return clientId;
 }
 
 /** The composer is gone (posted, cancelled, or now a draft that lists it). */
@@ -88,10 +130,11 @@ export function sameSpan(a: CodeSpan, b: CodeSpan): boolean {
 	);
 }
 
-/** The request fields of a span (what a draft keeps besides its text). */
-export function targetOf(span: CodeSpan): NewTarget {
+/** The request fields of a span (what a draft keeps besides its text), and the agent conversation it moves, if any. */
+export function targetOf(span: CodeSpan, agentThread?: string): NewTarget {
+	const link = agentThread ? { agentThread } : {};
 	if (span.subject === "file") {
-		return { path: span.path, commit: span.commit, subject: "file" };
+		return { path: span.path, commit: span.commit, subject: "file", ...link };
 	}
 	const cols =
 		span.startCol != null && span.endCol != null
@@ -106,6 +149,7 @@ export function targetOf(span: CodeSpan): NewTarget {
 		side: span.side,
 		line: span.line,
 		...cols,
+		...link,
 	};
 }
 
@@ -140,6 +184,8 @@ export interface NewThreadItem {
 	sending: boolean;
 	/** Its box takes focus once shown. */
 	focus: boolean;
+	/** Started from this agent conversation (Comment on its card). */
+	agentThread?: string;
 }
 
 /**
@@ -157,12 +203,15 @@ export function newThreadItems(
 		if (!span || !d.create) continue;
 		seen.add(d.create.clientId);
 		const opened = open.find((c) => c.clientId === d.create?.clientId);
+		// Once typed in, the draft says (a head move drops the link).
+		const agentThread = d.create.agentThread;
 		items.push({
 			clientId: d.create.clientId,
 			span,
 			text: d.text,
 			sending: d.create.sending !== undefined,
 			focus: opened?.focus ?? false,
+			...(agentThread ? { agentThread } : {}),
 		});
 	}
 	for (const c of open) {
@@ -173,6 +222,7 @@ export function newThreadItems(
 			text: "",
 			sending: false,
 			focus: c.focus,
+			...(c.agentThread ? { agentThread: c.agentThread } : {}),
 		});
 	}
 	return items;

@@ -242,6 +242,15 @@ export function setAgentDraft(threadId: string, text: string): void {
 	for (const l of draftListeners) l();
 }
 
+/** Every text typed to a thread's agent, by GitHub thread id. */
+export function useAgentDrafts(): ReadonlyMap<string, string> {
+	return useSyncExternalStore(
+		subscribeDrafts,
+		() => drafts,
+		() => drafts,
+	);
+}
+
 /** The agent composer's text for a thread: it outlives the panel closing. */
 export function useAgentDraft(
 	threadId: string,

@@ -916,6 +916,31 @@ describe("agent events", () => {
 		).toEqual([]);
 	});
 
+	it("parses agent-thread-linked by a human, drops it by ai, auto or with a bad GitHub id", () => {
+		const linked = newEvent("agent-thread-linked", "dan", {
+			thread,
+			github: "PRRT_kwDOAbc123",
+		});
+		expect(parseEventLines(msg([linked]))).toEqual([linked]);
+		expect(() => validateForWrite(linked)).not.toThrow();
+		const ai = { ...linked, by: "ai" } as unknown as CrbEvent;
+		expect(parseEventLines(msg([ai]))).toEqual([]);
+		expect(() => validateForWrite(ai)).toThrow(/human/);
+		const auto = { ...linked, by: "auto" } as unknown as CrbEvent;
+		expect(parseEventLines(msg([auto]))).toEqual([]);
+		expect(
+			parseEventLines(
+				msg([
+					{ ...linked, github: "" },
+					{ ...linked, github: "x".repeat(201) },
+					{ ...linked, github: 7 },
+					{ ...linked, github: undefined },
+					{ ...linked, thread: "NOT-A-ULID" },
+				]),
+			),
+		).toEqual([]);
+	});
+
 	it("drops an anchor with a bad side, line or commit", () => {
 		const bad = [
 			{ ...anchor, side: "BOTH" },

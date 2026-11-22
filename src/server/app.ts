@@ -41,6 +41,7 @@ import {
 import { JoinElsewhereError, StaleJoinRequestError } from "./agent/join.js";
 import { isSafePath } from "./agent/prompt.js";
 import {
+	AgentLinkError,
 	UnknownAgentMessageError,
 	UnknownAgentThreadError,
 } from "./agent/store.js";
@@ -806,7 +807,7 @@ export async function buildApp(
 				return sessionOf(request).setStates(revision, changes);
 			});
 			// Thread writes, posted to GitHub at once (threadWrites.ts, newThreads.ts).
-			review.post("/threads", (request) => {
+			review.post("/threads", async (request) => {
 				const problem = newThreadProblem(request.body);
 				if (problem) throw new WriteRefusedError(problem, "invalid");
 				const r = request.body as NewThreadRequest;
@@ -821,7 +822,7 @@ export async function buildApp(
 								endCol: r.endCol ?? null,
 							}
 						: {};
-				return sessionOf(request).startThread({
+				const answer = await sessionOf(request).startThread({
 					clientId: r.clientId,
 					body: r.body,
 					attemptedAt: r.attemptedAt,
@@ -831,6 +832,40 @@ export async function buildApp(
 					subject: r.subject,
 					...line,
 				});
+				// Started from an agent conversation: GitHub has the thread, so
+				// the conversation becomes its (a resend links nothing new). A
+				// link that fails leaves the conversation on its span, still
+				// shown, and the answer says why; GitHub's thread stands either way.
+				const github = answer.thread.id;
+				if (r.agentThread === undefined || github === "") return answer;
+				try {
+					await agentOf(request).link(r.agentThread, github, {
+						path: r.path,
+						commit: r.commit,
+						subject: r.subject,
+						...(r.subject === "line"
+							? {
+									side: r.side,
+									line: r.line,
+									startSide: r.startSide ?? r.side,
+									startLine: r.startLine ?? r.line,
+								}
+							: {}),
+					});
+					return { ...answer, agentThread: r.agentThread };
+				} catch (error) {
+					request.log.warn(
+						{ err: error },
+						"agent conversation not linked to its new thread",
+					);
+					return {
+						...answer,
+						agentLinkProblem: {
+							thread: r.agentThread,
+							reason: linkProblemOf(error),
+						},
+					};
+				}
 			});
 			review.post<{ Params: { threadId: string } }>(
 				"/threads/:threadId/replies",
@@ -998,7 +1033,7 @@ export async function buildApp(
 				"/agent/threads/:tid/seen",
 				(request) => {
 					const upTo = (request.body as { upTo?: unknown } | null)?.upTo;
-					if (typeof upTo !== "string" || !AGENT_THREAD_ID.test(upTo)) {
+					if (typeof upTo !== "string" || !isLowerUlid(upTo)) {
 						throw new BadRequestError("upTo must be a message id");
 					}
 					return agentOf(request).seen(
@@ -1280,6 +1315,21 @@ const isThreadWrite = (method: string, url: string) =>
 	) ||
 	(method === "POST" && /^\/api\/(threads|verdict)(\?|$)/.test(url));
 
+/** Why a conversation didn't move onto its new thread, in a few words. */
+function linkProblemOf(error: unknown): string {
+	if (
+		error instanceof AgentLinkError ||
+		error instanceof AgentRequestError ||
+		error instanceof NoAgentError
+	) {
+		return error.message;
+	}
+	if (error instanceof UnknownAgentThreadError) {
+		return "The conversation is gone";
+	}
+	return "It couldn't be saved";
+}
+
 /** The review's agent; a NoAgentError for one that has none. */
 function agentOf(request: FastifyRequest): AgentHost {
 	const agent = sessionOf(request).agent;
@@ -1291,18 +1341,16 @@ function agentOf(request: FastifyRequest): AgentHost {
 	return agent;
 }
 
-const AGENT_THREAD_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
-
 /** A join request id (a lowercase ULID); 400 otherwise. */
 function joinRequestParam(raw: string): string {
-	if (!AGENT_THREAD_ID.test(raw)) {
+	if (!isLowerUlid(raw)) {
 		throw new BadRequestError("Not a join request id");
 	}
 	return raw;
 }
 
 function agentThreadParam(raw: string): string {
-	if (!AGENT_THREAD_ID.test(raw)) {
+	if (!isLowerUlid(raw)) {
 		throw new BadRequestError(`Not an agent thread id: ${raw}`);
 	}
 	return raw;
@@ -1418,7 +1466,7 @@ function parseAgentPosted(body: unknown): AgentPostedRequest {
 		unknown
 	>;
 	const { message, block, github, text } = b;
-	if (typeof message !== "string" || !AGENT_THREAD_ID.test(message)) {
+	if (typeof message !== "string" || !isLowerUlid(message)) {
 		throw new BadRequestError("message must be a message id");
 	}
 	if (!Number.isSafeInteger(block) || (block as number) < 0) {

@@ -12,6 +12,7 @@ import type { DiffSide, ReviewThread } from "../../shared/types";
 import { AgentThreadCard } from "../agent/AgentThreadCard";
 import { AgentUnplaced } from "../agent/AgentUnplaced";
 import { agentStatusQuery } from "../agent/api";
+import { useLandWhere } from "../agent/pendingThread";
 import { useAgentPlacing } from "../agent/placeable";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import { Badge, LabeledIcon } from "../overview/parts";
@@ -70,6 +71,9 @@ export function ThreadBlock(props: {
 		commit: thread.madeOn ?? thread.commit,
 		lines: thread.anchor !== null,
 	});
+	// Posted from a pending thread (Comment on an agent card): shown where
+	// that one was.
+	useLandWhere(agent?.conversation?.id, card);
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<article

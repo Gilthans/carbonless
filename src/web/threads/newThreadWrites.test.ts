@@ -158,6 +158,23 @@ describe("new thread drafts", () => {
 		expect(s.get().map((d) => d.threadId)).toEqual(["new:c2"]);
 	});
 
+	it("one started from an agent conversation keeps its link across a reload; a bad one is dropped", () => {
+		const storage = memoryStorage();
+		const a = new DraftStore(() => storage);
+		a.bind("k");
+		const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		a.setNew("c1", { ...TARGET, agentThread }, "W");
+		const b = new DraftStore(() => storage);
+		b.bind("k");
+		expect(b.newThread("c1")?.create?.agentThread).toBe(agentThread);
+		const raw = JSON.parse(storage.getItem("k") ?? "[]");
+		raw[0].create.agentThread = 7;
+		storage.setItem("k", JSON.stringify(raw));
+		const c = new DraftStore(() => storage);
+		c.bind("k");
+		expect(c.get()).toEqual([]);
+	});
+
 	it("isn't anyone's reply box", () => {
 		const s = new DraftStore(() => undefined);
 		s.setNew("c1", TARGET, "W");
@@ -188,6 +205,44 @@ describe("ThreadWrites: new threads", () => {
 		expect(drafts.get()).toEqual([]);
 		expect(w.state().threads.size).toBe(0);
 		expect(posted).toBe(1);
+	});
+
+	it("one from an agent conversation posts with it", async () => {
+		const w = setup();
+		const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		drafts.setNew("c1", { ...TARGET, agentThread }, "Why trim?");
+		w.createThread("c1");
+		expect(calls[0]?.req).toMatchObject({ agentThread, body: "Why trim?" });
+		calls[0]?.resolve({ ...answer(), agentThread });
+		await flush();
+		expect(created[0]?.agentThread).toBe(agentThread);
+	});
+
+	it("one from an agent conversation refused (409) keeps its draft and link, and links nothing", async () => {
+		const w = setup();
+		const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		drafts.setNew("c1", { ...TARGET, agentThread }, "Why trim?");
+		w.createThread("c1");
+		calls[0]?.reject(
+			new ApiError(409, "The PR moved on since", undefined, { code: "stale" }),
+		);
+		await flush();
+		expect(created).toEqual([]);
+		expect(drafts.newThread("c1")).toMatchObject({
+			text: "Why trim?",
+			create: { agentThread },
+		});
+	});
+
+	it("a draft moved to a new head drops its agent conversation (asked on the old one)", () => {
+		const w = setup();
+		const agentThread = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		drafts.setNew("c1", { ...TARGET, agentThread }, "Why trim?");
+		drafts.retarget("c1", "head2");
+		expect(drafts.newThread("c1")?.create).toMatchObject({ commit: "head2" });
+		expect(drafts.newThread("c1")?.create).not.toHaveProperty("agentThread");
+		w.createThread("c1");
+		expect(calls[0]?.req).not.toHaveProperty("agentThread");
 	});
 
 	it("never sends a blank one, nor one already on its way", () => {
@@ -311,5 +366,21 @@ describe("addThread", () => {
 		expect(
 			client.getQueryData<ThreadComments>(["comments", "r1", "T9"]),
 		).toEqual({ threadId: "T9", comments: [] });
+	});
+
+	it("an answer that took an agent conversation reads the agent's threads again; one that didn't leaves them", () => {
+		const client = new QueryClient();
+		client.setQueryData(["agent", "threads"], { threads: [] });
+		addThread(client, answer());
+		expect(client.getQueryState(["agent", "threads"])?.isInvalidated).toBe(
+			false,
+		);
+		addThread(client, {
+			...answer(),
+			agentThread: "01k9e6m2q8x4v7c3n5b0h1j2t6",
+		});
+		expect(client.getQueryState(["agent", "threads"])?.isInvalidated).toBe(
+			true,
+		);
 	});
 });
