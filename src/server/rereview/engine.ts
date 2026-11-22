@@ -8,6 +8,7 @@ import {
 } from "../../shared/lineRanges.js";
 import {
 	clusterAt,
+	lineRuns,
 	type SincePiece,
 	sincePieces,
 	sinceUnits,
@@ -39,6 +40,7 @@ import type {
 	RereviewAnswer,
 	Snapshot,
 } from "../../shared/types.js";
+import { matchDisplayHunk, whitespaceLines } from "../../shared/whitespace.js";
 import { buildAllClusters } from "../diff/clusters.js";
 import { listChangedFiles } from "../diff/files.js";
 import { buildDisplayHunks, contextLines } from "../diff/hunks.js";
@@ -625,6 +627,7 @@ export function answerRereview(
 				target,
 				answer,
 				f.index,
+				sources,
 			);
 			if (pieces.length > 0) f.pieces = pieces;
 			const carries = sinceLineCarries(
@@ -834,12 +837,19 @@ export function interdiffFileContext(
  * clusters' on both sides (its interdiff is the target's own diff). A
  * file the interdiff doesn't touch has no hunks (the caller makes it one
  * whole-file gap, Session.interdiffHunks).
+ *
+ * `sources`: the compared patch set's human marks (humanMarksOf), for the
+ * pieces' whitespace flag (CAR-218): a piece is whitespace-only when its
+ * lines are on the interdiff and each one's counterpart at the compared
+ * patch set held a mark there (sinceWhitespace). Without it no piece is
+ * (they all count).
  */
 export function interdiffFileHunks(
 	traced: Traced,
 	target: Snapshot,
 	answer: RereviewAnswer,
 	index: number,
+	sources?: ReadonlyMap<string, HumanMarks>,
 ): FileHunks {
 	const { entry, file } = interdiffFileAt(traced, answer, index);
 	if (!file) return { hunks: [], newLineCount: 0 };
@@ -949,7 +959,15 @@ export function interdiffFileHunks(
 	// a line the patch set added. A line no piece shows is unchanged since
 	// the compared patch set: it takes its mark there, if any, as a carry
 	// (sinceLineCarries), never through a piece.
-	const pieces = sincePieces(hunks, targetClusters, () => ({ baseNo }));
+	// The keys are final here: the view matches these same arrays (its `~`
+	// rows), so the pieces' cut and its rows agree, the cap's per-run
+	// fallback included.
+	const pieces = sincePieces(
+		hunks,
+		targetClusters,
+		() => ({ baseNo }),
+		sinceWhitespace(traced, entry.path, file, hunks, sources),
+	);
 	// A removed line's GitHub line on the head (LEFT, in the base): what a
 	// comment on it posts with, never its number here (CAR-217). A
 	// conflicted file's old side is the base; else the virtual rebase's
@@ -966,6 +984,85 @@ export function interdiffFileHunks(
 		}
 	}
 	return { hunks, newLineCount: file.newLines.length, pieces };
+}
+
+/**
+ * The since view's whitespace-only lines of one file and whether each was
+ * read at the compared patch set (CAR-218): `lines`, every interdiff
+ * display hunk's `whitespaceLines` that the view draws as `~` rows;
+ * `marked(line)`, the line's counterpart
+ * on the interdiff's old side (the compared patch set's head, rebased) held
+ * a human mark there (`sources`, humanMarksOf), traced as the line carries
+ * trace lines (sinceLineSources over `lineKeys.old`). A removed line's
+ * counterpart is itself; an added line's, its twin in the matching (a
+ * removed or context line). No counterpart, one no cluster of that patch
+ * set added (a base line it left alone), one already taken, a conflicted
+ * file, or no `sources`: not marked (principle 2: it counts).
+ */
+function sinceWhitespace(
+	traced: Traced,
+	path: string,
+	file: InterdiffFile,
+	hunks: readonly { lines: readonly DiffLine[] }[],
+	sources: ReadonlyMap<string, HumanMarks> | undefined,
+): { lines: ReadonlySet<DiffLine>; marked: (line: DiffLine) => boolean } {
+	const lines = new Set<DiffLine>();
+	const twins = new Map<DiffLine, DiffLine>();
+	for (const hunk of hunks) {
+		const ws = whitespaceLines(hunk.lines);
+		for (const [l, t] of matchDisplayHunk(hunk.lines)) twins.set(l, t);
+		// Only what the view draws as `~` (src/web/files/whitespace.ts
+		// hunkView, pairRun): a keyed run of removed lines, then added ones.
+		// An unkeyed run, or one of another shape, shows its lines plain:
+		// they count.
+		for (const run of lineRuns(hunk.lines)) {
+			if (!run.change || run.key === undefined) continue;
+			const firstAdd = run.lines.findIndex((l) => l.kind === "add");
+			const shaped =
+				firstAdd < 0 ||
+				run.lines.slice(firstAdd).every((l) => l.kind === "add");
+			if (!shaped) continue;
+			for (const l of run.lines) if (ws.has(l)) lines.add(l);
+		}
+	}
+	if (!sources || file.conflict || lines.size === 0) {
+		return { lines, marked: () => false };
+	}
+	const then = sinceLineSources(
+		sources,
+		traced.lineKeys.old[file.oldPath ?? file.path] ?? {},
+		traced.lineKeys.base?.[path] ?? {},
+		file.oldLines,
+	);
+	// sinceLineSources answers each earlier line once: asked again (a
+	// removed line and the added twin that pairs with it), the first answer.
+	const byOld = new Map<number, boolean>();
+	const markedAt = (oldNo: number): boolean => {
+		let marked = byOld.get(oldNo);
+		if (marked === undefined) {
+			const source = then.added(oldNo);
+			const marks = source && sources.get(source.key);
+			marked =
+				!!source &&
+				!!marks &&
+				(has(marks.reviewed, source.index) || has(marks.crossed, source.index));
+			byOld.set(oldNo, marked);
+		}
+		return marked;
+	};
+	return {
+		lines,
+		marked: (line) => {
+			const old =
+				line.kind === "del"
+					? line
+					: line.kind === "add"
+						? twins.get(line)
+						: undefined;
+			if (!old || old.kind === "add" || old.oldNo === undefined) return false;
+			return markedAt(old.oldNo);
+		},
+	};
 }
 
 /** A line of a cluster of the compared patch set (its own line index). */

@@ -111,7 +111,7 @@ import {
 	ThreadPlacer,
 	UnknownMoveThreadError,
 } from "./rereview/threads.js";
-import { buildReviewView } from "./review/coverage.js";
+import { buildReviewView, humanMarksOf } from "./review/coverage.js";
 import type { PatchsetRecord, ProgressState } from "./review/fold.js";
 import { RefStore } from "./review/refStore.js";
 import {
@@ -1405,6 +1405,13 @@ export class Session {
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		const traced = await this.#traced(since, snapshot);
 		const { answer } = await this.#answerFor(since, snapshot, traced);
+		// The patch set's human marks: which re-indents since it the
+		// reviewer read there (the pieces' whitespace flag, as the answer's).
+		const { snapshot: sinceSnapshot, states } = await this.#sinceOf(
+			since,
+			await this.#progress(),
+		);
+		const sources = humanMarksOf(sinceSnapshot, states);
 		const known = new Set([
 			...snapshot.files.map((f) => f.index),
 			...answer.files.map((f) => f.index),
@@ -1412,7 +1419,13 @@ export class Session {
 		return {
 			has: (index) => known.has(index),
 			hunks: async (index) => {
-				const hunks = interdiffFileHunks(traced, snapshot, answer, index);
+				const hunks = interdiffFileHunks(
+					traced,
+					snapshot,
+					answer,
+					index,
+					sources,
+				);
 				if (hunks.hunks.length > 0) return hunks;
 				// A file the interdiff doesn't change (or only renames): its
 				// lines are one gap, so they and the threads on them can be opened.

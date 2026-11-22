@@ -4,9 +4,12 @@ import {
 	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 } from "../../../test/git-fixture";
+import { size } from "../../shared/lineRanges";
 import type { SincePiece } from "../../shared/pieces";
-import type { Snapshot } from "../../shared/types";
+import type { DiffLine, Snapshot } from "../../shared/types";
+import { hunkView } from "../../web/files/whitespace";
 import { buildSnapshot } from "../diff/snapshot";
+import { humanMarksOf } from "../review/coverage";
 import type { StateEntry } from "../review/fold";
 import {
 	answerRereview,
@@ -403,5 +406,261 @@ describe("a file the since patch set didn't touch", () => {
 		expect(k).toMatchObject({ removed: ["b 4"], added: ["b four"] });
 		const pieces = interdiffFileHunks(traced, b, answer, index).pieces ?? [];
 		expect(pieces.find((p) => p.key === k?.key)?.owns).toEqual([[0, 2]]);
+	});
+});
+
+describe("since pieces judged on the interdiff (CAR-218)", () => {
+	const head = Array.from({ length: 12 }, (_, i) => `head ${i + 1}`);
+	const tail = Array.from({ length: 12 }, (_, i) => `tail ${i + 1}`);
+	// PS1 adds a block; PS2 only wraps it one level deeper. The blank line
+	// inside reads the same at both depths: an unchanged line between the
+	// interdiff's two git hunks, so one display hunk spans both.
+	const block = ["if (ready) {", "  start();", "", "  finish();", "}"];
+	const deeper = block.map((l) => (l === "" ? l : `  ${l}`));
+	// Elsewhere, PS1 changes a base line for real; PS2 instead only
+	// re-indents it: whitespace-only against the base, a real edit since.
+	const base = [...head, "load();", ...tail];
+	const ps1 = [...head, "unload();", ...block, ...tail];
+	const ps2 = [...head, "  load();", ...deeper, ...tail];
+	let r: GitFixture;
+	let a: Snapshot;
+	let b: Snapshot;
+	beforeAll(async () => {
+		r = createGitFixture([
+			{ message: "base", files: { "a.ts": text(base) } },
+			{ message: "ps1", files: { "a.ts": text(ps1) } },
+			{ message: "ps2", files: { "a.ts": text(ps2) } },
+		]);
+		const [b0, h1, h2] = r.shas as [string, string, string];
+		a = await buildSnapshot(r.path, b0, h1);
+		b = await buildSnapshot(r.path, b0, h2);
+	});
+	afterAll(() => r.cleanup());
+
+	const since = async (state: "reviewed" | "crossed-off" | null) => {
+		const states = new Map<string, StateEntry>(
+			state === null
+				? []
+				: (a.files[0]?.clusters.map((c) => [c.key, { state }]) ?? []),
+		);
+		const ps: SincePatchset = {
+			number: 1,
+			revision: a.revision,
+			mergeBase: a.base,
+			head: a.head,
+			startedAt: 0,
+			since: null,
+			shape: null,
+			baseBranch: "main",
+			interdiff: null,
+			snapshot: a,
+			states,
+		};
+		const target = { ...b, baseBranch: "main" };
+		const traced = await traceRereview(r.path, ps, [], target);
+		const { answer } = answerRereview(traced, ps, [], target);
+		const hunks = interdiffFileHunks(
+			traced,
+			b,
+			answer,
+			0,
+			humanMarksOf(a, states),
+		);
+		const linesOf = (p: SincePiece) => {
+			const out: DiffLine[] = [];
+			const all = hunks.hunks[p.hunk]?.lines ?? [];
+			const n = p.line + size(p.old) + size(p.new);
+			for (const l of all.slice(p.line, n)) out.push(l);
+			return out;
+		};
+		const pieces = hunks.pieces ?? [];
+		return { hunks, pieces, linesOf, answer };
+	};
+	const textsOf = (lines: DiffLine[]) =>
+		lines.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`);
+
+	it("a re-indent since the last review is whitespace-only", async () => {
+		for (const state of ["reviewed", "crossed-off"] as const) {
+			const { pieces, linesOf, answer } = await since(state);
+			const reindent = pieces.filter((p) =>
+				linesOf(p).some((l) => l.text.includes("start();")),
+			);
+			expect(reindent.length).toBeGreaterThan(0);
+			const blockLines = pieces
+				.filter((p) =>
+					linesOf(p).every(
+						(l) => block.includes(l.text) || deeper.includes(l.text),
+					),
+				)
+				.flatMap(linesOf);
+			// Every changed line of the block, both depths, in a flagged piece;
+			// the blank line inside stays unchanged.
+			expect(textsOf(blockLines).sort()).toEqual(
+				[...block, ...deeper]
+					.filter((l) => l !== "")
+					.map((l) => (block.includes(l) ? `-${l}` : `+${l}`))
+					.sort(),
+			);
+			for (const p of pieces) {
+				if (linesOf(p).some((l) => l.text.includes("load();"))) continue;
+				expect(p.whitespaceOnly, `${state} ${textsOf(linesOf(p))}`).toBe(true);
+			}
+			// The answer's pieces are the page's.
+			expect(answer.files[0]?.pieces).toEqual(pieces);
+		}
+	});
+
+	it("an unread re-indent still counts", async () => {
+		const { pieces } = await since(null);
+		expect(pieces.length).toBeGreaterThan(0);
+		expect(pieces.filter((p) => p.whitespaceOnly)).toEqual([]);
+	});
+
+	it("a real edit since counts though its cluster is whitespace-only against the base", async () => {
+		const cluster = b.files[0]?.clusters.find((c) =>
+			c.added.includes("  load();"),
+		);
+		expect(cluster?.whitespaceOnly).toBe(true);
+		const { pieces, linesOf } = await since("reviewed");
+		const edit = pieces.filter((p) =>
+			linesOf(p).some((l) => l.text.includes("load();")),
+		);
+		expect(edit.flatMap((p) => textsOf(linesOf(p)))).toEqual([
+			"-unload();",
+			"+  load();",
+		]);
+		for (const p of edit) expect(p.whitespaceOnly).toBeUndefined();
+	});
+});
+
+describe("since pieces and the view's `~` rows agree (CAR-218)", () => {
+	let seed = 4218;
+	const rand = (k: number) => {
+		seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+		return (seed >>> 16) % k;
+	};
+	const words = ["<div>", "</div>", "}", "a();", "if (x) {", "", "b"];
+	const pad = ["", "  ", "\t"];
+	const line = () => `${pad[rand(pad.length)]}${words[rand(words.length)]}`;
+	const indent = (l: string) => (l === "" ? l : `  ${l}`);
+	const edit = (old: string[]) =>
+		old.flatMap((l) => {
+			const r = rand(8);
+			if (r === 0) return [];
+			if (r === 1) return [line()];
+			if (r === 2) return [l, line()];
+			if (r < 5) return [indent(l)];
+			return [l];
+		});
+	const FILES = 24;
+	const names = Array.from({ length: FILES }, (_, i) => `f${i}.txt`);
+	const bases = names.map(() => Array.from({ length: 6 + rand(24) }, line));
+	const ps1s = bases.map(edit);
+	const ps2s = ps1s.map(edit);
+	const files = (texts: string[][]) =>
+		Object.fromEntries(names.map((n, i) => [n, text(texts[i] as string[])]));
+	let r: GitFixture;
+	let a: Snapshot;
+	let b: Snapshot;
+	beforeAll(async () => {
+		r = createGitFixture([
+			{ message: "base", files: files(bases) },
+			{ message: "ps1", files: files(ps1s) },
+			{ message: "ps2", files: files(ps2s) },
+		]);
+		const [b0, h1, h2] = r.shas as [string, string, string];
+		a = await buildSnapshot(r.path, b0, h1);
+		b = await buildSnapshot(r.path, b0, h2);
+	});
+	afterAll(() => r.cleanup());
+
+	it("every whitespace-only piece's lines are `~` rows; none is when nothing was marked", async () => {
+		let flagged = 0;
+		let wsRows = 0;
+		for (const marked of [true, false]) {
+			const states = new Map<string, StateEntry>(
+				marked
+					? a.files.flatMap((f) =>
+							f.clusters.map((c) => [c.key, { state: "reviewed" }] as const),
+						)
+					: [],
+			);
+			const ps: SincePatchset = {
+				number: 1,
+				revision: a.revision,
+				mergeBase: a.base,
+				head: a.head,
+				startedAt: 0,
+				since: null,
+				shape: null,
+				baseBranch: "main",
+				interdiff: null,
+				snapshot: a,
+				states,
+			};
+			const target = { ...b, baseBranch: "main" };
+			const traced = await traceRereview(r.path, ps, [], target);
+			const { answer } = answerRereview(traced, ps, [], target);
+			for (const f of answer.files) {
+				const hunks = interdiffFileHunks(
+					traced,
+					b,
+					answer,
+					f.index,
+					humanMarksOf(a, states),
+				);
+				// As the page gets them: JSON, so nothing shares an array.
+				const page = JSON.parse(JSON.stringify(hunks)) as typeof hunks;
+				const tilde = new Set<string>();
+				page.hunks.forEach((hk, h) => {
+					for (const run of hunkView(hk.lines, true).runs) {
+						for (const row of run.rows) {
+							if (row.kind !== "ws") continue;
+							for (const l of [row.del, row.add]) {
+								if (l) tilde.add(`${h}:${hk.lines.indexOf(l)}`);
+							}
+						}
+					}
+				});
+				wsRows += tilde.size;
+				const covered = new Set<string>();
+				for (const p of page.pieces ?? []) {
+					const n = size(p.old) + size(p.new);
+					const at = Array.from(
+						{ length: n },
+						(_, k) => `${p.hunk}:${p.line + k}`,
+					);
+					for (const id of at) {
+						expect(covered.has(id)).toBe(false);
+						covered.add(id);
+					}
+					// A piece is all `~` rows or none.
+					const rows = at.map((id) => tilde.has(id));
+					expect(new Set(rows).size, `${f.path} ${p.hunk}:${p.line}`).toBe(1);
+					if (p.whitespaceOnly) {
+						expect(marked).toBe(true);
+						expect(
+							rows.every(Boolean),
+							JSON.stringify({
+								p,
+								lines: at.map(
+									(id) => page.hunks[p.hunk]?.lines[Number(id.split(":")[1])],
+								),
+							}),
+						).toBe(true);
+						flagged++;
+					}
+				}
+				// Every changed line is in exactly one piece.
+				page.hunks.forEach((hk, h) => {
+					hk.lines.forEach((l, k) => {
+						if (l.kind !== "context")
+							expect(covered.has(`${h}:${k}`)).toBe(true);
+					});
+				});
+			}
+		}
+		expect(wsRows).toBeGreaterThan(0);
+		expect(flagged).toBeGreaterThan(0);
 	});
 });
