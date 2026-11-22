@@ -1,5 +1,6 @@
 import { CheckCircleIcon, IssueReopenedIcon } from "@primer/octicons-react";
 import type { ReviewThread } from "../../shared/types";
+import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { useThreadWriter, useWritesOn } from "./threadWrites";
 
 /** The thread may be resolved or unresolved here (by GitHub and the session). */
@@ -18,6 +19,8 @@ export function canToggle(thread: ReviewThread, writesOn: boolean): boolean {
  * Send. Flips at once and goes to GitHub through the thread's write queue.
  * Hidden where the viewer can't, or the session doesn't write. Never
  * touches review progress (principle 2): it's a GitHub action on a thread.
+ * `compact`: the icon alone on a phone (a closed Overview card's Show more
+ * row, beside the toggle and the agent's handle), named and tipped.
  */
 export function ResolveButton(props: {
 	/** The thread as the reviewer intends it (overlayThreads). */
@@ -26,6 +29,8 @@ export function ResolveButton(props: {
 	onToggle?: (resolved: boolean, from: Element) => void;
 	/** The thread's agent suggests resolving it: an `ok` ring. */
 	suggested?: boolean;
+	/** The icon alone below `sm`, with a tooltip (the word from `sm` up). */
+	compact?: boolean;
 }) {
 	const { thread } = props;
 	const writer = useThreadWriter();
@@ -33,10 +38,12 @@ export function ResolveButton(props: {
 	if (!canToggle(thread, on)) return null;
 	const label = thread.resolved ? "Unresolve" : "Resolve";
 	const IconEl = thread.resolved ? IssueReopenedIcon : CheckCircleIcon;
-	return (
+	const button = (trigger?: TooltipTriggerProps) => (
 		<button
+			{...trigger}
 			type="button"
 			data-testid="resolve-button"
+			aria-label={props.compact ? label : undefined}
 			onClick={(e) => {
 				const next = !thread.resolved;
 				writer.setResolved(thread.id, next);
@@ -45,14 +52,27 @@ export function ResolveButton(props: {
 			// A focused reply box keeps its focus (and so its size) on a mouse
 			// click: shrinking under the pointer, it would move the button away.
 			onMouseDown={(e) => e.preventDefault()}
-			className={`flex h-10 shrink-0 items-center justify-center gap-2 self-end ml-auto rounded-md border px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent ${
+			className={`flex h-10 min-w-10 shrink-0 items-center justify-center gap-2 self-end ml-auto rounded-md border text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent ${
+				props.compact ? "px-2.5 sm:px-4" : "px-4"
+			} ${
 				thread.resolved
 					? "border-line-strong text-ink-soft hover:bg-overlay hover:text-ink"
 					: "border-ok/60 bg-ok/10 text-ok hover:bg-ok/20"
 			}${props.suggested && !thread.resolved ? " ring-2 ring-ok ring-offset-1 ring-offset-surface" : ""}`}
 		>
 			<IconEl size={16} aria-hidden />
-			{label}
+			{props.compact ? (
+				<span className="hidden sm:inline">{label}</span>
+			) : (
+				label
+			)}
 		</button>
+	);
+	return props.compact ? (
+		<Tooltip content={label} describe={false}>
+			{button}
+		</Tooltip>
+	) : (
+		button()
 	);
 }

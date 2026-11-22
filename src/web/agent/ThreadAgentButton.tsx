@@ -163,41 +163,54 @@ export function AgentHandle(props: { className?: string }) {
 
 /**
  * A row centred under the card (the Show more toggle) with the agent's
- * handle at its right end while `handle`: with an agent, three columns,
+ * handle at its right end while `handle`, after `end` (a closed card's
+ * Resolve): with either, three columns,
  * the outer two equal while there is room, so the toggle stays centred;
- * when tight the left one gives way first, the right one never below the
- * handle's width, so the toggle never runs under it. The
+ * when tight the left one gives way first, the right one never below
+ * what it holds, so the toggle never runs under it. The
  * columns stay while the handle is elsewhere, so the toggle is never
- * remounted (its focus kept). Both sit on the row's bottom, the handle
- * sunk as the toggle is (`-mb-2`), so neither rises into what is above.
+ * remounted (its focus kept): `columns` keeps them for a row whose `end`
+ * comes and goes without an agent. All sit on the row's bottom, sunk as
+ * the toggle is (`-mb-2`), so none rises into what is above.
  */
 export function CentredWithHandle(props: {
 	/** Show the handle here (the card's actions row is closed). */
 	handle: boolean;
 	testId?: string;
+	/** Before the handle at the row's right end (a closed card's Resolve). */
+	end?: ReactNode;
+	/** Three columns even without an agent (`end` may come and go). */
+	columns?: boolean;
 	children: ReactNode;
 }) {
 	const agent = useThreadAgentContext();
-	if (!agent) {
+	if (!agent && !props.columns && !props.end) {
 		return (
 			<div data-testid={props.testId} className="flex justify-center">
 				{props.children}
 			</div>
 		);
 	}
+	const handle = agent !== null && props.handle;
 	return (
 		<div
 			data-testid={props.testId}
-			// The right column never narrower than the handle (a bare 1fr
-			// resolved under it, and the handle ran into the toggle); the
+			// The right column never narrower than what it holds (a bare 1fr
+			// resolved under the handle, and it ran into the toggle); the
 			// toggle's column gives way last, wrapping its words if it must.
 			className="grid grid-cols-[1fr_minmax(0,auto)_minmax(max-content,1fr)] items-end gap-2"
 		>
 			<div className="col-start-2 flex min-w-0 justify-center">
 				{props.children}
 			</div>
-			{props.handle && (
-				<AgentHandle className="relative col-start-3 -mb-2 justify-self-end" />
+			{(handle || props.end) && (
+				<div
+					data-testid="row-end"
+					className="col-start-3 -mb-2 flex items-end gap-2 justify-self-end"
+				>
+					{props.end}
+					{handle && <AgentHandle />}
+				</div>
 			)}
 		</div>
 	);

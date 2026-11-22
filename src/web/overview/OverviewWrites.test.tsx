@@ -271,10 +271,15 @@ describe("resolving from an Overview card", () => {
 		});
 		const [card] = within(open).getAllByTestId("thread");
 		if (!card) throw new Error("no card");
-		// Closed, the card has no Resolve: it is inside Show more.
-		expect(within(card).queryByRole("button", { name: "Resolve" })).toBeNull();
-		await openCard(user, card);
+		// Closed, Resolve is on the card: no Show more needed.
+		expect(within(card).getByTestId("thread-more")).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		);
+		expect(within(card).queryByTestId("thread-actions")).toBeNull();
 		await user.click(within(card).getByRole("button", { name: "Resolve" }));
+		// Still closed.
+		expect(within(card).queryByTestId("thread-actions")).toBeNull();
 		// Flipped at once, in place, fading.
 		expect(card).toHaveAttribute("data-fading", "true");
 		expect(card).toHaveClass("thread-fading");
@@ -402,6 +407,52 @@ describe("resolving from an Overview card", () => {
 		expect(moved).not.toHaveAttribute("data-fading");
 	});
 
+	it("one Resolve per card: at the closed card's Show more row, in the actions row once open", async () => {
+		const user = userEvent.setup();
+		renderOverview({}, [thread("a")]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const card = within(humans).getByTestId("thread");
+		const row = within(card).getByTestId("thread-more-row");
+		const closed = within(card).getAllByTestId("resolve-button");
+		expect(closed).toHaveLength(1);
+		expect(row).toContainElement(closed[0] ?? null);
+		// Named and tipped, the word hidden on a phone.
+		expect(closed[0]).toHaveAccessibleName("Resolve");
+		await openCard(user, card);
+		const opened = within(card).getAllByTestId("resolve-button");
+		expect(opened).toHaveLength(1);
+		expect(within(card).getByTestId("thread-actions")).toContainElement(
+			opened[0] ?? null,
+		);
+		expect(row).not.toContainElement(opened[0] ?? null);
+		await user.click(within(card).getByTestId("thread-more"));
+		expect(within(card).getAllByTestId("resolve-button")).toHaveLength(1);
+		expect(row).toContainElement(within(card).getByTestId("resolve-button"));
+	});
+
+	it("a resolved card's closed Unresolve brings it back", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+		renderOverview({}, [
+			thread("a"),
+			thread("b", {
+				resolved: true,
+				viewerCan: { reply: true, resolve: false, unresolve: true },
+			}),
+		]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		await user.click(within(humans).getByRole("radio", { name: "1 resolved" }));
+		const done = within(humans).getByRole("list", { name: "Resolved threads" });
+		const card = within(done).getByTestId("thread");
+		expect(within(card).queryByTestId("thread-actions")).toBeNull();
+		await user.click(within(card).getByRole("button", { name: "Unresolve" }));
+		expect(card).toHaveAttribute("data-fading", "true");
+		expect(posts).toEqual([
+			{ path: "/api/threads/b/resolved", body: { resolved: false } },
+		]);
+		expect(statePosts()).toBe(0);
+	});
+
 	it("has no toggle or reply as of a cutoff", async () => {
 		renderOverview({ writes: "as-of", asOf: "2026-01-02T00:00:00Z" }, [
 			thread("a"),
@@ -430,8 +481,12 @@ describe("replying from an Overview card", () => {
 		expect(row.children[0]).toHaveClass("col-start-2");
 		expect(row.children[0]).toContainElement(more);
 		expect(row.children[1]).toHaveClass("col-start-3");
+		// Resolve, then the agent's handle, at the row's right end.
+		const end = row.children[1]?.children ?? [];
+		expect(end).toHaveLength(2);
+		expect(end[0]).toHaveAttribute("data-testid", "resolve-button");
 		// (Its spinner while the agent threads load: never "Ask agent" first.)
-		expect(row.children[1]?.getAttribute("data-testid")).toMatch(
+		expect(end[1]?.getAttribute("data-testid")).toMatch(
 			/^thread-agent-(button|loading)$/,
 		);
 		expect(more).toHaveTextContent(/^Reply$/);
@@ -471,7 +526,7 @@ describe("replying from an Overview card", () => {
 		).toBeTruthy();
 	});
 
-	it("a thread the viewer may resolve but not reply to still opens to Resolve", async () => {
+	it("a thread the viewer may resolve but not reply to: Resolve on the card, no toggle", async () => {
 		const user = userEvent.setup();
 		renderOverview({}, [
 			thread("a", {
@@ -480,15 +535,12 @@ describe("replying from an Overview card", () => {
 		]);
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
 		const card = within(humans).getByTestId("thread");
-		// Nothing to read or reply: the toggle says what it opens to.
-		expect(within(card).getByTestId("thread-more")).toHaveAccessibleName(
-			"Resolve",
-		);
-		await openCard(user, card);
-		expect(within(card).getByTestId("thread-more")).toHaveAccessibleName(
-			"Hide",
-		);
-		expect(within(card).getByTestId("resolve-button")).toBeVisible();
+		// Nothing to read or reply: nothing behind a toggle but Resolve,
+		// which the card shows itself.
+		expect(within(card).queryByTestId("thread-more")).toBeNull();
+		expect(within(card).getAllByTestId("resolve-button")).toHaveLength(1);
+		await user.click(within(card).getByRole("button", { name: "Resolve" }));
+		expect(card).toHaveAttribute("data-fading", "true");
 		expect(within(card).queryByRole("textbox", { name: "Reply" })).toBeNull();
 	});
 

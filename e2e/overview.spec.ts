@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import {
 	release,
@@ -5,7 +6,7 @@ import {
 	suggestionHtml,
 	threadComment,
 } from "../test/fake-gh/scenario";
-import { passLanding } from "./files-ui";
+import { expectNoPageOverflow, passLanding } from "./files-ui";
 import { expect, installClock, test } from "./fixtures";
 
 const botThreadNoReply = reviewThread({ path: "src/bot.ts", line: 3 }, [
@@ -1749,4 +1750,79 @@ test("the viewer's own pending reply gets a toggle, marked pending", async ({
 	await expect(
 		reply.getByRole("img", { name: "Pending, only you see it" }),
 	).toBeVisible();
+});
+
+test("a closed card's Resolve, at the end of its Show more row, resolves without opening it", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr({
+		threads: [
+			reviewThread({ path: "src/cache.ts", line: 42 }, [
+				threadComment({ login: "rev1", text: "Points" }),
+				threadComment({ login: "octo-author", text: "Done" }),
+			]),
+			reviewThread({ path: "src/other.ts", line: 1 }, [
+				threadComment({ login: "rev1", text: "Another" }),
+			]),
+		],
+	});
+	const resolved = () => {
+		const sc = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {
+			prs: Record<
+				number,
+				{
+					graphql?: { reviewThreads?: { path: string; isResolved: boolean }[] };
+				}
+			>;
+		};
+		return sc.prs[p.number]?.graphql?.reviewThreads?.find(
+			(t) => t.path === "src/cache.ts",
+		)?.isResolved;
+	};
+	const s = await startCrb();
+	await page.goto(s.url);
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	const card = humans.getByTestId("thread").filter({ hasText: "src/cache.ts" });
+	const more = card.getByTestId("thread-more");
+	await expect(more).toHaveAttribute("aria-expanded", "false");
+	const resolve = card.getByRole("button", { name: "Resolve", exact: true });
+	await expect(resolve).toBeVisible();
+	await expect(
+		card.getByTestId("thread-more-row").getByTestId("resolve-button"),
+	).toBeVisible();
+	// On the toggle's row, at its right end, a finger's size.
+	const r = await resolve.boundingBox();
+	const t = await more.boundingBox();
+	const c = await card.boundingBox();
+	if (!r || !t || !c) throw new Error("no boxes");
+	expect(r.height).toBeGreaterThanOrEqual(40);
+	expect(r.width).toBeGreaterThanOrEqual(40);
+	expect(
+		Math.abs(r.y + r.height / 2 - (t.y + t.height / 2)),
+	).toBeLessThanOrEqual(4);
+	expect(r.x).toBeGreaterThanOrEqual(t.x + t.width);
+	expect(c.x + c.width - (r.x + r.width)).toBeLessThanOrEqual(80);
+	// The icon alone on a phone, the word beside it on a desktop.
+	await expect(resolve).toHaveText(isMobile ? "" : "Resolve", {
+		useInnerText: true,
+	});
+	await expectNoPageOverflow(page);
+	// Opened: one Resolve, in the actions row; closed again, back on the row.
+	await more.click();
+	await expect(card.getByTestId("resolve-button")).toHaveCount(1);
+	await expect(
+		card.getByTestId("thread-actions").getByTestId("resolve-button"),
+	).toBeVisible();
+	await more.click();
+	await expect(card.getByTestId("thread-actions")).toHaveCount(0);
+	await expect(card.getByTestId("resolve-button")).toHaveCount(1);
+	// Pressed closed: GitHub's thread resolved, the card off to Resolved.
+	await resolve.click();
+	await expect.poll(resolved).toBe(true);
+	await expect(humans.getByTestId("thread")).toHaveCount(1);
+	await expect(humans.getByRole("radio", { name: "1 resolved" })).toBeVisible();
 });
