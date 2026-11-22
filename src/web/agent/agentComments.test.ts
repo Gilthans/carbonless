@@ -5,6 +5,7 @@ import {
 	commentPlace,
 	GITHUB_UNKNOWN,
 	knownBefore,
+	knownSince,
 	LINES_GONE,
 	type PostingThread,
 	placeLabel,
@@ -282,6 +283,38 @@ describe("placeLabel", () => {
 				},
 			).short,
 		).toBe("L3");
+	});
+});
+
+describe("knownSince: the time a reply's known comments are taken up to", () => {
+	it("the agent's message, or a later post of its conversation (the thread a joined conversation started, CAR-236)", () => {
+		const message = {
+			id: "01k9e6m2q8x4v7c3n5b0h1j2m1",
+			by: "ai" as const,
+			at: "2026-11-16T10:00:00.000Z",
+			text: "",
+		};
+		const t = conversation({
+			subject: "thread",
+			thread: "PRRT_9",
+			path: "src/x.ts",
+			commit: OLD,
+		});
+		expect(knownSince({ ...t, messages: [message] }, message)).toBe(message.at);
+		const posted = {
+			...message,
+			posted: [
+				{
+					block: 0,
+					url: "https://x",
+					at: "2026-11-16T10:05:00.000Z",
+					text: "x",
+				},
+			],
+		};
+		expect(knownSince({ ...t, messages: [posted] }, posted)).toBe(
+			"2026-11-16T10:05:00.000Z",
+		);
 	});
 });
 

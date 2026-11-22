@@ -224,6 +224,23 @@ export function knownBefore(
 		.map((c) => c.id);
 }
 
+/**
+ * What a reply's known comments are taken up to (knownBefore): the
+ * agent's message, or the conversation's latest recorded post when later.
+ * A conversation joined to the thread one of its blocks started (CAR-236)
+ * has a thread younger than the message: its opener (and earlier
+ * replies) were published by then, so a retry never takes them for itself.
+ */
+export function knownSince(thread: AgentThread, message: AgentMessage): string {
+	let since = message.at;
+	for (const m of thread.messages) {
+		for (const p of m.posted ?? []) {
+			if (Date.parse(p.at) > Date.parse(since)) since = p.at;
+		}
+	}
+	return since;
+}
+
 /** Why GitHub (or crb) refused the post, in a few words. */
 export function refusalText(error: Error, place: CommentPlace): string {
 	const code = error instanceof ApiError ? error.write?.code : undefined;
@@ -519,7 +536,11 @@ export async function postAgentComment(
 		if (place.kind === "reply") {
 			const known =
 				sending.known ??
-				(await threadCommentIds(client, place.thread, message.at));
+				(await threadCommentIds(
+					client,
+					place.thread,
+					knownSince(thread, message),
+				));
 			// Nothing sent: a refusal, never "may have landed".
 			if (!known) throw new Error("Couldn't read the thread's comments");
 			setKept(clientId, {
