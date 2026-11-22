@@ -33,6 +33,7 @@ import {
 import {
 	endMoveMode,
 	getMoving,
+	moveAnchorOf,
 	useMoveMode,
 	useMoveWrites,
 } from "./threadMove";
@@ -640,17 +641,21 @@ export function SelectionBar(props: {
 	if (!target || hidden || !ctx) return null;
 	if (moving) {
 		const span = target.span;
-		const anchor =
+		const picked =
 			span.subject === "line" &&
 			span.side !== undefined &&
-			span.line !== undefined
-				? {
+			span.line !== undefined;
+		// The full diff's lines (the since view's old ones through their
+		// base line; none for a line of neither the base nor the head).
+		const anchor =
+			picked && span.side !== undefined && span.line !== undefined
+				? moveAnchorOf({
 						path: span.path,
 						startSide: span.startSide ?? span.side,
 						startLine: span.startLine ?? span.line,
 						side: span.side,
 						line: span.line,
-					}
+					})
 				: null;
 		const ok = anchor !== null && moveWrites?.to != null;
 		return (
@@ -670,7 +675,15 @@ export function SelectionBar(props: {
 				style={(place ?? { top: -9999, left: -9999 }) satisfies CSSProperties}
 				className="fixed z-40 flex gap-0.5 rounded-lg border border-edge bg-overlay p-0.5 shadow-float"
 			>
-				<Tooltip content={ok ? "Place here" : "Pick lines to place it on"}>
+				<Tooltip
+					content={
+						ok
+							? "Place here"
+							: picked
+								? "Not a line of the base or the head"
+								: "Pick lines to place it on"
+					}
+				>
 					{(trigger) => (
 						<button
 							type="button"

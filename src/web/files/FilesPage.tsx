@@ -121,6 +121,7 @@ import {
 	MoveBar,
 	MoveWritesProvider,
 	movesOf,
+	moveTargetOf,
 	useMoveWritesHost,
 } from "./threadMove";
 import { outsideThreads, shownThread, shownThreads } from "./threadPlacement";
@@ -325,8 +326,6 @@ function useDiffThreads(
 	latest: number | null,
 	/** Threads published from then on (ms) are left out (an earlier patch set). */
 	until: number | null,
-	/** The full diff (the base on the branch): the only view a drag places in. */
-	fullDiff: boolean,
 ): {
 	threads: DiffThreads | undefined;
 	/** Every thread of the read, on this head or not (people's tints). */
@@ -464,15 +463,7 @@ function useDiffThreads(
 			readId: readId ?? null,
 			to,
 			moves,
-			// A move writes into the latest patch set or a head that is no
-			// patch set yet (earlier ones are read-only), from the full diff
-			// only: the since view's old-side numbers are the interdiff's.
-			moveTo:
-				fullDiff &&
-				answer !== null &&
-				(answer.patchset === null || answer.patchset === latest)
-					? to
-					: null,
+			moveTo: moveTargetOf(to, answer, latest),
 			viewedHead: snapshotHead ?? null,
 			openedOn: (t) => openedOn(t.createdAt, patchsets ?? []),
 		}),
@@ -490,7 +481,6 @@ function useDiffThreads(
 			to,
 			latest,
 			patchsets,
-			fullDiff,
 		],
 	);
 	// No overview or session, no threads: that's their failure too. Only
@@ -1181,7 +1171,6 @@ export function FilesPage() {
 		placingTo,
 		latest,
 		threadsCutoff,
-		comparison.base.kind === "branch",
 	);
 	// Thread moves (CAR-139): written to the target viewed, when it takes them.
 	const moveWrites = useMoveWritesHost({

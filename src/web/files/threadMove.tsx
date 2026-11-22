@@ -69,6 +69,23 @@ export function movesOf(
 	return out;
 }
 
+/**
+ * Where a move on this view writes (CAR-139): the target viewed when it
+ * takes writes, the latest patch set or a head that is no patch set yet
+ * (an earlier one is read-only), once its placements are in; else none.
+ * Only the target decides: the comparison base (the branch, or an earlier
+ * patch set in the since view) never does (principle 9), as a move's
+ * anchor is the target's full diff's in either view (moveEnd).
+ */
+export function moveTargetOf(
+	to: RereviewTo | null,
+	answer: { patchset: number | null } | null,
+	latest: number | null,
+): RereviewTo | null {
+	if (to === null || answer === null) return null;
+	return answer.patchset === null || answer.patchset === latest ? to : null;
+}
+
 // ---------------------------------------------------------------------------
 // Move mode: one thread at a time, page-wide.
 
@@ -399,6 +416,53 @@ export function useMovable(args: {
 	return moved !== undefined || args.commit !== info.viewedHead;
 }
 
+/** A diff row's numbers, as DiffBody puts them on it (`data-*-no`). */
+export interface RowNumbers {
+	oldNo?: number;
+	newNo?: number;
+	/** The since view's removed line: its line in the full diff's old side. */
+	baseNo?: number;
+}
+
+/**
+ * The line of the target's full diff a row's `side` stands for: where a
+ * move dropped or placed on it goes (CAR-139). A move's anchor is always
+ * the full diff's (RIGHT the target's line, LEFT the base's), whatever the
+ * view. A new line is the target's in any view. An old one is itself in
+ * the full diff; in the since view (`interdiff`) its number is the
+ * compared patch set's, so it stands for its base line (`baseNo`), and
+ * for none when it has none (a line the branch added before that patch
+ * set, gone since): no drop target. Never an interdiff number as a base one.
+ */
+export function moveEnd(
+	row: RowNumbers,
+	side: "LEFT" | "RIGHT",
+	interdiff: boolean,
+): { side: "LEFT" | "RIGHT"; line: number } | null {
+	const valid = (n: number | undefined): n is number =>
+		n !== undefined && Number.isInteger(n) && n > 0;
+	if (side === "RIGHT") {
+		return valid(row.newNo) ? { side, line: row.newNo } : null;
+	}
+	const line = interdiff ? row.baseNo : row.oldNo;
+	return valid(line) ? { side, line } : null;
+}
+
+/** A row element's numbers (its data attributes; absent or empty: none). */
+function numbersOf(row: HTMLElement): RowNumbers {
+	const n = (v: string | undefined) =>
+		v === undefined || v === "" ? undefined : Number(v);
+	return {
+		oldNo: n(row.dataset.oldNo),
+		newNo: n(row.dataset.newNo),
+		baseNo: n(row.dataset.baseNo),
+	};
+}
+
+/** The row shows the since view's interdiff (DiffBody's table says so). */
+const inInterdiff = (row: Element) =>
+	row.closest("table")?.hasAttribute("data-interdiff") ?? false;
+
 /** The row a point is over, in this file's diff, as a one-line anchor. */
 export function lineAt(
 	x: number,
@@ -411,18 +475,64 @@ export function lineAt(
 	if (!row) return null;
 	const file = row.closest<HTMLElement>("[data-path]");
 	if (file?.dataset.path !== path) return null;
-	const newNo = Number(row.dataset.newNo);
-	const oldNo = Number(row.dataset.oldNo);
-	const [side, line] =
-		Number.isInteger(newNo) && newNo > 0
-			? (["RIGHT", newNo] as const)
-			: Number.isInteger(oldNo) && oldNo > 0
-				? (["LEFT", oldNo] as const)
-				: [null, 0];
-	if (!side) return null;
+	const numbers = numbersOf(row);
+	// A row with a new line is that line; else its old one.
+	const end = moveEnd(
+		numbers,
+		numbers.newNo !== undefined && numbers.newNo > 0 ? "RIGHT" : "LEFT",
+		inInterdiff(row),
+	);
+	if (!end) return null;
 	return {
 		row,
-		anchor: { path, startSide: side, startLine: line, side, line },
+		anchor: {
+			path,
+			startSide: end.side,
+			startLine: end.line,
+			side: end.side,
+			line: end.line,
+		},
+	};
+}
+
+/**
+ * Move mode's picked lines (a span of the view's numbers) as the anchor a
+ * move stores (moveEnd): the full diff's as they are; the since view's
+ * old lines through their base line. Null when either end stands for no
+ * line of the full diff (the span isn't a place, Place here is off).
+ */
+export function moveAnchorOf(span: {
+	path: string;
+	startSide: "LEFT" | "RIGHT";
+	startLine: number;
+	side: "LEFT" | "RIGHT";
+	line: number;
+}): ThreadAnchorRef | null {
+	const file = document.querySelector(`[data-path="${CSS.escape(span.path)}"]`);
+	const endOf = (side: "LEFT" | "RIGHT", line: number) => {
+		const row = file?.querySelector<HTMLElement>(
+			`tr[data-testid="diff-line"][data-${side === "LEFT" ? "old" : "new"}-no="${line}"]`,
+		);
+		// Not on screen: as picked in the full diff (its numbers are the
+		// anchor's); never in the since view (they are the interdiff's).
+		if (!row) {
+			return file?.querySelector("table[data-interdiff]")
+				? null
+				: { side, line };
+		}
+		return moveEnd(numbersOf(row), side, inInterdiff(row));
+	};
+	const start = endOf(span.startSide, span.startLine);
+	const end = endOf(span.side, span.line);
+	if (!start || !end) return null;
+	return {
+		path: span.path,
+		startSide: start.side,
+		// One side: never a start after its end.
+		startLine:
+			start.side === end.side ? Math.min(start.line, end.line) : start.line,
+		side: end.side,
+		line: end.line,
 	};
 }
 

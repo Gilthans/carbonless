@@ -641,6 +641,35 @@ describe("the engine", () => {
 		}
 	});
 
+	it("a since removed line names its line in the full diff's old side (baseNo); one the patch set added names none (CAR-139)", async () => {
+		const ps1 = await snap(h.b0, h.p2);
+		const removed = async (head: string, base = h.b0) => {
+			const r = await snap(base, head);
+			const traced = await traceRereview(
+				h.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const { answer } = answerRereview(
+				traced,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const a = answer.files.find((f) => f.path === "a.txt");
+			if (!a) throw new Error("no a.txt");
+			return interdiffFileHunks(traced, r, answer, a.index)
+				.hunks.flatMap((hk) => hk.lines)
+				.filter((l) => l.kind === "del")
+				.map((l) => [l.text, l.oldNo, l.baseNo ?? null]);
+		};
+		// Line 35 is the base's, unchanged in PS1: the base's line 35.
+		expect(await removed(h.h3)).toEqual([["line 35", 35, 35]]);
+		// "thirty" is PS1's own line: no line of the base.
+		expect(await removed(h.reworked)).toEqual([["thirty", 30, null]]);
+	});
+
 	it("a deletion the author restored: gone, its restored line keyed to it", async () => {
 		const ps1 = await snap(h.b0, h.deletesLine);
 		const r = await snap(h.b0, h.restoresLine);

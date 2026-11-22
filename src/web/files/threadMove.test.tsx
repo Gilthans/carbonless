@@ -175,10 +175,7 @@ describe("the handle", () => {
 	});
 
 	it.each([
-		[
-			"moves are off here (an earlier patch set, the since view)",
-			info({ moveTo: null }),
-		],
+		["moves are off here (an earlier patch set)", info({ moveTo: null })],
 		["the placements aren't in yet", info({ placements: null, pending: true })],
 		["the thread was opened on the viewed head", info({ viewedHead: H1 })],
 	])("none when %s", async (_, value) => {

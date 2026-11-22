@@ -486,13 +486,15 @@ decides where; nothing else does):
 The reviewer puts a traced thread, a review thread or an agent thread, on
 the line it is about (`src/web/files/threadMove.tsx`). Same controls for
 both kinds; Files changed only, on the latest patch set or a head, in the
-full diff:
+full diff and the since view alike (in the since view a removed row that
+is no base line is no drop target, and Place here is off on it with the
+tooltip "Not a line of the base or the head"):
 
 - **Handle:** `GrabberIcon`, 40×40, `muted`, `ink` on hover, first in the
   card's header (on its line, `changed since`, an unplaced row, "Not in
   this comparison"). Name "Move thread"; tooltip "Drag to a line, or press
   to pick one". None on a thread opened on the viewed snapshot, a file
-  thread, a conversation, an earlier patch set, the since view, or while
+  thread, a conversation, an earlier patch set, or while
   the placements load.
 - **Drag** (pointer capture): the card dims; a slim `overlay` ghost (the
   author's avatar or the sparkle, the first words, as text) follows the

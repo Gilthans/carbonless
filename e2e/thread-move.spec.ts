@@ -126,7 +126,8 @@ async function drag(page: Page, handle: Locator, target: Locator) {
 	await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
 	await page.mouse.down();
 	await page.mouse.move(from.x + 30, from.y + 30, { steps: 4 });
-	await target.scrollIntoViewIfNeeded();
+	// Mid-screen: near the top or bottom edge, the drag scrolls the page on.
+	await target.evaluate((el) => el.scrollIntoView({ block: "center" }));
 	const to = await target.boundingBox();
 	if (!to) throw new Error("no target");
 	await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, {
@@ -379,4 +380,67 @@ test("no handle and no chip while the placements are on their way, for a moved t
 	const c = await openOn(again, page, 30);
 	await expect(c.getByTestId("move-handle")).toBeVisible();
 	await expect(c.getByTestId("moved-chip")).toBeVisible();
+});
+
+test("in the since view (PS1 → head) too: the handle on a carried thread, a drag (desktop) or move mode (phone) onto a new line; the full diff shows it there, moved, with Undo", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.setTimeout(150_000);
+	const { p, section } = await setup(page, pr, startCrb);
+	// PS1: the first mark starts it on this head.
+	await expect(bubbleOn(section, 5)).toBeVisible(GIT_WAIT);
+	const box = section
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.first();
+	await box.click();
+	await expect(box).toBeChecked();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// Push: core 7 changed, so the since view shows lines 4 to 10 (core 5,
+	// the thread's line, as context).
+	const h2 = p.moveHead({
+		message: "core 7",
+		files: {
+			[CORE]: edit(core, {
+				5: "core 5 changed",
+				7: "core 7 changed",
+				30: "core 30 changed",
+			}),
+		},
+	});
+	await viewHead(page, h2);
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible(GIT_WAIT);
+	const since = fileSection(page, CORE);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	await expect(row(since, 7)).toHaveAttribute("data-kind", "add", GIT_WAIT);
+	const c = await openOn(since, page, 5);
+	const handle = c.getByTestId("move-handle");
+	await expect(handle).toBeVisible(GIT_WAIT);
+	const log = p.ghLog();
+	if (isMobile) await placeByPick(page, c, since, 7);
+	else await drag(page, handle, row(since, 7));
+	await expect(bubbleOn(since, 7)).toBeVisible(GIT_WAIT);
+	await expect(bubbleOn(since, 5)).toHaveCount(0);
+	await expect(card(page).getByTestId("moved-chip")).toBeVisible();
+	await expect(
+		card(page).getByRole("button", { name: "Undo move" }),
+	).toBeVisible();
+	await expectNoPageOverflow(page);
+	// The full diff (base on the branch) shows it on the same line.
+	const url = new URL(page.url());
+	url.searchParams.set("from", "branch");
+	await page.goto(url.toString());
+	const full = fileSection(page, CORE);
+	await full.getByRole("button", { name: "Expand file" }).click();
+	const there = await openOn(full, page, 7);
+	await expect(there.getByTestId("moved-chip")).toBeVisible();
+	await expect(there.getByRole("button", { name: "Undo move" })).toBeVisible();
+	await expect(bubbleOn(full, 5)).toHaveCount(0);
+	expect(p.ghLog().slice(log.length)).not.toMatch(/mutation|-X POST/);
 });

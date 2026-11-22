@@ -378,6 +378,18 @@ controls are the same.
 
 ### The handle
 
+**In the since view too (owner, 2026-11-22; principle 9).** Everything
+below works in the since view (an earlier patch set as the comparison
+base) as in the full diff: only the target decides whether moves go. A
+move's anchor is always the target's full-diff lines: a new or context
+row of the interdiff is the target's line; a removed row is its line in
+the new merge base (the engine's `baseNo` on the since hunks, by position
+through the virtual rebase, the patch set's own diff and the bases'
+diff); a removed row with none (a line the branch added before the
+compared patch set, gone since) is no drop target and Place here is off
+on it. A thread on a removed base line shows on that removed row in the
+since view.
+
 - Every **traced** line thread's card (on a line, `changed since`,
   unplaced, "Not in this comparison"), review or agent, gets a Grabber
   handle in its header, 40×40, `muted`, `ink` on hover, when the viewed
