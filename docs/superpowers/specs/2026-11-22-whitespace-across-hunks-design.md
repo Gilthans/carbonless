@@ -41,6 +41,8 @@ matching over the same span, so they can't disagree.
 - No change to what "Ignore whitespace" does with whitespace-only
   clusters (CAR-156, CAR-184): it leaves them out of progress, collapsed
   to a `~` row, still markable.
+- No difference between the base view and the since view: both decide
+  whitespace-only the same way, each on its own diff.
 - No moved-code detection (CAR-31/33). A line whose whitespace twin is
   across a *change* line out of order stays a change, as `git diff -w`
   shows it.
@@ -126,12 +128,44 @@ names only a whole hunk's key), so it goes through
 `docs/gitdb-design-principles.md`. Without the carry the change is the
 cut, the docs and a release note.
 
-### The since view
+### The since view (interdiff), with the same rule
 
-*My call:* out of scope. The since view builds its own display hunks from
-the interdiff and reads `whitespaceOnly` from the snapshot's clusters, so
-its `~` rows and the cut can still disagree there. The docs say so, and a
-follow-up ticket is proposed to the owner.
+The owner, 2026-11-22: "I don't want us to skip interdiff view. Interdiff
+view and base view should have feature parity, whenever plausible. I want
+interdiff to be a first class citizen". So the since view gets the same
+rule, on its own diff.
+
+Today the since view builds display hunks from the interdiff
+(`src/server/rereview/engine.ts`, `buildDisplayHunks` over the interdiff's
+clusters), draws `~` rows with `matchHunk` over them, but takes each unit's
+`whitespaceOnly` from the viewed snapshot's cluster
+(`src/shared/pieces.ts` `sinceUnits`). Those disagree twice over: across
+hunks, as in the base view; and in what is compared, since a piece can be
+a re-indent *since the last review* inside a cluster that's a real change
+against the base (the reviewer read its content in the earlier patch set),
+or the other way round.
+
+The rule, the same as the base view's, on the diff the reader is looking
+at:
+
+- the same shared matching runs once per interdiff display hunk; it gives
+  both the since view's `~` rows and which of the interdiff's changed
+  lines are whitespace-only;
+- a since piece (the lines it shows) is whitespace-only when every one of
+  its lines is; `SinceUnit.whitespaceOnly` comes from that, not from the
+  snapshot's cluster;
+- a unit that is the rest of a cluster no piece shows (only the full diff
+  has those lines) keeps its cluster's flag, as today, because those lines
+  are read against the base;
+- with "Ignore whitespace" on, the since bar, file headers, chips and
+  move-on leave whitespace-only units out, with the same `~` count, as
+  CAR-184 already does for them.
+
+Since marks are stored by line ranges (`since-lines-state`), not by
+cluster key, so the since view's own marks don't move. The same caps apply
+(the interdiff display hunk's old × new lines; over the cap, a piece is
+whitespace-only only if its own lines pair within one git hunk, and the
+rows follow).
 
 ## Docs to update in the same change
 
@@ -140,6 +174,8 @@ follow-up ticket is proposed to the owner.
   in two hunks stays two changes", say the span is the display hunk.
 - `docs/review-data-storage.md`, "Split carries": the new cut, and the
   carry if chosen.
+- `docs/product-rules.md`, the since view's "Ignore whitespace" counts:
+  whitespace-only is judged on the interdiff.
 - `docs/faq.md`, if it explains why whitespace-only counts differ from
   GitHub.
 
@@ -163,11 +199,22 @@ follow-up ticket is proposed to the owner.
   (`test/cpu.ts`), the cap's worst case included.
 - e2e: on the gallery case, with Ignore whitespace on, the whole block
   reads quiet and the progress bar counts only the real changes.
+- Since view, unit and e2e: patch set 2 only re-indents a block patch set
+  1 changed (with an accidental byte-equal line inside); since patch set 1
+  with Ignore whitespace on, the block reads quiet, its units leave the
+  since bar, and the `~` count says how many. And the reverse: a real edit
+  since patch set 1 inside a cluster that's whitespace-only against the
+  base counts.
+- Property: in the since view too, every `~` row's line is in a
+  whitespace-only unit and every whitespace-only unit's lines are `~`
+  rows.
 
 ## Gallery
 
 An edge-case PR: a made-up component wrapped one level deeper in a new
-provider, with an accidental byte-equal line inside, before and after.
+provider, with an accidental byte-equal line inside, before and after;
+then a second push that re-indents a block the first push changed, for
+the since view.
 
 ## Left to the builder
 
