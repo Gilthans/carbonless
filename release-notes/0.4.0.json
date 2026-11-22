@@ -27,6 +27,12 @@
 			"text": "A new comment has an Ask agent button that moves your text into an agent question, and the Ask agent box has one that moves it back. Text typed in Ask agent now asks before you leave the page."
 		},
 		{
+			"id": "CAR-198",
+			"kind": "new",
+			"prs": [129],
+			"text": "An agent conversation on code can become a GitHub comment: press Comment and the conversation turns into the new thread in place, with the agent conversation attached behind its agent button."
+		},
+		{
 			"id": "CAR-83",
 			"kind": "new",
 			"prs": [132],
