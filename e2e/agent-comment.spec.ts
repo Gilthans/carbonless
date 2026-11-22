@@ -720,6 +720,20 @@ test("an earlier patch set that doesn't list the joined thread shows the convers
 	await expect(page.getByTestId("ps-node-ps2")).toBeVisible({
 		timeout: 30_000,
 	});
+	// PS2's start is in the review ref (its time is the cutoff PS1 lists
+	// threads by), and the clock is past it: the block's thread is newer.
+	const ps2Start = async () =>
+		page.evaluate(async () => {
+			const id = /\/r\/([^/]+)/.exec(location.pathname)?.[1];
+			const r = await fetch(`/api/r/${id}/session${location.search}`);
+			const s = (await r.json()) as {
+				patchsets?: { number: number; startedAt: number }[];
+			};
+			return s.patchsets?.find((p) => p.number === 2)?.startedAt ?? null;
+		});
+	await expect.poll(ps2Start, { timeout: 30_000 }).not.toBeNull();
+	const started = (await ps2Start()) as number;
+	await expect.poll(() => Date.now()).toBeGreaterThan(started + 1000);
 	// Now the block: a new thread on calc.ts's line 3, after PS2 started.
 	// calc.ts has no change in this view: the hidden lines' bubble holds it.
 	const calc = fileSection(page, CALC);
