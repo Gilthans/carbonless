@@ -113,9 +113,15 @@ loading never looking empty, checking against a real PR):
   `pnpm flake-check`) waits for one of `slots` (default 1) machine-wide locks
   (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock*`),
   printing whose runs it waits for, so runs never overload the machine
-  together. Runs go first come, first served: each has a ticket in
-  `~/.cache/carbonless-queue` (`scripts/queue-line.mjs`) from arrival to end
-  and tries a slot only while among the `slots` oldest live tickets; whoever
+  together. At most one of them is a full run: a whole suite (`pnpm test`
+  or `test:e2e` with no files or more than 10 specs, `verify:fast` running
+  every spec, `pnpm verify`; anything the queue can't tell counts as full), which also holds
+  `~/.cache/carbonless-verify.lock.full`, so a second full run waits while
+  a short one may take the free slot. Runs go first come, first served:
+  each has a ticket in `~/.cache/carbonless-queue`
+  (`scripts/queue-line.mjs`) from arrival to end, saying full or short and
+  whether it holds a slot, and tries a slot only when the line ahead of it
+  leaves one (`mayTry`); whoever
   reads a ticket whose pid died, is a zombie or was reused drops it, and a
   stopped run (Ctrl-Z) lets the ones behind it pass. A run nested in a held
   slot never queues again.
@@ -125,9 +131,12 @@ loading never looking empty, checking against a real PR):
   is read on every run and while waiting: a change applies at once, no
   restart. Interactive `pnpm test:watch` never queues. Waiting can take
   longer than a foreground command may: run tests in the background
-  (`run_in_background`); a signal ends the wait. A run in a slot gets the
-  cores but one divided by `slots` as workers (at least one). `CRB_NO_QUEUE=1` skips the queue for
-  one command. No file (CI, a machine of one's own): nothing queues.
+  (`run_in_background`); a signal ends the wait. A run in a slot picks its
+  workers when its runner starts, from the machine then: the cores but one
+  divided among the runs holding a slot at that moment, and no more than
+  the available memory holds at 1.5 GB a worker (at least one). So a full
+  run that starts alone keeps 7 of 8 cores, and a short one joining it gets
+  3 (measured: CAR-232). `CRB_NO_QUEUE=1` skips the queue for one command. No file (CI, a machine of one's own): nothing queues.
 - A tree's `dist` lock (`scripts/dist-lock.mjs`, `flock` on
   `node_modules/.crb-dist.lock`) keeps any build (`pnpm build`, so prepack,
   `test:pack`) from changing a `dist` that a Playwright run in the same tree

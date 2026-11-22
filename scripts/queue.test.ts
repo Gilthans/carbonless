@@ -16,8 +16,23 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ownerToken } from "./owner.mjs";
 import { queueSlots } from "./queue-config.mjs";
-import { queuedWorkers, requireQueue } from "./queue-guard.mjs";
-import { joinLine, line, startTime, ticketState } from "./queue-line.mjs";
+import {
+	queuedWorkers,
+	requireQueue,
+	WORKER_BYTES,
+	workersFor,
+} from "./queue-guard.mjs";
+import {
+	isFullRun,
+	joinLine,
+	line,
+	tickets as lineTickets,
+	markHeld,
+	mayTry,
+	startTime,
+	ticketKind,
+	ticketState,
+} from "./queue-line.mjs";
 
 let home: string;
 const env = { ...process.env };
@@ -74,18 +89,216 @@ describe("queue config and guard", () => {
 		expect(() => requireQueue("pnpm test")).not.toThrow();
 	});
 
-	it("a queued run gets the cores but one divided among the slots", () => {
-		expect(queuedWorkers(8)).toBeUndefined();
+	const GB = 2 ** 30;
+
+	it("a queued run whose line can't say who runs gets the cores but one divided among the slots", () => {
+		expect(queuedWorkers(8, 64 * GB)).toBeUndefined();
 		process.env.CRB_QUEUE_HELD = "/tmp/holder";
 		process.env.CRB_QUEUE_SLOTS = "1";
-		expect(queuedWorkers(8)).toBe(7);
-		expect(queuedWorkers(1)).toBe(1);
+		expect(queuedWorkers(8, 64 * GB)).toBe(7);
+		expect(queuedWorkers(1, 64 * GB)).toBe(1);
 		process.env.CRB_QUEUE_SLOTS = "3";
-		expect(queuedWorkers(8)).toBe(2);
+		expect(queuedWorkers(8, 64 * GB)).toBe(2);
 		process.env.CRB_QUEUE_SLOTS = "2";
-		expect(queuedWorkers(4)).toBe(1);
+		expect(queuedWorkers(4, 64 * GB)).toBe(1);
 		process.env.CRB_QUEUE_SLOTS = "16";
-		expect(queuedWorkers(8)).toBe(1);
+		expect(queuedWorkers(8, 64 * GB)).toBe(1);
+	});
+
+	it("a queued run's workers: the cores but one shared among the runs holding a slot now, as the memory allows", {
+		timeout: 30_000,
+	}, () => {
+		process.env.CRB_QUEUE_HELD = "/tmp/holder";
+		process.env.CRB_QUEUE_SLOTS = "2";
+		const dir = join(home, ".cache", "carbonless-queue");
+		// This run holds a slot, alone: a full run keeps the machine's cores.
+		const me = joinLine(dir);
+		markHeld(me.path);
+		expect(queuedWorkers(8, 64 * GB)).toBe(7);
+		// Another run comes in: one starting now gets half.
+		const other = spawn("sleep", ["30"]);
+		try {
+			const pid = other.pid as number;
+			const ticket = join(dir, `${"1".padStart(20, "0")}-${pid}`);
+			writeFileSync(ticket, `${pid} ${startTime(pid)} - short\n`);
+			// Still waiting: not sharing the machine yet.
+			expect(queuedWorkers(8, 64 * GB)).toBe(7);
+			markHeld(ticket);
+			expect(queuedWorkers(8, 64 * GB)).toBe(3);
+			// Memory short: fewer, never none.
+			expect(queuedWorkers(8, 2 * WORKER_BYTES)).toBe(2);
+			expect(queuedWorkers(8, 0)).toBe(1);
+		} finally {
+			other.kill("SIGKILL");
+			me.leave();
+		}
+	});
+
+	it("workers: (cores - 1) / runs sharing, at most what the memory holds, at least one", () => {
+		const w = (cores: number, sharing: number, gb: number) =>
+			workersFor({ cores, sharing, freeBytes: gb * GB });
+		expect(w(8, 1, 30)).toBe(7);
+		expect(w(8, 2, 30)).toBe(3);
+		expect(w(16, 2, 30)).toBe(7);
+		expect(w(8, 1, 6)).toBe(Math.floor((6 * GB) / WORKER_BYTES));
+		expect(w(1, 1, 30)).toBe(1);
+		expect(w(8, 0, 30)).toBe(7);
+		expect(w(8, 1, 0)).toBe(1);
+	});
+});
+
+describe("full runs", () => {
+	const node = "/usr/bin/node";
+	const e2e = [node, "/t/scripts/dist-lock.mjs", "--shared", "pnpm", "exec"];
+	it.each([
+		// pnpm test, pnpm test:changed, pnpm test <file>
+		[["vitest", "run"], true],
+		[["vitest", "run", "--changed"], false],
+		[["vitest", "run", "src/x.test.ts"], false],
+		[["vitest", "run", "queue"], false],
+		[["vitest", "run", "-t", "a title"], true],
+		[["vitest", "run", "--reporter", "dot"], true],
+		// verify:fast's unit steps
+		[
+			[
+				"pnpm",
+				"exec",
+				"vitest",
+				"run",
+				"--changed",
+				"master",
+				"--passWithNoTests",
+			],
+			false,
+		],
+		[["pnpm", "exec", "vitest", "run", "src/cli.test.ts"], false],
+		// test-outcomes' rerun
+		[[node, "node_modules/vitest/vitest.mjs", "run", "src/a.test.ts"], false],
+		// test:e2e, with and without specs (verify:fast's all specs too)
+		[[...e2e, "playwright", "test"], true],
+		[[...e2e, "playwright", "test", "--project=chromium"], true],
+		[
+			[
+				...e2e,
+				"playwright",
+				"test",
+				"--project",
+				"chromium",
+				"--repeat-each",
+				"3",
+			],
+			true,
+		],
+		[[...e2e, "playwright", "test", "e2e/files.spec.ts"], false],
+		[
+			[
+				...e2e,
+				"playwright",
+				"test",
+				...Array.from({ length: 10 }, (_, i) => `e2e/${i}.spec.ts`),
+			],
+			false,
+		],
+		[
+			[
+				...e2e,
+				"playwright",
+				"test",
+				...Array.from({ length: 11 }, (_, i) => `e2e/${i}.spec.ts`),
+			],
+			true,
+		],
+		[[...e2e, "playwright", "test", "-g", "a title"], false],
+		[[...e2e, "playwright", "test", "--grep=a title"], false],
+		[
+			[
+				node,
+				"node_modules/@playwright/test/cli.js",
+				"test",
+				"e2e/a.spec.ts:12",
+			],
+			false,
+		],
+		// flake-check names its tests
+		[
+			[node, "/t/scripts/flake-check.mjs", "e2e/a.spec.ts", "--runs", "5"],
+			false,
+		],
+		// pnpm verify, and anything unknown: full, so a mistake only waits
+		[["sh", "-c", "pnpm test && pnpm test:e2e && pnpm test:pack"], true],
+		[["sh", "-c", "vitest run a.test.ts"], true],
+		[["make", "check"], true],
+	])("%j is full: %s", (argv, full) => {
+		const [cmd, ...args] = argv as string[];
+		expect(isFullRun(cmd as string, args)).toBe(full);
+	});
+
+	const t = (name: string, full: boolean, held = false) => ({
+		name,
+		full,
+		held,
+	});
+	const go = (l: ReturnType<typeof t>[], slots: number) => [
+		...mayTry(l, slots),
+	];
+
+	it("one slot: the oldest waiter goes once nothing holds it", () => {
+		expect(go([t("a", true), t("b", false)], 1)).toEqual(["a"]);
+		expect(go([t("a", false, true), t("b", false)], 1)).toEqual([]);
+		expect(go([], 1)).toEqual([]);
+	});
+
+	it("two slots: never two full runs; a short one passes a full one that waits for the full run", () => {
+		// Two full runs arrive: the second waits even with a slot free.
+		expect(go([t("a", true), t("b", true)], 2)).toEqual(["a"]);
+		expect(go([t("a", true, true), t("b", true)], 2)).toEqual([]);
+		// ...and a short one behind it takes the free slot.
+		expect(go([t("a", true, true), t("b", true), t("c", false)], 2)).toEqual([
+			"c",
+		]);
+		expect(go([t("a", true), t("b", true), t("c", false)], 2)).toEqual([
+			"a",
+			"c",
+		]);
+		// The full run done: the full one that waited goes first.
+		expect(go([t("b", true), t("c", false, true), t("d", false)], 2)).toEqual([
+			"b",
+		]);
+		// Short runs share the slots; a full one goes beside a short one.
+		expect(go([t("a", false), t("b", false), t("c", false)], 2)).toEqual([
+			"a",
+			"b",
+		]);
+		expect(go([t("a", false, true), t("b", true)], 2)).toEqual(["b"]);
+	});
+
+	it("held runs beyond the slots (slots lowered meanwhile) let none in", () => {
+		expect(
+			go([t("a", false, true), t("b", false, true), t("c", false)], 1),
+		).toEqual([]);
+	});
+
+	it("a ticket says its kind and, once marked, that it holds a slot; an older one counts as full and waiting", () => {
+		const dir = mkdtempSync(join(tmpdir(), "crb-line-"));
+		try {
+			const me = joinLine(dir, { full: false });
+			expect(lineTickets(dir)).toEqual([
+				{ name: me.name, full: false, held: false },
+			]);
+			markHeld(me.path);
+			markHeld(me.path);
+			expect(lineTickets(dir)).toEqual([
+				{ name: me.name, full: false, held: true },
+			]);
+			expect(ticketState(readFileSync(me.path, "utf8"))).toBe("live");
+			me.leave();
+
+			const old = `${process.pid} ${startTime(process.pid)} pid:[1]`;
+			expect(ticketKind(old)).toEqual({ full: true, held: false });
+			expect(joinLine(dir).turn(2)).toEqual({ go: true, ahead: 0 });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -250,10 +463,25 @@ describe.skipIf(!hasFlock)("queue", () => {
 	 * `home`. `as`: the name its flock attempts log under, and how often it
 	 * polls. `env`: on top of the rest.
 	 */
+	/**
+	 * A `vitest` that runs $CRB_TEST_SCRIPT in sh: `vitest run only.test.ts`
+	 * is a short run to the queue, where `sh -c` is a full one.
+	 */
+	const fakeVitest = () => {
+		const bin = join(home, "vitest-bin");
+		mkdirSync(bin, { recursive: true });
+		writeFileSync(
+			join(bin, "vitest"),
+			'#!/bin/sh\nexec sh -c "$CRB_TEST_SCRIPT"\n',
+			{ mode: 0o755 },
+		);
+		return join(bin, "vitest");
+	};
 	const queue = (
 		script: string,
 		as?: { name: string; pollMs: number },
 		env: NodeJS.ProcessEnv = {},
+		short = false,
 	) => {
 		const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home };
 		if (as) {
@@ -266,7 +494,11 @@ describe.skipIf(!hasFlock)("queue", () => {
 		delete childEnv.CRB_QUEUE_SINCE;
 		delete childEnv.CRB_QUEUE_SLOTS;
 		Object.assign(childEnv, env);
-		const child = spawn(process.execPath, [QUEUE, "sh", "-c", script], {
+		if (short) childEnv.CRB_TEST_SCRIPT = script;
+		const command = short
+			? [fakeVitest(), "run", "only.test.ts"]
+			: ["sh", "-c", script];
+		const child = spawn(process.execPath, [QUEUE, ...command], {
 			env: childEnv,
 			cwd: home,
 		});
@@ -297,13 +529,18 @@ describe.skipIf(!hasFlock)("queue", () => {
 		join(home, ".cache", `carbonless-verify.lock${i ? `.${i}` : ""}`);
 	const free = (i = 0) =>
 		spawnSync("flock", ["-n", lock(i), "true"]).status === 0;
-	/** A run that holds its slot until `release` is touched. */
-	const holdUntil = (name: string, pollMs?: number) => {
+	/**
+	 * A run that holds its slot until `release` is touched; a full run
+	 * unless `short`.
+	 */
+	const holdUntil = (name: string, pollMs?: number, short = false) => {
 		const held = join(home, `${name}.held`);
 		const release = join(home, `${name}.go`);
 		const run = queue(
 			`touch ${held}; while [ ! -e ${release} ]; do sleep 0.05; done`,
 			pollMs ? { name, pollMs } : undefined,
+			{},
+			short,
 		);
 		return {
 			...run,
@@ -464,14 +701,14 @@ describe.skipIf(!hasFlock)("queue", () => {
 		timeout: 30_000,
 	}, async () => {
 		configure('{"slots": 2}');
-		const h1 = holdUntil("h1");
-		const h2 = holdUntil("h2");
+		const h1 = holdUntil("h1", undefined, true);
+		const h2 = holdUntil("h2", undefined, true);
 		await until(() => h1.held() && h2.held());
-		const w1 = holdUntil("w1", 1000);
+		const w1 = holdUntil("w1", 1000, true);
 		await until(() => w1.out().includes("queue: waiting for"));
-		const w2 = holdUntil("w2", 1000);
+		const w2 = holdUntil("w2", 1000, true);
 		await until(() => w2.out().includes("queue: waiting for"));
-		const w3 = holdUntil("w3", 20);
+		const w3 = holdUntil("w3", 20, true);
 		await until(() => w3.out().includes("queue: waiting for"));
 
 		h1.release();
@@ -487,6 +724,57 @@ describe.skipIf(!hasFlock)("queue", () => {
 		w3.release();
 		for (const r of [h1, h2, ...waiters]) expect(await exited(r.child)).toBe(0);
 		expect(tickets()).toEqual([]);
+	});
+
+	it("with 2 slots, a second full run waits while a short one behind it takes the free slot", {
+		timeout: 30_000,
+	}, async () => {
+		configure('{"slots": 2}');
+		const f1 = holdUntil("f1");
+		await until(f1.held);
+		const f2 = holdUntil("f2", 20);
+		await until(() => f2.out().includes("queue: waiting for"));
+		expect(f2.out()).toContain("full runs go one at a time");
+		const s = holdUntil("s", 20, true);
+		await until(s.held);
+		// The ticket of each run holding a slot says so; f2's doesn't.
+		const now = lineTickets(join(home, ".cache", "carbonless-queue"));
+		expect(now.map((t) => [t.full, t.held])).toEqual([
+			[true, true],
+			[true, false],
+			[false, true],
+		]);
+		expect(f2.held()).toBe(false);
+
+		f1.release();
+		await until(f2.held);
+		f2.release();
+		s.release();
+		for (const r of [f1, f2, s]) expect(await exited(r.child)).toBe(0);
+		expect(tickets()).toEqual([]);
+	});
+
+	it("a full run holds the full lock while it runs; a short one doesn't", {
+		timeout: 30_000,
+	}, async () => {
+		configure('{"slots": 2}');
+		const fullFree = () =>
+			spawnSync("flock", [
+				"-n",
+				join(home, ".cache", "carbonless-verify.lock.full"),
+				"true",
+			]).status === 0;
+		const s = holdUntil("s", undefined, true);
+		await until(s.held);
+		expect(fullFree()).toBe(true);
+		const f = holdUntil("f");
+		await until(f.held);
+		expect(fullFree()).toBe(false);
+		f.release();
+		expect(await exited(f.child)).toBe(0);
+		expect(fullFree()).toBe(true);
+		s.release();
+		expect(await exited(s.child)).toBe(0);
 	});
 
 	it("the next run goes once the holder is done, and its status comes back", {
@@ -507,11 +795,11 @@ describe.skipIf(!hasFlock)("queue", () => {
 		timeout: 30_000,
 	}, async () => {
 		configure('{"slots": 2}');
-		const a = holdUntil("a");
-		const b = holdUntil("b");
+		const a = holdUntil("a", undefined, true);
+		const b = holdUntil("b", undefined, true);
 		await until(() => a.held() && b.held());
 		expect(free(0) || free(1)).toBe(false);
-		const c = holdUntil("c");
+		const c = holdUntil("c", undefined, true);
 		await until(() => c.out().includes("queue: waiting for"));
 		expect(c.held()).toBe(false);
 

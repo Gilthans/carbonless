@@ -1,7 +1,10 @@
 // On a machine with a test queue (queue-config.mjs), stops a Vitest or
 // Playwright run started outside it. Loaded by vitest.config.ts and
 // playwright.config.ts.
-import { configPath, queueSlots } from "./queue-config.mjs";
+import { freemem } from "node:os";
+import { join } from "node:path";
+import { configPath, home, queueSlots } from "./queue-config.mjs";
+import { sharing } from "./queue-line.mjs";
 
 /**
  * Throws when this machine has a queue and this process neither runs inside
@@ -17,12 +20,33 @@ export function requireQueue(how) {
 }
 
 /**
- * Workers for a run holding a slot: the cores but one (left for the
- * machine's other work) shared among the slots (CRB_QUEUE_SLOTS, set by
- * queue.mjs). undefined outside the queue: the runner's own default.
+ * Workers for a run holding a slot, decided when its runner starts, from
+ * the machine as it is then: the cores but one (left for the machine's
+ * other work) shared among the runs holding a slot now (their tickets,
+ * queue-line.mjs; CRB_QUEUE_SLOTS, set by queue.mjs, when the line can't
+ * say), and no more than the available memory holds (workersFor).
+ * undefined outside the queue: the runner's own default.
  */
-export function queuedWorkers(cores) {
+export function queuedWorkers(cores, freeBytes = freemem()) {
 	if (!process.env.CRB_QUEUE_HELD) return undefined;
-	const slots = Number(process.env.CRB_QUEUE_SLOTS) || 1;
-	return Math.max(1, Math.floor((cores - 1) / slots));
+	const held = sharing(join(home(), ".cache", "carbonless-queue"));
+	return workersFor({
+		cores,
+		sharing: held || Number(process.env.CRB_QUEUE_SLOTS) || 1,
+		freeBytes,
+	});
+}
+
+/** Memory a test worker may take, with its browser or its share of crb. */
+export const WORKER_BYTES = 1.5 * 2 ** 30;
+
+/**
+ * Workers for one of `sharing` runs on `cores` with `freeBytes` of memory
+ * available: (cores - 1) / sharing, and at most freeBytes / WORKER_BYTES;
+ * at least one.
+ */
+export function workersFor({ cores, sharing, freeBytes }) {
+	const cpu = Math.floor((cores - 1) / Math.max(1, sharing));
+	const memory = Math.floor(freeBytes / WORKER_BYTES);
+	return Math.max(1, Math.min(cpu, memory));
 }

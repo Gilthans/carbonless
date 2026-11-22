@@ -10,7 +10,11 @@
 //
 // ~/.config/carbonless/queue.json turns the queue on and sets how many runs
 // go at once (queue-config.mjs). It is read again while waiting, so a change
-// reaches waiting runs too. No file, CRB_NO_QUEUE=1 or no `flock` on PATH:
+// reaches waiting runs too. At most one of those runs is a full run: a whole
+// suite (`pnpm test`, `test:e2e` with no specs, `verify:fast` when it runs
+// every spec, `pnpm verify`; isFullRun in queue-line.mjs). A full run also
+// holds ~/.cache/carbonless-verify.lock.full, so a second one waits while a
+// short run may take a free slot. No file, CRB_NO_QUEUE=1 or no `flock` on PATH:
 // the command runs at once. A command run inside a slot (CRB_QUEUE_HELD set)
 // doesn't queue again.
 //
@@ -22,8 +26,10 @@
 //
 // First come, first served: each run puts a ticket in
 // ~/.cache/carbonless-queue (queue-line.mjs) from its arrival to its end, and
-// tries the slots only while it is among the `slots` oldest live tickets. The
-// flock slots stay the real exclusion; the tickets only order who tries. A
+// tries the slots only when the line leaves it one (mayTry: the runs holding
+// a slot, then the older waiters, and one full run at a time). The flock
+// slots and the full lock stay the real exclusion; the tickets only order
+// who tries. A
 // run killed with SIGKILL leaves a ticket the next reader drops (its pid is
 // gone, a zombie, or now another process); a stopped run (Ctrl-Z) keeps its
 // ticket but lets the runs behind it go.
@@ -152,6 +158,13 @@ if (process.env.CRB_QUEUE_HELD) {
 			`${process.cwd()} (${[cmd, ...args].join(" ")}, since ${new Date().toLocaleTimeString()})\n`,
 		);
 	} catch {}
+	// Our ticket says we hold a slot: the runs that start now count us
+	// sharing the machine (queuedWorkers), and the line counts our slot.
+	if (process.env.CRB_QUEUE_TICKET) {
+		const { markHeld } = await import("./queue-line.mjs");
+		markHeld(process.env.CRB_QUEUE_TICKET);
+		delete process.env.CRB_QUEUE_TICKET;
+	}
 	const waited = Math.round((Date.now() - Number(since)) / 1000);
 	if (waited > 0) console.log(`queue: our turn after ${waited} s`);
 	const status = await run(cmd, args, { group: true });
@@ -172,8 +185,10 @@ if (
 mkdirSync(dir, { recursive: true });
 const start = Date.now();
 // Loaded only here: a nested or unqueued run never depends on the line.
-const { joinLine } = await import("./queue-line.mjs");
-const ticket = joinLine(join(dir, "carbonless-queue"));
+const { joinLine, isFullRun } = await import("./queue-line.mjs");
+const full = isFullRun(cmd, args);
+const ticket = joinLine(join(dir, "carbonless-queue"), { full });
+const fullLock = join(dir, "carbonless-verify.lock.full");
 // Kept while the command runs too: a run holding a slot stays ahead of the
 // ones that came after it. process.exit (signals included) runs this.
 process.on("exit", () => ticket.leave());
@@ -185,42 +200,43 @@ for (;;) {
 		ticket.leave();
 		process.exit(await unqueued());
 	}
-	// Runs that came earlier and still wait (or run) go first.
-	const ahead = ticket.place();
-	const tries = ahead < slots ? slots : 0;
+	// Runs that came earlier and still wait (or run) go first; a full run
+	// also waits for the one full run.
+	const { go, ahead } = ticket.turn(slots);
+	const tries = go ? slots : 0;
 	for (let i = 0; i < tries; i++) {
-		// -n: a taken slot ends flock at once with TAKEN; a free one becomes
-		// this script again (--no-fork), holding the slot.
-		const status = await run(
+		// -n: a taken lock ends flock at once with TAKEN; a free one becomes
+		// this script again (--no-fork), holding it. A full run takes the
+		// full lock, then the slot.
+		const take = (path) => ["-n", "-E", String(TAKEN), "--no-fork", path];
+		const [c, ...a] = [
+			...(full ? ["flock", ...take(fullLock)] : []),
 			"flock",
-			[
-				"-n",
-				"-E",
-				String(TAKEN),
-				"--no-fork",
-				lock(i),
-				process.execPath,
-				import.meta.filename,
-				cmd,
-				...args,
-			],
-			{
-				env: {
-					...process.env,
-					CRB_QUEUE_HELD: `${lock(i)}.holder`,
-					CRB_QUEUE_SINCE: String(start),
-					CRB_QUEUE_SLOTS: String(slots),
-					CRB_QUEUE_WAITER: ownerToken(process.pid),
-				},
+			...take(lock(i)),
+			process.execPath,
+			import.meta.filename,
+			cmd,
+			...args,
+		];
+		const status = await run(c, a, {
+			env: {
+				...process.env,
+				CRB_QUEUE_HELD: `${lock(i)}.holder`,
+				CRB_QUEUE_TICKET: ticket.path,
+				CRB_QUEUE_SINCE: String(start),
+				CRB_QUEUE_SLOTS: String(slots),
+				CRB_QUEUE_WAITER: ownerToken(process.pid),
 			},
-		);
+		});
 		if (status !== TAKEN) process.exit(status);
 	}
 	if (!told) {
 		told = true;
 		const n = Number.isFinite(ahead) ? ` (${ahead} ahead)` : "";
+		// With room for a short run, a full one waits for the full run.
+		const one = full && slots > 1 ? "; full runs go one at a time" : "";
 		console.log(
-			`queue: waiting for ${holders(slots).join("; ")} to finish${n}`,
+			`queue: waiting for ${holders(slots).join("; ")} to finish${n}${one}`,
 		);
 	}
 	await sleep(POLL_MS);
