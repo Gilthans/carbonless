@@ -3,13 +3,18 @@ import {
 	ClockIcon,
 	CommentIcon,
 	LinkExternalIcon,
+	SparkleFillIcon,
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import { type KeyboardEvent, useLayoutEffect, useRef } from "react";
 import { MAX_REPLY } from "../../shared/types";
-import { sessionQuery } from "../api";
+import { agentAsking } from "../agent/agentWrites";
+import { askAgentAvailable, openAgentComposer } from "../agent/askAgentAction";
+import { ASK_HANDLE, HANDLE, HANDLE_OFF } from "../agent/handle";
+import { overviewQuery, sessionQuery } from "../api";
 import { type CodeSpan, describeSpan } from "../files/selectionActions";
 import { LabeledIcon } from "../overview/parts";
+import { Tooltip } from "../Tooltip";
 import { safeHref } from "../ui";
 import { COMMENT_SURFACE } from "./Conversation";
 import { useClearOfNotices } from "./clearOfNotices";
@@ -65,6 +70,10 @@ export function quoteOf(span: CodeSpan, texts: readonly string[]): string {
 	return cut.length > 1 ? `${first} …` : first;
 }
 
+const ASK_INSTEAD = "Ask agent instead";
+/** Why neither switch is on before the overview is known. */
+export const LOADING = "Loading the PR";
+
 /** The longest first comment: GitHub's limit less room for carbonless's hidden marker. */
 export const MAX_NEW_THREAD = MAX_REPLY - 200;
 
@@ -91,6 +100,8 @@ export function NewThread(props: {
 	onPosted?: () => void;
 	/** A line comment's first and last line as shown (kept with the draft). */
 	lineTexts?: LineTexts;
+	/** The diff shown isn't yet the viewed head's (askAgentAvailable). */
+	headUnsure?: boolean;
 }) {
 	const { item } = props;
 	const { clientId, span } = item;
@@ -133,6 +144,19 @@ export function NewThread(props: {
 		if (typed && !window.confirm("Discard your comment?")) return;
 		writer.discard(newThreadKey(clientId));
 		closeComposer(clientId);
+	};
+	// The agent button: the comment becomes a question on the same span,
+	// its text moved (so no "Discard?"), nothing sent anywhere.
+	const writes = useQuery({ ...overviewQuery, enabled: false }).data?.writes;
+	const askable = writes
+		? askAgentAvailable(span, { writes, headUnsure: props.headUnsure })
+		: LOADING;
+	const toAgent = () => {
+		if (askable !== true) return;
+		const text = writer.drafts.newThread(clientId)?.text ?? item.text;
+		writer.discard(newThreadKey(clientId));
+		closeComposer(clientId);
+		openAgentComposer(span, undefined, text, (c) => !agentAsking(c.clientId));
 	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -252,6 +276,25 @@ export function NewThread(props: {
 								<CommentIcon size={16} aria-hidden />
 								Comment
 							</button>
+							{/* Where a thread's agent handle is: the row's right end. */}
+							<Tooltip
+								content={askable === true ? ASK_INSTEAD : askable}
+								describe={askable !== true}
+							>
+								{(trigger) => (
+									<button
+										{...trigger}
+										type="button"
+										data-testid="new-thread-agent"
+										aria-label={ASK_INSTEAD}
+										aria-disabled={askable !== true || undefined}
+										onClick={toAgent}
+										className={`${HANDLE} ${ASK_HANDLE} ${HANDLE_OFF} focus-visible:outline-2 focus-visible:outline-accent`}
+									>
+										<SparkleFillIcon size={14} aria-hidden />
+									</button>
+								)}
+							</Tooltip>
 						</div>
 					</>
 				)}

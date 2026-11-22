@@ -20,7 +20,11 @@ import {
 	postAgentThread,
 	withThread,
 } from "./api";
-import { anchorOf, closeAgentComposer } from "./askAgentAction";
+import {
+	anchorOf,
+	closeAgentComposer,
+	useAgentComposers,
+} from "./askAgentAction";
 
 export interface AgentWrite {
 	/** A new thread's span, or the thread a reply goes to. */
@@ -81,6 +85,65 @@ export function useAgentWrites(): AgentWriteState {
 }
 
 export const getAgentWrites = getState;
+
+/** Whether the question of composer `clientId` is on its way (or retrying). */
+export function agentAsking(clientId: string): boolean {
+	const write = state.pending.get(clientId);
+	return write !== undefined && !write.error;
+}
+
+/**
+ * Whether an Ask agent composer holds a question not yet asked, or a
+ * conversation's reply box a follow-up not yet sent: nothing keeps them
+ * past the page (they aren't drafts), so leaving would lose them
+ * (useUnsaved). One on its way, or one cleared, doesn't count; one the
+ * server refused does (its text is still only in the box).
+ */
+export function useUnaskedQuestion(): boolean {
+	const composers = useAgentComposers();
+	const { pending } = useAgentWrites();
+	const replies = useSyncExternalStore(
+		subscribeReplies,
+		getRepliesTyped,
+		getRepliesTyped,
+	);
+	return (
+		replies > 0 ||
+		composers.some((c) => {
+			const write = pending.get(c.clientId);
+			return c.text.trim() !== "" && (write === undefined || !!write.error);
+		})
+	);
+}
+
+// --- Follow-ups typed in a conversation's reply box --------------------------
+// Kept in the box only (no draft): the boxes holding text, so leaving asks.
+
+let typedReplies: ReadonlySet<string> = new Set();
+const replyListeners = new Set<() => void>();
+const getRepliesTyped = () => typedReplies.size;
+const subscribeReplies = (l: () => void) => {
+	replyListeners.add(l);
+	return () => {
+		replyListeners.delete(l);
+	};
+};
+
+/** Reply box `box` holds a follow-up not yet sent (`typed`), or not. */
+export function setReplyTyped(box: string, typed: boolean): void {
+	if (typedReplies.has(box) === typed) return;
+	const next = new Set(typedReplies);
+	if (typed) next.add(box);
+	else next.delete(box);
+	typedReplies = next;
+	for (const l of replyListeners) l();
+}
+
+/** Forgets every typed reply (tests). */
+export function resetRepliesTyped(): void {
+	typedReplies = new Set();
+	for (const l of replyListeners) l();
+}
 
 function send(client: QueryClient, clientId: string): void {
 	const item = state.pending.get(clientId);

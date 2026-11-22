@@ -58,7 +58,11 @@ import type {
 	SinceMark,
 } from "../../shared/types";
 import { AgentBubble } from "../agent/AgentBubble";
-import { AgentComposer } from "../agent/AgentComposer";
+import {
+	type AgentCommentContext,
+	AgentComposer,
+	headFacts,
+} from "../agent/AgentComposer";
 import { takeJustAsked } from "../agent/agentWrites";
 import { agentThreadsQuery } from "../agent/api";
 import {
@@ -375,6 +379,10 @@ interface AgentRows {
 	quote: (span: CodeSpan) => string;
 	/** Where a span is, by this view's row numbers (describeSpan). */
 	where: (span: CodeSpan) => string;
+	/** What an Ask agent composer's Comment button needs. */
+	comment: (span: CodeSpan) => AgentCommentContext;
+	/** Its first and last line's text (kept with a comment it turns into). */
+	texts: (span: CodeSpan) => LineTexts | undefined;
 }
 
 /** A cell's agent threads: those ending on its keys, the key, whether open. */
@@ -750,6 +758,8 @@ interface RowComposers {
 	/** Its first and last line's text as shown (kept with its draft). */
 	texts: (item: NewThreadItem) => LineTexts | undefined;
 	onPosted: (item: NewThreadItem) => void;
+	/** The diff shown isn't yet the viewed head's (no Ask agent on a line). */
+	headUnsure: boolean;
 }
 
 /**
@@ -1285,6 +1295,8 @@ function RowTail(props: {
 									span={item.span}
 									quote={agent.quote(item.span)}
 									where={agent.where(item.span)}
+									comment={agent.comment(item.span)}
+									lineTexts={agent.texts(item.span)}
 								/>
 							))}
 						</TailRow>
@@ -1310,6 +1322,7 @@ function NewThreadRow(props: {
 					where={props.composers.where(item)}
 					lineTexts={props.composers.texts(item)}
 					onPosted={() => props.composers.onPosted(item)}
+					headUnsure={props.composers.headUnsure}
 				/>
 			))}
 		</TailRow>
@@ -2616,13 +2629,19 @@ export function DiffBody(props: {
 	};
 	// Each line's text by both keys, to quote a span above its composer.
 	const textAt = new Map<LineKey, string>();
-	for (const l of [
-		...(hunks.data?.hunks.flatMap((h) => h.lines) ?? []),
-		...loaded.values(),
-	]) {
-		for (const side of ["LEFT", "RIGHT"] as const) {
-			const k = lineKey(side, l);
-			if (k) textAt.set(k, l.text);
+	// GitHub's diff's own lines (a hunk's), where it takes a comment.
+	const hunkKeys = new Set<string>();
+	for (const [lines, inHunk] of [
+		[hunks.data?.hunks.flatMap((h) => h.lines) ?? [], true],
+		[[...loaded.values()], false],
+	] as const) {
+		for (const l of lines) {
+			for (const side of ["LEFT", "RIGHT"] as const) {
+				const k = lineKey(side, l);
+				if (!k) continue;
+				textAt.set(k, l.text);
+				if (inHunk) hunkKeys.add(k);
+			}
 		}
 	}
 	/** A span's quote, from the texts of the rows it is on here. */
@@ -2664,6 +2683,9 @@ export function DiffBody(props: {
 		});
 		return describeSpan(rows ? { ...span, ...rows } : span);
 	};
+	/** A span's first and last line's text, on the rows it is on here (kept with a draft). */
+	const spanLineTexts = (span: CodeSpan): LineTexts | undefined =>
+		textsOf(span as SpanRange) ?? undefined;
 	const composers: RowComposers = {
 		where: (item) => whereSpan(item.span),
 		at: (keys) =>
@@ -2678,6 +2700,7 @@ export function DiffBody(props: {
 			const key = endKey(item.span);
 			if (key) setOpenThreads((open) => new Set(open).add(key));
 		},
+		headUnsure: props.headSure === false,
 	};
 
 	const picker = usePicker(
@@ -2760,6 +2783,31 @@ export function DiffBody(props: {
 			else next.add(key);
 			return next;
 		});
+	// GitHub's diff takes a comment on the rows a span is on here (in the
+	// since view, a removed line by its own row: CAR-217).
+	const commentOn = (span: CodeSpan): AgentCommentContext => {
+		const rows =
+			span.subject === "line" && span.side && span.line !== undefined
+				? onRows({
+						startSide: span.startSide ?? span.side,
+						startLine: span.startLine ?? span.line,
+						side: span.side,
+						line: span.line,
+					})
+				: null;
+		return {
+			// Its comment would open on that head: an orphan draft at once.
+			...headFacts(span, snapshotHead ?? sessionHead),
+			file: { binary: file.binary, submodule: file.submodule },
+			inDiff:
+				hunks.data && rows
+					? hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
+						hunkKeys.has(`${rows.side}:${rows.line}`)
+					: undefined,
+			headUnsure: props.headSure === false,
+			readOnly: props.readOnly === true,
+		};
+	};
 	const agentRows: AgentRows | undefined = agentPlacement
 		? {
 				placement: agentPlacement,
@@ -2773,6 +2821,8 @@ export function DiffBody(props: {
 					}),
 				quote: quoteSpan,
 				where: whereSpan,
+				comment: commentOn,
+				texts: spanLineTexts,
 			}
 		: undefined;
 	// Asked on a row that isn't shown (a gap), or on an earlier head: above
@@ -3279,6 +3329,8 @@ export function DiffBody(props: {
 							clientId={c.clientId}
 							span={c.span}
 							quote={quoteSpan(c.span)}
+							comment={commentOn(c.span)}
+							lineTexts={spanLineTexts(c.span)}
 						/>
 					))}
 				</div>
@@ -3294,6 +3346,7 @@ export function DiffBody(props: {
 							item={item}
 							quote={composers.quote(item)}
 							lineTexts={composers.texts(item)}
+							headUnsure={composers.headUnsure}
 						/>
 					))}
 					{orphanItems.length > 0 && (

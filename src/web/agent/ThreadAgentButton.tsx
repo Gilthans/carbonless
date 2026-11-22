@@ -5,6 +5,7 @@ import type { ReviewThread } from "../../shared/types";
 import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { useAgentOn } from "./api";
+import { ASK_HANDLE, HANDLE } from "./handle";
 import {
 	agentButtonName,
 	agentFor,
@@ -12,15 +13,6 @@ import {
 	useAgentThreadsLoading,
 	useThreadAgentContext,
 } from "./threadAgent";
-
-/**
- * The handle: a drawer pull at the right end of the thread's bottom row
- * (beside Resolve), where the conversation slides in from; its right
- * side a thick edge, the side the drawer comes out of. As tall as
- * Resolve: 40px, and at least 40px wide.
- */
-const HANDLE =
-	"flex h-10 min-w-10 shrink-0 items-center justify-center gap-1 rounded-l-lg rounded-r-sm border border-r-4 px-2";
 
 /**
  * A press leaves the focus where it is: beside the composer, taking it
@@ -123,7 +115,7 @@ export function ThreadAgentButton(props: {
 								: "border-agent-edge bg-agent hover:border-agent-ink"
 							: open
 								? "border-dashed border-agent-ink bg-agent"
-								: "border-dashed border-agent-edge bg-agent/60 hover:border-agent-ink hover:bg-agent"
+								: ASK_HANDLE
 					}`}
 				>
 					<SparkleFillIcon size={14} aria-hidden />
