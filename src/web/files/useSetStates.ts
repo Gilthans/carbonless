@@ -90,7 +90,8 @@ export function stateSyncFor(queryClient: QueryClient): StateSync {
 				void queryClient.invalidateQueries({ queryKey: ["rereview"] });
 			},
 			staled: () => reloadStale(queryClient),
-			// A batch may have been partly written: reread what the server has.
+			// A batch's marks land whole or not at all, but a patch set it
+			// started may have been written: reread what the server has.
 			failed: () => {
 				void queryClient.invalidateQueries({ queryKey: REVIEW_KEY });
 			},

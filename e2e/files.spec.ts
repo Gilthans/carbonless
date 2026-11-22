@@ -113,6 +113,8 @@ test("checking a cluster updates file and overall progress", async ({
 	await expect(bar).toHaveAttribute("aria-valuenow", "0");
 	await boxes.last().click();
 	await expect(bar).toHaveAttribute("aria-valuenow", "25");
+	// Shown at once, stored after: reloading sooner leaves it unsaved.
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	await page.reload();
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "25");
 	// The unit is remembered.
@@ -1124,6 +1126,8 @@ test("a finished file resets after asking, each button its own kind", async ({
 	await expect(
 		fileActionButton(section, "Mark remaining reviewed"),
 	).toBeEnabled();
+	// Shown at once, stored after: reloading sooner leaves it unsaved.
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	await page.reload();
 	await expect(progress(page)).toContainText("0 / 4 clusters reviewed");
 

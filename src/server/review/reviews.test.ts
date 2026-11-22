@@ -33,12 +33,14 @@ import {
 	findReviewById,
 	InvalidChangeError,
 	listReviews,
+	MAX_SUBJECT,
 	type PatchsetStart,
 	prKey,
 	ReadOnlyPatchsetError,
 	type ReviewPr,
 	ReviewService,
 	StaleSnapshotError,
+	subjectOf,
 	UnknownClusterError,
 } from "./reviews.js";
 
@@ -267,17 +269,67 @@ describe("recordStates", () => {
 		expect(progress.states.get(k1)).toEqual({ state: "reviewed" });
 	});
 
-	it("writes one commit per event with a readable summary", async () => {
-		const file = snap.files.find((f) => f.clusters.some((c) => c.key === k1));
+	it("writes a call's changes as one commit with a readable summary", async () => {
+		const pathOf = (key: string) =>
+			snap.files.find((f) => f.clusters.some((c) => c.key === key))?.path;
 		await svc.recordStates(id, "dan", snap, [
 			{ key: k1, state: "reviewed" },
 			{ key: k2, state: "crossed-off", reason: "generated" },
 		]);
-		const log = await runGit(repo, ["log", "--format=%s", progressRef()]);
-		expect(log.trim().split("\n")).toHaveLength(3);
-		expect(log).toContain("crb: started PS1");
-		expect(log).toContain(`crb: reviewed 1 cluster in ${file?.path}`);
-		expect(log).toContain("crb: crossed off 1 cluster in");
+		const log = async () =>
+			(await runGit(repo, ["log", "--format=%s", progressRef()]))
+				.trim()
+				.split("\n");
+		// The start, then both marks together.
+		expect(await log()).toHaveLength(2);
+		const where = pathOf(k1) === pathOf(k2) ? pathOf(k1) : "2 files";
+		expect((await log())[0]).toBe(
+			`crb: reviewed 1 cluster, crossed off 1 cluster in ${where}`,
+		);
+		expect((await log())[1]).toContain("crb: started PS1");
+	});
+
+	it("a write's subject counts alike parts, partial marks without line counts, capped", () => {
+		const reviewed = { verb: "reviewed", clusters: true };
+		const partial = (n: number) => ({
+			verb: "marked lines of",
+			clusters: true,
+			alone: `marked ${n} of 9 lines of 1 cluster`,
+		});
+		expect(subjectOf([partial(3)], ["a.ts"])).toBe(
+			"crb: marked 3 of 9 lines of 1 cluster in a.ts",
+		);
+		expect(
+			subjectOf([reviewed, partial(3), reviewed, partial(4)], ["a.ts", "b.ts"]),
+		).toBe("crb: reviewed 2 clusters, marked lines of 2 clusters in 2 files");
+		const long = subjectOf([reviewed], [`${"d/".repeat(200)}x.ts`]);
+		expect(long).toHaveLength(MAX_SUBJECT);
+		expect(long.endsWith("…")).toBe(true);
+		expect(long.startsWith("crb: reviewed 1 cluster in d/d/")).toBe(true);
+	});
+
+	it("a reset of several clusters lands whole: no reader sees it half done", async () => {
+		await svc.recordStates(id, "dan", snap, [
+			{ key: k1, state: "reviewed" },
+			{ key: k2, state: "reviewed" },
+		]);
+		const before = (await runGit(repo, ["rev-parse", progressRef()])).trim();
+		await svc.recordStates(id, "dan", snap, [
+			{ key: k1, state: "unreviewed" },
+			{ key: k2, state: "unreviewed" },
+		]);
+		// One commit on top: the ref never pointed at k1 reset and k2 still
+		// reviewed (CAR-215: a reload read between two commits saw that).
+		const after = (await runGit(repo, ["rev-parse", progressRef()])).trim();
+		expect((await runGit(repo, ["rev-parse", `${after}^`])).trim()).toBe(
+			before,
+		);
+		const states = foldProgress(await store.readEvents(progressRef())).states;
+		expect(states.get(k1)?.state).toBe("unreviewed");
+		expect(states.get(k2)?.state).toBe("unreviewed");
+		expect(
+			(await runGit(repo, ["log", "-1", "--format=%s", progressRef()])).trim(),
+		).toMatch(/^crb: reset 2 clusters in /);
 	});
 
 	it("returns the updated progress and appends to an existing patch set", async () => {
