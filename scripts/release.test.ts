@@ -1207,6 +1207,9 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 	});
 
 	it("shows the package's release notes before asking (CAR-242), terminal-safe", async () => {
+		// Built from code points: the source holds no raw control or bidi characters.
+		const ESC = String.fromCharCode(0x1b);
+		const RLO = String.fromCharCode(0x202e);
 		const notesFile = {
 			version: "0.1.0",
 			date: null,
@@ -1241,14 +1244,16 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 		const bad = notesLines(
 			{
 				...notesFile,
-				notes: [{ id: "CAR-1", kind: "new", prs: [1], text: "Red \u001b[31m‮" }],
+				notes: [
+					{ id: "CAR-1", kind: "new", prs: [1], text: `Red ${ESC}[31m${RLO}` },
+				],
 			},
 			"0.1.0",
 		);
 		expect(bad).toHaveLength(1);
 		expect(bad[0]).toMatch(/^ {2}notes: unreadable \(/);
 		expect(
-			[...(bad[0] ?? "")].some((c) => c.charCodeAt(0) < 32 || c === "‮"),
+			[...(bad[0] ?? "")].some((c) => c.charCodeAt(0) < 32 || c === RLO),
 		).toBe(false);
 		expect(notesLines(notesFile, "0.2.0")).toEqual([
 			"  notes: unreadable (for 0.1.0)",
