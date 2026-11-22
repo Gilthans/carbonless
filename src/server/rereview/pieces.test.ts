@@ -4,9 +4,9 @@ import {
 	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 } from "../../../test/git-fixture";
-import type { SincePiece } from "../../shared/pieces";
+import { lineRuns, type SincePiece } from "../../shared/pieces";
 import type { Snapshot } from "../../shared/types";
-import { buildSnapshot } from "../diff/snapshot";
+import { buildSnapshot, MARKDOWN_CUT_MAX_BYTES } from "../diff/snapshot";
 import type { StateEntry } from "../review/fold";
 import {
 	answerRereview,
@@ -492,5 +492,165 @@ describe("a Markdown file's since view: pieces cut at its blocks (CAR-167)", () 
 		expect(entry?.markdownBlocks).toBeUndefined();
 		expect(hunks.markdownBlocks).toBeUndefined();
 		expect(shown).toEqual([["-- one", "-- two", "+- one!", "+- two!"]]);
+	});
+});
+
+describe("a Markdown since view whose patch sets the full diff cut differently (CAR-167)", () => {
+	// A list of three items; each patch set edits items one and two.
+	const list = (mark: string) => [
+		"# Title",
+		"",
+		`- one${mark}`,
+		`- two${mark}`,
+		"- three",
+		"",
+	];
+	// Enough unchanged text that git pairs a rename.
+	const filler = Array.from(
+		{ length: 30 },
+		(_, i) => `Line ${i} of a paragraph long enough to keep the rename.`,
+	);
+	// Over the cap with few lines: one long line per paragraph.
+	const para = `${"x".repeat(999)}\n\n`;
+	const pad = para.repeat(Math.ceil(MARKDOWN_CUT_MAX_BYTES / para.length));
+	const doc = (mark: string, tail: string) =>
+		`${text([...list(mark), ...filler])}\n${tail}`;
+	let r: GitFixture;
+	let a: Snapshot;
+	let b: Snapshot;
+	beforeAll(async () => {
+		r = createGitFixture([
+			{
+				message: "base",
+				files: {
+					"notes.txt": doc("", ""),
+					"half.md": doc("", ""),
+					"big.md": doc("", pad),
+				},
+			},
+			{
+				message: "ps1",
+				files: {
+					// Not Markdown on PS1: its full diff isn't cut.
+					"notes.txt": doc("!", ""),
+					// Over the cap on PS1 only.
+					"half.md": doc("!", pad),
+					// Over the cap on both.
+					"big.md": doc("!", pad),
+				},
+			},
+			{
+				message: "ps2",
+				rename: { "notes.txt": "notes.md" },
+				files: {
+					"notes.md": doc("?", ""),
+					"half.md": doc("?", ""),
+					"big.md": doc("?", pad),
+				},
+			},
+		]);
+		const [b0, h1, h2] = r.shas as [string, string, string];
+		a = await buildSnapshot(r.path, b0, h1);
+		b = await buildSnapshot(r.path, b0, h2);
+	});
+	afterAll(() => r.cleanup());
+
+	async function sinceOf(path: string) {
+		const since: SincePatchset = {
+			number: 1,
+			revision: a.revision,
+			mergeBase: a.base,
+			head: a.head,
+			startedAt: 0,
+			since: null,
+			shape: null,
+			baseBranch: "main",
+			interdiff: null,
+			snapshot: a,
+			states: new Map(),
+		};
+		const target = { ...b, baseBranch: "main" };
+		const traced = await traceRereview(r.path, since, [], target);
+		const { answer } = answerRereview(traced, since, [], target);
+		const index = b.files.findIndex((f) => f.path === path);
+		expect(index).toBeGreaterThanOrEqual(0);
+		const hunks = interdiffFileHunks(traced, b, answer, index);
+		return { entry: answer.files[index], hunks };
+	}
+
+	/** Every changed line, on both sides, is in exactly one piece; returns how many. */
+	const coveredOnce = (hunks: Awaited<ReturnType<typeof sinceOf>>["hunks"]) => {
+		const pieces = hunks.pieces ?? [];
+		const inRanges = (ranges: [number, number][], n: number) =>
+			ranges.some(([f, t]) => f <= n && n < t);
+		let changed = 0;
+		for (const hunk of hunks.hunks) {
+			for (const l of hunk.lines) {
+				if (l.kind === "context") continue;
+				changed++;
+				const holders = pieces.filter((p) =>
+					l.kind === "del"
+						? inRanges(p.old, l.oldNo as number)
+						: inRanges(p.new, l.newNo as number),
+				);
+				expect(holders, `${l.kind} ${l.text}`).toHaveLength(1);
+			}
+		}
+		const size = (ranges: [number, number][]) =>
+			ranges.reduce((n, [f, t]) => n + t - f, 0);
+		expect(pieces.reduce((n, p) => n + size(p.old) + size(p.new), 0)).toBe(
+			changed,
+		);
+		return changed;
+	};
+	const runsOf = (hunks: Awaited<ReturnType<typeof sinceOf>>["hunks"]) =>
+		hunks.hunks.flatMap((h) =>
+			lineRuns(h.lines)
+				.filter((run) => run.change)
+				.map((run) =>
+					run.lines.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`),
+				),
+		);
+
+	it("renamed from .txt since the compared patch set: cut, every changed line in exactly one piece", async () => {
+		const { entry, hunks } = await sinceOf("notes.md");
+		expect(entry?.markdownBlocks).toBe(true);
+		expect(hunks.markdownBlocks).toBe(true);
+		expect(coveredOnce(hunks)).toBe(4);
+		// No piece spans the two items.
+		for (const run of runsOf(hunks)) {
+			expect(
+				run.some((l) => l.includes("one")) &&
+					run.some((l) => l.includes("two")),
+			).toBe(false);
+		}
+	});
+
+	it("over the cap on the compared patch set only: not cut, no flag, every changed line in exactly one piece", async () => {
+		const { entry, hunks } = await sinceOf("half.md");
+		expect(entry?.markdownBlocks).toBeUndefined();
+		expect(hunks.markdownBlocks).toBeUndefined();
+		expect(coveredOnce(hunks)).toBeGreaterThan(4);
+		expect(
+			hunks.hunks.every((h) =>
+				h.lines.every((l) => l.blockPiece === undefined),
+			),
+		).toBe(true);
+	});
+
+	it("over the cap on both: runs as before, no flag on the file or its hunks", async () => {
+		const { entry, hunks } = await sinceOf("big.md");
+		expect(entry?.markdownBlocks).toBeUndefined();
+		expect(hunks.markdownBlocks).toBeUndefined();
+		expect(coveredOnce(hunks)).toBe(4);
+		expect(
+			hunks.hunks.every((h) =>
+				h.lines.every((l) => l.blockPiece === undefined),
+			),
+		).toBe(true);
+		expect(runsOf(hunks)).toEqual([
+			["-- one!", "-- two!", "+- one?", "+- two?"],
+		]);
+		expect(hunks.pieces).toHaveLength(1);
 	});
 });

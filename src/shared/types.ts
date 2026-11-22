@@ -192,7 +192,11 @@ export interface FileHunks {
 	newLineCount: number;
 	/** The since view's only: its pieces, each markable (pieces.ts). */
 	pieces?: SincePiece[];
-	/** The since view's only: its pieces are cut at its Markdown blocks (CAR-167). */
+	/**
+	 * The since view's only: the file qualifies for the Markdown block cut
+	 * (CAR-167: a Markdown path, both sides text under the cap; so eligible
+	 * for the Rendered view), whether or not any run was actually cut.
+	 */
 	markdownBlocks?: true;
 	/**
 	 * The since view's only: the interdiff doesn't change the file's
@@ -1154,9 +1158,10 @@ export interface RereviewAnswer {
 		 */
 		pieces?: SincePiece[];
 		/**
-		 * A Markdown file whose since-view pieces are cut at its blocks
-		 * (CAR-167): both sides text under the cap, as the full diff's
-		 * FileSummary.markdownBlocks.
+		 * The file qualifies for the since view's Markdown block cut
+		 * (CAR-167: a Markdown path, both sides text under the cap, as the
+		 * full diff's FileSummary.markdownBlocks; so eligible for the
+		 * Rendered view), whether or not any of its runs was actually cut.
 		 */
 		markdownBlocks?: true;
 	}[];
