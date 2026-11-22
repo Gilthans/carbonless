@@ -15,6 +15,7 @@ import {
 	startedBy,
 } from "../../shared/agent.js";
 import { foldMoves } from "../../shared/rereview/moves.js";
+import { TRACER_VERSION } from "../../shared/tracer/trace.js";
 import { newEvent } from "../review/events.js";
 import { RefStore } from "../review/refStore.js";
 import {
@@ -1118,7 +1119,7 @@ describe("thread moves in the agent threads ref (CAR-139)", () => {
 			thread: { source: "agent", id: t.id },
 			on,
 			anchor: to(14),
-			engine: 1,
+			engine: TRACER_VERSION,
 		});
 		expect(undos).toEqual([{ id: u.id, ts: u.ts, thread: gh, move: g.id }]);
 		expect(git("rev-parse", ref)).toBe(tip);
