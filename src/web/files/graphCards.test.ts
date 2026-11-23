@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Shape } from "../../shared/types";
-import { commitsLabel, connectorLine, connectorTone } from "./graphCards";
+import {
+	commitsLabel,
+	connectorLine,
+	connectorTone,
+	toReadCounts,
+} from "./graphCards";
 
 const shape = (over: Partial<Shape> = {}): Shape => ({
 	code: "S1",
@@ -108,5 +113,40 @@ describe("commitsLabel", () => {
 		expect(commitsLabel(3, false)).toBe("3 commits");
 		expect(commitsLabel(1, false)).toBe("1 commit");
 		expect(commitsLabel(3, true)).toBe("3");
+	});
+});
+
+describe("toReadCounts (CAR-247)", () => {
+	const toReadWs = {
+		files: 2,
+		clusters: 3,
+		withoutWhitespaceOnly: { files: 1, clusters: 1 },
+	};
+	it("counts what the engine found with Ignore whitespace off", () => {
+		expect(toReadCounts(toReadWs, false)).toEqual({ files: 2, clusters: 3 });
+	});
+	it("leaves whitespace-only clusters, and a file of nothing else, out when on", () => {
+		expect(toReadCounts(toReadWs, true)).toEqual({ files: 1, clusters: 1 });
+		expect(connectorLine(shape(), toReadCounts(toReadWs, true))).toBe(
+			"3 new commits · 1 file, 1 cluster to read",
+		);
+	});
+	it("reads nothing new when every cluster is whitespace-only", () => {
+		const only = {
+			files: 1,
+			clusters: 2,
+			withoutWhitespaceOnly: { files: 0, clusters: 0 },
+		};
+		expect(connectorLine(shape(), toReadCounts(only, true))).toBe(
+			connectorLine(shape(), toReadCounts({ files: 0, clusters: 0 }, true)),
+		);
+		expect(connectorTone(shape(), toReadCounts(only, true))).toBe("ok");
+		expect(connectorTone(shape(), toReadCounts(only, false))).toBe("warn");
+	});
+	it("is the engine's count when it has no whitespace-only ones", () => {
+		expect(toReadCounts({ files: 2, clusters: 3 }, true)).toEqual({
+			files: 2,
+			clusters: 3,
+		});
 	});
 });

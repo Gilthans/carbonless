@@ -505,6 +505,50 @@ test("the full diff with a comparison open: to read leaves out whitespace-only c
 	await expect(toRead).toHaveText(/3 to read/);
 });
 
+test("a graph card's to-read count follows the switch: a push that only re-indents reads nothing new with it on, and counts the cluster with it off (CAR-247)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	test.slow();
+	const ps1 = lines.map((l, i) => (i === 1 ? `${l} changed` : l));
+	const p = await pr({
+		base: { [PATH]: text(lines) },
+		files: [{ message: "Line 2", files: { [PATH]: text(ps1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// PS2 only re-indents lines 6-7.
+	p.moveHead({
+		message: "Re-indent",
+		files: {
+			[PATH]: text(ps1.map((l, i) => (i === 5 || i === 6 ? `    ${l}` : l))),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	const card = page.locator('[role="tooltip"]:not([hidden])');
+	const conn = page.getByTestId("ps-conn-head");
+	const says = async (text: string) => {
+		await conn.hover();
+		await expect(card).toContainText(text, GIT_WAIT);
+		await page.mouse.move(0, 0);
+	};
+	await says("1 file, 1 cluster to read");
+	await ignoreWhitespace(page, true);
+	await says("nothing new");
+	await ignoreWhitespace(page, false);
+	await says("1 file, 1 cluster to read");
+});
+
 test("the since view: a run mixing a re-indent read in PS1 and a real edit is one piece per stretch, each with its box, the switch off and on", async ({
 	page,
 	pr,
