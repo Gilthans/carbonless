@@ -8,7 +8,9 @@ import {
 import {
 	type RenderedBlock,
 	renderBlocks,
+	renderPair,
 	renderSource,
+	sideBlocks,
 	tableHeaders,
 } from "./renderBlocks";
 
@@ -85,15 +87,17 @@ describe("renderBlocks", () => {
 		expect(out).toHaveLength(5);
 		for (const b of out) {
 			const d = dom(b.html);
-			expect(d.querySelectorAll("li")).toHaveLength(1);
-			expect(d.querySelector("li")?.parentElement?.tagName).toMatch(
-				/^(UL|OL)$/,
-			);
+			expect(d.querySelectorAll("li:not(.md-nest)")).toHaveLength(1);
+			expect(
+				d.querySelector("li:not(.md-nest)")?.parentElement?.tagName,
+			).toMatch(/^(UL|OL)$/);
 		}
-		// The nested item, indented in the source, is still a list item (not code).
-		expect(dom(out[2]?.html ?? "").querySelector("ul > li")?.textContent).toBe(
-			"c",
-		);
+		// The nested item, indented in the source, is still a list item (not
+		// code), nested in its list's wrapper.
+		expect(
+			dom(out[2]?.html ?? "").querySelector("li.md-nest > ul > li")
+				?.textContent,
+		).toBe("c");
 		expect(
 			dom(out[3]?.html ?? "")
 				.querySelector("ol")
@@ -241,6 +245,51 @@ describe("renderBlocks", () => {
 		expect(dom(out[2]?.html ?? "").querySelector("p")?.textContent).toBe(
 			"text",
 		);
+	});
+});
+
+describe("nested list items (gallery #61 lists.md)", () => {
+	const MOORING = [
+		"- First-aid kit, in the red locker",
+		"- Mooring lines",
+		"  - Bow line",
+		"  - Stern line",
+		"    - Spring lines",
+	].join("\n");
+	const lists = (html: string) => {
+		let n = 0;
+		for (let el = dom(html).querySelector("li"); el; ) {
+			n++;
+			el = el.querySelector("li");
+		}
+		return n;
+	};
+
+	it("a nested item renders in as many lists as its depth; a top one in one", () => {
+		const out = render(MOORING);
+		expect(out.map((b) => lists(b.html))).toEqual([1, 1, 2, 2, 3]);
+		const bow = dom((out[2] as RenderedBlock).html);
+		expect(bow.querySelector("li li")).toHaveTextContent("Bow line");
+		// The outer list adds indent only: no marker of its own.
+		expect(bow.querySelector("li")?.className).toBe("md-nest");
+	});
+
+	it("an item nested on its parent's line, or in a quote, isn't nested twice", () => {
+		expect(render("- - a\n- - b").map((b) => lists(b.html))).toEqual([2, 2]);
+		expect(render("> - a\n>   - b").map((b) => lists(b.html))).toEqual([1, 2]);
+	});
+
+	it("a changed nested item renders nested, its words marked", () => {
+		const oldL = ["- Mooring lines", "  - Stern line"];
+		const newL = ["- Mooring lines", "  - Heaving line"];
+		const o = sideBlocks(oldL, markdownBlocks(oldL));
+		const n = sideBlocks(newL, markdownBlocks(newL));
+		const pair = renderPair(o, 1, n, 1, opts);
+		expect(pair).not.toBeNull();
+		const d = dom(pair?.merged ?? "");
+		expect(lists(pair?.merged ?? "")).toBe(2);
+		expect(d.querySelector("li li del.md-del")).toHaveTextContent("Stern");
+		expect(d.querySelector("li li ins.md-ins")).toHaveTextContent("Heaving");
 	});
 });
 

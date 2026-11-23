@@ -616,6 +616,62 @@ describe("MarkdownView, full diff", () => {
 	});
 });
 
+describe("MarkdownView: gallery #61 lists.md, full diff and since view", () => {
+	const LOLD = [
+		"- Set up a Tidewater account with the crew role", // 1
+		"- Read the lifejacket drill card", // 2
+		"- Find your locker on the car deck",
+		"",
+		"- Mooring lines", // 5
+		"  - Bow line",
+		"  - Stern line", // 7
+		"  - Spring lines",
+	];
+	const LNEW = [
+		"- Set up a Tidewater account with the deckhand or purser role", // 1
+		"- Find your locker on the car deck",
+		"",
+		"- Mooring lines", // 4
+		"  - Bow line",
+		"  - Spring lines",
+		"  - Heaving line", // 7
+	];
+	const LEDITS: Edit[] = [
+		{ key: "set", old: [1, 2], new: [1, 2] },
+		{ key: "read", old: [2, 3] },
+		{ key: "stern", old: [7, 8] },
+		{ key: "heave", new: [7, 8] },
+	];
+
+	it.each([
+		["full diff", false],
+		["since view", true],
+	])(
+		"%s: the removed item sits after the changed one, as in the base; nested items render nested",
+		async (_, since) => {
+			show(docFixture(LOLD, LNEW, LEDITS, { since }), since ? { from: 1 } : {});
+			const root = await doc();
+			const unit = (i: number) => (since ? `p:${i}:0` : (LEDITS[i]?.key ?? ""));
+			const rows = [
+				...root.querySelectorAll<HTMLElement>('[data-testid="md-block"]'),
+			];
+			const at = (i: number) =>
+				rows.indexOf(rowOf(root, unit(i)) as HTMLElement);
+			expect(at(1)).toBe(at(0) + 1);
+			expect(rowOf(root, unit(1))).toHaveAttribute("data-tone", "removed");
+			// Stern (struck) and Heaving (new) one list deeper than Mooring lines.
+			for (const i of [2, 3]) {
+				const li = rowOf(root, unit(i))?.querySelector(".md-content li li");
+				expect(li, unit(i)).toHaveTextContent(i === 2 ? "Stern" : "Heaving");
+			}
+			expectCoverage(
+				root,
+				LEDITS.map((_, i) => unit(i)),
+			);
+		},
+	);
+});
+
 describe("MarkdownView, since view", () => {
 	it("one box per piece on its block; a tick marks that piece of its cluster; kind chips as the line view's", async () => {
 		const fx = docFixture(OLD, NEW, EDITS, { since: true });

@@ -123,8 +123,16 @@
 	background-color: var(--color-code);
 }
 
-.md-content li.md-continuation {
+.md-content li.md-continuation,
+.md-content li.md-nest {
 	list-style: none;
+}
+
+/* A nested item's outer lists: their indent only, no space around them. */
+.md-content.markdown-body.markdown-body ul.md-nest,
+.md-content.markdown-body.markdown-body li.md-nest {
+	margin-top: 0;
+	margin-bottom: 0;
 }
 
 /* A remote image: its URL, cut to the block's width; a click loads it. */

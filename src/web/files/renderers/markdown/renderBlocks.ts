@@ -571,6 +571,31 @@ function unwrap(
 const requote = (html: string, quotes: number): string =>
 	"<blockquote>".repeat(quotes) + html + "</blockquote>".repeat(quotes);
 
+const MARKER_RUN = /^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)/;
+
+/**
+ * How many lists a list item sits in beyond what its own source opens: its
+ * depth less its quotes, less the extra markers on its first line (`- - a`
+ * already renders nested). Its HTML goes in that many list wrappers, so a
+ * nested item renders nested.
+ */
+function nestOf(b: MdBlock, own: readonly string[], quotes: number): number {
+	if (b.kind !== "list-item") return 0;
+	let rest = own[0] ?? "";
+	let markers = 0;
+	for (let m = MARKER_RUN.exec(rest); m && m[0]; m = MARKER_RUN.exec(rest)) {
+		markers++;
+		rest = rest.slice(m[0].length);
+	}
+	return Math.max(0, b.depth - quotes - Math.max(0, markers - 1));
+}
+
+/** `html` inside `levels` list wrappers (no markers of their own). */
+const renest = (html: string, levels: number): string =>
+	'<ul class="md-nest"><li class="md-nest">'.repeat(levels) +
+	html +
+	"</li></ul>".repeat(levels);
+
 const isMath = (src: string): boolean => {
 	const t = src.trim();
 	return t.length >= 4 && t.startsWith("$$") && t.endsWith("$$");
@@ -621,6 +646,7 @@ function renderBlock(
 	const { lines: own, quotes } = unwrap(lines, b);
 	const src = own.join("\n");
 	const kind = b.kind;
+	const nest = nestOf(b, own, quotes);
 	if (
 		kind === "front-matter" ||
 		kind === "html" ||
@@ -641,9 +667,12 @@ function renderBlock(
 	if (kind === "list-item" && !LIST_MARKER.test(own[0] ?? "")) {
 		// The tail of an item after its nested list: still part of the item.
 		const html = renderMarkdown(src, opts, links);
-		return requote(`<ul><li class="md-continuation">${html}</li></ul>`, quotes);
+		return requote(
+			renest(`<ul><li class="md-continuation">${html}</li></ul>`, nest),
+			quotes,
+		);
 	}
-	return requote(renderMarkdown(src, opts, links), quotes);
+	return requote(renest(renderMarkdown(src, opts, links), nest), quotes);
 }
 
 /** Sanitized HTML for each of a file's blocks, in order; never drops one. */
@@ -712,9 +741,17 @@ export interface PairHtml {
 const isContinuation = (b: MdBlock, own: readonly string[]) =>
 	b.kind === "list-item" && !LIST_MARKER.test(own[0] ?? "");
 
-const wrapBlock = (html: string, continuation: boolean, quotes: number) =>
+const wrapBlock = (
+	html: string,
+	continuation: boolean,
+	quotes: number,
+	nest: number,
+) =>
 	requote(
-		continuation ? `<ul><li class="md-continuation">${html}</li></ul>` : html,
+		renest(
+			continuation ? `<ul><li class="md-continuation">${html}</li></ul>` : html,
+			nest,
+		),
 		quotes,
 	);
 
@@ -766,7 +803,10 @@ export function renderPair(
 			...(header === undefined ? {} : { header }),
 		});
 		if (!body) return null;
-		const wrap = (html: string) => wrapBlock(html, continuation, un.quotes);
+		const nest = nestOf(nb, un.lines, un.quotes);
+		if (nest !== nestOf(ob, uo.lines, uo.quotes)) return null;
+		const wrap = (html: string) =>
+			wrapBlock(html, continuation, un.quotes, nest);
 		return {
 			merged: wrap(body.innerHTML),
 			old: wrap(markedSide(body, "del")),
