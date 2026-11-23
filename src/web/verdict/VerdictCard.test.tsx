@@ -26,7 +26,7 @@ import type {
 } from "../../shared/types";
 import { createAppRouter } from "../router";
 import { ignoreWhitespace } from "../viewSettings";
-import { nothingToReread, sinceLine } from "./VerdictCard";
+import { nothingToReread, sinceCounts, sinceLine } from "./VerdictCard";
 
 /*
  * The verdict card's "since your verdict" lines (VerdictFacts.since): what
@@ -275,6 +275,34 @@ describe("sinceLine and nothingToReread", () => {
 		expect(sinceLine({ ...done, files: 0, reworked: 0, new: 0, gone: 2 })).toBe(
 			"3 commits · 2 gone",
 		);
+	});
+
+	it("counts the whole line with or without whitespace-only clusters by the switch (CAR-266)", () => {
+		const done = {
+			...(given().changes as Extract<
+				VerdictSince["changes"],
+				{ status: "done" }
+			>),
+			withoutWhitespaceOnly: { files: 1, reworked: 0, new: 1 },
+		};
+		expect(sinceLine(sinceCounts(done, false))).toBe(
+			"3 commits · 2 files · 1 reworked, 1 new cluster",
+		);
+		expect(sinceLine(sinceCounts(done, true))).toBe(
+			"3 commits · 1 file · 1 new cluster",
+		);
+		// Nothing whitespace-only: the same counts either way.
+		const { withoutWhitespaceOnly: _, ...plain } = done;
+		expect(sinceCounts(plain, true)).toEqual(plain);
+		// An identical diff of only whitespace-only clusters: nothing to re-read
+		// with the switch on, its clusters counted with it off.
+		const same = {
+			...SAME,
+			new: 1,
+			withoutWhitespaceOnly: { files: 0, reworked: 0, new: 0 },
+		} as Extract<VerdictSince["changes"], { status: "done" }>;
+		expect(nothingToReread(sinceCounts(same, true))).toBe(true);
+		expect(nothingToReread(sinceCounts(same, false))).toBe(false);
 	});
 
 	it("is nothing to re-read only for an identical diff with nothing counted (principle 2)", () => {

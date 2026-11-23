@@ -286,24 +286,63 @@ export function toReadClusters(
 	unit: Unit,
 	ignoreWhitespace: boolean,
 ): number {
+	let n = 0;
+	for (const inFile of toReadByFile(answer, view, unit, ignoreWhitespace)) {
+		n += unit === "files" ? (inFile.count > 0 ? 1 : 0) : inFile.count;
+	}
+	return n;
+}
+
+/** toReadClusters by file: each file's index and what it has to read. */
+function toReadByFile(
+	answer: RereviewAnswer,
+	view: ReviewView,
+	unit: Unit,
+	ignoreWhitespace: boolean,
+): { index: number; count: number }[] {
 	const kinds = new Map(
 		answer.files.flatMap((f) => f.clusters.map((c) => [c.key, c.kind])),
 	);
-	let n = 0;
-	for (const whole of view.files) {
+	return view.files.map((whole) => {
 		const file = ignoreWhitespace ? withoutWhitespaceOnly(whole) : whole;
-		let inFile = 0;
+		let count = 0;
 		for (const c of file.clusters) {
 			const kind = kinds.get(c.key);
 			if ((kind !== "reworked" && kind !== "new") || c.state !== "unreviewed") {
 				continue;
 			}
-			inFile +=
+			count +=
 				unit === "lines" ? c.lines - reviewedCount(c) - crossedCount(c) : 1;
 		}
-		n += unit === "files" ? (inFile > 0 ? 1 : 0) : inFile;
+		return { index: whole.index, count };
+	});
+}
+
+/**
+ * The connector's "to read" for the comparison open in the full diff
+ * (CAR-266): the bar's own count there (toReadClusters, the snapshot's
+ * clusters as marked, "Ignore whitespace" as the bar reads it), the
+ * files with any or with a conflict (as liveToRead), and the engine's
+ * reviewed clusters gone (the full diff shows none of them).
+ */
+export function fullDiffToRead(
+	answer: RereviewAnswer,
+	view: ReviewView,
+	since: Map<number, FileSince>,
+	ignoreWhitespace: boolean,
+): RereviewAnswer["toRead"] & { gone: number } {
+	const files = new Set<number>();
+	let clusters = 0;
+	for (const f of toReadByFile(answer, view, "clusters", ignoreWhitespace)) {
+		if (f.count > 0) files.add(f.index);
+		clusters += f.count;
 	}
-	return n;
+	for (const [index, info] of since) if (info.conflict) files.add(index);
+	const gone = answer.files.reduce(
+		(n, f) => n + f.clusters.filter((c) => c.kind === "gone").length,
+		0,
+	);
+	return { files: files.size, clusters, gone };
 }
 
 /**

@@ -105,6 +105,7 @@ import {
 	countedFileUnits,
 	countedUnits,
 	eyesOf,
+	fullDiffToRead,
 	goneFiles,
 	goneFileView,
 	liveToRead,
@@ -1724,14 +1725,24 @@ export function FilesPage() {
 		return out;
 	}, [units, ignoreWs]);
 	const progressPending = since !== null && sinceView.pending;
-	// The connector of the comparison on screen counts what is left here.
+	// The connector of the comparison on screen counts what is left here,
+	// as this view's bar does: the since view its units, the full diff
+	// (a viewed head against the latest patch set) its clusters (CAR-266).
 	const live =
-		since !== null && byFile && comparison.viewing
-			? {
-					from: since,
-					to: comparison.viewing,
-					toRead: liveToRead(byFile, sinceCounted.units),
-				}
+		byFile && comparison.viewing
+			? since !== null
+				? {
+						from: since,
+						to: comparison.viewing,
+						toRead: liveToRead(byFile, sinceCounted.units),
+					}
+				: sinceView.from !== null && sinceView.answer && data
+					? {
+							from: sinceView.from,
+							to: comparison.viewing,
+							toRead: fullDiffToRead(sinceView.answer, data, byFile, ignoreWs),
+						}
+					: undefined
 			: undefined;
 	const emptySince =
 		since !== null &&

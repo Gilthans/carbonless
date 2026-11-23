@@ -250,6 +250,17 @@ export function nothingToReread(changes: VerdictSince["changes"]): boolean {
 	);
 }
 
+/**
+ * The since line's counts as the reviewer reads them: with "Ignore
+ * whitespace" on, every one without the whitespace-only clusters (the
+ * server's withoutWhitespaceOnly, absent when the same), so the line's
+ * numbers all come from the same choice.
+ */
+export function sinceCounts(c: SinceDone, ignoreWs: boolean): SinceDone {
+	const { withoutWhitespaceOnly: without, ...counts } = c;
+	return ignoreWs && without ? { ...counts, ...without } : counts;
+}
+
 /** "3 commits · 2 files · 1 reworked, 1 new cluster" (and "· 1 gone"). */
 export function sinceLine(c: SinceDone): string {
 	const parts = [plural(c.commits, "commit")];
@@ -318,7 +329,11 @@ function SinceVerdict(props: {
 	counted: Counted | null;
 }) {
 	const { since, review } = props;
-	const { changes } = since;
+	const ignoreWs = ignoreWhitespace.use();
+	const changes =
+		since.changes.status === "done"
+			? sinceCounts(since.changes, ignoreWs)
+			: since.changes;
 	if (changes.status === "pending") return <SincePending />;
 	if (changes.status === "failed") {
 		return (

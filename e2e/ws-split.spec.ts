@@ -549,6 +549,75 @@ test("a graph card's to-read count follows the switch: a push that only re-inden
 	await says("1 file, 1 cluster to read");
 });
 
+test("the full diff with a comparison open: its connector's card counts as the bar's to read, the switch off and on; the since view's counts its units (CAR-266)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine's answer and two views: past the default budget on a loaded machine.
+	test.slow();
+	const ps1 = lines.map((l, i) => (i === 1 ? `${l} changed` : l));
+	const p = await pr({
+		base: { [PATH]: text(lines) },
+		files: [{ message: "Line 2", files: { [PATH]: text(ps1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// PS2 re-indents the changed line: one cluster of the full diff, two
+	// units of the since view (the line PS1 had, the line now).
+	p.moveHead({
+		message: "Re-indent line 2",
+		files: {
+			[PATH]: text(ps1.map((l, i) => (i === 1 ? `    ${l}` : l))),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	// The full diff of the same comparison (PS1 → head).
+	await page.keyboard.press("Control+Shift+[");
+	await expect(
+		page
+			.getByTestId("ps-node-branch")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const toRead = page.getByTestId("to-read");
+	const card = page.locator('[role="tooltip"]:not([hidden])');
+	const conn = page.getByTestId("ps-conn-head");
+	const says = async (text: string) => {
+		await conn.hover();
+		await expect(card).toContainText(text, GIT_WAIT);
+		await page.mouse.move(0, 0);
+	};
+	await expect(toRead).toHaveText(/1 to read/, GIT_WAIT);
+	await says("1 file, 1 cluster to read");
+	await ignoreWhitespace(page, true);
+	await expect(toRead).toHaveText(/1 to read/);
+	await says("1 file, 1 cluster to read");
+	await ignoreWhitespace(page, false);
+	// The since view (PS1 is the base again): its units, as its bar.
+	await page.keyboard.press("Control+Shift+]");
+	await expect(
+		page
+			.getByTestId("ps-node-branch")
+			.getByRole("button", { name: "comparison base" }),
+	).toHaveCount(0);
+	await expect(toRead).toHaveText(/2 to read/, GIT_WAIT);
+	await says("1 file, 2 clusters to read");
+});
+
 test("the since view: a run mixing a re-indent read in PS1 and a real edit is one piece per stretch, each with its box, the switch off and on", async ({
 	page,
 	pr,
