@@ -39,6 +39,7 @@ import {
 } from "../agent/pendingThread";
 import {
 	agentWaiting,
+	earlierAgentPending,
 	shownAgentPlaceables,
 	useAgentPlacing,
 } from "../agent/placeable";
@@ -1042,6 +1043,16 @@ export function FileDiff(props: {
 	// failed) and asked on an earlier head in the lead row, outdated.
 	// One the tracer put outside the comparison is listed after the files
 	// (AgentNotInComparison), never here.
+	const agentEarlier = useMemo(
+		() =>
+			earlierAgentPending(
+				agentAll ?? [],
+				snapshotHead,
+				agentPlacing,
+				earlierHead,
+			),
+		[agentAll, snapshotHead, agentPlacing, earlierHead],
+	);
 	const agentMineP = agentPlaceables.filter(
 		(p) =>
 			p.path === file.path && agentPlacements?.get(p.id)?.kind !== "outside",
@@ -1067,6 +1078,9 @@ export function FileDiff(props: {
 								? {}
 								: {
 										sinceEarlier: sinceEarlier(earlierHead, hunkData?.hunks),
+										// As DiffBody: on the removed row of a line only
+										// that patch set had, never in the header too.
+										earlierPending: agentEarlier,
 									}),
 						}),
 			})

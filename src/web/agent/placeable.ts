@@ -234,8 +234,10 @@ export function shownAgentPlaceables(
 
 /**
  * The since view's agent threads asked on its compared patch set's head
- * (`earlierHead`) on RIGHT lines that the tracer hasn't placed yet or put
- * outside the comparison by their own path (a gone file's, CAR-256), as
+ * (`earlierHead`) on RIGHT lines that the tracer hasn't placed yet, left
+ * unplaced in their file (a line only that patch set had, whose fate
+ * placeThreads then drops once it lands on a row), or put outside the
+ * comparison by their own path (a gone file's, CAR-256), as
  * review threads are (earlierPending): as asked on the viewed head, their
  * anchor keeping the commit they were asked on, so placeThreads' own
  * `earlierPending` puts each on the row of its line there, if it has one.
@@ -264,7 +266,9 @@ export function earlierAgentPending(
 			}
 			const own = agentPlaceable(t);
 			if (!own.anchor) return [];
-			if (!earlierUnplaced(own, placing.placements, placing.moves)) return [];
+			if (!earlierUnplaced(own, placing.placements, placing.moves, true)) {
+				return [];
+			}
 			const anchor = { ...own.anchor, commit: earlierHead };
 			return [{ ...own, commit: snapshotHead, anchor }];
 		});

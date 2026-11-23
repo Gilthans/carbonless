@@ -195,13 +195,20 @@ export function earlierUnplaced(
 	t: { id?: string; path: string },
 	placements: Placements | null,
 	moved?: ReadonlyMap<string, unknown> | null,
+	/**
+	 * Unplaced in its own file too: an agent thread's placeable loses its
+	 * lines there (tracedAgentPlaceables), so it waits here rather than in
+	 * placeThreads' own unplaced path, which a review thread takes.
+	 */
+	unplaced = false,
 ): boolean {
 	if (t.id === undefined) return false;
 	if (moved?.has(t.id)) return false;
 	const placed = placements?.get(t.id);
 	return (
 		placed === undefined ||
-		(placed.kind === "outside" && placed.path === t.path)
+		((placed.kind === "outside" || (unplaced && placed.kind === "unplaced")) &&
+			placed.path === t.path)
 	);
 }
 
@@ -594,16 +601,20 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	// placed yet (one just posted there): on their removed rows when they
 	// have one; else not shown here until placed, as before (never as
 	// unplaced while that is pending).
+	// Those that landed on a row: not listed with a fate as well.
+	const landed = new Set<string>();
 	for (const t of args.earlierPending ?? []) {
 		if (t.path !== args.path) continue;
 		const at = earlierRow(t);
 		if (!at) continue;
 		push(placement.end, at.key, t);
 		paint(at.range, at.row);
+		if (t.id !== undefined) landed.add(t.id);
 	}
 	for (const t of mine) {
 		const traced = t.id === undefined ? undefined : args.placements?.get(t.id);
 		if (traced?.kind === "unplaced") {
+			if (t.id !== undefined && landed.has(t.id)) continue;
 			// Made on the compared patch set's head on a line only it had
 			// (CAR-233): on the since view's removed row that shows it.
 			const at = earlierRow(t);
