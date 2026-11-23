@@ -520,12 +520,25 @@ function pieceControl(
 	if (owns) {
 		const whole = piece.key ? ctx.clusters.get(piece.key) : undefined;
 		if (!whole) return undefined;
-		const { reviewedLines: _, crossedLines: __, reason: ___, ...rest } = whole;
+		const {
+			reviewedLines: _,
+			crossedLines: __,
+			reason: ___,
+			whitespaceOnly: ____,
+			...rest
+		} = whole;
+		// Whitespace only as the piece is (judged on the interdiff, CAR-218),
+		// not as its cluster is against the base: as DiffBody's markOf.
+		const ws = piece.whitespaceOnly === true;
 		return {
-			cluster: { ...rest, state: pieceState(whole, owns) },
+			cluster: {
+				...rest,
+				state: pieceState(whole, owns),
+				...(ws ? { whitespaceOnly: true as const } : {}),
+			},
 			toggle: () => ctx.onToggle(whole, owns),
 			crossOff: () => ctx.onCrossOff(whole, owns),
-			ws: whole.whitespaceOnly === true,
+			ws,
 			entry,
 			carried: whole.carried,
 			sinceOnly: piece.kind,
@@ -543,10 +556,11 @@ function pieceControl(
 			added: [],
 			lines: size(piece.old) + size(piece.new),
 			state: sinceOnlyState(ctx.sinceMarks, ctx.from, ctx.path, piece),
+			...(piece.whitespaceOnly ? { whitespaceOnly: true as const } : {}),
 		},
 		toggle: () => ctx.onSinceMark?.(piece, false),
 		crossOff: () => ctx.onSinceMark?.(piece, true),
-		ws: false,
+		ws: piece.whitespaceOnly === true,
 		// A piece of its own isn't its neighbour's: only gone says where it came from.
 		entry: entry?.kind === "gone" ? entry : undefined,
 		sinceOnly: piece.kind,

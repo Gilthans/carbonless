@@ -427,6 +427,25 @@ describe("MarkdownView, since view", () => {
 		);
 	});
 
+	it("a whitespace-only piece gets its ~ box, left out with Ignore whitespace; two pieces of one block share its row", async () => {
+		const fx = docFixture(OLD, NEW, EDITS, { since: true });
+		const keys = (fx.hunks.pieces ?? []).map((p) => `p:${p.hunk}:${p.line}`);
+		show(fx, { from: 1 });
+		let root = await doc();
+		expect(boxOf(root, "p:4:0")).toHaveAttribute("data-ws", "true");
+		expect(rowOf(root, "p:5:0")).toBe(rowOf(root, "p:6:0"));
+		expectCoverage(root, keys);
+		cleanup();
+		ignoreWhitespace.set(true);
+		show(fx, { from: 1 });
+		root = await doc();
+		expect(boxOf(root, "p:4:0")).toBeNull();
+		expectCoverage(
+			root,
+			keys.filter((k) => k !== "p:4:0"),
+		);
+	});
+
 	it("a file the author left alone since says so", async () => {
 		const fx = docFixture(NEW, NEW, [], { since: true });
 		show({ ...fx, hunks: { ...fx.hunks, hunks: [], pieces: [] } }, { from: 1 });

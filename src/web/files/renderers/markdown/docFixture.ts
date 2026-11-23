@@ -116,6 +116,7 @@ export function docFixture(
 				old: e.old ? [e.old] : [],
 				new: e.new ? [e.new] : [],
 				...(e.new ? {} : { kind: "removed" as const }),
+				...(e.whitespaceOnly ? { whitespaceOnly: true as const } : {}),
 			}))
 		: undefined;
 	const file: FileView = {
