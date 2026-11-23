@@ -445,7 +445,7 @@ test("a posted block joins its conversation to the new thread: one thread on the
 	await expect(box(panel).first()).toContainText("Posted");
 	if (isMobile) await expectNoPageOverflow(page);
 	// The second block replies to that thread.
-	const second = box(panel).filter({ has: page.getByRole("textbox") });
+	const second = box(panel).nth(1);
 	await expect(second.getByTestId("agent-comment-target")).toHaveText("Reply");
 	await addButton(panel).click();
 	await expect(box(panel).nth(1)).toContainText("Posted");
