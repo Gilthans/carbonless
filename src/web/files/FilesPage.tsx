@@ -82,6 +82,7 @@ import { FindBar } from "./find/FindBar";
 import { findState, useFindFloatShown } from "./find/findState";
 import { hitSeen } from "./find/hitSeen";
 import { useFind } from "./find/useFind";
+import { useControlUnder } from "./floatClear";
 import { foldsKey } from "./folderFold";
 import { useHeadSure } from "./headSure";
 import {
@@ -1411,12 +1412,19 @@ export function FilesPage() {
 	);
 
 	// The floating Files button makes way while a comment is being written
-	// (a box has focus) or one was refused: it would cover its buttons.
+	// (a box has focus) or one was refused, and while a card's control (a
+	// composer's, a thread's) is under it: it would cover its buttons.
 	const writing = useWritingHere();
 	const refused = useThreadWrites().refused.some(
 		(f) => dropLosesText(f) && !f.retrying,
 	);
-	const filesButton = !writing && !refused;
+	const filesFab = useRef<HTMLButtonElement>(null);
+	const cardUnder = useControlUnder(
+		filesFab,
+		diffs,
+		!wide && (data?.files.length ?? 0) + gone.length > 0,
+	);
+	const filesButton = !writing && !refused && !cardUnder;
 
 	// Folded folders are kept per PR, once it's known.
 	const pr = session?.pr;
@@ -2101,6 +2109,7 @@ export function FilesPage() {
 											{!wide && (data.files.length > 0 || gone.length > 0) && (
 												<>
 													<button
+														ref={filesFab}
 														hidden={!filesButton}
 														type="button"
 														aria-label="Files"
