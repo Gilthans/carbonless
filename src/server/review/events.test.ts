@@ -832,6 +832,23 @@ describe("agent events", () => {
 		expect(parseEventLines(msg(bad))).toEqual([]);
 	});
 
+	it("parses suggests on an ai opening (open on a GitHub thread, CAR-265) and drops it on a human one or with another value", () => {
+		const origin = { thread, message: reply.id };
+		const aiOpened = {
+			...opened,
+			by: "ai",
+			agent,
+			origin,
+			suggests: "resolve",
+		};
+		expect(parseEventLines(msg([aiOpened]))).toEqual([aiOpened]);
+		const bad = [
+			{ ...opened, suggests: "resolve" },
+			{ ...aiOpened, suggests: "yes" },
+		];
+		expect(parseEventLines(msg(bad))).toEqual([]);
+	});
+
 	it("parses an origin of two lowercase ULIDs on ai events, drops it on human ones, bad ids and the old {request} shape", () => {
 		const origin = { thread, message: reply.id };
 		const aiOpened = { ...opened, by: "ai", agent, origin };

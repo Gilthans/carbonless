@@ -319,6 +319,8 @@ export interface AgentThreadOpenedEvent extends EventBase {
 	agent?: AgentIdentity;
 	/** ai only: the request the agent opened it from (its text is the first message). */
 	origin?: AgentOrigin;
+	/** ai only: its text suggests resolving the GitHub thread (MCP `open` on one). */
+	suggests?: "resolve";
 	/** human only: the comparison on screen. */
 	view?: AgentView;
 }
@@ -1249,8 +1251,14 @@ function parseAgentEvent(
 			if (base.by === "ai" && !extras.agent) return null;
 			// The review conversation is opened by the reviewer, never the agent.
 			if (base.by === "ai" && anchor.subject === "review") return null;
-			const { origin, view } = raw;
-			// Fail safe: an origin is the agent's, a view the human's.
+			const { origin, view, suggests } = raw;
+			// Fail safe: an origin and a suggestion are the agent's, a view the human's.
+			if (
+				suggests !== undefined &&
+				(base.by !== "ai" || suggests !== "resolve")
+			) {
+				return null;
+			}
 			let parsedOrigin: AgentOrigin | undefined;
 			if (origin !== undefined) {
 				const o = base.by === "ai" ? parseOrigin(origin) : null;
@@ -1272,6 +1280,7 @@ function parseAgentEvent(
 				anchor,
 				text: raw.text,
 				...extras,
+				...(suggests !== undefined ? { suggests: "resolve" as const } : {}),
 			};
 		}
 		case "agent-message": {

@@ -20,7 +20,9 @@ import {
 	COMMENT_POSTS,
 	COMMENT_WHICH,
 	JOINED_PREAMBLE,
+	OPEN_SUGGEST_RESOLVE,
 	REVIEW_PREAMBLE,
+	SUGGEST_RESOLVE,
 } from "../../shared/agent";
 import type { ReviewView } from "../../shared/types";
 import { buildApp } from "../app";
@@ -186,6 +188,9 @@ describe("/mcp", () => {
 		expect(desc("reply")).toContain(COMMENT_WHICH);
 		expect(desc("open")).not.toContain(COMMENT_WHICH);
 		expect(desc("open")).toContain(COMMENT_OPENED);
+		// open on a GitHub thread may suggest resolving it, as reply may (CAR-265).
+		expect(desc("open")).toContain(OPEN_SUGGEST_RESOLVE);
+		expect(OPEN_SUGGEST_RESOLVE).toContain(SUGGEST_RESOLVE);
 		const fake = `${id}.${"A".repeat(43)}`;
 		for (const name of ["next", "threads", "review", "progress", "detach"]) {
 			const r = await call(client, name, { token: fake });

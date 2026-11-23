@@ -117,6 +117,8 @@ export function agentButtonName(
  * finished answer, when it suggests resolving, while the GitHub thread is
  * open and still there. A later answer that doesn't suggest it retracts
  * it; one that failed or was stopped doesn't, nor does a question alone.
+ * A message from `open` (CAR-265) counts only when it suggests: it
+ * answers nothing, so one that doesn't never retracts.
  */
 export function standingSuggestion(
 	conversation: AgentThread | undefined,
@@ -128,8 +130,8 @@ export function standingSuggestion(
 	const latest = [...conversation.messages].reverse().find(
 		(m) =>
 			m.by === "ai" &&
-			// A message from `open` answers nothing: it never retracts one.
-			!m.origin &&
+			// A message from `open` answers nothing: it may suggest, never retract.
+			(!m.origin || m.suggests === "resolve") &&
 			m.stop !== "error" &&
 			m.stop !== "cancelled",
 	);
