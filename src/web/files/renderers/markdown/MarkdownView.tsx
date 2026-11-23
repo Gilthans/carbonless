@@ -345,10 +345,23 @@ export function MarkdownView(props: {
 	const realign = useCallback(() => {
 		if (root.current) alignTables(root.current);
 	}, []);
-	// Again only when the document's HTML may differ: its rows (a mark, a
-	// whitespace setting), a fold opened, side by side.
+	// Again only when the document's HTML may differ: the blocks' HTML,
+	// which rows show them (a whitespace setting), a fold opened, side by
+	// side. Not on a tick: it builds the model again, rows and HTML alike.
+	const rowsKey =
+		model === null || model === "failed"
+			? ""
+			: model.doc.rows
+					.map((r) =>
+						r.kind === "same"
+							? `s${r.block}`
+							: r.kind === "fold"
+								? `f${r.blocks.join(",")}`
+								: `c${r.oldBlocks.join(",")}/${r.newBlocks.join(",")}`,
+					)
+					.join(" ");
 	// biome-ignore lint/correctness/useExhaustiveDependencies: these change the rendered tables.
-	useLayoutEffect(realign, [model, open, split, ignoreWs, realign]);
+	useLayoutEffect(realign, [base, rowsKey, open, split, realign]);
 	const ready = model !== null && model !== "failed";
 	useEffect(() => {
 		const el = root.current;

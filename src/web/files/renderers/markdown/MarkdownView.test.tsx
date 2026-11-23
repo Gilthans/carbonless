@@ -172,6 +172,8 @@ type ShowOpts = {
 	agentThreads?: AgentThread[];
 	/** The review's files, for images. */
 	files?: ImageFile[];
+	/** The file as the page has it now (a tick reads the review again). */
+	file?: DocFixture["file"];
 };
 
 const HEAD = "h".repeat(40);
@@ -226,7 +228,7 @@ function show(fx: DocFixture, opts: ShowOpts = {}) {
 		return (
 			<QueryClientProvider client={client}>
 				<MarkdownView
-					file={fx.file}
+					file={o.file ?? fx.file}
 					revision="r1"
 					sideBySide={o.sideBySide ?? false}
 					readOnly={o.readOnly}
@@ -427,6 +429,38 @@ describe("MarkdownView, full diff", () => {
 		await userEvent.click(screen.getByTestId("md-fold"));
 		expect(calls()).toBeGreaterThan(first);
 	});
+
+	it.each([
+		["full diff", false],
+		["since view", true],
+	])(
+		"%s: a tick doesn't align the tables again",
+		async (_, since) => {
+			const fx = docFixture(OLD, NEW, EDITS, { since });
+			const { update } = show(fx, since ? { from: 1 } : {});
+			await doc();
+			const calls = () => vi.mocked(alignTables).mock.calls.length;
+			const first = calls();
+			expect(first).toBeGreaterThan(0);
+			// The page reads the review again: new clusters, one reviewed.
+			update({
+				file: {
+					...fx.file,
+					clusters: fx.file.clusters.map((c) =>
+						c.key === "k1" ? { ...c, state: "reviewed" as const } : { ...c },
+					),
+				},
+			});
+			await waitFor(() =>
+				expect(
+					screen
+						.getAllByRole("checkbox")
+						.some((b) => (b as HTMLInputElement).checked),
+				).toBe(true),
+			);
+			expect(calls()).toBe(first);
+		},
+	);
 
 	it("a whitespace-only cluster gets its own box with the ~; none with Ignore whitespace on", async () => {
 		show(docFixture(OLD, NEW, EDITS));
