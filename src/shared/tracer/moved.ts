@@ -386,6 +386,18 @@ export type Moved = { line: number } | "ambiguous" | "copies" | null;
 const block = (run: Run | null): run is Run =>
 	run !== null && run.words >= 2 && run.equalAlnum >= TUNING.minAlnum;
 
+/**
+ * Whether old line `o`'s text says something on its own: TUNING.minAlnum
+ * letters and digits, or once in the old file. A copy of `t.Parallel()` or
+ * `return nil` among the added lines says nothing about where a deleted
+ * one went: it stays `deleted`.
+ */
+function telling(o: number, r: TextReaders, x: FileIndex): boolean {
+	const t = readOld(r, o);
+	if (t === null) return false;
+	return alnum(t) >= TUNING.minAlnum || oldCounts(r, x).get(x.same(t)) === 1;
+}
+
 /** `hunk`'s removed lines with a word, memoized. */
 function wordsOf(hunk: MapHunk, r: TextReaders, x: FileIndex): number {
 	let n = x.hunkWords.get(hunk);
@@ -400,31 +412,59 @@ function wordsOf(hunk: MapHunk, r: TextReaders, x: FileIndex): number {
 }
 
 /**
- * Whether a block moved a thread of `hunk`: it carries more than half of
- * the hunk's removed lines with a word (lines it carries that have a
- * partner in place, `TextReaders.stays`, don't count: they stayed). A block that moved takes most of
- * what git removed around it along; two lines of boilerplate (`t.Parallel()`
- * and a `ctx :=` line, a `WithTimeout` and its `defer cancel()`) found in
- * new code while the rest of their function is gone did not move. Half
- * exactly is no majority: wrong is worse than unplaced.
+ * Whether a block moved a thread of `hunk`. With no partner nearby
+ * (`whole`, a pure deletion), the run must carry every removed line with a
+ * word of the hunk that has no partner in place of its own (`stays`):
+ * the block really moved. Two or three lines of boilerplate dropped from a
+ * function that is still there, found in new code, did not (owner's call,
+ * 2026-11-23: wrong is worse than unplaced). With a partner nearby, the
+ * move only enters the contest, and must carry more than half of the
+ * hunk's removed lines with a word. `extra`: lines carried besides the
+ * run's own (a block opener that joined another block with its body).
+ * Lines the run carries that have their own edited version at home don't
+ * count: they stayed; at least two must have left together.
  */
 function carries(
 	run: Run | null,
 	hunk: MapHunk | null,
 	r: TextReaders,
 	x: FileIndex,
+	whole: boolean,
+	extra = 0,
 ): run is Run {
 	if (!block(run) || hunk === null) return false;
-	// A line with its own edited version at home (a partner in place) didn't
-	// move with the run: it doesn't count.
-	let gone = 0;
+	let gone = extra;
+	// The line right above the run, removed with it, opening a block the run
+	// is the body of (`const (` over its constants): it went with its body.
+	const above = run.oldFrom - 1;
+	const opener = readOld(r, above);
+	if (
+		extra === 0 &&
+		opener !== null &&
+		OPENS_BLOCK.test(opener) &&
+		hasWord(opener) &&
+		above >= hunk.oldStart &&
+		r.bd.hunkRemovingOld(above) === hunk
+	) {
+		gone++;
+	}
 	for (let o = run.oldFrom; o <= run.oldTo; o++) {
 		const image = run.newFrom + (o - run.oldFrom);
 		if (hasWord(readOld(r, o) ?? "") && !(r.stays?.(o, image) ?? false)) {
 			gone++;
 		}
 	}
-	return gone * 2 > wordsOf(hunk, r, x);
+	// Two lines at least left their place together: one line beside a copy
+	// of its neighbour that stayed (edited) at home didn't move.
+	if (gone < 2) return false;
+	if (!whole) return gone * 2 > wordsOf(hunk, r, x);
+	let needed = 0;
+	for (let o = hunk.oldStart; o < hunk.oldStart + hunk.oldCount; o++) {
+		if (hasWord(readOld(r, o) ?? "") && !(r.stays?.(o, -1) ?? false)) {
+			needed++;
+		}
+	}
+	return gone >= needed;
 }
 
 /**
@@ -439,6 +479,8 @@ function bestRun(
 	o: number,
 	r: TextReaders,
 	x: FileIndex,
+	whole: boolean,
+	extra = 0,
 ): Run | "ambiguous" | "copies" | null {
 	const text = readOld(r, o);
 	if (text === null || !HAS_WORD.test(text)) return null;
@@ -449,7 +491,7 @@ function bestRun(
 	const hunk = r.bd.hunkRemovingOld(o);
 	const runs = candidates
 		.map((n) => runThrough(o, n, r, x))
-		.filter((run): run is Run => carries(run, hunk, r, x))
+		.filter((run): run is Run => carries(run, hunk, r, x, whole, extra))
 		.sort((a, b) => b.score - a.score);
 	const [best, second] = runs;
 	if (!best) return "copies";
@@ -479,12 +521,12 @@ function bestRun(
  * joined another block. A one-line body (a `case` arm) says nothing of
  * where its opener went.
  */
-export function movedTo(o: number, r: TextReaders): Moved {
+export function movedTo(o: number, r: TextReaders, whole = true): Moved {
 	const x = indexOf(r);
-	const own = bestRun(o, r, x);
+	const own = bestRun(o, r, x, whole);
 	if (own === "ambiguous") return own;
 	if (own && own !== "copies") return { line: own.newFrom + (o - own.oldFrom) };
-	const copies = own === "copies" ? own : null;
+	const copies = own === "copies" && telling(o, r, x) ? own : null;
 	const text = readOld(r, o);
 	if (text === null || !OPENS_BLOCK.test(text)) return copies;
 	// The body: the lines after `o` up to the first one indented no deeper
@@ -506,13 +548,9 @@ export function movedTo(o: number, r: TextReaders): Moved {
 	// most of the opener's hunk with the opener.
 	let seed = o + 1;
 	while (seed <= last && !HAS_WORD.test(readOld(r, seed) ?? "")) seed++;
-	const body = bestRun(seed, r, x);
+	const body = bestRun(seed, r, x, whole);
 	if (body === "ambiguous") return body;
 	if (!body || body === "copies" || body.oldFrom > o + 1 || body.oldTo < last) {
-		return copies;
-	}
-	const hunk = r.bd.hunkRemovingOld(o);
-	if (!carries(body, hunk, r, x)) {
 		return copies;
 	}
 	return { line: body.newFrom + (o + 1 - body.oldFrom) };

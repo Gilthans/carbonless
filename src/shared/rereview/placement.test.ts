@@ -650,10 +650,28 @@ describe("a replaced line follows its likeness (CAR-95)", () => {
 		// `return nil` is among the added lines as it was: rewritten, never
 		// deleted (fix round 2).
 		expect(place(rewrite(old, now, hunks, at(3)))).toBe("rewritten near 2");
-		// One word line that opens nothing still joins (a kept call).
-		const kept = [...old.slice(0, 6), "\tkeep()", ...old.slice(7)];
-		const keptNow = [...now.slice(0, 6), "\tkeep()", ...now.slice(7)];
-		expect(place(rewrite(kept, keptNow, hunks, at(3)))).toBe("changed 8");
+		// One word line that opens nothing still joins (a kept call), inside
+		// one function; a top-level `}` is a boundary too (fix round 3).
+		const one = [
+			"func A() {",
+			"\tif x {",
+			"\t\treturn nil",
+			"\t}",
+			"\tkeep()",
+			"\tdo()",
+			"}",
+		];
+		const oneNow = [
+			"func A() {",
+			"\tif x {",
+			"\t\tlogIt()",
+			"\t}",
+			"\tkeep()",
+			"\treturn nil",
+			"}",
+		];
+		const oneHunks = [h(3, 1, 3, 1), h(6, 1, 6, 1)];
+		expect(place(rewrite(one, oneNow, oneHunks, at(3)))).toBe("changed 6");
 	});
 
 	it("a joined region with two lines as like it as its partner: rewritten, never a pick", () => {
@@ -830,8 +848,8 @@ describe("a block moved elsewhere in its file follows it (CAR-95 step 3)", () =>
 		];
 		const hunks = [h(4, 0, 5, 3), h(6, 5, 8, 0)];
 		expect(place(rewrite(old, now, hunks, at(7)))).toBe("changed 6 moved");
-		// A body line itself: its partner in the region joined across `)`.
-		expect(place(rewrite(old, now, hunks, at(9)))).toBe("changed 7");
+		// A body line itself moves with its body (the opener went along).
+		expect(place(rewrite(old, now, hunks, at(9)))).toBe("changed 7 moved");
 	});
 
 	it("an edited block wins over a twin of the line alone", () => {
@@ -1326,6 +1344,106 @@ describe("fix round 2 (CAR-95 step 3)", () => {
 	});
 });
 
+describe("fix round 3 (CAR-95 step 3)", () => {
+	// TestA keeps its header and tail; some of its body is dropped, and new
+	// code elsewhere holds some or all of the dropped lines.
+	const OLD = [
+		"func TestA(t *testing.T) {",
+		"\tt.Parallel()",
+		"\tctx, cancel := context.WithTimeout(context.Background(), time.Minute)",
+		"\tdefer cancel()",
+		"\tgot := doA(ctx)",
+		"\tassert.Equal(t, wantA, got)",
+		"}",
+		"",
+		"func TestM(t *testing.T) {",
+		"\tmiddle()",
+		"}",
+	];
+	/** TestA with old lines `drop` (1-based, a run) gone; TestZ holding `copy`. */
+	function scenario(drop: number[], copy: number[]) {
+		const now = [
+			...OLD.slice(0, (drop[0] as number) - 1),
+			...OLD.slice(drop.at(-1) as number),
+			"",
+			"func TestZ(t *testing.T) {",
+			...copy.map((n) => OLD[n - 1] as string),
+			"\tsrv := startServer(ctx)",
+			"}",
+		];
+		const kept = OLD.length - drop.length;
+		const hunks = [
+			h(drop[0] as number, drop.length, (drop[0] as number) - 1, 0),
+			h(OLD.length, 0, kept + 1, now.length - kept),
+		];
+		return (line: number) => place(rewrite(OLD, now, hunks, at(line)));
+	}
+
+	it("boilerplate dropped from a function that is still there never moves: 2 of 3, 3 of 4", () => {
+		// Q1: t.Parallel and the timeout line of three dropped lines.
+		const q1 = scenario([2, 3, 4], [2, 3]);
+		expect(q1(2)).toMatch(/^(deleted|rewritten)/);
+		expect(q1(3)).toMatch(/^(deleted|rewritten)/);
+		// Q1b: three of four.
+		const q1b = scenario([2, 3, 4, 5], [2, 3, 4]);
+		expect(q1b(3)).toMatch(/^(deleted|rewritten)/);
+		// Exactly half: two of four.
+		expect(scenario([2, 3, 4, 5], [2, 3])(3)).toMatch(/^(deleted|rewritten)/);
+	});
+
+	it("the whole of what git removed, found together elsewhere, moved (an extracted method)", () => {
+		const whole = scenario([3, 4], [3, 4]);
+		expect(whole(3)).toBe(`changed ${OLD.length - 2 + 3} moved`);
+		expect(whole(4)).toBe(`changed ${OLD.length - 2 + 4} moved`);
+	});
+
+	it("a generic line of a function deleted whole stays deleted though its text is in new code", () => {
+		const old = [
+			"func TestA(t *testing.T) {",
+			"\tt.Parallel()",
+			"\tcheckA(t)",
+			"}",
+			"func TestB(t *testing.T) {",
+			"\tt.Parallel()",
+			"\tcheckB(t)",
+			"}",
+		];
+		const now = [
+			"func TestB(t *testing.T) {",
+			"\tt.Parallel()",
+			"\tcheckB(t)",
+			"}",
+			"func TestC(t *testing.T) {",
+			"\tt.Parallel()",
+			"\tcheckC(t)",
+			"}",
+		];
+		const hunks = [h(1, 4, 0, 0), h(8, 0, 5, 4)];
+		expect(place(rewrite(old, now, hunks, at(2)))).toBe("deleted");
+	});
+
+	it("a deleted guard's `return nil` never lands on an unrelated one in the next function (Q7)", () => {
+		const old = [
+			"func a() error {",
+			"\tif cached {",
+			"\t\treturn nil",
+			"\t}",
+			"\treturn load()",
+			"}",
+		];
+		const now = [
+			"func a() error {",
+			"\treturn load()",
+			"}",
+			"func b() error {",
+			"\tsync()",
+			"\treturn nil",
+			"}",
+		];
+		expect(placeIn(old, now, 3)).toMatch(/^(deleted|rewritten)/);
+	});
+});
+
 describe("a range split by a move follows its larger part (CAR-95 step 3, fix round 1)", () => {
 	const old = [
 		"func a() {",
@@ -1774,9 +1892,9 @@ describe("moves, deletions and look-alikes never put a thread on a wrong line (C
 			);
 			if (p.kind !== "placed" && p.kind !== "changed") continue;
 			expect(
-				p.anchor.line,
+				truth.get(line) ?? [],
 				`old line ${line} (${old[line - 1]?.trim()}) on ${p.anchor.line} "${now[p.anchor.line - 1]?.trim()}"`,
-			).toBe(truth.get(line));
+			).toContain(p.anchor.line);
 		}
 	}
 	const arb = moveDraws;

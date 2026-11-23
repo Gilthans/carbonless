@@ -6,11 +6,18 @@
  * settings.
  *
  * Statements share a pool of boilerplate lines (`t.Parallel()`, `ctx :=
- * context.Background()`, `if err != nil {` ...), so equal lines occur all
- * over the file, as in real code. Decoys are whole new functions put in
- * slots chosen far from every line the edit touched (DECOY_DISTANCE):
- * near home, a copy and an in-place edit read the same ("copy it, then
- * edit the original": the in-place line is right, a unit test's case).
+ * context.Background()`, ...), so equal lines occur all over the file, as
+ * in real code. Decoys are whole new functions put in slots chosen far
+ * from every line the edit touched (DECOY_DISTANCE): near home, a copy and
+ * an in-place edit read the same ("copy it, then edit the original": the
+ * in-place line is right, a unit test's case).
+ *
+ * Where the tracer's rules make a decoy a real move, its truth says so
+ * rather than the decoy being dropped: a deleted function's whole body in
+ * new code (its header follows it), lines dropped from a kept function
+ * found again as a run that is their whole hunk (an extracted method). A
+ * thread then may land there or nowhere. Everything short of that (half
+ * the lines, most of them, a boilerplate pair) has no truth: unplaced.
  */
 import fc from "fast-check";
 import type { MapHunk } from "../src/shared/tracer/lineMapper.js";
@@ -19,9 +26,16 @@ import type { MapHunk } from "../src/shared/tracer/lineMapper.js";
 const stmt = (id: number) =>
 	`\tvalue${id}a := compute${id}b(input${id}c, option${id}d)`;
 
-/** The same statement with one word changed: alike it (0.75). */
-const edited = (t: string, to = "setting") =>
-	t.replace(/option(\d+)d/u, `${to}$1e`);
+/**
+ * The statement edited: one word (alike, 0.75), two words (0.5), or
+ * rewritten (`size` 2: nothing alike).
+ */
+const edited = (t: string, to = "setting", size = 0) => {
+	if (size === 2)
+		return t.replace(/value(\d+)a := .*/u, `rewritten$1 = other(${to})`);
+	const one = t.replace(/option(\d+)d/u, `${to}$1e`);
+	return size === 1 ? one.replace(/input(\d+)c/u, `${to}In$1`) : one;
+};
 
 /** Lines many functions share. */
 const BOILERPLATE = [
@@ -34,30 +48,39 @@ const BOILERPLATE = [
 
 export const DECOY_DISTANCE = 8;
 
+export type Decoy =
+	| "copy-edited"
+	| "copy-function"
+	| "boilerplate-function"
+	| "function-body"
+	| "drop-and-copy"
+	| "second-block"
+	| "near-block"
+	| "block-line";
+
 export interface MoveDraw {
 	/** Per function, per body line: a statement (-1) or a boilerplate line. */
 	functions: number[][];
 	/** Statement lines edited in place (indices among all statement lines). */
 	edits: number[];
+	/** Per edit: its size (0 one word, 1 two words, 2 rewritten). */
+	sizes: number[];
 	/** For each edit, whether a neighbouring statement is deleted too. */
 	dropNeighbour: boolean[];
 	/** Functions deleted whole (indices). */
 	deleted: number[];
 	/** The moved block: function, first body line, length; target function. */
 	move: { fn: number; at: number; k: number; to: number } | null;
+	/**
+	 * Lines dropped from a kept function (boilerplate too): function, first
+	 * body line, how many dropped, how many of them copied into new code.
+	 */
+	drop: { fn: number; at: number; d: number; c: number } | null;
 	/** Decoy kinds to try, in order, each in a far slot when one is left. */
 	decoys: Decoy[];
 	/** Which slot (index among the far ones) each decoy takes. */
 	slots: number[];
 }
-
-type Decoy =
-	| "copy-edited"
-	| "copy-function"
-	| "boilerplate-function"
-	| "second-block"
-	| "near-block"
-	| "block-line";
 
 type Line = {
 	text: string;
@@ -65,6 +88,8 @@ type Line = {
 	src: number | null;
 	/** The old index it carries (kept, edited or moved); null: none. */
 	truth: number | null;
+	/** Old indices a real move may also carry here (see the file's doc). */
+	also?: number[];
 	/** It belongs to what the edit touched (home of an edit, move or deletion). */
 	home?: boolean;
 	/** A line gone (deleted or moved away): kept as a marker until the end. */
@@ -73,14 +98,20 @@ type Line = {
 
 let ids = 0;
 
-/** The new file, its -U0 hunks, each old line's true new line (absent: gone). */
+/**
+ * The new file, its -U0 hunks, each old line's acceptable new lines (its
+ * true line, and any line a real move may carry it to; absent: none), and
+ * the decoys put in.
+ */
 export function moveScenario(d: MoveDraw) {
 	ids = 1000;
 	const old: string[] = [];
 	const fnOf: number[] = [];
 	const statements: number[] = [];
 	const bodies: number[][] = [];
+	const headers: number[] = [];
 	d.functions.forEach((body, f) => {
+		headers.push(old.length);
 		old.push(`func f${f}(t *testing.T) {`);
 		fnOf.push(f);
 		const lines: number[] = [];
@@ -110,44 +141,74 @@ export function moveScenario(d: MoveDraw) {
 		}
 		if (block.size < 2) block.clear();
 	}
-	const edits = new Map<number, boolean>();
+	// Lines dropped from a kept function, boilerplate too (not the block's).
+	const dropped = new Set<number>();
+	const dropSpan: number[] = [];
+	// (Not in the moved block's functions: the block landing where lines
+	// were dropped, with the same boilerplate, is that line's place again.)
+	if (
+		d.drop &&
+		!deletedFns.has(d.drop.fn) &&
+		d.drop.fn !== move?.fn &&
+		d.drop.fn !== move?.to
+	) {
+		const body = bodies[d.drop.fn] ?? [];
+		for (let i = 0; i < d.drop.d; i++) {
+			const at = body[d.drop.at + i];
+			if (at === undefined || block.has(at)) break;
+			dropSpan.push(at);
+		}
+		// Keep one line of the function: it stays (the F1 shape).
+		if (dropSpan.length >= body.length)
+			dropSpan.length = Math.max(0, body.length - 1);
+		for (const at of dropSpan) dropped.add(at);
+	}
+	const edits = new Map<number, { drop: boolean; size: number }>();
 	d.edits.forEach((e, j) => {
 		const at = statements[e % Math.max(1, statements.length)];
-		if (at === undefined || block.has(at) || deletedFns.has(fnOf[at] as number))
+		if (
+			at === undefined ||
+			block.has(at) ||
+			dropped.has(at) ||
+			deletedFns.has(fnOf[at] as number)
+		)
 			return;
-		edits.set(at, d.dropNeighbour[j] ?? false);
+		edits.set(at, { drop: d.dropNeighbour[j] ?? false, size: d.sizes[j] ?? 0 });
 	});
 	// A dropped neighbour: the next statement line of the same function.
-	const dropped = new Set<number>();
-	for (const [at, drop] of edits) {
-		if (!drop) continue;
+	const neighbourOf = new Map<number, number>();
+	for (const [at, e] of edits) {
+		if (!e.drop) continue;
 		const next = at + 1;
 		if (
 			fnOf[next] === fnOf[at] &&
 			statements.includes(next) &&
 			!edits.has(next) &&
 			!block.has(next)
-		)
+		) {
 			dropped.add(next);
+			neighbourOf.set(at, next);
+		}
 	}
 	const rest: Line[] = [];
 	old.forEach((text, i) => {
 		const f = fnOf[i] as number;
-		if (deletedFns.has(f) || dropped.has(i)) {
+		if (deletedFns.has(f) || dropped.has(i) || block.has(i)) {
 			rest.push({ text: "", src: null, truth: null, home: true, hole: true });
 			return;
 		}
-		if (block.has(i)) {
-			rest.push({ text: "", src: null, truth: null, home: true, hole: true });
-			return;
-		}
-		if (edits.has(i)) {
-			rest.push({ text: edited(text), src: null, truth: i, home: true });
+		const e = edits.get(i);
+		if (e) {
+			rest.push({
+				text: edited(text, "setting", e.size),
+				src: null,
+				truth: i,
+				home: true,
+			});
 			return;
 		}
 		rest.push({ text, src: i, truth: i });
 	});
-	// Holes (deleted, dropped, moved away) stay as markers until the end.
 	const moved: Line[] = [...block]
 		.sort((a, b) => a - b)
 		.map((i) => ({ text: old[i] as string, src: null, truth: i, home: true }));
@@ -160,64 +221,99 @@ export function moveScenario(d: MoveDraw) {
 		else moved.length = 0;
 	}
 	// Decoys: whole new functions in far slots (between functions).
-	const functionOf = (body: string[]): Line[] => [
-		{ text: `func g${ids++}(t *testing.T) {`, src: null, truth: null },
-		...body.map((text) => ({ text, src: null, truth: null })),
-		{ text: "}", src: null, truth: null },
-		{ text: "", src: null, truth: null },
+	const fresh = (text: string, also?: number[]): Line => ({
+		text,
+		src: null,
+		truth: null,
+		...(also ? { also } : {}),
+	});
+	const functionOf = (body: Line[]): Line[] => [
+		fresh(`func g${ids++}(t *testing.T) {`),
+		...body,
+		fresh("}"),
+		fresh(""),
 	];
 	const editedAt = [...edits.keys()];
-	const deletedBodies = [...deletedFns].map((f) => bodies[f] ?? []);
+	const deletedList = [...deletedFns];
+	const put: Decoy[] = [];
 	d.decoys.forEach((kind, j) => {
-		let body: string[] | null = null;
+		let body: Line[] | null = null;
 		const e = editedAt[j % Math.max(1, editedAt.length)];
+		const gone = deletedList[j % Math.max(1, deletedList.length)];
 		if (kind === "copy-edited" && e !== undefined) {
-			body = [stmt(ids++), old[e] as string, stmt(ids++)];
-		} else if (kind === "copy-function" && e !== undefined) {
-			// The edited line's function, copied, the line edited another way
-			// (a moved block's lines left out: a copy of them is second-block).
+			body = [fresh(stmt(ids++)), fresh(old[e] as string), fresh(stmt(ids++))];
+		} else if (
+			kind === "copy-function" &&
+			e !== undefined &&
+			(edits.get(e)?.size ?? 0) < 2
+		) {
+			// (Not for a line rewritten beyond likeness: with its dropped
+			// neighbour, the copy holds its whole hunk, a real move.)
+			// The edited line's function, copied, the line edited another way,
+			// with the neighbour its edit dropped (C3); its lines other changes
+			// removed left out (with them, the copy holds what those changes
+			// removed: a real move, or another decoy kind).
 			body = (bodies[fnOf[e] as number] ?? [])
-				.filter((i) => !block.has(i))
+				.filter(
+					(i) =>
+						i === e ||
+						i === neighbourOf.get(e) ||
+						(!block.has(i) && !dropped.has(i) && !edits.has(i)),
+				)
 				.map((i) =>
-					i === e ? edited(old[i] as string, "other") : (old[i] as string),
+					fresh(
+						i === e ? edited(old[i] as string, "other") : (old[i] as string),
+					),
 				);
-		} else if (kind === "boilerplate-function") {
-			// A deleted function's boilerplate pair in unrelated new code, the
-			// pair no more than half its lines (more: its body did move).
-			const src = deletedBodies[j % Math.max(1, deletedBodies.length)] ?? [];
-			const pair = src.filter((i) => !statements.includes(i)).slice(0, 2);
-			if (pair.length > 0 && pair.length * 2 <= src.length + 1)
-				body = [...pair.map((i) => old[i] as string), stmt(ids++), stmt(ids++)];
+		} else if (kind === "boilerplate-function" && gone !== undefined) {
+			// A deleted function's boilerplate lines in unrelated new code.
+			const src = (bodies[gone] ?? []).filter((i) => !statements.includes(i));
+			if (src.length > 0)
+				body = [
+					...src.slice(0, 3).map((i) => fresh(old[i] as string)),
+					fresh(stmt(ids++)),
+				];
+		} else if (kind === "function-body" && gone !== undefined) {
+			// A deleted function's whole body, in a row in new code: its block
+			// moved; the header follows its body.
+			const src = bodies[gone] ?? [];
+			if (src.length >= 2) {
+				const header = headers[gone] as number;
+				body = src.map((i, k) =>
+					fresh(old[i] as string, k === 0 ? [i, header] : [i]),
+				);
+			}
+		} else if (kind === "drop-and-copy" && dropSpan.length >= 2) {
+			// Lines dropped from a kept function, `c` of them copied.
+			const c = Math.max(1, Math.min(d.drop?.c ?? 1, dropSpan.length));
+			const whole = c === dropSpan.length;
+			body = [
+				fresh(stmt(ids++)),
+				...dropSpan
+					.slice(0, c)
+					.map((i) => fresh(old[i] as string, whole ? [i] : undefined)),
+				fresh(stmt(ids++)),
+			];
 		} else if (kind === "second-block" && moved.length > 0) {
-			body = [stmt(ids++), ...moved.map((l) => l.text), stmt(ids++)];
+			body = [
+				fresh(stmt(ids++)),
+				...moved.map((l) => fresh(l.text)),
+				fresh(stmt(ids++)),
+			];
 		} else if (kind === "near-block" && moved.length > 0) {
 			body = [
-				stmt(ids++),
-				...moved.map((l) => edited(l.text, "near")),
-				stmt(ids++),
+				fresh(stmt(ids++)),
+				...moved.map((l) => fresh(edited(l.text, "near"))),
+				fresh(stmt(ids++)),
 			];
 		} else if (kind === "block-line" && moved.length > 0) {
-			body = [stmt(ids++), moved[0]?.text as string, stmt(ids++)];
+			body = [
+				fresh(stmt(ids++)),
+				fresh(moved[0]?.text as string),
+				fresh(stmt(ids++)),
+			];
 		}
 		if (!body) return;
-		// A decoy holding, in a row, most of a deleted function (its header
-		// counted) is that function moved, not a decoy (CAR-95: a block that
-		// carries most of its hunk moves).
-		const decoy = body;
-		const carriesDeleted = deletedBodies.some((b) => {
-			const texts = b.map((i) => old[i] as string);
-			for (let from = 0; from < texts.length; from++) {
-				for (let to = from + 1; to <= texts.length; to++) {
-					if ((to - from) * 2 <= texts.length + 1) continue;
-					const run = texts.slice(from, to);
-					for (let at = 0; at + run.length <= decoy.length; at++) {
-						if (run.every((t, i) => decoy[at + i] === t)) return true;
-					}
-				}
-			}
-			return false;
-		});
-		if (carriesDeleted) return;
 		const homes = rest.flatMap((l, i) => (l.home ? [i] : []));
 		// Slots: just before a kept function header, far from every home.
 		const slots = rest.flatMap((l, i) =>
@@ -227,22 +323,20 @@ export function moveScenario(d: MoveDraw) {
 				? [i]
 				: [],
 		);
-		slots.push(rest.length);
+		if (homes.every((h) => rest.length - h > DECOY_DISTANCE))
+			slots.push(rest.length);
+		if (slots.length === 0) return;
 		const at = slots[(d.slots[j] ?? 0) % slots.length] as number;
-		if (
-			at === rest.length &&
-			homes.some((h) => rest.length - h <= DECOY_DISTANCE)
-		)
-			return;
 		const lines = functionOf(body);
 		for (const l of lines) l.home = true;
 		rest.splice(at, 0, ...lines);
+		put.push(kind);
 	});
 	const kept = rest.filter((l) => !l.hole);
 	const now = kept.map((l) => l.text);
-	const truth = new Map<number, number>();
+	const truth = new Map<number, number[]>();
 	kept.forEach((l, j) => {
-		if (l.truth !== null) truth.set(l.truth + 1, j + 1);
+		if (l.truth !== null) truth.set(l.truth + 1, [j + 1]);
 	});
 	// Hunks between kept lines (in order: only moved and new lines broke).
 	const hunks: MapHunk[] = [];
@@ -265,13 +359,84 @@ export function moveScenario(d: MoveDraw) {
 		po = ko as number;
 		pn = kn as number;
 	}
-	return { old, now, hunks, truth };
+	// A deleted function's whole body found in a row among the decoys (a
+	// boilerplate decoy that happens to be all of it): its block moved, and
+	// its header follows it.
+	for (const f of deletedFns) {
+		const body = (bodies[f] ?? []).map((i) => old[i] as string);
+		if (body.length < 2) continue;
+		for (let j = 0; j + body.length <= kept.length; j++) {
+			const run = kept.slice(j, j + body.length);
+			if (
+				run.every(
+					(l, k) => l.src === null && l.truth === null && l.text === body[k],
+				)
+			) {
+				(run[0] as Line).also = [
+					...((run[0] as Line).also ?? []),
+					headers[f] as number,
+				];
+				run.forEach((l, k) => {
+					l.also = [...(l.also ?? []), (bodies[f] ?? [])[k] as number];
+				});
+			}
+		}
+	}
+	// The dropped lines found together, all of them, among any decoy's
+	// lines (another decoy that happens to hold them): an extracted block.
+	if (dropSpan.length >= 2) {
+		const texts = dropSpan.map((i) => old[i] as string);
+		for (let j = 0; j + texts.length <= kept.length; j++) {
+			const run = kept.slice(j, j + texts.length);
+			if (
+				run.every(
+					(l, k) => l.src === null && l.truth === null && l.text === texts[k],
+				)
+			) {
+				run.forEach((l, k) => {
+					const o = dropSpan[k] as number;
+					if (!(l.also ?? []).includes(o)) l.also = [...(l.also ?? []), o];
+				});
+			}
+		}
+	}
+	// A real move's lines: acceptable too. For lines dropped from a kept
+	// function, only when the copy is their whole hunk (an extracted method).
+	const hunkOf = (o: number) =>
+		hunks.find((h) => o + 1 >= h.oldStart && o + 1 < h.oldStart + h.oldCount);
+	kept.forEach((l, j) => {
+		for (const o of l.also ?? []) {
+			if (dropped.has(o)) {
+				const h = hunkOf(o);
+				const span = new Set(dropSpan);
+				const own =
+					h !== undefined &&
+					Array.from(
+						{ length: h.oldCount },
+						(_, k) => h.oldStart - 1 + k,
+					).every(
+						(i) =>
+							span.has(i) ||
+							!/\w/u.test(old[i] ?? "") ||
+							// Edited in place, alike: its partner stays at home.
+							(edits.get(i)?.size ?? 2) < 2,
+					);
+				if (!own) continue;
+			}
+			const list = truth.get(o + 1) ?? [];
+			list.push(j + 1);
+			truth.set(o + 1, list);
+		}
+	});
+	return { old, now, hunks, truth, put };
 }
 
 const DECOYS: Decoy[] = [
 	"copy-edited",
 	"copy-function",
 	"boilerplate-function",
+	"function-body",
+	"drop-and-copy",
 	"second-block",
 	"near-block",
 	"block-line",
@@ -294,6 +459,7 @@ export const moveDraws: fc.Arbitrary<MoveDraw> = fc
 		return fc.record({
 			functions: fc.constant(functions),
 			edits: fc.uniqueArray(fc.nat({ max: 60 }), { maxLength: 3 }),
+			sizes: fc.array(fc.nat({ max: 2 }), { minLength: 3, maxLength: 3 }),
 			dropNeighbour: fc.array(fc.boolean(), { minLength: 3, maxLength: 3 }),
 			deleted: fc.uniqueArray(fc.nat({ max: n - 1 }), { maxLength: 2 }),
 			move: fc.option(
@@ -302,6 +468,14 @@ export const moveDraws: fc.Arbitrary<MoveDraw> = fc
 					at: fc.nat({ max: 4 }),
 					k: fc.integer({ min: 2, max: 4 }),
 					to: fc.nat({ max: n - 1 }),
+				}),
+			),
+			drop: fc.option(
+				fc.record({
+					fn: fc.nat({ max: n - 1 }),
+					at: fc.nat({ max: 3 }),
+					d: fc.integer({ min: 2, max: 4 }),
+					c: fc.integer({ min: 1, max: 4 }),
 				}),
 			),
 			decoys: fc.array(fc.constantFrom(...DECOYS), { maxLength: 4 }),

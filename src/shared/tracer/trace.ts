@@ -322,6 +322,9 @@ function joins(a: MapHunk, b: MapHunk, diffs: TraceDiffs): boolean {
 	for (let n = from; n <= to; n++) {
 		const t = read(diffs.oldLineText, n);
 		if (t === null) return false;
+		// A line at the left margin (a top-level `}`, the next declaration)
+		// is a boundary between two pieces of code, as an opener is.
+		if (t.trim() !== "" && !/^\s/u.test(t)) return false;
 		if (!HAS_WORD.test(t)) continue;
 		if (OPENS_BLOCK.test(t)) return false;
 		words++;
@@ -493,7 +496,8 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 		diffs.bd.hunkAddingNew(at) === hunk
 			? { line: at }
 			: { line: at, moved: true };
-	const moved = movedTo(line, readers);
+	// No partner nearby: a move must carry its whole hunk.
+	const moved = movedTo(line, readers, local === null || local === "unknown");
 	if (moved === "ambiguous") return "unknown";
 	if (local === null || local === "unknown") {
 		// Its text is among the added lines as it was, but no move was

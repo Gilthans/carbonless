@@ -150,7 +150,8 @@ pairing (`src/shared/linePairing.ts`, whitespace not counted, so a
 re-indented line is the same line) of the hunk's removed and added lines,
 then of the hunk with its neighbours across a few lines that git cut it
 at (a `}`, a blank line, one other line, never a line opening a block such
-as a function header). A line the pairing leaves alone still goes to the
+as a function header, nor one at the left margin such as a function's
+closing `}`: the next function is other code). A line the pairing leaves alone still goes to the
 replacing line it most resembles between its neighbours' partners, when
 that is close (two lines merged into one). It shows as "changed since the
 review". Nothing replacing it resembles it: it is listed under its file as
@@ -177,20 +178,24 @@ A block moved elsewhere in its file takes its threads with it
 file's added lines, equal ignoring whitespace, inside a run of the removed
 lines around it found again line for line (equal, or alike beside an equal
 one), of two lines with a word or more and at least 20 letters and digits
-on its equal lines (git's `--color-moved` minimum), that carries more than
-half of its hunk's removed lines with a word (lines that have their own
-edited version at home don't count: they stayed). A block that moved
-takes most of what git removed around it along; two lines of boilerplate
-(`t.Parallel()` and a `ctx :=` line) found in new code while the rest of
-their function is gone did not move (owner's call, 2026-11-23: wrong is
-worse than unplaced). A block header that differs (`func a() {` against
+on its equal lines (git's `--color-moved` minimum). A deleted line (no
+partner nearby) follows it only when the run carries all of its hunk's
+removed lines with a word, two at least, those with their own edited
+version at home aside (they stayed): an extracted method, a block moved
+whole. Boilerplate dropped from a function that is still there (two or
+three of its lines, `t.Parallel()` and a `ctx :=` line) and found in new
+code did not move (owner's call, 2026-11-23: wrong is worse than
+unplaced). A line with a partner nearby only lets a move contest it when
+the run carries more than half of its hunk. A block header that differs (`func a() {` against
 `func b() {`) ends a run. The thread shows "moved since" on its new line.
 A line opening a block (`const (`) that didn't move itself, but whose
-whole body (two lines or more, most of its hunk) did, goes to the body's
-first line. An identical block that appears twice, or two runs within a
+whole body (two lines or more, with the opener all of its hunk) did, goes
+to the body's first line. An identical block that appears twice, or two runs within a
 clear margin of each other, is ambiguous: `rewritten`. With no move
-decided, a line whose text is still among the added lines is `rewritten`,
-never `deleted` (that would be a false claim). A partner nearby that isn't
+decided, a line whose text is still among the added lines, and says
+something on its own (20 letters and digits, or once in the old file), is
+`rewritten`, never `deleted` (that would be a false claim); a generic one
+(`t.Parallel()`, `return err` used all over) stays `deleted`. A partner nearby that isn't
 held like that competes with the move, if any, and with the file's
 look-alikes (about as alike, within 0.15, or more): the one whose
 surroundings (three lines each way) also resemble the old ones wins, by a
