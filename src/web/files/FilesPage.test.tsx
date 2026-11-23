@@ -856,9 +856,13 @@ describe("FilesPage", () => {
 		const box = document.createElement("textarea");
 		document.body.append(box);
 		act(() => box.focus());
-		await vi.waitFor(() => expect(button).toHaveClass("invisible"));
+		await vi.waitFor(() =>
+			expect(button).toHaveAttribute("data-fab-hidden", "writing"),
+		);
 		act(() => box.blur());
-		await vi.waitFor(() => expect(button).not.toHaveClass("invisible"));
+		await vi.waitFor(() =>
+			expect(button).not.toHaveAttribute("data-fab-hidden"),
+		);
 		expect(fileDiffRenders.count).toBe(before);
 		box.remove();
 	});

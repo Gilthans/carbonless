@@ -69,7 +69,8 @@ export function controlUnder(among: Iterable<Element>, fab: Box): boolean {
  * Watches the registered cards for `fab`, calling `report` with whether a
  * control is under it whenever that may have changed: the page or a
  * scroller scrolled, the viewport (a phone's toolbar) or a card resized, a
- * card's contents changed, a card came or went. Checked at most once a
+ * card's contents or a control's disabled, href or hidden changed, focus
+ * left something, a card came or went. Checked at most once a
  * frame, and only the cards on screen. The button's rect is read live:
  * it stays laid out while hidden (`invisible`), so no viewport arithmetic.
  * Returns a stop.
@@ -122,7 +123,14 @@ export function watchFloat(
 			watched.add(card);
 			io?.observe(card);
 			ro?.observe(card);
-			mo.observe(card, { childList: true, subtree: true });
+			// Controls coming and going, and one turning on or off by an
+			// attribute alone (an empty comment's Comment, enabled by a key).
+			mo.observe(card, {
+				childList: true,
+				subtree: true,
+				attributes: true,
+				attributeFilter: ["disabled", "href", "hidden"],
+			});
 		}
 		schedule();
 	};
@@ -131,6 +139,8 @@ export function watchFloat(
 	const opts = { capture: true, passive: true } as const;
 	window.addEventListener("scroll", schedule, opts);
 	window.addEventListener("resize", schedule);
+	// Leaving a box (the button shows again): looked at afresh.
+	document.addEventListener("focusout", schedule);
 	window.visualViewport?.addEventListener("resize", schedule);
 	ro?.observe(fab);
 	// Before the first paint, every card (the IntersectionObserver hasn't
@@ -141,6 +151,7 @@ export function watchFloat(
 		cancelAnimationFrame(frame);
 		window.removeEventListener("scroll", schedule, opts);
 		window.removeEventListener("resize", schedule);
+		document.removeEventListener("focusout", schedule);
 		window.visualViewport?.removeEventListener("resize", schedule);
 		io?.disconnect();
 		ro?.disconnect();

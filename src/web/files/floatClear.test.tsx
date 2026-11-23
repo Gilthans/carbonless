@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+} from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bestCpuRatio } from "../../../test/cpu";
 import { FilesFab } from "./FilesFab";
@@ -215,15 +222,23 @@ describe("watchFloat", () => {
 		// Each page's frame against the same reference (a look at five
 		// detached cards): a query of the whole page grows with the diff's
 		// lines (about 4x here), a look at the cards alone doesn't (about 1x).
+		// The reference is written out here, apart from floatClear.ts: a
+		// page-wide query slipped into the code under test must not slow it
+		// too (the ratio would hide it).
 		const detached = [0, 1, 2, 3, 4].map(() => {
 			const el = document.createElement("div");
 			el.innerHTML =
 				"<button>a</button><a href='#'>b</a><textarea></textarea><button>c</button><button>d</button>";
-			rects.set(el, rect(0, 600, 360, 200));
 			return el;
 		});
+		let sink = 0;
 		const reference = () => {
-			controlUnder(detached, FAB);
+			for (const el of detached) {
+				sink += el.getBoundingClientRect().width;
+				for (const c of el.querySelectorAll("button, a[href], textarea")) {
+					sink += c.getBoundingClientRect().width;
+				}
+			}
 		};
 		const frame = () => {
 			window.dispatchEvent(new Event("scroll"));
@@ -239,6 +254,7 @@ describe("watchFloat", () => {
 		const small = perPage(1000);
 		const big = perPage(4000);
 		expect(big / small).toBeLessThan(2);
+		expect(sink).toBe(0);
 	});
 });
 
@@ -260,8 +276,58 @@ function Page(props: { under: boolean }) {
 	);
 }
 
+/** A new comment: its Comment, under the button, off while the box is empty. */
+function Composer() {
+	const ref = useFloatClearCard();
+	const [text, setText] = useState("");
+	return (
+		<>
+			<div ref={ref} data-card="">
+				<textarea
+					aria-label="Comment"
+					value={text}
+					onChange={(e) => setText(e.target.value)}
+				/>
+				<button type="button" data-last="" disabled={!text.trim()}>
+					Comment
+				</button>
+			</div>
+			<QueryClientProvider client={client}>
+				<FilesFab onOpen={() => {}} />
+			</QueryClientProvider>
+		</>
+	);
+}
+
 describe("FilesFab", () => {
-	it("steps aside while a card's control is under it, kept in place (only invisible)", () => {
+	it("an empty comment's Comment, enabled by typing, then the box left: it steps aside", async () => {
+		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+			function (this: HTMLElement) {
+				if (this.getAttribute("aria-label") === "Files") return FAB;
+				if (this.hasAttribute("data-card")) return rect(0, 600, 360, 200);
+				if (this.hasAttribute("data-last")) return rect(230, 740, 110, 40);
+				return NOWHERE;
+			},
+		);
+		render(<Composer />);
+		const fab = screen.getByText("Files").closest("button");
+		// Comment is off: nothing to tap under the button.
+		expect(fab).not.toHaveAttribute("data-fab-hidden");
+		const box = screen.getByRole("textbox", { name: "Comment" });
+		act(() => box.focus());
+		expect(fab).toHaveAttribute("data-fab-hidden", "writing");
+		// A key: Comment turns on by its attribute alone (nothing resizes).
+		fireEvent.change(box, { target: { value: "x" } });
+		await act(async () => {});
+		act(() => box.blur());
+		await act(async () => {});
+		act(() => flush());
+		await vi.waitFor(() =>
+			expect(fab).toHaveAttribute("data-fab-hidden", "card"),
+		);
+	});
+
+	it("steps aside while a card's control is under it", () => {
 		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
 			function (this: HTMLElement) {
 				if (this.getAttribute("aria-label") === "Files") return FAB;
@@ -272,10 +338,9 @@ describe("FilesFab", () => {
 		);
 		const { rerender } = render(<Page under />);
 		const fab = screen.getByText("Files").closest("button");
-		expect(fab).toHaveClass("invisible");
 		expect(fab).toHaveAttribute("data-fab-hidden", "card");
 		rerender(<Page under={false} />);
 		act(() => flush());
-		expect(fab).not.toHaveClass("invisible");
+		expect(fab).not.toHaveAttribute("data-fab-hidden");
 	});
 });
