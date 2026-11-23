@@ -520,9 +520,13 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 	await installClock(page);
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
-	// Closed, the card has no Resolve: it's inside Show more.
-	await expect(c.getByRole("button", { name: "Resolve" })).toHaveCount(0);
+	// Closed, Resolve is on the card's Show more row; opened, the actions
+	// row has it beside Send (one at a time).
+	await expect(
+		c.getByTestId("thread-more-row").getByTestId("resolve-button"),
+	).toBeVisible();
 	await openCard(c);
+	await expect(c.getByTestId("resolve-button")).toHaveCount(1);
 	const resolve = c.getByRole("button", { name: "Resolve", exact: true });
 	await expect(resolve).toHaveText("Resolve");
 	const size = await resolve.boundingBox();
