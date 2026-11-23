@@ -214,9 +214,16 @@ A renderer `markdown` on the seam (`src/web/files/renderers/`):
   naming the headings it hides; it expands in place. The fold row never
   hides a changed block.
 - **Single** (side-by-side, an added or deleted file): each side rendered;
-  in side-by-side, the old and new documents side by side on desktop,
-  stacked on a phone, with boxes on the new side (removal-only clusters on
-  the old).
+  in side-by-side, the old and new documents side by side on desktop (each
+  column its own side's marks), the unified view on a phone, with boxes on
+  the new side (removal-only clusters on the old).
+- **Tables**: each row is a block, rendered as a table of its own; a
+  table's rows line up their columns as one table (`tableAlign.ts`), scroll
+  sideways in their own box and never break a word. Content's own
+  `~~strikethrough~~` reads apart from removed words (plain struck text in
+  its own color; only the diff's removed mark is red and tinted).
+- **No invisible change**: a change the rendering doesn't show shows its
+  changed lines as source under the block (Sanitizing, below).
 - **Whitespace-only clusters** in a block (CAR-156): each keeps its own
   box, a small extra box on the same bar with the `~` mark CAR-184 uses.
   With Ignore whitespace on, it is left out as in the line view.
@@ -241,13 +248,17 @@ marks are pieces (`src/shared/pieces.ts`, `sincePieces`): runs of changed
 lines, each owning lines of one full-diff cluster. Marks are stored by
 line (`lines-reviewed`), so cutting a piece needs no carry.
 
-- **The cut:** for a Markdown file, `sincePieces` cuts each run at block
-  boundaries the same way (blocks of the compared patch set's text on the
-  old side, the viewed head's on the new), with the same pairing, order and
-  contiguity rules. One function does the grouping for both cuts. A piece
-  already never spans two clusters; now it never spans two blocks either.
-- **The view:** the Rendered view reads the since view's two sides
-  (the blob route with `from`) and its pieces, and shows a box per piece on
+- **The cut:** for a Markdown file, `cutRunsAtBlocks` (`src/shared/pieces.ts`)
+  groups each run of one cluster's changed lines at block boundaries the
+  same way (blocks of the compared patch set's text on the old side, the
+  viewed head's on the new), with the same pairing, order and contiguity
+  rules; `sincePieces` then makes each group a piece (and cuts the groups
+  at whitespace-only runs). One function, `groupByBlocks`, does the
+  grouping for both cuts. A piece already never spans two clusters; now it
+  never spans two blocks either.
+- **The view:** the Rendered view rebuilds the since view's two sides from
+  what its line view reads, the hunks and the context route over the
+  whole new side (both with `from`), and reads its pieces; it shows a box per piece on
   its block, with the since view's kinds (reworked, new, reverted, removed)
   as the line view shows them; a piece of the compared patch set only (red,
   gone) shows struck with its since-only box. Unchanged-since text renders
@@ -262,14 +273,33 @@ since view too.
 
 `marked` renders to HTML; DOMPurify sanitizes it with an allow-list
 (no `script`, `style`, `iframe`, event handlers; `safeHref` on every link).
-Images: relative images resolve to the blob route at the same revision
-(CAR-38's `blobUrl`), remote images are not loaded by default (a placeholder
-showing the URL, click to load) because loading them would tell a third party
-the review is open. A placeholder shows the image's alt text before its
-path or URL. A removed image (a removed word mark's, or a removed block's)
-loads from the old side (the base in the full diff, the compared patch set
-in the since view), framed red and faded; an added one is framed green.
-Raw HTML blocks show as source.
+Images: a relative image loads only when it is one of the review's
+changed image files (the blob route at the same revision, by the file's
+index, CAR-38's `blobUrl`); any other relative image shows as a still
+placeholder (its icon, alt and path, "Not in this PR"; loading any image
+of the repo is CAR-268). Remote images are not loaded by default (a
+placeholder showing the URL, click to load, http(s) only) because loading
+them would tell a third party the review is open. A placeholder shows the
+image's alt text before its path or URL. A removed image (a removed word
+mark's, or a removed block's) loads from the old side (the base in the full
+diff, the compared patch set in the since view), framed red with the
+picture faded (a placeholder's words never fade); an added one is framed
+green. An image that fails to load (in the since view, one missing at the
+compared patch set) becomes a still placeholder ("Not at this patch set"),
+never a broken image. Raw HTML blocks show as source.
+
+**No invisible change.** Sanitizing drops source the rendering never
+shows: an HTML comment (a known prompt-injection channel in README and
+AGENTS.md files), a script, a style or class attribute. When a changed,
+added or removed block's rendering doesn't show its change (DOMPurify
+removed anything from that block's source, on either side; the old blocks
+look as the new ones do, whitespace collapsed as the browser does; or a
+unit's changed lines are all blank), its changed source lines show under
+the rendered block, always (no toggle): monospace rows as the line view's
+(`-` red struck, `+` green, word marks), with an icon "Not visible when
+rendered". Unified and side by side (each column its own side), full diff
+and since view; on a phone the rows scroll inside their own box. The boxes
+stay where they are: coverage is unchanged.
 
 ## Left to the builder
 
