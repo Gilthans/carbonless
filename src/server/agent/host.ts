@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import {
+	AGENT_ENV_MASK,
 	AGENT_TURN_MS,
 	type AgentAnchor,
 	type AgentConfig,
@@ -2120,6 +2121,54 @@ export async function agentConfig(): Promise<{
 		agent: config.agent,
 		problems: problems.filter((p) => /^(agent|config\.json)\b/.test(p)),
 	};
+}
+
+/** The agent with every env value masked: what the page may see (CAR-59). */
+export function maskAgentEnv(agent: AgentConfig | null): AgentConfig | null {
+	if (!agent) return null;
+	const env = Object.fromEntries(
+		Object.keys(agent.env).map((name) => [name, AGENT_ENV_MASK]),
+	);
+	return { ...agent, env };
+}
+
+/** agentConfig for the page: the env's names, never its values. */
+export async function agentConfigForPage(): Promise<{
+	agent: AgentConfig | null;
+	problems: string[];
+}> {
+	const read = await agentConfig();
+	return { ...read, agent: maskAgentEnv(read.agent) };
+}
+
+/** A Save's or Check's agent; `env` absent means "as stored". */
+export type AgentConfigInput = Omit<AgentConfig, "env"> & {
+	env?: Record<string, string>;
+};
+
+/**
+ * The agent a Save or Check means, against the stored one: a masked value
+ * (AGENT_ENV_MASK, as GET gave it) is the stored value, a missing env the
+ * stored env. A mask with no stored value to stand for throws: the mask
+ * never runs or reaches config.json.
+ */
+export function restoreAgentEnv(
+	sent: AgentConfigInput,
+	stored: AgentConfig | null,
+): AgentConfig {
+	const kept = stored?.env ?? {};
+	if (!sent.env) return { ...sent, env: { ...kept } };
+	const env: Record<string, string> = {};
+	for (const [name, value] of Object.entries(sent.env)) {
+		if (value !== AGENT_ENV_MASK) env[name] = value;
+		else if (Object.hasOwn(kept, name)) env[name] = kept[name] as string;
+		else {
+			throw new Error(
+				`agent.env.${name} has no stored value to keep; enter it again`,
+			);
+		}
+	}
+	return { ...sent, env };
 }
 
 /** The review's agent host: one thread store, one runner, the session's facts. */

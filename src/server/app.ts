@@ -37,11 +37,15 @@ import { registerAccessKey, registerHostCheck } from "./access.js";
 import { checkAgent } from "./agent/acp.js";
 import { agentsDir } from "./agent/checkout.js";
 import {
+	type AgentConfigInput,
 	AgentConflictError,
 	type AgentHost,
 	AgentRequestError,
 	agentConfig,
+	agentConfigForPage,
+	maskAgentEnv,
 	noteAgentConfigSaved,
+	restoreAgentEnv,
 } from "./agent/host.js";
 import { JoinElsewhereError, StaleJoinRequestError } from "./agent/join.js";
 import { isSafePath } from "./agent/prompt.js";
@@ -1140,22 +1144,34 @@ export async function buildApp(
 	);
 
 	// The setup modal: what is configured, save the agent, or try it once.
-	app.get("/api/config/agent", () => agentConfig());
+	// The env's values never reach the page (they hold tokens): it gets
+	// AGENT_ENV_MASK for each, and a Save or Check carrying the mask (or no
+	// env) keeps the stored value (CAR-59).
+	app.get("/api/config/agent", () => agentConfigForPage());
 	app.put("/api/config/agent", async (request) => {
-		const agent = parseAgentConfig(request.body, true);
+		const sent = parseAgentConfig(request.body, true);
 		try {
-			const c = await updateConfig((config) => ({ ...config, agent }));
+			const c = await updateConfig((config) => ({
+				...config,
+				agent: sent && restoreAgentEnv(sent, config.agent),
+			}));
 			noteAgentConfigSaved();
-			return { agent: c.agent };
+			return { agent: maskAgentEnv(c.agent) };
 		} catch (error) {
 			throw new BadRequestError((error as Error).message);
 		}
 	});
 	// Which one-time setups this machine has done (folded in the modal).
 	app.get("/api/config/agent/setup", () => readSetupDone());
-	app.post("/api/config/agent/check", (request) => {
-		const agent = parseAgentConfig(request.body, false);
-		if (!agent) throw new BadRequestError("Expected an agent");
+	app.post("/api/config/agent/check", async (request) => {
+		const sent = parseAgentConfig(request.body, false);
+		if (!sent) throw new BadRequestError("Expected an agent");
+		let agent: AgentConfig;
+		try {
+			agent = restoreAgentEnv(sent, (await agentConfig()).agent);
+		} catch (error) {
+			throw new BadRequestError((error as Error).message);
+		}
 		return checkAgent(agent, agentsDir());
 	});
 
@@ -1589,11 +1605,12 @@ function parseAgentView(
 /**
  * The setup modal's agent: `{command, args, env, leash}` (null when
  * `nullable`, to remove it), checked as config.json's agent section is.
+ * `env` stays absent when the body has none (restoreAgentEnv: the stored).
  */
 function parseAgentConfig(
 	body: unknown,
 	nullable: boolean,
-): AgentConfig | null {
+): AgentConfigInput | null {
 	if (body === null && nullable) return null;
 	const fail = (m: string) => new BadRequestError(m);
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -1602,7 +1619,7 @@ function parseAgentConfig(
 	const {
 		command,
 		args = [],
-		env = {},
+		env,
 		leash = "open",
 	} = body as Record<string, unknown>;
 	if (
@@ -1616,10 +1633,11 @@ function parseAgentConfig(
 		throw fail("agent.args must be an array of strings");
 	}
 	if (
-		typeof env !== "object" ||
-		env === null ||
-		Array.isArray(env) ||
-		!Object.values(env).every((v) => typeof v === "string")
+		env !== undefined &&
+		(typeof env !== "object" ||
+			env === null ||
+			Array.isArray(env) ||
+			!Object.values(env).every((v) => typeof v === "string"))
 	) {
 		throw fail("agent.env must be an object of strings");
 	}
@@ -1629,7 +1647,7 @@ function parseAgentConfig(
 	return {
 		command: command.trim(),
 		args: args as string[],
-		env: env as Record<string, string>,
+		...(env === undefined ? {} : { env: env as Record<string, string> }),
 		leash: "open",
 	};
 }

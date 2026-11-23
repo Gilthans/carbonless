@@ -22,7 +22,11 @@ import {
 } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
-import type { AgentStatus, AgentThread } from "../shared/agent";
+import {
+	AGENT_ENV_MASK,
+	type AgentStatus,
+	type AgentThread,
+} from "../shared/agent";
 import { IMAGE_MAX_BYTES } from "../shared/imageTypes";
 import type {
 	CommentsView,
@@ -2446,7 +2450,9 @@ describe("API", () => {
 				};
 				const res = await put(agent);
 				expect(res.statusCode, res.body).toBe(200);
-				expect(res.json()).toEqual({ agent });
+				expect(res.json()).toEqual({
+					agent: { ...agent, env: { A: AGENT_ENV_MASK } },
+				});
 				expect(JSON.parse(readFileSync(file(), "utf8"))).toMatchObject({
 					mine: 1,
 					agent: { ...agent, note: "keep" },
@@ -2454,6 +2460,89 @@ describe("API", () => {
 				const off = await put(null);
 				expect(off.json()).toEqual({ agent: null });
 				expect(JSON.parse(readFileSync(file(), "utf8")).agent).toBeNull();
+			});
+
+			// CAR-59: an agent's env holds tokens; the page never gets them.
+			const SECRET = "sk-ant-api03-very-secret-value";
+			const stored = {
+				command: "claude-agent-acp",
+				args: [],
+				env: { ANTHROPIC_API_KEY: SECRET, PLAIN: "x" },
+				leash: "open",
+			};
+			const masked = {
+				...stored,
+				env: { ANTHROPIC_API_KEY: AGENT_ENV_MASK, PLAIN: AGENT_ENV_MASK },
+			};
+			const storedEnv = () =>
+				JSON.parse(readFileSync(file(), "utf8")).agent.env;
+
+			it("GET gives the env's names, never its values", async () => {
+				writeFileSync(file(), JSON.stringify({ agent: stored }));
+				const res = await raw("/api/config/agent");
+				expect(res.statusCode, res.body).toBe(200);
+				expect(res.body).not.toContain(SECRET);
+				expect(res.json()).toEqual({ agent: masked, problems: [] });
+			});
+
+			it("a Save of what GET gave keeps the stored env; the PUT's answer is masked too", async () => {
+				writeFileSync(file(), JSON.stringify({ agent: stored }));
+				const read = (await raw("/api/config/agent")).json();
+				const res = await put(read.agent);
+				expect(res.statusCode, res.body).toBe(200);
+				expect(res.body).not.toContain(SECRET);
+				expect(res.json()).toEqual({ agent: masked });
+				expect(storedEnv()).toEqual(stored.env);
+				expect(readFileSync(file(), "utf8")).not.toContain(AGENT_ENV_MASK);
+				// No env at all: the stored one stays.
+				const { env: _, ...bare } = stored;
+				expect((await put(bare)).statusCode).toBe(200);
+				expect(storedEnv()).toEqual(stored.env);
+				// A typed value replaces its own; a name left out goes.
+				expect(
+					(
+						await put({
+							...stored,
+							env: { ANTHROPIC_API_KEY: AGENT_ENV_MASK, NEW: "y" },
+						})
+					).statusCode,
+				).toBe(200);
+				expect(storedEnv()).toEqual({ ANTHROPIC_API_KEY: SECRET, NEW: "y" });
+			});
+
+			it("a mask with nothing stored under its name is refused, config.json untouched", async () => {
+				writeFileSync(file(), JSON.stringify({ agent: stored }));
+				const res = await put({ ...stored, env: { OTHER: AGENT_ENV_MASK } });
+				expect(res.statusCode).toBe(400);
+				expect(res.json()).toEqual({
+					error: "agent.env.OTHER has no stored value to keep; enter it again",
+				});
+				expect(storedEnv()).toEqual(stored.env);
+			});
+
+			it("check runs with the stored value behind a mask", async () => {
+				// The stored CRB_FAKE_ACP names a scenario of its own: the
+				// agent says its name only if it got the stored path, not the mask.
+				const dir = join(pr.repo.path, "stored-acp");
+				mkdirSync(dir, { recursive: true });
+				const path = writeAcpScenario(dir, {
+					agent: { name: "stored-acp", version: "2.0.0" },
+				});
+				writeFileSync(
+					file(),
+					JSON.stringify({ agent: { ...stored, env: { CRB_FAKE_ACP: path } } }),
+				);
+				const check = (env: Record<string, string>) =>
+					raw("/api/config/agent/check", {
+						method: "POST",
+						payload: { ...stored, env },
+					});
+				expect((await check({ CRB_FAKE_ACP: AGENT_ENV_MASK })).json()).toEqual({
+					ok: true,
+					agent: { name: "stored-acp", version: "2.0.0" },
+				});
+				const refused = await check({ OTHER: AGENT_ENV_MASK });
+				expect(refused.statusCode).toBe(400);
 			});
 
 			it("each Save counts, the same config too (a crashed agent may start again); a bad one doesn't", async () => {
