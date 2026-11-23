@@ -1440,7 +1440,9 @@ for (const [where, control] of [
 		await openFiles(page, s.url);
 		// Its header at the top (picked), or stuck deep in a long file.
 		const [path, nextPath] =
-			where === "picked" ? ["a/one.ts", "a/two.ts"] : ["b/long.ts", "c/new.txt"];
+			where === "picked"
+				? ["a/one.ts", "a/two.ts"]
+				: ["b/long.ts", "c/new.txt"];
 		let section: Locator;
 		if (where === "picked") {
 			await pickInTree(page, /one\.ts/);
