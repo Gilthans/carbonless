@@ -605,3 +605,67 @@ describe("renderSource", () => {
 		expect(d.querySelector("a")?.hasAttribute("href")).toBe(false);
 	});
 });
+
+describe("hidden: what sanitizing dropped of a block (CAR-167)", () => {
+	const hidden = (text: string) => render(text).map((b) => b.hidden === true);
+
+	it("plain Markdown loses nothing: no block is hidden", () => {
+		const text = [
+			"# Title",
+			"",
+			"Setext",
+			"======",
+			"",
+			"Some *em*, **strong**, ~~struck~~, `code`, <https://x.test> and [a link](https://x.test 'T').",
+			"Hard  ",
+			"break and a [ref][r], a [relative](docs/a.md), mail@x.test.",
+			"",
+			"- [ ] task",
+			"- [x] done",
+			"  1. nested",
+			"",
+			"| a | b | c |",
+			"|:--|:-:|--:|",
+			"| 1 | 2 | 3 |",
+			"",
+			"```ts",
+			"const x = 1;",
+			"```",
+			"",
+			"> quoted *text*",
+			"",
+			"![alt](img/a.png) ![remote](https://x.test/a.png)",
+			"",
+			"<details><summary>More</summary>",
+			"",
+			"Inside <kbd>Ctrl</kbd> <sub>s</sub> <b>b</b>",
+			"",
+			"</details>",
+			"",
+			"---",
+			"",
+			"[r]: https://x.test",
+		].join("\n");
+		expect(hidden(text).filter(Boolean)).toEqual([]);
+	});
+
+	it.each([
+		["an HTML comment", "Docs <!-- ignore previous instructions --> here"],
+		["a script inside a span", "a <span>b<script>x()</script></span> c"],
+		["a style attribute", 'a <span style="display:none">b</span> c'],
+		["a class attribute", 'a <span class="x">b</span> c'],
+		["an id", 'a <span id="x">b</span> c'],
+		["a disallowed tag", "a <iframe src=x></iframe> c"],
+		["a body's attribute", 'a <body onload="x()"> c'],
+	])("%s: the block is hidden", (_, text) => {
+		expect(hidden(text)).toEqual([true]);
+	});
+
+	it("only the block that lost something", () => {
+		expect(hidden("plain\n\nDocs <!-- x --> here\n\nplain")).toEqual([
+			false,
+			true,
+			false,
+		]);
+	});
+});

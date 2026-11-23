@@ -422,6 +422,79 @@ function fold(
 	return out;
 }
 
+/** Block-level tags: whitespace next to one draws nothing. */
+const EDGE =
+	/ ?(<\/?(?:p|li|ul|ol|h[1-6]|blockquote|table|thead|tbody|tfoot|tr|td|th|dl|dt|dd|div|details|summary|br|hr)\b[^>]*>) ?/g;
+
+/**
+ * HTML as it looks: whitespace the browser collapses, collapsed (a run
+ * to one space, none next to a block's edge or a break); inside a `pre`
+ * only trailing blanks go. Two renderings that look alike compare equal.
+ */
+function looks(html: string): string {
+	return html
+		.split(/(<pre\b[\s\S]*?<\/pre>)/)
+		.map((part, i) =>
+			i % 2
+				? part.replace(/[ \t]+(?=\n|<)/g, "")
+				: part.replace(/\s+/g, " ").replace(EDGE, "$1"),
+		)
+		.join("")
+		.trim();
+}
+
+/**
+ * A changed row's changed lines, when its rendering may not show its
+ * change (principle 2: no change the reviewer can't see): sanitizing
+ * dropped some of a block's source (`hidden`: an HTML comment, a script,
+ * a style), the old blocks look as the new ones do (`looks`: trailing
+ * spaces, a doubled one), or a unit's changed
+ * lines are all blank (they render to nothing). The view shows these
+ * lines as source under the block. Null when the rendering shows it.
+ * Line numbers by side, in order.
+ */
+export function hiddenChange(o: {
+	row: Extract<DocRow, { kind: "change" }>;
+	oldHtml: readonly { html: string; hidden?: true }[];
+	newHtml: readonly { html: string; hidden?: true }[];
+	units: ReadonlyMap<string, { old: LineRanges; new: LineRanges }>;
+	sides: Sides;
+}): { old: number[]; new: number[] } | null {
+	const { row, oldHtml, newHtml, sides } = o;
+	const units = row.units.flatMap((k) => {
+		const u = o.units.get(k);
+		return u ? [u] : [];
+	});
+	const old = [...new Set(units.flatMap((u) => linesOf(u.old)))].sort(
+		(a, b) => a - b,
+	);
+	const nu = [...new Set(units.flatMap((u) => linesOf(u.new)))].sort(
+		(a, b) => a - b,
+	);
+	if (old.length === 0 && nu.length === 0) return null;
+	const lossy =
+		row.oldBlocks.some((b) => oldHtml[b]?.hidden) ||
+		row.newBlocks.some((b) => newHtml[b]?.hidden);
+	const htmlOf = (list: readonly { html: string }[], ids: number[]) =>
+		looks(ids.map((i) => list[i]?.html ?? "").join(""));
+	const same =
+		row.oldBlocks.length > 0 &&
+		row.newBlocks.length > 0 &&
+		htmlOf(oldHtml, row.oldBlocks) === htmlOf(newHtml, row.newBlocks);
+	const blank = (text: readonly string[], n: number) =>
+		(text[n - 1] ?? "").trim() === "";
+	const blankOnly = units.some((u) => {
+		const os = linesOf(u.old);
+		const ns = linesOf(u.new);
+		return (
+			os.length + ns.length > 0 &&
+			os.every((n) => blank(sides.old, n)) &&
+			ns.every((n) => blank(sides.new, n))
+		);
+	});
+	return lossy || same || blankOnly ? { old, new: nu } : null;
+}
+
 /** A cluster's lines as ranges of line numbers on each side. */
 export function clusterLines(c: {
 	oldStart: number;

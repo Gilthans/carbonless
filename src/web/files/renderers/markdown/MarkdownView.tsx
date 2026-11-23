@@ -1,7 +1,11 @@
 import "github-markdown-css/github-markdown-dark.css";
 import "../../../githubHtml.css";
 import "./markdownView.css";
-import { ChevronRightIcon, CommentIcon } from "@primer/octicons-react";
+import {
+	ChevronRightIcon,
+	CommentIcon,
+	EyeClosedIcon,
+} from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import {
 	type MouseEvent,
@@ -37,6 +41,7 @@ import {
 	overviewQuery,
 	sessionQuery,
 } from "../../../api";
+import { CodeLine, type Mark } from "../../../code/Invisibles";
 import { SkeletonBar, Spinner } from "../../../Spinner";
 import { Tooltip } from "../../../Tooltip";
 import { spanTexts } from "../../../threads/draftMove";
@@ -81,6 +86,7 @@ import {
 	sinceEarlier,
 	sinceLeft,
 } from "../../threadPlacement";
+import { wordMarks } from "../../wordDiff";
 import { type ImageFile, imageResolver, remoteImageUrl } from "./images";
 import {
 	blockCommentSpan,
@@ -90,6 +96,7 @@ import {
 	clusterLines,
 	type DocRow,
 	type DocUnit,
+	hiddenChange,
 	type LineAnchor,
 	lineAnchor,
 	rebuildSides,
@@ -311,6 +318,7 @@ export function MarkdownView(props: {
 				),
 				oldHtml: base.oldHtml,
 				newHtml: base.newHtml,
+				sides: base.sides,
 				pair: base.pair,
 			};
 		} catch {
@@ -953,7 +961,7 @@ export function MarkdownView(props: {
 		);
 	}
 
-	const { doc, units, oldHtml, newHtml, pair } = model;
+	const { doc, units, oldHtml, newHtml, pair, sides } = model;
 	const htmlOf = (list: readonly { html: string }[], ids: number[]) =>
 		ids.map((i) => list[i]?.html ?? "").join("");
 	const noteId = (key: string) => `${idBase}-note-${key}`;
@@ -1135,6 +1143,41 @@ export function MarkdownView(props: {
 				);
 			}
 		}
+		// A change the rendering doesn't show (an HTML comment, a dropped
+		// attribute, a blank line, old rendering as new): its changed lines
+		// as source under the block, each side in its column (principle 2).
+		const hid = hiddenChange({
+			row,
+			oldHtml,
+			newHtml,
+			units: model.lines,
+			sides,
+		});
+		if (hid) {
+			const dels = hid.old.map((n) => sides.old[n - 1] ?? "");
+			const adds = hid.new.map((n) => sides.new[n - 1] ?? "");
+			const words =
+				dels.length === adds.length
+					? dels.map((d, i) => wordMarks(d, adds[i] ?? ""))
+					: null;
+			const shown = (del: boolean, add: boolean) => (
+				<HiddenChange
+					del={del ? dels : []}
+					add={add ? adds : []}
+					delWords={words?.map((w) => w.old)}
+					addWords={words?.map((w) => w.new)}
+				/>
+			);
+			const under = (cell: ReactNode, rows: ReactNode) => (
+				<>
+					{cell}
+					{rows}
+				</>
+			);
+			unified = under(unified, shown(true, true));
+			if (dels.length > 0) left = under(left, shown(true, false));
+			if (adds.length > 0) right = under(right, shown(false, true));
+		}
 		const chips = controls.flatMap(({ key, u }) => {
 			const chip = unitChips(u, from);
 			return chip ? [<span key={key}>{chip}</span>] : [];
@@ -1300,6 +1343,77 @@ export function MarkdownView(props: {
 				/>
 			)}
 		</>
+	);
+}
+
+/**
+ * A changed block's changed lines as source (`hiddenChange`): what its
+ * rendering doesn't show, under it, always shown. Rows as the line view's:
+ * removed red and struck, added green, the pair's word marks when the
+ * sides have as many lines; they scroll inside their own box.
+ */
+function HiddenChange(props: {
+	del: readonly string[];
+	add: readonly string[];
+	delWords?: readonly (readonly Mark[])[];
+	addWords?: readonly (readonly Mark[])[];
+}) {
+	const row = (
+		kind: "del" | "add",
+		text: string,
+		i: number,
+		marks?: readonly Mark[],
+	) => (
+		<div
+			key={`${kind}${i}`}
+			data-testid="md-hidden-line"
+			data-kind={kind}
+			className={`whitespace-pre px-2 ${
+				kind === "del"
+					? "bg-del text-del-ink line-through"
+					: "bg-add text-add-ink"
+			}`}
+		>
+			<span aria-hidden className="select-none pr-2">
+				{kind === "del" ? "-" : "+"}
+			</span>
+			<CodeLine
+				text={text}
+				lang={null}
+				words={marks && marks.length > 0 ? { marks, tone: kind } : undefined}
+			/>
+		</div>
+	);
+	return (
+		<div
+			data-testid="md-hidden"
+			className="mt-1 flex min-w-0 items-start gap-2"
+		>
+			<Tooltip content="Not visible when rendered" describe={false} lazy>
+				{(trigger) => (
+					// Focusable without a tab stop, so a tap shows the name.
+					<span
+						{...trigger}
+						tabIndex={-1}
+						role="img"
+						aria-label="Not visible when rendered"
+						data-testid="md-hidden-icon"
+						className="mt-0.5 shrink-0 text-warn"
+					>
+						<EyeClosedIcon size={14} aria-hidden />
+					</span>
+				)}
+			</Tooltip>
+			<div
+				data-testid="md-hidden-lines"
+				className="min-w-0 flex-1 overflow-x-auto rounded border border-line bg-code font-mono text-xs leading-5"
+			>
+				<div className="w-max min-w-full">
+					{props.del.map((t, i) => row("del", t, i, props.delWords?.[i]))}
+					{props.add.map((t, i) => row("add", t, i, props.addWords?.[i]))}
+				</div>
+			</div>
+		</div>
 	);
 }
 

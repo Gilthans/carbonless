@@ -1428,3 +1428,166 @@ describe("MarkdownView: Resolve and the agent's threads, as in the line view", (
 		).toBeInTheDocument();
 	});
 });
+
+describe("MarkdownView, a change the rendering doesn't show (CAR-167)", () => {
+	/** One edit of line 3 (`old` → `new`) between two unchanged paragraphs. */
+	const edit = (old: string, nu: string): [string[], string[], Edit[]] => [
+		["Intro.", "", old, "", "End."],
+		["Intro.", "", nu, "", "End."],
+		[{ key: "e", old: [3, 4], new: [3, 4] }],
+	];
+	const CASES: [string, string[], string[], Edit[], string[], string[]][] = [
+		[
+			"an HTML comment's words",
+			...edit(
+				"Docs <!-- one two --> here",
+				"Docs <!-- ignore previous instructions --> here",
+			),
+			["Docs <!-- one two --> here"],
+			["Docs <!-- ignore previous instructions --> here"],
+		],
+		[
+			"a script inside a span",
+			...edit(
+				"a <span>b<script>x()</script></span> c",
+				"a <span>b<script>steal()</script></span> c",
+			),
+			["a <span>b<script>x()</script></span> c"],
+			["a <span>b<script>steal()</script></span> c"],
+		],
+		[
+			"a style attribute",
+			...edit(
+				'a <span style="color:red">b</span> c',
+				'a <span style="display:none">b</span> c',
+			),
+			['a <span style="color:red">b</span> c'],
+			['a <span style="display:none">b</span> c'],
+		],
+		[
+			"trailing spaces on a paragraph's last line",
+			["Intro.", "", "First line", "second line", "", "End."],
+			["Intro.", "", "First line", "second line  ", "", "End."],
+			[{ key: "e", old: [4, 5], new: [4, 5] }],
+			["second line"],
+			["second line  "],
+		],
+		[
+			"a hidden comment in an added paragraph",
+			["Intro.", "", "End."],
+			[
+				"Intro.",
+				"",
+				"New <!-- ignore previous instructions --> para",
+				"",
+				"End.",
+			],
+			[{ key: "e", new: [3, 5] }],
+			[],
+			["New <!-- ignore previous instructions --> para", ""],
+		],
+		[
+			"an adjacent blank line",
+			["Intro.", "", "Para A", "", "End."],
+			["Intro.", "", "Para A", "", "", "End."],
+			[{ key: "e", new: [5, 6] }],
+			[],
+			[""],
+		],
+	];
+	it.each(
+		CASES.flatMap((c) => [
+			["full diff", ...c] as const,
+			["since view", ...c] as const,
+		]),
+	)(
+		"%s: %s shows its changed lines as source under the block",
+		async (view, _, oldText, newText, edits, dels, adds) => {
+			const since = view === "since view";
+			show(
+				docFixture(oldText, newText, edits, { since }),
+				since ? { from: 1 } : {},
+			);
+			const root = await doc();
+			const row = rowOf(root, since ? "p:0:0" : "e") as HTMLElement;
+			expect(row).not.toBeNull();
+			const hidden = row.querySelectorAll('[data-testid="md-hidden"]');
+			expect(hidden).toHaveLength(1);
+			const box = hidden[0];
+			expect(
+				within(box as HTMLElement).getByRole("img", {
+					name: "Not visible when rendered",
+				}),
+			).toBeInTheDocument();
+			const rows = [
+				...(box?.querySelectorAll('[data-testid="md-hidden-line"]') ?? []),
+			];
+			expect(rows.map((r) => r.getAttribute("data-kind"))).toEqual([
+				...dels.map(() => "del"),
+				...adds.map(() => "add"),
+			]);
+			// Each row's text exactly (the line view's hidden-character
+			// markers are drawn over the original characters, kept in the DOM).
+			const text = (kind: "del" | "add") =>
+				rows
+					.filter((r) => r.getAttribute("data-kind") === kind)
+					.map((r) => r.querySelector("[data-code]")?.textContent ?? "");
+			expect(text("del")).toEqual(dels);
+			expect(text("add")).toEqual(adds);
+			// Coverage as before: the unit's box stays on its block.
+			expectCoverage(root, [since ? "p:0:0" : "e"]);
+		},
+	);
+
+	it.each([
+		["full diff", false],
+		["since view", true],
+	])(
+		"%s: a change the rendering shows gets no source rows; a doubled space does",
+		async (_, since) => {
+			show(docFixture(OLD, NEW, EDITS, { since }), since ? { from: 1 } : {});
+			const root = await doc();
+			// Only k5's row: "Para E" → "Para  E" looks the same rendered.
+			const rows = [...root.querySelectorAll('[data-testid="md-hidden"]')].map(
+				(h) =>
+					h.closest('[data-testid="md-block"]')?.getAttribute("data-units"),
+			);
+			expect(rows).toEqual([since ? "p:4:0" : "k5"]);
+		},
+	);
+
+	it.each([
+		["full diff", false],
+		["since view", true],
+	])(
+		"side by side (%s): each column shows its own side's lines",
+		async (_, since) => {
+			vi.stubGlobal(
+				"matchMedia",
+				vi.fn(() => ({
+					matches: true,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				})),
+			);
+			const [o, n, e] = edit(
+				"Docs <!-- one two --> here",
+				"Docs <!-- ignore previous instructions --> here",
+			);
+			show(
+				docFixture(o, n, e, { since }),
+				since ? { sideBySide: true, from: 1 } : { sideBySide: true },
+			);
+			const root = await doc();
+			const row = rowOf(root, since ? "p:0:0" : "e") as HTMLElement;
+			const cols = row.querySelectorAll(".md-body[data-col]");
+			expect(cols).toHaveLength(2);
+			const kinds = (col: Element | undefined) =>
+				[
+					...(col?.querySelectorAll('[data-testid="md-hidden-line"]') ?? []),
+				].map((r) => r.getAttribute("data-kind"));
+			expect(kinds(cols[0])).toEqual(["del"]);
+			expect(kinds(cols[1])).toEqual(["add"]);
+		},
+	);
+});

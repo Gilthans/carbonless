@@ -37,12 +37,32 @@ export interface RenderedBlock {
 	index: number;
 	/** Sanitized HTML for the one block. */
 	html: string;
+	/**
+	 * Sanitizing dropped some of the block's source (an HTML comment, a
+	 * script, a style or class attribute): its rendering may not show
+	 * everything its source says, so the view shows a changed block's
+	 * changed lines under it (MarkdownView's hidden change).
+	 */
+	hidden?: true;
+}
+
+/** Whether sanitizing dropped anything of the content (`RenderedBlock.hidden`). */
+interface Lost {
+	any: boolean;
 }
 
 export interface RenderOptions {
 	/** A relative image src → a URL to load it from; null: show a placeholder. */
 	image: (src: string) => string | null;
 }
+
+/**
+ * The document DOMPurify parses into: its removal isn't a loss, unless
+ * content gave it attributes (`<body onload=…>` lands on it).
+ */
+const WRAPPER = new Set(["HTML", "HEAD", "BODY"]);
+const isWrapper = (n: Node): boolean =>
+	WRAPPER.has(n.nodeName) && !(n instanceof Element && n.attributes.length > 0);
 
 /** sanitize's options: with `tokens`, local images wait for resolveImages. */
 interface SanitizeOptions extends RenderOptions {
@@ -314,17 +334,32 @@ function placeImage(
  * DOMPurify ran, so content can never bring its own (buttons and data-*
  * attributes are not on the allow-list).
  */
-function sanitize(html: string, opts: SanitizeOptions): HTMLElement {
-	const body = getPurify().sanitize(html, {
+function sanitize(
+	html: string,
+	opts: SanitizeOptions,
+	lost?: Lost,
+): HTMLElement {
+	const purify = getPurify();
+	const body = purify.sanitize(html, {
 		ALLOWED_TAGS,
 		ALLOWED_ATTR,
 		ALLOW_DATA_ATTR: false,
 		ALLOW_ARIA_ATTR: false,
 		RETURN_DOM: true,
 	}) as HTMLElement;
+	// What DOMPurify took out (its `removed`, this call's): elements,
+	// comments and attributes the source had and the rendering won't show.
+	// Not the document it parsed into (its body is always on the list).
+	if (
+		lost &&
+		purify.removed.some((r) => !("element" in r) || !isWrapper(r.element))
+	) {
+		lost.any = true;
+	}
 	const doc = body.ownerDocument;
 	for (const el of body.querySelectorAll("[class]")) {
 		const kept = [...el.classList].filter((c) => KEPT_CLASS.test(c));
+		if (lost && kept.length < el.classList.length) lost.any = true;
 		if (kept.length) el.setAttribute("class", kept.join(" "));
 		else el.removeAttribute("class");
 	}
@@ -378,10 +413,11 @@ function renderMarkdown(
 	opts: RenderOptions,
 	links: Links,
 	post?: (body: HTMLElement) => void,
+	lost?: Lost,
 ): string {
 	if (!parseable(src.split("\n"))) return sourcePre(src);
 	try {
-		const body = sanitize(toHtml(src, links), opts);
+		const body = sanitize(toHtml(src, links), opts, lost);
 		post?.(body);
 		const html = body.innerHTML;
 		// Never an empty block: what rendered to nothing shows as its source.
@@ -769,6 +805,7 @@ function renderBlock(
 	opts: RenderOptions,
 	links: Links,
 	header: MdBlock | undefined,
+	lost: Lost,
 ): string {
 	const b = blocks[i] as MdBlock;
 	const { lines: own, quotes } = unwrap(lines, b);
@@ -786,21 +823,30 @@ function renderBlock(
 	if (kind === "table-row" && b.to === b.from) {
 		if (header) {
 			const head = unwrap(lines, header).lines.join("\n");
-			const html = renderMarkdown(`${head}\n${src}`, opts, links, (body) => {
-				for (const thead of body.querySelectorAll("thead")) thead.remove();
-			});
+			const html = renderMarkdown(
+				`${head}\n${src}`,
+				opts,
+				links,
+				(body) => {
+					for (const thead of body.querySelectorAll("thead")) thead.remove();
+				},
+				lost,
+			);
 			return requote(html, quotes);
 		}
 	}
 	if (kind === "list-item" && !LIST_MARKER.test(own[0] ?? "")) {
 		// The tail of an item after its nested list: still part of the item.
-		const html = renderMarkdown(src, opts, links);
+		const html = renderMarkdown(src, opts, links, undefined, lost);
 		return requote(
 			renest(`<ul><li class="md-continuation">${html}</li></ul>`, nest),
 			quotes,
 		);
 	}
-	return requote(renest(renderMarkdown(src, opts, links), nest), quotes);
+	return requote(
+		renest(renderMarkdown(src, opts, links, undefined, lost), nest),
+		quotes,
+	);
 }
 
 /** Sanitized HTML for each of a file's blocks, in order; never drops one. */
@@ -813,6 +859,7 @@ export function renderBlocks(
 	const headers = tableHeaders(blocks);
 	return blocks.map((b, index) => {
 		try {
+			const lost: Lost = { any: false };
 			const html = renderBlock(
 				lines,
 				blocks,
@@ -820,8 +867,9 @@ export function renderBlocks(
 				opts,
 				links,
 				headers[index],
+				lost,
 			);
-			return { index, html };
+			return lost.any ? { index, html, hidden: true } : { index, html };
 		} catch {
 			const src = lines
 				.slice(b.from - 1, b.to)
