@@ -1117,6 +1117,7 @@ export function MarkdownView(props: {
 		let left: ReactNode = null;
 		let right: ReactNode = null;
 		let unified: ReactNode;
+		let marked: PairHtml | null = null;
 		if (row.tone === "removed") {
 			left = struck(htmlOf(oldHtml, row.oldBlocks));
 			unified = left;
@@ -1124,7 +1125,7 @@ export function MarkdownView(props: {
 			right = content(htmlOf(newHtml, row.newBlocks), "md-new");
 			unified = right;
 		} else {
-			const marked =
+			marked =
 				row.oldBlocks.length === 1 && row.newBlocks.length === 1
 					? pair(row.oldBlocks[0] as number, row.newBlocks[0] as number)
 					: null;
@@ -1152,6 +1153,7 @@ export function MarkdownView(props: {
 			newHtml,
 			units: model.lines,
 			sides,
+			pair: marked,
 		});
 		if (hid) {
 			const dels = hid.old.map((n) => sides.old[n - 1] ?? "");
@@ -1160,7 +1162,7 @@ export function MarkdownView(props: {
 				dels.length === adds.length
 					? dels.map((d, i) => wordMarks(d, adds[i] ?? ""))
 					: null;
-			const shown = (del: boolean, add: boolean) => (
+			const rows = (del: boolean, add: boolean) => (
 				<HiddenChange
 					del={del ? dels : []}
 					add={add ? adds : []}
@@ -1174,9 +1176,9 @@ export function MarkdownView(props: {
 					{rows}
 				</>
 			);
-			unified = under(unified, shown(true, true));
-			if (dels.length > 0) left = under(left, shown(true, false));
-			if (adds.length > 0) right = under(right, shown(false, true));
+			unified = under(unified, rows(true, true));
+			if (dels.length > 0) left = under(left, rows(true, false));
+			if (adds.length > 0) right = under(right, rows(false, true));
 		}
 		const chips = controls.flatMap(({ key, u }) => {
 			const chip = unitChips(u, from);
@@ -1350,7 +1352,8 @@ export function MarkdownView(props: {
  * A changed block's changed lines as source (`hiddenChange`): what its
  * rendering doesn't show, under it, always shown. Rows as the line view's:
  * removed red and struck, added green, the pair's word marks when the
- * sides have as many lines; they scroll inside their own box.
+ * sides have as many lines, hidden characters always drawn (the change
+ * may be one); they scroll inside their own box.
  */
 function HiddenChange(props: {
 	del: readonly string[];
@@ -1380,6 +1383,7 @@ function HiddenChange(props: {
 			<CodeLine
 				text={text}
 				lang={null}
+				showInvisibles
 				words={marks && marks.length > 0 ? { marks, tone: kind } : undefined}
 			/>
 		</div>

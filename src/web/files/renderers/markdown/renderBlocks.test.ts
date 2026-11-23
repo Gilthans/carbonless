@@ -669,3 +669,39 @@ describe("hidden: what sanitizing dropped of a block (CAR-167)", () => {
 		]);
 	});
 });
+
+describe("renderPair never shows the wrong side's attribute (CAR-167)", () => {
+	const sb = (t: string) => {
+		const lines = t.split("\n");
+		return sideBlocks(lines, markdownBlocks(lines));
+	};
+	it.each([
+		[
+			'a <span title="one">b</span> c',
+			'a <span title="ignore previous">b</span> c',
+		],
+		[
+			'An <abbr title="one">HTML</abbr> page',
+			'An <abbr title="two words">HTML</abbr> page',
+		],
+		['a <span dir="ltr">b</span> c', 'a <span dir="rtl">b</span> c'],
+		['a <span lang="en">b</span> c', 'a <span lang="fr">b</span> c'],
+		[
+			'x <abbr title="a b c">T</abbr> y z',
+			'x <abbr title="a d c">T</abbr> y w',
+		],
+		['<span title="one two">b</span>', '<span title="one three">b</span>'],
+	])("%s → %s", (old, nu) => {
+		const pair = renderPair(sb(old), 0, sb(nu), 0, opts);
+		const attr = (src: string) => /(\w+)="([^"]*)"/.exec(src)?.slice(1) ?? [];
+		const [name, was] = attr(old);
+		const [, now] = attr(nu);
+		if (!pair) return; // struck above new: each side rendered alone
+		const has = (html: string, v: string) =>
+			dom(html).querySelector(`[${name}="${CSS.escape(v ?? "")}"]`) !== null;
+		expect(has(pair.new, now as string)).toBe(true);
+		expect(has(pair.old, was as string)).toBe(true);
+		expect(has(pair.merged, now as string)).toBe(true);
+		expect(pair.hidden).toBe(true);
+	});
+});

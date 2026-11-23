@@ -549,6 +549,12 @@ export function mergedSource(
 			if (s.ins) out += INS_OPEN + fenceUrls(s.ins) + INS_CLOSE;
 		}
 	}
+	// Each side, marks taken out, must be that side's own source (its bare
+	// URLs fenced): a merge that lost or moved a change (an attribute's
+	// edit inside a tag token) gives no marks, never a wrong picture.
+	if (oldSide(out) !== fenceUrls(a) || newSide(out) !== fenceUrls(b)) {
+		return null;
+	}
 	return out;
 }
 

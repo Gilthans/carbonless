@@ -10,6 +10,7 @@ import {
 } from "../../../../shared/markdownBlocks";
 import type { DiffLine, FileHunks } from "../../../../shared/types";
 import type { SpanRange } from "../../../threads/spanMarks";
+import { looksOfHtml } from "./visibleText";
 
 /**
  * The Rendered view's document (CAR-167): which blocks show, in what order,
@@ -422,33 +423,14 @@ function fold(
 	return out;
 }
 
-/** Block-level tags: whitespace next to one draws nothing. */
-const EDGE =
-	/ ?(<\/?(?:p|li|ul|ol|h[1-6]|blockquote|table|thead|tbody|tfoot|tr|td|th|dl|dt|dd|div|details|summary|br|hr)\b[^>]*>) ?/g;
-
-/**
- * HTML as it looks: whitespace the browser collapses, collapsed (a run
- * to one space, none next to a block's edge or a break); inside a `pre`
- * only trailing blanks go. Two renderings that look alike compare equal.
- */
-function looks(html: string): string {
-	return html
-		.split(/(<pre\b[\s\S]*?<\/pre>)/)
-		.map((part, i) =>
-			i % 2
-				? part.replace(/[ \t]+(?=\n|<)/g, "")
-				: part.replace(/\s+/g, " ").replace(EDGE, "$1"),
-		)
-		.join("")
-		.trim();
-}
-
 /**
  * A changed row's changed lines, when its rendering may not show its
  * change (principle 2: no change the reviewer can't see): sanitizing
  * dropped some of a block's source (`hidden`: an HTML comment, a script,
- * a style), the old blocks look as the new ones do (`looks`: trailing
- * spaces, a doubled one), or a unit's changed
+ * a style), the pair's word marks show nothing (`pair.hidden`: a zero
+ * width or tag character, a link's target, an image's alt), the old blocks
+ * look as the new ones do (`looksOfHtml`: an attribute, trailing or
+ * doubled spaces, a no-break space, invisible characters), or a unit's changed
  * lines are all blank (they render to nothing). The view shows these
  * lines as source under the block. Null when the rendering shows it.
  * Line numbers by side, in order.
@@ -459,6 +441,8 @@ export function hiddenChange(o: {
 	newHtml: readonly { html: string; hidden?: true }[];
 	units: ReadonlyMap<string, { old: LineRanges; new: LineRanges }>;
 	sides: Sides;
+	/** The row's pair with its words marked (renderPair), when it has one. */
+	pair?: { hidden?: true } | null;
 }): { old: number[]; new: number[] } | null {
 	const { row, oldHtml, newHtml, sides } = o;
 	const units = row.units.flatMap((k) => {
@@ -476,7 +460,7 @@ export function hiddenChange(o: {
 		row.oldBlocks.some((b) => oldHtml[b]?.hidden) ||
 		row.newBlocks.some((b) => newHtml[b]?.hidden);
 	const htmlOf = (list: readonly { html: string }[], ids: number[]) =>
-		looks(ids.map((i) => list[i]?.html ?? "").join(""));
+		looksOfHtml(ids.map((i) => list[i]?.html ?? "").join(""));
 	const same =
 		row.oldBlocks.length > 0 &&
 		row.newBlocks.length > 0 &&
@@ -492,7 +476,8 @@ export function hiddenChange(o: {
 			ns.every((n) => blank(sides.new, n))
 		);
 	});
-	return lossy || same || blankOnly ? { old, new: nu } : null;
+	const marks = o.pair?.hidden === true;
+	return lossy || marks || same || blankOnly ? { old, new: nu } : null;
 }
 
 /** A cluster's lines as ranges of line numbers on each side. */

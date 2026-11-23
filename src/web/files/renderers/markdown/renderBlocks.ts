@@ -2,6 +2,7 @@ import DOMPurify from "dompurify";
 import { Lexer, type Links, Marked, Parser } from "marked";
 import { type MdBlock, parseable } from "../../../../shared/markdownBlocks";
 import { safeHref } from "../../../ui";
+import { hasUnseen, looksOf } from "./visibleText";
 import {
 	DEL_CLOSE,
 	DEL_OPEN,
@@ -912,6 +913,74 @@ export interface PairHtml {
 	old: string;
 	/** The new side with its added words marked. */
 	new: string;
+	/**
+	 * A word mark shows nothing (`marksHidden`): the view shows the
+	 * block's changed lines as source too.
+	 */
+	hidden?: true;
+}
+
+/**
+ * Whether a word mark may hide what it marks (no invisible change): one
+ * that looks empty (`looksOf`: a tag character, a zero width alone);
+ * one holding a character that prints as nothing or not as itself (a
+ * zero width, a bidi control, a soft hyphen, a no-break space:
+ * `hasUnseen`); or a removed mark next to an added one that looks the
+ * same, or whose links, images and other elements look the same but for
+ * their attributes (a link's target or title, an image's alt).
+ */
+export function marksHidden(body: HTMLElement): boolean {
+	for (const m of body.querySelectorAll("del.md-del, ins.md-ins")) {
+		const look = looksOf(m);
+		if (
+			look.replace(/<\/?[a-z][a-z0-9]*>/g, "") === "" &&
+			!/<img /.test(look)
+		) {
+			return true;
+		}
+		if (hasUnseen(m.textContent ?? "")) return true;
+		const next = m.nextSibling;
+		if (
+			m.matches("del.md-del") &&
+			next instanceof Element &&
+			next.matches("ins.md-ins")
+		) {
+			if (looksOf(next) === look) return true;
+			const a = elementsOf(m);
+			const b = elementsOf(next);
+			if (
+				a.length === b.length &&
+				a.some((x, i) => {
+					const y = b[i];
+					return (
+						y !== undefined &&
+						x.tag === y.tag &&
+						x.look === y.look &&
+						x.attrs !== y.attrs
+					);
+				})
+			) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+/** Attributes the renderer sets the same way on both sides, or per side (an image's URL). */
+const OWN_ATTRS = new Set(["class", "src", "target", "rel", "referrerpolicy"]);
+
+/** A mark's elements: each one's tag, look and content-given attributes. */
+function elementsOf(m: Element) {
+	return [...m.querySelectorAll("*")].map((el) => ({
+		tag: el.nodeName,
+		look: looksOf(el),
+		attrs: [...el.attributes]
+			.filter((a) => !OWN_ATTRS.has(a.name))
+			.map((a) => `${a.name}=${a.value}`)
+			.sort()
+			.join(" "),
+	}));
 }
 
 const isContinuation = (b: MdBlock, own: readonly string[]) =>
@@ -992,10 +1061,12 @@ export function renderPair(
 		if (nest !== nestOf(ob, uo.lines, uo.quotes)) return null;
 		const wrap = (html: string) =>
 			wrapBlock(html, continuation, un.quotes, nest);
+		const shown = sided();
 		return {
-			merged: wrap(sided().innerHTML),
+			merged: wrap(shown.innerHTML),
 			old: wrap(markedSide(sided("old"), "del")),
 			new: wrap(markedSide(sided("new"), "ins")),
+			...(marksHidden(shown) ? { hidden: true as const } : {}),
 		};
 	} catch {
 		return null;

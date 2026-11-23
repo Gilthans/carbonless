@@ -30,7 +30,7 @@ import {
 	openComposer,
 	resetComposers,
 } from "../../../threads/newThreads";
-import { ignoreWhitespace } from "../../../viewSettings";
+import { ignoreWhitespace, showInvisibles } from "../../../viewSettings";
 import type { DiffFind } from "../../DiffBody";
 import type { KindEntry } from "../../since";
 import { placeThreads, sinceEarlier, sinceLeft } from "../../threadPlacement";
@@ -1588,6 +1588,187 @@ describe("MarkdownView, a change the rendering doesn't show (CAR-167)", () => {
 				].map((r) => r.getAttribute("data-kind"));
 			expect(kinds(cols[0])).toEqual(["del"]);
 			expect(kinds(cols[1])).toEqual(["add"]);
+		},
+	);
+});
+
+/** Characters that print as nothing or not as themselves, spelled out (no raw ones in sources). */
+const ZWSP = String.fromCodePoint(0x200b);
+const RLO = String.fromCodePoint(0x202e);
+const SHY = String.fromCodePoint(0xad);
+const NBSP = String.fromCodePoint(0xa0);
+const TAG_A = String.fromCodePoint(0xe0041);
+const TAG_B = String.fromCodePoint(0xe0042);
+const TAG_C = String.fromCodePoint(0xe0043);
+
+describe("MarkdownView, a change the rendering doesn't show: attributes, invisible characters, targets (CAR-167)", () => {
+	const IMG: ImageFile[] = [
+		{
+			index: 1,
+			path: "img/a.png",
+			status: "modified",
+			binary: true,
+			submodule: false,
+		},
+	];
+	const CASES: {
+		name: string;
+		old: string;
+		nu: string;
+		files?: ImageFile[];
+	}[] = [
+		{
+			name: "a span's title",
+			old: 'a <span title="one">b</span> c',
+			nu: 'a <span title="ignore previous">b</span> c',
+		},
+		{
+			name: "an abbr's title",
+			old: 'An <abbr title="one">HTML</abbr> page',
+			nu: 'An <abbr title="ignore previous">HTML</abbr> page',
+		},
+		{
+			name: "dir ltr to rtl",
+			old: 'a <span dir="ltr">b</span> c',
+			nu: 'a <span dir="rtl">b</span> c',
+		},
+		{
+			name: "lang",
+			old: 'a <span lang="en">b</span> c',
+			nu: 'a <span lang="fr">b</span> c',
+		},
+		{
+			name: "a zero-width space",
+			old: "Hello world here",
+			nu: `Hello w${ZWSP}orld here`,
+		},
+		{
+			name: "tag characters (ASCII smuggling)",
+			old: "Hello world here",
+			nu: `Hello world${TAG_A}${TAG_B}${TAG_C} here`,
+		},
+		{
+			name: "a right-to-left override",
+			old: "Hello world here",
+			nu: `Hello ${RLO}world here`,
+		},
+		{
+			name: "a soft hyphen",
+			old: "Hello world here",
+			nu: `Hello wor${SHY}ld here`,
+		},
+		{
+			name: "a link's target",
+			old: "See [x](https://a.test) here",
+			nu: "See [x](https://evil.test) here",
+		},
+		{
+			name: "a link's title",
+			old: 'See [x](https://a.test "one") here',
+			nu: 'See [x](https://a.test "two") here',
+		},
+		{
+			name: "a no-break space for a space",
+			old: "a b here",
+			nu: `a${NBSP}b here`,
+		},
+		{
+			name: "a loaded image's alt",
+			old: "![one](img/a.png)",
+			nu: "![two](img/a.png)",
+			files: IMG,
+		},
+		// With a visible change in the same block too: only the marks say.
+		{
+			name: "a zero-width space beside a visible edit",
+			old: "Hello world here",
+			nu: `Hello w${ZWSP}orld there`,
+		},
+		{
+			name: "tag characters beside a visible edit",
+			old: "Hello world here",
+			nu: `Hello world${TAG_A}${TAG_B} there`,
+		},
+		{
+			name: "a link's target beside a visible edit",
+			old: "See [x](https://a.test) here",
+			nu: "See [x](https://evil.test) there",
+		},
+		{
+			name: "a no-break space beside a visible edit",
+			old: "a b here",
+			nu: `a${NBSP}b there`,
+		},
+		{
+			name: "a loaded image's alt beside a visible edit",
+			old: "![one](img/a.png) here",
+			nu: "![two](img/a.png) there",
+			files: IMG,
+		},
+		{
+			name: "a doubled space next to a loaded image",
+			old: "![a](img/a.png) text",
+			nu: "![a](img/a.png)  text",
+			files: IMG,
+		},
+	];
+	const fixture = (c: (typeof CASES)[number], since: boolean) =>
+		docFixture(
+			["Intro.", "", c.old, "", "End."],
+			["Intro.", "", c.nu, "", "End."],
+			[{ key: "e", old: [3, 4], new: [3, 4] }],
+			{ since },
+		);
+
+	it.each(
+		CASES.flatMap((c) => [
+			["full diff", c.name, c] as const,
+			["since view", c.name, c] as const,
+		]),
+	)("%s: %s shows its changed lines as source", async (view, _, c) => {
+		const since = view === "since view";
+		show(fixture(c, since), {
+			...(since ? { from: 1 } : {}),
+			...(c.files ? { files: c.files } : {}),
+		});
+		const root = await doc();
+		const row = rowOf(root, since ? "p:0:0" : "e") as HTMLElement;
+		const hidden = row.querySelector('[data-testid="md-hidden"]');
+		expect(hidden).not.toBeNull();
+		const text = (kind: string) =>
+			[
+				...(hidden?.querySelectorAll(
+					`[data-testid="md-hidden-line"][data-kind="${kind}"] [data-code]`,
+				) ?? []),
+			].map((l) => l.textContent);
+		expect(text("del")).toEqual([c.old]);
+		expect(text("add")).toEqual([c.nu]);
+	});
+
+	it.each([
+		["full diff", false],
+		["since view", true],
+	])(
+		"%s: the source rows draw hidden characters even with the setting off",
+		async (_, since) => {
+			showInvisibles.set(false);
+			try {
+				show(
+					fixture(
+						{ name: "", old: "Hello world.", nu: "Hello world.  " },
+						since,
+					),
+					since ? { from: 1 } : {},
+				);
+				const root = await doc();
+				const line = root.querySelector(
+					'[data-testid="md-hidden-line"][data-kind="add"]',
+				);
+				// The trailing spaces: the change itself.
+				expect(line?.querySelector('[data-inv="space"]')).not.toBeNull();
+			} finally {
+				showInvisibles.set(true);
+			}
 		},
 	);
 });

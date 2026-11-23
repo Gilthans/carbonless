@@ -292,12 +292,17 @@ never a broken image. Raw HTML blocks show as source.
 shows: an HTML comment (a known prompt-injection channel in README and
 AGENTS.md files), a script, a style or class attribute. When a changed,
 added or removed block's rendering doesn't show its change (DOMPurify
-removed anything from that block's source, on either side; the old blocks
-look as the new ones do, whitespace collapsed as the browser does; or a
-unit's changed lines are all blank), its changed source lines show under
+removed anything from that block's source, on either side; a word mark
+holds a character that prints as nothing or not as itself (a zero width,
+a tag character, a bidi control, a soft hyphen, a no-break space: the
+line view's hidden characters), looks empty, or looks as the mark beside
+it does but for an attribute (a link's target or title, an image's alt);
+the old blocks look as the new ones do, attributes ignored, loaded images
+by path, whitespace collapsed as the browser does; or a unit's changed
+lines are all blank), its changed source lines show under
 the rendered block, always (no toggle): monospace rows as the line view's
-(`-` red struck, `+` green, word marks), with an icon "Not visible when
-rendered". Unified and side by side (each column its own side), full diff
+(`-` red struck, `+` green, word marks, hidden characters drawn whatever
+the setting), with an icon "Not visible when rendered". Unified and side by side (each column its own side), full diff
 and since view; on a phone the rows scroll inside their own box. The boxes
 stay where they are: coverage is unchanged.
 
