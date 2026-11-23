@@ -2023,7 +2023,27 @@ export async function postThread(
 		},
 		JSON.stringify({ body, commit_id: commit, ...where }),
 	);
-	return postedFrom(out, "the comment");
+	const posted = postedFrom(out, "the comment");
+	// GitHub doesn't refuse a commit_id that is no longer one of the PR's
+	// commits (a force-push dropped it, after the check or before a
+	// Refresh): it puts the comment on the PR's new head at the same line
+	// numbers, silently (probed, CAR-233). Never left there: removed again.
+	const landed = rec(safeJson(out)).original_commit_id;
+	if (typeof landed === "string" && landed !== "" && landed !== commit) {
+		try {
+			await deleteComment(ref, posted.restId);
+		} catch {
+			throw new WriteRefusedError(
+				"GitHub put it on the PR's new head (a force-push), on another line, and removing it failed: delete it on GitHub",
+				"invalid",
+			);
+		}
+		throw new WriteRefusedError(
+			"The PR moved on (a force-push): GitHub would have put it on another line; refresh",
+			"stale",
+		);
+	}
+	return posted;
 }
 
 /** A PR review comment as REST lists it: what a retry looks for. */
@@ -2042,6 +2062,31 @@ export interface ListedComment {
  * Every review comment of PR `ref` by REST (no GraphQL lag after a
  * write), oldest first, pages and all.
  */
+/** How many of a PR's commits GitHub lists at most (REST `pulls/{n}/commits`). */
+export const PR_COMMITS_LISTED = 250;
+
+/**
+ * The PR's commits as GitHub lists them now (REST, every page; GitHub
+ * lists at most PR_COMMITS_LISTED): their oids, oldest first. A comment's
+ * commit_id outside them GitHub puts on the head instead (CAR-233).
+ */
+export async function fetchPrCommits(ref: PrRef): Promise<string[]> {
+	const out = await runGh(
+		[
+			"api",
+			`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/commits`,
+			"--paginate",
+			"--jq",
+			".[].sha",
+		],
+		{ what: "the PR's commits" },
+	);
+	return out
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(l));
+}
+
 export async function fetchReviewComments(
 	ref: PrRef,
 ): Promise<ListedComment[]> {

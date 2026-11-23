@@ -145,6 +145,19 @@ export interface DiffLine {
 	 * no line for it). CAR-217.
 	 */
 	baseNo?: number | null;
+	/**
+	 * The since view's removed lines with `baseNo` null only: the line's
+	 * number on the compared (earlier) patch set's head, an added line of
+	 * that commit's diff against its base: a comment on it goes there, on
+	 * that commit's RIGHT side (CAR-233). Absent when that diff hasn't it.
+	 */
+	psNo?: number;
+	/**
+	 * The since view's removed lines with `baseNo` null only: the compared
+	 * patch set's diff adds it, but at another path than the head's (a
+	 * rename since): no comment can go there by this file's path (CAR-233).
+	 */
+	psMoved?: true;
 }
 
 export interface DisplayHunk {
@@ -736,6 +749,13 @@ export interface NewThreadRequest {
 	 * GitHub has the thread, the conversation becomes its (agent-thread-linked).
 	 */
 	agentThread?: string;
+	/**
+	 * On an earlier patch set's commit on purpose (CAR-233): `commit` is
+	 * that patch set's head, not the snapshot's, and the lines are RIGHT
+	 * lines of its diff (a line the since view shows removed that only
+	 * the patch sets had).
+	 */
+	earlier?: boolean;
 }
 
 /** 200: the thread as the overview read would show it (anchor with cols, code window may be null until read), and its comments. */

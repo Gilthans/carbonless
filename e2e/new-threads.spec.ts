@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import type { Scenario } from "../test/fake-gh/scenario";
-import { fileSection, openFiles } from "./files-ui";
+import { expectNoPageOverflow, fileSection, openFiles } from "./files-ui";
 import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 /**
@@ -72,6 +72,23 @@ async function openFile(page: Page, url: string, path: string) {
 	await expect(section.getByTestId("diff-line").first()).toBeVisible();
 	return section;
 }
+
+/**
+ * The children of the toggle's row that stick out of it, either side (a
+ * `justify-end` row overflows to the left, where scrollWidth can't see it).
+ */
+const outOfRow = (toggle: Locator) =>
+	toggle.evaluate((el) => {
+		const row = el.parentElement;
+		if (!row) throw new Error("no row");
+		const r = row.getBoundingClientRect();
+		return [...row.children]
+			.filter((c) => {
+				const b = c.getBoundingClientRect();
+				return b.left < r.left - 1 || b.right > r.right + 1;
+			})
+			.map((c) => c.textContent || c.getAttribute("aria-label") || c.tagName);
+	});
 
 /** A row by its number on a side. */
 const row = (section: Locator, side: "LEFT" | "RIGHT", n: number) =>
@@ -192,6 +209,7 @@ test("pick lines by their numbers and comment on them", async ({
 	startCrb,
 	isMobile,
 }) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	const p = await pr(fixture);
 	const s = await startCrb();
 	const section = await openFile(page, s.url, GREET);
@@ -210,7 +228,24 @@ test("pick lines by their numbers and comment on them", async ({
 	await expect(section.locator("tr[data-picked]")).toHaveCount(0);
 	const composer = section.getByTestId("new-thread");
 	await expect(composer).toContainText("lines 10–12, new");
+	// The toggle's slot is kept while empty: the first character never
+	// reflows the composer (a narrow row wraps when it opens).
+	const before = (await composer.boundingBox())?.height ?? 0;
 	await composer.getByRole("textbox", { name: "Comment" }).fill("Three?");
+	const after = (await composer.boundingBox())?.height ?? 0;
+	expect(Math.abs(after - before)).toBeLessThanOrEqual(1);
+	// Previewed (CAR-202), then sent from Preview as typed.
+	const toggle = composer.getByTestId("preview-toggle");
+	await expect(toggle.getByRole("button", { name: "Write" })).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	// Toggle, Cancel and Comment fit the composer's row, at 360px too.
+	expect(await outOfRow(toggle)).toEqual([]);
+	await expectNoPageOverflow(page);
+	await toggle.getByRole("button", { name: "Preview" }).click();
+	await expect(composer.getByTestId("comment-preview")).toHaveText("Three?");
+	await expect(composer.getByRole("textbox", { name: "Comment" })).toBeHidden();
 	await composer.getByRole("button", { name: "Comment" }).click();
 	await expect(
 		section.getByTestId("files-thread").filter({ hasText: "Three?" }),

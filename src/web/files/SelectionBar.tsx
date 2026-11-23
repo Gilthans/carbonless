@@ -238,13 +238,13 @@ const rectOf = (el: Element | null | undefined) =>
 		? el.getBoundingClientRect()
 		: new DOMRect();
 
-const ofSelection = (commit: string): BarTarget | null => {
+const ofSelection = (commit: string, earlier?: string): BarTarget | null => {
 	const selection = document.getSelection();
 	if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
 		return null;
 	}
 	const range = selection.getRangeAt(0);
-	const found = spanOfRange(range, commit);
+	const found = spanOfRange(range, commit, earlier);
 	if (!found) return null;
 	// (Engines without range geometry, such as test DOMs: no rects.)
 	const rects =
@@ -303,7 +303,11 @@ export function pickAnchor(row: Element, column?: DiffSide): number {
 	return rectOf(own ?? numbers[numbers.length - 1] ?? row).right + GAP;
 }
 
-const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
+const ofPicks = (
+	picks: Picks,
+	commit: string,
+	earlier?: string,
+): BarTarget | null => {
 	const head = picks.lines[0];
 	const tail = picks.lines[picks.lines.length - 1];
 	if (!head || !tail) return null;
@@ -320,6 +324,8 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 		{ ...head, cell: firstRow },
 		{ ...tail, cell: lastRow },
 		commit,
+		undefined,
+		earlier,
 	);
 	const first = firstRow.getBoundingClientRect();
 	const last = lastRow.getBoundingClientRect();
@@ -327,7 +333,7 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 	return {
 		span,
 		inDiff: inHunk(head) && inHunk(tail),
-		noLine: noLineIn(picks.lines),
+		noLine: noLineIn(picks.lines, earlier),
 		first,
 		last,
 		box: new DOMRect(
@@ -371,6 +377,11 @@ export function SelectionBar(props: {
 	headSure?: boolean;
 	/** An earlier patch set: Comment off (Ask agent stays). */
 	readOnly?: boolean;
+	/**
+	 * The since view: the compared patch set's head, where a span of lines
+	 * only it had goes (CAR-233).
+	 */
+	earlier?: string;
 }) {
 	const sessionHead =
 		useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead ?? "";
@@ -394,14 +405,14 @@ export function SelectionBar(props: {
 	const bar = useRef<HTMLDivElement>(null);
 	const read = useCallback(() => {
 		if (!commit) return;
-		const next = ofSelection(commit);
+		const next = ofSelection(commit, props.earlier);
 		// A tap on the bar may clear the selection before its click: the
 		// bar keeps the span it shows until then.
 		if (!next && pressing.current) return;
 		// Text selected: it, not picked lines, is what the bar acts on.
 		if (next && getPicks()) setPicks(null);
 		setText(next);
-	}, [commit]);
+	}, [commit, props.earlier]);
 	useEffect(() => {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		// While a selection is being made it changes on every move: read it
@@ -426,7 +437,8 @@ export function SelectionBar(props: {
 			lifted.delete(now);
 		};
 	}, [read]);
-	const target = text ?? (picks && commit ? ofPicks(picks, commit) : null);
+	const target =
+		text ?? (picks && commit ? ofPicks(picks, commit, props.earlier) : null);
 	const targetKey = target ? keyOf(target.span) : null;
 	const hidden = !target || dismissed === targetKey;
 	// Escape's dismissal lasts while its span does: gone or changed, a span
@@ -444,7 +456,7 @@ export function SelectionBar(props: {
 			if (frame) return;
 			frame = requestAnimationFrame(() => {
 				frame = 0;
-				if (reading) setText(ofSelection(commit));
+				if (reading) setText(ofSelection(commit, props.earlier));
 				else setTick((n) => n + 1);
 			});
 		};
@@ -471,7 +483,7 @@ export function SelectionBar(props: {
 			vv?.removeEventListener("scroll", move);
 			vv?.removeEventListener("resize", move);
 		};
-	}, [hidden, reading, commit]);
+	}, [hidden, reading, commit, props.earlier]);
 	const clear = useCallback(() => {
 		setPicks(null);
 		setText(null);

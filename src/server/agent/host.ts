@@ -601,16 +601,23 @@ export class AgentHost {
 	/**
 	 * Each span thread's id, anchor and when it was asked (what placement
 	 * reads): a live thread conversation goes where its GitHub thread goes,
-	 * so it is left out; an orphan comes with its span anchor. The review
+	 * so it is left out (one joined to the thread its comment started is
+	 * in, where it was asked: CAR-236); an orphan comes with its span anchor. The review
 	 * conversation has no code to place on: left out.
 	 */
 	async asked(): Promise<
 		{ id: string; anchor: AgentSpanAnchor; at: string }[]
 	> {
 		const out: { id: string; anchor: AgentSpanAnchor; at: string }[] = [];
-		for (const { id, anchor, at } of await this.#joined(
+		for (const { id, anchor, at, joins } of await this.#joined(
 			await this.store.read(),
 		)) {
+			// One joined to a thread (CAR-236) is placed where it was asked
+			// too: a view that doesn't list its thread shows it there.
+			if (anchor.subject === "thread" && joins) {
+				out.push({ id, anchor: joins.asked, at });
+				continue;
+			}
 			if (anchor.subject === "thread" || anchor.subject === "review") continue;
 			out.push({ id, anchor, at });
 		}
@@ -679,9 +686,10 @@ export class AgentHost {
 		const current = await this.store.find(thread);
 		if (current.anchor.subject === "thread") {
 			// Fails closed: an unread GitHub never lets a question through.
-			const rt = liveGithubThreads(await this.github.threads()).get(
-				current.anchor.thread,
-			);
+			const live = liveGithubThreads(await this.github.threads());
+			const rt = githubThreadsOf(current)
+				.map((id) => live.get(id))
+				.find((x) => x !== undefined);
 			if (rt?.resolved) {
 				throw new AgentConflictError(
 					"The GitHub thread is resolved: unresolve it to ask again",
@@ -712,7 +720,7 @@ export class AgentHost {
 		if (current.anchor.subject === "thread") {
 			// Unknown GitHub threads fail the write (502), never resolve it here.
 			const live = liveGithubThreads(await this.github.threads());
-			if (live.has(current.anchor.thread)) {
+			if (githubThreadsOf(current).some((id) => live.has(id))) {
 				throw new AgentConflictError(
 					"A thread conversation resolves with its GitHub thread",
 				);
@@ -1299,9 +1307,7 @@ export class AgentHost {
 				`GitHub thread ${id} is resolved: the reviewer can't ask there, so neither can you`,
 			);
 		}
-		return threads.find(
-			(t) => t.anchor.subject === "thread" && t.anchor.thread === id,
-		);
+		return threads.find((t) => githubThreadsOf(t).includes(id));
 	}
 
 	/**
@@ -1555,8 +1561,8 @@ export class AgentHost {
 					}
 				: {}),
 		};
-		const existing = (await this.store.read()).find(
-			(f) => f.anchor.subject === "thread" && f.anchor.thread === rt.id,
+		const existing = (await this.store.read()).find((f) =>
+			githubThreadsOf(f).includes(rt.id),
 		);
 		if (existing) {
 			throw new AgentConflictError(
@@ -1577,7 +1583,21 @@ export class AgentHost {
 	}
 
 	async #view(t: AgentThreadFold): Promise<AgentThread> {
-		const { clientId: _, ...thread } = t;
+		const { clientId: _, joins, ...rest } = t;
+		// Joined (CAR-236): the thread it's on and where it was asked, so the
+		// page shows it there when that thread isn't in its view.
+		const thread: AgentThread = joins
+			? {
+					...rest,
+					joined: {
+						thread:
+							t.anchor.subject === "thread"
+								? t.anchor.thread
+								: (joins.threads[0] as string),
+						asked: joins.asked,
+					},
+				}
+			: rest;
 		if (t.anchor.subject !== "line") return thread;
 		const code = await this.code(t.anchor, t.at).catch(() => undefined);
 		return code ? { ...thread, code } : thread;
@@ -1613,6 +1633,15 @@ function threadForAgent(
 		opened,
 	);
 	return { ...t, anchor, code: { ...t.code, anchor: { ...a, commit } } };
+}
+
+/**
+ * The GitHub threads a thread conversation is on, first first: its own,
+ * or for one joined to the threads its comments started (CAR-236), those.
+ */
+function githubThreadsOf(t: AgentThreadFold): string[] {
+	if (t.joins) return t.joins.threads;
+	return t.anchor.subject === "thread" ? [t.anchor.thread] : [];
 }
 
 /** A joined session's turn: the envelope, the anchored file and the code block. */

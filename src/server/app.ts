@@ -831,6 +831,7 @@ export async function buildApp(
 					commit: r.commit,
 					subject: r.subject,
 					...line,
+					...(r.earlier === true ? { earlier: true } : {}),
 				});
 				// Started from an agent conversation: GitHub has the thread, so
 				// the conversation becomes its (a resend links nothing new). A

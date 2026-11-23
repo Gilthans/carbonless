@@ -928,7 +928,10 @@ export const placementsQuery = (readId: string, to: RereviewTo) =>
 				const shown = client.getQueryData<PlacementsAnswer | { pending: true }>(
 					queryKey,
 				);
-				if (shown && !("pending" in shown)) return shown;
+				// Still asked again until the new answer is in (a thread made
+				// on an earlier commit placed anew, CAR-233).
+				if (shown && !("pending" in shown))
+					return { ...shown, complete: false };
 			}
 			return next;
 		},

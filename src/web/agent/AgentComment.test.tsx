@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -114,7 +121,12 @@ function show(
 	return { client, view };
 }
 
-const box = () => screen.getByRole("textbox", { name: "Review comment" });
+/** The box, in Write (it opens in Preview: switched first). */
+const box = () => {
+	const write = screen.queryByRole("button", { name: "Write" });
+	if (write?.getAttribute("aria-pressed") === "false") fireEvent.click(write);
+	return screen.getByRole("textbox", { name: "Review comment" });
+};
 const button = () => screen.getByRole("button", { name: "Add review comment" });
 
 const newThreadAnswer = (body: string): NewThreadAnswer =>
@@ -128,9 +140,53 @@ const newThreadAnswer = (body: string): NewThreadAnswer =>
 	}) as unknown as NewThreadAnswer;
 
 describe("AgentComment: the box", () => {
+	it("opens in Preview: the agent's markdown rendered, Write shows the raw text", async () => {
+		const user = userEvent.setup();
+		show("**Why** one retry?\n\n- a\n- b");
+		const preview = screen.getByTestId("comment-preview");
+		expect(within(preview).getByText("Why").tagName).toBe("STRONG");
+		expect(within(preview).getAllByRole("listitem")).toHaveLength(2);
+		expect(screen.getByRole("button", { name: "Preview" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		expect(
+			screen.queryByRole("textbox", { name: "Review comment" }),
+		).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Write" }));
+		const text = screen.getByRole("textbox", { name: "Review comment" });
+		expect(text).toHaveProperty("value", "**Why** one retry?\n\n- a\n- b");
+		expect(text).toHaveFocus();
+		await user.type(text, "\n- c");
+		await user.click(screen.getByRole("button", { name: "Preview" }));
+		expect(
+			within(screen.getByTestId("comment-preview")).getAllByRole("listitem"),
+		).toHaveLength(3);
+	});
+
+	it("posts from Preview: the text as edited", async () => {
+		const user = userEvent.setup();
+		answer = () => new Promise(() => {});
+		show("Why one retry?");
+		await user.type(box(), " Really?");
+		await user.click(screen.getByRole("button", { name: "Preview" }));
+		await user.click(button());
+		const post = await vi.waitFor(() => {
+			const p = calls.find((c) => c.path.endsWith("/threads"));
+			if (!p) throw new Error("not posted yet");
+			return p;
+		});
+		expect(post.body).toMatchObject({ body: "Why one retry? Really?" });
+	});
+
 	it("shows the agent's raw text as the textarea's value, never as HTML", () => {
 		const hostile = '<img src=x onerror="window.pwned = 5">';
 		const { view } = show(hostile);
+		// Preview: sanitized (no handler, no http image).
+		expect(screen.getByTestId("comment-preview").innerHTML).not.toMatch(
+			/onerror/,
+		);
+		expect(view.container.querySelector("img")).toBeNull();
 		expect(box()).toHaveProperty("value", hostile);
 		expect(view.container.querySelector("img")).toBeNull();
 		expect((window as { pwned?: number }).pwned).toBeUndefined();
@@ -393,6 +449,58 @@ describe("AgentComment: posting", () => {
 		});
 	});
 
+	it("a joined conversation's reply (its thread younger than the message) knows the opener only: a later block's post never hides this block's own landed reply (CAR-236)", async () => {
+		const user = userEvent.setup();
+		const later: AgentMessage = {
+			id: "01k9e6m2q8x4v7c3n5b0h1j2t8",
+			by: "ai",
+			at: "2026-11-16T10:02:00.000Z",
+			text: "```comment\nOther\n```",
+			// Recorded after this block's own reply landed (its record lost).
+			posted: [
+				{
+					block: 0,
+					url: "https://github.com/o/r/pull/1#discussion_r4",
+					at: "2026-11-16T10:30:00.000Z",
+					text: "Other",
+				},
+			],
+		};
+		const thread = lineThread({
+			anchor: {
+				subject: "thread",
+				thread: "PRRT_1",
+				path: "src/x.ts",
+				commit: OLD,
+			},
+			messages: [message(), later],
+		});
+		answer = async (_m, path) =>
+			path.includes("/replies")
+				? json({
+						threadId: "PRRT_1",
+						comment: { id: "PRRC_2" },
+						comments: { threadId: "PRRT_1", comments: [] },
+						url: "https://github.com/o/r/pull/1#discussion_r2",
+					})
+				: json({ error: "down" }, 500);
+		const { client } = show("Thanks!", thread);
+		client.setQueryData(["comments", "r1", "PRRT_1"], {
+			threadId: "PRRT_1",
+			comments: [
+				// The opener: the block that started the thread, after the message.
+				{ id: "PRRC_1", publishedAt: "2026-11-16T10:05:00Z" },
+				// This block's own reply, landed on an earlier press.
+				{ id: "PRRC_2", publishedAt: "2026-11-16T10:20:00Z" },
+				{ id: "PRRC_4", publishedAt: "2026-11-16T10:25:00Z" },
+			],
+		});
+		await user.click(button());
+		await screen.findByText("Posted");
+		const post = calls.find((c) => c.path.includes("/replies"));
+		expect(post?.body).toMatchObject({ knownCommentIds: ["PRRC_1"] });
+	});
+
 	it("in doubt, the text is fixed: the box can't be edited, a press resends what was sent, Posted shows GitHub's text", async () => {
 		const user = userEvent.setup();
 		const thread = lineThread({
@@ -449,12 +557,10 @@ describe("AgentComment: posting", () => {
 				commit: OLD,
 			},
 		});
-		const { client } = show("Thanks!", thread);
-		// The thread's comments came, but all after the agent wrote (clocks apart).
-		client.setQueryData(["comments", "r1", "PRRT_1"], {
-			threadId: "PRRT_1",
-			comments: [{ id: "PRRC_1", publishedAt: "2026-11-16T11:00:00Z" }],
-		});
+		// The thread's comments can't be read. (All of them after the agent
+		// wrote no longer refuses: the opener is always known, CAR-236.)
+		answer = async () => json({ error: "down" }, 500);
+		show("Thanks!", thread);
 		await user.click(button());
 		const alert = await screen.findByRole("alert");
 		expect(alert.textContent).toContain("Couldn't read the thread's comments");

@@ -568,8 +568,9 @@ async function boxesIn<K extends string>(
 /**
  * Asserts the agent opener is the card's bottom handle: at the right end of
  * the actions row beside Resolve (at the card's bottom when that row is
- * closed), a finger's size, covering nothing, and the thread keeping its
- * full width (no gutter kept for it). Read once the panel rests, every box
+ * closed, beside the closed card's Resolve where it has one), a finger's
+ * size, covering nothing, and the thread keeping its full width (no
+ * gutter kept for it). Read once the panel rests, every box
  * in one layout.
  */
 async function expectBottomHandle(card: Locator, page: Page) {
@@ -584,9 +585,8 @@ async function expectBottomHandle(card: Locator, page: Page) {
 		};
 		const t = el.querySelector("[data-testid=thread-agent-button]");
 		const cover = el.querySelector("[data-testid=agent-cover]");
-		const resolve = el.querySelector(
-			"[data-testid=thread-actions] [data-testid=resolve-button]",
-		);
+		// Beside Resolve: the actions row's, or the closed card's Show more row's.
+		const resolve = el.querySelector("[data-testid=resolve-button]");
 		const others = [
 			...el.querySelectorAll(
 				"[data-testid=thread-comment-body], [data-testid=thread-counter], textarea, button:not([data-testid=thread-agent-button])",

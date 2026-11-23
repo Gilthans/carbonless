@@ -106,6 +106,11 @@ const FORMS: [string, string[], string[] | "none"][] = [
 	],
 	["REST comment read", ["api", `repos/${REPO}/pulls/comments/1000`], [REPO]],
 	[
+		"REST PR commits (CAR-233)",
+		["api", `repos/${REPO}/pulls/7/commits`, "--paginate", "--jq", ".[].sha"],
+		[REPO],
+	],
+	[
 		"REST new thread",
 		["api", "-X", "POST", `repos/${REPO}/pulls/7/comments`, "--input", "-"],
 		[REPO],

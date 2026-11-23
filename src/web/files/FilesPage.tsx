@@ -31,6 +31,7 @@ import {
 	agentPlacementIds,
 	agentWaiting,
 	shownAgentPlaceables,
+	unjoinUnlisted,
 } from "../agent/placeable";
 import {
 	comparisonView,
@@ -126,7 +127,12 @@ import {
 	moveTargetOf,
 	useMoveWritesHost,
 } from "./threadMove";
-import { outsideThreads, shownThread, shownThreads } from "./threadPlacement";
+import {
+	earlierPending,
+	outsideThreads,
+	shownThread,
+	shownThreads,
+} from "./threadPlacement";
 import {
 	agentRows,
 	type FocusWorld,
@@ -332,6 +338,11 @@ function useDiffThreads(
 	latest: number | null,
 	/** Threads published from then on (ms) are left out (an earlier patch set). */
 	until: number | null,
+	/**
+	 * The since view: its compared patch set's head, whose threads not
+	 * placed yet show on their removed rows (CAR-233).
+	 */
+	earlierHead?: string,
 ): {
 	threads: DiffThreads | undefined;
 	/** Every thread of the read, on this head or not (people's tints). */
@@ -426,9 +437,15 @@ function useDiffThreads(
 						snapshotHead,
 						threads: shownThreads(visible, snapshotHead, placements, moves),
 						placements,
+						earlierPending: earlierPending(
+							visible,
+							snapshotHead,
+							placements,
+							earlierHead,
+						),
 					}
 				: undefined,
-		[readId, visible, snapshotHead, placements, moves],
+		[readId, visible, snapshotHead, placements, moves, earlierHead],
 	);
 	const outside = useMemo(
 		() => (visible ? outsideThreads(visible, placements) : []),
@@ -1202,6 +1219,9 @@ export function FilesPage() {
 		placingTo,
 		latest,
 		threadsCutoff,
+		sinceView.since === null
+			? undefined
+			: session?.patchsets.find((p) => p.number === sinceView.since)?.head,
 	);
 	// Thread moves (CAR-139): written to the target viewed, when it takes them.
 	const moveWrites = useMoveWritesHost({
@@ -1260,7 +1280,22 @@ export function FilesPage() {
 		...agentThreadsQuery,
 		enabled: agentOn,
 	});
-	const agentThreads = agentThreadsRead.data?.threads;
+	// The GitHub threads this view lists (null: they failed): a conversation
+	// joined to a thread not among them shows where it was asked (CAR-236).
+	const listedIds = useMemo(
+		() =>
+			listedThreads
+				? new Set(listedThreads.map((t) => t.id))
+				: threadsFailed !== null
+					? null
+					: undefined,
+		[listedThreads, threadsFailed],
+	);
+	const agentThreadsAsRead = agentThreadsRead.data?.threads;
+	const agentThreads = useMemo(
+		() => agentThreadsAsRead && unjoinUnlisted(agentThreadsAsRead, listedIds),
+		[agentThreadsAsRead, listedIds],
+	);
 	// Where the tracer puts them in the viewed snapshot, as GitHub's are;
 	// until it answers (or if it fails) each shows where it was asked.
 	// The review conversation has no code to place: never asked about.
@@ -1287,6 +1322,7 @@ export function FilesPage() {
 			until: threadsCutoff,
 			pending: agentPending,
 			failed: agentPlacingState.error !== null,
+			...(listedIds !== undefined ? { listed: listedIds } : {}),
 		}),
 		[
 			agentPlacements,
@@ -1294,6 +1330,7 @@ export function FilesPage() {
 			threadsCutoff,
 			agentPending,
 			agentPlacingState.error,
+			listedIds,
 		],
 	);
 	const agentHead =
@@ -2023,6 +2060,12 @@ export function FilesPage() {
 												commit={agentHead}
 												headSure={headSure}
 												readOnly={readOnly}
+												earlier={
+													since === null
+														? undefined
+														: session?.patchsets.find((p) => p.number === since)
+																?.head
+												}
 											/>
 											{!wide && (data.files.length > 0 || gone.length > 0) && (
 												<>

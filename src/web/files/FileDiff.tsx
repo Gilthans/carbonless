@@ -99,7 +99,12 @@ import { ThreadBubble } from "./ThreadBubble";
 import { UnplacedThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
 import { useFocusAmong } from "./threadFocus";
-import { fileThreads, placeThreads, sinceLeft } from "./threadPlacement";
+import {
+	fileThreads,
+	placeThreads,
+	sinceEarlier,
+	sinceLeft,
+} from "./threadPlacement";
 import {
 	countedFile,
 	describeFileProgress,
@@ -887,6 +892,13 @@ export function FileDiff(props: {
 	// never dropped. A closed file's hunks aren't read (first open stays
 	// light): a binary or submodule file's line threads are flagged from the
 	// file alone; a line past the end shows once the file is opened.
+	// The since view's compared patch set's head (CAR-233: threads made
+	// there on a line only it had show on its removed row).
+	const sinceSession = useQuery({ ...sessionQuery, enabled: false }).data;
+	const earlierHead =
+		props.since === undefined
+			? undefined
+			: sinceSession?.patchsets.find((p) => p.number === props.since)?.head;
 	const filePlacement = props.threads
 		? placeThreads({
 				threads: props.threads.threads,
@@ -900,7 +912,15 @@ export function FileDiff(props: {
 				// the full diff), so the header holds what no row can.
 				...(props.since === undefined
 					? {}
-					: { sinceLeft: sinceLeft(file.clusters, hunkData?.hunks) }),
+					: {
+							sinceLeft: sinceLeft(file.clusters, hunkData?.hunks),
+							...(earlierHead === undefined
+								? {}
+								: {
+										sinceEarlier: sinceEarlier(earlierHead, hunkData?.hunks),
+										earlierPending: props.threads.earlierPending,
+									}),
+						}),
 			})
 		: null;
 	const header = filePlacement?.header ?? [];
@@ -1020,7 +1040,14 @@ export function FileDiff(props: {
 				placements: agentPlacements,
 				...(props.since === undefined
 					? {}
-					: { sinceLeft: sinceLeft(file.clusters, hunkData?.hunks) }),
+					: {
+							sinceLeft: sinceLeft(file.clusters, hunkData?.hunks),
+							...(earlierHead === undefined
+								? {}
+								: {
+										sinceEarlier: sinceEarlier(earlierHead, hunkData?.hunks),
+									}),
+						}),
 			})
 		: null;
 	const agentHeader = agentPlaced?.header ?? [];

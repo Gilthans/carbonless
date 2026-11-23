@@ -280,6 +280,32 @@ switch wouldn't happen.
   written, the browser keeps the post, shows it Posted and writes the record
   on a later load.
   The agent has no tool to post; a refusal is never retried by itself.
+  **A posted comment ties the conversation to its thread** (the owner,
+  2026-11-22: "I'd like it to be tied together, instead of just another
+  github thread over the same line"; CAR-236). Once a block from a
+  conversation on lines or a file starts a new GitHub thread, the
+  conversation is that thread's: it shows in the thread's agent panel (its
+  card opens with it on the press), as one asked with Ask agent there
+  would, never as a second thread on the line; its later blocks reply to
+  that thread. Two threads started before this: the first posted is the
+  one. The thread deleted on GitHub, it shows on its own lines again; while
+  GitHub's threads can't be read it shows there too, its blocks and its
+  reply box off (it may have a thread: never a second one). A view that
+  doesn't list its thread (an earlier patch set) shows it where it was
+  asked, its blocks replying to its thread. Until the first post's record
+  is in, this browser knows it: another block of the conversation waits
+  while one is on its way or in doubt, and replies to the thread one
+  started once GitHub took it.
+- **Write / Preview on every box that posts to GitHub (CAR-202).** The
+  reply, new-thread, edit and verdict-message boxes and the agent's
+  suggested comment each have a pencil/eye toggle (Ctrl/Cmd+Shift+P).
+  Preview renders the text the way crb shows a posted comment
+  (`escapeTags`, `marked`, then `sanitizeGithubHtml`: `CommentPreview.tsx`),
+  in the textarea's place and at least its height. The agent's box opens in
+  Preview (markdown the reviewer didn't write: read it first); the
+  reviewer's own boxes open in Write. Sending works from either mode and
+  posts the same text. No toggle on an empty box or in Ask agent (its text
+  never reaches GitHub). The mode isn't saved.
 - **Resolve in Files changed closes the thread to its bubble** (the owner,
   2026-11-09), on the press. Once none of the bubble's threads shows, it
   closes and takes the focus (a bubble above the view comes down to just
