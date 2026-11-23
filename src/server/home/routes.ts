@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import type { AnnotationOp } from "../../shared/home.js";
 import { GhError } from "../errors.js";
 import { GitError } from "../git.js";
@@ -78,7 +78,7 @@ export async function registerHomeRoutes(
 	} = {},
 ): Promise<void> {
 	const people = options.people ?? new HomePeople(home);
-	await app.register(async (scope) => {
+	await app.register((async (scope) => {
 		scope.setErrorHandler((error, _request, reply) => {
 			const send = (status: number, message: string) =>
 				reply.status(status).send({ error: message });
@@ -163,5 +163,5 @@ export async function registerHomeRoutes(
 				return people.people(q);
 			},
 		);
-	});
+	}) satisfies FastifyPluginAsync);
 }
