@@ -934,13 +934,15 @@ view); `FileSummary.markdownBlocks` says which files were cut. The block
 cut runs after CAR-218's whitespace cut, on its pieces: a block piece of a
 whitespace-only piece stays whitespace-only where the view draws all its
 lines as `~` rows. Under the cap the view matches the display hunk whole,
-so every part of a whitespace-only piece is `~`; over `SPLIT_CELLS` (or
-when the hunks don't fit the text) it matches each cluster alone, so a
-pair the block cut parted would draw as plain lines. `cutClusters` checks
-those block pieces against the view's matching over the clusters as they
-stand and cuts them again where the view's `~` rows start and end
-(`fitViewWhitespace`, repeated until nothing is cut): the parted pair
-counts (the safe direction), the rest stays whitespace-only. So the
+so every part of a whitespace-only piece is `~`; over `SPLIT_CELLS` it
+matches each cluster alone, so a pair the block cut parted would draw as
+plain lines. `cutClusters` checks those block pieces against the view's
+matching over the clusters as they stand and cuts them again where the
+view's `~` rows start and end (`fitViewWhitespace`, repeated until nothing
+is cut): the parted pair counts (the safe direction), the rest stays
+whitespace-only. When the display hunks don't fit the text, nothing is cut
+again: every such block piece loses its whitespace-only flag and counts,
+as does one the view draws no line of (unknown, so the safe direction). So the
 clusters agree with the view's `~` rows line for line
 (`src/server/diff/cut.test.ts`, Markdown included). The since view cuts
 the other way round, on its own diff: each run is grouped at the blocks

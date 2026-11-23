@@ -16,6 +16,7 @@ import { clusterKeys } from "./identity.js";
 import {
 	buildSnapshot,
 	cutClusters,
+	fitViewWhitespace,
 	loadContext,
 	loadFileHunks,
 	loadHunksBatch,
@@ -1291,5 +1292,34 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 			`cutClusters of a 300 KiB README: ${best} µs, ${ratio.toFixed(2)}x four cuts of its quarter (${ref} µs)`,
 		);
 		expect(ratio).toBeLessThan(2);
+	});
+});
+
+describe("fitViewWhitespace (CAR-167)", () => {
+	it("counts a rechecked piece the view draws no lines for: unknown is never whitespace", () => {
+		// A piece flagged whitespace-only that no display hunk holds a line
+		// of: the view can't say it is `~`, so it counts (principle 2).
+		const clusters: Omit<Cluster, "key">[] = [
+			{
+				kind: "file",
+				label: "x",
+				oldStart: 0,
+				oldCount: 0,
+				newStart: 0,
+				newCount: 0,
+				removed: [],
+				added: [],
+				lines: 0,
+				whitespaceOnly: true,
+			},
+		];
+		const parts = [{ hunk: -1, removedAt: 0, addedAt: 0, piece: -1 }];
+		fitViewWhitespace(clusters, parts, new Set([0]), {
+			oldLines: ["a"],
+			newLines: ["a"],
+			noNewlineAtEnd: false,
+		});
+		expect(clusters).toHaveLength(1);
+		expect(clusters[0]?.whitespaceOnly).toBeUndefined();
 	});
 });

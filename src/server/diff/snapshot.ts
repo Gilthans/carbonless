@@ -530,10 +530,11 @@ interface CutPart {
  * the clusters as they stand, its pairs inside the piece), each part
  * flagged by that, and the check runs again over the new clusters until
  * nothing is cut (each round only cuts or clears, so it ends). Display
- * hunks that don't build: every such piece counts (the safe direction).
+ * hunks that don't build, or a piece they draw no lines for: every such
+ * piece counts (the safe direction). Exported for its tests.
  * The parts keep their piece's place in the git hunk.
  */
-function fitViewWhitespace(
+export function fitViewWhitespace(
 	clusters: Omit<Cluster, "key">[],
 	parts: CutPart[],
 	recheck: Set<number>,
@@ -583,6 +584,9 @@ function fitViewWhitespace(
 		clusters.forEach((c, i) => {
 			const part = parts[i] as CutPart;
 			const lines = seen.get(i);
+			// A rechecked piece the view draws no lines for: unknown, so it
+			// counts (never left out as whitespace on a guess).
+			if (recheck.has(i) && !lines) delete c.whitespaceOnly;
 			if (!recheck.has(i) || !lines || c.whitespaceOnly !== true) {
 				nextClusters.push(c);
 				nextParts.push(part);
