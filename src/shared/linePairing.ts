@@ -230,6 +230,53 @@ export function similarityTo(
 	};
 }
 
+/**
+ * The added lines (indices into `adds`) at least `min` `lineSimilarity`
+ * alike an old line with a word, from an index of their word tokens built
+ * once: only lines sharing enough words with it are scored, so a lookup
+ * over a whole file's added lines costs what they share, not their count
+ * (the tracer's look-alike check, CAR-95). Lines without a word never
+ * count. `min` should be at least PAIR_MIN_SIMILARITY's bound to prune
+ * well; below it every sharing line is scored.
+ */
+export function alikeAtLeast(
+	adds: readonly string[],
+): (oldText: string, min: number) => number[] {
+	const codes: Codes = new Map();
+	const fresh = adds.map((t) => prepare(t, codes));
+	const index = new Map<string, Map<number, number>>();
+	fresh.forEach((line, j) => {
+		if (line.long) return;
+		for (const t of line.words) {
+			let posting = index.get(t);
+			if (!posting) {
+				posting = new Map();
+				index.set(t, posting);
+			}
+			posting.set(j, (posting.get(j) ?? 0) + 1);
+		}
+	});
+	return (oldText, min) => {
+		const a = prepare(oldText, codes);
+		if (a.long || a.words.length === 0) return [];
+		const counts = new Map<string, number>();
+		for (const t of a.words) counts.set(t, (counts.get(t) ?? 0) + 1);
+		const shared = new Map<number, number>();
+		for (const [t, c] of counts) {
+			for (const [j, cj] of index.get(t) ?? []) {
+				shared.set(j, (shared.get(j) ?? 0) + Math.min(c, cj));
+			}
+		}
+		const out: number[] = [];
+		for (const [j, common] of shared) {
+			const b = at(fresh, j);
+			if ((2 * common) / (a.words.length + b.words.length) < min) continue;
+			if (score(a, b, common) >= min) out.push(j);
+		}
+		return out.sort((x, y) => x - y);
+	};
+}
+
 /** A chosen set of pairs, as a persistent list (earliest pair first). */
 type Chain = { del: number; add: number; rest: Chain } | null;
 type Cell = { total: number; positions: number; chain: Chain };

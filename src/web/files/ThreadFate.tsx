@@ -245,7 +245,7 @@ function FateChip({ thread }: { thread: ReviewThread }) {
 	// attention: its chip is muted.
 	const quiet = thread.resolved;
 	if (placement.kind === "changed") {
-		return <ChangedChip thread={thread} />;
+		return <ChangedChip thread={thread} moved={placement.moved} />;
 	}
 	if (placement.kind === "unplaced" || placement.kind === "outside") {
 		// GitHub's outdated already has its badge on the card: no second sign.
@@ -265,22 +265,28 @@ function FateChip({ thread }: { thread: ReviewThread }) {
 	return null;
 }
 
-/** "changed since": a thread's line was rewritten since it was made (muted once resolved). */
+/**
+ * "changed since": a thread's line was rewritten since it was made;
+ * "moved since": it went elsewhere in its file with its block (the
+ * placement's `moved`). Muted once resolved.
+ */
 export function ChangedChip({
 	thread,
+	moved,
 }: {
 	thread: Pick<ReviewThread, "createdAt" | "resolved">;
+	moved?: boolean;
 }) {
 	const info = usePlacementInfo();
 	const ps = psLabel(info.openedOn(thread));
 	return (
 		<Chip
 			tone={thread.resolved ? "gray" : "yellow"}
-			icon={GitCompareIcon}
-			tip={`The line changed since ${ps || "the thread was made"}`}
+			icon={moved ? ArrowSwitchIcon : GitCompareIcon}
+			tip={`The ${moved ? "code moved" : "line changed"} since ${ps || "the thread was made"}`}
 			testId="placement-changed"
 		>
-			changed since
+			{moved ? "moved since" : "changed since"}
 		</Chip>
 	);
 }
@@ -318,7 +324,10 @@ export function ChangedSince({
 				data-testid="placement-fate-line"
 				className="flex min-h-10 flex-wrap items-center gap-x-2 text-xs text-muted"
 			>
-				<span>Line rewritten{ps === null ? "" : ` since PS${ps}`}</span>
+				<span>
+					Line {placement.moved ? "moved" : "rewritten"}
+					{ps === null ? "" : ` since PS${ps}`}
+				</span>
 				{ps !== null && (
 					<Link
 						to="/r/$id/files"

@@ -11,9 +11,11 @@
  * A stored placement (the reviewer's `thread-placed`) wins once it is
  * checked against the target (its path a file of the snapshot, its lines
  * inside that file); one that fails the check is ignored, never moved
- * elsewhere. `moved` is only ever a rename pair's new path (git's rename
- * detection), never a text search across lines. Which commit did what is
- * not computed (owner, 2026-11-07: deferred).
+ * elsewhere. The `moved` fate is only ever a rename pair's new path (git's
+ * rename detection); lines that went elsewhere in their file with their
+ * block are a changed placement marked `moved` (the tracer's move search,
+ * src/shared/tracer/moved.ts). Which commit did what is not computed
+ * (owner, 2026-11-07: deferred).
  *
  * A thread that can't be traced from its own commit (none given, or one
  * git can't have) is traced from where GitHub puts it now instead: its
@@ -82,6 +84,11 @@ export type ThreadPlacement =
 			old: { side: DiffSide; startLine: number; line: number; text: string[] };
 			/** The replacing lines' text in the target (empty when unknown). */
 			now: string[];
+			/**
+			 * The lines went elsewhere in the file with their block, edited
+			 * or not (the tracer's move search): moved since, not rewritten.
+			 */
+			moved?: true;
 	  }
 	/**
 	 * Under the file at `path` (its path in the target), fate first;
@@ -374,6 +381,7 @@ function traced(t: ThreadInput): ThreadPlacement {
 				anchor: refOf(path, start, start),
 				old: old(),
 				now: nowText(t, start, start),
+				...movedOf(start),
 			};
 		}
 		const fate = fateOf(end, t, diffs);
@@ -398,7 +406,12 @@ function traced(t: ThreadInput): ThreadPlacement {
 			anchor: refOf(path, first, end),
 			old: old(),
 			now: nowText(t, first, end),
+			...movedOf(end),
 		};
 	}
 	return { kind: "placed", anchor: refOf(path, first, end), changed: false };
 }
+
+/** A traced end that moved with its block marks the placement moved. */
+const movedOf = (p: Placement): { moved?: true } =>
+	p.kind === "changed" && p.moved ? { moved: true } : {};

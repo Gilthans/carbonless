@@ -159,9 +159,29 @@ its place. When it can't be told, it is `rewritten`, also under its file:
 a pairing too large, a text that can't be read, a line with no word (a
 `}`, a blank line: its likeness says nothing), or two lines past its own
 hunk as like it as each other. A range maps to the span its surviving
-lines landed on. Owner, 2026-11-18 (CAR-95): reuse the side-by-side
-similarity; measured on a real review's threads with `pnpm score-carry`
-(`docs/thread-carry-corpus.md`).
+lines landed on; one whose every line with a word is gone is gone too,
+never kept alive by a `}` or a blank line that stayed. Owner, 2026-11-18
+(CAR-95): reuse the side-by-side similarity; measured on a real review's
+threads with `pnpm score-carry` (`docs/thread-carry-corpus.md`).
+
+A block moved elsewhere in its file takes its threads with it
+(`src/shared/tracer/moved.ts`): the commented line found again among the
+file's added lines, equal ignoring whitespace, inside a run of the removed
+lines around it found again line for line (equal, or alike beside an
+equal one) with at least 20 letters and digits on its equal lines (git's
+`--color-moved` minimum, so a lone `return nil` never moves). The thread
+shows "moved since" on its new line. A line opening a block (`const (`,
+`func f() {`) that didn't move itself, but whose whole body did, goes to
+the body's first line. An identical block that appears twice (added
+twice, or removed twice and added once) is ambiguous: `rewritten`, never a
+pick. A partner found nearby is also checked against the file's other
+added lines: one about as alike (within 0.15, or more) contests it, and
+the line whose surroundings (three lines each way) also resemble the old
+ones wins, by a clear margin; none clearly ahead is `rewritten`. A rival
+more alike than the partner is left out when it is another removed line's
+mutual best match (a line carries one statement). On the same corpus
+(CAR-95 step 3) this ended every wrong-line placement, without a right one
+lost.
 
 ## A thread with nothing to trace from sits on GitHub's line
 

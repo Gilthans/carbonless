@@ -491,7 +491,8 @@ function rewrite(
 function where(p: ThreadPlacement): string {
 	if (p.kind === "changed" || p.kind === "placed") {
 		const { startLine, line } = p.anchor;
-		return `${p.kind} ${startLine === line ? line : `${startLine}-${line}`}`;
+		const moved = p.kind === "changed" && p.moved ? " moved" : "";
+		return `${p.kind} ${startLine === line ? line : `${startLine}-${line}`}${moved}`;
 	}
 	if (p.kind === "unplaced") {
 		return `${p.fate}${p.nearest ? ` near ${p.nearest.line}` : ""}`;
@@ -686,6 +687,330 @@ describe("a replaced line follows its likeness (CAR-95)", () => {
 	});
 });
 
+describe("a block moved elsewhere in its file follows it (CAR-95 step 3)", () => {
+	// b() moved above a(), unchanged.
+	const OLD = [
+		"func a() {",
+		"\tsetup()",
+		"}",
+		"",
+		"func b() {",
+		"\ttotal := sumAll(items, weights)",
+		'\treport.Write(total, "weighted sum")',
+		"}",
+	];
+	const NEW = [
+		"func b() {",
+		"\ttotal := sumAll(items, weights)",
+		'\treport.Write(total, "weighted sum")',
+		"}",
+		"",
+		"func a() {",
+		"\tsetup()",
+		"}",
+	];
+	const HUNKS = [h(0, 0, 1, 5), h(4, 5, 8, 0)];
+
+	it("a line of a moved block is on its new line, marked moved", () => {
+		expect(place(rewrite(OLD, NEW, HUNKS, at(7)))).toBe("changed 3 moved");
+		expect(place(rewrite(OLD, NEW, HUNKS, at(7, "RIGHT", 6)))).toBe(
+			"changed 2-3 moved",
+		);
+		const p = placeThread(rewrite(OLD, NEW, HUNKS, at(6)), () => 100);
+		expect(p).toMatchObject({
+			kind: "changed",
+			moved: true,
+			old: { text: ["\ttotal := sumAll(items, weights)"] },
+			now: ["\ttotal := sumAll(items, weights)"],
+		});
+	});
+
+	it("an identical block added twice is ambiguous: rewritten, never a pick", () => {
+		const now = [
+			"func x() {",
+			"\ttotal := sumAll(items, weights)",
+			'\treport.Write(total, "weighted sum")',
+			"}",
+			"",
+			"func y() {",
+			"\ttotal := sumAll(items, weights)",
+			'\treport.Write(total, "weighted sum")',
+			"}",
+			"",
+			"func a() {",
+			"\tsetup()",
+			"}",
+		];
+		const hunks = [h(0, 0, 1, 10), h(4, 5, 13, 0)];
+		expect(place(rewrite(OLD, now, hunks, at(7)))).toBe("rewritten near 13");
+	});
+
+	it("an identical block removed twice and added once is ambiguous too", () => {
+		const old = [
+			"func b() {",
+			"\ttotal := sumAll(items, weights)",
+			'\treport.Write(total, "weighted sum")',
+			"}",
+			"func c() {",
+			"\ttotal := sumAll(items, weights)",
+			'\treport.Write(total, "weighted sum")',
+			"}",
+			"func a() {",
+			"\tsetup()",
+			"}",
+		];
+		const now = [
+			"func a() {",
+			"\tsetup()",
+			"}",
+			"func d() {",
+			"\ttotal := sumAll(items, weights)",
+			'\treport.Write(total, "weighted sum")',
+			"}",
+		];
+		const hunks = [h(1, 8, 0, 0), h(11, 0, 4, 4)];
+		expect(place(rewrite(old, now, hunks, at(3)))).toBe("rewritten");
+	});
+
+	it("a short generic line found elsewhere alone never moves: deleted", () => {
+		const old = [
+			"func a() {",
+			"\tif x {",
+			"\t\treturn nil",
+			"\t}",
+			"}",
+			"func m() {",
+			"\tkeep()",
+			"}",
+		];
+		const now = [
+			"func a() {",
+			"}",
+			"func m() {",
+			"\tkeep()",
+			"}",
+			"func z() {",
+			"\treturn nil",
+			"}",
+		];
+		const hunks = [h(2, 3, 1, 0), h(8, 0, 6, 3)];
+		expect(place(rewrite(old, now, hunks, at(3)))).toBe("deleted near 1");
+	});
+
+	it("an opener whose whole body moved into another block goes to the body", () => {
+		const old = [
+			"package x",
+			"",
+			"const (",
+			"\tlimit = 1",
+			")",
+			"",
+			"const (",
+			'\txmlResponseExt = ".xml"',
+			'\tzipResponseExt = ".zip"',
+			")",
+		];
+		const now = [
+			"package x",
+			"",
+			"const (",
+			"\tlimit = 1",
+			"",
+			'\txmlResponseExt = ".xml"',
+			'\tzipResponseExt = ".zip"',
+			")",
+		];
+		const hunks = [h(4, 0, 5, 3), h(6, 5, 8, 0)];
+		expect(place(rewrite(old, now, hunks, at(7)))).toBe("changed 6 moved");
+		// A body line itself: its partner in the region joined across `)`.
+		expect(place(rewrite(old, now, hunks, at(9)))).toBe("changed 7");
+	});
+
+	it("an edited block wins over a twin of the line alone", () => {
+		const old = [
+			"class A:",
+			"    name: str",
+			"    # None makes the mock answer like an old agent.",
+			"    fingerprint: str | None = None",
+			"",
+			"class B:",
+			"    size: int",
+		];
+		const now = [
+			"class A:",
+			"    name: str",
+			"",
+			"class B:",
+			"    size: int",
+			"    # None answers like an old agent.",
+			"    fingerprint: str | None = None",
+			"",
+			"class C:",
+			"    fingerprint: str | None = None",
+		];
+		const hunks = [h(3, 2, 2, 0), h(7, 0, 6, 5)];
+		expect(place(rewrite(old, now, hunks, at(4)))).toBe("changed 7 moved");
+	});
+
+	it("one end moved and the other not: the range is its end", () => {
+		const old = [
+			"func a() {",
+			"\tsetup()",
+			"\ttotal := sumAll(items, weights)",
+			'\treport.Write(total, "weighted sum")',
+			"}",
+			"",
+			"func c() {",
+			"\tone()",
+			"\ttwo()",
+			"\tthree()",
+			"}",
+		];
+		const now = [
+			"func a() {",
+			"\tsetup(opts)",
+			"}",
+			"",
+			"func c() {",
+			"\tone()",
+			"\ttwo()",
+			"\tthree()",
+			"}",
+			"",
+			"func z() {",
+			"\ttotal := sumAll(items, weights)",
+			'\treport.Write(total, "weighted sum")',
+			"}",
+		];
+		const hunks = [h(2, 3, 2, 1), h(11, 0, 10, 5)];
+		expect(place(rewrite(old, now, hunks, at(2)))).toBe("changed 2");
+		expect(place(rewrite(old, now, hunks, at(4)))).toBe("changed 13 moved");
+		expect(place(rewrite(old, now, hunks, at(4, "RIGHT", 2)))).toBe(
+			"changed 13 moved",
+		);
+	});
+
+	it("a re-indented block too large to pair keeps its lines (CAR-225)", () => {
+		const old = Array.from(
+			{ length: 60 },
+			(_, i) => `call(value${i}, other${i})`,
+		);
+		const now = old.map((t) => `\t${t}`);
+		expect(place(rewrite(old, now, [h(1, 60, 1, 60)], at(30)))).toBe(
+			"changed 30",
+		);
+	});
+});
+
+describe("a partner contested by a look-alike elsewhere (CAR-95 step 3)", () => {
+	const OLD = [
+		"func TestParsesText(t *testing.T) {",
+		"\tt.Parallel()",
+		'\tassert.Equal(t, parse("plain words here"), want)',
+		"}",
+	];
+
+	it("the look-alike whose surroundings match wins", () => {
+		const now = [
+			"func TestRejectsBadInput(t *testing.T) {",
+			"\tt.Parallel()",
+			'\tassert.Error(t, check("<not xml>"))',
+			"}",
+			"",
+			"func TestParsesPlainText(t *testing.T) {",
+			"\tt.Parallel()",
+			'\tassert.Equal(t, parse("plain words here"), want)',
+			"}",
+		];
+		// git kept old 2-4 as new 7-9: old 1 is replaced by new 1-6.
+		expect(place(rewrite(OLD, now, [h(1, 1, 1, 6)], at(1)))).toBe("changed 6");
+	});
+
+	it("as alike, surroundings as alike: rewritten, never a pick", () => {
+		const now = [
+			"func TestRejectsBadInput(t *testing.T) {",
+			"\tt.Parallel()",
+			'\tassert.Equal(t, parse("plain words here"), want)',
+			"}",
+			"",
+			"func TestParsesPlainText(t *testing.T) {",
+			"\tt.Parallel()",
+			'\tassert.Equal(t, parse("plain words here"), want)',
+			"}",
+		];
+		expect(place(rewrite(OLD, now, [h(1, 1, 1, 6)], at(1)))).toBe("rewritten");
+	});
+
+	it("a partner nearby with a look-alike in a far hunk, neither clearer: rewritten", () => {
+		const old = [
+			"func load() {",
+			"\tcached, err := cache.Touch(ctx, key, ext)",
+			"\tif err != nil && cached != nil {",
+			'\t\tlog("serving the cached report anyway", err)',
+			"\t\treturn cached, nil",
+			"\t}",
+			"\tone()",
+			"\ttwo()",
+			"\tthree()",
+			"\tfour()",
+			"\tfive()",
+			"\tsix()",
+			"\treturn cached, err",
+			"}",
+		];
+		const now = [
+			"func load() {",
+			"\tcached, err := cache.Get(ctx, key, ext)",
+			"\tif cached == nil {",
+			"\t\terr = errMissing",
+			"\t}",
+			"\tone()",
+			"\ttwo()",
+			"\tthree()",
+			"\tfour()",
+			"\tfive()",
+			"\tsix()",
+			"\tif err = cache.Touch(ctx, key, ext); err != nil {",
+			'\t\tlog("serving the cached report anyway", err)',
+			"\t}",
+			"\treturn cached, nil",
+			"}",
+		];
+		// Old 2-5 replaced by new 2-4; old 13 by new 12-15, past six().
+		const hunks = [h(2, 4, 2, 3), h(13, 1, 12, 4)];
+		expect(place(rewrite(old, now, hunks, at(2)))).toBe("rewritten near 1");
+	});
+});
+
+describe("a range whose statements are all gone (CAR-95 step 3)", () => {
+	it("doesn't live on in a `}` that stayed", () => {
+		const old = [
+			"func f() {",
+			"\tfor _, c := range kids {",
+			"\t\twalk(c)",
+			"\t}",
+			"\treturn out",
+			"}",
+		];
+		const now = [
+			"func f() {",
+			"\tif len(stack) == 0 {",
+			"\t\tfail()",
+			"\t}",
+			"\treturn out",
+			"}",
+		];
+		expect(place(rewrite(old, now, [h(2, 2, 2, 2)], at(4, "RIGHT", 2)))).toBe(
+			"deleted near 1",
+		);
+		// One statement kept: the range lives on.
+		const kept = [...now.slice(0, 2), "\t\twalk(c)", ...now.slice(3)];
+		expect(place(rewrite(old, kept, [h(2, 1, 2, 1)], at(4, "RIGHT", 2)))).toBe(
+			"changed 3-4",
+		);
+	});
+});
+
 describe("a replaced hunk's CPU (CAR-95)", () => {
 	// A 49 x 49 replaced hunk of unrelated lines of ~90 tokens (under every
 	// pairing cap): no line has a partner, so every line of a range is
@@ -770,6 +1095,73 @@ function edit(
 	now.push(...lines.slice(pos));
 	return { now, hunks };
 }
+
+describe("the move search's CPU over a whole file (CAR-95 step 3)", () => {
+	const BLOCK = [
+		"\ttotal := sumAll(items, weights)",
+		'\treport.Write(total, "weighted sum")',
+		"\treturn total",
+	];
+	/**
+	 * A file of `n` lines with every other one rewritten (one hunk each,
+	 * joined into one region too large to pair) and BLOCK moved from its top
+	 * to its end: a thread on BLOCK's middle line is found by the move
+	 * search over every changed line. Every line shares words with the
+	 * others, so the look-alike index has work too.
+	 */
+	function file(n: number) {
+		const fill = (i: number, v: string) =>
+			`\tcall${i}(items, weights, ${v}${i % 13})`;
+		const old = [
+			...BLOCK,
+			...Array.from({ length: n }, (_, i) => fill(i, "a")),
+		];
+		const now = [
+			...Array.from({ length: n }, (_, i) => fill(i, i % 2 ? "b" : "a")),
+			...BLOCK,
+		];
+		const hunks = [h(1, BLOCK.length, 0, 0)];
+		for (let i = 1; i < n; i += 2) {
+			hunks.push(h(BLOCK.length + i + 1, 1, i + 1, 1));
+		}
+		hunks.push(h(old.length, 0, n + 1, BLOCK.length));
+		return { old, now, hunks };
+	}
+	/**
+	 * Two threads on a fresh mapper (nothing memoized from the last run): one
+	 * on BLOCK, one on a rewritten line whose partner every other added line
+	 * half resembles (the look-alike check).
+	 */
+	const placeIn = (f: ReturnType<typeof file>) => () => {
+		const bd = createLineMapper(f.hunks);
+		for (const line of [2, BLOCK.length + 2]) {
+			const t = rewrite(f.old, f.now, f.hunks, at(line));
+			placeThread(
+				{ ...t, diffs: { ...(t.diffs as TraceDiffs), bd } },
+				() => f.now.length,
+			);
+		}
+	};
+
+	it("finds the block", () => {
+		const f = file(40);
+		expect(place(rewrite(f.old, f.now, f.hunks, at(2)))).toBe(
+			"changed 42 moved",
+		);
+	});
+
+	it("a file four times as large costs about four of the quarter, not sixteen", () => {
+		const big = file(1600);
+		const small = file(400);
+		const { best, ref, ratio } = bestCpuRatio(placeIn(big), () => {
+			for (let i = 0; i < 4; i++) placeIn(small)();
+		});
+		console.info(
+			`move search, 1600 lines: ${best} µs, ${ratio.toFixed(2)}x four of 400 (${ref} µs)`,
+		);
+		expect(ratio).toBeLessThan(2);
+	});
+});
 
 describe("placeThread property (principle 2)", () => {
 	const line = fc.constantFrom(

@@ -22,13 +22,16 @@ import { alignOrOver, similarityTo } from "../linePairing.js";
 import { HAS_WORD, WORD_DIFF_MAX } from "../tokenize.js";
 import type { DiffSide } from "../types.js";
 import type { LineMapper, MapHunk } from "./lineMapper.js";
+import { contested, movedTo, sameFileTexts } from "./moved.js";
 
 /**
  * Bumped when a placement for the same inputs could change. 2: a line in a
  * replaced hunk goes to its similar partner, else unplaced (was: the same
- * offset in the replacement).
+ * offset in the replacement). 3: a line moved with its block follows it
+ * elsewhere in the file (`moved`); a partner that a line elsewhere
+ * resembles as much is `rewritten`.
  */
-export const TRACER_VERSION = 2;
+export const TRACER_VERSION = 3;
 
 export interface Position {
 	side: DiffSide;
@@ -62,8 +65,18 @@ export interface TraceDiffs {
 export type Placement =
 	/** Same text, at this line; `became: "context"`: the new snapshot no longer changes it. */
 	| { kind: "placed"; side: DiffSide; line: number; became?: "context" }
-	/** The line was edited in place: its replacement, with the text as it was. */
-	| { kind: "changed"; side: DiffSide; line: number; oldText: string | null }
+	/**
+	 * The line was edited in place: its replacement, with the text as it
+	 * was; `moved`: it went elsewhere in the file with its block (moved.ts),
+	 * edited or not.
+	 */
+	| {
+			kind: "changed";
+			side: DiffSide;
+			line: number;
+			oldText: string | null;
+			moved?: true;
+	  }
 	/**
 	 * Gone; `nearest`: the closest surviving line above, in the new
 	 * snapshot. `rewritten`: replaced, but which replacing line carries it
@@ -108,12 +121,13 @@ function traceRight(pos: Position, diffs: TraceDiffs): Placement {
 	}
 	const hunk = bd.hunkRemovingOld(pos.line);
 	const partner = hunk ? partnerIn(hunk, pos.line, diffs) : null;
-	if (typeof partner === "number") {
+	if (partner !== null && typeof partner === "object") {
 		return {
 			kind: "changed",
 			side: "RIGHT",
-			line: partner,
+			line: partner.line,
 			oldText: diffs.oldLineText?.(pos) ?? null,
+			...(partner.moved ? { moved: true as const } : {}),
 		};
 	}
 	return {
@@ -170,7 +184,9 @@ type Region =
 	  }
 	| "unknown";
 
-type Partner = number | null | "unknown";
+/** A replacing line found; `moved`: elsewhere, with its block (moved.ts). */
+type Found = { line: number; moved?: true };
+type Partner = Found | null | "unknown";
 
 /**
  * Per `bd` mapper (TraceDiffs.bd), shared by every thread traced through
@@ -355,6 +371,8 @@ function scoreIn(
  * memoized per line for every thread on the same diff.
  */
 function partnerIn(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
+	// A partner also depends on the whole file's changed lines (moved.ts).
+	if (!sameFileTexts(diffs)) memos.delete(diffs.bd);
 	const memo = checkedMemo(hunk, diffs).partners;
 	let partner = memo.get(line);
 	if (partner === undefined) {
@@ -365,16 +383,58 @@ function partnerIn(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 }
 
 /**
- * The replacing line that carries old line `line`: its partner in the
- * similarity pairing of the hunk's old and new lines (whitespace doesn't
- * count, so a re-indented line is its own partner), or of the hunk with its
- * joined neighbours when that partner is closer ("unknown" when another
- * line there is as close); else the line it most resembles between its neighbours'
- * partners at SHARE_MIN_SIMILARITY or more. null: nothing replacing it
- * resembles it; "unknown": it can't be told (a pairing too large, a text
- * missing, a line past the pairing's length cut, a line without a word).
+ * The replacing line that carries old line `line`: its partner nearby
+ * (`localPartner`) when equal ignoring whitespace; else where it went with
+ * its moved block (moved.ts: `moved` when outside its own hunk); else its
+ * partner nearby, unless an added line elsewhere in the file contests it
+ * (as alike, and no clearer by its surroundings: "unknown"). An ambiguous
+ * move is "unknown" too. null: nothing resembles it; "unknown": which line
+ * carries it can't be told.
  */
 function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
+	const local = localPartner(hunk, line, diffs);
+	const plain = (p: Local): Partner =>
+		p === null || p === "unknown" ? p : { line: p.line };
+	// Equal, ignoring whitespace, in its own region: it stayed.
+	if (local !== null && local !== "unknown" && local.score >= 1 - EPS) {
+		return plain(local);
+	}
+	const own = read(diffs.oldLineText, line);
+	if (own === null || !HAS_WORD.test(own) || !diffs.newLineText) {
+		return plain(local);
+	}
+	// Found again in its own hunk (a re-indented block too large to pair):
+	// rewritten there, not moved.
+	const away = (at: number): Found =>
+		diffs.bd.hunkAddingNew(at) === hunk
+			? { line: at }
+			: { line: at, moved: true };
+	const moved = movedTo(line, diffs);
+	if (moved === "ambiguous") return "unknown";
+	if (moved) return away(moved.line);
+	if (local === null || local === "unknown") return local;
+	const won = contested(line, local.line, local.score, diffs);
+	return won === "unknown" ? won : won.moved ? away(won.line) : won;
+}
+
+/** A partner found nearby, its likeness, and the new lines searched. */
+type Local =
+	| { line: number; score: number; from: number; to: number }
+	| null
+	| "unknown";
+
+/**
+ * The replacing line nearby that carries old line `line`: its partner in
+ * the similarity pairing of the hunk's old and new lines (whitespace
+ * doesn't count, so a re-indented line is its own partner), or of the hunk
+ * with its joined neighbours when that partner is closer ("unknown" when
+ * another line there is as close); else the line it most resembles
+ * between its neighbours' partners at SHARE_MIN_SIMILARITY or more. null:
+ * nothing replacing it resembles it; "unknown": it can't be told (a
+ * pairing too large, a text missing, a line past the pairing's length
+ * cut, a line without a word).
+ */
+function localPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Local {
 	const regions = regionsOf(hunk, diffs);
 	// Nothing at all replaced it: deleted, whatever its text.
 	if (regions.every((r) => r !== "unknown" && r.newLines.length === 0)) {
@@ -407,12 +467,18 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 		}
 		best = { line: region.newLines[partner] as number, score };
 	});
-	const found = best as { line: number } | null;
-	if (found) return found.line;
+	const span = widest as Exclude<Region, "unknown"> | null;
+	const from = span?.newLines[0] ?? 0;
+	const to = span?.newLines.at(-1) ?? -1;
+	const found = best as { line: number; score: number } | null;
+	if (found) return { ...found, from, to };
 	// Two lines as like it, past its own hunk: which one carries it can't
 	// be told.
 	if (twins) return "unknown";
-	const shared = widest ? sharedIn(widest, line) : null;
+	const shared = span ? sharedIn(span, line) : null;
+	if (shared !== null && typeof shared === "object") {
+		return { ...shared, from, to };
+	}
 	if (shared !== null) return shared;
 	// No likeness here, but a pairing that couldn't be made might have one.
 	return regions.includes("unknown") ? "unknown" : null;
@@ -422,7 +488,7 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 function sharedIn(
 	region: Exclude<Region, "unknown">,
 	line: number,
-): number | "unknown" | null {
+): { line: number; score: number } | "unknown" | null {
 	if (region.newLines.length === 0) return null;
 	const k = region.oldLines.indexOf(line);
 	// A line the pairing can't score never pairs: that says nothing about
@@ -443,7 +509,8 @@ function sharedIn(
 			score = s;
 		}
 	}
-	return best === -1 ? null : (region.newLines[best] ?? null);
+	const at = region.newLines[best];
+	return best === -1 || at === undefined ? null : { line: at, score };
 }
 
 function traceLeft(pos: Position, diffs: TraceDiffs): Placement {
@@ -499,10 +566,32 @@ function inward(
 				side: p.side,
 				line: p.line,
 				oldText: diffs.oldLineText?.(from) ?? null,
+				...(p.kind === "changed" && p.moved ? { moved: true as const } : {}),
 			};
 		}
 	}
 	return null;
+}
+
+/**
+ * When a range has a line with a word and none of those places, the last
+ * one's unplaced placement; else null (one places, or none has a word).
+ */
+function wordsGone(
+	start: Position,
+	end: Position,
+	diffs: TraceDiffs,
+): Placement | null {
+	let gone: Placement | null = null;
+	for (let n = start.line; n <= end.line; n++) {
+		const t = diffs.oldLineText?.({ side: start.side, line: n });
+		if (t === null || t === undefined) return null;
+		if (!HAS_WORD.test(t)) continue;
+		const p = tracePosition({ side: start.side, line: n }, diffs);
+		if (p.kind !== "unplaced") return null;
+		gone = p;
+	}
+	return gone;
 }
 
 /**
@@ -527,6 +616,27 @@ export function traceRange(
 		if (last.kind === "unplaced" && !(lost && first.kind === "unplaced")) {
 			last = inward(end, start, diffs) ?? last;
 		}
+		// Its statements all gone, a range doesn't live on in a `}` or a
+		// blank line that stayed: those say nothing about where it went.
+		const gone = start.side === "RIGHT" ? wordsGone(start, end, diffs) : null;
+		if (gone) return { start: gone, end: gone, collapsed: false };
+	}
+	const moved = (p: Placement) => p.kind === "changed" && p.moved === true;
+	// One end moved with its block and the other didn't: the span between
+	// them is no range of the thread's; the end carries it.
+	if (
+		first.kind !== "unplaced" &&
+		last.kind !== "unplaced" &&
+		moved(first) !== moved(last)
+	) {
+		const collapsed: Placement = {
+			kind: "changed",
+			side: last.side,
+			line: last.line,
+			oldText: diffs.oldLineText?.(end) ?? null,
+			...(moved(last) ? { moved: true as const } : {}),
+		};
+		return { start: collapsed, end: collapsed, collapsed: true };
 	}
 	if (
 		first.kind !== "unplaced" &&
