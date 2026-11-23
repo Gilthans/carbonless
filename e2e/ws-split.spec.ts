@@ -567,8 +567,8 @@ test("the full diff with a comparison open: its connector's card counts as the b
 	await boxes(section).first().click();
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
-	// PS2 re-indents the changed line: one cluster of the full diff, two
-	// units of the since view (the line PS1 had, the line now).
+	// PS2 re-indents the changed line, read at PS1: the engine's own count
+	// (no mark of the head yet) reads nothing new, the bar's 1 to read.
 	p.moveHead({
 		message: "Re-indent line 2",
 		files: {
@@ -614,8 +614,8 @@ test("the full diff with a comparison open: its connector's card counts as the b
 			.getByTestId("ps-node-branch")
 			.getByRole("button", { name: "comparison base" }),
 	).toHaveCount(0);
-	await expect(toRead).toHaveText(/2 to read/, GIT_WAIT);
-	await says("1 file, 2 clusters to read");
+	await expect(toRead).toHaveText(/1 to read/, GIT_WAIT);
+	await says("1 file, 1 cluster to read");
 });
 
 test("the since view: a run mixing a re-indent read in PS1 and a real edit is one piece per stretch, each with its box, the switch off and on", async ({
