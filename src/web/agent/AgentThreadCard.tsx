@@ -402,7 +402,7 @@ function QuestionBar(props: {
 			// The box's scroll-pt-10 keeps focused content clear of the bar;
 			// the bar itself, inside that band, counts as in view (focusing or
 			// revealing it doesn't scroll the box).
-			className="absolute inset-x-0 top-0 isolate flex h-10 scroll-mt-[-2.5rem] min-w-0 items-center gap-2 bg-surface px-2.5 text-left text-sm text-ink shadow-control focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+			className="group absolute inset-x-0 top-0 isolate flex h-10 cursor-pointer scroll-mt-[-2.5rem] min-w-0 items-center gap-2 bg-surface px-2.5 text-left text-sm text-ink shadow-control focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
 		>
 			{/* The reviewer's tint, as on their messages, over an opaque ground. */}
 			<span
@@ -416,7 +416,11 @@ function QuestionBar(props: {
 			>
 				{first}
 			</span>
-			<ArrowUpIcon size={16} aria-hidden className="shrink-0 text-muted" />
+			<ArrowUpIcon
+				size={16}
+				aria-hidden
+				className="shrink-0 text-muted group-hover:text-ink"
+			/>
 		</button>
 	);
 }

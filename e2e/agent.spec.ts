@@ -613,6 +613,8 @@ test("the question above what is in sight floats at the box's top; a tap jumps t
 	// At the end: the last question floats, cut with an ellipsis, over the
 	// box's top, in a slot that takes no room.
 	await expect(bar).toHaveAccessibleName(/^Jump to question: A third question/);
+	// It reads as clickable: a pointer, as the owner asked (2026-11-23).
+	await expect(bar).toHaveCSS("cursor", "pointer");
 	// Its name is the question's start, capped.
 	const name = (await bar.getAttribute("aria-label")) ?? "";
 	expect(name.length).toBeLessThanOrEqual("Jump to question: ".length + 101);
