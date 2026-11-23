@@ -468,7 +468,13 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 	it("a whole-file gap: a LEFT line the full diff deleted goes to the header, never onto the row with its number", () => {
 		const gone = thread({ side: "LEFT", line: 30 });
 		const p = sincePlace([gone], whole, [ctx(30, 30), ctx(31, 31)]);
-		expect(p.header).toEqual([{ thread: gone, reason: "unplaced" }]);
+		expect(p.header).toEqual([
+			{
+				thread: gone,
+				reason: "unplaced",
+				notHere: { why: "unchanged", side: "LEFT", line: 30 },
+			},
+		]);
 		expect(p.end.size).toBe(0);
 		expect(p.gaps.size).toBe(0);
 		expect(p.covered.size).toBe(0);
@@ -582,8 +588,80 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 			loadedContext: [],
 			sinceLeft: sinceLeft(fullGone, removedSince.hunks),
 		});
-		expect(p.header).toEqual([{ thread: t, reason: "unplaced" }]);
+		expect(p.header).toEqual([
+			{
+				thread: t,
+				reason: "unplaced",
+				notHere: { why: "deleted-before", side: "LEFT", line: 41 },
+			},
+		]);
 		expect(p.end.size).toBe(0);
+	});
+
+	it("says why a LEFT line has no row: deleted before the compared patch set, the file unchanged since, or unknown when a removed row's base line isn't (CAR-255)", () => {
+		const fullGone = [
+			...clusters,
+			{
+				kind: "lines" as const,
+				oldStart: 41,
+				oldCount: 1,
+				newStart: 49,
+				newCount: 0,
+			},
+		];
+		const why = (hunks: FileHunks) => {
+			const t = thread({ side: "LEFT", startLine: 40, line: 41 });
+			const p = placeThreads({
+				threads: [t],
+				path: PATH,
+				snapshotHead: HEAD,
+				hunks,
+				loadedContext: [],
+				sinceLeft: sinceLeft(fullGone, hunks.hunks),
+			});
+			expect(p.end.size).toBe(0);
+			expect(p.header.map((h) => h.reason)).toEqual(["unplaced"]);
+			return p.header[0]?.notHere;
+		};
+		// Every removed row is a known base line (or none), and none is 41.
+		expect(why(removedSince)).toEqual({
+			why: "deleted-before",
+			side: "LEFT",
+			line: 41,
+		});
+		// The interdiff doesn't touch the file.
+		expect(why(whole)?.why).toBe("unchanged");
+		// A removed row whose base line isn't known could be it: never
+		// claimed deleted before.
+		const unmapped: FileHunks = {
+			hunks: [hunk([ctx(39, 38), del(40), ctx(41, 39)])],
+			newLineCount: 49,
+		};
+		expect(why(unmapped)?.why).toBe("unknown");
+	});
+
+	it("a LEFT line no row shows waits for the hunks before it goes to the header (which removed rows are base lines isn't known yet) (CAR-255)", () => {
+		const t = thread({ side: "LEFT", line: 30 });
+		const p = placeThreads({
+			threads: [t],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: null,
+			loadedContext: [],
+			sinceLeft: sinceLeft(clusters, null),
+		});
+		expect(everywhere(p)).toEqual([]);
+		// A file with no lines to show (binary): the header, as before.
+		const binary = placeThreads({
+			threads: [t],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: null,
+			loadedContext: [],
+			noLines: true,
+			sinceLeft: sinceLeft(clusters, null),
+		});
+		expect(binary.header).toEqual([{ thread: t, reason: "unplaced" }]);
 	});
 
 	it("twins: a base line the full diff keeps is its head line in the since view too, never a removed twin's row that names it (CAR-139)", () => {

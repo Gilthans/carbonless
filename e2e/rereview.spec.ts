@@ -2519,6 +2519,8 @@ async function sinceGaps(
 	page: Page,
 	pr: (o: PrOptions) => Promise<Pr>,
 	startCrb: () => Promise<{ url: string }>,
+	/** More threads, made on PS1's head. */
+	extra: (h1: string) => ReturnType<typeof reviewThread>[] = () => [],
 ) {
 	const threads: ReturnType<typeof reviewThread>[] = [];
 	const p = await pr({ ...fixture, threads });
@@ -2534,6 +2536,7 @@ async function sinceGaps(
 				diffHunk: "",
 			}),
 		]),
+		...extra(h1),
 	);
 	p.editScenario((sc) => {
 		const graph = sc.prs[p.number]?.graphql;
@@ -2657,6 +2660,76 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 		utilS
 			.getByTestId("files-thread")
 			.filter({ hasText: "Why drop the old util 3?" }),
+	).toHaveCount(0);
+});
+
+test("the since view says why a LEFT thread's line has no row (deleted before PS1, or its file unchanged since) and opens it in the full diff on its line (CAR-255)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine's answer: each step waits on git.
+	test.setTimeout(180_000);
+	const { coreS, utilS } = await sinceGaps(page, pr, startCrb, (h1) => [
+		// Base core 30, which PS1 already changed: the interdiff (core 5
+		// reworked) has no row of it.
+		reviewThread({ path: "src/core.ts", line: 30, diffSide: "LEFT" }, [
+			threadComment({
+				login: "rev1",
+				text: "Why drop the old core 30?",
+				commit: h1,
+				diffHunk: "",
+			}),
+		]),
+	]);
+	const card = (section: Locator, text: string) =>
+		section.getByTestId("files-thread").filter({ hasText: text });
+
+	// util.ts, untouched since PS1: its file unchanged since.
+	await utilS.getByRole("button", { name: "Expand file" }).click();
+	await utilS
+		.getByRole("button", {
+			name: "1 comment on this file, line not in this diff",
+		})
+		.click(GIT_WAIT);
+	await expect(
+		card(utilS, "Why drop the old util 3?").getByTestId("not-here-why"),
+	).toHaveText("unchanged since PS1");
+	// core.ts changed since PS1, not on that line: deleted before PS1.
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await coreS
+		.getByRole("button", {
+			name: "1 comment on this file, line not in this diff",
+		})
+		.click(GIT_WAIT);
+	const core30 = card(coreS, "Why drop the old core 30?");
+	await expect(core30.getByTestId("not-here-why")).toHaveText(
+		"deleted before PS1",
+	);
+	// Never a tracer fate: the line is where the thread says.
+	await expect(core30.getByTestId("placement-fate")).toHaveCount(0);
+
+	await expectNoPageOverflow(page);
+	// One tap: the full diff, on base core 30's removed row, the thread there.
+	const link = core30.getByRole("link", { name: "Open in the full diff" });
+	await expect(link).toHaveAttribute("href", /[?&]side=LEFT(&|$)/);
+	await expect(link).toHaveAttribute("href", /[?&]line=30(&|$)/);
+	await expect(link).toHaveAttribute("href", /[?&]thread=/);
+	await link.click();
+	// The landing takes its line out of the address; the comparison stays.
+	await expect(page).toHaveURL(/[?&]from=branch(&|$)/);
+	const full = fileSection(page, "src/core.ts");
+	const row = full.locator(
+		'tr[data-testid="diff-line"][data-kind="del"][data-old-no="30"]',
+	);
+	await expect(row).toHaveAttribute("data-landed", "true", GIT_WAIT);
+	// Its card opens there, on its row.
+	await expect(
+		row.getByRole("button", { name: /^1 comment on old line 30/ }),
+	).toBeVisible();
+	await expect(card(full, "Why drop the old core 30?")).toBeVisible();
+	await expect(
+		card(full, "Why drop the old core 30?").getByTestId("not-here"),
 	).toHaveCount(0);
 });
 

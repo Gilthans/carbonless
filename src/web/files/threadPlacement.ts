@@ -57,8 +57,12 @@ export interface FilePlacement<T extends Placeable = ReviewThread> {
 	 * are loaded (what to open).
 	 */
 	gapTargets: Map<T, GapTarget>;
-	/** File comments ("file") and lines that couldn't be placed ("unplaced"). */
-	header: { thread: T; reason: "file" | "unplaced" }[];
+	/**
+	 * File comments ("file") and lines that couldn't be placed ("unplaced");
+	 * in the since view, an unplaced line its comparison doesn't hold says
+	 * why (`notHere`, CAR-255).
+	 */
+	header: { thread: T; reason: "file" | "unplaced"; notHere?: NotHere }[];
 	/**
 	 * Threads the tracer couldn't place in this file, with their fate: the
 	 * list under the file's header.
@@ -67,6 +71,36 @@ export interface FilePlacement<T extends Placeable = ReviewThread> {
 		thread: T;
 		placement: Extract<ThreadPlacement, { kind: "unplaced" }>;
 	}[];
+}
+
+/**
+ * The since view: why a thread's line has no row in it (CAR-255), and the
+ * line it is on in the full diff (its base line, LEFT), to open there.
+ * Not a tracer fate: the line is where the thread says, only outside this
+ * comparison.
+ * - "deleted-before": the compared patch set had already deleted it (no
+ *   removed row of the interdiff is it, and every removed row's base line
+ *   is known).
+ * - "unchanged": the file isn't changed between these patch sets at all.
+ * - "unknown": some removed row's base line isn't known, so neither can be
+ *   told: only that this comparison doesn't show it.
+ */
+export interface NotHere {
+	why: "deleted-before" | "unchanged" | "unknown";
+	side: "LEFT";
+	line: number;
+}
+
+/** Why the since view's `hunks` don't show base line `line` (NotHere). */
+function notHereOf(hunks: FileHunks, line: number): NotHere {
+	const rows = hunks.hunks.flatMap((h) => h.lines);
+	const why: NotHere["why"] =
+		hunks.wholeGap || rows.length === 0
+			? "unchanged"
+			: rows.some((l) => l.kind === "del" && l.baseNo === undefined)
+				? "unknown"
+				: "deleted-before";
+	return { why, side: "LEFT", line };
 }
 
 /** Each unresolved thread's place in the viewed snapshot, by thread id (GET /placements). */
@@ -592,8 +626,18 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 		const anchor = t.anchor && onSinceRows(t.anchor, args.sinceLeft);
 		if (anchor === null && t.anchor) {
 			// A LEFT line the full diff deleted that the since view doesn't
-			// show: no row of it is that line.
-			placement.header.push({ thread: t, reason: "unplaced" });
+			// show: no row of it is that line. Which removed rows are base
+			// lines is known once the hunks are in: till then it waits, as
+			// any line thread does.
+			if (args.noLines) {
+				placement.header.push({ thread: t, reason: "unplaced" });
+			} else if (hunks) {
+				placement.header.push({
+					thread: t,
+					reason: "unplaced",
+					notHere: notHereOf(hunks, t.anchor.line),
+				});
+			}
 			continue;
 		}
 		if (!anchor) {

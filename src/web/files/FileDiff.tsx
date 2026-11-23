@@ -1078,6 +1078,19 @@ export function FileDiff(props: {
 			(f) => [f.thread.thread, f.placement] as const,
 		),
 	);
+	// The since view's word on each one whose line it has no row for (CAR-255).
+	const agentNotHere = new Map(
+		agentHeader.flatMap((h) =>
+			h.notHere
+				? [
+						[
+							h.thread.thread,
+							{ notHere: h.notHere, since: props.since },
+						] as const,
+					]
+				: [],
+		),
+	);
 	const agentGroups = [
 		{ reason: "fate" as const, threads: [...agentFates.keys()] },
 		...(["file", "unplaced"] as const).map((reason) => ({
@@ -1232,6 +1245,12 @@ export function FileDiff(props: {
 											readId={props.threads?.readId ?? ""}
 											thread={h.thread}
 											unplaced={h.reason === "unplaced"}
+											notHere={
+												h.notHere && {
+													notHere: h.notHere,
+													since: props.since,
+												}
+											}
 											onResolved={(t, from) =>
 												collapse.resolved({
 													key: "file",
@@ -1267,6 +1286,7 @@ export function FileDiff(props: {
 								place={{ columns }}
 								rail={rail}
 								unplaced={g.reason === "unplaced"}
+								notHere={g.reason === "unplaced" ? agentNotHere : undefined}
 								outdated={g.reason === "outdated"}
 								fates={g.reason === "fate" ? agentFates : undefined}
 							/>

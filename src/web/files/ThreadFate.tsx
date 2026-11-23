@@ -5,6 +5,7 @@ import {
 	ChevronUpIcon,
 	CircleSlashIcon,
 	DiffRemovedIcon,
+	FileDiffIcon,
 	FileRemovedIcon,
 	GitCompareIcon,
 	HistoryIcon,
@@ -63,7 +64,7 @@ import {
 	movesOf,
 	useMovable,
 } from "./threadMove";
-import type { Placements } from "./threadPlacement";
+import type { NotHere, Placements } from "./threadPlacement";
 
 /**
  * What the page knows of the threads' places in the viewed snapshot
@@ -1020,5 +1021,84 @@ export function usePlacementMap(
 		() =>
 			answer ? new Map(answer.threads.map((t) => [t.id, t.placement])) : null,
 		[answer],
+	);
+}
+
+/** NotHere's word and tooltip, by why (since: the compared patch set). */
+export function notHereText(
+	why: NotHere["why"],
+	since: number | undefined,
+): { label: string; tip: string } {
+	const ps = since === undefined ? "the compared patch set" : `PS${since}`;
+	switch (why) {
+		case "deleted-before":
+			return {
+				label: `deleted before ${ps}`,
+				tip: `Its line was deleted before ${ps}: not in this comparison`,
+			};
+		case "unchanged":
+			return {
+				label: `unchanged since ${ps}`,
+				tip: `The file is unchanged since ${ps}; its line was deleted before`,
+			};
+		default:
+			return {
+				label: "not in this comparison",
+				tip: "Its line isn't in this comparison",
+			};
+	}
+}
+
+/**
+ * The since view's word on a thread whose line it has no row for
+ * (CAR-255): why (NotHere, never a tracer fate: the line is where the
+ * thread says), and a link to the full diff on that line, its card
+ * opened there. Muted once
+ * resolved.
+ */
+export function NotHereNote(props: {
+	notHere: NotHere;
+	path: string;
+	since?: number;
+	resolved?: boolean;
+	/** The card to open there: a review thread's id, or an agent conversation's. */
+	open: { thread: string } | { conversation: string };
+}) {
+	const id = useReviewId();
+	const { label, tip } = notHereText(props.notHere.why, props.since);
+	return (
+		<span data-testid="not-here" className="inline-flex items-center gap-1">
+			<Chip
+				tone={props.resolved ? "gray" : "yellow"}
+				icon={CircleSlashIcon}
+				tip={tip}
+				testId="not-here-why"
+			>
+				{label}
+			</Chip>
+			<Tooltip content="Open in the full diff, on its line" describe={false}>
+				{(trigger) => (
+					<Link
+						{...trigger}
+						to="/r/$id/files"
+						params={{ id }}
+						search={(prev) => ({
+							...prev,
+							from: "branch",
+							path: props.path,
+							line: props.notHere.line,
+							side: props.notHere.side,
+							...props.open,
+						})}
+						aria-label="Open in the full diff"
+						data-testid="not-here-full-diff"
+						className="inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						<FileDiffIcon size={14} aria-hidden />
+						full diff
+					</Link>
+				)}
+			</Tooltip>
+		</span>
 	);
 }

@@ -70,6 +70,15 @@ describe("parseFilesSearch", () => {
 		});
 	});
 
+	it("keeps a review thread id to open on arrival, nothing odd (CAR-255)", () => {
+		expect(
+			parseFilesSearch({ path: "a.ts", thread: "PRRT_kwDOAb-1_x" }),
+		).toEqual({ path: "a.ts", thread: "PRRT_kwDOAb-1_x" });
+		for (const bad of ["", "<b>x</b>", "a b", "a".repeat(129), 7]) {
+			expect(parseFilesSearch({ thread: bad })).toEqual({});
+		}
+	});
+
 	it("reads the comparison: a patch set, a head commit id, a from patch set or the branch", () => {
 		const oid = "a".repeat(40);
 		expect(parseFilesSearch({ ps: "2", from: "1" })).toEqual({

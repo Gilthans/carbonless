@@ -24,10 +24,19 @@ import {
 	ChangedChip,
 	ChangedSince,
 	NearLink,
+	NotHereNote,
 	PlacementChip,
 	usePlacementInfo,
 } from "./ThreadFate";
 import { useFocusCard } from "./threadFocus";
+import type { NotHere } from "./threadPlacement";
+
+/** A since-view NotHere with the compared patch set it is said against. */
+export interface NotHereAt {
+	notHere: NotHere;
+	since?: number;
+}
+
 import {
 	firstWords,
 	MoveFailureLine,
@@ -47,6 +56,8 @@ export function ThreadBlock(props: {
 	thread: ReviewThread;
 	/** Its line isn't in this diff: shown in the file's header instead. */
 	unplaced?: boolean;
+	/** The since view: why its line has no row here, and the way to it (CAR-255). */
+	notHere?: NotHereAt;
 	/** Resolve was pressed on it (not Unresolve), from the button `from`. */
 	onResolved?: (thread: ReviewThread, from: Element) => void;
 }) {
@@ -118,14 +129,23 @@ export function ThreadBlock(props: {
 					>
 						{thread.resolved ? "Resolved" : "Unresolved"}
 					</span>
-					{props.unplaced && (
-						<LabeledIcon
-							icon={AlertIcon}
-							label="Line not in this diff"
-							// A resolved thread asks for nothing: the fact, muted.
-							className={thread.resolved ? "text-muted" : "text-warn"}
-						/>
-					)}
+					{props.unplaced &&
+						(props.notHere ? (
+							<NotHereNote
+								notHere={props.notHere.notHere}
+								since={props.notHere.since}
+								path={thread.path}
+								resolved={thread.resolved}
+								open={{ thread: thread.id }}
+							/>
+						) : (
+							<LabeledIcon
+								icon={AlertIcon}
+								label="Line not in this diff"
+								// A resolved thread asks for nothing: the fact, muted.
+								className={thread.resolved ? "text-muted" : "text-warn"}
+							/>
+						))}
 					<span className="ml-auto flex items-center gap-2">
 						<PlacementChip thread={thread} />
 						<ThreadStatus
@@ -285,6 +305,8 @@ export function AgentThreadRow(props: {
 	rail?: string;
 	/** Their line isn't in this diff (the file's header). */
 	unplaced?: boolean;
+	/** The since view: why each one's line has no row here (CAR-255). */
+	notHere?: ReadonlyMap<SpanAgentThread, NotHereAt>;
 	/** Asked on an earlier head (the file's header): each card says on which. */
 	outdated?: boolean;
 	/** Traced and not placed in this file: each with its fate. */
@@ -331,6 +353,7 @@ export function AgentThreadRow(props: {
 							thread={t}
 							status={status}
 							unplaced={props.unplaced}
+							notHere={props.notHere?.get(t)}
 							outdated={props.outdated ? t.anchor.commit : undefined}
 						/>
 					);
@@ -355,15 +378,28 @@ function AgentLineCard(props: {
 	thread: SpanAgentThread;
 	status: Parameters<typeof AgentThreadCard>[0]["status"];
 	unplaced?: boolean;
+	notHere?: NotHereAt;
 	outdated?: string;
 }) {
 	const move = useAgentMove(props.thread, props.thread.anchor.path);
+	const notHere = props.notHere;
 	return (
 		<div className="min-w-0 space-y-1">
 			<AgentThreadCard
 				thread={props.thread}
 				status={props.status}
 				unplaced={props.unplaced}
+				unplacedNote={
+					props.unplaced && notHere ? (
+						<NotHereNote
+							notHere={notHere.notHere}
+							since={notHere.since}
+							path={props.thread.anchor.path}
+							resolved={props.thread.resolved}
+							open={{ conversation: props.thread.id }}
+						/>
+					) : undefined
+				}
 				outdated={props.outdated}
 				handle={move.handle}
 				moved={move.moved}
