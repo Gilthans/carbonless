@@ -64,7 +64,9 @@ const narrow = (page: Page) => (page.viewportSize()?.width ?? 1280) < 768;
  */
 export async function tapFilesButton(page: Page) {
 	const button = page.getByRole("button", { name: "Files", exact: true });
-	const any = page.locator('button[aria-label="Files"]');
+	const any = page.locator(
+		'button[aria-label="Files"][aria-haspopup="dialog"]',
+	);
 	await expect(async () => {
 		const why = await any.getAttribute("data-fab-hidden", { timeout: 1000 });
 		if (why !== null) {
