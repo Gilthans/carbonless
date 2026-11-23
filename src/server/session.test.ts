@@ -24,6 +24,7 @@ import {
 import { ghCallKinds, ghCallsOf } from "../../test/gh-log";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import { MAX_MOVES_PER_THREAD } from "../shared/rereview/moves";
 import type { Snapshot } from "../shared/types";
 import { agentsDir } from "./agent/checkout";
 import { setServerMcp } from "./agent/host";
@@ -35,6 +36,8 @@ import { registerMcp } from "./mcp/routes";
 import { parseHead } from "./pinnedHead";
 import type { SessionRegistry } from "./registry";
 import { answerRereview, traceRereview } from "./rereview/engine";
+import { DeadMoveError, MoveCapError } from "./rereview/threads";
+import { newEvent } from "./review/events";
 import { RefStore } from "./review/refStore";
 import { ReviewService, StaleSnapshotError } from "./review/reviews";
 import { refusal, Session, UnknownReadError } from "./session";
@@ -146,6 +149,7 @@ describe("Session", () => {
 			},
 			viewer: "octo-cat",
 			snapshotHead: pr.head(),
+			snapshotBase: pr.mergeBase,
 			currentHead: pr.head(),
 			headMoved: false,
 			patchset: null,
@@ -153,7 +157,6 @@ describe("Session", () => {
 			pinnedHead: null,
 			patchsets: [],
 			// Counted in the background: unknown on the first read.
-			snapshotBase: pr.mergeBase,
 			snapshotCommits: null,
 			lastSeen: null,
 			head: {
@@ -1277,7 +1280,7 @@ describe("Session", () => {
 		const CUTOFF = "2098-01-01T00:00:00Z";
 		const user = (login: string) => ({ login, __typename: "User" });
 		/** The PR moved on after the cutoff: `then` was its head, `now` is. */
-		const scenarioAsOf = (then: string, now: string) =>
+		const scenarioAsOf = (then: string, now: string, threads: unknown[] = []) =>
 			pr.scenario({
 				prs: {
 					12: {
@@ -1307,7 +1310,7 @@ describe("Session", () => {
 									commit: { oid: now },
 								},
 							],
-							reviewThreads: [],
+							reviewThreads: threads as never,
 							comments: [],
 						},
 					},
@@ -1381,6 +1384,202 @@ describe("Session", () => {
 					.map((c) => c.state),
 			).toEqual(["unreviewed", "unreviewed", "unreviewed"]);
 			expect(await splitCarried(s.id)).toEqual([]);
+		});
+
+		it("moves a review thread with no agent host (CAR-139): the reviewer's private ref, never GitHub", async () => {
+			const then = pr.head();
+			scenarioAsOf(then, pr.moveHead({ "later.txt": "later\n" }), [
+				reviewThread({ path: "a.txt", line: 2, subjectType: "LINE" }, [
+					threadComment({
+						login: "rev",
+						text: "Why?",
+						commit: then,
+						diffHunk: "",
+					}),
+				]),
+			]);
+			const s = await Session.open(pr.arg, process.cwd(), () => {}, {
+				asOf: CUTOFF,
+			});
+			expect(s.agent).toBeNull();
+			const o = await s.overview();
+			const { threads } = await s.threads(o.readId, "summary");
+			const id = threads[0]?.id ?? "";
+			await ghIdle();
+			const calls = pr.ghLog().length;
+			const anchor = {
+				path: "a.txt",
+				startSide: "RIGHT" as const,
+				startLine: 5,
+				side: "RIGHT" as const,
+				line: 5,
+			};
+			const moved = await s.moveThread({
+				thread: { source: "github", id },
+				to: { head: then },
+				anchor,
+			});
+			expect(moved.moved).toMatchObject({ on: { head: then }, here: true });
+			for (;;) {
+				const answer = await s.placements({ head: then }, o.readId);
+				if (!("pending" in answer)) {
+					expect(answer.threads.find((t) => t.id === id)).toMatchObject({
+						placement: { kind: "placed", anchor },
+						moved: { id: moved.move },
+					});
+					break;
+				}
+				await new Promise((r) => setTimeout(r, 20));
+			}
+			expect(pr.ghLog().length).toBe(calls);
+		});
+
+		describe("another server's move or undo between the check and the write (CAR-245)", () => {
+			const anchor = (line: number) => ({
+				path: "a.txt",
+				startSide: "RIGHT" as const,
+				startLine: line,
+				side: "RIGHT" as const,
+				line,
+			});
+			/** This server's session and another's on the same cache, and the GitHub thread both move. */
+			async function twoServers() {
+				const then = pr.head();
+				scenarioAsOf(then, pr.moveHead({ "later.txt": "later\n" }), [
+					reviewThread({ path: "a.txt", line: 2, subjectType: "LINE" }, [
+						threadComment({
+							login: "rev",
+							text: "Why?",
+							commit: then,
+							diffHunk: "",
+						}),
+					]),
+				]);
+				const open = () =>
+					Session.open(pr.arg, process.cwd(), () => {}, { asOf: CUTOFF });
+				const mine = await open();
+				const other = await open();
+				const o = await mine.overview();
+				const { threads } = await mine.threads(o.readId, "summary");
+				const thread = { source: "github" as const, id: threads[0]?.id ?? "" };
+				// The other server knows the thread too.
+				const oo = await other.overview();
+				await other.threads(oo.readId, "summary");
+				return { then, mine, other, thread };
+			}
+			/** Runs `write` with `race` landing just before its first write to the agent threads ref. */
+			async function racing<T>(
+				race: () => Promise<unknown>,
+				write: () => Promise<T>,
+			): Promise<T> {
+				const transaction = RefStore.prototype.transaction;
+				let raced = false;
+				const spy = vi
+					.spyOn(RefStore.prototype, "transaction")
+					.mockImplementation(async function (this: RefStore, updates) {
+						if (
+							!raced &&
+							updates.some((u) => u.ref.endsWith("/agent/threads"))
+						) {
+							raced = true;
+							await race();
+						}
+						return transaction.call(this, updates);
+					});
+				try {
+					return await write();
+				} finally {
+					spy.mockRestore();
+					expect(raced).toBe(true);
+				}
+			}
+
+			it("an undo whose move another server undid after the check is refused as dead, and writes nothing", async () => {
+				const { then, mine, other, thread } = await twoServers();
+				const moved = await mine.moveThread({
+					thread,
+					to: { head: then },
+					anchor: anchor(5),
+				});
+				const clone = clonePath("acme", "widget");
+				const ref = execFileSync(
+					"git",
+					[
+						"for-each-ref",
+						"--format=%(refname)",
+						"refs/crb/reviews/*/reviewers/*/agent/threads",
+					],
+					{ cwd: clone, encoding: "utf8", env: testGitEnv() },
+				).trim();
+				const store = new RefStore(clone);
+				await expect(
+					racing(
+						() => other.undoMove(moved.move, { head: then }),
+						() => mine.undoMove(moved.move, { head: then }),
+					),
+				).rejects.toBeInstanceOf(DeadMoveError);
+				const undos = (await store.readEvents(ref)).filter(
+					(e) => e.type === "thread-move-undone",
+				);
+				expect(undos).toHaveLength(1);
+			});
+
+			it("a move that another server's move took to the cap after the check is refused, and writes nothing", async () => {
+				const { then, mine, other, thread } = await twoServers();
+				await mine.moveThread({
+					thread,
+					to: { head: then },
+					anchor: anchor(5),
+				});
+				const clone = clonePath("acme", "widget");
+				const ref = execFileSync(
+					"git",
+					[
+						"for-each-ref",
+						"--format=%(refname)",
+						"refs/crb/reviews/*/reviewers/*/agent/threads",
+					],
+					{ cwd: clone, encoding: "utf8", env: testGitEnv() },
+				).trim();
+				const store = new RefStore(clone);
+				const [first] = (await store.readEvents(ref)).filter(
+					(e) => e.type === "thread-moved",
+				);
+				if (first?.type !== "thread-moved") throw new Error("no move");
+				// Up to one short of the cap, in one commit.
+				const fill = Array.from({ length: MAX_MOVES_PER_THREAD - 2 }, () =>
+					newEvent("thread-moved", first.actor, {
+						thread: first.thread,
+						on: first.on,
+						anchor: first.anchor,
+						engine: first.engine,
+					}),
+				);
+				await store.appendEvents(ref, "crb: fill", fill, first.actor);
+				await expect(
+					racing(
+						() =>
+							other.moveThread({
+								thread,
+								to: { head: then },
+								anchor: anchor(6),
+							}),
+						() =>
+							mine.moveThread({
+								thread,
+								to: { head: then },
+								anchor: anchor(7),
+							}),
+					),
+				).rejects.toBeInstanceOf(MoveCapError);
+				const moves = (await store.readEvents(ref)).filter(
+					(e) => e.type === "thread-moved",
+				);
+				expect(moves).toHaveLength(MAX_MOVES_PER_THREAD);
+				expect(
+					moves.some((m) => m.type === "thread-moved" && m.anchor.line === 7),
+				).toBe(false);
+			});
 		});
 
 		it("reads anew in four calls with no threads: the snapshot head's checks come in the overview's one query", async () => {
@@ -1699,7 +1898,8 @@ describe("Session", () => {
 				{ key: firstKey(s), state: "reviewed" },
 			]);
 			expect(s.info().snapshotCommits).toBeUndefined();
-			expect(s.info().snapshotBase).toBeUndefined();
+			// The base stays: the snapshot's merge base, always sent.
+			expect(s.info().snapshotBase).toBe(pr.mergeBase);
 		});
 
 		it("rebuilds an earlier patch set from its pins, with the recorded merge base when -base is missing", async () => {

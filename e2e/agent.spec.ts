@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { AGENT_POLL_MS } from "../src/shared/agent";
 import { acpLog, releaseAcp } from "../test/fake-acp/scenario";
+import type { Scenario } from "../test/fake-gh/scenario";
 import { testGitEnv } from "../test/git-fixture";
 import {
 	ask,
@@ -51,6 +52,29 @@ async function shot(page: Page, name: string, isMobile: boolean) {
  */
 const holdSeenMarks = (page: Page) =>
 	page.route(/\/api\/r\/[^/]+\/agent\/threads\/[^/]+\/seen$/, () => {});
+
+/**
+ * A composer's switch sits where a thread's agent handle does: at its
+ * bottom row's right end, under the box, a 40px target.
+ */
+async function expectAtBottomRight(composer: Locator, button: Locator) {
+	const card = await composer.boundingBox();
+	const box = await composer.getByRole("textbox").boundingBox();
+	const b = await button.boundingBox();
+	expect(card && box && b).toBeTruthy();
+	if (!card || !box || !b) return;
+	expect(b.y).toBeGreaterThanOrEqual(box.y + box.height);
+	expect(card.x + card.width - (b.x + b.width)).toBeLessThanOrEqual(16);
+	expect(b.height).toBeGreaterThanOrEqual(40);
+	expect(b.width).toBeGreaterThanOrEqual(40);
+}
+
+/** How many review threads the fake gh holds for the PR (what was posted). */
+const ghThreads = (scenarioPath: string, number: number) =>
+	(
+		(JSON.parse(readFileSync(scenarioPath, "utf8")) as Scenario).prs[number]
+			?.graphql?.reviewThreads ?? []
+	).length;
 
 const REPLY = [
 	"No: it adds **v1 and v2** only.",
@@ -362,6 +386,189 @@ test("agent and comment bubbles side by side on one line, each with its own coun
 	await comment.click();
 	await expect(again.getByTestId("thread-row")).toBeVisible();
 	await expect(again.getByTestId("agent-thread")).toHaveCount(2);
+});
+
+test("a comment being written turns into a question: on a line and on the file, the text carried over, nothing posted", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	// Two switches and a question asked and answered: past 30 s on a loaded machine.
+	test.slow();
+	const p = await pr(fixture);
+	const before = ghThreads(p.scenarioPath, p.number);
+	const s = await agentCrb();
+	const section = await openFile(page, s.url, CALC);
+	// A line comment (a column span), typed, then the agent button.
+	await selectText(page, CALC, 3, 0, 6);
+	await bar(page).getByRole("button", { name: "Comment" }).click();
+	const composer = section.getByTestId("new-thread");
+	await composer
+		.getByRole("textbox", { name: "Comment" })
+		.fill("Why <b>this</b>?");
+	await shot(page, "new-thread-agent-button", isMobile);
+	const toAgent = composer.getByRole("button", { name: "Ask agent instead" });
+	await expectAtBottomRight(composer, toAgent);
+	await toAgent.click();
+	await expect(section.getByTestId("new-thread")).toHaveCount(0);
+	const asking = section.getByTestId("agent-composer");
+	await expect(asking).toContainText("line 3, new");
+	const box = asking.getByRole("textbox", { name: "Ask your agent" });
+	await expect(box).toHaveValue("Why <b>this</b>?");
+	await expect(box).toBeFocused();
+	await expectNoPageOverflow(page);
+	await asking.getByTestId("agent-composer-ask").click();
+	await expect(
+		section.getByTestId("agent-thread").filter({ hasText: "Why <b>this</b>?" }),
+	).toBeVisible();
+	await expect(section.getByTestId("files-thread")).toHaveCount(0);
+	// Nothing went to GitHub.
+	expect(ghThreads(p.scenarioPath, p.number)).toBe(before);
+	// A file comment, the same.
+	await section.getByRole("button", { name: "Comment on file" }).click();
+	const onFile = section.getByTestId("new-thread");
+	await onFile.getByRole("textbox", { name: "Comment" }).fill("The file?");
+	await onFile.getByRole("button", { name: "Ask agent instead" }).click();
+	await expect(section.getByTestId("new-thread")).toHaveCount(0);
+	const fileAsking = section.getByTestId("agent-composer");
+	await expect(fileAsking).toContainText("whole file");
+	const fileBox = fileAsking.getByRole("textbox", { name: "Ask your agent" });
+	await expect(fileBox).toHaveValue("The file?");
+	await expect(fileBox).toBeFocused();
+	await expectNoPageOverflow(page);
+});
+
+test("a question being written turns into a comment: on a line and on the file, the text kept as a draft, nothing posted", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// Three switches and a reload: past 30 s on a loaded machine.
+	test.slow();
+	const p = await pr(fixture);
+	const before = ghThreads(p.scenarioPath, p.number);
+	const s = await agentCrb();
+	const section = await openFile(page, s.url, CALC);
+	await selectText(page, CALC, 3, 0, 6);
+	await bar(page).getByRole("button", { name: "Ask agent" }).click();
+	const asking = section.getByTestId("agent-composer");
+	await asking
+		.getByRole("textbox", { name: "Ask your agent" })
+		.fill("Rename <i>it</i>");
+	const toComment = asking.getByRole("button", { name: "Comment instead" });
+	await expectAtBottomRight(asking, toComment);
+	await expectNoPageOverflow(page);
+	// Clear of the phone's floating Files button, which sits over the
+	// bottom right of the viewport (the quick questions make the composer
+	// tall enough to end there).
+	await toComment.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	await toComment.click();
+	await expect(section.getByTestId("agent-composer")).toHaveCount(0);
+	const composer = section.getByTestId("new-thread");
+	await expect(composer).toContainText("line 3, new");
+	const box = composer.getByRole("textbox", { name: "Comment" });
+	await expect(box).toHaveValue("Rename <i>it</i>");
+	await expect(box).toBeFocused();
+	await expectNoPageOverflow(page);
+	// A draft: still there after a reload; nothing went to GitHub.
+	await page.reload();
+	const again = await openFile(page, s.url, CALC);
+	await expect(
+		again.getByTestId("new-thread").getByRole("textbox", { name: "Comment" }),
+	).toHaveValue("Rename <i>it</i>");
+	await expect(again.getByTestId("files-thread")).toHaveCount(0);
+	expect(ghThreads(p.scenarioPath, p.number)).toBe(before);
+	// The file's: Comment on file, Ask agent, then back to Comment.
+	await again.getByRole("button", { name: "Comment on file" }).click();
+	const onFile = again
+		.getByTestId("new-thread")
+		.filter({ hasText: "whole file" });
+	await onFile.getByRole("textbox", { name: "Comment" }).fill("The file?");
+	await onFile.getByRole("button", { name: "Ask agent instead" }).click();
+	const fileAsking = again.getByTestId("agent-composer");
+	await expect(fileAsking).toContainText("whole file");
+	const fileToComment = fileAsking.getByRole("button", {
+		name: "Comment instead",
+	});
+	await fileToComment.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	await fileToComment.click();
+	await expect(again.getByTestId("agent-composer")).toHaveCount(0);
+	const back = again
+		.getByTestId("new-thread")
+		.filter({ hasText: "whole file" });
+	await expect(back.getByRole("textbox", { name: "Comment" })).toHaveValue(
+		"The file?",
+	);
+	await expect(back.getByRole("textbox", { name: "Comment" })).toBeFocused();
+	expect(ghThreads(p.scenarioPath, p.number)).toBe(before);
+});
+
+/**
+ * Reloads, dismissing a leave prompt (the page then stays); the dialogs
+ * it raised. A dismissed reload never navigates: its promise is left
+ * behind; without a prompt the reload goes through.
+ */
+async function reloadAsked(page: Page): Promise<string[]> {
+	const asked: string[] = [];
+	const answer = (d: { type: () => string; dismiss: () => Promise<void> }) => {
+		asked.push(d.type());
+		void d.dismiss();
+	};
+	page.on("dialog", answer);
+	let dismissed: () => void = () => {};
+	const once = new Promise<void>((done) => {
+		dismissed = done;
+	});
+	page.once("dialog", () => dismissed());
+	const reloaded = page.reload().catch(() => {});
+	await Promise.race([once, reloaded]);
+	page.off("dialog", answer);
+	return asked;
+}
+
+test("a question being typed makes leaving ask; an empty one, an asked one or a cleared one doesn't (nothing saved)", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// Three reloads and a question asked: past 30 s on a loaded machine.
+	test.slow();
+	await pr(fixture);
+	const s = await agentCrb();
+	let section = await openFile(page, s.url, CALC);
+	await selectText(page, CALC, 3, 0, 6);
+	await bar(page).getByRole("button", { name: "Ask agent" }).click();
+	const asking = () => section.getByTestId("agent-composer");
+	const box = () => asking().getByRole("textbox", { name: "Ask your agent" });
+	await expect(box()).toBeFocused();
+	// Open but empty: nothing to lose.
+	expect(await reloadAsked(page)).toEqual([]);
+	section = await openFile(page, s.url, CALC);
+	await expect(asking()).toHaveCount(0);
+	await selectText(page, CALC, 3, 0, 6);
+	await bar(page).getByRole("button", { name: "Ask agent" }).click();
+	await box().fill("Why a lock?");
+	// Typed: the browser asks; dismissed, the page and the text stay.
+	expect(await reloadAsked(page)).toEqual(["beforeunload"]);
+	await expect(box()).toHaveValue("Why a lock?");
+	// Cleared: no longer.
+	await box().fill("");
+	await box().fill("Why a lock?");
+	await box().fill("   ");
+	expect(await reloadAsked(page)).toEqual([]);
+	// Not saved: a reload brings no question back.
+	section = await openFile(page, s.url, CALC);
+	await expect(asking()).toHaveCount(0);
+	// Asked: it is the server's now.
+	await selectText(page, CALC, 3, 0, 6);
+	await bar(page).getByRole("button", { name: "Ask agent" }).click();
+	await box().fill("Why a lock?");
+	await asking().getByTestId("agent-composer-ask").click();
+	await expect(
+		section.getByTestId("agent-thread").filter({ hasText: "Why a lock?" }),
+	).toBeVisible();
+	expect(await reloadAsked(page)).toEqual([]);
 });
 
 test("the chip: starting while the handshake is held, ready, busy while answering", async ({

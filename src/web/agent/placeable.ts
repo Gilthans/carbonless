@@ -4,6 +4,7 @@ import {
 	isSpanThread,
 	type SpanAgentThread,
 } from "../../shared/agent";
+import type { MovedInfo } from "../../shared/rereview/moves";
 import type { Placeable, Placements } from "../files/threadPlacement";
 
 /** An agent thread as placeThreads sees it, carrying the thread. */
@@ -68,16 +69,19 @@ export function tracedAgentPlaceables(
 	threads: readonly SpanAgentThread[],
 	snapshotHead: string,
 	placements: Placements | null,
+	/** Threads the reviewer moved (CAR-139): placed by their move wherever asked. */
+	moved?: ReadonlyMap<string, unknown> | null,
 ): AgentPlaceable[] {
 	return threads.map((thread) => {
 		const own = agentPlaceable(thread);
-		if (own.commit === snapshotHead) return own;
+		const isMoved = moved?.has(thread.id) === true;
+		if (own.commit === snapshotHead && !isMoved) return own;
 		const p = placements?.get(thread.id);
 		if (!p || p.kind === "outside") return own;
 		if (p.kind === "placed" || p.kind === "changed") {
 			const a = p.anchor;
 			const cols =
-				p.kind === "placed" && own.anchor
+				p.kind === "placed" && own.anchor && !isMoved
 					? { startCol: own.anchor.startCol, endCol: own.anchor.endCol }
 					: { startCol: null, endCol: null };
 			return {
@@ -108,12 +112,40 @@ export function tracedAgentPlaceables(
 }
 
 /**
+ * The agent threads as a view shows them (CAR-236): a conversation joined
+ * to the GitHub thread its comment started shows in that thread's card,
+ * so where the view doesn't list that thread (an earlier patch set, which
+ * leaves out threads published after it), it shows where it was asked,
+ * never nowhere; where the view's threads couldn't be read (`listed`
+ * null), there too, flagged `githubUnknown` (its blocks off: never a second
+ * thread). `listed` undefined: not known yet, as they are.
+ */
+export function unjoinUnlisted(
+	threads: readonly AgentThread[],
+	listed: ReadonlySet<string> | null | undefined,
+): AgentThread[] {
+	if (listed === undefined) return threads as AgentThread[];
+	return threads.map((t) => {
+		const a = t.anchor;
+		if (!t.joined || a.subject !== "thread") return t;
+		if (listed?.has(a.thread)) return t;
+		return {
+			...t,
+			anchor: t.joined.asked,
+			...(listed === null ? { githubUnknown: true } : {}),
+		};
+	});
+}
+
+/**
  * What the page knows to show the agent threads by (FilesPage): the
  * tracer's placements in the viewed snapshot, and on an earlier patch set
  * the moment the next one started (ms; null: no cutoff).
  */
 export interface AgentPlacing {
 	placements: Placements | null;
+	/** The reviewer's moves the threads stand on (CAR-139), by thread id. */
+	moves?: ReadonlyMap<string, MovedInfo> | null;
 	until: number | null;
 	/**
 	 * Asked and not in yet: one asked on another head waits for its place
@@ -125,6 +157,12 @@ export interface AgentPlacing {
 	 * failure group with an unknown fate (as review threads), never in a lead.
 	 */
 	failed?: boolean;
+	/**
+	 * The GitHub threads the view lists (null: they failed; undefined: not
+	 * known yet): a joined conversation whose thread isn't among them
+	 * shows where it was asked (unjoinUnlisted).
+	 */
+	listed?: ReadonlySet<string> | null;
 }
 
 const AgentPlacingContext = createContext<AgentPlacing>({
@@ -159,11 +197,12 @@ export function shownAgentPlaceables(
 	placing: AgentPlacing,
 ): AgentPlaceable[] {
 	const { until } = placing;
+	const all = unjoinUnlisted(threads, placing.listed);
 	// A live thread conversation goes where its GitHub thread goes (on its
 	// card's agent button): never an agent card or bubble of its own. An
 	// orphan reaches here with a span anchor (the GitHub join).
 	// The review conversation has no code to place on.
-	const spans = threads
+	const spans = all
 		.filter(isSpanThread)
 		.filter((t) => t.anchor.subject !== "thread");
 	const kept =
@@ -177,7 +216,12 @@ export function shownAgentPlaceables(
 		placing.pending || placing.failed
 			? kept.filter((t) => t.anchor.commit === snapshotHead)
 			: kept;
-	const shown = tracedAgentPlaceables(placed, snapshotHead, placing.placements);
+	const shown = tracedAgentPlaceables(
+		placed,
+		snapshotHead,
+		placing.placements,
+		placing.moves,
+	);
 	return [
 		...shown.filter((p) => !p.thread.resolved),
 		...shown.filter((p) => p.thread.resolved),
@@ -208,10 +252,11 @@ export function agentOutside(
 export function agentWaiting(
 	threads: readonly AgentThread[],
 	snapshotHead: string,
-	placing: Pick<AgentPlacing, "until">,
+	placing: Pick<AgentPlacing, "until" | "listed">,
 ): AgentPlaceable[] {
 	return shownAgentPlaceables(threads, snapshotHead, {
 		placements: null,
 		until: placing.until,
+		...(placing.listed !== undefined ? { listed: placing.listed } : {}),
 	}).filter((p) => p.commit !== snapshotHead);
 }

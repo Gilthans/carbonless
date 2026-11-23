@@ -481,6 +481,47 @@ decides where; nothing else does):
   anywhere else on a closed file's header (not its buttons, not the end of
   a path selection) opens the file too, never the composer.
 
+## Moving a thread (CAR-139)
+
+The reviewer puts a traced thread, a review thread or an agent thread, on
+the line it is about (`src/web/files/threadMove.tsx`). Same controls for
+both kinds; Files changed only, on the latest patch set or a head, in the
+full diff and the since view alike (in the since view a removed row that
+is no base line is no drop target, and Place here is off on it with the
+tooltip "Not a line of the base or the head"):
+
+- **Handle:** `GrabberIcon`, 40×40, `muted`, `ink` on hover, first in the
+  card's header (on its line, `changed since`, an unplaced row, "Not in
+  this comparison"). Name "Move thread"; tooltip "Drag to a line, or press
+  to pick one". None on a thread opened on the viewed snapshot, a file
+  thread, a conversation, an earlier patch set, or while
+  the placements load.
+- **Drag** (pointer capture): the card dims; a slim `overlay` ghost (the
+  author's avatar or the sparkle, the first words, as text) follows the
+  pointer; the row under it is outlined in `accent` (`data-drop-line`);
+  rows of the thread's file only; the page scrolls near the top or bottom
+  edge. Let go on a line: placed on it. Anywhere else, or Escape: nothing.
+- **Move mode** (a press, a tap, Enter, Space): a bar pushes in at the top
+  of the page under the find bar's slot (App's `MoveSlot`; pinned, never
+  over the header's buttons): the `accent` pin, "Pick a line", the first
+  words (truncated), a 40px ✕ "Cancel move". The card being moved gets an
+  `accent` outline. Lines are picked with the line picker in any file;
+  the selection bar then offers one 40px "Place here" (pin) in place of
+  its actions. Escape, ✕ or leaving the page: nothing written.
+- **`moved` chip:** `gray` (a fact, never the agent's teal), `PinIcon`,
+  "moved"; tooltip "Moved here by you on PS3" or "Moved by you on PS2,
+  followed here", and for a GitHub thread "· GitHub: line 88" or "· GitHub:
+  outdated". Beside it a 40px Undo (`UndoIcon`, "Undo move") in Files
+  changed; the Overview's card shows the chip alone. On a phone they wrap
+  to the header's second row. With `changed since` when the moved-to line
+  changed later.
+- After a place: the card scrolls in on its new line with `mark-tint`'s
+  wash, fading, focus on its Undo. A refused move or undo rolls back and
+  says so under the card in `bad`, with a 40px Retry when trying again can
+  help.
+- **Threads tab:** a moved thread's row has a muted pin among its cues
+  ("moved by you" in its name and tooltip).
+
 ## Starting threads in Files changed
 
 - **Selecting** text in the code (any row kind, across rows and sides,

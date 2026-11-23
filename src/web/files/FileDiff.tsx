@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
 	type MouseEvent,
 	type ReactNode,
+	useCallback,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -27,9 +28,15 @@ import type {
 	StateChange,
 } from "../../shared/types";
 import { AgentBubble } from "../agent/AgentBubble";
-import { AgentComposer } from "../agent/AgentComposer";
+import { AgentComposer, headFacts } from "../agent/AgentComposer";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
+import { onHeadMove } from "../agent/commentOnGithub";
+import {
+	PendingPosted,
+	shownOutsideCard,
+	useHeldByCard,
+} from "../agent/pendingThread";
 import {
 	agentWaiting,
 	shownAgentPlaceables,
@@ -92,7 +99,12 @@ import { ThreadBubble } from "./ThreadBubble";
 import { UnplacedThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
 import { useFocusAmong } from "./threadFocus";
-import { fileThreads, placeThreads, sinceLeft } from "./threadPlacement";
+import {
+	fileThreads,
+	placeThreads,
+	sinceEarlier,
+	sinceLeft,
+} from "./threadPlacement";
 import {
 	countedFile,
 	describeFileProgress,
@@ -629,6 +641,12 @@ export function FileDiff(props: {
 	/** An earlier patch set, as reviewed: the marks are locked. */
 	readOnly?: boolean;
 	/**
+	 * The since view: whether marks finish the file, by its units as its
+	 * header counts them (since.ts unitsFinish); undefined for a file the
+	 * engine didn't answer, judged by its clusters.
+	 */
+	unitsFinish?: (changes: readonly StateChange[]) => boolean | undefined;
+	/**
 	 * The reviewer's own mark just finished this open file (nothing left
 	 * unreviewed): the owner closes it and moves on (FilesPage opens the
 	 * next file). Without it, the file just closes.
@@ -716,15 +734,25 @@ export function FileDiff(props: {
 	// whitespace" on, without its whitespace-only clusters (countedFile),
 	// in the since view too (its meter counts its units: `counted`).
 	const ignoreWs = ignoreWhitespace.use();
-	const shown = countedFile(file, ignoreWs);
-	// How many whitespace-only clusters the header's counts leave out: its
-	// `~`. In the since view its units' count, and never less than its
-	// state leaves out: a header that reads done without them says so.
-	const clustersLeftOut = file.clusters.length - shown.clusters.length;
+	const byClusters = countedFile(file, ignoreWs);
+	// The since view: the header follows its units (CAR-218), not the
+	// snapshot's clusters, so its state, meter and `~` agree. With units to
+	// count, their state is the file's; with none, nothing is left to read.
+	const shown: FileView =
+		props.counted !== undefined && props.counted.clusters.length > 0
+			? {
+					...byClusters,
+					done: props.counted.done,
+					reviewed: props.counted.reviewed,
+					crossedOff: props.counted.crossedOff,
+				}
+			: byClusters;
+	// How many whitespace-only changes the header's counts leave out: its
+	// `~`. In the since view its units' count alone (countedFileUnits).
 	const leftOut =
 		props.counted !== undefined
-			? Math.max(props.countedLeftOut ?? 0, clustersLeftOut)
-			: clustersLeftOut;
+			? (props.countedLeftOut ?? 0)
+			: file.clusters.length - byClusters.clusters.length;
 	/**
 	 * A mark that leaves nothing unreviewed (a cluster's, or the rest of the
 	 * file's) finishes the file: an open one closes at once and the page
@@ -739,7 +767,12 @@ export function FileDiff(props: {
 	const mark = (changes: StateChange[]) => {
 		// An earlier patch set, as reviewed, takes no marks.
 		if (readOnly || marksIgnored()) return;
-		const closing = expanded && finishes(shown.clusters, changes, sinceOnly);
+		// The since view judges by the file's units, as its header's state
+		// does (CAR-218): it never closes while a counted unit is unmarked.
+		const closing =
+			expanded &&
+			(props.unitsFinish?.(changes) ??
+				finishes(shown.clusters, changes, sinceOnly));
 		if (closing) {
 			// The clicked control is gone or swaps; keep focus in the header.
 			toggleButton.current?.focus({ preventScroll: true });
@@ -880,6 +913,13 @@ export function FileDiff(props: {
 	// never dropped. A closed file's hunks aren't read (first open stays
 	// light): a binary or submodule file's line threads are flagged from the
 	// file alone; a line past the end shows once the file is opened.
+	// The since view's compared patch set's head (CAR-233: threads made
+	// there on a line only it had show on its removed row).
+	const sinceSession = useQuery({ ...sessionQuery, enabled: false }).data;
+	const earlierHead =
+		props.since === undefined
+			? undefined
+			: sinceSession?.patchsets.find((p) => p.number === props.since)?.head;
 	const filePlacement = props.threads
 		? placeThreads({
 				threads: props.threads.threads,
@@ -893,7 +933,15 @@ export function FileDiff(props: {
 				// the full diff), so the header holds what no row can.
 				...(props.since === undefined
 					? {}
-					: { sinceLeft: sinceLeft(file.clusters, hunkData?.hunks) }),
+					: {
+							sinceLeft: sinceLeft(file.clusters, hunkData?.hunks),
+							...(earlierHead === undefined
+								? {}
+								: {
+										sinceEarlier: sinceEarlier(earlierHead, hunkData?.hunks),
+										earlierPending: props.threads.earlierPending,
+									}),
+						}),
 			})
 		: null;
 	const header = filePlacement?.header ?? [];
@@ -943,20 +991,38 @@ export function FileDiff(props: {
 			),
 		[drafts, composers, file.path],
 	);
+	// One carrying an agent conversation whose card is on screen: drawn in
+	// that card (pendingThread.ts), not again here.
+	const heldByCard = useHeldByCard();
+	// As DiffBody's: only one on the head shown (the one a card draws).
+	const shownFileItems = fileItems.filter((i) =>
+		shownOutsideCard(i, snapshotHead, heldByCard),
+	);
 	const writer = useThreadWriter();
 	// The head moved under a file comment being written: it moves along (a
 	// file comment doesn't depend on lines); one only opened just closes.
+	// One carrying an agent conversation stays on its version while that
+	// takes comments, else closes or stays an orphan (onHeadMove).
 	useEffect(() => {
 		if (!snapshotHead) return;
 		for (const item of fileItems) {
 			if (item.span.commit === snapshotHead || item.sending) continue;
-			if (writer.drafts.newThread(item.clientId)) {
+			const typed = !!writer.drafts.newThread(item.clientId);
+			// One carrying an agent conversation: onHeadMove (never moved).
+			if (item.agentThread) {
+				if (onHeadMove(session, item.span.commit, typed) === "close") {
+					closeComposer(item.clientId);
+				}
+				continue;
+			}
+			if (typed) {
 				writer.drafts.retarget(item.clientId, snapshotHead);
 			} else closeComposer(item.clientId);
 		}
-	}, [fileItems, snapshotHead, writer]);
+	}, [fileItems, snapshotHead, writer, session]);
 
 	const fileComment = useFileComment(file, snapshotHead, readOnly);
+	const openFileThreads = useCallback(() => setFileOpen(true), []);
 
 	// The reviewer's agent threads on the file (FilesPage reads them): those
 	// on the whole file, and lines the diff can't show, beside the file's
@@ -995,7 +1061,14 @@ export function FileDiff(props: {
 				placements: agentPlacements,
 				...(props.since === undefined
 					? {}
-					: { sinceLeft: sinceLeft(file.clusters, hunkData?.hunks) }),
+					: {
+							sinceLeft: sinceLeft(file.clusters, hunkData?.hunks),
+							...(earlierHead === undefined
+								? {}
+								: {
+										sinceEarlier: sinceEarlier(earlierHead, hunkData?.hunks),
+									}),
+						}),
 			})
 		: null;
 	const agentHeader = agentPlaced?.header ?? [];
@@ -1067,6 +1140,7 @@ export function FileDiff(props: {
 					clientId={c.clientId}
 					span={c.span}
 					quote={file.path}
+					comment={{ readOnly, ...headFacts(c.span, snapshotHead) }}
 				/>
 			))}
 		</div>
@@ -1074,7 +1148,7 @@ export function FileDiff(props: {
 	// File comments being written, and drafts from an earlier head.
 	const newItems = (
 		<div data-testid="file-new-threads" className="space-y-2">
-			{fileItems.map((item) =>
+			{shownFileItems.map((item) =>
 				item.span.commit === snapshotHead ? (
 					<NewThread
 						key={item.clientId}
@@ -1145,7 +1219,7 @@ export function FileDiff(props: {
 		row: (columns, rail) => (
 			<>
 				{(fileOpen && (header.length > 0 || fileComment.ok !== true)) ||
-				fileItems.length > 0 ? (
+				shownFileItems.length > 0 ? (
 					<FileThreadsRow
 						id={fileThreadsId}
 						columns={columns}
@@ -1170,9 +1244,9 @@ export function FileDiff(props: {
 									))
 								: null
 						}
-						composers={fileItems.length > 0 ? newItems : null}
+						composers={shownFileItems.length > 0 ? newItems : null}
 						comment={
-							fileOpen && fileItems.length === 0 ? (
+							fileOpen && shownFileItems.length === 0 ? (
 								<FileCommentButton
 									file={file}
 									commit={snapshotHead}
@@ -1182,19 +1256,23 @@ export function FileDiff(props: {
 						}
 					/>
 				) : null}
-				{agentOpen &&
-					agentGroups.map((g, i) => (
-						<AgentThreadRow
-							key={g.reason}
-							id={i === 0 ? agentThreadsId : undefined}
-							threads={g.threads}
-							place={{ columns }}
-							rail={rail}
-							unplaced={g.reason === "unplaced"}
-							outdated={g.reason === "outdated"}
-							fates={g.reason === "fate" ? agentFates : undefined}
-						/>
-					))}
+				{agentOpen && (
+					// Comment on a file conversation's card: its thread opens in the bubble.
+					<PendingPosted onPosted={openFileThreads}>
+						{agentGroups.map((g, i) => (
+							<AgentThreadRow
+								key={g.reason}
+								id={i === 0 ? agentThreadsId : undefined}
+								threads={g.threads}
+								place={{ columns }}
+								rail={rail}
+								unplaced={g.reason === "unplaced"}
+								outdated={g.reason === "outdated"}
+								fates={g.reason === "fate" ? agentFates : undefined}
+							/>
+						))}
+					</PendingPosted>
+				)}
 				{agentComposers && (
 					<TailRow testId="agent-composer-row" place={{ columns }} rail={rail}>
 						{agentComposers}
@@ -1383,7 +1461,7 @@ export function FileDiff(props: {
 					)}
 				</Tooltip>
 			</header>
-			{!expanded && fileItems.length > 0 && (
+			{!expanded && shownFileItems.length > 0 && (
 				// Closed: a file comment being written stays in sight.
 				<div className="border-b border-line bg-canvas p-2">{newItems}</div>
 			)}
@@ -1606,6 +1684,12 @@ export function GoneFile(props: {
 	pathFind?: readonly FindMark[];
 	find?: DiffFind;
 	/**
+	 * The since view: whether marks finish the file, by its units as its
+	 * header counts them (since.ts unitsFinish); undefined for a file the
+	 * engine didn't answer, judged by its clusters.
+	 */
+	unitsFinish?: (changes: readonly StateChange[]) => boolean | undefined;
+	/**
 	 * The reviewer's own mark just finished this open file (no piece left):
 	 * the owner closes it and moves on, as FileDiff's does. Without it, the
 	 * file just closes.
@@ -1652,7 +1736,7 @@ export function GoneFile(props: {
 	const send = (c: StateChange | null) => {
 		if (!c || props.readOnly) return;
 		if (performance.now() < (ignoreMarksUntil ?? 0)) return;
-		if (expanded && finishes([], [c], only)) {
+		if (expanded && (props.unitsFinish?.([c]) ?? finishes([], [c], only))) {
 			toggleButton.current?.focus({ preventScroll: true });
 			if (props.onFinished) props.onFinished();
 			else setExpanded(false);

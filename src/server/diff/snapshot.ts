@@ -7,11 +7,13 @@ import type {
 	Cluster,
 	ClusterSplit,
 	DiffLine,
+	DisplayHunk,
 	FileHunks,
 	FileSummary,
 	HunksBatch,
 	Snapshot,
 } from "../../shared/types.js";
+import { type HunkCut, hunkCut, hunkCuts } from "../../shared/whitespace.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
 import { BlobCache } from "./blobCache.js";
 import { buildAllClusters, splitCluster } from "./clusters.js";
@@ -23,7 +25,11 @@ import {
 	type HeadingFile,
 	withHeadings,
 } from "./headings.js";
-import { buildDisplayHunks, contextLines } from "./hunks.js";
+import {
+	buildDisplayHunks,
+	contextLines,
+	HunksMismatchError,
+} from "./hunks.js";
 import { clusterKeys } from "./identity.js";
 import { chooseEncoding, decodeLines, type TextEncoding } from "./text.js";
 
@@ -307,10 +313,17 @@ export async function buildSnapshot(
 		// both sides are text under the cap, neither a symlink nor an LFS
 		// pointer (not Markdown); the Rendered view needs the cut.
 		const markdown =
-			text && cutsMarkdown(file, bytesOf(oldOid), bytesOf(newOid))
-				? { oldLines: text.oldLines, newLines: text.newLines }
-				: undefined;
-		const clusters = cutClusters(hunks, keysOf, markdown);
+			text !== null && cutsMarkdown(file, bytesOf(oldOid), bytesOf(newOid));
+		const clusters = cutClusters(
+			hunks,
+			keysOf,
+			{
+				oldLines: text?.oldLines ?? [],
+				newLines: text?.newLines ?? [],
+				noNewlineAtEnd: text?.noNewlineAtEnd ?? false,
+			},
+			markdown,
+		);
 		const tabWidth = tabWidths[index];
 		const oldSize = sizeOf(oldOid);
 		const newSize = sizeOf(newOid);
@@ -380,26 +393,39 @@ export function cutsMarkdown(
 /**
  * One file's git hunks (and its file-level cluster) as its clusters: each
  * hunk cut at its whitespace-only runs (splitCluster, CAR-156), and for a
- * Markdown file (`markdown`, its old and new lines) each piece cut again at
- * its blocks (cutAtBlocks, CAR-167), keyed by `keysOf` (clusterKeys over
- * the file's clusters). A piece of a hunk that split, by either cut,
- * remembers the key the whole git hunk had (`keysOf` over the hunks, as
- * before any cut) and where its lines sit in it, so marks on the hunk
- * carry onto the pieces (splitCarry.ts). A piece the block cut leaves whole
- * keeps the key it had with the whitespace cut alone; one it splits names
- * that CAR-156 piece's key (`split.piece`) when the hunk had several.
+ * Markdown file (`markdown`) each piece cut again at its blocks (cutAtBlocks,
+ * CAR-167, over `text`'s old and new lines), keyed by `keysOf` (clusterKeys
+ * over the file's clusters). Which lines are whitespace-only comes from one
+ * matching per display hunk (built from the uncut hunks over `text`, as the
+ * view builds them from the cut ones: the same lines on each side, so the
+ * same matching; hunkCuts, CAR-218), so a cluster is whitespace-only exactly
+ * where the view draws `~` rows; the block cut keeps that (a block piece of a
+ * whitespace-only piece holds only lines the matching gave twins). Should the
+ * display hunks fail to build (the hunks not fitting `text`), each hunk is
+ * matched on its own (hunkCut), as before CAR-218. A piece of a hunk that
+ * split, by either cut, remembers the key the whole git hunk had (`keysOf`
+ * over the hunks, as before any cut) and where its lines sit in it, so marks
+ * on the hunk carry onto the pieces (splitCarry.ts). A piece the block cut
+ * leaves whole keeps the key it had with the whitespace cut alone; one it
+ * splits names that CAR-156 piece's key (`split.piece`) when the hunk had
+ * several.
+ *
+ * **Part of cluster identity** (splitHunk): marks on a cluster the cut
+ * moves no longer match and read unreviewed (no carry, owner 2026-11-22).
  */
 export function cutClusters(
 	hunks: Omit<Cluster, "key">[],
 	keysOf: (clusters: Omit<Cluster, "key">[]) => string[],
-	markdown?: { oldLines: string[]; newLines: string[] },
+	text: { oldLines: string[]; newLines: string[]; noNewlineAtEnd: boolean },
+	markdown = false,
 ): Cluster[] {
+	const cuts = displayCuts(hunks, text);
 	// Parsed once per side, and only with lines to cut (not a pure rename).
 	const blocks =
 		markdown && hunks.some((h) => h.kind === "lines")
 			? {
-					old: markdownBlocks(markdown.oldLines),
-					new: markdownBlocks(markdown.newLines),
+					old: markdownBlocks(text.oldLines),
+					new: markdownBlocks(text.newLines),
 				}
 			: undefined;
 	const clusters: Omit<Cluster, "key">[] = [];
@@ -416,7 +442,16 @@ export function cutClusters(
 	hunks.forEach((hunk, h) => {
 		const ws =
 			hunk.kind === "lines"
-				? splitCluster(hunk)
+				? splitCluster(
+						hunk,
+						cuts?.get(String(h)) ??
+							hunkCut(
+								hunk.removed,
+								hunk.added,
+								hunk.noNewlineOld === true,
+								hunk.noNewlineNew === true,
+							),
+					)
 				: [{ cluster: hunk, removedAt: 0, addedAt: 0 }];
 		const pieces = ws.flatMap((p) => {
 			const at = wsClusters.push(p.cluster) - 1;
@@ -462,6 +497,42 @@ export function cutClusters(
 				: undefined;
 		return { ...c, key: keys[i] as string, ...(split ? { split } : {}) };
 	});
+}
+
+/**
+ * Each line hunk's cut (by its index in `hunks`, as a string) from its
+ * display hunk's matching; null only when the display hunks don't build
+ * because the hunks don't fit the text (HunksMismatchError). Any other
+ * error, the matching's included, is thrown: a silent fall back to the
+ * per-hunk cut could leave the clusters and the view's `~` rows
+ * disagreeing.
+ */
+function displayCuts(
+	hunks: Omit<Cluster, "key">[],
+	text: { oldLines: string[]; newLines: string[]; noNewlineAtEnd: boolean },
+): Map<string, HunkCut> | null {
+	const lines = hunks.flatMap((hunk, h) =>
+		hunk.kind === "lines" ? [{ ...hunk, key: String(h) }] : [],
+	);
+	if (lines.length === 0) return null;
+	let displays: DisplayHunk[];
+	try {
+		displays = buildDisplayHunks(
+			text.oldLines,
+			text.newLines,
+			lines,
+			3,
+			text.noNewlineAtEnd,
+		);
+	} catch (error) {
+		if (error instanceof HunksMismatchError) return null;
+		throw error;
+	}
+	const cuts = new Map<string, HunkCut>();
+	for (const display of displays) {
+		for (const [key, cut] of hunkCuts(display.lines)) cuts.set(key, cut);
+	}
+	return cuts;
 }
 
 /** The snapshot id of the comparison `base` → `head` (`Snapshot.revision`). */

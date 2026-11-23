@@ -150,8 +150,10 @@ export function groupByBlocks(
  * number them as hunks (a side with no lines starts at the line it follows,
  * as `splitCluster`); `noNewlineOld`/`New` stay on the piece holding the
  * last line. A cut piece drops `split` (the caller keys pieces) and keeps
- * `whitespaceOnly` only when its lines are still the same lines of a
- * whitespace-only `c`, side for side. `removedAt`/`addedAt` are relative to
+ * `whitespaceOnly` when `c` has it: since CAR-218 a whitespace-only cluster
+ * is one whose every line the display hunk's matching gave a twin (maybe
+ * outside it, maybe one side only), so any part of it is too, and the view
+ * draws all its lines as `~` rows. `removedAt`/`addedAt` are relative to
  * `c`; nothing to cut gives `[{ cluster: c, removedAt: 0, addedAt: 0 }]`.
  */
 export function cutAtBlocks<C extends LineCluster>(
@@ -197,9 +199,7 @@ export function cutAtBlocks<C extends LineCluster>(
 			...(c.noNewlineNew && newCount > 0 && at === c.added.length
 				? { noNewlineNew: true }
 				: {}),
-			...(c.whitespaceOnly && rf === af && oldCount === newCount
-				? { whitespaceOnly: true }
-				: {}),
+			...(c.whitespaceOnly ? { whitespaceOnly: true } : {}),
 		} as unknown as C;
 		return { cluster, removedAt: rf, addedAt: af };
 	});

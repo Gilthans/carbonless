@@ -305,6 +305,7 @@ test("a bare number lists that PR in each view repo; Enter opens the chosen one;
 	workdir,
 	pr,
 	startCrb,
+	expectConsoleError,
 }) => {
 	const made = await setup(workdir, pr, { widgetInView: true });
 	made.editScenario((s) => {
@@ -358,8 +359,15 @@ test("a bare number lists that PR in each view repo; Enter opens the chosen one;
 		release: () => release(made.scenarioPath, "home:acme/api"),
 		result: numbered.getByRole("option", { name: /Old cleanup/ }),
 	});
+	// GitHub has no PR view of acme/api#40 here: the server refuses to open
+	// it (409) and the page says why. Only this open may log a 409.
+	const refused = expectConsoleError(/409/);
 	await box.press("Enter");
 	await expect(page).toHaveURL(/\/pr\/acme\/api\/40$/);
+	// Wait for the open's answer, its refusal: a test that ends with it in
+	// flight fails whenever the 409 lands before the console check.
+	await expect(page.getByTestId("not-found")).toContainText("acme/api#40");
+	refused();
 });
 
 test("a PR chosen in the open box shows at once, loading, then becomes its review", async ({

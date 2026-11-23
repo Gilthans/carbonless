@@ -1,5 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { fromIndexes } from "./lineRanges";
 import { blockOfLine, markdownBlocks } from "./markdownBlocks";
 import type { SincePiece } from "./pieces";
 import {
@@ -20,6 +21,7 @@ import {
 	sinceOnlyState,
 	sincePieces,
 	sinceToggleChange,
+	sinceUnits,
 	toggleChange,
 	viewOfLines,
 } from "./pieces";
@@ -849,5 +851,164 @@ describe("the since view's pieces of a Markdown file, cut at its blocks (CAR-167
 			),
 			{ numRuns: 300 },
 		);
+	});
+});
+
+describe("the since view's pieces cut at whitespace runs (CAR-218)", () => {
+	const line = (
+		kind: "add" | "del" | "context",
+		no: number,
+		key?: string,
+	): DiffLine => ({
+		kind,
+		text: `${kind} ${no}`,
+		...(kind !== "add" ? { oldNo: no } : {}),
+		...(kind !== "del" ? { newNo: no } : {}),
+		...(key === undefined || kind === "context" ? {} : { clusterKey: key }),
+	});
+
+	it("a run mixing whitespace-only and changed lines is one piece per stretch; flagged only when every line is marked", () => {
+		const lines = [
+			line("context", 1),
+			line("del", 2, "k"),
+			line("del", 3, "k"),
+			line("del", 4, "k"),
+			line("add", 2, "k"),
+			line("add", 3, "k"),
+			line("add", 4, "k"),
+			line("context", 5),
+		];
+		const [, d2, d3, , a2, , a4] = lines as DiffLine[];
+		const ws = new Set([d2, d3, a2, a4] as DiffLine[]);
+		const pieces = sincePieces([{ newStart: 1, lines }], [], () => ({}), {
+			lines: ws,
+			marked: (l) => l !== a4,
+		});
+		expect(
+			pieces.map((p) => [p.line, p.old, p.new, p.whitespaceOnly === true]),
+		).toEqual([
+			[1, [[2, 4]], [], true],
+			[3, [[4, 5]], [], false],
+			[4, [], [[2, 3]], true],
+			[5, [], [[3, 4]], false],
+			// Whitespace-only on the interdiff, but its line wasn't marked then.
+			[6, [], [[4, 5]], false],
+		]);
+		// Without `ws`: one piece per run, never flagged (as before).
+		const plain = sincePieces([{ newStart: 1, lines }], []);
+		expect(plain.map((p) => [p.line, p.whitespaceOnly])).toEqual([
+			[1, undefined],
+		]);
+	});
+
+	it("pieces split at whitespace runs: every changed line in exactly one piece, in order, each piece all whitespace-only or none (any hunks)", () => {
+		let seed = 3218;
+		const rand = (k: number) => {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			return (seed >>> 16) % k;
+		};
+		for (let round = 0; round < 300; round++) {
+			const hunks: { newStart: number; lines: DiffLine[] }[] = [];
+			const ws = new Set<DiffLine>();
+			let no = 1;
+			for (let h = 0; h < 1 + rand(3); h++) {
+				const lines: DiffLine[] = [];
+				for (let i = 0; i < 1 + rand(14); i++) {
+					const kind = (["add", "del", "context"] as const)[rand(3)];
+					const key = ["a", "b", undefined][rand(3)];
+					const l = line(kind ?? "context", no++, key);
+					if (l.kind !== "context" && rand(2) === 0) ws.add(l);
+					lines.push(l);
+				}
+				hunks.push({ newStart: no, lines });
+			}
+			const marked = new Set([...ws].filter(() => rand(3) > 0));
+			const pieces = sincePieces(hunks, [], () => ({}), {
+				lines: ws,
+				marked: (l) => marked.has(l),
+			});
+			const seen: DiffLine[] = [];
+			for (const p of pieces) {
+				const run: DiffLine[] = [];
+				for (const l of hunks[p.hunk]?.lines.slice(p.line) ?? []) {
+					if (l.kind === "context") break;
+					if (run.length > 0) {
+						const prev = run.at(-1) as DiffLine;
+						if (prev.clusterKey !== l.clusterKey) break;
+						if (ws.has(prev) !== ws.has(l)) break;
+					}
+					run.push(l);
+				}
+				expect(run.length).toBeGreaterThan(0);
+				const flagged = run.every((l) => ws.has(l) && marked.has(l));
+				expect(p.whitespaceOnly === true).toBe(flagged);
+				// Its numbers are its lines'.
+				expect(p.old).toEqual(
+					fromIndexes(
+						run.flatMap((l) => (l.kind === "del" ? [l.oldNo as number] : [])),
+					),
+				);
+				expect(p.new).toEqual(
+					fromIndexes(
+						run.flatMap((l) => (l.kind === "add" ? [l.newNo as number] : [])),
+					),
+				);
+				seen.push(...run);
+			}
+			const changed = hunks.flatMap((hk) =>
+				hk.lines.filter((l) => l.kind !== "context"),
+			);
+			expect(seen).toEqual(changed);
+		}
+	});
+
+	it("a piece's unit takes the piece's flag, the rest of a cluster its cluster's", () => {
+		const ws: Cluster = { ...cluster, whitespaceOnly: true };
+		const piece = {
+			hunk: 0,
+			line: 0,
+			key: ws.key,
+			owns: [[2, 3]] as [number, number][],
+			old: [],
+			new: [[22, 23]] as [number, number][],
+		};
+		const free = {
+			hunk: 0,
+			line: 4,
+			owns: null,
+			old: [[40, 41]] as [number, number][],
+			new: [],
+			kind: "reverted" as const,
+		};
+		const units = (pieces: object[]) =>
+			sinceUnits(
+				[
+					{
+						index: 0,
+						path: "a.ts",
+						clusters: [{ key: ws.key, kind: "reworked" }],
+						pieces: pieces as never,
+					},
+				],
+				1,
+				() => [{ ...ws, state: "unreviewed" }],
+				undefined,
+			).map((u) => [u.rest === true, u.whitespaceOnly === true]);
+		// A real change since, in a cluster whitespace-only against the base: counts.
+		expect(units([piece, free])).toEqual([
+			[false, false],
+			[false, false],
+			[true, true],
+		]);
+		expect(
+			units([
+				{ ...piece, whitespaceOnly: true },
+				{ ...free, whitespaceOnly: true },
+			]),
+		).toEqual([
+			[false, true],
+			[false, true],
+			[true, true],
+		]);
 	});
 });

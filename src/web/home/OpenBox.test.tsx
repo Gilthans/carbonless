@@ -274,10 +274,13 @@ describe("OpenBox", () => {
 	});
 
 	it("asks again while a GitHub search is pending, with a spinner", async () => {
-		let calls = 0;
-		const api = setup(() => {
-			calls++;
-			return calls === 1
+		// Every query stays pending until the test has seen "far/away x"
+		// asked and its spinner (the box asks again every 700 ms: a call
+		// count would race it, and a prefix's pending answer would pass
+		// the loading checks before "far/away x" was asked).
+		let released = false;
+		const api = setup((q) => {
+			return !(released && q === "far/away x")
 				? {
 						repos: [],
 						prs: [],
@@ -297,12 +300,15 @@ describe("OpenBox", () => {
 		const status = screen.getByRole("status");
 		expect(status).toHaveTextContent("");
 		await userEvent.type(box(), "far/away x");
+		await waitFor(() => expect(searches(api)).toContain("far/away x"));
 		await waitFor(() => expect(status).toHaveTextContent("Searching GitHub"));
 		expect(status.closest("[role=listbox]")).toBeNull();
 		// The scoped PRs' heading spins too.
 		const scoped = await screen.findByRole("group", { name: /^far\/away ·/ });
 		expect(scoped).toHaveAttribute("aria-busy", "true");
 		expect(scoped.querySelector(".animate-spin")).not.toBeNull();
+		expect(screen.queryByTestId("suggestions-empty")).toBeNull();
+		released = true;
 		await screen.findByText("Found later", undefined, { timeout: 3000 });
 		expect(status).toHaveTextContent("");
 		expect(screen.getByRole("group", { name: /^far\/away ·/ })).toHaveAttribute(
@@ -316,10 +322,11 @@ describe("OpenBox", () => {
 	});
 
 	it("Repos shows a spinner while the viewer's repos load, with the known ones under it", async () => {
-		let calls = 0;
-		setup(() => {
-			calls++;
-			const loading = calls === 1;
+		// Pending until the test has seen the spinner (the box asks again
+		// every 700 ms: a call count would race it).
+		let released = false;
+		const api = setup(() => {
+			const loading = !released;
 			return {
 				repos: [
 					{ name: "acme/console", inView: true, openCount: 7 },
@@ -335,12 +342,14 @@ describe("OpenBox", () => {
 		});
 		const status = screen.getByRole("status");
 		await userEvent.type(box(), "con");
+		await waitFor(() => expect(searches(api)).toContain("con"));
 		const list = await screen.findByRole("listbox");
 		const repos = within(list).getByRole("group", { name: "Repos" });
 		expect(repos).toHaveAttribute("aria-busy", "true");
 		expect(repos.querySelector(".animate-spin")).not.toBeNull();
 		expect(within(repos).getAllByRole("option")).toHaveLength(1);
 		expect(status).toHaveTextContent("Loading your repos");
+		released = true;
 		await waitFor(
 			() => expect(within(repos).getAllByRole("option")).toHaveLength(2),
 			{ timeout: 3000 },

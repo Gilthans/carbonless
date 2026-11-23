@@ -54,7 +54,11 @@ import { AgentOverviewRow } from "../agent/AgentOverviewRow";
 import { requestConversationOpen } from "../agent/conversationLinks";
 import { CentredWithHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
-import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
+import {
+	standingSuggestion,
+	ThreadAgentContext,
+	useThreadAgent,
+} from "../agent/threadAgent";
 import {
 	OVERVIEW_FRESH_MS,
 	overviewAge,
@@ -103,7 +107,7 @@ import { kept, useDrafts } from "../threads/drafts";
 import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { Avatar, PeopleProvider, TINTS, usePerson } from "../threads/people";
-import { canToggle } from "../threads/ResolveButton";
+import { canToggle, ResolveButton } from "../threads/ResolveButton";
 import { withSpanMarks } from "../threads/spanMarks";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import {
@@ -1491,7 +1495,8 @@ const HEAD_PART =
  * whether anyone answered; then the code it was written on beside the first
  * comment as GitHub renders it (stacked on a phone), both clipped. One
  * "Show more" for the whole thread: opened, the code and the first comment
- * in full, every reply, then the reply box and the Resolve button.
+ * in full, every reply, then the reply box and the Resolve button. Closed,
+ * Resolve sits at the Show more row's right end (one at a time).
  */
 function ThreadItem({
 	thread,
@@ -1574,11 +1579,25 @@ function ThreadItem({
 		(!thread.unavailable &&
 			(replies.n > 0 || canAct || can.update || can.delete));
 	const writesOn = useWritesOn();
+	const resolvable = canToggle(thread, writesOn);
+	const session = useQuery(sessionQuery);
+	const viewer = session.data?.viewer;
+	// The opener's own Edit and Delete live behind the toggle. Until its
+	// comments are known (prefetching, or the read failed), the viewer's own
+	// opener counts as editable: a toggle that turns up late, or never,
+	// would leave them out of reach.
+	const editable = first
+		? can.update || can.delete
+		: writesOn &&
+			!thread.unavailable &&
+			viewer !== undefined &&
+			thread.author.toLowerCase() === viewer.toLowerCase();
 	const kind = toggleKind({
 		clipped: codeMore || commentMore,
 		replies: replies.n,
 		canReply: writesOn && thread.viewerCan.reply,
-		canResolve: canToggle(thread, writesOn),
+		editable,
+		canResolve: resolvable,
 	});
 	const commentClipped = commentMore && !open;
 	useEffect(() => {
@@ -1716,9 +1735,26 @@ function ThreadItem({
 	);
 	// The composer row: never under the agent's panel.
 	const actions = (open || agent?.open === true) && !thread.unavailable;
-	const session = useQuery(sessionQuery);
 	const target = threadTarget(thread, session.data, line);
 	const status = thread.resolved ? "Resolved" : "Unresolved";
+	// Resolve on the closed card, where the eye expects it: the bottom row's
+	// right end, where ThreadActions has it once open (one at a time).
+	const closedResolve = resolvable && !actions;
+	// Closed, a toggle opening only to Resolve has nothing left behind it.
+	const toggle = more && (kind !== "resolve" || open);
+	const moreRow = toggle || closedResolve;
+	// "Hide" on a card that opens only to Resolve goes with the card's
+	// opening: the focus it had moves to the card's one Resolve (the closed
+	// card's, or the actions row's while the agent's panel keeps it open),
+	// never to the page.
+	const refocusResolve = useRef(false);
+	useEffect(() => {
+		if (open || !refocusResolve.current) return;
+		refocusResolve.current = false;
+		cardRef.current
+			?.querySelector<HTMLElement>("[data-testid=resolve-button]")
+			?.focus();
+	}, [open]);
 	return (
 		<ThreadAgentContext.Provider value={agent}>
 			<li
@@ -1866,24 +1902,47 @@ function ThreadItem({
 					{!agent && repliesEl}
 					{actions && <ThreadActions thread={thread} onToggle={onToggle} />}
 					{/* The agent's handle at the bottom, while the actions row is closed. */}
-					{agent && !actions && !more && <AgentHandleRow />}
-					{more && (
-						// Its own row, centred under the card; the agent's handle at its
-						// right end while the actions row is closed.
-						<CentredWithHandle testId="thread-more-row" handle={!actions}>
-							<MoreToggle
-								open={open}
-								onClick={() => setOpen((o) => !o)}
-								controls={[
-									rows.length ? codeId : "",
-									commentId,
-									open && replies.n > 0 ? repliesId : "",
-								]
-									.filter(Boolean)
-									.join(" ")}
-								replies={replies}
-								kind={kind}
-							/>
+					{agent && !actions && !moreRow && <AgentHandleRow />}
+					{moreRow && (
+						// Its own row, centred under the card; Resolve and the agent's
+						// handle at its right end while the actions row is closed.
+						<CentredWithHandle
+							testId="thread-more-row"
+							handle={!actions}
+							columns={resolvable}
+							end={
+								closedResolve ? (
+									<ResolveButton
+										thread={thread}
+										onToggle={onToggle}
+										suggested={
+											standingSuggestion(agent?.conversation, thread) !==
+											undefined
+										}
+										compact
+									/>
+								) : undefined
+							}
+						>
+							{toggle && (
+								<MoreToggle
+									open={open}
+									onClick={() => {
+										// Closing a toggle that then goes: its focus to Resolve.
+										refocusResolve.current = open && kind === "resolve";
+										setOpen((o) => !o);
+									}}
+									controls={[
+										rows.length ? codeId : "",
+										commentId,
+										open && replies.n > 0 ? repliesId : "",
+									]
+										.filter(Boolean)
+										.join(" ")}
+									replies={replies}
+									kind={kind}
+								/>
+							)}
 						</CentredWithHandle>
 					)}
 				</div>
@@ -1918,18 +1977,22 @@ const NO_COMMENT: ThreadComment = {
 /**
  * What a card's toggle opens to: "more" when there's something to read
  * (clipped code or text, a reply, the viewer's pending or sending ones);
- * otherwise only the reply box and Resolve, so it says "reply", or
- * "resolve" where the viewer may resolve but not reply.
+ * otherwise the reply box and Resolve, so it says "reply"; "more" again
+ * for the opener's own Edit and Delete; "resolve" where it would open to
+ * Resolve alone, which a closed card shows itself (so no toggle there).
  */
 export function toggleKind(p: {
 	clipped: boolean;
 	/** Replies, the viewer's pending and sending ones included. */
 	replies: number;
 	canReply: boolean;
+	/** The viewer may edit or delete the opener (inside Show more). */
+	editable?: boolean;
 	canResolve: boolean;
 }): "more" | "reply" | "resolve" {
 	if (p.clipped || p.replies > 0) return "more";
 	if (p.canReply) return "reply";
+	if (p.editable) return "more";
 	if (p.canResolve) return "resolve";
 	return "more";
 }

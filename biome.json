@@ -12,7 +12,8 @@
 			"!test/fixtures/inline-diff",
 			"!test/fixtures/pairing",
 			"!test/fake-gh/gh.mjs",
-			"!release-notes"
+			"!release-notes",
+			"!docs/superpowers/specs/*.html"
 		]
 	},
 	"formatter": {

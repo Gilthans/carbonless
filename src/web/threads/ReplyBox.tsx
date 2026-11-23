@@ -17,6 +17,12 @@ import {
 	useSendView,
 	useThreadAgentContext,
 } from "../agent/threadAgent";
+import {
+	CommentPreview,
+	PREVIEW_KEYS,
+	PreviewToggle,
+	useWritePreview,
+} from "../CommentPreview";
 import type { Shortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { useClearOfNotices } from "./clearOfNotices";
@@ -34,6 +40,11 @@ export const EDITOR_KEYS: Omit<Shortcut, "run" | "when">[] = [
 	{
 		keys: "Escape",
 		label: "Leave the reply, cancel the edit",
+		group: "Threads",
+	},
+	{
+		keys: PREVIEW_KEYS,
+		label: "Write or preview a comment",
 		group: "Threads",
 	},
 ];
@@ -76,15 +87,19 @@ export function ReplyBox(props: {
 	const tooLong = asking && bytes(text) > MAX_AGENT_TEXT;
 	const blank = !text.trim();
 	const open = focused || !blank;
+	// Ask agent never posts to GitHub: no preview there (CAR-202).
+	const write = useWritePreview({ initial: "write", text, box, off: asking });
+	const previewing = write.mode === "preview";
 	const { onOpenChange } = props;
 	useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes.
 	useLayoutEffect(() => {
 		const el = box.current;
-		if (!el) return;
+		// Previewing, the hidden box keeps its height (re-measured on Write).
+		if (!el || previewing) return;
 		el.style.height = "auto";
 		if (open) el.style.height = `${el.scrollHeight + 2}px`;
-	}, [text, open]);
+	}, [text, open, previewing]);
 	const composer = agent?.composerRef;
 	useEffect(() => {
 		if (!composer) return;
@@ -110,9 +125,14 @@ export function ReplyBox(props: {
 		if (!now.trim()) return;
 		writer.reply(thread.id, now);
 	};
-	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+		write.onKeyDown(e);
+		if (e.defaultPrevented) return;
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
+			// Sent by keys from Preview: the cleared box takes the focus back,
+			// as when sent from Write, for the next reply.
+			if (previewing) write.focusOnWrite();
 			send();
 		} else if (e.key === "Escape") {
 			e.preventDefault();
@@ -125,6 +145,7 @@ export function ReplyBox(props: {
 			<div className="relative min-w-0 flex-1">
 				<textarea
 					ref={box}
+					hidden={previewing}
 					aria-label={asking ? "Ask agent" : "Reply"}
 					placeholder={asking ? "Ask agent…" : "Reply…"}
 					rows={open ? 3 : 1}
@@ -134,10 +155,20 @@ export function ReplyBox(props: {
 					onFocus={() => setFocused(true)}
 					onBlur={() => setFocused(false)}
 					onKeyDown={onKeyDown}
-					className={`block max-h-80 min-h-10 w-full min-w-0 resize-none rounded-md border bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-transparent focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 ${
+					// Open, it's at least as tall as the toggle above Send (40 + 4 + 40),
+					// asking the agent too, so switching never changes its height.
+					className={`block max-h-80 w-full ${open ? "min-h-[84px]" : "min-h-10"} min-w-0 resize-none rounded-md border bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-transparent focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 ${
 						asking ? "border-agent-edge" : "border-line-strong"
 					}`}
 				/>
+				{previewing && (
+					<CommentPreview
+						text={text}
+						{...write.previewProps}
+						onKeyDown={onKeyDown}
+						className="max-h-80 min-h-[84px]"
+					/>
+				)}
 				{/* The placeholders, crossfading as the box changes hands. */}
 				{!text && (
 					<span
@@ -159,28 +190,43 @@ export function ReplyBox(props: {
 					</span>
 				)}
 			</div>
-			<Tooltip content={sendLabel} describe={false}>
-				{(trigger) => (
-					<button
-						{...trigger}
-						type="button"
-						aria-label={sendLabel}
-						disabled={blank || off || tooLong}
-						onClick={send}
-						// Keeps the box's focus (and so its size) on a mouse click.
-						onMouseDown={(e) => e.preventDefault()}
-						className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint disabled:hover:bg-transparent ${
-							asking ? "text-agent-ink" : "text-link"
-						}`}
-					>
-						{asking ? (
-							<SparkleFillIcon size={16} aria-hidden />
-						) : (
-							<PaperAirplaneIcon size={16} aria-hidden />
-						)}
-					</button>
+			{/* Open: the toggle level with the box's top, Send with its bottom. */}
+			<div
+				data-testid="reply-side"
+				className="flex shrink-0 flex-col items-end justify-end gap-1 self-stretch"
+			>
+				{/* Open, its slot is kept (unseen while empty or asking the agent):
+				    typing or switching to Ask agent never changes the box's width. */}
+				{open && (
+					<PreviewToggle
+						{...write.toggleProps}
+						unseen={asking || !write.toggle}
+						className="mb-auto"
+					/>
 				)}
-			</Tooltip>
+				<Tooltip content={sendLabel} describe={false}>
+					{(trigger) => (
+						<button
+							{...trigger}
+							type="button"
+							aria-label={sendLabel}
+							disabled={blank || off || tooLong}
+							onClick={send}
+							// Keeps the box's focus (and so its size) on a mouse click.
+							onMouseDown={(e) => e.preventDefault()}
+							className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint disabled:hover:bg-transparent ${
+								asking ? "text-agent-ink" : "text-link"
+							}`}
+						>
+							{asking ? (
+								<SparkleFillIcon size={16} aria-hidden />
+							) : (
+								<PaperAirplaneIcon size={16} aria-hidden />
+							)}
+						</button>
+					)}
+				</Tooltip>
+			</div>
 		</div>
 	);
 }

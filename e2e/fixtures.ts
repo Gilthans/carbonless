@@ -651,7 +651,31 @@ export async function expectEveryUnitMarkable(
  * (`installClock` + `pauseAt`).
  */
 export async function clickPlaced(control: Locator): Promise<void> {
+	await placedBox(control);
+	await control.click();
+}
+
+type Box = { x: number; y: number; width: number; height: number };
+
+/**
+ * `control`'s box once it rests where a press reaches it: scrolled into
+ * view, the same across three animation frames (see clickPlaced), and the
+ * point a press will land on (`pressAt`, the box's center by default) hits
+ * the control or a child of it. Two reads with no frame between them agree
+ * even while a scroll still moves the control, and a fling that outlasts
+ * the scroll into view can come to rest with the control off screen
+ * (CAR-238): the hit test catches both, and each try scrolls it into view
+ * again. Real animation frames: not for a page with a paused clock.
+ */
+export async function placedBox(
+	control: Locator,
+	pressAt: (box: Box) => { x: number; y: number } = (b) => ({
+		x: b.x + b.width / 2,
+		y: b.y + b.height / 2,
+	}),
+): Promise<Box> {
 	const page = control.page();
+	const placed: { box: Box | null } = { box: null };
 	await expect(async () => {
 		await control.scrollIntoViewIfNeeded();
 		const before = await control.boundingBox();
@@ -665,9 +689,19 @@ export async function clickPlaced(control: Locator): Promise<void> {
 					),
 				),
 		);
-		expect(await control.boundingBox()).toEqual(before);
+		placed.box = await control.boundingBox();
+		expect(placed.box).toEqual(before);
+		if (!placed.box) return;
+		const at = pressAt(placed.box);
+		expect(
+			await control.evaluate((el, { x, y }) => {
+				const hit = document.elementFromPoint(x, y);
+				return hit !== null && el.contains(hit);
+			}, at),
+		).toBe(true);
 	}).toPass({ timeout: 10_000 });
-	await control.click();
+	if (!placed.box) throw new Error("no box");
+	return placed.box;
 }
 
 /**

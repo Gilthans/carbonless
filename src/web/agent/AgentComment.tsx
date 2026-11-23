@@ -1,8 +1,9 @@
 /**
  * A ```comment block of an agent message (CAR-83): the agent's suggested
- * review comment as an editable box with Add review comment, which posts
- * exactly the box's text to GitHub, as the reviewer, where the
- * conversation sits (agentComments.ts). Posted, it folds to one row with
+ * review comment as an editable box with Reply (on a GitHub thread) or
+ * Add review comment (new, on its lines or file), which posts exactly the
+ * box's text to GitHub, as the reviewer, where the conversation sits
+ * (agentComments.ts, postLabel). Posted, it folds to one row with
  * a link to the comment and the text as GitHub comments render. Outside
  * a conversation that can post (no `at`: a turn still streaming, or one
  * with nowhere to post), it's a read-only quote with a copy button.
@@ -16,9 +17,9 @@ import {
 	UndoIcon,
 } from "@primer/octicons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Marked } from "marked";
 import {
 	type KeyboardEvent,
+	type RefObject,
 	useCallback,
 	useEffect,
 	useLayoutEffect,
@@ -33,10 +34,15 @@ import {
 	type AgentThread,
 	agentCommentClientId,
 } from "../../shared/agent";
-import { escapeTags } from "../../shared/markdownEscape";
 import { sessionQuery } from "../api";
+import {
+	CommentHtml,
+	CommentPreview,
+	PreviewToggle,
+	useWritePreview,
+} from "../CommentPreview";
 import { type Copied, CopyMark, copyInto, copyWord } from "../CopyMark";
-import { GithubHtml } from "../GithubHtml";
+import { threadFocus } from "../files/threadFocus";
 import { RelativeTime } from "../RelativeTime";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
@@ -49,20 +55,23 @@ import {
 	commentPlace,
 	dropKeptPosted,
 	keptOf,
+	opensThreadCard,
 	type PostingThread,
 	placeLabel,
 	postAgentComment,
+	postLabel,
+	postsAsReply,
 	postsFrom,
 	recordPosted,
 	refusalText,
 	setDraft,
+	siblingKey,
+	siblingOf,
 	subscribeKept,
 	takeResend,
 	WRITES_OFF,
 } from "./agentComments";
 import { agentPlacementsOnHeadQuery } from "./api";
-
-const md = new Marked({ gfm: true, breaks: false, async: false });
 
 /** Where an agent message's comment blocks post from. */
 export interface CommentAt {
@@ -71,6 +80,8 @@ export interface CommentAt {
 }
 
 const PLACING = "Finding these lines in the latest push";
+/** The box's group name: its Reply is told apart from the thread's own (CAR-237). */
+export const SUGGESTED = "Suggested comment";
 
 const FRAME =
 	"my-2 flex min-w-0 flex-col gap-2 rounded-lg border border-line-strong bg-surface p-2";
@@ -102,7 +113,13 @@ function ReadOnlyComment(props: { text: string }) {
 	const [copied, setCopied] = useState<Copied>(null);
 	const quote = useRef<HTMLPreElement>(null);
 	return (
-		<div data-testid="agent-comment" className={FRAME}>
+		// biome-ignore lint/a11y/useSemanticElements: a named group of a box, not a form's fieldset (its flex frame and min-width stay).
+		<div
+			data-testid="agent-comment"
+			role="group"
+			aria-label={SUGGESTED}
+			className={FRAME}
+		>
 			<div className="flex min-h-7 items-center gap-1.5 text-xs text-muted">
 				<CommentIcon size={14} aria-hidden />
 				<span className="flex-1" />
@@ -133,10 +150,26 @@ function ReadOnlyComment(props: { text: string }) {
 }
 
 /** Where the block posts now: its conversation's place on the snapshot's head. */
-function usePlace(thread: PostingThread): CommentPlace {
+function usePlace(thread: PostingThread, clientId: string): CommentPlace {
 	const head = useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead;
 	const a = thread.anchor;
-	const needed = a.subject !== "thread" && !!head && a.commit !== head;
+	// Another block of a conversation on lines posting, or posted with its
+	// record not in (CAR-236): this one waits, or replies to its thread.
+	const siblingAt = useSyncExternalStore(
+		subscribeKept,
+		() => (a.subject === "thread" ? "" : siblingKey(thread.id, clientId)),
+		() => "",
+	);
+	const sibling = useMemo(() => siblingOf(siblingAt), [siblingAt]);
+	// A joined conversation replies, needing no lines; one whose thread is
+	// gone (orphaned) is back on its lines: placed like any other.
+	const needed =
+		a.subject !== "thread" &&
+		!(thread.joined && !thread.orphaned) &&
+		!thread.githubUnknown &&
+		sibling === undefined &&
+		!!head &&
+		a.commit !== head;
 	const placed = useQuery({
 		...agentPlacementsOnHeadQuery(head ?? ""),
 		enabled: needed,
@@ -155,8 +188,15 @@ function usePlace(thread: PostingThread): CommentPlace {
 	const waiting = missing && (askedAt === null || dataUpdatedAt === askedAt);
 	const placing = isError ? "failed" : !data || waiting ? "pending" : "in";
 	return useMemo(
-		() => commentPlace({ thread, head, placement, placing }),
-		[thread, head, placement, placing],
+		() =>
+			commentPlace({
+				thread,
+				head,
+				placement,
+				placing,
+				...(sibling ? { sibling } : {}),
+			}),
+		[thread, head, placement, placing, sibling],
 	);
 }
 
@@ -196,10 +236,13 @@ function CommentBox(props: {
 		() => null,
 	);
 	const text = sentBody ?? draft ?? props.text;
-	const place = usePlace(thread);
+	const place = usePlace(thread, clientId);
 	const writes = useWritesOn();
 	const [phase, setPhase] = useState<Phase>({ kind: "ready" });
 	const sending = phase.kind === "sending";
+	// Markdown the reviewer didn't write: read first (CAR-202).
+	const box = useRef<HTMLTextAreaElement>(null);
+	const view = useWritePreview({ initial: "preview", text, box });
 
 	const send = useCallback(
 		(
@@ -216,9 +259,14 @@ function CommentBox(props: {
 				place,
 				...(resend ? { resend } : {}),
 			}).then(
-				(p) => {
+				({ githubThread, recorded, ...p }) => {
 					setPostedNow(p);
 					setPhase({ kind: "ready" });
+					// The conversation is that thread's now (CAR-236): its card
+					// opens with it, once it's in.
+					if (opensThreadCard(thread, recorded)) {
+						threadFocus.request({ id: githubThread, conversation: thread.id });
+					}
 				},
 				(error: unknown) => {
 					if (error instanceof AgentCommentError && error.inDoubt) {
@@ -265,12 +313,14 @@ function CommentBox(props: {
 			? place.why
 			: null;
 	const disabled = blank || sending || pending || off !== null;
-	const label = placeLabel(place, thread.anchor);
+	// Button, icon and target agree on where it posts (CAR-237).
+	const reply = postsAsReply(place, thread);
+	const label = placeLabel(place, thread.anchor, reply);
 	const press = () => {
 		if (disabled) return;
 		send(text);
 	};
-	const why = off ?? (pending ? PLACING : null);
+	const why = off ?? (place.kind === "pending" ? (place.why ?? PLACING) : null);
 	const button = (trigger: object) => (
 		<button
 			{...trigger}
@@ -281,24 +331,28 @@ function CommentBox(props: {
 			className="flex h-10 w-full items-center justify-center gap-2 self-end rounded-md bg-ok-fill px-4 text-sm font-semibold text-canvas hover:brightness-110 focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:bg-overlay aria-disabled:text-muted aria-disabled:hover:brightness-100 sm:w-auto"
 		>
 			{(sending || pending) && <SpinnerIcon size={14} />}
-			Add review comment
+			{postLabel(place, thread)}
 		</button>
 	);
-	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+		view.onKeyDown(e);
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
 			press();
 		}
 	};
 	return (
+		// biome-ignore lint/a11y/useSemanticElements: a named group of a box, not a form's fieldset (its flex frame and min-width stay).
 		<div
 			data-testid="agent-comment"
 			data-block={block}
+			role="group"
+			aria-label={SUGGESTED}
 			aria-busy={sending || pending || undefined}
 			className={FRAME}
 		>
 			<div className="flex min-h-7 min-w-0 items-center gap-1.5 text-xs text-muted">
-				{place.kind === "reply" ? (
+				{reply ? (
 					<ReplyIcon size={14} aria-hidden className="shrink-0" />
 				) : (
 					<CommentIcon size={14} aria-hidden className="shrink-0" />
@@ -336,6 +390,7 @@ function CommentBox(props: {
 					</Tooltip>
 				)}
 				<span className="flex-1" />
+				{view.toggle && <PreviewToggle {...view.toggleProps} />}
 				{draft !== null && sentBody === null && !sending && (
 					<Tooltip content="Back to the agent's text" describe={false}>
 						{(trigger) => (
@@ -353,11 +408,21 @@ function CommentBox(props: {
 				)}
 			</div>
 			<CommentText
+				box={box}
 				value={text}
+				hidden={view.mode === "preview"}
 				readOnly={sending || sentBody !== null}
 				onChange={(v) => setDraft(clientId, v, props.text)}
 				onKeyDown={onKeyDown}
 			/>
+			{view.mode === "preview" && (
+				<CommentPreview
+					text={text}
+					{...view.previewProps}
+					onKeyDown={onKeyDown}
+					className="max-h-64 min-h-16"
+				/>
+			)}
 			{phase.kind === "refused" && (
 				<p
 					role="alert"
@@ -387,24 +452,28 @@ function CommentBox(props: {
 
 /** The box: monospace like the reply box, growing to about 12 lines, then scrolling. */
 function CommentText(props: {
+	box: RefObject<HTMLTextAreaElement | null>;
 	value: string;
+	/** Previewing: kept mounted, so Write brings the cursor back. */
+	hidden: boolean;
 	readOnly: boolean;
 	onChange: (value: string) => void;
-	onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
+	onKeyDown: (e: KeyboardEvent<HTMLElement>) => void;
 }) {
-	const box = useRef<HTMLTextAreaElement>(null);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes.
+	const { box } = props;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes, and once it shows.
 	useLayoutEffect(() => {
 		const el = box.current;
-		if (!el) return;
+		if (!el || props.hidden) return;
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
-	}, [props.value]);
+	}, [props.value, props.hidden]);
 	return (
 		<textarea
 			ref={box}
 			aria-label="Review comment"
 			rows={3}
+			hidden={props.hidden}
 			value={props.value}
 			readOnly={props.readOnly}
 			onChange={(e) => props.onChange(e.target.value)}
@@ -417,13 +486,16 @@ function CommentText(props: {
 /** Posted: one row (when, a link to it), then the text as GitHub comments render. */
 function PostedRow(props: { posted: AgentPostedComment }) {
 	const { posted } = props;
-	const html = useMemo(
-		() => md.parse(escapeTags(posted.text)) as string,
-		[posted.text],
-	);
 	const href = safeHref(posted.url);
 	return (
-		<div data-testid="agent-comment" data-posted className={FRAME}>
+		// biome-ignore lint/a11y/useSemanticElements: a named group of a box, not a form's fieldset (its flex frame and min-width stay).
+		<div
+			data-testid="agent-comment"
+			data-posted
+			role="group"
+			aria-label={SUGGESTED}
+			className={FRAME}
+		>
 			<div className="flex min-h-7 min-w-0 items-center gap-1.5 text-sm">
 				<CheckIcon size={16} aria-hidden className="shrink-0 text-ok" />
 				<span className="font-semibold text-ink-soft">Posted</span>
@@ -446,9 +518,9 @@ function PostedRow(props: { posted: AgentPostedComment }) {
 					</Tooltip>
 				)}
 			</div>
-			<GithubHtml
-				html={html}
-				className="border-l-2 border-ok-fill pl-2.5 text-sm"
+			<CommentHtml
+				text={posted.text}
+				className="border-l-2 border-ok-fill pl-2.5"
 			/>
 		</div>
 	);

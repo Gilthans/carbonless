@@ -16,7 +16,7 @@ import type { FileView } from "../../../../shared/types";
 import { REVIEW_KEY } from "../../../api";
 import { newQueryClient } from "../../../queryClient";
 import { imageMode } from "../../../viewSettings";
-import { STALE_MESSAGE } from "../../useSetStates";
+import { reloadStale, STALE_MESSAGE } from "../../useSetStates";
 import {
 	imageModesOf,
 	pressedView,
@@ -24,6 +24,12 @@ import {
 	viewOptions,
 } from "../ViewSwitch";
 import { ImageView } from "./ImageView";
+
+// The real reloadStale, counted: how many images asked for a re-read.
+vi.mock("../../useSetStates", async (original) => {
+	const m = await original<typeof import("../../useSetStates")>();
+	return { ...m, reloadStale: vi.fn(m.reloadStale) };
+});
 
 /** FileDiff's view switch, as the image toolbar gets it. */
 function Switch(props: { file: FileView; modes: boolean }) {
@@ -299,7 +305,11 @@ describe("ImageView", () => {
 		await act(async () => held.release({ error: "stale" }, 409));
 		await waitFor(() => expect(screen.getByText(STALE_MESSAGE)).toBeVisible());
 		expect(screen.queryByTestId("image-view")).toBeNull();
-		expect(invalidate).toHaveBeenCalledWith({ queryKey: REVIEW_KEY });
+		// The re-read starts in an effect, which React may run after the
+		// message is on screen (a passive effect on a scheduler task): wait.
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith({ queryKey: REVIEW_KEY }),
+		);
 		// The way back stays: the switch, as it was.
 		expect(names()).toEqual(["Slider", "Fade", "Binary"]);
 	});
@@ -326,6 +336,7 @@ describe("ImageView", () => {
 	});
 
 	it("several stale images at once: one review re-read", async () => {
+		vi.mocked(reloadStale).mockClear();
 		const read = heldJson();
 		const reviewFetch = vi.fn(() => read.response.then((r) => r.json()));
 		fetchMock.mockResolvedValue(new Response(null, { status: 409 }));
@@ -356,7 +367,16 @@ describe("ImageView", () => {
 		await waitFor(() =>
 			expect(screen.getAllByText(STALE_MESSAGE)).toHaveLength(3),
 		);
+		// The re-read starts in ImageView's effects, which React may run after
+		// the messages are on screen (passive effects on a scheduler task):
+		// wait until all three images asked, then one read is out (held).
+		await waitFor(() => expect(reloadStale).toHaveBeenCalledTimes(3));
 		expect(reviewFetch).toHaveBeenCalledTimes(1);
+		// Answered and settled: still the one read.
 		await act(async () => read.release({ revision: "r1" }));
+		await waitFor(() =>
+			expect(client.getQueryState([...REVIEW_KEY])?.fetchStatus).toBe("idle"),
+		);
+		expect(reviewFetch).toHaveBeenCalledTimes(1);
 	});
 });

@@ -14,6 +14,12 @@ import {
 	MAX_AGENT_TEXT,
 } from "../../shared/agent.js";
 import { type LineRanges, parseRanges, size } from "../../shared/lineRanges.js";
+import {
+	MAX_GITHUB_THREAD_ID,
+	MAX_MOVE_PATH,
+	type MoveSnapshot,
+	type ThreadRef,
+} from "../../shared/rereview/moves.js";
 import type {
 	ClusterState,
 	DiffSide,
@@ -226,6 +232,26 @@ export interface ThreadPlacedEvent extends EventBase {
 	engine: number;
 }
 
+/**
+ * The reviewer moved a thread to lines of a snapshot (CAR-139), in their
+ * private agent threads ref: `on` is the snapshot (filled in by the
+ * server), `anchor` lines of it. Only a human moves a thread.
+ */
+export interface ThreadMovedEvent extends EventBase {
+	type: "thread-moved";
+	thread: ThreadRef;
+	on: MoveSnapshot;
+	anchor: ThreadAnchorRef;
+	engine: number;
+}
+
+/** The reviewer took back move `move` (a `thread-moved`, or a legacy `thread-placed`) of `thread`. */
+export interface ThreadMoveUndoneEvent extends EventBase {
+	type: "thread-move-undone";
+	thread: ThreadRef;
+	move: string;
+}
+
 /** Parsed and validated only; not written in this milestone. */
 export interface ReviewClosedEvent extends EventBase {
 	type: "review-closed";
@@ -352,6 +378,16 @@ export interface AgentCommentPostedEvent extends EventBase {
 	text: string;
 }
 
+/**
+ * The reviewer started a GitHub thread from a span conversation: it becomes
+ * that GitHub thread's conversation (`github`, its node id). Human only.
+ */
+export interface AgentThreadLinkedEvent extends EventBase {
+	type: "agent-thread-linked";
+	thread: string;
+	github: string;
+}
+
 /** Agent threads are a conversation: a human's or the agent's, never automatic. */
 export type AgentEvent = (
 	| AgentThreadOpenedEvent
@@ -359,6 +395,7 @@ export type AgentEvent = (
 	| AgentThreadResolvedEvent
 	| AgentThreadSeenEvent
 	| AgentCommentPostedEvent
+	| AgentThreadLinkedEvent
 ) & { by: "human" | "ai" };
 
 export type CrbEvent =
@@ -371,6 +408,8 @@ export type CrbEvent =
 	| LinesCarriedEvent
 	| SplitCarriedEvent
 	| ThreadPlacedEvent
+	| ThreadMovedEvent
+	| ThreadMoveUndoneEvent
 	| ReviewClosedEvent
 	| InboxEvent
 	| AgentEvent;
@@ -496,6 +535,12 @@ export function validateForWrite(e: CrbEvent): void {
 	if (e.type === "thread-placed" && e.by === "auto") {
 		throw new Error("thread-placed events must be written by a human or ai");
 	}
+	if (
+		(e.type === "thread-moved" || e.type === "thread-move-undone") &&
+		e.by !== "human"
+	) {
+		throw new Error(`${e.type} events must be written by a human`);
+	}
 	if (e.type === "agent-thread-resolved" && e.by !== "human") {
 		throw new Error("agent-thread-resolved events must be written by a human");
 	}
@@ -504,6 +549,9 @@ export function validateForWrite(e: CrbEvent): void {
 	}
 	if (e.type === "agent-comment-posted" && e.by !== "human") {
 		throw new Error("agent-comment-posted events must be written by a human");
+	}
+	if (e.type === "agent-thread-linked" && e.by !== "human") {
+		throw new Error("agent-thread-linked events must be written by a human");
 	}
 	if (parseEvent(JSON.parse(JSON.stringify(e))) === null) {
 		throw new Error(`Refusing to write an invalid ${e.type} event`);
@@ -780,6 +828,10 @@ function parseEvent(raw: unknown): CrbEvent | null {
 				engine,
 			};
 		}
+		case "thread-moved":
+		case "thread-move-undone":
+			// A move is the reviewer's own view: never an AI's, never automatic.
+			return base.by === "human" ? parseMoveEvent(raw, base) : null;
 		case "cluster-state": {
 			// Fail safe: only a human can change a cluster's state.
 			if (base.by !== "human") return null;
@@ -875,6 +927,7 @@ function parseEvent(raw: unknown): CrbEvent | null {
 		case "agent-thread-resolved":
 		case "agent-thread-seen":
 		case "agent-comment-posted":
+		case "agent-thread-linked":
 			// A conversation's words are a human's or the agent's, never auto's.
 			return base.by === "auto"
 				? null
@@ -882,6 +935,65 @@ function parseEvent(raw: unknown): CrbEvent | null {
 		default:
 			return null;
 	}
+}
+
+/** A move's thread: a known source and its id; null for anything else (an unknown source is skipped). */
+function parseThreadRef(raw: unknown): ThreadRef | null {
+	if (!isObj(raw)) return null;
+	const { source, id } = raw;
+	if (typeof id !== "string") return null;
+	if (source === "agent") return LOWER_ULID.test(id) ? { source, id } : null;
+	if (source === "github") {
+		return id !== "" && id.length <= MAX_GITHUB_THREAD_ID
+			? { source, id }
+			: null;
+	}
+	return null;
+}
+
+/** A move's lines: as `thread-placed`'s, plus a capped path and start not after end on one side. */
+function parseMoveAnchor(raw: unknown): ThreadAnchorRef | null {
+	if (!isObj(raw)) return null;
+	const { path, startSide, startLine, side, line } = raw;
+	if (
+		!isStr(path) ||
+		Buffer.byteLength(path) > MAX_MOVE_PATH ||
+		!isSide(startSide) ||
+		!isSide(side) ||
+		!isPosInt(startLine) ||
+		!isPosInt(line) ||
+		(startSide === side && startLine > line)
+	) {
+		return null;
+	}
+	return { path, startSide, startLine, side, line };
+}
+
+function parseMoveEvent(
+	raw: Obj,
+	base: Omit<ThreadMovedEvent, "type" | "thread" | "on" | "anchor" | "engine">,
+): ThreadMovedEvent | ThreadMoveUndoneEvent | null {
+	const thread = parseThreadRef(raw.thread);
+	if (!thread) return null;
+	if (raw.type === "thread-move-undone") {
+		const { move } = raw;
+		if (typeof move !== "string" || !LOWER_ULID.test(move)) return null;
+		return { ...base, type: "thread-move-undone", thread, move };
+	}
+	const { on, engine } = raw;
+	const anchor = parseMoveAnchor(raw.anchor);
+	if (!anchor || !isPosInt(engine) || !isObj(on)) return null;
+	const { base: b, head, patchset } = on;
+	if (!isCommit(b) || !isCommit(head)) return null;
+	if (patchset !== undefined && !isPosInt(patchset)) return null;
+	return {
+		...base,
+		type: "thread-moved",
+		thread,
+		on: { base: b, head, ...(patchset !== undefined ? { patchset } : {}) },
+		anchor,
+		engine,
+	};
 }
 
 function parseInboxEvent(
@@ -990,6 +1102,10 @@ function parseAnchor(raw: unknown): AgentAnchor | null {
 /** A joined session's machine as read back from a ref: one line, capped (join.ts writes it so). */
 const MAX_MACHINE = 80;
 
+/** A GitHub review thread's node id as stored: 1 to 200 characters. */
+export const isGithubThreadId = (value: unknown): value is string =>
+	typeof value === "string" && value !== "" && value.length <= 200;
+
 function parseThreadAnchor(
 	raw: Obj,
 	path: string,
@@ -997,9 +1113,7 @@ function parseThreadAnchor(
 ): AgentAnchor | null {
 	const { thread, side, line, startSide, startLine } = raw;
 	// GitHub node ids are not ULIDs.
-	if (typeof thread !== "string" || thread === "" || thread.length > 200) {
-		return null;
-	}
+	if (!isGithubThreadId(thread)) return null;
 	if (
 		side !== undefined &&
 		(typeof side !== "string" || !SIDES.includes(side))
@@ -1269,6 +1383,13 @@ function parseAgentEvent(
 				github: { thread: gt, comment, url },
 				text,
 			};
+		}
+		case "agent-thread-linked": {
+			// Fail safe: only the reviewer's own Comment press links a conversation.
+			if (base.by !== "human") return null;
+			const { github } = raw;
+			if (!isGithubThreadId(github)) return null;
+			return { ...base, type: "agent-thread-linked", thread, github };
 		}
 		default:
 			return null;

@@ -241,16 +241,16 @@ Initial event types:
 | progress | `lines-state` | snapshot id (`patchset`), cluster identity hash, file path, `state` (`reviewed` or `crossed-off`), `lines`: line ranges of the cluster (see "Marks on part of a cluster") |
 | progress | `split-carried` | snapshot id (`patchset`), `states`: a list of `{ key, fromKey, state, from?, lines? }`, one per piece of a hunk cut at its whitespace-only runs (or two, one per state), `fromKey` the whole hunk's key before, `state` `reviewed` or `crossed-off`, `from` the hunk's line ranges it takes (for a hunk marked by lines), `lines` the piece's (only for part of it, as many as `from`); see "Split carries" |
 | progress | `since-lines-state` | snapshot id (`patchset`), `since` (an earlier patch set's number), file `path`, `reviewed` and `crossed`: each `{ old, new }` line ranges on the since view's sides; the whole set for that (since, path) |
-| progress | `thread-placed` | `thread` (the thread's id), `patchset` (number), `anchor` (`path`, `startSide`, `startLine`, `side`, `line`), `engine` (the tracer's version, a positive integer) |
+| progress | `thread-placed` | **read only since CAR-139** (never written again; read as a move, see "Thread moves"): `thread` (the thread's id), `patchset` (number), `anchor` (`path`, `startSide`, `startLine`, `side`, `line`), `engine` (the tracer's version, a positive integer) |
 
 `carried` holds many clusters in one event, so a move costs one event per
 rule, not one per cluster (see "Measurements"). It is written by the engine
 only, once, in the same commit as the `patchset-started` it carries into. A
-`thread-placed` is the reviewer's own placement of a thread in a patch set
-(an AI's later), overriding the engine's; computed placements are never
-stored. It lives in the reviewer's progress ref; once sync exists it is
-shared through `meta` only when it was placed or moved by hand (owner,
-2026-11-07).
+`thread-placed` was the reviewer's own placement of a thread in a patch set,
+overriding the engine's; computed placements are never stored. Since
+CAR-139 nothing writes it: a placement by hand is a `thread-moved` in the
+reviewer's agent threads ref (see "Thread moves"), and the old events in
+progress refs are read as moves, never migrated.
 
 Later features (AI groupings, the reviewer's corrections to them) add their
 own types.
@@ -270,7 +270,10 @@ a reader drops what breaks them:
   are cluster keys, its state `reviewed` or `crossed-off`, and `lines` and
   `fromLines` parse as non-empty ranges of as many lines. One bad entry
   drops the event.
-- `thread-placed` must have `by: "human"` or `"ai"`, never `"auto"`.
+- `thread-placed` must have `by: "human"` or `"ai"`, never `"auto"`; only
+  a human's is read as a move.
+- `thread-moved` and `thread-move-undone` must have `by: "human"` (see
+  "Thread moves").
 - `lines-state` and `since-lines-state` must have `by: "human"`; their
   ranges must parse (pairs of integers, `0 <= start < end`).
 - `by: "ai"` events can never change a cluster's state; `by: "auto"` ones
@@ -280,9 +283,12 @@ a reader drops what breaks them:
   "human"` (see "Agent threads ref").
 - An `agent-thread-opened` with a `review` anchor (the review conversation)
   must have `by: "human"`.
+- `agent-thread-linked` must have `by: "human"` (see "Agent threads ref").
 - Agent events (`agent-thread-opened`, `agent-message`,
-  `agent-thread-resolved`, `agent-thread-seen`, `agent-comment-posted`) are
-  a human's or the agent's (`by: "ai"`), never `"auto"`.
+  `agent-thread-resolved`, `agent-thread-seen`, `agent-comment-posted`,
+  `agent-thread-linked`) are never `"auto"`; opened and message events are
+  a human's or the agent's (`by: "ai"`), resolved, seen, comment-posted and
+  linked a human's only.
 
 ## Writing
 
@@ -311,7 +317,17 @@ a reader drops what breaks them:
     go out on the next start.
 - **Compare-and-swap.** Update refs with `git update-ref <ref> <new> <old>`. If
   the ref moved, re-parent the commit onto the new tip and retry. Events are
-  append-only, so there's nothing to merge.
+  append-only, so there's nothing to merge. A write whose events depend on
+  what the ref holds builds them again from the new tip's events on every
+  try (`RefStore.appendBuilt`): a states write checks again that its patch
+  set is still the latest and stamps after the new tip's events, so a
+  patch set another process started in between makes it fail as read-only,
+  never land on the old one (CAR-229). Agent-thread writes (messages,
+  moves, undos, links…) and inbox writes do the same: a retry stamps after
+  the new tip's events and checks again (a resend already stored writes
+  nothing, an undo of a move no longer live or a move past the cap is
+  refused), so a retried event never folds before one it lost the race to
+  (CAR-245).
 - **Several refs at once** (progress and the new `patchsets/<n>` and
   `patchsets/<n>-base` refs when a patch set starts) use one
   `git update-ref --stdin` transaction. A start's `since` must be the
@@ -570,6 +586,7 @@ tree, slug identities, compare-and-swap). Written by
 | `agent-thread-resolved` | human | `thread`, `resolved` (`false` reopens) |
 | `agent-thread-seen` | human | `thread`, `upTo` (the id of the last message the reviewer has seen; a lowercase ULID) |
 | `agent-comment-posted` | human | `thread`, `message` (the agent message's id, a lowercase ULID), `block` (the ```` ```comment ```` block's index in that message, from 0), `clientId` (`ag.<thread>.<message>.<block>`, the comment's marker id), `github` `{thread, comment, url}` (the GitHub thread and comment node ids, and the comment's https link), `text` (what the reviewer posted, at most 32 KiB) |
+| `agent-thread-linked` | human | `thread`, `github` (a GitHub thread node id, 1 to 200 characters): the reviewer posted a GitHub thread from this span conversation (its card's Comment; since 2026-11-16) |
 
 `view` is the comparison on screen when a human message was sent:
 `target` (`{patchset}` or `{head}`), `from` (`{branch: true}` or
@@ -601,7 +618,8 @@ folded from the origins on read (`startedBy`), never stored.
   once per block (the store writes nothing for a block already recorded).
   The review conversation is the reviewer's to open: an
   `agent-thread-opened` by ai with a `review` anchor is refused on write
-  and skipped on read.
+  and skipped on read. Only a human links one to a GitHub thread
+  (`agent-thread-linked`, the same rule).
 - **The review conversation** (`anchor: {subject: "review"}`, spec
   `docs/superpowers/specs/2026-11-13-review-conversation-design.md`): one
   agent conversation about the whole review, with no path or commit. At
@@ -640,7 +658,46 @@ folded from the origins on read (`startedBy`), never stored.
   thread anchor; whether it counts is the GitHub join's call.
   `agent-comment-posted` folds onto its message as `posted: [{block, url,
   at, text}]` (by block; the first record of a block wins), only onto an
-  ai message the thread holds; any other is dropped.
+  ai message the thread holds; any other is dropped. A record on a
+  `line` or `file` conversation also joins it to the GitHub thread its
+  block started (CAR-236): the fold reads it as a `thread` anchor on the
+  first such record's `github.thread` (with the lines it was asked on),
+  so it is that thread's conversation (later openings on that thread fold
+  into it, and the GitHub join resolves and places it by that thread). The
+  fold keeps where it was asked and every thread its blocks started, in
+  record order: the GitHub join puts it on the first one still live, and
+  back where it was asked when none is (an orphan) or while GitHub can't
+  be read (`githubUnknown`). A thread another conversation was already
+  opened on stays that one's. Derived on read only: no event records the
+  join, so conversations posted before it join too. Its threads are
+  ordered by when GitHub took each comment (the link's
+  `#discussion_r<id>`, GitHub's increasing id), not by when the record was
+  written: a record that failed is written on a later load. The page gets
+  the thread it's on and where it was asked (`joined`), and placements
+  trace it where it was asked, so a view that doesn't list its thread
+  (an earlier patch set, or GitHub's threads failed) shows it there.
+
+  **Links:** an `agent-thread-linked` turns a span conversation (`line` or
+  `file`) into that GitHub thread's: its anchor becomes a `thread` anchor
+  on the same span (path, commit, sides and lines; no columns), folded on
+  read, never stored as state. Its id and every message stay; later
+  openings on that GitHub thread join it as above. The fold drops a link
+  of a thread never opened, a second link of a conversation (the first
+  wins), and a link onto a GitHub thread that already has a conversation
+  (that conversation came first; the linked one stays on its span, still
+  listed). Only a human links: by ai is refused on write and skipped on
+  read. The server writes it only after GitHub has the new thread (POST
+  `threads` with `agentThread`, and on its resend, which writes nothing
+  new), and only when the posted span is the conversation's (path,
+  commit, sides and lines); a refused post links nothing, and a link the
+  server won't write leaves the conversation on its span, the answer's
+  `agentLinkProblem` saying why on its card. A draft moved to a new head
+  drops its `agentThread`. If the GitHub thread goes, the
+  conversation is an orphan on its recorded span, as any thread
+  conversation is. One event per link, measured 2026-11-16 with a
+  28-character node id: a 241-byte commit message, a 416-byte commit
+  object (uncompressed; the tree is the shared empty one). Nothing else
+  is stored: the new anchor is folded from the old one.
 - **Resends:** a human's question carries the page's `clientId` in
   `details` (informational: the fold ignores it). The store remembers the
   ones in the ref and the ones it wrote, so Ask pressed twice, or resent
@@ -697,13 +754,86 @@ folded from the origins on read (`startedBy`), never stored.
   It adds to a review what one long agent thread does; the format (one
   more anchor subject, no new event kind, no new ref) changes nothing else.
 
+## Thread moves
+
+The reviewer puts a thread (a GitHub review thread or one of their agent
+threads) on other lines of the snapshot they view (CAR-139; spec
+`docs/superpowers/specs/2026-11-18-thread-placement-design.md`). A move is
+the reviewer's view: GitHub keeps its own line, and nothing about a move is
+ever sent. Both kinds share one record, in the reviewer's **agent threads
+ref** (above), which is never pushed.
+
+| Type | By | Payload |
+|---|---|---|
+| `thread-moved` | human | `thread` `{source, id}`: `source` `agent` (`id` the agent thread's lowercase ULID) or `github` (`id` GitHub's thread node id, 1 to 200 characters); `on` `{base, head, patchset?}`: the snapshot it was moved in, filled in by the server from the target the page names (never from the request), `patchset` when that snapshot is one of the reviewer's; `anchor` `{path, startSide, startLine, side, line}` in that snapshot; `engine` (`TRACER_VERSION`) |
+| `thread-move-undone` | human | `thread` (as above), `move` (the id of the move it takes back: a `thread-moved`, or a legacy `thread-placed`) |
+
+- **Write rules**, enforced on write and on read (`validateForWrite`,
+  `parseEvent`): both `by: "human"` only (an agent never moves a thread);
+  `source` one of the two (a reader skips an unknown one, so a future
+  source never breaks an old reader); the anchor's sides `LEFT`/`RIGHT`,
+  positive lines, start not after end on one side, its path at most 4 KiB;
+  `on.base` and `on.head` full OIDs, `on.patchset` a positive integer;
+  `move` a lowercase ULID. An older reader skips both types (GitDB 8) and
+  shows the tracer's placement, which hides nothing: no version bump.
+- **Departure from GitDB, stated:** a review thread's hand placement lived
+  in the progress ref, to be shared through `meta` once sync exists (owner,
+  2026-11-07). Its moves now go to the private agent threads ref instead
+  (owner's decision 1, 2026-11-18): one writer either way (GitDB 3); no
+  other reader needs the reviewer's view of where a thread sits, and an
+  agent thread's id must not reach a pushed ref (GitDB 20). Sharing moves
+  is decided when sync is designed. The ref keeps its name.
+- **Legacy `thread-placed`:** read as moves (`legacyMoves`,
+  `src/server/rereview/threads.ts`): each human one becomes a move of a
+  GitHub thread on its patch set's snapshot (`base`, `head` from that patch
+  set's `patchset-started`, pinned by `patchsets/<n>` and `-base`); one
+  naming an unknown patch set is dropped, an ai one ignored. Nothing is
+  written on read. An Undo of one is a `thread-move-undone` naming its id.
+  Such a placement now also anchors later patch sets (decision 2).
+- **Fold** (`foldMoves`, `src/shared/rereview/moves.ts`): moves and legacy
+  moves in `(ts, id)` order, deduplicated by id, keyed `source:id`; minus
+  those an undo of the same thread names (an undo naming another thread's
+  move or an unknown id does nothing); at most 200 live moves a thread
+  (later ones dropped; the server refuses a 201st with a 409, so none it
+  acknowledged is ever dropped). An agent thread's move is dropped unless that thread was opened
+  on lines (`movesOf`, `src/server/agent/store.ts`): never a file thread, a
+  thread conversation or the review conversation. A GitHub thread's is kept
+  and used only for a thread GitHub lists. Two tabs: both writes are
+  compare-and-swap appends; the later `(ts, id)` wins.
+- **Which lines a snapshot uses** (`effectiveMove`): a move made on the
+  target itself (the last that fits it) is placed as chosen; else the last
+  move visible there (on an earlier patch set, made before the next one
+  started) is traced from its own snapshot by the tracer; else the
+  thread's own anchor, traced as before. A move on the target that doesn't
+  fit is skipped. A move whose commits are gone (a head pruned by hand)
+  leaves the thread unplaced as `rewritten`, never the older trace.
+- **Size**, measured 2026-11-18 (`pnpm tsx scripts/measure-agent-ref.ts
+  --moves`, on top of the 50-thread ref above; git 2.53, a shared machine
+  under load; every move with its own random base and head, which compress
+  worse than real ones sharing a patch set's). A size test keeps one move
+  commit under 1 KiB raw and 512 B deflated (`store.test.ts`):
+
+  | Measure | Value |
+  |---|---|
+  | One `thread-moved` commit, GitHub thread | 638 B raw, 432 B deflated |
+  | One `thread-moved` commit, agent thread | 637 B raw, 423 B deflated |
+  | One `thread-move-undone` commit | 415 B raw, 303 B deflated |
+  | Realistic: 2 agent + 5 GitHub threads moved once, 1 undone (8 commits) | +2 KiB packed |
+  | Heavy, mixed: 50 agent + 100 GitHub threads moved on 3 patch sets, every 6th undone (525 commits) | +133 KiB packed (300 KiB) |
+  | Cold `moves()` of the mixed heavy ref, packed (median of 9) | 30 ms wall; CPU 16 ms + 20 ms git |
+
+  A realistic review adds a few KiB to a ref that is never pushed or
+  fetched; everyday git never sees it (GitDB 14). Reading legacy
+  `thread-placed` costs nothing new: placements already read the progress
+  ref.
+
 ## Split carries
 
 Added 2026-11-15 (CAR-156, owner: "treating whitespace-only change as a
 separate cluster in all views sounds like a good idea regardless"; yes to
 carrying marks onto the split pieces). A snapshot's clusters used to be
 git's `-U0` hunks, one each. Now each hunk is cut at its whitespace-only
-runs (`splitHunk`, `src/shared/whitespace.ts`): a hunk that splits becomes
+runs (`cutClusters`; see "The cut is part of cluster identity" below): a hunk that splits becomes
 several clusters, each keyed by the usual rule (its path, lines and the
 three new-side lines around it), so none of them has the key the whole hunk
 had. A hunk that doesn't split keeps its key. Each piece knows its whole
@@ -743,18 +873,38 @@ clusters the old way, so it still reads the hunk's own mark, never more.
 Home never writes: it folds the carries in memory
 (`withSplitCarries`), as the review's next open writes them.
 
-**The cut is part of cluster identity.** Where `splitHunk` cuts decides
-which clusters exist and so their keys. A change to it, or to the matcher
-it shares with the view (`matchSides`: weights, tie-breaks, the fast path;
-`whitespaceKey`; the `SPLIT_CELLS` cap), moves cuts, and marks on pieces
-cut the old way stop matching: they fail safe (unreviewed), but the
-reviewer loses them, and the split carry only maps whole-hunk keys. Treat
-such a change as a key format change (carry it, or say so in the release);
-`snapshot.test.ts` pins the keys of a few fixed hunks. A hunk over
-`SPLIT_CELLS` (removed × added lines, 250,000) isn't cut unless both sides
-are the same keys line for line: the matching costs about 4 ms of CPU at
-the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on the server as the
-snapshot is built.
+**The cut is part of cluster identity.** Where the cut falls decides
+which clusters exist and so their keys. Since CAR-218 (2026-11-22) it is
+decided per display hunk, by the matching the view's `~` rows read
+(`cutClusters` in `src/server/diff/snapshot.ts` builds the display hunks
+from the uncut git hunks; `hunkCuts` and `cutByLines` in
+`src/shared/whitespace.ts`), so a block git cuts into several hunks around
+an accidental unchanged line is whitespace-only all through, and a piece
+may have lines on one side only. A change to it, or to the matcher it
+shares with the view (`matchDisplayHunk`, `matchSides`: weights,
+tie-breaks, the fast path; `whitespaceKey`; the `SPLIT_CELLS` cap), moves
+cuts, and marks on pieces cut the old way stop matching: they fail safe
+(unreviewed), but the reviewer loses them, and the split carry only maps
+whole-hunk keys. Treat such a change as a key format change (carry it, or
+say so in the release); `snapshot.test.ts` pins the keys of a few fixed
+hunks. CAR-218's own move is not carried (owner, 2026-11-22: "I'm fine
+with letting the affected clusters reset. It's an error in the correct
+direction"). Keys move where a hunk's whitespace-only lines have twins
+across hunks or in unchanged lines, and also where several equally good
+matchings exist and the display hunk's matching picks other twins inside
+a hunk than splitHunk's matching of the hunk alone did (the context lines
+around it change which optimum the traceback takes), so a hunk with no
+twin outside it may be cut differently too. On this repo's last 506
+merges the cut moved in 36 of 4,656 changed files. Either way it fails
+safe: marks on a whole hunk that now splits still carry onto its pieces,
+as above, while marks on pieces of the old cut read unreviewed, and the
+release says so. No new event. A display hunk over `SPLIT_CELLS`
+(old × new lines, context included, 250,000) is matched one git hunk at a
+time, as before CAR-218, and a git hunk over it on its own isn't cut
+unless both sides are the same keys line for line: the matching costs
+about 4 ms of CPU at the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on
+the server as the snapshot is built. Should a file's hunks not fit its
+text (the display hunks refuse them), each hunk is matched on its own.
 
 **Markdown blocks** (CAR-167, 2026-11-22). A Markdown file's pieces
 (`.md`, `.markdown`, both sides under `MARKDOWN_CUT_MAX_BYTES`, neither a
@@ -780,7 +930,17 @@ unreviewed; else they take what the git hunk's key itself holds (a hunk
 marked before CAR-156), as any piece does. That reaches only Markdown
 files marked between CAR-156 (2026-11-15) and this cut. A file the cut
 skips keeps the whitespace cut alone (and isn't offered the Rendered
-view); `FileSummary.markdownBlocks` says which files were cut.
+view); `FileSummary.markdownBlocks` says which files were cut. The block
+cut runs after CAR-218's whitespace cut, on its pieces: a block piece of a
+whitespace-only piece stays whitespace-only (each of its lines has its
+twin by the display hunk's matching, maybe on one side only), so the
+clusters still agree with the view's `~` rows. The since view cuts the
+other way round, on its own diff: each run is grouped at the blocks
+(`cutRunsAtBlocks`), then the whitespace cut (`sincePieces`) cuts the
+groups at whitespace-only runs; the grouping keeps each side's lines in
+order, so the matching is the same. Its pieces are marked by line, so
+neither moves a mark; the cached since answer is recomputed
+(`ENGINE_VERSION` 7).
 
 **Mixed versions.** Once progress refs sync, an older crb that unticks the
 whole hunk (its key still a cluster there) leaves pieces already
@@ -816,7 +976,8 @@ read forever, would spread the old cut through every reader of states.
    unreviewed, lines, crossed, linesCarried: { from, lines } }`, only when
    its source cluster holds a human mark (not carried, whole or by lines)
    covering `fromLines` in that state (the carried guard, by line), and a
-   `thread-placed` replaces the thread's placement in its patch set. For
+   human `thread-placed` is kept for reading as a move ("Thread moves").
+   For
    each `(patch set, cluster)`, the last event wins, so a human mark after a
    carry overrides it.
    **The carried guard** (principle 2): an entry counts only when `from`
@@ -926,8 +1087,9 @@ Tracked in `docs/todo.md`.
 
 ## Deferred
 
-- Sharing `thread-placed` through `meta` once sync exists, for placements
-  made or moved by hand only (owner, 2026-11-07).
+- Sharing hand placements (moves, and old `thread-placed`) with other
+  reviewers: decided when sync is designed (owner, 2026-11-18: "Let's not
+  think about syncing or sharing, as we're not there quite yet").
 - Earlier patch sets are read-only in this round (owner, 2026-11-07).
 
 ## Measurements

@@ -9,6 +9,7 @@ import {
 	agentWaiting,
 	shownAgentPlaceables,
 	tracedAgentPlaceables,
+	unjoinUnlisted,
 } from "./placeable";
 
 const H1 = "1".repeat(40);
@@ -297,5 +298,63 @@ describe("agentPlacementIds", () => {
 			"C",
 		]);
 		expect(agentPlacementIds(undefined)).toEqual([]);
+	});
+});
+
+describe("a conversation joined to its comment's GitHub thread (CAR-236)", () => {
+	const lines = asked("J", 3);
+	const joined: AgentThread = {
+		...lines,
+		anchor: {
+			subject: "thread",
+			thread: "PRRT_9",
+			path: "a.ts",
+			commit: H1,
+			side: "RIGHT",
+			line: 3,
+			startSide: "RIGHT",
+			startLine: 3,
+		},
+		joined: { thread: "PRRT_9", asked: lines.anchor },
+	};
+
+	it("its thread listed in the view: in that thread's card, never a card of its own", () => {
+		expect(unjoinUnlisted([joined], new Set(["PRRT_9"]))).toEqual([joined]);
+		expect(
+			shownAgentPlaceables([joined], H1, {
+				placements: null,
+				until: null,
+				listed: new Set(["PRRT_9"]),
+			}),
+		).toEqual([]);
+	});
+
+	it("its thread not listed in the view (an earlier patch set): where it was asked", () => {
+		const [t] = unjoinUnlisted([joined], new Set(["PRRT_other"]));
+		expect(t?.anchor).toEqual(lines.anchor);
+		expect(t).not.toHaveProperty("githubUnknown");
+		expect(
+			shownAgentPlaceables([joined], H1, {
+				placements: null,
+				until: null,
+				listed: new Set(),
+			}).map((p) => [p.id, p.anchor?.line]),
+		).toEqual([["J", 3]]);
+	});
+
+	it("the view's threads failed: where it was asked, flagged unknown", () => {
+		const [t] = unjoinUnlisted([joined], null);
+		expect(t?.anchor).toEqual(lines.anchor);
+		expect(t?.githubUnknown).toBe(true);
+	});
+
+	it("not known yet: as it is; other threads never change", () => {
+		const onThread: AgentThread = { ...joined, id: "K", joined: undefined };
+		delete onThread.joined;
+		expect(unjoinUnlisted([joined, onThread], undefined)).toEqual([
+			joined,
+			onThread,
+		]);
+		expect(unjoinUnlisted([lines, onThread], null)).toEqual([lines, onThread]);
 	});
 });

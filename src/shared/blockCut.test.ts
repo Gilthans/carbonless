@@ -323,7 +323,7 @@ describe("cutAtBlocks (CAR-167)", () => {
 		]);
 	});
 
-	it("drops split on cut pieces and keeps whitespaceOnly only on side-for-side pieces", () => {
+	it("drops split on cut pieces and keeps whitespaceOnly on every piece of a whitespace-only cluster", () => {
 		const c = {
 			oldStart: 1,
 			oldCount: 2,
@@ -345,6 +345,27 @@ describe("cutAtBlocks (CAR-167)", () => {
 			expect(p.whitespaceOnly).toBe(true);
 			expect(p.split).toBeUndefined();
 		}
+	});
+
+	it("keeps whitespaceOnly on the pieces of a one-sided whitespace-only cluster (CAR-218)", () => {
+		// Removed lines whose twins sit outside the cluster (another git hunk,
+		// or context): every line is whitespace-only, so every part is.
+		const c = {
+			oldStart: 3,
+			oldCount: 2,
+			newStart: 2,
+			newCount: 0,
+			removed: ["-  one", "-  two"],
+			added: [],
+			lines: 2,
+			whitespaceOnly: true as const,
+		};
+		const oldBlocks = markdownBlocks(["x", "", "-  one", "-  two"]);
+		const pieces = cutAtBlocks(c, oldBlocks, markdownBlocks([])).map(
+			(p) => p.cluster,
+		);
+		expect(pieces).toHaveLength(2);
+		for (const p of pieces) expect(p.whitespaceOnly).toBe(true);
 	});
 });
 

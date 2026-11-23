@@ -15,8 +15,15 @@ describe("toggleKind", () => {
 		expect(toggleKind({ ...base, canResolve: false })).toBe("reply");
 	});
 
-	it("says Resolve where the viewer may resolve but not reply", () => {
+	it("says Resolve (no toggle on a closed card) where the viewer may resolve but not reply", () => {
 		expect(toggleKind({ ...base, canReply: false })).toBe("resolve");
+	});
+
+	it("says Show more for the opener's own Edit and Delete with no reply box", () => {
+		expect(toggleKind({ ...base, canReply: false, editable: true })).toBe(
+			"more",
+		);
+		expect(toggleKind({ ...base, editable: true })).toBe("reply");
 	});
 
 	it("falls back to Show more with nothing to do", () => {

@@ -1,15 +1,20 @@
 // Release notes (CAR-192, docs/superpowers/specs/2026-11-16-release-notes-design.md;
 // docs/releasing.md, "Release notes"). Linear is the source: each ticket has
-// a `Release note` comment. `pnpm release notes` snapshots a version's notes
-// into release-notes/X.Y.Z.json (reviewed in a "notes: X.Y.Z" PR), CI checks
-// that file covers the release from git alone, and the build ships it (crbReleaseNotes in package.json,
-// dist/release-notes.json). The one Linear key in CI is the release-note
-// check's (CAR-211: read only, in that one step, running master's code).
+// a `Release note` comment. `pnpm release promote` collects the RC's notes
+// from Linear and sends them to the promote run as an input (CAR-242), which
+// checks they cover the release from git alone and ships them in the
+// release's package (crbReleaseNotes, crbReleaseNotesFile in package.json,
+// dist/release-notes.json); release-finish commits what was published as
+// release-notes/X.Y.Z.json. `pnpm release notes` can still snapshot them
+// early (a "notes: X.Y.Z" PR), for RCs' What's new. The one Linear key in
+// CI is the release-note check's (CAR-211: read only, in that one step,
+// running master's code).
 // Linear and git go through injected clients, so tests drive everything
 // with fakes.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync, gzipSync } from "node:zlib";
 import {
 	compareReleaseVersions,
 	MAX_LOCAL_BYTES,
@@ -31,10 +36,14 @@ import {
 	formatVersion,
 	type Io,
 	must,
+	PACKAGE,
+	parseManifest,
 	parseVersion,
 	previousRelease,
+	publishedIntegrity,
 	remoteTags,
 	tagOf,
+	tarballDigests,
 } from "./release-lib.js";
 
 export const NOTES_DIR = "release-notes";
@@ -486,9 +495,13 @@ export function coverage(
 
 const prList = (prs: number[]) => prs.map((n) => `#${n}`).join(", ");
 
+/** The real fix when promote has no Linear key to collect the notes with. */
+const KEY_FIX =
+	"set up the Linear key ($LINEAR_API_KEY or ~/.config/linear/api-key) and promote again (it collects the notes itself)";
+
 /**
- * `ci:notes-check <X.Y.Z> <sha>` (promote-check, no token, no Linear):
- * fails unless release-notes/X.Y.Z.json at `sha` is well formed, is for
+ * A committed notes file alone (`pnpm release promote` without a Linear
+ * key; git only): fails unless release-notes/X.Y.Z.json at `sha` is well formed, is for
  * X.Y.Z, and covers every ticket and ticket-less PR of the release.
  */
 export async function notesCheck(
@@ -502,18 +515,287 @@ export async function notesCheck(
 	const file = files.get(version);
 	if (!file) {
 		throw new Error(
-			`no ${path} at ${sha}: run pnpm release notes ${version} --pr and merge its "notes: ${version}" PR, then promote that RC`,
+			`no ${path} at ${sha}: ${KEY_FIX}; else run pnpm release notes ${version} --pr and merge its "notes: ${version}" PR, then promote that RC`,
 		);
 	}
 	const range = await releaseRange(io, version, sha, cwd);
 	const { missing } = coverage(range, file, files, version);
 	if (missing.length > 0) {
 		throw new Error(
-			`${path} doesn't cover ${missing.map((m) => `${m.id} (${prList(m.prs)})`).join(", ")}: give each a Release note (pnpm release note), then run pnpm release notes ${version} --pr again`,
+			`${path} doesn't cover ${missing.map((m) => `${m.id} (${prList(m.prs)})`).join(", ")}: give each a Release note (pnpm release note), then ${KEY_FIX}; else run pnpm release notes ${version} --pr again`,
 		);
 	}
 	const prs = range.prs.filter((p) => !p.exempt).length;
 	return `ok: ${path} covers the ${prs} PR(s) since ${range.from ?? "the first commit"} (${file.notes.length} notes, ${file.none.length} none)`;
+}
+
+// ---------------------------------------------------------------------------
+// The promote run's notes (CAR-242): `pnpm release promote` collects them
+// for exactly the RC's range and sends them as a workflow_dispatch input;
+// promote-check verifies them from git alone and ships them.
+
+/**
+ * At most this many characters of encoded notes in the `notes` input:
+ * GitHub caps a dispatch's inputs at 65,535 characters in all, and the
+ * other inputs (mode, rc, next) take a few dozen.
+ */
+export const MAX_NOTES_INPUT_CHARS = 60_000;
+
+/** The `notes` input: the notes file as compact JSON, gzipped, base64. */
+export function encodeNotesInput(file: ReleaseNotesFile): string {
+	const text = gzipSync(Buffer.from(JSON.stringify(file)), {
+		level: 9,
+	}).toString("base64");
+	if (text.length > MAX_NOTES_INPUT_CHARS) {
+		throw new Error(
+			`${file.version}'s notes are ${text.length} characters encoded, over the ${MAX_NOTES_INPUT_CHARS} a workflow input can carry (GitHub caps a dispatch's inputs at 65,535): shorten notes in Linear (pnpm release note), then promote again`,
+		);
+	}
+	return text;
+}
+
+/** The `notes` input read back strictly: a notes file of `version`, or an error saying what's wrong. */
+export function decodeNotesInput(
+	text: string,
+	version: string,
+): ReleaseNotesFile {
+	const t = text.trim();
+	if (t.length > MAX_NOTES_INPUT_CHARS) {
+		throw new Error(
+			`the notes input is ${t.length} characters, over ${MAX_NOTES_INPUT_CHARS}`,
+		);
+	}
+	if (!/^[A-Za-z0-9+/]+={0,2}$/.test(t)) {
+		throw new Error("the notes input isn't base64");
+	}
+	let json: string;
+	try {
+		json = gunzipSync(Buffer.from(t, "base64"), {
+			maxOutputLength: MAX_LOCAL_BYTES,
+		}).toString("utf8");
+	} catch (error) {
+		throw new Error(
+			`the notes input isn't gzip (or unpacks to over ${MAX_LOCAL_BYTES} bytes): ${(error as Error).message}`,
+		);
+	}
+	const file = readNotesFile(json, "the notes input");
+	if (file.version !== version) {
+		throw new Error(`the notes input is for ${file.version}, not ${version}`);
+	}
+	return file;
+}
+
+/** none entries in a file's order: by first PR, then id. */
+const sortNone = (none: ReleaseNoneEntry[]) =>
+	[...none].sort(
+		(a, b) => (a.prs[0] ?? 0) - (b.prs[0] ?? 0) || a.id.localeCompare(b.id),
+	);
+
+const entryIds = (f: ReleaseNotesFile) =>
+	new Set([...f.notes, ...f.none].map((e) => e.id));
+
+/** One id's entries in a file, comparable as text. */
+const entriesOf = (f: ReleaseNotesFile, id: string) =>
+	JSON.stringify([
+		f.notes.filter((n) => n.id === id),
+		f.none.filter((n) => n.id === id),
+	]);
+
+/**
+ * The promote input over a notes file already at the RC's commit: the
+ * input's entries win for every id it has (notes or none); the file's
+ * other ids are kept. `replaced`: ids both have, differently; `kept`: ids
+ * only the file has.
+ */
+export function mergeNotes(
+	input: ReleaseNotesFile | null,
+	file: ReleaseNotesFile | null,
+): { file: ReleaseNotesFile; replaced: string[]; kept: string[] } {
+	if (!input) {
+		if (!file) throw new Error("no notes to merge");
+		return { file, replaced: [], kept: [] };
+	}
+	if (!file) return { file: input, replaced: [], kept: [] };
+	const ids = entryIds(input);
+	const fileIds = [...entryIds(file)];
+	return {
+		file: {
+			version: input.version,
+			date: input.date ?? file.date,
+			notes: sortNotes([
+				...input.notes,
+				...file.notes.filter((n) => !ids.has(n.id)),
+			]),
+			none: sortNone([
+				...input.none,
+				...file.none.filter((n) => !ids.has(n.id)),
+			]),
+		},
+		replaced: fileIds.filter(
+			(id) => ids.has(id) && entriesOf(file, id) !== entriesOf(input, id),
+		),
+		kept: fileIds.filter((id) => !ids.has(id)),
+	};
+}
+
+/**
+ * `ci:notes-input` (promote-check, no token, no Linear): the release's
+ * notes from the promote's `notes` input (empty: none given) over
+ * release-notes/X.Y.Z.json at `sha`, if any. Fails unless the input is
+ * well formed, for X.Y.Z, has only entries of the range's PRs, and
+ * together with the file covers every ticket and ticket-less PR of the
+ * release up to `sha`. Returns the notes and a markdown summary.
+ */
+export async function notesFromInput(
+	io: Io,
+	version: string,
+	sha: string,
+	encoded: string,
+	cwd?: string,
+): Promise<{ file: ReleaseNotesFile; summary: string }> {
+	const path = notesPath(version);
+	const files = await notesFilesAt(io, sha, cwd);
+	const atCommit = files.get(version) ?? null;
+	const input =
+		encoded.trim() === "" ? null : decodeNotesInput(encoded, version);
+	if (!input && !atCommit) {
+		throw new Error(
+			`no release notes for ${version}: start the promote with pnpm release promote (it sends them from Linear), or merge ${path} (pnpm release notes ${version} --pr) and promote that RC`,
+		);
+	}
+	const range = await releaseRange(io, version, sha, cwd);
+	const merged = mergeNotes(input, atCommit);
+	// Exactly this range, whatever the notes came from (the input, or
+	// entries kept from the file): an entry of another PR would ship a
+	// note of a change the release doesn't have (notes collected for
+	// another RC, or a file edited by hand).
+	const needed = neededIds(range);
+	const inRange = new Set(
+		range.prs.filter((p) => !p.exempt).map((p) => p.number),
+	);
+	const foreign = [
+		...new Set(
+			[...merged.file.notes, ...merged.file.none]
+				.filter((e) => !needed.has(e.id) || e.prs.some((n) => !inRange.has(n)))
+				.map((e) => e.id),
+		),
+	];
+	if (foreign.length > 0) {
+		const fromInput = input ? entryIds(input) : new Set<string>();
+		const from = (id: string) => (fromInput.has(id) ? "the notes input" : path);
+		throw new Error(
+			`the release notes have entries outside ${version}'s PRs up to ${sha}: ${foreign.map((id) => `${id} (${from(id)})`).join(", ")}: collected for another RC, or edited by hand? Promote again with pnpm release promote, or fix ${path}`,
+		);
+	}
+	const { missing } = coverage(range, merged.file, files, version);
+	if (missing.length > 0) {
+		throw new Error(
+			`the release notes don't cover ${missing.map((m) => `${m.id} (${prList(m.prs)})`).join(", ")}: give each a Release note (pnpm release note), then pnpm release promote again`,
+		);
+	}
+	const prs = range.prs.filter((p) => !p.exempt).length;
+	const source = input
+		? atCommit
+			? `the promote's input, over ${path} at the RC`
+			: "the promote's input"
+		: `${path} at the RC (no input)`;
+	const lines = [
+		`### Release notes of ${version}`,
+		"",
+		`The ${prs} PR(s) since ${range.from ?? "the first commit"}: ${merged.file.notes.length} notes, ${merged.file.none.length} none, from ${source}.`,
+	];
+	if (merged.replaced.length > 0) {
+		lines.push(
+			"",
+			`The input replaced ${path}'s entries for ${merged.replaced.join(", ")}.`,
+		);
+	}
+	if (merged.kept.length > 0) {
+		lines.push(
+			"",
+			`Kept from ${path} (not in the input): ${merged.kept.join(", ")}.`,
+		);
+	}
+	lines.push("", renderNotesBody(merged.file, range));
+	return { file: merged.file, summary: lines.join("\n") };
+}
+
+/**
+ * release-finish: the notes `version` was published with, from the
+ * promote run's tarball in `dir` (its manifest.json and .tgz) once npm is
+ * shown to have that very tarball (its integrity): the package.json field
+ * crbReleaseNotesFile. Null when the package has none (promoted before
+ * CAR-242): the caller falls back to the file at the RC's commit.
+ */
+export async function publishedNotes(
+	io: Io,
+	version: string,
+	dir: string,
+): Promise<ReleaseNotesFile | null> {
+	const manifest = parseManifest(
+		readFileSync(join(dir, "manifest.json"), "utf8"),
+	);
+	if (manifest.version !== version) {
+		throw new Error(
+			`the promote run released ${manifest.version}, not ${version}`,
+		);
+	}
+	const tarball = join(dir, manifest.tarball);
+	const { integrity } = tarballDigests(readFileSync(tarball));
+	if (integrity !== manifest.integrity) {
+		throw new Error(
+			`${manifest.tarball} is ${integrity}, the manifest says ${manifest.integrity}`,
+		);
+	}
+	const published = await publishedIntegrity(io, version);
+	if (published !== integrity) {
+		throw new Error(
+			`npm has ${PACKAGE}@${version} as ${published ?? "nothing"}, not the promote run's tarball (${integrity})`,
+		);
+	}
+	const pkg = JSON.parse(
+		await must(io, "tar", ["-xzOf", tarball, "package/package.json"]),
+	) as { crbReleaseNotesFile?: unknown };
+	if (pkg.crbReleaseNotesFile === undefined) return null;
+	const parsed = parseReleaseNotesFile(pkg.crbReleaseNotesFile);
+	if (!parsed.ok) {
+		throw new Error(
+			`the published crbReleaseNotesFile is malformed: ${parsed.errors.join("; ")}`,
+		);
+	}
+	if (parsed.file.version !== version) {
+		throw new Error(
+			`the published crbReleaseNotesFile is for ${parsed.file.version}, not ${version}`,
+		);
+	}
+	return parsed.file;
+}
+
+/**
+ * `ci:published-notes`: the published notes (`publishedNotes`); for a
+ * package promoted without them (before CAR-242), the notes file at the
+ * RC's commit, with a warning; an error when there is neither.
+ */
+export async function finishNotes(
+	io: Io,
+	version: string,
+	dir: string,
+): Promise<{ file: ReleaseNotesFile; warning: string | null }> {
+	const published = await publishedNotes(io, version, dir);
+	if (published) return { file: published, warning: null };
+	const { sha } = parseManifest(
+		readFileSync(join(dir, "manifest.json"), "utf8"),
+	);
+	const file = (await notesFilesAt(io, sha)).get(version);
+	if (!file) {
+		throw new Error(
+			`${version}'s package has no crbReleaseNotesFile, and ${notesPath(version)} isn't at ${sha} either`,
+		);
+	}
+	return {
+		file,
+		warning: `${version}'s package has no crbReleaseNotesFile (promoted before CAR-242): using ${notesPath(version)} at ${sha}`,
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -562,23 +844,30 @@ export const LOCAL_NOTES_GIT_PATH = "crb-release-notes.json";
  * ships: its release's notes (undated; an RC also lists the range's PRs
  * no note covers yet) and every earlier released version's (dated by
  * their file, else their tag), newest first, uncapped: `capShipped` for
- * the manifest, `capLocal` for dist.
+ * the manifest, `capLocal` for dist. A release's own notes are `given`
+ * when passed (promote's, CAR-242), else its file at HEAD.
  */
 export async function shippedNotes(
 	io: Io,
 	version: string,
 	dir: string,
+	given?: ReleaseNotesFile,
 ): Promise<ShippedReleaseNotes[]> {
 	const v = parseVersion(version);
 	if (!v) throw new Error(`not a version: ${version}`);
 	const rc = v.rc !== undefined;
 	const release = formatVersion({ ...v, rc: undefined });
+	if (given && (rc || given.version !== release)) {
+		throw new Error(
+			`notes for ${given.version} given to a build of ${version}: only that release takes them`,
+		);
+	}
 	const files = await notesFilesAt(io, "HEAD", dir);
 	const tags = new Set(await remoteTags(io, dir));
-	const own = files.get(release) ?? null;
+	const own = given ?? files.get(release) ?? null;
 	if (!rc && !own) {
 		throw new Error(
-			`no ${notesPath(release)}: a release ships its notes (pnpm release notes ${release} --pr)`,
+			`no ${notesPath(release)}: a release ships its notes (pnpm release promote sends them)`,
 		);
 	}
 	const entries: ShippedReleaseNotes[] = [];
@@ -619,13 +908,20 @@ export async function shippedNotes(
 	return entries;
 }
 
-/** package.json's text with `crbReleaseNotes` set (re-serialized with tabs). */
+/**
+ * package.json's text with `crbReleaseNotes` set (re-serialized with
+ * tabs), and for a release `crbReleaseNotesFile`: its own notes file
+ * whole (notes and none), which release-finish commits from the published
+ * package (CAR-242).
+ */
 export function withReleaseNotes(
 	packageJson: string,
 	notes: ShippedReleaseNotes[],
+	file?: ReleaseNotesFile,
 ): string {
 	const pkg = JSON.parse(packageJson) as Record<string, unknown>;
 	pkg.crbReleaseNotes = notes;
+	if (file) pkg.crbReleaseNotesFile = file;
 	return `${JSON.stringify(pkg, null, "\t")}\n`;
 }
 
@@ -1054,9 +1350,7 @@ export async function collectNotes(
 			version,
 			date: files.get(version)?.date ?? null,
 			notes: sortNotes(notes),
-			none: [...none].sort(
-				(a, b) => (a.prs[0] ?? 0) - (b.prs[0] ?? 0) || a.id.localeCompare(b.id),
-			),
+			none: sortNone(none),
 		},
 		missing,
 		shippedBefore,
@@ -1638,40 +1932,64 @@ export async function rerunRedNoteCheck(
 }
 
 /**
- * Before promote dispatches: the RC's notes file covers its release (as
- * promote-check will check), and with a Linear key, a warning for each
- * note Linear has changed since the file was written.
+ * Before promote dispatches (CAR-242): the release's notes for exactly the
+ * RC's range (the previous release's tag up to the RC's commit), from
+ * Linear and the PR descriptions, refused (throws, listing what lacks a
+ * note and how to fix it) unless they cover it. Returns them encoded for
+ * the run's `notes` input. Without a Linear key it can't collect them: it
+ * checks release-notes/X.Y.Z.json at the RC covers the release instead
+ * and returns "" (the run then takes that file).
  */
-export async function promoteNotesCheck(
+export async function promoteNotes(
 	io: Io,
 	release: string,
 	tag: string,
-	linear: Linear | null,
-): Promise<void> {
+	found: { linear: Linear | null; tried: readonly string[] },
+): Promise<string> {
 	await must(io, "git", ["fetch", "origin", "master", "--tags"]);
 	const sha = (
 		await must(io, "git", ["rev-parse", `refs/tags/${tag}^{commit}`])
 	).trim();
-	io.log(await notesCheck(io, release, sha));
-	if (!linear) return;
-	try {
-		const range = await releaseRange(io, release, sha);
-		const files = await notesFilesAt(io, sha);
-		const fresh = await collectNotes(io, linear, release, range, files);
-		const same =
-			formatNotesFile(fresh.file) ===
-			formatNotesFile({
-				...(files.get(release) as ReleaseNotesFile),
-				date: fresh.file.date,
-			});
-		if (!same) {
-			io.log(
-				`warning: Linear's notes for ${release} changed since ${notesPath(release)} was written: pnpm release notes ${release} --pr, merge it, and promote its RC to ship them`,
-			);
-		}
-	} catch (error) {
+	const path = notesPath(release);
+	const { linear } = found;
+	if (!linear) {
 		io.log(
-			`warning: couldn't compare with Linear: ${(error as Error).message}`,
+			`warning: ${noLinearKey(found.tried)}: promote can't collect ${release}'s notes, so the run takes ${path} at ${tag}`,
+		);
+		io.log(await notesCheck(io, release, sha));
+		return "";
+	}
+	const range = await releaseRange(io, release, sha);
+	const files = await notesFilesAt(io, sha);
+	const collected = await collectNotes(io, linear, release, range, files);
+	for (const w of collected.warnings) io.log(`warning: ${w}`);
+	if (collected.missing.length > 0) {
+		throw new Error(
+			`${tag} can't be promoted: ${collected.missing.length} without a release note:\n${collected.missing.map((m) => `  ${m}`).join("\n")}`,
 		);
 	}
+	// What the run will check: the notes over any file at the RC's commit.
+	const merged = mergeNotes(collected.file, files.get(release) ?? null);
+	const { missing } = coverage(range, merged.file, files, release);
+	if (missing.length > 0) {
+		throw new Error(
+			`${tag} can't be promoted: the notes don't cover ${missing.map((m) => `${m.id} (${prList(m.prs)})`).join(", ")}`,
+		);
+	}
+	for (const e of collected.file.notes) io.log(`${e.id} ${e.kind}: ${e.text}`);
+	for (const e of collected.file.none) io.log(`${e.id} none: ${e.why}`);
+	for (const s of collected.shippedBefore) io.log(`${s} (no newer note)`);
+	if (merged.replaced.length > 0) {
+		io.log(
+			`Linear's notes replace ${path}'s at ${tag} for ${merged.replaced.join(", ")}`,
+		);
+	}
+	if (merged.kept.length > 0) {
+		io.log(`kept from ${path} at ${tag}: ${merged.kept.join(", ")}`);
+	}
+	const encoded = encodeNotesInput(collected.file);
+	io.log(
+		`${release}'s notes up to ${tag}: ${collected.file.notes.length} notes, ${collected.file.none.length} none (sent to the run)`,
+	);
+	return encoded;
 }

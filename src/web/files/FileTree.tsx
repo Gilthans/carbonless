@@ -15,7 +15,9 @@ import type { FileView, ReviewThread } from "../../shared/types";
 import { agentBubbleLabel } from "../agent/AgentBubble";
 import type { FindMark } from "../code/Invisibles";
 import { Spinner, SpinnerIcon } from "../Spinner";
+import { Keys } from "../shortcuts";
 import { Tooltip, TooltipPath } from "../Tooltip";
+import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace } from "../viewSettings";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import {
@@ -891,6 +893,8 @@ function TabButton(props: {
 	const files = props.tab === "files";
 	const Icon = files ? FileDirectoryIcon : CommentDiscussionIcon;
 	const { count } = props;
+	// Its keys on a desktop, as Find's button shows its own.
+	const desktop = useMedia(NOT_PHONE);
 	const name = files
 		? "Files"
 		: count.state === "loading"
@@ -901,11 +905,19 @@ function TabButton(props: {
 	return (
 		<Tooltip
 			content={
-				files
-					? "Files"
-					: count.state === "failed"
-						? `Threads: couldn't load ${count.what}`
-						: "Threads"
+				files ? (
+					"Files"
+				) : count.state === "failed" ? (
+					`Threads: couldn't load ${count.what}`
+				) : desktop ? (
+					<span className="flex items-center gap-2">
+						Threads
+						<Keys keys="j" />
+						<Keys keys="k" />
+					</span>
+				) : (
+					"Threads"
+				)
 			}
 			describe={false}
 		>

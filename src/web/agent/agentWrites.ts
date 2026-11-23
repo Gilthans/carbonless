@@ -7,8 +7,8 @@
  * only by retryAgentWrite. Kept apart from threadWrites.ts: those are
  * GitHub's writes and their unions stay closed.
  */
-import type { QueryClient } from "@tanstack/react-query";
-import { useSyncExternalStore } from "react";
+import { type QueryClient, useQuery } from "@tanstack/react-query";
+import { useCallback, useSyncExternalStore } from "react";
 import type { AgentThread, AgentView } from "../../shared/agent";
 import { ApiError } from "../api";
 import type { CodeSpan } from "../files/selectionActions";
@@ -20,7 +20,12 @@ import {
 	postAgentThread,
 	withThread,
 } from "./api";
-import { anchorOf, closeAgentComposer } from "./askAgentAction";
+import {
+	anchorOf,
+	closeAgentComposer,
+	useAgentComposers,
+} from "./askAgentAction";
+import { agentDraftText, setAgentDraft, useAgentDrafts } from "./threadAgent";
 
 export interface AgentWrite {
 	/** A new thread's span, or the thread a reply goes to. */
@@ -81,6 +86,134 @@ export function useAgentWrites(): AgentWriteState {
 }
 
 export const getAgentWrites = getState;
+
+/** Whether the question of composer `clientId` is on its way (or retrying). */
+export function agentAsking(clientId: string): boolean {
+	const write = state.pending.get(clientId);
+	return write !== undefined && !write.error;
+}
+
+/**
+ * Whether an Ask agent composer holds a question not yet asked, or a
+ * conversation's reply box a follow-up not yet sent: nothing keeps them
+ * past the page (they aren't drafts), so leaving would lose them
+ * (useUnsaved). One on its way, or one cleared, doesn't count; one the
+ * server refused does (its text is still only in the box).
+ */
+export function useUnaskedQuestion(): boolean {
+	const composers = useAgentComposers();
+	const { pending } = useAgentWrites();
+	const replies = useSyncExternalStore(
+		subscribeReplies,
+		getRepliesTyped,
+		getRepliesTyped,
+	);
+	// A card's kept follow-up, while its box can show it again: its
+	// conversation still a span one, not resolved (Resolve drops it).
+	const kept = useSyncExternalStore(
+		subscribeReplies,
+		() => cardReplies,
+		() => cardReplies,
+	);
+	const conversations = useQuery({ ...agentThreadsQuery, enabled: false }).data
+		?.threads;
+	const cardTyped = [...kept].some(
+		([id, text]) =>
+			text.trim() !== "" &&
+			conversations?.some(
+				(c) => c.id === id && c.anchor.subject !== "thread" && !c.resolved,
+			) === true,
+	);
+	// A follow-up that went along onto a posted thread's agent box, until
+	// sent or cleared there.
+	const agentDrafts = useAgentDrafts();
+	const movedTyped = [...movedToThread].some(
+		(id) => (agentDrafts.get(id) ?? "").trim() !== "",
+	);
+	return (
+		replies > 0 ||
+		cardTyped ||
+		movedTyped ||
+		composers.some((c) => {
+			const write = pending.get(c.clientId);
+			return c.text.trim() !== "" && (write === undefined || !!write.error);
+		})
+	);
+}
+
+// --- Follow-ups typed in a conversation's reply box --------------------------
+// Kept in the box only (no draft): the boxes holding text, so leaving asks.
+
+let typedReplies: ReadonlySet<string> = new Set();
+const replyListeners = new Set<() => void>();
+const getRepliesTyped = () => typedReplies.size;
+const subscribeReplies = (l: () => void) => {
+	replyListeners.add(l);
+	return () => {
+		replyListeners.delete(l);
+	};
+};
+
+/** Reply box `box` holds a follow-up not yet sent (`typed`), or not. */
+export function setReplyTyped(box: string, typed: boolean): void {
+	if (typedReplies.has(box) === typed) return;
+	const next = new Set(typedReplies);
+	if (typed) next.add(box);
+	else next.delete(box);
+	typedReplies = next;
+	for (const l of replyListeners) l();
+}
+
+/** Forgets every typed reply (tests). */
+export function resetRepliesTyped(): void {
+	typedReplies = new Set();
+	cardReplies = new Map();
+	movedToThread = new Set();
+	for (const l of replyListeners) l();
+}
+
+// The text in a span conversation's reply box, by conversation id: it
+// outlives the card (Comment turns the card into the thread it will be;
+// Cancel brings it back with the text), and counts as typed meanwhile.
+let cardReplies: ReadonlyMap<string, string> = new Map();
+
+/** What is typed in conversation `id`'s card's reply box ("" for nothing). */
+export const cardReplyText = (id: string): string => cardReplies.get(id) ?? "";
+
+export function setCardReply(id: string, text: string): void {
+	if ((cardReplies.get(id) ?? "") === text) return;
+	const next = new Map(cardReplies);
+	if (text) next.set(id, text);
+	else next.delete(id);
+	cardReplies = next;
+	for (const l of replyListeners) l();
+}
+
+/**
+ * GitHub threads whose agent box got a card's follow-up (posted from the
+ * card): what is typed there counts as unsaved (useUnaskedQuestion).
+ */
+let movedToThread: ReadonlySet<string> = new Set();
+
+/** The card's follow-up of a conversation now on GitHub thread `githubId` goes to its agent box. */
+export function moveCardReply(conversation: string, githubId: string): void {
+	const text = cardReplyText(conversation);
+	if (!text) return;
+	movedToThread = new Set(movedToThread).add(githubId);
+	if (!agentDraftText(githubId)) setAgentDraft(githubId, text);
+	setCardReply(conversation, "");
+}
+
+/** A card's reply box text, kept by its conversation's id. */
+export function useCardReply(id: string): [string, (text: string) => void] {
+	const text = useSyncExternalStore(
+		subscribeReplies,
+		() => cardReplyText(id),
+		() => cardReplyText(id),
+	);
+	const set = useCallback((t: string) => setCardReply(id, t), [id]);
+	return [text, set];
+}
 
 function send(client: QueryClient, clientId: string): void {
 	const item = state.pending.get(clientId);

@@ -524,6 +524,108 @@ describe("replying", () => {
 		expect(writeCalls).toHaveLength(1);
 	});
 
+	it("Write / Preview: no toggle on an empty box; Write by default; the reply sent from Preview is the text", async () => {
+		serve({ T1: three });
+		writeAnswer = () => new Promise(() => {});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
+		await userEvent.click(box);
+		expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
+		await userEvent.type(box, "**Done**, thanks");
+		expect(screen.getByRole("button", { name: "Write" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Preview" }));
+		const preview = screen.getByTestId("comment-preview");
+		expect(within(preview).getByText("Done").tagName).toBe("STRONG");
+		expect(screen.queryByRole("textbox", { name: "Reply" })).toBeNull();
+		await userEvent.click(screen.getByRole("button", { name: "Write" }));
+		expect(box).toHaveValue("**Done**, thanks");
+		expect(box).toHaveFocus();
+		await userEvent.keyboard("{Control>}{Shift>}P{/Shift}{/Control}");
+		expect(screen.getByTestId("comment-preview")).toHaveFocus();
+		await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+		expect(writeCalls[0]?.path).toBe("/api/threads/T1/replies");
+		expect(writeCalls[0]?.body).toMatchObject({ body: "**Done**, thanks" });
+	});
+
+	it("sent from Preview, the next reply is typed in Write: the box never flips to Preview on its own", async () => {
+		serve({ T1: three });
+		writeAnswer = () => new Promise(() => {});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		await userEvent.type(box, "first");
+		await userEvent.click(screen.getByRole("button", { name: "Preview" }));
+		await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+		expect(writeCalls).toHaveLength(1);
+		await userEvent.click(screen.getByRole("textbox", { name: "Reply" }));
+		await userEvent.keyboard("second one");
+		expect(screen.queryByTestId("comment-preview")).toBeNull();
+		expect(box).toHaveFocus();
+		expect(box).toHaveValue("second one");
+	});
+
+	it("Preview keeps the box's keys: Ctrl+Enter sends, Escape leaves", async () => {
+		serve({ T1: three });
+		writeAnswer = () => new Promise(() => {});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		await userEvent.type(box, "Looks right");
+		await userEvent.keyboard("{Control>}{Shift>}P{/Shift}{/Control}");
+		const preview = screen.getByTestId("comment-preview");
+		expect(preview).toHaveFocus();
+		await userEvent.keyboard("{Escape}");
+		expect(preview).not.toHaveFocus();
+		preview.focus();
+		await userEvent.keyboard("{Control>}{Enter}{/Control}");
+		expect(writeCalls[0]?.body).toMatchObject({ body: "Looks right" });
+		// Sent by keys from Preview: the cleared box has the focus back.
+		expect(box).toHaveValue("");
+		expect(box).toHaveFocus();
+	});
+
+	it("open, the box keeps the toggle's slot (unseen while empty), so typing never narrows it", async () => {
+		serve({ T1: three });
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		expect(screen.queryByTestId("preview-toggle")).toBeNull();
+		await userEvent.click(box);
+		const slot = screen.getByTestId("preview-toggle");
+		expect(slot).not.toBeVisible();
+		expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
+		await userEvent.type(box, "x");
+		expect(screen.getByTestId("preview-toggle")).toBe(slot);
+		expect(slot).toBeVisible();
+	});
+
+	it("previewing leaves the hidden box's height as it was", async () => {
+		serve({ T1: three });
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		await userEvent.type(box, "x");
+		const height = box.style.height;
+		expect(height).toMatch(/px$/);
+		await userEvent.click(screen.getByRole("button", { name: "Preview" }));
+		expect(box.style.height).toBe(height);
+	});
+
 	it("keeps the box while the comments load", () => {
 		answer = () => new Promise(() => {});
 		renderWith(<Conversation readId="r1" thread={thread()} />, {
@@ -798,6 +900,60 @@ describe("editing a comment", () => {
 		);
 		expect(within(item).getByTestId("comment-edited")).toBeVisible();
 		expect(item).toHaveTextContent("New text");
+	});
+
+	it("edits with Write / Preview: Write by default, saved from Preview as typed", async () => {
+		const own = mine("c2", "Old **text**");
+		serve({ T1: { comments: [comment("c1", "rev1", "First"), own] } });
+		writeAnswer = () => new Promise(() => {});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		const box = screen.getByRole("textbox", { name: "Edit comment" });
+		expect(screen.getByRole("button", { name: "Write" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		await userEvent.type(box, " _new_");
+		await userEvent.click(screen.getByRole("button", { name: "Preview" }));
+		const preview = screen.getByTestId("comment-preview");
+		expect(within(preview).getByText("new").tagName).toBe("EM");
+		await userEvent.click(screen.getByRole("button", { name: "Save" }));
+		expect(writeCalls[0]?.body).toMatchObject({ body: "Old **text** _new_" });
+	});
+
+	it("an emptied edit keeps the toggle's slot, unseen: the row never changes shape while typing", async () => {
+		const own = mine("c2", "Old text");
+		serve({ T1: { comments: [comment("c1", "rev1", "First"), own] } });
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		const slot = screen.getByTestId("preview-toggle");
+		expect(slot).toBeVisible();
+		await userEvent.clear(
+			screen.getByRole("textbox", { name: "Edit comment" }),
+		);
+		expect(screen.getByTestId("preview-toggle")).toBe(slot);
+		expect(slot).not.toBeVisible();
+		expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
+	});
+
+	it("Escape in an edit's Preview cancels it, as in Write", async () => {
+		const own = mine("c2", "Old **text**");
+		serve({ T1: { comments: [comment("c1", "rev1", "First"), own] } });
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		await userEvent.keyboard("{Control>}{Shift>}P{/Shift}{/Control}");
+		expect(screen.getByTestId("comment-preview")).toHaveFocus();
+		await userEvent.keyboard("{Escape}");
+		expect(screen.queryByTestId("edit-form")).toBeNull();
 	});
 
 	it("keeps the edit as a draft across closing the thread; Escape asks first when it changed", async () => {

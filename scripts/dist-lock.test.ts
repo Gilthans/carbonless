@@ -52,6 +52,7 @@ beforeEach(() => {
 		"queue-config.mjs",
 		"owner.mjs",
 		"queue-line.mjs",
+		"flake-check-args.mjs",
 		"run-child.mjs",
 	]) {
 		copyFileSync(join(here, f), join(tree, "scripts", f));

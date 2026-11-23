@@ -35,12 +35,19 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
    (machine-specific steps: CLAUDE.local.md). The coordinator checks it
    moved and sends the owner the link.
 3. **Promote → release**, only on the owner's word, in three steps:
-   - `pnpm release promote [<rc tag>] [--next patch|minor|major]` starts
-     `.github/workflows/release.yml` (mode `promote`) and prints the run's
-     link. It checks out the RC tag (default: the newest; it must be on
-     master), checks that CI passed on the RC's commit (below), sets the
-     version `X.Y.Z` (and the RC's commit as `gitHead`), packs it,
-     smoke-tests that very tarball, and **stages**
+   - `pnpm release promote [<rc tag>] [--next patch|minor|major]` first
+     collects the release's notes for exactly that RC (the previous
+     release's tag up to the RC's commit) from Linear and the PR
+     descriptions, refusing while any ticket or ticket-less PR there has
+     none ("Release notes", "At promote" below), then starts
+     `.github/workflows/release.yml` (mode `promote`, the notes as its
+     input `notes`) and prints the run's link. No notes PR has to merge
+     first, so merges never wait for a release: one merged after the RC
+     goes into the next release. The run checks out the RC tag (default:
+     the newest; it must be on master), checks that CI passed on the RC's
+     commit (below) and that the notes cover the release, sets the
+     version `X.Y.Z` (and the RC's commit as `gitHead`, and the notes),
+     packs it, smoke-tests that very tarball, and **stages**
      it on npm (`npm stage publish --tag latest`): the version is uploaded
      but hidden, with its dist-tag fixed, until a maintainer approves it
      with two-factor. The run's artifact `release` holds the tarball and a
@@ -79,9 +86,11 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
      `vX.Y.Z` on the RC's commit, has `release.yml` move `rc` up to it
      (mode `fixup`), and opens the PR **"next: X.Y+1.0"** (or the `--next`
      bump) that sets master's version, adds the release's notes (and every
-     PR, folded) to `docs/changelog.md` and dates `release-notes/X.Y.Z.json`.
-     It also creates the GitHub release `vX.Y.Z` with that section as its
-     text (once; a rerun leaves it alone). The "next" PR is merged on the
+     PR, folded) to `docs/changelog.md` and commits them, dated, as
+     `release-notes/X.Y.Z.json`: the notes as published, read from the
+     package npm has (its `crbReleaseNotesFile`), never a file at the RC's
+     commit. It also creates the GitHub release `vX.Y.Z` with that section
+     as its text (once; a rerun leaves it alone). The "next" PR is merged on the
      owner's approval like any other; its merge publishes `X.Y+1.0-rc.1`.
 4. **A different next version** (a fix release instead of a minor, say):
    `pnpm release next <patch|minor|major|X.Y.Z>` opens a PR setting master's
@@ -111,7 +120,7 @@ which was written before it. So until "next" merges, nothing else may
   `scripts/release-gate.mjs` (no dependencies) judges, and fails on an
   answer it can't read. Its error names the open "next" PR, or says to run
   release-finish again when none is open. It only blocks a merge once it
-  is a required check of the `master` ruleset (Setup, step 3).
+  is a required check of the `master checks` ruleset (Setup, step 3).
 - **Checks that passed before the release:** release-finish, after
   opening the "next" PR, reruns the newest `release-gate` run of every
   open PR to master, so none stays green from before the tag. A run still
@@ -121,8 +130,9 @@ which was written before it. So until "next" merges, nothing else may
   "Release gate" run (Re-run jobs on its checks, or `gh run rerun <run
   id>`): it reads master again and passes, with no new commit. A push to
   the PR does the same.
-- **Agents' merges:** `gh pr merge --admin` bypasses required checks, so
-  before merging any PR an agent runs `pnpm release merge-ok <pr>`, which
+- **Agents' merges:** `gh pr merge --admin` can't bypass required checks
+  (the `master checks` ruleset has no bypass), but a green `release-gate`
+  can be stale, so before merging any PR an agent runs `pnpm release merge-ok <pr>`, which
   fails with the same message for any PR but the "next" PR while frozen
   (it counts npm's versions as released too, as the RC plan does).
   It then checks the PR's release notes (below).
@@ -136,7 +146,8 @@ read only where its key is (`$LINEAR_API_KEY`, else `linear/api-key` in
 moves `XDG_CONFIG_HOME` still finds it; a missing key's error names each
 place tried). In CI the only Linear key is the `release-note` check's
 (below): read only, in that check's one step, running master's code;
-promote checks the committed snapshot from git alone.
+`pnpm release promote` reads Linear on the owner's machine and hands the
+notes to the run, which checks them from git alone (CAR-242).
 
 - **A ticket's note** is a comment on it whose first line starts with
   `Release note`; the newest such comment wins (by `updatedAt`, so an edit
@@ -208,8 +219,8 @@ promote checks the committed snapshot from git alone.
   pr checks`; a run still in progress is named instead; a failed rerun
   only warns), merge-ok reruns a red one once its own check passes and
   says to wait for it, and editing the description runs it again. It
-  only blocks a merge once it is a required check of the `master` ruleset
-  (Setup, step 3; the environment and key: step 11). Linear
+  only blocks a merge once it is a required check of the `master checks`
+  ruleset (Setup, step 3; the environment and key: step 11). Linear
   moves a ticket to Done on merge by itself, so the check can't wait for
   that. `pnpm release notes check` fails listing what in the release so
   far has no note, for merges no script saw, and warns about tickets done
@@ -223,13 +234,32 @@ promote checks the committed snapshot from git alone.
   command to fix it) and warnings (Linear PR attachments a title doesn't
   name, commits that aren't PRs). The owner approves the wording by
   merging that PR; a wording change goes back to Linear (`pnpm release
-  note`) and the file is written again. Run it before every promote, and
-  whenever RCs should carry fresher notes.
-- **At promote:** `pnpm release promote` refuses before starting the run
-  unless the RC's `release-notes/X.Y.Z.json` covers every ticket and
-  ticket-less PR of the release (and, with a Linear key, warns when Linear
-  changed since the file was written); `promote-check` checks the same,
-  in CI, with no token (`release.ts ci:notes-check`).
+  note`) and the file is written again. Optional since CAR-242 (promote
+  collects the notes itself): use it to preview the notes, or whenever
+  RCs should carry fresher notes in What's new.
+- **At promote** (CAR-242): `pnpm release promote` collects the notes for
+  exactly the chosen RC's range (the previous release's tag up to the
+  RC's commit, so a PR merged after the RC is neither needed nor sent)
+  with the same rules as `pnpm release notes` (`collectNotes`), and
+  refuses before starting the run while any ticket or ticket-less PR
+  there has none, listing each with the command that fixes it. It sends
+  them as the run's `notes` input: the notes file as compact JSON,
+  gzipped, base64, refused locally above 60,000 characters (GitHub caps a
+  dispatch's inputs at 65,535 in all; the notes' own 64 KB cap in
+  `crbReleaseNotes` comes first in practice). Without a Linear key it
+  can't collect them: it says so and falls back to an RC's committed
+  `release-notes/X.Y.Z.json`, which must cover the release.
+  `promote-check` (`release.ts ci:notes-input`, no token, no Linear; the
+  input reaches it as an environment variable) reads the input strictly
+  (base64, gzip unpacking to at most 1 MB, a well-formed notes file of
+  that version) and refuses an entry of a PR outside the RC's range
+  (notes collected for another RC). A `release-notes/X.Y.Z.json` at the
+  RC's commit is optional: for any id both have the input wins, the
+  file's other ids are kept, and the run's summary says which. With no
+  input the file alone serves (a dispatch from GitHub's UI). The
+  result must cover every ticket and ticket-less PR of the release, or
+  the run fails naming them. The summary lists the notes as the
+  changelog will.
 - **What ships:** `ci:set-version` gathers this version's notes (undated;
   on an RC with `uncovered`, the range's PRs no note covers yet) and every
   earlier released version's, dated, newest first, into two lists:
@@ -244,7 +274,16 @@ promote checks the committed snapshot from git alone.
     (`scripts/build-info.mjs`) writes it to `dist/release-notes.json`,
     which Global settings pages back through, all the way back. Without
     it, the build uses the field.
-  A local build has neither.
+  A local build has neither. A release's own notes are the ones
+  promote-check checked (an RC's: its committed file so far); a release
+  also carries them whole (notes and none) as `crbReleaseNotesFile` in its
+  `package.json`, which release-finish reads from the published package
+  (after checking npm has the promote run's very tarball) to write the
+  changelog, the GitHub release and the committed
+  `release-notes/X.Y.Z.json`. The field is written by master's
+  `release.ts`, so it doesn't depend on the RC's `build-info.mjs`; `dist`
+  keeps only the shipped notes, without the none entries a committed file
+  needs.
 - **One date per release:** the day it is published. release-finish
   writes it into `docs/changelog.md` and `release-notes/X.Y.Z.json` (in
   the "next" PR), and every later build ships it from there (a file that
@@ -296,8 +335,9 @@ all, where the suite took 10–15.
 2. **`promote-check`: the release tarball itself** (after `promote-ci`,
    with no token at all). It plans the RC again with `release.ts` (on
    master, not released) and fails unless that is the tag and commit
-   `promote-ci` checked, and unless the RC's release notes cover the
-   release (`ci:notes-check`, above). Then the RC packed as `X.Y.Z` (its
+   `promote-ci` checked, and unless the release notes it was given (or an
+   RC's committed file) cover the release up to the RC (`ci:notes-input`,
+   above). Then the RC packed as `X.Y.Z` (its
    `build-info.json` must say that version and the RC's commit, and its
    sha256 is recorded), and master's `node scripts/pack-smoke.mjs "$TGZ"`
    on that very tarball: installed globally into a temp dir, its `crb
@@ -706,18 +746,24 @@ machine.
    job that names a missing environment makes GitHub create it with **no**
    rule, which would let any branch's workflow get npm's credential.
 3. **A ruleset on `master`**, Settings → Rules → Rulesets → New branch
-   ruleset `master`, Active, target the default branch. Bypass list: the
-   Repository admin role, mode "For pull requests only". Rules: Restrict
+   ruleset `Master`, Active, target the default branch. Bypass list: the
+   Repository admin role. Rules: Restrict
    updates (only the bypass list updates `master`: the owner, or their
    agents on the owner's approval, nobody else, whatever their access), Restrict deletions, Block force
    pushes, Require a pull request before merging (0 approvals: only the
-   owner's login can merge anyway), Require status checks to pass (`checks`,
+   owner's login can merge anyway). Not "Require review from Code Owners": with
+   Restrict updates it adds nothing. Then a second branch ruleset,
+   `Master checks`, Active, the default branch, with **no bypass list**
+   and one rule, Require status checks to pass (`checks`,
    `windows-agent`, `e2e`, `release-gate`, the release freeze's check, and
    `release-note`, the release notes' check: add them by hand, nothing
-   sets them). Not "Require review from Code Owners": with
-   Restrict updates it adds nothing. Nobody pushes straight to `master`,
-   the owner included; the owner can merge any PR, with or without an
-   approval or green checks (GitHub's "bypass rules" box).
+   sets them). A bypass applies only to its own ruleset, so the owner
+   can merge without an approval, but nobody, the owner included, merges
+   over a red or missing check (owner, 2026-11-22: "It should block me
+   too, but I should still be the only one able to merge without a
+   review"). Nobody pushes straight to `master`, the owner included. When
+   CI itself is broken, the owner sets `Master checks` to Disabled for
+   the fix's merge, and back to Active right after.
 4. **Actions may create PRs**, Settings → Actions → General → Allow GitHub
    Actions to create and approve pull requests (the "next" PR). The
    default workflow permissions stay read-only: every workflow asks for
@@ -765,8 +811,8 @@ machine.
     Personal API keys → New key, with permission **Read** only and access
     to team **CAR** only; add it as that environment's secret
     **`LINEAR_READ_API_KEY`** (Environment secrets, not a repository
-    secret). Then add `release-note` to the `master` ruleset's required
-    checks (step 3). Without the key the check still runs, passing only
+    secret). Then add `release-note` to the `Master checks` ruleset's
+    required checks (step 3). Without the key the check still runs, passing only
     PRs whose description has a note.
 
 From then on a release is: `pnpm release promote` (CI stages it), then
