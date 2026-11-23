@@ -66,7 +66,6 @@ export function SinceNotes(props: {
 	kinds: Map<string, KindEntry> | undefined;
 	hunks: FileHunks;
 	unshown?: boolean;
-	empty?: boolean;
 }) {
 	const { from, clusters, hunks } = props;
 	const toRead = unshownToRead(clusters, props.kinds, hunks);
@@ -86,17 +85,14 @@ export function SinceNotes(props: {
 					<span className="text-muted">{carried} carried</span>
 				</p>
 			)}
-			{props.empty !== false &&
-				hunks.hunks.length === 0 &&
-				fileRows === 0 &&
-				toRead === 0 && (
-					<p
-						data-testid="since-empty"
-						className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
-					>
-						Nothing to read since PS{from} · {carried} carried
-					</p>
-				)}
+			{hunks.hunks.length === 0 && fileRows === 0 && toRead === 0 && (
+				<p
+					data-testid="since-empty"
+					className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
+				>
+					Nothing to read since PS{from} · {carried} carried
+				</p>
+			)}
 		</>
 	);
 }
