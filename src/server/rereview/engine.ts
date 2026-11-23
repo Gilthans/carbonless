@@ -652,10 +652,14 @@ export function answerRereview(
 	let toReadClusters = 0;
 	// The same count without the whitespace-only clusters (what a reviewer
 	// with "Ignore whitespace" on reads); the page picks by its switch.
+	// Only without an interdiff: with one, the since units replace the
+	// count below (and carry their own whitespace-only judgement).
 	const wsKeys = new Set(
-		target.files.flatMap((f) =>
-			f.clusters.filter((c) => c.whitespaceOnly).map((c) => c.key),
-		),
+		interdiff.status === "available"
+			? []
+			: target.files.flatMap((f) =>
+					f.clusters.filter((c) => c.whitespaceOnly).map((c) => c.key),
+				),
 	);
 	let countedFiles = 0;
 	let countedClusters = 0;
@@ -681,7 +685,10 @@ export function answerRereview(
 		toRead: { files: toReadFiles, clusters: toReadClusters },
 		threads: [],
 	};
-	if (countedFiles !== toReadFiles || countedClusters !== toReadClusters) {
+	if (
+		interdiff.status !== "available" &&
+		(countedFiles !== toReadFiles || countedClusters !== toReadClusters)
+	) {
 		answer.toRead.withoutWhitespaceOnly = {
 			files: countedFiles,
 			clusters: countedClusters,

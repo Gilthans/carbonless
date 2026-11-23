@@ -1334,13 +1334,6 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 	});
 
 	it("a file whose only to-read units are whitespace-only drops out of files; a re-indent of a change nobody marked at PS1 stays counted (CAR-218)", async () => {
-		const git = (cwd: string, ...args: string[]) =>
-			execFileSync("git", args, {
-				cwd,
-				encoding: "utf8",
-				stdio: "pipe",
-				env: testGitEnv(),
-			}).trim();
 		const fx = createGitFixture([
 			{
 				message: "base",
@@ -1367,7 +1360,6 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 			},
 		]);
 		try {
-			void git;
 			const [b0, h1, h2] = fx.shas as [string, string, string];
 			const answer = await run(fx.path, b0, h1, h2, () => new Map());
 			// Nothing marked at PS1: a.ts's re-indent is whitespace-only (it
