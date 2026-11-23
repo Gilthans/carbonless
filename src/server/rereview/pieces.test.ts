@@ -1040,6 +1040,86 @@ describe("a Markdown file's since view: the block cut, then the whitespace cut (
 	});
 });
 
+describe("a Markdown since run cut at its blocks, then one block group at whitespace runs (CAR-167, CAR-218)", () => {
+	// PS1 adds a list to a .txt file (not cut at blocks: one cluster over
+	// its items, marked); PS2 renames it to .md, edits items one and two,
+	// and only re-indents item two's continuation. The interdiff's removals
+	// are that one cluster's lines: one run over two items. The block cut
+	// parts the items, then the whitespace cut parts item two's group, its
+	// edited line from its re-indented one.
+	const intro = ["# Title", "", "Intro one.", "Intro two.", "Intro three."];
+	const list = (one: string, two: string, more: string) => [
+		...intro,
+		"",
+		one,
+		two,
+		more,
+		"- three",
+		"",
+		"end",
+	];
+	let r: GitFixture;
+	let a: Snapshot;
+	let b: Snapshot;
+	beforeAll(async () => {
+		r = createGitFixture([
+			{ message: "base", files: { "doc.txt": text([...intro, "", "end"]) } },
+			{
+				message: "ps1",
+				files: { "doc.txt": text(list("- one", "- two", "  more two")) },
+			},
+			{
+				message: "ps2",
+				rename: { "doc.txt": "doc.md" },
+				files: { "doc.md": text(list("- one!", "- two!", "    more two")) },
+			},
+		]);
+		const [b0, h1, h2] = r.shas as [string, string, string];
+		a = await buildSnapshot(r.path, b0, h1);
+		b = await buildSnapshot(r.path, b0, h2);
+	});
+	afterAll(() => r.cleanup());
+
+	it("applies both cuts: every changed line in one piece, each all `~` or none", async () => {
+		const view = await sinceView(r.path, a, b, allReviewed(a));
+		const hunks = view.hunks(b.files.findIndex((f) => f.path === "doc.md"));
+		expect(hunks.markdownBlocks).toBe(true);
+		expectAgree(hunks, true, "doc.md");
+		const pieces = (hunks.pieces ?? []).map((p) => {
+			const lines = (hunks.hunks[p.hunk]?.lines ?? []).slice(
+				p.line,
+				p.line + size(p.old) + size(p.new),
+			);
+			return {
+				texts: lines.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`),
+				key: p.key,
+				block: lines[0]?.blockPiece,
+				ws: p.whitespaceOnly === true,
+			};
+		});
+		const of = (t: string) => pieces.find((p) => p.texts.includes(t));
+		const one = of("-- one");
+		const two = of("-- two");
+		const more = of("-  more two");
+		// One run (one key) over both items, cut at the blocks...
+		expect(two?.key).toBe(one?.key);
+		expect(more?.key).toBe(one?.key);
+		expect(one).toMatchObject({ texts: ["-- one", "+- one!"], ws: false });
+		expect(two?.block).toBeDefined();
+		expect(one?.block).not.toBe(two?.block);
+		// ... and item two's group cut again: the re-indent a piece of its
+		// own, whitespace-only; the edit next to it not.
+		expect(two).toMatchObject({ texts: ["-- two"], ws: false });
+		expect(more).toMatchObject({
+			texts: ["-  more two"],
+			block: two?.block,
+			ws: true,
+		});
+		expect(of("+    more two")).toMatchObject({ ws: true });
+		expect(of("+- two!")).toMatchObject({ ws: false });
+	});
+});
+
 describe("a since display hunk over the cap (CAR-218)", () => {
 	// 600 lines; PS1 changes every 4th, PS2 re-indents those and edits a
 	// few for real: the interdiff's changes sit 3 lines apart, so one

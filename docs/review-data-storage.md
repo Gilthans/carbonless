@@ -932,15 +932,23 @@ files marked between CAR-156 (2026-11-15) and this cut. A file the cut
 skips keeps the whitespace cut alone (and isn't offered the Rendered
 view); `FileSummary.markdownBlocks` says which files were cut. The block
 cut runs after CAR-218's whitespace cut, on its pieces: a block piece of a
-whitespace-only piece stays whitespace-only (each of its lines has its
-twin by the display hunk's matching, maybe on one side only), so the
-clusters still agree with the view's `~` rows. The since view cuts the
-other way round, on its own diff: each run is grouped at the blocks
+whitespace-only piece stays whitespace-only where the view draws all its
+lines as `~` rows. Under the cap the view matches the display hunk whole,
+so every part of a whitespace-only piece is `~`; over `SPLIT_CELLS` (or
+when the hunks don't fit the text) it matches each cluster alone, so a
+pair the block cut parted would draw as plain lines. `cutClusters` checks
+those block pieces against the view's matching over the final clusters
+and clears the flag where it would (they count: the safe direction), so
+the clusters agree with the view's `~` rows line for line
+(`src/server/diff/cut.test.ts`, Markdown included). The since view cuts
+the other way round, on its own diff: each run is grouped at the blocks
 (`cutRunsAtBlocks`), then the whitespace cut (`sincePieces`) cuts the
-groups at whitespace-only runs; the grouping keeps each side's lines in
-order, so the matching is the same. Its pieces are marked by line, so
-neither moves a mark; the cached since answer is recomputed
-(`ENGINE_VERSION` 7).
+groups at whitespace-only runs. The grouping keeps each side's lines in
+order, so the whitespace-only lines are the same as without it, and both
+cuts' invariants hold (each piece in one block group, all `~` or none);
+the pieces' shapes are not those a whitespace-first cut would make. Its
+pieces are marked by line, so neither moves a mark; the cached since
+answer is recomputed (`ENGINE_VERSION` 7).
 
 **Mixed versions.** Once progress refs sync, an older crb that unticks the
 whole hunk (its key still a cluster there) leaves pieces already

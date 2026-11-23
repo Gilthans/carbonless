@@ -13,7 +13,12 @@ import type {
 	HunksBatch,
 	Snapshot,
 } from "../../shared/types.js";
-import { type HunkCut, hunkCut, hunkCuts } from "../../shared/whitespace.js";
+import {
+	type HunkCut,
+	hunkCut,
+	hunkCuts,
+	whitespaceLines,
+} from "../../shared/whitespace.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
 import { BlobCache } from "./blobCache.js";
 import { buildAllClusters, splitCluster } from "./clusters.js";
@@ -439,6 +444,8 @@ export function cutClusters(
 	// The file's clusters as the whitespace cut alone makes them (CAR-156),
 	// keyed only when a block piece needs its CAR-156 piece's key.
 	const wsClusters: Omit<Cluster, "key">[] = [];
+	// Indexes in `clusters` of block pieces of a whitespace-only piece.
+	const recheck = new Set<number>();
 	hunks.forEach((hunk, h) => {
 		const ws =
 			hunk.kind === "lines"
@@ -455,7 +462,9 @@ export function cutClusters(
 				: [{ cluster: hunk, removedAt: 0, addedAt: 0 }];
 		const pieces = ws.flatMap((p) => {
 			const at = wsClusters.push(p.cluster) - 1;
-			if (!blocks || hunk.kind !== "lines") return [{ ...p, piece: -1 }];
+			if (!blocks || hunk.kind !== "lines") {
+				return [{ ...p, piece: -1, split: false }];
+			}
 			// Each CAR-156 piece cut at the blocks with its own pairing budget
 			// (a piece's cut, and so its keys, never depends on another's
 			// cost), its pieces' places made the git hunk's.
@@ -463,14 +472,19 @@ export function cutClusters(
 				left: HUNK_ALIGN_WORD_OPS,
 			});
 			const piece = cut.length > 1 && ws.length > 1 ? at : -1;
+			// A whitespace-only piece the block cut splits: checked against
+			// the view's matching below (recheck).
+			const split = cut.length > 1 && p.cluster.whitespaceOnly === true;
 			return cut.map((q) => ({
 				cluster: q.cluster,
 				removedAt: p.removedAt + q.removedAt,
 				addedAt: p.addedAt + q.addedAt,
 				piece,
+				split,
 			}));
 		});
 		for (const piece of pieces) {
+			if (piece.split) recheck.add(clusters.length);
 			clusters.push(piece.cluster);
 			parts.push({
 				hunk: pieces.length > 1 ? h : -1,
@@ -483,7 +497,7 @@ export function cutClusters(
 	const keys = keysOf(clusters);
 	const hunkKeys = parts.some((p) => p.hunk >= 0) ? keysOf(hunks) : [];
 	const wsKeys = parts.some((p) => p.piece >= 0) ? keysOf(wsClusters) : [];
-	return clusters.map((c, i) => {
+	const keyed = clusters.map((c, i) => {
 		const part = parts[i];
 		const split: ClusterSplit | undefined =
 			part && part.hunk >= 0
@@ -497,6 +511,53 @@ export function cutClusters(
 				: undefined;
 		return { ...c, key: keys[i] as string, ...(split ? { split } : {}) };
 	});
+	if (recheck.size > 0) keepViewWhitespace(keyed, recheck, text);
+	return keyed;
+}
+
+/**
+ * The block pieces of a whitespace-only piece (`recheck`, indexes in
+ * `clusters`) keep `whitespaceOnly` only where the view draws every one of
+ * their lines as a `~` row (CAR-167, principle 2). Under the cap the view
+ * matches the whole display hunk, so a part of a whitespace-only piece is
+ * `~` all through; over SPLIT_CELLS (or on the per-hunk fallback) it
+ * matches each cluster alone, and a pair the block cut split across two
+ * pieces would draw as plain `-`/`+` lines while folding away as
+ * whitespace. So: the view's display hunks over the final clusters, its
+ * matching (`whitespaceLines`, as hunkView's), and any such piece with a
+ * line it leaves plain counts as a change (the safe direction). Display
+ * hunks that don't build: every such piece counts.
+ */
+function keepViewWhitespace(
+	clusters: Cluster[],
+	recheck: ReadonlySet<number>,
+	text: { oldLines: string[]; newLines: string[]; noNewlineAtEnd: boolean },
+): void {
+	const plain = new Set<string>();
+	try {
+		const displays = buildDisplayHunks(
+			text.oldLines,
+			text.newLines,
+			clusters.filter((c) => c.kind === "lines"),
+			3,
+			text.noNewlineAtEnd,
+		);
+		for (const display of displays) {
+			const ws = whitespaceLines(display.lines);
+			for (const l of display.lines) {
+				if (l.kind !== "context" && l.clusterKey !== undefined && !ws.has(l)) {
+					plain.add(l.clusterKey);
+				}
+			}
+		}
+	} catch (error) {
+		if (!(error instanceof HunksMismatchError)) throw error;
+		for (const i of recheck) plain.add((clusters[i] as Cluster).key);
+	}
+	for (const i of recheck) {
+		const c = clusters[i] as Cluster;
+		if (plain.has(c.key)) delete c.whitespaceOnly;
+	}
 }
 
 /**
