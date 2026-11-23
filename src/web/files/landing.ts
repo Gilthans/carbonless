@@ -1,4 +1,5 @@
 import type { FileView, ReviewThread, SessionInfo } from "../../shared/types";
+import type { SinceLeft } from "./threadPlacement";
 
 /**
  * Files changed's search params: land on `path`, at `line` on `side` ("LEFT"
@@ -105,3 +106,23 @@ export function landingFile(
  * diff) and a sequence number, new for each link followed.
  */
 export type Landing = FilesSearch & { index: number | null; seq: number };
+
+/**
+ * The row a landing's line is on, by its number on one side as the view
+ * numbers its rows (`old`: the old side). A link's LEFT line counts in the
+ * base (GitHub's, the Threads tab's, the agent's); the since view (`left`,
+ * threadPlacement.ts sinceLeft) numbers its old side in the compared patch
+ * set, so it goes where the line's thread shows there: the head line the
+ * full diff keeps it as, else the removed row whose base line it is; null
+ * when neither (no row of this view is that line). RIGHT lines, and any
+ * line in the full diff (no `left`), are as given.
+ */
+export function landingRow(
+	side: "LEFT" | "RIGHT",
+	line: number,
+	left: SinceLeft | undefined,
+): { old: boolean; line: number } | null {
+	if (side === "RIGHT" || !left) return { old: side === "LEFT", line };
+	const at = left(line);
+	return at && { old: at.side === "LEFT", line: at.line };
+}

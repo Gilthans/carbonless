@@ -3427,3 +3427,63 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 	);
 	await expect(row61).toHaveAttribute("data-commented", "", GIT_WAIT);
 });
+
+test("a link to an old line (side=LEFT) lands on that base line's row in the since view, and one the view doesn't show says so with the way to the full diff (CAR-253)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// PS1 adds two lines at core.ts's top (its old side numbers two on from
+	// the base) and deletes core 20; the push takes the two lines back out
+	// and deletes core 10. The since view's removed row of core 10 is PS1's
+	// old 12, while its old 10 is core 8; core 20 has no row there.
+	const top = ["top 1", "top 2"];
+	const p = await pr({
+		base: { "src/core.ts": text(core), "src/util.ts": text(util) },
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"src/core.ts": text([...top, ...core.filter((_, i) => i !== 19)]),
+					"src/util.ts": edit(util, { 3: "util 3 changed" }),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await pushed(page, s, p, {
+		message: "rework",
+		files: { "src/core.ts": edit(core, { 10: null, 20: null }) },
+	});
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible(GIT_WAIT);
+	const land = async (line: number) => {
+		const url = new URL(page.url());
+		url.searchParams.set("path", "src/core.ts");
+		url.searchParams.set("line", String(line));
+		url.searchParams.set("side", "LEFT");
+		await page.goto(url.toString());
+	};
+	const section = fileSection(page, "src/core.ts");
+	const landed = section.locator('tr[data-testid="diff-line"][data-landed]');
+
+	// Base line 10: the removed row showing it, not the row numbered 10.
+	await land(10);
+	await expect(landed).toHaveText(/core 10/, GIT_WAIT);
+	await expect(landed).toHaveAttribute("data-old-no", "12");
+	await expect(section.getByTestId("landing-hint")).toHaveCount(0);
+
+	// Base line 20, gone by PS1: not in this view; the full diff has it.
+	await land(20);
+	const hint = section.getByTestId("landing-hint");
+	await expect(hint).toContainText("Old line 20 isn't in this view", GIT_WAIT);
+	await expect(landed).toHaveCount(0);
+	await hint.getByTestId("landing-full-diff").click();
+	await expect(page).toHaveURL(/from=branch/);
+	const full = fileSection(page, "src/core.ts");
+	const there = full.locator('tr[data-testid="diff-line"][data-landed]');
+	await expect(there).toHaveText(/core 20/, GIT_WAIT);
+	await expect(there).toHaveAttribute("data-old-no", "20");
+});

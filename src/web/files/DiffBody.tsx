@@ -2,6 +2,7 @@ import {
 	AlertIcon,
 	ChevronDownIcon,
 	ChevronRightIcon,
+	FileDiffIcon,
 	InfoIcon,
 } from "@primer/octicons-react";
 import {
@@ -9,6 +10,7 @@ import {
 	useQueries,
 	useQuery,
 } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import {
 	type CSSProperties,
 	Fragment,
@@ -95,6 +97,7 @@ import {
 	type Words,
 } from "../code/Invisibles";
 import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
+import { useReviewId } from "../reviewId";
 import { Spinner, SpinnerIcon } from "../Spinner";
 import {
 	clickPointer,
@@ -124,7 +127,7 @@ import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
 import { KindChip } from "./KindChip";
-import type { Landing } from "./landing";
+import { type FilesSearch, type Landing, landingRow } from "./landing";
 import {
 	getPicks,
 	type Picks,
@@ -161,6 +164,7 @@ import {
 	type Placeable,
 	type Placements,
 	placeThreads,
+	type SinceLeft,
 	sinceEarlier,
 	sinceLeft,
 } from "./threadPlacement";
@@ -2489,10 +2493,23 @@ export function DiffBody(props: {
 		linesHidden && props.landing?.line !== undefined
 			? undefined
 			: props.landing;
+	// The since view numbers its old side in the compared patch set; a
+	// LEFT anchor, span or landing counts in the base, so it goes to the
+	// removed row that shows it (the row's base number), else through the
+	// full diff (its clusters) to the head line it became
+	// (threadPlacement.ts).
+	const left = useMemo(
+		() =>
+			props.from === undefined
+				? undefined
+				: sinceLeft(file.clusters, hunks.data?.hunks),
+		[props.from, file.clusters, hunks.data],
+	);
 	const { hint, landed, pending } = useLanding(
 		root,
 		lineLanding,
 		hunks.isSuccess,
+		left,
 	);
 	useFindStep(root, linesHidden ? undefined : find, hunks.isSuccess);
 	// The line a thread link is about to land on (so a collapsed cluster
@@ -2500,7 +2517,7 @@ export function DiffBody(props: {
 	// landed, `landed` keeps the cluster open while the highlight lasts.
 	const landingLine: LineRef | null =
 		pending && lineLanding?.line !== undefined && !lineLanding.moved
-			? { old: lineLanding.side === "LEFT", line: lineLanding.line }
+			? landingRow(lineLanding.side ?? "RIGHT", lineLanding.line, left)
 			: null;
 
 	const loaded = new Map<number, DiffLine>();
@@ -2600,17 +2617,6 @@ export function DiffBody(props: {
 			)
 		: [];
 
-	// The since view numbers its old side in the compared patch set; a
-	// LEFT anchor or span counts in the base, so it goes to the removed row
-	// that shows it (the row's base number), else through the full diff
-	// (its clusters) to the head line it became (threadPlacement.ts).
-	const left = useMemo(
-		() =>
-			props.from === undefined
-				? undefined
-				: sinceLeft(file.clusters, hunks.data?.hunks),
-		[props.from, file.clusters, hunks.data],
-	);
 	const early = useMemo(
 		() =>
 			earlierHead === undefined
@@ -3904,10 +3910,14 @@ export interface LineRef {
 const landingOn = (target: LineRef | null, line: RowLine) =>
 	target !== null && (target.old ? line.oldNo : line.newNo) === target.line;
 
-/** Why a landing found no line: the text and its tooltip. */
+/**
+ * Why a landing found no line: the text and its tooltip; `full`, the
+ * since view's old line no row shows: the link to it in the full diff.
+ */
 interface Hint {
 	text: string;
 	tip: string;
+	full?: FilesSearch;
 }
 
 /**
@@ -3962,10 +3972,14 @@ function useLanding(
 	root: RefObject<HTMLDivElement | null>,
 	landing: Landing | undefined,
 	ready: boolean,
+	/** The since view's base lines on its rows (landingRow); read as the landing runs. */
+	left: SinceLeft | undefined,
 ): { hint: Hint | null; landed: Landed | null; pending: boolean } {
 	const [hint, setHint] = useState<Hint | null>(null);
 	const [landed, setLanded] = useState<Landed | null>(null);
 	const done = useRef(0);
+	const leftNow = useRef(left);
+	leftNow.current = left;
 	// Until the landing below has run (it sets state when it does).
 	const pending =
 		landing !== undefined && ready && done.current !== landing.seq;
@@ -3976,15 +3990,20 @@ function useLanding(
 		const section = el.closest("section");
 		const scrollTo = (target: Element, margin: number) =>
 			scrollUnderStack(el, target, margin);
-		const old = landing.side === "LEFT";
-		const where = `${old ? "Old line" : "Line"} ${landing.line}`;
-		const row =
+		const side = landing.side ?? "RIGHT";
+		const where = `${side === "LEFT" ? "Old line" : "Line"} ${landing.line}`;
+		// The row it is on, as this view numbers its rows: in the since view
+		// a LEFT (base) line is where its thread shows (landingRow).
+		const at =
 			landing.line === undefined || landing.moved
 				? null
-				: el.querySelector(
-						`tr[data-${old ? "old" : "new"}-no="${landing.line}"]`,
-					);
-		if (!row) {
+				: landingRow(side, landing.line, leftNow.current);
+		const row =
+			at &&
+			el.querySelector(`tr[data-${at.old ? "old" : "new"}-no="${at.line}"]`);
+		if (!row || !at) {
+			// The since view's old line no row shows: the full diff may.
+			const since = leftNow.current !== undefined && side === "LEFT";
 			setHint(
 				landing.line === undefined
 					? null
@@ -3993,10 +4012,21 @@ function useLanding(
 								text: `${where} is from another commit`,
 								tip: "Commented on another commit: the line may have moved",
 							}
-						: {
-								text: `${where} isn't in this diff`,
-								tip: "Outdated, or an unchanged line the diff doesn't show",
-							},
+						: since
+							? {
+									text: `${where} isn't in this view`,
+									tip: "Not changed since the compared patch set: the full diff has it",
+									full: {
+										path: landing.path,
+										line: landing.line,
+										side,
+										from: "branch",
+									},
+								}
+							: {
+									text: `${where} isn't in this diff`,
+									tip: "Outdated, or an unchanged line the diff doesn't show",
+								},
 			);
 			if (section) scrollTo(section, -1);
 			return;
@@ -4004,7 +4034,7 @@ function useLanding(
 		setHint(null);
 		// A few lines of context above it stay in view.
 		scrollTo(row, 60);
-		const line = landing.line as number;
+		const { old, line } = at;
 		setLanded({ old, line, phase: "on" });
 		// The highlight's time counts from when the page is next idle: the
 		// line's first paint often comes with heavy work (the highlighter's
@@ -4057,9 +4087,32 @@ function LandingHint({ hint }: { hint: Hint }) {
 				>
 					<InfoIcon size={14} aria-hidden className="shrink-0 text-accent" />
 					{hint.text}
+					{hint.full && <FullDiffLink search={hint.full} />}
 				</p>
 			)}
 		</Tooltip>
+	);
+}
+
+/** The since view's way to a landing's line in the full diff (the comparison's base: the branch). */
+function FullDiffLink({ search }: { search: FilesSearch }) {
+	const id = useReviewId();
+	return (
+		<Link
+			to="/r/$id/files"
+			params={{ id }}
+			// The viewed dot stays; the base moves to the branch.
+			search={(prev: FilesSearch) => ({
+				ps: prev.ps,
+				head: prev.head,
+				...search,
+			})}
+			data-testid="landing-full-diff"
+			className="ml-auto inline-flex min-h-10 shrink-0 items-center gap-1 rounded-md px-2 font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+		>
+			<FileDiffIcon size={14} aria-hidden />
+			Full diff
+		</Link>
 	);
 }
 
