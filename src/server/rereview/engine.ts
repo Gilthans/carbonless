@@ -35,6 +35,7 @@ import type {
 	Cluster,
 	ClusterView,
 	DiffLine,
+	DisplayHunk,
 	FileHunks,
 	FileStatus,
 	RereviewAnswer,
@@ -679,12 +680,29 @@ export function answerRereview(
 	});
 	let toReadFiles = 0;
 	let toReadClusters = 0;
+	// The same count without the whitespace-only clusters (what a reviewer
+	// with "Ignore whitespace" on reads); the page picks by its switch.
+	// Only without an interdiff: with one, the since units replace the
+	// count below (and carry their own whitespace-only judgement).
+	const wsKeys = new Set(
+		interdiff.status === "available"
+			? []
+			: target.files.flatMap((f) =>
+					f.clusters.filter((c) => c.whitespaceOnly).map((c) => c.key),
+				),
+	);
+	let countedFiles = 0;
+	let countedClusters = 0;
 	for (const f of files) {
-		const count = f.clusters.filter(
+		const read = f.clusters.filter(
 			(c) => c.kind === "reworked" || c.kind === "new",
-		).length;
+		);
+		const count = read.length;
+		const counted = read.filter((c) => !wsKeys.has(c.key)).length;
 		toReadClusters += count;
+		countedClusters += counted;
 		if (count > 0 || f.conflict) toReadFiles++;
+		if (counted > 0 || f.conflict) countedFiles++;
 	}
 	const answer: RereviewAnswer = {
 		from: ps.number,
@@ -697,15 +715,31 @@ export function answerRereview(
 		toRead: { files: toReadFiles, clusters: toReadClusters },
 		threads: [],
 	};
+	if (
+		interdiff.status !== "available" &&
+		(countedFiles !== toReadFiles || countedClusters !== toReadClusters)
+	) {
+		answer.toRead.withoutWhitespaceOnly = {
+			files: countedFiles,
+			clusters: countedClusters,
+		};
+	}
 	// The since view's pieces, every one of them (its counts count them:
 	// sinceUnits), with the since patch set's states for what they own; to
 	// read is every unit, as nothing of the target is marked yet.
 	// The line carries (CAR-195): a reworked or new cluster's lines no
 	// piece shows take the mark their counterparts held on the since patch
-	// set (by hand), one to one.
+	// set (by hand), one to one. The rest of those lines are pieces of
+	// their own (CAR-216, orphanLines), found once the carries are.
 	const linesCarried: LinesCarriedEntry[] = [];
 	const sources = humanMarksOf(ps.snapshot, ps.states);
 	if (interdiff.status === "available") {
+		// By index once (the first, as a scan finds): a scan per file is
+		// quadratic in the files.
+		const targetAt = new Map<number, (typeof target.files)[number]>();
+		for (const t of target.files) {
+			if (!targetAt.has(t.index)) targetAt.set(t.index, t);
+		}
 		for (const f of files) {
 			const { pieces = [] } = interdiffFileHunks(
 				traced,
@@ -713,6 +747,7 @@ export function answerRereview(
 				answer,
 				f.index,
 				sources,
+				false,
 			);
 			if (pieces.length > 0) f.pieces = pieces;
 			const carries = sinceLineCarries(
@@ -739,15 +774,22 @@ export function answerRereview(
 				};
 				linesCarried.push(...mine);
 			}
+			// The pieces the since view shows (its hunks', so the two agree).
+			const own = targetAt.get(f.index);
+			const clusters = own?.path === f.path ? own.clusters : [];
+			if (orphanLines(f, clusters, pieces).length > 0) {
+				const shown = interdiffFileHunks(
+					traced,
+					target,
+					answer,
+					f.index,
+					sources,
+				);
+				if (shown.pieces?.length) f.pieces = shown.pieces;
+			}
 		}
 		// The target as the carries leave it: a carried cluster holds its
 		// mark (not to read), every other is unmarked.
-		// By index once (the first, as a scan finds): a scan per file is
-		// quadratic in the files.
-		const targetAt = new Map<number, (typeof target.files)[number]>();
-		for (const t of target.files) {
-			if (!targetAt.has(t.index)) targetAt.set(t.index, t);
-		}
 		const linesOf = new Map(
 			files.flatMap((f) =>
 				f.clusters.flatMap((c) => (c.lines ? [[c.key, c.lines] as const] : [])),
@@ -773,6 +815,15 @@ export function answerRereview(
 		const byFile = new Set(units.map((u) => u.index));
 		for (const f of files) if (f.conflict) byFile.add(f.index);
 		answer.toRead = { files: byFile.size, clusters: units.length };
+		const counted = units.filter((u) => !u.whitespaceOnly);
+		if (counted.length !== units.length) {
+			const countedFiles = new Set(counted.map((u) => u.index));
+			for (const f of files) if (f.conflict) countedFiles.add(f.index);
+			answer.toRead.withoutWhitespaceOnly = {
+				files: countedFiles.size,
+				clusters: counted.length,
+			};
+		}
 	}
 	// One carried event per (source patch set, rule).
 	const events = new Map<string, PatchsetStart["carried"][number]>();
@@ -928,6 +979,13 @@ export function interdiffFileContext(
  * lines are on the interdiff and each one's counterpart at the compared
  * patch set held a mark there, or was a base line it left alone
  * (sinceWhitespace). Without it no piece is (they all count).
+ *
+ * The orphans (CAR-216, orphanLines): a reworked or new cluster's lines
+ * no piece shows and nothing carried a mark into are shown too, at their
+ * place, as the change they are, each run of them a piece of its own;
+ * `withOrphans` false leaves them out (the carries are found without
+ * them). Should placing them fail, they are left out (fail closed: those
+ * lines stay to read, in the full diff).
  */
 export function interdiffFileHunks(
 	traced: Traced,
@@ -935,16 +993,239 @@ export function interdiffFileHunks(
 	answer: RereviewAnswer,
 	index: number,
 	sources?: ReadonlyMap<string, HumanMarks>,
+	withOrphans = true,
 ): FileHunks {
 	const { entry, file } = interdiffFileAt(traced, answer, index);
-	if (!file) return { hunks: [], newLineCount: 0 };
-	if (file.clusters.every((c) => c.kind !== "lines")) {
+	const targetClusters =
+		target.files.find((f) => f.path === entry.path)?.clusters ?? [];
+	const plain = sinceFileHunks(
+		traced,
+		entry,
+		file,
+		targetClusters,
+		[],
+		sources,
+	);
+	if (!withOrphans) return plain;
+	const orphans = orphanLines(entry, targetClusters, plain.pieces ?? []);
+	if (orphans.length === 0) return plain;
+	try {
+		return sinceFileHunks(
+			traced,
+			entry,
+			file,
+			targetClusters,
+			orphans,
+			sources,
+		);
+	} catch {
+		return plain;
+	}
+}
+
+/** A line of the since view no piece shows and nothing carried (CAR-216): where it goes, as a row. */
+export interface Orphan {
+	/** The new line it sits after (an added one's is the line above it). */
+	place: number;
+	line: DiffLine;
+}
+
+/**
+ * The orphans of a file (CAR-216): each line of a reworked or new
+ * cluster of the viewed snapshot that no piece owns (`pieces`, without
+ * orphans) and that the engine carried no mark into (the answer's
+ * `lines`, sinceLineCarries): unchanged since the compared patch set, but
+ * no change reviewed there. Its text and place come from the cluster,
+ * never from matching text. In file order, a place's removed lines
+ * before its added ones.
+ */
+export function orphanLines(
+	entry: RereviewAnswer["files"][number],
+	targetClusters: readonly Cluster[],
+	pieces: readonly SincePiece[],
+): Orphan[] {
+	const owned = new Map<string, LineRanges>();
+	for (const p of pieces) {
+		if (p.key === undefined || !p.owns) continue;
+		owned.set(p.key, union(owned.get(p.key) ?? [], p.owns));
+	}
+	const kinds = new Map(entry.clusters.map((c) => [c.key, c]));
+	const out: Orphan[] = [];
+	for (const c of targetClusters) {
+		const kind = kinds.get(c.key);
+		if (c.kind !== "lines" || c.lines === 0) continue;
+		if (kind?.kind !== "reworked" && kind?.kind !== "new") continue;
+		const carried = union(
+			kind.lines?.reviewed ?? [],
+			kind.lines?.crossed ?? [],
+		);
+		const rest = subtract(
+			subtract(all(c.lines), owned.get(c.key) ?? []),
+			carried,
+		);
+		const removed = c.removed.length;
+		// Where the cluster's removed lines sit: after its new line above.
+		const above = c.newCount === 0 ? c.newStart : c.newStart - 1;
+		for (const [start, end] of rest) {
+			for (let i = start; i < end; i++) {
+				if (i < removed) {
+					const line: DiffLine = {
+						kind: "del",
+						text: c.removed[i] as string,
+						clusterKey: c.key,
+						baseNo: c.oldStart + i,
+						orphan: true,
+					};
+					if (c.noNewlineOld && i === removed - 1) line.noNewline = true;
+					out.push({ place: above, line });
+				} else {
+					const newNo = c.newStart + i - removed;
+					const line: DiffLine = {
+						kind: "add",
+						newNo,
+						text: c.added[i - removed] as string,
+						clusterKey: c.key,
+						orphan: true,
+					};
+					if (c.noNewlineNew && i === c.lines - 1) line.noNewline = true;
+					out.push({ place: newNo - 1, line });
+				}
+			}
+		}
+	}
+	return out.sort(
+		(a, b) =>
+			a.place - b.place ||
+			(a.line.kind === b.line.kind ? 0 : a.line.kind === "del" ? -1 : 1),
+	);
+}
+
+/**
+ * Hunks of nothing but orphans (a file the interdiff doesn't touch): a
+ * hunk per run of them, no context (the gaps load it). The old side is
+ * the new head's: an orphan has no line there of its own (an added one's
+ * line is its new one, unchanged since), so a hunk's old span is empty,
+ * at its place.
+ */
+function orphanHunks(orphans: readonly Orphan[]): DisplayHunk[] {
+	const hunks: DisplayHunk[] = [];
+	// The new line the last hunk ends after.
+	let end = -1;
+	for (const { place, line } of orphans) {
+		let hunk = hunks.at(-1);
+		if (!hunk || place !== end) {
+			hunk = {
+				oldStart: place,
+				oldCount: 0,
+				newStart: place,
+				newCount: 0,
+				lines: [],
+			};
+			hunks.push(hunk);
+		}
+		hunk.lines.push(line);
+		if (line.kind === "add") {
+			if (hunk.newCount === 0) hunk.newStart = line.newNo as number;
+			hunk.newCount++;
+			end = line.newNo as number;
+		} else end = place;
+	}
+	return hunks;
+}
+
+/**
+ * Places the orphans (in file order, orphanLines) in hunks that hold
+ * their places (with the lines around them: sinceFileHunks's anchors):
+ * an added one stands for the context row at its new number, a removed
+ * one goes in before the first row below its place. One pass over the
+ * rows and one over the orphans (a file of thousands is common: a whole
+ * file never reviewed). Throws when a place isn't there (the caller falls
+ * back to none: fail closed).
+ *
+ * The hunks' spans stay as they are: an added orphan's new line is the
+ * row it stands for, and its old line (the interdiff's context) is still
+ * in the old span, only not shown; a removed orphan is no line of the
+ * since view's old side (it has a base number, no old one), so it
+ * counts in neither.
+ */
+export function placeOrphans(
+	hunks: DisplayHunk[],
+	orphans: readonly Orphan[],
+): void {
+	// Each new line's row: its hunk and its index there.
+	const rowOf = new Map<number, { hunk: number; index: number }>();
+	hunks.forEach((hunk, h) => {
+		hunk.lines.forEach((line, index) => {
+			if (line.newNo !== undefined) rowOf.set(line.newNo, { hunk: h, index });
+		});
+	});
+	// The removed ones to insert, by hunk, before the row at an index.
+	const inserts = new Map<number, Map<number, DiffLine[]>>();
+	for (const { place, line } of orphans) {
+		if (line.kind === "add") {
+			const at = rowOf.get(line.newNo as number);
+			const row = at && hunks[at.hunk]?.lines[at.index];
+			if (!at || row?.kind !== "context") {
+				throw new Error(`No unchanged row for line ${line.newNo}`);
+			}
+			if (row.noNewline) line.noNewline = true;
+			else delete line.noNewline;
+			(hunks[at.hunk] as DisplayHunk).lines[at.index] = line;
+			continue;
+		}
+		// The hunk with the line above (the first line's, at the top).
+		const above = rowOf.get(place === 0 ? 1 : place);
+		if (!above) throw new Error(`No place after line ${place}`);
+		const below = rowOf.get(place + 1);
+		const index =
+			below && below.hunk === above.hunk
+				? below.index
+				: (hunks[above.hunk] as DisplayHunk).lines.length;
+		const ofHunk = inserts.get(above.hunk) ?? new Map<number, DiffLine[]>();
+		inserts.set(above.hunk, ofHunk);
+		const list = ofHunk.get(index) ?? [];
+		list.push(line);
+		ofHunk.set(index, list);
+	}
+	for (const [h, ofHunk] of inserts) {
+		const hunk = hunks[h] as DisplayHunk;
+		const lines: DiffLine[] = [];
+		// A loop, not a spread: thousands of them can sit at one place.
+		const add = (index: number) => {
+			for (const line of ofHunk.get(index) ?? []) lines.push(line);
+		};
+		hunk.lines.forEach((line, index) => {
+			add(index);
+			lines.push(line);
+		});
+		add(hunk.lines.length);
+		hunk.lines = lines;
+	}
+}
+
+/** interdiffFileHunks's hunks and pieces, with these orphans placed. */
+function sinceFileHunks(
+	traced: Traced,
+	entry: RereviewAnswer["files"][number],
+	file: InterdiffFile | null,
+	targetClusters: readonly Cluster[],
+	orphans: readonly Orphan[],
+	sources: ReadonlyMap<string, HumanMarks> | undefined,
+): FileHunks {
+	if (!file) {
+		if (orphans.length === 0) return { hunks: [], newLineCount: 0 };
+		const hunks = orphanHunks(orphans);
+		const pieces = sincePieces(hunks, targetClusters, () => ({
+			baseNo: (line) => line.baseNo ?? undefined,
+		}));
+		return { hunks, newLineCount: 0, pieces };
+	}
+	if (orphans.length === 0 && file.clusters.every((c) => c.kind !== "lines")) {
 		return { hunks: [], newLineCount: file.newLines.length };
 	}
-	const targetFile = target.files.find((f) => f.path === entry.path);
 	const byNew = new Map<number, string>();
 	const byOld = new Map<number, string>();
-	for (const c of targetFile?.clusters ?? []) {
+	for (const c of targetClusters) {
 		if (c.kind !== "lines") continue;
 		for (let i = 0; i < c.newCount; i++) byNew.set(c.newStart + i, c.key);
 		for (let i = 0; i < c.oldCount; i++) byOld.set(c.oldStart + i, c.key);
@@ -962,10 +1243,29 @@ export function interdiffFileHunks(
 	const clusters: Cluster[] = file.clusters
 		.filter((c) => c.kind === "lines")
 		.map((c, i) => ({ ...c, key: `${TEMP}${i}` }));
+	// Each orphan's place in a hunk, with the lines around it: an empty
+	// cluster there (it shows no line; its context does).
+	const interdiff = createLineMapper(clusters);
+	const anchors = [...new Set(orphans.map((o) => o.place))].map(
+		(p): Cluster => ({
+			key: TEMP,
+			kind: "lines",
+			// An unchanged line's old number; else past any cluster at the
+			// same new line (one adding that line sorts first: it holds it).
+			oldStart:
+				p === 0 ? 0 : (interdiff.newToOld(p) ?? Number.MAX_SAFE_INTEGER),
+			oldCount: 0,
+			newStart: p,
+			newCount: 0,
+			removed: [],
+			added: [],
+			lines: 0,
+		}),
+	);
 	const hunks = buildDisplayHunks(
 		file.oldLines,
 		file.newLines,
-		clusters,
+		[...clusters, ...anchors],
 		3,
 		file.noNewlineAtEnd,
 	);
@@ -975,7 +1275,6 @@ export function interdiffFileHunks(
 			byNew.get(newNo) ?? (file.conflict ? undefined : gone(goneNew[newNo]))
 		);
 	};
-	const targetClusters = targetFile?.clusters ?? [];
 	// A removed line's line in the new base, by position: a conflicted
 	// file's old side is the new base; else the engine's map (none for a
 	// line the patch set added, one it can't map, or a file it has no map
@@ -987,6 +1286,9 @@ export function interdiffFileHunks(
 			: file.conflict
 				? line.oldNo
 				: mapped?.[line.oldNo];
+	// An orphan's is its cluster's (it has no old number here).
+	const baseOf = (line: DiffLine): number | undefined =>
+		line.orphan ? (line.baseNo ?? undefined) : baseNo(line);
 	/** The target cluster that removes a removed base line (by its place in the new base). */
 	const removedBy = (line: DiffLine): string | undefined => {
 		const b = baseNo(line);
@@ -1044,13 +1346,14 @@ export function interdiffFileHunks(
 	// a line the patch set added. A line no piece shows is unchanged since
 	// the compared patch set: it takes its mark there, if any, as a carry
 	// (sinceLineCarries), never through a piece.
-	// The keys are final here: the view matches these same arrays (its `~`
-	// rows), so the pieces' cut and its rows agree, the cap's per-run
-	// fallback included.
+	// The orphans are placed first and the keys are final here: the view
+	// matches these same arrays (its `~` rows), so the pieces' cut and its
+	// rows agree, the cap's per-run fallback included.
+	placeOrphans(hunks, orphans);
 	const pieces = sincePieces(
 		hunks,
 		targetClusters,
-		() => ({ baseNo }),
+		() => ({ baseNo: baseOf }),
 		sinceWhitespace(traced, entry.path, file, hunks, sources),
 	);
 	// A removed line's GitHub line on the head (LEFT, in the base): what a

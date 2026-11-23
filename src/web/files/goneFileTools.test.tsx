@@ -392,6 +392,9 @@ describe("a gone file's rows (CAR-256)", () => {
 		});
 		await user.click(bubble);
 		expect(await screen.findAllByTestId("files-thread")).toHaveLength(1);
+		// On its row: never flagged as a line this view doesn't show (CAR-255).
+		expect(screen.queryByTestId("not-here")).toBeNull();
+		expect(screen.queryByText(/deleted before/)).toBeNull();
 	});
 
 	it("a thread made on PS1's head on a line PS1 left alone: its bubble on that context row", async () => {

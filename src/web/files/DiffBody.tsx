@@ -120,12 +120,13 @@ import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { contextRanges, rangesKeyOf } from "./contextRanges";
+import { FullDiffLink, type FullDiffTarget } from "./FullDiffLink";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
 import { KindChip } from "./KindChip";
-import type { Landing } from "./landing";
+import { earlierRow, type Landing, landingRow } from "./landing";
 import {
 	getPicks,
 	type Picks,
@@ -147,6 +148,7 @@ import {
 	useStickyControls,
 } from "./stickyControls";
 import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
+import { notHereText } from "./ThreadFate";
 import {
 	AgentThreadRow,
 	type CardPlace,
@@ -158,10 +160,14 @@ import {
 	type FilePlacement,
 	type LineKey,
 	lineKey,
+	type NotHere,
+	notHereOf,
 	onSinceRows,
 	type Placeable,
 	type Placements,
 	placeThreads,
+	type SinceEarlier,
+	type SinceLeft,
 	sinceEarlier,
 	sinceLeft,
 } from "./threadPlacement";
@@ -2052,8 +2058,11 @@ function KindRow(props: {
 	carried?: ClusterView["carried"];
 	/** Lines whose mark the engine carried (CAR-195): a chip of their own. */
 	linesCarried?: ClusterView["linesCarried"];
-	/** A piece that owns no line of this snapshot: reverted, or removed. */
-	sinceOnly?: "reverted" | "removed";
+	/**
+	 * A piece that owns no line of this snapshot: reverted, or removed; or
+	 * a run of orphan lines (CAR-216): unreviewed.
+	 */
+	sinceOnly?: "reverted" | "removed" | "unreviewed";
 	from?: number;
 }) {
 	const kind =
@@ -2294,6 +2303,13 @@ const HIDDEN_HUNKS: HunksRead = {
 const hunkHeader = (h: DisplayHunk) =>
 	`@@ -${h.oldStart},${h.oldCount} +${h.newStart},${h.newCount} @@`;
 
+/**
+ * A row's old side in its React key: an orphan removed line (CAR-216) has
+ * no old number in the since view, its base number instead.
+ */
+const oldKeyOf = (line?: DiffLine) =>
+	line?.oldNo ?? (line?.orphan ? `b${line.baseNo}` : "");
+
 /** The expanded file: file-level clusters, then hunks with loadable context between them. */
 export function DiffBody(props: {
 	file: FileView;
@@ -2496,19 +2512,59 @@ export function DiffBody(props: {
 		linesHidden && props.landing?.line !== undefined
 			? undefined
 			: props.landing;
+	// The since view numbers its old side in the compared patch set; a
+	// LEFT anchor, span or landing counts in the base, so it goes to the
+	// removed row that shows it (the row's base number), else through the
+	// full diff (its clusters) to the head line it became
+	// (threadPlacement.ts).
+	const left = useMemo(
+		() =>
+			props.from === undefined
+				? undefined
+				: sinceLeft(file.clusters, hunks.data?.hunks),
+		[props.from, file.clusters, hunks.data],
+	);
+	// The since view's compared patch set's head: a comment on a line
+	// only it had goes there (CAR-233), shown on that line's removed row.
+	const sessionData = useQuery({ ...sessionQuery, enabled: false }).data;
+	const earlierHead =
+		props.from === undefined
+			? undefined
+			: sessionData?.patchsets.find((p) => p.number === props.from)?.head;
+	const early = useMemo(
+		() =>
+			earlierHead === undefined
+				? undefined
+				: sinceEarlier(earlierHead, hunks.data?.hunks),
+		[earlierHead, hunks.data],
+	);
+	// Why a base line the since view has no row for isn't in it (CAR-255).
+	const notHere = useMemo(() => {
+		const data = hunks.data;
+		if (props.from === undefined || !left || !data) return undefined;
+		return {
+			at: (n: number) => (left(n) === null ? notHereOf(data, n, left) : null),
+			since: props.from,
+		};
+	}, [props.from, left, hunks.data]);
 	const { hint, landed, pending } = useLanding(
 		root,
 		lineLanding,
 		hunks.isSuccess,
+		left,
+		early,
+		notHere,
 	);
 	useFindStep(root, linesHidden ? undefined : find, hunks.isSuccess);
 	// The line a thread link is about to land on (so a collapsed cluster
 	// holding it is open by the time the landing looks); once it has
 	// landed, `landed` keeps the cluster open while the highlight lasts.
 	const landingLine: LineRef | null =
-		pending && lineLanding?.line !== undefined && !lineLanding.moved
-			? { old: lineLanding.side === "LEFT", line: lineLanding.line }
-			: null;
+		!pending || lineLanding?.line === undefined
+			? null
+			: lineLanding.moved
+				? earlierRow(lineLanding, early)
+				: landingRow(lineLanding.side ?? "RIGHT", lineLanding.line, left);
 
 	const loaded = new Map<number, DiffLine>();
 	for (const result of contexts) {
@@ -2550,13 +2606,6 @@ export function DiffBody(props: {
 	const mineNew = allItems.filter(
 		(i) => i.span.path === file.path && i.span.subject === "line",
 	);
-	// The since view's compared patch set's head: a comment on a line
-	// only it had goes there (CAR-233), shown on that line's removed row.
-	const sessionData = useQuery({ ...sessionQuery, enabled: false }).data;
-	const earlierHead =
-		props.from === undefined
-			? undefined
-			: sessionData?.patchsets.find((p) => p.number === props.from)?.head;
 	const onEarlier = (span: CodeSpan) =>
 		span.earlier === true &&
 		earlierHead !== undefined &&
@@ -2620,24 +2669,6 @@ export function DiffBody(props: {
 			)
 		: [];
 
-	// The since view numbers its old side in the compared patch set; a
-	// LEFT anchor or span counts in the base, so it goes to the removed row
-	// that shows it (the row's base number), else through the full diff
-	// (its clusters) to the head line it became (threadPlacement.ts).
-	const left = useMemo(
-		() =>
-			props.from === undefined
-				? undefined
-				: sinceLeft(file.clusters, hunks.data?.hunks),
-		[props.from, file.clusters, hunks.data],
-	);
-	const early = useMemo(
-		() =>
-			earlierHead === undefined
-				? undefined
-				: sinceEarlier(earlierHead, hunks.data?.hunks),
-		[earlierHead, hunks.data],
-	);
 	/** A span (GitHub's numbers) on this view's rows; null when none shows it. */
 	const onRows = <A extends SpanRange & { earlier?: boolean }>(
 		span: A,
@@ -3934,10 +3965,14 @@ export interface LineRef {
 const landingOn = (target: LineRef | null, line: RowLine) =>
 	target !== null && (target.old ? line.oldNo : line.newNo) === target.line;
 
-/** Why a landing found no line: the text and its tooltip. */
+/**
+ * Why a landing found no line: the text and its tooltip; `full`, the
+ * since view's old line no row shows: the link to it in the full diff.
+ */
 interface Hint {
 	text: string;
 	tip: string;
+	full?: FullDiffTarget;
 }
 
 /**
@@ -3992,10 +4027,26 @@ function useLanding(
 	root: RefObject<HTMLDivElement | null>,
 	landing: Landing | undefined,
 	ready: boolean,
+	/** The since view's base lines on its rows (landingRow); read as the landing runs. */
+	left: SinceLeft | undefined,
+	/** The since view's lines only its compared patch set had (earlierRow). */
+	early: SinceEarlier | undefined,
+	/**
+	 * The since view: why a base line it has no row for isn't in it
+	 * (notHereOf, as a thread's card says it, CAR-255), and its compared
+	 * patch set; null for a line that rule doesn't cover.
+	 */
+	notHere?: { at: (n: number) => NotHere | null; since: number },
 ): { hint: Hint | null; landed: Landed | null; pending: boolean } {
 	const [hint, setHint] = useState<Hint | null>(null);
 	const [landed, setLanded] = useState<Landed | null>(null);
 	const done = useRef(0);
+	const leftNow = useRef(left);
+	leftNow.current = left;
+	const earlyNow = useRef(early);
+	earlyNow.current = early;
+	const notHereNow = useRef(notHere);
+	notHereNow.current = notHere;
 	// Until the landing below has run (it sets state when it does).
 	const pending =
 		landing !== undefined && ready && done.current !== landing.seq;
@@ -4006,15 +4057,45 @@ function useLanding(
 		const section = el.closest("section");
 		const scrollTo = (target: Element, margin: number) =>
 			scrollUnderStack(el, target, margin);
-		const old = landing.side === "LEFT";
-		const where = `${old ? "Old line" : "Line"} ${landing.line}`;
-		const row =
-			landing.line === undefined || landing.moved
+		const side = landing.side ?? "RIGHT";
+		const where = `${side === "LEFT" ? "Old line" : "Line"} ${landing.line}`;
+		// The row it is on, as this view numbers its rows: in the since view
+		// a LEFT (base) line is where its thread shows (landingRow).
+		// A moved line: only on the since view's removed row of a line its
+		// compared patch set alone had, numbered on that commit (earlierRow).
+		const at =
+			landing.line === undefined
 				? null
-				: el.querySelector(
-						`tr[data-${old ? "old" : "new"}-no="${landing.line}"]`,
-					);
-		if (!row) {
+				: landing.moved
+					? earlierRow(landing, earlyNow.current)
+					: landingRow(side, landing.line, leftNow.current);
+		const row =
+			at &&
+			el.querySelector(`tr[data-${at.old ? "old" : "new"}-no="${at.line}"]`);
+		if (!row || !at) {
+			// A line no row of the since view shows: the full diff may.
+			const since = leftNow.current !== undefined;
+			const sinceHint = (
+				path: string | undefined,
+				line: number,
+				side: DiffSide,
+				where: string,
+			): Hint => {
+				const full = path === undefined ? undefined : { path, line, side };
+				// A base line the compared patch set had already deleted: the
+				// thread card's words (notHereText); else unchanged since.
+				const why =
+					side === "LEFT" ? (notHereNow.current?.at(line) ?? null) : null;
+				if (why && notHereNow.current) {
+					const { label, tip } = notHereText(why.why, notHereNow.current.since);
+					return { text: `${where}: ${label}`, tip, ...(full && { full }) };
+				}
+				return {
+					text: `${where} isn't in this view`,
+					tip: "Unchanged since the compared patch set, or not in the diff",
+					...(full && { full }),
+				};
+			};
 			setHint(
 				landing.line === undefined
 					? null
@@ -4023,10 +4104,12 @@ function useLanding(
 								text: `${where} is from another commit`,
 								tip: "Commented on another commit: the line may have moved",
 							}
-						: {
-								text: `${where} isn't in this diff`,
-								tip: "Outdated, or an unchanged line the diff doesn't show",
-							},
+						: since
+							? sinceHint(landing.path, landing.line, side, where)
+							: {
+									text: `${where} isn't in this diff`,
+									tip: "Outdated, or an unchanged line the diff doesn't show",
+								},
 			);
 			if (section) scrollTo(section, -1);
 			return;
@@ -4034,7 +4117,7 @@ function useLanding(
 		setHint(null);
 		// A few lines of context above it stay in view.
 		scrollTo(row, 60);
-		const line = landing.line as number;
+		const { old, line } = at;
 		setLanded({ old, line, phase: "on" });
 		// The highlight's time counts from when the page is next idle: the
 		// line's first paint often comes with heavy work (the highlighter's
@@ -4074,22 +4157,31 @@ function whenIdle(fn: () => void): () => void {
 }
 
 function LandingHint({ hint }: { hint: Hint }) {
+	// The status (its tooltip's trigger) is the text alone; the full diff's
+	// link sits beside it: its own tab stop, never read as the status.
 	return (
-		<Tooltip content={hint.tip}>
-			{(trigger) => (
-				<p
-					{...trigger}
-					role="status"
-					data-testid="landing-hint"
-					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
-					tabIndex={0}
-					className="flex min-h-10 items-center gap-2 border-b border-line bg-band px-3 text-xs text-muted focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
-				>
-					<InfoIcon size={14} aria-hidden className="shrink-0 text-accent" />
-					{hint.text}
-				</p>
+		<div
+			data-testid="landing-hint"
+			className="flex min-h-10 items-center gap-2 border-b border-line bg-band pr-1 text-xs text-muted"
+		>
+			<Tooltip content={hint.tip}>
+				{(trigger) => (
+					<p
+						{...trigger}
+						role="status"
+						// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+						tabIndex={0}
+						className="flex min-h-10 min-w-0 flex-1 items-center gap-2 px-3 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+					>
+						<InfoIcon size={14} aria-hidden className="shrink-0 text-accent" />
+						{hint.text}
+					</p>
+				)}
+			</Tooltip>
+			{hint.full && (
+				<FullDiffLink target={hint.full} testId="landing-full-diff" />
 			)}
-		</Tooltip>
+		</div>
 	);
 }
 
@@ -4218,7 +4310,7 @@ function HunkRows(props: {
 			</tbody>
 			{hunkRuns.map((run) => {
 				const first = run.lines[0];
-				const runKey = `${run.key ?? ""}:${first?.oldNo}:${first?.newNo}`;
+				const runKey = `${run.key ?? ""}:${oldKeyOf(first)}:${first?.newNo}`;
 				const whole =
 					run.key === undefined ? undefined : props.clusters.get(run.key);
 				// The since view: every piece is marked as a cluster of its own,
@@ -4233,8 +4325,9 @@ function HunkRows(props: {
 				const entry =
 					run.key === undefined ? undefined : props.kinds?.get(run.key);
 				// Its chip: reverted or removed (a piece of its own, or a cluster's
-				// piece of removals only).
-				const sinceOnly = piece?.kind;
+				// piece of removals only); a run of orphan lines (CAR-216): not
+				// reviewed in the compared patch set.
+				const sinceOnly = run.orphan ? "unreviewed" : piece?.kind;
 				// A cluster the review doesn't list still shows as unreviewed.
 				const state = cluster
 					? cluster.state
@@ -4258,7 +4351,9 @@ function HunkRows(props: {
 						gone={gone}
 						// A piece of its own isn't its neighbour's: only gone says where it came from.
 						entry={
-							piece?.owns === null && entry?.kind !== "gone" ? undefined : entry
+							(piece?.owns === null && entry?.kind !== "gone") || run.orphan
+								? undefined
+								: entry
 						}
 						carried={cluster?.carried}
 						// The carried lines are the full diff's to show: the since
@@ -4325,7 +4420,8 @@ function HunkRows(props: {
 				const lineRows = (controls?: ReactNode) =>
 					run.side
 						? run.side.map((r, i) => {
-								const old = r.kind === "context" ? r.line.oldNo : r.del?.oldNo;
+								const old =
+									r.kind === "context" ? r.line.oldNo : oldKeyOf(r.del);
 								const nu = r.kind === "context" ? r.line.newNo : r.add?.newNo;
 								return (
 									<PairRow
@@ -4343,7 +4439,7 @@ function HunkRows(props: {
 								const shown = r.kind === "line" ? r.line : (r.add ?? r.del);
 								return (
 									<LineRow
-										key={`${line.kind}${line.oldNo ?? ""}:${line.newNo ?? ""}`}
+										key={`${line.kind}${line.kind === "ws" ? (line.oldNo ?? "") : oldKeyOf(line)}:${line.newNo ?? ""}`}
 										line={line}
 										order={shown ? orderOf(shown) : undefined}
 										checkbox={i === 0 ? controls : undefined}

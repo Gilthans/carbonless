@@ -1981,7 +1981,8 @@ describe("API", () => {
 				const [answered] = await answeredThreads(1);
 				expect(answered?.unread).toBe(true);
 				const ai = answered?.messages.find((m) => m.by === "ai");
-				const appends = vi.spyOn(RefStore.prototype, "appendEvent");
+				// Ref writes: a no-op never gets as far as one.
+				const appends = vi.spyOn(RefStore.prototype, "transaction");
 				const seen = await post(`/api/agent/threads/${t.id}/seen`, {
 					upTo: ai?.id,
 				});
@@ -2015,7 +2016,8 @@ describe("API", () => {
 					},
 					text: "Why one retry?",
 				};
-				const appends = vi.spyOn(RefStore.prototype, "appendEvent");
+				// Ref writes: a no-op never gets as far as one.
+				const appends = vi.spyOn(RefStore.prototype, "transaction");
 				const res = await post(`/api/agent/threads/${t.id}/posted`, body);
 				expect(res.statusCode, res.body).toBe(200);
 				const msg = (res.json() as AgentThread).messages.find(
@@ -2985,10 +2987,16 @@ describe("API", () => {
 				0,
 				later.index,
 			]);
-			expect(sinceBatch.files[0].hunks).toMatchObject({
-				hunks: [],
-				wholeGap: true,
-			});
+			// Its line-26 cluster, never reviewed on PS1, is the only thing
+			// shown: its lines, a box of their own (CAR-216).
+			expect(
+				sinceBatch.files[0].hunks.hunks
+					.flatMap((h: { lines: DiffLine[] }) => h.lines)
+					.map((l: DiffLine) => [l.kind, l.text, l.orphan]),
+			).toEqual([
+				["del", "line 26", true],
+				["add", "line 26 changed", true],
+			]);
 			expect(sinceBatch.files[1].hunks).toEqual(since);
 			const fullBatch = await batch("");
 			expect(fullBatch.files[0].hunks).toEqual(

@@ -179,7 +179,9 @@ export class RefStore {
 
 	/**
 	 * Appends one event as a new commit on the ref's tip. If another writer
-	 * moved the ref in between, the event is committed again on the new tip.
+	 * moved the ref in between, the event is committed again on the new tip,
+	 * unchanged: only for an event that doesn't depend on what the ref holds.
+	 * One stamped or checked against the ref's events uses appendBuilt.
 	 */
 	appendEvent(
 		ref: string,

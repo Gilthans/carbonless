@@ -144,7 +144,8 @@ export function useImageSide(
 			// A browser gives an SVG with no size a default one (Chrome:
 			// 300×150): read its root (cached) to tell.
 			const read = url;
-			svgSized(read).then((sized) => {
+			// An event handler can't wait; svgSized never rejects (null on error).
+			void svgSized(read).then((sized) => {
 				if (mounted.current && live.current === read) {
 					settle("ready", sized === false ? { w: 0, h: 0 } : natural);
 				}
