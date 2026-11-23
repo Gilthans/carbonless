@@ -887,16 +887,19 @@ test("the since view: a re-indent of markup nobody marked in PS1 still counts wi
 	// left unmarked; the note's change is reviewed.
 	await sinceReindent(page, pr, startCrb, { base: 2, ps1: 4, ps2: 6 }, [NOTE]);
 	const bar = progress(page);
-	await expect(bar).toContainText("0 / 5 clusters reviewed");
+	// The card's lines no interdiff piece shows (PS1's re-indent, never
+	// read) are two orphan pieces of their own (CAR-216); placed among the
+	// interdiff's rows, they also cut PS1's `<Title />` off as a piece.
+	await expect(bar).toContainText("0 / 7 clusters reviewed");
 	await ignoreWhitespace(page, true);
-	// On: the card's line no piece shows (a re-indent against the base,
-	// read in the full diff) is left out, and so is the since piece that
-	// only re-indents base lines PS1 left alone (git kept them, byte-equal
-	// at PS1's depth: nothing to read there, as in the full diff; owner
-	// 2026-11-23); both are the card's one cluster, so the `~` says one.
-	// Its other two since pieces, re-indents of lines PS1 changed and
+	// On: the orphan pieces (a re-indent against the base, as the full
+	// diff reads them) are left out, and so is the since piece that only
+	// re-indents base lines PS1 left alone (git kept them, byte-equal at
+	// PS1's depth: nothing to read there, as in the full diff; owner
+	// 2026-11-23); all are the card's one cluster, so the `~` says one.
+	// Its other three since pieces, re-indents of lines PS1 changed and
 	// nobody marked, still count with the note.
-	await expect(bar).toContainText("0 / 3 clusters reviewed");
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
 	await expect(
 		page
 			.locator("[data-page-bar]")
@@ -905,16 +908,16 @@ test("the since view: a re-indent of markup nobody marked in PS1 still counts wi
 			),
 	).toBeVisible();
 	// Nor are the counted ones collapsed: they show, `~` rows open; only
-	// the left-alone piece is a whitespace-only row.
+	// the left-alone piece and the two orphans are whitespace-only rows.
 	const cardSection = fileSection(page, CARD);
 	await opened(cardSection);
 	await expect(
 		cardSection.locator('[data-testid="diff-line"][data-kind="ws"]').first(),
 	).toBeVisible();
-	await expect(cardSection.getByTestId("ws-cluster")).toHaveCount(1);
+	await expect(cardSection.getByTestId("ws-cluster")).toHaveCount(3);
 	// Off: everything counts.
 	await ignoreWhitespace(page, false);
-	await expect(bar).toContainText("0 / 5 clusters reviewed");
+	await expect(bar).toContainText("0 / 7 clusters reviewed");
 	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
 });
 

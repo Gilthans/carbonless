@@ -152,7 +152,8 @@ export class SessionRegistry {
 				throw asRefusal(error);
 			});
 			if (generation !== this.#generation) {
-				this.#closeLater(session);
+				// Tracked in #closing (a reset waits for it); handled there.
+				void this.#closeLater(session);
 				throw new SessionClosedError("The server was reset");
 			}
 			const kept = this.#keep(session, req.viewer);
@@ -188,11 +189,13 @@ export class SessionRegistry {
 	#keep(session: Session, viewer: string | undefined): Session {
 		const existing = this.#open.get(session.id);
 		if (this.#closed) {
-			this.#closeLater(session);
+			// Tracked in #closing (closeAll waits for it); handled there.
+			void this.#closeLater(session);
 			throw new SessionClosedError("The server is closing");
 		}
 		if (existing && !existing.session.closed && existing.viewer === viewer) {
-			this.#closeLater(session);
+			// The duplicate goes in the background, tracked in #closing.
+			void this.#closeLater(session);
 			existing.lastUsed = this.#now();
 			return existing.session;
 		}
@@ -342,7 +345,8 @@ export class SessionRegistry {
 		this.#idOf.clear();
 		this.#opening.clear();
 		this.#reopening.clear();
-		for (const e of all) this.#closeLater(e.session);
+		// Not awaited here: the loop below waits for #closing, up to the deadline.
+		for (const e of all) void this.#closeLater(e.session);
 		for (const run of opens.keys()) {
 			const done = () => opens.delete(run);
 			run.then(done, done);

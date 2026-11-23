@@ -529,7 +529,7 @@ class CommentsBatcher {
 	): Promise<ThreadComments> {
 		if (this.#gone.has(readId)) return Promise.reject(this.#gone.get(readId));
 		const sent = this.#sent.get(keyOf(readId, threadId));
-		if (sent) return sent;
+		if (sent !== undefined) return sent;
 		const queued = this.#queue.find(
 			(w) => w.readId === readId && w.threadId === threadId,
 		);

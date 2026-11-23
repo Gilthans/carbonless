@@ -31,6 +31,7 @@ import type {
 	TimelineReviewComment,
 	TimelineReviewItem,
 } from "../../shared/types";
+import { unreachable } from "../../shared/unreachable";
 import { sessionQuery, timelineQuery } from "../api";
 import { type FilesSearch, threadTarget } from "../files/landing";
 import { RelativeTime } from "../RelativeTime";
@@ -492,6 +493,8 @@ function Fact({
 			return text("reopened");
 		case "merged":
 			return text("merged", event.commit ? code(short(event.commit)) : null);
+		default:
+			return unreachable(event);
 	}
 }
 
