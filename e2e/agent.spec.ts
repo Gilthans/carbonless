@@ -554,6 +554,131 @@ test("typing in a suggested comment at the end of a long conversation keeps the 
 	await expect(text).toBeInViewport();
 });
 
+test("the question above what is in sight floats at the box's top; a tap jumps to it, then the one before shows; none at the top (CAR-246)", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 760 });
+	await pr(fixture);
+	const long = (end: string) =>
+		[...Array.from({ length: 30 }, (_, i) => `Paragraph ${i + 1}.`), end].join(
+			"\n\n",
+		);
+	const s = await agentCrb({
+		scenario: {
+			agent: { name: "Fake Agent", version: "9.9.9" },
+			answers: [
+				{ match: "second", text: long("End two.") },
+				{ match: "third", text: long("End three.") },
+				{ text: long("End one.") },
+			],
+		},
+	});
+	await holdSeenMarks(page);
+	const section = await openFile(page, s.url, CALC);
+	const Q1 = "Tell me everything";
+	const Q2 = "A second question";
+	const Q3 = `A third question, long enough to run past the bar's width: ${"and more ".repeat(30)}`;
+	const card = await ask(page, section, 3, Q1);
+	const answers = card.getByTestId("agent-message-ai");
+	await expect(answers).toContainText("End one.");
+	const reply = card.getByRole("textbox", { name: "Reply to your agent" });
+	for (const [q, n] of [
+		[Q2, 2],
+		[Q3, 3],
+	] as const) {
+		await reply.fill(q);
+		await card.getByTestId("agent-reply-ask").click();
+		await expect(answers).toHaveCount(n);
+		await expect(answers.nth(n - 1)).toContainText(
+			n === 2 ? "End two." : "End three.",
+		);
+	}
+	const scroller = card.getByTestId("agent-thread-scroll");
+	const bar = card.getByTestId("agent-question-bar");
+	const barText = bar.getByTestId("agent-question-text");
+	const humans = card.getByTestId("agent-message-human");
+	/** Where the content starts in the box (moves if the bar took room). */
+	const contentTop = () =>
+		scroller.evaluate((el) => {
+			const inner = el.lastElementChild as HTMLElement;
+			return Math.round(
+				inner.getBoundingClientRect().top -
+					el.getBoundingClientRect().top +
+					el.scrollTop,
+			);
+		});
+	// At the end: the last question floats, cut with an ellipsis, over the
+	// box's top, in a slot that takes no room.
+	await expect(bar).toHaveAccessibleName(/^Jump to question: A third question/);
+	await expect(barText).toHaveText(/^A third question/);
+	expect(
+		await barText.evaluate((el) => ({
+			overflow: getComputedStyle(el).textOverflow,
+			cut: el.scrollWidth > el.clientWidth,
+		})),
+	).toEqual({ overflow: "ellipsis", cut: true });
+	const sb = await scroller.boundingBox();
+	const bb = await bar.boundingBox();
+	expect(sb && bb).toBeTruthy();
+	if (!sb || !bb) return;
+	expect(Math.abs(bb.y - sb.y)).toBeLessThanOrEqual(1);
+	expect(bb.height).toBeGreaterThanOrEqual(40);
+	expect(Math.abs(bb.width - sb.width)).toBeLessThanOrEqual(16);
+	const withBar = await contentTop();
+	await expectNoPageOverflow(page);
+	await shot(page, "agent-question-bar", isMobile);
+	// The box itself (the page's sticky headers may cover it in the shot).
+	if (shots) {
+		await scroller.screenshot({
+			path: `${shots}/agent-question-bar-box-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
+
+	/** `i`'s question: its top inside the box, just below the bar's band. */
+	const atTop = async (i: number) =>
+		humans.nth(i).evaluate(
+			(el, sc) => {
+				const box = (sc as Element).getBoundingClientRect();
+				const top = el.getBoundingClientRect().top;
+				return top >= box.top - 1 && top <= box.top + 80;
+			},
+			await scroller.elementHandle(),
+		);
+	// A tap: the third question comes to the top; the second floats.
+	await bar.click();
+	await expect.poll(async () => atTop(2)).toBe(true);
+	await expect(bar).toHaveAccessibleName(`Jump to question: ${Q2}`);
+	// Again: the second, then the first floats.
+	await bar.click();
+	await expect.poll(async () => atTop(1)).toBe(true);
+	await expect(bar).toHaveAccessibleName(`Jump to question: ${Q1}`);
+	// Scrolled up into the first answer: still the first; at the very top,
+	// no bar, and the content never moved for it.
+	await scroller.evaluate((el) => {
+		el.scrollTop = 400;
+	});
+	await expect(bar).toHaveAccessibleName(`Jump to question: ${Q1}`);
+	await scroller.evaluate((el) => {
+		el.scrollTop = 0;
+	});
+	await expect(bar).toHaveCount(0);
+	// The first message right under the box's 4px padding.
+	expect(await contentTop()).toBe(4);
+	expect(await contentTop()).toBe(withBar);
+	// Scrolling down again brings the later ones back, in order.
+	await scroller.evaluate((el) => {
+		const q2 = el.querySelectorAll<HTMLElement>("[data-by=human]")[1];
+		if (!q2) return;
+		el.scrollTop +=
+			q2.getBoundingClientRect().top - el.getBoundingClientRect().top + 200;
+	});
+	await expect(bar).toHaveAccessibleName(`Jump to question: ${Q2}`);
+	await expectNoPageOverflow(page);
+});
+
 test("agent and comment bubbles side by side on one line, each with its own count", async ({
 	page,
 	pr,

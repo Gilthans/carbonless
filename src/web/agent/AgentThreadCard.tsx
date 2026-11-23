@@ -1,5 +1,6 @@
 import {
 	AlertIcon,
+	ArrowUpIcon,
 	CheckCircleIcon,
 	ChevronDownIcon,
 	ChevronUpIcon,
@@ -50,7 +51,7 @@ import {
 	newThreadItems,
 	useComposers,
 } from "../threads/newThreads";
-import { Avatar, usePerson } from "../threads/people";
+import { Avatar, tintSurface, usePerson } from "../threads/people";
 import { AgentMarkdown } from "./AgentMarkdown";
 import {
 	type AgentWrite,
@@ -203,7 +204,11 @@ const AGENT_SURFACE =
  * streamed one's place) fired scroll events that read as the reader
  * leaving the end, and the pin let go (seen on the phone).
  */
-export function AgentScroll(props: { children: ReactNode }) {
+export function AgentScroll(props: {
+	children: ReactNode;
+	/** Who asked: the floating question's avatar. */
+	viewer: string;
+}) {
 	const box = useRef<HTMLDivElement>(null);
 	const content = useRef<HTMLDivElement>(null);
 	const atEnd = useRef(true);
@@ -219,6 +224,18 @@ export function AgentScroll(props: { children: ReactNode }) {
 	// read mid-commit when it refocuses, as Preview hides the comment's
 	// box): that pins again.
 	const seen = useRef({ top: 0, height: 0 });
+	const [turn, setTurn] = useState<Turn | null>(null);
+	const float = () => {
+		const el = box.current;
+		if (!el) return;
+		const next = floatingQuestion(el);
+		setTurn((t) =>
+			t?.id === next?.id && t?.text === next?.text && t?.top === next?.top
+				? t
+				: next,
+		);
+	};
+	// biome-ignore lint/correctness/useExhaustiveDependencies: float reads refs and sets state only.
 	useLayoutEffect(() => {
 		const el = box.current;
 		const inner = content.current;
@@ -231,6 +248,7 @@ export function AgentScroll(props: { children: ReactNode }) {
 		toEnd();
 		if (typeof ResizeObserver === "undefined") return;
 		const pin = new ResizeObserver(() => {
+			float();
 			if (!atEnd.current) return;
 			const moved = Math.abs(el.scrollTop - seen.current.top) >= 1;
 			const shrank = el.scrollHeight < seen.current.height;
@@ -242,6 +260,7 @@ export function AgentScroll(props: { children: ReactNode }) {
 				return;
 			}
 			toEnd();
+			float();
 		});
 		pin.observe(inner);
 		pin.observe(el);
@@ -254,6 +273,7 @@ export function AgentScroll(props: { children: ReactNode }) {
 			onScroll={(e) => {
 				const el = e.currentTarget;
 				seen.current = { top: el.scrollTop, height: el.scrollHeight };
+				float();
 				if (
 					pinned.current !== null &&
 					Math.abs(el.scrollTop - pinned.current) < 1
@@ -264,10 +284,117 @@ export function AgentScroll(props: { children: ReactNode }) {
 			}}
 			className={AGENT_SCROLL}
 		>
+			{/* Over the box's top, taking no room: showing it moves nothing.
+			    -top-1 and -mx-1: from the box's edges, not its padding (a
+			    sticky top counts from the padding edge). */}
+			<div className="sticky -top-1 z-10 -mx-1 h-0">
+				{turn && (
+					<QuestionBar
+						turn={turn}
+						viewer={props.viewer}
+						onJump={() => {
+							const el = box.current;
+							if (!el) return;
+							// Leaves the end: the pin lets go.
+							atEnd.current = false;
+							pinned.current = null;
+							const reduce =
+								typeof window.matchMedia === "function" &&
+								window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+							el.scrollTo({
+								top: Math.max(0, turn.top - QUESTION_BAR),
+								behavior: reduce ? "auto" : "smooth",
+							});
+						}}
+					/>
+				)}
+			</div>
 			<div ref={content} className="min-w-0 space-y-2">
 				{props.children}
 			</div>
 		</div>
+	);
+}
+
+/** The floating question's height (a 40px target): a turn under it isn't in view. */
+const QUESTION_BAR = 40;
+
+/** A reviewer's question in an agent conversation, where it starts in its scroll box. */
+interface Turn {
+	id: string;
+	text: string;
+	/** Its top in the box's content (scrollTop that puts it at the box's top). */
+	top: number;
+}
+
+/**
+ * Which question floats over a box scrolled to `scrollTop`: of the turns'
+ * tops (in order), the last one above the box's top; none while one sits
+ * in the band the bar would cover (it is reaching the top itself), or
+ * when none is above. -1 for none.
+ */
+export function floatingTurn(
+	tops: readonly number[],
+	scrollTop: number,
+	bar = QUESTION_BAR,
+): number {
+	let pick = -1;
+	for (const [i, top] of tops.entries()) {
+		if (top < scrollTop - 1) pick = i;
+		else if (top < scrollTop + bar) return -1;
+		else break;
+	}
+	return pick;
+}
+
+/** The question that floats over the box now (its human turns, measured). */
+function floatingQuestion(el: HTMLElement): Turn | null {
+	const origin = el.getBoundingClientRect().top - el.scrollTop;
+	const turns = [...el.querySelectorAll<HTMLElement>("[data-by=human]")].map(
+		(t) => ({
+			id: t.dataset.messageId ?? "",
+			text:
+				t.querySelector("[data-testid=agent-message-human]")?.textContent ?? "",
+			top: Math.round(t.getBoundingClientRect().top - origin),
+		}),
+	);
+	const i = floatingTurn(
+		turns.map((t) => t.top),
+		el.scrollTop,
+	);
+	return turns[i] ?? null;
+}
+
+/** The question above what is in sight: one line, tap to go to it. */
+function QuestionBar(props: {
+	turn: Turn;
+	viewer: string;
+	onJump: () => void;
+}) {
+	const me = usePerson(props.viewer);
+	const first = props.turn.text.replace(/\s+/g, " ").trim();
+	return (
+		<button
+			type="button"
+			data-testid="agent-question-bar"
+			aria-label={`Jump to question: ${first}`}
+			onClick={props.onJump}
+			className="absolute inset-x-0 top-0 isolate flex h-10 min-w-0 items-center gap-2 bg-surface px-2.5 text-left text-sm text-ink shadow-control focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+		>
+			{/* The reviewer's tint, as on their messages, over an opaque ground. */}
+			<span
+				aria-hidden
+				className={`absolute inset-0 -z-10 border-b ${tintSurface(me.tint)}`}
+			/>
+			<Avatar login={props.viewer} url="" size={16} />
+			<span
+				data-testid="agent-question-text"
+				className="min-w-0 flex-1 truncate"
+			>
+				{first}
+			</span>
+			<ArrowUpIcon size={16} aria-hidden className="shrink-0 text-muted" />
+		</button>
 	);
 }
 
@@ -812,7 +939,7 @@ function AgentCard(props: AgentCardProps) {
 			</div>
 			<LinkProblem thread={thread.id} />
 			<div id={bodyId} className="space-y-2 p-2.5">
-				<AgentScroll>
+				<AgentScroll viewer={viewer}>
 					<AgentMessageItems
 						thread={shown}
 						status={status}
@@ -912,6 +1039,7 @@ export function AgentMessageItems(props: {
 						{m.id === props.divider && <NewDivider />}
 						<div
 							data-message-id={m.id}
+							data-by={m.by}
 							data-landed={m.id === lit || undefined}
 							className={`min-w-0 space-y-1 rounded-md outline-offset-2 transition-[outline-color] duration-1000 motion-reduce:transition-none ${
 								m.id === lit

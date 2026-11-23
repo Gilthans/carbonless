@@ -17,7 +17,11 @@ import type {
 	AgentView,
 } from "../../shared/agent";
 import { useUnsavedGuard } from "../files/useSetStates";
-import { AgentThreadCard, activitySummary } from "./AgentThreadCard";
+import {
+	AgentThreadCard,
+	activitySummary,
+	floatingTurn,
+} from "./AgentThreadCard";
 import { resetAgentWrites, resetRepliesTyped } from "./agentWrites";
 import { agentThreadsQuery } from "./api";
 import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
@@ -656,5 +660,26 @@ describe("activitySummary", () => {
 		);
 		const chips = screen.getAllByTestId("agent-view-chip");
 		expect(chips.map((c) => c.textContent)).toEqual(["PS 3", "abcdef1"]);
+	});
+});
+
+describe("floatingTurn", () => {
+	// Questions at 0, 500 and 1200 in the box's content; a 40px bar.
+	const tops = [0, 500, 1200];
+	it("none at the very top, or while no question is above the box's top", () => {
+		expect(floatingTurn(tops, 0)).toBe(-1);
+		expect(floatingTurn([100, 500], 50)).toBe(-1);
+	});
+	it("the last question above the box's top, partly or wholly", () => {
+		expect(floatingTurn(tops, 10)).toBe(0);
+		expect(floatingTurn(tops, 499 - 40)).toBe(0);
+		expect(floatingTurn(tops, 600)).toBe(1);
+		expect(floatingTurn(tops, 5000)).toBe(2);
+	});
+	it("none while a question is reaching the top, under where the bar would be", () => {
+		expect(floatingTurn(tops, 470)).toBe(-1);
+		expect(floatingTurn(tops, 500)).toBe(-1);
+		// Jumped to (its top one bar below the box's top): the one before.
+		expect(floatingTurn(tops, 500 - 40)).toBe(0);
 	});
 });
