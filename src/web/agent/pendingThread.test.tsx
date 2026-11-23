@@ -27,6 +27,7 @@ import { useDrafts } from "../threads/drafts";
 import { NewThread } from "../threads/NewThread";
 import {
 	newThreadItems,
+	openComposer,
 	resetComposers,
 	targetOf,
 	useComposers,
@@ -200,7 +201,7 @@ function Line() {
 	);
 }
 
-function show(c: AgentThread = conversation()) {
+function show(c: AgentThread = conversation(), scope: CommentScope = SCOPE) {
 	client = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false, enabled: false, staleTime: Infinity },
@@ -224,7 +225,7 @@ function show(c: AgentThread = conversation()) {
 	};
 	render(
 		<QueryClientProvider client={client}>
-			<CommentScopeProvider value={SCOPE}>
+			<CommentScopeProvider value={scope}>
 				<PendingComposersProvider value={diff}>
 					<Line />
 				</PendingComposersProvider>
@@ -264,6 +265,26 @@ function pendingBoxAt(top: number): HTMLElement {
 }
 
 describe("Comment turns the agent card into the thread it will be", () => {
+	it("the since view: a card not on lines only the earlier patch set had (earlierSpan null) holds no composer (CAR-264)", () => {
+		const P1 = "1".repeat(40);
+		const asked = conversation({ anchor: { ...line, commit: P1 } });
+		show(asked, { ...SCOPE, earlier: () => null });
+		// A composer marked earlier carrying this conversation: never
+		// swallowed by a card that isn't on its row.
+		act(() => {
+			openComposer(
+				{ ...spanOfAnchor(asked.anchor as never), earlier: true },
+				undefined,
+				ID,
+			);
+		});
+		expect(within(region("cards")).getByTestId("agent-thread")).toBeTruthy();
+		expect(
+			within(region("composers")).getAllByTestId("new-thread"),
+		).toHaveLength(1);
+		expect(within(region("cards")).queryByTestId("new-thread")).toBeNull();
+	});
+
 	it("in the card's place: one pending thread holding the composer and the conversation's messages; no card, no second composer", async () => {
 		show();
 		expect(within(region("cards")).getByTestId("agent-thread")).toBeTruthy();

@@ -1916,21 +1916,6 @@ export class Session {
 	}
 
 	/**
-	 * Whether `commit` is a read-only patch set's head: one of the review's
-	 * patch sets, not the latest one's, nor GitHub's head. A comment from
-	 * an agent conversation asked on its lines goes there as an earlier
-	 * one (NewThreadRequest.earlier, CAR-233), as a direct comment on such
-	 * a line does (CAR-264), never refused as read-only.
-	 */
-	isReadOnlyPatchset(commit: string): boolean {
-		return (
-			commit !== this.#patchsets.at(-1)?.head &&
-			commit !== this.#head?.oid &&
-			this.#patchsets.some((p) => p.head === commit)
-		);
-	}
-
-	/**
 	 * Starts a thread on GitHub (newThreads.ts), after any new thread
 	 * still being started: a resend waits for the first attempt, then
 	 * finds it posted.

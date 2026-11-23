@@ -41,7 +41,6 @@ import {
 	AgentRequestError,
 	agentConfig,
 	noteAgentConfigSaved,
-	type PostedSpan,
 } from "./agent/host.js";
 import { JoinElsewhereError, StaleJoinRequestError } from "./agent/join.js";
 import { isSafePath } from "./agent/prompt.js";
@@ -851,34 +850,7 @@ export async function buildApp(
 								endCol: r.endCol ?? null,
 							}
 						: {};
-				const span: PostedSpan = {
-					path: r.path,
-					commit: r.commit,
-					subject: r.subject,
-					...(r.subject === "line"
-						? {
-								side: r.side,
-								line: r.line,
-								startSide: r.startSide ?? r.side,
-								startLine: r.startLine ?? r.line,
-							}
-						: {}),
-				};
-				const session = sessionOf(request);
-				// From an agent conversation on its own span (CAR-264): one
-				// asked on a read-only patch set's RIGHT lines goes there as an
-				// earlier comment (its checks: newThreads.ts), as a direct
-				// comment on such a line does, whatever the page marked. Any
-				// other posts as sent.
-				const earlier =
-					r.earlier === true ||
-					(r.agentThread !== undefined &&
-						r.subject === "line" &&
-						span.side === "RIGHT" &&
-						span.startSide === "RIGHT" &&
-						session.isReadOnlyPatchset(r.commit) &&
-						(await session.agent?.isOn(r.agentThread, span)) === true);
-				const answer = await session.startThread({
+				const answer = await sessionOf(request).startThread({
 					clientId: r.clientId,
 					body: r.body,
 					attemptedAt: r.attemptedAt,
@@ -887,7 +859,7 @@ export async function buildApp(
 					commit: r.commit,
 					subject: r.subject,
 					...line,
-					...(earlier ? { earlier: true } : {}),
+					...(r.earlier === true ? { earlier: true } : {}),
 				});
 				// Started from an agent conversation: GitHub has the thread, so
 				// the conversation becomes its (a resend links nothing new). A
@@ -896,7 +868,19 @@ export async function buildApp(
 				const github = answer.thread.id;
 				if (r.agentThread === undefined || github === "") return answer;
 				try {
-					await agentOf(request).link(r.agentThread, github, span);
+					await agentOf(request).link(r.agentThread, github, {
+						path: r.path,
+						commit: r.commit,
+						subject: r.subject,
+						...(r.subject === "line"
+							? {
+									side: r.side,
+									line: r.line,
+									startSide: r.startSide ?? r.side,
+									startLine: r.startLine ?? r.line,
+								}
+							: {}),
+					});
 					return { ...answer, agentThread: r.agentThread };
 				} catch (error) {
 					request.log.warn(

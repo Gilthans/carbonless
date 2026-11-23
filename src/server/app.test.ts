@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useFakeAcp, writeAcpScenario } from "../../test/fake-acp/scenario";
+import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
 	prView,
 	release,
@@ -1592,7 +1593,8 @@ describe("API", () => {
 			expect(marked.statusCode, marked.body).toBe(200);
 			const info: SessionInfo = await get("/api/session");
 			expect(info.patchsets.map((p) => p.head)).toEqual([h1, h2]);
-			// As the card sends it: the conversation's span, no `earlier` mark.
+			// As the page sends it (targetOf of the card's earlier span): the
+			// conversation's span on PS1's commit, marked earlier.
 			const comment = {
 				clientId: "e1",
 				body: "Why add it, then drop it?",
@@ -1603,6 +1605,7 @@ describe("API", () => {
 				subject: "line",
 				side: "RIGHT",
 				line: 2,
+				earlier: true,
 				agentThread: opened.id,
 			};
 			return { h1, h2, opened, comment };
@@ -1636,6 +1639,40 @@ describe("API", () => {
 					/^api -X POST repos\/acme\/widget\/pulls\/12\/comments /.test(l),
 				);
 
+		/**
+		 * A force-push: the PR's head becomes a new commit on the merge base,
+		 * so the earlier heads are no longer among its commits. The fake gh's
+		 * scenario keeps what it stored.
+		 */
+		const forcePush = () => {
+			const repoGit = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const rewritten = repoGit(
+				"commit-tree",
+				`${pr.head()}^{tree}`,
+				"-p",
+				pr.mergeBase,
+				"-m",
+				"rewritten",
+			);
+			repoGit("update-ref", "refs/pull/12/head", rewritten);
+			editScenario((s) => {
+				const pr12 = s.prs[12];
+				if (!pr12?.view) throw new Error("no PR 12");
+				pr12.view = { ...pr12.view, headRefOid: rewritten };
+			});
+		};
+		const editScenario = (edit: (s: Scenario) => void) => {
+			const path = process.env.CRB_FAKE_GH ?? "";
+			const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+			edit(s);
+			writeFileAtomic(path, JSON.stringify(s, null, "\t"));
+		};
+
 		it("POST threads from a conversation on an earlier patch set's line: posted on that patch set's commit as a direct comment there is (its checks), the conversation joins it (CAR-264)", async () => {
 			const { h1, opened, comment } = await earlierConversation();
 			const res = await post("/api/threads", comment);
@@ -1660,30 +1697,7 @@ describe("API", () => {
 
 		it("POST threads from a conversation on an earlier patch set's line whose commit a force-push dropped: refused before GitHub, nothing posted, the conversation stays (CAR-264)", async () => {
 			const { comment } = await earlierConversation();
-			// A force-push: the head becomes a new commit on the merge base.
-			const repoGit = (...args: string[]) =>
-				execFileSync("git", args, {
-					cwd: pr.repo.path,
-					encoding: "utf8",
-					env: testGitEnv(),
-				}).trim();
-			const rewritten = repoGit(
-				"commit-tree",
-				`${pr.head()}^{tree}`,
-				"-p",
-				pr.mergeBase,
-				"-m",
-				"rewritten",
-			);
-			repoGit("update-ref", "refs/pull/12/head", rewritten);
-			pr.scenario({
-				prs: {
-					12: {
-						view: prView({ headRefOid: rewritten, baseRefName: "main" }),
-						graphql: { reviewThreads: [], reviews: [] },
-					},
-				},
-			});
+			forcePush();
 			const before = storedThreads().length;
 			const sent = commentPosts().length;
 			const res = await post("/api/threads", comment);
@@ -1691,6 +1705,33 @@ describe("API", () => {
 			expect(res.json().error).toMatch(/no longer in the PR/);
 			expect(commentPosts()).toHaveLength(sent);
 			expect(storedThreads()).toHaveLength(before);
+			const [t] = (await get("/api/agent/threads")).threads as AgentThread[];
+			expect(t?.anchor).toMatchObject({ subject: "line", line: 2 });
+		});
+
+		it("POST threads from a conversation on an earlier patch set's line, a force-push while the post is out: GitHub moves it onto the new head, so it is removed again, refused with why, the conversation stays (CAR-264)", async () => {
+			const { comment } = await earlierConversation();
+			const before = storedThreads().length;
+			editScenario((s) => {
+				s.hold = ["comment"];
+			});
+			const out = post("/api/threads", comment);
+			// The post is out (held at GitHub): the PR is force-pushed meanwhile.
+			await vi.waitFor(() => expect(commentPosts()).toHaveLength(1), {
+				timeout: 10_000,
+			});
+			forcePush();
+			release(process.env.CRB_FAKE_GH ?? "", "comment");
+			const res = await out;
+			expect(res.statusCode, res.body).toBe(409);
+			expect(res.json()).toMatchObject({ code: "stale" });
+			expect(res.json().error).toMatch(/force-push/);
+			// Removed again: nothing of it left on GitHub.
+			expect(pr.ghLog()).toMatch(
+				/-X DELETE repos\/acme\/widget\/pulls\/comments\//,
+			);
+			expect(storedThreads()).toHaveLength(before + 1);
+			expect(storedThreads().at(-1)).toMatchObject({ removed: true });
 			const [t] = (await get("/api/agent/threads")).threads as AgentThread[];
 			expect(t?.anchor).toMatchObject({ subject: "line", line: 2 });
 		});

@@ -748,11 +748,14 @@ function usePendingComment(props: AgentCardProps): ReactNode | null {
 	const diff = usePendingComposers();
 	// On lines only the since view's compared patch set had: its comment
 	// is on that patch set's commit, shown here all the same (CAR-264).
-	const earlier =
+	const early =
 		scope?.earlier !== undefined &&
 		isSpanThread(thread) &&
-		thread.anchor.subject !== "thread" &&
-		typeof scope.earlier(spanOfAnchor(thread.anchor)) === "object";
+		thread.anchor.subject !== "thread"
+			? scope.earlier(spanOfAnchor(thread.anchor))
+			: null;
+	// Null is "not on such lines" (typeof null is "object").
+	const earlier = early !== null && typeof early === "object";
 	const here =
 		scope !== null &&
 		diff !== null &&

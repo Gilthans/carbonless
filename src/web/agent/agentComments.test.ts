@@ -249,6 +249,19 @@ describe("commentPlace: a conversation on lines only the since view's earlier pa
 	it("a joined conversation still replies to its thread", () => {
 		expect(
 			commentPlace({
+				thread: conversation(line().anchor, {
+					joined: { thread: "PRRT_7", asked: line().anchor },
+				}),
+				head: HEAD,
+				placement: undefined,
+				placing: "in",
+				earlier: target,
+			}),
+		).toEqual({ kind: "reply", thread: "PRRT_7" });
+	});
+	it("a sibling block that started a thread: this one replies to it", () => {
+		expect(
+			commentPlace({
 				thread: line({}),
 				head: HEAD,
 				placement: undefined,

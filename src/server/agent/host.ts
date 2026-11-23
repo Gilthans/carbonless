@@ -758,19 +758,6 @@ export class AgentHost {
 		return this.#view(await this.#joinedOne(t));
 	}
 
-	/**
-	 * Whether conversation `thread` is still on `span` (its own span, not
-	 * yet a GitHub thread's): a comment posted from it then goes where its
-	 * span is (CAR-264). False for one not found.
-	 */
-	async isOn(thread: string, span: PostedSpan): Promise<boolean> {
-		try {
-			return sameSpan((await this.store.find(thread)).anchor, span);
-		} catch {
-			return false;
-		}
-	}
-
 	/** The reviewer has seen the thread up to a message (no write when already seen). */
 	async seen(thread: string, upTo: string): Promise<AgentThread> {
 		const t = await this.store.seen(thread, upTo);
