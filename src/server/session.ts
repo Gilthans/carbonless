@@ -49,6 +49,7 @@ import type {
 	VerdictRequest,
 } from "../shared/types.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
+import type { AgentDiff } from "./agent/reads.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import { touchesOldSide } from "./codeWindow.js";
@@ -472,8 +473,15 @@ export class Session {
 			threads: async (maxAgeMs) => (await this.#agentGithub(maxAgeMs)).threads,
 			threadsAt: async (maxAgeMs) => {
 				const { read, threads } = await this.#agentGithub(maxAgeMs);
-				return { threads, at: new Date(read.started).toISOString() };
+				return {
+					threads,
+					at: new Date(read.started).toISOString(),
+					readId: read.id,
+				};
 			},
+			placedAtHead: (readId) => this.agentPlacedAtHead(readId),
+			diff: (c) => this.agentDiff(c),
+			reviewPatchsets: () => this.agentPatchsets(),
 			thread: async (id, maxAgeMs) => {
 				const { read, threads } = await this.#agentGithub(maxAgeMs);
 				const found = threads.find((t) => t.id === id);
@@ -1519,6 +1527,9 @@ export class Session {
 	): Promise<{
 		has: (index: number) => boolean;
 		hunks: (index: number) => Promise<FileHunks>;
+		/** The interdiff's own hunks of a file: none when it doesn't change it (no gap read). */
+		changed: (index: number) => FileHunks;
+		answer: RereviewAnswer;
 	}> {
 		const snapshot = this.#current(revision);
 		const since = (await this.#progress()).patchsets.find(
@@ -1534,7 +1545,10 @@ export class Session {
 			...answer.files.map((f) => f.index),
 		]);
 		return {
+			answer,
 			has: (index) => known.has(index),
+			changed: (index) =>
+				interdiffFileHunks(traced, snapshot, answer, index, sources),
 			hunks: async (index) => {
 				const hunks = interdiffFileHunks(
 					traced,
@@ -1568,6 +1582,122 @@ export class Session {
 					: { ...hunks, newLineCount };
 			},
 		};
+	}
+
+	/**
+	 * A comparison for the agent's `diff` read (CAR-182), read-only: the
+	 * full diff of the review's snapshot (`to` omitted) or of patch set
+	 * `to`, or, with `from`, the since view from patch set `from` to it,
+	 * by the same reads the page's hunks come from (loadFileHunks,
+	 * interdiffFileHunks). A RangeError for a patch set that is none of the
+	 * reviewer's, or a `from` not before `to`.
+	 */
+	async agentDiff(c: { from?: number; to?: number }): Promise<AgentDiff> {
+		const progress = await this.#progress();
+		const recordOf = (n: number) => {
+			const r = progress.patchsets.find((p) => p.number === n);
+			if (!r) throw new RangeError(`No patch set ${n}`);
+			return r;
+		};
+		const target =
+			c.to === undefined
+				? this.#snapshot
+				: await this.#snapshotOf(recordOf(c.to));
+		const to =
+			c.to ??
+			progress.patchsets.find((p) => p.revision === target.revision)?.number ??
+			null;
+		const listed: AgentDiff["files"] = target.files.map((f) => ({
+			index: f.index,
+			path: f.path,
+			...(f.oldPath !== undefined ? { oldPath: f.oldPath } : {}),
+			status: f.status,
+			...(f.binary ? { binary: true } : {}),
+		}));
+		if (c.from === undefined) {
+			return {
+				base: target.base,
+				head: target.head,
+				from: null,
+				to,
+				files: listed,
+				hunks: (index) => loadFileHunks(this.repo, target, index),
+			};
+		}
+		const since = recordOf(c.from);
+		if (
+			(to !== null && since.number >= to) ||
+			since.revision === target.revision
+		) {
+			throw new RangeError(
+				`Patch set ${c.from} isn't before the compared head`,
+			);
+		}
+		const interdiff = await this.#interdiffOf(c.from, target.revision);
+		// The full diff's status says nothing of the since view: left out.
+		const byIndex = new Map(
+			listed.map(({ status: _, ...f }) => [
+				f.index,
+				f as AgentDiff["files"][number],
+			]),
+		);
+		// A file only the earlier patch set had (gone since) is listed too.
+		for (const f of interdiff.answer.files) {
+			if (!byIndex.has(f.index)) {
+				byIndex.set(f.index, { index: f.index, path: f.path });
+			}
+		}
+		return {
+			base: since.head,
+			head: target.head,
+			from: since.number,
+			to,
+			interdiff: interdiff.answer.interdiff,
+			files: [...byIndex.values()].sort((a, b) => a.index - b.index),
+			hunks: async (index) => interdiff.changed(index),
+		};
+	}
+
+	/**
+	 * The reviewer's patch sets, read now, and which one the review's
+	 * snapshot is (null: a head that is no patch set yet), for `review`.
+	 */
+	async agentPatchsets(): Promise<{
+		patchsets: PatchsetRecord[];
+		current: number | null;
+	}> {
+		const { patchsets } = await this.#progress();
+		const revision = this.#snapshot.revision;
+		return {
+			patchsets,
+			current: patchsets.find((p) => p.revision === revision)?.number ?? null,
+		};
+	}
+
+	/**
+	 * Every thread of read `readId` placed on the review's snapshot (its
+	 * patch set, else its head), as the page places them there: waits for
+	 * the placing, resolved threads included.
+	 */
+	async agentPlacedAtHead(
+		readId: string,
+	): Promise<Map<string, ThreadPlacement>> {
+		const { current } = await this.agentPatchsets();
+		const to =
+			current !== null
+				? { patchset: current }
+				: { head: checkOid(this.#snapshot.head) };
+		let answer = await this.placements(to, readId);
+		if ("pending" in answer || !answer.complete) {
+			const key =
+				"patchset" in to
+					? this.#patchsets.find((p) => p.number === to.patchset)?.revision
+					: `head:${to.head}`;
+			await this.#placing.get(`${key}|${readId}`)?.settled;
+			answer = await this.placements(to, readId);
+		}
+		if ("pending" in answer) throw new Error("The threads aren't placed yet");
+		return new Map(answer.threads.map((t) => [t.id, t.placement]));
 	}
 
 	/**

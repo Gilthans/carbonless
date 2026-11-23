@@ -42,6 +42,7 @@ import type {
 	Counts,
 	DiffLine,
 	DiffSide,
+	FileHunks,
 	FileStatus,
 	FileView,
 	ReviewThread,
@@ -52,7 +53,7 @@ import type {
 import { readConfig } from "../config.js";
 import { loadFileHunks } from "../diff/snapshot.js";
 import type { PrMeta } from "../gh.js";
-import { runGitBuffer } from "../git.js";
+import { runGitBuffer, runGitFull } from "../git.js";
 import { stripMarker } from "../marker.js";
 import { RefStore } from "../review/refStore.js";
 import { slugify } from "../slug.js";
@@ -77,6 +78,17 @@ import {
 	takeSuggestion,
 	threadEnvelope,
 } from "./prompt.js";
+import {
+	type AgentDiff,
+	type AtHead,
+	analyse,
+	atHead,
+	type DiffFileOut,
+	fileDiff,
+	fileWindow,
+	isReadablePath,
+	MAX_DIFF_CHARS,
+} from "./reads.js";
 import {
 	AgentRunner,
 	type RunnerFacts,
@@ -238,6 +250,30 @@ export interface SessionReviewFacts {
 	threadsError?: string;
 	/** When the GitHub read the threads come from started (ISO). */
 	threadsReadAt?: string;
+	/** The threads' places on the review's head couldn't be read (why): each thread's `atHead` is then absent. */
+	placementsError?: string;
+	/** The reviewer's patch sets in order: each a head they reviewed (`startedAt` ISO). */
+	patchsets?: SessionPatchset[];
+	/** The newest patch set: the last head the reviewer marked lines on; null for none. */
+	lastReviewed?: number | null;
+	/**
+	 * What `diff`'s `from: "last"` compares from: the newest patch set
+	 * before the review's head (the page's default since view); null for
+	 * none (only the full diff).
+	 */
+	sinceLast?: number | null;
+	/** The review's head is this patch set; null: a head that is no patch set yet. */
+	headPatchset?: number | null;
+	/** The reviewer's patch sets couldn't be read (why). */
+	patchsetsError?: string;
+}
+
+/** A patch set as `review` lists it. */
+export interface SessionPatchset {
+	number: number;
+	head: string;
+	mergeBase: string;
+	startedAt: string;
 }
 
 /** A GitHub review thread as the `review` tool lists it (bodies sanitised and capped). */
@@ -251,6 +287,8 @@ export interface SessionGithubThread {
 	comments: { author: string; body: string }[];
 	/** Only the opening comment is listed: the others couldn't be read now. */
 	commentsPartial?: boolean;
+	/** Where crb shows it on the review's head, as the page places it (absent: see placementsError). */
+	atHead?: AtHead;
 }
 
 /**
@@ -271,7 +309,54 @@ export interface SessionFacts {
 	viewer?: string;
 	/** The coverage the page shows for `target` (none: the review's default comparison). */
 	coverage?(target?: AgentViewTarget): Promise<SessionCoverage>;
+	/** A comparison's files and hunks for `diff` (Session.agentDiff). */
+	diff?(c: { from?: number; to?: number }): Promise<AgentDiff>;
+	/** The reviewer's patch sets, read now, and the review's head's (Session.agentPatchsets). */
+	reviewPatchsets?(): Promise<{
+		patchsets: readonly {
+			number: number;
+			head: string;
+			mergeBase: string;
+			startedAt: number;
+		}[];
+		current: number | null;
+	}>;
+	/** A blob's bytes at `commit:path` from crb's clone; null when it has none. */
+	blob?(commit: string, path: string): Promise<Buffer | null>;
 }
+
+/** What `diff` answers. */
+export interface SessionDiff {
+	comparison: {
+		/** The full diff's merge base, or the since view's earlier patch set's head. */
+		base: string;
+		head: string;
+		from: number | null;
+		to: number | null;
+	};
+	files: DiffFileOut[];
+	/** The since view: files it doesn't change (not listed). */
+	unchanged?: number;
+	/** Past the budget: these files' hunks were left out; ask for each by path. */
+	omitted?: string[];
+}
+
+/** What `file` answers. */
+export interface SessionFile {
+	path: string;
+	commit: string;
+	lines: number;
+	startLine: number;
+	endLine: number;
+	text: string;
+	/** Past the budget: ask again from this line. */
+	nextLine?: number;
+}
+
+/** A `diff` or `file` request the tool refuses as made. */
+export class BadReadError extends Error {}
+/** A `file` read of a path the commit hasn't, or not as text. */
+export class NotFoundError extends Error {}
 
 /** One comparison's coverage, as the page reads it (Session.coverage). */
 export interface SessionCoverage {
@@ -366,6 +451,8 @@ export type AgentGithub = Pick<
 > & {
 	/** The snapshot's merge base (a viewed head's, unless it is a patch set's). */
 	base(): string;
+	/** Every thread of a read placed on the review's head, by id (Session.agentPlacedAtHead). */
+	placedAtHead?(readId: string): Promise<Map<string, ThreadPlacement>>;
 	/** The comments (author, markdown) of these threads, by id; absent: openers only. */
 	comments?(
 		ids: string[],
@@ -881,20 +968,65 @@ export class AgentHost {
 		const withFacts = pr
 			? { ...out, title: s(pr.title), body: s(pr.body), files: pr.files.map(s) }
 			: out;
+		const withSets = { ...withFacts, ...(await this.#sessionPatchsets()) };
 		return withThreads
-			? { ...withFacts, ...(await this.#sessionThreads()) }
-			: withFacts;
+			? { ...withSets, ...(await this.#sessionThreads()) }
+			: withSets;
+	}
+
+	/**
+	 * The reviewer's patch sets for `review`: each in order, the last one
+	 * reviewed, and what "since your last pass" compares from (the page's
+	 * default since view of the review's head). Read-only.
+	 */
+	async #sessionPatchsets(): Promise<
+		Pick<
+			SessionReviewFacts,
+			| "patchsets"
+			| "lastReviewed"
+			| "sinceLast"
+			| "headPatchset"
+			| "patchsetsError"
+		>
+	> {
+		const read = this.session?.reviewPatchsets;
+		if (!read) return {};
+		let got: Awaited<ReturnType<typeof read>>;
+		try {
+			got = await read();
+		} catch (error) {
+			return { patchsetsError: sanitizeThirdParty(oneError(error)) };
+		}
+		const patchsets = [...got.patchsets]
+			.sort((a, b) => a.number - b.number)
+			.map((p) => ({
+				number: p.number,
+				head: p.head,
+				mergeBase: p.mergeBase,
+				startedAt: new Date(p.startedAt).toISOString(),
+			}));
+		return {
+			patchsets,
+			lastReviewed: patchsets.at(-1)?.number ?? null,
+			sinceLast: sinceOf(patchsets, got.current),
+			headPatchset: got.current,
+		};
 	}
 
 	/** The PR's live GitHub threads for `review`, sanitised and capped. */
 	async #sessionThreads(): Promise<
 		Pick<
 			SessionReviewFacts,
-			"threads" | "threadsTruncated" | "threadsError" | "threadsReadAt"
+			| "threads"
+			| "threadsTruncated"
+			| "threadsError"
+			| "threadsReadAt"
+			| "placementsError"
 		>
 	> {
 		let listed: ReviewThread[];
 		let at: string | undefined;
+		let readId: string | undefined;
 		try {
 			// At most AGENT_GITHUB_MAX_AGE_MS old: "resolved" is GitHub's now.
 			const read = this.github.threadsAt
@@ -902,10 +1034,21 @@ export class AgentHost {
 				: { threads: await this.github.threads(AGENT_GITHUB_MAX_AGE_MS) };
 			listed = [...liveGithubThreads(read.threads).values()];
 			at = "at" in read ? read.at : undefined;
+			readId = "readId" in read ? read.readId : undefined;
 		} catch (error) {
 			return { threadsError: oneError(error) };
 		}
 		const kept = listed.slice(0, MAX_SESSION_THREADS);
+		// Where the page shows each on the review's head, by the same read.
+		let placed: Map<string, ThreadPlacement> | null = null;
+		let placementsError: string | undefined;
+		if (readId && this.github.placedAtHead) {
+			try {
+				placed = await this.github.placedAtHead(readId);
+			} catch (error) {
+				placementsError = sanitizeThirdParty(oneError(error));
+			}
+		} else placementsError = "crb can't place threads for this review";
 		const all = await (
 			this.github.comments?.(
 				kept.map((t) => t.id),
@@ -932,10 +1075,14 @@ export class AgentHost {
 					(c) => ({ author: s(c.author), body: cap(c.body) }),
 				),
 				...(comments ? {} : { commentsPartial: true }),
+				...(placed?.has(t.id)
+					? { atHead: atHead(placed.get(t.id) as ThreadPlacement, s) }
+					: {}),
 			};
 		});
 		return {
 			threads,
+			...(placementsError ? { placementsError } : {}),
 			...(at ? { threadsReadAt: at } : {}),
 			...(listed.length > kept.length ? { threadsTruncated: true } : {}),
 		};
@@ -1481,6 +1628,209 @@ export class AgentHost {
 	}
 
 	/**
+	 * The `diff` read (CAR-182), read-only: the full diff of the review's
+	 * head (or of patch set `to`), or with `from` the since view from that
+	 * patch set ("last": the reviewer's last pass before it), from crb's
+	 * clone with the page's own hunks and analysis. Whole hunks within
+	 * MAX_DIFF_CHARS: what doesn't fit is named (`omitted`, `nextHunk`),
+	 * never dropped. A read that fails is an error, never an empty diff.
+	 */
+	async sessionDiff(
+		secret: string,
+		args: {
+			path?: string;
+			from?: number | "last";
+			to?: number;
+			fromHunk?: number;
+		},
+	): Promise<SessionDiff> {
+		await this.#token(secret);
+		const { diff, reviewPatchsets } = this.#facts();
+		const unavailable = (why: string) =>
+			new CoverageError(
+				`The diff can't be read now (${why}): say so, don't guess it`,
+			);
+		if (!diff) throw unavailable("this review has no diff for agents");
+		if (args.path !== undefined && !isReadablePath(args.path)) {
+			throw new BadReadError(
+				"path must be a file of the comparison, as diff or review lists it",
+			);
+		}
+		if (args.fromHunk !== undefined && args.path === undefined) {
+			throw new BadReadError("fromHunk needs a path");
+		}
+		let from = args.from;
+		if (from === "last") {
+			if (!reviewPatchsets) throw unavailable("no patch sets");
+			const got = await reviewPatchsets().catch((error: unknown) => {
+				throw unavailable(sanitizeThirdParty(oneError(error)));
+			});
+			const last = sinceOf(
+				[...got.patchsets].sort((a, b) => a.number - b.number),
+				args.to ?? got.current,
+			);
+			if (last === null) {
+				throw new BadReadError(
+					"The reviewer has no pass before this head: there is only the full diff (call diff without from)",
+				);
+			}
+			from = last;
+		}
+		let c: AgentDiff;
+		try {
+			c = await diff({
+				...(from !== undefined ? { from } : {}),
+				...(args.to !== undefined ? { to: args.to } : {}),
+			});
+		} catch (error) {
+			if (error instanceof RangeError) {
+				throw new BadReadError(sanitizeThirdParty(error.message));
+			}
+			throw unavailable(sanitizeThirdParty(oneError(error)));
+		}
+		if (c.interdiff === "unavailable") {
+			throw unavailable(
+				`crb couldn't build what changed since patch set ${c.from}; compare the full diffs of the two patch sets (diff with to) instead`,
+			);
+		}
+		const s = sanitizeThirdParty;
+		const files = args.path
+			? c.files.filter((f) => f.path === args.path || s(f.path) === args.path)
+			: c.files;
+		if (args.path !== undefined && files.length === 0) {
+			throw new BadReadError(
+				"path isn't a file of this comparison: call diff without path for its files",
+			);
+		}
+		const out: DiffFileOut[] = [];
+		const omitted: string[] = [];
+		let unchanged = 0;
+		let left = MAX_DIFF_CHARS;
+		for (const f of files) {
+			const meta = {
+				path: s(f.path),
+				...(f.oldPath !== undefined ? { oldPath: s(f.oldPath) } : {}),
+				...(f.status ? { status: f.status } : {}),
+				...(f.binary ? { binary: true as const } : {}),
+			};
+			let hunks: FileHunks;
+			try {
+				hunks = await c.hunks(f.index);
+			} catch {
+				// Not git's message: it can carry the clone cache's path.
+				out.push({
+					...meta,
+					diff: "",
+					hunks: 0,
+					whitespaceOnly: { LEFT: [], RIGHT: [] },
+					pairs: [],
+					error: "Couldn't read this file's diff",
+				});
+				continue;
+			}
+			// The since view: a file it doesn't change is counted, not listed.
+			if (c.from !== null && hunks.hunks.length === 0 && !args.path) {
+				unchanged++;
+				continue;
+			}
+			const start = args.fromHunk ?? 0;
+			if (start > hunks.hunks.length) {
+				throw new BadReadError(
+					`fromHunk past the file's ${hunks.hunks.length} hunks`,
+				);
+			}
+			const part = fileDiff(hunks, start, left, args.path !== undefined);
+			left -= part.used;
+			if (part.given.length === 0 && start < hunks.hunks.length) {
+				omitted.push(meta.path);
+			}
+			out.push({
+				...meta,
+				diff: part.text,
+				hunks: hunks.hunks.length,
+				...analyse(part.given),
+				...(part.nextHunk !== undefined ? { nextHunk: part.nextHunk } : {}),
+			});
+		}
+		return {
+			comparison: { base: c.base, head: c.head, from: c.from, to: c.to },
+			files: out,
+			...(unchanged > 0 ? { unchanged } : {}),
+			...(omitted.length > 0 ? { omitted } : {}),
+		};
+	}
+
+	/**
+	 * The `file` read (CAR-182), read-only: a file's text at one of the
+	 * review's commits (its head by default) from crb's clone, a window of
+	 * lines within MAX_FILE_CHARS. The commit must be one crb knows for
+	 * this review (its base, merge base, head, the PR's head, a patch
+	 * set's head or merge base): never another object of the clone.
+	 */
+	async sessionFile(
+		secret: string,
+		args: {
+			path: string;
+			commit?: string;
+			startLine?: number;
+			endLine?: number;
+		},
+	): Promise<SessionFile> {
+		await this.#token(secret);
+		const { facts, blob, reviewPatchsets } = this.#facts();
+		if (!blob) {
+			throw new CoverageError("Files can't be read for this review");
+		}
+		if (!isReadablePath(args.path)) {
+			throw new BadReadError(
+				"path must be relative to the repository's root (no leading / or -, no ..)",
+			);
+		}
+		const review = facts.review();
+		const commit = args.commit ?? review.head.commit;
+		if (!OID.test(commit)) {
+			throw new BadReadError("commit must be a full commit id");
+		}
+		const known = new Set<string>([
+			review.base.commit,
+			review.mergeBase,
+			review.head.commit,
+			facts.views().current,
+			...(
+				(await reviewPatchsets?.().catch(() => null))?.patchsets ??
+				this.github.patchsets()
+			).flatMap((p) => [p.head, p.mergeBase]),
+		]);
+		if (!known.has(commit)) {
+			throw new BadReadError(
+				"commit must be one of the review's: its base, merge base or head, the PR's head, or a patch set's head or merge base (review lists them)",
+			);
+		}
+		if (
+			args.startLine !== undefined &&
+			args.endLine !== undefined &&
+			args.endLine < args.startLine
+		) {
+			throw new BadReadError("endLine is before startLine");
+		}
+		const bytes = await blob(commit, args.path);
+		if (bytes === null) {
+			throw new NotFoundError(
+				"No such file at that commit (or crb's clone hasn't the commit)",
+			);
+		}
+		if (bytes.includes(0)) {
+			throw new NotFoundError("A binary file: no text to read");
+		}
+		const w = fileWindow(
+			bytes.toString("utf8"),
+			args.startLine ?? 1,
+			args.endLine,
+		);
+		return { path: sanitizeThirdParty(args.path), commit, ...w };
+	}
+
+	/**
 	 * "The comparison" for `progress` and a review question's `open`: the
 	 * view of the reviewer's message the held question answers (none: the
 	 * default); with no question held, the view of the latest human
@@ -1960,6 +2310,19 @@ export function buildAgentHost(o: {
 }
 
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+/**
+ * The newest patch set before `head` (a patch set's number; null: a head
+ * after them all): the page's default since view (defaultBase), what
+ * "since your last pass" compares from. Null when none is before it.
+ */
+export function sinceOf(
+	patchsets: readonly { number: number }[],
+	head: number | null,
+): number | null {
+	const before = patchsets.filter((p) => head === null || p.number < head);
+	return before.at(-1)?.number ?? null;
+}
 /** The anchored file is sent up to this size (bytes); past it, or binary, not at all. */
 const MAX_ANCHORED = 256 * 1024;
 /** Lines of the hunk kept on each side of the anchor. */
@@ -1981,7 +2344,21 @@ export interface ReviewAgentSource {
 	/** As threads, with when that read started (ISO). */
 	threadsAt?(
 		maxAgeMs: number,
-	): Promise<{ threads: ReviewThread[]; at: string }>;
+	): Promise<{ threads: ReviewThread[]; at: string; readId?: string }>;
+	/** Every thread of read `readId` placed on the review's head, as the page places them. */
+	placedAtHead?(readId: string): Promise<Map<string, ThreadPlacement>>;
+	/** A comparison's files and hunks for `diff`. */
+	diff?(c: { from?: number; to?: number }): Promise<AgentDiff>;
+	/** The reviewer's patch sets, read now, and the review's head's. */
+	reviewPatchsets?(): Promise<{
+		patchsets: readonly {
+			number: number;
+			head: string;
+			mergeBase: string;
+			startedAt: number;
+		}[];
+		current: number | null;
+	}>;
 	/** One review thread, null when GitHub doesn't list it; a deleted one says so (`unavailable`). */
 	thread(id: string, maxAgeMs?: number): Promise<ReviewThread | null>;
 	/** The reviewer's patch sets (`startedAt` in ms). */
@@ -2195,6 +2572,7 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 			threads: (maxAgeMs) => src.threads(maxAgeMs),
 			thread: (id, maxAgeMs) => src.thread(id, maxAgeMs),
 			...(src.threadsAt ? { threadsAt: src.threadsAt.bind(src) } : {}),
+			...(src.placedAtHead ? { placedAtHead: src.placedAtHead.bind(src) } : {}),
 			patchsets: () => src.patchsets(),
 			base: () => src.snapshot().base,
 			...(src.comments ? { comments: src.comments } : {}),
@@ -2203,6 +2581,18 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 			facts,
 			viewer: src.viewer,
 			...(src.coverage ? { coverage: src.coverage } : {}),
+			...(src.diff ? { diff: src.diff } : {}),
+			...(src.reviewPatchsets ? { reviewPatchsets: src.reviewPatchsets } : {}),
+			blob: async (commit, path) => {
+				// The object name is one argument starting with a checked OID:
+				// never an option, whatever the path.
+				const r = await runGitFull(
+					src.repo,
+					["cat-file", "blob", `${commit}:${path}`],
+					{ allowFailure: true },
+				);
+				return r.code === 0 ? r.stdout : null;
+			},
 		},
 		claim: new ReviewClaim(dir, () => ({
 			pid: process.pid,

@@ -876,6 +876,23 @@ question would be on someone else's behalf, or about a past moment.
   the request's own thread, and past 25 from one request. A citation in
   the agent's reply (`crb:c/<id>`) links only a conversation of this
   review, labelled by crb, never with an href the agent wrote.
+- **The agent reads the review as the reviewer sees it, and only reads
+  (CAR-182).** crb's MCP `diff`, `file`, `progress` and `review` are
+  read-only and serve crb's clone and caches, never the reviewer's
+  working copy, the same for a spawned and a joined agent. `diff` gives
+  the full diff, the since view from a patch set (`"last"`: the page's
+  default since view, `review`'s `sinceLast`) or a patch set's own diff,
+  with the page's own analysis (whitespace-only lines, paired lines;
+  never a second computation, so the agent agrees with the page). crb
+  detects no moved blocks yet, and `diff` says so rather than guess. What
+  doesn't fit its budget is named (`omitted`, `nextHunk`), never dropped;
+  a since view crb can't build, or a file it can't read, is an error,
+  never an empty diff. `file` reads only the review's own commits (base,
+  merge base, head, the PR's head, a patch set's head or merge base),
+  paths checked (relative, no `..`, never an option). `review`'s
+  threads carry `atHead`, the page's placement on the review's head, or
+  why none (`unplaced` with its fate, `placementsError`): GitHub's line
+  is kept beside it, never offered as where the thread is now.
 - **A question never waits on the agent to be sent.** Ask agent writes
   the thread at once; it waits (yellow) until an agent answers, whether
   none is set up, it is starting, busy, crashed or elsewhere.

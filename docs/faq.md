@@ -399,7 +399,7 @@ only in the reviews where it was spawned.
 
 **How does a spawned agent answer?** Like a session you invite: through
 crb's MCP tools (`attach`, `next`, `reply`, `open`, `threads`, `review`,
-`detach`). Spawn hands it crb's `/mcp` when its session starts (over HTTP
+`progress`, `diff`, `file`, `detach`). Spawn hands it crb's `/mcp` when its session starts (over HTTP
 when the agent supports it, else through `crb mcp-bridge` over stdio) and
 a join that pressing Spawn already approved: there is no Approve bar, and
 that join works only for the process Spawn started (a secret only it was

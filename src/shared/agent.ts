@@ -460,7 +460,9 @@ export const JOINED_PREAMBLE = [
 
 /** crb's MCP tools a review-conversation question points the agent at. */
 export const REVIEW_TOOLS = [
-	"`review` (the PR's facts, its files and its GitHub threads)",
+	"`review` (the PR's facts, its files, the reviewer's patch sets and its GitHub threads with where each sits on the head now)",
+	"`diff` (the diff with carbonless's analysis: whitespace-only lines, paired lines; with from \"last\", what changed since the reviewer's last pass)",
+	"`file` (a file at one of the review's commits)",
 	"`threads` (the review's agent conversations)",
 	"`progress` (what the reviewer has reviewed in the comparison on screen, line by line)",
 	"`open` (points the reviewer at specific code or a GitHub thread: it starts a conversation there, which you cite in your reply)",

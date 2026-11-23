@@ -164,6 +164,8 @@ describe("/mcp", () => {
 		expect(tools.map((t) => t.name).sort()).toEqual([
 			"attach",
 			"detach",
+			"diff",
+			"file",
 			"next",
 			"open",
 			"progress",
@@ -541,6 +543,14 @@ describe("/mcp", () => {
 						{ author: "rev", body: "Fix this" },
 						{ author: "octo-author", body: "Done" },
 					],
+					atHead: {
+						kind: "placed",
+						path: "a.txt",
+						side: "RIGHT",
+						startSide: "RIGHT",
+						startLine: 2,
+						line: 2,
+					},
 				},
 			]);
 		});

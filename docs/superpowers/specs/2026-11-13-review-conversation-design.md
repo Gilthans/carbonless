@@ -329,6 +329,19 @@ review conversation uses that path and nothing else:
   which the drawer shows as links; it can't open another review
   conversation. The preamble names `review`, `threads`, `progress` and
   `open`.
+- **The agent reads the code through crb (CAR-182, 2026-11-23).** Owner:
+  "CAR-182 - let's open a PR to close that gap right away." Read-only
+  tools, served from crb's clone, so a joined agent needs none of the
+  PR's commits: **`diff`** (the full diff by default; `from` a patch set
+  or `"last"` for the since view; `to` another patch set's head), with
+  crb's analysis per file as the page computes it (whitespace-only
+  lines: `matchDisplayHunk`; line pairs: `hunkPairs`, "Ignore
+  whitespace" off), and **`file`** (a path at one of the review's
+  commits). `review` adds the reviewer's patch sets, the last one
+  (`lastReviewed`), what "since your last pass" compares from
+  (`sinceLast`, the page's default since view) and each GitHub thread's
+  place on the review's head (`atHead`, the page's placement). The
+  preamble names `diff` and `file` too.
 - crb never moves the checkout for this question (CAR-149 decision 8);
   the agent checks out what it needs.
 
