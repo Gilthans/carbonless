@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { AnnotationOp } from "../../shared/home.js";
 import { GhError } from "../errors.js";
+import { validOwnerRepo } from "../gh.js";
 import { GitError } from "../git.js";
 import {
 	HomeRequestError,
@@ -21,8 +22,6 @@ export const MAX_NOTE = 500;
 const MAX_REPOS = 100;
 const MAX_QUERY = 300;
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
-const REPO = /^[A-Za-z0-9._-]{1,100}$/;
 const NUMBER = /^[1-9]\d{0,9}$/;
 
 /** The op a request body names, or a HomeRequestError saying what's wrong. */
@@ -102,7 +101,7 @@ export async function registerHomeRoutes(
 			Querystring: { fresh?: unknown };
 		}>("/api/home/repos/:owner/:repo", (request) => {
 			const { owner, repo } = request.params;
-			if (!OWNER.test(owner) || !REPO.test(repo)) {
+			if (!validOwnerRepo(owner, repo)) {
 				throw new HomeRequestError(`Not a repository: ${owner}/${repo}`);
 			}
 			return home.repo(owner, repo, { fresh: request.query.fresh === "1" });
@@ -111,7 +110,7 @@ export async function registerHomeRoutes(
 			"/api/home/prs/:owner/:repo/:number/annotations",
 			(request) => {
 				const { owner, repo, number } = request.params;
-				if (!OWNER.test(owner) || !REPO.test(repo) || !NUMBER.test(number)) {
+				if (!validOwnerRepo(owner, repo) || !NUMBER.test(number)) {
 					throw new HomeRequestError(`Not a PR: ${owner}/${repo}#${number}`);
 				}
 				return home.annotate(
