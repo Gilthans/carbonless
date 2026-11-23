@@ -5,7 +5,6 @@ import {
 	ChevronUpIcon,
 	CircleSlashIcon,
 	DiffRemovedIcon,
-	FileDiffIcon,
 	FileRemovedIcon,
 	GitCompareIcon,
 	HistoryIcon,
@@ -55,6 +54,7 @@ import {
 } from "../threads/Conversation";
 import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
 import { Avatar, usePerson } from "../threads/people";
+import { FullDiffLink } from "./FullDiffLink";
 import { type ThreadFocus, useFocusCard } from "./threadFocus";
 import {
 	firstWords,
@@ -1024,7 +1024,12 @@ export function usePlacementMap(
 	);
 }
 
-/** NotHere's word and tooltip, by why (since: the compared patch set). */
+/**
+ * NotHere's word and tooltip, by why (since: the compared patch set). A
+ * file unchanged since is the same fact (the line was deleted before),
+ * said in the tooltip only. One wording wherever the since view says why
+ * a line isn't in it (CAR-255; CAR-253's landing hint).
+ */
 export function notHereText(
 	why: NotHere["why"],
 	since: number | undefined,
@@ -1038,8 +1043,8 @@ export function notHereText(
 			};
 		case "unchanged":
 			return {
-				label: `unchanged since ${ps}`,
-				tip: `The file is unchanged since ${ps}; its line was deleted before`,
+				label: `deleted before ${ps}`,
+				tip: `Its line was deleted before ${ps}, and the file is unchanged since ${ps}`,
 			};
 		default:
 			return {
@@ -1052,9 +1057,8 @@ export function notHereText(
 /**
  * The since view's word on a thread whose line it has no row for
  * (CAR-255): why (NotHere, never a tracer fate: the line is where the
- * thread says), and a link to the full diff on that line, its card
- * opened there. Muted once
- * resolved.
+ * thread says), and a link to the full diff on that line, its card opened
+ * there (FullDiffLink). Muted once resolved.
  */
 export function NotHereNote(props: {
 	notHere: NotHere;
@@ -1064,7 +1068,6 @@ export function NotHereNote(props: {
 	/** The card to open there: a review thread's id, or an agent conversation's. */
 	open: { thread: string } | { conversation: string };
 }) {
-	const id = useReviewId();
 	const { label, tip } = notHereText(props.notHere.why, props.since);
 	return (
 		<span data-testid="not-here" className="inline-flex items-center gap-1">
@@ -1076,29 +1079,15 @@ export function NotHereNote(props: {
 			>
 				{label}
 			</Chip>
-			<Tooltip content="Open in the full diff, on its line" describe={false}>
-				{(trigger) => (
-					<Link
-						{...trigger}
-						to="/r/$id/files"
-						params={{ id }}
-						search={(prev) => ({
-							...prev,
-							from: "branch",
-							path: props.path,
-							line: props.notHere.line,
-							side: props.notHere.side,
-							...props.open,
-						})}
-						aria-label="Open in the full diff"
-						data-testid="not-here-full-diff"
-						className="inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-					>
-						<FileDiffIcon size={14} aria-hidden />
-						full diff
-					</Link>
-				)}
-			</Tooltip>
+			<FullDiffLink
+				testId="not-here-full-diff"
+				target={{
+					path: props.path,
+					line: props.notHere.line,
+					side: props.notHere.side,
+					open: props.open,
+				}}
+			/>
 		</span>
 	);
 }

@@ -1194,7 +1194,12 @@ export function FileDiff(props: {
 					inline
 					file
 					threads={header.map((h) => h.thread)}
-					loading={props.threadsLoading && !props.threads}
+					// Its line threads wait for the hunks (which rows they're on): it
+					// spins till then, never an outline that reads as none.
+					loading={
+						(props.threadsLoading && !props.threads) ||
+						(expanded && hunksPending)
+					}
 					where="on this file"
 					label={
 						fileComment.ok === true

@@ -29,14 +29,6 @@ import {
 	usePlacementInfo,
 } from "./ThreadFate";
 import { useFocusCard } from "./threadFocus";
-import type { NotHere } from "./threadPlacement";
-
-/** A since-view NotHere with the compared patch set it is said against. */
-export interface NotHereAt {
-	notHere: NotHere;
-	since?: number;
-}
-
 import {
 	firstWords,
 	MoveFailureLine,
@@ -44,6 +36,13 @@ import {
 	useAgentMove,
 	useMovable,
 } from "./threadMove";
+import type { NotHere } from "./threadPlacement";
+
+/** A since-view NotHere with the compared patch set it is said against. */
+export interface NotHereAt {
+	notHere: NotHere;
+	since?: number;
+}
 
 /**
  * One thread opened in Files changed: a header with its state (resolved in

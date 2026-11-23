@@ -2663,7 +2663,7 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 	).toHaveCount(0);
 });
 
-test("the since view says why a LEFT thread's line has no row (deleted before PS1, or its file unchanged since) and opens it in the full diff on its line (CAR-255)", async ({
+test("the since view says why a LEFT thread's line has no row (deleted before PS1, its file changed since or not) and opens it in the full diff on its line (CAR-255)", async ({
 	page,
 	pr,
 	startCrb,
@@ -2685,7 +2685,7 @@ test("the since view says why a LEFT thread's line has no row (deleted before PS
 	const card = (section: Locator, text: string) =>
 		section.getByTestId("files-thread").filter({ hasText: text });
 
-	// util.ts, untouched since PS1: its file unchanged since.
+	// util.ts, untouched since PS1: its line was deleted before PS1 too.
 	await utilS.getByRole("button", { name: "Expand file" }).click();
 	await utilS
 		.getByRole("button", {
@@ -2694,7 +2694,7 @@ test("the since view says why a LEFT thread's line has no row (deleted before PS
 		.click(GIT_WAIT);
 	await expect(
 		card(utilS, "Why drop the old util 3?").getByTestId("not-here-why"),
-	).toHaveText("unchanged since PS1");
+	).toHaveText("deleted before PS1");
 	// core.ts changed since PS1, not on that line: deleted before PS1.
 	await coreS.getByRole("button", { name: "Expand file" }).click();
 	await coreS

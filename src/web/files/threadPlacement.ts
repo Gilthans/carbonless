@@ -79,11 +79,12 @@ export interface FilePlacement<T extends Placeable = ReviewThread> {
  * Not a tracer fate: the line is where the thread says, only outside this
  * comparison.
  * - "deleted-before": the compared patch set had already deleted it (no
- *   removed row of the interdiff is it, and every removed row's base line
- *   is known).
- * - "unchanged": the file isn't changed between these patch sets at all.
- * - "unknown": some removed row's base line isn't known, so neither can be
- *   told: only that this comparison doesn't show it.
+ *   removed row of the interdiff is it, and every removed row is a known
+ *   base line the full diff deletes too).
+ * - "unchanged": the same, and the file isn't changed between these patch
+ *   sets at all (said as "deleted before" too; notHereText).
+ * - "unknown": some removed row's base line isn't known, or the two diffs
+ *   pair twin lines differently: only that this comparison doesn't show it.
  */
 export interface NotHere {
 	why: "deleted-before" | "unchanged" | "unknown";
@@ -91,15 +92,32 @@ export interface NotHere {
 	line: number;
 }
 
-/** Why the since view's `hunks` don't show base line `line` (NotHere). */
-function notHereOf(hunks: FileHunks, line: number): NotHere {
-	const rows = hunks.hunks.flatMap((h) => h.lines);
-	const why: NotHere["why"] =
-		hunks.wholeGap || rows.length === 0
+/**
+ * Why the since view's `hunks` don't show base line `line` (NotHere),
+ * which `left` (SinceLeft) found the full diff deleted. "deleted-before"
+ * only when every removed row is a base line the full diff deletes too:
+ * one whose base line isn't known could be it, and one on a line the full
+ * diff keeps means the two diffs paired twin lines differently (the
+ * compared patch set may well have had this one): "unknown" for both.
+ */
+export function notHereOf(
+	hunks: FileHunks,
+	line: number,
+	left: SinceLeft,
+): NotHere {
+	const removed = hunks.hunks
+		.flatMap((h) => h.lines)
+		.filter((l) => l.kind === "del");
+	const doubtful = removed.some(
+		(l) =>
+			l.baseNo === undefined ||
+			(typeof l.baseNo === "number" && left(l.baseNo)?.side === "RIGHT"),
+	);
+	const why: NotHere["why"] = doubtful
+		? "unknown"
+		: hunks.wholeGap || hunks.hunks.length === 0
 			? "unchanged"
-			: rows.some((l) => l.kind === "del" && l.baseNo === undefined)
-				? "unknown"
-				: "deleted-before";
+			: "deleted-before";
 	return { why, side: "LEFT", line };
 }
 
@@ -635,7 +653,8 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 				placement.header.push({
 					thread: t,
 					reason: "unplaced",
-					notHere: notHereOf(hunks, t.anchor.line),
+					// sinceLeft is set: only it gives a null anchor.
+					notHere: notHereOf(hunks, t.anchor.line, args.sinceLeft as SinceLeft),
 				});
 			}
 			continue;

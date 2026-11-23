@@ -696,6 +696,41 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 		expect(p.end.has("LEFT:1")).toBe(false);
 	});
 
+	it("twins: the two diffs pair a deleted twin otherwise; never claimed deleted before the compared patch set (CAR-255)", () => {
+		// Base "}\n}\nb"; PS1 keeps both; head "}\nb". The full diff deletes
+		// base 1, the interdiff removes PS1's *second* "}" (base 2, which the
+		// full diff keeps as head 1): PS1 did have base 1.
+		const full = [
+			{
+				kind: "lines" as const,
+				oldStart: 1,
+				oldCount: 1,
+				newStart: 0,
+				newCount: 0,
+			},
+		];
+		const twins: FileHunks = {
+			hunks: [hunk([ctx(1, 1), { ...del(2), baseNo: 2 }, ctx(3, 2)])],
+			newLineCount: 2,
+		};
+		const t = thread({ side: "LEFT", line: 1 });
+		const p = placeThreads({
+			threads: [t],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: twins,
+			loadedContext: [],
+			sinceLeft: sinceLeft(full, twins.hunks),
+		});
+		expect(p.header).toEqual([
+			{
+				thread: t,
+				reason: "unplaced",
+				notHere: { why: "unknown", side: "LEFT", line: 1 },
+			},
+		]);
+	});
+
 	/** CAR-233: PS1 41 is its commit's line 51 (an added line of its diff). */
 	const PS1 = "e".repeat(40);
 	const earlierSince: FileHunks = {
