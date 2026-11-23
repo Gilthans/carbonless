@@ -112,8 +112,8 @@ describe("color tokens", () => {
 			resolve(import.meta.dirname, "files/renderers/markdown/markdownView.css"),
 			"utf8",
 		).replace(/\/\*[\s\S]*?\*\//g, "");
-		const faded = [...view.matchAll(/([^{}]+)\{[^}]*\bopacity:/g)].map(
-			(m) => (m[1] ?? "").trim(),
+		const faded = [...view.matchAll(/([^{}]+)\{[^}]*\bopacity:/g)].map((m) =>
+			(m[1] ?? "").trim(),
 		);
 		expect(faded.length).toBeGreaterThan(0);
 		for (const selector of faded) {
