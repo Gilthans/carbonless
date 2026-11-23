@@ -94,7 +94,8 @@ result should always be easily distinguishable for a still loading result."
   shows a spinner in place of the messages; a failed read with nothing in
   hand shows "Agent messages couldn't load" with Retry, kept while it reads
   again (a spinner in Retry's slot, never swapped for a full spinner by a
-  refetch); Send to agent waits until the read answers (a conversation may
+  refetch; the thread's red agent handle likewise stays, a spinner in its
+  icon's place); Send to agent waits until the read answers (a conversation may
   exist unseen); an empty conversation only once the answer has none for
   the thread (CAR-124).
 - **In place, never moving the page.** A spinner appears in place:

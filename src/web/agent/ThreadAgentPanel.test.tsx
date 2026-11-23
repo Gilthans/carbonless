@@ -11,6 +11,7 @@ import {
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage, AgentThread } from "../../shared/agent";
 import type { PrOverview, ReviewThread, SessionInfo } from "../../shared/types";
@@ -30,6 +31,7 @@ import {
 	type SendView,
 	SendViewProvider,
 	ThreadAgentContext,
+	useAgentThreadsRead,
 	useThreadAgent,
 } from "./threadAgent";
 import {
@@ -212,14 +214,27 @@ describe("ThreadAgentPanel", () => {
 		await waitFor(() => expect(failed).toHaveAttribute("aria-busy", "false"));
 		expect(retry).toHaveAttribute("aria-disabled", "false");
 		expect(within(failed).queryByRole("status")).toBeNull();
-		// The red handle, pressed while open: reads again, the panel stays.
-		await userEvent.click(
-			screen.getByRole("button", { name: "Agent messages couldn't load" }),
-		);
+		// The red handle, pressed from the keyboard while open: reads again,
+		// the panel stays, and the handle stays a focused button (a spinner
+		// in its icon's place) while that read is out; a press then waits.
+		const red = screen.getByRole("button", {
+			name: "Agent messages couldn't load",
+		});
+		red.focus();
+		await userEvent.keyboard("{Enter}");
 		expect(isOpen()).toBe(true);
 		await waitFor(() => expect(failed).toHaveAttribute("aria-busy", "true"));
+		expect(red).toBeInTheDocument();
+		expect(red).toHaveFocus();
+		expect(red).toHaveAttribute("aria-busy", "true");
+		await waitFor(() => expect(reads).toHaveLength(1));
+		await userEvent.keyboard("{Enter}");
+		expect(reads).toHaveLength(1);
+		expect(isOpen()).toBe(true);
 		await release(boom());
 		await waitFor(() => expect(failed).toHaveAttribute("aria-busy", "false"));
+		expect(red).toHaveFocus();
+		expect(red).toHaveAttribute("aria-busy", "false");
 		// Retry: the spinner in its slot, then the conversation; Send works.
 		await userEvent.click(retry);
 		expect(failed).toHaveAttribute("aria-busy", "true");
@@ -639,6 +654,50 @@ describe("ThreadAgentPanel", () => {
 		).toBeInTheDocument();
 		expect(within(panel()).getByText("Still?")).toBeInTheDocument();
 		expect(calls).toHaveLength(1);
+	});
+
+	it("the threads read's last error is the query's: a card mounted during a retry agrees, a 404 never reads as failed (CAR-124)", async () => {
+		const reads: ((r: Response) => void)[] = [];
+		read = (path) =>
+			path.endsWith("/agent/threads")
+				? new Promise<Response>((r) => {
+						reads.push(r);
+					})
+				: new Promise(() => {});
+		const answer = async (r: Response) => {
+			await waitFor(() => expect(reads.length).toBeGreaterThan(0));
+			await act(async () => reads.shift()?.(r));
+		};
+		for (const [status, after] of [
+			[404, "in"],
+			[500, "failed"],
+		] as const) {
+			const client = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+			clients.push(client);
+			client.setQueryData(overviewQuery.queryKey, {
+				writes: "on",
+			} as PrOverview);
+			const wrapper = ({ children }: { children: ReactNode }) => (
+				<QueryClientProvider client={client}>{children}</QueryClientProvider>
+			);
+			const first = renderHook(() => useAgentThreadsRead(), { wrapper });
+			expect(first.result.current.state).toBe("loading");
+			await answer(json({ error: "x" }, status));
+			await waitFor(() => expect(first.result.current.state).toBe(after));
+			// Read again (held), and a second card mounts meanwhile.
+			act(() => first.result.current.retry());
+			await waitFor(() => expect(reads.length).toBe(1));
+			const second = renderHook(() => useAgentThreadsRead(), { wrapper });
+			expect(second.result.current.state).toBe(after);
+			expect(first.result.current.state).toBe(after);
+			expect(second.result.current.retrying).toBe(after === "failed");
+			await answer(json({ threads: [] }));
+			await waitFor(() => expect(second.result.current.state).toBe("in"));
+			first.unmount();
+			second.unmount();
+		}
 	});
 
 	it("the card's context value is stable while nothing it holds changes", () => {
