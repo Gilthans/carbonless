@@ -865,6 +865,28 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		expect(spawns()).toHaveLength(3);
 	});
 
+	it("a failed turn's error echoing an env value is stored and shown masked (CAR-59)", async () => {
+		const secret = "sk-ant-api03-leaked-token";
+		config = {
+			agent: { ...AGENT, env: { MY_KEY: secret } },
+			problems: [],
+		};
+		scenario({
+			answers: [{ text: "", stop: "error", error: `401 for key ${secret}` }],
+		});
+		await ask("why?");
+		makeRunner().poke();
+		await answered(1);
+		expect((await threads())[0]?.messages[1]).toMatchObject({
+			stop: "error",
+			error: `Internal error: 401 for key ${AGENT_ENV_MASK}`,
+		});
+		expect(JSON.stringify(await threads())).not.toContain(secret);
+		const failed = await runnerUntil((s) => s.state === "error");
+		expect(JSON.stringify(failed)).not.toContain(secret);
+		await runner.settled();
+	});
+
 	it("a turn the agent fails: the held question shows its reason, the status too; the process lives on", async () => {
 		scenario({
 			answers: [
