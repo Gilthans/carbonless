@@ -7,6 +7,7 @@ import {
 	openFiles,
 	progress,
 	tapHeight,
+	tapWidth,
 } from "./files-ui";
 import { expect, expectLoadingThen, type Pr, test } from "./fixtures";
 import { BLUE, GREEN, png as pngImage, RED } from "./images";
@@ -516,6 +517,86 @@ test("a changed image: the removed one framed red and faded from the old side, t
 		"Route map: Nordnes",
 	);
 	await shot(since, "md-images-since");
+});
+
+test("phone: a short changed block (a table's header row) grows only to its targets, its bar running the row; full diff and since view (CAR-167 QA)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the touch gutter");
+	const fares = (head: string) =>
+		`# Fares\n\n| ${head} | Adult | Child |\n|:-------|------:|------:|\n| Single | 46 | 23 |\n| Return | 84 | 42 |\n\nEnd.\n`;
+	const p = await pr({
+		base: { [README]: fares("Ticket") },
+		files: [{ message: "fares", files: { [README]: fares("Ticket type") } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const check = async (section: Locator, head: string) => {
+		const row = section
+			.getByTestId("md-block")
+			.filter({ has: page.getByRole("checkbox") })
+			.filter({ hasText: head });
+		await expect(row).toHaveCount(1);
+		const box = async (el: Locator) => {
+			const b = await el.boundingBox();
+			if (!b) throw new Error("not shown");
+			return b;
+		};
+		const rowBox = await box(row);
+		const body = await box(row.locator(".md-body"));
+		// Three 40px targets in an 84px gutter: two rows of them, no more.
+		expect(rowBox.height).toBeLessThanOrEqual(81);
+		// The block's bar runs the row: no empty band above the next row.
+		expect(Math.abs(body.height - rowBox.height)).toBeLessThanOrEqual(1);
+		const targets = [
+			row.getByTestId("cluster-box-target"),
+			row.getByRole("button", { name: "Cross off cluster" }),
+			row.getByTestId("md-comment"),
+		];
+		for (const t of targets) {
+			expect(await tapHeight(t)).toBeGreaterThanOrEqual(40);
+			expect(await tapWidth(t)).toBeGreaterThanOrEqual(40);
+		}
+		// The comment button's target starts where the box's ends.
+		const tick = await box(targets[0] as Locator);
+		const comment = await box(targets[2] as Locator);
+		expect(comment.y).toBeGreaterThanOrEqual(tick.y + tick.height - 0.5);
+		await expectNoPageOverflow(page);
+	};
+
+	const section = await openRendered(page);
+	await check(section, "Ticket type");
+	await shot(section, "md-short-block-full");
+
+	await marksReady(page, section);
+	await section
+		.getByRole("button", { name: "Mark remaining reviewed" })
+		.click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "again", files: { [README]: fares("Ticket class") } });
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, README);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	await expect(since.getByTestId("md-doc")).toBeVisible(GIT_WAIT);
+	await check(since, "class");
+	await shot(since, "md-short-block-since");
 });
 
 test("the since view: one box per piece on its block; a tick in Rendered is the same piece's tick in Text", async ({

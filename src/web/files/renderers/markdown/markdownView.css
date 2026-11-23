@@ -295,6 +295,21 @@
 		padding: 10px 0;
 	}
 
+	/*
+	 * The comment button is its whole 40px target: it abuts the box's
+	 * target above it (and a bubble's below), no slack between them, so a
+	 * short block (a table's header row) grows only to the targets' 80px.
+	 */
+	.md-gutter > [data-testid="md-comment"] {
+		margin-top: -10px;
+		margin-bottom: -10px;
+	}
+
+	/* The block's bar and tint run the row's height: no empty band under it. */
+	.md-row > .md-body {
+		align-self: stretch;
+	}
+
 	.md-fold-row {
 		padding-left: 84px;
 	}
