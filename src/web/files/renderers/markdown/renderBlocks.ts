@@ -268,6 +268,13 @@ function sanitize(html: string, opts: RenderOptions): HTMLElement {
 			img.remove();
 		}
 	}
+	for (const table of body.querySelectorAll("table")) {
+		// A table scrolls sideways in its own box (the page never does).
+		const box = doc.createElement("div");
+		box.className = "md-table";
+		table.replaceWith(box);
+		box.appendChild(table);
+	}
 	for (const input of body.querySelectorAll("input")) {
 		// Task-list checkboxes show state; nothing else is an input here.
 		if (input.getAttribute("type") !== "checkbox") input.remove();
@@ -583,7 +590,7 @@ function nestOf(b: MdBlock, own: readonly string[], quotes: number): number {
 	if (b.kind !== "list-item") return 0;
 	let rest = own[0] ?? "";
 	let markers = 0;
-	for (let m = MARKER_RUN.exec(rest); m && m[0]; m = MARKER_RUN.exec(rest)) {
+	for (let m = MARKER_RUN.exec(rest); m?.[0]; m = MARKER_RUN.exec(rest)) {
 		markers++;
 		rest = rest.slice(m[0].length);
 	}

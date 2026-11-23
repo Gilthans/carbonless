@@ -616,3 +616,201 @@ test("the since view: a block's comment goes on the head's changed lines and sho
 	]);
 	await expectNoPageOverflow(page);
 });
+
+/** Gallery #61 tables.md and inline.md, cut down. */
+const TABLES = "docs/tables.md";
+const tablesDoc = (weekday: string[], vessels: string[], csv: string) =>
+	[
+		"# Timetable",
+		"",
+		"| Route | First | Last | Every |",
+		"|-------|-------|------|-------|",
+		...weekday,
+		"",
+		"Times are local.",
+		"",
+		...vessels,
+		"",
+		csv,
+		"",
+	].join("\n");
+const WEEKDAY = [
+	"| Strandkaien – Askøy | 06:10 | 23:40 | 30 min |",
+	"| Strandkaien – Nordnes | 06:30 | 22:00 | 20 min |",
+	"| Nordnes – Askøy | 07:00 | 21:00 | 60 min |",
+];
+const VESSELS_OLD = [
+	"| Name | Built | Seats | Cars |",
+	"|------|-------|-------|------|",
+	"| MF Sølvberg | 2009 | 290 | 60 |",
+];
+const VESSELS_NEW = [
+	"| Name | Built | Seats | Cars | Electric |",
+	"|------|-------|-------|------|----------|",
+	"| MF Sølvberg | 2009 | 290 | 60 | Landstrømanleggstrandkaien |",
+];
+const CSV_OLD = "The old CSV export is still available for partners.";
+const CSV_NEW =
+	"The old CSV export is ~~still available for partners~~ retired since March.";
+const PS1_WEEKDAY = [
+	WEEKDAY[0] as string,
+	"| Strandkaien – Nordnes | 06:30 | 22:00 | 15 min |",
+	WEEKDAY[2] as string,
+	"| Askøy – Kleppestø | 06:45 | 22:15 | 45 min |",
+];
+const PS2_WEEKDAY = [
+	PS1_WEEKDAY[0] as string,
+	PS1_WEEKDAY[1] as string,
+	"| Nordnes – Askøy | 07:00 | 21:00 | 45 min, weekdays only |",
+	PS1_WEEKDAY[3] as string,
+];
+
+/**
+ * The left edge of each column of the route table's row tables, per
+ * column: one value each when the columns line up (within a pixel).
+ */
+const routeColumns = (section: Locator) =>
+	section.getByTestId("md-doc").evaluate((doc) => {
+		const tables = [...doc.querySelectorAll(".md-content table")].filter((t) =>
+			/Askøy|Nordnes|Route/.test(t.textContent ?? ""),
+		);
+		const cols: number[][] = [];
+		for (const t of tables) {
+			const cells = t.querySelector("tr")?.children ?? [];
+			[...cells].forEach((c, k) => {
+				const xs = cols[k] ?? [];
+				xs.push(Math.round(c.getBoundingClientRect().left));
+				cols[k] = xs;
+			});
+		}
+		return {
+			tables: tables.length,
+			spread: cols.map((xs) => Math.max(...xs) - Math.min(...xs)),
+		};
+	});
+
+/** Words a cell broke across two lines (none: it wraps between words, or at a hyphen). */
+const brokenWords = (section: Locator) =>
+	section.getByTestId("md-doc").evaluate((doc) => {
+		const out: string[] = [];
+		for (const cell of doc.querySelectorAll(".md-content :is(td, th)")) {
+			const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+			for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+				const text = n.textContent ?? "";
+				for (const m of text.matchAll(/[^\s\-–]+/g)) {
+					const r = document.createRange();
+					r.setStart(n, m.index);
+					r.setEnd(n, m.index + m[0].length);
+					const tops = new Set(
+						[...r.getClientRects()].map((x) => Math.round(x.top)),
+					);
+					if (tops.size > 1) out.push(m[0]);
+				}
+			}
+		}
+		return out;
+	});
+
+test("a table's rows line up as one table, scroll in their own box on a phone and never break a word, in the full diff and the since view; an added ~~strikethrough~~ reads apart from removed words", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [TABLES]: tablesDoc(WEEKDAY, VESSELS_OLD, CSV_OLD) },
+		files: [
+			{
+				message: "tables",
+				files: { [TABLES]: tablesDoc(PS1_WEEKDAY, VESSELS_NEW, CSV_NEW) },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	let section = await openRendered(page, TABLES);
+	// Same, changed and added rows: 1 header + 4 rows, one column edge each.
+	const full = await routeColumns(section);
+	expect(full.tables).toBeGreaterThanOrEqual(5);
+	expect(full.spread.filter((d) => d > 1)).toEqual([]);
+	expect(await brokenWords(section)).toEqual([]);
+	if (isMobile) {
+		// The wide vessels table scrolls inside its block.
+		const wide = await section
+			.getByTestId("md-doc")
+			.evaluate((doc) =>
+				[...doc.querySelectorAll(".md-content .md-table")].some(
+					(t) => t.scrollWidth > t.clientWidth,
+				),
+			);
+		expect(wide).toBe(true);
+		await expectNoPageOverflow(page);
+	}
+	// The content's own strikethrough isn't the diff's removed mark.
+	const csv = block(section, "CSV");
+	const styles = await csv.evaluate((row) => {
+		const of = (el: Element | null) => {
+			const c = el ? getComputedStyle(el) : null;
+			return (
+				c && {
+					color: c.color,
+					background: c.backgroundColor,
+					line: c.textDecorationColor,
+					thickness: c.textDecorationThickness,
+				}
+			);
+		};
+		return {
+			removed: of(row.querySelector("del.md-del")),
+			added: of(row.querySelector("ins.md-ins")),
+			content: of(row.querySelector("ins.md-ins del:not(.md-del)")),
+		};
+	});
+	expect(styles.removed).not.toBeNull();
+	expect(styles.content).not.toBeNull();
+	// Removed words: red, tinted, a thick red line. Struck content: its
+	// own muted color and a thin line in it, on the added words' tint.
+	expect(styles.content?.color).not.toBe(styles.removed?.color);
+	expect(styles.content?.color).not.toBe(styles.added?.color);
+	expect(styles.content?.background).not.toBe(styles.removed?.background);
+	expect(styles.content?.line).not.toBe(styles.removed?.line);
+	expect(styles.content?.thickness).not.toBe(styles.removed?.thickness);
+	await shot(section, `markdown-tables-${isMobile ? "phone" : "desktop"}`);
+
+	// The since view: the same.
+	await marksReady(page, section);
+	await section
+		.getByRole("button", { name: "Mark remaining reviewed" })
+		.click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({
+		message: "rework",
+		files: { [TABLES]: tablesDoc(PS2_WEEKDAY, VESSELS_NEW, CSV_NEW) },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	section = fileSection(page, TABLES);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.getByTestId("md-doc")).toBeVisible(GIT_WAIT);
+	await shownAs(section, "markdown");
+	await expect(section.getByTestId("md-box")).toHaveCount(1);
+	const since = await routeColumns(section);
+	// The unchanged rows above fold away: the shown ones line up.
+	expect(since.tables).toBeGreaterThanOrEqual(3);
+	expect(since.spread.filter((d) => d > 1)).toEqual([]);
+	expect(await brokenWords(section)).toEqual([]);
+	if (isMobile) await expectNoPageOverflow(page);
+});

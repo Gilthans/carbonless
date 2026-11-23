@@ -78,15 +78,28 @@
 	margin-bottom: 4px;
 }
 
-/* Long lines, tables and code scroll inside their block, never the page. */
-.md-content.markdown-body.markdown-body :is(pre, table) {
+/*
+ * Long lines, tables and code scroll inside their block, never the page. A
+ * table is a real table in its own scroll box (renderBlocks), so a row's
+ * table can take its whole table's column widths (tableAlign.ts).
+ */
+.md-content.markdown-body.markdown-body :is(pre, .md-table) {
 	max-width: 100%;
 	overflow-x: auto;
 }
 
-.md-content.markdown-body.markdown-body table {
-	display: block;
-	width: max-content;
+.md-content.markdown-body.markdown-body .md-table > table {
+	display: table;
+	width: auto;
+	max-width: none;
+	overflow: visible;
+	margin: 0;
+}
+
+/* A cell wraps between words only: a wide table scrolls, never breaks a word. */
+.md-content.markdown-body.markdown-body :is(th, td) {
+	overflow-wrap: normal;
+	word-break: normal;
 }
 
 .md-content.markdown-body.markdown-body img {

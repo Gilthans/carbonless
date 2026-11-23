@@ -100,6 +100,7 @@ import {
 	renderPair,
 	sideBlocks,
 } from "./renderBlocks";
+import { alignTables, syncTableScroll } from "./tableAlign";
 
 /**
  * The Rendered view of a Markdown file (CAR-167, spec "The Rendered
@@ -330,11 +331,20 @@ export function MarkdownView(props: {
 	const [open, setOpen] = useState<ReadonlySet<number>>(new Set());
 	const root = useRef<HTMLDivElement>(null);
 	// A changed block's body is never hidden: content's own <details> stay open.
+	// A table's rows, one table each, line their columns up (tableAlign.ts).
 	useLayoutEffect(() => {
 		for (const d of root.current?.querySelectorAll("details") ?? []) {
 			d.open = true;
 		}
+		if (root.current) alignTables(root.current);
 	});
+	const ready = model !== null && model !== "failed";
+	useEffect(() => {
+		const el = root.current;
+		if (!ready || !el) return;
+		el.addEventListener("scroll", syncTableScroll, true);
+		return () => el.removeEventListener("scroll", syncTableScroll, true);
+	}, [ready]);
 	const idBase = useId();
 
 	// Where each line shows: the row of the block holding it (a folded
