@@ -26,6 +26,7 @@ export interface Action {
 		| "agent"
 		| "merge";
 	reason: string;
+	comment?: string;
 	key?: string;
 	sha?: string;
 	note?: string;
@@ -46,6 +47,14 @@ export function manifestProblems(o: {
 	addedLockLines: string[];
 }): string[];
 export function codeBlock(s: string): string;
+export const NONE_NOTE: string;
+export function isSweepNote(line: string): boolean;
+export function otherNoteLines(body: string | null | undefined): string[];
+export const AGENT_ACK: string;
+export function agentEnabledFrom(env: Record<string, string | undefined>): {
+	on: boolean;
+	refused?: string;
+};
 export function bumpFromTitle(
 	title: string,
 ): { name: string; from: string; to: string } | null;

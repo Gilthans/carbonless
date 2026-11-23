@@ -46,9 +46,11 @@ and at the PR's head, and the open Dependabot alerts. Then, in order:
    Against where the PR forked from master: it may change only
    `package.json` and `pnpm-lock.yaml`; `package.json` only in the
    versions of the packages the PR names (its title, and the
-   `dependency-name:` entries of Dependabot's commit metadata); and every
-   source the lockfile gains must be `https://registry.npmjs.org` (no
-   git, file, link or other hosts).
+   `dependency-name:` entries of Dependabot's commit metadata), each to a
+   plain version that keeps its range prefix (`^1.2.3`, never `npm:`,
+   `workspace:`, `catalog:`, `patch:`, a URL or a range); and every source
+   the lockfile gains must be `https://registry.npmjs.org` (no git, file,
+   link, npm-alias, workspace, catalog, patch or other hosts).
 6. **Breaking update**: a new major (or a new minor of a 0.x) of any
    dependency, dev tools included (from `package.json`, the title's
    versions, or Dependabot's `semver-major` metadata), or a new entry →
@@ -75,16 +77,22 @@ and at the PR's head, and the open Dependabot alerts. Then, in order:
      the owner. Only with `CRB_SWEEP_AGENT=on` (off by default) does the
      fix agent below try it instead, once per head commit.
 10. **Every check green** (required and not), and the required ones all
-   reported → `pnpm release merge-ok N` (from a clean worktree of master),
+   reported. A `Release note` line in the description other than the
+   sweep's own (anywhere, quoted or folded upstream text included) →
+   comment for the owner instead. Otherwise → `pnpm release merge-ok N` (from a clean worktree of master),
    the head re-read, then `gh pr merge N --merge --admin
    --match-head-commit <sha>`. A release freeze → comment once and wait.
 
-Owner comments start with `Dependabot sweep:` and carry a hidden
+Owner comments start with `Dependabot sweep:`, are fixed text (counts,
+run numbers and the sweep's own commit ids, never names, paths or text
+from the PR; the details go to the local log) and carry a hidden
 `<!-- crb-sweep:<reason>:<sha> -->` marker; the launcher doesn't post a
 comment whose marker one of the owner's comments already has.
 
-**The fix agent** (off unless `CRB_SWEEP_AGENT=on`), when rule 9 calls
-for it: the launcher makes a detached
+**The fix agent** (off unless `CRB_SWEEP_AGENT=on`, and that is refused
+unless `CRB_SWEEP_AGENT_ACK` names the sandbox revision that passed review,
+`AGENT_ACK` in the launcher, which is empty until it does), when rule 9
+calls for it: the launcher makes a detached
 worktree at the PR's head (`.worktrees/dependabot-sweep-<stamp>-prN`,
 removed afterwards whatever happens), installs it with
 `--frozen-lockfile` inside the sandbox, writes `.crb-dev/sweep/pr.json`

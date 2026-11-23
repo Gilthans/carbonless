@@ -164,6 +164,18 @@ export function manifestProblems({
 		);
 	if ((names ?? []).length === 0)
 		problems.push("it names no dependency it updates");
+	const PLAIN = /^[~^]?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+	const prefix = (v) => (/^[~^]/.test(v) ? v[0] : "");
+	for (const section of DEP_SECTIONS)
+		for (const n of names ?? []) {
+			const to = headPkg?.[section]?.[n];
+			if (to === undefined) continue;
+			const from = basePkg?.[section]?.[n];
+			if (typeof to !== "string" || !PLAIN.test(to))
+				problems.push(`${n} in ${section} isn't a plain version`);
+			else if (typeof from === "string" && prefix(from) !== prefix(to))
+				problems.push(`${n} in ${section} changes its range prefix`);
+		}
 	if ((files ?? []).includes("package.json")) {
 		const blank = (pkg) => {
 			const copy = JSON.parse(JSON.stringify(pkg ?? {}));
@@ -187,7 +199,9 @@ export function manifestProblems({
 			if (host !== LOCK_HOST || !u[0].startsWith("https://")) bad.add(u[0]);
 		}
 		if (
-			/(git\+|github:|gitlab:|bitbucket:|file:|link:)/.test(line) ||
+			/(git\+|github:|gitlab:|bitbucket:|file:|link:|npm:|workspace:|catalog:|patch:)/.test(
+				line,
+			) ||
 			/(^|[\s{,])(repo|commit|directory|path):/.test(line)
 		)
 			bad.add(line.trim().slice(0, 80));
@@ -205,6 +219,50 @@ export function bumpFromTitle(title) {
 		String(title ?? "").trim(),
 	);
 	return m ? { name: m[1], from: m[2], to: m[3] } : null;
+}
+
+export const NONE_NOTE = "Release note: none (dependency update)";
+const SWEEP_FIXED_NOTE =
+	/^Release note \(fixed\): Updated [A-Za-z0-9@/._-]+ to [0-9A-Za-z.+-]+, which closes security advisor(y|ies) GHSA(-[0-9a-z]{4}){3}(, GHSA(-[0-9a-z]{4}){3})*$/;
+/** Is this exactly a note line the sweep writes? */
+export const isSweepNote = (line) =>
+	line === NONE_NOTE || SWEEP_FIXED_NOTE.test(line);
+
+/**
+ * Lines of the description that start with "Release note" (after quote
+ * marks and leading tags, so inside <details> and quotes too) and aren't
+ * one the sweep writes: before merging, any of these is the owner's call.
+ */
+export function otherNoteLines(body) {
+	return String(body ?? "")
+		.split("\n")
+		.map((l) =>
+			l
+				.trim()
+				.replace(/^(>\s*)+/, "")
+				.replace(/^(<[^>]*>\s*)+/, "")
+				.trim(),
+		)
+		.filter((l) => /^release note\b/i.test(l) && !isSweepNote(l));
+}
+
+/**
+ * The sandbox revision whose review allows the local fix agent. Empty
+ * until the sandbox work passes review: until then CRB_SWEEP_AGENT=on is
+ * refused.
+ */
+export const AGENT_ACK = "";
+/** Is the local fix agent on, by the environment and the guard? */
+export function agentEnabledFrom(env) {
+	if (env.CRB_SWEEP_AGENT !== "on") return { on: false };
+	if (!AGENT_ACK || env.CRB_SWEEP_AGENT_ACK !== AGENT_ACK)
+		return {
+			on: false,
+			refused: AGENT_ACK
+				? `CRB_SWEEP_AGENT=on needs CRB_SWEEP_AGENT_ACK=${AGENT_ACK}; the agent stays off`
+				: "CRB_SWEEP_AGENT=on refused: no reviewed sandbox revision yet; the agent stays off",
+		};
+	return { on: true };
 }
 
 /**
@@ -258,7 +316,7 @@ export function releaseNote(bump, alerts) {
 				),
 			].sort()
 		: [];
-	if (ids.length === 0) return "Release note: none (dependency update)";
+	if (ids.length === 0) return NONE_NOTE;
 	const name = bump.name.replace(/[^A-Za-z0-9@/._-]/g, "");
 	const to = bump.to.replace(/[^0-9A-Za-z.+-]/g, "");
 	return `Release note (fixed): Updated ${name} to ${to}, which closes security ${ids.length === 1 ? "advisory" : "advisories"} ${ids.join(", ")}`;
@@ -310,6 +368,7 @@ export function decide(f) {
 		return {
 			type: "owner",
 			key: `branch:${sha}`,
+			comment: "its branch isn't a dependabot/ branch.",
 			reason: `its branch \`${pr.headRefName}\` isn't a dependabot/ branch`,
 		};
 	const sweep = new Set(f.sweepShas ?? []);
@@ -322,6 +381,7 @@ export function decide(f) {
 		return {
 			type: "owner",
 			key: `commits:${sha}`,
+			comment: `it has ${foreign.length || "no"} commit(s) by neither Dependabot nor the sweep, so it isn't merged automatically.`,
 			reason: `it has commits by neither Dependabot nor the sweep (${foreign.map((c) => c.sha.slice(0, 7)).join(", ") || "none listed"}), so it isn't merged automatically`,
 		};
 	const sweepShas = (f.commits ?? []).filter((c) => sweep.has(c.sha));
@@ -329,6 +389,7 @@ export function decide(f) {
 		return {
 			type: "owner",
 			key: `sweep-fix:${sha}`,
+			comment: `the sweep pushed a fix at ${sweepShas[sweepShas.length - 1].sha.slice(0, 7)}; review and merge it.`,
 			reason: `the sweep pushed a fix at ${sweepShas[sweepShas.length - 1].sha.slice(0, 7)}; review and merge it`,
 		};
 	const prot = matching(pr.files ?? []);
@@ -336,18 +397,21 @@ export function decide(f) {
 		return {
 			type: "owner",
 			key: `protected:${sha}`,
+			comment: `it changes ${prot.length} file(s) under .github/ or scripts/release*, which only the owner merges.`,
 			reason: `it changes ${prot.map((p) => `\`${p}\``).join(", ")} (workflows or release scripts), which only the owner merges`,
 		};
 	if ((f.manifestProblems ?? []).length > 0)
 		return {
 			type: "owner",
 			key: `manifest:${sha}`,
+			comment: `it isn't a plain dependency update (${f.manifestProblems.length} problem(s), listed in the sweep's local log).`,
 			reason: `it isn't a plain dependency update: ${f.manifestProblems.join("; ")}`,
 		};
 	if ((f.breaking ?? []).length > 0)
 		return {
 			type: "owner",
 			key: `major:${sha}`,
+			comment: `it is a breaking update of ${f.breaking.length} dependenc${f.breaking.length === 1 ? "y" : "ies"} (a new major, or a new entry), which needs the owner's look.`,
 			reason: `it is a breaking update (${f.breaking.map((b) => (b.kind === "added" ? `new: ${b.name}` : `${b.name} ${b.from ?? ""} → ${b.to ?? ""}`.trim())).join(", ")}), which needs the owner's look`,
 		};
 	if (
@@ -373,6 +437,8 @@ export function decide(f) {
 		return {
 			type: "owner",
 			key: `release-gate:${sha}`,
+			comment:
+				"the release-gate check fails (master is frozen for a release, or the gate is broken); it waits.",
 			reason:
 				"the release-gate check fails (master is frozen for a release, or the gate is broken); it waits",
 		};
@@ -386,7 +452,8 @@ export function decide(f) {
 			if (!m)
 				return {
 					type: "owner",
-					key: `check:${c.name}:${sha}`,
+					key: `check:${sha}`,
+					comment: "a check that isn't a GitHub Actions job failed.",
 					reason: `the \`${c.name}\` check failed and isn't a GitHub Actions job the sweep can read`,
 				};
 			const run = f.runs?.[m[1]];
@@ -399,12 +466,14 @@ export function decide(f) {
 					return {
 						type: "owner",
 						key: `ci:${sha}`,
+						comment: `a job of run ${m[1]} fails in a ${kind === "build" ? "build, lint or typecheck" : "test"} step${run.attempt >= 2 ? ", again after a rerun" : ""}; the update probably broke it and needs a fix by hand.`,
 						reason: `\`${c.name}\` fails in a ${kind === "build" ? "build, lint or typecheck" : "test"} step${run.attempt >= 2 ? ", again after a rerun" : ""}; the update probably broke it and needs a fix by hand`,
 					};
 				if (f.agentTried)
 					return {
 						type: "owner",
 						key: `agent:${sha}`,
+						comment: `a job of run ${m[1]} still fails after the sweep's fix attempt on this commit.`,
 						reason: `\`${c.name}\` still fails after the sweep's fix attempt on this commit`,
 					};
 				return {
@@ -431,6 +500,15 @@ export function decide(f) {
 		};
 	if ((f.required ?? []).length === 0)
 		return { type: "wait", reason: "no required checks reported" };
+	const others = otherNoteLines(pr.body);
+	if (others.length > 0)
+		return {
+			type: "owner",
+			key: `note-lines:${sha}`,
+			comment:
+				"its description has a Release note line the sweep didn't write (maybe in upstream text); check which note applies, then merge by hand.",
+			reason: `other Release note lines: ${others.length}`,
+		};
 	return { type: "merge", sha, reason: "all checks green" };
 }
 
@@ -961,11 +1039,11 @@ function runAgent(n, facts, action, ctx) {
 		if (result.status !== "fixed" || problems.length > 0) {
 			const why =
 				problems.length > 0
-					? `\n\nNot pushed: ${scrub(problems.join("; "), 300)}.`
+					? `\n\nNot pushed:\n\n${codeBlock(scrub(problems.join("; "), 300))}`
 					: "";
 			comment(
 				n,
-				`Dependabot sweep: \`${action.failure.check}\` fails and the sweep couldn't fix it. The agent's notes:\n\n${codeBlock(summary)}${why}`,
+				`Dependabot sweep: a job of run ${action.failure.runId} fails and the sweep couldn't fix it. The agent's notes:\n\n${codeBlock(summary)}${why}`,
 				`agent:${sha}`,
 				ctx,
 			);
@@ -999,7 +1077,7 @@ function runAgent(n, facts, action, ctx) {
 		]);
 		comment(
 			n,
-			`Dependabot sweep: pushed ${newSha.slice(0, 7)} to fix \`${action.failure.check}\`. The agent's notes:\n\n${codeBlock(summary)}`,
+			`Dependabot sweep: pushed ${newSha.slice(0, 7)} to fix a job of run ${action.failure.runId}. The agent's notes:\n\n${codeBlock(summary)}`,
 			`fixed:${newSha}`,
 			ctx,
 		);
@@ -1048,7 +1126,7 @@ function act(n, facts, action, ctx) {
 		case "owner":
 			return once(
 				action.key,
-				`Dependabot sweep: not merging this automatically: ${action.reason}.`,
+				`Dependabot sweep: not merging this automatically: ${action.comment ?? "see the sweep's local log."}`,
 			);
 		case "rebase": {
 			comment(n, "@dependabot rebase", null, ctx);
@@ -1181,7 +1259,7 @@ function main(argv) {
 		me: gh(["api", "user", "--jq", ".login"]).trim(),
 		// The local fix agent is off unless CRB_SWEEP_AGENT=on: a failure the
 		// update caused then gets an owner comment instead.
-		agentEnabled: process.env.CRB_SWEEP_AGENT === "on",
+		agentEnabled: agentEnabledFrom(process.env).on,
 		alerts: (
 			ghJson([
 				"api",
@@ -1196,6 +1274,8 @@ function main(argv) {
 		tmp: mkdtempSync(join(tmpdir(), "crb-sweep-")),
 	};
 	if (!dryRun) mkdirSync(stateDir, { recursive: true });
+	const agentGuard = agentEnabledFrom(process.env);
+	if (agentGuard.refused) say(agentGuard.refused);
 	const cleanupAll = () => {
 		for (const c of ctx.cleanups.splice(0)) c();
 		rmSync(ctx.tmp, { recursive: true, force: true });

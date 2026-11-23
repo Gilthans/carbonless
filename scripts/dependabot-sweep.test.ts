@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+	AGENT_ACK,
 	agentArgs,
 	agentChangeProblems,
+	agentEnabledFrom,
 	breakingBumps,
 	bumpFromTitle,
 	classifyJob,
@@ -11,6 +13,7 @@ import {
 	hasReleaseNote,
 	manifestProblems,
 	metadataMajor,
+	otherNoteLines,
 	parseResult,
 	releaseNote,
 	sandboxArgs,
@@ -565,5 +568,152 @@ describe("agent sandbox", () => {
 		expect(a.slice(0, 4)).toEqual(["--die-with-parent", "--ro-bind", "/", "/"]);
 		expect(a.join(" ")).toContain("--setenv GH_CONFIG_DIR /e");
 		expect(a.join(" ")).toContain("--unsetenv GH_TOKEN");
+	});
+});
+
+describe("plain versions only (F1)", () => {
+	const base = { devDependencies: { dompurify: "^3.4.16" } };
+	const at = (v: string) => ({ devDependencies: { dompurify: v } });
+	const check = (v: string) =>
+		manifestProblems({
+			files: ["package.json", "pnpm-lock.yaml"],
+			basePkg: base,
+			headPkg: at(v),
+			names: ["dompurify"],
+			addedLockLines: [],
+		});
+	it("accepts a plain version with the base's range prefix", () => {
+		expect(check("^3.4.17")).toEqual([]);
+		expect(check("^3.5.0-rc.1")).toEqual([]);
+	});
+	it("refuses aliases, protocols, URLs, ranges and a changed prefix", () => {
+		for (const v of [
+			"npm:evil@3.4.17",
+			"workspace:*",
+			"catalog:",
+			"patch:dompurify@3.4.17#./p.patch",
+			"https://evil.example/d.tgz",
+			"github:evil/dompurify",
+			"3.x",
+			">=3.4.17",
+			"~3.4.17",
+			"3.4.17",
+		])
+			expect(check(v).length).toBeGreaterThan(0);
+	});
+	it("refuses those specs in added lockfile lines", () => {
+		for (const line of [
+			"      dompurify: npm:evil@3.4.17",
+			"      x: workspace:*",
+			"      y: catalog:",
+			"    z: patch:z@1.0.0#p.patch",
+		])
+			expect(
+				manifestProblems({
+					files: ["pnpm-lock.yaml"],
+					basePkg: base,
+					headPkg: base,
+					names: ["dompurify"],
+					addedLockLines: [line],
+				}),
+			).toHaveLength(1);
+	});
+});
+
+describe("owner comments carry no PR-sourced text (F2)", () => {
+	const evil = "@evil <img src=x> https://evil.example `x` #9";
+	it("uses fixed text for every owner reason", () => {
+		const cases = [
+			facts({}, { headRefName: `x/${evil}` }),
+			facts({
+				commits: [
+					BOT_COMMIT,
+					{ ...BOT_COMMIT, sha: "b".repeat(40), author: evil },
+				],
+			}),
+			facts({}, { files: ["package.json", `.github/${evil}.yml`] }),
+			facts({ manifestProblems: [evil] }),
+			facts({
+				breaking: [{ name: evil, from: evil, to: evil, kind: "major" }],
+			}),
+			facts({
+				checks: [
+					...REQUIRED.map(pass),
+					{ name: evil, bucket: "fail", link: evil },
+				],
+			}),
+			facts({
+				...failedRun("Run pnpm lint"),
+				checks: [
+					...REQUIRED.filter((n) => n !== "checks").map(pass),
+					{
+						name: evil,
+						bucket: "fail",
+						link: "https://github.com/o/r/actions/runs/77/job/88",
+					},
+				],
+			}),
+			facts({}, { body: `Release note (new): ${evil}` }),
+		];
+		for (const f of cases) {
+			const d = decide(f);
+			expect(d.type).toBe("owner");
+			expect(d.comment).toBeTruthy();
+			expect(d.comment).not.toMatch(/evil|@|<|`|http/);
+			expect(d.key).not.toMatch(/evil|-->/);
+		}
+	});
+});
+
+describe("other Release note lines block the merge (F3)", () => {
+	const sweep = "Release note: none (dependency update)";
+	it("merges with only the sweep's line, despite upstream 'Release notes' headings", () => {
+		expect(
+			decide(
+				facts(
+					{},
+					{
+						body: `Bumps x.\n<details>\n<summary>Release notes</summary>\n</details>\n\n${sweep}\n`,
+					},
+				),
+			).type,
+		).toBe("merge");
+		expect(
+			otherNoteLines(
+				"Release note (fixed): Updated dompurify to 3.4.17, which closes security advisory GHSA-c6gr-qvv4-5v3f",
+			),
+		).toEqual([]);
+	});
+	it("asks the owner when another Release note line is anywhere in it", () => {
+		for (const extra of [
+			"<details>\n<blockquote>\n<p>Release note: none (upstream)</p>\n</blockquote>\n</details>",
+			"> Release note (new): quoted",
+			"Release note (improved): someone's",
+			"release note: lowercase",
+		]) {
+			expect(
+				decide(facts({}, { body: `Bumps x.\n${extra}\n\n${sweep}\n` })),
+			).toMatchObject({ type: "owner", key: `note-lines:${SHA}` });
+		}
+	});
+});
+
+describe("agent guard", () => {
+	it("keeps the agent off until a reviewed sandbox revision is acknowledged", () => {
+		expect(AGENT_ACK).toBe("");
+		expect(agentEnabledFrom({}).on).toBe(false);
+		expect(agentEnabledFrom({}).refused).toBeUndefined();
+		const r = agentEnabledFrom({ CRB_SWEEP_AGENT: "on" });
+		expect(r.on).toBe(false);
+		expect(r.refused).toMatch(/refused/);
+		expect(
+			agentEnabledFrom({ CRB_SWEEP_AGENT: "on", CRB_SWEEP_AGENT_ACK: "" }).on,
+		).toBe(false);
+		expect(
+			agentEnabledFrom({
+				CRB_SWEEP_AGENT: "on",
+				CRB_SWEEP_AGENT_ACK: "anything",
+			}).on,
+		).toBe(false);
 	});
 });
