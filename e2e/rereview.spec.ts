@@ -3553,6 +3553,12 @@ test("a file back to the base's version since PS1 (gone from the full diff): its
 			.getByTestId("not-in-comparison")
 			.filter({ hasText: "Why change it, then undo it?" }),
 	).toBeVisible(GIT_WAIT);
+	// The agent's placements in too: the question listed after the files.
+	await expect(
+		page
+			.getByTestId("agent-not-in-comparison")
+			.filter({ hasText: "Why was this here?" }),
+	).toBeVisible(GIT_WAIT);
 	const again = fileSection(page, BACK);
 	await again.getByRole("button", { name: "Expand file" }).click();
 	const ownAgain = again.locator(
