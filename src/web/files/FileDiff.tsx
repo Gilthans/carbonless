@@ -83,7 +83,10 @@ import {
 } from "./renderers";
 import { ImageView } from "./renderers/image/ImageView";
 import type { ImageFile } from "./renderers/markdown/images";
-import { MarkdownView } from "./renderers/markdown/MarkdownView";
+import {
+	documentContextQuery,
+	MarkdownView,
+} from "./renderers/markdown/MarkdownView";
 import {
 	imageModesOf,
 	pressedView,
@@ -740,9 +743,18 @@ export function FileDiff(props: {
 		...hunksQuery(revision, file.index, props.since),
 		enabled: expanded && renderer !== "image",
 	});
-	// The Rendered view reads the same hunks: its blocks arriving restart the
-	// wait for marks as lines do.
-	const hunksPending = renderer !== "image" && hunks.isPending;
+	// The Rendered view reads the same hunks, then the file's unchanged
+	// lines (its document): its boxes arriving restart the wait for marks as
+	// lines do.
+	const documentLength = hunks.data?.newLineCount ?? 0;
+	const documentLines = useQuery({
+		...documentContextQuery(revision, file.index, documentLength, props.since),
+		enabled: expanded && markdown && hunks.isSuccess && documentLength > 0,
+	});
+	const hunksPending =
+		renderer !== "image" &&
+		(hunks.isPending ||
+			(markdown && documentLength > 0 && documentLines.isPending));
 	const hunkData = linesHidden ? null : (hunks.data ?? null);
 	// Opened by a move-on, its lines (or what shows instead) arrive under the
 	// pointer once read: just as unseen, so they restart the wait for marks.

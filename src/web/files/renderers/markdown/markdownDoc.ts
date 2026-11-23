@@ -157,6 +157,9 @@ export function buildDoc(opts: {
 	};
 	// Unchanged lines: old number → new number, for where a removal sat.
 	const sameAt = sides.same;
+	/** Unchanged lines: new number → old number. */
+	const oldAt = new Map<number, number>();
+	for (const [o, n] of sameAt) oldAt.set(n, o);
 	const sameOld = [...sameAt.keys()].sort((a, b) => a - b);
 	/** The unchanged line just before old line `a`, and just after `b`. */
 	const around = (a: number, b: number) => {
@@ -222,6 +225,22 @@ export function buildDoc(opts: {
 					anchorOf.set(node, next === -1 ? newBlocks.length : next);
 				}
 			}
+		}
+		if (olds.length === 0 && news.length > 0) {
+			// Lines added to a block that was there (its other lines are
+			// unchanged, all from one old block: a line of a paragraph or a
+			// fence, a blank line after an item): that block changed, it isn't
+			// new, so its words are marked against the old one.
+			const was = new Set<number>();
+			for (const node of nodes) {
+				const b = newBlocks[node - N] as MdBlock;
+				for (let n = b.from; n <= b.to; n++) {
+					const o = oldAt.get(n);
+					if (o !== undefined) was.add(placeOf(o, oldBlocks));
+				}
+			}
+			const from = was.size === 1 ? ([...was][0] as number) : -1;
+			if (from >= 0) nodes.add(from);
 		}
 		if (nodes.size === 0) {
 			unplaced.push(u.key);

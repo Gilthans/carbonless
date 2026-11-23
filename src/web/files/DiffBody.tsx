@@ -28,21 +28,11 @@ import {
 } from "react";
 import type { SpanAgentThread } from "../../shared/agent";
 import { inGitOrder } from "../../shared/diffHunk";
-import {
-	contains,
-	covers,
-	has,
-	type LineRanges,
-	size,
-	union,
-} from "../../shared/lineRanges";
+import { has, type LineRanges, size } from "../../shared/lineRanges";
 import {
 	lineIndex,
 	marksOf as lineMarksOf,
-	pieceState,
 	type SincePiece,
-	sinceMarkKey,
-	sinceOnlyState,
 } from "../../shared/pieces";
 import type {
 	ClusterView,
@@ -131,11 +121,13 @@ import {
 	setPicks,
 	usePicks,
 } from "./linePicks";
+import { type Marker, pieceMark } from "./pieceMark";
 import { type ResolveCollapse, useResolveCollapse } from "./resolveCollapse";
 import { stickyBottom } from "./scrollAnchor";
 import { type CodeSpan, describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import type { KindEntry } from "./since";
+import { SinceNotes } from "./sinceNotes";
 import { StackControls, useStickyControls } from "./stickyControls";
 import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
 import {
@@ -608,35 +600,6 @@ const RAIL: Record<ClusterView["state"], string> = {
 };
 
 /** What a piece's controls do (the since view): its own mark, not its cluster's. */
-interface Marker {
-	toggle: () => void;
-	crossOff: () => void;
-}
-
-/**
- * A piece shown as a cluster of its own: reviewed or crossed off when every
- * line it owns is; whitespace only as the piece is (`whitespaceOnly`, judged
- * on the interdiff, CAR-218), never as its cluster is against the base.
- */
-function pieceView(
-	whole: ClusterView,
-	piece: LineRanges,
-	whitespaceOnly: boolean,
-): ClusterView {
-	const {
-		reviewedLines: _,
-		crossedLines: __,
-		reason: ___,
-		whitespaceOnly: ____,
-		...rest
-	} = whole;
-	return {
-		...rest,
-		state: pieceState(whole, piece),
-		...(whitespaceOnly ? { whitespaceOnly: true } : {}),
-	};
-}
-
 /** A line of a cluster marked one piece at a time: its own mark. */
 function lineReviewedState(
 	cluster: ClusterView,
@@ -2189,44 +2152,6 @@ export function DiffBody(props: {
 		enabled: !linesHidden,
 	});
 	const hunks: HunksRead = linesHidden ? HIDDEN_HUNKS : read;
-	// The since view: unreviewed clusters the engine lists as reworked or
-	// new whose lines these hunks don't show (gap 5: unreviewed on the
-	// compared patch set, unchanged since), and the carried count.
-	const unshownToRead = useMemo(() => {
-		if (props.from === undefined || !props.kinds || !hunks.data) return 0;
-		// A cluster's lines the pieces here can mark (they own them).
-		const owned = new Map<string, LineRanges>();
-		const shownKeys = new Set<string>();
-		for (const hunk of hunks.data.hunks) {
-			for (const line of hunk.lines) {
-				if (line.clusterKey !== undefined) shownKeys.add(line.clusterKey);
-			}
-		}
-		for (const p of hunks.data.pieces ?? []) {
-			if (p.key && p.owns) {
-				owned.set(p.key, [...(owned.get(p.key) ?? []), ...p.owns]);
-			}
-		}
-		return file.clusters.filter((c) => {
-			// As the counts do (sinceUnits): a reworked or new cluster, or one
-			// whose carried mark the reviewer replaced.
-			const kind = props.kinds?.get(c.key)?.kind;
-			if (kind !== "reworked" && kind !== "new" && c.carried) return false;
-			if (c.state !== "unreviewed") return false;
-			if (!shownKeys.has(c.key)) return true;
-			// Its pieces all marked, it still has lines no piece owns (not
-			// unchanged since a reviewed line): those are the full diff's.
-			const pieces = hunks.data?.pieces;
-			if (!pieces) return false;
-			const own = owned.get(c.key) ?? [];
-			const { reviewed, crossed } = lineMarksOf(c);
-			return (
-				contains(union(reviewed, crossed), own) &&
-				!covers(union(own, []), c.lines)
-			);
-		}).length;
-	}, [props.from, props.kinds, hunks.data, file.clusters]);
-	const carriedHere = file.clusters.filter((c) => c.carried).length;
 	const ignoreWs = ignoreWhitespace.use();
 	const view: View = sideBySide.use() ? "side-by-side" : "unified";
 	const wide = useMedia(NOT_PHONE);
@@ -2281,43 +2206,18 @@ export function DiffBody(props: {
 	/** A piece as a cluster of its own, and what its controls do. */
 	const markOf = (
 		piece: SincePiece,
-	): { cluster: ClusterView; marker: Marker } | undefined => {
-		const { owns } = piece;
-		if (owns) {
-			const whole = piece.key ? clusters.get(piece.key) : undefined;
-			if (!whole) return undefined;
-			return {
-				// Whitespace only as the piece is (judged on the interdiff,
-				// CAR-218), not as its cluster is against the base.
-				cluster: pieceView(whole, owns, piece.whitespaceOnly === true),
-				marker: {
-					toggle: () => props.onToggle(whole, owns),
-					crossOff: () => props.onCrossOff(whole, owns),
-				},
-			};
-		}
-		if (props.from === undefined) return undefined;
-		const since = props.from;
-		return {
-			cluster: {
-				key: `${sinceMarkKey(since, file.path)}:${piece.hunk}:${piece.line}`,
-				kind: "lines",
-				oldStart: 0,
-				oldCount: 0,
-				newStart: 0,
-				newCount: 0,
-				removed: [],
-				added: [],
-				lines: size(piece.old) + size(piece.new),
-				state: sinceOnlyState(props.sinceMarks, since, file.path, piece),
-				...(piece.whitespaceOnly ? { whitespaceOnly: true } : {}),
-			},
-			marker: {
-				toggle: () => props.onSinceMark?.(piece, false),
-				crossOff: () => props.onSinceMark?.(piece, true),
-			},
-		};
-	};
+	): { cluster: ClusterView; marker: Marker } | undefined =>
+		props.from === undefined
+			? undefined
+			: pieceMark(piece, {
+					clusters,
+					since: props.from,
+					path: file.path,
+					sinceMarks: props.sinceMarks,
+					onToggle: props.onToggle,
+					onCrossOff: props.onCrossOff,
+					onSinceMark: props.onSinceMark,
+				});
 	const idBase = useId();
 	const noteIds = new Map(
 		file.clusters.map((c, i) => [c.key, `${idBase}-note-${i}`]),
@@ -3417,38 +3317,17 @@ export function DiffBody(props: {
 						</div>
 					)}
 					{/* Lines hidden (an image): the view says nothing of lines; the
-			    header's counts and action still hold every unit. */}
-					{props.from !== undefined &&
-						!linesHidden &&
-						hunks.data &&
-						unshownToRead > 0 && (
-							// Clusters the engine says are to read (reworked or new) with no
-							// line in these hunks (unreviewed on the compared patch set and
-							// unchanged since): never "nothing to read"; the full diff has them.
-							<p
-								data-testid="since-unshown"
-								className="flex min-h-10 items-center gap-2 px-3 text-xs text-warn"
-							>
-								{unshownToRead} to read · only in the full diff ·{" "}
-								<span className="text-muted">{carriedHere} carried</span>
-							</p>
-						)}
-					{/* Lines hidden too: with no file-level row, nothing else shows. */}
-					{props.from !== undefined &&
-						!props.linesElsewhere &&
-						hunks.data &&
-						hunks.data.hunks.length === 0 &&
-						fileClusters.length === 0 &&
-						unshownToRead === 0 && (
-							// The since view of a file the author left alone: say so (never
-							// an empty table that reads as "nothing changed" by mistake).
-							<p
-								data-testid="since-empty"
-								className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
-							>
-								Nothing to read since PS{props.from} · {carriedHere} carried
-							</p>
-						)}
+					    header's counts and action still hold every unit. Lines
+					    shown elsewhere (Markdown's Rendered view): it says both. */}
+					{props.from !== undefined && hunks.data && !props.linesElsewhere && (
+						<SinceNotes
+							from={props.from}
+							clusters={file.clusters}
+							kinds={props.kinds}
+							hunks={hunks.data}
+							unshown={!linesHidden}
+						/>
+					)}
 					{hunks.isPending && (
 						// A screen tall while loading, so a file picked in the tree can
 						// scroll its header to the top before its lines arrive.

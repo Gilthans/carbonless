@@ -66,6 +66,55 @@ describe("buildDoc", () => {
 		});
 	});
 
+	it.each([
+		[
+			"a line added to a paragraph",
+			["one", "three"],
+			["one", "two", "three"],
+			[2, 3],
+		],
+		[
+			"a line added inside a fence",
+			["```", "a", "c", "```"],
+			["```", "a", "b", "c", "```"],
+			[3, 4],
+		],
+		[
+			"a blank line added after a block",
+			["A", "", "B"],
+			["A", "", "", "B"],
+			[3, 4],
+		],
+	] as const)(
+		"%s: that block changed, never wholly new",
+		(_, old, nu, added) => {
+			const doc = docOf(
+				[...old],
+				[...nu],
+				[{ key: "k", new: [...added] as [number, number] }],
+			);
+			const row = doc.rows.find((r) => r.kind === "change");
+			expect(row).toMatchObject({
+				tone: "changed",
+				oldBlocks: [0],
+				newBlocks: [0],
+				units: ["k"],
+			});
+		},
+	);
+
+	it("a block added between blocks stays added", () => {
+		const doc = docOf(
+			["A", "", "C"],
+			["A", "", "B", "", "C"],
+			[{ key: "k", new: [3, 5] }],
+		);
+		expect(doc.rows.find((r) => r.kind === "change")).toMatchObject({
+			tone: "added",
+			oldBlocks: [],
+		});
+	});
+
 	it("a removed block sits before the block that follows it; at the end, last", () => {
 		const doc = docOf(
 			["A", "", "B", "", "C", "", "D"],

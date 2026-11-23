@@ -14,12 +14,7 @@ import {
 	useState,
 } from "react";
 import { type LineRanges, size } from "../../../../shared/lineRanges";
-import {
-	pieceState,
-	type SincePiece,
-	sinceMarkKey,
-	sinceOnlyState,
-} from "../../../../shared/pieces";
+import type { SincePiece } from "../../../../shared/pieces";
 import type {
 	ClusterView,
 	FileView,
@@ -35,7 +30,9 @@ import { ClusterControls } from "../../ClusterControls";
 import type { DiffFind, DiffThreads } from "../../DiffBody";
 import { KindChip } from "../../KindChip";
 import type { Landing } from "../../landing";
+import { pieceMark } from "../../pieceMark";
 import type { KindEntry } from "../../since";
+import { SinceNotes } from "../../sinceNotes";
 import { type ImageFile, imageResolver, remoteImageUrl } from "./images";
 import {
 	blocksOf,
@@ -93,7 +90,7 @@ export function MarkdownView(props: {
 	const hunks = useQuery(hunksQuery(revision, file.index, from));
 	const count = hunks.data?.newLineCount ?? 0;
 	const context = useQuery({
-		...contextQuery(revision, file.index, 1, Math.max(count, 1), from),
+		...documentContextQuery(revision, file.index, count, from),
 		enabled: hunks.isSuccess && count > 0,
 	});
 	const ignoreWs = ignoreWhitespace.use();
@@ -101,7 +98,21 @@ export function MarkdownView(props: {
 	const split = props.sideBySide && wide;
 	const pending = hunks.isPending || (count > 0 && context.isPending);
 	const error = hunks.error ?? (count > 0 ? context.error : null);
-	const files = props.files ?? [];
+	// The review's files as the images read them: a new list every mark
+	// (the review is read again) but the same images, so the rendered HTML
+	// isn't built again for a tick.
+	const imagesKey = JSON.stringify(
+		(props.files ?? []).map((f) => [
+			f.index,
+			f.path,
+			f.status,
+			f.binary,
+			f.lfs ?? false,
+			f.submodule,
+		]),
+	);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the key stands for the list.
+	const files = useMemo(() => props.files ?? [], [imagesKey]);
 
 	// The marks go through the latest callbacks; the document is built once.
 	const marks = useRef({
@@ -114,13 +125,46 @@ export function MarkdownView(props: {
 		onCrossOff: props.onCrossOff,
 		onSinceMark: props.onSinceMark,
 	};
-	const model = useMemo(() => {
+	// The file's two sides, their blocks and HTML: from what was read alone,
+	// never again for a mark.
+	const base = useMemo(() => {
 		if (!hunks.data || (count > 0 && !context.data)) return null;
 		try {
 			const sides = rebuildSides(hunks.data, context.data ?? []);
 			if (!sides) return "failed" as const;
 			const oldBlocks = blocksOf(sides.old);
 			const newBlocks = blocksOf(sides.new);
+			const side = (s: "old" | "new") =>
+				imageResolver({ mdPath: file.path, files, revision, side: s, from });
+			const oldSide = sideBlocks(sides.old, oldBlocks);
+			const newSide = sideBlocks(sides.new, newBlocks);
+			const pairs = new Map<string, PairHtml | null>();
+			return {
+				sides,
+				oldBlocks,
+				newBlocks,
+				oldHtml: renderBlocks(sides.old, oldBlocks, { image: side("old") }),
+				newHtml: renderBlocks(sides.new, newBlocks, { image: side("new") }),
+				pair: (o: number, n: number): PairHtml | null => {
+					const key = `${o}:${n}`;
+					if (!pairs.has(key)) {
+						pairs.set(
+							key,
+							renderPair(oldSide, o, newSide, n, { image: side("new") }),
+						);
+					}
+					return pairs.get(key) ?? null;
+				},
+			};
+		} catch {
+			return "failed" as const;
+		}
+	}, [hunks.data, context.data, count, file.path, files, revision, from]);
+	// The units on it (the clusters or the since pieces, with their marks)
+	// and where each sits: again on each mark, cheaply.
+	const model = useMemo(() => {
+		if (base === null || base === "failed") return base;
+		try {
 			const clusters = new Map(file.clusters.map((c) => [c.key, c]));
 			const units: (DocUnit & { control: UnitControl })[] = [];
 			if (from === undefined) {
@@ -142,18 +186,29 @@ export function MarkdownView(props: {
 					});
 				}
 			} else {
-				for (const piece of hunks.data.pieces ?? []) {
-					const control = pieceControl(piece, {
+				for (const piece of hunks.data?.pieces ?? []) {
+					const mark = pieceMark(piece, {
 						clusters,
-						from,
+						since: from,
 						path: file.path,
-						kinds: props.kinds,
 						sinceMarks: props.sinceMarks,
 						onToggle: (c, p) => marks.current.onToggle(c, p),
 						onCrossOff: (c, p) => marks.current.onCrossOff(c, p),
 						onSinceMark: (p, cross) => marks.current.onSinceMark?.(p, cross),
 					});
-					if (!control) continue;
+					if (!mark) continue;
+					const entry = piece.key ? props.kinds?.get(piece.key) : undefined;
+					const control: UnitControl = {
+						cluster: mark.cluster,
+						toggle: mark.marker.toggle,
+						crossOff: mark.marker.crossOff,
+						ws: mark.cluster.whitespaceOnly === true,
+						// A piece of its own isn't its neighbour's: only gone says
+						// where it came from.
+						entry: mark.whole || entry?.kind === "gone" ? entry : undefined,
+						carried: mark.whole?.carried,
+						sinceOnly: piece.kind,
+					};
 					if (ignoreWs && control.ws) continue;
 					units.push({
 						key: `p:${piece.hunk}:${piece.line}`,
@@ -163,35 +218,32 @@ export function MarkdownView(props: {
 					});
 				}
 			}
-			const doc = buildDoc({ sides, oldBlocks, newBlocks, units });
+			const doc = buildDoc({
+				sides: base.sides,
+				oldBlocks: base.oldBlocks,
+				newBlocks: base.newBlocks,
+				units,
+			});
 			if (doc.unplaced.length > 0) return "failed" as const;
-			const side = (s: "old" | "new") =>
-				imageResolver({ mdPath: file.path, files, revision, side: s, from });
-			const oldSide = sideBlocks(sides.old, oldBlocks);
-			const newSide = sideBlocks(sides.new, newBlocks);
 			return {
 				doc,
 				units: new Map(units.map((u) => [u.key, u.control])),
-				oldHtml: renderBlocks(sides.old, oldBlocks, { image: side("old") }),
-				newHtml: renderBlocks(sides.new, newBlocks, { image: side("new") }),
-				pair: (o: number, n: number): PairHtml | null =>
-					renderPair(oldSide, o, newSide, n, { image: side("new") }),
+				oldHtml: base.oldHtml,
+				newHtml: base.newHtml,
+				pair: base.pair,
 			};
 		} catch {
 			return "failed" as const;
 		}
 	}, [
+		base,
 		hunks.data,
-		context.data,
-		count,
 		file.clusters,
 		file.path,
 		from,
 		ignoreWs,
 		props.kinds,
 		props.sinceMarks,
-		files,
-		revision,
 	]);
 	const failed = model === "failed";
 	const showText = useRef(props.onShowText);
@@ -432,17 +484,6 @@ export function MarkdownView(props: {
 		<>
 			{bar}
 			{props.head}
-			{from !== undefined && (hunks.data?.hunks.length ?? 0) === 0 && (
-				// The since view of a file the author left alone: say so, never a
-				// document that reads as "nothing changed" by mistake.
-				<p
-					data-testid="since-empty"
-					className="flex min-h-10 items-center gap-2 px-3 text-muted text-xs"
-				>
-					Nothing to read since PS{from} ·{" "}
-					{file.clusters.filter((c) => c.carried).length} carried
-				</p>
-			)}
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: delegates the remote-image placeholders' and summaries' clicks. */}
 			{/* biome-ignore lint/a11y/useKeyWithClickEvents: the placeholders are buttons, keyboard included. */}
 			<div
@@ -460,9 +501,31 @@ export function MarkdownView(props: {
 							: changeRow(row),
 				)}
 			</div>
+			{from !== undefined && hunks.data && (
+				// As the line view says them (SinceNotes): to read only in the
+				// full diff, or nothing to read since.
+				<SinceNotes
+					from={from}
+					clusters={file.clusters}
+					kinds={props.kinds}
+					hunks={hunks.data}
+				/>
+			)}
 		</>
 	);
 }
+
+/**
+ * The file's unchanged lines, all of them (the context route over its
+ * whole new side, `count` lines): with the hunks, both sides of the file.
+ * FileDiff reads it too, so marks wait for the document as for lines.
+ */
+export const documentContextQuery = (
+	revision: string,
+	index: number,
+	count: number,
+	from?: number,
+) => contextQuery(revision, index, 1, Math.max(count, 1), from);
 
 /**
  * The document's clicks: a remote image's placeholder loads it (http(s)
@@ -495,76 +558,6 @@ interface UnitControl {
 	carried?: ClusterView["carried"];
 	linesCarried?: ClusterView["linesCarried"];
 	sinceOnly?: "reverted" | "removed";
-}
-
-/**
- * A since piece as a box (as DiffBody's `markOf`): a piece of a cluster
- * marks those of its lines; one that owns none of this snapshot's lines is
- * marked on its own (`onSinceMark`).
- */
-function pieceControl(
-	piece: SincePiece,
-	ctx: {
-		clusters: Map<string, ClusterView>;
-		from: number;
-		path: string;
-		kinds?: Map<string, KindEntry>;
-		sinceMarks?: SinceMark[];
-		onToggle: (cluster: ClusterView, piece?: LineRanges) => void;
-		onCrossOff: (cluster: ClusterView, piece?: LineRanges) => void;
-		onSinceMark?: (piece: SincePiece, cross: boolean) => void;
-	},
-): UnitControl | undefined {
-	const entry = piece.key ? ctx.kinds?.get(piece.key) : undefined;
-	const { owns } = piece;
-	if (owns) {
-		const whole = piece.key ? ctx.clusters.get(piece.key) : undefined;
-		if (!whole) return undefined;
-		const {
-			reviewedLines: _,
-			crossedLines: __,
-			reason: ___,
-			whitespaceOnly: ____,
-			...rest
-		} = whole;
-		// Whitespace only as the piece is (judged on the interdiff, CAR-218),
-		// not as its cluster is against the base: as DiffBody's markOf.
-		const ws = piece.whitespaceOnly === true;
-		return {
-			cluster: {
-				...rest,
-				state: pieceState(whole, owns),
-				...(ws ? { whitespaceOnly: true as const } : {}),
-			},
-			toggle: () => ctx.onToggle(whole, owns),
-			crossOff: () => ctx.onCrossOff(whole, owns),
-			ws,
-			entry,
-			carried: whole.carried,
-			sinceOnly: piece.kind,
-		};
-	}
-	return {
-		cluster: {
-			key: `${sinceMarkKey(ctx.from, ctx.path)}:${piece.hunk}:${piece.line}`,
-			kind: "lines",
-			oldStart: 0,
-			oldCount: 0,
-			newStart: 0,
-			newCount: 0,
-			removed: [],
-			added: [],
-			lines: size(piece.old) + size(piece.new),
-			state: sinceOnlyState(ctx.sinceMarks, ctx.from, ctx.path, piece),
-			...(piece.whitespaceOnly ? { whitespaceOnly: true as const } : {}),
-		},
-		toggle: () => ctx.onSinceMark?.(piece, false),
-		crossOff: () => ctx.onSinceMark?.(piece, true),
-		ws: piece.whitespaceOnly === true,
-		// A piece of its own isn't its neighbour's: only gone says where it came from.
-		entry: entry?.kind === "gone" ? entry : undefined,
-		sinceOnly: piece.kind,
-	};
 }
 
 /** A unit's chips, as the line view's kind row shows them. */

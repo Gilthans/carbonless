@@ -1758,6 +1758,42 @@ describe("FileDiff", () => {
 		await waitFor(() => expect(posts()).toHaveLength(1));
 	});
 
+	it("a Rendered Markdown file: marks wait a moment after its document arrives late", async () => {
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		const doc = heldJson();
+		const { posts, user } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? doc.response
+					: { status: 200, body: view(md) },
+			hunks,
+			"clusters",
+			{ ignoreMarksUntil: 1000 + UNDO_ARM_MS },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(shown()).toBe("markdown");
+		// The page's wait is over before the document is in.
+		tick(2 * UNDO_ARM_MS);
+		doc.release(unchanged);
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		// It showed up under the pointer just now: not marked.
+		await user.click(box);
+		expect(posts()).toHaveLength(0);
+		expect(box).not.toBeChecked();
+		tick();
+		await user.click(box);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+	});
+
 	it("can't reset a file that isn't finished: it marks the rest", () => {
 		setup(file([cluster("k1", { state: "reviewed" }), cluster("k2")]));
 		expect(

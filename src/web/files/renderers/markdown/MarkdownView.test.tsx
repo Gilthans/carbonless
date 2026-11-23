@@ -13,6 +13,13 @@ import { ignoreWhitespace } from "../../../viewSettings";
 import type { KindEntry } from "../../since";
 import { type DocFixture, docFixture, type Edit } from "./docFixture";
 import { MarkdownView } from "./MarkdownView";
+import { renderBlocks } from "./renderBlocks";
+
+// Spied on, still the renderer: a mark mustn't render the document again.
+vi.mock("./renderBlocks", async (importOriginal) => {
+	const real = await importOriginal<typeof import("./renderBlocks")>();
+	return { ...real, renderBlocks: vi.fn(real.renderBlocks) };
+});
 
 /*
  * The Rendered view (CAR-167, spec "The Rendered view"): one box per unit
@@ -330,6 +337,41 @@ describe("MarkdownView, full diff", () => {
 		);
 	});
 
+	it("a mark (the review read again: new clusters, a new file list) renders no block again", async () => {
+		const fx = docFixture(OLD, NEW, EDITS);
+		serve(fx);
+		const client = new QueryClient();
+		const at = (clusters: ClusterView[]) => (
+			<QueryClientProvider client={client}>
+				<MarkdownView
+					file={{ ...fx.file, clusters }}
+					revision="r1"
+					sideBySide={false}
+					onToggle={() => {}}
+					onCrossOff={() => {}}
+					view={null}
+					onShowText={() => {}}
+					files={[{ ...fx.file }]}
+				/>
+			</QueryClientProvider>
+		);
+		const view = render(at(fx.file.clusters));
+		const root = await doc();
+		const rendered = vi.mocked(renderBlocks).mock.calls.length;
+		expect(rendered).toBeGreaterThan(0);
+		view.rerender(
+			at(
+				fx.file.clusters.map((c) =>
+					c.key === "k1" ? { ...c, state: "reviewed" as const } : c,
+				),
+			),
+		);
+		await waitFor(() =>
+			expect(boxOf(root, "k1")?.querySelector("input")).toBeChecked(),
+		);
+		expect(vi.mocked(renderBlocks).mock.calls.length).toBe(rendered);
+	});
+
 	it("loading shows the skeleton, never an empty document", async () => {
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => {
@@ -444,6 +486,40 @@ describe("MarkdownView, since view", () => {
 			root,
 			keys.filter((k) => k !== "p:4:0"),
 		);
+	});
+
+	it('clusters to read that only the full diff shows: said as in the line view, never "Nothing to read"', async () => {
+		const fx = docFixture(NEW, NEW, [], { since: true });
+		const unshown: ClusterView = {
+			key: "u1",
+			kind: "lines",
+			oldStart: 3,
+			oldCount: 1,
+			newStart: 3,
+			newCount: 1,
+			removed: ["x"],
+			added: ["y"],
+			lines: 2,
+			state: "unreviewed",
+		};
+		show(
+			{
+				...fx,
+				file: { ...fx.file, clusters: [unshown] },
+				hunks: { ...fx.hunks, hunks: [], pieces: [] },
+			},
+			{
+				from: 1,
+				kinds: new Map([
+					["u1", { key: "u1", kind: "reworked", from: 1 } as KindEntry],
+				]),
+			},
+		);
+		await doc();
+		expect(screen.getByTestId("since-unshown")).toHaveTextContent(
+			"1 to read · only in the full diff",
+		);
+		expect(screen.queryByTestId("since-empty")).toBeNull();
 	});
 
 	it("a file the author left alone since says so", async () => {
