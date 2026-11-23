@@ -384,6 +384,48 @@ describe("InboxStore (git)", () => {
 		expect(git(path, "rev-list", "--count", inboxRef("dan"))).toBe("3");
 	});
 
+	it("a write whose compare-and-swap loses to another server is stamped after that server's events (CAR-245)", async () => {
+		const mine = new InboxStore();
+		// Another server, its clock a minute ahead of ours.
+		const ahead = Date.now() + 60_000;
+		const other = new InboxStore(() => ahead);
+		await mine.append("dan", "acme", "widget", 5, { op: "wait", who: "bob" });
+		const transaction = RefStore.prototype.transaction;
+		let raced = false;
+		const spy = vi
+			.spyOn(RefStore.prototype, "transaction")
+			.mockImplementation(async function (this: RefStore, updates) {
+				if (!raced) {
+					raced = true;
+					// The other server's snooze lands between the wake's read
+					// and its compare-and-swap.
+					await other.append("dan", "acme", "widget", 5, {
+						op: "snooze",
+						until: iso(ahead + H),
+						wakeOnActivity: true,
+					});
+				}
+				return transaction.call(this, updates);
+			});
+		let row: Annotations;
+		try {
+			row = await mine.append("dan", "acme", "widget", 5, { op: "wake" });
+		} finally {
+			spy.mockRestore();
+		}
+		expect(raced).toBe(true);
+		// The wake came after the snooze: it clears it.
+		expect(row).toEqual({});
+		expect((await new InboxStore().read("dan", "acme", "widget")).get(5)).toBe(
+			undefined,
+		);
+		const path = clonePath("acme", "widget");
+		expect(git(path, "log", "-1", "--format=%s", inboxRef("dan"))).toBe(
+			"crb: woke #5",
+		);
+		expect(git(path, "rev-list", "--count", inboxRef("dan"))).toBe("3");
+	});
+
 	it("refuses an invalid slug", async () => {
 		await expect(
 			new InboxStore().append("Dan Real", "acme", "widget", 1, { op: "wake" }),

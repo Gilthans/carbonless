@@ -313,6 +313,98 @@ describe("the since view's pieces", () => {
 		]);
 	});
 
+	it("orphan lines (CAR-216) are a piece of their own: never merged with their cluster's shown lines, owning exactly theirs, unchipped", () => {
+		const orphan = (line: DiffLine): DiffLine => ({
+			...line,
+			clusterKey: cluster.key,
+			orphan: true,
+		});
+		const lines = [
+			ctx(1, 19),
+			// Base line 10, removed: no number here, its base number instead.
+			orphan({ kind: "del", text: "old a", baseNo: 10 }),
+			keyed(add(20), cluster.key),
+			orphan(add(21)),
+			orphan(add(22)),
+			keyed(add(23), cluster.key),
+			ctx(2, 30),
+		];
+		expect(
+			lineRuns(lines).map((r) => [r.change, r.orphan, r.lines.length]),
+		).toEqual([
+			[false, undefined, 1],
+			[true, true, 1],
+			[true, undefined, 1],
+			[true, true, 2],
+			[true, undefined, 1],
+			[false, undefined, 1],
+		]);
+		const pieces = sincePieces([{ newStart: 19, lines }], [cluster], () => ({
+			baseNo: (line) => (line.orphan ? (line.baseNo ?? undefined) : undefined),
+		}));
+		expect(pieces).toEqual([
+			{
+				hunk: 0,
+				line: 1,
+				key: cluster.key,
+				orphan: true,
+				owns: [[0, 1]],
+				old: [],
+				new: [],
+			},
+			{
+				hunk: 0,
+				line: 2,
+				key: cluster.key,
+				owns: [[2, 3]],
+				old: [],
+				new: [[20, 21]],
+			},
+			{
+				hunk: 0,
+				line: 3,
+				key: cluster.key,
+				orphan: true,
+				owns: [[3, 5]],
+				old: [],
+				new: [[21, 23]],
+			},
+			{
+				hunk: 0,
+				line: 5,
+				key: cluster.key,
+				owns: [[5, 6]],
+				old: [],
+				new: [[23, 24]],
+			},
+		]);
+		// The since view's units count an orphan's own lines (a removed one
+		// has no number here).
+		const units = sinceUnits(
+			[
+				{
+					index: 0,
+					path: "a.ts",
+					clusters: [{ key: cluster.key, kind: "new" }],
+					pieces,
+				},
+			],
+			1,
+			() => [view()],
+			undefined,
+		);
+		expect(units.filter((u) => !u.rest).map((u) => u.lines)).toEqual([
+			1, 1, 2, 1,
+		]);
+		// An orphan run with none of its cluster's lines is no piece.
+		expect(
+			sincePieces(
+				[{ newStart: 1, lines: [ctx(1, 1), orphan(add(40))] }],
+				[cluster],
+			),
+		).toEqual([]);
+	});
+
 	it("finds the cluster at a removal's place", () => {
 		expect(clusterAt([cluster], 19)?.key).toBe(cluster.key); // before line 20
 		expect(clusterAt([cluster], 29)?.key).toBe(cluster.key);
