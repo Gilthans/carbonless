@@ -284,7 +284,7 @@ export function toReadClusters(
 	answer: RereviewAnswer,
 	view: ReviewView,
 	unit: Unit,
-	ignoreWhitespace = false,
+	ignoreWhitespace: boolean,
 ): number {
 	const kinds = new Map(
 		answer.files.flatMap((f) => f.clusters.map((c) => [c.key, c.kind])),

@@ -411,12 +411,17 @@ describe("counts follow the since view (its pieces)", () => {
 	});
 
 	it("the full diff's to-read counts the snapshot's clusters", () => {
-		expect(toReadClusters(ans, at(), "clusters")).toBe(2);
+		expect(toReadClusters(ans, at(), "clusters", false)).toBe(2);
 		expect(
-			toReadClusters(ans, at(ten({ reviewedLines: [[0, 5]] })), "clusters"),
+			toReadClusters(
+				ans,
+				at(ten({ reviewedLines: [[0, 5]] })),
+				"clusters",
+				false,
+			),
 		).toBe(2);
 		expect(
-			toReadClusters(ans, at(ten({ state: "reviewed" })), "clusters"),
+			toReadClusters(ans, at(ten({ state: "reviewed" })), "clusters", false),
 		).toBe(1);
 	});
 });
@@ -452,15 +457,20 @@ describe('the full diff\'s "to read" with "Ignore whitespace" (CAR-243)', () => 
 		]),
 	]);
 
+	// Two whitespace-only clusters, two lines each (the `cluster` helper's default).
+	const WS_CLUSTERS = 2;
+	const LINES_PER_CLUSTER = 2;
+
 	it("counts whitespace-only clusters with the switch off, not with it on", () => {
-		expect(toReadClusters(wsAnswer, wsView, "clusters")).toBe(3);
+		expect(toReadClusters(wsAnswer, wsView, "clusters", false)).toBe(3);
 		expect(toReadClusters(wsAnswer, wsView, "clusters", false)).toBe(3);
 		expect(toReadClusters(wsAnswer, wsView, "clusters", true)).toBe(1);
-		expect(toReadClusters(wsAnswer, wsView, "files")).toBe(2);
+		expect(toReadClusters(wsAnswer, wsView, "files", false)).toBe(2);
 		// util.ts is nothing else: it counts nowhere, as on the bar.
 		expect(toReadClusters(wsAnswer, wsView, "files", true)).toBe(1);
 		expect(toReadClusters(wsAnswer, wsView, "lines", true)).toBe(
-			toReadClusters(wsAnswer, wsView, "lines") - 2 * 2,
+			toReadClusters(wsAnswer, wsView, "lines", false) -
+				WS_CLUSTERS * LINES_PER_CLUSTER,
 		);
 	});
 });
