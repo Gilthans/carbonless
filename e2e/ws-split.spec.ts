@@ -437,6 +437,74 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 	).toHaveCount(0);
 });
 
+test("the full diff with a comparison open: to read leaves out whitespace-only clusters with the switch on, as the bar does, and counts them with it off (CAR-243)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine's answer and marks: past the default budget on a loaded machine.
+	test.slow();
+	const ps1 = lines.map((l, i) =>
+		i === 1 ? `${l} changed` : i === 5 || i === 6 ? `  ${l}` : l,
+	);
+	const p = await pr({
+		base: { [PATH]: text(lines) },
+		files: [{ message: "Line 2, re-indent", files: { [PATH]: text(ps1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page);
+	await expect(boxes(section)).toHaveCount(2);
+	await boxes(section).first().click();
+	await expect(boxes(section).first()).toBeChecked();
+	await boxes(section).last().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// PS2 re-indents lines 6-7 deeper (whitespace-only against the base,
+	// reworked since PS1) and changes lines 4-5 and 8-9.
+	p.moveHead({
+		message: "Change, re-indent, change",
+		files: {
+			[PATH]: text(
+				ps1.map((l, i) =>
+					i === 3 || i === 4 || i === 7 || i === 8
+						? `${l} changed`
+						: i === 5 || i === 6
+							? `    ${l}`
+							: l,
+				),
+			),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	// The full diff of the same comparison (the PS1 node is still the base).
+	await page.keyboard.press("Control+Shift+[");
+	await expect(
+		page
+			.getByTestId("ps-node-branch")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const toRead = page.getByTestId("to-read");
+	const bar = progress(page);
+	await expect(toRead).toHaveText(/3 to read/, GIT_WAIT);
+	await expect(bar).toContainText("1 / 4 clusters reviewed");
+	await ignoreWhitespace(page, true);
+	await expect(toRead).toHaveText(/2 to read/);
+	await expect(bar).toContainText("1 / 3 clusters reviewed");
+	await ignoreWhitespace(page, false);
+	await expect(toRead).toHaveText(/3 to read/);
+});
+
 test("the since view: a run mixing a re-indent read in PS1 and a real edit is one piece per stretch, each with its box, the switch off and on", async ({
 	page,
 	pr,
