@@ -25,7 +25,8 @@ import {
  * - every href goes through `safeHref` (absolute http(s) only) and opens in a
  *   new tab;
  * - an image loads only through `opts.image` (a relative src → the PR's blob);
- *   a remote one (any scheme, or `//host`) becomes a placeholder button that
+ *   a relative one it turns down shows still (an icon and its path); a
+ *   remote one (any scheme, or `//host`) becomes a placeholder button that
  *   shows its URL and never loads it.
  *
  * View-agnostic: nothing here knows which side or revision the lines are from,
@@ -191,6 +192,36 @@ function placeholder(doc: Document, url: string): HTMLButtonElement {
 	return button;
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+/** Octicons' image (16px). */
+const IMAGE_PATH =
+	"M16 13.25A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75ZM1.75 2.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h.94l.03-.03 6.077-6.078a1.75 1.75 0 0 1 2.412-.06L14.5 10.31V2.75a.25.25 0 0 0-.25-.25Zm12.5 11a.25.25 0 0 0 .25-.25v-.917l-4.298-3.889a.25.25 0 0 0-.344.009L4.81 13.5ZM7 6a2 2 0 1 1-3.999.001A2 2 0 0 1 7 6ZM5.5 6a.5.5 0 1 0-1 0 .5.5 0 0 0 1 0Z";
+
+/**
+ * A relative image the review can't load (not one of its changed images):
+ * its icon and path, nothing to click (until CAR-268 loads any image of
+ * the repo).
+ */
+function localPlaceholder(doc: Document, path: string): HTMLSpanElement {
+	const span = doc.createElement("span");
+	span.className = "md-local-image";
+	span.setAttribute("role", "img");
+	span.setAttribute("aria-label", `${path}: not in this PR`);
+	span.setAttribute("title", "Not in this PR");
+	const svg = doc.createElementNS(SVG_NS, "svg");
+	svg.setAttribute("viewBox", "0 0 16 16");
+	svg.setAttribute("width", "16");
+	svg.setAttribute("height", "16");
+	svg.setAttribute("aria-hidden", "true");
+	const d = doc.createElementNS(SVG_NS, "path");
+	d.setAttribute("d", IMAGE_PATH);
+	d.setAttribute("fill", "currentColor");
+	svg.appendChild(d);
+	span.appendChild(svg);
+	span.appendChild(doc.createTextNode(path));
+	return span;
+}
+
 /**
  * marked's HTML → safe HTML. Placeholders and link targets are added after
  * DOMPurify ran, so content can never bring its own (buttons and data-*
@@ -229,6 +260,8 @@ function sanitize(html: string, opts: RenderOptions): HTMLElement {
 		if (url) {
 			img.setAttribute("src", url);
 			img.setAttribute("referrerpolicy", "no-referrer");
+		} else if (src !== null) {
+			img.replaceWith(localPlaceholder(doc, raw.trim()));
 		} else if (raw) {
 			img.replaceWith(placeholder(doc, raw));
 		} else {

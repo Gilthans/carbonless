@@ -140,6 +140,29 @@
 	cursor: pointer;
 }
 
+/* A relative image the review can't load: its icon and path, still. */
+.md-content span.md-local-image {
+	display: inline-flex;
+	max-width: 100%;
+	min-height: 40px;
+	align-items: center;
+	gap: 6px;
+	padding: 0 10px;
+	overflow: hidden;
+	white-space: nowrap;
+	vertical-align: middle;
+	border: 1px dashed var(--color-line-strong);
+	border-radius: 6px;
+	color: var(--color-muted);
+	background-color: var(--color-band);
+	font-size: 12px;
+	cursor: default;
+}
+
+.md-content span.md-local-image svg {
+	flex-shrink: 0;
+}
+
 .md-content button.md-remote-image:hover {
 	color: var(--color-ink);
 }

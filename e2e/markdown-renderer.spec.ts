@@ -319,12 +319,18 @@ test("images load only from the review's own files; a remote one on a click, htt
 	const src = (await imgs.first().getAttribute("src")) ?? "";
 	expect(new URL(src, origin).pathname).toMatch(/\/files\/\d+\/blob$/);
 	expect(src).not.toContain("logo");
-	// Every other one is a placeholder, loaded by nothing.
+	// A relative one the review can't load: a still placeholder, no
+	// button (a click would load nothing).
+	const stills = doc.locator(".md-local-image");
+	await expect(stills).toHaveCount(2);
+	await expect(stills.first()).toHaveAttribute("title", "Not in this PR");
+	await expect(doc.locator("button", { hasText: "x.png" })).toHaveCount(0);
+	// Every remote one is a placeholder button, loaded by nothing.
 	const holders = doc.locator("button.md-remote-image");
-	await expect(holders).toHaveCount(5);
+	await expect(holders).toHaveCount(3);
 	// A data: one (or any scheme but http(s)) loads nothing on a click.
 	await holders.filter({ hasText: "data:" }).click();
-	await expect(holders).toHaveCount(5);
+	await expect(holders).toHaveCount(3);
 	await expect(imgs).toHaveCount(1);
 	expect(offsite).toEqual([]);
 	// The http(s) one loads on a click, and only then.

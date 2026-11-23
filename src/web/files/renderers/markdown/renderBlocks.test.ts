@@ -386,12 +386,17 @@ describe("sanitizing", () => {
 		expect(img?.getAttribute("alt")).toBe("a");
 	});
 
-	it("a relative image image() turns down is a placeholder", () => {
+	it("a relative image image() turns down: a still placeholder (icon, path, Not in this PR), never a button", () => {
 		const d = only("![a](img/p.png)", { image: () => null });
 		expect(d.querySelector("img")).toBeNull();
-		expect(d.querySelector("button")?.getAttribute("data-remote-src")).toBe(
-			"img/p.png",
-		);
+		// A click could load nothing (CAR-268 loads any in-repo image).
+		expect(d.querySelector("button")).toBeNull();
+		const still = d.querySelector(".md-local-image");
+		expect(still?.textContent).toBe("img/p.png");
+		expect(still?.getAttribute("title")).toBe("Not in this PR");
+		expect(still?.getAttribute("role")).toBe("img");
+		expect(still?.getAttribute("aria-label")).toBe("img/p.png: not in this PR");
+		expect(still?.querySelector("svg")).not.toBeNull();
 	});
 });
 
