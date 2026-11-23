@@ -31,8 +31,8 @@ const keepFocus = (e: MouseEvent) => e.preventDefault();
  * before there is one. Pressed while the conversation is open: the
  * panel's handle. A spinner in its place while the agent threads load
  * (never "Ask agent" that would then turn into a count); an alert in
- * `bad` when they couldn't be read, still pressable (it opens the panel
- * and reads them again). Absent on a thread with no id, a deleted one,
+ * `bad` when they couldn't be read, still pressable (it reads them again,
+ * and opens the panel when closed; open, it stays open). Absent on a thread with no id, a deleted one,
  * and where the session doesn't write.
  */
 export function ThreadAgentButton(props: {
@@ -80,7 +80,8 @@ export function ThreadAgentButton(props: {
 						onMouseDown={keepFocus}
 						onClick={() => {
 							retry();
-							props.onToggle();
+							// Open, a press reads again and keeps the panel (its Retry's twin).
+							if (!open) props.onToggle();
 						}}
 						className={`${handle} border-dashed border-bad text-bad hover:bg-agent focus-visible:outline-2 focus-visible:outline-accent`}
 					>

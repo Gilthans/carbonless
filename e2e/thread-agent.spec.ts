@@ -13,7 +13,7 @@ import {
 	test,
 } from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
-import { expectLoadingThen, type Pr, type PrOptions } from "./fixtures";
+import type { Pr, PrOptions } from "./fixtures";
 
 // Its own crb serve: the agent's config, its fake ACP env and checkouts.
 test.use({ crbServer: "own" });
@@ -211,7 +211,7 @@ test("on code, with the viewer on the second tint (after rev1), the agent's answ
 	expect(answer.top).not.toBe(human.top);
 });
 
-test("the panel shows a spinner while its read is out and the error when it failed, never an empty conversation (CAR-124)", async ({
+test("a failed read: the panel keeps the error with a spinner in Retry's slot while it reads again, Send waits, never an empty conversation (CAR-124)", async ({
 	page,
 	pr,
 	agentCrb,
@@ -243,58 +243,63 @@ test("the panel shows a spinner while its read is out and the error when it fail
 		if (mode === "fail") return fail(route);
 		held.push(route);
 	});
-	await page.reload();
-	card = overviewCard(page);
-	const button = agentButton(card);
-	await expect(button).toHaveAttribute("data-failed", "true");
-	const loading = panel(card).getByTestId("thread-agent-panel-loading");
-	const failed = panel(card).getByRole("alert");
-	const messages = panel(card).getByTestId("agent-message-human");
-	// Pressed, it opens the panel and reads again (held): a spinner, no
-	// empty conversation, no error.
-	mode = "hold";
-	await button.click();
-	await expect(panel(card)).toHaveAttribute("data-open", "true");
-	await expect(loading).toBeVisible();
-	await expect(loading).toHaveAttribute("aria-busy", "true");
-	await expect(
-		loading.getByRole("status", { name: "Loading agent messages" }),
-	).toBeVisible();
-	await expect(messages).toHaveCount(0);
-	await expect(failed).toHaveCount(0);
-	// That read fails too: the error with Retry, in place of the spinner.
-	await expect.poll(() => held.length).toBeGreaterThan(0);
-	mode = "fail";
-	for (const route of held.splice(0)) await fail(route);
-	await expect(loading).toHaveCount(0);
-	await expect(failed).toContainText("Agent messages couldn't load");
-	await expect(messages).toHaveCount(0);
-	// Retry (held): the spinner, then the conversation.
-	mode = "hold";
-	// The status polls' refetches (failing at once) may swap the error for
-	// a spinner and back under the press: pressed until a read is asked.
-	await expect(async () => {
-		if (held.length === 0) {
-			await failed.getByRole("button", { name: "Retry" }).click({
-				timeout: 1000,
-			});
-		}
-		expect(held.length).toBeGreaterThan(0);
-	}).toPass();
-	await expectLoadingThen({
-		loading,
-		empty: [failed, panel(card).getByTestId("agent-message-ai")],
-		release: async () => {
-			await expect.poll(() => held.length).toBeGreaterThan(0);
-			mode = "pass";
-			for (const route of held.splice(0)) await route.continue();
-		},
-		result: messages,
+	// The status reads held too: a status that moves refetches the threads
+	// (useAgentSync), and only the presses below may ask for them.
+	const statusHeld: Route[] = [];
+	await page.route(/\/agent(\?.*)?$/, (route) => {
+		if (route.request().method() !== "GET") return route.continue();
+		statusHeld.push(route);
 	});
-	await expect(panel(card).getByTestId("agent-message-ai")).toContainText(
-		"Stored answer.",
-	);
-	await expect(failed).toHaveCount(0);
+	try {
+		await page.reload();
+		card = overviewCard(page);
+		const button = agentButton(card);
+		await expect(button).toHaveAttribute("data-failed", "true");
+		const failed = panel(card).getByRole("alert");
+		const retry = failed.getByRole("button", { name: "Retry" });
+		const messages = panel(card).getByTestId("agent-message-human");
+		const send = card.getByRole("button", { name: "Send to agent" });
+		// Pressed, it opens the panel and reads again (held): the error
+		// stays, with a spinner in Retry's slot; no empty conversation.
+		mode = "hold";
+		await button.click();
+		await expect(panel(card)).toHaveAttribute("data-open", "true");
+		await expect.poll(() => held.length).toBe(1);
+		await expect(failed).toContainText("Agent messages couldn't load");
+		await expect(failed).toHaveAttribute("aria-busy", "true");
+		await expect(
+			failed.getByRole("status", { name: "Loading agent messages" }),
+		).toBeVisible();
+		await expect(retry).toHaveAttribute("aria-disabled", "true");
+		await expect(messages).toHaveCount(0);
+		// Nothing known of the thread's conversation: a draft, no Send.
+		await card.getByRole("textbox", { name: "Ask agent" }).fill("Again?");
+		await expect(send).toBeDisabled();
+		// That read fails too: the same error, Retry live.
+		for (const route of held.splice(0)) await fail(route);
+		await expect(failed).toHaveAttribute("aria-busy", "false");
+		await expect(retry).toHaveAttribute("aria-disabled", "false");
+		await expect(messages).toHaveCount(0);
+		// One press of Retry asks once (held): the spinner in its slot, then
+		// the conversation.
+		await retry.click();
+		await expect.poll(() => held.length).toBe(1);
+		await expect(failed).toHaveAttribute("aria-busy", "true");
+		await expect(messages).toHaveCount(0);
+		mode = "pass";
+		for (const route of held.splice(0)) await route.continue();
+		await expect(panel(card).getByTestId("agent-message-ai")).toContainText(
+			"Stored answer.",
+		);
+		await expect(messages).toHaveCount(1);
+		await expect(failed).toHaveCount(0);
+		await expect(send).toBeEnabled();
+	} finally {
+		await page.unroute(/\/agent(\?.*)?$/);
+		for (const route of statusHeld.splice(0)) {
+			await route.continue().catch(() => {});
+		}
+	}
 });
 
 test("the same from Files changed", async ({

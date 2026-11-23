@@ -90,11 +90,13 @@ result should always be easily distinguishable for a still loading result."
   (Files changed: "Loading comments" in the progress bar, the file tree and
   the open file's bubble; the Timeline: "Loading threads" on a review run
   and its comments).
-  A thread's agent panel, before the agent threads are read (or while a
-  retry after a failed read is out), shows a spinner in place of the
-  messages; a failed read with nothing in hand shows "Agent messages
-  couldn't load" with Retry; an empty conversation only once the answer
-  has no conversation for the thread (CAR-124).
+  A thread's agent panel, before the agent threads are first read,
+  shows a spinner in place of the messages; a failed read with nothing in
+  hand shows "Agent messages couldn't load" with Retry, kept while it reads
+  again (a spinner in Retry's slot, never swapped for a full spinner by a
+  refetch); Send to agent waits until the read answers (a conversation may
+  exist unseen); an empty conversation only once the answer has none for
+  the thread (CAR-124).
 - **In place, never moving the page.** A spinner appears in place:
   showing or hiding it never moves anything (owner, 2026-11-02: "Make sure
   spinners appear somewhere static so the UI doesn't jitter"). It takes a

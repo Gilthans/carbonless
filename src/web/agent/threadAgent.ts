@@ -60,7 +60,7 @@ export function useThreadConversation(
 export function useAgentThreadsLoading(): boolean {
 	const on = useAgentOn();
 	const query = useQuery({ ...agentThreadsQuery, enabled: on });
-	return on && query.isPending && !query.isError;
+	return on && query.isPending;
 }
 
 /**
@@ -85,32 +85,41 @@ export function useAgentThreadsFailed(): {
 
 /**
  * How the agent threads' read stands for a view that shows a thread's
- * conversation (the thread panel): "loading" while there is no answer
- * and one is on its way (the first read, or a retry after a failure),
- * "failed" when the last read failed with nothing in hand (not a 404,
- * which is "no agent"), else "in". A later refetch that fails keeps the
- * answer in hand: "in".
+ * conversation (the thread panel, its composer): "loading" until the
+ * first answer, "failed" when the read failed with nothing in hand (not
+ * a 404, which is "no agent"), else "in". `retrying`: while failed, a
+ * read is out again (Retry, or a refetch of its own): the error stays,
+ * with a spinner in Retry's place, never swapped out from under a press.
+ * A later refetch that fails keeps the answer in hand: "in".
  */
 export function useAgentThreadsRead(): {
 	state: "loading" | "failed" | "in";
+	retrying: boolean;
 	retry: () => void;
 } {
 	const on = useAgentOn();
 	const query = useQuery({ ...agentThreadsQuery, enabled: on });
 	const { refetch } = query;
 	const retry = useCallback(() => void refetch(), [refetch]);
+	// A read out again with nothing in hand is "pending" (TanStack clears
+	// the error): the failure it follows is remembered here.
+	const lastError = useRef<unknown>(undefined);
+	if (query.isError) lastError.current = query.error;
 	let state: "loading" | "failed" | "in" = "in";
 	if (on && query.data === undefined) {
-		if (query.isFetching || (query.isPending && !query.isError)) {
-			state = "loading";
-		} else if (
-			query.isError &&
-			!(query.error instanceof ApiError && query.error.status === 404)
-		) {
-			state = "failed";
-		}
+		const error = query.isError
+			? query.error
+			: query.errorUpdateCount > 0
+				? (lastError.current ?? new Error("failed"))
+				: undefined;
+		if (error !== undefined) {
+			// A 404 is "no agent": no conversations, never an error or a spinner.
+			if (!(error instanceof ApiError && error.status === 404)) {
+				state = "failed";
+			}
+		} else if (query.isPending) state = "loading";
 	}
-	return { state, retry };
+	return { state, retrying: state === "failed" && query.isFetching, retry };
 }
 
 /**

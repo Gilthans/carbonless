@@ -14,6 +14,7 @@ import {
 	agentDraftText,
 	setAgentDraft,
 	useAgentDraft,
+	useAgentThreadsRead,
 	useSendView,
 	useThreadAgentContext,
 } from "../agent/threadAgent";
@@ -75,6 +76,10 @@ export function ReplyBox(props: {
 	const setText = asking ? setQuestion : setReply;
 	// GitHub couldn't be read: whether the thread is open is unknown.
 	const off = asking && conversation?.githubUnknown === true;
+	// The agent threads not read yet, or their read failed: a conversation
+	// may exist unseen, so nothing is sent (the box still takes a draft).
+	const read = useAgentThreadsRead();
+	const unread = asking && !conversation && read.state !== "in";
 	const [focused, setFocused] = useState(false);
 	const box = useRef<HTMLTextAreaElement>(null);
 	const row = useRef<HTMLDivElement>(null);
@@ -111,7 +116,7 @@ export function ReplyBox(props: {
 	const send = () => {
 		if (asking) {
 			const now = agentDraftText(thread.id);
-			if (!now.trim() || off || bytes(now) > MAX_AGENT_TEXT) return;
+			if (!now.trim() || off || unread || bytes(now) > MAX_AGENT_TEXT) return;
 			if (conversation) {
 				replyAgent(client, conversation.id, now, newClientId(), view);
 			} else {
@@ -210,7 +215,7 @@ export function ReplyBox(props: {
 							{...trigger}
 							type="button"
 							aria-label={sendLabel}
-							disabled={blank || off || tooLong}
+							disabled={blank || off || unread || tooLong}
 							onClick={send}
 							// Keeps the box's focus (and so its size) on a mouse click.
 							onMouseDown={(e) => e.preventDefault()}

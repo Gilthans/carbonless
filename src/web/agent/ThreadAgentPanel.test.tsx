@@ -165,8 +165,7 @@ describe("ThreadAgentPanel", () => {
 		expect(screen.getByRole("textbox", { name: "Ask agent" })).toHaveFocus();
 	});
 
-	it("while its read is out or failed, a spinner or the error, never an empty conversation (CAR-124)", async () => {
-		// The first read fails: the button's alert, which opens the panel and reads again.
+	it("a failed read: the error stays while it reads again, Send waits for the answer, the handle retries without closing (CAR-124)", async () => {
 		const reads: ((r: Response) => void)[] = [];
 		read = (path) =>
 			path.endsWith("/agent/threads")
@@ -179,40 +178,60 @@ describe("ThreadAgentPanel", () => {
 			await waitFor(() => expect(reads.length).toBeGreaterThan(0));
 			await act(async () => reads.shift()?.(r));
 		};
+		const boom = () => json({ error: "boom" }, 500);
 		show(reviewThread(), null);
-		await release(json({ error: "boom" }, 500));
-		const failedButton = await screen.findByRole("button", {
+		await release(boom());
+		const handle = await screen.findByRole("button", {
 			name: "Agent messages couldn't load",
 		});
-		await userEvent.click(failedButton);
+		// Pressed, it opens the panel and reads again (held): the error
+		// stays, a spinner in Retry's slot, Retry kept but inert.
+		await userEvent.click(handle);
 		expect(isOpen()).toBe(true);
-		// The read again is held: the spinner in the panel, no messages, no error.
-		const loading = within(panel()).getByTestId("thread-agent-panel-loading");
-		expect(loading).toHaveAttribute("aria-busy", "true");
-		expect(
-			within(loading).getByRole("status", { name: "Loading agent messages" }),
-		).toBeInTheDocument();
-		expect(within(panel()).queryByRole("alert")).toBeNull();
-		// It fails again: the error with Retry, no spinner.
-		await release(json({ error: "boom" }, 500));
-		const failed = await within(panel()).findByRole("alert");
+		const failed = within(panel()).getByRole("alert");
 		expect(failed).toHaveTextContent("Agent messages couldn't load");
+		expect(failed).toHaveAttribute("aria-busy", "true");
+		expect(
+			within(failed).getByRole("status", { name: "Loading agent messages" }),
+		).toBeInTheDocument();
+		const retry = within(failed).getByRole("button", { name: "Retry" });
+		expect(retry).toHaveAttribute("aria-disabled", "true");
 		expect(
 			within(panel()).queryByTestId("thread-agent-panel-loading"),
 		).toBeNull();
-		// Retry: the spinner, then the conversation.
+		// No conversation known: a draft is taken, nothing is sent.
+		const box = screen.getByRole("textbox", { name: "Ask agent" });
+		const send = screen.getByRole("button", { name: "Send to agent" });
+		await userEvent.type(box, "Anything?");
+		expect(send).toBeDisabled();
+		await userEvent.keyboard("{Control>}{Enter}{/Control}");
+		expect(box).toHaveValue("Anything?");
+		expect(calls).toEqual([]);
+		// It fails again: the same alert, Retry live, no spinner.
+		await release(boom());
+		await waitFor(() => expect(failed).toHaveAttribute("aria-busy", "false"));
+		expect(retry).toHaveAttribute("aria-disabled", "false");
+		expect(within(failed).queryByRole("status")).toBeNull();
+		// The red handle, pressed while open: reads again, the panel stays.
 		await userEvent.click(
-			within(failed).getByRole("button", { name: "Retry" }),
+			screen.getByRole("button", { name: "Agent messages couldn't load" }),
 		);
-		expect(
-			within(panel()).getByTestId("thread-agent-panel-loading"),
-		).toBeInTheDocument();
+		expect(isOpen()).toBe(true);
+		await waitFor(() => expect(failed).toHaveAttribute("aria-busy", "true"));
+		await release(boom());
+		await waitFor(() => expect(failed).toHaveAttribute("aria-busy", "false"));
+		// Retry: the spinner in its slot, then the conversation; Send works.
+		await userEvent.click(retry);
+		expect(failed).toHaveAttribute("aria-busy", "true");
+		expect(send).toBeDisabled();
 		await release(json({ threads: [conversation()] }));
 		expect(await within(panel()).findByText("Only here.")).toBeInTheDocument();
-		expect(
-			within(panel()).queryByTestId("thread-agent-panel-loading"),
-		).toBeNull();
 		expect(within(panel()).queryByRole("alert")).toBeNull();
+		expect(send).toBeEnabled();
+		box.focus();
+		await userEvent.keyboard("{Control>}{Enter}{/Control}");
+		await waitFor(() => expect(calls).toHaveLength(1));
+		expect(calls[0]?.method).toBe("POST");
 	});
 
 	it("an answer with no conversation for the thread: the empty panel, no spinner or error", async () => {
