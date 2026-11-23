@@ -620,13 +620,14 @@ verdict) and the since view (its bar, each file's header, chips and dot,
 count the same way, with the same `~` (CAR-184). The since view judges
 whitespace-only on its own diff, the interdiff (CAR-218): a piece is
 whitespace-only when every line is a `~` row there and every line was
-read (reviewed or crossed off) at the earlier patch set, since a line
-nobody read there that this patch set only re-indented is still unread,
-or was a base line that patch set left alone (nothing to read there; the
-full diff leaves the same re-indent out: owner 2026-11-23, "Interdiff
-should behave similarly to a basediff compare"); the rest of a cluster that no piece shows keeps its cluster's flag. A
-piece collapses by its own flag, not its cluster's: a real edit since,
-in a cluster whitespace-only against the base, stays open. A file is
+read (reviewed or crossed off) at the earlier patch set, or is a base
+line that patch set left alone (nothing to read there; the full diff
+leaves the same re-indent out: owner 2026-11-23, "Interdiff should
+behave similarly to a basediff compare"). A line nobody read there that
+this patch set only re-indented is still unread. The rest of a cluster
+that no piece shows keeps its cluster's flag. A piece collapses by its
+own flag, not its cluster's: a real edit since, in a cluster
+whitespace-only against the base, stays open. A file is
 nothing else when all its since units are whitespace-only (not its
 snapshot clusters), and its header then counts them all, with no `~`,
 while the bar, its "to read" and the move-on leave it out (the full

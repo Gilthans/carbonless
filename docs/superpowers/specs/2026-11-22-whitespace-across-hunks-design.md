@@ -152,8 +152,9 @@ at:
   behind the since view's carries (`sinceLineCarries`) sees it (*my call*,
   principle 2: a line nobody read in patch set 1 that patch set 2 only
   re-indented is still unread, so it still counts), **or** was a base
-  line patch set 1 left alone (no cluster of it added the line, and the
-  engine places it in the new base): there was nothing to read, and the
+  line patch set 1 left alone (no cluster of it added the line, nor is
+  it a slider twin of one, and the engine places it in the new base):
+  there was nothing to read, and the
   full diff leaves the same re-indent out (owner, 2026-11-23: "Interdiff
   should behave similarly to a basediff compare"). An added line whose
   twin is an unchanged (context) line of the interdiff is not such a

@@ -621,6 +621,7 @@ async function sinceView(
 	return {
 		traced,
 		answer,
+		sources,
 		hunks: (index: number) =>
 			interdiffFileHunks(traced, b, answer, index, sources),
 	};
@@ -854,16 +855,20 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 	// a.ts: PS1 changes `old();` and leaves `load();` alone; PS2 keeps
 	// PS1's change and only re-indents `load();`. b.ts: PS1 never touches
 	// it; PS2 only re-indents `save();`. c.ts: PS1 changes `keep();`
-	// (left unmarked) and PS2 only re-indents PS1's line.
+	// (left unmarked) and PS2 only re-indents PS1's line. d.ts: PS1 adds
+	// a copy of `end();` right after the base's (git takes the second as
+	// added); PS2 re-indents the first copy, a slider twin of PS1's line.
 	const files = (
 		load: string,
 		old: string,
 		save: string,
 		keep: string,
+		end: string[],
 	): Record<string, string> => ({
 		"a.ts": text([...head, old, ...mid, load, ...tail]),
 		"b.ts": text([...head, save, ...tail]),
 		"c.ts": text([...head, keep, ...tail]),
+		"d.ts": text([...head, ...end, ...tail]),
 	});
 	let r: GitFixture;
 	let a: Snapshot;
@@ -872,15 +877,21 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 		r = createGitFixture([
 			{
 				message: "base",
-				files: files("load();", "old();", "save();", "keep();"),
+				files: files("load();", "old();", "save();", "keep();", ["end();"]),
 			},
 			{
 				message: "ps1",
-				files: files("load();", "new();", "save();", "kept();"),
+				files: files("load();", "new();", "save();", "kept();", [
+					"end();",
+					"end();",
+				]),
 			},
 			{
 				message: "ps2",
-				files: files("  load();", "new();", "  save();", "  kept();"),
+				files: files("  load();", "new();", "  save();", "  kept();", [
+					"  end();",
+					"end();",
+				]),
 			},
 		]);
 		const [b0, h1, h2] = r.shas as [string, string, string];
@@ -908,6 +919,44 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 		expect(shape(view.hunks(at("b.ts")))).toEqual([
 			[["-save();", "+  save();"], true],
 		]);
+	});
+
+	it("fails closed: no placement map (an old cache entry), the re-indent counts", async () => {
+		const view = await sinceView(r.path, a, b, new Map());
+		const { baseLine: _, ...keys } = view.traced.lineKeys;
+		const stale = { ...view.traced, lineKeys: keys };
+		for (const path of ["a.ts", "b.ts"]) {
+			const hunks = interdiffFileHunks(
+				stale,
+				b,
+				view.answer,
+				at(path),
+				view.sources,
+			);
+			expect(hunks.pieces?.length, path).toBeGreaterThan(0);
+			expect(
+				hunks.pieces?.filter((p) => p.whitespaceOnly),
+				path,
+			).toEqual([]);
+		}
+	});
+
+	it("fails closed: a re-indent of a slider twin of a line PS1 added still counts", async () => {
+		const view = await sinceView(r.path, a, b, new Map());
+		const hunks = view.hunks(at("d.ts"));
+		// The interdiff removes the copy PS1's diff kept as the base's
+		// (no cluster's line, placed in the new base): only the slider
+		// twin check tells it from PS1's own.
+		const addedThen = view.traced.lineKeys.old["d.ts"] ?? {};
+		const placed = view.traced.lineKeys.baseLine?.["d.ts"] ?? {};
+		const removed = hunks.hunks
+			.flatMap((h) => h.lines)
+			.filter((l) => l.kind === "del");
+		expect(removed.map((l) => l.text)).toEqual(["end();"]);
+		const oldNo = removed[0]?.oldNo as number;
+		expect(addedThen[oldNo]).toBeUndefined();
+		expect(placed[oldNo]).toBeDefined();
+		expect(shape(hunks)).toEqual([[["-end();", "+  end();"], false]]);
 	});
 
 	it("a line PS1 changed, left unmarked, still counts when only re-indented since", async () => {

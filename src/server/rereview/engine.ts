@@ -359,6 +359,10 @@ export async function traceRereview(
 	for (const f of interdiff.files) {
 		const primePath = f.oldPath ?? f.path;
 		if (touched.has(primePath) || f.conflict) continue;
+		// New in the virtual rebase against the patch set's head: perhaps a
+		// file it touched under a name the rename detection didn't pair. No
+		// map (fails closed: its lines are never read as left alone).
+		if (prime.get(primePath)?.status === "added") continue;
 		const same: Record<number, number> = {};
 		for (const ic of f.clusters) {
 			if (ic.kind !== "lines") continue;
