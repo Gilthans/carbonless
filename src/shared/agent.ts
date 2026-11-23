@@ -426,7 +426,7 @@ export const COMMENT_INSTRUCTION =
 
 /** After COMMENT_INSTRUCTION where a question is answered (the preamble, `reply`): its line says which (COMMENT_POSTS). */
 export const COMMENT_WHICH =
-	"Each question's preamble says which, for its conversation.";
+	"Each question on code or a GitHub thread says which in its preamble.";
 
 /** After COMMENT_INSTRUCTION in `open`: a block in its text posts where the opened conversation sits. */
 export const COMMENT_OPENED =

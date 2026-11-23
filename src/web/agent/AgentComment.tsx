@@ -49,7 +49,6 @@ import { Tooltip } from "../Tooltip";
 import { useWritesOn } from "../threads/threadWrites";
 import { safeHref } from "../ui";
 import {
-	ADD_COMMENT,
 	AgentCommentError,
 	CHANGED,
 	type CommentPlace,
@@ -60,9 +59,9 @@ import {
 	type PostingThread,
 	placeLabel,
 	postAgentComment,
+	postLabel,
 	postsAsReply,
 	postsFrom,
-	REPLY,
 	recordPosted,
 	refusalText,
 	setDraft,
@@ -332,7 +331,7 @@ function CommentBox(props: {
 			className="flex h-10 w-full items-center justify-center gap-2 self-end rounded-md bg-ok-fill px-4 text-sm font-semibold text-canvas hover:brightness-110 focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:bg-overlay aria-disabled:text-muted aria-disabled:hover:brightness-100 sm:w-auto"
 		>
 			{(sending || pending) && <SpinnerIcon size={14} />}
-			{reply ? REPLY : ADD_COMMENT}
+			{postLabel(place, thread)}
 		</button>
 	);
 	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
