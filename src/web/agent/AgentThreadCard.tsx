@@ -211,10 +211,14 @@ export function AgentScroll(props: { children: ReactNode }) {
 	// later, maybe after the content grew again, and must not read as the
 	// reader leaving the end.
 	const pinned = useRef<number | null>(null);
-	// Its scrollTop as last seen (a pin or a scroll event): moved since by
-	// someone else (a landing's scrollIntoView, in the same frame as the
-	// content grew), the pin lets go rather than undo it.
-	const seen = useRef(0);
+	// Its scrollTop and scrollHeight as last seen (a pin or a scroll
+	// event): moved since by someone else while the content didn't shrink
+	// (a landing's scrollIntoView, in the same frame as the content grew),
+	// the pin lets go rather than undo it. Content that shrank moves it by
+	// a clamp, maybe one restored later (React puts back the scrollTop it
+	// read mid-commit when it refocuses, as Preview hides the comment's
+	// box): that pins again.
+	const seen = useRef({ top: 0, height: 0 });
 	useLayoutEffect(() => {
 		const el = box.current;
 		const inner = content.current;
@@ -222,18 +226,19 @@ export function AgentScroll(props: { children: ReactNode }) {
 		const toEnd = () => {
 			el.scrollTop = el.scrollHeight;
 			pinned.current = el.scrollTop;
-			seen.current = el.scrollTop;
+			seen.current = { top: el.scrollTop, height: el.scrollHeight };
 		};
 		toEnd();
 		if (typeof ResizeObserver === "undefined") return;
 		const pin = new ResizeObserver(() => {
 			if (!atEnd.current) return;
-			const moved = Math.abs(el.scrollTop - seen.current) >= 1;
+			const moved = Math.abs(el.scrollTop - seen.current.top) >= 1;
+			const shrank = el.scrollHeight < seen.current.height;
 			const end = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
-			if (moved && !end) {
+			if (moved && !shrank && !end) {
 				atEnd.current = false;
 				pinned.current = null;
-				seen.current = el.scrollTop;
+				seen.current = { top: el.scrollTop, height: el.scrollHeight };
 				return;
 			}
 			toEnd();
@@ -248,7 +253,7 @@ export function AgentScroll(props: { children: ReactNode }) {
 			data-testid="agent-thread-scroll"
 			onScroll={(e) => {
 				const el = e.currentTarget;
-				seen.current = el.scrollTop;
+				seen.current = { top: el.scrollTop, height: el.scrollHeight };
 				if (
 					pinned.current !== null &&
 					Math.abs(el.scrollTop - pinned.current) < 1

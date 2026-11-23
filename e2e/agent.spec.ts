@@ -495,7 +495,7 @@ test("typing in a suggested comment at the end of a long conversation keeps the 
 			agent: { name: "Fake Agent", version: "9.9.9" },
 			answers: [
 				{
-					text: `${paragraphs}\n\n\`\`\`comment\n${Array.from({ length: 8 }, (_, i) => `Suggested line ${i + 1}.`).join("\n")}\n\`\`\``,
+					text: `${paragraphs}\n\n\`\`\`comment\n${Array.from({ length: 3 }, (_, i) => `Suggested line ${i + 1}.`).join("\n")}\n\`\`\``,
 				},
 			],
 		},
@@ -503,12 +503,33 @@ test("typing in a suggested comment at the end of a long conversation keeps the 
 	await holdSeenMarks(page);
 	const section = await openFile(page, s.url, CALC);
 	const card = await ask(page, section, 3, "What should I ask?");
-	const text = card.getByRole("textbox", { name: "Review comment" });
-	await expect(text).toHaveValue(/Suggested line 8\./);
+	const comment = card.getByTestId("agent-comment");
+	const text = comment.getByRole("textbox", { name: "Review comment" });
+	const preview = comment.getByTestId("comment-preview");
+	// It opens in Preview (CAR-202).
+	await expect(preview).toContainText("Suggested line 3.");
 	const scroller = card.getByTestId("agent-thread-scroll");
 	const gap = () =>
 		scroller.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
 	await expect.poll(gap).toBeLessThanOrEqual(1);
+	/** `el`'s bottom inside the scroller's view. */
+	const bottomInBox = async (el: typeof text) =>
+		el.evaluate(
+			(t, sc) => {
+				const r = t.getBoundingClientRect();
+				const b = (sc as Element).getBoundingClientRect();
+				return r.bottom <= b.bottom + 1 && r.bottom > b.top;
+			},
+			await scroller.elementHandle(),
+		);
+	// Write, as a reviewer would: the box un-hides and sizes itself; the
+	// scroller stays at its end. The whole comment fits in the scroller's
+	// view there, so pressing its toggle needs no scrolling up first (a
+	// taller one would: the reader leaves the end to reach it).
+	await comment.getByRole("button", { name: "Write" }).click();
+	await expect(text).toHaveValue(/Suggested line 3\./);
+	await expect.poll(gap).toBeLessThanOrEqual(1);
+	expect(await bottomInBox(text)).toBe(true);
 	// Typed at its end: each line re-measures the box (collapsed, then grown).
 	await text.click();
 	await page.keyboard.press("ControlOrMeta+End");
@@ -519,16 +540,17 @@ test("typing in a suggested comment at the end of a long conversation keeps the 
 	}
 	await expect(text).toHaveValue(/More 4$/);
 	await expect.poll(gap).toBeLessThanOrEqual(1);
-	// The box's bottom in the scroller's view.
-	const inView = await text.evaluate(
-		(t, sc) => {
-			const r = t.getBoundingClientRect();
-			const b = (sc as Element).getBoundingClientRect();
-			return r.bottom <= b.bottom + 1 && r.bottom > b.top;
-		},
-		await scroller.elementHandle(),
-	);
-	expect(inView).toBe(true);
+	expect(await bottomInBox(text)).toBe(true);
+	await expect(text).toBeInViewport();
+	// Preview and back to Write at its end: the pin holds both ways.
+	await comment.getByRole("button", { name: "Preview" }).click();
+	await expect(preview).toContainText("More 4");
+	await expect.poll(gap).toBeLessThanOrEqual(1);
+	expect(await bottomInBox(preview)).toBe(true);
+	await comment.getByRole("button", { name: "Write" }).click();
+	await expect(text).toBeVisible();
+	await expect.poll(gap).toBeLessThanOrEqual(1);
+	expect(await bottomInBox(text)).toBe(true);
 	await expect(text).toBeInViewport();
 });
 
