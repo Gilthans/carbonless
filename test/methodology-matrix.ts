@@ -614,7 +614,8 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		const listed = (await s.threads(readId, "summary")).threads;
 		const to = { head: repo.heads.updated };
 		let answer = await s.placements(to, readId);
-		while ("pending" in answer) {
+		// The old-side threads join once their hunks are in (complete).
+		while ("pending" in answer || !answer.complete) {
 			await new Promise((r) => setTimeout(r, 20));
 			answer = await s.placements(to, readId);
 		}

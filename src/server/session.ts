@@ -51,6 +51,7 @@ import type {
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
+import { touchesOldSide } from "./codeWindow.js";
 import { contextLines } from "./diff/hunks.js";
 import {
 	blobName,
@@ -255,8 +256,9 @@ interface RereviewJob {
  */
 interface PlacingJob {
 	/**
-	 * The unresolved threads' inputs as soon as they are in; the resolved
-	 * ones' joined after (`complete`), so they never hold the others up.
+	 * The unresolved threads' inputs as soon as they are in (those on the
+	 * old side once their GitHub hunk is, CAR-8); the resolved ones'
+	 * joined after (`complete`), so they never hold the others up.
 	 */
 	done: { target: Snapshot; inputs: ThreadInput[]; complete: boolean } | null;
 	error: Error | null;
@@ -1028,7 +1030,14 @@ export class Session {
 					...t,
 					hunk: () => read.hunk(t.id),
 				}));
-				const unresolvedThreads = withHunks.filter((t) => !t.resolved);
+				// An old-side thread waits for its hunk (the opener's text): it
+				// joins after the others, so slow text never holds them up.
+				const unresolvedThreads = withHunks.filter(
+					(t) => !t.resolved && !(t.anchor && touchesOldSide(t.anchor)),
+				);
+				const oldSideThreads = withHunks.filter(
+					(t) => !t.resolved && t.anchor && touchesOldSide(t.anchor),
+				);
 				const resolvedThreads = withHunks.filter((t) => t.resolved);
 				await placingHooks.afterRead?.({ revision: target.revision, readId });
 				// Filed under its snapshot id too: a head and its patch set share it.
@@ -1043,6 +1052,17 @@ export class Session {
 					at,
 				);
 				job.done = { target, inputs: open, complete: false };
+				if (oldSideThreads.length > 0) {
+					open.push(
+						...(await this.#placer.inputs(
+							target,
+							oldSideThreads,
+							this.#diffBase(),
+							at,
+						)),
+					);
+					job.done = { target, inputs: [...open], complete: false };
+				}
 				// The resolved threads join after; their failure never takes
 				// the unresolved placements back (they then show where made).
 				const resolved = await this.#placer
