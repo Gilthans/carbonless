@@ -160,6 +160,16 @@ export interface DiffLine {
 	 * rename since): no comment can go there by this file's path (CAR-233).
 	 */
 	psMoved?: true;
+	/**
+	 * The since view's only (CAR-216): a changed line of the viewed
+	 * snapshot (against the base) that the interdiff leaves unchanged,
+	 * that nothing carried a mark into: unchanged since the compared patch
+	 * set, but no change reviewed there (git aligned the base's lines
+	 * another way). Shown as the change it is, an added line at its new
+	 * number, a removed one with its base number (`baseNo`, no `oldNo`),
+	 * in a piece of its own (SincePiece.orphan).
+	 */
+	orphan?: true;
 }
 
 export interface DisplayHunk {
@@ -1164,7 +1174,16 @@ export interface RereviewAnswer {
 		pieces?: SincePiece[];
 	}[];
 	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
-	toRead: { files: number; clusters: number };
+	toRead: {
+		files: number;
+		clusters: number;
+		/**
+		 * The same count without the whitespace-only clusters, for a reader
+		 * with "Ignore whitespace" on (the page picks by its switch); absent
+		 * when it would be the same.
+		 */
+		withoutWhitespaceOnly?: { files: number; clusters: number };
+	};
 	/**
 	 * Every unresolved thread's place in the target snapshot
 	 * (src/shared/rereview/placement.ts), as of the read of GitHub the

@@ -541,7 +541,7 @@ export class Session {
 		read: OverviewRead;
 		threads: ReviewThread[];
 	}> {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		// A recent or running read is reused (#pickRead): a burst reads once.
 		const read = this.#pickRead(maxAgeMs);
 		return { read, threads: (await read.threads("summary")).threads };
@@ -852,7 +852,7 @@ export class Session {
 		from: number,
 		to: { patchset: number } | { head: string },
 	): Promise<RereviewAnswer | { pending: true }> {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		const since = this.#patchsets.find((p) => p.number === from);
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		let key: string;
@@ -929,7 +929,7 @@ export class Session {
 		to: { patchset: number } | { head: string },
 		readId: string,
 	): Promise<PlacementsAnswer | { pending: true }> {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		if (!this.#reads.some((r) => r.id === readId)) {
 			throw new UnknownReadError(`No read ${readId}`);
 		}
@@ -977,7 +977,7 @@ export class Session {
 		to: { patchset: number } | { head: string },
 		agent: AgentHost | null = this.#agent,
 	): Promise<AgentPlacementsAnswer> {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		const progress = await this.#progress();
 		let target: Snapshot;
 		let record: PatchsetRecord | undefined;
@@ -1519,10 +1519,21 @@ export class Session {
 					index,
 					sources,
 				);
-				if (hunks.hunks.length > 0) return hunks;
+				if (hunks.hunks.length > 0 && hunks.newLineCount > 0) return hunks;
 				// A file the interdiff doesn't change (or only renames): its
 				// lines are one gap, so they and the threads on them can be opened.
 				const context = interdiffFileContext(traced, answer, index, 1, 1);
+				if (hunks.hunks.length > 0) {
+					// Lines no piece shows of a file the interdiff doesn't touch
+					// (CAR-216): their hunks, the rest gaps around them.
+					return context === "untouched"
+						? {
+								...hunks,
+								newLineCount: (await loadNewText(this.repo, snapshot, index))
+									.newLines.length,
+							}
+						: hunks;
+				}
 				if (context === "none") return hunks;
 				const newLineCount =
 					context === "untouched"
@@ -1821,7 +1832,7 @@ export class Session {
 		/** The page asks (its route): the read is kept while newer ones come. */
 		forPage = false,
 	): Promise<Omit<PrOverview, "servedAt">> {
-		if (this.#closed) {
+		if (this.closed) {
 			return Promise.reject(new SessionClosedError("The session is closed"));
 		}
 		// Asked at once, never waited for: it is in by the time GitHub's
@@ -1959,7 +1970,7 @@ export class Session {
 	 * failed read isn't kept.
 	 */
 	verdict(maxAgeMs = Number.POSITIVE_INFINITY): Promise<VerdictFacts> {
-		if (this.#closed) {
+		if (this.closed) {
 			return Promise.reject(new SessionClosedError("The session is closed"));
 		}
 		return this.#verdictFacts(maxAgeMs).then((facts) => this.#withSince(facts));
@@ -2171,7 +2182,7 @@ export class Session {
 
 	/** commentLeft as known now, asking GitHub if no one has: true until it says. */
 	#commentLeftNow(): boolean {
-		if (this.writes() !== "on" || this.#closed) return true;
+		if (this.writes() !== "on" || this.closed) return true;
 		return this.#askCommentLeft(this.#snapshot).known ?? true;
 	}
 
@@ -2193,7 +2204,7 @@ export class Session {
 	}
 
 	#writeTarget(): ThreadWriteTarget {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		const kept = () => [...this.#reads].reverse();
 		return {
 			ref: this.#ref(),
@@ -2312,7 +2323,7 @@ export class Session {
 	 * moving the snapshot) to know the diff base.
 	 */
 	#read(ready?: Promise<unknown>): OverviewRead {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		// Opt-in ($CRB_TRACE_DIR): the read until its overview is in.
 		const traced = tracer();
 		if (!traced.enabled) return this.#newRead(ready);
@@ -2362,7 +2373,7 @@ export class Session {
 
 	/** Reads GitHub again (after `ready`); older reads aren't served any more. */
 	#rereadOverview(ready?: Promise<unknown>): void {
-		if (this.#closed) return;
+		if (this.closed) return;
 		for (const read of this.#reads) this.#superseded.add(read);
 		this.#read(ready);
 	}

@@ -570,13 +570,17 @@ describe("the engine", () => {
 				(hk) =>
 					hk.lines
 						.filter((l) => l.kind === "del")
-						.map((l) => [l.text, l.baseNo]),
+						.map((l) => [l.text, l.baseNo, l.orphan === true]),
 			);
 			// B2's numbers (three lines down), never B1's: "line 20" is B2's 23.
 			// "thirty on master" is B2's 33, though PS1 never had that text.
+			// The engine can't place that shown row in the base through the
+			// old one (baseLine), so the cluster's line no piece owns is an
+			// orphan too, a row of its own (CAR-216: shown twice, never hidden).
 			expect(removed).toEqual([
-				["line 20", 23],
-				["thirty on master", 33],
+				["line 20", 23, false],
+				["thirty on master", 33, false],
+				["thirty on master", 33, true],
 			]);
 		} finally {
 			fx.cleanup();
@@ -1290,5 +1294,155 @@ describe("the engine's cost", () => {
 		// 200-file trace measured 16-27 ms CPU on the dev machine and
 		// 15-35 ms on CI over 10 runs; 250 ms is about 7x CI's slowest.
 		expect(one).toBeLessThan(250_000);
+	});
+});
+
+describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
+	const text = (ls: string[]) => `${ls.join("\n")}\n`;
+	const body = (name: string) =>
+		Array.from({ length: 12 }, (_, i) => `${name} ${i + 1}`);
+	const run = async (
+		path: string,
+		base: string,
+		ps1Head: string,
+		head: string,
+		states: (s: Snapshot) => Map<string, StateEntry>,
+	) => {
+		const ps1 = await buildSnapshot(path, base, ps1Head);
+		const r = await buildSnapshot(path, base, head);
+		const { answer } = await computeRereview(
+			path,
+			since(1, ps1, states(ps1)),
+			[],
+			targetOf(r),
+		);
+		return answer;
+	};
+
+	it("is absent when the count is the same: nothing whitespace-only to leave out", async () => {
+		const h = createRereviewHistory();
+		try {
+			const ps1 = await buildSnapshot(h.path, h.b0, h.p2);
+			const r = await buildSnapshot(h.path, h.b0, h.h3);
+			const { answer } = await computeRereview(
+				h.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			expect(answer.toRead).toEqual({ files: 1, clusters: 1 });
+			expect("withoutWhitespaceOnly" in answer.toRead).toBe(false);
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("a file whose only to-read units are whitespace-only drops out of files; a re-indent of a change nobody marked at PS1 stays counted (CAR-218)", async () => {
+		const fx = createGitFixture([
+			{
+				message: "base",
+				files: {
+					"a.ts": text(body("a")),
+					"c.ts": text(body("c")),
+				},
+			},
+			{
+				message: "ps1",
+				files: {
+					// a.ts: PS1 leaves it alone; c.ts: PS1 changes line 3.
+					"a.ts": text(body("a")),
+					"c.ts": text(body("c").map((l, i) => (i === 2 ? "c three" : l))),
+				},
+			},
+			{
+				message: "ps2",
+				files: {
+					// Both only re-indented since PS1.
+					"a.ts": text(body("a").map((l, i) => (i === 5 ? `  ${l}` : l))),
+					"c.ts": text(body("c").map((l, i) => (i === 2 ? "  c three" : l))),
+				},
+			},
+		]);
+		try {
+			const [b0, h1, h2] = fx.shas as [string, string, string];
+			const answer = await run(fx.path, b0, h1, h2, () => new Map());
+			// Nothing marked at PS1: a.ts's re-indent is whitespace-only (it
+			// left the line alone); c.ts's re-indent of a line PS1 changed
+			// and nobody read is a change to read.
+			// c.ts's re-indent is two units (the line PS1 had, the line now),
+			// and PS1's removal of the base's `c 3`, never read there, an
+			// orphan piece of its own (CAR-216): a real change, counted.
+			expect(answer.toRead).toEqual({
+				files: 2,
+				clusters: 4,
+				withoutWhitespaceOnly: { files: 1, clusters: 3 },
+			});
+		} finally {
+			fx.cleanup();
+		}
+	});
+
+	it("a conflicted file keeps counting as a file while a file of only whitespace-only units drops out", async () => {
+		const fx = createGitFixture([
+			{
+				message: "base",
+				files: { "a.ts": text(body("a")), "b.ts": text(body("b")) },
+			},
+		]);
+		try {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: fx.path,
+					encoding: "utf8",
+					stdio: "pipe",
+					env: testGitEnv(),
+				}).trim();
+			const commit = (
+				message: string,
+				content: string[],
+				other = body("b"),
+			) => {
+				writeFileSync(join(fx.path, "a.ts"), text(content));
+				writeFileSync(join(fx.path, "b.ts"), text(other));
+				git("commit", "--quiet", "-am", message);
+				return git("rev-parse", "HEAD");
+			};
+			const b1 = fx.shas[0] as string;
+			const h1 = commit(
+				"PS1",
+				body("a").map((l, i) => (i === 4 ? "a five" : l)),
+			);
+			git("checkout", "--quiet", "--detach", b1);
+			// Master changes the same line otherwise: PS1 conflicts on it.
+			const b2 = commit(
+				"master",
+				body("a").map((l, i) => (i === 4 ? "master five" : l)),
+			);
+			// PS2, on B2: a.ts takes master's line and re-indents another;
+			// b.ts, which PS1 left alone, is only re-indented.
+			const h2 = commit(
+				"PS2",
+				body("a").map((l, i) =>
+					i === 4 ? "master five" : i === 8 ? `  ${l}` : l,
+				),
+				body("b").map((l, i) => (i === 6 ? `  ${l}` : l)),
+			);
+			const ps1 = await buildSnapshot(fx.path, b1, h1);
+			const r = await buildSnapshot(fx.path, b2, h2);
+			const { answer } = await computeRereview(
+				fx.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			expect(answer.files.map((f) => f.conflict)).toEqual([true, false]);
+			expect(answer.toRead).toEqual({
+				files: 2,
+				clusters: 2,
+				withoutWhitespaceOnly: { files: 1, clusters: 1 },
+			});
+		} finally {
+			fx.cleanup();
+		}
 	});
 });

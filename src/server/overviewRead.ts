@@ -559,7 +559,7 @@ export class OverviewRead {
 				const ids = batch.ids.filter((i) => !this.#reading.has(i));
 				const others = batch.ids.flatMap((i) => {
 					const r = this.#reading.get(i);
-					return r ? [r.catch(() => {})] : [];
+					return r === undefined ? [] : [r.catch(() => {})];
 				});
 				return Promise.all([
 					...others,

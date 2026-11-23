@@ -1084,6 +1084,9 @@ export function FilesPage() {
 					? asked.anchor.thread
 					: undefined;
 			requestConversationOpen(search.conversation, search.message, card);
+		} else if (search.thread) {
+			// A review thread's link (the since view's NotHereNote): its card opens.
+			threadFocus.request({ id: search.thread });
 		}
 		const file = landingFile(data.files, search);
 		landingSeq.current += 1;

@@ -25,6 +25,7 @@ import { useShortcut } from "../shortcuts";
 import { placeNear, Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { useThreads } from "../threads/useThreads";
 import { NOT_PHONE, useMedia } from "../useMedia";
+import { ignoreWhitespace } from "../viewSettings";
 import {
 	type Comparison,
 	type ComparisonBase,
@@ -37,6 +38,7 @@ import {
 	connectorLine,
 	connectorTone,
 	type ToRead,
+	toReadCounts,
 } from "./graphCards";
 
 /** The rail's last slot is always this wide: "up to date", or the head connector and dot. */
@@ -457,9 +459,9 @@ const stubShape = (code: Shape["code"], commits: number): Shape => ({
 });
 
 /** How much the engine found to read, and the reviewed clusters gone. */
-function toReadOf(answer: RereviewAnswer): ToRead {
+function toReadOf(answer: RereviewAnswer, ignoreWs: boolean): ToRead {
 	return {
-		...answer.toRead,
+		...toReadCounts(answer.toRead, ignoreWs),
 		gone: answer.files.reduce(
 			(n, f) => n + f.clusters.filter((c) => c.kind === "gone").length,
 			0,
@@ -470,6 +472,7 @@ function toReadOf(answer: RereviewAnswer): ToRead {
 /** The connector's card: what happened between its dots, and what is to read. */
 function ConnectorCard(props: { c: Connector; baseBranch?: string }) {
 	const { c } = props;
+	const ignoreWs = ignoreWhitespace.use();
 	const head = `${c.from.label} → ${c.to.label}`;
 	const answer = settled(c.answer);
 	if (answer) {
@@ -478,7 +481,7 @@ function ConnectorCard(props: { c: Connector; baseBranch?: string }) {
 				head={head}
 				body={connectorLine(
 					answer.shape,
-					c.live ?? toReadOf(answer),
+					c.live ?? toReadOf(answer, ignoreWs),
 					props.baseBranch,
 				)}
 			/>
@@ -546,6 +549,7 @@ function ConnectorLine(props: {
 	className?: string;
 }) {
 	const { c } = props;
+	const ignoreWs = ignoreWhitespace.use();
 	const answer = settled(c.answer);
 	const count = c.commits ?? answer?.shape.commits ?? null;
 	const tone = !c.dashed
@@ -555,7 +559,7 @@ function ConnectorLine(props: {
 					warn: "border-warn",
 					ok: "border-ok",
 					bad: "border-bad",
-				}[connectorTone(answer.shape, c.live ?? toReadOf(answer))]
+				}[connectorTone(answer.shape, c.live ?? toReadOf(answer, ignoreWs))]
 			: "border-warn";
 	// The count's slot keeps its height while it loads (nothing moves).
 	const label =
