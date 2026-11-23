@@ -1788,13 +1788,14 @@ test("a thread on a block moved elsewhere in its file follows it, moved since, i
 	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	await toast(page).getByRole("button", { name: "View" }).click();
 	const coreS = fileSection(page, "src/core.ts");
+	await coreS.getByRole("button", { name: "Expand file" }).click();
 	const check = async () => {
-		const expandButton = coreS.getByRole("button", { name: "Expand file" });
-		if (await expandButton.isVisible()) await expandButton.click();
-		const moved = coreS
+		// On the head's line 40, once placed (until then it sits on PS1's
+		// line, which the since view shows removed).
+		const bubble = coreS
 			.getByTestId("diff-line")
-			.filter({ hasText: "weighted sum" });
-		const bubble = moved.getByRole("button", { name: /1 comment/ });
+			.filter({ hasText: "weighted sum" })
+			.getByRole("button", { name: "1 comment on line 40" });
 		await expect(bubble).toBeVisible(GIT_WAIT);
 		if ((await bubble.getAttribute("aria-expanded")) !== "true") {
 			await bubble.click();
