@@ -993,6 +993,7 @@ export class AgentRunner {
 				command: config.command,
 				args: config.args,
 				env: agentEnv(config.env),
+				secrets: Object.values(config.env),
 				// The tree's parent, as before: a PR's own harness config (hooks,
 				// MCP servers, allow rules) in the tree is never the agent's.
 				cwd: this.#checkout.dir,

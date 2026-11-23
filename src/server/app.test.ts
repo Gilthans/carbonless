@@ -2543,6 +2543,73 @@ describe("API", () => {
 				});
 				const refused = await check({ OTHER: AGENT_ENV_MASK });
 				expect(refused.statusCode).toBe(400);
+				expect(refused.json()).toEqual({
+					error: "agent.env.OTHER has no stored value to keep; enter it again",
+				});
+			});
+
+			it("check's stderr has the env's values masked", async () => {
+				const dir = join(pr.repo.path, "leaky-acp");
+				mkdirSync(dir, { recursive: true });
+				const path = writeAcpScenario(dir, {
+					agent: { name: "leaky", version: "1.0.0" },
+					initializeError: "Invalid API key",
+					stderrEnv: "ANTHROPIC_API_KEY",
+				});
+				const env = { ANTHROPIC_API_KEY: SECRET, CRB_FAKE_ACP: path };
+				writeFileSync(file(), JSON.stringify({ agent: { ...stored, env } }));
+				const res = await raw("/api/config/agent/check", {
+					method: "POST",
+					payload: {
+						...stored,
+						env: {
+							ANTHROPIC_API_KEY: AGENT_ENV_MASK,
+							CRB_FAKE_ACP: AGENT_ENV_MASK,
+						},
+					},
+				});
+				expect(res.statusCode, res.body).toBe(200);
+				expect(res.body).not.toContain(SECRET);
+				expect(res.json().stderr).toContain(
+					`ANTHROPIC_API_KEY=${AGENT_ENV_MASK}`,
+				);
+			});
+
+			it("another command starts with no env: none kept, a mask refused", async () => {
+				writeFileSync(file(), JSON.stringify({ agent: stored }));
+				const other = { command: "other-acp", args: [], leash: "open" };
+				const masked = await put({
+					...other,
+					env: { ANTHROPIC_API_KEY: AGENT_ENV_MASK },
+				});
+				expect(masked.statusCode).toBe(400);
+				expect(masked.json()).toEqual({
+					error:
+						"agent.env.ANTHROPIC_API_KEY has no stored value to keep; enter it again",
+				});
+				expect(storedEnv()).toEqual(stored.env);
+				const checked = await raw("/api/config/agent/check", {
+					method: "POST",
+					payload: { ...other, env: { ANTHROPIC_API_KEY: AGENT_ENV_MASK } },
+				});
+				expect(checked.statusCode).toBe(400);
+				expect((await put(other)).statusCode).toBe(200);
+				expect(storedEnv()).toEqual({});
+			});
+
+			it("a hand edit between GET and Save: the Save keeps the edited value", async () => {
+				writeFileSync(file(), JSON.stringify({ agent: stored }));
+				const read = (await raw("/api/config/agent")).json();
+				const edited = {
+					...stored.env,
+					ANTHROPIC_API_KEY: "sk-ant-edited-by-hand",
+				};
+				writeFileSync(
+					file(),
+					JSON.stringify({ agent: { ...stored, env: edited } }),
+				);
+				expect((await put(read.agent)).statusCode).toBe(200);
+				expect(storedEnv()).toEqual(edited);
 			});
 
 			it("each Save counts, the same config too (a crashed agent may start again); a bad one doesn't", async () => {

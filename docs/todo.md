@@ -162,7 +162,6 @@ Follow-ups from the first slice's final review (2026-11-07):
 - An agent that ignores a cancel blocks the queue: SIGTERM it after a
   grace period (11a).
 - `authorOf` never returns `pr_author` (11c).
-- GET `/api/config/agent` returns the env's values (11d).
 - An empty `claim.lock` races (13).
 - A leash value from a later version is rewritten to `open` on Save.
 - `snapshotHead` is read cache-only in `AgentOverviewRow`.
@@ -173,8 +172,9 @@ Follow-ups from the first slice's final review (2026-11-07):
   that shows what `config.json` has. A preset's `envHint` pre-fills it,
   with the path resolved where the server can find it (e.g.
   `CLAUDE_CODE_EXECUTABLE=/home/you/.local/bin/claude`). Check and Save
-  use the edited env. A `…TOKEN` value is masked when shown, since GET
-  `/api/config/agent` returning env values is follow-up 11d above.
+  use the edited env. GET `/api/config/agent` gives the values masked
+  (CAR-59, done): an unchanged value goes back as the mask, which keeps
+  the stored one.
 
 ## Future plans
 

@@ -2147,16 +2147,18 @@ export type AgentConfigInput = Omit<AgentConfig, "env"> & {
 };
 
 /**
- * The agent a Save or Check means, against the stored one: a masked value
- * (AGENT_ENV_MASK, as GET gave it) is the stored value, a missing env the
- * stored env. A mask with no stored value to stand for throws: the mask
- * never runs or reaches config.json.
+ * The agent a Save or Check means, against the stored one. For the stored
+ * command, a masked value (AGENT_ENV_MASK, as GET gave it) is the stored
+ * value and a missing env the stored env; another command starts with none
+ * (as SpawnTab's configOf). A mask with no stored value to stand for
+ * throws: the mask never runs or reaches config.json.
  */
 export function restoreAgentEnv(
 	sent: AgentConfigInput,
 	stored: AgentConfig | null,
 ): AgentConfig {
-	const kept = stored?.env ?? {};
+	const kept =
+		stored && stored.command === sent.command.trim() ? stored.env : {};
 	if (!sent.env) return { ...sent, env: { ...kept } };
 	const env: Record<string, string> = {};
 	for (const [name, value] of Object.entries(sent.env)) {

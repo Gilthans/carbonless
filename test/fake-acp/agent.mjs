@@ -39,6 +39,10 @@ log({
 	},
 });
 
+if (s.stderrEnv) {
+	process.stderr.write(`${s.stderrEnv}=${process.env[s.stderrEnv] ?? ""}\n`);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
  * Waits while the scenario file holds `op` (a test's gate: release() takes

@@ -800,7 +800,11 @@ question would be on someone else's behalf, or about a past moment.
   a mask (`AGENT_ENV_MASK`), never its value. A Save or Check carrying the
   mask, or no `env` at all, keeps the stored value; a mask with nothing
   stored under its name is refused (400), so the mask is never run or
-  written to `config.json`. Env is edited in `config.json` by hand.
+  written to `config.json`. Only for the stored command: another command
+  starts with no env, and a mask for it is refused. The agent's stderr
+  tail (Check, the status, a crashed turn's stored stop) has each env
+  value of 8 or more characters masked too; its log file keeps them. Env
+  is edited in `config.json` by hand.
 - **One agent per review per machine.** Another server with the review
   open shows `elsewhere` and leaves the answering to the holder.
 - **Agent threads are traced like comments (owner, 2026-11-09).** One

@@ -19,6 +19,7 @@ import {
 	testGitEnv,
 } from "../../../test/git-fixture.js";
 import {
+	AGENT_ENV_MASK,
 	type AgentConfig,
 	type AgentSpanAnchor,
 	type AgentStatus,
@@ -787,6 +788,28 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 			});
 		}
 		expect(JSON.stringify(await threads())).not.toContain('"stray"');
+	});
+
+	it("a crash's stderr reaches the status and the stored stop with the config's env values masked (CAR-59)", async () => {
+		const secret = "sk-ant-api03-leaked-token";
+		config = {
+			agent: { ...AGENT, env: { MY_KEY: secret } },
+			problems: [],
+		};
+		scenario({ crashOnPrompt: true, stderrEnv: "MY_KEY" });
+		await ask("one?", 1);
+		makeRunner().poke();
+		await answered(1);
+		const error = await until((s) => s.state === "error");
+		expect(error.error).toContain(`MY_KEY=${AGENT_ENV_MASK}`);
+		expect(JSON.stringify(error)).not.toContain(secret);
+		// The stop stored in the thread's ref carries the same tail.
+		expect((await threads())[0]?.messages[1]).toMatchObject({
+			stop: "error",
+			error: expect.stringContaining(`MY_KEY=${AGENT_ENV_MASK}`),
+		});
+		expect(JSON.stringify(await threads())).not.toContain(secret);
+		await runner.settled();
 	});
 
 	it("a crash mid-question: the thread shows the exit, the join ends, no wake follows; the next question respawns once; a second crash stays error", async () => {

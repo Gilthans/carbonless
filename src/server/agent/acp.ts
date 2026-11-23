@@ -11,11 +11,12 @@ import type {
 	SessionUpdate,
 } from "@agentclientprotocol/sdk";
 import spawn from "cross-spawn";
-import type {
-	AgentCheck,
-	AgentConfig,
-	AgentIdentity,
-	AgentStop,
+import {
+	AGENT_ENV_MASK,
+	type AgentCheck,
+	type AgentConfig,
+	type AgentIdentity,
+	type AgentStop,
 } from "../../shared/agent.js";
 import { inheritedEnv } from "../git.js";
 import { bridgeCommand } from "../mcp/bridge.js";
@@ -40,6 +41,46 @@ const KILL_AFTER_MS = 5_000;
 const SESSION_CLOSE_MS = 1_000;
 /** The stderr tail an error carries. */
 const STDERR_TAIL = 2048;
+/** Shorter env values aren't redacted: they'd mangle ordinary output. */
+export const MIN_REDACTED = 8;
+/** A secret's fragment cut at the tail's edge is dropped from this length on. */
+const MIN_FRAGMENT = 4;
+
+/**
+ * The last `max` characters of `text`, with each of the config's env
+ * values (CAR-59: tokens) of MIN_REDACTED or more characters replaced by
+ * AGENT_ENV_MASK, and a value's fragment cut at either end (a tail's edge)
+ * dropped. The stderr tail reaches the page (Check, the status) and a
+ * stopped thread's ref.
+ */
+export function redactSecrets(
+	text: string,
+	secrets: readonly string[],
+	max = Number.POSITIVE_INFINITY,
+): string {
+	const values = [...new Set(secrets)]
+		.filter((v) => v.length >= MIN_REDACTED)
+		.sort((a, b) => b.length - a.length);
+	let out = text;
+	for (const v of values) out = out.split(v).join(AGENT_ENV_MASK);
+	// Cut to `max` before the edges are looked at: the cut is an edge too.
+	if (out.length > max) out = out.slice(-max);
+	for (const v of values) {
+		for (let k = v.length - 1; k >= MIN_FRAGMENT; k--) {
+			if (out.startsWith(v.slice(-k))) {
+				out = out.slice(k);
+				break;
+			}
+		}
+		for (let k = v.length - 1; k >= MIN_FRAGMENT; k--) {
+			if (out.endsWith(v.slice(0, k))) {
+				out = out.slice(0, -k);
+				break;
+			}
+		}
+	}
+	return out;
+}
 /** A failed turn's reason, as stored on its reply and shown in the status. */
 export const MAX_TURN_ERROR = 300;
 
@@ -87,6 +128,11 @@ export interface AcpSpawn {
 	command: string;
 	args: string[];
 	env: Record<string, string>;
+	/**
+	 * The config's own env values: redacted from the stderr tail every
+	 * error, Check and status carry (redactSecrets). The log file keeps them.
+	 */
+	secrets?: readonly string[];
 	cwd: string;
 	stderrFile: string;
 	onUpdate(update: SessionUpdate): void;
@@ -235,7 +281,11 @@ async function start(
 		file = stream;
 	}
 	let tail = "";
-	const stderr = () => tail;
+	const secrets = opts.secrets ?? [];
+	// Long enough that a value cut at the raw tail's start is cut whole
+	// once redacted (or dropped as a fragment).
+	const keep = STDERR_TAIL + Math.max(0, ...secrets.map((v) => v.length));
+	const stderr = () => redactSecrets(tail, secrets, STDERR_TAIL);
 	const child = spawn(opts.command, opts.args, {
 		cwd: opts.cwd,
 		env: opts.env,
@@ -247,7 +297,7 @@ async function start(
 	track(child);
 	child.stderr?.on("data", (chunk: Buffer) => {
 		file?.write(chunk);
-		tail = (tail + chunk.toString("utf8")).slice(-STDERR_TAIL);
+		tail = (tail + chunk.toString("utf8")).slice(-keep);
 	});
 	child.stdin?.on("error", () => {});
 	const exited = new Promise<{ code: number | null; signal: string | null }>(
@@ -586,6 +636,7 @@ export async function checkAgent(
 				command: cfg.command,
 				args: cfg.args,
 				env: agentEnv(cfg.env),
+				secrets: Object.values(cfg.env),
 				cwd,
 				onUpdate: () => {},
 				onPermission: () => ({ outcome: { outcome: "cancelled" } }),
