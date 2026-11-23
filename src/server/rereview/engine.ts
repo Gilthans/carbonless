@@ -650,12 +650,25 @@ export function answerRereview(
 	});
 	let toReadFiles = 0;
 	let toReadClusters = 0;
+	// The same count without the whitespace-only clusters (what a reviewer
+	// with "Ignore whitespace" on reads); the page picks by its switch.
+	const wsKeys = new Set(
+		target.files.flatMap((f) =>
+			f.clusters.filter((c) => c.whitespaceOnly).map((c) => c.key),
+		),
+	);
+	let countedFiles = 0;
+	let countedClusters = 0;
 	for (const f of files) {
-		const count = f.clusters.filter(
+		const read = f.clusters.filter(
 			(c) => c.kind === "reworked" || c.kind === "new",
-		).length;
+		);
+		const count = read.length;
+		const counted = read.filter((c) => !wsKeys.has(c.key)).length;
 		toReadClusters += count;
+		countedClusters += counted;
 		if (count > 0 || f.conflict) toReadFiles++;
+		if (counted > 0 || f.conflict) countedFiles++;
 	}
 	const answer: RereviewAnswer = {
 		from: ps.number,
@@ -668,6 +681,12 @@ export function answerRereview(
 		toRead: { files: toReadFiles, clusters: toReadClusters },
 		threads: [],
 	};
+	if (countedFiles !== toReadFiles || countedClusters !== toReadClusters) {
+		answer.toRead.withoutWhitespaceOnly = {
+			files: countedFiles,
+			clusters: countedClusters,
+		};
+	}
 	// The since view's pieces, every one of them (its counts count them:
 	// sinceUnits), with the since patch set's states for what they own; to
 	// read is every unit, as nothing of the target is marked yet.
@@ -744,6 +763,15 @@ export function answerRereview(
 		const byFile = new Set(units.map((u) => u.index));
 		for (const f of files) if (f.conflict) byFile.add(f.index);
 		answer.toRead = { files: byFile.size, clusters: units.length };
+		const counted = units.filter((u) => !u.whitespaceOnly);
+		if (counted.length !== units.length) {
+			const countedFiles = new Set(counted.map((u) => u.index));
+			for (const f of files) if (f.conflict) countedFiles.add(f.index);
+			answer.toRead.withoutWhitespaceOnly = {
+				files: countedFiles.size,
+				clusters: counted.length,
+			};
+		}
 	}
 	// One carried event per (source patch set, rule).
 	const events = new Map<string, PatchsetStart["carried"][number]>();

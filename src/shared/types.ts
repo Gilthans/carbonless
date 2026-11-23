@@ -1164,7 +1164,16 @@ export interface RereviewAnswer {
 		pieces?: SincePiece[];
 	}[];
 	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
-	toRead: { files: number; clusters: number };
+	toRead: {
+		files: number;
+		clusters: number;
+		/**
+		 * The same count without the whitespace-only clusters, for a reader
+		 * with "Ignore whitespace" on (the page picks by its switch); absent
+		 * when it would be the same.
+		 */
+		withoutWhitespaceOnly?: { files: number; clusters: number };
+	};
 	/**
 	 * Every unresolved thread's place in the target snapshot
 	 * (src/shared/rereview/placement.ts), as of the read of GitHub the
