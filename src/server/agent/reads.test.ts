@@ -192,9 +192,9 @@ describe("agent reads", () => {
 	});
 
 	it("atHead: each placement as the agent reads it, paths sanitised", () => {
-		const s = (t: string) => t.replace("‮", "");
+		const s = (t: string) => t.replace("\u202e", "");
 		const anchor = {
-			path: "a‮.txt",
+			path: "a\u202e.txt",
 			side: "RIGHT" as const,
 			startSide: "RIGHT" as const,
 			startLine: 3,

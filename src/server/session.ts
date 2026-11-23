@@ -1729,12 +1729,20 @@ export class Session {
 					// Not known to the answer: listed as changed, never as unchanged.
 					return { index, path, changed: true };
 				}
+				// Hunks the since view shows count as a change too, whatever
+				// the facts say: never unchanged beside lines to read.
+				let shown = false;
+				try {
+					shown = interdiff.changed(index).hunks.length > 0;
+				} catch {
+					shown = true;
+				}
 				return {
 					index,
 					path,
 					...(facts.oldPath !== undefined ? { oldPath: facts.oldPath } : {}),
 					...(binary.has(index) ? { binary: true } : {}),
-					changed: facts.changed,
+					changed: facts.changed || shown,
 					...(facts.labels.length > 0 ? { changes: facts.labels } : {}),
 				};
 			});

@@ -318,16 +318,35 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 			from: 1,
 			to: 2,
 		});
-		expect(between.files.map((f) => f.path)).toEqual(["b.txt"]);
-		expect(between.files[0]?.diff).toBe("@@ -0,0 +1,1 @@\n+b");
-		expect(between.unchanged).toBe(2);
-		// Asked by path, an unchanged file says so.
-		const same = (await s.ok("diff", {
-			from: 1,
-			to: 2,
-			path: "a.txt",
-		})) as unknown as { files: { changed?: boolean; diff: string }[] };
-		expect(same.files[0]).toMatchObject({ changed: false, diff: "" });
+		// The files the page's since view shows hunks for, and no others.
+		const ps2 = await view("?patchset=2");
+		const pageChanged: string[] = [];
+		for (const f of ps2.files) {
+			const res = await api(
+				`/files/${f.index}/hunks?revision=${ps2.revision}&from=1`,
+			);
+			expect(res.statusCode, res.body).toBe(200);
+			if ((res.json() as FileHunks).hunks.length > 0) pageChanged.push(f.path);
+		}
+		expect(pageChanged).toContain("b.txt");
+		expect(between.files.map((f) => f.path)).toEqual(pageChanged);
+		expect(between.files.find((f) => f.path === "b.txt")?.diff).toBe(
+			"@@ -0,0 +1,1 @@\n+b",
+		);
+		expect(between.unchanged).toBe(ps2.files.length - pageChanged.length);
+		// Asked by path, each file agrees with the page: changed: false and
+		// no diff exactly when the page's since view shows no hunk for it.
+		for (const path of ["a.txt", "new.txt"]) {
+			const one = (await s.ok("diff", { from: 1, to: 2, path })) as unknown as {
+				files: { changed?: boolean; diff: string }[];
+			};
+			if (pageChanged.includes(path)) {
+				expect(one.files[0]?.changed, path).toBeUndefined();
+				expect(one.files[0]?.diff, path).not.toBe("");
+			} else {
+				expect(one.files[0], path).toMatchObject({ changed: false, diff: "" });
+			}
+		}
 		// PS1's own full diff hasn't b.txt.
 		const ps1 = (await s.ok("diff", { to: 1 })) as unknown as Diff;
 		expect(ps1.comparison).toMatchObject({ head: h1, from: null, to: 1 });
