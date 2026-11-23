@@ -653,7 +653,24 @@ folded from the origins on read (`startedBy`), never stored.
   thread anchor; whether it counts is the GitHub join's call.
   `agent-comment-posted` folds onto its message as `posted: [{block, url,
   at, text}]` (by block; the first record of a block wins), only onto an
-  ai message the thread holds; any other is dropped.
+  ai message the thread holds; any other is dropped. A record on a
+  `line` or `file` conversation also joins it to the GitHub thread its
+  block started (CAR-236): the fold reads it as a `thread` anchor on the
+  first such record's `github.thread` (with the lines it was asked on),
+  so it is that thread's conversation (later openings on that thread fold
+  into it, and the GitHub join resolves and places it by that thread). The
+  fold keeps where it was asked and every thread its blocks started, in
+  record order: the GitHub join puts it on the first one still live, and
+  back where it was asked when none is (an orphan) or while GitHub can't
+  be read (`githubUnknown`). A thread another conversation was already
+  opened on stays that one's. Derived on read only: no event records the
+  join, so conversations posted before it join too. Its threads are
+  ordered by when GitHub took each comment (the link's
+  `#discussion_r<id>`, GitHub's increasing id), not by when the record was
+  written: a record that failed is written on a later load. The page gets
+  the thread it's on and where it was asked (`joined`), and placements
+  trace it where it was asked, so a view that doesn't list its thread
+  (an earlier patch set, or GitHub's threads failed) shows it there.
 
   **Links:** an `agent-thread-linked` turns a span conversation (`line` or
   `file`) into that GitHub thread's: its anchor becomes a `thread` anchor

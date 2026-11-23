@@ -740,7 +740,12 @@ function AgentCard(props: AgentCardProps) {
 					</p>
 				)}
 				<div className="flex flex-wrap items-end gap-2">
-					{!resolved && <AgentReplyBox thread={thread.id} />}
+					{!resolved && (
+						<AgentReplyBox
+							thread={thread.id}
+							off={thread.githubUnknown === true}
+						/>
+					)}
 					<button
 						type="button"
 						data-testid="agent-resolve"
@@ -977,7 +982,12 @@ function PendingReply(props: {
 }
 
 /** The box for a follow-up question; Ctrl/Cmd+Enter or Ask sends it. */
-function AgentReplyBox(props: { thread: string }) {
+/**
+ * The card's reply box. `off`: GitHub's threads couldn't be read for a
+ * conversation joined to one (CAR-236): a question would be refused (its
+ * thread may be resolved), so nothing is sent.
+ */
+function AgentReplyBox(props: { thread: string; off?: boolean }) {
 	const client = useQueryClient();
 	// Kept by the conversation, not the box: Comment swaps the card for the
 	// thread it will be, and Cancel brings it back with the text. Counted
@@ -994,8 +1004,9 @@ function AgentReplyBox(props: { thread: string }) {
 	}, [text]);
 	const tooLong = new TextEncoder().encode(text).length > MAX_AGENT_TEXT;
 	const view = useSendView();
+	const off = props.off === true;
 	const send = () => {
-		if (!text.trim() || tooLong) return;
+		if (!text.trim() || tooLong || off) return;
 		replyAgent(client, props.thread, text, newClientId(), view);
 		setText("");
 	};
@@ -1011,17 +1022,20 @@ function AgentReplyBox(props: { thread: string }) {
 				ref={box}
 				id={id}
 				aria-label="Reply to your agent"
-				placeholder="Reply to your agent…"
+				placeholder={
+					off ? "Couldn't read GitHub's threads" : "Reply to your agent…"
+				}
 				rows={1}
 				value={text}
 				onChange={(e) => setText(e.target.value)}
 				onKeyDown={onKeyDown}
+				disabled={off}
 				className="block max-h-96 min-h-10 w-full min-w-0 resize-none rounded-md border border-line-strong bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent"
 			/>
 			<button
 				type="button"
 				data-testid="agent-reply-ask"
-				disabled={!text.trim() || tooLong}
+				disabled={!text.trim() || tooLong || off}
 				onClick={send}
 				onMouseDown={(e) => e.preventDefault()}
 				className="flex h-10 shrink-0 items-center gap-1.5 rounded-md border border-accent/60 bg-accent/15 px-4 text-sm font-semibold text-link hover:bg-accent/25 focus-visible:outline-2 focus-visible:outline-accent disabled:border-line disabled:bg-transparent disabled:text-faint"

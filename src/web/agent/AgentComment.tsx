@@ -41,6 +41,7 @@ import {
 	useWritePreview,
 } from "../CommentPreview";
 import { type Copied, CopyMark, copyInto, copyWord } from "../CopyMark";
+import { threadFocus } from "../files/threadFocus";
 import { RelativeTime } from "../RelativeTime";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
@@ -53,6 +54,7 @@ import {
 	commentPlace,
 	dropKeptPosted,
 	keptOf,
+	opensThreadCard,
 	type PostingThread,
 	placeLabel,
 	postAgentComment,
@@ -60,6 +62,8 @@ import {
 	recordPosted,
 	refusalText,
 	setDraft,
+	siblingKey,
+	siblingOf,
 	subscribeKept,
 	takeResend,
 	WRITES_OFF,
@@ -135,10 +139,24 @@ function ReadOnlyComment(props: { text: string }) {
 }
 
 /** Where the block posts now: its conversation's place on the snapshot's head. */
-function usePlace(thread: PostingThread): CommentPlace {
+function usePlace(thread: PostingThread, clientId: string): CommentPlace {
 	const head = useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead;
 	const a = thread.anchor;
-	const needed = a.subject !== "thread" && !!head && a.commit !== head;
+	// Another block of a conversation on lines posting, or posted with its
+	// record not in (CAR-236): this one waits, or replies to its thread.
+	const siblingAt = useSyncExternalStore(
+		subscribeKept,
+		() => (a.subject === "thread" ? "" : siblingKey(thread.id, clientId)),
+		() => "",
+	);
+	const sibling = useMemo(() => siblingOf(siblingAt), [siblingAt]);
+	const needed =
+		a.subject !== "thread" &&
+		!thread.joined &&
+		!thread.githubUnknown &&
+		sibling === undefined &&
+		!!head &&
+		a.commit !== head;
 	const placed = useQuery({
 		...agentPlacementsOnHeadQuery(head ?? ""),
 		enabled: needed,
@@ -157,8 +175,15 @@ function usePlace(thread: PostingThread): CommentPlace {
 	const waiting = missing && (askedAt === null || dataUpdatedAt === askedAt);
 	const placing = isError ? "failed" : !data || waiting ? "pending" : "in";
 	return useMemo(
-		() => commentPlace({ thread, head, placement, placing }),
-		[thread, head, placement, placing],
+		() =>
+			commentPlace({
+				thread,
+				head,
+				placement,
+				placing,
+				...(sibling ? { sibling } : {}),
+			}),
+		[thread, head, placement, placing, sibling],
 	);
 }
 
@@ -198,7 +223,7 @@ function CommentBox(props: {
 		() => null,
 	);
 	const text = sentBody ?? draft ?? props.text;
-	const place = usePlace(thread);
+	const place = usePlace(thread, clientId);
 	const writes = useWritesOn();
 	const [phase, setPhase] = useState<Phase>({ kind: "ready" });
 	const sending = phase.kind === "sending";
@@ -221,9 +246,14 @@ function CommentBox(props: {
 				place,
 				...(resend ? { resend } : {}),
 			}).then(
-				(p) => {
+				({ githubThread, recorded, ...p }) => {
 					setPostedNow(p);
 					setPhase({ kind: "ready" });
+					// The conversation is that thread's now (CAR-236): its card
+					// opens with it, once it's in.
+					if (opensThreadCard(thread, recorded)) {
+						threadFocus.request({ id: githubThread, conversation: thread.id });
+					}
 				},
 				(error: unknown) => {
 					if (error instanceof AgentCommentError && error.inDoubt) {
@@ -275,7 +305,7 @@ function CommentBox(props: {
 		if (disabled) return;
 		send(text);
 	};
-	const why = off ?? (pending ? PLACING : null);
+	const why = off ?? (place.kind === "pending" ? (place.why ?? PLACING) : null);
 	const button = (trigger: object) => (
 		<button
 			{...trigger}

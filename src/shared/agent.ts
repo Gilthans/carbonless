@@ -223,6 +223,13 @@ export interface AgentThread {
 	 * stored value). Absent when GitHub was read.
 	 */
 	githubUnknown?: boolean;
+	/**
+	 * Asked on lines or a file, it posted a ```comment block that started
+	 * a GitHub thread (CAR-236): it is that thread's conversation. `thread`
+	 * is the thread it's on, `asked` where it was asked: a view that doesn't
+	 * list the thread shows it there.
+	 */
+	joined?: { thread: string; asked: AgentSpanAnchor };
 	code?: CodeWindow;
 }
 

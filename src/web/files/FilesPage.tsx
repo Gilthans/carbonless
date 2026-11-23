@@ -31,6 +31,7 @@ import {
 	agentPlacementIds,
 	agentWaiting,
 	shownAgentPlaceables,
+	unjoinUnlisted,
 } from "../agent/placeable";
 import {
 	comparisonView,
@@ -1279,7 +1280,22 @@ export function FilesPage() {
 		...agentThreadsQuery,
 		enabled: agentOn,
 	});
-	const agentThreads = agentThreadsRead.data?.threads;
+	// The GitHub threads this view lists (null: they failed): a conversation
+	// joined to a thread not among them shows where it was asked (CAR-236).
+	const listedIds = useMemo(
+		() =>
+			listedThreads
+				? new Set(listedThreads.map((t) => t.id))
+				: threadsFailed !== null
+					? null
+					: undefined,
+		[listedThreads, threadsFailed],
+	);
+	const agentThreadsAsRead = agentThreadsRead.data?.threads;
+	const agentThreads = useMemo(
+		() => agentThreadsAsRead && unjoinUnlisted(agentThreadsAsRead, listedIds),
+		[agentThreadsAsRead, listedIds],
+	);
 	// Where the tracer puts them in the viewed snapshot, as GitHub's are;
 	// until it answers (or if it fails) each shows where it was asked.
 	// The review conversation has no code to place: never asked about.
@@ -1306,6 +1322,7 @@ export function FilesPage() {
 			until: threadsCutoff,
 			pending: agentPending,
 			failed: agentPlacingState.error !== null,
+			...(listedIds !== undefined ? { listed: listedIds } : {}),
 		}),
 		[
 			agentPlacements,
@@ -1313,6 +1330,7 @@ export function FilesPage() {
 			threadsCutoff,
 			agentPending,
 			agentPlacingState.error,
+			listedIds,
 		],
 	);
 	const agentHead =

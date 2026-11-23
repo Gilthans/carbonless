@@ -1456,3 +1456,229 @@ describe("moves stay private (CAR-139)", () => {
 		}
 	});
 });
+
+describe("a posted block joins its GitHub thread (CAR-236)", () => {
+	const T = "01k9e6m2q8x4v7c3n5b0h1j2b1";
+	const T2 = "01k9e6m2q8x4v7c3n5b0h1j2b2";
+	const A = "01k9e6m2q8x4v7c3n5b0h1j2c1";
+	const A2 = "01k9e6m2q8x4v7c3n5b0h1j2c2";
+	const file: AgentAnchor = {
+		subject: "file",
+		path: "src/a.ts",
+		commit: "a".repeat(40),
+	};
+	const opened = (thread: string, a: AgentAnchor, ts: number) =>
+		newEvent(
+			"agent-thread-opened",
+			"dan",
+			{ thread, anchor: a, text: "q", details: { clientId: thread } },
+			"human",
+			ts,
+		);
+	const said = (thread: string, id: string, ts: number) => ({
+		...newEvent(
+			"agent-message",
+			"dan",
+			{
+				thread,
+				text: "```comment\nx\n```\n```comment\ny\n```",
+				agent,
+				stop: "end_turn" as const,
+				activity: [],
+			},
+			"ai",
+			ts,
+		),
+		id,
+	});
+	const posted = (
+		thread: string,
+		message: string,
+		block: number,
+		gt: string,
+		ts: number,
+	) =>
+		newEvent(
+			"agent-comment-posted",
+			"dan",
+			{
+				thread,
+				message,
+				block,
+				clientId: agentCommentClientId(thread, message, block),
+				github: {
+					thread: gt,
+					comment: `PRRC_${block}`,
+					url: `https://github.com/o/r/pull/1#discussion_r${block}`,
+				},
+				text: "x",
+			},
+			"human",
+			ts,
+		);
+
+	it("a line conversation that posted a block is on that GitHub thread, its lines kept", () => {
+		const [t] = foldAgentThreads([
+			opened(T, anchor, 1000),
+			said(T, A, 2000),
+			posted(T, A, 0, "PRRT_new", 3000),
+		]);
+		expect(t?.id).toBe(T);
+		expect(t?.anchor).toEqual({
+			subject: "thread",
+			thread: "PRRT_new",
+			path: "src/lock.ts",
+			commit: "a".repeat(40),
+			side: "RIGHT",
+			line: 12,
+			startSide: "RIGHT",
+			startLine: 10,
+		});
+		expect(t?.joins).toEqual({ asked: anchor, threads: ["PRRT_new"] });
+		// Nothing else changes: messages, posted.
+		expect(t?.messages).toHaveLength(2);
+		expect(t?.messages[1]?.posted?.map((p) => p.block)).toEqual([0]);
+	});
+
+	it("a file conversation joins as a thread anchor without lines", () => {
+		const [t] = foldAgentThreads([
+			opened(T, file, 1000),
+			said(T, A, 2000),
+			posted(T, A, 0, "PRRT_new", 3000),
+		]);
+		expect(t?.anchor).toEqual({
+			subject: "thread",
+			thread: "PRRT_new",
+			path: "src/a.ts",
+			commit: "a".repeat(40),
+		});
+	});
+
+	it("nothing posted: on its lines as asked", () => {
+		const [t] = foldAgentThreads([opened(T, anchor, 1000), said(T, A, 2000)]);
+		expect(t?.anchor).toEqual(anchor);
+		expect(t).not.toHaveProperty("joins");
+	});
+
+	it("two posted threads: the earliest posted is the one, the other kept as a fallback", () => {
+		const [t] = foldAgentThreads([
+			opened(T, anchor, 1000),
+			said(T, A, 2000),
+			said(T, A2, 2500),
+			// Block 1 of the first message posted later than the second message's.
+			posted(T, A, 1, "PRRT_late", 4000),
+			posted(T, A2, 0, "PRRT_early", 3000),
+			// A reply to the joined thread adds nothing.
+			posted(T, A, 0, "PRRT_early", 5000),
+		]);
+		expect(t?.anchor).toMatchObject({
+			subject: "thread",
+			thread: "PRRT_early",
+		});
+		expect(t?.joins?.threads).toEqual(["PRRT_early", "PRRT_late"]);
+	});
+
+	it("several posted threads: ordered by when GitHub took the comment, not by when the record was written", () => {
+		const late = (gt: string, n: number, ts: number) => ({
+			...posted(T, A, n, gt, ts),
+			github: {
+				thread: gt,
+				comment: `PRRC_${n}`,
+				url: `https://github.com/o/r/pull/1#discussion_r${n === 0 ? 900 : 100}`,
+			},
+		});
+		const [t] = foldAgentThreads([
+			opened(T, anchor, 1000),
+			said(T, A, 2000),
+			// Block 0's comment (id 900) was recorded first, but GitHub took
+			// block 1's (id 100) earlier: its record failed and came later.
+			late("PRRT_second", 0, 3000),
+			late("PRRT_first", 1, 4000),
+		]);
+		expect(t?.anchor).toMatchObject({
+			subject: "thread",
+			thread: "PRRT_first",
+		});
+		expect(t?.joins?.threads).toEqual(["PRRT_first", "PRRT_second"]);
+	});
+
+	it("the review conversation and a thread conversation never change", () => {
+		const review: AgentAnchor = { subject: "review" };
+		const onThread: AgentAnchor = {
+			subject: "thread",
+			thread: "PRRT_old",
+			path: "src/a.ts",
+			commit: "a".repeat(40),
+		};
+		const folded = foldAgentThreads([
+			opened(T, review, 1000),
+			said(T, A, 2000),
+			posted(T, A, 0, "PRRT_x", 3000),
+			opened(T2, onThread, 1100),
+			said(T2, A2, 2100),
+			posted(T2, A2, 0, "PRRT_old", 3100),
+		]);
+		expect(folded.map((t) => t.anchor)).toEqual([review, onThread]);
+		expect(folded.every((t) => t.joins === undefined)).toBe(true);
+	});
+
+	it("a later Ask agent on the joined GitHub thread folds into the conversation", () => {
+		const folded = foldAgentThreads([
+			opened(T, anchor, 1000),
+			said(T, A, 2000),
+			posted(T, A, 0, "PRRT_new", 3000),
+			opened(
+				T2,
+				{
+					subject: "thread",
+					thread: "PRRT_new",
+					path: "src/lock.ts",
+					commit: "a".repeat(40),
+				},
+				4000,
+			),
+		]);
+		expect(folded).toHaveLength(1);
+		expect(folded[0]?.id).toBe(T);
+		expect(folded[0]?.messages).toHaveLength(3);
+	});
+
+	it("a GitHub thread another conversation was opened on first stays that one's", () => {
+		const folded = foldAgentThreads([
+			opened(
+				T2,
+				{
+					subject: "thread",
+					thread: "PRRT_new",
+					path: "src/lock.ts",
+					commit: "a".repeat(40),
+				},
+				1500,
+			),
+			opened(T, anchor, 1000),
+			said(T, A, 2000),
+			posted(T, A, 0, "PRRT_new", 3000),
+		]);
+		expect(folded.map((t) => t.id)).toEqual([T, T2]);
+		expect(folded[0]?.anchor).toEqual(anchor);
+	});
+
+	it("the store's posted() answers the joined conversation", async () => {
+		const t = await ask("Why?", "c1");
+		const a = await answer(t.id, "```comment\nx\n```");
+		const after = await store.posted(t.id, {
+			message: a.messages[1]?.id as string,
+			block: 0,
+			github: {
+				thread: "PRRT_9",
+				comment: "PRRC_9",
+				url: "https://github.com/o/r/pull/1#discussion_r9",
+			},
+			text: "x",
+		});
+		expect(after.id).toBe(t.id);
+		expect(after.anchor).toMatchObject({ subject: "thread", thread: "PRRT_9" });
+		// And find() by its id, as the MCP tools do.
+		expect((await store.find(t.id)).anchor).toMatchObject({ thread: "PRRT_9" });
+	});
+});

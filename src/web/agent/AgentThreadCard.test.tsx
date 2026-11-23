@@ -315,6 +315,25 @@ describe("AgentThreadCard", () => {
 		expect(screen.queryByTestId("agent-stop-chip")).toBeNull();
 	});
 
+	it("joined to a GitHub thread that couldn't be read (CAR-236): the reply box is off, nothing sent", async () => {
+		const unknown = answered({ githubUnknown: true });
+		show(
+			{
+				...unknown,
+				joined: {
+					thread: "PRRT_9",
+					asked: unknown.anchor as NonNullable<AgentThread["joined"]>["asked"],
+				},
+			},
+			status(),
+		);
+		const card = screen.getByTestId("agent-thread");
+		expect(
+			within(card).getByRole("textbox", { name: "Reply to your agent" }),
+		).toBeDisabled();
+		expect(within(card).getByTestId("agent-reply-ask")).toBeDisabled();
+	});
+
 	it("a resolved thread starts closed: one agent row that opens to Unresolve", async () => {
 		show(answered({ resolved: true }), status());
 		const card = screen.getByTestId("agent-thread");
