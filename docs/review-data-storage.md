@@ -317,7 +317,12 @@ a reader drops what breaks them:
     go out on the next start.
 - **Compare-and-swap.** Update refs with `git update-ref <ref> <new> <old>`. If
   the ref moved, re-parent the commit onto the new tip and retry. Events are
-  append-only, so there's nothing to merge.
+  append-only, so there's nothing to merge. A write whose events depend on
+  what the ref holds builds them again from the new tip's events on every
+  try (`RefStore.appendBuilt`): a states write checks again that its patch
+  set is still the latest and stamps after the new tip's events, so a
+  patch set another process started in between makes it fail as read-only,
+  never land on the old one (CAR-229).
 - **Several refs at once** (progress and the new `patchsets/<n>` and
   `patchsets/<n>-base` refs when a patch set starts) use one
   `git update-ref --stdin` transaction. A start's `since` must be the
