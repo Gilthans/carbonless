@@ -1,4 +1,5 @@
 import type { Locator, Page, Route } from "@playwright/test";
+import { PLACEMENTS_TRIES } from "../src/web/api";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { fileSection, openFiles } from "./files-ui";
 import {
@@ -161,37 +162,47 @@ test("CAR-271: placements that keep failing spin in the chip's slot through the 
 	expectConsoleError(/500/);
 	await setup(pr);
 	const s = await startCrb();
-	let asked = 0;
-	let releaseThird = () => {};
-	const third = new Promise<void>((r) => {
-		releaseThird = r;
+	// A failure answered, the page's next ask is held (whichever it is):
+	// the page is between tries.
+	let failures = 0;
+	let holding = false;
+	let releaseTry = () => {};
+	const nextTry = new Promise<void>((r) => {
+		releaseTry = r;
 	});
+	let tried = false;
 	/** Once the server is back: each ask held until `releaseBack`. */
 	let back: Promise<void> | null = null;
 	let releaseBack = () => {};
-	const fail = (route: Route) =>
-		route.fulfill({ status: 500, json: { error: "boom" } });
+	const fail = (route: Route) => {
+		failures++;
+		return route.fulfill({ status: 500, json: { error: "boom" } });
+	};
 	await page.route(PLACEMENTS, async (route) => {
-		asked++;
 		if (back !== null) {
 			await back;
 			return route.continue();
 		}
-		if (asked === 3) await third;
+		if (failures > 0 && !tried) {
+			tried = true;
+			holding = true;
+			await nextTry;
+			holding = false;
+		}
 		return fail(route);
 	});
 	await openFiles(page, s.url);
 	const section = await expandNew(page);
-	// Two failures in, the third ask held: still placing, never unknown.
-	await expect.poll(() => asked).toBeGreaterThanOrEqual(3);
+	// Failed once, asking again: still placing, never unknown.
+	await expect.poll(() => holding).toBe(true);
 	const onHead = await card(section, 40, "On the head");
 	await expect(
 		onHead.getByRole("status", { name: "Placing threads" }),
 	).toBeVisible();
 	await expect(page.getByTestId("placement-error")).toHaveCount(0);
 	await expect(page.getByTestId("placements-failed")).toHaveCount(0);
-	// The third fails too: now it says so.
-	releaseThird();
+	// The next tries fail too: after PLACEMENTS_TRIES it says so.
+	releaseTry();
 	const failed = page.getByTestId("placements-failed");
 	await expect(failed).toBeVisible();
 	await expect(
@@ -215,4 +226,46 @@ test("CAR-271: placements that keep failing spin in the chip's slot through the 
 	await expect(
 		row(section, 10).getByRole("button", { name: /1 comment/ }),
 	).toBeVisible();
+	expect(failures).toBeGreaterThanOrEqual(PLACEMENTS_TRIES);
+});
+
+test("CAR-271: a placement job that really fails on the server reads as failed after its tries, never a spinner forever, and the server runs it again only after a while", async ({
+	page,
+	pr,
+	startCrb,
+	sharedCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/500/);
+	await setup(pr);
+	const s = await startCrb();
+	// No faked answers: the server's job fails (the reset lets them run).
+	await sharedCrb.failPlacing("git failed: injected");
+	const asks: number[] = [];
+	page.on("request", (r) => {
+		if (PLACEMENTS.test(r.url())) asks.push(Date.now());
+	});
+	await installClock(page);
+	await openFiles(page, s.url);
+	const section = await expandNew(page);
+	const failed = page.getByTestId("placements-failed");
+	// The job (pending), its failure, then the tries 1 s and 2 s apart
+	// (the server answers the kept error): about 5 s on a loaded machine
+	// can take longer than the default 10 s.
+	await expect(failed).toBeVisible({ timeout: 30_000 });
+	await expect(failed).toContainText("git failed: injected");
+	await expect(
+		failed.getByTestId("unplaced-thread").filter({ hasText: "From before" }),
+	).toHaveAttribute("data-fate", "unknown");
+	const onHead = await card(section, 40, "On the head");
+	await expect(onHead.getByTestId("placement-error")).toHaveCount(0);
+	// It stays failed (no spinner coming back), asked again only with
+	// backoff: a handful of asks, not one every 2 s.
+	const at = asks.length;
+	await page.clock.fastForward(30_000);
+	await expect(failed).toBeVisible();
+	await expect(
+		page.getByRole("status", { name: "Placing threads" }),
+	).toHaveCount(0);
+	expect(asks.length - at).toBeLessThanOrEqual(3);
 });

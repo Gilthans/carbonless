@@ -52,7 +52,7 @@ import {
 import { markSetupDone, readSetupDone } from "./agentSetupDone.js";
 import { parseAsOf } from "./asOf.js";
 import { updateConfig } from "./config.js";
-import { failureLine } from "./errorLog.js";
+import { FailureLog } from "./errorLog.js";
 import { GhError, WriteRefusedError } from "./errors.js";
 import { NODE_ID, parsePrArg } from "./gh.js";
 import { GitError } from "./git.js";
@@ -322,23 +322,23 @@ export async function buildApp(
 		});
 	});
 
-	const logFailure =
-		options.logFailure ?? ((line: string) => console.error(line));
+	const failures = new FailureLog(
+		options.logFailure ?? ((line: string) => console.error(line)),
+	);
 	app.setErrorHandler((error, _request, reply) => {
-		const send = (status: number, message: string) => {
+		const send = (status: number, message: string, log = true) => {
 			// A failure on the server's side (git, gh, a placement job, a
-			// closed session) or a read gone: one line, no secret (CAR-271).
-			if (status >= 500 || status === 410) {
-				logFailure(
-					failureLine({
-						method: _request.method,
-						route: _request.routeOptions?.url,
-						reviewId: (_request.params as { id?: unknown } | undefined)?.id,
-						status,
-						error,
-						accessKey: options.accessKey,
-					}),
-				);
+			// closed session): one line, no secret, deduped (CAR-271). A
+			// read gone (410) is ordinary: not logged.
+			if (log && status >= 500) {
+				failures.log({
+					method: _request.method,
+					route: _request.routeOptions?.url,
+					reviewId: (_request.params as { id?: unknown } | undefined)?.id,
+					status,
+					error,
+					accessKey: options.accessKey,
+				});
 			}
 			return reply.status(status).send({ error: message });
 		};
@@ -434,8 +434,9 @@ export async function buildApp(
 		if (status && status >= 400 && status < 500) {
 			return send(status, (error as Error).message);
 		}
+		// Unmapped: the whole error, once (no failure line besides).
 		console.error(error);
-		return send(500, "Internal server error");
+		return send(500, "Internal server error", false);
 	});
 
 	// boot: which crb process answers (an updating page's wait, CAR-177).

@@ -829,6 +829,10 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 		const pending = earlierPending([t], HEAD, empty, PS1);
 		expect(pending).toHaveLength(1);
 		expect(earlierPending([t], HEAD, empty, PS1)[0]).toBe(pending[0]);
+		// Shown on the head, made on PS1's: its place is unknown when the
+		// placements fail (CAR-271), never "made on the head".
+		expect(pending[0]?.madeOn).toBe(PS1);
+		expect(madeOnHead(pending[0] as ReviewThread, HEAD)).toBe(false);
 		const p = placeThreads({
 			threads: [],
 			path: PATH,
@@ -908,6 +912,8 @@ describe("madeOnHead (CAR-271)", () => {
 		expect(madeOnHead(thread(null, { commit: "" }), "")).toBe(false);
 		expect(madeOnHead(own, null)).toBe(false);
 		expect(madeOnHead(own, undefined)).toBe(false);
+		// A copy shown on the head but made elsewhere (earlierPending's).
+		expect(madeOnHead({ ...own, madeOn: "e".repeat(40) }, HEAD)).toBe(false);
 	});
 });
 

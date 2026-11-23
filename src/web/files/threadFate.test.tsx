@@ -291,6 +291,17 @@ describe("when the placements fail", () => {
 		expect(screen.getByTestId("placement-error").textContent).toContain(
 			"place unknown",
 		);
+		// Shown on the head but made on an earlier patch set's (the since
+		// view's earlierPending copy): its place is unknown.
+		rerender(
+			wrap(
+				info({ error: new Error("git failed"), viewedHead: onHead.commit }),
+				<PlacementChip thread={{ ...onHead, madeOn: "c".repeat(40) }} />,
+			),
+		);
+		expect(screen.getByTestId("placement-error").textContent).toContain(
+			"place unknown",
+		);
 	});
 });
 
