@@ -690,7 +690,8 @@ describe("diff colors", () => {
 		// The owner (2026-11-22): "the hidden characters have the same design
 		// as comments. I'd like them to be more subtle, and distinct from code
 		// comments"; then (2026-11-23) "Make the color a little more muted and
-		// subtle". Whitespace marks (spaces, tabs, line endings;
+		// subtle", and after that round "Make the whitespace marks even dimmer".
+		// Whitespace marks (spaces, tabs, line endings;
 		// src/web/code/Invisibles.tsx) take `invisible`; an escape's label
 		// takes `invisible-strong`, a notch up, on an invisible/10 chip.
 		const mark = token("invisible");
@@ -706,19 +707,19 @@ describe("diff colors", () => {
 					color: washed(token(bg), wash),
 				})),
 			);
-		// Floors: still visible. A whitespace mark 2.5:1 on every row, span and
+		// Floors: still visible. A whitespace mark 2:1 on every row, span and
 		// find, under every wash; inside a word tint (which itself says
-		// "changed") 1.8:1, 1.6:1 under a wash.
+		// "changed") 1.4:1, 1.2:1 under a wash.
 		for (const back of backs(PLAIN))
 			expect(
 				contrast(mark, back.color),
 				`invisible on ${back.name}`,
-			).toBeGreaterThanOrEqual(2.5);
+			).toBeGreaterThanOrEqual(2);
 		for (const back of backs(WORD))
 			expect(
 				contrast(mark, back.color),
 				`invisible on ${back.name}`,
-			).toBeGreaterThanOrEqual(back.wash ? 1.6 : 1.8);
+			).toBeGreaterThanOrEqual(back.wash ? 1.2 : 1.4);
 		// An escape (a character that prints as nothing: principle 2) stays
 		// legible: its label on its chip 3:1 on every row, span and find under
 		// every wash, 2:1 inside a word tint; and above the whitespace marks.
@@ -734,15 +735,15 @@ describe("diff colors", () => {
 				contrast(mark, back.color),
 			);
 		}
-		// Ceilings: subtle. On each code row a whitespace mark has at most 70%
-		// of the comment color's contrast, an escape's label at most 85%; both
-		// under `faint` and code-ink.
+		// Ceilings: subtle. On each code row a whitespace mark has at most 55%
+		// (about half) of the comment color's contrast, an escape's label at
+		// most 85%; both under `faint` and code-ink.
 		for (const bg of CODE_BGS) {
 			const comment = contrast(SYNTAX.comment, token(bg));
 			expect(
 				contrast(mark, token(bg)),
 				`invisible on ${bg}`,
-			).toBeLessThanOrEqual(0.7 * comment);
+			).toBeLessThanOrEqual(0.55 * comment);
 			const chip = over(mark, 0.1, token(bg));
 			expect(contrast(strong, chip), `escape on ${bg}`).toBeLessThanOrEqual(
 				0.85 * comment,

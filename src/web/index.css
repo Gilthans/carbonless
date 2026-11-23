@@ -41,11 +41,11 @@
 	--color-label: #a397f7;
 	/*
 	 * Hidden characters in code (src/web/code/Invisibles.tsx), a near-neutral
-	 * stone grey of no hue of the comment color's, well under it
+	 * stone grey of no hue of the comment color's, about half its contrast
 	 * (theme.test.ts). invisible: whitespace marks, and an escape's chip at
 	 * 10%. invisible-strong: an escape's label, a notch up. Not for text.
 	 */
-	--color-invisible: #7d7b78;
+	--color-invisible: #686765;
 	--color-invisible-strong: #938f89;
 
 	/* Interaction: links, focus rings, the pointer's cluster. */

@@ -68,11 +68,11 @@ a line's only change still shows), tabs as `\t` padded to the next tab stop (the
 `.editorconfig` `tab_width`, else a numeric `indent_size`, else 4; a
 config over 64 KB is ignored; wide
 characters and emoji count two columns), line endings as `\n` / `\r\n`,
-all in `invisible`: a muted stone grey, upright, well under `faint` and
-the syntax's italic blue-grey comments, so a mark never reads as code or as
-a comment (owner, 2026-11-22 and 2026-11-23: "a little more muted and
-subtle"; at most 70% of a comment's contrast, at least 2.5:1 on every row,
-span and find, 1.8:1 inside a word mark, `theme.test.ts`). Characters that would print as nothing or as a lookalike
+all in `invisible`: a dim stone grey, upright, at about half the contrast
+of the syntax's italic blue-grey comments, so a mark never reads as code or
+as a comment (owner, 2026-11-22 and 2026-11-23: "a little more muted and
+subtle", then "even dimmer"; at most 55% of a comment's contrast, at least
+2:1 on every row, span and find, 1.4:1 inside a word mark, `theme.test.ts`). Characters that would print as nothing or as a lookalike
 blank (controls, zero widths, BOM, soft hyphen, tags, unusual spaces,
 separators, stray variation selectors) show as `\uXXXX` in
 `invisible-strong` on an `invisible` chip (10%), a notch above the
