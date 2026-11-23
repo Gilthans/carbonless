@@ -1617,7 +1617,7 @@ describe("API", () => {
 					prs: Record<
 						string,
 						{
-							graphql: {
+							graphql?: {
 								reviewThreads: {
 									line: number | null;
 									diffSide: string;
@@ -1630,7 +1630,7 @@ describe("API", () => {
 						}
 					>;
 				}
-			).prs[12]?.graphql.reviewThreads ?? [];
+			).prs[12]?.graphql?.reviewThreads ?? [];
 		const commentPosts = () =>
 			pr
 				.ghLog()
