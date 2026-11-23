@@ -269,7 +269,7 @@ export async function ghIdle(timeoutMs?: number): Promise<void> {
 		}
 	})();
 	try {
-		await (timedOut ? Promise.race([idle, timedOut]) : idle);
+		await (timedOut !== undefined ? Promise.race([idle, timedOut]) : idle);
 	} finally {
 		clearTimeout(timer);
 	}
