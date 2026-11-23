@@ -491,6 +491,12 @@ After the first release (0.1.0) the owner adds the trusted publisher
   https://github.com/Gilthans/carbonless-gallery (one PR per case study,
   regular and edge cases, to look at in carbonless). Clean up probes so
   the cases stay readable. Nowhere else.
+- Dependabot PRs: a daily agent (`scripts/dependabot-sweep.sh`, its
+  instructions in `docs/agents/dependabot-sweep.md`) rebases, fixes and
+  merges them. The owner's standing approval (CAR-273) lets it comment on
+  and merge Dependabot PRs with `--admin` once green and `merge-ok`
+  passes; not major bumps of runtime dependencies nor `.github/` or
+  release-script changes, which it leaves for the owner with a comment.
 - Every edge case we find or fix gets a gallery PR (its own `base/<case>`
   and `case/<case>` branches, a description of what to look at, a row in
   the gallery README).
