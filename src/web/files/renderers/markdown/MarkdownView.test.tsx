@@ -481,7 +481,7 @@ describe("MarkdownView, full diff", () => {
 		show(docFixture(OLD, NEW, EDITS), { sideBySide: true });
 		const root = await doc();
 		const changed = rowOf(root, "k1") as HTMLElement;
-		const cols = changed.querySelectorAll(".grid > div");
+		const cols = changed.querySelectorAll(".md-body[data-col]");
 		expect(cols).toHaveLength(2);
 		expect(cols[0]?.querySelector("del.md-del")).toHaveTextContent("old");
 		expect(cols[0]?.querySelector("ins")).toBeNull();
@@ -492,6 +492,49 @@ describe("MarkdownView, full diff", () => {
 			EDITS.map((e) => e.key),
 		);
 	});
+
+	it.each([
+		["full diff", false],
+		["since view", true],
+	])(
+		"side by side on desktop (%s): each box on the new column; a removal's on the old (the only one)",
+		async (_, since) => {
+			vi.stubGlobal(
+				"matchMedia",
+				vi.fn(() => ({
+					matches: true,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				})),
+			);
+			show(
+				docFixture(OLD, NEW, EDITS, { since }),
+				since ? { sideBySide: true, from: 1 } : { sideBySide: true },
+			);
+			const root = await doc();
+			const unit = (i: number) => (since ? `p:${i}:0` : (EDITS[i]?.key ?? ""));
+			const colOf = (i: number) =>
+				boxOf(root, unit(i))?.closest(".md-gutter")?.getAttribute("data-col");
+			for (const i of [0, 1, 2, 4, 5, 6]) expect(colOf(i), unit(i)).toBe("new");
+			expect(colOf(3)).toBe("old");
+			// The new column's gutter sits between the two bodies.
+			const row = rowOf(root, unit(0)) as HTMLElement;
+			expect(
+				[...row.children].map(
+					(c) => `${c.className.split(" ")[0]}:${c.getAttribute("data-col")}`,
+				),
+			).toEqual([
+				"md-gutter:old",
+				"md-body:old",
+				"md-gutter:new",
+				"md-body:new",
+			]);
+			expectCoverage(
+				root,
+				EDITS.map((_, i) => unit(i)),
+			);
+		},
+	);
 
 	it("a mark (the review read again: new clusters, a new file list) renders no block again", async () => {
 		const fx = docFixture(OLD, NEW, EDITS);

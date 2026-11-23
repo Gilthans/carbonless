@@ -892,18 +892,56 @@ export function MarkdownView(props: {
 			dangerouslySetInnerHTML={{ __html: html }}
 		/>
 	);
-	const columns = (left: ReactNode, right: ReactNode) =>
-		split ? (
-			<div className="grid grid-cols-2 gap-3">
-				<div className="min-w-0">{left}</div>
-				<div className="min-w-0">{right}</div>
-			</div>
-		) : (
+	/**
+	 * A row's cells. Unified: the gutter, then the body on its bar. Side by
+	 * side (desktop): each column its own gutter and body, the gutter's
+	 * boxes on the new column, a removal's (no new column) on the old.
+	 */
+	const cells = (o: {
+		gutter: ReactNode;
+		tone?: Tone;
+		/** Above the block, on the boxes' side: its chips and notes. */
+		top?: ReactNode;
+		unified: ReactNode;
+		left?: ReactNode;
+		right?: ReactNode;
+		onOld?: boolean;
+	}) => {
+		const tone = (shown: boolean) =>
+			o.tone && shown ? `md-body md-${o.tone}` : "md-body";
+		if (!split) {
+			return (
+				<>
+					<div className="md-gutter">{o.gutter}</div>
+					<div className={tone(true)} data-col="doc">
+						{o.top}
+						{o.unified}
+					</div>
+				</>
+			);
+		}
+		const left = o.left ?? null;
+		const right = o.right ?? null;
+		return (
 			<>
-				{left}
-				{right}
+				<div className="md-gutter" data-col="old">
+					{o.onOld ? o.gutter : null}
+				</div>
+				<div className={tone(left !== null)} data-col="old">
+					{o.onOld ? o.top : null}
+					{left}
+				</div>
+				<div className="md-gutter" data-col="new">
+					{o.onOld ? null : o.gutter}
+				</div>
+				<div className={tone(right !== null)} data-col="new">
+					{o.onOld ? null : o.top}
+					{right}
+				</div>
 			</>
 		);
+	};
+	const rowClass = split ? "md-row md-split" : "md-row";
 
 	const rowMarks = (key: string) => ({
 		"data-row": key,
@@ -919,13 +957,15 @@ export function MarkdownView(props: {
 				data-testid="md-block"
 				data-tone="same"
 				data-block={block}
-				className="md-row"
+				className={rowClass}
 				{...rowMarks(key)}
 			>
-				<div className="md-gutter">{bubbleOf(key)}</div>
-				<div className="md-body">
-					{split ? columns(content(html), content(html)) : content(html)}
-				</div>
+				{cells({
+					gutter: bubbleOf(key),
+					unified: content(html),
+					left: content(html),
+					right: content(html),
+				})}
 				{threadsOf(key)}
 			</div>
 		);
@@ -992,28 +1032,35 @@ export function MarkdownView(props: {
 			({ u }) => u.entry?.kind === "gone" && u.cluster.state === "unreviewed",
 		);
 		const tone: Tone = gone ? "removed" : row.tone;
-		let body: ReactNode;
 		const struck = (html: string) => content(html, "md-old");
+		let left: ReactNode = null;
+		let right: ReactNode = null;
+		let unified: ReactNode;
 		if (row.tone === "removed") {
-			const html = struck(htmlOf(oldHtml, row.oldBlocks));
-			body = split ? columns(html, null) : html;
+			left = struck(htmlOf(oldHtml, row.oldBlocks));
+			unified = left;
 		} else if (row.tone === "added") {
-			body = split
-				? columns(null, content(htmlOf(newHtml, row.newBlocks), "md-new"))
-				: content(htmlOf(newHtml, row.newBlocks), "md-new");
+			right = content(htmlOf(newHtml, row.newBlocks), "md-new");
+			unified = right;
 		} else {
 			const marked =
 				row.oldBlocks.length === 1 && row.newBlocks.length === 1
 					? pair(row.oldBlocks[0] as number, row.newBlocks[0] as number)
 					: null;
-			body = marked
-				? split
-					? columns(content(marked.old), content(marked.new))
-					: content(marked.merged)
-				: columns(
-						struck(htmlOf(oldHtml, row.oldBlocks)),
-						content(htmlOf(newHtml, row.newBlocks), "md-new"),
-					);
+			if (marked) {
+				left = content(marked.old);
+				right = content(marked.new);
+				unified = content(marked.merged);
+			} else {
+				left = struck(htmlOf(oldHtml, row.oldBlocks));
+				right = content(htmlOf(newHtml, row.newBlocks), "md-new");
+				unified = (
+					<>
+						{left}
+						{right}
+					</>
+				);
+			}
 		}
 		const chips = controls.flatMap(({ key, u }) => {
 			const chip = unitChips(u, from);
@@ -1028,49 +1075,53 @@ export function MarkdownView(props: {
 				data-block={row.newBlocks.join(",") || undefined}
 				data-old-block={row.oldBlocks.join(",") || undefined}
 				data-units={row.units.join(" ")}
-				className="md-row"
+				className={rowClass}
 				{...rowMarks(key)}
 			>
-				<div className="md-gutter">
-					{controls.map(({ key, u }) => (
-						<div
-							key={key}
-							data-testid="md-box"
-							data-unit={key}
-							data-ws={u.ws || undefined}
-							className="md-box"
-						>
-							<ClusterControls
-								cluster={u.cluster}
-								noteId={noteId(key)}
-								onToggle={u.toggle}
-								onCrossOff={u.crossOff}
-								readOnly={props.readOnly}
-							/>
-							{u.ws && (
-								<Tooltip content="Whitespace only" describe={false} lazy>
-									{(trigger) => (
-										// Focusable without a tab stop, so a tap shows the name.
-										<span
-											{...trigger}
-											tabIndex={-1}
-											role="img"
-											aria-label="Whitespace only"
-											data-testid="md-ws"
-											className="font-mono text-faint text-xs"
-										>
-											~
-										</span>
+				{cells({
+					tone,
+					onOld: row.tone === "removed",
+					gutter: (
+						<>
+							{controls.map(({ key, u }) => (
+								<div
+									key={key}
+									data-testid="md-box"
+									data-unit={key}
+									data-ws={u.ws || undefined}
+									className="md-box"
+								>
+									<ClusterControls
+										cluster={u.cluster}
+										noteId={noteId(key)}
+										onToggle={u.toggle}
+										onCrossOff={u.crossOff}
+										readOnly={props.readOnly}
+									/>
+									{u.ws && (
+										<Tooltip content="Whitespace only" describe={false} lazy>
+											{(trigger) => (
+												// Focusable without a tab stop, so a tap shows the name.
+												<span
+													{...trigger}
+													tabIndex={-1}
+													role="img"
+													aria-label="Whitespace only"
+													data-testid="md-ws"
+													className="font-mono text-faint text-xs"
+												>
+													~
+												</span>
+											)}
+										</Tooltip>
 									)}
-								</Tooltip>
-							)}
-						</div>
-					))}
-					{commentOf(row)}
-					{bubbleOf(key)}
-				</div>
-				<div className={`md-body md-${tone}`}>
-					{(chips.length > 0 || notes.length > 0) && (
+								</div>
+							))}
+							{commentOf(row)}
+							{bubbleOf(key)}
+						</>
+					),
+					top: (chips.length > 0 || notes.length > 0) && (
 						<div className="flex flex-wrap items-center gap-1 pb-1">
 							{chips}
 							{notes.map(({ key, u }) => (
@@ -1085,9 +1136,11 @@ export function MarkdownView(props: {
 								</span>
 							))}
 						</div>
-					)}
-					{body}
-				</div>
+					),
+					unified,
+					left,
+					right,
+				})}
 				{threadsOf(key)}
 			</div>
 		);

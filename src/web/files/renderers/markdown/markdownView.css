@@ -10,6 +10,11 @@
 	align-items: start;
 }
 
+/* Side by side (desktop): each column its own gutter; the boxes on the new one. */
+.md-row.md-split {
+	grid-template-columns: 44px minmax(0, 1fr) 44px minmax(0, 1fr);
+}
+
 .md-gutter {
 	display: flex;
 	flex-direction: column;
@@ -215,6 +220,10 @@
 @media (pointer: coarse) {
 	.md-row {
 		grid-template-columns: 84px minmax(0, 1fr);
+	}
+
+	.md-row.md-split {
+		grid-template-columns: 84px minmax(0, 1fr) 84px minmax(0, 1fr);
 	}
 
 	/* The targets reach 10px past their glyphs: room for that in the row. */
