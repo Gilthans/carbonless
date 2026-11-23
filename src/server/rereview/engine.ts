@@ -846,8 +846,8 @@ export function interdiffFileContext(
  * `sources`: the compared patch set's human marks (humanMarksOf), for the
  * pieces' whitespace flag (CAR-218): a piece is whitespace-only when its
  * lines are on the interdiff and each one's counterpart at the compared
- * patch set held a mark there (sinceWhitespace). Without it no piece is
- * (they all count).
+ * patch set held a mark there, or was a base line it left alone
+ * (sinceWhitespace). Without it no piece is (they all count).
  */
 export function interdiffFileHunks(
 	traced: Traced,
@@ -996,15 +996,20 @@ export function interdiffFileHunks(
  * read at the compared patch set (CAR-218): `lines`, every interdiff
  * display hunk's `whitespaceLines` that the view draws as `~` rows;
  * `marked(line)`, the line's counterpart
- * on the interdiff's old side (the compared patch set's head, rebased) held
- * a human mark there (`sources`, humanMarksOf), traced as the line carries
- * trace lines (sinceLineSources over `lineKeys.old`). A removed line's
- * counterpart is itself; an added line's, its twin in the matching (a
- * removed or context line). No counterpart, one no cluster of that patch
- * set added (a base line it left alone), one already taken, a conflicted
- * file, or no `sources`: not marked (principle 2: it counts). A file
- * nothing of which was marked there skips the matching: no lines, so its
- * pieces aren't cut at whitespace runs either (they all count).
+ * on the interdiff's old side (the compared patch set's head, rebased)
+ * left nothing to read there: it held a human mark (`sources`,
+ * humanMarksOf), traced as the line carries trace lines (sinceLineSources
+ * over `lineKeys.old`), or it is a base line that patch set left alone
+ * (no cluster added it, nor one of its slider twins, and `lineKeys.baseLine`
+ * places it in the new base), as the full diff leaves the same re-indent
+ * out. A removed line's counterpart is itself; an added line's, its twin
+ * in the matching (a removed or context line; a context twin counts only
+ * when marked, never as left alone: an extra copy of a line kept is new).
+ * No counterpart, a changed line unmarked or not traced, one already
+ * taken, a conflicted file, or no `sources`: not marked (principle 2: it
+ * counts). A file nothing of which was marked there and whose interdiff
+ * removes no line left alone skips the matching: no lines, so its pieces
+ * aren't cut at whitespace runs either (they all count).
  */
 function sinceWhitespace(
 	traced: Traced,
@@ -1023,7 +1028,22 @@ function sinceWhitespace(
 		const marks = sources.get(key);
 		return !!marks && (marks.reviewed.length > 0 || marks.crossed.length > 0);
 	});
-	if (!anyMarked) return none;
+	// A base line that patch set left alone, placed in the new base (a
+	// positive answer: a line the map can't place is not one).
+	const placed = traced.lineKeys.baseLine?.[file.oldPath ?? file.path] ?? {};
+	const leftAlone = (oldNo: number) =>
+		addedThen[oldNo] === undefined && placed[oldNo] !== undefined;
+	// ... or one the interdiff removes: its re-indent may be left out too.
+	const anyLeftAlone =
+		!anyMarked &&
+		file.clusters.some((c) => {
+			if (c.kind !== "lines") return false;
+			for (let i = 0; i < c.oldCount; i++) {
+				if (leftAlone(c.oldStart + i)) return true;
+			}
+			return false;
+		});
+	if (!anyMarked && !anyLeftAlone) return none;
 	const twins = new Map<DiffLine, DiffLine>();
 	for (const hunk of hunks) {
 		const ws = whitespaceLines(hunk.lines);
@@ -1052,9 +1072,15 @@ function sinceWhitespace(
 	// sinceLineSources answers each earlier line once: asked again (a
 	// removed line and the added twin that pairs with it), the first answer.
 	const byOld = new Map<number, boolean>();
-	const markedAt = (oldNo: number): boolean => {
+	const markedAt = (oldNo: number, removed: boolean): boolean => {
 		let marked = byOld.get(oldNo);
 		if (marked === undefined) {
+			// Left alone at that patch set: nothing was there to read (only
+			// a removed line, positively placed in the new base).
+			if (removed && leftAlone(oldNo) && then.untouched(oldNo)) {
+				byOld.set(oldNo, true);
+				return true;
+			}
 			const source = then.added(oldNo);
 			const marks = source && sources.get(source.key);
 			marked =
@@ -1075,7 +1101,7 @@ function sinceWhitespace(
 						? twins.get(line)
 						: undefined;
 			if (!old || old.kind === "add" || old.oldNo === undefined) return false;
-			return markedAt(old.oldNo);
+			return markedAt(old.oldNo, old.kind === "del");
 		},
 	};
 }
@@ -1099,7 +1125,9 @@ export interface LineSource {
  * in its cluster is its rank among the cluster's lines in the map, only
  * when the map holds all of them (else none: fails closed). One to one:
  * each earlier line stands for one line at most, the first asked about
- * (itself or one of its twins); a later ask gets none. Make one per file
+ * (itself or one of its twins); a later ask gets none. `untouched(line)`:
+ * no cluster added the line and it is no slider twin of one (a line the
+ * patch set left alone, as far as these maps tell). Make one per file
  * of the since view, and ask each line once.
  */
 export function sinceLineSources(
@@ -1110,6 +1138,7 @@ export function sinceLineSources(
 ): {
 	added: (line: number) => LineSource | null;
 	removed: (line: number) => LineSource | null;
+	untouched: (line: number) => boolean;
 } {
 	const byKey = (map: Readonly<Record<number, string>>) => {
 		const out = new Map<string, number[]>();
@@ -1204,6 +1233,7 @@ export function sinceLineSources(
 			usedRemoved.add(line);
 			return sourceOf(removedThen, removedBy, removedRank, "removed", line);
 		},
+		untouched: (line) => addedThen[line] === undefined && !twins.has(line),
 	};
 }
 

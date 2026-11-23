@@ -777,10 +777,14 @@ test("the since view: a re-indent of markup nobody marked in PS1 still counts wi
 	const bar = progress(page);
 	await expect(bar).toContainText("0 / 5 clusters reviewed");
 	await ignoreWhitespace(page, true);
-	// On: only the card's line no piece shows (a re-indent against the
-	// base, read in the full diff) is left out; its three since pieces,
-	// re-indents of lines nobody marked in PS1, still count with the note.
-	await expect(bar).toContainText("0 / 4 clusters reviewed");
+	// On: the card's line no piece shows (a re-indent against the base,
+	// read in the full diff) is left out, and so is the since piece that
+	// only re-indents base lines PS1 left alone (git kept them, byte-equal
+	// at PS1's depth: nothing to read there, as in the full diff; owner
+	// 2026-11-23); both are the card's one cluster, so the `~` says one.
+	// Its other two since pieces, re-indents of lines PS1 changed and
+	// nobody marked, still count with the note.
+	await expect(bar).toContainText("0 / 3 clusters reviewed");
 	await expect(
 		page
 			.locator("[data-page-bar]")
@@ -788,14 +792,14 @@ test("the since view: a re-indent of markup nobody marked in PS1 still counts wi
 				'[data-testid="ws-left-out"][aria-label="1 whitespace-only cluster not counted"]',
 			),
 	).toBeVisible();
-	// Nor are they collapsed: they show, `~` rows open, never a
-	// whitespace-only row.
+	// Nor are the counted ones collapsed: they show, `~` rows open; only
+	// the left-alone piece is a whitespace-only row.
 	const cardSection = fileSection(page, CARD);
 	await opened(cardSection);
 	await expect(
 		cardSection.locator('[data-testid="diff-line"][data-kind="ws"]').first(),
 	).toBeVisible();
-	await expect(cardSection.getByTestId("ws-cluster")).toHaveCount(0);
+	await expect(cardSection.getByTestId("ws-cluster")).toHaveCount(1);
 	// Off: everything counts.
 	await ignoreWhitespace(page, false);
 	await expect(bar).toContainText("0 / 5 clusters reviewed");
@@ -925,6 +929,74 @@ test("the since view: ticking a change never closes the file while a real edit s
 	await expect(bar).toContainText("2 / 2 clusters reviewed");
 	await expect(since.locator("table")).toHaveCount(0);
 	await expect(header(since)).toHaveAttribute("data-finished");
+});
+
+test("the since view: a re-indent of a base line PS1 left alone is left out with the switch on, as in the full diff", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 changes `alpha()` (reviewed) and leaves `load()` alone; PS2
+	// keeps `alpha!()`, edits `keep4()` and only re-indents `load()`:
+	// nothing to read there in PS1, so whitespace-only since, as the full
+	// diff has it (owner 2026-11-23).
+	const path = "src/loader.ts";
+	const at = (alpha: string, keep4: string, load: string) =>
+		text([
+			alpha,
+			...Array.from({ length: 9 }, (_, i) => (i === 4 ? keep4 : `keep${i}();`)),
+			load,
+		]);
+	const p = await pr({
+		base: { [path]: at("alpha();", "keep4();", "load();") },
+		files: [
+			{
+				message: "Alpha",
+				files: { [path]: at("alpha!();", "keep4();", "load();") },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, path);
+	await opened(section);
+	await marksReady(page, section);
+	await expect(boxes(section)).toHaveCount(1);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({
+		message: "Keep4, load indented",
+		files: { [path]: at("alpha!();", "keep4!();", "  load();") },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	const bar = progress(page);
+	// Off: the edit and the re-indent both count.
+	await expect(bar).toContainText("0 / 2 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+	// On: only the edit; the `~` says the re-indent is left out.
+	await ignoreWhitespace(page, true);
+	await expect(bar).toContainText("0 / 1 cluster reviewed");
+	await expect(leftOut(page)).toBeVisible();
+	const since = fileSection(page, path);
+	await opened(since);
+	await expect(since.getByTestId("ws-cluster")).toHaveCount(1);
+	// Off again: it counts.
+	await ignoreWhitespace(page, false);
+	await expect(bar).toContainText("0 / 2 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
 });
 
 test.describe("Home", () => {

@@ -151,7 +151,13 @@ at:
   (reviewed or crossed off) at the earlier patch set, as the line tracing
   behind the since view's carries (`sinceLineCarries`) sees it (*my call*,
   principle 2: a line nobody read in patch set 1 that patch set 2 only
-  re-indented is still unread, so it still counts);
+  re-indented is still unread, so it still counts), **or** was a base
+  line patch set 1 left alone (no cluster of it added the line, and the
+  engine places it in the new base): there was nothing to read, and the
+  full diff leaves the same re-indent out (owner, 2026-11-23: "Interdiff
+  should behave similarly to a basediff compare"). An added line whose
+  twin is an unchanged (context) line of the interdiff is not such a
+  line: it counts unless its twin was marked;
   `SinceUnit.whitespaceOnly` comes from that, not from the snapshot's
   cluster;
 - a unit that is the rest of a cluster no piece shows (only the full diff
@@ -210,7 +216,9 @@ rows follow).
   base counts.
 - Since view: patch set 1 changes a line, left unreviewed; patch set 2
   only re-indents it: since patch set 1 with Ignore whitespace on, it
-  still counts (principle 2).
+  still counts (principle 2). And a base line patch set 1 left alone,
+  only re-indented by patch set 2: left out with the switch on, as in
+  the full diff.
 - Property: in the since view too, every whitespace-only unit's lines
   are `~` rows, and every `~` row's line is in a whitespace-only unit
   unless it wasn't marked at the earlier patch set (then its unit counts).

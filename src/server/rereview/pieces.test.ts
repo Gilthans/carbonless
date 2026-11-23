@@ -8,7 +8,7 @@ import {
 import { size } from "../../shared/lineRanges";
 import type { SincePiece } from "../../shared/pieces";
 import type { DiffLine, FileHunks, Snapshot } from "../../shared/types";
-import { SPLIT_CELLS } from "../../shared/whitespace";
+import { matchDisplayHunk, SPLIT_CELLS } from "../../shared/whitespace";
 import { hunkView } from "../../web/files/whitespace";
 import { buildSnapshot } from "../diff/snapshot";
 import { humanMarksOf } from "../review/coverage";
@@ -674,9 +674,10 @@ describe("since pieces and the view's `~` rows agree (CAR-218)", () => {
 	});
 	afterAll(() => r.cleanup());
 
-	it("every piece starts a view run; every whitespace-only piece's lines are `~` rows; none is when nothing was marked", async () => {
+	it("every piece starts a view run; every whitespace-only piece's lines are `~` rows; nothing marked, only re-indents of lines PS1 left alone are", async () => {
 		let flagged = 0;
 		let wsRows = 0;
+		let leftAlone = 0;
 		for (const marked of [true, false]) {
 			const view = await sinceView(
 				r.path,
@@ -689,14 +690,32 @@ describe("since pieces and the view's `~` rows agree (CAR-218)", () => {
 				const cut =
 					marked &&
 					Object.keys(view.traced.lineKeys.old[f.path] ?? {}).length > 0;
-				const seen = expectAgree(view.hunks(f.index), cut, f.path);
-				if (!marked) expect(seen.flagged).toBe(0);
+				const hunks = view.hunks(f.index);
+				const seen = expectAgree(hunks, cut, f.path);
+				if (!marked) {
+					// Each line of a flagged piece stands for a removed line
+					// no cluster of PS1 added (itself, or an added line's twin).
+					const addedThen = view.traced.lineKeys.old[f.path] ?? {};
+					for (const p of hunks.pieces ?? []) {
+						if (!p.whitespaceOnly) continue;
+						const all = hunks.hunks[p.hunk]?.lines ?? [];
+						const twins = matchDisplayHunk(all);
+						const n = size(p.old) + size(p.new);
+						for (const l of all.slice(p.line, p.line + n)) {
+							const old = l.kind === "add" ? twins.get(l) : l;
+							expect(old?.kind, f.path).toBe("del");
+							expect(addedThen[old?.oldNo as number], f.path).toBeUndefined();
+						}
+						leftAlone++;
+					}
+				}
 				flagged += seen.flagged;
 				wsRows += seen.wsRows;
 			}
 		}
 		expect(wsRows).toBeGreaterThan(0);
 		expect(flagged).toBeGreaterThan(0);
+		expect(leftAlone).toBeGreaterThan(0);
 	});
 });
 
@@ -825,6 +844,77 @@ describe("a run mixing a re-indent and a real edit (CAR-218)", () => {
 		expect(
 			(both.hunks(0).pieces ?? []).filter((p) => p.whitespaceOnly),
 		).toHaveLength(2);
+	});
+});
+
+describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
+	const head = Array.from({ length: 8 }, (_, i) => `head ${i + 1}`);
+	const mid = Array.from({ length: 8 }, (_, i) => `mid ${i + 1}`);
+	const tail = Array.from({ length: 8 }, (_, i) => `tail ${i + 1}`);
+	// a.ts: PS1 changes `old();` and leaves `load();` alone; PS2 keeps
+	// PS1's change and only re-indents `load();`. b.ts: PS1 never touches
+	// it; PS2 only re-indents `save();`. c.ts: PS1 changes `keep();`
+	// (left unmarked) and PS2 only re-indents PS1's line.
+	const files = (
+		load: string,
+		old: string,
+		save: string,
+		keep: string,
+	): Record<string, string> => ({
+		"a.ts": text([...head, old, ...mid, load, ...tail]),
+		"b.ts": text([...head, save, ...tail]),
+		"c.ts": text([...head, keep, ...tail]),
+	});
+	let r: GitFixture;
+	let a: Snapshot;
+	let b: Snapshot;
+	beforeAll(async () => {
+		r = createGitFixture([
+			{
+				message: "base",
+				files: files("load();", "old();", "save();", "keep();"),
+			},
+			{
+				message: "ps1",
+				files: files("load();", "new();", "save();", "kept();"),
+			},
+			{
+				message: "ps2",
+				files: files("  load();", "new();", "  save();", "  kept();"),
+			},
+		]);
+		const [b0, h1, h2] = r.shas as [string, string, string];
+		a = await buildSnapshot(r.path, b0, h1);
+		b = await buildSnapshot(r.path, b0, h2);
+	});
+	afterAll(() => r.cleanup());
+
+	const shape = (hunks: FileHunks) =>
+		(hunks.pieces ?? []).map((p) => [
+			hunks.hunks[p.hunk]?.lines
+				.slice(p.line, p.line + size(p.old) + size(p.new))
+				.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`),
+			p.whitespaceOnly === true,
+		]);
+	const at = (path: string) => b.files.findIndex((f) => f.path === path);
+
+	it("nothing marked in PS1: the re-indent is whitespace-only, as in the full diff", async () => {
+		const view = await sinceView(r.path, a, b, new Map());
+		expect(shape(view.hunks(at("a.ts")))).toEqual([
+			[["-load();", "+  load();"], true],
+		]);
+		expectAgree(view.hunks(at("a.ts")), true, "a.ts");
+		// A file PS1 never touched: the same.
+		expect(shape(view.hunks(at("b.ts")))).toEqual([
+			[["-save();", "+  save();"], true],
+		]);
+	});
+
+	it("a line PS1 changed, left unmarked, still counts when only re-indented since", async () => {
+		const view = await sinceView(r.path, a, b, new Map());
+		const pieces = view.hunks(at("c.ts")).pieces ?? [];
+		expect(pieces.length).toBeGreaterThan(0);
+		expect(pieces.filter((p) => p.whitespaceOnly)).toEqual([]);
 	});
 });
 
