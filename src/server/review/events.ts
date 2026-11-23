@@ -1280,7 +1280,12 @@ function parseAgentEvent(
 				anchor,
 				text: raw.text,
 				...extras,
-				...(suggests !== undefined ? { suggests: "resolve" as const } : {}),
+				// Only a GitHub thread has something to resolve: on code the
+				// field goes (the message stays), so a span conversation
+				// later linked to a thread never inherits a suggestion.
+				...(suggests !== undefined && anchor.subject === "thread"
+					? { suggests: "resolve" as const }
+					: {}),
 			};
 		}
 		case "agent-message": {

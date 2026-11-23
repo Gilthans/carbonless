@@ -919,9 +919,12 @@ question would be on someone else's behalf, or about a past moment.
   writes with MCP `open` on a GitHub thread (a new conversation, or one
   added to its conversation) may suggest it the same way, on the same rule
   (CAR-265); `open` on code refuses the marker, as code has nothing to
-  resolve. An `open` message that suggests stands like an answer that
-  does; one that doesn't never retracts a suggestion, as it answers
-  nothing. The suggestion shows, inside the reply,
+  resolve. An `open` message counts like an answer here: one that
+  suggests stands, and one that doesn't withdraws a standing suggestion,
+  so an older opinion never outlives a newer one (principle 2). On a
+  review-conversation request the agent judges at the head `progress`
+  gives (the comparison the reviewer asked in), never `review`'s newest
+  head. The suggestion shows, inside the reply,
   "Resolve By Agent Suggestion" and rings Resolve in `ok`; only the
   reviewer's press resolves, through the same GitHub write as Resolve. A
   thread conversation has no resolved state of its own: it folds and

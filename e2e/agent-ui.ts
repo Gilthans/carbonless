@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import {
@@ -6,6 +6,7 @@ import {
 	FAKE_ACP_BIN,
 	writeAcpScenario,
 } from "../test/fake-acp/scenario";
+import type { Scenario } from "../test/fake-gh/scenario";
 import { fileSection, openFiles } from "./files-ui";
 import {
 	test as base,
@@ -13,6 +14,7 @@ import {
 	expect,
 	OWNER_REPO,
 	PR_NUMBER,
+	type Pr,
 	type PrOptions,
 	runCli,
 	type Served,
@@ -350,3 +352,16 @@ export const setupDialog = (page: Page) =>
 /** The agent modal's connected view: the agent's status, Detach. */
 export const statusDialog = (page: Page) =>
 	page.getByRole("dialog", { name: "Review Agent", exact: true });
+
+/** Whether the fake gh has the PR's first thread resolved (its writes are kept in the scenario). */
+export function storedResolved(p: Pr): boolean | undefined {
+	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
+	const threads = (s.prs[7]?.graphql?.reviewThreads ?? []) as {
+		isResolved: boolean;
+	}[];
+	return threads[0]?.isResolved;
+}
+
+/** The fake gh's resolve mutations so far. */
+export const resolveWrites = (p: Pr) =>
+	(p.ghLog().match(/\bresolveReviewThread\(/g) ?? []).length;

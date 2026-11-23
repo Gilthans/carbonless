@@ -2563,6 +2563,34 @@ describe("AgentHost with a session joined through MCP", () => {
 				expect(t?.waiting).toBe(true);
 			});
 
+			it("joining a conversation the reviewer started meanwhile: the message there carries it", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				ghThread = ghFacts(false);
+				const { token, origin } = await holding();
+				let conv: Awaited<ReturnType<typeof host.open>> | undefined;
+				// The reviewer asks on the thread while open reads GitHub.
+				onThread = async (id) => {
+					conv = await host.open({
+						clientId: "q1",
+						text: "Is this fixed?",
+						thread: "PRRT_9",
+					});
+					return ghThreads.find((t) => t.id === id) ?? null;
+				};
+				const r = await host.sessionOpen(token, {
+					thread: "PRRT_9",
+					text: marked,
+				});
+				expect(conv).toBeDefined();
+				expect(r).toMatchObject({ thread: conv?.id, created: false });
+				const t = (await store.read()).find((x) => x.id === conv?.id);
+				expect(t?.messages.map((m) => [m.by, m.text, m.suggests])).toEqual([
+					["human", "Is this fixed?", undefined],
+					["ai", "Fixed in the viewed head.", "resolve"],
+				]);
+				expect(t?.messages[1]?.origin).toEqual(origin);
+			});
+
 			it("without the line, or with it mid-text, nothing is suggested", async () => {
 				ghThreads = [ghOn("PRRT_9")];
 				const { token } = await holding();

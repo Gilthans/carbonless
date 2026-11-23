@@ -480,7 +480,7 @@ export const SUGGEST_RESOLVE = "[suggest-resolve]";
  * `open` tool's description: reply's rule (threadPreamble), for the
  * comparison the question was asked in.
  */
-export const OPEN_SUGGEST_RESOLVE = `On a GitHub thread, end text with a line holding exactly \`${SUGGEST_RESOLVE}\` only when the thread is resolved in the code the reviewer is viewing, never for a fix that exists only in a later commit; the reviewer decides whether to resolve it. On code there is nothing to resolve: open refuses that line there.`;
+export const OPEN_SUGGEST_RESOLVE = `On a GitHub thread, end text with a line holding exactly \`${SUGGEST_RESOLVE}\` only when the thread is resolved at the head \`progress\` gives (the comparison the question you hold was asked in, which is \`view.right\` in a thread question; not \`review\`'s newest head), never for a fix that exists only in a later commit; the reviewer decides whether to resolve it. On code there is nothing to resolve: open refuses that line there.`;
 
 /**
  * Appended to JOINED_PREAMBLE for a conversation on a GitHub review thread

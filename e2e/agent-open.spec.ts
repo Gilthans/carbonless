@@ -1,11 +1,6 @@
-import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import { acpLog } from "../test/fake-acp/scenario";
-import {
-	reviewThread,
-	type Scenario,
-	threadComment,
-} from "../test/fake-gh/scenario";
+import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import {
 	ask,
 	CALC,
@@ -13,7 +8,9 @@ import {
 	expect,
 	fixture,
 	openFile,
+	resolveWrites,
 	reviewDrawer,
+	storedResolved,
 	test,
 } from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
@@ -332,15 +329,6 @@ test("from the review conversation the agent opens on a thread suggesting to res
 			],
 		},
 	});
-	const resolved = () => {
-		const sc = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-		const threads = (sc.prs[7]?.graphql?.reviewThreads ?? []) as {
-			isResolved: boolean;
-		}[];
-		return threads[0]?.isResolved;
-	};
-	const resolveWrites = () =>
-		(p.ghLog().match(/\bresolveReviewThread\(/g) ?? []).length;
 	await page.goto(s.url);
 	await chip(page).click();
 	const box = reviewDrawer(page).getByRole("textbox", { name: "Ask agent" });
@@ -363,15 +351,31 @@ test("from the review conversation the agent opens on a thread suggesting to res
 	);
 	await expect(panel).not.toContainText("[suggest-resolve]");
 	// The agent resolved nothing.
-	expect(resolved()).toBe(false);
-	expect(resolveWrites()).toBe(0);
+	expect(storedResolved(p)).toBe(false);
+	expect(resolveWrites(p)).toBe(0);
 	const resolve = card.getByRole("button", { name: "Resolve", exact: true });
+	await expect(resolve).toHaveClass(/ring-ok/);
+	// Stored, not just on screen: loaded afresh (the Overview without the
+	// cite's link, so the panel starts closed), the suggestion still stands.
+	await page.goto(s.url);
+	const handle = card.getByTestId("thread-agent-button");
+	await expect(handle).toHaveAttribute("aria-pressed", "false");
+	// Opening marks it seen and slides the panel in: both settle before the
+	// press, so the button isn't moving under the click.
+	const seen = page.waitForResponse(/\/agent\/threads\/[^/]+\/seen$/);
+	await handle.click();
+	await expect(panel).toHaveAttribute("data-open", "true");
+	await seen;
+	await page.waitForFunction(() => document.getAnimations().length === 0);
+	await expect(panel.getByTestId("agent-message-ai")).toHaveText(
+		/^Fixed in PS 1\.\s*Resolve By Agent Suggestion$/,
+	);
 	await expect(resolve).toHaveClass(/ring-ok/);
 	await panel
 		.getByRole("button", { name: "Resolve By Agent Suggestion" })
 		.click();
-	await expect.poll(resolved).toBe(true);
-	expect(resolveWrites()).toBe(1);
+	await expect.poll(() => storedResolved(p)).toBe(true);
+	expect(resolveWrites(p)).toBe(1);
 	await expect(card.getByTestId("thread-head")).toContainText(
 		"Resolved thread",
 	);

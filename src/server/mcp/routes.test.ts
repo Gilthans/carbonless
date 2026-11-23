@@ -191,6 +191,11 @@ describe("/mcp", () => {
 		// open on a GitHub thread may suggest resolving it, as reply may (CAR-265).
 		expect(desc("open")).toContain(OPEN_SUGGEST_RESOLVE);
 		expect(OPEN_SUGGEST_RESOLVE).toContain(SUGGEST_RESOLVE);
+		// Judged at the question's comparison (progress's head), never
+		// review's newest head: a fix only in a later push never suggests.
+		expect(desc("open")).toMatch(
+			/resolved at the head `progress` gives .*not `review`'s newest head\), never for a fix that exists only in a later commit/,
+		);
 		const fake = `${id}.${"A".repeat(43)}`;
 		for (const name of ["next", "threads", "review", "progress", "detach"]) {
 			const r = await call(client, name, { token: fake });
