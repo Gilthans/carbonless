@@ -357,6 +357,20 @@ describe("PatchsetGraph", () => {
 		]);
 	});
 
+	it("on a phone, the head as comparison target widens the slot so its connector keeps a line (CAR-266)", () => {
+		renderGraph(session([1], oid("f")), {
+			viewing: { kind: "head", oid: oid("f") },
+			base: { kind: "branch" },
+		});
+		expect(tail()).toHaveAttribute("data-state", "head");
+		expect(tail().className).toContain("w-[124px]");
+		expect(tail().className).not.toContain("w-[84px]");
+		expect(tail().className).toContain("sm:w-[150px]");
+		expect(screen.getByTestId("ps-conn-head").className).toContain(
+			"min-w-[26px]",
+		);
+	});
+
 	it("a newer head: the same slot holds the dashed connector with its count and the head dot", async () => {
 		renderGraph(session([1, 2], oid("f")), {
 			viewing: ps(2),

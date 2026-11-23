@@ -1194,7 +1194,14 @@ export function PatchsetGraph(props: {
 			<div
 				data-testid="ps-tail"
 				data-state={head ? "head" : upToDate ? "up-to-date" : "none"}
-				className="flex w-[84px] shrink-0 items-start sm:w-[150px]"
+				// On a phone the head dot's "comp. target" marker is wider than
+				// the slot leaves it: the slot widens while the head is the
+				// target, so its connector keeps a line to hover or tap (CAR-266).
+				className={`flex shrink-0 items-start sm:w-[150px] ${
+					head && sameViewing(head.viewing, comparison.viewing)
+						? "w-[124px]"
+						: "w-[84px]"
+				}`}
 			>
 				{head && headConnector ? (
 					<>
@@ -1202,6 +1209,7 @@ export function PatchsetGraph(props: {
 							c={headConnector}
 							phone={phone}
 							baseBranch={session.head?.baseBranch}
+							className="min-w-[26px]"
 						/>
 						{node(head)}
 					</>
