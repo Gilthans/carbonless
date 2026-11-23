@@ -284,7 +284,7 @@ test("images load only from the review's own files; a remote one on a click, htt
 
 ![remote](https://remote.example/r.png)
 `;
-	await pr({
+	const p = await pr({
 		base: { [README]: "# Images\n" },
 		baseBinary: { "img/logo.png": pngImage(40, 20, RED) },
 		files: [
@@ -338,6 +338,58 @@ test("images load only from the review's own files; a remote one on a click, htt
 	await holders.filter({ hasText: "remote.example" }).click();
 	await expect(imgs).toHaveCount(2);
 	await expect.poll(() => remote.length).toBe(1);
+	expect(offsite.every((u) => u.startsWith("https://remote.example/"))).toBe(
+		true,
+	);
+
+	// The since view: the same images, the same rules.
+	await marksReady(page, section);
+	await section
+		.getByRole("button", { name: "Mark remaining reviewed" })
+		.click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({
+		message: "retitle",
+		files: { [README]: IMAGES.replace("# Images", "# Images, again") },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, README);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	const sinceDoc = since.getByTestId("md-doc");
+	await expect(sinceDoc).toBeVisible(GIT_WAIT);
+	await shownAs(since, "markdown");
+	await expect(since.getByTestId("md-box")).toHaveCount(1);
+	// The unchanged images fold: open them.
+	for (const fold of await since.getByTestId("md-fold").all()) {
+		await fold.click();
+	}
+	const sinceImgs = sinceDoc.locator("img");
+	await expect(sinceImgs).toHaveCount(1);
+	const sinceSrc = (await sinceImgs.first().getAttribute("src")) ?? "";
+	expect(new URL(sinceSrc, origin).pathname).toMatch(/\/files\/\d+\/blob$/);
+	const sinceStills = sinceDoc.locator(".md-local-image");
+	await expect(sinceStills).toHaveCount(2);
+	await expect(sinceDoc.locator("button", { hasText: "x.png" })).toHaveCount(0);
+	await expect(sinceDoc.locator("button.md-remote-image")).toHaveCount(3);
+	await sinceDoc
+		.locator("button.md-remote-image")
+		.filter({ hasText: "data:" })
+		.click();
+	await expect(sinceImgs).toHaveCount(1);
 	expect(offsite.every((u) => u.startsWith("https://remote.example/"))).toBe(
 		true,
 	);
@@ -711,6 +763,39 @@ const brokenWords = (section: Locator) =>
 		return out;
 	});
 
+/**
+ * In a row with removed words and struck content (~~x~~): removed words
+ * red, tinted, a thick red line; struck content its own color and a thin
+ * line in it, never the removed words' nor the added words' look.
+ */
+async function expectStrikeApart(row: Locator) {
+	const styles = await row.evaluate((el) => {
+		const of = (e: Element | null) => {
+			const c = e ? getComputedStyle(e) : null;
+			return (
+				c && {
+					color: c.color,
+					background: c.backgroundColor,
+					line: c.textDecorationColor,
+					thickness: c.textDecorationThickness,
+				}
+			);
+		};
+		return {
+			removed: of(el.querySelector("del.md-del")),
+			added: of(el.querySelector("ins.md-ins")),
+			content: of(el.querySelector(".md-content del:not(.md-del)")),
+		};
+	});
+	expect(styles.removed).not.toBeNull();
+	expect(styles.content).not.toBeNull();
+	expect(styles.content?.color).not.toBe(styles.removed?.color);
+	expect(styles.content?.color).not.toBe(styles.added?.color);
+	expect(styles.content?.background).not.toBe(styles.removed?.background);
+	expect(styles.content?.line).not.toBe(styles.removed?.line);
+	expect(styles.content?.thickness).not.toBe(styles.removed?.thickness);
+}
+
 test("a table's rows line up as one table, scroll in their own box on a phone and never break a word, in the full diff and the since view; an added ~~strikethrough~~ reads apart from removed words", async ({
 	page,
 	pr,
@@ -747,34 +832,7 @@ test("a table's rows line up as one table, scroll in their own box on a phone an
 		await expectNoPageOverflow(page);
 	}
 	// The content's own strikethrough isn't the diff's removed mark.
-	const csv = block(section, "CSV");
-	const styles = await csv.evaluate((row) => {
-		const of = (el: Element | null) => {
-			const c = el ? getComputedStyle(el) : null;
-			return (
-				c && {
-					color: c.color,
-					background: c.backgroundColor,
-					line: c.textDecorationColor,
-					thickness: c.textDecorationThickness,
-				}
-			);
-		};
-		return {
-			removed: of(row.querySelector("del.md-del")),
-			added: of(row.querySelector("ins.md-ins")),
-			content: of(row.querySelector("ins.md-ins del:not(.md-del)")),
-		};
-	});
-	expect(styles.removed).not.toBeNull();
-	expect(styles.content).not.toBeNull();
-	// Removed words: red, tinted, a thick red line. Struck content: its
-	// own muted color and a thin line in it, on the added words' tint.
-	expect(styles.content?.color).not.toBe(styles.removed?.color);
-	expect(styles.content?.color).not.toBe(styles.added?.color);
-	expect(styles.content?.background).not.toBe(styles.removed?.background);
-	expect(styles.content?.line).not.toBe(styles.removed?.line);
-	expect(styles.content?.thickness).not.toBe(styles.removed?.thickness);
+	await expectStrikeApart(block(section, "CSV"));
 	await shot(section, `markdown-tables-${isMobile ? "phone" : "desktop"}`);
 
 	// The since view: the same.
@@ -785,7 +843,13 @@ test("a table's rows line up as one table, scroll in their own box on a phone an
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	p.moveHead({
 		message: "rework",
-		files: { [TABLES]: tablesDoc(PS2_WEEKDAY, VESSELS_NEW, CSV_NEW) },
+		files: {
+			[TABLES]: tablesDoc(
+				PS2_WEEKDAY,
+				VESSELS_NEW,
+				CSV_NEW.replace("March", "April"),
+			),
+		},
 	});
 	await page.reload();
 	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
@@ -806,7 +870,8 @@ test("a table's rows line up as one table, scroll in their own box on a phone an
 	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(section.getByTestId("md-doc")).toBeVisible(GIT_WAIT);
 	await shownAs(section, "markdown");
-	await expect(section.getByTestId("md-box")).toHaveCount(1);
+	await expect(section.getByTestId("md-box")).toHaveCount(2);
+	await expectStrikeApart(block(section, "CSV"));
 	const since = await routeColumns(section);
 	// The unchanged rows above fold away: the shown ones line up.
 	expect(since.tables).toBeGreaterThanOrEqual(3);
