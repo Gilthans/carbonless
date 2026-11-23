@@ -35,10 +35,11 @@ const GLYPH =
 const MARK = `text-invisible ${GLYPH}`;
 /**
  * An escape (a character that prints as nothing) sits on a faint chip: a
- * mark, not text. Its label is `muted`, never harder to see than the
- * `faint` it had (principle 2; theme.test.ts).
+ * mark, not text. Its label is a notch above the whitespace marks
+ * (`invisible-strong`), legible on every background (principle 2;
+ * theme.test.ts).
  */
-const ESCAPE = "rounded-sm bg-invisible/8 text-muted";
+const ESCAPE = "rounded-sm bg-invisible/10 text-invisible-strong";
 const BIDI = "rounded-sm bg-warn/15 text-warn";
 
 function Marker(props: { piece: Exclude<Piece, { kind: "text" }> }): ReactNode {

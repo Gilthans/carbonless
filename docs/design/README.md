@@ -18,7 +18,7 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | `line` / `line-strong` / `edge` | decorative dividers / outlines of controls (3:1) / floating layers, scrollbars. The file tree's resize handle is a `line` rule, `line-strong` under the pointer and `accent` (2px) while focused or dragged |
 | `ink` `ink-soft` `muted` `faint` | text, strongest to weakest (all 4.5:1 on every surface) |
 | `label` | letter-spaced violet capitals for section labels |
-| `invisible` | whitespace marks in code (spaces, tabs, line endings) and the 8% chip behind an escape's `muted` label, nothing else: a quiet stone grey, apart from the comment color and `faint`; not for text |
+| `invisible` `invisible-strong` | hidden characters in code, nothing else: near-neutral stone greys, apart from the comment color and `faint`; not for text. `invisible`: whitespace marks (spaces, tabs, line endings) and the 10% chip behind an escape; `invisible-strong`: the escape's label, a notch up |
 | `accent` `link` | focus rings, the pointed-at cluster rail, selected segment, current file; links. `accent` is also unread: the dot on an agent pill, handle or bubble (and in the file tree) for an agent message not seen yet, and the "new" rule above it; never a state |
 | `add-done` `del-done` | reviewed lines: quieter add/del tints, text at full contrast |
 | `ok-wash` | a finished file's header: an opaque green wash on `raised` (it sticks over the diff) |
@@ -68,14 +68,16 @@ a line's only change still shows), tabs as `\t` padded to the next tab stop (the
 `.editorconfig` `tab_width`, else a numeric `indent_size`, else 4; a
 config over 64 KB is ignored; wide
 characters and emoji count two columns), line endings as `\n` / `\r\n`,
-all in `invisible`: a quiet stone grey, upright, under `faint` and the
-syntax's italic blue-grey comments, so a mark never reads as code or as a
-comment (owner, 2026-11-22; 3:1 on every row, span and find, 2.5:1
-inside a word mark, `theme.test.ts`). Characters that would print as nothing or as a lookalike
+all in `invisible`: a muted stone grey, upright, well under `faint` and
+the syntax's italic blue-grey comments, so a mark never reads as code or as
+a comment (owner, 2026-11-22 and 2026-11-23: "a little more muted and
+subtle"; at most 70% of a comment's contrast, at least 2.5:1 on every row,
+span and find, 1.8:1 inside a word mark, `theme.test.ts`). Characters that would print as nothing or as a lookalike
 blank (controls, zero widths, BOM, soft hyphen, tags, unusual spaces,
-separators, stray variation selectors) show as `\uXXXX` in `muted` on an
-`invisible` chip (8%), never harder to see than the `faint` they had
-(principle 2), named in a tooltip (hover or tap); bidi controls get a `warn`
+separators, stray variation selectors) show as `\uXXXX` in
+`invisible-strong` on an `invisible` chip (10%), a notch above the
+whitespace marks and legible on every background (principle 2: 3:1 on
+rows, span and find, 2:1 inside a word mark), named in a tooltip (hover or tap); bidi controls get a `warn`
 tint and text instead. Settings' "Show
 hidden characters" switch hides only spaces, tabs, line endings and a
 file's byte order mark (a U+FEFF that starts its first line: encoding, not

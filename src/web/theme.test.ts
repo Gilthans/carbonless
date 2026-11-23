@@ -689,12 +689,12 @@ describe("diff colors", () => {
 	it("hidden-character marks are quieter than code and apart from comments, yet show on every line", () => {
 		// The owner (2026-11-22): "the hidden characters have the same design
 		// as comments. I'd like them to be more subtle, and distinct from code
-		// comments". Whitespace marks (spaces, tabs, line endings;
-		// src/web/code/Invisibles.tsx) take `invisible`: non-text glyphs, so
-		// 3:1 (WCAG 1.4.11) on every background a mark sits on, under every
-		// wash; inside a word tint (which itself says "changed") 2.5:1, 2:1
-		// under a wash. And under the comment color and `faint` on each row.
+		// comments"; then (2026-11-23) "Make the color a little more muted and
+		// subtle". Whitespace marks (spaces, tabs, line endings;
+		// src/web/code/Invisibles.tsx) take `invisible`; an escape's label
+		// takes `invisible-strong`, a notch up, on an invisible/10 chip.
 		const mark = token("invisible");
+		const strong = token("invisible-strong");
 		/** Every background a mark can sit on, under no wash, a thread's and a pick's. */
 		const PLAIN = [...CODE_BGS, "span", "find"];
 		const WORD = ["add-word", "del-word", "add-word-done", "del-word-done"];
@@ -706,40 +706,63 @@ describe("diff colors", () => {
 					color: washed(token(bg), wash),
 				})),
 			);
+		// Floors: still visible. A whitespace mark 2.5:1 on every row, span and
+		// find, under every wash; inside a word tint (which itself says
+		// "changed") 1.8:1, 1.6:1 under a wash.
 		for (const back of backs(PLAIN))
 			expect(
 				contrast(mark, back.color),
 				`invisible on ${back.name}`,
-			).toBeGreaterThanOrEqual(3);
+			).toBeGreaterThanOrEqual(2.5);
 		for (const back of backs(WORD))
 			expect(
 				contrast(mark, back.color),
 				`invisible on ${back.name}`,
-			).toBeGreaterThanOrEqual(back.wash ? 2 : 2.5);
-		for (const bg of CODE_BGS)
-			for (const louder of [SYNTAX.comment, token("faint"), token("code-ink")])
-				expect(
-					contrast(mark, token(bg)),
-					`invisible quieter than ${louder} on ${bg}`,
-				).toBeLessThan(contrast(louder, token(bg)));
-		// An escape (a character that prints as nothing: principle 2) never
-		// gets easier to miss: its `muted` label on its invisible/8 chip reads
-		// at least as well as the `faint` label it had, on every background.
+			).toBeGreaterThanOrEqual(back.wash ? 1.6 : 1.8);
+		// An escape (a character that prints as nothing: principle 2) stays
+		// legible: its label on its chip 3:1 on every row, span and find under
+		// every wash, 2:1 inside a word tint; and above the whitespace marks.
 		for (const back of backs([...PLAIN, ...WORD])) {
-			const chip = over(mark, 0.08, back.color);
+			const chip = over(mark, 0.1, back.color);
 			expect(
-				contrast(token("muted"), chip),
+				contrast(strong, chip),
 				`escape on its chip over ${back.name}`,
-			).toBeGreaterThanOrEqual(contrast(token("faint"), back.color));
-		}
-		// Not the comment's (or faint's) blue-grey: a near-neutral stone of
-		// another hue, so a mark never reads as commented code.
-		for (const other of [SYNTAX.comment, token("faint")]) {
-			expect(chroma(mark)).toBeLessThan(chroma(other) / 2);
-			expect(hueGap(mark, other), `hue apart from ${other}`).toBeGreaterThan(
-				90,
+			).toBeGreaterThanOrEqual(
+				PLAIN.some((b) => back.name.startsWith(`${b} `)) ? 3 : 2,
+			);
+			expect(contrast(strong, chip)).toBeGreaterThan(
+				contrast(mark, back.color),
 			);
 		}
+		// Ceilings: subtle. On each code row a whitespace mark has at most 70%
+		// of the comment color's contrast, an escape's label at most 85%; both
+		// under `faint` and code-ink.
+		for (const bg of CODE_BGS) {
+			const comment = contrast(SYNTAX.comment, token(bg));
+			expect(
+				contrast(mark, token(bg)),
+				`invisible on ${bg}`,
+			).toBeLessThanOrEqual(0.7 * comment);
+			const chip = over(mark, 0.1, token(bg));
+			expect(contrast(strong, chip), `escape on ${bg}`).toBeLessThanOrEqual(
+				0.85 * comment,
+			);
+			for (const louder of [token("faint"), token("code-ink")])
+				expect(
+					contrast(strong, chip),
+					`escape quieter than ${louder} on ${bg}`,
+				).toBeLessThan(contrast(louder, token(bg)));
+		}
+		// Not the comment's (or faint's) blue-grey: near-neutral stones of
+		// another hue, so a mark never reads as commented code.
+		for (const own of [mark, strong])
+			for (const other of [SYNTAX.comment, token("faint")]) {
+				expect(chroma(own)).toBeLessThan(chroma(other) / 3);
+				expect(
+					hueGap(own, other),
+					`${own} apart from ${other}`,
+				).toBeGreaterThan(90);
+			}
 		// Comments are italic in the syntax theme; marks stay upright (not-italic).
 		const comment = syntaxTheme.settings?.find((s) =>
 			[s.scope ?? []].flat().includes("comment"),

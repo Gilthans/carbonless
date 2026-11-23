@@ -233,9 +233,9 @@ test("code shows invisible characters, and copying gives back the original", asy
 		}
 	}
 
-	// An escape (prints as nothing) stays easy to see: a muted label, upright,
-	// on a chip; a bidi control keeps its warn.
-	const muted = await colorOf("text-muted");
+	// An escape (prints as nothing) stays easy to see: a label a notch above
+	// the whitespace marks, upright, on a chip; a bidi control keeps its warn.
+	const strong = await colorOf("text-invisible-strong");
 	const warn = await colorOf("text-warn");
 	const look = (kind: string) =>
 		section
@@ -250,7 +250,8 @@ test("code shows invisible characters, and copying gives back the original", asy
 				};
 			});
 	const escaped = await look("escape");
-	expect(escaped).toMatchObject({ color: muted, italic: false });
+	expect(escaped).toMatchObject({ color: strong, italic: false });
+	expect(escaped.color).not.toBe(invisible);
 	expect(escaped.chip).not.toBe("rgba(0, 0, 0, 0)");
 	expect((await look("bidi")).color).toBe(warn);
 
