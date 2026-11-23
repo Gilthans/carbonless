@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type {
 	DiffLine,
@@ -18,11 +19,13 @@ import type {
 	ReviewThread,
 	SessionInfo,
 } from "../../shared/types";
+import { agentThreadsQuery } from "../agent/api";
 import {
 	ASK_AGENT_ACTION,
 	getAgentComposers,
 	resetAgentComposers,
 } from "../agent/askAgentAction";
+import { type AgentPlacing, AgentPlacingProvider } from "../agent/placeable";
 import { ShortcutsProvider } from "../shortcuts";
 import { draftsFor } from "../threads/drafts";
 import { getComposers, resetComposers } from "../threads/newThreads";
@@ -32,7 +35,7 @@ import type { DiffThreads } from "./DiffBody";
 import { GoneFile } from "./FileDiff";
 import { setPicks } from "./linePicks";
 import { SelectionBar } from "./SelectionBar";
-import { registerSelectionAction } from "./selectionActions";
+import { FILE_NOT_IN_PR, registerSelectionAction } from "./selectionActions";
 import {
 	endMoveMode,
 	lineAt,
@@ -87,14 +90,15 @@ const HUNKS: FileHunks = {
 			newStart: 1,
 			newCount: 3,
 			lines: [
-				line("context", 1, 1, "one"),
+				// Lines PS1 left alone: PS1's own number too (a gone file's).
+				line("context", 1, 1, "one", { psKept: 1 }),
 				line("del", 2, undefined, "ps1 own", {
 					clusterKey: "g1",
 					baseNo: null,
 					psNo: 2,
 				}),
 				line("add", undefined, 2, "base two", { clusterKey: "g1" }),
-				line("context", 3, 3, "three"),
+				line("context", 3, 3, "three", { psKept: 3 }),
 			],
 		},
 	],
@@ -119,12 +123,12 @@ const overview = () =>
 		pendingReview: null,
 	}) as unknown as PrOverview;
 
-/** A thread made on PS1's head on its line 2 (RIGHT), the removed row here. */
-const ps1Thread = (): ReviewThread => ({
-	id: "T1",
+/** A thread made on PS1's head on its line `n` (RIGHT): 2 is the removed row here. */
+const ps1Thread = (n = 2, id = "T1"): ReviewThread => ({
+	id,
 	loaded: true,
 	path: PATH,
-	line: 2,
+	line: n,
 	currentLine: null,
 	excerpt: "why this line?",
 	html: "<p>why this line?</p>",
@@ -145,9 +149,9 @@ const ps1Thread = (): ReviewThread => ({
 		path: PATH,
 		commit: PS1,
 		side: "RIGHT",
-		line: 2,
+		line: n,
 		startSide: "RIGHT",
-		startLine: 2,
+		startLine: n,
 		at: "2026-01-01T00:00:00Z",
 	},
 	commit: PS1,
@@ -164,7 +168,37 @@ const OUTSIDE: ThreadPlacement = {
 	fate: "reverted",
 };
 
-function setup(threads: ReviewThread[] = [], placements?: Placements) {
+/** An agent conversation asked on PS1's head on its line 2 (a line only PS1 had). */
+const ps1Question = (): AgentThread => ({
+	id: "A1",
+	anchor: {
+		subject: "line",
+		path: PATH,
+		commit: PS1,
+		side: "RIGHT",
+		line: 2,
+		startSide: "RIGHT",
+		startLine: 2,
+	},
+	openedBy: "human",
+	at: "2026-01-01T00:00:00Z",
+	messages: [
+		{ id: "m1", by: "human", at: "2026-01-01T00:00:00Z", text: "why?" },
+	],
+	resolved: false,
+	waiting: true,
+	unread: false,
+});
+
+function setup(
+	threads: ReviewThread[] = [],
+	placements?: Placements,
+	more: {
+		agentThreads?: AgentThread[];
+		agentPlacing?: AgentPlacing;
+		moved?: ReadonlyMap<string, unknown>;
+	} = {},
+) {
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: RequestInfo | URL) => {
@@ -186,6 +220,11 @@ function setup(threads: ReviewThread[] = [], placements?: Placements) {
 		pr: { owner: "o", repo: "r", number: 1 },
 		patchsets: [{ number: 1, head: PS1 }],
 	} as unknown as SessionInfo);
+	if (more.agentThreads) {
+		client.setQueryData(agentThreadsQuery.queryKey, {
+			threads: more.agentThreads,
+		});
+	}
 	const placed = placements ?? new Map();
 	const diffThreads: DiffThreads = {
 		readId: "r",
@@ -193,7 +232,7 @@ function setup(threads: ReviewThread[] = [], placements?: Placements) {
 		// The outside thread isn't among the shown threads (shownThreads).
 		threads: [],
 		placements: placed,
-		earlierPending: earlierPending(threads, HEAD, placed, PS1),
+		earlierPending: earlierPending(threads, HEAD, placed, PS1, more.moved),
 	};
 	const moves: MoveWrites = {
 		to: { patchset: 2 },
@@ -206,25 +245,29 @@ function setup(threads: ReviewThread[] = [], placements?: Placements) {
 	render(
 		<QueryClientProvider client={client}>
 			<ShortcutsProvider>
-				<MoveWritesProvider value={moves}>
-					<GoneFile
-						index={INDEX}
-						path={PATH}
-						revision="r2"
-						since={1}
-						pieces={HUNKS.pieces}
-						expanded
-						threads={diffThreads}
-						headSure
-					/>
-					<SelectionBar
-						files={[]}
-						commit={HEAD}
-						headSure
-						earlier={PS1}
-						gonePaths={new Set([PATH])}
-					/>
-				</MoveWritesProvider>
+				<AgentPlacingProvider
+					value={more.agentPlacing ?? { placements: null, until: null }}
+				>
+					<MoveWritesProvider value={moves}>
+						<GoneFile
+							index={INDEX}
+							path={PATH}
+							revision="r2"
+							since={1}
+							pieces={HUNKS.pieces}
+							expanded
+							threads={diffThreads}
+							headSure
+						/>
+						<SelectionBar
+							files={[]}
+							commit={HEAD}
+							headSure
+							earlier={PS1}
+							gonePaths={new Set([PATH])}
+						/>
+					</MoveWritesProvider>
+				</AgentPlacingProvider>
 			</ShortcutsProvider>
 		</QueryClientProvider>,
 	);
@@ -294,9 +337,7 @@ describe("a gone file's rows (CAR-256)", () => {
 		const bar = within(await screen.findByTestId("selection-bar"));
 		const comment = bar.getByRole("button", { name: "Comment" });
 		expect(comment).toHaveAttribute("aria-disabled", "true");
-		expect(comment).toHaveAccessibleDescription(
-			"GitHub only takes comments on lines in the diff",
-		);
+		expect(comment).toHaveAccessibleDescription(FILE_NOT_IN_PR);
 		await user.click(comment);
 		expect(getComposers()).toEqual([]);
 		const ask = bar.getByRole("button", { name: "Ask agent" });
@@ -317,9 +358,7 @@ describe("a gone file's rows (CAR-256)", () => {
 		// Its Comment instead is off too, with why.
 		const instead = within(section).getByTestId("agent-composer-comment");
 		expect(instead).toHaveAttribute("aria-disabled", "true");
-		expect(instead).toHaveAccessibleDescription(
-			"GitHub only takes comments on lines in the diff",
-		);
+		expect(instead).toHaveAccessibleDescription(FILE_NOT_IN_PR);
 	});
 
 	it("a line only PS1 had: Comment opens its composer in the file, on PS1's commit at its line there", async () => {
@@ -353,6 +392,54 @@ describe("a gone file's rows (CAR-256)", () => {
 		});
 		await user.click(bubble);
 		expect(await screen.findAllByTestId("files-thread")).toHaveLength(1);
+	});
+
+	it("a thread made on PS1's head on a line PS1 left alone: its bubble on that context row", async () => {
+		const t = ps1Thread(3, "T3");
+		setup([t], new Map([[t.id, OUTSIDE]]));
+		await loaded();
+		expect(row("RIGHT", 3)).toHaveAttribute("data-commented", "");
+		expect(
+			within(row("RIGHT", 3)).getByRole("button", { name: /^1 comment/ }),
+		).toBeVisible();
+		expect(row("LEFT", 2)).not.toHaveAttribute("data-commented");
+	});
+
+	it("a thread the reviewer moved stays off its own line, its move deciding; one outside by another path too", async () => {
+		const t = ps1Thread();
+		setup([t], new Map([[t.id, OUTSIDE]]), {
+			moved: new Map([[t.id, {}]]),
+		});
+		await loaded();
+		expect(row("LEFT", 2)).not.toHaveAttribute("data-commented");
+		cleanup();
+		setup([t], new Map([[t.id, { ...OUTSIDE, path: "src/elsewhere.ts" }]]));
+		await loaded();
+		expect(row("LEFT", 2)).not.toHaveAttribute("data-commented");
+	});
+
+	it("an agent conversation asked on a line only PS1 had: on that removed row, pending and once placed outside", async () => {
+		for (const agentPlacing of [
+			{ placements: null, until: null, pending: true },
+			{ placements: new Map([["A1", OUTSIDE]]), until: null },
+		] satisfies AgentPlacing[]) {
+			setup([], undefined, { agentThreads: [ps1Question()], agentPlacing });
+			await loaded();
+			const bubble = within(row("LEFT", 2)).getByTestId("agent-bubble");
+			expect(bubble).toHaveAccessibleName(/^1 agent thread/);
+			cleanup();
+		}
+		// Moved by the reviewer: its move decides, never this row.
+		setup([], undefined, {
+			agentThreads: [ps1Question()],
+			agentPlacing: {
+				placements: new Map([["A1", OUTSIDE]]),
+				moves: new Map([["A1", {} as never]]),
+				until: null,
+			},
+		});
+		await loaded();
+		expect(within(row("LEFT", 2)).queryByTestId("agent-bubble")).toBeNull();
 	});
 
 	it("is no place for a thread: a drop finds no line, Place here is off with why", async () => {

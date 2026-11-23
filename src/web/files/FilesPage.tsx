@@ -447,6 +447,7 @@ function useDiffThreads(
 							snapshotHead,
 							placements,
 							earlierHead,
+							moves,
 						),
 					}
 				: undefined,

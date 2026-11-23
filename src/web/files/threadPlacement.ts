@@ -162,6 +162,8 @@ export function earlierPending(
 	snapshotHead: string,
 	placements: Placements | null,
 	earlierHead: string | undefined,
+	/** Threads the reviewer moved (CAR-139): their move decides, never their own line. */
+	moved?: ReadonlyMap<string, unknown> | null,
 ): ReviewThread[] {
 	if (earlierHead === undefined || earlierHead === snapshotHead) return [];
 	return threads.flatMap((t) => {
@@ -169,12 +171,9 @@ export function earlierPending(
 			t.commit !== earlierHead ||
 			t.subject !== "line" ||
 			t.anchor?.side !== "RIGHT" ||
-			t.anchor.startSide !== "RIGHT"
+			t.anchor.startSide !== "RIGHT" ||
+			!earlierUnplaced(t, placements, moved)
 		) {
-			return [];
-		}
-		const placed = placements?.get(t.id);
-		if (placed !== undefined && placed.kind !== "outside") {
 			return [];
 		}
 		let copy = earlierCopies.get(t);
@@ -184,6 +183,26 @@ export function earlierPending(
 		}
 		return [copy];
 	});
+}
+
+/**
+ * Whether a thread made on the compared patch set's head waits for its
+ * removed (or kept) row there (earlierPending): no placement yet, or one
+ * outside the comparison by its own path (a gone file's, CAR-256); never
+ * one the reviewer moved, whose move decides where it goes.
+ */
+export function earlierUnplaced(
+	t: { id?: string; path: string },
+	placements: Placements | null,
+	moved?: ReadonlyMap<string, unknown> | null,
+): boolean {
+	if (t.id === undefined) return false;
+	if (moved?.has(t.id)) return false;
+	const placed = placements?.get(t.id);
+	return (
+		placed === undefined ||
+		(placed.kind === "outside" && placed.path === t.path)
+	);
 }
 
 /** Every thread Files changed shows in the viewed snapshot's files (shownThread). */
@@ -362,7 +381,7 @@ export interface SinceEarlier {
 	row: (n: number) => number | null;
 }
 
-/** The since view's SinceEarlier, from its hunks' removed rows (`psNo`). */
+/** The since view's SinceEarlier, from its hunks' removed rows (`psNo`) and a gone file's kept ones (`psKept`). */
 export function sinceEarlier(
 	head: string,
 	hunks: readonly DisplayHunk[] | null | undefined,
@@ -370,9 +389,11 @@ export function sinceEarlier(
 	const rows = new Map<number, number>();
 	for (const h of hunks ?? []) {
 		for (const l of h.lines) {
-			if (l.psNo !== undefined && l.oldNo !== undefined) {
-				rows.set(l.psNo, l.oldNo);
-			}
+			if (l.oldNo === undefined) continue;
+			// A removed line only it had, or (a gone file's) a line it left
+			// alone (CAR-256).
+			const ps = l.psNo ?? l.psKept;
+			if (ps !== undefined) rows.set(ps, l.oldNo);
 		}
 	}
 	return { head, row: (n) => rows.get(n) ?? null };

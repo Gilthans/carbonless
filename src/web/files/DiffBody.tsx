@@ -83,6 +83,7 @@ import {
 } from "../agent/pendingThread";
 import {
 	type AgentPlaceable,
+	earlierAgentPending,
 	shownAgentPlaceables,
 	useAgentPlacing,
 } from "../agent/placeable";
@@ -2594,6 +2595,19 @@ export function DiffBody(props: {
 			),
 		[agentThreads, agentHeadNow, agentPlacing],
 	);
+	// Asked on the compared patch set's head on a line only it had (or a
+	// gone file's line it left alone): on that row, as review threads are
+	// (earlierPending, CAR-256).
+	const agentEarlier = useMemo(
+		() =>
+			earlierAgentPending(
+				agentThreads ?? [],
+				agentHeadNow ?? "",
+				agentPlacing,
+				earlierHead,
+			),
+		[agentThreads, agentHeadNow, agentPlacing, earlierHead],
+	);
 	const agentMine = agentComposerList.filter(
 		(c) => c.span.path === file.path && c.span.subject === "line",
 	);
@@ -2870,6 +2884,7 @@ export function DiffBody(props: {
 				spans: agentLineItems.map((c) => c.span as SpanRange),
 				sinceLeft: left,
 				sinceEarlier: early,
+				earlierPending: agentEarlier,
 			})
 		: null;
 	const [openAgent, setOpenAgent] = useState<ReadonlySet<LineKey>>(
@@ -2907,6 +2922,7 @@ export function DiffBody(props: {
 						: undefined,
 			headUnsure: props.headSure === false,
 			readOnly: props.readOnly === true,
+			gone: props.gone === true,
 		};
 	};
 	const agentRows: AgentRows | undefined = agentPlacement
@@ -3430,6 +3446,7 @@ export function DiffBody(props: {
 						: hunkList
 							? spanInHunks(span, hunkList)
 							: undefined,
+			gone: (span) => goneFile && span.path === file.path,
 		}),
 		[props.headSure, hunkList, file.path, goneFile],
 	);

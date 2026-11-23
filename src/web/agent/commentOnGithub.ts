@@ -39,6 +39,8 @@ import { useSendView } from "./threadAgent";
 export interface CommentScope {
 	headSure: boolean;
 	inDiff: (span: CodeSpan) => boolean | undefined;
+	/** The span is in a gone file (GoneFile, CAR-256): its reason. */
+	gone?: (span: CodeSpan) => boolean;
 }
 
 /**
@@ -85,6 +87,8 @@ export interface AgentCommentContext {
 	headUnsure?: boolean;
 	/** Both ends of the span are lines of GitHub's diff (undefined: unknown). */
 	inDiff?: boolean;
+	/** The span is in a gone file (GoneFile, CAR-256). */
+	gone?: boolean;
 	/**
 	 * The comparison the conversation was first asked in (its first
 	 * question's view): old lines name GitHub's base only when that was the
@@ -192,6 +196,7 @@ export function agentCommentAvailable(
 		readOnly: onScreen ? ctx.readOnly : ctx.version === "read-only",
 		headUnsure: onScreen ? ctx.headUnsure : false,
 		inDiff: onScreen ? ctx.inDiff : undefined,
+		gone: onScreen ? ctx.gone : undefined,
 	});
 	if (rule !== true) return rule;
 	if (!onScreen && ctx.version !== "commentable") {
@@ -264,6 +269,7 @@ export function useAgentComment(
 				readOnly,
 				headUnsure: !scope.headSure,
 				inDiff: scope.inDiff(span),
+				gone: scope.gone?.(span),
 				// Nowhere to go to another version: none takes the comment.
 				version:
 					session && (showVersion ? versionOf(session, commit) : "unknown"),

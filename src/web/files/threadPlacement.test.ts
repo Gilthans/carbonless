@@ -763,11 +763,32 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 				nearest: null,
 			},
 			{ kind: "file" as const, path: PATH },
+			{
+				kind: "placed" as const,
+				anchor: {
+					path: PATH,
+					startSide: "RIGHT" as const,
+					startLine: 51,
+					side: "RIGHT" as const,
+					line: 51,
+				},
+				changed: false as const,
+			},
+			// Outside by another path: a reviewer's move whose commits are gone.
+			{
+				kind: "outside" as const,
+				path: "other.ts",
+				fate: "rewritten" as const,
+			},
 		]) {
 			expect(
 				earlierPending([t], HEAD, new Map([[t.id, placement]]), PS1),
 			).toEqual([]);
 		}
+		// Moved by the reviewer: its move decides, never its own line.
+		expect(
+			earlierPending([t], HEAD, outside, PS1, new Map([[t.id, {}]])),
+		).toEqual([]);
 	});
 
 	it("pending PS1 threads with no removed row aren't shown, never as unplaced; a LEFT one never reads its PS1-base number in today's base (CAR-233)", () => {

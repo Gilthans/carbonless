@@ -3495,9 +3495,7 @@ test("a file back to the base's version since PS1 (gone from the full diff): its
 	await pick(headRow.getByTestId("new"));
 	const comment = bar.getByRole("button", { name: "Comment" });
 	await expect(comment).toHaveAttribute("aria-disabled", "true");
-	await expect(comment).toHaveAccessibleDescription(
-		"GitHub only takes comments on lines in the diff",
-	);
+	await expect(comment).toHaveAccessibleDescription("File no longer in the PR");
 	await bar.getByRole("button", { name: "Ask agent" }).click();
 	const asking = back.getByTestId("agent-composer");
 	const box = asking.getByRole("textbox", { name: "Ask your agent" });
@@ -3510,7 +3508,18 @@ test("a file back to the base's version since PS1 (gone from the full diff): its
 	).toHaveCount(1);
 	await expectNoPageOverflow(page);
 
-	// PS1's own line: on PS1's commit, RIGHT 3, an added line of its diff.
+	// PS1's own line: the agent is asked about it there, on PS1's commit.
+	await pick(own.getByTestId("old"));
+	await bar.getByRole("button", { name: "Ask agent" }).click();
+	const askingOwn = back.getByTestId("agent-composer");
+	await askingOwn
+		.getByRole("textbox", { name: "Ask your agent" })
+		.fill("Why was this here?");
+	await askingOwn.getByTestId("agent-composer-ask").click();
+	await expect(askingOwn).toHaveCount(0);
+	await expect(own.getByTestId("agent-bubble")).toBeVisible();
+
+	// And a comment: on PS1's commit, RIGHT 3, an added line of its diff.
 	await pick(own.getByTestId("old"));
 	await bar.getByRole("button", { name: "Comment" }).click();
 	const composer = back.getByTestId("new-thread");
@@ -3532,12 +3541,17 @@ test("a file back to the base's version since PS1 (gone from the full diff): its
 			body: expect.stringContaining("Why change it, then undo it?"),
 		}),
 	]);
-	// After a reload (the tracer places it outside the full diff): its
-	// bubble is on that row still, and it stays listed under Not in this
-	// comparison, never gone.
+	// After a reload, once the tracer has placed it outside the full diff
+	// (listed under Not in this comparison, never gone): its bubble is on
+	// that row still, and the agent's conversation on it.
 	await page.reload();
 	await expect(
 		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible(GIT_WAIT);
+	await expect(
+		page
+			.getByTestId("not-in-comparison")
+			.filter({ hasText: "Why change it, then undo it?" }),
 	).toBeVisible(GIT_WAIT);
 	const again = fileSection(page, BACK);
 	await again.getByRole("button", { name: "Expand file" }).click();
@@ -3545,6 +3559,7 @@ test("a file back to the base's version since PS1 (gone from the full diff): its
 		'tr[data-testid="diff-line"][data-kind="del"][data-old-no="3"]',
 	);
 	await expect(ownAgain).toHaveAttribute("data-commented", "", GIT_WAIT);
+	await expect(ownAgain.getByTestId("agent-bubble")).toBeVisible();
 	await ownAgain.getByRole("button", { name: /^1 comment/ }).click();
 	await expect(
 		again

@@ -613,6 +613,7 @@ export function SelectionBar(props: {
 					noLine: target.noLine ?? undefined,
 					headUnsure: props.headSure === false,
 					readOnly: props.readOnly === true,
+					gone: props.gonePaths?.has(target.span.path) === true,
 				}
 			: null;
 	const run = (action: SelectionAction) => {

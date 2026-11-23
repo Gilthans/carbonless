@@ -814,6 +814,94 @@ describe("the engine", () => {
 		}
 	});
 
+	it("a file back to the base's version since PS1, rebased between: its kept lines carry their PS1 numbers (psKept), a line the base added since none (CAR-256)", async () => {
+		const lines = Array.from({ length: 12 }, (_, i) => `l${i + 1}`);
+		const text = (ls: string[]) => `${ls.join("\n")}\n`;
+		const fx = createGitFixture([
+			{
+				message: "base",
+				files: { "a.txt": text(lines), "keep.txt": text(lines) },
+			},
+		]);
+		try {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: fx.path,
+					encoding: "utf8",
+					stdio: "pipe",
+					env: testGitEnv(),
+				}).trim();
+			const b1 = fx.shas[0] as string;
+			const write = (path: string, ls: string[]) =>
+				writeFileSync(join(fx.path, path), text(ls));
+			// PS1: line 5 of a.txt changed, keep.txt's line 2.
+			write(
+				"a.txt",
+				lines.map((l) => (l === "l5" ? "five" : l)),
+			);
+			write(
+				"keep.txt",
+				lines.map((l) => (l === "l2" ? "two" : l)),
+			);
+			git("commit", "--quiet", "-am", "PS1");
+			const h1 = git("rev-parse", "HEAD");
+			// B2: master puts three lines on top of a.txt.
+			git("checkout", "--quiet", "--detach", b1);
+			const masterLines = ["m1", "m2", "m3", ...lines];
+			write("a.txt", masterLines);
+			git("commit", "--quiet", "-am", "base: three on top");
+			const b2 = git("rev-parse", "HEAD");
+			// PS2 on B2: a.txt left as the base has it (gone), keep.txt as PS1.
+			write(
+				"keep.txt",
+				lines.map((l) => (l === "l2" ? "two" : l)),
+			);
+			git("commit", "--quiet", "-am", "PS2");
+			const h2 = git("rev-parse", "HEAD");
+			const ps1 = await buildSnapshot(fx.path, b1, h1);
+			const r = await buildSnapshot(fx.path, b2, h2);
+			const traced = await traceRereview(
+				fx.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const { answer } = answerRereview(
+				traced,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(r),
+			);
+			const gone = answer.files.find((f) => f.path === "a.txt");
+			expect(gone?.index).toBe(r.files.length);
+			const rows = interdiffFileHunks(
+				traced,
+				r,
+				answer,
+				gone?.index as number,
+			).hunks.flatMap((hk) => hk.lines);
+			const del = rows.find((l) => l.kind === "del");
+			expect(del).toMatchObject({ text: "five", psNo: 5 });
+			const kept = rows.filter((l) => l.kind === "context");
+			expect(kept.length).toBeGreaterThan(0);
+			for (const l of kept) {
+				// PS1's line l<N> is its line N, whatever the rebase's number.
+				expect(l.psKept, l.text).toBe(Number(l.text.slice(1)));
+			}
+			// A file still in the full diff carries none.
+			const still = r.files.find((f) => f.path === "keep.txt");
+			const stillRows = interdiffFileHunks(
+				traced,
+				r,
+				answer,
+				still?.index as number,
+			).hunks.flatMap((hk) => hk.lines);
+			expect(stillRows.some((l) => l.psKept !== undefined)).toBe(false);
+		} finally {
+			fx.cleanup();
+		}
+	});
+
 	it("a file renamed between PS1 and the head: PS1's own removed line has no line to name on PS1's commit by the head's path (psMoved, no psNo; CAR-233)", async () => {
 		const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
 		const text = (ls: string[]) => `${ls.join("\n")}\n`;
