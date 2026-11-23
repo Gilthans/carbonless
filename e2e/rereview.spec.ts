@@ -3427,3 +3427,86 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 	);
 	await expect(row61).toHaveAttribute("data-commented", "", GIT_WAIT);
 });
+
+/**
+ * CAR-254: an unsent draft on a line the since view shows removed keeps
+ * its base line (CAR-217's base number), never the compared patch set's:
+ * PS1 30 is base 20. The full diff shows the draft, its text kept, on its
+ * removed row 20 (row 30 there is another line), and posts it there.
+ */
+test("a draft on a line the since view shows removed stays on its base line: the full diff shows it on that line and posts it there (CAR-254)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [REMOVED]: text(numbered) },
+		files: [{ message: "PS1", files: { [REMOVED]: text(ps1Lines) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, REMOVED);
+	await boxes(first).first().click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [REMOVED]: text(ps2Lines) } });
+	const head = p.head();
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, REMOVED);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	const removedRow = (section: Locator, old: number) =>
+		section.locator(
+			`tr[data-testid="diff-line"][data-kind="del"][data-old-no="${old}"]`,
+		);
+	await expect(removedRow(since, 30)).toBeVisible(GIT_WAIT);
+	const number = removedRow(since, 30).getByTestId("old");
+	await removedRow(since, 30).evaluate((el) =>
+		el.scrollIntoView({ block: "center" }),
+	);
+	if (isMobile) await number.tap();
+	else await number.click();
+	const bar = page.getByTestId("selection-bar");
+	await bar.getByRole("button", { name: "Comment" }).click();
+	const composer = since.getByTestId("new-thread");
+	await expect(composer).toContainText("line 30, old");
+	await composer
+		.getByRole("textbox", { name: "Comment" })
+		.fill("Why drop line 20?");
+	// Unsent: the full diff shows it under base line 20's removed row.
+	// (The view's shortcut, not typed into the box.)
+	await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+	await toFullDiff(page);
+	const full = fileSection(page, REMOVED);
+	const expandFull = full.getByRole("button", { name: "Expand file" });
+	await expect(
+		full.getByTestId("diff-line").first().or(expandFull),
+	).toBeVisible(GIT_WAIT);
+	if (await expandFull.isVisible()) await expandFull.click();
+	const draft = full.getByTestId("new-thread");
+	await expect(draft).toHaveCount(1, GIT_WAIT);
+	await expect(draft).toContainText("line 20, old");
+	await expect(draft.getByRole("textbox", { name: "Comment" })).toHaveValue(
+		"Why drop line 20?",
+	);
+	await expect(removedRow(full, 20)).toHaveAttribute("data-commented", "");
+	await expect(full.getByTestId("orphan-draft")).toHaveCount(0);
+	// Posted from there: GitHub's LEFT 20 on the head, never LEFT 30.
+	await draft.getByRole("button", { name: "Comment" }).click();
+	await expect(full.getByTestId("new-thread")).toHaveCount(0);
+	await expect(
+		full.getByTestId("files-thread").filter({ hasText: "Why drop line 20?" }),
+	).toBeVisible();
+	expect(postedThreads(p)).toEqual([
+		expect.objectContaining({
+			line: 20,
+			diffSide: "LEFT",
+			commit: head,
+			body: expect.stringContaining("Why drop line 20?"),
+		}),
+	]);
+});
