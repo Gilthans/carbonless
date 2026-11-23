@@ -1,6 +1,7 @@
 import {
 	FileBinaryIcon,
 	FileCodeIcon,
+	FileIcon,
 	FileMediaIcon,
 	type Icon,
 	MirrorIcon,
@@ -44,6 +45,12 @@ const IMAGE: ViewOption = {
 	label: "Image",
 	icon: FileMediaIcon,
 };
+const RENDERED: ViewOption = {
+	id: "markdown",
+	renderer: "markdown",
+	label: "Rendered",
+	icon: FileIcon,
+};
 const OTHERS: Record<"text" | "binary", ViewOption> = {
 	text: { id: "text", renderer: "text", label: "Text", icon: FileCodeIcon },
 	binary: {
@@ -57,7 +64,8 @@ const OTHERS: Record<"text" | "binary", ViewOption> = {
 /**
  * The view switch's buttons for `file`: Image first (as Slider and Fade
  * when `modes`: two versions in the unified view; else one Image button),
- * then Text, then Binary, each only where `rendererChoices` offers it.
+ * or Rendered (a Markdown file), then Text, then Binary, each only where
+ * `rendererChoices` offers it.
  * None for a file with one renderer: it gets no switch at all.
  */
 export function viewOptions(file: RendererFile, modes: boolean): ViewOption[] {
@@ -65,6 +73,7 @@ export function viewOptions(file: RendererFile, modes: boolean): ViewOption[] {
 	if (choices.length < 2) return [];
 	const out: ViewOption[] = [];
 	if (choices.includes("image")) out.push(...(modes ? IMAGE_MODES : [IMAGE]));
+	if (choices.includes("markdown")) out.push(RENDERED);
 	for (const id of ["text", "binary"] as const)
 		if (choices.includes(id)) out.push(OTHERS[id]);
 	return out;

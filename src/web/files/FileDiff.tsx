@@ -68,8 +68,15 @@ import {
 	WhitespaceLeftOut,
 	whitespaceLeftOutLabel,
 } from "./ProgressBar";
-import { rendererChoices, rendererPicks, resolveRenderer } from "./renderers";
+import {
+	rendererChoices,
+	rendererFileIn,
+	rendererPicks,
+	resolveRenderer,
+} from "./renderers";
 import { ImageView } from "./renderers/image/ImageView";
+import type { ImageFile } from "./renderers/markdown/images";
+import { MarkdownView } from "./renderers/markdown/MarkdownView";
 import {
 	imageModesOf,
 	pressedView,
@@ -642,6 +649,8 @@ export function FileDiff(props: {
 	 * later restart the wait (UNDO_ARM_MS from then).
 	 */
 	ignoreMarksUntil?: number;
+	/** The review's files: a Markdown file's relative images load from them. */
+	files?: readonly ImageFile[];
 }) {
 	const { file, revision, readOnly } = props;
 	const [ownExpanded, setOwnExpanded] = useState(false);
@@ -661,16 +670,28 @@ export function FileDiff(props: {
 	// How the body shows the file (renderers/): the reviewer's pick for
 	// its path, else the renderer that claims it. Only the view: never a
 	// review state.
-	const resolved = resolveRenderer(file, rendererPicks.use(file.path));
+	// In the since view, Rendered goes by the since answer's flag.
+	const viewed = rendererFileIn(
+		file,
+		props.since === undefined ? undefined : props.sinceInfo,
+	);
+	const resolved = resolveRenderer(viewed, rendererPicks.use(file.path));
+	// A line target (a find's step, a thread link) shows the file as Text
+	// for the view: Image has no lines, and the Rendered view doesn't land
+	// on lines yet; so does a document Rendered can't show whole.
 	const asText = useLineTargetText(
-		resolved === "image" && rendererChoices(file).includes("text"),
+		(resolved === "image" || resolved === "markdown") &&
+			rendererChoices(viewed).includes("text"),
 		props.find,
 		props.landing,
 	);
 	const renderer = asText.on ? "text" : resolved;
 	// The image renderer reads no lines: its review rows and threads are
-	// DiffBody's, with the lines hidden.
-	const linesHidden = renderer === "image";
+	// DiffBody's, with the lines hidden. The Markdown one shows the lines'
+	// clusters on its blocks, and leaves the file's rows and threads to
+	// DiffBody the same way.
+	const markdown = renderer === "markdown";
+	const linesHidden = renderer === "image" || markdown;
 	// The image view's layout follows Settings' "Side by side", as code does.
 	const sideBySideOn = sideBySide.use();
 	// The view switch (renderers/ViewSwitch): in the image toolbar, or a
@@ -687,7 +708,7 @@ export function FileDiff(props: {
 	};
 	const viewSwitch = (modes: boolean) => (
 		<ViewSwitch
-			options={viewOptions(file, modes)}
+			options={viewOptions(viewed, modes)}
 			pressed={pressedView(renderer, mode, modes)}
 			onPick={pickView}
 		/>
@@ -696,12 +717,14 @@ export function FileDiff(props: {
 	// apply): decided once from the file's facts, so the switch keeps its
 	// shape in every view and state (principle 8: nothing moves).
 	const imageModes = imageModesOf(file, sideBySideOn);
-	const switchRow = !linesHidden && viewOptions(file, imageModes).length > 0;
+	const switchRow = !linesHidden && viewOptions(viewed, imageModes).length > 0;
 	const hunks = useQuery({
 		...hunksQuery(revision, file.index, props.since),
-		enabled: expanded && !linesHidden,
+		enabled: expanded && renderer !== "image",
 	});
-	const hunksPending = !linesHidden && hunks.isPending;
+	// The Rendered view reads the same hunks: its blocks arriving restart the
+	// wait for marks as lines do.
+	const hunksPending = renderer !== "image" && hunks.isPending;
 	const hunkData = linesHidden ? null : (hunks.data ?? null);
 	// Opened by a move-on, its lines (or what shows instead) arrive under the
 	// pointer once read: just as unseen, so they restart the wait for marks.
@@ -1204,7 +1227,8 @@ export function FileDiff(props: {
 		),
 	};
 
-	// Today's body (text, binary), or with its lines hidden (an image).
+	// Today's body (text, binary), or with its lines hidden (an image, a
+	// rendered Markdown file).
 	const body = (linesHidden?: true) => (
 		<DiffBody
 			lead={lead}
@@ -1222,6 +1246,7 @@ export function FileDiff(props: {
 			sinceMarks={props.sinceMarks}
 			readOnly={readOnly}
 			linesHidden={linesHidden}
+			linesElsewhere={linesHidden && markdown}
 		/>
 	);
 
@@ -1401,7 +1426,27 @@ export function FileDiff(props: {
 				</div>
 			)}
 			{expanded &&
-				(linesHidden ? (
+				(markdown ? (
+					<MarkdownView
+						file={file}
+						revision={revision}
+						sideBySide={sideBySideOn}
+						readOnly={readOnly}
+						onToggle={toggle}
+						onCrossOff={crossOff}
+						threads={props.threads}
+						find={props.find}
+						landing={props.landing}
+						view={viewSwitch(false)}
+						head={body(true)}
+						onShowText={asText.show}
+						from={props.since}
+						kinds={props.sinceInfo?.kinds}
+						onSinceMark={sinceMark}
+						sinceMarks={props.sinceMarks}
+						files={props.files}
+					/>
+				) : linesHidden ? (
 					<>
 						<ImageView
 							file={file}

@@ -2116,6 +2116,11 @@ export function DiffBody(props: {
 	 * its line threads listed under the header as a binary file's are.
 	 */
 	linesHidden?: boolean;
+	/**
+	 * With `linesHidden`: another renderer shows the lines (Markdown's
+	 * Rendered view), and says itself what the since view has to read.
+	 */
+	linesElsewhere?: boolean;
 }) {
 	const { file, revision, find, linesHidden } = props;
 	const read = useQuery({
@@ -3246,6 +3251,7 @@ export function DiffBody(props: {
 				)}
 			{/* Lines hidden too: with no file-level row, nothing else shows. */}
 			{props.from !== undefined &&
+				!props.linesElsewhere &&
 				hunks.data &&
 				hunks.data.hunks.length === 0 &&
 				fileClusters.length === 0 &&

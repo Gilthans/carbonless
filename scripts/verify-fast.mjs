@@ -57,6 +57,8 @@ const specs = readdirSync("e2e")
 // not untested; an entry with no specs, covered by unit tests alone. Files
 // outside src/, e2e/ and test/ (docs, scripts) run none.
 const E2E_MAP = [
+	// The Markdown renderer's Rendered view (CAR-167): its own spec.
+	[/^src\/web\/files\/renderers\/markdown\//, ["markdown-renderer"]],
 	// Marks carried onto split pieces (CAR-156). The split and the counted
 	// progress (src/shared/whitespace.ts, progress.ts) feed every page:
 	// left unmapped, they run every spec.

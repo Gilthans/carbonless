@@ -7,6 +7,7 @@ import {
 	DEL_OPEN,
 	INS_CLOSE,
 	INS_OPEN,
+	mergedSource,
 	newSide,
 	oldSide,
 	SENTINEL,
@@ -420,6 +421,11 @@ function sideOf(body: HTMLElement, keep: "del" | "ins"): string {
  * never a wrong picture; and no sentinel survives into the output.
  */
 export function renderMerged(src: string, opts: MergedOptions): string | null {
+	return mergedBody(src, opts)?.innerHTML ?? null;
+}
+
+/** `renderMerged`'s checked body, or null. */
+function mergedBody(src: string, opts: MergedOptions): HTMLElement | null {
 	if (!parseable(src.split("\n"))) return null;
 	const links = opts.links ?? {};
 	const body = (s: string): HTMLElement | null => {
@@ -444,10 +450,19 @@ export function renderMerged(src: string, opts: MergedOptions): string | null {
 		newBody.normalize();
 		if (sideOf(merged, "del") !== oldBody.innerHTML) return null;
 		if (sideOf(merged, "ins") !== newBody.innerHTML) return null;
-		return html;
+		return merged;
 	} catch {
 		return null;
 	}
+}
+
+/** `body` showing one side, its own marks kept: the other side's dropped. */
+function markedSide(body: HTMLElement, keep: "del" | "ins"): string {
+	const copy = body.cloneNode(true) as HTMLElement;
+	const drop = keep === "del" ? "ins.md-ins" : "del.md-del";
+	for (const el of copy.querySelectorAll(drop)) el.remove();
+	copy.normalize();
+	return copy.innerHTML;
 }
 
 const cleanLine = (l: string): string =>
@@ -529,7 +544,7 @@ const isMath = (src: string): boolean => {
 };
 
 /** The links every reference definition in the file declares. */
-function fileLinks(
+export function fileLinks(
 	lines: readonly string[],
 	blocks: readonly MdBlock[],
 ): Links {
@@ -625,4 +640,106 @@ export function renderBlocks(
 			return { index, html: sourcePre(src) };
 		}
 	});
+}
+
+/**
+ * One side's text and blocks, with what rendering a block of it reads of
+ * the whole file (its reference links, each table row's header), worked
+ * out once per file.
+ */
+export interface SideBlocks {
+	lines: readonly string[];
+	blocks: readonly MdBlock[];
+	links: Links;
+	headers: readonly (MdBlock | undefined)[];
+}
+
+export function sideBlocks(
+	lines: readonly string[],
+	blocks: readonly MdBlock[],
+): SideBlocks {
+	return {
+		lines,
+		blocks,
+		links: fileLinks(lines, blocks),
+		headers: tableHeaders(blocks),
+	};
+}
+
+/** A changed block with its words marked: both sides in one, and each alone. */
+export interface PairHtml {
+	/** Removed words in `del.md-del`, added ones in `ins.md-ins`. */
+	merged: string;
+	/** The old side with its removed words marked (side by side). */
+	old: string;
+	/** The new side with its added words marked. */
+	new: string;
+}
+
+const isContinuation = (b: MdBlock, own: readonly string[]) =>
+	b.kind === "list-item" && !LIST_MARKER.test(own[0] ?? "");
+
+const wrapBlock = (html: string, continuation: boolean, quotes: number) =>
+	requote(
+		continuation ? `<ul><li class="md-continuation">${html}</li></ul>` : html,
+		quotes,
+	);
+
+/**
+ * Old block `oi` paired with new block `ni` (the cut's pairing), as one
+ * block with the changed words marked (`mergedSource`, `renderMerged`), or
+ * null when the marks can't show the change faithfully (another kind, a
+ * code fence, a heading's level, another table header, other containers):
+ * the view then shows the old block struck above the new. Images resolve
+ * through `opts.image` on both sides.
+ */
+export function renderPair(
+	old: SideBlocks,
+	oi: number,
+	nu: SideBlocks,
+	ni: number,
+	opts: RenderOptions,
+): PairHtml | null {
+	const ob = old.blocks[oi];
+	const nb = nu.blocks[ni];
+	if (!ob || !nb || ob.kind !== nb.kind) return null;
+	try {
+		const uo = unwrap(old.lines, ob);
+		const un = unwrap(nu.lines, nb);
+		if (uo.quotes !== un.quotes) return null;
+		const continuation = isContinuation(nb, un.lines);
+		if (continuation !== isContinuation(ob, uo.lines)) return null;
+		let header: string | undefined;
+		if (nb.kind === "table-row") {
+			const oneRow = (b: MdBlock) => b.to === b.from;
+			if (oneRow(nb) !== oneRow(ob)) return null;
+			if (oneRow(nb)) {
+				const nh = nu.headers[ni];
+				const oh = old.headers[oi];
+				if (!nh || !oh) return null;
+				header = unwrap(nu.lines, nh).lines.join("\n");
+				if (unwrap(old.lines, oh).lines.join("\n") !== header) return null;
+			}
+		}
+		const merged = mergedSource(
+			uo.lines.join("\n"),
+			un.lines.join("\n"),
+			nb.kind,
+		);
+		if (merged === null) return null;
+		const body = mergedBody(merged, {
+			image: opts.image,
+			links: { ...old.links, ...nu.links },
+			...(header === undefined ? {} : { header }),
+		});
+		if (!body) return null;
+		const wrap = (html: string) => wrapBlock(html, continuation, un.quotes);
+		return {
+			merged: wrap(body.innerHTML),
+			old: wrap(markedSide(body, "del")),
+			new: wrap(markedSide(body, "ins")),
+		};
+	} catch {
+		return null;
+	}
 }

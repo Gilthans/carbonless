@@ -37,6 +37,13 @@ describe("viewOptions", () => {
 			true,
 			["slider", "fade", "binary"],
 		],
+		[
+			"a Markdown file cut at blocks: Rendered, then Text",
+			file("README.md", { markdownBlocks: true }),
+			false,
+			["markdown", "text"],
+		],
+		["a Markdown file over the cap", file("README.md"), true, []],
 		["a .ts file", file("a.ts"), true, []],
 		["an unknown text file", file("notes.txt"), true, []],
 		["an LFS pointer", file("a.png", { lfs: true }), true, []],

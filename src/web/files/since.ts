@@ -54,6 +54,11 @@ export interface FileSince {
 	kinds: Map<string, KindEntry>;
 	conflict: boolean;
 	/**
+	 * Its since pieces are cut at Markdown blocks (CAR-167, the since
+	 * answer's flag): the Rendered view is offered in this comparison.
+	 */
+	markdownBlocks?: true;
+	/**
 	 * The file's units (sinceUnits) not marked yet, by kind: what its
 	 * header chips count, dropping as pieces are marked; `carried` counts
 	 * the view's clusters that carry a mark (the view decides).
@@ -145,6 +150,7 @@ export function sinceByFile(
 		out.set(file.index, {
 			kinds: new Map(file.clusters.map((c) => [c.key, c])),
 			conflict: file.conflict,
+			...(file.markdownBlocks ? { markdownBlocks: true as const } : {}),
 			counts: {
 				reworked: 0,
 				new: 0,

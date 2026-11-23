@@ -1,0 +1,193 @@
+/*
+ * The Rendered view of a Markdown file (MarkdownView.tsx): a gutter for
+ * the boxes, then the block on its bar. Colors from the design tokens
+ * only (docs/design/README.md): green added, red removed, yellow changed.
+ */
+
+.md-row {
+	display: grid;
+	grid-template-columns: 44px minmax(0, 1fr);
+	align-items: start;
+}
+
+.md-gutter {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	padding-top: 6px;
+}
+
+.md-box {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+.md-body {
+	min-width: 0;
+	padding: 4px 12px 4px 12px;
+	border-left: 3px solid transparent;
+}
+
+.md-body.md-added {
+	border-left-color: var(--color-ok);
+	background-color: color-mix(in srgb, var(--color-add) 70%, transparent);
+}
+
+.md-body.md-removed {
+	border-left-color: var(--color-bad);
+	background-color: color-mix(in srgb, var(--color-del) 70%, transparent);
+}
+
+.md-body.md-changed {
+	border-left-color: var(--color-warn);
+}
+
+/* Removed blocks, and the old side struck above the new. */
+.md-content.md-old > * {
+	text-decoration: line-through;
+	text-decoration-color: var(--color-del-ink);
+}
+
+.md-body.md-changed .md-content.md-old {
+	border-left: 2px solid var(--color-del-gutter);
+	padding-left: 8px;
+	margin-bottom: 4px;
+}
+
+.md-body.md-changed .md-content.md-new {
+	border-left: 2px solid var(--color-add-gutter);
+	padding-left: 8px;
+}
+
+.md-content.markdown-body.markdown-body {
+	font-size: 14px;
+}
+
+.md-content.markdown-body.markdown-body > :first-child {
+	margin-top: 4px;
+}
+
+.md-content.markdown-body.markdown-body > :last-child {
+	margin-bottom: 4px;
+}
+
+/* Long lines, tables and code scroll inside their block, never the page. */
+.md-content.markdown-body.markdown-body :is(pre, table) {
+	max-width: 100%;
+	overflow-x: auto;
+}
+
+.md-content.markdown-body.markdown-body table {
+	display: block;
+	width: max-content;
+}
+
+.md-content.markdown-body.markdown-body img {
+	max-width: 100%;
+	height: auto;
+}
+
+/* Content's own <details> never hide a block's body (MarkdownView opens them). */
+.md-content summary {
+	cursor: default;
+}
+
+.md-content del.md-del {
+	background-color: var(--color-del-word);
+	color: var(--color-del-ink);
+	border-radius: 3px;
+	text-decoration: line-through;
+	box-decoration-break: clone;
+	-webkit-box-decoration-break: clone;
+}
+
+.md-content ins.md-ins {
+	background-color: var(--color-add-word);
+	color: var(--color-add-ink);
+	border-radius: 3px;
+	text-decoration: none;
+	box-decoration-break: clone;
+	-webkit-box-decoration-break: clone;
+}
+
+.md-content pre.md-source {
+	white-space: pre;
+	color: var(--color-code-ink);
+	background-color: var(--color-code);
+}
+
+.md-content li.md-continuation {
+	list-style: none;
+}
+
+/* A remote image: its URL, cut to the block's width; a click loads it. */
+.md-content button.md-remote-image {
+	display: inline-block;
+	max-width: 100%;
+	min-height: 40px;
+	padding: 0 10px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	vertical-align: middle;
+	border: 1px dashed var(--color-line-strong);
+	border-radius: 6px;
+	color: var(--color-muted);
+	background-color: var(--color-band);
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.md-content button.md-remote-image:hover {
+	color: var(--color-ink);
+}
+
+.md-fold-row {
+	padding: 4px 12px 4px 44px;
+}
+
+.md-fold {
+	display: flex;
+	width: 100%;
+	min-height: 40px;
+	align-items: center;
+	gap: 8px;
+	padding: 0 12px;
+	border-radius: 6px;
+	background-color: var(--color-hunk);
+	color: var(--color-muted);
+	font-size: 12.5px;
+	text-align: left;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.md-fold:hover {
+	color: var(--color-ink);
+}
+
+.md-fold:focus-visible {
+	outline: 2px solid var(--color-accent);
+}
+
+/*
+ * On touch the box and the cross-off are 40px targets each, side by side
+ * (ClusterControls): the gutter holds both, never over the block.
+ */
+@media (pointer: coarse) {
+	.md-row {
+		grid-template-columns: 84px minmax(0, 1fr);
+	}
+
+	/* The targets reach 10px past their glyphs: room for that in the row. */
+	.md-gutter {
+		gap: 20px;
+		padding: 10px 0;
+	}
+
+	.md-fold-row {
+		padding-left: 84px;
+	}
+}
