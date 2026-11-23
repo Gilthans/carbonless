@@ -14,7 +14,8 @@ import { stickyBottom } from "./scrollAnchor";
  * Started row; conversationLinks.ts) alike. Whatever holds the card opens
  * (a line's or a hidden run's bubble, the file bubble, a collapsed card,
  * a review thread's agent panel), and the card scrolls in just below the
- * sticky stack; a message named is outlined for a moment.
+ * sticky stack, and stays there while the page settles around it until
+ * the reviewer acts (keepInPlace); a message named is outlined for a moment.
  *
  * A request lasts until a card on screen takes it, however long the page
  * takes to place it (no timer), and no longer than the reviewer stays: it
@@ -245,6 +246,110 @@ function scrollUnder(el: Element, margin = 8) {
 	});
 }
 
+/** How many keepInPlace holds are on: the browser's scroll anchoring is off while any is. */
+let anchoringHolds = 0;
+
+/**
+ * The browser's scroll anchoring off on the page's scroller while a card is
+ * held in place (index.css: html[data-focus-hold] { overflow-anchor: none }),
+ * or back on with the last hold. Its own attribute: a pending thread's
+ * landing (pendingThread.ts, data-landing) turns it off and on by itself.
+ */
+function holdAnchoring(off: boolean): void {
+	anchoringHolds = Math.max(0, anchoringHolds + (off ? 1 : -1));
+	const root = document.documentElement;
+	if (anchoringHolds > 0) root.dataset.focusHold = "";
+	else delete root.dataset.focusHold;
+}
+
+/** What the reviewer does that ends keepInPlace: they move the page themselves. */
+const REVIEWER_INPUT = [
+	"wheel",
+	"touchstart",
+	"pointerdown",
+	"keydown",
+] as const;
+
+/**
+ * Keeps a card just scrolled in where it landed, below the sticky stack,
+ * while the page settles around it: whatever above it changes height (the
+ * tracer's placements answering move a thread out of the file bubble
+ * above it to the list under the header; the stack sticks or wraps), the
+ * page scrolls by as much, so the card asked for never ends up under the
+ * stack or out of view (CAR-239). The browser's scroll anchoring is off
+ * meanwhile (its adjustments would add to these). It lasts until the
+ * reviewer acts (a wheel, a touch, a click, a key), the page scrolls by
+ * anything else,
+ * `wanted` turns false (a newer request, a cancel, the card gone) or the
+ * returned stop is called. Checked in the frame after it starts and after
+ * each change to the document, never on a timer.
+ */
+export function keepInPlace(el: Element, wanted: () => boolean): () => void {
+	const offset = () => el.getBoundingClientRect().top - stickyBottom(el);
+	const landed = offset();
+	let frame = 0;
+	let stopped = false;
+	/** Where it left the page: a scroll elsewhere, with nothing changed, isn't its own. */
+	let leftAt = window.scrollY;
+	const check = () => {
+		frame = 0;
+		if (stopped) return;
+		if (!wanted()) {
+			stop();
+			return;
+		}
+		const delta = offset() - landed;
+		if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
+		leftAt = window.scrollY;
+	};
+	const changed = () => {
+		if (!stopped && frame === 0) frame = requestAnimationFrame(check);
+	};
+	// The browser's own scroll anchoring stays out while it holds, so the
+	// page moves only by its scrolls or someone else's: any scroll not to
+	// where it left the page is someone else's (the scrollbar dragged, a
+	// find step, a screen reader, a status-bar tap), and it lets go.
+	holdAnchoring(true);
+	const scrolled = () => {
+		if (Math.abs(window.scrollY - leftAt) >= 1) stop();
+	};
+	window.addEventListener("scroll", scrolled, { passive: true });
+	const mutations = new MutationObserver(changed);
+	mutations.observe(document.documentElement, {
+		childList: true,
+		subtree: true,
+		attributes: true,
+		characterData: true,
+	});
+	const sizes =
+		typeof ResizeObserver === "undefined" ? null : new ResizeObserver(changed);
+	sizes?.observe(document.documentElement);
+	const unsubscribe = threadFocus.subscribe(() => {
+		if (!wanted()) stop();
+	});
+	const options = { capture: true, passive: true } as const;
+	function stop() {
+		if (stopped) return;
+		stopped = true;
+		if (frame !== 0) cancelAnimationFrame(frame);
+		mutations.disconnect();
+		sizes?.disconnect();
+		unsubscribe();
+		window.removeEventListener("scroll", scrolled);
+		holdAnchoring(false);
+		for (const type of REVIEWER_INPUT) {
+			window.removeEventListener(type, stop, options);
+		}
+	}
+	for (const type of REVIEWER_INPUT) {
+		window.addEventListener(type, stop, options);
+	}
+	// Once in the next frame whatever happens: the stack may settle (the
+	// opened file's header sticks) with nothing to observe.
+	changed();
+	return stop;
+}
+
 /**
  * The pending request matching `matches`, once per request, on the page
  * showing: what a container (a file's bubbles, a review thread's agent
@@ -314,9 +419,13 @@ export function useFocusCard(
 	const frames = useRef<number[]>([]);
 	// This card, as the store knows who took a request.
 	const owner = useRef({});
+	// Keeping it where it landed (keepInPlace), until the reviewer acts.
+	const hold = useRef<(() => void) | null>(null);
 	useEffect(
 		() => () => {
 			for (const f of frames.current) cancelAnimationFrame(f);
+			hold.current?.();
+			hold.current = null;
 			// Gone right after taking it (moved elsewhere): the copy that
 			// shows it now takes it again.
 			threadFocus.release(owner.current);
@@ -345,15 +454,16 @@ export function useFocusCard(
 					return;
 				}
 				scrollUnder(el);
-				// The stack may still settle (the opened file's header sticks,
-				// a bar wraps): once more, if the card ended up under it.
-				const again = requestAnimationFrame(() => {
-					if (threadFocus.latest() !== hit.seq || !onScreen(el)) return;
-					if (el.getBoundingClientRect().top < stickyBottom(el) - 1) {
-						scrollUnder(el);
-					}
-				});
-				frames.current = [again];
+				// The page may still settle under it (the opened file's header
+				// sticks, a bar wraps, the placements answer and move the
+				// threads above it): it stays where it landed until the
+				// reviewer acts (CAR-239).
+				hold.current?.();
+				hold.current = keepInPlace(
+					el,
+					() => threadFocus.latest() === hit.seq && onScreen(el),
+				);
+				frames.current = [];
 			});
 			frames.current = [inner];
 		});

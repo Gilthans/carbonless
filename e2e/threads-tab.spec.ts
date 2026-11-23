@@ -617,6 +617,82 @@ test.describe("every kind of thread opens, in view", () => {
 			page.getByTestId("unplaced-thread").filter({ hasText: "Outside note" }),
 		);
 	});
+
+	test("a card asked for stays in view as the placements, answering as it lands, move the threads above it (CAR-239)", async ({
+		page,
+		pr,
+		startCrb,
+	}) => {
+		const p = await pr(kinds);
+		const on = { commit: p.head(), diffHunk: "" };
+		p.editScenario((sc) => {
+			const graph = sc.prs[p.number]?.graphql;
+			if (!graph) throw new Error("no PR in the scenario");
+			graph.reviewThreads = [
+				reviewThread({ path: C, line: 20, subjectType: "LINE" }, [
+					threadComment({
+						login: "gapper",
+						text: "Gap note",
+						createdAt: "2026-01-04T10:00:00Z",
+						...on,
+					}),
+				]),
+				reviewThread({ path: C, line: 500, subjectType: "LINE" }, [
+					threadComment({
+						login: "ender",
+						text: "Past the end",
+						createdAt: "2026-01-04T10:03:00Z",
+						...on,
+					}),
+				]),
+				reviewThread({ path: C, line: null, subjectType: "FILE" }, [
+					threadComment({
+						login: "filer",
+						text: "File note",
+						createdAt: "2026-01-04T10:02:00Z",
+						...on,
+					}),
+				]),
+			];
+		});
+		// The placements held: until they answer, the thread past the end
+		// waits in the file bubble, above the file comment's card.
+		let answer = () => {};
+		const held = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		await page.route("**/api/placements?*", async (route) => {
+			await held;
+			await route.continue();
+		});
+		const s = await startCrb();
+		await installClock(page);
+		await openFiles(page, s.url);
+		const section = fileSection(page, C);
+		const card = section
+			.getByTestId("files-thread")
+			.filter({ hasText: "File note" });
+		// The page read further down first (a thread in the hidden lines),
+		// so the file comment's card lands under the sticky stack with the
+		// file bubble's other card above it, scrolled past.
+		await jump(page, /last by gapper/);
+		await expectShown(
+			section.getByTestId("files-thread").filter({ hasText: "Gap note" }),
+		);
+		await jump(page, /last by filer/);
+		// They answer as the card is taken and scrolled in: the thread past
+		// the end (the newest, so above the card in the file bubble) leaves
+		// the bubble for the list under the header. The page moved under
+		// the card by as much and left it under the sticky stack, now and
+		// then (CAR-239: CI, and 1 in 16 locally, on the phone).
+		answer();
+		await expect(
+			section
+				.getByTestId("unplaced-thread")
+				.filter({ hasText: "Past the end" }),
+		).toBeAttached();
+		await expectShown(card);
+	});
 });
 
 test.describe("on the reviewer's agent threads", () => {
