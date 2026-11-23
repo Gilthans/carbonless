@@ -270,6 +270,43 @@ describe("when the placements fail", () => {
 });
 
 describe("PlacementChip", () => {
+	it("an old-side thread still waiting for its hunk spins though the answer is in; an unchecked one is flagged (CAR-8)", () => {
+		const t = thread();
+		const { rerender } = render(
+			wrap(
+				info({
+					pending: false,
+					placements: new Map([[t.id, { kind: "pending", path: "a.ts" }]]),
+				}),
+				<PlacementChip thread={t} />,
+			),
+		);
+		expect(
+			screen.getByRole("status", { name: "Placing threads" }),
+		).toBeTruthy();
+		const anchor = {
+			path: "a.ts",
+			startSide: "LEFT" as const,
+			startLine: 3,
+			side: "LEFT" as const,
+			line: 3,
+		};
+		rerender(
+			wrap(
+				info({
+					placements: new Map([
+						[t.id, { kind: "placed", anchor, changed: false, unchecked: true }],
+					]),
+				}),
+				<PlacementChip thread={t} />,
+			),
+		);
+		expect(screen.queryByRole("status")).toBeNull();
+		expect(screen.getByTestId("placement-unchecked").textContent).toContain(
+			"unchecked",
+		);
+	});
+
 	it("spins in its slot while pending, says changed since, a fate, or nothing", () => {
 		const t = thread();
 		const { rerender } = render(
@@ -391,6 +428,7 @@ const SENTENCES: [Fate | null, string][] = [
 	],
 	["file-gone", "Commented file has been deleted since the review"],
 	["base-unknown", "Couldn't find the base the commented old line was on"],
+	["check-failed", "Couldn't check the commented old line against GitHub"],
 	[null, "Couldn't work out where this thread is now"],
 ];
 

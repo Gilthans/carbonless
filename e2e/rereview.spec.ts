@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
-import { reviewThread, threadComment } from "../test/fake-gh/scenario";
+import { release, reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { type FixtureCommit, testGitEnv } from "../test/git-fixture";
 import {
 	clicksReady,
@@ -3462,6 +3462,15 @@ test("a LEFT thread is placed where GitHub's hunk shows its line, not by its num
 				diffHunk: "@@ -15,3 +15,3 @@\n line 18\n line 19\n line 20",
 			}),
 		]),
+		// A hunk whose lines are nowhere: base unknown, on no line.
+		reviewThread({ path: FILE, line: 25, diffSide: "LEFT" }, [
+			threadComment({
+				login: "rev1",
+				text: "Where is this?",
+				commit: p.head(),
+				diffHunk: "@@ -23,3 +23,3 @@\n gone 23\n gone 24\n gone 25",
+			}),
+		]),
 	);
 	p.editScenario((sc) => {
 		const graph = sc.prs[p.number]?.graphql;
@@ -3503,6 +3512,14 @@ test("a LEFT thread is placed where GitHub's hunk shows its line, not by its num
 		await expect(
 			section.locator('tr[data-testid="diff-line"][data-commented]'),
 		).toHaveCount(1);
+		// The other: listed unplaced with its fate, on no row.
+		const lost = section.locator(
+			'[data-testid="unplaced-thread"][data-fate="base-unknown"]',
+		);
+		await expect(lost).toHaveCount(1);
+		await expect(lost.getByTestId("unplaced-fate")).toHaveText(
+			"Couldn't find the base the commented old line was on",
+		);
 	};
 	// The since view (PS1 → PS2): the removed base line 20.
 	await toast(page).getByRole("button", { name: "View" }).click();
@@ -3513,4 +3530,80 @@ test("a LEFT thread is placed where GitHub's hunk shows its line, not by its num
 	// The full diff (base → PS2): the same base line.
 	await toFullDiff(page);
 	await onLine20();
+});
+
+/**
+ * CAR-8: an old-side thread waits for GitHub's hunk (its comment's text):
+ * meanwhile a spinner under its file, on no line (never its raw number),
+ * then its place.
+ */
+test("an old-side thread waiting for GitHub's hunk shows a spinner under its file, on no line, then its place (CAR-8)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const FILE = "src/left.txt";
+	const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+	const p = await pr({
+		base: { [FILE]: text(lines) },
+		files: [
+			{
+				message: "PS1",
+				files: { [FILE]: text(lines.map((l, i) => (i === 4 ? "five" : l))) },
+			},
+		],
+	});
+	const h1 = p.head();
+	p.moveHead({
+		message: "PS2",
+		files: {
+			[FILE]: text(
+				lines
+					.map((l, i) => (i === 4 ? "five" : l))
+					.filter((l) => l !== "line 20"),
+			),
+		},
+	});
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (graph) {
+			graph.reviewThreads = [
+				reviewThread({ path: FILE, line: 17, diffSide: "LEFT" }, [
+					threadComment({
+						login: "rev1",
+						text: "Why line 20?",
+						commit: h1,
+						diffHunk: "@@ -15,3 +15,3 @@\n line 18\n line 19\n line 20",
+					}),
+				]),
+			];
+		}
+		sc.hold = ["threadContent"];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, FILE);
+	const expandIt = section.getByRole("button", { name: "Expand file" });
+	await expect(
+		section.getByTestId("diff-line").first().or(expandIt),
+	).toBeVisible(GIT_WAIT);
+	if (await expandIt.isVisible()) await expandIt.click();
+	await expect(section.getByTestId("diff-line").first()).toBeVisible(GIT_WAIT);
+	await expectLoadingThen({
+		loading: section
+			.getByTestId("placing-thread")
+			.getByRole("status", { name: "Placing thread" }),
+		// Never on a line (its raw LEFT 17 or any other) while it waits.
+		empty: [
+			section.locator('tr[data-testid="diff-line"][data-commented]'),
+			section.getByTestId("unplaced-thread"),
+		],
+		release: () => release(p.scenarioPath, "threadContent"),
+		result: section.locator(
+			'tr[data-testid="diff-line"][data-kind="del"][data-old-no="20"][data-commented]',
+		),
+	});
+	await expect(
+		section.locator('tr[data-testid="diff-line"][data-commented]'),
+	).toHaveCount(1);
 });

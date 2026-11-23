@@ -525,17 +525,44 @@ export class OverviewRead {
 
 	/**
 	 * GitHub's diff hunk of thread `id`'s opening comment, once its text is
-	 * in (joining the background read that brings it; never a read of its
-	 * own); "" when GitHub gave none, the read failed or the thread is gone.
+	 * in: joining the background read that brings it, and when that failed,
+	 * one retry (as `comments` does), batched with the other threads asking
+	 * at the same time. "" when GitHub gave none or the thread is gone;
+	 * null when its text couldn't be read (never taken for "none", CAR-8).
 	 */
-	async hunk(id: string): Promise<string> {
+	async hunk(id: string): Promise<string | null> {
 		await this.#stages.summary.catch(() => {});
 		await this.#textsStarted.catch(() => {});
 		if (this.#content(id) === undefined) {
 			await this.#reading.get(id)?.catch(() => {});
 		}
+		if (this.#content(id) === undefined) {
+			await (this.#reading.get(id) ?? this.#retryText(id)).catch(() => {});
+		}
 		const content = this.#content(id);
-		return content === GONE || content === undefined ? "" : hunkOf(content);
+		if (content === undefined) return null;
+		return content === GONE ? "" : hunkOf(content);
+	}
+
+	/** Ids whose text is to be read again, in one batch (hunk). */
+	#retrying: { ids: string[]; read: Promise<void> } | null = null;
+
+	#retryText(id: string): Promise<void> {
+		if (!this.#retrying) {
+			const batch: { ids: string[]; read: Promise<void> } = {
+				ids: [],
+				read: Promise.resolve(),
+			};
+			batch.read = new Promise<void>((r) => setTimeout(r, 0)).then(() => {
+				if (this.#retrying === batch) this.#retrying = null;
+				const ids = batch.ids.filter((i) => !this.#reading.has(i));
+				return ids.length > 0 ? this.#readText(ids) : undefined;
+			});
+			this.#retrying = batch;
+		}
+		const batch = this.#retrying;
+		batch.ids.push(id);
+		return batch.read;
 	}
 
 	#view(): ThreadsView {

@@ -88,8 +88,9 @@ let ids = 0;
 function leftThread(
 	commit: string,
 	line: number,
-	hunk: string | undefined,
+	hunk: string | null | undefined,
 	at = "2026-01-05T00:00:00Z",
+	retargeted?: boolean,
 ): TraceableThread {
 	ids += 1;
 	const anchor: CodeAnchor = {
@@ -108,6 +109,9 @@ function leftThread(
 		createdAt: at,
 		anchor,
 		...(hunk === undefined ? {} : { hunk: async () => hunk }),
+		...(retargeted === undefined
+			? {}
+			: { retargetedSince: async () => retargeted }),
 	};
 }
 
@@ -173,6 +177,7 @@ describe("LEFT threads' old side (CAR-8)", () => {
 		const target = await buildSnapshot(repo.path, B0, H0);
 		const got = await place(target, B0, leftThread(H0, 10, ""));
 		expect(got).toMatchObject(leftAt(10));
+		expect(got).not.toHaveProperty("unchecked");
 	});
 
 	it("an empty hunk after the base absorbed the PR's first commit: traced from the base as it stood then, not today's merge base", async () => {
@@ -182,7 +187,7 @@ describe("LEFT threads' old side (CAR-8)", () => {
 		const target = await buildSnapshot(repo.path, P, Hp);
 		expect(target.base).toBe(P);
 		const got = await place(target, Babs, leftThread(Hp, 10, ""));
-		expect(got).toMatchObject(leftAt(13));
+		expect(got).toMatchObject({ ...leftAt(13), unchecked: true });
 	});
 
 	it("a hunk on the base then agrees with the trace from it", async () => {
@@ -196,5 +201,32 @@ describe("LEFT threads' old side (CAR-8)", () => {
 		const got = await place(target, B1, leftThread(Hm, 10, undefined));
 		// Its own number, on the merge base: B1's line 10 ("l 7", context).
 		expect(got).toMatchObject({ kind: "placed", anchor: { line: 10 } });
+	});
+
+	it("an empty hunk after the base was retargeted since the comment: the base then is unknown, traced as before from today's merge base, unmarked", async () => {
+		const target = await buildSnapshot(repo.path, P, Hp);
+		const got = await place(
+			target,
+			Babs,
+			leftThread(Hp, 10, "", "2026-01-05T00:00:00Z", true),
+		);
+		expect(got).toMatchObject({ kind: "placed", anchor: { line: 10 } });
+		expect(got).not.toHaveProperty("unchecked");
+	});
+
+	it("a hunk with text but no header can't be read for its lines: base unknown, never placed by number", async () => {
+		const target = await buildSnapshot(repo.path, B0, H0);
+		const got = await place(
+			target,
+			B0,
+			leftThread(H0, 10, " l 8\n l 9\n-l 10"),
+		);
+		expect(got).toMatchObject({ kind: "unplaced", fate: "base-unknown" });
+	});
+
+	it("a hunk that couldn't be read: unplaced as not checked, never placed by number", async () => {
+		const target = await buildSnapshot(repo.path, B0, H0);
+		const got = await place(target, B0, leftThread(H0, 10, null));
+		expect(got).toMatchObject({ kind: "unplaced", fate: "check-failed" });
 	});
 });

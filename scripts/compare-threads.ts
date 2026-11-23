@@ -346,6 +346,8 @@ export function placementCell(p: ThreadPlacement): string {
 			return `outside ${p.fate}`;
 		case "file":
 			return "file";
+		case "pending":
+			return "pending";
 	}
 }
 
@@ -407,16 +409,21 @@ export function placementAgreement(
 	}
 }
 
-/** Placements into `head`, once the session's background job has them. */
-async function placedInto(
-	session: Session,
+/**
+ * Placements into `head`, once the session's background job has them all
+ * (`complete`): a partial answer lacks the old-side threads still waiting
+ * for their hunks (CAR-8) and the resolved ones.
+ */
+export async function placedInto(
+	session: Pick<Session, "placements">,
 	head: string,
 	readId: string,
+	pause = (ms: number) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<PlacementsAnswer> {
 	for (;;) {
 		const answer = await session.placements({ head }, readId);
-		if (!("pending" in answer)) return answer;
-		await new Promise((r) => setTimeout(r, 50));
+		if (!("pending" in answer) && answer.complete !== false) return answer;
+		await pause(50);
 	}
 }
 

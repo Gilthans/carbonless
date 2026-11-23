@@ -6,10 +6,13 @@ import {
 	CircleSlashIcon,
 	DiffRemovedIcon,
 	FileRemovedIcon,
+	GitBranchIcon,
 	GitCompareIcon,
 	HistoryIcon,
 	type Icon,
 	QuestionIcon,
+	StopIcon,
+	UnverifiedIcon,
 	VersionsIcon,
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
@@ -187,10 +190,17 @@ export const FATES: Record<
 	},
 	"base-unknown": {
 		label: "base unknown",
-		icon: QuestionIcon,
+		icon: GitBranchIcon,
 		tone: "yellow",
-		tip: "GitHub's hunk doesn't match: the base the old line counts on can't be found",
+		tip: "Its old line isn't where GitHub showed it",
 		sentence: "Couldn't find the base the commented old line was on",
+	},
+	"check-failed": {
+		label: "not checked",
+		icon: StopIcon,
+		tone: "red",
+		tip: "GitHub's copy of its line couldn't be read",
+		sentence: "Couldn't check the commented old line against GitHub",
 	},
 };
 
@@ -241,18 +251,32 @@ function FateChip({ thread }: { thread: ReviewThread }) {
 			</Chip>
 		);
 	}
-	if (!placement) {
-		return info.pending && !thread.resolved ? (
+	// Placing: all of them on their way, or this one (an old-side thread
+	// waiting for GitHub's hunk, CAR-8).
+	if (
+		placement?.kind === "pending" ||
+		(!placement && info.pending && !thread.resolved)
+	) {
+		return (
 			<span className="flex h-4 w-4 items-center" data-testid="placement-slot">
 				<Spinner label="Placing threads" size={12} />
 			</span>
-		) : null;
+		);
 	}
+	if (!placement) return null;
 	// A resolved thread is placed so it never vanishes, never to ask for
 	// attention: its chip is muted.
 	const quiet = thread.resolved;
 	if (placement.kind === "changed") {
-		return <ChangedChip thread={thread} />;
+		return (
+			<>
+				<ChangedChip thread={thread} />
+				{placement.unchecked && <UncheckedChip quiet={quiet} />}
+			</>
+		);
+	}
+	if (placement.kind === "placed" && placement.unchecked) {
+		return <UncheckedChip quiet={quiet} />;
 	}
 	if (placement.kind === "unplaced" || placement.kind === "outside") {
 		// GitHub's outdated already has its badge on the card: no second sign.
@@ -270,6 +294,23 @@ function FateChip({ thread }: { thread: ReviewThread }) {
 		);
 	}
 	return null;
+}
+
+/**
+ * An old-side line placed with nothing from GitHub to check it by, from a
+ * base other than today's merge base (CAR-8): a flag of uncertainty.
+ */
+function UncheckedChip({ quiet }: { quiet: boolean }) {
+	return (
+		<Chip
+			tone={quiet ? "gray" : "yellow"}
+			icon={UnverifiedIcon}
+			tip="Its old line couldn't be checked against GitHub"
+			testId="placement-unchecked"
+		>
+			unchecked
+		</Chip>
+	);
 }
 
 /** "changed since": a thread's line was rewritten since it was made (muted once resolved). */
@@ -860,11 +901,14 @@ export function UnplacedThreads(props: {
 		thread: ReviewThread;
 		placement: Extract<ThreadPlacement, { kind: "unplaced" }>;
 	}[];
+	/** Threads still being placed (CAR-8): a spinner each, counted nowhere. */
+	waiting?: readonly ReviewThread[];
 	readId: string;
 	path: string;
 	fileIndex: number;
 }) {
-	if (props.fates.length === 0) return null;
+	const waiting = props.waiting ?? [];
+	if (props.fates.length === 0 && waiting.length === 0) return null;
 	// Resolved ones last, quiet, and counted nowhere.
 	const fates = resolvedLast(props.fates);
 	const open = fates.filter((f) => !f.thread.resolved).length;
@@ -873,6 +917,24 @@ export function UnplacedThreads(props: {
 			data-testid="unplaced-threads"
 			className="space-y-1.5 border-b border-line bg-canvas p-2"
 		>
+			{waiting.length > 0 && (
+				<ul className="space-y-1.5" aria-busy="true">
+					{waiting.map((t) => (
+						<li
+							key={t.id}
+							data-testid="placing-thread"
+							data-thread={t.id}
+							className="flex min-h-10 min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-2 text-xs text-muted"
+						>
+							<Spinner label="Placing thread" size={14} />
+							<span className="min-w-0 truncate">
+								{t.author}
+								{t.excerpt ? ` · ${t.excerpt}` : ""}
+							</span>
+						</li>
+					))}
+				</ul>
+			)}
 			{open > 0 && (
 				<p className="flex items-center gap-2 text-xs text-muted">
 					<Badge tone="red" icon={CircleSlashIcon}>

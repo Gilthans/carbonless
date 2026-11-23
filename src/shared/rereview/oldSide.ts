@@ -25,11 +25,29 @@ export function hunkOldRows(hunk: string): { line: number; text: string }[] {
 	return out;
 }
 
+/** A line that tells nothing on its own: blank, or punctuation alone (`}`, `);`). */
+const trivial = (text: string) => /^[\s\p{P}\p{S}]*$/u.test(text);
+
+/**
+ * A run of rows worth finding elsewhere: at least MIN_RUN rows, at least
+ * MIN_TELLING of them not trivial. A shorter or emptier run (a `}`, a
+ * blank and one `return null;`) can sit once in unrelated code.
+ */
+export const MIN_RUN = 3;
+export const MIN_TELLING = 2;
+function telling(rows: readonly { text: string }[]): boolean {
+	return (
+		rows.length >= MIN_RUN &&
+		rows.filter((r) => !trivial(r.text)).length >= MIN_TELLING
+	);
+}
+
 /**
  * Where the hunk's old-side rows sit in `text` (a candidate old side, one
  * string per line): `0` where the hunk numbers them; else the shift that
- * puts the whole run of them at the one place in `text` it occurs; null
- * when they are nowhere, in several places, or the hunk has none (or
+ * puts the whole run of them at the one place in `text` it occurs (a run
+ * that tells enough: `telling`); null when they are nowhere, in several
+ * places, too short or trivial to look for, or the hunk has none (or
  * doesn't hold `line`, the commented old line, as the commenter's hunk
  * always does). A failure to find the rows is never a guess.
  */
@@ -45,9 +63,10 @@ export function oldSideShift(
 		return t === undefined ? null : bare(t);
 	};
 	if (rows.every((r) => at(r.line) === r.text)) return 0;
-	// The rows are consecutive old lines: one run to look for.
+	// The rows are consecutive old lines: one run to look for, and only one
+	// that says enough to be told from boilerplate elsewhere.
 	const first = rows[0];
-	if (!first) return null;
+	if (!first || !telling(rows)) return null;
 	const consecutive = rows.every((r, i) => r.line === first.line + i);
 	if (!consecutive) return null;
 	let found: number | null = null;

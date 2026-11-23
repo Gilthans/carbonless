@@ -1468,6 +1468,7 @@ export function FileDiff(props: {
 			{expanded && props.threads && (
 				<UnplacedThreads
 					fates={fates}
+					waiting={filePlacement?.waiting ?? []}
 					readId={props.threads.readId}
 					path={file.path}
 					fileIndex={file.index}

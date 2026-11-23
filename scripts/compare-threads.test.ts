@@ -15,6 +15,7 @@ import {
 	compareThreads,
 	githubCell,
 	main,
+	placedInto,
 	placementAgreement,
 	placementCell,
 	placementKind,
@@ -570,5 +571,48 @@ describe("placement cells and kinds", () => {
 		expect(githubCell(rest({ start_line: 8 }))).toBe("RIGHT 8-10");
 		expect(githubCell(rest({ line: null }))).toBe("outdated");
 		expect(githubCell(rest({ subject_type: "file" }))).toBe("file");
+	});
+});
+
+describe("placedInto (CAR-8)", () => {
+	it("waits for the complete answer: a partial one lacks the old-side threads still waiting for their hunks", async () => {
+		const placed = {
+			kind: "placed" as const,
+			anchor: {
+				path: "a.ts",
+				startSide: "LEFT" as const,
+				startLine: 3,
+				side: "LEFT" as const,
+				line: 3,
+			},
+			changed: false as const,
+		};
+		const answers = [
+			{ pending: true as const },
+			{
+				readId: "r",
+				revision: "x",
+				patchset: null,
+				threads: [{ id: "R", placement: placed }],
+				complete: false,
+			},
+			{
+				readId: "r",
+				revision: "x",
+				patchset: null,
+				threads: [
+					{ id: "R", placement: placed },
+					{ id: "L", placement: placed },
+				],
+				complete: true,
+			},
+		];
+		let asked = 0;
+		const session = {
+			placements: async () => answers[Math.min(asked++, answers.length - 1)],
+		} as unknown as Parameters<typeof placedInto>[0];
+		const got = await placedInto(session, "h", "r", async () => {});
+		expect(got.threads.map((t) => t.id)).toEqual(["R", "L"]);
+		expect(asked).toBe(3);
 	});
 });

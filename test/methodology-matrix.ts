@@ -595,6 +595,8 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		const threads = [
 			left("Seen", "@@ -28,3 +28,3 @@\n line 28\n line 29\n-line 30"),
 			left("Other", "@@ -28,3 +28,3 @@\n other 28\n other 29\n-other 30"),
+			// No hunk: traced from the base as it stood at the review.
+			left("Empty", ""),
 		];
 		repo.setStage("updated");
 		const entry = repo.prEntry("updated");
@@ -623,8 +625,9 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		const ids: Record<string, string | undefined> = {
 			Seen: listed[0]?.id,
 			Other: listed[1]?.id,
+			Empty: listed[2]?.id,
 		};
-		expect(listed).toHaveLength(2);
+		expect(listed).toHaveLength(3);
 		const of = (text: string) =>
 			answer.threads.find((t) => t.id === ids[text])?.placement;
 		// The base changed line 30 itself only where it conflicted.
@@ -640,6 +643,20 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 			kind: "unplaced",
 			fate: "base-unknown",
 		});
+		// The empty hunk: the same line, from the base at the review's
+		// time. Where today's merge base isn't that one (the base absorbed
+		// the PR's first commit), it says so: unchecked.
+		expect(of("Empty")).toMatchObject(
+			m.update === "merge-base-in-conflict"
+				? { kind: "unplaced", fate: "base-changed" }
+				: {
+						kind: "placed",
+						anchor: { path: "a.txt", side: "LEFT", line: 30 },
+					},
+		);
+		const unchecked = (of("Empty") as { unchecked?: true } | undefined)
+			?.unchecked;
+		expect(unchecked === true).toBe(m.update === "base-absorbs");
 	});
 
 	it("orders the timeline by GitHub's facts: a rebase's commits by their new times, then its force-push; the merge, not the close", async () => {

@@ -1965,6 +1965,126 @@ describe("Session", () => {
 				]),
 			);
 
+		describe("old-side threads and GitHub's hunk (CAR-8)", () => {
+			const HUNK = "@@ -1,2 +1,2 @@\n line 1\n-line 2";
+			const serve = (over: Partial<Parameters<typeof pr.scenario>[0]> = {}) =>
+				pr.scenario({
+					...over,
+					prs: {
+						12: {
+							view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+							graphql: {
+								reviewThreads: [
+									reviewThread({ path: "a.txt", line: 2, diffSide: "LEFT" }, [
+										threadComment({
+											login: "rev1",
+											text: "Old 2",
+											commit: pr.head(),
+											diffHunk: HUNK,
+										}),
+									]),
+									reviewThread({ path: "a.txt", line: 2, diffSide: "RIGHT" }, [
+										threadComment({
+											login: "rev1",
+											text: "New 2",
+											commit: pr.head(),
+										}),
+									]),
+								],
+								reviews: [],
+							},
+						},
+					},
+				});
+			const answerOf = async (
+				s: Session,
+				readId: string,
+				done: (a: { complete?: boolean }) => boolean = () => true,
+			) => {
+				for (;;) {
+					const answer = await s.placements({ head: pr.head() }, readId);
+					if (!("pending" in answer) && done(answer)) return answer;
+					await new Promise((r) => setTimeout(r, 20));
+				}
+			};
+			const LEFT2 = {
+				path: "a.txt",
+				startSide: "LEFT" as const,
+				startLine: 2,
+				side: "LEFT" as const,
+				line: 2,
+			};
+
+			it("waits for its hunk as pending (never on a line), the others placed meanwhile; a hand move wins in every phase", async () => {
+				serve({ hold: ["threadContent"] });
+				const s = await Session.open(pr.arg, process.cwd());
+				const { readId } = await s.overview();
+				const [left, right] = (await s.threads(readId, "summary")).threads;
+				if (!left || !right) throw new Error("no threads");
+				const first = await answerOf(s, readId);
+				expect(first.complete).toBe(false);
+				const of = (a: typeof first, id: string) =>
+					a.threads.find((t) => t.id === id);
+				expect(of(first, left.id)?.placement).toEqual({
+					kind: "pending",
+					path: "a.txt",
+				});
+				expect(of(first, right.id)?.placement.kind).toBe("placed");
+				// A hand move on the waiting thread wins at once, and after.
+				const to = {
+					path: "a.txt",
+					startSide: "RIGHT" as const,
+					startLine: 5,
+					side: "RIGHT" as const,
+					line: 5,
+				};
+				await s.moveThread({
+					thread: { source: "github", id: left.id },
+					to: { head: pr.head() },
+					anchor: to,
+				});
+				const moved = await answerOf(s, readId);
+				expect(of(moved, left.id)?.placement).toMatchObject({
+					kind: "placed",
+					anchor: to,
+				});
+				release(process.env.CRB_FAKE_GH ?? "", "threadContent");
+				const done = await answerOf(s, readId, (a) => a.complete === true);
+				expect(of(done, left.id)?.placement).toMatchObject({
+					kind: "placed",
+					anchor: to,
+				});
+			});
+
+			it("once its hunk is in, it is placed where the hunk shows it", async () => {
+				serve();
+				const s = await Session.open(pr.arg, process.cwd());
+				const { readId } = await s.overview();
+				const [left] = (await s.threads(readId, "summary")).threads;
+				const done = await answerOf(s, readId, (a) => a.complete === true);
+				expect(
+					done.threads.find((t) => t.id === left?.id)?.placement,
+				).toMatchObject({ kind: "placed", anchor: LEFT2 });
+			});
+
+			it("a comment text GitHub won't give, even read again, leaves it unplaced as not checked, never on its number", async () => {
+				serve({ failGraphql: "diffHunk" });
+				const s = await Session.open(pr.arg, process.cwd());
+				const { readId } = await s.overview();
+				const [left] = (await s.threads(readId, "summary")).threads;
+				const done = await answerOf(s, readId, (a) => a.complete === true);
+				expect(
+					done.threads.find((t) => t.id === left?.id)?.placement,
+				).toMatchObject({ kind: "unplaced", fate: "check-failed" });
+				// Read again once after the background read failed.
+				const reads = pr
+					.ghLog()
+					.split("\n")
+					.filter((l) => l.includes("diffHunk"));
+				expect(reads.length).toBeGreaterThanOrEqual(2);
+			});
+		});
+
 		it("a thread with no commit sits on GitHub's line counted on the head of the same answer, never on a head checked later (CAR-116)", async () => {
 			const noCommit = () =>
 				reviewThread({ path: "a.txt", line: 20, diffSide: "RIGHT" }, [

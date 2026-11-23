@@ -112,6 +112,7 @@ import {
 	placeAgentThreads,
 	ThreadPlacer,
 	UnknownMoveThreadError,
+	waitingInput,
 } from "./rereview/threads.js";
 import { buildReviewView } from "./review/coverage.js";
 import type { PatchsetRecord, ProgressState } from "./review/fold.js";
@@ -1026,9 +1027,24 @@ export class Session {
 				// The threads as read now: the tracing below takes them as they
 				// are (a thread joining the read meanwhile isn't among them).
 				// Each with GitHub's hunk, which tells an old-side line's base (CAR-8).
+				// And whether the PR's base was retargeted since it was written
+				// (GitHub's base-change events; unknown when the timeline fails).
+				const retargets = read.timeline.then(
+					(tl) =>
+						tl.events.flatMap((e) =>
+							e.kind === "base-change" ? [Date.parse(e.at)] : [],
+						),
+					() => null,
+				);
 				const withHunks = view.threads.map((t) => ({
 					...t,
 					hunk: () => read.hunk(t.id),
+					retargetedSince: async () => {
+						const times = await retargets;
+						if (times === null) return true;
+						const made = Date.parse(t.anchor?.at ?? t.createdAt);
+						return times.some((at) => !(at <= made));
+					},
 				}));
 				// An old-side thread waits for its hunk (the opener's text): it
 				// joins after the others, so slow text never holds them up.
@@ -1051,24 +1067,38 @@ export class Session {
 					this.#diffBase(),
 					at,
 				);
-				job.done = { target, inputs: open, complete: false };
-				if (oldSideThreads.length > 0) {
-					open.push(
-						...(await this.#placer.inputs(
-							target,
-							oldSideThreads,
-							this.#diffBase(),
-							at,
-						)),
-					);
-					job.done = { target, inputs: [...open], complete: false };
-				}
+				// Each phase's inputs a new array: an answer being made from
+				// the last one never sees it change.
+				job.done = {
+					target,
+					// Old-side ones as pending meanwhile: a spinner, never a line.
+					inputs: [
+						...open,
+						...oldSideThreads.map((t) => waitingInput(target, t)),
+					],
+					complete: false,
+				};
+				const oldSide =
+					oldSideThreads.length > 0
+						? await this.#placer.inputs(
+								target,
+								oldSideThreads,
+								this.#diffBase(),
+								at,
+							)
+						: [];
+				const unresolved = [...open, ...oldSide];
+				job.done = { target, inputs: unresolved, complete: false };
 				// The resolved threads join after; their failure never takes
 				// the unresolved placements back (they then show where made).
 				const resolved = await this.#placer
 					.inputs(target, resolvedThreads, this.#diffBase(), at)
 					.catch(() => []);
-				job.done = { target, inputs: [...open, ...resolved], complete: true };
+				job.done = {
+					target,
+					inputs: [...unresolved, ...resolved],
+					complete: true,
+				};
 			} catch (error) {
 				job.error = error as Error;
 			}

@@ -52,4 +52,37 @@ describe("oldSideShift", () => {
 			),
 		).toBe(0);
 	});
+
+	it("never moves a run that tells too little: a brace, a blank and one statement found once elsewhere", () => {
+		const boiler = hunkOldRows("@@ -10,3 +10,3 @@\n }\n \n-return null;");
+		const text = [
+			...Array.from({ length: 20 }, (_, i) => `code ${i + 1}`),
+			"}",
+			"",
+			"return null;",
+		];
+		// As numbered it's wrong (lines 10–12 are code), and the run sits
+		// once at 21–23: still not moved there.
+		expect(oldSideShift(boiler, text, 12)).toBeNull();
+		// Three rows, two of them telling: moved.
+		const telling = hunkOldRows(
+			"@@ -10,3 +10,3 @@\n }\n const a = 1;\n-return a;",
+		);
+		expect(
+			oldSideShift(
+				telling,
+				[...text.slice(0, 20), "}", "const a = 1;", "return a;"],
+				12,
+			),
+		).toBe(11);
+		// Two rows, both telling: too short to move.
+		const short = hunkOldRows("@@ -10,2 +10,1 @@\n const a = 1;\n-return a;");
+		expect(
+			oldSideShift(
+				short,
+				[...text.slice(0, 20), "const a = 1;", "return a;"],
+				11,
+			),
+		).toBeNull();
+	});
 });

@@ -107,8 +107,12 @@ history.
   `base-unknown`, never on a guessed line. An empty hunk is no evidence:
   the base as it stood then (a base that later absorbed the PR's own
   commits moves today's merge base, not the commenter's), else, when that
-  can't be told, today's merge base. The matrix places one LEFT thread
-  whose hunk matches and one whose hunk matches nothing at each update.
+  can't be told (or the PR's base was retargeted since: GitHub's
+  base-change event), today's merge base; traced from the base then while
+  today's merge base differs, it carries an `unchecked` mark. The matrix
+  places a LEFT thread whose hunk matches, one whose hunk matches nothing
+  and one with an empty hunk (`unchecked` for `base-absorbs` alone) at
+  each update.
 
 ## Test matrix
 
