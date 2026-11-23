@@ -96,7 +96,7 @@ import {
 	StatusIcon,
 } from "./status";
 import { ThreadBubble } from "./ThreadBubble";
-import { UnplacedThreads } from "./ThreadFate";
+import { UnplacedThreads, WaitingThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
 import { useFocusAmong } from "./threadFocus";
 import {
@@ -1466,9 +1466,11 @@ export function FileDiff(props: {
 				<div className="border-b border-line bg-canvas p-2">{newItems}</div>
 			)}
 			{expanded && props.threads && (
+				<WaitingThreads waiting={filePlacement?.waiting ?? []} />
+			)}
+			{expanded && props.threads && (
 				<UnplacedThreads
 					fates={fates}
-					waiting={filePlacement?.waiting ?? []}
 					readId={props.threads.readId}
 					path={file.path}
 					fileIndex={file.index}

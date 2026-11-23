@@ -486,6 +486,8 @@ function useDiffThreads(
 			placements,
 			pending: asked && answer === null && !placed.error,
 			error: failedPlacing,
+			// A partial answer kept while asking again failed (CAR-8).
+			stalled: answer !== null ? (placed.error ?? null) : null,
 			retry: () => void refetchPlacements(),
 			retrying: retryingPlacing,
 			readId: readId ?? null,

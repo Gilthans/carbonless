@@ -79,6 +79,11 @@ export interface PlacementInfo {
 	pending: boolean;
 	/** They couldn't be computed (each card says so; the page offers a retry). */
 	error: Error | null;
+	/**
+	 * Asking again after a partial answer failed (CAR-8): the threads still
+	 * `pending` in it say so instead of spinning.
+	 */
+	stalled?: Error | null;
 	/** Asks for them again. */
 	retry: () => void;
 	/** A retry after an error is under way. */
@@ -196,7 +201,7 @@ export const FATES: Record<
 		sentence: "Couldn't find the base the commented old line was on",
 	},
 	"check-failed": {
-		label: "not checked",
+		label: "couldn't check",
 		icon: StopIcon,
 		tone: "red",
 		tip: "GitHub's copy of its line couldn't be read",
@@ -239,12 +244,18 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 function FateChip({ thread }: { thread: ReviewThread }) {
 	const info = usePlacementInfo();
 	const placement = info.placements?.get(thread.id);
-	if (!placement && info.error && !thread.resolved) {
+	const failed =
+		placement?.kind === "pending" ? (info.error ?? info.stalled) : info.error;
+	if (
+		(!placement || placement.kind === "pending") &&
+		failed &&
+		!thread.resolved
+	) {
 		return (
 			<Chip
 				tone="red"
 				icon={AlertIcon}
-				tip={`Where this thread sits now couldn't be computed: ${info.error.message}`}
+				tip={`Where this thread sits now couldn't be computed: ${failed.message}`}
 				testId="placement-error"
 			>
 				place unknown
@@ -901,14 +912,11 @@ export function UnplacedThreads(props: {
 		thread: ReviewThread;
 		placement: Extract<ThreadPlacement, { kind: "unplaced" }>;
 	}[];
-	/** Threads still being placed (CAR-8): a spinner each, counted nowhere. */
-	waiting?: readonly ReviewThread[];
 	readId: string;
 	path: string;
 	fileIndex: number;
 }) {
-	const waiting = props.waiting ?? [];
-	if (props.fates.length === 0 && waiting.length === 0) return null;
+	if (props.fates.length === 0) return null;
 	// Resolved ones last, quiet, and counted nowhere.
 	const fates = resolvedLast(props.fates);
 	const open = fates.filter((f) => !f.thread.resolved).length;
@@ -917,24 +925,6 @@ export function UnplacedThreads(props: {
 			data-testid="unplaced-threads"
 			className="space-y-1.5 border-b border-line bg-canvas p-2"
 		>
-			{waiting.length > 0 && (
-				<ul className="space-y-1.5" aria-busy="true">
-					{waiting.map((t) => (
-						<li
-							key={t.id}
-							data-testid="placing-thread"
-							data-thread={t.id}
-							className="flex min-h-10 min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-2 text-xs text-muted"
-						>
-							<Spinner label="Placing thread" size={14} />
-							<span className="min-w-0 truncate">
-								{t.author}
-								{t.excerpt ? ` · ${t.excerpt}` : ""}
-							</span>
-						</li>
-					))}
-				</ul>
-			)}
 			{open > 0 && (
 				<p className="flex items-center gap-2 text-xs text-muted">
 					<Badge tone="red" icon={CircleSlashIcon}>
@@ -961,6 +951,60 @@ export function UnplacedThreads(props: {
 						}
 						dropPath={props.path}
 					/>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+/**
+ * Threads still being placed (CAR-8: an old-side thread waiting for
+ * GitHub's hunk): a spinner pill each, laid over the top of the file's
+ * lines, so showing or hiding it moves nothing; counted nowhere. When
+ * asking again failed, each says so instead of spinning.
+ */
+export function WaitingThreads(props: { waiting: readonly ReviewThread[] }) {
+	const info = usePlacementInfo();
+	if (props.waiting.length === 0) return null;
+	const failed = info.error ?? info.stalled ?? null;
+	return (
+		<div className="relative h-0">
+			<ul
+				data-testid="placing-threads"
+				aria-busy={failed ? undefined : true}
+				className="absolute top-1 right-2 z-10 flex max-w-[calc(100%-1rem)] flex-col items-end gap-1"
+			>
+				{props.waiting.map((t) => (
+					<li
+						key={t.id}
+						data-testid="placing-thread"
+						data-thread={t.id}
+						className="flex min-h-10 max-w-full min-w-0 items-center gap-2 rounded-full border border-line bg-surface px-3 text-xs text-muted shadow-sm"
+					>
+						{failed ? (
+							<Tooltip
+								content={`Where this thread sits now couldn't be computed: ${failed.message}`}
+							>
+								{(trigger) => (
+									<span
+										{...trigger}
+										role="img"
+										aria-label="Place unknown"
+										data-testid="placing-thread-error"
+										className="flex shrink-0 text-bad"
+									>
+										<AlertIcon size={14} aria-hidden />
+									</span>
+								)}
+							</Tooltip>
+						) : (
+							<Spinner label="Placing thread" size={14} />
+						)}
+						<span className="min-w-0 truncate">
+							{t.author}
+							{t.excerpt ? ` · ${t.excerpt}` : ""}
+						</span>
+					</li>
 				))}
 			</ul>
 		</div>

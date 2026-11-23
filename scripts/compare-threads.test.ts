@@ -611,8 +611,31 @@ describe("placedInto (CAR-8)", () => {
 		const session = {
 			placements: async () => answers[Math.min(asked++, answers.length - 1)],
 		} as unknown as Parameters<typeof placedInto>[0];
-		const got = await placedInto(session, "h", "r", async () => {});
+		const got = await placedInto(session, "h", "r", { pause: async () => {} });
 		expect(got.threads.map((t) => t.id)).toEqual(["R", "L"]);
 		expect(asked).toBe(3);
+	});
+
+	it("gives up with a clear error when the answer never completes", async () => {
+		const partial = {
+			readId: "r",
+			revision: "x",
+			patchset: null,
+			threads: [],
+			complete: false,
+		};
+		const session = {
+			placements: async () => partial,
+		} as unknown as Parameters<typeof placedInto>[0];
+		let t = 0;
+		await expect(
+			placedInto(session, "abcdef123", "r", {
+				pause: async (ms) => {
+					t += ms;
+				},
+				now: () => t,
+				timeoutMs: 1000,
+			}),
+		).rejects.toThrow(/still incomplete after 1 s/);
 	});
 });

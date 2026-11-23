@@ -36,7 +36,7 @@ import { registerMcp } from "./mcp/routes";
 import { parseHead } from "./pinnedHead";
 import type { SessionRegistry } from "./registry";
 import { answerRereview, traceRereview } from "./rereview/engine";
-import { DeadMoveError, MoveCapError } from "./rereview/threads";
+import { DeadMoveError, MoveCapError, ThreadPlacer } from "./rereview/threads";
 import { newEvent } from "./review/events";
 import { RefStore } from "./review/refStore";
 import { ReviewService, StaleSnapshotError } from "./review/reviews";
@@ -2056,6 +2056,37 @@ describe("Session", () => {
 				});
 			});
 
+			it("one git can't trace gets a final answer of its own (untraced), and the answer completes: never pending for good", async () => {
+				serve();
+				const original = ThreadPlacer.prototype.inputs;
+				const spy = vi
+					.spyOn(ThreadPlacer.prototype, "inputs")
+					.mockImplementation(function (
+						this: ThreadPlacer,
+						...args: Parameters<ThreadPlacer["inputs"]>
+					) {
+						if (args[1].some((t) => t.anchor?.side === "LEFT")) {
+							return Promise.reject(new Error("git failed"));
+						}
+						return original.apply(this, args);
+					});
+				try {
+					const s = await Session.open(pr.arg, process.cwd());
+					const { readId } = await s.overview();
+					const [left, right] = (await s.threads(readId, "summary")).threads;
+					const done = await answerOf(s, readId, (a) => a.complete === true);
+					const of = (id: string | undefined) =>
+						done.threads.find((t) => t.id === id)?.placement;
+					expect(of(left?.id)).toMatchObject({
+						kind: "unplaced",
+						fate: "untraced",
+					});
+					expect(of(right?.id)?.kind).toBe("placed");
+				} finally {
+					spy.mockRestore();
+				}
+			});
+
 			it("once its hunk is in, it is placed where the hunk shows it", async () => {
 				serve();
 				const s = await Session.open(pr.arg, process.cwd());
@@ -2067,7 +2098,7 @@ describe("Session", () => {
 				).toMatchObject({ kind: "placed", anchor: LEFT2 });
 			});
 
-			it("a comment text GitHub won't give, even read again, leaves it unplaced as not checked, never on its number", async () => {
+			it("a comment text GitHub won't give, even read again, leaves it unplaced as couldn't check, never on its number", async () => {
 				serve({ failGraphql: "diffHunk" });
 				const s = await Session.open(pr.arg, process.cwd());
 				const { readId } = await s.overview();

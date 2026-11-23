@@ -12,7 +12,7 @@ import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { CodeAnchor, Snapshot } from "../../shared/types";
 import { buildSnapshot } from "../diff/snapshot";
 import { ThreadCodeSource } from "../threadCode";
-import { ThreadPlacer, type TraceableThread } from "./threads";
+import { ThreadPlacer, type TraceableThread, waitingInput } from "./threads";
 
 vi.setConfig(GIT_TEST_TIMEOUTS);
 
@@ -203,14 +203,28 @@ describe("LEFT threads' old side (CAR-8)", () => {
 		expect(got).toMatchObject({ kind: "placed", anchor: { line: 10 } });
 	});
 
-	it("an empty hunk after the base was retargeted since the comment: the base then is unknown, traced as before from today's merge base, unmarked", async () => {
+	it("an empty hunk after the base was retargeted since the comment: the base then isn't taken; today's merge base, flagged unchecked as the two old sides differ", async () => {
 		const target = await buildSnapshot(repo.path, P, Hp);
 		const got = await place(
 			target,
 			Babs,
 			leftThread(Hp, 10, "", "2026-01-05T00:00:00Z", true),
 		);
-		expect(got).toMatchObject({ kind: "placed", anchor: { line: 10 } });
+		expect(got).toMatchObject({
+			kind: "placed",
+			anchor: { line: 10 },
+			unchecked: true,
+		});
+	});
+
+	it("an empty hunk after a retarget, the old sides the same: today's merge base, unmarked", async () => {
+		const target = await buildSnapshot(repo.path, B0, H0);
+		const got = await place(
+			target,
+			B0,
+			leftThread(H0, 10, "", "2026-01-05T00:00:00Z", true),
+		);
+		expect(got).toMatchObject(leftAt(10));
 		expect(got).not.toHaveProperty("unchecked");
 	});
 
@@ -224,9 +238,22 @@ describe("LEFT threads' old side (CAR-8)", () => {
 		expect(got).toMatchObject({ kind: "unplaced", fate: "base-unknown" });
 	});
 
-	it("a hunk that couldn't be read: unplaced as not checked, never placed by number", async () => {
+	it("a hunk that couldn't be read: unplaced as couldn't check, never placed by number", async () => {
 		const target = await buildSnapshot(repo.path, B0, H0);
 		const got = await place(target, B0, leftThread(H0, 10, null));
 		expect(got).toMatchObject({ kind: "unplaced", fate: "check-failed" });
+	});
+
+	it("a waiting thread on a file renamed since is filed under its path now", async () => {
+		git(["mv", "l.ts", "m.ts"]);
+		git(["add", "--all"]);
+		const tree = git(["write-tree"]);
+		const renamed = git(["commit-tree", tree, "-p", H0, "-m", "mv"]);
+		git(["mv", "m.ts", "l.ts"]);
+		const target = await buildSnapshot(repo.path, B0, renamed);
+		expect(waitingInput(target, leftThread(H0, 10, HUNK_B0))).toMatchObject({
+			newPath: "m.ts",
+			pending: true,
+		});
 	});
 });

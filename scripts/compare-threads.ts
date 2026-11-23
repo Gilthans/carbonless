@@ -418,11 +418,25 @@ export async function placedInto(
 	session: Pick<Session, "placements">,
 	head: string,
 	readId: string,
-	pause = (ms: number) => new Promise((r) => setTimeout(r, ms)),
+	opts: {
+		pause?: (ms: number) => Promise<unknown>;
+		now?: () => number;
+		/** How long to wait for the complete answer (default 5 minutes). */
+		timeoutMs?: number;
+	} = {},
 ): Promise<PlacementsAnswer> {
+	const pause = opts.pause ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+	const now = opts.now ?? Date.now;
+	const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
+	const until = now() + timeoutMs;
 	for (;;) {
 		const answer = await session.placements({ head }, readId);
 		if (!("pending" in answer) && answer.complete !== false) return answer;
+		if (now() >= until) {
+			throw new Error(
+				`Placements into ${head.slice(0, 7)} still incomplete after ${Math.round(timeoutMs / 1000)} s (some threads' text never came from GitHub); try again`,
+			);
+		}
 		await pause(50);
 	}
 }

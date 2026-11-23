@@ -555,8 +555,16 @@ export class OverviewRead {
 			};
 			batch.read = new Promise<void>((r) => setTimeout(r, 0)).then(() => {
 				if (this.#retrying === batch) this.#retrying = null;
+				// Those another read (comments) is bringing already: waited for.
 				const ids = batch.ids.filter((i) => !this.#reading.has(i));
-				return ids.length > 0 ? this.#readText(ids) : undefined;
+				const others = batch.ids.flatMap((i) => {
+					const r = this.#reading.get(i);
+					return r ? [r.catch(() => {})] : [];
+				});
+				return Promise.all([
+					...others,
+					ids.length > 0 ? this.#readText(ids) : undefined,
+				]).then(() => {});
 			});
 			this.#retrying = batch;
 		}

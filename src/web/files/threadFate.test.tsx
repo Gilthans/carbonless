@@ -23,6 +23,7 @@ import {
 	PlacementProvider,
 	UnplacedRow,
 	UnplacedThreads,
+	WaitingThreads,
 } from "./ThreadFate";
 
 vi.mock("./highlight", () => ({
@@ -270,6 +271,21 @@ describe("when the placements fail", () => {
 });
 
 describe("PlacementChip", () => {
+	it("a pending one whose answer failed to complete says so, never spinning for good (CAR-8)", () => {
+		const t = thread();
+		render(
+			wrap(
+				info({
+					placements: new Map([[t.id, { kind: "pending", path: "a.ts" }]]),
+					stalled: new Error("git failed"),
+				}),
+				<PlacementChip thread={t} />,
+			),
+		);
+		expect(screen.getByTestId("placement-error")).toBeTruthy();
+		expect(screen.queryByRole("status")).toBeNull();
+	});
+
 	it("an old-side thread still waiting for its hunk spins though the answer is in; an unchecked one is flagged (CAR-8)", () => {
 		const t = thread();
 		const { rerender } = render(
@@ -973,5 +989,30 @@ describe("the per-file unplaced list", () => {
 			/unplaced/,
 		);
 		expect(screen.getByTestId("unplaced-collapsed")).toBeTruthy();
+	});
+});
+
+describe("WaitingThreads (CAR-8)", () => {
+	it("a spinner each, laid over (no height of its own); an error mark instead once asking again failed", () => {
+		const t = thread({ excerpt: "Why line 20?" });
+		const { container, rerender } = render(
+			wrap(info(), <WaitingThreads waiting={[t]} />),
+		);
+		expect(screen.getByRole("status", { name: "Placing thread" })).toBeTruthy();
+		// In flow it takes no room: showing or hiding it moves nothing.
+		expect((container.firstElementChild as HTMLElement).className).toContain(
+			"h-0",
+		);
+		expect(screen.getByTestId("placing-threads").className).toContain(
+			"absolute",
+		);
+		rerender(
+			wrap(
+				info({ stalled: new Error("git failed") }),
+				<WaitingThreads waiting={[t]} />,
+			),
+		);
+		expect(screen.queryByRole("status")).toBeNull();
+		expect(screen.getByTestId("placing-thread-error")).toBeTruthy();
 	});
 });

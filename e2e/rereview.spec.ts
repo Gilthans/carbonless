@@ -3589,6 +3589,12 @@ test("an old-side thread waiting for GitHub's hunk shows a spinner under its fil
 	).toBeVisible(GIT_WAIT);
 	if (await expandIt.isVisible()) await expandIt.click();
 	await expect(section.getByTestId("diff-line").first()).toBeVisible(GIT_WAIT);
+	// The spinner is laid over the lines: its going moves nothing above the
+	// thread's own row.
+	const top = async () =>
+		(await section.getByTestId("diff-line").first().boundingBox())?.y;
+	await expect(section.getByTestId("placing-thread")).toBeVisible(GIT_WAIT);
+	const before = await top();
 	await expectLoadingThen({
 		loading: section
 			.getByTestId("placing-thread")
@@ -3606,4 +3612,5 @@ test("an old-side thread waiting for GitHub's hunk shows a spinner under its fil
 	await expect(
 		section.locator('tr[data-testid="diff-line"][data-commented]'),
 	).toHaveCount(1);
+	expect(await top()).toBe(before);
 });

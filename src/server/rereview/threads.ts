@@ -239,6 +239,20 @@ export function waitingInput(
 	target: Snapshot,
 	t: TraceableThread,
 ): ThreadInput {
+	return { ...standIn(target, t), pending: true };
+}
+
+/**
+ * A thread whose trace failed (git couldn't give what it needs): a final
+ * answer, `untraced` under its file, never a spinner left for good.
+ */
+export function failedInput(target: Snapshot, t: TraceableThread): ThreadInput {
+	return { ...standIn(target, t), untraced: "untraced" };
+}
+
+/** A thread's input with nothing traced: under its file, by its path now (through a rename). */
+function standIn(target: Snapshot, t: TraceableThread): ThreadInput {
+	const renamed = target.files.find((f) => f.oldPath === t.path)?.path;
 	return {
 		id: t.id,
 		path: t.path,
@@ -249,11 +263,10 @@ export function waitingInput(
 			startLine: t.anchor.startLine,
 		},
 		diffs: null,
-		newPath: t.path,
+		newPath: renamed ?? t.path,
 		inComparison: target.files.some(
 			(f) => f.path === t.path || f.oldPath === t.path,
 		),
-		pending: true,
 	};
 }
 
@@ -600,8 +613,16 @@ export class ThreadPlacer {
 			ends: { base: b, head: anchor.commit },
 		});
 		if (!hunk.trim()) {
-			if (!then) return undefined;
-			return then === sides.now ? at(then) : { ...at(then), unchecked: true };
+			if (then) {
+				return then === sides.now ? at(then) : { ...at(then), unchecked: true };
+			}
+			// The base then not taken (a retarget since, or no timeline to
+			// tell): today's merge base, flagged when the two old sides are
+			// known to differ.
+			if (sides.then && sides.now && sides.then !== sides.now) {
+				return { ...at(sides.now), unchecked: true };
+			}
+			return undefined;
 		}
 		const rows = hunkOldRows(hunk);
 		if (rows.length === 0) return lost("base-unknown");

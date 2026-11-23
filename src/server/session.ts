@@ -105,6 +105,7 @@ import {
 import { checkOid, commitsOver, commitsSince } from "./rereview/shape.js";
 import {
 	DeadMoveError,
+	failedInput,
 	InvalidPlacementError,
 	legacyMoves,
 	MoveCapError,
@@ -1078,15 +1079,17 @@ export class Session {
 					],
 					complete: false,
 				};
-				const oldSide =
-					oldSideThreads.length > 0
-						? await this.#placer.inputs(
-								target,
-								oldSideThreads,
-								this.#diffBase(),
-								at,
-							)
-						: [];
+				// Each on its own: one git can't trace gets a final answer of
+				// its own (untraced), never a spinner left for good.
+				const oldSide = (
+					await Promise.all(
+						oldSideThreads.map((t) =>
+							this.#placer
+								.inputs(target, [t], this.#diffBase(), at)
+								.catch(() => [failedInput(target, t)]),
+						),
+					)
+				).flat();
 				const unresolved = [...open, ...oldSide];
 				job.done = { target, inputs: unresolved, complete: false };
 				// The resolved threads join after; their failure never takes
