@@ -12,6 +12,7 @@ import type {
 	Progress,
 	RereviewAnswer,
 	ReviewView,
+	StateChange,
 } from "../../shared/types";
 import { overlayReview, type PendingChange } from "./stateSync";
 import type { Unit } from "./unit";
@@ -135,6 +136,39 @@ export function countedFileUnits(
 	return nothingElse
 		? { units, leftOut: 0 }
 		: countedUnits(units, ignoreWhitespace);
+}
+
+/**
+ * Whether `changes` (marks on one file) finish it in the since view, by
+ * its units as its header counts them (countedFileUnits), not by the
+ * snapshot's clusters: something of them is unmarked now and nothing
+ * once the changes apply. So a file never closes while a unit its header
+ * counts is unmarked (CAR-218). Undefined for a file the engine didn't
+ * answer: the caller judges it by its clusters.
+ */
+export function unitsFinish(
+	answer: RereviewAnswer,
+	view: ReviewView,
+	index: number,
+	path: string,
+	changes: readonly StateChange[],
+	ignoreWhitespace: boolean,
+): boolean | undefined {
+	const file = answer.files.find((f) => f.index === index);
+	if (!file) return undefined;
+	const one = { ...answer, files: [file] };
+	const left = (v: ReviewView) =>
+		countedFileUnits(unitsOf(one, v), ignoreWhitespace).units.some(
+			(u) => u.state === "unreviewed",
+		);
+	if (!left(view)) return false;
+	const pending = new Map<string, PendingChange>(
+		changes.map((change, version) => [
+			change.key,
+			{ change, revision: view.revision, path, version, since: 0 },
+		]),
+	);
+	return !left(overlayReview(view, pending));
 }
 
 /**
@@ -323,19 +357,26 @@ export function unitsFile(
 	return { ...file, clusters, ...fileFlags(clusters) };
 }
 
-/** The connector's "to read" for the comparison on screen: its units not marked yet. */
+/**
+ * The connector's "to read" for the comparison on screen: the bar's own
+ * units (countedUnits, as toReadCount reads them) not marked yet, and the
+ * files with any or with a conflict.
+ */
 export function liveToRead(
 	since: Map<number, FileSince>,
+	units: readonly SinceUnit[],
 ): RereviewAnswer["toRead"] & { gone: number } {
-	let files = 0;
+	const files = new Set<number>();
 	let clusters = 0;
 	let gone = 0;
-	for (const info of since.values()) {
-		if (info.left.units > 0 || info.conflict) files++;
-		clusters += info.left.units;
-		gone += info.counts.gone;
+	for (const u of units) {
+		if (u.state !== "unreviewed") continue;
+		files.add(u.index);
+		clusters++;
+		if (u.kind === "gone") gone++;
 	}
-	return { files, clusters, gone };
+	for (const [index, info] of since) if (info.conflict) files.add(index);
+	return { files: files.size, clusters, gone };
 }
 
 /**

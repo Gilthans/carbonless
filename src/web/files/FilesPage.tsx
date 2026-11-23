@@ -17,7 +17,11 @@ import { createPortal, flushSync } from "react-dom";
 import { type AgentThread, isSpanThread } from "../../shared/agent";
 import { sinceOnlyPieces } from "../../shared/pieces";
 import { openedOn } from "../../shared/rereview/openedOn";
-import type { ReviewThread, SessionInfo } from "../../shared/types";
+import type {
+	ReviewThread,
+	SessionInfo,
+	StateChange,
+} from "../../shared/types";
 import { AgentNotInComparison } from "../agent/AgentNotInComparison";
 import {
 	agentThreadsQuery,
@@ -108,6 +112,7 @@ import {
 	toReadClusters,
 	toReadCount,
 	unitsFile,
+	unitsFinish,
 	unitsOf,
 } from "./since";
 import {
@@ -1612,6 +1617,12 @@ export function FilesPage() {
 		() => countedUnits(units, ignoreWs),
 		[units, ignoreWs],
 	);
+	/** The since view: whether marks finish a file, by its units (unitsFinish). */
+	const unitsFinishOf = (index: number, path: string) =>
+		sinceAnswer && data
+			? (changes: readonly StateChange[]) =>
+					unitsFinish(sinceAnswer, data, index, path, changes, ignoreWs)
+			: undefined;
 	// The files the since view's units cover (the engine answered them).
 	const unitIndexes = useMemo(
 		() => new Set(units.map((u) => u.index)),
@@ -1679,7 +1690,11 @@ export function FilesPage() {
 	// The connector of the comparison on screen counts what is left here.
 	const live =
 		since !== null && byFile && comparison.viewing
-			? { from: since, to: comparison.viewing, toRead: liveToRead(byFile) }
+			? {
+					from: since,
+					to: comparison.viewing,
+					toRead: liveToRead(byFile, sinceCounted.units),
+				}
 			: undefined;
 	const emptySince =
 		since !== null &&
@@ -1942,6 +1957,10 @@ export function FilesPage() {
 																	toggleFile(file.index, expanded, auto)
 																}
 																onFinished={() => finished(file.index)}
+																unitsFinish={unitsFinishOf(
+																	file.index,
+																	file.path,
+																)}
 																ignoreMarksUntil={
 																	movedOn?.key === keyOf(file.index)
 																		? movedOn.until
@@ -2007,6 +2026,10 @@ export function FilesPage() {
 																pathFind={find.pathOf(file.index)}
 																find={find.diffOf(file.index)}
 																onFinished={() => finished(file.index)}
+																unitsFinish={unitsFinishOf(
+																	file.index,
+																	file.path,
+																)}
 																ignoreMarksUntil={
 																	movedOn?.key === keyOf(file.index)
 																		? movedOn.until

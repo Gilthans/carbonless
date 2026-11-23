@@ -7,6 +7,7 @@ import type {
 	ReviewView,
 	SinceMark,
 } from "../../shared/types";
+import { finishes } from "./fileFinish";
 import {
 	carriedCount,
 	countedFileUnits,
@@ -20,8 +21,10 @@ import {
 	sinceProgress,
 	toReadClusters,
 	toReadCount,
+	unitsFinish,
 	unitsOf,
 } from "./since";
+import { countedFile } from "./unit";
 
 const cluster = (
 	key: string,
@@ -370,7 +373,9 @@ describe("counts follow the since view (its pieces)", () => {
 		expect(after.get(0)?.counts.reworked).toBe(
 			(before.get(0)?.counts.reworked ?? 0) - 1,
 		);
-		expect(liveToRead(after).clusters).toBe(liveToRead(before).clusters - 1);
+		expect(liveToRead(after, unitsOf(ans, one)).clusters).toBe(
+			liveToRead(before, unitsOf(ans, at())).clusters - 1,
+		);
 		// The reverted piece: by its mark, the same.
 		const reverted = at(ten(), [
 			{
@@ -382,7 +387,9 @@ describe("counts follow the since view (its pieces)", () => {
 		]);
 		const r = sinceByFile(ans, reverted);
 		expect(r.get(0)?.counts.reverted).toBe(0);
-		expect(liveToRead(r).clusters).toBe(liveToRead(before).clusters - 1);
+		expect(liveToRead(r, unitsOf(ans, reverted)).clusters).toBe(
+			liveToRead(before, unitsOf(ans, at())).clusters - 1,
+		);
 		expect(sinceProgress(unitsOf(ans, reverted)).clusters.reviewed).toBe(1);
 	});
 
@@ -646,7 +653,9 @@ describe("an unticked carried cluster in the since view (principle 2)", () => {
 			crossedOff: 0,
 		});
 		expect(eyesOf(unticked.files[0] as FileView, after.get(0))).toBe("read");
-		expect(liveToRead(after).clusters).toBe(1);
+		expect(liveToRead(after, unitsOf(carriedAnswer, unticked)).clusters).toBe(
+			1,
+		);
 		// Ticked again by the reviewer: counted, and reviewed.
 		const again = view([
 			file(0, "core.ts", [cluster("c", "reviewed", false, 4)]),
@@ -730,12 +739,24 @@ describe('"Ignore whitespace" in the since view (CAR-184)', () => {
 		expect(toReadCount(on.units, "lines")).toBe(0);
 		expect(toReadCount(on.units, "files")).toBe(0);
 		// util.ts's row still counts its unit.
-		expect(sinceByFile(wa, wv, true).get(1)?.left.units).toBe(1);
+		const rows = sinceByFile(wa, wv, true);
+		expect(rows.get(1)?.left.units).toBe(1);
+		// The connector's live count agrees with the bar.
+		expect(liveToRead(rows, on.units)).toEqual({
+			files: 0,
+			clusters: 0,
+			gone: 0,
+		});
 		// Off: both whitespace-only units are to read, in two files.
 		const off = countedUnits(unitsOf(wa, wv), false);
 		expect(toReadCount(off.units, "clusters")).toBe(2);
 		expect(toReadCount(off.units, "lines")).toBe(4);
 		expect(toReadCount(off.units, "files")).toBe(2);
+		expect(liveToRead(sinceByFile(wa, wv), off.units)).toEqual({
+			files: 2,
+			clusters: 2,
+			gone: 0,
+		});
 	});
 
 	it("a file's header leaves them out, but a file of nothing else keeps its own", () => {
@@ -994,5 +1015,70 @@ describe('"Ignore whitespace" in the since view (CAR-184)', () => {
 		// A change unit, even reviewed, is something that changed.
 		const both = countedUnits(unitsOf(wa, wv), true);
 		expect(nothingSince(wa, sinceByFile(wa, wv, true), both.units)).toBe(false);
+	});
+});
+
+describe("unitsFinish: a mark finishes a since view's file by its units (CAR-218)", () => {
+	// core.ts: a new change `a`, and `w`, whitespace-only against the base
+	// but a real edit since the earlier patch set (its piece isn't
+	// whitespace-only).
+	const fv = view([
+		file(0, "core.ts", [
+			cluster("a", "unreviewed"),
+			{ ...cluster("w", "unreviewed"), whitespaceOnly: true },
+		]),
+	]);
+	const fa = answer(
+		[
+			{
+				index: 0,
+				path: "core.ts",
+				conflict: false,
+				clusters: [
+					{ key: "a", kind: "new" },
+					{ key: "w", kind: "reworked" },
+				],
+				pieces: [
+					{
+						hunk: 0,
+						line: 0,
+						key: "w",
+						owns: [[0, 2]],
+						old: [[0, 1]],
+						new: [[0, 1]],
+					},
+				],
+			},
+		],
+		{ files: 1, clusters: 2 },
+	);
+	const tick = (key: string) => ({ key, state: "reviewed" as const });
+
+	it("never while a counted unit is unmarked, the switch on or off", () => {
+		// The snapshot's clusters, the switch on, would say `a` finishes it.
+		expect(
+			finishes(countedFile(fv.files[0] as FileView, true).clusters, [
+				tick("a"),
+			]),
+		).toBe(true);
+		for (const on of [true, false]) {
+			expect(unitsFinish(fa, fv, 0, "core.ts", [tick("a")], on)).toBe(false);
+			expect(
+				unitsFinish(fa, fv, 0, "core.ts", [tick("a"), tick("w")], on),
+			).toBe(true);
+		}
+	});
+
+	it("a file the engine didn't answer is left to its clusters; one with nothing left can't finish again", () => {
+		expect(unitsFinish(fa, fv, 9, "other.ts", [tick("a")], true)).toBe(
+			undefined,
+		);
+		const done = view([
+			file(0, "core.ts", [
+				cluster("a", "reviewed"),
+				{ ...cluster("w", "reviewed"), whitespaceOnly: true },
+			]),
+		]);
+		expect(unitsFinish(fa, done, 0, "core.ts", [tick("a")], true)).toBe(false);
 	});
 });
