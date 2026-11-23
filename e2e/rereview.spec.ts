@@ -3467,12 +3467,17 @@ test("a link to an old line (side=LEFT) lands on that base line's row in the sin
 		await page.goto(url.toString());
 	};
 	const section = fileSection(page, "src/core.ts");
+	// The highlight lasts 2.5 s: one locator names the row and its tint.
+	const landedOn = (s: typeof section, oldNo: number) =>
+		s.locator(
+			`tr[data-testid="diff-line"][data-landed][data-old-no="${oldNo}"]`,
+		);
 	const landed = section.locator('tr[data-testid="diff-line"][data-landed]');
 
-	// Base line 10: the removed row showing it, not the row numbered 10.
+	// Base line 10: the removed row showing it (PS1's 12), not the row
+	// numbered 10 (core 8).
 	await land(10);
-	await expect(landed).toHaveText(/core 10/, GIT_WAIT);
-	await expect(landed).toHaveAttribute("data-old-no", "12");
+	await expect(landedOn(section, 12)).toHaveText(/core 10/, GIT_WAIT);
 	await expect(section.getByTestId("landing-hint")).toHaveCount(0);
 
 	// Base line 20, gone by PS1: not in this view; the full diff has it.
@@ -3483,7 +3488,5 @@ test("a link to an old line (side=LEFT) lands on that base line's row in the sin
 	await hint.getByTestId("landing-full-diff").click();
 	await expect(page).toHaveURL(/from=branch/);
 	const full = fileSection(page, "src/core.ts");
-	const there = full.locator('tr[data-testid="diff-line"][data-landed]');
-	await expect(there).toHaveText(/core 20/, GIT_WAIT);
-	await expect(there).toHaveAttribute("data-old-no", "20");
+	await expect(landedOn(full, 20)).toHaveText(/core 20/, GIT_WAIT);
 });

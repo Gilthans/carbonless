@@ -59,6 +59,17 @@ describe("parseFilesSearch", () => {
 		expect(parseFilesSearch({ line: 1.5 })).toEqual({});
 	});
 
+	it("keeps a moved line's commit when it is a commit id", () => {
+		const oid = "b".repeat(40);
+		expect(parseFilesSearch({ path: "a.ts", commit: oid })).toEqual({
+			path: "a.ts",
+			commit: oid,
+		});
+		expect(parseFilesSearch({ path: "a.ts", commit: "main" })).toEqual({
+			path: "a.ts",
+		});
+	});
+
 	it("reads the comparison: a patch set, a head commit id, a from patch set or the branch", () => {
 		const oid = "a".repeat(40);
 		expect(parseFilesSearch({ ps: "2", from: "1" })).toEqual({
@@ -102,6 +113,20 @@ describe("threadTarget", () => {
 		).toEqual(moved);
 		expect(threadTarget(thread(), at("old", "new"), 10)).toEqual(moved);
 		expect(threadTarget(thread(), undefined, 10)).toEqual(moved);
+	});
+
+	it("a moved line names the commit it was numbered on (the since view finds a line only that patch set had)", () => {
+		const oid = "e".repeat(40);
+		const on = thread({
+			code: codeFromHunk("@@ -10 +10 @@\n x", { commit: oid, line: 10 }),
+		});
+		expect(threadTarget(on, at("old", "new"), 10)).toEqual({
+			path: "src/a.ts",
+			line: 10,
+			side: "RIGHT",
+			moved: true,
+			commit: oid,
+		});
 	});
 
 	it("keeps the comment's side, and lands a file comment on the file", () => {

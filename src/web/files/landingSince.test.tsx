@@ -3,7 +3,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../test/in-router";
-import type { DiffLine, FileHunks, FileView } from "../../shared/types";
+import type {
+	DiffLine,
+	FileHunks,
+	FileView,
+	SessionInfo,
+} from "../../shared/types";
+import { sessionQuery } from "../api";
 import { contextRanges } from "./contextRanges";
 import { DiffBody } from "./DiffBody";
 import { type Landing, landingRow } from "./landing";
@@ -24,6 +30,8 @@ vi.mock("./highlight", () => ({
  */
 
 const PATH = "src/a.ts";
+/** PS1's head (the compared patch set's). */
+const H1 = "a".repeat(40);
 
 const line = (
 	kind: DiffLine["kind"],
@@ -44,11 +52,12 @@ const line = (
  * removed (cluster k1), new lines 3–4 added. The since view (PS1 → head),
  * PS1 numbering its old side two lines on from the base (the branch added
  * two lines at its top, gone since): its old 5 is base line 3 (baseNo),
- * its old 2 one of the branch's own lines (no baseNo). Base line 4 was
- * gone by PS1 already: no row of the since view is it.
+ * its old 2 one of the branch's own lines (no baseNo; PS1's line 2,
+ * psNo). Base line 4 was gone by PS1 already: no row of the since view is
+ * it. The head's lines 5 to 20 are unchanged since PS1: no row either.
  */
 const sinceHunks: FileHunks = {
-	newLineCount: 4,
+	newLineCount: 20,
 	hunks: [
 		{
 			oldStart: 1,
@@ -60,6 +69,7 @@ const sinceHunks: FileHunks = {
 				line("del", 2, undefined, "branch's own", {
 					clusterKey: "k1",
 					baseNo: null,
+					psNo: 2,
 				}),
 				line("context", 3, 2, "two"),
 				line("del", 5, undefined, "three", { clusterKey: "k1", baseNo: 3 }),
@@ -138,6 +148,9 @@ function renderSince(landing: Landing) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
+	client.setQueryData(sessionQuery.queryKey, {
+		patchsets: [{ number: 1, head: H1 }],
+	} as unknown as SessionInfo);
 	render(
 		<QueryClientProvider client={client}>
 			{inRouter(() => (
@@ -172,12 +185,17 @@ afterEach(() => {
 });
 
 describe("the since view lands a LEFT link on the base line's row", () => {
-	const at = (n: number, side: "LEFT" | "RIGHT" = "LEFT"): Landing => ({
+	const at = (
+		n: number,
+		side: "LEFT" | "RIGHT" = "LEFT",
+		more: Partial<Landing> = {},
+	): Landing => ({
 		path: PATH,
 		line: n,
 		side,
 		index: 0,
 		seq: 1,
+		...more,
 	});
 
 	it("on the removed row whose base line it is, not the row numbered N", async () => {
@@ -209,6 +227,10 @@ describe("the since view lands a LEFT link on the base line's row", () => {
 		await screen.findByText("new four");
 		const hint = await screen.findByTestId("landing-hint");
 		expect(hint).toHaveTextContent("Old line 4 isn't in this view");
+		// The status is the text alone; the link is beside it, not in it.
+		const status = screen.getByRole("status");
+		expect(status).toHaveTextContent("Old line 4 isn't in this view");
+		expect(status).not.toHaveTextContent("Full diff");
 		expect(landedRow()).toBeNull();
 		const link = screen.getByTestId("landing-full-diff");
 		const href = new URL(link.getAttribute("href") ?? "", "http://test");
@@ -219,5 +241,38 @@ describe("the since view lands a LEFT link on the base line's row", () => {
 			side: "LEFT",
 			from: "branch",
 		});
+	});
+
+	it("says a RIGHT line no row is (unchanged since) isn't in this view, with the way to the full diff", async () => {
+		renderSince(at(10, "RIGHT"));
+		await screen.findByText("new four");
+		const hint = await screen.findByTestId("landing-hint");
+		expect(hint).toHaveTextContent("Line 10 isn't in this view");
+		const link = screen.getByTestId("landing-full-diff");
+		const href = new URL(link.getAttribute("href") ?? "", "http://test");
+		expect(Object.fromEntries(href.searchParams)).toMatchObject({
+			path: PATH,
+			line: "10",
+			side: "RIGHT",
+			from: "branch",
+		});
+	});
+
+	it("a link to a line only the compared patch set had (on its commit) lands on the removed row showing it", async () => {
+		renderSince(at(2, "RIGHT", { moved: true, commit: H1 }));
+		await screen.findByText("new four");
+		const row = await vi.waitFor(() => landedRow() ?? Promise.reject());
+		expect(row).toHaveAttribute("data-old-no", "2");
+		expect(row).toHaveTextContent("branch's own");
+		expect(screen.queryByTestId("landing-hint")).toBeNull();
+	});
+
+	it("a moved link on another commit still says so", async () => {
+		renderSince(at(2, "RIGHT", { moved: true, commit: "c".repeat(40) }));
+		await screen.findByText("new four");
+		expect(await screen.findByTestId("landing-hint")).toHaveTextContent(
+			"Line 2 is from another commit",
+		);
+		expect(landedRow()).toBeNull();
 	});
 });

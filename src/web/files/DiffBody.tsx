@@ -127,7 +127,12 @@ import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
 import { KindChip } from "./KindChip";
-import { type FilesSearch, type Landing, landingRow } from "./landing";
+import {
+	earlierRow,
+	type FilesSearch,
+	type Landing,
+	landingRow,
+} from "./landing";
 import {
 	getPicks,
 	type Picks,
@@ -164,6 +169,7 @@ import {
 	type Placeable,
 	type Placements,
 	placeThreads,
+	type SinceEarlier,
 	type SinceLeft,
 	sinceEarlier,
 	sinceLeft,
@@ -2505,20 +2511,37 @@ export function DiffBody(props: {
 				: sinceLeft(file.clusters, hunks.data?.hunks),
 		[props.from, file.clusters, hunks.data],
 	);
+	// The since view's compared patch set's head: a comment on a line
+	// only it had goes there (CAR-233), shown on that line's removed row.
+	const sessionData = useQuery({ ...sessionQuery, enabled: false }).data;
+	const earlierHead =
+		props.from === undefined
+			? undefined
+			: sessionData?.patchsets.find((p) => p.number === props.from)?.head;
+	const early = useMemo(
+		() =>
+			earlierHead === undefined
+				? undefined
+				: sinceEarlier(earlierHead, hunks.data?.hunks),
+		[earlierHead, hunks.data],
+	);
 	const { hint, landed, pending } = useLanding(
 		root,
 		lineLanding,
 		hunks.isSuccess,
 		left,
+		early,
 	);
 	useFindStep(root, linesHidden ? undefined : find, hunks.isSuccess);
 	// The line a thread link is about to land on (so a collapsed cluster
 	// holding it is open by the time the landing looks); once it has
 	// landed, `landed` keeps the cluster open while the highlight lasts.
 	const landingLine: LineRef | null =
-		pending && lineLanding?.line !== undefined && !lineLanding.moved
-			? landingRow(lineLanding.side ?? "RIGHT", lineLanding.line, left)
-			: null;
+		!pending || lineLanding?.line === undefined
+			? null
+			: lineLanding.moved
+				? earlierRow(lineLanding, early)
+				: landingRow(lineLanding.side ?? "RIGHT", lineLanding.line, left);
 
 	const loaded = new Map<number, DiffLine>();
 	for (const result of contexts) {
@@ -2560,13 +2583,6 @@ export function DiffBody(props: {
 	const mineNew = allItems.filter(
 		(i) => i.span.path === file.path && i.span.subject === "line",
 	);
-	// The since view's compared patch set's head: a comment on a line
-	// only it had goes there (CAR-233), shown on that line's removed row.
-	const sessionData = useQuery({ ...sessionQuery, enabled: false }).data;
-	const earlierHead =
-		props.from === undefined
-			? undefined
-			: sessionData?.patchsets.find((p) => p.number === props.from)?.head;
 	const onEarlier = (span: CodeSpan) =>
 		span.earlier === true &&
 		earlierHead !== undefined &&
@@ -2617,13 +2633,6 @@ export function DiffBody(props: {
 			)
 		: [];
 
-	const early = useMemo(
-		() =>
-			earlierHead === undefined
-				? undefined
-				: sinceEarlier(earlierHead, hunks.data?.hunks),
-		[earlierHead, hunks.data],
-	);
 	/** A span (GitHub's numbers) on this view's rows; null when none shows it. */
 	const onRows = <A extends SpanRange & { earlier?: boolean }>(
 		span: A,
@@ -3974,12 +3983,16 @@ function useLanding(
 	ready: boolean,
 	/** The since view's base lines on its rows (landingRow); read as the landing runs. */
 	left: SinceLeft | undefined,
+	/** The since view's lines only its compared patch set had (earlierRow). */
+	early: SinceEarlier | undefined,
 ): { hint: Hint | null; landed: Landed | null; pending: boolean } {
 	const [hint, setHint] = useState<Hint | null>(null);
 	const [landed, setLanded] = useState<Landed | null>(null);
 	const done = useRef(0);
 	const leftNow = useRef(left);
 	leftNow.current = left;
+	const earlyNow = useRef(early);
+	earlyNow.current = early;
 	// Until the landing below has run (it sets state when it does).
 	const pending =
 		landing !== undefined && ready && done.current !== landing.seq;
@@ -3994,16 +4007,20 @@ function useLanding(
 		const where = `${side === "LEFT" ? "Old line" : "Line"} ${landing.line}`;
 		// The row it is on, as this view numbers its rows: in the since view
 		// a LEFT (base) line is where its thread shows (landingRow).
+		// A moved line: only on the since view's removed row of a line its
+		// compared patch set alone had, numbered on that commit (earlierRow).
 		const at =
-			landing.line === undefined || landing.moved
+			landing.line === undefined
 				? null
-				: landingRow(side, landing.line, leftNow.current);
+				: landing.moved
+					? earlierRow(landing, earlyNow.current)
+					: landingRow(side, landing.line, leftNow.current);
 		const row =
 			at &&
 			el.querySelector(`tr[data-${at.old ? "old" : "new"}-no="${at.line}"]`);
 		if (!row || !at) {
-			// The since view's old line no row shows: the full diff may.
-			const since = leftNow.current !== undefined && side === "LEFT";
+			// A line no row of the since view shows: the full diff may.
+			const since = leftNow.current !== undefined;
 			setHint(
 				landing.line === undefined
 					? null
@@ -4015,7 +4032,7 @@ function useLanding(
 						: since
 							? {
 									text: `${where} isn't in this view`,
-									tip: "Not changed since the compared patch set: the full diff has it",
+									tip: "Unchanged since the compared patch set, or not in the diff",
 									full: {
 										path: landing.path,
 										line: landing.line,
@@ -4074,23 +4091,29 @@ function whenIdle(fn: () => void): () => void {
 }
 
 function LandingHint({ hint }: { hint: Hint }) {
+	// The status (its tooltip's trigger) is the text alone; the full diff's
+	// link sits beside it: its own tab stop, never read as the status.
 	return (
-		<Tooltip content={hint.tip}>
-			{(trigger) => (
-				<p
-					{...trigger}
-					role="status"
-					data-testid="landing-hint"
-					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
-					tabIndex={0}
-					className="flex min-h-10 items-center gap-2 border-b border-line bg-band px-3 text-xs text-muted focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
-				>
-					<InfoIcon size={14} aria-hidden className="shrink-0 text-accent" />
-					{hint.text}
-					{hint.full && <FullDiffLink search={hint.full} />}
-				</p>
-			)}
-		</Tooltip>
+		<div
+			data-testid="landing-hint"
+			className="flex min-h-10 items-center gap-2 border-b border-line bg-band pr-1 text-xs text-muted"
+		>
+			<Tooltip content={hint.tip}>
+				{(trigger) => (
+					<p
+						{...trigger}
+						role="status"
+						// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+						tabIndex={0}
+						className="flex min-h-10 min-w-0 flex-1 items-center gap-2 px-3 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+					>
+						<InfoIcon size={14} aria-hidden className="shrink-0 text-accent" />
+						{hint.text}
+					</p>
+				)}
+			</Tooltip>
+			{hint.full && <FullDiffLink search={hint.full} />}
+		</div>
 	);
 }
 
@@ -4108,7 +4131,7 @@ function FullDiffLink({ search }: { search: FilesSearch }) {
 				...search,
 			})}
 			data-testid="landing-full-diff"
-			className="ml-auto inline-flex min-h-10 shrink-0 items-center gap-1 rounded-md px-2 font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+			className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-md px-2 font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 		>
 			<FileDiffIcon size={14} aria-hidden />
 			Full diff
