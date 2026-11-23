@@ -4,9 +4,11 @@
 # tags vX.Y.Z on the RC's commit, starts release.yml's fixup (rc up to the
 # release; npm's trusted publisher is release.yml, not this file), creates
 # the GitHub release with the version's notes, opens the "next" PR with
-# docs/changelog.md, and reruns the release gate of open
-# PRs. Every step skips what is already done, so it can run again after a
-# failure. No npm credentials at all.
+# docs/changelog.md and release-notes/X.Y.Z.json, and reruns the release
+# gate of open PRs. The notes are the ones published: the package's
+# crbReleaseNotesFile (CAR-242), never a file at the RC's commit. Every step
+# skips what is already done, so it can run again after a failure. No npm
+# credentials at all.
 # docs/releasing.md.
 name: Release finish
 run-name: Finish release ${{ inputs.version }}
@@ -96,6 +98,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref master -f mode=fixup -f version="$VERSION"
+      - name: The published release notes
+        # CAR-242: the notes VERSION was published with, from the promote
+        # run's tarball once npm shows that very tarball (its integrity):
+        # its package.json's crbReleaseNotesFile. A file at the RC's commit
+        # never overrides them (it is read only for a package promoted
+        # without them, with a warning). For the "next" PR and the GitHub
+        # release. No token.
+        run: pnpm exec tsx scripts/release.ts ci:published-notes "$VERSION" "$RUNNER_TEMP/release" "$RUNNER_TEMP/release-notes.json"
       - name: Next version and changelog PR
         if: steps.plan.outputs.next_pr == 'true'
         env:
@@ -121,10 +131,10 @@ jobs:
           else
             git switch -c "$branch"
             crb_release ci:write-version "$next"
-            crb_release ci:changelog "$VERSION" "$SHA"
-            git add package.json docs/changelog.md
-            # ci:changelog dates the version's notes file (CAR-192).
-            [[ ! -d release-notes ]] || git add release-notes
+            # The published notes, dated, as release-notes/X.Y.Z.json
+            # (CAR-242), and the changelog section from them.
+            crb_release ci:changelog "$VERSION" "$SHA" "$RUNNER_TEMP/release-notes.json"
+            git add package.json docs/changelog.md release-notes
             git commit -m "next: $next" -m "Released $VERSION ($RC_TAG); merges to master now publish $next-rc.N."
             git push origin "$branch"
           fi
@@ -140,7 +150,10 @@ jobs:
         # Rerun each open PR's newest release-gate run: it reads master again
         # and now fails, except on the "next" PR. Harmless once master moved
         # on (they pass). A run still in progress can't be rerun; it is
-        # reported and left (it may have read master before the tag).
+        # reported and left (it may have read master before the tag). Even
+        # when a step before failed (the published notes, the next PR): a
+        # PR green from before the tag must not stay mergeable meanwhile.
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -157,13 +170,13 @@ jobs:
               fi
             done
       - name: The GitHub release's text
-        # CAR-192: the version's changelog section, from its release notes
-        # file at the RC's commit. git only, no token. Last but the summary,
-        # with the GitHub release: a failure here holds up neither rc, the
+        # CAR-192: the version's changelog section, from the published
+        # notes (CAR-242). git only, no token. Last but the summary, with
+        # the GitHub release: a failure here holds up neither rc, the
         # "next" PR nor the freeze, and a rerun redoes only what's missing.
         env:
           SHA: ${{ steps.plan.outputs.sha }}
-        run: pnpm exec tsx scripts/release.ts ci:release-body "$VERSION" "$SHA" >"$RUNNER_TEMP/release-body.md"
+        run: pnpm exec tsx scripts/release.ts ci:release-body "$VERSION" "$SHA" "$RUNNER_TEMP/release-notes.json" >"$RUNNER_TEMP/release-body.md"
       - name: GitHub release
         # vX.Y.Z's page on GitHub, which the update toast links to. Once: a
         # rerun leaves an existing release alone. gh only.
