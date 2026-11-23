@@ -1,5 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickQuestionChips } from "./QuickQuestionChips";
@@ -8,85 +15,151 @@ const SHORT = "Why this change?";
 const LONG =
 	"Please confirm all comments I wrote have been addressed and highlight those that haven't";
 
-// jsdom has no layout: the list is 40px a question tall.
+// jsdom has no layout: a chip's text is 6px a character (plus `rounding`)
+// on a line `width` wide, less the chevron's 28px while it shows, and a
+// resize tells every observer.
+let width = 200;
+let rounding = 0;
+const chevron = (el: HTMLElement) =>
+	el.closest("li")?.querySelector("[data-testid=agent-quick-question-more]")
+		? 28
+		: 0;
+const observers = new Set<() => void>();
+function resize(to: number) {
+	width = to;
+	act(() => {
+		for (const cb of observers) cb();
+	});
+}
+
 beforeEach(() => {
-	vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(
+	width = 200;
+	rounding = 0;
+	vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(
 		function (this: HTMLElement) {
-			return this.querySelectorAll("li").length * 40;
+			return (this.textContent ?? "").length * 6 + rounding;
+		},
+	);
+	vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+		function (this: HTMLElement) {
+			return Math.min(
+				width - chevron(this),
+				(this.textContent ?? "").length * 6,
+			);
+		},
+	);
+	vi.stubGlobal(
+		"ResizeObserver",
+		class {
+			cb: () => void;
+			constructor(cb: () => void) {
+				this.cb = cb;
+			}
+			observe() {
+				observers.add(this.cb);
+			}
+			disconnect() {
+				observers.delete(this.cb);
+			}
 		},
 	);
 });
 
 afterEach(() => {
 	cleanup();
+	observers.clear();
 	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
 });
 
-function show(questions: readonly string[] | null = [SHORT, LONG]) {
+function show(questions = [SHORT, LONG]) {
 	const onPick = vi.fn();
-	const r = render(
-		<QuickQuestionChips questions={questions} onPick={onPick} />,
-	);
-	return { onPick, user: userEvent.setup(), rerender: r.rerender };
+	render(<QuickQuestionChips questions={questions} onPick={onPick} />);
+	return { onPick, user: userEvent.setup() };
 }
-const list = () => screen.getByTestId("agent-quick-questions");
+const chip = (q: string) =>
+	screen
+		.getAllByTestId("agent-quick-question")
+		.find((b) => b.textContent === q) as HTMLElement;
+const item = (q: string) => chip(q).closest("li") as HTMLElement;
+const more = (q: string) =>
+	within(item(q)).queryByRole("button", { name: /Show (more|less)/ });
 
-describe("question chips (CAR-203)", () => {
-	it("every chip's name is its whole question, and there is no Show more", () => {
+describe("long question chips (CAR-203 follow-up)", () => {
+	it("a long chip is one line with an ellipsis and Show more; a short one has neither", () => {
 		show();
-		expect(screen.getByRole("button", { name: LONG })).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: SHORT })).toBeInTheDocument();
-		expect(screen.getAllByTestId("agent-quick-question")).toHaveLength(2);
-		expect(
-			screen.queryByRole("button", { name: /Show (more|less)/ }),
-		).toBeNull();
+		const longText = within(chip(LONG)).getByTestId(
+			"agent-quick-question-text",
+		);
+		expect(longText).toHaveClass("truncate");
+		const toggle = more(LONG);
+		expect(toggle).toHaveAccessibleName("Show more");
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+		expect(more(SHORT)).toBeNull();
 	});
 
-	it("a tap picks the whole question; the box keeps focus", async () => {
+	it("the chip's name is the whole question, cut or not", () => {
+		show();
+		expect(more(LONG)).not.toBeNull();
+		expect(screen.getByRole("button", { name: LONG })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: SHORT })).toBeInTheDocument();
+	});
+
+	it("Show more unfolds without picking, keeps focus where it was, then Show less folds", async () => {
 		const { onPick, user } = show();
-		const chip = screen.getByRole("button", { name: LONG });
+		const toggle = more(LONG) as HTMLElement;
+		const down = fireEvent.mouseDown(toggle);
 		// preventDefault: the Ask box keeps focus.
-		expect(fireEvent.mouseDown(chip)).toBe(false);
-		await user.click(chip);
+		expect(down).toBe(false);
+		await user.click(toggle);
+		expect(onPick).not.toHaveBeenCalled();
+		expect(toggle).toHaveAccessibleName("Show less");
+		expect(toggle).toHaveAttribute("aria-expanded", "true");
+		expect(
+			within(chip(LONG)).getByTestId("agent-quick-question-text"),
+		).not.toHaveClass("truncate");
+		await user.click(toggle);
+		expect(onPick).not.toHaveBeenCalled();
+		expect(more(LONG)).toHaveAccessibleName("Show more");
+		expect(
+			within(chip(LONG)).getByTestId("agent-quick-question-text"),
+		).toHaveClass("truncate");
+	});
+
+	it("tapping a cut chip picks the whole question", async () => {
+		const { onPick, user } = show();
+		expect(more(LONG)).not.toBeNull();
+		await user.click(chip(LONG));
 		expect(onPick).toHaveBeenCalledExactlyOnceWith(LONG);
 	});
 
-	it("the list is capped and scrolls", () => {
+	it("is measured again on a resize: cut on a phone, whole on a desktop", () => {
 		show();
-		expect(list()).toHaveClass("max-h-28", "overflow-y-auto");
+		expect(more(LONG)).not.toBeNull();
+		resize(2000);
+		expect(more(LONG)).toBeNull();
+		resize(200);
+		expect(more(LONG)).not.toBeNull();
 	});
 
-	it("starts scrolled all the way down, and again when the questions change", () => {
-		const { rerender, onPick } = show();
-		expect(list().scrollTop).toBe(80);
-		list().scrollTop = 0;
-		// The same questions in a new array: the reader's scroll stays.
-		rerender(<QuickQuestionChips questions={[SHORT, LONG]} onPick={onPick} />);
-		expect(list().scrollTop).toBe(0);
-		rerender(
-			<QuickQuestionChips
-				questions={[SHORT, LONG, "Third?"]}
-				onPick={onPick}
-			/>,
-		);
-		expect(list().scrollTop).toBe(120);
-	});
-
-	it("scrolls down when the questions arrive after loading", () => {
-		const { rerender, onPick } = show(null);
-		rerender(<QuickQuestionChips questions={[SHORT, LONG]} onPick={onPick} />);
-		expect(list().scrollTop).toBe(80);
-	});
-
-	it("while loading: a spinner and capped skeletons, never an empty list", () => {
-		show(null);
-		const loading = screen.getByTestId("agent-quick-questions-loading");
-		expect(loading).toHaveAttribute("aria-busy", "true");
-		expect(loading).toHaveClass("max-h-28", "overflow-hidden");
+	it("a chip that fits once its chevron's room is free is whole again: no cut kept by the chevron itself", () => {
+		// 180px of text: cut on a 150px line; whole on a 200px one, though
+		// the chevron, while it shows, leaves the text only 172px.
+		const MID = "x".repeat(30);
+		width = 150;
+		show([MID]);
+		expect(more(MID)).not.toBeNull();
+		resize(200);
+		expect(more(MID)).toBeNull();
 		expect(
-			screen.getByRole("status", { name: "Loading suggested questions" }),
-		).toBeInTheDocument();
-		expect(screen.queryByTestId("agent-quick-questions")).toBeNull();
-		expect(screen.queryByTestId("agent-quick-question")).toBeNull();
+			within(chip(MID)).getByTestId("agent-quick-question-text"),
+		).toHaveClass("truncate");
+	});
+
+	it("a pixel's rounding is no cut", () => {
+		rounding = 1;
+		width = 2000;
+		show();
+		expect(more(LONG)).toBeNull();
 	});
 });

@@ -787,65 +787,65 @@ test("one-tap questions (CAR-203): a first review's fill the box; PS1 the new PR
 	]);
 	await expectNoPageOverflow(page);
 	await shot(page, "review-conversation-rereview-questions", isMobile);
-	// The list is capped and scrolls, starting at its bottom (the owner,
-	// 2026-11-22); every chip shows its whole question, wrapping, on the
-	// narrowest phone too. The desktop's width is set too: its drawer is
-	// then narrower than the long question.
-	// The drawer opens again at that size: the list starts at its bottom
-	// when it shows.
-	await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
-	await expect(reviewDrawer(page)).toHaveCount(0);
+	// A long question is one line with Show more (the owner, 2026-11-18),
+	// on the narrowest phone too; unfolding it only reads. The desktop's
+	// width is set too: its drawer is then narrower than the long question.
 	await page.setViewportSize(
 		isMobile ? { width: 360, height: 780 } : { width: 1024, height: 720 },
 	);
-	await chip(page).click();
-	const rr = reviewDrawer(page);
-	const list = rr.getByTestId("agent-quick-questions");
+	// As tall as the loading skeleton (QuickQuestionChips: three 40px rows,
+	// 6px apart), so nothing moves when the questions arrive: one chip a
+	// row, each exactly 40px (its edge a ring, no border). The skeleton
+	// itself can't be held in a browser: the chip and Shift+A wait for the
+	// session that the questions wait for.
+	const list = reviewDrawer(page).getByTestId("agent-quick-questions");
 	await expect(list.getByTestId("agent-quick-question")).toHaveCount(3);
-	await expect(
-		rr.getByRole("button", { name: /Show (more|less)/ }),
-	).toHaveCount(0);
-	// Two 40px rows and a peek of the third (max-h-28).
 	await expect
-		.poll(async () => (await list.boundingBox())?.height ?? 999)
-		.toBeLessThanOrEqual(112 + 1);
-	// Overflowing, and scrolled all the way down when the drawer shows.
-	const scroll = () =>
-		list.evaluate((el) => ({
-			top: el.scrollTop,
-			client: el.clientHeight,
-			height: el.scrollHeight,
-		}));
-	const atBottom = await scroll();
-	expect(atBottom.height).toBeGreaterThan(atBottom.client);
-	expect(atBottom.top + atBottom.client).toBeGreaterThanOrEqual(
-		atBottom.height - 1,
+		.poll(async () => (await list.boundingBox())?.height)
+		.toBeCloseTo(3 * 40 + 2 * 6, 0);
+	const rr = reviewDrawer(page);
+	await expect(
+		rr
+			.getByRole("listitem")
+			.filter({ hasText: "Please summarize what changed" })
+			.getByRole("button", { name: /Show (more|less)/ }),
+	).toHaveCount(0);
+	const long = rr.getByRole("listitem").filter({ hasText: "Please confirm" });
+	const longChip = long.getByTestId("agent-quick-question");
+	const more = long.getByRole("button", { name: "Show more" });
+	await expect(more).toBeVisible();
+	await expect(longChip).toHaveAccessibleName(
+		"Please confirm all comments I wrote have been addressed and highlight those that haven't",
 	);
-	await shot(page, "review-conversation-long-question", isMobile);
-	const LONG =
-		"Please confirm all comments I wrote have been addressed and highlight those that haven't";
-	const longChip = list.getByRole("button", { name: LONG });
-	for (const b of await list.getByTestId("agent-quick-question").all()) {
-		await b.scrollIntoViewIfNeeded();
-		expect((await b.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+	const oneLine = (await longChip.boundingBox())?.height ?? 0;
+	expect(oneLine).toBeLessThan(48);
+	for (const b of [longChip, more]) {
+		const box = await b.boundingBox();
+		expect(box?.height).toBeGreaterThanOrEqual(40);
+		expect(box?.width).toBeGreaterThanOrEqual(40);
 	}
-	// The whole long question shows, wrapped, once scrolled into view.
-	await longChip.scrollIntoViewIfNeeded();
-	await expect(longChip).toHaveText(LONG);
-	await expect(longChip).toBeInViewport({ ratio: 1 });
-	const text = await longChip.evaluate((el) => {
-		const span = el.firstElementChild as HTMLElement;
-		return { scroll: span.scrollWidth, client: span.clientWidth };
-	});
-	expect(text.scroll).toBeLessThanOrEqual(text.client + 1);
 	await expectNoPageOverflow(page);
-	await shot(page, "review-conversation-long-question-open", isMobile);
+	await shot(page, "review-conversation-long-question", isMobile);
 	const rrBox = rr.getByRole("textbox", { name: "Ask agent" });
 	// The first tap's draft may still be there.
 	await rrBox.fill("");
-	await longChip.click();
-	await expect(rrBox).toHaveValue(LONG);
+	await more.click();
 	await expect(rrBox).toBeFocused();
+	const less = long.getByRole("button", { name: "Show less" });
+	await expect(less).toHaveAttribute("aria-expanded", "true");
+	await expect
+		.poll(async () => (await longChip.boundingBox())?.height ?? 0)
+		.toBeGreaterThan(oneLine);
+	await expect(rrBox).toHaveValue("");
+	await expectNoPageOverflow(page);
+	await shot(page, "review-conversation-long-question-open", isMobile);
+	await less.click();
+	await expect(more).toBeVisible();
+	await expect(rrBox).toBeFocused();
+	await longChip.click();
+	await expect(rrBox).toHaveValue(
+		"Please confirm all comments I wrote have been addressed and highlight those that haven't",
+	);
 	// Long past the tap (a reload and a head check later): nothing was sent.
 	expect(asks).toEqual([]);
 });
