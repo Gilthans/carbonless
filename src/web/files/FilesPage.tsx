@@ -1674,7 +1674,7 @@ export function FilesPage() {
 		: byFile && data && sinceView.answer
 			? sinceView.since !== null
 				? toReadCount(sinceCounted.units, unit)
-				: toReadClusters(sinceView.answer, data, unit)
+				: toReadClusters(sinceView.answer, data, unit, ignoreWs)
 			: sinceView.error
 				? undefined
 				: null;

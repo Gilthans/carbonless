@@ -4,7 +4,7 @@ import {
 	type SinceUnit,
 	sinceUnits,
 } from "../../shared/pieces";
-import { fileFlags } from "../../shared/progress";
+import { fileFlags, withoutWhitespaceOnly } from "../../shared/progress";
 import { overlayCarries } from "../../shared/rereview/overlay";
 import type {
 	ClusterView,
@@ -276,18 +276,22 @@ export function toReadCount(units: readonly SinceUnit[], unit: Unit): number {
 /**
  * The full diff's "to read" (it counts the snapshot's clusters): the
  * view's clusters the engine lists as reworked or new, not reviewed or
- * crossed off yet, in the unit (lines: the ones not marked).
+ * crossed off yet, in the unit (lines: the ones not marked). With
+ * "Ignore whitespace" on, the bar's own files (withoutWhitespaceOnly):
+ * whitespace-only clusters count nowhere, a file of nothing else included.
  */
 export function toReadClusters(
 	answer: RereviewAnswer,
 	view: ReviewView,
 	unit: Unit,
+	ignoreWhitespace = false,
 ): number {
 	const kinds = new Map(
 		answer.files.flatMap((f) => f.clusters.map((c) => [c.key, c.kind])),
 	);
 	let n = 0;
-	for (const file of view.files) {
+	for (const whole of view.files) {
+		const file = ignoreWhitespace ? withoutWhitespaceOnly(whole) : whole;
 		let inFile = 0;
 		for (const c of file.clusters) {
 			const kind = kinds.get(c.key);

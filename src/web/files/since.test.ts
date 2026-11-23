@@ -421,6 +421,50 @@ describe("counts follow the since view (its pieces)", () => {
 	});
 });
 
+describe('the full diff\'s "to read" with "Ignore whitespace" (CAR-243)', () => {
+	const wsAnswer = answer(
+		[
+			{
+				index: 0,
+				path: "core.ts",
+				conflict: false,
+				clusters: [
+					{ key: "a", kind: "reworked" },
+					{ key: "w", kind: "reworked" },
+				],
+			},
+			{
+				index: 1,
+				path: "util.ts",
+				conflict: false,
+				clusters: [{ key: "u", kind: "new" }],
+			},
+		],
+		{ files: 2, clusters: 3 },
+	);
+	const wsView = view([
+		file(0, "core.ts", [
+			cluster("a", "unreviewed"),
+			{ ...cluster("w", "unreviewed"), whitespaceOnly: true as const },
+		]),
+		file(1, "util.ts", [
+			{ ...cluster("u", "unreviewed"), whitespaceOnly: true as const },
+		]),
+	]);
+
+	it("counts whitespace-only clusters with the switch off, not with it on", () => {
+		expect(toReadClusters(wsAnswer, wsView, "clusters")).toBe(3);
+		expect(toReadClusters(wsAnswer, wsView, "clusters", false)).toBe(3);
+		expect(toReadClusters(wsAnswer, wsView, "clusters", true)).toBe(1);
+		expect(toReadClusters(wsAnswer, wsView, "files")).toBe(2);
+		// util.ts is nothing else: it counts nowhere, as on the bar.
+		expect(toReadClusters(wsAnswer, wsView, "files", true)).toBe(1);
+		expect(toReadClusters(wsAnswer, wsView, "lines", true)).toBe(
+			toReadClusters(wsAnswer, wsView, "lines") - 2 * 2,
+		);
+	});
+});
+
 describe("eyesOf", () => {
 	it("read for anything to look at, carried when every mark carried, null without an answer", () => {
 		const since = sinceByFile(a, v);
