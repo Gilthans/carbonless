@@ -335,7 +335,8 @@ export interface SincePiece {
 	 * (its display hunk's one matching, `whitespaceLines`) and held a human
 	 * mark at the compared patch set (`SinceWhitespace.marked`). "Ignore
 	 * whitespace" on leaves it out of the counts. Any doubt leaves it unset
-	 * (principle 2: it counts).
+	 * (principle 2: it counts). An orphan piece (CAR-216) isn't on the
+	 * interdiff: its cluster's (Cluster.whitespaceOnly, against the base).
 	 */
 	whitespaceOnly?: true;
 	/**
@@ -398,7 +399,14 @@ export function sincePieces(
 						),
 					),
 				};
-				if (ws && run.lines.every((l) => ws.lines.has(l) && ws.marked(l))) {
+				// An orphan run (CAR-216) isn't on the interdiff: it is read
+				// against the base, so it is whitespace-only as its cluster is.
+				const cluster = run.key === undefined ? undefined : byKey.get(run.key);
+				if (
+					run.orphan
+						? cluster?.kind === "lines" && cluster.whitespaceOnly === true
+						: ws && run.lines.every((l) => ws.lines.has(l) && ws.marked(l))
+				) {
 					piece.whitespaceOnly = true;
 				}
 				out.push(piece);
@@ -445,8 +453,9 @@ export function sincePieces(
 
 /**
  * Changed runs cut where membership in `ws.lines` changes (each piece all
- * whitespace-only lines, or none); context runs and, without `ws`, every
- * run as it is.
+ * whitespace-only lines, or none); context runs, orphan runs (CAR-216:
+ * whitespace-only as their cluster is) and, without `ws`, every run as it
+ * is.
  */
 function wsRuns(
 	runs: ReturnType<typeof lineRuns>,
@@ -455,7 +464,7 @@ function wsRuns(
 	if (!ws) return runs;
 	const out: ReturnType<typeof lineRuns> = [];
 	for (const run of runs) {
-		if (!run.change) {
+		if (!run.change || run.orphan) {
 			out.push(run);
 			continue;
 		}

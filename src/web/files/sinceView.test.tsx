@@ -1140,8 +1140,18 @@ describe("orphan lines: changed, unchanged since PS1, never reviewed there (CAR-
 					old: [],
 					new: [],
 					orphan: true,
+					// The server's: an orphan is whitespace-only as its cluster is.
+					whitespaceOnly: true,
 				},
-				{ hunk: 0, line: 2, key: "w", owns: [[1, 2]], old: [], new: [[2, 3]] },
+				{
+					hunk: 0,
+					line: 2,
+					key: "w",
+					owns: [[1, 2]],
+					old: [],
+					new: [[2, 3]],
+					whitespaceOnly: true,
+				},
 			],
 		};
 		const wsKinds = new Map<string, KindEntry>([

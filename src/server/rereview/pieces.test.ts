@@ -523,7 +523,9 @@ describe("since pieces judged on the interdiff (CAR-218)", () => {
 	it("an unread re-indent still counts", async () => {
 		const { pieces } = await since(null);
 		expect(pieces.length).toBeGreaterThan(0);
-		expect(pieces.filter((p) => p.whitespaceOnly)).toEqual([]);
+		// PS1's own unread changes are orphan pieces (CAR-216), whitespace-
+		// only as their cluster is against the base: not the re-indent.
+		expect(pieces.filter((p) => p.whitespaceOnly && !p.orphan)).toEqual([]);
 	});
 
 	it("a real edit since counts though its cluster is whitespace-only against the base", async () => {
@@ -581,12 +583,17 @@ function expectAgree(hunks: FileHunks, cut: boolean, label: string) {
 		wsRows += tilde.size;
 		const covered = new Set<number>();
 		for (const p of mine) {
-			const n = size(p.old) + size(p.new);
+			// An orphan piece (CAR-216) owns exactly its lines; its removed
+			// ones have no number here.
+			const n = p.orphan && p.owns ? size(p.owns) : size(p.old) + size(p.new);
 			const lines = hk.lines.slice(p.line, p.line + n);
 			for (let k = p.line; k < p.line + n; k++) {
 				expect(covered.has(k)).toBe(false);
 				covered.add(k);
 			}
+			// Not on the interdiff: never cut at whitespace runs, and
+			// whitespace-only as its cluster is (against the base).
+			if (p.orphan) continue;
 			const rows = lines.map((l) => tilde.has(l));
 			if (cut) {
 				expect(new Set(rows).size, `${label} ${h}:${p.line}`).toBe(1);
@@ -706,7 +713,8 @@ describe("since pieces and the view's `~` rows agree (CAR-218)", () => {
 					// no cluster of PS1 added (itself, or an added line's twin).
 					const addedThen = view.traced.lineKeys.old[f.path] ?? {};
 					for (const p of hunks.pieces ?? []) {
-						if (!p.whitespaceOnly) continue;
+						// An orphan's flag is its cluster's (CAR-216), not a twin's.
+						if (!p.whitespaceOnly || p.orphan) continue;
 						const all = hunks.hunks[p.hunk]?.lines ?? [];
 						const twins = matchDisplayHunk(all);
 						const n = size(p.old) + size(p.new);
@@ -908,13 +916,17 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 	});
 	afterAll(() => r.cleanup());
 
+	// The re-indents' pieces: PS1's own unread change (a.ts's `old();`)
+	// is an orphan piece (CAR-216), checked on its own.
 	const shape = (hunks: FileHunks) =>
-		(hunks.pieces ?? []).map((p) => [
-			hunks.hunks[p.hunk]?.lines
-				.slice(p.line, p.line + size(p.old) + size(p.new))
-				.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`),
-			p.whitespaceOnly === true,
-		]);
+		(hunks.pieces ?? [])
+			.filter((p) => !p.orphan)
+			.map((p) => [
+				hunks.hunks[p.hunk]?.lines
+					.slice(p.line, p.line + size(p.old) + size(p.new))
+					.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`),
+				p.whitespaceOnly === true,
+			]);
 	const at = (path: string) => b.files.findIndex((f) => f.path === path);
 
 	it("nothing marked in PS1: the re-indent is whitespace-only, as in the full diff", async () => {
@@ -922,6 +934,12 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 		expect(shape(view.hunks(at("a.ts")))).toEqual([
 			[["-load();", "+  load();"], true],
 		]);
+		// PS1's change, never reviewed: an orphan piece of its own, counted.
+		const orphans = (view.hunks(at("a.ts")).pieces ?? []).filter(
+			(p) => p.orphan,
+		);
+		expect(orphans).toHaveLength(1);
+		expect(orphans[0]?.whitespaceOnly).toBeUndefined();
 		expectAgree(view.hunks(at("a.ts")), true, "a.ts");
 		// A file PS1 never touched: the same.
 		expect(shape(view.hunks(at("b.ts")))).toEqual([
@@ -943,7 +961,7 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 			);
 			expect(hunks.pieces?.length, path).toBeGreaterThan(0);
 			expect(
-				hunks.pieces?.filter((p) => p.whitespaceOnly),
+				hunks.pieces?.filter((p) => p.whitespaceOnly && !p.orphan),
 				path,
 			).toEqual([]);
 		}
