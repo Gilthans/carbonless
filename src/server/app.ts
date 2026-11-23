@@ -3,7 +3,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 // Its types (reply.sendFile); the plugin itself loads only with a web root.
 import type {} from "@fastify/static";
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, {
+	type FastifyInstance,
+	type FastifyPluginAsync,
+	type FastifyRequest,
+} from "fastify";
 import {
 	type AgentConfig,
 	type AgentMessageRequest,
@@ -528,7 +532,7 @@ export async function buildApp(
 
 	// A review's routes, by its id: /api/r/<id>/session, ...
 	await app.register(
-		async (review) => {
+		(async (review) => {
 			review.addHook<{ Params: { id: string } }>(
 				"preHandler",
 				async (request) => {
@@ -1092,7 +1096,7 @@ export async function buildApp(
 			review.get("/head", (request) =>
 				sessionOf(request).checkHead({ reuseOpen: true }),
 			);
-		},
+		}) satisfies FastifyPluginAsync,
 		{ prefix: "/api/r/:id" },
 	);
 

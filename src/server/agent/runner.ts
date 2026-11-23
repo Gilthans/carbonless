@@ -513,7 +513,7 @@ export class AgentRunner {
 
 	/** After a human open or message: spawns if needed, then wakes it if a question waits. Never throws. */
 	poke(): void {
-		if (this.#closed) return;
+		if (this.#closed !== null) return;
 		if (this.#off()) {
 			// The flag cleared elsewhere: what still runs here goes.
 			this.#windDown();
@@ -521,16 +521,16 @@ export class AgentRunner {
 		}
 		// A detach under way finishes first; its end pokes again. Not
 		// #again: the pump it waits for would take that as a new round.
-		if (this.#detaching) return;
+		if (this.#detaching !== null) return;
 		this.#again = true;
-		if (this.#pump) return;
+		if (this.#pump !== null) return;
 		this.#pump = this.#run()
 			.catch((error: unknown) => {
 				this.#set("error", { error: (error as Error).message });
 			})
 			.finally(() => {
 				this.#pump = null;
-				if (this.#closed) return;
+				if (this.#closed !== null) return;
 				// Turned off while it ran (a poke then found it busy): wind down now.
 				if (this.#off()) this.#windDown();
 				else if (this.#again) this.poke();
@@ -599,7 +599,7 @@ export class AgentRunner {
 	 * Unlike close(), the runner stays usable: the next Spawn starts afresh.
 	 */
 	detach(): Promise<void> {
-		if (this.#closed) return this.#closed;
+		if (this.#closed !== null) return this.#closed;
 		return this.#startDetach({ keepCheckout: false });
 	}
 
@@ -662,7 +662,7 @@ export class AgentRunner {
 		this.#crashes = 0;
 		this.#dry = 0;
 		this.#seen = undefined;
-		if (this.#closed) return;
+		if (this.#closed !== null) return;
 		// Spawn pressed again while this ran: #startDetach pokes once it ends.
 		this.#set("off");
 	}
@@ -890,7 +890,7 @@ export class AgentRunner {
 	/** The running agent, spawned (and admitted) if it should run; null when it can't or shouldn't. */
 	async #ensure(): Promise<AcpAgent | null> {
 		await this.#readConfig();
-		if (this.#closed) return null;
+		if (this.#closed !== null) return null;
 		if (this.#off()) {
 			await this.#stopProc();
 			this.#identity = undefined;
@@ -928,7 +928,7 @@ export class AgentRunner {
 				this.#set("elsewhere", { elsewhere: claim.holder.port });
 				return null;
 			}
-			if (this.#closed) {
+			if (this.#closed !== null) {
 				await claim.release();
 				return null;
 			}
@@ -971,7 +971,7 @@ export class AgentRunner {
 		// Closed while the checkout was made: close() found no process to
 		// stop and waits for this pump, so a start now would hold it until
 		// the start times out (close removes the checkout after).
-		if (this.#closed) return null;
+		if (this.#closed !== null) return null;
 		// ACP went off while the checkout was made: nothing spawns.
 		if (this.#off()) {
 			this.#set("off");
@@ -1081,7 +1081,7 @@ export class AgentRunner {
 	}
 
 	#onExit(proc: Proc, code: number | null, signal: string | null): void {
-		if (proc.stopping || this.#closed) return;
+		if (proc.stopping || this.#closed !== null) return;
 		if (this.#proc === proc) this.#proc = null;
 		proc.stopping = true;
 		this.#crashes++;
