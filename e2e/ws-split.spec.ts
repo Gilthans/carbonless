@@ -567,8 +567,10 @@ test("the full diff with a comparison open: its connector's card counts as the b
 	await boxes(section).first().click();
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
-	// PS2 re-indents the changed line, read at PS1: the engine's own count
-	// (no mark of the head yet) reads nothing new, the bar's 1 to read.
+	// PS2 re-indents the changed line, read at PS1. With Ignore whitespace
+	// on, the engine's count leaves the re-indent out (judged on the
+	// interdiff: the line was read at PS1, CAR-218), while the full diff's
+	// bar counts its cluster (not whitespace-only against the base).
 	p.moveHead({
 		message: "Re-indent line 2",
 		files: {

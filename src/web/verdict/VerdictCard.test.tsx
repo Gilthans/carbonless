@@ -383,6 +383,39 @@ describe("the verdict card since your verdict", () => {
 		expect(posted[0]).toMatchObject({ event: "APPROVE", commit: NEW });
 	});
 
+	it("Ignore whitespace on, an identical diff of only whitespace-only clusters: nothing to re-read and Approve again, both (CAR-266)", async () => {
+		ignoreWhitespace.set(true);
+		renderTab(() =>
+			facts(
+				given({
+					to: { head: NEW, patchset: null },
+					changes: {
+						...SAME,
+						files: 1,
+						new: 1,
+						withoutWhitespaceOnly: { files: 0, reworked: 0, new: 0 },
+					} as typeof SAME,
+				}),
+			),
+		);
+		const c = await card();
+		const since = await within(c).findByTestId("verdict-since");
+		expect(since).toHaveTextContent("Rebased, same diff · nothing to re-read");
+		expect(
+			within(c).getByRole("button", { name: /^Approve again on / }),
+		).toBeInTheDocument();
+		// Off: the cluster counts, on the line and the button alike.
+		act(() => ignoreWhitespace.set(false));
+		await waitFor(() =>
+			expect(since).toHaveTextContent(
+				"Since then: 2 commits · 1 file · 1 new cluster",
+			),
+		);
+		expect(
+			within(c).queryByRole("button", { name: /Approve again/ }),
+		).toBeNull();
+	});
+
 	it("an identical diff with a cluster the engine calls new is never nothing to re-read", async () => {
 		renderTab(() =>
 			facts(

@@ -318,12 +318,23 @@ function toReadByFile(
 	});
 }
 
+/** The engine's reviewed clusters gone, in every file of its answer. */
+export function goneCount(answer: RereviewAnswer): number {
+	return answer.files.reduce(
+		(n, f) => n + f.clusters.filter((c) => c.kind === "gone").length,
+		0,
+	);
+}
+
 /**
  * The connector's "to read" for the comparison open in the full diff
- * (CAR-266): the bar's own count there (toReadClusters, the snapshot's
- * clusters as marked, "Ignore whitespace" as the bar reads it), the
- * files with any or with a conflict (as liveToRead), and the engine's
- * reviewed clusters gone (the full diff shows none of them).
+ * (CAR-266): clusters are the bar's own count there (toReadClusters, the
+ * snapshot's clusters as marked, "Ignore whitespace" as the bar reads
+ * it); files are those with any, plus every conflicted file, as the since
+ * view's connector counts them (liveToRead): a conflict always counts on
+ * the card, though the bar's files unit leaves a conflicted file with
+ * nothing else to read out. Gone: the engine's (goneCount; the full diff
+ * shows none of them).
  */
 export function fullDiffToRead(
 	answer: RereviewAnswer,
@@ -338,11 +349,7 @@ export function fullDiffToRead(
 		clusters += f.count;
 	}
 	for (const [index, info] of since) if (info.conflict) files.add(index);
-	const gone = answer.files.reduce(
-		(n, f) => n + f.clusters.filter((c) => c.kind === "gone").length,
-		0,
-	);
-	return { files: files.size, clusters, gone };
+	return { files: files.size, clusters, gone: goneCount(answer) };
 }
 
 /**

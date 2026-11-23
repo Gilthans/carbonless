@@ -40,6 +40,7 @@ import {
 	type ToRead,
 	toReadCounts,
 } from "./graphCards";
+import { goneCount } from "./since";
 
 /** The rail's last slot is always this wide: "up to date", or the head connector and dot. */
 export const TAIL_WIDTH = { desktop: 150, phone: 84 } as const;
@@ -462,10 +463,7 @@ const stubShape = (code: Shape["code"], commits: number): Shape => ({
 function toReadOf(answer: RereviewAnswer, ignoreWs: boolean): ToRead {
 	return {
 		...toReadCounts(answer.toRead, ignoreWs),
-		gone: answer.files.reduce(
-			(n, f) => n + f.clusters.filter((c) => c.kind === "gone").length,
-			0,
-		),
+		gone: goneCount(answer),
 	};
 }
 

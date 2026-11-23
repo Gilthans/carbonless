@@ -261,6 +261,18 @@ export function sinceCounts(c: SinceDone, ignoreWs: boolean): SinceDone {
 	return ignoreWs && without ? { ...counts, ...without } : counts;
 }
 
+/**
+ * What changed since the verdict as the card shows it, the line and the
+ * Approve button alike: done counts picked by the switch (sinceCounts),
+ * pending and failed as they are.
+ */
+export function shownChanges(
+	changes: VerdictSince["changes"],
+	ignoreWs: boolean,
+): VerdictSince["changes"] {
+	return changes.status === "done" ? sinceCounts(changes, ignoreWs) : changes;
+}
+
 /** "3 commits · 2 files · 1 reworked, 1 new cluster" (and "· 1 gone"). */
 export function sinceLine(c: SinceDone): string {
 	const parts = [plural(c.commits, "commit")];
@@ -329,11 +341,7 @@ function SinceVerdict(props: {
 	counted: Counted | null;
 }) {
 	const { since, review } = props;
-	const ignoreWs = ignoreWhitespace.use();
-	const changes =
-		since.changes.status === "done"
-			? sinceCounts(since.changes, ignoreWs)
-			: since.changes;
+	const changes = shownChanges(since.changes, ignoreWhitespace.use());
 	if (changes.status === "pending") return <SincePending />;
 	if (changes.status === "failed") {
 		return (
@@ -464,6 +472,7 @@ export function VerdictCard(props: {
 }) {
 	const { overview, session, place } = props;
 	const reviewId = useReviewId();
+	const ignoreWs = ignoreWhitespace.use();
 	const client = useQueryClient();
 	const writer = useThreadWriter();
 	const writes = useThreadWrites();
@@ -527,10 +536,12 @@ export function VerdictCard(props: {
 	// compared with (the latest patch set's, or the PR's head past it,
 	// which the verdict then starts); else on the snapshot's, as before.
 	const commit = verdictCommitOf(props.facts, session);
+	// "Approve again" exactly when the since line says nothing to re-read:
+	// the same counts, picked by the same switch (CAR-266).
 	const again =
 		since !== null &&
 		since.state === "APPROVED" &&
-		nothingToReread(since.changes);
+		nothingToReread(shownChanges(since.changes, ignoreWs));
 	// The verdict goes on an older commit than the PR's head (no since
 	// line: the snapshot's); or, with one, the PR's head moved back onto an
 	// earlier patch set's (S6): that is still the head, said as such.
