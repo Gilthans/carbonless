@@ -318,7 +318,7 @@ describe("PlacementChip", () => {
 								anchor,
 								old: { side: "RIGHT", startLine: 3, line: 3, text: ["x"] },
 								now: ["x"],
-								moved: true,
+								inFileMove: true,
 							},
 						],
 					]),
@@ -467,7 +467,7 @@ describe("ChangedSince", () => {
 				inRouter(() => (
 					<ChangedSince
 						thread={thread()}
-						placement={{ ...changed, moved: true }}
+						placement={{ ...changed, inFileMove: true }}
 					/>
 				)),
 			),

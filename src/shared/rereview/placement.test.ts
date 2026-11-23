@@ -2,10 +2,16 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { bestCpuRatio } from "../../../test/cpu";
 import {
+	type MoveDraw,
+	moveDraws,
+	moveScenario,
+} from "../../../test/move-scenario";
+import {
 	createLineMapper,
 	IDENTITY,
 	type MapHunk,
 } from "../tracer/lineMapper.js";
+import { TUNING } from "../tracer/moved.js";
 import type { TraceDiffs } from "../tracer/trace.js";
 import type { DiffSide, ThreadAnchorRef } from "../types.js";
 import {
@@ -491,7 +497,7 @@ function rewrite(
 function where(p: ThreadPlacement): string {
 	if (p.kind === "changed" || p.kind === "placed") {
 		const { startLine, line } = p.anchor;
-		const moved = p.kind === "changed" && p.moved ? " moved" : "";
+		const moved = p.kind === "changed" && p.inFileMove ? " moved" : "";
 		return `${p.kind} ${startLine === line ? line : `${startLine}-${line}`}${moved}`;
 	}
 	if (p.kind === "unplaced") {
@@ -719,7 +725,7 @@ describe("a block moved elsewhere in its file follows it (CAR-95 step 3)", () =>
 		const p = placeThread(rewrite(OLD, NEW, HUNKS, at(6)), () => 100);
 		expect(p).toMatchObject({
 			kind: "changed",
-			moved: true,
+			inFileMove: true,
 			old: { text: ["\ttotal := sumAll(items, weights)"] },
 			now: ["\ttotal := sumAll(items, weights)"],
 		});
@@ -852,7 +858,7 @@ describe("a block moved elsewhere in its file follows it (CAR-95 step 3)", () =>
 		expect(place(rewrite(old, now, hunks, at(4)))).toBe("changed 7 moved");
 	});
 
-	it("one end moved and the other not: the range is its end", () => {
+	it("one end moved and the other not: the range follows its larger part", () => {
 		const old = [
 			"func a() {",
 			"\tsetup()",
@@ -885,8 +891,9 @@ describe("a block moved elsewhere in its file follows it (CAR-95 step 3)", () =>
 		const hunks = [h(2, 3, 2, 1), h(11, 0, 10, 5)];
 		expect(place(rewrite(old, now, hunks, at(2)))).toBe("changed 2");
 		expect(place(rewrite(old, now, hunks, at(4)))).toBe("changed 13 moved");
+		// Two of its three statements moved: the range is those (fix round 1).
 		expect(place(rewrite(old, now, hunks, at(4, "RIGHT", 2)))).toBe(
-			"changed 13 moved",
+			"changed 12-13 moved",
 		);
 	});
 
@@ -899,6 +906,287 @@ describe("a block moved elsewhere in its file follows it (CAR-95 step 3)", () =>
 		expect(place(rewrite(old, now, [h(1, 60, 1, 60)], at(30)))).toBe(
 			"changed 30",
 		);
+	});
+});
+
+/**
+ * A diff's -U0 hunks by the longest common subsequence of whole lines (a
+ * stand-in for git's, for fixtures too long to write the hunks of by hand).
+ */
+function lcsHunks(old: readonly string[], now: readonly string[]): MapHunk[] {
+	const n = old.length;
+	const m = now.length;
+	const best = Array.from({ length: n + 1 }, () =>
+		new Array<number>(m + 1).fill(0),
+	);
+	for (let i = n - 1; i >= 0; i--) {
+		for (let j = m - 1; j >= 0; j--) {
+			const row = best[i] as number[];
+			row[j] =
+				old[i] === now[j]
+					? ((best[i + 1] as number[])[j + 1] as number) + 1
+					: Math.max(
+							(best[i + 1] as number[])[j] as number,
+							row[j + 1] as number,
+						);
+		}
+	}
+	const hunks: MapHunk[] = [];
+	let i = 0;
+	let j = 0;
+	let from: [number, number] | null = null;
+	const close = () => {
+		if (!from) return;
+		const [oi, oj] = from;
+		const oldCount = i - oi;
+		const newCount = j - oj;
+		hunks.push({
+			oldStart: oldCount > 0 ? oi + 1 : oi,
+			oldCount,
+			newStart: newCount > 0 ? oj + 1 : oj,
+			newCount,
+		});
+		from = null;
+	};
+	while (i < n || j < m) {
+		if (i < n && j < m && old[i] === now[j]) {
+			close();
+			i++;
+			j++;
+		} else {
+			from ??= [i, j];
+			const down = i < n ? ((best[i + 1] as number[])[j] as number) : -1;
+			const right = j < m ? ((best[i] as number[])[j + 1] as number) : -1;
+			if (down >= right) i++;
+			else j++;
+		}
+	}
+	close();
+	return hunks;
+}
+
+/** Where a thread on `old`'s lines lands in `now`, with lcsHunks' diff. */
+const placeIn = (
+	old: string[],
+	now: string[],
+	line: number,
+	startLine = line,
+) => place(rewrite(old, now, lcsHunks(old, now), at(line, "RIGHT", startLine)));
+
+describe("a line edited in place keeps its partner, whatever looks like it elsewhere (CAR-95 step 3, fix round 1)", () => {
+	it("an assertion edited in place, its old text in a new test elsewhere", () => {
+		const old = [
+			"func TestA(t *testing.T) {",
+			"\tgot := parse(input)",
+			"\tassert.Equal(t, expected, actual)",
+			"\tcleanup()",
+			"}",
+			"",
+			"func TestM(t *testing.T) {",
+			"\tmiddle()",
+			"}",
+		];
+		const now = [
+			"func TestA(t *testing.T) {",
+			"\tgot := parse(input)",
+			'\tassert.Equal(t, expected, actual, "parsed")',
+			"\tcleanup()",
+			"}",
+			"",
+			"func TestM(t *testing.T) {",
+			"\tmiddle()",
+			"}",
+			"",
+			"func TestB(t *testing.T) {",
+			"\tother := build(x)",
+			"\tassert.Equal(t, expected, actual)",
+			"}",
+		];
+		expect(placeIn(old, now, 3)).toBe("changed 3");
+	});
+
+	it("a Python assertion, and a version bumped in YAML with the old one in a new section", () => {
+		const py = [
+			"def test_a():",
+			"    resp = client.get(url)",
+			"    self.assertEqual(response.status_code, 200)",
+			"    done()",
+			"",
+			"def test_m():",
+			"    pass",
+		];
+		const pyNow = [
+			...py.slice(0, 2),
+			"    self.assertEqual(response.status_code, 201)",
+			...py.slice(3),
+			"",
+			"def test_b():",
+			"    other()",
+			"    self.assertEqual(response.status_code, 200)",
+		];
+		expect(placeIn(py, pyNow, 3)).toBe("changed 3");
+		const yaml = [
+			"staging:",
+			"  image: registry.example.com/app:1.2.3",
+			"  replicas: 2",
+			"production:",
+			"  image: registry.example.com/app:1.2.0",
+			"  replicas: 5",
+		];
+		const yamlNow = [
+			"staging:",
+			"  image: registry.example.com/app:1.2.4",
+			...yaml.slice(2),
+			"canary:",
+			"  image: registry.example.com/app:1.2.3",
+			"  replicas: 1",
+		];
+		expect(placeIn(yaml, yamlNow, 2)).toBe("changed 2");
+	});
+
+	it("`return nil` edited in place while forty new functions each add one", () => {
+		const fn = (i: number) => [
+			`func gen${i}(x int) error {`,
+			`\tif x > ${i} {`,
+			"\t\treturn nil",
+			"\t}",
+			`\treturn fail${i}(x)`,
+			"}",
+		];
+		const old = [
+			"func keep(a int) error {",
+			"\tif a > 0 {",
+			"\t\treturn nil",
+			"\t}",
+			"\treturn bad(a)",
+			"}",
+		];
+		const now = [
+			...old.slice(0, 2),
+			"\t\treturn nil, nil",
+			...old.slice(3),
+			...Array.from({ length: 40 }, (_, i) => fn(i)).flat(),
+		];
+		expect(placeIn(old, now, 3)).toBe("changed 3");
+	});
+
+	it("copy a function, then edit the original: the edit keeps the thread", () => {
+		const old = [
+			"func handleA(w http.ResponseWriter, r *http.Request) {",
+			"\tuser := auth.Current(r)",
+			"\titems := store.List(user.ID, 50)",
+			"\trender(w, items)",
+			"}",
+			"",
+			"func other() {",
+			"\tkeep()",
+			"}",
+		];
+		const now = [
+			...old.slice(0, 2),
+			"\titems := store.List(user.ID, limit)",
+			...old.slice(3),
+			"",
+			"func handleB(w http.ResponseWriter, r *http.Request) {",
+			"\tuser := auth.Current(r)",
+			"\titems := store.List(user.OrgID, 50)",
+			"\trender(w, items)",
+			"}",
+		];
+		expect(placeIn(old, now, 3)).toBe("changed 3");
+	});
+});
+
+describe("a deleted line never moves on one line alone (CAR-95 step 3, fix round 1)", () => {
+	it("a deleted test's boilerplate line, found in a new test elsewhere, is deleted", () => {
+		const old = [
+			"func TestA(t *testing.T) {",
+			"\tctx := context.Background()",
+			"\tgot, err := doA(ctx)",
+			"\trequire.NoError(t, err)",
+			"\tassert.Len(t, got, 3)",
+			"}",
+			"",
+			"func TestM(t *testing.T) {",
+			"\tmiddle()",
+			"}",
+		];
+		const now = [
+			"func TestM(t *testing.T) {",
+			"\tmiddle()",
+			"}",
+			"",
+			"func TestZ(t *testing.T) {",
+			"\tctx := context.Background()",
+			"\tsrv := startServer(ctx)",
+			"\trequire.NoError(t, err)",
+			"}",
+		];
+		expect(placeIn(old, now, 2)).toMatch(/^deleted/);
+	});
+
+	it("a switch arm removed, another arm with the same one-line body added: the case line is deleted", () => {
+		const old = [
+			"switch kind {",
+			'case "png":',
+			"\treturn renderImage(ctx, req, opts)",
+			'case "svg":',
+			"\treturn renderVector(ctx, req)",
+			"}",
+		];
+		const now = [
+			"switch kind {",
+			'case "svg":',
+			"\treturn renderVector(ctx, req)",
+			'case "jpeg", "webp":',
+			"\treturn renderImage(ctx, req, opts)",
+			"}",
+		];
+		expect(placeIn(old, now, 2)).toMatch(/^deleted/);
+	});
+});
+
+describe("a range split by a move follows its larger part (CAR-95 step 3, fix round 1)", () => {
+	const old = [
+		"func a() {",
+		"\tsetup()",
+		"\ttotal := sumAll(items, weights)",
+		'\treport.Write(total, "weighted sum")',
+		"}",
+		"",
+		"func c() {",
+		"\tone()",
+		"}",
+	];
+	const now = [
+		"func a() {",
+		"\tsetup()",
+		"}",
+		"",
+		"func c() {",
+		"\tone()",
+		"}",
+		"",
+		"func z() {",
+		"\ttotal := sumAll(items, weights)",
+		'\treport.Write(total, "weighted sum")',
+		"}",
+	];
+
+	it("more of it moved: the moved lines", () => {
+		expect(placeIn(old, now, 4, 2)).toBe("changed 10-11 moved");
+	});
+
+	it("more of it stayed: the lines that stayed, with all its old lines kept", () => {
+		const p = placeThread(
+			rewrite(old, now, lcsHunks(old, now), at(8, "RIGHT", 4)),
+			() => 100,
+		);
+		expect(where(p)).toBe("changed 5-6");
+		expect(p).toMatchObject({
+			old: { startLine: 4, line: 8 },
+			now: ["func c() {", "\tone()"],
+		});
 	});
 });
 
@@ -1128,20 +1416,39 @@ describe("the move search's CPU over a whole file (CAR-95 step 3)", () => {
 		return { old, now, hunks };
 	}
 	/**
-	 * Two threads on a fresh mapper (nothing memoized from the last run): one
-	 * on BLOCK, one on a rewritten line whose partner every other added line
-	 * half resembles (the look-alike check).
+	 * Threads on `lines` on a fresh mapper (nothing memoized from the last
+	 * run), every thread of the file reading through the same two readers,
+	 * as the server's do (threads.ts).
 	 */
-	const placeIn = (f: ReturnType<typeof file>) => () => {
-		const bd = createLineMapper(f.hunks);
-		for (const line of [2, BLOCK.length + 2]) {
-			const t = rewrite(f.old, f.now, f.hunks, at(line));
-			placeThread(
-				{ ...t, diffs: { ...(t.diffs as TraceDiffs), bd } },
-				() => f.now.length,
-			);
-		}
-	};
+	const placeAll =
+		(f: { old: string[]; now: string[]; hunks: MapHunk[] }, lines: number[]) =>
+		() => {
+			const bd = createLineMapper(f.hunks);
+			const oldLineText = (p: { line: number }) => f.old[p.line - 1] ?? null;
+			const newLineText = (p: { line: number }) => f.now[p.line - 1] ?? null;
+			for (const line of lines) {
+				placeThread(
+					input({
+						anchor: at(line),
+						diffs: {
+							ac: IDENTITY,
+							bd,
+							cd: IDENTITY,
+							oldLineText,
+							newLineCount: { LEFT: f.now.length, RIGHT: f.now.length },
+						},
+						newLineText,
+					}),
+					() => f.now.length,
+				);
+			}
+		};
+	/**
+	 * Two threads: one on BLOCK, one on a rewritten line whose partner every
+	 * other added line half resembles (the look-alike check).
+	 */
+	const placeIn = (f: ReturnType<typeof file>) =>
+		placeAll(f, [2, BLOCK.length + 2]);
 
 	it("finds the block", () => {
 		const f = file(40);
@@ -1158,6 +1465,71 @@ describe("the move search's CPU over a whole file (CAR-95 step 3)", () => {
 		});
 		console.info(
 			`move search, 1600 lines: ${best} µs, ${ratio.toFixed(2)}x four of 400 (${ref} µs)`,
+		);
+		expect(ratio).toBeLessThan(2);
+	});
+
+	it("threads growing with the file: four times the lines and threads cost about four of the quarter", () => {
+		// One thread every 10 lines, on rewritten lines and the block: a
+		// lookup that scanned the file per thread would cost 16x here.
+		const threadsOf = (f: ReturnType<typeof file>) => [
+			2,
+			...Array.from(
+				{ length: Math.floor(f.old.length / 10) },
+				(_, i) => BLOCK.length + 2 + i * 10,
+			),
+		];
+		const big = file(1600);
+		const small = file(400);
+		const { best, ref, ratio } = bestCpuRatio(
+			placeAll(big, threadsOf(big)),
+			() => {
+				for (let i = 0; i < 4; i++) placeAll(small, threadsOf(small))();
+			},
+		);
+		console.info(
+			`${threadsOf(big).length} threads on 1600 lines: ${best} µs, ${ratio.toFixed(2)}x four of 400 (${ref} µs)`,
+		);
+		expect(ratio).toBeLessThan(2);
+	});
+
+	it("a block among near-copies: four times the block costs about four of the quarter", () => {
+		// A block of alike statements removed; eight near-copies of it added
+		// (each line alike, not equal), one line of each equal: every equal
+		// line's run meets look-alikes all the way (CAR-95 review, S3).
+		const nearCopies = (length: number) => {
+			const row = (i: number, v: string) =>
+				`\tresult${i} := transform(input${i}, config.${v}Option, registry.lookup("key${i}"))`;
+			const old = [
+				"package x",
+				"func f() {",
+				...Array.from({ length }, (_, i) => row(i, "alpha")),
+				"}",
+				"func g() {}",
+			];
+			const now = ["package x", "func g() {}"];
+			for (let c = 0; c < 8; c++) {
+				now.push(
+					`func f${c}() {`,
+					...Array.from({ length }, (_, i) =>
+						row(i, i === length / 2 ? "alpha" : `beta${c}`),
+					),
+					"}",
+				);
+			}
+			return { old, now, hunks: lcsHunks(old, now) };
+		};
+		const threads = (length: number) => [3, length / 2 + 3, length + 2];
+		const big = nearCopies(160);
+		const small = nearCopies(40);
+		const { best, ref, ratio } = bestCpuRatio(
+			placeAll(big, threads(160)),
+			() => {
+				for (let i = 0; i < 4; i++) placeAll(small, threads(40))();
+			},
+		);
+		console.info(
+			`near-copies, block of 160: ${best} µs, ${ratio.toFixed(2)}x four of 40 (${ref} µs)`,
 		);
 		expect(ratio).toBeLessThan(2);
 	});
@@ -1208,6 +1580,55 @@ describe("placeThread property (principle 2)", () => {
 			),
 		);
 	});
+});
+
+describe("moves and look-alikes never put a thread on a wrong line (CAR-95 step 3, property)", () => {
+	/** Every thread on a line with a word lands on its true line, or nowhere. */
+	function check(o: MoveDraw) {
+		const { old, now, hunks, truth, fair } = moveScenario(o);
+		fc.pre(fair);
+		for (let line = 1; line <= old.length; line++) {
+			if (old[line - 1] === "}") continue;
+			const p = placeThread(
+				rewrite(old, now, hunks, at(line)),
+				() => now.length,
+			);
+			if (p.kind !== "placed" && p.kind !== "changed") continue;
+			expect(
+				p.anchor.line,
+				`old line ${line} (${old[line - 1]?.trim()}) on ${p.anchor.line} "${now[p.anchor.line - 1]?.trim()}"`,
+			).toBe(truth.get(line));
+		}
+	}
+	const arb = moveDraws;
+
+	it("with today's tuning", () => {
+		fc.assert(fc.property(arb, check), { numRuns: 200 });
+	});
+
+	// A constant that only works at one value is a knife-edge: each
+	// neighbouring setting must hold too.
+	const nudges: Partial<typeof TUNING>[] = [
+		{ contextLines: 2 },
+		{ contextLines: 4 },
+		{ minAlnum: 15 },
+		{ minAlnum: 25 },
+		{ contextMargin: 0.15 },
+		{ contextMargin: 0.35 },
+		{ contestMargin: 0.1 },
+		{ contestMargin: 0.2 },
+	];
+	for (const nudge of nudges) {
+		it(`with ${JSON.stringify(nudge)}`, () => {
+			const saved = { ...TUNING };
+			Object.assign(TUNING, nudge);
+			try {
+				fc.assert(fc.property(arb, check), { numRuns: 100 });
+			} finally {
+				Object.assign(TUNING, saved);
+			}
+		});
+	}
 });
 
 describe("validAnchor", () => {

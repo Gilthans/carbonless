@@ -13,7 +13,7 @@
  * inside that file); one that fails the check is ignored, never moved
  * elsewhere. The `moved` fate is only ever a rename pair's new path (git's
  * rename detection); lines that went elsewhere in their file with their
- * block are a changed placement marked `moved` (the tracer's move search,
+ * block are a changed placement marked `inFileMove` (the tracer's move search,
  * src/shared/tracer/moved.ts). Which commit did what is not computed
  * (owner, 2026-11-07: deferred).
  *
@@ -87,8 +87,9 @@ export type ThreadPlacement =
 			/**
 			 * The lines went elsewhere in the file with their block, edited
 			 * or not (the tracer's move search): moved since, not rewritten.
+			 * Not the reviewer's own move of a thread (`MovedInfo`).
 			 */
-			moved?: true;
+			inFileMove?: true;
 	  }
 	/**
 	 * Under the file at `path` (its path in the target), fate first;
@@ -413,5 +414,5 @@ function traced(t: ThreadInput): ThreadPlacement {
 }
 
 /** A traced end that moved with its block marks the placement moved. */
-const movedOf = (p: Placement): { moved?: true } =>
-	p.kind === "changed" && p.moved ? { moved: true } : {};
+const movedOf = (p: Placement): { inFileMove?: true } =>
+	p.kind === "changed" && p.moved ? { inFileMove: true } : {};

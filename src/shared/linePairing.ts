@@ -231,17 +231,37 @@ export function similarityTo(
 }
 
 /**
+ * `lineSimilarity`, with each text prepared once however often it is
+ * scored (by text, either side): the tracer's move search scores the same
+ * lines many times (CAR-95).
+ */
+export function similarityMemo(): (oldText: string, newText: string) => number {
+	const codes: Codes = new Map();
+	const known = new Map<string, Scored>();
+	const of = (t: string) => {
+		let s = known.get(t);
+		if (!s) {
+			s = prepare(t, codes);
+			known.set(t, s);
+		}
+		return s;
+	};
+	return (a, b) => score(of(a), of(b));
+}
+
+/**
  * The added lines (indices into `adds`) at least `min` `lineSimilarity`
  * alike an old line with a word, from an index of their word tokens built
- * once: only lines sharing enough words with it are scored, so a lookup
- * over a whole file's added lines costs what they share, not their count
- * (the tracer's look-alike check, CAR-95). Lines without a word never
- * count. `min` should be at least PAIR_MIN_SIMILARITY's bound to prune
- * well; below it every sharing line is scored.
+ * once (the tracer's look-alike check, CAR-95). A line that alike shares
+ * at least `min·|old| / (2 − min)` of the old line's words, so it shares
+ * one of the old line's rarest words (prefix filtering): only those words'
+ * lines are looked at, so a lookup costs what the rare words share, not
+ * the file's size. More candidates than `cap`: null (too common to tell).
+ * Lines without a word never count.
  */
 export function alikeAtLeast(
 	adds: readonly string[],
-): (oldText: string, min: number) => number[] {
+): (oldText: string, min: number, cap?: number) => number[] | null {
 	const codes: Codes = new Map();
 	const fresh = adds.map((t) => prepare(t, codes));
 	const index = new Map<string, Map<number, number>>();
@@ -256,21 +276,35 @@ export function alikeAtLeast(
 			posting.set(j, (posting.get(j) ?? 0) + 1);
 		}
 	});
-	return (oldText, min) => {
+	return (oldText, min, cap = Number.POSITIVE_INFINITY) => {
 		const a = prepare(oldText, codes);
 		if (a.long || a.words.length === 0) return [];
 		const counts = new Map<string, number>();
 		for (const t of a.words) counts.set(t, (counts.get(t) ?? 0) + 1);
-		const shared = new Map<number, number>();
-		for (const [t, c] of counts) {
-			for (const [j, cj] of index.get(t) ?? []) {
-				shared.set(j, (shared.get(j) ?? 0) + Math.min(c, cj));
-			}
+		const size = a.words.length;
+		const needed = Math.max(1, Math.ceil((min * size) / (2 - min) - EPS));
+		// Words a line may miss and still be alike: it holds at least one
+		// occurrence among any `size - needed + 1` of the old line's.
+		let budget = size - needed + 1;
+		const rare = [...counts].sort(
+			(x, y) => (index.get(x[0])?.size ?? 0) - (index.get(y[0])?.size ?? 0),
+		);
+		const candidates = new Set<number>();
+		for (const [t, c] of rare) {
+			if (budget <= 0) break;
+			budget -= c;
+			for (const j of index.get(t)?.keys() ?? []) candidates.add(j);
+			if (candidates.size > cap) return null;
 		}
 		const out: number[] = [];
-		for (const [j, common] of shared) {
+		for (const j of candidates) {
 			const b = at(fresh, j);
-			if ((2 * common) / (a.words.length + b.words.length) < min) continue;
+			let common = 0;
+			for (const [t, c] of counts) {
+				const cj = index.get(t)?.get(j);
+				if (cj !== undefined) common += Math.min(c, cj);
+			}
+			if ((2 * common) / (size + b.words.length) < min) continue;
 			if (score(a, b, common) >= min) out.push(j);
 		}
 		return out.sort((x, y) => x - y);

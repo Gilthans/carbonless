@@ -9,6 +9,7 @@ import {
 	GitCompareIcon,
 	HistoryIcon,
 	type Icon,
+	MoveToBottomIcon,
 	QuestionIcon,
 	VersionsIcon,
 } from "@primer/octicons-react";
@@ -245,7 +246,7 @@ function FateChip({ thread }: { thread: ReviewThread }) {
 	// attention: its chip is muted.
 	const quiet = thread.resolved;
 	if (placement.kind === "changed") {
-		return <ChangedChip thread={thread} moved={placement.moved} />;
+		return <ChangedChip thread={thread} inFileMove={placement.inFileMove} />;
 	}
 	if (placement.kind === "unplaced" || placement.kind === "outside") {
 		// GitHub's outdated already has its badge on the card: no second sign.
@@ -268,25 +269,25 @@ function FateChip({ thread }: { thread: ReviewThread }) {
 /**
  * "changed since": a thread's line was rewritten since it was made;
  * "moved since": it went elsewhere in its file with its block (the
- * placement's `moved`). Muted once resolved.
+ * placement's `inFileMove`). Muted once resolved.
  */
 export function ChangedChip({
 	thread,
-	moved,
+	inFileMove,
 }: {
 	thread: Pick<ReviewThread, "createdAt" | "resolved">;
-	moved?: boolean;
+	inFileMove?: boolean;
 }) {
 	const info = usePlacementInfo();
 	const ps = psLabel(info.openedOn(thread));
 	return (
 		<Chip
 			tone={thread.resolved ? "gray" : "yellow"}
-			icon={moved ? ArrowSwitchIcon : GitCompareIcon}
-			tip={`The ${moved ? "code moved" : "line changed"} since ${ps || "the thread was made"}`}
+			icon={inFileMove ? MoveToBottomIcon : GitCompareIcon}
+			tip={`The ${inFileMove ? "code moved" : "line changed"} since ${ps || "the thread was made"}`}
 			testId="placement-changed"
 		>
-			{moved ? "moved since" : "changed since"}
+			{inFileMove ? "moved since" : "changed since"}
 		</Chip>
 	);
 }
@@ -325,7 +326,7 @@ export function ChangedSince({
 				className="flex min-h-10 flex-wrap items-center gap-x-2 text-xs text-muted"
 			>
 				<span>
-					Line {placement.moved ? "moved" : "rewritten"}
+					Line {placement.inFileMove ? "moved" : "rewritten"}
 					{ps === null ? "" : ` since PS${ps}`}
 				</span>
 				{ps !== null && (

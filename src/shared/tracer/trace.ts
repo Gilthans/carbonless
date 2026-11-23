@@ -22,7 +22,7 @@ import { alignOrOver, similarityTo } from "../linePairing.js";
 import { HAS_WORD, WORD_DIFF_MAX } from "../tokenize.js";
 import type { DiffSide } from "../types.js";
 import type { LineMapper, MapHunk } from "./lineMapper.js";
-import { contested, movedTo, sameFileTexts } from "./moved.js";
+import { contested, movedTo, sameFileTexts, TUNING } from "./moved.js";
 
 /**
  * Bumped when a placement for the same inputs could change. 2: a line in a
@@ -195,9 +195,23 @@ type Partner = Found | null | "unknown";
  */
 interface Memo {
 	regions: Map<MapHunk, Region[]>;
-	/** Per hunk, the texts its pairings read: checked on every lookup. */
-	read: Map<MapHunk, Read>;
+	/**
+	 * Per hunk, its joined run (shared by every hunk of it): the run's
+	 * pairing and the texts its pairings read, checked on every lookup.
+	 */
+	runs: Map<MapHunk, Run>;
+	/** Each hunk's index in `bd.hunks`. */
+	index?: Map<MapHunk, number>;
 	partners: Map<number, Partner>;
+}
+
+/** A run of joined hunks: its first and last index, its pairing, its texts. */
+interface Run {
+	first: number;
+	last: number;
+	/** The run's pairing; null for a run of one hunk. */
+	wide: Region | null;
+	read: Read;
 }
 const memos = new WeakMap<LineMapper, Memo>();
 
@@ -207,12 +221,14 @@ interface Read {
 	old: (string | null)[];
 	newFrom: number;
 	fresh: (string | null)[];
+	/** Readers already found to read these texts (checked once each). */
+	checked: WeakSet<(pos: Position) => string | null>;
 }
 
 function memoOf(diffs: TraceDiffs): Memo {
 	let memo = memos.get(diffs.bd);
 	if (!memo) {
-		memo = { regions: new Map(), read: new Map(), partners: new Map() };
+		memo = { regions: new Map(), runs: new Map(), partners: new Map() };
 		memos.set(diffs.bd, memo);
 	}
 	return memo;
@@ -238,16 +254,30 @@ function readFor(
 	for (let n = a.newStart; n < b.newStart + b.newCount; n++) {
 		fresh.push(read(diffs.newLineText, n));
 	}
-	return { from, old, newFrom: a.newStart, fresh };
+	const checked = new WeakSet<(pos: Position) => string | null>();
+	if (diffs.oldLineText) checked.add(diffs.oldLineText);
+	if (diffs.newLineText) checked.add(diffs.newLineText);
+	return { from, old, newFrom: a.newStart, fresh, checked };
 }
 
-/** Whether `diffs` still reads the texts `r` was read from. */
+/**
+ * Whether `diffs` still reads the texts `r` was read from: each reader
+ * checked once (the server hands every thread of a file the same ones).
+ */
 function sameTexts(r: Read, diffs: TraceDiffs): boolean {
-	for (let i = 0; i < r.old.length; i++) {
-		if (read(diffs.oldLineText, r.from + i) !== r.old[i]) return false;
+	const old = diffs.oldLineText;
+	if (old && !r.checked.has(old)) {
+		for (let i = 0; i < r.old.length; i++) {
+			if (read(old, r.from + i) !== r.old[i]) return false;
+		}
+		r.checked.add(old);
 	}
-	for (let i = 0; i < r.fresh.length; i++) {
-		if (read(diffs.newLineText, r.newFrom + i) !== r.fresh[i]) return false;
+	const fresh = diffs.newLineText;
+	if (fresh && !r.checked.has(fresh)) {
+		for (let i = 0; i < r.fresh.length; i++) {
+			if (read(fresh, r.newFrom + i) !== r.fresh[i]) return false;
+		}
+		r.checked.add(fresh);
 	}
 	return true;
 }
@@ -259,7 +289,7 @@ function sameTexts(r: Read, diffs: TraceDiffs): boolean {
  */
 function checkedMemo(hunk: MapHunk, diffs: TraceDiffs): Memo {
 	const memo = memoOf(diffs);
-	const r = memo.read.get(hunk);
+	const r = memo.runs.get(hunk)?.read;
 	if (!r || sameTexts(r, diffs)) return memo;
 	memos.delete(diffs.bd);
 	return memoOf(diffs);
@@ -335,8 +365,23 @@ function regionsOf(hunk: MapHunk, diffs: TraceDiffs): Region[] {
 	const memo = memoOf(diffs);
 	const known = memo.regions.get(hunk);
 	if (known) return known;
+	const run = runOf(hunk, diffs, memo);
+	const out = [linesOf([hunk], diffs)];
+	if (run.wide !== null) out.push(run.wide);
+	memo.regions.set(hunk, out);
+	return out;
+}
+
+/**
+ * `hunk`'s joined run, found once for all its hunks (a long run of hunks
+ * joined end to end is walked and paired once, not once per hunk).
+ */
+function runOf(hunk: MapHunk, diffs: TraceDiffs, memo: Memo): Run {
+	const known = memo.runs.get(hunk);
+	if (known) return known;
 	const all = diffs.bd.hunks;
-	const i = all.indexOf(hunk);
+	memo.index ??= new Map(all.map((h, i) => [h, i]));
+	const i = memo.index.get(hunk) ?? all.indexOf(hunk);
 	let first = i;
 	let last = i;
 	while (
@@ -349,11 +394,14 @@ function regionsOf(hunk: MapHunk, diffs: TraceDiffs): Region[] {
 		joins(all[last] as MapHunk, all[last + 1] as MapHunk, diffs)
 	)
 		last++;
-	const out = [linesOf([hunk], diffs)];
-	if (first !== last) out.push(linesOf(all.slice(first, last + 1), diffs));
-	memo.regions.set(hunk, out);
-	memo.read.set(hunk, readFor(all, first, last, diffs));
-	return out;
+	const run: Run = {
+		first,
+		last,
+		wide: first === last ? null : linesOf(all.slice(first, last + 1), diffs),
+		read: readFor(all, first, last, diffs),
+	};
+	for (let k = first; k <= last; k++) memo.runs.set(all[k] as MapHunk, run);
+	return run;
 }
 
 /** lineSimilarity of the region's old line `k` to its added line `j`. */
@@ -384,12 +432,12 @@ function partnerIn(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 
 /**
  * The replacing line that carries old line `line`: its partner nearby
- * (`localPartner`) when equal ignoring whitespace; else where it went with
- * its moved block (moved.ts: `moved` when outside its own hunk); else its
- * partner nearby, unless an added line elsewhere in the file contests it
- * (as alike, and no clearer by its surroundings: "unknown"). An ambiguous
- * move is "unknown" too. null: nothing resembles it; "unknown": which line
- * carries it can't be told.
+ * (`localPartner`) when equal ignoring whitespace, or when the line was
+ * edited in place (`anchored`); else the partner, where it went with its
+ * moved block (moved.ts) and the file's look-alikes compete on likeness
+ * plus context (`contested`), or, with no partner nearby, the moved
+ * block's line (`moved` when outside its own hunk). An ambiguous move or
+ * contest is "unknown". null: nothing resembles it.
  */
 function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 	const local = localPartner(hunk, line, diffs);
@@ -403,6 +451,13 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 	if (own === null || !HAS_WORD.test(own) || !diffs.newLineText) {
 		return plain(local);
 	}
+	if (
+		local !== null &&
+		local !== "unknown" &&
+		anchored(hunk, line, local.line, diffs)
+	) {
+		return plain(local);
+	}
 	// Found again in its own hunk (a re-indented block too large to pair):
 	// rewritten there, not moved.
 	const away = (at: number): Found =>
@@ -411,10 +466,61 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 			: { line: at, moved: true };
 	const moved = movedTo(line, diffs);
 	if (moved === "ambiguous") return "unknown";
-	if (moved) return away(moved.line);
-	if (local === null || local === "unknown") return local;
-	const won = contested(line, local.line, local.score, diffs);
+	if (local === null || local === "unknown") {
+		return moved ? away(moved.line) : local;
+	}
+	const won = contested(
+		line,
+		local.line,
+		local.score,
+		diffs,
+		moved?.line ?? null,
+	);
 	return won === "unknown" ? won : won.moved ? away(won.line) : won;
+}
+
+/**
+ * Whether `line` was edited in place, onto `partner`: every line with a
+ * word within TUNING.contextLines of it either stayed (git kept it) or has
+ * a partner in its hunk's pairing (alone or joined), landing on the same side of
+ * `partner` and within as many lines of it; and there is one. Its partner
+ * nearby then carries it, whatever looks like it elsewhere: a line copied
+ * into new code and edited at home, a version bumped, an assertion
+ * changed, never jump to the copy.
+ */
+function anchored(
+	hunk: MapHunk,
+	line: number,
+	partner: number,
+	diffs: TraceDiffs,
+): boolean {
+	const regions = regionsOf(hunk, diffs).filter(
+		(r): r is Exclude<Region, "unknown"> => r !== "unknown",
+	);
+	if (regions.length === 0) return false;
+	/** A removed neighbour's partner, in its own hunk's pairing or the joined one's. */
+	const pairedOf = (n: number): number | null => {
+		for (const region of regions) {
+			const at = region.oldLines.indexOf(n);
+			const j = at === -1 ? undefined : region.partner.get(at);
+			if (j !== undefined) return region.newLines[j] ?? null;
+		}
+		return null;
+	};
+	const k = TUNING.contextLines;
+	let any = false;
+	for (let i = -k; i <= k; i++) {
+		const n = line + i;
+		if (i === 0 || n < 1) continue;
+		const t = read(diffs.oldLineText, n);
+		if (t === null || !HAS_WORD.test(t)) continue;
+		any = true;
+		const image = diffs.bd.oldToNew(n) ?? pairedOf(n);
+		if (image === null) return false;
+		const d = image - partner;
+		if (Math.sign(d) !== Math.sign(i) || Math.abs(d) > k) return false;
+	}
+	return any;
 }
 
 /** A partner found nearby, its likeness, and the new lines searched. */
@@ -595,6 +701,41 @@ function wordsGone(
 }
 
 /**
+ * A range split by a move (one-side): the first and last placement of the
+ * part, moved or stayed, with more of its lines with a word (`movedWins`
+ * on a tie); null when it can't be read.
+ */
+function majority(
+	start: Position,
+	end: Position,
+	diffs: TraceDiffs,
+	movedWins: boolean,
+): [Placement, Placement] | null {
+	if (start.side !== end.side) return null;
+	const parts: { moved: Placement[]; stayed: Placement[] } = {
+		moved: [],
+		stayed: [],
+	};
+	for (let n = start.line; n <= end.line; n++) {
+		const t = diffs.oldLineText?.({ side: start.side, line: n });
+		if (t === null || t === undefined) return null;
+		if (!HAS_WORD.test(t)) continue;
+		const p = tracePosition({ side: start.side, line: n }, diffs);
+		if (p.kind === "unplaced") continue;
+		(p.kind === "changed" && p.moved ? parts.moved : parts.stayed).push(p);
+	}
+	const { moved, stayed } = parts;
+	const part =
+		moved.length > stayed.length ||
+		(moved.length === stayed.length && movedWins)
+			? moved
+			: stayed;
+	const a = part[0];
+	const b = part.at(-1);
+	return a && b ? [a, b] : null;
+}
+
+/**
  * Both ends of a range. An end that doesn't place, on a one-side range,
  * moves inwards to the nearest line of the range that does (marked
  * changed): a range maps to the span its surviving lines landed on. When
@@ -623,12 +764,15 @@ export function traceRange(
 	}
 	const moved = (p: Placement) => p.kind === "changed" && p.moved === true;
 	// One end moved with its block and the other didn't: the span between
-	// them is no range of the thread's; the end carries it.
+	// them is no range of the thread's. It follows the part holding more of
+	// its lines with a word (the end's part on a tie), each end as traced.
 	if (
 		first.kind !== "unplaced" &&
 		last.kind !== "unplaced" &&
 		moved(first) !== moved(last)
 	) {
+		const part = majority(start, end, diffs, moved(last));
+		if (part) return { start: part[0], end: part[1], collapsed: true };
 		const collapsed: Placement = {
 			kind: "changed",
 			side: last.side,

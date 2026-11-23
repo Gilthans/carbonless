@@ -1797,12 +1797,16 @@ test("a thread on a block moved elsewhere in its file follows it, moved since, i
 			.filter({ hasText: "weighted sum" })
 			.getByRole("button", { name: "1 comment on line 40" });
 		await expect(bubble).toBeVisible(GIT_WAIT);
-		if ((await bubble.getAttribute("aria-expanded")) !== "true") {
+		// Its state settled first: open once, then the card stays.
+		await expect(bubble).toHaveAttribute("aria-expanded", /^(true|false)$/);
+		if ((await bubble.getAttribute("aria-expanded")) === "false") {
 			await bubble.click();
 		}
+		await expect(bubble).toHaveAttribute("aria-expanded", "true");
 		const card = coreS
 			.getByTestId("files-thread")
 			.filter({ hasText: "Weighted by what?" });
+		await expect(card).toBeVisible();
 		await expect(card.getByTestId("placement-changed")).toHaveText(
 			"moved since",
 		);
