@@ -3234,6 +3234,55 @@ describe("API", () => {
 			}
 		});
 
+		it("a failed placement job logs one line to the server's log: route, review, status, class, message; never the key, a URL or a token (CAR-271)", async () => {
+			const logged: string[] = [];
+			const keyed = await buildApp(registry, {
+				accessKey: "s3cr3tk3y",
+				logFailure: (line) => logged.push(line),
+			});
+			const failing = vi
+				.spyOn(ThreadPlacer.prototype, "inputs")
+				.mockRejectedValue(
+					new GitError(
+						"git fetch failed: https://x-access-token:ghs_abcdef123456@github.com/acme/widget.git?key=s3cr3tk3y\nsecond line with file content",
+					),
+				);
+			try {
+				const { h2, readId } = await setup();
+				const ask = () =>
+					keyed.inject({
+						method: "GET",
+						url: `/api/r/${id}/placements?read=${readId}&head=${h2}&key=s3cr3tk3y`,
+					});
+				let res = await ask();
+				while (res.statusCode === 200) {
+					expect(res.json()).toEqual({ pending: true });
+					await new Promise((r) => setTimeout(r, 20));
+					res = await ask();
+				}
+				expect(res.statusCode).toBe(500);
+				expect(logged).toHaveLength(1);
+				const [line = ""] = logged;
+				expect(line).toContain("/api/r/:id/placements");
+				expect(line).toContain(`review ${id}`);
+				expect(line).toContain("500 GitError");
+				expect(line).toContain("git fetch failed: <url>");
+				for (const secret of [
+					"s3cr3tk3y",
+					"ghs_",
+					"github.com",
+					"https://",
+					"read=",
+					"second line",
+				]) {
+					expect(line).not.toContain(secret);
+				}
+			} finally {
+				failing.mockRestore();
+				await keyed.close();
+			}
+		});
+
 		it("the engine's answer carries the placements of the newest read once they are in", async () => {
 			const { h2, readId } = await setup();
 			await placementsOf(`read=${readId}&head=${h2}`);

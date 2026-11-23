@@ -13,6 +13,7 @@ import {
 	fileThreads,
 	type LineKey,
 	lineKey,
+	madeOnHead,
 	onSinceRows,
 	outsideThreads,
 	type Placements,
@@ -895,6 +896,18 @@ describe("shownThreads (no placements: the head's own)", () => {
 		const none = thread(null, { commit: "" });
 		expect(shownThreads([a, other, b, none], HEAD, null)).toEqual([a, b]);
 		expect(shownThreads([none], "", null)).toEqual([]);
+	});
+});
+
+describe("madeOnHead (CAR-271)", () => {
+	it("a thread made on the viewed head needs no placing: it is shown at its own line", () => {
+		const own = thread({ side: "RIGHT", line: 32 });
+		expect(madeOnHead(own, HEAD)).toBe(true);
+		expect(shownThread(own, HEAD, null)).toBe(own);
+		expect(madeOnHead(thread({ commit: "e".repeat(40) }), HEAD)).toBe(false);
+		expect(madeOnHead(thread(null, { commit: "" }), "")).toBe(false);
+		expect(madeOnHead(own, null)).toBe(false);
+		expect(madeOnHead(own, undefined)).toBe(false);
 	});
 });
 

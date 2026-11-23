@@ -147,7 +147,7 @@ export function shownThread(
 	moved?: ReadonlyMap<string, unknown> | null,
 ): ReviewThread | null {
 	const p = placements?.get(t.id);
-	if (!p) return t.commit !== "" && t.commit === snapshotHead ? t : null;
+	if (!p) return madeOnHead(t, snapshotHead) ? t : null;
 	if (p.kind === "outside") return null;
 	let copies = shownCopies.get(t);
 	if (!copies) {
@@ -196,6 +196,16 @@ export function shownThread(
 	copies.set(p, shown);
 	return shown;
 }
+
+/**
+ * A thread made on the viewed head (`viewedHead`): shown where it was
+ * made, so it needs no placing, and never reads "place unknown" when the
+ * placements fail (CAR-271). One on no known commit ("") is on no head.
+ */
+export const madeOnHead = (
+	t: Pick<ReviewThread, "commit">,
+	viewedHead: string | null | undefined,
+): boolean => !!viewedHead && t.commit !== "" && t.commit === viewedHead;
 
 /** Copies of threads made on the since view's compared patch set's head (CAR-233). */
 const earlierCopies = new WeakMap<ReviewThread, ReviewThread>();

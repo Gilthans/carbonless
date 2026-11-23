@@ -19,6 +19,7 @@ import {
 	type ReactNode,
 	useCallback,
 	useContext,
+	useEffect,
 	useId,
 	useMemo,
 	useRef,
@@ -64,7 +65,7 @@ import {
 	movesOf,
 	useMovable,
 } from "./threadMove";
-import type { NotHere, Placements } from "./threadPlacement";
+import { madeOnHead, type NotHere, type Placements } from "./threadPlacement";
 
 /**
  * What the page knows of the threads' places in the viewed snapshot
@@ -223,7 +224,14 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 function FateChip({ thread }: { thread: ReviewThread }) {
 	const info = usePlacementInfo();
 	const placement = info.placements?.get(thread.id);
-	if (!placement && info.error && !thread.resolved) {
+	// Made on the viewed head, it is shown where it was made: nothing to
+	// place, so never unknown (CAR-271).
+	if (
+		!placement &&
+		info.error &&
+		!thread.resolved &&
+		!madeOnHead(thread, info.viewedHead)
+	) {
 		return (
 			<Chip
 				tone="red"
@@ -976,6 +984,18 @@ export function useSessionPlacements(
 	});
 	const answer =
 		asked && query.data && !("pending" in query.data) ? query.data : null;
+	// A failure stays shown while the query asks again by itself (a refetch
+	// clears its error), until an answer lands (CAR-271).
+	const key = asked ? JSON.stringify([readId, to]) : "";
+	const [held, setHeld] = useState<{ key: string; error: Error } | null>(null);
+	useEffect(() => {
+		if (query.error) setHeld({ key, error: query.error });
+		else if (answer) setHeld(null);
+	}, [query.error, answer, key]);
+	const error =
+		asked && answer === null
+			? (query.error ?? (held?.key === key ? held.error : null))
+			: null;
 	const placements = usePlacementMap(answer);
 	const moves = useMemo(() => movesOf(answer), [answer]);
 	const patchsets = session?.patchsets;
@@ -984,8 +1004,8 @@ export function useSessionPlacements(
 	return useMemo(
 		() => ({
 			placements,
-			pending: asked && answer === null && !query.error,
-			error: asked && answer === null ? query.error : null,
+			pending: asked && answer === null && error === null,
+			error,
 			retry: () => void query.refetch(),
 			readId: readId ?? null,
 			to,
@@ -1001,6 +1021,7 @@ export function useSessionPlacements(
 			moves,
 			asked,
 			answer,
+			error,
 			query,
 			readId,
 			toKey,

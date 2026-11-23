@@ -908,10 +908,63 @@ export const rereviewQuery = (from: number, to: RereviewTo) =>
 				: false,
 	});
 
+/** Tries of one placements ask before it reads as failed (CAR-271). */
+export const PLACEMENTS_TRIES = 3;
+/** The longest wait between two asks after placements failures. */
+export const PLACEMENTS_BACKOFF_MAX_MS = 30_000;
+
+/**
+ * The wait before asking for the placements again after `failures`
+ * failures in a row: 1 s, 2 s, 4 s … up to PLACEMENTS_BACKOFF_MAX_MS.
+ */
+export const placementsBackoff = (failures: number) =>
+	Math.min(PLACEMENTS_BACKOFF_MAX_MS, 1000 * 2 ** Math.max(0, failures - 1));
+
+/**
+ * Whether a failed placements ask is tried again at once (it reads as
+ * failed after PLACEMENTS_TRIES): a server or network failure is, a
+ * refusal (a 4xx: a bad ask, a read gone) never.
+ */
+export const retryPlacements = (failureCount: number, error: Error) =>
+	failureCount < PLACEMENTS_TRIES - 1 && !refusal(error);
+
+/** A 4xx: asking again the same way gets the same answer. */
+const refusal = (error: unknown) =>
+	error instanceof ApiError && error.status >= 400 && error.status < 500;
+
+/**
+ * When to ask for the placements again by itself: every REREVIEW_POLL_MS
+ * while pending or still completing; after a failure (a round of
+ * PLACEMENTS_TRIES), with backoff by the failed rounds in a row (`streak`):
+ * 4 s, 8 s, 16 s, then every 30 s, until an answer lands; never after a
+ * refusal (a 4xx), nor once in.
+ */
+export function placementsPoll(state: {
+	status: "pending" | "error" | "success";
+	error: unknown;
+	data: PlacementsAnswer | { pending: true } | undefined;
+	streak: number;
+}): number | false {
+	if (state.status === "error")
+		return refusal(state.error)
+			? false
+			: placementsBackoff(PLACEMENTS_TRIES + Math.max(1, state.streak) - 1);
+	return state.data &&
+		("pending" in state.data || state.data.complete === false)
+		? REREVIEW_POLL_MS
+		: false;
+}
+
+/** Each placements query's error count at its last answer (placementsPoll's streak). */
+const errorsAtAnswer = new WeakMap<object, number>();
+
 /**
  * The threads' placements in a snapshot for one read: polled every
  * REREVIEW_POLL_MS while `pending`, then kept (a placement write updates
- * it; a new read is another key).
+ * it; a new read is another key). A failure is tried again at once, and
+ * after PLACEMENTS_TRIES reads as failed; it is then asked again by itself
+ * with backoff, and on window focus or reconnect, so a passing failure
+ * clears without a Retry (CAR-271).
  */
 export const placementsQuery = (readId: string, to: RereviewTo) =>
 	queryOptions({
@@ -936,14 +989,27 @@ export const placementsQuery = (readId: string, to: RereviewTo) =>
 			return next;
 		},
 		staleTime: Number.POSITIVE_INFINITY,
-		// Asked again while pending, and while the resolved threads are
-		// still joining (the unresolved ones are in already).
-		// Never after an error: the last data would keep it going.
-		refetchInterval: (query) =>
-			query.state.status !== "error" &&
-			query.state.data &&
-			("pending" in query.state.data || query.state.data.complete === false)
-				? REREVIEW_POLL_MS
+		retry: retryPlacements,
+		retryDelay: (failureCount) => placementsBackoff(failureCount + 1),
+		refetchInterval: (query) => {
+			const { status, errorUpdateCount } = query.state;
+			// An answer ends the streak (a refetch's "pending" doesn't).
+			if (status === "success") errorsAtAnswer.set(query, errorUpdateCount);
+			return placementsPoll({
+				status,
+				error: query.state.error,
+				data: query.state.data,
+				streak: errorUpdateCount - (errorsAtAnswer.get(query) ?? 0),
+			});
+		},
+		// Only after a failure: an answer in is kept (staleTime).
+		refetchOnWindowFocus: (query) =>
+			query.state.status === "error" && !refusal(query.state.error)
+				? "always"
+				: false,
+		refetchOnReconnect: (query) =>
+			query.state.status === "error" && !refusal(query.state.error)
+				? "always"
 				: false,
 	});
 
