@@ -54,20 +54,23 @@ export const fileSection = (page: Page, path: string) =>
 const narrow = (page: Page) => (page.viewportSize()?.width ?? 1280) < 768;
 
 /**
- * The phone's floating Files button, shown: it makes way while a card's
+ * Taps the phone's floating Files button. It makes way while a card's
  * control (a composer's, a thread's) is under it (CAR-248), so when it's
  * hidden the page scrolls to its end, where the diff's bottom room keeps
- * every card clear of it.
+ * every card clear of it; tried again until the tap lands (it can hide
+ * just after a look found it shown, a jump's scroll settling a card under
+ * it).
  */
-export async function filesButton(page: Page): Promise<Locator> {
+export async function tapFilesButton(page: Page) {
 	const button = page.getByRole("button", { name: "Files", exact: true });
-	if (await button.isHidden()) {
-		await page.evaluate(() =>
-			window.scrollTo(0, document.documentElement.scrollHeight),
-		);
-	}
-	await expect(button).toBeVisible();
-	return button;
+	await expect(async () => {
+		if (await button.isHidden()) {
+			await page.evaluate(() =>
+				window.scrollTo(0, document.documentElement.scrollHeight),
+			);
+		}
+		await button.click({ timeout: 1000 });
+	}).toPass();
 }
 
 /**
@@ -79,7 +82,7 @@ export async function withTree(
 	use: (tree: Locator) => Promise<void>,
 ) {
 	const sheet = narrow(page);
-	if (sheet) await (await filesButton(page)).click();
+	if (sheet) await tapFilesButton(page);
 	const tree = page.getByTestId("file-tree");
 	await expect(tree).toBeVisible();
 	await use(tree);
@@ -94,7 +97,7 @@ export async function withTree(
 
 /** Picks a file in the tree (from the sheet on a phone, which then closes). */
 export async function pickInTree(page: Page, name: RegExp) {
-	if (narrow(page)) await (await filesButton(page)).click();
+	if (narrow(page)) await tapFilesButton(page);
 	await page.getByTestId("file-tree").getByRole("button", { name }).click();
 	await expect(page.getByRole("dialog", { name: "Files" })).toBeHidden();
 }

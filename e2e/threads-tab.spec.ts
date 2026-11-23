@@ -4,8 +4,8 @@ import { fixture as agentFixture, ask, CALC, openFile, test } from "./agent-ui";
 import {
 	expectNoPageOverflow,
 	fileSection,
-	filesButton,
 	openFiles,
+	tapFilesButton,
 } from "./files-ui";
 import {
 	expect,
@@ -49,7 +49,7 @@ const narrow = (page: Page) => (page.viewportSize()?.width ?? 1280) < 768;
 /** The tree's sidebar: the column on desktop, the sheet behind the Files button on a phone. */
 async function sidebar(page: Page): Promise<Locator> {
 	if (narrow(page)) {
-		await (await filesButton(page)).click();
+		await tapFilesButton(page);
 		const sheet = page.getByRole("dialog", { name: "Files" });
 		await expect(sheet).toBeVisible();
 		return sheet;
