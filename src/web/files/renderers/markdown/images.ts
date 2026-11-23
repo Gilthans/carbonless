@@ -37,7 +37,8 @@ export function repoPathOf(src: string, mdPath: string): string | null {
  * files loads that file's side through the blob route, by its index (the
  * route never reads a path); anything else (not in the review, not an
  * image, above the repo root, a side the file doesn't have) gets null, the
- * placeholder, and loads nothing.
+ * placeholder, and loads nothing. In the since view (`from`) the old side
+ * is the compared patch set's, so a file the base lacks may still have one.
  */
 export function imageResolver(opts: {
 	mdPath: string;
@@ -55,7 +56,16 @@ export function imageResolver(opts: {
 		if (!file || !isImagePath(file.path) || file.lfs || file.submodule) {
 			return null;
 		}
-		if (opts.side === "old" && file.status === "added") return null;
+		// The full diff's old side is the base. The since view's is the
+		// compared patch set's (the server's interdiff), which may hold an
+		// image the base lacks: the route answers for it.
+		if (
+			opts.side === "old" &&
+			file.status === "added" &&
+			opts.from === undefined
+		) {
+			return null;
+		}
 		if (opts.side === "new" && file.status === "deleted") return null;
 		return blobUrl(opts.revision, file.index, opts.side, opts.from);
 	};

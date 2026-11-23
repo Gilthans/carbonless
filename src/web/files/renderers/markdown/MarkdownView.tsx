@@ -221,7 +221,10 @@ export function MarkdownView(props: {
 					if (!pairs.has(key)) {
 						pairs.set(
 							key,
-							renderPair(oldSide, o, newSide, n, { image: side("new") }),
+							renderPair(oldSide, o, newSide, n, {
+								image: side("new"),
+								oldImage: side("old"),
+							}),
 						);
 					}
 					return pairs.get(key) ?? null;

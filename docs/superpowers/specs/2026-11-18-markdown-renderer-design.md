@@ -265,7 +265,11 @@ since view too.
 Images: relative images resolve to the blob route at the same revision
 (CAR-38's `blobUrl`), remote images are not loaded by default (a placeholder
 showing the URL, click to load) because loading them would tell a third party
-the review is open. Raw HTML blocks show as source.
+the review is open. A placeholder shows the image's alt text before its
+path or URL. A removed image (a removed word mark's, or a removed block's)
+loads from the old side (the base in the full diff, the compared patch set
+in the since view), framed red and faded; an added one is framed green.
+Raw HTML blocks show as source.
 
 ## Left to the builder
 

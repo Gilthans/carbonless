@@ -9,7 +9,7 @@ import {
 	tapHeight,
 } from "./files-ui";
 import { expect, expectLoadingThen, type Pr, test } from "./fixtures";
-import { GREEN, png as pngImage, RED } from "./images";
+import { BLUE, GREEN, png as pngImage, RED } from "./images";
 
 /*
  * The Markdown renderer's Rendered view (CAR-167, spec "The Rendered
@@ -393,6 +393,129 @@ test("images load only from the review's own files; a remote one on a click, htt
 	expect(offsite.every((u) => u.startsWith("https://remote.example/"))).toBe(
 		true,
 	);
+});
+
+/** An image's frame against a design token's color (both computed). */
+async function framedIn(el: Locator, token: string) {
+	return el.evaluate((node, t) => {
+		const probe = document.createElement("span");
+		probe.style.color = `var(${t})`;
+		document.body.appendChild(probe);
+		const want = getComputedStyle(probe).color;
+		probe.remove();
+		const style = getComputedStyle(node);
+		return {
+			match: style.outlineColor === want && style.outlineStyle === "solid",
+			opacity: Number(style.opacity),
+		};
+	}, token);
+}
+
+test("a changed image: the removed one framed red and faded from the old side, the added one framed green; an alt-only change shows both alts; full diff and since view (CAR-167 QA)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const doc = (shot: string, map: string) =>
+		`# Images\n\n![Screen](img/${shot}.png)\n\n![${map}](img/route-map.png)\n\nEnd.\n`;
+	const p = await pr({
+		base: { [README]: doc("departures", "Route map of the three ports") },
+		baseBinary: {
+			"img/departures.png": pngImage(40, 20, RED),
+			"img/route-map.png": pngImage(40, 20, RED),
+		},
+		files: [
+			{
+				message: "push 1",
+				files: { [README]: doc("timetable-export", "Route map: Strandkaien") },
+				binary: {
+					"img/departures.png": pngImage(30, 20, GREEN),
+					"img/timetable-export.png": pngImage(20, 20, BLUE),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const check = async (section: Locator, from?: string) => {
+		const row = section
+			.getByTestId("md-block")
+			.filter({ has: page.locator("del.md-del img") });
+		const removed = row.locator("del.md-del img");
+		const added = row.locator("ins.md-ins img");
+		await expect(removed).toHaveCount(1);
+		await expect(added).toHaveCount(1);
+		const params = async (img: Locator) =>
+			new URL((await img.getAttribute("src")) ?? "", "http://x").searchParams;
+		const was = await params(removed);
+		expect(was.get("side")).toBe("old");
+		expect(was.get("from")).toBe(from ?? null);
+		expect((await params(added)).get("side")).toBe("new");
+		// The old side really is served: the image loads.
+		await expect
+			.poll(() => removed.evaluate((i) => (i as HTMLImageElement).naturalWidth))
+			.toBeGreaterThan(0);
+		const red = await framedIn(removed, "--color-bad");
+		expect(red.match).toBe(true);
+		expect(red.opacity).toBeLessThan(1);
+		const green = await framedIn(added, "--color-ok");
+		expect(green.match).toBe(true);
+		expect(green.opacity).toBe(1);
+		// The route map isn't in the PR: placeholders, each with its alt.
+		const maps = section.getByTestId("md-block").locator(".md-local-image");
+		await expect(maps).toHaveCount(2);
+		expect((await framedIn(maps.first(), "--color-bad")).match).toBe(true);
+		expect((await framedIn(maps.last(), "--color-ok")).match).toBe(true);
+		return maps;
+	};
+
+	const section = await openRendered(page);
+	const maps = await check(section);
+	await expect(maps.first().locator(".md-image-alt")).toHaveText(
+		"Route map of the three ports",
+	);
+	await expect(maps.last().locator(".md-image-alt")).toHaveText(
+		"Route map: Strandkaien",
+	);
+	await shot(section, "md-images-full");
+
+	// The since view: push 2 puts the departures screen back, and retitles
+	// the map again. The removed image is push 1's (the base lacks it).
+	await marksReady(page, section);
+	await section
+		.getByRole("button", { name: "Mark remaining reviewed" })
+		.click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({
+		message: "push 2",
+		files: { [README]: doc("departures", "Route map: Nordnes") },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, README);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	await expect(since.getByTestId("md-doc")).toBeVisible(GIT_WAIT);
+	const sinceMaps = await check(since, "1");
+	await expect(sinceMaps.first().locator(".md-image-alt")).toHaveText(
+		"Route map: Strandkaien",
+	);
+	await expect(sinceMaps.last().locator(".md-image-alt")).toHaveText(
+		"Route map: Nordnes",
+	);
+	await shot(since, "md-images-since");
 });
 
 test("the since view: one box per piece on its block; a tick in Rendered is the same piece's tick in Text", async ({

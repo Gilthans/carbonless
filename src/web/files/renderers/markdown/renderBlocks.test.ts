@@ -435,17 +435,116 @@ describe("sanitizing", () => {
 		expect(img?.getAttribute("alt")).toBe("a");
 	});
 
-	it("a relative image image() turns down: a still placeholder (icon, path, Not in this PR), never a button", () => {
-		const d = only("![a](img/p.png)", { image: () => null });
+	it("a relative image image() turns down: a still placeholder (icon, alt, path, Not in this PR), never a button", () => {
+		const d = only("![a <b>](img/p.png)", { image: () => null });
 		expect(d.querySelector("img")).toBeNull();
 		// A click could load nothing (CAR-268 loads any in-repo image).
 		expect(d.querySelector("button")).toBeNull();
 		const still = d.querySelector(".md-local-image");
-		expect(still?.textContent).toBe("img/p.png");
+		expect(still?.querySelector(".md-image-alt")?.textContent).toBe("a <b>");
+		expect(still?.querySelector(".md-image-path")?.textContent).toBe(
+			"img/p.png",
+		);
+		expect(still?.querySelector("b")).toBeNull();
 		expect(still?.getAttribute("title")).toBe("Not in this PR");
 		expect(still?.getAttribute("role")).toBe("img");
-		expect(still?.getAttribute("aria-label")).toBe("img/p.png: not in this PR");
+		expect(still?.getAttribute("aria-label")).toBe(
+			"a <b>, img/p.png: not in this PR",
+		);
 		expect(still?.querySelector("svg")).not.toBeNull();
+		// No alt: the path alone.
+		const bare = only("![](img/p.png)", { image: () => null });
+		expect(bare.querySelector(".md-image-alt")).toBeNull();
+		expect(bare.querySelector(".md-local-image")?.textContent).toBe(
+			"img/p.png",
+		);
+		expect(
+			bare.querySelector(".md-local-image")?.getAttribute("aria-label"),
+		).toBe("img/p.png: not in this PR");
+	});
+
+	it("a remote placeholder shows its alt before its URL", () => {
+		const d = only("![Build status](https://example.com/b.png)");
+		const button = d.querySelector("button.md-remote-image");
+		expect(button?.querySelector(".md-image-alt")?.textContent).toBe(
+			"Build status",
+		);
+		expect(button?.querySelector(".md-image-path")?.textContent).toBe(
+			"https://example.com/b.png",
+		);
+	});
+});
+
+describe("renderPair's images (gallery #61)", () => {
+	const side = (text: string) => {
+		const lines = text.split("\n");
+		return sideBlocks(lines, markdownBlocks(lines));
+	};
+	const pairOf = (o: string, n: string) =>
+		renderPair(side(o), 0, side(n), 0, {
+			image: (src) => `/new?${src}`,
+			oldImage: (src) => `/old?${src}`,
+		});
+
+	it("a removed image loads from the old side, an added one from the new; each side alone from its own", () => {
+		const pair = pairOf(
+			"![Timetable export dialog](img/timetable-export.png)",
+			"![Timetable export dialog](img/departures.png)",
+		);
+		const merged = dom(pair?.merged ?? "");
+		expect(merged.querySelector("del.md-del img")?.getAttribute("src")).toBe(
+			"/old?img/timetable-export.png",
+		);
+		expect(merged.querySelector("ins.md-ins img")?.getAttribute("src")).toBe(
+			"/new?img/departures.png",
+		);
+		expect(
+			dom(pair?.old ?? "")
+				.querySelector("img")
+				?.getAttribute("src"),
+		).toBe("/old?img/timetable-export.png");
+		expect(
+			dom(pair?.new ?? "")
+				.querySelector("img")
+				?.getAttribute("src"),
+		).toBe("/new?img/departures.png");
+	});
+
+	it("an image both sides keep: the new side's in the merged block, each side's own alone", () => {
+		const pair = pairOf(
+			"See ![a](img/x.png) here",
+			"See ![a](img/x.png) there",
+		);
+		expect(
+			dom(pair?.merged ?? "")
+				.querySelector("img")
+				?.getAttribute("src"),
+		).toBe("/new?img/x.png");
+		expect(
+			dom(pair?.old ?? "")
+				.querySelector("img")
+				?.getAttribute("src"),
+		).toBe("/old?img/x.png");
+	});
+
+	it("a side's resolver turning an image down: that side's placeholder, with its alt", () => {
+		const pair = renderPair(
+			side("![Route map of the three ports](img/route-map.png)"),
+			0,
+			side("![Route map: Strandkaien, Nordnes and Askøy](img/route-map.png)"),
+			0,
+			{ image: () => null, oldImage: () => null },
+		);
+		const merged = dom(pair?.merged ?? "");
+		expect(
+			merged.querySelector("del.md-del .md-local-image .md-image-alt")
+				?.textContent,
+		).toBe("Route map of the three ports");
+		expect(
+			merged.querySelector("ins.md-ins .md-local-image .md-image-alt")
+				?.textContent,
+		).toBe("Route map: Strandkaien, Nordnes and Askøy");
+		expect(merged.querySelector("img")).toBeNull();
 	});
 });
 

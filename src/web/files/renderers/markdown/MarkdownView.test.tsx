@@ -35,6 +35,7 @@ import type { DiffFind } from "../../DiffBody";
 import type { KindEntry } from "../../since";
 import { placeThreads, sinceEarlier, sinceLeft } from "../../threadPlacement";
 import { type DocFixture, docFixture, type Edit } from "./docFixture";
+import type { ImageFile } from "./images";
 import { MarkdownView } from "./MarkdownView";
 import { renderBlocks } from "./renderBlocks";
 import { alignTables } from "./tableAlign";
@@ -169,6 +170,8 @@ type ShowOpts = {
 	earlierHead?: string;
 	/** The reviewer's agent threads on the viewed head, placed as FileDiff places them. */
 	agentThreads?: AgentThread[];
+	/** The review's files, for images. */
+	files?: ImageFile[];
 };
 
 const HEAD = "h".repeat(40);
@@ -244,6 +247,7 @@ function show(fx: DocFixture, opts: ShowOpts = {}) {
 					find={o.find}
 					findSpent={o.findSpent}
 					onFindText={o.onFindText}
+					files={o.files}
 				/>
 			</QueryClientProvider>
 		);
@@ -687,6 +691,119 @@ describe("MarkdownView: gallery #61 lists.md, full diff and since view", () => {
 			expectCoverage(
 				root,
 				LEDITS.map((_, i) => unit(i)),
+			);
+		},
+	);
+});
+
+describe("MarkdownView: gallery #61 images, full diff and since view (CAR-167 QA)", () => {
+	// md/images.md's last image, PS1 → head: another image under the same
+	// alt; md/inline.md's route map, base → head: only its alt changed (an
+	// image not in the PR, a placeholder on both sides).
+	const image = (index: number, path: string, status: ImageFile["status"]) => ({
+		index,
+		path: `md/${path}`,
+		status,
+		binary: true,
+		submodule: false,
+	});
+	const FILES: ImageFile[] = [
+		image(1, "img/departures.png", "modified"),
+		image(2, "img/timetable-export.png", "added"),
+	];
+	const IOLD = [
+		"Intro.",
+		"",
+		"![Timetable export dialog](img/timetable-export.png)",
+		"",
+		"The export dialog is new in this release.",
+	];
+	const INEW = [
+		"Intro.",
+		"",
+		"![Timetable export dialog](img/departures.png)",
+		"",
+		"The export dialog is new in this release.",
+	];
+	const imgEdit: Edit[] = [{ key: "img", old: [3, 4], new: [3, 4] }];
+	const params = (src: string | null | undefined) =>
+		Object.fromEntries(new URL(src ?? "", "http://test").searchParams);
+
+	it.each([
+		["full diff", undefined],
+		["since view", 1],
+	])(
+		"%s: a removed image loads from the old side, the added one from the new",
+		async (_, from) => {
+			// The timetable export image the base lacks: the full diff marks
+			// it modified here so both sides exist; the since view keeps it
+			// added, as its old side is the compared patch set's, which has it.
+			const files =
+				from === undefined
+					? FILES.map((f) => ({ ...f, status: "modified" as const }))
+					: FILES;
+			show(
+				docFixture(IOLD, INEW, imgEdit, {
+					path: "md/images.md",
+					since: from !== undefined,
+				}),
+				{ files, ...(from === undefined ? {} : { from }) },
+			);
+			const root = await doc();
+			const row = rowOf(root, from === undefined ? "img" : "p:0:0");
+			const removed = row?.querySelector("del.md-del img");
+			const added = row?.querySelector("ins.md-ins img");
+			expect(params(removed?.getAttribute("src"))).toMatchObject({
+				side: "old",
+				...(from === undefined ? {} : { from: String(from) }),
+			});
+			expect(removed?.getAttribute("src")).toContain("/files/2/blob");
+			expect(params(added?.getAttribute("src"))).toMatchObject({
+				side: "new",
+			});
+			expect(added?.getAttribute("src")).toContain("/files/1/blob");
+		},
+	);
+
+	const ROLD = [
+		"Intro.",
+		"",
+		"![Route map of the three ports](img/route-map.png)",
+	];
+	const RNEW = [
+		"Intro.",
+		"",
+		"![Route map: Strandkaien, Nordnes and Askøy](img/route-map.png)",
+	];
+	it.each([
+		["full diff", false],
+		["since view", true],
+	])(
+		"%s: an alt-only change of an image not in the PR shows each side's alt",
+		async (_, since) => {
+			show(
+				docFixture(ROLD, RNEW, [{ key: "map", old: [3, 4], new: [3, 4] }], {
+					path: "md/inline.md",
+					since,
+				}),
+				{ files: FILES, ...(since ? { from: 1 } : {}) },
+			);
+			const root = await doc();
+			const row = rowOf(root, since ? "p:0:0" : "map");
+			const old = row?.querySelector(".md-local-image");
+			const stills = [...(row?.querySelectorAll(".md-local-image") ?? [])];
+			expect(stills).toHaveLength(2);
+			const [was, now] = stills;
+			expect(was?.closest("del.md-del, .md-old")).not.toBeNull();
+			expect(now?.closest("del.md-del, .md-old")).toBeNull();
+			expect(was?.querySelector(".md-image-alt")).toHaveTextContent(
+				"Route map of the three ports",
+			);
+			expect(now?.querySelector(".md-image-alt")).toHaveTextContent(
+				"Route map: Strandkaien, Nordnes and Askøy",
+			);
+			expect(old?.querySelector(".md-image-path")).toHaveTextContent(
+				"img/route-map.png",
 			);
 		},
 	);

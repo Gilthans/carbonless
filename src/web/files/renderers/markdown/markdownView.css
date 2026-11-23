@@ -204,6 +204,33 @@
 	flex-shrink: 0;
 }
 
+/* A placeholder's alt text, then its path or URL, softer. */
+.md-content :is(.md-local-image, .md-remote-image) .md-image-alt {
+	color: var(--color-ink);
+	margin-right: 6px;
+}
+
+/*
+ * A strike or a tint doesn't show on a picture: a removed image (a removed
+ * word mark's, or a removed or struck block's) is framed in red and
+ * faded; an added one (an added word mark's, or an added or new block's)
+ * framed in green. Placeholders too.
+ */
+.md-content:where(.md-old) :is(img, .md-local-image, .md-remote-image),
+.md-content :where(del.md-del) :is(img, .md-local-image, .md-remote-image) {
+	outline: 2px solid var(--color-bad);
+	outline-offset: 1px;
+	margin: 3px 4px 3px 3px;
+	opacity: 0.6;
+}
+
+.md-content:where(.md-new) :is(img, .md-local-image, .md-remote-image),
+.md-content :where(ins.md-ins) :is(img, .md-local-image, .md-remote-image) {
+	outline: 2px solid var(--color-ok);
+	outline-offset: 1px;
+	margin: 3px 4px 3px 3px;
+}
+
 .md-content button.md-remote-image:hover {
 	color: var(--color-ink);
 }

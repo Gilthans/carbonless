@@ -44,6 +44,11 @@ export interface RenderOptions {
 	image: (src: string) => string | null;
 }
 
+/** sanitize's options: with `tokens`, local images wait for resolveImages. */
+interface SanitizeOptions extends RenderOptions {
+	tokens?: Map<string, string>;
+}
+
 const ALLOWED_TAGS = [
 	"a",
 	"abbr",
@@ -183,12 +188,38 @@ const escapeHtml = (s: string): string =>
 const sourcePre = (src: string): string =>
 	`<pre class="md-source">${escapeHtml(src)}</pre>`;
 
-function placeholder(doc: Document, url: string): HTMLButtonElement {
+/**
+ * A placeholder's words: the image's alt text, when it has one, then where
+ * it is from (so a changed alt, or another path, reads as changed).
+ */
+function placeholderText(
+	doc: Document,
+	el: HTMLElement,
+	alt: string,
+	where: string,
+) {
+	if (alt) {
+		const a = doc.createElement("span");
+		a.className = "md-image-alt";
+		a.textContent = alt;
+		el.appendChild(a);
+	}
+	const w = doc.createElement("span");
+	w.className = "md-image-path";
+	w.textContent = where;
+	el.appendChild(w);
+}
+
+function placeholder(
+	doc: Document,
+	url: string,
+	alt: string,
+): HTMLButtonElement {
 	const button = doc.createElement("button");
 	button.type = "button";
 	button.className = "md-remote-image";
 	button.setAttribute("data-remote-src", url);
-	button.textContent = url;
+	placeholderText(doc, button, alt, url);
 	return button;
 }
 
@@ -199,14 +230,21 @@ const IMAGE_PATH =
 
 /**
  * A relative image the review can't load (not one of its changed images):
- * its icon and path, nothing to click (until CAR-268 loads any image of
- * the repo).
+ * its icon, alt text and path, nothing to click (until CAR-268 loads any
+ * image of the repo).
  */
-function localPlaceholder(doc: Document, path: string): HTMLSpanElement {
+function localPlaceholder(
+	doc: Document,
+	path: string,
+	alt: string,
+): HTMLSpanElement {
 	const span = doc.createElement("span");
 	span.className = "md-local-image";
 	span.setAttribute("role", "img");
-	span.setAttribute("aria-label", `${path}: not in this PR`);
+	span.setAttribute(
+		"aria-label",
+		`${alt ? `${alt}, ` : ""}${path}: not in this PR`,
+	);
 	span.setAttribute("title", "Not in this PR");
 	const svg = doc.createElementNS(SVG_NS, "svg");
 	svg.setAttribute("viewBox", "0 0 16 16");
@@ -218,8 +256,36 @@ function localPlaceholder(doc: Document, path: string): HTMLSpanElement {
 	d.setAttribute("fill", "currentColor");
 	svg.appendChild(d);
 	span.appendChild(svg);
-	span.appendChild(doc.createTextNode(path));
+	placeholderText(doc, span, alt, path);
 	return span;
+}
+
+/**
+ * An image's src while a merged block is checked (mergedBody): its path,
+ * not yet a side's URL, so the merged and each side's render compare
+ * equal; `resolveImages` then loads each from its side.
+ */
+const IMAGE_TOKEN = "crb-image:";
+
+/** `img`, its src resolved to `url`, or the placeholder it becomes. */
+function placeImage(
+	img: HTMLImageElement,
+	raw: string,
+	src: string | null,
+	url: string | null,
+) {
+	const doc = img.ownerDocument;
+	const alt = (img.getAttribute("alt") ?? "").trim();
+	if (url) {
+		img.setAttribute("src", url);
+		img.setAttribute("referrerpolicy", "no-referrer");
+	} else if (src !== null) {
+		img.replaceWith(localPlaceholder(doc, raw.trim(), alt));
+	} else if (raw) {
+		img.replaceWith(placeholder(doc, raw, alt));
+	} else {
+		img.remove();
+	}
 }
 
 /**
@@ -227,7 +293,7 @@ function localPlaceholder(doc: Document, path: string): HTMLSpanElement {
  * DOMPurify ran, so content can never bring its own (buttons and data-*
  * attributes are not on the allow-list).
  */
-function sanitize(html: string, opts: RenderOptions): HTMLElement {
+function sanitize(html: string, opts: SanitizeOptions): HTMLElement {
 	const body = getPurify().sanitize(html, {
 		ALLOWED_TAGS,
 		ALLOWED_ATTR,
@@ -256,17 +322,13 @@ function sanitize(html: string, opts: RenderOptions): HTMLElement {
 	for (const img of body.querySelectorAll("img")) {
 		const raw = img.getAttribute("src") ?? "";
 		const src = localSrc(raw);
-		const url = src === null ? null : opts.image(src);
-		if (url) {
-			img.setAttribute("src", url);
-			img.setAttribute("referrerpolicy", "no-referrer");
-		} else if (src !== null) {
-			img.replaceWith(localPlaceholder(doc, raw.trim()));
-		} else if (raw) {
-			img.replaceWith(placeholder(doc, raw));
-		} else {
-			img.remove();
+		if (opts.tokens && src !== null) {
+			// Resolved once checked (resolveImages): kept as written for now.
+			opts.tokens.set(src, raw);
+			img.setAttribute("src", `${IMAGE_TOKEN}${encodeURIComponent(src)}`);
+			continue;
 		}
+		placeImage(img, raw, src, src === null ? null : opts.image(src));
 	}
 	for (const table of body.querySelectorAll("table")) {
 		// A table scrolls sideways in its own box (the page never does).
@@ -314,6 +376,12 @@ export function renderSource(src: string, opts: RenderOptions): string {
 }
 
 export interface MergedOptions extends RenderOptions {
+	/**
+	 * The old side's image resolver: a removed image (in a `del.md-del`
+	 * mark) and the old side alone load from it, never from the new side's
+	 * blob. `image` when unset.
+	 */
+	oldImage?: (src: string) => string | null;
 	/** The file's reference definitions (`[a]: url`), as `renderBlocks` resolves them. */
 	links?: Links;
 	/**
@@ -461,16 +529,48 @@ function sideOf(body: HTMLElement, keep: "del" | "ins"): string {
  * never a wrong picture; and no sentinel survives into the output.
  */
 export function renderMerged(src: string, opts: MergedOptions): string | null {
-	return mergedBody(src, opts)?.innerHTML ?? null;
+	const checked = mergedBody(src, opts);
+	if (!checked) return null;
+	resolveImages(checked.body, checked.raws, opts);
+	return checked.body.innerHTML;
 }
 
-/** `renderMerged`'s checked body, or null. */
-function mergedBody(src: string, opts: MergedOptions): HTMLElement | null {
+/**
+ * A checked merged body's images, each from its side: in a `del.md-del`
+ * mark (a removed image) the old side's (`oldImage`), else the new
+ * side's; with `only`, every image from that side (one side shown alone).
+ */
+function resolveImages(
+	body: HTMLElement,
+	raws: ReadonlyMap<string, string>,
+	opts: MergedOptions,
+	only?: "old" | "new",
+) {
+	for (const img of body.querySelectorAll("img")) {
+		const token = img.getAttribute("src") ?? "";
+		if (!token.startsWith(IMAGE_TOKEN)) continue;
+		const src = decodeURIComponent(token.slice(IMAGE_TOKEN.length));
+		const old =
+			only === undefined ? img.closest("del.md-del") !== null : only === "old";
+		const resolve = old ? (opts.oldImage ?? opts.image) : opts.image;
+		placeImage(img, raws.get(src) ?? src, src, resolve(src));
+	}
+}
+
+/**
+ * `renderMerged`'s checked body, or null; its local images still tokens
+ * (IMAGE_TOKEN) for resolveImages, with each one's src as written.
+ */
+function mergedBody(
+	src: string,
+	opts: MergedOptions,
+): { body: HTMLElement; raws: ReadonlyMap<string, string> } | null {
 	if (!parseable(src.split("\n"))) return null;
 	const links = opts.links ?? {};
+	const tokens = new Map<string, string>();
 	const body = (s: string): HTMLElement | null => {
 		const full = opts.header === undefined ? s : `${opts.header}\n${s}`;
-		const el = sanitize(toHtml(full, links), opts);
+		const el = sanitize(toHtml(full, links), { ...opts, tokens });
 		if (opts.header !== undefined) {
 			const heads = el.querySelectorAll("thead");
 			if (!heads.length) return null;
@@ -490,7 +590,7 @@ function mergedBody(src: string, opts: MergedOptions): HTMLElement | null {
 		newBody.normalize();
 		if (sideOf(merged, "del") !== oldBody.innerHTML) return null;
 		if (sideOf(merged, "ins") !== newBody.innerHTML) return null;
-		return merged;
+		return { body: merged, raws: tokens };
 	} catch {
 		return null;
 	}
@@ -767,15 +867,16 @@ const wrapBlock = (
  * block with the changed words marked (`mergedSource`, `renderMerged`), or
  * null when the marks can't show the change faithfully (another kind, a
  * code fence, a heading's level, another table header, other containers):
- * the view then shows the old block struck above the new. Images resolve
- * through `opts.image` on both sides.
+ * the view then shows the old block struck above the new. A removed image
+ * (and the old side alone) loads through `opts.oldImage`, the rest through
+ * `opts.image`.
  */
 export function renderPair(
 	old: SideBlocks,
 	oi: number,
 	nu: SideBlocks,
 	ni: number,
-	opts: RenderOptions,
+	opts: Pick<MergedOptions, "image" | "oldImage">,
 ): PairHtml | null {
 	const ob = old.blocks[oi];
 	const nb = nu.blocks[ni];
@@ -804,20 +905,28 @@ export function renderPair(
 			nb.kind,
 		);
 		if (merged === null) return null;
-		const body = mergedBody(merged, {
+		const mergedOpts: MergedOptions = {
 			image: opts.image,
+			...(opts.oldImage ? { oldImage: opts.oldImage } : {}),
 			links: { ...old.links, ...nu.links },
 			...(header === undefined ? {} : { header }),
-		});
-		if (!body) return null;
+		};
+		const checked = mergedBody(merged, mergedOpts);
+		if (!checked) return null;
+		const { body, raws } = checked;
+		const sided = (only?: "old" | "new") => {
+			const copy = body.cloneNode(true) as HTMLElement;
+			resolveImages(copy, raws, mergedOpts, only);
+			return copy;
+		};
 		const nest = nestOf(nb, un.lines, un.quotes);
 		if (nest !== nestOf(ob, uo.lines, uo.quotes)) return null;
 		const wrap = (html: string) =>
 			wrapBlock(html, continuation, un.quotes, nest);
 		return {
-			merged: wrap(body.innerHTML),
-			old: wrap(markedSide(body, "del")),
-			new: wrap(markedSide(body, "ins")),
+			merged: wrap(sided().innerHTML),
+			old: wrap(markedSide(sided("old"), "del")),
+			new: wrap(markedSide(sided("new"), "ins")),
 		};
 	} catch {
 		return null;

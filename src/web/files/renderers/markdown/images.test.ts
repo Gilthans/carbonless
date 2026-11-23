@@ -92,6 +92,15 @@ describe("imageResolver", () => {
 		expect(resolve("../logo.png", "new")).toMatch(/files\/4\/blob/);
 		expect(resolve("img/a.png?x=1")).toBeNull();
 	});
+
+	it("the since view's old side is the compared patch set's: an image the base lacks loads from it", () => {
+		// logo.png is added against the base: no old side in the full diff.
+		expect(resolve("../logo.png", "old")).toBeNull();
+		const url = resolve("../logo.png", "old", 1) as string;
+		expect(url).toMatch(/files\/4\/blob/);
+		expect(url).toContain("side=old");
+		expect(url).toContain("from=1");
+	});
 });
 
 describe("remoteImageUrl", () => {
