@@ -18,6 +18,8 @@
 // Environment:
 //   CRB_SWEEP_PRS      "201 202": these PRs instead of gh's list (--dry-run
 //                      only).
+//   CRB_SWEEP_AGENT    "on" lets a local fix agent try CI failures the update
+//                      caused (default off: they get an owner comment).
 //   CRB_SWEEP_TIMEOUT  the agent's time budget, as timeout(1) takes it
 //                      (default 90m).
 //   XDG_STATE_HOME     state and logs in $XDG_STATE_HOME/carbonless/
@@ -81,13 +83,20 @@ export function isBreaking(from, to) {
 	return a[0] === 0 && b[1] !== a[1];
 }
 
+const DEP_SECTIONS = [
+	"dependencies",
+	"devDependencies",
+	"optionalDependencies",
+	"peerDependencies",
+];
+
 /**
- * Runtime dependency changes that need the owner: a breaking bump of an
- * entry in `dependencies`/`optionalDependencies`, or a new one there.
+ * Dependency changes that need the owner (any section, dev tools too): a
+ * breaking bump (a new major, or a new minor of a 0.x), or a new entry.
  */
-export function runtimeBumps(basePkg, headPkg) {
+export function breakingBumps(basePkg, headPkg) {
 	const out = [];
-	for (const section of ["dependencies", "optionalDependencies"]) {
+	for (const section of DEP_SECTIONS) {
 		const base = basePkg?.[section] ?? {};
 		const head = headPkg?.[section] ?? {};
 		for (const [name, to] of Object.entries(head)) {
@@ -100,6 +109,96 @@ export function runtimeBumps(basePkg, headPkg) {
 	return out;
 }
 
+/**
+ * The packages a Dependabot PR says it updates: its title's, and the
+ * `dependency-name:` entries of its commits' metadata.
+ */
+export function dependabotNames(title, messages = []) {
+	const names = new Set();
+	const t = bumpFromTitle(title);
+	if (t) names.add(t.name);
+	for (const m of messages)
+		for (const x of String(m ?? "").matchAll(
+			/^[\s-]*dependency-name:\s*["']?([^\s"']+)/gm,
+		))
+			names.add(x[1]);
+	return [...names];
+}
+
+/** Did Dependabot's own metadata call this a major update? */
+export const metadataMajor = (messages = []) =>
+	messages.some((m) => /update-type:\s*version-update:semver-major/.test(m));
+
+const LOCK_HOST = "registry.npmjs.org";
+const stable = (v) =>
+	Array.isArray(v)
+		? v.map(stable)
+		: v && typeof v === "object"
+			? Object.fromEntries(
+					Object.keys(v)
+						.sort()
+						.map((k) => [k, stable(v[k])]),
+				)
+			: v;
+
+/**
+ * Why a Dependabot PR isn't a plain manifest update, or []: it may change
+ * only package.json and pnpm-lock.yaml; package.json only in the versions
+ * of the packages it names; and every source the lockfile gains must be
+ * the npm registry (no git, file, link or other hosts).
+ */
+export function manifestProblems({
+	files,
+	basePkg,
+	headPkg,
+	names,
+	addedLockLines,
+}) {
+	const problems = [];
+	const other = (files ?? []).filter(
+		(f) => f !== "package.json" && f !== "pnpm-lock.yaml",
+	);
+	if (other.length > 0)
+		problems.push(
+			`it changes more than package.json and pnpm-lock.yaml (${other.join(", ")})`,
+		);
+	if ((names ?? []).length === 0)
+		problems.push("it names no dependency it updates");
+	if ((files ?? []).includes("package.json")) {
+		const blank = (pkg) => {
+			const copy = JSON.parse(JSON.stringify(pkg ?? {}));
+			for (const section of DEP_SECTIONS)
+				for (const n of names ?? [])
+					if (copy[section] && n in copy[section]) copy[section][n] = "*";
+			return JSON.stringify(stable(copy));
+		};
+		if (!basePkg || !headPkg || blank(basePkg) !== blank(headPkg))
+			problems.push(
+				`its package.json changes more than the version of ${(names ?? []).join(", ") || "its dependency"}`,
+			);
+	}
+	const bad = new Set();
+	for (const line of addedLockLines ?? []) {
+		for (const u of line.matchAll(/[a-z][a-z0-9+.-]*:\/\/[^\s'",}]+/gi)) {
+			let host = "";
+			try {
+				host = new URL(u[0]).host;
+			} catch {}
+			if (host !== LOCK_HOST || !u[0].startsWith("https://")) bad.add(u[0]);
+		}
+		if (
+			/(git\+|github:|gitlab:|bitbucket:|file:|link:)/.test(line) ||
+			/(^|[\s{,])(repo|commit|directory|path):/.test(line)
+		)
+			bad.add(line.trim().slice(0, 80));
+	}
+	if (bad.size > 0)
+		problems.push(
+			`its lockfile adds sources other than ${LOCK_HOST} (${[...bad].slice(0, 3).join("; ")})`,
+		);
+	return problems;
+}
+
 /** "Bump X from A to B" (Dependabot's title), else null. */
 export function bumpFromTitle(title) {
 	const m = /^Bump (\S+) from (\S+) to (\S+?)(?: in .*)?$/.exec(
@@ -108,9 +207,20 @@ export function bumpFromTitle(title) {
 	return m ? { name: m[1], from: m[2], to: m[3] } : null;
 }
 
-/** Does the description already carry a Release note line? */
-export function hasReleaseNote(body) {
-	return /^Release note\b/m.test(String(body ?? ""));
+/**
+ * Does the description carry a Release note: the sweep's own line, or a
+ * `Release note` line of the description itself (not in a quote or in a
+ * <details> block, where Dependabot puts upstream changelogs).
+ */
+export function hasReleaseNote(body, note) {
+	const b = String(body ?? "");
+	if (note && b.split("\n").some((l) => l.trim() === note)) return true;
+	const own = b
+		.replace(/<details[\s\S]*?<\/details>/gi, "")
+		.split("\n")
+		.filter((l) => !/^\s*>/.test(l))
+		.join("\n");
+	return /^Release note( \((new|improved|fixed)\))?:/m.test(own);
 }
 
 const cmpVersion = (a, b) => {
@@ -214,6 +324,13 @@ export function decide(f) {
 			key: `commits:${sha}`,
 			reason: `it has commits by neither Dependabot nor the sweep (${foreign.map((c) => c.sha.slice(0, 7)).join(", ") || "none listed"}), so it isn't merged automatically`,
 		};
+	const sweepShas = (f.commits ?? []).filter((c) => sweep.has(c.sha));
+	if (sweepShas.length > 0)
+		return {
+			type: "owner",
+			key: `sweep-fix:${sha}`,
+			reason: `the sweep pushed a fix at ${sweepShas[sweepShas.length - 1].sha.slice(0, 7)}; review and merge it`,
+		};
 	const prot = matching(pr.files ?? []);
 	if (prot.length > 0)
 		return {
@@ -221,32 +338,30 @@ export function decide(f) {
 			key: `protected:${sha}`,
 			reason: `it changes ${prot.map((p) => `\`${p}\``).join(", ")} (workflows or release scripts), which only the owner merges`,
 		};
-	if ((f.runtimeBumps ?? []).length > 0)
+	if ((f.manifestProblems ?? []).length > 0)
+		return {
+			type: "owner",
+			key: `manifest:${sha}`,
+			reason: `it isn't a plain dependency update: ${f.manifestProblems.join("; ")}`,
+		};
+	if ((f.breaking ?? []).length > 0)
 		return {
 			type: "owner",
 			key: `major:${sha}`,
-			reason: `it is a breaking update of a runtime dependency (${f.runtimeBumps.map((b) => (b.kind === "added" ? `new: ${b.name}` : `${b.name} ${b.from} → ${b.to}`)).join(", ")}), which needs the owner's look`,
+			reason: `it is a breaking update (${f.breaking.map((b) => (b.kind === "added" ? `new: ${b.name}` : `${b.name} ${b.from ?? ""} → ${b.to ?? ""}`.trim())).join(", ")}), which needs the owner's look`,
 		};
-	const hasSweepCommits = (f.commits ?? []).some((c) => sweep.has(c.sha));
 	if (
 		pr.mergeStateStatus === "BEHIND" ||
 		pr.mergeStateStatus === "DIRTY" ||
 		pr.mergeable === "CONFLICTING"
 	) {
-		if (hasSweepCommits)
-			return {
-				type: "owner",
-				key: `behind:${sha}`,
-				reason:
-					"it is behind master or conflicts, and carries the sweep's fix commits, so Dependabot won't rebase it: rebase it by hand, or `@dependabot recreate` (drops the fix)",
-			};
 		if (f.rebaseAsked)
 			return { type: "wait", reason: "rebase asked; waiting for Dependabot" };
 		return { type: "rebase", reason: `${pr.mergeStateStatus}/${pr.mergeable}` };
 	}
 	if (pr.mergeable === "UNKNOWN" || pr.mergeStateStatus === "UNKNOWN")
 		return { type: "wait", reason: "GitHub is still computing mergeability" };
-	if (!hasReleaseNote(pr.body))
+	if (!hasReleaseNote(pr.body, f.note))
 		return { type: "add-note", note: f.note, reason: "no release note" };
 
 	const checks = f.checks ?? [];
@@ -280,6 +395,12 @@ export function decide(f) {
 			const job = (run.jobs ?? []).find((j) => String(j.id) === m[2]);
 			const kind = classifyJob(job);
 			if (kind === "build" || run.attempt >= 2) {
+				if (!f.agentEnabled)
+					return {
+						type: "owner",
+						key: `ci:${sha}`,
+						reason: `\`${c.name}\` fails in a ${kind === "build" ? "build, lint or typecheck" : "test"} step${run.attempt >= 2 ? ", again after a rerun" : ""}; the update probably broke it and needs a fix by hand`,
+					};
 				if (f.agentTried)
 					return {
 						type: "owner",
@@ -314,12 +435,16 @@ export function decide(f) {
 }
 
 /**
- * Agent text made fit to post publicly: one block, capped, no tokens,
- * addresses, emails, home paths or HTML, and no @-mentions or commands.
+ * Agent text made fit to post publicly: links, issue references, tokens,
+ * addresses, emails and absolute paths dropped, then only plain characters
+ * kept (no markdown, HTML, @-mentions or backticks), capped. Post it inside
+ * codeBlock().
  */
 export function scrub(text, max = COMMENT_MAX) {
 	let s = String(text ?? "")
 		.replace(/\r/g, "")
+		.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "[link]")
+		.replace(/\bwww\.\S+/gi, "[link]")
 		.replace(
 			/\b(gh[opsur]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|sk-ant-[A-Za-z0-9_-]{10,}|lin_(api|oauth)_[A-Za-z0-9]{10,}|npm_[A-Za-z0-9]{20,}|xox[abp]-[A-Za-z0-9-]{10,})/g,
 			"[redacted]",
@@ -328,14 +453,18 @@ export function scrub(text, max = COMMENT_MAX) {
 		.replace(/\b\d{1,3}(\.\d{1,3}){3}\b/g, "[redacted]")
 		.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[redacted]")
 		.replace(/[A-Za-z0-9.-]*\.ts\.net\b/gi, "[redacted]")
-		.replace(/(\/home|\/Users|\/root|~)\/[^\s`'")]*/g, "[path]")
-		.replace(/<[^>]*>/g, "")
-		.replace(/@(?=[A-Za-z0-9])/g, "@​")
+		.replace(/(^|[\s(])~?\/[^\s)]*/g, "$1[path]")
+		.replace(/\b[\w.-]+\/[\w.-]+#\d+/g, "[ref]")
+		.replace(/#\d+/g, "[ref]")
+		.replace(/[^A-Za-z0-9 .,:;()'"_/+=\-\n[\]]/g, "")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();
-	if (s.length > max) s = `${s.slice(0, max - 1)}…`;
+	if (s.length > max) s = `${s.slice(0, max - 3)}...`;
 	return s;
 }
+
+/** Scrubbed text as an inert block in a comment. */
+export const codeBlock = (s) => `\`\`\`text\n${s}\n\`\`\``;
 
 /** Problems with the agent's commits, from `git diff --name-only`. */
 export function agentChangeProblems(files) {
@@ -402,6 +531,7 @@ function gatherFacts(n, ctx) {
 		author: c.author?.login ?? null,
 		committer: c.committer?.login ?? null,
 		verified: c.commit?.verification?.verified === true,
+		message: String(c.commit?.message ?? ""),
 	}));
 	const checksOf = (extra) => {
 		const r = run(
@@ -451,9 +581,15 @@ function gatherFacts(n, ctx) {
 			};
 		}
 	}
-	// package.json at master and at the PR's head (fetched by name, checked).
-	let rb = [];
-	let headPkg = null;
+	// What the PR's head changes against where it forked from master
+	// (fetched by name, checked), read from git, not from the PR's text.
+	const botMessages = commits
+		.filter((c) => c.author === BOT)
+		.map((c) => c.message);
+	const names = dependabotNames(pr.title, botMessages);
+	const bump = bumpFromTitle(pr.title);
+	let breaking = [];
+	let mp = ["its head could not be read"];
 	if (BRANCH_RE.test(pr.headRefName) && SHA_RE.test(sha)) {
 		run("git", [
 			"fetch",
@@ -471,13 +607,47 @@ function gatherFacts(n, ctx) {
 		]);
 		if (!heads.startsWith(sha))
 			throw new Error("the PR's head moved while reading it; next run");
-		const basePkg = JSON.parse(
-			out("git", ["show", "origin/master:package.json"]),
-		);
-		headPkg = JSON.parse(out("git", ["show", `${sha}:package.json`]));
-		rb = runtimeBumps(basePkg, headPkg);
+		const base = out("git", ["merge-base", "origin/master", sha]).trim();
+		const pkgAt = (rev) => {
+			const r = run("git", ["show", `${rev}:package.json`], {
+				allowFail: true,
+			});
+			try {
+				return r.status === 0 ? JSON.parse(r.stdout) : null;
+			} catch {
+				return null;
+			}
+		};
+		const basePkg = pkgAt(base);
+		const headPkg = pkgAt(sha);
+		const files = out("git", ["diff", "--name-only", base, sha])
+			.trim()
+			.split("\n")
+			.filter(Boolean);
+		const addedLockLines = out("git", [
+			"diff",
+			"--no-ext-diff",
+			"--unified=0",
+			base,
+			sha,
+			"--",
+			"pnpm-lock.yaml",
+		])
+			.split("\n")
+			.filter((l) => l.startsWith("+") && !l.startsWith("+++"))
+			.map((l) => l.slice(1));
+		mp = manifestProblems({ files, basePkg, headPkg, names, addedLockLines });
+		breaking = breakingBumps(basePkg, headPkg);
+		if (bump && isBreaking(bump.from, bump.to))
+			breaking.push({ ...bump, kind: "major" });
+		if (metadataMajor(botMessages) && breaking.length === 0)
+			breaking.push({
+				name: names.join(", "),
+				from: null,
+				to: "a new major",
+				kind: "major",
+			});
 	}
-	const bump = bumpFromTitle(pr.title);
 	const mine = (pr.comments ?? []).filter((c) => c.author?.login === ctx.me);
 	return {
 		pr: {
@@ -487,7 +657,10 @@ function gatherFacts(n, ctx) {
 		},
 		commits,
 		sweepShas: ctx.state.sweepShas ?? [],
-		runtimeBumps: rb,
+		manifestProblems: mp,
+		breaking,
+		names,
+		agentEnabled: ctx.agentEnabled,
 		checks,
 		required,
 		runs,
@@ -787,21 +960,23 @@ function runAgent(n, facts, action, ctx) {
 		const summary = scrub(result.summary);
 		if (result.status !== "fixed" || problems.length > 0) {
 			const why =
-				problems.length > 0 ? `\n\nNot pushed: ${problems.join("; ")}.` : "";
+				problems.length > 0
+					? `\n\nNot pushed: ${scrub(problems.join("; "), 300)}.`
+					: "";
 			comment(
 				n,
-				`Dependabot sweep: \`${action.failure.check}\` fails and the sweep couldn't fix it. The agent's notes:\n\n${summary}${why}`,
+				`Dependabot sweep: \`${action.failure.check}\` fails and the sweep couldn't fix it. The agent's notes:\n\n${codeBlock(summary)}${why}`,
 				`agent:${sha}`,
 				ctx,
 			);
 			return `agent: ${result.status}${problems.length ? ` (refused: ${problems.join("; ")})` : ""}`;
 		}
 		// One commit of exactly the checked tree on the PR's head, with a
-		// fixed message, the agent's scrubbed summary and the trailer.
+		// fixed message and the trailer (no agent text in git history).
 		const msgFile = join(ctx.tmp, `msg-${n}.txt`);
 		writeFileSync(
 			msgFile,
-			`Adapt to ${pr.title.replace(/[^\w .@/-]/g, "")}\n\n${summary}\n\n${TRAILER}: ${ctx.stamp}\n`,
+			`Adapt to ${pr.title.replace(/[^\w .@/-]/g, "").slice(0, 100)}\n\n${TRAILER}: ${ctx.stamp}\n`,
 		);
 		const newSha = out("git", [
 			"commit-tree",
@@ -824,7 +999,7 @@ function runAgent(n, facts, action, ctx) {
 		]);
 		comment(
 			n,
-			`Dependabot sweep: pushed ${newSha.slice(0, 7)} to fix \`${action.failure.check}\`. The agent's notes:\n\n${summary}`,
+			`Dependabot sweep: pushed ${newSha.slice(0, 7)} to fix \`${action.failure.check}\`. The agent's notes:\n\n${codeBlock(summary)}`,
 			`fixed:${newSha}`,
 			ctx,
 		);
@@ -1004,6 +1179,9 @@ function main(argv) {
 			? out("git", ["show", `${ref}:${instructionsPath}`])
 			: readFileSync(instructionsPath, "utf8"),
 		me: gh(["api", "user", "--jq", ".login"]).trim(),
+		// The local fix agent is off unless CRB_SWEEP_AGENT=on: a failure the
+		// update caused then gets an owner comment instead.
+		agentEnabled: process.env.CRB_SWEEP_AGENT === "on",
 		alerts: (
 			ghJson([
 				"api",

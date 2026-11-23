@@ -6,7 +6,7 @@ parts with different trust:
 - **The launcher** (`scripts/dependabot-sweep.mjs`) holds the owner's
   GitHub login. It does every GitHub read and write itself, by the fixed
   rules below; no model decides what it merges or posts.
-- **The fix agent** (Claude Code, headless) only fixes code locally, for a
+- **The fix agent** (Claude Code, headless; off by default) only fixes code locally, for a
   CI failure the update caused. It has no GitHub access, no network tools
   and no credentials, and runs in a sandbox. The launcher checks what it
   committed, then pushes it or comments why not.
@@ -35,25 +35,35 @@ and at the PR's head, and the open Dependabot alerts. Then, in order:
 1. **Not the sweep's**: author isn't `dependabot[bot]`, not open, or a
    draft → skip.
 2. **Untrusted commits**: a commit not authored by `dependabot[bot]`,
-   committed by `web-flow` and verified, and not one the sweep pushed
-   itself (it records their SHAs locally; they also carry a
-   `Dependabot-Sweep:` trailer) → comment for the owner, leave it.
-3. **Workflows or release scripts**: a changed file under `.github/` or
+   committed by `web-flow` and verified → comment for the owner, leave it.
+3. **The sweep's own fix**: the PR carries a commit the sweep pushed (it
+   records their SHAs locally; they carry a `Dependabot-Sweep:` trailer)
+   → never merged automatically: comment for the owner ("the sweep pushed
+   a fix at <sha>; review and merge it").
+4. **Workflows or release scripts**: a changed file under `.github/` or
    `scripts/release*` → comment for the owner, leave it.
-4. **Breaking runtime update**: a new major (or a new minor of a 0.x) of
-   an entry in `package.json`'s `dependencies` or `optionalDependencies`,
-   or a new entry there → comment for the owner, leave it. Dev tools may
-   take majors.
-5. **Behind or conflicting** → comment `@dependabot rebase`, once per head
-   commit. If the PR carries the sweep's fix commits, Dependabot won't
-   rebase it: comment for the owner instead (rebase by hand, or
-   `@dependabot recreate`, which drops the fix).
-6. **No release note** in the description → append one line:
-   `Release note: none (dependency update)`, or, when the update reaches
-   the first patched version of open Dependabot alerts for that package,
-   `Release note (fixed): Updated <package> to <version>, which closes
-   security advisory <GHSA ids>` (built from the advisories' ids only).
-7. **Checks**: none yet or any running → wait for a later run. Then:
+5. **Not a plain manifest update** → comment for the owner, leave it.
+   Against where the PR forked from master: it may change only
+   `package.json` and `pnpm-lock.yaml`; `package.json` only in the
+   versions of the packages the PR names (its title, and the
+   `dependency-name:` entries of Dependabot's commit metadata); and every
+   source the lockfile gains must be `https://registry.npmjs.org` (no
+   git, file, link or other hosts).
+6. **Breaking update**: a new major (or a new minor of a 0.x) of any
+   dependency, dev tools included (from `package.json`, the title's
+   versions, or Dependabot's `semver-major` metadata), or a new entry →
+   comment for the owner, leave it.
+7. **Behind or conflicting** → comment `@dependabot rebase`, once per head
+   commit.
+8. **No release note** in the description (the sweep's line, or a
+   `Release note` line of the description itself: not one quoted or
+   folded in `<details>`, where Dependabot puts upstream changelogs) →
+   append one line: `Release note: none (dependency update)`, or, when
+   the update reaches the first patched version of open Dependabot alerts
+   for that package, `Release note (fixed): Updated <package> to
+   <version>, which closes security advisory <GHSA ids>` (built from the
+   advisories' ids only).
+9. **Checks**: none yet or any running → wait for a later run. Then:
    - `release-gate` failed → comment for the owner once (a freeze), wait;
    - only `release-note` failed → run `pnpm release merge-ok`, which
      reruns it;
@@ -61,9 +71,10 @@ and at the PR's head, and the open Dependabot alerts. Then, in order:
      runner) → `gh run rerun <run> --failed`, once (only runs of that
      PR's head commit and branch);
    - it failed again on the rerun, or a build step failed (install, lint,
-     typecheck, build, pack) → the fix agent, once per head commit; a
-     second failure on the same commit → comment for the owner.
-8. **Every check green** (required and not), and the required ones all
+     typecheck, build, pack): the update probably broke it → comment for
+     the owner. Only with `CRB_SWEEP_AGENT=on` (off by default) does the
+     fix agent below try it instead, once per head commit.
+10. **Every check green** (required and not), and the required ones all
    reported → `pnpm release merge-ok N` (from a clean worktree of master),
    the head re-read, then `gh pr merge N --merge --admin
    --match-head-commit <sha>`. A release freeze → comment once and wait.
@@ -72,7 +83,8 @@ Owner comments start with `Dependabot sweep:` and carry a hidden
 `<!-- crb-sweep:<reason>:<sha> -->` marker; the launcher doesn't post a
 comment whose marker one of the owner's comments already has.
 
-**The fix agent**, when rule 7 calls for it: the launcher makes a detached
+**The fix agent** (off unless `CRB_SWEEP_AGENT=on`), when rule 9 calls
+for it: the launcher makes a detached
 worktree at the PR's head (`.worktrees/dependabot-sweep-<stamp>-prN`,
 removed afterwards whatever happens), installs it with
 `--frozen-lockfile` inside the sandbox, writes `.crb-dev/sweep/pr.json`
@@ -99,12 +111,14 @@ Afterwards the launcher reads only the worktree's HEAD commit id and
 works from the main repository (never running git in the agent's
 worktree). It refuses the result unless that commit builds on the PR's
 head and the change touches no protected file, `package.json` or the
-lockfile. It makes one commit of exactly that tree with a fixed message, the
-agent's summary and the trailer, pushes it only to that PR's
+lockfile. It makes one commit of exactly that tree with a fixed message
+and the trailer (no agent text), pushes it only to that PR's
 `dependabot/*` branch with `--force-with-lease` on the head it started
-from, and comments the summary. Agent text it posts is scrubbed (tokens,
-addresses, emails, paths, HTML, @-mentions) and capped, and goes through a
-file, never the command line.
+from, and comments the agent's summary. That text is scrubbed (links,
+issue references, tokens, addresses, emails, absolute paths dropped; only
+plain characters kept, so no markdown, HTML, @-mentions or backticks),
+capped, posted inside a code block, through a file. Rule 3 then leaves
+the PR to the owner.
 
 Logs: the launcher's lines go to its output (the timer's journal) and
 `<state>/dependabot-sweep/<date>.log`; each agent session to

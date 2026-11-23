@@ -35,11 +35,24 @@ export interface Action {
 export function matching(files: string[], patterns?: RegExp[]): string[];
 export function versionOf(range: string): [number, number] | null;
 export function isBreaking(from: string, to: string): boolean;
-export function runtimeBumps(basePkg: unknown, headPkg: unknown): Bump[];
+export function breakingBumps(basePkg: unknown, headPkg: unknown): Bump[];
+export function dependabotNames(title: string, messages?: string[]): string[];
+export function metadataMajor(messages?: string[]): boolean;
+export function manifestProblems(o: {
+	files: string[];
+	basePkg: unknown;
+	headPkg: unknown;
+	names: string[];
+	addedLockLines: string[];
+}): string[];
+export function codeBlock(s: string): string;
 export function bumpFromTitle(
 	title: string,
 ): { name: string; from: string; to: string } | null;
-export function hasReleaseNote(body: string | null | undefined): boolean;
+export function hasReleaseNote(
+	body: string | null | undefined,
+	note?: string,
+): boolean;
 export function releaseNote(
 	bump: { name: string; to: string } | null,
 	alerts: Alert[],

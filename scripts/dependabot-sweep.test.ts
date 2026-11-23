@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
 	agentArgs,
 	agentChangeProblems,
+	breakingBumps,
 	bumpFromTitle,
 	classifyJob,
+	codeBlock,
 	decide,
+	dependabotNames,
+	hasReleaseNote,
+	manifestProblems,
+	metadataMajor,
 	parseResult,
 	releaseNote,
-	runtimeBumps,
 	sandboxArgs,
 	scrub,
 } from "./dependabot-sweep.mjs";
@@ -46,7 +51,9 @@ function facts(over: Record<string, unknown> = {}, pr = {}) {
 		},
 		commits: [BOT_COMMIT],
 		sweepShas: [],
-		runtimeBumps: [],
+		manifestProblems: [],
+		breaking: [],
+		agentEnabled: false,
 		checks: REQUIRED.map(pass),
 		required: REQUIRED,
 		runs: {},
@@ -115,17 +122,18 @@ describe("decide", () => {
 		expect(decide(facts({ commits: [] })).type).toBe("owner");
 	});
 
-	it("trusts the sweep's own pushed commits", () => {
+	it("never merges a PR carrying the sweep's own fix: the owner reviews it", () => {
 		const mine = {
 			sha: "c".repeat(40),
 			author: "owner",
 			committer: "owner",
 			verified: false,
 		};
-		expect(
-			decide(facts({ commits: [BOT_COMMIT, mine], sweepShas: [mine.sha] }))
-				.type,
-		).toBe("merge");
+		const d = decide(
+			facts({ commits: [BOT_COMMIT, mine], sweepShas: [mine.sha] }),
+		);
+		expect(d).toMatchObject({ type: "owner", key: `sweep-fix:${SHA}` });
+		expect(d.reason).toContain("ccccccc");
 	});
 
 	it("never merges workflow or release-script changes", () => {
@@ -141,11 +149,18 @@ describe("decide", () => {
 		}
 	});
 
-	it("never merges a breaking runtime dependency bump", () => {
-		const rb = [
-			{ name: "fastify", from: "^5.1.0", to: "^6.0.0", kind: "major" },
-		];
-		expect(decide(facts({ runtimeBumps: rb })).type).toBe("owner");
+	it("never merges a breaking bump of any dependency", () => {
+		const b = [{ name: "vitest", from: "^5.0.0", to: "^6.0.0", kind: "major" }];
+		expect(decide(facts({ breaking: b }))).toMatchObject({
+			type: "owner",
+			key: `major:${SHA}`,
+		});
+	});
+
+	it("never merges what isn't a plain manifest update", () => {
+		expect(
+			decide(facts({ manifestProblems: ["it changes more than x"] })),
+		).toMatchObject({ type: "owner", key: `manifest:${SHA}` });
 	});
 
 	it("asks Dependabot to rebase once per head commit", () => {
@@ -219,7 +234,9 @@ describe("decide", () => {
 			type: "rerun",
 			runIds: ["77"],
 		});
-		expect(decide(facts(failedRun("Run pnpm test", 2)))).toMatchObject({
+		expect(
+			decide(facts({ ...failedRun("Run pnpm test", 2), agentEnabled: true })),
+		).toMatchObject({
 			type: "agent",
 			failure: { runId: "77", jobId: "88" },
 		});
@@ -231,13 +248,29 @@ describe("decide", () => {
 			"Run pnpm typecheck",
 			"Run pnpm install --frozen-lockfile",
 		]) {
-			expect(decide(facts(failedRun(s))).type).toBe("agent");
+			expect(decide(facts({ ...failedRun(s), agentEnabled: true })).type).toBe(
+				"agent",
+			);
 		}
+	});
+
+	it("asks the owner instead of the agent while the agent is off (the default)", () => {
+		for (const f of [failedRun("Run pnpm lint"), failedRun("Run pnpm test", 2)])
+			expect(decide(facts(f))).toMatchObject({
+				type: "owner",
+				key: `ci:${SHA}`,
+			});
 	});
 
 	it("tries the agent once per head commit", () => {
 		expect(
-			decide(facts({ ...failedRun("Run pnpm lint"), agentTried: true })),
+			decide(
+				facts({
+					...failedRun("Run pnpm lint"),
+					agentTried: true,
+					agentEnabled: true,
+				}),
+			),
 		).toMatchObject({
 			type: "owner",
 			key: `agent:${SHA}`,
@@ -288,8 +321,8 @@ describe("classifyJob", () => {
 	});
 });
 
-describe("runtimeBumps", () => {
-	it("flags breaking and new runtime dependencies, not dev ones", () => {
+describe("breakingBumps", () => {
+	it("flags breaking and new dependencies, dev ones too", () => {
 		const base = {
 			dependencies: { a: "^1.2.0", b: "^0.3.1", c: "^2.0.0" },
 			devDependencies: { v: "^1.0.0" },
@@ -299,8 +332,120 @@ describe("runtimeBumps", () => {
 			devDependencies: { v: "^9.0.0" },
 		};
 		expect(
-			runtimeBumps(base, head).map((x: { name: string }) => x.name),
-		).toEqual(["a", "b", "d"]);
+			breakingBumps(base, head).map((x: { name: string }) => x.name),
+		).toEqual(["a", "b", "d", "v"]);
+	});
+	it("reads Dependabot's semver-major metadata", () => {
+		expect(
+			metadataMajor([
+				"Bump x\n---\nupdated-dependencies:\n- dependency-name: x\n  update-type: version-update:semver-major\n",
+			]),
+		).toBe(true);
+		expect(metadataMajor(["update-type: version-update:semver-patch"])).toBe(
+			false,
+		);
+	});
+});
+
+describe("manifestProblems", () => {
+	const base = {
+		name: "carbonless-review",
+		scripts: { test: "vitest" },
+		dependencies: { fastify: "^5.1.0" },
+		devDependencies: { dompurify: "^3.4.16" },
+	};
+	const head = {
+		...base,
+		devDependencies: { dompurify: "^3.4.17" },
+	};
+	const ok = {
+		files: ["package.json", "pnpm-lock.yaml"],
+		basePkg: base,
+		headPkg: head,
+		names: ["dompurify"],
+		addedLockLines: [
+			"  dompurify@3.4.17:",
+			"    resolution: {integrity: sha512-abc==}",
+		],
+	};
+	it("accepts a version bump of the named package", () => {
+		expect(manifestProblems(ok)).toEqual([]);
+		expect(
+			manifestProblems({
+				...ok,
+				files: ["pnpm-lock.yaml"],
+				names: ["glob"],
+				addedLockLines: [
+					"    resolution: {tarball: https://registry.npmjs.org/glob/-/glob-14.0.2.tgz}",
+				],
+			}),
+		).toEqual([]);
+	});
+	it("refuses other files", () => {
+		expect(
+			manifestProblems({ ...ok, files: [...ok.files, "src/server/x.ts"] }),
+		).toHaveLength(1);
+		expect(
+			manifestProblems({ ...ok, files: [...ok.files, ".npmrc"] }),
+		).toHaveLength(1);
+	});
+	it("refuses package.json changes beyond the named versions", () => {
+		for (const h of [
+			{ ...head, scripts: { test: "vitest", postinstall: "curl x | sh" } },
+			{ ...head, dependencies: { fastify: "^5.2.0" } },
+			{ ...head, devDependencies: { dompurify: "^3.4.17", evil: "1.0.0" } },
+		])
+			expect(manifestProblems({ ...ok, headPkg: h })).toHaveLength(1);
+		expect(manifestProblems({ ...ok, names: [] })).toHaveLength(2);
+		expect(manifestProblems({ ...ok, headPkg: null })).toHaveLength(1);
+	});
+	it("refuses lockfile sources other than the npm registry", () => {
+		for (const line of [
+			"    resolution: {tarball: https://evil.example/x.tgz}",
+			"    resolution: {tarball: http://registry.npmjs.org/x.tgz}",
+			"    resolution: {type: git, repo: https://github.com/a/b, commit: abc}",
+			"    version: link:../x",
+			"    version: file:x.tgz",
+			"  x@git+https://github.com/a/b.git:",
+		])
+			expect(manifestProblems({ ...ok, addedLockLines: [line] })).toHaveLength(
+				1,
+			);
+	});
+});
+
+describe("dependabotNames", () => {
+	it("takes the title's package and the commits' metadata", () => {
+		expect(
+			dependabotNames("Bump the dev group with 2 updates", [
+				'---\nupdated-dependencies:\n- dependency-name: vitest\n- dependency-name: "@types/node"\n',
+			]),
+		).toEqual(["vitest", "@types/node"]);
+		expect(dependabotNames("Bump dompurify from 3.4.16 to 3.4.17")).toEqual([
+			"dompurify",
+		]);
+	});
+});
+
+describe("hasReleaseNote", () => {
+	const note = "Release note: none (dependency update)";
+	it("finds the sweep's line or the description's own", () => {
+		expect(hasReleaseNote(`Bumps x.\n\n${note}\n`, note)).toBe(true);
+		expect(hasReleaseNote("Bumps x.\n\nRelease note (fixed): Y\n", note)).toBe(
+			true,
+		);
+	});
+	it("ignores Release note lines in quoted or folded upstream text", () => {
+		expect(
+			hasReleaseNote(
+				"Bumps x.\n<details>\n<summary>Release notes</summary>\nRelease note: none (upstream)\n</details>\n",
+				note,
+			),
+		).toBe(false);
+		expect(
+			hasReleaseNote("Bumps x.\n> Release note (new): from upstream\n", note),
+		).toBe(false);
+		expect(hasReleaseNote("Release notes\nRelease notesy", note)).toBe(false);
 	});
 });
 
@@ -347,6 +492,30 @@ describe("agent output", () => {
 		])
 			expect(s).not.toContain(bad);
 		expect(scrub("x".repeat(5000), 100).length).toBeLessThanOrEqual(100);
+	});
+	it("drops links, issue references, markdown and absolute paths; keeps repo paths", () => {
+		const s = scrub(
+			"see [docs](https://evil.example/x) ![i](http://x/y.png) www.evil.example closes #12 and acme/widget#7 in /tmp/abc and ~/x; `code` **b** fixed src/web/a.ts",
+		);
+		for (const bad of [
+			"http",
+			"evil.example",
+			"#12",
+			"acme/widget",
+			"/tmp",
+			"~/",
+			"`",
+			"*",
+			"!",
+		])
+			expect(s).not.toContain(bad);
+		expect(s).toContain("src/web/a.ts");
+	});
+	it("posts agent text as an inert code block", () => {
+		const b = codeBlock(scrub("x ``` y"));
+		expect(b.startsWith("```text\n")).toBe(true);
+		expect(b.endsWith("\n```")).toBe(true);
+		expect(b.slice(8, -4)).not.toContain("`");
 	});
 	it("treats an unreadable or odd result as cannot-fix", () => {
 		expect(parseResult("nope").status).toBe("cannot-fix");
