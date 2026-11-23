@@ -22,6 +22,7 @@ import {
 import type {
 	ClusterView,
 	CodeWindow,
+	DisplayHunk,
 	ReviewThread,
 	ReviewView,
 	Snapshot,
@@ -30,11 +31,13 @@ import { buildSnapshot } from "../diff/snapshot.js";
 import { RefStore } from "../review/refStore.js";
 import {
 	AgentConflictError,
+	type AgentGithub,
 	type AgentHost,
 	anchoredFile,
 	anchorHunk,
 	authorOf,
 	BadAnchorError,
+	BadReadError,
 	buildAgentHost,
 	CoverageError,
 	commentPostsOf,
@@ -54,6 +57,7 @@ import type {
 	PromptCodeEnvelope,
 	PromptPatchset,
 } from "./prompt.js";
+import { AgentDiffRequestError } from "./reads.js";
 import type { RunnerFacts } from "./runner.js";
 import { AgentThreadStore } from "./store.js";
 
@@ -258,6 +262,10 @@ describe("AgentHost with a session joined through MCP", () => {
 		| undefined;
 	/** The reviewer's coverage as the stub session reads it; unset: none. */
 	let coverage: SessionFacts["coverage"];
+	/** More of the stub session's facts (the agent's reads, CAR-182). */
+	let sessionExtra: Partial<SessionFacts>;
+	/** More of the stub GitHub side (threadsAt, placedAtHead). */
+	let githubExtra: Partial<AgentGithub>;
 	/** Runs (once) in place of the next single-thread read: a race's other side. */
 	let onThread: ((id: string) => Promise<ReviewThread | null>) | undefined;
 
@@ -288,8 +296,10 @@ describe("AgentHost with a session joined through MCP", () => {
 					if (!ghComments) throw new Error("gh: comments unreadable");
 					return ghComments(ids);
 				},
+				...githubExtra,
 			},
 			session: {
+				...sessionExtra,
 				facts,
 				viewer: "dan",
 				coverage: (target) => {
@@ -346,6 +356,8 @@ describe("AgentHost with a session joined through MCP", () => {
 		ghThread = null;
 		ghThreads = [];
 		coverage = undefined;
+		sessionExtra = {};
+		githubExtra = {};
 		host = make();
 	});
 	afterEach(async () => {
@@ -442,6 +454,161 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect(opened?.messages[0]?.origin).toEqual({
 				thread: t.id,
 				message: t.messages[0]?.id,
+			});
+		});
+
+		describe("agent reads (CAR-182)", () => {
+			const rebuild = async () => {
+				await host.close();
+				host = make();
+			};
+			const hunk = (n: number, text: string): DisplayHunk => ({
+				oldStart: 0,
+				oldCount: 0,
+				newStart: 1,
+				newCount: n,
+				lines: Array.from({ length: n }, (_, i) => ({
+					kind: "add" as const,
+					newNo: i + 1,
+					text,
+				})),
+			});
+
+			it("diff: once the budget is spent, the remaining files are named without being read", async () => {
+				const read: number[] = [];
+				const files = Array.from({ length: 50 }, (_, i) => ({
+					index: i,
+					path: `f${String(i).padStart(2, "0")}.txt`,
+					status: "added" as const,
+				}));
+				sessionExtra = {
+					diff: async () => ({
+						base: "c".repeat(40),
+						head: "d".repeat(40),
+						from: null,
+						to: null,
+						files,
+						hunks: async (index) => {
+							read.push(index);
+							// About 60k characters each: four fit the budget at most.
+							return {
+								hunks: [hunk(1500, "x".repeat(38))],
+								newLineCount: 1500,
+							};
+						},
+					}),
+				};
+				await rebuild();
+				const token = await approve();
+				const d = await host.sessionDiff(token, {});
+				// Every file is listed; the ones past the budget are named.
+				expect(d.files.map((f) => f.path)).toEqual(files.map((f) => f.path));
+				expect(d.omitted?.length).toBeGreaterThan(40);
+				// Only what could fit was read, plus the one that didn't.
+				expect(read.length).toBeLessThanOrEqual(5);
+				expect(d.files.filter((f) => f.diff !== "").length).toBe(
+					50 - (d.omitted?.length ?? 0),
+				);
+			});
+
+			it("diff: only the request's own faults are invalid; an internal error is unavailable", async () => {
+				let fail: Error = new AgentDiffRequestError("No patch set 9");
+				sessionExtra = {
+					diff: async () => {
+						throw fail;
+					},
+				};
+				await rebuild();
+				const token = await approve();
+				await expect(host.sessionDiff(token, { from: 9 })).rejects.toThrow(
+					BadReadError,
+				);
+				fail = new RangeError("No file 3 in this snapshot");
+				await expect(host.sessionDiff(token, {})).rejects.toThrow(
+					CoverageError,
+				);
+				await expect(host.sessionDiff(token, {})).rejects.not.toBeInstanceOf(
+					BadReadError,
+				);
+			});
+
+			it("review: a thread the placing didn't cover, or a resolved one whose placing failed, says so; never silently without atHead", async () => {
+				ghThreads = [
+					{
+						id: "PRRT_1",
+						path: "a.txt",
+						resolved: false,
+						line: 2,
+						author: "rev",
+						body: "a",
+					},
+					{
+						id: "PRRT_2",
+						path: "a.txt",
+						resolved: true,
+						line: 5,
+						author: "rev",
+						body: "b",
+					},
+					{
+						id: "PRRT_3",
+						path: "b.txt",
+						resolved: false,
+						line: 1,
+						author: "rev",
+						body: "c",
+					},
+				] as unknown as ReviewThread[];
+				ghComments = async () => new Map();
+				githubExtra = {
+					threadsAt: async () => ({
+						threads: ghThreads,
+						at: "2026-11-23T00:00:00Z",
+						readId: "r1",
+					}),
+					placedAtHead: async () => ({
+						placed: new Map([
+							[
+								"PRRT_1",
+								{
+									kind: "placed",
+									anchor: {
+										path: "a.txt",
+										side: "RIGHT",
+										startSide: "RIGHT",
+										startLine: 2,
+										line: 2,
+									},
+									changed: false,
+								},
+							],
+						]),
+						resolvedFailed: "git: boom",
+					}),
+				};
+				await rebuild();
+				const token = await approve();
+				const r = await host.sessionReview(token, true, true);
+				const by = (id: string) => r.threads?.find((t) => t.id === id)?.atHead;
+				expect(by("PRRT_1")).toMatchObject({ kind: "placed", line: 2 });
+				expect(by("PRRT_2")).toEqual({
+					kind: "unknown",
+					why: "resolved threads couldn't be placed (git: boom)",
+				});
+				expect(by("PRRT_3")).toEqual({
+					kind: "unknown",
+					why: "crb didn't place this thread",
+				});
+				// The placing failing outright: every thread says why.
+				githubExtra.placedAtHead = async () => {
+					throw new Error("placing failed");
+				};
+				await rebuild();
+				const again = await host.sessionReview(await approve(), true, true);
+				expect(again.placementsError).toBe("placing failed");
+				for (const t of again.threads ?? []) {
+					expect(t.atHead).toEqual({ kind: "unknown", why: "placing failed" });
+				}
 			});
 		});
 

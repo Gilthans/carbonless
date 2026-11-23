@@ -911,6 +911,37 @@ function interdiffFileAt(
 }
 
 /**
+ * What the since view shows of file `index` (the agent's `diff`, CAR-182):
+ * whether it changes it at all (the interdiff's clusters of it, lines or
+ * file-level, a cluster gone since, or a conflict: never the hunks'
+ * count, so a binary, submodule or mode change counts), the interdiff's file-level
+ * labels (as the page shows them) and its old path in the interdiff.
+ * RangeError for an index the answer hasn't.
+ */
+export function interdiffFileFacts(
+	traced: Traced,
+	answer: RereviewAnswer,
+	index: number,
+): { changed: boolean; labels: string[]; oldPath?: string } {
+	const { entry, file } = interdiffFileAt(traced, answer, index);
+	const labels = (file?.clusters ?? [])
+		.filter((c) => c.kind === "file" && c.label)
+		.map((c) => c.label as string);
+	// The interdiff's own change (lines or file-level), a cluster gone
+	// since, or a conflict. Not the clusters' kinds: an unchanged cluster
+	// with no mark to carry is `new` to the engine (to read), not changed.
+	const changed =
+		entry.conflict ||
+		(file?.clusters.length ?? 0) > 0 ||
+		entry.clusters.some((c) => c.kind === "gone");
+	return {
+		changed,
+		labels,
+		...(file?.oldPath !== undefined ? { oldPath: file.oldPath } : {}),
+	};
+}
+
+/**
  * The `<treeish>:<path>` name of one side of the since view's file at
  * `index`, from the same interdiff its hunks come from, so the two can't
  * drift apart: the old side is the virtual rebase's (`H1'`), or for a

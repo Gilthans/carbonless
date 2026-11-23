@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -34,8 +35,11 @@ export interface PrFixture {
 	mergeBase: string;
 	/** The PR's current head. */
 	head: () => string;
-	/** Pushes a commit onto the PR and points the fake gh at it. */
-	moveHead: (files: Record<string, string>) => string;
+	/** Pushes a commit onto the PR and points the fake gh at it (`executable`: paths made 0755). */
+	moveHead: (
+		files: Record<string, string | Buffer>,
+		opts?: { executable?: string[] },
+	) => string;
 	/** Moves main to `sha`, by default the PR head (as merging it would). */
 	moveMain: (sha?: string) => void;
 	/** Every gh call so far, one per line. */
@@ -129,7 +133,7 @@ export function createPrFixture(
 		repo,
 		mergeBase,
 		head: () => head,
-		moveHead: (files) => {
+		moveHead: (files, opts = {}) => {
 			const work = join(tmp, "work");
 			rmSync(work, { recursive: true, force: true });
 			execFileSync(
@@ -143,6 +147,9 @@ export function createPrFixture(
 			for (const [name, content] of Object.entries(files)) {
 				mkdirSync(dirname(join(work, name)), { recursive: true });
 				writeFileSync(join(work, name), content);
+			}
+			for (const name of opts.executable ?? []) {
+				chmodSync(join(work, name), 0o755);
 			}
 			const w = (...args: string[]) =>
 				execFileSync("git", args, {

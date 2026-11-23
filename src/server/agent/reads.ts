@@ -35,13 +35,24 @@ export interface AgentDiff {
 		oldPath?: string;
 		status?: FileStatus;
 		binary?: boolean;
+		/** File-level changes, as the page labels them (a mode, a binary file, a rename). */
+		changes?: string[];
+		/** The since view only: whether it changes the file (the engine's answer, not the hunks' count). */
+		changed?: boolean;
 	}[];
 	/** A file's display hunks, as the page gets them (the since view's: none when unchanged since). */
 	hunks(index: number): Promise<FileHunks>;
 }
 
+/** A `diff` request the agent made that can't be served as made (the tool's `invalid`). */
+export class AgentDiffRequestError extends Error {}
+
 /** A `diff` answer's text budget (characters of diff text, all files together). */
 export const MAX_DIFF_CHARS = 200_000;
+/** Below this much budget left, `diff` reads no more files: it names them (`omitted`). */
+export const MIN_FILE_BUDGET = 1_000;
+/** `file` refuses a blob over this many bytes, before reading it. */
+export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 /** A `file` answer's text budget (characters). */
 export const MAX_FILE_CHARS = 200_000;
 
@@ -69,6 +80,8 @@ export interface DiffFileOut extends DiffAnalysis {
 	oldPath?: string;
 	status?: FileStatus;
 	binary?: true;
+	/** File-level changes, as the page labels them (a mode, a binary file, a rename). */
+	changes?: string[];
 	/** Unified diff text of the hunks given (git's order); "" for none. */
 	diff: string;
 	/** Hunks in the file (all of them, given or not). */
@@ -104,14 +117,23 @@ export function hunkText(hunk: DisplayHunk): string {
 	return [header, ...lines].join("\n");
 }
 
-/** The page's analysis of these hunks: whitespace twins and line pairs. */
-export function analyse(hunks: readonly DisplayHunk[]): DiffAnalysis {
+/**
+ * The page's analysis of these hunks: whitespace twins and line pairs,
+ * computed on the whole hunks as the page does; with `shown`, only the
+ * lines in it are reported (a cut hunk's).
+ */
+export function analyse(
+	hunks: readonly DisplayHunk[],
+	shown?: ReadonlySet<DiffLine>,
+): DiffAnalysis {
+	const keep = (l: DiffLine) => !shown || shown.has(l);
 	const wsOld: number[] = [];
 	const wsNew: number[] = [];
 	const pairs: [number, number][] = [];
 	for (const hunk of hunks) {
 		// The page's `~` rows: the display hunk's one matching.
 		for (const line of matchDisplayHunk(hunk.lines).keys()) {
+			if (!keep(line)) continue;
 			if (line.kind === "del" && line.oldNo !== undefined)
 				wsOld.push(line.oldNo);
 			if (line.kind === "add" && line.newNo !== undefined)
@@ -123,6 +145,7 @@ export function analyse(hunks: readonly DisplayHunk[]): DiffAnalysis {
 			line,
 		}));
 		for (const [del, add] of hunkPairs(rows)) {
+			if (!keep(del) || !keep(add)) continue;
 			if (del.oldNo !== undefined && add.newNo !== undefined) {
 				pairs.push([del.oldNo, add.newNo]);
 			}
@@ -136,9 +159,11 @@ export function analyse(hunks: readonly DisplayHunk[]): DiffAnalysis {
 
 /**
  * One file's hunks from `fromHunk` on, whole hunks while they fit `budget`
- * characters; with `cutFirst`, a first hunk alone over it is cut (it ends
- * with a marker and `nextHunk` points past it). Returns the text, the
- * hunks given, the characters used and the first hunk left out.
+ * characters; with `cutFirst`, a first hunk alone over it is cut at a
+ * line (it ends with a marker, `shown` holds the lines given, and
+ * `nextHunk` points past it). `since`: the since view's marker (its old
+ * side is no commit `file` reads). Returns the text, the hunks given, the
+ * characters used and the first hunk left out.
  */
 export function fileDiff(
 	file: FileHunks,
@@ -146,11 +171,13 @@ export function fileDiff(
 	budget: number,
 	/** Cut a first hunk that alone is over the budget (else it is left for later). */
 	cutFirst = true,
+	since = false,
 ): {
 	text: string;
 	given: DisplayHunk[];
 	used: number;
 	nextHunk?: number;
+	shown?: Set<DiffLine>;
 } {
 	const parts: string[] = [];
 	const given: DisplayHunk[] = [];
@@ -160,19 +187,27 @@ export function fileDiff(
 		const text = hunkText(hunk);
 		const cost = text.length + 1;
 		if (used + cost > budget) {
-			if (given.length === 0 && cutFirst && budget > 200) {
-				// One hunk too big for the whole budget: cut, and say so.
-				const cut = text.slice(0, Math.max(0, budget - 200));
-				const cutLines = cut.slice(0, cut.lastIndexOf("\n"));
-				parts.push(
-					`${cutLines}\n[truncated: hunk ${i} is too long; read the rest of the file with the file tool]`,
-				);
+			if (given.length === 0 && cutFirst && budget > 400) {
+				// One hunk too big for the whole budget: cut at a line, say so.
+				const room = budget - 300;
+				let size = hunkText({ ...hunk, lines: [] }).length;
+				const shown: DiffLine[] = [];
+				for (const l of inGitOrder(hunk.lines)) {
+					const n = l.text.length + 2 + (l.noNewline ? 30 : 0);
+					if (size + n > room) break;
+					shown.push(l);
+					size += n;
+				}
+				const marker = since
+					? `[truncated: hunk ${i} is too long; read the rest of its new side with the file tool at the compared head (its old side is the earlier patch set rebased, which no commit holds)]`
+					: `[truncated: hunk ${i} is too long; read the rest with the file tool]`;
+				parts.push(`${hunkText({ ...hunk, lines: shown })}\n${marker}`);
 				given.push(hunk);
-				used = budget;
 				return {
 					text: parts.join("\n"),
 					given,
-					used,
+					used: budget,
+					shown: new Set(shown),
 					...(i + 1 < file.hunks.length ? { nextHunk: i + 1 } : {}),
 				};
 			}
@@ -206,7 +241,9 @@ export type AtHead =
 			near: { side: DiffSide; line: number } | null;
 	  }
 	/** Its file isn't in the comparison (why: `fate`). */
-	| { kind: "outside"; path: string; fate: string };
+	| { kind: "outside"; path: string; fate: string }
+	/** crb couldn't place it now (why): never a guess. */
+	| { kind: "unknown"; why: string };
 
 /** A page placement as the agent reads it (paths sanitised by `s`). */
 export function atHead(
@@ -250,9 +287,9 @@ export function isReadablePath(path: string): boolean {
 	);
 }
 
-/** One window of a text file's lines (1-based, inclusive), within MAX_FILE_CHARS. */
+/** One window of a text file's lines (1-based, inclusive; git's lines, as decodeLines splits them), within MAX_FILE_CHARS. */
 export function fileWindow(
-	text: string,
+	all: readonly string[],
 	startLine: number,
 	endLine: number | undefined,
 	budget = MAX_FILE_CHARS,
@@ -263,9 +300,6 @@ export function fileWindow(
 	text: string;
 	nextLine?: number;
 } {
-	const all = text.split("\n");
-	// A final newline ends the last line; it doesn't start another.
-	if (all.length > 0 && all.at(-1) === "") all.pop();
 	const lines = all.length;
 	const from = Math.min(Math.max(1, startLine), Math.max(1, lines));
 	const to = Math.min(endLine ?? lines, lines);

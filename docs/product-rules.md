@@ -877,22 +877,34 @@ question would be on someone else's behalf, or about a past moment.
   the agent's reply (`crb:c/<id>`) links only a conversation of this
   review, labelled by crb, never with an href the agent wrote.
 - **The agent reads the review as the reviewer sees it, and only reads
-  (CAR-182).** crb's MCP `diff`, `file`, `progress` and `review` are
-  read-only and serve crb's clone and caches, never the reviewer's
-  working copy, the same for a spawned and a joined agent. `diff` gives
-  the full diff, the since view from a patch set (`"last"`: the page's
-  default since view, `review`'s `sinceLast`) or a patch set's own diff,
-  with the page's own analysis (whitespace-only lines, paired lines;
-  never a second computation, so the agent agrees with the page). crb
-  detects no moved blocks yet, and `diff` says so rather than guess. What
-  doesn't fit its budget is named (`omitted`, `nextHunk`), never dropped;
-  a since view crb can't build, or a file it can't read, is an error,
-  never an empty diff. `file` reads only the review's own commits (base,
-  merge base, head, the PR's head, a patch set's head or merge base),
-  paths checked (relative, no `..`, never an option). `review`'s
-  threads carry `atHead`, the page's placement on the review's head, or
-  why none (`unplaced` with its fate, `placementsError`): GitHub's line
-  is kept beside it, never offered as where the thread is now.
+  (CAR-182).** crb's MCP `diff`, `file`, `progress` and `review` serve
+  crb's clone and caches, never the reviewer's working copy, the same for
+  a spawned and a joined agent. They write no review mark, agent thread
+  or resolved state. One write can happen, the page's own: building a
+  patch set's snapshot for a read may run the split carry the page runs
+  when it opens that patch set (#carrySplits), which carries the
+  reviewer's own marks on a whole hunk onto its pieces and never marks
+  anything the reviewer didn't; the agent and the page then see the
+  same pieces. `diff` gives the full diff of the review's head, of a
+  patch set, or of the PR's head (`to: "head"`, the page's head dot),
+  and the since view from a patch set (`"last"`: the newest before the
+  compared head, the page's default; `"last"` to `"head"` is what the
+  author pushed since the reviewer's last pass), with the page's own
+  analysis (whitespace-only lines, paired lines with "Ignore whitespace"
+  off; never a second computation) and file-level changes by the page's
+  labels (a mode, a binary file). The since view lists every file its
+  engine says it changes, never deciding from the hunks' count. crb
+  detects no moved blocks yet, and `diff` says so rather than guess.
+  Past its budget, the remaining files are named (`omitted`) without
+  being read; a since view crb can't build, or a file it can't read, is
+  an error, never an empty diff. `file` reads only commits `review`
+  names (base, merge base, head, the PR's head, a patch set's head or
+  merge base), paths checked (relative, no `..`, never an option),
+  refuses a blob over 4 MiB before reading it, and decodes as the page
+  does (UTF-8, else latin1). `review`'s threads each carry `atHead`, the
+  page's placement on the review's head, or `unknown` with why (never
+  absent); GitHub's line is kept beside it, never offered as where the
+  thread is now.
 - **A question never waits on the agent to be sent.** Ask agent writes
   the thread at once; it waits (yellow) until an agent answers, whether
   none is set up, it is starting, busy, crashed or elsewhere.

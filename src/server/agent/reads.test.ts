@@ -112,8 +112,37 @@ describe("agent reads", () => {
 		expect(part.nextHunk).toBe(1);
 	});
 
+	it("fileDiff: a cut hunk's analysis covers only the lines it shows; the since view's marker says its old side can't be read", () => {
+		// 60 edited lines, each paired with its old one.
+		const lines: DiffLine[] = [
+			...Array.from({ length: 60 }, (_, i) => del(i + 1, `value ${i} = old`)),
+			...Array.from({ length: 60 }, (_, i) => add(i + 1, `value ${i} = new`)),
+		];
+		const big: DisplayHunk = {
+			oldStart: 1,
+			oldCount: 60,
+			newStart: 1,
+			newCount: 60,
+			lines,
+		};
+		const part = fileDiff(file([big]), 0, 1800, true, true);
+		expect(hunkText(big).length).toBeGreaterThan(1800);
+		const a = analyse(part.given, part.shown);
+		const shownAdds = new Set(
+			[...(part.shown ?? [])]
+				.filter((l) => l.kind === "add")
+				.map((l) => l.newNo),
+		);
+		expect(a.pairs.length).toBeGreaterThan(0);
+		expect(a.pairs.length).toBeLessThan(60);
+		for (const [, n] of a.pairs) expect(shownAdds.has(n)).toBe(true);
+		expect(part.text).toMatch(/old side is the earlier patch set rebased/);
+		// The whole hunk, uncut: all 60.
+		expect(analyse([big]).pairs).toHaveLength(60);
+	});
+
 	it("fileWindow: a window of lines within the budget; nextLine for the rest; a long line is cut", () => {
-		const text = "one\ntwo\nthree\nfour\n";
+		const text = ["one", "two", "three", "four"];
 		expect(fileWindow(text, 2, 3)).toEqual({
 			lines: 4,
 			startLine: 2,
@@ -127,7 +156,7 @@ describe("agent reads", () => {
 			text: "one\ntwo",
 			nextLine: 3,
 		});
-		const long = fileWindow(`${"y".repeat(500)}\nz\n`, 1, undefined, 200);
+		const long = fileWindow(["y".repeat(500), "z"], 1, undefined, 200);
 		expect(long.text.split("\n")).toEqual([
 			expect.stringMatching(/^y{100} \[truncated: line 1 is too long\]$/),
 			"z",

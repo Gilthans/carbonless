@@ -14,7 +14,7 @@ import { REVIEW_PREAMBLE } from "../../shared/agent";
 import type { FileHunks, ReviewView } from "../../shared/types";
 import { whitespaceLines } from "../../shared/whitespace";
 import { hunkView } from "../../web/files/whitespace";
-import { MAX_DIFF_CHARS } from "../agent/reads";
+import { MAX_DIFF_CHARS, MAX_FILE_BYTES } from "../agent/reads";
 import { buildApp } from "../app";
 import { SessionRegistry } from "../registry";
 
@@ -27,6 +27,8 @@ type DiffFile = {
 	path: string;
 	oldPath?: string;
 	status?: string;
+	binary?: boolean;
+	changes?: string[];
 	diff: string;
 	hunks: number;
 	whitespaceOnly: { LEFT: Ranges; RIGHT: Ranges };
@@ -190,9 +192,11 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 		expect(REVIEW_PREAMBLE).toContain("`file`");
 	});
 
-	it("diff: the review's full diff from crb's clone, as unified text per file; it writes nothing", async () => {
+	it("diff: the review's full diff from crb's clone, as unified text per file; the read writes no review marks or agent threads", async () => {
 		const s = await joined();
 		const stored = await refs();
+		const before = await view();
+		const threadsBefore = (await api("/agent/threads")).json();
 		const d = (await s.ok("diff")) as unknown as Diff;
 		expect(d.comparison).toEqual({
 			base: pr.mergeBase,
@@ -221,6 +225,15 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 		// One file by path.
 		const one = (await s.ok("diff", { path: "new.txt" })) as unknown as Diff;
 		expect(one.files.map((f) => f.path)).toEqual(["new.txt"]);
+		// No review marks, no agent threads, nothing resolved by the read.
+		const after = await view();
+		expect(after.progress).toEqual(before.progress);
+		expect(after.files.map((f) => f.clusters.map((c) => c.state))).toEqual(
+			before.files.map((f) => f.clusters.map((c) => c.state)),
+		);
+		expect((await api("/agent/threads")).json()).toEqual(threadsBefore);
+		// This fixture has no split hunk for the page's split carry
+		// (#carrySplits) to carry the reviewer's marks onto: no ref moved.
 		expect(await refs()).toBe(stored);
 	});
 
@@ -348,11 +361,19 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 			"big.txt",
 			"new.txt",
 		]);
-		expect(all.omitted).toEqual(["big.txt"]);
+		// big.txt doesn't fit: the budget is spent, and every file after it
+		// is named without being read.
+		expect(all.omitted).toEqual(["big.txt", "new.txt"]);
 		const left = all.files.find((f) => f.path === "big.txt");
 		expect(left).toMatchObject({ diff: "", hunks: 1, nextHunk: 0 });
-		// Every other file is whole.
-		expect(all.files.find((f) => f.path === "new.txt")?.diff).toContain("+new");
+		expect(all.files.find((f) => f.path === "new.txt")).toMatchObject({
+			diff: "",
+			nextHunk: 0,
+		});
+		// The file before it is whole.
+		expect(all.files.find((f) => f.path === "a.txt")?.diff).toContain(
+			"+line 2 changed",
+		);
 		const one = (await s.ok("diff", { path: "big.txt" })) as unknown as Diff;
 		const text = one.files[0]?.diff ?? "";
 		expect(text.length).toBeLessThanOrEqual(MAX_DIFF_CHARS);
@@ -525,5 +546,100 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 		// Never put back on GitHub's original line as if it still stood there.
 		expect(outdated?.atHead).toMatchObject({ kind: "unplaced", path: "a.txt" });
 		expect(outdated?.atHead?.fate).toEqual(expect.any(String));
+	});
+
+	it("since view: a binary change and a mode change between patch sets are listed with the page's labels, never counted unchanged", async () => {
+		pr.moveHead({ "bin.dat": "\u0000\u0001one", "run.sh": "echo hi\n" });
+		await refresh();
+		const first = await view();
+		await mark(first, keyOf(first, "a.txt"));
+		const h2 = pr.moveHead(
+			{ "bin.dat": "\u0000\u0002two", "run.sh": "echo hi\n" },
+			{ executable: ["run.sh"] },
+		);
+		await refresh();
+		const atHead = await view(`?head=${h2}`);
+		await mark(atHead, keyOf(atHead, "bin.dat"));
+		expect((await view("?patchset=2")).patchset).toBe(2);
+		const s = await joined();
+		const d = (await s.ok("diff", { from: 1, to: 2 })) as unknown as Diff & {
+			files: (DiffFile & { changes?: string[]; binary?: boolean })[];
+		};
+		const paths = d.files.map((f) => f.path);
+		expect(paths).toEqual(["bin.dat", "run.sh"]);
+		const bin = d.files.find((f) => f.path === "bin.dat");
+		const sh = d.files.find((f) => f.path === "run.sh");
+		expect(bin?.binary).toBe(true);
+		expect(bin?.changes?.length).toBeGreaterThan(0);
+		expect(sh?.changes?.join(" ")).toMatch(/mode/i);
+		// a.txt and new.txt only.
+		expect(d.unchanged).toBe(2);
+	});
+
+	it("full diff: a mode change on a changed file comes with the page's label", async () => {
+		const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+		lines[1] = "line 2 changed";
+		lines[25] = "line 26 changed";
+		// The same text, now executable: a mode change against the base.
+		pr.moveHead(
+			{ "a.txt": `${lines.join("\n")}\n` },
+			{ executable: ["a.txt"] },
+		);
+		await refresh();
+		const s = await joined();
+		const d = (await s.ok("diff", { path: "a.txt" })) as unknown as Diff;
+		expect(d.files[0]?.changes?.join(" ")).toMatch(/mode/i);
+		expect(d.files[0]?.hunks).toBe(2);
+	});
+
+	it("a push after the reviewer's last pass: review names the PR's head, and diff from 'last' to 'head' shows only what the push changed", async () => {
+		const { h2 } = await twoPatchsets();
+		const h3 = pr.moveHead({ "c.txt": "c\n" });
+		await refresh();
+		const s = await joined();
+		const r = (await s.ok("review")).review as Record<string, unknown>;
+		expect(r).toMatchObject({
+			head: { commit: h2 },
+			headPatchset: 2,
+			lastReviewed: 2,
+			prHead: { commit: h3, newer: true },
+		});
+		const d = (await s.ok("diff", {
+			from: "last",
+			to: "head",
+		})) as unknown as Diff;
+		expect(d.comparison).toEqual({ base: h2, head: h3, from: 2, to: null });
+		expect(d.files.map((f) => f.path)).toEqual(["c.txt"]);
+		expect(d.files[0]?.diff).toBe("@@ -0,0 +1,1 @@\n+c");
+		// The head's own full diff has every file.
+		const full = (await s.ok("diff", { to: "head" })) as unknown as Diff;
+		expect(full.comparison).toMatchObject({ head: h3, from: null });
+		expect(full.files.map((f) => f.path)).toEqual([
+			"a.txt",
+			"b.txt",
+			"c.txt",
+			"new.txt",
+		]);
+		// file reads the PR's head, which review names.
+		const f = await s.ok("file", { path: "c.txt", commit: h3 });
+		expect(f.text).toBe("c");
+	});
+
+	it("file refuses a file over its size cap before reading it, and decodes as the page does", async () => {
+		const big = "z".repeat(MAX_FILE_BYTES + 1);
+		// Not valid UTF-8: the page shows it as latin1.
+		pr.moveHead({
+			"huge.txt": big,
+			"latin.txt": Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]),
+		});
+		await refresh();
+		const s = await joined();
+		const r = await s.refused("file", { path: "huge.txt" });
+		expect(r).toMatchObject({
+			error: "not-found",
+			message: expect.stringContaining("cap"),
+		});
+		const ok = await s.ok("file", { path: "latin.txt" });
+		expect(ok.text).toBe("caf\u00e9");
 	});
 });
