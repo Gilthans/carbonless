@@ -551,4 +551,41 @@ describe("buildReviewView and renderers", () => {
 			buildReviewView(snap, progress({ s1a: "reviewed" })).progress,
 		);
 	});
+
+	it("a Markdown file's renderer state (its pick, Rendered's blocks) never marks anything", () => {
+		// CAR-167: the Rendered view only shows the clusters; the picks
+		// (`rendererPicks`), a "markdown" renderer's key, a block's index:
+		// none is a review state.
+		const md = file(2, "README.md", [cluster("m2a", 2), cluster("m2b", 3)]);
+		const view = buildReviewView(
+			snapshot([md]),
+			progress({
+				"README.md": "reviewed",
+				"file:README.md": "reviewed",
+				"markdown:2": "reviewed",
+				markdown: "reviewed",
+				rendererPicks: "reviewed",
+				"block:0": "reviewed",
+				m2a: "reviewed",
+			}),
+		);
+		const [shown] = view.files;
+		expect(shown?.clusters.map((c) => c.state)).toEqual([
+			"reviewed",
+			"unreviewed",
+		]);
+		expect(shown?.done).toBe(false);
+		const json = JSON.stringify(view);
+		for (const forged of ["markdown:2", "rendererPicks", "block:0"]) {
+			expect(json).not.toContain(forged);
+		}
+		// The same file at a path no renderer claims folds the same.
+		const plain = buildReviewView(
+			snapshot([file(2, "README.txt", [cluster("m2a", 2), cluster("m2b", 3)])]),
+			progress({ m2a: "reviewed" }),
+		);
+		expect(plain.files.map(({ path, ...rest }) => rest)).toEqual(
+			view.files.map(({ path, ...rest }) => rest),
+		);
+	});
 });

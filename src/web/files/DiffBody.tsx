@@ -2142,7 +2142,8 @@ export function DiffBody(props: {
 	linesHidden?: boolean;
 	/**
 	 * With `linesHidden`: another renderer shows the lines (Markdown's
-	 * Rendered view), and says itself what the since view has to read.
+	 * Rendered view), and says itself what the since view has to read; it
+	 * shows the line comments being written too.
 	 */
 	linesElsewhere?: boolean;
 }) {
@@ -2406,9 +2407,12 @@ export function DiffBody(props: {
 			})
 		: null;
 	// Written on a row that isn't shown (a gap): above the diff, never lost.
-	const unshown = hunks.data
-		? lineItems.filter((_, i) => !placement?.spansShown.has(i))
-		: [];
+	// With the lines shown elsewhere (Markdown's Rendered view), that view
+	// shows them, under the block holding their line.
+	const unshown =
+		hunks.data && !props.linesElsewhere
+			? lineItems.filter((_, i) => !placement?.spansShown.has(i))
+			: [];
 	const [openThreads, setOpenThreads] = useState<ReadonlySet<LineKey>>(
 		() => new Set(),
 	);

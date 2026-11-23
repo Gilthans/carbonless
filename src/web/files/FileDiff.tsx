@@ -698,12 +698,15 @@ export function FileDiff(props: {
 	);
 	const resolved = resolveRenderer(viewed, rendererPicks.use(file.path));
 	// A line target (a find's step, a thread link) shows the file as Text
-	// for the view: Image has no lines, and the Rendered view doesn't land
-	// on lines yet; so does a document Rendered can't show whole.
+	// for the view: Image has no lines. The Rendered view takes a find's
+	// step on its block itself, and asks for Text (`onShowText`) only for a
+	// hit its rendered text doesn't show (a link's URL); a thread link
+	// still lands on its exact line in Text, as does a document Rendered
+	// can't show whole.
 	const asText = useLineTargetText(
 		(resolved === "image" || resolved === "markdown") &&
 			rendererChoices(viewed).includes("text"),
-		props.find,
+		resolved === "markdown" ? undefined : props.find,
 		props.landing,
 	);
 	const renderer = asText.on ? "text" : resolved;
@@ -955,25 +958,35 @@ export function FileDiff(props: {
 		props.since === undefined
 			? undefined
 			: sinceSession?.patchsets.find((p) => p.number === props.since)?.head;
+	// The Rendered view shows every line (its document: the hunks and the
+	// file's unchanged lines), so its line threads are placed on them, each
+	// shown under the block holding its line (MarkdownView); only what no
+	// line of either side is stays in the header. Until the document is in,
+	// none is placed (the view shows its skeleton).
+	const documentIn =
+		markdown && hunks.data && (documentLength === 0 || documentLines.data)
+			? hunks.data
+			: null;
+	const placedHunks = markdown ? documentIn : hunkData;
 	const filePlacement = props.threads
 		? placeThreads({
 				threads: props.threads.threads,
 				path: file.path,
 				snapshotHead: props.threads.snapshotHead,
-				hunks: hunkData,
-				loadedContext: [],
-				noLines: file.binary || file.submodule || linesHidden,
+				hunks: placedHunks,
+				loadedContext: markdown && documentIn ? (documentLines.data ?? []) : [],
+				noLines: file.binary || file.submodule || (linesHidden && !markdown),
 				placements: props.threads.placements,
 				// The since view: as its DiffBody places them (LEFT through
 				// the full diff), so the header holds what no row can.
 				...(props.since === undefined
 					? {}
 					: {
-							sinceLeft: sinceLeft(file.clusters, hunkData?.hunks),
+							sinceLeft: sinceLeft(file.clusters, placedHunks?.hunks),
 							...(earlierHead === undefined
 								? {}
 								: {
-										sinceEarlier: sinceEarlier(earlierHead, hunkData?.hunks),
+										sinceEarlier: sinceEarlier(earlierHead, placedHunks?.hunks),
 										earlierPending: props.threads.earlierPending,
 									}),
 						}),
@@ -1147,6 +1160,7 @@ export function FileDiff(props: {
 	// for a find step or a thread link.
 	const onHiddenLine = (id: string) =>
 		linesHidden &&
+		!markdown &&
 		asText.textable &&
 		(header.some((h) => h.reason === "unplaced" && h.thread.id === id) ||
 			agentHeader.some(
@@ -1525,6 +1539,8 @@ export function FileDiff(props: {
 						onToggle={toggle}
 						onCrossOff={crossOff}
 						threads={props.threads}
+						placement={filePlacement}
+						headSure={props.headSure}
 						find={props.find}
 						landing={props.landing}
 						view={viewSwitch(false)}

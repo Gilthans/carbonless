@@ -185,6 +185,13 @@ function pointIn(
 	return { col: Math.min(head.toString().length, len), where: "in" };
 }
 
+/** What a span's end needs of a cell: its line, and the since view's numbers for it. */
+export type SpanCell = Pick<
+	CellLine,
+	"path" | "side" | "line" | "base" | "ps"
+> &
+	Partial<CellLine>;
+
 /** Whether the cell's line is in GitHub's diff (a hunk's, not expanded context). */
 export const inHunk = (c: Pick<CellLine, "hunk">) => c.hunk.startsWith("h");
 
@@ -196,8 +203,8 @@ export const inHunk = (c: Pick<CellLine, "hunk">) => c.hunk.startsWith("h");
  * (CAR-233).
  */
 export function spanOfCells(
-	start: CellLine,
-	end: CellLine,
+	start: SpanCell,
+	end: SpanCell,
 	commit: string,
 	cols?: { startCol: number; endCol: number },
 	earlier?: string,

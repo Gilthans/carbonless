@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Locator, Page, Route } from "@playwright/test";
 import {
 	expectNoPageOverflow,
@@ -7,7 +8,7 @@ import {
 	progress,
 	tapHeight,
 } from "./files-ui";
-import { expect, expectLoadingThen, test } from "./fixtures";
+import { expect, expectLoadingThen, type Pr, test } from "./fixtures";
 import { GREEN, png as pngImage, RED } from "./images";
 
 /*
@@ -394,5 +395,206 @@ test("the since view: one box per piece on its block; a tick in Rendered is the 
 	await expect(textBox(section, "Intro newer")).toBeChecked();
 	await viewButton(section, "Rendered").click();
 	await expect(renderedBox(section, "Intro")).toBeChecked();
+	await expectNoPageOverflow(page);
+});
+
+/*
+ * Comments and threads on blocks (CAR-167, spec "Comments" and "Threads"):
+ * a block's comment button comments on its last cluster's changed lines;
+ * the posted thread shows under that block; an unchanged block has no
+ * button; the file comment stays in the header. In the since view too.
+ */
+const COMMENTED = "docs/guide.md";
+const guide = (words: [string, string, string]) => `# Doc
+
+Para A
+
+Para B
+
+Para C
+
+Para D
+
+## Changes
+${words[0]} x
+${words[1]} y
+${words[2]} z
+
+Para F
+`;
+
+/** The GitHub threads the fake holds: where each was posted. */
+const postedThreads = (p: Pr) =>
+	(
+		(
+			JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {
+				prs: Record<
+					number,
+					{
+						graphql?: {
+							reviewThreads?: {
+								originalLine: number | null;
+								originalStartLine: number | null;
+								diffSide: string;
+								first: { nodes: { originalCommit: { oid: string } }[] };
+								comments: { nodes: { body: string }[] };
+							}[];
+						};
+					}
+				>;
+			}
+		).prs[p.number]?.graphql?.reviewThreads ?? []
+	).map((t) => ({
+		startLine: t.originalStartLine,
+		line: t.originalLine,
+		side: t.diffSide,
+		commit: t.first.nodes[0]?.originalCommit.oid,
+		body: t.comments.nodes[0]?.body ?? "",
+	}));
+
+/** Comments on `text`'s block from its button; the thread shows under it. */
+async function commentOnBlock(section: Locator, text: string, body: string) {
+	const row = block(section, text);
+	await row.getByRole("button", { name: "Comment on block" }).click();
+	const composer = row.getByTestId("new-thread");
+	await expect(composer).toContainText("lines 12–14, new");
+	await composer.getByRole("textbox", { name: "Comment" }).fill(body);
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(row.getByTestId("new-thread")).toHaveCount(0);
+	await expect(
+		row.getByTestId("files-thread").filter({ hasText: body }),
+	).toBeVisible(GIT_WAIT);
+}
+
+test("a block's comment goes on its last cluster's changed lines and its thread shows under the block; an unchanged block has none; the file comment stays in the header", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [COMMENTED]: guide(["First old", "second old", "third old"]) },
+		files: [
+			{
+				message: "docs",
+				files: {
+					[COMMENTED]: guide(["First new", "second new", "third new"]),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await openRendered(page, COMMENTED);
+	// Unchanged blocks take no comment (GitHub takes them only in the diff).
+	await expect(
+		block(section, "Para F").getByRole("button", { name: "Comment on block" }),
+	).toHaveCount(0);
+	await expect(
+		block(section, "Changes").getByRole("button", { name: "Comment on block" }),
+	).toHaveCount(0);
+	// The file's own bubble is in the header, not on a block.
+	await expect(
+		section.locator('[data-testid="thread-bubble"][data-file]'),
+	).toHaveCount(1);
+	await expect(
+		section
+			.getByTestId("md-doc")
+			.locator('[data-testid="thread-bubble"][data-file]'),
+	).toHaveCount(0);
+	if (isMobile) {
+		const button = block(section, "second").getByRole("button", {
+			name: "Comment on block",
+		});
+		expect(await tapHeight(button)).toBeGreaterThanOrEqual(40);
+	}
+	// The changed paragraph (its words marked: "First oldnew x").
+	await commentOnBlock(section, "second", "Why these three?");
+	expect(postedThreads(p)).toEqual([
+		expect.objectContaining({
+			startLine: 12,
+			line: 14,
+			side: "RIGHT",
+			commit: p.head(),
+			body: expect.stringContaining("Why these three?"),
+		}),
+	]);
+	// After a reload, under its block, behind its bubble.
+	await page.reload();
+	const again = fileSection(page, COMMENTED);
+	const expand = again.getByRole("button", { name: "Expand file" });
+	await expect(expand.or(again.getByTestId("md-doc"))).toBeVisible(GIT_WAIT);
+	if (await expand.isVisible()) await expand.click();
+	const bubble = block(again, "second").getByTestId("thread-bubble");
+	await expect(bubble).toBeVisible(GIT_WAIT);
+	await bubble.click();
+	await expect(
+		block(again, "second")
+			.getByTestId("files-thread")
+			.filter({ hasText: "Why these three?" }),
+	).toBeVisible();
+	await shot(again, `markdown-comment-${isMobile ? "phone" : "desktop"}`);
+	await expectNoPageOverflow(page);
+});
+
+test("the since view: a block's comment goes on the head's changed lines and shows under the block", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		base: { [COMMENTED]: guide(["First old", "second old", "third old"]) },
+		files: [
+			{
+				message: "docs",
+				files: {
+					[COMMENTED]: guide(["First new", "second new", "third new"]),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	let section = await openRendered(page, COMMENTED);
+	await marksReady(page, section);
+	await section
+		.getByRole("button", { name: "Mark remaining reviewed" })
+		.click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({
+		message: "rework",
+		files: {
+			[COMMENTED]: guide(["First newer", "second newer", "third newer"]),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	section = fileSection(page, COMMENTED);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.getByTestId("md-doc")).toBeVisible(GIT_WAIT);
+	await shownAs(section, "markdown");
+	await commentOnBlock(section, "second", "And now?");
+	expect(postedThreads(p)).toEqual([
+		expect.objectContaining({
+			startLine: 12,
+			line: 14,
+			side: "RIGHT",
+			commit: p.head(),
+			body: expect.stringContaining("And now?"),
+		}),
+	]);
 	await expectNoPageOverflow(page);
 });

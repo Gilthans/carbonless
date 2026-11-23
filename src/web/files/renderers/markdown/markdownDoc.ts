@@ -1,10 +1,15 @@
-import { type LineRanges, normalize } from "../../../../shared/lineRanges";
+import {
+	type LineRanges,
+	normalize,
+	size,
+} from "../../../../shared/lineRanges";
 import {
 	blockOfLine,
 	type MdBlock,
 	markdownBlocks,
 } from "../../../../shared/markdownBlocks";
 import type { DiffLine, FileHunks } from "../../../../shared/types";
+import type { SpanRange } from "../../../threads/spanMarks";
 
 /**
  * The Rendered view's document (CAR-167): which blocks show, in what order,
@@ -412,4 +417,91 @@ export function clusterLines(c: {
 		new:
 			c.newCount > 0 ? normalize([[c.newStart, c.newStart + c.newCount]]) : [],
 	};
+}
+
+/** A unit on a block, for its comment: its lines, and whether it is whitespace only. */
+export interface CommentUnit {
+	old: LineRanges;
+	new: LineRanges;
+	ws?: boolean;
+}
+
+/**
+ * What a block's comment button comments on (the owner, 2026-11-22: "all
+ * the changed lines in the last cluster of the block"): the last unit's
+ * changed lines, `startLine..line`, on the new side; on the old side when
+ * that unit only removes lines. A whitespace-only unit is the last only
+ * when the block has no other. `units` are the block's, in source order
+ * (a full-diff cluster or a since piece each), numbered as the view
+ * numbers its rows; null for a block with none (an unchanged block takes
+ * no comment: GitHub takes line comments only inside the diff).
+ */
+export function blockCommentSpan(
+	units: readonly CommentUnit[],
+): SpanRange | null {
+	const real = units.filter((u) => !u.ws);
+	const last = (real.length > 0 ? real : units).at(-1);
+	if (!last) return null;
+	const pick = size(last.new) > 0 ? last.new : last.old;
+	const first = pick[0];
+	const end = pick.at(-1);
+	if (!first || !end) return null;
+	const side = pick === last.new ? "RIGHT" : "LEFT";
+	return { startSide: side, startLine: first[0], side, line: end[1] - 1 };
+}
+
+/**
+ * Where a line shows in the document (a thread, a composer, a find's
+ * hit): a new block (its row is whatever holds it: unchanged, folded or
+ * changed), or a changed row by index (an old block only a change row
+ * shows). Every line lands somewhere while the document has a row: a
+ * blank line goes with the block before it (`blockOfLine`), an unchanged
+ * old line with the new line it is, a line no block holds with the
+ * nearest one (principle 2: a thread is never dropped). Null only for a
+ * document with no rows.
+ */
+export type LineAnchor = { block: number } | { row: number };
+
+export function lineAnchor(
+	doc: Doc,
+	sides: Sides,
+	oldBlocks: readonly MdBlock[],
+	newBlocks: readonly MdBlock[],
+	side: "LEFT" | "RIGHT",
+	line: number,
+): LineAnchor | null {
+	if (doc.rows.length === 0) return null;
+	const onNew = (n: number): LineAnchor | null =>
+		newBlocks.length === 0 ? null : { block: blockOfLine(newBlocks, n) };
+	const first = (): LineAnchor => {
+		const row = doc.rows[0] as DocRow;
+		return row.kind === "same"
+			? { block: row.block }
+			: row.kind === "fold"
+				? { block: row.blocks[0] as number }
+				: { row: 0 };
+	};
+	if (side === "RIGHT") return onNew(line) ?? first();
+	const same = sides.same.get(line);
+	if (same !== undefined) return onNew(same) ?? first();
+	if (oldBlocks.length > 0) {
+		const b = blockOfLine(oldBlocks, line);
+		const row = doc.rows.findIndex(
+			(r) => r.kind === "change" && r.oldBlocks.includes(b),
+		);
+		if (row >= 0) return { row };
+		// An old block no change row shows (its line taken out between
+		// blocks): with the new line its first unchanged line became.
+		const block = oldBlocks[b] as MdBlock;
+		for (let o = block.from; o <= block.to; o++) {
+			const n = sides.same.get(o);
+			if (n !== undefined) return onNew(n) ?? first();
+		}
+	}
+	// Nothing on the old side says where: the unchanged line before it.
+	let before: number | undefined;
+	for (const [o, n] of sides.same) {
+		if (o < line && (before === undefined || n > before)) before = n;
+	}
+	return (before === undefined ? null : onNew(before)) ?? first();
 }

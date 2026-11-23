@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SincePiece } from "../../../../shared/pieces";
@@ -8,9 +14,16 @@ import type {
 	ClusterView,
 	DiffLine,
 	FileHunks,
+	PrOverview,
+	ReviewThread,
+	SessionInfo,
 } from "../../../../shared/types";
+import { overviewQuery, sessionQuery } from "../../../api";
+import { getComposers, resetComposers } from "../../../threads/newThreads";
 import { ignoreWhitespace } from "../../../viewSettings";
+import type { DiffFind } from "../../DiffBody";
 import type { KindEntry } from "../../since";
+import { placeThreads, sinceEarlier, sinceLeft } from "../../threadPlacement";
 import { type DocFixture, docFixture, type Edit } from "./docFixture";
 import { MarkdownView } from "./MarkdownView";
 import { renderBlocks } from "./renderBlocks";
@@ -95,6 +108,7 @@ const EDITS: Edit[] = [
 
 afterEach(() => {
 	cleanup();
+	resetComposers();
 	vi.unstubAllGlobals();
 	ignoreWhitespace.set(false);
 });
@@ -107,7 +121,9 @@ function serve(fx: { hunks: FileHunks; context: DiffLine[] }) {
 			? fx.hunks
 			: url.pathname.endsWith("/context")
 				? fx.context
-				: {};
+				: url.pathname === "/api/comments"
+					? { threads: [] }
+					: {};
 		return new Response(JSON.stringify(body), {
 			headers: { "content-type": "application/json" },
 		});
@@ -116,40 +132,149 @@ function serve(fx: { hunks: FileHunks; context: DiffLine[] }) {
 	return fetch;
 }
 
-function show(
-	fx: DocFixture,
-	opts: {
-		from?: number;
-		kinds?: Map<string, KindEntry>;
-		readOnly?: boolean;
-		onShowText?: () => void;
-		onToggle?: (c: ClusterView, piece?: unknown) => void;
-		onSinceMark?: (p: SincePiece, cross: boolean) => void;
-		sideBySide?: boolean;
-	} = {},
-) {
+type ShowOpts = {
+	from?: number;
+	kinds?: Map<string, KindEntry>;
+	readOnly?: boolean;
+	onShowText?: () => void;
+	onToggle?: (c: ClusterView, piece?: unknown) => void;
+	onSinceMark?: (p: SincePiece, cross: boolean) => void;
+	sideBySide?: boolean;
+	/** The PR's review threads on the viewed head, placed as FileDiff places them. */
+	threads?: ReviewThread[];
+	find?: DiffFind;
+	/** The since view's compared patch set's head (CAR-233). */
+	earlierHead?: string;
+};
+
+const HEAD = "h".repeat(40);
+
+function show(fx: DocFixture, opts: ShowOpts = {}) {
 	serve(fx);
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
-	return render(
-		<QueryClientProvider client={client}>
-			<MarkdownView
-				file={fx.file}
-				revision="r1"
-				sideBySide={opts.sideBySide ?? false}
-				readOnly={opts.readOnly}
-				onToggle={opts.onToggle ?? (() => {})}
-				onCrossOff={() => {}}
-				view={<span>switch</span>}
-				onShowText={opts.onShowText ?? (() => {})}
-				from={opts.from}
-				kinds={opts.kinds}
-				onSinceMark={opts.onSinceMark}
-			/>
-		</QueryClientProvider>,
-	);
+	client.setQueryData(sessionQuery.queryKey, {
+		snapshotHead: HEAD,
+		patchsets: opts.earlierHead
+			? [{ number: opts.from ?? 1, head: opts.earlierHead }]
+			: [],
+	} as unknown as SessionInfo);
+	client.setQueryData(overviewQuery.queryKey, {
+		writes: "on",
+		commentLeft: true,
+	} as unknown as PrOverview);
+	const tree = (o: ShowOpts) => {
+		// As FileDiff places them: on the hunks and the whole document.
+		const placement = o.threads
+			? placeThreads({
+					threads: o.threads,
+					path: fx.file.path,
+					snapshotHead: HEAD,
+					hunks: fx.hunks,
+					loadedContext: fx.context,
+					...(o.from === undefined
+						? {}
+						: {
+								sinceLeft: sinceLeft(fx.file.clusters, fx.hunks.hunks),
+								...(o.earlierHead
+									? {
+											sinceEarlier: sinceEarlier(o.earlierHead, fx.hunks.hunks),
+										}
+									: {}),
+							}),
+				})
+			: undefined;
+		return (
+			<QueryClientProvider client={client}>
+				<MarkdownView
+					file={fx.file}
+					revision="r1"
+					sideBySide={o.sideBySide ?? false}
+					readOnly={o.readOnly}
+					onToggle={o.onToggle ?? (() => {})}
+					onCrossOff={() => {}}
+					view={<span>switch</span>}
+					onShowText={o.onShowText ?? (() => {})}
+					from={o.from}
+					kinds={o.kinds}
+					onSinceMark={o.onSinceMark}
+					threads={
+						o.threads
+							? { readId: "r", snapshotHead: HEAD, threads: o.threads }
+							: undefined
+					}
+					placement={placement}
+					find={o.find}
+				/>
+			</QueryClientProvider>
+		);
+	};
+	const result = render(tree(opts));
+	return {
+		...result,
+		/** New props, as the page rerenders it (a find's step). */
+		update: (next: Partial<ShowOpts>) => {
+			Object.assign(opts, next);
+			result.rerender(tree(opts));
+		},
+	};
 }
+
+/** A line thread ending on `line` of `side`, on the viewed head. */
+const lineThread = (
+	id: string,
+	side: "LEFT" | "RIGHT",
+	line: number,
+	path = "README.md",
+): ReviewThread =>
+	({
+		id,
+		loaded: true,
+		path,
+		line,
+		currentLine: line,
+		excerpt: `About ${id}`,
+		html: `<p>About ${id}</p>`,
+		body: `About ${id}`,
+		createdAt: "2026-01-01T00:00:00Z",
+		lastActivityAt: "2026-01-01T00:00:00Z",
+		author: "rev",
+		bot: false,
+		avatarUrl: "",
+		participants: [],
+		lastAuthor: { login: "rev", avatarUrl: "", bot: false },
+		commentCount: 1,
+		hasReply: false,
+		outdated: false,
+		resolved: false,
+		code: null,
+		anchor: {
+			path,
+			commit: HEAD,
+			side,
+			line,
+			startSide: side,
+			startLine: line,
+			at: "2026-01-01T00:00:00Z",
+		},
+		commit: HEAD,
+		subject: "line",
+		attention: [],
+		yourTurn: false,
+		viewerCan: { reply: true, resolve: true, unresolve: true },
+	}) as unknown as ReviewThread;
+
+/** The row (a block, or a fold) whose gutter holds a bubble of `n` comments. */
+const bubbleRows = (root: HTMLElement) =>
+	[...root.querySelectorAll('[data-testid="thread-bubble"]')].map((b) =>
+		b.closest("[data-row]")?.getAttribute("data-row"),
+	);
+const rowByKey = (root: HTMLElement, key: string) =>
+	root.querySelector<HTMLElement>(`[data-row="${key}"]`);
+/** The row a box's unit is on, by its key (`c<i>`, `s<block>`). */
+const keyOfUnit = (root: HTMLElement, unit: string) =>
+	rowOf(root, unit)?.getAttribute("data-row");
 
 const doc = async () => {
 	await screen.findByTestId("md-doc");
@@ -529,5 +654,281 @@ describe("MarkdownView, since view", () => {
 		expect(screen.getByTestId("since-empty")).toHaveTextContent(
 			"Nothing to read since PS1",
 		);
+	});
+});
+
+describe("MarkdownView: threads, block comments, find", () => {
+	it("a line thread shows under the block holding its line; every placed thread shows once, none dropped", async () => {
+		const threads = [
+			// "- three", the added item (k2).
+			lineThread("onAdded", "RIGHT", 7),
+			// "Para A": an unchanged block.
+			lineThread("onSame", "RIGHT", 13),
+			// The blank line after the fence: with the fence's block (k3).
+			lineThread("onBlank", "RIGHT", 12),
+			// "## Gone", removed (k4): its removal row.
+			lineThread("onRemoved", "LEFT", 12),
+			// An unchanged old line: the new line it is ("Para D").
+			lineThread("onOldSame", "LEFT", 20),
+			// Inside the fold ("## Usage"): on the fold while it is closed.
+			lineThread("inFold", "RIGHT", 17),
+		];
+		show(docFixture(OLD, NEW, EDITS), { threads });
+		const root = await doc();
+		const k2 = keyOfUnit(root, "k2");
+		const k3 = keyOfUnit(root, "k3");
+		const k4 = keyOfUnit(root, "k4");
+		expect(bubbleRows(root).sort()).toEqual(
+			[k2, "s6", k3, k4, "s9", "f7"].sort(),
+		);
+		// Every thread on some row's bubble: one comment each.
+		const bubbles = [...root.querySelectorAll('[data-testid="thread-bubble"]')];
+		expect(bubbles.map((b) => b.getAttribute("aria-label"))).toEqual(
+			bubbles.map(() => "1 comment on this block"),
+		);
+		// The fold opened: the thread goes with its block.
+		await userEvent.click(screen.getByTestId("md-fold"));
+		expect(bubbleRows(root)).toContain("s8");
+		expect(bubbleRows(root)).not.toContain("f7");
+	});
+
+	it("a bubble opens its block's threads under it", async () => {
+		show(docFixture(OLD, NEW, EDITS), {
+			threads: [lineThread("t1", "RIGHT", 7)],
+		});
+		const root = await doc();
+		const row = rowByKey(root, keyOfUnit(root, "k2") as string) as HTMLElement;
+		const bubble = row.querySelector(
+			'[data-testid="thread-bubble"]',
+		) as HTMLElement;
+		expect(row.querySelector('[data-testid="files-thread"]')).toBeNull();
+		await userEvent.click(bubble);
+		expect(bubble).toHaveAttribute("aria-expanded", "true");
+		expect(
+			row.querySelector('[data-testid="md-threads"] [data-thread="t1"]'),
+		).toBeTruthy();
+	});
+
+	it("a comment button on each changed block (none on unchanged ones) opens a composer on its last cluster's changed lines, under the block", async () => {
+		show(docFixture(OLD, NEW, EDITS));
+		const root = await doc();
+		const comments = [...root.querySelectorAll('[data-testid="md-comment"]')];
+		const changeRows = [
+			...root.querySelectorAll(
+				'[data-testid="md-block"]:not([data-tone="same"])',
+			),
+		];
+		expect(comments).toHaveLength(changeRows.length);
+		for (const r of root.querySelectorAll('[data-tone="same"]')) {
+			expect(r.querySelector('[data-testid="md-comment"]')).toBeNull();
+		}
+		// The added item: new line 7.
+		const added = rowOf(root, "k2") as HTMLElement;
+		await userEvent.click(
+			added.querySelector('[data-testid="md-comment"]') as HTMLElement,
+		);
+		expect(getComposers().at(-1)?.span).toMatchObject({
+			path: "README.md",
+			commit: HEAD,
+			subject: "line",
+			startSide: "RIGHT",
+			startLine: 7,
+			side: "RIGHT",
+			line: 7,
+		});
+		expect(await within(added).findByRole("textbox")).toBeInTheDocument();
+		// The last of two clusters on one block: k7's line only.
+		await userEvent.click(
+			rowOf(root, "k7")?.querySelector(
+				'[data-testid="md-comment"]',
+			) as HTMLElement,
+		);
+		expect(getComposers().at(-1)?.span).toMatchObject({
+			startSide: "RIGHT",
+			startLine: 25,
+			line: 25,
+		});
+		// A removal-only block: its old lines.
+		await userEvent.click(
+			rowOf(root, "k4")?.querySelector(
+				'[data-testid="md-comment"]',
+			) as HTMLElement,
+		);
+		expect(getComposers().at(-1)?.span).toMatchObject({
+			startSide: "LEFT",
+			startLine: 12,
+			side: "LEFT",
+			line: 13,
+		});
+	});
+
+	it("read-only: the comment button says why, and opens nothing", async () => {
+		show(docFixture(OLD, NEW, EDITS), { readOnly: true });
+		const root = await doc();
+		const button = rowOf(root, "k2")?.querySelector(
+			'[data-testid="md-comment"]',
+		) as HTMLElement;
+		expect(button).toHaveAttribute("aria-disabled", "true");
+		await userEvent.click(button);
+		expect(getComposers()).toHaveLength(0);
+	});
+
+	const LINKED_OLD = [
+		"# T",
+		"",
+		"See [docs](https://example.com/guide) here.",
+		"",
+		"Para",
+	];
+	const LINKED_NEW = [
+		"# T",
+		"",
+		"See [docs](https://example.com/guide) now.",
+		"",
+		"Para",
+	];
+	const findAt = (
+		line: number,
+		word: string,
+		stepSeq: number,
+		text = LINKED_NEW,
+	): DiffFind => {
+		const from = (text[line - 1] ?? "").indexOf(word);
+		return {
+			marksOf: (side, n) =>
+				side === "RIGHT" && n === line
+					? [{ from, to: from + word.length, current: true }]
+					: [],
+			current: { old: false, line },
+			shown: true,
+			stepSeq,
+		};
+	};
+
+	it("find: a step lands on the block holding its hit; a hit only in a link's URL shows Text, once per step", async () => {
+		const scrolled = vi.fn();
+		Element.prototype.scrollIntoView = scrolled;
+		const onShowText = vi.fn();
+		const fx = docFixture(LINKED_OLD, LINKED_NEW, [
+			{ key: "k", old: [3, 4], new: [3, 4] },
+		]);
+		const { update } = show(fx, { onShowText });
+		const root = await doc();
+		update({ find: findAt(3, "docs", 1) });
+		await waitFor(() => expect(scrolled).toHaveBeenCalled());
+		const row = rowOf(root, "k") as HTMLElement;
+		expect(scrolled.mock.contexts.at(-1)).toBe(row);
+		expect(row).toHaveAttribute("data-find-current", "true");
+		expect(onShowText).not.toHaveBeenCalled();
+		update({ find: findAt(3, "example", 2) });
+		await waitFor(() => expect(onShowText).toHaveBeenCalledTimes(1));
+	});
+
+	it("find: a file opened on a step to a URL hit lands without sending it to Text again", async () => {
+		Element.prototype.scrollIntoView = vi.fn();
+		const onShowText = vi.fn();
+		const fx = docFixture(LINKED_OLD, LINKED_NEW, [
+			{ key: "k", old: [3, 4], new: [3, 4] },
+		]);
+		show(fx, { onShowText, find: findAt(3, "example", 4) });
+		await doc();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(onShowText).not.toHaveBeenCalled();
+	});
+
+	it("find: a hit in a folded block opens the fold and lands there", async () => {
+		const scrolled = vi.fn();
+		Element.prototype.scrollIntoView = scrolled;
+		const onShowText = vi.fn();
+		const { update } = show(docFixture(OLD, NEW, EDITS), { onShowText });
+		const root = await doc();
+		update({ find: findAt(15, "Install", 1, NEW) });
+		await waitFor(() =>
+			expect(scrolled.mock.contexts.at(-1)).toBe(rowByKey(root, "s7")),
+		);
+		expect(screen.queryByTestId("md-fold")).toBeNull();
+		expect(onShowText).not.toHaveBeenCalled();
+	});
+});
+
+describe("MarkdownView, since view: threads and block comments", () => {
+	it("threads show under their block in the since view", async () => {
+		const fx = docFixture(OLD, NEW, EDITS, { since: true });
+		show(fx, {
+			from: 1,
+			threads: [lineThread("t1", "RIGHT", 3), lineThread("t2", "RIGHT", 13)],
+		});
+		const root = await doc();
+		expect(bubbleRows(root).sort()).toEqual(
+			[keyOfUnit(root, "p:0:0"), "s6"].sort(),
+		);
+	});
+
+	it("a comment on a removal-only block posts on its base line (CAR-217)", async () => {
+		const fx = docFixture(OLD, NEW, EDITS, { since: true });
+		// The compared patch set's old 12-13 are the base's 112-113, which
+		// the full diff removes (its cluster k4, in the base's numbers).
+		for (const l of fx.hunks.hunks[3]?.lines ?? []) {
+			if (l.oldNo !== undefined) l.baseNo = l.oldNo + 100;
+		}
+		fx.file.clusters = fx.file.clusters.map((c) =>
+			c.key === "k4" ? { ...c, oldStart: 112 } : c,
+		);
+		show(fx, { from: 1 });
+		const root = await doc();
+		const row = rowOf(root, "p:3:0") as HTMLElement;
+		await userEvent.click(
+			row.querySelector('[data-testid="md-comment"]') as HTMLElement,
+		);
+		expect(getComposers().at(-1)?.span).toMatchObject({
+			commit: HEAD,
+			startSide: "LEFT",
+			startLine: 112,
+			side: "LEFT",
+			line: 113,
+		});
+		// Its composer is under the block that was clicked.
+		expect(await within(row).findByRole("textbox")).toBeInTheDocument();
+	});
+
+	it("a comment on lines only the earlier patch set had posts on that patch set's commit (CAR-233)", async () => {
+		const EARLIER = "e".repeat(40);
+		const fx = docFixture(OLD, NEW, EDITS, { since: true });
+		for (const l of fx.hunks.hunks[3]?.lines ?? []) {
+			if (l.oldNo !== undefined) {
+				l.baseNo = null;
+				l.psNo = l.oldNo + 30;
+			}
+		}
+		show(fx, { from: 1, earlierHead: EARLIER });
+		const root = await doc();
+		const row = rowOf(root, "p:3:0") as HTMLElement;
+		await userEvent.click(
+			row.querySelector('[data-testid="md-comment"]') as HTMLElement,
+		);
+		expect(getComposers().at(-1)?.span).toMatchObject({
+			commit: EARLIER,
+			earlier: true,
+			startSide: "RIGHT",
+			startLine: 42,
+			side: "RIGHT",
+			line: 43,
+		});
+		expect(await within(row).findByRole("textbox")).toBeInTheDocument();
+	});
+
+	it("a removed line GitHub has no line for: the button says why, and opens nothing", async () => {
+		const fx = docFixture(OLD, NEW, EDITS, { since: true });
+		for (const l of fx.hunks.hunks[3]?.lines ?? []) {
+			if (l.oldNo !== undefined) l.baseNo = null;
+		}
+		show(fx, { from: 1 });
+		const root = await doc();
+		const button = rowOf(root, "p:3:0")?.querySelector(
+			'[data-testid="md-comment"]',
+		) as HTMLElement;
+		expect(button).toHaveAttribute("aria-disabled", "true");
+		await userEvent.click(button);
+		expect(getComposers()).toHaveLength(0);
 	});
 });

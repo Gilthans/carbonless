@@ -172,6 +172,19 @@
 	outline: 2px solid var(--color-accent);
 }
 
+/* A block's threads and comments being written: under it, across the row. */
+.md-threads {
+	grid-column: 1 / -1;
+	min-width: 0;
+	padding: 4px 12px 8px 44px;
+}
+
+/* The find's current hit is in this block. */
+.md-row[data-find-current] > .md-body {
+	outline: 2px solid var(--color-accent);
+	outline-offset: -2px;
+}
+
 /*
  * On touch the box and the cross-off are 40px targets each, side by side
  * (ClusterControls): the gutter holds both, never over the block.
@@ -189,5 +202,10 @@
 
 	.md-fold-row {
 		padding-left: 84px;
+	}
+
+	/* At phone width the cards take the row's width, not the gutter's. */
+	.md-threads {
+		padding-left: 12px;
 	}
 }

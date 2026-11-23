@@ -2877,6 +2877,61 @@ describe("FileDiff: the renderer seam", () => {
 		expect(hunkReads(paths)).toEqual([]);
 	});
 
+	it("a Rendered Markdown file: a line thread shows under its block, one on no line stays in the file bubble, never dropped", async () => {
+		const head = "h".repeat(40);
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const on = (id: string, side: "LEFT" | "RIGHT", line: number) => {
+			const t = svgLineThread(head, id);
+			return {
+				...t,
+				path: "README.md",
+				line,
+				anchor: {
+					...(t.anchor as NonNullable<typeof t.anchor>),
+					path: "README.md",
+					side,
+					line,
+					startSide: side,
+					startLine: line,
+				},
+			} as typeof t;
+		};
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		const { user } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 200, body: unchanged }
+					: { status: 200, body: view(md) },
+			hunks,
+			"clusters",
+			{
+				threads: {
+					readId: "r",
+					snapshotHead: head,
+					threads: [on("T1", "RIGHT", 5), on("T2", "LEFT", 999)],
+				},
+			},
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const doc = await screen.findByTestId("md-doc");
+		expect(
+			within(doc).getByRole("button", { name: "1 comment on this block" }),
+		).toBeInTheDocument();
+		// The line no row is: in the file's bubble, flagged.
+		expect(
+			screen.getByRole("button", {
+				name: /^1 comment on this file.*line not in this diff/,
+			}),
+		).toBeInTheDocument();
+		expect(within(doc).getAllByTestId("thread-bubble")).toHaveLength(1);
+	});
+
 	it("since view, lines hidden: an SVG with nothing left to read says so, never an empty table", async () => {
 		const svg = file(
 			[

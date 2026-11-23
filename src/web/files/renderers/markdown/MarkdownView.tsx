@@ -1,7 +1,7 @@
 import "github-markdown-css/github-markdown-dark.css";
 import "../../../githubHtml.css";
 import "./markdownView.css";
-import { ChevronRightIcon } from "@primer/octicons-react";
+import { ChevronRightIcon, CommentIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import {
 	type MouseEvent,
@@ -17,29 +17,68 @@ import { type LineRanges, size } from "../../../../shared/lineRanges";
 import type { SincePiece } from "../../../../shared/pieces";
 import type {
 	ClusterView,
+	DiffLine,
+	DiffSide,
 	FileView,
+	ReviewThread,
 	SinceMark,
 } from "../../../../shared/types";
-import { contextQuery, hunksQuery } from "../../../api";
+import { shownOutsideCard, useHeldByCard } from "../../../agent/pendingThread";
+import {
+	contextQuery,
+	hunksQuery,
+	overviewQuery,
+	sessionQuery,
+} from "../../../api";
 import { SkeletonBar, Spinner } from "../../../Spinner";
 import { Tooltip } from "../../../Tooltip";
+import { spanTexts } from "../../../threads/draftMove";
+import { useDrafts } from "../../../threads/drafts";
+import { LOADING, NewThread, quoteOf } from "../../../threads/NewThread";
+import {
+	newThreadItems,
+	openComposer,
+	useComposers,
+} from "../../../threads/newThreads";
+import type { SpanRange } from "../../../threads/spanMarks";
 import { ErrorMessage } from "../../../ui";
 import { NOT_PHONE, useMedia } from "../../../useMedia";
 import { ignoreWhitespace } from "../../../viewSettings";
 import { ClusterControls } from "../../ClusterControls";
+import { noLineIn, type SpanCell, spanOfCells } from "../../codeSpan";
 import type { DiffFind, DiffThreads } from "../../DiffBody";
 import { KindChip } from "../../KindChip";
 import type { Landing } from "../../landing";
 import { pieceMark } from "../../pieceMark";
+import {
+	type CodeSpan,
+	commentAvailable,
+	describeSpan,
+	noLineReason,
+} from "../../selectionActions";
 import type { KindEntry } from "../../since";
 import { SinceNotes } from "../../sinceNotes";
+import { ThreadBubble } from "../../ThreadBubble";
+import { ThreadBlock } from "../../ThreadRow";
+import { useFocusAmong } from "../../threadFocus";
+import {
+	type FilePlacement,
+	type LineKey,
+	onSinceRows,
+	sinceEarlier,
+	sinceLeft,
+} from "../../threadPlacement";
 import { type ImageFile, imageResolver, remoteImageUrl } from "./images";
 import {
+	blockCommentSpan,
 	blocksOf,
 	buildDoc,
+	type CommentUnit,
 	clusterLines,
 	type DocRow,
 	type DocUnit,
+	type LineAnchor,
+	lineAnchor,
 	rebuildSides,
 	type Tone,
 } from "./markdownDoc";
@@ -68,9 +107,18 @@ export function MarkdownView(props: {
 	/** A cluster's box; in the since view, one piece of it. */
 	onToggle: (cluster: ClusterView, piece?: LineRanges) => void;
 	onCrossOff: (cluster: ClusterView, piece?: LineRanges) => void;
-	/** Threads, find and landings: Task 7 places them on blocks. */
+	/**
+	 * The review's threads, and where FileDiff placed this file's on its
+	 * lines (the hunks and the whole document): each shows under the block
+	 * holding its line; what no line is stays in the file's header.
+	 */
 	threads?: DiffThreads;
+	placement?: FilePlacement | null;
+	/** These hunks are the viewed head's (not a Refresh's moment of the old ones). */
+	headSure?: boolean;
+	/** The find: a step lands on the block holding its hit. */
 	find?: DiffFind;
+	/** A thread link: FileDiff shows Text for it (its exact line). */
 	landing?: Landing;
 	/** The view switch. */
 	view: ReactNode;
@@ -228,6 +276,12 @@ export function MarkdownView(props: {
 			return {
 				doc,
 				units: new Map(units.map((u) => [u.key, u.control])),
+				lines: new Map<string, CommentUnit>(
+					units.map((u) => [
+						u.key,
+						{ old: u.old, new: u.new, ws: u.control.ws },
+					]),
+				),
 				oldHtml: base.oldHtml,
 				newHtml: base.newHtml,
 				pair: base.pair,
@@ -261,6 +315,234 @@ export function MarkdownView(props: {
 		}
 	});
 	const idBase = useId();
+
+	// Where each line shows: the row of the block holding it (a folded
+	// block's fold while it is closed), by a key the rows carry.
+	const where = useMemo(() => {
+		if (!base || base === "failed" || !model || model === "failed") {
+			return null;
+		}
+		const { doc } = model;
+		const blockRow = new Map<number, number>();
+		doc.rows.forEach((r, i) => {
+			const blocks =
+				r.kind === "same"
+					? [r.block]
+					: r.kind === "fold"
+						? r.blocks
+						: r.newBlocks;
+			for (const b of blocks) blockRow.set(b, i);
+		});
+		return {
+			doc,
+			blockRow,
+			anchor: (side: DiffSide, line: number): LineAnchor | null =>
+				lineAnchor(doc, base.sides, base.oldBlocks, base.newBlocks, side, line),
+			text: (side: DiffSide, line: number) =>
+				(side === "LEFT" ? base.sides.old : base.sides.new)[line - 1] ?? "",
+		};
+	}, [base, model]);
+	/** The key of the row that shows a line (TOP: a document with no rows). */
+	const rowKeyOf = (side: DiffSide, line: number): string => {
+		const a = where?.anchor(side, line);
+		if (!where || !a) return TOP;
+		if ("row" in a) return `c${a.row}`;
+		const i = where.blockRow.get(a.block);
+		const row = i === undefined ? undefined : where.doc.rows[i];
+		if (!row) return TOP;
+		if (row.kind === "change") return `c${i}`;
+		if (row.kind === "fold") {
+			const first = row.blocks[0] as number;
+			return open.has(first) ? `s${a.block}` : `f${first}`;
+		}
+		return `s${a.block}`;
+	};
+	const keyOfLineKey = (key: LineKey) => {
+		const [side, n] = key.split(":");
+		return rowKeyOf(side as DiffSide, Number(n));
+	};
+
+	// The file's threads by the row that shows their line: every one
+	// FileDiff placed on a line (none dropped: a blank line, a line no
+	// block holds, goes with the nearest block).
+	const threadsAt = new Map<string, ReviewThread[]>();
+	const rowOfThread = new Map<string, string>();
+	const addThread = (key: LineKey, t: ReviewThread) => {
+		const row = keyOfLineKey(key);
+		threadsAt.set(row, [...(threadsAt.get(row) ?? []), t]);
+		if (t.id) rowOfThread.set(t.id, row);
+	};
+	if (where && props.placement) {
+		for (const [key, list] of props.placement.end) {
+			for (const t of list) addThread(key, t);
+		}
+		for (const [t, target] of props.placement.gapTargets) {
+			addThread(target.key, t);
+		}
+	}
+	const [openRows, setOpenRows] = useState<ReadonlySet<string>>(new Set());
+	const openRow = (key: string) =>
+		setOpenRows((was) => (was.has(key) ? was : new Set(was).add(key)));
+	// A card asked for (a Threads tab row, a link to a conversation): its
+	// block's threads open, and the card takes it.
+	const rowOfThreadNow = useRef(rowOfThread);
+	rowOfThreadNow.current = rowOfThread;
+	useFocusAmong(
+		(id) => rowOfThreadNow.current.has(id),
+		(f) => {
+			const key = rowOfThreadNow.current.get(f.id);
+			if (key) openRow(key);
+		},
+	);
+
+	// Line comments being written on this file: under the block holding
+	// the line they end on, as the line view has them under theirs.
+	const session = useQuery({ ...sessionQuery, enabled: false }).data;
+	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
+	const snapshotHead =
+		props.threads?.snapshotHead ?? session?.snapshotHead ?? "";
+	const earlierHead =
+		from === undefined
+			? undefined
+			: session?.patchsets.find((p) => p.number === from)?.head;
+	const drafts = useDrafts();
+	const composerList = useComposers();
+	const allItems = useMemo(
+		() => newThreadItems(drafts, composerList),
+		[drafts, composerList],
+	);
+	const heldByCard = useHeldByCard();
+	const onEarlier = (span: CodeSpan) =>
+		span.earlier === true &&
+		earlierHead !== undefined &&
+		span.commit === earlierHead;
+	const lineItems = allItems.filter(
+		(i) =>
+			i.span.path === file.path &&
+			i.span.subject === "line" &&
+			(i.span.commit === snapshotHead || onEarlier(i.span)) &&
+			shownOutsideCard(i, snapshotHead, heldByCard),
+	);
+	// The since view numbers its old side in the compared patch set: a span
+	// (GitHub's numbers) goes on the rows that show it there (CAR-217/233).
+	const sinceRows = useMemo(
+		() =>
+			from === undefined || !hunks.data
+				? null
+				: {
+						left: sinceLeft(file.clusters, hunks.data.hunks),
+						early:
+							earlierHead === undefined
+								? undefined
+								: sinceEarlier(earlierHead, hunks.data.hunks),
+					},
+		[from, hunks.data, file.clusters, earlierHead],
+	);
+	const rowsOf = (span: CodeSpan): SpanRange | null => {
+		if (span.side === undefined || span.line === undefined) return null;
+		const range = {
+			earlier: span.earlier,
+			startSide: span.startSide ?? span.side,
+			startLine: span.startLine ?? span.line,
+			side: span.side,
+			line: span.line,
+			startCol: span.startCol,
+			endCol: span.endCol,
+		};
+		return sinceRows
+			? onSinceRows(range, sinceRows.left, sinceRows.early)
+			: from === undefined
+				? range
+				: null;
+	};
+	const composersAt = new Map<string, typeof lineItems>();
+	for (const item of lineItems) {
+		const rows = where ? rowsOf(item.span) : null;
+		const key = rows ? rowKeyOf(rows.side, rows.line) : TOP;
+		composersAt.set(key, [...(composersAt.get(key) ?? []), item]);
+	}
+	// The since view's removed rows by their own old number: GitHub's
+	// numbers for them (CAR-217: the base; CAR-233: the compared patch
+	// set's commit).
+	const removedRows = useMemo(() => {
+		const out = new Map<number, DiffLine>();
+		for (const h of hunks.data?.hunks ?? []) {
+			for (const l of h.lines) {
+				if (l.kind !== "add" && l.kind !== "context" && l.oldNo !== undefined) {
+					out.set(l.oldNo, l);
+				}
+			}
+		}
+		return out;
+	}, [hunks.data]);
+	/** A block's comment as GitHub takes it, or why it can't be. */
+	const githubSpan = (
+		range: SpanRange,
+	): { span: CodeSpan } | { why: string } => {
+		const cell = (side: DiffSide, line: number): SpanCell => {
+			if (side === "RIGHT" || from === undefined) {
+				return { path: file.path, side, line };
+			}
+			const row = removedRows.get(line);
+			return {
+				path: file.path,
+				side,
+				line,
+				base: row?.baseNo === undefined ? "unknown" : row.baseNo,
+				...(row?.psNo !== undefined ? { ps: row.psNo } : {}),
+				...(row?.psMoved ? { psMoved: true } : {}),
+			};
+		};
+		const start = cell(range.startSide, range.startLine);
+		const end = cell(range.side, range.line);
+		if (from !== undefined) {
+			const why = noLineIn([start, end], earlierHead);
+			if (why) return { why: noLineReason(why) };
+		}
+		return {
+			span: spanOfCells(start, end, snapshotHead, undefined, earlierHead),
+		};
+	};
+
+	// The find: a step onto a hit in this file lands on the block that
+	// shows it; a hit its rendered text doesn't show (a link's URL, markup)
+	// shows the file as Text for the view (the stored pick unchanged).
+	const findSeq = props.find?.current ? props.find.stepSeq : 0;
+	const findCurrent = props.find?.current ?? null;
+	const findDone = useRef(0);
+	// The step it was mounted with (an opened file's): landed on, but never
+	// sent to Text again (back in Rendered after a pick, it stays).
+	const findMounted = useRef(findSeq);
+	const findNow = useRef({ find: props.find, rowKeyOf, text: where?.text });
+	findNow.current = { find: props.find, rowKeyOf, text: where?.text };
+	// biome-ignore lint/correctness/useExhaustiveDependencies: again once a fold it opened is drawn (`open`).
+	useEffect(() => {
+		const el = root.current;
+		if (!where || !el || findSeq === 0 || findDone.current === findSeq) return;
+		const { find, rowKeyOf: keyOf, text } = findNow.current;
+		const current = find?.current;
+		if (!current || !text) return;
+		const side: DiffSide = current.old ? "LEFT" : "RIGHT";
+		const key = keyOf(side, current.line);
+		if (key.startsWith("f")) {
+			// A folded block: its fold opens, then this runs again.
+			setOpen((was) => new Set(was).add(Number(key.slice(1))));
+			return;
+		}
+		findDone.current = findSeq;
+		const marks = find.marksOf(side, current.line);
+		const mark = marks.find((m) => m.current) ?? marks[0];
+		const hit = mark ? text(side, current.line).slice(mark.from, mark.to) : "";
+		const row = el.querySelector(`[data-row="${CSS.escape(key)}"]`);
+		if (!row || !shows(row, hit)) {
+			if (findSeq !== findMounted.current) showText.current();
+			return;
+		}
+		row.scrollIntoView?.({ block: "center" });
+	}, [where, findSeq, open]);
+	const findKey = findCurrent
+		? rowKeyOf(findCurrent.old ? "LEFT" : "RIGHT", findCurrent.line)
+		: null;
 
 	const bar = (
 		<div
@@ -305,6 +587,7 @@ export function MarkdownView(props: {
 	const htmlOf = (list: readonly { html: string }[], ids: number[]) =>
 		ids.map((i) => list[i]?.html ?? "").join("");
 	const noteId = (key: string) => `${idBase}-note-${key}`;
+	const threadsId = (key: string) => `${idBase}-threads-${key}`;
 
 	const content = (html: string, extra = "") => (
 		<div
@@ -326,25 +609,156 @@ export function MarkdownView(props: {
 			</>
 		);
 
-	const sameRow = (block: number) => {
-		const html = newHtml[block]?.html ?? "";
+	/** A row's threads bubble (in its gutter), when it has threads. */
+	const bubbleOf = (key: string) => {
+		const list = threadsAt.get(key) ?? [];
+		if (list.length === 0) return null;
+		const shown = openRows.has(key);
+		return (
+			<ThreadBubble
+				threads={list}
+				where="on this block"
+				open={shown}
+				controls={shown ? threadsId(key) : undefined}
+				onToggle={() =>
+					setOpenRows((was) => {
+						const next = new Set(was);
+						if (shown) next.delete(key);
+						else next.add(key);
+						return next;
+					})
+				}
+			/>
+		);
+	};
+	/** Under a row: its threads once opened, and comments being written on it. */
+	const threadsOf = (key: string) => {
+		const list = openRows.has(key) ? (threadsAt.get(key) ?? []) : [];
+		const writing = composersAt.get(key) ?? [];
+		if (list.length === 0 && writing.length === 0) return null;
 		return (
 			<div
-				key={`s${block}`}
+				id={threadsId(key)}
+				data-testid="md-threads"
+				data-threads-of={key}
+				className="md-threads space-y-2"
+			>
+				{list.map((t, i) => (
+					<ThreadBlock
+						key={t.id || `#${i}`}
+						readId={props.threads?.readId ?? ""}
+						thread={t}
+					/>
+				))}
+				{writing.map((item) => {
+					const rows = rowsOf(item.span);
+					const texts =
+						rows && where
+							? [
+									where.text(rows.startSide, rows.startLine),
+									...(rows.startSide === rows.side &&
+									rows.startLine === rows.line
+										? []
+										: [where.text(rows.side, rows.line)]),
+								]
+							: [];
+					return (
+						<NewThread
+							key={item.clientId}
+							item={item}
+							quote={quoteOf(item.span, texts)}
+							where={describeSpan(rows ? { ...item.span, ...rows } : item.span)}
+							lineTexts={
+								rows && hunks.data
+									? (spanTexts(hunks.data.hunks, rows) ?? undefined)
+									: undefined
+							}
+							onPosted={() => openRow(key)}
+							headUnsure={props.headSure === false}
+						/>
+					);
+				})}
+			</div>
+		);
+	};
+	const rowMarks = (key: string) => ({
+		"data-row": key,
+		"data-find-current": findKey === key || undefined,
+	});
+
+	const sameRow = (block: number) => {
+		const html = newHtml[block]?.html ?? "";
+		const key = `s${block}`;
+		return (
+			<div
+				key={key}
 				data-testid="md-block"
 				data-tone="same"
 				data-block={block}
 				className="md-row"
+				{...rowMarks(key)}
 			>
-				<div className="md-gutter" />
+				<div className="md-gutter">{bubbleOf(key)}</div>
 				<div className="md-body">
 					{split ? columns(content(html), content(html)) : content(html)}
 				</div>
+				{threadsOf(key)}
 			</div>
 		);
 	};
 
-	const changeRow = (row: Extract<DocRow, { kind: "change" }>) => {
+	/** A changed block's comment button: on its last cluster's changed lines. */
+	const commentOf = (row: Extract<DocRow, { kind: "change" }>) => {
+		const range = blockCommentSpan(
+			row.units.flatMap((k) => {
+				const u = model.lines.get(k);
+				return u ? [u] : [];
+			}),
+		);
+		if (!range) return null;
+		const github = githubSpan(range);
+		const ok =
+			"why" in github
+				? github.why
+				: overview
+					? commentAvailable(github.span, {
+							writes: overview.writes,
+							commentLeft: overview.commentLeft !== false,
+							file: { binary: file.binary, submodule: file.submodule },
+							// A cluster's changed lines: GitHub's diff's own.
+							inDiff: true,
+							headUnsure: props.headSure === false,
+							readOnly: props.readOnly === true,
+						})
+					: LOADING;
+		return (
+			<Tooltip content={ok === true ? "Comment on block" : ok}>
+				{(trigger) => (
+					<button
+						type="button"
+						{...trigger}
+						data-testid="md-comment"
+						aria-label="Comment on block"
+						aria-disabled={ok !== true || undefined}
+						onClick={() => {
+							if (ok === true && "span" in github && snapshotHead) {
+								openComposer(github.span);
+							}
+						}}
+						className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:text-faint aria-disabled:hover:bg-transparent"
+					>
+						<CommentIcon size={16} aria-hidden />
+					</button>
+				)}
+			</Tooltip>
+		);
+	};
+
+	const changeRow = (
+		row: Extract<DocRow, { kind: "change" }>,
+		index: number,
+	) => {
+		const key = `c${index}`;
 		const controls = row.units.flatMap((k) => {
 			const u = units.get(k);
 			return u ? [{ key: k, u }] : [];
@@ -391,6 +805,7 @@ export function MarkdownView(props: {
 				data-old-block={row.oldBlocks.join(",") || undefined}
 				data-units={row.units.join(" ")}
 				className="md-row"
+				{...rowMarks(key)}
 			>
 				<div className="md-gutter">
 					{controls.map(({ key, u }) => (
@@ -427,6 +842,8 @@ export function MarkdownView(props: {
 							)}
 						</div>
 					))}
+					{commentOf(row)}
+					{bubbleOf(key)}
 				</div>
 				<div className={`md-body md-${tone}`}>
 					{(chips.length > 0 || notes.length > 0) && (
@@ -447,6 +864,7 @@ export function MarkdownView(props: {
 					)}
 					{body}
 				</div>
+				{threadsOf(key)}
 			</div>
 		);
 	};
@@ -456,25 +874,37 @@ export function MarkdownView(props: {
 		const shown = open.has(first);
 		if (shown) return row.blocks.map(sameRow);
 		const names = row.headings.slice(0, 3);
-		return (
-			<div key={`f${first}`} className="md-fold-row">
-				<button
-					type="button"
-					data-testid="md-fold"
-					aria-expanded={false}
-					onClick={() => setOpen((s) => new Set(s).add(first))}
-					className="md-fold"
-				>
-					<ChevronRightIcon size={12} aria-hidden />
-					<span className="shrink-0 text-hunk-ink">
-						{row.blocks.length} unchanged
+		const key = `f${first}`;
+		const button = (
+			<button
+				type="button"
+				data-testid="md-fold"
+				aria-expanded={false}
+				onClick={() => setOpen((s) => new Set(s).add(first))}
+				className="md-fold"
+			>
+				<ChevronRightIcon size={12} aria-hidden />
+				<span className="shrink-0 text-hunk-ink">
+					{row.blocks.length} unchanged
+				</span>
+				{names.map((n) => (
+					<span key={n} className="truncate">
+						· {n}
 					</span>
-					{names.map((n) => (
-						<span key={n} className="truncate">
-							· {n}
-						</span>
-					))}
-				</button>
+				))}
+			</button>
+		);
+		// Threads on its blocks: their bubble beside it, never hidden by it.
+		const bubble = bubbleOf(key);
+		return bubble ? (
+			<div key={key} className="md-row" {...rowMarks(key)}>
+				<div className="md-gutter">{bubble}</div>
+				<div className="md-body">{button}</div>
+				{threadsOf(key)}
+			</div>
+		) : (
+			<div key={key} className="md-fold-row" {...rowMarks(key)}>
+				{button}
 			</div>
 		);
 	};
@@ -493,12 +923,19 @@ export function MarkdownView(props: {
 				onClick={onDocClick}
 				className="md-doc bg-surface py-2"
 			>
-				{doc.rows.map((row) =>
+				{(threadsAt.has(TOP) || composersAt.has(TOP)) && (
+					<div className="md-row" {...rowMarks(TOP)}>
+						<div className="md-gutter">{bubbleOf(TOP)}</div>
+						<div className="md-body" />
+						{threadsOf(TOP)}
+					</div>
+				)}
+				{doc.rows.map((row, i) =>
 					row.kind === "same"
 						? sameRow(row.block)
 						: row.kind === "fold"
 							? foldRow(row)
-							: changeRow(row),
+							: changeRow(row, i),
 				)}
 			</div>
 			{from !== undefined && hunks.data && (
@@ -526,6 +963,24 @@ export const documentContextQuery = (
 	count: number,
 	from?: number,
 ) => contextQuery(revision, index, 1, Math.max(count, 1), from);
+
+/** The row key of what no block holds (a document with no rows). */
+const TOP = "top";
+
+/**
+ * Whether a row's rendered text shows a find's hit: its characters, case
+ * and runs of whitespace aside, in the text of the row's blocks (not its
+ * threads). A link's URL, or markup, isn't there.
+ */
+function shows(row: Element, hit: string): boolean {
+	const norm = (t: string) => t.replace(/\s+/g, " ").trim().toLowerCase();
+	const wanted = norm(hit);
+	if (!wanted) return false;
+	const text = [...row.querySelectorAll(".md-content")]
+		.map((c) => c.textContent ?? "")
+		.join(" ");
+	return norm(text).includes(wanted);
+}
 
 /**
  * The document's clicks: a remote image's placeholder loads it (http(s)

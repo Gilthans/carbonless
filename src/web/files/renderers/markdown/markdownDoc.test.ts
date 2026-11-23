@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { docFixture, type Edit } from "./docFixture";
-import { blocksOf, buildDoc, rebuildSides } from "./markdownDoc";
+import {
+	blockCommentSpan,
+	blocksOf,
+	buildDoc,
+	lineAnchor,
+	rebuildSides,
+} from "./markdownDoc";
 
 function docOf(oldText: string[], newText: string[], edits: Edit[]) {
 	const fx = docFixture(oldText, newText, edits);
@@ -178,5 +184,108 @@ describe("buildDoc", () => {
 				if (r.kind === "fold") expect(r.blocks.length).toBeGreaterThan(0);
 			}
 		}
+	});
+});
+
+describe("blockCommentSpan", () => {
+	it("a block with one cluster of added lines 12-14: those lines, on the new side", () => {
+		expect(blockCommentSpan([{ old: [], new: [[12, 15]] }])).toEqual({
+			startSide: "RIGHT",
+			startLine: 12,
+			side: "RIGHT",
+			line: 14,
+		});
+	});
+
+	it("a changed cluster: its new lines", () => {
+		expect(blockCommentSpan([{ old: [[3, 5]], new: [[3, 4]] }])).toEqual({
+			startSide: "RIGHT",
+			startLine: 3,
+			side: "RIGHT",
+			line: 3,
+		});
+	});
+
+	it("two clusters: the last one's lines", () => {
+		expect(
+			blockCommentSpan([
+				{ old: [[24, 25]], new: [[23, 24]] },
+				{ old: [[26, 27]], new: [[25, 26]] },
+			]),
+		).toMatchObject({ startLine: 25, line: 25 });
+	});
+
+	it("a cluster then a whitespace-only one: the first; whitespace-only alone: that one", () => {
+		expect(
+			blockCommentSpan([
+				{ old: [], new: [[12, 15]] },
+				{ old: [[20, 21]], new: [[16, 17]], ws: true },
+			]),
+		).toMatchObject({ startLine: 12, line: 14, side: "RIGHT" });
+		expect(
+			blockCommentSpan([{ old: [[20, 21]], new: [[16, 17]], ws: true }]),
+		).toMatchObject({ startLine: 16, line: 16 });
+	});
+
+	it("a removal-only block on old 30-31: the old side", () => {
+		expect(blockCommentSpan([{ old: [[30, 32]], new: [] }])).toEqual({
+			startSide: "LEFT",
+			startLine: 30,
+			side: "LEFT",
+			line: 31,
+		});
+	});
+
+	it("an unchanged block (no unit): none", () => {
+		expect(blockCommentSpan([])).toBeNull();
+	});
+});
+
+describe("lineAnchor", () => {
+	const OLD = ["# T", "", "old p", "", "gone", "", "kept", "", "tail"];
+	const NEW = ["# T", "", "new p", "", "kept", "", "tail"];
+	const setup = () => {
+		const edits: Edit[] = [
+			{ key: "a", old: [3, 4], new: [3, 4] },
+			{ key: "b", old: [5, 7] },
+		];
+		const fx = docFixture(OLD, NEW, edits);
+		const sides = rebuildSides(fx.hunks, fx.context);
+		if (!sides) throw new Error("no sides");
+		const oldBlocks = blocksOf(sides.old);
+		const newBlocks = blocksOf(sides.new);
+		const doc = buildDoc({
+			sides,
+			oldBlocks,
+			newBlocks,
+			units: edits.map((e) => ({
+				key: e.key,
+				old: e.old ? [e.old] : [],
+				new: e.new ? [e.new] : [],
+			})),
+		});
+		return (side: "LEFT" | "RIGHT", n: number) =>
+			lineAnchor(doc, sides, oldBlocks, newBlocks, side, n);
+	};
+
+	it("a new line: its block; a blank line: the block before it", () => {
+		const at = setup();
+		expect(at("RIGHT", 3)).toEqual({ block: 1 });
+		expect(at("RIGHT", 4)).toEqual({ block: 1 });
+		expect(at("RIGHT", 7)).toEqual({ block: 3 });
+	});
+
+	it("an unchanged old line: the new line it is; a removed one: its change row", () => {
+		const at = setup();
+		expect(at("LEFT", 7)).toEqual({ block: 2 });
+		// Rows: title, intro (changed), the removal before "kept", ...
+		expect(at("LEFT", 5)).toEqual({ row: 2 });
+		expect(at("LEFT", 3)).toEqual({ row: 1 });
+	});
+
+	it("a line past either end still lands on a block, never nowhere", () => {
+		const at = setup();
+		expect(at("RIGHT", 99)).toEqual({ block: 3 });
+		expect(at("LEFT", 99)).not.toBeNull();
 	});
 });
