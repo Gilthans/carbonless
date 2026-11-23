@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
 	type MouseEvent,
 	type ReactNode,
+	useCallback,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -336,15 +337,47 @@ export function MarkdownView(props: {
 		for (const d of root.current?.querySelectorAll("details") ?? []) {
 			d.open = true;
 		}
-		if (root.current) alignTables(root.current);
 	});
+	const realign = useCallback(() => {
+		if (root.current) alignTables(root.current);
+	}, []);
+	// Again only when the document's HTML may differ: its rows (a mark, a
+	// whitespace setting), a fold opened, side by side.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: these change the rendered tables.
+	useLayoutEffect(realign, [model, open, split, ignoreWs, realign]);
 	const ready = model !== null && model !== "failed";
 	useEffect(() => {
 		const el = root.current;
 		if (!ready || !el) return;
 		el.addEventListener("scroll", syncTableScroll, true);
-		return () => el.removeEventListener("scroll", syncTableScroll, true);
-	}, [ready]);
+		// What changes a cell's width after the pass: the document's width,
+		// a font face arriving, an image in a cell loading. Aligning never
+		// changes the document's width (tables scroll in their boxes).
+		const onLoad = (e: Event) => {
+			if (e.target instanceof Element && e.target.closest("table")) realign();
+		};
+		el.addEventListener("load", onLoad, true);
+		let width = el.clientWidth;
+		const resized =
+			typeof ResizeObserver === "undefined"
+				? null
+				: new ResizeObserver(() => {
+						if (el.clientWidth === width) return;
+						width = el.clientWidth;
+						realign();
+					});
+		resized?.observe(el);
+		let live = true;
+		void document.fonts?.ready.then(() => {
+			if (live) realign();
+		});
+		return () => {
+			live = false;
+			resized?.disconnect();
+			el.removeEventListener("load", onLoad, true);
+			el.removeEventListener("scroll", syncTableScroll, true);
+		};
+	}, [ready, realign]);
 	const idBase = useId();
 
 	// Where each line shows: the row of the block holding it (a folded

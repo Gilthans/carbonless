@@ -15,8 +15,12 @@
 
 const COLS = ["doc", "old", "new"] as const;
 
-/** Each group's scroll boxes, by box: for the scroll sync. */
-const groupOf = new WeakMap<HTMLElement, HTMLElement[]>();
+/**
+ * Per document, each group's scroll boxes by box, for the scroll sync:
+ * made again by each alignment, so a box that left a group stops taking
+ * its old partners along.
+ */
+const groupsOf = new WeakMap<Element, Map<Element, HTMLElement[]>>();
 
 function groups(root: HTMLElement): HTMLElement[][] {
 	const out: HTMLElement[][] = [];
@@ -69,15 +73,23 @@ const cellsOf = (t: HTMLElement): HTMLElement[][] =>
 		),
 	);
 
+/** What `fit` writes onto one table: its width and its columns'. */
+interface Fit {
+	t: HTMLElement;
+	rows: HTMLElement[][];
+	want: number[];
+}
+
 /**
  * The group's tables, each laid out on its own as the page allows, give
  * each column the widest any of them took; then every table is laid out
  * fixed at those widths, each column's edge at the same place in the page
  * (a struck old row sits a little further in: its first column is that
  * much narrower). No column is narrower than any table's own needed it,
- * so no cell's content is cut or overlaps its neighbour.
+ * so no cell's content is cut or overlaps its neighbour. Reads only:
+ * `apply` writes, once every group is read.
  */
-function align(tables: HTMLElement[]): void {
+function fit(tables: HTMLElement[]): Fit[] {
 	const shape = tables.map((t) => {
 		const rows = cellsOf(t);
 		const box = t.parentElement;
@@ -110,25 +122,30 @@ function align(tables: HTMLElement[]): void {
 			starts[i] = edge;
 		});
 	}
-	placed.forEach((s, i) => {
-		const want = wants[i] as number[];
-		if (want.length === 0) return;
-		s.t.style.tableLayout = "fixed";
-		s.t.style.width = `${want.reduce((a, b) => a + b, 0)}px`;
-		s.t.setAttribute("data-md-w", "");
-		for (const r of s.rows) {
-			r.forEach((c, k) => {
-				const w = want[k];
-				if (w === undefined) return;
-				c.style.boxSizing = "border-box";
-				c.style.width = `${w}px`;
-				c.setAttribute("data-md-w", "");
-			});
-		}
-	});
+	return placed.map((s, i) => ({ t: s.t, rows: s.rows, want: wants[i] ?? [] }));
 }
 
-/** Lines up the tables under `root` (MarkdownView's document), again from scratch. */
+function apply({ t, rows, want }: Fit): void {
+	if (want.length === 0) return;
+	t.style.tableLayout = "fixed";
+	t.style.width = `${want.reduce((a, b) => a + b, 0)}px`;
+	t.setAttribute("data-md-w", "");
+	for (const r of rows) {
+		r.forEach((c, k) => {
+			const w = want[k];
+			if (w === undefined) return;
+			c.style.boxSizing = "border-box";
+			c.style.width = `${w}px`;
+			c.setAttribute("data-md-w", "");
+		});
+	}
+}
+
+/**
+ * Lines up the tables under `root` (MarkdownView's document), again from
+ * scratch: what an earlier pass wrote cleared, every group read, then
+ * every group written (one layout, however many groups).
+ */
 export function alignTables(root: HTMLElement): void {
 	for (const c of root.querySelectorAll<HTMLElement>("[data-md-w]")) {
 		c.style.width = "";
@@ -136,21 +153,27 @@ export function alignTables(root: HTMLElement): void {
 		c.style.tableLayout = "";
 		c.removeAttribute("data-md-w");
 	}
-	for (const g of groups(root)) {
-		align(g);
+	const all = groups(root);
+	const fits = all.map(fit);
+	for (const f of fits) for (const t of f) apply(t);
+	const by = new Map<Element, HTMLElement[]>();
+	for (const g of all) {
 		const boxes = g.flatMap((t) => (t.parentElement ? [t.parentElement] : []));
-		for (const b of boxes) groupOf.set(b, boxes);
+		for (const b of boxes) by.set(b, boxes);
 	}
+	groupsOf.set(root, by);
 }
 
 /**
  * A table scrolled sideways takes the rest of its group along (a capture
- * listener on the document: scroll events don't bubble).
+ * listener on the document, `currentTarget`: scroll events don't bubble).
  */
 export function syncTableScroll(event: Event): void {
 	const t = event.target;
+	const root = event.currentTarget;
 	if (!(t instanceof HTMLElement) || !t.classList.contains("md-table")) return;
-	for (const other of groupOf.get(t) ?? []) {
+	if (!(root instanceof Element)) return;
+	for (const other of groupsOf.get(root)?.get(t) ?? []) {
 		if (other !== t && other.scrollLeft !== t.scrollLeft) {
 			other.scrollLeft = t.scrollLeft;
 		}

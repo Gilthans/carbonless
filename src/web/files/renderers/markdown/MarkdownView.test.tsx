@@ -37,11 +37,18 @@ import { placeThreads, sinceEarlier, sinceLeft } from "../../threadPlacement";
 import { type DocFixture, docFixture, type Edit } from "./docFixture";
 import { MarkdownView } from "./MarkdownView";
 import { renderBlocks } from "./renderBlocks";
+import { alignTables } from "./tableAlign";
 
 // Spied on, still the renderer: a mark mustn't render the document again.
 vi.mock("./renderBlocks", async (importOriginal) => {
 	const real = await importOriginal<typeof import("./renderBlocks")>();
 	return { ...real, renderBlocks: vi.fn(real.renderBlocks) };
+});
+
+// Spied on, still the aligner: it runs again only when the tables may differ.
+vi.mock("./tableAlign", async (importOriginal) => {
+	const real = await importOriginal<typeof import("./tableAlign")>();
+	return { ...real, alignTables: vi.fn(real.alignTables) };
 });
 
 /*
@@ -402,6 +409,19 @@ describe("MarkdownView, full diff", () => {
 			root,
 			EDITS.map((e) => e.key),
 		);
+	});
+
+	it("tables are aligned again when the document's rows change (a fold opened), not on every render", async () => {
+		const { update } = show(docFixture(OLD, NEW, EDITS));
+		await doc();
+		const calls = () => vi.mocked(alignTables).mock.calls.length;
+		const first = calls();
+		expect(first).toBeGreaterThan(0);
+		update({ findSpent: true });
+		update({ findSpent: false });
+		expect(calls()).toBe(first);
+		await userEvent.click(screen.getByTestId("md-fold"));
+		expect(calls()).toBeGreaterThan(first);
 	});
 
 	it("a whitespace-only cluster gets its own box with the ~; none with Ignore whitespace on", async () => {
