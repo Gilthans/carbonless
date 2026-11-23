@@ -1,5 +1,6 @@
 import {
 	type AgentAnchor,
+	type AgentMessage,
 	type AgentSpanAnchor,
 	type AgentView,
 	SUGGEST_RESOLVE,
@@ -142,37 +143,109 @@ export function isSafePath(path: string): boolean {
 	);
 }
 
+/** A patch set as anchorFor reads it (`startedAt` ISO or ms). */
+export interface AnchorPatchset {
+	number: number;
+	head: string;
+	mergeBase: string;
+	startedAt: string | number;
+}
+
 /**
- * The anchor as the envelope gives it: `commit` the commit its side is
- * on: the merge base (the diff's left side) for a LEFT anchor. A thread
- * anchor's commit is the one its comment was made on: on the LEFT, the
- * merge base of the patch set with that head, else the review's, as for
- * a line anchor. The review conversation's anchor has no commit: as is.
+ * Where a conversation was opened, to tell apart patch sets that share a
+ * head (a retarget keeps the head and starts a patch set with another
+ * merge base): the patch set its opening message's view showed, if it
+ * says, and when it was opened.
+ */
+export interface AnchorOpened {
+	patchset?: number;
+	at?: string;
+}
+
+/**
+ * Where an agent thread was opened (anchorFor's AnchorOpened): the patch
+ * set its first message's view showed (the since view's target too: its
+ * LEFT lines are stored in that patch set's base numbers, CAR-217), and
+ * the thread's opening time. A GitHub thread conversation's anchor is
+ * the GitHub comment's, made before the conversation on whatever patch
+ * set: only the time.
+ */
+export function anchorOpened(thread: {
+	anchor: AgentAnchor;
+	at: string;
+	messages: readonly AgentMessage[];
+}): AnchorOpened {
+	const target = thread.messages[0]?.view?.target;
+	return {
+		at: thread.at,
+		...(thread.anchor.subject !== "thread" && target && "patchset" in target
+			? { patchset: target.patchset }
+			: {}),
+	};
+}
+
+/**
+ * The patch set an anchor on head `commit` was opened on: the only one
+ * with that head; of several (a retarget), the one its opening message
+ * named, else the latest started by its opening (the earliest when none
+ * was, the latest when the time is unknown).
+ */
+function patchsetOf(
+	commit: string,
+	patchsets: readonly AnchorPatchset[],
+	opened: AnchorOpened,
+): AnchorPatchset | undefined {
+	const same = patchsets
+		.filter((p) => p.head === commit)
+		.sort((a, b) => a.number - b.number);
+	if (same.length <= 1) return same[0];
+	const named = same.find((p) => p.number === opened.patchset);
+	if (named) return named;
+	const at = opened.at ? Date.parse(opened.at) : Number.NaN;
+	if (Number.isNaN(at)) return same.at(-1);
+	const ms = (p: AnchorPatchset) =>
+		typeof p.startedAt === "number" ? p.startedAt : Date.parse(p.startedAt);
+	return same.filter((p) => ms(p) <= at).at(-1) ?? same[0];
+}
+
+/**
+ * The anchor as an agent gets it (every tool: `next`'s envelope and
+ * anchored file, `threads`, a thread's code window): `commit` the commit
+ * its side is on. Stored, a span or thread anchor names the head it was
+ * opened on, whatever its side (the code window derives the left side
+ * from that head); an agent reading `{commit: head, side: LEFT, line: n}`
+ * would read line n of the head, another line (CAR-222). So a LEFT
+ * anchor names the merge base of the patch set it was opened on
+ * (patchsetOf), else the review's merge base. A since-view LEFT line is
+ * stored in that base's numbers (CAR-217), so the same holds for it.
+ * RIGHT and file anchors as they are; the review conversation's anchor
+ * has no commit. The one place this rule lives: never apply it to an
+ * anchor it already gave (its commit is no head then).
  */
 export function anchorFor(
 	anchor: AgentSpanAnchor,
-	review: PromptReview,
-	patchsets?: readonly { head: string; mergeBase: string }[],
+	review: Pick<PromptReview, "mergeBase">,
+	patchsets?: readonly AnchorPatchset[],
+	opened?: AnchorOpened,
 ): AgentSpanAnchor;
 export function anchorFor(
 	anchor: AgentAnchor,
-	review: PromptReview,
-	patchsets?: readonly { head: string; mergeBase: string }[],
+	review: Pick<PromptReview, "mergeBase">,
+	patchsets?: readonly AnchorPatchset[],
+	opened?: AnchorOpened,
 ): AgentAnchor;
 export function anchorFor(
 	anchor: AgentAnchor,
-	review: PromptReview,
-	patchsets: readonly { head: string; mergeBase: string }[] = [],
+	review: Pick<PromptReview, "mergeBase">,
+	patchsets: readonly AnchorPatchset[] = [],
+	opened: AnchorOpened = {},
 ): AgentAnchor {
 	if (anchor.subject === "review") return { subject: "review" };
 	if (anchor.subject === "file" || anchor.side !== "LEFT") {
 		return { ...anchor };
 	}
 	const commit =
-		anchor.subject === "thread"
-			? (patchsets.find((p) => p.head === anchor.commit)?.mergeBase ??
-				review.mergeBase)
-			: review.mergeBase;
+		patchsetOf(anchor.commit, patchsets, opened)?.mergeBase ?? review.mergeBase;
 	return { ...anchor, commit };
 }
 
@@ -184,7 +257,7 @@ export function anchorFor(
  */
 export function threadEnvelope(input: {
 	review: PromptReview;
-	thread: { id: string; anchor: AgentAnchor };
+	thread: { id: string; anchor: AgentAnchor; opened?: AnchorOpened };
 	github: GithubThreadFacts | null;
 	view: AgentView;
 	current: string;
@@ -237,7 +310,7 @@ export function threadEnvelope(input: {
 		review,
 		thread: {
 			id: thread.id,
-			anchor: anchorFor(thread.anchor, review, patchsets),
+			anchor: anchorFor(thread.anchor, review, patchsets, thread.opened),
 		},
 		...(github ? { github } : {}),
 		view: {

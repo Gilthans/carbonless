@@ -381,7 +381,7 @@ export function createMcpServer(
 		"next",
 		{
 			description:
-				"The oldest question waiting for you, handed to you until you reply (the same one again if you call it before replying): preamble, envelope, and for a question on code the anchored file and the diff hunk (null for a question about the whole review: read it with the other tools). `{none: true}` when nothing waits: then run watch in the background.",
+				"The oldest question waiting for you, handed to you until you reply (the same one again if you call it before replying): preamble, envelope, and for a question on code the anchored file and the diff hunk (null for a question about the whole review: read it with the other tools). The anchor's commit is the commit its side is on: for LEFT, the base side's. `{none: true}` when nothing waits: then run watch in the background.",
 			inputSchema: TOKEN,
 		},
 		({ token }) =>
@@ -453,7 +453,7 @@ export function createMcpServer(
 		"threads",
 		{
 			description:
-				"Every agent thread on the review, with its messages (yours included), to reread one.",
+				"Every agent thread on the review, with its messages (yours included), to reread one. An anchor's commit is the commit its side is on: for LEFT, the base side's (the merge base of the patch set it was opened on), as in next.",
 			inputSchema: TOKEN,
 		},
 		({ token }) =>

@@ -110,6 +110,69 @@ describe("the preamble and anchors", () => {
 			commit: review.mergeBase,
 		});
 	});
+
+	it("a LEFT line anchor opened on an earlier patch set names that patch set's merge base, not the review's (CAR-222)", () => {
+		const left = {
+			...right,
+			commit: "e".repeat(40),
+			side: "LEFT" as const,
+			startSide: "LEFT" as const,
+		};
+		const patchsets = [
+			{
+				number: 1,
+				head: "e".repeat(40),
+				mergeBase: "f".repeat(40),
+				startedAt: "2026-11-01T00:00:00Z",
+			},
+			{
+				number: 2,
+				head: review.head.commit,
+				mergeBase: review.mergeBase,
+				startedAt: "2026-11-02T00:00:00Z",
+			},
+		];
+		expect(anchorFor(left, review, patchsets)).toEqual({
+			...left,
+			commit: "f".repeat(40),
+		});
+		// RIGHT keeps the head it was opened on.
+		expect(
+			anchorFor({ ...right, commit: "e".repeat(40) }, review, patchsets),
+		).toMatchObject({ commit: "e".repeat(40) });
+	});
+
+	/**
+	 * A retarget (main → release) keeps the head and starts a patch set
+	 * with another merge base: two patch sets share head H. A removed line
+	 * opened on patch set 2 is in patch set 2's base, never patch set 1's.
+	 */
+	it("patch sets sharing a head (a retarget): the one the conversation was opened on, by its view, else by its time (CAR-222)", () => {
+		const H = "a".repeat(40);
+		const M1 = "1".repeat(40);
+		const M2 = "2".repeat(40);
+		const retargeted = [
+			{ number: 1, head: H, mergeBase: M1, startedAt: "2026-11-01T00:00:00Z" },
+			{ number: 2, head: H, mergeBase: M2, startedAt: "2026-11-02T00:00:00Z" },
+		];
+		const left = {
+			...right,
+			commit: H,
+			side: "LEFT" as const,
+			startSide: "LEFT" as const,
+		};
+		const at = (opened: { patchset?: number; at?: string }) =>
+			anchorFor(left, review, retargeted, opened).commit;
+		// Its opening message's view named the patch set.
+		expect(at({ patchset: 1, at: "2026-11-03T00:00:00Z" })).toBe(M1);
+		expect(at({ patchset: 2 })).toBe(M2);
+		// Else the latest started by the time it was opened.
+		expect(at({ at: "2026-11-01T12:00:00Z" })).toBe(M1);
+		expect(at({ at: "2026-11-02T12:00:00Z" })).toBe(M2);
+		// Opened before either (a skewed clock): the earliest; no time: the latest.
+		expect(at({ at: "2026-10-01T00:00:00Z" })).toBe(M1);
+		expect(at({})).toBe(M2);
+	});
 });
 
 /** A character by code point: invisible ones stay visible in the source. */

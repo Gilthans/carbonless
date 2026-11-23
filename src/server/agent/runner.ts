@@ -44,6 +44,7 @@ import type { AgentThreadFold, AgentThreadStore } from "./store.js";
 export interface RunnerFacts {
 	review(): PromptReview;
 	prFacts(): Promise<{ title: string; body: string; files: string[] }>;
+	/** The file at the anchor's commit: pass the anchor as the agent is told it (anchorFor). */
 	anchored(anchor: AgentAnchor): Promise<{ text: string } | null>;
 	hunk(anchor: AgentAnchor): Promise<string | null>;
 	authorOf(login: string): Promise<CommentRole>;
