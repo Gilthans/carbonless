@@ -315,13 +315,42 @@ export interface SincePiece {
 	old: LineRanges;
 	new: LineRanges;
 	kind?: "reverted" | "removed";
+	/**
+	 * A re-indent since the compared patch set that the reviewer already
+	 * read there (CAR-218): every line is whitespace-only on the interdiff
+	 * (its display hunk's one matching, `whitespaceLines`) and held a human
+	 * mark at the compared patch set (`SinceWhitespace.marked`). "Ignore
+	 * whitespace" on leaves it out of the counts. Any doubt leaves it unset
+	 * (principle 2: it counts).
+	 */
+	whitespaceOnly?: true;
 }
 
-/** The since view's pieces of a file, from its hunks and the viewed snapshot's clusters. */
+/**
+ * What sincePieces needs to cut whitespace-only runs (CAR-218): the
+ * interdiff's whitespace-only lines (`whitespaceLines` of each display
+ * hunk, the matching the view's `~` rows read), and whether a line held a
+ * human mark at the compared patch set (its counterpart there, traced).
+ */
+export interface SinceWhitespace {
+	lines: ReadonlySet<DiffLine>;
+	marked: (line: DiffLine) => boolean;
+}
+
+/**
+ * The since view's pieces of a file, from its hunks and the viewed
+ * snapshot's clusters. With `ws` (CAR-218), each run of one cluster's
+ * changed lines is also cut where whitespace-only lines start and end, as
+ * the base view's cut cuts git hunks, so a piece never mixes `~` rows with
+ * real changes; a piece is `whitespaceOnly` when every line is in
+ * `ws.lines` and `ws.marked`. Every changed line is in exactly one piece,
+ * in order, with or without it.
+ */
 export function sincePieces(
 	hunks: readonly { newStart: number; lines: readonly DiffLine[] }[],
 	clusters: readonly Cluster[],
 	facts: (cluster: Cluster) => PieceFacts = () => ({}),
+	ws?: SinceWhitespace,
 ): SincePiece[] {
 	const byKey = new Map(clusters.map((c) => [c.key, c]));
 	const out: SincePiece[] = [];
@@ -329,7 +358,7 @@ export function sincePieces(
 	hunks.forEach((hunk, h) => {
 		let at = 0;
 		let before = hunk.newStart - 1;
-		for (const run of lineRuns(hunk.lines)) {
+		for (const run of wsRuns(lineRuns(hunk.lines), ws)) {
 			const first = run.lines[0];
 			if (run.change && first) {
 				const piece: SincePiece = {
@@ -348,6 +377,9 @@ export function sincePieces(
 						),
 					),
 				};
+				if (ws && run.lines.every((l) => ws.lines.has(l) && ws.marked(l))) {
+					piece.whitespaceOnly = true;
+				}
 				out.push(piece);
 				if (run.key !== undefined && byKey.has(run.key)) {
 					const list = ofKey.get(run.key) ?? [];
@@ -383,6 +415,40 @@ export function sincePieces(
 		if (!piece.owns) continue;
 		if (piece.new.length === 0) piece.kind = "removed";
 		else delete piece.kind;
+	}
+	return out;
+}
+
+/**
+ * Changed runs cut where membership in `ws.lines` changes (each piece all
+ * whitespace-only lines, or none); context runs and, without `ws`, every
+ * run as it is.
+ */
+function wsRuns(
+	runs: ReturnType<typeof lineRuns>,
+	ws: SinceWhitespace | undefined,
+): ReturnType<typeof lineRuns> {
+	if (!ws) return runs;
+	const out: ReturnType<typeof lineRuns> = [];
+	for (const run of runs) {
+		if (!run.change) {
+			out.push(run);
+			continue;
+		}
+		let last: boolean | undefined;
+		for (const line of run.lines) {
+			const isWs = ws.lines.has(line);
+			const tail = out.at(-1);
+			if (tail && last === isWs) tail.lines.push(line);
+			else {
+				out.push({
+					...(run.key === undefined ? {} : { key: run.key }),
+					change: true,
+					lines: [line],
+				});
+			}
+			last = isWs;
+		}
 	}
 	return out;
 }
@@ -576,10 +642,11 @@ export interface SinceUnit {
 	/** The rest of a cluster no piece owns: only the full diff shows those lines. */
 	rest?: true;
 	/**
-	 * Of a whitespace-only cluster of the viewed snapshot
-	 * (Cluster.whitespaceOnly): "Ignore whitespace" on leaves it out of the
-	 * counts (src/web/files/since.ts countedUnits). A piece no cluster owns
-	 * never is.
+	 * "Ignore whitespace" on leaves it out of the counts
+	 * (src/web/files/since.ts countedUnits). A piece's comes from the piece
+	 * (SincePiece.whitespaceOnly: judged on the interdiff, CAR-218); the
+	 * rest of a cluster keeps its cluster's (Cluster.whitespaceOnly: those
+	 * lines are read against the base).
 	 */
 	whitespaceOnly?: true;
 	/** The viewed snapshot's cluster it belongs to, if any (a cluster's pieces share it). */
@@ -638,7 +705,7 @@ export function sinceUnits(
 					state,
 					open,
 					cluster: p.key,
-					...(cluster.whitespaceOnly ? { whitespaceOnly: true } : {}),
+					...(p.whitespaceOnly ? { whitespaceOnly: true } : {}),
 				});
 				continue;
 			}
@@ -653,6 +720,7 @@ export function sinceUnits(
 				lines,
 				state,
 				open: state === "unreviewed" ? lines : 0,
+				...(p.whitespaceOnly ? { whitespaceOnly: true } : {}),
 			});
 		}
 		// What no piece owns of a cluster: one unit, for a reworked or new

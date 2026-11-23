@@ -5,11 +5,14 @@
 #     package.json version (the next release), set only in the runner.
 #   - mode=promote (`pnpm release promote`, on the owner's word): a tried RC
 #     (its tag must be on master, CI must have passed on its commit:
-#     promote-ci) packed as X.Y.Z, that tarball smoke-tested, and staged on
-#     npm with the dist-tag `latest`, hidden until the owner approves it
-#     with their two-factor (`pnpm release publish`). The run's artifact
-#     `release` holds the tarball and its manifest. Before the
-#     package's first publish nothing is staged: the owner publishes that one.
+#     promote-ci) packed as X.Y.Z with its release notes (the input
+#     `notes`, which pnpm release promote collects from Linear for exactly
+#     the RC's range; checked here from git alone), that tarball
+#     smoke-tested, and staged on npm with the dist-tag `latest`, hidden
+#     until the owner approves it with their two-factor (`pnpm release
+#     publish`). The run's artifact `release` holds the tarball and its
+#     manifest. Before the package's first publish nothing is staged: the
+#     owner publishes that one.
 #   - mode=fixup (release-finish): `rc` up to a new release, when behind.
 #
 # npm: Trusted Publishing (OIDC), no token; npm adds provenance (the repo is
@@ -51,6 +54,10 @@ on:
         default: minor
       version:
         description: "fixup: the release just published (X.Y.Z)"
+        required: false
+        default: ""
+      notes:
+        description: "promote: the release notes, gzip+base64 (pnpm release promote sends them; empty = release-notes/X.Y.Z.json at the RC)"
         required: false
         default: ""
 
@@ -412,23 +419,30 @@ jobs:
           fi
           echo "RC_SHA=$sha" >>"$GITHUB_ENV"
       - name: Release notes cover the release
-        # CAR-192: release-notes/X.Y.Z.json at the RC's commit accounts for
-        # every ticket and ticket-less PR since the previous release (notes
-        # or an explicit none). git only: no Linear, no token. Else: run
-        # `pnpm release notes X.Y.Z --pr`, merge it, promote its RC.
+        # CAR-192, CAR-242: the notes pnpm release promote collected (the
+        # input `notes`; for any id both have it wins over a
+        # release-notes/X.Y.Z.json at the RC's commit, which is optional)
+        # account for every ticket and ticket-less PR from the previous
+        # release up to the RC (notes or an explicit none), and have no
+        # entry of another PR. git only: no Linear, no token. The input
+        # reaches the script as a variable, never pasted into it. Writes
+        # the checked notes for ci:set-version; the summary lists them.
         env:
           RELEASE: ${{ steps.plan.outputs.release }}
-        run: pnpm exec tsx scripts/release.ts ci:notes-check "$RELEASE" "$RC_SHA"
+          NOTES_INPUT: ${{ inputs.notes }}
+        run: pnpm exec tsx scripts/release.ts ci:notes-input "$RELEASE" "$RC_SHA" "$RUNNER_TEMP/release-notes.json" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Install the RC
         # What builds the tarball (prepack); nothing of the suite runs.
         working-directory: ${{ runner.temp }}/rc
         run: pnpm install --frozen-lockfile
       - name: Set the version and gitHead (the tree stays clean)
         # master's release.ts: the RC's commit may predate it. It also sets
-        # crbReleaseNotes (CAR-192), which the build copies into dist.
+        # crbReleaseNotes (CAR-192; this version's from the checked notes),
+        # which the build copies into dist, and crbReleaseNotesFile (CAR-242:
+        # those notes whole, which release-finish commits once published).
         env:
           RELEASE: ${{ steps.plan.outputs.release }}
-        run: pnpm exec tsx scripts/release.ts ci:set-version "$RELEASE" "$RC_DIR"
+        run: pnpm exec tsx scripts/release.ts ci:set-version "$RELEASE" "$RC_DIR" "$RUNNER_TEMP/release-notes.json"
       - name: Pack
         env:
           RELEASE: ${{ steps.plan.outputs.release }}

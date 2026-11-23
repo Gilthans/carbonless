@@ -27,6 +27,7 @@ import {
 	newestTag,
 	next,
 	nextRc,
+	notesLines,
 	type PublishIo,
 	parseManifest,
 	parseTag,
@@ -178,7 +179,7 @@ function fakeIo(
 
 /** merge-ok's release-notes check and promote's, passed (their own tests: release-notes.test.ts). */
 const NO_NOTES = async () => "not checked here";
-const NO_CHECK = async () => {};
+const NO_CHECK = async () => undefined;
 const lsRemote = (...tags: string[]) =>
 	tags.map((t, i) => `${String(i).repeat(40)}\trefs/tags/${t}`).join("\n");
 const npmView = (distTags: Record<string, string>, versions: string[]) =>
@@ -886,9 +887,13 @@ describe("pnpm release", () => {
 		await promote(io, undefined, "minor", async (tag, release) => {
 			checked.push(`${tag} ${release}`);
 			expect(calls.some((c) => c.startsWith("gh workflow"))).toBe(false);
+			// CAR-242: the notes it collected go to the run as its input.
+			return "H4sIAAAA+notes=";
 		});
 		expect(checked).toEqual(["v0.1.0-rc.3 0.1.0"]);
-		expect(calls.some((c) => c.startsWith("gh workflow run"))).toBe(true);
+		expect(calls).toContain(
+			"gh workflow run release.yml --repo owner/repo --ref master -f mode=promote -f rc=v0.1.0-rc.3 -f next=minor -f notes=H4sIAAAA+notes=",
+		);
 		const refused = fakeIo({
 			"git ls-remote": lsRemote("v0.1.0-rc.3"),
 		});
@@ -1199,6 +1204,60 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 		expect(p.calls).toContain(
 			"gh workflow run release-finish.yml --repo owner/repo --ref master -f version=0.1.0 -f run=77",
 		);
+	});
+
+	it("shows the package's release notes before asking (CAR-242), terminal-safe", async () => {
+		// Built from code points: the source holds no raw control or bidi characters.
+		const ESC = String.fromCharCode(0x1b);
+		const RLO = String.fromCharCode(0x202e);
+		const notesFile = {
+			version: "0.1.0",
+			date: null,
+			notes: [
+				{ id: "CAR-1", kind: "new", prs: [1], text: "Threads tab." },
+				{ id: "#2", kind: "fixed", prs: [2], text: "Uses `<dialog>`." },
+			],
+			none: [{ id: "CAR-3", prs: [3], why: "test tooling" }],
+		};
+		const { out } = artifact({
+			packageJson: {
+				name: "carbonless-review",
+				version: "0.1.0",
+				crbReleaseNotesFile: notesFile,
+			},
+		});
+		let shown: string[] = [];
+		const p = publishIo(out, {}, { onAsk: () => (shown = [...p.lines]) });
+		await publishRelease(p.io, "77");
+		expect(shown).toEqual(
+			expect.arrayContaining([
+				"  notes: 2 note(s), 1 without one (none)",
+				"    new: Threads tab. (CAR-1)",
+				"    fixed: Uses `<dialog>`. (#2)",
+			]),
+		);
+		// A package from before CAR-242 says so; a bad field is named, and
+		// nothing of it reaches the terminal raw.
+		expect(notesLines(undefined, "0.1.0")).toEqual([
+			"  notes: none in the package (promoted before CAR-242)",
+		]);
+		const bad = notesLines(
+			{
+				...notesFile,
+				notes: [
+					{ id: "CAR-1", kind: "new", prs: [1], text: `Red ${ESC}[31m${RLO}` },
+				],
+			},
+			"0.1.0",
+		);
+		expect(bad).toHaveLength(1);
+		expect(bad[0]).toMatch(/^ {2}notes: unreadable \(/);
+		expect(
+			[...(bad[0] ?? "")].some((c) => c.charCodeAt(0) < 32 || c === RLO),
+		).toBe(false);
+		expect(notesLines(notesFile, "0.2.0")).toEqual([
+			"  notes: unreadable (for 0.1.0)",
+		]);
 	});
 
 	it("refuses a tarball whose sha256 isn't the manifest's", async () => {
@@ -2415,8 +2474,16 @@ esac
 			),
 		);
 		const step = steps[at] ?? "";
-		// Every time (a rerun of release-finish too), with the job's token.
-		expect(step).not.toMatch(/^ {8}if:/m);
+		// Every time (a rerun of release-finish too), with the job's token,
+		// even when a step before it failed (CAR-242: the published notes,
+		// the next PR): only a cancel skips it.
+		expect(at).toBeGreaterThan(
+			steps.findIndex((st) => st.includes("name: The published release notes")),
+		);
+		expect(step.match(/^ {8}if:.*$/gm)).toEqual([
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+			"        if: ${{ !cancelled() }}",
+		]);
 		expect(step).toMatch(/GH_TOKEN: \$\{\{ github\.token \}\}/);
 		expect(code(workflow("release-finish.yml"))).toMatch(
 			/^ {2}actions: write\b/m,
@@ -2476,7 +2543,7 @@ esac
 		}
 	});
 
-	it("release notes (CAR-192): no Linear in any workflow but the release-note check's; promote-check checks the notes with no token; release-finish's GitHub release has the token only where it calls gh", () => {
+	it("release notes (CAR-192, CAR-242): no Linear in any workflow but the release-note check's; promote-check checks the input notes with no token and packs them; release-finish takes the published notes; its GitHub release has the token only where it calls gh", () => {
 		const files = readdirSync(
 			join(import.meta.dirname, "../.github/workflows"),
 		).filter((f) => f.endsWith(".yml"));
@@ -2497,16 +2564,27 @@ esac
 			st.includes("name: Release notes cover the release"),
 		);
 		expect(notes).toContain(
-			'pnpm exec tsx scripts/release.ts ci:notes-check "$RELEASE" "$RC_SHA"',
+			'pnpm exec tsx scripts/release.ts ci:notes-input "$RELEASE" "$RC_SHA" "$RUNNER_TEMP/release-notes.json" | tee -a "$GITHUB_STEP_SUMMARY"',
+		);
+		// The input reaches it as a variable, in that step alone.
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+		expect(notes).toContain("NOTES_INPUT: ${{ inputs.notes }}");
+		expect(check.match(/inputs\.notes/g)).toHaveLength(1);
+		expect(workflow("release.yml")).toMatch(
+			/\n {6}notes:\n {8}description: "promote: the release notes, gzip\+base64 [^\n]*"\n {8}required: false\n {8}default: ""\n/,
 		);
 		// After the RC it checks is planned and pinned, before anything is built.
-		expect(check.indexOf("ci:notes-check")).toBeGreaterThan(
+		expect(check.indexOf("ci:notes-input")).toBeGreaterThan(
 			check.indexOf(
 				'if [[ "$TAG" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
 			),
 		);
-		expect(check.indexOf("ci:notes-check")).toBeLessThan(
+		expect(check.indexOf("ci:notes-input")).toBeLessThan(
 			check.indexOf("name: Install the RC"),
+		);
+		// The checked notes are what the package carries.
+		expect(check).toContain(
+			'pnpm exec tsx scripts/release.ts ci:set-version "$RELEASE" "$RC_DIR" "$RUNNER_TEMP/release-notes.json"',
 		);
 		const finish = code(
 			new Map(jobs(workflow("release-finish.yml"))).get("finish") ?? "",
@@ -2516,7 +2594,18 @@ esac
 		const body = finish[at("The GitHub release's text")] ?? "";
 		const release = finish[at("GitHub release")] ?? "";
 		expect(body).toContain(
-			'pnpm exec tsx scripts/release.ts ci:release-body "$VERSION" "$SHA" >"$RUNNER_TEMP/release-body.md"',
+			'pnpm exec tsx scripts/release.ts ci:release-body "$VERSION" "$SHA" "$RUNNER_TEMP/release-notes.json" >"$RUNNER_TEMP/release-body.md"',
+		);
+		// The published notes (CAR-242), read with no token before the
+		// "next" PR and the GitHub release use them.
+		const published = finish[at("The published release notes")] ?? "";
+		expect(published).toContain(
+			'pnpm exec tsx scripts/release.ts ci:published-notes "$VERSION" "$RUNNER_TEMP/release" "$RUNNER_TEMP/release-notes.json"',
+		);
+		expect(published).not.toMatch(/token|GH_TOKEN/i);
+		expect(at("Plan")).toBeLessThan(at("The published release notes"));
+		expect(at("The published release notes")).toBeLessThan(
+			at("Next version and changelog PR"),
 		);
 		expect(body).not.toMatch(/token|GH_TOKEN/i);
 		expect(release).toMatch(/GH_TOKEN: \$\{\{ github\.token \}\}/);
@@ -2548,9 +2637,13 @@ esac
 			'crb_release() { env -u GH_TOKEN -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 pnpm exec tsx scripts/release.ts "$@"; }',
 		);
 		expect(nextPr.split("pnpm exec tsx").length - 1).toBe(1);
-		// The next PR commits the dated notes file.
-		expect(finish[at("Next version and changelog PR")]).toContain(
-			"[[ ! -d release-notes ]] || git add release-notes",
+		// The next PR commits the published notes, dated, and the changelog
+		// from them.
+		expect(nextPr).toContain(
+			'crb_release ci:changelog "$VERSION" "$SHA" "$RUNNER_TEMP/release-notes.json"',
+		);
+		expect(nextPr).toContain(
+			"git add package.json docs/changelog.md release-notes\n",
 		);
 	});
 

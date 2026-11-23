@@ -16,7 +16,8 @@ test.use({ crbServer: "own" });
 /**
  * The agent suggests a review comment (CAR-83): its answer holds a
  * ```comment block, which shows as an editable box; Add review comment
- * posts the box's text to the fake gh where the conversation sits, once.
+ * (Reply on a GitHub thread, CAR-237) posts the box's text to the fake gh
+ * where the conversation sits, once.
  * Desktop and phone, against the fake ACP agent.
  */
 
@@ -57,6 +58,11 @@ const replyPosts = (p: Pr) =>
 const box = (scope: Locator) => scope.getByTestId("agent-comment");
 const addButton = (scope: Locator) =>
 	box(scope).getByRole("button", { name: "Add review comment" });
+/** The button of a block that posts as a reply to a GitHub thread (CAR-237). */
+const replyButton = (scope: Locator) =>
+	scope
+		.getByRole("group", { name: "Suggested comment" })
+		.getByRole("button", { name: "Reply", exact: true });
 
 /** The box in Write (it opens in Preview, CAR-202). */
 async function write(scope: Locator) {
@@ -260,7 +266,8 @@ test("a GitHub-thread conversation: the box replies to that thread", async ({
 	await expect(box(panel).getByTestId("agent-comment-target")).toHaveText(
 		"Reply",
 	);
-	await addButton(panel).click();
+	await expect(addButton(panel)).toHaveCount(0);
+	await replyButton(panel).click();
 	await expect(box(panel)).toContainText("Posted");
 	expect(replyPosts(p)).toHaveLength(1);
 	expect(newThreadPosts(p)).toHaveLength(0);
@@ -437,6 +444,9 @@ test("a posted block joins its conversation to the new thread: one thread on the
 	});
 	const { section, card } = await askLine3(page, s.url);
 	await expect(box(card)).toHaveCount(2);
+	// Neither block has a thread yet: both start one (CAR-237).
+	await expect(addButton(card)).toHaveCount(2);
+	await expect(replyButton(card)).toHaveCount(0);
 	await addButton(card).first().click();
 	// One thread on line 3: GitHub's, opened with the conversation in it.
 	const thread = section.getByTestId("files-thread");
@@ -451,7 +461,9 @@ test("a posted block joins its conversation to the new thread: one thread on the
 	// The second block replies to that thread.
 	const second = box(panel).nth(1);
 	await expect(second.getByTestId("agent-comment-target")).toHaveText("Reply");
-	await addButton(panel).click();
+	await expect(addButton(panel)).toHaveCount(0);
+	if (isMobile) await expectNoPageOverflow(page);
+	await replyButton(panel).click();
 	await expect(box(panel).nth(1)).toContainText("Posted");
 	expect(newThreadPosts(p)).toHaveLength(1);
 	expect(replyPosts(p)).toHaveLength(1);
@@ -531,6 +543,7 @@ test("two blocks pressed back to back: the second waits for the first, then repl
 	await expect.poll(held.hits).toBe(1);
 	// The first on its way: the second can't start a thread of its own.
 	const second = box(card).nth(1);
+	// No thread yet: still a new comment while it waits (CAR-237).
 	const button = second.getByRole("button", { name: "Add review comment" });
 	await expect(button).toHaveAttribute("aria-disabled", "true");
 	await expect(button).toHaveAttribute("aria-busy", "true");
@@ -548,7 +561,7 @@ test("two blocks pressed back to back: the second waits for the first, then repl
 	await expect(
 		box(panel).nth(1).getByTestId("agent-comment-target"),
 	).toHaveText("Reply");
-	await addButton(panel).click();
+	await replyButton(panel).click();
 	await expect(box(panel).nth(1)).toContainText("Posted");
 	expect(held.hits()).toBe(1);
 	expect(newThreadPosts(p)).toHaveLength(1);
@@ -581,7 +594,7 @@ test("the first post's record lost: the next block replies to its thread, never 
 	await page.unroute(RECORD);
 	const second = box(card).nth(1);
 	await expect(second.getByTestId("agent-comment-target")).toHaveText("Reply");
-	await second.getByRole("button", { name: "Add review comment" }).click();
+	await second.getByRole("button", { name: "Reply", exact: true }).click();
 	// Recorded: the conversation is the thread's, its card open with both.
 	const panel = section
 		.getByTestId("files-thread")
@@ -658,12 +671,17 @@ test("the page can't read GitHub's threads: the joined conversation shows on its
 	const back = await reopenLine3(page, s.url);
 	await expect(back).toContainText("Anything to ask the author?");
 	await expect(box(back).nth(0)).toContainText("Posted");
+	// Still the thread's: it would reply, never start a second (CAR-237).
 	const off = box(back)
 		.nth(1)
-		.getByRole("button", { name: "Add review comment" });
+		.getByRole("button", { name: "Reply", exact: true });
 	await expect(off).toHaveAttribute("aria-disabled", "true");
 	await expect(off).toHaveAccessibleDescription(
 		"Couldn't read GitHub's threads",
+	);
+	// Its header agrees: on a thread, not on line 3.
+	await expect(box(back).nth(1).getByTestId("agent-comment-target")).toHaveText(
+		"Reply",
 	);
 	await expect(
 		back.getByRole("textbox", { name: "Reply to your agent" }),

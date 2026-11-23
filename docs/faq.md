@@ -130,10 +130,14 @@ shown as added or removed, and the two sides are whitespace-equal, so a
 line that moves across an unchanged line stays a change (a loop wrapped in
 an `if` shows the `if`, its `}` and the `log` line that crossed the loop's
 closing brace; the rest of the body goes quiet). It can show a little more
-as changed than `git diff -w` would, never less. Clusters are cut within
-one of git's hunks only, so a line whose twin sits in another hunk, or is
-a context line, stays in a change cluster: its rows read as `~` but stay
-open, and progress counts it.
+as changed than `git diff -w` would, never less. Clusters are cut by the
+same matching (CAR-218), so a cluster is whitespace-only exactly where its
+rows read `~`: a block that only moved one level deeper is quiet all
+through, even where git cut it around a line that happens to match, and a
+whitespace-only cluster may have lines on one side only (their twins sit in
+another of git's hunks, or are unchanged lines). In a display hunk too big
+to match whole (more than 250,000 old × new lines), each of git's hunks is
+matched on its own, rows and clusters alike.
 
 ## Why are lines in a different order, or marked where GitHub shows none?
 
@@ -423,10 +427,12 @@ any other; the agent gets your request's text with it (`re`).
 
 **Can the agent post comments?** No: it suggests, you post. It can put a
 comment for the PR's author in a ```` ```comment ```` block; crb shows it as
-an editable box under the answer, with Add review comment. Only your
+an editable box under the answer, with Reply (on a GitHub thread) or Add
+review comment (a new one on its lines or file). Only your
 press posts it, exactly what the box holds (your edits included), as you,
 where the conversation sits: a new thread on its lines or file at the
-latest push, or a reply to its GitHub thread. Once posted the box links
+latest push, or a reply to its GitHub thread (the agent is told which,
+and writes a reply as one). Once posted the box links
 to the comment, and a second press, here or on another device, never
 posts it again. If the lines are gone in the latest push the button is
 off and says so; the text stays, to copy. The agent has no tool that

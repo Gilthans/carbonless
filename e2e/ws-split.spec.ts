@@ -17,9 +17,11 @@ import {
 	withTree,
 } from "./files-ui";
 import {
+	type Crb,
 	expect,
 	OWNER_REPO,
 	PR_NUMBER,
+	type Pr,
 	type PrOptions,
 	reviewPage,
 	test,
@@ -350,16 +352,23 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 }) => {
 	// A review, a push, the engine's answer and four marks: past the default budget on a loaded machine.
 	test.slow();
-	// PS1: line 2 changed (one cluster), reviewed.
-	const ps1 = lines.map((l, i) => (i === 1 ? `${l} changed` : l));
+	// PS1: line 2 changed, lines 6-7 re-indented, both reviewed. A
+	// re-indent since PS1 is whitespace-only only where the reviewer read
+	// those lines in PS1 (CAR-218): PS2 indents 6-7 deeper.
+	const ps1 = lines.map((l, i) =>
+		i === 1 ? `${l} changed` : i === 5 || i === 6 ? `  ${l}` : l,
+	);
 	const p = await pr({
 		base: { [PATH]: text(lines) },
-		files: [{ message: "Line 2", files: { [PATH]: text(ps1) } }],
+		files: [{ message: "Line 2, re-indent", files: { [PATH]: text(ps1) } }],
 	});
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const section = await expand(page);
+	await expect(boxes(section)).toHaveCount(2);
 	await boxes(section).first().click();
+	await expect(boxes(section).first()).toBeChecked();
+	await boxes(section).last().click();
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	// PS2: line 2 as it was (carried), and change / re-indent / change.
@@ -389,8 +398,8 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 		.click();
 	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
 	// Each changed run is two pieces here (its old lines and its new
-	// ones): six, two of them the whitespace-only cluster's (one cluster,
-	// as the `~` says).
+	// ones): six, two of them whitespace-only since PS1 (the re-indent
+	// the reviewer read there).
 	await expect(progress(page)).toContainText("0 / 6 clusters reviewed");
 	await expect(sinceLeftOut(page)).toHaveCount(0);
 
@@ -428,10 +437,208 @@ test("the since view follows the switch: its bar, the header and the move-on lea
 	).toHaveCount(0);
 });
 
-const SINCE_LEFT_OUT = LEFT_OUT;
-const sinceLeftOut = leftOut;
+test("the full diff with a comparison open: to read leaves out whitespace-only clusters with the switch on, as the bar does, and counts them with it off (CAR-243)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine's answer and marks: past the default budget on a loaded machine.
+	test.slow();
+	const ps1 = lines.map((l, i) =>
+		i === 1 ? `${l} changed` : i === 5 || i === 6 ? `  ${l}` : l,
+	);
+	const p = await pr({
+		base: { [PATH]: text(lines) },
+		files: [{ message: "Line 2, re-indent", files: { [PATH]: text(ps1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page);
+	await expect(boxes(section)).toHaveCount(2);
+	await boxes(section).first().click();
+	await expect(boxes(section).first()).toBeChecked();
+	await boxes(section).last().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// PS2 re-indents lines 6-7 deeper (whitespace-only against the base,
+	// reworked since PS1) and changes lines 4-5 and 8-9.
+	p.moveHead({
+		message: "Change, re-indent, change",
+		files: {
+			[PATH]: text(
+				ps1.map((l, i) =>
+					i === 3 || i === 4 || i === 7 || i === 8
+						? `${l} changed`
+						: i === 5 || i === 6
+							? `    ${l}`
+							: l,
+				),
+			),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	// The full diff of the same comparison (the PS1 node is still the base).
+	await page.keyboard.press("Control+Shift+[");
+	await expect(
+		page
+			.getByTestId("ps-node-branch")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const toRead = page.getByTestId("to-read");
+	const bar = progress(page);
+	await expect(toRead).toHaveText(/3 to read/, GIT_WAIT);
+	await expect(bar).toContainText("1 / 4 clusters reviewed");
+	await ignoreWhitespace(page, true);
+	await expect(toRead).toHaveText(/2 to read/);
+	await expect(bar).toContainText("1 / 3 clusters reviewed");
+	await ignoreWhitespace(page, false);
+	await expect(toRead).toHaveText(/3 to read/);
+});
 
-test("the since view: a change carried, only the indent reworked: the header reads done with the `~`, never without (B1)", async ({
+test("a graph card's to-read count follows the switch: a push that only re-indents reads nothing new with it on, and counts the cluster with it off (CAR-247)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	test.slow();
+	const ps1 = lines.map((l, i) => (i === 1 ? `${l} changed` : l));
+	const p = await pr({
+		base: { [PATH]: text(lines) },
+		files: [{ message: "Line 2", files: { [PATH]: text(ps1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// PS2 only re-indents lines 6-7.
+	p.moveHead({
+		message: "Re-indent",
+		files: {
+			[PATH]: text(ps1.map((l, i) => (i === 5 || i === 6 ? `    ${l}` : l))),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	const card = page.locator('[role="tooltip"]:not([hidden])');
+	const conn = page.getByTestId("ps-conn-head");
+	const says = async (text: string) => {
+		await conn.hover();
+		await expect(card).toContainText(text, GIT_WAIT);
+		await page.mouse.move(0, 0);
+	};
+	await says("1 file, 1 cluster to read");
+	await ignoreWhitespace(page, true);
+	await says("nothing new");
+	await ignoreWhitespace(page, false);
+	await says("1 file, 1 cluster to read");
+});
+
+test("the since view: a run mixing a re-indent read in PS1 and a real edit is one piece per stretch, each with its box, the switch off and on", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine's answer and four marks: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 adds three lines after line 8 (one cluster), reviewed. PS2
+	// re-indents two of them and edits the third: since PS1, each run (the
+	// gone PS1 lines, the new ones) is a re-indent piece and an edit piece.
+	const ps1 = [...lines.slice(0, 8), "one();", "two();", "three();"];
+	ps1.push(...lines.slice(8));
+	const p = await pr({
+		base: { [PATH]: text(lines) },
+		files: [{ message: "Three lines", files: { [PATH]: text(ps1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({
+		message: "Re-indent two, edit one",
+		files: {
+			[PATH]: text(
+				ps1.map((l) =>
+					l === "three();" ? "three!();" : l.endsWith("();") ? `  ${l}` : l,
+				),
+			),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	await expect(progress(page)).toContainText("0 / 4 clusters reviewed");
+	const since = await expand(page);
+	// Every piece has its box (each its own run of the view).
+	await expect(boxes(since)).toHaveCount(4);
+	const pieceBox = (line: string) =>
+		since
+			.getByRole("row")
+			.filter({ has: page.getByRole("button", { name: line, exact: true }) })
+			.getByRole("checkbox", { name: /cluster reviewed$/ });
+	// Off: the edits, PS1's line and PS2's.
+	await pieceBox("Old line 11").click();
+	await expect(progress(page)).toContainText("1 / 4 clusters reviewed");
+	await pieceBox("Line 11").click();
+	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
+	// On: the re-indents are left out; still each with its box, to tick.
+	// PS2's is a collapsed whitespace-only row (its own flag, CAR-218);
+	// PS1's, gone, shows its lines until marked, then is quiet too.
+	await ignoreWhitespace(page, true);
+	await expect(progress(page)).toContainText("2 / 2 clusters reviewed");
+	await expect(boxes(since)).toHaveCount(4);
+	const quiet = since.getByTestId("ws-cluster");
+	await expect(quiet).toHaveCount(1);
+	await pieceBox("Old line 9").click();
+	await expect(quiet).toHaveCount(2);
+	await expect(
+		since.getByRole("checkbox", { name: /cluster reviewed$/, checked: true }),
+	).toHaveCount(3);
+	// The last box: the file is done and the move-on folds it.
+	await since
+		.getByRole("checkbox", { name: /cluster reviewed$/, checked: false })
+		.click();
+	// Off: all four marked, the gone PS1 run's two pieces among them.
+	await ignoreWhitespace(page, false);
+	await expect(progress(page)).toContainText("4 / 4 clusters reviewed");
+	await expect(header(since)).toHaveAttribute("data-finished");
+});
+
+// The since view's `~` in the test above: the whitespace-only cluster's
+// new lines, and its old ones, a piece of PS1's re-indent (gone in PS2:
+// no cluster of PS2's, so a unit of its own; CAR-218).
+const SINCE_LEFT_OUT = "2 whitespace-only clusters not counted";
+const sinceLeftOut = (page: Page) =>
+	page
+		.locator("[data-page-bar]")
+		.locator(`[data-testid="ws-left-out"][aria-label="${SINCE_LEFT_OUT}"]`);
+
+test("the since view: a change carried, only the indent reworked: the file is nothing else, so its header counts the re-indent, unfinished, with no `~` (B1)", async ({
 	page,
 	pr,
 	startCrb,
@@ -482,21 +689,426 @@ test("the since view: a change carried, only the indent reworked: the header rea
 	const since = fileSection(page, PATH);
 	await expect(header(since)).not.toHaveAttribute("data-finished");
 
-	// On: the re-indent is left out. The header reads done, with the `~`.
+	// On: the file's only since unit is the re-indent (the carried change
+	// is none), so the file is nothing else: its header counts it, reads
+	// unfinished and shows no `~`; the page bar leaves it out as a whole.
 	await ignoreWhitespace(page, true);
 	await expect(progress(page)).toContainText("Nothing to read");
 	await expect(leftOut(page)).toBeVisible();
-	await expect(header(since)).toHaveAttribute("data-finished");
-	await expect(
-		header(since).getByRole("img", { name: LEFT_OUT }),
-	).toBeVisible();
-
-	// Off: to read again.
-	await ignoreWhitespace(page, false);
 	await expect(header(since)).not.toHaveAttribute("data-finished");
+	await expect(
+		header(since).getByRole("progressbar", { name: "File progress" }),
+	).toContainText(/0 \/ \d+ clusters?/);
 	await expect(header(since).getByRole("img", { name: LEFT_OUT })).toHaveCount(
 		0,
 	);
+
+	// Off: the same header, counting the same unit.
+	await ignoreWhitespace(page, false);
+	await expect(header(since)).not.toHaveAttribute("data-finished");
+	await expect(
+		header(since).getByRole("progressbar", { name: "File progress" }),
+	).toContainText(/0 \/ \d+ clusters?/);
+});
+
+/*
+ * CAR-218, the since view: PS2 only re-indents a card's markup by two, and
+ * the inner `<div>` and `</div>` at PS1's depth equal the outer ones at
+ * PS2's, so git cuts the interdiff into three hunks around them. A note's
+ * line changes in PS1 and gets a real edit in PS2.
+ */
+const CARD = "src/card.tsx";
+const NOTE = "src/note.ts";
+const MARKUP = [
+	"<div>",
+	"  <div>",
+	"    <Title />",
+	"  </div>",
+	"  <Body />",
+	"</div>",
+];
+/** The card returning its markup at `depth` spaces, or `null`. */
+const cardAt = (depth: number | null) =>
+	text([
+		"export function Card() {",
+		...(depth === null
+			? ["  return null;"]
+			: [
+					"  return (",
+					...MARKUP.map((l) => `${" ".repeat(depth)}${l}`),
+					"  );",
+				]),
+		"}",
+	]);
+/** The card's since pieces in the test below (one per run, git's three hunks). */
+const CARD_PIECES = 3;
+const note = (two: string, seven: string) =>
+	text(["one", two, "three", "four", "five", "six", seven]);
+
+/** Opens a file's section, unless the move-on did (it may still be landing). */
+async function opened(section: Locator) {
+	const expandFile = section.getByRole("button", { name: "Expand file" });
+	// The move-on may still be landing: open it until it stays open.
+	await expect(async () => {
+		if (await expandFile.isVisible()) await expandFile.click();
+		await expect(section.locator("table")).toBeVisible({ timeout: 1_000 });
+	}).toPass();
+}
+
+/**
+ * PS1 opened and the given files' clusters ticked, then PS2 pushed and
+ * viewed since PS1.
+ */
+async function sinceReindent(
+	page: Page,
+	pr: (o: PrOptions) => Promise<Pr>,
+	startCrb: () => Promise<Crb>,
+	card: { base: number | null; ps1: number; ps2: number },
+	mark: string[],
+) {
+	const p = await pr({
+		base: { [CARD]: cardAt(card.base), [NOTE]: note("two", "seven") },
+		files: [
+			{
+				message: "Card markup, note",
+				files: { [CARD]: cardAt(card.ps1), [NOTE]: note("two!", "seven") },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await expect(progress(page)).toContainText(/0 \/ \d+ clusters reviewed/);
+	for (const path of mark) {
+		const section = fileSection(page, path);
+		// The move-on may have opened it already.
+		await opened(section);
+		await marksReady(page, section);
+		// One cluster per file: ticking it finishes the file.
+		await expect(boxes(section)).toHaveCount(1);
+		await boxes(section).first().click();
+		await expect(header(section)).toHaveAttribute("data-finished");
+	}
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({
+		message: "Re-indent the card, edit the note",
+		files: { [CARD]: cardAt(card.ps2), [NOTE]: note("two!", "seven!") },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+}
+
+test("the since view: a re-indent across an accidental unchanged line of markup read in PS1 is quiet with the switch on, its units off the bar, the `~` saying how many", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 adds the markup (one change against the base), reviewed.
+	await sinceReindent(page, pr, startCrb, { base: null, ps1: 4, ps2: 6 }, [
+		CARD,
+		NOTE,
+	]);
+	const bar = progress(page);
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+
+	await ignoreWhitespace(page, true);
+	// On: the card's units, each a re-indent of lines read in PS1, leave
+	// the bar; only the note's edit counts, and the `~` says three are
+	// left out. The card is nothing else, so its header counts them
+	// all, with no `~` of its own.
+	await expect(bar).toContainText("0 / 1 cluster reviewed");
+	// Its "to read" is the bar's own: the note's edit alone (the card,
+	// nothing else, counts nowhere on the bar).
+	await expect(page.getByTestId("to-read")).toHaveText(/(^|\s)1 to read$/);
+	await expect(
+		page
+			.locator("[data-page-bar]")
+			.locator(
+				'[data-testid="ws-left-out"][aria-label="3 whitespace-only clusters not counted"]',
+			),
+	).toBeVisible();
+	const cardSection = fileSection(page, CARD);
+	await expect(header(cardSection).getByTestId("ws-left-out")).toHaveCount(0);
+	// The block reads quiet across the hunks git cut: each since piece,
+	// a re-indent read in PS1, a collapsed whitespace-only row; no added
+	// or removed rows.
+	await opened(cardSection);
+	const quiet = cardSection.getByTestId("ws-cluster");
+	await expect(quiet).toHaveCount(CARD_PIECES);
+	await expect(quiet.first()).not.toHaveAttribute("data-expanded");
+	await expect(
+		cardSection.locator('[data-testid="diff-line"][data-kind="add"]'),
+	).toHaveCount(0);
+	await expect(
+		cardSection.locator('[data-testid="diff-line"][data-kind="del"]'),
+	).toHaveCount(0);
+
+	// The note's edit, the last unit the bar counts: the move-on skips the
+	// card (nothing else, as the full diff skips one) and the verdict rises.
+	await cardSection.getByRole("button", { name: "Collapse file" }).click();
+	await expect(cardSection.locator("table")).toHaveCount(0);
+	const noteSection = fileSection(page, NOTE);
+	await opened(noteSection);
+	await marksReady(page, noteSection);
+	await expect(boxes(noteSection)).toHaveCount(1);
+	await boxes(noteSection).first().click();
+	await expect(bar).toContainText("1 / 1 cluster reviewed");
+	await expect(page.getByTestId("to-read")).toHaveText(/(^|\s)0 to read$/);
+	await expect(page.getByTestId("verdict-card-files")).toBeInViewport();
+	await expect(page.getByRole("button", { name: "Collapse file" })).toHaveCount(
+		0,
+	);
+
+	// Off: they count again.
+	await ignoreWhitespace(page, false);
+	await expect(bar).toContainText("1 / 4 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+});
+
+test("the since view: a re-indent of markup nobody marked in PS1 still counts with the switch on (principle 2)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 only re-indents the markup (whitespace only against the base),
+	// left unmarked; the note's change is reviewed.
+	await sinceReindent(page, pr, startCrb, { base: 2, ps1: 4, ps2: 6 }, [NOTE]);
+	const bar = progress(page);
+	await expect(bar).toContainText("0 / 5 clusters reviewed");
+	await ignoreWhitespace(page, true);
+	// On: the card's line no piece shows (a re-indent against the base,
+	// read in the full diff) is left out, and so is the since piece that
+	// only re-indents base lines PS1 left alone (git kept them, byte-equal
+	// at PS1's depth: nothing to read there, as in the full diff; owner
+	// 2026-11-23); both are the card's one cluster, so the `~` says one.
+	// Its other two since pieces, re-indents of lines PS1 changed and
+	// nobody marked, still count with the note.
+	await expect(bar).toContainText("0 / 3 clusters reviewed");
+	await expect(
+		page
+			.locator("[data-page-bar]")
+			.locator(
+				'[data-testid="ws-left-out"][aria-label="1 whitespace-only cluster not counted"]',
+			),
+	).toBeVisible();
+	// Nor are the counted ones collapsed: they show, `~` rows open; only
+	// the left-alone piece is a whitespace-only row.
+	const cardSection = fileSection(page, CARD);
+	await opened(cardSection);
+	await expect(
+		cardSection.locator('[data-testid="diff-line"][data-kind="ws"]').first(),
+	).toBeVisible();
+	await expect(cardSection.getByTestId("ws-cluster")).toHaveCount(1);
+	// Off: everything counts.
+	await ignoreWhitespace(page, false);
+	await expect(bar).toContainText("0 / 5 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+});
+
+test("the since view: a real edit since PS1, in a cluster whitespace-only against the base, is never collapsed with the switch on: its lines show, and count", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 changes `load()` for real, reviewed; PS2 only re-indents the
+	// base's line: whitespace only against the base, a real edit since.
+	const path = "src/loader.ts";
+	const at = (line: string) =>
+		text(["export function start() {", "  ready();", line, "}"]);
+	const p = await pr({
+		base: { [path]: at("load();") },
+		files: [{ message: "Unload", files: { [path]: at("unload();") } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, path);
+	await opened(section);
+	await marksReady(page, section);
+	await expect(boxes(section)).toHaveCount(1);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({ message: "Load, indented", files: { [path]: at("  load();") } });
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	const bar = progress(page);
+	// One piece since PS1: the edit's run, `unload()` gone, `  load()` new.
+	await expect(bar).toContainText("0 / 1 cluster reviewed");
+
+	// On: the edit still counts, and its lines show.
+	await ignoreWhitespace(page, true);
+	await expect(bar).toContainText("0 / 1 cluster reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+	const since = fileSection(page, path);
+	await opened(since);
+	const del = since.locator('[data-testid="diff-line"][data-kind="del"]');
+	const add = since.locator('[data-testid="diff-line"][data-kind="add"]');
+	await expect(del).toHaveCount(1);
+	await expect(del).toContainText("unload();");
+	await expect(add).toHaveCount(1);
+	await expect(add).toContainText("load();");
+	await expect(since.getByTestId("ws-cluster")).toHaveCount(0);
+	await expect(boxes(since)).toHaveCount(1);
+});
+
+test("the since view: ticking a change never closes the file while a real edit since, in a cluster whitespace-only against the base, is unmarked", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 changes `load()` for real, reviewed; PS2 only re-indents the
+	// base's line (whitespace only against the base, a real edit since)
+	// and changes `alpha()`, far above it: two units, both counted.
+	const path = "src/loader.ts";
+	const at = (alpha: string, load: string) =>
+		text([alpha, ...Array.from({ length: 9 }, (_, i) => `keep${i}();`), load]);
+	const p = await pr({
+		base: { [path]: at("alpha();", "load();") },
+		files: [
+			{ message: "Unload", files: { [path]: at("alpha();", "unload();") } },
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, path);
+	await opened(section);
+	await marksReady(page, section);
+	await expect(boxes(section)).toHaveCount(1);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({
+		message: "Alpha, load indented",
+		files: { [path]: at("alpha!();", "  load();") },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	const bar = progress(page);
+	await ignoreWhitespace(page, true);
+	await expect(bar).toContainText("0 / 2 clusters reviewed");
+	const since = fileSection(page, path);
+	await opened(since);
+	await marksReady(page, since);
+	// Each run is a piece with its box, `alpha()`'s first.
+	await expect(boxes(since)).toHaveCount(2);
+	// The change: the edit is still to read, so the file stays open.
+	await boxes(since).first().click();
+	await expect(bar).toContainText("1 / 2 clusters reviewed");
+	await expect(since.locator("table")).toBeVisible();
+	await expect(header(since)).not.toHaveAttribute("data-finished");
+	await expect(
+		since.locator('[data-testid="diff-line"][data-kind="add"]', {
+			hasText: "load();",
+		}),
+	).toBeVisible();
+	// The edit, the last unit: the file is done and closes.
+	await boxes(since).last().click();
+	await expect(bar).toContainText("2 / 2 clusters reviewed");
+	await expect(since.locator("table")).toHaveCount(0);
+	await expect(header(since)).toHaveAttribute("data-finished");
+});
+
+test("the since view: a re-indent of a base line PS1 left alone is left out with the switch on, as in the full diff", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 changes `alpha()` (reviewed) and leaves `load()` alone; PS2
+	// keeps `alpha!()`, edits `keep4()` and only re-indents `load()`:
+	// nothing to read there in PS1, so whitespace-only since, as the full
+	// diff has it (owner 2026-11-23).
+	const path = "src/loader.ts";
+	const at = (alpha: string, keep4: string, load: string) =>
+		text([
+			alpha,
+			...Array.from({ length: 9 }, (_, i) => (i === 4 ? keep4 : `keep${i}();`)),
+			load,
+		]);
+	const p = await pr({
+		base: { [path]: at("alpha();", "keep4();", "load();") },
+		files: [
+			{
+				message: "Alpha",
+				files: { [path]: at("alpha!();", "keep4();", "load();") },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, path);
+	await opened(section);
+	await marksReady(page, section);
+	await expect(boxes(section)).toHaveCount(1);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({
+		message: "Keep4, load indented",
+		files: { [path]: at("alpha!();", "keep4!();", "  load();") },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	const bar = progress(page);
+	// Off: the edit and the re-indent both count.
+	await expect(bar).toContainText("0 / 2 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+	// On: only the edit; the `~` says the re-indent is left out.
+	await ignoreWhitespace(page, true);
+	await expect(bar).toContainText("0 / 1 cluster reviewed");
+	await expect(leftOut(page)).toBeVisible();
+	const since = fileSection(page, path);
+	await opened(since);
+	await expect(since.getByTestId("ws-cluster")).toHaveCount(1);
+	// Off again: it counts.
+	await ignoreWhitespace(page, false);
+	await expect(bar).toContainText("0 / 2 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
 });
 
 test.describe("Home", () => {

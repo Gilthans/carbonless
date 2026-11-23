@@ -155,6 +155,8 @@ type Extra = {
 	ignoreMarksUntil?: number;
 	/** The since view's units, counted by the meter. */
 	counted?: FileView;
+	/** The since view, "Ignore whitespace" on: how many units `counted` left out. */
+	countedLeftOut?: number;
 	/** The tracer's placements of the agent threads (FilesPage's read). */
 	agentPlacements?: Placements;
 	/** In a router (pieces that link: an unplaced row's "near N"). */
@@ -196,6 +198,7 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 						onFinished={extra.onFinished}
 						ignoreMarksUntil={extra.ignoreMarksUntil}
 						counted={extra.counted}
+						countedLeftOut={extra.countedLeftOut}
 						pathFind={extra.pathFind}
 						since={extra.since}
 						sincePieces={extra.sincePieces}
@@ -2266,12 +2269,49 @@ describe("FileDiff", () => {
 		// Its units with the whitespace-only one left out: none.
 		setup(f, undefined, undefined, "clusters", {
 			counted: unitsFile(f, []),
+			countedLeftOut: 1,
 			since: 1,
 		});
 		const header = screen.getByTestId("file-path").closest("header");
 		if (!header) throw new Error("no header");
 		expect(header).toHaveAttribute("data-finished");
 		expect(within(header).getByRole("img", { name: LEFT_OUT })).toBeVisible();
+	});
+
+	it("in the since view, a file of nothing but whitespace-only units reads unfinished, counts them, and shows no `~`: state and counts agree (CAR-218)", () => {
+		ignoreWhitespace.set(true);
+		const ws = { whitespaceOnly: true as const };
+		// The snapshot says done once its re-indent is left out; the since
+		// units (countedFileUnits) say the re-indent is all there is to read.
+		const f = file([
+			cluster("k1", {
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			}),
+			cluster("k2", { newStart: 40, oldStart: 40, ...ws }),
+		]);
+		setup(f, undefined, undefined, "clusters", {
+			counted: unitsFile(f, [
+				{
+					index: 0,
+					path: "src/a.ts",
+					kind: "reworked",
+					lines: 2,
+					state: "unreviewed",
+					open: 2,
+					whitespaceOnly: true,
+				},
+			]),
+			countedLeftOut: 0,
+			since: 1,
+		});
+		const header = screen.getByTestId("file-path").closest("header");
+		if (!header) throw new Error("no header");
+		expect(header).not.toHaveAttribute("data-finished");
+		expect(within(header).queryByRole("img", { name: LEFT_OUT })).toBeNull();
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("0 / 1");
 	});
 });
 

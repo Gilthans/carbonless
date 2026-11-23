@@ -451,7 +451,8 @@ After the first release (0.1.0) the owner adds the trusted publisher
   artifacts), fixed and pushed; a failure that looks unrelated is rerun once
   (`gh run rerun --failed`), and is flagged if it fails again. A PR is merged only on the owner's explicit word for that PR (by
   the owner on GitHub, or on their behalf by an agent with `gh pr merge
-  --admin`, the ruleset's bypass for the owner's login). Before merging
+  --admin`, the ruleset's bypass for the owner's login, which skips the
+  review but never a red or missing required check). Before merging
   any PR, `pnpm release merge-ok <pr>` must pass (the release freeze, and
   the PR's release notes: `docs/releasing.md`). Never push `master` or
   `v*` tags.
@@ -466,8 +467,9 @@ After the first release (0.1.0) the owner adds the trusted publisher
   no ticket carries the line in its description. GitHub's required
   `release-note` check enforces it on every PR (the ticket's note, else a
   `Release note` line in the PR's description). After a batch of merges,
-  `pnpm release notes check`; before a promote, `pnpm release notes --pr`
-  and its "notes: X.Y.Z" PR (`docs/releasing.md`, "Release notes").
+  `pnpm release notes check`. Promote collects the RC's notes from Linear
+  itself and refuses while one is missing; no "notes: X.Y.Z" PR is needed
+  (`docs/releasing.md`, "Release notes").
 - On the owner's word only: `pnpm release promote` (starts the promote run,
   which checks, packs and stages; nothing goes live) and `pnpm release
   next` (pushes a `next/*` branch, opens its PR) on Gilthans/carbonless.

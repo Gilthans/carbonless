@@ -3106,10 +3106,16 @@ test("a line crossed off in PS1 stays crossed off in a grown cluster: ticking th
 }) => {
 	const since = await grownSince(page, pr, startCrb, "cross");
 	const all = boxes(since);
-	for (let i = 0; i < 3; i++) {
+	for (let i = 0; i < 2; i++) {
 		await all.nth(i).click();
 		await expect(all.nth(i)).toBeChecked();
 	}
+	// The last piece finishes the file by its units, as its header reads
+	// (CAR-218), though the snapshot's cluster mixes marks: it closes.
+	await all.nth(2).click();
+	await expect(
+		since.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
 	await expect(
@@ -3117,7 +3123,8 @@ test("a line crossed off in PS1 stays crossed off in a grown cluster: ticking th
 	).toContainText("3 / 3 clusters");
 	await toFullDiff(page);
 	const full = fileSection(page, GROWN);
-	// The file stays open (it was open in the since view).
+	// Closed in the since view, so closed here: open it.
+	await full.getByRole("button", { name: "Expand file" }).click();
 	await expect(
 		full.getByRole("button", { name: "Collapse file" }),
 	).toBeVisible();
@@ -3174,10 +3181,13 @@ test("the first tick on the viewed head starts PS2 of that snapshot: the since v
 	await page.unroute(ps2Answer);
 	await expect(chips).toHaveCount(chipsBefore);
 	expect(await yOf()).toBe(before);
-	for (let i = 1; i < 3; i++) {
-		await all.nth(i).click();
-		await expect(all.nth(i)).toBeChecked();
-	}
+	await all.nth(1).click();
+	await expect(all.nth(1)).toBeChecked();
+	// The last piece finishes the file (its units, CAR-218): it closes.
+	await all.nth(2).click();
+	await expect(
+		since.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
 });

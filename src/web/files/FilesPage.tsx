@@ -17,7 +17,11 @@ import { createPortal, flushSync } from "react-dom";
 import { type AgentThread, isSpanThread } from "../../shared/agent";
 import { sinceOnlyPieces } from "../../shared/pieces";
 import { openedOn } from "../../shared/rereview/openedOn";
-import type { ReviewThread, SessionInfo } from "../../shared/types";
+import type {
+	ReviewThread,
+	SessionInfo,
+	StateChange,
+} from "../../shared/types";
 import { AgentNotInComparison } from "../agent/AgentNotInComparison";
 import {
 	agentThreadsQuery,
@@ -109,6 +113,7 @@ import {
 	toReadClusters,
 	toReadCount,
 	unitsFile,
+	unitsFinish,
 	unitsOf,
 } from "./since";
 import {
@@ -984,25 +989,33 @@ export function FilesPage() {
 			...gone.map((g) => ({ index: g.index, path: g.path, clusters: [] })),
 		];
 		const next = nextFile(candidates, index, (f) =>
-			fileLeft(
-				// "Ignore whitespace" on: whitespace-only clusters aren't left.
-				ignoreWs
-					? f.clusters.filter(
-							(c: { whitespaceOnly?: true }) => !c.whitespaceOnly,
-						)
-					: f.clusters,
-				since === null || !sinceAnswer
-					? undefined
-					: {
-							marks: data?.sinceMarks,
-							since,
-							path: f.path,
-							pieces: sinceOnlyPieces(
-								piecesByFile.get(f.index) ?? [],
-								new Set(f.clusters.map((c) => c.key)),
-							),
-						},
-			),
+			// The since view's files the engine answered: left while a unit
+			// the bar counts is unmarked (countedUnits: with "Ignore
+			// whitespace" on, a file of nothing else is skipped, as the full
+			// diff skips one, CAR-218).
+			sinceAnswer && unitIndexes.has(f.index)
+				? sinceCounted.units.some(
+						(u) => u.index === f.index && u.state === "unreviewed",
+					)
+				: fileLeft(
+						// "Ignore whitespace" on: whitespace-only clusters aren't left.
+						ignoreWs
+							? f.clusters.filter(
+									(c: { whitespaceOnly?: true }) => !c.whitespaceOnly,
+								)
+							: f.clusters,
+						since === null || !sinceAnswer
+							? undefined
+							: {
+									marks: data?.sinceMarks,
+									since,
+									path: f.path,
+									pieces: sinceOnlyPieces(
+										piecesByFile.get(f.index) ?? [],
+										new Set(f.clusters.map((c) => c.key)),
+									),
+								},
+					),
 		);
 		if (!next) {
 			// The verdict rises where the click landed: a double click's
@@ -1601,18 +1614,6 @@ export function FilesPage() {
 			}}
 		/>
 	);
-	// "5 to read": the comparison's unreviewed reworked and new clusters,
-	// in the unit; a spinner while the engine computes; nothing in a plain
-	// full diff (no comparison asked).
-	const toRead = !sinceView.asked
-		? undefined
-		: byFile && data && sinceView.answer
-			? sinceView.since !== null
-				? toReadCount(byFile, data, unit)
-				: toReadClusters(sinceView.answer, data, unit)
-			: sinceView.error
-				? undefined
-				: null;
 	const since = sinceView.since;
 	/** The chips of a file: the engine's, or in a full diff its carried count alone. */
 	const sinceInfoOf = (index: number, carried: number) => {
@@ -1653,6 +1654,30 @@ export function FilesPage() {
 		() => countedUnits(units, ignoreWs),
 		[units, ignoreWs],
 	);
+	/** The since view: whether marks finish a file, by its units (unitsFinish). */
+	const unitsFinishOf = (index: number, path: string) =>
+		sinceAnswer && data
+			? (changes: readonly StateChange[]) =>
+					unitsFinish(sinceAnswer, data, index, path, changes, ignoreWs)
+			: undefined;
+	// The files the since view's units cover (the engine answered them).
+	const unitIndexes = useMemo(
+		() => new Set(units.map((u) => u.index)),
+		[units],
+	);
+	// "5 to read": the comparison's unreviewed reworked and new clusters,
+	// in the unit (the since view: the bar's own units, countedUnits, so
+	// it agrees with the bar's count); a spinner while the engine
+	// computes; nothing in a plain full diff (no comparison asked).
+	const toRead = !sinceView.asked
+		? undefined
+		: byFile && data && sinceView.answer
+			? sinceView.since !== null
+				? toReadCount(sinceCounted.units, unit)
+				: toReadClusters(sinceView.answer, data, unit, ignoreWs)
+			: sinceView.error
+				? undefined
+				: null;
 	const viewProgress = useMemo(
 		() =>
 			sinceAnswer
@@ -1692,23 +1717,21 @@ export function FilesPage() {
 			if (list) list.push(u);
 			else all.set(u.index, [u]);
 		}
-		const clustersAt = new Map(
-			(data?.files ?? []).map((f) => [f.index, f.clusters]),
-		);
 		const out = new Map<number, ReturnType<typeof countedFileUnits>>();
 		for (const [index, list] of all) {
-			out.set(
-				index,
-				countedFileUnits(list, ignoreWs, clustersAt.get(index) ?? []),
-			);
+			out.set(index, countedFileUnits(list, ignoreWs));
 		}
 		return out;
-	}, [units, ignoreWs, data]);
+	}, [units, ignoreWs]);
 	const progressPending = since !== null && sinceView.pending;
 	// The connector of the comparison on screen counts what is left here.
 	const live =
 		since !== null && byFile && comparison.viewing
-			? { from: since, to: comparison.viewing, toRead: liveToRead(byFile) }
+			? {
+					from: since,
+					to: comparison.viewing,
+					toRead: liveToRead(byFile, sinceCounted.units),
+				}
 			: undefined;
 	const emptySince =
 		since !== null &&
@@ -1971,6 +1994,10 @@ export function FilesPage() {
 																	toggleFile(file.index, expanded, auto)
 																}
 																onFinished={() => finished(file.index)}
+																unitsFinish={unitsFinishOf(
+																	file.index,
+																	file.path,
+																)}
 																ignoreMarksUntil={
 																	movedOn?.key === keyOf(file.index)
 																		? movedOn.until
@@ -2036,6 +2063,10 @@ export function FilesPage() {
 																pathFind={find.pathOf(file.index)}
 																find={find.diffOf(file.index)}
 																onFinished={() => finished(file.index)}
+																unitsFinish={unitsFinishOf(
+																	file.index,
+																	file.path,
+																)}
 																ignoreMarksUntil={
 																	movedOn?.key === keyOf(file.index)
 																		? movedOn.until

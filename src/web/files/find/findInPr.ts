@@ -90,19 +90,35 @@ export interface PairedHunk {
  * needs them. Kept per hunk: a search per keystroke never pairs it again.
  */
 const pairedByHunk = [
-	new WeakMap<DiffLine[], PairedHunk>(),
-	new WeakMap<DiffLine[], PairedHunk>(),
+	new WeakMap<DiffLine[], Map<string, PairedHunk>>(),
+	new WeakMap<DiffLine[], Map<string, PairedHunk>>(),
 ];
-function pairedHunk(lines: DiffLine[], ignoreWhitespace: boolean): PairedHunk {
+/**
+ * `starts`: the since view's pieces' first lines, the same set HunkRows
+ * gives hunkView (CAR-244), so a pair split across two pieces is two rows
+ * here too, and the hits follow the screen's order.
+ */
+function pairedHunk(
+	lines: DiffLine[],
+	ignoreWhitespace: boolean,
+	starts?: ReadonlySet<DiffLine>,
+): PairedHunk {
 	const cache = pairedByHunk[ignoreWhitespace ? 1 : 0] as WeakMap<
 		DiffLine[],
-		PairedHunk
+		Map<string, PairedHunk>
 	>;
-	let paired = cache.get(lines);
+	let at = "";
+	if (starts && starts.size > 0)
+		lines.forEach((l, i) => {
+			if (starts.has(l)) at += `,${i}`;
+		});
+	const slots = cache.get(lines) ?? new Map<string, PairedHunk>();
+	cache.set(lines, slots);
+	let paired = slots.get(at);
 	if (!paired) {
 		const order: DiffLine[] = [];
 		const twins = new Map<DiffLine, number>();
-		for (const run of hunkView(lines, ignoreWhitespace).runs)
+		for (const run of hunkView(lines, ignoreWhitespace, starts).runs)
 			for (const row of run.rows) {
 				if (row.kind === "line") order.push(row.line);
 				else if (row.del && row.add) {
@@ -111,9 +127,20 @@ function pairedHunk(lines: DiffLine[], ignoreWhitespace: boolean): PairedHunk {
 				} else order.push((row.del ?? row.add) as DiffLine);
 			}
 		paired = { order, twins };
-		cache.set(lines, paired);
+		slots.set(at, paired);
 	}
 	return paired;
+}
+
+/** The since view's pieces' first lines (none in the full diff). */
+function pieceStarts(hunks: FileHunks | undefined): Set<DiffLine> | undefined {
+	if (!hunks?.pieces) return undefined;
+	const out = new Set<DiffLine>();
+	for (const piece of hunks.pieces) {
+		const first = hunks.hunks[piece.hunk]?.lines[piece.line];
+		if (first) out.add(first);
+	}
+	return out;
 }
 
 /**
@@ -241,6 +268,8 @@ export function findInPr(
 		if (file.binary || file.submodule) continue;
 		// With `pairs`, a hunk's hits wait for its end: each line's, and
 		// whether a removed line has any (then the hunk is paired).
+		// The since view's pieces' first lines, as HunkRows cuts its runs.
+		const starts = pieceStarts(hunksOf(file));
 		let hunk: DiffLine[] | undefined;
 		let byLine: Map<DiffLine, Hit[]> | null = null;
 		let seen: DiffLine[] = [];
@@ -251,7 +280,7 @@ export function findInPr(
 				hits,
 				seen,
 				byLine,
-				delHit ? pairedHunk(hunk, ignoreWhitespace) : null,
+				delHit ? pairedHunk(hunk, ignoreWhitespace, starts) : null,
 			);
 			byLine = null;
 		};

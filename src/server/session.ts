@@ -49,7 +49,7 @@ import type {
 	VerdictRequest,
 } from "../shared/types.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
-import { AgentThreadStore } from "./agent/store.js";
+import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import { contextLines } from "./diff/hunks.js";
 import {
@@ -1195,14 +1195,20 @@ export class Session {
 		return this.#exclusive(async () => {
 			const progress = await this.#progress();
 			const { target, patchset } = await this.#moveTarget(req.to, progress);
-			const live =
-				(await this.#foldedMoves(progress)).get(threadKey(req.thread))
-					?.length ?? 0;
-			if (live >= MAX_MOVES_PER_THREAD) {
-				throw new MoveCapError(
-					`This thread has been moved ${MAX_MOVES_PER_THREAD} times: undo a move first`,
-				);
-			}
+			// Checked again on the write's every try: another server may move
+			// the thread in between (CAR-245).
+			const underCap: MovesCheck = ({ moves, undos }) => {
+				const live =
+					foldMoves([...moves, ...legacyMoves(progress)], undos).get(
+						threadKey(req.thread),
+					)?.length ?? 0;
+				if (live >= MAX_MOVES_PER_THREAD) {
+					throw new MoveCapError(
+						`This thread has been moved ${MAX_MOVES_PER_THREAD} times: undo a move first`,
+					);
+				}
+			};
+			underCap(await this.#threadStore.moves());
 			const { anchor } = req;
 			const counts = new Map<string, number | null>();
 			for (const side of ["LEFT", "RIGHT"] as const) {
@@ -1222,15 +1228,18 @@ export class Session {
 			}
 			const { path, startSide, startLine, side, line } = anchor;
 			const clean = { path, startSide, startLine, side, line };
-			const move = await this.#threadStore.move({
-				thread: req.thread,
-				on: {
-					base: target.base,
-					head: target.head,
-					...(patchset !== null ? { patchset } : {}),
+			const move = await this.#threadStore.move(
+				{
+					thread: req.thread,
+					on: {
+						base: target.base,
+						head: target.head,
+						...(patchset !== null ? { patchset } : {}),
+					},
+					anchor: clean,
 				},
-				anchor: clean,
-			});
+				underCap,
+			);
 			return {
 				move: move.id,
 				thread: req.thread,
@@ -1254,9 +1263,18 @@ export class Session {
 		const move = await this.#exclusive(async () => {
 			const progress = await this.#progress();
 			await this.#moveTarget(to, progress);
+			const isLive: MovesCheck = ({ moves, undos }) => {
+				const live = liveMove(
+					foldMoves([...moves, ...legacyMoves(progress)], undos),
+					id,
+				);
+				if (!live) throw new DeadMoveError(`No live move ${id}`);
+			};
 			const live = liveMove(await this.#foldedMoves(progress), id);
 			if (!live) throw new DeadMoveError(`No live move ${id}`);
-			await this.#threadStore.undoMove(live.thread, id);
+			// Checked again on the write's every try: another server may undo
+			// it in between (CAR-245).
+			await this.#threadStore.undoMove(live.thread, id, isLive);
 			return live;
 		});
 		// The thread's place now, after the lock: a trace of the review's
@@ -1426,7 +1444,9 @@ export class Session {
 		);
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		const traced = await this.#traced(since, snapshot);
-		const { answer } = await this.#answerFor(since, snapshot, traced);
+		// `sources`: the patch set's human marks the answer judged its pieces'
+		// whitespace by; the page's pieces take the same, so they agree.
+		const { answer, sources } = await this.#answerFor(since, snapshot, traced);
 		const known = new Set([
 			...snapshot.files.map((f) => f.index),
 			...answer.files.map((f) => f.index),
@@ -1434,7 +1454,13 @@ export class Session {
 		return {
 			has: (index) => known.has(index),
 			hunks: async (index) => {
-				const hunks = interdiffFileHunks(traced, snapshot, answer, index);
+				const hunks = interdiffFileHunks(
+					traced,
+					snapshot,
+					answer,
+					index,
+					sources,
+				);
 				if (hunks.hunks.length > 0) return hunks;
 				// A file the interdiff doesn't change (or only renames): its
 				// lines are one gap, so they and the threads on them can be opened.

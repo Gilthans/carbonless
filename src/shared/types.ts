@@ -66,8 +66,10 @@ export interface Cluster {
 	/** The last added line has no newline at end of file. */
 	noNewlineNew?: boolean;
 	/**
-	 * Every line is whitespace-only change, side for side (git's `-w`:
-	 * src/shared/whitespace.ts splitHunk). With "Ignore whitespace" on, such
+	 * Every line is whitespace-only change: the display hunk's matching
+	 * gave each a `-w`-equal twin, maybe outside this cluster, so it may
+	 * have lines on one side only (src/shared/whitespace.ts hunkCuts,
+	 * cutByLines; CAR-218). With "Ignore whitespace" on, such
 	 * a cluster is shown as one quiet row and left out of progress.
 	 */
 	whitespaceOnly?: true;
@@ -1162,7 +1164,16 @@ export interface RereviewAnswer {
 		pieces?: SincePiece[];
 	}[];
 	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
-	toRead: { files: number; clusters: number };
+	toRead: {
+		files: number;
+		clusters: number;
+		/**
+		 * The same count without the whitespace-only clusters, for a reader
+		 * with "Ignore whitespace" on (the page picks by its switch); absent
+		 * when it would be the same.
+		 */
+		withoutWhitespaceOnly?: { files: number; clusters: number };
+	};
 	/**
 	 * Every unresolved thread's place in the target snapshot
 	 * (src/shared/rereview/placement.ts), as of the read of GitHub the
