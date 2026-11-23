@@ -173,7 +173,7 @@ test("CAR-271: placements that keep failing spin in the chip's slot through the 
 		route.fulfill({ status: 500, json: { error: "boom" } });
 	await page.route(PLACEMENTS, async (route) => {
 		asked++;
-		if (back) {
+		if (back !== null) {
 			await back;
 			return route.continue();
 		}
