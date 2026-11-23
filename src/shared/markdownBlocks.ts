@@ -5,6 +5,18 @@ import { Lexer, type Token, type Tokens } from "marked";
 // tags rendered blocks), so both agree on what a block is. No DOM: runs in Node
 // and the browser.
 
+/**
+ * **Part of cluster identity in Markdown files.** The server cuts a Markdown
+ * file's hunks at these blocks (src/shared/blockCut.ts, CAR-167), so this
+ * parser and the pinned `marked` version (package.json, exact: its lexer
+ * decides where a block starts and ends) decide where a hunk is cut and its
+ * pieces' keys. Any change to either (a block kind, a range rule, a `marked`
+ * upgrade that lexes some source differently) moves cuts, and marks on
+ * pieces cut the old way no longer match: fail safe (they read unreviewed),
+ * but the reviewer loses their Markdown marks. Treat it as a key format
+ * change, as splitHunk's comment says for the whitespace cut.
+ */
+
 export type MdBlockKind =
 	| "paragraph"
 	| "heading"
