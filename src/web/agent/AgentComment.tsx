@@ -1,8 +1,9 @@
 /**
  * A ```comment block of an agent message (CAR-83): the agent's suggested
- * review comment as an editable box with Add review comment, which posts
- * exactly the box's text to GitHub, as the reviewer, where the
- * conversation sits (agentComments.ts). Posted, it folds to one row with
+ * review comment as an editable box with Reply (on a GitHub thread) or
+ * Add review comment (new, on its lines or file), which posts exactly the
+ * box's text to GitHub, as the reviewer, where the conversation sits
+ * (agentComments.ts, postLabel). Posted, it folds to one row with
  * a link to the comment and the text as GitHub comments render. Outside
  * a conversation that can post (no `at`: a turn still streaming, or one
  * with nowhere to post), it's a read-only quote with a copy button.
@@ -58,6 +59,7 @@ import {
 	type PostingThread,
 	placeLabel,
 	postAgentComment,
+	postLabel,
 	postsFrom,
 	recordPosted,
 	refusalText,
@@ -316,7 +318,7 @@ function CommentBox(props: {
 			className="flex h-10 w-full items-center justify-center gap-2 self-end rounded-md bg-ok-fill px-4 text-sm font-semibold text-canvas hover:brightness-110 focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:bg-overlay aria-disabled:text-muted aria-disabled:hover:brightness-100 sm:w-auto"
 		>
 			{(sending || pending) && <SpinnerIcon size={14} />}
-			Add review comment
+			{postLabel(place, thread)}
 		</button>
 	);
 	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {

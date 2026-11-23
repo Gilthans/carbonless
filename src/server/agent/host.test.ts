@@ -12,6 +12,7 @@ import {
 	type AgentAnchor,
 	type AgentSpanAnchor,
 	type AgentStatus,
+	COMMENT_POSTS,
 	JOIN,
 	JOINED_PREAMBLE,
 	JOINED_THREAD_PREAMBLE,
@@ -36,6 +37,7 @@ import {
 	BadAnchorError,
 	buildAgentHost,
 	CoverageError,
+	commentPostsOf,
 	type HostRunner,
 	NotHandedError,
 	NotHoldingError,
@@ -926,6 +928,117 @@ describe("AgentHost with a session joined through MCP", () => {
 		});
 	});
 
+	describe("where a ```comment block posts, as next tells the agent (CAR-237)", () => {
+		const lines: AgentSpanAnchor = {
+			subject: "line",
+			path: "a.txt",
+			commit: "a".repeat(40),
+			side: "RIGHT",
+			line: 1,
+			startSide: "RIGHT",
+			startLine: 1,
+		};
+		const told = (preamble: string | undefined) =>
+			(Object.keys(COMMENT_POSTS) as (keyof typeof COMMENT_POSTS)[]).filter(
+				(k) => preamble?.includes(COMMENT_POSTS[k]),
+			);
+
+		it("a thread conversation: reply", async () => {
+			listGh(false);
+			await store.open({
+				anchor: ghAnchor,
+				text: "Is this fixed?",
+				by: "human",
+				clientId: "g1",
+			});
+			const q = await host.sessionNext(await approve());
+			expect(told(q?.preamble)).toEqual(["reply"]);
+			expect(COMMENT_POSTS.reply).toMatch(/reply to the GitHub thread/);
+		});
+
+		it("a thread conversation while GitHub can't be read: still reply", async () => {
+			listGh(false);
+			await store.open({
+				anchor: ghAnchor,
+				text: "Is this fixed?",
+				by: "human",
+				clientId: "g1",
+			});
+			ghDown = true;
+			const q = await host.sessionNext(await approve());
+			expect(told(q?.preamble)).toEqual(["reply"]);
+		});
+
+		it("a line conversation: a new comment on its lines", async () => {
+			await host.open({ clientId: "c1", text: "Why?", span: lines });
+			const q = await host.sessionNext(await approve());
+			expect(told(q?.preamble)).toEqual(["line"]);
+			expect(COMMENT_POSTS.line).toMatch(/new review comment on its lines/);
+		});
+
+		it("the review conversation: told nothing", async () => {
+			await host.open({ clientId: "c1", text: "q", review: true });
+			const q = await host.sessionNext(await approve());
+			expect(told(q?.preamble)).toEqual([]);
+		});
+
+		it("a file conversation: new; after its block started a thread, reply; that thread deleted, new again; GitHub unread, reply", async () => {
+			listGh(false);
+			const x = await host.open({ clientId: "c1", text: "Why?", span });
+			const token = await approve();
+			const answer = async (expected: string[]) => {
+				const q = await host.sessionNext(token);
+				expect(q?.thread).toBe(x.id);
+				expect(told(q?.preamble)).toEqual(expected);
+				return host.sessionReply(token, {
+					thread: x.id,
+					replyTo: q?.replyTo as string,
+					text: "```comment\nLooks off.\n```",
+				});
+			};
+			const a = await answer(["file"]);
+			await host.posted(x.id, {
+				message: a.messages.at(-1)?.id as string,
+				block: 0,
+				github: {
+					thread: "PRRT_1",
+					comment: "PRRC_1",
+					url: "https://github.com/o/r/pull/1#discussion_r1",
+				},
+				text: "Looks off.",
+			});
+			// Joined since its last question: computed on this read.
+			await host.message(x.id, { clientId: "c2", text: "And?" });
+			await answer(["reply"]);
+			// The thread deleted on GitHub: back on its file.
+			ghThreads = [];
+			ghThread = null;
+			await host.message(x.id, { clientId: "c3", text: "Still?" });
+			await answer(["file"]);
+			// GitHub can't be read: it may have its thread, never a second.
+			listGh(false);
+			await host.message(x.id, { clientId: "c4", text: "Now?" });
+			ghDown = true;
+			await answer(["reply"]);
+		});
+
+		it("commentPostsOf follows the fold", () => {
+			expect(commentPostsOf({ anchor: { subject: "review" } })).toBeNull();
+			expect(commentPostsOf({ anchor: ghAnchor })).toBe("reply");
+			expect(commentPostsOf({ anchor: ghAnchor, githubUnknown: true })).toBe(
+				"reply",
+			);
+			expect(commentPostsOf({ anchor: lines })).toBe("line");
+			expect(commentPostsOf({ anchor: span })).toBe("file");
+			const joins = { asked: span, threads: ["PRRT_1"] };
+			// Orphaned (deleted): back on where it was asked.
+			expect(commentPostsOf({ anchor: span, joins })).toBe("file");
+			expect(commentPostsOf({ anchor: span, joins, githubUnknown: true })).toBe(
+				"reply",
+			);
+		});
+	});
+
 	it("a GitHub thread conversation: next gives its envelope (no checkout), and a final [suggest-resolve] line is a suggestion", async () => {
 		listGh(false);
 		const asked = await store.open({
@@ -1771,7 +1884,7 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect(q).toMatchObject({
 				thread: x.id,
 				replyTo: x.messages[0]?.id,
-				preamble: JOINED_PREAMBLE,
+				preamble: `${JOINED_PREAMBLE} ${COMMENT_POSTS.file}`,
 				anchoredFile: { path: "a.txt", commit: span.commit, text: "hello\n" },
 				hunk: "@@ -1 +1 @@\n-a\n+b",
 			});

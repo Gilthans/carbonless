@@ -22,7 +22,13 @@ import type {
 } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import { AgentComment } from "./AgentComment";
-import { LINES_GONE, resetAgentComments, THREAD_GONE } from "./agentComments";
+import {
+	GITHUB_UNKNOWN,
+	LINES_GONE,
+	resetAgentComments,
+	SIBLING_SENDING,
+	THREAD_GONE,
+} from "./agentComments";
 import { agentThreadsQuery } from "./api";
 
 const HEAD = "b".repeat(40);
@@ -127,7 +133,8 @@ const box = () => {
 	if (write?.getAttribute("aria-pressed") === "false") fireEvent.click(write);
 	return screen.getByRole("textbox", { name: "Review comment" });
 };
-const button = () => screen.getByRole("button", { name: "Add review comment" });
+const button = (name: "Add review comment" | "Reply" = "Add review comment") =>
+	screen.getByRole("button", { name });
 
 const newThreadAnswer = (body: string): NewThreadAnswer =>
 	({
@@ -436,8 +443,13 @@ describe("AgentComment: posting", () => {
 				{ id: "PRRC_2", publishedAt: "2026-11-16T10:30:00Z" },
 			],
 		});
-		expect(screen.getByText("Reply")).toBeTruthy();
-		await user.click(button());
+		expect(screen.getByTestId("agent-comment-target").textContent).toBe(
+			"Reply",
+		);
+		expect(
+			screen.queryByRole("button", { name: "Add review comment" }),
+		).toBeNull();
+		await user.click(button("Reply"));
 		await screen.findByText("Posted");
 		const post = calls.find((c) => c.path.includes("/replies"));
 		expect(post?.path).toContain("/threads/PRRT_1/replies");
@@ -495,7 +507,7 @@ describe("AgentComment: posting", () => {
 				{ id: "PRRC_4", publishedAt: "2026-11-16T10:25:00Z" },
 			],
 		});
-		await user.click(button());
+		await user.click(button("Reply"));
 		await screen.findByText("Posted");
 		const post = calls.find((c) => c.path.includes("/replies"));
 		expect(post?.body).toMatchObject({ knownCommentIds: ["PRRC_1"] });
@@ -529,14 +541,14 @@ describe("AgentComment: posting", () => {
 			threadId: "PRRT_1",
 			comments: [{ id: "PRRC_1", publishedAt: "2026-11-16T09:00:00Z" }],
 		});
-		await user.click(button());
+		await user.click(button("Reply"));
 		expect((await screen.findByRole("alert")).textContent).toMatch(
 			/may have landed/i,
 		);
 		expect(box()).toHaveProperty("readOnly", true);
 		await user.type(box(), " typo fixed");
 		expect(box()).toHaveProperty("value", "Thanks!");
-		await user.click(button());
+		await user.click(button("Reply"));
 		await screen.findByText("Posted");
 		const sent = calls.filter((c) => c.path.includes("/replies"));
 		expect(sent.map((c) => (c.body as { body: string }).body)).toEqual([
@@ -561,13 +573,13 @@ describe("AgentComment: posting", () => {
 		// wrote no longer refuses: the opener is always known, CAR-236.)
 		answer = async () => json({ error: "down" }, 500);
 		show("Thanks!", thread);
-		await user.click(button());
+		await user.click(button("Reply"));
 		const alert = await screen.findByRole("alert");
 		expect(alert.textContent).toContain("Couldn't read the thread's comments");
 		expect(alert.textContent).not.toMatch(/may have landed/i);
 		expect(alert.className).toContain("text-bad");
 		expect(calls.filter((c) => c.path.includes("/replies"))).toEqual([]);
-		expect(button()).not.toHaveAttribute("aria-disabled", "true");
+		expect(button("Reply")).not.toHaveAttribute("aria-disabled", "true");
 	});
 
 	it("a deleted GitHub thread: the button is off and says so", () => {
@@ -585,6 +597,136 @@ describe("AgentComment: posting", () => {
 		);
 		expect(button()).toHaveAttribute("aria-disabled", "true");
 		expect(button()).toHaveAccessibleDescription(THREAD_GONE);
+	});
+});
+
+describe("AgentComment: the button names the post (CAR-237)", () => {
+	const onThread = (more: Partial<AgentThread> = {}) =>
+		lineThread({
+			anchor: {
+				subject: "thread",
+				thread: "PRRT_1",
+				path: "src/x.ts",
+				commit: HEAD,
+				side: "RIGHT",
+				line: 44,
+				startSide: "RIGHT",
+				startLine: 41,
+			},
+			...more,
+		});
+	const asked = lineThread().anchor as Extract<
+		AgentThread["anchor"],
+		{ subject: "line" }
+	>;
+
+	it("on lines: Add review comment, no Reply", () => {
+		show("x");
+		expect(button()).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Reply" })).toBeNull();
+	});
+
+	it("on a GitHub thread, and on a joined one: Reply", () => {
+		show("x", onThread());
+		expect(button("Reply")).not.toHaveAttribute("aria-disabled", "true");
+		cleanup();
+		show("x", onThread({ joined: { thread: "PRRT_1", asked } }));
+		expect(button("Reply")).not.toHaveAttribute("aria-disabled", "true");
+		expect(
+			screen.queryByRole("button", { name: "Add review comment" }),
+		).toBeNull();
+	});
+
+	it("joined, shown on its lines as GitHub can't be read: Reply, off and saying why", () => {
+		show(
+			"x",
+			lineThread({
+				joined: { thread: "PRRT_1", asked },
+				githubUnknown: true,
+			}),
+		);
+		expect(button("Reply")).toHaveAttribute("aria-disabled", "true");
+		expect(button("Reply")).toHaveAccessibleDescription(GITHUB_UNKNOWN);
+	});
+
+	it("joined, its thread deleted (back on its lines): Add review comment", () => {
+		show(
+			"x",
+			lineThread({ joined: { thread: "PRRT_1", asked }, orphaned: true }),
+		);
+		expect(button()).not.toHaveAttribute("aria-disabled", "true");
+	});
+
+	it("two blocks on lines: the second waits saying Reply while the first starts a thread, then replies to it", async () => {
+		const user = userEvent.setup();
+		const msg = message({
+			text: "```comment\nFirst\n```\n\n```comment\nSecond\n```",
+		});
+		const thread = lineThread({ messages: [msg] });
+		let release: (r: Response) => void = () => {};
+		answer = (m, path) =>
+			m === "POST" && path.endsWith("/threads") && !path.includes("/agent/")
+				? new Promise((r) => {
+						release = r;
+					})
+				: // The record fails: only this browser knows the thread.
+					Promise.reject(new Error("record failed"));
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+		});
+		client.setQueryData(overviewQuery.queryKey, {
+			readId: "r1",
+			writes: "on",
+			pendingReview: null,
+		} as PrOverview);
+		client.setQueryData(sessionQuery.queryKey, {
+			viewer: "octo",
+			snapshotHead: HEAD,
+			pr: { url: "https://github.com/o/r/pull/1" },
+		} as unknown as SessionInfo);
+		client.setQueryData(agentThreadsQuery.queryKey, { threads: [thread] });
+		render(
+			<QueryClientProvider client={client}>
+				<AgentComment text="First" block={0} at={{ thread, message: msg }} />
+				<AgentComment text="Second" block={1} at={{ thread, message: msg }} />
+			</QueryClientProvider>,
+		);
+		// Each block's box, as rendered now (Posted is another element).
+		const nth = (i: number) =>
+			screen.getAllByTestId("agent-comment")[i] as HTMLElement;
+		const secondButton = () =>
+			within(nth(1)).getByRole("button", { name: "Reply" });
+		expect(
+			within(nth(1)).getByRole("button", { name: "Add review comment" }),
+		).toBeTruthy();
+		await user.click(
+			within(nth(0)).getByRole("button", { name: "Add review comment" }),
+		);
+		// Waiting for the first: it replies to the thread that one starts.
+		expect(secondButton()).toHaveAttribute("aria-busy", "true");
+		expect(secondButton()).toHaveAccessibleDescription(SIBLING_SENDING);
+		await act(async () => release(json(newThreadAnswer("First"))));
+		await vi.waitFor(() => expect(nth(0).textContent).toContain("Posted"));
+		expect(secondButton()).not.toHaveAttribute("aria-disabled", "true");
+		answer = async (_m, path) =>
+			path.includes("/replies")
+				? json({
+						threadId: "PRRT_9",
+						comment: { id: "PRRC_10" },
+						comments: { threadId: "PRRT_9", comments: [] },
+						url: "https://github.com/o/r/pull/1#discussion_r10",
+					})
+				: Promise.reject(new Error("record failed"));
+		client.setQueryData(["comments", "r1", "PRRT_9"], {
+			threadId: "PRRT_9",
+			comments: [{ id: "PRRC_9", publishedAt: "2026-11-16T10:05:00Z" }],
+		});
+		await user.click(secondButton());
+		await vi.waitFor(() => {
+			const p = calls.find((c) => c.path.includes("/replies"));
+			if (!p) throw new Error("not posted yet");
+			expect(p.path).toContain("/threads/PRRT_9/replies");
+		});
 	});
 });
 

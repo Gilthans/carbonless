@@ -12,6 +12,8 @@ import {
 	type AgentThread,
 	type AgentView,
 	type AgentViewTarget,
+	COMMENT_POSTS,
+	type CommentPosts,
 	isAgentQuestion,
 	isOpenToAgent,
 	JOIN,
@@ -1038,11 +1040,15 @@ export class AgentHost {
 			head: envelope.review.head.commit,
 			mergeBase: envelope.review.mergeBase,
 		};
+		// Where its ```comment blocks post, as of this read (CAR-237): a
+		// conversation that joined a thread since its last question replies.
+		const posts = commentPostsOf(thread);
+		const where = posts ? ` ${COMMENT_POSTS[posts]}` : "";
 		return {
 			preamble:
 				envelope.kind === "github_thread_conversation"
-					? `${JOINED_PREAMBLE} ${JOINED_THREAD_PREAMBLE} Here \`hunk\` is the code the thread was opened on.`
-					: JOINED_PREAMBLE,
+					? `${JOINED_PREAMBLE} ${JOINED_THREAD_PREAMBLE} Here \`hunk\` is the code the thread was opened on.${where}`
+					: `${JOINED_PREAMBLE}${where}`,
 			thread: thread.id,
 			replyTo: asked,
 			envelope,
@@ -1642,6 +1648,27 @@ function threadForAgent(
 function githubThreadsOf(t: AgentThreadFold): string[] {
 	if (t.joins) return t.joins.threads;
 	return t.anchor.subject === "thread" ? [t.anchor.thread] : [];
+}
+
+/**
+ * Where a conversation's ```comment blocks post, as the page's
+ * commentPlace decides (src/web/agent/agentComments.ts), from the fold as
+ * GitHub-joined now: a thread conversation, or one joined to the thread
+ * its comment started (CAR-236), replies; one on lines or a file (an
+ * orphan back on its lines too) starts a new thread there; the review
+ * conversation posts none. GitHub unread (`githubUnknown`): a thread
+ * conversation still replies, and a joined one shown where it was asked
+ * is still that thread's (the page never starts a second one), so it is
+ * told reply too.
+ */
+export function commentPostsOf(
+	t: Pick<AgentThreadFold, "anchor" | "joins" | "githubUnknown">,
+): CommentPosts | null {
+	const a = t.anchor;
+	if (a.subject === "review") return null;
+	if (a.subject === "thread") return "reply";
+	if (t.joins && t.githubUnknown) return "reply";
+	return a.subject;
 }
 
 /** A joined session's turn: the envelope, the anchored file and the code block. */

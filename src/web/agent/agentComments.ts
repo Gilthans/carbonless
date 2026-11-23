@@ -146,6 +146,28 @@ export function commentPlace(args: {
 	return base;
 }
 
+export const REPLY = "Reply";
+export const ADD_COMMENT = "Add review comment";
+
+/**
+ * The box's button (CAR-237): Reply where the block posts as a reply to a
+ * GitHub thread; else Add review comment. A block waiting for its
+ * sibling's post replies to the thread that one starts; a joined
+ * conversation shown on its lines because GitHub couldn't be read is
+ * still its thread's (it never starts a second one).
+ */
+export function postLabel(
+	place: CommentPlace,
+	thread: Pick<AgentThread, "joined" | "orphaned">,
+): typeof REPLY | typeof ADD_COMMENT {
+	if (place.kind === "reply") return REPLY;
+	if (place.kind === "pending" && place.why === SIBLING_SENDING) return REPLY;
+	if (place.kind === "off" && place.why === GITHUB_UNKNOWN && thread.joined) {
+		return REPLY;
+	}
+	return ADD_COMMENT;
+}
+
 /** Where a block posts, from its own conversation alone (commentPlace without siblings). */
 function ownPlace(args: {
 	thread: PostingThread;

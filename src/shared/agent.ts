@@ -422,7 +422,22 @@ export const JOIN = {
  * posts it.
  */
 export const COMMENT_INSTRUCTION =
-	"To suggest a comment the reviewer could post where this conversation sits, put its exact text in a ```comment block (use four backticks if it holds a fence). Only the reviewer can post it. Write at most a few per message, and none in the whole-review conversation.";
+	"To suggest a comment the reviewer could post where this conversation sits, put its exact text in a ```comment block (use four backticks if it holds a fence). Only the reviewer can post it. In a conversation on a GitHub thread it posts as a reply to that thread; on lines or a file, as a new review comment there; each question's preamble says which, for its conversation. Write at most a few per message, and none in the whole-review conversation.";
+
+/**
+ * Where this conversation's ```comment blocks post (CAR-237), as the
+ * agent is told with each question: as the page's commentPlace decides
+ * (src/web/agent/agentComments.ts).
+ */
+export type CommentPosts = "reply" | "line" | "file";
+
+/** The question's line on where its ```comment blocks post (COMMENT_INSTRUCTION's per-conversation half). */
+export const COMMENT_POSTS: Record<CommentPosts, string> = {
+	reply:
+		"In this conversation a ```comment block posts as a reply to the GitHub thread it is on: write it as a reply, answering the thread's latest comment, without restating what the thread already says.",
+	line: "In this conversation a ```comment block posts as a new review comment on its lines: no GitHub thread holds it yet, so the comment must stand on its own.",
+	file: "In this conversation a ```comment block posts as a new review comment on its file: no GitHub thread holds it yet, so the comment must stand on its own.",
+};
 
 /** What the attach instructions say about `open` (spec 2026-11-15, "What the agent is told"). */
 export const OPEN_INSTRUCTION =

@@ -71,6 +71,13 @@ describe("the preamble and anchors", () => {
 		expect(JOINED_PREAMBLE).toContain(COMMENT_INSTRUCTION);
 		for (const part of ["```comment", "four backticks", "Only the reviewer"])
 			expect(COMMENT_INSTRUCTION).toContain(part);
+		// Where it posts, in general; each question says which (CAR-237).
+		expect(COMMENT_INSTRUCTION).toContain(
+			"In a conversation on a GitHub thread it posts as a reply to that thread",
+		);
+		expect(COMMENT_INSTRUCTION).toContain(
+			"each question's preamble says which",
+		);
 		// The thread preamble: a block there is a reply the reviewer may
 		// post; the agent itself still never writes to the thread.
 		expect(JOINED_THREAD_PREAMBLE).toContain("```comment");

@@ -16,6 +16,7 @@ import {
 	type AgentStatus,
 	type AgentThread,
 	COMMENT_INSTRUCTION,
+	COMMENT_POSTS,
 	JOINED_PREAMBLE,
 	REVIEW_PREAMBLE,
 } from "../../shared/agent";
@@ -316,7 +317,8 @@ describe("/mcp", () => {
 		};
 		expect(q.thread).toBe(asked.id);
 		expect(q.replyTo).toBe(asked.messages[0]?.id);
-		expect(q.preamble).toBe(JOINED_PREAMBLE);
+		// Then where its ```comment blocks post (CAR-237): lines, no thread yet.
+		expect(q.preamble).toBe(`${JOINED_PREAMBLE} ${COMMENT_POSTS.line}`);
 		expect(q.envelope.review).not.toHaveProperty("tree");
 		expect(q.envelope.thread.anchor).not.toHaveProperty("file");
 		expect(q.envelope.pr).toBeDefined();

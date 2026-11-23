@@ -423,10 +423,12 @@ any other; the agent gets your request's text with it (`re`).
 
 **Can the agent post comments?** No: it suggests, you post. It can put a
 comment for the PR's author in a ```` ```comment ```` block; crb shows it as
-an editable box under the answer, with Add review comment. Only your
+an editable box under the answer, with Reply (on a GitHub thread) or Add
+review comment (a new one on its lines or file). Only your
 press posts it, exactly what the box holds (your edits included), as you,
 where the conversation sits: a new thread on its lines or file at the
-latest push, or a reply to its GitHub thread. Once posted the box links
+latest push, or a reply to its GitHub thread (the agent is told which,
+and writes a reply as one). Once posted the box links
 to the comment, and a second press, here or on another device, never
 posts it again. If the lines are gone in the latest push the button is
 off and says so; the text stays, to copy. The agent has no tool that
