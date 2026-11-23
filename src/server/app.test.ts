@@ -2987,10 +2987,16 @@ describe("API", () => {
 				0,
 				later.index,
 			]);
-			expect(sinceBatch.files[0].hunks).toMatchObject({
-				hunks: [],
-				wholeGap: true,
-			});
+			// Its line-26 cluster, never reviewed on PS1, is the only thing
+			// shown: its lines, a box of their own (CAR-216).
+			expect(
+				sinceBatch.files[0].hunks.hunks
+					.flatMap((h: { lines: DiffLine[] }) => h.lines)
+					.map((l: DiffLine) => [l.kind, l.text, l.orphan]),
+			).toEqual([
+				["del", "line 26", true],
+				["add", "line 26 changed", true],
+			]);
 			expect(sinceBatch.files[1].hunks).toEqual(since);
 			const fullBatch = await batch("");
 			expect(fullBatch.files[0].hunks).toEqual(

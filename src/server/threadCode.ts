@@ -39,7 +39,7 @@ export class Memo<T> {
 
 	get(key: string, make: () => Promise<T>): Promise<T> {
 		const known = this.#map.get(key);
-		if (known) {
+		if (known !== undefined) {
 			// Most recently used last.
 			this.#map.delete(key);
 			this.#map.set(key, known);

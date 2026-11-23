@@ -167,12 +167,15 @@ function HeaderIconButton(props: {
 	const tone = tones[props.tone];
 	const button = useRef<HTMLButtonElement | null>(null);
 	// A reset swapped in (under the pointer, on the mark's own click: the UI
-	// doesn't wait for the save): ignore clicks a moment.
+	// doesn't wait for the save): ignore clicks a moment. The wait is the
+	// reset's alone: once another action is back in its place (the reset's
+	// marks undone elsewhere, e.g. a cluster's box), it takes clicks at
+	// once (CAR-257).
 	const lastLabel = useRef(props.label);
 	const swappedUntil = useRef(0);
 	if (lastLabel.current !== props.label) {
 		lastLabel.current = props.label;
-		if (props.pressed) swappedUntil.current = performance.now() + UNDO_ARM_MS;
+		swappedUntil.current = props.pressed ? performance.now() + UNDO_ARM_MS : 0;
 	}
 	// The question asked, for this action. Another action in its place, or
 	// none to ask (the file isn't finished, e.g. after another tab's write),

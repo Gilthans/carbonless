@@ -420,8 +420,16 @@ included, so it **adopts** them: from then on they are the reviewer's own
 marks, and they carry on to a later patch set like any hand mark (each hop
 is a line unchanged since a line marked by hand, so content-equivalent).
 Only the "N carried" chip goes with that. A line with no counterpart, or one whose
-counterpart wasn't marked, gets nothing: it stays the cluster's "rest",
-to read in the since view until marked in the full diff (principle 2).
+counterpart wasn't marked, gets nothing (principle 2): an **orphan**
+(CAR-216, `orphanLines`). The since view shows it at its place as the
+change it is (an added line at its new number, a removed base line with
+its base number), each run of them a piece of its own chipped "not
+reviewed in PS*n*", whose box marks exactly those lines with the same
+`lines-state` as any piece (nothing new is stored). Typically git aligned
+the base's identical lines another way in each patch set's diff (a blank
+that was context becomes an added one). Computed on read from the
+target's clusters, after the carries; should placing one fail, it stays
+the cluster's "rest", to read until marked in the full diff.
 Stored as one `lines-carried` event in the start's commit, beside
 `carried`; the viewed head shows the same carries before that
 (`overlayCarries`, from the engine's answer: each reworked or new

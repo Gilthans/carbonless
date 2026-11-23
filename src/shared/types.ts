@@ -160,6 +160,16 @@ export interface DiffLine {
 	 * rename since): no comment can go there by this file's path (CAR-233).
 	 */
 	psMoved?: true;
+	/**
+	 * The since view's only (CAR-216): a changed line of the viewed
+	 * snapshot (against the base) that the interdiff leaves unchanged,
+	 * that nothing carried a mark into: unchanged since the compared patch
+	 * set, but no change reviewed there (git aligned the base's lines
+	 * another way). Shown as the change it is, an added line at its new
+	 * number, a removed one with its base number (`baseNo`, no `oldNo`),
+	 * in a piece of its own (SincePiece.orphan).
+	 */
+	orphan?: true;
 }
 
 export interface DisplayHunk {

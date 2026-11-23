@@ -2057,8 +2057,11 @@ function KindRow(props: {
 	carried?: ClusterView["carried"];
 	/** Lines whose mark the engine carried (CAR-195): a chip of their own. */
 	linesCarried?: ClusterView["linesCarried"];
-	/** A piece that owns no line of this snapshot: reverted, or removed. */
-	sinceOnly?: "reverted" | "removed";
+	/**
+	 * A piece that owns no line of this snapshot: reverted, or removed; or
+	 * a run of orphan lines (CAR-216): unreviewed.
+	 */
+	sinceOnly?: "reverted" | "removed" | "unreviewed";
 	from?: number;
 }) {
 	const kind =
@@ -2298,6 +2301,13 @@ const HIDDEN_HUNKS: HunksRead = {
 
 const hunkHeader = (h: DisplayHunk) =>
 	`@@ -${h.oldStart},${h.oldCount} +${h.newStart},${h.newCount} @@`;
+
+/**
+ * A row's old side in its React key: an orphan removed line (CAR-216) has
+ * no old number in the since view, its base number instead.
+ */
+const oldKeyOf = (line?: DiffLine) =>
+	line?.oldNo ?? (line?.orphan ? `b${line.baseNo}` : "");
 
 /** The expanded file: file-level clusters, then hunks with loadable context between them. */
 export function DiffBody(props: {
@@ -4270,7 +4280,7 @@ function HunkRows(props: {
 			</tbody>
 			{hunkRuns.map((run) => {
 				const first = run.lines[0];
-				const runKey = `${run.key ?? ""}:${first?.oldNo}:${first?.newNo}`;
+				const runKey = `${run.key ?? ""}:${oldKeyOf(first)}:${first?.newNo}`;
 				const whole =
 					run.key === undefined ? undefined : props.clusters.get(run.key);
 				// The since view: every piece is marked as a cluster of its own,
@@ -4285,8 +4295,9 @@ function HunkRows(props: {
 				const entry =
 					run.key === undefined ? undefined : props.kinds?.get(run.key);
 				// Its chip: reverted or removed (a piece of its own, or a cluster's
-				// piece of removals only).
-				const sinceOnly = piece?.kind;
+				// piece of removals only); a run of orphan lines (CAR-216): not
+				// reviewed in the compared patch set.
+				const sinceOnly = run.orphan ? "unreviewed" : piece?.kind;
 				// A cluster the review doesn't list still shows as unreviewed.
 				const state = cluster
 					? cluster.state
@@ -4310,7 +4321,9 @@ function HunkRows(props: {
 						gone={gone}
 						// A piece of its own isn't its neighbour's: only gone says where it came from.
 						entry={
-							piece?.owns === null && entry?.kind !== "gone" ? undefined : entry
+							(piece?.owns === null && entry?.kind !== "gone") || run.orphan
+								? undefined
+								: entry
 						}
 						carried={cluster?.carried}
 						// The carried lines are the full diff's to show: the since
@@ -4377,7 +4390,8 @@ function HunkRows(props: {
 				const lineRows = (controls?: ReactNode) =>
 					run.side
 						? run.side.map((r, i) => {
-								const old = r.kind === "context" ? r.line.oldNo : r.del?.oldNo;
+								const old =
+									r.kind === "context" ? r.line.oldNo : oldKeyOf(r.del);
 								const nu = r.kind === "context" ? r.line.newNo : r.add?.newNo;
 								return (
 									<PairRow
@@ -4395,7 +4409,7 @@ function HunkRows(props: {
 								const shown = r.kind === "line" ? r.line : (r.add ?? r.del);
 								return (
 									<LineRow
-										key={`${line.kind}${line.oldNo ?? ""}:${line.newNo ?? ""}`}
+										key={`${line.kind}${line.kind === "ws" ? (line.oldNo ?? "") : oldKeyOf(line)}:${line.newNo ?? ""}`}
 										line={line}
 										order={shown ? orderOf(shown) : undefined}
 										checkbox={i === 0 ? controls : undefined}

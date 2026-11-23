@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { type CSSProperties, type ReactNode, useEffect, useMemo } from "react";
+import { unreachable } from "../../shared/unreachable";
 import { highlightLine } from "../files/highlight";
 import { Tooltip } from "../Tooltip";
 import { showInvisibles } from "../viewSettings";
@@ -96,6 +97,8 @@ function Marker(props: { piece: Exclude<Piece, { kind: "text" }> }): ReactNode {
 					{raw}
 				</span>
 			);
+		default:
+			return unreachable(piece);
 	}
 }
 

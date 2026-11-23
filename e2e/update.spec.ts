@@ -183,7 +183,7 @@ async function fakeRegistry(tags: Record<string, string>): Promise<Registry> {
 		const version = decodeURIComponent(m[1] ?? "");
 		reg.asked.push(version);
 		void (async () => {
-			if (gate) await gate;
+			if (gate !== null) await gate;
 			if (reg.failWith) {
 				res.writeHead(reg.failWith.status).end("{}");
 				return;

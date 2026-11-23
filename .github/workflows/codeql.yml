@@ -1,0 +1,43 @@
+# CodeQL security scanning (CAR-259): command injection into git/gh argv,
+# XSS where comment markdown reaches HTML, path traversal where files are
+# served, slow regexes. Results land in the repo's Security tab and as PR
+# annotations. Not a required check: whether a new alert fails a PR is the
+# owner's call. Paths it skips: .github/codeql/codeql-config.yml.
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  schedule:
+    # Monday 05:00 UTC: new queries find old code.
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          queries: security-extended
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:javascript-typescript

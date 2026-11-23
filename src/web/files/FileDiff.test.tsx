@@ -1173,6 +1173,34 @@ describe("FileDiff", () => {
 		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
 	});
 
+	it("takes a cross-off at once when it comes back right after the undo swapped in (CAR-257)", async () => {
+		const before = file([cluster("k1", { state: "reviewed" }), cluster("k2")]);
+		const crossedOff = file([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { state: "crossed-off" }),
+		]);
+		const { posts, rerender, user } = setup(before, () => ({
+			status: 200,
+			body: view(before),
+		}));
+		const cross = screen.getByRole("button", { name: "Cross off file" });
+		await user.click(cross);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+		await rerender(crossedOff);
+		expect(cross).toHaveAccessibleName("Undo cross-off");
+		// Undone elsewhere (the cluster's own box) within the undo's guard: the
+		// cross-off is back, and the guard went with the undo it was for.
+		await rerender(before);
+		expect(cross).toHaveAccessibleName("Cross off file");
+		expect(cross).not.toHaveAttribute("data-clicks-from");
+		await user.click(cross);
+		await waitFor(() =>
+			expect(posts()[1]?.body.changes).toEqual([
+				{ key: "k2", state: "crossed-off" },
+			]),
+		);
+	});
+
 	it("disables cross off once all is reviewed; mark flips to unmark", () => {
 		setup(
 			file([

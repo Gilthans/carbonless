@@ -269,7 +269,7 @@ export async function ghIdle(timeoutMs?: number): Promise<void> {
 		}
 	})();
 	try {
-		await (timedOut ? Promise.race([idle, timedOut]) : idle);
+		await (timedOut !== undefined ? Promise.race([idle, timedOut]) : idle);
 	} finally {
 		clearTimeout(timer);
 	}
@@ -426,7 +426,8 @@ function rec(value: unknown): Record<string, unknown> {
 		: {};
 }
 
-function validOwnerRepo(owner: string, repo: string): boolean {
+/** A GitHub owner and repo name, each a plain path segment (never `.` or `..`). */
+export function validOwnerRepo(owner: string, repo: string): boolean {
 	return OWNER.test(owner) && REPO.test(repo) && repo !== "." && repo !== "..";
 }
 

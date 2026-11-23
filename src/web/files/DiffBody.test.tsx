@@ -242,7 +242,10 @@ function setup(
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 		const url = new URL(String(input), "http://test");
-		if (url.pathname === "/api/files/0/hunks" && opts.hunksResponse) {
+		if (
+			url.pathname === "/api/files/0/hunks" &&
+			opts.hunksResponse !== undefined
+		) {
 			return opts.hunksResponse;
 		}
 		const body =

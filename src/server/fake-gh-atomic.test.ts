@@ -154,7 +154,8 @@ describe("writeFileAtomic", () => {
 			writer.on("close", done),
 		);
 		let running = true;
-		closed.then(() => {
+		// Never rejects (close only resolves); awaited after the loop.
+		void closed.then(() => {
 			running = false;
 		});
 		// Read and parse the file, like gh does, for as long as the writer runs.
