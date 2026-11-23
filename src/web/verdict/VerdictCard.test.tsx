@@ -406,8 +406,9 @@ describe("the verdict card since your verdict", () => {
 		).toBeInTheDocument();
 		// Off: the cluster counts, on the line and the button alike.
 		act(() => ignoreWhitespace.set(false));
+		// Another element (the changed line): asked for again.
 		await waitFor(() =>
-			expect(since).toHaveTextContent(
+			expect(within(c).getByTestId("verdict-since")).toHaveTextContent(
 				"Since then: 2 commits · 1 file · 1 new cluster",
 			),
 		);
