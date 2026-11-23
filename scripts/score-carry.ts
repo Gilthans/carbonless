@@ -343,13 +343,15 @@ export async function scoreCorpus(
 			createdAt: at,
 			anchor: lines && { path: m.path, commit: made.head, at, ...lines },
 		};
-		const inputs = await placer.inputs(
+		const base = { snapshot: snapshot.base, ref: snapshot.base };
+		const inputs = await placer.inputs(snapshot, [thread], base, at);
+		// No moves: the corpus scores the tracer alone.
+		const [placed] = await placer.placeMoved(
 			snapshot,
-			[thread],
-			{ snapshot: snapshot.base, ref: snapshot.base },
-			at,
+			inputs,
+			() => undefined,
+			base,
 		);
-		const [placed] = await placer.place(snapshot, inputs, new Map());
 		if (!placed) throw new Error(`entry ${e.id} got no placement`);
 		entries.push({
 			id: e.id,

@@ -1,5 +1,6 @@
 import type { LineRanges } from "./lineRanges.js";
 import type { SincePiece } from "./pieces.js";
+import type { MovedInfo } from "./rereview/moves.js";
 import type { ThreadPlacement } from "./rereview/placement.js";
 
 export type FileStatus =
@@ -65,8 +66,10 @@ export interface Cluster {
 	/** The last added line has no newline at end of file. */
 	noNewlineNew?: boolean;
 	/**
-	 * Every line is whitespace-only change, side for side (git's `-w`:
-	 * src/shared/whitespace.ts splitHunk). With "Ignore whitespace" on, such
+	 * Every line is whitespace-only change: the display hunk's matching
+	 * gave each a `-w`-equal twin, maybe outside this cluster, so it may
+	 * have lines on one side only (src/shared/whitespace.ts hunkCuts,
+	 * cutByLines; CAR-218). With "Ignore whitespace" on, such
 	 * a cluster is shown as one quiet row and left out of progress.
 	 */
 	whitespaceOnly?: true;
@@ -171,6 +174,19 @@ export interface DiffLine {
 	 * cluster side by side stay runs of their own (lineRuns).
 	 */
 	blockPiece?: number;
+	/**
+	 * The since view's removed lines with `baseNo` null only: the line's
+	 * number on the compared (earlier) patch set's head, an added line of
+	 * that commit's diff against its base: a comment on it goes there, on
+	 * that commit's RIGHT side (CAR-233). Absent when that diff hasn't it.
+	 */
+	psNo?: number;
+	/**
+	 * The since view's removed lines with `baseNo` null only: the compared
+	 * patch set's diff adds it, but at another path than the head's (a
+	 * rename since): no comment can go there by this file's path (CAR-233).
+	 */
+	psMoved?: true;
 }
 
 export interface DisplayHunk {
@@ -563,6 +579,12 @@ export interface ReviewThread {
 	 * commit, so never on the one viewed).
 	 */
 	commit: string;
+	/**
+	 * Page only: `commit` as GitHub gave it, on a copy Files changed shows
+	 * re-anchored on the viewed head (shownThread), whose `commit` is that
+	 * head's (CAR-139: a thread made on the viewed head isn't moved).
+	 */
+	madeOn?: string;
 	/** On lines (`anchor`, null when the host gave no line) or on the whole file. */
 	subject: "line" | "file";
 	/**
@@ -757,6 +779,18 @@ export interface NewThreadRequest {
 	/** subject "line" only: the span's columns, both or neither. */
 	startCol?: number | null;
 	endCol?: number | null;
+	/**
+	 * Started from this agent conversation (its id, a lowercase ULID): once
+	 * GitHub has the thread, the conversation becomes its (agent-thread-linked).
+	 */
+	agentThread?: string;
+	/**
+	 * On an earlier patch set's commit on purpose (CAR-233): `commit` is
+	 * that patch set's head, not the snapshot's, and the lines are RIGHT
+	 * lines of its diff (a line the since view shows removed that only
+	 * the patch sets had).
+	 */
+	earlier?: boolean;
 }
 
 /** 200: the thread as the overview read would show it (anchor with cols, code window may be null until read), and its comments. */
@@ -765,6 +799,10 @@ export interface NewThreadAnswer {
 	comments: ThreadComments;
 	/** The opening comment's link on GitHub, when GitHub gave its REST id. */
 	url?: string;
+	/** The agent conversation now on this thread (the request's `agentThread`, linked). */
+	agentThread?: string;
+	/** The request's `agentThread` stayed on its span: why, in a few words. */
+	agentLinkProblem?: { thread: string; reason: string };
 }
 
 /** A verdict the reviewer can send: one submitted review (Final Verdict). */
@@ -1185,9 +1223,10 @@ export interface PlacementsAnswer {
 	readId: string;
 	/** The snapshot id placed into. */
 	revision: string;
-	/** Its patch set (where a drag stores one); null for a head that is none yet. */
+	/** Its patch set; null for a head that is none yet. */
 	patchset: number | null;
-	threads: { id: string; placement: ThreadPlacement }[];
+	/** Each thread's place; `moved`: the reviewer's move it stands on (CAR-139). */
+	threads: { id: string; placement: ThreadPlacement; moved?: MovedInfo }[];
 	/**
 	 * Every thread is in: unresolved threads are placed first and answered
 	 * at once, resolved ones join later (false until then; ask again).
@@ -1207,6 +1246,12 @@ export interface SessionInfo {
 	viewer: string;
 	/** Head of the snapshot being reviewed (the patch set's, once started). */
 	snapshotHead: string;
+	/**
+	 * The snapshot's merge base (its left side against the base branch).
+	 * snapshotCommits is counted over it: the page keys the count by base
+	 * and head, so a retarget asks anew.
+	 */
+	snapshotBase?: string;
 	/** The PR's head on GitHub, as last fetched or checked. */
 	currentHead: string;
 	headMoved: boolean;
@@ -1253,11 +1298,6 @@ export interface SessionInfo {
 	 * once a patch set exists (its own count stands for it).
 	 */
 	snapshotCommits?: number | null | { error: string };
-	/**
-	 * The merge base snapshotCommits is counted over, sent with it: the
-	 * page keys the count by base and head, so a retarget asks anew.
-	 */
-	snapshotBase?: string;
 	/**
 	 * The PR's head when this crb last opened the review, before this open
 	 * (the toast's "since you last looked"); null on the first open.

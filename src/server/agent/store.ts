@@ -10,11 +10,20 @@ import {
 	type AgentThread,
 	type AgentView,
 	agentCommentClientId,
+	linkedAnchor,
 	MAX_ACTIVITY_BYTES,
 	MAX_ACTIVITY_ENTRIES,
 	MAX_AGENT_ERROR,
 	MAX_AGENT_TEXT,
 } from "../../shared/agent.js";
+import type {
+	MoveSnapshot,
+	MoveUndo,
+	ThreadMove,
+	ThreadRef,
+} from "../../shared/rereview/moves.js";
+import { TRACER_VERSION } from "../../shared/tracer/index.js";
+import type { ThreadAnchorRef } from "../../shared/types.js";
 import {
 	type AgentEvent,
 	type CrbEvent,
@@ -38,6 +47,55 @@ export const agentThreadsRef = (reviewId: string, slug: string): string =>
 export interface AgentThreadFold extends Omit<AgentThread, "code"> {
 	/** The reviewer's clientId of the opening question. */
 	clientId?: string;
+	/**
+	 * A conversation asked on lines or a file that posted a ```comment block
+	 * as a new GitHub thread (CAR-236): it is that thread's conversation
+	 * (`anchor` is a thread anchor on the first, by when it was recorded).
+	 * `asked` is where it was asked (it shows there again if no thread of
+	 * `threads` is still on GitHub, or GitHub can't be read); `threads` the
+	 * GitHub threads its blocks started, in the order recorded. Derived on
+	 * read from `agent-comment-posted`: nothing more is stored. Ordered by
+	 * when GitHub took the comment (its `#discussion_r<id>`, GitHub's
+	 * increasing database id), not when the record was written (a record
+	 * that failed is written on a later load).
+	 */
+	joins?: { asked: SpanAskedAnchor; threads: string[] };
+}
+
+/**
+ * GitHub's id of a review comment, from its link (`…#discussion_r<id>`):
+ * increasing with the time GitHub took it. Unknown: last.
+ */
+export function discussionId(url: string): number {
+	const m = /#discussion_r(\d+)$/.exec(url);
+	return m ? Number(m[1]) : Number.POSITIVE_INFINITY;
+}
+
+/** Where a conversation that can join a GitHub thread was asked: lines or a file. */
+export type SpanAskedAnchor = Extract<
+	AgentAnchor,
+	{ subject: "line" | "file" }
+>;
+
+/** The thread anchor a conversation asked at `asked` has once it joins GitHub thread `thread`. */
+export function joinedAnchor(
+	asked: SpanAskedAnchor,
+	thread: string,
+): Extract<AgentAnchor, { subject: "thread" }> {
+	const { path, commit } = asked;
+	if (asked.subject === "file")
+		return { subject: "thread", thread, path, commit };
+	const { side, line, startSide, startLine } = asked;
+	return {
+		subject: "thread",
+		thread,
+		path,
+		commit,
+		side,
+		line,
+		startSide,
+		startLine,
+	};
 }
 
 /** Thrown for a seen mark on a message the thread doesn't hold (the app answers 400). */
@@ -64,13 +122,21 @@ export class UnknownAgentThreadError extends Error {
 	}
 }
 
+/**
+ * A link the store won't write (the app answers 409): the conversation is
+ * already a GitHub thread's, or that GitHub thread already has one.
+ */
+export class AgentLinkError extends Error {}
+
 const iso = (ms: number) => new Date(ms).toISOString();
 const isAgentEvent = (e: CrbEvent): e is AgentEvent =>
 	e.type === "agent-thread-opened" ||
 	e.type === "agent-message" ||
 	e.type === "agent-thread-resolved" ||
 	e.type === "agent-thread-seen" ||
-	e.type === "agent-comment-posted";
+	e.type === "agent-comment-posted" ||
+	e.type === "agent-thread-linked";
+
 const clientIdOf = (e: CrbEvent): string | undefined => {
 	const id = e.details?.clientId;
 	return typeof id === "string" ? id : undefined;
@@ -143,6 +209,8 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 	/** The review conversation's thread: later review openings join it. */
 	let byReview: string | undefined;
 	const seenUpTo = new Map<string, string[]>();
+	/** A joined conversation's GitHub threads, with their comment's id. */
+	const joinOrder = new Map<string, { thread: string; n: number }[]>();
 	for (const e of sorted) {
 		const id = alias.get(e.thread) ?? e.thread;
 		const thread = threads.get(id);
@@ -201,11 +269,47 @@ function foldWithAliases(events: readonly CrbEvent[]): Folded {
 					...(m.posted ?? []),
 					{ block: e.block, url: e.github.url, at: iso(e.ts), text: e.text },
 				].sort((a, b) => a.block - b.block);
+				// Asked on lines or a file, its block started a GitHub thread:
+				// the conversation is that thread's (the first one's; a later
+				// one is a fallback should the first be gone). One another
+				// conversation already holds stays that one's.
+				if (!thread) break;
+				const gt = e.github.thread;
+				const a = thread.anchor;
+				const order = { thread: gt, n: discussionId(e.github.url) };
+				if (a.subject === "line" || a.subject === "file") {
+					if (byGithub.has(gt)) break;
+					thread.joins = { asked: a, threads: [gt] };
+					thread.anchor = joinedAnchor(a, gt);
+					joinOrder.set(id, [order]);
+					byGithub.set(gt, id);
+				} else if (thread.joins && !byGithub.has(gt)) {
+					thread.joins.threads.push(gt);
+					joinOrder.get(id)?.push(order);
+					byGithub.set(gt, id);
+				}
 				break;
 			}
+			case "agent-thread-linked":
+				// A span conversation becomes the GitHub thread's, once; a link
+				// onto a GitHub thread that has a conversation already is
+				// dropped (the conversation stays on its span, still listed).
+				if (!thread || thread.anchor.subject === "thread") break;
+				if (byGithub.has(e.github)) break;
+				thread.anchor = linkedAnchor(thread.anchor, e.github);
+				byGithub.set(e.github, id);
+				break;
 		}
 	}
 	const out = [...threads.values()];
+	// A joined conversation is on the thread GitHub took first.
+	for (const t of out) {
+		const order = joinOrder.get(t.id);
+		if (!t.joins || !order || order.length < 2) continue;
+		const sorted = [...order].sort((a, b) => a.n - b.n).map((o) => o.thread);
+		t.joins.threads = sorted;
+		t.anchor = joinedAnchor(t.joins.asked, sorted[0] as string);
+	}
 	// A message `open` wrote answers nothing, even when its origin is dropped
 	// below (fail safe: a bad origin never makes a question look answered).
 	const fromOpen = new Set<string>();
@@ -413,134 +517,138 @@ export class AgentThreadStore {
 
 	/** Opens a thread; a clientId already seen (in memory, or in details.clientId of a stored opened event) returns that thread unchanged. */
 	open(input: OpenInput): Promise<AgentThreadFold> {
-		return this.#serial(async () => {
-			const events = await this.#events();
-			const known =
-				input.by === "human"
-					? this.#opened.get(input.clientId)
-					: input.key !== undefined && input.origin
-						? this.#aiKeys.get(aiKey(input.origin, input.key))?.thread
-						: undefined;
-			if (known !== undefined) return this.#find(events, known);
-			if (input.anchor.subject === "review") {
-				if (input.by !== "human") {
-					throw new ReviewConversationError(
-						"The review conversation is opened by the reviewer",
+		return this.#serial(() =>
+			this.#write((events) => {
+				const known =
+					input.by === "human"
+						? this.#opened.get(input.clientId)
+						: input.key !== undefined && input.origin
+							? this.#aiKeys.get(aiKey(input.origin, input.key))?.thread
+							: undefined;
+				if (known !== undefined)
+					return { unchanged: this.#find(events, known) };
+				if (input.anchor.subject === "review") {
+					if (input.by !== "human") {
+						throw new ReviewConversationError(
+							"The review conversation is opened by the reviewer",
+						);
+					}
+					const existing = foldAgentThreads(events).find(
+						(t) => t.anchor.subject === "review",
 					);
+					if (existing) {
+						throw new ReviewConversationError(
+							"The review already has a conversation",
+							existing.id,
+						);
+					}
 				}
-				const existing = foldAgentThreads(events).find(
-					(t) => t.anchor.subject === "review",
-				);
-				if (existing) {
-					throw new ReviewConversationError(
-						"The review already has a conversation",
-						existing.id,
-					);
-				}
-			}
-			const { text, truncated } = capText(input.text);
-			const event = newEvent(
-				"agent-thread-opened",
-				this.slug,
-				{
-					thread: nextUlid().toLowerCase(),
-					anchor: input.anchor,
-					text,
-					...(truncated ? { truncated } : {}),
-					...(input.by === "ai"
-						? {
-								agent: input.agent,
-								...(input.origin ? { origin: input.origin } : {}),
-								...(input.key !== undefined
-									? { details: { key: input.key } }
-									: {}),
-							}
-						: {
-								details: { clientId: input.clientId },
-								...(input.view ? { view: input.view } : {}),
-							}),
-				},
-				input.by,
-				stampAfter(events),
-			);
-			return this.#write(events, "crb: agent thread opened", event);
-		});
-	}
-
-	message(thread: string, input: MessageInput): Promise<AgentThreadFold> {
-		return this.#serial(async () => {
-			const events = await this.#events();
-			const current = this.#find(events, thread);
-			// Only a resend to this thread is a no-op: a clientId seen on another
-			// thread is a new message here.
-			if (
-				input.by === "human" &&
-				this.#messaged.has(`${thread} ${input.clientId}`)
-			) {
-				return current;
-			}
-			// A keyed write already made returns what it wrote, wherever that was.
-			const keyed =
-				input.by === "ai" && input.origin && input.key !== undefined
-					? this.#aiKeys.get(aiKey(input.origin, input.key))
-					: undefined;
-			if (keyed) return this.#find(events, keyed.thread);
-			const { text, truncated } = capText(input.text);
-			const event = newEvent(
-				"agent-message",
-				this.slug,
-				{
-					thread,
-					text,
-					...(truncated ? { truncated } : {}),
-					...(input.by === "ai" && input.origin
-						? {
-								agent: input.agent,
-								stop: "end_turn" as const,
-								activity: [],
-								origin: input.origin,
-								...(input.key !== undefined
-									? { details: { key: input.key } }
-									: {}),
-							}
-						: input.by === "ai"
+				const { text, truncated } = capText(input.text);
+				const event = newEvent(
+					"agent-thread-opened",
+					this.slug,
+					{
+						thread: nextUlid().toLowerCase(),
+						anchor: input.anchor,
+						text,
+						...(truncated ? { truncated } : {}),
+						...(input.by === "ai"
 							? {
 									agent: input.agent,
-									stop: input.stop,
-									activity: capActivity(input.activity),
-									...(input.replyTo ? { replyTo: input.replyTo } : {}),
-									...(input.stop === "error" && input.error
-										? { error: input.error.slice(0, MAX_AGENT_ERROR) }
+									...(input.origin ? { origin: input.origin } : {}),
+									...(input.key !== undefined
+										? { details: { key: input.key } }
 										: {}),
-									...(input.head ? { head: input.head } : {}),
-									...(input.suggests ? { suggests: input.suggests } : {}),
 								}
 							: {
 									details: { clientId: input.clientId },
 									...(input.view ? { view: input.view } : {}),
 								}),
-				},
-				input.by,
-				stampAfter(events),
-			);
-			return this.#write(events, "crb: agent message", event);
-		});
+					},
+					input.by,
+					stampAfter(events),
+				);
+				return { summary: "crb: agent thread opened", event };
+			}),
+		);
+	}
+
+	message(thread: string, input: MessageInput): Promise<AgentThreadFold> {
+		return this.#serial(() =>
+			this.#write((events) => {
+				const current = this.#find(events, thread);
+				// Only a resend to this thread is a no-op: a clientId seen on another
+				// thread is a new message here.
+				if (
+					input.by === "human" &&
+					this.#messaged.has(`${thread} ${input.clientId}`)
+				) {
+					return { unchanged: current };
+				}
+				// A keyed write already made returns what it wrote, wherever that was.
+				const keyed =
+					input.by === "ai" && input.origin && input.key !== undefined
+						? this.#aiKeys.get(aiKey(input.origin, input.key))
+						: undefined;
+				if (keyed) return { unchanged: this.#find(events, keyed.thread) };
+				const { text, truncated } = capText(input.text);
+				const event = newEvent(
+					"agent-message",
+					this.slug,
+					{
+						thread,
+						text,
+						...(truncated ? { truncated } : {}),
+						...(input.by === "ai" && input.origin
+							? {
+									agent: input.agent,
+									stop: "end_turn" as const,
+									activity: [],
+									origin: input.origin,
+									...(input.key !== undefined
+										? { details: { key: input.key } }
+										: {}),
+								}
+							: input.by === "ai"
+								? {
+										agent: input.agent,
+										stop: input.stop,
+										activity: capActivity(input.activity),
+										...(input.replyTo ? { replyTo: input.replyTo } : {}),
+										...(input.stop === "error" && input.error
+											? { error: input.error.slice(0, MAX_AGENT_ERROR) }
+											: {}),
+										...(input.head ? { head: input.head } : {}),
+										...(input.suggests ? { suggests: input.suggests } : {}),
+									}
+								: {
+										details: { clientId: input.clientId },
+										...(input.view ? { view: input.view } : {}),
+									}),
+					},
+					input.by,
+					stampAfter(events),
+				);
+				return { summary: "crb: agent message", event };
+			}),
+		);
 	}
 
 	setResolved(thread: string, resolved: boolean): Promise<AgentThreadFold> {
-		return this.#serial(async () => {
-			const events = await this.#events();
-			this.#find(events, thread);
-			const event = newEvent(
-				"agent-thread-resolved",
-				this.slug,
-				{ thread, resolved },
-				"human",
-				stampAfter(events),
-			);
-			const summary = `crb: agent thread ${resolved ? "resolved" : "unresolved"}`;
-			return this.#write(events, summary, event);
-		});
+		return this.#serial(() =>
+			this.#write((events) => {
+				this.#find(events, thread);
+				const event = newEvent(
+					"agent-thread-resolved",
+					this.slug,
+					{ thread, resolved },
+					"human",
+					stampAfter(events),
+				);
+				const summary = `crb: agent thread ${resolved ? "resolved" : "unresolved"}`;
+				return { summary, event };
+			}),
+		);
 	}
 
 	/**
@@ -548,22 +656,25 @@ export class AgentThreadStore {
 	 * the thread is already seen up to it or later.
 	 */
 	seen(thread: string, upTo: string): Promise<AgentThreadFold> {
-		return this.#serial(async () => {
-			const events = await this.#events();
-			const current = this.#find(events, thread);
-			const at = current.messages.findIndex((m) => m.id === upTo);
-			if (at < 0) throw new UnknownAgentMessageError(upTo);
-			const mark = current.messages.findIndex((m) => m.id === current.seenUpTo);
-			if (mark >= at) return current;
-			const event = newEvent(
-				"agent-thread-seen",
-				this.slug,
-				{ thread: current.id, upTo },
-				"human",
-				stampAfter(events),
-			);
-			return this.#write(events, "crb: agent thread seen", event);
-		});
+		return this.#serial(() =>
+			this.#write((events) => {
+				const current = this.#find(events, thread);
+				const at = current.messages.findIndex((m) => m.id === upTo);
+				if (at < 0) throw new UnknownAgentMessageError(upTo);
+				const mark = current.messages.findIndex(
+					(m) => m.id === current.seenUpTo,
+				);
+				if (mark >= at) return { unchanged: current };
+				const event = newEvent(
+					"agent-thread-seen",
+					this.slug,
+					{ thread: current.id, upTo },
+					"human",
+					stampAfter(events),
+				);
+				return { summary: "crb: agent thread seen", event };
+			}),
+		);
 	}
 
 	/**
@@ -573,32 +684,162 @@ export class AgentThreadStore {
 	 * UnknownAgentMessageError.
 	 */
 	posted(thread: string, input: AgentPostedRequest): Promise<AgentThreadFold> {
+		return this.#serial(() =>
+			this.#write((events) => {
+				const current = this.#find(events, thread);
+				const m = current.messages.find((x) => x.id === input.message);
+				if (m?.by !== "ai") throw new UnknownAgentMessageError(input.message);
+				if (m.posted?.some((p) => p.block === input.block))
+					return { unchanged: current };
+				const event = newEvent(
+					"agent-comment-posted",
+					this.slug,
+					{
+						thread: current.id,
+						message: input.message,
+						block: input.block,
+						clientId: agentCommentClientId(
+							current.id,
+							input.message,
+							input.block,
+						),
+						github: input.github,
+						text: capText(input.text).text,
+					},
+					"human",
+					stampAfter(events),
+				);
+				return { summary: "crb: agent comment posted", event };
+			}),
+		);
+	}
+
+	/**
+	 * The thread moves in the ref (`thread-moved`, `thread-move-undone`),
+	 * as read: an agent thread's move is dropped unless that thread was
+	 * opened on lines (a file thread, a thread conversation and the review
+	 * conversation are never moved); a GitHub thread's is kept (the
+	 * caller uses it only for a thread GitHub lists). Folding is the
+	 * caller's (foldMoves), with the legacy moves it holds.
+	 */
+	async moves(): Promise<{ moves: ThreadMove[]; undos: MoveUndo[] }> {
+		return movesOf(await this.#events());
+	}
+
+	/**
+	 * Writes a `thread-moved` (by the reviewer); returns the move. `check`
+	 * sees the ref's moves as each try reads them (another server may have
+	 * written since the caller's check) and throws to refuse the write.
+	 */
+	move(
+		input: {
+			thread: ThreadRef;
+			on: MoveSnapshot;
+			anchor: ThreadAnchorRef;
+		},
+		check?: MovesCheck,
+	): Promise<ThreadMove> {
+		const { path, startSide, startLine, side, line } = input.anchor;
+		const where = `${oneLinePath(path)}:${line}`;
+		const on =
+			input.on.patchset !== undefined
+				? `PS${input.on.patchset}`
+				: input.on.head.slice(0, 7);
 		return this.#serial(async () => {
-			const events = await this.#events();
-			const current = this.#find(events, thread);
-			const m = current.messages.find((x) => x.id === input.message);
-			if (m?.by !== "ai") throw new UnknownAgentMessageError(input.message);
-			if (m.posted?.some((p) => p.block === input.block)) return current;
-			const event = newEvent(
-				"agent-comment-posted",
-				this.slug,
-				{
-					thread: current.id,
-					message: input.message,
-					block: input.block,
-					clientId: agentCommentClientId(
-						current.id,
-						input.message,
-						input.block,
+			const { event } = await this.#append((events) => {
+				check?.(movesOf(events));
+				return {
+					summary: `crb: moved a thread to ${where} on ${on}`,
+					event: newEvent(
+						"thread-moved",
+						this.slug,
+						{
+							thread: { source: input.thread.source, id: input.thread.id },
+							on: input.on,
+							anchor: { path, startSide, startLine, side, line },
+							engine: TRACER_VERSION,
+						},
+						"human",
+						stampAfter(events),
 					),
-					github: input.github,
-					text: capText(input.text).text,
-				},
-				"human",
-				stampAfter(events),
-			);
-			return this.#write(events, "crb: agent comment posted", event);
+				};
+			});
+			return {
+				id: event.id,
+				ts: event.ts,
+				thread: event.thread,
+				on: event.on,
+				anchor: event.anchor,
+				engine: event.engine,
+			};
 		});
+	}
+
+	/**
+	 * Writes a `thread-move-undone` taking back move `move` of `thread`;
+	 * `check` as move's.
+	 */
+	undoMove(
+		thread: ThreadRef,
+		move: string,
+		check?: MovesCheck,
+	): Promise<MoveUndo> {
+		return this.#serial(async () => {
+			const { event } = await this.#append((events) => {
+				check?.(movesOf(events));
+				return {
+					summary: "crb: undid a thread move",
+					event: newEvent(
+						"thread-move-undone",
+						this.slug,
+						{ thread: { source: thread.source, id: thread.id }, move },
+						"human",
+						stampAfter(events),
+					),
+				};
+			});
+			return { id: event.id, ts: event.ts, thread: event.thread, move };
+		});
+	}
+
+	/**
+	 * The reviewer started GitHub thread `github` from this span
+	 * conversation: it becomes that thread's conversation. Already linked
+	 * to it: nothing written. Refused (AgentLinkError) when the
+	 * conversation is another GitHub thread's, or `github` has one.
+	 */
+	link(thread: string, github: string): Promise<AgentThreadFold> {
+		return this.#serial(() =>
+			this.#write((events) => {
+				const { threads } = foldWithAliases(events);
+				const current = this.#find(events, thread);
+				if (current.anchor.subject === "thread") {
+					if (current.anchor.thread === github) return { unchanged: current };
+					throw new AgentLinkError(
+						"This conversation is already on a GitHub thread",
+					);
+				}
+				const taken = threads.find(
+					(t) => t.anchor.subject === "thread" && t.anchor.thread === github,
+				);
+				if (taken) {
+					throw new AgentLinkError(
+						"That GitHub thread already has a conversation",
+					);
+				}
+				const event = newEvent(
+					"agent-thread-linked",
+					this.slug,
+					{ thread: current.id, github },
+					"human",
+					stampAfter(events),
+				);
+				return {
+					summary: "crb: agent thread linked to a GitHub thread",
+					event,
+				};
+			}),
+		);
 	}
 
 	/** The ref's events; every human clientId in them is remembered. */
@@ -663,15 +904,53 @@ export class AgentThreadStore {
 		return found;
 	}
 
+	/**
+	 * Appends the event `build` makes from the ref's events, in one commit.
+	 * On a moved ref each try reads the new tip and builds again (a fresh
+	 * stamp, a fresh check: RefStore.appendBuilt), so an event never lands
+	 * stamped or checked against a tip another server has since moved.
+	 * `build` throws to refuse. Returns the event and what its try read.
+	 */
+	async #append<E extends CrbEvent>(
+		build: (events: CrbEvent[]) => { summary: string; event: E },
+	): Promise<{ events: CrbEvent[]; event: E }> {
+		let built: { events: CrbEvent[]; event: E } | undefined;
+		await this.store.appendBuilt(this.#ref, this.slug, (events) => {
+			for (const e of events) this.#remember(e);
+			const { summary, event } = build(events);
+			// The last try's is the one that landed.
+			built = { events, event };
+			return { summary, events: [event] };
+		});
+		if (!built) throw new Error("appendBuilt landed nothing built");
+		this.#remember(built.event);
+		return built;
+	}
+
+	/**
+	 * #append for a thread's event; returns the thread as the write left
+	 * it. `build` returns `unchanged` (that try's fold) to write nothing.
+	 */
 	async #write(
-		events: readonly CrbEvent[],
-		summary: string,
-		event: AgentEvent,
+		build: (
+			events: CrbEvent[],
+		) =>
+			| { summary: string; event: AgentEvent }
+			| { unchanged: AgentThreadFold },
 	): Promise<AgentThreadFold> {
-		await this.store.appendEvent(this.#ref, summary, event, this.slug);
-		this.#remember(event);
-		// Folded from what was read plus what was written: no second read.
-		return this.#find([...events, event], event.thread);
+		let out: { events: CrbEvent[]; event: AgentEvent };
+		try {
+			out = await this.#append((events) => {
+				const b = build(events);
+				if ("unchanged" in b) throw new Unchanged(b.unchanged);
+				return b;
+			});
+		} catch (error) {
+			if (error instanceof Unchanged) return error.value;
+			throw error;
+		}
+		// Folded from what the landing try read plus what it wrote: no second read.
+		return this.#find([...out.events, out.event], out.event.thread);
 	}
 
 	#serial<T>(run: () => Promise<T>): Promise<T> {
@@ -679,6 +958,52 @@ export class AgentThreadStore {
 		this.#writes = next.catch(() => {});
 		return next;
 	}
+}
+
+/** Refuses a move or an undo (by throwing) given the ref's moves as read. */
+export type MovesCheck = (state: {
+	moves: ThreadMove[];
+	undos: MoveUndo[];
+}) => void;
+
+/** Thrown out of a write's build: write nothing, answer `value`. */
+class Unchanged {
+	constructor(readonly value: AgentThreadFold) {}
+}
+
+/** A path on one line, for a commit's summary. */
+const oneLinePath = (path: string) =>
+	path.replace(/[\r\n]+/g, " ").slice(0, 200);
+
+/** The moves and undos of a ref's events (AgentThreadStore.moves). */
+export function movesOf(events: readonly CrbEvent[]): {
+	moves: ThreadMove[];
+	undos: MoveUndo[];
+} {
+	const lines = new Set(
+		foldAgentThreads(events)
+			.filter((t) => t.anchor.subject === "line")
+			.map((t) => t.id),
+	);
+	const movable = (t: ThreadRef) => t.source === "github" || lines.has(t.id);
+	const moves: ThreadMove[] = [];
+	const undos: MoveUndo[] = [];
+	for (const e of events) {
+		if (e.by !== "human") continue;
+		if (e.type === "thread-moved" && movable(e.thread)) {
+			moves.push({
+				id: e.id,
+				ts: e.ts,
+				thread: e.thread,
+				on: e.on,
+				anchor: e.anchor,
+				engine: e.engine,
+			});
+		} else if (e.type === "thread-move-undone") {
+			undos.push({ id: e.id, ts: e.ts, thread: e.thread, move: e.move });
+		}
+	}
+	return { moves, undos };
 }
 
 const aiKey = (origin: AgentOrigin, key: string) => `${origin.message} ${key}`;

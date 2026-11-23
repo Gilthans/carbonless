@@ -26,6 +26,7 @@ import {
 	type OpenAgentThreadRequest,
 } from "../../shared/agent";
 import { MCP_HARNESSES, type McpHarness } from "../../shared/agentHarnesses";
+import type { MovedInfo } from "../../shared/rereview/moves";
 import {
 	AGENT_PLACEMENTS_KEY,
 	AGENT_THREADS_KEY,
@@ -281,6 +282,8 @@ export const agentPlacementsQuery = (
 export interface AgentPlacementsState {
 	/** By thread id; null until they are in, when off, or after a failure. */
 	placements: Placements | null;
+	/** The reviewer's moves they stand on, by thread id (with `placements`). */
+	moves: ReadonlyMap<string, MovedInfo> | null;
 	/** Asked and on their way (retries included): a spinner, never a result. */
 	pending: boolean;
 	/** They couldn't be computed (after the retries). */
@@ -317,6 +320,17 @@ export function useAgentPlacementsFor(args: {
 				: null,
 		[on, data, revision],
 	);
+	const moves = useMemo(
+		() =>
+			on && data && data.revision === revision
+				? new Map(
+						data.threads.flatMap((t) =>
+							t.moved ? [[t.id, t.moved] as const] : [],
+						),
+					)
+				: null,
+		[on, data, revision],
+	);
 	// An answer for another snapshot (the base moved under the session):
 	// asked once more, then a failure, never an endless spinner.
 	const key = JSON.stringify(query.data ? [revision, data?.revision] : null);
@@ -335,6 +349,7 @@ export function useAgentPlacementsFor(args: {
 	const failure = on && placements === null ? (error ?? stale) : null;
 	return {
 		placements,
+		moves,
 		pending: on && placements === null && failure === null,
 		error: failure,
 		retry: () => {

@@ -1257,3 +1257,75 @@ describe("findInPr over a moved pair (step 2, unified B)", () => {
 		},
 	);
 });
+
+describe("findInPr in the since view (pieces cut the runs, CAR-244)", () => {
+	const del = (n: number, text: string): DiffLine => ({
+		kind: "del",
+		oldNo: n,
+		text,
+		clusterKey: "k",
+	});
+	const add = (n: number, text: string): DiffLine => ({
+		kind: "add",
+		newNo: n,
+		text,
+		clusterKey: "k",
+	});
+	// d1 and a2 are one whitespace-only pair in the full diff; the pieces
+	// start at d2 and a2, so the since view draws [d1] [d2 a1] [a2].
+	const setup = () => {
+		const lines = [
+			del(1, "  value = 1"),
+			del(2, "value two old"),
+			add(1, "value two new"),
+			add(2, "value = 1"),
+		];
+		const piece = (line: number) =>
+			({ hunk: 0, line, owns: null, old: [], new: [] }) as never;
+		const base = {
+			newLineCount: 2,
+			hunks: [{ oldStart: 1, oldCount: 2, newStart: 1, newCount: 2, lines }],
+		};
+		const since: FileHunks = {
+			...base,
+			pieces: [piece(0), piece(1), piece(3)],
+		};
+		return { lines, base: base as FileHunks, since };
+	};
+	const order = (hunks: FileHunks) =>
+		shownHits(
+			findInPr(
+				"value",
+				[file(0, { path: "a.txt" })],
+				() => hunks,
+				noContext,
+				false,
+				true,
+				false,
+				true,
+			),
+			true,
+		).map((h) => `${h.side === "LEFT" ? "old" : "new"} ${h.line}`);
+
+	it("steps in the order the since view draws a pair split across pieces", () => {
+		const { lines, since } = setup();
+		const starts = new Set(
+			(since.pieces ?? []).map((p) => lines[p.line] as DiffLine),
+		);
+		const drawn = hunkView(lines, true, starts)
+			.runs.flatMap((r) => r.rows)
+			.flatMap((r) =>
+				r.kind === "line"
+					? [r.line]
+					: ([r.del, r.add].filter(Boolean) as DiffLine[]),
+			)
+			.map((l) => (l.kind === "del" ? `old ${l.oldNo}` : `new ${l.newNo}`));
+		expect(drawn).toEqual(["old 1", "old 2", "new 1", "new 2"]);
+		expect(order(since)).toEqual(drawn);
+	});
+
+	it("keeps the full diff's order (no pieces: one pair)", () => {
+		// The `~` row d1/a2 hides old 1; the rows come as the full diff draws them.
+		expect(order(setup().base)).toEqual(["new 1", "new 2", "old 2"]);
+	});
+});

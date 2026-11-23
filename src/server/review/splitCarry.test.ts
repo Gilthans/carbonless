@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { Cluster, Snapshot } from "../../shared/types.js";
+import { parseU0Patch } from "../diff/clusters.js";
 import { clusterKeys } from "../diff/identity.js";
 import { cutClusters } from "../diff/snapshot.js";
 import { buildReviewView } from "./coverage.js";
@@ -353,15 +354,30 @@ describe("splitCarries, for any hunk and any marks on it (principle 2)", () => {
 			lines: n + added.length,
 		};
 		// As buildSnapshot cuts and keys them; the hunk alone keys as H.
-		// Lines 1-9 unchanged above the hunk, as the file's.
+		// Unchanged lines around the hunk that match none of its lines; for
+		// the Markdown cut, lines 1-9 above it only, as the file's.
 		const above = Array.from({ length: 9 }, (_, i) => `para ${i}`);
+		const around = (side: string[]) => [
+			...Array.from({ length: 9 }, (_, i) => `ctx ${i}`),
+			...side,
+			"ctx end",
+		];
 		const clusters = cutClusters(
 			[hunk],
 			(cs) =>
 				cs.length === 1 && cs[0] === hunk ? [H] : cs.map((_, i) => keyOf(i)),
 			markdown
-				? { oldLines: [...above, ...removed], newLines: [...above, ...added] }
-				: undefined,
+				? {
+						oldLines: [...above, ...removed],
+						newLines: [...above, ...added],
+						noNewlineAtEnd: false,
+					}
+				: {
+						oldLines: around(removed),
+						newLines: around(added),
+						noNewlineAtEnd: false,
+					},
+			markdown,
 		);
 		if (clusters.length < 2) return true;
 		const snap = snapshot();
@@ -476,7 +492,13 @@ describe("splitCarries onto Markdown block pieces (CAR-167)", () => {
 		// Keyed as buildSnapshot keys them: the hunk alone keys as H.
 		const keysOf = (cs: Omit<Cluster, "key">[]) =>
 			cs.length === 1 && cs[0] === hunk ? [H] : cs.map((_, i) => keyOf(i));
-		const pieces = () => cutClusters([hunk], keysOf, { oldLines, newLines });
+		const pieces = () =>
+			cutClusters(
+				[hunk],
+				keysOf,
+				{ oldLines, newLines, noNewlineAtEnd: false },
+				true,
+			);
 
 		it("is cut into one piece per item, each pointing at the hunk", () => {
 			expect(pieces().map((c) => [c.key, c.removed, c.added, c.split])).toEqual(
@@ -549,8 +571,17 @@ describe("splitCarries onto Markdown block pieces (CAR-167)", () => {
 		};
 		const keysOf = (cs: Omit<Cluster, "key">[]) =>
 			clusterKeys("src/a.ts", cs, newLines);
-		const ws = cutClusters([hunk], keysOf);
-		const md = cutClusters([hunk], keysOf, { oldLines, newLines });
+		const ws = cutClusters([hunk], keysOf, {
+			oldLines,
+			newLines,
+			noNewlineAtEnd: false,
+		});
+		const md = cutClusters(
+			[hunk],
+			keysOf,
+			{ oldLines, newLines, noNewlineAtEnd: false },
+			true,
+		);
 
 		it("reads a CAR-156 piece the block cut splits again unreviewed, and keeps the marks of pieces it leaves whole", () => {
 			expect(ws.map((c) => c.whitespaceOnly ?? false)).toEqual([
@@ -590,11 +621,17 @@ describe("splitCarries onto Markdown block pieces (CAR-167)", () => {
 			const one = { ...hunk, removed: oneOld, added: oneNew };
 			const keys = (cs: Omit<Cluster, "key">[]) =>
 				clusterKeys("src/a.ts", cs, oneNew);
-			const before = cutClusters([one], keys);
-			const after = cutClusters([one], keys, {
+			const before = cutClusters([one], keys, {
 				oldLines: oneOld,
 				newLines: oneNew,
+				noNewlineAtEnd: false,
 			});
+			const after = cutClusters(
+				[one],
+				keys,
+				{ oldLines: oneOld, newLines: oneNew, noNewlineAtEnd: false },
+				true,
+			);
 			expect(after.map((c) => c.key)).toEqual(before.map((c) => c.key));
 			const w = before[1] as Cluster;
 			expect(w.whitespaceOnly).toBe(true);
@@ -627,8 +664,17 @@ describe("splitCarries onto Markdown block pieces (CAR-167)", () => {
 				clusterKeys("src/a.ts", cs, newLines);
 			return {
 				hunkKey: keysOf([hunk])[0] as string,
-				ws: cutClusters([hunk], keysOf),
-				md: cutClusters([hunk], keysOf, { oldLines, newLines }),
+				ws: cutClusters([hunk], keysOf, {
+					oldLines,
+					newLines,
+					noNewlineAtEnd: false,
+				}),
+				md: cutClusters(
+					[hunk],
+					keysOf,
+					{ oldLines, newLines, noNewlineAtEnd: false },
+					true,
+				),
 			};
 		};
 		// A whitespace-only piece across two items: [x] [a␠ b␠] [y].
@@ -725,5 +771,117 @@ describe("splitCarries onto Markdown block pieces (CAR-167)", () => {
 				);
 			}
 		});
+	});
+});
+
+describe("the cut over display hunks: reset, no carry (CAR-218, owner 2026-11-22)", () => {
+	// A page's markup wrapped one level deeper in a new <Provider>, cut by
+	// git into three hunks around the inner `<div>` and `</div>` that equal
+	// the outer ones at the new depth; and an unrelated change further down.
+	const oldLines = [
+		"export function Page() {",
+		"  return (",
+		"    <div>",
+		"      <Header />",
+		"      <div>",
+		"        <Title />",
+		"      </div>",
+		"      <Footer />",
+		"    </div>",
+		"  );",
+		"}",
+		"",
+		"function a() {}",
+		"function b() {}",
+		"function c() {}",
+		"function d() {}",
+		"const limit = 1;",
+	];
+	const newLines = [
+		"export function Page() {",
+		"  return (",
+		"    <Provider>",
+		"      <div>",
+		"        <Header />",
+		"        <div>",
+		"          <Title />",
+		"        </div>",
+		"        <Footer />",
+		"      </div>",
+		"    </Provider>",
+		"  );",
+		"}",
+		"",
+		"function a() {}",
+		"function b() {}",
+		"function c() {}",
+		"function d() {}",
+		"const limit = 2;",
+	];
+	const patch =
+		"@@ -3,2 +3 @@\n-    <div>\n-      <Header />\n+    <Provider>\n@@ -6 +5,5 @@\n-        <Title />\n+        <Header />\n+        <div>\n+          <Title />\n+        </div>\n+        <Footer />\n@@ -8,2 +11 @@\n-      <Footer />\n-    </div>\n+    </Provider>\n@@ -17 +19 @@\n-const limit = 1;\n+const limit = 2;\n";
+
+	it("opens a review marked under the old cut with the re-keyed clusters unreviewed and every other mark kept", () => {
+		const hunks = parseU0Patch(patch).map((c) => ({
+			...c,
+			kind: "lines" as const,
+		}));
+		const keysOf = (cs: Omit<Cluster, "key">[]) =>
+			clusterKeys("src/a.ts", cs, newLines);
+		// The cut before CAR-218: each hunk matched on its own (what
+		// cutClusters falls back to when the hunks don't fit the text).
+		const before = cutClusters(hunks, keysOf, {
+			oldLines: [],
+			newLines: [],
+			noNewlineAtEnd: false,
+		});
+		const after = cutClusters(hunks, keysOf, {
+			oldLines,
+			newLines,
+			noNewlineAtEnd: false,
+		});
+		const [H1, H2, H3, H4] = keysOf(hunks);
+		// Before: H1 whole, H2 in three pieces (only <Title /> paired), H3
+		// whole, H4 whole. After: H1 and H3 in two pieces each, H2 whole
+		// (all whitespace), H4 whole.
+		expect(before.map((c) => c.split?.key ?? c.key)).toEqual([
+			H1,
+			H2,
+			H2,
+			H2,
+			H3,
+			H4,
+		]);
+		expect(after.map((c) => c.split?.key ?? c.key)).toEqual([
+			H1,
+			H1,
+			H2,
+			H3,
+			H3,
+			H4,
+		]);
+		const snap = snapshot();
+		(snap.files[0] as Snapshot["files"][number]).clusters = after;
+		const events: CrbEvent[] = [
+			started(),
+			...before.map((c) => mark(c.key, "reviewed")),
+		];
+		const { view } = carry(events, snap);
+		const got = view.files[0]?.clusters.map((c) => c.state);
+		// H2's pieces were marked; H2 whole is a key nobody marked: it reads
+		// unreviewed (no carry). H1's and H3's marks reach their pieces by
+		// the split carry, as for any hunk that splits; H4 keeps its key.
+		expect(got).toEqual([
+			"reviewed",
+			"reviewed",
+			"unreviewed",
+			"reviewed",
+			"reviewed",
+			"reviewed",
+		]);
+		const afterKeys = new Set(after.map((c) => c.key));
+		expect(
+			before.filter((c) => afterKeys.has(c.key)).map((c) => c.key),
+		).toEqual([H4]);
 	});
 });

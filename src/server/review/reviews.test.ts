@@ -27,7 +27,7 @@ import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
 import { buildReviewView } from "./coverage.js";
 import { newEvent, parseEventLines } from "./events.js";
-import { foldProgress } from "./fold.js";
+import { foldProgress, type ProgressState } from "./fold.js";
 import { RefStore } from "./refStore.js";
 import {
 	findReviewById,
@@ -960,6 +960,77 @@ describe("patch set n+1", () => {
 		expect(progress.statesByRevision.get(snap.revision)?.has(k2)).toBe(false);
 	});
 
+	it("a mark whose compare-and-swap loses to another process starting a patch set is refused as read-only, not landed on the old one (CAR-229)", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		// Another process (its own store) starts PS2 after this write read
+		// the ref and before its compare-and-swap.
+		const other = new ReviewService(new RefStore(repo));
+		const transaction = store.transaction.bind(store);
+		let raced = false;
+		const spy = vi
+			.spyOn(store, "transaction")
+			.mockImplementation(async (updates) => {
+				if (!raced && updates.some((u) => u.ref === progressRef())) {
+					raced = true;
+					await other.ensurePatchset(id, "dan", otherSnap, start());
+				}
+				return transaction(updates);
+			});
+		try {
+			const write = svc.recordStates(id, "dan", snap, [
+				{ key: k2, state: "reviewed" },
+			]);
+			await expect(write).rejects.toBeInstanceOf(ReadOnlyPatchsetError);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(raced).toBe(true);
+		const progress = await svc.getProgress(id, "dan");
+		expect(progress.patchsets.map((p) => p.number)).toEqual([1, 2]);
+		expect(progress.statesByRevision.get(snap.revision)?.has(k2)).toBe(false);
+		const events = await store.readEvents(progressRef());
+		expect(events.at(-1)?.type).toBe("patchset-started");
+	});
+
+	it("a mark whose compare-and-swap loses to another mark retries with stamps after the new tip's", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const other = new ReviewService(new RefStore(repo));
+		const transaction = store.transaction.bind(store);
+		let raced = false;
+		const spy = vi
+			.spyOn(store, "transaction")
+			.mockImplementation(async (updates) => {
+				if (!raced && updates.some((u) => u.ref === progressRef())) {
+					raced = true;
+					await other.recordStates(id, "dan", snap, [
+						{ key: k1, state: "crossed-off" },
+					]);
+				}
+				return transaction(updates);
+			});
+		try {
+			await svc.recordStates(id, "dan", snap, [{ key: k2, state: "reviewed" }]);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(raced).toBe(true);
+		const events = await store.readEvents(progressRef());
+		expect(events.slice(-2).map((e) => e.type)).toEqual([
+			"cluster-state",
+			"cluster-state",
+		]);
+		const [theirs, mine] = events.slice(-2) as [
+			(typeof events)[number],
+			(typeof events)[number],
+		];
+		expect(mine.ts).toBeGreaterThan(theirs.ts);
+		const states = (await svc.getProgress(id, "dan")).statesByRevision.get(
+			snap.revision,
+		);
+		expect(states?.get(k1)?.state).toBe("crossed-off");
+		expect(states?.get(k2)?.state).toBe("reviewed");
+	});
+
 	it("a mark against an unknown snapshot without a start is stale", async () => {
 		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
 		const write = svc.recordStates(id, "dan", otherSnap, [
@@ -1075,56 +1146,12 @@ describe("patch set n+1", () => {
 		).toBe(0);
 	});
 
-	it("recordPlacement appends a thread-placed by the reviewer", async () => {
-		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
-		const anchor = {
-			path: "mod.ts",
-			startSide: "RIGHT" as const,
-			startLine: 2,
-			side: "RIGHT" as const,
-			line: 2,
-		};
-		const progress = await svc.recordPlacement(
-			id,
-			"dan",
-			1,
-			"PRRT_1",
-			anchor,
-			1,
-		);
-		expect(progress.placements.get(1)?.get("PRRT_1")).toMatchObject({
-			type: "thread-placed",
-			by: "human",
-			actor: "dan",
-			thread: "PRRT_1",
-			patchset: 1,
-			anchor,
-			engine: 1,
-		});
-		const log = await runGit(repo, ["log", "--format=%s", "-1", progressRef()]);
-		expect(log).toContain("placed thread");
-		// Not for a patch set that doesn't exist.
-		await expect(
-			svc.recordPlacement(id, "dan", 2, "PRRT_1", anchor, 1),
-		).rejects.toBeInstanceOf(StaleSnapshotError);
-	});
-
 	it("refuses a patch set number that isn't one before touching git", async () => {
 		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
-		const anchor = {
-			path: "mod.ts",
-			startSide: "RIGHT" as const,
-			startLine: 2,
-			side: "RIGHT" as const,
-			line: 2,
-		};
 		for (const n of [0, -1, 1.5, Number.NaN, 2 ** 53]) {
 			await expect(svc.patchsetPins(id, "dan", n)).rejects.toThrow(
 				/patch set number/,
 			);
-			await expect(
-				svc.recordPlacement(id, "dan", n, "PRRT_1", anchor, 1),
-			).rejects.toThrow(/patch set number/);
 		}
 		expect((await store.readEvents(progressRef())).length).toBe(2);
 		expect(await svc.patchsetPins(id, "dan", 1)).toEqual({
@@ -1160,10 +1187,30 @@ describe("patch set n+1", () => {
 
 	it("a start that loses the progress ref to a mark retries and lands", async () => {
 		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
-		const [progress] = await Promise.all([
-			svc.ensurePatchset(id, "dan", otherSnap, start()),
-			svc.recordStates(id, "dan", snap, [{ key: k2, state: "reviewed" }]),
-		]);
+		// The mark (another process) lands between the start's read and its
+		// compare-and-swap. The other order refuses the mark as read-only
+		// (CAR-229, above).
+		const other = new ReviewService(new RefStore(repo));
+		const transaction = store.transaction.bind(store);
+		let raced = false;
+		const spy = vi
+			.spyOn(store, "transaction")
+			.mockImplementation(async (updates) => {
+				if (!raced && updates.some((u) => u.oldOid === null)) {
+					raced = true;
+					await other.recordStates(id, "dan", snap, [
+						{ key: k2, state: "reviewed" },
+					]);
+				}
+				return transaction(updates);
+			});
+		let progress: ProgressState;
+		try {
+			progress = await svc.ensurePatchset(id, "dan", otherSnap, start());
+		} finally {
+			spy.mockRestore();
+		}
+		expect(raced).toBe(true);
 		expect(progress.patchsets.map((p) => p.number)).toEqual([1, 2]);
 		const final = await svc.getProgress(id, "dan");
 		expect(final.statesByRevision.get(snap.revision)?.get(k2)).toEqual({

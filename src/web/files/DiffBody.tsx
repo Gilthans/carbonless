@@ -55,13 +55,29 @@ import type {
 	SinceMark,
 } from "../../shared/types";
 import { AgentBubble } from "../agent/AgentBubble";
-import { AgentComposer } from "../agent/AgentComposer";
+import {
+	type AgentCommentContext,
+	AgentComposer,
+	headFacts,
+} from "../agent/AgentComposer";
 import { takeJustAsked } from "../agent/agentWrites";
 import { agentThreadsQuery } from "../agent/api";
 import {
 	type AgentComposerItem,
 	useAgentComposers,
 } from "../agent/askAgentAction";
+import {
+	type CommentScope,
+	CommentScopeProvider,
+	onHeadMove,
+	spanInHunks,
+} from "../agent/commentOnGithub";
+import {
+	type PendingComposers,
+	PendingComposersProvider,
+	shownOutsideCard,
+	useHeldByCard,
+} from "../agent/pendingThread";
 import {
 	type AgentPlaceable,
 	shownAgentPlaceables,
@@ -137,6 +153,7 @@ import {
 	type Placeable,
 	type Placements,
 	placeThreads,
+	sinceEarlier,
 	sinceLeft,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
@@ -154,6 +171,11 @@ export interface DiffThreads {
 	threads: ReviewThread[];
 	/** The tracer's placements by thread id; null (or none) until they are in. */
 	placements?: Placements | null;
+	/**
+	 * The since view: threads on its compared patch set's head not placed
+	 * yet (earlierPending, CAR-233), each on its removed row if it has one.
+	 */
+	earlierPending?: ReviewThread[];
 }
 
 /** The find's view of this file (FilesPage): marks per line, the current hit, and steps onto it. */
@@ -367,6 +389,10 @@ interface AgentRows {
 	quote: (span: CodeSpan) => string;
 	/** Where a span is, by this view's row numbers (describeSpan). */
 	where: (span: CodeSpan) => string;
+	/** What an Ask agent composer's Comment button needs. */
+	comment: (span: CodeSpan) => AgentCommentContext;
+	/** Its first and last line's text (kept with a comment it turns into). */
+	texts: (span: CodeSpan) => LineTexts | undefined;
 }
 
 /** A cell's agent threads: those ending on its keys, the key, whether open. */
@@ -414,6 +440,10 @@ interface WsLine {
 	noNewline?: boolean;
 	/** Its removed line's, in the since view (DiffLine.baseNo). */
 	baseNo?: number | null;
+	/** Its removed line's, in the since view (DiffLine.psNo). */
+	psNo?: number;
+	/** Its removed line's, in the since view (DiffLine.psMoved). */
+	psMoved?: true;
 }
 
 /** What a diff row shows: a line as it is, or a whitespace-only pair. */
@@ -429,6 +459,8 @@ const rowLine = (row: DiffRow): RowLine => {
 		text: shown.text,
 		noNewline: shown.noNewline,
 		...(row.del?.baseNo === undefined ? {} : { baseNo: row.del.baseNo }),
+		...(row.del?.psNo === undefined ? {} : { psNo: row.del.psNo }),
+		...(row.del?.psMoved ? { psMoved: true as const } : {}),
 	};
 };
 
@@ -442,6 +474,8 @@ const sideLine = (line: DiffLine, ws: boolean): RowLine =>
 				text: line.text,
 				noNewline: line.noNewline,
 				...(line.baseNo === undefined ? {} : { baseNo: line.baseNo }),
+				...(line.psNo === undefined ? {} : { psNo: line.psNo }),
+				...(line.psMoved ? { psMoved: true as const } : {}),
 			}
 		: line;
 
@@ -579,10 +613,28 @@ interface Marker {
 	crossOff: () => void;
 }
 
-/** A piece shown as a cluster of its own: reviewed or crossed off when every line it owns is. */
-function pieceView(whole: ClusterView, piece: LineRanges): ClusterView {
-	const { reviewedLines: _, crossedLines: __, reason: ___, ...rest } = whole;
-	return { ...rest, state: pieceState(whole, piece) };
+/**
+ * A piece shown as a cluster of its own: reviewed or crossed off when every
+ * line it owns is; whitespace only as the piece is (`whitespaceOnly`, judged
+ * on the interdiff, CAR-218), never as its cluster is against the base.
+ */
+function pieceView(
+	whole: ClusterView,
+	piece: LineRanges,
+	whitespaceOnly: boolean,
+): ClusterView {
+	const {
+		reviewedLines: _,
+		crossedLines: __,
+		reason: ___,
+		whitespaceOnly: ____,
+		...rest
+	} = whole;
+	return {
+		...rest,
+		state: pieceState(whole, piece),
+		...(whitespaceOnly ? { whitespaceOnly: true } : {}),
+	};
 }
 
 /** A line of a cluster marked one piece at a time: its own mark. */
@@ -742,6 +794,8 @@ interface RowComposers {
 	/** Its first and last line's text as shown (kept with its draft). */
 	texts: (item: NewThreadItem) => LineTexts | undefined;
 	onPosted: (item: NewThreadItem) => void;
+	/** The diff shown isn't yet the viewed head's (no Ask agent on a line). */
+	headUnsure: boolean;
 }
 
 /**
@@ -1277,6 +1331,8 @@ function RowTail(props: {
 									span={item.span}
 									quote={agent.quote(item.span)}
 									where={agent.where(item.span)}
+									comment={agent.comment(item.span)}
+									lineTexts={agent.texts(item.span)}
 								/>
 							))}
 						</TailRow>
@@ -1302,6 +1358,7 @@ function NewThreadRow(props: {
 					where={props.composers.where(item)}
 					lineTexts={props.composers.texts(item)}
 					onPosted={() => props.composers.onPosted(item)}
+					headUnsure={props.composers.headUnsure}
 				/>
 			))}
 		</TailRow>
@@ -1388,6 +1445,8 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-old-no={line.oldNo}
 				data-new-no={line.newNo}
 				data-base-no={baseAttr(line.baseNo)}
+				data-ps-no={line.psNo}
+				data-ps-moved={line.psMoved || undefined}
 				data-landed={landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -1719,6 +1778,8 @@ function PairRow(
 				data-old-no={left?.line.oldNo}
 				data-new-no={right?.line.newNo}
 				data-base-no={baseAttr(left?.line.baseNo)}
+				data-ps-no={left?.line.psNo}
+				data-ps-moved={left?.line.psMoved || undefined}
 				data-landed={phase === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -2226,7 +2287,9 @@ export function DiffBody(props: {
 			const whole = piece.key ? clusters.get(piece.key) : undefined;
 			if (!whole) return undefined;
 			return {
-				cluster: pieceView(whole, owns),
+				// Whitespace only as the piece is (judged on the interdiff,
+				// CAR-218), not as its cluster is against the base.
+				cluster: pieceView(whole, owns, piece.whitespaceOnly === true),
 				marker: {
 					toggle: () => props.onToggle(whole, owns),
 					crossOff: () => props.onCrossOff(whole, owns),
@@ -2247,6 +2310,7 @@ export function DiffBody(props: {
 				added: [],
 				lines: size(piece.old) + size(piece.new),
 				state: sinceOnlyState(props.sinceMarks, since, file.path, piece),
+				...(piece.whitespaceOnly ? { whitespaceOnly: true } : {}),
 			},
 			marker: {
 				toggle: () => props.onSinceMark?.(piece, false),
@@ -2333,15 +2397,35 @@ export function DiffBody(props: {
 	const mineNew = allItems.filter(
 		(i) => i.span.path === file.path && i.span.subject === "line",
 	);
-	const lineItems = mineNew.filter((i) => i.span.commit === snapshotHead);
+	// The since view's compared patch set's head: a comment on a line
+	// only it had goes there (CAR-233), shown on that line's removed row.
+	const sessionData = useQuery({ ...sessionQuery, enabled: false }).data;
+	const earlierHead =
+		props.from === undefined
+			? undefined
+			: sessionData?.patchsets.find((p) => p.number === props.from)?.head;
+	const onEarlier = (span: CodeSpan) =>
+		span.earlier === true &&
+		earlierHead !== undefined &&
+		span.commit === earlierHead;
+	// One carrying an agent conversation whose card is on screen: drawn
+	// in that card (pendingThread.ts), not again here.
+	const heldByCard = useHeldByCard();
+	const lineItems = mineNew.filter(
+		(i) =>
+			(i.span.commit === snapshotHead || onEarlier(i.span)) &&
+			shownOutsideCard(i, snapshotHead, heldByCard),
+	);
 	const orphanItems = snapshotHead
-		? mineNew.filter((i) => i.span.commit !== snapshotHead)
+		? mineNew.filter(
+				(i) => i.span.commit !== snapshotHead && !onEarlier(i.span),
+			)
 		: [];
 	const writer = useThreadWriter();
 
 	// The agent's side: its threads (their own read) and open composers.
-	const sessionHead = useQuery({ ...sessionQuery, enabled: false }).data
-		?.snapshotHead;
+	const sessionNow = sessionData;
+	const sessionHead = sessionNow?.snapshotHead;
 	// FilesPage reads them (and the tree counts them); here, from the cache.
 	const agentThreads = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
@@ -2362,10 +2446,12 @@ export function DiffBody(props: {
 		(c) => c.span.path === file.path && c.span.subject === "line",
 	);
 	const agentLineItems = agentMine.filter(
-		(c) => c.span.commit === agentHeadNow,
+		(c) => c.span.commit === agentHeadNow || onEarlier(c.span),
 	);
 	const agentOrphans = agentHeadNow
-		? agentMine.filter((c) => c.span.commit !== agentHeadNow)
+		? agentMine.filter(
+				(c) => c.span.commit !== agentHeadNow && !onEarlier(c.span),
+			)
 		: [];
 
 	// The since view numbers its old side in the compared patch set; a
@@ -2379,13 +2465,22 @@ export function DiffBody(props: {
 				: sinceLeft(file.clusters, hunks.data?.hunks),
 		[props.from, file.clusters, hunks.data],
 	);
+	const early = useMemo(
+		() =>
+			earlierHead === undefined
+				? undefined
+				: sinceEarlier(earlierHead, hunks.data?.hunks),
+		[earlierHead, hunks.data],
+	);
 	/** A span (GitHub's numbers) on this view's rows; null when none shows it. */
-	const onRows = <A extends SpanRange>(span: A): A | null =>
-		onSinceRows(span, left);
+	const onRows = <A extends SpanRange & { earlier?: boolean }>(
+		span: A,
+	): A | null => onSinceRows(span, left, early);
 	/** The key of the row a span ends on, as this view numbers it. */
 	const endKey = (span: CodeSpan): LineKey | null => {
 		if (span.side === undefined || span.line === undefined) return null;
 		const rows = onRows({
+			earlier: span.earlier,
 			startSide: span.startSide ?? span.side,
 			startLine: span.startLine ?? span.line,
 			side: span.side,
@@ -2406,6 +2501,8 @@ export function DiffBody(props: {
 				spans: lineItems.map((i) => i.span as SpanRange),
 				placements: props.threads.placements,
 				sinceLeft: left,
+				sinceEarlier: early,
+				earlierPending: props.threads.earlierPending,
 			})
 		: null;
 	// Written on a row that isn't shown (a gap): above the diff, never lost.
@@ -2470,13 +2567,19 @@ export function DiffBody(props: {
 	};
 	// Each line's text by both keys, to quote a span above its composer.
 	const textAt = new Map<LineKey, string>();
-	for (const l of [
-		...(hunks.data?.hunks.flatMap((h) => h.lines) ?? []),
-		...loaded.values(),
-	]) {
-		for (const side of ["LEFT", "RIGHT"] as const) {
-			const k = lineKey(side, l);
-			if (k) textAt.set(k, l.text);
+	// GitHub's diff's own lines (a hunk's), where it takes a comment.
+	const hunkKeys = new Set<string>();
+	for (const [lines, inHunk] of [
+		[hunks.data?.hunks.flatMap((h) => h.lines) ?? [], true],
+		[[...loaded.values()], false],
+	] as const) {
+		for (const l of lines) {
+			for (const side of ["LEFT", "RIGHT"] as const) {
+				const k = lineKey(side, l);
+				if (!k) continue;
+				textAt.set(k, l.text);
+				if (inHunk) hunkKeys.add(k);
+			}
 		}
 	}
 	/** A span's quote, from the texts of the rows it is on here. */
@@ -2484,6 +2587,7 @@ export function DiffBody(props: {
 		const rows =
 			span.subject === "line" && span.side && span.line !== undefined
 				? onRows({
+						earlier: span.earlier,
 						startSide: span.startSide ?? span.side,
 						startLine: span.startLine ?? span.line,
 						side: span.side,
@@ -2511,6 +2615,7 @@ export function DiffBody(props: {
 			return describeSpan(span);
 		}
 		const rows = onRows({
+			earlier: span.earlier,
 			startSide: span.startSide ?? span.side,
 			startLine: span.startLine ?? span.line,
 			side: span.side,
@@ -2518,6 +2623,9 @@ export function DiffBody(props: {
 		});
 		return describeSpan(rows ? { ...span, ...rows } : span);
 	};
+	/** A span's first and last line's text, on the rows it is on here (kept with a draft). */
+	const spanLineTexts = (span: CodeSpan): LineTexts | undefined =>
+		textsOf(span as SpanRange) ?? undefined;
 	const composers: RowComposers = {
 		where: (item) => whereSpan(item.span),
 		at: (keys) =>
@@ -2532,6 +2640,7 @@ export function DiffBody(props: {
 			const key = endKey(item.span);
 			if (key) setOpenThreads((open) => new Set(open).add(key));
 		},
+		headUnsure: props.headSure === false,
 	};
 
 	const picker = usePicker(
@@ -2555,6 +2664,12 @@ export function DiffBody(props: {
 		for (const item of orphanItems) {
 			if (item.sending) continue;
 			const draft = writer.drafts.newThread(item.clientId);
+			// One carrying an agent conversation: onHeadMove (never moved).
+			if (item.agentThread) {
+				const fate = onHeadMove(sessionNow, item.span.commit, !!draft);
+				if (fate === "close") closeComposer(item.clientId);
+				continue;
+			}
 			// Opened on the earlier head and never typed in: nothing to keep.
 			if (!draft) {
 				closeComposer(item.clientId);
@@ -2602,6 +2717,7 @@ export function DiffBody(props: {
 				noLines: file.binary || file.submodule || linesHidden,
 				spans: agentLineItems.map((c) => c.span as SpanRange),
 				sinceLeft: left,
+				sinceEarlier: early,
 			})
 		: null;
 	const [openAgent, setOpenAgent] = useState<ReadonlySet<LineKey>>(
@@ -2614,6 +2730,31 @@ export function DiffBody(props: {
 			else next.add(key);
 			return next;
 		});
+	// GitHub's diff takes a comment on the rows a span is on here (in the
+	// since view, a removed line by its own row: CAR-217).
+	const commentOn = (span: CodeSpan): AgentCommentContext => {
+		const rows =
+			span.subject === "line" && span.side && span.line !== undefined
+				? onRows({
+						startSide: span.startSide ?? span.side,
+						startLine: span.startLine ?? span.line,
+						side: span.side,
+						line: span.line,
+					})
+				: null;
+		return {
+			// Its comment would open on that head: an orphan draft at once.
+			...headFacts(span, snapshotHead ?? sessionHead),
+			file: { binary: file.binary, submodule: file.submodule },
+			inDiff:
+				hunks.data && rows
+					? hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
+						hunkKeys.has(`${rows.side}:${rows.line}`)
+					: undefined,
+			headUnsure: props.headSure === false,
+			readOnly: props.readOnly === true,
+		};
+	};
 	const agentRows: AgentRows | undefined = agentPlacement
 		? {
 				placement: agentPlacement,
@@ -2627,6 +2768,8 @@ export function DiffBody(props: {
 					}),
 				quote: quoteSpan,
 				where: whereSpan,
+				comment: commentOn,
+				texts: spanLineTexts,
 			}
 		: undefined;
 	// Asked on a row that isn't shown (a gap), or on an earlier head: above
@@ -3118,166 +3261,209 @@ export function DiffBody(props: {
 		hunks.data && gapRows(gapAt(hunks.data.hunks.length), takeLead);
 	// Nothing to show it on (no rows, or they failed to load): a row of its own.
 	const lead = hunks.isPending ? undefined : takeLead();
+	// Comment on an agent card here: the head's diff shown, and whether a
+	// span's ends are this diff's lines (as the selection bar asks).
+	const hunkList = hunks.data?.hunks;
+	const commentScope = useMemo<CommentScope>(
+		() => ({
+			headSure: props.headSure !== false,
+			inDiff: (span) =>
+				hunkList && span.path === file.path
+					? spanInHunks(span, hunkList)
+					: undefined,
+		}),
+		[props.headSure, hunkList, file.path],
+	);
+
+	// A composer drawn in its conversation's card: what this diff gives one.
+	// Its functions read this render's (a ref), so the value changes only
+	// with the head: the file's cards don't all re-render with the diff.
+	const latest = useRef({
+		quoteSpan,
+		spanLineTexts,
+		onPosted: composers.onPosted,
+	});
+	latest.current = { quoteSpan, spanLineTexts, onPosted: composers.onPosted };
+	const headUnsure = composers.headUnsure;
+	const pendingComposers = useMemo<PendingComposers>(
+		() => ({
+			head: snapshotHead,
+			quote: (span) => latest.current.quoteSpan(span),
+			texts: (span) => latest.current.spanLineTexts(span),
+			onPosted: (item) => latest.current.onPosted(item),
+			headUnsure,
+		}),
+		[snapshotHead, headUnsure],
+	);
 
 	return (
-		<div ref={root}>
-			{hint && <LandingHint hint={hint} />}
-			{agentUnshown.length > 0 && (
-				<div
-					data-testid="agent-composers-unshown"
-					className="space-y-2 border-b border-line bg-canvas p-2"
-				>
-					{agentUnshown.map((c) => (
-						<AgentComposer
-							key={c.clientId}
-							clientId={c.clientId}
-							span={c.span}
-							quote={quoteSpan(c.span)}
-						/>
-					))}
-				</div>
-			)}
-			{(unshown.length > 0 || orphanItems.length > 0) && (
-				<div
-					data-testid="new-threads-unshown"
-					className="space-y-2 border-b border-line bg-canvas p-2"
-				>
-					{unshown.map((item) => (
-						<NewThread
-							key={item.clientId}
-							item={item}
-							quote={composers.quote(item)}
-							lineTexts={composers.texts(item)}
-						/>
-					))}
-					{orphanItems.length > 0 && (
-						<ul
-							aria-label="Drafts written on an earlier version"
-							className="space-y-2"
+		<CommentScopeProvider value={commentScope}>
+			<PendingComposersProvider value={pendingComposers}>
+				<div ref={root}>
+					{hint && <LandingHint hint={hint} />}
+					{agentUnshown.length > 0 && (
+						<div
+							data-testid="agent-composers-unshown"
+							className="space-y-2 border-b border-line bg-canvas p-2"
 						>
-							{orphanItems.map((item) => (
-								<OrphanDraft
-									key={item.clientId}
-									label={`${
-										gone(item) ? "Lines gone" : "Written on an earlier version"
-									} · ${describeSpan(item.span)}`}
-									text={item.text}
-									onDiscard={() => writer.discard(`new:${item.clientId}`)}
+							{agentUnshown.map((c) => (
+								<AgentComposer
+									key={c.clientId}
+									clientId={c.clientId}
+									span={c.span}
+									quote={quoteSpan(c.span)}
+									comment={commentOn(c.span)}
+									lineTexts={spanLineTexts(c.span)}
 								/>
 							))}
-						</ul>
+						</div>
 					)}
-				</div>
-			)}
-			{/* Its own bar is hidden: the proxy below is the one bar (useScrollbarProxy). */}
-			<div
-				ref={scroller}
-				className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-			>
-				{/*
-				 * Unified, the table is as wide as its longest line and scrolls in
-				 * the div; side by side it is the div's width, its two code columns
-				 * equal (the fixed layout with the other columns' widths), and the
-				 * lines wrap in their cells.
-				 */}
-				<table
-					ref={table}
-					data-view={view}
-					data-since={props.from !== undefined || undefined}
-					data-tight={tight || undefined}
-					onPointerDown={onPointerDown}
-					style={
-						{
-							"--num-w": `calc(${numberDigits(hunks.data)}ch + var(--num-pad, 1rem))`,
-						} as CSSProperties
-					}
-					className={`group/diff ${TABLE_VARS} border-collapse bg-code font-mono text-xs leading-5 text-code-ink ${
-						view === "side-by-side" ? "w-full table-fixed" : "min-w-full"
-					}`}
-				>
-					{view === "side-by-side" && (
-						<colgroup>
-							<col className="w-1" />
-							<col className={CONTROLS_W} />
-							<col className={NUMBER_W} />
-							<col />
-							<col className={NUMBER_W} />
-							<col />
-						</colgroup>
+					{(unshown.length > 0 || orphanItems.length > 0) && (
+						<div
+							data-testid="new-threads-unshown"
+							className="space-y-2 border-b border-line bg-canvas p-2"
+						>
+							{unshown.map((item) => (
+								<NewThread
+									key={item.clientId}
+									item={item}
+									quote={composers.quote(item)}
+									lineTexts={composers.texts(item)}
+									headUnsure={composers.headUnsure}
+								/>
+							))}
+							{orphanItems.length > 0 && (
+								<ul
+									aria-label="Drafts written on an earlier version"
+									className="space-y-2"
+								>
+									{orphanItems.map((item) => (
+										<OrphanDraft
+											key={item.clientId}
+											label={`${
+												gone(item)
+													? "Lines gone"
+													: "Written on an earlier version"
+											} · ${describeSpan(item.span)}`}
+											text={item.text}
+											onDiscard={() => writer.discard(`new:${item.clientId}`)}
+										/>
+									))}
+								</ul>
+							)}
+						</div>
 					)}
-					{lead && (
-						<tbody>
-							<LeadRow lead={lead} columns={columns} centred={centred} />
-						</tbody>
+					{/* Its own bar is hidden: the proxy below is the one bar (useScrollbarProxy). */}
+					<div
+						ref={scroller}
+						className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+					>
+						{/*
+						 * Unified, the table is as wide as its longest line and scrolls in
+						 * the div; side by side it is the div's width, its two code columns
+						 * equal (the fixed layout with the other columns' widths), and the
+						 * lines wrap in their cells.
+						 */}
+						<table
+							ref={table}
+							data-view={view}
+							data-since={props.from !== undefined || undefined}
+							data-tight={tight || undefined}
+							onPointerDown={onPointerDown}
+							style={
+								{
+									"--num-w": `calc(${numberDigits(hunks.data)}ch + var(--num-pad, 1rem))`,
+								} as CSSProperties
+							}
+							className={`group/diff ${TABLE_VARS} border-collapse bg-code font-mono text-xs leading-5 text-code-ink ${
+								view === "side-by-side" ? "w-full table-fixed" : "min-w-full"
+							}`}
+						>
+							{view === "side-by-side" && (
+								<colgroup>
+									<col className="w-1" />
+									<col className={CONTROLS_W} />
+									<col className={NUMBER_W} />
+									<col />
+									<col className={NUMBER_W} />
+									<col />
+								</colgroup>
+							)}
+							{lead && (
+								<tbody>
+									<LeadRow lead={lead} columns={columns} centred={centred} />
+								</tbody>
+							)}
+							{clusterRows}
+							{hunkRows}
+							{tailRows}
+						</table>
+					</div>
+					{overflow !== null && (
+						// Stuck to the viewport's bottom while the diff's end is below it,
+						// clear of what floats there (the phone's Files button below md,
+						// the save notices, the selection bar: FilesPage's paddingBottom).
+						<div
+							ref={proxy}
+							data-testid="diff-scrollbar"
+							aria-hidden
+							// Chrome makes a scroller with nothing focusable in it a Tab
+							// stop: not this one (the pointer scrolls it; the keyboard
+							// has the lines).
+							tabIndex={-1}
+							className="sticky bottom-[max(5rem,var(--sync-notices,0px),var(--selection-room,0px))] z-[6] overflow-x-auto [scrollbar-width:thin] data-[overlay]:h-2.5 md:bottom-[max(var(--sync-notices,0px),var(--selection-room,0px))]"
+						>
+							<div style={{ width: overflow }} className="h-px" />
+						</div>
 					)}
-					{clusterRows}
-					{hunkRows}
-					{tailRows}
-				</table>
-			</div>
-			{overflow !== null && (
-				// Stuck to the viewport's bottom while the diff's end is below it,
-				// clear of what floats there (the phone's Files button below md,
-				// the save notices, the selection bar: FilesPage's paddingBottom).
-				<div
-					ref={proxy}
-					data-testid="diff-scrollbar"
-					aria-hidden
-					// Chrome makes a scroller with nothing focusable in it a Tab
-					// stop: not this one (the pointer scrolls it; the keyboard
-					// has the lines).
-					tabIndex={-1}
-					className="sticky bottom-[max(5rem,var(--sync-notices,0px),var(--selection-room,0px))] z-[6] overflow-x-auto [scrollbar-width:thin] data-[overlay]:h-2.5 md:bottom-[max(var(--sync-notices,0px),var(--selection-room,0px))]"
-				>
-					<div style={{ width: overflow }} className="h-px" />
-				</div>
-			)}
-			{/* Lines hidden (an image): the view says nothing of lines; the
+					{/* Lines hidden (an image): the view says nothing of lines; the
 			    header's counts and action still hold every unit. */}
-			{props.from !== undefined &&
-				!linesHidden &&
-				hunks.data &&
-				unshownToRead > 0 && (
-					// Clusters the engine says are to read (reworked or new) with no
-					// line in these hunks (unreviewed on the compared patch set and
-					// unchanged since): never "nothing to read"; the full diff has them.
-					<p
-						data-testid="since-unshown"
-						className="flex min-h-10 items-center gap-2 px-3 text-xs text-warn"
-					>
-						{unshownToRead} to read · only in the full diff ·{" "}
-						<span className="text-muted">{carriedHere} carried</span>
-					</p>
-				)}
-			{/* Lines hidden too: with no file-level row, nothing else shows. */}
-			{props.from !== undefined &&
-				!props.linesElsewhere &&
-				hunks.data &&
-				hunks.data.hunks.length === 0 &&
-				fileClusters.length === 0 &&
-				unshownToRead === 0 && (
-					// The since view of a file the author left alone: say so (never
-					// an empty table that reads as "nothing changed" by mistake).
-					<p
-						data-testid="since-empty"
-						className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
-					>
-						Nothing to read since PS{props.from} · {carriedHere} carried
-					</p>
-				)}
-			{hunks.isPending && (
-				// A screen tall while loading, so a file picked in the tree can
-				// scroll its header to the top before its lines arrive.
-				<div aria-busy="true" className="min-h-[100dvh] px-3 py-2">
-					<Spinner label="Loading diff" />
+					{props.from !== undefined &&
+						!linesHidden &&
+						hunks.data &&
+						unshownToRead > 0 && (
+							// Clusters the engine says are to read (reworked or new) with no
+							// line in these hunks (unreviewed on the compared patch set and
+							// unchanged since): never "nothing to read"; the full diff has them.
+							<p
+								data-testid="since-unshown"
+								className="flex min-h-10 items-center gap-2 px-3 text-xs text-warn"
+							>
+								{unshownToRead} to read · only in the full diff ·{" "}
+								<span className="text-muted">{carriedHere} carried</span>
+							</p>
+						)}
+					{/* Lines hidden too: with no file-level row, nothing else shows. */}
+					{props.from !== undefined &&
+						!props.linesElsewhere &&
+						hunks.data &&
+						hunks.data.hunks.length === 0 &&
+						fileClusters.length === 0 &&
+						unshownToRead === 0 && (
+							// The since view of a file the author left alone: say so (never
+							// an empty table that reads as "nothing changed" by mistake).
+							<p
+								data-testid="since-empty"
+								className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
+							>
+								Nothing to read since PS{props.from} · {carriedHere} carried
+							</p>
+						)}
+					{hunks.isPending && (
+						// A screen tall while loading, so a file picked in the tree can
+						// scroll its header to the top before its lines arrive.
+						<div aria-busy="true" className="min-h-[100dvh] px-3 py-2">
+							<Spinner label="Loading diff" />
+						</div>
+					)}
+					{hunks.isError && hunks.error && (
+						<div className="p-2">
+							<ErrorMessage error={hunks.error} />
+						</div>
+					)}
 				</div>
-			)}
-			{hunks.isError && hunks.error && (
-				<div className="p-2">
-					<ErrorMessage error={hunks.error} />
-				</div>
-			)}
-		</div>
+			</PendingComposersProvider>
+		</CommentScopeProvider>
 	);
 }
 
@@ -3786,15 +3972,21 @@ function HunkRows(props: {
 	// rows with a pair on one (sideBySide.ts, by the hunk's partners), so the
 	// whitespace and pairing compose. A pair whose lines sit in two runs
 	// gets its marks only: neither row moves.
+	// The since view: each piece is a run of its own (its first line starts
+	// one), so every piece has its controls (CAR-218).
+	const sincePieces = props.pieces;
 	const { hunkRuns, pairs } = useMemo(() => {
-		const shown = hunkView(hunk.lines, ignoreWhitespace);
+		const starts = sincePieces
+			? new Set(hunk.lines.filter((l) => sincePieces.has(l)))
+			: undefined;
+		const shown = hunkView(hunk.lines, ignoreWhitespace, starts);
 		const runs = shown.runs.map((run) => ({
 			...run,
 			side:
 				view === "side-by-side" ? layoutRows(run.rows, shown.partners) : null,
 		}));
 		return { hunkRuns: runs, pairs: shown.pairs };
-	}, [hunk, ignoreWhitespace, view]);
+	}, [hunk, ignoreWhitespace, view, sincePieces]);
 	// The word marks of the hunk's pairs: those done before and those the
 	// render budget allows now; the rest are marked off the render path and
 	// come in with `marked`, chunk by chunk (wordWork.ts, CAR-135). Their
@@ -3995,7 +4187,8 @@ function HunkRows(props: {
 				}
 				// Whitespace only: the server's flag (a git hunk's whitespace-only
 				// run is a cluster of its own, CAR-156), the clusters progress
-				// leaves out with the switch on. A change cluster whose lines'
+				// leaves out with the switch on; in the since view the piece's
+				// (markOf: judged on the interdiff, CAR-218), as its counts are. A change cluster whose lines'
 				// twins sit elsewhere (a context line, another hunk) shows its `~`
 				// rows open: it still counts.
 				if (state && ignoreWhitespace && cluster?.whitespaceOnly) {

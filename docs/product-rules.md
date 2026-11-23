@@ -109,6 +109,19 @@ touched is reworked or new, and unreviewed. A carry is stored as a
 carried event that doesn't check out (an unknown patch set, a source that
 isn't reviewed) is ignored, leaving the cluster unreviewed (principle 2).
 
+## Interdiffs are first-class
+
+Reviewing what changed since an earlier patch set is as natural as
+reviewing the whole change (principle 9; owner, 2026-11-22: "I want
+interdiff and basediff comparisons to have feature parity as much as
+possible"). A feature built for the full diff works in the since view
+in the same change, or the since view says why not where the feature
+would be; a full-diff-only feature is a gap with a ticket. Numbers the since
+view shows on its old side are the compared patch set's: anything stored
+or sent (a move, a comment, a link) goes through the full diff's lines,
+never the interdiff's own numbers (thread moves: `moveEnd`,
+`src/web/files/threadMove.tsx`).
+
 ## Re-review never hides a change
 
 The since view, the "needs eyes" filter, carried marks, thread placement
@@ -250,7 +263,8 @@ switch wouldn't happen.
   (below). Its tooltip says so before the press.
 - **AI-suggested comments (CAR-83).** The reviewer's agent may suggest a
   review comment as a ```` ```comment ```` block in its answer; crb shows it
-  as an editable box with **Add review comment**. Only the reviewer's press
+  as an editable box with **Reply** when it posts as a reply to a GitHub
+  thread, else **Add review comment**. Only the reviewer's press
   posts it, exactly the box's text (their edits included), as the reviewer,
   where the conversation sits: a new thread on its lines or file at the
   snapshot's head (through the conversation's placement there: a changed
@@ -267,6 +281,45 @@ switch wouldn't happen.
   written, the browser keeps the post, shows it Posted and writes the record
   on a later load.
   The agent has no tool to post; a refusal is never retried by itself.
+  **A posted comment ties the conversation to its thread** (the owner,
+  2026-11-22: "I'd like it to be tied together, instead of just another
+  github thread over the same line"; CAR-236). Once a block from a
+  conversation on lines or a file starts a new GitHub thread, the
+  conversation is that thread's: it shows in the thread's agent panel (its
+  card opens with it on the press), as one asked with Ask agent there
+  would, never as a second thread on the line; its later blocks reply to
+  that thread. Two threads started before this: the first posted is the
+  one. The thread deleted on GitHub, it shows on its own lines again; while
+  GitHub's threads can't be read it shows there too, its blocks and its
+  reply box off (it may have a thread: never a second one). A view that
+  doesn't list its thread (an earlier patch set) shows it where it was
+  asked, its blocks replying to its thread. Until the first post's record
+  is in, this browser knows it: another block of the conversation waits
+  while one is on its way or in doubt, and replies to the thread one
+  started once GitHub took it (its button says Add review comment until
+  then, Reply from then on: its header and button always agree).
+  **The agent is told where its blocks post** (the owner, 2026-11-22: "a
+  suggestion should post as a reply if the agent thread is tied to a
+  conversation. Make sure the MCP tells the agent about that, and make sure
+  the texts align with that"; CAR-237). Each question's preamble says, as of
+  that read, whether a block in this conversation posts as a reply to its
+  GitHub thread (write it as a reply to that thread, without restating
+  it) or as a new review comment on its lines or file:
+  a conversation that joined a thread since its last question replies, one
+  whose thread was deleted is back to new comments. While GitHub can't be
+  read, a thread conversation or a joined one is still told reply (and a
+  joined one's box, off, still shows Reply on a thread). The
+  whole-review conversation is told nothing (it posts none).
+- **Write / Preview on every box that posts to GitHub (CAR-202).** The
+  reply, new-thread, edit and verdict-message boxes and the agent's
+  suggested comment each have a pencil/eye toggle (Ctrl/Cmd+Shift+P).
+  Preview renders the text the way crb shows a posted comment
+  (`escapeTags`, `marked`, then `sanitizeGithubHtml`: `CommentPreview.tsx`),
+  in the textarea's place and at least its height. The agent's box opens in
+  Preview (markdown the reviewer didn't write: read it first); the
+  reviewer's own boxes open in Write. Sending works from either mode and
+  posts the same text. No toggle on an empty box or in Ask agent (its text
+  never reaches GitHub). The mode isn't saved.
 - **Resolve in Files changed closes the thread to its bubble** (the owner,
   2026-11-09), on the press. Once none of the bubble's threads shows, it
   closes and takes the focus (a bubble above the view comes down to just
@@ -556,20 +609,35 @@ A whitespace-only change is its own cluster in every view (CAR-156, owner
 2026-11-15: "treating whitespace-only change as a separate cluster in all
 views sounds like a good idea regardless. Clusters are too big
 currently"). The server cuts each git hunk at its whitespace-only runs
-(`splitHunk`, `src/shared/whitespace.ts`, git's `-w`: lines equal once
-every ASCII whitespace character is removed): the longest order-preserving
-matching of the hunk's removed lines to its added ones, each maximal run
-of pairs a whitespace-only cluster (`Cluster.whitespaceOnly`), the lines
-between runs change clusters. Two changed lines, two re-indented ones and
-two more changed lines are three clusters, with the switch on or off. A
-single whitespace-only line between two changes counts; a pure addition or
-deletion never does, an added blank line included (as `git diff -w` shows
-it); a blank line paired with one of only whitespace does. A line moved
-across others stays a change. Only within a git hunk: a re-indented block
-whose two sides git puts in two hunks stays two changes. The pieces cover
-every changed line of the hunk exactly once (checked for any input,
-principle 2). Marks made on a hunk before it split carry onto its pieces
-(`docs/review-data-storage.md`, "Split carries").
+(git's `-w`: lines equal once every ASCII whitespace character is
+removed). Which lines are whitespace-only is decided once per display
+hunk (git hunks up to 6 unchanged lines apart, with 3 lines of context),
+by the same matching the view's `~` rows read (`matchDisplayHunk`,
+`hunkCuts`, `cutByLines`, `src/shared/whitespace.ts`; CAR-218): the
+heaviest order-preserving matching of the display hunk's old side to its
+new side, unchanged lines kept matched. A changed line it matched is
+whitespace-only; each maximal run of them in a git hunk is a
+whitespace-only cluster (`Cluster.whitespaceOnly`), the lines between runs
+change clusters. So a cluster is whitespace-only exactly where the view
+draws `~` rows. Two changed lines, two re-indented ones and two more
+changed lines are three clusters, with the switch on or off. A single
+whitespace-only line between two changes counts; a pure addition or
+deletion with no twin anywhere in the display hunk never does, an added
+blank line included (as `git diff -w` shows it); a blank line paired with
+one of only whitespace does. A line moved across others (an unchanged
+line, or out of order across a change) stays a change. A block that only
+moved one level deeper is whitespace-only all through, even where git cuts
+it into several hunks around a line that happens to equal one at the new
+depth (that line stays unchanged); a whitespace-only cluster may then have
+lines on one side only, its twins being in another git hunk or unchanged
+lines. A display hunk of more than 250,000 old × new lines (`SPLIT_CELLS`,
+context included), unless both sides are the same keys line for line, is
+matched one git hunk at a time instead, rows and clusters alike. The
+pieces cover every changed line of the hunk exactly once (checked for any
+input, principle 2). Marks made on a hunk before it split carry onto its
+pieces (`docs/review-data-storage.md`, "Split carries"); marks on a
+cluster the CAR-218 cut re-keyed read unreviewed (no carry, owner
+2026-11-22).
 
 Settings' "Ignore whitespace" is the reviewer's own choice of what progress
 counts. With it on, whitespace-only clusters are left out of every count
@@ -588,12 +656,25 @@ This is no AI decision: nothing is marked reviewed, and turning the
 switch off shows what is still unreviewed. The Overview's progress, the
 verdict (its "You reviewed" line and its meter of what changed since your
 verdict) and the since view (its bar, each file's header, chips and dot,
-"Nothing to read since", the move-on; its units of whitespace-only
-clusters, `SinceUnit.whitespaceOnly`; whether a file is nothing else is
-decided by its clusters, and the `~` counts clusters, not their pieces)
-count the same way, with the same `~` (CAR-184). Home doesn't: it never reads a review's view settings
-(owner 2026-11-16: "Home shouldn't probe for specific review settings"),
-so it counts every cluster.
+"Nothing to read since", the move-on; `SinceUnit.whitespaceOnly`)
+count the same way, with the same `~` (CAR-184). The since view judges
+whitespace-only on its own diff, the interdiff (CAR-218): a piece is
+whitespace-only when every line is a `~` row there and every line was
+read (reviewed or crossed off) at the earlier patch set, or is a base
+line that patch set left alone (nothing to read there; the full diff
+leaves the same re-indent out: owner 2026-11-23, "Interdiff should
+behave similarly to a basediff compare"). A line nobody read there that
+this patch set only re-indented is still unread. The rest of a cluster
+that no piece shows keeps its cluster's flag. A piece collapses by its
+own flag, not its cluster's: a real edit since, in a cluster
+whitespace-only against the base, stays open. A file is
+nothing else when all its since units are whitespace-only (not its
+snapshot clusters), and its header then counts them all, with no `~`,
+while the bar, its "to read" and the move-on leave it out (the full
+diff's bar and move-on do too). The `~` counts a cluster's units as
+one and each unit without a cluster on its own. Home doesn't: it never
+reads a review's view settings (owner 2026-11-16: "Home shouldn't probe
+for specific review settings"), so it counts every cluster.
 
 The view still pairs whitespace-equal lines as quiet `~` rows
 (`src/web/files/whitespace.ts`), over the whole display hunk, context
@@ -702,8 +783,40 @@ question would be on someone else's behalf, or about a past moment.
   group as its agent card (with its fate when known): never gone. An
   earlier patch set shows only those asked before the next one started,
   as review threads, except those asked on its own commit (asked there). Placements are for the viewed snapshot (a moved base
-  asks again), retried on failure, computed and never stored: no drag, no
-  storage change. Bubbles count unresolved agent threads only.
+  asks again), retried on failure, computed and never stored; the
+  reviewer moves one as a review thread (next rule). Bubbles count
+  unresolved agent threads only.
+- **A move is the reviewer's view (owner, 2026-11-18, CAR-139).** Any traced
+  thread on lines, a GitHub review thread or an agent thread, can be put on
+  other lines of the target viewed (the latest patch set or a head; never
+  an earlier patch set), in the full diff or the since view alike: drag its handle onto a line
+  of its file, or press the handle for move mode (a bar at the top, "Pick a
+  line", the line picker, "Place here": a range, any file of the
+  comparison). One mechanism for both kinds: `thread-moved` in the
+  reviewer's private agent threads ref, undone by `thread-move-undone`;
+  old `thread-placed` events read as moves. The move is the thread's new
+  truth: later snapshots trace from the moved lines; a move made on the
+  viewed snapshot places it as chosen. It shows as a gray `moved` chip
+  (pin) whose tooltip says where it was made ("Moved here by you on PS3",
+  "Moved by you on PS2, followed here") and, for a GitHub thread, where
+  GitHub shows it ("GitHub: line 88", "GitHub: outdated"), with a 40px
+  Undo in Files changed; the Threads tab lists it at its moved place with
+  a pin cue, the Overview shows the chip only. A move never writes to
+  GitHub (a reply goes to the thread as ever, with nothing added), never
+  starts a patch set, never touches coverage, counts or bubbles' totals,
+  and never hides a thread: every thread keeps exactly one placement, and
+  a move that can't be followed (its commits gone) shows the thread
+  unplaced as `rewritten`, never the tracer's older guess. A thread opened
+  on the viewed snapshot has no handle (no guess to correct), nor does a
+  file thread or a conversation; no handle or chip until the placements
+  answer. Sharing moves with other reviewers waits for sync. A move always
+  stores the target's full-diff lines: in the since view a new or context
+  row is the target's line, and a removed row its base line (CAR-217's
+  `baseNo`, the same one a comment there posts with); a removed row that
+  is no base line (only the earlier patch set had it) is no drop target and Place
+  here is off on it, never stored under the interdiff's own number. A
+  thread on a removed base line shows on that removed row in the since
+  view when it shows one.
 - **The agent opens conversations only while answering, and they answer
   nothing (spec 2026-11-15, CAR-80).** While it holds a question `next`
   handed it, the agent may call MCP `open` to put a conversation on the

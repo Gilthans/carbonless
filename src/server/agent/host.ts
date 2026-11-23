@@ -12,6 +12,8 @@ import {
 	type AgentThread,
 	type AgentView,
 	type AgentViewTarget,
+	COMMENT_POSTS,
+	type CommentPosts,
 	isAgentQuestion,
 	isOpenToAgent,
 	JOIN,
@@ -39,6 +41,7 @@ import type {
 	CodeWindow,
 	Counts,
 	DiffLine,
+	DiffSide,
 	FileStatus,
 	FileView,
 	ReviewThread,
@@ -58,13 +61,16 @@ import { ReviewClaim } from "./claim.js";
 import { joinRead, liveGithubThreads, resolveView } from "./githubJoin.js";
 import { JoinBroker, type WatchLease } from "./join.js";
 import {
+	type AnchorPatchset,
 	anchorFor,
+	anchorOpened,
 	type CommentRole,
 	type GithubThreadFacts,
 	isSafePath,
 	type PromptCodeEnvelope,
 	type PromptEnvelope,
 	type PromptMessage,
+	type PromptReview,
 	type PromptReviewEnvelope,
 	sanitizeEnvelope,
 	sanitizeThirdParty,
@@ -312,6 +318,32 @@ export interface SessionProgress {
 
 /** A request the agent host refuses as made (the app answers 400). */
 export class AgentRequestError extends Error {}
+
+/** A new comment's span as posted (NewThreadRequest's fields). */
+export interface PostedSpan {
+	path: string;
+	commit: string;
+	subject: "line" | "file";
+	side?: DiffSide;
+	line?: number;
+	startSide?: DiffSide;
+	startLine?: number;
+}
+
+/** Whether a conversation's span anchor is the posted span (columns aside: GitHub has none). */
+export function sameSpan(a: AgentAnchor, s: PostedSpan): boolean {
+	if (a.subject === "thread" || a.subject === "review") return false;
+	if (a.path !== s.path || a.commit !== s.commit || a.subject !== s.subject) {
+		return false;
+	}
+	if (a.subject === "file") return true;
+	return (
+		a.side === s.side &&
+		a.line === s.line &&
+		a.startSide === (s.startSide ?? s.side) &&
+		a.startLine === (s.startLine ?? s.line)
+	);
+}
 
 /**
  * A request that conflicts with what is there (the app answers 409): a
@@ -571,16 +603,23 @@ export class AgentHost {
 	/**
 	 * Each span thread's id, anchor and when it was asked (what placement
 	 * reads): a live thread conversation goes where its GitHub thread goes,
-	 * so it is left out; an orphan comes with its span anchor. The review
+	 * so it is left out (one joined to the thread its comment started is
+	 * in, where it was asked: CAR-236); an orphan comes with its span anchor. The review
 	 * conversation has no code to place on: left out.
 	 */
 	async asked(): Promise<
 		{ id: string; anchor: AgentSpanAnchor; at: string }[]
 	> {
 		const out: { id: string; anchor: AgentSpanAnchor; at: string }[] = [];
-		for (const { id, anchor, at } of await this.#joined(
+		for (const { id, anchor, at, joins } of await this.#joined(
 			await this.store.read(),
 		)) {
+			// One joined to a thread (CAR-236) is placed where it was asked
+			// too: a view that doesn't list its thread shows it there.
+			if (anchor.subject === "thread" && joins) {
+				out.push({ id, anchor: joins.asked, at });
+				continue;
+			}
 			if (anchor.subject === "thread" || anchor.subject === "review") continue;
 			out.push({ id, anchor, at });
 		}
@@ -649,9 +688,10 @@ export class AgentHost {
 		const current = await this.store.find(thread);
 		if (current.anchor.subject === "thread") {
 			// Fails closed: an unread GitHub never lets a question through.
-			const rt = liveGithubThreads(await this.github.threads()).get(
-				current.anchor.thread,
-			);
+			const live = liveGithubThreads(await this.github.threads());
+			const rt = githubThreadsOf(current)
+				.map((id) => live.get(id))
+				.find((x) => x !== undefined);
 			if (rt?.resolved) {
 				throw new AgentConflictError(
 					"The GitHub thread is resolved: unresolve it to ask again",
@@ -682,13 +722,39 @@ export class AgentHost {
 		if (current.anchor.subject === "thread") {
 			// Unknown GitHub threads fail the write (502), never resolve it here.
 			const live = liveGithubThreads(await this.github.threads());
-			if (live.has(current.anchor.thread)) {
+			if (githubThreadsOf(current).some((id) => live.has(id))) {
 				throw new AgentConflictError(
 					"A thread conversation resolves with its GitHub thread",
 				);
 			}
 		}
 		const t = await this.store.setResolved(thread, resolved);
+		return this.#view(await this.#joinedOne(t));
+	}
+
+	/**
+	 * The reviewer posted GitHub thread `github` on `span` from span
+	 * conversation `thread` (POST threads' `agentThread`): the
+	 * conversation becomes that thread's (store.link). A comment on
+	 * another span than the conversation's (file, commit, sides, lines)
+	 * is refused (AgentRequestError); a resend links nothing new.
+	 */
+	async link(
+		thread: string,
+		github: string,
+		span: PostedSpan,
+	): Promise<AgentThread> {
+		const current = await this.store.find(thread);
+		// On a GitHub thread already (a resend, or another): store.link decides.
+		if (
+			current.anchor.subject !== "thread" &&
+			!sameSpan(current.anchor, span)
+		) {
+			throw new AgentRequestError(
+				"The comment is on another span than the conversation",
+			);
+		}
+		const t = await this.store.link(current.id, github);
 		return this.#view(await this.#joinedOne(t));
 	}
 
@@ -974,11 +1040,15 @@ export class AgentHost {
 			head: envelope.review.head.commit,
 			mergeBase: envelope.review.mergeBase,
 		};
+		// Where its ```comment blocks post, as of this read (CAR-237): a
+		// conversation that joined a thread since its last question replies.
+		const posts = commentPostsOf(thread);
+		const where = posts ? ` ${COMMENT_POSTS[posts]}` : "";
 		return {
 			preamble:
 				envelope.kind === "github_thread_conversation"
-					? `${JOINED_PREAMBLE} ${JOINED_THREAD_PREAMBLE} Here \`hunk\` is the code the thread was opened on.`
-					: JOINED_PREAMBLE,
+					? `${JOINED_PREAMBLE} ${JOINED_THREAD_PREAMBLE} Here \`hunk\` is the code the thread was opened on.${where}`
+					: `${JOINED_PREAMBLE}${where}`,
 			thread: thread.id,
 			replyTo: asked,
 			envelope,
@@ -1243,9 +1313,7 @@ export class AgentHost {
 				`GitHub thread ${id} is resolved: the reviewer can't ask there, so neither can you`,
 			);
 		}
-		return threads.find(
-			(t) => t.anchor.subject === "thread" && t.anchor.thread === id,
-		);
+		return threads.find((t) => githubThreadsOf(t).includes(id));
 	}
 
 	/**
@@ -1432,10 +1500,19 @@ export class AgentHost {
 			?.messages.findLast((m) => m.by === "human")?.view;
 	}
 
-	/** Every thread, for a joined session. */
+	/**
+	 * Every thread, for a joined session: each anchor (and its code
+	 * window's) as an agent gets it, a LEFT one on its patch set's merge
+	 * base (anchorFor; the stored anchors keep their head).
+	 */
 	async sessionThreads(secret: string): Promise<AgentThread[]> {
 		await this.#token(secret);
-		return this.threads();
+		const { facts } = this.#facts();
+		const review = facts.review();
+		const { patchsets } = facts.views();
+		return (await this.threads()).map((t) =>
+			threadForAgent(t, review, patchsets),
+		);
 	}
 
 	/**
@@ -1490,8 +1567,8 @@ export class AgentHost {
 					}
 				: {}),
 		};
-		const existing = (await this.store.read()).find(
-			(f) => f.anchor.subject === "thread" && f.anchor.thread === rt.id,
+		const existing = (await this.store.read()).find((f) =>
+			githubThreadsOf(f).includes(rt.id),
 		);
 		if (existing) {
 			throw new AgentConflictError(
@@ -1512,11 +1589,92 @@ export class AgentHost {
 	}
 
 	async #view(t: AgentThreadFold): Promise<AgentThread> {
-		const { clientId: _, ...thread } = t;
+		const { clientId: _, joins, ...rest } = t;
+		// Joined (CAR-236): the thread it's on and where it was asked, so the
+		// page shows it there when that thread isn't in its view.
+		const thread: AgentThread = joins
+			? {
+					...rest,
+					joined: {
+						thread:
+							t.anchor.subject === "thread"
+								? t.anchor.thread
+								: (joins.threads[0] as string),
+						asked: joins.asked,
+					},
+				}
+			: rest;
 		if (t.anchor.subject !== "line") return thread;
 		const code = await this.code(t.anchor, t.at).catch(() => undefined);
 		return code ? { ...thread, code } : thread;
 	}
+}
+
+/**
+ * A thread as a joined session's `threads` gives it: its anchor, and its
+ * code window's, through anchorFor (a LEFT one on the merge base of the
+ * patch set it was opened on), the rest as stored.
+ */
+function threadForAgent(
+	t: AgentThread,
+	review: Pick<PromptReview, "mergeBase">,
+	patchsets: readonly AnchorPatchset[],
+): AgentThread {
+	const opened = anchorOpened(t);
+	const anchor = anchorFor(t.anchor, review, patchsets, opened);
+	if (!t.code) return { ...t, anchor };
+	const a = t.code.anchor;
+	const { commit } = anchorFor(
+		{
+			subject: "line",
+			path: a.path,
+			commit: a.commit,
+			side: a.side,
+			line: a.line,
+			startSide: a.startSide,
+			startLine: a.startLine,
+		},
+		review,
+		patchsets,
+		opened,
+	);
+	return { ...t, anchor, code: { ...t.code, anchor: { ...a, commit } } };
+}
+
+/**
+ * The GitHub threads a thread conversation is on, first first: its own,
+ * or for one joined to the threads its comments started (CAR-236), those.
+ */
+function githubThreadsOf(t: AgentThreadFold): string[] {
+	if (t.joins) return t.joins.threads;
+	return t.anchor.subject === "thread" ? [t.anchor.thread] : [];
+}
+
+/**
+ * Where a conversation's ```comment blocks post, as the page's
+ * commentPlace decides (src/web/agent/agentComments.ts), from the fold as
+ * GitHub-joined now: a thread conversation, or one joined to the thread
+ * its comment started (CAR-236), replies; one on lines or a file (an
+ * orphan back on its lines too) starts a new thread there; the review
+ * conversation posts none. GitHub unread (`githubUnknown`): a thread
+ * conversation still replies, and a joined one shown where it was asked
+ * is still that thread's (the page never starts a second one), so it is
+ * told reply too.
+ *
+ * Known to the browser only: a block GitHub took as a new thread whose
+ * record (`agent-comment-posted`) failed. Until the page writes it on a
+ * later load, the server has no `joins` and says new here while the page's
+ * next block replies (commentPlace's sibling). That's short-lived and
+ * unknowable here; don't "fix" it by guessing a thread.
+ */
+export function commentPostsOf(
+	t: Pick<AgentThreadFold, "anchor" | "joins" | "githubUnknown">,
+): CommentPosts | null {
+	const a = t.anchor;
+	if (a.subject === "review") return null;
+	if (a.subject === "thread") return "reply";
+	if (t.joins && t.githubUnknown) return "reply";
+	return a.subject;
 }
 
 /** A joined session's turn: the envelope, the anchored file and the code block. */
@@ -1558,6 +1716,13 @@ async function sessionSpanTurn(
 ): Promise<SessionTurn> {
 	const review = facts.review();
 	const a = thread.anchor as AgentSpanAnchor;
+	// As the agent is told: a LEFT side on its patch set's merge base.
+	const told = anchorFor(
+		a,
+		review,
+		facts.views().patchsets,
+		anchorOpened(thread),
+	);
 	const notice = joinNotices([
 		thread.orphaned
 			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${a.path} at ${a.commit || "an unknown commit"}).`
@@ -1569,14 +1734,14 @@ async function sessionSpanTurn(
 		review,
 		thread: {
 			id: thread.id,
-			anchor: anchorFor(thread.anchor, review),
+			anchor: told,
 		},
 		messages,
 		...(notice ? { notice } : {}),
 		...(pr ? { pr } : {}),
 	});
 	const [anchored, hunk] = await Promise.all([
-		facts.anchored(a).catch(() => null),
+		facts.anchored(told).catch(() => null),
 		facts.hunk(a).catch(() => null),
 	]);
 	return { envelope, anchored, hunk };
@@ -1631,7 +1796,7 @@ async function sessionThreadTurn(
 	const env = sanitizeEnvelope(
 		threadEnvelope({
 			review,
-			thread: { id: thread.id, anchor },
+			thread: { id: thread.id, anchor, opened: anchorOpened(thread) },
 			github,
 			view,
 			current,
@@ -1642,7 +1807,9 @@ async function sessionThreadTurn(
 		}),
 	);
 	const envelope: PromptCodeEnvelope = env;
-	const anchored = await facts.anchored(anchor).catch(() => null);
+	// The file at the commit the envelope names (anchorFor, as there).
+	const told = anchorFor(anchor, review, patchsets, anchorOpened(thread));
+	const anchored = await facts.anchored(told).catch(() => null);
 	return { envelope, anchored, hunk: github?.code ?? null };
 }
 
@@ -1800,6 +1967,8 @@ const HUNK_CONTEXT = 20;
 
 /** What a Session hands its agent: its clone, its review and its live views. */
 export interface ReviewAgentSource {
+	/** The reviewer's agent threads store, when the session holds one (one per review and reviewer). */
+	store?: AgentThreadStore;
 	repo: string;
 	reviewId: string;
 	viewer: string;
@@ -1955,11 +2124,9 @@ export async function agentConfig(): Promise<{
 
 /** The review's agent host: one thread store, one runner, the session's facts. */
 export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
-	const store = new AgentThreadStore(
-		new RefStore(src.repo),
-		src.reviewId,
-		src.viewer,
-	);
+	const store =
+		src.store ??
+		new AgentThreadStore(new RefStore(src.repo), src.reviewId, src.viewer);
 	/** The PR author's login; "" when it can't be read (nobody is then). */
 	const prAuthor = () => src.prAuthor().catch(() => "");
 	const facts: RunnerFacts = {
@@ -2063,26 +2230,19 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 }
 
 /**
- * The anchored file's text at the anchor's commit (the merge base for a
- * LEFT anchor), read from the clone with a checked OID and a relative
- * path; null when it can't be read, is binary or large, and for the
- * review conversation (no path).
+ * The anchored file's text at the anchor's commit, read from the clone
+ * with a checked OID and a relative path; null when it can't be read, is
+ * binary or large, and for the review conversation (no path). The anchor
+ * is the one the agent is told (anchorFor: a LEFT side's merge base
+ * already), so the file is the one its commit names.
  */
 export async function anchoredFile(
-	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
-		Partial<Pick<ReviewAgentSource, "patchsets">>,
+	src: Pick<ReviewAgentSource, "repo">,
 	anchor: AgentAnchor,
 ): Promise<{ text: string } | null> {
 	// The review conversation has no file.
 	if (anchor.subject === "review" || !isSafePath(anchor.path)) return null;
-	let commit = anchor.commit;
-	if (anchor.subject !== "file" && anchor.side === "LEFT") {
-		// A thread's LEFT side: its patch set's merge base, as the prompt says.
-		commit =
-			(anchor.subject === "thread"
-				? src.patchsets?.().find((p) => p.head === anchor.commit)?.mergeBase
-				: undefined) ?? src.snapshot().base;
-	}
+	const commit = anchor.commit;
 	if (!OID.test(commit)) return null;
 	const blob = await runGitBuffer(
 		src.repo,

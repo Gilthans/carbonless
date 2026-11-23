@@ -8,11 +8,13 @@
 //                                             is the tarball's path
 //   pnpm release status                       master's next version, rc and latest on npm and in tags
 //   pnpm release promote [<rc tag>] [--next patch|minor|major]
-//                                             starts release.yml's promote: <rc tag> (default:
-//                                             the newest; CI must have passed on it), packed as
-//                                             X.Y.Z, the tarball smoke-tested, and
-//                                             staged on npm (hidden until approved); prints the
-//                                             run's URL
+//                                             collects the release's notes for exactly <rc tag>'s
+//                                             range from Linear (refusing while any is missing),
+//                                             then starts release.yml's promote with them: <rc
+//                                             tag> (default: the newest; CI must have passed on
+//                                             it), packed as X.Y.Z with those notes, the tarball
+//                                             smoke-tested, and staged on npm (hidden until
+//                                             approved); prints the run's URL
 //   pnpm release publish [<run-id>]
 //                                             THE OWNER ONLY: checks a promote run's staged
 //                                             tarball (default: the newest run) and approves it
@@ -36,15 +38,17 @@
 //   pnpm release notes [X.Y.Z] [--pr]         writes release-notes/X.Y.Z.json (default: master's
 //                                             next release) from Linear and the PRs merged up to
 //                                             origin/master; prints what is missing; --pr puts
-//                                             it on notes/X.Y.Z with a "notes: X.Y.Z" PR instead.
-//                                             Never writes to Linear
+//                                             it on notes/X.Y.Z with a "notes: X.Y.Z" PR instead
+//                                             (optional: promote collects the notes itself; this
+//                                             previews them, and RCs ship them). Never writes to
+//                                             Linear
 //   pnpm release notes check                  fails listing what has no note: the release so
 //                                             far, and tickets done in the last 30 days
 //
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
 // ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
-// ci:check-run, ci:finish-plan, ci:notes-check, ci:changelog,
-// ci:release-body, ci:bump, ci:pr-note. (CI passed on the
+// ci:check-run, ci:finish-plan, ci:notes-input, ci:published-notes,
+// ci:changelog, ci:release-body, ci:bump, ci:pr-note. (CI passed on the
 // RC's commit: scripts/ci-passed.mjs, with no dependencies.) They print KEY=value
 // lines for $GITHUB_OUTPUT and read the checkout's tags. (The rc fix-up is
 // scripts/rc-fixup.mjs, with no dependencies, for the jobs that hold npm's
@@ -92,6 +96,7 @@ import {
 	auditNotes,
 	capLocal,
 	capShipped,
+	finishNotes,
 	formatNotesFile,
 	type Linear,
 	LOCAL_NOTES_GIT_PATH,
@@ -99,13 +104,13 @@ import {
 	linearKey,
 	mergeOkNotes,
 	noLinearKey,
-	notesCheck,
 	notesFilesAt,
+	notesFromInput,
 	notesPath,
 	type PullForNotes,
 	postNote,
 	prNotesOk,
-	promoteNotesCheck,
+	promoteNotes,
 	readNotesFile,
 	releaseRange,
 	renderNotesBody,
@@ -183,7 +188,14 @@ function findLinear(): { linear: Linear | null; tried: string[] } {
 	return { linear: key ? linearClient(key) : null, tried };
 }
 
-const linearOrNull = () => findLinear().linear;
+/** ci:published-notes' output, read back strictly: a notes file of `version`. */
+function readPublishedNotes(path: string, version: string) {
+	const notes = readNotesFile(readFileSync(path, "utf8"), path);
+	if (notes.version !== version) {
+		throw new Error(`${path} is for ${notes.version}, not ${version}`);
+	}
+	return notes;
+}
 
 function mustLinear(): Linear {
 	const { linear, tried } = findLinear();
@@ -215,10 +227,14 @@ const packageVersion = (dir: string) =>
  * Sets package.json's version in the runner's checkout without making the
  * tree dirty: git is told to skip the file (skip-worktree), so `git status`
  * stays empty and scripts/build-info.mjs records the commit, not `-dirty`.
- * Works on any commit, also one whose build-info.mjs predates this.
+ * Works on any commit, also one whose build-info.mjs predates this. A
+ * release's own notes come from `notesFile` (promote's, CAR-242: the
+ * checked input, written by ci:notes-input) when given, else from its
+ * release-notes/X.Y.Z.json at HEAD.
  */
-async function setVersion(version: string, dir: string) {
-	if (!parseVersion(version)) throw new Error(`not a version: ${version}`);
+async function setVersion(version: string, dir: string, notesFile?: string) {
+	const v = parseVersion(version);
+	if (!v) throw new Error(`not a version: ${version}`);
 	const file = join(dir, "package.json");
 	const git = (...args: string[]) =>
 		execFileSync("git", args, { cwd: dir, encoding: "utf8" });
@@ -229,12 +245,25 @@ async function setVersion(version: string, dir: string) {
 	// The release notes it ships (CAR-192): npm keeps the field, capped, in
 	// the version's manifest; the build (scripts/build-info.mjs) writes
 	// every version into dist/release-notes.json from the git dir's file.
-	const notes = await shippedNotes(io, version, dir);
+	const given = notesFile
+		? readNotesFile(readFileSync(notesFile, "utf8"), notesFile)
+		: undefined;
+	const notes = await shippedNotes(io, version, dir, given);
+	// A release also carries its notes file whole (notes and none), which
+	// release-finish commits from the published package.
+	const own =
+		v.rc !== undefined
+			? undefined
+			: (given ??
+				(await notesFilesAt(io, "HEAD", dir)).get(
+					formatVersion({ ...v, rc: undefined }),
+				));
 	writeFileSync(
 		file,
 		withReleaseNotes(
 			withGitHead(withVersion(readFileSync(file, "utf8"), version), head),
 			capShipped(notes),
+			own,
 		),
 	);
 	const local = git(
@@ -272,7 +301,7 @@ async function main(argv: string[]) {
 				else usage();
 			}
 			await promote(io, tag, kind, (rc, release) =>
-				promoteNotesCheck(io, release, rc, linearOrNull()),
+				promoteNotes(io, release, rc, findLinear()),
 			);
 			return;
 		}
@@ -423,20 +452,46 @@ async function main(argv: string[]) {
 			}
 			return;
 		}
-		case "ci:notes-check": {
-			// ci:notes-check <X.Y.Z> <sha>: release-notes/X.Y.Z.json at sha covers the release.
-			const [version, sha] = rest;
-			if (!version || !sha || !/^[0-9a-f]{40}$/.test(sha)) usage();
-			console.log(await notesCheck(io, version, sha));
+		case "ci:notes-input": {
+			// ci:notes-input <X.Y.Z> <sha> <out.json>: the promote's notes
+			// ($NOTES_INPUT, the run's `notes` input; empty: none) over
+			// release-notes/X.Y.Z.json at sha, checked to cover the release,
+			// written to out.json; prints the summary (markdown).
+			const [version, sha, out] = rest;
+			if (!version || !sha || !out || !/^[0-9a-f]{40}$/.test(sha)) usage();
+			const { file, summary } = await notesFromInput(
+				io,
+				version,
+				sha,
+				process.env.NOTES_INPUT ?? "",
+			);
+			writeFileSync(out, formatNotesFile(file));
+			console.log(summary);
+			return;
+		}
+		case "ci:published-notes": {
+			// ci:published-notes <X.Y.Z> <promote artifact dir> <out.json>:
+			// the notes X.Y.Z was published with (its package's
+			// crbReleaseNotesFile, once npm shows that very tarball); for a
+			// package promoted without them, the file at the RC's commit.
+			const [version, dir, out] = rest;
+			if (!version || !dir || !out) usage();
+			const { file, warning } = await finishNotes(io, version, dir);
+			if (warning) console.log(`::warning::${workflowText(warning)}`);
+			writeFileSync(out, formatNotesFile(file));
+			console.log(
+				`${version}: ${file.notes.length} notes, ${file.none.length} none`,
+			);
 			return;
 		}
 		case "ci:release-body": {
-			// ci:release-body <X.Y.Z> <sha>: the GitHub release's text.
-			const [version, sha] = rest;
-			if (!version || !sha) usage();
-			const files = await notesFilesAt(io, sha);
+			// ci:release-body <X.Y.Z> <sha> <notes.json>: the GitHub release's
+			// text, from the published notes (ci:published-notes).
+			const [version, sha, notesFile] = rest;
+			if (!version || !sha || !notesFile) usage();
+			const notes = readPublishedNotes(notesFile, version);
 			const range = await releaseRange(io, version, sha);
-			console.log(renderNotesBody(files.get(version) ?? null, range));
+			console.log(renderNotesBody(notes, range));
 			return;
 		}
 		case "ci:rc-version": {
@@ -451,9 +506,10 @@ async function main(argv: string[]) {
 			return;
 		}
 		case "ci:set-version": {
-			const [version, dir = process.cwd()] = rest;
+			// ci:set-version <version> [dir] [notes.json]
+			const [version, dir = process.cwd(), notesFile] = rest;
 			if (!version) usage();
-			await setVersion(version, dir);
+			await setVersion(version, dir, notesFile);
 			return;
 		}
 		case "ci:check-publish": {
@@ -479,26 +535,24 @@ async function main(argv: string[]) {
 			return;
 		}
 		case "ci:changelog": {
-			// ci:changelog <X.Y.Z> <the RC's commit>: the version's section in
-			// docs/changelog.md from its notes file at that commit (git only),
-			// and the file in this checkout dated.
-			const [version, to] = rest;
-			if (!version || !to) usage();
-			const files = await notesFilesAt(io, to);
+			// ci:changelog <X.Y.Z> <the RC's commit> <notes.json>: the
+			// version's section in docs/changelog.md from the published notes
+			// (ci:published-notes; the PRs from git), and those notes, dated,
+			// as release-notes/X.Y.Z.json in this checkout (replacing any file
+			// there: what was published wins).
+			const [version, to, published] = rest;
+			if (!version || !to || !published) usage();
+			const notes = readPublishedNotes(published, version);
 			const range = await releaseRange(io, version, to);
 			const date = io.now().toISOString().slice(0, 10);
 			const file = join(process.cwd(), "docs/changelog.md");
 			const existing = existsSync(file) ? readFileSync(file, "utf8") : null;
-			const section = `## ${version} (${date})\n\n${renderNotesBody(files.get(version) ?? null, range)}`;
+			mkdirSync(dirname(file), { recursive: true });
+			const section = `## ${version} (${date})\n\n${renderNotesBody(notes, range)}`;
 			writeFileSync(file, withChangelogSection(existing, version, section));
 			const notesFile = join(process.cwd(), notesPath(version));
-			if (existsSync(notesFile)) {
-				const notes = readNotesFile(
-					readFileSync(notesFile, "utf8"),
-					notesPath(version),
-				);
-				writeFileSync(notesFile, formatNotesFile({ ...notes, date }));
-			}
+			mkdirSync(dirname(notesFile), { recursive: true });
+			writeFileSync(notesFile, formatNotesFile({ ...notes, date }));
 			console.log(`prs=${range.prs.length}`);
 			return;
 		}

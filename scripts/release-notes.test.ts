@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -10,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	MAX_SHIPPED_BYTES,
@@ -17,29 +19,35 @@ import {
 	type ShippedReleaseNotes,
 } from "../src/shared/releaseNotes.js";
 import { GIT_TEST_TIMEOUTS } from "../test/git-fixture";
-import type { Io, RunResult } from "./release-lib.js";
+import { type Io, type RunResult, tarballDigests } from "./release-lib.js";
 import {
 	auditNotes,
 	capShipped,
 	collectNotes,
 	commentNoteLines,
 	coverage,
+	decodeNotesInput,
 	descriptionsNote,
+	encodeNotesInput,
+	finishNotes,
 	formatNotesFile,
 	kindFromLabels,
 	type Linear,
 	linearClient,
 	linearKey,
+	MAX_NOTES_INPUT_CHARS,
 	mdText,
+	mergeNotes,
 	mergeOkNotes,
 	NOTE_CHECK,
 	NOTE_WORKFLOW_NAME,
 	notesCheck,
+	notesFromInput,
 	parseNoteLine,
 	postNote,
 	prBodyNote,
 	prNotesOk,
-	promoteNotesCheck,
+	promoteNotes,
 	readNotesFile,
 	releaseRange,
 	renderNotesBody,
@@ -228,11 +236,12 @@ type Handler =
 	| string
 	| ((args: string[]) => Partial<RunResult> | string);
 
-/** An Io running git for real in `repo`, and gh from `gh` handlers (by argument prefix). */
+/** An Io running git and tar for real in `repo`, and gh and npm from handlers (by argument prefix). */
 function repoIo(
 	repo: string,
 	gh: Record<string, Handler> = {},
 	tags: Io["tags"] = "local",
+	npm: Record<string, Handler> = {},
 ) {
 	const calls: string[] = [];
 	const lines: string[] = [];
@@ -245,9 +254,9 @@ function repoIo(
 		run: (cmd, args, opts) => {
 			const line = [cmd, ...args].join(" ");
 			calls.push(line);
-			if (cmd === "git") {
+			if (cmd === "git" || cmd === "tar") {
 				return new Promise((resolve) => {
-					const child = spawn("git", args, { cwd: opts?.cwd ?? repo });
+					const child = spawn(cmd, args, { cwd: opts?.cwd ?? repo });
 					let stdout = "";
 					let stderr = "";
 					child.stdout.on("data", (d) => {
@@ -261,17 +270,18 @@ function repoIo(
 					);
 				});
 			}
-			const key = Object.keys(gh)
+			const handlers = cmd === "gh" ? gh : cmd === "npm" ? npm : {};
+			const key = Object.keys(handlers)
 				.filter((k) => line.startsWith(`${cmd} ${k}`))
 				.sort((a, b) => b.length - a.length)[0];
-			if (cmd !== "gh" || key === undefined) {
+			if (key === undefined) {
 				return Promise.resolve({
 					code: 127,
 					stdout: "",
 					stderr: `unexpected: ${line}`,
 				});
 			}
-			const h = gh[key] ?? "";
+			const h = handlers[key] ?? "";
 			const out = typeof h === "function" ? h([...args]) : h;
 			return Promise.resolve(
 				typeof out === "string"
@@ -447,7 +457,7 @@ describe("against a repository", {
 		).toEqual([200]);
 	});
 
-	describe("ci:notes-check (promote-check: git only)", () => {
+	describe("a committed notes file (promote without a Linear key: git only)", () => {
 		const covered = {
 			version: "0.4.0",
 			notes: [
@@ -490,7 +500,7 @@ describe("against a repository", {
 			const sha = commit("Late one (CAR-200) (#141)");
 			const { io } = repoIo(repo);
 			await expect(notesCheck(io, "0.4.0", sha)).rejects.toThrow(
-				"release-notes/0.4.0.json doesn't cover #125 (#125), CAR-172 (#126), CAR-200 (#141): give each a Release note (pnpm release note), then run pnpm release notes 0.4.0 --pr again",
+				"release-notes/0.4.0.json doesn't cover #125 (#125), CAR-172 (#126), CAR-200 (#141): give each a Release note (pnpm release note), then set up the Linear key ($LINEAR_API_KEY or ~/.config/linear/api-key) and promote again (it collects the notes itself); else run pnpm release notes 0.4.0 --pr again",
 			);
 		});
 
@@ -499,7 +509,7 @@ describe("against a repository", {
 			const none = git("rev-parse", "HEAD");
 			const { io } = repoIo(repo);
 			await expect(notesCheck(io, "0.4.0", none)).rejects.toThrow(
-				/^no release-notes\/0\.4\.0\.json at [0-9a-f]{40}: run pnpm release notes 0\.4\.0 --pr/,
+				/^no release-notes\/0\.4\.0\.json at [0-9a-f]{40}: set up the Linear key \(\$LINEAR_API_KEY or ~\/\.config\/linear\/api-key\) and promote again \(it collects the notes itself\); else run pnpm release notes 0\.4\.0 --pr/,
 			);
 			const other = commit("x (#2)", {
 				"release-notes/0.4.0.json": notesFile({ ...covered, version: "0.5.0" }),
@@ -545,6 +555,240 @@ describe("against a repository", {
 			});
 			const { io } = repoIo(repo);
 			expect(await notesCheck(io, "0.5.0", sha)).toMatch(/^ok: /);
+		});
+	});
+
+	describe("ci:notes-input (promote-check, CAR-242: the input notes, git only)", () => {
+		const file = (f: Partial<ReleaseNotesFile> = {}): ReleaseNotesFile => ({
+			version: "0.4.0",
+			date: null,
+			notes: [
+				{
+					id: "CAR-183",
+					kind: "new",
+					prs: [110, 127],
+					text: "Threads tab.",
+				},
+			],
+			none: [
+				{ id: "CAR-66", prs: [111], why: "refactor" },
+				{ id: "#125", prs: [125], why: "test tooling" },
+				{ id: "CAR-171", prs: [126], why: "flaky test fix" },
+				{ id: "CAR-172", prs: [126], why: "flaky test fix" },
+			],
+			...f,
+		});
+
+		it("passes input notes covering every ticket and ticket-less PR with no file at the commit, and lists them; fails on one missing a ticket or PR", async () => {
+			history();
+			const sha = git("rev-parse", "HEAD");
+			const { io } = repoIo(repo);
+			const r = await notesFromInput(
+				io,
+				"0.4.0",
+				sha,
+				encodeNotesInput(file()),
+			);
+			expect(r.file).toEqual(file());
+			expect(r.summary).toContain("### Release notes of 0.4.0");
+			expect(r.summary).toContain(
+				"The 5 PR(s) since v0.3.0: 1 notes, 4 none, from the promote's input.",
+			);
+			expect(r.summary).toContain("- Threads tab. (CAR-183, #110, #127)");
+			const short = file({
+				none: file().none.filter((n) => n.id !== "#125" && n.id !== "CAR-172"),
+			});
+			await expect(
+				notesFromInput(io, "0.4.0", sha, encodeNotesInput(short)),
+			).rejects.toThrow(
+				"the release notes don't cover #125 (#125), CAR-172 (#126): give each a Release note (pnpm release note), then pnpm release promote again",
+			);
+			// Neither an input nor a file.
+			await expect(notesFromInput(io, "0.4.0", sha, "")).rejects.toThrow(
+				/^no release notes for 0\.4\.0: start the promote with pnpm release promote/,
+			);
+		});
+
+		it("refuses an entry outside the RC's range (another RC's notes), and an input malformed, of another version, not base64 or not gzip", async () => {
+			history();
+			const sha = git("rev-parse", "HEAD");
+			commit("Late one (CAR-200) (#141)");
+			const { io } = repoIo(repo);
+			const late = file({
+				none: [...file().none, { id: "CAR-200", prs: [141], why: "later" }],
+			});
+			await expect(
+				notesFromInput(io, "0.4.0", sha, encodeNotesInput(late)),
+			).rejects.toThrow(
+				/entries outside 0\.4\.0's PRs up to [0-9a-f]{40}: CAR-200 \(the notes input\)/,
+			);
+			await expect(
+				notesFromInput(
+					io,
+					"0.4.0",
+					sha,
+					encodeNotesInput(file({ version: "0.5.0" })),
+				),
+			).rejects.toThrow("the notes input is for 0.5.0, not 0.4.0");
+			await expect(
+				notesFromInput(io, "0.4.0", sha, "not base64; rm -rf /"),
+			).rejects.toThrow("the notes input isn't base64");
+			await expect(
+				notesFromInput(io, "0.4.0", sha, "aGVsbG8="),
+			).rejects.toThrow(/the notes input isn't gzip/);
+			const html = file({
+				notes: [
+					{
+						id: "CAR-183",
+						kind: "new",
+						prs: [110],
+						text: "<img src=x onerror=alert(1)>",
+					},
+				],
+			});
+			await expect(
+				notesFromInput(io, "0.4.0", sha, encodeNotesInput(html)),
+			).rejects.toThrow(
+				/the notes input is malformed: notes\[0\] CAR-183: text .*has HTML/,
+			);
+		});
+
+		it("refuses an out-of-range entry kept from the file at the commit too, with or without an input", async () => {
+			history();
+			// A hand-edited file naming a PR the release doesn't have.
+			const sha = commit("notes: 0.4.0 (#140)", {
+				"release-notes/0.4.0.json": notesFile(
+					file({
+						none: [
+							...file().none,
+							{ id: "CAR-999", prs: [999], why: "elsewhere" },
+						],
+					}),
+				),
+			});
+			const { io } = repoIo(repo);
+			const outside =
+				/entries outside 0\.4\.0's PRs up to [0-9a-f]{40}: CAR-999 \(release-notes\/0\.4\.0\.json\)/;
+			// The input doesn't name CAR-999: the file's entry is kept, and refused.
+			await expect(
+				notesFromInput(io, "0.4.0", sha, encodeNotesInput(file())),
+			).rejects.toThrow(outside);
+			await expect(notesFromInput(io, "0.4.0", sha, "")).rejects.toThrow(
+				outside,
+			);
+		});
+
+		it("the input wins over a file at the commit for any id both have, the file's other ids stay, and the summary says so; with no input the file serves", async () => {
+			history();
+			const sha = commit("notes: 0.4.0 (#140)", {
+				"release-notes/0.4.0.json": notesFile(
+					file({
+						notes: [
+							{
+								id: "CAR-183",
+								kind: "new",
+								prs: [110, 127],
+								text: "Old wording.",
+							},
+						],
+					}),
+				),
+			});
+			const { io } = repoIo(repo);
+			const input = file({
+				notes: [
+					{
+						id: "CAR-183",
+						kind: "improved",
+						prs: [110, 127],
+						text: "New wording.",
+					},
+				],
+				none: file().none.filter((n) => n.id !== "CAR-66"),
+			});
+			const r = await notesFromInput(io, "0.4.0", sha, encodeNotesInput(input));
+			expect(r.file.notes).toEqual(input.notes);
+			expect(r.file.none).toEqual(file().none);
+			expect(r.summary).toContain(
+				"from the promote's input, over release-notes/0.4.0.json at the RC.",
+			);
+			expect(r.summary).toContain(
+				"The input replaced release-notes/0.4.0.json's entries for CAR-183.",
+			);
+			expect(r.summary).toContain(
+				"Kept from release-notes/0.4.0.json (not in the input): CAR-66.",
+			);
+			expect(r.summary).toContain("- New wording. (CAR-183, #110, #127)");
+			expect(r.summary).not.toContain("Old wording.");
+			const fromFile = await notesFromInput(io, "0.4.0", sha, "");
+			expect(fromFile.file.notes[0]?.text).toBe("Old wording.");
+			expect(fromFile.summary).toContain(
+				"from release-notes/0.4.0.json at the RC (no input).",
+			);
+		});
+
+		it("ci:set-version packs the given notes as the release's (crbReleaseNotes and crbReleaseNotesFile), over a different file at the commit; the tree stays clean", () => {
+			commit("Build info (no PR)", {
+				"scripts/build-info.mjs": readFileSync(
+					join(import.meta.dirname, "build-info.mjs"),
+					"utf8",
+				),
+				".gitignore": "dist/\n",
+			});
+			history();
+			commit("notes: 0.4.0 (#140)", {
+				"release-notes/0.4.0.json": notesFile(
+					file({
+						notes: [
+							{
+								id: "CAR-183",
+								kind: "new",
+								prs: [110, 127],
+								text: "Old wording.",
+							},
+						],
+					}),
+				),
+			});
+			const given = file({
+				notes: [
+					{
+						id: "CAR-183",
+						kind: "new",
+						prs: [110, 127],
+						text: "New wording.",
+					},
+				],
+			});
+			const dir = mkdtempSync(join(tmpdir(), "crb-notes-in-"));
+			try {
+				const path = join(dir, "release-notes.json");
+				writeFileSync(path, formatNotesFile(given));
+				execFileSync(
+					join(import.meta.dirname, "../node_modules/.bin/tsx"),
+					[
+						join(import.meta.dirname, "release.ts"),
+						"ci:set-version",
+						"0.4.0",
+						repo,
+						path,
+					],
+					{ encoding: "utf8" },
+				);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+			const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+			expect(pkg.version).toBe("0.4.0");
+			expect(pkg.crbReleaseNotes).toEqual([
+				{ version: "0.4.0", date: null, notes: given.notes },
+			]);
+			expect(pkg.crbReleaseNotesFile).toEqual(given);
+			expect(git("status", "--porcelain")).toBe("");
+			execFileSync("node", ["scripts/build-info.mjs"], { cwd: repo });
+			expect(
+				JSON.parse(readFileSync(join(repo, "dist/release-notes.json"), "utf8")),
+			).toEqual([{ version: "0.4.0", date: null, notes: given.notes }]);
 		});
 	});
 
@@ -867,47 +1111,214 @@ describe("against a repository", {
 			);
 		});
 
-		it("ci:changelog writes the section from the notes at the RC's commit and dates the file", () => {
+		it("ci:changelog and ci:release-body take the published notes, not the file at the RC's commit; the next PR's file is the published one, dated", () => {
 			history();
+			// A file at the RC's commit (and so in master's checkout) that
+			// differs from what was published.
 			const sha = commit("notes: 0.4.0 (#140)", {
 				"release-notes/0.4.0.json": notesFile({
 					version: "0.4.0",
 					notes: [
-						{ id: "CAR-183", kind: "new", prs: [110], text: "Threads tab." },
+						{ id: "CAR-183", kind: "new", prs: [110], text: "Commit wording." },
 					],
 				}),
 				"docs/changelog.md":
 					"# Changelog\n\n## 0.3.0 (2026-11-01)\n\n- Old PR (#50)\n",
 			});
-			const out = execFileSync(
-				join(import.meta.dirname, "../node_modules/.bin/tsx"),
-				[join(import.meta.dirname, "release.ts"), "ci:changelog", "0.4.0", sha],
-				{ cwd: repo, encoding: "utf8" },
-			);
-			expect(out).toBe("prs=7\n");
+			const published: ReleaseNotesFile = {
+				version: "0.4.0",
+				date: null,
+				notes: [
+					{
+						id: "CAR-183",
+						kind: "new",
+						prs: [110],
+						text: "Published wording.",
+					},
+				],
+				none: [{ id: "#125", prs: [125], why: "test tooling" }],
+			};
+			const dir = mkdtempSync(join(tmpdir(), "crb-published-"));
+			const path = join(dir, "release-notes.json");
+			writeFileSync(path, formatNotesFile(published));
+			const run = (...args: string[]) =>
+				execFileSync(
+					join(import.meta.dirname, "../node_modules/.bin/tsx"),
+					[join(import.meta.dirname, "release.ts"), ...args],
+					{ cwd: repo, encoding: "utf8" },
+				);
+			try {
+				expect(run("ci:changelog", "0.4.0", sha, path)).toBe("prs=7\n");
+				const body = run("ci:release-body", "0.4.0", sha, path);
+				expect(
+					body.startsWith("### New\n\n- Published wording. (CAR-183, #110)\n"),
+				).toBe(true);
+				expect(body).not.toContain("Commit wording.");
+				// Notes of another version are refused.
+				writeFileSync(
+					path,
+					formatNotesFile({ ...published, version: "0.5.0" }),
+				);
+				expect(() =>
+					execFileSync(
+						join(import.meta.dirname, "../node_modules/.bin/tsx"),
+						[
+							join(import.meta.dirname, "release.ts"),
+							"ci:release-body",
+							"0.4.0",
+							sha,
+							path,
+						],
+						{ cwd: repo, encoding: "utf8", stdio: "pipe" },
+					),
+				).toThrow(/is for 0\.5\.0, not 0\.4\.0/);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
 			const today = new Date().toISOString().slice(0, 10);
 			const changelog = readFileSync(join(repo, "docs/changelog.md"), "utf8");
 			expect(changelog).toContain(
-				`## 0.4.0 (${today})\n\n### New\n\n- Threads tab. (CAR-183, #110)\n`,
+				`## 0.4.0 (${today})\n\n### New\n\n- Published wording. (CAR-183, #110)\n`,
 			);
+			expect(changelog).not.toContain("Commit wording.");
 			expect(changelog).toContain("## 0.3.0 (2026-11-01)");
 			expect(
-				JSON.parse(readFileSync(join(repo, "release-notes/0.4.0.json"), "utf8"))
-					.date,
-			).toBe(today);
-			const body = execFileSync(
-				join(import.meta.dirname, "../node_modules/.bin/tsx"),
-				[
-					join(import.meta.dirname, "release.ts"),
-					"ci:release-body",
-					"0.4.0",
-					sha,
-				],
-				{ cwd: repo, encoding: "utf8" },
-			);
+				JSON.parse(
+					readFileSync(join(repo, "release-notes/0.4.0.json"), "utf8"),
+				),
+			).toEqual({ ...published, date: today });
+		});
+
+		it("ci:changelog writes the notes file when the checkout has none", () => {
+			history();
+			const sha = git("rev-parse", "HEAD");
+			const dir = mkdtempSync(join(tmpdir(), "crb-published-"));
+			const path = join(dir, "release-notes.json");
+			const published = notesFile({ version: "0.4.0" });
+			writeFileSync(path, published);
+			try {
+				execFileSync(
+					join(import.meta.dirname, "../node_modules/.bin/tsx"),
+					[
+						join(import.meta.dirname, "release.ts"),
+						"ci:changelog",
+						"0.4.0",
+						sha,
+						path,
+					],
+					{ cwd: repo, encoding: "utf8" },
+				);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
 			expect(
-				body.startsWith("### New\n\n- Threads tab. (CAR-183, #110)\n"),
-			).toBe(true);
+				JSON.parse(readFileSync(join(repo, "release-notes/0.4.0.json"), "utf8"))
+					.version,
+			).toBe("0.4.0");
+		});
+	});
+
+	describe("release-finish's notes: what was published (CAR-242)", () => {
+		let dir: string;
+		beforeEach(() => {
+			dir = mkdtempSync(join(tmpdir(), "crb-finish-notes-"));
+		});
+		afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+		const published: ReleaseNotesFile = {
+			version: "0.4.0",
+			date: null,
+			notes: [
+				{
+					id: "CAR-183",
+					kind: "new",
+					prs: [110],
+					text: "Published wording.",
+				},
+			],
+			none: [{ id: "#125", prs: [125], why: "test tooling" }],
+		};
+
+		/** The promote run's artifact: a tarball whose package.json has `field`, and its manifest. */
+		const artifact = (sha: string, field?: unknown) => {
+			mkdirSync(join(dir, "package"), { recursive: true });
+			writeFileSync(
+				join(dir, "package/package.json"),
+				JSON.stringify({
+					name: "carbonless-review",
+					version: "0.4.0",
+					...(field === undefined ? {} : { crbReleaseNotesFile: field }),
+				}),
+			);
+			const tarball = "carbonless-review-0.4.0.tgz";
+			execFileSync("tar", ["-czf", tarball, "package"], { cwd: dir });
+			const digests = tarballDigests(readFileSync(join(dir, tarball)));
+			writeFileSync(
+				join(dir, "manifest.json"),
+				JSON.stringify({
+					version: "0.4.0",
+					tag: "v0.4.0-rc.1",
+					sha,
+					...digests,
+					next: "minor",
+					tarball,
+				}),
+			);
+			return digests.integrity;
+		};
+		const npmHas = (integrity: string) => ({
+			"view carbonless-review@0.4.0 dist.integrity": `${integrity}\n`,
+		});
+
+		it("takes the package's crbReleaseNotesFile once npm has that very tarball, over a different file at the RC's commit", async () => {
+			history();
+			const sha = commit("notes: 0.4.0 (#140)", {
+				"release-notes/0.4.0.json": notesFile({
+					version: "0.4.0",
+					notes: [
+						{ id: "CAR-183", kind: "new", prs: [110], text: "Commit wording." },
+					],
+				}),
+			});
+			const integrity = artifact(sha, published);
+			const ok = repoIo(repo, {}, "local", npmHas(integrity));
+			expect(await finishNotes(ok.io, "0.4.0", dir)).toEqual({
+				file: published,
+				warning: null,
+			});
+			const other = repoIo(repo, {}, "local", npmHas("sha512-b3RoZXI="));
+			await expect(finishNotes(other.io, "0.4.0", dir)).rejects.toThrow(
+				/npm has carbonless-review@0\.4\.0 as sha512-b3RoZXI=, not the promote run's tarball/,
+			);
+			await expect(finishNotes(ok.io, "0.5.0", dir)).rejects.toThrow(
+				"the promote run released 0.4.0, not 0.5.0",
+			);
+		});
+
+		it("refuses malformed published notes; a package without them falls back to the file at the RC's commit, warning; neither fails", async () => {
+			history();
+			const bare = git("rev-parse", "HEAD");
+			const bad = artifact(bare, { ...published, notes: [{ id: "x" }] });
+			await expect(
+				finishNotes(repoIo(repo, {}, "local", npmHas(bad)).io, "0.4.0", dir),
+			).rejects.toThrow(/the published crbReleaseNotesFile is malformed/);
+			const none = artifact(bare);
+			await expect(
+				finishNotes(repoIo(repo, {}, "local", npmHas(none)).io, "0.4.0", dir),
+			).rejects.toThrow(
+				`0.4.0's package has no crbReleaseNotesFile, and release-notes/0.4.0.json isn't at ${bare} either`,
+			);
+			const sha = commit("notes: 0.4.0 (#140)", {
+				"release-notes/0.4.0.json": notesFile(published),
+			});
+			const old = artifact(sha);
+			const r = await finishNotes(
+				repoIo(repo, {}, "local", npmHas(old)).io,
+				"0.4.0",
+				dir,
+			);
+			expect(r.file).toEqual(published);
+			expect(r.warning).toMatch(/promoted before CAR-242/);
 		});
 	});
 
@@ -1165,60 +1576,166 @@ describe("against a repository", {
 			expect(calls.some((c) => c.includes("other/repo"))).toBe(false);
 		});
 
-		it("promote refuses before dispatching while the RC's file doesn't cover it, and warns when Linear moved on", async () => {
+		it("promote (CAR-242) collects the notes for exactly the RC's range with no notes file: refuses one missing, sends them otherwise; a PR merged after the RC is neither needed nor sent", async () => {
 			history();
-			commit("notes: 0.4.0 (#140)", {
-				"release-notes/0.4.0.json": notesFile({ version: "0.4.0" }),
-			});
 			git("tag", "v0.4.0-rc.1");
-			const { io } = repoIo(repo, {}, "origin");
+			// After the RC: no note anywhere, and not this release's.
+			commit("Late one (CAR-200) (#141)");
+			const gh = {
+				"api repos/owner/repo/pulls/125": "Release note: none (test tooling)",
+				"api repos/owner/repo/pulls/126": "Fixes CAR-172\n",
+			};
+			const { io, calls } = repoIo(repo, gh, "origin");
+			// CAR-172 has no note in Linear nor in #126's description.
 			await expect(
-				promoteNotesCheck(io, "0.4.0", "v0.4.0-rc.1", null),
-			).rejects.toThrow(
-				/^release-notes\/0\.4\.0\.json doesn't cover CAR-183 \(#110, #127\), CAR-66/,
-			);
-			commit("notes: 0.4.0 (#141)", {
-				"release-notes/0.4.0.json": notesFile({
-					version: "0.4.0",
-					notes: [
-						{
-							id: "CAR-183",
-							kind: "new",
-							prs: [110, 127],
-							text: "Old wording.",
-						},
-					],
-					none: [
-						{ id: "CAR-66", prs: [111], why: "refactor" },
-						{ id: "#125", prs: [125], why: "test tooling" },
-						{ id: "CAR-171", prs: [126], why: "flaky test fix" },
-						{ id: "CAR-172", prs: [126], why: "flaky test fix" },
-					],
+				promoteNotes(io, "0.4.0", "v0.4.0-rc.1", {
+					linear: linearFor0_4().linear,
+					tried: [],
 				}),
-			});
-			git("tag", "v0.4.0-rc.2");
-			const ok = repoIo(
-				repo,
-				{
-					"api repos/owner/repo/pulls/125": "Release note: none (test tooling)",
+			).rejects.toThrow(
+				/^v0\.4\.0-rc\.1 can't be promoted: 1 without a release note:\n {2}CAR-172 \(#126\): no Release note: pnpm release note CAR-172 "<text>"/,
+			);
+			const { linear, queries } = fakeLinear({
+				"CAR-183": {
+					labels: ["Feature"],
+					comments: [note("Files changed has a Threads tab.")],
 				},
-				"origin",
-			);
-			await promoteNotesCheck(ok.io, "0.4.0", "v0.4.0-rc.2", null);
-			expect(ok.lines.at(-1)).toMatch(
-				/^ok: release-notes\/0\.4\.0\.json covers/,
-			);
-			const { linear } = fakeLinear({
-				"CAR-183": { labels: ["Feature"], comments: [note("New wording.")] },
 				"CAR-66": { comments: [note("none (refactor)")] },
 				"CAR-171": { comments: [note("none (flaky test fix)")] },
 				"CAR-172": { comments: [note("none (flaky test fix)")] },
 			});
-			await promoteNotesCheck(ok.io, "0.4.0", "v0.4.0-rc.2", linear);
-			expect(ok.lines.at(-1)).toMatch(
-				/^warning: Linear's notes for 0\.4\.0 changed since/,
+			const ok = repoIo(repo, gh, "origin");
+			const encoded = await promoteNotes(ok.io, "0.4.0", "v0.4.0-rc.1", {
+				linear,
+				tried: [],
+			});
+			expect(decodeNotesInput(encoded, "0.4.0")).toEqual({
+				version: "0.4.0",
+				date: null,
+				notes: [
+					{
+						id: "CAR-183",
+						kind: "new",
+						prs: [110, 127],
+						text: "Files changed has a Threads tab.",
+					},
+				],
+				none: [
+					{ id: "CAR-66", prs: [111], why: "refactor" },
+					{ id: "#125", prs: [125], why: "test tooling" },
+					{ id: "CAR-171", prs: [126], why: "flaky test fix" },
+					{ id: "CAR-172", prs: [126], why: "flaky test fix" },
+				],
+			});
+			// Read only: never a Linear write.
+			expect(queries.some((q) => /mutation/.test(q))).toBe(false);
+			expect(ok.lines.at(-1)).toBe(
+				"0.4.0's notes up to v0.4.0-rc.1: 1 notes, 4 none (sent to the run)",
+			);
+			// What it sends is what promote-check passes for that RC.
+			const rc = git("rev-parse", "v0.4.0-rc.1");
+			expect(
+				(await notesFromInput(ok.io, "0.4.0", rc, encoded)).file.none,
+			).toHaveLength(4);
+			expect(calls.some((c) => c.startsWith("gh workflow"))).toBe(false);
+		});
+
+		it("promote without a Linear key falls back to the file at the RC, saying where it looked", async () => {
+			history();
+			git("tag", "v0.4.0-rc.1");
+			const { io, lines } = repoIo(repo, {}, "origin");
+			await expect(
+				promoteNotes(io, "0.4.0", "v0.4.0-rc.1", {
+					linear: null,
+					tried: ["$LINEAR_API_KEY", "/home/x/.config/linear/api-key"],
+				}),
+			).rejects.toThrow(
+				/^no release-notes\/0\.4\.0\.json at [0-9a-f]{40}: set up the Linear key \(\$LINEAR_API_KEY or ~\/\.config\/linear\/api-key\)/,
+			);
+			expect(lines[0]).toMatch(
+				/^warning: no Linear key \(tried \$LINEAR_API_KEY, \/home\/x\/\.config\/linear\/api-key\).*so the run takes release-notes\/0\.4\.0\.json at v0\.4\.0-rc\.1$/,
 			);
 		});
+	});
+});
+
+describe("the promote's notes input (CAR-242)", () => {
+	const file = (notes: ReleaseNotesFile["notes"]): ReleaseNotesFile => ({
+		version: "0.4.0",
+		date: null,
+		notes,
+		none: [{ id: "#125", prs: [125], why: "test tooling" }],
+	});
+
+	it("round-trips through gzip+base64, compactly", () => {
+		const f = file([
+			{ id: "CAR-183", kind: "new", prs: [110, 127], text: "Threads tab." },
+			{ id: "CAR-66", kind: "fixed", prs: [111], text: "Uses `<dialog>`." },
+		]);
+		const encoded = encodeNotesInput(f);
+		expect(encoded).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);
+		expect(decodeNotesInput(encoded, "0.4.0")).toEqual(f);
+		expect(decodeNotesInput(`  ${encoded}\n`, "0.4.0")).toEqual(f);
+	});
+
+	it("refuses notes too large for a workflow input, saying so, before dispatching; and an oversized input", () => {
+		// Text that doesn't compress: 200 notes of 580 random hex characters.
+		const big = file(
+			Array.from({ length: 200 }, (_, i) => ({
+				id: `CAR-${i + 1}`,
+				kind: "new" as const,
+				prs: [i + 1],
+				text: `X${randomBytes(290).toString("hex")}`,
+			})),
+		);
+		expect(() => encodeNotesInput(big)).toThrow(
+			new RegExp(
+				`^0\\.4\\.0's notes are \\d+ characters encoded, over the ${MAX_NOTES_INPUT_CHARS} a workflow input can carry \\(GitHub caps a dispatch's inputs at 65,535\\)`,
+			),
+		);
+		expect(() =>
+			decodeNotesInput("A".repeat(MAX_NOTES_INPUT_CHARS + 1), "0.4.0"),
+		).toThrow(
+			`the notes input is ${MAX_NOTES_INPUT_CHARS + 1} characters, over ${MAX_NOTES_INPUT_CHARS}`,
+		);
+		// Just under the limit still goes.
+		const fits = file(big.notes.slice(0, 100));
+		expect(encodeNotesInput(fits).length).toBeLessThanOrEqual(
+			MAX_NOTES_INPUT_CHARS,
+		);
+	});
+
+	it("refuses an input that unpacks to over 1 MB (a gzip bomb)", () => {
+		const bomb = gzipSync(Buffer.alloc(2 * 1024 * 1024, 32)).toString("base64");
+		expect(bomb.length).toBeLessThan(MAX_NOTES_INPUT_CHARS);
+		expect(() => decodeNotesInput(bomb, "0.4.0")).toThrow(
+			/the notes input isn't gzip \(or unpacks to over 1048576 bytes\)/,
+		);
+	});
+
+	it("merges over a file: the input's entries win per id, the file's other ids stay", () => {
+		const input = file([{ id: "CAR-1", kind: "new", prs: [1], text: "New." }]);
+		const atCommit: ReleaseNotesFile = {
+			version: "0.4.0",
+			date: null,
+			notes: [
+				{ id: "CAR-1", kind: "new", prs: [1], text: "Old." },
+				{ id: "CAR-2", kind: "fixed", prs: [2], text: "Two." },
+			],
+			none: [{ id: "#125", prs: [125], why: "test tooling" }],
+		};
+		const m = mergeNotes(input, atCommit);
+		expect(m.file.notes.map((n) => n.text)).toEqual(["New.", "Two."]);
+		expect(m.file.none).toEqual(input.none);
+		// #125 is the same in both: not "replaced".
+		expect(m.replaced).toEqual(["CAR-1"]);
+		expect(m.kept).toEqual(["CAR-2"]);
+		expect(mergeNotes(input, null)).toEqual({
+			file: input,
+			replaced: [],
+			kept: [],
+		});
+		expect(mergeNotes(null, atCommit).file).toEqual(atCommit);
 	});
 });
 

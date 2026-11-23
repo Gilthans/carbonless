@@ -9,6 +9,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	parseReleaseNotesFile,
+	printable,
+} from "../src/shared/releaseNotes.js";
 import { rcMoveTo } from "./rc-fixup.mjs";
 import { isReleased, releaseGate } from "./release-gate.mjs";
 import type { PullForNotes } from "./release-notes.js";
@@ -392,14 +396,14 @@ const RUN_URL = /https:\/\/github\.com\/\S+\/actions\/runs\/\d+/;
 
 /**
  * `pnpm release promote [<rc tag>] [--next kind]`. `check` runs before the
- * dispatch (the release notes, CAR-192: promoteNotesCheck) and throws to
- * stop it.
+ * dispatch (the release notes, CAR-192/CAR-242: promoteNotes) and throws to
+ * stop it; what it returns, when not empty, is the run's `notes` input.
  */
 export async function promote(
 	io: Io,
 	rcTag: string | undefined,
 	next: Kind,
-	check: (tag: string, release: string) => Promise<void>,
+	check: (tag: string, release: string) => Promise<string | undefined>,
 ): Promise<string> {
 	const tags = await remoteTags(io);
 	const tag = rcTag ?? newestTag(tags, true)?.tag;
@@ -413,7 +417,7 @@ export async function promote(
 	if (tags.includes(release)) {
 		throw new Error(`${release} is already released`);
 	}
-	await check(tag, formatVersion(releaseOf(version)));
+	const notes = await check(tag, formatVersion(releaseOf(version)));
 	const started = io.now().getTime();
 	const out = await must(io, "gh", [
 		"workflow",
@@ -429,6 +433,7 @@ export async function promote(
 		`rc=${tag}`,
 		"-f",
 		`next=${next}`,
+		...(notes ? ["-f", `notes=${notes}`] : []),
 	]);
 	io.log(
 		`Promoting ${tag}: checks ${release}, packs and stages it on npm; then the owner approves it: pnpm release publish (npm OTP)`,
@@ -836,7 +841,7 @@ export type PublishIo = Io & {
 export async function checkedRelease(
 	io: Io,
 	dir: string,
-): Promise<{ manifest: Manifest; tarball: string }> {
+): Promise<{ manifest: Manifest; tarball: string; notes: unknown }> {
 	const manifest = parseManifest(
 		readFileSync(join(dir, "manifest.json"), "utf8"),
 	);
@@ -863,7 +868,12 @@ export async function checkedRelease(
 	// send it to another registry or under another tag).
 	const pkg = JSON.parse(
 		await must(io, "tar", ["-xzOf", tarball, "package/package.json"]),
-	) as { name?: string; version?: string; publishConfig?: unknown };
+	) as {
+		name?: string;
+		version?: string;
+		publishConfig?: unknown;
+		crbReleaseNotesFile?: unknown;
+	};
 	const wrong = [
 		pkg.name === PACKAGE ? "" : `name ${pkg.name}`,
 		pkg.version === manifest.version ? "" : `version ${pkg.version}`,
@@ -881,7 +891,32 @@ export async function checkedRelease(
 	if (!(await onMaster({ ...io, tags: "origin" }, manifest.tag))) {
 		throw new Error(`${manifest.tag} is not on master`);
 	}
-	return { manifest, tarball };
+	return { manifest, tarball, notes: pkg.crbReleaseNotesFile };
+}
+
+/**
+ * The release notes a release's package carries (its crbReleaseNotesFile,
+ * CAR-242), as lines for the owner's terminal before approving: each
+ * note's kind and text, and how many tickets or PRs need none. Text from
+ * the package is printed with control and bidi characters replaced.
+ */
+export function notesLines(field: unknown, version: string): string[] {
+	if (field === undefined) {
+		return ["  notes: none in the package (promoted before CAR-242)"];
+	}
+	const parsed = parseReleaseNotesFile(field);
+	if (!parsed.ok || parsed.file.version !== version) {
+		return [
+			`  notes: unreadable (${printable(parsed.ok ? `for ${parsed.file.version}` : parsed.errors.join("; ")).slice(0, 200)})`,
+		];
+	}
+	const { notes, none } = parsed.file;
+	return [
+		`  notes: ${notes.length} note(s), ${none.length} without one (none)`,
+		...notes.map(
+			(n) => `    ${n.kind}: ${printable(n.text)} (${printable(n.id)})`,
+		),
+	];
 }
 
 /** The commit a tag points at on GitHub, exactly (a branch of that name doesn't count). */
@@ -1155,7 +1190,7 @@ export async function publishRelease(
 			"--dir",
 			dir,
 		]);
-		const { manifest, tarball } = await checkedRelease(io, dir);
+		const { manifest, tarball, notes } = await checkedRelease(io, dir);
 		const publish = await needsPublish(io, manifest);
 		const npm = await npmState(io);
 		const latest = npm?.distTags.latest;
@@ -1196,6 +1231,7 @@ export async function publishRelease(
 					? `  npm: approve staged ${stageId} (the same tarball) to latest (now ${latest ?? "nothing"}); npm asks for your OTP`
 					: `  npm: first publish, to latest; npm asks for your OTP`,
 		);
+		for (const line of notesLines(notes, manifest.version)) io.log(line);
 		io.log(
 			`  then release-finish: tag v${manifest.version}, rc, changelog, "next: ${manifest.next}" PR`,
 		);

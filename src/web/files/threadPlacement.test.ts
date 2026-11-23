@@ -9,6 +9,7 @@ import type {
 } from "../../shared/types";
 import type { SpanRange } from "../threads/spanMarks";
 import {
+	earlierPending,
 	fileThreads,
 	type LineKey,
 	lineKey,
@@ -18,6 +19,7 @@ import {
 	placeThreads,
 	shownThread,
 	shownThreads,
+	sinceEarlier,
 	sinceLeft,
 	threadOrder,
 } from "./threadPlacement";
@@ -582,6 +584,187 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 		});
 		expect(p.header).toEqual([{ thread: t, reason: "unplaced" }]);
 		expect(p.end.size).toBe(0);
+	});
+
+	it("twins: a base line the full diff keeps is its head line in the since view too, never a removed twin's row that names it (CAR-139)", () => {
+		// Base "}\nb"; PS1 "}\n}\nb"; head "Y\n}\nb". The full diff adds Y
+		// on top: base 1 ("}") is head 2. The interdiff removes PS1's *first*
+		// "}" (old 1), whose base number is 1 too (git aligns the twins
+		// otherwise there).
+		const twinsFull = [
+			{
+				kind: "lines" as const,
+				oldStart: 0,
+				oldCount: 0,
+				newStart: 1,
+				newCount: 1,
+			},
+		];
+		const twins: FileHunks = {
+			hunks: [hunk([{ ...del(1), baseNo: 1 }, add(1), ctx(2, 2), ctx(3, 3)])],
+			newLineCount: 3,
+		};
+		const t = thread({ side: "LEFT", line: 1 });
+		const p = placeThreads({
+			threads: [t],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: twins,
+			loadedContext: [],
+			sinceLeft: sinceLeft(twinsFull, twins.hunks),
+		});
+		// Where the full diff shows it (head line 2), not the removed row.
+		expect([...p.end]).toEqual([["RIGHT:2", [t]]]);
+		expect(p.end.has("LEFT:1")).toBe(false);
+	});
+
+	/** CAR-233: PS1 41 is its commit's line 51 (an added line of its diff). */
+	const PS1 = "e".repeat(40);
+	const earlierSince: FileHunks = {
+		...removedSince,
+		hunks: removedSince.hunks.map((h) => ({
+			...h,
+			lines: h.lines.map((l) => (l.oldNo === 41 ? { ...l, psNo: 51 } : l)),
+		})),
+	};
+
+	it("a span on PS1's commit (a line only PS1 had) paints the removed row that shows it; never without PS1's rows (CAR-233)", () => {
+		const one = {
+			startSide: "RIGHT",
+			startLine: 51,
+			side: "RIGHT",
+			line: 51,
+			earlier: true,
+		} as const;
+		const p = placeThreads({
+			threads: [],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: earlierSince,
+			loadedContext: [],
+			spans: [one],
+			sinceLeft: sinceLeft(clusters, earlierSince.hunks),
+			sinceEarlier: sinceEarlier(PS1, earlierSince.hunks),
+		});
+		expect([...p.spansShown]).toEqual([0]);
+		expect([...p.covered]).toEqual(["LEFT:41"]);
+		// Not the head's RIGHT 51, nor anything without PS1's rows.
+		expect(
+			onSinceRows(one, sinceLeft(clusters, earlierSince.hunks), undefined),
+		).toBeNull();
+		expect(onSinceRows(one, undefined, undefined)).toBeNull();
+	});
+
+	it("a thread made on PS1's commit on such a line, which the tracer can't place in the head, shows on that removed row (CAR-233)", () => {
+		const t = thread({ side: "RIGHT", line: 51, commit: PS1 }, { commit: PS1 });
+		const placements: Placements = new Map([
+			[
+				t.id,
+				{
+					kind: "unplaced" as const,
+					fate: "deleted" as const,
+					path: PATH,
+					nearest: { side: "RIGHT" as const, line: 39 },
+				},
+			],
+		]);
+		const shown = shownThreads([t], HEAD, placements);
+		const p = placeThreads({
+			threads: shown,
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: earlierSince,
+			loadedContext: [],
+			placements,
+			sinceLeft: sinceLeft(clusters, earlierSince.hunks),
+			sinceEarlier: sinceEarlier(PS1, earlierSince.hunks),
+		});
+		expect([...p.end.keys()]).toEqual(["LEFT:41"]);
+		expect(p.fates).toEqual([]);
+		// Another commit's thread on that line number stays a fate.
+		const other = thread(
+			{ side: "RIGHT", line: 51, commit: "f".repeat(40) },
+			{ commit: "f".repeat(40) },
+		);
+		const otherPlacements: Placements = new Map([
+			[
+				other.id,
+				placements.get(t.id) as NonNullable<ReturnType<Placements["get"]>>,
+			],
+		]);
+		const q = placeThreads({
+			threads: shownThreads([other], HEAD, otherPlacements),
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: earlierSince,
+			loadedContext: [],
+			placements: otherPlacements,
+			sinceLeft: sinceLeft(clusters, earlierSince.hunks),
+			sinceEarlier: sinceEarlier(PS1, earlierSince.hunks),
+		});
+		expect(q.end.size).toBe(0);
+		expect(q.fates).toHaveLength(1);
+	});
+
+	it("one just posted on PS1's commit, before the tracer has placed it, shows on that removed row in the since view only (CAR-233)", () => {
+		const t = thread({ side: "RIGHT", line: 51, commit: PS1 }, { commit: PS1 });
+		const empty: Placements = new Map();
+		// Not among the shown threads: only a pending one, in the since view.
+		expect(shownThreads([t], HEAD, empty)).toEqual([]);
+		expect(earlierPending([t], HEAD, empty, undefined)).toEqual([]);
+		const pending = earlierPending([t], HEAD, empty, PS1);
+		expect(pending).toHaveLength(1);
+		expect(earlierPending([t], HEAD, empty, PS1)[0]).toBe(pending[0]);
+		const p = placeThreads({
+			threads: [],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: earlierSince,
+			loadedContext: [],
+			placements: empty,
+			sinceLeft: sinceLeft(clusters, earlierSince.hunks),
+			sinceEarlier: sinceEarlier(PS1, earlierSince.hunks),
+			earlierPending: pending,
+		});
+		// LEFT:41, never the head's RIGHT 51.
+		expect([...p.end.keys()]).toEqual(["LEFT:41"]);
+		expect(p.header).toEqual([]);
+	});
+
+	it("pending PS1 threads with no removed row aren't shown, never as unplaced; a LEFT one never reads its PS1-base number in today's base (CAR-233)", () => {
+		// RIGHT 30 on PS1: a line the head still has (no psNo row).
+		const right = thread(
+			{ side: "RIGHT", line: 30, commit: PS1 },
+			{ commit: PS1 },
+		);
+		// LEFT 5 on PS1: PS1's base numbering (the base moved since).
+		const left = thread(
+			{ side: "LEFT", line: 5, commit: PS1 },
+			{ commit: PS1 },
+		);
+		for (const placements of [new Map() as Placements, null]) {
+			const pending = earlierPending([right, left], HEAD, placements, PS1);
+			// Only RIGHT threads are pending candidates; the LEFT one waits for
+			// the tracer, as before.
+			expect(pending.map((t) => t.anchor?.side)).toEqual(["RIGHT"]);
+			const shown = shownThreads([right, left], HEAD, placements);
+			expect(shown).toEqual([]);
+			const p = placeThreads({
+				threads: shown,
+				path: PATH,
+				snapshotHead: HEAD,
+				hunks: earlierSince,
+				loadedContext: [],
+				placements,
+				sinceLeft: sinceLeft(clusters, earlierSince.hunks),
+				sinceEarlier: sinceEarlier(PS1, earlierSince.hunks),
+				earlierPending: pending,
+			});
+			expect(p.end.size).toBe(0);
+			expect(p.header).toEqual([]);
+			expect(p.fates).toEqual([]);
+			expect(p.covered.size).toBe(0);
+		}
 	});
 
 	it("outside the since view (no mapper) LEFT stays by number", () => {

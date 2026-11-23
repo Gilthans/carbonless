@@ -15,13 +15,13 @@ import {
 import { parseU0Patch } from "../../server/diff/clusters";
 import { buildDisplayHunks } from "../../server/diff/hunks";
 import type { DiffLine, DisplayHunk } from "../../shared/types";
+import { SPLIT_CELLS } from "../../shared/whitespace";
 import {
 	type DiffRow,
 	hunkView,
 	linesWhitespaceEqual,
 	matchHunk,
 	matchSides,
-	PAIR_CAP,
 	pairRun,
 	runs,
 	stripWhitespace,
@@ -321,27 +321,35 @@ describe("hunkView's rows in git's order (Ignore whitespace on)", () => {
 	});
 
 	it("doesn't match a run over the size cap, and does at the cap", () => {
-		const big = (n: number, key = "k") => [
+		// n re-indented lines and one added line: n × (n + 1) cells.
+		const big = (n: number, extra = true, key = "k") => [
 			...Array.from({ length: n }, (_, i) =>
 				del(i + 1, `line ${i}`, { clusterKey: key }),
 			),
 			...Array.from({ length: n }, (_, i) =>
 				add(i + 1, `  line ${i}`, { clusterKey: key }),
 			),
+			...(extra ? [add(n + 1, "extra", { clusterKey: key })] : []),
 		];
-		const over = big(PAIR_CAP + 1);
+		const over = big(500);
+		expect(500 * 501).toBeGreaterThan(SPLIT_CELLS);
 		const plain = gitRows(over);
 		expect(plain.every((r) => r.kind === "line")).toBe(true);
 		expectCoverage(over, plain);
-		const at = big(PAIR_CAP);
+		const at = big(499);
+		expect(499 * 500).toBeLessThanOrEqual(SPLIT_CELLS);
 		const paired = gitRows(at);
-		expect(paired.every((r) => r.kind === "ws")).toBe(true);
-		expect(paired).toHaveLength(PAIR_CAP);
+		expect(paired.filter((r) => r.kind === "ws")).toHaveLength(499);
+		expectCoverage(at, paired);
+		// A wholesale re-indent over the cap still pairs (no O(n·m) work).
+		const reindent = big(2000, false);
+		expect(gitRows(reindent).every((r) => r.kind === "ws")).toBe(true);
 	});
 
 	it("over the cap for the hunk, matches each run on its own (a big re-indented file keeps its rows)", () => {
-		// Two re-indented runs around a context line: together over the cap.
-		const half = PAIR_CAP / 2 + 10;
+		// Two re-indented runs (and an added line each) around a context
+		// line: together over the cap, each alone under it.
+		const half = 260;
 		const run = (key: string, from: number) => [
 			...Array.from({ length: half }, (_, i) =>
 				del(from + i, `${key} ${i}`, { clusterKey: key }),
@@ -349,25 +357,27 @@ describe("hunkView's rows in git's order (Ignore whitespace on)", () => {
 			...Array.from({ length: half }, (_, i) =>
 				add(from + i, `  ${key} ${i}`, { clusterKey: key }),
 			),
+			add(from + half, `${key} new`, { clusterKey: key }),
 		];
 		const lines: DiffLine[] = [
 			...run("A", 1),
-			ctx(half + 1, half + 1, "between"),
+			ctx(half + 1, half + 2, "between"),
 			...run("B", half + 2),
 		];
+		expect((2 * half + 1) * (2 * half + 3)).toBeGreaterThan(SPLIT_CELLS);
 		const rows = gitRows(lines);
 		expectCoverage(lines, rows);
 		expect(rows.filter((r) => r.kind === "ws")).toHaveLength(2 * half);
 		// A single run over the cap on its own still can't be matched.
 		const huge = [
-			...Array.from({ length: PAIR_CAP + 1 }, (_, i) =>
+			...Array.from({ length: 501 }, (_, i) =>
 				del(i + 1, `c ${i}`, { clusterKey: "C" }),
 			),
-			...Array.from({ length: PAIR_CAP + 1 }, (_, i) =>
+			...Array.from({ length: 502 }, (_, i) =>
 				add(i + 1, `  c ${i}`, { clusterKey: "C" }),
 			),
 		];
-		const wide: DiffLine[] = [...huge, ctx(PAIR_CAP + 2, PAIR_CAP + 2, "x")];
+		const wide: DiffLine[] = [...huge, ctx(502, 503, "x")];
 		expect(gitRows(wide).every((r) => r.kind === "line")).toBe(true);
 	});
 
@@ -624,6 +634,62 @@ describe("hunkView's runs", () => {
 			"+3",
 			" 4/4",
 		]);
+	});
+});
+
+describe("hunkView's runs cut at the since view's pieces (CAR-218)", () => {
+	const lines: DiffLine[] = [
+		ctx(1, 1, "a"),
+		del(2, "b"),
+		del(3, "c"),
+		add(2, "  b"),
+		add(3, "d"),
+		ctx(4, 4, "e"),
+	];
+	// The since view's pieces here: -b, -c, then +b, then +d.
+	const starts = new Set([
+		lines[1],
+		lines[2],
+		lines[3],
+		lines[4],
+	] as DiffLine[]);
+
+	it("each piece's first line starts a run, keeping the key; the full diff's runs stay", () => {
+		for (const on of [false, true]) {
+			const out = hunkView(lines, on, starts).runs;
+			expect(out.map((r) => [r.key, r.lines.map((l) => l.text)])).toEqual([
+				[undefined, ["a"]],
+				["k", ["b"]],
+				["k", ["c"]],
+				["k", ["  b"]],
+				["k", ["d"]],
+				[undefined, ["e"]],
+			]);
+			expect(hunkView(lines, on).runs.map((r) => r.lines.length)).toEqual([
+				1, 4, 1,
+			]);
+		}
+	});
+
+	it("a pair the cut straddles is two one-sided `~` rows; every line once", () => {
+		const out = hunkView(lines, true, starts);
+		expect(trace(out.runs.flatMap((r) => r.rows))).toEqual([
+			" 1/1",
+			"~2/",
+			"-3",
+			"~/2",
+			"+3",
+			" 4/4",
+		]);
+		expectCoverage(lines, out.gitRows);
+	});
+
+	it("a part of a run of another shape stays plain, as the whole run does", () => {
+		// An added line before a removed one: pairRun leaves the run plain.
+		const odd: DiffLine[] = [add(2, "  b"), del(2, "b"), del(3, "c")];
+		const cut = new Set([odd[1]] as DiffLine[]);
+		const rows = hunkView(odd, true, cut).runs.flatMap((r) => r.rows);
+		expect(rows.every((r) => r.kind === "line")).toBe(true);
 	});
 });
 

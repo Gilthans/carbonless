@@ -19,6 +19,7 @@ import {
 	expect,
 	expectLoadingThen,
 	type Pr,
+	placedBox,
 	reviewPage,
 	test,
 } from "./fixtures";
@@ -654,49 +655,78 @@ test("wide image on phone: no page overflow; at 1:1 a swipe scrolls, the grip dr
 	await expectNoPageOverflow(page);
 	const split = splitOf(section);
 	await expect(split).toHaveAttribute("aria-valuetext", "50% before");
+	const cdp = isMobile ? await page.context().newCDPSession(page) : null;
+	const touch = (
+		type: "touchStart" | "touchMove" | "touchEnd",
+		x: number,
+		y: number,
+	) =>
+		cdp?.send("Input.dispatchTouchEvent", {
+			type,
+			touchPoints: type === "touchEnd" ? [] : [{ x, y }],
+		});
 	if (isMobile) {
 		// A swipe away from the handle scrolls the image, not the split.
 		await frame.scrollIntoViewIfNeeded();
 		const box = await frame.boundingBox();
 		if (!box) throw new Error("no frame");
-		const cdp = await page.context().newCDPSession(page);
 		const y = Math.round(box.y + box.height / 2);
 		const x0 = Math.round(box.x + box.width - 40);
-		const touch = (type: "touchStart" | "touchMove" | "touchEnd", x: number) =>
-			cdp.send("Input.dispatchTouchEvent", {
-				type,
-				touchPoints: type === "touchEnd" ? [] : [{ x, y }],
-			});
-		await touch("touchStart", x0);
+		// The swipe's fling keeps scrolling the frame after the finger
+		// lifts, and can outlast any scroll into view (CAR-238): listen for
+		// its end before it starts.
+		type Flagged = HTMLElement & { scrollEnded?: boolean };
+		await frame.evaluate((el) => {
+			el.addEventListener(
+				"scrollend",
+				() => {
+					(el as Flagged).scrollEnded = true;
+				},
+				{ once: true },
+			);
+		});
+		await touch("touchStart", x0, y);
 		for (let step = 1; step <= 10; step++)
-			await touch("touchMove", x0 - step * 25);
-		await touch("touchEnd", x0 - 250);
+			await touch("touchMove", x0 - step * 25, y);
+		await touch("touchEnd", x0 - 250, y);
 		await expect
-			.poll(() => frame.evaluate((el) => el.scrollLeft))
-			.toBeGreaterThan(50);
+			.poll(
+				() => frame.evaluate((el) => (el as Flagged).scrollEnded === true),
+				{
+					message: "the swipe's fling never ended (no scrollend)",
+				},
+			)
+			.toBe(true);
+		expect(await frame.evaluate((el) => el.scrollLeft)).toBeGreaterThan(50);
 		await expect(split).toHaveValue("50");
 		await expectNoPageOverflow(page);
 	}
-	// The grip on the handle still drags it.
+	// The grip on the handle still drags it: by touch on a phone.
 	const grip = section.getByTestId("image-split-grip");
-	await grip.scrollIntoViewIfNeeded();
-	// A swipe's fling may still be scrolling the frame (and the grip with
-	// it): wait until the grip stays put between two reads.
-	let g = await grip.boundingBox();
-	await expect
-		.poll(async () => {
-			const was = g;
-			g = await grip.boundingBox();
-			return was !== null && g !== null && was.x === g.x && was.y === g.y;
-		})
-		.toBe(true);
-	if (!g) throw new Error("no grip");
+	const pressAt = (b: {
+		x: number;
+		y: number;
+		width: number;
+		height: number;
+	}) => ({
+		x: Math.round(b.x + b.width / 2),
+		y: Math.round(b.y + Math.min(b.height, 40) / 2),
+	});
+	// Pressed only once the grip rests where the press lands.
+	const g = await placedBox(grip, pressAt);
 	expect(g.width).toBeGreaterThanOrEqual(40);
-	const gy = g.y + Math.min(g.height, 40) / 2;
-	await page.mouse.move(g.x + g.width / 2, gy);
-	await page.mouse.down();
-	await page.mouse.move(g.x + g.width / 2 + 100, gy, { steps: 5 });
-	await page.mouse.up();
+	const at = pressAt(g);
+	if (isMobile) {
+		await touch("touchStart", at.x, at.y);
+		for (let step = 1; step <= 5; step++)
+			await touch("touchMove", at.x + step * 20, at.y);
+		await touch("touchEnd", at.x + 100, at.y);
+	} else {
+		await page.mouse.move(at.x, at.y);
+		await page.mouse.down();
+		await page.mouse.move(at.x + 100, at.y, { steps: 5 });
+		await page.mouse.up();
+	}
 	await expect
 		.poll(async () => Number(await split.inputValue()))
 		.toBeGreaterThan(50);

@@ -259,16 +259,17 @@ export class InboxStore {
 		const store = this.#store(path);
 		const ref = inboxRef(slug);
 		// Stamped after everything stored, so a clock stepping back can't put
-		// a clear before the snooze it ends (the fold orders by ts).
-		let last = -1;
-		for (const e of await store.readEvents(ref)) if (e.ts > last) last = e.ts;
-		const events = opEvents(slug, number, op, Math.max(this.#now(), last + 1));
-		await store.appendEvents(
-			ref,
-			`crb: ${SUMMARY[op.op]} #${number}`,
-			events,
-			slug,
-		);
+		// a clear before the snooze it ends (the fold orders by ts). Each try
+		// stamps after what it read: one that lost the ref to another server
+		// stamps after that server's events too (CAR-245).
+		await store.appendBuilt(ref, slug, (existing) => {
+			let last = -1;
+			for (const e of existing) if (e.ts > last) last = e.ts;
+			return {
+				summary: `crb: ${SUMMARY[op.op]} #${number}`,
+				events: opEvents(slug, number, op, Math.max(this.#now(), last + 1)),
+			};
+		});
 		return foldInbox(await store.readEvents(ref)).get(number) ?? {};
 	}
 }

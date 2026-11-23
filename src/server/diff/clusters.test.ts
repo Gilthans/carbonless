@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { hunkCut } from "../../shared/whitespace.js";
 import type { LineCluster } from "./clusters.js";
 import {
 	fileLevelCluster,
@@ -217,6 +218,10 @@ describe("splitPatch", () => {
 	});
 });
 
+/** A hunk's cut matched on its own (hunkCut). */
+const own = (c: LineCluster) =>
+	hunkCut(c.removed, c.added, c.noNewlineOld === true, c.noNewlineNew === true);
+
 describe("splitCluster (CAR-156)", () => {
 	const shape = (c: ReturnType<typeof splitCluster>[number]) => ({
 		ws: c.cluster.whitespaceOnly === true,
@@ -229,7 +234,9 @@ describe("splitCluster (CAR-156)", () => {
 		const [hunk] = parseU0Patch(
 			"@@ -10,3 +10,3 @@\n-gone\n-  b1\n-  b2\n+b1\n+b2\n+new\n",
 		);
-		expect(splitCluster(hunk as LineCluster).map(shape)).toEqual([
+		expect(
+			splitCluster(hunk as LineCluster, own(hunk as LineCluster)).map(shape),
+		).toEqual([
 			{ ws: false, old: [10, 1], new: [9, 0], at: [0, 0] },
 			{ ws: true, old: [11, 2], new: [10, 2], at: [1, 0] },
 			{ ws: false, old: [12, 0], new: [12, 1], at: [3, 2] },
@@ -240,7 +247,10 @@ describe("splitCluster (CAR-156)", () => {
 		const [hunk] = parseU0Patch(
 			"@@ -1,2 +1,2 @@\n- a\n-b\n\\ No newline at end of file\n+a\n+B\n\\ No newline at end of file\n",
 		);
-		const pieces = splitCluster(hunk as LineCluster).map((p) => p.cluster);
+		const pieces = splitCluster(
+			hunk as LineCluster,
+			own(hunk as LineCluster),
+		).map((p) => p.cluster);
 		expect(pieces).toMatchObject([
 			{ whitespaceOnly: true, removed: [" a"], added: ["a"] },
 			{ removed: ["b"], added: ["B"], noNewlineOld: true, noNewlineNew: true },
@@ -249,13 +259,66 @@ describe("splitCluster (CAR-156)", () => {
 		expect(pieces[0]?.noNewlineNew).toBeUndefined();
 	});
 
+	it("cuts by the display hunk's flags: one-sided pieces of a pure deletion or addition numbered as git numbers them (CAR-218)", () => {
+		const [gone] = parseU0Patch("@@ -5,3 +4,0 @@\n-  a\n-b\n-  c\n");
+		expect(
+			splitCluster(gone as LineCluster, {
+				removedWs: [true, false, true],
+				addedWs: [],
+				pairs: [],
+			}).map(shape),
+		).toEqual([
+			{ ws: true, old: [5, 1], new: [4, 0], at: [0, 0] },
+			{ ws: false, old: [6, 1], new: [4, 0], at: [1, 0] },
+			{ ws: true, old: [7, 1], new: [4, 0], at: [2, 0] },
+		]);
+		const [added] = parseU0Patch("@@ -4,0 +5,2 @@\n+x\n+  y\n");
+		expect(
+			splitCluster(added as LineCluster, {
+				removedWs: [],
+				addedWs: [false, true],
+				pairs: [],
+			}).map(shape),
+		).toEqual([
+			{ ws: false, old: [4, 0], new: [5, 1], at: [0, 0] },
+			{ ws: true, old: [4, 0], new: [6, 1], at: [0, 1] },
+		]);
+		// Removed lines whose twins are elsewhere, then a real addition.
+		const [hunk] = parseU0Patch(
+			"@@ -3,2 +3 @@\n-    <div>\n-      <Header />\n+    <Provider>\n",
+		);
+		expect(
+			splitCluster(hunk as LineCluster, {
+				removedWs: [true, true],
+				addedWs: [false],
+				pairs: [],
+			}).map(shape),
+		).toEqual([
+			{ ws: true, old: [3, 2], new: [2, 0], at: [0, 0] },
+			{ ws: false, old: [4, 0], new: [3, 1], at: [2, 0] },
+		]);
+	});
+
+	it("counts nothing as whitespace when the cut doesn't fit the hunk", () => {
+		const [hunk] = parseU0Patch("@@ -1,2 +1,2 @@\n- a\n-b\n+a\n+B\n");
+		expect(
+			splitCluster(hunk as LineCluster, {
+				removedWs: [true],
+				addedWs: [true, false],
+				pairs: [[0, 0]],
+			}),
+		).toEqual([{ cluster: hunk, removedAt: 0, addedAt: 0 }]);
+	});
+
 	it("leaves a hunk that doesn't split as it is, flagged when all whitespace", () => {
 		const [plain] = parseU0Patch("@@ -1 +1 @@\n-a\n+b\n");
-		expect(splitCluster(plain as LineCluster)).toEqual([
-			{ cluster: plain, removedAt: 0, addedAt: 0 },
-		]);
+		expect(
+			splitCluster(plain as LineCluster, own(plain as LineCluster)),
+		).toEqual([{ cluster: plain, removedAt: 0, addedAt: 0 }]);
 		const [ws] = parseU0Patch("@@ -1 +1 @@\n-a\n+ a\n");
-		expect(splitCluster(ws as LineCluster)[0]?.cluster).toEqual({
+		expect(
+			splitCluster(ws as LineCluster, own(ws as LineCluster))[0]?.cluster,
+		).toEqual({
 			...ws,
 			whitespaceOnly: true,
 		});

@@ -206,6 +206,34 @@ describe("ThreadAgentPanel", () => {
 		expect([drawn(), tall()]).toEqual([false, false]);
 	});
 
+	it("Ask agent has no Write / Preview: the box goes back to Write", async () => {
+		show(reviewThread(), [conversation()]);
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Reply" }),
+			"**hi**",
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Preview" }));
+		expect(screen.getByTestId("comment-preview")).toBeInTheDocument();
+		await userEvent.click(agentButton());
+		const ask = screen.getByRole("textbox", { name: "Ask agent" });
+		await userEvent.type(ask, "why?");
+		expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
+		expect(screen.queryByTestId("comment-preview")).toBeNull();
+		// Open, it is as tall as the reply's (toggle over Send), and as wide:
+		// the toggle's slot stays, unseen. No jump either way.
+		expect(ask.className).toContain("min-h-[84px]");
+		expect(screen.getByTestId("preview-toggle")).not.toBeVisible();
+		// Back to the reply: in Write, not the Preview it left.
+		await userEvent.click(agentButton());
+		const reply = screen.getByRole("textbox", { name: "Reply" });
+		expect(reply).toHaveValue("**hi**");
+		expect(screen.queryByTestId("comment-preview")).toBeNull();
+		expect(screen.getByRole("button", { name: "Write" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+	});
+
 	it("placeholder reads Ask agent… when open and Reply… when closed", async () => {
 		show(reviewThread(), [conversation()]);
 		expect(screen.getByRole("textbox", { name: "Reply" })).toHaveAttribute(

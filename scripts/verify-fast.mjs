@@ -88,6 +88,12 @@ const E2E_MAP = [
 		/^src\/web\/files\/(ThreadFate|NotInComparison|threadPlacement|ThreadRow)\.tsx?$/,
 		["rereview", "files-threads"],
 	],
+	// Thread moves (CAR-139): the handle, move mode and "Place here", the
+	// `moved` chip and Undo, the routes, the fold in the agent threads ref.
+	[
+		/^src\/web\/files\/(threadMove|SelectionBar|ThreadFate|ThreadRow|NotInComparison|ThreadsPanel|threadRows|threadPlacement)\.tsx?$|^src\/web\/agent\/(AgentThreadCard|AgentUnplaced|placeable)\.tsx?$|^src\/web\/sticky\.ts$|^src\/shared\/rereview\/moves\.ts$|^src\/server\/rereview\/(threads|moveBody)\.ts$|^src\/server\/agent\/store\.ts$|^e2e\/thread-move(-agent)?\.spec\.ts$/,
+		["thread-move", "thread-move-agent"],
+	],
 	// The tree's Threads tab: its rows, its state, the tree's tabs, and
 	// who spoke last (the server's thread summaries).
 	[
@@ -110,6 +116,8 @@ const E2E_MAP = [
 			"agent-join",
 			"agent-open",
 			"review-conversation",
+			"agent-comment",
+			"agent-comment-github",
 		],
 	],
 	// The review conversation's drawer: mounted and pushing the page in App,
@@ -131,7 +139,10 @@ const E2E_MAP = [
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
 	],
-	[/^src\/web\/threads\//, ["files-threads", "thread-people"]],
+	[
+		/^src\/web\/threads\//,
+		["files-threads", "thread-people", "agent-comment", "agent-comment-github"],
+	],
 	[
 		/^src\/web\/files\/(ThreadRow|FilesPage)\.tsx$|^src\/web\/overview\/OverviewPage\.tsx$|^test\/fake-gh\/(demo-threads|showcase)\.ts$|^src\/web\/index\.css$/,
 		["thread-people"],
@@ -308,21 +319,34 @@ console.log(
 	}`,
 );
 
+// Changes that make Vitest --changed rerun every unit file (its config and
+// what the config loads), or that every file runs through: the unit steps
+// tell the queue they are a full run (CRB_QUEUE_FULL), though no file list
+// says so.
+const RERUN_ALL =
+	/^(vitest\.config|vite\.config)\.|^package\.json$|^pnpm-lock\.yaml$|^tsconfig[^/]*\.json$|^test\/(setup|real-gh-trap|trace-setup|trace-run)\.ts$|^scripts\/(queue-guard|queue-config|queue-line|flake-check-args)\.mjs$|^scripts\/test-profile\//;
+const unitAll = changed.filter((f) => RERUN_ALL.test(f));
+if (unitAll.length) console.log(`  unit: all (${unitAll[0]} changed)`);
+const fullEnv = { ...process.env, CRB_QUEUE_FULL: "1" };
+
 /** A test step, run in its turn on the machine (scripts/queue.mjs). */
 const queued = (...cmd) => ["node", ["scripts/queue.mjs", ...cmd]];
 
 const steps = [
 	["pnpm", ["lint"]],
 	["pnpm", ["typecheck"]],
-	queued(
-		"pnpm",
-		"exec",
-		"vitest",
-		"run",
-		"--changed",
-		base,
-		"--passWithNoTests",
-	),
+	[
+		...queued(
+			"pnpm",
+			"exec",
+			"vitest",
+			"run",
+			"--changed",
+			base,
+			"--passWithNoTests",
+		),
+		unitAll.length ? fullEnv : undefined,
+	],
 ];
 // src/cli.test.ts only spawns the CLI, so --changed never finds it through
 // imports: it runs whenever the CLI's module graph may have changed.
@@ -337,12 +361,16 @@ if (allE2e || e2e.size) {
 	// Builds, then runs in its turn on a dist no other build in this tree
 	// changes while it runs (scripts/e2e.mjs).
 	const files = allE2e ? [] : [...e2e].map((s) => `e2e/${s}.spec.ts`);
-	steps.push(["node", ["scripts/e2e.mjs", ...files, ...passthrough]]);
+	steps.push([
+		"node",
+		["scripts/e2e.mjs", ...files, ...passthrough],
+		allE2e ? fullEnv : undefined,
+	]);
 }
 
-for (const [cmd, a] of steps) {
-	console.log(`\n$ ${cmd} ${a.join(" ")}`);
+for (const [cmd, a, env] of steps) {
+	console.log(`\n$ ${env ? "CRB_QUEUE_FULL=1 " : ""}${cmd} ${a.join(" ")}`);
 	if (dryRun) continue;
-	const { status } = spawnSync(cmd, a, { stdio: "inherit" });
+	const { status } = spawnSync(cmd, a, { stdio: "inherit", env });
 	if (status !== 0) process.exit(status ?? 1);
 }

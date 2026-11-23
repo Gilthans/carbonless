@@ -53,6 +53,13 @@ export const useAppHeaderHeight = () => useContext(AppHeaderHeight);
  */
 export const FindSlot = createContext<HTMLElement | null>(null);
 
+/**
+ * Where move mode's bar goes (CAR-139): App's slot under the find bar's,
+ * pinned at the top and pushing the page down (null outside App: the bar
+ * renders in place).
+ */
+export const MoveSlot = createContext<HTMLElement | null>(null);
+
 let vvTop = 0;
 const vvListeners = new Set<() => void>();
 const subscribeVv = (onChange: () => void) => {

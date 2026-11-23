@@ -14,7 +14,9 @@ import type { CodeSpan } from "./selectionActions";
  *   read from the row otherwise. The since view numbers its old side in
  *   the earlier patch set: its removed rows also carry `data-base-no`,
  *   the base line GitHub knows a LEFT line by on the head (empty: a line
- *   only that patch set had, which GitHub has no line for; CAR-217). Side by side, a context line is shown in
+ *   only that patch set had, which GitHub has no line for; CAR-217); such
+ *   a line also carries `data-ps-no`, its line on that patch set's commit,
+ *   when that commit's diff adds it (a comment goes there, CAR-233). Side by side, a context line is shown in
  *   a cell on each side (`data-kind="context"`, `data-side` the cell's
  *   column): it is one line, RIGHT from either cell;
  * - inside it, `[data-code]` holds exactly the line's characters (CodeLine):
@@ -45,28 +47,74 @@ export interface CellLine {
 	 * GitHub's.
 	 */
 	base?: number | null | "unknown";
+	/**
+	 * A since-view LEFT cell with `base` null (`data-ps-no`): its line on
+	 * the compared patch set's commit, an added line of that commit's diff
+	 * (GitHub's RIGHT line there, CAR-233). Absent when that diff hasn't it.
+	 */
+	ps?: number;
+	/**
+	 * A since-view LEFT cell with `base` null whose line that patch set's
+	 * diff adds at another path than this file's (`data-ps-moved`): no
+	 * comment can name it (CAR-233).
+	 */
+	psMoved?: boolean;
 }
 
-/** Why a since-view line has no GitHub line: only an earlier patch set's, or not known. */
-export type NoLine = "earlier" | "unknown";
+/**
+ * Why a since-view span can't go to GitHub: a line only an earlier patch
+ * set had and not in its diff either ("earlier"), a line it doesn't know
+ * ("unknown"), or lines of the earlier patch set's commit mixed with the
+ * head's ("mixed").
+ */
+export type NoLine = "earlier" | "unknown" | "mixed" | "renamed" | "split";
+
+/** A line only the compared patch set had, on its commit (CAR-233). */
+export const onEarlier = (c: Pick<CellLine, "base" | "ps">) =>
+	c.base === null && c.ps !== undefined;
 
 /** The line GitHub knows a cell's line by: its base number in the since view. */
 const githubLine = (c: Pick<CellLine, "line" | "base">) =>
 	typeof c.base === "number" ? c.base : c.line;
 
 /** Why a cell's line has no GitHub line (codeSpan's NoLine), or null when it has one. */
-export const noLineOf = (c: Pick<CellLine, "base">): NoLine | null =>
-	c.base === null ? "earlier" : c.base === "unknown" ? "unknown" : null;
+export const noLineOf = (
+	c: Pick<CellLine, "base" | "ps" | "psMoved">,
+): NoLine | null =>
+	c.base === null
+		? c.ps !== undefined
+			? null
+			: c.psMoved
+				? "renamed"
+				: "earlier"
+		: c.base === "unknown"
+			? "unknown"
+			: null;
 
-/** Why some line among `cells` has no GitHub line (the first one's), or null. */
+/**
+ * Why the span over `cells` can't go to GitHub (the first line's reason),
+ * or null. Lines on the earlier patch set's commit go there all together
+ * or not at all: mixed with others, "mixed"; with no such commit known
+ * (`earlier`), "unknown".
+ */
 export function noLineIn(
-	cells: readonly Pick<CellLine, "base">[],
+	cells: readonly Pick<CellLine, "base" | "ps" | "psMoved">[],
+	earlier?: string,
 ): NoLine | null {
 	for (const c of cells) {
 		const why = noLineOf(c);
 		if (why) return why;
 	}
-	return null;
+	const on = cells.filter(onEarlier).length;
+	if (on === 0) return null;
+	if (on < cells.length) return "mixed";
+	if (!earlier) return "unknown";
+	// One run of lines on that commit: else its range would hold lines the
+	// view never showed (a base change between them since).
+	const ps = cells.map((c) => c.ps as number).sort((a, b) => a - b);
+	return ps.every((n, i) => i === 0 || n === (ps[i - 1] as number) + 1)
+		? null
+		: "split";
 }
 
 export function cellLine(cell: Element): CellLine | null {
@@ -80,6 +128,7 @@ export function cellLine(cell: Element): CellLine | null {
 		row?.getAttribute(side === "LEFT" ? "data-old-no" : "data-new-no"),
 	);
 	const baseAttr = side === "LEFT" ? row?.getAttribute("data-base-no") : null;
+	const psAttr = baseAttr === "" ? row?.getAttribute("data-ps-no") : null;
 	// The since view's LEFT line without a base number: not known (CAR-217).
 	const unknown =
 		side === "LEFT" &&
@@ -104,6 +153,10 @@ export function cellLine(cell: Element): CellLine | null {
 			: baseAttr == null
 				? {}
 				: { base: baseAttr === "" ? null : Number(baseAttr) }),
+		...(psAttr ? { ps: Number(psAttr) } : {}),
+		...(baseAttr === "" && row?.hasAttribute("data-ps-moved")
+			? { psMoved: true }
+			: {}),
 	};
 }
 
@@ -138,15 +191,32 @@ export const inHunk = (c: Pick<CellLine, "hunk">) => c.hunk.startsWith("h");
 /**
  * A span over cells `start`..`end` (in the order shown), whole lines unless
  * cols are given; each end by GitHub's number for it (`base` in the since
- * view).
+ * view). Both ends lines only the compared patch set had, on its commit
+ * (`earlier`): that commit's RIGHT lines (`ps`), marked `earlier`
+ * (CAR-233).
  */
 export function spanOfCells(
 	start: CellLine,
 	end: CellLine,
 	commit: string,
 	cols?: { startCol: number; endCol: number },
+	earlier?: string,
 ): CodeSpan {
 	const whole = !cols || (cols.startCol === 0 && cols.endCol === end.len);
+	if (earlier && onEarlier(start) && onEarlier(end)) {
+		return {
+			path: start.path,
+			commit: earlier,
+			subject: "line",
+			startSide: "RIGHT",
+			startLine: start.ps as number,
+			side: "RIGHT",
+			line: end.ps as number,
+			startCol: whole ? null : (cols?.startCol ?? null),
+			endCol: whole ? null : (cols?.endCol ?? null),
+			earlier: true,
+		};
+	}
 	return {
 		path: start.path,
 		commit,
@@ -231,6 +301,8 @@ function selectedCells(range: Range): CellLine[] {
 export function spanOfRange(
 	range: Range,
 	commit: string,
+	/** The since view's compared patch set's head (CAR-233). */
+	earlier?: string,
 ): {
 	span: CodeSpan;
 	inDiff: boolean;
@@ -274,13 +346,16 @@ export function spanOfRange(
 		head.order > last.order;
 	return {
 		span: swapped
-			? spanOfCells(last, head, commit)
-			: spanOfCells(head, last, commit, {
-					startCol: start.col,
-					endCol: end.col,
-				}),
+			? spanOfCells(last, head, commit, undefined, earlier)
+			: spanOfCells(
+					head,
+					last,
+					commit,
+					{ startCol: start.col, endCol: end.col },
+					earlier,
+				),
 		inDiff: inHunk(head) && inHunk(last),
-		noLine: noLineIn(cells),
+		noLine: noLineIn(cells, earlier),
 		cells: { head: head.cell, last: last.cell },
 	};
 }

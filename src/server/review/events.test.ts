@@ -916,6 +916,31 @@ describe("agent events", () => {
 		).toEqual([]);
 	});
 
+	it("parses agent-thread-linked by a human, drops it by ai, auto or with a bad GitHub id", () => {
+		const linked = newEvent("agent-thread-linked", "dan", {
+			thread,
+			github: "PRRT_kwDOAbc123",
+		});
+		expect(parseEventLines(msg([linked]))).toEqual([linked]);
+		expect(() => validateForWrite(linked)).not.toThrow();
+		const ai = { ...linked, by: "ai" } as unknown as CrbEvent;
+		expect(parseEventLines(msg([ai]))).toEqual([]);
+		expect(() => validateForWrite(ai)).toThrow(/human/);
+		const auto = { ...linked, by: "auto" } as unknown as CrbEvent;
+		expect(parseEventLines(msg([auto]))).toEqual([]);
+		expect(
+			parseEventLines(
+				msg([
+					{ ...linked, github: "" },
+					{ ...linked, github: "x".repeat(201) },
+					{ ...linked, github: 7 },
+					{ ...linked, github: undefined },
+					{ ...linked, thread: "NOT-A-ULID" },
+				]),
+			),
+		).toEqual([]);
+	});
+
 	it("drops an anchor with a bad side, line or commit", () => {
 		const bad = [
 			{ ...anchor, side: "BOTH" },
@@ -987,5 +1012,99 @@ describe("agent events", () => {
 		expect(() =>
 			validateForWrite({ ...opened, by: "ai" } as CrbEvent),
 		).toThrow();
+	});
+});
+
+describe("thread moves (CAR-139)", () => {
+	const anchor = {
+		path: "src/a.ts",
+		startSide: "RIGHT" as const,
+		startLine: 3,
+		side: "RIGHT" as const,
+		line: 5,
+	};
+	const on = { base: "a".repeat(40), head: "b".repeat(40), patchset: 3 };
+	const moved = newEvent("thread-moved", "dan", {
+		thread: { source: "github", id: "PRRT_kwDOabc" },
+		on,
+		anchor,
+		engine: 1,
+	});
+	const agentMoved = newEvent("thread-moved", "dan", {
+		thread: { source: "agent", id: "01jaaaaaaaaaaaaaaaaaaaaaaa" },
+		on: { base: on.base, head: on.head },
+		anchor,
+		engine: 1,
+	});
+	const undone = newEvent("thread-move-undone", "dan", {
+		thread: { source: "github", id: "PRRT_kwDOabc" },
+		move: moved.id,
+	});
+
+	it("round-trip through a commit message and pass the write rules", () => {
+		const all = [moved, agentMoved, undone];
+		expect(parseEventLines(serializeCommitMessage("crb: x", all))).toEqual(all);
+		for (const e of all) expect(() => validateForWrite(e)).not.toThrow();
+	});
+
+	it("only a human moves a thread or takes a move back: ai and auto ones are dropped and refused", () => {
+		for (const by of ["ai", "auto"] as const) {
+			for (const e of [moved, undone]) {
+				const other = { ...e, by } as CrbEvent;
+				expect(parseEventLines(msg([other]))).toEqual([]);
+				expect(() => validateForWrite(other)).toThrow(/human/);
+			}
+		}
+	});
+
+	it("an unknown source is skipped, never an error", () => {
+		const future = {
+			...moved,
+			thread: { source: "gitlab", id: "x" },
+		};
+		expect(parseEventLines(msg([future, moved]))).toEqual([moved]);
+	});
+
+	it("an old reader's unknown types (as this one's would be) are skipped", () => {
+		const unknown = { ...moved, type: "thread-moved-v2" };
+		expect(parseEventLines(msg([unknown, undone]))).toEqual([undone]);
+	});
+
+	it("skips moves that break a write rule, and refuses to write them", () => {
+		const bad: unknown[] = [
+			{ ...moved, thread: null },
+			{ ...moved, thread: { source: "github", id: "" } },
+			{ ...moved, thread: { source: "github", id: "x".repeat(201) } },
+			{ ...moved, thread: { source: "agent", id: "PRRT_1" } },
+			{ ...moved, on: null },
+			{ ...moved, on: { ...on, base: "main" } },
+			{ ...moved, on: { ...on, head: "b".repeat(39) } },
+			{ ...moved, on: { ...on, patchset: 0 } },
+			{ ...moved, on: { ...on, patchset: "3" } },
+			{ ...moved, engine: 0 },
+			{ ...moved, anchor: null },
+			{ ...moved, anchor: { ...anchor, path: "" } },
+			{ ...moved, anchor: { ...anchor, path: "x".repeat(4097) } },
+			{ ...moved, anchor: { ...anchor, side: "UP" } },
+			{ ...moved, anchor: { ...anchor, line: 0 } },
+			{ ...moved, anchor: { ...anchor, startLine: 9 } },
+			{ ...undone, move: "not-a-ulid" },
+			{ ...undone, move: moved.id.toUpperCase() },
+			{ ...undone, thread: { source: "agent", id: "x" } },
+		];
+		expect(parseEventLines(msg([...bad, moved]))).toEqual([moved]);
+		for (const e of bad) {
+			expect(() => validateForWrite(e as CrbEvent)).toThrow();
+		}
+	});
+
+	it("keeps only the known fields", () => {
+		const extra = {
+			...moved,
+			thread: { ...moved.thread, x: 1 },
+			on: { ...on, extra: "<b>" },
+			anchor: { ...anchor, extra: 1 },
+		};
+		expect(parseEventLines(msg([extra]))).toEqual([moved]);
 	});
 });

@@ -1,4 +1,9 @@
 import { type QueryClient, queryOptions } from "@tanstack/react-query";
+import type {
+	MoveAnswer,
+	MoveRequest,
+	UndoMoveAnswer,
+} from "../shared/rereview/moves";
 import {
 	COMMENTS_BATCH,
 	type CommentsView,
@@ -16,7 +21,6 @@ import {
 	type ReviewView,
 	type SessionInfo,
 	type StateChange,
-	type ThreadAnchorRef,
 	type ThreadComment,
 	type ThreadComments,
 	type ThreadGone,
@@ -258,15 +262,17 @@ export const fetchPlacements = (readId: string, to: RereviewTo) =>
 		})}`,
 	);
 
-/** The reviewer places a thread on lines of their latest patch set. */
-export const postPlacement = (
-	threadId: string,
-	patchset: number,
-	anchor: ThreadAnchorRef,
-) =>
-	post<PlacementsAnswer["threads"][number]>(
-		`/api/threads/${encodeURIComponent(threadId)}/placement`,
-		{ patchset, anchor },
+/** The reviewer moves a thread to lines of the target viewed (CAR-139). */
+export const postMove = (req: MoveRequest) =>
+	post<MoveAnswer>("/api/moves", req);
+
+/** The reviewer takes a move back; with `to`, the thread's placement there. */
+export const deleteMove = (id: string, to: RereviewTo) =>
+	request<UndoMoveAnswer>(
+		`/api/moves/${encodeURIComponent(id)}?${new URLSearchParams(
+			"patchset" in to ? { ps: String(to.patchset) } : { head: to.head },
+		)}`,
+		{ method: "DELETE" },
 	);
 
 /**
@@ -922,7 +928,10 @@ export const placementsQuery = (readId: string, to: RereviewTo) =>
 				const shown = client.getQueryData<PlacementsAnswer | { pending: true }>(
 					queryKey,
 				);
-				if (shown && !("pending" in shown)) return shown;
+				// Still asked again until the new answer is in (a thread made
+				// on an earlier commit placed anew, CAR-233).
+				if (shown && !("pending" in shown))
+					return { ...shown, complete: false };
 			}
 			return next;
 		},
