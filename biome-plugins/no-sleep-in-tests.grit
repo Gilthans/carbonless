@@ -1,0 +1,27 @@
+// CAR-260: no fixed sleeps in tests (`await new Promise((r) =>
+// setTimeout(r, 50))`): on a loaded machine the thing waited for comes
+// later, and "nothing happened in 50 ms" proves nothing. Hold the answer
+// (the fake gh's `hold`, a held fetch), wait on the state (`waitFor`,
+// `expect.poll`), or move a fake clock past the window. Allowed: a timer of
+// 0 (or none), which yields one macrotask rather than waiting for time, and
+// a sleep inside a loop, which polls a condition. A sleep that is the
+// point goes through test/sleep.ts: `quietFor` (a window for something
+// that must not happen) or `fakeDelay` (a fake's latency); elsewhere a
+// `biome-ignore lint/plugin/no-sleep-in-tests: <why>`. Scoped in
+// biome.json to tests, e2e/ and test/, but not the fakes (fake-gh,
+// fake-acp). Plugin globs match absolute paths, hence their `**/` prefix.
+// CLAUDE.md, "Development" (test rules).
+language js
+
+`new Promise($executor)` as $sleep where {
+	$executor <: contains `setTimeout($_, $ms)`,
+	not $ms <: `0`,
+	not $sleep <: within or {
+		JsWhileStatement(),
+		JsDoWhileStatement(),
+		JsForStatement(),
+		JsForOfStatement(),
+		JsForInStatement()
+	},
+	register_diagnostic(span=$sleep, message="no-sleep-in-tests: hold the answer, wait on the state (waitFor, expect.poll) or move a fake clock; for an absence or a fake's latency, test/sleep.ts. CLAUDE.md test rules.")
+}

@@ -21,17 +21,16 @@ const alive = (pid: number) => {
 };
 
 describe("runGit timeoutMs", () => {
-	// A shell alias stands in for a fetch that hangs.
-	const slow = ["-c", "alias.slow=!sleep 5", "slow"];
+	// A shell alias stands in for a fetch that hangs: longer than the test's
+	// timeout (20 s), so a run that waited for it fails the test.
+	const slow = ["-c", "alias.slow=!sleep 60", "slow"];
 	const dir = mkdtempSync(join(tmpdir(), "crb-git-test-"));
 	afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 	it("kills git after the timeout and fails", async () => {
-		const start = Date.now();
 		await expect(runGit(".", slow, { timeoutMs: 200 })).rejects.toThrow(
 			/timed out/,
 		);
-		expect(Date.now() - start).toBeLessThan(3000);
 	});
 
 	it("resolves empty with allowFailure", async () => {
@@ -115,11 +114,9 @@ const wait = setInterval(() => {
 
 	it("stops git when aborted, and never starts it once aborted", async () => {
 		const stop = new AbortController();
-		const started = Date.now();
 		const run = runGit(".", slow, { signal: stop.signal });
 		setTimeout(() => stop.abort(), 100);
 		await expect(run).rejects.toThrow(/stopped/);
-		expect(Date.now() - started).toBeLessThan(3000);
 		await expect(
 			runGit(".", ["rev-parse", "HEAD"], { signal: stop.signal }),
 		).rejects.toThrow(/stopped/);

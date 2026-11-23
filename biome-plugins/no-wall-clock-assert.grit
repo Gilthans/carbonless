@@ -1,0 +1,22 @@
+// CAR-260: no wall-clock time asserts in tests: `expect(Date.now() - t)`
+// or `expect(performance.now() - t)` against a bound fails on a slower or
+// contended CPU (a CI runner). Measure CPU time against a reference in the
+// same test (test/cpu.ts), or prove "doesn't wait" with a hold or a timeout
+// of 0. Only the difference written inside `expect(…)` is caught; one kept
+// in a variable first is not (the rule stays free of false positives).
+// CLAUDE.md, "Development" (test rules).
+language js
+
+`expect($left - $right)` as $assert where {
+	or {
+		$left <: or {
+			`Date.now()`,
+			`performance.now()`
+		},
+		$right <: or {
+			`Date.now()`,
+			`performance.now()`
+		}
+	},
+	register_diagnostic(span=$assert, message="no-wall-clock-assert: compare CPU time to a reference (test/cpu.ts), or show it doesn't wait with a hold; never elapsed wall-clock time. CLAUDE.md test rules.")
+}

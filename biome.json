@@ -20,7 +20,49 @@
 		"enabled": true,
 		"indentStyle": "tab"
 	},
-	"plugins": ["./biome-plugins/no-static-private-method.grit"],
+	"plugins": [
+		"./biome-plugins/no-static-private-method.grit",
+		{
+			"path": "./biome-plugins/no-wait-for-timeout.grit",
+			"includes": ["**/e2e/**", "**/test/**"]
+		},
+		{
+			"path": "./biome-plugins/no-test-retries.grit",
+			"includes": [
+				"**/playwright*.config.*",
+				"**/vitest*.config.*",
+				"**/*.test.ts",
+				"**/*.test.tsx",
+				"**/*.test.mts",
+				"**/*.test.mjs",
+				"**/e2e/**"
+			]
+		},
+		{
+			"path": "./biome-plugins/no-wall-clock-assert.grit",
+			"includes": [
+				"**/*.test.ts",
+				"**/*.test.tsx",
+				"**/*.test.mts",
+				"**/*.test.mjs",
+				"**/e2e/**",
+				"**/test/**"
+			]
+		},
+		{
+			"path": "./biome-plugins/no-sleep-in-tests.grit",
+			"includes": [
+				"**/*.test.ts",
+				"**/*.test.tsx",
+				"**/*.test.mts",
+				"**/*.test.mjs",
+				"**/e2e/**",
+				"**/test/**",
+				"!**/test/fake-gh/**",
+				"!**/test/fake-acp/**"
+			]
+		}
+	],
 	"linter": {
 		"enabled": true,
 		"rules": {

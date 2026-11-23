@@ -99,7 +99,7 @@ describe("createTracer", () => {
 		const root = t.root("crb serve");
 		const outer = t.start("POST /api/reviews");
 		const inner = await t.run(outer, async () => {
-			await new Promise((r) => setTimeout(r, 1));
+			await new Promise((r) => setTimeout(r, 0));
 			return t.start("git fetch");
 		});
 		inner.end();

@@ -11,6 +11,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { quietFor } from "../../../test/sleep";
 import type {
 	CodeAnchor,
 	DiffLine,
@@ -1082,8 +1083,9 @@ describe("the selection bar", () => {
 		selectAndRelease(rangeOf(at("RIGHT", 7, 0), at("RIGHT", 7, 4)));
 		expect(await screen.findByTestId("selection-bar")).toBeInTheDocument();
 		await user.keyboard("{Escape}");
-		await new Promise((r) => setTimeout(r, 50));
-		expect(screen.queryByTestId("selection-bar")).toBeNull();
+		await vi.waitFor(() =>
+			expect(screen.queryByTestId("selection-bar")).toBeNull(),
+		);
 		// The selection itself stays; another one brings the bar back.
 		expect(document.getSelection()?.toString()).toBe("line");
 		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 4)));
@@ -1288,7 +1290,7 @@ describe("the composer", () => {
 			),
 		);
 		expect(await screen.findByTestId("orphan-draft")).toHaveTextContent("wait");
-		await new Promise((r) => setTimeout(r, 30));
+		await quietFor(30);
 		expect(draftsFor(client).newThread("early")?.create?.commit).toBe(OLD);
 	});
 
@@ -2830,7 +2832,7 @@ describe("the selection bar on a phone", () => {
 			document.dispatchEvent(new Event("selectionchange"));
 		});
 		await screen.findByTestId("selection-bar", {}, { timeout: 2000 });
-		await new Promise((r) => setTimeout(r, 50));
+		await quietFor(50);
 		expect(window.scrollBy).not.toHaveBeenCalled();
 		fireEvent.touchEnd(document.body, { touches: [] });
 		await vi.waitFor(() => expect(window.scrollBy).toHaveBeenCalledTimes(1));

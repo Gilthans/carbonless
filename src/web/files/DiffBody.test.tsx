@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../test/in-router";
 import { heldJson } from "../../../test/loading";
+import { quietFor } from "../../../test/sleep";
 import type { AgentThread } from "../../shared/agent";
 import type {
 	ClusterView,
@@ -2651,7 +2652,7 @@ describe("DiffBody find", () => {
 		refind(findAt({ old: false, line: 99 }, 1, () => [], false));
 		refind(findAt(null, 1, () => [], false));
 		// Give a collapse that shouldn't come every chance to.
-		await act(() => new Promise((r) => setTimeout(r, 20)));
+		await act(() => quietFor(20));
 		expect(collapsed()[0]).toHaveAttribute("data-expanded");
 	});
 

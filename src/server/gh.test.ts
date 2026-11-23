@@ -752,12 +752,13 @@ describe("runGh with a fake gh", () => {
 		).rejects.toThrow(
 			"GitHub took longer than 0.2 s to answer for the review threads",
 		);
+		// gh answers after longer than the test's timeout (20 s): a read that
+		// waited for it, rather than stopping, fails the test.
+		setEnv({ FAKE_SLEEP: "60" });
 		const stop = new AbortController();
-		const started = Date.now();
 		const read = runGh(["api", "graphql"], { signal: stop.signal });
 		setTimeout(() => stop.abort(), 100);
 		await expect(read).rejects.toBeInstanceOf(GhAbortedError);
-		expect(Date.now() - started).toBeLessThan(2000);
 		// Once aborted, gh isn't started at all.
 		const before = log();
 		await expect(

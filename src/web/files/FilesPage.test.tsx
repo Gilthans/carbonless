@@ -19,6 +19,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
+import { quietFor } from "../../../test/sleep";
 import type { AgentThread } from "../../shared/agent";
 import type { FileView, ReviewView } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
@@ -223,7 +224,7 @@ describe("FilesPage", () => {
 				.refetchQueries({ queryKey: overviewQuery.queryKey })
 				.catch(() => {});
 			// The query cache notifies on a timeout.
-			await new Promise((r) => setTimeout(r, 20));
+			await quietFor(20);
 		});
 		expect(overviewReads).toBe(2);
 		expect(lastClient.getQueryState(overviewQuery.queryKey)?.status).toBe(
@@ -286,7 +287,7 @@ describe("FilesPage", () => {
 			);
 			// Let the page render with the threads (placements enable then).
 			await act(async () => {
-				await new Promise((r) => setTimeout(r, 20));
+				await quietFor(20);
 			});
 			const reads = () =>
 				fetchMock.mock.calls.filter(([input]) =>
@@ -1140,7 +1141,7 @@ describe("FilesPage", () => {
 			await user.click(within(a).getByRole("button", { name: "Expand file" }));
 			await waitFor(() => expect(currentIn()).toBe("a.txt"));
 			// Give a scroll that shouldn't come every chance to.
-			await act(() => new Promise((r) => setTimeout(r, 50)));
+			await act(() => quietFor(50));
 			expect(scrolled).toHaveBeenCalledTimes(1);
 		});
 

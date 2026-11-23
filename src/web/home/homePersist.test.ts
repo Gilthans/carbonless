@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { quietFor } from "../../../test/sleep";
 import { newQueryClient } from "../queryClient";
 import { leaveHome, repoKey } from "./homeApi";
 import {
@@ -13,7 +14,7 @@ const stops: (() => void)[] = [];
 afterEach(async () => {
 	for (const stop of stops.splice(0)) stop();
 	// A throttled save already timed lands now, not in the next test.
-	await new Promise((r) => setTimeout(r, 5));
+	await quietFor(5);
 	sessionStorage.clear();
 });
 
@@ -80,7 +81,7 @@ describe("persistHome", () => {
 		const review = await page({ restore: false });
 		review.setQueryData(["session"], { id: "review" });
 		window.dispatchEvent(new Event("pagehide"));
-		await new Promise((r) => setTimeout(r, 5));
+		await quietFor(5);
 		expect(stored()).toContain("kept");
 	});
 
@@ -118,7 +119,7 @@ describe("persistHome", () => {
 			review.setQueryData(["files", i], { n: i });
 		}
 		window.dispatchEvent(new Event("pagehide"));
-		await new Promise((r) => setTimeout(r, 5));
+		await quietFor(5);
 		expect(writes).toBe(1);
 		// A change of Home's own is saved.
 		review.setQueryData(VIEW, { view: "w" });

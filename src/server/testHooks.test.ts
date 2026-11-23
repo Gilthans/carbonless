@@ -13,6 +13,7 @@ import {
 import { fakeGhServerCalls } from "../../test/fake-gh/server.mjs";
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import { quietFor } from "../../test/sleep";
 import { buildApp } from "./app";
 import { ghRunning, runGh } from "./gh";
 import { gitChildren } from "./git";
@@ -163,7 +164,7 @@ describe("test hooks", () => {
 		});
 		const calls = pr.ghLog();
 		release(process.env.CRB_FAKE_GH ?? "", "threads");
-		await new Promise((r) => setTimeout(r, 300));
+		await quietFor(300);
 		expect(pr.ghLog()).toBe(calls);
 
 		// The registry still works: the same PR opens a new session.

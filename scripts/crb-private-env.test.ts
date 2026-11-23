@@ -9,6 +9,7 @@ import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { quietFor } from "../test/sleep";
 import {
 	envrc,
 	privateDirs,
@@ -101,7 +102,7 @@ describe("a worktree's private crb state and config", () => {
 			void waited.then(() => {
 				settled = true;
 			});
-			await new Promise((r) => setTimeout(r, 400));
+			await quietFor(400);
 			expect(settled).toBe(false);
 			server = createServer((_req, res) => {
 				res.setHeader("content-type", "application/json");

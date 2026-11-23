@@ -2,6 +2,7 @@
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { quietFor } from "../../../test/sleep";
 import type { SearchResult } from "../../shared/home";
 import { HomePage } from "./HomePage";
 import {
@@ -424,7 +425,7 @@ describe("ViewSettings", () => {
 			await waitFor(() =>
 				expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
 			);
-			await new Promise((r) => setTimeout(r, 1500));
+			await quietFor(1500);
 			expect(bodies()).toEqual([["acme/api"], ["acme/api", "acme/web"]]);
 			expect(chips()).toEqual(["acme/api", "acme/web"]);
 		});

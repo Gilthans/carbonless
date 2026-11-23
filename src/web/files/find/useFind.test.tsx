@@ -5,6 +5,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { type ReactNode, useEffect, useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { heldJson } from "../../../../test/loading";
+import { quietFor } from "../../../../test/sleep";
 import type { DiffLine, FileHunks, FileView } from "../../../shared/types";
 import { hunksQuery } from "../../api";
 import { newQueryClient } from "../../queryClient";
@@ -581,7 +582,7 @@ describe("useFind", () => {
 			batches[3]?.held.release(answer(batches[3]));
 		});
 		// Give a request that shouldn't come every chance to.
-		await act(() => new Promise((r) => setTimeout(r, 20)));
+		await act(() => quietFor(20));
 		expect(batches).toHaveLength(4);
 		expect(result.current.searching).toBe(false);
 	});
@@ -889,7 +890,7 @@ describe("useFind", () => {
 			});
 		});
 		// Give the prefetch's answer every chance to land.
-		await act(() => new Promise((r) => setTimeout(r, 20)));
+		await act(() => quietFor(20));
 		expect(result.current.searching).toBe(true);
 		await act(async () => {
 			contexts[0]?.held.release([
@@ -946,7 +947,7 @@ describe("useFind", () => {
 			});
 		});
 		// Give the prefetch's answer every chance to land.
-		await act(() => new Promise((r) => setTimeout(r, 20)));
+		await act(() => quietFor(20));
 		expect(result.current.searching).toBe(true);
 		await act(async () => {
 			singles[0]?.held.release(hunksOf(files[0] as FileView, "save too"));

@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { suggestionHtml } from "../../../test/fake-gh/scenario";
+import { quietFor } from "../../../test/sleep";
 import type {
 	PrOverview,
 	ReviewThread,
@@ -313,7 +314,7 @@ describe("Conversation", () => {
 		expect(
 			await screen.findByText("Couldn't be read from GitHub"),
 		).toBeInTheDocument();
-		await new Promise((r) => setTimeout(r, 30));
+		await quietFor(30);
 		expect(requests).toBe(0);
 	});
 });
@@ -323,7 +324,7 @@ describe("Conversation across reads", () => {
 		answer = async () => json({ error: "read gone" }, 410);
 		renderWith(<Conversation readId="r1" thread={thread()} />);
 		await waitFor(() => expect(requests).toBeGreaterThan(0));
-		await new Promise((r) => setTimeout(r, 30));
+		await quietFor(30);
 		expect(
 			screen.getByRole("status", { name: "Loading comments" }),
 		).toBeInTheDocument();

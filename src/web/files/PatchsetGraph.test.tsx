@@ -12,6 +12,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
+import { quietFor } from "../../../test/sleep";
 import type { RereviewAnswer, SessionInfo } from "../../shared/types";
 import { patchsetCommitsQuery, REREVIEW_POLL_MS } from "../api";
 import { ShortcutsProvider } from "../shortcuts";
@@ -651,7 +652,7 @@ describe("PatchsetGraph", () => {
 		});
 		const base = within(card).getByRole("button", { name: "Comparison Base" });
 		await user.hover(target);
-		await act(() => new Promise((r) => setTimeout(r, 300)));
+		await act(() => quietFor(300));
 		expect(shownTips()).toEqual([]);
 		expect(target).not.toHaveAccessibleDescription();
 		await user.hover(base);

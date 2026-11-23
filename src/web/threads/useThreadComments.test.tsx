@@ -7,6 +7,7 @@ import {
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fakeDelay, quietFor } from "../../../test/sleep";
 import type { CommentsView, ThreadComments } from "../../shared/types";
 import { commentsQuery, overviewQuery, showCommentsOf } from "../api";
 import { PageActive } from "../pageActive";
@@ -54,7 +55,7 @@ beforeEach(() => {
 	most = 0;
 	overviewReads = 0;
 	answer = async (a) => {
-		await new Promise((r) => setTimeout(r, 20));
+		await fakeDelay(20);
 		return json({ threads: a.ids.map(comments) } satisfies CommentsView);
 	};
 	vi.stubGlobal(
@@ -184,7 +185,7 @@ describe("comments: batched, prefetched, opened", () => {
 			</>,
 		);
 		expect(screen.getByTestId("T1")).toHaveTextContent("T1");
-		await new Promise((r) => setTimeout(r, 50));
+		await quietFor(50);
 		expect(asked).toHaveLength(1);
 	});
 
@@ -210,7 +211,7 @@ describe("comments: batched, prefetched, opened", () => {
 		const slow = answer;
 		answer = async (a) => {
 			// The prefetched ones take a while: the opened one doesn't wait.
-			if (a.ids.length > 1) await new Promise((r) => setTimeout(r, 300));
+			if (a.ids.length > 1) await fakeDelay(300);
 			return slow(a);
 		};
 		const client = newClient();
@@ -300,7 +301,7 @@ describe("comments: batched, prefetched, opened", () => {
 	it("a new prefetch order moves what is still queued", async () => {
 		const slow = answer;
 		answer = async (a) => {
-			await new Promise((r) => setTimeout(r, 200));
+			await fakeDelay(200);
 			return slow(a);
 		};
 		const client = newClient();
@@ -318,7 +319,7 @@ describe("comments: batched, prefetched, opened", () => {
 	it("an opened thread stays ahead of a new prefetch order", async () => {
 		const slow = answer;
 		answer = async (a) => {
-			await new Promise((r) => setTimeout(r, 300));
+			await fakeDelay(300);
 			return slow(a);
 		};
 		const client = newClient();
@@ -353,7 +354,7 @@ describe("comments: batched, prefetched, opened", () => {
 
 	it("a read gone (410) sends nothing more for it", async () => {
 		answer = async () => {
-			await new Promise((r) => setTimeout(r, 30));
+			await fakeDelay(30);
 			return json({ error: "read gone" }, 410);
 		};
 		const client = newClient({
@@ -374,7 +375,7 @@ describe("comments: batched, prefetched, opened", () => {
 	it("a new read drops the old one's queue and comments", async () => {
 		const slow = answer;
 		answer = async (a) => {
-			await new Promise((r) => setTimeout(r, 100));
+			await fakeDelay(100);
 			return slow(a);
 		};
 		const client = newClient();
@@ -386,7 +387,7 @@ describe("comments: batched, prefetched, opened", () => {
 		await waitFor(() =>
 			expect(client.getQueryData(["comments", "r2", "T2"])).toBeDefined(),
 		);
-		await new Promise((r) => setTimeout(r, 150));
+		await quietFor(150);
 		expect(asked.map((a) => a.read)).toEqual(["r1", "r1", "r2"]);
 		expect(
 			client.getQueryCache().findAll({ queryKey: ["comments", "r1"] }),
@@ -398,7 +399,7 @@ describe("comments: batched, prefetched, opened", () => {
 	it("waits for a read id", async () => {
 		const client = newClient();
 		render(<Thread readId={undefined} id="T1" />, { wrapper: wrapper(client) });
-		await new Promise((r) => setTimeout(r, 30));
+		await quietFor(30);
 		expect(asked).toEqual([]);
 		expect(screen.getByTestId("T1")).toHaveTextContent("loading");
 	});
@@ -408,7 +409,7 @@ describe("comments across reads and pages", () => {
 	it("asks for nothing while the read id is empty", async () => {
 		const client = newClient();
 		render(<Thread readId="" id="T1" />, { wrapper: wrapper(client) });
-		await new Promise((r) => setTimeout(r, 30));
+		await quietFor(30);
 		expect(asked).toEqual([]);
 		expect(screen.getByTestId("T1")).toHaveTextContent("loading");
 	});
@@ -455,7 +456,7 @@ describe("comments across reads and pages", () => {
 			</PageActive>
 		);
 		const { rerender } = render(page(false), { wrapper: wrapper(client) });
-		await new Promise((r) => setTimeout(r, 30));
+		await quietFor(30);
 		expect(asked).toEqual([]);
 		rerender(page(true));
 		await waitFor(() =>

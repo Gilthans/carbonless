@@ -12,6 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../test/in-router";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
+import { fakeDelay, quietFor } from "../../../test/sleep";
 import type { AgentThread } from "../../shared/agent";
 import type { SincePiece } from "../../shared/pieces";
 import type {
@@ -435,7 +436,7 @@ describe("FileDiff", () => {
 		expect(alert).toHaveTextContent("git exploded");
 		expect(alert).toHaveTextContent("Reviewed · src/a.ts");
 		// The reread server view doesn't roll it back.
-		await new Promise((r) => setTimeout(r, 20));
+		await quietFor(20);
 		expect(box).toBeChecked();
 		expect(sync().stale).toBeNull();
 		fail = false;
@@ -751,7 +752,7 @@ describe("FileDiff", () => {
 		const { posts, user } = setup(f, async () => {
 			inFlight++;
 			maxInFlight = Math.max(maxInFlight, inFlight);
-			await new Promise((r) => setTimeout(r, 5));
+			await fakeDelay(5);
 			inFlight--;
 			return { status: 200, body: view(f) };
 		});
@@ -1156,7 +1157,7 @@ describe("FileDiff", () => {
 		await waitFor(() => expect(undo).toBeEnabled());
 		// Right after it swaps in, a click (a double click's second) does nothing.
 		await user.click(undo);
-		await new Promise((r) => setTimeout(r, 50));
+		await quietFor(50);
 		expect(posts()).toHaveLength(1);
 		tick();
 		await confirmClick(user, undo);
@@ -2054,7 +2055,7 @@ describe("FileDiff", () => {
 			expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(after),
 		);
 		answerRead?.();
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await quietFor(20);
 		expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(after);
 	});
 
@@ -3245,13 +3246,13 @@ describe("FileDiff: review in the image view", () => {
 		await pick(user, "Image");
 		expect(shown()).toBe("image");
 		// The same landing, still the page's, isn't replayed on the image.
-		await new Promise((r) => setTimeout(r, 20));
+		await quietFor(20);
 		expect(screen.queryByTestId("landing-hint")).toBeNull();
 		expect(scrolls).not.toHaveBeenCalled();
 		// Nor after closing and reopening the file there.
 		await user.click(screen.getByRole("button", { name: "Collapse file" }));
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		await new Promise((r) => setTimeout(r, 20));
+		await quietFor(20);
 		expect(screen.queryByTestId("landing-hint")).toBeNull();
 		expect(scrolls).not.toHaveBeenCalled();
 	});
