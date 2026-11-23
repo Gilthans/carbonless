@@ -859,6 +859,74 @@ test("the since view: a real edit since PS1, in a cluster whitespace-only agains
 	await expect(boxes(since)).toHaveCount(1);
 });
 
+test("the since view: ticking a change never closes the file while a real edit since, in a cluster whitespace-only against the base, is unmarked", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	// PS1 changes `load()` for real, reviewed; PS2 only re-indents the
+	// base's line (whitespace only against the base, a real edit since)
+	// and changes `alpha()`, far above it: two units, both counted.
+	const path = "src/loader.ts";
+	const at = (alpha: string, load: string) =>
+		text([alpha, ...Array.from({ length: 9 }, (_, i) => `keep${i}();`), load]);
+	const p = await pr({
+		base: { [path]: at("alpha();", "load();") },
+		files: [
+			{ message: "Unload", files: { [path]: at("alpha();", "unload();") } },
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, path);
+	await opened(section);
+	await marksReady(page, section);
+	await expect(boxes(section)).toHaveCount(1);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead({
+		message: "Alpha, load indented",
+		files: { [path]: at("alpha!();", "  load();") },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	const bar = progress(page);
+	await ignoreWhitespace(page, true);
+	await expect(bar).toContainText("0 / 2 clusters reviewed");
+	const since = fileSection(page, path);
+	await opened(since);
+	await marksReady(page, since);
+	// Each run is a piece with its box, `alpha()`'s first.
+	await expect(boxes(since)).toHaveCount(2);
+	// The change: the edit is still to read, so the file stays open.
+	await boxes(since).first().click();
+	await expect(bar).toContainText("1 / 2 clusters reviewed");
+	await expect(since.locator("table")).toBeVisible();
+	await expect(header(since)).not.toHaveAttribute("data-finished");
+	await expect(
+		since.locator('[data-testid="diff-line"][data-kind="add"]', {
+			hasText: "load();",
+		}),
+	).toBeVisible();
+	// The edit, the last unit: the file is done and closes.
+	await boxes(since).last().click();
+	await expect(bar).toContainText("2 / 2 clusters reviewed");
+	await expect(since.locator("table")).toHaveCount(0);
+	await expect(header(since)).toHaveAttribute("data-finished");
+});
+
 test.describe("Home", () => {
 	// Its own crb serve: Home reads the config's views.
 	test.use({ crbServer: "own" });
