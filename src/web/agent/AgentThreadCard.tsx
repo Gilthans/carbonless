@@ -190,8 +190,10 @@ const AGENT_SURFACE =
  * the reader is at its end, what grows in it (a new message, a streamed
  * answer) keeps it there; scrolled up, it stays put. A short conversation
  * takes its own height. Its padding (out into the body's) keeps focus and
- * landing outlines unclipped; `mb-1` over the body's space-y-2 keeps the
- * gap to the reply row as it was.
+ * landing outlines unclipped; `mb-1!` (over the body's space-y-2, which
+ * would win otherwise) keeps the gap to the reply row at 8px as it was.
+ * A swipe at its end hands on to the page (no overscroll containment):
+ * on a phone it is most of the screen.
  *
  * Not the thread agent panel's flex-col-reverse: in a reversed box,
  * Chromium's scroll anchoring let a reader scrolled up jump when a reply
@@ -209,6 +211,10 @@ export function AgentScroll(props: { children: ReactNode }) {
 	// later, maybe after the content grew again, and must not read as the
 	// reader leaving the end.
 	const pinned = useRef<number | null>(null);
+	// Its scrollTop as last seen (a pin or a scroll event): moved since by
+	// someone else (a landing's scrollIntoView, in the same frame as the
+	// content grew), the pin lets go rather than undo it.
+	const seen = useRef(0);
 	useLayoutEffect(() => {
 		const el = box.current;
 		const inner = content.current;
@@ -216,11 +222,21 @@ export function AgentScroll(props: { children: ReactNode }) {
 		const toEnd = () => {
 			el.scrollTop = el.scrollHeight;
 			pinned.current = el.scrollTop;
+			seen.current = el.scrollTop;
 		};
 		toEnd();
 		if (typeof ResizeObserver === "undefined") return;
 		const pin = new ResizeObserver(() => {
-			if (atEnd.current) toEnd();
+			if (!atEnd.current) return;
+			const moved = Math.abs(el.scrollTop - seen.current) >= 1;
+			const end = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+			if (moved && !end) {
+				atEnd.current = false;
+				pinned.current = null;
+				seen.current = el.scrollTop;
+				return;
+			}
+			toEnd();
 		});
 		pin.observe(inner);
 		pin.observe(el);
@@ -232,6 +248,7 @@ export function AgentScroll(props: { children: ReactNode }) {
 			data-testid="agent-thread-scroll"
 			onScroll={(e) => {
 				const el = e.currentTarget;
+				seen.current = el.scrollTop;
 				if (
 					pinned.current !== null &&
 					Math.abs(el.scrollTop - pinned.current) < 1
@@ -250,7 +267,7 @@ export function AgentScroll(props: { children: ReactNode }) {
 }
 
 export const AGENT_SCROLL =
-	"-mx-1 -mt-1 mb-1 max-h-[min(28rem,60vh)] overflow-y-auto overscroll-contain p-1 [overflow-anchor:none]";
+	"-mx-1 -mt-1 mb-1! max-h-[min(28rem,60vh)] overflow-y-auto p-1 [overflow-anchor:none]";
 
 function Who(props: { children: React.ReactNode }) {
 	return (

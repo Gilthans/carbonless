@@ -328,12 +328,13 @@ describe("AgentThreadCard", () => {
 		for (const c of [
 			"max-h-[min(28rem,60vh)]",
 			"overflow-y-auto",
-			"overscroll-contain",
 			// No anchoring jumps: the pin to the end is its own (AgentScroll).
 			"[overflow-anchor:none]",
 		]) {
 			expect(scroller.className).toContain(c);
 		}
+		// A swipe at its end hands on to the page (a phone's diff).
+		expect(scroller.className).not.toContain("overscroll-contain");
 		// Every message, the turn under way, inside it.
 		for (const id of [
 			"agent-message-human",

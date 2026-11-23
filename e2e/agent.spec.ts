@@ -396,9 +396,43 @@ test("a long conversation scrolls in its capped box, opens at its end and keeps 
 	const bb = await box.boundingBox();
 	expect(sb && bb).toBeTruthy();
 	if (!sb || !bb) return;
-	expect(bb.y).toBeGreaterThanOrEqual(sb.y + sb.height);
+	// 8px from the last message to the reply row: 4px of the box's padding,
+	// then 4px of margin.
+	expect(Math.abs(bb.y - (sb.y + sb.height) - 4)).toBeLessThanOrEqual(1);
 	await expectNoPageOverflow(page);
 	await shot(page, "agent-card-scroll", isMobile);
+
+	// A landing on an earlier message (scrollIntoView in an animation frame,
+	// as threadFocus's) in the same frame as the content grows: its
+	// ResizeObserver runs before the scroll event, and the pin lets go
+	// rather than undo the landing.
+	await scroller.evaluate(
+		(el) =>
+			new Promise<void>((done) => {
+				const inner = el.firstElementChild as Element;
+				const extra = document.createElement("div");
+				requestAnimationFrame(() => {
+					el.querySelector("[data-testid=agent-message-human]")?.scrollIntoView(
+						{ block: "center" },
+					);
+					extra.style.height = "50px";
+					inner.append(extra);
+					requestAnimationFrame(() =>
+						requestAnimationFrame(() => {
+							extra.remove();
+							done();
+						}),
+					);
+				});
+			}),
+	);
+	await expect(card.getByTestId("agent-message-human")).toBeInViewport();
+	expect(gap(await measure())).toBeGreaterThan(100);
+	// Back at its end, it pins again.
+	await scroller.evaluate((el) => {
+		el.scrollTop = el.scrollHeight;
+	});
+	await expect.poll(async () => gap(await measure())).toBeLessThanOrEqual(1);
 
 	// At its end, a new answer keeps it there.
 	await box.fill("A second question");
@@ -442,6 +476,60 @@ test("a long conversation scrolls in its capped box, opens at its end and keeps 
 	expect(Math.abs(after - before)).toBeLessThanOrEqual(1);
 	expect(gap(await measure())).toBeGreaterThan(100);
 	await expectNoPageOverflow(page);
+});
+
+test("typing in a suggested comment at the end of a long conversation keeps the box at its end and the comment in sight (CAR-246)", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 760 });
+	await pr(fixture);
+	const paragraphs = Array.from(
+		{ length: 30 },
+		(_, i) => `Paragraph ${i + 1}.`,
+	).join("\n\n");
+	const s = await agentCrb({
+		scenario: {
+			agent: { name: "Fake Agent", version: "9.9.9" },
+			answers: [
+				{
+					text: `${paragraphs}\n\n\`\`\`comment\n${Array.from({ length: 8 }, (_, i) => `Suggested line ${i + 1}.`).join("\n")}\n\`\`\``,
+				},
+			],
+		},
+	});
+	await holdSeenMarks(page);
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 3, "What should I ask?");
+	const text = card.getByRole("textbox", { name: "Review comment" });
+	await expect(text).toHaveValue(/Suggested line 8\./);
+	const scroller = card.getByTestId("agent-thread-scroll");
+	const gap = () =>
+		scroller.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+	await expect.poll(gap).toBeLessThanOrEqual(1);
+	// Typed at its end: each line re-measures the box (collapsed, then grown).
+	await text.click();
+	await page.keyboard.press("ControlOrMeta+End");
+	for (let i = 0; i < 4; i++) {
+		await page.keyboard.press("Enter");
+		await page.keyboard.type(`More ${i + 1}`);
+		expect(await gap()).toBeLessThanOrEqual(1);
+	}
+	await expect(text).toHaveValue(/More 4$/);
+	await expect.poll(gap).toBeLessThanOrEqual(1);
+	// The box's bottom in the scroller's view.
+	const inView = await text.evaluate(
+		(t, sc) => {
+			const r = t.getBoundingClientRect();
+			const b = (sc as Element).getBoundingClientRect();
+			return r.bottom <= b.bottom + 1 && r.bottom > b.top;
+		},
+		await scroller.elementHandle(),
+	);
+	expect(inView).toBe(true);
+	await expect(text).toBeInViewport();
 });
 
 test("agent and comment bubbles side by side on one line, each with its own count", async ({
