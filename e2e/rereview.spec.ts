@@ -3463,6 +3463,10 @@ test("a LEFT thread is placed where GitHub's hunk shows its line, not by its num
 			}),
 		]),
 	);
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (graph) graph.reviewThreads = threads;
+	});
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const first = await expand(page, FILE);
@@ -3477,10 +3481,6 @@ test("a LEFT thread is placed where GitHub's hunk shows its line, not by its num
 					.filter((l) => l !== "line 20"),
 			),
 		},
-	});
-	p.editScenario((sc) => {
-		const graph = sc.prs[p.number]?.graphql;
-		if (graph) graph.reviewThreads = threads;
 	});
 	await page.reload();
 	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
