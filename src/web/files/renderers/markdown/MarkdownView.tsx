@@ -100,6 +100,7 @@ import {
 	renderBlocks,
 	renderPair,
 	sideBlocks,
+	stillImage,
 } from "./renderBlocks";
 import { alignTables, syncTableScroll } from "./tableAlign";
 
@@ -381,6 +382,19 @@ export function MarkdownView(props: {
 			el.removeEventListener("scroll", syncTableScroll, true);
 		};
 	}, [ready, realign]);
+	// An image that fails to load becomes a still placeholder, never a
+	// broken image: in the since view, a removed image the compared patch
+	// set doesn't have. A layout effect: listening before any load ends.
+	useLayoutEffect(() => {
+		const el = root.current;
+		if (!ready || !el) return;
+		const why = from === undefined ? "Not loaded" : "Not at this patch set";
+		const onError = (e: Event) => {
+			if (e.target instanceof HTMLImageElement) stillImage(e.target, why);
+		};
+		el.addEventListener("error", onError, true);
+		return () => el.removeEventListener("error", onError, true);
+	}, [ready, from]);
 	const idBase = useId();
 
 	// Where each line shows: the row of the block holding it (a folded

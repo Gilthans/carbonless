@@ -765,6 +765,42 @@ describe("MarkdownView: gallery #61 images, full diff and since view (CAR-167 QA
 		},
 	);
 
+	it.each([
+		["full diff", undefined, "Not loaded"],
+		["since view", 1, "Not at this patch set"],
+	])(
+		"%s: an image that fails to load becomes a still placeholder, never a broken image",
+		async (_, from, why) => {
+			// The since view's removed timetable export, missing at the
+			// compared patch set: its blob doesn't load.
+			const files =
+				from === undefined
+					? FILES.map((f) => ({ ...f, status: "modified" as const }))
+					: FILES;
+			show(
+				docFixture(IOLD, INEW, imgEdit, {
+					path: "md/images.md",
+					since: from !== undefined,
+				}),
+				{ files, ...(from === undefined ? {} : { from }) },
+			);
+			const root = await doc();
+			const row = rowOf(root, from === undefined ? "img" : "p:0:0");
+			const removed = row?.querySelector("del.md-del img");
+			expect(removed).not.toBeNull();
+			removed?.dispatchEvent(new Event("error"));
+			expect(row?.querySelector("del.md-del img")).toBeNull();
+			const still = row?.querySelector("del.md-del .md-local-image");
+			expect(still).toHaveAttribute("title", why);
+			expect(still).toHaveAttribute(
+				"aria-label",
+				`Timetable export dialog, img/timetable-export.png: ${why.toLowerCase()}`,
+			);
+			// The added image, loaded, stays an image.
+			expect(row?.querySelector("ins.md-ins img")).not.toBeNull();
+		},
+	);
+
 	const ROLD = [
 		"Intro.",
 		"",

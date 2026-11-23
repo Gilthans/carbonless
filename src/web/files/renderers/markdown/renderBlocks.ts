@@ -237,15 +237,16 @@ function localPlaceholder(
 	doc: Document,
 	path: string,
 	alt: string,
+	why = "Not in this PR",
 ): HTMLSpanElement {
 	const span = doc.createElement("span");
 	span.className = "md-local-image";
 	span.setAttribute("role", "img");
 	span.setAttribute(
 		"aria-label",
-		`${alt ? `${alt}, ` : ""}${path}: not in this PR`,
+		`${alt ? `${alt}, ` : ""}${path}: ${why.charAt(0).toLowerCase()}${why.slice(1)}`,
 	);
-	span.setAttribute("title", "Not in this PR");
+	span.setAttribute("title", why);
 	const svg = doc.createElementNS(SVG_NS, "svg");
 	svg.setAttribute("viewBox", "0 0 16 16");
 	svg.setAttribute("width", "16");
@@ -267,6 +268,23 @@ function localPlaceholder(
  */
 const IMAGE_TOKEN = "crb-image:";
 
+/** A loaded image's path as written (placeImage). */
+const PATH_ATTR = "data-md-path";
+
+/**
+ * A loaded image that failed to load (an image missing at the compared
+ * patch set, a blob the route turns down) → a still placeholder saying
+ * `why`, never a broken image. Only images placeImage loaded: content's
+ * own can't reach here (DOMPurify strips data-*).
+ */
+export function stillImage(img: HTMLImageElement, why: string): boolean {
+	const path = img.getAttribute(PATH_ATTR);
+	if (path === null) return false;
+	const alt = (img.getAttribute("alt") ?? "").trim();
+	img.replaceWith(localPlaceholder(img.ownerDocument, path, alt, why));
+	return true;
+}
+
 /** `img`, its src resolved to `url`, or the placeholder it becomes. */
 function placeImage(
 	img: HTMLImageElement,
@@ -279,6 +297,9 @@ function placeImage(
 	if (url) {
 		img.setAttribute("src", url);
 		img.setAttribute("referrerpolicy", "no-referrer");
+		// Its path as written, for the still it becomes if it fails to
+		// load (`stillImage`). Set after DOMPurify: content can't forge it.
+		img.setAttribute(PATH_ATTR, raw.trim());
 	} else if (src !== null) {
 		img.replaceWith(localPlaceholder(doc, raw.trim(), alt));
 	} else if (raw) {
