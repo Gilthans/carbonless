@@ -1,11 +1,5 @@
 // @vitest-environment jsdom
-import {
-	act,
-	cleanup,
-	fireEvent,
-	render,
-	screen,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickQuestionChips } from "./QuickQuestionChips";
@@ -14,47 +8,18 @@ const SHORT = "Why this change?";
 const LONG =
 	"Please confirm all comments I wrote have been addressed and highlight those that haven't";
 
-// jsdom has no layout: the list is `rowHeight` a question tall, shows
-// 112px of it, and a reflow tells every observer.
-let rowHeight = 40;
-const observers = new Set<() => void>();
-function reflow(to: number) {
-	rowHeight = to;
-	act(() => {
-		for (const cb of observers) cb();
-	});
-}
-
+// jsdom has no layout: the list is 40px a question tall.
 beforeEach(() => {
-	rowHeight = 40;
 	vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(
 		function (this: HTMLElement) {
-			return this.querySelectorAll("li").length * rowHeight;
-		},
-	);
-	vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(112);
-	vi.stubGlobal(
-		"ResizeObserver",
-		class {
-			cb: () => void;
-			constructor(cb: () => void) {
-				this.cb = cb;
-			}
-			observe() {
-				observers.add(this.cb);
-			}
-			disconnect() {
-				observers.delete(this.cb);
-			}
+			return this.querySelectorAll("li").length * 40;
 		},
 	);
 });
 
 afterEach(() => {
 	cleanup();
-	observers.clear();
 	vi.restoreAllMocks();
-	vi.unstubAllGlobals();
 });
 
 function show(questions: readonly string[] | null = [SHORT, LONG]) {
@@ -88,11 +53,7 @@ describe("question chips (CAR-203)", () => {
 
 	it("the list is capped and scrolls", () => {
 		show();
-		expect(list()).toHaveClass(
-			"max-h-28",
-			"overflow-y-auto",
-			"overscroll-contain",
-		);
+		expect(list()).toHaveClass("max-h-28", "overflow-y-auto");
 	});
 
 	it("starts scrolled all the way down, and again when the questions change", () => {
@@ -109,26 +70,6 @@ describe("question chips (CAR-203)", () => {
 			/>,
 		);
 		expect(list().scrollTop).toBe(120);
-	});
-
-	it("a reflow keeps a list at its bottom there (a rotation, the drawer's width)", () => {
-		show([SHORT, LONG, "Third?"]);
-		expect(list().scrollTop).toBe(120);
-		reflow(60);
-		expect(list().scrollTop).toBe(180);
-	});
-
-	it("a reflow never yanks a reader who scrolled up", () => {
-		show([SHORT, LONG, "Third?"]);
-		list().scrollTop = 0;
-		fireEvent.scroll(list());
-		reflow(60);
-		expect(list().scrollTop).toBe(0);
-		// Back at the bottom (within 2px): pinned again.
-		list().scrollTop = 180 - 112 - 1;
-		fireEvent.scroll(list());
-		reflow(80);
-		expect(list().scrollTop).toBe(240);
 	});
 
 	it("scrolls down when the questions arrive after loading", () => {

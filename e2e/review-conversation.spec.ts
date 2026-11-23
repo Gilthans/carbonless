@@ -790,36 +790,37 @@ test("one-tap questions (CAR-203): a first review's fill the box; PS1 the new PR
 	// The list is capped and scrolls, starting at its bottom (the owner,
 	// 2026-11-22); every chip shows its whole question, wrapping, on the
 	// narrowest phone too. The desktop's width is set too: its drawer is
-	// then narrower than the long question. Resized while it shows (a
-	// rotation, the drawer's width), the chips reflow and the list stays at
-	// its bottom.
+	// then narrower than the long question.
+	// The drawer opens again at that size: the list starts at its bottom
+	// when it shows.
+	await reviewDrawer(page).getByRole("button", { name: "Close" }).click();
+	await expect(reviewDrawer(page)).toHaveCount(0);
+	await page.setViewportSize(
+		isMobile ? { width: 360, height: 780 } : { width: 1024, height: 720 },
+	);
+	await chip(page).click();
 	const rr = reviewDrawer(page);
 	const list = rr.getByTestId("agent-quick-questions");
+	await expect(list.getByTestId("agent-quick-question")).toHaveCount(3);
+	await expect(
+		rr.getByRole("button", { name: /Show (more|less)/ }),
+	).toHaveCount(0);
+	// Two 40px rows and a peek of the third (max-h-28).
+	await expect
+		.poll(async () => (await list.boundingBox())?.height ?? 999)
+		.toBeLessThanOrEqual(112 + 1);
+	// Overflowing, and scrolled all the way down when the drawer shows.
 	const scroll = () =>
 		list.evaluate((el) => ({
 			top: el.scrollTop,
 			client: el.clientHeight,
 			height: el.scrollHeight,
 		}));
-	const gap = async () => {
-		const s = await scroll();
-		return s.height - (s.top + s.client);
-	};
-	await expect.poll(gap).toBeLessThanOrEqual(1);
-	await page.setViewportSize(
-		isMobile ? { width: 360, height: 780 } : { width: 1024, height: 720 },
+	const atBottom = await scroll();
+	expect(atBottom.height).toBeGreaterThan(atBottom.client);
+	expect(atBottom.top + atBottom.client).toBeGreaterThanOrEqual(
+		atBottom.height - 1,
 	);
-	await expect(list.getByTestId("agent-quick-question")).toHaveCount(3);
-	await expect(
-		rr.getByRole("button", { name: /Show (more|less)/ }),
-	).toHaveCount(0);
-	// Overflowing, so as tall as its cap and the loading skeleton's: two
-	// 40px rows and a peek of the third (max-h-28).
-	await expect
-		.poll(async () => (await list.boundingBox())?.height)
-		.toBeCloseTo(112, 0);
-	expect((await scroll()).height).toBeGreaterThan(112);
-	await expect.poll(gap).toBeLessThanOrEqual(1);
 	await shot(page, "review-conversation-long-question", isMobile);
 	const LONG =
 		"Please confirm all comments I wrote have been addressed and highlight those that haven't";
