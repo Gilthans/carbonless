@@ -581,6 +581,62 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		expect(await placed(await open())).toEqual([want, want]);
 	});
 
+	it("a LEFT thread on the opened head is placed by GitHub's hunk on the updated stage: on its base line, never on a line the hunk contradicts (CAR-8)", async () => {
+		const left = (text: string, diffHunk: string) =>
+			reviewThread({ path: "a.txt", line: 30, diffSide: "LEFT" }, [
+				threadComment({
+					login: "rev1",
+					text,
+					commit: repo.heads.opened,
+					createdAt: TIMES.review,
+					diffHunk,
+				}),
+			]);
+		const threads = [
+			left("Seen", "@@ -28,3 +28,3 @@\n line 28\n line 29\n-line 30"),
+			left("Other", "@@ -28,3 +28,3 @@\n other 28\n other 29\n-other 30"),
+		];
+		repo.setStage("updated");
+		const entry = repo.prEntry("updated");
+		process.env.CRB_FAKE_GH = writeScenario(tmp, {
+			repoPath: repo.path,
+			user: { login: "Octo_Cat" },
+			nameWithOwner: "acme/widget",
+			prs: {
+				[NUMBER]: {
+					...entry,
+					graphql: { ...entry.graphql, reviewThreads: threads },
+				},
+			},
+		});
+		const s = await open();
+		const readId = (await s.overview(0)).readId;
+		const listed = (await s.threads(readId, "summary")).threads;
+		const to = { head: repo.heads.updated };
+		let answer = await s.placements(to, readId);
+		while ("pending" in answer) {
+			await new Promise((r) => setTimeout(r, 20));
+			answer = await s.placements(to, readId);
+		}
+		const of = (text: string) => {
+			const id = listed.find((t) => t.excerpt === text)?.id;
+			return answer.threads.find((t) => t.id === id)?.placement;
+		};
+		// The base changed line 30 itself only where it conflicted.
+		expect(of("Seen")).toMatchObject(
+			m.update === "merge-base-in-conflict"
+				? { kind: "unplaced", fate: "base-changed" }
+				: {
+						kind: "placed",
+						anchor: { path: "a.txt", side: "LEFT", line: 30 },
+					},
+		);
+		expect(of("Other")).toMatchObject({
+			kind: "unplaced",
+			fate: "base-unknown",
+		});
+	});
+
 	it("orders the timeline by GitHub's facts: a rebase's commits by their new times, then its force-push; the merge, not the close", async () => {
 		const shape = async (s: Session) =>
 			(await s.timeline((await s.overview(0)).readId)).events.map((e) =>

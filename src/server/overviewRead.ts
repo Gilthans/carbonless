@@ -523,6 +523,21 @@ export class OverviewRead {
 		};
 	}
 
+	/**
+	 * GitHub's diff hunk of thread `id`'s opening comment, once its text is
+	 * in (joining the background read that brings it; never a read of its
+	 * own); "" when GitHub gave none, the read failed or the thread is gone.
+	 */
+	async hunk(id: string): Promise<string> {
+		await this.#stages.summary.catch(() => {});
+		await this.#textsStarted.catch(() => {});
+		if (this.#content(id) === undefined) {
+			await this.#reading.get(id)?.catch(() => {});
+		}
+		const content = this.#content(id);
+		return content === GONE || content === undefined ? "" : hunkOf(content);
+	}
+
 	#view(): ThreadsView {
 		let complete = true;
 		const threads = this.#map().map((t): ReviewThread => {

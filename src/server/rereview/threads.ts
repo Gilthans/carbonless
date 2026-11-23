@@ -18,6 +18,7 @@ import {
 	placeWithMoves,
 	type ThreadMove,
 } from "../../shared/rereview/moves.js";
+import { hunkOldRows, oldSideShift } from "../../shared/rereview/oldSide.js";
 import {
 	placeThread,
 	type ThreadInput,
@@ -36,6 +37,7 @@ import type {
 	Snapshot,
 	ThreadAnchorRef,
 } from "../../shared/types.js";
+import { touchesOldSide } from "../codeWindow.js";
 import { fileText } from "../diff/snapshot.js";
 import { runGitBuffer } from "../git.js";
 import type { DiffBase, ThreadCodeSource } from "../threadCode.js";
@@ -116,6 +118,12 @@ export type TraceableThread = Pick<
 	 * pane finds (a move's, CAR-139): its base and head as given.
 	 */
 	ends?: { base: string; head: string };
+	/**
+	 * GitHub's diff hunk of its opening comment ("" when GitHub gave
+	 * none): which old side its LEFT lines count on (CAR-8). Review
+	 * threads only; without it, a thread is traced from its merge base.
+	 */
+	hunk?: () => Promise<string>;
 };
 
 /**
@@ -232,6 +240,8 @@ function anchorOf(t: TraceableThread): CodeAnchor {
 
 /** What a thread is traced from: its own snapshot, or GitHub's line now. */
 interface Source {
+	/** No old side matches GitHub's hunk: never traced (CAR-8). */
+	lost?: true;
 	/** The range traced; null for a file comment. */
 	anchor: CodeAnchor | null;
 	ends: { base: string; head: string };
@@ -390,6 +400,8 @@ export class ThreadPlacer {
 				const anchor = anchorOf(t);
 				// A move's own snapshot: traced from it alone.
 				if (t.ends) return { anchor: t.anchor && anchor, ends: t.ends };
+				const left = await this.#oldSide(t, base);
+				if (left) return left;
 				const ends = await this.code.endpoints(anchor, base);
 				if (ends) return { anchor: t.anchor && anchor, ends };
 				const github = githubAnchor(t, at);
@@ -411,7 +423,9 @@ export class ThreadPlacer {
 			target.files.some((f) => f.path === p || f.oldPath === p);
 		return Promise.all(
 			list.map(async (t, i): Promise<ThreadInput> => {
-				const src = own[i];
+				const found = own[i];
+				const lost = found?.lost === true;
+				const src = lost ? null : found;
 				const from = src ? src.anchor : t.anchor;
 				const anchor = from
 					? {
@@ -432,7 +446,11 @@ export class ThreadPlacer {
 						diffs: null,
 						newPath: t.path,
 						inComparison: inTarget(t.path),
-						untraced: t.outdated ? "outdated" : "untraced",
+						untraced: lost
+							? "base-unknown"
+							: t.outdated
+								? "outdated"
+								: "untraced",
 					};
 				}
 				const { ends } = src;
@@ -497,6 +515,66 @@ export class ThreadPlacer {
 				};
 			}),
 		);
+	}
+
+	/**
+	 * A review thread's old side by GitHub's hunk (CAR-8), for a range
+	 * touching the old side: GitHub keeps no commit for it, so its LEFT
+	 * numbers may count on another merge base than ours. The candidates
+	 * are the merge base of its commit with the base branch then (when
+	 * that can be told) and with the snapshot's base now. With a hunk, the
+	 * one whose text holds the hunk's old-side rows where the hunk numbers
+	 * them; else the one holding that run of rows at one place, the range's
+	 * LEFT ends shifted to it; else none (`lost`: never placed on a guessed
+	 * line). With no hunk (no evidence either way), the base then; when it
+	 * can't be told, undefined: traced as before, from the merge base now.
+	 * Undefined too for every other thread, and a commit git can't give.
+	 */
+	async #oldSide(
+		t: TraceableThread,
+		base: DiffBase,
+	): Promise<Source | undefined> {
+		const anchor = t.anchor;
+		if (!anchor || !t.hunk || !touchesOldSide(anchor)) return undefined;
+		const sides = await this.code.oldSides(anchor, base);
+		if (!sides) return undefined;
+		const hunk = await t.hunk().catch(() => "");
+		const rows = hunk.trim() ? hunkOldRows(hunk) : [];
+		const at = (b: string, a: CodeAnchor = anchor): Source => ({
+			anchor: a,
+			ends: { base: b, head: anchor.commit },
+		});
+		if (rows.length === 0) return sides.then ? at(sides.then) : undefined;
+		const candidates = [
+			...new Set([sides.then, sides.now].filter((c) => c !== null)),
+		];
+		const ownPath = new Set([t.path]);
+		const texts = await Promise.all(
+			candidates.map(async (c) => {
+				const entry = (await this.#diff(c, anchor.commit, ownPath)).get(t.path);
+				return this.text(c, entry?.oldPath ?? t.path);
+			}),
+		);
+		const leftLine = anchor.side === "LEFT" ? anchor.line : anchor.startLine;
+		const shifts = texts.map((text) => oldSideShift(rows, text, leftLine));
+		const exact = shifts.indexOf(0);
+		const pick = exact !== -1 ? exact : shifts.findIndex((s) => s !== null);
+		const by = shifts[pick];
+		const chosen = candidates[pick];
+		if (by === undefined || by === null || chosen === undefined) {
+			return { lost: true, anchor, ends: { base: "", head: anchor.commit } };
+		}
+		const shift = (side: DiffSide, line: number) =>
+			side === "LEFT" ? line + by : line;
+		const moved = {
+			...anchor,
+			line: shift(anchor.side, anchor.line),
+			startLine: shift(anchor.startSide, anchor.startLine),
+		};
+		if (moved.line < 1 || moved.startLine < 1) {
+			return { lost: true, anchor, ends: { base: "", head: anchor.commit } };
+		}
+		return at(chosen, moved);
 	}
 
 	/**

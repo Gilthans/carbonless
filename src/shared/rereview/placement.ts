@@ -47,7 +47,8 @@ import type { CodeAnchor, DiffSide, ThreadAnchorRef } from "../types.js";
  * moved (the file was renamed and the lines didn't follow: a candidate
  * only); reverted (the PR no longer changes that place: what the thread was
  * about is out of the PR); base-changed (an old-side line the base itself
- * changed since).
+ * changed since); base-unknown (an old-side line whose old side
+ * doesn't match GitHub's hunk: the base it counts on can't be found).
  */
 export type Fate =
 	| "deleted"
@@ -57,7 +58,8 @@ export type Fate =
 	| "file-gone"
 	| "moved"
 	| "reverted"
-	| "base-changed";
+	| "base-changed"
+	| "base-unknown";
 
 export type ThreadPlacement =
 	/**
@@ -145,9 +147,10 @@ export interface ThreadInput {
 	/**
 	 * Why `diffs` is null when the file isn't gone: there is nothing to
 	 * trace from, and GitHub says outdated ("outdated") or gives no line
-	 * ("untraced", the default).
+	 * ("untraced", the default), or no old side matches GitHub's hunk
+	 * ("base-unknown", CAR-8).
 	 */
-	untraced?: "outdated" | "untraced";
+	untraced?: "outdated" | "untraced" | "base-unknown";
 }
 
 const isLine = (n: unknown): n is number =>

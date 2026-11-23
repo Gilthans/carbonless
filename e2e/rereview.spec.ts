@@ -3427,3 +3427,90 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 	);
 	await expect(row61).toHaveAttribute("data-commented", "", GIT_WAIT);
 });
+
+/**
+ * CAR-8: a LEFT thread whose number counts on another old side than ours.
+ * Its GitHub hunk numbers "line 20" as 17 (3 lines up): it goes on base
+ * line 20, which PS2 removes, in the full diff and the since view alike,
+ * never on base line 17.
+ */
+test("a LEFT thread is placed where GitHub's hunk shows its line, not by its number: the same base line in the full diff and the since view (CAR-8)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	test.setTimeout(180_000);
+	const FILE = "src/left.txt";
+	const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+	const threads: ReturnType<typeof reviewThread>[] = [];
+	const p = await pr({
+		base: { [FILE]: text(lines) },
+		files: [
+			{
+				message: "PS1",
+				files: { [FILE]: text(lines.map((l, i) => (i === 4 ? "five" : l))) },
+			},
+		],
+		threads,
+	});
+	threads.push(
+		reviewThread({ path: FILE, line: 17, diffSide: "LEFT" }, [
+			threadComment({
+				login: "rev1",
+				text: "Why line 20?",
+				commit: p.head(),
+				diffHunk: "@@ -15,3 +15,3 @@\n line 18\n line 19\n line 20",
+			}),
+		]),
+	);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, FILE);
+	await boxes(first).first().click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({
+		message: "PS2",
+		files: {
+			[FILE]: text(
+				lines
+					.map((l, i) => (i === 4 ? "five" : l))
+					.filter((l) => l !== "line 20"),
+			),
+		},
+	});
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (graph) graph.reviewThreads = threads;
+	});
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	const onLine20 = async () => {
+		const section = fileSection(page, FILE);
+		const expandIt = section.getByRole("button", { name: "Expand file" });
+		await expect(
+			section.getByTestId("diff-line").first().or(expandIt),
+		).toBeVisible(GIT_WAIT);
+		if (await expandIt.isVisible()) await expandIt.click();
+		const row = section.locator(
+			'tr[data-testid="diff-line"][data-kind="del"][data-old-no="20"]',
+		);
+		await expect(row).toHaveAttribute("data-commented", "", GIT_WAIT);
+		await expect(
+			section
+				.getByTestId("unplaced-thread")
+				.filter({ hasText: "Why line 20?" }),
+		).toHaveCount(0);
+		await expect(
+			section.locator('tr[data-testid="diff-line"][data-commented]'),
+		).toHaveCount(1);
+	};
+	// The since view (PS1 → PS2): the removed base line 20.
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await onLine20();
+	// The full diff (base → PS2): the same base line.
+	await toFullDiff(page);
+	await onLine20();
+});

@@ -373,6 +373,30 @@ export class ThreadCodeSource {
 	}
 
 	/**
+	 * The old sides a comment's LEFT lines may count on (CAR-8): `then`,
+	 * the merge base of its commit with the base branch as it stood at the
+	 * comment's time (null when that can't be told); `now`, with the
+	 * snapshot's base. Null when the commit can't be had.
+	 */
+	async oldSides(
+		anchor: CodeAnchor,
+		base: DiffBase,
+	): Promise<{ then: string | null; now: string | null } | null> {
+		try {
+			if (!OID.test(anchor.commit)) return null;
+			if (!(await this.#commit(anchor.commit))) return null;
+			const [now, tip] = await Promise.all([
+				this.#mergeBase(anchor.commit, base.snapshot),
+				this.#tip(base.ref, anchor.at),
+			]);
+			const then = tip ? await this.#mergeBase(anchor.commit, tip) : null;
+			return { then, now };
+		} catch {
+			return null;
+		}
+	}
+
+	/**
 	 * The rows of `anchor`'s window in the PR's diff at its commit. Null,
 	 * never a guess, when the commit can't be had, the old side isn't
 	 * certain (see #left), the file's diff can't be had (#fileLines) or

@@ -390,6 +390,7 @@ const SENTENCES: [Fate | null, string][] = [
 		"The base changed under the commented line since the review",
 	],
 	["file-gone", "Commented file has been deleted since the review"],
+	["base-unknown", "Couldn't find the base the commented old line was on"],
 	[null, "Couldn't work out where this thread is now"],
 ];
 

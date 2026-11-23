@@ -1023,8 +1023,13 @@ export class Session {
 				]);
 				// The threads as read now: the tracing below takes them as they
 				// are (a thread joining the read meanwhile isn't among them).
-				const unresolvedThreads = view.threads.filter((t) => !t.resolved);
-				const resolvedThreads = view.threads.filter((t) => t.resolved);
+				// Each with GitHub's hunk, which tells an old-side line's base (CAR-8).
+				const withHunks = view.threads.map((t) => ({
+					...t,
+					hunk: () => read.hunk(t.id),
+				}));
+				const unresolvedThreads = withHunks.filter((t) => !t.resolved);
+				const resolvedThreads = withHunks.filter((t) => t.resolved);
 				await placingHooks.afterRead?.({ revision: target.revision, readId });
 				// Filed under its snapshot id too: a head and its patch set share it.
 				if (!job.stale) this.#placing.set(`${target.revision}|${readId}`, job);

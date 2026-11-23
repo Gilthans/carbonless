@@ -27,13 +27,9 @@ Foundation for everything below.
   with progress tracking. Design:
   the PR review parity spec (Linear, M2 project documents).
 - **Commenting** from carbonless.
-- **LEFT-side thread placement (discuss with the owner right after the
-  threads stage):** GitHub records no commit for a comment's LEFT side
-  (`commit_id` and `original_commit_id` are both PR heads), so a LEFT line
-  can sit on a different old side than the view's merge base. Only
-  `diff_hunk` shows what the commenter saw, and it's sometimes empty (2 of
-  4 LEFT comments on #99). The threads stage places LEFT threads by line
-  number with no check.
+- **LEFT-side thread placement (done, CAR-8):** checked against GitHub's
+  `diff_hunk` and traced from the old side it shows
+  (`docs/product-rules.md`).
 - **Threads from earlier commits in Files changed (next):** today Files
   changed shows only the threads whose opening comment was made on the
   viewed head. Place the others too, mapping their lines onto the viewed

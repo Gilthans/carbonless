@@ -185,6 +185,13 @@ export const FATES: Record<
 		tip: "The base branch changed this line since",
 		sentence: "The base changed under the commented line since the review",
 	},
+	"base-unknown": {
+		label: "base unknown",
+		icon: QuestionIcon,
+		tone: "yellow",
+		tip: "GitHub's hunk doesn't match: the base the old line counts on can't be found",
+		sentence: "Couldn't find the base the commented old line was on",
+	},
 };
 
 /** No fate known: the placements couldn't be computed. */

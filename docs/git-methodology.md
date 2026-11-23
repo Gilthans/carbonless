@@ -96,6 +96,19 @@ history.
   differ from ours, so it stays `untraced`. Only the same text places it
   (`docs/product-rules.md`, "A thread with nothing to trace from sits on
   GitHub's line").
+- **A thread's old side** (CAR-8, `#oldSide` in
+  `src/server/rereview/threads.ts`). GitHub keeps no commit for a
+  comment's LEFT side, so a review thread touching the old side is traced
+  from the old side its `diff_hunk` shows: of the merge base of its commit
+  with the base branch as it stood at the comment's time and the one with
+  today's base, the one whose text holds the hunk's old-side rows where
+  the hunk numbers them; else the one holding that run of rows at one
+  place, the line shifted to it; else none, and the thread is unplaced as
+  `base-unknown`, never on a guessed line. An empty hunk is no evidence:
+  the base as it stood then (a base that later absorbed the PR's own
+  commits moves today's merge base, not the commenter's), else, when that
+  can't be told, today's merge base. The matrix places one LEFT thread
+  whose hunk matches and one whose hunk matches nothing at each update.
 
 ## Test matrix
 
@@ -134,7 +147,7 @@ alone at the updated stage, for `base-absorbs` the first commit → the head
 
 Every permutation proves:
 
-- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 10 tests × 28):
+- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 12 tests × 28):
   - the snapshot equals the stage's reference (same files, same clusters
     and keys) at the opened and the updated stage, through a refresh and a
     fresh open;
