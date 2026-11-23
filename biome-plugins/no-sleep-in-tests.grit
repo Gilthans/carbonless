@@ -14,8 +14,9 @@
 // A sleep that is the point goes through test/sleep.ts: `quietFor(ms, why)`
 // (a window for something that must not happen) or `fakeDelay(ms)` (a
 // fake's latency). quietFor itself is flagged in a before/after hook (a
-// drain there races the next test: stop or flush what runs instead) and
-// over 500 ms (an app timer's window: move a fake clock), unless a
+// drain there races the next test: stop or flush what runs instead), over
+// 500 ms (an app timer's window: move a fake clock), and with anything but
+// a plain digits literal for its ms (a constant or 2e3 would hide it), unless a
 // `biome-ignore lint/plugin/no-sleep-in-tests: <why>` says why not.
 //
 // Scoped in biome.json to test files and the files directly in e2e/ and
@@ -38,7 +39,10 @@ or {
 		},
 		register_diagnostic(span=$sleep, message="no-sleep-in-tests: hold the answer, wait on the state (waitFor, expect.poll) or move a fake clock; for an absence or a fake's latency, test/sleep.ts. CLAUDE.md test rules.")
 	},
-	JsImport() as $import where {
+	or {
+		JsImport(),
+		JsImportCallExpression()
+	} as $import where {
 		$import <: contains r"^[\"'](?:node:)?timers/promises[\"']$",
 		register_diagnostic(span=$import, message="no-sleep-in-tests: no timers/promises sleeps in tests; hold, wait on the state or move a fake clock. CLAUDE.md test rules.")
 	},
@@ -47,12 +51,19 @@ or {
 			`beforeEach($_)`,
 			`afterEach($_)`,
 			`beforeAll($_)`,
-			`afterAll($_)`
+			`afterAll($_)`,
+			`$_.beforeEach($_)`,
+			`$_.afterEach($_)`,
+			`$_.beforeAll($_)`,
+			`$_.afterAll($_)`
 		},
 		register_diagnostic(span=$quiet, message="no-sleep-in-tests: no quietFor in a hook; stop or flush what is running instead. CLAUDE.md test rules.")
 	},
 	`quietFor($ms, $_)` as $quiet where {
-		$ms <: r"^(?:50[1-9]|5[1-9][0-9]|[6-9][0-9][0-9]|[1-9][0-9_]{3,})$",
-		register_diagnostic(span=$quiet, message="no-sleep-in-tests: a quietFor over 500 ms waits out an app timer; move a fake clock. CLAUDE.md test rules.")
+		or {
+			not $ms <: r"^[0-9_]+$",
+			$ms <: r"^(?:50[1-9]|5[1-9][0-9]|[6-9][0-9][0-9]|[1-9][0-9_]{3,})$"
+		},
+		register_diagnostic(span=$quiet, message="no-sleep-in-tests: quietFor takes a plain number of ms, at most 500; over that it waits out an app timer: move a fake clock. CLAUDE.md test rules.")
 	}
 }

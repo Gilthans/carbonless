@@ -23,12 +23,12 @@ const alive = (pid: number) => {
 describe("runGit timeoutMs", () => {
 	// A shell alias stands in for a fetch that hangs: held until the test
 	// releases it (so a run that waited for it fails on the test's timeout),
-	// and gone within 50 ms of its git (nothing outlives the test).
+	// and gone within 50 ms of its git or its dir (nothing outlives the test).
 	const dir = mkdtempSync(join(tmpdir(), "crb-git-test-"));
 	const released = join(dir, "released");
 	const slow = [
 		"-c",
-		`alias.slow=!while [ ! -e '${released}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.05; done`,
+		`alias.slow=!while [ -d '${dir}' ] && [ ! -e '${released}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.05; done`,
 		"slow",
 	];
 	afterAll(() => {

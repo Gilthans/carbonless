@@ -85,11 +85,23 @@ const planted: Record<string, string> = {
 		"afterEach(async () => {",
 		"\tawait quietFor(5, 'a late save');",
 		"});",
+		"test.afterEach(async () => {",
+		"\tawait quietFor(5, 'a late save');",
+		"});",
+		"it('b', async () => {",
+		"\tawait quietFor(WINDOW, 'a refetch');",
+		"\tawait quietFor(2e3, 'a refetch');",
+		"\tawait quietFor(1_000, 'a refetch');",
+		"\tawait quietFor(50, 'a refetch');",
+		"});",
 	].join("\n"),
 	"src/timers.test.ts": [
 		'import { setTimeout as sleep } from "node:timers/promises";',
 		'import { setTimeout as later } from "timers/promises";',
 		'import { setInterval } from "node:timers";',
+		'const { setTimeout: nap } = await import("node:timers/promises");',
+		'const lazy = () => import("timers/promises");',
+		'const other = () => import("node:timers");',
 	].join("\n"),
 	// In scope: a helper directly in test/.
 	"test/helper.ts": [
@@ -197,9 +209,11 @@ describe("lint: the test rules", () => {
 
 	it("no-sleep-in-tests: a fixed sleep in any form, a counted loop of them, a race against one, timers/promises, quietFor in a hook or over 500 ms; not a 0 timer, a poll loop, a timer that isn't awaited, or an ignore", () => {
 		expect(linesOf("src/sleep.test.ts", "no-sleep-in-tests")).toEqual([
-			2, 3, 4, 7, 11, 12, 13, 14, 17, 19, 23,
+			2, 3, 4, 7, 11, 12, 13, 14, 17, 19, 23, 26, 29, 30, 31,
 		]);
-		expect(linesOf("src/timers.test.ts", "no-sleep-in-tests")).toEqual([1, 2]);
+		expect(linesOf("src/timers.test.ts", "no-sleep-in-tests")).toEqual([
+			1, 2, 4, 5,
+		]);
 		expect(linesOf("test/helper.ts", "no-sleep-in-tests")).toEqual([1]);
 	});
 
