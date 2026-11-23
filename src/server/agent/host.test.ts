@@ -967,6 +967,10 @@ describe("AgentHost with a session joined through MCP", () => {
 			ghDown = true;
 			const q = await host.sessionNext(await approve());
 			expect(told(q?.preamble)).toEqual(["reply"]);
+			// The envelope has none of the thread's comments here: the line
+			// never asks to answer one it can't see.
+			expect(codeOf(q)?.github ?? null).toBeNull();
+			expect(q?.preamble).not.toMatch(/latest comment/);
 		});
 
 		it("a line conversation: a new comment on its lines", async () => {

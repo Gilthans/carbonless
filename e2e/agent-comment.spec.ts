@@ -60,7 +60,9 @@ const addButton = (scope: Locator) =>
 	box(scope).getByRole("button", { name: "Add review comment" });
 /** The button of a block that posts as a reply to a GitHub thread (CAR-237). */
 const replyButton = (scope: Locator) =>
-	box(scope).getByRole("button", { name: "Reply", exact: true });
+	scope
+		.getByRole("group", { name: "Suggested comment" })
+		.getByRole("button", { name: "Reply", exact: true });
 
 /** The box in Write (it opens in Preview, CAR-202). */
 async function write(scope: Locator) {
@@ -541,8 +543,8 @@ test("two blocks pressed back to back: the second waits for the first, then repl
 	await expect.poll(held.hits).toBe(1);
 	// The first on its way: the second can't start a thread of its own.
 	const second = box(card).nth(1);
-	// It will reply to the thread the first starts (CAR-237).
-	const button = second.getByRole("button", { name: "Reply", exact: true });
+	// No thread yet: still a new comment while it waits (CAR-237).
+	const button = second.getByRole("button", { name: "Add review comment" });
 	await expect(button).toHaveAttribute("aria-disabled", "true");
 	await expect(button).toHaveAttribute("aria-busy", "true");
 	await expect(button).toHaveAccessibleDescription(
@@ -676,6 +678,10 @@ test("the page can't read GitHub's threads: the joined conversation shows on its
 	await expect(off).toHaveAttribute("aria-disabled", "true");
 	await expect(off).toHaveAccessibleDescription(
 		"Couldn't read GitHub's threads",
+	);
+	// Its header agrees: on a thread, not on line 3.
+	await expect(box(back).nth(1).getByTestId("agent-comment-target")).toHaveText(
+		"Reply",
 	);
 	await expect(
 		back.getByRole("textbox", { name: "Reply to your agent" }),

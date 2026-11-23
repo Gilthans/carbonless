@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { AgentSpanAnchor } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import {
+	type CommentPlace,
 	commentPlace,
 	GITHUB_UNKNOWN,
 	knownBefore,
@@ -11,6 +12,8 @@ import {
 	opensThreadCard,
 	type PostingThread,
 	placeLabel,
+	postLabel,
+	postsAsReply,
 	resetAgentComments,
 	SIBLING_SENDING,
 	siblingKey,
@@ -371,6 +374,53 @@ describe("opensThreadCard", () => {
 			commit: OLD,
 		});
 		expect(opensThreadCard(onThread, true)).toBe(false);
+	});
+});
+
+describe("postLabel / postsAsReply: the box's button and header (CAR-237)", () => {
+	const joined = {
+		joined: {
+			thread: "PRRT_1",
+			asked: { subject: "file" as const, path: "a", commit: OLD },
+		},
+	};
+	const target = { path: "a", commit: HEAD, subject: "file" as const };
+	it.each([
+		["a reply", { kind: "reply", thread: "T" }, {}, "Reply"],
+		[
+			"a new thread",
+			{ kind: "new", target, changed: false },
+			{},
+			"Add review comment",
+		],
+		["placing", { kind: "pending" }, {}, "Add review comment"],
+		[
+			"waiting for a sibling's thread",
+			{ kind: "pending", why: SIBLING_SENDING },
+			{},
+			"Add review comment",
+		],
+		[
+			"GitHub unread, joined",
+			{ kind: "off", why: GITHUB_UNKNOWN },
+			joined,
+			"Reply",
+		],
+		[
+			"GitHub unread, not joined",
+			{ kind: "off", why: GITHUB_UNKNOWN },
+			{},
+			"Add review comment",
+		],
+		[
+			"lines gone",
+			{ kind: "off", why: LINES_GONE },
+			joined,
+			"Add review comment",
+		],
+	] as const)("%s: %s", (_name, place, thread, label) => {
+		expect(postLabel(place as CommentPlace, thread)).toBe(label);
+		expect(postsAsReply(place as CommentPlace, thread)).toBe(label === "Reply");
 	});
 });
 

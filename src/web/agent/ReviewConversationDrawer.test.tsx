@@ -273,6 +273,12 @@ describe("ReviewConversationDrawer", () => {
 		expect(
 			within(drawer()).queryByRole("button", { name: "Add review comment" }),
 		).toBeNull();
+		// Nor Reply (CAR-237): the block's only button is Copy.
+		expect(
+			within(block)
+				.getAllByRole("button")
+				.map((b) => b.getAttribute("aria-label")),
+		).toEqual(["Copy comment"]);
 	});
 
 	it("with unread answers: the new rule above the first, scrolled to it", () => {

@@ -3,6 +3,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
 	COMMENT_INSTRUCTION,
+	COMMENT_OPENED,
+	COMMENT_WHICH,
 	JOIN,
 	JOINED_PREAMBLE,
 	MAX_OPENED_PER_REQUEST,
@@ -394,7 +396,7 @@ export function createMcpServer(
 	server.registerTool(
 		"reply",
 		{
-			description: `Answer the question next handed you: thread and replyTo as next gave them, text in GitHub-flavored Markdown (up to 32 KiB). ${COMMENT_INSTRUCTION} Then call next again; when it says none, run watch.`,
+			description: `Answer the question next handed you: thread and replyTo as next gave them, text in GitHub-flavored Markdown (up to 32 KiB). ${COMMENT_INSTRUCTION} ${COMMENT_WHICH} Then call next again; when it says none, run watch.`,
 			inputSchema: {
 				...TOKEN,
 				thread: z.string().max(100),
@@ -415,7 +417,7 @@ export function createMcpServer(
 	server.registerTool(
 		"open",
 		{
-			description: `Open a conversation for the reviewer while you answer the question next handed you (only then). ${OPEN_INSTRUCTION} Give exactly one of code (a changed file of the PR, as review lists them: path alone for the whole file, or lines on side RIGHT (the head your question showed, default) or LEFT (its merge base), startLine..line, and for a text range startCol on startLine to endCol on line, UTF-16, endCol exclusive) or thread (a GitHub review thread id from review's threads; if it already has a conversation your text goes at its end). text is GitHub-flavored Markdown (up to 32 KiB). ${COMMENT_INSTRUCTION} key: any string, the same on a retry, so a retry opens nothing twice; one key names one open (a call with a key already used for this question returns what that first call opened, whatever its target). At most ${MAX_OPENED_PER_REQUEST} per question. Returns the conversation's thread, whether it was created, and cite: put cite in your reply where you mention it, and carbonless turns it into a link.`,
+			description: `Open a conversation for the reviewer while you answer the question next handed you (only then). ${OPEN_INSTRUCTION} Give exactly one of code (a changed file of the PR, as review lists them: path alone for the whole file, or lines on side RIGHT (the head your question showed, default) or LEFT (its merge base), startLine..line, and for a text range startCol on startLine to endCol on line, UTF-16, endCol exclusive) or thread (a GitHub review thread id from review's threads; if it already has a conversation your text goes at its end). text is GitHub-flavored Markdown (up to 32 KiB). ${COMMENT_INSTRUCTION} ${COMMENT_OPENED} key: any string, the same on a retry, so a retry opens nothing twice; one key names one open (a call with a key already used for this question returns what that first call opened, whatever its target). At most ${MAX_OPENED_PER_REQUEST} per question. Returns the conversation's thread, whether it was created, and cite: put cite in your reply where you mention it, and carbonless turns it into a link.`,
 			inputSchema: {
 				...TOKEN,
 				text: z.string().max(1_000_000),

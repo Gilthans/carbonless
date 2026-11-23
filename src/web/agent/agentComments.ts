@@ -150,22 +150,29 @@ export const REPLY = "Reply";
 export const ADD_COMMENT = "Add review comment";
 
 /**
- * The box's button (CAR-237): Reply where the block posts as a reply to a
- * GitHub thread; else Add review comment. A block waiting for its
- * sibling's post replies to the thread that one starts; a joined
- * conversation shown on its lines because GitHub couldn't be read is
- * still its thread's (it never starts a second one).
+ * Whether a block's box reads as a reply to a GitHub thread (CAR-237):
+ * its button, its header's icon and its target. A reply, or a joined
+ * conversation shown on its lines because GitHub couldn't be read (off,
+ * but still its thread's: it never starts a second one). A block waiting
+ * for a sibling's post isn't one until that thread exists: a refused
+ * sibling leaves it a new comment, never flipping back and forth.
  */
+export function postsAsReply(
+	place: CommentPlace,
+	thread: Pick<AgentThread, "joined">,
+): boolean {
+	if (place.kind === "reply") return true;
+	return (
+		place.kind === "off" && place.why === GITHUB_UNKNOWN && !!thread.joined
+	);
+}
+
+/** The box's button (CAR-237): Reply where it posts as a reply (postsAsReply), else Add review comment. */
 export function postLabel(
 	place: CommentPlace,
-	thread: Pick<AgentThread, "joined" | "orphaned">,
+	thread: Pick<AgentThread, "joined">,
 ): typeof REPLY | typeof ADD_COMMENT {
-	if (place.kind === "reply") return REPLY;
-	if (place.kind === "pending" && place.why === SIBLING_SENDING) return REPLY;
-	if (place.kind === "off" && place.why === GITHUB_UNKNOWN && thread.joined) {
-		return REPLY;
-	}
-	return ADD_COMMENT;
+	return postsAsReply(place, thread) ? REPLY : ADD_COMMENT;
 }
 
 /** Where a block posts, from its own conversation alone (commentPlace without siblings). */
@@ -251,8 +258,10 @@ function shortLines(s: {
 export function placeLabel(
 	place: CommentPlace,
 	anchor: AgentSpanAnchor,
+	/** postsAsReply: shown as a reply whatever the place (a joined conversation GitHub can't be read for). */
+	reply = false,
 ): { short: string; full: string } {
-	if (place.kind === "reply") {
+	if (place.kind === "reply" || reply) {
 		return { short: "Reply", full: "Reply on this GitHub thread" };
 	}
 	if (place.kind === "new") {

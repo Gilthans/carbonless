@@ -1660,6 +1660,12 @@ function githubThreadsOf(t: AgentThreadFold): string[] {
  * conversation still replies, and a joined one shown where it was asked
  * is still that thread's (the page never starts a second one), so it is
  * told reply too.
+ *
+ * Known to the browser only: a block GitHub took as a new thread whose
+ * record (`agent-comment-posted`) failed. Until the page writes it on a
+ * later load, the server has no `joins` and says new here while the page's
+ * next block replies (commentPlace's sibling). That's short-lived and
+ * unknowable here; don't "fix" it by guessing a thread.
  */
 export function commentPostsOf(
 	t: Pick<AgentThreadFold, "anchor" | "joins" | "githubUnknown">,

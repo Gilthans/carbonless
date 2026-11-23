@@ -4,6 +4,7 @@ import {
 	type AgentSpanAnchor,
 	type AgentView,
 	COMMENT_INSTRUCTION,
+	COMMENT_WHICH,
 	JOINED_PREAMBLE,
 	JOINED_THREAD_PREAMBLE,
 	REVIEW_PREAMBLE,
@@ -75,9 +76,10 @@ describe("the preamble and anchors", () => {
 		expect(COMMENT_INSTRUCTION).toContain(
 			"In a conversation on a GitHub thread it posts as a reply to that thread",
 		);
-		expect(COMMENT_INSTRUCTION).toContain(
-			"each question's preamble says which",
-		);
+		// Which, per question: in the preamble, not in the general rule
+		// (open's description embeds that too, CAR-237).
+		expect(COMMENT_INSTRUCTION).not.toContain("preamble");
+		expect(JOINED_PREAMBLE).toContain(COMMENT_WHICH);
 		// The thread preamble: a block there is a reply the reviewer may
 		// post; the agent itself still never writes to the thread.
 		expect(JOINED_THREAD_PREAMBLE).toContain("```comment");

@@ -21,7 +21,7 @@ import type {
 	SessionInfo,
 } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
-import { AgentComment } from "./AgentComment";
+import { AgentComment, SUGGESTED } from "./AgentComment";
 import {
 	GITHUB_UNKNOWN,
 	LINES_GONE,
@@ -619,6 +619,7 @@ describe("AgentComment: the button names the post (CAR-237)", () => {
 		AgentThread["anchor"],
 		{ subject: "line" }
 	>;
+	const asked0 = asked;
 
 	it("on lines: Add review comment, no Reply", () => {
 		show("x");
@@ -647,6 +648,82 @@ describe("AgentComment: the button names the post (CAR-237)", () => {
 		);
 		expect(button("Reply")).toHaveAttribute("aria-disabled", "true");
 		expect(button("Reply")).toHaveAccessibleDescription(GITHUB_UNKNOWN);
+		// The header agrees: on a thread, not the asked lines.
+		expect(screen.getByTestId("agent-comment-target").textContent).toBe(
+			"Reply",
+		);
+		expect(document.querySelector(".octicon-reply")).not.toBeNull();
+		expect(document.querySelector(".octicon-comment")).toBeNull();
+	});
+
+	it("joined and orphaned on an older commit: placed like any other, never pending forever (principle 8)", async () => {
+		let asked = 0;
+		placements = async () => {
+			asked++;
+			return json({
+				revision: "r",
+				threads: [
+					{
+						id: T,
+						placement: {
+							kind: "placed",
+							changed: false,
+							anchor: {
+								path: "src/x.ts",
+								side: "RIGHT",
+								startSide: "RIGHT",
+								startLine: 41,
+								line: 44,
+							},
+						},
+					},
+				],
+			} satisfies AgentPlacementsAnswer);
+		};
+		const back = lineThread({
+			anchor: { ...asked0, commit: OLD },
+			joined: { thread: "PRRT_1", asked: { ...asked0, commit: OLD } },
+			orphaned: true,
+		});
+		show("x", back);
+		await vi.waitFor(() =>
+			expect(button()).not.toHaveAttribute("aria-disabled", "true"),
+		);
+		expect(asked).toBeGreaterThan(0);
+		expect(button()).not.toHaveAttribute("aria-busy", "true");
+	});
+
+	it("its Reply is told apart from the thread's own by its group", () => {
+		const thread = onThread({ joined: { thread: "PRRT_1", asked } });
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+		});
+		client.setQueryData(overviewQuery.queryKey, {
+			readId: "r1",
+			writes: "on",
+			pendingReview: null,
+		} as PrOverview);
+		client.setQueryData(sessionQuery.queryKey, {
+			viewer: "octo",
+			snapshotHead: HEAD,
+		} as unknown as SessionInfo);
+		render(
+			<QueryClientProvider client={client}>
+				{/* The thread card's own reply (ReplyBox's send). */}
+				<button type="button" aria-label="Reply" />
+				<AgentComment
+					text="x"
+					block={0}
+					at={{ thread, message: thread.messages[0] ?? message() }}
+				/>
+			</QueryClientProvider>,
+		);
+		expect(screen.getAllByRole("button", { name: "Reply" })).toHaveLength(2);
+		const group = screen.getByRole("group", { name: SUGGESTED });
+		expect(group).toHaveAttribute("data-testid", "agent-comment");
+		expect(
+			within(group).getAllByRole("button", { name: "Reply" }),
+		).toHaveLength(1);
 	});
 
 	it("joined, its thread deleted (back on its lines): Add review comment", () => {
@@ -657,7 +734,7 @@ describe("AgentComment: the button names the post (CAR-237)", () => {
 		expect(button()).not.toHaveAttribute("aria-disabled", "true");
 	});
 
-	it("two blocks on lines: the second waits saying Reply while the first starts a thread, then replies to it", async () => {
+	it("two blocks on lines: the second waits as a new comment while the first starts a thread, then replies to it", async () => {
 		const user = userEvent.setup();
 		const msg = message({
 			text: "```comment\nFirst\n```\n\n```comment\nSecond\n```",
@@ -696,15 +773,19 @@ describe("AgentComment: the button names the post (CAR-237)", () => {
 			screen.getAllByTestId("agent-comment")[i] as HTMLElement;
 		const secondButton = () =>
 			within(nth(1)).getByRole("button", { name: "Reply" });
-		expect(
-			within(nth(1)).getByRole("button", { name: "Add review comment" }),
-		).toBeTruthy();
+		const waiting = () =>
+			within(nth(1)).getByRole("button", { name: "Add review comment" });
+		expect(waiting()).toBeTruthy();
 		await user.click(
 			within(nth(0)).getByRole("button", { name: "Add review comment" }),
 		);
-		// Waiting for the first: it replies to the thread that one starts.
-		expect(secondButton()).toHaveAttribute("aria-busy", "true");
-		expect(secondButton()).toHaveAccessibleDescription(SIBLING_SENDING);
+		// Waiting for the first: no thread yet, so still a new comment, its
+		// header too (a refused first never flips it back and forth).
+		expect(waiting()).toHaveAttribute("aria-busy", "true");
+		expect(waiting()).toHaveAccessibleDescription(SIBLING_SENDING);
+		expect(within(nth(1)).getByTestId("agent-comment-target").textContent).toBe(
+			"L41–44",
+		);
 		await act(async () => release(json(newThreadAnswer("First"))));
 		await vi.waitFor(() => expect(nth(0).textContent).toContain("Posted"));
 		expect(secondButton()).not.toHaveAttribute("aria-disabled", "true");

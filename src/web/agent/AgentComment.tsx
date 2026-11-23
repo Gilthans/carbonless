@@ -49,6 +49,7 @@ import { Tooltip } from "../Tooltip";
 import { useWritesOn } from "../threads/threadWrites";
 import { safeHref } from "../ui";
 import {
+	ADD_COMMENT,
 	AgentCommentError,
 	CHANGED,
 	type CommentPlace,
@@ -59,8 +60,9 @@ import {
 	type PostingThread,
 	placeLabel,
 	postAgentComment,
-	postLabel,
+	postsAsReply,
 	postsFrom,
+	REPLY,
 	recordPosted,
 	refusalText,
 	setDraft,
@@ -79,6 +81,8 @@ export interface CommentAt {
 }
 
 const PLACING = "Finding these lines in the latest push";
+/** The box's group name: its Reply is told apart from the thread's own (CAR-237). */
+export const SUGGESTED = "Suggested comment";
 
 const FRAME =
 	"my-2 flex min-w-0 flex-col gap-2 rounded-lg border border-line-strong bg-surface p-2";
@@ -110,7 +114,13 @@ function ReadOnlyComment(props: { text: string }) {
 	const [copied, setCopied] = useState<Copied>(null);
 	const quote = useRef<HTMLPreElement>(null);
 	return (
-		<div data-testid="agent-comment" className={FRAME}>
+		// biome-ignore lint/a11y/useSemanticElements: a named group of a box, not a form's fieldset (its flex frame and min-width stay).
+		<div
+			data-testid="agent-comment"
+			role="group"
+			aria-label={SUGGESTED}
+			className={FRAME}
+		>
 			<div className="flex min-h-7 items-center gap-1.5 text-xs text-muted">
 				<CommentIcon size={14} aria-hidden />
 				<span className="flex-1" />
@@ -152,9 +162,11 @@ function usePlace(thread: PostingThread, clientId: string): CommentPlace {
 		() => "",
 	);
 	const sibling = useMemo(() => siblingOf(siblingAt), [siblingAt]);
+	// A joined conversation replies, needing no lines; one whose thread is
+	// gone (orphaned) is back on its lines: placed like any other.
 	const needed =
 		a.subject !== "thread" &&
-		!thread.joined &&
+		!(thread.joined && !thread.orphaned) &&
 		!thread.githubUnknown &&
 		sibling === undefined &&
 		!!head &&
@@ -302,7 +314,9 @@ function CommentBox(props: {
 			? place.why
 			: null;
 	const disabled = blank || sending || pending || off !== null;
-	const label = placeLabel(place, thread.anchor);
+	// Button, icon and target agree on where it posts (CAR-237).
+	const reply = postsAsReply(place, thread);
+	const label = placeLabel(place, thread.anchor, reply);
 	const press = () => {
 		if (disabled) return;
 		send(text);
@@ -318,7 +332,7 @@ function CommentBox(props: {
 			className="flex h-10 w-full items-center justify-center gap-2 self-end rounded-md bg-ok-fill px-4 text-sm font-semibold text-canvas hover:brightness-110 focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:bg-overlay aria-disabled:text-muted aria-disabled:hover:brightness-100 sm:w-auto"
 		>
 			{(sending || pending) && <SpinnerIcon size={14} />}
-			{postLabel(place, thread)}
+			{reply ? REPLY : ADD_COMMENT}
 		</button>
 	);
 	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
@@ -329,14 +343,17 @@ function CommentBox(props: {
 		}
 	};
 	return (
+		// biome-ignore lint/a11y/useSemanticElements: a named group of a box, not a form's fieldset (its flex frame and min-width stay).
 		<div
 			data-testid="agent-comment"
 			data-block={block}
+			role="group"
+			aria-label={SUGGESTED}
 			aria-busy={sending || pending || undefined}
 			className={FRAME}
 		>
 			<div className="flex min-h-7 min-w-0 items-center gap-1.5 text-xs text-muted">
-				{place.kind === "reply" ? (
+				{reply ? (
 					<ReplyIcon size={14} aria-hidden className="shrink-0" />
 				) : (
 					<CommentIcon size={14} aria-hidden className="shrink-0" />
@@ -472,7 +489,14 @@ function PostedRow(props: { posted: AgentPostedComment }) {
 	const { posted } = props;
 	const href = safeHref(posted.url);
 	return (
-		<div data-testid="agent-comment" data-posted className={FRAME}>
+		// biome-ignore lint/a11y/useSemanticElements: a named group of a box, not a form's fieldset (its flex frame and min-width stay).
+		<div
+			data-testid="agent-comment"
+			data-posted
+			role="group"
+			aria-label={SUGGESTED}
+			className={FRAME}
+		>
 			<div className="flex min-h-7 min-w-0 items-center gap-1.5 text-sm">
 				<CheckIcon size={16} aria-hidden className="shrink-0 text-ok" />
 				<span className="font-semibold text-ink-soft">Posted</span>
