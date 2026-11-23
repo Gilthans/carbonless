@@ -1,3 +1,4 @@
+import { request } from "node:http";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { homePr } from "../../../test/fake-gh/scenario";
@@ -28,6 +29,33 @@ afterEach(async () => {
 	await fx?.cleanup();
 	fx = undefined;
 });
+
+/** A request whose path goes out as written (no dot-segment removal). */
+function raw(
+	base: string,
+	method: string,
+	path: string,
+	body?: unknown,
+): Promise<{ status: number; body: string }> {
+	return new Promise((resolve, reject) => {
+		const req = request(
+			`${base}/`,
+			{ method, path, headers: { "content-type": "application/json" } },
+			(res) => {
+				let text = "";
+				res.setEncoding("utf8");
+				res.on("data", (c: string) => {
+					text += c;
+				});
+				res.on("end", () =>
+					resolve({ status: res.statusCode ?? 0, body: text }),
+				);
+			},
+		);
+		req.on("error", reject);
+		req.end(body === undefined ? undefined : JSON.stringify(body));
+	});
+}
 
 async function setup() {
 	fx = createHomeFixture({
@@ -109,6 +137,21 @@ describe("/api/home", () => {
 			url: "/api/home/repos/-x/tool",
 		});
 		expect(bad.statusCode).toBe(400);
+		// A dot segment is never a repo: it would name a path, not a clone.
+		// A browser drops it from the URL, a raw request doesn't (inject
+		// normalizes as a browser does, so this goes over a socket).
+		const base = await app.listen({ port: 0, host: "127.0.0.1" });
+		for (const dots of [".", ".."]) {
+			const get = await raw(base, "GET", `/api/home/repos/acme/${dots}`);
+			expect(get.status, `${dots} ${get.body}`).toBe(400);
+			const post = await raw(
+				base,
+				"POST",
+				`/api/home/prs/acme/${dots}/1/annotations`,
+				{ op: "wake" },
+			);
+			expect(post.status, `${dots} ${post.body}`).toBe(400);
+		}
 	});
 
 	it("GET and a repo's GET answer 200 with the reason while gh is logged out", async () => {
