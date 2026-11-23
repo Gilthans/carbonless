@@ -1421,7 +1421,6 @@ export function FilesPage() {
 	const filesFab = useRef<HTMLButtonElement>(null);
 	const cardUnder = useControlUnder(
 		filesFab,
-		diffs,
 		!wide && (data?.files.length ?? 0) + gone.length > 0,
 	);
 	const filesButton = !writing && !refused && !cardUnder;

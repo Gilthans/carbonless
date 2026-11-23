@@ -36,14 +36,15 @@ export function rootMarginFor(f: Footprint, vw: number, vh: number): string {
 }
 
 /**
- * Whether a control of a marked card (FLOAT_CLEAR) in `scope` sits under
- * the fixed element `float`, while `on`. Its footprint is measured while it
+ * Whether a control of a marked card (FLOAT_CLEAR) on the page sits under
+ * the fixed element `float`, while `on`. The whole body is watched, not the
+ * diff's container: that mounts on its own schedule, and a card is only
+ * ever in the diff. Its footprint is measured while it
  * shows and kept while it's hidden (it hides for this), so hiding never
  * changes the answer.
  */
 export function useControlUnder(
 	float: RefObject<HTMLElement | null>,
-	scope: RefObject<HTMLElement | null>,
 	on: boolean,
 ): boolean {
 	const [footprint, setFootprint] = useState<Footprint | null>(null);
@@ -86,8 +87,8 @@ export function useControlUnder(
 	}, [on]);
 
 	useEffect(() => {
-		const root = scope.current;
-		if (!on || !footprint || !root) {
+		const root = document.body;
+		if (!on || !footprint) {
 			setUnder(false);
 			return;
 		}
@@ -135,7 +136,7 @@ export function useControlUnder(
 			mo.disconnect();
 			io.disconnect();
 		};
-	}, [on, footprint, view, scope]);
+	}, [on, footprint, view]);
 
 	return on && under;
 }
