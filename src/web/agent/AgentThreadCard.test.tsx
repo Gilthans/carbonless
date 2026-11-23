@@ -315,6 +315,43 @@ describe("AgentThreadCard", () => {
 		expect(screen.queryByTestId("agent-stop-chip")).toBeNull();
 	});
 
+	it("the messages scroll in a capped box; the reply row, header and Stop stay outside it", () => {
+		show(
+			answered(),
+			status({
+				state: "busy",
+				answering: { thread: "T1", text: "", activity: [] },
+			}),
+		);
+		const card = screen.getByTestId("agent-thread");
+		const scroller = within(card).getByTestId("agent-thread-scroll");
+		for (const c of [
+			"max-h-[min(28rem,60vh)]",
+			"overflow-y-auto",
+			"overscroll-contain",
+			// No anchoring jumps: the pin to the end is its own (AgentScroll).
+			"[overflow-anchor:none]",
+		]) {
+			expect(scroller.className).toContain(c);
+		}
+		// Every message, the turn under way, inside it.
+		for (const id of [
+			"agent-message-human",
+			"agent-message-ai",
+			"agent-answering",
+		]) {
+			expect(scroller.contains(within(card).getByTestId(id))).toBe(true);
+		}
+		// The reply box, Resolve and Stop outside it, always in sight.
+		for (const el of [
+			within(card).getByRole("textbox", { name: "Reply to your agent" }),
+			within(card).getByTestId("agent-resolve"),
+			within(card).getByTestId("agent-stop"),
+		]) {
+			expect(scroller.contains(el)).toBe(false);
+		}
+	});
+
 	it("a resolved thread starts closed: one agent row that opens to Unresolve", async () => {
 		show(answered({ resolved: true }), status());
 		const card = screen.getByTestId("agent-thread");

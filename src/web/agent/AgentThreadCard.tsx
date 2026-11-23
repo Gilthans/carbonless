@@ -184,6 +184,74 @@ export function ActivityLine(props: { activity: readonly AgentActivity[] }) {
 const AGENT_SURFACE =
 	"min-w-0 rounded-md border border-agent-edge bg-agent px-3 py-2";
 
+/**
+ * The card's messages in their own capped box with its own scroll bar,
+ * opened at its end (the latest message next to the reply box). While
+ * the reader is at its end, what grows in it (a new message, a streamed
+ * answer) keeps it there; scrolled up, it stays put. A short conversation
+ * takes its own height. Its padding (out into the body's) keeps focus and
+ * landing outlines unclipped; `mb-1` over the body's space-y-2 keeps the
+ * gap to the reply row as it was.
+ *
+ * Not the thread agent panel's flex-col-reverse: in a reversed box,
+ * Chromium's scroll anchoring let a reader scrolled up jump when a reply
+ * landed (measured 70px, e2e "CAR-246"). Here new content lands below
+ * what is in sight, so nothing moves unless pinned to the end. Scroll
+ * anchoring is off in it: its adjustments (a stored reply taking the
+ * streamed one's place) fired scroll events that read as the reader
+ * leaving the end, and the pin let go (seen on the phone).
+ */
+export function AgentScroll(props: { children: ReactNode }) {
+	const box = useRef<HTMLDivElement>(null);
+	const content = useRef<HTMLDivElement>(null);
+	const atEnd = useRef(true);
+	// Where the last pin left scrollTop: its scroll event comes a frame
+	// later, maybe after the content grew again, and must not read as the
+	// reader leaving the end.
+	const pinned = useRef<number | null>(null);
+	useLayoutEffect(() => {
+		const el = box.current;
+		const inner = content.current;
+		if (!el || !inner) return;
+		const toEnd = () => {
+			el.scrollTop = el.scrollHeight;
+			pinned.current = el.scrollTop;
+		};
+		toEnd();
+		if (typeof ResizeObserver === "undefined") return;
+		const pin = new ResizeObserver(() => {
+			if (atEnd.current) toEnd();
+		});
+		pin.observe(inner);
+		pin.observe(el);
+		return () => pin.disconnect();
+	}, []);
+	return (
+		<div
+			ref={box}
+			data-testid="agent-thread-scroll"
+			onScroll={(e) => {
+				const el = e.currentTarget;
+				if (
+					pinned.current !== null &&
+					Math.abs(el.scrollTop - pinned.current) < 1
+				)
+					return;
+				pinned.current = null;
+				atEnd.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+			}}
+			className={AGENT_SCROLL}
+		>
+			<div ref={content} className="min-w-0 space-y-2">
+				{props.children}
+			</div>
+		</div>
+	);
+}
+
+export const AGENT_SCROLL =
+	"-mx-1 -mt-1 mb-1 max-h-[min(28rem,60vh)] overflow-y-auto overscroll-contain p-1 [overflow-anchor:none]";
+
 function Who(props: { children: React.ReactNode }) {
 	return (
 		<div className="flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 px-0.5 text-xs text-muted">
@@ -722,14 +790,16 @@ function AgentCard(props: AgentCardProps) {
 			</div>
 			<LinkProblem thread={thread.id} />
 			<div id={bodyId} className="space-y-2 p-2.5">
-				<AgentMessageItems
-					thread={shown}
-					status={status}
-					answering={answering}
-					viewer={viewer}
-					name={name}
-					pending={replies}
-				/>
+				<AgentScroll>
+					<AgentMessageItems
+						thread={shown}
+						status={status}
+						answering={answering}
+						viewer={viewer}
+						name={name}
+						pending={replies}
+					/>
+				</AgentScroll>
 				{resolve.error && (
 					<p
 						role="alert"

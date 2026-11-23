@@ -338,6 +338,112 @@ test("a reply goes on the same thread and is answered", async ({
 	]);
 });
 
+test("a long conversation scrolls in its capped box, opens at its end and keeps there for a new answer; scrolled up, it stays put (CAR-246)", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 760 });
+	await pr(fixture);
+	const long = (end: string) =>
+		[...Array.from({ length: 30 }, (_, i) => `Paragraph ${i + 1}.`), end].join(
+			"\n\n",
+		);
+	const s = await agentCrb({
+		scenario: {
+			agent: { name: "Fake Agent", version: "9.9.9" },
+			answers: [
+				{ match: "second", text: long("End two.") },
+				{ match: "third", text: long("End three.") },
+				{ text: long("End one.") },
+			],
+		},
+	});
+	// Answers stay new: no seen write races what the test measures.
+	await holdSeenMarks(page);
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 3, "Tell me everything");
+	await expect(card.getByTestId("agent-message-ai")).toContainText("End one.");
+	const scroller = card.getByTestId("agent-thread-scroll");
+	const box = card.getByRole("textbox", { name: "Reply to your agent" });
+	const measure = () =>
+		scroller.evaluate((el) => ({
+			top: el.scrollTop,
+			client: el.clientHeight,
+			height: el.scrollHeight,
+			cap: Math.min(
+				28 *
+					Number.parseFloat(
+						getComputedStyle(document.documentElement).fontSize,
+					),
+				0.6 * window.innerHeight,
+			),
+		}));
+	const gap = (x: { top: number; client: number; height: number }) =>
+		x.height - x.client - x.top;
+	const atEnd = async () => expect(gap(await measure())).toBeLessThanOrEqual(1);
+	const m = await measure();
+	expect(m.height).toBeGreaterThan(m.client);
+	expect(Math.abs(m.client - m.cap)).toBeLessThanOrEqual(2);
+	await atEnd();
+	// The reply box under the scroller, outside it: in sight without
+	// scrolling it.
+	await box.scrollIntoViewIfNeeded();
+	await expect(box).toBeInViewport();
+	await expect(card.getByText("End one.")).toBeInViewport();
+	const sb = await scroller.boundingBox();
+	const bb = await box.boundingBox();
+	expect(sb && bb).toBeTruthy();
+	if (!sb || !bb) return;
+	expect(bb.y).toBeGreaterThanOrEqual(sb.y + sb.height);
+	await expectNoPageOverflow(page);
+	await shot(page, "agent-card-scroll", isMobile);
+
+	// At its end, a new answer keeps it there.
+	await box.fill("A second question");
+	await card.getByTestId("agent-reply-ask").click();
+	await expect(card.getByTestId("agent-message-ai")).toHaveCount(2);
+	await expect(card.getByTestId("agent-message-ai").nth(1)).toContainText(
+		"End two.",
+	);
+	await expect.poll(async () => gap(await measure())).toBeLessThanOrEqual(1);
+	await expect(card.getByText("End two.")).toBeInViewport();
+
+	// Scrolled up, a new answer doesn't move what is in sight.
+	await scroller.evaluate((el) => {
+		el.scrollTop = el.scrollHeight - el.clientHeight - 600;
+	});
+	const paragraph = card
+		.getByTestId("agent-message-ai")
+		.nth(1)
+		.getByText("Paragraph 10.", { exact: true });
+	await expect(paragraph).toBeInViewport();
+	const before = await paragraph.evaluate(
+		(el, sc) => {
+			const s = sc as Element;
+			return el.getBoundingClientRect().top - s.getBoundingClientRect().top;
+		},
+		await scroller.elementHandle(),
+	);
+	await box.fill("A third question");
+	await card.getByTestId("agent-reply-ask").click();
+	await expect(card.getByTestId("agent-message-ai")).toHaveCount(3);
+	await expect(card.getByTestId("agent-message-ai").nth(2)).toContainText(
+		"End three.",
+	);
+	const after = await paragraph.evaluate(
+		(el, sc) => {
+			const s = sc as Element;
+			return el.getBoundingClientRect().top - s.getBoundingClientRect().top;
+		},
+		await scroller.elementHandle(),
+	);
+	expect(Math.abs(after - before)).toBeLessThanOrEqual(1);
+	expect(gap(await measure())).toBeGreaterThan(100);
+	await expectNoPageOverflow(page);
+});
+
 test("agent and comment bubbles side by side on one line, each with its own count", async ({
 	page,
 	pr,
