@@ -895,8 +895,12 @@ question would be on someone else's behalf, or about a past moment.
   off; never a second computation) and file-level changes labelled as
   crb labels them (a mode, a binary file; in the since view, what changed
   since). An unchanged file in the since view can still hold lines to
-  read (`progress` says). The since view lists every file its
-  engine says it changes, never deciding from the hunks' count. crb
+  read (`progress` says). The since view lists every file the
+  page's since view shows: one its engine says the author changed (never
+  decided from the hunks' count), and one with lines left unreviewed at
+  that patch set that nothing carries (CAR-216's "not reviewed in PSn"
+  pieces), each file saying `changed` and those lines as
+  `notReviewedThen`, so the agent never presents them as new code. crb
   detects no moved blocks yet, and `diff` says so rather than guess.
   Past its budget, the remaining files are named (`omitted`, `unread`,
   with no hunk count or analysis) without being read; a since view crb can't build, or a file it can't read, is

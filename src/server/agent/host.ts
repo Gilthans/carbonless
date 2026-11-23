@@ -92,6 +92,7 @@ import {
 	MAX_DIFF_CHARS,
 	MAX_FILE_BYTES,
 	MIN_FILE_BUDGET,
+	orphanRanges,
 } from "./reads.js";
 import {
 	AgentRunner,
@@ -1748,7 +1749,7 @@ export class AgentHost {
 		let left = MAX_DIFF_CHARS;
 		for (const f of files) {
 			// The since view: a file its engine says it doesn't change is counted.
-			if (since && f.changed === false && !args.path) {
+			if (since && f.shown === false && !args.path) {
 				unchanged++;
 				continue;
 			}
@@ -1791,12 +1792,15 @@ export class AgentHost {
 			}
 			// A file that didn't fit whole spends the budget: no more reads.
 			if (!args.path && part.nextHunk !== undefined) left = 0;
+			// Lines left unreviewed at that patch set (CAR-216), as the page shows them.
+			const notReviewed = since ? orphanRanges(part.given, part.shown) : null;
 			out.push({
 				...meta,
-				...(since && f.changed === false ? { changed: false as const } : {}),
+				...(since && f.changed !== undefined ? { changed: f.changed } : {}),
 				diff: part.text,
 				hunks: hunks.hunks.length,
 				...analyse(part.given, part.shown),
+				...(notReviewed ? { notReviewedThen: notReviewed } : {}),
 				...(part.nextHunk !== undefined ? { nextHunk: part.nextHunk } : {}),
 			});
 		}

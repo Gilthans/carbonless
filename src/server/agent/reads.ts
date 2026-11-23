@@ -43,8 +43,14 @@ export interface AgentDiff {
 		binary?: boolean;
 		/** File-level changes, as crb labels them (a mode, a binary file, a rename); the since view's: what changed since. */
 		changes?: string[];
-		/** The since view only: whether it changes the file (the engine's answer, not the hunks' count). */
+		/** The since view only: whether the author changed the file since (the engine's interdiff). */
 		changed?: boolean;
+		/**
+		 * The since view only: whether the page's since view shows it at all:
+		 * a change since, or lines left unreviewed at that patch set that
+		 * nothing carries (CAR-216).
+		 */
+		shown?: boolean;
 	}[];
 	/** A file's display hunks, as the page gets them (the since view's: none when unchanged since). */
 	hunks(index: number): Promise<FileHunks>;
@@ -94,12 +100,37 @@ export interface DiffFileOut extends Partial<DiffAnalysis> {
 	hunks?: number;
 	/** Not read: the budget was spent before it (ask for it by path). */
 	unread?: true;
-	/** Read by path in the since view: it doesn't change the file since. */
-	changed?: false;
+	/** The since view: whether the author changed the file since (false: only lines left unreviewed show). */
+	changed?: boolean;
+	/**
+	 * The since view: lines unchanged since that patch set but not reviewed
+	 * there (the page's "not reviewed in PSn" boxes, CAR-216); LEFT in the
+	 * base's numbering, RIGHT in the head's.
+	 */
+	notReviewedThen?: { LEFT: Ranges; RIGHT: Ranges };
 	/** Past the budget: the first hunk left out; ask again with `fromHunk`. */
 	nextHunk?: number;
 	/** The file's diff couldn't be read (it is still one of the comparison's). */
 	error?: string;
+}
+
+/** The given hunks' orphan lines (DiffLine.orphan, CAR-216), within `shown`; null for none. */
+export function orphanRanges(
+	hunks: readonly DisplayHunk[],
+	shown?: ReadonlySet<DiffLine>,
+): { LEFT: Ranges; RIGHT: Ranges } | null {
+	const left: number[] = [];
+	const right: number[] = [];
+	for (const h of hunks) {
+		for (const l of h.lines) {
+			if (!l.orphan || (shown && !shown.has(l))) continue;
+			if (l.kind === "del" && typeof l.baseNo === "number") left.push(l.baseNo);
+			if (l.kind === "add" && l.newNo !== undefined) right.push(l.newNo);
+		}
+	}
+	return left.length + right.length > 0
+		? { LEFT: toRanges(left), RIGHT: toRanges(right) }
+		: null;
 }
 
 /** Sorted numbers as inclusive ranges. */

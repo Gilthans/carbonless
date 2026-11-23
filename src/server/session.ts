@@ -1729,8 +1729,9 @@ export class Session {
 					// Not known to the answer: listed as changed, never as unchanged.
 					return { index, path, changed: true };
 				}
-				// Hunks the since view shows count as a change too, whatever
-				// the facts say: never unchanged beside lines to read.
+				// What the page's since view shows of it: its changes since, and
+				// the lines left unreviewed then that nothing carries (CAR-216's
+				// orphans). Listed whenever it shows something.
 				let shown = false;
 				try {
 					shown = interdiff.changed(index).hunks.length > 0;
@@ -1742,7 +1743,8 @@ export class Session {
 					path,
 					...(facts.oldPath !== undefined ? { oldPath: facts.oldPath } : {}),
 					...(binary.has(index) ? { binary: true } : {}),
-					changed: facts.changed || shown,
+					changed: facts.changed,
+					shown: facts.changed || shown,
 					...(facts.labels.length > 0 ? { changes: facts.labels } : {}),
 				};
 			});

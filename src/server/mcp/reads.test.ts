@@ -152,6 +152,19 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 		});
 		expect(res.statusCode, res.body).toBe(200);
 	};
+	/** Marks every cluster of the view reviewed: nothing left unreviewed there. */
+	const markAll = async (v: ReviewView) => {
+		const changes = v.files.flatMap((f) =>
+			f.clusters.map((c) => ({ key: c.key, state: "reviewed" })),
+		);
+		const res = await app.inject({
+			method: "POST",
+			url: `/api/r/${id}/review/states`,
+			headers: { host },
+			payload: { revision: v.revision, changes },
+		});
+		expect(res.statusCode, res.body).toBe(200);
+	};
 	const keyOf = (v: ReviewView, path: string) => {
 		const c = v.files.find((f) => f.path === path)?.clusters[0];
 		if (!c) throw new Error(`no cluster in ${path}`);
@@ -170,15 +183,21 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 			{ cwd: repo, encoding: "utf8", env: testGitEnv() },
 		);
 	};
-	/** PS1 on the PR's first head, PS2 on a second one that adds b.txt. */
-	const twoPatchsets = async () => {
+	/**
+	 * PS1 on the PR's first head, PS2 on a second one that adds b.txt;
+	 * `all`: every change reviewed in both (else one cluster of a.txt in
+	 * PS1 and b.txt in PS2: the rest is left unreviewed, CAR-216's orphans).
+	 */
+	const twoPatchsets = async (all = true) => {
 		const h1 = pr.head();
 		const first = await view();
-		await mark(first, keyOf(first, "a.txt"));
+		if (all) await markAll(first);
+		else await mark(first, keyOf(first, "a.txt"));
 		const h2 = pr.moveHead({ "b.txt": "b\n" });
 		await refresh();
 		const atHead = await view(`?head=${h2}`);
-		await mark(atHead, keyOf(atHead, "b.txt"));
+		if (all) await markAll(atHead);
+		else await mark(atHead, keyOf(atHead, "b.txt"));
 		expect((await view("?patchset=2")).patchset).toBe(2);
 		return { h1, h2 };
 	};
@@ -318,35 +337,20 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 			from: 1,
 			to: 2,
 		});
-		// The files the page's since view shows hunks for, and no others.
-		const ps2 = await view("?patchset=2");
-		const pageChanged: string[] = [];
-		for (const f of ps2.files) {
-			const res = await api(
-				`/files/${f.index}/hunks?revision=${ps2.revision}&from=1`,
-			);
-			expect(res.statusCode, res.body).toBe(200);
-			if ((res.json() as FileHunks).hunks.length > 0) pageChanged.push(f.path);
-		}
-		expect(pageChanged).toContain("b.txt");
-		expect(between.files.map((f) => f.path)).toEqual(pageChanged);
-		expect(between.files.find((f) => f.path === "b.txt")?.diff).toBe(
-			"@@ -0,0 +1,1 @@\n+b",
-		);
-		expect(between.unchanged).toBe(ps2.files.length - pageChanged.length);
-		// Asked by path, each file agrees with the page: changed: false and
-		// no diff exactly when the page's since view shows no hunk for it.
-		for (const path of ["a.txt", "new.txt"]) {
-			const one = (await s.ok("diff", { from: 1, to: 2, path })) as unknown as {
-				files: { changed?: boolean; diff: string }[];
-			};
-			if (pageChanged.includes(path)) {
-				expect(one.files[0]?.changed, path).toBeUndefined();
-				expect(one.files[0]?.diff, path).not.toBe("");
-			} else {
-				expect(one.files[0], path).toMatchObject({ changed: false, diff: "" });
-			}
-		}
+		// Everything reviewed in PS1: only b.txt changed since.
+		expect(between.files.map((f) => f.path)).toEqual(["b.txt"]);
+		expect(between.files[0]).toMatchObject({
+			changed: true,
+			diff: "@@ -0,0 +1,1 @@\n+b",
+		});
+		expect(between.unchanged).toBe(2);
+		// Asked by path, an unchanged file says so.
+		const same = (await s.ok("diff", {
+			from: 1,
+			to: 2,
+			path: "a.txt",
+		})) as unknown as { files: { changed?: boolean; diff: string }[] };
+		expect(same.files[0]).toMatchObject({ changed: false, diff: "" });
 		// PS1's own full diff hasn't b.txt.
 		const ps1 = (await s.ok("diff", { to: 1 })) as unknown as Diff;
 		expect(ps1.comparison).toMatchObject({ head: h1, from: null, to: 1 });
@@ -581,14 +585,14 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 		pr.moveHead({ "bin.dat": "\u0000\u0001one", "run.sh": "echo hi\n" });
 		await refresh();
 		const first = await view();
-		await mark(first, keyOf(first, "a.txt"));
+		await markAll(first);
 		const h2 = pr.moveHead(
 			{ "bin.dat": "\u0000\u0002two", "run.sh": "echo hi\n" },
 			{ executable: ["run.sh"] },
 		);
 		await refresh();
 		const atHead = await view(`?head=${h2}`);
-		await mark(atHead, keyOf(atHead, "bin.dat"));
+		await markAll(atHead);
 		expect((await view("?patchset=2")).patchset).toBe(2);
 		const s = await joined();
 		const d = (await s.ok("diff", { from: 1, to: 2 })) as unknown as Diff & {
@@ -776,6 +780,46 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 		expect(r).toMatchObject({
 			error: "not-found",
 			message: expect.stringContaining("binary"),
+		});
+	});
+
+	it("since view: lines left unreviewed at the earlier patch set show as the page shows them, marked notReviewedThen and changed: false, never as new code", async () => {
+		// PS1: only a.txt's first change reviewed; line 26 and new.txt not.
+		await twoPatchsets(false);
+		const s = await joined();
+		const d = (await s.ok("diff", { from: 1, to: 2 })) as unknown as {
+			files: {
+				path: string;
+				changed?: boolean;
+				diff: string;
+				notReviewedThen?: { LEFT: Ranges; RIGHT: Ranges };
+			}[];
+			unchanged?: number;
+		};
+		// The files the page's since view shows, and no others.
+		const ps2 = await view("?patchset=2");
+		const pageShows: string[] = [];
+		for (const f of ps2.files) {
+			const res = await api(
+				`/files/${f.index}/hunks?revision=${ps2.revision}&from=1`,
+			);
+			expect(res.statusCode, res.body).toBe(200);
+			if ((res.json() as FileHunks).hunks.length > 0) pageShows.push(f.path);
+		}
+		expect(pageShows).toEqual(["a.txt", "b.txt", "new.txt"]);
+		expect(d.files.map((f) => f.path)).toEqual(pageShows);
+		expect(d.unchanged).toBeUndefined();
+		const by = (p: string) => d.files.find((f) => f.path === p);
+		expect(by("b.txt")).toMatchObject({ changed: true });
+		expect(by("b.txt")?.notReviewedThen).toBeUndefined();
+		expect(by("a.txt")).toMatchObject({
+			changed: false,
+			notReviewedThen: { LEFT: [[26, 26]], RIGHT: [[26, 26]] },
+		});
+		expect(by("a.txt")?.diff).toContain("+line 26 changed");
+		expect(by("new.txt")).toMatchObject({
+			changed: false,
+			notReviewedThen: { LEFT: [], RIGHT: [[1, 1]] },
 		});
 	});
 });
