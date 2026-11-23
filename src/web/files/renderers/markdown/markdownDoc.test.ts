@@ -135,6 +135,49 @@ describe("buildDoc", () => {
 		).toEqual(["same", "b", "same", "d"]);
 	});
 
+	it("a removed item after a changed one sits after it, where it was (gallery #61 lists.md)", () => {
+		const doc = docOf(
+			[
+				"## Before the first shift",
+				"",
+				"- Sign the safety briefing form",
+				"- Set up a Tidewater account with the crew role", // 4
+				"- Read the lifejacket drill card", // 5
+				"- Find your locker on the car deck",
+			],
+			[
+				"## Before the first shift",
+				"",
+				"- Sign the safety briefing form",
+				"- Set up a Tidewater account with the deckhand or purser role", // 4
+				"- Find your locker on the car deck",
+			],
+			[
+				{ key: "set", old: [4, 5], new: [4, 5] },
+				{ key: "read", old: [5, 6] },
+			],
+		);
+		expect(
+			doc.rows.map((r) =>
+				r.kind === "change" ? `${r.tone}:${r.units.join()}` : r.kind,
+			),
+		).toEqual(["same", "same", "changed:set", "removed:read", "same"]);
+	});
+
+	it("a removed block before a changed one stays before it", () => {
+		const doc = docOf(
+			["A", "", "B", "", "C x", "", "D"],
+			["A", "", "C y", "", "D"],
+			[
+				{ key: "b", old: [3, 5] },
+				{ key: "c", old: [5, 6], new: [3, 4] },
+			],
+		);
+		expect(
+			doc.rows.map((r) => (r.kind === "change" ? r.units.join() : r.kind)),
+		).toEqual(["same", "b", "c", "same"]);
+	});
+
 	it("every unit is on exactly one row (the coverage rule), however the edits fall", () => {
 		const old = Array.from({ length: 40 }, (_, i) =>
 			i % 3 === 2 ? "" : `line ${i}`,

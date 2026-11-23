@@ -188,6 +188,19 @@ export function buildDoc(opts: {
 	const placeOf = (line: number, blocks: readonly MdBlock[]) =>
 		blocks.length === 0 ? -1 : blockOfLine(blocks, line);
 	const unplaced: string[] = [];
+	/** Units with lines on both sides: their first old line, their last new one. */
+	const changedAt: { old: number; new: number }[] = [];
+	for (const u of units) {
+		const o = u.old[0]?.[0];
+		const n = u.new.at(-1)?.[1];
+		if (
+			o !== undefined &&
+			n !== undefined &&
+			size(u.new) > 0 &&
+			size(u.old) > 0
+		)
+			changedAt.push({ old: o, new: n - 1 });
+	}
 	for (const u of units) {
 		const nodes = new Set<number>();
 		const olds = linesOf(u.old);
@@ -224,7 +237,12 @@ export function buildDoc(opts: {
 			else {
 				const first = olds[0] as number;
 				const last = olds[olds.length - 1] as number;
-				const pos = around(first, last).before ?? 0;
+				// Where it was: after the last new line whose old line came
+				// before it, unchanged or changed (an item edited just above a
+				// removed one keeps the removal under it, as in the base).
+				let pos = around(first, last).before ?? 0;
+				for (const c of changedAt)
+					if (c.old < first) pos = Math.max(pos, c.new);
 				const next = newBlocks.findIndex((b) => b.from > pos);
 				for (const node of nodes) {
 					anchorOf.set(node, next === -1 ? newBlocks.length : next);
