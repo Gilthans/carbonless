@@ -413,7 +413,11 @@ test("Write / Preview: the box opens on the agent's markdown rendered; an edit s
 	expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeLessThanOrEqual(1);
 	if (isMobile) await expectNoPageOverflow(page);
 	await addButton(card).click();
-	await expect(box(card)).toContainText("Posted");
+	// Posted, the conversation moves into its new thread (CAR-236).
+	const panel = section
+		.getByTestId("files-thread")
+		.getByTestId("thread-agent-panel");
+	await expect(box(panel)).toContainText("Posted");
 	const [t] = storedThreads(p);
 	expect(t?.bodies[0]).toContain("Short _one_");
 });
