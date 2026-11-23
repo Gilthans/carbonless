@@ -3427,3 +3427,97 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 	);
 	await expect(row61).toHaveAttribute("data-commented", "", GIT_WAIT);
 });
+
+/**
+ * CAR-252: Ask agent on a line the since view shows removed asks about
+ * its base line (CAR-217's base number), never the compared patch set's
+ * number: PS1 30 is base 20, so the question is on LEFT 20, and the full
+ * diff shows it on its removed row 20 (row 30 there is another line).
+ */
+test("Ask agent on a line the since view shows removed asks about its base line, and the full diff shows it on that line (CAR-252)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [REMOVED]: text(numbered) },
+		files: [{ message: "PS1", files: { [REMOVED]: text(ps1Lines) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, REMOVED);
+	await boxes(first).first().click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [REMOVED]: text(ps2Lines) } });
+	const head = p.head();
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, REMOVED);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	const removedRow = (section: Locator, old: number) =>
+		section.locator(
+			`tr[data-testid="diff-line"][data-kind="del"][data-old-no="${old}"]`,
+		);
+	await expect(removedRow(since, 30)).toBeVisible(GIT_WAIT);
+	const asks: unknown[] = [];
+	page.on("request", (r) => {
+		if (
+			r.method() === "POST" &&
+			/\/agent\/threads$/.test(new URL(r.url()).pathname)
+		) {
+			asks.push(JSON.parse(r.postData() ?? "{}"));
+		}
+	});
+	const bar = page.getByTestId("selection-bar");
+	const pick = async (old: number) => {
+		const number = removedRow(since, old).getByTestId("old");
+		await removedRow(since, old).evaluate((el) =>
+			el.scrollIntoView({ block: "center" }),
+		);
+		if (isMobile) await number.tap();
+		else await number.click();
+		await expect(bar).toBeVisible();
+	};
+	await pick(30);
+	await bar.getByRole("button", { name: "Ask agent" }).click();
+	const composer = since.getByTestId("agent-composer");
+	// Named as this view numbers the row; GitHub's (the base's) is sent.
+	await expect(composer).toContainText("line 30, old");
+	await composer
+		.getByRole("textbox", { name: "Ask your agent" })
+		.fill("Why drop line 20?");
+	await composer.getByTestId("agent-composer-ask").click();
+	await expect(composer).toHaveCount(0);
+	await expect.poll(() => asks.length).toBe(1);
+	expect(asks[0]).toMatchObject({
+		span: {
+			subject: "line",
+			commit: head,
+			side: "LEFT",
+			line: 20,
+			startSide: "LEFT",
+			startLine: 20,
+		},
+	});
+	// It shows on the row it was asked on.
+	await expect(removedRow(since, 30).getByTestId("agent-bubble")).toBeVisible(
+		GIT_WAIT,
+	);
+	// The full diff: on its removed row 20, not on row 30 (another line).
+	await toFullDiff(page);
+	const full = fileSection(page, REMOVED);
+	const expandFull = full.getByRole("button", { name: "Expand file" });
+	await expect(
+		full.getByTestId("diff-line").first().or(expandFull),
+	).toBeVisible(GIT_WAIT);
+	if (await expandFull.isVisible()) await expandFull.click();
+	await expect(removedRow(full, 20).getByTestId("agent-bubble")).toBeVisible(
+		GIT_WAIT,
+	);
+	await expect(full.getByTestId("agent-bubble")).toHaveCount(1);
+});
