@@ -618,10 +618,14 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 			await new Promise((r) => setTimeout(r, 20));
 			answer = await s.placements(to, readId);
 		}
-		const of = (text: string) => {
-			const id = listed.find((t) => t.excerpt === text)?.id;
-			return answer.threads.find((t) => t.id === id)?.placement;
+		// The summary lists them in GitHub's order (its text comes later).
+		const ids: Record<string, string | undefined> = {
+			Seen: listed[0]?.id,
+			Other: listed[1]?.id,
 		};
+		expect(listed).toHaveLength(2);
+		const of = (text: string) =>
+			answer.threads.find((t) => t.id === ids[text])?.placement;
 		// The base changed line 30 itself only where it conflicted.
 		expect(of("Seen")).toMatchObject(
 			m.update === "merge-base-in-conflict"
