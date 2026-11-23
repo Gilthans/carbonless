@@ -17,6 +17,7 @@ import {
 	type HunkCut,
 	hunkCut,
 	hunkCuts,
+	matchDisplayHunk,
 	whitespaceLines,
 } from "../../shared/whitespace.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
@@ -434,13 +435,7 @@ export function cutClusters(
 				}
 			: undefined;
 	const clusters: Omit<Cluster, "key">[] = [];
-	const parts: {
-		hunk: number;
-		removedAt: number;
-		addedAt: number;
-		/** Its CAR-156 piece's index in `wsClusters`, when the block cut split that piece of a split hunk. */
-		piece: number;
-	}[] = [];
+	const parts: CutPart[] = [];
 	// The file's clusters as the whitespace cut alone makes them (CAR-156),
 	// keyed only when a block piece needs its CAR-156 piece's key.
 	const wsClusters: Omit<Cluster, "key">[] = [];
@@ -494,10 +489,11 @@ export function cutClusters(
 			});
 		}
 	});
+	if (recheck.size > 0) fitViewWhitespace(clusters, parts, recheck, text);
 	const keys = keysOf(clusters);
 	const hunkKeys = parts.some((p) => p.hunk >= 0) ? keysOf(hunks) : [];
 	const wsKeys = parts.some((p) => p.piece >= 0) ? keysOf(wsClusters) : [];
-	const keyed = clusters.map((c, i) => {
+	return clusters.map((c, i) => {
 		const part = parts[i];
 		const split: ClusterSplit | undefined =
 			part && part.hunk >= 0
@@ -511,52 +507,115 @@ export function cutClusters(
 				: undefined;
 		return { ...c, key: keys[i] as string, ...(split ? { split } : {}) };
 	});
-	if (recheck.size > 0) keepViewWhitespace(keyed, recheck, text);
-	return keyed;
+}
+
+/** Where a cluster of `cutClusters` sits in its git hunk (see there). */
+interface CutPart {
+	hunk: number;
+	removedAt: number;
+	addedAt: number;
+	/** Its CAR-156 piece's index in `wsClusters`, when the block cut split that piece of a split hunk. */
+	piece: number;
 }
 
 /**
  * The block pieces of a whitespace-only piece (`recheck`, indexes in
- * `clusters`) keep `whitespaceOnly` only where the view draws every one of
- * their lines as a `~` row (CAR-167, principle 2). Under the cap the view
- * matches the whole display hunk, so a part of a whitespace-only piece is
- * `~` all through; over SPLIT_CELLS (or on the per-hunk fallback) it
- * matches each cluster alone, and a pair the block cut split across two
- * pieces would draw as plain `-`/`+` lines while folding away as
- * whitespace. So: the view's display hunks over the final clusters, its
- * matching (`whitespaceLines`, as hunkView's), and any such piece with a
- * line it leaves plain counts as a change (the safe direction). Display
- * hunks that don't build: every such piece counts.
+ * `clusters`) made to agree with the view's `~` rows line for line
+ * (CAR-167, principle 2). Under the cap the view matches the display hunk
+ * whole, so every part of a whitespace-only piece is `~` and nothing
+ * changes. Over SPLIT_CELLS (or on the per-hunk fallback) it matches each
+ * cluster alone, so a pair the block cut parted would draw as plain lines
+ * in a cluster left out as whitespace: such a piece is cut again where the
+ * view's `~` rows start and end (splitCluster by the view's matching over
+ * the clusters as they stand, its pairs inside the piece), each part
+ * flagged by that, and the check runs again over the new clusters until
+ * nothing is cut (each round only cuts or clears, so it ends). Display
+ * hunks that don't build: every such piece counts (the safe direction).
+ * The parts keep their piece's place in the git hunk.
  */
-function keepViewWhitespace(
-	clusters: Cluster[],
-	recheck: ReadonlySet<number>,
+function fitViewWhitespace(
+	clusters: Omit<Cluster, "key">[],
+	parts: CutPart[],
+	recheck: Set<number>,
 	text: { oldLines: string[]; newLines: string[]; noNewlineAtEnd: boolean },
 ): void {
-	const plain = new Set<string>();
-	try {
-		const displays = buildDisplayHunks(
-			text.oldLines,
-			text.newLines,
-			clusters.filter((c) => c.kind === "lines"),
-			3,
-			text.noNewlineAtEnd,
+	for (;;) {
+		const keyed = clusters.flatMap((c, i) =>
+			c.kind === "lines" ? [{ ...c, key: String(i) } as Cluster] : [],
 		);
+		let displays: DisplayHunk[];
+		try {
+			displays = buildDisplayHunks(
+				text.oldLines,
+				text.newLines,
+				keyed,
+				3,
+				text.noNewlineAtEnd,
+			);
+		} catch (error) {
+			if (!(error instanceof HunksMismatchError)) throw error;
+			for (const i of recheck) delete clusters[i]?.whitespaceOnly;
+			return;
+		}
+		// Each rechecked cluster's lines as the view matches them.
+		const seen = new Map<number, { dels: DiffLine[]; adds: DiffLine[] }>();
+		const ws = new Set<DiffLine>();
+		const twins = new Map<DiffLine, DiffLine>();
 		for (const display of displays) {
-			const ws = whitespaceLines(display.lines);
+			for (const l of whitespaceLines(display.lines)) ws.add(l);
+			for (const [l, t] of matchDisplayHunk(display.lines)) twins.set(l, t);
 			for (const l of display.lines) {
-				if (l.kind !== "context" && l.clusterKey !== undefined && !ws.has(l)) {
-					plain.add(l.clusterKey);
+				if (l.kind === "context" || l.clusterKey === undefined) continue;
+				const i = Number(l.clusterKey);
+				if (!recheck.has(i)) continue;
+				let lines = seen.get(i);
+				if (!lines) {
+					lines = { dels: [], adds: [] };
+					seen.set(i, lines);
 				}
+				(l.kind === "del" ? lines.dels : lines.adds).push(l);
 			}
 		}
-	} catch (error) {
-		if (!(error instanceof HunksMismatchError)) throw error;
-		for (const i of recheck) plain.add((clusters[i] as Cluster).key);
-	}
-	for (const i of recheck) {
-		const c = clusters[i] as Cluster;
-		if (plain.has(c.key)) delete c.whitespaceOnly;
+		const nextClusters: Omit<Cluster, "key">[] = [];
+		const nextParts: CutPart[] = [];
+		const nextRecheck = new Set<number>();
+		let cutAgain = false;
+		clusters.forEach((c, i) => {
+			const part = parts[i] as CutPart;
+			const lines = seen.get(i);
+			if (!recheck.has(i) || !lines || c.whitespaceOnly !== true) {
+				nextClusters.push(c);
+				nextParts.push(part);
+				return;
+			}
+			const addAt = new Map(lines.adds.map((l, k) => [l, k]));
+			const pairs: [number, number][] = [];
+			lines.dels.forEach((d, k) => {
+				const twin = twins.get(d);
+				const at = twin && addAt.get(twin);
+				if (at !== undefined) pairs.push([k, at]);
+			});
+			const cut = splitCluster(c, {
+				removedWs: lines.dels.map((l) => ws.has(l)),
+				addedWs: lines.adds.map((l) => ws.has(l)),
+				pairs,
+			});
+			if (cut.length > 1) cutAgain = true;
+			for (const q of cut) {
+				if (q.cluster.whitespaceOnly) nextRecheck.add(nextClusters.length);
+				nextClusters.push(q.cluster);
+				nextParts.push({
+					...part,
+					removedAt: part.removedAt + q.removedAt,
+					addedAt: part.addedAt + q.addedAt,
+				});
+			}
+		});
+		clusters.splice(0, clusters.length, ...nextClusters);
+		parts.splice(0, parts.length, ...nextParts);
+		recheck.clear();
+		for (const i of nextRecheck) recheck.add(i);
+		if (!cutAgain) return;
 	}
 }
 

@@ -252,12 +252,14 @@ describe("the snapshot's cut (CAR-218)", () => {
 		expect(overCap).toBeGreaterThan(0);
 	});
 
-	it("counts the block pieces of a whitespace-only piece whose pairs the view can't draw over the cap (CAR-167)", () => {
+	it("cuts again the block pieces of a whitespace-only piece whose pairs the view can't draw over the cap (CAR-167)", () => {
 		// A re-indent (the list item's lazy line becomes a heading in it) and
 		// a line added before it, under paragraphs: the whitespace cut makes
-		// one whitespace-only piece the block cut parts across its pairs.
-		// Under the cap the view matches the display hunk whole, so the parts
-		// stay `~`; over it, each cluster alone, so they count (drawn plain).
+		// one whitespace-only piece the block cut parts across a pair. Under
+		// the cap the view matches the display hunk whole, so the parts stay
+		// `~`; over it, each cluster alone, so the parted pair would draw
+		// plain: the piece is cut again there and that pair counts, the rest
+		// stays whitespace-only (rows and clusters agree line for line).
 		const doc = (n: number, part: string[]) =>
 			Array.from({ length: n }, (_, i) => [
 				`Para ${i}.`,
