@@ -322,7 +322,12 @@ a reader drops what breaks them:
   try (`RefStore.appendBuilt`): a states write checks again that its patch
   set is still the latest and stamps after the new tip's events, so a
   patch set another process started in between makes it fail as read-only,
-  never land on the old one (CAR-229).
+  never land on the old one (CAR-229). Agent-thread writes (messages,
+  moves, undos, links…) and inbox writes do the same: a retry stamps after
+  the new tip's events and checks again (a resend already stored writes
+  nothing, an undo of a move no longer live or a move past the cap is
+  refused), so a retried event never folds before one it lost the race to
+  (CAR-245).
 - **Several refs at once** (progress and the new `patchsets/<n>` and
   `patchsets/<n>-base` refs when a patch set starts) use one
   `git update-ref --stdin` transaction. A start's `since` must be the
