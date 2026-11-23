@@ -120,7 +120,7 @@ which was written before it. So until "next" merges, nothing else may
   `scripts/release-gate.mjs` (no dependencies) judges, and fails on an
   answer it can't read. Its error names the open "next" PR, or says to run
   release-finish again when none is open. It only blocks a merge once it
-  is a required check of the `master` ruleset (Setup, step 3).
+  is a required check of the `master checks` ruleset (Setup, step 3).
 - **Checks that passed before the release:** release-finish, after
   opening the "next" PR, reruns the newest `release-gate` run of every
   open PR to master, so none stays green from before the tag. A run still
@@ -130,8 +130,9 @@ which was written before it. So until "next" merges, nothing else may
   "Release gate" run (Re-run jobs on its checks, or `gh run rerun <run
   id>`): it reads master again and passes, with no new commit. A push to
   the PR does the same.
-- **Agents' merges:** `gh pr merge --admin` bypasses required checks, so
-  before merging any PR an agent runs `pnpm release merge-ok <pr>`, which
+- **Agents' merges:** `gh pr merge --admin` can't bypass required checks
+  (the `master checks` ruleset has no bypass), but a green `release-gate`
+  can be stale, so before merging any PR an agent runs `pnpm release merge-ok <pr>`, which
   fails with the same message for any PR but the "next" PR while frozen
   (it counts npm's versions as released too, as the RC plan does).
   It then checks the PR's release notes (below).
@@ -218,8 +219,8 @@ notes to the run, which checks them from git alone (CAR-242).
   pr checks`; a run still in progress is named instead; a failed rerun
   only warns), merge-ok reruns a red one once its own check passes and
   says to wait for it, and editing the description runs it again. It
-  only blocks a merge once it is a required check of the `master` ruleset
-  (Setup, step 3; the environment and key: step 11). Linear
+  only blocks a merge once it is a required check of the `master checks`
+  ruleset (Setup, step 3; the environment and key: step 11). Linear
   moves a ticket to Done on merge by itself, so the check can't wait for
   that. `pnpm release notes check` fails listing what in the release so
   far has no note, for merges no script saw, and warns about tickets done
@@ -745,18 +746,24 @@ machine.
    job that names a missing environment makes GitHub create it with **no**
    rule, which would let any branch's workflow get npm's credential.
 3. **A ruleset on `master`**, Settings → Rules → Rulesets → New branch
-   ruleset `master`, Active, target the default branch. Bypass list: the
-   Repository admin role, mode "For pull requests only". Rules: Restrict
+   ruleset `Master`, Active, target the default branch. Bypass list: the
+   Repository admin role. Rules: Restrict
    updates (only the bypass list updates `master`: the owner, or their
    agents on the owner's approval, nobody else, whatever their access), Restrict deletions, Block force
    pushes, Require a pull request before merging (0 approvals: only the
-   owner's login can merge anyway), Require status checks to pass (`checks`,
+   owner's login can merge anyway). Not "Require review from Code Owners": with
+   Restrict updates it adds nothing. Then a second branch ruleset,
+   `Master checks`, Active, the default branch, with **no bypass list**
+   and one rule, Require status checks to pass (`checks`,
    `windows-agent`, `e2e`, `release-gate`, the release freeze's check, and
    `release-note`, the release notes' check: add them by hand, nothing
-   sets them). Not "Require review from Code Owners": with
-   Restrict updates it adds nothing. Nobody pushes straight to `master`,
-   the owner included; the owner can merge any PR, with or without an
-   approval or green checks (GitHub's "bypass rules" box).
+   sets them). A bypass applies only to its own ruleset, so the owner
+   can merge without an approval, but nobody, the owner included, merges
+   over a red or missing check (owner, 2026-11-22: "It should block me
+   too, but I should still be the only one able to merge without a
+   review"). Nobody pushes straight to `master`, the owner included. When
+   CI itself is broken, the owner sets `Master checks` to Disabled for
+   the fix's merge, and back to Active right after.
 4. **Actions may create PRs**, Settings → Actions → General → Allow GitHub
    Actions to create and approve pull requests (the "next" PR). The
    default workflow permissions stay read-only: every workflow asks for
@@ -804,8 +811,8 @@ machine.
     Personal API keys → New key, with permission **Read** only and access
     to team **CAR** only; add it as that environment's secret
     **`LINEAR_READ_API_KEY`** (Environment secrets, not a repository
-    secret). Then add `release-note` to the `master` ruleset's required
-    checks (step 3). Without the key the check still runs, passing only
+    secret). Then add `release-note` to the `Master checks` ruleset's
+    required checks (step 3). Without the key the check still runs, passing only
     PRs whose description has a note.
 
 From then on a release is: `pnpm release promote` (CI stages it), then
