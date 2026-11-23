@@ -3553,10 +3553,11 @@ test("a link to an old line (side=LEFT) lands on that base line's row in the sin
 	await expect(landedOn(section, 12)).toHaveText(/core 10/, GIT_WAIT);
 	await expect(section.getByTestId("landing-hint")).toHaveCount(0);
 
-	// Base line 20, gone by PS1: not in this view; the full diff has it.
+	// Base line 20, gone by PS1: deleted before PS1; the full diff has it.
 	await land(20);
 	const hint = section.getByTestId("landing-hint");
-	await expect(hint).toContainText("Old line 20 isn't in this view", GIT_WAIT);
+	// As its thread's card says it (CAR-255): gone before PS1.
+	await expect(hint).toContainText("Old line 20: deleted before PS1", GIT_WAIT);
 	await expect(landed).toHaveCount(0);
 	await hint.getByTestId("landing-full-diff").click();
 	await expect(page).toHaveURL(/from=branch/);
