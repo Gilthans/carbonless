@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentThread, SpanAgentThread } from "../../../../shared/agent";
 import type { SincePiece } from "../../../../shared/pieces";
 import type {
 	ClusterView,
@@ -18,6 +19,11 @@ import type {
 	ReviewThread,
 	SessionInfo,
 } from "../../../../shared/types";
+import {
+	openAgentComposer,
+	resetAgentComposers,
+} from "../../../agent/askAgentAction";
+import { type AgentPlaceable, agentPlaceable } from "../../../agent/placeable";
 import { overviewQuery, sessionQuery } from "../../../api";
 import {
 	getComposers,
@@ -113,13 +119,16 @@ const EDITS: Edit[] = [
 afterEach(() => {
 	cleanup();
 	resetComposers();
+	resetAgentComposers();
 	vi.unstubAllGlobals();
 	ignoreWhitespace.set(false);
 });
 
 /** Serves the fixture's hunks and context; `hold` keeps them back. */
 function serve(fx: { hunks: FileHunks; context: DiffLine[] }) {
-	const fetch = vi.fn(async (input: RequestInfo | URL) => {
+	const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+		// A write (Resolve) is on its way until the test ends.
+		if (init?.method === "POST") return new Promise<Response>(() => {});
 		const url = new URL(String(input), "http://test");
 		const body = url.pathname.endsWith("/hunks")
 			? fx.hunks
@@ -151,6 +160,8 @@ type ShowOpts = {
 	onFindText?: () => void;
 	/** The since view's compared patch set's head (CAR-233). */
 	earlierHead?: string;
+	/** The reviewer's agent threads on the viewed head, placed as FileDiff places them. */
+	agentThreads?: AgentThread[];
 };
 
 const HEAD = "h".repeat(40);
@@ -191,6 +202,17 @@ function show(fx: DocFixture, opts: ShowOpts = {}) {
 							}),
 				})
 			: undefined;
+		const agentPlacement = o.agentThreads
+			? placeThreads<AgentPlaceable>({
+					threads: o.agentThreads.map((t) =>
+						agentPlaceable(t as SpanAgentThread),
+					),
+					path: fx.file.path,
+					snapshotHead: HEAD,
+					hunks: fx.hunks,
+					loadedContext: fx.context,
+				})
+			: undefined;
 		return (
 			<QueryClientProvider client={client}>
 				<MarkdownView
@@ -211,6 +233,7 @@ function show(fx: DocFixture, opts: ShowOpts = {}) {
 							: undefined
 					}
 					placement={placement}
+					agentPlacement={agentPlacement}
 					find={o.find}
 					findSpent={o.findSpent}
 					onFindText={o.onFindText}
@@ -816,20 +839,20 @@ describe("MarkdownView: threads, block comments, find", () => {
 	it("find: a step lands on the block holding its hit; a hit only in a link's URL shows Text, once per step", async () => {
 		const scrolled = vi.fn();
 		Element.prototype.scrollIntoView = scrolled;
-		const onShowText = vi.fn();
+		const onFindText = vi.fn();
 		const fx = docFixture(LINKED_OLD, LINKED_NEW, [
 			{ key: "k", old: [3, 4], new: [3, 4] },
 		]);
-		const { update } = show(fx, { onShowText });
+		const { update } = show(fx, { onFindText });
 		const root = await doc();
 		update({ find: findAt(3, "docs", 1) });
 		await waitFor(() => expect(scrolled).toHaveBeenCalled());
 		const row = rowOf(root, "k") as HTMLElement;
 		expect(scrolled.mock.contexts.at(-1)).toBe(row);
 		expect(row).toHaveAttribute("data-find-current", "true");
-		expect(onShowText).not.toHaveBeenCalled();
+		expect(onFindText).not.toHaveBeenCalled();
 		update({ find: findAt(3, "example", 2) });
-		await waitFor(() => expect(onShowText).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(onFindText).toHaveBeenCalledTimes(1));
 	});
 
 	it("find: mounted on a fresh step to a URL hit, it shows Text; on a spent one (FileDiff's), it stays", async () => {
@@ -856,15 +879,15 @@ describe("MarkdownView: threads, block comments, find", () => {
 	it("find: a hit in a folded block opens the fold and lands there", async () => {
 		const scrolled = vi.fn();
 		Element.prototype.scrollIntoView = scrolled;
-		const onShowText = vi.fn();
-		const { update } = show(docFixture(OLD, NEW, EDITS), { onShowText });
+		const onFindText = vi.fn();
+		const { update } = show(docFixture(OLD, NEW, EDITS), { onFindText });
 		const root = await doc();
 		update({ find: findAt(15, "Install", 1, NEW) });
 		await waitFor(() =>
 			expect(scrolled.mock.contexts.at(-1)).toBe(rowByKey(root, "s7")),
 		);
 		expect(screen.queryByTestId("md-fold")).toBeNull();
-		expect(onShowText).not.toHaveBeenCalled();
+		expect(onFindText).not.toHaveBeenCalled();
 	});
 });
 
@@ -1016,5 +1039,89 @@ describe("MarkdownView: comments being written in a fold", () => {
 		expect(fold).toBeTruthy();
 		expect(fold.querySelector('[data-testid="md-fold"]')).toBeTruthy();
 		expect(await within(fold).findByRole("textbox")).toBeInTheDocument();
+	});
+});
+
+/** An agent thread asked on `line` of the viewed head. */
+const agentThread = (line: number): AgentThread =>
+	({
+		id: `A${line}`,
+		anchor: {
+			subject: "line",
+			path: "README.md",
+			commit: HEAD,
+			side: "RIGHT",
+			line,
+			startSide: "RIGHT",
+			startLine: line,
+		},
+		openedBy: "human",
+		at: "2026-11-07T10:00:00Z",
+		messages: [
+			{ id: "m1", by: "human", at: "2026-11-07T10:00:00Z", text: "why?" },
+		],
+		resolved: false,
+		waiting: true,
+		unread: false,
+	}) as AgentThread;
+
+describe("MarkdownView: Resolve and the agent's threads, as in the line view", () => {
+	it("Resolve closes a thread under a block down to its bubble; opened again, it shows", async () => {
+		window.scrollTo = vi.fn();
+		window.scrollBy = vi.fn();
+		show(docFixture(OLD, NEW, EDITS), {
+			threads: [lineThread("t1", "RIGHT", 7)],
+		});
+		const root = await doc();
+		const row = rowOf(root, "k2") as HTMLElement;
+		const bubble = within(row).getByTestId("thread-bubble");
+		await userEvent.click(bubble);
+		expect(within(row).getByTestId("files-thread")).toBeInTheDocument();
+		await userEvent.click(within(row).getByRole("button", { name: "Resolve" }));
+		expect(within(row).queryByTestId("files-thread")).toBeNull();
+		expect(bubble).toHaveAttribute("aria-expanded", "false");
+		await waitFor(() => expect(bubble).toHaveFocus());
+		await userEvent.click(bubble);
+		expect(within(row).getByTestId("files-thread")).toBeInTheDocument();
+	});
+
+	it("an agent thread on a line shows under its block with its own bubble, once; in a fold, on the fold's row", async () => {
+		show(docFixture(OLD, NEW, EDITS), {
+			agentThreads: [agentThread(7), agentThread(17)],
+		});
+		const root = await doc();
+		const bubbles = [...root.querySelectorAll('[data-testid="agent-bubble"]')];
+		expect(
+			bubbles.map((b) => b.closest("[data-row]")?.getAttribute("data-row")),
+		).toEqual([keyOfUnit(root, "k2"), "f7"]);
+		const row = rowOf(root, "k2") as HTMLElement;
+		await userEvent.click(within(row).getByTestId("agent-bubble"));
+		expect(within(row).getByTestId("md-agent-threads")).toBeInTheDocument();
+	});
+
+	it("an Ask agent question being written on a line of a folded block shows on the fold's row, once", async () => {
+		openAgentComposer({
+			path: "README.md",
+			commit: HEAD,
+			subject: "line",
+			startSide: "RIGHT",
+			startLine: 17,
+			side: "RIGHT",
+			line: 17,
+		});
+		show(docFixture(OLD, NEW, EDITS));
+		const root = await doc();
+		const fold = rowByKey(root, "f7") as HTMLElement;
+		expect(within(fold).getByTestId("agent-composer")).toBeInTheDocument();
+		expect(screen.getAllByTestId("agent-composer")).toHaveLength(1);
+	});
+
+	it("since view: an agent thread shows under its piece's block", async () => {
+		const fx = docFixture(OLD, NEW, EDITS, { since: true });
+		show(fx, { from: 1, agentThreads: [agentThread(3)] });
+		const root = await doc();
+		expect(
+			within(rowOf(root, "p:0:0") as HTMLElement).getByTestId("agent-bubble"),
+		).toBeInTheDocument();
 	});
 });

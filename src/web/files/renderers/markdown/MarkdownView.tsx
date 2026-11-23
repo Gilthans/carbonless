@@ -13,6 +13,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import type { SpanAgentThread } from "../../../../shared/agent";
 import { type LineRanges, size } from "../../../../shared/lineRanges";
 import type { SincePiece } from "../../../../shared/pieces";
 import type {
@@ -23,7 +24,12 @@ import type {
 	ReviewThread,
 	SinceMark,
 } from "../../../../shared/types";
+import { AgentBubble } from "../../../agent/AgentBubble";
+import { AgentComposer } from "../../../agent/AgentComposer";
+import { takeJustAsked } from "../../../agent/agentWrites";
+import { useAgentComposers } from "../../../agent/askAgentAction";
 import { shownOutsideCard, useHeldByCard } from "../../../agent/pendingThread";
+import type { AgentPlaceable } from "../../../agent/placeable";
 import {
 	contextQuery,
 	hunksQuery,
@@ -46,10 +52,15 @@ import { NOT_PHONE, useMedia } from "../../../useMedia";
 import { ignoreWhitespace } from "../../../viewSettings";
 import { ClusterControls } from "../../ClusterControls";
 import { noLineIn, type SpanCell, spanOfCells } from "../../codeSpan";
-import type { DiffFind, DiffThreads } from "../../DiffBody";
+import {
+	agentCommentOn,
+	type DiffFind,
+	type DiffThreads,
+} from "../../DiffBody";
 import { KindChip } from "../../KindChip";
 import type { Landing } from "../../landing";
 import { pieceMark } from "../../pieceMark";
+import { useResolveCollapse } from "../../resolveCollapse";
 import {
 	type CodeSpan,
 	commentAvailable,
@@ -59,11 +70,12 @@ import {
 import type { KindEntry } from "../../since";
 import { SinceNotes } from "../../sinceNotes";
 import { ThreadBubble } from "../../ThreadBubble";
-import { ThreadBlock } from "../../ThreadRow";
+import { AgentThreadCards, ThreadBlock } from "../../ThreadRow";
 import { useFocusAmong } from "../../threadFocus";
 import {
 	type FilePlacement,
 	type LineKey,
+	lineKey,
 	onSinceRows,
 	sinceEarlier,
 	sinceLeft,
@@ -114,6 +126,8 @@ export function MarkdownView(props: {
 	 */
 	threads?: DiffThreads;
 	placement?: FilePlacement | null;
+	/** The agent's threads on this file, placed by FileDiff the same way. */
+	agentPlacement?: FilePlacement<AgentPlaceable> | null;
 	/** These hunks are the viewed head's (not a Refresh's moment of the old ones). */
 	headSure?: boolean;
 	/** The find: a step lands on the block holding its hit. */
@@ -387,9 +401,28 @@ export function MarkdownView(props: {
 			addThread(target.key, t);
 		}
 	}
+	const threadsId = (key: string) => `${idBase}-threads-${key}`;
 	const [openRows, setOpenRows] = useState<ReadonlySet<string>>(new Set());
 	const openRow = (key: string) =>
 		setOpenRows((was) => (was.has(key) ? was : new Set(was).add(key)));
+	const [focusBubble, setFocusBubble] = useState<string | null>(null);
+	// Resolve closes a thread down to its block's bubble, as in the line
+	// view (resolveCollapse.ts).
+	const collapse = useResolveCollapse<string>(props.threads?.threads, {
+		open: openRow,
+		close: (key) =>
+			setOpenRows((was) => {
+				if (!was.has(key)) return was;
+				const next = new Set(was);
+				next.delete(key);
+				return next;
+			}),
+		focus: setFocusBubble,
+		element: (key) =>
+			root.current?.querySelector(
+				`[aria-controls="${CSS.escape(threadsId(key))}"]`,
+			) ?? null,
+	});
 	// A card asked for (a Threads tab row, a link to a conversation): its
 	// block's threads open, and the card takes it.
 	const rowOfThreadNow = useRef(rowOfThread);
@@ -398,9 +431,56 @@ export function MarkdownView(props: {
 		(id) => rowOfThreadNow.current.has(id),
 		(f) => {
 			const key = rowOfThreadNow.current.get(f.id);
-			if (key) openRow(key);
+			if (!key) return;
+			collapse.toggled(key);
+			openRow(key);
 		},
 	);
+
+	// The agent's threads on lines: placed as the review threads are
+	// (FileDiff, on the document), each under its block with its own
+	// bubble, as the line view has them beside a line's comments.
+	const agentAt = new Map<string, SpanAgentThread[]>();
+	const rowOfAgent = new Map<string, string>();
+	const addAgent = (key: LineKey, p: AgentPlaceable) => {
+		const row = keyOfLineKey(key);
+		agentAt.set(row, [...(agentAt.get(row) ?? []), p.thread]);
+		rowOfAgent.set(p.thread.id, row);
+	};
+	if (where && props.agentPlacement) {
+		for (const [key, list] of props.agentPlacement.end) {
+			for (const p of list) addAgent(key, p);
+		}
+		for (const [p, target] of props.agentPlacement.gapTargets) {
+			addAgent(target.key, p);
+		}
+	}
+	const [openAgent, setOpenAgent] = useState<ReadonlySet<string>>(new Set());
+	const openAgentRow = (key: string) =>
+		setOpenAgent((was) => (was.has(key) ? was : new Set(was).add(key)));
+	const rowOfAgentNow = useRef(rowOfAgent);
+	rowOfAgentNow.current = rowOfAgent;
+	useFocusAmong(
+		(id) => rowOfAgentNow.current.has(id),
+		(f) => {
+			const key = rowOfAgentNow.current.get(f.id);
+			if (key) openAgentRow(key);
+		},
+	);
+	// A thread just asked from this page opens where it lands.
+	const agentEnded = props.agentPlacement?.end;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: once per placement, by the rows as drawn now.
+	useEffect(() => {
+		if (!agentEnded) return;
+		for (const [key, list] of agentEnded) {
+			if (list.some((p) => takeJustAsked(p.thread.id))) {
+				openAgentRow(
+					rowOfAgentNow.current.get(list[0]?.thread.id ?? "") ??
+						keyOfLineKey(key),
+				);
+			}
+		}
+	}, [agentEnded]);
 
 	// Line comments being written on this file: under the block holding
 	// the line they end on, as the line view has them under theirs.
@@ -468,6 +548,60 @@ export function MarkdownView(props: {
 		const key = rows ? rowKeyOf(rows.side, rows.line) : TOP;
 		composersAt.set(key, [...(composersAt.get(key) ?? []), item]);
 	}
+	// Ask agent on lines: under the block, as comments being written are.
+	const agentItems = useAgentComposers().filter(
+		(c) =>
+			c.span.path === file.path &&
+			c.span.subject === "line" &&
+			(c.span.commit === snapshotHead || onEarlier(c.span)),
+	);
+	const askingAt = new Map<string, typeof agentItems>();
+	for (const item of agentItems) {
+		const rows = where ? rowsOf(item.span) : null;
+		const key = rows ? rowKeyOf(rows.side, rows.line) : TOP;
+		askingAt.set(key, [...(askingAt.get(key) ?? []), item]);
+	}
+	/** What a row shows under or beside it besides its block. */
+	const hasExtra = (key: string) =>
+		threadsAt.has(key) ||
+		composersAt.has(key) ||
+		agentAt.has(key) ||
+		askingAt.has(key);
+	// GitHub's diff's own lines (a hunk's), by side: where a comment goes.
+	const hunkKeys = useMemo(() => {
+		const out = new Set<string>();
+		for (const h of hunks.data?.hunks ?? []) {
+			for (const l of h.lines) {
+				for (const side of ["LEFT", "RIGHT"] as const) {
+					const k = lineKey(side, l);
+					if (k) out.add(k);
+				}
+			}
+		}
+		return out;
+	}, [hunks.data]);
+	/** The span's quote and where it is, as this view numbers its rows. */
+	const quoteAndWhere = (span: CodeSpan) => {
+		const rows = rowsOf(span);
+		const texts =
+			rows && where
+				? [
+						where.text(rows.startSide, rows.startLine),
+						...(rows.startSide === rows.side && rows.startLine === rows.line
+							? []
+							: [where.text(rows.side, rows.line)]),
+					]
+				: [];
+		return {
+			rows,
+			quote: quoteOf(span, texts),
+			where: describeSpan(rows ? { ...span, ...rows } : span),
+			lineTexts:
+				rows && hunks.data
+					? (spanTexts(hunks.data.hunks, rows) ?? undefined)
+					: undefined,
+		};
+	};
 	// The since view's removed rows by their own old number: GitHub's
 	// numbers for them (CAR-217: the base; CAR-233: the compared patch
 	// set's commit).
@@ -562,7 +696,7 @@ export function MarkdownView(props: {
 		if (!row || !shows(row, hit)) {
 			// A step FileDiff already spent (it switched for it, or the file
 			// remounted with it) lands here without bouncing back to Text.
-			if (!spent) (toText ?? showText.current)();
+			if (!spent) toText?.();
 			return;
 		}
 		row.scrollIntoView?.({ block: "center" });
@@ -614,7 +748,6 @@ export function MarkdownView(props: {
 	const htmlOf = (list: readonly { html: string }[], ids: number[]) =>
 		ids.map((i) => list[i]?.html ?? "").join("");
 	const noteId = (key: string) => `${idBase}-note-${key}`;
-	const threadsId = (key: string) => `${idBase}-threads-${key}`;
 
 	const content = (html: string, extra = "") => (
 		<div
@@ -636,72 +769,135 @@ export function MarkdownView(props: {
 			</>
 		);
 
-	/** A row's threads bubble (in its gutter), when it has threads. */
+	/** A row's bubbles (in its gutter): its comments', and its agent threads'. */
 	const bubbleOf = (key: string) => {
 		const list = threadsAt.get(key) ?? [];
-		if (list.length === 0) return null;
+		const asked = agentAt.get(key) ?? [];
+		if (list.length === 0 && asked.length === 0) return null;
 		const shown = openRows.has(key);
+		const agentShown = openAgent.has(key);
 		return (
-			<ThreadBubble
-				threads={list}
-				where="on this block"
-				open={shown}
-				controls={shown ? threadsId(key) : undefined}
-				onToggle={() =>
-					setOpenRows((was) => {
-						const next = new Set(was);
-						if (shown) next.delete(key);
-						else next.add(key);
-						return next;
-					})
-				}
-			/>
+			<>
+				{list.length > 0 && (
+					<ThreadBubble
+						threads={list}
+						where="on this block"
+						open={shown}
+						controls={shown ? threadsId(key) : undefined}
+						focus={focusBubble === key}
+						onFocused={() => setFocusBubble(null)}
+						onToggle={() => {
+							collapse.toggled(key);
+							setOpenRows((was) => {
+								const next = new Set(was);
+								if (shown) next.delete(key);
+								else next.add(key);
+								return next;
+							});
+						}}
+					/>
+				)}
+				{asked.length > 0 && (
+					<AgentBubble
+						threads={asked}
+						where="on this block"
+						open={agentShown}
+						controls={agentShown ? `${threadsId(key)}-agent` : undefined}
+						onToggle={() =>
+							setOpenAgent((was) => {
+								const next = new Set(was);
+								if (agentShown) next.delete(key);
+								else next.add(key);
+								return next;
+							})
+						}
+					/>
+				)}
+			</>
 		);
 	};
-	/** Under a row: its threads once opened, and comments being written on it. */
+	/**
+	 * Under a row: its threads once opened (Resolve closes one down to the
+	 * bubble), its agent threads once opened, and comments and questions
+	 * being written on it.
+	 */
 	const threadsOf = (key: string) => {
-		const list = openRows.has(key) ? (threadsAt.get(key) ?? []) : [];
+		const list = openRows.has(key)
+			? (threadsAt.get(key) ?? []).filter(collapse.shows)
+			: [];
+		const asked = openAgent.has(key) ? (agentAt.get(key) ?? []) : [];
 		const writing = composersAt.get(key) ?? [];
-		if (list.length === 0 && writing.length === 0) return null;
+		const asking = askingAt.get(key) ?? [];
+		if (
+			list.length === 0 &&
+			asked.length === 0 &&
+			writing.length === 0 &&
+			asking.length === 0
+		) {
+			return null;
+		}
 		return (
 			<div
-				id={threadsId(key)}
 				data-testid="md-threads"
 				data-threads-of={key}
 				className="md-threads space-y-2"
 			>
-				{list.map((t, i) => (
-					<ThreadBlock
-						key={t.id || `#${i}`}
-						readId={props.threads?.readId ?? ""}
-						thread={t}
-					/>
-				))}
+				{list.length > 0 && (
+					<div id={threadsId(key)} className="space-y-2">
+						{list.map((t, i) => (
+							<ThreadBlock
+								key={t.id || `#${i}`}
+								readId={props.threads?.readId ?? ""}
+								thread={t}
+								onResolved={(thread, from) =>
+									collapse.resolved({ key, thread, shown: list, from })
+								}
+							/>
+						))}
+					</div>
+				)}
+				{asked.length > 0 && (
+					<div
+						id={`${threadsId(key)}-agent`}
+						data-testid="md-agent-threads"
+						className="space-y-2"
+					>
+						<AgentThreadCards threads={asked} />
+					</div>
+				)}
 				{writing.map((item) => {
-					const rows = rowsOf(item.span);
-					const texts =
-						rows && where
-							? [
-									where.text(rows.startSide, rows.startLine),
-									...(rows.startSide === rows.side &&
-									rows.startLine === rows.line
-										? []
-										: [where.text(rows.side, rows.line)]),
-								]
-							: [];
+					const at = quoteAndWhere(item.span);
 					return (
 						<NewThread
 							key={item.clientId}
 							item={item}
-							quote={quoteOf(item.span, texts)}
-							where={describeSpan(rows ? { ...item.span, ...rows } : item.span)}
-							lineTexts={
-								rows && hunks.data
-									? (spanTexts(hunks.data.hunks, rows) ?? undefined)
-									: undefined
-							}
+							quote={at.quote}
+							where={at.where}
+							lineTexts={at.lineTexts}
 							onPosted={() => openRow(key)}
 							headUnsure={props.headSure === false}
+						/>
+					);
+				})}
+				{asking.map((item) => {
+					const at = quoteAndWhere(item.span);
+					return (
+						<AgentComposer
+							key={item.clientId}
+							clientId={item.clientId}
+							span={item.span}
+							quote={at.quote}
+							where={at.where}
+							lineTexts={at.lineTexts}
+							comment={agentCommentOn(item.span, {
+								rowsOf: (range) =>
+									rowsOf({ ...item.span, ...range, subject: "line" }),
+								hunkKeys: hunks.data ? hunkKeys : null,
+								head: snapshotHead || undefined,
+								file,
+								headUnsure: props.headSure === false,
+								readOnly: props.readOnly === true,
+							})}
 						/>
 					);
 				})}
@@ -924,7 +1120,7 @@ export function MarkdownView(props: {
 		// Threads on its blocks, or comments being written there: beside it
 		// and under it, never hidden by it.
 		const bubble = bubbleOf(key);
-		return bubble || composersAt.has(key) ? (
+		return bubble || hasExtra(key) ? (
 			<div key={key} className="md-row" {...rowMarks(key)}>
 				<div className="md-gutter">{bubble}</div>
 				<div className="md-body">{button}</div>
@@ -951,7 +1147,7 @@ export function MarkdownView(props: {
 				onClick={onDocClick}
 				className="md-doc bg-surface py-2"
 			>
-				{(threadsAt.has(TOP) || composersAt.has(TOP)) && (
+				{hasExtra(TOP) && (
 					<div className="md-row" {...rowMarks(TOP)}>
 						<div className="md-gutter">{bubbleOf(TOP)}</div>
 						<div className="md-body" />

@@ -1,4 +1,5 @@
 import {
+	AlertFillIcon,
 	FileBinaryIcon,
 	FileCodeIcon,
 	FileIcon,
@@ -7,6 +8,7 @@ import {
 	MirrorIcon,
 	StackIcon,
 } from "@primer/octicons-react";
+import { useId } from "react";
 import type { FileSummary } from "../../../shared/types";
 import { Tooltip } from "../../Tooltip";
 import type { CompareMode } from "./image/ImageCompare";
@@ -118,7 +120,13 @@ export function ViewSwitch(props: {
 	options: readonly ViewOption[];
 	pressed: ViewId;
 	onPick: (option: ViewOption) => void;
+	/**
+	 * Why a view isn't shown though it was the file's (Rendered fell back
+	 * to Text by itself): a warning mark on its button, said in its tooltip.
+	 */
+	warn?: Partial<Record<ViewId, string>>;
 }) {
+	const warnId = useId();
 	if (props.options.length === 0) return null;
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: a named group of toggle buttons; a fieldset is for form fields.
@@ -130,13 +138,21 @@ export function ViewSwitch(props: {
 		>
 			{props.options.map((option) => {
 				const ViewIcon = option.icon;
+				const warning = props.warn?.[option.id];
 				return (
-					<Tooltip key={option.id} content={option.label} describe={false}>
+					<Tooltip
+						key={option.id}
+						content={warning ? `${option.label}: ${warning}` : option.label}
+						describe={false}
+					>
 						{(trigger) => (
 							<button
 								type="button"
 								{...trigger}
 								aria-label={option.label}
+								aria-describedby={
+									warning ? `${warnId}-${option.id}` : undefined
+								}
 								aria-pressed={props.pressed === option.id}
 								// The shown one again does nothing (no pick is kept).
 								onClick={() => {
@@ -144,7 +160,19 @@ export function ViewSwitch(props: {
 								}}
 								className={`${ICON_BUTTON} not-first:border-line-strong not-first:border-l`}
 							>
-								<ViewIcon aria-hidden size={20} />
+								<span className="relative flex">
+									<ViewIcon aria-hidden size={20} />
+									{warning && (
+										<span
+											id={`${warnId}-${option.id}`}
+											data-testid="view-warn"
+											className="absolute -top-1.5 -right-2 flex rounded-full bg-band text-warn"
+										>
+											<AlertFillIcon aria-hidden size={12} />
+											<span className="sr-only">{warning}</span>
+										</span>
+									)}
+								</span>
 							</button>
 						)}
 					</Tooltip>

@@ -534,6 +534,18 @@ test("a block's comment goes on its last cluster's changed lines and its thread 
 			.filter({ hasText: "Why these three?" }),
 	).toBeVisible();
 	await shot(again, `markdown-comment-${isMobile ? "phone" : "desktop"}`);
+	// Resolve closes it down to its bubble, as in the line view; opened
+	// again, it shows resolved.
+	await block(again, "second").getByRole("button", { name: "Resolve" }).click();
+	await expect(block(again, "second").getByTestId("files-thread")).toHaveCount(
+		0,
+	);
+	await expect(bubble).toHaveAttribute("aria-expanded", "false");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await bubble.click();
+	await expect(
+		block(again, "second").getByRole("article", { name: /^Resolved thread/ }),
+	).toBeVisible(GIT_WAIT);
 	await expectNoPageOverflow(page);
 });
 

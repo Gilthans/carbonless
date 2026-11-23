@@ -715,6 +715,9 @@ export function FileDiff(props: {
 	// Rendered picked again after that switch never bounces back; a fresh
 	// step (into a file it opens, too) is not.
 	const findStep = props.find?.current ? props.find.stepSeq : 0;
+	// Rendered fell back to Text by itself (it can't show this document
+	// whole): its button says so until another pick.
+	const [renderFailed, setRenderFailed] = useState(false);
 	const [spentFindStep, setSpentFindStep] = useState(findStep);
 	// The image renderer reads no lines: its review rows and threads are
 	// DiffBody's, with the lines hidden. The Markdown one shows the lines'
@@ -730,6 +733,7 @@ export function FileDiff(props: {
 	const mode = imageMode.use();
 	const pickView = (option: ViewOption) => {
 		asText.clear();
+		setRenderFailed(false);
 		// Kept per path only when it differs from what the file shows
 		// without a line target's Text: Image again after one writes nothing.
 		if (option.renderer !== resolved)
@@ -741,6 +745,11 @@ export function FileDiff(props: {
 			options={viewOptions(viewed, modes)}
 			pressed={pressedView(renderer, mode, modes)}
 			onPick={pickView}
+			warn={
+				renderFailed && renderer === "text"
+					? { markdown: "Couldn't render this file" }
+					: undefined
+			}
 		/>
 	);
 	// Whether Image compares two versions on one stage (Slider and Fade
@@ -977,17 +986,20 @@ export function FileDiff(props: {
 	// Its document can't be read (the view shows the error): its line
 	// threads go to the header, never dropped while it says so.
 	const documentFailed = markdown && (hunks.isError || documentLines.isError);
+	const placedContext =
+		markdown && documentIn ? (documentLines.data ?? []) : [];
+	const placedNoLines =
+		file.binary ||
+		file.submodule ||
+		(linesHidden && (!markdown || documentFailed));
 	const filePlacement = props.threads
 		? placeThreads({
 				threads: props.threads.threads,
 				path: file.path,
 				snapshotHead: props.threads.snapshotHead,
 				hunks: placedHunks,
-				loadedContext: markdown && documentIn ? (documentLines.data ?? []) : [],
-				noLines:
-					file.binary ||
-					file.submodule ||
-					(linesHidden && (!markdown || documentFailed)),
+				loadedContext: placedContext,
+				noLines: placedNoLines,
 				placements: props.threads.placements,
 				// The since view: as its DiffBody places them (LEFT through
 				// the full diff), so the header holds what no row can.
@@ -1115,18 +1127,19 @@ export function FileDiff(props: {
 				threads: agentPlaceables,
 				path: file.path,
 				snapshotHead,
-				hunks: hunkData,
-				loadedContext: [],
-				noLines: file.binary || file.submodule || linesHidden,
+				// As the review threads: a Rendered file's on its document.
+				hunks: placedHunks,
+				loadedContext: placedContext,
+				noLines: placedNoLines,
 				placements: agentPlacements,
 				...(props.since === undefined
 					? {}
 					: {
-							sinceLeft: sinceLeft(file.clusters, hunkData?.hunks),
+							sinceLeft: sinceLeft(file.clusters, placedHunks?.hunks),
 							...(earlierHead === undefined
 								? {}
 								: {
-										sinceEarlier: sinceEarlier(earlierHead, hunkData?.hunks),
+										sinceEarlier: sinceEarlier(earlierHead, placedHunks?.hunks),
 									}),
 						}),
 			})
@@ -1557,7 +1570,12 @@ export function FileDiff(props: {
 						landing={props.landing}
 						view={viewSwitch(false)}
 						head={body(true)}
-						onShowText={asText.show}
+						onShowText={() => {
+							// Rendered can't show it whole: Text, and Rendered says why.
+							setRenderFailed(true);
+							asText.show();
+						}}
+						agentPlacement={agentPlaced}
 						findSpent={findStep === spentFindStep}
 						onFindText={() => {
 							setSpentFindStep(findStep);

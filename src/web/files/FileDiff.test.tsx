@@ -3298,6 +3298,120 @@ describe("FileDiff: review in the image view", () => {
 		await waitFor(() => expect(shown()).toBe("text"));
 	});
 
+	it("a Rendered Markdown file: an agent thread on a line shows under its block only, never also in the header", async () => {
+		const head = "h".repeat(40);
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		const { user, queryClient } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 200, body: unchanged }
+					: { status: 200, body: view(md) },
+			hunks,
+			"clusters",
+			{ threads: { readId: "r", snapshotHead: head, threads: [] } },
+		);
+		await act(async () => {
+			queryClient.setQueryData(sessionQuery.queryKey, {
+				snapshotHead: head,
+			} as SessionInfo);
+			queryClient.setQueryData(agentThreadsQuery.queryKey, {
+				threads: [
+					{
+						id: "A5",
+						anchor: {
+							subject: "line",
+							path: "README.md",
+							commit: head,
+							side: "RIGHT",
+							line: 5,
+							startSide: "RIGHT",
+							startLine: 5,
+						},
+						openedBy: "human",
+						at: "2026-11-07T10:00:00Z",
+						messages: [
+							{
+								id: "m1",
+								by: "human",
+								at: "2026-11-07T10:00:00Z",
+								text: "Why?",
+							},
+						],
+						resolved: false,
+						waiting: false,
+						unread: false,
+					},
+				],
+			});
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const doc = await screen.findByTestId("md-doc");
+		await within(doc).findByTestId("agent-bubble");
+		expect(screen.getAllByTestId("agent-bubble")).toHaveLength(1);
+	});
+
+	it("Rendered falling back to Text by itself marks its button, said in its description", async () => {
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		// A document with a line missing: Rendered can't show it whole.
+		const holey = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5 && n !== 30)
+			.map((n) => ctx(n, n));
+		const { user } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 200, body: holey }
+					: { status: 200, body: view(md) },
+			hunks,
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await waitFor(() => expect(shown()).toBe("text"));
+		const rendered = () =>
+			within(viewSwitch() as HTMLElement).getByRole("button", {
+				name: "Rendered",
+			});
+		expect(rendered()).toHaveAccessibleDescription("Couldn't render this file");
+		expect(screen.getByTestId("view-warn")).toBeInTheDocument();
+		// Rendered again: it tries, and says so again.
+		await pick(user, "Rendered");
+		await waitFor(() => expect(shown()).toBe("text"));
+		expect(screen.getByTestId("view-warn")).toBeInTheDocument();
+	});
+
+	it("Text picked by hand on a Markdown file shows no fallback mark", async () => {
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		const { user } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 200, body: unchanged }
+					: { status: 200, body: view(md) },
+			hunks,
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await screen.findByTestId("md-doc");
+		await pick(user, "Text");
+		expect(shown()).toBe("text");
+		expect(screen.queryByTestId("view-warn")).toBeNull();
+	});
+
 	it("a Rendered Markdown file whose document can't be read: its line threads stay in the file bubble", async () => {
 		const head = "h".repeat(40);
 		const md = file([cluster("k1")], {

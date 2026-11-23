@@ -2093,6 +2093,47 @@ type HunksRead = Pick<
 	"data" | "isSuccess" | "isPending" | "isError" | "error"
 >;
 
+/**
+ * What Comment on an Ask-agent composer can do with its span here: its
+ * head's facts, and whether GitHub's diff has both ends of the rows it is
+ * on (`rowsOf`: in the since view, a removed line by its own row,
+ * CAR-217; `hunkKeys`: the hunks' lines by side, null until they are in).
+ * The line view's and the Rendered view's composers both ask it.
+ */
+export function agentCommentOn(
+	span: CodeSpan,
+	at: {
+		rowsOf: (range: SpanRange) => SpanRange | null;
+		hunkKeys: ReadonlySet<string> | null;
+		head: string | undefined;
+		file: Pick<FileView, "binary" | "submodule">;
+		headUnsure: boolean;
+		readOnly: boolean;
+	},
+): AgentCommentContext {
+	const rows =
+		span.subject === "line" && span.side && span.line !== undefined
+			? at.rowsOf({
+					startSide: span.startSide ?? span.side,
+					startLine: span.startLine ?? span.line,
+					side: span.side,
+					line: span.line,
+				})
+			: null;
+	return {
+		// Its comment would open on that head: an orphan draft at once.
+		...headFacts(span, at.head),
+		file: { binary: at.file.binary, submodule: at.file.submodule },
+		inDiff:
+			at.hunkKeys && rows
+				? at.hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
+					at.hunkKeys.has(`${rows.side}:${rows.line}`)
+				: undefined,
+		headUnsure: at.headUnsure,
+		readOnly: at.readOnly,
+	};
+}
+
 /** `linesHidden`: no lines, settled at once (never a spinner or "nothing"). */
 const HIDDEN_HUNKS: HunksRead = {
 	data: { hunks: [], newLineCount: 0 },
@@ -2636,29 +2677,15 @@ export function DiffBody(props: {
 		});
 	// GitHub's diff takes a comment on the rows a span is on here (in the
 	// since view, a removed line by its own row: CAR-217).
-	const commentOn = (span: CodeSpan): AgentCommentContext => {
-		const rows =
-			span.subject === "line" && span.side && span.line !== undefined
-				? onRows({
-						startSide: span.startSide ?? span.side,
-						startLine: span.startLine ?? span.line,
-						side: span.side,
-						line: span.line,
-					})
-				: null;
-		return {
-			// Its comment would open on that head: an orphan draft at once.
-			...headFacts(span, snapshotHead ?? sessionHead),
-			file: { binary: file.binary, submodule: file.submodule },
-			inDiff:
-				hunks.data && rows
-					? hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
-						hunkKeys.has(`${rows.side}:${rows.line}`)
-					: undefined,
+	const commentOn = (span: CodeSpan): AgentCommentContext =>
+		agentCommentOn(span, {
+			rowsOf: onRows,
+			hunkKeys: hunks.data ? hunkKeys : null,
+			head: snapshotHead ?? sessionHead,
+			file,
 			headUnsure: props.headSure === false,
 			readOnly: props.readOnly === true,
-		};
-	};
+		});
 	const agentRows: AgentRows | undefined = agentPlacement
 		? {
 				placement: agentPlacement,
@@ -2678,8 +2705,10 @@ export function DiffBody(props: {
 		: undefined;
 	// Asked on a row that isn't shown (a gap), or on an earlier head: above
 	// the diff, never lost.
+	// With the lines shown elsewhere (Markdown's Rendered view), that view
+	// shows those on lines, under the block holding their line.
 	const agentUnshown = [
-		...(hunks.data
+		...(hunks.data && !props.linesElsewhere
 			? agentLineItems.filter((_, i) => !agentPlacement?.spansShown.has(i))
 			: []),
 		...agentOrphans,
