@@ -212,15 +212,20 @@
 
 /*
  * A strike or a tint doesn't show on a picture: a removed image (a removed
- * word mark's, or a removed or struck block's) is framed in red and
- * faded; an added one (an added word mark's, or an added or new block's)
- * framed in green. Placeholders too.
+ * word mark's, or a removed or struck block's) is framed in red, a picture
+ * faded; an added one (an added word mark's, or an added or new
+ * block's) framed in green. Placeholders too, never faded: their alt and
+ * path stay readable.
  */
 .md-content:where(.md-old) :is(img, .md-local-image, .md-remote-image),
 .md-content :where(del.md-del) :is(img, .md-local-image, .md-remote-image) {
 	outline: 2px solid var(--color-bad);
 	outline-offset: 1px;
 	margin: 3px 4px 3px 3px;
+}
+
+.md-content:where(.md-old) img,
+.md-content :where(del.md-del) img {
 	opacity: 0.6;
 }
 
