@@ -889,14 +889,17 @@ question would be on someone else's behalf, or about a past moment.
   patch set, or of the PR's head (`to: "head"`, the page's head dot),
   and the since view from a patch set (`"last"`: the newest before the
   compared head, the page's default; `"last"` to `"head"` is what the
-  author pushed since the reviewer's last pass), with the page's own
+  author pushed since the reviewer's last pass, or, with nothing pushed,
+  an explicit `nothingPushed` and no files, never the last pass itself), with the page's own
   analysis (whitespace-only lines, paired lines with "Ignore whitespace"
-  off; never a second computation) and file-level changes by the page's
-  labels (a mode, a binary file). The since view lists every file its
+  off; never a second computation) and file-level changes labelled as
+  crb labels them (a mode, a binary file; in the since view, what changed
+  since). An unchanged file in the since view can still hold lines to
+  read (`progress` says). The since view lists every file its
   engine says it changes, never deciding from the hunks' count. crb
   detects no moved blocks yet, and `diff` says so rather than guess.
-  Past its budget, the remaining files are named (`omitted`) without
-  being read; a since view crb can't build, or a file it can't read, is
+  Past its budget, the remaining files are named (`omitted`, `unread`,
+  with no hunk count or analysis) without being read; a since view crb can't build, or a file it can't read, is
   an error, never an empty diff. `file` reads only commits `review`
   names (base, merge base, head, the PR's head, a patch set's head or
   merge base), paths checked (relative, no `..`, never an option),

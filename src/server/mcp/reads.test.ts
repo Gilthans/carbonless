@@ -17,6 +17,7 @@ import { hunkView } from "../../web/files/whitespace";
 import { MAX_DIFF_CHARS, MAX_FILE_BYTES } from "../agent/reads";
 import { buildApp } from "../app";
 import { SessionRegistry } from "../registry";
+import { ThreadPlacer } from "../rereview/threads";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -320,6 +321,13 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 		expect(between.files.map((f) => f.path)).toEqual(["b.txt"]);
 		expect(between.files[0]?.diff).toBe("@@ -0,0 +1,1 @@\n+b");
 		expect(between.unchanged).toBe(2);
+		// Asked by path, an unchanged file says so.
+		const same = (await s.ok("diff", {
+			from: 1,
+			to: 2,
+			path: "a.txt",
+		})) as unknown as { files: { changed?: boolean; diff: string }[] };
+		expect(same.files[0]).toMatchObject({ changed: false, diff: "" });
 		// PS1's own full diff hasn't b.txt.
 		const ps1 = (await s.ok("diff", { to: 1 })) as unknown as Diff;
 		expect(ps1.comparison).toMatchObject({ head: h1, from: null, to: 1 });
@@ -366,10 +374,12 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 		expect(all.omitted).toEqual(["big.txt", "new.txt"]);
 		const left = all.files.find((f) => f.path === "big.txt");
 		expect(left).toMatchObject({ diff: "", hunks: 1, nextHunk: 0 });
-		expect(all.files.find((f) => f.path === "new.txt")).toMatchObject({
-			diff: "",
-			nextHunk: 0,
-		});
+		// Not read: marked unread, with no hunk count or analysis it hasn't.
+		const unread = all.files.find((f) => f.path === "new.txt");
+		expect(unread).toMatchObject({ diff: "", nextHunk: 0, unread: true });
+		expect(unread).not.toHaveProperty("hunks");
+		expect(unread).not.toHaveProperty("pairs");
+		expect(unread).not.toHaveProperty("whitespaceOnly");
 		// The file before it is whole.
 		expect(all.files.find((f) => f.path === "a.txt")?.diff).toContain(
 			"+line 2 changed",
@@ -641,5 +651,112 @@ describe("/mcp reads: diff, file, patch sets, threads at head", () => {
 		});
 		const ok = await s.ok("file", { path: "latin.txt" });
 		expect(ok.text).toBe("caf\u00e9");
+	});
+
+	it("since my last pass with nothing pushed: diff from 'last' to 'head' says nothingPushed, never the last pass itself", async () => {
+		const { h2 } = await twoPatchsets();
+		const s = await joined();
+		const r = (await s.ok("review")).review as Record<string, unknown>;
+		expect(r).toMatchObject({ prHead: { commit: h2, newer: false } });
+		const d = (await s.ok("diff", {
+			from: "last",
+			to: "head",
+		})) as unknown as Diff & {
+			nothingPushed?: number;
+		};
+		expect(d.nothingPushed).toBe(2);
+		expect(d.files).toEqual([]);
+		// An explicit from still compares, as asked.
+		const explicit = (await s.ok("diff", {
+			from: 1,
+			to: "head",
+		})) as unknown as Diff;
+		expect(explicit.files.map((f) => f.path)).toEqual(["b.txt"]);
+	});
+
+	it("to 'head' with the head unmoved is the review's own snapshot, even after the base branch moved", async () => {
+		const { h2 } = await twoPatchsets();
+		// The base branch moves to the PR's head: today's merge base differs.
+		pr.moveMain(h2);
+		await refresh();
+		const s = await joined();
+		const d = (await s.ok("diff", { to: "head" })) as unknown as Diff;
+		expect(d.comparison).toMatchObject({
+			base: pr.mergeBase,
+			head: h2,
+			from: null,
+			to: 2,
+		});
+		expect(d.files.map((f) => f.path)).toEqual(["a.txt", "b.txt", "new.txt"]);
+	});
+
+	it("review: placing the resolved threads failing in the session reaches each resolved thread's atHead", async () => {
+		const real = ThreadPlacer.prototype.inputs;
+		const spy = vi
+			.spyOn(ThreadPlacer.prototype, "inputs")
+			.mockImplementation(function (this: ThreadPlacer, ...args) {
+				const [, threads] = args;
+				if (threads.some((t) => t.resolved)) {
+					return Promise.reject(new Error("placer boom"));
+				}
+				return real.apply(this, args);
+			});
+		try {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2 }, [
+									threadComment({
+										login: "rev",
+										text: "Open",
+										commit: pr.head(),
+									}),
+								]),
+								reviewThread({ path: "a.txt", line: 26, isResolved: true }, [
+									threadComment({
+										login: "rev",
+										text: "Done",
+										commit: pr.head(),
+									}),
+								]),
+							],
+						},
+					},
+				},
+			});
+			const o = await api("/overview?maxAge=0");
+			expect(o.statusCode, o.body).toBe(200);
+			const s = await joined();
+			const r = (await s.ok("review")).review as {
+				threads: { resolved: boolean; atHead: Record<string, unknown> }[];
+			};
+			const open = r.threads.find((t) => !t.resolved);
+			const done = r.threads.find((t) => t.resolved);
+			expect(open?.atHead).toMatchObject({ kind: "placed", line: 2 });
+			expect(done?.atHead).toEqual({
+				kind: "unknown",
+				why: "resolved threads couldn't be placed (placer boom)",
+			});
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("file: a NUL past git's first 8000 bytes is text, as the page shows it", async () => {
+		pr.moveHead({ "late.txt": `${"a".repeat(9000)}\u0000tail\n` });
+		await refresh();
+		const s = await joined();
+		const f = await s.ok("file", { path: "late.txt" });
+		expect(f.lines).toBe(1);
+		const early = pr.moveHead({ "early.txt": "\u0000head\n" });
+		await refresh();
+		const r = await s.refused("file", { path: "early.txt", commit: early });
+		expect(r).toMatchObject({
+			error: "not-found",
+			message: expect.stringContaining("binary"),
+		});
 	});
 });

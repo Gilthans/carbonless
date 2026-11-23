@@ -504,6 +504,11 @@ describe("AgentHost with a session joined through MCP", () => {
 				// Every file is listed; the ones past the budget are named.
 				expect(d.files.map((f) => f.path)).toEqual(files.map((f) => f.path));
 				expect(d.omitted?.length).toBeGreaterThan(40);
+				// What wasn't read claims no hunks or analysis.
+				for (const f of d.files.filter((x) => x.unread)) {
+					expect(f.hunks).toBeUndefined();
+					expect(f.pairs).toBeUndefined();
+				}
 				// Only what could fit was read, plus the one that didn't.
 				expect(read.length).toBeLessThanOrEqual(5);
 				expect(d.files.filter((f) => f.diff !== "").length).toBe(

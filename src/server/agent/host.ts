@@ -361,6 +361,8 @@ export interface SessionDiff {
 	files: DiffFileOut[];
 	/** The since view: files it doesn't change (not listed). */
 	unchanged?: number;
+	/** Nothing was pushed since the reviewer's last pass (this patch set): no files. */
+	nothingPushed?: number;
 	/** Past the budget: these files' hunks were left out; ask for each by path. */
 	omitted?: string[];
 }
@@ -1744,7 +1746,6 @@ export class AgentHost {
 		const omitted: string[] = [];
 		let unchanged = 0;
 		let left = MAX_DIFF_CHARS;
-		const empty = { whitespaceOnly: { LEFT: [], RIGHT: [] }, pairs: [] };
 		for (const f of files) {
 			// The since view: a file its engine says it doesn't change is counted.
 			if (since && f.changed === false && !args.path) {
@@ -1761,7 +1762,8 @@ export class AgentHost {
 			// The budget is spent: the rest are named, not read.
 			if (!args.path && left < MIN_FILE_BUDGET) {
 				omitted.push(meta.path);
-				out.push({ ...meta, diff: "", hunks: 0, ...empty, nextHunk: 0 });
+				// Unread: no hunk count or analysis it doesn't have.
+				out.push({ ...meta, diff: "", unread: true, nextHunk: 0 });
 				continue;
 			}
 			let hunks: FileHunks;
@@ -1772,8 +1774,6 @@ export class AgentHost {
 				out.push({
 					...meta,
 					diff: "",
-					hunks: 0,
-					...empty,
 					error: "Couldn't read this file's diff",
 				});
 				continue;
@@ -1793,6 +1793,7 @@ export class AgentHost {
 			if (!args.path && part.nextHunk !== undefined) left = 0;
 			out.push({
 				...meta,
+				...(since && f.changed === false ? { changed: false as const } : {}),
 				diff: part.text,
 				hunks: hunks.hunks.length,
 				...analyse(part.given, part.shown),
@@ -1801,6 +1802,9 @@ export class AgentHost {
 		}
 		return {
 			comparison: { base: c.base, head: c.head, from: c.from, to: c.to },
+			...(c.nothingPushed !== undefined
+				? { nothingPushed: c.nothingPushed }
+				: {}),
 			files: out,
 			...(unchanged > 0 ? { unchanged } : {}),
 			...(omitted.length > 0 ? { omitted } : {}),
@@ -2646,7 +2650,8 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 				// The page's blob cache and decoding (UTF-8, else latin1).
 				const bytes = (await readBlobs(src.repo, [stat.oid])).get(stat.oid);
 				if (!bytes) return "missing";
-				if (bytes.includes(0)) return "binary";
+				// Binary as git (and so the page) decides: a NUL in the first 8000 bytes.
+				if (bytes.subarray(0, 8000).includes(0)) return "binary";
 				return { lines: decodeLines(bytes, chooseEncoding(bytes)).lines };
 			},
 		},

@@ -1621,9 +1621,15 @@ export class Session {
 			if (!r) throw bad(`No patch set ${n}`);
 			return r;
 		};
+		// The head dot only when the PR moved past the review's head; else
+		// the review's own snapshot, as the page shows no head dot then.
+		const headMoved =
+			!this.options.asOf && this.#meta.headOid !== this.#snapshot.head;
 		const target =
 			c.to === "head"
-				? await this.#headSnapshot(checkOid(this.#meta.headOid))
+				? headMoved
+					? await this.#headSnapshot(checkOid(this.#meta.headOid))
+					: this.#snapshot
 				: c.to !== undefined
 					? await this.#snapshotOf(recordOf(c.to))
 					: this.#snapshot;
@@ -1654,6 +1660,28 @@ export class Session {
 					};
 				}),
 				hunks: (index) => loadFileHunks(this.repo, target, index),
+			};
+		}
+		const newest = [...progress.patchsets].sort(
+			(a, b) => b.number - a.number,
+		)[0];
+		// "Since my last pass" with nothing pushed: say so, never the pass itself.
+		if (
+			c.from === "last" &&
+			c.to === "head" &&
+			newest &&
+			newest.revision === target.revision
+		) {
+			return {
+				base: target.head,
+				head: target.head,
+				from: newest.number,
+				to: newest.number,
+				nothingPushed: newest.number,
+				files: [],
+				hunks: async () => {
+					throw new Error("nothing pushed: no hunks");
+				},
 			};
 		}
 		let since: PatchsetRecord;

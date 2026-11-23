@@ -29,13 +29,19 @@ export interface AgentDiff {
 	to: number | null;
 	/** The since view's only: whether the interdiff could be built. */
 	interdiff?: "available" | "unavailable";
+	/**
+	 * `from: "last"` to `"head"` when the PR's head is the reviewer's
+	 * newest patch set: nothing was pushed since their last pass (this
+	 * patch set); no files are listed.
+	 */
+	nothingPushed?: number;
 	files: {
 		index: number;
 		path: string;
 		oldPath?: string;
 		status?: FileStatus;
 		binary?: boolean;
-		/** File-level changes, as the page labels them (a mode, a binary file, a rename). */
+		/** File-level changes, as crb labels them (a mode, a binary file, a rename); the since view's: what changed since. */
 		changes?: string[];
 		/** The since view only: whether it changes the file (the engine's answer, not the hunks' count). */
 		changed?: boolean;
@@ -74,18 +80,22 @@ export interface DiffAnalysis {
 	pairs: [number, number][];
 }
 
-/** One file in a `diff` answer. */
-export interface DiffFileOut extends DiffAnalysis {
+/** One file in a `diff` answer: read (hunks and analysis), or `unread` past the budget. */
+export interface DiffFileOut extends Partial<DiffAnalysis> {
 	path: string;
 	oldPath?: string;
 	status?: FileStatus;
 	binary?: true;
-	/** File-level changes, as the page labels them (a mode, a binary file, a rename). */
+	/** File-level changes, as crb labels them (a mode, a binary file, a rename); the since view's: what changed since. */
 	changes?: string[];
 	/** Unified diff text of the hunks given (git's order); "" for none. */
 	diff: string;
-	/** Hunks in the file (all of them, given or not). */
-	hunks: number;
+	/** Hunks in the file (all of them, given or not); absent when it wasn't read. */
+	hunks?: number;
+	/** Not read: the budget was spent before it (ask for it by path). */
+	unread?: true;
+	/** Read by path in the since view: it doesn't change the file since. */
+	changed?: false;
 	/** Past the budget: the first hunk left out; ask again with `fromHunk`. */
 	nextHunk?: number;
 	/** The file's diff couldn't be read (it is still one of the comparison's). */
