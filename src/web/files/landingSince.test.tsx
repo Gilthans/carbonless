@@ -222,15 +222,19 @@ describe("the since view lands a LEFT link on the base line's row", () => {
 		expect(row).toHaveAttribute("data-new-no", "3");
 	});
 
-	it("says a base line no row is isn't in this view, with the way to the full diff", async () => {
+	it("says why a base line no row is isn't in this view, as its thread's card does (CAR-255), with the way to the full diff", async () => {
 		renderSince(at(4));
 		await screen.findByText("new four");
 		const hint = await screen.findByTestId("landing-hint");
-		expect(hint).toHaveTextContent("Old line 4 isn't in this view");
+		// Gone by PS1 already (notHereText): never "unchanged since".
+		expect(hint).toHaveTextContent("Old line 4: deleted before PS1");
 		// The status is the text alone; the link is beside it, not in it.
 		const status = screen.getByRole("status");
-		expect(status).toHaveTextContent("Old line 4 isn't in this view");
-		expect(status).not.toHaveTextContent("Full diff");
+		expect(status).toHaveTextContent("Old line 4: deleted before PS1");
+		expect(status).not.toHaveTextContent("full diff");
+		expect(screen.getByRole("link", { name: "Open in the full diff" })).toBe(
+			screen.getByTestId("landing-full-diff"),
+		);
 		expect(landedRow()).toBeNull();
 		const link = screen.getByTestId("landing-full-diff");
 		const href = new URL(link.getAttribute("href") ?? "", "http://test");

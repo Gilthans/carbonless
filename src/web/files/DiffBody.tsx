@@ -2,7 +2,6 @@ import {
 	AlertIcon,
 	ChevronDownIcon,
 	ChevronRightIcon,
-	FileDiffIcon,
 	InfoIcon,
 } from "@primer/octicons-react";
 import {
@@ -10,7 +9,6 @@ import {
 	useQueries,
 	useQuery,
 } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import {
 	type CSSProperties,
 	Fragment,
@@ -97,7 +95,6 @@ import {
 	type Words,
 } from "../code/Invisibles";
 import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
-import { useReviewId } from "../reviewId";
 import { Spinner, SpinnerIcon } from "../Spinner";
 import {
 	clickPointer,
@@ -122,17 +119,13 @@ import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { contextRanges, rangesKeyOf } from "./contextRanges";
+import { FullDiffLink, type FullDiffTarget } from "./FullDiffLink";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
 import { KindChip } from "./KindChip";
-import {
-	earlierRow,
-	type FilesSearch,
-	type Landing,
-	landingRow,
-} from "./landing";
+import { earlierRow, type Landing, landingRow } from "./landing";
 import {
 	getPicks,
 	type Picks,
@@ -154,6 +147,7 @@ import {
 	useStickyControls,
 } from "./stickyControls";
 import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
+import { notHereText } from "./ThreadFate";
 import {
 	AgentThreadRow,
 	type CardPlace,
@@ -165,6 +159,8 @@ import {
 	type FilePlacement,
 	type LineKey,
 	lineKey,
+	type NotHere,
+	notHereOf,
 	onSinceRows,
 	type Placeable,
 	type Placements,
@@ -2535,12 +2531,22 @@ export function DiffBody(props: {
 				: sinceEarlier(earlierHead, hunks.data?.hunks),
 		[earlierHead, hunks.data],
 	);
+	// Why a base line the since view has no row for isn't in it (CAR-255).
+	const notHere = useMemo(() => {
+		const data = hunks.data;
+		if (props.from === undefined || !left || !data) return undefined;
+		return {
+			at: (n: number) => (left(n) === null ? notHereOf(data, n, left) : null),
+			since: props.from,
+		};
+	}, [props.from, left, hunks.data]);
 	const { hint, landed, pending } = useLanding(
 		root,
 		lineLanding,
 		hunks.isSuccess,
 		left,
 		early,
+		notHere,
 	);
 	useFindStep(root, linesHidden ? undefined : find, hunks.isSuccess);
 	// The line a thread link is about to land on (so a collapsed cluster
@@ -3936,7 +3942,7 @@ const landingOn = (target: LineRef | null, line: RowLine) =>
 interface Hint {
 	text: string;
 	tip: string;
-	full?: FilesSearch;
+	full?: FullDiffTarget;
 }
 
 /**
@@ -3995,6 +4001,12 @@ function useLanding(
 	left: SinceLeft | undefined,
 	/** The since view's lines only its compared patch set had (earlierRow). */
 	early: SinceEarlier | undefined,
+	/**
+	 * The since view: why a base line it has no row for isn't in it
+	 * (notHereOf, as a thread's card says it, CAR-255), and its compared
+	 * patch set; null for a line that rule doesn't cover.
+	 */
+	notHere?: { at: (n: number) => NotHere | null; since: number },
 ): { hint: Hint | null; landed: Landed | null; pending: boolean } {
 	const [hint, setHint] = useState<Hint | null>(null);
 	const [landed, setLanded] = useState<Landed | null>(null);
@@ -4003,6 +4015,8 @@ function useLanding(
 	leftNow.current = left;
 	const earlyNow = useRef(early);
 	earlyNow.current = early;
+	const notHereNow = useRef(notHere);
+	notHereNow.current = notHere;
 	// Until the landing below has run (it sets state when it does).
 	const pending =
 		landing !== undefined && ready && done.current !== landing.seq;
@@ -4031,6 +4045,27 @@ function useLanding(
 		if (!row || !at) {
 			// A line no row of the since view shows: the full diff may.
 			const since = leftNow.current !== undefined;
+			const sinceHint = (
+				path: string | undefined,
+				line: number,
+				side: DiffSide,
+				where: string,
+			): Hint => {
+				const full = path === undefined ? undefined : { path, line, side };
+				// A base line the compared patch set had already deleted: the
+				// thread card's words (notHereText); else unchanged since.
+				const why =
+					side === "LEFT" ? (notHereNow.current?.at(line) ?? null) : null;
+				if (why && notHereNow.current) {
+					const { label, tip } = notHereText(why.why, notHereNow.current.since);
+					return { text: `${where}: ${label}`, tip, ...(full && { full }) };
+				}
+				return {
+					text: `${where} isn't in this view`,
+					tip: "Unchanged since the compared patch set, or not in the diff",
+					...(full && { full }),
+				};
+			};
 			setHint(
 				landing.line === undefined
 					? null
@@ -4040,16 +4075,7 @@ function useLanding(
 								tip: "Commented on another commit: the line may have moved",
 							}
 						: since
-							? {
-									text: `${where} isn't in this view`,
-									tip: "Unchanged since the compared patch set, or not in the diff",
-									full: {
-										path: landing.path,
-										line: landing.line,
-										side,
-										from: "branch",
-									},
-								}
+							? sinceHint(landing.path, landing.line, side, where)
 							: {
 									text: `${where} isn't in this diff`,
 									tip: "Outdated, or an unchanged line the diff doesn't show",
@@ -4122,30 +4148,10 @@ function LandingHint({ hint }: { hint: Hint }) {
 					</p>
 				)}
 			</Tooltip>
-			{hint.full && <FullDiffLink search={hint.full} />}
+			{hint.full && (
+				<FullDiffLink target={hint.full} testId="landing-full-diff" />
+			)}
 		</div>
-	);
-}
-
-/** The since view's way to a landing's line in the full diff (the comparison's base: the branch). */
-function FullDiffLink({ search }: { search: FilesSearch }) {
-	const id = useReviewId();
-	return (
-		<Link
-			to="/r/$id/files"
-			params={{ id }}
-			// The viewed dot stays; the base moves to the branch.
-			search={(prev: FilesSearch) => ({
-				ps: prev.ps,
-				head: prev.head,
-				...search,
-			})}
-			data-testid="landing-full-diff"
-			className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-md px-2 font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-		>
-			<FileDiffIcon size={14} aria-hidden />
-			Full diff
-		</Link>
 	);
 }
 

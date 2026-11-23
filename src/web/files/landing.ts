@@ -25,11 +25,15 @@ export interface FilesSearch {
 	/** An agent conversation to open on arrival (its card), and a message in it to outline. */
 	conversation?: string;
 	message?: string;
+	/** A review thread whose card opens on arrival (its GitHub id; CAR-255). */
+	thread?: string;
 }
 
 const OID = /^[0-9a-f]{40}$/;
 /** An agent thread or message id (a lowercase ULID). */
 const ULID = /^[0-9a-hjkmnp-tv-z]{26}$/;
+/** A GitHub review thread's node id (e.g. `PRRT_kwDO…`). */
+const THREAD_ID = /^[A-Za-z0-9_=-]{1,128}$/;
 
 /** A positive integer, as the address has it (a string) or as given. */
 function positive(raw: unknown): number | undefined {
@@ -61,6 +65,9 @@ export function parseFilesSearch(raw: Record<string, unknown>): FilesSearch {
 		if (typeof raw.message === "string" && ULID.test(raw.message)) {
 			out.message = raw.message;
 		}
+	}
+	if (typeof raw.thread === "string" && THREAD_ID.test(raw.thread)) {
+		out.thread = raw.thread;
 	}
 	return out;
 }
