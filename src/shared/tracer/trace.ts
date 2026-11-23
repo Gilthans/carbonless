@@ -29,6 +29,7 @@ import {
 	movedTo,
 	sameFileTexts,
 	TUNING,
+	tellingLine,
 } from "./moved.js";
 
 /**
@@ -216,6 +217,12 @@ interface Memo {
 interface Run {
 	first: number;
 	last: number;
+	/**
+	 * A boundary (joinOf) cut it from a neighbouring hunk that adds lines:
+	 * a line that finds nothing alike may have gone there, so it isn't
+	 * "deleted" (rewritten: can't tell).
+	 */
+	blocked: boolean;
 	/** The run's pairing; null for a run of one hunk. */
 	wide: Region | null;
 	read: Read;
@@ -316,20 +323,36 @@ function between(a: MapHunk, b: MapHunk): [number, number] {
 
 /** Whether `a` and `b` join one region (old text read through `diffs`). */
 function joins(a: MapHunk, b: MapHunk, diffs: TraceDiffs): boolean {
+	return joinOf(a, b, diffs) === "join";
+}
+
+/** A lone closer at the left margin: the end of a top-level block. */
+const TOP_CLOSER = /^(?:[)\]}]+[;,]?|end)\s*$/u;
+
+/**
+ * Whether `a` and `b` join one region ("join"), are cut by a boundary
+ * between two pieces of code ("boundary": a line opening a block, or a
+ * lone closer at the left margin such as a function's `}`), or are just
+ * too far apart ("apart"). Text at the left margin that closes nothing
+ * (Markdown, YAML, a top-level Python line) is no boundary.
+ */
+function joinOf(
+	a: MapHunk,
+	b: MapHunk,
+	diffs: TraceDiffs,
+): "join" | "boundary" | "apart" {
 	const [from, to] = between(a, b);
-	if (to - from + 1 > REGION_GAP) return false;
+	if (to - from + 1 > REGION_GAP) return "apart";
 	let words = 0;
 	for (let n = from; n <= to; n++) {
 		const t = read(diffs.oldLineText, n);
-		if (t === null) return false;
-		// A line at the left margin (a top-level `}`, the next declaration)
-		// is a boundary between two pieces of code, as an opener is.
-		if (t.trim() !== "" && !/^\s/u.test(t)) return false;
+		if (t === null) return "apart";
+		if (TOP_CLOSER.test(t)) return "boundary";
 		if (!HAS_WORD.test(t)) continue;
-		if (OPENS_BLOCK.test(t)) return false;
+		if (OPENS_BLOCK.test(t)) return "boundary";
 		words++;
 	}
-	return words <= REGION_GAP_WORDS;
+	return words <= REGION_GAP_WORDS ? "join" : "apart";
 }
 
 function linesOf(hunks: readonly MapHunk[], diffs: TraceDiffs): Region {
@@ -404,9 +427,16 @@ function runOf(hunk: MapHunk, diffs: TraceDiffs, memo: Memo): Run {
 		joins(all[last] as MapHunk, all[last + 1] as MapHunk, diffs)
 	)
 		last++;
+	const cut = (a: number, b: number) => {
+		const x = all[a];
+		const y = all[b];
+		if (!x || !y || joinOf(x, y, diffs) !== "boundary") return false;
+		return (a < first ? x : y).newCount > 0;
+	};
 	const run: Run = {
 		first,
 		last,
+		blocked: cut(first - 1, first) || cut(last, last + 1),
 		wide: first === last ? null : linesOf(all.slice(first, last + 1), diffs),
 		read: readFor(all, first, last, diffs),
 	};
@@ -596,9 +626,10 @@ type Local =
  */
 function localPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Local {
 	const regions = regionsOf(hunk, diffs);
-	// Nothing at all replaced it: deleted, whatever its text.
+	// Nothing at all replaced it: deleted, whatever its text (unless a
+	// boundary cut it off from code added beside it: can't tell).
 	if (regions.every((r) => r !== "unknown" && r.newLines.length === 0)) {
-		return null;
+		return cutOff(hunk, line, diffs) ? "unknown" : null;
 	}
 	// A line without a word (a `}`, a blank line) is like every other one:
 	// its likeness says nothing about where it went, nor whether it did.
@@ -645,7 +676,22 @@ function localPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Local {
 	}
 	if (shared !== null) return shared;
 	// No likeness here, but a pairing that couldn't be made might have one.
-	return regions.includes("unknown") ? "unknown" : null;
+	if (regions.includes("unknown")) return "unknown";
+	return cutOff(hunk, line, diffs) ? "unknown" : null;
+}
+
+/**
+ * Whether `line`, finding nothing alike, may have gone past a boundary its
+ * hunk's run was cut at (Run.blocked), into code added there: then not
+ * "deleted" but can't tell, when its text says something on its own
+ * (moved.ts `tellingLine`; a generic `t.Parallel()` stays deleted).
+ */
+function cutOff(hunk: MapHunk, line: number, diffs: TraceDiffs): boolean {
+	return (
+		runOf(hunk, diffs, memoOf(diffs)).blocked &&
+		diffs.newLineText !== undefined &&
+		tellingLine(line, diffs)
+	);
 }
 
 /** SHARE_MIN_SIMILARITY's step: the unpaired line's likeliest replacement. */

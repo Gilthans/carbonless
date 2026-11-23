@@ -387,6 +387,34 @@ const block = (run: Run | null): run is Run =>
 	run !== null && run.words >= 2 && run.equalAlnum >= TUNING.minAlnum;
 
 /**
+ * Whether new line `n` sits directly under an opener like `opener` (equal
+ * ignoring whitespace, or alike): the nearest line with a word above it,
+ * indented less than `n`. A block that joined another of its kind (`const
+ * (` under `const (`) took its opener's place; a block dropped from an `if
+ * strict {` or a `with mock.patch(...):` and found under another opener
+ * left that opener behind.
+ */
+function joinsLike(
+	opener: string,
+	n: number,
+	r: TextReaders,
+	x: FileIndex,
+): boolean {
+	const own = readNew(r, n);
+	if (own === null) return false;
+	const depth = indent(own);
+	for (let m = n - 1; m >= 1; m--) {
+		const t = readNew(r, m);
+		if (t === null) return false;
+		if (!hasWord(t) || indent(t) >= depth) continue;
+		return (
+			x.same(t) === x.same(opener) || x.sim(opener, t) >= PAIR_MIN_SIMILARITY
+		);
+	}
+	return false;
+}
+
+/**
  * Whether old line `o`'s text says something on its own: TUNING.minAlnum
  * letters and digits, or once in the old file. A copy of `t.Parallel()` or
  * `return nil` among the added lines says nothing about where a deleted
@@ -396,6 +424,11 @@ function telling(o: number, r: TextReaders, x: FileIndex): boolean {
 	const t = readOld(r, o);
 	if (t === null) return false;
 	return alnum(t) >= TUNING.minAlnum || oldCounts(r, x).get(x.same(t)) === 1;
+}
+
+/** `telling` of old line `o`, for trace.ts (its index built when needed). */
+export function tellingLine(o: number, r: TextReaders): boolean {
+	return telling(o, r, indexOf(r));
 }
 
 /** `hunk`'s removed lines with a word, memoized. */
@@ -444,7 +477,8 @@ function carries(
 		OPENS_BLOCK.test(opener) &&
 		hasWord(opener) &&
 		above >= hunk.oldStart &&
-		r.bd.hunkRemovingOld(above) === hunk
+		r.bd.hunkRemovingOld(above) === hunk &&
+		joinsLike(opener, run.newFrom, r, x)
 	) {
 		gone++;
 	}

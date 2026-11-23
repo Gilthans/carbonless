@@ -1145,7 +1145,7 @@ describe("a deleted line never moves on one line alone (CAR-95 step 3, fix round
 		expect(placeIn(old, now, 2)).toBe("rewritten");
 	});
 
-	it("a switch arm removed, another arm with the same one-line body added: the case line is deleted", () => {
+	it("a switch arm removed, another arm with the same one-line body added: the case line never moves", () => {
 		const old = [
 			"switch kind {",
 			'case "png":',
@@ -1162,7 +1162,7 @@ describe("a deleted line never moves on one line alone (CAR-95 step 3, fix round
 			"\treturn renderImage(ctx, req, opts)",
 			"}",
 		];
-		expect(placeIn(old, now, 2)).toMatch(/^deleted/);
+		expect(placeIn(old, now, 2)).toMatch(/^(deleted|rewritten)/);
 	});
 });
 
@@ -1441,6 +1441,148 @@ describe("fix round 3 (CAR-95 step 3)", () => {
 			"}",
 		];
 		expect(placeIn(old, now, 3)).toMatch(/^(deleted|rewritten)/);
+	});
+});
+
+describe("fix round 4 (CAR-95 step 3)", () => {
+	it("an `if` block of boilerplate dropped from a function that stays never moves into new code (Q9)", () => {
+		const old = [
+			"func TestA(t *testing.T) {",
+			"\tif strict {",
+			"\t\tt.Parallel()",
+			"\t\tctx := context.Background()",
+			"\t}",
+			"\tgot := doA()",
+			"\tassert.Equal(t, wantA, got)",
+			"}",
+			"",
+			"func TestM(t *testing.T) {",
+			"\tmiddle()",
+			"}",
+		];
+		const now = [
+			"func TestA(t *testing.T) {",
+			"\tgot := doA()",
+			"\tassert.Equal(t, wantA, got)",
+			"}",
+			"",
+			"func TestM(t *testing.T) {",
+			"\tmiddle()",
+			"}",
+			"",
+			"func TestZ(t *testing.T) {",
+			"\tt.Parallel()",
+			"\tctx := context.Background()",
+			"\tsrv := startServer(ctx)",
+			"}",
+		];
+		for (const line of [2, 3, 4]) {
+			expect(placeIn(old, now, line)).toMatch(/^(deleted|rewritten)/);
+		}
+	});
+
+	it("a Python `with` block dropped from a test that stays never moves into a new test (Q11)", () => {
+		const old = [
+			"def test_a():",
+			'    with mock.patch("svc.client"):',
+			"        client = make_client(settings)",
+			"        client.connect(timeout=5)",
+			"    assert run() == 1",
+			"",
+			"def test_m():",
+			"    pass",
+		];
+		const now = [
+			"def test_a():",
+			"    assert run() == 1",
+			"",
+			"def test_m():",
+			"    pass",
+			"",
+			"def test_z():",
+			"    client = make_client(settings)",
+			"    client.connect(timeout=5)",
+			"    assert ping(client)",
+		];
+		expect(placeIn(old, now, 2)).toMatch(/^(deleted|rewritten)/);
+		expect(placeIn(old, now, 3)).toMatch(/^(deleted|rewritten)/);
+	});
+
+	it("text at the left margin that closes nothing still joins: Markdown, top-level Python, YAML", () => {
+		const md = [
+			"# Setup",
+			"",
+			"Install the command line tool with npm before anything else.",
+			"Keep this line as it is.",
+			"Configure the access token in the settings page before anything else.",
+			"",
+			"End.",
+		];
+		const mdNow = [
+			"# Setup",
+			"",
+			"Configure the access token in the settings panel before anything else.",
+			"Keep this line as it is.",
+			"Install the command line tool with pnpm before anything else.",
+			"",
+			"End.",
+		];
+		const swap = [h(3, 1, 3, 1), h(5, 1, 5, 1)];
+		expect(place(rewrite(md, mdNow, swap, at(5)))).toBe("changed 3");
+		const py = [
+			"import os",
+			"",
+			'DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///local.db")',
+			"DEBUG = False",
+			'CACHE_URL = os.environ.get("CACHE_URL", "redis://localhost:6379")',
+			"",
+		];
+		const pyNow = [
+			"import os",
+			"",
+			'CACHE_URL = os.environ.get("CACHE_URL", "redis://cache:6379")',
+			"DEBUG = False",
+			'DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://db/app")',
+			"",
+		];
+		expect(place(rewrite(py, pyNow, swap, at(5)))).toBe("changed 3");
+		const yaml = [
+			"service_name: billing-api-production",
+			"replicas: 3",
+			"service_port: 8080",
+			"log_level: info",
+		];
+		const yamlNow = [
+			"service_port: 9090",
+			"replicas: 3",
+			"service_name: billing-api-staging",
+			"log_level: info",
+		];
+		const yamlSwap = [h(1, 1, 1, 1), h(3, 1, 3, 1)];
+		expect(place(rewrite(yaml, yamlNow, yamlSwap, at(1)))).toBe("changed 3");
+	});
+
+	it("a deleted line cut off by a block boundary from added code is rewritten, never deleted", () => {
+		// f's statement deleted; past the kept `}` and g's opener, code is
+		// added: whether it went there can't be told.
+		const old = [
+			"package x",
+			"func f() {",
+			"\tresult := transform(input, config.alphaOption)",
+			"}",
+			"func g() {}",
+		];
+		const now = [
+			"package x",
+			"func f() {",
+			"}",
+			"func g() {}",
+			"func h() {",
+			"\tother := build(config.betaOption)",
+			"}",
+		];
+		const hunks = [h(3, 1, 2, 0), h(5, 0, 5, 3)];
+		expect(place(rewrite(old, now, hunks, at(3)))).toMatch(/^rewritten/);
 	});
 });
 

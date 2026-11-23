@@ -150,8 +150,12 @@ pairing (`src/shared/linePairing.ts`, whitespace not counted, so a
 re-indented line is the same line) of the hunk's removed and added lines,
 then of the hunk with its neighbours across a few lines that git cut it
 at (a `}`, a blank line, one other line, never a line opening a block such
-as a function header, nor one at the left margin such as a function's
-closing `}`: the next function is other code). A line the pairing leaves alone still goes to the
+as a function header, nor a lone closer at the left margin such as a
+function's closing `}`: the next function is other code; Markdown, YAML or
+top-level Python at the margin still joins). A line that finds nothing
+alike, cut off by such a boundary from code added beside it, is
+`rewritten` when its text says something on its own (it may have gone
+there), else `deleted`. A line the pairing leaves alone still goes to the
 replacing line it most resembles between its neighbours' partners, when
 that is close (two lines merged into one). It shows as "changed since the
 review". Nothing replacing it resembles it: it is listed under its file as
@@ -190,7 +194,11 @@ the run carries more than half of its hunk. A block header that differs (`func a
 `func b() {`) ends a run. The thread shows "moved since" on its new line.
 A line opening a block (`const (`) that didn't move itself, but whose
 whole body (two lines or more, with the opener all of its hunk) did, goes
-to the body's first line. An identical block that appears twice, or two runs within a
+to the body's first line, and counts as carried for its body's lines, only
+when the body now sits directly under an opener like it (`const (` under
+`const (`). A block dropped from an `if strict {` or a `with
+mock.patch(...):` and found under another opener left its opener behind:
+it did not move. An identical block that appears twice, or two runs within a
 clear margin of each other, is ambiguous: `rewritten`. With no move
 decided, a line whose text is still among the added lines, and says
 something on its own (20 letters and digits, or once in the old file), is

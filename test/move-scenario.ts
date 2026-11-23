@@ -75,7 +75,18 @@ export interface MoveDraw {
 	 * Lines dropped from a kept function (boilerplate too): function, first
 	 * body line, how many dropped, how many of them copied into new code.
 	 */
-	drop: { fn: number; at: number; d: number; c: number } | null;
+	drop: {
+		fn: number;
+		at: number;
+		d: number;
+		c: number;
+		/**
+		 * 0: the lines alone; 1: wrapped in an `if strict {` block dropped
+		 * whole, copied without it; 2: the same, copied under an equal
+		 * opener (it joined its kind: a real move, the opener follows).
+		 */
+		wrap: number;
+	} | null;
 	/** Decoy kinds to try, in order, each in a far slot when one is left. */
 	decoys: Decoy[];
 	/** Which slot (index among the far ones) each decoy takes. */
@@ -110,18 +121,53 @@ export function moveScenario(d: MoveDraw) {
 	const statements: number[] = [];
 	const bodies: number[][] = [];
 	const headers: number[] = [];
+	// The drop, decided before the file is written (a wrapped one changes it).
+	const dropFn =
+		d.drop &&
+		!d.deleted.includes(d.drop.fn) &&
+		d.drop.fn !== d.move?.fn &&
+		d.drop.fn !== d.move?.to &&
+		d.drop.fn < d.functions.length
+			? d.drop
+			: null;
+	const dropCount = dropFn
+		? Math.min(
+				dropFn.d,
+				(d.functions[dropFn.fn]?.length ?? 0) - dropFn.at,
+				(d.functions[dropFn.fn]?.length ?? 0) - 1,
+			)
+		: 0;
+	const wrap = dropFn && dropCount >= 2 ? dropFn.wrap : 0;
+	let opener = -1;
+	let closer = -1;
 	d.functions.forEach((body, f) => {
 		headers.push(old.length);
 		old.push(`func f${f}(t *testing.T) {`);
 		fnOf.push(f);
 		const lines: number[] = [];
-		body.forEach((b) => {
+		body.forEach((b, k) => {
+			const wrapped =
+				wrap > 0 &&
+				f === dropFn?.fn &&
+				k >= dropFn.at &&
+				k < dropFn.at + dropCount;
+			if (wrapped && k === dropFn?.at) {
+				opener = old.length;
+				old.push("\tif strict {");
+				fnOf.push(f);
+			}
+			const pad = wrapped ? "\t" : "";
 			if (b < 0) {
 				statements.push(old.length);
-				old.push(stmt(old.length));
-			} else old.push(BOILERPLATE[b % BOILERPLATE.length] as string);
+				old.push(pad + stmt(old.length));
+			} else old.push(pad + (BOILERPLATE[b % BOILERPLATE.length] as string));
 			lines.push(old.length - 1);
 			fnOf.push(f);
+			if (wrapped && k === (dropFn?.at ?? 0) + dropCount - 1) {
+				closer = old.length;
+				old.push("\t}");
+				fnOf.push(f);
+			}
 		});
 		bodies.push(lines);
 		old.push("}", "");
@@ -146,22 +192,19 @@ export function moveScenario(d: MoveDraw) {
 	const dropSpan: number[] = [];
 	// (Not in the moved block's functions: the block landing where lines
 	// were dropped, with the same boilerplate, is that line's place again.)
-	if (
-		d.drop &&
-		!deletedFns.has(d.drop.fn) &&
-		d.drop.fn !== move?.fn &&
-		d.drop.fn !== move?.to
-	) {
-		const body = bodies[d.drop.fn] ?? [];
-		for (let i = 0; i < d.drop.d; i++) {
-			const at = body[d.drop.at + i];
+	if (dropFn) {
+		const body = bodies[dropFn.fn] ?? [];
+		for (let i = 0; i < dropCount; i++) {
+			const at = body[dropFn.at + i];
 			if (at === undefined || block.has(at)) break;
 			dropSpan.push(at);
 		}
-		// Keep one line of the function: it stays (the F1 shape).
-		if (dropSpan.length >= body.length)
-			dropSpan.length = Math.max(0, body.length - 1);
 		for (const at of dropSpan) dropped.add(at);
+		// A wrapped drop takes its block's opener and close along.
+		if (wrap > 0) {
+			dropped.add(opener);
+			dropped.add(closer);
+		}
 	}
 	const edits = new Map<number, { drop: boolean; size: number }>();
 	d.edits.forEach((e, j) => {
@@ -286,14 +329,26 @@ export function moveScenario(d: MoveDraw) {
 		} else if (kind === "drop-and-copy" && dropSpan.length >= 2) {
 			// Lines dropped from a kept function, `c` of them copied.
 			const c = Math.max(1, Math.min(d.drop?.c ?? 1, dropSpan.length));
-			const whole = c === dropSpan.length;
-			body = [
-				fresh(stmt(ids++)),
-				...dropSpan
-					.slice(0, c)
-					.map((i) => fresh(old[i] as string, whole ? [i] : undefined)),
-				fresh(stmt(ids++)),
-			];
+			// Whole: all of them, and a wrapped block's opener only when the
+			// copy sits under an equal one (wrap 2).
+			const whole = c === dropSpan.length && wrap !== 1;
+			const copied = dropSpan
+				.slice(0, c)
+				.map((i) => fresh(old[i] as string, whole ? [i] : undefined));
+			// Under an equal opener, the opener's thread may go to it (equal
+			// text) or to its body's first line (it joined its kind).
+			if (whole && wrap === 2 && copied[0]) {
+				copied[0].also = [...(copied[0].also ?? []), opener];
+			}
+			body =
+				wrap === 2
+					? [
+							fresh(stmt(ids++)),
+							fresh("\tif strict {", whole ? [opener] : undefined),
+							...copied,
+							fresh("\t}"),
+						]
+					: [fresh(stmt(ids++)), ...copied, fresh(stmt(ids++))];
 		} else if (kind === "second-block" && moved.length > 0) {
 			body = [
 				fresh(stmt(ids++)),
@@ -417,6 +472,8 @@ export function moveScenario(d: MoveDraw) {
 					).every(
 						(i) =>
 							span.has(i) ||
+							// A wrapped block's opener, copied under an equal one.
+							(wrap === 2 && i === opener) ||
 							!/\w/u.test(old[i] ?? "") ||
 							// Edited in place, alike: its partner stays at home.
 							(edits.get(i)?.size ?? 2) < 2,
@@ -476,6 +533,7 @@ export const moveDraws: fc.Arbitrary<MoveDraw> = fc
 					at: fc.nat({ max: 3 }),
 					d: fc.integer({ min: 2, max: 4 }),
 					c: fc.integer({ min: 1, max: 4 }),
+					wrap: fc.nat({ max: 2 }),
 				}),
 			),
 			decoys: fc.array(fc.constantFrom(...DECOYS), { maxLength: 4 }),
