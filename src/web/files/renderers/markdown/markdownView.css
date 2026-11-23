@@ -113,12 +113,12 @@
 }
 
 /*
- * The content's own strikethrough (~~x~~): plain struck text, muted, on no
+ * The content's own strikethrough (~~x~~): plain struck text, softer, on no
  * tint of its own. Only the diff's removed mark below is red, tinted and
  * struck in red, so an added ~~x~~ never reads as removed words.
  */
 .md-content :is(del:not(.md-del), s, strike) {
-	color: var(--color-muted);
+	color: var(--color-ink-soft);
 	background-color: transparent;
 	text-decoration-line: line-through;
 	text-decoration-color: currentColor;
