@@ -19,6 +19,7 @@ import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
 import { Avatar } from "../threads/people";
 import { ThreadStatus } from "../threads/ThreadStatus";
+import { useFloatClearCard } from "./floatClear";
 import { StackControls } from "./stickyControls";
 import {
 	ChangedChip,
@@ -184,8 +185,8 @@ const CARD =
  * a cluster's first row on touch, it starts 10px lower: below that row's
  * side-by-side controls' 40px targets (DiffBody's UNDER_CONTROLS); in a run
  * whose controls stack, it starts past the controls column. Either way
- * neither covers the other. The card is marked `data-float-clear`: the
- * phone's floating Files button makes way while its controls are under it
+ * neither covers the other. The card registers with the phone's floating
+ * Files button, which makes way while its controls are under it
  * (floatClear.ts).
  */
 export function TailRow(props: {
@@ -197,6 +198,7 @@ export function TailRow(props: {
 	children: ReactNode;
 }) {
 	const { place } = props;
+	const floatCard = useFloatClearCard();
 	// In a cluster run whose touch controls stack (StackControls), the card
 	// starts past the controls column, where the stacked cross-off hangs:
 	// neither covers the other, whenever the card opens, and nothing else
@@ -214,7 +216,7 @@ export function TailRow(props: {
 					className={`p-0 ${clear ? "pointer-coarse:pl-[calc(0.25rem+var(--controls-w))]" : ""}`}
 				>
 					<div
-						data-float-clear=""
+						ref={floatCard}
 						className={`sticky left-0 w-[var(--diff-w,100%)] max-w-full pr-2 pl-3 pointer-coarse:[tr:has([data-sticky-slot])+tr>td>&]:mt-2.5 ${clear ? "pointer-coarse:left-[calc(0.25rem+var(--controls-w))] pointer-coarse:w-[calc(var(--diff-w,100%)-0.25rem-var(--controls-w))]" : ""} ${CARD}`}
 					>
 						{props.rail && (
@@ -241,7 +243,7 @@ export function TailRow(props: {
 			<td />
 			{place.side === "RIGHT" && blank}
 			<td colSpan={2} className="p-0">
-				<div data-float-clear="" className={`px-2 ${CARD}`}>
+				<div ref={floatCard} className={`px-2 ${CARD}`}>
 					{props.children}
 				</div>
 			</td>

@@ -55,22 +55,28 @@ const narrow = (page: Page) => (page.viewportSize()?.width ?? 1280) < 768;
 
 /**
  * Taps the phone's floating Files button. It makes way while a card's
- * control (a composer's, a thread's) is under it (CAR-248), so when it's
- * hidden the page scrolls to its end, where the diff's bottom room keeps
- * every card clear of it; tried again until the tap lands (it can hide
- * just after a look found it shown, a jump's scroll settling a card under
- * it).
+ * control (a composer's, a thread's) is under it (CAR-248): then, and only
+ * then (`data-fab-hidden="card"`, checked, so a button hidden for any other
+ * reason still fails), the page scrolls to its end, where the diff's
+ * bottom room keeps every card clear of it. Tried again until the tap
+ * lands: it can hide just after a look found it shown (a jump's scroll
+ * settling a card under it).
  */
 export async function tapFilesButton(page: Page) {
 	const button = page.getByRole("button", { name: "Files", exact: true });
+	const any = page.locator('button[aria-label="Files"]');
 	await expect(async () => {
-		if (await button.isHidden()) {
+		const why = await any.getAttribute("data-fab-hidden", { timeout: 1000 });
+		if (why !== null) {
+			expect(why, "the Files button is hidden only by a card under it").toBe(
+				"card",
+			);
 			await page.evaluate(() =>
 				window.scrollTo(0, document.documentElement.scrollHeight),
 			);
 		}
 		await button.click({ timeout: 1000 });
-	}).toPass();
+	}).toPass({ timeout: 10_000 });
 }
 
 /**

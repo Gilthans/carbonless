@@ -58,7 +58,7 @@ import { useShortcut } from "../shortcuts";
 import { FindSlot, useAppHeaderHeight, useHeight, visualTop } from "../sticky";
 import { Tooltip } from "../Tooltip";
 import { PeopleProvider } from "../threads/people";
-import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
+import { useThreadWrites } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
@@ -74,6 +74,7 @@ import {
 } from "./comparison";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff, GoneFile, UNDO_ARM_MS } from "./FileDiff";
+import { FilesFab } from "./FilesFab";
 import { FileTree, type SidebarTab } from "./FileTree";
 import { fileLeft, nextFile } from "./fileFinish";
 import { treeOrder } from "./fileOrder";
@@ -82,7 +83,6 @@ import { FindBar } from "./find/FindBar";
 import { findState, useFindFloatShown } from "./find/findState";
 import { hitSeen } from "./find/hitSeen";
 import { useFind } from "./find/useFind";
-import { useControlUnder } from "./floatClear";
 import { foldsKey } from "./folderFold";
 import { useHeadSure } from "./headSure";
 import {
@@ -534,29 +534,6 @@ function useDiffThreads(
 	};
 }
 
-/** A text box on the page has focus (a comment or a reply being written). */
-function useWritingHere(): boolean {
-	const [writing, setWriting] = useState(false);
-	useEffect(() => {
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const update = () =>
-			setWriting(document.activeElement instanceof HTMLTextAreaElement);
-		// Focus moving between two boxes: read where it lands.
-		const left = () => {
-			clearTimeout(timer);
-			timer = setTimeout(update, 0);
-		};
-		document.addEventListener("focusin", update);
-		document.addEventListener("focusout", left);
-		return () => {
-			clearTimeout(timer);
-			document.removeEventListener("focusin", update);
-			document.removeEventListener("focusout", left);
-		};
-	}, []);
-	return writing;
-}
-
 /**
  * The page's frame while the diff loads (principle 8): the progress bar's
  * row with a spinner, and file cards' headers, never "no files" or 0%.
@@ -787,6 +764,8 @@ export function FilesPage() {
 	const [unit, saveUnit] = useUnit();
 	const wide = useMedia(WIDE);
 	const [sheetOpen, setSheetOpen] = useState(false);
+	// Stable: the floating button (FilesFab) re-renders on its own.
+	const openSheet = useCallback(() => setSheetOpen(true), []);
 
 	// One file open at a time, by snapshot and index: a new snapshot starts
 	// with every file closed.
@@ -1410,20 +1389,6 @@ export function FilesPage() {
 				: [],
 		[agentShown, data, agentPlacements],
 	);
-
-	// The floating Files button makes way while a comment is being written
-	// (a box has focus) or one was refused, and while a card's control (a
-	// composer's, a thread's) is under it: it would cover its buttons.
-	const writing = useWritingHere();
-	const refused = useThreadWrites().refused.some(
-		(f) => dropLosesText(f) && !f.retrying,
-	);
-	const filesFab = useRef<HTMLButtonElement>(null);
-	const cardUnder = useControlUnder(
-		filesFab,
-		!wide && (data?.files.length ?? 0) + gone.length > 0,
-	);
-	const filesButton = !writing && !refused && !cardUnder;
 
 	// Folded folders are kept per PR, once it's known.
 	const pr = session?.pr;
@@ -2107,18 +2072,7 @@ export function FilesPage() {
 											/>
 											{!wide && (data.files.length > 0 || gone.length > 0) && (
 												<>
-													<button
-														ref={filesFab}
-														hidden={!filesButton}
-														type="button"
-														aria-label="Files"
-														aria-haspopup="dialog"
-														onClick={() => setSheetOpen(true)}
-														className="fixed right-[calc(1rem+var(--drawer-push,0px))] bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-													>
-														<span aria-hidden>☰</span>
-														Files
-													</button>
+													<FilesFab onOpen={openSheet} />
 													<FilesSheet
 														open={sheetOpen}
 														onClose={() => setSheetOpen(false)}

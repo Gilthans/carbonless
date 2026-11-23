@@ -1,147 +1,166 @@
-import { type RefObject, useEffect, useLayoutEffect, useState } from "react";
+import { type RefObject, useCallback, useLayoutEffect, useState } from "react";
 
 /**
- * Marks a card in the diff (TailRow: a thread, a composer, an agent card):
- * the phone's floating Files button makes way whenever one of its controls
- * passes under it, so no card's button is ever covered (CAR-248).
+ * The phone's floating Files button makes way while a card's control is
+ * under it (CAR-248). Cards (TailRow: threads, composers, agent cards)
+ * register themselves here; the button watches only them, so nothing else
+ * on the page (diff lines, their gutter buttons, toasts) costs it anything.
  */
-const FLOAT_CLEAR = "data-float-clear";
 
-/** What a tap can land on inside a marked card. */
-const CONTROLS = `[${FLOAT_CLEAR}] :is(button, a[href], input, textarea, select, summary, [role="button"], [tabindex]:not([tabindex="-1"]))`;
+const cards = new Set<HTMLElement>();
+const changed = new Set<() => void>();
 
-/** A fixed element's place by its distances from the viewport's right and bottom edges (how it's positioned). */
-export type Footprint = {
-	right: number;
-	bottom: number;
-	width: number;
-	height: number;
-};
+function notify() {
+	for (const f of changed) f();
+}
+
+/** A ref callback for a card the Files button keeps clear of. */
+export function useFloatClearCard(): (el: HTMLElement | null) => () => void {
+	return useCallback((el: HTMLElement | null) => {
+		if (!el) return () => {};
+		cards.add(el);
+		notify();
+		return () => {
+			cards.delete(el);
+			notify();
+		};
+	}, []);
+}
+
+/**
+ * What a tap acts on: a control, not a time stamp's tooltip or a focusable
+ * preview (those only show more).
+ */
+const CONTROLS =
+	'button:not(:disabled), a[href], textarea:not(:disabled), select:not(:disabled), input:not([type="hidden"]):not(:disabled)';
 
 /** Counted as under the button this close to it, not only on it. */
 const SLACK = 4;
 
+type Box = { left: number; top: number; right: number; bottom: number };
+
+const overlaps = (a: Box, b: Box) =>
+	a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
 /**
- * The IntersectionObserver root margin that shrinks the viewport to the
- * footprint (grown by SLACK): a control intersects it exactly when it is
- * under the button.
+ * Whether a control of one of `among` overlaps `fab` (the button's
+ * viewport rect, grown by SLACK). Each card's own rect first, then the
+ * controls of only those cards that reach the button: the cost follows
+ * the cards, never the rest of the page.
  */
-export function rootMarginFor(f: Footprint, vw: number, vh: number): string {
-	const top = vh - f.bottom - f.height - SLACK;
-	const left = vw - f.right - f.width - SLACK;
-	const right = f.right - SLACK;
-	const bottom = f.bottom - SLACK;
-	const px = (n: number) => (n > 0 ? `-${Math.round(n)}px` : "0px");
-	return `${px(top)} ${px(right)} ${px(bottom)} ${px(left)}`;
+export function controlUnder(among: Iterable<Element>, fab: Box): boolean {
+	const near = {
+		left: fab.left - SLACK,
+		top: fab.top - SLACK,
+		right: fab.right + SLACK,
+		bottom: fab.bottom + SLACK,
+	};
+	for (const card of among) {
+		if (!overlaps(card.getBoundingClientRect(), near)) continue;
+		for (const control of card.querySelectorAll(CONTROLS)) {
+			const r = control.getBoundingClientRect();
+			if (r.width > 0 && r.height > 0 && overlaps(r, near)) return true;
+		}
+	}
+	return false;
 }
 
 /**
- * Whether a control of a marked card (FLOAT_CLEAR) on the page sits under
- * the fixed element `float`, while `on`. The whole body is watched, not the
- * diff's container: that mounts on its own schedule, and a card is only
- * ever in the diff. Its footprint is measured while it
- * shows and kept while it's hidden (it hides for this), so hiding never
- * changes the answer.
+ * Watches the registered cards for `fab`, calling `report` with whether a
+ * control is under it whenever that may have changed: the page or a
+ * scroller scrolled, the viewport (a phone's toolbar) or a card resized, a
+ * card's contents changed, a card came or went. Checked at most once a
+ * frame, and only the cards on screen. The button's rect is read live:
+ * it stays laid out while hidden (`invisible`), so no viewport arithmetic.
+ * Returns a stop.
  */
+export function watchFloat(
+	fab: HTMLElement,
+	report: (under: boolean) => void,
+): () => void {
+	// The cards on screen (all of them without an IntersectionObserver).
+	const shown = new Set<Element>();
+	const watched = new Set<HTMLElement>();
+	let frame = 0;
+	const check = (among: Set<Element> = io ? shown : watched) => {
+		frame = 0;
+		const r = fab.getBoundingClientRect();
+		if (r.width === 0 || r.height === 0) return report(false);
+		report(controlUnder(among, r));
+	};
+	const schedule = () => {
+		if (frame) return;
+		frame = requestAnimationFrame(() => check());
+	};
+	const io =
+		typeof IntersectionObserver === "undefined"
+			? null
+			: new IntersectionObserver((entries) => {
+					for (const e of entries) {
+						if (e.isIntersecting) shown.add(e.target);
+						else shown.delete(e.target);
+					}
+					schedule();
+				});
+	const ro =
+		typeof ResizeObserver === "undefined"
+			? null
+			: new ResizeObserver(() => schedule());
+	// Each card's own contents: a change anywhere else never syncs.
+	const mo = new MutationObserver(() => schedule());
+	const onCards = () => {
+		for (const card of watched) {
+			if (cards.has(card)) continue;
+			watched.delete(card);
+			shown.delete(card);
+			io?.unobserve(card);
+			ro?.unobserve(card);
+			// The MutationObserver keeps the detached card: it never changes.
+		}
+		for (const card of cards) {
+			if (watched.has(card)) continue;
+			watched.add(card);
+			io?.observe(card);
+			ro?.observe(card);
+			mo.observe(card, { childList: true, subtree: true });
+		}
+		schedule();
+	};
+	changed.add(onCards);
+	onCards();
+	const opts = { capture: true, passive: true } as const;
+	window.addEventListener("scroll", schedule, opts);
+	window.addEventListener("resize", schedule);
+	window.visualViewport?.addEventListener("resize", schedule);
+	ro?.observe(fab);
+	// Before the first paint, every card (the IntersectionObserver hasn't
+	// reported yet): no frame with the button over a control.
+	check(watched);
+	return () => {
+		changed.delete(onCards);
+		cancelAnimationFrame(frame);
+		window.removeEventListener("scroll", schedule, opts);
+		window.removeEventListener("resize", schedule);
+		window.visualViewport?.removeEventListener("resize", schedule);
+		io?.disconnect();
+		ro?.disconnect();
+		mo.disconnect();
+	};
+}
+
+/** Whether a card's control sits under the fixed element `fab`, while `on`. */
 export function useControlUnder(
-	float: RefObject<HTMLElement | null>,
+	fab: RefObject<HTMLElement | null>,
 	on: boolean,
 ): boolean {
-	const [footprint, setFootprint] = useState<Footprint | null>(null);
-	const [view, setView] = useState(() => viewSize());
 	const [under, setUnder] = useState(false);
-
-	// Measured after every render while it shows (it can move: the drawer's
-	// push); a new state only when it did.
 	useLayoutEffect(() => {
-		const el = float.current;
-		if (!on || !el) return;
-		const r = el.getBoundingClientRect();
-		if (r.width === 0 || r.height === 0) return;
-		const next: Footprint = {
-			right: Math.round(window.innerWidth - r.right),
-			bottom: Math.round(window.innerHeight - r.bottom),
-			width: Math.round(r.width),
-			height: Math.round(r.height),
-		};
-		setFootprint((was) =>
-			was &&
-			was.right === next.right &&
-			was.bottom === next.bottom &&
-			was.width === next.width &&
-			was.height === next.height
-				? was
-				: next,
-		);
-	});
-
-	useEffect(() => {
-		if (!on) return;
-		const resized = () =>
-			setView((was) => {
-				const next = viewSize();
-				return was.w === next.w && was.h === next.h ? was : next;
-			});
-		window.addEventListener("resize", resized);
-		return () => window.removeEventListener("resize", resized);
-	}, [on]);
-
-	useEffect(() => {
-		const root = document.body;
-		if (!on || !footprint) {
+		const el = fab.current;
+		if (!on || !el) {
 			setUnder(false);
 			return;
 		}
-		const hits = new Set<Element>();
-		const observed = new Set<Element>();
-		const io = new IntersectionObserver(
-			(entries) => {
-				for (const e of entries) {
-					if (e.isIntersecting) hits.add(e.target);
-					else hits.delete(e.target);
-				}
-				setUnder(hits.size > 0);
-			},
-			{ rootMargin: rootMarginFor(footprint, view.w, view.h), threshold: 0 },
-		);
-		const sync = () => {
-			const now = new Set(root.querySelectorAll(CONTROLS));
-			for (const el of observed) {
-				if (now.has(el)) continue;
-				io.unobserve(el);
-				observed.delete(el);
-				hits.delete(el);
-			}
-			for (const el of now) {
-				if (observed.has(el)) continue;
-				io.observe(el);
-				observed.add(el);
-			}
-			setUnder(hits.size > 0);
-		};
-		// Cards and their controls come and go (a composer opens, chips
-		// show): synced once a frame at most.
-		let frame = 0;
-		const mo = new MutationObserver(() => {
-			if (frame) return;
-			frame = requestAnimationFrame(() => {
-				frame = 0;
-				sync();
-			});
-		});
-		mo.observe(root, { childList: true, subtree: true });
-		sync();
-		return () => {
-			cancelAnimationFrame(frame);
-			mo.disconnect();
-			io.disconnect();
-		};
-	}, [on, footprint, view]);
-
+		return watchFloat(el, setUnder);
+	}, [fab, on]);
 	return on && under;
 }
-
-const viewSize = () => ({
-	w: typeof window === "undefined" ? 0 : window.innerWidth,
-	h: typeof window === "undefined" ? 0 : window.innerHeight,
-});

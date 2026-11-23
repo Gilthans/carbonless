@@ -8,6 +8,7 @@ import {
 	fileSection,
 	openFiles,
 	sideBySide,
+	tapFilesButton,
 } from "./files-ui";
 import { type Crb, expect, type PrOptions, test } from "./fixtures";
 
@@ -198,7 +199,7 @@ test.describe("phone", () => {
 		const tree = page.getByTestId("file-tree");
 		await expect(tree).toBeHidden();
 		const button = page.getByRole("button", { name: "Files", exact: true });
-		await button.click();
+		await tapFilesButton(page);
 		const sheet = page.getByRole("dialog", { name: "Files" });
 		await expect(sheet).toBeVisible();
 		await expect(sheet.getByTestId("file-tree")).toBeVisible();
@@ -240,7 +241,7 @@ test.describe("phone", () => {
 		await pr(fixture);
 		const s = await startCrb();
 		await openFiles(page, s.url);
-		await page.getByRole("button", { name: "Files", exact: true }).click();
+		await tapFilesButton(page);
 		const sheet = page.getByRole("dialog", { name: "Files" });
 		await expect(sheet).toBeVisible();
 		expect(

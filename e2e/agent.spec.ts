@@ -522,22 +522,23 @@ const longFixture = {
 };
 
 /**
- * Each shown button of `card`, scrolled so its centre is level with the
- * floating Files button's (`fab`, measured while it showed), is what a tap
- * at its centre lands on: never the Files button over it.
+ * Each shown button of `card` that sits under the floating Files button
+ * across (`fab`, measured while it showed), scrolled so its centre is
+ * level with the Files button's, is what a tap at its centre lands on:
+ * never the Files button over it. At least one such button is checked.
  */
 async function expectTappableUnderFab(
 	page: Page,
 	card: Locator,
 	fab: { x: number; y: number; width: number; height: number },
 ) {
-	const buttons = await card.getByRole("button").all();
-	expect(buttons.length).toBeGreaterThan(0);
-	for (const button of buttons) {
+	let checked = 0;
+	for (const button of await card.getByRole("button").all()) {
 		if (!(await button.isVisible())) continue;
-		const name = (await button.getAttribute("aria-label")) ?? "";
 		const b = await button.boundingBox();
-		if (!b) continue;
+		if (!b || b.x + b.width <= fab.x || b.x >= fab.x + fab.width) continue;
+		const name =
+			(await button.getAttribute("aria-label")) ?? (await button.textContent());
 		await page.evaluate(
 			(dy) => window.scrollBy(0, dy),
 			b.y + b.height / 2 - (fab.y + fab.height / 2),
@@ -559,16 +560,18 @@ async function expectTappableUnderFab(
 						);
 						return hit !== null && el.contains(hit);
 					}),
-				{ message: `${name || (await button.textContent())} is tappable` },
+				{ message: `${name} is tappable` },
 			)
 			.toBe(true);
+		checked++;
 	}
+	expect(checked, "a button under the Files button across").toBeGreaterThan(0);
 }
 
 test.describe("phone", () => {
 	test.skip(({ isMobile }) => !isMobile, "phone layout only");
 
-	test("a composer's buttons are never under the floating Files button: Ask agent with its quick questions, then the comment it turns into", async ({
+	test("a card's buttons are never under the floating Files button: Ask agent with its quick questions, the comment it turns into, its GitHub thread, an agent thread", async ({
 		page,
 		pr,
 		agentCrb,
@@ -605,6 +608,16 @@ test.describe("phone", () => {
 		await expectTappableUnderFab(page, composer, fab);
 		await composer.getByRole("textbox", { name: "Comment" }).blur();
 		await expectTappableUnderFab(page, composer, fab);
+		// Posted: a GitHub thread's card, its buttons the same.
+		await composer.getByTestId("new-thread-post").click();
+		const thread = section.getByTestId("files-thread");
+		await expect(thread).toBeVisible();
+		await expectTappableUnderFab(page, thread, fab);
+		// An agent thread's card, the same.
+		const agent = await ask(page, section, 6, "Why?");
+		await expect(agent).toHaveAttribute("aria-label", "Agent thread, answered");
+		await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+		await expectTappableUnderFab(page, agent, fab);
 		// Nothing of a card under it: the Files button is back, and opens Files.
 		await page.evaluate(() => window.scrollTo(0, 0));
 		await expect(files).toBeVisible();
