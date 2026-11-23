@@ -2328,6 +2328,12 @@ export function DiffBody(props: {
 	 * its line threads listed under the header as a binary file's are.
 	 */
 	linesHidden?: boolean;
+	/**
+	 * A since-view file the full diff doesn't have (GoneFile): GitHub's diff
+	 * has none of its lines on the head, only those on the compared patch
+	 * set's commit (CAR-256).
+	 */
+	gone?: boolean;
 }) {
 	const { file, revision, find, linesHidden } = props;
 	const read = useQuery({
@@ -2893,10 +2899,12 @@ export function DiffBody(props: {
 			...headFacts(span, snapshotHead ?? sessionHead),
 			file: { binary: file.binary, submodule: file.submodule },
 			inDiff:
-				hunks.data && rows
-					? hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
-						hunkKeys.has(`${rows.side}:${rows.line}`)
-					: undefined,
+				props.gone && !span.earlier
+					? false
+					: hunks.data && rows
+						? hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
+							hunkKeys.has(`${rows.side}:${rows.line}`)
+						: undefined,
 			headUnsure: props.headSure === false,
 			readOnly: props.readOnly === true,
 		};
@@ -3410,15 +3418,20 @@ export function DiffBody(props: {
 	// Comment on an agent card here: the head's diff shown, and whether a
 	// span's ends are this diff's lines (as the selection bar asks).
 	const hunkList = hunks.data?.hunks;
+	const goneFile = props.gone === true;
 	const commentScope = useMemo<CommentScope>(
 		() => ({
 			headSure: props.headSure !== false,
 			inDiff: (span) =>
-				hunkList && span.path === file.path
-					? spanInHunks(span, hunkList)
-					: undefined,
+				span.path !== file.path
+					? undefined
+					: goneFile && !span.earlier
+						? false
+						: hunkList
+							? spanInHunks(span, hunkList)
+							: undefined,
 		}),
-		[props.headSure, hunkList, file.path],
+		[props.headSure, hunkList, file.path, goneFile],
 	);
 
 	// A composer drawn in its conversation's card: what this diff gives one.

@@ -1697,6 +1697,14 @@ export function GoneFile(props: {
 	onFinished?: () => void;
 	/** Opened by a move-on: marks are ignored before then (FileDiff's). */
 	ignoreMarksUntil?: number;
+	/**
+	 * The PR's review threads, placed on its rows as on any file's (CAR-256):
+	 * those made on the compared patch set's head on a line only it had,
+	 * on the removed row that shows it (earlierPending).
+	 */
+	threads?: DiffThreads;
+	/** The diff on screen is the viewed head's (FileDiff's). */
+	headSure?: boolean;
 }) {
 	const [ownExpanded, setOwnExpanded] = useState(false);
 	const expanded = props.expanded ?? ownExpanded;
@@ -1756,6 +1764,9 @@ export function GoneFile(props: {
 	return (
 		<section
 			id={`file-${props.index}`}
+			// Its rows take a selection's actions as any file's (codeSpan.ts):
+			// `data-gone-file` says none of them is in GitHub's diff on the head.
+			data-path={props.path}
 			data-gone-file={props.path}
 			aria-label={props.path}
 			// When it takes marks again (`performance.now()`), for tests to wait on.
@@ -1813,6 +1824,9 @@ export function GoneFile(props: {
 					sinceMarks={props.sinceMarks}
 					readOnly={props.readOnly}
 					find={props.find}
+					threads={props.threads}
+					headSure={props.headSure}
+					gone
 				/>
 			)}
 		</section>

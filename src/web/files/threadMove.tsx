@@ -460,6 +460,12 @@ function numbersOf(row: HTMLElement): RowNumbers {
 	};
 }
 
+/**
+ * Why a thread can't be placed on a since-view file the full diff doesn't
+ * have (GoneFile, CAR-256): a placement names a line of the full diff.
+ */
+export const NOT_IN_FULL_DIFF = "Not in the full diff";
+
 /** The row shows the since view's interdiff (DiffBody's table: `data-since`). */
 const inInterdiff = (row: Element) => row.closest("[data-since]") !== null;
 
@@ -475,6 +481,8 @@ export function lineAt(
 	if (!row) return null;
 	const file = row.closest<HTMLElement>("[data-path]");
 	if (file?.dataset.path !== path) return null;
+	// A gone file's line (CAR-256): no line of the full diff to place on.
+	if (file.hasAttribute("data-gone-file")) return null;
 	const numbers = numbersOf(row);
 	// A row with a new line is that line; else its old one.
 	const end = moveEnd(

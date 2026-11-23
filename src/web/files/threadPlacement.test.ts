@@ -731,6 +731,45 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 		expect(p.header).toEqual([]);
 	});
 
+	it("one on PS1's commit whose file is out of the full diff (a gone file's) shows on its removed row too; a placed or unplaced one doesn't (CAR-256)", () => {
+		const t = thread({ side: "RIGHT", line: 51, commit: PS1 }, { commit: PS1 });
+		const outside: Placements = new Map([
+			[
+				t.id,
+				{ kind: "outside" as const, path: PATH, fate: "reverted" as const },
+			],
+		]);
+		expect(shownThreads([t], HEAD, outside)).toEqual([]);
+		const pending = earlierPending([t], HEAD, outside, PS1);
+		expect(pending).toHaveLength(1);
+		const p = placeThreads({
+			threads: [],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: earlierSince,
+			loadedContext: [],
+			placements: outside,
+			sinceLeft: sinceLeft(clusters, earlierSince.hunks),
+			sinceEarlier: sinceEarlier(PS1, earlierSince.hunks),
+			earlierPending: pending,
+		});
+		expect([...p.end.keys()]).toEqual(["LEFT:41"]);
+		// Placed or unplaced in the target: its own place decides, as before.
+		for (const placement of [
+			{
+				kind: "unplaced" as const,
+				fate: "deleted" as const,
+				path: PATH,
+				nearest: null,
+			},
+			{ kind: "file" as const, path: PATH },
+		]) {
+			expect(
+				earlierPending([t], HEAD, new Map([[t.id, placement]]), PS1),
+			).toEqual([]);
+		}
+	});
+
 	it("pending PS1 threads with no removed row aren't shown, never as unplaced; a LEFT one never reads its PS1-base number in today's base (CAR-233)", () => {
 		// RIGHT 30 on PS1: a line the head still has (no psNo row).
 		const right = thread(

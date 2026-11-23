@@ -151,7 +151,9 @@ const earlierCopies = new WeakMap<ReviewThread, ReviewThread>();
 /**
  * The since view's threads made on its compared patch set's head
  * (`earlierHead`) that the tracer hasn't placed yet (one just posted
- * there, CAR-233): RIGHT line threads, as made on the viewed head (their
+ * there, CAR-233), or placed outside the comparison (its file isn't in
+ * the full diff: a gone file's, CAR-256; still listed under "Not in this
+ * comparison"): RIGHT line threads, as made on the viewed head (their
  * anchor keeps their commit). placeThreads' `earlierPending` puts each on
  * the removed row of its line, if it has one; none goes anywhere else.
  */
@@ -167,9 +169,12 @@ export function earlierPending(
 			t.commit !== earlierHead ||
 			t.subject !== "line" ||
 			t.anchor?.side !== "RIGHT" ||
-			t.anchor.startSide !== "RIGHT" ||
-			placements?.get(t.id) !== undefined
+			t.anchor.startSide !== "RIGHT"
 		) {
+			return [];
+		}
+		const placed = placements?.get(t.id);
+		if (placed !== undefined && placed.kind !== "outside") {
 			return [];
 		}
 		let copy = earlierCopies.get(t);
