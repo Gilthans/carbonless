@@ -646,7 +646,7 @@ export class AgentThreadStore {
 					stampAfter(events),
 				);
 				const summary = `crb: agent thread ${resolved ? "resolved" : "unresolved"}`;
-				return { summary: summary, event };
+				return { summary, event };
 			}),
 		);
 	}
