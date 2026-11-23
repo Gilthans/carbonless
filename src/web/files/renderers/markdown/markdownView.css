@@ -224,8 +224,8 @@
 	margin: 3px 4px 3px 3px;
 }
 
-.md-content:where(.md-old) img,
-.md-content :where(del.md-del) img {
+.md-content:where(.md-old) :is(img),
+.md-content :where(del.md-del) :is(img) {
 	opacity: 0.6;
 }
 
