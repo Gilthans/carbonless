@@ -67,6 +67,7 @@ import {
 	fetchHeadAsOf,
 	fetchMergeBase,
 	fetchPinnedHead,
+	fetchPrCommits,
 	fetchPrMeta,
 	fetchRuleReads,
 	fetchVerdict,
@@ -194,6 +195,19 @@ const SPLIT_CARRY_TRIES = 2;
 
 export class SessionClosedError extends Error {}
 
+/**
+ * Test hook: awaited by every placement job once it has taken its
+ * threads, before it traces them, so a test can hold a job provably running
+ * (CAR-233). Null outside tests.
+ */
+export const placingHooks: {
+	afterRead:
+		| ((job: { revision: string; readId: string }) => Promise<void>)
+		| null;
+} = {
+	afterRead: null,
+};
+
 /** crb --head and the hidden dev options (--as-of, --viewer). */
 export interface SessionOptions {
 	/**
@@ -247,6 +261,11 @@ interface PlacingJob {
 	done: { target: Snapshot; inputs: ThreadInput[]; complete: boolean } | null;
 	error: Error | null;
 	settled: Promise<void>;
+	/**
+	 * Started before a thread on another commit joined the read (CAR-233):
+	 * its answer lacks it, so it is filed nowhere; the next ask starts anew.
+	 */
+	stale?: boolean;
 }
 
 /**
@@ -361,6 +380,8 @@ export class Session {
 	readonly #placer: ThreadPlacer;
 	/** Placement jobs, by `${target}|${readId}` (placements). */
 	readonly #placing = new Map<string, PlacingJob>();
+	/** Placement jobs placeAgain left running (stale): close waits for them. */
+	readonly #retiredPlacing = new Set<PlacingJob>();
 
 	private constructor(
 		private readonly repo: string,
@@ -543,6 +564,7 @@ export class Session {
 				...[...this.#live].map((r) => r.settled),
 				...[...this.#jobs.values()].map((j) => j.settled),
 				...[...this.#placing.values()].map((j) => j.settled),
+				...[...this.#retiredPlacing].map((j) => j.settled),
 				this.#queue,
 				// Its process, checkout and claim.
 				this.#agent?.close(),
@@ -999,14 +1021,19 @@ export class Session {
 					snapshot(),
 					read.threads("summary"),
 				]);
+				// The threads as read now: the tracing below takes them as they
+				// are (a thread joining the read meanwhile isn't among them).
+				const unresolvedThreads = view.threads.filter((t) => !t.resolved);
+				const resolvedThreads = view.threads.filter((t) => t.resolved);
+				await placingHooks.afterRead?.({ revision: target.revision, readId });
 				// Filed under its snapshot id too: a head and its patch set share it.
-				this.#placing.set(`${target.revision}|${readId}`, job);
+				if (!job.stale) this.#placing.set(`${target.revision}|${readId}`, job);
 				// When GitHub gave the threads' current lines (each with the
 				// head it counts on): one time per read.
 				const at = new Date(read.started).toISOString();
 				const open = await this.#placer.inputs(
 					target,
-					view.threads.filter((t) => !t.resolved),
+					unresolvedThreads,
 					this.#diffBase(),
 					at,
 				);
@@ -1014,12 +1041,7 @@ export class Session {
 				// The resolved threads join after; their failure never takes
 				// the unresolved placements back (they then show where made).
 				const resolved = await this.#placer
-					.inputs(
-						target,
-						view.threads.filter((t) => t.resolved),
-						this.#diffBase(),
-						at,
-					)
+					.inputs(target, resolvedThreads, this.#diffBase(), at)
 					.catch(() => []);
 				job.done = { target, inputs: [...open, ...resolved], complete: true };
 			} catch (error) {
@@ -2152,9 +2174,33 @@ export class Session {
 		// the session's, or a viewed head's), even if a Refresh moves the
 		// session's while it runs.
 		const snapshot = this.#snapshotForWrite(commit);
+		// A patch set's head (a comment on an earlier one, CAR-233): its own
+		// merge base, whatever snapshot is kept for it.
+		const codeBase =
+			this.#patchsets.find((p) => p.head === commit)?.mergeBase ??
+			snapshot.base;
 		return {
 			...this.#writeTarget(),
 			head: snapshot.head,
+			patchsetHeads: () => this.#patchsets.map((p) => p.head),
+			prCommits: () => fetchPrCommits(this.#ref()),
+			placeAgain: () => {
+				// Started again on the next ask, a running one too (it read
+				// the threads before this one joined); the page keeps what it
+				// shows meanwhile (placementsQuery).
+				const reads = new Set(this.#reads.map((r) => r.id));
+				for (const [k, job] of this.#placing) {
+					const readId = k.slice(k.lastIndexOf("|") + 1);
+					if (!reads.has(readId)) continue;
+					if (!job.done && !job.error) {
+						// Still running: waited for on close all the same.
+						job.stale = true;
+						this.#retiredPlacing.add(job);
+						void job.settled.finally(() => this.#retiredPlacing.delete(job));
+					}
+					this.#placing.delete(k);
+				}
+			},
 			commentLeft: () => this.commentLeft(snapshot),
 			startPatchset: this.#startHook(snapshot),
 			started: (clientId) => this.#started.get(clientId),
@@ -2169,7 +2215,7 @@ export class Session {
 				this.#threadCode.code(
 					anchor,
 					{
-						snapshot: snapshot.base,
+						snapshot: codeBase,
 						ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
 					},
 					async () => hunk,

@@ -1700,6 +1700,13 @@ export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
 	void client.invalidateQueries({ queryKey: REVIEW_KEY });
 	void client.invalidateQueries({ queryKey: ["rereview"] });
 	void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
+	// Made on another commit than the snapshot's (an earlier patch set's,
+	// CAR-233): placed anew (the server computes the placements again), so
+	// every view shows it, never only the since view.
+	const head = client.getQueryData(sessionQuery.queryKey)?.snapshotHead;
+	if (head && thread.commit !== head) {
+		void client.invalidateQueries({ queryKey: ["placements"] });
+	}
 	// An agent conversation moved onto it: its card leaves the code for the
 	// thread's agent button.
 	if (answer.agentThread) {

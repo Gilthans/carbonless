@@ -126,7 +126,12 @@ import {
 	moveTargetOf,
 	useMoveWritesHost,
 } from "./threadMove";
-import { outsideThreads, shownThread, shownThreads } from "./threadPlacement";
+import {
+	earlierPending,
+	outsideThreads,
+	shownThread,
+	shownThreads,
+} from "./threadPlacement";
 import {
 	agentRows,
 	type FocusWorld,
@@ -332,6 +337,11 @@ function useDiffThreads(
 	latest: number | null,
 	/** Threads published from then on (ms) are left out (an earlier patch set). */
 	until: number | null,
+	/**
+	 * The since view: its compared patch set's head, whose threads not
+	 * placed yet show on their removed rows (CAR-233).
+	 */
+	earlierHead?: string,
 ): {
 	threads: DiffThreads | undefined;
 	/** Every thread of the read, on this head or not (people's tints). */
@@ -426,9 +436,15 @@ function useDiffThreads(
 						snapshotHead,
 						threads: shownThreads(visible, snapshotHead, placements, moves),
 						placements,
+						earlierPending: earlierPending(
+							visible,
+							snapshotHead,
+							placements,
+							earlierHead,
+						),
 					}
 				: undefined,
-		[readId, visible, snapshotHead, placements, moves],
+		[readId, visible, snapshotHead, placements, moves, earlierHead],
 	);
 	const outside = useMemo(
 		() => (visible ? outsideThreads(visible, placements) : []),
@@ -1202,6 +1218,9 @@ export function FilesPage() {
 		placingTo,
 		latest,
 		threadsCutoff,
+		sinceView.since === null
+			? undefined
+			: session?.patchsets.find((p) => p.number === sinceView.since)?.head,
 	);
 	// Thread moves (CAR-139): written to the target viewed, when it takes them.
 	const moveWrites = useMoveWritesHost({
@@ -2023,6 +2042,12 @@ export function FilesPage() {
 												commit={agentHead}
 												headSure={headSure}
 												readOnly={readOnly}
+												earlier={
+													since === null
+														? undefined
+														: session?.patchsets.find((p) => p.number === since)
+																?.head
+												}
 											/>
 											{!wide && (data.files.length > 0 || gone.length > 0) && (
 												<>

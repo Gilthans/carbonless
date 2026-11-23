@@ -10,14 +10,15 @@ import {
 	type Scenario,
 	threadComment,
 } from "../../test/fake-gh/scenario";
-import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
+import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { NewThreadRequest } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
+import { postThread } from "./gh";
 import { newThreadProblem, placeOf, postedBody } from "./newThreads";
 import { mapThreads } from "./overview";
 import { parseHead } from "./pinnedHead";
-import { Session } from "./session";
+import { placingHooks, Session } from "./session";
 import { writeWaits } from "./threadWrites";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
@@ -351,6 +352,214 @@ describe("new threads", () => {
 			session.startThread(request({ side: "RIGHT", line: 15 })),
 		);
 		expect(between.code).toBe("gone");
+	});
+
+	/**
+	 * A force-push on GitHub: the PR's head becomes a new commit on the
+	 * merge base (the current head's tree), so the old head is no longer
+	 * one of the PR's commits. Its oid.
+	 */
+	const forcePush = () => {
+		const repoGit = (...args: string[]) =>
+			execFileSync("git", args, {
+				cwd: pr.repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim();
+		const rewritten = repoGit(
+			"commit-tree",
+			`${pr.head()}^{tree}`,
+			"-p",
+			pr.mergeBase,
+			"-m",
+			"rewritten",
+		);
+		repoGit("update-ref", "refs/pull/12/head", rewritten);
+		const path = process.env.CRB_FAKE_GH ?? "";
+		const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+		const pr12 = s.prs[12];
+		if (!pr12?.view) throw new Error("no PR 12");
+		pr12.view = { ...pr12.view, headRefOid: rewritten };
+		writeFileAtomic(path, JSON.stringify(s, null, "\t"));
+		return rewritten;
+	};
+
+	it("a thread posted on an earlier commit while its read's placements are being computed is placed all the same, without a Refresh (CAR-233)", async () => {
+		const review = await session.review();
+		const key = review.files[0]?.clusters[0]?.key ?? "";
+		await session.setStates(review.revision, [{ key, state: "reviewed" }]);
+		const ps1 = pr.head();
+		const { readId } = await session.overview();
+		// The job is held once it has read the threads: provably running,
+		// without the new one, when the post lands.
+		const ps1Revision = session.info().patchsets[0]?.revision;
+		let entered = false;
+		let open = () => {};
+		const gate = new Promise<void>((r) => {
+			open = r;
+		});
+		placingHooks.afterRead = async (job) => {
+			if (job.revision !== ps1Revision || job.readId !== readId) return;
+			entered = true;
+			await gate;
+		};
+		try {
+			expect(await session.placements({ patchset: 1 }, readId)).toEqual({
+				pending: true,
+			});
+			await vi.waitFor(() => expect(entered).toBe(true));
+			const { thread } = await session.startThread(
+				request({ earlier: true, commit: ps1, line: 2 }),
+			);
+			placingHooks.afterRead = null;
+			open();
+			await vi.waitFor(
+				async () => {
+					const answer = await session.placements({ patchset: 1 }, readId);
+					expect("pending" in answer).toBe(false);
+					if ("pending" in answer) return;
+					expect(answer.threads.map((t) => t.id)).toContain(thread.id);
+				},
+				{ timeout: 20_000, interval: 50 },
+			);
+		} finally {
+			placingHooks.afterRead = null;
+			open();
+		}
+	});
+
+	for (const earlier of [false, true]) {
+		it(`a force-push while the post is on its way (${earlier ? "an earlier patch set's commit" : "the head"}): GitHub moves it onto the new head, so it is removed again and refused, nothing left on GitHub (CAR-233)`, async () => {
+			const review = await session.review();
+			const key = review.files[0]?.clusters[0]?.key ?? "";
+			await session.setStates(review.revision, [{ key, state: "reviewed" }]);
+			const before = stored().length;
+			const path = process.env.CRB_FAKE_GH ?? "";
+			tweak({ hold: ["comment"] });
+			const out = session
+				.startThread(
+					request({ ...(earlier ? { earlier: true } : {}), line: 2 }),
+				)
+				.then(
+					() => null,
+					(e: unknown) => e,
+				);
+			// The post is out (held at GitHub): the head moves meanwhile.
+			await vi.waitFor(() => expect(posts()).toHaveLength(1), {
+				timeout: 10_000,
+			});
+			forcePush();
+			release(path, "comment");
+			const error = await out;
+			expect(error).toBeInstanceOf(WriteRefusedError);
+			expect((error as WriteRefusedError).code).toBe("stale");
+			expect((error as WriteRefusedError).message).toMatch(/force-push/);
+			// Removed again: nothing of it left on GitHub.
+			expect(pr.ghLog()).toMatch(
+				/-X DELETE repos\/acme\/widget\/pulls\/comments\//,
+			);
+			expect(stored()).toHaveLength(before + 1);
+			expect(stored().at(-1)).toMatchObject({ removed: true });
+		});
+	}
+
+	it("an earlier patch set's commit a force-push dropped from the PR: refused before GitHub, which would silently put it on the head (CAR-233)", async () => {
+		const review = await session.review();
+		const key = review.files[0]?.clusters[0]?.key ?? "";
+		await session.setStates(review.revision, [{ key, state: "reviewed" }]);
+		const ps1 = pr.head();
+		const rewritten = forcePush();
+		const sent = posts().length;
+		const gone = await refused(
+			session.startThread(request({ earlier: true, commit: ps1, line: 2 })),
+		);
+		expect(gone.code).toBe("invalid");
+		expect(gone.message).toMatch(/no longer in the PR/);
+		expect(posts()).toHaveLength(sent);
+		// What GitHub does with such a commit_id (the fake models it): the
+		// comment lands on the head, not on PS1's commit; postThread sees
+		// that and removes it again.
+		const direct = await postThread(
+			{ owner: "acme", repo: "widget", number: 12 },
+			ps1,
+			{ subject: "line", path: "a.txt", side: "RIGHT", line: 2 },
+			"direct",
+			"https://github.com/acme/widget/pull/12",
+		).then(
+			() => null,
+			(e: unknown) => e,
+		);
+		expect((direct as WriteRefusedError).code).toBe("stale");
+		expect(stored().at(-1)).toMatchObject({
+			removed: true,
+			first: {
+				nodes: [
+					expect.objectContaining({ originalCommit: { oid: rewritten } }),
+				],
+			},
+		});
+	});
+
+	it("on an earlier patch set's commit on purpose: RIGHT lines of that commit's diff, a patch set's head only, starting none (CAR-233)", async () => {
+		// No patch set yet: no commit is one.
+		const none = await refused(session.startThread(request({ earlier: true })));
+		expect(none.code).toBe("stale");
+		// PS1 on the head; then a comment marked earlier on it is taken.
+		const review = await session.review();
+		const key = review.files[0]?.clusters[0]?.key ?? "";
+		await session.setStates(review.revision, [{ key, state: "reviewed" }]);
+		expect(session.info().patchsets).toHaveLength(1);
+		// The PR moves on: PS1's head is an older commit of it now.
+		const ps1 = pr.head();
+		const later = pr.moveHead({ "later.txt": "one\ntwo\n" });
+		const { thread } = await session.startThread(
+			request({ earlier: true, commit: ps1, line: 2 }),
+		);
+		expect(thread.anchor).toMatchObject({ side: "RIGHT", line: 2 });
+		expect(stored().at(-1)).toMatchObject({
+			line: 2,
+			diffSide: "RIGHT",
+			first: {
+				nodes: [expect.objectContaining({ originalCommit: { oid: ps1 } })],
+			},
+		});
+		expect(session.info().patchsets).toHaveLength(1);
+		// Not in that commit's diff against its base, though in the head's
+		// (later.txt), or between its hunks: GitHub's 422 (the fake checks
+		// it) → gone.
+		for (const req of [
+			request({ earlier: true, commit: ps1, path: "later.txt", line: 1 }),
+			request({ earlier: true, commit: ps1, line: 15 }),
+		]) {
+			expect((await refused(session.startThread(req))).code).toBe("gone");
+		}
+		// The new head isn't a patch set: no earlier comment goes there.
+		expect(
+			(
+				await refused(
+					session.startThread(
+						request({
+							earlier: true,
+							commit: later,
+							path: "later.txt",
+							line: 1,
+						}),
+					),
+				)
+			).code,
+		).toBe("stale");
+		// Old lines, or not a patch set's head: refused, nothing posted.
+		const sent = posts().length;
+		const left = await refused(
+			session.startThread(request({ earlier: true, side: "LEFT", line: 26 })),
+		);
+		expect(left.code).toBe("invalid");
+		const stray = await refused(
+			session.startThread(request({ earlier: true, commit: pr.mergeBase })),
+		);
+		expect(stray.code).toBe("stale");
+		expect(posts()).toHaveLength(sent);
+		expect(none.code).toBe("stale");
 	});
 
 	it("a LEFT line counts in the base: one in a hunk is taken, one between hunks is GitHub's 422 → gone (CAR-217)", async () => {

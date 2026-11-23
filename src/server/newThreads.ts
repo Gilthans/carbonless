@@ -12,6 +12,7 @@ import {
 	fetchReviewComments,
 	findThreadOf,
 	type PostedComment,
+	PR_COMMITS_LISTED,
 	postThread,
 	type ThreadPlace,
 } from "./gh.js";
@@ -47,6 +48,19 @@ export interface StartedRecord {
 export interface NewThreadTarget extends ThreadWriteTarget {
 	/** The snapshot's head: what a new comment's `commit` must be. */
 	head: string;
+	/**
+	 * The heads of the review's patch sets: an `earlier` comment's
+	 * `commit` must be one of them (CAR-233).
+	 */
+	patchsetHeads: () => readonly string[];
+	/** The PR's commits as GitHub lists them now (fetchPrCommits). */
+	prCommits: () => Promise<readonly string[]>;
+	/**
+	 * A thread made on another commit than the snapshot's joined the
+	 * reads: their placements are computed again, so it is placed (shown)
+	 * in every view, not only in the since view (CAR-233).
+	 */
+	placeAgain?: () => void;
 	/** Whether LEFT lines take comments (PrOverview.commentLeft). */
 	commentLeft: () => Promise<boolean>;
 	started: (clientId: string) => StartedRecord | undefined;
@@ -108,6 +122,17 @@ export function newThreadProblem(req: unknown): string | null {
 		(typeof r.agentThread !== "string" || !isLowerUlid(r.agentThread))
 	) {
 		return "agentThread must be an agent conversation's id";
+	}
+	if (!absent(r.earlier) && typeof r.earlier !== "boolean") {
+		return "earlier must be true or false";
+	}
+	if (
+		r.earlier === true &&
+		(r.subject !== "line" ||
+			r.side !== "RIGHT" ||
+			(!absent(r.startSide) && r.startSide !== "RIGHT"))
+	) {
+		return "A comment on an earlier patch set is on its new lines";
 	}
 	const lineFields = [r.startSide, r.startLine, r.side, r.line];
 	const cols = [r.startCol, r.endCol];
@@ -224,7 +249,17 @@ export async function startThread(
 			"invalid",
 		);
 	}
-	if (!record) {
+	// On an earlier patch set's commit on purpose (CAR-233): one of the
+	// review's patch sets, RIGHT lines (newThreadProblem); GitHub checks
+	// the lines are in that commit's diff. It starts no patch set.
+	const earlier = req.earlier === true;
+	if (!record && earlier && !target.patchsetHeads().includes(req.commit)) {
+		throw new WriteRefusedError(
+			"Not a patch set of this review: refresh to comment",
+			"stale",
+		);
+	}
+	if (!record && !earlier) {
 		if (req.commit !== target.head) {
 			throw new WriteRefusedError(
 				"The PR moved on since: refresh to comment on its new head",
@@ -240,18 +275,34 @@ export async function startThread(
 				"invalid",
 			);
 		}
-		if (body.length > MAX_REPLY) {
-			const room = MAX_REPLY - (body.length - req.body.length);
+	}
+	if (!record && body.length > MAX_REPLY) {
+		const room = MAX_REPLY - (body.length - req.body.length);
+		throw new WriteRefusedError(
+			`A comment is at most ${room} characters`,
+			"invalid",
+		);
+	}
+	// GitHub doesn't refuse a commit_id that is no longer one of the PR's
+	// commits (a head a force-push dropped): it puts the comment on the
+	// PR's head at the same numbers, silently (probed, CAR-233). So that
+	// commit must still be one of them, as GitHub lists them now. GitHub
+	// lists at most PR_COMMITS_LISTED: past that a commit not among them
+	// may still be one, so it goes, and the post's own check (postThread:
+	// where GitHub put it) removes it again if GitHub moved it.
+	if (!record && earlier) {
+		const commits = await target.prCommits();
+		if (commits.length < PR_COMMITS_LISTED && !commits.includes(req.commit)) {
 			throw new WriteRefusedError(
-				`A comment is at most ${room} characters`,
+				"That patch set's commit is no longer in the PR: GitHub would put the comment on the head",
 				"invalid",
 			);
 		}
 	}
 	if (!record) {
 		// The patch set first, in its own transaction: the thread then lands
-		// on a started snapshot.
-		await target.startPatchset?.();
+		// on a started snapshot. Not for a comment on an earlier one.
+		if (!earlier) await target.startPatchset?.();
 		let posted: PostedComment;
 		try {
 			posted = await postThread(
@@ -280,7 +331,10 @@ export async function startThread(
 		// It posted: no pending review stands in the way (any more).
 		target.setPendingReview(null);
 	}
-	return answer(target, req.clientId, record);
+	const out = await answer(target, req.clientId, record);
+	// In the reads now: placed anew from here on.
+	if (earlier) target.placeAgain?.();
+	return out;
 }
 
 /**

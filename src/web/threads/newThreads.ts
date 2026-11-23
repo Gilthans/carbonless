@@ -121,6 +121,7 @@ export function sameSpan(a: CodeSpan, b: CodeSpan): boolean {
 		a.path === b.path &&
 		a.commit === b.commit &&
 		a.subject === b.subject &&
+		(a.earlier === true) === (b.earlier === true) &&
 		a.startSide === b.startSide &&
 		a.startLine === b.startLine &&
 		a.side === b.side &&
@@ -150,6 +151,7 @@ export function targetOf(span: CodeSpan, agentThread?: string): NewTarget {
 		line: span.line,
 		...cols,
 		...link,
+		...(span.earlier ? { earlier: true } : {}),
 	};
 }
 
@@ -169,6 +171,7 @@ export function spanOfDraft(d: Draft): CodeSpan | null {
 					line: c.line,
 					startCol: c.startCol ?? null,
 					endCol: c.endCol ?? null,
+					...(c.earlier === true ? { earlier: true } : {}),
 				}
 			: {}),
 	};
