@@ -1682,3 +1682,198 @@ describe("a posted block joins its GitHub thread (CAR-236)", () => {
 		expect((await store.find(t.id)).anchor).toMatchObject({ thread: "PRRT_9" });
 	});
 });
+
+describe("a write whose compare-and-swap loses to another process is rebuilt on the new tip (CAR-245)", () => {
+	const on = { base: "b".repeat(40), head: "c".repeat(40), patchset: 2 };
+	const to = (line: number) => ({
+		path: "src/lock.ts",
+		startSide: "RIGHT" as const,
+		startLine: line,
+		side: "RIGHT" as const,
+		line,
+	});
+	const gh = { source: "github" as const, id: "PRRT_kwDOabc" };
+	/** Another server, its clock a minute ahead of ours. */
+	const AHEAD = 60_000;
+
+	/**
+	 * Runs `write` with `race` (another process's write) landing between
+	 * the write's read and its first compare-and-swap.
+	 */
+	async function racing<T>(
+		race: () => Promise<unknown>,
+		write: () => Promise<T>,
+	): Promise<T> {
+		const transaction = refs.transaction.bind(refs);
+		let raced = false;
+		const spy = vi
+			.spyOn(refs, "transaction")
+			.mockImplementation(async (updates) => {
+				if (!raced) {
+					raced = true;
+					await race();
+				}
+				return transaction(updates);
+			});
+		try {
+			return await write();
+		} finally {
+			spy.mockRestore();
+			expect(raced).toBe(true);
+		}
+	}
+	const otherWrites = (event: CrbEvent) => () =>
+		new RefStore(repo).appendEvent(ref, "crb: other", event, "dan");
+
+	it("a move retried after another server's newer move is the one the thread stands on", async () => {
+		const theirs = newEvent(
+			"thread-moved",
+			"dan",
+			{ thread: gh, on, anchor: to(4), engine: TRACER_VERSION },
+			"human",
+			Date.now() + AHEAD,
+		);
+		const mine = await racing(otherWrites(theirs), () =>
+			store.move({ thread: gh, on, anchor: to(3) }),
+		);
+		const { moves, undos } = await store.moves();
+		expect(moves.map((m) => m.id)).toEqual([theirs.id, mine.id]);
+		expect(mine.ts).toBeGreaterThan(theirs.ts);
+		expect(foldMoves(moves, undos).get("github:PRRT_kwDOabc")?.at(-1)?.id).toBe(
+			mine.id,
+		);
+	});
+
+	it("an undo retried after another server's newer write folds after its move, and after that write", async () => {
+		const move = await store.move({ thread: gh, on, anchor: to(3) });
+		const theirs = newEvent(
+			"thread-moved",
+			"dan",
+			{ thread: gh, on, anchor: to(9), engine: TRACER_VERSION },
+			"human",
+			Date.now() + AHEAD,
+		);
+		const undo = await racing(otherWrites(theirs), () =>
+			store.undoMove(gh, move.id),
+		);
+		expect(undo.ts).toBeGreaterThan(theirs.ts);
+		expect(undo.ts).toBeGreaterThan(move.ts);
+		const { moves, undos } = await store.moves();
+		expect(
+			foldMoves(moves, undos)
+				.get("github:PRRT_kwDOabc")
+				?.map((m) => m.id),
+		).toEqual([theirs.id]);
+	});
+
+	it("an undo whose move another server undid meanwhile is refused by its check, as a first try would be", async () => {
+		const move = await store.move({ thread: gh, on, anchor: to(3) });
+		const theirs = newEvent(
+			"thread-move-undone",
+			"dan",
+			{ thread: gh, move: move.id },
+			"human",
+		);
+		const tip = git("rev-parse", ref);
+		class Dead extends Error {}
+		await expect(
+			racing(
+				async () => {
+					await otherWrites(theirs)();
+				},
+				() =>
+					store.undoMove(gh, move.id, ({ moves, undos }) => {
+						const live = foldMoves(moves, undos).get("github:PRRT_kwDOabc");
+						if (!live?.some((m) => m.id === move.id)) throw new Dead();
+					}),
+			),
+		).rejects.toBeInstanceOf(Dead);
+		// Only the other server's undo landed.
+		expect(git("rev-list", "--count", `${tip}..${ref}`)).toBe("1");
+	});
+
+	it("a move whose thread another server moved to the cap meanwhile is refused by its check", async () => {
+		const theirs = newEvent(
+			"thread-moved",
+			"dan",
+			{ thread: gh, on, anchor: to(4), engine: TRACER_VERSION },
+			"human",
+		);
+		class Cap extends Error {}
+		await expect(
+			racing(otherWrites(theirs), () =>
+				store.move({ thread: gh, on, anchor: to(3) }, ({ moves, undos }) => {
+					if (
+						(foldMoves(moves, undos).get("github:PRRT_kwDOabc")?.length ?? 0) >=
+						1
+					)
+						throw new Cap();
+				}),
+			),
+		).rejects.toBeInstanceOf(Cap);
+		expect((await store.moves()).moves.map((m) => m.id)).toEqual([theirs.id]);
+	});
+
+	it("an answer retried after another server's newer message folds after it", async () => {
+		const t = await ask("Why a lock?", "c1");
+		const theirs = newEvent(
+			"agent-message",
+			"dan",
+			{ thread: t.id, text: "And the timeout?", details: { clientId: "c2" } },
+			"human",
+			Date.now() + AHEAD,
+		);
+		const folded = await racing(otherWrites(theirs), () =>
+			answer(t.id, "It guards the pool."),
+		);
+		const texts = ["Why a lock?", "And the timeout?", "It guards the pool."];
+		expect(folded.messages.map((m) => m.text)).toEqual(texts);
+		expect((await store.find(t.id)).messages.map((m) => m.text)).toEqual(texts);
+	});
+
+	it("a resend whose message another server stored meanwhile writes nothing", async () => {
+		const t = await ask("Why a lock?", "c1");
+		const theirs = newEvent(
+			"agent-message",
+			"dan",
+			{ thread: t.id, text: "And the timeout?", details: { clientId: "c2" } },
+			"human",
+		);
+		const tip = git("rev-parse", ref);
+		const folded = await racing(otherWrites(theirs), () =>
+			store.message(t.id, {
+				by: "human",
+				text: "And the timeout?",
+				clientId: "c2",
+			}),
+		);
+		expect(folded.messages.map((m) => m.text)).toEqual([
+			"Why a lock?",
+			"And the timeout?",
+		]);
+		expect(git("rev-list", "--count", `${tip}..${ref}`)).toBe("1");
+	});
+
+	it("a link whose GitHub thread another server gave a conversation meanwhile is refused", async () => {
+		const t = await ask("Why a lock?", "c1");
+		const theirs = newEvent(
+			"agent-thread-opened",
+			"dan",
+			{
+				thread: "01jzzzzzzzzzzzzzzzzzzzzzzz",
+				anchor: {
+					subject: "thread",
+					thread: "PRRT_new",
+					path: "src/lock.ts",
+					commit: "a".repeat(40),
+				},
+				text: "Fixed?",
+				details: { clientId: "c9" },
+			},
+			"human",
+		);
+		await expect(
+			racing(otherWrites(theirs), () => store.link(t.id, "PRRT_new")),
+		).rejects.toBeInstanceOf(AgentLinkError);
+	});
+});

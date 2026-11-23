@@ -686,13 +686,93 @@ describe("diff colors", () => {
 		}
 	});
 
-	it("invisible-character markers read at 4.5:1 on every code line", () => {
-		// Muted markers and escapes (src/web/code); bidi controls on a warn tint.
-		for (const bg of CODE_BGS) {
+	it("hidden-character marks are quieter than code and apart from comments, yet show on every line", () => {
+		// The owner (2026-11-22): "the hidden characters have the same design
+		// as comments. I'd like them to be more subtle, and distinct from code
+		// comments"; then (2026-11-23) "Make the color a little more muted and
+		// subtle", and after that round "Make the whitespace marks even dimmer".
+		// Whitespace marks (spaces, tabs, line endings;
+		// src/web/code/Invisibles.tsx) take `invisible`; an escape's label
+		// takes `invisible-strong`, a notch up, on an invisible/10 chip.
+		const mark = token("invisible");
+		const strong = token("invisible-strong");
+		/** Every background a mark can sit on, under no wash, a thread's and a pick's. */
+		const PLAIN = [...CODE_BGS, "span", "find"];
+		const WORD = ["add-word", "del-word", "add-word-done", "del-word-done"];
+		const backs = (names: string[]) =>
+			names.flatMap((bg) =>
+				WASHES.map((wash) => ({
+					name: `${bg} under accent/${wash * 100}`,
+					wash,
+					color: washed(token(bg), wash),
+				})),
+			);
+		// Floors: still visible. A whitespace mark 2:1 on every row, span and
+		// find, under every wash; inside a word tint (which itself says
+		// "changed") 1.4:1, 1.2:1 under a wash.
+		for (const back of backs(PLAIN))
 			expect(
-				contrast(token("faint"), token(bg)),
-				`faint on ${bg}`,
-			).toBeGreaterThanOrEqual(4.5);
+				contrast(mark, back.color),
+				`invisible on ${back.name}`,
+			).toBeGreaterThanOrEqual(2);
+		for (const back of backs(WORD))
+			expect(
+				contrast(mark, back.color),
+				`invisible on ${back.name}`,
+			).toBeGreaterThanOrEqual(back.wash ? 1.2 : 1.4);
+		// An escape (a character that prints as nothing: principle 2) stays
+		// legible: its label on its chip 3:1 on every row, span and find under
+		// every wash, 2:1 inside a word tint; and above the whitespace marks.
+		for (const back of backs([...PLAIN, ...WORD])) {
+			const chip = over(mark, 0.1, back.color);
+			expect(
+				contrast(strong, chip),
+				`escape on its chip over ${back.name}`,
+			).toBeGreaterThanOrEqual(
+				PLAIN.some((b) => back.name.startsWith(`${b} `)) ? 3 : 2,
+			);
+			expect(contrast(strong, chip)).toBeGreaterThan(
+				contrast(mark, back.color),
+			);
+		}
+		// Ceilings: subtle. On each code row a whitespace mark has at most 55%
+		// (about half) of the comment color's contrast, an escape's label at
+		// most 85%; both under `faint` and code-ink.
+		for (const bg of CODE_BGS) {
+			const comment = contrast(SYNTAX.comment, token(bg));
+			expect(
+				contrast(mark, token(bg)),
+				`invisible on ${bg}`,
+			).toBeLessThanOrEqual(0.55 * comment);
+			const chip = over(mark, 0.1, token(bg));
+			expect(contrast(strong, chip), `escape on ${bg}`).toBeLessThanOrEqual(
+				0.85 * comment,
+			);
+			for (const louder of [token("faint"), token("code-ink")])
+				expect(
+					contrast(strong, chip),
+					`escape quieter than ${louder} on ${bg}`,
+				).toBeLessThan(contrast(louder, token(bg)));
+		}
+		// Not the comment's (or faint's) blue-grey: near-neutral stones of
+		// another hue, so a mark never reads as commented code.
+		for (const own of [mark, strong])
+			for (const other of [SYNTAX.comment, token("faint")]) {
+				expect(chroma(own)).toBeLessThan(chroma(other) / 3);
+				expect(
+					hueGap(own, other),
+					`${own} apart from ${other}`,
+				).toBeGreaterThan(90);
+			}
+		// Comments are italic in the syntax theme; marks stay upright (not-italic).
+		const comment = syntaxTheme.settings?.find((s) =>
+			[s.scope ?? []].flat().includes("comment"),
+		);
+		expect(comment?.settings.fontStyle).toBe("italic");
+	});
+
+	it("bidi controls read at 4.5:1 on their warn tint on every code line", () => {
+		for (const bg of CODE_BGS) {
 			const tint = over(token("warn"), 0.15, token(bg));
 			expect(
 				contrast(token("warn"), tint),

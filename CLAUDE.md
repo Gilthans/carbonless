@@ -451,7 +451,8 @@ After the first release (0.1.0) the owner adds the trusted publisher
   artifacts), fixed and pushed; a failure that looks unrelated is rerun once
   (`gh run rerun --failed`), and is flagged if it fails again. A PR is merged only on the owner's explicit word for that PR (by
   the owner on GitHub, or on their behalf by an agent with `gh pr merge
-  --admin`, the ruleset's bypass for the owner's login). Before merging
+  --admin`, the ruleset's bypass for the owner's login, which skips the
+  review but never a red or missing required check). Before merging
   any PR, `pnpm release merge-ok <pr>` must pass (the release freeze, and
   the PR's release notes: `docs/releasing.md`). Never push `master` or
   `v*` tags.

@@ -27,10 +27,19 @@ export const useShowInvisibles = (): boolean => showInvisibles.use();
  * A marker drawn as CSS generated content (never selected, copied or read
  * out), over the original character kept in the DOM at zero size, so a copy
  * gives back exactly the code. The zero-size character is isolated: a bidi
- * control can't reorder the text around it.
+ * control can't reorder the text around it. Marks take their own quiet
+ * `invisible` color, upright, apart from the syntax's italic comments.
  */
-const MARK =
-	"text-faint before:content-[attr(data-glyph)_/_''] [&>span]:text-[0px] [&>span]:leading-[0] [&>span]:[unicode-bidi:isolate]";
+const GLYPH =
+	"not-italic before:content-[attr(data-glyph)_/_''] [&>span]:text-[0px] [&>span]:leading-[0] [&>span]:[unicode-bidi:isolate]";
+const MARK = `text-invisible ${GLYPH}`;
+/**
+ * An escape (a character that prints as nothing) sits on a faint chip: a
+ * mark, not text. Its label is a notch above the whitespace marks
+ * (`invisible-strong`), legible on every background (principle 2;
+ * theme.test.ts).
+ */
+const ESCAPE = "rounded-sm bg-invisible/10 text-invisible-strong";
 const BIDI = "rounded-sm bg-warn/15 text-warn";
 
 function Marker(props: { piece: Exclude<Piece, { kind: "text" }> }): ReactNode {
@@ -73,7 +82,7 @@ function Marker(props: { piece: Exclude<Piece, { kind: "text" }> }): ReactNode {
 							tabIndex={-1}
 							data-inv={piece.bidi ? "bidi" : "escape"}
 							data-glyph={piece.label}
-							className={`${MARK} ${piece.bidi ? BIDI : ""} focus-visible:outline-2 focus-visible:outline-accent`}
+							className={`${GLYPH} ${piece.bidi ? BIDI : ESCAPE} focus-visible:outline-2 focus-visible:outline-accent`}
 						>
 							{raw}
 						</span>
