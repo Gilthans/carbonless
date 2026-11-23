@@ -263,7 +263,8 @@ switch wouldn't happen.
   (below). Its tooltip says so before the press.
 - **AI-suggested comments (CAR-83).** The reviewer's agent may suggest a
   review comment as a ```` ```comment ```` block in its answer; crb shows it
-  as an editable box with **Add review comment**. Only the reviewer's press
+  as an editable box with **Reply** when it posts as a reply to a GitHub
+  thread, else **Add review comment**. Only the reviewer's press
   posts it, exactly the box's text (their edits included), as the reviewer,
   where the conversation sits: a new thread on its lines or file at the
   snapshot's head (through the conversation's placement there: a changed
@@ -295,7 +296,20 @@ switch wouldn't happen.
   asked, its blocks replying to its thread. Until the first post's record
   is in, this browser knows it: another block of the conversation waits
   while one is on its way or in doubt, and replies to the thread one
-  started once GitHub took it.
+  started once GitHub took it (its button says Add review comment until
+  then, Reply from then on: its header and button always agree).
+  **The agent is told where its blocks post** (the owner, 2026-11-22: "a
+  suggestion should post as a reply if the agent thread is tied to a
+  conversation. Make sure the MCP tells the agent about that, and make sure
+  the texts align with that"; CAR-237). Each question's preamble says, as of
+  that read, whether a block in this conversation posts as a reply to its
+  GitHub thread (write it as a reply to that thread, without restating
+  it) or as a new review comment on its lines or file:
+  a conversation that joined a thread since its last question replies, one
+  whose thread was deleted is back to new comments. While GitHub can't be
+  read, a thread conversation or a joined one is still told reply (and a
+  joined one's box, off, still shows Reply on a thread). The
+  whole-review conversation is told nothing (it posts none).
 - **Write / Preview on every box that posts to GitHub (CAR-202).** The
   reply, new-thread, edit and verdict-message boxes and the agent's
   suggested comment each have a pencil/eye toggle (Ctrl/Cmd+Shift+P).

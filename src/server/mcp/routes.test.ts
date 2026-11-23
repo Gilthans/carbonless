@@ -16,6 +16,9 @@ import {
 	type AgentStatus,
 	type AgentThread,
 	COMMENT_INSTRUCTION,
+	COMMENT_OPENED,
+	COMMENT_POSTS,
+	COMMENT_WHICH,
 	JOINED_PREAMBLE,
 	REVIEW_PREAMBLE,
 } from "../../shared/agent";
@@ -176,6 +179,13 @@ describe("/mcp", () => {
 				COMMENT_INSTRUCTION,
 			);
 		}
+		// reply answers the question: its preamble says which; open's block
+		// goes by the opened conversation's target, not the question's (CAR-237).
+		const desc = (name: string) =>
+			tools.find((t) => t.name === name)?.description ?? "";
+		expect(desc("reply")).toContain(COMMENT_WHICH);
+		expect(desc("open")).not.toContain(COMMENT_WHICH);
+		expect(desc("open")).toContain(COMMENT_OPENED);
 		const fake = `${id}.${"A".repeat(43)}`;
 		for (const name of ["next", "threads", "review", "progress", "detach"]) {
 			const r = await call(client, name, { token: fake });
@@ -316,7 +326,8 @@ describe("/mcp", () => {
 		};
 		expect(q.thread).toBe(asked.id);
 		expect(q.replyTo).toBe(asked.messages[0]?.id);
-		expect(q.preamble).toBe(JOINED_PREAMBLE);
+		// Then where its ```comment blocks post (CAR-237): lines, no thread yet.
+		expect(q.preamble).toBe(`${JOINED_PREAMBLE} ${COMMENT_POSTS.line}`);
 		expect(q.envelope.review).not.toHaveProperty("tree");
 		expect(q.envelope.thread.anchor).not.toHaveProperty("file");
 		expect(q.envelope.pr).toBeDefined();
