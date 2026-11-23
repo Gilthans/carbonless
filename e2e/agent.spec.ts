@@ -613,6 +613,10 @@ test("the question above what is in sight floats at the box's top; a tap jumps t
 	// At the end: the last question floats, cut with an ellipsis, over the
 	// box's top, in a slot that takes no room.
 	await expect(bar).toHaveAccessibleName(/^Jump to question: A third question/);
+	// Its name is the question's start, capped.
+	const name = (await bar.getAttribute("aria-label")) ?? "";
+	expect(name.length).toBeLessThanOrEqual("Jump to question: ".length + 101);
+	expect(name.endsWith("…")).toBe(true);
 	await expect(barText).toHaveText(/^A third question/);
 	expect(
 		await barText.evaluate((el) => ({
@@ -636,6 +640,36 @@ test("the question above what is in sight floats at the box's top; a tap jumps t
 			path: `${shots}/agent-question-bar-box-${isMobile ? "phone" : "desktop"}.png`,
 		});
 	}
+	// The card's top just under the file's sticky header: the cluster's
+	// floating checkbox and cross-off stop above the agent card (as above an
+	// opened thread), never over the bar.
+	await card.evaluate((el) => {
+		const header = el.closest("section")?.querySelector(":scope > header");
+		const top = header?.getBoundingClientRect().bottom ?? 0;
+		window.scrollBy(0, el.getBoundingClientRect().top - top - 5);
+	});
+	await page.evaluate(
+		() =>
+			new Promise<void>((done) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => done())),
+			),
+	);
+	const cardBox = await card.boundingBox();
+	expect(cardBox).toBeTruthy();
+	for (const controls of await section
+		.locator("[data-sticky-controls]")
+		.all()) {
+		for (const target of await controls.locator(":scope > *").all()) {
+			const t = await target.boundingBox();
+			if (!t || !cardBox || t.height === 0) continue;
+			const overlaps =
+				t.x < cardBox.x + cardBox.width &&
+				cardBox.x < t.x + t.width &&
+				t.y < cardBox.y + cardBox.height &&
+				cardBox.y < t.y + t.height;
+			expect(overlaps).toBe(false);
+		}
+	}
 
 	/** `i`'s question: its top inside the box, just below the bar's band. */
 	const atTop = async (i: number) =>
@@ -647,12 +681,18 @@ test("the question above what is in sight floats at the box's top; a tap jumps t
 			},
 			await scroller.elementHandle(),
 		);
-	// A tap: the third question comes to the top; the second floats.
-	await bar.click();
+	const turns = card.locator("[data-by=human]");
+	// By keyboard: Enter brings the third question to the top and gives it
+	// the focus (the bar may go mid-scroll); the second floats.
+	await bar.focus();
+	await page.keyboard.press("Enter");
+	await expect(turns.nth(2)).toBeFocused();
 	await expect.poll(async () => atTop(2)).toBe(true);
 	await expect(bar).toHaveAccessibleName(`Jump to question: ${Q2}`);
-	// Again: the second, then the first floats.
-	await bar.click();
+	// A second keyboard step: the second, focused; then the first floats.
+	await bar.focus();
+	await page.keyboard.press("Enter");
+	await expect(turns.nth(1)).toBeFocused();
 	await expect.poll(async () => atTop(1)).toBe(true);
 	await expect(bar).toHaveAccessibleName(`Jump to question: ${Q1}`);
 	// Scrolled up into the first answer: still the first; at the very top,
@@ -676,7 +716,78 @@ test("the question above what is in sight floats at the box's top; a tap jumps t
 			q2.getBoundingClientRect().top - el.getBoundingClientRect().top + 200;
 	});
 	await expect(bar).toHaveAccessibleName(`Jump to question: ${Q2}`);
+	// A tap (a click) jumps too, the box in the middle of the page.
+	await scroller.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	if (isMobile) await bar.tap();
+	else await bar.click();
+	await expect.poll(async () => atTop(1)).toBe(true);
+	await expect(bar).toHaveAccessibleName(`Jump to question: ${Q1}`);
 	await expectNoPageOverflow(page);
+});
+
+test("a jump to the question while an answer lands stays where it went: the pin doesn't take it back (CAR-246)", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await pr(fixture);
+	const long = (end: string) =>
+		[...Array.from({ length: 40 }, (_, i) => `Paragraph ${i + 1}.`), end].join(
+			"\n\n",
+		);
+	const s = await agentCrb({
+		scenario: {
+			agent: { name: "Fake Agent", version: "9.9.9" },
+			answers: [
+				{ match: "second", text: long("End two.") },
+				{ text: long("End one.") },
+			],
+		},
+	});
+	await holdSeenMarks(page);
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 3, "Tell me everything");
+	const answers = card.getByTestId("agent-message-ai");
+	await expect(answers).toContainText("End one.");
+	const scroller = card.getByTestId("agent-thread-scroll");
+	const bar = card.getByTestId("agent-question-bar");
+	// The threads read that brings the second answer is held: it lands on
+	// the test's cue, right as the jump starts.
+	const held: Array<() => Promise<void>> = [];
+	let holding = true;
+	await page.route("**/agent/threads", (route) => {
+		if (!holding || route.request().method() !== "GET") {
+			return route.continue();
+		}
+		held.push(() => route.continue());
+	});
+	await card
+		.getByRole("textbox", { name: "Reply to your agent" })
+		.fill("A second question");
+	await card.getByTestId("agent-reply-ask").click();
+	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	await expect.poll(() => held.length).toBeGreaterThan(0);
+	await expect(bar).toHaveAccessibleName(
+		"Jump to question: Tell me everything",
+	);
+	await scroller.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	await bar.click();
+	holding = false;
+	for (const go of held.splice(0)) await go();
+	await expect(answers).toHaveCount(2);
+	await expect(answers.nth(1)).toContainText("End two.");
+	// Still at the first question (the box's top), far from the end.
+	await expect
+		.poll(() => scroller.evaluate((el) => el.scrollTop))
+		.toBeLessThanOrEqual(1);
+	expect(
+		await scroller.evaluate(
+			(el) => el.scrollHeight - el.clientHeight - el.scrollTop,
+		),
+	).toBeGreaterThan(400);
+	await expect(
+		card.getByTestId("agent-message-human").first(),
+	).toBeInViewport();
 });
 
 test("agent and comment bubbles side by side on one line, each with its own count", async ({

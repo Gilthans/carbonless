@@ -225,6 +225,9 @@ export function AgentScroll(props: {
 	// box): that pins again.
 	const seen = useRef({ top: 0, height: 0 });
 	const [turn, setTurn] = useState<Turn | null>(null);
+	// A jump under way (its end handler): the pin stays off until it ends.
+	const jumping = useRef<(() => void) | null>(null);
+	useEffect(() => () => jumping.current?.(), []);
 	const float = () => {
 		const el = box.current;
 		if (!el) return;
@@ -280,7 +283,9 @@ export function AgentScroll(props: {
 				)
 					return;
 				pinned.current = null;
-				atEnd.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+				atEnd.current =
+					!jumping.current &&
+					el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
 			}}
 			className={AGENT_SCROLL}
 		>
@@ -295,9 +300,24 @@ export function AgentScroll(props: {
 						onJump={() => {
 							const el = box.current;
 							if (!el) return;
-							// Leaves the end: the pin lets go.
+							// Leaves the end: the pin lets go, and stays off until the
+							// scroll ends (its first frames may still be near the end).
 							atEnd.current = false;
 							pinned.current = null;
+							jumping.current?.();
+							const done = () => {
+								el.removeEventListener("scrollend", done);
+								clearTimeout(timer);
+								jumping.current = null;
+							};
+							// scrollend may never come (nothing to scroll): let go anyway.
+							const timer = setTimeout(done, 2000);
+							el.addEventListener("scrollend", done);
+							jumping.current = done;
+							// The question takes the focus (the bar may go mid-scroll).
+							el.querySelector<HTMLElement>(
+								`[data-by=human][data-message-id="${CSS.escape(turn.id)}"]`,
+							)?.focus({ preventScroll: true });
 							const reduce =
 								typeof window.matchMedia === "function" &&
 								window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -377,9 +397,12 @@ function QuestionBar(props: {
 		<button
 			type="button"
 			data-testid="agent-question-bar"
-			aria-label={`Jump to question: ${first}`}
+			aria-label={`Jump to question: ${first.length > 100 ? `${first.slice(0, 100)}…` : first}`}
 			onClick={props.onJump}
-			className="absolute inset-x-0 top-0 isolate flex h-10 min-w-0 items-center gap-2 bg-surface px-2.5 text-left text-sm text-ink shadow-control focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+			// The box's scroll-pt-10 keeps focused content clear of the bar;
+			// the bar itself, inside that band, counts as in view (focusing or
+			// revealing it doesn't scroll the box).
+			className="absolute inset-x-0 top-0 isolate flex h-10 scroll-mt-[-2.5rem] min-w-0 items-center gap-2 bg-surface px-2.5 text-left text-sm text-ink shadow-control focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
 		>
 			{/* The reviewer's tint, as on their messages, over an opaque ground. */}
 			<span
@@ -399,7 +422,7 @@ function QuestionBar(props: {
 }
 
 export const AGENT_SCROLL =
-	"-mx-1 -mt-1 mb-1! max-h-[min(28rem,60vh)] overflow-y-auto p-1 [overflow-anchor:none]";
+	"-mx-1 -mt-1 mb-1! max-h-[min(28rem,60vh)] overflow-y-auto scroll-pt-10 p-1 [overflow-anchor:none]";
 
 function Who(props: { children: React.ReactNode }) {
 	return (
@@ -1040,8 +1063,11 @@ export function AgentMessageItems(props: {
 						<div
 							data-message-id={m.id}
 							data-by={m.by}
+							// A question takes the focus when its floating bar is
+							// pressed (AgentScroll).
+							tabIndex={m.by === "human" ? -1 : undefined}
 							data-landed={m.id === lit || undefined}
-							className={`min-w-0 space-y-1 rounded-md outline-offset-2 transition-[outline-color] duration-1000 motion-reduce:transition-none ${
+							className={`min-w-0 space-y-1 rounded-md outline-offset-2 transition-[outline-color] duration-1000 focus-visible:outline-accent motion-reduce:transition-none ${
 								m.id === lit
 									? "outline-2 outline-accent"
 									: "outline-2 outline-transparent"
