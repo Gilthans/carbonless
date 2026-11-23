@@ -283,9 +283,10 @@ function Composer() {
 	return (
 		<>
 			<div ref={ref} data-card="">
+				{/* Uncontrolled: a key changes no node in the card, only Comment's
+				    disabled (a controlled box would also rewrite its text node). */}
 				<textarea
 					aria-label="Comment"
-					value={text}
 					onChange={(e) => setText(e.target.value)}
 				/>
 				<button type="button" data-last="" disabled={!text.trim()}>
@@ -311,7 +312,10 @@ describe("FilesFab", () => {
 		);
 		render(<Composer />);
 		const fab = screen.getByText("Files").closest("button");
-		// Comment is off: nothing to tap under the button.
+		// Settled (the frames the first look left): Comment is off, nothing
+		// to tap under the button.
+		act(() => flush());
+		expect(frames).toHaveLength(0);
 		expect(fab).not.toHaveAttribute("data-fab-hidden");
 		const box = screen.getByRole("textbox", { name: "Comment" });
 		act(() => box.focus());
