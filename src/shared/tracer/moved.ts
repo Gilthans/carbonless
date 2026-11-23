@@ -1,25 +1,27 @@
 /**
  * A replaced line that went elsewhere in its file: the tracer's move search
- * (CAR-95 step 3), and the contest that keeps a partner nearby from winning
- * when a line elsewhere resembles the old one as much.
+ * (CAR-95 step 3), and the contest that keeps a partner nearby from losing
+ * to a line elsewhere that only resembles the old one.
  *
  * A moved block is a run of the old file's removed lines found again, line
- * for line, as a run of the new file's added lines: equal (as `same`
+ * for line, as a run of the new file's added lines: equal (as `sameKey`
  * compares them), or alike (PAIR_MIN_SIMILARITY) beside an equal one. A
- * run counts only with two lines with a word or more (one line alone says
- * nothing about where it went: a copied line, a shared boilerplate line)
- * and TUNING.minAlnum letters and digits on its equal lines (git's
- * `--color-moved` minimum). An alike line that opens a block (`func a() {`
- * against `func b() {`) never extends a run: a block's header names it. A
- * line follows its run only when that run leads every other by
- * TUNING.contextMargin: an identical block that appears twice (two added,
- * or two removed) is ambiguous, never a pick.
+ * run moves a thread only with two lines with a word or more,
+ * TUNING.minAlnum letters and digits on its equal lines (git's
+ * `--color-moved` minimum), and more than half of its hunk's removed lines
+ * carried (`carries`: a block that moved takes most of what git removed
+ * around it; two lines of boilerplate don't). An alike line that opens a
+ * block (`func a() {` against `func b() {`) never extends a run: a block's
+ * header names it. A line follows its run only when that run leads every
+ * other by TUNING.contextMargin: an identical block that appears twice is
+ * ambiguous, never a pick. No move, but the text is among the added lines
+ * as it was: "copies" (the caller says `rewritten`, not `deleted`).
  *
- * A line edited in place keeps its partner nearby: when every line with a
- * word around it stayed (kept by git) or was paired in place beside it
- * (`anchored`, trace.ts), neither a move nor a look-alike contests it.
- * Otherwise the partner, a move, and the file's look-alikes compete on
- * likeness plus context (`contested`).
+ * A line edited in place keeps its partner nearby (trace.ts's `anchored`,
+ * and `held` here). Otherwise the partner, a move, and the file's
+ * look-alikes compete on likeness plus context (`contested`), where a line
+ * elsewhere needs its surroundings to lead, gets nothing for neighbours
+ * that stayed at home, and never wins from new code.
  *
  * Every lookup works from an index of the file's added and removed lines
  * built once per `bd` mapper (shared by every thread traced through it, as
@@ -35,7 +37,7 @@ import {
 	similarityMemo,
 } from "../linePairing.js";
 import { HAS_WORD } from "../tokenize.js";
-import type { LineMapper } from "./lineMapper.js";
+import type { LineMapper, MapHunk } from "./lineMapper.js";
 import type { Position } from "./trace.js";
 
 /**
@@ -153,6 +155,11 @@ export interface TextReaders {
 	bd: LineMapper;
 	oldLineText?: (pos: Position) => string | null;
 	newLineText?: (pos: Position) => string | null;
+	/**
+	 * Whether removed old line `oldLine` has a partner in place other than
+	 * new line `image` (trace.ts): it stayed, edited.
+	 */
+	stays?: (oldLine: number, image: number) => boolean;
 }
 
 type Reader = (pos: Position) => string | null;
@@ -185,6 +192,10 @@ interface FileIndex {
 	) => number[] | null;
 	/** Per added line, the removed line it is the mutual best of (claimed). */
 	mutual: Map<number, { other: number; score: number } | null>;
+	/** Per hunk, its removed lines with a word. */
+	hunkWords: Map<MapHunk, number>;
+	/** How often each `same` key occurs in the whole old file (made when needed). */
+	oldCounts?: Map<string, number>;
 }
 
 const indexes = new WeakMap<LineMapper, FileIndex>();
@@ -234,6 +245,7 @@ function build(r: TextReaders): FileIndex {
 		sim: similarityMemo(),
 		same,
 		mutual: new Map(),
+		hunkWords: new Map(),
 	};
 }
 
@@ -363,50 +375,96 @@ function pairScore(
 	return s >= PAIR_MIN_SIMILARITY ? { score: s, equalAlnum: 0, word } : null;
 }
 
-/** Where old line `o` went with its moved run: its new line, ambiguous, or none. */
-export type Moved = { line: number } | "ambiguous" | null;
+/**
+ * Where old line `o` went with its moved run: its new line; "ambiguous";
+ * "copies": none decided, but its text is among the added lines as it was
+ * (so "deleted" would be a false claim); null: none.
+ */
+export type Moved = { line: number } | "ambiguous" | "copies" | null;
 
-/** Whether a run is enough to move a thread: see the file's doc. */
-const enough = (run: Run | null): run is Run =>
+/** Whether a run is a block (two word lines, enough letters): see the file's doc. */
+const block = (run: Run | null): run is Run =>
 	run !== null && run.words >= 2 && run.equalAlnum >= TUNING.minAlnum;
+
+/** `hunk`'s removed lines with a word, memoized. */
+function wordsOf(hunk: MapHunk, r: TextReaders, x: FileIndex): number {
+	let n = x.hunkWords.get(hunk);
+	if (n === undefined) {
+		n = 0;
+		for (let o = hunk.oldStart; o < hunk.oldStart + hunk.oldCount; o++) {
+			if (hasWord(readOld(r, o) ?? "")) n++;
+		}
+		x.hunkWords.set(hunk, n);
+	}
+	return n;
+}
+
+/**
+ * Whether a block moved a thread of `hunk`: it carries more than half of
+ * the hunk's removed lines with a word (lines it carries that have a
+ * partner in place, `TextReaders.stays`, don't count: they stayed). A block that moved takes most of
+ * what git removed around it along; two lines of boilerplate (`t.Parallel()`
+ * and a `ctx :=` line, a `WithTimeout` and its `defer cancel()`) found in
+ * new code while the rest of their function is gone did not move. Half
+ * exactly is no majority: wrong is worse than unplaced.
+ */
+function carries(
+	run: Run | null,
+	hunk: MapHunk | null,
+	r: TextReaders,
+	x: FileIndex,
+): run is Run {
+	if (!block(run) || hunk === null) return false;
+	// A line with its own edited version at home (a partner in place) didn't
+	// move with the run: it doesn't count.
+	let gone = 0;
+	for (let o = run.oldFrom; o <= run.oldTo; o++) {
+		const image = run.newFrom + (o - run.oldFrom);
+		if (hasWord(readOld(r, o) ?? "") && !(r.stays?.(o, image) ?? false)) {
+			gone++;
+		}
+	}
+	return gone * 2 > wordsOf(hunk, r, x);
+}
 
 /**
  * The best run through old line `o` among the added lines equal to it:
- * one run enough to move, ahead of every other by TUNING.contextMargin,
- * else ambiguous (a near tie, or an equal removed line with a run to the
- * same place as good); null: none (or more equal lines than
- * MOVE_MAX_CANDIDATES, either side: too common to say).
+ * one run that carries the line's hunk (`carries`), ahead of every other
+ * by TUNING.contextMargin, else "ambiguous" (a near tie, or an equal
+ * removed line with a run to the same place as good); "copies": equal
+ * lines but no such run (or more than MOVE_MAX_CANDIDATES: too common to
+ * say); null: no equal line.
  */
 function bestRun(
 	o: number,
 	r: TextReaders,
 	x: FileIndex,
-): Run | "ambiguous" | null {
+): Run | "ambiguous" | "copies" | null {
 	const text = readOld(r, o);
 	if (text === null || !HAS_WORD.test(text)) return null;
 	const key = x.same(text);
 	const candidates = x.addedBySame.get(key) ?? [];
-	if (candidates.length === 0 || candidates.length > MOVE_MAX_CANDIDATES) {
-		return null;
-	}
+	if (candidates.length === 0) return null;
+	if (candidates.length > MOVE_MAX_CANDIDATES) return "copies";
+	const hunk = r.bd.hunkRemovingOld(o);
 	const runs = candidates
 		.map((n) => runThrough(o, n, r, x))
-		.filter(enough)
+		.filter((run): run is Run => carries(run, hunk, r, x))
 		.sort((a, b) => b.score - a.score);
 	const [best, second] = runs;
-	if (!best) return null;
+	if (!best) return "copies";
 	if (second && best.score - second.score < TUNING.contextMargin) {
 		return "ambiguous";
 	}
 	// Another removed line equal to this one, with as good a run to the
 	// same place: which of the two moved can't be told.
 	const twins = x.removedBySame.get(key) ?? [];
-	if (twins.length > MOVE_MAX_CANDIDATES) return null;
+	if (twins.length > MOVE_MAX_CANDIDATES) return "copies";
 	const at = best.newFrom + (o - best.oldFrom);
 	for (const t of twins) {
 		if (t === o) continue;
 		const run = runThrough(t, at, r, x);
-		if (enough(run) && best.score - run.score < TUNING.contextMargin) {
+		if (block(run) && best.score - run.score < TUNING.contextMargin) {
 			return "ambiguous";
 		}
 	}
@@ -425,9 +483,10 @@ export function movedTo(o: number, r: TextReaders): Moved {
 	const x = indexOf(r);
 	const own = bestRun(o, r, x);
 	if (own === "ambiguous") return own;
-	if (own) return { line: own.newFrom + (o - own.oldFrom) };
+	if (own && own !== "copies") return { line: own.newFrom + (o - own.oldFrom) };
+	const copies = own === "copies" ? own : null;
 	const text = readOld(r, o);
-	if (text === null || !OPENS_BLOCK.test(text)) return null;
+	if (text === null || !OPENS_BLOCK.test(text)) return copies;
 	// The body: the lines after `o` up to the first one indented no deeper
 	// (its close, or the next statement outside it).
 	const depth = indent(text);
@@ -435,35 +494,102 @@ export function movedTo(o: number, r: TextReaders): Moved {
 	let words = 0;
 	for (let n = o + 1; n <= o + MOVE_MAX_RUN; n++) {
 		const t = readOld(r, n);
-		if (t === null) return null;
+		if (t === null) break;
 		if (t.trim() === "") continue;
 		if (indent(t) <= depth) break;
 		last = n;
 		if (HAS_WORD.test(t)) words++;
 	}
-	if (words < 2) return null;
+	if (words < 2) return copies;
 	// The body's first word line seeds the run; the run must hold it all
-	// (its close may stay: the block it joined has its own).
+	// (its close may stay: the block it joined has its own), and carry
+	// most of the opener's hunk with the opener.
 	let seed = o + 1;
 	while (seed <= last && !HAS_WORD.test(readOld(r, seed) ?? "")) seed++;
 	const body = bestRun(seed, r, x);
 	if (body === "ambiguous") return body;
-	if (!body || body.oldFrom > o + 1 || body.oldTo < last) return null;
+	if (!body || body === "copies" || body.oldFrom > o + 1 || body.oldTo < last) {
+		return copies;
+	}
+	const hunk = r.bd.hunkRemovingOld(o);
+	if (!carries(body, hunk, r, x)) {
+		return copies;
+	}
 	return { line: body.newFrom + (o + 1 - body.oldFrom) };
+}
+
+/** Each `same` key's count over the whole old file, read once per index. */
+function oldCounts(r: TextReaders, x: FileIndex): Map<string, number> {
+	if (x.oldCounts) return x.oldCounts;
+	const counts = new Map<string, number>();
+	for (let n = 1; ; n++) {
+		const t = readOld(r, n);
+		if (t === null) break;
+		if (!hasWord(t)) continue;
+		const key = x.same(t);
+		counts.set(key, (counts.get(key) ?? 0) + 1);
+	}
+	x.oldCounts = counts;
+	return counts;
+}
+
+/** Whether another removed line has old line `o`'s text (`same`). */
+export function hasTwin(o: number, r: TextReaders): boolean {
+	const x = indexOf(r);
+	const t = readOld(r, o);
+	if (t === null || !hasWord(t)) return false;
+	return (x.removedBySame.get(x.same(t)) ?? []).some((other) => other !== o);
+}
+
+/**
+ * Whether new line `n` is where another removed line than `o` moved with
+ * its block (`movedTo`): then it is that line's, never `o`'s partner. Past
+ * MOVE_MAX_CANDIDATES equal removed lines: too common to say (false).
+ */
+export function claimedByMove(o: number, n: number, r: TextReaders): boolean {
+	const x = indexOf(r);
+	const t = readNew(r, n);
+	if (t === null || !hasWord(t)) return false;
+	const twins = x.removedBySame.get(x.same(t)) ?? [];
+	if (twins.length > MOVE_MAX_CANDIDATES) return false;
+	return twins.some((other) => {
+		if (other === o) return false;
+		const m = movedTo(other, r);
+		return m !== null && typeof m === "object" && m.line === n;
+	});
 }
 
 /**
  * How much old line `o`'s neighbours (TUNING.contextLines each way, word
  * lines) resemble new line `n`'s, each its best match on the same side of
- * `n` within as many lines: a statement's surroundings follow it.
+ * `n` within as many lines: a statement's surroundings follow it. For a
+ * line away from home (`away`), a neighbour git kept at home with unique
+ * text counts nothing: it stayed, so its look-alike beside `n` is a copy's,
+ * not the statement's surroundings (copy a function, then edit the
+ * original). A generic kept line (`t.Parallel()`) still counts.
  */
-function contextOf(o: number, n: number, r: TextReaders, x: FileIndex): number {
+function contextOf(
+	o: number,
+	n: number,
+	r: TextReaders,
+	x: FileIndex,
+	away = false,
+): number {
 	const k = TUNING.contextLines;
 	let total = 0;
 	for (const step of [-1, 1]) {
 		for (let i = 1; i <= k; i++) {
 			const a = readOld(r, o + step * i);
 			if (a === null || !HAS_WORD.test(a)) continue;
+			// Kept at home (not beside `n`) with unique text: a copy's.
+			const kept = away ? r.bd.oldToNew(o + step * i) : null;
+			if (
+				kept !== null &&
+				(Math.sign(kept - n) !== step || Math.abs(kept - n) > k) &&
+				oldCounts(r, x).get(x.same(a)) === 1
+			) {
+				continue;
+			}
 			let best = 0;
 			for (let j = 1; j <= k; j++) {
 				const b = readNew(r, n + step * j);
@@ -476,6 +602,59 @@ function contextOf(o: number, n: number, r: TextReaders, x: FileIndex): number {
 		}
 	}
 	return total;
+}
+
+/**
+ * Whether `found` sits where old line `o` sat: between the images of the
+ * nearest lines with a word git kept above and below `o`, both within
+ * TUNING.contextLines of it, with a kept line of unique text in the old
+ * file among those within reach on either side (generic kept lines alone,
+ * `t.Parallel()`, `}`-like boilerplate, could be any function's). Its
+ * function is still around it, edited in place, lines inserted or deleted
+ * beside it or not: a look-alike elsewhere never takes it (copy it, then
+ * edit the original); only a moved block can.
+ */
+function held(o: number, found: number, r: TextReaders, x: FileIndex): boolean {
+	let unique = false;
+	const bracket = (step: number) => {
+		let nearest: number | null = null;
+		for (let i = 1; i <= TUNING.contextLines; i++) {
+			const n = o + step * i;
+			const t = readOld(r, n);
+			if (t === null) break;
+			if (!hasWord(t)) continue;
+			const image = r.bd.oldToNew(n);
+			if (image === null) continue;
+			nearest ??= image;
+			if (oldCounts(r, x).get(x.same(t)) === 1) unique = true;
+		}
+		return nearest;
+	};
+	const above = bracket(-1);
+	const below = bracket(1);
+	return (
+		unique && above !== null && below !== null && above < found && found < below
+	);
+}
+
+/**
+ * Whether new line `n` is new code: inserted by a hunk that removed
+ * nothing, or with no line with a word git kept within
+ * TUNING.contextLines of it (a kept `}` or blank line between two
+ * functions doesn't make the code around it old).
+ */
+function inNewCode(n: number, r: TextReaders): boolean {
+	// Inserted where nothing was removed: new code, whatever kept lines
+	// border it.
+	if (r.bd.hunkAddingNew(n)?.oldCount === 0) return true;
+	const k = TUNING.contextLines;
+	for (let i = -k; i <= k; i++) {
+		const m = n + i;
+		const t = m < 1 ? null : readNew(r, m);
+		if (t === null || !hasWord(t)) continue;
+		if (r.bd.newToOld(m) !== null) return false;
+	}
+	return true;
 }
 
 /** Old line `o`'s neighbours with a word, within TUNING.contextLines. */
@@ -559,10 +738,10 @@ export type Contest = { line: number; moved?: true } | "unknown";
  * context (contextOf) is ahead of every other by TUNING.contextMargin
  * carries it (`moved` when that isn't `found`), a line elsewhere only
  * when its context alone also leads the partner's, by half as much; none
- * ahead: "unknown".
- * When no rival could catch up with the partner even with every neighbour
- * alike, they aren't weighed one by one; past CONTEST_MAX_RIVALS otherwise,
- * "unknown". Uncontested: `found`.
+ * ahead: "unknown". A partner `held` by kept lines of its function faces
+ * the move only; past CONTEST_MAX_RIVALS look-alikes (too many to weigh)
+ * too. When no rival could catch up with the partner even with every
+ * neighbour alike, they aren't weighed one by one. Uncontested: `found`.
  */
 export function contested(
 	o: number,
@@ -576,11 +755,14 @@ export function contested(
 	if (text === null) return { line: found };
 	x.alike ??= alikeAtLeast(x.addedText.map((t) => t ?? ""));
 	const min = Math.max(score - TUNING.contestMargin, PAIR_MIN_SIMILARITY);
-	// Look-alikes sharing only common words with it past the cap: too
-	// common to tell (a generated table, say).
-	const near = x.alike(text, min - EPS, CONTEST_MAX_RIVALS);
-	if (near === null) return "unknown";
-	const rivals = near
+	// Held by its own function: only a moved block contests it.
+	const near = held(o, found, r, x)
+		? []
+		: x.alike(text, min - EPS, CONTEST_MAX_RIVALS);
+	// Look-alikes past the cap (a generated table, say): too many to weigh;
+	// the partner nearby keeps it against them, as before this search
+	// existed (a moved block still contests it).
+	const rivals = (near ?? [])
 		.map((i) => x.added[i] as number)
 		.filter((n) => n !== found && n !== move);
 	if (move !== null) rivals.unshift(move);
@@ -589,7 +771,7 @@ export function contested(
 		n === found ? score : x.sim(text, readNew(r, n) ?? "");
 	const home = contextOf(o, found, r, x);
 	const ours = score + home;
-	// Every rival's best: its likeness and a fully alike neighbourhood.
+	// Every rival's best: its likeness and every neighbour at its most.
 	const reach = wordNeighbours(o, r);
 	const best = Math.max(...rivals.map(likeness));
 	if (ours - (best + reach) >= TUNING.contextMargin) return { line: found };
@@ -597,11 +779,11 @@ export function contested(
 		(n) => n === move || !claimed(o, text, n, score, r, x),
 	);
 	if (weighed.length === 0) return { line: found };
-	if (weighed.length > CONTEST_MAX_RIVALS) return "unknown";
+	if (weighed.length > CONTEST_MAX_RIVALS) return { line: found };
 	const totals = [
 		{ n: found, total: ours, context: home },
 		...weighed.map((n) => {
-			const context = contextOf(o, n, r, x);
+			const context = contextOf(o, n, r, x, true);
 			return { n, total: likeness(n) + context, context };
 		}),
 	].sort((a, b) => b.total - a.total);
@@ -615,5 +797,9 @@ export function contested(
 	if (first.n !== found && first.context - home < TUNING.contextMargin / 2) {
 		return "unknown";
 	}
+	// A partner nearby against a line in new code (nothing with a word kept
+	// around it): a copy of the old code, or the statement rewritten into
+	// new code; which, text can't tell. Never a pick.
+	if (first.n !== found && inNewCode(first.n, r)) return "unknown";
 	return first.n === found ? { line: found } : { line: first.n, moved: true };
 }

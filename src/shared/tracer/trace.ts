@@ -22,7 +22,14 @@ import { alignOrOver, similarityTo } from "../linePairing.js";
 import { HAS_WORD, WORD_DIFF_MAX } from "../tokenize.js";
 import type { DiffSide } from "../types.js";
 import type { LineMapper, MapHunk } from "./lineMapper.js";
-import { contested, movedTo, sameFileTexts, TUNING } from "./moved.js";
+import {
+	claimedByMove,
+	contested,
+	hasTwin,
+	movedTo,
+	sameFileTexts,
+	TUNING,
+} from "./moved.js";
 
 /**
  * Bumped when a placement for the same inputs could change. 2: a line in a
@@ -440,11 +447,24 @@ function partnerIn(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
  * contest is "unknown". null: nothing resembles it.
  */
 function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
-	const local = localPartner(hunk, line, diffs);
+	const readers = {
+		...diffs,
+		stays: (n: number, image: number) => {
+			const h = diffs.bd.hunkRemovingOld(n);
+			const p = h ? localPartner(h, n, diffs) : null;
+			return p !== null && p !== "unknown" && p.line !== image;
+		},
+	};
+	let local = localPartner(hunk, line, diffs);
 	const plain = (p: Local): Partner =>
 		p === null || p === "unknown" ? p : { line: p.line };
-	// Equal, ignoring whitespace, in its own region: it stayed.
+	// Equal, ignoring whitespace, in its own region: it stayed. Found equal
+	// only across kept lines, with another removed line of the same text:
+	// which of the two it is can't be told.
 	if (local !== null && local !== "unknown" && local.score >= 1 - EPS) {
+		if (local.wide && diffs.newLineText && hasTwin(line, readers)) {
+			return "unknown";
+		}
 		return plain(local);
 	}
 	const own = read(diffs.oldLineText, line);
@@ -458,15 +478,27 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 	) {
 		return plain(local);
 	}
+	// Its partner nearby is where another line moved with its block: that
+	// line's, not this one's.
+	if (
+		local !== null &&
+		local !== "unknown" &&
+		claimedByMove(line, local.line, readers)
+	) {
+		local = null;
+	}
 	// Found again in its own hunk (a re-indented block too large to pair):
 	// rewritten there, not moved.
 	const away = (at: number): Found =>
 		diffs.bd.hunkAddingNew(at) === hunk
 			? { line: at }
 			: { line: at, moved: true };
-	const moved = movedTo(line, diffs);
+	const moved = movedTo(line, readers);
 	if (moved === "ambiguous") return "unknown";
 	if (local === null || local === "unknown") {
+		// Its text is among the added lines as it was, but no move was
+		// decided: "deleted" would be a false claim.
+		if (moved === "copies") return "unknown";
 		return moved ? away(moved.line) : local;
 	}
 	const won = contested(
@@ -474,7 +506,7 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 		local.line,
 		local.score,
 		diffs,
-		moved?.line ?? null,
+		moved === null || moved === "copies" ? null : moved.line,
 	);
 	return won === "unknown" ? won : won.moved ? away(won.line) : won;
 }
@@ -482,7 +514,8 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 /**
  * Whether `line` was edited in place, onto `partner`: every line with a
  * word within TUNING.contextLines of it either stayed (git kept it) or has
- * a partner in its hunk's pairing (alone or joined), landing on the same side of
+ * a partner in a hunk's pairing (its own, joined, or the neighbour's own),
+ * landing on the same side of
  * `partner` and within as many lines of it; and there is one. Its partner
  * nearby then carries it, whatever looks like it elsewhere: a line copied
  * into new code and edited at home, a version bumped, an assertion
@@ -498,9 +531,19 @@ function anchored(
 		(r): r is Exclude<Region, "unknown"> => r !== "unknown",
 	);
 	if (regions.length === 0) return false;
-	/** A removed neighbour's partner, in its own hunk's pairing or the joined one's. */
+	/**
+	 * A removed neighbour's partner: in this hunk's pairing or the joined
+	 * one's, else in its own hunk's (a table edited row by row is a run of
+	 * small hunks, too large to pair joined).
+	 */
 	const pairedOf = (n: number): number | null => {
-		for (const region of regions) {
+		const theirs = diffs.bd.hunkRemovingOld(n);
+		const own =
+			theirs && theirs !== hunk ? regionsOf(theirs, diffs)[0] : undefined;
+		for (const region of [
+			...regions,
+			...(own && own !== "unknown" ? [own] : []),
+		]) {
 			const at = region.oldLines.indexOf(n);
 			const j = at === -1 ? undefined : region.partner.get(at);
 			if (j !== undefined) return region.newLines[j] ?? null;
@@ -525,7 +568,14 @@ function anchored(
 
 /** A partner found nearby, its likeness, and the new lines searched. */
 type Local =
-	| { line: number; score: number; from: number; to: number }
+	| {
+			line: number;
+			score: number;
+			from: number;
+			to: number;
+			/** Found only in the region joined across kept lines, not its own hunk. */
+			wide?: true;
+	  }
 	| null
 	| "unknown";
 
@@ -551,7 +601,7 @@ function localPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Local {
 	const own = read(diffs.oldLineText, line);
 	if (own === null || !HAS_WORD.test(own)) return "unknown";
 	let widest: Exclude<Region, "unknown"> | null = null;
-	let best: { line: number; score: number } | null = null;
+	let best: { line: number; score: number; wide?: true } | null = null;
 	let twins = false;
 	regions.forEach((region, i) => {
 		if (region === "unknown") return;
@@ -571,12 +621,16 @@ function localPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Local {
 				}
 			}
 		}
-		best = { line: region.newLines[partner] as number, score };
+		best = {
+			line: region.newLines[partner] as number,
+			score,
+			...(i > 0 ? { wide: true as const } : {}),
+		};
 	});
 	const span = widest as Exclude<Region, "unknown"> | null;
 	const from = span?.newLines[0] ?? 0;
 	const to = span?.newLines.at(-1) ?? -1;
-	const found = best as { line: number; score: number } | null;
+	const found = best as { line: number; score: number; wide?: true } | null;
 	if (found) return { ...found, from, to };
 	// Two lines as like it, past its own hunk: which one carries it can't
 	// be told.
@@ -606,9 +660,16 @@ function sharedIn(
 		if (d < k && a > lo) lo = a;
 		if (d > k && a < hi) hi = a;
 	}
+	// A line another old line pairs with exactly was not merged into: it is
+	// that line, as it was.
+	const taken = new Set<number>();
+	for (const [d, a] of region.partner) {
+		if (d !== k && scoreIn(region, d, a) >= 1 - EPS) taken.add(a);
+	}
 	let best = -1;
 	let score = SHARE_MIN_SIMILARITY;
 	for (let j = lo; j <= hi; j++) {
+		if (taken.has(j)) continue;
 		const s = scoreIn(region, k, j);
 		if (s > score || (s === score && best === -1)) {
 			best = j;

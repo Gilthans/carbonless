@@ -647,7 +647,9 @@ describe("a replaced line follows its likeness (CAR-95)", () => {
 			"}",
 		];
 		const hunks = [h(3, 1, 3, 1), h(8, 1, 8, 1)];
-		expect(place(rewrite(old, now, hunks, at(3)))).toBe("deleted near 2");
+		// `return nil` is among the added lines as it was: rewritten, never
+		// deleted (fix round 2).
+		expect(place(rewrite(old, now, hunks, at(3)))).toBe("rewritten near 2");
 		// One word line that opens nothing still joins (a kept call).
 		const kept = [...old.slice(0, 6), "\tkeep()", ...old.slice(7)];
 		const keptNow = [...now.slice(0, 6), "\tkeep()", ...now.slice(7)];
@@ -778,7 +780,7 @@ describe("a block moved elsewhere in its file follows it (CAR-95 step 3)", () =>
 		expect(place(rewrite(old, now, hunks, at(3)))).toBe("rewritten");
 	});
 
-	it("a short generic line found elsewhere alone never moves: deleted", () => {
+	it("a short generic line found elsewhere alone never moves: rewritten (its text is there), never moved", () => {
 		const old = [
 			"func a() {",
 			"\tif x {",
@@ -800,7 +802,7 @@ describe("a block moved elsewhere in its file follows it (CAR-95 step 3)", () =>
 			"}",
 		];
 		const hunks = [h(2, 3, 1, 0), h(8, 0, 6, 3)];
-		expect(place(rewrite(old, now, hunks, at(3)))).toBe("deleted near 1");
+		expect(place(rewrite(old, now, hunks, at(3)))).toBe("rewritten near 1");
 	});
 
 	it("an opener whose whole body moved into another block goes to the body", () => {
@@ -1098,7 +1100,7 @@ describe("a line edited in place keeps its partner, whatever looks like it elsew
 });
 
 describe("a deleted line never moves on one line alone (CAR-95 step 3, fix round 1)", () => {
-	it("a deleted test's boilerplate line, found in a new test elsewhere, is deleted", () => {
+	it("a deleted test's boilerplate line, found in a new test elsewhere, never moves: rewritten (its copy is there)", () => {
 		const old = [
 			"func TestA(t *testing.T) {",
 			"\tctx := context.Background()",
@@ -1122,7 +1124,7 @@ describe("a deleted line never moves on one line alone (CAR-95 step 3, fix round
 			"\trequire.NoError(t, err)",
 			"}",
 		];
-		expect(placeIn(old, now, 2)).toMatch(/^deleted/);
+		expect(placeIn(old, now, 2)).toBe("rewritten");
 	});
 
 	it("a switch arm removed, another arm with the same one-line body added: the case line is deleted", () => {
@@ -1143,6 +1145,184 @@ describe("a deleted line never moves on one line alone (CAR-95 step 3, fix round
 			"}",
 		];
 		expect(placeIn(old, now, 2)).toMatch(/^deleted/);
+	});
+});
+
+describe("fix round 2 (CAR-95 step 3)", () => {
+	it("copy a function, edit the original and delete a neighbour: the edit keeps the thread", () => {
+		const old = [
+			"func handleA(w http.ResponseWriter, r *http.Request) {",
+			"\tuser := auth.Current(r)",
+			"\titems := store.List(user.ID, 50)",
+			"\trender(w, items)",
+			"}",
+			"",
+			"func other() {",
+			"\tkeep()",
+			"}",
+		];
+		const now = [
+			"func handleA(w http.ResponseWriter, r *http.Request) {",
+			"\titems := store.List(currentID(r), limit)",
+			"\trender(w, items)",
+			"}",
+			"",
+			"func other() {",
+			"\tkeep()",
+			"}",
+			"",
+			"func handleB(w http.ResponseWriter, r *http.Request) {",
+			"\tuser := auth.Current(r)",
+			"\titems := store.List(user.OrgID, 50)",
+			"\trender(w, items)",
+			"}",
+		];
+		expect(placeIn(old, now, 3)).toBe("changed 2");
+	});
+
+	it("a deleted function's two boilerplate lines in unrelated new code never move it", () => {
+		const old = [
+			"func TestA(t *testing.T) {",
+			"\tt.Parallel()",
+			"\tctx := context.Background()",
+			"\tgot, err := doA(ctx)",
+			"\trequire.NoError(t, err)",
+			"}",
+			"",
+			"func TestM(t *testing.T) {",
+			"\tmiddle()",
+			"}",
+		];
+		const now = [
+			"func TestM(t *testing.T) {",
+			"\tmiddle()",
+			"}",
+			"",
+			"func TestZ(t *testing.T) {",
+			"\tt.Parallel()",
+			"\tctx := context.Background()",
+			"\tsrv := startServer(ctx)",
+			"\tsrv.Stop()",
+			"}",
+		];
+		expect(placeIn(old, now, 3)).toBe("rewritten");
+		expect(placeIn(old, now, 2)).toBe("rewritten");
+		const fetch = [
+			"func fetchUser(id string) (*User, error) {",
+			"\tctx, cancel := context.WithTimeout(ctx, defaultTimeout)",
+			"\tdefer cancel()",
+			"\treturn users.Get(ctx, id)",
+			"}",
+			"",
+			"func keep() {",
+			"\tstay()",
+			"}",
+		];
+		const ping = [
+			"func keep() {",
+			"\tstay()",
+			"}",
+			"",
+			"func pingAll(hosts []string) error {",
+			"\tctx, cancel := context.WithTimeout(ctx, defaultTimeout)",
+			"\tdefer cancel()",
+			"\tfor _, h := range hosts {",
+			"\t\tping(ctx, h)",
+			"\t}",
+			"\treturn nil",
+			"}",
+		];
+		expect(placeIn(fetch, ping, 2)).toBe("rewritten");
+		expect(placeIn(fetch, ping, 3)).toBe("rewritten");
+	});
+
+	it("a block that moved whole still takes its threads: most of its hunk went with it", () => {
+		const old = [
+			"func a() {",
+			"\tsetup()",
+			"}",
+			"",
+			"func b() {",
+			"\tt.Parallel()",
+			"\tctx := context.Background()",
+			"}",
+		];
+		const now = [
+			"func b() {",
+			"\tt.Parallel()",
+			"\tctx := context.Background()",
+			"}",
+			"",
+			"func a() {",
+			"\tsetup()",
+			"}",
+		];
+		// b moved above a: old 4-8 removed, new 1-5 added.
+		const hunks = [h(0, 0, 1, 5), h(4, 5, 8, 0)];
+		expect(place(rewrite(old, now, hunks, at(7)))).toBe("changed 3 moved");
+	});
+
+	it("text still among the added lines, with no move decided, is rewritten, never deleted", () => {
+		const fn = (i: number) => [
+			`func gen${i}() error {`,
+			`\terr := step${i}()`,
+			"\tif err != nil {",
+			"\t\treturn err",
+			"\t}",
+			"\treturn nil",
+			"}",
+		];
+		const old = [
+			"func a() error {",
+			"\tif err := loadConfiguration(path); err != nil {",
+			"\t\treturn err",
+			"\t}",
+			"\treturn nil",
+			"}",
+			"func mid() {}",
+		];
+		const now = [
+			"func a() error {",
+			"\treturn nil",
+			"}",
+			"func mid() {}",
+			"func b() error {",
+			"\tif err := loadConfiguration(path); err != nil {",
+			"\t\treturn err",
+			"\t}",
+			"\treturn nil",
+			"}",
+			...Array.from({ length: 40 }, (_, i) => fn(i)).flat(),
+		];
+		// a's if-block moved into the new b; forty new functions add `return
+		// err` too: past the cap of equal lines, no move for that line, but
+		// its text is there.
+		const hunks = [h(2, 3, 1, 0), h(7, 0, 5, now.length - 4)];
+		expect(place(rewrite(old, now, hunks, at(3)))).toMatch(/^rewritten/);
+		expect(place(rewrite(old, now, hunks, at(2)))).toBe("changed 6 moved");
+		// One import line moved, alone: no block, but not deleted either.
+		const imports = [
+			'import { zebra } from "./zebra";',
+			'import { alpha } from "./alpha";',
+			'import { beta } from "./beta";',
+		];
+		const sorted = [...imports.slice(1), imports[0] as string];
+		expect(placeIn(imports, sorted, 1)).toBe("rewritten");
+	});
+
+	it("a large table edited row by row keeps each row's thread (each row's own hunk pairs it)", () => {
+		const n = 3000;
+		const row = (i: number, v: string) =>
+			`  "msg_${i}_title": "${v} number ${i} for screen ${i % 17}",`;
+		const old = Array.from({ length: n }, (_, i) => row(i, "Title"));
+		const now = old.map((t, i) => (i % 3 ? row(i, "Heading") : t));
+		const hunks: MapHunk[] = [];
+		for (let i = 1; i < n; i += 3) {
+			const count = Math.min(2, n - i);
+			hunks.push(h(i + 1, count, i + 1, count));
+		}
+		expect(place(rewrite(old, now, hunks, at(5)))).toBe("changed 5");
+		expect(place(rewrite(old, now, hunks, at(302)))).toBe("changed 302");
 	});
 });
 
@@ -1582,13 +1762,12 @@ describe("placeThread property (principle 2)", () => {
 	});
 });
 
-describe("moves and look-alikes never put a thread on a wrong line (CAR-95 step 3, property)", () => {
+describe("moves, deletions and look-alikes never put a thread on a wrong line (CAR-95 step 3, property)", () => {
 	/** Every thread on a line with a word lands on its true line, or nowhere. */
 	function check(o: MoveDraw) {
-		const { old, now, hunks, truth, fair } = moveScenario(o);
-		fc.pre(fair);
+		const { old, now, hunks, truth } = moveScenario(o);
 		for (let line = 1; line <= old.length; line++) {
-			if (old[line - 1] === "}") continue;
+			if (!/\w/u.test(old[line - 1] ?? "")) continue;
 			const p = placeThread(
 				rewrite(old, now, hunks, at(line)),
 				() => now.length,

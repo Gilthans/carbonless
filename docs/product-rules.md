@@ -165,36 +165,52 @@ never kept alive by a `}` or a blank line that stayed. Owner, 2026-11-18
 threads with `pnpm score-carry` (`docs/thread-carry-corpus.md`).
 
 A line edited in place keeps its thread there: when every line with a
-word within three lines of it stayed or was paired in place beside it,
-nothing elsewhere contests its partner, however alike (a version bumped
-with the old value copied into a new section, an assertion changed with
-the old one in a new test, a function copied and the original edited).
+word within three lines of it stayed or was paired in place beside it, or
+when it sits between the lines git kept nearest above and below it (one
+of them of unique text), nothing elsewhere contests its partner, however
+alike (a version bumped with the old value copied into a new section, an
+assertion changed with the old one in a new test, a function copied and
+the original edited, even with a neighbour deleted).
 
 A block moved elsewhere in its file takes its threads with it
 (`src/shared/tracer/moved.ts`): the commented line found again among the
 file's added lines, equal ignoring whitespace, inside a run of the removed
 lines around it found again line for line (equal, or alike beside an equal
 one), of two lines with a word or more and at least 20 letters and digits
-on its equal lines (git's `--color-moved` minimum). One line alone never
-moves a thread: a deleted test's `ctx := context.Background()` found in a
-new test stays deleted. A block header that differs (`func a() {` against
-`func b() {`) ends a run: it names another block. The thread shows "moved
-since" on its new line. A line opening a block (`const (`, `func f() {`)
-that didn't move itself, but whose whole body (two lines or more) did,
-goes to the body's first line; a one-line body (a `case` arm) says
-nothing. An identical block that appears twice (added twice, or removed
-twice and added once), or two runs within a clear margin of each other,
-is ambiguous: `rewritten`, never a pick. A partner nearby that isn't
-anchored like that competes with the move, if any, and with the file's
+on its equal lines (git's `--color-moved` minimum), that carries more than
+half of its hunk's removed lines with a word (lines that have their own
+edited version at home don't count: they stayed). A block that moved
+takes most of what git removed around it along; two lines of boilerplate
+(`t.Parallel()` and a `ctx :=` line) found in new code while the rest of
+their function is gone did not move (owner's call, 2026-11-23: wrong is
+worse than unplaced). A block header that differs (`func a() {` against
+`func b() {`) ends a run. The thread shows "moved since" on its new line.
+A line opening a block (`const (`) that didn't move itself, but whose
+whole body (two lines or more, most of its hunk) did, goes to the body's
+first line. An identical block that appears twice, or two runs within a
+clear margin of each other, is ambiguous: `rewritten`. With no move
+decided, a line whose text is still among the added lines is `rewritten`,
+never `deleted` (that would be a false claim). A partner nearby that isn't
+held like that competes with the move, if any, and with the file's
 look-alikes (about as alike, within 0.15, or more): the one whose
 surroundings (three lines each way) also resemble the old ones wins, by a
-clear margin; none clearly ahead is `rewritten`. A rival more alike than
-the partner is left out when it is another removed line's mutual best
-match (a line carries one statement). A range split by a move follows its
-part with more lines. The tuning holds at its neighbouring settings
-(a property test with decoys: copied lines, a second copy of the block,
-near-copies). On the same corpus (CAR-95 step 3) this ended every
-wrong-line placement, without a right one lost.
+clear margin, and a line elsewhere only when its surroundings, not its
+likeness alone, lead. A neighbour git kept at home with unique text never
+counts for a line elsewhere (it stayed: a look-alike of it there is a
+copy). A line in new code (inserted, or with nothing kept around it) never
+wins against a partner nearby: a copy of the old code and the statement
+rewritten into new code read the same, so it is `rewritten`. A partner
+found equal only across kept lines while another removed line has the
+same text, or one where another line's block moved to, is not taken.
+Past 64 look-alikes (a generated table), the partner nearby keeps it. A
+range split by a move follows its part with more lines. The tuning holds
+at its neighbouring settings (a property test: functions sharing
+boilerplate, edits, deleted lines and functions, a moved block, and
+decoys: copied lines, a copied function edited differently, boilerplate in
+new code, a second copy of the block, near-copies). On the same corpus
+(CAR-95 step 3) this ended every wrong-line placement; one entry right by
+a far look-alike in new code (a test function renamed and rewritten)
+became `rewritten`.
 
 ## A thread with nothing to trace from sits on GitHub's line
 
