@@ -130,10 +130,14 @@ shown as added or removed, and the two sides are whitespace-equal, so a
 line that moves across an unchanged line stays a change (a loop wrapped in
 an `if` shows the `if`, its `}` and the `log` line that crossed the loop's
 closing brace; the rest of the body goes quiet). It can show a little more
-as changed than `git diff -w` would, never less. Clusters are cut within
-one of git's hunks only, so a line whose twin sits in another hunk, or is
-a context line, stays in a change cluster: its rows read as `~` but stay
-open, and progress counts it.
+as changed than `git diff -w` would, never less. Clusters are cut by the
+same matching (CAR-218), so a cluster is whitespace-only exactly where its
+rows read `~`: a block that only moved one level deeper is quiet all
+through, even where git cut it around a line that happens to match, and a
+whitespace-only cluster may have lines on one side only (their twins sit in
+another of git's hunks, or are unchanged lines). In a display hunk too big
+to match whole (more than 250,000 old × new lines), each of git's hunks is
+matched on its own, rows and clusters alike.
 
 ## Why are lines in a different order, or marked where GitHub shows none?
 

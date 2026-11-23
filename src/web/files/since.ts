@@ -12,6 +12,7 @@ import type {
 	Progress,
 	RereviewAnswer,
 	ReviewView,
+	StateChange,
 } from "../../shared/types";
 import { overlayReview, type PendingChange } from "./stateSync";
 import type { Unit } from "./unit";
@@ -83,18 +84,29 @@ export function unitsOf(answer: RereviewAnswer, view: ReviewView): SinceUnit[] {
 	);
 }
 
-/** How many distinct clusters `units` belong to (a cluster may be several pieces). */
-function clustersOf(units: readonly SinceUnit[]): number {
-	return new Set(units.map((u) => `${u.index}:${u.cluster ?? ""}`)).size;
+/**
+ * How many whitespace-only changes `units` are, for the `~`: a cluster's
+ * units (its old and new pieces) as one, each unit without a cluster (a
+ * piece of an earlier patch set's cluster this one no longer has) on its
+ * own.
+ */
+function leftOutOf(units: readonly SinceUnit[]): number {
+	const clusters = new Set<string>();
+	let alone = 0;
+	for (const u of units) {
+		if (u.cluster === undefined) alone++;
+		else clusters.add(`${u.index}:${u.cluster}`);
+	}
+	return clusters.size + alone;
 }
 
 /**
  * The since view's units as its bar counts them: with "Ignore whitespace"
- * on, without those of whitespace-only clusters (SinceUnit.whitespaceOnly),
- * as countedProgress leaves them out of the full diff's; and how many
- * whitespace-only clusters that left out (not pieces: the `~` says
- * clusters, as the tree and the full diff count them). The same list with
- * the switch off.
+ * on, without the whitespace-only ones (SinceUnit.whitespaceOnly, judged
+ * on the interdiff, CAR-218), as countedProgress leaves them out of the
+ * full diff's; and how many that left out for the `~` (a cluster's units
+ * as one, each unit without a cluster on its own). The same list with the
+ * switch off.
  */
 export function countedUnits(
 	units: readonly SinceUnit[],
@@ -106,27 +118,57 @@ export function countedUnits(
 	const counted = units.filter((u) => !u.whitespaceOnly);
 	return {
 		units: counted,
-		leftOut: clustersOf(units.filter((u) => u.whitespaceOnly)),
+		leftOut: leftOutOf(units.filter((u) => u.whitespaceOnly)),
 	};
 }
 
 /**
  * One file's units as its header, chips and dot count them: as
- * countedUnits, unless the file is nothing but whitespace-only clusters
- * (decided by its clusters, as countedFile decides it, so the header's
- * finished state and its counts never disagree): then they all count, its
- * own marks shown.
+ * countedUnits, unless the file is nothing but whitespace-only units
+ * (decided by its since units, not its snapshot clusters): then they all
+ * count, its own marks shown.
  */
 export function countedFileUnits(
 	units: readonly SinceUnit[],
 	ignoreWhitespace: boolean,
-	clusters: readonly { whitespaceOnly?: true }[],
 ): { units: readonly SinceUnit[]; leftOut: number } {
-	const nothingElse =
-		clusters.length > 0 && clusters.every((c) => c.whitespaceOnly);
+	const nothingElse = units.length > 0 && units.every((u) => u.whitespaceOnly);
 	return nothingElse
 		? { units, leftOut: 0 }
 		: countedUnits(units, ignoreWhitespace);
+}
+
+/**
+ * Whether `changes` (marks on one file) finish it in the since view, by
+ * its units as its header counts them (countedFileUnits), not by the
+ * snapshot's clusters: something of them is unmarked now and nothing
+ * once the changes apply. So a file never closes while a unit its header
+ * counts is unmarked (CAR-218). Undefined for a file the engine didn't
+ * answer: the caller judges it by its clusters.
+ */
+export function unitsFinish(
+	answer: RereviewAnswer,
+	view: ReviewView,
+	index: number,
+	path: string,
+	changes: readonly StateChange[],
+	ignoreWhitespace: boolean,
+): boolean | undefined {
+	const file = answer.files.find((f) => f.index === index);
+	if (!file) return undefined;
+	const one = { ...answer, files: [file] };
+	const left = (v: ReviewView) =>
+		countedFileUnits(unitsOf(one, v), ignoreWhitespace).units.some(
+			(u) => u.state === "unreviewed",
+		);
+	if (!left(view)) return false;
+	const pending = new Map<string, PendingChange>(
+		changes.map((change, version) => [
+			change.key,
+			{ change, revision: view.revision, path, version, since: 0 },
+		]),
+	);
+	return !left(overlayReview(view, pending));
 }
 
 /**
@@ -166,12 +208,7 @@ export function sinceByFile(
 		else byIndex.set(u.index, [u]);
 	}
 	const counted = [...byIndex.entries()].flatMap(
-		([index, list]) =>
-			countedFileUnits(
-				list,
-				ignoreWhitespace,
-				viewFiles.get(index)?.clusters ?? [],
-			).units,
+		([, list]) => countedFileUnits(list, ignoreWhitespace).units,
 	);
 	for (const u of counted) {
 		const info = out.get(u.index);
@@ -220,20 +257,20 @@ export function goneFileView(file: { index: number; path: string }): FileView {
 /**
  * How much is still to read in the unit: the since view's units not
  * marked yet (pieces, and the rest of a reworked or new cluster only the
- * full diff shows). Files: those with any.
+ * full diff shows). Files: those with any. `units` are the bar's own
+ * (countedUnits): with "Ignore whitespace" on, a file of nothing else
+ * counts nowhere on the bar, its "to read" included, though its row and
+ * header keep their counts (sinceByFile).
  */
-export function toReadCount(
-	since: Map<number, FileSince>,
-	_view: ReviewView,
-	unit: Unit,
-): number {
+export function toReadCount(units: readonly SinceUnit[], unit: Unit): number {
 	let n = 0;
-	for (const info of since.values()) {
-		const { units, lines } = info.left;
-		n +=
-			unit === "files" ? (units > 0 ? 1 : 0) : unit === "lines" ? lines : units;
+	const files = new Set<number>();
+	for (const u of units) {
+		if (u.state !== "unreviewed") continue;
+		files.add(u.index);
+		n += unit === "lines" ? u.open : 1;
 	}
-	return n;
+	return unit === "files" ? files.size : n;
 }
 
 /**
@@ -320,19 +357,26 @@ export function unitsFile(
 	return { ...file, clusters, ...fileFlags(clusters) };
 }
 
-/** The connector's "to read" for the comparison on screen: its units not marked yet. */
+/**
+ * The connector's "to read" for the comparison on screen: the bar's own
+ * units (countedUnits, as toReadCount reads them) not marked yet, and the
+ * files with any or with a conflict.
+ */
 export function liveToRead(
 	since: Map<number, FileSince>,
+	units: readonly SinceUnit[],
 ): RereviewAnswer["toRead"] & { gone: number } {
-	let files = 0;
+	const files = new Set<number>();
 	let clusters = 0;
 	let gone = 0;
-	for (const info of since.values()) {
-		if (info.left.units > 0 || info.conflict) files++;
-		clusters += info.left.units;
-		gone += info.counts.gone;
+	for (const u of units) {
+		if (u.state !== "unreviewed") continue;
+		files.add(u.index);
+		clusters++;
+		if (u.kind === "gone") gone++;
 	}
-	return { files, clusters, gone };
+	for (const [index, info] of since) if (info.conflict) files.add(index);
+	return { files: files.size, clusters, gone };
 }
 
 /**

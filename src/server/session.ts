@@ -1426,7 +1426,9 @@ export class Session {
 		);
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		const traced = await this.#traced(since, snapshot);
-		const { answer } = await this.#answerFor(since, snapshot, traced);
+		// `sources`: the patch set's human marks the answer judged its pieces'
+		// whitespace by; the page's pieces take the same, so they agree.
+		const { answer, sources } = await this.#answerFor(since, snapshot, traced);
 		const known = new Set([
 			...snapshot.files.map((f) => f.index),
 			...answer.files.map((f) => f.index),
@@ -1434,7 +1436,13 @@ export class Session {
 		return {
 			has: (index) => known.has(index),
 			hunks: async (index) => {
-				const hunks = interdiffFileHunks(traced, snapshot, answer, index);
+				const hunks = interdiffFileHunks(
+					traced,
+					snapshot,
+					answer,
+					index,
+					sources,
+				);
 				if (hunks.hunks.length > 0) return hunks;
 				// A file the interdiff doesn't change (or only renames): its
 				// lines are one gap, so they and the threads on them can be opened.

@@ -641,6 +641,12 @@ export function FileDiff(props: {
 	/** An earlier patch set, as reviewed: the marks are locked. */
 	readOnly?: boolean;
 	/**
+	 * The since view: whether marks finish the file, by its units as its
+	 * header counts them (since.ts unitsFinish); undefined for a file the
+	 * engine didn't answer, judged by its clusters.
+	 */
+	unitsFinish?: (changes: readonly StateChange[]) => boolean | undefined;
+	/**
 	 * The reviewer's own mark just finished this open file (nothing left
 	 * unreviewed): the owner closes it and moves on (FilesPage opens the
 	 * next file). Without it, the file just closes.
@@ -728,15 +734,25 @@ export function FileDiff(props: {
 	// whitespace" on, without its whitespace-only clusters (countedFile),
 	// in the since view too (its meter counts its units: `counted`).
 	const ignoreWs = ignoreWhitespace.use();
-	const shown = countedFile(file, ignoreWs);
-	// How many whitespace-only clusters the header's counts leave out: its
-	// `~`. In the since view its units' count, and never less than its
-	// state leaves out: a header that reads done without them says so.
-	const clustersLeftOut = file.clusters.length - shown.clusters.length;
+	const byClusters = countedFile(file, ignoreWs);
+	// The since view: the header follows its units (CAR-218), not the
+	// snapshot's clusters, so its state, meter and `~` agree. With units to
+	// count, their state is the file's; with none, nothing is left to read.
+	const shown: FileView =
+		props.counted !== undefined && props.counted.clusters.length > 0
+			? {
+					...byClusters,
+					done: props.counted.done,
+					reviewed: props.counted.reviewed,
+					crossedOff: props.counted.crossedOff,
+				}
+			: byClusters;
+	// How many whitespace-only changes the header's counts leave out: its
+	// `~`. In the since view its units' count alone (countedFileUnits).
 	const leftOut =
 		props.counted !== undefined
-			? Math.max(props.countedLeftOut ?? 0, clustersLeftOut)
-			: clustersLeftOut;
+			? (props.countedLeftOut ?? 0)
+			: file.clusters.length - byClusters.clusters.length;
 	/**
 	 * A mark that leaves nothing unreviewed (a cluster's, or the rest of the
 	 * file's) finishes the file: an open one closes at once and the page
@@ -751,7 +767,12 @@ export function FileDiff(props: {
 	const mark = (changes: StateChange[]) => {
 		// An earlier patch set, as reviewed, takes no marks.
 		if (readOnly || marksIgnored()) return;
-		const closing = expanded && finishes(shown.clusters, changes, sinceOnly);
+		// The since view judges by the file's units, as its header's state
+		// does (CAR-218): it never closes while a counted unit is unmarked.
+		const closing =
+			expanded &&
+			(props.unitsFinish?.(changes) ??
+				finishes(shown.clusters, changes, sinceOnly));
 		if (closing) {
 			// The clicked control is gone or swaps; keep focus in the header.
 			toggleButton.current?.focus({ preventScroll: true });
@@ -1663,6 +1684,12 @@ export function GoneFile(props: {
 	pathFind?: readonly FindMark[];
 	find?: DiffFind;
 	/**
+	 * The since view: whether marks finish the file, by its units as its
+	 * header counts them (since.ts unitsFinish); undefined for a file the
+	 * engine didn't answer, judged by its clusters.
+	 */
+	unitsFinish?: (changes: readonly StateChange[]) => boolean | undefined;
+	/**
 	 * The reviewer's own mark just finished this open file (no piece left):
 	 * the owner closes it and moves on, as FileDiff's does. Without it, the
 	 * file just closes.
@@ -1709,7 +1736,7 @@ export function GoneFile(props: {
 	const send = (c: StateChange | null) => {
 		if (!c || props.readOnly) return;
 		if (performance.now() < (ignoreMarksUntil ?? 0)) return;
-		if (expanded && finishes([], [c], only)) {
+		if (expanded && (props.unitsFinish?.([c]) ?? finishes([], [c], only))) {
 			toggleButton.current?.focus({ preventScroll: true });
 			if (props.onFinished) props.onFinished();
 			else setExpanded(false);

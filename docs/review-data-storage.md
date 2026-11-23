@@ -828,7 +828,7 @@ Added 2026-11-15 (CAR-156, owner: "treating whitespace-only change as a
 separate cluster in all views sounds like a good idea regardless"; yes to
 carrying marks onto the split pieces). A snapshot's clusters used to be
 git's `-U0` hunks, one each. Now each hunk is cut at its whitespace-only
-runs (`splitHunk`, `src/shared/whitespace.ts`): a hunk that splits becomes
+runs (`cutClusters`; see "The cut is part of cluster identity" below): a hunk that splits becomes
 several clusters, each keyed by the usual rule (its path, lines and the
 three new-side lines around it), so none of them has the key the whole hunk
 had. A hunk that doesn't split keeps its key. Each piece knows its whole
@@ -868,18 +868,38 @@ clusters the old way, so it still reads the hunk's own mark, never more.
 Home never writes: it folds the carries in memory
 (`withSplitCarries`), as the review's next open writes them.
 
-**The cut is part of cluster identity.** Where `splitHunk` cuts decides
-which clusters exist and so their keys. A change to it, or to the matcher
-it shares with the view (`matchSides`: weights, tie-breaks, the fast path;
-`whitespaceKey`; the `SPLIT_CELLS` cap), moves cuts, and marks on pieces
-cut the old way stop matching: they fail safe (unreviewed), but the
-reviewer loses them, and the split carry only maps whole-hunk keys. Treat
-such a change as a key format change (carry it, or say so in the release);
-`snapshot.test.ts` pins the keys of a few fixed hunks. A hunk over
-`SPLIT_CELLS` (removed × added lines, 250,000) isn't cut unless both sides
-are the same keys line for line: the matching costs about 4 ms of CPU at
-the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on the server as the
-snapshot is built.
+**The cut is part of cluster identity.** Where the cut falls decides
+which clusters exist and so their keys. Since CAR-218 (2026-11-22) it is
+decided per display hunk, by the matching the view's `~` rows read
+(`cutClusters` in `src/server/diff/snapshot.ts` builds the display hunks
+from the uncut git hunks; `hunkCuts` and `cutByLines` in
+`src/shared/whitespace.ts`), so a block git cuts into several hunks around
+an accidental unchanged line is whitespace-only all through, and a piece
+may have lines on one side only. A change to it, or to the matcher it
+shares with the view (`matchDisplayHunk`, `matchSides`: weights,
+tie-breaks, the fast path; `whitespaceKey`; the `SPLIT_CELLS` cap), moves
+cuts, and marks on pieces cut the old way stop matching: they fail safe
+(unreviewed), but the reviewer loses them, and the split carry only maps
+whole-hunk keys. Treat such a change as a key format change (carry it, or
+say so in the release); `snapshot.test.ts` pins the keys of a few fixed
+hunks. CAR-218's own move is not carried (owner, 2026-11-22: "I'm fine
+with letting the affected clusters reset. It's an error in the correct
+direction"). Keys move where a hunk's whitespace-only lines have twins
+across hunks or in unchanged lines, and also where several equally good
+matchings exist and the display hunk's matching picks other twins inside
+a hunk than splitHunk's matching of the hunk alone did (the context lines
+around it change which optimum the traceback takes), so a hunk with no
+twin outside it may be cut differently too. On this repo's last 506
+merges the cut moved in 36 of 4,656 changed files. Either way it fails
+safe: marks on a whole hunk that now splits still carry onto its pieces,
+as above, while marks on pieces of the old cut read unreviewed, and the
+release says so. No new event. A display hunk over `SPLIT_CELLS`
+(old × new lines, context included, 250,000) is matched one git hunk at a
+time, as before CAR-218, and a git hunk over it on its own isn't cut
+unless both sides are the same keys line for line: the matching costs
+about 4 ms of CPU at the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on
+the server as the snapshot is built. Should a file's hunks not fit its
+text (the display hunks refuse them), each hunk is matched on its own.
 
 **Mixed versions.** Once progress refs sync, an older crb that unticks the
 whole hunk (its key still a cluster there) leaves pieces already
