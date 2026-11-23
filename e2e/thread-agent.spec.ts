@@ -215,7 +215,10 @@ test("the panel shows a spinner while its read is out and the error when it fail
 	page,
 	pr,
 	agentCrb,
+	expectConsoleError,
 }) => {
+	// The failed reads (500s) Chromium logs.
+	expectConsoleError(/500/);
 	await setup(pr);
 	const s = await agentCrb({
 		scenario: { agent: AGENT, answers: [{ text: "Stored answer." }] },
@@ -268,7 +271,16 @@ test("the panel shows a spinner while its read is out and the error when it fail
 	await expect(messages).toHaveCount(0);
 	// Retry (held): the spinner, then the conversation.
 	mode = "hold";
-	await failed.getByRole("button", { name: "Retry" }).click();
+	// The status polls' refetches (failing at once) may swap the error for
+	// a spinner and back under the press: pressed until a read is asked.
+	await expect(async () => {
+		if (held.length === 0) {
+			await failed.getByRole("button", { name: "Retry" }).click({
+				timeout: 1000,
+			});
+		}
+		expect(held.length).toBeGreaterThan(0);
+	}).toPass();
 	await expectLoadingThen({
 		loading,
 		empty: [failed, panel(card).getByTestId("agent-message-ai")],

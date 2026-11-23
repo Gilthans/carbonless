@@ -7,6 +7,7 @@ import {
 	render,
 	renderHook,
 	screen,
+	waitFor,
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -166,15 +167,20 @@ describe("ThreadAgentPanel", () => {
 
 	it("while its read is out or failed, a spinner or the error, never an empty conversation (CAR-124)", async () => {
 		// The first read fails: the button's alert, which opens the panel and reads again.
-		let release: (r: Response) => void = () => {};
+		const reads: ((r: Response) => void)[] = [];
 		read = (path) =>
 			path.endsWith("/agent/threads")
 				? new Promise<Response>((r) => {
-						release = r;
+						reads.push(r);
 					})
 				: new Promise(() => {});
+		/** Answers the next threads read, once it is asked. */
+		const release = async (r: Response) => {
+			await waitFor(() => expect(reads.length).toBeGreaterThan(0));
+			await act(async () => reads.shift()?.(r));
+		};
 		show(reviewThread(), null);
-		await act(async () => release(json({ error: "boom" }, 500)));
+		await release(json({ error: "boom" }, 500));
 		const failedButton = await screen.findByRole("button", {
 			name: "Agent messages couldn't load",
 		});
@@ -188,8 +194,8 @@ describe("ThreadAgentPanel", () => {
 		).toBeInTheDocument();
 		expect(within(panel()).queryByRole("alert")).toBeNull();
 		// It fails again: the error with Retry, no spinner.
-		await act(async () => release(json({ error: "boom" }, 500)));
-		const failed = within(panel()).getByRole("alert");
+		await release(json({ error: "boom" }, 500));
+		const failed = await within(panel()).findByRole("alert");
 		expect(failed).toHaveTextContent("Agent messages couldn't load");
 		expect(
 			within(panel()).queryByTestId("thread-agent-panel-loading"),
@@ -201,7 +207,7 @@ describe("ThreadAgentPanel", () => {
 		expect(
 			within(panel()).getByTestId("thread-agent-panel-loading"),
 		).toBeInTheDocument();
-		await act(async () => release(json({ threads: [conversation()] })));
+		await release(json({ threads: [conversation()] }));
 		expect(await within(panel()).findByText("Only here.")).toBeInTheDocument();
 		expect(
 			within(panel()).queryByTestId("thread-agent-panel-loading"),
