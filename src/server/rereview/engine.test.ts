@@ -1369,11 +1369,13 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 			// Nothing marked at PS1: a.ts's re-indent is whitespace-only (it
 			// left the line alone); c.ts's re-indent of a line PS1 changed
 			// and nobody read is a change to read.
-			// c.ts's re-indent is two units (the line PS1 had, the line now).
+			// c.ts's re-indent is two units (the line PS1 had, the line now),
+			// and PS1's removal of the base's `c 3`, never read there, an
+			// orphan piece of its own (CAR-216): a real change, counted.
 			expect(answer.toRead).toEqual({
 				files: 2,
-				clusters: 3,
-				withoutWhitespaceOnly: { files: 1, clusters: 2 },
+				clusters: 4,
+				withoutWhitespaceOnly: { files: 1, clusters: 3 },
 			});
 		} finally {
 			fx.cleanup();
