@@ -317,21 +317,34 @@ console.log(
 	}`,
 );
 
+// Changes that make Vitest --changed rerun every unit file (its config and
+// what the config loads), or that every file runs through: the unit steps
+// tell the queue they are a full run (CRB_QUEUE_FULL), though no file list
+// says so.
+const RERUN_ALL =
+	/^(vitest\.config|vite\.config)\.|^package\.json$|^pnpm-lock\.yaml$|^tsconfig[^/]*\.json$|^test\/(setup|real-gh-trap|trace-setup|trace-run)\.ts$|^scripts\/(queue-guard|queue-config|queue-line|flake-check-args)\.mjs$|^scripts\/test-profile\//;
+const unitAll = changed.filter((f) => RERUN_ALL.test(f));
+if (unitAll.length) console.log(`  unit: all (${unitAll[0]} changed)`);
+const fullEnv = { ...process.env, CRB_QUEUE_FULL: "1" };
+
 /** A test step, run in its turn on the machine (scripts/queue.mjs). */
 const queued = (...cmd) => ["node", ["scripts/queue.mjs", ...cmd]];
 
 const steps = [
 	["pnpm", ["lint"]],
 	["pnpm", ["typecheck"]],
-	queued(
-		"pnpm",
-		"exec",
-		"vitest",
-		"run",
-		"--changed",
-		base,
-		"--passWithNoTests",
-	),
+	[
+		...queued(
+			"pnpm",
+			"exec",
+			"vitest",
+			"run",
+			"--changed",
+			base,
+			"--passWithNoTests",
+		),
+		unitAll.length ? fullEnv : undefined,
+	],
 ];
 // src/cli.test.ts only spawns the CLI, so --changed never finds it through
 // imports: it runs whenever the CLI's module graph may have changed.
@@ -346,12 +359,16 @@ if (allE2e || e2e.size) {
 	// Builds, then runs in its turn on a dist no other build in this tree
 	// changes while it runs (scripts/e2e.mjs).
 	const files = allE2e ? [] : [...e2e].map((s) => `e2e/${s}.spec.ts`);
-	steps.push(["node", ["scripts/e2e.mjs", ...files, ...passthrough]]);
+	steps.push([
+		"node",
+		["scripts/e2e.mjs", ...files, ...passthrough],
+		allE2e ? fullEnv : undefined,
+	]);
 }
 
-for (const [cmd, a] of steps) {
-	console.log(`\n$ ${cmd} ${a.join(" ")}`);
+for (const [cmd, a, env] of steps) {
+	console.log(`\n$ ${env ? "CRB_QUEUE_FULL=1 " : ""}${cmd} ${a.join(" ")}`);
 	if (dryRun) continue;
-	const { status } = spawnSync(cmd, a, { stdio: "inherit" });
+	const { status } = spawnSync(cmd, a, { stdio: "inherit", env });
 	if (status !== 0) process.exit(status ?? 1);
 }
