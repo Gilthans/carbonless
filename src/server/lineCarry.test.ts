@@ -277,7 +277,7 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 		]);
 	});
 
-	it("a line not marked in PS1 doesn't carry: the since view leaves it to read, the full diff marks it", async () => {
+	it("a line not marked in PS1 doesn't carry: the since view gives it a box of its own (CAR-216)", async () => {
 		// PS1 marks only another file: nothing of the cluster was reviewed.
 		const { s, view, since, answer } = await toPs2(
 			(v) =>
@@ -289,7 +289,14 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 			{ "other.txt": "other\n" },
 		);
 		expect(grown(view).linesCarried).toBeUndefined();
-		const after = await tickEveryPiece(s, view, since.pieces ?? []);
+		const pieces = since.pieces ?? [];
+		const orphan = pieces.find((p) => p.orphan);
+		expect(orphan).toMatchObject({ key: grown(view).key, owns: [[1, 2]] });
+		const after = await tickEveryPiece(
+			s,
+			view,
+			pieces.filter((p) => p !== orphan),
+		);
 		expect(grown(after)).toMatchObject({
 			state: "unreviewed",
 			reviewedLines: [
@@ -297,13 +304,14 @@ describe("line carry from the compared patch set (CAR-195)", () => {
 				[2, 4],
 			],
 		});
-		// The since view doesn't read done: the rest of the cluster is to read.
+		// The since view doesn't read done: the blank's own box is to read.
 		expect(openUnits(answer, after)).toEqual([
-			expect.objectContaining({ rest: true, lines: 1, open: 1 }),
+			expect.objectContaining({ lines: 1, open: 1 }),
 		]);
-		// The full diff marks it.
+		expect(openUnits(answer, after)[0]?.rest).toBeUndefined();
+		// Its box marks it.
 		const done = await s.setStates(after.revision, [
-			{ key: grown(after).key, state: "reviewed" },
+			toggleChange(grown(after), orphan?.owns ?? []),
 		]);
 		expect(grown(done).state).toBe("reviewed");
 		expect(openUnits(answer, done)).toEqual([]);

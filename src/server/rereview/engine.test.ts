@@ -570,13 +570,17 @@ describe("the engine", () => {
 				(hk) =>
 					hk.lines
 						.filter((l) => l.kind === "del")
-						.map((l) => [l.text, l.baseNo]),
+						.map((l) => [l.text, l.baseNo, l.orphan === true]),
 			);
 			// B2's numbers (three lines down), never B1's: "line 20" is B2's 23.
 			// "thirty on master" is B2's 33, though PS1 never had that text.
+			// The engine can't place that shown row in the base through the
+			// old one (baseLine), so the cluster's line no piece owns is an
+			// orphan too, a row of its own (CAR-216: shown twice, never hidden).
 			expect(removed).toEqual([
-				["line 20", 23],
-				["thirty on master", 33],
+				["line 20", 23, false],
+				["thirty on master", 33, false],
+				["thirty on master", 33, true],
 			]);
 		} finally {
 			fx.cleanup();
@@ -1365,11 +1369,13 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 			// Nothing marked at PS1: a.ts's re-indent is whitespace-only (it
 			// left the line alone); c.ts's re-indent of a line PS1 changed
 			// and nobody read is a change to read.
-			// c.ts's re-indent is two units (the line PS1 had, the line now).
+			// c.ts's re-indent is two units (the line PS1 had, the line now),
+			// and PS1's removal of the base's `c 3`, never read there, an
+			// orphan piece of its own (CAR-216): a real change, counted.
 			expect(answer.toRead).toEqual({
 				files: 2,
-				clusters: 3,
-				withoutWhitespaceOnly: { files: 1, clusters: 2 },
+				clusters: 4,
+				withoutWhitespaceOnly: { files: 1, clusters: 3 },
 			});
 		} finally {
 			fx.cleanup();
