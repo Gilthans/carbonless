@@ -84,6 +84,36 @@ export function useAgentThreadsFailed(): {
 }
 
 /**
+ * How the agent threads' read stands for a view that shows a thread's
+ * conversation (the thread panel): "loading" while there is no answer
+ * and one is on its way (the first read, or a retry after a failure),
+ * "failed" when the last read failed with nothing in hand (not a 404,
+ * which is "no agent"), else "in". A later refetch that fails keeps the
+ * answer in hand: "in".
+ */
+export function useAgentThreadsRead(): {
+	state: "loading" | "failed" | "in";
+	retry: () => void;
+} {
+	const on = useAgentOn();
+	const query = useQuery({ ...agentThreadsQuery, enabled: on });
+	const { refetch } = query;
+	const retry = useCallback(() => void refetch(), [refetch]);
+	let state: "loading" | "failed" | "in" = "in";
+	if (on && query.data === undefined) {
+		if (query.isFetching || (query.isPending && !query.isError)) {
+			state = "loading";
+		} else if (
+			query.isError &&
+			!(query.error instanceof ApiError && query.error.status === 404)
+		) {
+			state = "failed";
+		}
+	}
+	return { state, retry };
+}
+
+/**
  * Whether a thread gets the agent: a session that writes (not --viewer,
  * not --as-of), a thread GitHub gave an id, not deleted.
  */

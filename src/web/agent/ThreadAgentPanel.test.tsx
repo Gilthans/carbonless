@@ -43,16 +43,19 @@ const json = (body: unknown, status = 200) =>
 let calls: { method: string; path: string; body: unknown }[];
 /** Answers a POST; never answered unless a test says. */
 let answer: (path: string, body: unknown) => Promise<Response>;
+/** Answers a GET; never answered unless a test says. */
+let read: (path: string) => Promise<Response>;
 
 beforeEach(() => {
 	calls = [];
 	answer = () => new Promise(() => {});
+	read = () => new Promise(() => {});
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: string, init?: RequestInit) => {
 			const url = new URL(input, "http://crb");
 			const method = init?.method ?? "GET";
-			if (method === "GET") return new Promise<Response>(() => {});
+			if (method === "GET") return read(url.pathname);
 			const body: unknown = JSON.parse(String(init?.body ?? "null"));
 			calls.push({ method, path: url.pathname, body });
 			return answer(url.pathname, body);
@@ -95,7 +98,8 @@ function Card(props: { thread: ReviewThread }) {
 
 function show(
 	thread: ReviewThread,
-	threads: AgentThread[],
+	/** null: not read yet (agentThreadsQuery asks). */
+	threads: AgentThread[] | null,
 	opts: { view?: SendView } = {},
 ) {
 	const client = new QueryClient({
@@ -115,7 +119,7 @@ function show(
 			{ number: 2, head: "h2" },
 		],
 	} as unknown as SessionInfo);
-	client.setQueryData(agentThreadsQuery.queryKey, { threads });
+	if (threads) client.setQueryData(agentThreadsQuery.queryKey, { threads });
 	client.setQueryData(agentStatusQuery.queryKey, {
 		state: "ready",
 		configured: true,
@@ -158,6 +162,61 @@ describe("ThreadAgentPanel", () => {
 		expect(within(panel()).getByText("Only here.")).toBeInTheDocument();
 		// The composer takes the focus.
 		expect(screen.getByRole("textbox", { name: "Ask agent" })).toHaveFocus();
+	});
+
+	it("while its read is out or failed, a spinner or the error, never an empty conversation (CAR-124)", async () => {
+		// The first read fails: the button's alert, which opens the panel and reads again.
+		let release: (r: Response) => void = () => {};
+		read = (path) =>
+			path.endsWith("/agent/threads")
+				? new Promise<Response>((r) => {
+						release = r;
+					})
+				: new Promise(() => {});
+		show(reviewThread(), null);
+		await act(async () => release(json({ error: "boom" }, 500)));
+		const failedButton = await screen.findByRole("button", {
+			name: "Agent messages couldn't load",
+		});
+		await userEvent.click(failedButton);
+		expect(isOpen()).toBe(true);
+		// The read again is held: the spinner in the panel, no messages, no error.
+		const loading = within(panel()).getByTestId("thread-agent-panel-loading");
+		expect(loading).toHaveAttribute("aria-busy", "true");
+		expect(
+			within(loading).getByRole("status", { name: "Loading agent messages" }),
+		).toBeInTheDocument();
+		expect(within(panel()).queryByRole("alert")).toBeNull();
+		// It fails again: the error with Retry, no spinner.
+		await act(async () => release(json({ error: "boom" }, 500)));
+		const failed = within(panel()).getByRole("alert");
+		expect(failed).toHaveTextContent("Agent messages couldn't load");
+		expect(
+			within(panel()).queryByTestId("thread-agent-panel-loading"),
+		).toBeNull();
+		// Retry: the spinner, then the conversation.
+		await userEvent.click(
+			within(failed).getByRole("button", { name: "Retry" }),
+		);
+		expect(
+			within(panel()).getByTestId("thread-agent-panel-loading"),
+		).toBeInTheDocument();
+		await act(async () => release(json({ threads: [conversation()] })));
+		expect(await within(panel()).findByText("Only here.")).toBeInTheDocument();
+		expect(
+			within(panel()).queryByTestId("thread-agent-panel-loading"),
+		).toBeNull();
+		expect(within(panel()).queryByRole("alert")).toBeNull();
+	});
+
+	it("an answer with no conversation for the thread: the empty panel, no spinner or error", async () => {
+		show(reviewThread(), []);
+		await userEvent.click(agentButton());
+		expect(isOpen()).toBe(true);
+		expect(
+			within(panel()).queryByTestId("thread-agent-panel-loading"),
+		).toBeNull();
+		expect(within(panel()).queryByRole("alert")).toBeNull();
 	});
 
 	it("the strip, the comment counter and the agent button each close it", async () => {
