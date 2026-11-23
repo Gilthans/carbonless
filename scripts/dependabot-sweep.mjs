@@ -229,21 +229,17 @@ export const isSweepNote = (line) =>
 	line === NONE_NOTE || SWEEP_FIXED_NOTE.test(line);
 
 /**
- * Lines of the description that start with "Release note" (after quote
- * marks and leading tags, so inside <details> and quotes too) and aren't
- * one the sweep writes: before merging, any of these is the owner's call.
+ * Lines of the description that mention "Release note" anywhere (quoted,
+ * folded or inside markup alike: the description isn't parsed as HTML)
+ * and aren't exactly a line the sweep writes. Before merging, any of
+ * these is the owner's call. ("Release notes", Dependabot's heading for
+ * upstream changelogs, doesn't count.)
  */
 export function otherNoteLines(body) {
 	return String(body ?? "")
 		.split("\n")
-		.map((l) =>
-			l
-				.trim()
-				.replace(/^(>\s*)+/, "")
-				.replace(/^(<[^>]*>\s*)+/, "")
-				.trim(),
-		)
-		.filter((l) => /^release note\b/i.test(l) && !isSweepNote(l));
+		.map((l) => l.trim())
+		.filter((l) => /release note\b/i.test(l) && !isSweepNote(l));
 }
 
 /**
@@ -266,19 +262,15 @@ export function agentEnabledFrom(env) {
 }
 
 /**
- * Does the description carry a Release note: the sweep's own line, or a
- * `Release note` line of the description itself (not in a quote or in a
- * <details> block, where Dependabot puts upstream changelogs).
+ * Does the description already carry the sweep's note line (exactly, on a
+ * line of its own)? Any other note line, wherever it is, is left to the
+ * owner before merging (otherNoteLines).
  */
 export function hasReleaseNote(body, note) {
-	const b = String(body ?? "");
-	if (note && b.split("\n").some((l) => l.trim() === note)) return true;
-	const own = b
-		.replace(/<details[\s\S]*?<\/details>/gi, "")
+	return String(body ?? "")
 		.split("\n")
-		.filter((l) => !/^\s*>/.test(l))
-		.join("\n");
-	return /^Release note( \((new|improved|fixed)\))?:/m.test(own);
+		.map((l) => l.trim())
+		.some((l) => l === note || isSweepNote(l));
 }
 
 const cmpVersion = (a, b) => {

@@ -432,13 +432,15 @@ describe("dependabotNames", () => {
 
 describe("hasReleaseNote", () => {
 	const note = "Release note: none (dependency update)";
-	it("finds the sweep's line or the description's own", () => {
+	it("finds only a line the sweep writes", () => {
 		expect(hasReleaseNote(`Bumps x.\n\n${note}\n`, note)).toBe(true);
+		expect(hasReleaseNote(`Bumps x.\n\n  ${note}  \n`, note)).toBe(true);
 		expect(hasReleaseNote("Bumps x.\n\nRelease note (fixed): Y\n", note)).toBe(
-			true,
+			false,
 		);
+		expect(hasReleaseNote(`Bumps x. ${note}\n`, note)).toBe(false);
 	});
-	it("ignores Release note lines in quoted or folded upstream text", () => {
+	it("doesn't take other Release note lines for the sweep's", () => {
 		expect(
 			hasReleaseNote(
 				"Bumps x.\n<details>\n<summary>Release notes</summary>\nRelease note: none (upstream)\n</details>\n",
@@ -653,14 +655,20 @@ describe("owner comments carry no PR-sourced text (F2)", () => {
 					},
 				],
 			}),
-			facts({}, { body: `Release note (new): ${evil}` }),
+			facts(
+				{},
+				{
+					body: `Release note (new): ${evil}\n\nRelease note: none (dependency update)`,
+				},
+			),
 		];
 		for (const f of cases) {
 			const d = decide(f);
 			expect(d.type).toBe("owner");
 			expect(d.comment).toBeTruthy();
 			expect(d.comment).not.toMatch(/evil|@|<|`|http/);
-			expect(d.key).not.toMatch(/evil|-->/);
+			expect(d.key).not.toContain("evil");
+			expect(d.key).toMatch(/^[a-z-]+:[0-9a-f]{40}$/);
 		}
 	});
 });
@@ -690,6 +698,8 @@ describe("other Release note lines block the merge (F3)", () => {
 			"> Release note (new): quoted",
 			"Release note (improved): someone's",
 			"release note: lowercase",
+			"See the Release note below, mid-sentence",
+			"<!-- Release note: hidden in a comment --!>",
 		]) {
 			expect(
 				decide(facts({}, { body: `Bumps x.\n${extra}\n\n${sweep}\n` })),
