@@ -2652,7 +2652,7 @@ describe("DiffBody find", () => {
 		refind(findAt({ old: false, line: 99 }, 1, () => [], false));
 		refind(findAt(null, 1, () => [], false));
 		// Give a collapse that shouldn't come every chance to.
-		await act(() => quietFor(20));
+		await act(() => quietFor(20, "a collapse when the caret moves"));
 		expect(collapsed()[0]).toHaveAttribute("data-expanded");
 	});
 

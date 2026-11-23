@@ -185,7 +185,7 @@ describe("comments: batched, prefetched, opened", () => {
 			</>,
 		);
 		expect(screen.getByTestId("T1")).toHaveTextContent("T1");
-		await quietFor(50);
+		await quietFor(50, "a second request for a prefetched id");
 		expect(asked).toHaveLength(1);
 	});
 
@@ -387,7 +387,7 @@ describe("comments: batched, prefetched, opened", () => {
 		await waitFor(() =>
 			expect(client.getQueryData(["comments", "r2", "T2"])).toBeDefined(),
 		);
-		await quietFor(150);
+		await quietFor(150, "a request for the old read");
 		expect(asked.map((a) => a.read)).toEqual(["r1", "r1", "r2"]);
 		expect(
 			client.getQueryCache().findAll({ queryKey: ["comments", "r1"] }),
@@ -399,7 +399,7 @@ describe("comments: batched, prefetched, opened", () => {
 	it("waits for a read id", async () => {
 		const client = newClient();
 		render(<Thread readId={undefined} id="T1" />, { wrapper: wrapper(client) });
-		await quietFor(30);
+		await quietFor(30, "a request with no read id");
 		expect(asked).toEqual([]);
 		expect(screen.getByTestId("T1")).toHaveTextContent("loading");
 	});
@@ -409,7 +409,7 @@ describe("comments across reads and pages", () => {
 	it("asks for nothing while the read id is empty", async () => {
 		const client = newClient();
 		render(<Thread readId="" id="T1" />, { wrapper: wrapper(client) });
-		await quietFor(30);
+		await quietFor(30, "a request with an empty read id");
 		expect(asked).toEqual([]);
 		expect(screen.getByTestId("T1")).toHaveTextContent("loading");
 	});
@@ -456,7 +456,7 @@ describe("comments across reads and pages", () => {
 			</PageActive>
 		);
 		const { rerender } = render(page(false), { wrapper: wrapper(client) });
-		await quietFor(30);
+		await quietFor(30, "a prefetch on a hidden page");
 		expect(asked).toEqual([]);
 		rerender(page(true));
 		await waitFor(() =>

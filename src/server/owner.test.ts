@@ -31,7 +31,7 @@ describe("owner", () => {
 		expect(calls).toBe(0);
 		owner.kill("SIGKILL");
 		await gone;
-		await quietFor(100);
+		await quietFor(100, "a second call of the gone-owner callback");
 		expect(calls).toBe(1);
 	});
 });

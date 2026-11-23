@@ -652,7 +652,7 @@ describe("PatchsetGraph", () => {
 		});
 		const base = within(card).getByRole("button", { name: "Comparison Base" });
 		await user.hover(target);
-		await act(() => quietFor(300));
+		await act(() => quietFor(300, "a tooltip on an enabled button"));
 		expect(shownTips()).toEqual([]);
 		expect(target).not.toHaveAccessibleDescription();
 		await user.hover(base);

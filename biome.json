@@ -24,7 +24,16 @@
 		"./biome-plugins/no-static-private-method.grit",
 		{
 			"path": "./biome-plugins/no-wait-for-timeout.grit",
-			"includes": ["**/e2e/**", "**/test/**"]
+			"includes": [
+				"**/e2e/*.ts",
+				"**/e2e/*.tsx",
+				"**/e2e/*.mts",
+				"**/e2e/*.mjs",
+				"**/test/*.ts",
+				"**/test/*.tsx",
+				"**/test/*.mts",
+				"**/test/*.mjs"
+			]
 		},
 		{
 			"path": "./biome-plugins/no-test-retries.grit",
@@ -35,7 +44,10 @@
 				"**/*.test.tsx",
 				"**/*.test.mts",
 				"**/*.test.mjs",
-				"**/e2e/**"
+				"**/e2e/*.ts",
+				"**/e2e/*.tsx",
+				"**/e2e/*.mts",
+				"**/e2e/*.mjs"
 			]
 		},
 		{
@@ -45,8 +57,14 @@
 				"**/*.test.tsx",
 				"**/*.test.mts",
 				"**/*.test.mjs",
-				"**/e2e/**",
-				"**/test/**"
+				"**/e2e/*.ts",
+				"**/e2e/*.tsx",
+				"**/e2e/*.mts",
+				"**/e2e/*.mjs",
+				"**/test/*.ts",
+				"**/test/*.tsx",
+				"**/test/*.mts",
+				"**/test/*.mjs"
 			]
 		},
 		{
@@ -56,10 +74,14 @@
 				"**/*.test.tsx",
 				"**/*.test.mts",
 				"**/*.test.mjs",
-				"**/e2e/**",
-				"**/test/**",
-				"!**/test/fake-gh/**",
-				"!**/test/fake-acp/**"
+				"**/e2e/*.ts",
+				"**/e2e/*.tsx",
+				"**/e2e/*.mts",
+				"**/e2e/*.mjs",
+				"**/test/*.ts",
+				"**/test/*.tsx",
+				"**/test/*.mts",
+				"**/test/*.mjs"
 			]
 		}
 	],

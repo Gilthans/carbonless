@@ -102,7 +102,7 @@ describe("a worktree's private crb state and config", () => {
 			void waited.then(() => {
 				settled = true;
 			});
-			await quietFor(400);
+			await quietFor(400, "a wait that settled before crb answers");
 			expect(settled).toBe(false);
 			server = createServer((_req, res) => {
 				res.setHeader("content-type", "application/json");

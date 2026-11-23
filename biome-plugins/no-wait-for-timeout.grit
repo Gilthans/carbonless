@@ -1,7 +1,7 @@
 // CAR-260: no `page.waitForTimeout(…)` in e2e. A fixed sleep is too short
 // on a loaded machine and wasted time on an idle one: wait on the state with
 // an expect, or move the page's clock (`installClock`, e2e/fixtures.ts).
-// CLAUDE.md, "Development" (test rules).
+// CLAUDE.md, "Development" (test rules); docs/ci-flakes.md, "Lint rules".
 language js
 
 `$_.waitForTimeout($_)` as $call where {

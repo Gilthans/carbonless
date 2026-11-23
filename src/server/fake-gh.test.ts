@@ -124,7 +124,7 @@ describe("fake gh", () => {
 			answered = true;
 			return meta;
 		});
-		await quietFor(300);
+		await quietFor(300, "a held call that answered anyway");
 		expect(answered).toBe(false);
 		release(process.env.CRB_FAKE_GH ?? "", "prView");
 		await expect(view).resolves.toMatchObject({ headOid: "a".repeat(40) });

@@ -425,7 +425,7 @@ describe("RowActions", () => {
 		await screen.findByRole("img", { name: "Note: kept" });
 		await act(async () => {
 			release(undefined);
-			await quietFor(20);
+			await quietFor(20, "the refetch wiping the saved note");
 		});
 		expect(screen.getByRole("img", { name: "Note: kept" })).toBeInTheDocument();
 	});

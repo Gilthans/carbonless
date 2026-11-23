@@ -4,7 +4,7 @@
 // same test (test/cpu.ts), or prove "doesn't wait" with a hold or a timeout
 // of 0. Only the difference written inside `expect(…)` is caught; one kept
 // in a variable first is not (the rule stays free of false positives).
-// CLAUDE.md, "Development" (test rules).
+// CLAUDE.md, "Development" (test rules); docs/ci-flakes.md, "Lint rules".
 language js
 
 `expect($left - $right)` as $assert where {

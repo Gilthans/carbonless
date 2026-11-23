@@ -436,7 +436,7 @@ describe("FileDiff", () => {
 		expect(alert).toHaveTextContent("git exploded");
 		expect(alert).toHaveTextContent("Reviewed · src/a.ts");
 		// The reread server view doesn't roll it back.
-		await quietFor(20);
+		await quietFor(20, "the reread view rolling the box back");
 		expect(box).toBeChecked();
 		expect(sync().stale).toBeNull();
 		fail = false;
@@ -1157,7 +1157,7 @@ describe("FileDiff", () => {
 		await waitFor(() => expect(undo).toBeEnabled());
 		// Right after it swaps in, a click (a double click's second) does nothing.
 		await user.click(undo);
-		await quietFor(50);
+		await quietFor(50, "a post from the click right after the swap");
 		expect(posts()).toHaveLength(1);
 		tick();
 		await confirmClick(user, undo);
@@ -2055,7 +2055,7 @@ describe("FileDiff", () => {
 			expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(after),
 		);
 		answerRead?.();
-		await quietFor(20);
+		await quietFor(20, "the late read overwriting the mark");
 		expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(after);
 	});
 
@@ -3246,13 +3246,13 @@ describe("FileDiff: review in the image view", () => {
 		await pick(user, "Image");
 		expect(shown()).toBe("image");
 		// The same landing, still the page's, isn't replayed on the image.
-		await quietFor(20);
+		await quietFor(20, "the landing replayed on the image");
 		expect(screen.queryByTestId("landing-hint")).toBeNull();
 		expect(scrolls).not.toHaveBeenCalled();
 		// Nor after closing and reopening the file there.
 		await user.click(screen.getByRole("button", { name: "Collapse file" }));
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		await quietFor(20);
+		await quietFor(20, "the landing replayed on reopening");
 		expect(screen.queryByTestId("landing-hint")).toBeNull();
 		expect(scrolls).not.toHaveBeenCalled();
 	});

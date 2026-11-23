@@ -829,7 +829,7 @@ describe("Session", () => {
 			release(process.env.CRB_FAKE_GH ?? "", "threads");
 			await expect(s.threads(readId, "full")).rejects.toThrow();
 			const calls = pr.ghLog();
-			await quietFor(200);
+			await quietFor(200, "a gh call after close");
 			expect(pr.ghLog()).toBe(calls);
 			await expect(s.overview(0)).rejects.toThrow(/closed/);
 		});
@@ -859,7 +859,7 @@ describe("Session", () => {
 			// any of them.
 			const calls = pr.ghLog();
 			release(process.env.CRB_FAKE_GH ?? "", "threads");
-			await quietFor(1800);
+			await quietFor(300, "a gh call from a read pushed out or closed");
 			expect(pr.ghLog()).toBe(calls);
 		});
 

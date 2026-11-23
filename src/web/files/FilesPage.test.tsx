@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	QueryClient,
+	QueryClientProvider,
+	QueryObserver,
+} from "@tanstack/react-query";
 import {
 	createMemoryHistory,
 	createRootRoute,
@@ -219,12 +223,24 @@ describe("FilesPage", () => {
 				.findByRole("progressbar", { name: "Review progress" })
 				.then((p) => p.closest("[data-page-bar]") as HTMLElement),
 		).findByRole("status", { name: "Loading comments" });
+		// The query cache notifies its observers on a timeout: one subscribed
+		// after the page's hears the failure after them.
+		const observer = new QueryObserver(lastClient, {
+			queryKey: overviewQuery.queryKey,
+			enabled: false,
+		});
+		const notified = new Promise<void>((done) => {
+			const unsubscribe = observer.subscribe((result) => {
+				if (result.status !== "error") return;
+				unsubscribe();
+				done();
+			});
+		});
 		await act(async () => {
 			await lastClient
 				.refetchQueries({ queryKey: overviewQuery.queryKey })
 				.catch(() => {});
-			// The query cache notifies on a timeout.
-			await quietFor(20);
+			await notified;
 		});
 		expect(overviewReads).toBe(2);
 		expect(lastClient.getQueryState(overviewQuery.queryKey)?.status).toBe(
@@ -287,7 +303,7 @@ describe("FilesPage", () => {
 			);
 			// Let the page render with the threads (placements enable then).
 			await act(async () => {
-				await quietFor(20);
+				await quietFor(20, "an unwanted placements read");
 			});
 			const reads = () =>
 				fetchMock.mock.calls.filter(([input]) =>
@@ -1141,7 +1157,7 @@ describe("FilesPage", () => {
 			await user.click(within(a).getByRole("button", { name: "Expand file" }));
 			await waitFor(() => expect(currentIn()).toBe("a.txt"));
 			// Give a scroll that shouldn't come every chance to.
-			await act(() => quietFor(50));
+			await act(() => quietFor(50, "a second scroll to the hit"));
 			expect(scrolled).toHaveBeenCalledTimes(1);
 		});
 

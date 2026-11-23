@@ -21,11 +21,20 @@ const alive = (pid: number) => {
 };
 
 describe("runGit timeoutMs", () => {
-	// A shell alias stands in for a fetch that hangs: longer than the test's
-	// timeout (20 s), so a run that waited for it fails the test.
-	const slow = ["-c", "alias.slow=!sleep 60", "slow"];
+	// A shell alias stands in for a fetch that hangs: held until the test
+	// releases it (so a run that waited for it fails on the test's timeout),
+	// and gone within 50 ms of its git (nothing outlives the test).
 	const dir = mkdtempSync(join(tmpdir(), "crb-git-test-"));
-	afterAll(() => rmSync(dir, { recursive: true, force: true }));
+	const released = join(dir, "released");
+	const slow = [
+		"-c",
+		`alias.slow=!while [ ! -e '${released}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.05; done`,
+		"slow",
+	];
+	afterAll(() => {
+		writeFileSync(released, "");
+		rmSync(dir, { recursive: true, force: true });
+	});
 
 	it("kills git after the timeout and fails", async () => {
 		await expect(runGit(".", slow, { timeoutMs: 200 })).rejects.toThrow(

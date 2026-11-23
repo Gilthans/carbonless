@@ -43,6 +43,9 @@ const planted: Record<string, string> = {
 		"\tsend({ retries: 4 });",
 		"});",
 		"describe('c', { retry: 0 }, () => {});",
+		"it('d', () => {}, { retry: 2 });",
+		"export const short = defineConfig({ retries });",
+		"it('e', () => {}, 10_000);",
 	].join("\n"),
 	// no-wall-clock-assert
 	"src/wall.test.ts": [
@@ -68,7 +71,29 @@ const planted: Record<string, string> = {
 		"\tsetTimeout(() => stop.abort(), 100);",
 		"\t// biome-ignore lint/plugin/no-sleep-in-tests: a fake's latency",
 		"\tawait new Promise((r) => setTimeout(r, 30));",
+		"\tawait new Promise<void>((r) => setTimeout(r, 50));",
+		"\tawait new Promise((r) => globalThis.setTimeout(r, 50));",
+		"\tawait new Promise((r) => window.setTimeout(r, 50));",
+		"\tfor (const x of xs) await new Promise((r) => setTimeout(r, 20));",
+		"\tdo await new Promise((r) => setTimeout(r, 20)); while (!ready());",
+		"\tfor (;;) { if (ready()) break; await new Promise((r) => setTimeout(r, 20)); }",
+		"\tawait Promise.race([p, new Promise((d) => setTimeout(() => d(1), 1000))]);",
+		"\tawait quietFor(20, 'a second call');",
+		"\tawait quietFor(1500, 'a retry');",
+		"\tawait quietFor(500, 'a refetch');",
 		"});",
+		"afterEach(async () => {",
+		"\tawait quietFor(5, 'a late save');",
+		"});",
+	].join("\n"),
+	"src/timers.test.ts": [
+		'import { setTimeout as sleep } from "node:timers/promises";',
+		'import { setTimeout as later } from "timers/promises";',
+		'import { setInterval } from "node:timers";',
+	].join("\n"),
+	// In scope: a helper directly in test/.
+	"test/helper.ts": [
+		"export const nap = () => new Promise((r) => setTimeout(r, 50));",
 	].join("\n"),
 	// Out of every test rule's scope: app code, and the fakes.
 	"src/server/app.ts": [
@@ -161,17 +186,21 @@ describe("lint: the test rules", () => {
 	it("no-test-retries: a config's or a test's retries, not 0 and not app data", () => {
 		expect(linesOf("playwright.config.ts", "no-test-retries")).toEqual([2]);
 		expect(linesOf("vitest.config.ts", "no-test-retries")).toEqual([1]);
-		expect(linesOf("src/retries.test.ts", "no-test-retries")).toEqual([1, 2]);
+		expect(linesOf("src/retries.test.ts", "no-test-retries")).toEqual([
+			1, 2, 8, 9,
+		]);
 	});
 
 	it("no-wall-clock-assert: elapsed Date.now()/performance.now() in expect", () => {
 		expect(linesOf("src/wall.test.ts", "no-wall-clock-assert")).toEqual([4, 5]);
 	});
 
-	it("no-sleep-in-tests: a fixed sleep; not a 0 timer, a poll loop, a timer that isn't awaited, or an ignore", () => {
+	it("no-sleep-in-tests: a fixed sleep in any form, a counted loop of them, a race against one, timers/promises, quietFor in a hook or over 500 ms; not a 0 timer, a poll loop, a timer that isn't awaited, or an ignore", () => {
 		expect(linesOf("src/sleep.test.ts", "no-sleep-in-tests")).toEqual([
-			2, 3, 4,
+			2, 3, 4, 7, 11, 12, 13, 14, 17, 19, 23,
 		]);
+		expect(linesOf("src/timers.test.ts", "no-sleep-in-tests")).toEqual([1, 2]);
+		expect(linesOf("test/helper.ts", "no-sleep-in-tests")).toEqual([1]);
 	});
 
 	it("app code and the fakes are out of scope", () => {
@@ -187,6 +216,8 @@ describe("lint: the test rules", () => {
 			"src/retries.test.ts",
 			"src/wall.test.ts",
 			"src/sleep.test.ts",
+			"src/timers.test.ts",
+			"test/helper.ts",
 		]);
 		for (const [path, list] of Object.entries(hits)) {
 			expect(expected.has(path), `${path}: ${JSON.stringify(list)}`).toBe(true);

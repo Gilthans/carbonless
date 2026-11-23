@@ -582,7 +582,7 @@ describe("useFind", () => {
 			batches[3]?.held.release(answer(batches[3]));
 		});
 		// Give a request that shouldn't come every chance to.
-		await act(() => quietFor(20));
+		await act(() => quietFor(20, "a batch asked after closing"));
 		expect(batches).toHaveLength(4);
 		expect(result.current.searching).toBe(false);
 	});
@@ -890,7 +890,7 @@ describe("useFind", () => {
 			});
 		});
 		// Give the prefetch's answer every chance to land.
-		await act(() => quietFor(20));
+		await act(() => quietFor(20, "the search ending before the context lands"));
 		expect(result.current.searching).toBe(true);
 		await act(async () => {
 			contexts[0]?.held.release([
@@ -947,7 +947,9 @@ describe("useFind", () => {
 			});
 		});
 		// Give the prefetch's answer every chance to land.
-		await act(() => quietFor(20));
+		await act(() =>
+			quietFor(20, "the search ending before the open file's lines land"),
+		);
 		expect(result.current.searching).toBe(true);
 		await act(async () => {
 			singles[0]?.held.release(hunksOf(files[0] as FileView, "save too"));

@@ -1,23 +1,36 @@
 // CAR-260: no automatic retries (Playwright `retries`, Vitest `retry`): a
 // flaky test fails visibly and gets fixed. Fires on a `retries`/`retry` key
-// other than 0 (or false) in a config (`defineConfig`, `defineProject`), in
+// other than 0 (or false), or one given by shorthand (`{ retries }`), in a
+// config (`defineConfig`, `defineProject`), in
 // `test.describe.configure({ … })`, or in a test's options object
-// (`it(name, { retry: 2 }, fn)`). A `retry` field of app data elsewhere
-// (a write's `retry: true`) is not a test option and stays quiet.
-// CLAUDE.md, "Development" (test rules).
+// (`it(name, { retry: 2 }, fn)`, or Vitest's older `it(name, fn,
+// { retry: 2 })`). A `retry` field of app data elsewhere (a write's
+// `retry: true`) is not a test option and stays quiet.
+// CLAUDE.md, "Development" (test rules); docs/ci-flakes.md, "Lint rules".
 language js
 
-JsPropertyObjectMember(name=$name, value=$value) as $member where {
-	$name <: r"^retr[yi]e?s?$",
-	not $value <: or {
-		`0`,
-		`false`
+or {
+	JsPropertyObjectMember(name=$name, value=$value) as $member where {
+		$name <: r"^retr[yi]e?s?$",
+		not $value <: or {
+			`0`,
+			`false`
+		}
 	},
+	JsShorthandPropertyObjectMember() as $member where {
+		$member <: r"^retr[yi]e?s?$"
+	}
+} where {
 	or {
 		$member <: within `defineConfig($_)`,
 		$member <: within `defineProject($_)`,
 		$member <: within `$_.configure($_)`,
 		$member <: within `$fn($_, $options, $_)` where {
+			$fn <: r"^(?:it|test|describe)(?:\..+)?$",
+			$options <: JsObjectExpression(members=$members),
+			$members <: contains $member
+		},
+		$member <: within `$fn($_, $_, $options)` where {
 			$fn <: r"^(?:it|test|describe)(?:\..+)?$",
 			$options <: JsObjectExpression(members=$members),
 			$members <: contains $member

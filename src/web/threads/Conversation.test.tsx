@@ -314,7 +314,7 @@ describe("Conversation", () => {
 		expect(
 			await screen.findByText("Couldn't be read from GitHub"),
 		).toBeInTheDocument();
-		await quietFor(30);
+		await quietFor(30, "a request for an unreadable thread");
 		expect(requests).toBe(0);
 	});
 });
@@ -324,7 +324,7 @@ describe("Conversation across reads", () => {
 		answer = async () => json({ error: "read gone" }, 410);
 		renderWith(<Conversation readId="r1" thread={thread()} />);
 		await waitFor(() => expect(requests).toBeGreaterThan(0));
-		await quietFor(30);
+		await quietFor(30, "a dead Retry in place of the spinner");
 		expect(
 			screen.getByRole("status", { name: "Loading comments" }),
 		).toBeInTheDocument();

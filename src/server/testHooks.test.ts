@@ -164,7 +164,7 @@ describe("test hooks", () => {
 		});
 		const calls = pr.ghLog();
 		release(process.env.CRB_FAKE_GH ?? "", "threads");
-		await quietFor(300);
+		await quietFor(300, "the killed gh serving more");
 		expect(pr.ghLog()).toBe(calls);
 
 		// The registry still works: the same PR opens a new session.

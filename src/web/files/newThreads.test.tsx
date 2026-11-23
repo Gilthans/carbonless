@@ -1290,7 +1290,7 @@ describe("the composer", () => {
 			),
 		);
 		expect(await screen.findByTestId("orphan-draft")).toHaveTextContent("wait");
-		await quietFor(30);
+		await quietFor(30, "the draft moving to the new head");
 		expect(draftsFor(client).newThread("early")?.create?.commit).toBe(OLD);
 	});
 
@@ -2832,7 +2832,7 @@ describe("the selection bar on a phone", () => {
 			document.dispatchEvent(new Event("selectionchange"));
 		});
 		await screen.findByTestId("selection-bar", {}, { timeout: 2000 });
-		await quietFor(50);
+		await quietFor(50, "a scroll while the finger is down");
 		expect(window.scrollBy).not.toHaveBeenCalled();
 		fireEvent.touchEnd(document.body, { touches: [] });
 		await vi.waitFor(() => expect(window.scrollBy).toHaveBeenCalledTimes(1));

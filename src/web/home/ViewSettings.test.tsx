@@ -425,7 +425,8 @@ describe("ViewSettings", () => {
 			await waitFor(() =>
 				expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
 			);
-			await quietFor(1500);
+			// biome-ignore lint/plugin/no-sleep-in-tests: waits out the save retry's backoff; its move to a fake clock is a follow-up (CAR-260 review)
+			await quietFor(1500, "a third save or a chip rolled back");
 			expect(bodies()).toEqual([["acme/api"], ["acme/api", "acme/web"]]);
 			expect(chips()).toEqual(["acme/api", "acme/web"]);
 		});
