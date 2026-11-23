@@ -118,6 +118,13 @@ export function MarkdownView(props: {
 	headSure?: boolean;
 	/** The find: a step lands on the block holding its hit. */
 	find?: DiffFind;
+	/**
+	 * The find's current step is spent (FileDiff's: it already showed Text
+	 * for it, or was mounted with it): landed on, never sent to Text again.
+	 */
+	findSpent?: boolean;
+	/** A step's hit the rendered text doesn't show: Text for the view, this step spent. */
+	onFindText?: () => void;
 	/** A thread link: FileDiff shows Text for it (its exact line). */
 	landing?: Landing;
 	/** The view switch. */
@@ -496,7 +503,16 @@ export function MarkdownView(props: {
 		const start = cell(range.startSide, range.startLine);
 		const end = cell(range.side, range.line);
 		if (from !== undefined) {
-			const why = noLineIn([start, end], earlierHead);
+			// Every line of it, as the line view checks every picked line: a
+			// middle line GitHub has none for (or of the other commit) refuses
+			// the span; the earlier patch set's lines must be one run there.
+			const cells =
+				range.startSide === range.side
+					? Array.from({ length: range.line - range.startLine + 1 }, (_, i) =>
+							cell(range.side, range.startLine + i),
+						)
+					: [start, end];
+			const why = noLineIn(cells, earlierHead);
 			if (why) return { why: noLineReason(why) };
 		}
 		return {
@@ -510,16 +526,25 @@ export function MarkdownView(props: {
 	const findSeq = props.find?.current ? props.find.stepSeq : 0;
 	const findCurrent = props.find?.current ?? null;
 	const findDone = useRef(0);
-	// The step it was mounted with (an opened file's): landed on, but never
-	// sent to Text again (back in Rendered after a pick, it stays).
-	const findMounted = useRef(findSeq);
-	const findNow = useRef({ find: props.find, rowKeyOf, text: where?.text });
-	findNow.current = { find: props.find, rowKeyOf, text: where?.text };
+	const findNow = useRef({
+		find: props.find,
+		rowKeyOf,
+		text: where?.text,
+		spent: props.findSpent,
+		toText: props.onFindText,
+	});
+	findNow.current = {
+		find: props.find,
+		rowKeyOf,
+		text: where?.text,
+		spent: props.findSpent,
+		toText: props.onFindText,
+	};
 	// biome-ignore lint/correctness/useExhaustiveDependencies: again once a fold it opened is drawn (`open`).
 	useEffect(() => {
 		const el = root.current;
 		if (!where || !el || findSeq === 0 || findDone.current === findSeq) return;
-		const { find, rowKeyOf: keyOf, text } = findNow.current;
+		const { find, rowKeyOf: keyOf, text, spent, toText } = findNow.current;
 		const current = find?.current;
 		if (!current || !text) return;
 		const side: DiffSide = current.old ? "LEFT" : "RIGHT";
@@ -535,7 +560,9 @@ export function MarkdownView(props: {
 		const hit = mark ? text(side, current.line).slice(mark.from, mark.to) : "";
 		const row = el.querySelector(`[data-row="${CSS.escape(key)}"]`);
 		if (!row || !shows(row, hit)) {
-			if (findSeq !== findMounted.current) showText.current();
+			// A step FileDiff already spent (it switched for it, or the file
+			// remounted with it) lands here without bouncing back to Text.
+			if (!spent) (toText ?? showText.current)();
 			return;
 		}
 		row.scrollIntoView?.({ block: "center" });
@@ -894,9 +921,10 @@ export function MarkdownView(props: {
 				))}
 			</button>
 		);
-		// Threads on its blocks: their bubble beside it, never hidden by it.
+		// Threads on its blocks, or comments being written there: beside it
+		// and under it, never hidden by it.
 		const bubble = bubbleOf(key);
-		return bubble ? (
+		return bubble || composersAt.has(key) ? (
 			<div key={key} className="md-row" {...rowMarks(key)}>
 				<div className="md-gutter">{bubble}</div>
 				<div className="md-body">{button}</div>

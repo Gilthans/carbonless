@@ -442,6 +442,9 @@ export function blockCommentSpan(
 	const real = units.filter((u) => !u.ws);
 	const last = (real.length > 0 ? real : units).at(-1);
 	if (!last) return null;
+	// From its first changed line to its last: a since piece whose lines
+	// on that side are two runs (an unchanged line between, kept by the
+	// cut) is one span over that line too, as GitHub takes a range.
 	const pick = size(last.new) > 0 ? last.new : last.old;
 	const first = pick[0];
 	const end = pick.at(-1);

@@ -3242,6 +3242,97 @@ describe("FileDiff: review in the image view", () => {
 		expect(shown()).toBe("text");
 	});
 
+	it("a Rendered Markdown file: a step into it (opened by the step) onto a link's URL shows Text once; Rendered picked again stays; a later step switches again", async () => {
+		const LINK = "see [docs](https://example.com/guide)";
+		const linked: FileHunks = {
+			...hunks,
+			hunks: hunks.hunks.map((h) => ({
+				...h,
+				lines: h.lines.map((l) =>
+					l.kind === "add" ? { ...l, text: LINK } : l,
+				),
+			})),
+		};
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const onUrl = (stepSeq: number): DiffFind => {
+			const from = LINK.indexOf("example");
+			return {
+				marksOf: (side, n) =>
+					side === "RIGHT" && n === 5
+						? [{ from, to: from + 7, current: true }]
+						: [],
+				current: { old: false, line: 5 },
+				shown: true,
+				stepSeq,
+			};
+		};
+		Element.prototype.scrollIntoView = vi.fn();
+		const { user, update } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 200, body: unchanged }
+					: { status: 200, body: view(md) },
+			linked,
+		);
+		// The page steps into the closed file and opens it at once.
+		update({ find: onUrl(1) });
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await waitFor(() => expect(shown()).toBe("text"));
+		expect(rendererPicks.get("README.md")).toBeUndefined();
+		// Rendered again: that step is spent, it stays.
+		await pick(user, "Rendered");
+		expect(await screen.findByTestId("md-doc")).toBeInTheDocument();
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		expect(shown()).toBe("markdown");
+		// A later step onto the URL: Text again.
+		update({ find: onUrl(2) });
+		await waitFor(() => expect(shown()).toBe("text"));
+	});
+
+	it("a Rendered Markdown file whose document can't be read: its line threads stay in the file bubble", async () => {
+		const head = "h".repeat(40);
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const t = svgLineThread(head);
+		const thread = {
+			...t,
+			path: "README.md",
+			anchor: {
+				...(t.anchor as NonNullable<typeof t.anchor>),
+				path: "README.md",
+			},
+		} as typeof t;
+		const { user } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 500, body: { error: "boom" } }
+					: { status: 200, body: view(md) },
+			hunks,
+			"clusters",
+			{ threads: { readId: "r", snapshotHead: head, threads: [thread] } },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(
+			await screen.findByRole(
+				"button",
+				{ name: /^1 comment on this file.*line not in this diff/ },
+				{ timeout: 5000 },
+			),
+		).toBeInTheDocument();
+	});
+
 	it("a thread link to an SVG line in Image view shows it as Text for the view, not stored", async () => {
 		const { user, update } = setup(svg([cluster("k1")]));
 		await user.click(screen.getByRole("button", { name: "Expand file" }));

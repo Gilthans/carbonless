@@ -710,6 +710,12 @@ export function FileDiff(props: {
 		props.landing,
 	);
 	const renderer = asText.on ? "text" : resolved;
+	// The Rendered view's find steps: the one this file was mounted with
+	// (a new snapshot's remount) and the one it sent to Text are spent, so
+	// Rendered picked again after that switch never bounces back; a fresh
+	// step (into a file it opens, too) is not.
+	const findStep = props.find?.current ? props.find.stepSeq : 0;
+	const [spentFindStep, setSpentFindStep] = useState(findStep);
 	// The image renderer reads no lines: its review rows and threads are
 	// DiffBody's, with the lines hidden. The Markdown one shows the lines'
 	// clusters on its blocks, and leaves the file's rows and threads to
@@ -968,6 +974,9 @@ export function FileDiff(props: {
 			? hunks.data
 			: null;
 	const placedHunks = markdown ? documentIn : hunkData;
+	// Its document can't be read (the view shows the error): its line
+	// threads go to the header, never dropped while it says so.
+	const documentFailed = markdown && (hunks.isError || documentLines.isError);
 	const filePlacement = props.threads
 		? placeThreads({
 				threads: props.threads.threads,
@@ -975,7 +984,10 @@ export function FileDiff(props: {
 				snapshotHead: props.threads.snapshotHead,
 				hunks: placedHunks,
 				loadedContext: markdown && documentIn ? (documentLines.data ?? []) : [],
-				noLines: file.binary || file.submodule || (linesHidden && !markdown),
+				noLines:
+					file.binary ||
+					file.submodule ||
+					(linesHidden && (!markdown || documentFailed)),
 				placements: props.threads.placements,
 				// The since view: as its DiffBody places them (LEFT through
 				// the full diff), so the header holds what no row can.
@@ -1546,6 +1558,11 @@ export function FileDiff(props: {
 						view={viewSwitch(false)}
 						head={body(true)}
 						onShowText={asText.show}
+						findSpent={findStep === spentFindStep}
+						onFindText={() => {
+							setSpentFindStep(findStep);
+							asText.show();
+						}}
 						from={props.since}
 						kinds={props.sinceInfo?.kinds}
 						onSinceMark={sinceMark}

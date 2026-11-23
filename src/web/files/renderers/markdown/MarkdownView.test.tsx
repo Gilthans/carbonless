@@ -19,7 +19,11 @@ import type {
 	SessionInfo,
 } from "../../../../shared/types";
 import { overviewQuery, sessionQuery } from "../../../api";
-import { getComposers, resetComposers } from "../../../threads/newThreads";
+import {
+	getComposers,
+	openComposer,
+	resetComposers,
+} from "../../../threads/newThreads";
 import { ignoreWhitespace } from "../../../viewSettings";
 import type { DiffFind } from "../../DiffBody";
 import type { KindEntry } from "../../since";
@@ -143,6 +147,8 @@ type ShowOpts = {
 	/** The PR's review threads on the viewed head, placed as FileDiff places them. */
 	threads?: ReviewThread[];
 	find?: DiffFind;
+	findSpent?: boolean;
+	onFindText?: () => void;
 	/** The since view's compared patch set's head (CAR-233). */
 	earlierHead?: string;
 };
@@ -206,6 +212,8 @@ function show(fx: DocFixture, opts: ShowOpts = {}) {
 					}
 					placement={placement}
 					find={o.find}
+					findSpent={o.findSpent}
+					onFindText={o.onFindText}
 				/>
 			</QueryClientProvider>
 		);
@@ -824,16 +832,25 @@ describe("MarkdownView: threads, block comments, find", () => {
 		await waitFor(() => expect(onShowText).toHaveBeenCalledTimes(1));
 	});
 
-	it("find: a file opened on a step to a URL hit lands without sending it to Text again", async () => {
+	it("find: mounted on a fresh step to a URL hit, it shows Text; on a spent one (FileDiff's), it stays", async () => {
 		Element.prototype.scrollIntoView = vi.fn();
-		const onShowText = vi.fn();
 		const fx = docFixture(LINKED_OLD, LINKED_NEW, [
 			{ key: "k", old: [3, 4], new: [3, 4] },
 		]);
-		show(fx, { onShowText, find: findAt(3, "example", 4) });
+		const onFindText = vi.fn();
+		show(fx, { onFindText, find: findAt(3, "example", 4) });
+		await doc();
+		await waitFor(() => expect(onFindText).toHaveBeenCalledTimes(1));
+		cleanup();
+		const spentText = vi.fn();
+		show(fx, {
+			onFindText: spentText,
+			findSpent: true,
+			find: findAt(3, "example", 4),
+		});
 		await doc();
 		await new Promise((r) => setTimeout(r, 0));
-		expect(onShowText).not.toHaveBeenCalled();
+		expect(spentText).not.toHaveBeenCalled();
 	});
 
 	it("find: a hit in a folded block opens the fold and lands there", async () => {
@@ -930,5 +947,74 @@ describe("MarkdownView, since view: threads and block comments", () => {
 		expect(button).toHaveAttribute("aria-disabled", "true");
 		await userEvent.click(button);
 		expect(getComposers()).toHaveLength(0);
+	});
+
+	it("an earlier-only removal of 3 lines posts on that patch set's commit; mixed with base lines it is refused, as the line view refuses it", async () => {
+		const EARLIER = "e".repeat(40);
+		const OLD3 = ["# T", "", "one", "two", "three", "", "Para"];
+		const NEW3 = ["# T", "", "Para"];
+		const make = () =>
+			docFixture(OLD3, NEW3, [{ key: "k", old: [3, 7] }], { since: true });
+		let fx = make();
+		for (const l of fx.hunks.hunks[0]?.lines ?? []) {
+			if (l.oldNo !== undefined) {
+				l.baseNo = null;
+				l.psNo = l.oldNo + 10;
+			}
+		}
+		show(fx, { from: 1, earlierHead: EARLIER });
+		let root = await doc();
+		let button = rowOf(root, "p:0:0")?.querySelector(
+			'[data-testid="md-comment"]',
+		) as HTMLElement;
+		expect(button).not.toHaveAttribute("aria-disabled");
+		await userEvent.click(button);
+		expect(getComposers().at(-1)?.span).toMatchObject({
+			commit: EARLIER,
+			earlier: true,
+			startLine: 13,
+			line: 16,
+		});
+		cleanup();
+		resetComposers();
+		// Its ends only PS1's (one run there: 13, 14), its middle lines the
+		// base's: mixed commits, refused (the ends alone would pass).
+		fx = make();
+		for (const l of fx.hunks.hunks[0]?.lines ?? []) {
+			if (l.oldNo === undefined) continue;
+			if (l.oldNo === 4 || l.oldNo === 5) l.baseNo = l.oldNo;
+			else {
+				l.baseNo = null;
+				l.psNo = l.oldNo === 3 ? 13 : 14;
+			}
+		}
+		show(fx, { from: 1, earlierHead: EARLIER });
+		root = await doc();
+		button = rowOf(root, "p:0:0")?.querySelector(
+			'[data-testid="md-comment"]',
+		) as HTMLElement;
+		expect(button).toHaveAttribute("aria-disabled", "true");
+		await userEvent.click(button);
+		expect(getComposers()).toHaveLength(0);
+	});
+});
+
+describe("MarkdownView: comments being written in a fold", () => {
+	it("a comment on a line of a folded block with no threads there shows on the fold's row, never nowhere", async () => {
+		openComposer({
+			path: "README.md",
+			commit: HEAD,
+			subject: "line",
+			startSide: "RIGHT",
+			startLine: 17,
+			side: "RIGHT",
+			line: 17,
+		});
+		show(docFixture(OLD, NEW, EDITS));
+		const root = await doc();
+		const fold = rowByKey(root, "f7") as HTMLElement;
+		expect(fold).toBeTruthy();
+		expect(fold.querySelector('[data-testid="md-fold"]')).toBeTruthy();
+		expect(await within(fold).findByRole("textbox")).toBeInTheDocument();
 	});
 });
