@@ -13,8 +13,10 @@ import type {
 } from "../../shared/agent";
 import type { DisplayHunk, PrOverview, SessionInfo } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
+import type { NoLine } from "../files/codeSpan";
 import type { Viewing } from "../files/comparison";
 import { type CodeSpan, commentAvailable } from "../files/selectionActions";
+import type { SinceEarlier } from "../files/threadPlacement";
 import { LOADING } from "../threads/NewThread";
 import {
 	closeComposer,
@@ -39,6 +41,42 @@ import { useSendView } from "./threadAgent";
 export interface CommentScope {
 	headSure: boolean;
 	inDiff: (span: CodeSpan) => boolean | undefined;
+	/**
+	 * The since view: a conversation's span on its compared patch set's
+	 * lines that only that patch set had (earlierSpan, CAR-264); absent
+	 * elsewhere.
+	 */
+	earlier?: (span: CodeSpan) => CodeSpan | NoLine | null;
+}
+
+/**
+ * A conversation's span in the since view whose compared patch set's
+ * lines only that patch set had (`early`, from the view's removed rows,
+ * CAR-233), as a direct comment on those rows names them: that commit's
+ * RIGHT lines, marked `earlier` (CAR-264). Why not when it can't be one:
+ * some of its lines still in the head ("mixed"), or its file renamed
+ * since (`renamed`: the file shown has lines that patch set's diff adds
+ * at another path, and the span is on another path). Null when it isn't
+ * on such lines at all (the conversation's usual rules apply).
+ */
+export function earlierSpan(
+	span: CodeSpan,
+	early: SinceEarlier | undefined,
+	file: { path: string; renamed: boolean },
+): CodeSpan | NoLine | null {
+	if (!early || span.subject !== "line" || span.commit !== early.head) {
+		return null;
+	}
+	const end = span.line;
+	if (end === undefined || span.side !== "RIGHT") return null;
+	if ((span.startSide ?? span.side) !== "RIGHT") return null;
+	if (span.path !== file.path) return file.renamed ? "renamed" : null;
+	const start = span.startLine ?? end;
+	let on = 0;
+	for (let n = start; n <= end; n++) if (early.row(n) !== null) on++;
+	if (on === 0) return null;
+	if (on < end - start + 1) return "mixed";
+	return { ...span, earlier: true };
 }
 
 /**
@@ -101,6 +139,12 @@ export interface AgentCommentContext {
 	base?: string;
 	/** The session (where `base` comes from) isn't read yet. */
 	baseLoading?: boolean;
+	/**
+	 * The since view's take on the span (CommentScope.earlier): on lines
+	 * only its compared patch set had, the span a comment goes on there,
+	 * or why none can.
+	 */
+	earlier?: CodeSpan | NoLine;
 }
 
 /**
@@ -181,6 +225,19 @@ export function agentCommentAvailable(
 		});
 		return rule === true ? "The PR's head is loading" : rule;
 	}
+	// On lines only the since view's compared patch set had (CAR-264):
+	// as a direct comment on those rows, on that patch set's commit.
+	if (ctx.earlier !== undefined) {
+		const early = typeof ctx.earlier === "string" ? span : ctx.earlier;
+		return commentAvailable(early, {
+			writes: ctx.writes,
+			commentLeft: ctx.commentLeft,
+			file: { binary: false, submodule: false },
+			readOnly: ctx.readOnly,
+			headUnsure: ctx.headUnsure,
+			...(typeof ctx.earlier === "string" ? { noLine: ctx.earlier } : {}),
+		});
+	}
 	const onScreen = anchor.commit === ctx.right;
 	// Another version than the one on screen: its own rules, as the page
 	// will show it (whether its lines are GitHub's diff isn't known here;
@@ -253,7 +310,11 @@ export function useAgentComment(
 			: session?.patchsets?.find((p) => p.number === t.patchset)?.head;
 	const readOnly =
 		"patchset" in t && latest !== undefined && t.patchset < latest;
-	const span = spanOfAnchor(thread.anchor);
+	const asked = spanOfAnchor(thread.anchor);
+	// On lines only the since view's compared patch set had: commented on
+	// there, on that patch set's commit (CAR-264).
+	const earlier = scope.earlier?.(asked) ?? undefined;
+	const span = typeof earlier === "object" ? earlier : asked;
 	const commit = thread.anchor.commit;
 	const showVersion = useContext(ShowVersionContext);
 	const ok = overview
@@ -270,6 +331,7 @@ export function useAgentComment(
 				asked: thread.messages.find((m) => m.by === "human")?.view,
 				base: baseOf(session, commit),
 				baseLoading: session === undefined,
+				earlier,
 			})
 		: LOADING;
 	return {
@@ -281,7 +343,7 @@ export function useAgentComment(
 			// Asked on another version than the one on screen: the page goes
 			// there, where its lines are, and the comment is written (and
 			// posted) on it, as any comment on that version is.
-			if (session && commit !== right) {
+			if (session && commit !== right && !span.earlier) {
 				showVersion?.(viewingOf(session, commit), span.path);
 			}
 			// A plain comment typed on the span takes the conversation along.

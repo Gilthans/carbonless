@@ -211,6 +211,55 @@ describe("commentPlace: where a ```comment block posts", () => {
 	});
 });
 
+describe("commentPlace: a conversation on lines only the since view's earlier patch set had (CAR-264)", () => {
+	const target = {
+		path: "src/x.ts",
+		commit: OLD,
+		subject: "line" as const,
+		startSide: "RIGHT" as const,
+		startLine: 41,
+		side: "RIGHT" as const,
+		line: 44,
+		earlier: true,
+	};
+	it("posts a new thread on that patch set's commit, marked earlier, whatever the tracer says (the lines are gone at the head)", () => {
+		for (const placing of ["in", "pending", "failed"] as const) {
+			expect(
+				commentPlace({
+					thread: line(),
+					head: HEAD,
+					placement: { kind: "unplaced", fate: "deleted" } as never,
+					placing,
+					earlier: target,
+				}),
+			).toEqual({ kind: "new", changed: false, target });
+		}
+	});
+	it("off with the since view's reason where it can't (mixed, renamed)", () => {
+		expect(
+			commentPlace({
+				thread: line(),
+				head: HEAD,
+				placement: undefined,
+				placing: "pending",
+				earlier: "Renamed since the earlier patch set",
+			}),
+		).toEqual({ kind: "off", why: "Renamed since the earlier patch set" });
+	});
+	it("a joined conversation still replies to its thread", () => {
+		expect(
+			commentPlace({
+				thread: line({}),
+				head: HEAD,
+				placement: undefined,
+				placing: "in",
+				earlier: target,
+				sibling: { kind: "reply", thread: "PRRT_9" },
+			}),
+		).toEqual({ kind: "reply", thread: "PRRT_9" });
+	});
+});
+
 describe("commentPlace: a conversation joined to its comment's thread (CAR-236)", () => {
 	it("another block posted as a new thread, its record not in: this one replies to that thread, never a second one", () => {
 		expect(

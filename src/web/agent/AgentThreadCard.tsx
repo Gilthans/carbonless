@@ -69,6 +69,7 @@ import {
 	postAgentResolved,
 	withThread,
 } from "./api";
+import { spanOfAnchor } from "./askAgentAction";
 import {
 	type CommentScope,
 	useAgentComment,
@@ -745,13 +746,20 @@ function usePendingComment(props: AgentCardProps): ReactNode | null {
 	const { thread } = props;
 	const scope = useCommentScope();
 	const diff = usePendingComposers();
+	// On lines only the since view's compared patch set had: its comment
+	// is on that patch set's commit, shown here all the same (CAR-264).
+	const earlier =
+		scope?.earlier !== undefined &&
+		isSpanThread(thread) &&
+		thread.anchor.subject !== "thread" &&
+		typeof scope.earlier(spanOfAnchor(thread.anchor)) === "object";
 	const here =
 		scope !== null &&
 		diff !== null &&
 		diff.head !== undefined &&
 		isSpanThread(thread) &&
 		thread.anchor.subject !== "thread" &&
-		thread.anchor.commit === diff.head &&
+		(thread.anchor.commit === diff.head || earlier) &&
 		!thread.orphaned &&
 		!props.unplaced &&
 		!props.outdated;
@@ -760,7 +768,9 @@ function usePendingComment(props: AgentCardProps): ReactNode | null {
 	const composers = useComposers();
 	if (!here || !diff) return null;
 	const item = newThreadItems(drafts, composers).find(
-		(i) => i.agentThread === thread.id && i.span.commit === diff.head,
+		(i) =>
+			i.agentThread === thread.id &&
+			(i.span.commit === diff.head || (earlier && i.span.earlier === true)),
 	);
 	if (!item) return null;
 	return (

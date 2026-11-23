@@ -1556,6 +1556,145 @@ describe("API", () => {
 			]);
 		});
 
+		/**
+		 * PS1 (a check-off on the head), a conversation asked on PS1's line
+		 * RIGHT 2, then the PR moves on and PS2 starts on the new head: PS1
+		 * is an earlier patch set, read-only (CAR-264).
+		 */
+		const earlierConversation = async () => {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: { reviewThreads: [], reviews: [] },
+					},
+				},
+			});
+			await get("/api/overview?maxAge=0");
+			const ps1: ReviewView = await get("/api/review");
+			const [key = ""] = keys(ps1);
+			await post("/api/review/states", {
+				revision: ps1.revision,
+				changes: [{ key, state: "reviewed" }],
+			});
+			const h1 = pr.head();
+			const opened: AgentThread = (await ask()).json();
+			await firstHeadCheck();
+			const h2 = pr.moveHead({ "later.txt": "later\n" });
+			expect((await get("/api/head")).head).toMatchObject({ oid: h2 });
+			const head: ReviewView = await get(`/api/review?head=${h2}`);
+			const later =
+				head.files.find((f) => f.path === "later.txt")?.clusters[0]?.key ?? "";
+			const marked = await post("/api/review/states", {
+				revision: head.revision,
+				changes: [{ key: later, state: "reviewed" }],
+			});
+			expect(marked.statusCode, marked.body).toBe(200);
+			const info: SessionInfo = await get("/api/session");
+			expect(info.patchsets.map((p) => p.head)).toEqual([h1, h2]);
+			// As the card sends it: the conversation's span, no `earlier` mark.
+			const comment = {
+				clientId: "e1",
+				body: "Why add it, then drop it?",
+				attemptedAt: new Date().toISOString(),
+				retry: false,
+				path: "a.txt",
+				commit: h1,
+				subject: "line",
+				side: "RIGHT",
+				line: 2,
+				agentThread: opened.id,
+			};
+			return { h1, h2, opened, comment };
+		};
+		/** The threads the fake gh stores for PR 12 (with what it removed). */
+		const storedThreads = () =>
+			(
+				JSON.parse(readFileSync(process.env.CRB_FAKE_GH ?? "", "utf8")) as {
+					prs: Record<
+						string,
+						{
+							graphql: {
+								reviewThreads: {
+									line: number | null;
+									diffSide: string;
+									removed?: boolean;
+									first: {
+										nodes: { originalCommit: { oid: string } }[];
+									};
+								}[];
+							};
+						}
+					>;
+				}
+			).prs[12]?.graphql.reviewThreads ?? [];
+		const commentPosts = () =>
+			pr
+				.ghLog()
+				.split("\n")
+				.filter((l) =>
+					/^api -X POST repos\/acme\/widget\/pulls\/12\/comments /.test(l),
+				);
+
+		it("POST threads from a conversation on an earlier patch set's line: posted on that patch set's commit as a direct comment there is (its checks), the conversation joins it (CAR-264)", async () => {
+			const { h1, opened, comment } = await earlierConversation();
+			const res = await post("/api/threads", comment);
+			expect(res.statusCode, res.body).toBe(200);
+			expect(res.json().agentThread).toBe(opened.id);
+			// On PS1's commit, its RIGHT line, as an earlier comment: the
+			// PR's commits were checked first, no patch set started.
+			expect(storedThreads().at(-1)).toMatchObject({
+				line: 2,
+				diffSide: "RIGHT",
+				first: {
+					nodes: [expect.objectContaining({ originalCommit: { oid: h1 } })],
+				},
+			});
+			expect(pr.ghLog()).toMatch(/pulls\/12\/commits/);
+			expect(
+				((await get("/api/session")) as SessionInfo).patchsets,
+			).toHaveLength(2);
+			const [t] = (await get("/api/agent/threads")).threads as AgentThread[];
+			expect(t?.anchor).toMatchObject({ subject: "thread", commit: h1 });
+		});
+
+		it("POST threads from a conversation on an earlier patch set's line whose commit a force-push dropped: refused before GitHub, nothing posted, the conversation stays (CAR-264)", async () => {
+			const { comment } = await earlierConversation();
+			// A force-push: the head becomes a new commit on the merge base.
+			const repoGit = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const rewritten = repoGit(
+				"commit-tree",
+				`${pr.head()}^{tree}`,
+				"-p",
+				pr.mergeBase,
+				"-m",
+				"rewritten",
+			);
+			repoGit("update-ref", "refs/pull/12/head", rewritten);
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: rewritten, baseRefName: "main" }),
+						graphql: { reviewThreads: [], reviews: [] },
+					},
+				},
+			});
+			const before = storedThreads().length;
+			const sent = commentPosts().length;
+			const res = await post("/api/threads", comment);
+			expect(res.statusCode, res.body).toBe(400);
+			expect(res.json().error).toMatch(/no longer in the PR/);
+			expect(commentPosts()).toHaveLength(sent);
+			expect(storedThreads()).toHaveLength(before);
+			const [t] = (await get("/api/agent/threads")).threads as AgentThread[];
+			expect(t?.anchor).toMatchObject({ subject: "line", line: 2 });
+		});
+
 		it("join: Approve and Deny race, the second is 409; Detach; start", async () => {
 			const { session } = await registry.open({ pr: pr.arg });
 			const host = session.agent;

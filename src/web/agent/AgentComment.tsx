@@ -43,10 +43,12 @@ import {
 	useWritePreview,
 } from "../CommentPreview";
 import { type Copied, CopyMark, copyInto, copyWord } from "../CopyMark";
+import { noLineReason } from "../files/selectionActions";
 import { threadFocus } from "../files/threadFocus";
 import { RelativeTime } from "../RelativeTime";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
+import { targetOf } from "../threads/newThreads";
 import { useWritesOn } from "../threads/threadWrites";
 import { safeHref } from "../ui";
 import {
@@ -73,6 +75,8 @@ import {
 	WRITES_OFF,
 } from "./agentComments";
 import { agentPlacementsOnHeadQuery } from "./api";
+import { spanOfAnchor } from "./askAgentAction";
+import { useCommentScope } from "./commentOnGithub";
 
 /** Where an agent message's comment blocks post from. */
 export interface CommentAt {
@@ -162,6 +166,15 @@ function usePlace(thread: PostingThread, clientId: string): CommentPlace {
 		() => "",
 	);
 	const sibling = useMemo(() => siblingOf(siblingAt), [siblingAt]);
+	// The since view: on lines only its compared patch set had, it posts
+	// there, on that commit, as a direct comment on them (CAR-264).
+	const scope = useCommentScope();
+	const early = useMemo(() => {
+		if (a.subject !== "line" || !scope?.earlier) return undefined;
+		const e = scope.earlier(spanOfAnchor(a));
+		if (e === null) return undefined;
+		return typeof e === "string" ? noLineReason(e) : targetOf(e);
+	}, [a, scope]);
 	// A joined conversation replies, needing no lines; one whose thread is
 	// gone (orphaned) is back on its lines: placed like any other.
 	const needed =
@@ -170,7 +183,8 @@ function usePlace(thread: PostingThread, clientId: string): CommentPlace {
 		!thread.githubUnknown &&
 		sibling === undefined &&
 		!!head &&
-		a.commit !== head;
+		a.commit !== head &&
+		early === undefined;
 	const placed = useQuery({
 		...agentPlacementsOnHeadQuery(head ?? ""),
 		enabled: needed,
@@ -196,8 +210,9 @@ function usePlace(thread: PostingThread, clientId: string): CommentPlace {
 				placement,
 				placing,
 				...(sibling ? { sibling } : {}),
+				...(early ? { earlier: early } : {}),
 			}),
-		[thread, head, placement, placing, sibling],
+		[thread, head, placement, placing, sibling, early],
 	);
 }
 
