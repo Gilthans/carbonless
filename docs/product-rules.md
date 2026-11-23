@@ -280,6 +280,16 @@ switch wouldn't happen.
   written, the browser keeps the post, shows it Posted and writes the record
   on a later load.
   The agent has no tool to post; a refusal is never retried by itself.
+- **Write / Preview on every box that posts to GitHub (CAR-202).** The
+  reply, new-thread, edit and verdict-message boxes and the agent's
+  suggested comment each have a pencil/eye toggle (Ctrl/Cmd+Shift+P).
+  Preview renders the text the way crb shows a posted comment
+  (`escapeTags`, `marked`, then `sanitizeGithubHtml`: `CommentPreview.tsx`),
+  in the textarea's place and at least its height. The agent's box opens in
+  Preview (markdown the reviewer didn't write: read it first); the
+  reviewer's own boxes open in Write. Sending works from either mode and
+  posts the same text. No toggle on an empty box or in Ask agent (its text
+  never reaches GitHub). The mode isn't saved.
 - **Resolve in Files changed closes the thread to its bubble** (the owner,
   2026-11-09), on the press. Once none of the bubble's threads shows, it
   closes and takes the focus (a bubble above the view comes down to just

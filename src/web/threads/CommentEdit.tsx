@@ -18,6 +18,11 @@ import {
 	type ReviewThread,
 	type ThreadComment,
 } from "../../shared/types";
+import {
+	CommentPreview,
+	PreviewToggle,
+	useWritePreview,
+} from "../CommentPreview";
 import { LabeledIcon } from "../overview/parts";
 import { usePageActive } from "../pageActive";
 import { fullDate } from "../RelativeTime";
@@ -362,6 +367,8 @@ export function EditForm(props: {
 	const text = draft?.text ?? from;
 	const box = useRef<HTMLTextAreaElement>(null);
 	const blank = !text.trim();
+	const view = useWritePreview({ initial: "write", text, box });
+	const previewing = view.mode === "preview";
 	useLayoutEffect(() => {
 		const el = box.current;
 		if (!el) return;
@@ -371,10 +378,10 @@ export function EditForm(props: {
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes.
 	useLayoutEffect(() => {
 		const el = box.current;
-		if (!el) return;
+		if (!el || previewing) return;
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
-	}, [text]);
+	}, [text, previewing]);
 	const save = () => {
 		// What the store holds now, not this render's copy.
 		const now = writer.drafts.edit(comment.id);
@@ -391,7 +398,8 @@ export function EditForm(props: {
 		const changed = writer.drafts.edit(comment.id) !== undefined;
 		if (!changed || window.confirm("Discard your edit?")) cancel();
 	};
-	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+		view.onKeyDown(e);
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
 			save();
@@ -428,6 +436,7 @@ export function EditForm(props: {
 			)}
 			<textarea
 				ref={box}
+				hidden={previewing}
 				aria-label="Edit comment"
 				rows={3}
 				maxLength={MAX_REPLY}
@@ -438,7 +447,23 @@ export function EditForm(props: {
 				onKeyDown={onKeyDown}
 				className="block max-h-96 min-h-10 w-full min-w-0 resize-none rounded-md border border-line-strong bg-raised px-3 py-2 text-sm leading-normal text-ink focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent"
 			/>
-			<div className="flex justify-end gap-2">
+			{previewing && (
+				<CommentPreview
+					text={text}
+					{...view.previewProps}
+					onKeyDown={onKeyDown}
+					className="max-h-96 min-h-10"
+				/>
+			)}
+			{/* Wraps when narrow (a phone's card in a thread in the diff). */}
+			<div className="flex flex-wrap justify-end gap-2">
+				{/* Its slot kept (unseen while empty): a narrow row wraps when the box
+				    opens, never on the first character. */}
+				<PreviewToggle
+					{...view.toggleProps}
+					unseen={!view.toggle}
+					className="mr-auto"
+				/>
 				<button
 					type="button"
 					onClick={ask}

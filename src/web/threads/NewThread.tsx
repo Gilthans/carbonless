@@ -24,6 +24,11 @@ import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext } from "../agent/threadAgent";
 import { overviewQuery, sessionQuery } from "../api";
 import {
+	CommentPreview,
+	PreviewToggle,
+	useWritePreview,
+} from "../CommentPreview";
+import {
 	type CodeSpan,
 	commentAvailable,
 	describeSpan,
@@ -138,6 +143,8 @@ export function NewThread(props: {
 	// Refused: the text and its Comment button stay above the notice.
 	useClearOfNotices(card, failed !== null && !item.sending);
 	const blank = !item.text.trim();
+	const view = useWritePreview({ initial: "write", text: item.text, box });
+	const previewing = view.mode === "preview";
 	// Opened from an agent conversation on another version (Comment on its
 	// card), the page then showing that version: its lines checked as the
 	// selection bar checks them, so a span GitHub won't take says why here
@@ -165,10 +172,10 @@ export function NewThread(props: {
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes.
 	useLayoutEffect(() => {
 		const el = box.current;
-		if (!el) return;
+		if (!el || previewing) return;
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
-	}, [item.text, item.sending]);
+	}, [item.text, item.sending, previewing]);
 	// Links to the conversation it carries find it while it is pending.
 	useFocusCard(props.focusId, card);
 	// The card's frame becomes the thread's: right after Comment only.
@@ -205,7 +212,8 @@ export function NewThread(props: {
 		closeComposer(clientId);
 		openAgentComposer(span, undefined, text, (c) => !agentAsking(c.clientId));
 	};
-	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+		view.onKeyDown(e);
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
 			post();
@@ -302,6 +310,7 @@ export function NewThread(props: {
 			)}
 			<textarea
 				ref={setBox}
+				hidden={previewing}
 				aria-label="Comment"
 				placeholder="Comment…"
 				rows={3}
@@ -318,7 +327,23 @@ export function NewThread(props: {
 				onKeyDown={onKeyDown}
 				className="block max-h-96 min-h-16 w-full min-w-0 resize-none rounded-md border border-line-strong bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent"
 			/>
-			<div className="flex items-center justify-end gap-2">
+			{previewing && (
+				<CommentPreview
+					text={item.text}
+					{...view.previewProps}
+					onKeyDown={onKeyDown}
+					className="max-h-96 min-h-16"
+				/>
+			)}
+			{/* Wraps when narrow (a phone's card past the stacked controls). */}
+			<div className="flex flex-wrap items-center justify-end gap-2">
+				{/* Its slot kept (unseen while empty): a narrow row wraps when the box
+				    opens, never on the first character. */}
+				<PreviewToggle
+					{...view.toggleProps}
+					unseen={!view.toggle}
+					className="mr-auto"
+				/>
 				<button
 					type="button"
 					onClick={cancel}

@@ -8,7 +8,7 @@ import {
 	type Scenario,
 	threadComment,
 } from "../test/fake-gh/scenario";
-import { fileSection, openFiles } from "./files-ui";
+import { expectNoPageOverflow, fileSection, openFiles } from "./files-ui";
 import {
 	expect,
 	installClock,
@@ -16,6 +16,22 @@ import {
 	type PrOptions,
 	test,
 } from "./fixtures";
+
+/** The toggle's action row fits its box, and the page doesn't scroll sideways. */
+async function expectRowFits(page: Page, toggle: Locator) {
+	// Either side: a `justify-end` row overflows to the left, unseen by scrollWidth.
+	const out = await toggle.evaluate((el) => {
+		const row = el.parentElement;
+		if (!row) throw new Error("no row");
+		const r = row.getBoundingClientRect();
+		return [...row.children].filter((c) => {
+			const b = c.getBoundingClientRect();
+			return b.left < r.left - 1 || b.right > r.right + 1;
+		}).length;
+	});
+	expect(out).toBe(0);
+	await expectNoPageOverflow(page);
+}
 
 /**
  * Editing and deleting the viewer's own comments, written to the fake gh
@@ -469,7 +485,9 @@ test("edit and delete a reply from Files changed", async ({
 	page,
 	pr,
 	startCrb,
+	isMobile,
 }) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	const p = await setup(pr);
 	const s = await startCrb();
 	await installClock(page);
@@ -489,6 +507,10 @@ test("edit and delete a reply from Files changed", async ({
 	await mine.getByRole("button", { name: "Edit" }).click();
 	const box = thread.getByRole("textbox", { name: "Edit comment" });
 	await box.fill("Because of the cache");
+	// With Write / Preview (CAR-202) the actions still fit the card's row.
+	const toggle = thread.getByTestId("preview-toggle");
+	await expect(toggle).toBeVisible();
+	await expectRowFits(page, toggle);
 	// Mid-window: the floating Files button comes back where the box loses
 	// focus, and must not be under the pointer when Save is pressed.
 	const save = thread.getByRole("button", { name: "Save" });
