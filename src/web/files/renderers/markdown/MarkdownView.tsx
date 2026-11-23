@@ -705,70 +705,6 @@ export function MarkdownView(props: {
 		? rowKeyOf(findCurrent.old ? "LEFT" : "RIGHT", findCurrent.line)
 		: null;
 
-	const bar = (
-		<div
-			data-testid="view-bar"
-			className="flex min-h-12 flex-wrap items-center gap-2 border-line border-b bg-band px-2 py-1"
-		>
-			{props.view}
-		</div>
-	);
-
-	if (error) {
-		return (
-			<>
-				{bar}
-				{props.head}
-				<div className="p-2">
-					<ErrorMessage error={error} />
-				</div>
-			</>
-		);
-	}
-	if (pending || model === null || failed) {
-		return (
-			<>
-				{bar}
-				{props.head}
-				<div
-					aria-busy="true"
-					data-testid="md-loading"
-					className="min-h-[100dvh] space-y-3 px-3 py-3"
-				>
-					<Spinner label="Loading document" />
-					<SkeletonBar className="w-2/5" />
-					<SkeletonBar className="w-11/12" />
-					<SkeletonBar className="w-4/5" />
-				</div>
-			</>
-		);
-	}
-
-	const { doc, units, oldHtml, newHtml, pair } = model;
-	const htmlOf = (list: readonly { html: string }[], ids: number[]) =>
-		ids.map((i) => list[i]?.html ?? "").join("");
-	const noteId = (key: string) => `${idBase}-note-${key}`;
-
-	const content = (html: string, extra = "") => (
-		<div
-			className={`markdown-body md-content min-w-0 ${extra}`}
-			// biome-ignore lint/security/noDangerouslySetInnerHtml: renderBlocks/renderPair output only, sanitized there (renderBlocks.ts).
-			dangerouslySetInnerHTML={{ __html: html }}
-		/>
-	);
-	const columns = (left: ReactNode, right: ReactNode) =>
-		split ? (
-			<div className="grid grid-cols-2 gap-3">
-				<div className="min-w-0">{left}</div>
-				<div className="min-w-0">{right}</div>
-			</div>
-		) : (
-			<>
-				{left}
-				{right}
-			</>
-		);
-
 	/** A row's bubbles (in its gutter): its comments', and its agent threads'. */
 	const bubbleOf = (key: string) => {
 		const list = threadsAt.get(key) ?? [];
@@ -890,8 +826,7 @@ export function MarkdownView(props: {
 							where={at.where}
 							lineTexts={at.lineTexts}
 							comment={agentCommentOn(item.span, {
-								rowsOf: (range) =>
-									rowsOf({ ...item.span, ...range, subject: "line" }),
+								rowsOf: (range) => rowsOf({ ...item.span, ...range }),
 								hunkKeys: hunks.data ? hunkKeys : null,
 								head: snapshotHead || undefined,
 								file,
@@ -904,6 +839,72 @@ export function MarkdownView(props: {
 			</div>
 		);
 	};
+	const bar = (
+		<div
+			data-testid="view-bar"
+			className="flex min-h-12 flex-wrap items-center gap-2 border-line border-b bg-band px-2 py-1"
+		>
+			{props.view}
+		</div>
+	);
+
+	if (error) {
+		return (
+			<>
+				{bar}
+				{props.head}
+				<div className="p-2">
+					<ErrorMessage error={error} />
+				</div>
+				{/* Comments and questions being written on its lines: above, never lost. */}
+				{threadsOf(TOP)}
+			</>
+		);
+	}
+	if (pending || model === null || failed) {
+		return (
+			<>
+				{bar}
+				{props.head}
+				<div
+					aria-busy="true"
+					data-testid="md-loading"
+					className="min-h-[100dvh] space-y-3 px-3 py-3"
+				>
+					<Spinner label="Loading document" />
+					<SkeletonBar className="w-2/5" />
+					<SkeletonBar className="w-11/12" />
+					<SkeletonBar className="w-4/5" />
+				</div>
+			</>
+		);
+	}
+
+	const { doc, units, oldHtml, newHtml, pair } = model;
+	const htmlOf = (list: readonly { html: string }[], ids: number[]) =>
+		ids.map((i) => list[i]?.html ?? "").join("");
+	const noteId = (key: string) => `${idBase}-note-${key}`;
+
+	const content = (html: string, extra = "") => (
+		<div
+			className={`markdown-body md-content min-w-0 ${extra}`}
+			// biome-ignore lint/security/noDangerouslySetInnerHtml: renderBlocks/renderPair output only, sanitized there (renderBlocks.ts).
+			dangerouslySetInnerHTML={{ __html: html }}
+		/>
+	);
+	const columns = (left: ReactNode, right: ReactNode) =>
+		split ? (
+			<div className="grid grid-cols-2 gap-3">
+				<div className="min-w-0">{left}</div>
+				<div className="min-w-0">{right}</div>
+			</div>
+		) : (
+			<>
+				{left}
+				{right}
+			</>
+		);
+
 	const rowMarks = (key: string) => ({
 		"data-row": key,
 		"data-find-current": findKey === key || undefined,

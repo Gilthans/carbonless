@@ -24,6 +24,10 @@ import type {
 	SinceMark,
 } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
+import {
+	openAgentComposer,
+	resetAgentComposers,
+} from "../agent/askAgentAction";
 import { AgentPlacingProvider } from "../agent/placeable";
 import { reviewQuery, sessionQuery } from "../api";
 import {
@@ -31,6 +35,7 @@ import {
 	resetShowInvisibles,
 	setShowInvisibles,
 } from "../code/Invisibles";
+import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import { contextRanges } from "./contextRanges";
 import type { DiffFind, DiffThreads } from "./DiffBody";
@@ -3410,6 +3415,63 @@ describe("FileDiff: review in the image view", () => {
 		await pick(user, "Text");
 		expect(shown()).toBe("text");
 		expect(screen.queryByTestId("view-warn")).toBeNull();
+	});
+
+	describe("a Rendered Markdown file's line comments and questions being written", () => {
+		const head = "h".repeat(40);
+		const span = {
+			path: "README.md",
+			commit: head,
+			subject: "line" as const,
+			startSide: "RIGHT" as const,
+			startLine: 5,
+			side: "RIGHT" as const,
+			line: 5,
+		};
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		afterEach(() => {
+			resetComposers();
+			resetAgentComposers();
+		});
+		const open = (context: Result) => {
+			openComposer(span);
+			openAgentComposer(span);
+			return setup(
+				md,
+				(url) =>
+					url.pathname === "/api/files/0/context"
+						? context
+						: { status: 200, body: view(md) },
+				hunks,
+				"clusters",
+				{ threads: { readId: "r", snapshotHead: head, threads: [] } },
+			);
+		};
+
+		it("show once each, under their block", async () => {
+			const { user } = open({ status: 200, body: unchanged });
+			await user.click(screen.getByRole("button", { name: "Expand file" }));
+			const doc = await screen.findByTestId("md-doc");
+			expect(screen.getAllByTestId("new-thread")).toHaveLength(1);
+			expect(screen.getAllByTestId("agent-composer")).toHaveLength(1);
+			expect(within(doc).getByTestId("new-thread")).toBeInTheDocument();
+			expect(within(doc).getByTestId("agent-composer")).toBeInTheDocument();
+		});
+
+		it("the document can't be read: they show beside its error, once each, never nowhere", async () => {
+			const { user } = open({ status: 500, body: { error: "boom" } });
+			await user.click(screen.getByRole("button", { name: "Expand file" }));
+			await screen.findByRole("alert", undefined, { timeout: 5000 });
+			expect(screen.queryByTestId("md-doc")).toBeNull();
+			expect(screen.getAllByTestId("new-thread")).toHaveLength(1);
+			expect(screen.getAllByTestId("agent-composer")).toHaveLength(1);
+		});
 	});
 
 	it("a Rendered Markdown file whose document can't be read: its line threads stay in the file bubble", async () => {

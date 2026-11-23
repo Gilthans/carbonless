@@ -2103,7 +2103,7 @@ type HunksRead = Pick<
 export function agentCommentOn(
 	span: CodeSpan,
 	at: {
-		rowsOf: (range: SpanRange) => SpanRange | null;
+		rowsOf: (range: SpanRange & { earlier?: boolean }) => SpanRange | null;
 		hunkKeys: ReadonlySet<string> | null;
 		head: string | undefined;
 		file: Pick<FileView, "binary" | "submodule">;
@@ -2114,6 +2114,9 @@ export function agentCommentOn(
 	const rows =
 		span.subject === "line" && span.side && span.line !== undefined
 			? at.rowsOf({
+					// Lines only the compared patch set had (CAR-233): its RIGHT
+					// lines there, on the removed rows that show them.
+					earlier: span.earlier,
 					startSide: span.startSide ?? span.side,
 					startLine: span.startLine ?? span.line,
 					side: span.side,
