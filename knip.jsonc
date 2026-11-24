@@ -15,9 +15,11 @@
 		"test/setup.ts",
 		"test/real-gh-trap.ts",
 		"test/trace-setup.ts",
+		// Its CI reporter (named as a string when CRB_TEST_JSON is set).
+		"scripts/vitest-unhandled-reporter.mjs",
 		// playwright.config.ts: specs, globalSetup, reporter.
 		"playwright.config.ts",
-		"e2e/*.spec.ts",
+		"e2e/**/*.spec.ts",
 		"e2e/global-setup.ts",
 		"e2e/trace-reporter.ts",
 		// Inside package.json's `build` (`sh -c '…'`, which knip doesn't parse).
