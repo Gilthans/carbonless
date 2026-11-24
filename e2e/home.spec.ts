@@ -1985,3 +1985,61 @@ test("screenshots of view settings and the loading page (CRB_HOME_SHOTS only)", 
 	});
 	release(made.scenarioPath, "prView");
 });
+
+test("a view repo's chip shows only its PRs, kept on reload, back and forth; again shows all", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await setup(workdir, pr, { widgetInView: true });
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const widget = page.getByRole("button", { name: OWNER_REPO, exact: true });
+	const api = page.getByRole("button", { name: "acme/api", exact: true });
+	const widgetRow = rowOf(page, "Add widget cache");
+	const apiRow = rowOf(page, "Snooze PRs from the inbox");
+	await expect(widgetRow).toBeVisible();
+	await expect(widget).toHaveAttribute("aria-pressed", "false");
+	// The whole chip, 40px tall, is the target: a tap just above the
+	// visible chip (28px) still presses it.
+	const box = await page
+		.getByTestId("view-repo")
+		.filter({ hasText: OWNER_REPO })
+		.boundingBox();
+	if (!box) throw new Error("no chip");
+	expect(box.height).toBeLessThan(40);
+	await page.mouse.click(box.x + box.width / 2, box.y - 4);
+	await expect(widget).toHaveAttribute("aria-pressed", "true");
+	await expect(apiRow).toHaveCount(0);
+	await expect(widgetRow).toBeVisible();
+	await expect(page).toHaveURL(
+		new RegExp(`\\?repo=${encodeURIComponent(OWNER_REPO.toLowerCase())}$`),
+	);
+
+	await page.reload();
+	await expect(widgetRow).toBeVisible();
+	await expect(widget).toHaveAttribute("aria-pressed", "true");
+	await expect(apiRow).toHaveCount(0);
+
+	await widget.click();
+	await expect(widget).toHaveAttribute("aria-pressed", "false");
+	await expect(apiRow).toBeVisible();
+	await expect(widgetRow).toBeVisible();
+	await expect(page).toHaveURL(home(crb.url));
+
+	await api.click();
+	await expect(api).toHaveAttribute("aria-pressed", "true");
+	await expect(widgetRow).toHaveCount(0);
+	await expect(apiRow).toBeVisible();
+
+	await page.goBack();
+	await expect(api).toHaveAttribute("aria-pressed", "false");
+	await expect(widgetRow).toBeVisible();
+	await expect(apiRow).toBeVisible();
+	await page.goBack();
+	await expect(widget).toHaveAttribute("aria-pressed", "true");
+	await expect(apiRow).toHaveCount(0);
+	if (isMobile) await expectNoPageOverflow(page);
+});
