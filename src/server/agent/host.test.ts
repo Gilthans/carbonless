@@ -177,6 +177,114 @@ describe("anchorHunk", () => {
 	});
 });
 
+/**
+ * CAR-53: a follow-up in a conversation opened on patch set 1 gets patch
+ * set 1's hunk, though patch set 2 since moved the anchored line (5 lines
+ * added on top) and changed it.
+ */
+describe("anchorHunk on an earlier patch set (CAR-53)", () => {
+	let ps: GitFixture;
+	let current: Snapshot;
+	const lines = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`);
+	beforeEach(async () => {
+		const one = [...lines];
+		one[29] = "line 30 changed";
+		const two = [...lines];
+		two[29] = "line 30 changed again";
+		ps = createGitFixture([
+			{ message: "base", files: { "src/x.ts": `${lines.join("\n")}\n` } },
+			{ message: "ps1", files: { "src/x.ts": `${one.join("\n")}\n` } },
+			{
+				message: "ps2",
+				files: {
+					"src/x.ts": `${["top 1", "top 2", "top 3", "top 4", "top 5", ...two].join("\n")}\n`,
+				},
+			},
+		]);
+		current = await buildSnapshot(
+			ps.path,
+			ps.shas[0] as string,
+			ps.shas[2] as string,
+		);
+	});
+	afterEach(() => ps.cleanup());
+	const [BASE, PS1] = [0, 1];
+	const onPs1 = (): AgentSpanAnchor => ({
+		subject: "line",
+		path: "src/x.ts",
+		commit: ps.shas[PS1] as string,
+		side: "RIGHT",
+		line: 30,
+		startSide: "RIGHT",
+		startLine: 30,
+	});
+
+	it("is patch set 1's hunk, read from its own comparison, not the current snapshot's", async () => {
+		const asked: string[][] = [];
+		const src = {
+			repo: ps.path,
+			snapshot: () => current,
+			snapshotAt: async (base: string, head: string) => {
+				asked.push([base, head]);
+				return buildSnapshot(ps.path, base, head);
+			},
+		};
+		const hunk = await anchorHunk(src, onPs1(), ps.shas[BASE] as string);
+		expect(hunk?.split("\n")).toEqual([
+			"@@ -27,7 +27,7 @@",
+			" line 27",
+			" line 28",
+			" line 29",
+			"-line 30",
+			"+line 30 changed",
+			" line 31",
+			" line 32",
+			" line 33",
+		]);
+		expect(asked).toEqual([[ps.shas[BASE], ps.shas[PS1]]]);
+	});
+
+	it("the current snapshot when it is the comparison: no other read", async () => {
+		const snapshotAt = vi.fn();
+		const hunk = await anchorHunk(
+			{ repo: ps.path, snapshot: () => current, snapshotAt },
+			{
+				...onPs1(),
+				commit: ps.shas[2] as string,
+				line: 35,
+				startLine: 35,
+			} as AgentAnchor,
+			ps.shas[BASE] as string,
+		);
+		expect(hunk).toContain("+line 30 changed again");
+		expect(snapshotAt).not.toHaveBeenCalled();
+	});
+
+	it("throws, never the current snapshot's code, when patch set 1 can't be read or its commit is unknown", async () => {
+		const gone = {
+			repo: ps.path,
+			snapshot: () => current,
+			snapshotAt: async () => {
+				throw new Error("commit gone and can't be fetched");
+			},
+		};
+		await expect(
+			anchorHunk(gone, onPs1(), ps.shas[BASE] as string),
+		).rejects.toThrow("commit gone and can't be fetched");
+		await expect(
+			anchorHunk(gone, { ...onPs1(), commit: "" }, ps.shas[BASE] as string),
+		).rejects.toThrow("its commit is unknown");
+		// A source that reads only the current snapshot.
+		await expect(
+			anchorHunk(
+				{ repo: ps.path, snapshot: () => current },
+				onPs1(),
+				ps.shas[BASE] as string,
+			),
+		).rejects.toThrow("only the current diff");
+	});
+});
+
 describe("AgentHost with a session joined through MCP", () => {
 	const WHO = {
 		name: "carbonless · main",
@@ -1492,6 +1600,87 @@ describe("AgentHost with a session joined through MCP", () => {
 			text: "",
 			activity: [],
 			asked: q?.replyTo,
+		});
+	});
+
+	describe("a follow-up in a conversation opened on patch set 1, after patch set 2 was pushed (CAR-53)", () => {
+		const M1 = "1".repeat(40);
+		const H1 = "2".repeat(40);
+		const H2 = "4".repeat(40);
+		const M2 = "3".repeat(40);
+		const ps = (number: number, h: string, mb: string): PromptPatchset => ({
+			number,
+			head: h,
+			mergeBase: mb,
+			startedAt: `2026-11-0${number}T00:00:00Z`,
+		});
+		const onLine30 = (commit: string): AgentSpanAnchor => ({
+			subject: "line",
+			path: "src/x.ts",
+			commit,
+			side: "RIGHT",
+			line: 30,
+			startSide: "RIGHT",
+			startLine: 30,
+		});
+		let realHunk: RunnerFacts["hunk"];
+		beforeEach(() => {
+			realHunk = facts.hunk;
+			patchsets = [ps(1, H1, M1), ps(2, H2, M2)];
+			mergeBase = M2;
+			head = H2;
+		});
+		afterEach(() => {
+			facts.hunk = realHunk;
+		});
+
+		/** The first question answered, a follow-up asked: its question. */
+		async function followUp(): Promise<SessionQuestion | null> {
+			const x = await host.open({
+				clientId: "c1",
+				text: "Why?",
+				span: onLine30(H1),
+			});
+			const token = await approve();
+			const q1 = await host.sessionNext(token);
+			expect(q1?.thread).toBe(x.id);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: q1?.replyTo as string,
+				text: "Because.",
+			});
+			await host.message(x.id, { clientId: "c2", text: "And now?" });
+			return host.sessionNext(token);
+		}
+
+		it("asks for patch set 1's hunk (its head and its merge base), not the current comparison's", async () => {
+			const asked: [AgentAnchor, string][] = [];
+			facts.hunk = async (a, base) => {
+				asked.push([a, base]);
+				return a.subject === "line" && a.commit === H1 && base === M1
+					? "@@ -30 +30 @@\n-line 30\n+line 30 changed"
+					: "@@ the current snapshot's hunk @@";
+			};
+			const q = await followUp();
+			expect(q?.hunk).toBe("@@ -30 +30 @@\n-line 30\n+line 30 changed");
+			expect(
+				asked.map(([a, base]) => [a.subject === "line" && a.commit, base]),
+			).toEqual([
+				[H1, M1],
+				[H1, M1],
+			]);
+			expect(codeOf(q)?.notice ?? "").not.toContain("can't be read");
+		});
+
+		it("patch set 1's code can't be read: the envelope says so, and no hunk is sent", async () => {
+			facts.hunk = async () => {
+				throw new Error("commit gone and can't be fetched");
+			};
+			const q = await followUp();
+			expect(q?.hunk).toBeNull();
+			expect(codeOf(q)?.notice).toContain(
+				`The diff this conversation was opened on (src/x.ts, ${M1}..${H1}) can't be read now (commit gone and can't be fetched)`,
+			);
 		});
 	});
 

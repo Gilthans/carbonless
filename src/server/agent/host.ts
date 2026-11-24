@@ -71,6 +71,7 @@ import {
 	type CommentRole,
 	type GithubThreadFacts,
 	isSafePath,
+	mergeBaseOpened,
 	type PromptCodeEnvelope,
 	type PromptEnvelope,
 	type PromptMessage,
@@ -2146,9 +2147,27 @@ async function sessionSpanTurn(
 		facts.views().patchsets,
 		anchorOpened(thread),
 	);
+	// The hunk of the comparison it was opened on (its head, its patch
+	// set's merge base), whatever was pushed since (CAR-53).
+	const base = mergeBaseOpened(
+		a,
+		review,
+		facts.views().patchsets,
+		anchorOpened(thread),
+	);
+	const [anchored, hunk] = await Promise.all([
+		facts.anchored(told).catch(() => null),
+		facts.hunk(a, base).then(
+			(text) => ({ text }),
+			(error: unknown) => ({ text: null, error: oneError(error) }),
+		),
+	]);
 	const notice = joinNotices([
 		thread.orphaned
 			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${a.path} at ${a.commit || "an unknown commit"}).`
+			: undefined,
+		"error" in hunk && a.subject === "line"
+			? `The diff this conversation was opened on (${a.path}, ${base || "an unknown merge base"}..${a.commit || "an unknown commit"}) can't be read now (${hunk.error}): \`hunk\` is missing; don't take the PR's current code for it.`
 			: undefined,
 		moved,
 	]);
@@ -2163,11 +2182,7 @@ async function sessionSpanTurn(
 		...(notice ? { notice } : {}),
 		...(pr ? { pr } : {}),
 	});
-	const [anchored, hunk] = await Promise.all([
-		facts.anchored(told).catch(() => null),
-		facts.hunk(a).catch(() => null),
-	]);
-	return { envelope, anchored, hunk };
+	return { envelope, anchored, hunk: hunk.text };
 }
 
 /**
@@ -2396,6 +2411,29 @@ export function sinceOf(
 	const before = patchsets.filter((p) => head === null || p.number < head);
 	return before.at(-1)?.number ?? null;
 }
+
+/**
+ * The snapshot of `base`..`head`: the current one when it is that (or
+ * no `base` is given and its head is `head`), else src.snapshotAt. Throws,
+ * without a git read, for a commit that isn't an OID.
+ */
+async function comparisonOf(
+	src: Pick<ReviewAgentSource, "snapshot"> &
+		Partial<Pick<ReviewAgentSource, "snapshotAt">>,
+	head: string,
+	base: string | undefined,
+): Promise<Snapshot> {
+	const current = src.snapshot();
+	if (current.head === head && (base === undefined || base === current.base)) {
+		return current;
+	}
+	if (!OID.test(head)) throw new Error("its commit is unknown");
+	if (base !== undefined && !OID.test(base)) {
+		throw new Error("its merge base is unknown");
+	}
+	if (!src.snapshotAt) throw new Error("only the current diff can be read");
+	return src.snapshotAt(base ?? current.base, head);
+}
 /** The anchored file is sent up to this size (bytes); past it, or binary, not at all. */
 const MAX_ANCHORED = 256 * 1024;
 /** Lines of the hunk kept on each side of the anchor. */
@@ -2410,6 +2448,12 @@ export interface ReviewAgentSource {
 	viewer: string;
 	meta(): PrMeta;
 	snapshot(): Snapshot;
+	/**
+	 * The snapshot of `base`..`head` (an earlier patch set's comparison):
+	 * the current one, a kept one or built now, fetching a commit the clone
+	 * lacks (a force-push dropped it). Throws when it can't be had.
+	 */
+	snapshotAt(base: string, head: string): Promise<Snapshot>;
 	prFacts(): Promise<{ title: string; body: string }>;
 	code(anchor: CodeAnchor): Promise<CodeWindow | null>;
 	/** The PR's review threads as read from GitHub (their summaries), at most `maxAgeMs` old (default: any). */
@@ -2648,7 +2692,7 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 			files: src.snapshot().files.map((f) => f.path),
 		}),
 		anchored: (anchor) => anchoredFile(src, anchor),
-		hunk: (anchor) => anchorHunk(src, anchor),
+		hunk: (anchor, mergeBase) => anchorHunk(src, anchor, mergeBase),
 		authorOf: async (login) =>
 			authorOf(login, { viewer: src.viewer, prAuthor: await prAuthor() }),
 		join: (folds) => joinRead(folds, () => src.threads()),
@@ -2775,16 +2819,23 @@ export async function anchoredFile(
 }
 
 /**
- * The snapshot's diff hunk around a line anchor, as unified diff text,
- * HUNK_CONTEXT lines each side of the anchored range; null for a file
- * anchor, an unsafe path or a file the snapshot doesn't change.
+ * The diff hunk around a stored line anchor, as unified diff text,
+ * HUNK_CONTEXT lines each side of the anchored range, from the comparison
+ * it was opened on: `mergeBase`..`anchor.commit` (CAR-53; the current
+ * snapshot when that is it, as on a first question, or with no
+ * `mergeBase`). Null for a file anchor, an unsafe path or a file that
+ * comparison doesn't change. Throws when that comparison can't be read
+ * (an unknown commit, one gone and not fetchable): never the current
+ * snapshot's code in its place, whose lines may be other lines.
  */
 export async function anchorHunk(
-	src: Pick<ReviewAgentSource, "repo" | "snapshot">,
+	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
+		Partial<Pick<ReviewAgentSource, "snapshotAt">>,
 	anchor: AgentAnchor,
+	mergeBase?: string,
 ): Promise<string | null> {
 	if (anchor.subject !== "line" || !isSafePath(anchor.path)) return null;
-	const snapshot = src.snapshot();
+	const snapshot = await comparisonOf(src, anchor.commit, mergeBase);
 	const file = snapshot.files.find(
 		(f) => f.path === anchor.path || f.oldPath === anchor.path,
 	);

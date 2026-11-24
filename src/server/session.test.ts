@@ -3337,6 +3337,82 @@ describe("Session", () => {
 			await s.close();
 		});
 
+		it("a follow-up in a conversation opened on patch set 1 gets patch set 1's hunk, after patch set 2 moved and changed its line and crb restarted (CAR-53)", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			await s.setStates((await s.review()).revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const h1 = pr.head();
+			const x = await host.open({
+				clientId: "q1",
+				text: "Why?",
+				span: {
+					subject: "line",
+					path: "a.txt",
+					commit: h1,
+					side: "RIGHT",
+					line: 2,
+					startSide: "RIGHT",
+					startLine: 2,
+				},
+			});
+			// Patch set 2: two lines on top, line 2 changed again.
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed again";
+			lines[25] = "line 26 changed";
+			const h2 = pr.moveHead({
+				"a.txt": `top 1\ntop 2\n${lines.join("\n")}\n`,
+			});
+			await s.checkHead();
+			const v2 = await s.viewHead(h2);
+			const key = v2.files[0]?.clusters[0]?.key;
+			if (!key) throw new Error("no cluster");
+			await s.setStates(v2.revision, [{ key, state: "reviewed" }]);
+			expect(s.info().patchset).toBe(2);
+			await s.close();
+			// A new server: patch set 1's snapshot isn't kept any more.
+			const s2 = await Session.open(pr.arg, process.cwd());
+			expect(s2.snapshot().head).toBe(h2);
+			const agent = s2.agent;
+			if (!agent) throw new Error("no agent");
+			const { request } = agent.join.request({
+				name: "carbonless · main",
+				machine: "devbox",
+				harness: "cc 2.1",
+			});
+			await agent.join.answer(request, true);
+			const token = (
+				(await agent.join.outcome(request, 0)) as { token: string }
+			).token;
+			const q1 = await agent.sessionNext(token);
+			expect(q1?.thread).toBe(x.id);
+			await agent.sessionReply(token, {
+				thread: x.id,
+				replyTo: q1?.replyTo as string,
+				text: "Because.",
+			});
+			await agent.message(x.id, { clientId: "q2", text: "And now?" });
+			const q2 = await agent.sessionNext(token);
+			expect(q2?.thread).toBe(x.id);
+			for (const q of [q1, q2]) {
+				expect(q?.hunk?.split("\n")).toEqual([
+					"@@ -1,5 +1,5 @@",
+					" line 1",
+					"-line 2",
+					"+line 2 changed",
+					" line 3",
+					" line 4",
+					" line 5",
+				]);
+				expect(q?.envelope).toMatchObject({
+					thread: { anchor: { commit: h1, line: 2 } },
+				});
+			}
+			await s2.close();
+		});
+
 		it("a thread turn, a suggestion included, never resolves, replies to or writes to the GitHub thread", async () => {
 			writeAcpScenario(pr.repo.path, {
 				agent: { name: "fake-acp", version: "1.0.0" },

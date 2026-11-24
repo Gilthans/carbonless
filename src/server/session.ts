@@ -463,6 +463,7 @@ export class Session {
 			viewer: this.viewer,
 			meta: () => this.#meta,
 			snapshot: () => this.#snapshot,
+			snapshotAt: (base, head) => this.#comparisonSnapshot(base, head),
 			prFacts: async () => {
 				const o = await this.overview();
 				return { title: o.title, body: o.body };
@@ -1884,6 +1885,41 @@ export class Session {
 					return snapshot;
 				})
 				.finally(() => this.#building.delete(revision));
+			this.#building.set(revision, building);
+		}
+		return building;
+	}
+
+	/**
+	 * The snapshot of `base`..`head` (an agent conversation's patch set,
+	 * CAR-53): the current one, a kept one, or built now and kept (by
+	 * snapshot id, so two asks build once). A commit the clone lacks (a
+	 * force-push dropped it) is fetched by OID; throws when it can't be.
+	 */
+	async #comparisonSnapshot(base: string, head: string): Promise<Snapshot> {
+		checkOid(base);
+		checkOid(head);
+		const revision = snapshotId(base, head);
+		if (this.#snapshot.revision === revision) return this.#snapshot;
+		const kept = this.#snapshots.get(revision);
+		if (kept) return kept;
+		let building = this.#building.get(revision);
+		if (!building) {
+			const signal = this.#stop.signal;
+			building = (async () => {
+				const [hasBase, hasHead] = await Promise.all([
+					ensureCommit(this.repo, base, signal),
+					ensureCommit(this.repo, head, signal),
+				]);
+				if (!hasBase || !hasHead) {
+					throw new Error(
+						`commit ${hasHead ? base : head} is not in the clone and can't be fetched`,
+					);
+				}
+				const snapshot = await buildSnapshot(this.repo, base, head);
+				this.#snapshots.set(snapshot.revision, snapshot);
+				return snapshot;
+			})().finally(() => this.#building.delete(revision));
 			this.#building.set(revision, building);
 		}
 		return building;
