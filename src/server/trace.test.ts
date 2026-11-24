@@ -525,6 +525,47 @@ describe("a long-running process's files", () => {
 	});
 });
 
+describe("the build on every file", () => {
+	it("is read only when tracing is on, once, and never through version.ts", async () => {
+		const readBuild = vi.fn(() => ({
+			version: "9.9.9",
+			commit: "c".repeat(40),
+		}));
+		vi.resetModules();
+		vi.doMock("./buildInfo", () => ({ readBuild }));
+		// version.ts reads the build (git, from source) at import: the tracer
+		// must not load it, or every unit file pays a git spawn.
+		vi.doMock("./version", () => {
+			throw new Error("trace.ts imported version.ts");
+		});
+		try {
+			const fresh = await import("./trace");
+			fresh.createTracer({ dir: undefined, service: "x" });
+			expect(readBuild).not.toHaveBeenCalled();
+			const dir = tempDir();
+			for (const service of ["a", "b"]) {
+				const t = fresh.createTracer({ dir, service, flushOnExit: false });
+				t.start("s").end();
+				t.flush();
+			}
+			expect(readBuild).toHaveBeenCalledTimes(1);
+			const versions = readRequests(dir).map((r) =>
+				r.resourceSpans[0]?.resource?.attributes?.find(
+					(x) => x.key === "service.version",
+				),
+			);
+			expect(versions).toEqual([
+				{ key: "service.version", value: { stringValue: "9.9.9" } },
+				{ key: "service.version", value: { stringValue: "9.9.9" } },
+			]);
+		} finally {
+			vi.doUnmock("./buildInfo");
+			vi.doUnmock("./version");
+			vi.resetModules();
+		}
+	});
+});
+
 describe("traceparent", () => {
 	it("round-trips and rejects anything else", () => {
 		const ctx = parseTraceparent(PARENT);

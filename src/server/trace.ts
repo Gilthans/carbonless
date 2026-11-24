@@ -8,7 +8,7 @@ import {
 	statSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { BUILD } from "./version.js";
+import { type BuildInfo, readBuild } from "./buildInfo.js";
 
 /*
  * Opt-in tracing (docs/test-profiling.md): when $CRB_TRACE_DIR names a
@@ -385,6 +385,13 @@ export interface TracerOptions {
 	timers?: FlushTimers;
 }
 
+let buildCache: BuildInfo | null = null;
+/** This build, read once, and only by a tracer that writes (not at import). */
+function build(): BuildInfo {
+	buildCache ??= readBuild();
+	return buildCache;
+}
+
 export function createTracer(opts: TracerOptions): Tracer {
 	if (!opts.dir) return DISABLED;
 	const dir = opts.dir;
@@ -395,8 +402,8 @@ export function createTracer(opts: TracerOptions): Tracer {
 	// package version and the checkout's HEAD), to compare between builds.
 	const resource: Attrs = {
 		"process.pid": process.pid,
-		"service.version": BUILD.version,
-		"service.commit": BUILD.commit,
+		"service.version": build().version,
+		"service.commit": build().commit,
 		...opts.resource,
 	};
 	const warn =

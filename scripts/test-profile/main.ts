@@ -14,7 +14,7 @@
 // trace directory ($CRB_TRACE_DIR: no run.json, crb's files) is read as a
 // server: its slowest routes and gh/git calls, over `--since` (30m, 6h,
 // 1d, 2w or a date); it is never packed. Spans carry the build that wrote
-// them: `--only` keeps one build's ("rc.3", a commit's start),
+// them: `--only` keeps one build's (a version, a build as listed, a commit's start),
 // `--compare-version` puts two side by side.
 import { execFileSync } from "node:child_process";
 import { traceRoot } from "../../test/trace-run";

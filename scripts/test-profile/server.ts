@@ -125,17 +125,39 @@ export function buildOf(s: Span): string {
 }
 
 /**
- * The spans of the builds `query` names: a build's text contains it
- * ("rc.3", "0.5.0", a commit's start). Throws, listing the builds, when
- * none does.
+ * The spans of the one build `query` names: its text exactly
+ * ("0.5.0-rc.3 (93fe843)"), else its version exactly ("0.5.0-rc.3", never
+ * "0.5.0" for an RC of it), else its commit by prefix ("93fe843"). A query
+ * that names no build, or more than one (a version built from two
+ * commits, a short commit prefix), throws, listing them: a comparison
+ * never mixes builds.
  */
 export function ofBuild(spans: Span[], query: string): Span[] {
-	const out = spans.filter((s) => buildOf(s).includes(query));
-	if (out.length === 0) {
-		const all = [...new Set(spans.map(buildOf))].join(", ") || "none";
-		throw new Error(`no spans of a build matching "${query}" (builds: ${all})`);
+	const builds = new Map<string, { version?: string; commit?: string }>();
+	for (const s of spans) {
+		const name = buildOf(s);
+		if (!builds.has(name))
+			builds.set(name, { version: s.version, commit: s.commit });
 	}
-	return out;
+	const names = [...builds.keys()];
+	const q = query.trim();
+	let match = names.filter((n) => n === q);
+	if (match.length === 0) {
+		match = names.filter((n) => builds.get(n)?.version === q);
+	}
+	if (match.length === 0 && /^[0-9a-f]{4,40}$/.test(q)) {
+		match = names.filter((n) => builds.get(n)?.commit?.startsWith(q));
+	}
+	if (match.length !== 1) {
+		const listed = (match.length ? match : names).join(", ") || "none";
+		throw new Error(
+			match.length
+				? `"${query}" names more than one build: ${listed}`
+				: `no build "${query}": a version, a build as listed, or a commit's start (builds: ${listed})`,
+		);
+	}
+	const [name] = match;
+	return spans.filter((s) => buildOf(s) === name);
 }
 
 export interface ServerSummary {
@@ -304,10 +326,12 @@ function compareRows(
 	const after = new Map(b.map((x) => [x.name, x]));
 	const names = [...new Set([...before.keys(), ...after.keys()])];
 	// Most moved first (by p95; a side with no calls sorts last).
+	// Most moved first, weighed by calls: a p95 shift over many calls
+	// before one seen once on each side. A row on one side only goes last.
 	const moved = (n: string) => {
 		const x = before.get(n);
 		const y = after.get(n);
-		return x && y ? Math.abs(y.p95 - x.p95) : -1;
+		return x && y ? Math.abs(y.p95 - x.p95) * Math.min(x.n, y.n) : -1;
 	};
 	names.sort((x, y) => moved(y) - moved(x) || (x < y ? -1 : 1));
 	const out = ["", title];
@@ -332,7 +356,12 @@ export function formatServerCompare(
 ): string {
 	const out = [`▶ ${aName} → ${bName}`, `  spans ${a.spans} → ${b.spans}`];
 	out.push(
-		...compareRows("🐢 routes (most moved p95 first)", a.routes, b.routes, top),
+		...compareRows(
+			"🐢 routes (most moved p95 × calls first)",
+			a.routes,
+			b.routes,
+			top,
+		),
 	);
 	out.push(...compareRows("⚙ calls", a.kinds, b.kinds, top));
 	out.push(...compareRows("⚙ calls by command", a.commands, b.commands, top));
