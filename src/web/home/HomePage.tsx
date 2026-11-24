@@ -14,6 +14,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import type { RepoHome } from "../../shared/home";
 import { composeSections } from "../../shared/homeSections";
@@ -95,17 +96,25 @@ function RefreshStatus(props: {
 
 /**
  * A view repo's chip: its name; a spinner until its first read is in; on
- * a failed read an alert with why, and Retry beside it.
+ * a failed read an alert with why, and Retry beside it. The name is a
+ * toggle: pressed, Home shows only this repo's PRs (owner, 2026-11-24:
+ * "When clicking on one, it filters only PRs from that repo. Clicking
+ * again resets to all the repos."). Its hit area is the whole chip, 40px
+ * tall; the status sign sits above it, so its tooltip shows on hover.
  */
 function RepoChip(props: {
 	name: string;
 	query: RepoResult;
 	state: RepoState;
+	pressed: boolean;
+	onToggle: () => void;
 }) {
-	const { name, query, state } = props;
+	const { name, query, state, pressed } = props;
 	const client = useQueryClient();
 	const failed = failureOf(query);
 	const retry = useMutation({ mutationFn: () => refetchRepo(client, name) });
+	// Pressed: accent; a failure keeps its red, on the pressed fill.
+	const tone = `${failed ? "border-bad/50 text-bad" : pressed ? "border-accent text-ink" : "border-edge text-ink-soft"} ${pressed ? "bg-accent/15" : "bg-raised"}`;
 	return (
 		<span className="inline-flex max-w-full items-center">
 			<span
@@ -113,7 +122,8 @@ function RepoChip(props: {
 				data-state={
 					state === "unread" ? "failed" : state === "ready" ? "ready" : state
 				}
-				className={`inline-flex h-7 max-w-full items-center gap-1.5 truncate rounded-full border bg-raised px-2.5 text-xs ${failed ? "border-bad/50 text-bad" : "border-edge text-ink-soft"}`}
+				data-pressed={pressed || undefined}
+				className={`relative inline-flex h-7 max-w-full items-center gap-1.5 rounded-full border px-2.5 text-xs has-focus-visible:outline-2 has-focus-visible:outline-accent ${tone}`}
 			>
 				{failed ? (
 					<Sign label={`${name}: ${failed}`}>
@@ -128,9 +138,26 @@ function RepoChip(props: {
 						<ClockIcon size={12} aria-hidden />
 					</Sign>
 				) : (
-					<RepoIcon size={12} aria-hidden className="text-faint" />
+					<RepoIcon
+						size={12}
+						aria-hidden
+						className={pressed ? "text-accent" : "text-faint"}
+					/>
 				)}
-				{name}
+				<Tooltip content={pressed ? "Show all repos" : `Show only ${name}`}>
+					{(trigger) => (
+						<button
+							type="button"
+							{...trigger}
+							aria-pressed={pressed}
+							onClick={props.onToggle}
+							// The chip is the target: stretched over it, 40px tall.
+							className="min-w-0 truncate outline-none after:absolute after:inset-x-0 after:top-1/2 after:h-10 after:-translate-y-1/2 after:rounded-full after:content-['']"
+						>
+							{name}
+						</button>
+					)}
+				</Tooltip>
 			</span>
 			{failed && (
 				<Tooltip content={`Retry ${name}`} describe={false}>
@@ -156,14 +183,59 @@ function RepoChip(props: {
 	);
 }
 
+/** Home's search: `?repo=` (lowercased, as view repos are), its repo filter. */
+export interface HomeSearch {
+	repo?: string;
+}
+
+export function parseHomeSearch(raw: Record<string, unknown>): HomeSearch {
+	return typeof raw.repo === "string" && raw.repo
+		? { repo: raw.repo.toLowerCase() }
+		: {};
+}
+
+/**
+ * Home at `/`: its repo filter is the address's `?repo=`, so reload and
+ * back/forward keep it; each toggle is a history entry.
+ */
+export function HomeRoute() {
+	const search = parseHomeSearch(
+		useSearch({ strict: false }) as Record<string, unknown>,
+	);
+	const navigate = useNavigate();
+	return (
+		<HomePage
+			repo={search.repo}
+			onRepo={(repo, replace) =>
+				void navigate({
+					to: "/",
+					search: repo ? { repo: repo.toLowerCase() } : {},
+					replace,
+				})
+			}
+		/>
+	);
+}
+
 /**
  * Home: the view's PRs in five sections, the open box, the view's repos
  * and the refresh. Each view repo is its own query (repoQuery), read again
  * every refresh.minutes; the sections are composed here from all of them,
  * so one repo's failure or slowness never holds the others' rows.
  */
-export function HomePage() {
+export function HomePage(
+	props: {
+		/** The repo filter asked for (any case); one not in the view is ignored. */
+		repo?: string;
+		/** Sets the filter (undefined: all repos); without it, the page keeps it. */
+		onRepo?: (repo: string | undefined, replace?: boolean) => void;
+	} = {},
+) {
 	const client = useQueryClient();
+	const [ownRepo, setOwnRepo] = useState<string | undefined>();
+	const wanted = props.onRepo ? props.repo : ownRepo;
+	const setRepo =
+		props.onRepo ?? ((repo: string | undefined) => setOwnRepo(repo));
 	const home = useQuery(homeQuery);
 	const [editing, setEditing] = useState(false);
 	const openHelp = useOpenShortcutsHelp();
@@ -192,6 +264,21 @@ export function HomePage() {
 			state: stateOf(query, saved.has(name.toLowerCase())),
 		};
 	});
+	// The repo filter: only among the view's repos, so `?repo=` never
+	// reaches the page as anything but one of their names.
+	const filter = wanted
+		? repos.find(({ name }) => name.toLowerCase() === wanted.toLowerCase())
+				?.name
+		: undefined;
+	// One that isn't (or no longer is) in the view leaves the address once
+	// the server's view is in.
+	const stale = wanted !== undefined && filter === undefined;
+	const viewKnown = home.isSuccess && !home.isFetching;
+	useEffect(() => {
+		if (stale && viewKnown) setRepo(undefined, true);
+	}, [stale, viewKnown, setRepo]);
+	// What the sections show: the filtered repo's, else every repo's.
+	const shown = filter ? repos.filter(({ name }) => name === filter) : repos;
 	const refresh = useMutation({
 		mutationFn: () =>
 			Promise.allSettled(names.map((name) => refetchRepo(client, name))),
@@ -211,9 +298,9 @@ export function HomePage() {
 	// A repo a save is still adding isn't read yet: its chip says so,
 	// the counts don't wait for it.
 	const loading =
-		home.isPending || repos.some(({ state }) => state === "loading");
+		home.isPending || shown.some(({ state }) => state === "loading");
 	// Never read: the counts leave these out, and say so.
-	const unread = repos.filter(({ state }) => state === "unread");
+	const unread = shown.filter(({ state }) => state === "unread");
 	const missing =
 		unread.length > 0
 			? `Without ${unread
@@ -221,13 +308,13 @@ export function HomePage() {
 					.join("; ")}`
 			: undefined;
 	// Added by a save not confirmed yet: not read, so not counted either.
-	const adding = repos.filter(({ state }) => state === "saving");
+	const adding = shown.filter(({ state }) => state === "saving");
 	const waiting =
 		adding.length > 0
 			? `Waiting for the save: ${adding.map(({ name }) => name).join(", ")}`
 			: undefined;
 	const sections = composeSections(
-		repos.flatMap(({ query }) => query.data?.rows ?? []),
+		shown.flatMap(({ query }) => query.data?.rows ?? []),
 	);
 	useEffect(() => {
 		document.title = "carbonless";
@@ -340,6 +427,10 @@ export function HomePage() {
 									name={r.name}
 									query={r.query}
 									state={r.state}
+									pressed={r.name === filter}
+									onToggle={() =>
+										setRepo(r.name === filter ? undefined : r.name)
+									}
 								/>
 							))}
 							{data.view.repos.length === 0 ? (
