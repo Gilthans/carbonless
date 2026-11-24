@@ -161,8 +161,7 @@ So a pure split marks nothing. `timeout=30` → `timeout=30,` marks the
 comma. Joining `items` / `.map(price)` / `.reduce(sum, 0);` into
 `items.map(price).reduce(sum, 1);` marks only `0` and `1`. In the
 CAR-221 shape, the added words are marked on both lines; the comma after
-`matrix` is in the old line too, so it stays plain (the mockup marks it;
-that is wrong).
+`matrix` is in the old line too, so it stays plain.
 
 ### Where today's helpers change
 
