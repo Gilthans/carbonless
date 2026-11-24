@@ -61,7 +61,8 @@ export function NotFound({ reason }: { reason?: string | null }) {
 function Root() {
 	useUnsavedGuard();
 	// A Threads tab row's or a conversation link's request ends on a move
-	// to another page.
+	// to another page (main.tsx follows the app's router from its creation
+	// too; a history is subscribed once).
 	const router = useRouter();
 	useEffect(() => threadFocus.follow(router.history), [router]);
 	return (

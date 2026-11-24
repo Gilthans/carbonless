@@ -274,7 +274,7 @@ describe("threadFocus", () => {
 		}
 	});
 
-	it("follows the router's moves without patching the window's history", async () => {
+	it("threadFocus itself patches no window history: no wrapped push or replace, no popstate listener, no flag", async () => {
 		const listen = vi.spyOn(window, "addEventListener");
 		vi.resetModules();
 		const fresh = await import("./threadFocus");
@@ -296,6 +296,35 @@ describe("threadFocus", () => {
 		} finally {
 			stop();
 		}
+	});
+
+	it("a follow stopped gives the path back to the history followed before, subscribed once each", () => {
+		const outer = createMemoryHistory({ initialEntries: ["/r/RV1/files"] });
+		const inner = createMemoryHistory({ initialEntries: ["/r/RV2/files"] });
+		const stopOuter = threadFocus.follow(outer);
+		const stopTwice = threadFocus.follow(outer);
+		expect(outer.subscribers.size).toBe(1);
+		const stopInner = threadFocus.follow(inner);
+		try {
+			threadFocus.request({ id: "T1" });
+			stopInner();
+			stopInner();
+			expect(inner.subscribers.size).toBe(0);
+			// The path is outer's again: a request made there stays, and
+			// outer's moves still drop it.
+			threadFocus.request({ id: "T2" });
+			expect(threadFocus.get()?.id).toBe("T2");
+			stopTwice();
+			expect(outer.subscribers.size).toBe(1);
+			outer.push("/r/RV1");
+			outer.push("/r/RV1/files");
+			expect(threadFocus.get()).toBeNull();
+		} finally {
+			stopInner();
+			stopTwice();
+			stopOuter();
+		}
+		expect(outer.subscribers.size).toBe(0);
 	});
 
 	it("a row's request in another comparison is dropped; a link's waits", () => {

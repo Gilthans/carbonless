@@ -64,14 +64,18 @@ const listeners = new Set<() => void>();
 const notify = () => {
 	for (const l of listeners) l();
 };
-/** The router's history once the app follows it (`threadFocus.follow`). */
-let moves: RouterHistory | null = null;
-const currentPath = () =>
-	moves
-		? moves.location.pathname
-		: typeof window === "undefined"
-			? ""
-			: window.location.pathname;
+/**
+ * The router histories followed (`threadFocus.follow`), one entry per
+ * follow still on, newest last: the path is the newest's. Each history is
+ * subscribed once however often it is followed.
+ */
+const followed: RouterHistory[] = [];
+const unsubscribes = new Map<RouterHistory, () => void>();
+const currentPath = () => {
+	const moves = followed.at(-1);
+	if (moves) return moves.location.pathname;
+	return typeof window === "undefined" ? "" : window.location.pathname;
+};
 
 /** Drops the request (and any outline) once the path isn't the request's. */
 function leftPage() {
@@ -186,15 +190,22 @@ export const threadFocus = {
 	/**
 	 * Every move to another page drops the request, whether or not anything
 	 * reads it while there: `history` is the router's, which tells of each
-	 * push and replace, and of back and forward. The app's root follows its
-	 * router while mounted; the returned function stops.
+	 * push and replace, and of back and forward. The app follows its router
+	 * from its creation (main.tsx), and the root while mounted. The returned
+	 * function stops this follow: the one followed before is the path again.
 	 */
 	follow(history: RouterHistory): () => void {
-		moves = history;
-		const stop = history.subscribe(leftPage);
+		if (!unsubscribes.has(history))
+			unsubscribes.set(history, history.subscribe(leftPage));
+		followed.push(history);
+		let on = true;
 		return () => {
-			stop();
-			if (moves === history) moves = null;
+			if (!on) return;
+			on = false;
+			followed.splice(followed.lastIndexOf(history), 1);
+			if (followed.includes(history)) return;
+			unsubscribes.get(history)?.();
+			unsubscribes.delete(history);
 		};
 	},
 	/** Forgets everything (tests). */
