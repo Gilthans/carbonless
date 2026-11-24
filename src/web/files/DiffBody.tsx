@@ -72,6 +72,7 @@ import {
 import {
 	type CommentScope,
 	CommentScopeProvider,
+	earlierSpan,
 	onHeadMove,
 	spanInHunks,
 } from "../agent/commentOnGithub";
@@ -3441,16 +3442,25 @@ export function DiffBody(props: {
 	// Comment on an agent card here: the head's diff shown, and whether a
 	// span's ends are this diff's lines (as the selection bar asks).
 	const hunkList = hunks.data?.hunks;
-	const commentScope = useMemo<CommentScope>(
-		() => ({
+	const commentScope = useMemo<CommentScope>(() => {
+		// The since view: a conversation on lines only its compared patch
+		// set had comments there, on that commit (CAR-264).
+		const renamed =
+			hunkList?.some((h) => h.lines.some((l) => l.psMoved)) === true;
+		return {
 			headSure: props.headSure !== false,
 			inDiff: (span) =>
 				hunkList && span.path === file.path
 					? spanInHunks(span, hunkList)
 					: undefined,
-		}),
-		[props.headSure, hunkList, file.path],
-	);
+			...(early
+				? {
+						earlier: (span: CodeSpan) =>
+							earlierSpan(span, early, { path: file.path, renamed }),
+					}
+				: {}),
+		};
+	}, [props.headSure, hunkList, file.path, early]);
 
 	// A composer drawn in its conversation's card: what this diff gives one.
 	// Its functions read this render's (a ref), so the value changes only
