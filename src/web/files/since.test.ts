@@ -13,6 +13,7 @@ import {
 	countedFileUnits,
 	countedUnits,
 	eyesOf,
+	fullDiffToRead,
 	goneFiles,
 	liveToRead,
 	nothingSince,
@@ -472,6 +473,85 @@ describe('the full diff\'s "to read" with "Ignore whitespace" (CAR-243)', () => 
 			toReadClusters(wsAnswer, wsView, "lines", false) -
 				WS_CLUSTERS * LINES_PER_CLUSTER,
 		);
+	});
+});
+
+describe("the connector of the comparison open in the full diff counts as its bar (CAR-266)", () => {
+	// The engine's count is its since units (four: a re-indent of a
+	// changed line is two); the full diff's bar counts the clusters.
+	const wsAnswer = answer(
+		[
+			{
+				index: 0,
+				path: "core.ts",
+				conflict: false,
+				clusters: [
+					{ key: "a", kind: "reworked" },
+					{ key: "w", kind: "reworked" },
+				],
+			},
+			{
+				index: 1,
+				path: "util.ts",
+				conflict: false,
+				clusters: [
+					{ key: "u", kind: "new" },
+					{ key: "g", kind: "gone", from: 1 },
+				],
+			},
+		],
+		{ files: 2, clusters: 4 },
+	);
+	const wsView = view([
+		file(0, "core.ts", [
+			cluster("a", "unreviewed"),
+			{ ...cluster("w", "unreviewed"), whitespaceOnly: true as const },
+		]),
+		file(1, "util.ts", [
+			{ ...cluster("u", "unreviewed"), whitespaceOnly: true as const },
+		]),
+	]);
+
+	it("is the bar's to-read, switch off and on, not the engine's units", () => {
+		for (const ws of [false, true]) {
+			const live = fullDiffToRead(
+				wsAnswer,
+				wsView,
+				sinceByFile(wsAnswer, wsView, ws),
+				ws,
+			);
+			expect(live.clusters).toBe(
+				toReadClusters(wsAnswer, wsView, "clusters", ws),
+			);
+			expect(live.files).toBe(toReadClusters(wsAnswer, wsView, "files", ws));
+			expect(live.gone).toBe(1);
+		}
+		expect(
+			fullDiffToRead(wsAnswer, wsView, sinceByFile(wsAnswer, wsView), false),
+		).toEqual({ files: 2, clusters: 3, gone: 1 });
+	});
+
+	it("follows the reviewer's marks, and a conflicted file always counts", () => {
+		const marked = view([
+			file(0, "core.ts", [
+				cluster("a", "reviewed"),
+				{ ...cluster("w", "unreviewed"), whitespaceOnly: true as const },
+			]),
+			file(1, "util.ts", [cluster("u", "reviewed")]),
+		]);
+		expect(
+			fullDiffToRead(wsAnswer, marked, sinceByFile(wsAnswer, marked), true),
+		).toEqual({ files: 0, clusters: 0, gone: 1 });
+		const conflicted = {
+			...wsAnswer,
+			files: wsAnswer.files.map((f) =>
+				f.index === 1 ? { ...f, conflict: true } : f,
+			),
+		};
+		expect(
+			fullDiffToRead(conflicted, marked, sinceByFile(conflicted, marked), true)
+				.files,
+		).toBe(1);
 	});
 });
 

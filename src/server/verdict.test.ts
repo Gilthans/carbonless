@@ -1078,6 +1078,32 @@ describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
 		});
 	});
 
+	it("sends the counts without whitespace-only clusters beside them, from the engine's judgement (CAR-266)", () => {
+		const a = answer(["reworked", "new", "new", "gone"]);
+		const clusters = a.files[0]?.clusters ?? [];
+		// The engine's whitespace-only reworked cluster and one new one.
+		for (const i of [0, 2]) {
+			const c = clusters[i];
+			if (c) c.whitespaceOnly = true;
+		}
+		a.toRead.withoutWhitespaceOnly = { files: 1, clusters: 1 };
+		expect(sinceOf(target, a).changes).toEqual({
+			status: "done",
+			shape: "S1",
+			commits: 3,
+			files: 2,
+			reworked: 1,
+			new: 2,
+			gone: 1,
+			identical: false,
+			withoutWhitespaceOnly: { files: 1, reworked: 0, new: 1 },
+		});
+		// Absent when nothing whitespace-only is left out.
+		expect(
+			"withoutWhitespaceOnly" in sinceOf(target, answer(["new"])).changes,
+		).toBe(false);
+	});
+
 	it("an identical rebase says so with nothing counted; an unreviewed cluster still counts as new", () => {
 		const same = sinceOf(
 			target,

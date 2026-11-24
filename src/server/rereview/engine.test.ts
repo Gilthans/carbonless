@@ -1332,6 +1332,9 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 			);
 			expect(answer.toRead).toEqual({ files: 1, clusters: 1 });
 			expect("withoutWhitespaceOnly" in answer.toRead).toBe(false);
+			expect(
+				answer.files.flatMap((f) => f.clusters).some((c) => c.whitespaceOnly),
+			).toBe(false);
 		} finally {
 			h.cleanup();
 		}
@@ -1377,6 +1380,14 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 				clusters: 4,
 				withoutWhitespaceOnly: { files: 1, clusters: 3 },
 			});
+			// The same judgement per cluster, for the verdict's since line
+			// (CAR-266): a.ts's re-indent is whitespace-only, c.ts's is not.
+			const flags = answer.files.map((f) =>
+				f.clusters
+					.filter((c) => c.kind === "reworked" || c.kind === "new")
+					.map((c) => c.whitespaceOnly === true),
+			);
+			expect(flags).toEqual([[true], [false]]);
 		} finally {
 			fx.cleanup();
 		}

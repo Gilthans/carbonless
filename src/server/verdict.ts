@@ -342,11 +342,21 @@ export function sinceOf(
 		};
 	}
 	const count = { reworked: 0, new: 0, gone: 0 };
+	// Without the whitespace-only clusters ("Ignore whitespace" on).
+	const counted = { reworked: 0, new: 0 };
 	for (const file of answer.files) {
 		for (const c of file.clusters) {
-			if (c.kind !== "carried") count[c.kind] += 1;
+			if (c.kind === "carried") continue;
+			count[c.kind] += 1;
+			if (c.kind !== "gone" && !c.whitespaceOnly) counted[c.kind] += 1;
 		}
 	}
+	const files =
+		answer.toRead.withoutWhitespaceOnly?.files ?? answer.toRead.files;
+	const same =
+		files === answer.toRead.files &&
+		counted.reworked === count.reworked &&
+		counted.new === count.new;
 	return {
 		...target,
 		changes: {
@@ -356,6 +366,7 @@ export function sinceOf(
 			files: answer.toRead.files,
 			...count,
 			identical: answer.shape.identical,
+			...(same ? {} : { withoutWhitespaceOnly: { files, ...counted } }),
 		},
 	};
 }
