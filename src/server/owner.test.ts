@@ -1,7 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ownerToken } from "../../scripts/owner.mjs";
-import { quietFor } from "../../test/sleep";
 import { ownerAlive, watchOwner } from "./owner";
 
 describe("owner", () => {
@@ -15,23 +14,34 @@ describe("owner", () => {
 	});
 
 	it("calls back once the owner ends", async () => {
-		const owner = spawn("sleep", ["60"]);
-		const token = ownerToken(owner.pid as number);
-		let calls = 0;
-		const gone = new Promise<void>((done) =>
-			watchOwner(
-				() => {
-					calls++;
-					done();
-				},
-				token,
-				20,
-			),
-		);
-		expect(calls).toBe(0);
-		owner.kill("SIGKILL");
-		await gone;
-		await quietFor(100, "a second call of the gone-owner callback");
-		expect(calls).toBe(1);
+		// The poll on a fake clock (moving with real time until the owner is
+		// gone), so the polls after are counted, not raced.
+		vi.useFakeTimers({
+			shouldAdvanceTime: true,
+			toFake: ["setInterval", "clearInterval"],
+		});
+		try {
+			const owner = spawn("sleep", ["60"]);
+			const token = ownerToken(owner.pid as number);
+			let calls = 0;
+			const gone = new Promise<void>((done) =>
+				watchOwner(
+					() => {
+						calls++;
+						done();
+					},
+					token,
+					20,
+				),
+			);
+			expect(calls).toBe(0);
+			owner.kill("SIGKILL");
+			await gone;
+			// Fifty polls more: no second call.
+			vi.advanceTimersByTime(1000);
+			expect(calls).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

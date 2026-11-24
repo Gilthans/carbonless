@@ -2,7 +2,6 @@
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { quietFor } from "../../../test/sleep";
 import type { SearchResult } from "../../shared/home";
 import { HomePage } from "./HomePage";
 import {
@@ -369,22 +368,25 @@ describe("ViewSettings", () => {
 					.map((c) => (c.body as { repos: string[] }).repos);
 			return { api, held, bodies };
 		}
-		async function edit(change: (dialog: HTMLElement) => Promise<void>) {
-			await userEvent.click(
+		/** userEvent, or one set up to move a fake clock. */
+		type User = Pick<typeof userEvent, "click" | "type">;
+		async function edit(
+			change: (dialog: HTMLElement, user: User) => Promise<void>,
+			user: User = userEvent,
+		) {
+			await user.click(
 				await screen.findByRole("button", { name: "Edit repos" }),
 			);
 			const dialog = screen.getByRole("dialog", { name: "My PRs" });
-			await change(dialog);
-			await userEvent.click(
-				within(dialog).getByRole("button", { name: "Save" }),
-			);
+			await change(dialog, user);
+			await user.click(within(dialog).getByRole("button", { name: "Save" }));
 		}
-		const removeConsole = (dialog: HTMLElement) =>
-			userEvent.click(
+		const removeConsole = (dialog: HTMLElement, user: User) =>
+			user.click(
 				within(dialog).getByRole("button", { name: "Remove acme/console" }),
 			);
-		const addWeb = (dialog: HTMLElement) =>
-			userEvent.type(
+		const addWeb = (dialog: HTMLElement, user: User) =>
+			user.type(
 				within(dialog).getByRole("combobox", { name: "Add a repo" }),
 				"acme/web{Enter}",
 			);
@@ -412,23 +414,33 @@ describe("ViewSettings", () => {
 		});
 
 		it("the first failing transiently while the second waits: the newest goes next, the first never again", async () => {
-			const { held, bodies } = twoSaves();
-			renderWithQuery(<HomePage />);
-			await edit(removeConsole);
-			await waitFor(() => expect(held).toHaveLength(1));
-			await edit(addWeb);
-			held[0]?.(
-				new Response(JSON.stringify({ error: "busy" }), { status: 503 }),
-			);
-			await waitFor(() => expect(held).toHaveLength(2));
-			held[1]?.(saved(["acme/api", "acme/web"]));
-			await waitFor(() =>
-				expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
-			);
-			// biome-ignore lint/plugin/no-sleep-in-tests: waits out the save retry's backoff; its move to a fake clock is a follow-up (CAR-260 review)
-			await quietFor(1500, "a third save or a chip rolled back");
-			expect(bodies()).toEqual([["acme/api"], ["acme/api", "acme/web"]]);
-			expect(chips()).toEqual(["acme/api", "acme/web"]);
+			vi.useFakeTimers({ shouldAdvanceTime: true });
+			try {
+				const user = userEvent.setup({
+					advanceTimers: vi.advanceTimersByTime,
+				});
+				const { held, bodies } = twoSaves();
+				renderWithQuery(<HomePage />);
+				await edit(removeConsole, user);
+				await waitFor(() => expect(held).toHaveLength(1));
+				await edit(addWeb, user);
+				held[0]?.(
+					new Response(JSON.stringify({ error: "busy" }), { status: 503 }),
+				);
+				await waitFor(() => expect(held).toHaveLength(2));
+				held[1]?.(saved(["acme/api", "acme/web"]));
+				await waitFor(() =>
+					expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+				);
+				// Past the first retries' backoff (RETRY_DELAYS_MS: 1, 2, 4, 8,
+				// 15 s), short of Home's minute poll (its fake answers the old
+				// view): no third save.
+				await act(() => vi.advanceTimersByTimeAsync(30_000));
+				expect(bodies()).toEqual([["acme/api"], ["acme/api", "acme/web"]]);
+				expect(chips()).toEqual(["acme/api", "acme/web"]);
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 
 		it("the first lands while the second waits: the second stays shown, then lands", async () => {
