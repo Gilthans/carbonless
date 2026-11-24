@@ -8,6 +8,7 @@ import {
 } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import { Activity, beginCall, runIn } from "./activity";
 import { OverviewRead } from "./overviewRead";
 import type { ThreadCodeSource } from "./threadCode";
 
@@ -72,5 +73,90 @@ describe("OverviewRead.hunk (CAR-8)", () => {
 		await comments;
 		expect(await hunk).toBe(HUNK);
 		read.abort();
+	});
+});
+
+describe("OverviewRead's parts (CAR-296)", () => {
+	let pr: PrFixture;
+	beforeEach(() => {
+		pr = createPrFixture();
+	});
+	afterEach(() => pr.cleanup());
+
+	it("a wait on the threads' code shows the code's step, a wait on the timeline GitHub's, though the other part's call is newer", async () => {
+		pr.scenario({
+			hold: ["timeline"],
+			prs: {
+				12: {
+					view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+					graphql: {
+						reviewThreads: [
+							reviewThread({ path: "a.txt", line: 2, diffSide: "LEFT" }, [
+								threadComment({
+									login: "rev1",
+									text: "Old 2",
+									commit: pr.head(),
+									diffHunk: HUNK,
+								}),
+							]),
+						],
+						reviews: [],
+					},
+				},
+			},
+		});
+		const scenarioFile = process.env.CRB_FAKE_GH ?? "";
+		let letCode = () => {};
+		const codeHeld = new Promise<void>((r) => {
+			letCode = r;
+		});
+		let building = () => {};
+		const codeBuilding = new Promise<void>((r) => {
+			building = r;
+		});
+		const read = new OverviewRead({
+			ref: { owner: "acme", repo: "widget", number: 12 },
+			viewer: "octo-cat",
+			writes: "on",
+			code: {
+				prefetch: () => {},
+				// The clone read of a thread's code, held.
+				window: async () => {
+					const end = beginCall("git cat-file");
+					building();
+					await codeHeld;
+					end();
+					return null;
+				},
+				code: async () => null,
+			} as unknown as ThreadCodeSource,
+			base: async () => ({ snapshot: pr.mergeBase, ref: "refs/heads/main" }),
+		});
+		const firstCode = new Activity();
+		const timeline = new Activity();
+		try {
+			await codeBuilding;
+			const code = runIn(firstCode, () => read.threads("firstCode"));
+			const events = runIn(timeline, () =>
+				read.waitFor("timeline", read.timeline),
+			);
+			// The code's clone read, though the timeline's GitHub call is out.
+			await vi.waitFor(() =>
+				expect(firstCode.current()?.label).toBe("git cat-file"),
+			);
+			await vi.waitFor(() =>
+				expect(timeline.current()?.label).toBe("GitHub: api graphql"),
+			);
+			letCode();
+			await code;
+			expect(firstCode.current()).toBeNull();
+			release(scenarioFile, "timeline");
+			await events;
+			expect(timeline.current()).toBeNull();
+		} finally {
+			letCode();
+			release(scenarioFile, "timeline");
+			await read.settled;
+		}
 	});
 });

@@ -3080,10 +3080,14 @@ describe("API", () => {
 			});
 			aborted.on("error", () => {});
 			aborted.end();
-			await vi.waitFor(() => expect(trackedRequests()).toBe(before + 1));
-			aborted.destroy();
-			await vi.waitFor(() => expect(trackedRequests()).toBe(before));
-			release(scenarioFile, "threads");
+			try {
+				await vi.waitFor(() => expect(trackedRequests()).toBe(before + 1));
+				aborted.destroy();
+				await vi.waitFor(() => expect(trackedRequests()).toBe(before));
+			} finally {
+				aborted.destroy();
+				release(scenarioFile, "threads");
+			}
 		});
 
 		it("GET /api/mcp/setup gives the key behind the key, null without one", async () => {

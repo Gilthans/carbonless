@@ -1,5 +1,6 @@
 import { type HunkLine, parseDiffHunk } from "../shared/diffHunk.js";
 import type { CodeAnchor, CodeRow, CodeWindow } from "../shared/types.js";
+import { Activity, runIn, waitOn } from "./activity.js";
 import { ensureCommit } from "./clone.js";
 import {
 	hunkWindowRows,
@@ -26,6 +27,8 @@ export interface DiffBase {
  */
 export class Memo<T> {
 	readonly #map = new Map<string, Promise<T>>();
+	/** Each promise's making, in an Activity of its own (activity.ts). */
+	readonly #work = new WeakMap<Promise<T>, Activity>();
 	readonly #failed = new Set<string>();
 
 	constructor(
@@ -43,21 +46,31 @@ export class Memo<T> {
 			// Most recently used last.
 			this.#map.delete(key);
 			this.#map.set(key, known);
-			return known;
+			return this.#wait(known);
 		}
-		const made: Promise<T> = make().then((value) => {
+		// Made in an Activity of its own: whoever waits on it (this caller,
+		// or another read's, the agent's, the placer's later) shows its step.
+		const activity = new Activity();
+		const made: Promise<T> = runIn(activity, make).then((value) => {
 			if (this.failed(value) && this.#map.get(key) === made) {
 				this.#failed.add(key);
 			}
 			return value;
 		});
 		this.#map.set(key, made);
+		this.#work.set(made, activity);
 		for (const oldest of this.#map.keys()) {
 			if (this.#map.size <= this.max) break;
 			this.#map.delete(oldest);
 			this.#failed.delete(oldest);
 		}
-		return made;
+		return this.#wait(made);
+	}
+
+	/** Awaits `promise`, showing its making's step meanwhile. */
+	#wait(promise: Promise<T>): Promise<T> {
+		const activity = this.#work.get(promise);
+		return activity ? waitOn(promise, () => activity) : promise;
 	}
 
 	forgetFailures(): void {

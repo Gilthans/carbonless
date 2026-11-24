@@ -17,6 +17,7 @@ vi.mock("./git.js", async (importOriginal) => {
 	return { ...git, runGit: vi.fn(git.runGit) };
 });
 
+import { Activity, beginCall, runIn } from "./activity";
 import { type DiffBase, Memo, ThreadCodeSource } from "./threadCode";
 
 const numbered = (n: number, tag = "") =>
@@ -572,6 +573,31 @@ describe("ThreadCodeSource.code", () => {
 });
 
 describe("Memo", () => {
+	it("a caller of a value another is making shows that making's step while it waits (CAR-296)", async () => {
+		const memo = new Memo<string>(() => false, 10);
+		let letGo = () => {};
+		const held = new Promise<void>((r) => {
+			letGo = r;
+		});
+		const maker = new Activity();
+		const other = new Activity();
+		const first = runIn(maker, () =>
+			memo.get("k", async () => {
+				const end = beginCall("git fetch");
+				await held;
+				end();
+				return "v";
+			}),
+		);
+		// Another read asks for the same value: a hit on the making.
+		const second = runIn(other, () => memo.get("k", async () => "never"));
+		expect(other.current()?.label).toBe("git fetch");
+		expect(maker.current()?.label).toBe("git fetch");
+		letGo();
+		expect(await Promise.all([first, second])).toEqual(["v", "v"]);
+		expect(other.current()).toBeNull();
+	});
+
 	it("makes each answer once, and keeps at most max, dropping the least recently used", async () => {
 		const memo = new Memo<string>(() => false, 2);
 		const make = vi.fn(async () => "x");

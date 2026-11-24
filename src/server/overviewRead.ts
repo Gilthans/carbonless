@@ -9,7 +9,7 @@ import {
 	type ThreadsView,
 	type TimelineView,
 } from "../shared/types.js";
-import { WorkParts } from "./activity.js";
+import { WorkParts, waitOn } from "./activity.js";
 import { GhError } from "./errors.js";
 import {
 	fetchOverview,
@@ -296,9 +296,20 @@ export class OverviewRead {
 	}
 
 	/** The threads once `stage` is in, with all that is in by then. */
-	async threads(stage: ThreadsStage): Promise<ThreadsView> {
-		await this.#stages[stage];
-		return this.#view();
+	threads(stage: ThreadsStage): Promise<ThreadsView> {
+		return this.waitFor(
+			stage,
+			this.#stages[stage].then(() => this.#view()),
+		);
+	}
+
+	/**
+	 * Awaits `answer`, what this read gives once `what` is in, showing the
+	 * step of the parts it waits on (READ_PARTS) in the caller's request
+	 * meanwhile (activity.ts).
+	 */
+	waitFor<T>(what: keyof typeof READ_PARTS, answer: Promise<T>): Promise<T> {
+		return waitOn(answer, () => this.parts.stepOf(READ_PARTS[what]));
 	}
 
 	/**
@@ -508,7 +519,11 @@ export class OverviewRead {
 	 * (GhError) rather than give a thread fewer comments than it has. An id
 	 * this read's summary doesn't list is "unreadable".
 	 */
-	async comments(ids: string[]): Promise<CommentsView> {
+	comments(ids: string[]): Promise<CommentsView> {
+		return this.waitFor("comments", this.#comments(ids));
+	}
+
+	async #comments(ids: string[]): Promise<CommentsView> {
 		await this.#stages.summary;
 		await this.#textsStarted.catch(() => {});
 		const summaries = new Map<string, unknown>();

@@ -123,7 +123,7 @@ result should always be easily distinguishable for a still loading result."
   clone keeps its own wording), the overview's frames (over the first
   one), a thread's code still being built (over its frame's foot), and
   Home's repo chips (in the spinner's tooltip and accessible name, every
-  repo in one ask: a chip has no room for a line; the spinner's tap
+  repo in the same asks, 16 requests an ask: a chip has no room for a line; the spinner's tap
   target is 40px around it, so a tap opens the tooltip). `crb <pr>`
   prints each new step on stderr once an open has taken 2 s.
   How: every API request of the page (`src/web/loadingStep.ts`) and of

@@ -48,7 +48,7 @@ import type {
 	VerdictFacts,
 	VerdictRequest,
 } from "../shared/types.js";
-import { join, phase, shared, waitOn } from "./activity.js";
+import { join, phase, shared, waitOn, workOf } from "./activity.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { type AgentDiff, AgentDiffRequestError } from "./agent/reads.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
@@ -85,7 +85,7 @@ import {
 	type StartedRecord,
 	startThread,
 } from "./newThreads.js";
-import { OverviewRead, READ_PARTS } from "./overviewRead.js";
+import { OverviewRead } from "./overviewRead.js";
 import type { HeadSpec } from "./pinnedHead.js";
 import {
 	BackgroundCounts,
@@ -2112,7 +2112,7 @@ export class Session {
 		this.#commentLeftNow();
 		const read = this.#pickRead(maxAgeMs);
 		if (forPage) this.#served = read;
-		return this.#waitRead(read, "overview", read.overview).then((o) => ({
+		return read.waitFor("overview", read.overview).then((o) => ({
 			...o,
 			commentLeft: this.#commentLeftNow(),
 		}));
@@ -2142,19 +2142,7 @@ export class Session {
 	threads(readId: string, stage: ThreadsStage): Promise<ThreadsView> {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
-		return this.#waitRead(read, stage, read.threads(stage));
-	}
-
-	/**
-	 * Awaits `answer`, what `read` gives once `what` is in, showing the
-	 * step of the parts it waits on meanwhile (activity.ts).
-	 */
-	#waitRead<T>(
-		read: OverviewRead,
-		what: keyof typeof READ_PARTS,
-		answer: Promise<T>,
-	): Promise<T> {
-		return waitOn(answer, () => read.parts.stepOf(READ_PARTS[what]));
+		return read.threads(stage);
 	}
 
 	/**
@@ -2165,7 +2153,7 @@ export class Session {
 	comments(readId: string, ids: string[]): Promise<CommentsView> {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
-		return this.#waitRead(read, "comments", read.comments(ids));
+		return read.comments(ids);
 	}
 
 	/**
@@ -2175,7 +2163,7 @@ export class Session {
 	timeline(readId: string): Promise<TimelineView> {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
-		return this.#waitRead(read, "timeline", read.timeline);
+		return read.waitFor("timeline", read.timeline);
 	}
 
 	/**
@@ -2640,7 +2628,14 @@ export class Session {
 			asOf: asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
 			code: this.#threadCode,
 			base: async () => {
-				await ready?.catch(() => {});
+				// The Refresh's move (shared): the code shows its step meanwhile,
+				// never another part's (activity.ts).
+				if (ready) {
+					await waitOn(
+						ready.catch(() => {}),
+						() => workOf(ready),
+					);
+				}
 				return {
 					snapshot: this.#snapshot.base,
 					ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
@@ -2871,32 +2866,35 @@ export class Session {
 			return Promise.resolve(this.info());
 		}
 		// GitHub is read while the snapshot moves; its code once it has.
-		const moved = this.#exclusive(async () => {
-			const seq = ++this.#metaSeq;
-			const signal = this.#stop.signal;
-			const meta = await fetchPrMeta(this.#ref(), { signal });
-			const fetched = await fetchPr(this.repo, meta, {
-				signal,
-				pinned: this.pinned ?? undefined,
-			});
-			this.#setMeta(seq, meta);
-			const progress = await this.#progress();
-			// An unstarted review of a merged or closed PR has nothing to move
-			// to (a merge commit empties the comparison): keep the current
-			// snapshot (headMoved tells the UI). An open PR always moves, even
-			// to an empty comparison.
-			if (!progress.patchset && meta.state !== "OPEN") {
-				this.#patchset = null;
-				this.#head = null;
+		// Shared: the read's code waits on it, showing its step (activity.ts).
+		const moved = shared(() =>
+			this.#exclusive(async () => {
+				const seq = ++this.#metaSeq;
+				const signal = this.#stop.signal;
+				const meta = await fetchPrMeta(this.#ref(), { signal });
+				const fetched = await fetchPr(this.repo, meta, {
+					signal,
+					pinned: this.pinned ?? undefined,
+				});
+				this.#setMeta(seq, meta);
+				const progress = await this.#progress();
+				// An unstarted review of a merged or closed PR has nothing to move
+				// to (a merge commit empties the comparison): keep the current
+				// snapshot (headMoved tells the UI). An open PR always moves, even
+				// to an empty comparison.
+				if (!progress.patchset && meta.state !== "OPEN") {
+					this.#patchset = null;
+					this.#head = null;
+					return this.info();
+				}
+				await this.#moveTo(progress, fetched);
+				this.#fetched(meta, fetched.mergeBase);
+				this.#head = await this.#headInfo(meta, fetched.mergeBase);
 				return this.info();
-			}
-			await this.#moveTo(progress, fetched);
-			this.#fetched(meta, fetched.mergeBase);
-			this.#head = await this.#headInfo(meta, fetched.mergeBase);
-			return this.info();
-		});
+			}),
+		);
 		this.#rereadOverview(moved);
-		return moved;
+		return join(moved);
 	}
 
 	/**

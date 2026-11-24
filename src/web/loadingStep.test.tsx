@@ -178,6 +178,32 @@ describe("useLoadingStep (CAR-296)", () => {
 		await other;
 	});
 
+	it("more requests than one ask takes: every hook still gets its step, in as few asks (CAR-296)", async () => {
+		const paths = Array.from({ length: 20 }, (_, i) => `/api/slow/r${i}`);
+		const slow = paths.map((p) => tagFetch(fetch)(p));
+		render(
+			<>
+				{paths.map((p) => (
+					<Probe key={p} active testId={p} path={p} />
+				))}
+			</>,
+		);
+		await act(() => vi.advanceTimersByTimeAsync(LOADING_STEP_AFTER_MS + 10));
+		// 20 ids: two asks of at most 16.
+		expect(asks).toHaveLength(2);
+		for (const ask of asks) {
+			expect(
+				new URL(ask, "http://x").searchParams.get("req")?.split(",").length,
+			).toBeLessThanOrEqual(16);
+		}
+		for (const p of paths) {
+			expect(screen.getByTestId(p)).toHaveTextContent("GitHub: pr view");
+		}
+		cleanup();
+		releaseSlow();
+		await Promise.all(slow);
+	});
+
 	it("hooks of one key share one ask", async () => {
 		const slow = tagFetch(fetch)("/api/slow");
 		render(

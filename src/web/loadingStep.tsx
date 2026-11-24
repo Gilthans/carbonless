@@ -151,23 +151,30 @@ function startPoll(): Poll {
 	};
 	const ask = async () => {
 		const users = [...poll.users];
-		// The requests out now, any hook's: one ask for all of them.
-		const wanted = [...out]
-			.filter(([, request]) => users.some((u) => u.match(request)))
-			.slice(0, MAX_ACTIVITY_IDS);
+		// The requests out now, any hook's: asked for together, at most
+		// MAX_ACTIVITY_IDS an ask (every Home repo's, however many).
+		const wanted = [...out].filter(([, request]) =>
+			users.some((u) => u.match(request)),
+		);
+		const chunks: string[][] = [];
+		for (let i = 0; i < wanted.length; i += MAX_ACTIVITY_IDS) {
+			chunks.push(wanted.slice(i, i + MAX_ACTIVITY_IDS).map(([id]) => id));
+		}
 		let steps: ActivityAnswer["steps"] | null = {};
-		if (wanted.length > 0) {
-			try {
-				const res = await fetch(activityPathOf(wanted.map(([id]) => id)), {
-					signal: poll.stop.signal,
-				});
-				steps = res.ok
-					? (((await res.json()) as ActivityAnswer).steps ?? {})
-					: null;
-			} catch {
-				// Stopped, or the server is busy: the load says the rest.
-				steps = null;
-			}
+		try {
+			const answers = await Promise.all(
+				chunks.map(async (ids) => {
+					const res = await fetch(activityPathOf(ids), {
+						signal: poll.stop.signal,
+					});
+					if (!res.ok) throw new Error(`activity: ${res.status}`);
+					return ((await res.json()) as ActivityAnswer).steps ?? {};
+				}),
+			);
+			steps = Object.assign({}, ...answers);
+		} catch {
+			// Stopped, or the server is busy: the load says the rest.
+			steps = null;
 		}
 		if (poll.stop.signal.aborted) return;
 		for (const user of users) {
