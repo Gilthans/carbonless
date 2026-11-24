@@ -1457,6 +1457,50 @@ describe("a removed orphan row takes comments, on its base line (CAR-276)", () =
 		expect(pickedSpan()?.noLine).toBe("orphan");
 	});
 
+	it("an added orphan line with a since row outside its run is off too (CAR-276 fix round)", async () => {
+		await shown();
+		const added = document.querySelector('tr[data-new-no="2"]') as HTMLElement;
+		press(
+			within(added)
+				.getByRole("button", { name: "Line 2" })
+				.closest("td") as Element,
+		);
+		press(
+			within(ps1Row(2))
+				.getByRole("button", { name: "Old line 2" })
+				.closest("td") as Element,
+			{ shiftKey: true },
+		);
+		expect(pickedSpan()?.noLine).toBe("orphan");
+		expect(
+			noLineIn([
+				{ side: "RIGHT", base: undefined, orphan: true },
+				{ side: "RIGHT", base: undefined },
+			]),
+		).toBe("orphan");
+	});
+
+	it("orphan removed lines whose base lines aren't one run are off: the range would cover lines the view never showed (CAR-276 fix round)", () => {
+		const left = (base: number) => ({
+			side: "LEFT" as const,
+			base,
+			orphan: true,
+		});
+		expect(noLineIn([left(10), left(13)])).toBe("orphan-split");
+		expect(noLineIn([left(10), left(11)])).toBeNull();
+		// With its added line: the removed ones still one run.
+		expect(
+			noLineIn([left(10), left(11), { side: "RIGHT", orphan: true }]),
+		).toBeNull();
+	});
+
+	it("its blank number button has a tooltip naming it (CAR-276 fix round)", async () => {
+		await shown();
+		fireEvent.focus(base(2));
+		const tip = document.querySelector('[role="tooltip"]:not([hidden])');
+		expect(tip).toHaveTextContent("Base line 2");
+	});
+
 	it("a selection over its text maps to its base line too", async () => {
 		await shown();
 		const cell = orphanRow(3).querySelector(`[${CODE_CELL}]`) as Element;

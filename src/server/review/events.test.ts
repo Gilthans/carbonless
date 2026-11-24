@@ -811,7 +811,6 @@ describe("agent events", () => {
 		const bad = [
 			{ ...reply, view },
 			{ ...humanMsg, view: { ...view, left: "abc" } },
-			{ ...humanMsg, view: { ...view, base: "abc" } },
 			{ ...humanMsg, view: { ...view, target: {} } },
 			{ ...humanMsg, view: { ...view, target: { patchset: 0 } } },
 			{ ...humanMsg, view: { ...view, from: { branch: false } } },
@@ -819,6 +818,15 @@ describe("agent events", () => {
 			{ ...opened, by: "ai", agent, view },
 		];
 		expect(parseEventLines(msg(bad))).toEqual([]);
+	});
+
+	it("a malformed view base drops only the base: the message stays, as one without it (CAR-276)", () => {
+		const humanMsg = newEvent("agent-message", "dan", {
+			thread,
+			text: "q",
+			view: { ...view, base: "abc" },
+		});
+		expect(parseEventLines(msg([humanMsg]))).toEqual([{ ...humanMsg, view }]);
 	});
 
 	it("parses head and suggests on ai messages and drops them on human ones", () => {
