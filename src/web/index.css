@@ -104,30 +104,34 @@
 	 * border of the same hue (person-N-edge, also their avatar fallback).
 	 * Blues to violets and two greys (stone, slate): well clear of the
 	 * deleted reds (40° of hue), of the add/ok green and warn yellow (25°)
-	 * and of the agent's teal (25°, so nobody's comments pass for the
-	 * agent's), all text at 4.5:1 (theme.test.ts). Seven: no warm hue is far
-	 * enough from both red and yellow.
+	 * and of the agent's teal (40° of OKLCH hue, and apart in OKLab even
+	 * for a grey, so nobody's comments pass for the agent's), all text at
+	 * 4.5:1 (theme.test.ts). Seven: no warm hue is far enough from both red
+	 * and yellow. In slot order, neighbours take another family (navy,
+	 * purple, azure, indigo, stone, violet, slate, then navy again): the
+	 * first speakers, the commonest pairs, never get two of a kind.
 	 */
 	--color-person-1: #1f2947;
 	--color-person-1-edge: #2e458a;
-	--color-person-2: #152f45;
-	--color-person-2-edge: #1f5f94;
-	--color-person-3: #3b2442;
-	--color-person-3-edge: #6e3781;
-	--color-person-4: #302f2c;
-	--color-person-4-edge: #5a5853;
-	--color-person-5: #292348;
-	--color-person-5-edge: #423489;
-	--color-person-6: #272d35;
-	--color-person-6-edge: #4b5563;
-	--color-person-7: #332145;
-	--color-person-7-edge: #5c3285;
+	--color-person-2: #3b2442;
+	--color-person-2-edge: #6e3781;
+	--color-person-3: #0c3049;
+	--color-person-3-edge: #18608e;
+	--color-person-4: #292348;
+	--color-person-4-edge: #423489;
+	--color-person-5: #302f2c;
+	--color-person-5-edge: #5a5853;
+	--color-person-6: #332145;
+	--color-person-6-edge: #5c3285;
+	--color-person-7: #2a2e38;
+	--color-person-7-edge: #414c57;
 
 	/*
 	 * The reviewer's own agent (src/web/agent): its messages' wash, the
 	 * border and bubble edge, and its icon and count ink. Teal, clear of the
 	 * review colours' hues: red 40°, the green, yellow and violet 25°, and
-	 * every person's tint 25° (theme.test.ts): its own colour, nobody's.
+	 * every person's tint 40° of OKLCH hue and apart in OKLab
+	 * (theme.test.ts): its own colour, nobody's.
 	 * Only on agent things: never as a state colour.
 	 */
 	--color-agent: #0f3534;

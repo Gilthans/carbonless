@@ -187,8 +187,8 @@ test("on code, with the viewer on the second tint (after rev1), the agent's answ
 	agentCrb,
 	isMobile,
 }) => {
-	// rev1 spoke first: the viewer gets person-2, once the teal next to
-	// the agent's.
+	// rev1 spoke first: the viewer gets person-2 (before CAR-270 a teal
+	// next to the agent's).
 	await setup(pr);
 	const s = await agentCrb({
 		scenario: { agent: AGENT, answers: [{ text: "Only v1 and v2." }] },
