@@ -20,7 +20,7 @@ import {
 	splitCluster,
 } from "./clusters.js";
 import { readTabWidths } from "./editorconfig.js";
-import { type ChangedFile, listChangedFiles } from "./files.js";
+import { type ChangedFile, changedPathsOf, listChangedFiles } from "./files.js";
 import {
 	buildAllHeadings,
 	type GitHunkHeading,
@@ -261,6 +261,47 @@ export async function buildSnapshot(
 	const changed = await listChangedFiles(repo, base, head);
 	// Started now, beside the clusters' run: ready by the first file's hunks.
 	void snapshotHeadings(repo, base, head, changed);
+	const files = await summarize(repo, base, head, changed);
+	return { base, head, revision: snapshotId(base, head), files };
+}
+
+/**
+ * A snapshot of `base`..`head` holding only the changed file whose path
+ * or old path is `path` (none when the comparison doesn't change it),
+ * built as buildSnapshot builds each file: the page's renames, diff
+ * options, clusters and encoding, so loadFileHunks gives that file the
+ * page's hunks. For a one-off read of an earlier comparison (CAR-53: an
+ * agent conversation's code): never kept, never a review's snapshot.
+ */
+export async function fileSnapshot(
+	repo: string,
+	base: string,
+	head: string,
+	path: string,
+): Promise<Snapshot> {
+	const revision = snapshotId(base, head);
+	const pair = await changedPathsOf(repo, base, head, path);
+	if (!pair) return { base, head, revision, files: [] };
+	const paths = [
+		...(pair.oldPath !== undefined ? [pair.oldPath] : []),
+		pair.path,
+	].map((p) => `:(literal)${p}`);
+	const changed = await listChangedFiles(repo, base, head, paths);
+	if (changed.length !== 1 || changed[0]?.path !== pair.path) {
+		throw new GitError(`git diff didn't pair ${path} as its listing did`);
+	}
+	const files = await summarize(repo, base, head, changed, paths);
+	return { base, head, revision, files };
+}
+
+/** Each of `changed` (base..head's listing, limited to `paths` if given) as the page's FileSummary. */
+async function summarize(
+	repo: string,
+	base: string,
+	head: string,
+	changed: ChangedFile[],
+	paths: string[] = [],
+): Promise<FileSummary[]> {
 	const isText = (f: ChangedFile) => !f.binary && !f.submodule;
 	const oidsOf = (files: ChangedFile[]) =>
 		files.flatMap((f) => [f.oldOid, f.newOid]).filter((oid) => !isZeroOid(oid));
@@ -290,13 +331,14 @@ export async function buildSnapshot(
 		head,
 		changed,
 		texts.map((t) => t?.encoding),
+		paths,
 	);
 	const tabWidths = await readTabWidths(
 		repo,
 		head,
 		changed.map((f) => f.path),
 	);
-	const files = changed.map((file, index): FileSummary => {
+	return changed.map((file, index): FileSummary => {
 		const { oldOid, newOid, ...summary } = file;
 		const hunks = unkeyed[index] ?? [];
 		const text = texts[index];
@@ -339,7 +381,6 @@ export async function buildSnapshot(
 			clusters,
 		};
 	});
-	return { base, head, revision: snapshotId(base, head), files };
 }
 
 /**

@@ -58,6 +58,7 @@ import { contextLines } from "./diff/hunks.js";
 import {
 	blobName,
 	buildSnapshot,
+	fileSnapshot,
 	loadContext,
 	loadFileHunks,
 	loadHunksBatch,
@@ -179,7 +180,7 @@ interface CommentLeft {
 /** How long a failed compare stands before commentLeft asks again. */
 const COMMENT_LEFT_RETRY_MS = 30_000;
 /**
- * How long a commit an agent's file diff couldn't fetch is taken as gone
+ * How long a commit an agent's file snapshot couldn't fetch is taken as gone
  * (CAR-53): its follow-ups answer at once with the notice, not after the
  * fetch's timeout each time; a later one tries again.
  */
@@ -470,7 +471,8 @@ export class Session {
 			viewer: this.viewer,
 			meta: () => this.#meta,
 			snapshot: () => this.#snapshot,
-			fileDiff: (base, head, path) => this.#agentFileDiff(base, head, path),
+			fileSnapshot: (base, head, path) =>
+				this.#agentFileSnapshot(base, head, path),
 			prFacts: async () => {
 				const o = await this.overview();
 				return { title: o.title, body: o.body };
@@ -1898,25 +1900,24 @@ export class Session {
 	}
 
 	/**
-	 * One file's diff of `base`..`head` for an agent conversation opened on
-	 * an earlier comparison (CAR-53): `git diff` of that path alone, three
-	 * lines of context; `base` null: `head`'s merge base with the base
-	 * branch, as a viewed head's snapshot takes it (#headSnapshot). A
-	 * commit the clone lacks (a force-push dropped it) is fetched by OID
-	 * (ensureCommit); one that can't be is remembered for a while, so
-	 * follow-ups don't each wait out the fetch. Builds and keeps no
-	 * snapshot: an agent's read never becomes a patch set or a write's
-	 * target. Throws when it can't be read.
+	 * A snapshot of `base`..`head` holding only `path`'s file, for an agent
+	 * conversation opened on an earlier comparison (CAR-53): fileSnapshot,
+	 * the page's renames, diff options and encoding for that one file;
+	 * `base` null: `head`'s merge base with the base branch, as a viewed
+	 * head's snapshot takes it (#headSnapshot). A commit the clone lacks
+	 * (a force-push dropped it) is fetched by OID (ensureCommit); one that
+	 * can't be is remembered for a while, so follow-ups don't each wait out
+	 * the fetch. Never kept (#snapshots, #building): an agent's read never
+	 * becomes a patch set or a write's target. Throws when it can't be read.
 	 */
-	async #agentFileDiff(
+	async #agentFileSnapshot(
 		base: string | null,
 		head: string,
 		path: string,
-	): Promise<string> {
+	): Promise<Snapshot> {
 		checkOid(head);
 		if (base !== null) checkOid(base);
 		if (!isSafePath(path)) throw new Error("its path isn't a safe one");
-		const signal = this.#stop.signal;
 		await this.#agentCommit(head);
 		const from =
 			base ??
@@ -1924,30 +1925,15 @@ export class Session {
 				await runGit(
 					this.repo,
 					["merge-base", `refs/remotes/origin/${this.#meta.baseBranch}`, head],
-					{ signal },
+					{ signal: this.#stop.signal },
 				)
 			).trim();
 		checkOid(from);
 		await this.#agentCommit(from);
-		return runGit(
-			this.repo,
-			[
-				"--literal-pathspecs",
-				"diff",
-				"--no-color",
-				"--no-ext-diff",
-				"--no-renames",
-				"--unified=3",
-				from,
-				head,
-				"--",
-				path,
-			],
-			{ signal },
-		);
+		return fileSnapshot(this.repo, from, head, path);
 	}
 
-	/** Commits an agent's file diff couldn't fetch, until when (ms). */
+	/** Commits an agent's file snapshot couldn't fetch, until when (ms). */
 	readonly #unfetchable = new Map<string, number>();
 
 	/** Throws unless `oid` is in the clone, fetched by OID if need be. */

@@ -29,7 +29,7 @@ import type {
 	ReviewView,
 	Snapshot,
 } from "../../shared/types.js";
-import { buildSnapshot } from "../diff/snapshot.js";
+import { buildSnapshot, fileSnapshot } from "../diff/snapshot.js";
 import { RefStore } from "../review/refStore.js";
 import {
 	AgentConflictError,
@@ -221,7 +221,7 @@ describe("anchorHunk on an earlier patch set (CAR-53)", () => {
 		startLine: 30,
 	});
 
-	/** A source whose fileDiff runs git on the fixture, logging its asks. */
+	/** A source whose fileSnapshot is the session's (fileSnapshot on the fixture), logging its asks. */
 	const gitSource = () => {
 		const asked: (string | null)[][] = [];
 		return {
@@ -229,26 +229,24 @@ describe("anchorHunk on an earlier patch set (CAR-53)", () => {
 			src: {
 				repo: ps.path,
 				snapshot: () => current,
-				fileDiff: async (base: string | null, head: string, path: string) => {
+				fileSnapshot: async (
+					base: string | null,
+					head: string,
+					path: string,
+				) => {
 					asked.push([base, head, path]);
-					return execFileSync(
-						"git",
-						[
-							"diff",
-							"--unified=3",
-							base ?? (ps.shas[BASE] as string),
-							head,
-							"--",
-							path,
-						],
-						{ cwd: ps.path, encoding: "utf8", env: testGitEnv() },
+					return fileSnapshot(
+						ps.path,
+						base ?? (ps.shas[BASE] as string),
+						head,
+						path,
 					);
 				},
 			},
 		};
 	};
 
-	it("is patch set 1's hunk, from that one file's diff, not the current snapshot's", async () => {
+	it("is patch set 1's hunk, from that one file's snapshot, not the current snapshot's", async () => {
 		const { src, asked } = gitSource();
 		const hunk = await anchorHunk(src, onPs1(), ps.shas[BASE] as string);
 		expect(hunk?.split("\n")).toEqual([
@@ -286,7 +284,7 @@ describe("anchorHunk on an earlier patch set (CAR-53)", () => {
 	});
 
 	it("the current snapshot when it is the comparison: no other read", async () => {
-		const fileDiff = vi.fn();
+		const fileSnapshot = vi.fn();
 		const anchor = {
 			...onPs1(),
 			commit: ps.shas[2] as string,
@@ -295,20 +293,20 @@ describe("anchorHunk on an earlier patch set (CAR-53)", () => {
 		} as AgentAnchor;
 		for (const base of [ps.shas[BASE] as string, null, undefined]) {
 			const hunk = await anchorHunk(
-				{ repo: ps.path, snapshot: () => current, fileDiff },
+				{ repo: ps.path, snapshot: () => current, fileSnapshot },
 				anchor,
 				base,
 			);
 			expect(hunk).toContain("+line 30 changed again");
 		}
-		expect(fileDiff).not.toHaveBeenCalled();
+		expect(fileSnapshot).not.toHaveBeenCalled();
 	});
 
 	it("throws, never the current snapshot's code, when patch set 1 can't be read", async () => {
 		const gone = {
 			repo: ps.path,
 			snapshot: () => current,
-			fileDiff: async () => {
+			fileSnapshot: async () => {
 				throw new Error("commit gone and can't be fetched");
 			},
 		};
@@ -326,8 +324,8 @@ describe("anchorHunk on an earlier patch set (CAR-53)", () => {
 	});
 
 	it("a commit or merge base that isn't an OID (empty, argument-like) throws without a read", async () => {
-		const fileDiff = vi.fn();
-		const src = { repo: ps.path, snapshot: () => current, fileDiff };
+		const fileSnapshot = vi.fn();
+		const src = { repo: ps.path, snapshot: () => current, fileSnapshot };
 		gitCalls.length = 0;
 		for (const bad of ["", "--upload-pack=x", "HEAD"]) {
 			await expect(
@@ -337,8 +335,151 @@ describe("anchorHunk on an earlier patch set (CAR-53)", () => {
 				"its merge base is unknown",
 			);
 		}
-		expect(fileDiff).not.toHaveBeenCalled();
+		expect(fileSnapshot).not.toHaveBeenCalled();
 		expect(gitCalls).toEqual([]);
+	});
+});
+
+/**
+ * CAR-53 review: an earlier comparison's hunk is the page's, built with
+ * its diff options and renames, whatever the reviewer's git config says.
+ */
+describe("anchorHunk on an earlier comparison: the page's diff (CAR-53)", () => {
+	let fx: GitFixture;
+	const numbered = (n: number, edit: (l: string[]) => void = () => {}) => {
+		const lines = Array.from({ length: n }, (_, i) => `line ${i + 1}`);
+		edit(lines);
+		return `${lines.join("\n")}\n`;
+	};
+	const SWAP_OLD = `${["a", "b", "c", "d", "e", "f", "g", "a", "b", "c", "x", "y", "z"].join("\n")}\n`;
+	const SWAP_NEW = `${["a", "b", "c", "x", "y", "z", "g", "a", "b", "c", "d", "e", "f"].join("\n")}\n`;
+	beforeEach(() => {
+		fx = createGitFixture([
+			{
+				message: "base",
+				files: { "src/old.ts": numbered(60), "swap.txt": SWAP_OLD },
+			},
+			{
+				// PS1: renamed and edited; swap.txt's halves swapped.
+				message: "ps1",
+				rename: { "src/old.ts": "src/new.ts" },
+				files: {
+					"src/new.ts": numbered(60, (l) => {
+						l[29] = "line 30 changed";
+					}),
+					"swap.txt": SWAP_NEW,
+				},
+			},
+			{
+				// PS2: both files changed again, lines shifted.
+				message: "ps2",
+				files: {
+					"src/new.ts": `top\n${numbered(60, (l) => {
+						l[29] = "line 30 changed again";
+					})}`,
+					"swap.txt": `top\n${SWAP_NEW}`,
+				},
+			},
+		]);
+		// The reviewer's own config: the page's diff must not follow it.
+		execFileSync("git", ["config", "diff.algorithm", "histogram"], {
+			cwd: fx.path,
+			env: testGitEnv(),
+		});
+	});
+	afterEach(() => fx.cleanup());
+	const [B, P1, P2] = [0, 1, 2];
+	const src = async () => {
+		const current = await buildSnapshot(
+			fx.path,
+			fx.shas[B] as string,
+			fx.shas[P2] as string,
+		);
+		return {
+			repo: fx.path,
+			snapshot: () => current,
+			fileSnapshot: (base: string | null, head: string, path: string) =>
+				fileSnapshot(fx.path, base ?? (fx.shas[B] as string), head, path),
+		};
+	};
+	/** The hunk PS1's own page (its snapshot, current then) gave the anchor. */
+	const pageHunk = async (anchor: AgentAnchor) => {
+		const ps1 = await buildSnapshot(
+			fx.path,
+			fx.shas[B] as string,
+			fx.shas[P1] as string,
+		);
+		return anchorHunk({ repo: fx.path, snapshot: () => ps1 }, anchor);
+	};
+	const on = (
+		path: string,
+		side: "LEFT" | "RIGHT",
+		line: number,
+	): AgentAnchor => ({
+		subject: "line",
+		path,
+		commit: fx.shas[P1] as string,
+		side,
+		line,
+		startSide: side,
+		startLine: line,
+	});
+
+	it("a file renamed and edited in PS1: a RIGHT line (new path) and a LEFT line (old path) get the rename's hunk, as PS1's page had it", async () => {
+		const s = await src();
+		const right = on("src/new.ts", "RIGHT", 30);
+		const left = on("src/old.ts", "LEFT", 30);
+		const expected = [
+			"@@ -27,7 +27,7 @@",
+			" line 27",
+			" line 28",
+			" line 29",
+			"-line 30",
+			"+line 30 changed",
+			" line 31",
+			" line 32",
+			" line 33",
+		];
+		for (const a of [right, left]) {
+			const hunk = await anchorHunk(s, a, fx.shas[B] as string);
+			expect(hunk?.split("\n")).toEqual(expected);
+			expect(hunk).toBe(await pageHunk(a));
+		}
+		// A LEFT line by the new path, as the page stores it on a rename.
+		expect(
+			await anchorHunk(s, on("src/new.ts", "LEFT", 30), fx.shas[B] as string),
+		).toBe(expected.join("\n"));
+	});
+
+	it("with diff.algorithm=histogram in the repo's config, the hunk is the page's myers one", async () => {
+		const s = await src();
+		const anchor = on("swap.txt", "RIGHT", 4);
+		const hunk = await anchorHunk(s, anchor, fx.shas[B] as string);
+		expect(hunk).toBe(await pageHunk(anchor));
+		expect(hunk?.split("\n").slice(0, 8)).toEqual([
+			"@@ -1,13 +1,13 @@",
+			" a",
+			" b",
+			" c",
+			"-d",
+			"-e",
+			"-f",
+			"+x",
+		]);
+		// Plain git, as the config has it, diffs it otherwise.
+		const plain = execFileSync(
+			"git",
+			["diff", fx.shas[B] as string, fx.shas[P1] as string, "--", "swap.txt"],
+			{ cwd: fx.path, encoding: "utf8", env: testGitEnv() },
+		);
+		expect(plain).toContain("\n-g\n");
+	});
+
+	it("a file the comparison doesn't change is null", async () => {
+		const s = await src();
+		expect(
+			await anchorHunk(s, on("nope.txt", "RIGHT", 1), fx.shas[B] as string),
+		).toBeNull();
 	});
 });
 

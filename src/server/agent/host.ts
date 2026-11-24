@@ -26,7 +26,7 @@ import {
 	SUGGEST_RESOLVE,
 	startedBy,
 } from "../../shared/agent.js";
-import { inGitOrder, parseDiffHunk } from "../../shared/diffHunk.js";
+import { inGitOrder } from "../../shared/diffHunk.js";
 import {
 	all,
 	type LineRanges,
@@ -2398,53 +2398,42 @@ export function buildAgentHost(o: {
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
- * The hunks of `anchor.path` in `mergeBase`..`anchor.commit` (anchorHunk):
- * the current snapshot's when it is that comparison, else the one file's
- * diff from src.fileDiff; null when the comparison doesn't change it.
+ * The hunks of `anchor.path` in `mergeBase`..`anchor.commit` (anchorHunk),
+ * as the page builds them (loadFileHunks): from the current snapshot when
+ * it is that comparison, else from a snapshot of that one file
+ * (src.fileSnapshot: never kept); null when the comparison doesn't change it.
  */
 async function comparisonHunks(
 	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
-		Partial<Pick<ReviewAgentSource, "fileDiff">>,
+		Partial<Pick<ReviewAgentSource, "fileSnapshot">>,
 	anchor: Extract<AgentAnchor, { subject: "line" }>,
 	mergeBase: string | null | undefined,
 ): Promise<{ lines: DiffLine[] }[] | null> {
 	const current = src.snapshot();
 	const head = anchor.commit;
+	let snapshot: Snapshot;
 	if (
 		current.head === head &&
 		(mergeBase == null || mergeBase === current.base)
 	) {
-		const file = current.files.find(
-			(f) => f.path === anchor.path || f.oldPath === anchor.path,
-		);
-		if (!file) return null;
-		return (
-			await loadFileHunks(src.repo, current, file.index, { headings: false })
-		).hunks;
+		snapshot = current;
+	} else {
+		if (!OID.test(head)) throw new Error("its commit is unknown");
+		if (mergeBase != null && !OID.test(mergeBase)) {
+			throw new Error("its merge base is unknown");
+		}
+		if (!src.fileSnapshot) {
+			throw new Error("only the current diff can be read");
+		}
+		snapshot = await src.fileSnapshot(mergeBase ?? null, head, anchor.path);
 	}
-	if (!OID.test(head)) throw new Error("its commit is unknown");
-	if (mergeBase != null && !OID.test(mergeBase)) {
-		throw new Error("its merge base is unknown");
-	}
-	if (!src.fileDiff) throw new Error("only the current diff can be read");
-	const diff = await src.fileDiff(mergeBase ?? null, head, anchor.path);
-	const hunks = diffHunks(diff);
-	return hunks.length ? hunks : null;
-}
-
-/** A one-file `git diff`'s hunks as numbered lines (undefined: not on that side). */
-export function diffHunks(diff: string): { lines: DiffLine[] }[] {
-	const out: { lines: DiffLine[] }[] = [];
-	for (const part of diff.split(/^(?=@@ -\d)/m).slice(1)) {
-		const lines = parseDiffHunk(part).map((l) => ({
-			kind: l.kind,
-			text: l.text,
-			...(l.oldNo !== null ? { oldNo: l.oldNo } : {}),
-			...(l.newNo !== null ? { newNo: l.newNo } : {}),
-		}));
-		if (lines.length) out.push({ lines });
-	}
-	return out;
+	const file = snapshot.files.find(
+		(f) => f.path === anchor.path || f.oldPath === anchor.path,
+	);
+	if (!file) return null;
+	return (
+		await loadFileHunks(src.repo, snapshot, file.index, { headings: false })
+	).hunks;
 }
 
 /**
@@ -2475,14 +2464,19 @@ export interface ReviewAgentSource {
 	meta(): PrMeta;
 	snapshot(): Snapshot;
 	/**
-	 * One file's `git diff` (3 lines of context) of `base`..`head`, an
-	 * earlier comparison an agent conversation was opened on (CAR-53);
-	 * `base` null: `head`'s own merge base with the base branch. Fetches a
-	 * commit the clone lacks (a force-push dropped it); builds and keeps no
-	 * snapshot, so it never becomes a patch set or a write's target.
-	 * Throws when it can't be read.
+	 * A snapshot of `base`..`head` holding only the file whose path or old
+	 * path is `path` (diff/snapshot.ts fileSnapshot: the page's renames,
+	 * diff options and encoding), an earlier comparison an agent
+	 * conversation was opened on (CAR-53); `base` null: `head`'s own merge
+	 * base with the base branch. Fetches a commit the clone lacks (a
+	 * force-push dropped it). Never kept, so it never becomes a patch set or
+	 * a write's target. Throws when it can't be read.
 	 */
-	fileDiff(base: string | null, head: string, path: string): Promise<string>;
+	fileSnapshot(
+		base: string | null,
+		head: string,
+		path: string,
+	): Promise<Snapshot>;
 	prFacts(): Promise<{ title: string; body: string }>;
 	code(anchor: CodeAnchor): Promise<CodeWindow | null>;
 	/** The PR's review threads as read from GitHub (their summaries), at most `maxAgeMs` old (default: any). */
@@ -2853,14 +2847,14 @@ export async function anchoredFile(
  * it was opened on (CAR-53): `mergeBase`..`anchor.commit`, `mergeBase`
  * null for the head's own merge base. The current snapshot when that is
  * it (as on a first question, or `mergeBase` undefined); else that one
- * file's diff (src.fileDiff). Null for a file anchor, an unsafe path or a
+ * file's snapshot (src.fileSnapshot). Null for a file anchor, an unsafe path or a
  * file that comparison doesn't change. Throws, without a git read for a
  * commit that isn't an OID, when that comparison can't be read: never the
  * current snapshot's code in its place, whose lines may be other lines.
  */
 export async function anchorHunk(
 	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
-		Partial<Pick<ReviewAgentSource, "fileDiff">>,
+		Partial<Pick<ReviewAgentSource, "fileSnapshot">>,
 	anchor: AgentAnchor,
 	mergeBase?: string | null,
 ): Promise<string | null> {
