@@ -88,7 +88,12 @@ export function shownOutsideCard(
 	head: string | undefined,
 	held: (item: Pick<NewThreadItem, "agentThread">) => boolean,
 ): boolean {
-	return !(item.span.commit === head && held(item));
+	// One on the since view's compared patch set's commit (`earlier`,
+	// CAR-264) is drawn in its card too.
+	return !(
+		(item.span.commit === head || item.span.earlier === true) &&
+		held(item)
+	);
 }
 
 /** Forgets every hold (tests). */

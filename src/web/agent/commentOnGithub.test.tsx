@@ -13,7 +13,11 @@ import type {
 } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import type { Viewing } from "../files/comparison";
-import { HEAD_UNSURE } from "../files/selectionActions";
+import {
+	HEAD_UNSURE,
+	MIXED_COMMITS,
+	RENAMED_SINCE,
+} from "../files/selectionActions";
 import {
 	getComposers,
 	newThreadItems,
@@ -30,6 +34,7 @@ import {
 	baseOf,
 	type CommentScope,
 	CommentScopeProvider,
+	earlierSpan,
 	onHeadMove,
 	ShowVersionProvider,
 	spanInHunks,
@@ -733,5 +738,154 @@ describe("Comment on an agent conversation", () => {
 			screen.getByRole("button", { name: "Comment on GitHub" }),
 		);
 		expect(screen.queryByTestId("agent-link-problem")).toBeNull();
+	});
+});
+
+describe("a conversation on lines only the since view's earlier patch set had (CAR-264)", () => {
+	const P1 = "1".repeat(40);
+	// The since view's removed rows: PS1's RIGHT 2..3 only PS1 had (rows 60, 61).
+	const early = {
+		head: P1,
+		row: (n: number) => (n === 2 ? 60 : n === 3 ? 61 : null),
+	};
+	const file = { path: "src/math.js", renamed: false };
+	const asked = spanOfAnchor({
+		...line,
+		commit: P1,
+		startCol: undefined,
+		endCol: undefined,
+	} as AgentAnchor & { subject: "line" });
+
+	it("earlierSpan: its span marked earlier on that commit; mixed when some of its lines are still in the head; renamed; else none", () => {
+		expect(earlierSpan(asked, early, file)).toEqual({
+			...asked,
+			earlier: true,
+		});
+		// Lines 2..4: 4 is still in the head (no removed row).
+		expect(earlierSpan({ ...asked, line: 4 }, early, file)).toBe("mixed");
+		expect(
+			earlierSpan({ ...asked, path: "src/old.js" }, early, {
+				...file,
+				renamed: true,
+			}),
+		).toBe("renamed");
+		// None of its lines removed, another commit, LEFT lines, no since view.
+		expect(
+			earlierSpan({ ...asked, startLine: 7, line: 8 }, early, file),
+		).toBeNull();
+		expect(earlierSpan({ ...asked, commit: HEAD }, early, file)).toBeNull();
+		expect(
+			earlierSpan({ ...asked, side: "LEFT", startSide: "LEFT" }, early, file),
+		).toBeNull();
+		expect(earlierSpan(asked, undefined, file)).toBeNull();
+	});
+
+	it("agentCommentAvailable: on as a direct comment there is, off with the since view's reasons", () => {
+		const anchor = { ...line, commit: P1 };
+		const ctx = { ...on, version: "read-only" as const };
+		// Without the since view's take: an earlier version's.
+		expect(agentCommentAvailable(anchor, ctx)).toMatch(/earlier/);
+		expect(
+			agentCommentAvailable(anchor, {
+				...ctx,
+				earlier: { ...asked, earlier: true },
+			}),
+		).toBe(true);
+		expect(agentCommentAvailable(anchor, { ...ctx, earlier: "mixed" })).toBe(
+			MIXED_COMMITS,
+		);
+		expect(agentCommentAvailable(anchor, { ...ctx, earlier: "renamed" })).toBe(
+			RENAMED_SINCE,
+		);
+		// The rules every comment has still apply.
+		expect(
+			agentCommentAvailable(anchor, {
+				...ctx,
+				writes: "as-of",
+				earlier: { ...asked, earlier: true },
+			}),
+		).toMatch(/cutoff/);
+		expect(
+			agentCommentAvailable(anchor, {
+				...ctx,
+				headUnsure: true,
+				earlier: { ...asked, earlier: true },
+			}),
+		).toBe(HEAD_UNSURE);
+	});
+
+	const scopeOf = (renamed = false): CommentScope => ({
+		...SCOPE,
+		earlier: (span) => earlierSpan(span, early, { ...file, renamed }),
+	});
+	const sinceView = (n: ReactNode) => (
+		<SendViewProvider value={{ target: { head: HEAD }, from: { patchset: 1 } }}>
+			{n}
+		</SendViewProvider>
+	);
+
+	it("the card's Comment on GitHub is on, labelled as usual; the composer is on that commit, marked earlier, and the page stays on the since view", async () => {
+		const go = vi.fn();
+		const t = thread({
+			anchor: { ...line, commit: P1, startCol: undefined, endCol: undefined },
+		});
+		show(t, {
+			patchsets: [1, 2],
+			showVersion: go,
+			scope: scopeOf(),
+			wrap: sinceView,
+		});
+		// show() names PS1's head "1…1".
+		const button = screen.getByRole("button", { name: "Comment on GitHub" });
+		expect(button.getAttribute("aria-disabled")).toBeNull();
+		await userEvent.click(button);
+		expect(go).not.toHaveBeenCalled();
+		const [item] = newThreadItems([], getComposers());
+		if (!item) throw new Error("no item");
+		expect(targetOf(item.span, t.id)).toEqual({
+			path: "src/math.js",
+			commit: P1,
+			subject: "line",
+			startSide: "RIGHT",
+			startLine: 2,
+			side: "RIGHT",
+			line: 3,
+			agentThread: t.id,
+			earlier: true,
+		});
+	});
+
+	it("off, with the reason, on a range some of whose lines are still in the head, or a file renamed since", () => {
+		const mixed = thread({
+			anchor: {
+				...line,
+				commit: P1,
+				line: 4,
+				startCol: undefined,
+				endCol: undefined,
+			},
+		});
+		show(mixed, { patchsets: [1, 2], scope: scopeOf(), wrap: sinceView });
+		expect(
+			screen.getByRole("button", {
+				name: `Comment on GitHub — ${MIXED_COMMITS}`,
+			}),
+		).toBeTruthy();
+		cleanup();
+		const moved = thread({
+			anchor: {
+				...line,
+				path: "src/old.js",
+				commit: P1,
+				startCol: undefined,
+				endCol: undefined,
+			},
+		});
+		show(moved, { patchsets: [1, 2], scope: scopeOf(true), wrap: sinceView });
+		expect(
+			screen.getByRole("button", {
+				name: `Comment on GitHub — ${RENAMED_SINCE}`,
+			}),
+		).toBeTruthy();
 	});
 });
