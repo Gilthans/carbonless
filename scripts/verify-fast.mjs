@@ -57,6 +57,11 @@ const specs = readdirSync("e2e")
 // not untested; an entry with no specs, covered by unit tests alone. Files
 // outside src/, e2e/ and test/ (docs, scripts) run none.
 const E2E_MAP = [
+	// A message's long press and its menu (CAR-280).
+	[
+		/^src\/web\/(longPress|messageCopy)\.tsx?$|^e2e\/long-press-copy\.spec\.ts$/,
+		["long-press-copy"],
+	],
 	// Marks carried onto split pieces (CAR-156). The split and the counted
 	// progress (src/shared/whitespace.ts, progress.ts) feed every page:
 	// left unmapped, they run every spec.

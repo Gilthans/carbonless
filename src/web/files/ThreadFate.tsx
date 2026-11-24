@@ -41,6 +41,7 @@ import { CentredWithHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import { placementsQuery, type RereviewTo, sessionQuery } from "../api";
+import { useMessageCopy } from "../messageCopy";
 import { Badge, BotIcon, Chip, SkeletonBar } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
@@ -860,6 +861,8 @@ function UnplacedReplies({
  */
 function Opener({ thread }: { thread: ReviewThread }) {
 	const opener = usePerson(thread.author, thread.avatarUrl);
+	// A long press on a phone: Copy message (its Markdown, as written).
+	const copy = useMessageCopy(thread.body || thread.excerpt);
 	if (thread.unavailable !== undefined || (thread.id === "" && thread.loaded))
 		return <UnavailableText reason={thread.unavailable ?? "unreadable"} />;
 	return (
@@ -886,6 +889,7 @@ function Opener({ thread }: { thread: ReviewThread }) {
 				<div
 					data-testid="thread-body"
 					className={`${commentSurface(opener.tint)} break-words`}
+					{...copy.press}
 				>
 					<CommentBody
 						html={thread.html}
@@ -899,10 +903,12 @@ function Opener({ thread }: { thread: ReviewThread }) {
 				<p
 					data-testid="thread-body"
 					className={`${commentSurface(opener.tint)} text-sm break-words`}
+					{...copy.press}
 				>
 					{thread.excerpt}
 				</p>
 			)}
+			{copy.menu}
 		</div>
 	);
 }

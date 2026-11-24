@@ -2497,6 +2497,7 @@ export function DiffBody(props: {
 	const overflow = useScrollbarProxy(scroller, table, proxy);
 	useBubbleFocusKept(scroller, wide);
 	const onPointerDown = useOneSideSelection(table, view);
+	useCardSelection(table);
 	// With its lines hidden (an image) no line is shown to land on: a
 	// thread link to a line, or a find's step, neither scrolls nor hints.
 	// Their file shows as Text to take them (FileDiff); a remount back to
@@ -3668,6 +3669,45 @@ const markSelecting = (
 	if (side) table.dataset.selecting = side;
 	else delete table.dataset.selecting;
 };
+
+/**
+ * A text selection begun in a card under a line (a thread, a composer, an
+ * agent conversation: TailRow's `data-tail-card`) stays out of the code
+ * (CAR-280). The card is sticky at the diff's left while the lines scroll
+ * sideways under it: on a phone, a selection handle dragged past the
+ * card's edge reached into the code rows, whose lines run far wider than
+ * the screen, and the browser scrolled the diff sideways to show the
+ * selection's end. The lines slid under a card that stays put, and the
+ * selection jumped from line to line under the finger. While a selection
+ * starts in a card, the table carries `data-card-selecting` and, on touch,
+ * its rows' cells can't be selected but the cards' contents can
+ * (index.css).
+ */
+function useCardSelection(table: RefObject<HTMLTableElement | null>) {
+	useEffect(() => {
+		const el = table.current;
+		if (!el) return;
+		const onSelectionChange = () => {
+			const selection = document.getSelection();
+			const anchor = selection?.anchorNode;
+			const from =
+				anchor instanceof Element ? anchor : (anchor?.parentElement ?? null);
+			const inCard =
+				!!selection &&
+				!selection.isCollapsed &&
+				!!from &&
+				el.contains(from) &&
+				from.closest("[data-tail-card]") !== null;
+			if (inCard) el.dataset.cardSelecting = "";
+			else delete el.dataset.cardSelecting;
+		};
+		document.addEventListener("selectionchange", onSelectionChange);
+		return () => {
+			document.removeEventListener("selectionchange", onSelectionChange);
+			delete el.dataset.cardSelecting;
+		};
+	}, [table]);
+}
 
 /**
  * Side by side, a text selection stays on one side: the table carries
