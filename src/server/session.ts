@@ -53,7 +53,7 @@ import { type AgentDiff, AgentDiffRequestError } from "./agent/reads.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import { touchesOldSide } from "./codeWindow.js";
-import { contextLines } from "./diff/hunks.js";
+import { contextLines, inDiffHunks } from "./diff/hunks.js";
 import {
 	blobName,
 	buildSnapshot,
@@ -2570,6 +2570,15 @@ export class Session {
 				}
 			},
 			commentLeft: () => this.commentLeft(snapshot),
+			// GitHub's diff of the head: the snapshot's clusters, with the
+			// full diff's context (CAR-293).
+			rightInDiff: async (path, line) => {
+				const file = snapshot.files.find((f) => f.path === path);
+				if (!file || !inDiffHunks(file.clusters, line)) return false;
+				// Within the file: its end clips the last hunk's context.
+				const { newLines } = await loadNewText(this.repo, snapshot, file.index);
+				return inDiffHunks(file.clusters, line, newLines.length);
+			},
 			startPatchset: this.#startHook(snapshot),
 			started: (clientId) => this.#started.get(clientId),
 			rememberStarted: (clientId, record) =>

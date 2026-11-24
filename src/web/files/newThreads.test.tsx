@@ -583,6 +583,7 @@ describe("Ignore whitespace and GitHub's order", () => {
 				endCol: null,
 			},
 			inDiff: true,
+			sameAsBase: false,
 			noLine: null,
 			cells: { head: pair, last: cell("LEFT", 4) },
 		});

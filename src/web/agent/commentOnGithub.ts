@@ -42,6 +42,11 @@ export interface CommentScope {
 	headSure: boolean;
 	inDiff: (span: CodeSpan) => boolean | undefined;
 	/**
+	 * The since view: an end of the span is a line it shows that GitHub's
+	 * diff hasn't (spanOffGithub, CAR-293); absent elsewhere.
+	 */
+	sameAsBase?: (span: CodeSpan) => boolean;
+	/**
 	 * The since view: a conversation's span on its compared patch set's
 	 * lines that only that patch set had (earlierSpan, CAR-264); absent
 	 * elsewhere.
@@ -101,14 +106,36 @@ export function spanInHunks(
 	hunks: readonly DisplayHunk[],
 ): boolean {
 	if (span.subject === "file") return true;
+	// A since-view line GitHub's diff hasn't isn't one (CAR-293).
 	const has = (side: CodeSpan["side"], n: number | undefined) =>
 		n !== undefined &&
 		hunks.some((h) =>
-			h.lines.some((l) => (side === "LEFT" ? l.oldNo : l.newNo) === n),
+			h.lines.some((l) =>
+				side === "LEFT" ? l.oldNo === n : l.newNo === n && !l.offGithub,
+			),
 		);
 	return (
 		has(span.side, span.line) &&
 		has(span.startSide ?? span.side, span.startLine ?? span.line)
+	);
+}
+
+/**
+ * Whether an end of a line span is a RIGHT line of `hunks` that GitHub's
+ * diff hasn't (DiffLine.offGithub: the since view's, CAR-293).
+ */
+export function spanOffGithub(
+	span: CodeSpan,
+	hunks: readonly DisplayHunk[],
+): boolean {
+	if (span.subject === "file") return false;
+	const off = (side: CodeSpan["side"], n: number | undefined) =>
+		side === "RIGHT" &&
+		n !== undefined &&
+		hunks.some((h) => h.lines.some((l) => l.newNo === n && l.offGithub));
+	return (
+		off(span.side, span.line) ||
+		off(span.startSide ?? span.side, span.startLine ?? span.line)
 	);
 }
 
@@ -123,6 +150,8 @@ export interface AgentCommentContext {
 	headUnsure?: boolean;
 	/** Both ends of the span are lines of GitHub's diff (undefined: unknown). */
 	inDiff?: boolean;
+	/** An end of the span is a since-view line GitHub's diff hasn't (CAR-293). */
+	sameAsBase?: boolean;
 	/**
 	 * The comparison the conversation was first asked in (its first
 	 * question's view): old lines name GitHub's base only when that was the
@@ -249,6 +278,7 @@ export function agentCommentAvailable(
 		readOnly: onScreen ? ctx.readOnly : ctx.version === "read-only",
 		headUnsure: onScreen ? ctx.headUnsure : false,
 		inDiff: onScreen ? ctx.inDiff : undefined,
+		sameAsBase: onScreen ? ctx.sameAsBase : undefined,
 	});
 	if (rule !== true) return rule;
 	if (!onScreen && ctx.version !== "commentable") {
@@ -330,6 +360,7 @@ export function useAgentComment(
 				readOnly,
 				headUnsure: !scope.headSure,
 				inDiff: scope.inDiff(span),
+				sameAsBase: scope.sameAsBase?.(span),
 				// Nowhere to go to another version: none takes the comment.
 				version:
 					session && (showVersion ? versionOf(session, commit) : "unknown"),

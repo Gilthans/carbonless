@@ -152,7 +152,14 @@ would be; a full-diff-only feature is a gap with a ticket. Numbers the since
 view shows on its old side are the compared patch set's: anything stored
 or sent (a move, a comment, a link) goes through the full diff's lines,
 never the interdiff's own numbers (thread moves: `moveEnd`,
-`src/web/files/threadMove.tsx`).
+`src/web/files/threadMove.tsx`). Whether a line takes a GitHub comment
+is GitHub's diff's call too, never the interdiff's: a line the since view
+shows as changed that reads as the base (a later patch set put it back)
+isn't in GitHub's diff, so Comment, the agent's Comment on GitHub and a
+suggested comment are off there ("Same as the base: GitHub can't take a
+comment here"), and the server refuses it before calling GitHub
+(`DiffLine.offGithub`, CAR-293). A GitHub refusal of lines that check
+out says the PR moved on, with refresh.
 
 ## Re-review never hides a change
 
@@ -394,8 +401,15 @@ switch wouldn't happen.
   which puts the comment into the viewer's pending review. What is sent is
   what the thread then reads back: the answer is the thread as GitHub's
   GraphQL lists it, mapped like any other. Only on the head the page shows
-  (else 409 `stale`: refresh). A line or file GitHub's diff doesn't have
-  (its 422 "could not be resolved") is 404 `gone`; a pending review refuses
+  (else 409 `stale`: refresh). A `RIGHT` line outside the snapshot's
+  diff (its hunks' lines, within the file) is refused before gh, 400
+  `invalid` "Same as the base: GitHub can't take a comment here"
+  (CAR-293), but only while GitHub's merge base is the snapshot's
+  (`commentLeft`; else GitHub decides). GitHub's 422 "could not be
+  resolved" on lines that check passed means its diff moved on since:
+  409 `stale`, refresh. Any other line or file GitHub's diff doesn't have
+  (that 422 on `LEFT` lines, a file, or unchecked lines) is 404 `gone`;
+  a pending review refuses
   it as it refuses replies (409 `pending-review`). `LEFT` lines take
   comments only when GitHub's merge base for the snapshot's head (REST
   compare of the PR's base commit, `baseRefOid`, and the head: what GitHub

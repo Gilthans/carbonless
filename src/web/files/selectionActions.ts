@@ -1,5 +1,10 @@
 import { CommentIcon, type Icon } from "@primer/octicons-react";
-import type { DiffSide, FileSummary, PrOverview } from "../../shared/types";
+import {
+	type DiffSide,
+	type FileSummary,
+	type PrOverview,
+	SAME_AS_BASE,
+} from "../../shared/types";
 import { openComposer } from "../threads/newThreads";
 import type { NoLine } from "./codeSpan";
 
@@ -48,6 +53,11 @@ export interface SelectionContext {
 	 * head first): its lines would be named on the wrong commit.
 	 */
 	headUnsure?: boolean;
+	/**
+	 * The since view: an end of the span (`inDiff` false) is a line GitHub's
+	 * diff hasn't, though the view shows it as changed (CAR-293).
+	 */
+	sameAsBase?: boolean;
 	/** An earlier patch set (read-only): GitHub's comments go on the latest. */
 	readOnly?: boolean;
 }
@@ -147,7 +157,9 @@ export function commentAvailable(
 	// Checked on GitHub: a line only expanded context shows is refused (a
 	// range across hunks is taken).
 	if (!COMMENT_OUTSIDE_HUNKS && ctx.inDiff === false) {
-		return "GitHub only takes comments on lines in the diff";
+		return ctx.sameAsBase
+			? SAME_AS_BASE
+			: "GitHub only takes comments on lines in the diff";
 	}
 	return true;
 }

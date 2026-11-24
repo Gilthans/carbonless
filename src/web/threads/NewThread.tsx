@@ -158,6 +158,7 @@ export function NewThread(props: {
 					commentLeft: overview.commentLeft !== false,
 					file: { binary: false, submodule: false },
 					inDiff: false,
+					sameAsBase: scope?.sameAsBase?.(span),
 				})
 			: true;
 	useLayoutEffect(() => {

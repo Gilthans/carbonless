@@ -219,7 +219,10 @@ The shapes the engine tells apart on throwaway repos outside the matrix
 (`src/server/rereview/shape.test.ts`, `interdiff.test.ts`,
 `engine.test.ts`): S5 (squash), S6 (head moved back), S7 (retargeted), a
 reverted commit, unrelated histories and a shallow clone (no virtual
-rebase), a conflicted file the PR deletes. After a retarget each patch set
+rebase), a conflicted file the PR deletes. A since-view line a later
+patch set put back as the base had it is off GitHub's diff (no comment
+there, CAR-293) alike when PS2 was rebased or merged the base in
+(`engine.test.ts`). After a retarget each patch set
 keeps the base branch it was reviewed against (its graph card's "Against";
 only the head's card names the PR's current base; `session.test.ts`, S7).
 

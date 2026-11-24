@@ -591,6 +591,87 @@ describe("the engine", () => {
 		}
 	});
 
+	for (const update of ["rebase", "merge-base-in"] as const) {
+		it(`a since-view line put back as the base had it is off GitHub's diff, as are context lines around it outside that diff; the change beside it isn't, whatever the methodology: ${update} (CAR-293)`, async () => {
+			const lines = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`);
+			const text = (ls: string[]) => `${ls.join("\n")}\n`;
+			const changed = (ls: string[], at: number[]) =>
+				ls.map((l, i) => (at.includes(i + 1) ? `${l} changed` : l));
+			const fx = createGitFixture([
+				{ message: "base", files: { "a.txt": text(lines) } },
+			]);
+			try {
+				const git = (...args: string[]) =>
+					execFileSync("git", args, {
+						cwd: fx.path,
+						encoding: "utf8",
+						stdio: "pipe",
+						env: testGitEnv(),
+					}).trim();
+				const commit = (message: string, content: string[]) => {
+					writeFileSync(join(fx.path, "a.txt"), text(content));
+					git("commit", "--quiet", "-am", message);
+					return git("rev-parse", "HEAD");
+				};
+				const b1 = fx.shas[0] as string;
+				// PS1 on B1: lines 10 and 30 changed.
+				const h1 = commit("PR: 10 and 30", changed(lines, [10, 30]));
+				// B2: the base changes line 50.
+				git("checkout", "--quiet", "--detach", b1);
+				const b2Lines = changed(lines, [50]);
+				const b2 = commit("base: line 50", b2Lines);
+				// PS2 on B2: line 10 kept, line 30 put back, line 34 changed.
+				let h2: string;
+				if (update === "rebase") {
+					h2 = commit("PR, rebased", changed(b2Lines, [10, 34]));
+				} else {
+					git("checkout", "--quiet", "--detach", h1);
+					git("merge", "--quiet", "--no-edit", b2);
+					h2 = commit("PR: 30 back, 34", changed(b2Lines, [10, 34]));
+				}
+				const ps1 = await buildSnapshot(fx.path, b1, h1);
+				const r = await buildSnapshot(fx.path, git("merge-base", b2, h2), h2);
+				const traced = await traceRereview(
+					fx.path,
+					since(1, ps1, marked(ps1)),
+					[],
+					targetOf(r),
+				);
+				const { answer } = answerRereview(
+					traced,
+					since(1, ps1, marked(ps1)),
+					[],
+					targetOf(r),
+				);
+				const rows = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
+					(hk) =>
+						hk.lines.flatMap((l) =>
+							l.newNo === undefined
+								? []
+								: [[l.newNo, l.kind, l.offGithub === true] as const],
+						),
+				);
+				// GitHub's diff (B2 → head): hunks 7–13 and 31–37. Line 30
+				// and the context above it are the base's text there.
+				expect(rows).toEqual([
+					[27, "context", true],
+					[28, "context", true],
+					[29, "context", true],
+					[30, "add", true],
+					[31, "context", false],
+					[32, "context", false],
+					[33, "context", false],
+					[34, "add", false],
+					[35, "context", false],
+					[36, "context", false],
+					[37, "context", false],
+				]);
+			} finally {
+				fx.cleanup();
+			}
+		});
+	}
+
 	it("a renamed file the head's diff pairs with another base file than the since view's map does: no base numbers, so no comment lands in the wrong file (CAR-217)", async () => {
 		const block = (name: string) =>
 			`${Array.from({ length: 30 }, (_, i) => `${name} ${i + 1}`).join("\n")}\n`;
@@ -907,7 +988,14 @@ describe("the engine", () => {
 			hk.lines.filter((l) => l.kind !== "context"),
 		);
 		expect(lines).toEqual([
-			{ kind: "add", newNo: 20, text: "line 20", clusterKey: del.key },
+			{
+				kind: "add",
+				newNo: 20,
+				text: "line 20",
+				clusterKey: del.key,
+				// Restored as the base had it: not in GitHub's diff (CAR-293).
+				offGithub: true,
+			},
 		]);
 	});
 

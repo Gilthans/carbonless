@@ -170,6 +170,14 @@ export interface DiffLine {
 	 * in a piece of its own (SincePiece.orphan).
 	 */
 	orphan?: true;
+	/**
+	 * The since view's added and context lines only (CAR-293): GitHub's
+	 * diff (the head's merge base → the head) hasn't this line (its
+	 * `newNo`): the since view shows it, but it reads as the base, so
+	 * GitHub refuses a comment on it (e.g. a line a later patch set put
+	 * back as the base had it). Absent: GitHub's diff has it.
+	 */
+	offGithub?: true;
 }
 
 export interface DisplayHunk {
@@ -964,6 +972,13 @@ export interface VerdictAnswer {
 
 /** The longest reply GitHub takes (a comment body's limit). */
 export const MAX_REPLY = 65536;
+
+/**
+ * Why no comment can go on a RIGHT line GitHub's diff hasn't (DiffLine.offGithub,
+ * CAR-293): the page's and the server's refusal.
+ */
+export const SAME_AS_BASE =
+	"Same as the base: GitHub can't take a comment here";
 
 /** Threads whose comments one `GET /api/comments` asks for, at most. */
 export const COMMENTS_BATCH = 50;

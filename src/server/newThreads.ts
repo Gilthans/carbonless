@@ -6,8 +6,9 @@ import {
 	MAX_REPLY,
 	type NewThreadAnswer,
 	type NewThreadRequest,
+	SAME_AS_BASE,
 } from "../shared/types.js";
-import { GhError, WriteRefusedError } from "./errors.js";
+import { GhError, UnresolvedError, WriteRefusedError } from "./errors.js";
 import {
 	fetchReviewComments,
 	findThreadOf,
@@ -20,6 +21,7 @@ import { MARKER_ID, markerFor, parseMarker } from "./marker.js";
 import { mapComments, mapThreads, openerOf, withContent } from "./overview.js";
 import { isLowerUlid } from "./review/events.js";
 import { slugify } from "./slug.js";
+
 import {
 	commentUrl,
 	gone,
@@ -63,6 +65,12 @@ export interface NewThreadTarget extends ThreadWriteTarget {
 	placeAgain?: () => void;
 	/** Whether LEFT lines take comments (PrOverview.commentLeft). */
 	commentLeft: () => Promise<boolean>;
+	/**
+	 * Whether GitHub's diff of the head (the snapshot's) has RIGHT line
+	 * `line` of `path`: a hunk's line, as the full diff shows it, within
+	 * the file (CAR-293). Absent: not checked here (GitHub checks it).
+	 */
+	rightInDiff?: (path: string, line: number) => Promise<boolean>;
 	started: (clientId: string) => StartedRecord | undefined;
 	rememberStarted: (clientId: string, record: StartedRecord) => void;
 	/**
@@ -259,6 +267,8 @@ export async function startThread(
 			"stale",
 		);
 	}
+	// Every end checked against the snapshot's diff, that diff GitHub's.
+	let checked = false;
 	if (!record && !earlier) {
 		if (req.commit !== target.head) {
 			throw new WriteRefusedError(
@@ -274,6 +284,28 @@ export async function startThread(
 				"GitHub's base for this commit differs from the one shown: no comments on old lines",
 				"invalid",
 			);
+		}
+		// A RIGHT end GitHub's diff hasn't (one the since view shows that
+		// reads as the base): GitHub would refuse it, so it never goes
+		// (CAR-293). Only where GitHub's diff is the snapshot's (its merge
+		// base is the snapshot's base, commentLeft): else GitHub decides.
+		// GitHub still checks: see the 422 below.
+		if (place.subject === "line" && target.rightInDiff) {
+			const ends = [place.start, place].filter((e) => e !== undefined);
+			if (
+				ends.some((e) => e.side === "RIGHT") &&
+				(await target.commentLeft())
+			) {
+				for (const end of ends) {
+					if (
+						end.side === "RIGHT" &&
+						!(await target.rightInDiff(place.path, end.line))
+					) {
+						throw new WriteRefusedError(SAME_AS_BASE, "invalid");
+					}
+				}
+				checked = ends.every((e) => e.side === "RIGHT");
+			}
 		}
 	}
 	if (!record && body.length > MAX_REPLY) {
@@ -313,6 +345,16 @@ export async function startThread(
 				target.prUrl,
 			);
 		} catch (error) {
+			// Lines checked against the snapshot's diff (GitHub's then), yet
+			// GitHub's 422 says its diff hasn't them: its diff moved on (a
+			// push to the base or the head since), so a Refresh shows where
+			// the lines are now. Other refusals keep their own answer.
+			if (error instanceof UnresolvedError && checked) {
+				throw new WriteRefusedError(
+					"The PR moved on since: refresh to comment on its new head",
+					"stale",
+				);
+			}
 			if (
 				error instanceof WriteRefusedError &&
 				error.code === "pending-review" &&
