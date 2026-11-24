@@ -938,7 +938,7 @@ before (the whole file one cluster) keeps its marks: the split carry puts a
 whole mark on every piece and line marks on the lines they marked. No new
 event and no new stored field. The since view needs nothing of its own: its
 pieces follow the viewed snapshot's clusters, so a file added since the
-compared patch set is cut the same way; `ENGINE_VERSION` went to 6 so no
+compared patch set is cut the same way; `ENGINE_VERSION` went to 7 so no
 cached comparison names the old whole-file key. Ignore whitespace is
 untouched: an added file has no old side, so no piece is whitespace-only.
 Since every added file is now cut, the two CAR-156 cases below are common
