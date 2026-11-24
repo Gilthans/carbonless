@@ -49,6 +49,7 @@ import type {
 	VerdictRequest,
 } from "../shared/types.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
+import { isSafePath } from "./agent/prompt.js";
 import { type AgentDiff, AgentDiffRequestError } from "./agent/reads.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
@@ -177,6 +178,12 @@ interface CommentLeft {
 
 /** How long a failed compare stands before commentLeft asks again. */
 const COMMENT_LEFT_RETRY_MS = 30_000;
+/**
+ * How long a commit an agent's file diff couldn't fetch is taken as gone
+ * (CAR-53): its follow-ups answer at once with the notice, not after the
+ * fetch's timeout each time; a later one tries again.
+ */
+export const UNFETCHABLE_MS = 5 * 60_000;
 
 /** The write queue new threads share (one PR's: one at a time). */
 const NEW_THREADS = "new-threads";
@@ -463,7 +470,7 @@ export class Session {
 			viewer: this.viewer,
 			meta: () => this.#meta,
 			snapshot: () => this.#snapshot,
-			snapshotAt: (base, head) => this.#comparisonSnapshot(base, head),
+			fileDiff: (base, head, path) => this.#agentFileDiff(base, head, path),
 			prFacts: async () => {
 				const o = await this.overview();
 				return { title: o.title, body: o.body };
@@ -1891,38 +1898,73 @@ export class Session {
 	}
 
 	/**
-	 * The snapshot of `base`..`head` (an agent conversation's patch set,
-	 * CAR-53): the current one, a kept one, or built now and kept (by
-	 * snapshot id, so two asks build once). A commit the clone lacks (a
-	 * force-push dropped it) is fetched by OID; throws when it can't be.
+	 * One file's diff of `base`..`head` for an agent conversation opened on
+	 * an earlier comparison (CAR-53): `git diff` of that path alone, three
+	 * lines of context; `base` null: `head`'s merge base with the base
+	 * branch, as a viewed head's snapshot takes it (#headSnapshot). A
+	 * commit the clone lacks (a force-push dropped it) is fetched by OID
+	 * (ensureCommit); one that can't be is remembered for a while, so
+	 * follow-ups don't each wait out the fetch. Builds and keeps no
+	 * snapshot: an agent's read never becomes a patch set or a write's
+	 * target. Throws when it can't be read.
 	 */
-	async #comparisonSnapshot(base: string, head: string): Promise<Snapshot> {
-		checkOid(base);
+	async #agentFileDiff(
+		base: string | null,
+		head: string,
+		path: string,
+	): Promise<string> {
 		checkOid(head);
-		const revision = snapshotId(base, head);
-		if (this.#snapshot.revision === revision) return this.#snapshot;
-		const kept = this.#snapshots.get(revision);
-		if (kept) return kept;
-		let building = this.#building.get(revision);
-		if (!building) {
-			const signal = this.#stop.signal;
-			building = (async () => {
-				const [hasBase, hasHead] = await Promise.all([
-					ensureCommit(this.repo, base, signal),
-					ensureCommit(this.repo, head, signal),
-				]);
-				if (!hasBase || !hasHead) {
-					throw new Error(
-						`commit ${hasHead ? base : head} is not in the clone and can't be fetched`,
-					);
-				}
-				const snapshot = await buildSnapshot(this.repo, base, head);
-				this.#snapshots.set(snapshot.revision, snapshot);
-				return snapshot;
-			})().finally(() => this.#building.delete(revision));
-			this.#building.set(revision, building);
+		if (base !== null) checkOid(base);
+		if (!isSafePath(path)) throw new Error("its path isn't a safe one");
+		const signal = this.#stop.signal;
+		await this.#agentCommit(head);
+		const from =
+			base ??
+			(
+				await runGit(
+					this.repo,
+					["merge-base", `refs/remotes/origin/${this.#meta.baseBranch}`, head],
+					{ signal },
+				)
+			).trim();
+		checkOid(from);
+		await this.#agentCommit(from);
+		return runGit(
+			this.repo,
+			[
+				"--literal-pathspecs",
+				"diff",
+				"--no-color",
+				"--no-ext-diff",
+				"--no-renames",
+				"--unified=3",
+				from,
+				head,
+				"--",
+				path,
+			],
+			{ signal },
+		);
+	}
+
+	/** Commits an agent's file diff couldn't fetch, until when (ms). */
+	readonly #unfetchable = new Map<string, number>();
+
+	/** Throws unless `oid` is in the clone, fetched by OID if need be. */
+	async #agentCommit(oid: string): Promise<void> {
+		const until = this.#unfetchable.get(oid);
+		if (until !== undefined && Date.now() < until) {
+			throw new Error(`commit ${oid} can't be fetched (tried just now)`);
 		}
-		return building;
+		const signal = this.#stop.signal;
+		const present = await ensureCommit(this.repo, oid, signal);
+		if (present) {
+			this.#unfetchable.delete(oid);
+			return;
+		}
+		if (signal.aborted) throw new Error("this review is closing");
+		this.#unfetchable.set(oid, Date.now() + UNFETCHABLE_MS);
+		throw new Error(`commit ${oid} is not in crb's clone and can't be fetched`);
 	}
 
 	/** The engine's state-free result for `since` → `target`: cached, or computed once. */

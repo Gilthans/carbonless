@@ -3337,6 +3337,99 @@ describe("Session", () => {
 			await s.close();
 		});
 
+		/** An approved outside join of session `s`'s agent host: its token. */
+		const joinAgent = async (host: NonNullable<Session["agent"]>) => {
+			const { request } = host.join.request({
+				name: "carbonless · main",
+				machine: "devbox",
+				harness: "cc 2.1",
+			});
+			await host.join.answer(request, true);
+			return ((await host.join.outcome(request, 0)) as { token: string }).token;
+		};
+		/** A RIGHT line anchor on a.txt at `commit`. */
+		const onA = (commit: string, line: number) =>
+			({
+				subject: "line",
+				path: "a.txt",
+				commit,
+				side: "RIGHT",
+				line,
+				startSide: "RIGHT",
+				startLine: line,
+			}) as const;
+		/** The question, its answer, a follow-up: both questions. */
+		const askTwice = async (
+			host: NonNullable<Session["agent"]>,
+			token: string,
+			thread: string,
+		) => {
+			const q1 = await host.sessionNext(token);
+			expect(q1?.thread).toBe(thread);
+			await host.sessionReply(token, {
+				thread,
+				replyTo: q1?.replyTo as string,
+				text: "Because.",
+			});
+			await host.message(thread, { clientId: "q2", text: "And now?" });
+			const q2 = await host.sessionNext(token);
+			expect(q2?.thread).toBe(thread);
+			return [q1, q2] as const;
+		};
+		const originGit = (...args: string[]) =>
+			execFileSync("git", args, {
+				cwd: pr.repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim();
+		/** A commit on origin with a.txt as `text` on `parent`'s tree. */
+		const commitOnOrigin = (parent: string, text: string, msg: string) => {
+			const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+				cwd: pr.repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+				input: text,
+			}).trim();
+			const entries = originGit("ls-tree", parent)
+				.split("\n")
+				.filter((l) => !l.endsWith("\ta.txt"));
+			const tree = execFileSync("git", ["mktree"], {
+				cwd: pr.repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+				input: `${[...entries, `100644 blob ${blob}\ta.txt`].join("\n")}\n`,
+			}).trim();
+			return originGit("commit-tree", tree, "-p", parent, "-m", msg);
+		};
+		const numbered = (edit: (lines: string[]) => void) => {
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			edit(lines);
+			return `${lines.join("\n")}\n`;
+		};
+		/** A session's patch sets and where it is (not the counts filled in later). */
+		const where = (s: Session) => ({
+			patchset: s.info().patchset,
+			patchsets: s.info().patchsets.map((p) => ({
+				number: p.number,
+				head: p.head,
+				mergeBase: p.mergeBase,
+				revision: p.revision,
+			})),
+			revision: s.snapshot().revision,
+		});
+		const inClone = (oid: string) => {
+			try {
+				execFileSync("git", ["cat-file", "-e", `${oid}^{commit}`], {
+					cwd: clonePath("acme", "widget"),
+					env: testGitEnv(),
+					stdio: "ignore",
+				});
+				return true;
+			} catch {
+				return false;
+			}
+		};
+
 		it("a follow-up in a conversation opened on patch set 1 gets patch set 1's hunk, after patch set 2 moved and changed its line and crb restarted (CAR-53)", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const host = s.agent;
@@ -3377,25 +3470,8 @@ describe("Session", () => {
 			expect(s2.snapshot().head).toBe(h2);
 			const agent = s2.agent;
 			if (!agent) throw new Error("no agent");
-			const { request } = agent.join.request({
-				name: "carbonless · main",
-				machine: "devbox",
-				harness: "cc 2.1",
-			});
-			await agent.join.answer(request, true);
-			const token = (
-				(await agent.join.outcome(request, 0)) as { token: string }
-			).token;
-			const q1 = await agent.sessionNext(token);
-			expect(q1?.thread).toBe(x.id);
-			await agent.sessionReply(token, {
-				thread: x.id,
-				replyTo: q1?.replyTo as string,
-				text: "Because.",
-			});
-			await agent.message(x.id, { clientId: "q2", text: "And now?" });
-			const q2 = await agent.sessionNext(token);
-			expect(q2?.thread).toBe(x.id);
+			const before = where(s2);
+			const [q1, q2] = await askTwice(agent, await joinAgent(agent), x.id);
 			for (const q of [q1, q2]) {
 				expect(q?.hunk?.split("\n")).toEqual([
 					"@@ -1,5 +1,5 @@",
@@ -3410,7 +3486,150 @@ describe("Session", () => {
 					thread: { anchor: { commit: h1, line: 2 } },
 				});
 			}
+			// The agent's read built no snapshot and started nothing: the
+			// session is where it was, and a write still lands on PS2.
+			expect(where(s2)).toEqual(before);
+			await expect(s2.reviewAt(2)).resolves.toMatchObject({
+				revision: before.revision,
+			});
 			await s2.close();
+		});
+
+		it("after a rebase, a conversation on a viewed head no patch set has gets that head's own diff (its merge base with the base branch), and a mark there still starts the patch set on it (CAR-53)", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			await s.setStates((await s.review()).revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			// main moves (line 6), the PR is rebased onto it: H2, merge base M2.
+			const m2 = commitOnOrigin(
+				pr.mergeBase,
+				numbered((l) => {
+					l[5] = "line 6 from main";
+				}),
+				"main moves",
+			);
+			pr.moveMain(m2);
+			const h2 = commitOnOrigin(
+				m2,
+				numbered((l) => {
+					l[1] = "line 2 rebased";
+					l[5] = "line 6 from main";
+					l[25] = "line 26 changed";
+				}),
+				"PR rebased",
+			);
+			originGit("update-ref", "refs/pull/12/head", h2);
+			pr.scenario({
+				prs: {
+					12: { view: prView({ headRefOid: h2, baseRefName: "main" }) },
+				},
+			});
+			await s.checkHead();
+			const viewed = await s.viewHead(h2);
+			const x = await host.open({
+				clientId: "q1",
+				text: "Why?",
+				span: onA(h2, 2),
+			});
+			const before = where(s);
+			const [q1, q2] = await askTwice(host, await joinAgent(host), x.id);
+			for (const q of [q1, q2]) {
+				// M2..H2, as the page showed it: main's line 6 is context, not
+				// a change of the PR's (M1..H2 would show it removed and added).
+				expect(q?.hunk?.split("\n")).toEqual([
+					"@@ -1,5 +1,5 @@",
+					" line 1",
+					"-line 2",
+					"+line 2 rebased",
+					" line 3",
+					" line 4",
+					" line 5",
+				]);
+			}
+			expect(where(s)).toEqual(before);
+			// A mark on the viewed head starts patch set 2 on M2..H2.
+			const key = viewed.files.find((f) => f.path === "a.txt")?.clusters[0]
+				?.key;
+			if (!key) throw new Error("no cluster");
+			await s.setStates(viewed.revision, [{ key, state: "reviewed" }]);
+			expect(s.info().patchsets.at(-1)).toMatchObject({
+				number: 2,
+				head: h2,
+				mergeBase: m2,
+			});
+			await s.close();
+		});
+
+		it("a conversation on a commit a force-push dropped, missing from crb's clone: fetched by OID for its hunk; one that can't be fetched gives the notice and no hunk (CAR-53)", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			// Pushed and force-pushed away before crb ever fetched it: only
+			// origin has it, by OID (GitHub keeps it).
+			const dropped = commitOnOrigin(
+				pr.mergeBase,
+				numbered((l) => {
+					l[1] = "line 2 then";
+				}),
+				"dropped",
+			);
+			originGit("update-ref", "refs/keep/dropped", dropped);
+			originGit("config", "uploadpack.allowAnySHA1InWant", "true");
+			expect(inClone(dropped)).toBe(false);
+			const x = await host.open({
+				clientId: "q1",
+				text: "Why?",
+				span: onA(dropped, 2),
+			});
+			const token = await joinAgent(host);
+			const [q1, q2] = await askTwice(host, token, x.id);
+			for (const q of [q1, q2]) {
+				expect(q?.hunk?.split("\n")).toEqual([
+					"@@ -1,5 +1,5 @@",
+					" line 1",
+					"-line 2",
+					"+line 2 then",
+					" line 3",
+					" line 4",
+					" line 5",
+				]);
+			}
+			expect(inClone(dropped)).toBe(true);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: q2?.replyTo as string,
+				text: "Done.",
+			});
+
+			// GitHub doesn't have this one: the notice, no hunk, never the
+			// PR's current code; the follow-up doesn't fetch again.
+			const gone = "7".repeat(40);
+			const y = await host.open({
+				clientId: "q3",
+				text: "And this?",
+				span: onA(gone, 2),
+			});
+			const r1 = await host.sessionNext(token);
+			expect(r1?.thread).toBe(y.id);
+			expect(r1?.hunk).toBeNull();
+			const notice = (r1?.envelope as { notice?: string } | undefined)?.notice;
+			expect(notice).toContain(
+				`The diff this conversation was opened on (a.txt, its merge base..${gone}) can't be read now (commit ${gone} is not in crb's clone and can't be fetched)`,
+			);
+			await host.sessionReply(token, {
+				thread: y.id,
+				replyTo: r1?.replyTo as string,
+				text: "Can't see it.",
+			});
+			await host.message(y.id, { clientId: "q4", text: "Try again?" });
+			const r2 = await host.sessionNext(token);
+			expect(r2?.hunk).toBeNull();
+			expect(
+				(r2?.envelope as { notice?: string } | undefined)?.notice,
+			).toContain(`commit ${gone} can't be fetched (tried just now)`);
+			await s.close();
 		});
 
 		it("a thread turn, a suggestion included, never resolves, replies to or writes to the GitHub thread", async () => {

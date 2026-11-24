@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import {
 	createGitFixture,
 	GIT_TEST_TIMEOUTS,
 	type GitFixture,
+	testGitEnv,
 } from "../../../test/git-fixture.js";
 import {
 	type AgentAnchor,
@@ -209,7 +211,7 @@ describe("anchorHunk on an earlier patch set (CAR-53)", () => {
 	});
 	afterEach(() => ps.cleanup());
 	const [BASE, PS1] = [0, 1];
-	const onPs1 = (): AgentSpanAnchor => ({
+	const onPs1 = (): Extract<AgentSpanAnchor, { subject: "line" }> => ({
 		subject: "line",
 		path: "src/x.ts",
 		commit: ps.shas[PS1] as string,
@@ -219,16 +221,35 @@ describe("anchorHunk on an earlier patch set (CAR-53)", () => {
 		startLine: 30,
 	});
 
-	it("is patch set 1's hunk, read from its own comparison, not the current snapshot's", async () => {
-		const asked: string[][] = [];
-		const src = {
-			repo: ps.path,
-			snapshot: () => current,
-			snapshotAt: async (base: string, head: string) => {
-				asked.push([base, head]);
-				return buildSnapshot(ps.path, base, head);
+	/** A source whose fileDiff runs git on the fixture, logging its asks. */
+	const gitSource = () => {
+		const asked: (string | null)[][] = [];
+		return {
+			asked,
+			src: {
+				repo: ps.path,
+				snapshot: () => current,
+				fileDiff: async (base: string | null, head: string, path: string) => {
+					asked.push([base, head, path]);
+					return execFileSync(
+						"git",
+						[
+							"diff",
+							"--unified=3",
+							base ?? (ps.shas[BASE] as string),
+							head,
+							"--",
+							path,
+						],
+						{ cwd: ps.path, encoding: "utf8", env: testGitEnv() },
+					);
+				},
 			},
 		};
+	};
+
+	it("is patch set 1's hunk, from that one file's diff, not the current snapshot's", async () => {
+		const { src, asked } = gitSource();
 		const hunk = await anchorHunk(src, onPs1(), ps.shas[BASE] as string);
 		expect(hunk?.split("\n")).toEqual([
 			"@@ -27,7 +27,7 @@",
@@ -241,39 +262,59 @@ describe("anchorHunk on an earlier patch set (CAR-53)", () => {
 			" line 32",
 			" line 33",
 		]);
-		expect(asked).toEqual([[ps.shas[BASE], ps.shas[PS1]]]);
+		expect(asked).toEqual([[ps.shas[BASE], ps.shas[PS1], "src/x.ts"]]);
+		// A head no patch set has: its own merge base, asked as null.
+		await anchorHunk(src, onPs1(), null);
+		expect(asked.at(-1)).toEqual([null, ps.shas[PS1], "src/x.ts"]);
+	});
+
+	it("a line the diff doesn't change is null; a removed line reads on the LEFT", async () => {
+		const { src } = gitSource();
+		expect(
+			await anchorHunk(
+				src,
+				{ ...onPs1(), line: 50, startLine: 50 },
+				ps.shas[BASE] as string,
+			),
+		).toBeNull();
+		const left = await anchorHunk(
+			src,
+			{ ...onPs1(), side: "LEFT", startSide: "LEFT" },
+			ps.shas[BASE] as string,
+		);
+		expect(left).toContain("-line 30\n+line 30 changed");
 	});
 
 	it("the current snapshot when it is the comparison: no other read", async () => {
-		const snapshotAt = vi.fn();
-		const hunk = await anchorHunk(
-			{ repo: ps.path, snapshot: () => current, snapshotAt },
-			{
-				...onPs1(),
-				commit: ps.shas[2] as string,
-				line: 35,
-				startLine: 35,
-			} as AgentAnchor,
-			ps.shas[BASE] as string,
-		);
-		expect(hunk).toContain("+line 30 changed again");
-		expect(snapshotAt).not.toHaveBeenCalled();
+		const fileDiff = vi.fn();
+		const anchor = {
+			...onPs1(),
+			commit: ps.shas[2] as string,
+			line: 35,
+			startLine: 35,
+		} as AgentAnchor;
+		for (const base of [ps.shas[BASE] as string, null, undefined]) {
+			const hunk = await anchorHunk(
+				{ repo: ps.path, snapshot: () => current, fileDiff },
+				anchor,
+				base,
+			);
+			expect(hunk).toContain("+line 30 changed again");
+		}
+		expect(fileDiff).not.toHaveBeenCalled();
 	});
 
-	it("throws, never the current snapshot's code, when patch set 1 can't be read or its commit is unknown", async () => {
+	it("throws, never the current snapshot's code, when patch set 1 can't be read", async () => {
 		const gone = {
 			repo: ps.path,
 			snapshot: () => current,
-			snapshotAt: async () => {
+			fileDiff: async () => {
 				throw new Error("commit gone and can't be fetched");
 			},
 		};
 		await expect(
 			anchorHunk(gone, onPs1(), ps.shas[BASE] as string),
 		).rejects.toThrow("commit gone and can't be fetched");
-		await expect(
-			anchorHunk(gone, { ...onPs1(), commit: "" }, ps.shas[BASE] as string),
-		).rejects.toThrow("its commit is unknown");
 		// A source that reads only the current snapshot.
 		await expect(
 			anchorHunk(
@@ -282,6 +323,22 @@ describe("anchorHunk on an earlier patch set (CAR-53)", () => {
 				ps.shas[BASE] as string,
 			),
 		).rejects.toThrow("only the current diff");
+	});
+
+	it("a commit or merge base that isn't an OID (empty, argument-like) throws without a read", async () => {
+		const fileDiff = vi.fn();
+		const src = { repo: ps.path, snapshot: () => current, fileDiff };
+		gitCalls.length = 0;
+		for (const bad of ["", "--upload-pack=x", "HEAD"]) {
+			await expect(
+				anchorHunk(src, { ...onPs1(), commit: bad }, ps.shas[BASE] as string),
+			).rejects.toThrow("its commit is unknown");
+			await expect(anchorHunk(src, onPs1(), bad)).rejects.toThrow(
+				"its merge base is unknown",
+			);
+		}
+		expect(fileDiff).not.toHaveBeenCalled();
+		expect(gitCalls).toEqual([]);
 	});
 });
 
@@ -1654,7 +1711,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		}
 
 		it("asks for patch set 1's hunk (its head and its merge base), not the current comparison's", async () => {
-			const asked: [AgentAnchor, string][] = [];
+			const asked: [AgentAnchor, string | null][] = [];
 			facts.hunk = async (a, base) => {
 				asked.push([a, base]);
 				return a.subject === "line" && a.commit === H1 && base === M1
@@ -1670,6 +1727,20 @@ describe("AgentHost with a session joined through MCP", () => {
 				[H1, M1],
 			]);
 			expect(codeOf(q)?.notice ?? "").not.toContain("can't be read");
+		});
+
+		it("a head no patch set has asks for that head's own merge base (null), not the review's", async () => {
+			const H9 = "9".repeat(40);
+			const asked: (string | null)[] = [];
+			facts.hunk = async (_a, base) => {
+				asked.push(base);
+				return "@@ -1 +1 @@\n-a\n+b";
+			};
+			await host.open({ clientId: "c1", text: "Why?", span: onLine30(H9) });
+			const token = await approve();
+			const q = await host.sessionNext(token);
+			expect(q?.hunk).toBe("@@ -1 +1 @@\n-a\n+b");
+			expect(asked).toEqual([null]);
 		});
 
 		it("patch set 1's code can't be read: the envelope says so, and no hunk is sent", async () => {

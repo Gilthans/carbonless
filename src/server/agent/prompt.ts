@@ -244,27 +244,24 @@ export function anchorFor(
 	if (anchor.subject === "file" || anchor.side !== "LEFT") {
 		return { ...anchor };
 	}
-	return {
-		...anchor,
-		commit: mergeBaseOpened(anchor, review, patchsets, opened),
-	};
+	const commit =
+		patchsetOpened(anchor, patchsets, opened)?.mergeBase ?? review.mergeBase;
+	return { ...anchor, commit };
 }
 
 /**
- * The merge base of the comparison a conversation was opened on: its
- * patch set's (patchsetOf, by the head its anchor names), else the
- * review's. With the anchor's head, the diff its first question showed
- * (CAR-53: a follow-up's hunk comes from there, whatever was pushed since).
+ * The patch set a conversation was opened on (patchsetOf, by the head its
+ * anchor names); undefined when that head is no patch set's (a viewed head
+ * nobody marked on). Its merge base and head are the diff its first
+ * question showed (CAR-53: a follow-up's hunk comes from there, whatever
+ * was pushed since).
  */
-export function mergeBaseOpened(
+export function patchsetOpened(
 	anchor: { commit: string },
-	review: Pick<PromptReview, "mergeBase">,
 	patchsets: readonly AnchorPatchset[] = [],
 	opened: AnchorOpened = {},
-): string {
-	return (
-		patchsetOf(anchor.commit, patchsets, opened)?.mergeBase ?? review.mergeBase
-	);
+): AnchorPatchset | undefined {
+	return patchsetOf(anchor.commit, patchsets, opened);
 }
 
 /**
