@@ -349,16 +349,16 @@ test("opening a file moves the caret to its start: Next goes to its first hit, P
 	isMobile,
 }) => {
 	await phone(page, isMobile);
-	const next = () =>
-		isMobile
-			? bar(page).getByRole("button", { name: /^Next/ }).click()
-			: box(page).press("Enter");
+	// A phone taps the bar's ↓/↑ where they are: Playwright's click would
+	// first scroll the page (the hit mid-screen out of view).
+	const tap = async (name: RegExp) => {
+		const b = await bar(page).getByRole("button", { name }).boundingBox();
+		if (!b) throw new Error(`no ${name} button`);
+		await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+	};
+	const next = () => (isMobile ? tap(/^Next/) : box(page).press("Enter"));
 	const previous = () =>
-		isMobile
-			? bar(page)
-					.getByRole("button", { name: /^Previous/ })
-					.click()
-			: box(page).press("Shift+Enter");
+		isMobile ? tap(/^Previous/) : box(page).press("Shift+Enter");
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
