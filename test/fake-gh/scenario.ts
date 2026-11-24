@@ -201,6 +201,8 @@ export interface Scenario {
 	homeListSkip?: Record<string, number[]>;
 	/** PRs whose details GitHub answers null, with an error (partial data). */
 	homeDetailsNull?: Record<string, number[]>;
+	/** A details query reading any of these PR numbers fails as a 502 does (no data). */
+	homeDetailsFail?: number[];
 	/**
 	 * The viewer's teams (`org/slug`); null: reading them fails as with a
 	 * token missing `read:org`. Absent: no teams.
@@ -576,13 +578,15 @@ export function threadComment(c: {
  * `restList` the REST review comments, `comment` a new thread's REST
  * comment, `verdict` a verdict's REST review, `dismiss` a review's REST
  * dismissal, `home` Home's PR list and details queries (a refresh),
- * `home:<owner/repo>` (lowercased) those of that one repo only, `clone`
+ * `home:<owner/repo>` (lowercased) those of that one repo only,
+ * `homePr:<number>` a details query that reads that PR (one batch), `clone`
  * a `gh repo clone` (crb's first clone of a repo).
  */
 export type HoldOp =
 	| "home"
 	| "clone"
 	| `home:${string}`
+	| `homePr:${number}`
 	| "prView"
 	| "threads"
 	| "thread"

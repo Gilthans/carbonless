@@ -1024,6 +1024,62 @@ test("one repo's read held: the other's rows show, the held one and the sections
 	);
 });
 
+test("a repo's first read shows its rows as batches land, newest first: the chip spins and nothing counts until the last (CAR-290)", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const made = await setup(workdir, pr);
+	// 6 PRs + 15 older ones: a first batch of the 10 newest, then the rest.
+	const older = Array.from({ length: 15 }, (_, i) => 101 + i);
+	const held = "homePr:115" as const;
+	made.editScenario((s) => {
+		s.repos?.["acme/api"]?.prs.push(
+			...older.map((n) =>
+				homePr({
+					repo: "acme/api",
+					number: n,
+					title: `Older change ${n}`,
+					author: VIEWER,
+					updatedAt: iso(60 * 24 + n),
+				}),
+			),
+		);
+		s.hold = [held];
+	});
+	const crb = await startCrb();
+	await page.goto(home(crb.url));
+	const chip = page.getByTestId("view-repo").filter({ hasText: "acme/api" });
+	const first = rowOf(page, "Snooze PRs from the inbox");
+	// The first batch is in: the newest rows show, while more are coming.
+	await expect(first).toBeVisible();
+	await expect(rowOf(page, "Older change 101")).toBeVisible();
+	const top = (await first.boundingBox())?.y;
+	await expectLoadingThen({
+		loading: chip.getByRole("img", { name: "Loading acme/api" }),
+		empty: [
+			page.getByTestId("section-none"),
+			...["Mine", "Reviewing", "Up for grabs", "Other open"].map((name) =>
+				section(page, name).getByRole("heading").filter({ hasText: /\d/ }),
+			),
+		],
+		release: () => release(made.scenarioPath, held),
+		result: rowOf(page, "Older change 115"),
+	});
+	await expect(chip).toHaveAttribute("data-state", "ready");
+	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
+	await expect(page.getByTestId("row-skeleton")).toHaveCount(0);
+	await expect(section(page, "Mine").getByRole("heading")).toHaveText(
+		/Mine\s*16/,
+	);
+	// The rows shown first stayed put: the rest came in below them.
+	expect((await first.boundingBox())?.y).toBe(top);
+	await expectNoPageOverflow(page);
+});
+
 test("a snooze moves the row behind its footer, Wake up brings it back, and activity wakes it", async ({
 	page,
 	workdir,

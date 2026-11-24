@@ -89,6 +89,14 @@ export interface RepoHome {
 	error: string | null; // the last read's failure, rows kept
 	/** Reads in a row that failed: the page backs off (doubling, up to 30 min). */
 	failures: number;
+	/**
+	 * False while the repo's first read is still landing: `rows` are those
+	 * read so far (newest updatedAt first), more are coming. Never a count
+	 * or an empty state yet (principle 8). Absent (an older answer): true.
+	 */
+	complete?: boolean;
+	/** Batches of the first read in so far: the page's next ask sends it as `seen`. */
+	progress?: number;
 }
 export type AnnotationOp =
 	| { op: "snooze"; until: string; wakeOnActivity: boolean }

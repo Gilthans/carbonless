@@ -1626,6 +1626,10 @@ async function call(io) {
 							([, o, n]) => `${JSON.parse(o)}/${JSON.parse(n)}`,
 						);
 				for (const name of new Set(named.map((n) => n.toLowerCase()))) await delay(`home:${name}`);
+				// One details batch held: `homePr:<number>`, any batch reading that PR.
+				if (homeDetails) {
+					for (const [, n] of f.query.matchAll(/\bp(\d+): pullRequest\(number: \d+\)/g)) await delay(`homePr:${n}`);
+				}
 				if (s.rateLimited) {
 					writeOut(
 						`${JSON.stringify({ data: null, errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded for user ID 1." }] })}\n`,
@@ -1676,6 +1680,14 @@ async function call(io) {
 						]);
 					}
 					print({ data: { rateLimit, repository } });
+				}
+				if (
+					homeDetails &&
+					[...f.query.matchAll(/\bp(\d+): pullRequest\(number: \d+\)/g)].some(([, n]) =>
+						(s.homeDetailsFail ?? []).includes(Number(n)),
+					)
+				) {
+					fail("gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)");
 				}
 				// r<i>: repository(owner: "o", name: "n") { p<n>: pullRequest(number: <n>) { ...F } … }
 				const data = { rateLimit };

@@ -41,6 +41,13 @@ export const LIST_QUERY = `query($owner: String!, $name: String!, $openCursor: S
 
 /** PRs whose full facts one query reads (20 took about 4 s on GitHub). */
 export const DETAILS_BATCH = 20;
+/**
+ * A progressive read's first query (onProgress): smaller, so the newest
+ * rows land first and soonest. 20 took 2-5 s on GitHub, most of it per
+ * PR; 10 is about a screen of rows in about half that, and costs at most
+ * one more query per read (245 PRs: 13 queries either way).
+ */
+export const FIRST_BATCH = 10;
 /** Detail queries in flight at once. */
 const DETAILS_PARALLEL = 3;
 /** List pages per repo at most (10,000 open PRs). */
@@ -396,12 +403,17 @@ export interface PrId {
 
 /**
  * The full facts of these PRs, in any repos, DETAILS_BATCH a query (repos
- * and PRs by alias). A PR GitHub doesn't know is left out.
+ * and PRs by alias), in `ids`' order. A PR GitHub doesn't know is left
+ * out. `onProgress`: called as the batches land, in order (a batch that
+ * lands before an earlier one waits for it), with every fact read so far,
+ * but for the last (the answer is all of them); its first batch is
+ * FIRST_BATCH.
  */
 export async function fetchPrDetails(
 	ids: readonly PrId[],
 	cost: RefreshCost = newCost(),
 	signal?: AbortSignal,
+	onProgress?: (read: PrFacts[]) => void,
 ): Promise<PrFacts[]> {
 	for (const id of ids) {
 		if (
@@ -413,21 +425,39 @@ export async function fetchPrDetails(
 		}
 	}
 	const batches: PrId[][] = [];
-	for (let i = 0; i < ids.length; i += DETAILS_BATCH) {
-		batches.push(ids.slice(i, i + DETAILS_BATCH));
+	const first = onProgress ? FIRST_BATCH : DETAILS_BATCH;
+	for (let i = 0; i < ids.length; ) {
+		const size = i === 0 ? first : DETAILS_BATCH;
+		batches.push(ids.slice(i, i + size));
+		i += size;
 	}
-	const out: PrFacts[] = [];
+	const results: (PrFacts[] | undefined)[] = batches.map(() => undefined);
+	let published = 0;
 	let next = 0;
+	// One batch failed: the read has, so the others take no more batches and
+	// a batch landing after it shows nothing (the caller has its answer).
+	let failed = false;
 	const worker = async () => {
-		while (next < batches.length) {
-			const batch = batches[next++] ?? [];
-			out.push(...(await fetchBatch(batch, cost, signal)));
+		while (next < batches.length && !failed) {
+			const at = next++;
+			try {
+				results[at] = await fetchBatch(batches[at] ?? [], cost, signal);
+			} catch (error) {
+				failed = true;
+				throw error;
+			}
+			if (failed || !onProgress || results[published] === undefined) continue;
+			while (results[published] !== undefined) published++;
+			// The last one is the answer itself.
+			if (published < batches.length) {
+				onProgress(results.slice(0, published).flat() as PrFacts[]);
+			}
 		}
 	};
 	await Promise.all(
 		Array.from({ length: Math.min(DETAILS_PARALLEL, batches.length) }, worker),
 	);
-	return out;
+	return results.flat() as PrFacts[];
 }
 
 /** The details query for one batch: `r<i>` per repo, `p<number>` per PR. */
@@ -509,6 +539,12 @@ export async function fetchRepoPrs(
 		signal?: AbortSignal;
 		/** Filled with the numbers of listed PRs whose details GitHub didn't give. */
 		missing?: number[];
+		/**
+		 * Called as details land (fetchPrDetails' onProgress, newest
+		 * updatedAt first), with every PR known so far: the kept ones and
+		 * those read.
+		 */
+		onProgress?: (prs: PrFacts[]) => void;
 	} = {},
 ): Promise<PrFacts[]> {
 	const {
@@ -534,14 +570,14 @@ export async function fetchRepoPrs(
 		k.facts.checks !== "running" &&
 		now - k.readAt < DETAILS_MAX_AGE_MS;
 	const kept: PrFacts[] = [];
-	const stale: PrId[] = [];
+	const stale: (PrId & { updatedAt: string })[] = [];
 	const seen = new Set<number>();
 	for (const { number, updatedAt } of listed) {
 		if (seen.has(number)) continue;
 		seen.add(number);
 		const k = known.get(number);
 		if (fresh(k) && k.facts.updatedAt === updatedAt) kept.push(k.facts);
-		else stale.push({ owner, repo, number });
+		else stale.push({ owner, repo, number, updatedAt });
 	}
 	// Known open PRs the list didn't reach (it stopped at known history) or
 	// skipped (a PR updated between two pages' reads moves to a page already
@@ -550,9 +586,31 @@ export async function fetchRepoPrs(
 	for (const [number, k] of known) {
 		if (seen.has(number) || k.facts.state !== "OPEN") continue;
 		if (fresh(k)) kept.push(k.facts);
-		else stale.push({ owner, repo, number });
+		else stale.push({ owner, repo, number, updatedAt: k.facts.updatedAt });
 	}
-	const read = await fetchPrDetails(stale, cost, signal);
+	// Newest first, open and closed together: the rows a reviewer most
+	// likely wants land first (owner, 2026-11-24), and each batch's rows
+	// are older than those already shown.
+	stale.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+	const recent = (pr: PrFacts) =>
+		pr.closedAt === null || Date.parse(pr.closedAt) >= closedSince;
+	const { onProgress } = options;
+	const read = await fetchPrDetails(
+		stale.map(({ owner, repo, number }) => ({ owner, repo, number })),
+		cost,
+		signal,
+		onProgress &&
+			((got) => {
+				// Known facts of PRs not read yet stay meanwhile (a retry of a
+				// first read that failed keeps the rows it had).
+				const read = new Set(got.map((pr) => pr.number));
+				const waiting = stale.flatMap(({ number }) => {
+					const k = read.has(number) ? undefined : known.get(number);
+					return k ? [k.facts] : [];
+				});
+				onProgress([...kept, ...waiting, ...got.filter(recent)]);
+			}),
+	);
 	const got = new Set(read.map((pr) => pr.number));
 	// Details GitHub didn't give (a null node in partial data): the known
 	// facts stay, and the caller hears of it.
@@ -564,10 +622,7 @@ export async function fetchRepoPrs(
 	}
 	// A PR listed open but read closed (it closed in between) stays only if
 	// it closed recently.
-	const current = read.filter(
-		(pr) => pr.closedAt === null || Date.parse(pr.closedAt) >= closedSince,
-	);
-	return [...kept, ...current];
+	return [...kept, ...read.filter(recent)];
 }
 
 /** The `gh` user, with their avatar. */

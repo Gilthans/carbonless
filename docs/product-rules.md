@@ -753,6 +753,21 @@ placeholder rows stand in until every repo has answered (owner,
 a still loading result"). A repo never read successfully is unknown, not
 empty: the counts carry an alert naming it, and no section says "none".
 
+A repo's first read shows its rows as they land (owner, 2026-11-24: "as
+soon as anything is loaded we show it"): its PRs' facts are read newest
+`updatedAt` first, open and closed together, in batches (10, then 20),
+and each batch shows once those before it are in, so later rows are older
+and land below the ones shown. Until the last batch the repo's chip spins
+and Home counts nothing (the same spinners, placeholders and no "none" as
+above). A read that fails mid-way keeps the rows so far and says why; the
+spinner stops; a retry spins again (never the last read's alert) as its
+rows land. A refresh of a repo read before keeps its rows whole until it
+is done (`RepoHome.complete`, `progress`; the page's next ask sends
+`seen` and the server answers at the next batch). A page that already
+shows a whole list (the server restarted, or forgot the repo) asks with
+`whole` and gets only a whole answer: a list never shrinks to a batch;
+if that read fails, the list stays with the failure on it.
+
 ## "Side by side" is a view
 
 Settings' "Side by side" (`src/web/files/sideBySide.ts`) lays the same

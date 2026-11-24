@@ -95,16 +95,29 @@ export async function registerHomeRoutes(
 
 		scope.get("/api/home", () => home.view());
 		// A repo's rows (in the view, or picked in its settings: any repo);
-		// `fresh=1` reads GitHub now (Refresh, Retry, a save after a failed pick).
+		// `fresh=1` reads GitHub now (Refresh, Retry, a save after a failed pick);
+		// `seen=N`: a first read's answer after its Nth batch (RepoHome.progress);
+		// `whole=1`: the page shows a whole list, so only a whole one answers.
 		scope.get<{
 			Params: { owner: string; repo: string };
-			Querystring: { fresh?: unknown };
+			Querystring: { fresh?: unknown; seen?: unknown; whole?: unknown };
 		}>("/api/home/repos/:owner/:repo", (request) => {
 			const { owner, repo } = request.params;
 			if (!validOwnerRepo(owner, repo)) {
 				throw new HomeRequestError(`Not a repository: ${owner}/${repo}`);
 			}
-			return home.repo(owner, repo, { fresh: request.query.fresh === "1" });
+			const { seen } = request.query;
+			if (
+				seen !== undefined &&
+				(typeof seen !== "string" || !/^(0|[1-9]\d{0,8})$/.test(seen))
+			) {
+				throw new HomeRequestError("seen must be a whole number");
+			}
+			return home.repo(owner, repo, {
+				fresh: request.query.fresh === "1",
+				whole: request.query.whole === "1",
+				...(seen === undefined ? {} : { seen: Number(seen) }),
+			});
 		});
 		scope.post<{ Params: { owner: string; repo: string; number: string } }>(
 			"/api/home/prs/:owner/:repo/:number/annotations",
