@@ -788,9 +788,28 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		}
 		let view = await s.viewHead(repo.heads.updated);
 		for (const f of answer.files) {
-			const { pieces = [] } = await s.interdiffHunks(1, view.revision, f.index);
+			const { hunks, pieces = [] } = await s.interdiffHunks(
+				1,
+				view.revision,
+				f.index,
+			);
 			// The engine's answer and the page's hunks agree on the pieces.
 			expect(pieces).toEqual(f.pieces ?? []);
+			// No removed line shows twice: a shown row and an orphan of the
+			// same cluster, base line and text (CAR-277). A guard rail: no
+			// update here edits a line the base changed, so this never
+			// reaches the githubLeft fallback (engine.test.ts covers that
+			// per method: rebase, merge-base-in, squash).
+			const removed = hunks
+				.flatMap((h) => h.lines)
+				.filter((l) => l.kind === "del" && l.clusterKey !== undefined);
+			const rowOf = (l: (typeof removed)[number]) =>
+				`${l.clusterKey}:${l.baseNo}:${l.text}`;
+			const shown = new Set(removed.filter((l) => !l.orphan).map(rowOf));
+			expect(
+				removed.filter((l) => l.orphan && shown.has(rowOf(l))).map(rowOf),
+				f.path,
+			).toEqual([]);
 			const clusterOf = (key: string | undefined) =>
 				view.files
 					.find((v) => v.index === f.index)

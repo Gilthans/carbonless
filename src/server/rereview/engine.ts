@@ -57,7 +57,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-export const ENGINE_VERSION = 5;
+export const ENGINE_VERSION = 6;
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {
@@ -132,6 +132,15 @@ export interface Traced {
 		 * head's path on that commit (CAR-233).
 		 */
 		earlierMoved?: Record<string, number[]>;
+		/**
+		 * By the virtual rebase's path, for each file of the since patch set
+		 * whose head file pairs with it: interdiff removed lines `baseLine`
+		 * has no place for because the base move brought or changed them
+		 * (not in the patch set's head, or a base line of the old base the
+		 * bases' diff changed), never one the patch set added (CAR-277).
+		 * Only these may be placed by `githubLeft` instead, for ownership.
+		 */
+		baseMoved?: Record<string, number[]>;
 	};
 }
 
@@ -470,6 +479,7 @@ export async function traceRereview(
 		const cd = t ? linesMapper(t.clusters) : null;
 		// Each removed line the since view shows, as the new base's line.
 		const baseLines: Record<number, number> = {};
+		const moved: number[] = [];
 		const shownFile = interdiffByOld.get(primePath);
 		if (t && shownFile && !shownFile.conflict) {
 			const own = linesMapper(file.clusters);
@@ -480,8 +490,16 @@ export async function traceRereview(
 					const b1 = h1 === null ? null : own.newToOld(h1);
 					const b2 = b1 === null ? null : t.ac.oldToNew(b1);
 					if (b2 !== null) baseLines[ic.oldStart + i] = b2;
+					// Not placed, and not the patch set's own (h1 there, b1
+					// none): the base move's line.
+					else if (h1 === null || b1 !== null) moved.push(ic.oldStart + i);
 				}
 			}
+		}
+		if (moved.length > 0) {
+			const all = lineKeys.baseMoved ?? {};
+			all[primePath] = moved;
+			lineKeys.baseMoved = all;
 		}
 		const placed = lineKeys.baseLine ?? {};
 		placed[primePath] = baseLines;
@@ -1283,9 +1301,35 @@ function sinceFileHunks(
 			: file.conflict
 				? line.oldNo
 				: mapped?.[line.oldNo];
+	// For ownership only (CAR-277): a line the base move brought or
+	// changed has no place through the old base; GitHub's LEFT line (the
+	// virtual rebase against the new base) places it then, only when the
+	// tracer names it the base move's (`baseMoved`), the compared patch
+	// set didn't add it, and no row the old base places claims that base
+	// line (that placement wins). pieceRanges's text guard still applies:
+	// anything else leaves it unplaced, and the cluster's line an orphan
+	// row of its own (principle 2: shown twice, never hidden). A
+	// conflicted file has neither map (its old side is the base).
+	const left = file.conflict
+		? undefined
+		: traced.lineKeys.githubLeft?.[file.oldPath ?? file.path];
+	const baseMoved = new Set(
+		left ? (traced.lineKeys.baseMoved?.[file.oldPath ?? file.path] ?? []) : [],
+	);
+	const addedThen = traced.lineKeys.old[file.oldPath ?? file.path] ?? {};
+	const claimed = new Set(Object.values(mapped ?? {}));
+	const placedOrLeft = (line: DiffLine): number | undefined => {
+		const b = baseNo(line);
+		if (b !== undefined || !mapped || !left) return b;
+		const n = line.oldNo;
+		if (line.kind !== "del" || n === undefined) return undefined;
+		if (!baseMoved.has(n) || addedThen[n] !== undefined) return undefined;
+		const l = left[n];
+		return l === undefined || claimed.has(l) ? undefined : l;
+	};
 	// An orphan's is its cluster's (it has no old number here).
 	const baseOf = (line: DiffLine): number | undefined =>
-		line.orphan ? (line.baseNo ?? undefined) : baseNo(line);
+		line.orphan ? (line.baseNo ?? undefined) : placedOrLeft(line);
 	/** The target cluster that removes a removed base line (by its place in the new base). */
 	const removedBy = (line: DiffLine): string | undefined => {
 		const b = baseNo(line);
@@ -1358,9 +1402,6 @@ function sinceFileHunks(
 	// conflicted file's old side is the base; else the virtual rebase's
 	// diff against it (null: a line only the patch sets had). A file with
 	// no such map leaves it unset, which the page refuses (fails closed).
-	const left = file.conflict
-		? undefined
-		: traced.lineKeys.githubLeft?.[file.oldPath ?? file.path];
 	const earlier = file.conflict
 		? undefined
 		: traced.lineKeys.earlierRight?.[file.oldPath ?? file.path];
