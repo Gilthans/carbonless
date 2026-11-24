@@ -147,7 +147,8 @@ function sameMemo(): Same {
 	};
 }
 
-const alnum = (t: string) => t.match(ALNUM)?.length ?? 0;
+/** Letters and digits in `t` (TUNING.minAlnum counts these). */
+export const alnum = (t: string) => t.match(ALNUM)?.length ?? 0;
 
 const indent = (t: string) => t.length - t.trimStart().length;
 

@@ -417,12 +417,24 @@ function inPlace(old: string[], now: string[]): TraceDiffs {
 			});
 		}
 	});
-	return diffs({
+	return withHunks(old, now, hunks);
+}
+
+/** `old` to `now` through the given `git diff -U0` hunks. */
+const withHunks = (old: string[], now: string[], hunks: MapHunk[]) =>
+	diffs({
 		bd: createLineMapper(hunks),
 		texts: rows(1, old),
 		now: rows(1, now),
 	});
-}
+
+/** A one-line hunk: `[old, new]` start and count, as `@@ -o,oc +n,nc @@`. */
+const hunk = (o: number, oc: number, n: number, nc: number): MapHunk => ({
+	oldStart: o,
+	oldCount: oc,
+	newStart: n,
+	newCount: nc,
+});
 
 /** Where old line `n` of the swap's thread lands: its line, or its unplaced reason. */
 function landing(d: TraceDiffs, n: number): number | string {
@@ -543,6 +555,114 @@ describe("tracePosition: look-alike lines swapped around a kept line (CAR-279)",
 		);
 		expect(landing(d, 1)).toBe("rewritten");
 		expect(landing(d, 3)).toBe("rewritten");
+	});
+
+	it("a near miss (ten-word items, one word apart, swapped with a word added) can't be told", () => {
+		// Crosses by 0.087 both ways, just under SWAP_MARGIN.
+		const d = inPlace(
+			[
+				"- Run the full build script for the main web package now",
+				"Note: kept.",
+				"- Run the full build script for the main server package now",
+			],
+			[
+				"- Run the full build script for the main server package now twice",
+				"Note: kept.",
+				"- Run the full build script for the main web package now twice",
+			],
+		);
+		expect(landing(d, 1)).toBe("rewritten");
+		expect(landing(d, 3)).toBe("rewritten");
+	});
+
+	it("values swapped under keys that stay put: each thread stays on its key", () => {
+		const d = inPlace(
+			[
+				"primary_host: db-west-1.internal.example.com",
+				"timeout: 30",
+				"replica_host: db-east-2.internal.example.com",
+			],
+			[
+				"primary_host: db-east-2.internal.example.com",
+				"timeout: 30",
+				"replica_host: db-west-1.internal.example.com",
+			],
+		);
+		expect(tracePosition(R(1), d)).toStrictEqual({
+			kind: "changed",
+			side: "RIGHT",
+			line: 1,
+			oldText: "primary_host: db-west-1.internal.example.com",
+		});
+		expect(landing(d, 3)).toBe(3);
+	});
+
+	it("values swapped under call subjects that stay put: each thread stays on its call", () => {
+		const d = inPlace(
+			[
+				'\texpect(primary).toBe("db-east-1.internal.example.com")',
+				"\tkept()",
+				'\texpect(replica).toBe("db-west-2.internal.example.com")',
+			],
+			[
+				'\texpect(primary).toBe("db-west-2.internal.example.com")',
+				"\tkept()",
+				'\texpect(replica).toBe("db-east-1.internal.example.com")',
+			],
+		);
+		expect(landing(d, 1)).toBe(1);
+		expect(landing(d, 3)).toBe(3);
+	});
+
+	it("generic short lines that cross never move: can't tell", () => {
+		const d = inPlace(
+			["if err != nil {", "\treturn err", "}", "return nil"],
+			["if err != nil {", "\treturn nil", "}", "return err"],
+		);
+		expect(landing(d, 2)).toBe("rewritten");
+		expect(landing(d, 4)).toBe("rewritten");
+	});
+
+	it("a swap decides the same for both lines when a deletion unanchors one", () => {
+		const d = withHunks(
+			[
+				"value = compute(alpha)",
+				"kept()",
+				"value = compute(beta)",
+				"k2()",
+				"drop_this_line(now)",
+			],
+			[
+				"value = compute(beta, 1)",
+				"kept()",
+				"value = compute(alpha, 1)",
+				"k2()",
+			],
+			[hunk(1, 1, 1, 1), hunk(3, 1, 3, 1), hunk(5, 1, 4, 0)],
+		);
+		expect(landing(d, 1)).toBe(3);
+		expect(landing(d, 3)).toBe(1);
+	});
+
+	it("the same, mirrored: a deletion above the first line unanchors it", () => {
+		const mirror = withHunks(
+			[
+				"drop_this_line(now)",
+				"k0()",
+				"value = compute(alpha)",
+				"kept()",
+				"value = compute(beta)",
+			],
+			[
+				"k0()",
+				"value = compute(beta, 1)",
+				"kept()",
+				"value = compute(alpha, 1)",
+			],
+			[hunk(1, 1, 0, 0), hunk(3, 1, 2, 1), hunk(5, 1, 4, 1)],
+		);
+		expect(landing(mirror, 3)).toBe(4);
+		expect(landing(mirror, 5)).toBe(2);
 	});
 
 	it("look-alikes both edited in place, not swapped, stay in place", () => {

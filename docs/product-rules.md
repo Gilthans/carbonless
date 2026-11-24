@@ -182,7 +182,14 @@ replacement more than its own. Crossed both ways by 0.1 or more (about
 one word in ten), each thread follows its own text to the
 other line ("moved since"); crossed one way only, or by less, it is
 `rewritten`: a guess there would put a thread on a wrong line. A tie
-(twins, the same text twice) is no crossing: it stays.
+(twins, the same text twice) is no crossing: it stays. Both lines kept
+the word that told them apart (a key, `primary_host:`; a subject,
+`expect(primary)`) and only their values swapped: each stays on its own
+line; only one kept it: `rewritten`. Generic lines with under 20 letters
+and digits between the two (`return err`, `return nil`) never move on a
+crossing: `rewritten`. The check is made before anything else on the
+line's partner nearby, so both lines of a pair decide alike, even when a
+deletion beside one unanchors it.
 
 A block moved elsewhere in its file takes its threads with it
 (`src/shared/tracer/moved.ts`): the commented line found again among the
