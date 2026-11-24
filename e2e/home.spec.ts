@@ -493,15 +493,42 @@ test("opening a PR of a repo crb never cloned says so beside the spinner while i
 	});
 	const fresh =
 		"Cloning acme/fresh for the first time, this might take a while";
-	// The clone held: the spinner, and the notice beside it.
+	// The open's answer reaches the page only on the test's cue (a held
+	// fetch): the clone can end while the page still waits.
+	let answerOpen = () => {};
+	const openHeld = new Promise<void>((done) => {
+		answerOpen = done;
+	});
+	let openDone = false;
+	await page.route("**/api/reviews", async (route) => {
+		const response = await route.fetch();
+		openDone = true;
+		await openHeld;
+		await route.fulfill({ response });
+	});
+	// The clone held: the spinner, and the notice beside it, outside the
+	// spinner's busy region.
 	await page.goto(new URL("/pr/acme/fresh/8", crb.url).href);
 	await expect(opening).toBeVisible();
 	await expect(notice).toHaveText(fresh);
-	await expect(page.getByRole("main")).toHaveAttribute("aria-busy", "true");
+	await expect(page.getByTestId("opening-busy")).toHaveAttribute(
+		"aria-busy",
+		"true",
+	);
+	await expect(
+		page.locator('[aria-busy="true"] [data-testid="first-clone"]'),
+	).toHaveCount(0);
 	await expectNoPageOverflow(page);
+	// The clone ends (the server's open with it), the page still waiting:
+	// the notice goes, the spinner stays.
 	release(made.scenarioPath, "clone");
+	await expect.poll(() => openDone).toBe(true);
+	await expect(notice).toBeEmpty();
+	await expect(opening).toBeVisible();
+	answerOpen();
 	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
 	await expect(notice).toHaveCount(0);
+	await page.unroute("**/api/reviews");
 
 	// The next open of the repo only fetches: held in GitHub's answer, past
 	// a poll of the clone state, the spinner shows alone.
@@ -514,8 +541,9 @@ test("opening a PR of a repo crb never cloned says so beside the spinner while i
 	await page.goto(new URL("/pr/acme/fresh/9", crb.url).href);
 	await expect(opening).toBeVisible();
 	expect(await (await polled).json()).toEqual({ cloning: false });
+	// The live region is there, empty, from the start (read out when filled).
 	await expect(notice).toBeEmpty();
-	await expect(notice).toBeHidden();
+	await expect(notice).toHaveCSS("display", "block");
 	release(made.scenarioPath, "prView");
 	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
 });

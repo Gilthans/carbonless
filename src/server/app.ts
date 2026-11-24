@@ -56,7 +56,7 @@ import { isCloning } from "./clone.js";
 import { updateConfig } from "./config.js";
 import { FailureLog } from "./errorLog.js";
 import { GhError, WriteRefusedError } from "./errors.js";
-import { NODE_ID, parsePrArg } from "./gh.js";
+import { NODE_ID, parsePrArg, validOwnerRepo } from "./gh.js";
 import { GitError } from "./git.js";
 import type { HomeService } from "./home/homeService.js";
 import { registerHomeRoutes } from "./home/routes.js";
@@ -532,6 +532,9 @@ export async function buildApp(
 		async (request, reply): Promise<CloneState> => {
 			reply.header("cache-control", "no-store");
 			const { owner, repo } = request.params;
+			if (!validOwnerRepo(owner, repo)) {
+				throw new BadRequestError(`Not a repository: ${owner}/${repo}`);
+			}
 			return { cloning: isCloning(owner, repo) };
 		},
 	);

@@ -76,7 +76,8 @@ export function OpeningPage() {
 	const waiting = refused === null && open.isPending;
 	const clone = useQuery({
 		queryKey: ["cloning", owner.toLowerCase(), repo.toLowerCase()],
-		queryFn: () => fetchJson<CloneState>(clonePathOf(owner, repo)),
+		queryFn: ({ signal }) =>
+			fetchJson<CloneState>(clonePathOf(owner, repo), { signal }),
 		enabled: waiting,
 		refetchInterval: CLONE_POLL_MS,
 		retry: false,
@@ -132,23 +133,29 @@ export function OpeningPage() {
 					</div>
 				</div>
 			</header>
-			<main aria-busy={waiting} className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
+			<main className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
 				{why !== null ? (
 					<NotFound reason={why} />
 				) : error ? (
 					<ErrorMessage error={error} />
 				) : (
 					<>
-						<Spinner label="Opening the PR" className="text-sm">
-							Opening…
-						</Spinner>
-						{/* Under the spinner, with nothing after it: nothing moves
-						    as the notice comes and goes; read out when it fills.
-						    The repo name is React text (escaped). */}
+						<div data-testid="opening-busy" aria-busy={waiting}>
+							<Spinner label="Opening the PR" className="text-sm">
+								Opening…
+							</Spinner>
+						</div>
+						{/* The first-clone notice's live region: in the page (and
+						    the accessibility tree) from the start, empty, so a
+						    screen reader announces the text when it comes; outside
+						    the busy region, whose updates it would hold back. Under
+						    the spinner with nothing after it: nothing moves as the
+						    text comes and goes. The repo name is React text
+						    (escaped). */}
 						<p
 							aria-live="polite"
 							data-testid="first-clone"
-							className="mt-2 text-sm break-words text-muted empty:hidden"
+							className="mt-2 text-sm break-words text-muted"
 						>
 							{cloning ? firstCloneMessage(`${owner}/${repo}`) : null}
 						</p>

@@ -2767,6 +2767,45 @@ describe("API", () => {
 			expect(open.json().start_url).toBe("/");
 		});
 
+		it("GET /api/clones/<owner>/<repo>: whether its first clone runs, behind the key; a bad name is a 400 (CAR-291)", async () => {
+			// Not a review's route (inject() would put it under /api/r/<id>).
+			const clones = (url: string) =>
+				app.inject({ method: "GET", url, headers: { host } });
+			const ok = await clones("/api/clones/acme/widget");
+			expect(ok.statusCode).toBe(200);
+			expect(ok.headers["cache-control"]).toBe("no-store");
+			expect(ok.json()).toEqual({ cloning: false });
+			// `..` as a segment never reaches the route (the router's 404).
+			for (const dots of ["/api/clones/acme/%2E%2E", "/api/clones/%2E%2E/w"]) {
+				expect((await clones(dots)).statusCode, dots).not.toBe(200);
+			}
+			for (const bad of [
+				"/api/clones/a.b%2F..%2Fc/widget",
+				"/api/clones/acme/..%2Fwidget",
+				"/api/clones/acme/wid%2Fget",
+				"/api/clones/ac%20me/widget",
+				"/api/clones/acme/wid%3Cget",
+				`/api/clones/${"a".repeat(60)}/widget`,
+			]) {
+				const res = await clones(bad);
+				expect(res.statusCode, bad).toBe(400);
+				expect(res.json().error, bad).toMatch(/^Not a repository/);
+			}
+			const keyed = await buildApp(registry, { accessKey: "k3y" });
+			try {
+				expect((await keyed.inject("/api/clones/acme/widget")).statusCode).toBe(
+					401,
+				);
+				const res = await keyed.inject({
+					url: "/api/clones/acme/widget",
+					cookies: { crb_key: "k3y" },
+				});
+				expect(res.json()).toEqual({ cloning: false });
+			} finally {
+				await keyed.close();
+			}
+		});
+
 		it("GET /api/mcp/setup gives the key behind the key, null without one", async () => {
 			const keyed = await buildApp(registry, { accessKey: "k3y" });
 			try {

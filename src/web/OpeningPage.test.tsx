@@ -107,6 +107,46 @@ describe("/pr/<owner>/<repo>/<n>", () => {
 		});
 	});
 
+	it("has the first-clone notice's live region, empty, from the start, outside the busy region; fills it while the repo clones (CAR-291)", async () => {
+		let answerClone = () => {};
+		const cloneAsked = new Promise<void>((done) => {
+			answerClone = done;
+		});
+		const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+			if (input === "/api/reviews" && init?.method === "POST") {
+				return new Promise<Response>(() => {});
+			}
+			if (input === "/api/clones/acme/widget") {
+				await cloneAsked;
+				return json(200, { cloning: true });
+			}
+			return new Response("{}", { status: 404 });
+		});
+		vi.stubGlobal("fetch", fetch);
+		renderAt("/pr/acme/widget/7");
+		const notice = await screen.findByTestId("first-clone");
+		// Before the answer: there, empty, polite, and not held back by a busy
+		// ancestor; the spinner's region is the busy one.
+		expect(notice).toHaveTextContent("");
+		expect(notice).toHaveAttribute("aria-live", "polite");
+		expect(notice).not.toHaveClass("empty:hidden");
+		expect(notice.closest('[aria-busy="true"]')).toBeNull();
+		const busy = screen.getByTestId("opening-busy");
+		expect(busy).toHaveAttribute("aria-busy", "true");
+		expect(busy).toContainElement(screen.getByRole("status"));
+		answerClone();
+		await waitFor(() =>
+			expect(notice).toHaveTextContent(
+				"Cloning acme/widget for the first time, this might take a while",
+			),
+		);
+		// The poll passes the query's signal (stopped with the page).
+		const poll = fetch.mock.calls.find(
+			([u]) => u === "/api/clones/acme/widget",
+		);
+		expect(poll?.[1]?.signal).toBeInstanceOf(AbortSignal);
+	});
+
 	it("pins an all-digit head as typed (not read as a number)", async () => {
 		const api = serve(() => json(200, { id: ID }));
 		const router = renderAt("/pr/acme/widget/7?head=1234567");
