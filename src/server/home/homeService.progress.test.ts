@@ -307,6 +307,34 @@ describe("a repo's first read answers as it lands", () => {
 		read.finish(prs(1, 12));
 	});
 
+	it("an ask that has seen more than the read has (a restart) waits for the next batch (fix round 2)", async () => {
+		const { home } = service();
+		// A page from before a restart, its read 3 batches along.
+		const ask = home.repo("acme", "api", { seen: 3 });
+		const read = await current();
+		expect(await settled(ask)).toBe(false);
+		read.progress(prs(1, 10));
+		expect(await ask).toMatchObject({ complete: false, progress: 1 });
+		read.finish(prs(1, 12));
+	});
+
+	it("a first read slower than the cache period, failing, is answered with its error, not followed by another read (fix round 2)", async () => {
+		const { home, clock } = service();
+		const first = home.repo("acme", "api");
+		const read = await current();
+		read.progress(prs(1, 10));
+		await first;
+		// GitHub slow: the read outlasts the period, then fails, while no ask waits.
+		clock.now += 60 * 60_000;
+		read.fail(new Error("gh: boom"));
+		// The read has ended before the page's next ask (its gap between asks).
+		await new Promise((r) => setImmediate(r));
+		const next = home.repo("acme", "api", { seen: 1 });
+		expect(await settled(next)).toBe(true);
+		expect(await next).toMatchObject({ complete: true, error: "boom" });
+		expect(reads).toHaveLength(1);
+	});
+
 	it("an ask that has seen everything answers after PROGRESS_WAIT_MS with what there is", async () => {
 		const { home } = service();
 		const first = home.repo("acme", "api");

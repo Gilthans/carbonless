@@ -60,6 +60,24 @@ export const fetchRepo = (
 	);
 };
 
+/**
+ * One ask of a repo whose shown answer is `shown` (askOf). A whole list
+ * shown stays when the answer is a failed first read's (a cold server
+ * whose read failed): its rows are kept, with the failure on them.
+ */
+export async function readRepo(
+	name: string,
+	fresh: boolean,
+	signal: AbortSignal | undefined,
+	shown: RepoHome | undefined,
+): Promise<RepoHome> {
+	const ask = askOf(shown);
+	const answer = await fetchRepo(name, fresh, signal, ask);
+	return ask.whole && shown && neverRead(answer)
+		? { ...shown, error: answer.error, failures: answer.failures }
+		: answer;
+}
+
 /** A repo whose first read is still landing: more rows are coming. */
 export const incomplete = (data: RepoHome | undefined) =>
 	data?.complete === false;
@@ -135,11 +153,11 @@ export const repoQuery = (name: string, minutes: number) =>
 		queryKey: repoKey(name),
 		// The signal: a cancelled ask (Refresh, Home left) isn't held on.
 		queryFn: ({ client, signal }) =>
-			fetchRepo(
+			readRepo(
 				name,
 				false,
 				signal,
-				askOf(client.getQueryData<RepoHome>(repoKey(name))),
+				client.getQueryData<RepoHome>(repoKey(name)),
 			),
 		staleTime: Math.max(1, minutes) * 60_000,
 		gcTime: REPO_GC_MS,
@@ -169,10 +187,10 @@ export function repoRefetchInterval(
  */
 export const refetchRepo = async (client: QueryClient, name: string) => {
 	await client.cancelQueries({ queryKey: repoKey(name) });
-	const ask = askOf(client.getQueryData<RepoHome>(repoKey(name)));
+	const shown = client.getQueryData<RepoHome>(repoKey(name));
 	return client.fetchQuery({
 		queryKey: repoKey(name),
-		queryFn: ({ signal }) => fetchRepo(name, true, signal, ask),
+		queryFn: ({ signal }) => readRepo(name, true, signal, shown),
 		staleTime: 0,
 		gcTime: REPO_GC_MS,
 	});
@@ -213,18 +231,20 @@ export function prefetchRepo(
 	const saved = () =>
 		client.getQueryData(homeQuery.queryKey)?.view.repos.includes(key) ?? false;
 	// A whole list it already holds (a repo added back) stays whole.
-	const ask = askOf(client.getQueryData<RepoHome>(repoKey(key)));
+	const shown = client.getQueryData<RepoHome>(repoKey(key));
 	void client.prefetchQuery({
 		...repoQuery(name, minutes),
 		staleTime: 0,
 		queryFn: async ({ signal }) => {
 			try {
-				const answer = await fetchRepo(name, false, signal, ask);
+				const answer = await readRepo(name, false, signal, shown);
 				return neverRead(answer) && saved()
-					? fetchRepo(name, true, signal)
+					? readRepo(name, true, signal, shown)
 					: answer;
 			} catch (error) {
-				if (saved() && !signal.aborted) return fetchRepo(name, true, signal);
+				if (saved() && !signal.aborted) {
+					return readRepo(name, true, signal, shown);
+				}
 				throw error;
 			}
 		},

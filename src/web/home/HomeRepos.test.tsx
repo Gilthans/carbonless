@@ -303,6 +303,57 @@ describe("Home's repos", () => {
 		expect(titles("Mine")).toEqual(["API 1", "API 2", "API 3"]);
 	});
 
+	it("a whole list stays when a cold server's read fails: its rows kept, the failure on them (CAR-290 fix round 2)", async () => {
+		const all = [1, 2, 3].map((n) =>
+			row({
+				number: n,
+				title: `API ${n}`,
+				updatedAt: `2026-10-0${5 - n}T00:00:00Z`,
+			}),
+		);
+		const api = fakeApi(
+			view({}, { view: { name: "My PRs", repos: ["acme/api"] } }),
+			{
+				// Whole first; then a cold server whose first read failed after a batch.
+				"GET /api/home/repos/acme/api": () =>
+					asked() === 1
+						? {
+								repo: "acme/api",
+								rows: all,
+								refreshedAt: "2026-10-05T00:00:00Z",
+								error: null,
+								failures: 0,
+								complete: true,
+							}
+						: {
+								repo: "acme/api",
+								rows: all.slice(0, 1),
+								refreshedAt: null,
+								error: "Rate limited by GitHub",
+								failures: 1,
+								complete: true,
+								progress: 1,
+							},
+			},
+		);
+		const asked = () => repoGets(api.calls, "acme/api").length;
+		renderWithQuery(<HomePage />);
+		await waitFor(() =>
+			expect(titles("Mine")).toEqual(["API 1", "API 2", "API 3"]),
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+		await waitFor(() =>
+			within(chip("acme/api") as HTMLElement).getByRole("img", {
+				name: "acme/api: Rate limited by GitHub",
+			}),
+		);
+		expect(titles("Mine")).toEqual(["API 1", "API 2", "API 3"]);
+		// Kept rows, not unknown ones: counted, with no "Without" alert.
+		expect(within(section("Mine")).getByRole("heading")).toHaveTextContent(
+			/Mine\s*3/,
+		);
+	});
+
 	it("a retry of a failed first read spins while it lands, never the old error (CAR-290 fix round 1)", async () => {
 		fakeApi(
 			view(

@@ -757,7 +757,8 @@ rows land. A refresh of a repo read before keeps its rows whole until it
 is done (`RepoHome.complete`, `progress`; the page's next ask sends
 `seen` and the server answers at the next batch). A page that already
 shows a whole list (the server restarted, or forgot the repo) asks with
-`whole` and gets only a whole answer: a list never shrinks to a batch.
+`whole` and gets only a whole answer: a list never shrinks to a batch;
+if that read fails, the list stays with the failure on it.
 
 ## "Side by side" is a view
 

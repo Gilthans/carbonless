@@ -74,7 +74,7 @@ export function configAccess<C extends HomeConfig>(
 
 /**
  * A repo's facts answer from the cache for refresh.minutes after its last
- * read began (doubled per failure in a row, up to MAX_BACKOFF_MS), never
+ * read ended (doubled per failure in a row, up to MAX_BACKOFF_MS), never
  * less than this: however many tabs and devices ask on their own timers,
  * a repo costs one read per period. `fresh` (Refresh, Retry) always reads.
  */
@@ -141,7 +141,7 @@ interface RepoState {
 	facts: Map<number, Known>;
 	/** When the last read that worked began (fetchRepoPrs' listedSince). */
 	listedAt: number | undefined;
-	/** When the last read, worked or not, began: FRESH_MS counts from it. */
+	/** When the last read, worked or not, ended: FRESH_MS counts from it. */
 	checkedAt: number;
 	error: string | null;
 	failures: number;
@@ -372,7 +372,10 @@ export class HomeService {
 				state.bump();
 			});
 			if (state.listedAt !== undefined || opts.whole) await state.reading;
-			else if (state.progress === (opts.seen ?? 0)) {
+			// Seen as much or more (a page from before a restart, whose read
+			// was further along): wait for the next batch too, never an
+			// answer with fewer rows at once.
+			else if (state.progress <= (opts.seen ?? 0)) {
 				let timer: ReturnType<typeof setTimeout> | undefined;
 				await Promise.race([
 					state.reading,
@@ -441,7 +444,9 @@ export class HomeService {
 			state.error = refreshReason(error);
 		} finally {
 			live = false;
-			state.checkedAt = begun;
+			// The period counts from the read's end: a read slower than it
+			// isn't followed at once by another, and its failure is answered.
+			state.checkedAt = this.#now();
 			if (generation === this.#generation) this.lastCost = cost;
 		}
 	}

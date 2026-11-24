@@ -1,7 +1,7 @@
 import { request } from "node:http";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { homePr } from "../../../test/fake-gh/scenario";
+import { homePr, release } from "../../../test/fake-gh/scenario";
 import {
 	createHomeFixture,
 	type HomeFixture,
@@ -57,8 +57,8 @@ function raw(
 	});
 }
 
-async function setup() {
-	fx = createHomeFixture({
+async function setup(
+	scenario: Parameters<typeof createHomeFixture>[0] = {
 		repos: {
 			"acme/api": {
 				prs: [
@@ -72,7 +72,9 @@ async function setup() {
 				],
 			},
 		},
-	});
+	},
+) {
+	fx = createHomeFixture(scenario);
 	let config: HomeConfig = {
 		views: [{ name: "My PRs", repos: ["acme/api"] }],
 		refresh: { minutes: 2 },
@@ -93,6 +95,42 @@ async function setup() {
 }
 
 describe("/api/home", () => {
+	it("whole=1 answers a cold repo only whole; anything else gets its batches (CAR-290)", async () => {
+		// 15 PRs: a first batch of 10, then 5 (held).
+		const prs = Array.from({ length: 15 }, (_, i) =>
+			homePr({
+				repo: "acme/api",
+				number: i + 1,
+				author: "Octo",
+				updatedAt: iso(Date.now() - (i + 1) * 1000),
+			}),
+		);
+		const { app } = await setup({
+			repos: { "acme/api": { prs } },
+			hold: ["homePr:11"],
+		});
+		const get = (query: string) =>
+			app
+				.inject({ method: "GET", url: `/api/home/repos/acme/api${query}` })
+				.then((r) => r.json<RepoHome>());
+		let wholeDone = false;
+		const whole = get("?whole=1").then((r) => {
+			wholeDone = true;
+			return r;
+		});
+		// The first batch is in: a plain ask and a misspelt one get it.
+		for (const query of ["", "?whole=yes", "?whole=true"]) {
+			const partial = await get(query);
+			expect(partial, query).toMatchObject({ complete: false });
+			expect(partial.rows, query).toHaveLength(10);
+		}
+		expect(wholeDone).toBe(false);
+		release(fx?.path ?? "", "homePr:11");
+		const answer = await whole;
+		expect(answer).toMatchObject({ complete: true });
+		expect(answer.rows).toHaveLength(15);
+	});
+
 	it("GET answers the view without reading a repo; each repo has its own GET", async () => {
 		const { app } = await setup();
 		const res = await app.inject({ method: "GET", url: "/api/home" });
