@@ -1,9 +1,14 @@
-import { CheckCircleIcon, SquareFillIcon } from "@primer/octicons-react";
+import {
+	AlertIcon,
+	CheckCircleIcon,
+	SquareFillIcon,
+} from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { AgentMessage, AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
 import { sessionQuery } from "../api";
+import { Spinner } from "../Spinner";
 import { canToggle } from "../threads/ResolveButton";
 import { useThreadWriter, useWritesOn } from "../threads/threadWrites";
 import { AgentMessageItems, agentName, useAnswering } from "./AgentThreadCard";
@@ -12,6 +17,7 @@ import { agentStatusQuery, postAgentCancel } from "./api";
 import {
 	standingSuggestion,
 	unseenMessages,
+	useAgentThreadsRead,
 	useSeenWriter,
 	useThreadAgentContext,
 } from "./threadAgent";
@@ -115,6 +121,10 @@ function useEntered(open: boolean): boolean {
  * under the latest message that suggests it, which resolves the GitHub
  * thread (the card's Resolve, a human's press) and is gone once it is
  * resolved. The card header and the composer row stay outside it.
+ * Before the agent threads are first read, a spinner; once their read
+ * failed with nothing in hand, the error with Retry (a spinner in its
+ * slot while it reads again): never what reads as an empty conversation.
+ * Pending writes show under either.
  */
 export function ThreadAgentPanel(props: {
 	thread: ReviewThread;
@@ -132,6 +142,9 @@ export function ThreadAgentPanel(props: {
 	const entered = useEntered(shown && open);
 	const scroller = useRef<HTMLDivElement>(null);
 	useSeenWriter(conversation, open, scroller);
+	// No conversation before the first answer or after a failed read: a
+	// spinner or the error, never what reads as an empty one (principle 8).
+	const read = useAgentThreadsRead();
 	// The first agent message unseen as it opened: the divider stays there.
 	const [divider, setDivider] = useState<string | undefined>(undefined);
 	const firstUnseen = conversation?.unread
@@ -170,6 +183,7 @@ export function ThreadAgentPanel(props: {
 						data-testid="thread-agent-scroll"
 						className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto overscroll-contain p-2.5"
 					>
+						{/* Reversed: the messages (and any pending write) last in sight. */}
 						<div className="space-y-2">
 							<PanelMessages
 								thread={thread}
@@ -177,6 +191,50 @@ export function ThreadAgentPanel(props: {
 								divider={divider}
 							/>
 						</div>
+						{read.state === "loading" && !conversation && (
+							<div
+								data-testid="thread-agent-panel-loading"
+								aria-busy="true"
+								className="flex flex-1 items-center justify-center"
+							>
+								<Spinner label="Loading agent messages" size={24} />
+							</div>
+						)}
+						{read.state === "failed" && !conversation && (
+							<p
+								role="alert"
+								data-testid="thread-agent-panel-failed"
+								aria-busy={read.retrying}
+								className="flex flex-wrap items-center gap-2 text-sm text-bad"
+							>
+								<AlertIcon size={14} aria-hidden />
+								Agent messages couldn't load
+								{/* While it reads again: a spinner in Retry's slot, the
+								    button kept (focus stays) and inert to presses. */}
+								<span className="relative inline-flex">
+									<button
+										type="button"
+										aria-label="Retry"
+										aria-disabled={read.retrying}
+										onClick={() => {
+											if (!read.retrying) read.retry();
+										}}
+										className="flex h-10 items-center rounded-md px-3 font-medium text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-default aria-disabled:hover:bg-transparent"
+									>
+										<span className={read.retrying ? "invisible" : undefined}>
+											Retry
+										</span>
+									</button>
+									{read.retrying && (
+										<Spinner
+											label="Loading agent messages"
+											size={16}
+											className="pointer-events-none absolute inset-0 justify-center"
+										/>
+									)}
+								</span>
+							</p>
+						)}
 					</div>
 				)}
 			</section>

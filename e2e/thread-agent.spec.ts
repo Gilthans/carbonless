@@ -1,4 +1,4 @@
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import { releaseAcp } from "../test/fake-acp/scenario";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import {
@@ -209,6 +209,104 @@ test("on code, with the viewer on the second tint (after rev1), the agent's answ
 	expect(human.left).toBe("1px");
 	expect(answer.bg).not.toBe(human.bg);
 	expect(answer.top).not.toBe(human.top);
+});
+
+test("a failed read: the panel keeps the error with a spinner in Retry's slot while it reads again, Send waits, never an empty conversation (CAR-124)", async ({
+	page,
+	pr,
+	agentCrb,
+	expectConsoleError,
+}) => {
+	// The failed reads (500s) Chromium logs.
+	expectConsoleError(/500/);
+	await setup(pr);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "Stored answer." }] },
+	});
+	await holdSeen(page);
+	await page.goto(s.url);
+	let card = overviewCard(page);
+	await openPanel(card);
+	await sendToAgent(card, "Anything?");
+	await expect(panel(card).getByTestId("agent-message-ai")).toContainText(
+		"Stored answer.",
+	);
+	// From here, the threads' GETs fail, are held, or pass, as the test says.
+	let mode: "fail" | "hold" | "pass" = "fail";
+	const held: Route[] = [];
+	const fail = (route: Route) =>
+		route.fulfill({ status: 500, body: '{"error":"boom"}' });
+	await page.route(/\/agent\/threads(\?.*)?$/, async (route) => {
+		if (route.request().method() !== "GET" || mode === "pass") {
+			await route.continue();
+			return;
+		}
+		if (mode === "fail") {
+			await fail(route);
+			return;
+		}
+		held.push(route);
+	});
+	// The status reads held too: a status that moves refetches the threads
+	// (useAgentSync), and only the presses below may ask for them.
+	const statusHeld: Route[] = [];
+	await page.route(/\/agent(\?.*)?$/, async (route) => {
+		if (route.request().method() !== "GET") {
+			await route.continue();
+			return;
+		}
+		statusHeld.push(route);
+	});
+	try {
+		await page.reload();
+		card = overviewCard(page);
+		const button = agentButton(card);
+		await expect(button).toHaveAttribute("data-failed", "true");
+		const failed = panel(card).getByRole("alert");
+		const retry = failed.getByRole("button", { name: "Retry" });
+		const messages = panel(card).getByTestId("agent-message-human");
+		const send = card.getByRole("button", { name: "Send to agent" });
+		// Pressed, it opens the panel and reads again (held): the error
+		// stays, with a spinner in Retry's slot; no empty conversation.
+		mode = "hold";
+		await button.click();
+		await expect(panel(card)).toHaveAttribute("data-open", "true");
+		await expect.poll(() => held.length).toBe(1);
+		await expect(failed).toContainText("Agent messages couldn't load");
+		await expect(failed).toHaveAttribute("aria-busy", "true");
+		await expect(
+			failed.getByRole("status", { name: "Loading agent messages" }),
+		).toBeVisible();
+		await expect(retry).toHaveAttribute("aria-disabled", "true");
+		await expect(messages).toHaveCount(0);
+		// Nothing known of the thread's conversation: a draft, no Send.
+		await card.getByRole("textbox", { name: "Ask agent" }).fill("Again?");
+		await expect(send).toBeDisabled();
+		// That read fails too: the same error, Retry live.
+		for (const route of held.splice(0)) await fail(route);
+		await expect(failed).toHaveAttribute("aria-busy", "false");
+		await expect(retry).toHaveAttribute("aria-disabled", "false");
+		await expect(messages).toHaveCount(0);
+		// One press of Retry asks once (held): the spinner in its slot, then
+		// the conversation.
+		await retry.click();
+		await expect.poll(() => held.length).toBe(1);
+		await expect(failed).toHaveAttribute("aria-busy", "true");
+		await expect(messages).toHaveCount(0);
+		mode = "pass";
+		for (const route of held.splice(0)) await route.continue();
+		await expect(panel(card).getByTestId("agent-message-ai")).toContainText(
+			"Stored answer.",
+		);
+		await expect(messages).toHaveCount(1);
+		await expect(failed).toHaveCount(0);
+		await expect(send).toBeEnabled();
+	} finally {
+		await page.unroute(/\/agent(\?.*)?$/);
+		for (const route of statusHeld.splice(0)) {
+			await route.continue().catch(() => {});
+		}
+	}
 });
 
 test("the same from Files changed", async ({
