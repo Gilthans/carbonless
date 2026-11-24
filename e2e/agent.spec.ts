@@ -757,9 +757,10 @@ test("a jump to the question while an answer lands stays where it went: the pin 
 	// the test's cue, right as the jump starts.
 	const held: Array<() => Promise<void>> = [];
 	let holding = true;
-	await page.route("**/agent/threads", (route) => {
+	await page.route("**/agent/threads", async (route) => {
 		if (!holding || route.request().method() !== "GET") {
-			return route.continue();
+			await route.continue();
+			return;
 		}
 		held.push(() => route.continue());
 	});
@@ -1266,7 +1267,10 @@ test("from the answering view to the stored reply, the card never empties and wa
 			const c = [
 				...document.querySelectorAll('[data-testid="agent-thread"]'),
 			].find((e) => e.textContent?.includes("Stream?"));
-			if (!c) return w.crbSeen.push("no card");
+			if (!c) {
+				w.crbSeen.push("no card");
+				return;
+			}
 			if (c.querySelector('[data-testid="agent-waiting"]'))
 				w.crbSeen.push("waiting");
 			if (
@@ -1284,9 +1288,10 @@ test("from the answering view to the stored reply, the card never empties and wa
 	// The threads read after the reply is held.
 	const held: Array<() => Promise<void>> = [];
 	let holding = true;
-	await page.route("**/agent/threads", (route) => {
+	await page.route("**/agent/threads", async (route) => {
 		if (!holding || route.request().method() !== "GET") {
-			return route.continue();
+			await route.continue();
+			return;
 		}
 		held.push(() => route.continue());
 	});
@@ -1341,9 +1346,10 @@ test("elsewhere: a second server leaves the agent to the first, which answers wh
 	// and only its threadsRev says the threads moved.
 	const held: Array<() => Promise<void>> = [];
 	let holding = true;
-	await other.route("**/agent", (route) => {
+	await other.route("**/agent", async (route) => {
 		if (!holding || route.request().method() !== "GET") {
-			return route.continue();
+			await route.continue();
+			return;
 		}
 		held.push(() => route.continue());
 	});
