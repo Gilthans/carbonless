@@ -298,7 +298,13 @@ export function HomePage(
 				home === "home" &&
 				(kind === "view" || (kind === "repo" && shownKeys.has(String(name)))),
 		}) > 0;
-	const busy = fetching || viewSave.saving || refresh.isPending;
+	// A first read still landing is busy between its asks too: the spinner
+	// stays put until the repo is complete.
+	const busy =
+		fetching ||
+		viewSave.saving ||
+		refresh.isPending ||
+		repos.some(({ state }) => state === "loading");
 	// Until every repo has answered once (a failure counts), sections show
 	// placeholders, never a count of rows still to come.
 	// A repo a save is still adding isn't read yet: its chip says so,

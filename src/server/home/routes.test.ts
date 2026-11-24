@@ -137,6 +137,19 @@ describe("/api/home", () => {
 			url: "/api/home/repos/-x/tool",
 		});
 		expect(bad.statusCode).toBe(400);
+		// `seen` is a batch count: a whole number, nothing else.
+		for (const seen of ["-1", "x", "1.5", "01", "9999999999"]) {
+			const res = await app.inject({
+				method: "GET",
+				url: `/api/home/repos/acme/api?seen=${seen}`,
+			});
+			expect(res.statusCode, seen).toBe(400);
+		}
+		const seen = await app.inject({
+			method: "GET",
+			url: "/api/home/repos/acme/api?seen=0",
+		});
+		expect(seen.json<RepoHome>()).toMatchObject({ complete: true });
 		// A dot segment is never a repo: it would name a path, not a clone.
 		// A browser drops it from the URL, a raw request doesn't (inject
 		// normalizes as a browser does, so this goes over a socket).
