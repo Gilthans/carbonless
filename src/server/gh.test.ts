@@ -110,6 +110,7 @@ describe("runGh", () => {
  * A tiny fake `gh` on PATH. Behaviour comes from env vars:
  * FAKE_AUTH=out (auth status fails logged out), FAKE_AUTH=net (fails offline),
  * FAKE_AUTH_SLEEP (auth status answers after that long, then logs "auth answered"),
+ * FAKE_HOLD (a path: every call waits until it exists, or its parent is gone),
  * FAKE_PRVIEW_ERR / FAKE_GQL_ERR (stderr of a failing call), FAKE_VIEW (stdout
  * of `pr view`), FAKE_GQL_DIR (dir with <connection>-<page>.json responses,
  * and overview-1.json for the overview's one query).
@@ -118,6 +119,7 @@ describe("runGh", () => {
 const FAKE_GH = `#!/bin/sh
 echo "$*" >> "$FAKE_LOG"
 [ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
+[ -n "$FAKE_HOLD" ] && while [ ! -e "$FAKE_HOLD" ] && kill -0 $PPID 2>/dev/null; do sleep 0.05; done
 case "$1 $2" in
 "auth status")
   [ -n "$FAKE_AUTH_SLEEP" ] && { sleep "$FAKE_AUTH_SLEEP"; echo "auth answered" >> "$FAKE_LOG"; }
@@ -166,6 +168,7 @@ describe("runGh with a fake gh", () => {
 	afterEach(async () => {
 		// A failed read's sibling calls end on this fake gh, not the real one.
 		try {
+			writeFileSync(join(dir, "released"), "");
 			await settleGh();
 		} finally {
 			for (const [k, v] of Object.entries(saved)) {
@@ -746,18 +749,18 @@ describe("runGh with a fake gh", () => {
 	});
 
 	it("names the read that took too long, and stops a read that is aborted", async () => {
-		setEnv({ FAKE_SLEEP: "5" });
+		// gh answers only once released (afterEach): a read that waited for
+		// it, rather than stopping, fails on the test's timeout.
+		setEnv({ FAKE_HOLD: join(dir, "released") });
 		await expect(
 			runGh(["api", "graphql"], { timeoutMs: 200, what: "the review threads" }),
 		).rejects.toThrow(
 			"GitHub took longer than 0.2 s to answer for the review threads",
 		);
 		const stop = new AbortController();
-		const started = Date.now();
 		const read = runGh(["api", "graphql"], { signal: stop.signal });
 		setTimeout(() => stop.abort(), 100);
 		await expect(read).rejects.toBeInstanceOf(GhAbortedError);
-		expect(Date.now() - started).toBeLessThan(2000);
 		// Once aborted, gh isn't started at all.
 		const before = log();
 		await expect(

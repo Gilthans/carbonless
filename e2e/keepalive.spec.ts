@@ -1,6 +1,12 @@
 import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
-import { fileSection, openFiles, progress, tapHeight } from "./files-ui";
+import {
+	fileSection,
+	openFiles,
+	progress,
+	tapFilesButton,
+	tapHeight,
+} from "./files-ui";
 import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 /**
@@ -88,6 +94,7 @@ async function expectScroll(page: Page, y: number) {
 		.toBeLessThanOrEqual(2);
 	// And it stays there (nothing scrolls it again a frame later).
 	await page.evaluate(
+		// biome-ignore lint/plugin/no-sleep-in-tests: proves an absence (no later scroll); no event marks it
 		() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 100))),
 	);
 	expect(Math.abs((await scrollY(page)) - y)).toBeLessThanOrEqual(2);
@@ -285,7 +292,7 @@ test("leaving the files page with the tree sheet open closes it", async ({
 	await page.goto(s.url);
 	await tab(page, "Files changed").click();
 	await expect(progress(page)).toBeVisible();
-	await page.getByRole("button", { name: "Files", exact: true }).click();
+	await tapFilesButton(page);
 	await expect(page.getByRole("dialog", { name: "Files" })).toBeVisible();
 	await page.goBack();
 	await expect(whatItDoes(page)).toBeVisible();
@@ -419,6 +426,7 @@ test("a diff scrolled sideways is still scrolled there after visiting the overvi
 	await tab(page, "Files changed").click();
 	await expect(progress(page)).toBeVisible();
 	await page.evaluate(
+		// biome-ignore lint/plugin/no-sleep-in-tests: proves an absence (no later scroll); no event marks it
 		() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 100))),
 	);
 	expect(await scroller.evaluate((el) => el.scrollLeft)).toBe(120);

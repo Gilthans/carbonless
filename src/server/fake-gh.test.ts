@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fakeGh } from "../../test/fake-gh/gh.mjs";
 import { KEPT_TAGS } from "../../test/fake-gh/keptTags.mjs";
 import {
 	FAKE_GH_DIR,
@@ -34,6 +35,7 @@ import {
 import { ghCallsOf } from "../../test/gh-log";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { settleGh } from "../../test/settle-gh";
+import { quietFor } from "../../test/sleep";
 import { GITHUB_KEPT_TAGS } from "../shared/markdownEscape";
 import { GhError, WriteRefusedError } from "./errors";
 import {
@@ -123,7 +125,7 @@ describe("fake gh", () => {
 			answered = true;
 			return meta;
 		});
-		await new Promise((r) => setTimeout(r, 300));
+		await quietFor(300, "a held call that answered anyway");
 		expect(answered).toBe(false);
 		release(process.env.CRB_FAKE_GH ?? "", "prView");
 		await expect(view).resolves.toMatchObject({ headOid: "a".repeat(40) });
@@ -941,6 +943,32 @@ describe("fake gh", () => {
 				await exited;
 				release(process.env.CRB_FAKE_GH ?? "", "reply");
 				await until(() => fakeGhServerCalls().running === 0);
+				expect((await thread0()).comments.totalCount).toBe(1);
+			});
+
+			it("a call killed just after its gate last checked, then released, saves nothing (CAR-274)", async () => {
+				// The interleaving the test above races into on a loaded
+				// machine: the kill, and the release after it, land between
+				// the gate's check for a kill and its read of the release.
+				writable({ hold: ["reply"] });
+				const opener = (await thread0()).first.nodes[0]?.databaseId ?? 0;
+				let gone = false;
+				const code = await fakeGh({
+					args: replyArgs(opener),
+					env: process.env,
+					cwd: tmp,
+					stdin: () => JSON.stringify({ body: "Never" }),
+					out: () => {},
+					err: () => {},
+					log: () => true,
+					killed: () => {
+						if (gone) return true;
+						gone = true;
+						release(process.env.CRB_FAKE_GH ?? "", "reply");
+						return false;
+					},
+				});
+				expect(code).toBe(137);
 				expect((await thread0()).comments.totalCount).toBe(1);
 			});
 

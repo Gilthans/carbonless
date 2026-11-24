@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { quietFor } from "../../../test/sleep";
 import { newQueryClient } from "../queryClient";
 import { leaveHome, repoKey } from "./homeApi";
 import {
@@ -11,9 +12,8 @@ import {
 
 const stops: (() => void)[] = [];
 afterEach(async () => {
+	// Stopping drops a throttled save already timed: none lands in the next test.
 	for (const stop of stops.splice(0)) stop();
-	// A throttled save already timed lands now, not in the next test.
-	await new Promise((r) => setTimeout(r, 5));
 	sessionStorage.clear();
 });
 
@@ -80,7 +80,7 @@ describe("persistHome", () => {
 		const review = await page({ restore: false });
 		review.setQueryData(["session"], { id: "review" });
 		window.dispatchEvent(new Event("pagehide"));
-		await new Promise((r) => setTimeout(r, 5));
+		await quietFor(5, "the review page's save wiping Home's");
 		expect(stored()).toContain("kept");
 	});
 
@@ -90,6 +90,22 @@ describe("persistHome", () => {
 		expect(stored()).not.toContain("just in");
 		window.dispatchEvent(new Event("pagehide"));
 		expect(stored()).toContain("just in");
+	});
+
+	it("stopped, a save already timed writes nothing", async () => {
+		const client = await page({ throttleTime: 1_000 });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			client.setQueryData(VIEW, { view: "late" });
+			// The change is seen and its save timed, not yet written.
+			await vi.advanceTimersByTimeAsync(100);
+			expect(stored()).not.toContain("late");
+			stops.pop()?.();
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(stored()).not.toContain("late");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("a review page's own reads never write Home's unchanged answers again", async () => {
@@ -118,7 +134,7 @@ describe("persistHome", () => {
 			review.setQueryData(["files", i], { n: i });
 		}
 		window.dispatchEvent(new Event("pagehide"));
-		await new Promise((r) => setTimeout(r, 5));
+		await quietFor(5, "a write of unchanged Home answers");
 		expect(writes).toBe(1);
 		// A change of Home's own is saved.
 		review.setQueryData(VIEW, { view: "w" });

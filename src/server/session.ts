@@ -77,7 +77,7 @@ import {
 	type PrRef,
 	resolvePrRef,
 } from "./gh.js";
-import { runGit, runGitBuffer } from "./git.js";
+import { GitError, runGit, runGitBuffer } from "./git.js";
 import {
 	type NewThreadTarget,
 	type StartedRecord,
@@ -207,9 +207,22 @@ export const placingHooks: {
 	afterRead:
 		| ((job: { revision: string; readId: string }) => Promise<void>)
 		| null;
+	/**
+	 * Test hook (POST /api/_test/placing): every placement job fails with a
+	 * GitError of this message once it has read its threads. Null: none.
+	 */
+	fail: string | null;
 } = {
 	afterRead: null,
+	fail: null,
 };
+
+/**
+ * How long a failed placement job's error is answered again before an ask
+ * starts a new job (CAR-271): a page asking again and again reruns the
+ * job (git work) at most this often, per target and read.
+ */
+export const PLACING_FAILURE_KEPT_MS = 30_000;
 
 /** crb --head and the hidden dev options (--as-of, --viewer). */
 export interface SessionOptions {
@@ -249,6 +262,8 @@ interface Endpoints {
 interface RereviewJob {
 	done: { target: Snapshot; traced: Traced } | null;
 	error: Error | null;
+	/** When it failed (Date.now()): its error is answered until PLACING_FAILURE_KEPT_MS later. */
+	failedAt?: number;
 	settled: Promise<void>;
 }
 
@@ -264,6 +279,8 @@ interface PlacingJob {
 	 */
 	done: { target: Snapshot; inputs: ThreadInput[]; complete: boolean } | null;
 	error: Error | null;
+	/** When it failed (Date.now()): its error is answered until PLACING_FAILURE_KEPT_MS later. */
+	failedAt?: number;
 	settled: Promise<void>;
 	/**
 	 * Started before a thread on another commit joined the read (CAR-233):
@@ -945,11 +962,16 @@ export class Session {
 			key = `head:${head}`;
 			snapshot = () => this.#headSnapshot(head);
 		}
-		const job = this.#placingJob(key, snapshot, readId);
+		let job = this.#placingJob(key, snapshot, readId);
 		if (job.error) {
+			// Answered again for a while, never rerun on every ask (CAR-271);
+			// then dropped: the next ask starts it anew.
+			if (Date.now() - (job.failedAt ?? 0) < PLACING_FAILURE_KEPT_MS) {
+				throw job.error;
+			}
 			for (const [k, j] of this.#placing)
 				if (j === job) this.#placing.delete(k);
-			throw job.error;
+			job = this.#placingJob(key, snapshot, readId);
 		}
 		if (!job.done) return { pending: true };
 		const { complete } = job.done;
@@ -1057,6 +1079,7 @@ export class Session {
 				);
 				const resolvedThreads = withHunks.filter((t) => t.resolved);
 				await placingHooks.afterRead?.({ revision: target.revision, readId });
+				if (placingHooks.fail !== null) throw new GitError(placingHooks.fail);
 				// Filed under its snapshot id too: a head and its patch set share it.
 				if (!job.stale) this.#placing.set(`${target.revision}|${readId}`, job);
 				// When GitHub gave the threads' current lines (each with the
@@ -1103,6 +1126,7 @@ export class Session {
 					complete: true,
 				};
 			} catch (error) {
+				job.failedAt = Date.now();
 				job.error = error as Error;
 			}
 		})();

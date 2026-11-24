@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { ownerToken } from "../../scripts/owner.mjs";
+import { quietFor } from "../../test/sleep";
 import { ownerAlive, watchOwner } from "./owner";
 
 describe("owner", () => {
@@ -30,7 +31,7 @@ describe("owner", () => {
 		expect(calls).toBe(0);
 		owner.kill("SIGKILL");
 		await gone;
-		await new Promise((r) => setTimeout(r, 100));
+		await quietFor(100, "a second call of the gone-owner callback");
 		expect(calls).toBe(1);
 	});
 });

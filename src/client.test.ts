@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPrFixture, type PrFixture } from "../test/pr-fixture";
+import { fakeDelay } from "../test/sleep";
 import { ClientError, ensureServer, runClient, trimLog } from "./client";
 import { type StartedServer, startServer } from "./server/serve";
 import { readLiveServerState, writeServerState } from "./server/serverState";
@@ -29,7 +30,7 @@ describe("the client", () => {
 	const spawner = (delayMs = 0) => {
 		const spawn = vi.fn(() => {
 			void (async () => {
-				await new Promise((r) => setTimeout(r, delayMs));
+				await fakeDelay(delayMs);
 				servers.push(await startServer({ port: 0 }));
 			})();
 			return { exited: new Promise<number | null>(() => {}) };

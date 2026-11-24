@@ -100,6 +100,12 @@ async function call(io) {
 	 * for that only; its new `hold` is kept, so a write saved after doesn't put
 	 * the gate back. Other test edits made while it waited are overwritten if
 	 * this call saves (a write): see the hazards in scenario.ts (HoldOp).
+	 *
+	 * A release seen ends the wait only after one more turn for news of a
+	 * kill: a test kills gh, awaits its exit, then releases, and the kill
+	 * may land between sleep()'s check and the read that sees the release.
+	 * Its socket closed before the release was written, so the next turn
+	 * takes it in, and the killed call saves nothing (CAR-274).
 	 */
 	async function delay(op, ms) {
 		if (ms) await sleep(ms);
@@ -108,6 +114,7 @@ async function call(io) {
 			const hold = JSON.parse(readFileSync(scenarioPath, "utf8")).hold;
 			if (!hold?.includes(op)) {
 				s.hold = hold;
+				await sleep(0);
 				return;
 			}
 			await sleep(20);

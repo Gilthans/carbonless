@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	QueryClient,
+	QueryClientProvider,
+	QueryObserver,
+} from "@tanstack/react-query";
 import {
 	createMemoryHistory,
 	createRootRoute,
@@ -19,6 +23,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
+import { quietFor } from "../../../test/sleep";
 import type { AgentThread } from "../../shared/agent";
 import type { FileView, ReviewView } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
@@ -30,6 +35,20 @@ import { LANDED_MS } from "./DiffBody";
 import { FilesPage, MISSING_HINT_MS } from "./FilesPage";
 import { findState } from "./find/findState";
 import { parseFilesSearch } from "./landing";
+
+/** FileDiff's renders: the floating Files button's flips must not add any. */
+const fileDiffRenders = vi.hoisted(() => ({ count: 0 }));
+vi.mock("./FileDiff", async (importOriginal) => {
+	const real = await importOriginal<typeof import("./FileDiff")>();
+	const { createElement } = await import("react");
+	return {
+		...real,
+		FileDiff: (props: Parameters<typeof real.FileDiff>[0]) => {
+			fileDiffRenders.count++;
+			return createElement(real.FileDiff, props);
+		},
+	};
+});
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -218,12 +237,24 @@ describe("FilesPage", () => {
 				.findByRole("progressbar", { name: "Review progress" })
 				.then((p) => p.closest("[data-page-bar]") as HTMLElement),
 		).findByRole("status", { name: "Loading comments" });
+		// The query cache notifies its observers on a timeout: one subscribed
+		// after the page's hears the failure after them.
+		const observer = new QueryObserver(lastClient, {
+			queryKey: overviewQuery.queryKey,
+			enabled: false,
+		});
+		const notified = new Promise<void>((done) => {
+			const unsubscribe = observer.subscribe((result) => {
+				if (result.status !== "error") return;
+				unsubscribe();
+				done();
+			});
+		});
 		await act(async () => {
 			await lastClient
 				.refetchQueries({ queryKey: overviewQuery.queryKey })
 				.catch(() => {});
-			// The query cache notifies on a timeout.
-			await new Promise((r) => setTimeout(r, 20));
+			await notified;
 		});
 		expect(overviewReads).toBe(2);
 		expect(lastClient.getQueryState(overviewQuery.queryKey)?.status).toBe(
@@ -286,7 +317,7 @@ describe("FilesPage", () => {
 			);
 			// Let the page render with the threads (placements enable then).
 			await act(async () => {
-				await new Promise((r) => setTimeout(r, 20));
+				await quietFor(20, "an unwanted placements read");
 			});
 			const reads = () =>
 				fetchMock.mock.calls.filter(([input]) =>
@@ -814,6 +845,45 @@ describe("FilesPage", () => {
 		await vi.waitFor(() => expect(scrolled).toHaveBeenCalled());
 	});
 
+	it("on a narrow screen, the floating button hiding and showing re-renders no file", async () => {
+		vi.stubGlobal(
+			"matchMedia",
+			(query: string) =>
+				({
+					matches: false,
+					media: query,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				}) as unknown as MediaQueryList,
+		);
+		renderPage({
+			"/api/review": () => ({
+				status: 200,
+				body: { ...emptyReview, files: [oneFile] },
+			}),
+		});
+		const button = await screen.findByRole("button", { name: "Files" });
+		await screen.findByRole("region", { name: "a.txt" });
+		// Settled: no render pending.
+		await act(async () => {});
+		const before = fileDiffRenders.count;
+		expect(before).toBeGreaterThan(0);
+		// A box takes focus: the button makes way (the same flip as a
+		// card's control under it), and back.
+		const box = document.createElement("textarea");
+		document.body.append(box);
+		act(() => box.focus());
+		await vi.waitFor(() =>
+			expect(button).toHaveAttribute("data-fab-hidden", "writing"),
+		);
+		act(() => box.blur());
+		await vi.waitFor(() =>
+			expect(button).not.toHaveAttribute("data-fab-hidden"),
+		);
+		expect(fileDiffRenders.count).toBe(before);
+		box.remove();
+	});
+
 	describe("landing from a thread link", () => {
 		const hunks = {
 			newLineCount: 3,
@@ -1140,7 +1210,7 @@ describe("FilesPage", () => {
 			await user.click(within(a).getByRole("button", { name: "Expand file" }));
 			await waitFor(() => expect(currentIn()).toBe("a.txt"));
 			// Give a scroll that shouldn't come every chance to.
-			await act(() => new Promise((r) => setTimeout(r, 50)));
+			await act(() => quietFor(50, "a second scroll to the hit"));
 			expect(scrolled).toHaveBeenCalledTimes(1);
 		});
 

@@ -13,13 +13,14 @@ import {
 import { fakeGhServerCalls } from "../../test/fake-gh/server.mjs";
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import { quietFor } from "../../test/sleep";
 import { buildApp } from "./app";
 import { ghRunning, runGh } from "./gh";
 import { gitChildren } from "./git";
 import { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
 import { startServer } from "./serve";
-import { Session } from "./session";
+import { placingHooks, Session } from "./session";
 import {
 	type ResetAnswer,
 	registerTestHooks,
@@ -93,6 +94,7 @@ describe("test hooks", () => {
 		expect((await call("POST", "/api/_test/reset")).statusCode).toBe(404);
 		expect((await call("GET", "/api/_test/state")).statusCode).toBe(404);
 		expect((await call("POST", "/api/_test/limits")).statusCode).toBe(404);
+		expect((await call("POST", "/api/_test/placing")).statusCode).toBe(404);
 		expect(registry.openIds()).toHaveLength(1);
 	});
 
@@ -104,6 +106,7 @@ describe("test hooks", () => {
 				["POST", "/api/_test/reset"],
 				["GET", "/api/_test/state"],
 				["POST", "/api/_test/limits"],
+				["POST", "/api/_test/placing"],
 			] as const) {
 				const res = await call(method, url, token);
 				expect(res.statusCode, `${method} ${url} ${token}`).toBe(403);
@@ -111,6 +114,30 @@ describe("test hooks", () => {
 		}
 		expect(session.closed).toBe(false);
 		expect(registry.openIds()).toHaveLength(1);
+	});
+
+	it("POST /placing makes every placement job fail (a message) or run (null); 400 for anything else; a reset lets them run", async () => {
+		await serve(TOKEN);
+		const placing = (fail: unknown) =>
+			(app as FastifyInstance).inject({
+				method: "POST",
+				url: "/api/_test/placing",
+				headers: { host, [TEST_HOOK_HEADER]: TOKEN },
+				payload: { fail },
+			});
+		try {
+			expect((await placing("git failed")).statusCode).toBe(200);
+			expect(placingHooks.fail).toBe("git failed");
+			expect((await placing(3)).statusCode).toBe(400);
+			expect(placingHooks.fail).toBe("git failed");
+			expect((await placing(null)).statusCode).toBe(200);
+			expect(placingHooks.fail).toBeNull();
+			await placing("again");
+			await reset();
+			expect(placingHooks.fail).toBeNull();
+		} finally {
+			placingHooks.fail = null;
+		}
 	});
 
 	it("sits behind the host check", async () => {
@@ -163,7 +190,7 @@ describe("test hooks", () => {
 		});
 		const calls = pr.ghLog();
 		release(process.env.CRB_FAKE_GH ?? "", "threads");
-		await new Promise((r) => setTimeout(r, 300));
+		await quietFor(300, "the killed gh serving more");
 		expect(pr.ghLog()).toBe(calls);
 
 		// The registry still works: the same PR opens a new session.

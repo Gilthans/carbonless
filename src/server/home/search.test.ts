@@ -205,13 +205,15 @@ const viewOf = (home: HomeService) => {
 };
 
 /** Asks until the GitHub search is in. */
-async function settle(search: HomeSearch, q: string): Promise<SearchResult> {
-	for (let i = 0; i < 100; i++) {
-		const r = await search.search(q);
-		if (!r.pending) return r;
-		await new Promise((resolve) => setTimeout(resolve, 50));
-	}
-	throw new Error("search never settled");
+function settle(search: HomeSearch, q: string): Promise<SearchResult> {
+	return vi.waitFor(
+		async () => {
+			const r = await search.search(q);
+			if (r.pending) throw new Error("search never settled");
+			return r;
+		},
+		{ timeout: 5_000, interval: 50 },
+	);
 }
 const prIds = (r: SearchResult) =>
 	r.prs.map((p) => `${p.owner}/${p.repo}#${p.number}`);

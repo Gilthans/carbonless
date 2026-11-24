@@ -271,6 +271,39 @@ describe("when the placements fail", () => {
 		);
 		expect(screen.queryByRole("status")).toBeNull();
 	});
+
+	it("a thread made on the viewed head, shown at its own line, never reads 'place unknown' (CAR-271)", () => {
+		const onHead = thread();
+		const { rerender } = render(
+			wrap(
+				info({ error: new Error("git failed"), viewedHead: onHead.commit }),
+				<PlacementChip thread={onHead} />,
+			),
+		);
+		expect(screen.queryByTestId("placement-error")).toBeNull();
+		expect(screen.queryByRole("status")).toBeNull();
+		// One made on another commit still says so: its place is unknown.
+		rerender(
+			wrap(
+				info({ error: new Error("git failed"), viewedHead: "b".repeat(40) }),
+				<PlacementChip thread={onHead} />,
+			),
+		);
+		expect(screen.getByTestId("placement-error").textContent).toContain(
+			"place unknown",
+		);
+		// Shown on the head but made on an earlier patch set's (the since
+		// view's earlierPending copy): its place is unknown.
+		rerender(
+			wrap(
+				info({ error: new Error("git failed"), viewedHead: onHead.commit }),
+				<PlacementChip thread={{ ...onHead, madeOn: "c".repeat(40) }} />,
+			),
+		);
+		expect(screen.getByTestId("placement-error").textContent).toContain(
+			"place unknown",
+		);
+	});
 });
 
 describe("PlacementChip", () => {
