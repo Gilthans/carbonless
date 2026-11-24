@@ -330,6 +330,40 @@ describe("private clone", () => {
 		letGo();
 		await Promise.all([held, waiting]);
 		expect(waiter.size).toBe(0);
+		// The holder makes another call beside the lock's work, later: a
+		// waiter shows the lock's work, not that call.
+		let letGo2 = () => {};
+		const holding2 = new Promise<void>((r) => {
+			letGo2 = r;
+		});
+		let inside2 = () => {};
+		const entered2 = new Promise<void>((r) => {
+			inside2 = r;
+		});
+		const holder2 = new Activity();
+		const waiter2 = new Activity();
+		let endBeside = () => {};
+		const held2 = runIn(holder2, () =>
+			Promise.all([
+				withRepoLock(path, async () => {
+					const end = beginCall("git fetch");
+					inside2();
+					await holding2;
+					end();
+				}),
+				entered2.then(() => {
+					endBeside = beginCall("gh pr view");
+				}),
+			]),
+		);
+		await entered2;
+		const waiting2 = runIn(waiter2, () => withRepoLock(path, async () => {}));
+		await vi.waitFor(() => expect(waiter2.current()?.label).toBe("git fetch"));
+		// The holder's own request shows the lock's work too (the newest wait).
+		expect(holder2.current()?.label).toBe("git fetch");
+		endBeside();
+		letGo2();
+		await Promise.all([held2, waiting2]);
 		// A lock another process holds: the wait's own words.
 		writeFileSync(`${path}.lock`, "elsewhere 1 token\n");
 		const other = new Activity();

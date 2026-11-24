@@ -182,6 +182,42 @@ export async function waitOn<T>(
 	}
 }
 
+/**
+ * Work in parts that run side by side (an overview read: its overview,
+ * thread summaries, texts, code and timeline): each part in an Activity
+ * of its own, so a request waiting on some parts shows one of theirs,
+ * never a call another part started meanwhile.
+ */
+export class WorkParts<K extends string> {
+	readonly #parts = new Map<K, Activity>();
+
+	#activity(part: K): Activity {
+		let activity = this.#parts.get(part);
+		if (!activity) {
+			activity = new Activity();
+			this.#parts.set(part, activity);
+		}
+		return activity;
+	}
+
+	/** Runs `fn` as (some of) part `part`: its calls, and what it chains, are the part's. */
+	run<T>(part: K, fn: () => T): T {
+		return runIn(this.#activity(part), fn);
+	}
+
+	/**
+	 * What a wait on `parts` shows: the first of them (in the order given)
+	 * doing something now; none: undefined (the wait reads "Working…").
+	 */
+	stepOf(parts: readonly K[]): Activity | undefined {
+		for (const part of parts) {
+			const activity = this.#parts.get(part);
+			if (activity?.current()) return activity;
+		}
+		return undefined;
+	}
+}
+
 /** Shared promises, by the Activity of the work behind them. */
 const work = new WeakMap<Promise<unknown>, Activity>();
 

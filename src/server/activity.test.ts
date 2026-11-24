@@ -13,6 +13,7 @@ import {
 	shared,
 	trackedRequests,
 	trackRequest,
+	WorkParts,
 	waitOn,
 } from "./activity";
 
@@ -129,6 +130,30 @@ describe("activity (CAR-296)", () => {
 		held.open();
 		await waiting;
 		expect(activity.current()).toBeNull();
+	});
+
+	it("a wait on one part of work shows that part's step, or Working…, never a later call of another part", async () => {
+		const parts = new WorkParts<"code" | "timeline">();
+		const request = new Activity();
+		const held = gate();
+		const endCode = parts.run("code", () => beginCall("git cat-file"));
+		const waiting = runIn(request, () =>
+			waitOn(held.promise, () => parts.stepOf(["code"])),
+		);
+		// The timeline's call starts later, beside it.
+		const endTimeline = parts.run("timeline", () =>
+			beginCall("gh api graphql"),
+		);
+		expect(request.current()?.label).toBe("git cat-file");
+		endCode();
+		// The code part does nothing now: the wait says so, not the timeline's call.
+		expect(request.current()?.label).toBe("Working…");
+		expect(parts.stepOf(["code", "timeline"])?.current()?.label).toBe(
+			"GitHub: api graphql",
+		);
+		endTimeline();
+		held.open();
+		await waiting;
 	});
 
 	it("a cycle of waits ends (Working…)", async () => {

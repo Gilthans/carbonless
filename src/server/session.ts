@@ -48,7 +48,7 @@ import type {
 	VerdictFacts,
 	VerdictRequest,
 } from "../shared/types.js";
-import { Activity, join, phase, runIn, shared, waitOn } from "./activity.js";
+import { join, phase, shared, waitOn } from "./activity.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { type AgentDiff, AgentDiffRequestError } from "./agent/reads.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
@@ -85,7 +85,7 @@ import {
 	type StartedRecord,
 	startThread,
 } from "./newThreads.js";
-import { OverviewRead } from "./overviewRead.js";
+import { OverviewRead, READ_PARTS } from "./overviewRead.js";
 import type { HeadSpec } from "./pinnedHead.js";
 import {
 	BackgroundCounts,
@@ -396,8 +396,6 @@ export class Session {
 	/** The base branch name the snapshot was compared against (the triple's third). */
 	#snapshotBase: string;
 	/** Merge bases by (head, base oid, base branch): one fetch per triple (#noteHead). */
-	/** Each overview read's Activity: what a request waiting on it shows. */
-	readonly #readActivity = new WeakMap<OverviewRead, Activity>();
 	readonly #fetchedHeads = new Map<string, Promise<{ mergeBase: string }>>();
 	/** The engine's state-free results, in memory and on disk. */
 	readonly #cache = new RereviewCache<Traced>();
@@ -698,12 +696,11 @@ export class Session {
 				: null,
 		]);
 		progress(`fetching PR #${meta.number}…`);
-		const fetched = await step("crb: fetch pr", () =>
-			fetchPr(repo, meta, {
-				asOf,
-				pinned: pinned ?? undefined,
-			}),
-		);
+		// Its phase (crb: fetch pr) is fetchPr's own, under the repo lock.
+		const fetched = await fetchPr(repo, meta, {
+			asOf,
+			pinned: pinned ?? undefined,
+		});
 		// Whether the PR is over comes from GitHub's PR state, never from
 		// history shape: squash and rebase merges leave the head outside the
 		// base (docs/git-methodology.md). As of a cutoff, meta says OPEN.
@@ -2115,7 +2112,7 @@ export class Session {
 		this.#commentLeftNow();
 		const read = this.#pickRead(maxAgeMs);
 		if (forPage) this.#served = read;
-		return this.#waitRead(read, read.overview).then((o) => ({
+		return this.#waitRead(read, "overview", read.overview).then((o) => ({
 			...o,
 			commentLeft: this.#commentLeftNow(),
 		}));
@@ -2145,12 +2142,19 @@ export class Session {
 	threads(readId: string, stage: ThreadsStage): Promise<ThreadsView> {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
-		return this.#waitRead(read, read.threads(stage));
+		return this.#waitRead(read, stage, read.threads(stage));
 	}
 
-	/** Awaits `part` of `read`, showing the read's step meanwhile (activity.ts). */
-	#waitRead<T>(read: OverviewRead, part: Promise<T>): Promise<T> {
-		return waitOn(part, () => this.#readActivity.get(read));
+	/**
+	 * Awaits `answer`, what `read` gives once `what` is in, showing the
+	 * step of the parts it waits on meanwhile (activity.ts).
+	 */
+	#waitRead<T>(
+		read: OverviewRead,
+		what: keyof typeof READ_PARTS,
+		answer: Promise<T>,
+	): Promise<T> {
+		return waitOn(answer, () => read.parts.stepOf(READ_PARTS[what]));
 	}
 
 	/**
@@ -2161,7 +2165,7 @@ export class Session {
 	comments(readId: string, ids: string[]): Promise<CommentsView> {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
-		return this.#waitRead(read, read.comments(ids));
+		return this.#waitRead(read, "comments", read.comments(ids));
 	}
 
 	/**
@@ -2171,7 +2175,7 @@ export class Session {
 	timeline(readId: string): Promise<TimelineView> {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
-		return this.#waitRead(read, read.timeline);
+		return this.#waitRead(read, "timeline", read.timeline);
 	}
 
 	/**
@@ -2613,21 +2617,13 @@ export class Session {
 	 */
 	#read(ready?: Promise<unknown>): OverviewRead {
 		if (this.closed) throw new SessionClosedError("The session is closed");
-		// Its reads run in an Activity of their own: a request waiting on
-		// any part of it shows what it does (activity.ts).
-		const activity = new Activity();
-		const make = () => {
-			const read = runIn(activity, () => this.#newRead(ready));
-			this.#readActivity.set(read, activity);
-			return read;
-		};
 		// Opt-in ($CRB_TRACE_DIR): the read until its overview is in.
 		const traced = tracer();
-		if (!traced.enabled) return make();
+		if (!traced.enabled) return this.#newRead(ready);
 		const span = traced.start("crb: overview read", {
 			first: this.#reads.length === 0,
 		});
-		const read = traced.run(span, make);
+		const read = traced.run(span, () => this.#newRead(ready));
 		read.overview.then(
 			() => span.end(),
 			(error: unknown) => span.end(undefined, (error as Error)?.message),

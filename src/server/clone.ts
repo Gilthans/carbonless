@@ -12,14 +12,7 @@ import {
 } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import {
-	Activity,
-	beginStep,
-	currentActivity,
-	phase,
-	runIn,
-	waitOn,
-} from "./activity.js";
+import { Activity, beginStep, phase, runIn, waitOn } from "./activity.js";
 import { GhError } from "./errors.js";
 import type { PrMeta } from "./gh.js";
 import { runGh } from "./gh.js";
@@ -154,8 +147,11 @@ export async function withRepoLock<T>(
 	} finally {
 		endWait?.();
 	}
-	const holder = currentActivity();
-	if (holder) lockHolders.set(path, holder);
+	// What runs under the lock, in an Activity of its own: a waiter shows
+	// it, never a call its holder makes beside it; the holder's request
+	// waits on it, so it shows it too.
+	const holder = new Activity();
+	lockHolders.set(path, holder);
 	const heartbeat = setInterval(() => {
 		const now = new Date();
 		readLock(lock).then((c) => {
@@ -164,7 +160,7 @@ export async function withRepoLock<T>(
 	}, heartbeatMs);
 	heartbeat.unref();
 	try {
-		return await fn();
+		return await waitOn(runIn(holder, fn), () => holder);
 	} finally {
 		if (lockHolders.get(path) === holder) lockHolders.delete(path);
 		clearInterval(heartbeat);
@@ -416,54 +412,59 @@ export async function fetchPr(
 		throw new GhError(`gh returned an invalid base branch name: ${base}`);
 	}
 	const baseRef = `refs/remotes/origin/${base}`;
-	return withRepoLock(path, async () => {
-		// The head comes from refs/pull/<n>/head, never the head branch: it
-		// exists even when the branch or its fork has been deleted.
-		await runGit(
-			path,
-			[
-				...GH_CREDENTIALS,
-				"fetch",
-				"--quiet",
-				"--no-tags",
-				"origin",
-				`+refs/heads/${base}:${baseRef}`,
-				`refs/pull/${meta.number}/head`,
-			],
-			{ env: { GIT_TERMINAL_PROMPT: "0" }, signal },
-		);
-		const present = () =>
-			runGit(path, ["cat-file", "-e", `${head}^{commit}`]).then(
-				() => true,
-				() => false,
-			);
-		if ((asOf || pinned) && !(await present())) {
+	// The phase under the lock: what a waiter on the lock shows too.
+	return withRepoLock(path, () =>
+		phase("crb: fetch pr", {}, async () => {
+			// The head comes from refs/pull/<n>/head, never the head branch: it
+			// exists even when the branch or its fork has been deleted.
 			await runGit(
 				path,
-				[...GH_CREDENTIALS, "fetch", "--quiet", "--no-tags", "origin", head],
-				{ env: { GIT_TERMINAL_PROMPT: "0" }, allowFailure: true, signal },
+				[
+					...GH_CREDENTIALS,
+					"fetch",
+					"--quiet",
+					"--no-tags",
+					"origin",
+					`+refs/heads/${base}:${baseRef}`,
+					`refs/pull/${meta.number}/head`,
+				],
+				{ env: { GIT_TERMINAL_PROMPT: "0" }, signal },
 			);
-		}
-		if (!(await present())) {
-			throw new GhError(
-				pinned
-					? `Commit ${head} could not be fetched from GitHub`
-					: asOf
-						? `PR head ${head} as of ${asOf} could not be fetched from GitHub`
-						: `PR head ${head} is not on GitHub yet (the PR may have just been updated); try again`,
-			);
-		}
-		const baseTip = asOf
-			? await baseTipAt(path, baseRef, asOf)
-			: (await runGit(path, ["rev-parse", "--verify", baseRef])).trim();
-		const mergeBase = (
-			await runGit(path, ["merge-base", baseTip, head], { allowFailure: true })
-		).trim();
-		if (!mergeBase) {
-			throw new GhError(`PR head ${head} shares no history with ${base}`);
-		}
-		return { baseTip, head, mergeBase };
-	});
+			const present = () =>
+				runGit(path, ["cat-file", "-e", `${head}^{commit}`]).then(
+					() => true,
+					() => false,
+				);
+			if ((asOf || pinned) && !(await present())) {
+				await runGit(
+					path,
+					[...GH_CREDENTIALS, "fetch", "--quiet", "--no-tags", "origin", head],
+					{ env: { GIT_TERMINAL_PROMPT: "0" }, allowFailure: true, signal },
+				);
+			}
+			if (!(await present())) {
+				throw new GhError(
+					pinned
+						? `Commit ${head} could not be fetched from GitHub`
+						: asOf
+							? `PR head ${head} as of ${asOf} could not be fetched from GitHub`
+							: `PR head ${head} is not on GitHub yet (the PR may have just been updated); try again`,
+				);
+			}
+			const baseTip = asOf
+				? await baseTipAt(path, baseRef, asOf)
+				: (await runGit(path, ["rev-parse", "--verify", baseRef])).trim();
+			const mergeBase = (
+				await runGit(path, ["merge-base", baseTip, head], {
+					allowFailure: true,
+				})
+			).trim();
+			if (!mergeBase) {
+				throw new GhError(`PR head ${head} shares no history with ${base}`);
+			}
+			return { baseTip, head, mergeBase };
+		}),
+	);
 }
 
 /**
