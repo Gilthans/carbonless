@@ -623,6 +623,50 @@ describe("tracePosition: look-alike lines swapped around a kept line (CAR-279)",
 		expect(landing(d, 4)).toBe("rewritten");
 	});
 
+	it("short generic lines swapped between branches never move: can't tell", () => {
+		const bools = inPlace(
+			["if missing {", "\treturn false", "}", "return true"],
+			["if missing {", "\treturn true", "}", "return false"],
+		);
+		expect(landing(bools, 2)).toBe("rewritten");
+		expect(landing(bools, 4)).toBe("rewritten");
+		const results = inPlace(
+			["if err != nil {", "\treturn nil, err", "}", "return res, nil"],
+			["if err != nil {", "\treturn res, nil", "}", "return nil, err"],
+		);
+		expect(landing(results, 2)).toBe("rewritten");
+		expect(landing(results, 4)).toBe("rewritten");
+	});
+
+	it("a swap never overrides a block that moved elsewhere: can't tell", () => {
+		// Old 1-3 found again word for word at new 6-8, and old 2 also
+		// crosses with old 5 at home.
+		const d = withHunks(
+			[
+				"setupAlphaConnection(pool)",
+				"value = computeTotal(alpha)",
+				"logAlphaTotals(value)",
+				"kept()",
+				"value = computeTotal(beta)",
+				"other()",
+				"more()",
+			],
+			[
+				"value = computeTotal(beta, 2)",
+				"kept()",
+				"value = computeTotal(alpha, 2)",
+				"other()",
+				"more()",
+				"setupAlphaConnection(pool)",
+				"value = computeTotal(alpha)",
+				"logAlphaTotals(value)",
+			],
+			[hunk(1, 3, 1, 1), hunk(5, 1, 3, 1), hunk(7, 0, 6, 3)],
+		);
+		expect(landing(d, 2)).toBe("rewritten");
+		expect(landing(d, 5)).toBe("rewritten");
+	});
+
 	it("a swap decides the same for both lines when a deletion unanchors one", () => {
 		const d = withHunks(
 			[

@@ -606,6 +606,18 @@ function oldCounts(r: TextReaders, x: FileIndex): Map<string, number> {
 	return counts;
 }
 
+/**
+ * Whether new line `n` is the one added line with old line `o`'s text
+ * (`same`): a "copies" from `movedTo` that only says `o` went to `n`.
+ */
+export function onlyCopyAt(o: number, n: number, r: TextReaders): boolean {
+	const x = indexOf(r);
+	const t = readOld(r, o);
+	if (t === null) return false;
+	const at = x.addedBySame.get(x.same(t)) ?? [];
+	return at.length === 1 && at[0] === n;
+}
+
 /** Whether another removed line has old line `o`'s text (`same`). */
 export function hasTwin(o: number, r: TextReaders): boolean {
 	const x = indexOf(r);

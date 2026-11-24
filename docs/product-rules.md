@@ -185,9 +185,11 @@ other line ("moved since"); crossed one way only, or by less, it is
 (twins, the same text twice) is no crossing: it stays. Both lines kept
 the word that told them apart (a key, `primary_host:`; a subject,
 `expect(primary)`) and only their values swapped: each stays on its own
-line; only one kept it: `rewritten`. Generic lines with under 20 letters
-and digits between the two (`return err`, `return nil`) never move on a
-crossing: `rewritten`. The check is made before anything else on the
+line; only one kept it: `rewritten`. Generic lines, either one under 14
+letters and digits (`return err`, `return false`, `return nil, err`),
+never move on a crossing: `rewritten`. Nor does a swap when either line's
+block was found moved elsewhere (or the crossed line is where another
+block moved): `rewritten`. The check is made before anything else on the
 line's partner nearby, so both lines of a pair decide alike, even when a
 deletion beside one unanchors it.
 

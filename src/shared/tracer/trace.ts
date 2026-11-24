@@ -28,6 +28,7 @@ import {
 	contested,
 	hasTwin,
 	movedTo,
+	onlyCopyAt,
 	sameFileTexts,
 	TUNING,
 	tellingLine,
@@ -517,7 +518,24 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 		// Swapped with a look-alike nearby: decided here, for both lines of
 		// the pair alike, whether or not a neighbour's deletion unanchors one.
 		const swap = swappedWith(hunk, line, local, diffs);
-		if (swap !== null) return swap === "unknown" ? swap : away(swap);
+		if (swap === "unknown") return swap;
+		if (swap !== null) {
+			// A block moved elsewhere, or one claiming the crossed line, is
+			// other evidence of where either line went: can't tell.
+			const elsewhere = (o: number, to: number) => {
+				const m = movedTo(o, readers, false);
+				// Found again as it was only on the crossed line: the swap.
+				const there =
+					m === null ||
+					(m === "copies" && onlyCopyAt(o, to, readers)) ||
+					(typeof m === "object" && m.line === to);
+				return !there || claimedByMove(o, to, readers);
+			};
+			if (elsewhere(line, swap.line) || elsewhere(swap.other, local.line)) {
+				return "unknown";
+			}
+			return away(swap.line);
+		}
 		if (anchored(hunk, line, local.line, diffs)) return plain(local);
 	}
 	// Its partner nearby is where another line moved with its block: that
@@ -563,6 +581,18 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
  */
 export const SWAP_MARGIN = 0.1;
 
+/**
+ * Letters and digits each line of a swap needs to move (CAR-279): generic
+ * statements swapped between branches have 9 to 12 (`return nil` 9,
+ * `return true` 10, `return false` 11, `return nil, err` 12) and are
+ * `unknown`; the shortest real swaps measured have 16 and more
+ * (`value = compute(beta)` 16, `buildPackage("web", opts)` 19). Two clear
+ * of each side. A single line falls short of git's --color-moved minimum
+ * (20, TUNING.minAlnum, which is for a block): a swap is two lines that
+ * cross-check each other.
+ */
+export const SWAP_MIN_ALNUM = 14;
+
 /** A line's words (letters, digits, `_`), for what tells two lines apart. */
 const words = (t: string) => new Set(t.match(/[\p{L}\p{N}_]+/gu) ?? []);
 
@@ -591,10 +621,11 @@ function keepsOwn(
  * joined run, or within TUNING.contextLines) whose own replacement it
  * resembles more, while that line resembles `line`'s replacement more than
  * its own. Both crossed by SWAP_MARGIN: the look-alike's replacement, the
- * new line it went to. Crossed one way only, by less, with more than one
- * look-alike, between generic lines, or with only one of the two keeping
- * what told it apart: "unknown". null: nothing crossed, or both kept their
- * key and only values swapped: it stayed. A window of a few lines: no
+ * new line it went to, and the look-alike's old line. Crossed one way
+ * only, by less, with more than one look-alike, between generic lines, or
+ * with only one of the two keeping what told it apart: "unknown". null:
+ * nothing crossed, or both kept their key and only values swapped: it
+ * stayed. A window of a few lines: no
  * whole-file work.
  */
 function swappedWith(
@@ -602,14 +633,14 @@ function swappedWith(
 	line: number,
 	local: { line: number; score: number },
 	diffs: TraceDiffs,
-): number | "unknown" | null {
+): { line: number; other: number } | "unknown" | null {
 	const own = read(diffs.oldLineText, line);
 	const mine = read(diffs.newLineText, local.line);
 	if (own === null || mine === null) return null;
 	const memo = memoOf(diffs);
 	const run = runOf(hunk, diffs, memo);
 	const index = memo.index;
-	let found: number | null = null;
+	let found: { line: number; other: number } | null = null;
 	let unsure = false;
 	// A run joins hunks at most REGION_GAP old lines apart.
 	const reach = REGION_GAP + 1;
@@ -639,13 +670,12 @@ function swappedWith(
 			!keptMine &&
 			!keptTheirs &&
 			// Generic lines (`return err`, `return nil`): too little text
-			// between them to say they moved (git's --color-moved minimum
-			// over the pair, the two lines that moved past each other).
-			alnum(own) + alnum(other) >= TUNING.minAlnum &&
+			// to say they moved.
+			Math.min(alnum(own), alnum(other)) >= SWAP_MIN_ALNUM &&
 			ahead >= SWAP_MARGIN - EPS &&
 			back >= SWAP_MARGIN - EPS
 		) {
-			found = p.line;
+			found = { line: p.line, other: n };
 		} else {
 			unsure = true;
 		}
