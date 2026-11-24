@@ -170,12 +170,19 @@ function HeaderIconButton(props: {
 	// doesn't wait for the save): ignore clicks a moment. The wait is the
 	// reset's alone: once another action is back in its place (the reset's
 	// marks undone elsewhere, e.g. a cluster's box), it takes clicks at
-	// once (CAR-257).
+	// once (CAR-257). Likewise the action a reset's own confirming click
+	// brings back: that click's double was meant for the reset (CAR-272).
+	// The button knows its own click (`resetFrom`, the label it reset from);
+	// a reset made elsewhere leaves the action taking clicks at once.
 	const lastLabel = useRef(props.label);
 	const swappedUntil = useRef(0);
+	const resetFrom = useRef<string | null>(null);
 	if (lastLabel.current !== props.label) {
+		const ownReset = resetFrom.current === lastLabel.current;
+		resetFrom.current = null;
 		lastLabel.current = props.label;
-		swappedUntil.current = props.pressed ? performance.now() + UNDO_ARM_MS : 0;
+		swappedUntil.current =
+			props.pressed || ownReset ? performance.now() + UNDO_ARM_MS : 0;
 	}
 	// The question asked, for this action. Another action in its place, or
 	// none to ask (the file isn't finished, e.g. after another tab's write),
@@ -218,6 +225,7 @@ function HeaderIconButton(props: {
 		}
 		if (now < askedAt.current + UNDO_ARM_MS) return;
 		setAskedFor(null);
+		resetFrom.current = props.label;
 		props.onClick();
 	};
 	return (
