@@ -456,9 +456,13 @@ function useDiffThreads(
 		() => (visible ? outsideThreads(visible, placements) : []),
 		[visible, placements],
 	);
+	// The reviewer's Retry is under way (the asks the page makes by itself
+	// after a failure, CAR-271, show no spinner: the failure stays shown).
+	const [retryAsked, setRetryAsked] = useState(false);
 	useEffect(() => {
 		if (placed.error) setLastFailure({ key: placingKey, error: placed.error });
 		else if (served !== null) setLastFailure(null);
+		if (placed.error || served !== null) setRetryAsked(false);
 	}, [placed.error, served, placingKey]);
 	const failedPlacing =
 		asked && answer === null
@@ -467,7 +471,9 @@ function useDiffThreads(
 			: null;
 	failedBefore.current = failedPlacing !== null;
 	const retryingPlacing =
-		failedPlacing !== null && (placed.isFetching || placed.error === null);
+		failedPlacing !== null &&
+		retryAsked &&
+		(placed.isFetching || placed.error === null);
 	const unplacedOnError = useMemo(
 		() =>
 			failedPlacing && visible && snapshotHead
@@ -484,9 +490,13 @@ function useDiffThreads(
 	const placement = useMemo<PlacementInfo>(
 		() => ({
 			placements,
-			pending: asked && answer === null && !placed.error,
+			// A failure stays shown while the page asks again by itself.
+			pending: asked && answer === null && failedPlacing === null,
 			error: failedPlacing,
-			retry: () => void refetchPlacements(),
+			retry: () => {
+				setRetryAsked(true);
+				void refetchPlacements();
+			},
 			retrying: retryingPlacing,
 			readId: readId ?? null,
 			to,
@@ -501,7 +511,6 @@ function useDiffThreads(
 			snapshotHead,
 			asked,
 			answer,
-			placed.error,
 			retryingPlacing,
 			failedPlacing,
 			refetchPlacements,
