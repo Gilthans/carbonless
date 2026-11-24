@@ -6,7 +6,12 @@ import {
 	threadComment,
 } from "../test/fake-gh/scenario";
 import { ask, CALC, expect, fixture, openFile, row, test } from "./agent-ui";
-import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
+import {
+	expectNoPageOverflow,
+	fileSection,
+	marksReady,
+	tapFilesButton,
+} from "./files-ui";
 import type { Pr } from "./fixtures";
 import { reviewPage } from "./fixtures";
 
@@ -628,7 +633,7 @@ test("the Threads tab after a post: one People row for the thread, one AI row th
 	const narrow = (page.viewportSize()?.width ?? 1280) < 768;
 	let side = page.locator("body");
 	if (narrow) {
-		await page.getByRole("button", { name: "Files", exact: true }).click();
+		await tapFilesButton(page);
 		side = page.getByRole("dialog", { name: "Files" });
 	}
 	await side

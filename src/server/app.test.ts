@@ -40,7 +40,7 @@ import { SessionRegistry } from "./registry";
 import { ThreadPlacer } from "./rereview/threads";
 import { newEvent } from "./review/events";
 import { RefStore } from "./review/refStore";
-import { Session } from "./session";
+import { PLACING_FAILURE_KEPT_MS, Session } from "./session";
 import { TEST_HOOK_HEADER } from "./testHooks";
 import { BOOT_ID, BUILD, VERSION_HEADER } from "./version";
 
@@ -3231,6 +3231,108 @@ describe("API", () => {
 				expect(Object.keys(byId(again))).toEqual(["T12-0"]);
 			} finally {
 				failing.mockRestore();
+			}
+		});
+
+		it("an unmapped error is logged once, whole, with no failure line besides (CAR-271)", async () => {
+			const logged: string[] = [];
+			const keyed = await buildApp(registry, {
+				accessKey: "s3cr3tk3y",
+				logFailure: (line) => logged.push(line),
+			});
+			const printed = vi.spyOn(console, "error").mockImplementation(() => {});
+			const failing = vi
+				.spyOn(ThreadPlacer.prototype, "inputs")
+				.mockRejectedValue(new TypeError("a bug"));
+			try {
+				const { h2, readId } = await setup();
+				const ask = () =>
+					keyed.inject({
+						method: "GET",
+						url: `/api/r/${id}/placements?read=${readId}&head=${h2}&key=s3cr3tk3y`,
+					});
+				let res = await ask();
+				while (res.statusCode === 200) {
+					await new Promise((r) => setTimeout(r, 20));
+					res = await ask();
+				}
+				expect(res.statusCode).toBe(500);
+				expect(printed).toHaveBeenCalledTimes(1);
+				expect(logged).toEqual([]);
+			} finally {
+				failing.mockRestore();
+				printed.mockRestore();
+				await keyed.close();
+			}
+		});
+
+		it("a failed placement job logs one line to the server's log: route, review, status, class, message; never the key, a URL or a token (CAR-271)", async () => {
+			const logged: string[] = [];
+			const keyed = await buildApp(registry, {
+				accessKey: "s3cr3tk3y",
+				logFailure: (line) => logged.push(line),
+			});
+			const failing = vi
+				.spyOn(ThreadPlacer.prototype, "inputs")
+				.mockRejectedValue(
+					new GitError(
+						"git fetch failed: https://x-access-token:ghs_abcdef123456@github.com/acme/widget.git?key=s3cr3tk3y\nsecond line with file content",
+					),
+				);
+			try {
+				const { h2, readId } = await setup();
+				const ask = () =>
+					keyed.inject({
+						method: "GET",
+						url: `/api/r/${id}/placements?read=${readId}&head=${h2}&key=s3cr3tk3y`,
+					});
+				let res = await ask();
+				while (res.statusCode === 200) {
+					expect(res.json()).toEqual({ pending: true });
+					await new Promise((r) => setTimeout(r, 20));
+					res = await ask();
+				}
+				expect(res.statusCode).toBe(500);
+				const runs = failing.mock.calls.length;
+				// Asked again within PLACING_FAILURE_KEPT_MS: the same error,
+				// the job not run again, and the log not written again.
+				expect((await ask()).statusCode).toBe(500);
+				expect((await ask()).statusCode).toBe(500);
+				expect(failing.mock.calls.length).toBe(runs);
+				expect(logged).toHaveLength(1);
+				const [line = ""] = logged;
+				expect(line).toContain("/api/r/:id/placements");
+				expect(line).toContain(`review ${id}`);
+				expect(line).toContain("500 GitError");
+				expect(line).toContain("git fetch failed: <url>");
+				for (const secret of [
+					"s3cr3tk3y",
+					"ghs_",
+					"github.com",
+					"https://",
+					"read=",
+					"second line",
+				]) {
+					expect(line).not.toContain(secret);
+				}
+				// Past it: the next ask starts the job anew.
+				const later = Date.now() + PLACING_FAILURE_KEPT_MS;
+				const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+				try {
+					expect((await ask()).json()).toEqual({ pending: true });
+				} finally {
+					clock.mockRestore();
+				}
+				// A read gone (410) is ordinary: never logged.
+				const gone = await keyed.inject({
+					method: "GET",
+					url: `/api/r/${id}/placements?read=nope&head=${h2}&key=s3cr3tk3y`,
+				});
+				expect(gone.statusCode).toBe(410);
+				expect(logged).toHaveLength(1);
+			} finally {
+				failing.mockRestore();
+				await keyed.close();
 			}
 		});
 

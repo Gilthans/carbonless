@@ -38,6 +38,7 @@ import { sessionQuery } from "../api";
 import {
 	CommentHtml,
 	CommentPreview,
+	isPreviewKey,
 	PreviewToggle,
 	useWritePreview,
 } from "../CommentPreview";
@@ -243,6 +244,34 @@ function CommentBox(props: {
 	// Markdown the reviewer didn't write: read first (CAR-202).
 	const box = useRef<HTMLTextAreaElement>(null);
 	const view = useWritePreview({ initial: "preview", text, box });
+	// Write and Preview swap the box for the preview in one commit, which
+	// shrinks a scroll box around it for a moment (the preview's text comes
+	// in a layout effect) and clamps its scrollTop; React, refocusing, puts
+	// that clamped value back, and the final size is the same, so nothing
+	// else sees it. The scroll boxes around it keep the scrollTop they had
+	// at the press (CAR-246: the agent card's scroller kept at its end).
+	const keptScroll = useRef<[Element, number][] | null>(null);
+	const keepScroll = () => {
+		keptScroll.current = box.current ? scrolledAncestors(box.current) : null;
+	};
+	// biome-ignore lint/correctness/useExhaustiveDependencies: once per switch.
+	useLayoutEffect(() => {
+		const kept = keptScroll.current;
+		keptScroll.current = null;
+		for (const [a, top] of kept ?? [])
+			if (a.scrollTop !== top) a.scrollTop = top;
+	}, [view.mode]);
+	const toggleProps = {
+		...view.toggleProps,
+		onChange: (mode: Parameters<typeof view.choose>[0]) => {
+			if (mode !== view.mode) keepScroll();
+			view.choose(mode);
+		},
+		onKeyDown: (e: Parameters<typeof view.toggleProps.onKeyDown>[0]) => {
+			if (view.toggle && isPreviewKey(e)) keepScroll();
+			view.toggleProps.onKeyDown(e);
+		},
+	};
 
 	const send = useCallback(
 		(
@@ -335,6 +364,7 @@ function CommentBox(props: {
 		</button>
 	);
 	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+		if (view.toggle && isPreviewKey(e)) keepScroll();
 		view.onKeyDown(e);
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
@@ -390,7 +420,7 @@ function CommentBox(props: {
 					</Tooltip>
 				)}
 				<span className="flex-1" />
-				{view.toggle && <PreviewToggle {...view.toggleProps} />}
+				{view.toggle && <PreviewToggle {...toggleProps} />}
 				{draft !== null && sentBody === null && !sending && (
 					<Tooltip content="Back to the agent's text" describe={false}>
 						{(trigger) => (
@@ -450,6 +480,24 @@ function CommentBox(props: {
 	);
 }
 
+/**
+ * The element scroll boxes around `el` that are scrolled, with their
+ * scrollTop (not the page's: body and html are left out).
+ */
+function scrolledAncestors(el: Element): [Element, number][] {
+	const kept: [Element, number][] = [];
+	for (
+		let a = el.parentElement;
+		a && a !== document.body && a !== document.documentElement;
+		a = a.parentElement
+	) {
+		if (a.scrollTop <= 0) continue;
+		const y = getComputedStyle(a).overflowY;
+		if (y === "auto" || y === "scroll") kept.push([a, a.scrollTop]);
+	}
+	return kept;
+}
+
 /** The box: monospace like the reply box, growing to about 12 lines, then scrolling. */
 function CommentText(props: {
 	box: RefObject<HTMLTextAreaElement | null>;
@@ -465,8 +513,14 @@ function CommentText(props: {
 	useLayoutEffect(() => {
 		const el = box.current;
 		if (!el || props.hidden) return;
+		// Collapsing it to measure shrinks a scroll box it sits in (the agent
+		// card's), which clamps that box's scrollTop: kept across the
+		// measurement, so typing never moves the comment (CAR-246). The page
+		// itself is left as it was.
+		const kept = scrolledAncestors(el);
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
+		for (const [a, top] of kept) if (a.scrollTop !== top) a.scrollTop = top;
 	}, [props.value, props.hidden]);
 	return (
 		<textarea

@@ -12,6 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../test/in-router";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
+import { fakeDelay, quietFor } from "../../../test/sleep";
 import type { AgentThread } from "../../shared/agent";
 import type { SincePiece } from "../../shared/pieces";
 import type {
@@ -435,7 +436,7 @@ describe("FileDiff", () => {
 		expect(alert).toHaveTextContent("git exploded");
 		expect(alert).toHaveTextContent("Reviewed · src/a.ts");
 		// The reread server view doesn't roll it back.
-		await new Promise((r) => setTimeout(r, 20));
+		await quietFor(20, "the reread view rolling the box back");
 		expect(box).toBeChecked();
 		expect(sync().stale).toBeNull();
 		fail = false;
@@ -751,7 +752,7 @@ describe("FileDiff", () => {
 		const { posts, user } = setup(f, async () => {
 			inFlight++;
 			maxInFlight = Math.max(maxInFlight, inFlight);
-			await new Promise((r) => setTimeout(r, 5));
+			await fakeDelay(5);
 			inFlight--;
 			return { status: 200, body: view(f) };
 		});
@@ -1156,7 +1157,7 @@ describe("FileDiff", () => {
 		await waitFor(() => expect(undo).toBeEnabled());
 		// Right after it swaps in, a click (a double click's second) does nothing.
 		await user.click(undo);
-		await new Promise((r) => setTimeout(r, 50));
+		await quietFor(50, "a post from the click right after the swap");
 		expect(posts()).toHaveLength(1);
 		tick();
 		await confirmClick(user, undo);
@@ -1200,6 +1201,62 @@ describe("FileDiff", () => {
 			]),
 		);
 	});
+
+	it.each([
+		{
+			undo: "Undo cross-off",
+			back: "Cross off file",
+			finished: [
+				cluster("k1", { state: "reviewed" }),
+				cluster("k2", { state: "crossed-off" }),
+			],
+			reset: [cluster("k1", { state: "reviewed" }), cluster("k2")],
+			resetChanges: [{ key: "k2", state: "unreviewed" }],
+			markChanges: [{ key: "k2", state: "crossed-off" }],
+		},
+		{
+			undo: "Unmark reviewed",
+			back: "Mark remaining reviewed",
+			finished: [cluster("k1", { state: "reviewed" })],
+			reset: [cluster("k1")],
+			resetChanges: [{ key: "k1", state: "unreviewed" }],
+			markChanges: [{ key: "k1", state: "reviewed" }],
+		},
+	])(
+		"a double click on $undo's confirm leaves the file reset; $back takes a click after the wait (CAR-272)",
+		async ({ undo, back, finished, reset, resetChanges, markChanges }) => {
+			// The server answers the reset, then the mark.
+			let answered = 0;
+			const { posts, user } = setup(file(finished), () => ({
+				status: 200,
+				body: view(file(answered++ === 0 ? reset : finished)),
+			}));
+			const button = screen.getByRole("button", { name: undo });
+			await confirmClick(user, button);
+			await waitFor(() =>
+				expect(posts()[0]?.body.changes).toEqual(resetChanges),
+			);
+			// The action the reset's own click brought back, in the same place.
+			expect(button).toHaveAccessibleName(back);
+			expect(button).toHaveAttribute(
+				"data-clicks-from",
+				String(clock + UNDO_ARM_MS),
+			);
+			// The double click's second click: nothing happens.
+			await user.click(button);
+			expect(button).toHaveAccessibleName(back);
+			expect(button).toHaveAttribute("aria-pressed", "false");
+			expect(posts()).toHaveLength(1);
+			// Once the wait is over, a click marks again.
+			tick();
+			await user.click(button);
+			await waitFor(() =>
+				expect(posts()[1]?.body.changes).toEqual(markChanges),
+			);
+			await waitFor(() => expect(button).toHaveAccessibleName(undo));
+			expect(posts()).toHaveLength(2);
+		},
+	);
 
 	it("disables cross off once all is reviewed; mark flips to unmark", () => {
 		setup(
@@ -2054,7 +2111,7 @@ describe("FileDiff", () => {
 			expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(after),
 		);
 		answerRead?.();
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await quietFor(20, "the late read overwriting the mark");
 		expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(after);
 	});
 
@@ -3349,13 +3406,13 @@ describe("FileDiff: review in the image view", () => {
 		await pick(user, "Image");
 		expect(shown()).toBe("image");
 		// The same landing, still the page's, isn't replayed on the image.
-		await new Promise((r) => setTimeout(r, 20));
+		await quietFor(20, "the landing replayed on the image");
 		expect(screen.queryByTestId("landing-hint")).toBeNull();
 		expect(scrolls).not.toHaveBeenCalled();
 		// Nor after closing and reopening the file there.
 		await user.click(screen.getByRole("button", { name: "Collapse file" }));
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		await new Promise((r) => setTimeout(r, 20));
+		await quietFor(20, "the landing replayed on reopening");
 		expect(screen.queryByTestId("landing-hint")).toBeNull();
 		expect(scrolls).not.toHaveBeenCalled();
 	});

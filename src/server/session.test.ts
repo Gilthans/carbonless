@@ -24,6 +24,7 @@ import {
 import { ghCallKinds, ghCallsOf } from "../../test/gh-log";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import { quietFor } from "../../test/sleep";
 import { MAX_MOVES_PER_THREAD } from "../shared/rereview/moves";
 import type { Snapshot } from "../shared/types";
 import { agentsDir } from "./agent/checkout";
@@ -828,7 +829,7 @@ describe("Session", () => {
 			release(process.env.CRB_FAKE_GH ?? "", "threads");
 			await expect(s.threads(readId, "full")).rejects.toThrow();
 			const calls = pr.ghLog();
-			await new Promise((r) => setTimeout(r, 200));
+			await quietFor(200, "a gh call after close");
 			expect(pr.ghLog()).toBe(calls);
 			await expect(s.overview(0)).rejects.toThrow(/closed/);
 		});
@@ -858,7 +859,7 @@ describe("Session", () => {
 			// any of them.
 			const calls = pr.ghLog();
 			release(process.env.CRB_FAKE_GH ?? "", "threads");
-			await new Promise((r) => setTimeout(r, 1800));
+			await quietFor(300, "a gh call from a read pushed out or closed");
 			expect(pr.ghLog()).toBe(calls);
 		});
 

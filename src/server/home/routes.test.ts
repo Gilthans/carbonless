@@ -288,19 +288,21 @@ describe("/api/home", () => {
 		const { app } = await setup();
 		fx?.scenario({ orgMembers: { acme: ["Octo", "olga"] } });
 		await app.inject({ method: "GET", url: "/api/home/repos/acme/api" });
-		let people: PeopleResult | undefined;
-		for (let i = 0; i < 200; i++) {
-			const res = await app.inject({
-				method: "GET",
-				url: "/api/home/people?q=o",
-			});
-			expect(res.statusCode).toBe(200);
-			people = res.json<PeopleResult>();
-			if (!people.pending) break;
-			await new Promise((resolve) => setTimeout(resolve, 50));
-		}
+		const people = await vi.waitFor(
+			async () => {
+				const res = await app.inject({
+					method: "GET",
+					url: "/api/home/people?q=o",
+				});
+				expect(res.statusCode).toBe(200);
+				const answer = res.json<PeopleResult>();
+				if (answer.pending) throw new Error("people still pending");
+				return answer;
+			},
+			{ timeout: 10_000, interval: 50 },
+		);
 		// Never the viewer: "Me" is theirs.
-		expect(people?.close.map((p) => p.login)).toEqual(["olga"]);
+		expect(people.close.map((p) => p.login)).toEqual(["olga"]);
 		const long = await app.inject({
 			method: "GET",
 			url: `/api/home/people?q=${"x".repeat(301)}`,

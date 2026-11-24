@@ -24,6 +24,7 @@ import {
 	testGitEnv,
 } from "../../test/git-fixture";
 import { settleGh } from "../../test/settle-gh";
+import { fakeDelay } from "../../test/sleep";
 import {
 	clonePath,
 	ensureClone,
@@ -233,14 +234,19 @@ describe("private clone", () => {
 	it("ensureRepoInit doesn't wait for the lock when the repo exists (a clone running)", async () => {
 		const path = await ensureRepoInit("acme", "widget");
 		let release = () => {};
+		let locked = false;
 		const held = withRepoLock(
 			path,
-			() => new Promise<void>((r) => (release = r)),
+			() =>
+				new Promise<void>((r) => {
+					locked = true;
+					release = r;
+				}),
 		);
-		await new Promise((r) => setTimeout(r, 50));
-		const started = Date.now();
+		await vi.waitFor(() => expect(locked).toBe(true));
+		// Answers while the lock is still held: waiting for it would hang
+		// (the test's timeout), as only this test releases it, afterwards.
 		expect(await ensureRepoInit("acme", "widget")).toBe(path);
-		expect(Date.now() - started).toBeLessThan(1000);
 		release();
 		await held;
 	});
@@ -454,7 +460,7 @@ describe("withRepoLock", () => {
 		const hold = (name: string, ms: number, fail = false) =>
 			withRepoLock(path, async () => {
 				order.push(`${name}+`);
-				await new Promise((r) => setTimeout(r, ms));
+				await fakeDelay(ms);
 				order.push(`${name}-`);
 				if (fail) throw new Error(`${name} failed`);
 				return name;
@@ -501,7 +507,7 @@ describe("withRepoLock", () => {
 			path,
 			async () => {
 				order.push("slow+");
-				await new Promise((r) => setTimeout(r, 4_000));
+				await fakeDelay(4_000);
 				order.push("slow-");
 			},
 			opts,
@@ -524,9 +530,16 @@ describe("withRepoLock", () => {
 		const path = join(tmp, "repo.git");
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(`${path}.lock`, `${hostname()} ${process.pid} live\n`);
-		setTimeout(() => rmSync(`${path}.lock`), 300);
-		const started = Date.now();
-		await withRepoLock(path, async () => {});
-		expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+		let removed = false;
+		setTimeout(() => {
+			rmSync(`${path}.lock`);
+			removed = true;
+		}, 300);
+		let ranAfterRemoval: boolean | undefined;
+		await withRepoLock(path, async () => {
+			ranAfterRemoval = removed;
+		});
+		// It ran only once the other holder's lock was gone.
+		expect(ranAfterRemoval).toBe(true);
 	});
 });

@@ -132,3 +132,37 @@ collection) in its summary, and it fails when the 7-day rate is over 2%,
 or when the report can't read what it needs. It runs no tests and is the
 only workflow job with a token (read-only Actions, 1,000 API calls an
 hour).
+
+## Lint rules
+
+The test rules most likely to bring flakes back are lint errors (CAR-260),
+as Biome GritQL plugins in `biome-plugins/`, scoped in `biome.json`:
+
+- `no-wait-for-timeout`: no `page.waitForTimeout`.
+- `no-test-retries`: no Playwright `retries` or Vitest `retry` other than
+  0, in a config, `test.describe.configure` or a test's options.
+- `no-wall-clock-assert`: no `expect(Date.now() - t)` or
+  `expect(performance.now() - t)`. CPU time goes through `test/cpu.ts`, and
+  "doesn't wait" is a hold. A difference kept in a variable first isn't
+  caught.
+- `no-sleep-in-tests`: no awaited fixed sleep (`new Promise` around a
+  `setTimeout`, `node:timers/promises`), a counted loop of them or a
+  `Promise.race` against one. A 0 ms timer and a poll in a `while`,
+  `do … while` or `for (;;)` loop are fine. Two sleeps are allowed, from
+  `test/sleep.ts`: `quietFor(ms, why)`, a window for something that must
+  not happen, and `fakeDelay(ms)`, a fake's own latency. A `quietFor` in a
+  before/after hook or over 500 ms is flagged too. Anything else takes a
+  `biome-ignore lint/plugin/<rule>: <why>`.
+
+Scope: test files (`*.test.ts(x)`), the files directly in `e2e/` and
+`test/` (not the fakes in `test/fake-gh/` and `test/fake-acp/`), and, for
+retries, the Playwright and Vitest configs. Biome matches a plugin's
+`includes` against the file's absolute path. `e2e/*.ts` never matches,
+and neither a `./` anchor nor a negation pins a glob to the repo root, so
+each glob starts with `**/`. As a result, a directory named `e2e` or
+`test` anywhere puts the files directly inside it in scope, including one
+above the checkout. A checkout at `~/test/carbonless` stays out (its files
+aren't directly in `test/`), but a checkout whose own folder is named
+`test` has its top-level config files in scope. A broken plugin only logs
+"errored" and fails nothing: `scripts/test-rule-plugins.test.ts` checks
+each rule on good and bad samples, and that every plugin loads.

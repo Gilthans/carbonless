@@ -835,12 +835,11 @@ describe("the helper itself", () => {
 
 	it("fails fast, saying which unit moved, when two units share one control", async () => {
 		render(<SharedBox />);
-		const started = Date.now();
+		// The helper's own wait (4 s), not a hang: a hang fails on the test's
+		// timeout (20 s, test/setup.ts).
 		await expect(use(0, "box", "reviewed")).rejects.toThrow(
 			/marking unit 0 reviewed left unit 1 reviewed, not unreviewed/,
 		);
-		// The helper's own wait (4 s), not a hang.
-		expect(Date.now() - started).toBeLessThan(15_000);
 	});
 
 	it("reads a crossed-off box by its name and a mixed box as mixed, not crossed off", () => {
