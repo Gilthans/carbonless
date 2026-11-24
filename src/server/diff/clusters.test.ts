@@ -1,15 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import {
+	createGitFixture,
+	GIT_TEST_TIMEOUTS,
+} from "../../../test/git-fixture.js";
 import { hunkCut } from "../../shared/whitespace.js";
 import type { LineCluster } from "./clusters.js";
 import {
+	buildAllClusters,
 	cutsAtBlankLines,
 	fileLevelCluster,
+	headersFor,
 	parseU0Patch,
 	splitAtBlankLines,
 	splitCluster,
 	splitPatch,
 } from "./clusters.js";
-import type { ChangedFile } from "./files.js";
+import { type ChangedFile, listChangedFiles } from "./files.js";
+
+// Real git processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 function file(partial: Partial<ChangedFile>): ChangedFile {
 	return {
@@ -312,6 +321,17 @@ describe("splitCluster (CAR-156)", () => {
 		).toEqual([{ cluster: hunk, removedAt: 0, addedAt: 0 }]);
 	});
 
+	it("counts nothing as whitespace when only the added side's cut doesn't fit", () => {
+		const [hunk] = parseU0Patch("@@ -1,2 +1,2 @@\n- a\n-b\n+a\n+B\n");
+		expect(
+			splitCluster(hunk as LineCluster, {
+				removedWs: [true, false],
+				addedWs: [true],
+				pairs: [[0, 0]],
+			}),
+		).toEqual([{ cluster: hunk, removedAt: 0, addedAt: 0 }]);
+	});
+
 	it("leaves a hunk that doesn't split as it is, flagged when all whitespace", () => {
 		const [plain] = parseU0Patch("@@ -1 +1 @@\n-a\n+b\n");
 		expect(
@@ -432,6 +452,54 @@ describe("cutsAtBlankLines: lock files stay whole (CAR-235, owner 2026-11-24)", 
 			"lock/index.ts",
 		]) {
 			expect(cutsAtBlankLines(path), path).toBe(true);
+		}
+	});
+});
+
+describe("headersFor", () => {
+	it("names a plain path as is, and a path git quotes as git quotes it", () => {
+		expect(headersFor({ path: "a.ts" })).toContain("diff --git a/a.ts b/a.ts");
+		// A quote, a backslash, a tab and a newline in the name.
+		expect(headersFor({ path: 'q"\\\tn\n.ts' })[1]).toBe(
+			String.raw`diff --git "a/q\"\\\tn\n.ts" "b/q\"\\\tn\n.ts"`,
+		);
+		// A control character alone is enough to quote.
+		expect(headersFor({ path: "c\u0001.ts" })[1]).toBe(
+			'diff --git "a/c\u0001.ts" "b/c\u0001.ts"',
+		);
+		// A space is not.
+		expect(headersFor({ path: "s p.ts" })[1]).toBe(
+			"diff --git a/s p.ts b/s p.ts",
+		);
+	});
+});
+
+describe("buildAllClusters: a change can never go missing (principle 2)", () => {
+	it("throws when the parsed lines don't add up to the listing's counts, or a listed file has no section", async () => {
+		const fx = createGitFixture([
+			{ message: "base", files: { "a.txt": "one\ntwo\n" } },
+			{ message: "head", files: { "a.txt": "one\nTWO\n" } },
+		]);
+		try {
+			const [base, head] = fx.shas as [string, string];
+			const listed = await listChangedFiles(fx.path, base, head);
+			expect(await buildAllClusters(fx.path, base, head, listed)).toHaveLength(
+				1,
+			);
+			const [a] = listed as [ChangedFile];
+			for (const wrong of [
+				{ ...a, deletions: a.deletions + 1 },
+				{ ...a, additions: a.additions + 1 },
+			]) {
+				await expect(
+					buildAllClusters(fx.path, base, head, [wrong]),
+				).rejects.toThrow(/Could not extract line clusters/);
+			}
+			await expect(
+				buildAllClusters(fx.path, base, head, [a, { ...a, path: "b.txt" }]),
+			).rejects.toThrow(/no section for b\.txt/);
+		} finally {
+			fx.cleanup();
 		}
 	});
 });

@@ -198,6 +198,78 @@ describe("toReadCount", () => {
 	});
 });
 
+describe("sinceProgress", () => {
+	const unit = (
+		index: number,
+		state: ClusterState,
+		lines = 2,
+	): Parameters<typeof sinceProgress>[0][number] => ({
+		index,
+		path: `f${index}`,
+		kind: "reworked",
+		lines,
+		state,
+		open: state === "unreviewed" ? lines : 0,
+	});
+
+	it("counts units by state, and a file done only when every unit of it is marked", () => {
+		expect(
+			sinceProgress([
+				unit(0, "reviewed", 3),
+				unit(0, "unreviewed", 1),
+				unit(1, "crossed-off", 2),
+				unit(1, "crossed-off", 1),
+				unit(2, "reviewed", 1),
+				unit(2, "crossed-off", 4),
+			]),
+		).toEqual({
+			clusters: { total: 6, reviewed: 2, crossedOff: 3 },
+			lines: { total: 12, reviewed: 4, crossedOff: 7 },
+			// f0 has an unmarked unit: not done. f1 all crossed off; f2 done
+			// with a reviewed unit: reviewed.
+			files: { total: 3, done: 2, crossedOff: 1, reviewed: 1 },
+		});
+	});
+});
+
+describe("toReadClusters", () => {
+	it("counts only reworked and new clusters left unmarked, in lines their unmarked lines", () => {
+		const marks = view([
+			file(0, "core.ts", [
+				{
+					...cluster("a", "unreviewed", false, 5),
+					reviewedLines: [[0, 1]],
+					crossedLines: [[1, 3]],
+				},
+				// Carried per the engine, unticked: the bar's full diff count
+				// is of reworked and new clusters only.
+				cluster("b", "unreviewed", false, 4),
+			]),
+			file(1, "util.ts", [cluster("d", "unreviewed", false, 1)]),
+		]);
+		expect(toReadClusters(a, marks, "lines", false)).toBe(2 + 1);
+		expect(toReadClusters(a, marks, "clusters", false)).toBe(2);
+		expect(toReadClusters(a, marks, "files", false)).toBe(2);
+	});
+});
+
+describe("liveToRead", () => {
+	it("counts the unmarked units, the gone ones among them, and every conflicted file", () => {
+		const base = { path: "f", lines: 1, open: 1 };
+		const since = new Map([
+			[7, { conflict: true } as never],
+			[0, { conflict: false } as never],
+		]);
+		expect(
+			liveToRead(since, [
+				{ ...base, index: 0, kind: "gone", state: "unreviewed" },
+				{ ...base, index: 0, kind: "gone", state: "reviewed", open: 0 },
+				{ ...base, index: 1, kind: "new", state: "unreviewed" },
+			]),
+		).toEqual({ files: 3, clusters: 2, gone: 1 });
+	});
+});
+
 describe("toReadCount, a partly reviewed cluster", () => {
 	it("is still to read: in lines, only its unreviewed lines", () => {
 		const partly = view([
@@ -666,6 +738,33 @@ describe("nothingSince", () => {
 			{ files: 0, clusters: 0 },
 		);
 		expect(nothingSince(gone, sinceByFile(gone, v))).toBe(false);
+	});
+
+	it("anything to read, in either count, or gone in any file is not nothing (principle 2)", () => {
+		const quietFiles: RereviewAnswer["files"] = [
+			{ index: 0, path: "core.ts", conflict: false, clusters: [] },
+		];
+		for (const toRead of [
+			{ files: 0, clusters: 1 },
+			{ files: 1, clusters: 0 },
+		]) {
+			const some = answer(quietFiles, toRead);
+			expect(nothingSince(some, sinceByFile(some, v))).toBe(false);
+		}
+		// Gone only in the second file.
+		const goneLater = answer(
+			[
+				...quietFiles,
+				{
+					index: 1,
+					path: "util.ts",
+					conflict: false,
+					clusters: [{ key: "x", kind: "gone", from: 1 }],
+				},
+			],
+			{ files: 0, clusters: 0 },
+		);
+		expect(nothingSince(goneLater, sinceByFile(goneLater, v))).toBe(false);
 	});
 });
 

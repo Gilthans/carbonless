@@ -113,6 +113,60 @@ describe("nothingLeft", () => {
 			clusters: { total: 3, reviewed: 0, crossedOff: 2 },
 		};
 		expect(nothingLeft(renameLeft, "lines")).toBe(false);
+		// Everything reviewed: done, not "nothing left" (that says crossed off).
+		const reviewed = {
+			clusters: { total: 2, reviewed: 2, crossedOff: 0 },
+			lines: { total: 4, reviewed: 4, crossedOff: 0 },
+			files: { total: 1, reviewed: 1, crossedOff: 0, done: 1 },
+		};
+		expect(nothingLeft(reviewed, "lines")).toBe(false);
+		// A reviewed cluster without lines beside crossed-off lines: none left.
+		const fileLevelReviewed = {
+			clusters: { total: 2, reviewed: 1, crossedOff: 1 },
+			lines: { total: 4, reviewed: 0, crossedOff: 4 },
+			files: { total: 1, reviewed: 1, crossedOff: 0, done: 1 },
+		};
+		expect(nothingLeft(fileLevelReviewed, "lines")).toBe(true);
+	});
+});
+
+describe("fileUnitProgress, lines crossed off inside a cluster", () => {
+	it("a reviewed cluster's crossed-off lines count crossed off, not reviewed; a cluster counts once in clusters", () => {
+		const f = file([
+			{ ...cluster("reviewed", 5), crossedLines: [[0, 2]] },
+			{
+				...cluster("unreviewed", 4),
+				reviewedLines: [[0, 1]],
+				crossedLines: [[1, 2]],
+			},
+		]);
+		expect(fileUnitProgress(f, "lines").counts).toEqual({
+			total: 9,
+			reviewed: 3 + 1,
+			crossedOff: 2 + 1,
+		});
+		expect(fileUnitProgress(f, "clusters").counts).toEqual({
+			total: 2,
+			reviewed: 1,
+			crossedOff: 0,
+		});
+		// Not done: a crossed-off cluster isn't counted as a done file's.
+		expect(
+			fileUnitProgress(
+				file([cluster("crossed-off", 1), cluster("unreviewed", 1)]),
+				"lines",
+			).partlyCrossedOff,
+		).toBe(0);
+	});
+
+	it("says clusters without lines are left when every line is marked, crossed-off lines too", () => {
+		const f = file([
+			{ ...cluster("reviewed", 3), crossedLines: [[0, 1]] },
+			cluster("unreviewed", 0, "file"),
+		]);
+		const p = fileUnitProgress(f, "lines");
+		expect(p.hiddenLeft).toBe(true);
+		expect(p.percent).toBeLessThan(100);
 	});
 });
 

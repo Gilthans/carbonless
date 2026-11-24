@@ -758,6 +758,68 @@ describe("overlayReview", () => {
 		expect(shown.files[0]?.clusters[0]?.state).toBe("unreviewed");
 	});
 
+	it("a cross-off's reason follows the change, and a whole change clears crossed-off lines", () => {
+		const base = view([
+			file("a.ts", [
+				cluster("k1", { state: "crossed-off", reason: "old" }),
+				cluster("k2", { state: "crossed-off", reason: "old" }),
+				cluster("k3", {
+					lines: 4,
+					oldCount: 2,
+					newCount: 2,
+					removed: ["a", "b"],
+					added: ["c", "d"],
+					crossedLines: [[0, 2]],
+				}),
+			]),
+		]);
+		const shown = overlayReview(
+			base,
+			pendingOf("r1", [
+				{ key: "k1", state: "crossed-off", reason: " new " },
+				{ key: "k2", state: "crossed-off" },
+				set("k3", "unreviewed"),
+			]),
+		);
+		const [k1, k2, k3] = shown.files[0]?.clusters ?? [];
+		expect(k1).toMatchObject({ state: "crossed-off", reason: "new" });
+		expect(k2?.state).toBe("crossed-off");
+		expect(k2).not.toHaveProperty("reason");
+		expect(k3?.state).toBe("unreviewed");
+		expect(k3?.crossedLines).toBeUndefined();
+		expect(shown.progress.lines.crossedOff).toBe(2 + 2);
+	});
+
+	it("a pending since mark replaces its comparison's mark, never another's, and only on its revision", () => {
+		const mark = (since: number, path: string, old: [number, number][]) => ({
+			since,
+			path,
+			reviewed: { old, new: [] as [number, number][] },
+			crossed: { old: [] as [number, number][], new: [] as [number, number][] },
+		});
+		const base: ReviewView = {
+			...view([file("a.ts", [cluster("k1")])]),
+			sinceMarks: [
+				mark(1, "a.ts", [[1, 2]]),
+				mark(1, "b.ts", [[3, 4]]),
+				mark(2, "a.ts", [[5, 6]]),
+			],
+		};
+		const untick = mark(1, "a.ts", []);
+		const change: StateChange = {
+			key: "since:1:a.ts",
+			state: "unreviewed",
+			sinceMark: untick,
+		};
+		expect(overlayReview(base, pendingOf("r1", [change])).sinceMarks).toEqual([
+			mark(1, "b.ts", [[3, 4]]),
+			mark(2, "a.ts", [[5, 6]]),
+			untick,
+		]);
+		// Made on another revision: the view's marks stand.
+		expect(overlayReview(base, pendingOf("r0", [change]))).toBe(base);
+	});
+
 	it("ignores changes made on another revision", () => {
 		const base = view([file("a.ts", [cluster("k1")])], "r2");
 		expect(overlayReview(base, pendingOf("r1", [set("k1", "reviewed")]))).toBe(

@@ -64,6 +64,46 @@ describe("finishes", () => {
 	});
 });
 
+describe("finishes, the file's since mark as the changes leave it", () => {
+	const a = { old: [[1, 2]] as [number, number][], new: [] };
+	const b = { old: [[5, 6]] as [number, number][], new: [] };
+	const mark = (reviewed: [number, number][]): SinceMark => ({
+		since: 1,
+		path: "src/a.ts",
+		reviewed: { old: reviewed, new: [] },
+		crossed: { old: [], new: [] },
+	});
+	const only: SinceOnly = {
+		marks: [mark([[1, 2]])],
+		since: 1,
+		path: "src/a.ts",
+		pieces: [a, b],
+	};
+	const both = mark([
+		[1, 2],
+		[5, 6],
+	]);
+	const tick = {
+		key: sinceMarkKey(1, "src/a.ts"),
+		state: "reviewed" as const,
+		sinceMark: both,
+	};
+
+	it("the new mark replaces the file's old one: ticking the last piece finishes it", () => {
+		expect(finishes([c("k", "reviewed")], [tick], only)).toBe(true);
+	});
+
+	it("reads the file's own mark among the changes, not the last change's", () => {
+		expect(
+			finishes(
+				[c("k", "reviewed")],
+				[tick, { key: "k", state: "reviewed" }],
+				only,
+			),
+		).toBe(true);
+	});
+});
+
 describe("finishes, in the since view (CAR-159)", () => {
 	// One removed piece no cluster owns: old lines 10 and 11 ([10, 12) is half-open).
 	const removed = { old: [[10, 12]] as [number, number][], new: [] };
