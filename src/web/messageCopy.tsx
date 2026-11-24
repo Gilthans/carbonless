@@ -107,18 +107,23 @@ export function wordAt(el: HTMLElement, x: number, y: number): Range | null {
 	const text = at.node.textContent ?? "";
 	if (typeof Intl.Segmenter !== "function") return null;
 	const words = new Intl.Segmenter(undefined, { granularity: "word" });
+	// The segment holding the caret, or the ones either side of it when it
+	// sits on a boundary: a press on a word's last letter snaps past it.
+	let before: Intl.SegmentData | undefined;
+	let after: Intl.SegmentData | undefined;
 	for (const seg of words.segment(text)) {
 		const end = seg.index + seg.segment.length;
-		if (at.offset < seg.index || at.offset > end) continue;
-		// On a boundary the word after wins; a space or a mark is none.
-		if (at.offset === end && end < text.length) continue;
-		if (!seg.isWordLike) return null;
-		const range = document.createRange();
-		range.setStart(at.node, seg.index);
-		range.setEnd(at.node, end);
-		return range;
+		if (end === at.offset) before = seg;
+		else if (seg.index === at.offset) after = seg;
+		else if (seg.index < at.offset && at.offset < end) after = seg;
+		if (seg.index >= at.offset) break;
 	}
-	return null;
+	const seg = after?.isWordLike ? after : before?.isWordLike ? before : null;
+	if (!seg) return null;
+	const range = document.createRange();
+	range.setStart(at.node, seg.index);
+	range.setEnd(at.node, seg.index + seg.segment.length);
+	return range;
 }
 
 /**
@@ -145,30 +150,19 @@ const READER_SCROLLS = ["wheel", "touchmove", "keydown"] as const;
  * The menu a long press opened: Copy message, Select text. Fixed by the
  * finger, over the page for as long as it is open: a tap elsewhere, a
  * scroll by the reader (not one the content makes, a growing answer
- * re-pinned) or Escape closes it, and the focus goes back where it was.
+ * re-pinned) or Escape closes it. It never takes the focus.
  * In the message's modal dialog when it is in one (the rest of the page
  * is inert there).
  */
 function MessageMenu(props: { at: Press; text: string; onClose: () => void }) {
 	const { at, text, onClose } = props;
 	const menu = useRef<HTMLDivElement>(null);
-	const first = useRef<HTMLButtonElement>(null);
 	const [place, setPlace] = useState<{ left: number; top: number } | null>(
 		null,
 	);
 	const [copied, setCopied] = useState<Copied>(null);
 	const latestClose = useRef(onClose);
 	latestClose.current = onClose;
-	// Where the focus was (a reply being written): back there on close,
-	// unless the menu left a selection to keep (Select text, Copy failed).
-	useLayoutEffect(() => {
-		const back = document.activeElement;
-		return () => {
-			if (!(back instanceof HTMLElement) || !back.isConnected) return;
-			if (selectedIn(at.el)) return;
-			back.focus({ preventScroll: true });
-		};
-	}, [at]);
 	useLayoutEffect(() => {
 		const el = menu.current;
 		if (!el) return;
@@ -180,7 +174,6 @@ function MessageMenu(props: { at: Press; text: string; onClose: () => void }) {
 				{ w: window.innerWidth, h: window.innerHeight },
 			),
 		);
-		first.current?.focus({ preventScroll: true });
 	}, [at]);
 	useEffect(() => {
 		const close = () => latestClose.current();
@@ -229,6 +222,9 @@ function MessageMenu(props: { at: Press; text: string; onClose: () => void }) {
 			role="menu"
 			aria-label="Message"
 			data-testid="message-menu"
+			// Touch-only: the focus stays where it was (a reply being written
+			// keeps its keyboard), and a press on an item never takes it.
+			onMouseDown={(e) => e.preventDefault()}
 			style={
 				place
 					? { left: place.left, top: place.top }
@@ -237,7 +233,6 @@ function MessageMenu(props: { at: Press; text: string; onClose: () => void }) {
 			className="fixed z-50 min-w-44 rounded-lg border border-edge bg-surface p-1 text-ink shadow-float"
 		>
 			<button
-				ref={first}
 				type="button"
 				role="menuitem"
 				aria-label={copyWord(copied, "Copy message")}

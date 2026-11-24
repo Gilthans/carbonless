@@ -13,7 +13,7 @@ import {
 	PRESS_SLOP,
 	useLongPress,
 } from "./longPress";
-import { menuPlace, useMessageCopy } from "./messageCopy";
+import { menuPlace, useMessageCopy, wordAt } from "./messageCopy";
 
 const copied = vi.hoisted(() => ({ ok: true, texts: [] as string[] }));
 vi.mock("./copyText", () => ({
@@ -272,7 +272,7 @@ describe("useMessageCopy", () => {
 		expect(document.getSelection()?.toString()).toBe("Rendered text");
 	});
 
-	it("gives the focus back to where it was (a reply being written) when it closes", () => {
+	it("leaves the focus where it is (a reply being written keeps its keyboard), through Copy too", async () => {
 		render(
 			<>
 				<textarea aria-label="Reply" />
@@ -281,11 +281,17 @@ describe("useMessageCopy", () => {
 		);
 		const box = screen.getByRole("textbox", { name: "Reply" });
 		box.focus();
-		open();
-		expect(
-			screen.getByRole("menuitem", { name: "Copy message" }),
-		).toHaveFocus();
-		fireEvent.keyDown(document, { key: "Escape" });
+		const menu = open();
+		expect(box).toHaveFocus();
+		// A press on the menu never takes the focus (fireEvent: false when
+		// the default was prevented).
+		expect(fireEvent.mouseDown(menu)).toBe(false);
+		await act(async () => {
+			fireEvent.click(screen.getByRole("menuitem", { name: "Copy message" }));
+		});
+		expect(box).toHaveFocus();
+		act(() => vi.advanceTimersByTime(COPIED_MS));
+		expect(screen.queryByRole("menu")).toBeNull();
 		expect(box).toHaveFocus();
 	});
 
@@ -324,6 +330,44 @@ describe("useMessageCopy", () => {
 		down(screen.getByTestId("msg"));
 		act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
 		expect(screen.queryByRole("menu")).toBeNull();
+	});
+});
+
+describe("wordAt", () => {
+	afterEach(() => {
+		cleanup();
+		Reflect.deleteProperty(document, "caretRangeFromPoint");
+	});
+
+	/** The word at a caret `offset` into "Is total right?". */
+	function at(offset: number): string | null {
+		render(<p data-testid="p">Is total right?</p>);
+		const el = screen.getByTestId("p");
+		const text = el.firstChild as Text;
+		Object.assign(document, {
+			caretRangeFromPoint: () => {
+				const r = document.createRange();
+				r.setStart(text, offset);
+				return r;
+			},
+		});
+		const word = wordAt(el, 0, 0)?.toString() ?? null;
+		cleanup();
+		return word;
+	}
+
+	it("inside a word: that word", () => {
+		expect(at(1)).toBe("Is");
+		expect(at(5)).toBe("total");
+	});
+
+	it("on a boundary: the word after, else the word before (a press on a word's last letter snaps past it)", () => {
+		expect(at(0)).toBe("Is");
+		expect(at(3)).toBe("total");
+		expect(at(2)).toBe("Is");
+		expect(at(8)).toBe("total");
+		expect(at(14)).toBe("right");
+		expect(at(15)).toBe(null);
 	});
 });
 
