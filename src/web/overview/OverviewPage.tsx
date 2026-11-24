@@ -318,6 +318,29 @@ function OverviewContent({
 /** The sections' frames while GitHub is read: grey bars where text will be. */
 function OverviewSkeleton() {
 	const bar = (width: string) => <SkeletonBar className={width} />;
+	// Once slow: what the overview's read waits on (CAR-296), laid over
+	// the first frame's bars (nothing moves as it comes and goes).
+	const step = useLoadingStep(
+		"overview",
+		(r) => r.method === "GET" && /\/overview(?:\?|$)/.test(r.path),
+		true,
+	);
+	return (
+		<div className="relative">
+			<p
+				aria-live="polite"
+				data-testid="overview-step"
+				className="absolute inset-x-px top-12 z-10 bg-surface px-4 py-1.5 text-xs break-words text-muted empty:p-0"
+			>
+				{step}
+			</p>
+			<OverviewFrames bar={bar} />
+		</div>
+	);
+}
+
+/** The sections' frames (OverviewSkeleton's busy part). */
+function OverviewFrames({ bar }: { bar: (width: string) => ReactNode }) {
 	return (
 		<div data-testid="overview-loading" aria-busy="true" className="space-y-6">
 			<p className="sr-only">Loading the PR from GitHub…</p>
