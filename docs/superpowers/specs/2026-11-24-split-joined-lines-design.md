@@ -13,14 +13,13 @@ problem.
 
 Today each line has at most one partner (step 2, CAR-30:
 `alignCluster` in `src/shared/linePairing.ts`, called by `hunkPairs` in
-`src/web/files/wordBlocks.ts`). So one new line pairs with the old line
-and the rest read as entirely new:
+`src/web/files/wordBlocks.ts`). Take:
 
 ```python
 def load(path, retries=3, timeout=30):
 ```
 
-becomes
+becoming
 
 ```python
 def load(
@@ -30,9 +29,11 @@ def load(
 ):
 ```
 
-and only `def load(` gets marks. CAR-221 is the same shape: a comment
-line grew and wrapped onto a second line; the first line's added words
-are marked, the second line reads as a plain added line.
+No new line is similar enough to pair (`def load(` scores 0.44, under
+`PAIR_MIN_SIMILARITY` 0.5), so all six lines are plain: one removed, five
+added. CAR-221 is the other shape: a comment line grew and wrapped onto a
+second line. Its first line pairs (0.55) and gets marks; the second reads
+as a plain added line.
 
 ## Goal
 
@@ -53,10 +54,12 @@ marked, on whichever line it lands. The owner's rule, 2026-11-24:
   same mechanism: a group is one line against a run of adjacent lines
   that together hold its text. Step 2's case 7 looks as it does today.
 - **Many to many** (two old lines rewrapped into three new ones). A
-  group is always one line on one side. *My call:* rewrapping a
+  group always has one line on one side. *My call:* rewrapping a
   paragraph is a later step if the real-PR comparison shows it matters.
 - **The thread tracer** (`src/shared/tracer/trace.ts`). It keeps
   `alignOrOver` and its own "two lines merged into one" step. *My call.*
+- **Correcting pairs or groups by hand.** A follow-up of its own (see the
+  end). *My call.*
 - Any change to clusters, keys, +/− counts, progress or what is
   unreviewed. The pairing stays a view.
 
@@ -65,12 +68,14 @@ marked, on whichever line it lands. The owner's rule, 2026-11-24:
 - **A group that hides a change.** Every line of a group stays a changed
   line, unreviewed until the reviewer marks it (principle 2). Any text
   that isn't in the other side is marked (owner, 2026-11-24, on reflow
-  punctuation: "Mark it. Any added text should be visible").
+  punctuation: "Mark it. Any added text should be visible"). The only
+  exceptions are the break itself: indentation, a trailing `\r`, and a
+  comment leader as defined below.
 - **A confident wrong group.** In doubt, no group: the lines pair as
   today.
-- **Making step 2's cases look worse.** Its seven cases and the step 1
-  GitHub fixture keep their rows and marks, unless a case is a split or
-  join (none of them is).
+- **Taking anything from today's pairs.** Every pair that exists today
+  still exists, unless a group covers its lines; the step 1 GitHub
+  fixture and step 2's seven cases keep their rows and marks.
 
 ## Design
 
@@ -87,59 +92,95 @@ A candidate is a group when all of these hold:
 
 - **Similar:** the one line against the run joined (below) scores at
   least `PAIR_MIN_SIMILARITY` with step 2's `score` (whitespace not
-  counted; words only when both have words).
+  counted; words only when both sides have words). Words-or-all can flip
+  as run lines are added, so a streamed LCS keeps both states.
 - **Every line holds part of it:** each line of the run shares a
   non-whitespace token with the one line that the lines before it
-  haven't already used up. So an added `'gamma'` after `'beta'` →
-  `'beta',` (step 2's case 1), or a `}` added after a changed line, is
-  never pulled into a group. *My call*; the exact test is the builder's,
-  decided with the rows (before marks), and must keep those two cases
-  out.
+  haven't already used up. This rule alone keeps step 2's case 1
+  (`'beta'` → `'beta',` + `'gamma'`: the joined text scores 0.67) out,
+  and also a `}` added after a changed line. *My call*; the exact test is
+  the builder's, decided with the rows (before marks).
 - **Small enough:** at most `GROUP_MAX_LINES` lines in the run (*my
   call:* 20), the joined text under `WORD_DIFF_MAX` (1,024 characters,
-  as for a pair), and inside step 2's guards and the hunk's word-step
-  budget (below).
+  as for a pair).
 
-### Choosing groups and pairs together
+### Choosing groups and pairs
 
-Groups join step 2's non-crossing pairing as one more kind of item: each
+Groups join step 2's non-crossing choice as one more kind of item: each
 line in at most one pair or group, no two items crossing, the most total
 similarity. A group replaces the pairs it would cover only when it holds
-more of the line's text than they do (*my call*: the weighting is the
-builder's, tuned on the fixtures and the real-PR comparison). Ties go to
-today's layout.
+more of the line's text than they do (the weighting is the builder's,
+tuned on the fixtures and the real-PR comparison). Ties go to today's
+layout.
 
-Equal stretches keep step 1's i-th-with-i-th pairs; groups are only
-looked for in unequal ones (*my call*: a split alone always makes a
-stretch unequal, and GitHub parity in equal ones stays as step 1
-promised).
+*My call:* equal stretches keep step 1's i-th-with-i-th pairs; groups are
+only looked for in unequal ones. A split alone always makes a stretch
+unequal, and step 1 promised GitHub's pairs there.
 
-A group never spans two runs (two clusters, or two since pieces): its
-bracket needs adjacent rows. Such lines pair as today. *My call*, the
-safe direction.
+*My call:* a group never spans two runs (two clusters, or two since
+pieces); its rows must be adjacent. `hunkPairs` still pairs one-to-one
+across runs as today (marks only), so those lines look as they do now.
+
+### Cuts end a group
+
+The server cuts whitespace-only lines into their own clusters whatever
+the setting (CAR-218, `matchDisplayHunk`). So a run line that is some
+other line's whitespace twin (a lone `)`, `}` or blank line) is in
+another run, with Ignore whitespace on or off, and the group stops
+there. The one line's text on the far side (say `);`) is then marked as
+removed. *My call:* accepted: it over-marks, the safe way. With the
+setting on, the `~` row also ends the stretch, as today.
 
 ### The marks
 
-The run is joined into one text: each break, with the next line's
-indentation, counts as a gap that matches any whitespace on the one
-line, or none. A repeated comment leader at the start of a continuation
-line (`//`, `///`, `#`, `*`, `--`, `;`, `%`, the same as the run's
-first line starts with) counts as part of the break too, so CAR-221's
-second `//` isn't marked, as in the mockups (*my call*; a Markdown `*`
-bullet list is read the same way). Then step 1's `wordMarks` runs on the
-one line against that text, and the marks are painted back onto each
-line, a mark spanning a break cut into one per line. Whitespace
-elsewhere is marked as in a pair.
+*My call:* a group variant of step 1's `tokenMarks`, not `wordMarks` as
+is:
 
-So a pure split marks nothing; `timeout=30` → `timeout=30,` marks the
-comma; the join of `items` / `.map(price)` / `.reduce(sum, 0);` into one
-line marks only `0` → `0.0`.
+- The run is tokenized per line, with step 1's `tokenize`, and the lines'
+  tokens are put together with one **gap token** between lines, so `foo`
+  at a line's end and `bar` at the next line's start never fuse into one
+  word.
+- A gap token stands for the break: the line end, a trailing `\r` (CRLF
+  files), and the next line's indentation. It matches any run of spaces
+  and tabs on the one line, or nothing. It is never marked.
+- A **comment leader** at the start of a continuation line is part of the
+  break only when the one line and that continuation line are both
+  comments with the same leader (`//`, `///`, `#`, `--`, `;`, `%`, `*`
+  inside a block comment), and the file is not Markdown. So CAR-221's
+  second `//` stays plain, as in the mockups. *My call:* Markdown bullets
+  and headings are never absorbed: a new `*` or `#` there is a new item
+  and is marked ("Any added text should be visible", owner 2026-11-24).
+- Trailing spaces before a break are not part of it: added ones are
+  marked (and flagged as hidden, as on any line). *My call.*
+- `bridge` (merging two marks across spaces) never bridges across a gap
+  token.
+- The marks are painted back on each line; one that spans a break is cut
+  into one per line.
 
-Marks for a group go through the same runner as a pair's
-(`src/web/files/wordWork.ts`): marked on first paint while the render's
-budget lasts, else off the render path; pending, done or failed per
-group, never plain while pending (principle 8). The hidden-characters
-check (`hiddenLines.ts`) reads a group's marks as it reads a pair's.
+So a pure split marks nothing. `timeout=30` → `timeout=30,` marks the
+comma. Joining `items` / `.map(price)` / `.reduce(sum, 0);` into
+`items.map(price).reduce(sum, 1);` marks only `0` and `1`. In the
+CAR-221 shape, the added words are marked on both lines; the comma after
+`matrix` is in the old line too, so it stays plain (the mockup marks it;
+that is wrong).
+
+### Where today's helpers change
+
+- `hunkPairs` returns pairs and groups (an item: one line, its run, which
+  side is which).
+- `Partners` (`pairOrder.ts`) is one-to-one today; it becomes a map from
+  each line to its item, read by `orderRun`, `layoutRows`, `HunkView` and
+  `DiffBody`.
+- `wordWork.ts` and `wordWorker.ts`: a new job shape (one text and the
+  run's texts), keyed by the one line and its run, with done, pending and
+  failed kept over every line of the group. Marked on first paint while
+  the render's budget lasts, else off the render path, as pairs are.
+- `hiddenLines.ts`: `hiddenChange` takes one `partner`. *My call:* in a
+  group, the one line's partner is the run's first line and the first
+  line's partner is the one line; other run lines have no partner (no
+  look-alike or swapped-indent check). The break's indentation and `\r`
+  never count as hidden changes. `noNewline` (no newline at end of file)
+  is compared between the one line and the run's last line.
 
 ### Unified
 
@@ -154,38 +195,45 @@ the order of rows inside the stretch does, as for pairs today.
 The one line shares a row with the first line of its run; the run's
 other lines get rows of their own with a blank (hatched) cell opposite
 (the mockups' split). A join mirrors it: the old run on the left, the
-one new line on the first row on the right, blanks below. The layout's
-guarantees (`sideBySide.ts`) hold as they are: every line exactly once
-per side, each side in order, never in a cell of the wrong side, and a
-blank cell only once the other side of that gap or group has run out.
+one new line on the first row on the right, blanks below.
+
+*My call:* the layout's guarantee changes from "a blank cell only once
+the other side has run out" to "a blank cell only once the other side
+of that gap or group has run out". `docs/product-rules.md` ("Side by
+side is a view") and `sideBySide.test.ts`'s property change with it. The
+rest holds: every line exactly once per side, each side in order, never
+in a cell of the wrong side.
 
 ### The bracket
 
 A bracket in the gutter ties the one line to its run, in unified and
 side by side, desktop and phone. Unified, it spans all the group's rows;
 side by side, it runs down the run's side. Owner, 2026-11-24: "No chip.
-The bracket is sufficient". Its tooltip and accessible name say what it
-ties, short: "Line 12 split into 12–16", "Lines 7–9 joined into 7". It
-is drawn with the rows (groups are decided with the rows,
-synchronously, as pairs are), so it never appears late or moves code.
+The bracket is sufficient". It is drawn with the rows (groups are
+decided with the rows, synchronously, as pairs are), so it never appears
+late or moves code.
 
-### Ignore whitespace
+- *My call:* rows inserted inside a group (a thread, a new-comment box)
+  don't break it: the bracket runs on past them.
+- *My call:* the bracket itself is not interactive. Its text ("Line 12
+  split into 12–16", "Lines 7–9 joined into 7") is the accessible name of
+  each group row and a tooltip on hover; on a phone it is reached through
+  the line-number cell (a 40px target), not the 14px bracket.
 
-A pure split or join is not whitespace-only and keeps counting (owner,
-2026-11-24: "Keep counting it"). This needs no new code: clusters and
-`whitespaceOnly` come from per-line matching (`matchDisplayHunk`), which
-never matches one line with several. A `~` row ends a stretch, so a
-line of the run that is some other line's whitespace twin (a lone `)`)
-leaves the group; the rest may still group.
+### Loading
+
+*My call:* while a group's marks are computed, every line of the group
+shows pending (the same treatment as a pending pair, `aria-busy`), never
+plain; a failure shows failed on every line (principle 8).
 
 ### The since view and Find in PR
 
 Groups come from `hunkView`, so the since view gets them on the
 interdiff's hunks, cut at its pieces, exactly as the full diff gets them
-on its own (principle 9: interdiffs are first-class).
-Example: patch set 1 adds `def load(path, retries=3, timeout=30):`,
-patch set 2 splits it. Since patch set 1, the old line and its run are
-one group; against the base, all five lines are plain additions.
+on its own (principle 9: interdiffs are first-class). Example: patch set
+1 adds `def load(path, retries=3, timeout=30):`, patch set 2 splits it.
+Since patch set 1, the old line and its run are one group; against the
+base, all five lines are plain additions.
 
 Find in PR reads `hunkView`'s rows (`findInPr.ts`), so its order of hits
 follows the group layout with no new work. It draws its own hit marks,
@@ -199,63 +247,34 @@ do over pair rows today.
 
 ### Caps and CPU
 
-Group candidates are scored inside step 2's guards (`ALIGN_CAP`,
-`ALIGN_CHARS`, `ALIGN_WORD_OPS`) and spend from the same hunk budget
-(`HUNK_ALIGN_WORD_OPS`). A stretch whose groups don't fit gets today's
-pairs only; past the budget, today's layout. A hint for the builder:
-for a fixed one line and run start, the bit-parallel LCS can go on over
-the run's next line, so scoring every run length costs about one LCS
-over the longest run, not one per length.
+*My call:* groups never take budget from pairs. Pairs are chosen first,
+inside step 2's guards and `HUNK_ALIGN_WORD_OPS`, exactly as today;
+groups are scored from what that leaves of the hunk's budget, and a
+stretch whose groups don't fit keeps its pairs. A test checks that a
+hunk's pairs are identical with and without groups wherever no group
+replaced them. `ALIGN_WORD_OPS` stays the per-stretch guard for pairs;
+group scoring has the same guard on its own estimate. Hint: for a fixed
+one line and run start, the bit-parallel LCS can stream the run's lines
+over the one line's masks, so every run length costs about one LCS over
+the longest run.
 
-### Correcting a pair or a group by hand (second PR)
+### Known limit
 
-The mockups say a group "can be unpaired by hand like today's pairs, and
-the correction is kept". Today no pair can be corrected by hand: step 2
-shipped without it. Principle 1 asks for it for both, so this spec adds
-it for pairs and groups alike, as its own PR (`Part of CAR-130`). See
-"Questions for the owner".
-
-- **UI:** the reviewer picks lines by their numbers (`linePicks.ts`).
-  When the picked lines are exactly a pair or a group, the selection bar
-  (`SelectionBar.tsx`) offers an Unpair icon; when they are one line on
-  one side and a run on the other in one stretch, a Pair icon. Icons with
-  tooltips and accessible names, 40px tap targets; nothing new in the
-  rows. Picking the same lines again offers the opposite action (that is
-  the undo).
-- **Effect:** an unpaired pair or group's lines stay plain in that
-  stretch (*my call*: they don't re-pair otherwise; plain is never
-  wrong). A hand pair or group is kept even below the threshold; the
-  automatic pairing fills around it, never crossing it. A hand item that
-  crosses another: the later one wins.
-- **Identity:** by content, so a correction holds in every snapshot, in
-  the since view and after a push wherever the same lines meet: the
-  file's path and, per side, the count and a hash of the lines' texts.
-  Applies to each place in the file where the same lines meet (GitDB 9).
-- **Storage** (`docs/gitdb-design-principles.md` followed): a
-  `pairing-corrected` event, `by: "human"` only, with `path`, `action`
-  (`pair` or `unpair`), `old` and `new` (`{ lines, hash }`). *My call:*
-  in the reviewer's private agent threads ref, beside thread moves (the
-  owner's 2026-11-18 decision for "the reviewer's view" data): one
-  writer (GitDB 3), never pushed. The last event for the same path and
-  sides wins (`(ts, id)`, GitDB 11). An older reader skips the type
-  (GitDB 8) and shows the computed pairing, which hides nothing: no
-  version bump. The format gains one event type; measure a correction
-  commit's size as thread moves were (a test keeps it under 1 KiB raw).
-- **Loading:** corrections are read with the review, in parallel with the
-  hunks; a hunk is laid out once both are in, so a correction never
-  moves rows after first paint. A failed read shows the computed pairing
-  and says so with an alert icon, distinct from "no corrections".
+A split that changes behaviour by its line break alone (`return` / `x` in
+JavaScript, a break inside a string literal) is a pure split by the
+owner's rule, so nothing is marked. Its lines are still green, changed
+and unreviewed until marked (principle 2 holds). *My call:* stated, no
+change.
 
 ## Docs to update in the same change
 
 - `docs/product-rules.md`: a short section "A line split or joined pairs
-  as a group": the rule, the bracket, that coverage is untouched, the
-  Ignore whitespace call, the since view; with the second PR, hand
-  corrections.
+  as a group": the rule, the bracket, the break (indentation, `\r`,
+  comment leaders, never Markdown), that coverage is untouched, that
+  cuts end a group, the since view. And "Side by side is a view": the
+  blank-cell guarantee per gap or group.
 - `docs/faq.md`, "Why are lines in a different order, or marked where
   GitHub shows none?": a split or join reads as one group with a bracket.
-- `docs/review-data-storage.md` (second PR): the `pairing-corrected`
-  event, its write rules and size.
 - `2026-11-08-inline-diff-step2-design.md`: its non-goal "one line
   drawing on two" points here for splits and joins; extract method
   stays out.
@@ -264,40 +283,47 @@ it for pairs and groups alike, as its own PR (`Part of CAR-130`). See
 
 - **Unit, cases:** the pure split (no marks, five lines in the group);
   the split with a new trailing comma (only the comma); the CAR-221
-  shape, made-up code (the added words on both lines, the second `//`
-  plain); the join (`0` → `0.0` only); a split next to an ordinary pair
-  in the same stretch; step 2's seven cases unchanged (case 1, list item
-  added, and a `}` added after a changed line: no group).
+  shape, made-up code (the added words on both lines, the comma after
+  `matrix` and the second `//` plain); the join (`0` and `1` only); a
+  split next to an ordinary pair in the same stretch.
+- **Unit, near misses (hard tests):** step 2's case 1 (list item added)
+  and a `}` added after a changed line: no group. Step 2's seven cases
+  and the step 1 GitHub fixture unchanged.
+- **Unit, the break:** a CRLF file's pure split marks nothing and flags
+  nothing hidden; a mixed-ending split marks the odd `\r`. A Markdown
+  bullet or heading split into two marks the new `*` or `#`; a code
+  comment split keeps its leader plain; a comment split into a
+  non-comment line marks it. `foo` / `bar` across a break never read as
+  one word.
 - **Unit, properties** (random stretches, `linePairing.test.ts` style):
   items never cross; each line in at most one item; every group's run
   adjacent, inside one run of the view, at most `GROUP_MAX_LINES`; every
-  group's lines each share text with the one line; with groups, the same
-  clusters, keys and counts as without (principle 2). Layout: the
-  existing `sideBySide.test.ts` and `pairOrder.test.ts` properties over
-  stretches with groups; every group's rows adjacent in unified.
-- **Unit, marks:** a pure split or join of random lines (random breaks,
-  random indentation) gives no marks; any token inserted anywhere in the
-  run is marked, on the line it sits on.
+  run line shares text with the one line; with groups, the same
+  clusters, keys and counts as without (principle 2). Marks: a pure
+  split or join of random lines (random breaks, random indentation)
+  gives no marks; any token inserted anywhere in the run is marked, on
+  the line it sits on. Layout: `sideBySide.test.ts` (the changed blank
+  rule) and `pairOrder.test.ts` over stretches with groups; every group's
+  rows adjacent in unified.
+- **Unit, budget:** a hunk's pairs are identical with and without groups
+  wherever no group replaced them, including a hunk at the budget's edge.
+- **Cuts:** a split whose closing `)` has a whitespace twin elsewhere in
+  the hunk, with Ignore whitespace off and on: the group stops at the
+  cut and the far text is marked removed.
 - **Ignore whitespace:** a pure split keeps its cluster counted with the
   switch on.
 - **CPU** (`test/cpu.ts`): the worst stretch inside the guards, with
   groups, against step 2's reference workload (plain word steps); a hunk
-  of 40 such stretches within the hunk budget, in `hunkPairs` and in
-  Find; a scaling check on run length (a run 4x as long against four of
-  a quarter).
+  of 40 such stretches, in `hunkPairs` and in Find; a scaling check on
+  run length (a run 4x as long against four of a quarter).
 - **e2e** (desktop and phone, unified and side by side): the split, the
   CAR-221 shape and the join from a throwaway repo: which rows the
-  bracket spans, the bracket's accessible name, the marked text, a
-  thread on a group line staying with it; the since view's split from
-  patch set 2; Find stepping through a group's rows in shown order;
-  `expectEveryUnitMarkable` on a file with groups. Groups add no new row
-  kind.
-- **Second PR:** event write and read rules (`validateForWrite`,
-  `parseEvent`, a human only); the fold (last wins, unknown type
-  skipped); a correction made on patch set 1 holding on patch set 2 and
-  in the since view; e2e: unpair a group and a pair, pair a missed
-  group, reload, undo; the held read (`expectLoadingThen`) shows the
-  hunk's loading state, never computed rows that then move.
+  bracket spans (also across a thread inside the group), the rows'
+  accessible name, the marked text, a thread on a group line staying
+  with it; group lines pending while their marks are held, then marked;
+  the since view's split from patch set 2; Find stepping through a
+  group's rows in shown order; `expectEveryUnitMarkable` on a file with
+  groups. Groups add no new row kind.
 - **Real-PR comparison** (before merge, not CI, part of the owner's QA):
   `scripts/pairing-compare.mjs` grows a page of every stretch whose
   layout groups change, worst first; the owner marks each fine or bad.
@@ -306,24 +332,40 @@ it for pairs and groups alike, as its own PR (`Part of CAR-130`). See
 
 One PR, `base/split-joined-lines` and `case/split-joined-lines`, made-up
 code: the pure split, the trailing-comma split, the wrapped comment
-(CAR-221's shape), the join, a split next to a pair, and the near misses
-(list item added, `}` after a changed line, extract method); then a
-second push that splits a line the first push added, for the since view.
-A README row and a description of what to look at.
+(CAR-221's shape), the join, a split next to a pair, a CRLF file, a
+Markdown bullet split, a split cut by a whitespace twin, and the near
+misses (list item added, `}` after a changed line, extract method); then
+a second push that splits a line the first push added, for the since
+view. A README row and a description of what to look at. (Mockup 1 holds
+both the pure split and the comma; the gallery keeps them apart.)
 
 ## Left to the builder
 
 The group weighting against pairs and the "every line holds part of it"
 test (within the constraints above); `GROUP_MAX_LINES` if the CPU tests
 say otherwise; where the bracket sits in the gutter (no horizontal page
-scroll at 360px, no code moved in hunks without a group); the
-correction endpoint's shape and hash function (stable, computed the same
-in every browser); the selection bar's icons.
+scroll at 360px, no code moved in hunks without a group); the exact
+comment-leader list per language.
+
+## Follow-up (separate ticket, pending owner)
+
+Correcting pairs and groups by hand (principle 1). The mockups said a
+group "can be unpaired by hand like today's pairs", but today no pair
+can be corrected by hand. Problems found while drafting, for that
+ticket's own design:
+
+- Picking: `pickRange` (`linePicks.ts`) extends a pick in GitHub's order
+  (all removed lines, then all added), so a group or pair is usually not
+  a contiguous pick; the selection bar alone can't offer Pair/Unpair.
+- Undo needs its own event (as `thread-move-undone`), not the opposite
+  action, which would pin a hand pairing forever.
+- Learning: per review (matched by content within it), or carried to
+  other PRs as the reviewer's preferences?
+- Loading: corrections must come from a local read (the hunks response,
+  or a local-only endpoint), never gate the diff on anything slow.
 
 ## Questions for the owner
 
-1. The mockups said a group can be unpaired "like today's pairs", but
-   today no pair can be corrected by hand. This spec adds hand
-   unpair/pair for pairs and groups as CAR-130's second PR, stored in the
-   reviewer's private ref beside thread moves. Keep it in CAR-130, or
-   give it its own ticket?
+1. Open a separate ticket for correcting pairs and groups by hand (the
+   follow-up above)? The mockups promised it "like today's pairs", but
+   no pair can be corrected today.
