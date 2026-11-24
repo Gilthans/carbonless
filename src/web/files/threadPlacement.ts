@@ -71,6 +71,11 @@ export interface FilePlacement<T extends Placeable = ReviewThread> {
 		thread: T;
 		placement: Extract<ThreadPlacement, { kind: "unplaced" }>;
 	}[];
+	/**
+	 * Threads still being placed (`pending`, CAR-8): listed under the
+	 * header with a spinner, never on a line meanwhile.
+	 */
+	waiting: T[];
 }
 
 /**
@@ -184,6 +189,15 @@ export function shownThread(
 				at: t.anchor?.at ?? t.createdAt,
 				...cols,
 			},
+		};
+	} else if (p.kind === "pending") {
+		// Still being placed (CAR-8): on no line of this head meanwhile.
+		shown = {
+			...t,
+			madeOn: t.madeOn ?? t.commit,
+			path: p.path,
+			commit: snapshotHead,
+			anchor: null,
 		};
 	} else {
 		shown = {
@@ -577,6 +591,7 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 		gapTargets: new Map(),
 		header: [],
 		fates: [],
+		waiting: [],
 	};
 	const mine = fileThreads(args.threads, args.path, args.snapshotHead);
 	const spans = args.spans ?? [];
@@ -681,6 +696,10 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	}
 	for (const t of mine) {
 		const traced = t.id === undefined ? undefined : args.placements?.get(t.id);
+		if (traced?.kind === "pending") {
+			placement.waiting.push(t);
+			continue;
+		}
 		if (traced?.kind === "unplaced") {
 			if (t.id !== undefined && landed.has(t.id)) continue;
 			// Made on the compared patch set's head on a line only it had

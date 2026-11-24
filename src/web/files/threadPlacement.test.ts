@@ -1017,6 +1017,34 @@ describe("placements", () => {
 		expect(p.fates).toEqual([]);
 	});
 
+	it("pending (an old-side thread waiting for its hunk, CAR-8): listed waiting under its file, on no line, made on this head or an earlier one", () => {
+		const earlier = thread(
+			{ side: "LEFT", line: 3, commit: OLD },
+			{ commit: OLD },
+		);
+		const here = thread({ side: "LEFT", line: 3 });
+		const placements: Placements = new Map([
+			[earlier.id, { kind: "pending", path: PATH }],
+			[here.id, { kind: "pending", path: PATH }],
+		]);
+		const shown = shownThreads([earlier, here], HEAD, placements);
+		expect(shown.map((t) => [t.id, t.anchor])).toEqual([
+			[earlier.id, null],
+			[here.id, null],
+		]);
+		const p = placeThreads({
+			threads: shown,
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: HUNKS,
+			loadedContext: [],
+			placements,
+		});
+		expect(p.waiting.map((t) => t.id)).toEqual([earlier.id, here.id]);
+		expect(everywhere(p)).toEqual([]);
+		expect(p.fates).toEqual([]);
+	});
+
 	it("placed and resolved: it keeps carrying to its traced line on a later head (owner, 2026-11-09)", () => {
 		const t = thread(
 			{ side: "RIGHT", line: 3, commit: OLD },

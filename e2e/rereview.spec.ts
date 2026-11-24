@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
-import { reviewThread, threadComment } from "../test/fake-gh/scenario";
+import { release, reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { type FixtureCommit, testGitEnv } from "../test/git-fixture";
 import {
 	chooseUnit,
@@ -10,6 +10,7 @@ import {
 	fileActionButton,
 	fileProgress,
 	fileSection,
+	ignoreWhitespace,
 	marksReady,
 	openFiles,
 	progress,
@@ -2161,6 +2162,37 @@ test("an identical diff force-pushed (a squash on the same base): same diff · n
 	await expect(progress(page)).toHaveText("Nothing to read");
 });
 
+test("a push that only re-indents: the verdict's since line counts it with Ignore whitespace off, and leaves it out of every number with it on (CAR-266)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const kept: unknown[] = [];
+	const p = await pr({ ...fixture, reviews: kept });
+	const s = await startCrb();
+	await approvedThenPushed(page, s, p, kept, () =>
+		p.moveHead({
+			message: "re-indent",
+			files: {
+				// util.ts line 8, which PS1 left alone, only re-indented.
+				"src/util.ts": edit(util, { 3: "util 3 changed", 8: "    util 8" }),
+			},
+		}),
+	);
+	const card = verdictCard(page);
+	const since = card.getByTestId("verdict-since");
+	await expect(since).toHaveText(
+		"Since then: 1 commit · 1 file · 1 new cluster",
+		GIT_WAIT,
+	);
+	await ignoreWhitespace(page, true);
+	await expect(since).toHaveText("Since then: 1 commit");
+	await ignoreWhitespace(page, false);
+	await expect(since).toHaveText(
+		"Since then: 1 commit · 1 file · 1 new cluster",
+	);
+});
+
 test("a new thread on the viewed head starts PS2 and the page follows: the PS2 dot, up to date, PS1 read-only", async ({
 	page,
 	pr,
@@ -3855,6 +3887,193 @@ test("a draft on a line the since view shows removed stays on its base line: the
 			body: expect.stringContaining("Why drop line 20?"),
 		}),
 	]);
+});
+
+/**
+ * CAR-8: a LEFT thread whose number counts on another old side than ours.
+ * Its GitHub hunk numbers "line 20" as 17 (3 lines up): it goes on base
+ * line 20, which PS2 removes, in the full diff and the since view alike,
+ * never on base line 17.
+ */
+test("a LEFT thread is placed where GitHub's hunk shows its line, not by its number: the same base line in the full diff and the since view (CAR-8)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	test.setTimeout(180_000);
+	const FILE = "src/left.txt";
+	const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+	const threads: ReturnType<typeof reviewThread>[] = [];
+	const p = await pr({
+		base: { [FILE]: text(lines) },
+		files: [
+			{
+				message: "PS1",
+				files: { [FILE]: text(lines.map((l, i) => (i === 4 ? "five" : l))) },
+			},
+		],
+		threads,
+	});
+	threads.push(
+		reviewThread({ path: FILE, line: 17, diffSide: "LEFT" }, [
+			threadComment({
+				login: "rev1",
+				text: "Why line 20?",
+				commit: p.head(),
+				diffHunk: "@@ -15,3 +15,3 @@\n line 18\n line 19\n line 20",
+			}),
+		]),
+		// A hunk whose lines are nowhere: base unknown, on no line.
+		reviewThread({ path: FILE, line: 25, diffSide: "LEFT" }, [
+			threadComment({
+				login: "rev1",
+				text: "Where is this?",
+				commit: p.head(),
+				diffHunk: "@@ -23,3 +23,3 @@\n gone 23\n gone 24\n gone 25",
+			}),
+		]),
+	);
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (graph) graph.reviewThreads = threads;
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, FILE);
+	await boxes(first).first().click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({
+		message: "PS2",
+		files: {
+			[FILE]: text(
+				lines
+					.map((l, i) => (i === 4 ? "five" : l))
+					.filter((l) => l !== "line 20"),
+			),
+		},
+	});
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	const onLine20 = async () => {
+		const section = fileSection(page, FILE);
+		const expandIt = section.getByRole("button", { name: "Expand file" });
+		await expect(
+			section.getByTestId("diff-line").first().or(expandIt),
+		).toBeVisible(GIT_WAIT);
+		if (await expandIt.isVisible()) await expandIt.click();
+		const row = section.locator(
+			'tr[data-testid="diff-line"][data-kind="del"][data-old-no="20"]',
+		);
+		await expect(row).toHaveAttribute("data-commented", "", GIT_WAIT);
+		await expect(
+			section
+				.getByTestId("unplaced-thread")
+				.filter({ hasText: "Why line 20?" }),
+		).toHaveCount(0);
+		await expect(
+			section.locator('tr[data-testid="diff-line"][data-commented]'),
+		).toHaveCount(1);
+		// The other: listed unplaced with its fate, on no row.
+		const lost = section.locator(
+			'[data-testid="unplaced-thread"][data-fate="base-unknown"]',
+		);
+		await expect(lost).toHaveCount(1);
+		await expect(lost.getByTestId("unplaced-fate")).toHaveText(
+			"Couldn't find the base the commented old line was on",
+		);
+	};
+	// The since view (PS1 → PS2): the removed base line 20.
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await onLine20();
+	// The full diff (base → PS2): the same base line.
+	await toFullDiff(page);
+	await onLine20();
+});
+
+/**
+ * CAR-8: an old-side thread waits for GitHub's hunk (its comment's text):
+ * meanwhile a spinner under its file, on no line (never its raw number),
+ * then its place.
+ */
+test("an old-side thread waiting for GitHub's hunk shows a spinner under its file, on no line, then its place (CAR-8)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const FILE = "src/left.txt";
+	const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+	const p = await pr({
+		base: { [FILE]: text(lines) },
+		files: [
+			{
+				message: "PS1",
+				files: { [FILE]: text(lines.map((l, i) => (i === 4 ? "five" : l))) },
+			},
+		],
+	});
+	const h1 = p.head();
+	p.moveHead({
+		message: "PS2",
+		files: {
+			[FILE]: text(
+				lines
+					.map((l, i) => (i === 4 ? "five" : l))
+					.filter((l) => l !== "line 20"),
+			),
+		},
+	});
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (graph) {
+			graph.reviewThreads = [
+				reviewThread({ path: FILE, line: 17, diffSide: "LEFT" }, [
+					threadComment({
+						login: "rev1",
+						text: "Why line 20?",
+						commit: h1,
+						diffHunk: "@@ -15,3 +15,3 @@\n line 18\n line 19\n line 20",
+					}),
+				]),
+			];
+		}
+		sc.hold = ["threadContent"];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, FILE);
+	const expandIt = section.getByRole("button", { name: "Expand file" });
+	await expect(
+		section.getByTestId("diff-line").first().or(expandIt),
+	).toBeVisible(GIT_WAIT);
+	if (await expandIt.isVisible()) await expandIt.click();
+	await expect(section.getByTestId("diff-line").first()).toBeVisible(GIT_WAIT);
+	// The spinner is laid over the lines: its going moves nothing above the
+	// thread's own row.
+	const top = async () =>
+		(await section.getByTestId("diff-line").first().boundingBox())?.y;
+	await expect(section.getByTestId("placing-thread")).toBeVisible(GIT_WAIT);
+	const before = await top();
+	await expectLoadingThen({
+		loading: section
+			.getByTestId("placing-thread")
+			.getByRole("status", { name: "Placing thread" }),
+		// Never on a line (its raw LEFT 17 or any other) while it waits.
+		empty: [
+			section.locator('tr[data-testid="diff-line"][data-commented]'),
+			section.getByTestId("unplaced-thread"),
+		],
+		release: () => release(p.scenarioPath, "threadContent"),
+		result: section.locator(
+			'tr[data-testid="diff-line"][data-kind="del"][data-old-no="20"][data-commented]',
+		),
+	});
+	await expect(
+		section.locator('tr[data-testid="diff-line"][data-commented]'),
+	).toHaveCount(1);
+	expect(await top()).toBe(before);
 });
 
 /** PS1 changes src/back.ts's line 3; PS2 puts it back as the base has it. */

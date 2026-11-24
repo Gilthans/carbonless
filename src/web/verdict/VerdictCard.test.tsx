@@ -26,7 +26,7 @@ import type {
 } from "../../shared/types";
 import { createAppRouter } from "../router";
 import { ignoreWhitespace } from "../viewSettings";
-import { nothingToReread, sinceLine } from "./VerdictCard";
+import { nothingToReread, sinceCounts, sinceLine } from "./VerdictCard";
 
 /*
  * The verdict card's "since your verdict" lines (VerdictFacts.since): what
@@ -277,6 +277,34 @@ describe("sinceLine and nothingToReread", () => {
 		);
 	});
 
+	it("counts the whole line with or without whitespace-only clusters by the switch (CAR-266)", () => {
+		const done = {
+			...(given().changes as Extract<
+				VerdictSince["changes"],
+				{ status: "done" }
+			>),
+			withoutWhitespaceOnly: { files: 1, reworked: 0, new: 1 },
+		};
+		expect(sinceLine(sinceCounts(done, false))).toBe(
+			"3 commits · 2 files · 1 reworked, 1 new cluster",
+		);
+		expect(sinceLine(sinceCounts(done, true))).toBe(
+			"3 commits · 1 file · 1 new cluster",
+		);
+		// Nothing whitespace-only: the same counts either way.
+		const { withoutWhitespaceOnly: _, ...plain } = done;
+		expect(sinceCounts(plain, true)).toEqual(plain);
+		// An identical diff of only whitespace-only clusters: nothing to re-read
+		// with the switch on, its clusters counted with it off.
+		const same = {
+			...SAME,
+			new: 1,
+			withoutWhitespaceOnly: { files: 0, reworked: 0, new: 0 },
+		} as Extract<VerdictSince["changes"], { status: "done" }>;
+		expect(nothingToReread(sinceCounts(same, true))).toBe(true);
+		expect(nothingToReread(sinceCounts(same, false))).toBe(false);
+	});
+
 	it("is nothing to re-read only for an identical diff with nothing counted (principle 2)", () => {
 		expect(nothingToReread(SAME)).toBe(true);
 		expect(nothingToReread({ ...SAME, new: 1 } as typeof SAME)).toBe(false);
@@ -353,6 +381,40 @@ describe("the verdict card since your verdict", () => {
 		await userEvent.click(again);
 		await waitFor(() => expect(posted).toHaveLength(1));
 		expect(posted[0]).toMatchObject({ event: "APPROVE", commit: NEW });
+	});
+
+	it("Ignore whitespace on, an identical diff of only whitespace-only clusters: nothing to re-read and Approve again, both (CAR-266)", async () => {
+		ignoreWhitespace.set(true);
+		renderTab(() =>
+			facts(
+				given({
+					to: { head: NEW, patchset: null },
+					changes: {
+						...SAME,
+						files: 1,
+						new: 1,
+						withoutWhitespaceOnly: { files: 0, reworked: 0, new: 0 },
+					} as typeof SAME,
+				}),
+			),
+		);
+		const c = await card();
+		const since = await within(c).findByTestId("verdict-since");
+		expect(since).toHaveTextContent("Rebased, same diff · nothing to re-read");
+		expect(
+			within(c).getByRole("button", { name: /^Approve again on / }),
+		).toBeInTheDocument();
+		// Off: the cluster counts, on the line and the button alike.
+		act(() => ignoreWhitespace.set(false));
+		// Another element (the changed line): asked for again.
+		await waitFor(() =>
+			expect(within(c).getByTestId("verdict-since")).toHaveTextContent(
+				"Since then: 2 commits · 1 file · 1 new cluster",
+			),
+		);
+		expect(
+			within(c).queryByRole("button", { name: /Approve again/ }),
+		).toBeNull();
 	});
 
 	it("an identical diff with a cluster the engine calls new is never nothing to re-read", async () => {

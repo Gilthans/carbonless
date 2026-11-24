@@ -908,6 +908,17 @@ export interface VerdictSince {
 				new: number;
 				gone: number;
 				identical: boolean;
+				/**
+				 * The same counts without the whitespace-only clusters, for a
+				 * reader with "Ignore whitespace" on (the page picks by its
+				 * switch, the whole line from one choice); absent when they
+				 * would be the same. As RereviewAnswer's toRead.
+				 */
+				withoutWhitespaceOnly?: {
+					files: number;
+					reworked: number;
+					new: number;
+				};
 		  };
 }
 
@@ -1173,6 +1184,14 @@ export interface RereviewAnswer {
 			 * reviewer marked there, as carried (CAR-195).
 			 */
 			lines?: { reviewed?: LineRanges; crossed?: LineRanges };
+			/**
+			 * reworked and new: nothing of it is left to read with "Ignore
+			 * whitespace" on, judged as toRead.withoutWhitespaceOnly judges
+			 * (every since unit of it whitespace-only, or without an
+			 * interdiff the snapshot cluster's flag). The verdict's since
+			 * line counts by it (src/server/verdict.ts sinceOf).
+			 */
+			whitespaceOnly?: true;
 		}[];
 		/**
 		 * The file's since-view pieces (pieces.ts SincePiece), what the since

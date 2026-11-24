@@ -72,6 +72,7 @@ import {
 import {
 	type CommentScope,
 	CommentScopeProvider,
+	earlierSpan,
 	onHeadMove,
 	spanInHunks,
 } from "../agent/commentOnGithub";
@@ -3466,8 +3467,12 @@ export function DiffBody(props: {
 	// span's ends are this diff's lines (as the selection bar asks).
 	const hunkList = hunks.data?.hunks;
 	const goneFile = props.gone === true;
-	const commentScope = useMemo<CommentScope>(
-		() => ({
+	const commentScope = useMemo<CommentScope>(() => {
+		// The since view: a conversation on lines only its compared patch
+		// set had comments there, on that commit (CAR-264).
+		const renamed =
+			hunkList?.some((h) => h.lines.some((l) => l.psMoved)) === true;
+		return {
 			headSure: props.headSure !== false,
 			inDiff: (span) =>
 				span.path !== file.path
@@ -3478,9 +3483,14 @@ export function DiffBody(props: {
 							? spanInHunks(span, hunkList)
 							: undefined,
 			gone: (span) => goneFile && span.path === file.path,
-		}),
-		[props.headSure, hunkList, file.path, goneFile],
-	);
+			...(early
+				? {
+						earlier: (span: CodeSpan) =>
+							earlierSpan(span, early, { path: file.path, renamed }),
+					}
+				: {}),
+		};
+	}, [props.headSure, hunkList, file.path, goneFile, early]);
 
 	// A composer drawn in its conversation's card: what this diff gives one.
 	// Its functions read this render's (a ref), so the value changes only

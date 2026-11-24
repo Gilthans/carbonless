@@ -824,6 +824,32 @@ export function answerRereview(
 				clusters: counted.length,
 			};
 		}
+		// A reworked or new cluster is whitespace-only to a reader with
+		// "Ignore whitespace" on when every unit of it is (none of it left
+		// to read with the switch on); one with no unit keeps counting.
+		const unitsOfCluster = new Map<string, boolean>();
+		for (const u of units) {
+			if (u.cluster === undefined) continue;
+			const id = `${u.index}:${u.cluster}`;
+			unitsOfCluster.set(
+				id,
+				(unitsOfCluster.get(id) ?? true) && u.whitespaceOnly === true,
+			);
+		}
+		for (const f of files) {
+			for (const c of f.clusters) {
+				if (c.kind !== "reworked" && c.kind !== "new") continue;
+				if (unitsOfCluster.get(`${f.index}:${c.key}`)) c.whitespaceOnly = true;
+			}
+		}
+	} else {
+		for (const f of files) {
+			for (const c of f.clusters) {
+				if ((c.kind === "reworked" || c.kind === "new") && wsKeys.has(c.key)) {
+					c.whitespaceOnly = true;
+				}
+			}
+		}
 	}
 	// One carried event per (source patch set, rule).
 	const events = new Map<string, PatchsetStart["carried"][number]>();

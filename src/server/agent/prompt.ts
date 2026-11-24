@@ -471,6 +471,7 @@ function sanitizePlacement(p: ThreadPlacement): ThreadPlacement {
 			};
 		case "file":
 		case "outside":
+		case "pending":
 			return { ...p, path: s(p.path) };
 	}
 }

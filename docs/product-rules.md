@@ -181,6 +181,21 @@ it is listed under its file as `outdated` when GitHub says so, else
 `untraced`. `rewritten` is only ever a real trace's answer. A placement
 from GitHub's line carries `source: "github"` in `GET /placements`.
 
+A review thread on an old-side line is checked against GitHub's
+`diff_hunk` (owner, 2026-11-23, CAR-8: "do both"): it is traced from the
+old side whose text the hunk shows (the merge base then or now, or the
+hunk's own run of lines found once in one of them), and when none holds
+it, it is unplaced as `base unknown` under its file, never placed on its
+line number. A run found elsewhere moves the line only when it tells
+enough (3 rows or more, 2 of them not blank or punctuation alone). A
+hunk that couldn't be read (even read again) is `couldn't check`, never
+"no hunk". An empty hunk is no evidence either way: the base as it stood
+at the comment's time is traced from (unknown after a retarget), with an
+`unchecked` mark when that isn't today's merge base; when it can't be
+told, today's merge base, as before. While its hunk is on its way the
+thread is `pending`: a spinner under its file, on no line. A reviewer's
+move wins over all of it.
+
 ## Every visible cluster is individually markable
 
 The owner: "every cluster visible in the UI in any view should be

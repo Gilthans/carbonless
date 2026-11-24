@@ -47,7 +47,10 @@ import type { CodeAnchor, DiffSide, ThreadAnchorRef } from "../types.js";
  * moved (the file was renamed and the lines didn't follow: a candidate
  * only); reverted (the PR no longer changes that place: what the thread was
  * about is out of the PR); base-changed (an old-side line the base itself
- * changed since).
+ * changed since); base-unknown (an old-side line whose old side
+ * doesn't match GitHub's hunk: the base it counts on can't be found);
+ * check-failed (an old-side line whose GitHub hunk couldn't be read to
+ * check it: never placed by its number).
  */
 export type Fate =
 	| "deleted"
@@ -57,7 +60,9 @@ export type Fate =
 	| "file-gone"
 	| "moved"
 	| "reverted"
-	| "base-changed";
+	| "base-changed"
+	| "base-unknown"
+	| "check-failed";
 
 export type ThreadPlacement =
 	/**
@@ -70,6 +75,12 @@ export type ThreadPlacement =
 			anchor: ThreadAnchorRef;
 			changed: false;
 			source?: "github";
+			/**
+			 * An old-side line with no hunk from GitHub to check it, traced
+			 * from the base as it stood then, which today's merge base isn't
+			 * (CAR-8): shown with an "unchecked" mark.
+			 */
+			unchecked?: true;
 	  }
 	/**
 	 * On the lines that replaced the commented ones; `old` the commented
@@ -82,6 +93,8 @@ export type ThreadPlacement =
 			old: { side: DiffSide; startLine: number; line: number; text: string[] };
 			/** The replacing lines' text in the target (empty when unknown). */
 			now: string[];
+			/** As `placed`'s. */
+			unchecked?: true;
 	  }
 	/**
 	 * Under the file at `path` (its path in the target), fate first;
@@ -101,6 +114,11 @@ export type ThreadPlacement =
 	  }
 	/** A file comment, on its file (through a rename). */
 	| { kind: "file"; path: string }
+	/**
+	 * Still being placed (CAR-8): an old-side thread waiting for GitHub's
+	 * hunk, in an answer that isn't complete yet. Never on a line meanwhile.
+	 */
+	| { kind: "pending"; path: string }
 	/**
 	 * The file is not in the comparison at all: listed in the trailing
 	 * group by its original `path`, with why (file-gone: deleted; reverted:
@@ -145,9 +163,14 @@ export interface ThreadInput {
 	/**
 	 * Why `diffs` is null when the file isn't gone: there is nothing to
 	 * trace from, and GitHub says outdated ("outdated") or gives no line
-	 * ("untraced", the default).
+	 * ("untraced", the default), or no old side matches GitHub's hunk
+	 * ("base-unknown", CAR-8), or its hunk couldn't be read ("check-failed").
 	 */
-	untraced?: "outdated" | "untraced";
+	untraced?: "outdated" | "untraced" | "base-unknown" | "check-failed";
+	/** Waiting for GitHub's hunk: placed as `pending` (CAR-8). */
+	pending?: true;
+	/** Traced with nothing to check its old side by: `unchecked` (CAR-8). */
+	unchecked?: true;
 }
 
 const isLine = (n: unknown): n is number =>
@@ -301,8 +324,14 @@ export function placeThread(
 			changed: false,
 		};
 	}
+	if (t.pending) return { kind: "pending", path: t.newPath ?? t.path };
 	const p = traced(t);
-	if (t.source !== "github" || p.kind === "file") return p;
+	if (t.unchecked && (p.kind === "placed" || p.kind === "changed")) {
+		return { ...p, unchecked: true };
+	}
+	if (t.source !== "github" || p.kind === "file" || p.kind === "pending") {
+		return p;
+	}
 	if (p.kind === "placed") return { ...p, source: "github" };
 	// Only GitHub's own line, unchanged, is GitHub's word: the rest was
 	// never traced from the thread's own commit.
