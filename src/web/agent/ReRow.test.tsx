@@ -24,6 +24,7 @@ import type { AgentStatus, AgentThread } from "../../shared/agent";
 import type { ReviewView, SessionInfo } from "../../shared/types";
 import { reviewQuery, sessionQuery } from "../api";
 import { parseFilesSearch } from "../files/landing";
+import { threadFocus } from "../files/threadFocus";
 import { parseOverviewSearch } from "../overview/threadLink";
 import { parseSearch, stringifySearch } from "../search";
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -528,7 +529,8 @@ describe("while the review's files load (CAR-80 fix 2)", () => {
 });
 
 describe("a landing no card takes (CAR-80 B)", () => {
-	afterEach(() => window.history.replaceState(null, "", "/"));
+	let stop = () => {};
+	afterEach(() => stop());
 
 	it("waits however long the page takes to place it: no timer drops it", () => {
 		vi.useFakeTimers();
@@ -544,16 +546,17 @@ describe("a landing no card takes (CAR-80 B)", () => {
 	});
 
 	it("is dropped once the reviewer moves to another page, and coming back doesn't bring it back", async () => {
-		window.history.replaceState(null, "", "/r/RV1/files");
+		const history = createMemoryHistory({ initialEntries: ["/r/RV1/files"] });
+		stop = threadFocus.follow(history);
 		const { result, rerender } = renderHook(() => usePendingLanding());
 		act(() => requestConversationOpen(A));
 		expect(result.current?.conversation).toBe(A);
-		window.history.pushState(null, "", "/r/RV1");
+		history.push("/r/RV1");
 		rerender();
 		expect(result.current).toBeNull();
 		// The drop lands just after the render that saw the move.
 		await act(async () => {});
-		window.history.pushState(null, "", "/r/RV1/files");
+		history.push("/r/RV1/files");
 		rerender();
 		expect(result.current).toBeNull();
 	});

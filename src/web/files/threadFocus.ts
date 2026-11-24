@@ -1,3 +1,4 @@
+import type { RouterHistory } from "@tanstack/react-router";
 import {
 	type RefObject,
 	useEffect,
@@ -63,8 +64,18 @@ const listeners = new Set<() => void>();
 const notify = () => {
 	for (const l of listeners) l();
 };
-const currentPath = () =>
-	typeof window === "undefined" ? "" : window.location.pathname;
+/**
+ * The router histories followed (`threadFocus.follow`), one entry per
+ * follow still on, newest last: the path is the newest's. Each history is
+ * subscribed once however often it is followed.
+ */
+const followed: RouterHistory[] = [];
+const unsubscribes = new Map<RouterHistory, () => void>();
+const currentPath = () => {
+	const moves = followed.at(-1);
+	if (moves) return moves.location.pathname;
+	return typeof window === "undefined" ? "" : window.location.pathname;
+};
 
 /** Drops the request (and any outline) once the path isn't the request's. */
 function leftPage() {
@@ -94,28 +105,6 @@ function pending(): ThreadFocus | null {
 	}
 	return snapshot;
 }
-
-/**
- * Every move to another page drops the request, whether or not anything
- * reads it while there: the router moves by the history API, and back and
- * forward by popstate. Wrapped once per window.
- */
-function watchMoves() {
-	if (typeof window === "undefined") return;
-	const w = window as Window & { __crbThreadFocusMoves?: true };
-	if (w.__crbThreadFocusMoves) return;
-	w.__crbThreadFocusMoves = true;
-	for (const name of ["pushState", "replaceState"] as const) {
-		const original = history[name];
-		history[name] = function (this: History, ...args) {
-			const result = original.apply(this, args);
-			leftPage();
-			return result;
-		} as History[typeof name];
-	}
-	window.addEventListener("popstate", leftPage);
-}
-watchMoves();
 
 export const threadFocus = {
 	request(target: {
@@ -198,6 +187,27 @@ export const threadFocus = {
 	},
 	/** The newest request's number, pending or taken. */
 	latest: () => lastSeq,
+	/**
+	 * Every move to another page drops the request, whether or not anything
+	 * reads it while there: `history` is the router's, which tells of each
+	 * push and replace, and of back and forward. The app follows its router
+	 * from its creation (main.tsx), and the root while mounted. The returned
+	 * function stops this follow: the one followed before is the path again.
+	 */
+	follow(history: RouterHistory): () => void {
+		if (!unsubscribes.has(history))
+			unsubscribes.set(history, history.subscribe(leftPage));
+		followed.push(history);
+		let on = true;
+		return () => {
+			if (!on) return;
+			on = false;
+			followed.splice(followed.lastIndexOf(history), 1);
+			if (followed.includes(history)) return;
+			unsubscribes.get(history)?.();
+			unsubscribes.delete(history);
+		};
+	},
 	/** Forgets everything (tests). */
 	reset() {
 		current = null;

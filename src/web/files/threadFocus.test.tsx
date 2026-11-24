@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, render } from "@testing-library/react";
 import { type ReactNode, useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -245,18 +246,85 @@ describe("threadFocus", () => {
 	});
 
 	it("a request is dropped once the reviewer moves to another page", () => {
-		window.history.replaceState(null, "", "/r/RV1/files");
+		const history = createMemoryHistory({ initialEntries: ["/r/RV1/files"] });
+		const stop = threadFocus.follow(history);
 		try {
 			act(() => {
 				threadFocus.request({ id: "T1" });
 			});
-			window.history.pushState(null, "", "/r/RV1");
+			history.push("/r/RV1");
 			const onOpen = vi.fn();
 			render(<Card id="T1" onOpen={onOpen} />);
 			expect(onOpen).not.toHaveBeenCalled();
 		} finally {
-			window.history.replaceState(null, "", "/");
+			stop();
 		}
+	});
+
+	it("a request stays while only the address's search or hash changes", () => {
+		const history = createMemoryHistory({ initialEntries: ["/r/RV1/files"] });
+		const stop = threadFocus.follow(history);
+		try {
+			threadFocus.request({ id: "T1" });
+			history.replace("/r/RV1/files?file=a.ts");
+			history.push("/r/RV1/files?file=b.ts#L3");
+			expect(threadFocus.get()?.id).toBe("T1");
+		} finally {
+			stop();
+		}
+	});
+
+	it("threadFocus itself patches no window history: no wrapped push or replace, no popstate listener, no flag", async () => {
+		const listen = vi.spyOn(window, "addEventListener");
+		vi.resetModules();
+		const fresh = await import("./threadFocus");
+		expect(fresh.threadFocus).not.toBe(threadFocus);
+		expect(Object.hasOwn(window.history, "pushState")).toBe(false);
+		expect(Object.hasOwn(window.history, "replaceState")).toBe(false);
+		expect(window.history.pushState).toBe(History.prototype.pushState);
+		expect(window.history.replaceState).toBe(History.prototype.replaceState);
+		expect(listen.mock.calls.map(([type]) => type)).not.toContain("popstate");
+		expect("__crbThreadFocusMoves" in window).toBe(false);
+		// It drops a request on the router's moves all the same.
+		const history = createMemoryHistory({ initialEntries: ["/r/RV1/files"] });
+		const stop = fresh.threadFocus.follow(history);
+		try {
+			fresh.threadFocus.request({ id: "T1" });
+			history.push("/r/RV1");
+			history.push("/r/RV1/files");
+			expect(fresh.threadFocus.get()).toBeNull();
+		} finally {
+			stop();
+		}
+	});
+
+	it("a follow stopped gives the path back to the history followed before, subscribed once each", () => {
+		const outer = createMemoryHistory({ initialEntries: ["/r/RV1/files"] });
+		const inner = createMemoryHistory({ initialEntries: ["/r/RV2/files"] });
+		const stopOuter = threadFocus.follow(outer);
+		const stopTwice = threadFocus.follow(outer);
+		expect(outer.subscribers.size).toBe(1);
+		const stopInner = threadFocus.follow(inner);
+		try {
+			threadFocus.request({ id: "T1" });
+			stopInner();
+			stopInner();
+			expect(inner.subscribers.size).toBe(0);
+			// The path is outer's again: a request made there stays, and
+			// outer's moves still drop it.
+			threadFocus.request({ id: "T2" });
+			expect(threadFocus.get()?.id).toBe("T2");
+			stopTwice();
+			expect(outer.subscribers.size).toBe(1);
+			outer.push("/r/RV1");
+			outer.push("/r/RV1/files");
+			expect(threadFocus.get()).toBeNull();
+		} finally {
+			stopInner();
+			stopTwice();
+			stopOuter();
+		}
+		expect(outer.subscribers.size).toBe(0);
 	});
 
 	it("a row's request in another comparison is dropped; a link's waits", () => {
@@ -360,17 +428,23 @@ describe("threadFocus", () => {
 	});
 
 	it("a row's request is gone after a move to another page and back, with nothing reading it meanwhile", () => {
-		window.history.replaceState(null, "", "/r/RV1/files");
+		const history = createMemoryHistory({ initialEntries: ["/r/RV1/files"] });
+		const stop = threadFocus.follow(history);
 		try {
 			threadFocus.request({ id: "T1", scope: "ps1" });
-			window.history.pushState(null, "", "/r/RV1");
-			window.history.pushState(null, "", "/r/RV1/files");
+			history.push("/r/RV1");
+			history.push("/r/RV1/files");
 			expect(threadFocus.get()).toBeNull();
 			const onOpen = vi.fn();
 			render(<Card id="T1" onOpen={onOpen} />);
 			expect(onOpen).not.toHaveBeenCalled();
+			// Back and forward too.
+			threadFocus.request({ id: "T1", scope: "ps1" });
+			history.back();
+			history.forward();
+			expect(threadFocus.get()).toBeNull();
 		} finally {
-			window.history.replaceState(null, "", "/");
+			stop();
 		}
 	});
 
