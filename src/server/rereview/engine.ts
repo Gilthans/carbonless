@@ -8,6 +8,7 @@ import {
 } from "../../shared/lineRanges.js";
 import {
 	clusterAt,
+	FILE_LEVEL,
 	lineRuns,
 	type SincePiece,
 	sincePieces,
@@ -1044,29 +1045,69 @@ export function interdiffFileHunks(
 	const { entry, file } = interdiffFileAt(traced, answer, index);
 	const targetClusters =
 		target.files.find((f) => f.path === entry.path)?.clusters ?? [];
-	const plain = sinceFileHunks(
-		traced,
-		entry,
-		file,
-		targetClusters,
-		[],
-		sources,
+	const withFile = (hunks: FileHunks) =>
+		withFileLevel(hunks, traced, entry, file, targetClusters);
+	const plain = withFile(
+		sinceFileHunks(traced, entry, file, targetClusters, [], sources),
 	);
 	if (!withOrphans) return plain;
 	const orphans = orphanLines(entry, targetClusters, plain.pieces ?? []);
 	if (orphans.length === 0) return plain;
 	try {
-		return sinceFileHunks(
-			traced,
-			entry,
-			file,
-			targetClusters,
-			orphans,
-			sources,
+		return withFile(
+			sinceFileHunks(traced, entry, file, targetClusters, orphans, sources),
 		);
 	} catch {
 		return plain;
 	}
+}
+
+/**
+ * `hunks` with the interdiff's file-level change as a piece of its own
+ * (SincePiece.file, CAR-297) when the interdiff has one for the file (a
+ * mode, a binary file, a submodule pointer that differs since) and no
+ * reworked or new file-level cluster of the viewed snapshot shows it: one
+ * the author reverted since (back to the base), or anything else the
+ * clusters miss (principle 2: it is to read until marked). Keyed by the
+ * gone since cluster it undoes when exactly one gone cluster of the file
+ * has no line in the interdiff (a file-level one: lines are keyed by
+ * theirs), so it reads "gone".
+ */
+function withFileLevel(
+	hunks: FileHunks,
+	traced: Traced,
+	entry: RereviewAnswer["files"][number],
+	file: InterdiffFile | null,
+	targetClusters: readonly Cluster[],
+): FileHunks {
+	const level = file?.clusters.find((c) => c.kind === "file");
+	if (!file || !level?.label) return hunks;
+	const kinds = new Map(entry.clusters.map((c) => [c.key, c.kind]));
+	const shown = targetClusters.some((c) => {
+		const kind = kinds.get(c.key);
+		return c.kind === "file" && (kind === "reworked" || kind === "new");
+	});
+	if (shown) return hunks;
+	const lineKeys = new Set([
+		...Object.values(traced.lineKeys.old[file.oldPath ?? file.path] ?? {}),
+		...Object.values(traced.lineKeys.new[file.path] ?? {}),
+	]);
+	const gone = entry.clusters.filter(
+		(c) => c.kind === "gone" && !lineKeys.has(c.key),
+	);
+	const piece: SincePiece = {
+		hunk: -1,
+		line: 0,
+		...(gone.length === 1 ? { key: (gone[0] as { key: string }).key } : {}),
+		owns: null,
+		old: FILE_LEVEL.old,
+		new: FILE_LEVEL.new,
+		kind: targetClusters.some((c) => c.kind === "file")
+			? "removed"
+			: "reverted",
+		file: level.label,
+	};
+	return { ...hunks, pieces: [piece, ...(hunks.pieces ?? [])] };
 }
 
 /** A line of the since view no piece shows and nothing carried (CAR-216): where it goes, as a row. */

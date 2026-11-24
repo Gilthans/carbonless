@@ -4178,3 +4178,122 @@ test("an old-side thread waiting for GitHub's hunk shows a spinner under its fil
 	).toHaveCount(1);
 	expect(await top()).toBe(before);
 });
+
+/**
+ * PS1: core.ts's two lines and bin/run.sh made executable (a file-level
+ * change only: no line of it changes). CAR-297.
+ */
+const modeFixture: PrOptions = {
+	base: { "src/core.ts": text(core), "bin/run.sh": "echo run\n" },
+	files: [
+		{
+			message: "PR change",
+			files: {
+				"src/core.ts": edit(core, {
+					5: "core 5 changed",
+					30: "core 30 changed",
+				}),
+			},
+			chmod: { "bin/run.sh": "755" },
+		},
+	],
+};
+
+/** PS1 fully reviewed from the closed headers, then `push`, viewed since PS1. */
+async function sinceAfter(
+	page: Page,
+	s: Crb,
+	p: Pr,
+	paths: string[],
+	push: FixtureCommit,
+) {
+	await openFiles(page, s.url);
+	for (const path of paths) {
+		const button = fileActionButton(
+			fileSection(page, path),
+			"Mark remaining reviewed",
+		);
+		await clicksReady(page, button);
+		await button.click();
+		await expect(
+			fileActionButton(fileSection(page, path), "Unmark reviewed"),
+		).toBeVisible();
+	}
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead(push);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+}
+
+test("a mode change reverted since the last review is gone with its label, to read until its box is ticked; never Nothing to read (CAR-297)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(modeFixture);
+	const s = await startCrb();
+	await sinceAfter(page, s, p, ["bin/run.sh", "src/core.ts"], {
+		message: "mode back",
+		files: {},
+		chmod: { "bin/run.sh": "644" },
+	});
+	const run = fileSection(page, "bin/run.sh");
+	await expect(run).toHaveAttribute("data-gone-file", "bin/run.sh", GIT_WAIT);
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	await expect(progress(page)).toContainText("0 / 1 cluster reviewed");
+	await expect(page.getByTestId("since-empty-all")).toHaveCount(0);
+	await run.getByRole("button", { name: "Expand file" }).click();
+	const level = run.getByTestId("since-file-level");
+	await expect(level).toContainText("Mode changed 100755 → 100644", GIT_WAIT);
+	await expect(level.getByTestId("kind-chip")).toHaveText("gone");
+	await expect(run.getByTestId("since-empty")).toHaveCount(0);
+	const box = level.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	await marksReady(page, run);
+	await box.click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(toRead(page)).toHaveText(/0 to read/);
+	// The mark is the file-level change's own: kept after a reload.
+	await page.reload();
+	await expect(progress(page)).toHaveAttribute(
+		"aria-valuenow",
+		"100",
+		GIT_WAIT,
+	);
+	await expect(
+		fileActionButton(fileSection(page, "bin/run.sh"), "Unmark reviewed"),
+	).toBeVisible();
+});
+
+test("a mode change new since the last review shows its label and box in the since view and is to read until ticked (CAR-297)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		...modeFixture,
+		files: [{ ...(modeFixture.files?.[0] as FixtureCommit), chmod: {} }],
+	});
+	const s = await startCrb();
+	await sinceAfter(page, s, p, ["src/core.ts"], {
+		message: "mode",
+		files: {},
+		chmod: { "bin/run.sh": "755" },
+	});
+	await expect(toRead(page)).toHaveText(/1 to read/, GIT_WAIT);
+	await expect(page.getByTestId("since-empty-all")).toHaveCount(0);
+	const run = fileSection(page, "bin/run.sh");
+	await run.getByRole("button", { name: "Expand file" }).click();
+	await expect(run).toContainText("Mode changed 100644 → 100755", GIT_WAIT);
+	await expect(run.getByTestId("since-empty")).toHaveCount(0);
+	await marksReady(page, run);
+	await run.getByRole("checkbox", { name: "Mark cluster reviewed" }).click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(toRead(page)).toHaveText(/0 to read/);
+});

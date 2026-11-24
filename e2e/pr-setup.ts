@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -275,6 +276,13 @@ function commitInWorktree(dir: string, commit: FixtureCommit): string {
 	for (const [name, content] of Object.entries(commit.files)) {
 		mkdirSync(dirname(join(dir, name)), { recursive: true });
 		writeFileSync(join(dir, name), content);
+	}
+	for (const [name, content] of Object.entries(commit.binary ?? {})) {
+		mkdirSync(dirname(join(dir, name)), { recursive: true });
+		writeFileSync(join(dir, name), content);
+	}
+	for (const [name, mode] of Object.entries(commit.chmod ?? {})) {
+		chmodSync(join(dir, name), mode === "755" ? 0o755 : 0o644);
 	}
 	git("add", "--all");
 	git("commit", "--quiet", "--allow-empty", "-m", commit.message);

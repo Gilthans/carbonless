@@ -148,7 +148,9 @@ The since view, the "needs eyes" filter, carried marks, thread placement
 and the verdict's since line organise what changed; none of them removes
 anything. Every unreviewed cluster stays countable and in the full diff,
 one drag of the comparison base away; a reviewed cluster the author
-removed shows as `gone`; a thread that can't be placed is listed under its
+removed shows as `gone`, a file-level one (a mode, a binary file, a
+submodule pointer reverted since) too, with its label and a box of its
+own (CAR-297); a thread that can't be placed is listed under its
 file or under "Not in this comparison" until it is resolved; a failure
 says so where the answer would be. "Nothing to read" and "nothing to
 re-read" show only when the engine's answer says so: an identical diff

@@ -1591,8 +1591,14 @@ export class Session {
 					context === "untouched"
 						? (await loadNewText(this.repo, snapshot, index)).newLines.length
 						: hunks.newLineCount;
+				// A file-level piece (CAR-297) stays: it has no line to show.
 				return newLineCount > 0
-					? { hunks: [], newLineCount, wholeGap: true }
+					? {
+							hunks: [],
+							newLineCount,
+							wholeGap: true,
+							...(hunks.pieces ? { pieces: hunks.pieces } : {}),
+						}
 					: { ...hunks, newLineCount };
 			},
 		};

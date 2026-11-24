@@ -493,6 +493,14 @@ pieces marks every since-only piece inside it, in the since view only. These mar
 cluster's state, never carry, and never count in the snapshot's progress;
 the since view counts an unmarked since-only piece in "to read", and the
 engine's answer lists them per file (`sinceOnly`) and in `toRead`.
+A file-level change of the interdiff (a mode, a binary file, a submodule
+pointer) that no reworked or new file-level cluster of the snapshot shows,
+such as one the author reverted since (CAR-297), is a since-only piece
+with no lines (`SincePiece.file`, its label): it is marked as **old-side
+line 0** of the file's since mark (`FILE_LEVEL`, `src/shared/pieces.ts`),
+a number no line has (they start at 1), so no mark on the file's lines
+ever holds it. The format is unchanged; a crb from before reads such a
+mark as marking nothing (fails closed).
 
 **Counts follow the view** (owner, 2026-11-08: "all the counts should be
 related to the interdiff, not the base diff"). In the since view every
