@@ -1,4 +1,5 @@
 import type { DiffSide } from "../../shared/types";
+import { ORPHAN_LEFT } from "./orphanLeft";
 import type { CodeSpan } from "./selectionActions";
 
 /**
@@ -16,7 +17,10 @@ import type { CodeSpan } from "./selectionActions";
  *   the base line GitHub knows a LEFT line by on the head (empty: a line
  *   only that patch set had, which GitHub has no line for; CAR-217); such
  *   a line also carries `data-ps-no`, its line on that patch set's commit,
- *   when that commit's diff adds it (a comment goes there, CAR-233). Side by side, a context line is shown in
+ *   when that commit's diff adds it (a comment goes there, CAR-233). A
+ *   since-view orphan line's cell (CAR-216) carries `data-orphan`; a
+ *   removed one has no old number: its line is its base number in
+ *   ORPHAN_LEFT's space (orphanLeft.ts, CAR-276). Side by side, a context line is shown in
  *   a cell on each side (`data-kind="context"`, `data-side` the cell's
  *   column): it is one line, RIGHT from either cell;
  * - inside it, `[data-code]` holds exactly the line's characters (CodeLine):
@@ -59,6 +63,11 @@ export interface CellLine {
 	 * comment can name it (CAR-233).
 	 */
 	psMoved?: boolean;
+	/**
+	 * A since-view orphan line's cell (`data-orphan`, CAR-216): a removed
+	 * one's `line` is in ORPHAN_LEFT's space, its GitHub line `base`.
+	 */
+	orphan?: boolean;
 }
 
 /**
@@ -67,7 +76,13 @@ export interface CellLine {
  * ("unknown"), or lines of the earlier patch set's commit mixed with the
  * head's ("mixed").
  */
-export type NoLine = "earlier" | "unknown" | "mixed" | "renamed" | "split";
+export type NoLine =
+	| "earlier"
+	| "unknown"
+	| "mixed"
+	| "renamed"
+	| "split"
+	| "orphan";
 
 /** A line only the compared patch set had, on its commit (CAR-233). */
 export const onEarlier = (c: Pick<CellLine, "base" | "ps">) =>
@@ -95,15 +110,24 @@ export const noLineOf = (
  * Why the span over `cells` can't go to GitHub (the first line's reason),
  * or null. Lines on the earlier patch set's commit go there all together
  * or not at all: mixed with others, "mixed"; with no such commit known
- * (`earlier`), "unknown".
+ * (`earlier`), "unknown". An orphan removed line (CAR-276) goes with
+ * its orphan run's lines only: with others, "orphan" (the view shows them
+ * apart from it, unlike GitHub's range between them).
  */
 export function noLineIn(
-	cells: readonly Pick<CellLine, "base" | "ps" | "psMoved">[],
+	cells: readonly (Pick<CellLine, "base" | "ps" | "psMoved"> &
+		Partial<Pick<CellLine, "orphan" | "side">>)[],
 	earlier?: string,
 ): NoLine | null {
 	for (const c of cells) {
 		const why = noLineOf(c);
 		if (why) return why;
+	}
+	if (
+		cells.some((c) => c.orphan && c.side === "LEFT") &&
+		cells.some((c) => !c.orphan)
+	) {
+		return "orphan";
 	}
 	const on = cells.filter(onEarlier).length;
 	if (on === 0) return null;
@@ -124,10 +148,17 @@ export function cellLine(cell: Element): CellLine | null {
 			? "RIGHT"
 			: cell.getAttribute("data-side");
 	const row = cell.closest("tr");
-	const line = Number(
-		row?.getAttribute(side === "LEFT" ? "data-old-no" : "data-new-no"),
-	);
 	const baseAttr = side === "LEFT" ? row?.getAttribute("data-base-no") : null;
+	const orphan = cell.hasAttribute("data-orphan");
+	const numbered = row?.getAttribute(
+		side === "LEFT" ? "data-old-no" : "data-new-no",
+	);
+	// An orphan removed line has no old number: its base one, in its own
+	// space (CAR-276).
+	const line =
+		numbered == null && side === "LEFT" && orphan && baseAttr
+			? ORPHAN_LEFT + Number(baseAttr)
+			: Number(numbered);
 	const psAttr = baseAttr === "" ? row?.getAttribute("data-ps-no") : null;
 	// The since view's LEFT line without a base number: not known (CAR-217).
 	const unknown =
@@ -157,6 +188,7 @@ export function cellLine(cell: Element): CellLine | null {
 		...(baseAttr === "" && row?.hasAttribute("data-ps-moved")
 			? { psMoved: true }
 			: {}),
+		...(orphan ? { orphan: true } : {}),
 	};
 }
 

@@ -136,6 +136,7 @@ import {
 	setPicks,
 	usePicks,
 } from "./linePicks";
+import { isOrphanLeft, leftNo, orphanBase, rowSelector } from "./orphanLeft";
 import { type ResolveCollapse, useResolveCollapse } from "./resolveCollapse";
 import { stickyBottom } from "./scrollAnchor";
 import { type CodeSpan, describeSpan } from "./selectionActions";
@@ -459,6 +460,8 @@ interface WsLine {
 	psNo?: number;
 	/** Its removed line's, in the since view (DiffLine.psMoved). */
 	psMoved?: true;
+	/** Its removed line's, in the since view (DiffLine.orphan, CAR-276). */
+	orphan?: true;
 }
 
 /** What a diff row shows: a line as it is, or a whitespace-only pair. */
@@ -476,6 +479,7 @@ const rowLine = (row: DiffRow): RowLine => {
 		...(row.del?.baseNo === undefined ? {} : { baseNo: row.del.baseNo }),
 		...(row.del?.psNo === undefined ? {} : { psNo: row.del.psNo }),
 		...(row.del?.psMoved ? { psMoved: true as const } : {}),
+		...(row.del?.orphan ? { orphan: true as const } : {}),
 	};
 };
 
@@ -491,6 +495,7 @@ const sideLine = (line: DiffLine, ws: boolean): RowLine =>
 				...(line.baseNo === undefined ? {} : { baseNo: line.baseNo }),
 				...(line.psNo === undefined ? {} : { psNo: line.psNo }),
 				...(line.psMoved ? { psMoved: true as const } : {}),
+				...(line.orphan ? { orphan: true as const } : {}),
 			}
 		: line;
 
@@ -501,6 +506,18 @@ const sideLine = (line: DiffLine, ws: boolean): RowLine =>
  */
 const baseAttr = (baseNo: number | null | undefined) =>
 	baseNo === undefined ? undefined : baseNo === null ? "" : baseNo;
+
+/** A number button with no number to show (a since-view orphan removed row's). */
+const NO_NUMBER = "\u00a0";
+
+/**
+ * Where a row's old side is, as its bubble names it: its old number, or a
+ * since-view orphan removed row's base line (it has no old number there).
+ */
+const oldWhere = (line: RowLine) =>
+	line.oldNo === undefined && typeof line.baseNo === "number"
+		? `on base line ${line.baseNo}`
+		: `on old line ${line.oldNo}`;
 
 /** Which side(s) a whitespace-only row shows (tests). */
 const wsSide = (line: WsLine) =>
@@ -776,7 +793,7 @@ export function codeCellOf(line: RowLine): {
 } {
 	// A context line is one line, always RIGHT (the spec's cells contract).
 	if (line.kind === "del" || line.newNo === undefined) {
-		return { side: "LEFT", line: line.oldNo as number };
+		return { side: "LEFT", line: leftNo(line) as number };
 	}
 	return { side: "RIGHT", line: line.newNo };
 }
@@ -825,6 +842,12 @@ interface NumberPick {
 	label: string;
 	button: boolean;
 	picked: boolean;
+	/**
+	 * A since-view removed orphan row's (CAR-276): its button shows no
+	 * number (the old side is the compared patch set's, which hasn't the
+	 * line) and is named by its base line.
+	 */
+	orphan?: boolean;
 }
 
 /** The pick a number makes for code cell `code`: its key, its name, whether it is picked. */
@@ -834,11 +857,15 @@ const pickOf = (
 	picker: Picker | undefined,
 ): NumberPick => {
 	const key = pickKey(code);
+	const orphan = code.side === "LEFT" && isOrphanLeft(code.line);
 	return {
 		key,
-		label: `${code.side === "LEFT" ? "Old line" : "Line"} ${code.line}`,
+		label: orphan
+			? `Base line ${orphanBase(code.line)}`
+			: `${code.side === "LEFT" ? "Old line" : "Line"} ${code.line}`,
 		button,
 		picked: picker?.keys.has(key) ?? false,
+		...(orphan ? { orphan } : {}),
 	};
 };
 
@@ -1045,7 +1072,7 @@ function NumberCell(props: {
 			onClick={picker?.onClick}
 			className={`${NUMBER_W} ${NUMBER_PAD} text-right align-top select-none ${props.className} ${picker ? "cursor-pointer" : ""}`}
 		>
-			{picker && pick?.button && n !== undefined ? (
+			{picker && pick?.button && (n !== undefined || pick.orphan) ? (
 				<button
 					type="button"
 					data-pick={pick.key}
@@ -1056,7 +1083,7 @@ function NumberCell(props: {
 					onFocus={() => picker.onFocus(stopOf(props.side, pick.key))}
 					className="block w-full cursor-pointer text-right hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
 				>
-					{n}
+					{n ?? NO_NUMBER}
 				</button>
 			) : (
 				n
@@ -1117,6 +1144,7 @@ function CodeCell(props: {
 			data-len={line.text.length}
 			data-hunk={props.hunk}
 			data-order={props.order}
+			data-orphan={line.orphan || undefined}
 			data-kind={cell ? line.kind : undefined}
 			data-landed={cell?.landed || undefined}
 			data-commented={cell?.commented ? "" : undefined}
@@ -1437,7 +1465,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 		(line.kind === "ws" &&
 			ending.length > 0 &&
 			ending.every((t) => t.anchor?.side === "LEFT"));
-	const where = onOld ? `on old line ${line.oldNo}` : `on line ${line.newNo}`;
+	const where = onOld ? oldWhere(line) : `on line ${line.newNo}`;
 	// The commented range: the accent stripe and tinted numbers (thread-mark),
 	// unlike a landed line's tint and rail; not while it is landed on.
 	const mark = commented && landed !== "on" ? "thread-mark" : "";
@@ -1462,6 +1490,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-base-no={baseAttr(line.baseNo)}
 				data-ps-no={line.psNo}
 				data-ps-moved={line.psMoved || undefined}
+				data-orphan={line.orphan || undefined}
 				data-landed={landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -1669,7 +1698,7 @@ function PairRow(
 				line,
 				row.del,
 				threads ? rowKeys(line) : [],
-				`on old line ${line.oldNo}`,
+				oldWhere(line),
 			);
 		}
 		if (row.add) {
@@ -1795,6 +1824,7 @@ function PairRow(
 				data-base-no={baseAttr(left?.line.baseNo)}
 				data-ps-no={left?.line.psNo}
 				data-ps-moved={left?.line.psMoved || undefined}
+				data-orphan={left?.line.orphan || right?.line.orphan || undefined}
 				data-landed={phase === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -2799,7 +2829,29 @@ export function DiffBody(props: {
 			side: span.side,
 			line: span.line,
 		});
-		return describeSpan(rows ? { ...span, ...rows } : span);
+		if (!rows) return describeSpan(span);
+		const orphan = (side: DiffSide, n: number) =>
+			side === "LEFT" && isOrphanLeft(n);
+		if (
+			!orphan(rows.startSide, rows.startLine) &&
+			!orphan(rows.side, rows.line)
+		) {
+			return describeSpan({ ...span, ...rows });
+		}
+		// An orphan removed row has no number of this view's: its base
+		// line names it, as its button does (CAR-276).
+		const word = (side: DiffSide, n: number) =>
+			side === "RIGHT" ? "new" : orphan(side, n) ? "base" : "old";
+		const no = (side: DiffSide, n: number) =>
+			orphan(side, n) ? orphanBase(n) : n;
+		const from = no(rows.startSide, rows.startLine);
+		const to = no(rows.side, rows.line);
+		const [a, b] = [
+			word(rows.startSide, rows.startLine),
+			word(rows.side, rows.line),
+		];
+		if (a !== b) return `${a} ${from} – ${b} ${to}`;
+		return from === to ? `line ${to}, ${b}` : `lines ${from}–${to}, ${b}`;
 	};
 	/** A span's first and last line's text, on the rows it is on here (kept with a draft). */
 	const spanLineTexts = (span: CodeSpan): LineTexts | undefined =>
@@ -3442,6 +3494,11 @@ export function DiffBody(props: {
 	// Comment on an agent card here: the head's diff shown, and whether a
 	// span's ends are this diff's lines (as the selection bar asks).
 	const hunkList = hunks.data?.hunks;
+	// The since view: GitHub's numbers on this view's rows (commentOn), never
+	// matched against its old side's numbers (the compared patch set's).
+	const sinceInDiff = useRef(commentOn);
+	sinceInDiff.current = commentOn;
+	const since = left !== undefined;
 	const commentScope = useMemo<CommentScope>(() => {
 		// The since view: a conversation on lines only its compared patch
 		// set had comments there, on that commit (CAR-264).
@@ -3451,7 +3508,9 @@ export function DiffBody(props: {
 			headSure: props.headSure !== false,
 			inDiff: (span) =>
 				hunkList && span.path === file.path
-					? spanInHunks(span, hunkList)
+					? since && !span.earlier
+						? sinceInDiff.current(span).inDiff
+						: spanInHunks(span, hunkList)
 					: undefined,
 			...(early
 				? {
@@ -3460,7 +3519,7 @@ export function DiffBody(props: {
 					}
 				: {}),
 		};
-	}, [props.headSure, hunkList, file.path, early]);
+	}, [props.headSure, hunkList, file.path, early, since]);
 
 	// A composer drawn in its conversation's card: what this diff gives one.
 	// Its functions read this render's (a ref), so the value changes only
@@ -3932,7 +3991,7 @@ export interface Landed {
 }
 
 const landedPhase = (landed: Landed | null, line: RowLine) =>
-	landed && (landed.old ? line.oldNo : line.newNo) === landed.line
+	landed && (landed.old ? leftNo(line) : line.newNo) === landed.line
 		? landed.phase
 		: undefined;
 
@@ -3943,7 +4002,7 @@ export interface LineRef {
 }
 
 const landingOn = (target: LineRef | null, line: RowLine) =>
-	target !== null && (target.old ? line.oldNo : line.newNo) === target.line;
+	target !== null && (target.old ? leftNo(line) : line.newNo) === target.line;
 
 /**
  * Why a landing found no line: the text and its tooltip; `full`, the
@@ -3990,9 +4049,7 @@ function useFindStep(
 		if (!el || !ready || seq === 0 || done.current === seq) return;
 		done.current = seq;
 		if (line === undefined) return;
-		const row = el.querySelector(
-			`tr[data-${old ? "old" : "new"}-no="${line}"]`,
-		);
+		const row = el.querySelector(rowSelector(Boolean(old), line));
 		if (row) scrollUnderStack(el, row, 60);
 	}, [root, seq, ready, old, line]);
 }
@@ -4049,9 +4106,7 @@ function useLanding(
 				: landing.moved
 					? earlierRow(landing, earlyNow.current)
 					: landingRow(side, landing.line, leftNow.current);
-		const row =
-			at &&
-			el.querySelector(`tr[data-${at.old ? "old" : "new"}-no="${at.line}"]`);
+		const row = at && el.querySelector(rowSelector(at.old, at.line));
 		if (!row || !at) {
 			// A line no row of the since view shows: the full diff may.
 			const since = leftNow.current !== undefined;
