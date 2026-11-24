@@ -723,6 +723,8 @@ interface AgentCardProps {
 	status: AgentStatus | undefined;
 	/** Its line isn't in this diff: shown in the file's header instead. */
 	unplaced?: boolean;
+	/** What says why, in place of the plain flag (the since view's NotHereNote, CAR-255). */
+	unplacedNote?: ReactNode;
 	/** Asked on this earlier head (its commit): marked outdated. */
 	outdated?: string;
 	/** The move handle, first in the header (Files changed; threadMove.tsx). */
@@ -940,13 +942,14 @@ function AgentCard(props: AgentCardProps) {
 						/>
 					</span>
 				)}
-				{props.unplaced && (
-					<LabeledIcon
-						icon={AlertIcon}
-						label="Line not in this diff"
-						className="text-warn"
-					/>
-				)}
+				{props.unplaced &&
+					(props.unplacedNote ?? (
+						<LabeledIcon
+							icon={AlertIcon}
+							label="Line not in this diff"
+							className="text-warn"
+						/>
+					))}
 				{props.moved}
 				<div className="ml-auto flex items-center gap-x-2">
 					{answering && (

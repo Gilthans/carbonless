@@ -1,5 +1,9 @@
 import { timingSafeEqual } from "node:crypto";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type {
+	FastifyInstance,
+	FastifyPluginAsync,
+	FastifyRequest,
+} from "fastify";
 import { IMAGE_MAX_BYTES } from "../shared/imageTypes.js";
 import { clearSnapshotCaches } from "./diff/snapshot.js";
 import { ghRunning } from "./gh.js";
@@ -117,7 +121,7 @@ export async function registerTestHooks(
 		const given = Buffer.from(typeof raw === "string" ? raw : "");
 		return given.length === expected.length && timingSafeEqual(given, expected);
 	};
-	await app.register(async (scope) => {
+	await app.register((async (scope) => {
 		scope.addHook("onRequest", async (request, reply) => {
 			if (!allowed(request)) {
 				return reply.status(403).send({ error: "Not allowed" });
@@ -188,5 +192,5 @@ export async function registerTestHooks(
 				git: gitChildren(),
 			};
 		});
-	});
+	}) satisfies FastifyPluginAsync);
 }

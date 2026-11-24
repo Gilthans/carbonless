@@ -2111,11 +2111,47 @@ describe("Session", () => {
 					},
 				],
 			});
-			// a.txt is untouched since PS1: one whole-file gap.
+			// a.txt is untouched since PS1, but its line-26 cluster was never
+			// reviewed there: its lines alone, a box of their own (CAR-216),
+			// the rest of the file gaps around them.
+			const lineKey = view.files[0]?.clusters[1]?.key;
 			expect(await s.interdiffHunks(1, view.revision, 0)).toEqual({
-				hunks: [],
+				hunks: [
+					{
+						oldStart: 25,
+						oldCount: 0,
+						newStart: 26,
+						newCount: 1,
+						lines: [
+							{
+								kind: "del",
+								text: "line 26",
+								clusterKey: lineKey,
+								baseNo: 26,
+								orphan: true,
+							},
+							{
+								kind: "add",
+								newNo: 26,
+								text: "line 26 changed",
+								clusterKey: lineKey,
+								orphan: true,
+							},
+						],
+					},
+				],
 				newLineCount: 30,
-				wholeGap: true,
+				pieces: [
+					{
+						hunk: 0,
+						line: 0,
+						key: lineKey,
+						orphan: true,
+						owns: [[0, 2]],
+						old: [],
+						new: [[26, 27]],
+					},
+				],
 			});
 
 			// The first mark starts PS2, carrying PS1's mark.
@@ -2178,7 +2214,11 @@ describe("Session", () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const ps1 = s.snapshot();
 			await s.setStates(ps1.revision, [
-				{ key: firstKey(s), state: "reviewed" },
+				...s
+					.snapshot()
+					.files.flatMap((f) =>
+						f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+					),
 			]);
 			// PS2 changes a.txt's line 15 and adds a line after it (the new
 			// side shifts by one below it); new.txt is untouched since PS1.
@@ -2283,9 +2323,13 @@ describe("Session", () => {
 		const sinceAfter = async (push: () => string) => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const ps1 = s.snapshot();
-			await s.setStates(ps1.revision, [
-				{ key: firstKey(s), state: "reviewed" },
-			]);
+			// All of it: a cluster left unreviewed would be shown (CAR-216).
+			await s.setStates(
+				ps1.revision,
+				ps1.files.flatMap((f) =>
+					f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+				),
+			);
 			const newHead = push();
 			await s.checkHead();
 			const answer = await settled(s, 1, { head: newHead });

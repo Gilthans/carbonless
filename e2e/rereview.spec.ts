@@ -4,9 +4,11 @@ import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { type FixtureCommit, testGitEnv } from "../test/git-fixture";
 import {
+	chooseUnit,
 	clicksReady,
 	expectNoPageOverflow,
 	fileActionButton,
+	fileProgress,
 	fileSection,
 	marksReady,
 	openFiles,
@@ -15,6 +17,7 @@ import {
 	rowTop,
 	sideBySide,
 	tapHeight,
+	treeNumbers,
 	withTree,
 } from "./files-ui";
 import {
@@ -2519,6 +2522,8 @@ async function sinceGaps(
 	page: Page,
 	pr: (o: PrOptions) => Promise<Pr>,
 	startCrb: () => Promise<{ url: string }>,
+	/** More threads, made on PS1's head. */
+	extra: (h1: string) => ReturnType<typeof reviewThread>[] = () => [],
 ) {
 	const threads: ReturnType<typeof reviewThread>[] = [];
 	const p = await pr({ ...fixture, threads });
@@ -2534,6 +2539,7 @@ async function sinceGaps(
 				diffHunk: "",
 			}),
 		]),
+		...extra(h1),
 	);
 	p.editScenario((sc) => {
 		const graph = sc.prs[p.number]?.graphql;
@@ -2657,6 +2663,76 @@ test("the since view's gaps load the interdiff's lines: a line the PR added at P
 		utilS
 			.getByTestId("files-thread")
 			.filter({ hasText: "Why drop the old util 3?" }),
+	).toHaveCount(0);
+});
+
+test("the since view says why a LEFT thread's line has no row (deleted before PS1, its file changed since or not) and opens it in the full diff on its line (CAR-255)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine's answer: each step waits on git.
+	test.setTimeout(180_000);
+	const { coreS, utilS } = await sinceGaps(page, pr, startCrb, (h1) => [
+		// Base core 30, which PS1 already changed: the interdiff (core 5
+		// reworked) has no row of it.
+		reviewThread({ path: "src/core.ts", line: 30, diffSide: "LEFT" }, [
+			threadComment({
+				login: "rev1",
+				text: "Why drop the old core 30?",
+				commit: h1,
+				diffHunk: "",
+			}),
+		]),
+	]);
+	const card = (section: Locator, text: string) =>
+		section.getByTestId("files-thread").filter({ hasText: text });
+
+	// util.ts, untouched since PS1: its line was deleted before PS1 too.
+	await utilS.getByRole("button", { name: "Expand file" }).click();
+	await utilS
+		.getByRole("button", {
+			name: "1 comment on this file, line not in this diff",
+		})
+		.click(GIT_WAIT);
+	await expect(
+		card(utilS, "Why drop the old util 3?").getByTestId("not-here-why"),
+	).toHaveText("deleted before PS1");
+	// core.ts changed since PS1, not on that line: deleted before PS1.
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await coreS
+		.getByRole("button", {
+			name: "1 comment on this file, line not in this diff",
+		})
+		.click(GIT_WAIT);
+	const core30 = card(coreS, "Why drop the old core 30?");
+	await expect(core30.getByTestId("not-here-why")).toHaveText(
+		"deleted before PS1",
+	);
+	// Never a tracer fate: the line is where the thread says.
+	await expect(core30.getByTestId("placement-fate")).toHaveCount(0);
+
+	await expectNoPageOverflow(page);
+	// One tap: the full diff, on base core 30's removed row, the thread there.
+	const link = core30.getByRole("link", { name: "Open in the full diff" });
+	await expect(link).toHaveAttribute("href", /[?&]side=LEFT(&|$)/);
+	await expect(link).toHaveAttribute("href", /[?&]line=30(&|$)/);
+	await expect(link).toHaveAttribute("href", /[?&]thread=/);
+	await link.click();
+	// The landing takes its line out of the address; the comparison stays.
+	await expect(page).toHaveURL(/[?&]from=branch(&|$)/);
+	const full = fileSection(page, "src/core.ts");
+	const row = full.locator(
+		'tr[data-testid="diff-line"][data-kind="del"][data-old-no="30"]',
+	);
+	await expect(row).toHaveAttribute("data-landed", "true", GIT_WAIT);
+	// Its card opens there, on its row.
+	await expect(
+		row.getByRole("button", { name: /^1 comment on old line 30/ }),
+	).toBeVisible();
+	await expect(card(full, "Why drop the old core 30?")).toBeVisible();
+	await expect(
+		card(full, "Why drop the old core 30?").getByTestId("not-here"),
 	).toHaveCount(0);
 });
 
@@ -3135,6 +3211,118 @@ test("a line crossed off in PS1 stays crossed off in a grown cluster: ticking th
 	).toHaveAttribute("data-reviewed", "true");
 });
 
+/**
+ * CAR-216 (gallery #58): the base's blank after `count: int` is PS1's
+ * line 6, context there. PS2 inserts `Totals`, which starts like the old
+ * `Result`: PS2's diff matches the base's blank to its line 3, so its
+ * line 10 (PS1's line 6, unchanged since) is an added line nobody
+ * reviewed, which no since piece showed.
+ */
+const RESULT = "src/result.py";
+const resultBase = text([
+	"class Result:",
+	"    count: int",
+	"",
+	"    def total(self):",
+	"        return self.count",
+]);
+const resultPs1 = text([
+	"class Result(Base):",
+	"    count: int = 0",
+	"",
+	"    def add(self):",
+	"        return 2",
+	"",
+	"    def total(self):",
+	"        return self.count",
+]);
+const resultPs2 = text([
+	"class Totals:",
+	"    count: int",
+	"",
+	"",
+	"class Result(Base):",
+	"    count: int = 0",
+	"",
+	"    def add(self):",
+	"        return 3",
+	"",
+	"    def total(self):",
+	"        return self.count",
+]);
+
+test("a changed line unchanged since PS1 but never reviewed there has a box of its own: ticking every box finishes the file, every count full (CAR-216)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		base: { [RESULT]: resultBase },
+		files: [{ message: "PS1", files: { [RESULT]: resultPs1 } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// PS1 reviewed whole: its last box closes the file.
+	const first = await expand(page, RESULT);
+	const ps1 = boxes(first);
+	const n = await ps1.count();
+	for (let i = 0; i < n; i++) await ps1.nth(i).click();
+	await expect(
+		first.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [RESULT]: resultPs2 } });
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	// The engine's answer is in (its carries laid over): five boxes to read,
+	// line 10's among them.
+	await expect(toRead(page)).toHaveText(/5 to read/, GIT_WAIT);
+	await expect(progress(page)).toContainText("0 / 5 clusters reviewed");
+	const since = await expand(page, RESULT);
+	// Line 10: an added row with a box and a chip of its own.
+	const line10 = since.locator('[data-testid="diff-line"][data-new-no="10"]');
+	await expect(line10).toHaveAttribute("data-kind", "add", GIT_WAIT);
+	const run = since.locator("tbody", {
+		has: page.locator('[data-testid="diff-line"][data-new-no="10"]'),
+	});
+	const chip = run.getByTestId("kind-chip");
+	await expect(chip).toHaveText("not reviewed in PS1");
+	await expect(chip).toBeVisible();
+	await expect(boxes(run)).toHaveCount(1);
+	await expect(since.getByTestId("since-unshown")).toHaveCount(0);
+	await expectNoPageOverflow(page);
+
+	// Every box ticked: the last finishes the file, which closes.
+	const all = boxes(since);
+	const count = await all.count();
+	for (let i = 0; i < count - 1; i++) {
+		await all.nth(i).click();
+		await expect(all.nth(i)).toBeChecked();
+	}
+	await all.nth(count - 1).click();
+	await expect(
+		since.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await chooseUnit(page, "Lines");
+	await expect(progress(page)).toContainText(/\b(\d+) \/ \1 lines reviewed/);
+	await expect(fileProgress(since)).toHaveAttribute(
+		"aria-valuetext",
+		/\b(\d+) of \1 lines reviewed/,
+	);
+	await withTree(page, (tree) =>
+		expect(treeNumbers(tree, /result\.py/)).toHaveText("9 of 9 lines reviewed"),
+	);
+	await expect(
+		page.locator("#files-verdict").getByTestId("verdict-info"),
+	).toContainText("You reviewed 9 of 9 lines");
+});
+
 test("the first tick on the viewed head starts PS2 of that snapshot: the since view's chips stay while PS2's answer is read, so no row moves under the pointer (CAR-208)", async ({
 	page,
 	pr,
@@ -3426,4 +3614,245 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 		'tr[data-testid="diff-line"][data-kind="del"][data-old-no="61"]',
 	);
 	await expect(row61).toHaveAttribute("data-commented", "", GIT_WAIT);
+});
+
+test("a link to an old line (side=LEFT) lands on that base line's row in the since view, and one the view doesn't show says so with the way to the full diff (CAR-253)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// PS1 adds two lines at core.ts's top (its old side numbers two on from
+	// the base) and deletes core 20; the push takes the two lines back out
+	// and deletes core 10. The since view's removed row of core 10 is PS1's
+	// old 12, while its old 10 is core 8; core 20 has no row there.
+	const top = ["top 1", "top 2"];
+	const p = await pr({
+		base: { "src/core.ts": text(core), "src/util.ts": text(util) },
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"src/core.ts": text([...top, ...core.filter((_, i) => i !== 19)]),
+					"src/util.ts": edit(util, { 3: "util 3 changed" }),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await pushed(page, s, p, {
+		message: "rework",
+		files: { "src/core.ts": edit(core, { 10: null, 20: null }) },
+	});
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible(GIT_WAIT);
+	const land = async (line: number) => {
+		const url = new URL(page.url());
+		url.searchParams.set("path", "src/core.ts");
+		url.searchParams.set("line", String(line));
+		url.searchParams.set("side", "LEFT");
+		await page.goto(url.toString());
+	};
+	const section = fileSection(page, "src/core.ts");
+	// The highlight lasts 2.5 s: one locator names the row and its tint.
+	const landedOn = (s: typeof section, oldNo: number) =>
+		s.locator(
+			`tr[data-testid="diff-line"][data-landed][data-old-no="${oldNo}"]`,
+		);
+	const landed = section.locator('tr[data-testid="diff-line"][data-landed]');
+
+	// Base line 10: the removed row showing it (PS1's 12), not the row
+	// numbered 10 (core 8).
+	await land(10);
+	await expect(landedOn(section, 12)).toHaveText(/core 10/, GIT_WAIT);
+	await expect(section.getByTestId("landing-hint")).toHaveCount(0);
+
+	// Base line 20, gone by PS1: deleted before PS1; the full diff has it.
+	await land(20);
+	const hint = section.getByTestId("landing-hint");
+	// As its thread's card says it (CAR-255): gone before PS1.
+	await expect(hint).toContainText("Old line 20: deleted before PS1", GIT_WAIT);
+	await expect(landed).toHaveCount(0);
+	await hint.getByTestId("landing-full-diff").click();
+	await expect(page).toHaveURL(/from=branch/);
+	const full = fileSection(page, "src/core.ts");
+	await expect(landedOn(full, 20)).toHaveText(/core 20/, GIT_WAIT);
+});
+
+/**
+ * CAR-252: Ask agent on a line the since view shows removed asks about
+ * its base line (CAR-217's base number), never the compared patch set's
+ * number: PS1 30 is base 20, so the question is on LEFT 20, and the full
+ * diff shows it on its removed row 20 (row 30 there is another line).
+ */
+test("Ask agent on a line the since view shows removed asks about its base line, and the full diff shows it on that line (CAR-252)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [REMOVED]: text(numbered) },
+		files: [{ message: "PS1", files: { [REMOVED]: text(ps1Lines) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, REMOVED);
+	await boxes(first).first().click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [REMOVED]: text(ps2Lines) } });
+	const head = p.head();
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, REMOVED);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	const removedRow = (section: Locator, old: number) =>
+		section.locator(
+			`tr[data-testid="diff-line"][data-kind="del"][data-old-no="${old}"]`,
+		);
+	await expect(removedRow(since, 30)).toBeVisible(GIT_WAIT);
+	const asks: unknown[] = [];
+	page.on("request", (r) => {
+		if (
+			r.method() === "POST" &&
+			/\/agent\/threads$/.test(new URL(r.url()).pathname)
+		) {
+			asks.push(JSON.parse(r.postData() ?? "{}"));
+		}
+	});
+	const bar = page.getByTestId("selection-bar");
+	const pick = async (old: number) => {
+		const number = removedRow(since, old).getByTestId("old");
+		await removedRow(since, old).evaluate((el) =>
+			el.scrollIntoView({ block: "center" }),
+		);
+		if (isMobile) await number.tap();
+		else await number.click();
+		await expect(bar).toBeVisible();
+	};
+	await pick(30);
+	await bar.getByRole("button", { name: "Ask agent" }).click();
+	const composer = since.getByTestId("agent-composer");
+	// Named as this view numbers the row; GitHub's (the base's) is sent.
+	await expect(composer).toContainText("line 30, old");
+	await composer
+		.getByRole("textbox", { name: "Ask your agent" })
+		.fill("Why drop line 20?");
+	await composer.getByTestId("agent-composer-ask").click();
+	await expect(composer).toHaveCount(0);
+	await expect.poll(() => asks.length).toBe(1);
+	expect(asks[0]).toMatchObject({
+		span: {
+			subject: "line",
+			commit: head,
+			side: "LEFT",
+			line: 20,
+			startSide: "LEFT",
+			startLine: 20,
+		},
+	});
+	// It shows on the row it was asked on.
+	await expect(removedRow(since, 30).getByTestId("agent-bubble")).toBeVisible(
+		GIT_WAIT,
+	);
+	// The full diff: on its removed row 20, not on row 30 (another line).
+	await toFullDiff(page);
+	const full = fileSection(page, REMOVED);
+	const expandFull = full.getByRole("button", { name: "Expand file" });
+	await expect(
+		full.getByTestId("diff-line").first().or(expandFull),
+	).toBeVisible(GIT_WAIT);
+	if (await expandFull.isVisible()) await expandFull.click();
+	await expect(removedRow(full, 20).getByTestId("agent-bubble")).toBeVisible(
+		GIT_WAIT,
+	);
+	await expect(full.getByTestId("agent-bubble")).toHaveCount(1);
+});
+
+/**
+ * CAR-254: an unsent draft on a line the since view shows removed keeps
+ * its base line (CAR-217's base number), never the compared patch set's:
+ * PS1 30 is base 20. The full diff shows the draft, its text kept, on its
+ * removed row 20 (row 30 there is another line), and posts it there.
+ */
+test("a draft on a line the since view shows removed stays on its base line: the full diff shows it on that line and posts it there (CAR-254)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [REMOVED]: text(numbered) },
+		files: [{ message: "PS1", files: { [REMOVED]: text(ps1Lines) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, REMOVED);
+	await boxes(first).first().click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [REMOVED]: text(ps2Lines) } });
+	const head = p.head();
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, REMOVED);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	const removedRow = (section: Locator, old: number) =>
+		section.locator(
+			`tr[data-testid="diff-line"][data-kind="del"][data-old-no="${old}"]`,
+		);
+	await expect(removedRow(since, 30)).toBeVisible(GIT_WAIT);
+	const number = removedRow(since, 30).getByTestId("old");
+	await removedRow(since, 30).evaluate((el) =>
+		el.scrollIntoView({ block: "center" }),
+	);
+	if (isMobile) await number.tap();
+	else await number.click();
+	const bar = page.getByTestId("selection-bar");
+	await bar.getByRole("button", { name: "Comment" }).click();
+	const composer = since.getByTestId("new-thread");
+	await expect(composer).toContainText("line 30, old");
+	await composer
+		.getByRole("textbox", { name: "Comment" })
+		.fill("Why drop line 20?");
+	// Unsent: the full diff shows it under base line 20's removed row.
+	// (The view's shortcut, not typed into the box.)
+	await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+	await toFullDiff(page);
+	const full = fileSection(page, REMOVED);
+	const expandFull = full.getByRole("button", { name: "Expand file" });
+	await expect(
+		full.getByTestId("diff-line").first().or(expandFull),
+	).toBeVisible(GIT_WAIT);
+	if (await expandFull.isVisible()) await expandFull.click();
+	const draft = full.getByTestId("new-thread");
+	await expect(draft).toHaveCount(1, GIT_WAIT);
+	await expect(draft).toContainText("line 20, old");
+	await expect(draft.getByRole("textbox", { name: "Comment" })).toHaveValue(
+		"Why drop line 20?",
+	);
+	await expect(removedRow(full, 20)).toHaveAttribute("data-commented", "");
+	await expect(full.getByTestId("orphan-draft")).toHaveCount(0);
+	// Posted from there: GitHub's LEFT 20 on the head, never LEFT 30.
+	await draft.getByRole("button", { name: "Comment" }).click();
+	await expect(full.getByTestId("new-thread")).toHaveCount(0);
+	await expect(
+		full.getByTestId("files-thread").filter({ hasText: "Why drop line 20?" }),
+	).toBeVisible();
+	expect(postedThreads(p)).toEqual([
+		expect.objectContaining({
+			line: 20,
+			diffSide: "LEFT",
+			commit: head,
+			body: expect.stringContaining("Why drop line 20?"),
+		}),
+	]);
 });

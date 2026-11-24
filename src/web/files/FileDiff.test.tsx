@@ -1173,6 +1173,34 @@ describe("FileDiff", () => {
 		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
 	});
 
+	it("takes a cross-off at once when it comes back right after the undo swapped in (CAR-257)", async () => {
+		const before = file([cluster("k1", { state: "reviewed" }), cluster("k2")]);
+		const crossedOff = file([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { state: "crossed-off" }),
+		]);
+		const { posts, rerender, user } = setup(before, () => ({
+			status: 200,
+			body: view(before),
+		}));
+		const cross = screen.getByRole("button", { name: "Cross off file" });
+		await user.click(cross);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+		await rerender(crossedOff);
+		expect(cross).toHaveAccessibleName("Undo cross-off");
+		// Undone elsewhere (the cluster's own box) within the undo's guard: the
+		// cross-off is back, and the guard went with the undo it was for.
+		await rerender(before);
+		expect(cross).toHaveAccessibleName("Cross off file");
+		expect(cross).not.toHaveAttribute("data-clicks-from");
+		await user.click(cross);
+		await waitFor(() =>
+			expect(posts()[1]?.body.changes).toEqual([
+				{ key: "k2", state: "crossed-off" },
+			]),
+		);
+	});
+
 	it("disables cross off once all is reviewed; mark flips to unmark", () => {
 		setup(
 			file([
@@ -2369,6 +2397,110 @@ describe("FileDiff: agent threads asked on an earlier head", () => {
 				.getAllByTestId("agent-bubble")
 				.some((b) => b.getAttribute("aria-label")?.includes("on this file")),
 		).toBe(true);
+	});
+});
+
+describe("FileDiff: the since view's word on an agent thread whose line it has no row for (CAR-255)", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	it("its card says deleted before PS1 and links to the full diff, its conversation opened there", async () => {
+		const NOW = "f".repeat(40);
+		// The full diff changes base 5 and deletes base 30; the interdiff
+		// removes only base 5 again: base 30 was gone before PS1.
+		const since: FileHunks = {
+			newLineCount: 50,
+			hunks: [
+				{
+					oldStart: 4,
+					oldCount: 2,
+					newStart: 4,
+					newCount: 2,
+					lines: [
+						ctx(4, 4),
+						{ kind: "del", oldNo: 5, text: "five", baseNo: 5 },
+						{ kind: "add", newNo: 5, text: "new five" },
+					],
+				},
+			],
+		};
+		const { queryClient, user } = setup(
+			file([
+				cluster("k1"),
+				cluster("k2", {
+					oldStart: 30,
+					oldCount: 1,
+					newStart: 29,
+					newCount: 0,
+					removed: ["thirty"],
+					added: [],
+					lines: 1,
+				}),
+			]),
+			undefined,
+			since,
+			"clusters",
+			{ since: 1, router: true },
+		);
+		const left: AgentThread = {
+			id: "01jagentthread000000000000",
+			anchor: {
+				subject: "line",
+				path: "src/a.ts",
+				commit: NOW,
+				side: "LEFT",
+				line: 30,
+				startSide: "LEFT",
+				startLine: 30,
+			},
+			openedBy: "human",
+			at: "2026-11-07T10:00:00Z",
+			messages: [
+				{ id: "m1", by: "human", at: "2026-11-07T10:00:00Z", text: "Why?" },
+			],
+			resolved: false,
+			waiting: false,
+			unread: false,
+		};
+		await act(async () => {
+			queryClient.setQueryData(sessionQuery.queryKey, {
+				snapshotHead: NOW,
+				patchsets: [{ number: 1, head: "e".repeat(40) }],
+			} as unknown as SessionInfo);
+			queryClient.setQueryData(agentThreadsQuery.queryKey, {
+				threads: [left],
+			});
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		// The closed header counts it; open, the file's lead holds it.
+		await user.click(
+			await screen.findByRole("button", {
+				name: "1 agent thread in this file",
+			}),
+		);
+		await user.click(
+			await screen.findByRole("button", {
+				name: "1 agent thread on this file",
+			}),
+		);
+		const card = await screen.findByTestId("agent-thread");
+		expect((await within(card).findByTestId("not-here-why")).textContent).toBe(
+			"deleted before PS1",
+		);
+		const link = within(card).getByRole("link", {
+			name: "Open in the full diff",
+		});
+		const url = new URL(link.getAttribute("href") ?? "", "http://x");
+		expect(url.searchParams.get("from")).toBe("branch");
+		expect(url.searchParams.get("line")).toBe("30");
+		expect(url.searchParams.get("side")).toBe("LEFT");
+		expect(url.searchParams.get("conversation")).toBe(left.id);
+		// Not the plain flag beside it.
+		expect(
+			within(card).queryByRole("img", { name: "Line not in this diff" }),
+		).toBeNull();
 	});
 });
 
