@@ -591,6 +591,65 @@ describe("MarkdownView, full diff", () => {
 		},
 	);
 
+	it.each([
+		["full diff", false],
+		["since view", true],
+	])(
+		"side by side on a phone (%s): old and new columns, each its own marks, the controls in a row of their own above",
+		async (_, since) => {
+			vi.stubGlobal(
+				"matchMedia",
+				vi.fn(() => ({
+					matches: false,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				})),
+			);
+			show(
+				docFixture(OLD, NEW, EDITS, { since }),
+				since ? { sideBySide: true, from: 1 } : { sideBySide: true },
+			);
+			const root = await doc();
+			const unit = (i: number) => (since ? `p:${i}:0` : (EDITS[i]?.key ?? ""));
+			// No merged rendering anywhere.
+			expect(root.querySelector('[data-col="doc"]')).toBeNull();
+			const row = rowOf(root, unit(0)) as HTMLElement;
+			expect(
+				[...row.children]
+					.filter((c) => !c.matches('[data-testid="md-threads"]'))
+					.map(
+						(c) => `${c.className.split(" ")[0]}:${c.getAttribute("data-col")}`,
+					),
+			).toEqual(["md-controls:controls", "md-body:old", "md-body:new"]);
+			const [oldCol, newCol] = row.querySelectorAll(".md-body[data-col]");
+			expect(oldCol?.querySelector("del.md-del")).toHaveTextContent("old");
+			expect(oldCol?.querySelector("ins")).toBeNull();
+			expect(newCol?.querySelector("ins.md-ins")).toHaveTextContent("new");
+			expect(newCol?.querySelector("del")).toBeNull();
+			// Every box in its row's controls, none in a column; a removal's
+			// says it is the old side's.
+			for (const i of EDITS.keys()) {
+				const box = boxOf(root, unit(i));
+				expect(box?.closest(".md-controls"), unit(i)).not.toBeNull();
+				expect(box?.closest(".md-body"), unit(i)).toBeNull();
+			}
+			expect(
+				boxOf(root, unit(3))
+					?.closest(".md-controls")
+					?.getAttribute("data-side"),
+			).toBe("old");
+			const removed = rowOf(root, unit(3)) as HTMLElement;
+			const [rOld, rNew] = removed.querySelectorAll(".md-body[data-col]");
+			expect(rOld?.querySelector(".md-old")).not.toBeNull();
+			expect(rNew?.childElementCount).toBe(0);
+			expect(root.querySelector(".md-gutter")).toBeNull();
+			expectCoverage(
+				root,
+				EDITS.map((_, i) => unit(i)),
+			);
+		},
+	);
+
 	it("a mark (the review read again: new clusters, a new file list) renders no block again", async () => {
 		const fx = docFixture(OLD, NEW, EDITS);
 		serve(fx);

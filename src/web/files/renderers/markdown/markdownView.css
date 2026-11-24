@@ -15,6 +15,16 @@
 	grid-template-columns: 44px minmax(0, 1fr) 44px minmax(0, 1fr);
 }
 
+/*
+ * Side by side on a phone: two equal columns, no gutter. A row's controls
+ * (boxes, comment, bubbles, chips) sit in a slim row of their own above the
+ * pair, across it, so they never take the columns' width.
+ */
+.md-row.md-split.md-narrow {
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	column-gap: 2px;
+}
+
 .md-gutter {
 	display: flex;
 	flex-direction: column;
@@ -27,6 +37,23 @@
 	display: flex;
 	flex-direction: column;
 	align-items: center;
+}
+
+/* Side by side on a phone: the row's controls, in a line above the pair. */
+.md-controls {
+	grid-column: 1 / -1;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 8px;
+	min-width: 0;
+	min-height: 40px;
+	padding: 0 8px;
+}
+
+.md-controls > .md-box {
+	flex-direction: row;
+	gap: 4px;
 }
 
 .md-body {
@@ -290,7 +317,7 @@
 		grid-template-columns: 84px minmax(0, 1fr);
 	}
 
-	.md-row.md-split {
+	.md-row.md-split:not(.md-narrow) {
 		grid-template-columns: 84px minmax(0, 1fr) 84px minmax(0, 1fr);
 	}
 
@@ -323,4 +350,14 @@
 	.md-threads {
 		padding-left: 12px;
 	}
+}
+
+/* Side by side on a phone: the columns' bodies and the threads take the width. */
+.md-row.md-narrow > .md-body {
+	padding: 4px 6px;
+	align-self: stretch;
+}
+
+.md-row.md-narrow > .md-threads {
+	padding-left: 12px;
 }

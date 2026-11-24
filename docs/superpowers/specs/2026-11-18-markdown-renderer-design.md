@@ -214,9 +214,15 @@ A renderer `markdown` on the seam (`src/web/files/renderers/`):
   naming the headings it hides; it expands in place. The fold row never
   hides a changed block.
 - **Single** (side-by-side, an added or deleted file): each side rendered;
-  in side-by-side, the old and new documents side by side on desktop (each
-  column its own side's marks), the unified view on a phone, with boxes on
-  the new side (removal-only clusters on the old).
+  in side-by-side, the old and new documents side by side on every width
+  (each column its own side's marks), with boxes on the new side
+  (removal-only clusters on the old). On a phone, as the line view does, the
+  two columns take the width and a changed block's controls (boxes,
+  cross-off, comment, chips, bubbles) sit in a slim row of their own above
+  the pair. The owner (2026-11-24), on the phone's earlier fallback to the
+  unified view: "when I turn on side by side, it looks the same. It should
+  be showing the old vs new rendered side by side, with the changes
+  highlighted, similar to what happens with code".
 - **Tables**: each row is a block, rendered as a table of its own; a
   table's rows line up their columns as one table (`tableAlign.ts`), scroll
   sideways in their own box and never break a word. Content's own

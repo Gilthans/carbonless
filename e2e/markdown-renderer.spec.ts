@@ -6,6 +6,7 @@ import {
 	marksReady,
 	openFiles,
 	progress,
+	sideBySide,
 	tapHeight,
 	tapWidth,
 } from "./files-ui";
@@ -597,6 +598,110 @@ test("phone: a short changed block (a table's header row) grows only to its targ
 	await expect(since.getByTestId("md-doc")).toBeVisible(GIT_WAIT);
 	await check(since, "class");
 	await shot(since, "md-short-block-since");
+});
+
+test("phone: side by side shows old and new rendered in two columns, the controls in a row above, never scrolling the page; full diff and since view (CAR-167)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the phone's side by side");
+	await page.setViewportSize({ width: 360, height: 780 });
+	const wide = (cell: string) =>
+		`\n| a | b |\n|---|---|\n| ${cell} | 2 |\n\n\`\`\`\n${"long_code_line_".repeat(20)}\n\`\`\`\n\nSee https://example.com/${"very-long-path-segment-".repeat(8)} here.\n`;
+	const p = await pr({
+		base: { [README]: `${BASE}${wide("short")}` },
+		files: [
+			{
+				message: "wide",
+				files: { [README]: `${PS1}${wide("wide-cell-".repeat(20))}` },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const bounds = async (l: Locator) => {
+		const b = await l.boundingBox();
+		if (!b) throw new Error("not shown");
+		return b;
+	};
+	const check = async (section: Locator, text: string) => {
+		const row = block(section, text);
+		await expect(row).toHaveCount(1);
+		const oldCol = row.locator('.md-body[data-col="old"]');
+		const newCol = row.locator('.md-body[data-col="new"]');
+		await expect(oldCol.locator("del.md-del")).toBeVisible();
+		await expect(newCol.locator("ins.md-ins")).toBeVisible();
+		await expect(oldCol.locator("ins")).toHaveCount(0);
+		await expect(newCol.locator("del")).toHaveCount(0);
+		await expect(section.locator('[data-col="doc"]')).toHaveCount(0);
+		await row.scrollIntoViewIfNeeded();
+		const o = await bounds(oldCol);
+		const n = await bounds(newCol);
+		const c = await bounds(row.locator(".md-controls"));
+		// Two columns of one width, side by side; the controls above them.
+		expect(n.x).toBeGreaterThanOrEqual(o.x + o.width - 0.5);
+		expect(Math.abs(o.width - n.width)).toBeLessThanOrEqual(1);
+		expect(o.y).toBeGreaterThanOrEqual(c.y + c.height - 0.5);
+		for (const t of [
+			row.getByTestId("cluster-box-target"),
+			row.getByRole("button", { name: "Cross off cluster" }),
+			row.getByTestId("md-comment"),
+		]) {
+			expect(await tapHeight(t)).toBeGreaterThanOrEqual(40);
+			expect(await tapWidth(t)).toBeGreaterThanOrEqual(40);
+		}
+		// Wide content (a table, a code fence, a long URL) scrolls inside its
+		// column, never widening it or the page.
+		const spill = await section
+			.locator(".md-body[data-col]")
+			.evaluateAll(
+				(cols) =>
+					cols.filter((col) => col.scrollWidth > col.clientWidth + 1).length,
+			);
+		expect(spill).toBe(0);
+		await expectNoPageOverflow(page);
+		const box = row.getByRole("checkbox", { name: "Mark cluster reviewed" });
+		await box.click();
+		await expect(box).toBeChecked();
+		await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	};
+
+	const section = await openRendered(page);
+	await check(section, "Intro");
+	await shot(section, "md-sbs-phone-full");
+
+	await marksReady(page, section);
+	await section
+		.getByRole("button", { name: "Mark remaining reviewed" })
+		.click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({
+		message: "again",
+		files: { [README]: `${PS2}${wide("wide-cell-".repeat(20))}` },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, README);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	await expect(since.getByTestId("md-doc")).toBeVisible(GIT_WAIT);
+	await check(since, "Intro");
+	await shot(since, "md-sbs-phone-since");
 });
 
 test("the since view: one box per piece on its block; a tick in Rendered is the same piece's tick in Text", async ({

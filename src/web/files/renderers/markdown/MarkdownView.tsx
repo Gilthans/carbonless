@@ -174,7 +174,10 @@ export function MarkdownView(props: {
 	});
 	const ignoreWs = ignoreWhitespace.use();
 	const wide = useMedia(NOT_PHONE);
-	const split = props.sideBySide && wide;
+	// Side by side on every width, as the line view is (the owner,
+	// 2026-11-24); on a phone the controls take a row of their own.
+	const split = props.sideBySide;
+	const narrow = split && !wide;
 	const pending = hunks.isPending || (count > 0 && context.isPending);
 	const error = hunks.error ?? (count > 0 ? context.error : null);
 	// The review's files as the images read them: a new list every mark
@@ -369,7 +372,7 @@ export function MarkdownView(props: {
 					)
 					.join(" ");
 	// biome-ignore lint/correctness/useExhaustiveDependencies: these change the rendered tables.
-	useLayoutEffect(realign, [base, rowsKey, open, split, realign]);
+	useLayoutEffect(realign, [base, rowsKey, open, split, narrow, realign]);
 	const ready = model !== null && model !== "failed";
 	useEffect(() => {
 		const el = root.current;
@@ -976,7 +979,10 @@ export function MarkdownView(props: {
 	/**
 	 * A row's cells. Unified: the gutter, then the body on its bar. Side by
 	 * side (desktop): each column its own gutter and body, the gutter's
-	 * boxes on the new column, a removal's (no new column) on the old.
+	 * boxes on the new column, a removal's (no new column) on the old. Side
+	 * by side on a phone: the gutter and the chips in a slim row of their
+	 * own above the pair (as the line view's BubbleRow keeps bubbles off its
+	 * narrow cells), then the two columns at full width.
 	 */
 	const cells = (o: {
 		gutter: ReactNode;
@@ -1003,6 +1009,29 @@ export function MarkdownView(props: {
 		}
 		const left = o.left ?? null;
 		const right = o.right ?? null;
+		if (narrow) {
+			const controls = o.gutter || o.top;
+			return (
+				<>
+					{controls && (
+						<div
+							className="md-controls"
+							data-col="controls"
+							data-side={o.onOld ? "old" : "new"}
+						>
+							{o.gutter}
+							{o.top}
+						</div>
+					)}
+					<div className={tone(left !== null)} data-col="old">
+						{left}
+					</div>
+					<div className={tone(right !== null)} data-col="new">
+						{right}
+					</div>
+				</>
+			);
+		}
 		return (
 			<>
 				<div className="md-gutter" data-col="old">
@@ -1022,7 +1051,11 @@ export function MarkdownView(props: {
 			</>
 		);
 	};
-	const rowClass = split ? "md-row md-split" : "md-row";
+	const rowClass = narrow
+		? "md-row md-split md-narrow"
+		: split
+			? "md-row md-split"
+			: "md-row";
 
 	const rowMarks = (key: string) => ({
 		"data-row": key,
