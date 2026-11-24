@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { bumpHomePr, homePr } from "../../../test/fake-gh/scenario";
+import { bumpHomePr, homePr, release } from "../../../test/fake-gh/scenario";
 import {
 	createHomeFixture,
 	type HomeFixture,
 } from "../../../test/home-fixture";
 import {
+	DETAILS_BATCH,
 	DETAILS_MAX_AGE_MS,
+	FIRST_BATCH,
 	fetchPrDetails,
 	fetchRepoPrs,
 	fetchViewer,
@@ -336,6 +338,90 @@ describe("fetchRepoPrs never drops a PR it knew", () => {
 		});
 		expect(none.map((p) => p.number)).toEqual([1]);
 		expect(fresh).toEqual([2]);
+	});
+});
+
+describe("fetchRepoPrs, progressively (CAR-290)", () => {
+	const open = (n: number) =>
+		homePr({
+			repo: "acme/api",
+			number: n,
+			author: "alice",
+			// #1 newest.
+			updatedAt: iso(NOW - n * 1000),
+		});
+
+	it("reads details newest updatedAt first, open and closed together", async () => {
+		const closed = (n: number, at: number) =>
+			homePr({
+				repo: "acme/api",
+				number: n,
+				author: "a",
+				state: "MERGED",
+				closedAt: iso(at),
+				updatedAt: iso(at),
+			});
+		// Two open pages (5 a page) and closed PRs between them by updatedAt.
+		fx = createHomeFixture({
+			repos: {
+				"acme/api": {
+					prs: [
+						...Array.from({ length: 12 }, (_, i) => open(i + 1)),
+						closed(900, NOW - 2500),
+						closed(901, NOW - 11_500),
+					],
+				},
+			},
+			homePageSize: 5,
+		});
+		const got = await fetchRepoPrs("acme", "api", SINCE, { now: NOW });
+		expect(got.map((p) => p.number)).toEqual([
+			1, 2, 900, 3, 4, 5, 6, 7, 8, 9, 10, 11, 901, 12,
+		]);
+	});
+
+	it("shows the batches as they land, in order: a later one waits for an earlier one", async () => {
+		// Batches: 10 (#1-10), 20 (#11-30), 20 (#31-50), 20 (#51-70), 5.
+		expect([FIRST_BATCH, DETAILS_BATCH]).toEqual([10, 20]);
+		fx = createHomeFixture({
+			repos: {
+				"acme/api": { prs: Array.from({ length: 75 }, (_, i) => open(i + 1)) },
+			},
+			hold: ["homePr:11", "homePr:51"],
+		});
+		const cost = newCost();
+		const shown: number[][] = [];
+		const reading = fetchRepoPrs("acme", "api", SINCE, {
+			now: NOW,
+			cost,
+			onProgress: (prs) => shown.push(prs.map((p) => p.number)),
+		});
+		const range = (from: number, to: number) =>
+			Array.from({ length: to - from + 1 }, (_, i) => from + i);
+		// The list and the first, third and fifth batches have answered (the
+		// second and fourth are held): only the first shows.
+		await vi.waitFor(() => expect(cost.calls).toBe(4), { timeout: 20_000 });
+		expect(shown).toEqual([range(1, 10)]);
+		release(fx.path, "homePr:11");
+		await vi.waitFor(() => expect(shown).toHaveLength(2), { timeout: 20_000 });
+		expect(shown[1]).toEqual(range(1, 50));
+		release(fx.path, "homePr:51");
+		const got = await reading;
+		expect(got.map((p) => p.number)).toEqual(range(1, 75));
+		// The last batch is the answer itself, never a progress.
+		expect(shown).toHaveLength(2);
+		// One list call, five detail batches: every call counted.
+		expect(cost).toMatchObject({ calls: 6, points: 6 });
+	});
+
+	it("without onProgress, batches stay DETAILS_BATCH (no extra call)", async () => {
+		fx = createHomeFixture({
+			repos: {
+				"acme/api": { prs: Array.from({ length: 40 }, (_, i) => open(i + 1)) },
+			},
+		});
+		await fetchRepoPrs("acme", "api", SINCE, { now: NOW });
+		expect(detailCalls()).toBe(2);
 	});
 });
 

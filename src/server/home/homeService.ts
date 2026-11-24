@@ -148,6 +148,28 @@ interface RepoState {
 	/** The viewer's started reviews of its PRs, as of its last answer. */
 	started: StartedReview[];
 	reading: Promise<void> | null;
+	/**
+	 * Bumped as each batch of a first read lands (RepoHome.progress): an
+	 * ask that has seen this many waits for the next.
+	 */
+	progress: number;
+	/** Resolves at the next bump, or as the read ends. */
+	progressed: Promise<void>;
+	bump: () => void;
+}
+
+/**
+ * A first read's ask that has seen everything so far answers at the next
+ * batch, the read's end, or after this long (the page then asks again).
+ */
+export const PROGRESS_WAIT_MS = 20_000;
+
+function progressGate(): Pick<RepoState, "progressed" | "bump"> {
+	let bump = () => {};
+	const progressed = new Promise<void>((resolve) => {
+		bump = resolve;
+	});
+	return { progressed, bump };
 }
 
 export interface HomeServiceOptions {
@@ -290,6 +312,8 @@ export class HomeService {
 				failures: 0,
 				started: [],
 				reading: null,
+				progress: 0,
+				...progressGate(),
 			};
 			this.#repos.set(name, state);
 		}
@@ -304,11 +328,18 @@ export class HomeService {
 	 * out of knownPrs until saved, and goes KEEP_MS after a save leaves it
 	 * out, or on any ask once read over KEEP_MS ago). GitHub's failures are
 	 * the answer's `error`, never a throw.
+	 *
+	 * A repo never read in full answers as its first read goes (owner,
+	 * 2026-11-24: "as soon as anything is loaded we show it"): at its next
+	 * batch of facts after the `seen` one (RepoHome.progress; none: the
+	 * first), or its end, or PROGRESS_WAIT_MS on, `complete` false until
+	 * the read ends. A repo read before keeps its rows and answers once the
+	 * read is done, as a whole.
 	 */
 	async repo(
 		owner: string,
 		repo: string,
-		opts: { fresh?: boolean } = {},
+		opts: { fresh?: boolean; seen?: number } = {},
 	): Promise<RepoHome> {
 		const name = `${owner}/${repo}`.toLowerCase();
 		const { config } = await this.#config.read();
@@ -333,8 +364,21 @@ export class HomeService {
 		) {
 			state.reading ??= this.#read(name, state).finally(() => {
 				state.reading = null;
+				state.bump();
 			});
-			await state.reading;
+			if (state.listedAt !== undefined) await state.reading;
+			else if (state.progress === (opts.seen ?? 0)) {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				await Promise.race([
+					state.reading,
+					state.progressed,
+					new Promise<void>((resolve) => {
+						timer = setTimeout(resolve, PROGRESS_WAIT_MS);
+						timer.unref?.();
+					}),
+				]);
+				clearTimeout(timer);
+			}
 		}
 		return this.#repoView(name, state);
 	}
@@ -345,25 +389,33 @@ export class HomeService {
 		for (const listener of this.#onRefresh) listener();
 		const [owner = "", repo = ""] = name.split("/");
 		const cost = newCost();
+		// Never read in full: its facts show as they land. A repo read
+		// before keeps its last facts whole until the read is done.
+		const progressive = state.listedAt === undefined;
+		const known = state.facts;
+		// A gate the last read's end left open: this read's asks wait anew.
+		Object.assign(state, progressGate());
 		try {
 			const viewer = await this.#ensureViewer();
 			const teamsError = await this.#ensureTeams(viewer.login, begun);
 			const missing: number[] = [];
 			const prs = await fetchRepoPrs(owner, repo, begun - RECENTLY_CLOSED_MS, {
-				known: state.facts,
+				known,
 				listedSince: state.listedAt,
 				now: begun,
 				cost,
 				missing,
+				...(progressive && {
+					onProgress: (so: PrFacts[]) => {
+						state.facts = this.#known(so, known, begun);
+						state.progress++;
+						const { bump } = state;
+						Object.assign(state, progressGate());
+						bump();
+					},
+				}),
 			});
-			const facts = new Map<number, Known>();
-			for (const pr of prs) {
-				const before = state.facts.get(pr.number);
-				// Kept facts keep the time they were read.
-				const readAt = before && before.facts === pr ? before.readAt : begun;
-				facts.set(pr.number, { facts: pr, readAt });
-			}
-			state.facts = facts;
+			state.facts = this.#known(prs, known, begun);
 			state.listedAt = begun;
 			state.failures = 0;
 			const errors = [
@@ -382,6 +434,23 @@ export class HomeService {
 			state.checkedAt = begun;
 			if (generation === this.#generation) this.lastCost = cost;
 		}
+	}
+
+	/** `prs` by number; kept facts (from `before`) keep the time they were read. */
+	#known(
+		prs: readonly PrFacts[],
+		before: ReadonlyMap<number, Known>,
+		readAt: number,
+	): Map<number, Known> {
+		const facts = new Map<number, Known>();
+		for (const pr of prs) {
+			const k = before.get(pr.number);
+			facts.set(pr.number, {
+				facts: pr,
+				readAt: k && k.facts === pr ? k.readAt : readAt,
+			});
+		}
+		return facts;
 	}
 
 	/**
@@ -427,6 +496,9 @@ export class HomeService {
 				refreshedAt === undefined ? null : new Date(refreshedAt).toISOString(),
 			error: state.error,
 			failures: state.failures,
+			// Never read in full and a read out: more rows are coming.
+			complete: !(state.reading && state.listedAt === undefined),
+			progress: state.progress,
 		};
 	}
 

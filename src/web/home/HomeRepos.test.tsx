@@ -188,6 +188,78 @@ describe("Home's repos", () => {
 		expect(within(section("Mine")).queryByTestId("section-none")).toBeNull();
 	});
 
+	it("a first read still landing: its rows so far show, the chip spins, no counts or none; more come in below, then the counts (CAR-290)", async () => {
+		const more = held();
+		const all = [1, 2, 3, 4].map((n) =>
+			row({
+				number: n,
+				title: `API ${n}`,
+				updatedAt: `2026-10-0${5 - n}T00:00:00Z`,
+			}),
+		);
+		const answer = (rows: typeof all, complete: boolean, progress: number) => ({
+			repo: "acme/api",
+			rows,
+			refreshedAt: complete ? "2026-10-05T00:00:00Z" : null,
+			error: null,
+			failures: 0,
+			complete,
+			progress,
+		});
+		let asked = 0;
+		const api = fakeApi(
+			view({}, { view: { name: "My PRs", repos: ["acme/api"] } }),
+			{
+				"GET /api/home/repos/acme/api": async () => {
+					asked++;
+					if (asked === 1) return answer(all.slice(0, 2), false, 1);
+					await more.gate;
+					return answer(all, true, 1);
+				},
+			},
+		);
+		renderWithQuery(<HomePage />);
+		await waitFor(() => expect(titles("Mine")).toEqual(["API 1", "API 2"]));
+		// More are coming: the chip spins, the sections count nothing yet.
+		expect(chip("acme/api")).toHaveAttribute("data-state", "loading");
+		within(chip("acme/api") as HTMLElement).getByRole("img", {
+			name: "Loading acme/api",
+		});
+		expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
+		for (const name of ["Mine", "Reviewing", "Up for grabs", "Other open"]) {
+			const s = section(name);
+			within(s).getByRole("img", { name: "Loading" });
+			expect(within(s).getByRole("heading").textContent).not.toMatch(/\d/);
+			expect(within(s).queryByTestId("section-none")).toBeNull();
+			expect(within(s).getAllByTestId("row-skeleton").length).toBeGreaterThan(
+				0,
+			);
+		}
+		// The next ask says what it has seen: the server answers at the next batch.
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/api").map((c) => c.url)).toContain(
+				"/api/home/repos/acme/api?seen=1",
+			),
+		);
+		const shown = within(section("Mine")).getAllByTestId("home-row");
+		more.release();
+		await waitFor(() =>
+			expect(titles("Mine")).toEqual(["API 1", "API 2", "API 3", "API 4"]),
+		);
+		// The rows shown before stay put (the same nodes, first), the new ones below.
+		const after = within(section("Mine")).getAllByTestId("home-row");
+		expect(after[0]).toBe(shown[0]);
+		expect(after[1]).toBe(shown[1]);
+		expect(chip("acme/api")).toHaveAttribute("data-state", "ready");
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+		expect(within(section("Mine")).getByRole("heading")).toHaveTextContent(
+			/Mine\s*4/,
+		);
+		expect(screen.queryAllByTestId("row-skeleton")).toHaveLength(0);
+	});
+
 	it("before the view answers: placeholders in every section, no counts", async () => {
 		const gate = held();
 		const api = fakeApi(view(), {

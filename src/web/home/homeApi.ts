@@ -22,18 +22,38 @@ const send = <T>(method: string, path: string, body: unknown) =>
 
 export const fetchHome = () => request<HomeView>("/api/home");
 
-/** One view repo's rows; `fresh`: read from GitHub now (Refresh, Retry). */
+/**
+ * One view repo's rows; `fresh`: read from GitHub now (Refresh, Retry).
+ * `seen`: a first read's progress already shown; the server answers at
+ * its next batch (RepoHome.progress).
+ */
 export const fetchRepo = (
 	name: string,
 	fresh = false,
 	signal?: AbortSignal,
+	seen?: number,
 ) => {
 	const [owner = "", repo = ""] = name.split("/");
+	const query = new URLSearchParams({
+		...(fresh ? { fresh: "1" } : {}),
+		...(seen === undefined ? {} : { seen: String(seen) }),
+	}).toString();
 	return request<RepoHome>(
-		`/api/home/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${fresh ? "?fresh=1" : ""}`,
+		`/api/home/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${query ? `?${query}` : ""}`,
 		signal ? { signal } : undefined,
 	);
 };
+
+/** A repo whose first read is still landing: more rows are coming. */
+export const incomplete = (data: RepoHome | undefined) =>
+	data?.complete === false;
+
+/**
+ * While a repo's first read lands, it is asked again this soon: the
+ * server holds each ask until the next batch is in, so this is the gap
+ * between an answer and the next ask, not a poll's period.
+ */
+export const PROGRESS_POLL_MS = 100;
 
 /** Where a row's PR is in the API and in the cache. */
 export type RowKey = Pick<HomeRow, "owner" | "repo" | "number">;
@@ -88,15 +108,28 @@ export function repoInterval(minutes: number, data: RepoHome | undefined) {
 /**
  * One view repo's rows (owner, 2026-11-01: "Every repo PR list should have
  * its own tanstack query, so it is automatically cached and refreshed"):
- * read again every refresh.minutes and on focus once that old.
+ * read again every refresh.minutes and on focus once that old. While its
+ * first read is landing, asked again at once for each next batch (owner,
+ * 2026-11-24: "as soon as anything is loaded we show it").
  */
 export const repoQuery = (name: string, minutes: number) =>
 	queryOptions({
 		queryKey: repoKey(name),
-		queryFn: () => fetchRepo(name),
+		queryFn: ({ client }) => {
+			const shown = client.getQueryData<RepoHome>(repoKey(name));
+			return fetchRepo(
+				name,
+				false,
+				undefined,
+				incomplete(shown) ? (shown?.progress ?? 0) : undefined,
+			);
+		},
 		staleTime: Math.max(1, minutes) * 60_000,
 		gcTime: REPO_GC_MS,
-		refetchInterval: (query) => repoInterval(minutes, query.state.data),
+		refetchInterval: (query) =>
+			incomplete(query.state.data)
+				? PROGRESS_POLL_MS
+				: repoInterval(minutes, query.state.data),
 		// Back on the page once that old: read again (the app's default is off).
 		refetchOnWindowFocus: true,
 	});

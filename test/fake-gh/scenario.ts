@@ -576,13 +576,15 @@ export function threadComment(c: {
  * `restList` the REST review comments, `comment` a new thread's REST
  * comment, `verdict` a verdict's REST review, `dismiss` a review's REST
  * dismissal, `home` Home's PR list and details queries (a refresh),
- * `home:<owner/repo>` (lowercased) those of that one repo only, `clone`
+ * `home:<owner/repo>` (lowercased) those of that one repo only,
+ * `homePr:<number>` a details query that reads that PR (one batch), `clone`
  * a `gh repo clone` (crb's first clone of a repo).
  */
 export type HoldOp =
 	| "home"
 	| "clone"
 	| `home:${string}`
+	| `homePr:${number}`
 	| "prView"
 	| "threads"
 	| "thread"

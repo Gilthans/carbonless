@@ -24,7 +24,7 @@ import { Settings } from "../Settings";
 import { useOpenShortcutsHelp } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
-import { homeQuery, refetchRepo, repoQuery } from "./homeApi";
+import { homeQuery, incomplete, refetchRepo, repoQuery } from "./homeApi";
 import { OpenBox } from "./OpenBox";
 import { ColumnHeader, Sign } from "./PrRow";
 import { Section } from "./Section";
@@ -44,7 +44,8 @@ const failureOf = (q: RepoResult): string | null =>
 
 /**
  * Where a view repo is: "saving" (added by a save the server hasn't
- * confirmed: nothing is read yet), "loading" (its first read is out),
+ * confirmed: nothing is read yet), "loading" (its first read is out, or
+ * still landing: rows so far show, more are coming),
  * "unread" (it failed and never had a good read: its rows are unknown),
  * "failed" (its last read failed, its rows kept) or "ready".
  */
@@ -56,7 +57,7 @@ function stateOf(query: RepoResult, saved: boolean): RepoState {
 		return saved ? "loading" : "saving";
 	}
 	if (failed) return query.data.refreshedAt === null ? "unread" : "failed";
-	return "ready";
+	return incomplete(query.data) ? "loading" : "ready";
 }
 
 /**
