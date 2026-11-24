@@ -1,4 +1,5 @@
 // pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]
+// pnpm test-profile <server trace dir> [--since 1d] [--top N] [--jaeger]
 // pnpm test-profile [unit run] --write-durations [--force]
 //
 // Summarizes a test run's traces (docs/test-profiling.md). A run is named
@@ -8,17 +9,26 @@
 // `gh run download <id> -n test-traces-e2e -D <dir>`. --jaeger loads it into
 // a local Jaeger (docker) and prints the link. --write-durations writes a
 // unit run's file durations into the list the Vitest sequencer starts
-// the slowest files by (scripts/test-profile/sequencer.mjs).
+// the slowest files by (scripts/test-profile/sequencer.mjs). A crb serve's
+// trace directory ($CRB_TRACE_DIR: no run.json, crb's files) is read as a
+// server: its slowest routes and gh/git calls, over `--since` (30m, 6h,
+// 1d, 2w or a date); it is never packed.
 import { execFileSync } from "node:child_process";
 import { traceRoot } from "../../test/trace-run";
 import { writeDurations } from "./durations";
-import { readRequests, spansOf, viewRun } from "./load";
+import { type OtlpRequest, readRequests, spansOf, viewRun } from "./load";
 import { resolveRun } from "./runs";
 import { DURATIONS_FILE } from "./sequencer.mjs";
+import {
+	formatServer,
+	parseSince,
+	readServerRequests,
+	summarizeServer,
+} from "./server";
 import { formatCompare, formatSummary, summarize } from "./summary";
 
 const USAGE =
-	"usage: pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]\n       pnpm test-profile [unit run] --write-durations [--force]";
+	"usage: pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]\n       pnpm test-profile <server trace dir> [--since 1d] [--top N] [--jaeger]\n       pnpm test-profile [unit run] --write-durations [--force]";
 
 const load = (dir: string) => viewRun(dir);
 
@@ -33,8 +43,15 @@ function sh(cmd: string, args: string[]): string {
 	return execFileSync(cmd, args, { encoding: "utf8" }).trim();
 }
 
-async function jaeger(dir: string): Promise<void> {
-	const spans = spansOf(readRequests(dir));
+interface JaegerView {
+	/** Jaeger's service to search. */
+	service: string;
+	/** Tags to search by, if any. */
+	tags?: Record<string, string>;
+}
+
+async function jaeger(lines: OtlpRequest[], view: JaegerView): Promise<void> {
+	const spans = spansOf(lines);
 	if (spans.length === 0) {
 		console.log("🔎 no spans in this run");
 		return;
@@ -79,7 +96,6 @@ async function jaeger(dir: string): Promise<void> {
 		sh("docker", ["start", JAEGER.name]);
 	}
 	const endpoint = `http://127.0.0.1:${JAEGER.otlp}/v1/traces`;
-	const lines = readRequests(dir);
 	// Up to 50 lines a request; Jaeger's collector may take a moment to listen.
 	for (let i = 0; i < lines.length; i += 50) {
 		const body = JSON.stringify({
@@ -100,13 +116,11 @@ async function jaeger(dir: string): Promise<void> {
 			}
 		}
 	}
-	const run = dir.replace(/^.*\//, "");
 	const start = Math.min(...spans.map((s) => s.startMs)) - 60_000;
 	const end = Math.max(...spans.map((s) => s.endMs)) + 60_000;
-	const service = run.includes("-unit-") ? "vitest" : "e2e";
 	const params = new URLSearchParams({
-		service,
-		tags: JSON.stringify({ "crb.run": run }),
+		service: view.service,
+		...(view.tags ? { tags: JSON.stringify(view.tags) } : {}),
 		start: String(Math.floor(start * 1000)),
 		end: String(Math.ceil(end * 1000)),
 		limit: "1500",
@@ -121,18 +135,22 @@ async function main(argv: string[]): Promise<void> {
 	let run: string | undefined;
 	let compare: string | undefined;
 	let top = 8;
+	let topSet = false;
 	let toJaeger = false;
 	let toDurations = false;
 	let force = false;
+	let since: number | undefined;
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i] as string;
 		if (a === "--compare") compare = argv[++i];
 		else if (a === "--top") {
 			top = Number(argv[++i]);
+			topSet = true;
 			if (!Number.isInteger(top) || top < 1) {
 				throw new Error(`--top takes a count\n${USAGE}`);
 			}
-		} else if (a === "--jaeger") toJaeger = true;
+		} else if (a === "--since") since = parseSince(argv[++i] ?? "");
+		else if (a === "--jaeger") toJaeger = true;
 		else if (a === "--write-durations") toDurations = true;
 		else if (a === "--force") force = true;
 		else if (a === "-h" || a === "--help") {
@@ -144,6 +162,20 @@ async function main(argv: string[]): Promise<void> {
 	const root = traceRoot();
 	const found = resolveRun(root, run ?? (toDurations ? "unit" : undefined));
 	const { dir } = found;
+	if (found.server) {
+		if (toDurations || compare) {
+			throw new Error(
+				`a server's trace directory takes --since, --top, --jaeger\n${USAGE}`,
+			);
+		}
+		const lines = readServerRequests(dir, since);
+		if (toJaeger) await jaeger(lines, { service: "crb" });
+		else {
+			const summary = summarizeServer(spansOf(lines));
+			console.log(formatServer(dir, summary, topSet ? top : 15));
+		}
+		return;
+	}
 	if (toDurations) {
 		const { count, changes } = writeDurations(process.cwd(), load(dir), force);
 		console.log(`⏳ ${count} files from ${found.name} → ${DURATIONS_FILE}`);
@@ -152,7 +184,11 @@ async function main(argv: string[]): Promise<void> {
 	}
 	if (toJaeger) {
 		viewRun(dir); // Packs a finished run first.
-		await jaeger(dir);
+		const run = dir.replace(/^.*\//, "");
+		await jaeger(readRequests(dir), {
+			service: run.includes("-unit-") ? "vitest" : "e2e",
+			tags: { "crb.run": run },
+		});
 		return;
 	}
 	const summary = summarize(load(dir), top);

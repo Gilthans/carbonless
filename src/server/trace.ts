@@ -1,6 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import {
+	appendFileSync,
+	mkdirSync,
+	readdirSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 
 /*
@@ -13,6 +19,13 @@ import { basename, join } from "node:path";
  * Hand-rolled on purpose: crb ships no OpenTelemetry SDK. Test harnesses
  * (Playwright, Vitest) use the same writer. A write that fails is reported
  * once on stderr and tracing stops; it never throws into the caller.
+ *
+ * Spans are written in batches: at 256 waiting, a few seconds after the
+ * first of a batch ends (an unref'd timer: a crash loses seconds at most),
+ * and at exit. A long-running process (crb serve, `rotate()`) rolls its
+ * file at a size limit and at the UTC day change
+ * (`<service>-<pid>-<random>.<yyyymmdd>.<seq>.jsonl`) and prunes the
+ * directory's files of its service by age and total size.
  */
 
 export interface SpanContext {
@@ -76,7 +89,134 @@ export interface Tracer {
 	flush(): void;
 	/** Renames its service, unless it has written already. */
 	name(service: string): void;
+	/**
+	 * Rolls its file by size and day and prunes its service's old files
+	 * (crb serve), from its next write on.
+	 */
+	rotate(options: RotationOptions): void;
 }
+
+/** Rotation and retention of a long-running process's trace files. */
+export interface RotationOptions {
+	/** A file rolls to a new one before it would grow past this. */
+	maxFileBytes: number;
+	/** Files of the service older than this (by mtime) are deleted. */
+	keepDays: number;
+	/** Beyond that, the oldest go while the service's files exceed this. */
+	maxTotalBytes: number;
+}
+
+const MiB = 1024 * 1024;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/*
+ * Defaults. Measured 2026-11-24 on a traced crb serve: ~400 bytes a span,
+ * a few thousand spans an hour of active reviewing, so tens of MB on a busy
+ * day. 32 MiB keeps a file quick to read (and a day usually in one file);
+ * 14 days covers two weeks of RCs to compare; 1 GiB is the hard bound on
+ * disk whatever the traffic.
+ */
+export const DEFAULT_ROTATION: RotationOptions = {
+	maxFileBytes: 32 * MiB,
+	keepDays: 14,
+	maxTotalBytes: 1024 * MiB,
+};
+
+/**
+ * Rotation from $CRB_TRACE_FILE_MB, $CRB_TRACE_KEEP_DAYS and
+ * $CRB_TRACE_MAX_MB; an unset or invalid one keeps its default (tracing
+ * never stops crb from starting).
+ */
+export function rotationFromEnv(
+	env: NodeJS.ProcessEnv = process.env,
+): RotationOptions {
+	const num = (name: string, fallback: number) => {
+		const v = Number(env[name]);
+		return env[name]?.trim() && Number.isFinite(v) && v > 0 ? v : fallback;
+	};
+	return {
+		maxFileBytes: Math.round(
+			num("CRB_TRACE_FILE_MB", DEFAULT_ROTATION.maxFileBytes / MiB) * MiB,
+		),
+		keepDays: num("CRB_TRACE_KEEP_DAYS", DEFAULT_ROTATION.keepDays),
+		maxTotalBytes: Math.round(
+			num("CRB_TRACE_MAX_MB", DEFAULT_ROTATION.maxTotalBytes / MiB) * MiB,
+		),
+	};
+}
+
+/** The file-name start of `service`'s files. */
+const fileService = (service: string) => service.replace(/[^\w.-]/g, "_");
+
+/** Whether `name` is a trace file `service` wrote (rotated or not). */
+export function isServiceFile(service: string, name: string): boolean {
+	const s = fileService(service).replace(/[.]/g, "\\.");
+	return new RegExp(`^${s}-\\d+-[0-9a-f]+(?:\\.\\d{8}\\.\\d+)?\\.jsonl$`).test(
+		name,
+	);
+}
+
+/**
+ * Deletes `service`'s trace files in `dir` older than `keepDays`, then the
+ * oldest while they total more than `maxTotalBytes`; never `keep` (the
+ * file being written). Other files (another service's, a test run's) are
+ * left alone. Never throws; returns the names deleted.
+ */
+export function pruneTraces(
+	dir: string,
+	service: string,
+	options: RotationOptions,
+	nowMs = Date.now(),
+	keep?: string,
+): string[] {
+	const deleted: string[] = [];
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch {
+		return deleted;
+	}
+	const files: { name: string; size: number; mtimeMs: number }[] = [];
+	for (const name of names) {
+		if (!isServiceFile(service, name)) continue;
+		try {
+			const st = statSync(join(dir, name));
+			if (st.isFile()) files.push({ name, size: st.size, mtimeMs: st.mtimeMs });
+		} catch {
+			// Gone meanwhile.
+		}
+	}
+	files.sort((a, b) => a.mtimeMs - b.mtimeMs || (a.name < b.name ? -1 : 1));
+	const drop = (name: string) => {
+		try {
+			rmSync(join(dir, name), { force: true });
+			deleted.push(name);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	const cutoff = nowMs - options.keepDays * DAY_MS;
+	let total = 0;
+	const left: typeof files = [];
+	for (const f of files) {
+		if (f.mtimeMs < cutoff && join(dir, f.name) !== keep && drop(f.name)) {
+			continue;
+		}
+		left.push(f);
+		total += f.size;
+	}
+	for (const f of left) {
+		if (total <= options.maxTotalBytes) break;
+		if (join(dir, f.name) === keep) continue;
+		if (drop(f.name)) total -= f.size;
+	}
+	return deleted;
+}
+
+/** The UTC day of `ms`, as yyyymmdd. */
+const utcDay = (ms: number) =>
+	new Date(ms).toISOString().slice(0, 10).replace(/-/g, "");
 
 const NOOP_SPAN: Span = {
 	context: null,
@@ -95,6 +235,7 @@ const DISABLED: Tracer = {
 	root: () => NOOP_SPAN,
 	flush() {},
 	name() {},
+	rotate() {},
 };
 
 /** A W3C traceparent header for `context`. */
@@ -175,6 +316,8 @@ const hex = (bytes: number) => randomBytes(bytes).toString("hex");
 
 /** Buffered spans are written once this many wait (and at exit). */
 const FLUSH_AT = 256;
+/** …and this long after the first of them ended. */
+export const FLUSH_AFTER_MS = 2000;
 
 export interface TracerOptions {
 	/** Where the file goes; no tracing when unset or empty. */
@@ -189,6 +332,12 @@ export interface TracerOptions {
 	flushOnExit?: boolean;
 	/** Where the one write failure goes (default stderr). */
 	warn?: (message: string) => void;
+	/** Writes waiting spans this long after the first (default 2 s; 0: never by time). */
+	flushAfterMs?: number;
+	/** Rolls and prunes its files (as `rotate()` does). */
+	rotation?: RotationOptions;
+	/** Epoch milliseconds now, for the day and retention (tests). */
+	clock?: () => number;
 }
 
 export function createTracer(opts: TracerOptions): Tracer {
@@ -211,21 +360,57 @@ export function createTracer(opts: TracerOptions): Tracer {
 	let made = false;
 	let root: { span: Span } | null = null;
 
+	const flushAfterMs = opts.flushAfterMs ?? FLUSH_AFTER_MS;
+	const clock = opts.clock ?? Date.now;
+	let rotation = opts.rotation ?? null;
+	let stem = "";
+	let seq = 0;
+	let fileDay = "";
+	let fileBytes = 0;
+	let timer: ReturnType<typeof setTimeout> | null = null;
+
+	// A new file: the first, or the next one of a rotation (then pruned).
+	const open = (now: number) => {
+		if (!made) {
+			mkdirSync(dir, { recursive: true });
+			made = true;
+			stem = `${fileService(service)}-${process.pid}-${hex(3)}`;
+		}
+		fileDay = utcDay(now);
+		fileBytes = 0;
+		if (rotation) {
+			file = join(
+				dir,
+				`${stem}.${fileDay}.${String(seq++).padStart(3, "0")}.jsonl`,
+			);
+			pruneTraces(dir, service, rotation, now, file);
+		} else {
+			file = join(dir, `${stem}.jsonl`);
+		}
+	};
 	const flush = () => {
+		if (timer) {
+			clearTimeout(timer);
+			timer = null;
+		}
 		if (buffer.length === 0) return;
 		const spans = buffer;
 		buffer = [];
 		if (broken) return;
 		try {
-			if (!made) {
-				mkdirSync(dir, { recursive: true });
-				made = true;
-				file = join(
-					dir,
-					`${service.replace(/[^\w.-]/g, "_")}-${process.pid}-${hex(3)}.jsonl`,
-				);
+			const line = `${otlpLine(service, resource, spans)}\n`;
+			const bytes = Buffer.byteLength(line);
+			const now = clock();
+			if (
+				!file ||
+				(rotation &&
+					(utcDay(now) !== fileDay ||
+						(fileBytes > 0 && fileBytes + bytes > rotation.maxFileBytes)))
+			) {
+				open(now);
 			}
-			appendFileSync(file, `${otlpLine(service, resource, spans)}\n`);
+			appendFileSync(file, line);
+			fileBytes += bytes;
 		} catch (error) {
 			broken = true;
 			warn(
@@ -234,8 +419,13 @@ export function createTracer(opts: TracerOptions): Tracer {
 		}
 	};
 	const push = (span: RecordedSpan) => {
+		if (broken) return;
 		buffer.push(span);
 		if (buffer.length >= FLUSH_AT) flush();
+		else if (!timer && flushAfterMs > 0) {
+			timer = setTimeout(flush, flushAfterMs);
+			timer.unref?.();
+		}
 	};
 	const current = () =>
 		store.getStore() ?? defaultParent ?? (root ? null : envParent);
@@ -297,6 +487,11 @@ export function createTracer(opts: TracerOptions): Tracer {
 		flush,
 		name(name) {
 			if (!made) service = name;
+		},
+		rotate(options) {
+			// The file named before rotation ends here.
+			if (!rotation) file = "";
+			rotation = options;
 		},
 	};
 	if (opts.flushOnExit !== false) {

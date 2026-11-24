@@ -176,7 +176,7 @@ export function compactRun(
 	try {
 		mtime = statSync(dir).mtime;
 		for (const f of readdirSync(dir)) {
-			const plain = /-(\d+)-[0-9a-f]+\.jsonl$/.exec(f);
+			const plain = /-(\d+)-[0-9a-f]+(?:\.\d{8}\.\d+)?\.jsonl$/.exec(f);
 			if (plain) {
 				if (!isAlive(Number(plain[1]))) claim(f, f);
 				continue;
