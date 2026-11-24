@@ -307,4 +307,20 @@ describe("file-level changes between patch sets (CAR-297)", () => {
 			"new.dat gone unreviewed 0",
 		]);
 	});
+	it("a rename since is the rename carry's, no piece; a mode changed with it is a piece without the rename", async () => {
+		const v = await sinceView([
+			{ message: "base", files: { "a.txt": "a\n" } },
+			{ message: "ps1", files: { "x.sh": "echo\n", "y.sh": "echo y\n" } },
+			{
+				message: "ps2",
+				files: {},
+				rename: { "x.sh": "x2.sh", "y.sh": "y2.sh" },
+				chmod: { "y2.sh": "755" },
+			},
+		]);
+		expect(v.hunks("x2.sh").pieces ?? []).toEqual([]);
+		expect(v.hunks("y2.sh").pieces?.map((p) => p.file)).toEqual([
+			"Mode changed 100644 → 100755",
+		]);
+	});
 });

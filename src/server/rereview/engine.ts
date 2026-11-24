@@ -1082,6 +1082,10 @@ function withFileLevel(
 ): FileHunks {
 	const level = file?.clusters.find((c) => c.kind === "file");
 	if (!file || !level?.label) return hunks;
+	// A rename since is the rename carry's (a file the interdiff only
+	// renames is one whole-file gap): only what else changed is a piece.
+	const label = withoutRename(level.label, file);
+	if (!label) return hunks;
 	const kinds = new Map(entry.clusters.map((c) => [c.key, c.kind]));
 	const shown = targetClusters.some((c) => {
 		const kind = kinds.get(c.key);
@@ -1105,9 +1109,21 @@ function withFileLevel(
 		kind: targetClusters.some((c) => c.kind === "file")
 			? "removed"
 			: "reverted",
-		file: level.label,
+		file: label,
 	};
 	return { ...hunks, pieces: [piece, ...(hunks.pieces ?? [])] };
+}
+
+/**
+ * A file-level label (fileLevelCluster's) without its "Renamed from …"
+ * part, the next part capitalised as the first; "" when that was all.
+ */
+function withoutRename(label: string, file: InterdiffFile): string {
+	if (file.status !== "renamed" || file.oldPath === undefined) return label;
+	const rename = `Renamed from ${file.oldPath}`;
+	if (!label.startsWith(rename)) return label;
+	const rest = label.slice(rename.length).replace(/^, /, "");
+	return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 
 /** A line of the since view no piece shows and nothing carried (CAR-216): where it goes, as a row. */
