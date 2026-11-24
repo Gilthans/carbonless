@@ -14,7 +14,10 @@ test.use({ crbServer: "own" });
  * in a thread card stays out of the code lines on touch.
  */
 
-const BODY = "Is **total** right?";
+/** As written on github.com: two lines, CRLF (the textarea copy turns it into LF). */
+const BODY = "Is **total** right?\r\nOr just v1 + v2.";
+const COPIED = BODY.replace(/\r\n/g, "\n");
+const SHOWN = "Is total right?\nOr just v1 + v2.";
 const ANSWER = "Yes: it adds **v1 and v2**.";
 
 async function setup(pr: (opts?: PrOptions) => Promise<Pr>): Promise<Pr> {
@@ -27,9 +30,9 @@ async function setup(pr: (opts?: PrOptions) => Promise<Pr>): Promise<Pr> {
 			reviewThread({ path: CALC, line: 3, subjectType: "LINE" }, [
 				threadComment({
 					login: "rev1",
-					text: "Is total right?",
+					text: SHOWN,
 					body: BODY,
-					html: '<p dir="auto">Is <strong>total</strong> right?</p>',
+					html: '<p dir="auto">Is <strong>total</strong> right?<br>\nOr just v1 + v2.</p>',
 					createdAt: "2026-01-02T09:00:00Z",
 					commit: head,
 					diffHunk:
@@ -145,7 +148,7 @@ test("on a phone, a long press on a GitHub comment and on an agent answer copies
 	await installClock(page);
 	const thread = await filesThread(page, s.url);
 	const comment = thread.getByTestId("thread-comment-body").first();
-	await expect(comment).toHaveText("Is total right?");
+	await expect(comment).toHaveText(/^Is total right\?\s*Or just v1 \+ v2\.$/);
 	await setClipboard(page, "before");
 	await pause(page);
 
@@ -165,7 +168,7 @@ test("on a phone, a long press on a GitHub comment and on an agent answer copies
 			.getByRole("menuitem", { name: "Copied" })
 			.locator(".octicon-check"),
 	).toBeVisible();
-	await expect.poll(() => clipboard(page)).toBe(BODY);
+	await expect.poll(() => clipboard(page)).toBe(COPIED);
 	await page.clock.fastForward(COPIED_MS);
 	await expect(menu(page)).toHaveCount(0);
 
@@ -190,9 +193,9 @@ test("on a phone, a long press on a GitHub comment and on an agent answer copies
 	await expect(failed.locator(".octicon-x")).toBeVisible();
 	await page.clock.fastForward(COPIED_MS * 2);
 	await expect(failed).toBeVisible();
-	expect(await page.evaluate(() => document.getSelection()?.toString())).toBe(
-		"Is total right?",
-	);
+	expect(
+		await page.evaluate(() => document.getSelection()?.toString()),
+	).toMatch(/^Is total right\?\s*Or just v1 \+ v2\.$/);
 	expect(await clipboard(page)).toBe("before");
 	await page.keyboard.press("Escape");
 	await expect(menu(page)).toHaveCount(0);
@@ -220,14 +223,14 @@ test("on a phone, a long press on a GitHub comment and on an agent answer copies
 	await menu(page).getByRole("menuitem", { name: "Copy message" }).click();
 	await expect.poll(() => clipboard(page)).toBe(ANSWER);
 
-	// Select text: the whole message selected, for the browser's own handles.
+	// Select text: the word under the finger selected, for the phone's own handles.
 	await page.clock.fastForward(COPIED_MS);
 	const question = panel.getByTestId("agent-message-human");
 	await longPress(page, question);
 	await menu(page).getByRole("menuitem", { name: "Select text" }).click();
 	await expect(menu(page)).toHaveCount(0);
 	expect(await page.evaluate(() => document.getSelection()?.toString())).toBe(
-		"Does it add everything?",
+		"Does",
 	);
 });
 

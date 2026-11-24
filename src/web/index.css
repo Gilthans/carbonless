@@ -250,6 +250,17 @@ table[data-selecting="new"] td[data-side="LEFT"] {
 }
 
 /*
+ * A message under a resting finger (longPress.ts, CAR-280): the browser's
+ * own long press can't select a word or show its callout there, so the
+ * long press opens the message's menu alone.
+ */
+[data-pressing] {
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+}
+
+/*
  * On touch, a text selection begun in a card under a line (DiffBody's
  * `data-card-selecting`) stays in the cards: the table's own cells can't be
  * selected, the cards' contents can. Dragging a handle past the card no

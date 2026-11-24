@@ -11,8 +11,15 @@ import {
  * (messageCopy.tsx). No JSX here, so e2e specs can read its timings.
  */
 
-/** How long a finger rests on a message before its menu opens. */
-export const LONG_PRESS_MS = 500;
+/**
+ * How long a finger rests on a message before its menu opens: Android's
+ * own long press (its system timeout, 400 ms since Android 12), and
+ * before iOS's text long press (~500 ms). Ours comes first or together;
+ * while a finger rests, the message can't be selected anyway
+ * (`data-pressing`), and Android's contextmenu, if it comes first, opens
+ * ours at once.
+ */
+export const LONG_PRESS_MS = 400;
 /** How far the finger may move and still be a press (not a scroll or a drag). */
 export const PRESS_SLOP = 8;
 /** How long "Copied" shows before the menu goes. */
@@ -55,9 +62,10 @@ export function selectedIn(el: HTMLElement): boolean {
  * link or a control inside (they keep their own press), not by a second
  * finger (a pinch), and not while the reader has text selected in it (a
  * long press there is the browser's own, to adjust the selection). The
- * browser's long press (Android's contextmenu, which would select a word)
- * on the same press is cancelled, and opens the menu at once if it comes
- * first; the click a lifted finger may send is swallowed.
+ * browser's long press on the same press can't select (`data-pressing`)
+ * and its contextmenu (Android) is cancelled, opening the menu at once if
+ * it comes first; the click a lifted finger may send right after is
+ * swallowed (none comes on a phone: any next press clears it).
  */
 export function useLongPress(onPress: (p: Press) => void): PressHandlers {
 	const press = useRef<{
@@ -73,7 +81,10 @@ export function useLongPress(onPress: (p: Press) => void): PressHandlers {
 	const latest = useRef(onPress);
 	latest.current = onPress;
 	const end = useCallback(() => {
-		if (press.current) clearTimeout(press.current.timer);
+		const p = press.current;
+		if (!p) return;
+		clearTimeout(p.timer);
+		p.el.removeAttribute("data-pressing");
 		press.current = null;
 	}, []);
 	useEffect(() => end, [end]);
@@ -86,6 +97,10 @@ export function useLongPress(onPress: (p: Press) => void): PressHandlers {
 	}, []);
 	return {
 		onPointerDown: (e) => {
+			// Any new press: the click a fired press left to swallow never
+			// came (phones send none after a long press), and this press's
+			// own click goes through.
+			swallow.current = false;
 			// A second finger: a pinch, not a press.
 			if (press.current) return end();
 			if (e.pointerType !== "touch") return;
@@ -93,7 +108,10 @@ export function useLongPress(onPress: (p: Press) => void): PressHandlers {
 			if (target?.closest(OWN_PRESS)) return;
 			const el = e.currentTarget;
 			if (selectedIn(el)) return;
-			swallow.current = false;
+			// While the finger rests, the browser's own long press can't
+			// select a word or bring its callout here (index.css); back on
+			// lift, cancel or a move, not on firing: iOS's comes after ours.
+			el.setAttribute("data-pressing", "");
 			press.current = {
 				id: e.pointerId,
 				x: e.clientX,

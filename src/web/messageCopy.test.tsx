@@ -144,6 +144,51 @@ describe("useLongPress", () => {
 		expect(fireEvent.click(el)).toBe(true);
 	});
 
+	it("a long press no click followed never eats the next tap on a link or a button inside", () => {
+		const onPress = vi.fn();
+		render(<Pressable onPress={onPress} />);
+		const el = screen.getByTestId("msg");
+		// As on a phone: a long press is never followed by a click.
+		down(el);
+		act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+		fireEvent.pointerUp(el, { pointerId: 1 });
+		const link = screen.getByRole("link");
+		down(link);
+		fireEvent.pointerUp(link, { pointerId: 1 });
+		expect(fireEvent.click(link)).toBe(true);
+		// The same with a mouse click on a button.
+		down(el);
+		act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+		fireEvent.pointerUp(el, { pointerId: 1 });
+		const button = screen.getByRole("button");
+		down(button, { pointerType: "mouse" });
+		expect(fireEvent.click(button)).toBe(true);
+	});
+
+	it("while a finger rests on it, the browser can't start its own selection or callout there; lifting, a cancel or a move puts them back", () => {
+		render(<Pressable onPress={() => {}} />);
+		const el = screen.getByTestId("msg");
+		// index.css: [data-pressing] can't be selected, and has no callout.
+		const armed = () => el.hasAttribute("data-pressing");
+		down(el);
+		expect(armed()).toBe(true);
+		// Kept through the fire, until the finger lifts (iOS's own long
+		// press comes after ours).
+		act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+		expect(armed()).toBe(true);
+		fireEvent.pointerUp(el, { pointerId: 1 });
+		expect(armed()).toBe(false);
+		down(el);
+		fireEvent.pointerCancel(el, { pointerId: 1 });
+		expect(armed()).toBe(false);
+		down(el);
+		fireEvent.pointerMove(el, { pointerId: 1, clientX: 140, clientY: 200 });
+		expect(armed()).toBe(false);
+		// A mouse arms nothing.
+		down(el, { pointerType: "mouse" });
+		expect(armed()).toBe(false);
+	});
+
 	it("leaves the press to the browser while text is selected in the message", () => {
 		const onPress = vi.fn();
 		render(<Pressable onPress={onPress} />);
@@ -200,15 +245,65 @@ describe("useMessageCopy", () => {
 		expect(document.getSelection()?.toString()).toBe("Rendered text");
 	});
 
-	it("Select text selects the whole message and closes", () => {
+	it("Select text selects the word under the finger, for the phone's own handles, and closes", () => {
+		render(<Message text="x" />);
+		const word = screen.getByText("text").firstChild as Text;
+		const at = vi.fn(() => {
+			const r = document.createRange();
+			r.setStart(word, 2);
+			return r;
+		});
+		Object.assign(document, { caretRangeFromPoint: at });
+		try {
+			open();
+			fireEvent.click(screen.getByRole("menuitem", { name: "Select text" }));
+			expect(at).toHaveBeenCalledWith(100, 200);
+			expect(screen.queryByRole("menu")).toBeNull();
+			expect(document.getSelection()?.toString()).toBe("text");
+		} finally {
+			Reflect.deleteProperty(document, "caretRangeFromPoint");
+		}
+	});
+
+	it("Select text selects the whole message when no word is under the finger", () => {
 		render(<Message text="x" />);
 		open();
 		fireEvent.click(screen.getByRole("menuitem", { name: "Select text" }));
-		expect(screen.queryByRole("menu")).toBeNull();
 		expect(document.getSelection()?.toString()).toBe("Rendered text");
 	});
 
-	it("closes on Escape, a tap elsewhere and a scroll; a tap inside keeps it", () => {
+	it("gives the focus back to where it was (a reply being written) when it closes", () => {
+		render(
+			<>
+				<textarea aria-label="Reply" />
+				<Message text="x" />
+			</>,
+		);
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		box.focus();
+		open();
+		expect(
+			screen.getByRole("menuitem", { name: "Copy message" }),
+		).toHaveFocus();
+		fireEvent.keyDown(document, { key: "Escape" });
+		expect(box).toHaveFocus();
+	});
+
+	it("stays while content scrolls by itself (a growing answer re-pinned); a scroll by the reader closes it", () => {
+		render(<Message text="x" />);
+		open();
+		fireEvent.scroll(window);
+		expect(screen.getByRole("menu")).toBeTruthy();
+		fireEvent.wheel(document.body);
+		fireEvent.scroll(window);
+		expect(screen.queryByRole("menu")).toBeNull();
+		open();
+		fireEvent.touchMove(document.body);
+		fireEvent.scroll(window);
+		expect(screen.queryByRole("menu")).toBeNull();
+	});
+
+	it("closes on Escape, a tap elsewhere and a scroll by the reader; a tap inside keeps it", () => {
 		render(<Message text="x" />);
 		open();
 		fireEvent.keyDown(document, { key: "Escape" });
@@ -219,6 +314,7 @@ describe("useMessageCopy", () => {
 		fireEvent.pointerDown(document.body);
 		expect(screen.queryByRole("menu")).toBeNull();
 		open();
+		fireEvent.keyDown(document, { key: "PageDown" });
 		fireEvent.scroll(window);
 		expect(screen.queryByRole("menu")).toBeNull();
 	});

@@ -74,11 +74,80 @@ export function menuPlace(
 	return { left, top };
 }
 
+/** The caret's place at a viewport point, by whichever API the browser has. */
+function caretAt(x: number, y: number): { node: Node; offset: number } | null {
+	const d = document as Document & {
+		caretPositionFromPoint?: (
+			x: number,
+			y: number,
+		) => { offsetNode: Node; offset: number } | null;
+		caretRangeFromPoint?: (x: number, y: number) => Range | null;
+	};
+	if (typeof d.caretPositionFromPoint === "function") {
+		const p = d.caretPositionFromPoint(x, y);
+		if (p) return { node: p.offsetNode, offset: p.offset };
+	}
+	if (typeof d.caretRangeFromPoint === "function") {
+		const r = d.caretRangeFromPoint(x, y);
+		if (r) return { node: r.startContainer, offset: r.startOffset };
+	}
+	return null;
+}
+
+/**
+ * The word of `el` at a viewport point, as a range: in the text node the
+ * caret lands in there, the word segment holding it (Intl.Segmenter, any
+ * script). Null where there is none (a space, an image, outside `el`).
+ */
+export function wordAt(el: HTMLElement, x: number, y: number): Range | null {
+	const at = caretAt(x, y);
+	if (!at || at.node.nodeType !== Node.TEXT_NODE || !el.contains(at.node)) {
+		return null;
+	}
+	const text = at.node.textContent ?? "";
+	if (typeof Intl.Segmenter !== "function") return null;
+	const words = new Intl.Segmenter(undefined, { granularity: "word" });
+	for (const seg of words.segment(text)) {
+		const end = seg.index + seg.segment.length;
+		if (at.offset < seg.index || at.offset > end) continue;
+		// On a boundary the word after wins; a space or a mark is none.
+		if (at.offset === end && end < text.length) continue;
+		if (!seg.isWordLike) return null;
+		const range = document.createRange();
+		range.setStart(at.node, seg.index);
+		range.setEnd(at.node, end);
+		return range;
+	}
+	return null;
+}
+
+/**
+ * Select text: the word under the finger, so the phone shows its own
+ * handles to widen it (as its long press would have); the whole message
+ * where no word is there.
+ */
+function selectFrom(at: Press) {
+	const selection = document.getSelection();
+	if (!selection) return;
+	const word = wordAt(at.el, at.x, at.y);
+	if (word) {
+		selection.removeAllRanges();
+		selection.addRange(word);
+	} else {
+		selection.selectAllChildren(at.el);
+	}
+}
+
+/** What a reader does to scroll: a scroll after one of these is theirs. */
+const READER_SCROLLS = ["wheel", "touchmove", "keydown"] as const;
+
 /**
  * The menu a long press opened: Copy message, Select text. Fixed by the
  * finger, over the page for as long as it is open: a tap elsewhere, a
- * scroll or Escape closes it. In the message's modal dialog when it is in
- * one (the rest of the page is inert there).
+ * scroll by the reader (not one the content makes, a growing answer
+ * re-pinned) or Escape closes it, and the focus goes back where it was.
+ * In the message's modal dialog when it is in one (the rest of the page
+ * is inert there).
  */
 function MessageMenu(props: { at: Press; text: string; onClose: () => void }) {
 	const { at, text, onClose } = props;
@@ -90,6 +159,16 @@ function MessageMenu(props: { at: Press; text: string; onClose: () => void }) {
 	const [copied, setCopied] = useState<Copied>(null);
 	const latestClose = useRef(onClose);
 	latestClose.current = onClose;
+	// Where the focus was (a reply being written): back there on close,
+	// unless the menu left a selection to keep (Select text, Copy failed).
+	useLayoutEffect(() => {
+		const back = document.activeElement;
+		return () => {
+			if (!(back instanceof HTMLElement) || !back.isConnected) return;
+			if (selectedIn(at.el)) return;
+			back.focus({ preventScroll: true });
+		};
+	}, [at]);
 	useLayoutEffect(() => {
 		const el = menu.current;
 		if (!el) return;
@@ -114,22 +193,30 @@ function MessageMenu(props: { at: Press; text: string; onClose: () => void }) {
 			e.stopPropagation();
 			close();
 		};
-		// Its own target: while it is up, a long press never brings the
-		// browser's callout over it (iOS).
-		const prior = at.el.style.getPropertyValue("-webkit-touch-callout");
-		at.el.style.setProperty("-webkit-touch-callout", "none");
+		let byReader = false;
+		const reader = (e: Event) => {
+			if (e instanceof KeyboardEvent && e.key === "Escape") return;
+			byReader = true;
+		};
+		const scrolled = () => {
+			if (byReader) close();
+		};
+		const opts = { capture: true, passive: true } as const;
 		document.addEventListener("pointerdown", outside, true);
 		document.addEventListener("keydown", onKey, true);
-		window.addEventListener("scroll", close, { capture: true, passive: true });
+		for (const t of READER_SCROLLS) window.addEventListener(t, reader, opts);
+		window.addEventListener("scroll", scrolled, opts);
 		window.addEventListener("resize", close);
 		return () => {
-			at.el.style.setProperty("-webkit-touch-callout", prior);
 			document.removeEventListener("pointerdown", outside, true);
 			document.removeEventListener("keydown", onKey, true);
-			window.removeEventListener("scroll", close, { capture: true });
+			for (const t of READER_SCROLLS) {
+				window.removeEventListener(t, reader, opts);
+			}
+			window.removeEventListener("scroll", scrolled, opts);
 			window.removeEventListener("resize", close);
 		};
-	}, [at]);
+	}, []);
 	useEffect(() => {
 		if (copied !== "ok") return;
 		const timer = setTimeout(() => latestClose.current(), COPIED_MS);
@@ -167,7 +254,7 @@ function MessageMenu(props: { at: Press; text: string; onClose: () => void }) {
 				type="button"
 				role="menuitem"
 				onClick={() => {
-					document.getSelection()?.selectAllChildren(at.el);
+					selectFrom(at);
 					onClose();
 				}}
 				className={ITEM}
