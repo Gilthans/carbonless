@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { PrOverview } from "../shared/types.js";
 import { headAsOf } from "./asOf.js";
-import { GhError, WriteRefusedError } from "./errors.js";
+import { GhError, UnresolvedError, WriteRefusedError } from "./errors.js";
 import { mapOverview } from "./overview.js";
 import { type HeadSpec, needsCommentPages, pickHead } from "./pinnedHead.js";
 import { slugify } from "./slug.js";
@@ -2013,11 +2013,10 @@ export async function postThread(
 				);
 			}
 			if (/could not be resolved/i.test(a.message)) {
-				return new WriteRefusedError(
+				return new UnresolvedError(
 					place.subject === "file"
 						? "GitHub's diff doesn't have this file"
 						: "GitHub's diff doesn't have these lines",
-					"gone",
 				);
 			}
 			return null;

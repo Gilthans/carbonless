@@ -18,3 +18,14 @@ export class WriteRefusedError extends GhError {
 		super(message);
 	}
 }
+
+/**
+ * GitHub's 422 "could not be resolved" on a new thread: its diff hasn't
+ * the lines (or file) asked for. "gone", told apart from other refusals
+ * (a 404) by its kind (CAR-293).
+ */
+export class UnresolvedError extends WriteRefusedError {
+	constructor(message: string) {
+		super(message, "gone");
+	}
+}
