@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app";
 import {
+	BROWSER_SERVICE,
+	Budgets,
 	FUTURE_MS,
 	MAX_ATTRS,
 	MAX_SPANS,
@@ -43,6 +45,8 @@ describe("readBatch", () => {
 		const batch = readBatch({ spans: [span()], sentAt: NOW }, NOW);
 		expect(batch).toEqual({
 			dropped: 0,
+			doc: null,
+			lost: 0,
 			spans: [
 				{
 					name: "browser.fetch",
@@ -52,6 +56,7 @@ describe("readBatch", () => {
 					endMs: NOW - 50,
 					attrs: { api: "/api/r/:id/review", status: 200 },
 					kind: "client",
+					service: BROWSER_SERVICE,
 				},
 			],
 		});
@@ -253,6 +258,46 @@ describe("readBatch", () => {
 		expect(attrs.ok).toBe(true);
 	});
 
+	it("after a sleep (the page's clock stood still for an hour) the page is placed again", () => {
+		const clocks = new PageClocks();
+		// Before: the page's clock was right.
+		readBatch({ spans: [span()], sentAt: NOW - 5, doc: TRACE }, NOW, clocks);
+		expect(clocks.offset(TRACE)).toBe(5);
+		// An hour later by the server; the page's clock lags an hour. Its
+		// /review request reached the server 3 ms after the page started it.
+		const later = NOW + 3_600_000;
+		const lag = 3_600_000;
+		const fetchStart = later - lag - 2000;
+		clocks.arrived("0011223344556677", fetchStart + lag + 3);
+		const [s] =
+			readBatch(
+				{
+					spans: [span({ startMs: fetchStart, endMs: fetchStart + 40 })],
+					// Sent 10 ms before it arrived.
+					sentAt: later - lag - 10,
+					doc: TRACE,
+				},
+				later,
+				clocks,
+			)?.spans ?? [];
+		// Moved by the hour: its server child (at arrival) lands inside it.
+		expect(s?.startMs).toBe(fetchStart + lag + 3);
+		expect(s?.endMs).toBeGreaterThanOrEqual(fetchStart + lag + 3);
+	});
+
+	it("a malformed doc or a non-finite sentAt leaves the clocks alone", () => {
+		const clocks = new PageClocks();
+		for (const body of [
+			{ spans: [span()], sentAt: NOW - 50_000, doc: "nope" },
+			{ spans: [span()], sentAt: Number.POSITIVE_INFINITY, doc: TRACE },
+			{ spans: [span()], sentAt: "soon", doc: TRACE },
+		]) {
+			const [s] = readBatch(body, NOW, clocks)?.spans ?? [];
+			expect(s?.startMs).toBe(NOW - 100);
+		}
+		expect(clocks.offset(TRACE)).toBeUndefined();
+	});
+
 	it("cuts on code points, never half a surrogate pair", () => {
 		const [s] =
 			readBatch(
@@ -294,19 +339,35 @@ describe("POST /api/trace and the page's meta", () => {
 		rmSync(web, { recursive: true, force: true });
 	});
 
-	const written = () =>
+	interface Written {
+		name: string;
+		traceId: string;
+		spanId: string;
+		parentSpanId?: string;
+		service: string;
+		attributes: { key: string; value: Record<string, unknown> }[];
+	}
+	const written = (): Written[] =>
 		readdirSync(dir).flatMap((f) =>
 			readFileSync(join(dir, f), "utf8")
 				.trim()
 				.split("\n")
-				.flatMap(
-					(line) =>
-						JSON.parse(line).resourceSpans[0].scopeSpans[0].spans as {
-							name: string;
-							traceId: string;
-							spanId: string;
-							parentSpanId?: string;
-						}[],
+				.flatMap((line) =>
+					(
+						JSON.parse(line).resourceSpans as {
+							resource: {
+								attributes: { key: string; value: { stringValue?: string } }[];
+							};
+							scopeSpans: { spans: Omit<Written, "service">[] }[];
+						}[]
+					).flatMap((r) => {
+						const service =
+							r.resource.attributes.find((a) => a.key === "service.name")?.value
+								.stringValue ?? "";
+						return r.scopeSpans.flatMap((sc) =>
+							sc.spans.map((x) => ({ ...x, service })),
+						);
+					}),
 				),
 		);
 	const host = { host: "127.0.0.1" };
@@ -337,6 +398,8 @@ describe("POST /api/trace and the page's meta", () => {
 					},
 				});
 				expect(page.statusCode, url).not.toBe(304);
+				// Fresh each time, yet kept for back/forward (no-store isn't).
+				expect(page.headers["cache-control"], url).toBe("no-cache");
 				expect(page.headers["content-type"], url).toMatch(/text\/html/);
 				expect(page.body, url).toContain(`${TRACE_META}</head>`);
 				expect(page.headers.etag, url).toBeUndefined();
@@ -398,6 +461,10 @@ describe("POST /api/trace and the page's meta", () => {
 			traceId: TRACE,
 			parentSpanId: "8899aabbccddeeff",
 		});
+		// The page's spans are a service of their own beside the server's.
+		expect(new Set(spans.map((x) => x.service))).toEqual(
+			new Set([BROWSER_SERVICE]),
+		);
 	});
 
 	it("caps the spans a minute it keeps (429 past it)", async () => {
@@ -408,7 +475,7 @@ describe("POST /api/trace and the page's meta", () => {
 		let now = NOW;
 		registerBrowserTrace(app, tracer, {
 			now: () => now,
-			budget: new SpanBudget(3, 60_000),
+			budget: new Budgets(new SpanBudget(3, 60_000)),
 		});
 		const post = (n: number) =>
 			app.inject({
@@ -429,6 +496,65 @@ describe("POST /api/trace and the page's meta", () => {
 		} finally {
 			await app.close();
 		}
+	});
+
+	it("caps one page load apart: a tab in a loop can't starve the others", async () => {
+		vi.stubEnv("CRB_TRACE_BROWSER", "1");
+		const tracer = createTracer({ dir, service: "crb", flushOnExit: false });
+		const { default: Fastify } = await import("fastify");
+		const app = Fastify();
+		registerBrowserTrace(app, tracer, {
+			now: () => NOW,
+			budget: new Budgets(
+				new SpanBudget(100, 60_000),
+				() => new SpanBudget(2, 60_000),
+			),
+		});
+		const post = (doc: string) =>
+			app.inject({
+				method: "POST",
+				url: "/api/trace",
+				payload: { doc, spans: [span(), span({ spanId: "2".repeat(16) })] },
+			});
+		try {
+			expect((await post("a".repeat(32))).statusCode).toBe(200);
+			expect((await post("a".repeat(32))).statusCode).toBe(429);
+			expect((await post("b".repeat(32))).statusCode).toBe(200);
+		} finally {
+			await app.close();
+		}
+	});
+
+	it("what the page says it lost (turned away) is one span, so the gap shows", async () => {
+		vi.stubEnv("CRB_TRACE_BROWSER", "1");
+		const tracer = createTracer({ dir, service: "crb", flushOnExit: false });
+		const { default: Fastify } = await import("fastify");
+		const app = Fastify();
+		registerBrowserTrace(app, tracer, { now: () => NOW });
+		try {
+			const res = await app.inject({
+				method: "POST",
+				url: "/api/trace",
+				payload: { doc: TRACE, dropped: 37, spans: [] },
+			});
+			expect(res.statusCode).toBe(200);
+			// Nonsense counts are no count.
+			for (const dropped of [-1, 1.5, "9", 1e300]) {
+				await app.inject({
+					method: "POST",
+					url: "/api/trace",
+					payload: { doc: TRACE, dropped, spans: [] },
+				});
+			}
+		} finally {
+			await app.close();
+		}
+		const lost = written().filter((x) => x.name === "browser.dropped");
+		expect(lost).toHaveLength(1);
+		expect(lost[0]).toMatchObject({ traceId: TRACE, service: BROWSER_SERVICE });
+		expect(lost[0]?.attributes).toEqual([
+			{ key: "count", value: { intValue: 37 } },
+		]);
 	});
 
 	it("not tracing: no meta, no route", async () => {

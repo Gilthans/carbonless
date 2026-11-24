@@ -50,8 +50,12 @@ export interface TraceEnv {
 	now(): number;
 	/** `bytes` random bytes as hex. */
 	randomHex(bytes: number): string;
-	/** Posts a batch's JSON; `final` when the page goes away (a beacon). */
-	send(body: string, final: boolean): void;
+	/**
+	 * Posts a batch's JSON (`count` spans in it). `beacon`: the page may be
+	 * going away (hidden, or leaving): a beacon or a keepalive POST, which
+	 * outlive it. `refused(count)` when the server turned it away (429).
+	 */
+	send(body: string, beacon: boolean, refused: (count: number) => void): void;
 	setTimer(fn: () => void, ms: number): unknown;
 	/** Whether the page is hidden now (document.visibilityState). */
 	hidden(): boolean;
@@ -172,6 +176,10 @@ export class Collector {
 	#pageKey: string;
 	#pages = 0;
 	#lcp: number | null = null;
+	/** How often the page was hidden: a request across one says so. */
+	#hides = 0;
+	/** The page's late milestones are no longer looked for (given up). */
+	#lateClosed = false;
 	#lcpSent = false;
 
 	constructor(env: TraceEnv, path: string) {
@@ -188,10 +196,12 @@ export class Collector {
 	}
 
 	#newPage(path: string, start: number, extra?: Attrs): Page {
+		this.#lateClosed = false;
 		const { route, review } = routeOf(path);
 		// Pages after the document's first are SPA moves: the app's shell
-		// (its header) is already up, so they aggregate apart.
-		const spa = this.#pages++ > 0;
+		// (its header) is already up, so they aggregate apart (a page back
+		// from the back-forward cache is `restored`, not a move).
+		const spa = this.#pages++ > 0 && !extra?.restored;
 		return {
 			spanId: this.#env.randomHex(8),
 			start,
@@ -233,7 +243,7 @@ export class Collector {
 		this.#pending.push(span);
 		this.#timer ??= this.#env.setTimer(() => {
 			this.#timer = null;
-			this.flush(false);
+			this.flush();
 		}, FLUSH_MS);
 	}
 
@@ -313,7 +323,9 @@ export class Collector {
 
 	/** The page's visibility changed: a page ever hidden says so. */
 	visibility(): void {
-		if (this.#env.hidden()) this.#page.hidden = true;
+		if (!this.#env.hidden()) return;
+		this.#page.hidden = true;
+		this.#hides++;
 	}
 
 	/**
@@ -382,7 +394,7 @@ export class Collector {
 		);
 		if (how === "complete") {
 			this.#sendLcp();
-			this.flush(false);
+			this.flush();
 		}
 	}
 
@@ -429,6 +441,9 @@ export class Collector {
 		const parent = after ? null : this.#page.spanId;
 		const spanId = this.#env.randomHex(8);
 		const start = this.#env.now();
+		// Hidden at any point from its start to its end, as pages are.
+		const hiddenAtStart = this.#env.hidden();
+		const hides = this.#hides;
 		const attrs: Attrs = {
 			"http.method": verb,
 			...apiRoute(url),
@@ -441,7 +456,8 @@ export class Collector {
 		const finish = () => {
 			if (done) return;
 			done = true;
-			if (this.#env.hidden()) attrs.hidden = true;
+			if (hiddenAtStart || this.#hides !== hides || this.#env.hidden())
+				attrs.hidden = true;
 			this.span(
 				"browser.fetch",
 				start,
@@ -476,17 +492,40 @@ export class Collector {
 		};
 	}
 
+	/** The server turned `count` spans away: the next batch says so. */
+	lost(count: number): void {
+		this.#dropped += count;
+	}
+
+	/** Whether the page's late milestones are still looked for. */
+	get lateOpen(): boolean {
+		return !this.#lateClosed;
+	}
+
 	/**
-	 * Sends what waits, in batches; `final` (the page goes away) ends the
-	 * page and sends its LCP first, in beacon-sized batches.
+	 * Gives the page up (PAGE_GIVE_UP_MS): its span ends `abandoned`, and
+	 * its late milestones aren't looked for any more.
 	 */
-	flush(final: boolean): void {
-		if (final) {
+	giveUp(): void {
+		this.endPage("abandoned");
+		this.#lateClosed = true;
+	}
+
+	/**
+	 * Sends what waits, in batches. `plain`: the page's life (plain
+	 * POSTs). `hidden`: the tab is hidden and may be closed without another
+	 * event: beacon-sized batches that outlive it, the page left open.
+	 * `final`: the page goes away: it ends, its LCP is sent, then as
+	 * `hidden`.
+	 */
+	flush(mode: "plain" | "hidden" | "final" = "plain"): void {
+		if (mode === "final") {
 			this.endPage("left");
 			this.#sendLcp();
 		}
+		const beacon = mode !== "plain";
 		while (this.#pending.length > 0) {
-			const spans = this.#pending.splice(0, final ? BEACON_BATCH : BATCH);
+			const spans = this.#pending.splice(0, beacon ? BEACON_BATCH : BATCH);
 			const body: WireBatch = {
 				spans,
 				sentAt: this.#epoch(this.#env.now()),
@@ -496,7 +535,7 @@ export class Collector {
 				body.dropped = this.#dropped;
 				this.#dropped = 0;
 			}
-			this.#env.send(JSON.stringify(body), final);
+			this.#env.send(JSON.stringify(body), beacon, (n) => this.lost(n));
 		}
 	}
 }

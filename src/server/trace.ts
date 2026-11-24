@@ -60,6 +60,11 @@ export interface RecordedSpan {
 	attrs?: Attrs;
 	error?: string;
 	kind?: SpanKind;
+	/**
+	 * Another service.name for it than the tracer's (the page's spans:
+	 * `crb-browser`), the rest of the resource the same.
+	 */
+	service?: string;
 }
 
 export type SpanKind = "internal" | "server" | "client";
@@ -306,36 +311,44 @@ function otlpAttrs(attrs: Attrs | undefined) {
 	return out;
 }
 
-/** One ExportTraceServiceRequest line of `spans` from `service`. */
+/**
+ * One ExportTraceServiceRequest line of `spans` from `service`: one
+ * resource per service, a span's own (`service`) apart.
+ */
 export function otlpLine(
 	service: string,
 	resource: Attrs,
 	spans: RecordedSpan[],
 ): string {
+	const groups = new Map<string, RecordedSpan[]>();
+	for (const s of spans) {
+		const name = s.service ?? service;
+		const group = groups.get(name);
+		if (group) group.push(s);
+		else groups.set(name, [s]);
+	}
 	return JSON.stringify({
-		resourceSpans: [
-			{
-				resource: {
-					attributes: otlpAttrs({ "service.name": service, ...resource }),
-				},
-				scopeSpans: [
-					{
-						scope: { name: "carbonless" },
-						spans: spans.map((s) => ({
-							traceId: s.context.traceId,
-							spanId: s.context.spanId,
-							...(s.parent ? { parentSpanId: s.parent.spanId } : {}),
-							name: s.name,
-							kind: KIND[s.kind ?? "internal"],
-							startTimeUnixNano: toNanos(s.startMs),
-							endTimeUnixNano: toNanos(s.endMs),
-							attributes: otlpAttrs(s.attrs),
-							...(s.error ? { status: { code: 2, message: s.error } } : {}),
-						})),
-					},
-				],
+		resourceSpans: [...groups].map(([name, group]) => ({
+			resource: {
+				attributes: otlpAttrs({ "service.name": name, ...resource }),
 			},
-		],
+			scopeSpans: [
+				{
+					scope: { name: "carbonless" },
+					spans: group.map((s) => ({
+						traceId: s.context.traceId,
+						spanId: s.context.spanId,
+						...(s.parent ? { parentSpanId: s.parent.spanId } : {}),
+						name: s.name,
+						kind: KIND[s.kind ?? "internal"],
+						startTimeUnixNano: toNanos(s.startMs),
+						endTimeUnixNano: toNanos(s.endMs),
+						attributes: otlpAttrs(s.attrs),
+						...(s.error ? { status: { code: 2, message: s.error } } : {}),
+					})),
+				},
+			],
+		})),
 	});
 }
 

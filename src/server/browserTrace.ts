@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import {
 	type Attrs,
@@ -53,8 +54,14 @@ export const SKEW_MS = 30;
 /** Pages (documents) whose clock offset is kept, and requests' arrivals. */
 export const CLOCK_PAGES = 256;
 export const CLOCK_ARRIVALS = 4096;
+/** How long a page's best clock offset holds before a new one replaces it. */
+export const CLOCK_TTL_MS = 60_000;
+/** The page's spans' own service.name in the trace files. */
+export const BROWSER_SERVICE = "crb-browser";
 /** The most spans a minute the route keeps (several tabs, a page in a loop). */
 export const RATE_SPANS = 3000;
+/** The most spans a minute from one page load (one tab can't starve the rest). */
+export const RATE_DOC_SPANS = 1500;
 export const RATE_WINDOW_MS = 60_000;
 
 const TRACE_ID = /^[0-9a-f]{32}$/;
@@ -105,7 +112,7 @@ class Lru<V> {
  * seconds never moves spans that a quick request already placed.
  */
 export class PageClocks {
-	#offsets = new Lru<number>(CLOCK_PAGES);
+	#offsets = new Lru<{ best: number; at: number }>(CLOCK_PAGES);
 	#arrivals = new Lru<number>(CLOCK_ARRIVALS);
 
 	/** A request carrying the page's span `spanId` arrived at `at`. */
@@ -118,16 +125,25 @@ export class PageClocks {
 		return this.#arrivals.get(spanId);
 	}
 
-	/** Takes an estimate for page `doc`; its best offset so far. */
-	estimate(doc: string, offset: number): number {
-		const best = Math.min(this.#offsets.get(doc) ?? offset, offset);
-		this.#offsets.set(doc, best);
-		return best;
+	/**
+	 * Takes an estimate for page `doc` at the server's `now`; its best
+	 * offset. The best holds CLOCK_TTL_MS from when it was seen: after
+	 * that any estimate replaces it, so a clock that steps (a device that
+	 * slept: the page's monotonic clock stood still; the server's NTP) is
+	 * placed again within a minute instead of never.
+	 */
+	estimate(doc: string, offset: number, now: number): number {
+		const held = this.#offsets.get(doc);
+		if (!held || offset < held.best || now - held.at > CLOCK_TTL_MS) {
+			this.#offsets.set(doc, { best: offset, at: now });
+			return offset;
+		}
+		return held.best;
 	}
 
 	/** The best offset known for page `doc`. */
 	offset(doc: string): number | undefined {
-		return this.#offsets.get(doc);
+		return this.#offsets.get(doc)?.best;
 	}
 }
 
@@ -153,6 +169,10 @@ export interface Batch {
 	spans: RecordedSpan[];
 	/** Spans the batch had that weren't kept (bad, unknown, over the cap). */
 	dropped: number;
+	/** The page load it came from (its `doc`), when valid. */
+	doc: string | null;
+	/** Spans the page says it lost before (the server turned them away). */
+	lost: number;
 }
 
 /**
@@ -175,17 +195,18 @@ export function readBatch(
 		}
 	}
 	if (typeof value !== "object" || value === null) return null;
-	const { spans, sentAt, doc } = value as {
+	const { spans, sentAt, doc, dropped } = value as {
 		spans?: unknown;
 		sentAt?: unknown;
 		doc?: unknown;
+		dropped?: unknown;
 	};
 	if (!Array.isArray(spans)) return null;
 	const page = id(doc, TRACE_ID);
 	let shift = 0;
 	if (page) {
 		if (typeof sentAt === "number" && Number.isFinite(sentAt)) {
-			clocks.estimate(page, now - sentAt);
+			clocks.estimate(page, now - sentAt, now);
 		}
 		for (const raw of spans.slice(0, MAX_SPANS)) {
 			const s = raw as Record<string, unknown> | null;
@@ -194,7 +215,7 @@ export function readBatch(
 			const spanId = id(s.spanId, SPAN_ID);
 			const at = spanId ? clocks.arrival(spanId) : undefined;
 			if (at !== undefined && Number.isFinite(s.startMs)) {
-				clocks.estimate(page, at - s.startMs);
+				clocks.estimate(page, at - s.startMs, now);
 			}
 		}
 		const best = clocks.offset(page) ?? 0;
@@ -229,9 +250,14 @@ export function readBatch(
 				? { error: text(s.error) }
 				: {}),
 			kind: s.name === "browser.fetch" ? "client" : "internal",
+			service: BROWSER_SERVICE,
 		});
 	}
-	return { spans: out, dropped: spans.length - out.length };
+	const lost =
+		typeof dropped === "number" && Number.isSafeInteger(dropped) && dropped > 0
+			? Math.min(dropped, 1_000_000)
+			: 0;
+	return { spans: out, dropped: spans.length - out.length, doc: page, lost };
 }
 
 /** Whether the page records spans: the server traces, and they aren't turned off. */
@@ -280,6 +306,28 @@ export class SpanBudget {
 	}
 }
 
+/** The global budget, and one per page load under it. */
+export class Budgets {
+	#docs = new Lru<SpanBudget>(CLOCK_PAGES);
+	constructor(
+		readonly global: SpanBudget = new SpanBudget(),
+		readonly perDoc: () => SpanBudget = () =>
+			new SpanBudget(RATE_DOC_SPANS, RATE_WINDOW_MS),
+	) {}
+	/** Takes `n` spans of page `doc` (null: the global budget alone). */
+	take(doc: string | null, n: number, now: number): boolean {
+		if (doc) {
+			let mine = this.#docs.get(doc);
+			if (!mine) {
+				mine = this.perDoc();
+				this.#docs.set(doc, mine);
+			}
+			if (!mine.take(n, now)) return false;
+		}
+		return this.global.take(n, now);
+	}
+}
+
 async function readAll(payload: unknown): Promise<string | null> {
 	if (typeof payload === "string") return payload;
 	if (Buffer.isBuffer(payload)) return payload.toString("utf8");
@@ -305,10 +353,10 @@ async function readAll(payload: unknown): Promise<string | null> {
 export function registerBrowserTrace(
 	app: FastifyInstance,
 	traced: Tracer,
-	opts: { now?: () => number; budget?: SpanBudget; clocks?: PageClocks } = {},
+	opts: { now?: () => number; budget?: Budgets; clocks?: PageClocks } = {},
 ): void {
 	const now = opts.now ?? Date.now;
-	const budget = opts.budget ?? new SpanBudget();
+	const budget = opts.budget ?? new Budgets();
 	const clocks = opts.clocks ?? new PageClocks();
 	app.addHook("onRequest", async (request) => {
 		// A page a browser kept from before tracing has no meta: while
@@ -333,7 +381,9 @@ export function registerBrowserTrace(
 		reply.removeHeader("content-length");
 		reply.removeHeader("etag");
 		reply.removeHeader("last-modified");
-		reply.header("cache-control", "no-store");
+		// Always asked anew (its meta current), yet kept for back/forward:
+		// no-store would keep it out of the back-forward cache.
+		reply.header("cache-control", "no-cache");
 		return html.replace("</head>", `${TRACE_META}</head>`);
 	});
 	app.post("/api/trace", { bodyLimit: BODY_LIMIT }, async (request, reply) => {
@@ -342,11 +392,23 @@ export function registerBrowserTrace(
 		if (!batch) {
 			return reply.status(400).send({ error: "Not a batch of spans" });
 		}
-		if (!budget.take(batch.spans.length, at)) {
+		if (!budget.take(batch.doc, batch.spans.length, at)) {
 			return reply.status(429).send({ error: "Too many spans" });
 		}
 		for (const span of batch.spans) traced.record(span);
-		if (batch.spans.length > 0) traced.flush();
+		// What the page lost before (turned away): one span, so the gap shows.
+		if (batch.lost > 0 && batch.doc) {
+			traced.record({
+				name: "browser.dropped",
+				context: { traceId: batch.doc, spanId: randomBytes(8).toString("hex") },
+				parent: null,
+				startMs: at,
+				endMs: at,
+				attrs: { count: batch.lost },
+				service: BROWSER_SERVICE,
+			});
+		}
+		if (batch.spans.length > 0 || batch.lost > 0) traced.flush();
 		return { kept: batch.spans.length, dropped: batch.dropped };
 	});
 }

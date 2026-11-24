@@ -31,7 +31,7 @@ const LATE: Record<string, string> = { files: "browser.ui.diff_rows" };
 export function watching(trace: Collector): boolean {
 	if (trace.pageOpen) return true;
 	const late = LATE[trace.page.route];
-	return late !== undefined && !trace.reached(late);
+	return late !== undefined && trace.lateOpen && !trace.reached(late);
 }
 
 /** Checks the page's milestones against `root`; ends the page once its last is in. */

@@ -23,7 +23,7 @@ function setup(path: string) {
 		checkMilestones(root, trace);
 	};
 	const spans = () => {
-		trace.flush(false);
+		trace.flush();
 		return sent;
 	};
 	const at = (name: string) =>

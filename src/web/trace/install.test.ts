@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Collector, type TraceEnv, type WireSpan } from "./collector";
+import {
+	Collector,
+	PAGE_GIVE_UP_MS,
+	type TraceEnv,
+	type WireSpan,
+} from "./collector";
 import {
 	apiPath,
 	type Installed,
@@ -26,7 +31,7 @@ function collector() {
 	return {
 		trace,
 		spans: () => {
-			trace.flush(false);
+			trace.flush();
 			return sent;
 		},
 	};
@@ -113,18 +118,19 @@ describe("installBrowserTrace", () => {
 	it("an error in its own code turns tracing off, never the page's", async () => {
 		traced();
 		const history = fakeHistory();
+		const original = window.fetch;
 		installed = installBrowserTrace(history);
+		expect(window.fetch).not.toBe(original);
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.spyOn(installed?.trace as Collector, "route").mockImplementation(() => {
 			throw new Error("boom");
 		});
-		const wrapped = window.fetch;
 		expect(() => history.move("/settings")).not.toThrow();
 		expect(installed?.on).toBe(false);
 		expect(installed?.observing).toBe(false);
 		expect(warn).toHaveBeenCalled();
-		// fetch is the page's own again, and still works.
-		expect(window.fetch).not.toBe(wrapped);
+		// fetch is exactly the page's own again, and still works.
+		expect(window.fetch).toBe(original);
 		expect(await (await window.fetch("/api/version")).json()).toEqual({});
 	});
 
@@ -166,6 +172,22 @@ describe("installBrowserTrace", () => {
 		expect(never).not.toHaveBeenCalled();
 	});
 
+	it("on Files, given up, the observer detaches though diff rows never came", async () => {
+		vi.useFakeTimers();
+		traced();
+		window.history.replaceState(null, "", `/r/${REV}/files`);
+		installed = installBrowserTrace(fakeHistory());
+		document.body.innerHTML = `<h1 data-testid="header-title">t</h1><section data-file-index="0"></section>`;
+		// A frame's worth: not the give-up's 5 minutes.
+		await vi.advanceTimersByTimeAsync(50);
+		expect(installed?.trace.pageOpen).toBe(false);
+		// Still watching for the late diff rows…
+		expect(installed?.observing).toBe(true);
+		await vi.advanceTimersByTimeAsync(PAGE_GIVE_UP_MS);
+		// …until the page is given up.
+		expect(installed?.observing).toBe(false);
+	});
+
 	it("a batch in the page's life is a plain POST; keepalive and the beacon only when it goes away", () => {
 		traced();
 		const beacon = vi.fn(() => false);
@@ -176,17 +198,88 @@ describe("installBrowserTrace", () => {
 		const post = window.fetch as ReturnType<typeof vi.fn>;
 		installed = installBrowserTrace(fakeHistory());
 		installed?.trace.milestone("browser.ui.home_rows");
-		installed?.trace.flush(false);
+		installed?.trace.flush();
 		const [url, init] = post.mock.calls.at(-1) as [string, RequestInit];
 		expect(url).toBe("/api/trace");
 		expect(init.keepalive).toBeUndefined();
 		expect(beacon).not.toHaveBeenCalled();
-		installed?.trace.flush(true);
+		installed?.trace.flush("final");
 		expect(beacon).toHaveBeenCalled();
 		// The beacon refused (its quota): a keepalive POST instead.
 		expect((post.mock.calls.at(-1) as [string, RequestInit])[1].keepalive).toBe(
 			true,
 		);
+	});
+});
+
+describe("going away", () => {
+	const hide = () => {
+		Object.defineProperty(document, "visibilityState", {
+			configurable: true,
+			get: () => "hidden",
+		});
+		document.dispatchEvent(new Event("visibilitychange"));
+	};
+	const beacons = () => {
+		const sent: string[] = [];
+		Object.defineProperty(navigator, "sendBeacon", {
+			configurable: true,
+			value: (_url: string, body: string) => {
+				sent.push(body);
+				return true;
+			},
+		});
+		return sent;
+	};
+
+	it("hidden then pagehide (a tab closed): what waited goes by beacon at the hide, the page open until pagehide", () => {
+		traced();
+		const sent = beacons();
+		installed = installBrowserTrace(fakeHistory());
+		installed?.trace.milestone("browser.ui.home_rows");
+		hide();
+		const names = () =>
+			sent.flatMap((b) =>
+				(JSON.parse(b).spans as { name: string }[]).map((x) => x.name),
+			);
+		expect(names()).toContain("browser.ui.home_rows");
+		expect(installed?.trace.pageOpen).toBe(true);
+		window.dispatchEvent(new Event("pagehide"));
+		expect(names()).toContain("browser.page");
+	});
+
+	it("a check queued for a frame runs as a task once the tab hides", async () => {
+		vi.useFakeTimers();
+		traced();
+		beacons();
+		const frames = vi.fn();
+		vi.stubGlobal("requestAnimationFrame", frames);
+		window.history.replaceState(null, "", `/r/${REV}/verdict`);
+		installed = installBrowserTrace(fakeHistory());
+		expect(frames).toHaveBeenCalled(); // queued for a frame that never comes
+		document.body.innerHTML = '<h1 data-testid="header-title">t</h1>';
+		hide();
+		// A task's worth: not the give-up's 5 minutes.
+		await vi.advanceTimersByTimeAsync(50);
+		expect(installed?.trace.pageOpen).toBe(false);
+		expect(installed?.trace.reached("browser.ui.header")).toBe(true);
+	});
+
+	it("a batch the server turns away (429) counts as dropped in the next one", async () => {
+		traced();
+		const post = window.fetch as ReturnType<typeof vi.fn>;
+		post.mockImplementation(async () => new Response("{}", { status: 429 }));
+		installed = installBrowserTrace(fakeHistory());
+		installed?.trace.milestone("browser.ui.home_rows");
+		installed?.trace.milestone("browser.ui.home_done");
+		installed?.trace.flush();
+		// The refused answer settles (the mock's promise, then its .then).
+		await new Promise((done) => setTimeout(done, 0));
+		post.mockImplementation(async () => new Response("{}"));
+		installed?.trace.milestone("browser.ui.repo_done");
+		installed?.trace.flush();
+		const last = post.mock.calls.at(-1) as [string, RequestInit];
+		expect(JSON.parse(String(last[1].body)).dropped).toBe(2);
 	});
 });
 

@@ -46,6 +46,16 @@ export function apiPath(
 	return `${url.pathname}${url.search}`;
 }
 
+/** How many spans a batch's JSON holds (for a refused one). */
+function spanCount(body: string): number {
+	try {
+		const spans = (JSON.parse(body) as { spans?: unknown }).spans;
+		return Array.isArray(spans) ? spans.length : 0;
+	} catch {
+		return 0;
+	}
+}
+
 /** Runs tracing's own code; an error in it turns tracing off. */
 export type Guard = <T>(fn: () => T) => T | undefined;
 
@@ -187,16 +197,25 @@ function start(
 		timeOrigin: performance.timeOrigin,
 		now: () => performance.now(),
 		randomHex,
-		send(body, final) {
-			// Keepalive (and beacons, which share its small quota) only when
-			// the page goes away: a batch in the page's life is a plain POST.
-			if (final && navigator.sendBeacon?.(TRACE_URL, body)) return;
+		send(body, beacon, refused) {
+			// A beacon (or keepalive, which shares its small quota) only when
+			// the page may be going away (hidden, leaving): a batch in the
+			// page's life is a plain POST.
+			if (beacon && navigator.sendBeacon?.(TRACE_URL, body)) return;
 			void inner(TRACE_URL, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body,
-				...(final ? { keepalive: true } : {}),
-			}).catch(() => {});
+				...(beacon ? { keepalive: true } : {}),
+			})
+				.then((response) => {
+					// Turned away (the server's span budget): the next batch
+					// says how many, so the gap shows.
+					if (response.status === 429) {
+						guard(() => refused(spanCount(body)));
+					}
+				})
+				.catch(() => {});
 		},
 		setTimer: (fn, ms) => setTimeout(() => guard(fn), ms),
 		hidden: () => document.visibilityState === "hidden",
@@ -245,17 +264,21 @@ function start(
 			clearTimeout(giveUp);
 		}
 	};
+	const run = () => guard(check);
 	const schedule = () => {
 		if (scheduled || !watching(trace)) return;
 		scheduled = true;
-		const run = () => guard(check);
 		if (document.visibilityState === "hidden") setTimeout(run, 0);
 		else requestAnimationFrame(run);
 	};
 	const armGiveUp = () => {
 		clearTimeout(giveUp);
 		giveUp = setTimeout(
-			() => guard(() => trace.endPage("abandoned")),
+			() =>
+				guard(() => {
+					trace.giveUp();
+					detach();
+				}),
 			PAGE_GIVE_UP_MS,
 		);
 	};
@@ -339,14 +362,19 @@ function start(
 	else listen(window, "load", afterLoad);
 	listen(document, "visibilitychange", () => {
 		trace.visibility();
-		if (document.visibilityState === "hidden") trace.flush(false);
+		if (document.visibilityState !== "hidden") return;
+		// A check queued for a frame waits for none now: run it as a task.
+		if (scheduled) setTimeout(run, 0);
+		// The tab may be closed with no other event: what waits goes out
+		// in a way that outlives it; the page itself stays open.
+		trace.flush("hidden");
 	});
 	listen(window, "pagehide", () => {
 		if (!navigated) {
 			navigated = true;
 			navigation();
 		}
-		trace.flush(true);
+		trace.flush("final");
 	});
 	// Back from the back-forward cache: a page of its own, watched anew.
 	listen(window, "pageshow", (event) => {

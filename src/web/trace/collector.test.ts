@@ -106,7 +106,7 @@ describe("Collector", () => {
 		f.at(400);
 		c.navigation({ type: "navigate", responseStart: 12.4, loadEventEnd: 250 });
 		c.endPage("complete");
-		c.flush(false);
+		c.flush();
 		const spans = f.spans();
 		const by = (name: string) => spans.filter((s) => s.name === name);
 		const [nav] = by("browser.navigation");
@@ -162,7 +162,7 @@ describe("Collector", () => {
 		f.at(700);
 		c.milestone("browser.ui.first_file");
 		c.endPage("complete");
-		c.flush(false);
+		c.flush();
 		const pages = f.spans().filter((s) => s.name === "browser.page");
 		expect(pages.map((p) => p.attrs)).toEqual([
 			{ route: "overview", review: REV, complete: false },
@@ -200,7 +200,7 @@ describe("Collector", () => {
 		g.hide(true);
 		const d = new Collector(g.env, "/");
 		d.milestone("browser.ui.home_rows");
-		d.flush(false);
+		d.flush();
 		expect(g.spans()[0]?.attrs).toMatchObject({ hidden: true });
 	});
 
@@ -215,7 +215,7 @@ describe("Collector", () => {
 		c.endPage("abandoned");
 		f.at(PAGE_END + 50);
 		c.milestone("browser.ui.first_file", undefined, undefined, { user: true });
-		c.flush(false);
+		c.flush();
 		const by = (name: string) => f.spans().find((s) => s.name === name);
 		expect(by("browser.ui.diff_rows")?.attrs).toMatchObject({ user: true });
 		expect(by("browser.ui.diff_rows")?.attrs).not.toHaveProperty("late");
@@ -235,7 +235,7 @@ describe("Collector", () => {
 		const c = new Collector(f.env, "/");
 		f.at(PAGE_END);
 		c.endPage("abandoned");
-		c.flush(false);
+		c.flush();
 		expect(f.spans()[0]).toMatchObject({ startMs: ORIGIN, endMs: ORIGIN });
 	});
 
@@ -243,7 +243,7 @@ describe("Collector", () => {
 		const f = fakeEnv();
 		const c = new Collector(f.env, `/r/${REV}`);
 		c.endPage("failed");
-		c.flush(false);
+		c.flush();
 		expect(f.spans()[0]).toMatchObject({
 			name: "browser.page",
 			error: "failed",
@@ -259,12 +259,14 @@ describe("Collector", () => {
 		c.restored("/");
 		expect(c.pageOpen).toBe(true);
 		c.milestone("browser.ui.home_rows");
-		c.flush(false);
+		c.flush();
 		const rows = f.spans().find((s) => s.name === "browser.ui.home_rows");
 		expect(rows).toMatchObject({
 			startMs: ORIGIN + 900,
-			attrs: { restored: true, spa: true },
+			attrs: { restored: true },
 		});
+		// A restore isn't an SPA move: they aggregate apart.
+		expect(rows?.attrs).not.toHaveProperty("spa");
 	});
 
 	it("once the page has ended its reads aren't traced, and a write is a trace of its own", () => {
@@ -276,7 +278,7 @@ describe("Collector", () => {
 		const write = c.fetch("POST", "/api/r/x/state");
 		write?.answered(200);
 		write?.finish();
-		c.flush(false);
+		c.flush();
 		const [span] = f.spans().filter((s) => s.name === "browser.fetch");
 		expect(span?.traceId).not.toBe(c.traceId);
 		expect(span?.parentSpanId).toBeUndefined();
@@ -286,6 +288,58 @@ describe("Collector", () => {
 		expect(f.sent.at(-1)?.body.doc).toBe(c.traceId);
 	});
 
+	it("a request hidden at any point from its start to its end says so", () => {
+		const f = fakeEnv();
+		const c = new Collector(f.env, "/");
+		const across = c.fetch("GET", "/api/home");
+		f.hide(true);
+		c.visibility();
+		f.hide(false);
+		c.visibility();
+		across?.answered(200);
+		across?.finish();
+		const visible = c.fetch("GET", "/api/home");
+		visible?.answered(200);
+		visible?.finish();
+		f.hide(true);
+		const startedHidden = c.fetch("GET", "/api/home");
+		f.hide(false);
+		startedHidden?.answered(200);
+		startedHidden?.finish();
+		c.flush();
+		expect(
+			f
+				.spans()
+				.filter((s) => s.name === "browser.fetch")
+				.map((s) => s.attrs?.hidden ?? false),
+		).toEqual([true, false, true]);
+	});
+
+	it("a hidden flush goes as beacons and leaves the page open; spans turned away count in the next batch", () => {
+		const f = fakeEnv();
+		const c = new Collector(f.env, "/");
+		c.milestone("browser.ui.home_rows");
+		c.flush("hidden");
+		expect(f.sent.map((s) => s.final)).toEqual([true]);
+		expect(c.pageOpen).toBe(true);
+		c.lost(7);
+		c.milestone("browser.ui.home_done");
+		c.flush();
+		expect(f.sent.at(-1)?.body.dropped).toBe(7);
+		expect(f.sent.at(-1)?.final).toBe(false);
+	});
+
+	it("given up, a page's late milestones aren't looked for; a new page looks again", () => {
+		const f = fakeEnv();
+		const c = new Collector(f.env, `/r/${REV}/files`);
+		expect(c.lateOpen).toBe(true);
+		c.giveUp();
+		expect(c.lateOpen).toBe(false);
+		expect(c.pageOpen).toBe(false);
+		c.route(`/r/${REV}`);
+		expect(c.lateOpen).toBe(true);
+	});
+
 	it("a failed request is a span with its error", () => {
 		const f = fakeEnv();
 		const c = new Collector(f.env, "/");
@@ -293,7 +347,7 @@ describe("Collector", () => {
 		f.at(10);
 		req?.answered(null, "network error");
 		req?.painted(); // after it is recorded: no change
-		c.flush(false);
+		c.flush();
 		const [s] = f.spans();
 		expect(s).toMatchObject({ name: "browser.fetch", error: "network error" });
 		expect(s?.attrs).not.toHaveProperty("painted_ms");
@@ -307,7 +361,7 @@ describe("Collector", () => {
 		c.layoutShift(160, 0.3);
 		c.endPage("left");
 		c.longTask(300, 90); // after: not the load's
-		c.flush(false);
+		c.flush();
 		const names = f.spans().map((s) => s.name);
 		expect(names).toEqual([
 			"browser.longtask",
@@ -332,7 +386,7 @@ describe("Collector", () => {
 		f.sent.length = 0;
 		for (let i = 0; i < BEACON_BATCH + 3; i++) c.layoutShift(i, 0.1);
 		f.at(1000);
-		c.flush(true);
+		c.flush("final");
 		expect(f.sent.every((s) => s.final)).toBe(true);
 		expect(f.sent.map((s) => s.body.spans.length)).toEqual([BEACON_BATCH, 5]);
 		const last = f.sent.at(-1);
@@ -366,7 +420,7 @@ describe("Collector", () => {
 		const f = fakeEnv();
 		const c = new Collector(f.env, "/");
 		for (let i = 0; i < MAX_PENDING + 3; i++) c.longTask(i, 60);
-		c.flush(false);
+		c.flush();
 		expect(f.spans()).toHaveLength(MAX_PENDING);
 		expect(f.sent[0]?.body.dropped).toBe(3);
 	});
