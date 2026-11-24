@@ -72,7 +72,8 @@ export interface AcpScenario {
 	mcp?: {
 		attach?: boolean;
 		replies?: "answer" | "none";
-		tools?: string[];
+		/** A tool by name (called with the token alone), or with its arguments. */
+		tools?: (string | { name: string; args?: Record<string, unknown> })[];
 		detach?: boolean;
 		strayReply?: string;
 		/** false: attaches but never calls next (an agent that ignores crb). */

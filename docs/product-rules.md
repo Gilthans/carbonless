@@ -889,6 +889,42 @@ question would be on someone else's behalf, or about a past moment.
   the request's own thread, and past 25 from one request. A citation in
   the agent's reply (`crb:c/<id>`) links only a conversation of this
   review, labelled by crb, never with an href the agent wrote.
+- **The agent reads the review as the reviewer sees it, and only reads
+  (CAR-182).** crb's MCP `diff`, `file`, `progress` and `review` serve
+  crb's clone and caches, never the reviewer's working copy, the same for
+  a spawned and a joined agent. They write no review mark, agent thread
+  or resolved state. One write can happen, the page's own: building a
+  patch set's snapshot for a read may run the split carry the page runs
+  when it opens that patch set (#carrySplits), which carries the
+  reviewer's own marks on a whole hunk onto its pieces and never marks
+  anything the reviewer didn't; the agent and the page then see the
+  same pieces. `diff` gives the full diff of the review's head, of a
+  patch set, or of the PR's head (`to: "head"`, the page's head dot),
+  and the since view from a patch set (`"last"`: the newest before the
+  compared head, the page's default; `"last"` to `"head"` is what the
+  author pushed since the reviewer's last pass, or, with nothing pushed,
+  an explicit `nothingPushed` and no files, never the last pass itself), with the page's own
+  analysis (whitespace-only lines, paired lines with "Ignore whitespace"
+  off; never a second computation) and file-level changes labelled as
+  crb labels them (a mode, a binary file; in the since view, what changed
+  since). An unchanged file in the since view can still hold lines to
+  read (`progress` says). The since view lists every file the
+  page's since view shows: one its engine says the author changed (never
+  decided from the hunks' count), and one with lines left unreviewed at
+  that patch set that nothing carries (CAR-216's "not reviewed in PSn"
+  pieces), each file saying `changed` and those lines as
+  `notReviewedThen`, so the agent never presents them as new code. crb
+  detects no moved blocks yet, and `diff` says so rather than guess.
+  Past its budget, the remaining files are named (`omitted`, `unread`,
+  with no hunk count or analysis) without being read; a since view crb can't build, or a file it can't read, is
+  an error, never an empty diff. `file` reads only commits `review`
+  names (base, merge base, head, the PR's head, a patch set's head or
+  merge base), paths checked (relative, no `..`, never an option),
+  refuses a blob over 4 MiB before reading it, and decodes as the page
+  does (UTF-8, else latin1). `review`'s threads each carry `atHead`, the
+  page's placement on the review's head, or `unknown` with why (never
+  absent); GitHub's line is kept beside it, never offered as where the
+  thread is now.
 - **A question never waits on the agent to be sent.** Ask agent writes
   the thread at once; it waits (yellow) until an agent answers, whether
   none is set up, it is starting, busy, crashed or elsewhere.

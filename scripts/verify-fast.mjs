@@ -75,7 +75,7 @@ const E2E_MAP = [
 	// The similarity pairing: the side-by-side view's pairs and the
 	// tracer's (CAR-95).
 	[
-		/^src\/shared\/(linePairing|tokenize)\.ts$/,
+		/^src\/shared\/(linePairing|tokenize|hunkPairs)\.ts$/,
 		["linePairing", "inlineDiff", "rereview", "agent"],
 	],
 	// Release notes' formats and text rule (CAR-192): pure, its unit tests
@@ -118,6 +118,7 @@ const E2E_MAP = [
 			"thread-agent",
 			"agent-join",
 			"agent-open",
+			"agent-reads",
 			"review-conversation",
 			"agent-comment",
 			"agent-comment-github",
@@ -256,7 +257,7 @@ const E2E_MAP = [
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
 	[/^src\/server\/agent\/|^test\/fake-acp\//, ["agent", "agent-join"]],
 	// crb's MCP (joined sessions, and the spawned agent's tools and bridge).
-	[/^src\/server\/mcp\//, ["agent", "agent-join"]],
+	[/^src\/server\/mcp\//, ["agent", "agent-join", "agent-reads"]],
 	[
 		/^src\/web\/(brand\/|Tooltip\.tsx$|theme)|^src\/web\/index\.css$/,
 		["design", "mobile"],

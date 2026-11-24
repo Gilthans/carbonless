@@ -264,7 +264,10 @@ async function mcpTurn(cx, sessionId, prompt) {
 		}
 	}
 	if (!token) return { stopReason: "end_turn" };
-	for (const t of cfg.tools ?? []) await tool(t, { token });
+	for (const t of cfg.tools ?? []) {
+		if (typeof t === "string") await tool(t, { token });
+		else await tool(t.name, { token, ...(t.args ?? {}) });
+	}
 	let crashed = false;
 	for (;;) {
 		if (cfg.next === false) break;
