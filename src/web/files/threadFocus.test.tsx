@@ -219,7 +219,10 @@ describe("threadFocus", () => {
 			const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
 			const M = "01k9e6m2q8x4v7c3n5b0h1j2mm";
 			function Messages() {
-				return <p data-lit={useOutlinedMessage([{ id: M }]) ?? ""} />;
+				const ref = useRef<HTMLParagraphElement>(null);
+				return (
+					<p ref={ref} data-lit={useOutlinedMessage([{ id: M }], ref) ?? ""} />
+				);
 			}
 			const { container, rerender } = render(
 				<>
@@ -243,6 +246,104 @@ describe("threadFocus", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("the outline scrolls its own copy of the message, not a hidden one found first", () => {
+		const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+		const M = "01k9e6m2q8x4v7c3n5b0h1j2mm";
+		const hidden = vi.fn();
+		const mine = vi.fn();
+		function Messages() {
+			const ref = useRef<HTMLDivElement>(null);
+			const lit = useOutlinedMessage([{ id: M }], ref);
+			return (
+				<div ref={ref} data-message-id={M} data-mine data-lit={lit ?? ""} />
+			);
+		}
+		render(
+			<>
+				{/* A kept page that isn't showing, holding the same conversation. */}
+				<div hidden>
+					<div data-message-id={M} data-other />
+				</div>
+				<Card id={A} />
+				<Messages />
+			</>,
+		);
+		const other = document.querySelector("[data-other]");
+		const own = document.querySelector("[data-mine]");
+		if (!other || !own) throw new Error("no messages");
+		other.scrollIntoView = hidden;
+		own.scrollIntoView = mine;
+		act(() => requestConversationOpen(A, M));
+		expect(own.getAttribute("data-lit")).toBe(M);
+		expect(mine).toHaveBeenCalledWith({ block: "center" });
+		expect(hidden).not.toHaveBeenCalled();
+	});
+
+	it("a message id with quotes and brackets is looked up as itself", () => {
+		const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+		const M = 'x"] [data-other="';
+		const centred = vi.fn();
+		const wrong = vi.fn();
+		function WithMessage() {
+			const ref = useRef<HTMLDivElement>(null);
+			const at = useRef<HTMLParagraphElement>(null);
+			useFocusCard(A, ref);
+			const lit = useOutlinedMessage([{ id: M }], at);
+			return (
+				<div ref={ref}>
+					{/* What the id would select unescaped: `[data-message-id="x"] [data-other=""]`. */}
+					<div data-message-id="x">
+						<p data-other="" />
+					</div>
+					<p ref={at} data-message-id={M} data-lit={lit ?? ""} />
+				</div>
+			);
+		}
+		render(<WithMessage />);
+		const msg = document.querySelector("[data-lit]");
+		const decoy = document.querySelector("[data-other]");
+		if (!(msg instanceof HTMLElement) || !decoy) throw new Error("no message");
+		msg.scrollIntoView = centred;
+		decoy.scrollIntoView = wrong;
+		// Straight to the store: a link checks its ids, the lookup must not rely on it.
+		act(() => {
+			threadFocus.request({ id: A, message: M });
+		});
+		// Found inside its card (not the card's top scrolled instead), and lit.
+		expect(scrollTo).not.toHaveBeenCalled();
+		expect(centred).toHaveBeenCalledWith({ block: "center" });
+		expect(wrong).not.toHaveBeenCalled();
+		expect(msg.dataset.lit).toBe(M);
+	});
+
+	it("the outline doesn't scroll its own copy while that copy is inert", () => {
+		const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+		const M = "01k9e6m2q8x4v7c3n5b0h1j2mm";
+		const scrolled = vi.fn();
+		function Messages() {
+			const ref = useRef<HTMLDivElement>(null);
+			const lit = useOutlinedMessage([{ id: M }], ref);
+			return (
+				<div ref={ref} data-message-id={M} data-mine data-lit={lit ?? ""} />
+			);
+		}
+		render(
+			<>
+				<Card id={A} />
+				{/* A closed sheet: drawn, but not where the reviewer can use it. */}
+				<div inert>
+					<Messages />
+				</div>
+			</>,
+		);
+		const own = document.querySelector("[data-mine]");
+		if (!own) throw new Error("no message");
+		own.scrollIntoView = scrolled;
+		act(() => requestConversationOpen(A, M));
+		expect(own.getAttribute("data-lit")).toBe(M);
+		expect(scrolled).not.toHaveBeenCalled();
 	});
 
 	it("a request is dropped once the reviewer moves to another page", () => {
@@ -385,7 +486,10 @@ describe("threadFocus", () => {
 		const msg = document.querySelector(`[data-message-id="${M}"]`);
 		if (!msg) throw new Error("no message");
 		msg.scrollIntoView = centred;
-		act(() => requestConversationOpen(A, M));
+		// Straight to the store: a link checks its ids, the lookup must not rely on it.
+		act(() => {
+			threadFocus.request({ id: A, message: M });
+		});
 		expect(centred).toHaveBeenCalledWith({ block: "center" });
 		expect(scrollTo).not.toHaveBeenCalled();
 	});
@@ -396,7 +500,10 @@ describe("threadFocus", () => {
 			const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
 			const M = "01k9e6m2q8x4v7c3n5b0h1j2mm";
 			function Messages() {
-				return <p data-lit={useOutlinedMessage([{ id: M }]) ?? ""} />;
+				const ref = useRef<HTMLParagraphElement>(null);
+				return (
+					<p ref={ref} data-lit={useOutlinedMessage([{ id: M }], ref) ?? ""} />
+				);
 			}
 			const lit = (c: HTMLElement) => c.querySelector("p")?.dataset.lit;
 			// Taken (its card), no messages shown, then a cancel: the panel

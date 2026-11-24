@@ -457,7 +457,7 @@ export function useFocusCard(
 				if (threadFocus.latest() !== hit.seq || !onScreen(el)) return;
 				// A message named: it, centred (its outline), not the card's top.
 				const message = hit.message
-					? el.querySelector(`[data-message-id="${hit.message}"]`)
+					? el.querySelector(`[data-message-id="${CSS.escape(hit.message)}"]`)
 					: null;
 				if (message) {
 					message.scrollIntoView?.({ block: "center" });
@@ -487,22 +487,26 @@ export const OUTLINE_MS = 2000;
 /**
  * The message of `messages` a request landed on, while it is outlined:
  * scrolled into view (centred) as its card takes it, its outline gone
- * after OUTLINE_MS.
+ * after OUTLINE_MS. `landed` is the caller's own element for that message
+ * (the one it outlines): only it scrolls, never another copy of the
+ * message elsewhere on the page (a kept page, a closed sheet, another
+ * card), and only while it is on screen.
  */
 export function useOutlinedMessage(
 	messages: readonly { id: string }[] | undefined,
+	landed: RefObject<Element | null>,
 ): string | null {
 	const active = usePageActive();
-	const landed = useSyncExternalStore(
+	const outlined = useSyncExternalStore(
 		threadFocus.subscribe,
 		threadFocus.outline,
 	);
 	const mine =
 		active &&
-		landed &&
-		Date.now() - landed.at < OUTLINE_MS &&
-		messages?.some((m) => m.id === landed.message)
-			? landed
+		outlined &&
+		Date.now() - outlined.at < OUTLINE_MS &&
+		messages?.some((m) => m.id === outlined.message)
+			? outlined
 			: null;
 	const [lit, setLit] = useState<Outline | null>(null);
 	const seq = mine?.seq ?? 0;
@@ -511,12 +515,13 @@ export function useOutlinedMessage(
 		if (!mine) return;
 		setLit(mine);
 		threadFocus.outlined(mine.seq);
-		document
-			.querySelector(`[data-message-id="${mine.message}"]`)
-			?.scrollIntoView?.({ block: "center" });
 	}, [seq]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `landed` is a ref, read once lit drew it.
 	useEffect(() => {
 		if (!lit) return;
+		// Drawn lit by now: the caller's element for it, if it shows.
+		const el = landed.current;
+		if (onScreen(el)) el.scrollIntoView?.({ block: "center" });
 		const timer = setTimeout(() => setLit(null), OUTLINE_MS);
 		return () => clearTimeout(timer);
 	}, [lit]);

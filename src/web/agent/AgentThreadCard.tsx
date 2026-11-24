@@ -1057,7 +1057,9 @@ export function AgentMessageItems(props: {
 	const all =
 		useQuery({ ...agentThreadsQuery, enabled: false }).data?.threads ?? [];
 	const started = startedBy(all);
-	const lit = useOutlinedMessage(thread?.messages);
+	// The message a link landed on: only this copy of it scrolls in.
+	const landed = useRef<HTMLDivElement>(null);
+	const lit = useOutlinedMessage(thread?.messages, landed);
 	return (
 		<>
 			{thread?.messages.map((m) => {
@@ -1068,6 +1070,7 @@ export function AgentMessageItems(props: {
 					<Fragment key={m.id}>
 						{m.id === props.divider && <NewDivider />}
 						<div
+							ref={m.id === lit ? landed : undefined}
 							data-message-id={m.id}
 							data-by={m.by}
 							// A question takes the focus when its floating bar is
