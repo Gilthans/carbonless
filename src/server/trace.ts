@@ -150,9 +150,10 @@ const fileService = (service: string) => service.replace(/[^\w.-]/g, "_");
 
 /** Whether `name` is a trace file `service` wrote (rotated or not). */
 export function isServiceFile(service: string, name: string): boolean {
-	const s = fileService(service).replace(/[.]/g, "\\.");
-	return new RegExp(`^${s}-\\d+-[0-9a-f]+(?:\\.\\d{8}\\.\\d+)?\\.jsonl$`).test(
-		name,
+	const prefix = `${fileService(service)}-`;
+	return (
+		name.startsWith(prefix) &&
+		/^\d+-[0-9a-f]+(?:\.\d{8}\.\d+)?\.jsonl$/.test(name.slice(prefix.length))
 	);
 }
 
