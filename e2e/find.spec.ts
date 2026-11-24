@@ -334,6 +334,86 @@ test("a term with no hit in the open file says the next file's hit and opens not
 	await expect(count(page)).toHaveText(counted(DOC_HIT, ALL), VISIBLE);
 });
 
+test("opening a file moves the caret to its start: Next goes to its first hit, Previous to the last at or before its end; a file without hits goes on to its neighbours (CAR-298)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await phone(page, isMobile);
+	const next = () =>
+		isMobile
+			? bar(page).getByRole("button", { name: /^Next/ }).click()
+			: box(page).press("Enter");
+	const previous = () =>
+		isMobile
+			? bar(page)
+					.getByRole("button", { name: /^Previous/ })
+					.click()
+			: box(page).press("Shift+Enter");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await pickInTree(page, /\sa\.ts\s/);
+	await expect(
+		fileSection(page, A).getByTestId("diff-line").first(),
+	).toBeVisible();
+	await openBar(page, isMobile);
+	await search(page, "saveDraft");
+	// At a hit in src/a.ts.
+	await next();
+	await expect(count(page)).toHaveText(counted(A_FIRST + 1, ALL), VISIBLE);
+
+	// src/c.ts opened from the tree: the caret sits at its start, the count
+	// on the hit Next goes to (its line 15); nothing is stepped to.
+	await pickInTree(page, /\sc\.ts\s/);
+	await expect.poll(() => openPaths(page)).toEqual([C]);
+	await expect(count(page)).toHaveText(counted(ALL - 2, ALL), VISIBLE);
+	await next();
+	await expect(currentSection(page)).toHaveAttribute("aria-label", C);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "15");
+	await expect(count(page)).toHaveText(counted(ALL - 2, ALL), VISIBLE);
+	await expect(currentRow(page)).toBeInViewport();
+
+	// src/b.ts reopened: Previous goes to its last hit (line 10), not back
+	// from src/c.ts.
+	await pickInTree(page, /\sb\.ts\s/);
+	await expect.poll(() => openPaths(page)).toEqual([B]);
+	await previous();
+	await expect(currentSection(page)).toHaveAttribute("aria-label", B);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "10");
+	await expect(count(page)).toHaveText(counted(ALL - 3, ALL), VISIBLE);
+	// A step's own open (into src/a.ts) keeps the caret where it went: the
+	// next Previous goes on back from there, not from src/a.ts's end.
+	await previous();
+	await expect(currentSection(page)).toHaveAttribute("aria-label", A);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "8");
+	await previous();
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "6");
+	await expect(count(page)).toHaveText(counted(A_FIRST + 1, ALL), VISIBLE);
+
+	// docs/notes.md (no hit) opened from its header: Next goes to the next
+	// file's hit (docs/saveDraft.md's path)…
+	await expand(page, NOTES);
+	await expect.poll(() => openPaths(page)).toEqual([NOTES]);
+	await expect(count(page)).toHaveText(counted(DOC_HIT, ALL), VISIBLE);
+	await next();
+	await expect.poll(() => openPaths(page)).toEqual([DOC]);
+	await expect(count(page)).toHaveText(counted(DOC_HIT, ALL), VISIBLE);
+	// …and, opened again, Previous to the hit before it (the PNG's path).
+	await expand(page, NOTES);
+	await expect.poll(() => openPaths(page)).toEqual([NOTES]);
+	await previous();
+	await expect(count(page)).toHaveText(counted(1, ALL), VISIBLE);
+	await expect(currentSection(page)).toHaveAttribute("aria-label", PNG);
+	// Next and Previous across files work as before.
+	await next();
+	await expect(count(page)).toHaveText(counted(DOC_HIT, ALL), VISIBLE);
+	await next();
+	await expect(count(page)).toHaveText(counted(A_FIRST, ALL), VISIBLE);
+	await expect(currentSection(page)).toHaveAttribute("aria-label", A);
+});
+
 test("the header button opens and closes the bar", async ({
 	page,
 	pr,

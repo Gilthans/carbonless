@@ -30,6 +30,7 @@ import type { DiffFind } from "../DiffBody";
 import type { TreeFind } from "../FileTree";
 import {
 	type Caret,
+	caretAfterOpen,
 	caretAfterTyping,
 	caretMove,
 	countsByFile,
@@ -74,6 +75,18 @@ export interface Find {
 	pathOf: (index: number) => readonly FindMark[];
 	/** Bumps a file's DiffFind.stepSeq (a line hit stepped to). */
 	stepInto: (index: number) => void;
+}
+
+/**
+ * The caret's state since typing: a step's caret, or (`opened`) the start
+ * of a file the reviewer opened. `opens`: the file a step went into, which
+ * the page is opening (that open keeps the caret).
+ */
+interface Stepped {
+	key: string;
+	caret: Caret | null;
+	opened?: number;
+	opens?: number;
 }
 
 const NO_HITS: Hit[] = [];
@@ -227,33 +240,47 @@ export function useFind(opts: {
 	const { all, hits } = useMemo(() => searchFor(term), [searchFor, term]);
 
 	// The caret. Typing (a new term, match case, a reopen, a new revision)
-	// starts over from the file open at that moment: a pick in the tree
-	// later doesn't move it. A step's caret holds until the next typing.
+	// starts over from the file open at that moment. A step's caret holds
+	// until the next typing, or until the reviewer opens a file (a pick in
+	// the tree, j/k, a link, a Threads row…): the caret then sits at that
+	// file's start (caretAfterOpen, CAR-298). A step's own open of the file
+	// it went into isn't one.
 	const typingKey = `${open}\0${term}\0${matchCase}\0${revision}\0${from}`;
 	const [typed, setTyped] = useState({ key: typingKey, openIndex });
 	if (typed.key !== typingKey) setTyped({ key: typingKey, openIndex });
 	const typedOpen = typed.key === typingKey ? typed.openIndex : openIndex;
-	const [stepped, setStepped] = useState<{
-		key: string;
-		caret: Caret | null;
-	} | null>(null);
+	const [stepped, setStepped] = useState<Stepped | null>(null);
 	const order = useMemo(() => files.map((f) => f.index), [files]);
 	// A step's caret whose hit the view stopped showing (a switch to unified
 	// with Ignore whitespace on) moves to the same row's shown hit, never back
 	// to the top (keptCaret).
 	const { caret, sticks } = useMemo(() => {
-		const kept =
-			stepped?.key === typingKey && stepped.caret
-				? caretMove(all, hits, stepped.caret)
-				: null;
+		const mine = stepped?.key === typingKey ? stepped : null;
+		const kept = mine?.caret ? caretMove(all, hits, mine.caret) : null;
 		return {
-			caret: kept?.caret ?? caretAfterTyping(hits, order, typedOpen),
+			caret:
+				kept?.caret ??
+				(mine?.opened !== undefined
+					? caretAfterOpen(hits, order, mine.opened)
+					: caretAfterTyping(hits, order, typedOpen)),
 			sticks: kept?.sticks === true,
 		};
 	}, [stepped, typingKey, all, hits, order, typedOpen]);
 	// A move onto the same row sticks (owner, 2026-11-10): back in side by
 	// side, or with Ignore whitespace off, the caret stays on that row's hit.
-	if (sticks && stepped) setStepped({ key: stepped.key, caret });
+	if (sticks && stepped) setStepped({ ...stepped, caret });
+	// A file opened: the caret moves to its start, unless a step opened the
+	// file it went into (no feedback loop).
+	const [lastOpen, setLastOpen] = useState(openIndex);
+	if (lastOpen !== openIndex) {
+		setLastOpen(openIndex);
+		// (Whatever its key: a step may search the typed term while the
+		// deferred one trails.)
+		if (stepped?.opens !== undefined && stepped.opens === openIndex)
+			setStepped({ ...stepped, opens: undefined });
+		else if (openIndex !== null && open)
+			setStepped({ key: typingKey, caret: null, opened: openIndex });
+	}
 	// Steps read the latest, also two in one frame. While the deferred
 	// search trails the typed term, a step searches the typed term itself
 	// (Enter right after typing goes to the typed term's hit).
@@ -270,11 +297,12 @@ export function useFind(opts: {
 			const t = typedNow.current;
 			if (now.typingKey !== t.typedKey) {
 				const { all, hits } = t.searchFor(t.typedTerm);
-				const kept = t.stepped;
+				const kept = t.stepped?.key === t.typedKey ? t.stepped : null;
 				const caret =
-					(kept?.key === t.typedKey && kept.caret
-						? keptCaret(all, hits, kept.caret)
-						: null) ?? caretAfterTyping(hits, t.order, openNow.current);
+					(kept?.caret ? keptCaret(all, hits, kept.caret) : null) ??
+					(kept?.opened !== undefined
+						? caretAfterOpen(hits, t.order, kept.opened)
+						: caretAfterTyping(hits, t.order, openNow.current));
 				// (A moved caret sticks once this step sets it.)
 				now = { hits, caret, typingKey: t.typedKey };
 			}
@@ -291,7 +319,12 @@ export function useFind(opts: {
 			);
 			if (!next) return null;
 			latest.current = { ...now, caret: next };
-			setStepped({ key: now.typingKey, caret: next });
+			// Into another file: the page opens it, which isn't the reviewer's open.
+			setStepped({
+				key: now.typingKey,
+				caret: next,
+				opens: next.pos.index !== openNow.current ? next.pos.index : undefined,
+			});
 			return now.hits.find((h) => samePos(h, next.pos)) ?? null;
 		},
 		[],
