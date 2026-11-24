@@ -849,6 +849,66 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 		expect(p.header).toEqual([]);
 	});
 
+	it("one on PS1's commit whose file is out of the full diff (a gone file's) shows on its removed row too; a placed or unplaced one doesn't (CAR-256)", () => {
+		const t = thread({ side: "RIGHT", line: 51, commit: PS1 }, { commit: PS1 });
+		const outside: Placements = new Map([
+			[
+				t.id,
+				{ kind: "outside" as const, path: PATH, fate: "reverted" as const },
+			],
+		]);
+		expect(shownThreads([t], HEAD, outside)).toEqual([]);
+		const pending = earlierPending([t], HEAD, outside, PS1);
+		expect(pending).toHaveLength(1);
+		const p = placeThreads({
+			threads: [],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: earlierSince,
+			loadedContext: [],
+			placements: outside,
+			sinceLeft: sinceLeft(clusters, earlierSince.hunks),
+			sinceEarlier: sinceEarlier(PS1, earlierSince.hunks),
+			earlierPending: pending,
+		});
+		expect([...p.end.keys()]).toEqual(["LEFT:41"]);
+		// Placed or unplaced in the target: its own place decides, as before.
+		for (const placement of [
+			{
+				kind: "unplaced" as const,
+				fate: "deleted" as const,
+				path: PATH,
+				nearest: null,
+			},
+			{ kind: "file" as const, path: PATH },
+			{
+				kind: "placed" as const,
+				anchor: {
+					path: PATH,
+					startSide: "RIGHT" as const,
+					startLine: 51,
+					side: "RIGHT" as const,
+					line: 51,
+				},
+				changed: false as const,
+			},
+			// Outside by another path: a reviewer's move whose commits are gone.
+			{
+				kind: "outside" as const,
+				path: "other.ts",
+				fate: "rewritten" as const,
+			},
+		]) {
+			expect(
+				earlierPending([t], HEAD, new Map([[t.id, placement]]), PS1),
+			).toEqual([]);
+		}
+		// Moved by the reviewer: its move decides, never its own line.
+		expect(
+			earlierPending([t], HEAD, outside, PS1, new Map([[t.id, {}]])),
+		).toEqual([]);
+	});
+
 	it("pending PS1 threads with no removed row aren't shown, never as unplaced; a LEFT one never reads its PS1-base number in today's base (CAR-233)", () => {
 		// RIGHT 30 on PS1: a line the head still has (no psNo row).
 		const right = thread(

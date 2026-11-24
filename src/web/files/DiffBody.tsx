@@ -84,6 +84,7 @@ import {
 } from "../agent/pendingThread";
 import {
 	type AgentPlaceable,
+	earlierAgentPending,
 	shownAgentPlaceables,
 	useAgentPlacing,
 } from "../agent/placeable";
@@ -2345,6 +2346,12 @@ export function DiffBody(props: {
 	 * its line threads listed under the header as a binary file's are.
 	 */
 	linesHidden?: boolean;
+	/**
+	 * A since-view file the full diff doesn't have (GoneFile): GitHub's diff
+	 * has none of its lines on the head, only those on the compared patch
+	 * set's commit (CAR-256).
+	 */
+	gone?: boolean;
 }) {
 	const { file, revision, find, linesHidden } = props;
 	const read = useQuery({
@@ -2638,6 +2645,19 @@ export function DiffBody(props: {
 			),
 		[agentThreads, agentHeadNow, agentPlacing],
 	);
+	// Asked on the compared patch set's head on a line only it had (or a
+	// gone file's line it left alone): on that row, as review threads are
+	// (earlierPending, CAR-256).
+	const agentEarlier = useMemo(
+		() =>
+			earlierAgentPending(
+				agentThreads ?? [],
+				agentHeadNow ?? "",
+				agentPlacing,
+				earlierHead,
+			),
+		[agentThreads, agentHeadNow, agentPlacing, earlierHead],
+	);
 	const agentMine = agentComposerList.filter(
 		(c) => c.span.path === file.path && c.span.subject === "line",
 	);
@@ -2896,6 +2916,7 @@ export function DiffBody(props: {
 				spans: agentLineItems.map((c) => c.span as SpanRange),
 				sinceLeft: left,
 				sinceEarlier: early,
+				earlierPending: agentEarlier,
 			})
 		: null;
 	const [openAgent, setOpenAgent] = useState<ReadonlySet<LineKey>>(
@@ -2925,12 +2946,15 @@ export function DiffBody(props: {
 			...headFacts(span, snapshotHead ?? sessionHead),
 			file: { binary: file.binary, submodule: file.submodule },
 			inDiff:
-				hunks.data && rows
-					? hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
-						hunkKeys.has(`${rows.side}:${rows.line}`)
-					: undefined,
+				props.gone && !span.earlier
+					? false
+					: hunks.data && rows
+						? hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
+							hunkKeys.has(`${rows.side}:${rows.line}`)
+						: undefined,
 			headUnsure: props.headSure === false,
 			readOnly: props.readOnly === true,
+			gone: props.gone === true,
 		};
 	};
 	const agentRows: AgentRows | undefined = agentPlacement
@@ -3442,6 +3466,7 @@ export function DiffBody(props: {
 	// Comment on an agent card here: the head's diff shown, and whether a
 	// span's ends are this diff's lines (as the selection bar asks).
 	const hunkList = hunks.data?.hunks;
+	const goneFile = props.gone === true;
 	const commentScope = useMemo<CommentScope>(() => {
 		// The since view: a conversation on lines only its compared patch
 		// set had comments there, on that commit (CAR-264).
@@ -3450,9 +3475,14 @@ export function DiffBody(props: {
 		return {
 			headSure: props.headSure !== false,
 			inDiff: (span) =>
-				hunkList && span.path === file.path
-					? spanInHunks(span, hunkList)
-					: undefined,
+				span.path !== file.path
+					? undefined
+					: goneFile && !span.earlier
+						? false
+						: hunkList
+							? spanInHunks(span, hunkList)
+							: undefined,
+			gone: (span) => goneFile && span.path === file.path,
 			...(early
 				? {
 						earlier: (span: CodeSpan) =>
@@ -3460,7 +3490,7 @@ export function DiffBody(props: {
 					}
 				: {}),
 		};
-	}, [props.headSure, hunkList, file.path, early]);
+	}, [props.headSure, hunkList, file.path, goneFile, early]);
 
 	// A composer drawn in its conversation's card: what this diff gives one.
 	// Its functions read this render's (a ref), so the value changes only

@@ -5,7 +5,11 @@ import {
 	type SpanAgentThread,
 } from "../../shared/agent";
 import type { MovedInfo } from "../../shared/rereview/moves";
-import type { Placeable, Placements } from "../files/threadPlacement";
+import {
+	earlierUnplaced,
+	type Placeable,
+	type Placements,
+} from "../files/threadPlacement";
 
 /** An agent thread as placeThreads sees it, carrying the thread. */
 export interface AgentPlaceable extends Placeable {
@@ -226,6 +230,48 @@ export function shownAgentPlaceables(
 		...shown.filter((p) => !p.thread.resolved),
 		...shown.filter((p) => p.thread.resolved),
 	];
+}
+
+/**
+ * The since view's agent threads asked on its compared patch set's head
+ * (`earlierHead`) on RIGHT lines that the tracer hasn't placed yet, left
+ * unplaced in their file (a line only that patch set had, whose fate
+ * placeThreads then drops once it lands on a row), or put outside the
+ * comparison by their own path (a gone file's, CAR-256), as
+ * review threads are (earlierPending): as asked on the viewed head, their
+ * anchor keeping the commit they were asked on, so placeThreads' own
+ * `earlierPending` puts each on the row of its line there, if it has one.
+ * Never one the reviewer moved.
+ */
+export function earlierAgentPending(
+	threads: readonly AgentThread[],
+	snapshotHead: string,
+	placing: AgentPlacing,
+	earlierHead: string | undefined,
+): AgentPlaceable[] {
+	if (earlierHead === undefined || earlierHead === snapshotHead) return [];
+	const { until } = placing;
+	return unjoinUnlisted(threads, placing.listed)
+		.filter(isSpanThread)
+		.flatMap((t) => {
+			const a = t.anchor;
+			if (
+				a.subject !== "line" ||
+				a.commit !== earlierHead ||
+				a.side !== "RIGHT" ||
+				a.startSide !== "RIGHT" ||
+				(until !== null && Date.parse(t.at) >= until)
+			) {
+				return [];
+			}
+			const own = agentPlaceable(t);
+			if (!own.anchor) return [];
+			if (!earlierUnplaced(own, placing.placements, placing.moves, true)) {
+				return [];
+			}
+			const anchor = { ...own.anchor, commit: earlierHead };
+			return [{ ...own, commit: snapshotHead, anchor }];
+		});
 }
 
 /**

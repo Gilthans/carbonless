@@ -4075,3 +4075,152 @@ test("an old-side thread waiting for GitHub's hunk shows a spinner under its fil
 	).toHaveCount(1);
 	expect(await top()).toBe(before);
 });
+
+/** PS1 changes src/back.ts's line 3; PS2 puts it back as the base has it. */
+const BACK = "src/back.ts";
+const backLines = ["back 1", "back 2", "back 3", "back 4", "back 5"];
+const backFixture: PrOptions = {
+	base: { ...fixture.base, [BACK]: text(backLines) },
+	files: [
+		{
+			message: "PR change",
+			files: {
+				...fixture.files?.[0]?.files,
+				[BACK]: edit(backLines, { 3: "back 3 changed" }),
+			},
+		},
+	],
+};
+
+test("a file back to the base's version since PS1 (gone from the full diff): its own line takes a comment on PS1's commit and shows its thread there, after a reload too; a head line takes Ask agent, Comment off with why (CAR-256)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr(backFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	for (const path of ["src/back.ts", "src/core.ts", "src/util.ts"]) {
+		const button = fileActionButton(
+			fileSection(page, path),
+			"Mark remaining reviewed",
+		);
+		await clicksReady(page, button);
+		await button.click();
+		await expect(
+			fileActionButton(fileSection(page, path), "Unmark reviewed"),
+		).toBeVisible();
+	}
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	const ps1Head = p.head();
+	p.moveHead({ message: "back to base", files: { [BACK]: text(backLines) } });
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const back = fileSection(page, BACK);
+	await expect(back).toHaveAttribute("data-gone-file", BACK);
+	await back.getByRole("button", { name: "Expand file" }).click();
+	const own = back.locator(
+		'tr[data-testid="diff-line"][data-kind="del"][data-old-no="3"]',
+	);
+	const headRow = back.locator(
+		'tr[data-testid="diff-line"][data-kind="add"][data-new-no="3"]',
+	);
+	await expect(own).toBeVisible(GIT_WAIT);
+	const bar = page.getByTestId("selection-bar");
+	const pick = async (number: Locator) => {
+		if (isMobile) await number.tap();
+		else await number.click();
+		await expect(bar).toBeVisible();
+	};
+
+	// The head's line: not in GitHub's diff (the PR no longer changes the
+	// file), so Comment is off with why; the agent can be asked.
+	await pick(headRow.getByTestId("new"));
+	const comment = bar.getByRole("button", { name: "Comment" });
+	await expect(comment).toHaveAttribute("aria-disabled", "true");
+	await expect(comment).toHaveAccessibleDescription("File no longer in the PR");
+	await bar.getByRole("button", { name: "Ask agent" }).click();
+	const asking = back.getByTestId("agent-composer");
+	const box = asking.getByRole("textbox", { name: "Ask your agent" });
+	await expect(box).toBeFocused();
+	await box.fill("Why put it back?");
+	await asking.getByTestId("agent-composer-ask").click();
+	await expect(asking).toHaveCount(0);
+	await expect(
+		back.getByTestId("agent-thread").filter({ hasText: "Why put it back?" }),
+	).toHaveCount(1);
+	await expectNoPageOverflow(page);
+
+	// PS1's own line: the agent is asked about it there, on PS1's commit.
+	await pick(own.getByTestId("old"));
+	await bar.getByRole("button", { name: "Ask agent" }).click();
+	const askingOwn = back.getByTestId("agent-composer");
+	await askingOwn
+		.getByRole("textbox", { name: "Ask your agent" })
+		.fill("Why was this here?");
+	await askingOwn.getByTestId("agent-composer-ask").click();
+	await expect(askingOwn).toHaveCount(0);
+	await expect(own.getByTestId("agent-bubble")).toBeVisible();
+
+	// And a comment: on PS1's commit, RIGHT 3, an added line of its diff.
+	await pick(own.getByTestId("old"));
+	await bar.getByRole("button", { name: "Comment" }).click();
+	const composer = back.getByTestId("new-thread");
+	await composer
+		.getByRole("textbox", { name: "Comment" })
+		.fill("Why change it, then undo it?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(back.getByTestId("new-thread")).toHaveCount(0);
+	await expect(
+		back
+			.getByTestId("files-thread")
+			.filter({ hasText: "Why change it, then undo it?" }),
+	).toBeVisible();
+	expect(postedThreads(p)).toEqual([
+		expect.objectContaining({
+			line: 3,
+			diffSide: "RIGHT",
+			commit: ps1Head,
+			body: expect.stringContaining("Why change it, then undo it?"),
+		}),
+	]);
+	// After a reload, once the tracer has placed it outside the full diff
+	// (listed under Not in this comparison, never gone): its bubble is on
+	// that row still, and the agent's conversation on it.
+	await page.reload();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible(GIT_WAIT);
+	await expect(
+		page
+			.getByTestId("not-in-comparison")
+			.filter({ hasText: "Why change it, then undo it?" }),
+	).toBeVisible(GIT_WAIT);
+	// The agent's placements in too: the question listed after the files.
+	await expect(
+		page
+			.getByTestId("agent-not-in-comparison")
+			.filter({ hasText: "Why was this here?" }),
+	).toBeVisible(GIT_WAIT);
+	const again = fileSection(page, BACK);
+	await again.getByRole("button", { name: "Expand file" }).click();
+	const ownAgain = again.locator(
+		'tr[data-testid="diff-line"][data-kind="del"][data-old-no="3"]',
+	);
+	await expect(ownAgain).toHaveAttribute("data-commented", "", GIT_WAIT);
+	await expect(ownAgain.getByTestId("agent-bubble")).toBeVisible();
+	await ownAgain.getByRole("button", { name: /^1 comment/ }).click();
+	await expect(
+		again
+			.getByTestId("files-thread")
+			.filter({ hasText: "Why change it, then undo it?" }),
+	).toBeVisible();
+	// On its row it is placed, never "deleted before PS1" (CAR-255's note).
+	await expect(again.getByTestId("not-here")).toHaveCount(0);
+	await expectNoPageOverflow(page);
+});

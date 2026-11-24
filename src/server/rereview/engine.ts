@@ -57,7 +57,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-export const ENGINE_VERSION = 5;
+export const ENGINE_VERSION = 6;
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {
@@ -132,6 +132,14 @@ export interface Traced {
 		 * head's path on that commit (CAR-233).
 		 */
 		earlierMoved?: Record<string, number[]>;
+		/**
+		 * By the virtual rebase's path, for each file the target's diff
+		 * doesn't list (a gone file) at the same path on the since patch
+		 * set's head: its lines no interdiff cluster removes, as runs
+		 * `[old line, its line on that head, count]`: where a thread made
+		 * on that head on a line it left alone shows (CAR-256).
+		 */
+		earlierKept?: Record<string, [number, number, number][]>;
 	};
 }
 
@@ -397,6 +405,7 @@ export async function traceRereview(
 	const githubLeft: Record<string, Record<number, number>> = {};
 	const earlierRight: Record<string, Record<number, number>> = {};
 	const earlierMoved: Record<string, number[]> = {};
+	const earlierKept: Record<string, [number, number, number][]> = {};
 	for (const f of interdiff.files) {
 		if (f.conflict) continue;
 		const primePath = f.oldPath ?? f.path;
@@ -458,10 +467,30 @@ export async function traceRereview(
 		githubLeft[primePath] = lines;
 		earlierRight[primePath] = earlier;
 		if (moved.length > 0) earlierMoved[primePath] = moved;
+		// A gone file (CAR-256): its kept lines on that head, as runs.
+		if (!headFile && samePath && toHead) {
+			const removed = new Set<number>();
+			for (const ic of f.clusters) {
+				if (ic.kind !== "lines") continue;
+				for (let i = 0; i < ic.oldCount; i++) removed.add(ic.oldStart + i);
+			}
+			const runs: [number, number, number][] = [];
+			for (let n = 1; n <= f.oldLines.length; n++) {
+				if (removed.has(n)) continue;
+				const h1 = toHead.newToOld(n);
+				if (h1 === null) continue;
+				const last = runs[runs.length - 1];
+				if (last && last[0] + last[2] === n && last[1] + last[2] === h1) {
+					last[2]++;
+				} else runs.push([n, h1, 1]);
+			}
+			if (runs.length > 0) earlierKept[primePath] = runs;
+		}
 	}
 	lineKeys.githubLeft = githubLeft;
 	lineKeys.earlierRight = earlierRight;
 	lineKeys.earlierMoved = earlierMoved;
+	lineKeys.earlierKept = earlierKept;
 	for (const file of ps.snapshot.files) {
 		const toPrime = primeByOld.get(file.path);
 		const primePath = toPrime?.path ?? file.path;
@@ -1369,8 +1398,16 @@ function sinceFileHunks(
 			? []
 			: (traced.lineKeys.earlierMoved?.[file.oldPath ?? file.path] ?? []),
 	);
+	const kept = file.conflict
+		? undefined
+		: traced.lineKeys.earlierKept?.[file.oldPath ?? file.path];
 	for (const hunk of hunks) {
 		for (const line of hunk.lines) {
+			if (kept && line.kind === "context" && line.oldNo !== undefined) {
+				const n = line.oldNo;
+				const run = kept.find(([at, , count]) => at <= n && n < at + count);
+				if (run) line.psKept = run[1] + (n - run[0]);
+			}
 			if (line.kind !== "del" || line.oldNo === undefined) continue;
 			if (file.conflict) line.baseNo = line.oldNo;
 			else if (left) {

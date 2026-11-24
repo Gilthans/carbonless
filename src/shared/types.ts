@@ -155,6 +155,13 @@ export interface DiffLine {
 	 */
 	psNo?: number;
 	/**
+	 * The since view's context lines of a file the full diff doesn't have
+	 * (a gone file) only: the line's number on the compared patch set's
+	 * head, which that patch set left alone; a thread made there shows on
+	 * this row (CAR-256). Never a place a comment starts.
+	 */
+	psKept?: number;
+	/**
 	 * The since view's removed lines with `baseNo` null only: the compared
 	 * patch set's diff adds it, but at another path than the head's (a
 	 * rename since): no comment can go there by this file's path (CAR-233).

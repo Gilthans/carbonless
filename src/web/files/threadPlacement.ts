@@ -232,7 +232,9 @@ const earlierCopies = new WeakMap<ReviewThread, ReviewThread>();
 /**
  * The since view's threads made on its compared patch set's head
  * (`earlierHead`) that the tracer hasn't placed yet (one just posted
- * there, CAR-233): RIGHT line threads, as made on the viewed head (their
+ * there, CAR-233), or placed outside the comparison (its file isn't in
+ * the full diff: a gone file's, CAR-256; still listed under "Not in this
+ * comparison"): RIGHT line threads, as made on the viewed head (their
  * anchor keeps their commit). placeThreads' `earlierPending` puts each on
  * the removed row of its line, if it has one; none goes anywhere else.
  */
@@ -241,6 +243,8 @@ export function earlierPending(
 	snapshotHead: string,
 	placements: Placements | null,
 	earlierHead: string | undefined,
+	/** Threads the reviewer moved (CAR-139): their move decides, never their own line. */
+	moved?: ReadonlyMap<string, unknown> | null,
 ): ReviewThread[] {
 	if (earlierHead === undefined || earlierHead === snapshotHead) return [];
 	return threads.flatMap((t) => {
@@ -249,7 +253,7 @@ export function earlierPending(
 			t.subject !== "line" ||
 			t.anchor?.side !== "RIGHT" ||
 			t.anchor.startSide !== "RIGHT" ||
-			placements?.get(t.id) !== undefined
+			!earlierUnplaced(t, placements, moved)
 		) {
 			return [];
 		}
@@ -261,6 +265,33 @@ export function earlierPending(
 		}
 		return [copy];
 	});
+}
+
+/**
+ * Whether a thread made on the compared patch set's head waits for its
+ * removed (or kept) row there (earlierPending): no placement yet, or one
+ * outside the comparison by its own path (a gone file's, CAR-256); never
+ * one the reviewer moved, whose move decides where it goes.
+ */
+export function earlierUnplaced(
+	t: { id?: string; path: string },
+	placements: Placements | null,
+	moved?: ReadonlyMap<string, unknown> | null,
+	/**
+	 * Unplaced in its own file too: an agent thread's placeable loses its
+	 * lines there (tracedAgentPlaceables), so it waits here rather than in
+	 * placeThreads' own unplaced path, which a review thread takes.
+	 */
+	unplaced = false,
+): boolean {
+	if (t.id === undefined) return false;
+	if (moved?.has(t.id)) return false;
+	const placed = placements?.get(t.id);
+	return (
+		placed === undefined ||
+		((placed.kind === "outside" || (unplaced && placed.kind === "unplaced")) &&
+			placed.path === t.path)
+	);
 }
 
 /** Every thread Files changed shows in the viewed snapshot's files (shownThread). */
@@ -439,7 +470,7 @@ export interface SinceEarlier {
 	row: (n: number) => number | null;
 }
 
-/** The since view's SinceEarlier, from its hunks' removed rows (`psNo`). */
+/** The since view's SinceEarlier, from its hunks' removed rows (`psNo`) and a gone file's kept ones (`psKept`). */
 export function sinceEarlier(
 	head: string,
 	hunks: readonly DisplayHunk[] | null | undefined,
@@ -447,9 +478,11 @@ export function sinceEarlier(
 	const rows = new Map<number, number>();
 	for (const h of hunks ?? []) {
 		for (const l of h.lines) {
-			if (l.psNo !== undefined && l.oldNo !== undefined) {
-				rows.set(l.psNo, l.oldNo);
-			}
+			if (l.oldNo === undefined) continue;
+			// A removed line only it had, or (a gone file's) a line it left
+			// alone (CAR-256).
+			const ps = l.psNo ?? l.psKept;
+			if (ps !== undefined) rows.set(ps, l.oldNo);
 		}
 	}
 	return { head, row: (n) => rows.get(n) ?? null };
@@ -651,12 +684,15 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	// placed yet (one just posted there): on their removed rows when they
 	// have one; else not shown here until placed, as before (never as
 	// unplaced while that is pending).
+	// Those that landed on a row: not listed with a fate as well.
+	const landed = new Set<string>();
 	for (const t of args.earlierPending ?? []) {
 		if (t.path !== args.path) continue;
 		const at = earlierRow(t);
 		if (!at) continue;
 		push(placement.end, at.key, t);
 		paint(at.range, at.row);
+		if (t.id !== undefined) landed.add(t.id);
 	}
 	for (const t of mine) {
 		const traced = t.id === undefined ? undefined : args.placements?.get(t.id);
@@ -665,6 +701,7 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 			continue;
 		}
 		if (traced?.kind === "unplaced") {
+			if (t.id !== undefined && landed.has(t.id)) continue;
 			// Made on the compared patch set's head on a line only it had
 			// (CAR-233): on the since view's removed row that shows it.
 			const at = earlierRow(t);

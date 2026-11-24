@@ -449,6 +449,7 @@ function useDiffThreads(
 							snapshotHead,
 							placements,
 							earlierHead,
+							moves,
 						),
 					}
 				: undefined,
@@ -1136,6 +1137,7 @@ export function FilesPage() {
 				: [],
 		[sinceView.since, sinceView.answer, data],
 	);
+	const gonePaths = useMemo(() => new Set(gone.map((f) => f.path)), [gone]);
 	const findFiles = useMemo(
 		() => (gone.length > 0 ? [...files, ...gone.map(goneFileView)] : files),
 		[files, gone],
@@ -2070,6 +2072,8 @@ export function FilesPage() {
 																		? movedOn.until
 																		: undefined
 																}
+																threads={threads}
+																headSure={headSure}
 															/>
 														))}
 														{/* Threads whose file isn't in this comparison at all. */}
@@ -2086,6 +2090,7 @@ export function FilesPage() {
 											{active && <MoveBar />}
 											<SelectionBar
 												files={data.files}
+												gonePaths={gonePaths}
 												commit={agentHead}
 												headSure={headSure}
 												readOnly={readOnly}

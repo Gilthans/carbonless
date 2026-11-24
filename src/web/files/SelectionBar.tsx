@@ -34,6 +34,7 @@ import {
 	endMoveMode,
 	getMoving,
 	moveAnchorOf,
+	NOT_IN_FULL_DIFF,
 	useMoveMode,
 	useMoveWrites,
 } from "./threadMove";
@@ -382,6 +383,11 @@ export function SelectionBar(props: {
 	 * only it had goes (CAR-233).
 	 */
 	earlier?: string;
+	/**
+	 * The since view's files the full diff doesn't have (GoneFile): a
+	 * thread can't be placed on their lines (CAR-256).
+	 */
+	gonePaths?: ReadonlySet<string>;
 }) {
 	const sessionHead =
 		useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead ?? "";
@@ -607,6 +613,7 @@ export function SelectionBar(props: {
 					noLine: target.noLine ?? undefined,
 					headUnsure: props.headSure === false,
 					readOnly: props.readOnly === true,
+					gone: props.gonePaths?.has(target.span.path) === true,
 				}
 			: null;
 	const run = (action: SelectionAction) => {
@@ -660,7 +667,8 @@ export function SelectionBar(props: {
 		// GitHub's (the full diff's) lines, as the span names them; none
 		// for a line of neither the base nor the head (target.noLine).
 		const anchor = moveAnchorOf(span, target.noLine);
-		const ok = anchor !== null && moveWrites?.to != null;
+		const gone = props.gonePaths?.has(span.path) === true;
+		const ok = anchor !== null && !gone && moveWrites?.to != null;
 		return (
 			<div
 				ref={bar}
@@ -682,9 +690,11 @@ export function SelectionBar(props: {
 					content={
 						ok
 							? "Place here"
-							: picked
-								? "Not a line of the base or the head"
-								: "Pick lines to place it on"
+							: gone
+								? NOT_IN_FULL_DIFF
+								: picked
+									? "Not a line of the base or the head"
+									: "Pick lines to place it on"
 					}
 				>
 					{(trigger) => (

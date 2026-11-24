@@ -21,7 +21,9 @@ import type { CodeSpan } from "./selectionActions";
  *   column): it is one line, RIGHT from either cell;
  * - inside it, `[data-code]` holds exactly the line's characters (CodeLine):
  *   a column is the text before a point in it;
- * - the file's section carries `data-path`.
+ * - the file's section carries `data-path`; a since-view file the full
+ *   diff doesn't have (GoneFile) also carries `data-gone-file`: none of its
+ *   lines is in GitHub's diff on the head (CAR-256).
  * The side comes from the cell, never the row: a side-by-side view puts
  * two cells in one row.
  */
@@ -59,6 +61,12 @@ export interface CellLine {
 	 * comment can name it (CAR-233).
 	 */
 	psMoved?: boolean;
+	/**
+	 * The cell is in a since-view file the full diff doesn't have (GoneFile,
+	 * `data-gone-file`): GitHub's diff has none of its lines on the head,
+	 * only those on the compared patch set's commit (`ps`, CAR-256).
+	 */
+	gone?: boolean;
 }
 
 /**
@@ -135,6 +143,7 @@ export function cellLine(cell: Element): CellLine | null {
 		baseAttr == null &&
 		cell.closest("[data-since]") !== null;
 	const path = cell.closest("[data-path]")?.getAttribute("data-path");
+	const gone = cell.closest("[data-gone-file]") !== null;
 	if ((side !== "LEFT" && side !== "RIGHT") || !line || path == null) {
 		return null;
 	}
@@ -157,6 +166,7 @@ export function cellLine(cell: Element): CellLine | null {
 		...(baseAttr === "" && row?.hasAttribute("data-ps-moved")
 			? { psMoved: true }
 			: {}),
+		...(gone ? { gone: true } : {}),
 	};
 }
 
@@ -185,8 +195,13 @@ function pointIn(
 	return { col: Math.min(head.toString().length, len), where: "in" };
 }
 
-/** Whether the cell's line is in GitHub's diff (a hunk's, not expanded context). */
-export const inHunk = (c: Pick<CellLine, "hunk">) => c.hunk.startsWith("h");
+/**
+ * Whether the cell's line is in GitHub's diff (a hunk's, not expanded
+ * context). A gone file's (CAR-256) never is on the head: only a line on
+ * the compared patch set's commit (`ps`), which that commit's diff adds.
+ */
+export const inHunk = (c: Pick<CellLine, "hunk" | "gone" | "ps">) =>
+	c.hunk.startsWith("h") && (!c.gone || c.ps !== undefined);
 
 /**
  * A span over cells `start`..`end` (in the order shown), whole lines unless

@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { AgentThread, SpanAgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
-import { placeThreads } from "../files/threadPlacement";
+import {
+	placeThreads,
+	sinceEarlier,
+	sinceLeft,
+} from "../files/threadPlacement";
 import {
 	agentOutside,
 	agentPlaceable,
 	agentPlacementIds,
 	agentWaiting,
+	earlierAgentPending,
 	shownAgentPlaceables,
 	tracedAgentPlaceables,
 	unjoinUnlisted,
@@ -115,6 +120,65 @@ describe("tracedAgentPlaceables", () => {
 			["A1", deleted],
 		]);
 		expect(placed.header).toEqual([]);
+	});
+
+	it("the since view: one asked on the compared patch set's head on a line only it had, unplaced in a file still in the full diff, lands on that removed row, not with a fate (CAR-256)", () => {
+		const deleted: ThreadPlacement = {
+			kind: "unplaced",
+			fate: "deleted",
+			path: "a.ts",
+			nearest: { side: "RIGHT", line: 9 },
+		};
+		const placements = new Map([["A1", deleted]]);
+		const placing = { placements, until: null };
+		// PS1 (H1) line 10 is the since view's removed row old 12.
+		const hunks = {
+			newLineCount: 20,
+			hunks: [
+				{
+					oldStart: 11,
+					oldCount: 3,
+					newStart: 11,
+					newCount: 2,
+					lines: [
+						{ kind: "context", oldNo: 11, newNo: 11, text: "a" },
+						{ kind: "del", oldNo: 12, text: "x", baseNo: null, psNo: 10 },
+						{ kind: "context", oldNo: 13, newNo: 12, text: "b" },
+					],
+				},
+			],
+		} as never;
+		const threads = [asked("A1", 10)];
+		const shown = shownAgentPlaceables(threads, H2, placing);
+		const pending = earlierAgentPending(threads, H2, placing, H1);
+		expect(pending.map((p) => p.id)).toEqual(["A1"]);
+		const placed = placeThreads({
+			threads: shown,
+			path: "a.ts",
+			snapshotHead: H2,
+			hunks,
+			loadedContext: [],
+			placements,
+			sinceLeft: sinceLeft([], (hunks as { hunks: never }).hunks),
+			sinceEarlier: sinceEarlier(H1, (hunks as { hunks: never }).hunks),
+			earlierPending: pending,
+		});
+		expect([...placed.end.keys()]).toEqual(["LEFT:12"]);
+		expect(placed.fates).toEqual([]);
+		// Outside the since view (no compared head): with its fate, as before.
+		expect(earlierAgentPending(threads, H2, placing, undefined)).toEqual([]);
+		// Unplaced by another path (a rename since): not this row.
+		expect(
+			earlierAgentPending(
+				threads,
+				H2,
+				{
+					placements: new Map([["A1", { ...deleted, path: "b.ts" }]]),
+					until: null,
+				},
+				H1,
+			),
+		).toEqual([]);
 	});
 
 	it("a file question follows its file", () => {

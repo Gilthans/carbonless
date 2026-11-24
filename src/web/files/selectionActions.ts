@@ -49,6 +49,12 @@ export interface SelectionContext {
 	headUnsure?: boolean;
 	/** An earlier patch set (read-only): GitHub's comments go on the latest. */
 	readOnly?: boolean;
+	/**
+	 * The span is in a since-view file the full diff doesn't have (GoneFile):
+	 * GitHub refuses its lines on the head (CAR-256), so one not in GitHub's
+	 * diff says so by that.
+	 */
+	gone?: boolean;
 }
 
 /**
@@ -84,6 +90,9 @@ export const noLineReason = (
 				: why === "split"
 					? SPLIT_EARLIER
 					: NO_GITHUB_LINE;
+
+/** Why Comment is off on a gone file's head lines (CAR-256): GitHub refuses the path. */
+export const FILE_NOT_IN_PR = "File no longer in the PR";
 
 /** Why nothing can start on a span while the diff shown isn't the head's. */
 export const HEAD_UNSURE = "The new head's diff is loading";
@@ -132,6 +141,9 @@ export function commentAvailable(
 	if (!ctx.commentLeft && sides(span).includes("LEFT")) {
 		return "Old lines can't take comments with this pinned head";
 	}
+	// Checked on GitHub: a gone file's head line is refused ("path could
+	// not be resolved").
+	if (ctx.gone && ctx.inDiff === false) return FILE_NOT_IN_PR;
 	// Checked on GitHub: a line only expanded context shows is refused (a
 	// range across hunks is taken).
 	if (!COMMENT_OUTSIDE_HUNKS && ctx.inDiff === false) {
