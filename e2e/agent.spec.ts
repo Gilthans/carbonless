@@ -913,10 +913,6 @@ test("a question being written turns into a comment: on a line and on the file, 
 	const toComment = asking.getByRole("button", { name: "Comment instead" });
 	await expectAtBottomRight(asking, toComment);
 	await expectNoPageOverflow(page);
-	// Clear of the phone's floating Files button, which sits over the
-	// bottom right of the viewport (the quick questions make the composer
-	// tall enough to end there).
-	await toComment.evaluate((el) => el.scrollIntoView({ block: "center" }));
 	await toComment.click();
 	await expect(section.getByTestId("agent-composer")).toHaveCount(0);
 	const composer = section.getByTestId("new-thread");
@@ -942,11 +938,7 @@ test("a question being written turns into a comment: on a line and on the file, 
 	await onFile.getByRole("button", { name: "Ask agent instead" }).click();
 	const fileAsking = again.getByTestId("agent-composer");
 	await expect(fileAsking).toContainText("whole file");
-	const fileToComment = fileAsking.getByRole("button", {
-		name: "Comment instead",
-	});
-	await fileToComment.evaluate((el) => el.scrollIntoView({ block: "center" }));
-	await fileToComment.click();
+	await fileAsking.getByRole("button", { name: "Comment instead" }).click();
 	await expect(again.getByTestId("agent-composer")).toHaveCount(0);
 	const back = again
 		.getByTestId("new-thread")
@@ -956,6 +948,136 @@ test("a question being written turns into a comment: on a line and on the file, 
 	);
 	await expect(back.getByRole("textbox", { name: "Comment" })).toBeFocused();
 	expect(ghThreads(p.scenarioPath, p.number)).toBe(before);
+});
+
+/**
+ * Twenty files before calc.ts: room above its composers to scroll them
+ * down to the bottom of a phone's viewport.
+ */
+const AHEAD = Object.fromEntries(
+	Array.from({ length: 20 }, (_, i) => [
+		`src/a${String(i).padStart(2, "0")}.ts`,
+		"export const a = 1;\n",
+	]),
+);
+const longFixture = {
+	base: { ...fixture.base, ...AHEAD },
+	files: [
+		{
+			message: "calc and more",
+			files: {
+				...fixture.files?.[0]?.files,
+				...Object.fromEntries(
+					Object.keys(AHEAD).map((path) => [path, "export const a = 2;\n"]),
+				),
+			},
+		},
+	],
+};
+
+/**
+ * Each shown button of `card` that sits under the floating Files button
+ * across (`fab`, measured while it showed), scrolled so its centre is
+ * level with the Files button's, is what a tap at its centre lands on:
+ * never the Files button over it. At least one such button is checked.
+ */
+async function expectTappableUnderFab(
+	page: Page,
+	card: Locator,
+	fab: { x: number; y: number; width: number; height: number },
+) {
+	let checked = 0;
+	for (const button of await card.getByRole("button").all()) {
+		if (!(await button.isVisible())) continue;
+		const b = await button.boundingBox();
+		if (!b || b.x + b.width <= fab.x || b.x >= fab.x + fab.width) continue;
+		const name =
+			(await button.getAttribute("aria-label")) ?? (await button.textContent());
+		await page.evaluate(
+			(dy) => window.scrollBy(0, dy),
+			b.y + b.height / 2 - (fab.y + fab.height / 2),
+		);
+		await expect
+			.poll(async () => {
+				const r = await button.boundingBox();
+				return r ? Math.round(r.y + r.height / 2) : null;
+			})
+			.toBe(Math.round(fab.y + fab.height / 2));
+		await expect
+			.poll(
+				() =>
+					button.evaluate((el) => {
+						const r = el.getBoundingClientRect();
+						const hit = document.elementFromPoint(
+							r.x + r.width / 2,
+							r.y + r.height / 2,
+						);
+						return hit !== null && el.contains(hit);
+					}),
+				{ message: `${name} is tappable` },
+			)
+			.toBe(true);
+		checked++;
+	}
+	expect(checked, "a button under the Files button across").toBeGreaterThan(0);
+}
+
+test.describe("phone", () => {
+	test.skip(({ isMobile }) => !isMobile, "phone layout only");
+
+	test("a card's buttons are never under the floating Files button: Ask agent with its quick questions, the comment it turns into, its GitHub thread, an agent thread", async ({
+		page,
+		pr,
+		agentCrb,
+	}) => {
+		test.slow();
+		await pr(longFixture);
+		const s = await agentCrb();
+		const section = await openFile(page, s.url, CALC);
+		const files = page.getByRole("button", { name: "Files", exact: true });
+		await expect(files).toBeVisible();
+		const fab = await files.boundingBox();
+		expect(fab).toBeTruthy();
+		if (!fab) return;
+		await selectText(page, CALC, 3, 0, 6);
+		await bar(page).getByRole("button", { name: "Ask agent" }).click();
+		const asking = section.getByTestId("agent-composer");
+		await expect(
+			asking.getByRole("button", { name: "What calls this?" }),
+		).toBeVisible();
+		const box = asking.getByRole("textbox", { name: "Ask your agent" });
+		await box.fill("Rename it");
+		// Writing (the box has focus), then not (a tap elsewhere).
+		await expectTappableUnderFab(page, asking, fab);
+		await box.blur();
+		await expectTappableUnderFab(page, asking, fab);
+		// A tap where the Files button would be: the composer's switch takes it.
+		const toComment = asking.getByRole("button", { name: "Comment instead" });
+		await toComment.click();
+		await expect(section.getByTestId("agent-composer")).toHaveCount(0);
+		const composer = section.getByTestId("new-thread");
+		await expect(
+			composer.getByRole("textbox", { name: "Comment" }),
+		).toHaveValue("Rename it");
+		await expectTappableUnderFab(page, composer, fab);
+		await composer.getByRole("textbox", { name: "Comment" }).blur();
+		await expectTappableUnderFab(page, composer, fab);
+		// Posted: a GitHub thread's card, its buttons the same.
+		await composer.getByTestId("new-thread-post").click();
+		const thread = section.getByTestId("files-thread");
+		await expect(thread).toBeVisible();
+		await expectTappableUnderFab(page, thread, fab);
+		// An agent thread's card, the same.
+		const agent = await ask(page, section, 6, "Why?");
+		await expect(agent).toHaveAttribute("aria-label", "Agent thread, answered");
+		await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+		await expectTappableUnderFab(page, agent, fab);
+		// Nothing of a card under it: the Files button is back, and opens Files.
+		await page.evaluate(() => window.scrollTo(0, 0));
+		await expect(files).toBeVisible();
+		await files.click();
+		await expect(page.getByRole("dialog", { name: "Files" })).toBeVisible();
+	});
 });
 
 /**

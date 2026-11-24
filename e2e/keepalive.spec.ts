@@ -1,6 +1,12 @@
 import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
-import { fileSection, openFiles, progress, tapHeight } from "./files-ui";
+import {
+	fileSection,
+	openFiles,
+	progress,
+	tapFilesButton,
+	tapHeight,
+} from "./files-ui";
 import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 /**
@@ -285,7 +291,7 @@ test("leaving the files page with the tree sheet open closes it", async ({
 	await page.goto(s.url);
 	await tab(page, "Files changed").click();
 	await expect(progress(page)).toBeVisible();
-	await page.getByRole("button", { name: "Files", exact: true }).click();
+	await tapFilesButton(page);
 	await expect(page.getByRole("dialog", { name: "Files" })).toBeVisible();
 	await page.goBack();
 	await expect(whatItDoes(page)).toBeVisible();

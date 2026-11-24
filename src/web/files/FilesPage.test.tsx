@@ -31,6 +31,20 @@ import { FilesPage, MISSING_HINT_MS } from "./FilesPage";
 import { findState } from "./find/findState";
 import { parseFilesSearch } from "./landing";
 
+/** FileDiff's renders: the floating Files button's flips must not add any. */
+const fileDiffRenders = vi.hoisted(() => ({ count: 0 }));
+vi.mock("./FileDiff", async (importOriginal) => {
+	const real = await importOriginal<typeof import("./FileDiff")>();
+	const { createElement } = await import("react");
+	return {
+		...real,
+		FileDiff: (props: Parameters<typeof real.FileDiff>[0]) => {
+			fileDiffRenders.count++;
+			return createElement(real.FileDiff, props);
+		},
+	};
+});
+
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
 	highlightLine: async () => [],
@@ -812,6 +826,45 @@ describe("FilesPage", () => {
 		await user.click(within(sheet).getByRole("button", { name: /a\.txt/ }));
 		await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		await vi.waitFor(() => expect(scrolled).toHaveBeenCalled());
+	});
+
+	it("on a narrow screen, the floating button hiding and showing re-renders no file", async () => {
+		vi.stubGlobal(
+			"matchMedia",
+			(query: string) =>
+				({
+					matches: false,
+					media: query,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				}) as unknown as MediaQueryList,
+		);
+		renderPage({
+			"/api/review": () => ({
+				status: 200,
+				body: { ...emptyReview, files: [oneFile] },
+			}),
+		});
+		const button = await screen.findByRole("button", { name: "Files" });
+		await screen.findByRole("region", { name: "a.txt" });
+		// Settled: no render pending.
+		await act(async () => {});
+		const before = fileDiffRenders.count;
+		expect(before).toBeGreaterThan(0);
+		// A box takes focus: the button makes way (the same flip as a
+		// card's control under it), and back.
+		const box = document.createElement("textarea");
+		document.body.append(box);
+		act(() => box.focus());
+		await vi.waitFor(() =>
+			expect(button).toHaveAttribute("data-fab-hidden", "writing"),
+		);
+		act(() => box.blur());
+		await vi.waitFor(() =>
+			expect(button).not.toHaveAttribute("data-fab-hidden"),
+		);
+		expect(fileDiffRenders.count).toBe(before);
+		box.remove();
 	});
 
 	describe("landing from a thread link", () => {
