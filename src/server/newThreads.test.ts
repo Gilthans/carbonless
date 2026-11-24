@@ -12,15 +12,10 @@ import {
 } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
-import type { NewThreadRequest } from "../shared/types";
+import { type NewThreadRequest, SAME_AS_BASE } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
 import { postThread } from "./gh";
-import {
-	newThreadProblem,
-	placeOf,
-	postedBody,
-	SAME_AS_BASE,
-} from "./newThreads";
+import { newThreadProblem, placeOf, postedBody } from "./newThreads";
 import { mapThreads } from "./overview";
 import { parseHead } from "./pinnedHead";
 import { placingHooks, Session } from "./session";
@@ -398,6 +393,25 @@ describe("new threads", () => {
 			session.startThread(request({ side: "LEFT", line: 26 })),
 		);
 		expect(left.code).toBe("gone");
+		// Another refusal on checked RIGHT lines (a 404: the PR gone from
+		// reach) isn't the PR moving on: it keeps its own answer.
+		tweak({ failNext: { op: "comment", status: 404 } });
+		const missing = await refused(session.startThread(request({ line: 2 })));
+		expect(missing.code).toBe("gone");
+		expect(missing.message).not.toMatch(/moved on/);
+	});
+
+	it("a RIGHT line past the file's end is refused before gh, though within three lines of its last change (CAR-293)", async () => {
+		// new.txt is one line, all added: GitHub's hunk ends at line 1.
+		const e = await refused(
+			session.startThread(request({ path: "new.txt", line: 2 })),
+		);
+		expect(e.code).toBe("invalid");
+		expect(posts()).toHaveLength(0);
+		const { thread } = await session.startThread(
+			request({ path: "new.txt", line: 1 }),
+		);
+		expect(thread.anchor).toMatchObject({ side: "RIGHT", line: 1 });
 	});
 
 	/**
@@ -1037,6 +1051,18 @@ describe("commentLeft", () => {
 		const right = await s.startThread(line(pr.head(), "l3", { side: "RIGHT" }));
 		expect(right.thread.anchor).toMatchObject({ side: "RIGHT", line: 2 });
 		expect(compares()).toBe(1);
+		// GitHub's diff isn't the snapshot's here: a RIGHT line outside the
+		// snapshot's diff isn't refused as "same as the base" (it may be in
+		// GitHub's); GitHub decides, and its 422 stays gone, never "moved
+		// on" (CAR-293).
+		const posted = (pr.ghLog().match(/-X POST/g) ?? []).length;
+		const outside = await s
+			.startThread(line(pr.head(), "l4", { side: "RIGHT", line: 15 }))
+			.catch((e: unknown) => e);
+		expect(outside).toBeInstanceOf(WriteRefusedError);
+		expect((outside as WriteRefusedError).message).not.toBe(SAME_AS_BASE);
+		expect((outside as WriteRefusedError).code).toBe("gone");
+		expect((pr.ghLog().match(/-X POST/g) ?? []).length).toBe(posted + 1);
 	});
 
 	it("a started review of a PR then merged: asked against the PR's own base commit, where GitHub still puts its LEFT lines (gallery #11)", async () => {
