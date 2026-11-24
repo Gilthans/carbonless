@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { GhError } from "./errors.js";
 import type { PrMeta } from "./gh.js";
 import { runGh } from "./gh.js";
-import { GitError, inheritedEnv, runGit } from "./git.js";
+import { GitError, inheritedEnv, runGit, runGitFull } from "./git.js";
 import { cacheDir } from "./paths.js";
 
 /**
@@ -409,43 +409,224 @@ export async function fetchPr(
 	});
 }
 
-/** How long fetching one commit by OID may hold the repo lock. */
+/** How long fetching commits by OID may hold the repo lock, per batch. */
 export const FETCH_COMMIT_TIMEOUT_MS = 60_000;
 
 /**
  * Whether `oid` is a commit in the clone, fetching it by OID from GitHub
- * if not (a commit a force-push dropped from the PR), within
- * FETCH_COMMIT_TIMEOUT_MS. Never throws. Callers cache the answer
- * (threadCode.ts), so a missing commit is asked for once.
+ * if not (a commit a force-push dropped from the PR). Never throws.
+ * Callers cache the answer (threadCode.ts), so a missing commit is asked
+ * for once.
+ *
+ * Asks are batched per clone (CommitBatcher): those made together are
+ * checked with one `git cat-file --batch-check`, and the missing ones are
+ * fetched with one `git fetch origin <oid>…` under one repo lock hold,
+ * within FETCH_COMMIT_TIMEOUT_MS. Asks made while a batch runs join it
+ * when it already has their commit, else the next batch.
  */
-export async function ensureCommit(
+export function ensureCommit(
 	path: string,
 	oid: string,
-	/** Stops the fetch (a session closing); then false. */
+	/** Stops this ask (a session closing); then false. */
 	signal?: AbortSignal,
 ): Promise<boolean> {
-	if (!OID.test(oid)) return false;
-	const present = () =>
-		runGit(path, ["cat-file", "-e", `${oid}^{commit}`], { signal }).then(
-			() => true,
-			() => false,
-		);
-	if (await present()) return true;
-	return withRepoLock(path, async () => {
-		if (await present()) return true;
-		await runGit(
+	if (!OID.test(oid) || signal?.aborted) return Promise.resolve(false);
+	let batcher = batchers.get(path);
+	if (!batcher) {
+		const made = new CommitBatcher(path, () => {
+			if (batchers.get(path) === made) batchers.delete(path);
+		});
+		batchers.set(path, made);
+		batcher = made;
+	}
+	return batcher.ask(oid, signal);
+}
+
+/** Each clone's batcher, while it has asks. */
+const batchers = new Map<string, CommitBatcher>();
+
+/** One ask: answered once, false when its signal stops it first. */
+interface CommitAsk {
+	answer: (present: boolean) => void;
+}
+
+/** Commits asked for together; stopped when every ask is. */
+interface CommitBatch {
+	asks: Map<string, Set<CommitAsk>>;
+	/** What it found so far, by commit. */
+	answers: Map<string, boolean>;
+	stop: AbortController;
+}
+
+const newBatch = (): CommitBatch => ({
+	asks: new Map(),
+	answers: new Map(),
+	stop: new AbortController(),
+});
+
+/** Answers `ensureCommit` asks for one clone, a batch at a time. */
+class CommitBatcher {
+	#next: CommitBatch | null = null;
+	#running: CommitBatch | null = null;
+	#scheduled = false;
+
+	constructor(
+		private readonly path: string,
+		private readonly idle: () => void,
+	) {}
+
+	ask(oid: string, signal?: AbortSignal): Promise<boolean> {
+		const running = this.#running;
+		const known = running?.answers.get(oid);
+		if (known !== undefined) return Promise.resolve(known);
+		const batch = running?.asks.has(oid) ? running : this.#nextBatch();
+		return new Promise<boolean>((resolve) => {
+			let done = false;
+			const ask: CommitAsk = {
+				answer: (present) => {
+					if (done) return;
+					done = true;
+					signal?.removeEventListener("abort", onAbort);
+					resolve(present);
+				},
+			};
+			const onAbort = () => {
+				const same = batch.asks.get(oid);
+				same?.delete(ask);
+				if (same?.size === 0) batch.asks.delete(oid);
+				ask.answer(false);
+				// Nobody waits on it any more: stop its git.
+				if (batch.asks.size === 0) batch.stop.abort();
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+			const same = batch.asks.get(oid) ?? new Set<CommitAsk>();
+			same.add(ask);
+			batch.asks.set(oid, same);
+			if (batch === this.#next) this.#schedule();
+		});
+	}
+
+	#nextBatch(): CommitBatch {
+		if (!this.#next) this.#next = newBatch();
+		return this.#next;
+	}
+
+	/** Runs the next batch once this turn's asks are in, after the running one. */
+	#schedule(): void {
+		if (this.#scheduled || this.#running) return;
+		this.#scheduled = true;
+		setImmediate(() => {
+			this.#scheduled = false;
+			const batch = this.#next;
+			this.#next = null;
+			if (!batch) return this.idle();
+			this.#running = batch;
+			void answerBatch(this.path, batch).finally(() => {
+				this.#running = null;
+				if (this.#next) this.#schedule();
+				else this.idle();
+			});
+		});
+	}
+}
+
+/** Answers every ask of `batch`; never throws. */
+async function answerBatch(path: string, batch: CommitBatch): Promise<void> {
+	const signal = batch.stop.signal;
+	const answer = (oid: string, present: boolean) => {
+		if (batch.answers.has(oid)) return;
+		batch.answers.set(oid, present);
+		for (const ask of batch.asks.get(oid) ?? []) ask.answer(present);
+	};
+	const asked = () => [...batch.asks.keys()];
+	try {
+		const have = await presentCommits(path, asked(), signal);
+		for (const oid of have) answer(oid, true);
+		if (asked().every((oid) => have.has(oid))) return;
+		await withRepoLock(path, async () => {
+			const missing = asked().filter((oid) => !have.has(oid));
+			const now = await presentCommits(path, missing, signal);
+			await fetchCommits(
+				path,
+				missing.filter((oid) => !now.has(oid)),
+				signal,
+			);
+		});
+		const after = await presentCommits(path, asked(), signal);
+		for (const oid of asked()) answer(oid, after.has(oid));
+	} catch {
+		// Answered false below.
+	} finally {
+		for (const oid of asked()) answer(oid, false);
+	}
+}
+
+/** Which of `oids` are commits in the clone: one `cat-file --batch-check`. */
+async function presentCommits(
+	path: string,
+	oids: string[],
+	signal: AbortSignal,
+): Promise<Set<string>> {
+	if (oids.length === 0) return new Set();
+	const out = await runGit(path, ["cat-file", "--batch-check"], {
+		input: oids.map((oid) => `${oid}^{commit}\n`).join(""),
+		signal,
+	});
+	// One line per input line, in order: "<oid> commit <size>" or "<input> missing".
+	const lines = out.split("\n");
+	return new Set(oids.filter((_, i) => / commit \d+$/.test(lines[i] ?? "")));
+}
+
+/**
+ * Fetches `oids` by OID in one `git fetch`, within FETCH_COMMIT_TIMEOUT_MS
+ * in all. GitHub fails the whole fetch for one commit it doesn't have,
+ * naming it: that one is dropped and the rest fetched again. A failure
+ * that names none (the network, a timeout) falls back to one fetch per
+ * commit while time is left. What it fetched is checked by the caller.
+ */
+async function fetchCommits(
+	path: string,
+	oids: string[],
+	signal: AbortSignal,
+): Promise<void> {
+	const deadline = Date.now() + FETCH_COMMIT_TIMEOUT_MS;
+	const fetch = async (wanted: string[]) => {
+		const timeoutMs = deadline - Date.now();
+		if (timeoutMs <= 0 || signal.aborted) return null;
+		return runGitFull(
 			path,
-			[...GH_CREDENTIALS, "fetch", "--quiet", "--no-tags", "origin", oid],
+			[...GH_CREDENTIALS, "fetch", "--quiet", "--no-tags", "origin", ...wanted],
 			{
 				env: { GIT_TERMINAL_PROMPT: "0" },
 				allowFailure: true,
-				timeoutMs: FETCH_COMMIT_TIMEOUT_MS,
+				timeoutMs,
 				signal,
 			},
 		);
-		return present();
-	}).catch(() => false);
+	};
+	// Within Windows' command line limit (32K characters).
+	for (let i = 0; i < oids.length; i += FETCH_OIDS_MAX) {
+		let wanted = oids.slice(i, i + FETCH_OIDS_MAX);
+		while (wanted.length > 0) {
+			const result = await fetch(wanted);
+			if (!result) return;
+			if (result.code === 0) break;
+			const named = wanted.filter((oid) => result.stderr.includes(oid));
+			if (named.length === 0) {
+				if (wanted.length > 1) {
+					for (const oid of wanted) {
+						if (!(await fetch([oid]))) return;
+					}
+				}
+				break;
+			}
+			wanted = wanted.filter((oid) => !named.includes(oid));
+		}
+	}
 }
+
+/** OIDs one `git fetch` asks for at most. */
+const FETCH_OIDS_MAX = 200;
 
 /** The base branch's tip at `cutoff`: its last first-parent commit by then. */
 export async function baseTipAt(

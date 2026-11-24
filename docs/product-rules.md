@@ -49,6 +49,9 @@ more), so merging them would make the thread list later. The gh login is kept
 per server for 10 minutes (`src/server/viewerCache.ts`), and the page's
 first head check answers from the open's read when it is under 10 s old
 (`HEAD_REUSE_MS`).
+Commits the threads sit on that the clone lacks (a force-push dropped them)
+come in one `git fetch` for the whole read, not one per commit (CAR-289: five
+such commits took 10.7 s one by one on a real PR).
 
 ## Loading never looks empty
 

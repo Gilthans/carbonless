@@ -68,7 +68,10 @@ history.
   later check, and a Refresh, asks GitHub.
 - **Thread code** (`src/server/threadCode.ts`). A line comment's code pane is
   the PR's diff of its file at the commit the comment was made on, from the
-  clone (a commit a force-push dropped is fetched by OID): its old side is
+  clone (commits a force-push dropped are fetched by OID, all a read's
+  threads need in one `git fetch`; `ensureCommit`, `src/server/clone.ts`,
+  drops a commit GitHub names as unknown and fetches the rest again): its
+  old side is
   `merge-base(commit, snapshot base)`, and that must be the merge base with
   the base branch *as it stood when the comment was made*, or the old-side
   rows could be ones the commenter never saw. "As it stood" is the last

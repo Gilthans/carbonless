@@ -213,6 +213,11 @@ export class OverviewRead {
 		const restText = texts.then((t) => t.rest);
 		// Each thread's code, a few at a time, listed-first ones ahead.
 		const codes = plan.then((p) => {
+			// Every commit the threads sit on, asked for together: the ones a
+			// force-push dropped come in one fetch, not one per build slot.
+			sources.code.prefetch(
+				p.coded.flatMap((t) => (t.code ? [t.code.anchor] : [])),
+			);
 			const limit = limiter(CODE_CONCURRENCY);
 			const firstIds = new Set(p.first);
 			const textOf = (id: string) =>
