@@ -525,6 +525,31 @@ describe("ThreadCodeSource.code", () => {
 		expect(fetchCommit).toHaveBeenCalledTimes(2);
 	});
 
+	it("prefetch asks for every commit at once, each once, and the builds reuse the answers (CAR-289)", async () => {
+		const asked: string[] = [];
+		let answer = (_ok: boolean) => {};
+		const held = new Promise<boolean>((r) => {
+			answer = r;
+		});
+		const fetchCommit = vi.fn(async (_repo: string, oid: string) => {
+			asked.push(oid);
+			return oid === head ? true : held;
+		});
+		const s = new ThreadCodeSource(fx.path, fetchCommit);
+		const lost = "d".repeat(40);
+		s.prefetch([
+			at({ commit: lost }),
+			at({ commit: head }),
+			at({ commit: lost, line: 3, startLine: 3 }),
+			at({ commit: "not an oid" }),
+		]);
+		// Asked together, before any build: the clone can batch them.
+		expect(asked).toEqual([lost, head]);
+		answer(false);
+		await fill(s, [comment(at({ commit: lost })), comment(at({}))]);
+		expect(fetchCommit).toHaveBeenCalledTimes(2);
+	});
+
 	it("reads git once for the same code: a second build is served from the cache", async () => {
 		const fetchCommit = vi.fn(async () => true);
 		const s = new ThreadCodeSource(fx.path, fetchCommit);

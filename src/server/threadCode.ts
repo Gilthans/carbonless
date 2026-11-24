@@ -184,6 +184,17 @@ export class ThreadCodeSource {
 		this.#files.forgetFailures();
 	}
 
+	/**
+	 * Asks for every commit of `anchors` at once, so the clone fetches the
+	 * missing ones in one `git fetch` (ensureCommit batches asks made
+	 * together) rather than as each thread's code is built.
+	 */
+	prefetch(anchors: readonly CodeAnchor[]): void {
+		for (const { commit } of anchors) {
+			if (OID.test(commit)) void this.#commit(commit);
+		}
+	}
+
 	#commit(oid: string): Promise<boolean> {
 		return this.#commits.get(oid, () =>
 			this.fetchCommit(this.repo, oid, this.#stop.signal).catch(() => false),
