@@ -355,7 +355,11 @@ export async function buildSnapshot(
  *
  * With `blankLines` (an added file, CAR-235), each piece with no removed
  * lines is cut further after its blank lines (splitAtBlankLines), the same
- * way: the pieces remember the whole hunk's key.
+ * way: the pieces remember the whole hunk's key. That key (`keysOf(hunks)`)
+ * is the key the whole file had before CAR-235 only because an added file
+ * is never cut for whitespace (no old side, so no twins): the uncut hunk
+ * was its one cluster. Should either cut change so that an added file's
+ * hunk is cut before this, old whole-file marks would stop carrying.
  *
  * **Part of cluster identity** (splitHunk): marks on a cluster the cut
  * moves no longer match and read unreviewed (no carry, owner 2026-11-22).

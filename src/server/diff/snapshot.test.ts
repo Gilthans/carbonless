@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { bestCpuRatio, repeat } from "../../../test/cpu.js";
 import { createDiffFixture } from "../../../test/diff-fixture.js";
 import {
 	createGitFixture,
@@ -1043,5 +1044,52 @@ describe("added files cut at blank lines (CAR-235)", () => {
 		const e = fileOf("edit.ts");
 		expect(e.clusters).toHaveLength(1);
 		expect(e.clusters[0]?.added).toEqual(["", "more", "", "and more"]);
+	});
+});
+
+describe("the blank-line cut of a big added file scales linearly (CAR-235)", () => {
+	/** An added file of `blocks` five-line blocks, each ended by a blank line. */
+	const addedFile = (blocks: number) => {
+		const lines = Array.from({ length: blocks }, (_, b) => [
+			`export function f${b}(x: number) {`,
+			`\tconst y = x * ${b};`,
+			"\treturn y + 1;",
+			"}",
+			"",
+		]).flat();
+		const hunk: Omit<Cluster, "key"> = {
+			kind: "lines",
+			oldStart: 0,
+			oldCount: 0,
+			newStart: 1,
+			newCount: lines.length,
+			removed: [],
+			added: lines,
+			lines: lines.length,
+		};
+		return () =>
+			cutClusters(
+				[hunk],
+				(cs) => clusterKeys("big.ts", cs, lines),
+				{ oldLines: [], newLines: lines, noNewlineAtEnd: false },
+				{ blankLines: true },
+			);
+	};
+
+	it("cuts and keys a 4x larger file in about 4x the CPU, not 16x", () => {
+		const large = addedFile(1600);
+		const small = addedFile(400);
+		expect(large()).toHaveLength(1600);
+		expect(small()).toHaveLength(400);
+		// The whole snapshot's cost of the cut: the pieces' keys (each hashed
+		// with its context) and the whole hunk's key for the split carry.
+		// Linear is about 1x; a per-piece pass over the file would be 4x:
+		// measured 1.00-1.14x on the dev machine, and 3.56x with such a pass
+		// put in splitAtBlankLines as a probe.
+		const { best, ratio } = bestCpuRatio(large, repeat(4, small));
+		console.info(
+			`blank-line cut of an 8,000-line added file: ${(best / 1000).toFixed(1)} ms CPU, ${ratio.toFixed(2)}x four 2,000-line ones`,
+		);
+		expect(ratio).toBeLessThan(2);
 	});
 });

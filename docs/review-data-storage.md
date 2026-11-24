@@ -937,6 +937,10 @@ pieces follow the viewed snapshot's clusters, so a file added since the
 compared patch set is cut the same way; `ENGINE_VERSION` went to 6 so no
 cached comparison names the old whole-file key. Ignore whitespace is
 untouched: an added file has no old side, so no piece is whitespace-only.
+Since every added file is now cut, the two CAR-156 cases below are common
+rather than rare: an older crb unticking a split-carried file (see "Mixed
+versions") leaves the pieces marked, and a file carried whole into a later
+patch set counts as N carried clusters, one per piece, not one.
 
 **Mixed versions.** Once progress refs sync, an older crb that unticks the
 whole hunk (its key still a cluster there) leaves pieces already
@@ -1147,9 +1151,31 @@ now split. 600 entries (200 hunks reviewed whole, each cut in three), two
 random 64-hex keys and a state each: about 103 KB raw, 31 KB deflated. One
 entry for part of a piece (with `from` and `lines`): 587 bytes raw, 400
 deflated. The test asserts under 120 KiB raw and 60 KiB deflated for the
-first, 1 KiB raw for the second. Real reviews split few hunks (only hunks
-holding a whitespace-only run between changes), and a review started after
-the change never writes one.
+first, 1 KiB raw for the second. Since CAR-235 every added file with a
+blank line between code splits, so a review in progress with such a file
+writes one on its next open (one entry per piece of each marked file); a
+review started after the change never writes one.
+
+**Whole-file marks on added files** (CAR-235, measured 2026-11-24 with
+`buildSnapshot` and `ReviewService.recordStates` on this repo's files,
+added in one commit): "Mark all reviewed" or a cross-off writes one
+`cluster-state` event per cluster (about 300 bytes raw each), so its commit
+grows with the blocks of the file. Before the cut, each was one event (0.5
+KB raw, 0.3 KB deflated).
+
+| Added file | Lines | Clusters (was 1) | Mark all, raw | deflated |
+|---|---|---|---|---|
+| `splitCarry.ts` (typical) | 120 | 5 | 1.8 KB | 0.6 KB |
+| `snapshot.ts` | 611 | 30 | 9.7 KB | 2.0 KB |
+| `session.ts` | 2,733 | 117 | 36.3 KB | 6.8 KB |
+| `pnpm-lock.yaml` (worst case) | 4,084 | 916 | 276.6 KB | 51.3 KB |
+
+A cross-off with a reason is about the same (298 KB raw, 50 KB deflated for
+the lockfile). Each later patch set start then carries every piece: about
+90 bytes raw an entry, so about 80 KB raw for the lockfile per reviewer per
+start. One click on a big generated or lock file thus takes a review past
+the 50 KiB target above. Whether to cap the cut or store a whole-file
+action compactly is the owner's call (CAR-235).
 
 **Everyday git** (ms, median of 5) on a 3,000-commit, 2,000-file repo, with the
 review refs on the remote and the clone using the default refspec:
