@@ -123,6 +123,9 @@ export function crbEnv(workdir: string): NodeJS.ProcessEnv {
 		XDG_CACHE_HOME: join(workdir, "cache"),
 		XDG_STATE_HOME: join(workdir, "state"),
 		XDG_CONFIG_HOME: join(workdir, "config"),
+		// The run's trace has no page spans: their posts would add requests
+		// tests count (browser-trace.spec.ts turns them on for itself).
+		CRB_TRACE_BROWSER: "0",
 	});
 }
 

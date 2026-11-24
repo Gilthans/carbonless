@@ -29,6 +29,7 @@ import {
 	stopChild,
 } from "./crb-process";
 import {
+	crbEnv,
 	createPr,
 	OWNER_REPO,
 	PR_NUMBER,
@@ -162,6 +163,11 @@ export const test = base.extend<
 		crbClient: CrbClient;
 		/** Which crb serve startCrb uses (CrbServer); serve flags always get the test's own. */
 		crbServer: CrbServer;
+		/**
+		 * The test's own crb serve traces into `<workdir>/trace` with the
+		 * page's spans on (browser-trace.spec.ts); needs crbServer "own".
+		 */
+		browserTrace: boolean;
 		/** The test's PR on the fake GitHub: its own on a shared server, else acme/widget#7. */
 		ownerRepo: string;
 		prNumber: number;
@@ -191,6 +197,7 @@ export const test = base.extend<
 	}
 >({
 	crbClient: ["http", { option: true }],
+	browserTrace: [false, { option: true }],
 	crbServer: ["shared", { option: true }],
 
 	sharedCrb: [
@@ -275,6 +282,7 @@ export const test = base.extend<
 			context,
 			crbClient,
 			crbServer,
+			browserTrace,
 			sharedCrb,
 			ownerRepo,
 			prNumber,
@@ -283,6 +291,11 @@ export const test = base.extend<
 		use,
 		info,
 	) => {
+		if (browserTrace && crbServer !== "own") {
+			throw new Error(
+				'browserTrace needs its own crb serve: test.use({ crbServer: "own", browserTrace: true })',
+			);
+		}
 		// Page requests nest under the test in its trace, also on a server
 		// another test started.
 		const parent = process.env.TRACEPARENT;
@@ -311,7 +324,18 @@ export const test = base.extend<
 			if (!current || !live) {
 				current = await base.step(
 					"setup: crb serve",
-					() => startServe(workdir, serve),
+					() =>
+						startServe(
+							workdir,
+							serve,
+							browserTrace
+								? {
+										...crbEnv(workdir),
+										CRB_TRACE_DIR: join(workdir, "trace"),
+										CRB_TRACE_BROWSER: "1",
+									}
+								: undefined,
+						),
 					{ box: true },
 				);
 				currentFlags = serve.join(" ");

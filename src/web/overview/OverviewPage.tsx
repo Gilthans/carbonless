@@ -1356,7 +1356,12 @@ function ThreadGroup(props: {
 					</ul>
 				)}
 			</div>
-			<div id={listId}>
+			{/* data-trace: the threads milestone (src/web/trace/milestones.ts). */}
+			<div
+				id={listId}
+				data-trace="threads"
+				data-state={props.failed ? "failed" : undefined}
+			>
 				{loading && (
 					<ul
 						aria-label="Loading threads"

@@ -130,6 +130,7 @@ function RepoChip(props: {
 		<span className="inline-flex max-w-full items-center">
 			<span
 				data-testid="view-repo"
+				data-repo={name}
 				data-state={
 					state === "unread" ? "failed" : state === "ready" ? "ready" : state
 				}

@@ -69,6 +69,11 @@ const E2E_MAP = [
 		/^src\/server\/review\/(splitCarry|fold|events|reviews)\.ts$|^src\/server\/home\/started\.ts$|^e2e\/ws-split\.spec\.ts$/,
 		["ws-split", "whitespace"],
 	],
+	// The page's spans, only while crb serve traces (CAR-288).
+	[
+		/^src\/web\/trace\/|^src\/server\/browserTrace\.ts$|^e2e\/browser-trace\.spec\.ts$/,
+		["browser-trace"],
+	],
 	// Pure (hunks and texts in, placements out), but where threads sit on
 	// the re-review and agent pages follows it (CAR-95).
 	[/^src\/shared\/tracer\//, ["rereview", "agent"]],
