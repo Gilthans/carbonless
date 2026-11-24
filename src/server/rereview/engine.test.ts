@@ -1696,3 +1696,56 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 		}
 	});
 });
+
+describe("an added file cut at blank lines, in the since view (CAR-235)", () => {
+	const added = "one\n\ntwo\n\nthree\n";
+	let fx: ReturnType<typeof createGitFixture>;
+	beforeAll(() => {
+		fx = createGitFixture([
+			{ message: "base", files: { "a.txt": "a\n" } },
+			{ message: "ps1", files: { "a.txt": "A\n" } },
+			{ message: "ps2", files: { "new.txt": added } },
+		]);
+	});
+	afterAll(() => fx.cleanup());
+	const [b0, p1, p2] = [0, 1, 2].map((i) => () => fx.shas[i] as string);
+
+	it("a file added since the compared patch set reads as one new unit per block", async () => {
+		const ps1 = await buildSnapshot(fx.path, b0(), p1());
+		const r = await buildSnapshot(fx.path, b0(), p2());
+		const file = r.files.find((f) => f.path === "new.txt");
+		expect(file?.clusters.map((c) => c.added)).toEqual([
+			["one", ""],
+			["two", ""],
+			["three"],
+		]);
+		const { answer } = await computeRereview(
+			fx.path,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		expect(kinds(answer)).toEqual({
+			"a.txt": ["carried:1"],
+			"new.txt": ["new", "new", "new"],
+		});
+		expect(answer.toRead).toEqual({ files: 1, clusters: 3 });
+	});
+
+	it("an added file reviewed whole at the compared patch set carries onto every piece", async () => {
+		const ps1 = await buildSnapshot(fx.path, b0(), p2());
+		const r = await buildSnapshot(fx.path, b0(), p2());
+		const { answer } = await computeRereview(
+			fx.path,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		expect(kinds(answer)["new.txt"]).toEqual([
+			"carried:1",
+			"carried:1",
+			"carried:1",
+		]);
+		expect(answer.toRead).toEqual({ files: 0, clusters: 0 });
+	});
+});

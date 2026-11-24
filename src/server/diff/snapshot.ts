@@ -13,7 +13,11 @@ import type {
 import { type HunkCut, hunkCut, hunkCuts } from "../../shared/whitespace.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
 import { BlobCache } from "./blobCache.js";
-import { buildAllClusters, splitCluster } from "./clusters.js";
+import {
+	buildAllClusters,
+	splitAtBlankLines,
+	splitCluster,
+} from "./clusters.js";
 import { readTabWidths } from "./editorconfig.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
 import {
@@ -306,11 +310,16 @@ export async function buildSnapshot(
 						? [oldOid, newOid]
 						: undefined,
 			});
-		const clusters = cutClusters(hunks, keysOf, {
-			oldLines: text?.oldLines ?? [],
-			newLines: text?.newLines ?? [],
-			noNewlineAtEnd: text?.noNewlineAtEnd ?? false,
-		});
+		const clusters = cutClusters(
+			hunks,
+			keysOf,
+			{
+				oldLines: text?.oldLines ?? [],
+				newLines: text?.newLines ?? [],
+				noNewlineAtEnd: text?.noNewlineAtEnd ?? false,
+			},
+			{ blankLines: file.status === "added" },
+		);
 		const tabWidth = tabWidths[index];
 		const oldSize = sizeOf(oldOid);
 		const newSize = sizeOf(newOid);
@@ -344,6 +353,10 @@ export async function buildSnapshot(
  * hunks, as before the cut) and where its lines sit in it, so marks on the
  * hunk carry onto the pieces (splitCarry.ts).
  *
+ * With `blankLines` (an added file, CAR-235), each piece with no removed
+ * lines is cut further after its blank lines (splitAtBlankLines), the same
+ * way: the pieces remember the whole hunk's key.
+ *
  * **Part of cluster identity** (splitHunk): marks on a cluster the cut
  * moves no longer match and read unreviewed (no carry, owner 2026-11-22).
  */
@@ -351,12 +364,13 @@ export function cutClusters(
 	hunks: Omit<Cluster, "key">[],
 	keysOf: (clusters: Omit<Cluster, "key">[]) => string[],
 	text: { oldLines: string[]; newLines: string[]; noNewlineAtEnd: boolean },
+	opts: { blankLines?: boolean } = {},
 ): Cluster[] {
 	const cuts = displayCuts(hunks, text);
 	const clusters: Omit<Cluster, "key">[] = [];
 	const parts: { hunk: number; removedAt: number; addedAt: number }[] = [];
 	hunks.forEach((hunk, h) => {
-		const pieces =
+		let pieces =
 			hunk.kind === "lines"
 				? splitCluster(
 						hunk,
@@ -369,6 +383,15 @@ export function cutClusters(
 							),
 					)
 				: [{ cluster: hunk, removedAt: 0, addedAt: 0 }];
+		if (opts.blankLines && hunk.kind === "lines") {
+			pieces = pieces.flatMap((piece) =>
+				splitAtBlankLines(piece.cluster).map((p) => ({
+					cluster: p.cluster,
+					removedAt: piece.removedAt + p.removedAt,
+					addedAt: piece.addedAt + p.addedAt,
+				})),
+			);
+		}
 		for (const piece of pieces) {
 			clusters.push(piece.cluster);
 			parts.push({

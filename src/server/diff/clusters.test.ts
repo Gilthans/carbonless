@@ -4,6 +4,7 @@ import type { LineCluster } from "./clusters.js";
 import {
 	fileLevelCluster,
 	parseU0Patch,
+	splitAtBlankLines,
 	splitCluster,
 	splitPatch,
 } from "./clusters.js";
@@ -322,5 +323,83 @@ describe("splitCluster (CAR-156)", () => {
 			...ws,
 			whitespaceOnly: true,
 		});
+	});
+});
+
+describe("splitAtBlankLines (CAR-235)", () => {
+	/** An added file's one hunk, from its lines (`\\` ending: no newline at end). */
+	const addedFile = (lines: string[], noNewline = false): LineCluster =>
+		parseU0Patch(
+			`@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}\n`).join("")}${noNewline ? "\\ No newline at end of file\n" : ""}`,
+		)[0] as LineCluster;
+	const shape = (p: ReturnType<typeof splitAtBlankLines>[number]) => ({
+		added: p.cluster.added,
+		new: [p.cluster.newStart, p.cluster.newCount],
+		old: [p.cluster.oldStart, p.cluster.oldCount],
+		at: p.addedAt,
+	});
+
+	it("ends a cluster at each blank line, the blank line staying with the cluster before it", () => {
+		const hunk = addedFile(["a", "b", "", "c", "", "d"]);
+		expect(splitAtBlankLines(hunk).map(shape)).toEqual([
+			{ added: ["a", "b", ""], new: [1, 3], old: [0, 0], at: 0 },
+			{ added: ["c", ""], new: [4, 2], old: [0, 0], at: 3 },
+			{ added: ["d"], new: [6, 1], old: [0, 0], at: 5 },
+		]);
+	});
+
+	it("joins leading blank lines to the first cluster, and keeps a run of blanks with the cluster before it", () => {
+		const hunk = addedFile(["", "  ", "a", "", "", "\t", "b", "", ""]);
+		expect(splitAtBlankLines(hunk).map((p) => p.cluster.added)).toEqual([
+			["", "  ", "a", "", "", "\t"],
+			["b", "", ""],
+		]);
+	});
+
+	it("counts CRLF, tab-only and space-only lines as blank", () => {
+		const hunk = addedFile(["a\r", "\r", "b\r", "\t\t", "c", " \t \r", "d"]);
+		expect(splitAtBlankLines(hunk).map((p) => p.cluster.added)).toEqual([
+			["a\r", "\r"],
+			["b\r", "\t\t"],
+			["c", " \t \r"],
+			["d"],
+		]);
+	});
+
+	it("leaves a file with no blank line, a single line or only blank lines whole", () => {
+		for (const lines of [["a", "b"], ["a"], [""], ["", " ", "\t"], ["a", ""]]) {
+			const hunk = addedFile(lines);
+			expect(splitAtBlankLines(hunk)).toEqual([
+				{ cluster: hunk, removedAt: 0, addedAt: 0 },
+			]);
+		}
+	});
+
+	it("keeps no-newline-at-end on the last piece only", () => {
+		const pieces = splitAtBlankLines(addedFile(["a", "", "b"], true)).map(
+			(p) => p.cluster,
+		);
+		expect(pieces.map((c) => c.noNewlineNew)).toEqual([undefined, true]);
+	});
+
+	it("leaves a cluster with removed lines alone", () => {
+		const [hunk] = parseU0Patch("@@ -1 +1,3 @@\n-x\n+a\n+\n+b\n");
+		expect(splitAtBlankLines(hunk as LineCluster)).toEqual([
+			{ cluster: hunk, removedAt: 0, addedAt: 0 },
+		]);
+	});
+
+	it("puts every line in exactly one piece, in order (principle 2)", () => {
+		const lines = ["", "a", "", " ", "b", "c", "", "d", "\t", ""];
+		const hunk = addedFile(lines);
+		const pieces = splitAtBlankLines(hunk);
+		expect(pieces.flatMap((p) => p.cluster.added)).toEqual(lines);
+		expect(pieces.reduce((n, p) => n + p.cluster.lines, 0)).toBe(lines.length);
+		for (const p of pieces) {
+			expect(p.cluster.lines).toBe(p.cluster.added.length);
+			expect(lines.slice(p.addedAt, p.addedAt + p.cluster.lines)).toEqual(
+				p.cluster.added,
+			);
+		}
 	});
 });

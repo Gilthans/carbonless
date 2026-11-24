@@ -960,3 +960,88 @@ describe("file sizes and the LFS flag", () => {
 		}
 	});
 });
+
+describe("added files cut at blank lines (CAR-235)", () => {
+	const added =
+		"import x\n\nfunction a() {\n  return 1;\n}\n\n\nfunction b() {}\n";
+	const edited = "one\n";
+	let repo: GitFixture;
+	let snap: Snapshot;
+	beforeAll(async () => {
+		repo = createGitFixture([
+			{ message: "base", files: { "edit.ts": edited } },
+			{
+				message: "head",
+				files: {
+					"edit.ts": `${edited}\nmore\n\nand more\n`,
+					"new.ts": added,
+					"blank.txt": "\n \n",
+				},
+			},
+		]);
+		snap = await buildSnapshot(
+			repo.path,
+			repo.shas[0] as string,
+			repo.shas[1] as string,
+		);
+	});
+	afterAll(() => repo.cleanup());
+	const fileOf = (path: string) => {
+		const f = snap.files.find((x) => x.path === path);
+		if (!f) throw new Error(`no ${path}`);
+		return f;
+	};
+
+	it("gives an added file one cluster per blank-line-ended block, every line once", () => {
+		const f = fileOf("new.ts");
+		expect(f.clusters.map((c) => c.added)).toEqual([
+			["import x", ""],
+			["function a() {", "  return 1;", "}", "", ""],
+			["function b() {}"],
+		]);
+		expect(f.clusters.map((c) => [c.newStart, c.newCount])).toEqual([
+			[1, 2],
+			[3, 5],
+			[8, 1],
+		]);
+		// Totals unchanged (principle 2): every added line in one cluster.
+		expect(f.clusters.reduce((n, c) => n + c.lines, 0)).toBe(f.additions);
+		expect(f.clusters.flatMap((c) => c.added).join("\n")).toBe(
+			added.slice(0, -1),
+		);
+		expect(new Set(f.clusters.map((c) => c.key)).size).toBe(3);
+	});
+
+	it("remembers the whole hunk's key on each piece, so marks on it carry", () => {
+		const f = fileOf("new.ts");
+		const whole = clusterKeys(
+			"new.ts",
+			[
+				{
+					...(parseU0Patch(
+						`@@ -0,0 +1,8 @@\n${added
+							.split("\n")
+							.slice(0, -1)
+							.map((l) => `+${l}`)
+							.join("\n")}\n`,
+					)[0] as Omit<Cluster, "key" | "kind">),
+					kind: "lines",
+				},
+			],
+			added.split("\n").slice(0, -1),
+		)[0];
+		expect(f.clusters.map((c) => c.split)).toEqual([
+			{ key: whole, removedAt: 0, addedAt: 0, removed: 0 },
+			{ key: whole, removedAt: 0, addedAt: 2, removed: 0 },
+			{ key: whole, removedAt: 0, addedAt: 7, removed: 0 },
+		]);
+	});
+
+	it("leaves an added file of only blank lines whole, and an edited file's hunks as git cuts them", () => {
+		expect(fileOf("blank.txt").clusters).toHaveLength(1);
+		expect(fileOf("blank.txt").clusters[0]?.split).toBeUndefined();
+		const e = fileOf("edit.ts");
+		expect(e.clusters).toHaveLength(1);
+		expect(e.clusters[0]?.added).toEqual(["", "more", "", "and more"]);
+	});
+});

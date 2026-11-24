@@ -922,6 +922,22 @@ about 4 ms of CPU at the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on
 the server as the snapshot is built. Should a file's hunks not fit its
 text (the display hunks refuse them), each hunk is matched on its own.
 
+**Added files cut at blank lines.** Since CAR-235 (2026-11-24; owner:
+"each cluster should end when reaching a line of only whitespace") a file
+the comparison adds is cut further: each piece with no removed lines ends
+after a run of blank (empty or whitespace-only) lines, the blank lines
+staying with the piece before them, and blank lines at the top joining the
+first piece (`splitAtBlankLines` in `src/server/diff/clusters.ts`, called by
+`cutClusters` for files of status `added`). Edited files are not cut this
+way. The pieces carry `Cluster.split` like any other, so a review marked
+before (the whole file one cluster) keeps its marks: the split carry puts a
+whole mark on every piece and line marks on the lines they marked. No new
+event and no new stored field. The since view needs nothing of its own: its
+pieces follow the viewed snapshot's clusters, so a file added since the
+compared patch set is cut the same way; `ENGINE_VERSION` went to 6 so no
+cached comparison names the old whole-file key. Ignore whitespace is
+untouched: an added file has no old side, so no piece is whitespace-only.
+
 **Mixed versions.** Once progress refs sync, an older crb that unticks the
 whole hunk (its key still a cluster there) leaves pieces already
 split-carried as they were: they still show a mark the reviewer made,

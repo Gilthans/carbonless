@@ -1256,3 +1256,51 @@ test.describe("Home", () => {
 		await expect(anyLeftOut(page)).toHaveCount(0);
 	});
 });
+
+/** CAR-235: an added file is cut after each run of blank lines. */
+const ADDED = "src/added.ts";
+const addedFixture: PrOptions = {
+	base: { "README.md": "readme\n" },
+	files: [
+		{
+			message: "Add a file",
+			files: {
+				[ADDED]: text([
+					"import { x } from './x';",
+					"",
+					"export function a() {",
+					"  return x;",
+					"}",
+					"",
+					"",
+					"export const b = 1;",
+				]),
+			},
+		},
+	],
+};
+
+test("an added file is one box per blank-line-ended block; ticking each finishes the file", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(addedFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bar = progress(page);
+	await expect(bar).toContainText("0 / 3 clusters reviewed");
+	const section = fileSection(page, ADDED);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.locator("table")).toBeVisible();
+	await expect(boxes(section)).toHaveCount(3);
+	await boxes(section).nth(0).click();
+	await expect(bar).toContainText("1 / 3 clusters reviewed");
+	await expect(section.locator("header")).not.toHaveAttribute("data-finished");
+	await boxes(section).nth(1).click();
+	await expect(bar).toContainText("2 / 3 clusters reviewed");
+	await boxes(section).nth(2).click();
+	await expect(bar).toContainText("3 / 3 clusters reviewed");
+	await expect(bar).toContainText("100%");
+	await expect(section.locator("header")).toHaveAttribute("data-finished");
+});

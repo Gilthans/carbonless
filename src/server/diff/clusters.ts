@@ -140,6 +140,49 @@ export function splitCluster<C extends LineCluster>(
 	});
 }
 
+/** An empty line, or one of only whitespace (a CRLF line's `\r` included). */
+export const isBlankLine = (line: string): boolean => /^\s*$/.test(line);
+
+/**
+ * A pure addition (an added file's hunk) cut at its blank lines (CAR-235,
+ * owner 2026-11-22: "each cluster should end when reaching a line of only
+ * whitespace"): a blank line ends its cluster and stays in it, as does a
+ * run of them; blank lines before the first non-blank one join the
+ * cluster that line starts. A cluster with removed lines, or with no
+ * non-blank line after a blank one, comes back as itself. Pieces are
+ * numbered as git would number them as hunks; the end-of-file flag stays
+ * on the last.
+ */
+export function splitAtBlankLines<C extends LineCluster>(c: C): HunkPart<C>[] {
+	const starts = [0];
+	if (c.removed.length === 0) {
+		let text = false;
+		let afterBlank = false;
+		c.added.forEach((line, i) => {
+			const blank = isBlankLine(line);
+			if (!blank && afterBlank && text) starts.push(i);
+			if (!blank) text = true;
+			afterBlank = blank;
+		});
+	}
+	if (starts.length === 1) return [{ cluster: c, removedAt: 0, addedAt: 0 }];
+	return starts.map((from, k) => {
+		const to = starts[k + 1] ?? c.added.length;
+		const { noNewlineNew: _n, ...rest } = c;
+		const cluster = {
+			...rest,
+			newStart: c.newStart + from,
+			newCount: to - from,
+			added: c.added.slice(from, to),
+			lines: to - from,
+			...(c.noNewlineNew && to === c.added.length
+				? { noNewlineNew: true }
+				: {}),
+		} as C;
+		return { cluster, removedAt: 0, addedAt: from };
+	});
+}
+
 const short = (oid: string) => oid.slice(0, 7);
 
 /**
