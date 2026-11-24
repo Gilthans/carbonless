@@ -2,13 +2,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { copyText } from "./copyText";
 
-/** What the fallback's textarea held when "copy" ran. */
+/**
+ * What the fallback's textarea held when "copy" ran, and where it sat (its
+ * parent).
+ */
 function fakeExecCommand(result: boolean | "throw") {
 	const seen: string[] = [];
+	const parents: (Element | null)[] = [];
 	const exec = vi.fn((command: string) => {
 		const area = document.activeElement;
 		if (command === "copy" && area instanceof HTMLTextAreaElement) {
 			seen.push(area.value.slice(area.selectionStart, area.selectionEnd));
+			parents.push(area.parentElement);
 		}
 		if (result === "throw") throw new Error("no");
 		return result;
@@ -17,7 +22,7 @@ function fakeExecCommand(result: boolean | "throw") {
 		configurable: true,
 		value: exec,
 	});
-	return { exec, seen };
+	return { exec, seen, parents };
 }
 
 function setContext(secure: boolean, writeText?: (t: string) => Promise<void>) {
@@ -29,6 +34,7 @@ function setContext(secure: boolean, writeText?: (t: string) => Promise<void>) {
 }
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 	Reflect.deleteProperty(document, "execCommand");
 	Reflect.deleteProperty(navigator, "clipboard");
@@ -86,5 +92,74 @@ describe("copyText", () => {
 		fakeExecCommand("throw");
 		expect(await copyText("x")).toBe(false);
 		expect(document.querySelector("textarea")).toBeNull();
+	});
+
+	it("inside a modal dialog, puts the textarea in the dialog (the rest of the page is inert)", async () => {
+		setContext(false);
+		const dialog = document.createElement("dialog");
+		dialog.setAttribute("open", "");
+		const field = document.createElement("input");
+		const button = document.createElement("button");
+		dialog.append(field, button);
+		document.body.append(dialog);
+		button.focus();
+		const { seen, parents } = fakeExecCommand(true);
+		expect(await copyText("crb mcp", field)).toBe(true);
+		expect(seen).toEqual(["crb mcp"]);
+		expect(parents).toEqual([dialog]);
+		expect(dialog.querySelector("textarea")).toBeNull();
+		expect(document.activeElement).toBe(button);
+	});
+
+	it("finds the dialog from the focused button when not told where", async () => {
+		setContext(false);
+		const dialog = document.createElement("dialog");
+		dialog.setAttribute("open", "");
+		const button = document.createElement("button");
+		dialog.append(button);
+		document.body.append(dialog);
+		button.focus();
+		const { parents } = fakeExecCommand(true);
+		expect(await copyText("x")).toBe(true);
+		expect(parents).toEqual([dialog]);
+	});
+
+	it("outside any dialog, still uses the body", async () => {
+		setContext(false);
+		const field = document.createElement("input");
+		document.body.append(field);
+		const { parents } = fakeExecCommand(true);
+		expect(await copyText("x", field)).toBe(true);
+		expect(parents).toEqual([document.body]);
+	});
+
+	it("is false when the textarea couldn't take focus, even if execCommand says true", async () => {
+		setContext(false);
+		const button = document.createElement("button");
+		document.body.append(button);
+		button.focus();
+		// What an inert page does: focus() and select() on the textarea
+		// do nothing, yet execCommand("copy") still answers true.
+		vi.spyOn(HTMLTextAreaElement.prototype, "focus").mockImplementation(
+			() => {},
+		);
+		const { exec } = fakeExecCommand(true);
+		expect(await copyText("x")).toBe(false);
+		expect(exec).not.toHaveBeenCalled();
+		expect(document.querySelector("textarea")).toBeNull();
+		expect(document.activeElement).toBe(button);
+	});
+
+	it("is false when the selection doesn't cover the text, even if execCommand says true", async () => {
+		setContext(false);
+		vi.spyOn(
+			HTMLTextAreaElement.prototype,
+			"setSelectionRange",
+		).mockImplementation(() => {});
+		vi.spyOn(HTMLTextAreaElement.prototype, "select").mockImplementation(
+			() => {},
+		);
+		fakeExecCommand(true);
+		expect(await copyText("some text")).toBe(false);
 	});
 });
