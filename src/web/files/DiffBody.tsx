@@ -3687,26 +3687,38 @@ function useCardSelection(table: RefObject<HTMLTableElement | null>) {
 	useEffect(() => {
 		const el = table.current;
 		if (!el) return;
-		const onSelectionChange = () => {
-			const selection = document.getSelection();
-			const anchor = selection?.anchorNode;
-			const from =
-				anchor instanceof Element ? anchor : (anchor?.parentElement ?? null);
-			const inCard =
-				!!selection &&
-				!selection.isCollapsed &&
-				!!from &&
-				el.contains(from) &&
-				from.closest("[data-tail-card]") !== null;
-			if (inCard) el.dataset.cardSelecting = "";
-			else delete el.dataset.cardSelecting;
-		};
-		document.addEventListener("selectionchange", onSelectionChange);
+		cardTables.add(el);
+		markCardSelecting(el);
 		return () => {
-			document.removeEventListener("selectionchange", onSelectionChange);
+			cardTables.delete(el);
 			delete el.dataset.cardSelecting;
 		};
 	}, [table]);
+}
+
+/** The diff tables on the page, for one document listener among them all. */
+const cardTables = new Set<HTMLTableElement>();
+
+/** Marks `el` while the document's selection starts in one of its cards. */
+function markCardSelecting(el: HTMLTableElement) {
+	const selection = document.getSelection();
+	const anchor = selection?.anchorNode;
+	const from =
+		anchor instanceof Element ? anchor : (anchor?.parentElement ?? null);
+	const inCard =
+		!!selection &&
+		!selection.isCollapsed &&
+		!!from &&
+		el.contains(from) &&
+		from.closest("[data-tail-card]") !== null;
+	if (inCard) el.dataset.cardSelecting = "";
+	else delete el.dataset.cardSelecting;
+}
+
+if (typeof document !== "undefined") {
+	document.addEventListener("selectionchange", () => {
+		for (const el of cardTables) markCardSelecting(el);
+	});
 }
 
 /**
