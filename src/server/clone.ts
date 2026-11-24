@@ -409,7 +409,12 @@ export async function fetchPr(
 	});
 }
 
-/** How long fetching commits by OID may hold the repo lock, per batch. */
+/**
+ * How long fetching commits by OID may hold the repo lock: one budget for
+ * a whole batch, its retries included (a commit GitHub doesn't have costs
+ * one more fetch). Commits still unfetched when it runs out answer false
+ * (cached until a Refresh), so the lock is never held longer.
+ */
 export const FETCH_COMMIT_TIMEOUT_MS = 60_000;
 
 /**
@@ -450,8 +455,9 @@ interface CommitAsk {
 	answer: (present: boolean) => void;
 }
 
-/** Commits asked for together; stopped when every ask is. */
+/** Commits asked for together; once running, stopped when every ask is. */
 interface CommitBatch {
+	/** The asks still waiting, by commit (an answered commit leaves). */
 	asks: Map<string, Set<CommitAsk>>;
 	/** What it found so far, by commit. */
 	answers: Map<string, boolean>;
@@ -495,8 +501,11 @@ class CommitBatcher {
 				same?.delete(ask);
 				if (same?.size === 0) batch.asks.delete(oid);
 				ask.answer(false);
-				// Nobody waits on it any more: stop its git.
-				if (batch.asks.size === 0) batch.stop.abort();
+				// Nobody waits on it any more: stop its git. A batch not yet
+				// running stays as it is: later asks may still join it.
+				if (batch.asks.size === 0 && batch === this.#running) {
+					batch.stop.abort();
+				}
 			};
 			signal?.addEventListener("abort", onAbort, { once: true });
 			const same = batch.asks.get(oid) ?? new Set<CommitAsk>();
@@ -537,6 +546,8 @@ async function answerBatch(path: string, batch: CommitBatch): Promise<void> {
 		if (batch.answers.has(oid)) return;
 		batch.answers.set(oid, present);
 		for (const ask of batch.asks.get(oid) ?? []) ask.answer(present);
+		// No longer waiting: a stop of the rest stops the batch's git.
+		batch.asks.delete(oid);
 	};
 	const asked = () => [...batch.asks.keys()];
 	try {
@@ -573,7 +584,7 @@ async function presentCommits(
 		signal,
 	});
 	// One line per input line, in order: "<oid> commit <size>" or "<input> missing".
-	const lines = out.split("\n");
+	const lines = out.split(/\r?\n/);
 	return new Set(oids.filter((_, i) => / commit \d+$/.test(lines[i] ?? "")));
 }
 
@@ -611,6 +622,10 @@ async function fetchCommits(
 			const result = await fetch(wanted);
 			if (!result) return;
 			if (result.code === 0) break;
+			// GitHub (as git's own upload-pack) fails the whole fetch and names
+			// the first commit it doesn't have, whatever the locale: "fatal:
+			// remote error: upload-pack: not our ref <full oid>" (probed on
+			// github.com, 2026-11-24; nothing of the batch is fetched).
 			const named = wanted.filter((oid) => result.stderr.includes(oid));
 			if (named.length === 0) {
 				if (wanted.length > 1) {

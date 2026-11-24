@@ -14,6 +14,8 @@ import { ensureCommit } from "./clone";
 // Every git call ensureCommit makes, and a gate a fetch waits at.
 const calls = vi.hoisted(() => ({
 	log: [] as string[][],
+	/** What each git call got on stdin. */
+	inputs: [] as string[],
 	gate: null as Promise<void> | null,
 	gated: null as (() => void) | null,
 	/** The next fetch fails like this without running. */
@@ -27,6 +29,8 @@ vi.mock("./git", async (original) => {
 		) =>
 		async (repo: string, args: string[], ...rest: never[]) => {
 			calls.log.push(args);
+			const opts = rest[0] as { input?: string } | undefined;
+			if (opts?.input) calls.inputs.push(opts.input);
 			if (args.includes("fetch") && calls.gate) {
 				calls.gated?.();
 				await calls.gate;
@@ -108,6 +112,7 @@ describe("ensureCommit: commits a force-push dropped, fetched together", () => {
 		}
 		git(origin.path, "config", "uploadpack.allowAnySHA1InWant", "true");
 		calls.log.length = 0;
+		calls.inputs.length = 0;
 		calls.gate = null;
 		calls.gated = null;
 		calls.failNext = null;
@@ -225,5 +230,85 @@ describe("ensureCommit: commits a force-push dropped, fetched together", () => {
 		expect(await stopped).toBe(false);
 		held.release();
 		expect(await other).toBe(true);
+	});
+
+	it("a session closing stops the fetch even when some of its commits were there", async () => {
+		const [a = "", c = ""] = dropped;
+		const held = holdFetches();
+		const stop = new AbortController();
+		const present = ensureCommit(clone, kept, stop.signal);
+		const missing = ensureCommit(clone, a, stop.signal);
+		await held.waiting;
+		expect(await present).toBe(true);
+		stop.abort();
+		expect(await missing).toBe(false);
+		held.release();
+		// Runs once the stopped batch is over: its fetch never ran.
+		expect(await ensureCommit(clone, c)).toBe(true);
+		expect(() => git(clone, "cat-file", "-e", `${a}^{commit}`)).toThrow();
+	});
+
+	it("asks stopped before their batch ran don't fail the asks that come after", async () => {
+		const [a = "", b = "", c = ""] = dropped;
+		const held = holdFetches();
+		const running = ensureCommit(clone, a);
+		await held.waiting;
+		// Queued behind the running fetch, then stopped (its session closed).
+		const stop = new AbortController();
+		const stopped = ensureCommit(clone, b, stop.signal);
+		stop.abort();
+		expect(await stopped).toBe(false);
+		// Another session's ask, into the same next batch.
+		const later = ensureCommit(clone, c);
+		held.release();
+		expect(await running).toBe(true);
+		expect(await later).toBe(true);
+	});
+
+	it("refuses what isn't a full commit id before any git runs", async () => {
+		const [a = ""] = dropped;
+		const bad = [
+			"--upload-pack=touch pwned",
+			"HEAD",
+			"refs/heads/main",
+			a.slice(0, 12),
+			`${a} `,
+			a.toUpperCase(),
+			`${a}\n${kept}`,
+		];
+		const answers = await Promise.all(
+			bad.map((oid) => ensureCommit(clone, oid)),
+		);
+		expect(answers.every((ok) => ok === false)).toBe(true);
+		expect(calls.log).toEqual([]);
+		// Mixed into a batch with good ones: they still come, and no bad one
+		// reaches git's argv or stdin.
+		const mixed = await Promise.all(
+			[a, ...bad].map((oid) => ensureCommit(clone, oid)),
+		);
+		expect(mixed).toEqual([true, ...bad.map(() => false)]);
+		for (const args of calls.log) {
+			for (const b of bad) expect(args).not.toContain(b);
+		}
+		expect(calls.inputs.length).toBeGreaterThan(0);
+		for (const input of calls.inputs) expect(input).toBe(`${a}^{commit}\n`);
+	});
+
+	it("reads the commit git names in any wording, and fetches the rest again", async () => {
+		const [a = "", b = ""] = dropped;
+		const unknown = "2".repeat(40);
+		// A localized message still carries the full id.
+		calls.failNext = `fatal: Fehler am anderen Ende: upload-pack: nicht unsere Referenz ${unknown}\n`;
+		const answers = await Promise.all(
+			[a, unknown, b].map((oid) => ensureCommit(clone, oid)),
+		);
+		expect(answers).toEqual([true, false, true]);
+		const wanted = fetches().map((args) =>
+			args.slice(args.indexOf("origin") + 1),
+		);
+		expect(wanted).toEqual([
+			[a, unknown, b],
+			[a, b],
+		]);
 	});
 });
