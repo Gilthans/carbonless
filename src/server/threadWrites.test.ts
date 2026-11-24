@@ -800,6 +800,7 @@ describe("thread writes", () => {
 				viewer: "octo-cat",
 				writes: "on",
 				code: {
+					prefetch: () => {},
 					window: async () => null,
 					code: async () => null,
 				} as unknown as ThreadCodeSource,
@@ -832,6 +833,7 @@ describe("thread writes", () => {
 				viewer: "octo-cat",
 				writes: "on",
 				code: {
+					prefetch: () => {},
 					window: async () => null,
 					code: async () => null,
 				} as unknown as ThreadCodeSource,
