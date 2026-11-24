@@ -34,6 +34,7 @@ import {
 import { ghCallsOf } from "../../test/gh-log";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { settleGh } from "../../test/settle-gh";
+import { quietFor } from "../../test/sleep";
 import { GITHUB_KEPT_TAGS } from "../shared/markdownEscape";
 import { GhError, WriteRefusedError } from "./errors";
 import {
@@ -123,7 +124,7 @@ describe("fake gh", () => {
 			answered = true;
 			return meta;
 		});
-		await new Promise((r) => setTimeout(r, 300));
+		await quietFor(300, "a held call that answered anyway");
 		expect(answered).toBe(false);
 		release(process.env.CRB_FAKE_GH ?? "", "prView");
 		await expect(view).resolves.toMatchObject({ headOid: "a".repeat(40) });

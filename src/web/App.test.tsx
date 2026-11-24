@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { codeFromHunk } from "../../test/code-window";
 import { suggestionHtml } from "../../test/fake-gh/scenario";
 import { expectLoadingThen, heldJson } from "../../test/loading";
+import { quietFor } from "../../test/sleep";
 import type {
 	CodeWindow,
 	PrOverview,
@@ -1789,7 +1790,7 @@ describe("OverviewPage", () => {
 			// Throttled: more broken images within the minute don't refetch.
 			vi.setSystemTime(new Date("2026-01-05T18:06:30Z"));
 			img().dispatchEvent(new Event("error"));
-			await new Promise((r) => setTimeout(r, 50));
+			await quietFor(50, "a refetch inside the throttle");
 			expect(reads()).toBe(1);
 		} finally {
 			vi.useRealTimers();
@@ -1959,14 +1960,14 @@ describe("OverviewPage", () => {
 			}),
 		});
 		await screen.findByRole("region", { name: "What it does" });
-		await new Promise((r) => setTimeout(r, 50));
+		await quietFor(50, "a maxAge read of a young overview");
 		expect(fetchMock.mock.calls.map(([i]) => String(i))).not.toContainEqual(
 			expect.stringContaining("maxAge"),
 		);
 		cleanup();
 		renderApp();
 		await screen.findByRole("region", { name: "What it does" });
-		await new Promise((r) => setTimeout(r, 50));
+		await quietFor(50, "a maxAge read of an overview as of a cutoff");
 		expect(fetchMock.mock.calls.map(([i]) => String(i))).not.toContainEqual(
 			expect.stringContaining("maxAge"),
 		);

@@ -80,13 +80,27 @@ async function setup(over: Parameters<typeof createHomeFixture>[0] = {}) {
 }
 
 /** Asks until nothing is pending. */
-async function settle(people: HomePeople, q: string): Promise<PeopleResult> {
-	for (let i = 0; i < 200; i++) {
-		const r = await people.people(q);
-		if (!r.pending) return r;
-		await new Promise((resolve) => setTimeout(resolve, 50));
-	}
-	throw new Error("people never settled");
+function settle(people: HomePeople, q: string): Promise<PeopleResult> {
+	return vi.waitFor(
+		async () => {
+			const r = await people.people(q);
+			if (r.pending) throw new Error("people never settled");
+			return r;
+		},
+		{ timeout: 10_000, interval: 50 },
+	);
+}
+
+/** Asks until `q` finds someone close (a list read again in the background). */
+function untilClose(people: HomePeople, q: string): Promise<PeopleResult> {
+	return vi.waitFor(
+		async () => {
+			const r = await people.people(q);
+			if (r.close.length === 0) throw new Error(`nobody close for ${q}`);
+			return r;
+		},
+		{ timeout: 10_000, interval: 50 },
+	);
 }
 const logins = (r: PeopleResult) => ({
 	close: r.close.map((p) => p.login),
@@ -147,11 +161,7 @@ describe("HomePeople", () => {
 		expect(reads()).toBe(1);
 		clock.now = T0 + ORG_MEMBERS_TTL_MS;
 		// The stale list answers while it's read again.
-		let r = await people.people("zel");
-		for (let i = 0; i < 200 && r.close.length === 0; i++) {
-			await new Promise((resolve) => setTimeout(resolve, 50));
-			r = await people.people("zel");
-		}
+		const r = await untilClose(people, "zel");
 		expect(logins(r).close).toEqual(["zelda"]);
 		expect(reads()).toBe(2);
 	});
@@ -225,11 +235,7 @@ describe("HomePeople", () => {
 		await settle(people, "zo");
 		expect(betaReads()).toBe(1);
 		clock.now = T0 + 61_000;
-		let again = await people.people("zo");
-		for (let i = 0; i < 200 && again.close.length === 0; i++) {
-			await new Promise((resolve) => setTimeout(resolve, 50));
-			again = await people.people("zo");
-		}
+		const again = await untilClose(people, "zo");
 		expect(logins(again).close).toEqual(["zoe"]);
 		expect(betaReads()).toBe(2);
 	});

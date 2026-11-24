@@ -236,6 +236,9 @@ loading never looking empty, interdiffs first-class, checking against a real PR)
   only to label it flaky or consistent; that rerun never turns a job
   green (`docs/ci-flakes.md`). Playwright's expects wait
   10 s (a reload's chained reads); a test that needs longer says why.
+  Lint enforces these rules (`biome-plugins/`: no `waitForTimeout`, no
+  retries, no wall-clock asserts, no fixed sleeps but `test/sleep.ts`'s;
+  `docs/ci-flakes.md`, "Lint rules").
 - A runner killed mid-test (a Playwright worker past its teardown timeout,
   an interrupted run) never runs its cleanup. What a test starts carries
   `$CRB_OWNER` (`test/setup.ts`, `crbEnv` in `e2e/pr-setup.ts`): `crb serve`,

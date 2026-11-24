@@ -289,11 +289,9 @@ describe("SessionRegistry", () => {
 		const close = a.session.close.bind(a.session);
 		a.session.close = () => closing.then(close);
 		try {
-			const got = await Promise.race([
-				r.get(b.id),
-				new Promise((done) => setTimeout(() => done("held up"), 1000)),
-			]);
-			expect(got).toBe(b.session);
+			// Resolves while a's close is held: waiting for it would hang (the
+			// test's timeout), as only the finally below releases it.
+			expect(await r.get(b.id)).toBe(b.session);
 		} finally {
 			release();
 		}
