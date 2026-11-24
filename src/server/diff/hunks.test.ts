@@ -8,7 +8,7 @@ import type { Cluster, DisplayHunk } from "../../shared/types.js";
 import { runGit } from "../git.js";
 import { buildClusters } from "./clusters.js";
 import { DIFF_ARGS, listChangedFiles } from "./files.js";
-import { buildDisplayHunks, contextLines } from "./hunks.js";
+import { buildDisplayHunks, contextLines, inDiffHunks } from "./hunks.js";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -343,5 +343,65 @@ describe("buildDisplayHunks matches git diff -U3", () => {
 			lines: h.lines.map(({ clusterKey, ...l }) => l),
 		}));
 		expect(actual).toEqual(expected);
+	});
+});
+
+describe("inDiffHunks (CAR-293)", () => {
+	/** The new-side lines the display hunks hold (GitHub's diff's RIGHT lines). */
+	const shown = (cs: Cluster[], news: string[], olds: string[]) =>
+		new Set(
+			buildDisplayHunks(olds, news, cs).flatMap((h) =>
+				h.lines.flatMap((l) => (l.newNo === undefined ? [] : [l.newNo])),
+			),
+		);
+	const cases: [string, string[], Cluster[], string[]][] = [
+		["Program.cs", oldLines, clusters, newLines],
+	];
+	const base = Array.from({ length: 40 }, (_, i) => `l${i + 1}`);
+	for (const [name, edits] of [
+		["a pure deletion", [{ at: 20, remove: 2, add: [] }]],
+		["an insertion at the top", [{ at: 0, remove: 0, add: ["x"] }]],
+		["a change at the end", [{ at: 39, remove: 1, add: ["y", "z"] }]],
+		[
+			"two changes 6 apart (one hunk) and one far",
+			[
+				{ at: 4, remove: 1, add: ["a"] },
+				{ at: 11, remove: 1, add: ["b"] },
+				{ at: 30, remove: 0, add: ["c"] },
+			],
+		],
+	] as const) {
+		const made = applyEdits(base, edits as unknown as Edit[]);
+		cases.push([name, base, made.clusters, made.newLines]);
+	}
+	for (const [name, olds, cs, news] of cases) {
+		it(`is every new line of buildDisplayHunks' hunks, and no other: ${name}`, () => {
+			const want = shown(cs, news, olds);
+			for (let n = 0; n <= news.length + 4; n++) {
+				expect(inDiffHunks(cs, n, news.length), `line ${n}`).toBe(want.has(n));
+			}
+		});
+	}
+
+	it("no clusters (a file the base and head agree on) or file-level ones only: no line", () => {
+		expect(inDiffHunks([], 1)).toBe(false);
+		expect(
+			inDiffHunks(
+				[
+					{
+						key: "f",
+						kind: "file",
+						oldStart: 0,
+						oldCount: 0,
+						newStart: 0,
+						newCount: 0,
+						removed: [],
+						added: [],
+						lines: 0,
+					},
+				],
+				1,
+			),
+		).toBe(false);
 	});
 });

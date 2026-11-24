@@ -5,11 +5,12 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentAnchor, AgentThread, AgentView } from "../../shared/agent";
-import type {
-	DisplayHunk,
-	PrOverview,
-	ReviewThread,
-	SessionInfo,
+import {
+	type DisplayHunk,
+	type PrOverview,
+	type ReviewThread,
+	SAME_AS_BASE,
+	type SessionInfo,
 } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import type { Viewing } from "../files/comparison";
@@ -38,6 +39,7 @@ import {
 	onHeadMove,
 	ShowVersionProvider,
 	spanInHunks,
+	spanOffGithub,
 	versionOf,
 	viewingOf,
 } from "./commentOnGithub";
@@ -419,6 +421,50 @@ describe("spanInHunks", () => {
 				hunks,
 			),
 		).toBe(false);
+	});
+});
+
+describe("a since-view line GitHub's diff hasn't (CAR-293)", () => {
+	const hunks = [
+		{
+			lines: [
+				{ oldNo: 1, newNo: 1, offGithub: true },
+				{ newNo: 2, offGithub: true },
+				{ oldNo: 2, newNo: 3 },
+				{ newNo: 4 },
+			],
+		},
+	] as unknown as DisplayHunk[];
+	const at = (startLine: number, end: number) =>
+		spanOfAnchor({ ...line, startLine, line: end });
+	it("isn't in GitHub's diff (spanInHunks), and says so (spanOffGithub), at either end", () => {
+		expect(spanInHunks(at(2, 2), hunks)).toBe(false);
+		expect(spanOffGithub(at(2, 2), hunks)).toBe(true);
+		expect(spanInHunks(at(2, 4), hunks)).toBe(false);
+		expect(spanOffGithub(at(2, 4), hunks)).toBe(true);
+		expect(spanInHunks(at(3, 1), hunks)).toBe(false);
+		expect(spanOffGithub(at(3, 1), hunks)).toBe(true);
+		// The lines beside it GitHub's diff has: in, and not off.
+		expect(spanInHunks(at(3, 4), hunks)).toBe(true);
+		expect(spanOffGithub(at(3, 4), hunks)).toBe(false);
+		// A LEFT line isn't the RIGHT line's flag: old 1 is in.
+		const left = spanOfAnchor({
+			...line,
+			side: "LEFT",
+			startSide: "LEFT",
+			line: 1,
+			startLine: 1,
+		});
+		expect(spanInHunks(left, hunks)).toBe(true);
+		expect(spanOffGithub(left, hunks)).toBe(false);
+	});
+
+	it("Comment on GitHub on the conversation shown is off with why; on another version it isn't checked here", () => {
+		const ctx = { ...on, inDiff: false, sameAsBase: true };
+		expect(agentCommentAvailable(line, ctx)).toBe(SAME_AS_BASE);
+		expect(agentCommentAvailable(line, { ...ctx, sameAsBase: undefined })).toBe(
+			"GitHub only takes comments on lines in the diff",
+		);
 	});
 });
 

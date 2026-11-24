@@ -15,7 +15,12 @@ import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { NewThreadRequest } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
 import { postThread } from "./gh";
-import { newThreadProblem, placeOf, postedBody } from "./newThreads";
+import {
+	newThreadProblem,
+	placeOf,
+	postedBody,
+	SAME_AS_BASE,
+} from "./newThreads";
 import { mapThreads } from "./overview";
 import { parseHead } from "./pinnedHead";
 import { placingHooks, Session } from "./session";
@@ -343,15 +348,56 @@ describe("new threads", () => {
 		});
 	});
 
-	it("a range across two hunks goes as asked (GitHub takes it); a line between hunks is GitHub's 422 → gone", async () => {
+	it("a range across two hunks goes as asked (GitHub takes it); a line between hunks is refused before GitHub (CAR-293)", async () => {
 		const { thread } = await session.startThread(
 			request({ startSide: "RIGHT", startLine: 2, side: "RIGHT", line: 26 }),
 		);
 		expect(thread.anchor).toMatchObject({ startLine: 2, line: 26 });
+		const sent = posts().length;
 		const between = await refused(
 			session.startThread(request({ side: "RIGHT", line: 15 })),
 		);
-		expect(between.code).toBe("gone");
+		expect(between.code).toBe("invalid");
+		expect(between.message).toBe(SAME_AS_BASE);
+		expect(posts()).toHaveLength(sent);
+	});
+
+	it("a RIGHT line GitHub's diff hasn't (the since view can show one: a line put back as the base had it) is refused before gh, with why; the hunk's own context lines are taken (CAR-293)", async () => {
+		// a.txt line 2 changed: GitHub's hunk is lines 1–5 (three of context).
+		const before = stored().length;
+		for (const req of [
+			request({ line: 6 }),
+			// A range with one end outside: refused as well, whichever end.
+			request({ startSide: "RIGHT", startLine: 6, line: 26 }),
+			request({ startSide: "RIGHT", startLine: 2, line: 6 }),
+		]) {
+			const e = await refused(session.startThread(req));
+			expect(e.code).toBe("invalid");
+			expect(e.message).toBe(SAME_AS_BASE);
+		}
+		expect(posts()).toHaveLength(0);
+		expect(stored()).toHaveLength(before);
+		// Line 5, the hunk's last context line: taken.
+		const { thread } = await session.startThread(request({ line: 5 }));
+		expect(thread.anchor).toMatchObject({ side: "RIGHT", line: 5 });
+		expect(posts()).toHaveLength(1);
+	});
+
+	it("GitHub's 422 on RIGHT lines the snapshot's diff has: its diff moved on, so the PR moved on (stale, refresh); on LEFT lines it stays gone (CAR-293)", async () => {
+		const unresolved = {
+			op: "comment" as const,
+			status: 422,
+			message: "pull_request_review_thread.line could not be resolved",
+		};
+		tweak({ failNext: unresolved });
+		const right = await refused(session.startThread(request({ line: 2 })));
+		expect(right.code).toBe("stale");
+		expect(right.message).toMatch(/moved on/);
+		tweak({ failNext: unresolved });
+		const left = await refused(
+			session.startThread(request({ side: "LEFT", line: 26 })),
+		);
+		expect(left.code).toBe("gone");
 	});
 
 	/**
@@ -610,8 +656,13 @@ describe("new threads", () => {
 
 	it("GitHub's 422 for a line or a file not in its diff → gone (404), nothing posted", async () => {
 		const before = stored().length;
+		// A RIGHT line is checked here first (CAR-293); a LEFT one by GitHub.
 		expect(
 			(await refused(session.startThread(request({ line: 15 })))).code,
+		).toBe("invalid");
+		expect(
+			(await refused(session.startThread(request({ side: "LEFT", line: 15 }))))
+				.code,
 		).toBe("gone");
 		expect(
 			(

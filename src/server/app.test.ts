@@ -1053,7 +1053,14 @@ describe("API", () => {
 			const stale = await start({ ...ok(), commit: "f".repeat(40) });
 			expect(stale.statusCode).toBe(409);
 			expect(stale.json().code).toBe("stale");
-			const gone = await start({ ...ok(), clientId: "n2", line: 15 });
+			// A LEFT line between hunks: GitHub's 422 (a RIGHT one is refused
+			// before gh, 400: CAR-293).
+			const gone = await start({
+				...ok(),
+				clientId: "n2",
+				side: "LEFT",
+				line: 15,
+			});
 			expect(gone.statusCode, gone.body).toBe(404);
 			expect(gone.json().code).toBe("gone");
 			expect(pr.ghLog()).toMatch(

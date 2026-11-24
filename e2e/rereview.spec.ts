@@ -3751,6 +3751,99 @@ test("a removed line never reviewed in PS1 takes a comment in the since view: Gi
 	).toHaveAttribute("data-commented", "", GIT_WAIT);
 });
 
+/**
+ * CAR-293: a line the push put back to the base's text. PS1 changes lines
+ * 10 and 30; PS2 keeps line 10, puts line 30 back as the base had it and
+ * changes line 34. The since view shows line 30 as a change (PS1's text
+ * removed, the base's added), but GitHub's diff (base → head) hasn't it:
+ * its hunks are around lines 10 and 34 (31–37). Line 34 is in both.
+ */
+const REVERTED = "src/reverted.txt";
+const revertPs1 = numbered.map((l) =>
+	l === "line 10" || l === "line 30" ? `${l} changed` : l,
+);
+const revertPs2 = numbered.map((l) =>
+	l === "line 10" || l === "line 34" ? `${l} changed` : l,
+);
+
+test("since view: a line put back to the base's text takes no comment, with why (GitHub's diff hasn't it); the changed line beside it does (CAR-293)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [REVERTED]: text(numbered) },
+		files: [{ message: "PS1", files: { [REVERTED]: text(revertPs1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, REVERTED);
+	await boxes(first).first().click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [REVERTED]: text(revertPs2) } });
+	const head = p.head();
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = await expand(page, REVERTED);
+	const addedRow = (n: number) =>
+		since.locator(
+			`tr[data-testid="diff-line"][data-kind="add"][data-new-no="${n}"]`,
+		);
+	await expect(addedRow(30)).toBeVisible(GIT_WAIT);
+	const bar = page.getByTestId("selection-bar");
+	const pick = async (n: number) => {
+		const number = addedRow(n).getByTestId("new");
+		await addedRow(n).evaluate((el) => el.scrollIntoView({ block: "center" }));
+		if (isMobile) await number.tap();
+		else await number.click();
+		await expect(bar).toBeVisible();
+	};
+	const commentButton = bar.getByRole("button", { name: "Comment" });
+
+	// Line 34, a change GitHub's diff has: Comment posts RIGHT 34 on the head.
+	// (First: on a phone a second tap extends the pick.)
+	await pick(34);
+	await expect(commentButton).not.toHaveAttribute("aria-disabled", "true");
+	await commentButton.click();
+	const composer = since.getByTestId("new-thread");
+	await composer
+		.getByRole("textbox", { name: "Comment" })
+		.fill("Why change line 34?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(since.getByTestId("new-thread")).toHaveCount(0);
+	await expect(addedRow(34)).toHaveAttribute("data-commented", "", GIT_WAIT);
+	expect(postedThreads(p)).toEqual([
+		expect.objectContaining({
+			line: 34,
+			diffSide: "RIGHT",
+			commit: head,
+			body: expect.stringContaining("Why change line 34?"),
+		}),
+	]);
+	// Line 30 reads as the base: Comment is off, saying why (alone, or with
+	// line 34 when a phone's tap extends the pick); pressed, nothing opens.
+	await pick(30);
+	await expect(commentButton).toHaveAttribute("aria-disabled", "true");
+	await expect(commentButton).toHaveAccessibleDescription(
+		"Same as the base: GitHub can't take a comment here",
+	);
+	await commentButton.click({ force: true });
+	await expect(since.getByTestId("new-thread")).toHaveCount(0);
+
+	// No post was tried on line 30 (GitHub would have refused it).
+	expect(
+		p
+			.ghLog()
+			.split("\n")
+			.filter((l) => /pulls\/\d+\/comments /.test(l) && l.includes("-X POST")),
+	).toHaveLength(1);
+});
+
 test("a link to an old line (side=LEFT) lands on that base line's row in the since view, and one the view doesn't show says so with the way to the full diff (CAR-253)", async ({
 	page,
 	pr,
