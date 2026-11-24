@@ -50,6 +50,23 @@ per server for 10 minutes (`src/server/viewerCache.ts`), and the page's
 first head check answers from the open's read when it is under 10 s old
 (`HEAD_REUSE_MS`).
 
+A repo's first open waits on crb's clone of it (`gh repo clone --bare`: 27 s
+of a 29 s open on a large repo), which no later open pays. The owner,
+2026-11-24: "If the backend is cloning the repo, UI should show a message
+[...] so the user knows this is irregular." While the server clones a repo
+for the first time (`isCloning`, `src/server/clone.ts`: from the clone's
+start to its end, never while an existing clone only fetches), every open
+waiting on that repo says "Cloning <owner/repo> for the first time, this
+might take a while": under the opening page's spinner (`/pr/...`, where
+Home's open box, its rows and a bare number all go), and once on `crb
+<pr>`'s stderr. Both poll `GET /api/clones/<owner>/<repo>` while their open
+is pending (the page every second, the CLI every half second): the answer
+is the repo's, so an open that joined another's, or waits on another
+open's clone, says it too, and the open's own request stays one JSON
+answer. A clone shorter than a poll goes unsaid. The review page
+(`/r/<id>`) never waits on a clone: a review lives in its repo's clone, so
+a reopen finds one there.
+
 ## Loading never looks empty
 
 Design principle 8 (`CLAUDE.md`). The owner: "Whenever something is

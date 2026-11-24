@@ -1280,6 +1280,7 @@ async function call(io) {
 		case "repo clone": {
 			const [, , , path, ...flags] = args;
 			if (flags.join(" ") !== "-- --bare --quiet") unsupported();
+			await delay("clone", 0);
 			// Like a real clone failing: git's progress line, then its fatal line.
 			if (s.cloneError) {
 				fail(`Cloning into bare repository '${path}'...\n${s.cloneError}`, 128);

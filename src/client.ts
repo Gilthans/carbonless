@@ -25,6 +25,11 @@ import {
 	sameBuild,
 	VERSION_HEADER,
 } from "./server/version.js";
+import {
+	type CloneState,
+	clonePathOf,
+	firstCloneMessage,
+} from "./shared/firstClone.js";
 
 /**
  * `crb <pr>`, the thin client: finds this machine's `crb serve` through
@@ -52,6 +57,10 @@ export interface SpawnedServer {
 
 export interface ClientDeps {
 	out?: (line: string) => void;
+	/** stderr's lines (the first-clone notice); default process.stderr. */
+	err?: (line: string) => void;
+	/** How often a waiting open asks whether its repo is cloning (ms). */
+	clonePollMs?: number;
 	openUrl?: (url: string) => Promise<unknown>;
 	/** Starts `crb serve` in the background (default: detached, logging to serve.log). */
 	spawnServer?: () => SpawnedServer;
@@ -184,6 +193,65 @@ async function prForServer(pr: string, cwd: string): Promise<string> {
 	return `${ref.owner}/${ref.repo}#${ref.number}`;
 }
 
+const CLONE_POLL_MS = 500;
+
+/**
+ * Asks the server, until stop(), whether it is cloning `owner/repo` for the
+ * first time, and says so on stderr once when it is. A poll, not a stream
+ * of the open's progress: the server's answer is the repo's (an open that
+ * joined another's, or waits on another's clone, learns it too), and the
+ * open's own request stays one JSON answer. A clone shorter than a poll
+ * goes unsaid, as it should. A failed poll says nothing.
+ */
+function watchFirstClone(
+	server: ServerState,
+	owner: string,
+	repo: string,
+	deps: ClientDeps,
+): { stop: () => Promise<void> } {
+	const err = deps.err ?? ((line) => process.stderr.write(`${line}\n`));
+	const every = deps.clonePollMs ?? CLONE_POLL_MS;
+	const stopped = new AbortController();
+	const loop = (async () => {
+		const headers = {
+			[VERSION_HEADER]: JSON.stringify(deps.build ?? BUILD),
+			...(await authHeaders(server)),
+		};
+		while (!stopped.signal.aborted) {
+			try {
+				const res = await fetch(`${server.url}${clonePathOf(owner, repo)}`, {
+					headers,
+					signal: stopped.signal,
+				});
+				const state = (await res.json()) as Partial<CloneState>;
+				if (res.ok && state.cloning === true && !stopped.signal.aborted) {
+					err(firstCloneMessage(`${owner}/${repo}`));
+					return;
+				}
+			} catch {
+				// Stopped, or the server is busy: the open itself reports failures.
+			}
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, every);
+				stopped.signal.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						resolve();
+					},
+					{ once: true },
+				);
+			});
+		}
+	})();
+	return {
+		stop: async () => {
+			stopped.abort();
+			await loop;
+		},
+	};
+}
+
 /** `crb <pr>`: prints the review's URL; ClientError when it can't. */
 export async function runClient(
 	req: ClientRequest,
@@ -205,6 +273,13 @@ export async function runClient(
 		throw new ClientError(mismatchMessage(server.version, build));
 	}
 	let res: Response;
+	// While the open waits: one line on stderr if it is crb's first clone of
+	// the repo (CAR-291), which can take long.
+	const parsed = parsePrArg(pr);
+	const watch =
+		"owner" in parsed
+			? watchFirstClone(server, parsed.owner, parsed.repo, deps)
+			: null;
 	try {
 		res = await fetch(`${server.url}/api/reviews`, {
 			method: "POST",
@@ -228,6 +303,8 @@ export async function runClient(
 		throw new ClientError(
 			`Could not reach crb serve at ${server.url}: ${(error as Error).message}`,
 		);
+	} finally {
+		await watch?.stop();
 	}
 	const body = (await res.json().catch(() => ({}))) as {
 		url?: unknown;

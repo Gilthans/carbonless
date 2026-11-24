@@ -6,6 +6,11 @@ import {
 	useSearch,
 } from "@tanstack/react-router";
 import { useEffect } from "react";
+import {
+	type CloneState,
+	clonePathOf,
+	firstCloneMessage,
+} from "../shared/firstClone";
 import { ApiError, fetchJson } from "./api";
 import { Logo } from "./brand/Brand";
 import { NotFound, notFoundReason } from "./router";
@@ -30,6 +35,9 @@ export function parseOpeningSearch(search: Record<string, unknown>): {
 } {
 	return typeof search.head === "string" ? { head: search.head } : {};
 }
+
+/** How often a waiting open asks whether its repo is cloning (ms). */
+const CLONE_POLL_MS = 1_000;
 
 /** The statuses whose message says why the PR can't be opened. */
 const REFUSED = [400, 404, 409, 410];
@@ -63,6 +71,18 @@ export function OpeningPage() {
 		staleTime: Number.POSITIVE_INFINITY,
 		gcTime: Number.POSITIVE_INFINITY,
 	});
+	// While it waits: whether crb is cloning the repo for the first time
+	// (the server's answer, by repo: CAR-291), which can take long.
+	const waiting = refused === null && open.isPending;
+	const clone = useQuery({
+		queryKey: ["cloning", owner.toLowerCase(), repo.toLowerCase()],
+		queryFn: () => fetchJson<CloneState>(clonePathOf(owner, repo)),
+		enabled: waiting,
+		refetchInterval: CLONE_POLL_MS,
+		retry: false,
+		gcTime: 0,
+	});
+	const cloning = waiting && clone.data?.cloning === true;
 	const id = open.data?.id;
 	useEffect(() => {
 		if (id) void navigate({ to: "/r/$id", params: { id }, replace: true });
@@ -112,15 +132,27 @@ export function OpeningPage() {
 					</div>
 				</div>
 			</header>
-			<main className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
+			<main aria-busy={waiting} className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
 				{why !== null ? (
 					<NotFound reason={why} />
 				) : error ? (
 					<ErrorMessage error={error} />
 				) : (
-					<Spinner label="Opening the PR" className="text-sm">
-						Opening…
-					</Spinner>
+					<>
+						<Spinner label="Opening the PR" className="text-sm">
+							Opening…
+						</Spinner>
+						{/* Under the spinner, with nothing after it: nothing moves
+						    as the notice comes and goes; read out when it fills.
+						    The repo name is React text (escaped). */}
+						<p
+							aria-live="polite"
+							data-testid="first-clone"
+							className="mt-2 text-sm break-words text-muted empty:hidden"
+						>
+							{cloning ? firstCloneMessage(`${owner}/${repo}`) : null}
+						</p>
+					</>
 				)}
 			</main>
 		</div>
