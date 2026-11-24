@@ -22,6 +22,9 @@ export interface Span {
 	endMs: number;
 	attrs: Record<string, string | number | boolean>;
 	error: boolean;
+	/** The build that wrote it (resource `service.version`, `service.commit`), when recorded. */
+	version?: string;
+	commit?: string;
 }
 
 interface OtlpValue {
@@ -129,6 +132,14 @@ export function spansOf(requests: OtlpRequest[]): Span[] {
 		for (const rs of req.resourceSpans ?? []) {
 			const res = attrsOf(rs.resource?.attributes);
 			const service = String(res["service.name"] ?? "?");
+			const build = {
+				...(res["service.version"] !== undefined
+					? { version: String(res["service.version"]) }
+					: {}),
+				...(res["service.commit"] !== undefined
+					? { commit: String(res["service.commit"]) }
+					: {}),
+			};
 			for (const ss of rs.scopeSpans ?? []) {
 				for (const s of ss.spans ?? []) {
 					spans.push({
@@ -141,6 +152,7 @@ export function spansOf(requests: OtlpRequest[]): Span[] {
 						endMs: nanosToMs(s.endTimeUnixNano),
 						attrs: attrsOf(s.attributes),
 						error: s.status?.code === 2,
+						...build,
 					});
 				}
 			}

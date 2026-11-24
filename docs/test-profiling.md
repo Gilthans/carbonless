@@ -76,6 +76,17 @@ max, failures: 5xx or aborted), gh and git calls, and gh/git by command
 read. A test run refuses `--since`. `--jaeger` loads the same
 window into Jaeger (service `crb`). A server's directory is never packed.
 
+Every file says which build wrote it: each line's resource has
+`service.version` (package.json's version) and `service.commit` (the full
+SHA, `-dirty` kept), as `crb --version` and `server.json` have them
+(`src/server/version.ts`). Run from source (tests, `pnpm dev`) that is
+package.json's version and the checkout's HEAD. The server summary lists
+the builds in the window ("unknown": files from before builds were
+recorded); `--only <build>` keeps one (any part of `0.5.0-rc.3 (93fe843)`:
+`rc.3`, a commit's start), and `--compare-version <a> <b>` puts two side
+by side: n, p50 and p95 per route, per gh/git kind and per command, most
+moved first. A build missing on one side shows `–`, not a 0.
+
 ## Reading them
 
 - `pnpm test-profile [run|latest|e2e|unit]` (the newest match with traces,

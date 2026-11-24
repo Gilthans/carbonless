@@ -1,5 +1,6 @@
 // pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]
-// pnpm test-profile <server trace dir> [--since 1d] [--top N] [--jaeger]
+// pnpm test-profile <server trace dir> [--since 1d] [--only <build>] [--top N] [--jaeger]
+// pnpm test-profile <server trace dir> [--since 1d] --compare-version <a> <b>
 // pnpm test-profile [unit run] --write-durations [--force]
 //
 // Summarizes a test run's traces (docs/test-profiling.md). A run is named
@@ -12,7 +13,9 @@
 // the slowest files by (scripts/test-profile/sequencer.mjs). A crb serve's
 // trace directory ($CRB_TRACE_DIR: no run.json, crb's files) is read as a
 // server: its slowest routes and gh/git calls, over `--since` (30m, 6h,
-// 1d, 2w or a date); it is never packed.
+// 1d, 2w or a date); it is never packed. Spans carry the build that wrote
+// them: `--only` keeps one build's ("rc.3", a commit's start),
+// `--compare-version` puts two side by side.
 import { execFileSync } from "node:child_process";
 import { traceRoot } from "../../test/trace-run";
 import { writeDurations } from "./durations";
@@ -27,6 +30,8 @@ import { resolveRun } from "./runs";
 import { DURATIONS_FILE } from "./sequencer.mjs";
 import {
 	formatServer,
+	formatServerCompare,
+	ofBuild,
 	parseSince,
 	readServerRequests,
 	summarizeServer,
@@ -34,7 +39,7 @@ import {
 import { formatCompare, formatSummary, summarize } from "./summary";
 
 const USAGE =
-	"usage: pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]\n       pnpm test-profile <server trace dir> [--since 1d] [--top N] [--jaeger]\n       pnpm test-profile [unit run] --write-durations [--force]";
+	"usage: pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]\n       pnpm test-profile <server trace dir> [--since 1d] [--only <build>] [--top N] [--jaeger]\n       pnpm test-profile <server trace dir> [--since 1d] --compare-version <a> <b>\n       pnpm test-profile [unit run] --write-durations [--force]";
 
 const load = (dir: string) => viewRun(dir);
 
@@ -149,6 +154,8 @@ async function main(argv: string[]): Promise<void> {
 	let toDurations = false;
 	let force = false;
 	let since: string | undefined;
+	let only: string | undefined;
+	let versions: [string, string] | undefined;
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i] as string;
 		if (a === "--compare") compare = argv[++i];
@@ -161,6 +168,13 @@ async function main(argv: string[]): Promise<void> {
 		} else if (a === "--since") {
 			since = argv[++i] ?? "";
 			parseSince(since); // Refused before anything is read.
+		} else if (a === "--only") only = argv[++i];
+		else if (a === "--compare-version") {
+			const x = argv[++i];
+			const y = argv[++i];
+			if (!x || !y)
+				throw new Error(`--compare-version takes two builds\n${USAGE}`);
+			versions = [x, y];
 		} else if (a === "--jaeger") toJaeger = true;
 		else if (a === "--write-durations") toDurations = true;
 		else if (a === "--force") force = true;
@@ -182,17 +196,45 @@ async function main(argv: string[]): Promise<void> {
 		// A week unless asked: the whole directory can be a GiB of JSON.
 		const window = since ?? SERVER_WINDOW;
 		const lines = readServerRequests(dir, parseSince(window));
-		if (toJaeger) await jaeger(lines, { service: "crb" });
-		else {
-			const summary = summarizeServer(spansOf(lines));
-			const label = `${dir} · since ${window}${since ? "" : " (default; --since to change)"}`;
-			console.log(formatServer(label, summary, topSet ? top : 15));
+		const label = `${dir} · since ${window}${since ? "" : " (default; --since to change)"}`;
+		const n = topSet ? top : 15;
+		if (versions) {
+			if (only) {
+				throw new Error(
+					`--only and --compare-version don't go together: the comparison names its two builds\n${USAGE}`,
+				);
+			}
+			const spans = spansOf(lines);
+			const [a, b] = versions;
+			console.log(
+				formatServerCompare(
+					`${a} (since ${window})`,
+					summarizeServer(ofBuild(spans, a)),
+					b,
+					summarizeServer(ofBuild(spans, b)),
+					n,
+				),
+			);
+		} else if (toJaeger) {
+			// Every build's spans: Jaeger filters by tag itself
+			// (service.version, service.commit).
+			if (only) throw new Error(`--only doesn't apply to --jaeger\n${USAGE}`);
+			await jaeger(lines, { service: "crb" });
+		} else {
+			const spans = spansOf(lines);
+			const summary = summarizeServer(only ? ofBuild(spans, only) : spans);
+			console.log(formatServer(label, summary, n));
 		}
 		return;
 	}
-	if (since !== undefined) {
+	const serverOnly = [
+		since !== undefined && "--since",
+		only !== undefined && "--only",
+		versions && "--compare-version",
+	].filter(Boolean);
+	if (serverOnly.length) {
 		throw new Error(
-			`--since applies to a server's trace directory, not a test run\n${USAGE}`,
+			`${serverOnly.join(", ")} applies to a server's trace directory, not a test run\n${USAGE}`,
 		);
 	}
 	if (toDurations) {

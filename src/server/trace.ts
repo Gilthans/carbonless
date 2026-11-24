@@ -8,6 +8,7 @@ import {
 	statSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import { BUILD } from "./version.js";
 
 /*
  * Opt-in tracing (docs/test-profiling.md): when $CRB_TRACE_DIR names a
@@ -26,6 +27,10 @@ import { basename, join } from "node:path";
  * file at a size limit and at the UTC day change
  * (`<service>-<pid>-<random>.<yyyymmdd>.<seq>.jsonl`) and prunes the
  * directory's files of its service by age and total size.
+ *
+ * Every line's resource says which build wrote it: `service.version`
+ * (package.json's) and `service.commit` (the full SHA, "-dirty" kept), as
+ * `crb --version` and server.json have them (src/server/version.ts).
  */
 
 export interface SpanContext {
@@ -386,7 +391,14 @@ export function createTracer(opts: TracerOptions): Tracer {
 	let service = opts.service;
 	// Named at the first write, so the entry point may still rename it.
 	let file = "";
-	const resource: Attrs = { "process.pid": process.pid, ...opts.resource };
+	// Which crb wrote it, as `crb --version` says (run from source: the
+	// package version and the checkout's HEAD), to compare between builds.
+	const resource: Attrs = {
+		"process.pid": process.pid,
+		"service.version": BUILD.version,
+		"service.commit": BUILD.commit,
+		...opts.resource,
+	};
 	const warn =
 		opts.warn ??
 		((m: string) => {

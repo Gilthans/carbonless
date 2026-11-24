@@ -104,8 +104,44 @@ export interface Stat {
 	errors: number;
 }
 
+/** Spans of one build. */
+export interface Build {
+	name: string;
+	spans: number;
+	fromMs: number;
+	toMs: number;
+}
+
+/**
+ * A span's build, as `crb --version` prints it: "0.5.0-rc.3 (93fe843)";
+ * "unknown" for files written before builds were recorded (CAR-287).
+ */
+export function buildOf(s: Span): string {
+	if (s.version === undefined) return "unknown";
+	const commit = s.commit ?? "unknown";
+	const dirty = commit.endsWith("-dirty");
+	const sha = dirty ? commit.slice(0, -"-dirty".length) : commit;
+	return `${s.version} (${sha.slice(0, 7)}${dirty ? "-dirty" : ""})`;
+}
+
+/**
+ * The spans of the builds `query` names: a build's text contains it
+ * ("rc.3", "0.5.0", a commit's start). Throws, listing the builds, when
+ * none does.
+ */
+export function ofBuild(spans: Span[], query: string): Span[] {
+	const out = spans.filter((s) => buildOf(s).includes(query));
+	if (out.length === 0) {
+		const all = [...new Set(spans.map(buildOf))].join(", ") || "none";
+		throw new Error(`no spans of a build matching "${query}" (builds: ${all})`);
+	}
+	return out;
+}
+
 export interface ServerSummary {
 	spans: number;
+	/** The builds that wrote them, oldest first. */
+	builds: Build[];
 	fromMs: number | null;
 	toMs: number | null;
 	/** Requests by route, slowest p95 first. */
@@ -166,7 +202,17 @@ export function summarizeServer(spans: Span[]): ServerSummary {
 		if (failed(s)) g.errors++;
 		m.set(k, g);
 	};
+	const builds = new Map<string, Build>();
 	for (const s of spans) {
+		const name = buildOf(s);
+		const b = builds.get(name);
+		if (b) {
+			b.spans++;
+			b.fromMs = Math.min(b.fromMs, s.startMs);
+			b.toMs = Math.max(b.toMs, s.endMs);
+		} else {
+			builds.set(name, { name, spans: 1, fromMs: s.startMs, toMs: s.endMs });
+		}
 		if (ROUTE.test(s.name)) add(routes, s.name, s);
 		const kind = s.name.startsWith("gh ")
 			? "gh"
@@ -180,6 +226,7 @@ export function summarizeServer(spans: Span[]): ServerSummary {
 	}
 	return {
 		spans: spans.length,
+		builds: [...builds.values()].sort((a, b) => a.fromMs - b.fromMs),
 		fromMs: extent(spans.map((s) => s.startMs))?.[0] ?? null,
 		toMs: extent(spans.map((s) => s.endMs))?.[1] ?? null,
 		routes: stats(routes).sort((a, b) => b.p95 - a.p95 || b.ms - a.ms),
@@ -210,6 +257,14 @@ export function formatServer(
 		`▶ ${label}`,
 		`  ${s.spans} spans · ${when(s.fromMs)} → ${when(s.toMs)} UTC`,
 	];
+	if (s.builds.length) {
+		out.push("", "🏷 builds");
+		for (const b of s.builds) {
+			out.push(
+				`  ${pad(trim(b.name, 36), 36)} ${lpad(String(b.spans), 7)} spans  ${when(b.fromMs)} → ${when(b.toMs)}`,
+			);
+		}
+	}
 	if (s.routes.length) {
 		out.push("", "🐢 slowest routes (by p95)", `  ${pad("", 44)} ${HEAD}`);
 		for (const r of s.routes.slice(0, top)) out.push(row(44, r));
@@ -225,5 +280,61 @@ export function formatServer(
 		for (const c of s.commands.slice(0, top)) out.push(row(44, c));
 	}
 	if (!s.routes.length && !s.kinds.length) out.push("", "no requests or calls");
+	return out.join("\n");
+}
+
+/** "1.2s → 900ms  -300ms (-25%)"; a side with no calls shows "–". */
+function change(a: number | undefined, b: number | undefined): string {
+	if (a === undefined || b === undefined) {
+		return `${a === undefined ? "–" : fmt(a)} → ${b === undefined ? "–" : fmt(b)}`;
+	}
+	const d = b - a;
+	const rel =
+		a > 0 ? ` (${d >= 0 ? "+" : ""}${((100 * d) / a).toFixed(0)}%)` : "";
+	return `${fmt(a)} → ${fmt(b)}  ${d >= 0 ? "+" : ""}${fmt(d)}${rel}`;
+}
+
+function compareRows(
+	title: string,
+	a: Stat[],
+	b: Stat[],
+	top: number,
+): string[] {
+	const before = new Map(a.map((x) => [x.name, x]));
+	const after = new Map(b.map((x) => [x.name, x]));
+	const names = [...new Set([...before.keys(), ...after.keys()])];
+	// Most moved first (by p95; a side with no calls sorts last).
+	const moved = (n: string) => {
+		const x = before.get(n);
+		const y = after.get(n);
+		return x && y ? Math.abs(y.p95 - x.p95) : -1;
+	};
+	names.sort((x, y) => moved(y) - moved(x) || (x < y ? -1 : 1));
+	const out = ["", title];
+	for (const n of names.slice(0, top)) {
+		const x = before.get(n);
+		const y = after.get(n);
+		out.push(
+			`  ${trim(n, 44)}`,
+			`    n ${x?.n ?? 0} → ${y?.n ?? 0} · p50 ${change(x?.p50, y?.p50)} · p95 ${change(x?.p95, y?.p95)}`,
+		);
+	}
+	return out;
+}
+
+/** `--compare-version a b`: per route and gh/git kind and command, a → b. */
+export function formatServerCompare(
+	aName: string,
+	a: ServerSummary,
+	bName: string,
+	b: ServerSummary,
+	top = 15,
+): string {
+	const out = [`▶ ${aName} → ${bName}`, `  spans ${a.spans} → ${b.spans}`];
+	out.push(
+		...compareRows("🐢 routes (most moved p95 first)", a.routes, b.routes, top),
+	);
+	out.push(...compareRows("⚙ calls", a.kinds, b.kinds, top));
+	out.push(...compareRows("⚙ calls by command", a.commands, b.commands, top));
 	return out.join("\n");
 }

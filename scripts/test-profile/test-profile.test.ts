@@ -32,8 +32,11 @@ import {
 } from "./load";
 import { findRun, resolveRun } from "./runs";
 import {
+	buildOf,
 	formatServer,
+	formatServerCompare,
 	isServerDir,
+	ofBuild,
 	parseSince,
 	readServerSpans,
 	summarizeServer,
@@ -971,6 +974,72 @@ describe("a crb serve's trace directory", () => {
 		);
 		expect(out.status).toBe(1);
 		expect(out.stderr).toMatch(/--since applies to a server's trace directory/);
+	});
+
+	it("splits by the build that wrote each file, and compares two", () => {
+		const dir = tempDir();
+		const line = (version: string, commit: string, spans: RecordedSpan[]) =>
+			`${otlpLine("crb", { "service.version": version, "service.commit": commit }, spans)}\n`;
+		const a = "a".repeat(40);
+		const b = `${"b".repeat(40)}-dirty`;
+		writeFileSync(
+			join(dir, "crb-1-aaaaaa.20261123.000.jsonl"),
+			line("0.5.0-rc.2", a, [
+				sp("GET /api/home", T0, 1000, { status: 200 }),
+				sp("GET /api/home", T0, 1200, { status: 200 }),
+				sp("git fetch", T0, 1900),
+			]),
+		);
+		writeFileSync(
+			join(dir, "crb-2-bbbbbb.20261124.000.jsonl"),
+			line("0.5.0-rc.3", b, [
+				sp("GET /api/home", T0 + 86_400_000, 3000, { status: 200 }),
+				sp("git fetch", T0 + 86_400_000, 500),
+				sp("gh pr list", T0 + 86_400_000, 700),
+			]),
+		);
+		// Written before builds were recorded.
+		write(dir, "crb-3-cccccc.jsonl", [sp("GET /api/old", T0 - 1000, 5)]);
+		const spans = readServerSpans(dir);
+		expect(new Set(spans.map(buildOf))).toEqual(
+			new Set([
+				"0.5.0-rc.2 (aaaaaaa)",
+				"0.5.0-rc.3 (bbbbbbb-dirty)",
+				"unknown",
+			]),
+		);
+		const all = summarizeServer(spans);
+		expect(all.builds.map((x) => [x.name, x.spans])).toEqual([
+			["unknown", 1],
+			["0.5.0-rc.2 (aaaaaaa)", 3],
+			["0.5.0-rc.3 (bbbbbbb-dirty)", 3],
+		]);
+		expect(formatServer("traces", all)).toMatch(
+			/builds[\s\S]*0\.5\.0-rc\.3 \(bbbbbbb-dirty\) +3 spans/,
+		);
+		// --only: by version or commit.
+		expect(
+			ofBuild(spans, "rc.3")
+				.map((x) => x.name)
+				.sort(),
+		).toEqual(["GET /api/home", "gh pr list", "git fetch"]);
+		expect(ofBuild(spans, "aaaaaaa")).toHaveLength(3);
+		expect(() => ofBuild(spans, "rc.9")).toThrow(/rc\.2 \(aaaaaaa\)/);
+		const text = formatServerCompare(
+			"rc.2",
+			summarizeServer(ofBuild(spans, "rc.2")),
+			"rc.3",
+			summarizeServer(ofBuild(spans, "rc.3")),
+		);
+		expect(text).toContain("▶ rc.2 → rc.3");
+		expect(text).toMatch(
+			/GET \/api\/home\n +n 2 → 1 · p50 1\.0s → 3\.0s {2}\+2\.0s \(\+200%\) · p95 1\.2s → 3\.0s {2}\+1\.8s \(\+150%\)/,
+		);
+		expect(text).toMatch(
+			/ git\n +n 1 → 1 · p50 1\.9s → 500ms {2}-1\.4s \(-74%\)/,
+		);
+		// Only in one build: the other side is "–", never a 0.
+		expect(text).toMatch(/gh pr list\n +n 0 → 1 · p50 – → 700ms/);
 	});
 
 	it("says so when the window holds nothing", () => {

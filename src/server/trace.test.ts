@@ -23,6 +23,7 @@ import {
 	toNanos,
 	traceparent,
 } from "./trace";
+import { BUILD } from "./version";
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -76,8 +77,20 @@ describe("createTracer", () => {
 			expect.arrayContaining([
 				{ key: "service.name", value: { stringValue: "svc" } },
 				{ key: "crb.run", value: { stringValue: "r1" } },
+				{ key: "service.version", value: { stringValue: BUILD.version } },
+				{ key: "service.commit", value: { stringValue: BUILD.commit } },
 			]),
 		);
+		// From source (tests): package.json's version, the checkout's HEAD.
+		expect(BUILD.version).toBe(
+			JSON.parse(
+				readFileSync(
+					resolve(import.meta.dirname, "../../package.json"),
+					"utf8",
+				),
+			).version,
+		);
+		expect(BUILD.commit).toMatch(/^([0-9a-f]{40}|unknown)$/);
 		const [a, b] = rs.scopeSpans[0].spans;
 		expect(a).toMatchObject({
 			traceId: expect.stringMatching(/^[0-9a-f]{32}$/),
