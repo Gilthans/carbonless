@@ -140,7 +140,14 @@ would be; a full-diff-only feature is a gap with a ticket. Numbers the since
 view shows on its old side are the compared patch set's: anything stored
 or sent (a move, a comment, a link) goes through the full diff's lines,
 never the interdiff's own numbers (thread moves: `moveEnd`,
-`src/web/files/threadMove.tsx`).
+`src/web/files/threadMove.tsx`). Whether a line takes a GitHub comment
+is GitHub's diff's call too, never the interdiff's: a line the since view
+shows as changed that reads as the base (a later patch set put it back)
+isn't in GitHub's diff, so Comment, the agent's Comment on GitHub and a
+suggested comment are off there ("Same as the base: GitHub can't take a
+comment here"), and the server refuses it before calling GitHub
+(`DiffLine.offGithub`, CAR-293). A GitHub refusal of lines that check
+out says the PR moved on, with refresh.
 
 ## Re-review never hides a change
 

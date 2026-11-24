@@ -68,6 +68,12 @@ export interface CellLine {
 	 * one's `line` is in ORPHAN_LEFT's space, its GitHub line `base`.
 	 */
 	orphan?: boolean;
+	/**
+	 * A since-view RIGHT cell whose line GitHub's diff hasn't
+	 * (`data-off-github`, DiffLine.offGithub): no comment can go on it
+	 * (CAR-293).
+	 */
+	offGithub?: boolean;
 }
 
 /**
@@ -195,6 +201,9 @@ export function cellLine(cell: Element): CellLine | null {
 			? { psMoved: true }
 			: {}),
 		...(orphan ? { orphan: true } : {}),
+		...(side === "RIGHT" && row?.hasAttribute("data-off-github")
+			? { offGithub: true }
+			: {}),
 	};
 }
 
@@ -225,6 +234,13 @@ function pointIn(
 
 /** Whether the cell's line is in GitHub's diff (a hunk's, not expanded context). */
 export const inHunk = (c: Pick<CellLine, "hunk">) => c.hunk.startsWith("h");
+
+/**
+ * Whether GitHub takes a comment on the cell's line: a hunk's, and not a
+ * since-view line GitHub's diff hasn't (CAR-293).
+ */
+export const onGithub = (c: Pick<CellLine, "hunk" | "offGithub">) =>
+	inHunk(c) && !c.offGithub;
 
 /**
  * A span over cells `start`..`end` (in the order shown), whole lines unless
@@ -344,6 +360,8 @@ export function spanOfRange(
 ): {
 	span: CodeSpan;
 	inDiff: boolean;
+	/** An end of it is a since-view line GitHub's diff hasn't (CAR-293). */
+	sameAsBase: boolean;
 	/** Why one of its lines has no GitHub line (the since view), or null. */
 	noLine: NoLine | null;
 	/** The code cells of its first and last line, as shown (SelectionBar's geometry). */
@@ -392,7 +410,8 @@ export function spanOfRange(
 					{ startCol: start.col, endCol: end.col },
 					earlier,
 				),
-		inDiff: inHunk(head) && inHunk(last),
+		inDiff: onGithub(head) && onGithub(last),
+		sameAsBase: !!(head.offGithub || last.offGithub),
 		noLine: noLineIn(cells, earlier),
 		cells: { head: head.cell, last: last.cell },
 	};

@@ -44,7 +44,7 @@ import type {
 import { matchDisplayHunk, whitespaceLines } from "../../shared/whitespace.js";
 import { buildAllClusters } from "../diff/clusters.js";
 import { listChangedFiles } from "../diff/files.js";
-import { buildDisplayHunks, contextLines } from "../diff/hunks.js";
+import { buildDisplayHunks, contextLines, inDiffHunks } from "../diff/hunks.js";
 import { type HumanMarks, humanMarksOf } from "../review/coverage.js";
 import type { LinesCarriedEntry } from "../review/events.js";
 import type { PatchsetRecord, StateEntry } from "../review/fold.js";
@@ -1423,6 +1423,17 @@ function sinceFileHunks(
 				else if (line.baseNo === null && moved.has(line.oldNo)) {
 					line.psMoved = true;
 				}
+			}
+		}
+	}
+	// An added or context line GitHub's diff (the head's, against its
+	// merge base: the target's clusters, with their context) hasn't: it
+	// reads as the base there, so GitHub refuses a comment on it (CAR-293).
+	for (const hunk of hunks) {
+		for (const line of hunk.lines) {
+			if (line.newNo === undefined) continue;
+			if (!inDiffHunks(targetClusters, line.newNo, file.newLines.length)) {
+				line.offGithub = true;
 			}
 		}
 	}

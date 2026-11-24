@@ -6,6 +6,7 @@ import {
 	MAX_REPLY,
 	type NewThreadAnswer,
 	type NewThreadRequest,
+	SAME_AS_BASE,
 } from "../shared/types.js";
 import { GhError, WriteRefusedError } from "./errors.js";
 import {
@@ -20,6 +21,9 @@ import { MARKER_ID, markerFor, parseMarker } from "./marker.js";
 import { mapComments, mapThreads, openerOf, withContent } from "./overview.js";
 import { isLowerUlid } from "./review/events.js";
 import { slugify } from "./slug.js";
+
+export { SAME_AS_BASE };
+
 import {
 	commentUrl,
 	gone,
@@ -63,6 +67,12 @@ export interface NewThreadTarget extends ThreadWriteTarget {
 	placeAgain?: () => void;
 	/** Whether LEFT lines take comments (PrOverview.commentLeft). */
 	commentLeft: () => Promise<boolean>;
+	/**
+	 * Whether GitHub's diff of the head (the snapshot's) has RIGHT line
+	 * `line` of `path`: a hunk's line, as the full diff shows it (CAR-293).
+	 * Absent: not checked here (GitHub checks it).
+	 */
+	rightInDiff?: (path: string, line: number) => boolean;
 	started: (clientId: string) => StartedRecord | undefined;
 	rememberStarted: (clientId: string, record: StartedRecord) => void;
 	/**
@@ -275,6 +285,19 @@ export async function startThread(
 				"invalid",
 			);
 		}
+		// A RIGHT end GitHub's diff hasn't (one the since view shows that
+		// reads as the base): GitHub would refuse it, so it never goes
+		// (CAR-293). GitHub still checks: see the 422 below.
+		if (place.subject === "line" && target.rightInDiff) {
+			for (const end of [place.start, place]) {
+				if (
+					end?.side === "RIGHT" &&
+					!target.rightInDiff(place.path, end.line)
+				) {
+					throw new WriteRefusedError(SAME_AS_BASE, "invalid");
+				}
+			}
+		}
 	}
 	if (!record && body.length > MAX_REPLY) {
 		const room = MAX_REPLY - (body.length - req.body.length);
@@ -313,6 +336,20 @@ export async function startThread(
 				target.prUrl,
 			);
 		} catch (error) {
+			// Lines checked against the snapshot's diff, yet GitHub's hasn't
+			// them: its diff moved on (a push to the base or the head since
+			// the snapshot), so a Refresh shows where the lines are now.
+			if (
+				error instanceof WriteRefusedError &&
+				error.code === "gone" &&
+				!earlier &&
+				checkedRight(place, target)
+			) {
+				throw new WriteRefusedError(
+					"The PR moved on since: refresh to comment on its new head",
+					"stale",
+				);
+			}
 			if (
 				error instanceof WriteRefusedError &&
 				error.code === "pending-review" &&
@@ -336,6 +373,13 @@ export async function startThread(
 	if (earlier) target.placeAgain?.();
 	return out;
 }
+
+/** A line span whose every end is a RIGHT line this server checked against the snapshot's diff. */
+const checkedRight = (place: ThreadPlace, target: NewThreadTarget) =>
+	place.subject === "line" &&
+	target.rightInDiff !== undefined &&
+	place.side === "RIGHT" &&
+	(place.start === undefined || place.start.side === "RIGHT");
 
 /**
  * The viewer's thread opener on GitHub carrying `clientId` in its marker

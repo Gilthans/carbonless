@@ -19,6 +19,7 @@ import {
 	inHunk,
 	type NoLine,
 	noLineIn,
+	onGithub,
 	spanOfCells,
 	spanOfRange,
 } from "./codeSpan";
@@ -44,6 +45,8 @@ export interface BarTarget {
 	span: CodeSpan;
 	/** Both ends are lines of GitHub's diff. */
 	inDiff: boolean;
+	/** An end is a since-view line GitHub's diff hasn't (CAR-293). */
+	sameAsBase: boolean;
 	/** Why a line of it has no GitHub line (codeSpan.ts noLineIn), or null. */
 	noLine: NoLine | null;
 	/** Viewport rects: the selection's first and last line, and all of it. */
@@ -333,7 +336,8 @@ const ofPicks = (
 
 	return {
 		span,
-		inDiff: inHunk(head) && inHunk(tail),
+		inDiff: onGithub(head) && onGithub(tail),
+		sameAsBase: !!(head.offGithub || tail.offGithub),
 		noLine: noLineIn(picks.lines, earlier),
 		first,
 		last,
@@ -605,6 +609,7 @@ export function SelectionBar(props: {
 						submodule: file?.submodule ?? false,
 					},
 					inDiff: target.inDiff,
+					sameAsBase: target.sameAsBase,
 					noLine: target.noLine ?? undefined,
 					headUnsure: props.headSure === false,
 					readOnly: props.readOnly === true,

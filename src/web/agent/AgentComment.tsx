@@ -34,6 +34,7 @@ import {
 	type AgentThread,
 	agentCommentClientId,
 } from "../../shared/agent";
+import { SAME_AS_BASE } from "../../shared/types";
 import { sessionQuery } from "../api";
 import {
 	CommentHtml,
@@ -170,11 +171,18 @@ function usePlace(thread: PostingThread, clientId: string): CommentPlace {
 	// there, on that commit, as a direct comment on them (CAR-264).
 	const scope = useCommentScope();
 	const early = useMemo(() => {
-		if (a.subject !== "line" || !scope?.earlier) return undefined;
-		const e = scope.earlier(spanOfAnchor(a));
-		if (e === null) return undefined;
-		return typeof e === "string" ? noLineReason(e) : targetOf(e);
-	}, [a, scope]);
+		if (a.subject !== "line" || !scope) return undefined;
+		const span = spanOfAnchor(a);
+		const e = scope.earlier?.(span) ?? null;
+		if (e !== null) {
+			return typeof e === "string" ? noLineReason(e) : targetOf(e);
+		}
+		// On the head's lines the since view shows but GitHub's diff
+		// hasn't: off, with why, rather than refused after a press (CAR-293).
+		return a.commit === head && scope.sameAsBase?.(span)
+			? SAME_AS_BASE
+			: undefined;
+	}, [a, scope, head]);
 	// A joined conversation replies, needing no lines; one whose thread is
 	// gone (orphaned) is back on its lines: placed like any other.
 	const needed =

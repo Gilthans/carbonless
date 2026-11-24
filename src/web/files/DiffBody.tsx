@@ -75,6 +75,7 @@ import {
 	earlierSpan,
 	onHeadMove,
 	spanInHunks,
+	spanOffGithub,
 } from "../agent/commentOnGithub";
 import {
 	type PendingComposers,
@@ -462,6 +463,8 @@ interface WsLine {
 	psMoved?: true;
 	/** Its removed line's, in the since view (DiffLine.orphan, CAR-276). */
 	orphan?: true;
+	/** Its added line's, in the since view (DiffLine.offGithub). */
+	offGithub?: true;
 }
 
 /** What a diff row shows: a line as it is, or a whitespace-only pair. */
@@ -480,6 +483,7 @@ const rowLine = (row: DiffRow): RowLine => {
 		...(row.del?.psNo === undefined ? {} : { psNo: row.del.psNo }),
 		...(row.del?.psMoved ? { psMoved: true as const } : {}),
 		...(row.del?.orphan ? { orphan: true as const } : {}),
+		...(row.add?.offGithub ? { offGithub: true as const } : {}),
 	};
 };
 
@@ -496,6 +500,7 @@ const sideLine = (line: DiffLine, ws: boolean): RowLine =>
 				...(line.psNo === undefined ? {} : { psNo: line.psNo }),
 				...(line.psMoved ? { psMoved: true as const } : {}),
 				...(line.orphan ? { orphan: true as const } : {}),
+				...(line.offGithub ? { offGithub: true as const } : {}),
 			}
 		: line;
 
@@ -1539,6 +1544,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-ps-no={line.psNo}
 				data-ps-moved={line.psMoved || undefined}
 				data-orphan={line.orphan || undefined}
+				data-off-github={line.offGithub || undefined}
 				data-landed={landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -1874,6 +1880,7 @@ function PairRow(
 				data-ps-no={left?.line.psNo}
 				data-ps-moved={left?.line.psMoved || undefined}
 				data-orphan={left?.line.orphan || right?.line.orphan || undefined}
+				data-off-github={right?.line.offGithub || undefined}
 				data-landed={phase === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
@@ -2843,8 +2850,10 @@ export function DiffBody(props: {
 	};
 	// Each line's text by both keys, to quote a span above its composer.
 	const textAt = new Map<LineKey, string>();
-	// GitHub's diff's own lines (a hunk's), where it takes a comment.
+	// GitHub's diff's own lines (a hunk's), where it takes a comment; the
+	// since view's lines GitHub's diff hasn't (CAR-293) are left out.
 	const hunkKeys = new Set<string>();
+	const offKeys = new Set<string>();
 	for (const [lines, inHunk] of [
 		[hunks.data?.hunks.flatMap((h) => h.lines) ?? [], true],
 		[[...loaded.values()], false],
@@ -2854,7 +2863,8 @@ export function DiffBody(props: {
 				const k = lineKey(side, l);
 				if (!k) continue;
 				textAt.set(k, l.text);
-				if (inHunk) hunkKeys.add(k);
+				if (inHunk && side === "RIGHT" && l.offGithub) offKeys.add(k);
+				else if (inHunk) hunkKeys.add(k);
 			}
 		}
 	}
@@ -3049,6 +3059,10 @@ export function DiffBody(props: {
 					? hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
 						hunkKeys.has(`${rows.side}:${rows.line}`)
 					: undefined,
+			sameAsBase:
+				!!rows &&
+				(offKeys.has(`${rows.startSide}:${rows.startLine}`) ||
+					offKeys.has(`${rows.side}:${rows.line}`)),
 			headUnsure: props.headSure === false,
 			readOnly: props.readOnly === true,
 		};
@@ -3580,6 +3594,12 @@ export function DiffBody(props: {
 						? sinceInDiff.current(span).inDiff
 						: spanInHunks(span, hunkList)
 					: undefined,
+			// The head's lines only (an earlier patch set's go there, CAR-264).
+			sameAsBase: (span) =>
+				!!hunkList &&
+				span.path === file.path &&
+				!span.earlier &&
+				spanOffGithub(span, hunkList),
 			...(early
 				? {
 						earlier: (span: CodeSpan) =>

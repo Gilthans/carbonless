@@ -52,7 +52,7 @@ import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import { touchesOldSide } from "./codeWindow.js";
-import { contextLines } from "./diff/hunks.js";
+import { contextLines, inDiffHunks } from "./diff/hunks.js";
 import {
 	blobName,
 	buildSnapshot,
@@ -2321,6 +2321,13 @@ export class Session {
 				}
 			},
 			commentLeft: () => this.commentLeft(snapshot),
+			// GitHub's diff of the head: the snapshot's clusters, with the
+			// full diff's context (CAR-293).
+			rightInDiff: (path, line) =>
+				inDiffHunks(
+					snapshot.files.find((f) => f.path === path)?.clusters ?? [],
+					line,
+				),
 			startPatchset: this.#startHook(snapshot),
 			started: (clientId) => this.#started.get(clientId),
 			rememberStarted: (clientId, record) =>
