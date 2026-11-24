@@ -110,6 +110,34 @@ export async function installClock(page: Page): Promise<void> {
 }
 
 /**
+ * With the page's clock paused (`pauseAt`), moves it `stepMs` at a time
+ * until `target` shows, giving the page real time between moves (its
+ * fetches answer in real time; what follows them may wait on a timer, as
+ * TanStack Query's notifications do). Fails once `maxMs` of page time has
+ * passed: a test that must stay short of an app timer (CAR-296's step
+ * line) bounds the page time it spends here.
+ */
+export async function advanceUntilVisible(
+	page: Page,
+	target: Locator,
+	{ stepMs = 10, maxMs = 1_000 } = {},
+): Promise<void> {
+	for (let spent = 0; ; spent += stepMs) {
+		const shown = await expect(target.first())
+			.toBeVisible({ timeout: 150 })
+			.then(
+				() => true,
+				() => false,
+			);
+		if (shown) return;
+		if (spent >= maxMs) {
+			throw new Error(`Not visible after ${maxMs} ms of page time: ${target}`);
+		}
+		await page.clock.runFor(stepMs);
+	}
+}
+
+/**
  * Runs a test's setup step (a fixture repo, starting crb) and gives the test
  * back the time it took: on a loaded machine these take seconds, and the
  * test's own timeout is for its own steps. START_TIMEOUT_MS

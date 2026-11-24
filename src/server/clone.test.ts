@@ -26,6 +26,7 @@ import {
 } from "../../test/git-fixture";
 import { settleGh } from "../../test/settle-gh";
 import { fakeDelay } from "../../test/sleep";
+import { Activity, beginCall, runIn } from "./activity";
 import {
 	clonePath,
 	ensureClone,
@@ -301,6 +302,57 @@ describe("private clone", () => {
 		});
 		expect(during).toBe(true);
 		expect(isCloning("acme", "widget")).toBe(false);
+	});
+
+	it("a request waiting on the repo lock says what its holder in this process does; another crb's lock reads as the lock (CAR-296)", async () => {
+		const path = join(tmp, "locked.git");
+		let letGo = () => {};
+		const holding = new Promise<void>((r) => {
+			letGo = r;
+		});
+		let inside = () => {};
+		const entered = new Promise<void>((r) => {
+			inside = r;
+		});
+		const holder = new Activity();
+		const waiter = new Activity();
+		const held = runIn(holder, () =>
+			withRepoLock(path, async () => {
+				const end = beginCall("git fetch");
+				inside();
+				await holding;
+				end();
+			}),
+		);
+		await entered;
+		const waiting = runIn(waiter, () => withRepoLock(path, async () => {}));
+		await vi.waitFor(() => expect(waiter.current()?.label).toBe("git fetch"));
+		letGo();
+		await Promise.all([held, waiting]);
+		expect(waiter.size).toBe(0);
+		// A lock another process holds: the wait's own words.
+		writeFileSync(`${path}.lock`, "elsewhere 1 token\n");
+		const other = new Activity();
+		const blocked = runIn(other, () =>
+			withRepoLock(path, async () => {}, { timeoutMs: 60_000 }),
+		);
+		await vi.waitFor(() =>
+			expect(other.current()?.label).toBe("Waiting for the repo lock"),
+		);
+		rmSync(`${path}.lock`);
+		await blocked;
+		expect(other.size).toBe(0);
+	});
+
+	it("says the clone's step while crb clones a repo for the first time (CAR-296)", async () => {
+		scenario({ hold: ["clone"] });
+		const activity = new Activity();
+		const first = runIn(activity, () => ensureClone("acme", "widget"));
+		await vi.waitFor(() => expect(ghLog()).toMatch(/^repo clone /m));
+		expect(activity.current()?.label).toBe("Cloning acme/widget…");
+		release(scenarioPath, "clone");
+		await first;
+		expect(activity.size).toBe(0);
 	});
 
 	it("serializes concurrent opens with the lock", async () => {

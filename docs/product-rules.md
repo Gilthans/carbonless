@@ -107,6 +107,31 @@ result should always be easily distinguishable for a still loading result."
   spinners appear somewhere static so the UI doesn't jitter"). It takes a
   slot kept whether or not it spins, replaces something of its size, or is
   laid over; tested by comparing bounding boxes before, while and after.
+- **A slow wait says what it waits on (CAR-296).** The owner, 2026-11-24:
+  "when possible, I'd like the loading to say what it's doing. So that I
+  can know what's blocking me if something is slow". Once a load has been
+  pending 1.5 s, one short muted line beside its spinner says the step its
+  requests are on, with the seconds spent on it: "GitHub: pr view · 4s",
+  "git fetch · 12s", "Fetching dropped commits", "GitHub: PR details 3 of
+  13". A fast load looks as before: the page asks nothing until then. The
+  line sits in a kept slot or is laid over the skeleton (nothing moves),
+  in an `aria-live="polite"` region outside the `aria-busy` one. Where:
+  the opening page (under its spinner; the first clone keeps its own
+  wording), a thread's code still being built (over its frame's foot),
+  and Home's repo chips (in the spinner's tooltip and accessible name: a
+  chip has no room for a line; a tap opens the tooltip). `crb <pr>`
+  prints each new step on stderr once an open has taken 2 s.
+  How: every API request of the page (`src/web/loadingStep.ts`) and of
+  `crb <pr>` carries an id (`x-crb-req`); the server keeps each tagged
+  request's steps while it runs (`src/server/activity.ts`: every gh and
+  git call, and named phases); `GET /api/activity?req=<id>,…` (at most 16,
+  checked) answers each one's innermost step and never waits. A request
+  waiting on work another started (an open, an overview read, a commit
+  batch, a Home repo read, the repo lock) shows that work's step; a wait
+  whose work shows nothing reads "Working…", never another step. The
+  labels are crb's words, mapped from the span names
+  ([test-profiling.md](test-profiling.md), "Loading steps"): no paths,
+  OIDs, branches or logins.
 - **Errors are a third state.** A failed read shows its error (red; or a
   `warn` notice where only a part is missing, per "Flag uncertainty", like
   Files changed's "Threads not shown"; with Retry where it can), never the

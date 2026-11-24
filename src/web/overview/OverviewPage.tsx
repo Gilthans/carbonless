@@ -79,6 +79,7 @@ import {
 import { useFocusCard } from "../files/threadFocus";
 import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
+import { useLoadingStep } from "../loadingStep";
 import { useMessageCopy } from "../messageCopy";
 import { usePageActive } from "../pageActive";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
@@ -1883,17 +1884,7 @@ function ThreadItem({
 					<ThreadFateLine thread={thread} />
 					{thread.code?.source === "pending" ? (
 						<div className="grid gap-3 md:grid-cols-2 md:items-start">
-							{/* The code is still being built: the pane's frame. */}
-							<div
-								data-testid="thread-code-loading"
-								aria-busy="true"
-								className="min-w-0 space-y-2 rounded-md border border-line bg-code px-3 py-3"
-							>
-								<span className="sr-only">Loading…</span>
-								{["w-3/5", "w-4/5", "w-full", "w-2/3", "w-3/4"].map((w) => (
-									<SkeletonBar key={w} className={w} />
-								))}
-							</div>
+							<ThreadCodeLoading />
 							{comments}
 						</div>
 					) : thread.code && rows.length > 0 ? (
@@ -1966,6 +1957,44 @@ function ThreadItem({
 }
 
 /** A changed thread's fate line ("Line rewritten since PS1 · See on PS1"). */
+/** A threads request that brings the threads' code. */
+const CODE_STAGES = /\/threads\?(?:.*&)?stage=(?:firstCode|full)(?:&|$)/;
+
+/**
+ * A thread's code still being built: the pane's frame, and once that is
+ * slow, what it waits on (CAR-296) laid over the frame's foot: nothing
+ * moves as it comes and goes. Every pane shares one ask (its key).
+ */
+function ThreadCodeLoading() {
+	const step = useLoadingStep(
+		"thread-code",
+		(r) => CODE_STAGES.test(r.path),
+		true,
+	);
+	return (
+		<div className="relative min-w-0">
+			<div
+				data-testid="thread-code-loading"
+				aria-busy="true"
+				className="min-w-0 space-y-2 rounded-md border border-line bg-code px-3 py-3"
+			>
+				<span className="sr-only">Loading…</span>
+				{["w-3/5", "w-4/5", "w-full", "w-2/3", "w-3/4"].map((w) => (
+					<SkeletonBar key={w} className={w} />
+				))}
+			</div>
+			{/* Outside the busy frame, so a screen reader reads it out. */}
+			<p
+				aria-live="polite"
+				data-testid="thread-code-step"
+				className="absolute inset-x-px bottom-px rounded-b-md bg-code px-3 py-1.5 text-xs break-words text-muted empty:p-0"
+			>
+				{step}
+			</p>
+		</div>
+	);
+}
+
 function ThreadFateLine({ thread }: { thread: Thread }) {
 	const placement = usePlacementInfo().placements?.get(thread.id);
 	if (placement?.kind !== "changed") return null;

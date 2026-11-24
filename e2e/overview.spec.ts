@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
+import { LOADING_STEP_AFTER_MS } from "../src/web/loadingStep";
 import {
 	release,
 	reviewThread,
@@ -7,7 +8,7 @@ import {
 	threadComment,
 } from "../test/fake-gh/scenario";
 import { expectNoPageOverflow, passLanding } from "./files-ui";
-import { expect, installClock, test } from "./fixtures";
+import { advanceUntilVisible, expect, installClock, test } from "./fixtures";
 
 const botThreadNoReply = reviewThread({ path: "src/bot.ts", line: 3 }, [
 	threadComment({
@@ -944,6 +945,55 @@ test("the page never waits for the threads: lists, then cards, fill in as they c
 	await expect(humans.getByTestId("thread-body").last()).toHaveText("Point 0", {
 		timeout: 10_000,
 	});
+});
+
+test("a thread's code still on its way says, once slow, what it waits on over its frame; never before (CAR-296)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		threads: [
+			reviewThread({ path: "src/f.ts", line: 1 }, [
+				threadComment({
+					login: "rev1",
+					text: "Point",
+					diffHunk: "@@ -0,0 +1 @@\n+x",
+				}),
+			]),
+		],
+	});
+	// The comments' text is held: the code waits for it.
+	p.editScenario((s) => {
+		s.hold = ["threadContent"];
+	});
+	const s = await startCrb();
+	const asks: string[] = [];
+	page.on("request", (r) => {
+		if (r.url().includes("/api/activity")) asks.push(r.url());
+	});
+	// The page's clock held from the start: only the test moves it.
+	await installClock(page);
+	await page.clock.pauseAt(Date.now() + 1_000);
+	await page.goto(s.url);
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	const frame = humans.getByTestId("thread-code-loading");
+	const step = humans.getByTestId("thread-code-step");
+	await advanceUntilVisible(page, frame);
+	await expect(step).toBeEmpty();
+	// The step's live region is outside the busy frame.
+	await expect(frame.getByTestId("thread-code-step")).toHaveCount(0);
+	expect(asks).toEqual([]);
+	await page.clock.fastForward(LOADING_STEP_AFTER_MS);
+	await expect(step).toHaveText(/^GitHub: api graphql/);
+	await expectNoPageOverflow(page);
+	await page.clock.resume();
+	release(p.scenarioPath, "threadContent");
+	await expect(humans.getByTestId("thread-code").first()).toBeVisible({
+		timeout: 15_000,
+	});
+	await expect(frame).toHaveCount(0);
+	await expect(step).toHaveCount(0);
 });
 
 test("a line comment GitHub kept no hunk for shows its code from the clone; a file comment shows none", async ({

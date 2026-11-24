@@ -1,4 +1,5 @@
 import type { Person } from "../../shared/home.js";
+import { phase } from "../activity.js";
 import { GhError } from "../errors.js";
 import { runGh } from "../gh.js";
 import type { PrFacts } from "./facts.js";
@@ -314,24 +315,26 @@ async function listRepoPrs(
 	let withClosed = true;
 	let complete = true;
 	for (let page = 0; page < MAX_PAGES && (withOpen || withClosed); page++) {
-		const data = await graphql(
-			[
-				"-f",
-				`query=${LIST_QUERY}`,
-				"-f",
-				`owner=${owner}`,
-				"-f",
-				`name=${repo}`,
-				"-F",
-				`withOpen=${withOpen}`,
-				"-F",
-				`withClosed=${withClosed}`,
-				...(openCursor ? ["-f", `openCursor=${openCursor}`] : []),
-				...(closedCursor ? ["-f", `closedCursor=${closedCursor}`] : []),
-			],
-			`the PRs of ${owner}/${repo}`,
-			cost,
-			signal,
+		const data = await phase("crb: home list", { n: page + 1 }, () =>
+			graphql(
+				[
+					"-f",
+					`query=${LIST_QUERY}`,
+					"-f",
+					`owner=${owner}`,
+					"-f",
+					`name=${repo}`,
+					"-F",
+					`withOpen=${withOpen}`,
+					"-F",
+					`withClosed=${withClosed}`,
+					...(openCursor ? ["-f", `openCursor=${openCursor}`] : []),
+					...(closedCursor ? ["-f", `closedCursor=${closedCursor}`] : []),
+				],
+				`the PRs of ${owner}/${repo}`,
+				cost,
+				signal,
+			),
 		);
 		if (data.repository === null || typeof data.repository !== "object") {
 			throw new GhError(`Repository ${owner}/${repo} not found`);
@@ -441,7 +444,11 @@ export async function fetchPrDetails(
 		while (next < batches.length && !failed) {
 			const at = next++;
 			try {
-				results[at] = await fetchBatch(batches[at] ?? [], cost, signal);
+				results[at] = await phase(
+					"crb: home details",
+					{ n: at + 1, of: batches.length },
+					() => fetchBatch(batches[at] ?? [], cost, signal),
+				);
 			} catch (error) {
 				failed = true;
 				throw error;

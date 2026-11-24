@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page, Route } from "@playwright/test";
+import { LOADING_STEP_AFTER_MS } from "../src/web/loadingStep";
 import { bumpHomePr, homePr, release } from "../test/fake-gh/scenario";
 import {
 	expectNoPageOverflow,
@@ -10,6 +11,7 @@ import {
 	openFiles,
 } from "./files-ui";
 import {
+	advanceUntilVisible,
 	expect,
 	expectLoadingThen,
 	installClock,
@@ -450,7 +452,7 @@ test("a PR chosen in the open box shows at once, loading, then becomes its revie
 	await expect(page).toHaveURL(review);
 });
 
-test("opening a PR of a repo crb never cloned says so beside the spinner while it clones; the next open of the repo doesn't", async ({
+test("opening a PR of a repo crb never cloned says so beside the spinner while it clones; the next open of the repo says what it waits on once slow (CAR-296)", async ({
 	page,
 	workdir,
 	pr,
@@ -485,6 +487,7 @@ test("opening a PR of a repo crb never cloned says so beside the spinner while i
 		}
 		s.hold = ["clone"];
 	});
+	await installClock(page);
 	await page.goto(crb.url);
 	await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
 	const notice = page.getByTestId("first-clone");
@@ -531,21 +534,80 @@ test("opening a PR of a repo crb never cloned says so beside the spinner while i
 	await page.unroute("**/api/reviews");
 
 	// The next open of the repo only fetches: held in GitHub's answer, past
-	// a poll of the clone state, the spinner shows alone.
+	// a poll of the clone state, the spinner shows alone (the page's clock
+	// held: no time passes but what the test moves).
 	made.editScenario((s) => {
 		s.hold = ["prView"];
+	});
+	const asks: string[] = [];
+	page.on("request", (r) => {
+		if (r.url().includes("/api/activity")) asks.push(r.url());
 	});
 	const polled = page.waitForResponse(
 		(r) => r.url().includes("/api/clones/acme/fresh") && r.ok(),
 	);
+	await page.clock.pauseAt(Date.now() + 1_000);
 	await page.goto(new URL("/pr/acme/fresh/9", crb.url).href);
 	await expect(opening).toBeVisible();
 	expect(await (await polled).json()).toEqual({ cloning: false });
 	// The live region is there, empty, from the start (read out when filled).
 	await expect(notice).toBeEmpty();
 	await expect(notice).toHaveCSS("display", "block");
+	// Short of the threshold: nothing asked, nothing said (CAR-296).
+	await page.clock.fastForward(LOADING_STEP_AFTER_MS - 200);
+	await expect(notice).toBeEmpty();
+	expect(asks).toEqual([]);
+	// Past it: the step the open waits on, beside the spinner.
+	await page.clock.fastForward(400);
+	await expect(notice).toHaveText(/^GitHub: pr view/);
+	await expect(opening).toBeVisible();
+	await expect(
+		page.locator('[aria-busy="true"] [data-testid="first-clone"]'),
+	).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	await page.clock.resume();
 	release(made.scenarioPath, "prView");
 	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
+	await expect(notice).toHaveCount(0);
+});
+
+test("a repo still reading says, once slow, which step it waits on in its spinner's name; never before (CAR-296)", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const made = await setup(workdir, pr);
+	made.editScenario((s) => {
+		s.hold = ["home:acme/api"];
+	});
+	const crb = await startCrb();
+	const asks: string[] = [];
+	page.on("request", (r) => {
+		if (r.url().includes("/api/activity")) asks.push(r.url());
+	});
+	// The page's clock held from the start: only the test moves it.
+	await installClock(page);
+	await page.clock.pauseAt(Date.now() + 1_000);
+	await page.goto(home(crb.url));
+	const chip = page.locator('[data-testid="view-repo"][data-repo="acme/api"]');
+	const sign = chip.getByTestId("repo-loading");
+	await advanceUntilVisible(page, sign);
+	await expect(chip).toHaveAttribute("data-state", "loading");
+	await expect(sign).toHaveAccessibleName("Loading acme/api");
+	expect(asks).toEqual([]);
+	// Past the threshold: the read's step, in its name and tooltip.
+	await page.clock.fastForward(LOADING_STEP_AFTER_MS);
+	await expect(sign).toHaveAccessibleName(
+		/^Loading acme\/api: GitHub: PR list, page 1/,
+	);
+	expect(asks.length).toBeGreaterThan(0);
+	await page.clock.resume();
+	release(made.scenarioPath, "home:acme/api");
+	await expect(chip).toHaveAttribute("data-state", "ready", {
+		timeout: 15_000,
+	});
+	await expect(sign).toHaveCount(0);
 });
 
 test("Repos spins while the viewer's repos load, then lists only theirs", async ({

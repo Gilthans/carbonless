@@ -48,6 +48,7 @@ import type {
 	VerdictFacts,
 	VerdictRequest,
 } from "../shared/types.js";
+import { Activity, join, phase, runIn, shared, waitOn } from "./activity.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { type AgentDiff, AgentDiffRequestError } from "./agent/reads.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
@@ -138,7 +139,7 @@ import {
 	setResolved,
 	type ThreadWriteTarget,
 } from "./threadWrites.js";
-import { type Tracer, tracer } from "./trace.js";
+import { tracer } from "./trace.js";
 import {
 	mapVerdict,
 	ruleOf,
@@ -395,6 +396,8 @@ export class Session {
 	/** The base branch name the snapshot was compared against (the triple's third). */
 	#snapshotBase: string;
 	/** Merge bases by (head, base oid, base branch): one fetch per triple (#noteHead). */
+	/** Each overview read's Activity: what a request waiting on it shows. */
+	readonly #readActivity = new WeakMap<OverviewRead, Activity>();
 	readonly #fetchedHeads = new Map<string, Promise<{ mergeBase: string }>>();
 	/** The engine's state-free results, in memory and on disk. */
 	readonly #cache = new RereviewCache<Traced>();
@@ -630,12 +633,12 @@ export class Session {
 		// Opt-in ($CRB_TRACE_DIR): the open, with its slow steps under it.
 		const traced = tracer();
 		if (!traced.enabled) {
-			return Session.openReview(arg, cwd, progress, options, traced);
+			return Session.openReview(arg, cwd, progress, options);
 		}
 		const span = traced.start("crb: open review");
 		try {
 			return await traced.run(span, () =>
-				Session.openReview(arg, cwd, progress, options, traced),
+				Session.openReview(arg, cwd, progress, options),
 			);
 		} catch (error) {
 			span.end(undefined, (error as Error).message);
@@ -655,13 +658,11 @@ export class Session {
 		cwd: string,
 		progress: (message: string) => void,
 		options: SessionOptions,
-		traced: Tracer,
 	): Promise<Session> {
-		const step = <T>(name: string, run: () => Promise<T>): Promise<T> => {
-			if (!traced.enabled) return run();
-			const span = traced.start(name);
-			return traced.run(span, run).finally(() => span.end());
-		};
+		// Named phases: a span each when tracing, and the step a request
+		// waiting on the open shows (activity.ts).
+		const step = <T>(name: string, run: () => Promise<T>): Promise<T> =>
+			phase(name, {}, run);
 		// No `gh auth status` first: a logged-out gh fails the first call
 		// below as "not logged in" all the same (runGh), and that check was
 		// 0.7 s before anything else on a real open.
@@ -684,10 +685,8 @@ export class Session {
 			meta = { ...meta, headOid, state: "OPEN" };
 		}
 		const [repo, pinned] = await Promise.all([
-			step("crb: clone", () =>
-				ensureClone(meta.owner, meta.repo, () =>
-					progress(`cloning ${meta.owner}/${meta.repo}…`),
-				),
+			ensureClone(meta.owner, meta.repo, () =>
+				progress(`cloning ${meta.owner}/${meta.repo}…`),
 			),
 			// The head is resolved once: the session keeps it for its life.
 			options.head
@@ -1901,26 +1900,29 @@ export class Session {
 		);
 		let pending = this.#tracing.get(key);
 		if (!pending) {
-			pending = (async () => {
+			// Shared: whoever waits on it shows its step (activity.ts).
+			pending = shared(async () => {
 				const cached = await this.#cache.get(key);
 				if (cached) return cached;
 				const progress = await this.#progress();
-				const traced = await traceRereview(
-					this.repo,
-					await this.#sinceOf(since, progress),
-					await this.#earlierOf(since, progress),
-					this.#targetOf(target),
-					this.#stop.signal,
+				const traced = await phase("crb: since", {}, async () =>
+					traceRereview(
+						this.repo,
+						await this.#sinceOf(since, progress),
+						await this.#earlierOf(since, progress),
+						this.#targetOf(target),
+						this.#stop.signal,
+					),
 				);
 				// A cache that can't be written costs the next restart a
 				// computation, never the answer.
 				await this.#cache.set(key, traced).catch(() => {});
 				return traced;
-			})();
+			});
 			this.#tracing.set(key, pending);
 			pending.catch(() => this.#tracing.delete(key));
 		}
-		return pending;
+		return join(pending);
 	}
 
 	/** The answer and the start the traced result gives under the marks of now. */
@@ -2113,7 +2115,7 @@ export class Session {
 		this.#commentLeftNow();
 		const read = this.#pickRead(maxAgeMs);
 		if (forPage) this.#served = read;
-		return read.overview.then((o) => ({
+		return this.#waitRead(read, read.overview).then((o) => ({
 			...o,
 			commentLeft: this.#commentLeftNow(),
 		}));
@@ -2143,7 +2145,12 @@ export class Session {
 	threads(readId: string, stage: ThreadsStage): Promise<ThreadsView> {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
-		return read.threads(stage);
+		return this.#waitRead(read, read.threads(stage));
+	}
+
+	/** Awaits `part` of `read`, showing the read's step meanwhile (activity.ts). */
+	#waitRead<T>(read: OverviewRead, part: Promise<T>): Promise<T> {
+		return waitOn(part, () => this.#readActivity.get(read));
 	}
 
 	/**
@@ -2154,7 +2161,7 @@ export class Session {
 	comments(readId: string, ids: string[]): Promise<CommentsView> {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
-		return read.comments(ids);
+		return this.#waitRead(read, read.comments(ids));
 	}
 
 	/**
@@ -2164,7 +2171,7 @@ export class Session {
 	timeline(readId: string): Promise<TimelineView> {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
-		return read.timeline;
+		return this.#waitRead(read, read.timeline);
 	}
 
 	/**
@@ -2606,13 +2613,21 @@ export class Session {
 	 */
 	#read(ready?: Promise<unknown>): OverviewRead {
 		if (this.closed) throw new SessionClosedError("The session is closed");
+		// Its reads run in an Activity of their own: a request waiting on
+		// any part of it shows what it does (activity.ts).
+		const activity = new Activity();
+		const make = () => {
+			const read = runIn(activity, () => this.#newRead(ready));
+			this.#readActivity.set(read, activity);
+			return read;
+		};
 		// Opt-in ($CRB_TRACE_DIR): the read until its overview is in.
 		const traced = tracer();
-		if (!traced.enabled) return this.#newRead(ready);
+		if (!traced.enabled) return make();
 		const span = traced.start("crb: overview read", {
 			first: this.#reads.length === 0,
 		});
-		const read = traced.run(span, () => this.#newRead(ready));
+		const read = traced.run(span, make);
 		read.overview.then(
 			() => span.end(),
 			(error: unknown) => span.end(undefined, (error as Error)?.message),

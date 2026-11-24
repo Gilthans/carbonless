@@ -2971,6 +2971,73 @@ describe("API", () => {
 			}
 		});
 
+		it("GET /api/activity: validated ids, at most 16, an unknown one null; behind the key (CAR-296)", async () => {
+			const ask = (url: string) =>
+				app.inject({ method: "GET", url, headers: { host } });
+			const ok = await ask("/api/activity?req=abcdefgh,unknown-id-1");
+			expect(ok.statusCode).toBe(200);
+			expect(ok.headers["cache-control"]).toBe("no-store");
+			expect(ok.json()).toEqual({
+				steps: { abcdefgh: null, "unknown-id-1": null },
+			});
+			for (const bad of [
+				"/api/activity",
+				"/api/activity?req=",
+				"/api/activity?req=short",
+				"/api/activity?req=abcdefgh,has%20space1",
+				`/api/activity?req=${"a".repeat(33)}`,
+				`/api/activity?req=${Array.from({ length: 17 }, (_, i) => `request-${i}x`).join(",")}`,
+			]) {
+				expect((await ask(bad)).statusCode, bad).toBe(400);
+			}
+			const keyed = await buildApp(registry, { accessKey: "k3y" });
+			try {
+				expect(
+					(await keyed.inject("/api/activity?req=abcdefgh")).statusCode,
+				).toBe(401);
+			} finally {
+				await keyed.close();
+			}
+		});
+
+		it("says what a tagged request waits on while GitHub holds it, through the read it joined; nothing once it answered (CAR-296)", async () => {
+			const scenarioFile = process.env.CRB_FAKE_GH ?? "";
+			pr.scenario({ hold: ["threads"] });
+			const tagged = (url: string, req: string) =>
+				app.inject({
+					method: "GET",
+					url: r(url),
+					headers: { host, "x-crb-req": req },
+				});
+			const { readId } = await get("/api/overview?maxAge=0");
+			// The threads' summary is held: the request waits on the read,
+			// which another request started.
+			const threads = tagged(
+				`/api/threads?read=${readId}&stage=summary`,
+				"threads-req-1",
+			);
+			const step = async () =>
+				(
+					await app.inject({
+						method: "GET",
+						url: "/api/activity?req=threads-req-1",
+						headers: { host },
+					})
+				).json().steps["threads-req-1"];
+			await vi.waitFor(async () =>
+				expect(await step()).toMatchObject({
+					name: "gh api graphql",
+					label: "GitHub: api graphql",
+				}),
+			);
+			const seen = await step();
+			expect(typeof seen.ms).toBe("number");
+			expect(Number.isNaN(Date.parse(seen.since))).toBe(false);
+			release(scenarioFile, "threads");
+			expect((await threads).statusCode).toBe(200);
+			expect(await step()).toBeNull();
+		});
+
 		it("GET /api/mcp/setup gives the key behind the key, null without one", async () => {
 			const keyed = await buildApp(registry, { accessKey: "k3y" });
 			try {
