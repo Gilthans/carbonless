@@ -365,29 +365,38 @@ test("opening a file moves the caret to its start: Next goes to its first hit, P
 	await expect(count(page)).toHaveText(counted(A_FIRST + 1, ALL), VISIBLE);
 
 	// src/c.ts opened from the tree: the caret sits at its start, the count
-	// on the hit Next goes to (its line 15); nothing is stepped to.
+	// on the hit Next goes to (its line 15, painted current); nothing is
+	// stepped to. That hit is in view: Next passes over it, as after typing
+	// (owner, 2026-11-07), to src/ws.ts.
 	await pickInTree(page, /\sc\.ts\s/);
 	await expect.poll(() => openPaths(page)).toEqual([C]);
 	await expect(count(page)).toHaveText(counted(ALL - 2, ALL), VISIBLE);
-	await next();
-	await expect(currentSection(page)).toHaveAttribute("aria-label", C);
 	await expect(currentRow(page)).toHaveAttribute("data-new-no", "15");
-	await expect(count(page)).toHaveText(counted(ALL - 2, ALL), VISIBLE);
 	await expect(currentRow(page)).toBeInViewport();
+	await next();
+	await expect(currentSection(page)).toHaveAttribute("aria-label", WS);
+	await expect(count(page)).toHaveText(counted(ALL - 1, ALL), VISIBLE);
 
-	// src/b.ts reopened: Previous goes to its last hit (line 10), not back
-	// from src/c.ts.
-	await pickInTree(page, /\sb\.ts\s/);
-	await expect.poll(() => openPaths(page)).toEqual([B]);
-	await previous();
-	await expect(currentSection(page)).toHaveAttribute("aria-label", B);
-	await expect(currentRow(page)).toHaveAttribute("data-new-no", "10");
-	await expect(count(page)).toHaveText(counted(ALL - 3, ALL), VISIBLE);
-	// A step's own open (into src/a.ts) keeps the caret where it went: the
-	// next Previous goes on back from there, not from src/a.ts's end.
+	// src/a.ts opened from the tree: Previous goes to its last hit (line 8),
+	// not back from src/ws.ts.
+	await pickInTree(page, /\sa\.ts\s/);
+	await expect.poll(() => openPaths(page)).toEqual([A]);
 	await previous();
 	await expect(currentSection(page)).toHaveAttribute("aria-label", A);
 	await expect(currentRow(page)).toHaveAttribute("data-new-no", "8");
+	await expect(count(page)).toHaveText(counted(A_FIRST + 2, ALL), VISIBLE);
+
+	// src/b.ts opened: its one hit (line 10) is in view, so Previous passes
+	// over it to src/a.ts's last. A step's own open (into src/a.ts) keeps
+	// the caret where it went: the next Previous goes on back from there.
+	await pickInTree(page, /\sb\.ts\s/);
+	await expect.poll(() => openPaths(page)).toEqual([B]);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "10");
+	await expect(currentRow(page)).toBeInViewport();
+	await previous();
+	await expect(currentSection(page)).toHaveAttribute("aria-label", A);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "8");
+	await expect(count(page)).toHaveText(counted(A_FIRST + 2, ALL), VISIBLE);
 	await previous();
 	await expect(currentRow(page)).toHaveAttribute("data-new-no", "6");
 	await expect(count(page)).toHaveText(counted(A_FIRST + 1, ALL), VISIBLE);

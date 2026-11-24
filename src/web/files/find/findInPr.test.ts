@@ -457,10 +457,18 @@ describe("caret after opening a file (CAR-298)", () => {
 		);
 	});
 
-	it("goes to the file's own hit even when the reviewer already sees it (from the file's start)", () => {
+	it("passes over the hit Next goes to when the reviewer already sees it, as after typing (owner, 2026-11-07)", () => {
 		const c = caretAfterOpen(hits, order, 2);
-		expect(stepCaret(hits, c, 1, true)).toEqual(shown(h(2)));
+		// Next: the file's first hit is seen, on to its second.
+		expect(stepCaret(hits, c, 1, true)).toEqual(shown(h(3)));
+		// Previous: the file's last hit isn't the one seen.
 		expect(stepCaret(hits, c, -1, true)).toEqual(shown(h(4)));
+		// File 3's one hit is both: seen, Previous goes to the one before.
+		const one = caretAfterOpen(hits, order, 3);
+		expect(stepCaret(hits, one, -1, true)).toEqual(shown(h(4)));
+		expect(stepCaret(hits, one, -1, false)).toEqual(shown(h(5)));
+		// Seen and wrapping: from the PR's last hit Next goes round to the first.
+		expect(stepCaret(hits, one, 1, true)).toEqual(shown(h(0)));
 	});
 
 	it("is null without hits", () => {
