@@ -180,11 +180,37 @@ describe("createTracer", () => {
 const MiB = 1024 * 1024;
 const DAY = 24 * 60 * 60 * 1000;
 
+/**
+ * Timers the test's fake clock drives, handed to the tracer (which uses
+ * the real ones by default), each checked to be unref'd.
+ */
+function testTimers() {
+	const unrefs: ReturnType<typeof vi.fn>[] = [];
+	const timers = {
+		setTimeout(fn: () => void, ms: number) {
+			const handle = setTimeout(fn, ms);
+			const unref = vi.fn(() => handle);
+			unrefs.push(unref);
+			return Object.assign(handle, { unref });
+		},
+		clearTimeout(handle: { unref?(): unknown }) {
+			clearTimeout(handle as ReturnType<typeof setTimeout>);
+		},
+	};
+	return { timers, unrefs };
+}
+
 describe("a long-running process's files", () => {
 	it("writes a span a few seconds after it ends, by an unref'd timer", () => {
 		vi.useFakeTimers();
 		const dir = tempDir();
-		const t = createTracer({ dir, service: "crb", flushOnExit: false });
+		const { timers, unrefs } = testTimers();
+		const t = createTracer({
+			dir,
+			service: "crb",
+			flushOnExit: false,
+			timers,
+		});
 		t.start("GET /api/x").end();
 		t.start("git fetch").end();
 		vi.advanceTimersByTime(FLUSH_AFTER_MS - 1);
@@ -197,6 +223,45 @@ describe("a long-running process's files", () => {
 		t.start("later").end();
 		vi.advanceTimersByTime(FLUSH_AFTER_MS);
 		expect(spansOf(readRequests(dir)).map((s) => s.name)).toContain("later");
+		// Never keeps the process alive.
+		expect(unrefs).toHaveLength(2);
+		for (const unref of unrefs) expect(unref).toHaveBeenCalled();
+	});
+
+	it("uses the real timers: a test's fake clock neither sees nor holds them", async () => {
+		vi.useFakeTimers();
+		const dir = tempDir();
+		const t = createTracer({
+			dir,
+			service: "crb",
+			flushOnExit: false,
+			flushAfterMs: 5,
+		});
+		t.start("a").end();
+		expect(vi.getTimerCount()).toBe(0);
+		vi.useRealTimers();
+		await vi.waitFor(() =>
+			expect(spansOf(readRequests(dir)).map((s) => s.name)).toEqual(["a"]),
+		);
+	});
+
+	it("makes its directory again when it was deleted while running", () => {
+		const dir = join(tempDir(), "traces");
+		const warn = vi.fn();
+		const t = createTracer({
+			dir,
+			service: "crb",
+			flushOnExit: false,
+			rotation: DEFAULT_ROTATION,
+			warn,
+		});
+		t.start("before").end();
+		t.flush();
+		rmSync(dir, { recursive: true, force: true });
+		t.start("after").end();
+		t.flush();
+		expect(warn).not.toHaveBeenCalled();
+		expect(spansOf(readRequests(dir)).map((s) => s.name)).toEqual(["after"]);
 	});
 
 	it("rolls to a new file before one would pass the size limit", () => {
@@ -214,13 +279,13 @@ describe("a long-running process's files", () => {
 		const files = readdirSync(dir).sort();
 		expect(files.length).toBeGreaterThan(2);
 		for (const f of files) {
-			expect(f).toMatch(/^crb-\d+-[0-9a-f]{6}\.\d{8}\.\d{3}\.jsonl$/);
+			expect(f).toMatch(/^crb-\d+-[0-9a-f]{6}\.\d{8}\.\d{6}\.jsonl$/);
 			expect(statSync(join(dir, f)).size).toBeLessThanOrEqual(1500);
 		}
 		// One stem, numbered in order: nothing lost or reordered.
 		expect(new Set(files.map((f) => f.split(".")[0])).size).toBe(1);
 		expect(files.map((f) => f.split(".")[2])).toEqual(
-			files.map((_, i) => String(i).padStart(3, "0")),
+			files.map((_, i) => String(i).padStart(6, "0")),
 		);
 		expect(spansOf(readRequests(dir)).map((s) => s.name)).toEqual(
 			Array.from({ length: 12 }, (_, i) => `span ${i}`),
@@ -247,8 +312,8 @@ describe("a long-running process's files", () => {
 		t.flush();
 		const files = readdirSync(dir).sort();
 		expect(files).toEqual([
-			expect.stringMatching(/\.20261124\.000\.jsonl$/),
-			expect.stringMatching(/\.20261125\.001\.jsonl$/),
+			expect.stringMatching(/\.20261124\.000000\.jsonl$/),
+			expect.stringMatching(/\.20261125\.000001\.jsonl$/),
 		]);
 		expect(readFileSync(join(dir, files[0] as string), "utf8")).toContain(
 			"still before",
@@ -268,7 +333,7 @@ describe("a long-running process's files", () => {
 		t.flush();
 		const files = readdirSync(dir).sort();
 		expect(files).toEqual([
-			expect.stringMatching(/^crb-\d+-[0-9a-f]{6}\.\d{8}\.000\.jsonl$/),
+			expect.stringMatching(/^crb-\d+-[0-9a-f]{6}\.\d{8}\.000000\.jsonl$/),
 			expect.stringMatching(/^crb-\d+-[0-9a-f]{6}\.jsonl$/),
 		]);
 	});
@@ -365,6 +430,7 @@ describe("a long-running process's files", () => {
 			flushOnExit: false,
 			rotation: DEFAULT_ROTATION,
 			warn,
+			timers: testTimers().timers,
 		});
 		expect(() => {
 			t.start("a").end();
@@ -380,7 +446,11 @@ describe("a long-running process's files", () => {
 
 	it("the disabled tracer starts no timer and writes nothing", () => {
 		vi.useFakeTimers();
-		const t = createTracer({ dir: "", service: "crb" });
+		const t = createTracer({
+			dir: "",
+			service: "crb",
+			timers: testTimers().timers,
+		});
 		t.rotate(DEFAULT_ROTATION);
 		t.start("a").end();
 		expect(vi.getTimerCount()).toBe(0);
@@ -400,6 +470,45 @@ describe("a long-running process's files", () => {
 			maxTotalBytes: DEFAULT_ROTATION.maxTotalBytes,
 		});
 		expect(rotationFromEnv({ CRB_TRACE_KEEP_DAYS: "-1" }).keepDays).toBe(14);
+	});
+
+	it("raises tiny settings to a floor: 1 MiB files, a day, one file in all", () => {
+		expect(
+			rotationFromEnv({
+				CRB_TRACE_FILE_MB: "0.0000001",
+				CRB_TRACE_KEEP_DAYS: "0.01",
+				CRB_TRACE_MAX_MB: "0.5",
+			}),
+		).toEqual({ maxFileBytes: MiB, keepDays: 1, maxTotalBytes: MiB });
+		expect(
+			rotationFromEnv({ CRB_TRACE_FILE_MB: "64", CRB_TRACE_MAX_MB: "10" }),
+		).toEqual({
+			maxFileBytes: 64 * MiB,
+			keepDays: 14,
+			maxTotalBytes: 64 * MiB,
+		});
+	});
+
+	it("prunes at start, before anything is written", () => {
+		const dir = tempDir();
+		old(dir, "crb-1-aaaaaa.20261101.000000.jsonl", 10, 20 * DAY);
+		const t = createTracer({ dir, service: "crb", flushOnExit: false });
+		t.rotate(DEFAULT_ROTATION);
+		expect(readdirSync(dir)).toEqual([]);
+	});
+
+	it("the cap never deletes a file written in the last minutes (another live crb's)", () => {
+		const dir = tempDir();
+		old(dir, "crb-1-aaaaaa.20261124.000000.jsonl", 600, 60_000);
+		old(dir, "crb-2-bbbbbb.20261123.000000.jsonl", 600, DAY);
+		const deleted = pruneTraces(
+			dir,
+			"crb",
+			{ maxFileBytes: 100, keepDays: 14, maxTotalBytes: 100 },
+			Date.now(),
+		);
+		expect(deleted).toEqual(["crb-2-bbbbbb.20261123.000000.jsonl"]);
+		expect(readdirSync(dir)).toEqual(["crb-1-aaaaaa.20261124.000000.jsonl"]);
 	});
 });
 

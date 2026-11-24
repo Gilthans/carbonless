@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -21,7 +22,14 @@ import {
 	testSpanContext,
 	traceRoot,
 } from "../../test/trace-run";
-import { compactRun, readRequests, type Span, spansOf, viewRun } from "./load";
+import {
+	compactRun,
+	extent,
+	readRequests,
+	type Span,
+	spansOf,
+	viewRun,
+} from "./load";
 import { findRun, resolveRun } from "./runs";
 import {
 	formatServer,
@@ -916,6 +924,53 @@ describe("a crb serve's trace directory", () => {
 		);
 		expect(text).toMatch(/git fetch +2 +4\.0s/);
 		expect(text).not.toContain("session: open");
+	});
+
+	it("summarizes a long window: 200k spans, no stack overflow", () => {
+		const many: Span[] = Array.from({ length: 200_000 }, (_, i) => ({
+			traceId: "t",
+			spanId: String(i),
+			parent: null,
+			name: i % 2 ? "git log" : "GET /api/home",
+			service: "crb",
+			startMs: T0 + i,
+			endMs: T0 + i + (i % 100),
+			attrs: {},
+			error: false,
+		}));
+		const s = summarizeServer(many);
+		expect(s.spans).toBe(200_000);
+		expect(s.fromMs).toBe(T0);
+		expect(s.toMs).toBe(T0 + 199_999 + 99);
+		expect(s.routes[0]).toMatchObject({ n: 100_000, max: 98 });
+		expect(extent([])).toBeNull();
+		expect(extent([3, 1, 2])).toEqual([1, 3]);
+	});
+
+	it("skips a line that is valid JSON but no request (null, a number)", () => {
+		const dir = tempDir();
+		write(dir, "crb-1-aaaaaa.20261124.000000.jsonl", [sp("GET /a", T0, 1)]);
+		writeFileSync(
+			join(dir, "crb-1-aaaaaa.20261124.000000.jsonl"),
+			"null\n7\n",
+			{ flag: "a" },
+		);
+		expect(readServerSpans(dir).map((x) => x.name)).toEqual(["GET /a"]);
+		expect(spansOf([null, 7] as never)).toEqual([]);
+	});
+
+	it("the CLI refuses --since on a test run rather than ignore it", () => {
+		const run = tempDir();
+		writeFileSync(join(run, "run.json"), "{}\n");
+		write(run, "crb-1-aaaaaa.jsonl", [sp("x", T0, 1)]);
+		const main = join(import.meta.dirname, "main.ts");
+		const out = spawnSync(
+			process.execPath,
+			["--import", "tsx", main, run, "--since", "1d"],
+			{ encoding: "utf8", cwd: join(import.meta.dirname, "../..") },
+		);
+		expect(out.status).toBe(1);
+		expect(out.stderr).toMatch(/--since applies to a server's trace directory/);
 	});
 
 	it("says so when the window holds nothing", () => {

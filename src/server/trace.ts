@@ -125,7 +125,10 @@ export const DEFAULT_ROTATION: RotationOptions = {
 /**
  * Rotation from $CRB_TRACE_FILE_MB, $CRB_TRACE_KEEP_DAYS and
  * $CRB_TRACE_MAX_MB; an unset or invalid one keeps its default (tracing
- * never stops crb from starting).
+ * never stops crb from starting). Each is raised to a floor: files of at
+ * least 1 MiB, a day kept, a total of at least one file (a tiny file size
+ * would roll and prune on every flush; a tiny total would delete every
+ * other file on each roll).
  */
 export function rotationFromEnv(
 	env: NodeJS.ProcessEnv = process.env,
@@ -134,13 +137,23 @@ export function rotationFromEnv(
 		const v = Number(env[name]);
 		return env[name]?.trim() && Number.isFinite(v) && v > 0 ? v : fallback;
 	};
-	return {
-		maxFileBytes: Math.round(
+	const maxFileBytes = Math.max(
+		MiB,
+		Math.round(
 			num("CRB_TRACE_FILE_MB", DEFAULT_ROTATION.maxFileBytes / MiB) * MiB,
 		),
-		keepDays: num("CRB_TRACE_KEEP_DAYS", DEFAULT_ROTATION.keepDays),
-		maxTotalBytes: Math.round(
-			num("CRB_TRACE_MAX_MB", DEFAULT_ROTATION.maxTotalBytes / MiB) * MiB,
+	);
+	return {
+		maxFileBytes,
+		keepDays: Math.max(
+			1,
+			num("CRB_TRACE_KEEP_DAYS", DEFAULT_ROTATION.keepDays),
+		),
+		maxTotalBytes: Math.max(
+			maxFileBytes,
+			Math.round(
+				num("CRB_TRACE_MAX_MB", DEFAULT_ROTATION.maxTotalBytes / MiB) * MiB,
+			),
 		),
 	};
 }
@@ -158,10 +171,18 @@ export function isServiceFile(service: string, name: string): boolean {
 }
 
 /**
+ * A file written to this recently may be another live process's current
+ * one (two crb serves during an update's restart, several in an e2e run):
+ * the cap never deletes it.
+ */
+export const RECENT_MS = 5 * 60 * 1000;
+
+/**
  * Deletes `service`'s trace files in `dir` older than `keepDays`, then the
  * oldest while they total more than `maxTotalBytes`; never `keep` (the
- * file being written). Other files (another service's, a test run's) are
- * left alone. Never throws; returns the names deleted.
+ * file being written) nor one written in the last RECENT_MS. Other files
+ * (another service's, a test run's) are left alone. Never throws; returns
+ * the names deleted.
  */
 export function pruneTraces(
 	dir: string,
@@ -209,7 +230,7 @@ export function pruneTraces(
 	}
 	for (const f of left) {
 		if (total <= options.maxTotalBytes) break;
-		if (join(dir, f.name) === keep) continue;
+		if (join(dir, f.name) === keep || nowMs - f.mtimeMs < RECENT_MS) continue;
 		if (drop(f.name)) total -= f.size;
 	}
 	return deleted;
@@ -315,6 +336,22 @@ export function otlpLine(
 
 const hex = (bytes: number) => randomBytes(bytes).toString("hex");
 
+/**
+ * The timer functions as the process started with: a test that fakes
+ * timers (Vitest's) never holds the tracer's flush, nor sees it among its
+ * own timers.
+ */
+const realTimers = {
+	setTimeout: globalThis.setTimeout,
+	clearTimeout: globalThis.clearTimeout,
+};
+
+/** A scheduler for the timed flush (tests pass their own). */
+export interface FlushTimers {
+	setTimeout(fn: () => void, ms: number): { unref?(): unknown };
+	clearTimeout(handle: { unref?(): unknown }): void;
+}
+
 /** Buffered spans are written once this many wait (and at exit). */
 const FLUSH_AT = 256;
 /** …and this long after the first of them ended. */
@@ -339,6 +376,8 @@ export interface TracerOptions {
 	rotation?: RotationOptions;
 	/** Epoch milliseconds now, for the day and retention (tests). */
 	clock?: () => number;
+	/** The timed flush's scheduler (tests); default the real timers. */
+	timers?: FlushTimers;
 }
 
 export function createTracer(opts: TracerOptions): Tracer {
@@ -368,7 +407,8 @@ export function createTracer(opts: TracerOptions): Tracer {
 	let seq = 0;
 	let fileDay = "";
 	let fileBytes = 0;
-	let timer: ReturnType<typeof setTimeout> | null = null;
+	const timers: FlushTimers = opts.timers ?? (realTimers as FlushTimers);
+	let timer: { unref?(): unknown } | null = null;
 
 	// A new file: the first, or the next one of a rotation (then pruned).
 	const open = (now: number) => {
@@ -380,9 +420,10 @@ export function createTracer(opts: TracerOptions): Tracer {
 		fileDay = utcDay(now);
 		fileBytes = 0;
 		if (rotation) {
+			// Six digits: sorts as text far past any real day's count.
 			file = join(
 				dir,
-				`${stem}.${fileDay}.${String(seq++).padStart(3, "0")}.jsonl`,
+				`${stem}.${fileDay}.${String(seq++).padStart(6, "0")}.jsonl`,
 			);
 			pruneTraces(dir, service, rotation, now, file);
 		} else {
@@ -391,7 +432,7 @@ export function createTracer(opts: TracerOptions): Tracer {
 	};
 	const flush = () => {
 		if (timer) {
-			clearTimeout(timer);
+			timers.clearTimeout(timer);
 			timer = null;
 		}
 		if (buffer.length === 0) return;
@@ -410,7 +451,15 @@ export function createTracer(opts: TracerOptions): Tracer {
 			) {
 				open(now);
 			}
-			appendFileSync(file, line);
+			try {
+				appendFileSync(file, line);
+			} catch (error) {
+				// The directory was deleted under it (traces cleared by hand):
+				// made again, once, rather than tracing off until a restart.
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				mkdirSync(dir, { recursive: true });
+				appendFileSync(file, line);
+			}
 			fileBytes += bytes;
 		} catch (error) {
 			broken = true;
@@ -424,7 +473,7 @@ export function createTracer(opts: TracerOptions): Tracer {
 		buffer.push(span);
 		if (buffer.length >= FLUSH_AT) flush();
 		else if (!timer && flushAfterMs > 0) {
-			timer = setTimeout(flush, flushAfterMs);
+			timer = timers.setTimeout(flush, flushAfterMs);
 			timer.unref?.();
 		}
 	};
@@ -493,8 +542,12 @@ export function createTracer(opts: TracerOptions): Tracer {
 			// The file named before rotation ends here.
 			if (!rotation) file = "";
 			rotation = options;
+			// Retention at start, not at the first write: a server with no
+			// traffic prunes too.
+			pruneTraces(dir, service, options, clock());
 		},
 	};
+	if (rotation) pruneTraces(dir, service, rotation, clock());
 	if (opts.flushOnExit !== false) {
 		process.on("exit", () => {
 			root?.span.end();

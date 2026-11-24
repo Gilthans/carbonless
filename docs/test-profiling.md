@@ -53,22 +53,27 @@ unit in [remote-machine.md](remote-machine.md) sets it):
 
 - Spans reach the file about 2 s after they end (an unref'd timer, besides
   every 256 spans and at exit), so a crash loses seconds and the files can
-  be read while it runs. A write that fails is reported once on stderr and
-  tracing stops; crb goes on.
+  be read while it runs (real timers: a test's fake clock never holds
+  them). A directory deleted while it runs is made again; any other write
+  that fails is reported once on stderr and tracing stops; crb goes on.
 - Its file rolls at a size limit and at the UTC day change:
-  `crb-<pid>-<random>.<yyyymmdd>.<seq>.jsonl`.
+  `crb-<pid>-<random>.<yyyymmdd>.<seq, 6 digits>.jsonl`.
 - At start and on each roll it deletes its own files (`crb-<pid>-…`, old
   unrotated names too) older than the days kept, then the oldest while
-  they pass the total cap. Nothing else in the directory is touched.
+  they pass the total cap, never one written in the last 5 minutes (another
+  live crb serve's, during an update's restart). Nothing else in the
+  directory is touched.
 - Defaults, overridable in the environment: `CRB_TRACE_FILE_MB` (32 per
-  file), `CRB_TRACE_KEEP_DAYS` (14), `CRB_TRACE_MAX_MB` (1024 in all).
+  file), `CRB_TRACE_KEEP_DAYS` (14), `CRB_TRACE_MAX_MB` (1024 in all),
+  raised to at least 1 MiB, 1 day and one file's size.
 
 `pnpm test-profile <the trace dir> [--since 1d] [--top N]` reads it as a
 server (a directory with crb serve's files and no `run.json`): the span
 count and time window, the slowest routes by p95 (n, total, p50, p95,
 max, failures: 5xx or aborted), gh and git calls, and gh/git by command
-(most time first). `--since` takes `30m`, `6h`, `1d`, `2w` or a date;
-files last written before it aren't read. `--jaeger` loads the same
+(most time first). `--since` takes `30m`, `6h`, `1d`, `2w` or a date
+(default `7d`, said in the header); files last written before it aren't
+read. A test run refuses `--since`. `--jaeger` loads the same
 window into Jaeger (service `crb`). A server's directory is never packed.
 
 ## Reading them

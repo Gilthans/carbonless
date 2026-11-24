@@ -16,7 +16,13 @@
 import { execFileSync } from "node:child_process";
 import { traceRoot } from "../../test/trace-run";
 import { writeDurations } from "./durations";
-import { type OtlpRequest, readRequests, spansOf, viewRun } from "./load";
+import {
+	extent,
+	type OtlpRequest,
+	readRequests,
+	spansOf,
+	viewRun,
+} from "./load";
 import { resolveRun } from "./runs";
 import { DURATIONS_FILE } from "./sequencer.mjs";
 import {
@@ -31,6 +37,9 @@ const USAGE =
 	"usage: pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]\n       pnpm test-profile <server trace dir> [--since 1d] [--top N] [--jaeger]\n       pnpm test-profile [unit run] --write-durations [--force]";
 
 const load = (dir: string) => viewRun(dir);
+
+/** A server directory's window when --since isn't given. */
+const SERVER_WINDOW = "7d";
 
 const JAEGER = {
 	name: "crb-jaeger",
@@ -116,8 +125,8 @@ async function jaeger(lines: OtlpRequest[], view: JaegerView): Promise<void> {
 			}
 		}
 	}
-	const start = Math.min(...spans.map((s) => s.startMs)) - 60_000;
-	const end = Math.max(...spans.map((s) => s.endMs)) + 60_000;
+	const start = (extent(spans.map((s) => s.startMs))?.[0] ?? 0) - 60_000;
+	const end = (extent(spans.map((s) => s.endMs))?.[1] ?? 0) + 60_000;
 	const params = new URLSearchParams({
 		service: view.service,
 		...(view.tags ? { tags: JSON.stringify(view.tags) } : {}),
@@ -139,7 +148,7 @@ async function main(argv: string[]): Promise<void> {
 	let toJaeger = false;
 	let toDurations = false;
 	let force = false;
-	let since: number | undefined;
+	let since: string | undefined;
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i] as string;
 		if (a === "--compare") compare = argv[++i];
@@ -149,8 +158,10 @@ async function main(argv: string[]): Promise<void> {
 			if (!Number.isInteger(top) || top < 1) {
 				throw new Error(`--top takes a count\n${USAGE}`);
 			}
-		} else if (a === "--since") since = parseSince(argv[++i] ?? "");
-		else if (a === "--jaeger") toJaeger = true;
+		} else if (a === "--since") {
+			since = argv[++i] ?? "";
+			parseSince(since); // Refused before anything is read.
+		} else if (a === "--jaeger") toJaeger = true;
 		else if (a === "--write-durations") toDurations = true;
 		else if (a === "--force") force = true;
 		else if (a === "-h" || a === "--help") {
@@ -168,13 +179,21 @@ async function main(argv: string[]): Promise<void> {
 				`a server's trace directory takes --since, --top, --jaeger\n${USAGE}`,
 			);
 		}
-		const lines = readServerRequests(dir, since);
+		// A week unless asked: the whole directory can be a GiB of JSON.
+		const window = since ?? SERVER_WINDOW;
+		const lines = readServerRequests(dir, parseSince(window));
 		if (toJaeger) await jaeger(lines, { service: "crb" });
 		else {
 			const summary = summarizeServer(spansOf(lines));
-			console.log(formatServer(dir, summary, topSet ? top : 15));
+			const label = `${dir} · since ${window}${since ? "" : " (default; --since to change)"}`;
+			console.log(formatServer(label, summary, topSet ? top : 15));
 		}
 		return;
+	}
+	if (since !== undefined) {
+		throw new Error(
+			`--since applies to a server's trace directory, not a test run\n${USAGE}`,
+		);
 	}
 	if (toDurations) {
 		const { count, changes } = writeDurations(process.cwd(), load(dir), force);

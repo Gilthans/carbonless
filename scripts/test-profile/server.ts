@@ -1,6 +1,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { isServiceFile } from "../../src/server/trace";
 import {
+	extent,
 	fileLines,
 	nanosToMs,
 	type OtlpRequest,
@@ -74,6 +75,7 @@ export function readServerRequests(
 			} catch {
 				continue; // A torn last line.
 			}
+			if (!req || typeof req !== "object") continue;
 			for (const rs of req.resourceSpans ?? []) {
 				for (const ss of rs.scopeSpans ?? []) {
 					ss.spans = (ss.spans ?? []).filter(
@@ -178,8 +180,8 @@ export function summarizeServer(spans: Span[]): ServerSummary {
 	}
 	return {
 		spans: spans.length,
-		fromMs: spans.length ? Math.min(...spans.map((s) => s.startMs)) : null,
-		toMs: spans.length ? Math.max(...spans.map((s) => s.endMs)) : null,
+		fromMs: extent(spans.map((s) => s.startMs))?.[0] ?? null,
+		toMs: extent(spans.map((s) => s.endMs))?.[1] ?? null,
 		routes: stats(routes).sort((a, b) => b.p95 - a.p95 || b.ms - a.ms),
 		kinds: stats(kinds).sort((a, b) => (a.name < b.name ? -1 : 1)),
 		commands: stats(commands).sort((a, b) => b.ms - a.ms),

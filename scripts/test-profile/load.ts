@@ -60,6 +60,20 @@ const value = (v: OtlpValue) =>
 const attrsOf = (list: OtlpAttr[] | undefined) =>
 	Object.fromEntries((list ?? []).map((a) => [a.key, value(a.value)]));
 
+/**
+ * The least and greatest of `values` by a loop: spreading them into
+ * Math.min/max overflows the stack past ~125k (a server's week of spans).
+ */
+export function extent(values: Iterable<number>): [number, number] | null {
+	let lo = Number.POSITIVE_INFINITY;
+	let hi = Number.NEGATIVE_INFINITY;
+	for (const v of values) {
+		if (v < lo) lo = v;
+		if (v > hi) hi = v;
+	}
+	return lo <= hi ? [lo, hi] : null;
+}
+
 /** Nanosecond string to epoch milliseconds (fractions kept). */
 export const nanosToMs = (n: string) =>
 	Number(n.slice(0, -6) || "0") + Number(n.slice(-6)) / 1e6;
@@ -110,6 +124,8 @@ export function readRequests(dir: string, traceId?: string): OtlpRequest[] {
 export function spansOf(requests: OtlpRequest[]): Span[] {
 	const spans: Span[] = [];
 	for (const req of requests) {
+		// A line that parses to no object (`null`, a number) is skipped.
+		if (!req || typeof req !== "object") continue;
 		for (const rs of req.resourceSpans ?? []) {
 			const res = attrsOf(rs.resource?.attributes);
 			const service = String(res["service.name"] ?? "?");
