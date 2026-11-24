@@ -7,6 +7,7 @@ import { threadFocus } from "./files/threadFocus";
 import { persistHome, reloadedHome, renderAfter } from "./home/homePersist";
 import { newQueryClient } from "./queryClient";
 import { createAppRouter } from "./router";
+import { tracingOn } from "./trace/on";
 import "./index.css";
 
 const root = document.getElementById("root");
@@ -16,11 +17,22 @@ const queryClient = newQueryClient();
 // Before the router reads the URL.
 stripAccessKey(window.location, window.history);
 const router = createAppRouter();
+// Only when the server traces (its page's crb-trace meta): the page's
+// spans, loaded on demand (off, only the meta is looked for). The app
+// renders once they're in, so its first requests are traced too.
+const traced = tracingOn()
+	? import("./trace/install")
+			.then((m) => {
+				m.installBrowserTrace(router.history);
+			})
+			.catch(() => {})
+	: Promise.resolve();
 // Moves end a pending thread focus from the start, before Root's effects.
 threadFocus.follow(router.history);
 
 // Home's last answers first (homePersist.ts): Home shows them at once.
-void renderAfter(persistHome(queryClient, { restore: !reloadedHome() }), () => {
+const restored = persistHome(queryClient, { restore: !reloadedHome() });
+void renderAfter(Promise.all([restored, traced]), () => {
 	createRoot(root).render(
 		<StrictMode>
 			<QueryClientProvider client={queryClient}>

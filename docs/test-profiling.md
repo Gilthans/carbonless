@@ -92,6 +92,60 @@ one side shows `–`, not a 0. `--only` goes with neither
 `--compare-version` nor `--jaeger`, and test runs refuse all three.
 The tracer reads the build only when tracing is on.
 
+### Browser spans (CAR-288)
+
+While `crb serve` traces, the pages it serves record what the reviewer
+waits for and send it to the same trace files (`$CRB_TRACE_BROWSER=0`
+turns just the page's spans off; the unit and e2e harnesses do, so test
+traces have none but `e2e/browser-trace.spec.ts`'s). The server says so
+with a `<meta name="crb-trace">` in its page (a page is then never served
+as "not modified"); without it the page loads no tracing code at all
+(`src/web/trace/on.ts` looks for the meta; `install.ts` is a chunk of its
+own): no observer, no wrapped `fetch`, no listener, no request. `pnpm
+dev`'s Vite page has no meta, so no page spans. Tracing never breaks the
+page: its callbacks run guarded, and an error in them turns it off for
+the page's life.
+
+One trace per page load (`src/web/trace/`), the size of its loads:
+
+| span | what it is |
+| --- | --- |
+| `browser.navigation` | the trace's root: the document's load, 0 to `loadEventEnd`; `type`, `ttfb_ms`, `dom_interactive_ms`, `dcl_ms`, `load_ms`, `transfer_bytes`, `viewport_w`, `route` |
+| `browser.page` | a page shown (the first from the document's start, each later route from its move) to its last milestone (`complete: true`); left first, `complete: false` at the move; failed (a threads or Home repo read), `complete: false` with an error; given up after 5 minutes, `abandoned: true`, ending at its last milestone reached. `route` (`home`, `overview`, `files`, `verdict`, `settings`, `opening`), `review` (its id), `spa` (a move in the app: its shell, the header, was already up), `restored` (back from the back-forward cache), `hidden`, `cls` |
+| `browser.ui.*` | a milestone, from the page's start to when it is on screen: `header`; overview `threads` (the list, skeleton gone; an error when the read failed) and `threads_code` (no thread's code pending); files `first_file` (the first file with nothing busy, where the page ends) and `diff_rows` (the first diff line on screen); Home `home_rows`, `home_done`, and per view repo `repo_rows`, `repo_done` (`repo.index`: its place in the view, never its name) |
+| `browser.fetch` | an API request, from `fetch` to its headers; `api` (a template: `/api/r/:id/threads`), `stage`, `status`, `body_ms` (to its body read), `painted_ms` (to the frame after) |
+| `browser.longtask`, `browser.layout_shift` | while a page loads: a long task (`duration_ms`); a layout shift of 0.05 or more (`value`; every shift counts in its page's `cls`) |
+| `browser.lcp` | 0 to the largest contentful paint, once the first page is complete or the page goes away |
+
+Filter before aggregating: `hidden: true` (the page was in a background
+tab at some point: no frames, so its times include the wait to be shown),
+`user: true` (a milestone the reviewer's pace sets: `diff_rows`, as files
+open collapsed unless the address lands on one), `late: true` (it came
+after its page's span ended), `spa: true` (a move, not a document load).
+Only `complete: true` pages are load times.
+
+Milestones are read off the page (`src/web/trace/milestones.ts`: test ids,
+`aria-busy`, the thread list's `data-trace`/`data-state`, Home's
+`data-repo`), so they hold however a page loads; the DOM is watched only
+while one is pending. Each `browser.fetch` sends a `traceparent`: the
+server's `GET /api/r/:id/...` span, with its git and gh, is its child, so
+a slow milestone reads down to the request and the command behind it.
+Once a page's span has ended its reads (polls, refetches) aren't traced,
+and a write (the reviewer's action) is a small trace of its own
+(`after_page: true`): a tab left open adds nothing while it only polls.
+
+Spans go out when a page is complete and every 5 s (plain POSTs), and by
+`sendBeacon` (else a keepalive POST) in batches of 50 when the page goes
+away, a best effort: a beacon sent while the document is replaced may be
+lost. `POST /api/trace` (`src/server/browserTrace.ts`, itself not traced)
+keeps only known names, checked ids, times within a day of now, 16 short
+attributes a span, 200 spans a batch and 3,000 spans a minute (then 429).
+The page's clock is moved onto the server's by its smallest offset seen
+(a batch's `sentAt`, and each traced request's arrival against its span's
+start: latency only adds), when that is over 30 ms. Later: the page's
+spans under a `service.name` of their own, once CAR-287's resource
+changes are in.
+
 ## Reading them
 
 - `pnpm test-profile [run|latest|e2e|unit]` (the newest match with traces,

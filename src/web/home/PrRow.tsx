@@ -428,6 +428,8 @@ export function PrRow(props: {
 		<>
 			<li
 				data-testid={hidden ? "home-row-hidden" : "home-row"}
+				// Its repo, for the page's spans (src/web/trace/milestones.ts).
+				data-repo={`${row.owner}/${row.repo}`}
 				className={`group relative flex min-h-11 flex-wrap any-pointer-coarse:min-h-12 items-center gap-x-3 gap-y-1 border-t border-line px-3 py-2 text-sm first:border-t-0 hover:bg-raised focus-within:bg-raised lg:flex-nowrap ${touch ? "lg:pr-12" : ""}`}
 			>
 				<span

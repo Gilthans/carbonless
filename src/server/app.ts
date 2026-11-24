@@ -52,6 +52,7 @@ import {
 } from "./agent/store.js";
 import { markSetupDone, readSetupDone } from "./agentSetupDone.js";
 import { parseAsOf } from "./asOf.js";
+import { browserTraceOn, registerBrowserTrace } from "./browserTrace.js";
 import { isCloning } from "./clone.js";
 import { updateConfig } from "./config.js";
 import { FailureLog } from "./errorLog.js";
@@ -256,6 +257,9 @@ function traceRequests(app: FastifyInstance, traced: Tracer): void {
 	if (!traced.enabled) return;
 	const spans = new WeakMap<object, Span>();
 	app.addHook("onRequest", (request, _reply, done) => {
+		// The page's own spans arriving (browserTrace.ts): a span each
+		// would only trace the tracing.
+		if (request.routeOptions.url === "/api/trace") return done();
 		const header = request.headers.traceparent;
 		const incoming = parseTraceparent(
 			typeof header === "string" ? header : undefined,
@@ -296,7 +300,8 @@ export async function buildApp(
 		// so there's nothing to drain.
 		forceCloseConnections: true,
 	});
-	traceRequests(app, options.tracer ?? tracer());
+	const traced = options.tracer ?? tracer();
+	traceRequests(app, traced);
 	// Lowered only by a test (/api/_test/limits).
 	const limits = defaultLimits();
 	// First hook, so even the access checks' 401/403 replies carry them.
@@ -308,6 +313,8 @@ export async function buildApp(
 		publicUrl: options.publicUrl,
 	});
 	await registerAccessKey(app, options.accessKey, options.publicUrl);
+	// The page's own spans, only while the server traces (CAR-288).
+	if (browserTraceOn(traced)) registerBrowserTrace(app, traced);
 	// A crb of another build must not drive this server (the browser sends
 	// no header and isn't checked: its page comes from this server).
 	app.addHook("onRequest", async (request, reply) => {

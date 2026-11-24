@@ -35,6 +35,10 @@ both right after `crb` starts and when it has been running a while. Never block
 a page on slow data: render what is ready, show skeletons per section, and load
 long lists in stages (what's visible plus one "load more" page first). Caching
 for reloads is secondary.
+`CRB_TRACE_DIR=<dir> crb serve` measures these on a real server: the page's
+own spans (`browser.ui.header`, `browser.ui.threads_code`, Home's
+`browser.ui.repo_done`, ...) with the server's requests under them
+(`docs/test-profiling.md`, "Browser spans").
 The skeletons and spinners follow "Loading never looks empty" below.
 
 Fewer GitHub calls never at the cost of the first paint (the owner,
