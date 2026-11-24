@@ -1,9 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ownerToken } from "../../scripts/owner.mjs";
 import { ownerAlive, watchOwner } from "./owner";
 
 describe("owner", () => {
+	// A test that timed out on a fake clock leaks it to none after.
+	afterEach(() => vi.useRealTimers());
+
 	it("is alive only while its pid runs with the start time in the token", () => {
 		expect(ownerAlive(ownerToken(process.pid))).toBe(true);
 		// The pid now belongs to another process (pid reuse).

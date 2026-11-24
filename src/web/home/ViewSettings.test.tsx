@@ -3,7 +3,9 @@ import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SearchResult } from "../../shared/home";
+import { RETRY_DELAYS_MS } from "../files/stateSync";
 import { HomePage } from "./HomePage";
+import { homeQuery } from "./homeApi";
 import {
 	ago,
 	type Call,
@@ -16,6 +18,8 @@ import {
 import { parseRepo, suggestedRepos } from "./ViewSettings";
 
 afterEach(() => {
+	// A test that timed out on a fake clock leaks it to none after.
+	vi.useRealTimers();
 	cleanup();
 	vi.unstubAllGlobals();
 });
@@ -432,10 +436,15 @@ describe("ViewSettings", () => {
 				await waitFor(() =>
 					expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
 				);
-				// Past the first retries' backoff (RETRY_DELAYS_MS: 1, 2, 4, 8,
-				// 15 s), short of Home's minute poll (its fake answers the old
-				// view): no third save.
-				await act(() => vi.advanceTimersByTimeAsync(30_000));
+				// Past the first retries' backoff (RETRY_DELAYS_MS), short of
+				// Home's poll (its fake answers the old view): no third save.
+				const window = 30_000;
+				expect(RETRY_DELAYS_MS[0]).toBeLessThan(window);
+				expect(
+					homeQuery.refetchInterval,
+					"Home's poll must come after this window (its fake answers the old view)",
+				).toBeGreaterThan(window);
+				await act(() => vi.advanceTimersByTimeAsync(window));
 				expect(bodies()).toEqual([["acme/api"], ["acme/api", "acme/web"]]);
 				expect(chips()).toEqual(["acme/api", "acme/web"]);
 			} finally {

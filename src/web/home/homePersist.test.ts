@@ -11,6 +11,8 @@ import {
 
 const stops: (() => void)[] = [];
 afterEach(async () => {
+	// A test that timed out on a fake clock leaks it to none after.
+	vi.useRealTimers();
 	// Stopping drops a throttled save already timed: none lands in the next test.
 	for (const stop of stops.splice(0)) stop();
 	sessionStorage.clear();

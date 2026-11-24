@@ -155,6 +155,8 @@ const markerIn = (id: string, name: "comparison target" | "comparison base") =>
 const ps = (number: number): Viewing => ({ kind: "patchset", number });
 
 afterEach(() => {
+	// A test that timed out on a fake clock leaks it to none after.
+	vi.useRealTimers();
 	cleanup();
 	vi.unstubAllGlobals();
 });
