@@ -8,7 +8,7 @@ import {
 } from "../../shared/lineRanges.js";
 import {
 	clusterAt,
-	FILE_LEVEL,
+	fileLevelSides,
 	lineRuns,
 	type SincePiece,
 	sincePieces,
@@ -1046,7 +1046,7 @@ export function interdiffFileHunks(
 	const targetClusters =
 		target.files.find((f) => f.path === entry.path)?.clusters ?? [];
 	const withFile = (hunks: FileHunks) =>
-		withFileLevel(hunks, traced, entry, file, targetClusters);
+		withFileLevel(hunks, traced, target, answer, entry, file);
 	const plain = withFile(
 		sinceFileHunks(traced, entry, file, targetClusters, [], sources),
 	);
@@ -1065,47 +1065,87 @@ export function interdiffFileHunks(
 /**
  * `hunks` with the interdiff's file-level change as a piece of its own
  * (SincePiece.file, CAR-297) when the interdiff has one for the file (a
- * mode, a binary file, a submodule pointer that differs since) and no
- * reworked or new file-level cluster of the viewed snapshot shows it: one
- * the author reverted since (back to the base), or anything else the
- * clusters miss (principle 2: it is to read until marked). Keyed by the
- * gone since cluster it undoes when exactly one gone cluster of the file
- * has no line in the interdiff (a file-level one: lines are keyed by
+ * mode, a binary file, a submodule pointer, a rename that differs since)
+ * and no reworked or new file-level cluster of the viewed snapshot shows
+ * it: one the author reverted since (back to the base), or anything else
+ * the clusters miss (principle 2: it is to read until marked). Keyed by
+ * the gone since cluster it undoes when exactly one gone cluster of the
+ * file has no line in the interdiff (a file-level one: lines are keyed by
  * theirs), so it reads "gone".
+ *
+ * A rename PS1 made and the author undid since: the interdiff renames the
+ * file back, from the path PS1 gave it; the piece goes on that path's
+ * gone file (its PS1 cluster is gone there), with the interdiff's whole
+ * label, "Renamed from …" included, and none on the path it went back to.
+ * A rename made since the compared patch set is the rename carry's (a
+ * file the interdiff only renames is one whole-file gap): only what else
+ * changed with it is a piece.
+ *
+ * Deliberately unlabelled: when a reworked or new file-level cluster of
+ * the snapshot shows the file (say the binary changed and the mode was
+ * put back), that cluster is what is read and counted; the interdiff's
+ * own label for the file isn't named apart.
  */
 function withFileLevel(
 	hunks: FileHunks,
 	traced: Traced,
+	target: Snapshot,
+	answer: RereviewAnswer,
 	entry: RereviewAnswer["files"][number],
-	file: InterdiffFile | null,
-	targetClusters: readonly Cluster[],
+	own: InterdiffFile | null,
 ): FileHunks {
+	if (traced.interdiff.status !== "available") return hunks;
+	// A rename PS1 made, undone since: the interdiff's file left this path.
+	const away = own
+		? undefined
+		: traced.interdiff.files.find(
+				(f) => f.status === "renamed" && f.oldPath === entry.path,
+			);
+	const file = own ?? away;
 	const level = file?.clusters.find((c) => c.kind === "file");
 	if (!file || !level?.label) return hunks;
-	// A rename since is the rename carry's (a file the interdiff only
-	// renames is one whole-file gap): only what else changed is a piece.
-	const label = withoutRename(level.label, file);
-	if (!label) return hunks;
-	const kinds = new Map(entry.clusters.map((c) => [c.key, c.kind]));
-	const shown = targetClusters.some((c) => {
-		const kind = kinds.get(c.key);
-		return c.kind === "file" && (kind === "reworked" || kind === "new");
-	});
-	if (shown) return hunks;
 	const lineKeys = new Set([
 		...Object.values(traced.lineKeys.old[file.oldPath ?? file.path] ?? {}),
 		...Object.values(traced.lineKeys.new[file.path] ?? {}),
 	]);
-	const gone = entry.clusters.filter(
-		(c) => c.kind === "gone" && !lineKeys.has(c.key),
-	);
+	const goneOf = (e: RereviewAnswer["files"][number] | undefined) =>
+		(e?.clusters ?? []).filter(
+			(c) => c.kind === "gone" && !lineKeys.has(c.key),
+		);
+	// A reworked or new file-level cluster of the snapshot at `path` shows it.
+	const shownAt = (path: string) => {
+		const at = answer.files.find((f) => f.path === path);
+		const kinds = new Map((at?.clusters ?? []).map((c) => [c.key, c.kind]));
+		return (target.files.find((f) => f.path === path)?.clusters ?? []).some(
+			(c) => {
+				const kind = kinds.get(c.key);
+				return c.kind === "file" && (kind === "reworked" || kind === "new");
+			},
+		);
+	};
+	let label = level.label;
+	if (away) {
+		// Nothing of PS1 gone here: no rename of PS1's to undo.
+		if (goneOf(entry).length === 0 || shownAt(file.path)) return hunks;
+	} else {
+		const from =
+			file.status === "renamed" && file.oldPath !== undefined
+				? answer.files.find((f) => f.path === file.oldPath)
+				: undefined;
+		// The path PS1 renamed it to takes the piece (above).
+		if (goneOf(from).length > 0) return hunks;
+		label = withoutRename(label, file);
+		if (!label || shownAt(entry.path)) return hunks;
+	}
+	const gone = goneOf(entry);
+	const targetClusters =
+		target.files.find((f) => f.path === entry.path)?.clusters ?? [];
 	const piece: SincePiece = {
 		hunk: -1,
 		line: 0,
 		...(gone.length === 1 ? { key: (gone[0] as { key: string }).key } : {}),
 		owns: null,
-		old: FILE_LEVEL.old,
-		new: FILE_LEVEL.new,
+		...fileLevelSides(),
 		kind: targetClusters.some((c) => c.kind === "file")
 			? "removed"
 			: "reverted",

@@ -2568,7 +2568,8 @@ export function DiffBody(props: {
 				newCount: 0,
 				removed: [],
 				added: [],
-				lines: size(piece.old) + size(piece.new),
+				// A file-level piece has no lines (its line 0 is the change), as counted.
+				lines: piece.file !== undefined ? 0 : size(piece.old) + size(piece.new),
 				state: sinceOnlyState(props.sinceMarks, since, file.path, piece),
 				...(piece.whitespaceOnly ? { whitespaceOnly: true } : {}),
 			},

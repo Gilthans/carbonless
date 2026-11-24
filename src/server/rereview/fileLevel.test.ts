@@ -5,7 +5,7 @@ import {
 	GIT_TEST_TIMEOUTS,
 } from "../../../test/git-fixture";
 import {
-	FILE_LEVEL,
+	fileLevelSides,
 	type SinceUnit,
 	sinceFileChange,
 	sinceToggleChange,
@@ -226,7 +226,7 @@ describe("file-level changes between patch sets (CAR-297)", () => {
 				.map((u) => u.state);
 		expect(fileUnits([everyLine])).toEqual(["unreviewed"]);
 		// Line 0 of the old side, which no line has, is that change's alone.
-		expect(FILE_LEVEL).toEqual({ old: [[0, 1]], new: [] });
+		expect(fileLevelSides()).toEqual({ old: [[0, 1]], new: [] });
 		expect(
 			fileUnits([{ ...everyLine, reviewed: { old: [[0, 1]], new: [] } }]),
 		).toEqual(["reviewed"]);
@@ -321,6 +321,61 @@ describe("file-level changes between patch sets (CAR-297)", () => {
 		expect(v.hunks("x2.sh").pieces ?? []).toEqual([]);
 		expect(v.hunks("y2.sh").pieces?.map((p) => p.file)).toEqual([
 			"Mode changed 100644 → 100755",
+		]);
+	});
+	it('a rename PS1 made, undone since: the gone file at PS1\'s path has the piece, "Renamed from …" its label, to read; none on the path it went back to', async () => {
+		const v = await sinceView([
+			{ message: "base", files: { "a.txt": "a 1\na 2\n", "o.txt": "o\n" } },
+			{ message: "ps1", files: {}, rename: { "a.txt": "b.txt" } },
+			{
+				message: "ps2",
+				files: { "o.txt": "o\nx\n" },
+				rename: { "b.txt": "a.txt" },
+			},
+		]);
+		const pieces = v.hunks("b.txt").pieces ?? [];
+		expect(pieces.map((p) => p.file)).toEqual(["Renamed from b.txt"]);
+		const gone = v.answer.files.find((f) => f.path === "b.txt")?.clusters;
+		expect(gone?.map((c) => c.kind)).toEqual(["gone"]);
+		expect(pieces[0]?.key).toBe(gone?.[0]?.key);
+		const back = v.answer.files.find((f) => f.path === "a.txt");
+		if (back) expect(v.hunks("a.txt").pieces ?? []).toEqual([]);
+		expect(brief(v.units()).filter((u) => !u.startsWith("o.txt"))).toEqual([
+			"b.txt gone unreviewed 0",
+		]);
+		// The gone file's header has something to mark (never "Unmark reviewed").
+		expect(
+			sinceFileChange(undefined, 1, "b.txt", pieces, "reviewed"),
+		).not.toBeNull();
+	});
+
+	it("a rename and a mode PS1 made, both undone since: one piece, on PS1's path, keyed by its gone cluster", async () => {
+		const v = await sinceView([
+			{ message: "base", files: { "a.sh": "1\n2\n", "o.txt": "o\n" } },
+			{
+				message: "ps1",
+				files: {},
+				rename: { "a.sh": "b.sh" },
+				chmod: { "b.sh": "755" },
+			},
+			{
+				message: "ps2",
+				files: { "o.txt": "o\nx\n" },
+				rename: { "b.sh": "a.sh" },
+				chmod: { "a.sh": "644" },
+			},
+		]);
+		const pieces = v.hunks("b.sh").pieces ?? [];
+		expect(pieces.map((p) => p.file)).toEqual([
+			"Renamed from b.sh, mode changed 100755 → 100644",
+		]);
+		const gone = v.answer.files.find((f) => f.path === "b.sh")?.clusters[0];
+		expect(pieces[0]?.key).toBe(gone?.key);
+		if (v.answer.files.some((f) => f.path === "a.sh")) {
+			expect(v.hunks("a.sh").pieces ?? []).toEqual([]);
+		}
+		expect(brief(v.units()).filter((u) => !u.startsWith("o.txt"))).toEqual([
+			"b.sh gone unreviewed 0",
 		]);
 	});
 });

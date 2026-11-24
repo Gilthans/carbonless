@@ -4297,3 +4297,45 @@ test("a mode change new since the last review shows its label and box in the sin
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 	await expect(toRead(page)).toHaveText(/0 to read/);
 });
+
+test("a rename undone since the last review: the gone file's row says Renamed from …, its header offers ✓ not Unmark, and crossing the row off finishes it (CAR-297)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		base: { "src/core.ts": text(core), "docs/old.md": "# Notes\n\nKept.\n" },
+		files: [
+			{
+				message: "PR change",
+				files: { "src/core.ts": edit(core, { 5: "core 5 changed" }) },
+				rename: { "docs/old.md": "docs/new.md" },
+			},
+		],
+	});
+	const s = await startCrb();
+	await sinceAfter(page, s, p, ["docs/new.md", "src/core.ts"], {
+		message: "name back",
+		files: {},
+		rename: { "docs/new.md": "docs/old.md" },
+	});
+	const gone = fileSection(page, "docs/new.md");
+	await expect(gone).toHaveAttribute("data-gone-file", "docs/new.md", GIT_WAIT);
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	// Nothing of it is marked: its header offers ✓, never the reset.
+	await expect(fileActionButton(gone, "Mark remaining reviewed")).toBeVisible();
+	await expect(fileActionButton(gone, "Unmark reviewed")).toHaveCount(0);
+	await gone.getByRole("button", { name: "Expand file" }).click();
+	const level = gone.getByTestId("since-file-level");
+	await expect(level).toContainText("Renamed from docs/new.md", GIT_WAIT);
+	await expect(level.getByTestId("kind-chip")).toHaveText("gone");
+	await marksReady(page, gone);
+	await level.getByRole("button", { name: "Cross off cluster" }).click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(toRead(page)).toHaveText(/0 to read/);
+	await page.reload();
+	await expect(
+		fileActionButton(fileSection(page, "docs/new.md"), "Undo cross-off"),
+	).toBeVisible(GIT_WAIT);
+});

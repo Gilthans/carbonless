@@ -351,7 +351,7 @@ export interface SincePiece {
 	 * reworked or new file-level cluster of the viewed snapshot shows
 	 * (CAR-297: the author reverted it since, say). It has no lines and
 	 * no row (`hunk` -1): it is marked on its own, on the since mark's
-	 * old-side line 0, which no line has (FILE_LEVEL), and counts as one
+	 * old-side line 0, which no line has (fileLevelSides), and counts as one
 	 * unit of no lines.
 	 */
 	file?: string;
@@ -359,12 +359,13 @@ export interface SincePiece {
 
 /**
  * The since mark's sides a file-level piece (SincePiece.file) is marked
- * by: old-side line 0, which no real line has (they start at 1).
+ * by: old-side line 0, which no real line has (they start at 1). A fresh
+ * copy each call: nothing shares its arrays.
  */
-export const FILE_LEVEL = { old: [[0, 1]], new: [] } as {
-	old: LineRanges;
-	new: LineRanges;
-};
+export const fileLevelSides = (): { old: LineRanges; new: LineRanges } => ({
+	old: [[0, 1]],
+	new: [],
+});
 
 /**
  * What sincePieces needs to cut whitespace-only runs (CAR-218): the

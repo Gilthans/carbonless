@@ -240,7 +240,7 @@ Initial event types:
 | progress | `lines-carried` | `from` and `to` (patch set numbers, `from < to`), `states`: a list of `{ key, fromKey, state, lines, fromLines }`, `lines` of cluster `key` in `to` taking `state` (`reviewed` or `crossed-off`) from as many `fromLines` of cluster `fromKey` in `from`; see "Line carries" |
 | progress | `lines-state` | snapshot id (`patchset`), cluster identity hash, file path, `state` (`reviewed` or `crossed-off`), `lines`: line ranges of the cluster (see "Marks on part of a cluster") |
 | progress | `split-carried` | snapshot id (`patchset`), `states`: a list of `{ key, fromKey, state, from?, lines? }`, one per piece of a hunk cut at its whitespace-only runs (or two, one per state), `fromKey` the whole hunk's key before, `state` `reviewed` or `crossed-off`, `from` the hunk's line ranges it takes (for a hunk marked by lines), `lines` the piece's (only for part of it, as many as `from`); see "Split carries" |
-| progress | `since-lines-state` | snapshot id (`patchset`), `since` (an earlier patch set's number), file `path`, `reviewed` and `crossed`: each `{ old, new }` line ranges on the since view's sides; the whole set for that (since, path) |
+| progress | `since-lines-state` | snapshot id (`patchset`), `since` (an earlier patch set's number), file `path`, `reviewed` and `crossed`: each `{ old, new }` line ranges on the since view's sides (old-side line 0: the file-level change); the whole set for that (since, path) |
 | progress | `thread-placed` | **read only since CAR-139** (never written again; read as a move, see "Thread moves"): `thread` (the thread's id), `patchset` (number), `anchor` (`path`, `startSide`, `startLine`, `side`, `line`), `engine` (the tracer's version, a positive integer) |
 
 `carried` holds many clusters in one event, so a move costs one event per
@@ -494,13 +494,13 @@ cluster's state, never carry, and never count in the snapshot's progress;
 the since view counts an unmarked since-only piece in "to read", and the
 engine's answer lists them per file (`sinceOnly`) and in `toRead`.
 A file-level change of the interdiff (a mode, a binary file, a submodule
-pointer) that no reworked or new file-level cluster of the snapshot shows,
+pointer, a rename the earlier patch set made: it goes on that path's gone
+file, "Renamed from …" in its label) that no reworked or new file-level cluster of the snapshot shows,
 such as one the author reverted since (CAR-297), is a since-only piece
 with no lines (`SincePiece.file`, its label): it is marked as **old-side
-line 0** of the file's since mark (`FILE_LEVEL`, `src/shared/pieces.ts`),
+line 0** of the file's since mark (`fileLevelSides`, `src/shared/pieces.ts`),
 a number no line has (they start at 1), so no mark on the file's lines
-ever holds it. The format is unchanged; a crb from before reads such a
-mark as marking nothing (fails closed).
+ever holds it. The format is unchanged: a crb from before CAR-297 neither shows nor counts the change, and keeps the line-0 range when it writes the file's mark.
 
 **Counts follow the view** (owner, 2026-11-08: "all the counts should be
 related to the interdiff, not the base diff"). In the since view every
