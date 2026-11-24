@@ -15,7 +15,7 @@ import type { PrFacts } from "./facts.js";
 const PERSON = "login avatarUrl(size: 40)";
 
 /** The fields of one PR node (PR_NODE in test/fake-gh/scenario.ts serves them). */
-export const PR_FIELDS = `number title url isDraft state updatedAt closedAt mergedAt headRefOid
+const PR_FIELDS = `number title url isDraft state updatedAt closedAt mergedAt headRefOid
 author { ${PERSON} }
 reviewDecision
 reviewRequests(first: 30) { nodes { requestedReviewer { __typename ... on User { ${PERSON} } ... on Mannequin { ${PERSON} } ... on Team { slug organization { login } avatarUrl(size: 40) } } } }
@@ -25,7 +25,7 @@ commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } 
 timelineItems(last: 30, itemTypes: [PULL_REQUEST_COMMIT, ISSUE_COMMENT, PULL_REQUEST_REVIEW]) { nodes { __typename ... on PullRequestCommit { commit { committedDate author { user { ${PERSON} } } } } ... on IssueComment { createdAt author { ${PERSON} } } ... on PullRequestReview { submittedAt state author { __typename ${PERSON} } } } }`;
 
 /** One query's worth of a repo's PR list: number and updatedAt only. */
-export const LIST_QUERY = `query($owner: String!, $name: String!, $openCursor: String, $closedCursor: String, $withOpen: Boolean!, $withClosed: Boolean!) {
+const LIST_QUERY = `query($owner: String!, $name: String!, $openCursor: String, $closedCursor: String, $withOpen: Boolean!, $withClosed: Boolean!) {
   rateLimit { cost remaining resetAt }
   repository(owner: $owner, name: $name) {
     open: pullRequests(states: OPEN, first: 100, after: $openCursor, orderBy: { field: UPDATED_AT, direction: DESC }) @include(if: $withOpen) {
@@ -58,7 +58,7 @@ const MAX_PAGES = 100;
  */
 export const DETAILS_MAX_AGE_MS = 2 * 3_600_000;
 /** Clock skew allowed between GitHub's updatedAt and ours when listing since a moment. */
-export const LIST_MARGIN_MS = 5 * 60_000;
+const LIST_MARGIN_MS = 5 * 60_000;
 /** What a refresh of one repo cost, from GraphQL's `rateLimit`. */
 export interface RefreshCost {
 	calls: number;
@@ -288,7 +288,7 @@ export const newCost = (): RefreshCost => ({
 });
 
 /** A listed PR: enough to tell whether known facts are current. */
-export interface Listed {
+interface Listed {
 	number: number;
 	updatedAt: string;
 }
@@ -299,7 +299,7 @@ export interface Listed {
  * PRs are listed only down to the first page reaching back past it (the
  * caller knows the rest).
  */
-export async function listRepoPrs(
+async function listRepoPrs(
 	owner: string,
 	repo: string,
 	closedSince: number,
@@ -461,7 +461,7 @@ export async function fetchPrDetails(
 }
 
 /** The details query for one batch: `r<i>` per repo, `p<number>` per PR. */
-export function detailsQuery(batch: readonly PrId[]): string {
+function detailsQuery(batch: readonly PrId[]): string {
 	const repos = new Map<string, PrId[]>();
 	for (const id of batch) {
 		const key = `${id.owner}/${id.repo}`.toLowerCase();
@@ -682,7 +682,7 @@ export async function fetchViewerTeams(
 const RELATIONS = "[OWNER, COLLABORATOR, ORGANIZATION_MEMBER]";
 const VIEWER_REPOS_QUERY = `query($cursor: String) { viewer { repositories(first: 100, after: $cursor, affiliations: ${RELATIONS}, ownerAffiliations: ${RELATIONS}, orderBy: { field: PUSHED_AT, direction: DESC }) { pageInfo { hasNextPage endCursor } nodes { nameWithOwner } } } rateLimit { cost remaining resetAt } }`;
 /** At most this many pages (100 each) of the viewer's repos. */
-export const VIEWER_REPOS_MAX_PAGES = 50;
+const VIEWER_REPOS_MAX_PAGES = 50;
 
 /**
  * Every repo the viewer owns, collaborates on or reaches as an org member,
@@ -725,7 +725,7 @@ const ORGS_QUERY =
 	"query { viewer { organizations(first: 100) { nodes { login } } } rateLimit { cost remaining resetAt } }";
 const MEMBERS_QUERY = `query($org: String!, $cursor: String) { organization(login: $org) { membersWithRole(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { login avatarUrl } } } rateLimit { cost remaining resetAt } }`;
 /** At most this many pages (100 each) of one org's members. */
-export const ORG_MEMBERS_MAX_PAGES = 10;
+const ORG_MEMBERS_MAX_PAGES = 10;
 
 /**
  * The members of the viewer's orgs (one query for the orgs, one per page
@@ -861,42 +861,4 @@ export async function searchUsers(
 		if (p) out.push(p);
 	}
 	return out;
-}
-
-const REPO_QUERY = `query($owner: String!, $name: String!) {
-  repository(owner: $owner, name: $name) { nameWithOwner }
-}`;
-
-/**
- * Whether GitHub has `owner/repo` (visible to the viewer); null when it
- * couldn't be asked (offline, rate limited): the caller can't tell.
- */
-export async function repoExists(
-	owner: string,
-	repo: string,
-): Promise<boolean | null> {
-	if (!OWNER.test(owner) || !REPO.test(repo)) return false;
-	try {
-		const data = await graphql(
-			[
-				"-f",
-				`query=${REPO_QUERY}`,
-				"-f",
-				`owner=${owner}`,
-				"-f",
-				`name=${repo}`,
-			],
-			`the repository ${owner}/${repo}`,
-			newCost(),
-		);
-		return typeof rec(data.repository).nameWithOwner === "string";
-	} catch (error) {
-		if (
-			error instanceof GhError &&
-			/could not resolve to a repository|not found/i.test(error.message)
-		) {
-			return false;
-		}
-		return null;
-	}
 }

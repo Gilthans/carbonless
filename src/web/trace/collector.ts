@@ -72,7 +72,7 @@ export const MAX_PENDING = 2000;
 /** A page whose milestones never all show is given up after this long (ms). */
 export const PAGE_GIVE_UP_MS = 5 * 60_000;
 /** A layout shift at least this large is a span of its own. */
-export const SHIFT_MIN = 0.05;
+const SHIFT_MIN = 0.05;
 
 /** A review's id (a ULID, as the server makes them). */
 const REVIEW_ID = /^[0-9a-hjkmnp-tv-z]{26}$/i;
