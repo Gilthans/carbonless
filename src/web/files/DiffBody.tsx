@@ -688,6 +688,20 @@ const rowState = (
 		? lineState(r.line)
 		: combined([r.del, r.add], lineState, state);
 
+/**
+ * A changed row's colour, for the seams between clusters (HunkRows): its
+ * state and its kind (a pair row's two sides); a gone run's are red. Null
+ * for a row with no cluster colour (context, no state).
+ */
+const toneOf = (
+	state: ClusterView["state"] | undefined,
+	kind: string,
+	gone: boolean,
+): string | null =>
+	state === undefined || kind === "context"
+		? null
+		: `${state}:${kind}${gone ? ":gone" : ""}`;
+
 const pairState = (
 	r: SideRow,
 	lineState: (line: DiffLine | undefined) => ClusterView["state"] | undefined,
@@ -1198,6 +1212,11 @@ interface RowProps {
 	pendingWords?: ReadonlySet<DiffLine>;
 	/** The paired lines whose word marks couldn't be computed (wordWork.ts). */
 	failedWords?: ReadonlySet<DiffLine>;
+	/**
+	 * The row starts a cluster right under another of the same colour
+	 * (HunkRows): a darker hairline at its top edge (`cluster-seam`).
+	 */
+	seam?: boolean;
 }
 
 /** The spans painted over a cell's characters: those of the threads on its keys. */
@@ -1466,7 +1485,8 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
 				data-find-current={current || undefined}
-				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""} ${current ? "mark-tint" : ""}`}
+				data-seam={props.seam || undefined}
+				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""} ${current ? "mark-tint" : ""} ${props.seam ? "cluster-seam" : ""}`}
 			>
 				<Rail state={state} gone={props.gone} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
@@ -1798,7 +1818,8 @@ function PairRow(
 				data-landed={phase === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
-				className={phase ? LANDED_ROW[phase] : ""}
+				data-seam={props.seam || undefined}
+				className={`${phase ? LANDED_ROW[phase] : ""} ${props.seam ? "cluster-seam" : ""}`}
 			>
 				<Rail state={state} gone={props.gone} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
@@ -2050,6 +2071,30 @@ export const READ_ONLY_TIP = "Read-only: an earlier patch set, as reviewed";
  * A row above a cluster's lines saying what happened to it since the
  * compared patch set (KindChip): reworked, new, gone, or carried.
  */
+/** A cluster's chip kind on its KindRow: gone, reworked, new or carried. */
+const kindOf = (
+	entry: KindEntry | undefined,
+	carried: ClusterView["carried"],
+) =>
+	entry?.kind === "gone"
+		? "gone"
+		: entry?.kind === "reworked" || entry?.kind === "new"
+			? entry.kind
+			: carried
+				? "carried"
+				: null;
+
+/** Whether KindRow draws a row (HunkRows' seams: a band row between two runs). */
+const kindRowShows = (props: {
+	entry?: KindEntry;
+	carried?: ClusterView["carried"];
+	linesCarried?: ClusterView["linesCarried"];
+	sinceOnly?: string;
+}) =>
+	kindOf(props.entry, props.carried) !== null ||
+	props.sinceOnly !== undefined ||
+	(props.linesCarried ? size(props.linesCarried.lines) : 0) > 0;
+
 function KindRow(props: {
 	columns: number;
 	state?: ClusterView["state"];
@@ -2065,16 +2110,9 @@ function KindRow(props: {
 	sinceOnly?: "reverted" | "removed" | "unreviewed";
 	from?: number;
 }) {
-	const kind =
-		props.entry?.kind === "gone"
-			? "gone"
-			: props.entry?.kind === "reworked" || props.entry?.kind === "new"
-				? props.entry.kind
-				: props.carried
-					? "carried"
-					: null;
+	const kind = kindOf(props.entry, props.carried);
 	const lines = props.linesCarried ? size(props.linesCarried.lines) : 0;
-	if (!kind && !props.sinceOnly && lines === 0) return null;
+	if (!kindRowShows(props)) return null;
 	return (
 		<tr
 			data-testid="cluster-kind"
@@ -4265,6 +4303,9 @@ function HunkRows(props: {
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
 	const centred = view === "unified";
+	// The colour of the last row of the run drawn so far, when nothing
+	// follows it (the seams, below); null at the hunk's top.
+	let above: string | null = null;
 	return (
 		<>
 			<tbody>
@@ -4307,7 +4348,8 @@ function HunkRows(props: {
 				// Its chip: reverted or removed (a piece of its own, or a cluster's
 				// piece of removals only); a run of orphan lines (CAR-216): not
 				// reviewed in the compared patch set.
-				const sinceOnly = run.orphan ? "unreviewed" : piece?.kind;
+				const sinceOnly: "reverted" | "removed" | "unreviewed" | undefined =
+					run.orphan ? "unreviewed" : piece?.kind;
 				// A cluster the review doesn't list still shows as unreviewed.
 				const state = cluster
 					? cluster.state
@@ -4324,22 +4366,24 @@ function HunkRows(props: {
 					(cluster.reviewedLines || cluster.crossedLines)
 						? lineReviewedState(cluster, line)
 						: state;
+				const kinds = {
+					// A piece of its own isn't its neighbour's: only gone says where it came from.
+					entry:
+						(piece?.owns === null && entry?.kind !== "gone") || run.orphan
+							? undefined
+							: entry,
+					carried: cluster?.carried,
+					// The carried lines are the full diff's to show: the since
+					// view never shows them.
+					linesCarried: props.pieces ? undefined : cluster?.linesCarried,
+					sinceOnly,
+				};
 				const kindRow = (
 					<KindRow
 						columns={columns}
 						state={state}
 						gone={gone}
-						// A piece of its own isn't its neighbour's: only gone says where it came from.
-						entry={
-							(piece?.owns === null && entry?.kind !== "gone") || run.orphan
-								? undefined
-								: entry
-						}
-						carried={cluster?.carried}
-						// The carried lines are the full diff's to show: the since
-						// view never shows them.
-						linesCarried={props.pieces ? undefined : cluster?.linesCarried}
-						sinceOnly={sinceOnly}
+						{...kinds}
 						from={props.from}
 					/>
 				);
@@ -4383,6 +4427,36 @@ function HunkRows(props: {
 								: tailed(r.del) || tailed(r.add),
 						)
 					: rows.map((r) => tailed(rowLine(r)));
+				// The seam (CAR-235): this run's first row right under the last
+				// row of the run above, both the same colour (state and row
+				// kind), with nothing between (a kind row, a thread, a cross-off
+				// note, a collapsed whitespace cluster): a hairline says where
+				// one cluster ends and the next starts.
+				const collapsed = Boolean(
+					state && ignoreWhitespace && cluster?.whitespaceOnly,
+				);
+				const tones = run.side
+					? run.side.map((r) =>
+							r.kind === "context"
+								? null
+								: toneOf(
+										pairState(r, lineState, state),
+										`${r.del ? r.del.kind : ""}/${r.add ? r.add.kind : ""}`,
+										gone,
+									),
+						)
+					: rows.map((r) =>
+							toneOf(rowState(r, lineState, state), rowLine(r).kind, gone),
+						);
+				const top =
+					collapsed || kindRowShows(kinds) ? null : (tones[0] ?? null);
+				const seam = top !== null && top === above;
+				above =
+					collapsed ||
+					cluster?.state === "crossed-off" ||
+					rowTails.at(-1) === true
+						? null
+						: (tones.at(-1) ?? null);
 				const stack = props.stackOf(
 					runKey,
 					() =>
@@ -4409,6 +4483,7 @@ function HunkRows(props: {
 										row={r}
 										checkbox={i === 0 ? controls : undefined}
 										{...rowProps}
+										seam={i === 0 && seam}
 										state={pairState(r, lineState, state)}
 									/>
 								);
@@ -4424,6 +4499,7 @@ function HunkRows(props: {
 										order={shown ? orderOf(shown) : undefined}
 										checkbox={i === 0 ? controls : undefined}
 										{...rowProps}
+										seam={i === 0 && seam}
 										state={rowState(r, lineState, state)}
 									/>
 								);

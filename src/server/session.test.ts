@@ -2175,6 +2175,113 @@ describe("Session", () => {
 			expect(await placed(h3)).toEqual(on(25));
 		});
 
+		it("an added lock file stays one cluster; one mark finishes it, beside a cut source file (CAR-235)", async () => {
+			pr.moveHead({
+				"web/pnpm-lock.yaml": "a:\n  b: 1\n\nc:\n  d: 2\n",
+				"web/src/x.ts": "one\n\ntwo\n",
+			});
+			const s = await Session.open(pr.arg, process.cwd());
+			const fileOf = (path: string) =>
+				s.snapshot().files.find((f) => f.path === path);
+			expect(fileOf("web/src/x.ts")?.clusters).toHaveLength(2);
+			const lock = fileOf("web/pnpm-lock.yaml");
+			expect(lock?.clusters).toHaveLength(1);
+			const key = lock?.clusters[0]?.key as string;
+			const view = await s.setStates(s.snapshot().revision, [
+				{ key, state: "crossed-off", reason: "generated" },
+			]);
+			expect(
+				view.files
+					.find((f) => f.path === "web/pnpm-lock.yaml")
+					?.clusters.map((c) => c.state),
+			).toEqual(["crossed-off"]);
+		});
+
+		it("an added file reviewed whole before the blank-line cut (one cluster, an older crb) reads reviewed on every piece, and its next patch set carries every piece and nothing more (CAR-235)", async () => {
+			pr.moveHead({ "blocks.txt": "one\n\ntwo\n\nthree\n" });
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			const blocks = (snap: Snapshot) =>
+				snap.files.find((f) => f.path === "blocks.txt")?.clusters ?? [];
+			const pieces = blocks(ps1);
+			expect(pieces.map((c) => c.added)).toEqual([
+				["one", ""],
+				["two", ""],
+				["three"],
+			]);
+			// As an older crb wrote it: the whole file one cluster, reviewed.
+			const whole = {
+				key: pieces[0]?.split?.key as string,
+				kind: "lines" as const,
+				oldStart: 0,
+				oldCount: 0,
+				newStart: 1,
+				newCount: 5,
+				removed: [],
+				added: pieces.flatMap((c) => c.added),
+				lines: 5,
+			};
+			expect(pieces.every((c) => c.split?.key === whole.key)).toBe(true);
+			await new ReviewService(
+				new RefStore(clonePath("acme", "widget")),
+			).recordStates(
+				s.id,
+				"octo-cat",
+				{
+					...ps1,
+					files: ps1.files.map((f) =>
+						f.path === "blocks.txt" ? { ...f, clusters: [whole] } : f,
+					),
+				},
+				[{ key: whole.key, state: "reviewed" }],
+			);
+			// The next open writes the split carry: every piece reviewed.
+			const again = await Session.open(pr.arg, process.cwd());
+			const view1 = await again.review();
+			expect(
+				view1.files
+					.find((f) => f.path === "blocks.txt")
+					?.clusters.map((c) => c.state),
+			).toEqual(["reviewed", "reviewed", "reviewed"]);
+			expect(await splitCarried(s.id)).toHaveLength(1);
+			expect(view1.progress.clusters.reviewed).toBe(3);
+
+			// A push: PS2's comparison carries the three pieces, exact.
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			await again.checkHead();
+			const answer = await settled(again, 1, { head: newHead });
+			expect(kinds(answer)["blocks.txt"]).toEqual([
+				"carried:1",
+				"carried:1",
+				"carried:1",
+			]);
+			const view = await again.viewHead(newHead);
+			const laterKey = view.files.find((f) => f.path === "later.txt")
+				?.clusters[0]?.key;
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			// The first mark starts PS2 with the carries.
+			const after = await again.setStates(view.revision, [
+				{ key: laterKey, state: "reviewed" },
+			]);
+			expect(after.patchset).toBe(2);
+			expect(
+				after.files
+					.find((f) => f.path === "blocks.txt")
+					?.clusters.map((c) => [c.state, c.carried?.from]),
+			).toEqual([
+				["reviewed", 1],
+				["reviewed", 1],
+				["reviewed", 1],
+			]);
+			// Nothing else reads reviewed: the PR's own a.txt and new.txt
+			// were never marked.
+			expect(after.progress.clusters).toEqual({
+				total: blocks(again.snapshot()).length + 4,
+				reviewed: 4,
+				crossedOff: 0,
+			});
+		});
+
 		it("answers pending at once, then the answer; the viewed head carries provisionally; the first mark starts PS2 with the carries", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const ps1 = s.snapshot();

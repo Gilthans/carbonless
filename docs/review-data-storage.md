@@ -922,6 +922,30 @@ about 4 ms of CPU at the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on
 the server as the snapshot is built. Should a file's hunks not fit its
 text (the display hunks refuse them), each hunk is matched on its own.
 
+**Added files cut at blank lines.** Since CAR-235 (2026-11-24; owner:
+"each cluster should end when reaching a line of only whitespace") a file
+the comparison adds is cut further: each piece with no removed lines ends
+after a run of blank (empty or whitespace-only) lines, the blank lines
+staying with the piece before them, and blank lines at the top joining the
+first piece (`splitAtBlankLines` in `src/server/diff/clusters.ts`, called by
+`cutClusters` for files of status `added`). Edited files are not cut this
+way, nor are added lock files (`LOCK_FILES`, by name: `pnpm-lock.yaml`,
+`package-lock.json`, `Cargo.lock`, `go.sum` and the like), which stay one
+cluster, so a whole-file mark on one stays one event (see "Measurements").
+Files `.gitattributes` marks `linguist-generated` are cut like any other:
+nothing reads that attribute yet. The pieces carry `Cluster.split` like any other, so a review marked
+before (the whole file one cluster) keeps its marks: the split carry puts a
+whole mark on every piece and line marks on the lines they marked. No new
+event and no new stored field. The since view needs nothing of its own: its
+pieces follow the viewed snapshot's clusters, so a file added since the
+compared patch set is cut the same way; `ENGINE_VERSION` went to 7 so no
+cached comparison names the old whole-file key. Ignore whitespace is
+untouched: an added file has no old side, so no piece is whitespace-only.
+Since every added file is now cut, the two CAR-156 cases below are common
+rather than rare: an older crb unticking a split-carried file (see "Mixed
+versions") leaves the pieces marked, and a file carried whole into a later
+patch set counts as N carried clusters, one per piece, not one.
+
 **Mixed versions.** Once progress refs sync, an older crb that unticks the
 whole hunk (its key still a cluster there) leaves pieces already
 split-carried as they were: they still show a mark the reviewer made,
@@ -1131,9 +1155,35 @@ now split. 600 entries (200 hunks reviewed whole, each cut in three), two
 random 64-hex keys and a state each: about 103 KB raw, 31 KB deflated. One
 entry for part of a piece (with `from` and `lines`): 587 bytes raw, 400
 deflated. The test asserts under 120 KiB raw and 60 KiB deflated for the
-first, 1 KiB raw for the second. Real reviews split few hunks (only hunks
-holding a whitespace-only run between changes), and a review started after
-the change never writes one.
+first, 1 KiB raw for the second. Since CAR-235 every added file with a
+blank line between code splits, so a review in progress with such a file
+writes one on its next open (one entry per piece of each marked file); a
+review started after the change never writes one.
+
+**Whole-file marks on added files** (CAR-235, measured 2026-11-24 with
+`buildSnapshot` and `ReviewService.recordStates` on this repo's files,
+added in one commit): "Mark all reviewed" or a cross-off writes one
+`cluster-state` event per cluster (about 300 bytes raw each), so its commit
+grows with the blocks of the file. Before the cut, each was one event (0.5
+KB raw, 0.3 KB deflated).
+
+| Added file | Lines | Clusters (was 1) | Mark all, raw | deflated |
+|---|---|---|---|---|
+| `splitCarry.ts` (typical) | 120 | 5 | 1.8 KB | 0.6 KB |
+| `snapshot.ts` | 611 | 30 | 9.7 KB | 2.0 KB |
+| `session.ts` | 2,733 | 117 | 36.3 KB | 6.8 KB |
+| `pnpm-lock.yaml`, cut (before the blocklist) | 4,084 | 916 | 276.6 KB | 51.3 KB |
+| `pnpm-lock.yaml`, blocklisted (now) | 4,084 | 1 | 0.5 KB | 0.3 KB |
+
+A cross-off with a reason is about the same (298 KB raw, 50 KB deflated for
+the lockfile). Each later patch set start then carries every piece: about
+90 bytes raw an entry, so about 80 KB raw for the lockfile per reviewer per
+start. Cut, one click on a big lock file took a review past the 50 KiB
+target above, so lock files are not cut (owner, 2026-11-24: "skip the
+custom split on a blocklist of files (like lock), and accept the size for
+the rest"). A compact whole-file entry was considered and declined: it
+would tie stored marks to how a file is cut, and a later change to the cut
+could have unforeseen consequences.
 
 **Everyday git** (ms, median of 5) on a 3,000-commit, 2,000-file repo, with the
 review refs on the remote and the clone using the default refspec:

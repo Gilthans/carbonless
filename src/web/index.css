@@ -194,6 +194,23 @@
 }
 
 /*
+ * Where a cluster starts right under another of the same colour (two blocks
+ * of an added file, both unreviewed or both reviewed; HunkRows, CAR-235): a
+ * 1px hairline at the top of its first row, a shade darker than the row
+ * (canvas mixed over whatever colour the cell has, so a gutter and a code
+ * cell each darken their own). A background image: it adds no height, sits
+ * under the text and under the marks' inset washes. Not on the rail.
+ */
+@utility cluster-seam {
+	& > td:not([aria-hidden]) {
+		background-image: linear-gradient(
+			color-mix(in srgb, var(--color-canvas) 45%, transparent) 1px,
+			transparent 1px
+		);
+	}
+}
+
+/*
  * A review thread's commented lines (Files changed): mark-tint's wash over
  * every cell, the old/new numbers tinted 20% accent (like GitHub's selected
  * line numbers) and a 3px accent stripe at the code's left edge, so the range

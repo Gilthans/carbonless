@@ -1256,3 +1256,94 @@ test.describe("Home", () => {
 		await expect(anyLeftOut(page)).toHaveCount(0);
 	});
 });
+
+/** CAR-235: an added file is cut after each run of blank lines. */
+const ADDED = "src/added.ts";
+const addedFixture: PrOptions = {
+	base: { "README.md": "readme\n" },
+	files: [
+		{
+			message: "Add a file",
+			files: {
+				[ADDED]: text([
+					"import { x } from './x';",
+					"",
+					"export function a() {",
+					"  return x;",
+					"}",
+					"",
+					"",
+					"export const b = 1;",
+				]),
+			},
+		},
+	],
+};
+
+test("an added file is one box per blank-line-ended block; ticking each finishes the file", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(addedFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bar = progress(page);
+	await expect(bar).toContainText("0 / 3 clusters reviewed");
+	const section = fileSection(page, ADDED);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.locator("table")).toBeVisible();
+	await expect(boxes(section)).toHaveCount(3);
+	await boxes(section).nth(0).click();
+	await expect(bar).toContainText("1 / 3 clusters reviewed");
+	await expect(section.locator("header")).not.toHaveAttribute("data-finished");
+	await boxes(section).nth(1).click();
+	await expect(bar).toContainText("2 / 3 clusters reviewed");
+	await boxes(section).nth(2).click();
+	await expect(bar).toContainText("3 / 3 clusters reviewed");
+	await expect(bar).toContainText("100%");
+	await expect(section.locator("header")).toHaveAttribute("data-finished");
+});
+
+test("a seam marks where one cluster ends and the next starts, only between two of the same colour; it moves nothing (CAR-235)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(addedFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, ADDED);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.locator("table")).toBeVisible();
+	await expect(boxes(section)).toHaveCount(3);
+	// The blocks start on new lines 1, 3 and 8.
+	const row = (n: number) =>
+		section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
+	const seams = () =>
+		section
+			.locator('tr[data-testid="diff-line"][data-seam]')
+			.evaluateAll((rows) => rows.map((r) => r.getAttribute("data-new-no")));
+	const height = async () => (await row(3).boundingBox())?.height;
+	// All three unreviewed and green: a seam above the second and third.
+	await expect.poll(seams).toEqual(["3", "8"]);
+	const seamed = await height();
+	// The second reviewed: its colour differs from both neighbours, no seam.
+	await boxes(section).nth(1).click();
+	await expect(row(3)).toHaveAttribute("data-reviewed");
+	await expect.poll(seams).toEqual([]);
+	// A seam adds no height (a background image on the cells).
+	expect(await height()).toBe(seamed);
+	// The first reviewed too: the first two match again, the third doesn't.
+	await boxes(section).nth(0).click();
+	await expect(row(1)).toHaveAttribute("data-reviewed");
+	await expect.poll(seams).toEqual(["3"]);
+	// Side by side, the same seam, and again no height of its own.
+	await sideBySide(page, true);
+	await expect.poll(seams).toEqual(["3"]);
+	const sideSeamed = await height();
+	await boxes(section).nth(0).click();
+	await expect(row(1)).not.toHaveAttribute("data-reviewed");
+	await expect.poll(seams).toEqual([]);
+	expect(await height()).toBe(sideSeamed);
+});
