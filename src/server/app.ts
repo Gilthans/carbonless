@@ -16,6 +16,7 @@ import {
 	MAX_AGENT_TEXT,
 	type OpenAgentThreadRequest,
 } from "../shared/agent.js";
+import type { CloneState } from "../shared/firstClone.js";
 import { imageTypeOf, sniffRaster } from "../shared/imageTypes.js";
 import { type LineRanges, parseRanges } from "../shared/lineRanges.js";
 import {
@@ -51,10 +52,11 @@ import {
 } from "./agent/store.js";
 import { markSetupDone, readSetupDone } from "./agentSetupDone.js";
 import { parseAsOf } from "./asOf.js";
+import { isCloning } from "./clone.js";
 import { updateConfig } from "./config.js";
 import { FailureLog } from "./errorLog.js";
 import { GhError, WriteRefusedError } from "./errors.js";
-import { NODE_ID, parsePrArg } from "./gh.js";
+import { NODE_ID, parsePrArg, validOwnerRepo } from "./gh.js";
 import { GitError } from "./git.js";
 import type { HomeService } from "./home/homeService.js";
 import { registerHomeRoutes } from "./home/routes.js";
@@ -523,6 +525,19 @@ export async function buildApp(
 			.header("cross-origin-resource-policy", "same-origin")
 			.send({ key: options.accessKey });
 	});
+	// Whether crb is cloning owner/repo for the first time now: an open
+	// waiting on it (the opening page, crb <pr>) polls this to say so.
+	app.get<{ Params: { owner: string; repo: string } }>(
+		"/api/clones/:owner/:repo",
+		async (request, reply): Promise<CloneState> => {
+			reply.header("cache-control", "no-store");
+			const { owner, repo } = request.params;
+			if (!validOwnerRepo(owner, repo)) {
+				throw new BadRequestError(`Not a repository: ${owner}/${repo}`);
+			}
+			return { cloning: isCloning(owner, repo) };
+		},
+	);
 	// Opens (or finds) the review of a PR: crb <pr>.
 	app.post("/api/reviews", async (request) => {
 		const req = parseOpenBody(request.body);

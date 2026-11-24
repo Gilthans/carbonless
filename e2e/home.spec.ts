@@ -450,6 +450,104 @@ test("a PR chosen in the open box shows at once, loading, then becomes its revie
 	await expect(page).toHaveURL(review);
 });
 
+test("opening a PR of a repo crb never cloned says so beside the spinner while it clones; the next open of the repo doesn't", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const made = await setup(workdir, pr);
+	// Opens acme/widget#7: that repo is cloned.
+	const crb = await startCrb();
+	// Two PRs of acme/fresh, a repo this crb never cloned (GitHub's URL
+	// names it; the fake clones the fixture repo for any name).
+	for (const n of [8, 9]) {
+		execFileSync("git", [
+			"-C",
+			made.repo.path,
+			"update-ref",
+			`refs/pull/${n}/head`,
+			made.repo.shas.at(-1) ?? "",
+		]);
+	}
+	made.editScenario((s) => {
+		const first = s.prs[String(PR_NUMBER)];
+		if (!first) throw new Error("no fixture PR");
+		for (const n of [8, 9]) {
+			s.prs[String(n)] = {
+				...first,
+				view: {
+					...first.view,
+					number: n,
+					url: `https://github.com/acme/fresh/pull/${n}`,
+				},
+			};
+		}
+		s.hold = ["clone"];
+	});
+	await page.goto(crb.url);
+	await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+	const notice = page.getByTestId("first-clone");
+	const opening = page.getByRole("main").getByRole("status", {
+		name: "Opening the PR",
+	});
+	const fresh =
+		"Cloning acme/fresh for the first time, this might take a while";
+	// The open's answer reaches the page only on the test's cue (a held
+	// fetch): the clone can end while the page still waits.
+	let answerOpen = () => {};
+	const openHeld = new Promise<void>((done) => {
+		answerOpen = done;
+	});
+	let openDone = false;
+	await page.route("**/api/reviews", async (route) => {
+		const response = await route.fetch();
+		openDone = true;
+		await openHeld;
+		await route.fulfill({ response });
+	});
+	// The clone held: the spinner, and the notice beside it, outside the
+	// spinner's busy region.
+	await page.goto(new URL("/pr/acme/fresh/8", crb.url).href);
+	await expect(opening).toBeVisible();
+	await expect(notice).toHaveText(fresh);
+	await expect(page.getByTestId("opening-busy")).toHaveAttribute(
+		"aria-busy",
+		"true",
+	);
+	await expect(
+		page.locator('[aria-busy="true"] [data-testid="first-clone"]'),
+	).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	// The clone ends (the server's open with it), the page still waiting:
+	// the notice goes, the spinner stays.
+	release(made.scenarioPath, "clone");
+	await expect.poll(() => openDone).toBe(true);
+	await expect(notice).toBeEmpty();
+	await expect(opening).toBeVisible();
+	answerOpen();
+	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
+	await expect(notice).toHaveCount(0);
+	await page.unroute("**/api/reviews");
+
+	// The next open of the repo only fetches: held in GitHub's answer, past
+	// a poll of the clone state, the spinner shows alone.
+	made.editScenario((s) => {
+		s.hold = ["prView"];
+	});
+	const polled = page.waitForResponse(
+		(r) => r.url().includes("/api/clones/acme/fresh") && r.ok(),
+	);
+	await page.goto(new URL("/pr/acme/fresh/9", crb.url).href);
+	await expect(opening).toBeVisible();
+	expect(await (await polled).json()).toEqual({ cloning: false });
+	// The live region is there, empty, from the start (read out when filled).
+	await expect(notice).toBeEmpty();
+	await expect(notice).toHaveCSS("display", "block");
+	release(made.scenarioPath, "prView");
+	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
+});
+
 test("Repos spins while the viewer's repos load, then lists only theirs", async ({
 	page,
 	workdir,

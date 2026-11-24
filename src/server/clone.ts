@@ -177,10 +177,39 @@ const exists = (path: string) =>
 /** Config key marking a repo ensureRepoInit made and no clone has filled yet. */
 const INIT_ONLY = "crb.initOnly";
 
+/** Repos (`owner/repo`, lowercased) whose first clone runs now. */
+const cloning = new Set<string>();
+const repoKey = (owner: string, repo: string) =>
+	`${owner}/${repo}`.toLowerCase();
+
+/**
+ * Whether crb is cloning `owner/repo` for the first time right now (an open
+ * waiting on it shows so: CAR-291). True from ensureClone's `onClone` until
+ * the clone is in place; never while an existing clone only fetches.
+ */
+export const isCloning = (owner: string, repo: string): boolean =>
+	cloning.has(repoKey(owner, repo));
+
+/** Runs a first clone of `owner/repo`, marked as cloning meanwhile. */
+async function asCloning(
+	owner: string,
+	repo: string,
+	run: () => Promise<void>,
+): Promise<void> {
+	const key = repoKey(owner, repo);
+	cloning.add(key);
+	try {
+		await run();
+	} finally {
+		cloning.delete(key);
+	}
+}
+
 /**
  * The bare clone of `owner/repo`, cloning it through `gh` the first time
- * (calling `onClone` just before). A repo ensureRepoInit made is filled
- * the same way, its own refs (crb's) kept.
+ * (calling `onClone` just before; isCloning says so until it is done). A
+ * repo ensureRepoInit made is filled the same way, its own refs (crb's)
+ * kept.
  */
 export async function ensureClone(
 	owner: string,
@@ -193,17 +222,21 @@ export async function ensureClone(
 			// Clones made before auto gc was turned off.
 			await disableAutoGc(path);
 			if (await isInitOnly(path)) {
-				onClone();
-				await fillInitOnly(owner, repo, path);
+				await asCloning(owner, repo, async () => {
+					onClone();
+					await fillInitOnly(owner, repo, path);
+				});
 			}
 			return;
 		}
 		// Clone next to the target and rename on success, so a crash mid-clone
 		// never leaves something at `path` that looks like a complete clone.
-		onClone();
-		await cloneAside(owner, repo, path, async (partial) => {
-			await disableAutoGc(partial);
-			await rename(partial, path);
+		await asCloning(owner, repo, async () => {
+			onClone();
+			await cloneAside(owner, repo, path, async (partial) => {
+				await disableAutoGc(partial);
+				await rename(partial, path);
+			});
 		});
 	});
 	return path;

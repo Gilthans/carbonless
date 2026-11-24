@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	fakeGhEnv,
+	release,
 	type Scenario,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
@@ -30,6 +31,7 @@ import {
 	ensureClone,
 	ensureRepoInit,
 	fetchPr,
+	isCloning,
 	withRepoLock,
 } from "./clone";
 import { GhError, type PrMeta } from "./gh";
@@ -259,6 +261,46 @@ describe("private clone", () => {
 		await ensureRepoInit("acme", "widget");
 		expect(refs()).toBe(before);
 		expect(configOf(path, "crb.initOnly")).toBe("");
+	});
+
+	it("says a repo is cloning only while its first clone runs, for every spelling (CAR-291)", async () => {
+		scenario({ hold: ["clone"] });
+		let atStart: boolean | undefined;
+		const first = ensureClone("Acme", "Widget", () => {
+			atStart = isCloning("acme", "widget");
+		});
+		// Held in `gh repo clone`: cloning, whoever asks and however spelled.
+		await vi.waitFor(() => expect(ghLog()).toMatch(/^repo clone /m));
+		expect(atStart).toBe(true);
+		expect(isCloning("ACME", "widget")).toBe(true);
+		expect(isCloning("acme", "other")).toBe(false);
+		// An open of the same repo waits on the lock meanwhile (the repo
+		// reads as cloning for it too), and clones nothing again.
+		const waiter = ensureClone("acme", "widget");
+		release(scenarioPath, "clone");
+		await Promise.all([first, waiter]);
+		expect(isCloning("acme", "widget")).toBe(false);
+		expect(ghLog().match(/^repo clone /gm)).toHaveLength(1);
+		// The next open only fetches: never cloning.
+		const onClone = vi.fn(() => isCloning("acme", "widget"));
+		await ensureClone("acme", "widget", onClone);
+		expect(onClone).not.toHaveBeenCalled();
+		expect(isCloning("acme", "widget")).toBe(false);
+		// A failed clone isn't left cloning.
+		scenario({ repoPath: join(tmp, "does-not-exist") });
+		await expect(ensureClone("acme", "gone")).rejects.toThrow();
+		expect(isCloning("acme", "gone")).toBe(false);
+	});
+
+	it("says an init-only repo is cloning while ensureClone fills it", async () => {
+		await ensureRepoInit("acme", "widget");
+		expect(isCloning("acme", "widget")).toBe(false);
+		let during: boolean | undefined;
+		await ensureClone("acme", "widget", () => {
+			during = isCloning("acme", "widget");
+		});
+		expect(during).toBe(true);
+		expect(isCloning("acme", "widget")).toBe(false);
 	});
 
 	it("serializes concurrent opens with the lock", async () => {

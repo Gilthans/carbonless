@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { release } from "../test/fake-gh/scenario";
 import { createPrFixture, type PrFixture } from "../test/pr-fixture";
 import { fakeDelay } from "../test/sleep";
 import { ClientError, ensureServer, runClient, trimLog } from "./client";
@@ -71,6 +72,53 @@ describe("the client", () => {
 		expect(
 			await runClient({ pr: pr.arg, cwd: process.cwd() }, { out: () => {} }),
 		).toBe(url);
+	});
+
+	it("says on stderr, once, when the server clones the repo for the first time; a later open says nothing (CAR-291)", async () => {
+		servers.push(await startServer({ port: 0 }));
+		const scenarioFile = process.env.CRB_FAKE_GH as string;
+		// The clone is held until the client has said so.
+		pr.scenario({ hold: ["clone"] });
+		const err: string[] = [];
+		const out: string[] = [];
+		const url = await runClient(
+			{ pr: pr.arg, cwd: process.cwd() },
+			{
+				out: (l) => out.push(l),
+				clonePollMs: 5,
+				err: (line) => {
+					err.push(line);
+					release(scenarioFile, "clone");
+				},
+			},
+		);
+		expect(err).toEqual([
+			"Cloning acme/widget for the first time, this might take a while",
+		]);
+		expect(out).toEqual([url]);
+
+		// Another open of the repo (another viewer: a session of its own)
+		// fetches into the clone: held in GitHub's answer while the client
+		// asks several times, it says nothing.
+		pr.scenario({ hold: ["prView"] });
+		const polls = vi.spyOn(globalThis, "fetch");
+		const again: string[] = [];
+		const second = runClient(
+			{ pr: pr.arg, cwd: process.cwd(), viewer: "someone-else" },
+			{ out: () => {}, clonePollMs: 5, err: (l) => again.push(l) },
+		);
+		await vi.waitFor(
+			() =>
+				expect(
+					polls.mock.calls.filter(([u]) => String(u).includes("/api/clones/"))
+						.length,
+				).toBeGreaterThanOrEqual(3),
+			{ timeout: 10_000 },
+		);
+		release(scenarioFile, "prView");
+		await second;
+		polls.mockRestore();
+		expect(again).toEqual([]);
 	});
 
 	it("behind a public URL: reaches the keyed loopback server, prints the public link", async () => {
