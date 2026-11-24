@@ -1170,8 +1170,9 @@ describe("the engine", () => {
 });
 
 describe("a line the base move changed, shown removed in the since view (CAR-277)", () => {
-	// PS1 changes line 5 on B1; master changes line 30 (B2); PS2, rebased
-	// on B2, drops master's line 30. The since view shows that removal; the
+	// PS1 changes line 5 on B1; master changes lines 30 and 35 (B2); PS2,
+	// rebased on B2, drops master's line 30 and edits its line 35. PS1 was
+	// reviewed, so line 5 carries and shows nothing. The since view shows that removal; the
 	// old base can't place it (baseLine), GitHub's LEFT line can.
 	const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
 	const text = (ls: string[]) => `${ls.join("\n")}\n`;
@@ -1203,26 +1204,36 @@ describe("a line the base move changed, shown removed in the since view (CAR-277
 		);
 		git("checkout", "--quiet", "--detach", b1);
 		const masterLines = lines.map((l) =>
-			l === "line 30" ? "thirty on master" : l,
+			l === "line 30"
+				? "thirty on master"
+				: l === "line 35"
+					? "thirty-five on master"
+					: l,
 		);
-		const b2 = commit("base: line 30", masterLines);
+		const b2 = commit("base: lines 30 and 35", masterLines);
 		const h2 = commit(
-			"PR: five, rebased; line 30 dropped",
+			"PR: five, rebased; line 30 dropped, line 35 edited",
 			masterLines
-				.map((l) => (l === "line 5" ? "five" : l))
+				.map((l) =>
+					l === "line 5"
+						? "five"
+						: l === "thirty-five on master"
+							? "thirty-five, PR"
+							: l,
+				)
 				.filter((l) => l !== "thirty on master"),
 		);
 		const ps1 = await buildSnapshot(fx.path, b1, h1);
 		r = await buildSnapshot(fx.path, b2, h2);
 		traced = await traceRereview(
 			fx.path,
-			since(1, ps1, new Map()),
+			since(1, ps1, marked(ps1)),
 			[],
 			targetOf(r),
 		);
 		answer = answerRereview(
 			traced,
-			since(1, ps1, new Map()),
+			since(1, ps1, marked(ps1)),
 			[],
 			targetOf(r),
 		).answer;
@@ -1274,7 +1285,15 @@ describe("a line the base move changed, shown removed in the since view (CAR-277
 		expect(traced.lineKeys.baseLine?.["a.txt"]?.[oldNo]).toBeUndefined();
 		expect(traced.lineKeys.githubLeft?.["a.txt"]?.[oldNo]).toBe(30);
 		expect(view()).toEqual({ rows: ["shown"], pieces: [[false, [[0, 1]]]] });
-		// One unit to read for it, not two.
+		// The edited line 35 too: no orphan row anywhere in the file.
+		const rows = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
+			(h) => h.lines,
+		);
+		expect(rows.filter((l) => l.orphan)).toEqual([]);
+		expect(rows.filter((l) => l.kind !== "context").map((l) => l.text)).toEqual(
+			["thirty on master", "thirty-five on master", "thirty-five, PR"],
+		);
+		// One unit to read for each of lines 30 and 35, not two (line 5 carries).
 		expect(answer.toRead).toEqual({ files: 1, clusters: 2 });
 	});
 
