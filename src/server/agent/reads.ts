@@ -313,6 +313,9 @@ export function atHead(
 			};
 		case "outside":
 			return { kind: "outside", path: s(p.path), fate: p.fate };
+		case "pending":
+			// Still waiting for GitHub's hunk (CAR-8): never a guessed line.
+			return { kind: "unknown", why: "crb is still placing this thread" };
 	}
 }
 

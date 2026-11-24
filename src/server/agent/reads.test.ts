@@ -232,5 +232,10 @@ describe("agent reads", () => {
 			kind: "file",
 			path: "b",
 		});
+		// Still being placed (CAR-8): unknown, with why, never a line.
+		expect(atHead({ kind: "pending", path: "b" }, s)).toEqual({
+			kind: "unknown",
+			why: "crb is still placing this thread",
+		});
 	});
 });
