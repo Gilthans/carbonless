@@ -10,6 +10,7 @@ import {
 	fileActionButton,
 	fileProgress,
 	fileSection,
+	ignoreWhitespace,
 	marksReady,
 	openFiles,
 	progress,
@@ -2159,6 +2160,37 @@ test("an identical diff force-pushed (a squash on the same base): same diff · n
 	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
 	// The since view (PS1 → PS2): the same diff, nothing of its own to count.
 	await expect(progress(page)).toHaveText("Nothing to read");
+});
+
+test("a push that only re-indents: the verdict's since line counts it with Ignore whitespace off, and leaves it out of every number with it on (CAR-266)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const kept: unknown[] = [];
+	const p = await pr({ ...fixture, reviews: kept });
+	const s = await startCrb();
+	await approvedThenPushed(page, s, p, kept, () =>
+		p.moveHead({
+			message: "re-indent",
+			files: {
+				// util.ts line 8, which PS1 left alone, only re-indented.
+				"src/util.ts": edit(util, { 3: "util 3 changed", 8: "    util 8" }),
+			},
+		}),
+	);
+	const card = verdictCard(page);
+	const since = card.getByTestId("verdict-since");
+	await expect(since).toHaveText(
+		"Since then: 1 commit · 1 file · 1 new cluster",
+		GIT_WAIT,
+	);
+	await ignoreWhitespace(page, true);
+	await expect(since).toHaveText("Since then: 1 commit");
+	await ignoreWhitespace(page, false);
+	await expect(since).toHaveText(
+		"Since then: 1 commit · 1 file · 1 new cluster",
+	);
 });
 
 test("a new thread on the viewed head starts PS2 and the page follows: the PS2 dot, up to date, PS1 read-only", async ({
