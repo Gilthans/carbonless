@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** What a build of carbonless is: package.json's version and the commit built. */
 export interface BuildInfo {
@@ -18,9 +20,12 @@ export const VERSION_HEADER = "x-crb-version";
  * version and the checkout's HEAD.
  */
 function readBuild(): BuildInfo {
+	// Paths, not URLs: under jsdom (web unit tests, which load the tracer
+	// through test/setup.ts) the global URL is jsdom's, which fs refuses.
+	const here = dirname(fileURLToPath(import.meta.url));
 	try {
 		const info = JSON.parse(
-			readFileSync(new URL("../build-info.json", import.meta.url), "utf8"),
+			readFileSync(join(here, "../build-info.json"), "utf8"),
 		) as BuildInfo;
 		if (typeof info.version === "string" && typeof info.commit === "string") {
 			return { version: info.version, commit: info.commit };
@@ -28,9 +33,9 @@ function readBuild(): BuildInfo {
 	} catch {
 		// Not a build: from source.
 	}
-	const root = new URL("../../", import.meta.url);
+	const root = join(here, "../..");
 	const { version } = JSON.parse(
-		readFileSync(new URL("package.json", root), "utf8"),
+		readFileSync(join(root, "package.json"), "utf8"),
 	) as { version: string };
 	let commit = "unknown";
 	try {
