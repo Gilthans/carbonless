@@ -22,7 +22,7 @@ describe("standingSuggestion", () => {
 		expect(standingSuggestion(suggesting, open)?.id).toBe("m2");
 	});
 
-	it("a message the agent added with open (an origin) doesn't retract it (CAR-80)", () => {
+	it("a later message the agent added with open (an origin) without the marker retracts it (CAR-265)", () => {
 		const after = conversation({
 			messages: [
 				...suggesting.messages,
@@ -30,13 +30,53 @@ describe("standingSuggestion", () => {
 					id: "m3",
 					by: "ai",
 					at: "2026-11-11T10:02:00Z",
-					text: "This is such a case.",
+					text: "Still not fixed: the null case.",
 					stop: "end_turn",
 					origin: { thread: "T0", message: "q0" },
 				},
 			],
 		});
-		expect(standingSuggestion(after, open)?.id).toBe("m2");
+		expect(standingSuggestion(after, open)).toBeUndefined();
+	});
+
+	it("a message from open that suggests it stands, and a later answer that doesn't retracts it (CAR-265)", () => {
+		const opened = conversation({
+			messages: [
+				{ id: "m1", by: "human", at: "2026-11-11T10:00:00Z", text: "Fixed?" },
+				{
+					id: "m2",
+					by: "ai",
+					at: "2026-11-11T10:01:00Z",
+					text: "Not yet.",
+					stop: "end_turn",
+				},
+				{
+					id: "m3",
+					by: "ai",
+					at: "2026-11-11T10:02:00Z",
+					text: "Fixed now.",
+					stop: "end_turn",
+					origin: { thread: "T0", message: "q0" },
+					suggests: "resolve",
+				},
+			],
+		});
+		expect(standingSuggestion(opened, open)?.id).toBe("m3");
+		expect(standingSuggestion(opened, { resolved: true })).toBeUndefined();
+		const retracted = conversation({
+			messages: [
+				...opened.messages,
+				{ id: "m4", by: "human", at: "2026-11-11T10:03:00Z", text: "Sure?" },
+				{
+					id: "m5",
+					by: "ai",
+					at: "2026-11-11T10:04:00Z",
+					text: "Not quite.",
+					stop: "end_turn",
+				},
+			],
+		});
+		expect(standingSuggestion(retracted, open)).toBeUndefined();
 	});
 
 	it("a later answer that doesn't suggest it retracts it", () => {

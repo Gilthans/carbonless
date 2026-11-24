@@ -23,6 +23,7 @@ import {
 	MAX_OPENED_PER_REQUEST,
 	type OpenAgentThreadRequest,
 	REVIEW_PREAMBLE,
+	SUGGEST_RESOLVE,
 	startedBy,
 } from "../../shared/agent.js";
 import { inGitOrder } from "../../shared/diffHunk.js";
@@ -1195,7 +1196,16 @@ export class AgentHost {
 				};
 			}
 		}
-		if (!r.text.trim()) throw new BadReplyError("The text is empty");
+		// On a GitHub thread a final marker line suggests resolving it, as
+		// reply's does (CAR-265); code has nothing to resolve: refused, so
+		// the agent learns it and the marker never shows as text.
+		const { text, suggests } = takeSuggestion(r.text);
+		if (suggests && r.thread === undefined) {
+			throw new BadReplyError(
+				`${SUGGEST_RESOLVE} suggests resolving a GitHub thread: code has none, so drop that line`,
+			);
+		}
+		if (!text.trim()) throw new BadReplyError("The text is empty");
 		const threads = await this.store.read();
 		const request = threads.find((t) => t.id === origin.thread);
 		if (
@@ -1250,21 +1260,24 @@ export class AgentHost {
 			);
 		}
 		const key = r.key !== undefined ? { key: r.key } : {};
+		const suggestion = suggests ? { suggests: "resolve" as const } : {};
 		const t = existing
 			? await this.store.message(existing.id, {
 					by: "ai",
-					text: r.text,
+					text,
 					agent,
 					origin,
 					...key,
+					...suggestion,
 				})
 			: await this.store.open({
 					anchor: anchor as AgentAnchor,
-					text: r.text,
+					text,
 					by: "ai",
 					agent,
 					origin,
 					...key,
+					...suggestion,
 				});
 		// An opening that folded into a conversation the reviewer started
 		// meanwhile (one per GitHub thread) continued it.

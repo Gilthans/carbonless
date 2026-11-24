@@ -2521,6 +2521,109 @@ describe("AgentHost with a session joined through MCP", () => {
 			).rejects.toThrow(/empty/);
 		});
 
+		describe("a final [suggest-resolve] line (CAR-265)", () => {
+			const marked = `Fixed in the viewed head.\n\n${SUGGEST_RESOLVE}\n`;
+
+			it("on a new GitHub thread conversation: stored as the suggestion, not as text", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				const { token, origin } = await holding();
+				const r = await host.sessionOpen(token, {
+					thread: "PRRT_9",
+					text: marked,
+				});
+				expect(r.created).toBe(true);
+				const t = (await store.read()).find((x) => x.id === r.thread);
+				expect(t?.messages).toEqual([
+					expect.objectContaining({
+						by: "ai",
+						text: "Fixed in the viewed head.",
+						suggests: "resolve",
+						origin,
+					}),
+				]);
+			});
+
+			it("on a GitHub thread's existing conversation: the added message carries it", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				ghThread = ghFacts(false);
+				const { token } = await holding();
+				const conv = await host.open({
+					clientId: "q1",
+					text: "Is this fixed?",
+					thread: "PRRT_9",
+				});
+				await host.sessionOpen(token, { thread: "PRRT_9", text: marked });
+				const t = (await store.read()).find((x) => x.id === conv.id);
+				expect(t?.messages[1]).toMatchObject({
+					by: "ai",
+					text: "Fixed in the viewed head.",
+					suggests: "resolve",
+				});
+				// Still waits: a suggestion answers nothing.
+				expect(t?.waiting).toBe(true);
+			});
+
+			it("joining a conversation the reviewer started meanwhile: the message there carries it", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				ghThread = ghFacts(false);
+				const { token, origin } = await holding();
+				let conv: Awaited<ReturnType<typeof host.open>> | undefined;
+				// The reviewer asks on the thread while open reads GitHub.
+				onThread = async (id) => {
+					conv = await host.open({
+						clientId: "q1",
+						text: "Is this fixed?",
+						thread: "PRRT_9",
+					});
+					return ghThreads.find((t) => t.id === id) ?? null;
+				};
+				const r = await host.sessionOpen(token, {
+					thread: "PRRT_9",
+					text: marked,
+				});
+				expect(conv).toBeDefined();
+				expect(r).toMatchObject({ thread: conv?.id, created: false });
+				const t = (await store.read()).find((x) => x.id === conv?.id);
+				expect(t?.messages.map((m) => [m.by, m.text, m.suggests])).toEqual([
+					["human", "Is this fixed?", undefined],
+					["ai", "Fixed in the viewed head.", "resolve"],
+				]);
+				expect(t?.messages[1]?.origin).toEqual(origin);
+			});
+
+			it("without the line, or with it mid-text, nothing is suggested", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				const { token } = await holding();
+				const mid = `Not ${SUGGEST_RESOLVE} yet.\n${SUGGEST_RESOLVE}\nStill open.`;
+				const r = await host.sessionOpen(token, {
+					thread: "PRRT_9",
+					text: mid,
+				});
+				const t = (await store.read()).find((x) => x.id === r.thread);
+				expect(t?.messages[0]?.text).toBe(mid);
+				expect(t?.messages[0]?.suggests).toBeUndefined();
+			});
+
+			it("on code: refused, naming the reason, and nothing is written", async () => {
+				const { token } = await holding();
+				const before = (await store.read()).length;
+				for (const code of [{ path: "a.txt" }, { path: "a.txt", line: 2 }]) {
+					await expect(
+						host.sessionOpen(token, { code, text: marked }),
+					).rejects.toThrow(/suggest-resolve.*GitHub thread/);
+				}
+				expect(await store.read()).toHaveLength(before);
+			});
+
+			it("the line alone is an empty text", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				const { token } = await holding();
+				await expect(
+					host.sessionOpen(token, { thread: "PRRT_9", text: SUGGEST_RESOLVE }),
+				).rejects.toThrow(/empty/);
+			});
+		});
+
 		it("reply afterwards still answers the request", async () => {
 			const { token, origin, req } = await holding();
 			await host.sessionOpen(token, { code: { path: "a.txt" }, text });

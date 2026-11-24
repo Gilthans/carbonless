@@ -167,9 +167,7 @@ function messageOf(
 		...(e.type === "agent-message" && e.head !== undefined
 			? { head: e.head }
 			: {}),
-		...(e.type === "agent-message" && e.suggests
-			? { suggests: e.suggests }
-			: {}),
+		...(e.suggests ? { suggests: e.suggests } : {}),
 		...(e.origin ? { origin: e.origin } : {}),
 	};
 }
@@ -418,6 +416,8 @@ type OpenInput =
 			origin?: AgentOrigin;
 			/** The agent's idempotency key: a key already stored returns that thread. */
 			key?: string;
+			/** Its text suggests resolving the GitHub thread it opens on. */
+			suggests?: "resolve";
 	  };
 type MessageInput =
 	| { by: "human"; text: string; clientId: string; view?: AgentView }
@@ -429,6 +429,8 @@ type MessageInput =
 			origin: AgentOrigin;
 			/** The agent's idempotency key on this thread. */
 			key?: string;
+			/** Its text suggests resolving the GitHub thread (`open` on one). */
+			suggests?: "resolve";
 	  }
 	| {
 			by: "ai";
@@ -559,6 +561,7 @@ export class AgentThreadStore {
 									...(input.key !== undefined
 										? { details: { key: input.key } }
 										: {}),
+									...(input.suggests ? { suggests: input.suggests } : {}),
 								}
 							: {
 									details: { clientId: input.clientId },
@@ -608,6 +611,7 @@ export class AgentThreadStore {
 									...(input.key !== undefined
 										? { details: { key: input.key } }
 										: {}),
+									...(input.suggests ? { suggests: input.suggests } : {}),
 								}
 							: input.by === "ai"
 								? {

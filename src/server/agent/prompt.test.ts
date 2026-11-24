@@ -495,6 +495,10 @@ describe("thread conversations", () => {
 		const at = order.map((p) => JOINED_THREAD_PREAMBLE.indexOf(p));
 		expect(at).toEqual([...at].sort((a, b) => a - b));
 		expect(at.every((i) => i >= 0)).toBe(true);
+		// The same marker works for open on a GitHub thread (CAR-265).
+		expect(JOINED_THREAD_PREAMBLE).toMatch(
+			/A message you `open` on a GitHub thread .* may end with that line too/,
+		);
 	});
 
 	it("takeSuggestion strips a final marker line and ignores one mid-text", () => {

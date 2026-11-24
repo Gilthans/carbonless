@@ -1,12 +1,17 @@
-import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import { releaseAcp } from "../test/fake-acp/scenario";
+import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import {
-	reviewThread,
-	type Scenario,
-	threadComment,
-} from "../test/fake-gh/scenario";
-import { ask, CALC, expect, fixture, openFile, row, test } from "./agent-ui";
+	ask,
+	CALC,
+	expect,
+	fixture,
+	openFile,
+	resolveWrites,
+	row,
+	storedResolved,
+	test,
+} from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
 import type { Pr, PrOptions } from "./fixtures";
 
@@ -53,19 +58,6 @@ async function setup(pr: (opts?: PrOptions) => Promise<Pr>): Promise<Pr> {
 	});
 	return p;
 }
-
-/** Whether the fake gh has the thread resolved (its writes are kept in the scenario). */
-function storedResolved(p: Pr): boolean | undefined {
-	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-	const threads = (s.prs[7]?.graphql?.reviewThreads ?? []) as {
-		isResolved: boolean;
-	}[];
-	return threads[0]?.isResolved;
-}
-
-/** The fake gh's resolve mutations so far. */
-const resolveWrites = (p: Pr) =>
-	(p.ghLog().match(/\bresolveReviewThread\(/g) ?? []).length;
 
 /** The Overview's card of the thread. */
 const overviewCard = (page: Page) =>

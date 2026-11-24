@@ -880,7 +880,8 @@ question would be on someone else's behalf, or about a past moment.
   makes, never posted to GitHub. Its message records the request it came
   from (`origin`) and shows a Re row pointing back; the request shows
   Started N. `open` writes only that agent-thread event: no reviewed
-  state, no resolve, no GitHub write (principle 2), and an origin message
+  state, no resolve (on a thread it may only suggest one, as `reply`
+  does), no GitHub write (principle 2), and an origin message
   answers no question, so one waiting on that thread stays waiting
   (principle 8). It is refused with no question held, past the question's
   time limit, on code outside the PR or lines out of range, on a
@@ -926,7 +927,16 @@ question would be on someone else's behalf, or about a past moment.
   suggests with a final `[suggest-resolve]` line, stripped and stored as
   data (`suggests: "resolve"`), and only for a fix in the patch set the
   reviewer is viewing (a fix found only in a later push is said plainly,
-  "fixed later, in PS m", and never suggests). The suggestion shows, inside the reply,
+  "fixed later, in PS m", and never suggests). A message the agent
+  writes with MCP `open` on a GitHub thread (a new conversation, or one
+  added to its conversation) may suggest it the same way, on the same rule
+  (CAR-265); `open` on code refuses the marker, as code has nothing to
+  resolve. An `open` message counts like an answer here: one that
+  suggests stands, and one that doesn't withdraws a standing suggestion,
+  so an older opinion never outlives a newer one (principle 2). On a
+  review-conversation request the agent judges at the head `progress`
+  gives (the comparison the reviewer asked in), never `review`'s newest
+  head. The suggestion shows, inside the reply,
   "Resolve By Agent Suggestion" and rings Resolve in `ok`; only the
   reviewer's press resolves, through the same GitHub write as Resolve. A
   thread conversation has no resolved state of its own: it folds and
