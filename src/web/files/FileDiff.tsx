@@ -96,7 +96,7 @@ import {
 	StatusIcon,
 } from "./status";
 import { ThreadBubble } from "./ThreadBubble";
-import { UnplacedThreads } from "./ThreadFate";
+import { UnplacedThreads, WaitingThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
 import { useFocusAmong } from "./threadFocus";
 import {
@@ -1500,6 +1500,9 @@ export function FileDiff(props: {
 			{!expanded && shownFileItems.length > 0 && (
 				// Closed: a file comment being written stays in sight.
 				<div className="border-b border-line bg-canvas p-2">{newItems}</div>
+			)}
+			{expanded && props.threads && (
+				<WaitingThreads waiting={filePlacement?.waiting ?? []} />
 			)}
 			{expanded && props.threads && (
 				<UnplacedThreads

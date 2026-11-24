@@ -51,6 +51,7 @@ import type {
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
+import { touchesOldSide } from "./codeWindow.js";
 import { contextLines } from "./diff/hunks.js";
 import {
 	blobName,
@@ -104,6 +105,7 @@ import {
 import { checkOid, commitsOver, commitsSince } from "./rereview/shape.js";
 import {
 	DeadMoveError,
+	failedInput,
 	InvalidPlacementError,
 	legacyMoves,
 	MoveCapError,
@@ -111,6 +113,7 @@ import {
 	placeAgentThreads,
 	ThreadPlacer,
 	UnknownMoveThreadError,
+	waitingInput,
 } from "./rereview/threads.js";
 import { buildReviewView } from "./review/coverage.js";
 import type { PatchsetRecord, ProgressState } from "./review/fold.js";
@@ -270,8 +273,9 @@ interface RereviewJob {
  */
 interface PlacingJob {
 	/**
-	 * The unresolved threads' inputs as soon as they are in; the resolved
-	 * ones' joined after (`complete`), so they never hold the others up.
+	 * The unresolved threads' inputs as soon as they are in (those on the
+	 * old side once their GitHub hunk is, CAR-8); the resolved ones'
+	 * joined after (`complete`), so they never hold the others up.
 	 */
 	done: { target: Snapshot; inputs: ThreadInput[]; complete: boolean } | null;
 	error: Error | null;
@@ -1045,8 +1049,35 @@ export class Session {
 				]);
 				// The threads as read now: the tracing below takes them as they
 				// are (a thread joining the read meanwhile isn't among them).
-				const unresolvedThreads = view.threads.filter((t) => !t.resolved);
-				const resolvedThreads = view.threads.filter((t) => t.resolved);
+				// Each with GitHub's hunk, which tells an old-side line's base (CAR-8).
+				// And whether the PR's base was retargeted since it was written
+				// (GitHub's base-change events; unknown when the timeline fails).
+				const retargets = read.timeline.then(
+					(tl) =>
+						tl.events.flatMap((e) =>
+							e.kind === "base-change" ? [Date.parse(e.at)] : [],
+						),
+					() => null,
+				);
+				const withHunks = view.threads.map((t) => ({
+					...t,
+					hunk: () => read.hunk(t.id),
+					retargetedSince: async () => {
+						const times = await retargets;
+						if (times === null) return true;
+						const made = Date.parse(t.anchor?.at ?? t.createdAt);
+						return times.some((at) => !(at <= made));
+					},
+				}));
+				// An old-side thread waits for its hunk (the opener's text): it
+				// joins after the others, so slow text never holds them up.
+				const unresolvedThreads = withHunks.filter(
+					(t) => !t.resolved && !(t.anchor && touchesOldSide(t.anchor)),
+				);
+				const oldSideThreads = withHunks.filter(
+					(t) => !t.resolved && t.anchor && touchesOldSide(t.anchor),
+				);
+				const resolvedThreads = withHunks.filter((t) => t.resolved);
 				await placingHooks.afterRead?.({ revision: target.revision, readId });
 				if (placingHooks.fail !== null) throw new GitError(placingHooks.fail);
 				// Filed under its snapshot id too: a head and its patch set share it.
@@ -1060,13 +1091,40 @@ export class Session {
 					this.#diffBase(),
 					at,
 				);
-				job.done = { target, inputs: open, complete: false };
+				// Each phase's inputs a new array: an answer being made from
+				// the last one never sees it change.
+				job.done = {
+					target,
+					// Old-side ones as pending meanwhile: a spinner, never a line.
+					inputs: [
+						...open,
+						...oldSideThreads.map((t) => waitingInput(target, t)),
+					],
+					complete: false,
+				};
+				// Each on its own: one git can't trace gets a final answer of
+				// its own (untraced), never a spinner left for good.
+				const oldSide = (
+					await Promise.all(
+						oldSideThreads.map((t) =>
+							this.#placer
+								.inputs(target, [t], this.#diffBase(), at)
+								.catch(() => [failedInput(target, t)]),
+						),
+					)
+				).flat();
+				const unresolved = [...open, ...oldSide];
+				job.done = { target, inputs: unresolved, complete: false };
 				// The resolved threads join after; their failure never takes
 				// the unresolved placements back (they then show where made).
 				const resolved = await this.#placer
 					.inputs(target, resolvedThreads, this.#diffBase(), at)
 					.catch(() => []);
-				job.done = { target, inputs: [...open, ...resolved], complete: true };
+				job.done = {
+					target,
+					inputs: [...unresolved, ...resolved],
+					complete: true,
+				};
 			} catch (error) {
 				job.failedAt = Date.now();
 				job.error = error as Error;

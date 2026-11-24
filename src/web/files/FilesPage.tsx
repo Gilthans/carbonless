@@ -495,6 +495,8 @@ function useDiffThreads(
 			// A failure stays shown while the page asks again by itself.
 			pending: asked && answer === null && failedPlacing === null,
 			error: failedPlacing,
+			// A partial answer kept while asking again failed (CAR-8).
+			stalled: answer !== null ? (placed.error ?? null) : null,
 			retry: () => {
 				setRetryAsked(true);
 				void refetchPlacements();
@@ -513,6 +515,7 @@ function useDiffThreads(
 			snapshotHead,
 			asked,
 			answer,
+			placed.error,
 			retryingPlacing,
 			failedPlacing,
 			refetchPlacements,

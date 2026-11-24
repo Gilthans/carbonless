@@ -248,6 +248,8 @@ function ownPlace(args: {
 				changed: false,
 				target: { path: placement.path, commit: head, subject: "file" },
 			};
+		case "pending":
+			return { kind: "pending" };
 		default:
 			return { kind: "off", why: LINES_GONE };
 	}
