@@ -57,9 +57,9 @@ const rows = (from: number, lines: string[], side: DiffSide = "RIGHT") =>
 	Object.fromEntries(lines.map((t, i) => [`${side}:${from + i}`, t]));
 
 describe("tracePosition", () => {
-	it("exports TRACER_VERSION 3 from the index", () => {
-		expect(TRACER_VERSION).toBe(3);
-		expect(tracer.TRACER_VERSION).toBe(3);
+	it("exports TRACER_VERSION 4 from the index", () => {
+		expect(TRACER_VERSION).toBe(4);
+		expect(tracer.TRACER_VERSION).toBe(4);
 		expect(tracer.createLineMapper).toBe(createLineMapper);
 		expect(tracer.tracePosition).toBe(tracePosition);
 	});
@@ -397,6 +397,224 @@ describe("tracePosition", () => {
 				diffs({ cd: IDENTITY, newLineCount: { LEFT: 10, RIGHT: 9 } }),
 			),
 		).toStrictEqual({ kind: "unplaced", reason: "outside", nearest: null });
+	});
+});
+
+/**
+ * A file whose changed lines were edited in place, line for line (old and
+ * new the same length): each differing line its own one-line hunk, as
+ * `git diff -U0` splits them around the kept lines between.
+ */
+function inPlace(old: string[], now: string[]): TraceDiffs {
+	const hunks: MapHunk[] = [];
+	old.forEach((t, i) => {
+		if (t !== now[i]) {
+			hunks.push({
+				oldStart: i + 1,
+				oldCount: 1,
+				newStart: i + 1,
+				newCount: 1,
+			});
+		}
+	});
+	return diffs({
+		bd: createLineMapper(hunks),
+		texts: rows(1, old),
+		now: rows(1, now),
+	});
+}
+
+/** Where old line `n` of the swap's thread lands: its line, or its unplaced reason. */
+function landing(d: TraceDiffs, n: number): number | string {
+	const p = tracePosition(R(n), d);
+	return p.kind === "unplaced" ? p.reason : p.line;
+}
+
+describe("tracePosition: look-alike lines swapped around a kept line (CAR-279)", () => {
+	it("Markdown items swapped and edited follow their own text across the kept line", () => {
+		const d = inPlace(
+			[
+				"# Steps",
+				"",
+				"- Run the build script for the web package",
+				"Note: kept.",
+				"- Run the build script for the server package",
+				"",
+				"End.",
+			],
+			[
+				"# Steps",
+				"",
+				"- Run the build script for the server package twice",
+				"Note: kept.",
+				"- Run the build script for the web package twice",
+				"",
+				"End.",
+			],
+		);
+		expect(tracePosition(R(3), d)).toStrictEqual({
+			kind: "changed",
+			side: "RIGHT",
+			line: 5,
+			oldText: "- Run the build script for the web package",
+			moved: true,
+		});
+		expect(tracePosition(R(5), d)).toStrictEqual({
+			kind: "changed",
+			side: "RIGHT",
+			line: 3,
+			oldText: "- Run the build script for the server package",
+			moved: true,
+		});
+	});
+
+	it("YAML keys swapped and edited follow their own key", () => {
+		const d = inPlace(
+			[
+				"primary_database_host: db-1.internal",
+				"timeout: 30",
+				"replica_database_host: db-2.internal",
+			],
+			[
+				"replica_database_host: db-3.internal",
+				"timeout: 30",
+				"primary_database_host: db-4.internal",
+			],
+		);
+		expect(landing(d, 1)).toBe(3);
+		expect(landing(d, 3)).toBe(1);
+	});
+
+	it("Go statements swapped and edited follow their own call", () => {
+		const d = inPlace(
+			[
+				"func f() {",
+				'\tbuildPackage("web", opts)',
+				"\tkept()",
+				'\tbuildPackage("server", opts)',
+				"}",
+			],
+			[
+				"func f() {",
+				'\tbuildPackage("server", opts, twice)',
+				"\tkept()",
+				'\tbuildPackage("web", opts, twice)',
+				"}",
+			],
+		);
+		expect(landing(d, 2)).toBe(4);
+		expect(landing(d, 4)).toBe(2);
+	});
+
+	it("lines swapped as they were follow their text", () => {
+		const d = inPlace(
+			["value = compute(alpha)", "kept()", "value = compute(beta)"],
+			["value = compute(beta)", "kept()", "value = compute(alpha)"],
+		);
+		expect(landing(d, 1)).toBe(3);
+		expect(landing(d, 3)).toBe(1);
+	});
+
+	it("crossed one way only: can't tell, never a guess", () => {
+		// `register(web…)` resembles the line below more than its own
+		// replacement; `register(server…)` stays closest to its own.
+		const d = inPlace(
+			["register(web, opts)", "kept()", "register(server, opts)"],
+			["register(web_v2, opts)", "kept()", "register(server, web, opts)"],
+		);
+		expect(landing(d, 1)).toBe("rewritten");
+		expect(landing(d, 3)).toBe("rewritten");
+	});
+
+	it("crossed both ways by less than the margin: can't tell", () => {
+		// Both crossings are under SWAP_MARGIN (0.875 over 0.857, 0.615
+		// over 0.533).
+		const d = inPlace(
+			[
+				"send the report to the web team now",
+				"kept()",
+				"fetch the report for the server team",
+			],
+			[
+				"send the report to the team",
+				"kept()",
+				"send the report to the web team later",
+			],
+		);
+		expect(landing(d, 1)).toBe("rewritten");
+		expect(landing(d, 3)).toBe("rewritten");
+	});
+
+	it("look-alikes both edited in place, not swapped, stay in place", () => {
+		const d = inPlace(
+			[
+				"- Run the build script for the web package",
+				"Note: kept.",
+				"- Run the build script for the server package",
+			],
+			[
+				"- Run the build script for the web package twice",
+				"Note: kept.",
+				"- Run the build script for the server package twice",
+			],
+		);
+		expect(tracePosition(R(1), d)).toStrictEqual({
+			kind: "changed",
+			side: "RIGHT",
+			line: 1,
+			oldText: "- Run the build script for the web package",
+		});
+		expect(landing(d, 3)).toBe(3);
+	});
+
+	it("a line edited in place next to an unrelated look-alike edit stays in place", () => {
+		const d = inPlace(
+			[
+				"- Deploy the web package",
+				"Note: kept.",
+				"- Deploy the server package",
+			],
+			[
+				"- Deploy the web package to staging",
+				"Note: kept.",
+				"- Deploy the server package to staging",
+			],
+		);
+		expect(landing(d, 1)).toBe(1);
+		expect(landing(d, 3)).toBe(3);
+		// A look-alike that stayed as it was is no candidate.
+		const kept = inPlace(
+			[
+				"- Deploy the web package",
+				"Note: kept.",
+				"- Deploy the server package",
+			],
+			[
+				"- Deploy the web package now",
+				"Note: kept.",
+				"- Deploy the server package",
+			],
+		);
+		expect(landing(kept, 1)).toBe(1);
+	});
+
+	it("twins (the same text twice) stay as they were: no crossing", () => {
+		const d = inPlace(
+			["retry(3, web)", "kept()", "retry(3, web)"],
+			["retry(4, web)", "kept()", "retry(4, web)"],
+		);
+		// Which of the two went where can't be told, and needn't be: either
+		// way each lands on a line of its own text, edited alike.
+		expect(landing(d, 1)).toBe(1);
+		expect(landing(d, 3)).toBe(3);
+		// Twins edited apart resemble both replacements alike: a tie, no
+		// crossing.
+		const apart = inPlace(
+			["retry(3, web)", "kept()", "retry(3, web)"],
+			["retry(4, web)", "kept()", "retry(5, web)"],
+		);
+		expect(landing(apart, 1)).toBe(1);
+		expect(landing(apart, 3)).toBe(3);
 	});
 });
 

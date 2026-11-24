@@ -175,7 +175,14 @@ when it sits between the lines git kept nearest above and below it (one
 of them of unique text), nothing elsewhere contests its partner, however
 alike (a version bumped with the old value copied into a new section, an
 assertion changed with the old one in a new test, a function copied and
-the original edited, even with a neighbour deleted).
+the original edited, even with a neighbour deleted). Unless it swapped
+with a look-alike (CAR-279): two edited lines a few lines apart (their
+hunks joined, or within three lines), each resembling the other's
+replacement more than its own. Crossed both ways by 0.1 or more (about
+one word in ten), each thread follows its own text to the
+other line ("moved since"); crossed one way only, or by less, it is
+`rewritten`: a guess there would put a thread on a wrong line. A tie
+(twins, the same text twice) is no crossing: it stays.
 
 A block moved elsewhere in its file takes its threads with it
 (`src/shared/tracer/moved.ts`): the commented line found again among the

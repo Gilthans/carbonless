@@ -18,7 +18,7 @@
  * Pure: no git, no I/O, nothing from `src/server/`.
  */
 
-import { alignOrOver, similarityTo } from "../linePairing.js";
+import { alignOrOver, lineSimilarity, similarityTo } from "../linePairing.js";
 import { HAS_WORD, WORD_DIFF_MAX } from "../tokenize.js";
 import type { DiffSide } from "../types.js";
 import type { LineMapper, MapHunk } from "./lineMapper.js";
@@ -37,9 +37,10 @@ import {
  * replaced hunk goes to its similar partner, else unplaced (was: the same
  * offset in the replacement). 3: a line moved with its block follows it
  * elsewhere in the file (`moved`); a partner that a line elsewhere
- * resembles as much is `rewritten`.
+ * resembles as much is `rewritten`. 4: two look-alike lines swapped around
+ * a kept line follow their text across (a crossing by less, `rewritten`).
  */
-export const TRACER_VERSION = 3;
+export const TRACER_VERSION = 4;
 
 export interface Position {
 	side: DiffSide;
@@ -504,12 +505,21 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 	if (own === null || !HAS_WORD.test(own) || !diffs.newLineText) {
 		return plain(local);
 	}
+	// Found again in its own hunk (a re-indented block too large to pair):
+	// rewritten there, not moved.
+	const away = (at: number): Found =>
+		diffs.bd.hunkAddingNew(at) === hunk
+			? { line: at }
+			: { line: at, moved: true };
 	if (
 		local !== null &&
 		local !== "unknown" &&
 		anchored(hunk, line, local.line, diffs)
 	) {
-		return plain(local);
+		// Edited in place, unless it swapped with a look-alike nearby.
+		const swap = swappedWith(hunk, line, local, diffs);
+		if (swap === null) return plain(local);
+		return swap === "unknown" ? swap : away(swap);
 	}
 	// Its partner nearby is where another line moved with its block: that
 	// line's, not this one's.
@@ -520,12 +530,6 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 	) {
 		local = null;
 	}
-	// Found again in its own hunk (a re-indented block too large to pair):
-	// rewritten there, not moved.
-	const away = (at: number): Found =>
-		diffs.bd.hunkAddingNew(at) === hunk
-			? { line: at }
-			: { line: at, moved: true };
 	// No partner nearby: a move must carry its whole hunk.
 	const moved = movedTo(line, readers, local === null || local === "unknown");
 	if (moved === "ambiguous") return "unknown";
@@ -543,6 +547,76 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 		moved === null || moved === "copies" ? null : moved.line,
 	);
 	return won === "unknown" ? won : won.moved ? away(won.line) : won;
+}
+
+/**
+ * How much more each of two lines a hunk apart must resemble the other's
+ * replacement than its own for the two to have swapped places (CAR-279),
+ * on lineSimilarity's scale. A look-alike line differs from its sibling
+ * in a word or two: the closest swap measured (two Markdown items of
+ * eight words each, swapped and each given one more word) crosses by
+ * 0.118; YAML keys swapped with their values edited cross by 0.25, Go
+ * calls by 0.29. Lines edited in place beside a look-alike, not swapped,
+ * don't cross at all (the corpus's, CAR-95's, and the tests'). Below
+ * this, a crossing is too close to say which way the lines went:
+ * "unknown", never a guess. A tie is no crossing.
+ */
+export const SWAP_MARGIN = 0.1;
+
+/**
+ * Whether `line`, edited in place onto `local` by its own hunk's pairing,
+ * swapped with a look-alike: another removed line nearby (in a hunk of its
+ * joined run, or within TUNING.contextLines) whose own replacement it
+ * resembles more, while that line resembles `line`'s replacement more than
+ * its own. Both crossed by SWAP_MARGIN: the look-alike's replacement, the
+ * new line it went to. Crossed one way only, by less, or with more than
+ * one look-alike: "unknown". null: nothing crossed, it stayed. A window of
+ * a few lines: no whole-file work.
+ */
+function swappedWith(
+	hunk: MapHunk,
+	line: number,
+	local: { line: number; score: number },
+	diffs: TraceDiffs,
+): number | "unknown" | null {
+	const own = read(diffs.oldLineText, line);
+	const mine = read(diffs.newLineText, local.line);
+	if (own === null || mine === null) return null;
+	const memo = memoOf(diffs);
+	const run = runOf(hunk, diffs, memo);
+	const index = memo.index;
+	let found: number | null = null;
+	let unsure = false;
+	// A run joins hunks at most REGION_GAP old lines apart.
+	const reach = REGION_GAP + 1;
+	for (let n = Math.max(1, line - reach); n <= line + reach; n++) {
+		if (n === line) continue;
+		const theirs = diffs.bd.hunkRemovingOld(n);
+		if (!theirs || theirs === hunk) continue;
+		const i = index?.get(theirs);
+		const inRun = i !== undefined && i >= run.first && i <= run.last;
+		if (!inRun && Math.abs(n - line) > TUNING.contextLines) continue;
+		const other = read(diffs.oldLineText, n);
+		if (other === null || !HAS_WORD.test(other)) continue;
+		const p = localPartner(theirs, n, diffs);
+		if (p === null || p === "unknown" || p.line === local.line) continue;
+		const their = read(diffs.newLineText, p.line);
+		if (their === null) continue;
+		const ahead = lineSimilarity(own, their) - local.score;
+		const back = lineSimilarity(other, mine) - p.score;
+		if (ahead <= EPS && back <= EPS) continue;
+		if (
+			found === null &&
+			ahead >= SWAP_MARGIN - EPS &&
+			back >= SWAP_MARGIN - EPS
+		) {
+			found = p.line;
+		} else {
+			unsure = true;
+		}
+	}
+	if (unsure) return "unknown";
+	return found;
 }
 
 /**
