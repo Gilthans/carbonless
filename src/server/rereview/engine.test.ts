@@ -14,7 +14,11 @@ import {
 	createRereviewHistory,
 	type RereviewHistory,
 } from "../../../test/rereview-fixture";
-import type { ClusterState, Snapshot } from "../../shared/types";
+import type {
+	ClusterState,
+	RereviewAnswer,
+	Snapshot,
+} from "../../shared/types";
 import { buildSnapshot } from "../diff/snapshot";
 import type { PatchsetRecord, StateEntry } from "../review/fold";
 import { RereviewCache } from "./cache";
@@ -27,6 +31,7 @@ import {
 	rereviewKey,
 	type SincePatchset,
 	type TargetSnapshot,
+	type Traced,
 	traceRereview,
 } from "./engine";
 
@@ -574,13 +579,12 @@ describe("the engine", () => {
 			);
 			// B2's numbers (three lines down), never B1's: "line 20" is B2's 23.
 			// "thirty on master" is B2's 33, though PS1 never had that text.
-			// The engine can't place that shown row in the base through the
-			// old one (baseLine), so the cluster's line no piece owns is an
-			// orphan too, a row of its own (CAR-216: shown twice, never hidden).
+			// The old base can't place that shown row (baseLine), GitHub's
+			// LEFT line can: the shown row owns its line, no orphan twin
+			// (CAR-277).
 			expect(removed).toEqual([
 				["line 20", 23, false],
 				["thirty on master", 33, false],
-				["thirty on master", 33, true],
 			]);
 		} finally {
 			fx.cleanup();
@@ -1162,6 +1166,158 @@ describe("the engine", () => {
 				`${h.orphanHead}:z.txt`,
 			);
 		});
+	});
+});
+
+describe("a line the base move changed, shown removed in the since view (CAR-277)", () => {
+	// PS1 changes line 5 on B1; master changes line 30 (B2); PS2, rebased
+	// on B2, drops master's line 30. The since view shows that removal; the
+	// old base can't place it (baseLine), GitHub's LEFT line can.
+	const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+	const text = (ls: string[]) => `${ls.join("\n")}\n`;
+	let cleanup = () => {};
+	let traced: Traced;
+	let answer: RereviewAnswer;
+	let r: Snapshot;
+	beforeAll(async () => {
+		const fx = createGitFixture([
+			{ message: "base", files: { "a.txt": text(lines) } },
+		]);
+		cleanup = fx.cleanup;
+		const git = (...args: string[]) =>
+			execFileSync("git", args, {
+				cwd: fx.path,
+				encoding: "utf8",
+				stdio: "pipe",
+				env: testGitEnv(),
+			}).trim();
+		const commit = (message: string, content: string[]) => {
+			writeFileSync(join(fx.path, "a.txt"), text(content));
+			git("commit", "--quiet", "-am", message);
+			return git("rev-parse", "HEAD");
+		};
+		const b1 = fx.shas[0] as string;
+		const h1 = commit(
+			"PR: five",
+			lines.map((l) => (l === "line 5" ? "five" : l)),
+		);
+		git("checkout", "--quiet", "--detach", b1);
+		const masterLines = lines.map((l) =>
+			l === "line 30" ? "thirty on master" : l,
+		);
+		const b2 = commit("base: line 30", masterLines);
+		const h2 = commit(
+			"PR: five, rebased; line 30 dropped",
+			masterLines
+				.map((l) => (l === "line 5" ? "five" : l))
+				.filter((l) => l !== "thirty on master"),
+		);
+		const ps1 = await buildSnapshot(fx.path, b1, h1);
+		r = await buildSnapshot(fx.path, b2, h2);
+		traced = await traceRereview(
+			fx.path,
+			since(1, ps1, new Map()),
+			[],
+			targetOf(r),
+		);
+		answer = answerRereview(
+			traced,
+			since(1, ps1, new Map()),
+			[],
+			targetOf(r),
+		).answer;
+	});
+	afterAll(() => cleanup());
+
+	/** The dropped line's cluster in the head. */
+	const thirty = () => {
+		const c = r.files[0]?.clusters.find((c) =>
+			c.removed.includes("thirty on master"),
+		);
+		if (!c) throw new Error("no cluster");
+		return c;
+	};
+	/** The since view's rows of the dropped line, and its cluster's pieces. */
+	const view = (t: Traced = traced, target: Snapshot = r) => {
+		const shown = interdiffFileHunks(t, target, answer, 0);
+		const key = thirty().key;
+		return {
+			rows: shown.hunks.flatMap((h) =>
+				h.lines
+					.filter((l) => l.kind === "del" && l.clusterKey === key)
+					.map((l) => (l.orphan ? "orphan" : "shown")),
+			),
+			pieces: (shown.pieces ?? [])
+				.filter((p) => p.key === key)
+				.map((p) => [p.orphan === true, p.owns]),
+		};
+	};
+	/** The shown row's old-side number (the interdiff's). */
+	const shownOldNo = () => {
+		const row = interdiffFileHunks(traced, r, answer, 0)
+			.hunks.flatMap((h) => h.lines)
+			.find((l) => l.kind === "del" && !l.orphan);
+		return row?.oldNo as number;
+	};
+	/** `traced` with one line's map entries replaced. */
+	const tampered = (
+		edit: (keys: Traced["lineKeys"], oldNo: number) => void,
+	): Traced => {
+		const keys = structuredClone(traced.lineKeys);
+		edit(keys, shownOldNo());
+		return { ...traced, lineKeys: keys };
+	};
+
+	it("shows once: the shown row owns the line, no orphan twin", () => {
+		// The premise: the old base can't place it, GitHub's LEFT line can.
+		const oldNo = shownOldNo();
+		expect(traced.lineKeys.baseLine?.["a.txt"]?.[oldNo]).toBeUndefined();
+		expect(traced.lineKeys.githubLeft?.["a.txt"]?.[oldNo]).toBe(30);
+		expect(view()).toEqual({ rows: ["shown"], pieces: [[false, [[0, 1]]]] });
+		// One unit to read for it, not two.
+		expect(answer.toRead).toEqual({ files: 1, clusters: 2 });
+	});
+
+	it("the text differs at that place: both rows stay", () => {
+		const head = structuredClone(r);
+		const c = head.files[0]?.clusters.find((c) => c.key === thirty().key);
+		if (!c) throw new Error("no cluster");
+		c.removed = ["thirty elsewhere"];
+		expect(view(traced, head).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("the fallback places it elsewhere: both rows stay", () => {
+		const t = tampered((keys, oldNo) => {
+			(keys.githubLeft?.["a.txt"] as Record<number, number>)[oldNo] = 29;
+		});
+		expect(view(t)).toEqual({
+			rows: ["shown", "orphan"],
+			pieces: [
+				[false, null],
+				[true, [[0, 1]]],
+			],
+		});
+	});
+
+	it("no fallback (no LEFT line for it): both rows stay", () => {
+		const t = tampered((keys, oldNo) => {
+			delete keys.githubLeft?.["a.txt"]?.[oldNo];
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("a line the compared patch set added never takes the fallback: both rows stay", () => {
+		const t = tampered((keys, oldNo) => {
+			keys.old["a.txt"] = { ...keys.old["a.txt"], [oldNo]: "ps1-cluster" };
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("a file with no placement map at all fails closed: both rows stay", () => {
+		const t = tampered((keys) => {
+			delete keys.baseLine?.["a.txt"];
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
 	});
 });
 

@@ -1283,9 +1283,27 @@ function sinceFileHunks(
 			: file.conflict
 				? line.oldNo
 				: mapped?.[line.oldNo];
+	// For ownership only (CAR-277): a line the base move changed has no
+	// place through the old base; GitHub's LEFT line (the virtual rebase
+	// against the new base) places it then, when the file has a map and
+	// the compared patch set didn't add the line. pieceRanges's text guard
+	// still applies: anything else leaves it unplaced, and the cluster's
+	// line an orphan row of its own (principle 2: shown twice, never hidden).
+	const left = file.conflict
+		? undefined
+		: traced.lineKeys.githubLeft?.[file.oldPath ?? file.path];
+	const addedThen = traced.lineKeys.old[file.oldPath ?? file.path] ?? {};
+	const placedOrLeft = (line: DiffLine): number | undefined => {
+		const b = baseNo(line);
+		if (b !== undefined || file.conflict || !mapped || !left) return b;
+		const n = line.oldNo;
+		if (line.kind !== "del" || n === undefined || addedThen[n] !== undefined)
+			return undefined;
+		return left[n];
+	};
 	// An orphan's is its cluster's (it has no old number here).
 	const baseOf = (line: DiffLine): number | undefined =>
-		line.orphan ? (line.baseNo ?? undefined) : baseNo(line);
+		line.orphan ? (line.baseNo ?? undefined) : placedOrLeft(line);
 	/** The target cluster that removes a removed base line (by its place in the new base). */
 	const removedBy = (line: DiffLine): string | undefined => {
 		const b = baseNo(line);
@@ -1358,9 +1376,6 @@ function sinceFileHunks(
 	// conflicted file's old side is the base; else the virtual rebase's
 	// diff against it (null: a line only the patch sets had). A file with
 	// no such map leaves it unset, which the page refuses (fails closed).
-	const left = file.conflict
-		? undefined
-		: traced.lineKeys.githubLeft?.[file.oldPath ?? file.path];
 	const earlier = file.conflict
 		? undefined
 		: traced.lineKeys.earlierRight?.[file.oldPath ?? file.path];
