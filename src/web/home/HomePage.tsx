@@ -144,7 +144,11 @@ function RepoChip(props: {
 						className={pressed ? "text-accent" : "text-faint"}
 					/>
 				)}
-				<Tooltip content={pressed ? "Show all repos" : `Show only ${name}`}>
+				<Tooltip
+					content={pressed ? "Show all repos" : `Show only ${name}`}
+					// A tap's focus keeps the tip open: a toggle closes it.
+					dismissKey={pressed}
+				>
 					{(trigger) => (
 						<button
 							type="button"
@@ -271,9 +275,10 @@ export function HomePage(
 				?.name
 		: undefined;
 	// One that isn't (or no longer is) in the view leaves the address once
-	// the server's view is in.
+	// the server's view is in, and no save is out (a failed one brings the
+	// repo back, its filter kept).
 	const stale = wanted !== undefined && filter === undefined;
-	const viewKnown = home.isSuccess && !home.isFetching;
+	const viewKnown = home.isSuccess && !home.isFetching && !viewSave.saving;
 	useEffect(() => {
 		if (stale && viewKnown) setRepo(undefined, true);
 	}, [stale, viewKnown, setRepo]);
@@ -296,9 +301,14 @@ export function HomePage(
 	// Until every repo has answered once (a failure counts), sections show
 	// placeholders, never a count of rows still to come.
 	// A repo a save is still adding isn't read yet: its chip says so,
-	// the counts don't wait for it.
+	// the counts don't wait for it, unless it is all the filter shows
+	// (nothing read: a count would be a 0 still to come).
 	const loading =
-		home.isPending || shown.some(({ state }) => state === "loading");
+		home.isPending ||
+		shown.some(
+			({ state }) =>
+				state === "loading" || (filter !== undefined && state === "saving"),
+		);
 	// Never read: the counts leave these out, and say so.
 	const unread = shown.filter(({ state }) => state === "unread");
 	const missing =

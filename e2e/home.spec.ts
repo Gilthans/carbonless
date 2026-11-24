@@ -2002,15 +2002,15 @@ test("a view repo's chip shows only its PRs, kept on reload, back and forth; aga
 	const apiRow = rowOf(page, "Snooze PRs from the inbox");
 	await expect(widgetRow).toBeVisible();
 	await expect(widget).toHaveAttribute("aria-pressed", "false");
-	// Phone: the whole chip, 40px tall, is the target.
-	const target = await widget.evaluate((el) => {
-		const after = getComputedStyle(el, "::after");
-		return { height: after.height, position: after.position };
-	});
-	expect(target.position).toBe("absolute");
-	expect(Number.parseFloat(target.height)).toBeGreaterThanOrEqual(40);
-
-	await widget.click();
+	// The whole chip, 40px tall, is the target: a tap just above the
+	// visible chip (28px) still presses it.
+	const box = await page
+		.getByTestId("view-repo")
+		.filter({ hasText: OWNER_REPO })
+		.boundingBox();
+	if (!box) throw new Error("no chip");
+	expect(box.height).toBeLessThan(40);
+	await page.mouse.click(box.x + box.width / 2, box.y - 4);
 	await expect(widget).toHaveAttribute("aria-pressed", "true");
 	await expect(apiRow).toHaveCount(0);
 	await expect(widgetRow).toBeVisible();

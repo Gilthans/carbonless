@@ -41,6 +41,26 @@ const titles = (name: string) =>
 const count = (name: string) =>
 	within(section(name)).getByRole("heading").textContent?.match(/\d+$/)?.[0];
 const toggle = (name: string) => screen.getByRole("button", { name });
+const chip = (name: string) =>
+	screen.getAllByTestId("view-repo").find((c) => c.textContent === name);
+
+async function saveRepos(change: (dialog: HTMLElement) => Promise<void>) {
+	await userEvent.click(
+		await screen.findByRole("button", { name: "Edit repos" }),
+	);
+	const dialog = screen.getByRole("dialog", { name: "My PRs" });
+	await change(dialog);
+	await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+}
+const addRepo = (name: string) => async (dialog: HTMLElement) => {
+	const field = within(dialog).getByRole("combobox", { name: "Add a repo" });
+	await userEvent.type(field, `${name}{Enter}`);
+};
+const removeRepo = (name: string) => async (dialog: HTMLElement) => {
+	await userEvent.click(
+		within(dialog).getByRole("button", { name: `Remove ${name}` }),
+	);
+};
 
 /** Home at `path`, routed as the app routes it (the address holds the filter). */
 function renderAt(path: string) {
@@ -181,6 +201,115 @@ describe("Home repo filter", () => {
 		expect(await screen.findByText("Console reviewing")).toBeInTheDocument();
 		expect(count("Mine")).toBe("1");
 		expect(screen.queryByText("API mine")).toBeNull();
+	});
+
+	it("filtered to a repo a save is still adding: its sections show loading, never a 0, until its rows are in", async () => {
+		const put = held();
+		// Its read too: one picked in the settings is read at once, and
+		// with its rows in it would no longer be pending.
+		const read = held();
+		const api = fakeApi(
+			view({
+				mine: inOrder([
+					row({ number: 1, title: "API mine" }),
+					row({ repo: "web", number: 2, title: "Web mine" }),
+				]),
+			}),
+			{
+				"GET /api/home/repos/acme/web": async () => {
+					await read.gate;
+					return repoAnswer(api.state.home, "acme/web");
+				},
+				"PUT /api/home/view": async (call) => {
+					await put.gate;
+					const repos = (call.body as { repos: string[] }).repos;
+					api.state.home = {
+						...api.state.home,
+						view: { name: "My PRs", repos },
+					};
+					const { sections: _, repos: __, ...rest } = api.state.home;
+					return rest;
+				},
+			},
+		);
+		renderAt("/");
+		await screen.findByText("API mine");
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+		await saveRepos(addRepo("acme/web"));
+		await waitFor(() =>
+			expect(chip("acme/web")).toHaveAttribute("data-state", "saving"),
+		);
+		await userEvent.click(toggle("acme/web"));
+		expect(toggle("acme/web")).toHaveAttribute("aria-pressed", "true");
+		for (const name of ["Mine", "Reviewing", "Other open"]) {
+			within(section(name)).getByRole("img", { name: "Loading" });
+			expect(
+				within(section(name)).getByRole("heading").textContent,
+			).not.toMatch(/\d/);
+			expect(within(section(name)).queryByTestId("section-none")).toBeNull();
+		}
+		expect(screen.queryByText("API mine")).toBeNull();
+		put.release();
+		// Saved, its first read still out: still loading.
+		await waitFor(() =>
+			expect(chip("acme/web")).toHaveAttribute("data-state", "loading"),
+		);
+		within(section("Mine")).getByRole("img", { name: "Loading" });
+		expect(
+			within(section("Mine")).getByRole("heading").textContent,
+		).not.toMatch(/\d/);
+		read.release();
+		expect(await screen.findByText("Web mine")).toBeInTheDocument();
+		await waitFor(() => expect(count("Mine")).toBe("1"));
+		expect(screen.queryByText("API mine")).toBeNull();
+	});
+
+	it("the filtered repo leaving the view drops the filter once the save is in; a refused save keeps it", async () => {
+		const put = held();
+		let refuse = true;
+		const api = fakeApi(twoRepos(), {
+			"PUT /api/home/view": async (call) => {
+				await put.gate;
+				if (refuse) {
+					return new Response(JSON.stringify({ error: "nope" }), {
+						status: 400,
+					});
+				}
+				const repos = (call.body as { repos: string[] }).repos;
+				api.state.home = {
+					...api.state.home,
+					view: { name: "My PRs", repos },
+				};
+				const { sections: _, repos: __, ...rest } = api.state.home;
+				return rest;
+			},
+		});
+		const router = renderAt("/?repo=acme/console");
+		expect(await screen.findByText("Console mine")).toBeInTheDocument();
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+
+		// Refused: the view comes back, the filter with it.
+		await saveRepos(removeRepo("acme/console"));
+		await waitFor(() => expect(chip("acme/console")).toBeUndefined());
+		expect(router.state.location.search).toEqual({ repo: "acme/console" });
+		put.release();
+		await waitFor(() =>
+			expect(toggle("acme/console")).toHaveAttribute("aria-pressed", "true"),
+		);
+		expect(router.state.location.search).toEqual({ repo: "acme/console" });
+		expect(screen.queryByText("API mine")).toBeNull();
+
+		// Stored: every repo's rows, the address without it.
+		refuse = false;
+		await saveRepos(removeRepo("acme/console"));
+		await waitFor(() => expect(router.state.location.search).toEqual({}));
+		expect(await screen.findByText("API mine")).toBeInTheDocument();
+		expect(screen.queryByText("Console mine")).toBeNull();
+		expect(chip("acme/console")).toBeUndefined();
 	});
 
 	it("a failed chip keeps its alert and Retry; Retry doesn't toggle the filter", async () => {
