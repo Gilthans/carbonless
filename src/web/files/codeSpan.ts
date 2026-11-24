@@ -82,7 +82,8 @@ export type NoLine =
 	| "mixed"
 	| "renamed"
 	| "split"
-	| "orphan";
+	| "orphan"
+	| "orphan-split";
 
 /** A line only the compared patch set had, on its commit (CAR-233). */
 export const onEarlier = (c: Pick<CellLine, "base" | "ps">) =>
@@ -110,9 +111,10 @@ export const noLineOf = (
  * Why the span over `cells` can't go to GitHub (the first line's reason),
  * or null. Lines on the earlier patch set's commit go there all together
  * or not at all: mixed with others, "mixed"; with no such commit known
- * (`earlier`), "unknown". An orphan removed line (CAR-276) goes with
- * its orphan run's lines only: with others, "orphan" (the view shows them
- * apart from it, unlike GitHub's range between them).
+ * (`earlier`), "unknown". An orphan line (CAR-276) goes with orphan
+ * lines only: with others, "orphan" (the view shows them apart, unlike
+ * GitHub's range between them); its removed lines' base lines one run, else
+ * "orphan-split" (the range would hold base lines the view never showed).
  */
 export function noLineIn(
 	cells: readonly (Pick<CellLine, "base" | "ps" | "psMoved"> &
@@ -123,11 +125,15 @@ export function noLineIn(
 		const why = noLineOf(c);
 		if (why) return why;
 	}
-	if (
-		cells.some((c) => c.orphan && c.side === "LEFT") &&
-		cells.some((c) => !c.orphan)
-	) {
+	if (cells.some((c) => c.orphan) && cells.some((c) => !c.orphan)) {
 		return "orphan";
+	}
+	const bases = cells
+		.filter((c) => c.orphan && c.side === "LEFT" && typeof c.base === "number")
+		.map((c) => c.base as number)
+		.sort((a, b) => a - b);
+	if (bases.some((n, i) => i > 0 && n !== (bases[i - 1] as number) + 1)) {
+		return "orphan-split";
 	}
 	const on = cells.filter(onEarlier).length;
 	if (on === 0) return null;

@@ -507,6 +507,10 @@ const sideLine = (line: DiffLine, ws: boolean): RowLine =>
 const baseAttr = (baseNo: number | null | undefined) =>
 	baseNo === undefined ? undefined : baseNo === null ? "" : baseNo;
 
+/** A number cell's pick button. */
+const NUMBER_BUTTON =
+	"block w-full cursor-pointer text-right hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent";
+
 /** A number button with no number to show (a since-view orphan removed row's). */
 const NO_NUMBER = "\u00a0";
 
@@ -1072,7 +1076,7 @@ function NumberCell(props: {
 			onClick={picker?.onClick}
 			className={`${NUMBER_W} ${NUMBER_PAD} text-right align-top select-none ${props.className} ${picker ? "cursor-pointer" : ""}`}
 		>
-			{picker && pick?.button && (n !== undefined || pick.orphan) ? (
+			{picker && pick?.button && n !== undefined ? (
 				<button
 					type="button"
 					data-pick={pick.key}
@@ -1081,10 +1085,35 @@ function NumberCell(props: {
 					aria-pressed={pick.picked}
 					onKeyDown={picker.onKeyDown}
 					onFocus={() => picker.onFocus(stopOf(props.side, pick.key))}
-					className="block w-full cursor-pointer text-right hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+					className={NUMBER_BUTTON}
 				>
-					{n ?? NO_NUMBER}
+					{n}
 				</button>
+			) : picker && pick?.button && pick.orphan ? (
+				// No number to show: its name says which line it picks (CAR-276).
+				<Tooltip content={pick.label} describe={false} lazy>
+					{(trigger) => (
+						<button
+							{...trigger}
+							type="button"
+							data-pick={pick.key}
+							tabIndex={picker.roving === stopOf(props.side, pick.key) ? 0 : -1}
+							aria-label={pick.label}
+							aria-pressed={pick.picked}
+							onKeyDown={(e) => {
+								trigger.onKeyDown(e);
+								picker.onKeyDown(e);
+							}}
+							onFocus={(e) => {
+								trigger.onFocus(e);
+								picker.onFocus(stopOf(props.side, pick.key));
+							}}
+							className={NUMBER_BUTTON}
+						>
+							{NO_NUMBER}
+						</button>
+					)}
+				</Tooltip>
 			) : (
 				n
 			)}

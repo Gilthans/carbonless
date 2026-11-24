@@ -1,6 +1,7 @@
 import { CommentIcon, type Icon } from "@primer/octicons-react";
 import type { DiffSide, FileSummary, PrOverview } from "../../shared/types";
 import { openComposer } from "../threads/newThreads";
+import type { NoLine } from "./codeSpan";
 
 /**
  * What a selection in Files changed points at, whatever is done with it: a
@@ -41,7 +42,7 @@ export interface SelectionContext {
 	 * view doesn't know (CAR-217), or the earlier patch set's lines mixed
 	 * with the head's (CAR-233).
 	 */
-	noLine?: "earlier" | "unknown" | "mixed" | "renamed" | "split" | "orphan";
+	noLine?: NoLine;
 	/**
 	 * The diff on screen is not yet the viewed head's (a Refresh moved the
 	 * head first): its lines would be named on the wrong commit.
@@ -78,9 +79,10 @@ export const SPLIT_EARLIER = "Not one range on the earlier patch set";
  */
 export const ORPHAN_MIXED = "Mixes lines not reviewed earlier with others";
 
-export const noLineReason = (
-	why: "earlier" | "unknown" | "mixed" | "renamed" | "split" | "orphan",
-) =>
+/** Why nothing can start on orphan removed lines whose base lines aren't one run. */
+export const ORPHAN_SPLIT = "Not one range of base lines";
+
+export const noLineReason = (why: NoLine) =>
 	why === "earlier"
 		? EARLIER_ONLY
 		: why === "mixed"
@@ -91,7 +93,9 @@ export const noLineReason = (
 					? SPLIT_EARLIER
 					: why === "orphan"
 						? ORPHAN_MIXED
-						: NO_GITHUB_LINE;
+						: why === "orphan-split"
+							? ORPHAN_SPLIT
+							: NO_GITHUB_LINE;
 
 /** Why nothing can start on a span while the diff shown isn't the head's. */
 export const HEAD_UNSURE = "The new head's diff is loading";

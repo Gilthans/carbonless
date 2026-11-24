@@ -1158,7 +1158,6 @@ function parseView(raw: unknown): AgentView | null {
 	if (!isObj(raw) || !isObj(raw.target) || !isObj(raw.from)) return null;
 	const { target, from, left, right, base } = raw;
 	if (!isCommit(left) || !isCommit(right)) return null;
-	if (base !== undefined && !isCommit(base)) return null;
 	let t: AgentViewTarget;
 	if (isPatchset(target.patchset)) t = { patchset: target.patchset };
 	else if (isCommit(target.head)) t = { head: target.head };
@@ -1172,7 +1171,9 @@ function parseView(raw: unknown): AgentView | null {
 		from: f,
 		left,
 		right,
-		...(base === undefined ? {} : { base }),
+		// Optional, and it only ever turns Comment on GitHub on: a bad one is
+		// dropped, the message kept (CAR-276).
+		...(isCommit(base) ? { base } : {}),
 	};
 }
 
