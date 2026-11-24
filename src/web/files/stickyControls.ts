@@ -19,8 +19,12 @@ export const StackControls = createContext(false);
 export const SLOT = "data-sticky-slot";
 /** Marks the controls that move; `data-stuck="true"` while they float. */
 export const CONTROLS = "data-sticky-controls";
-/** An opened review thread's row (ThreadRow): the floating controls stop above it. */
-const THREAD_ROW = '[data-testid="thread-row"]';
+/**
+ * An opened review thread's row, or an agent conversation's (ThreadRow):
+ * the floating controls stop above it.
+ */
+const THREAD_ROW =
+	'[data-testid="thread-row"], [data-testid="agent-thread-row"]';
 /**
  * Room kept between floating controls and the cluster's end, in px. The
  * placement runs on the main thread (once per frame), so on a fast fling the

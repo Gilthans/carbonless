@@ -5,7 +5,13 @@ import {
 	type Scenario,
 	threadComment,
 } from "../test/fake-gh/scenario";
-import { fileSection, openFiles, progress, withTree } from "./files-ui";
+import {
+	fileSection,
+	openFiles,
+	progress,
+	tapFilesButton,
+	withTree,
+} from "./files-ui";
 import {
 	expect,
 	expectLoadingThen,
@@ -629,8 +635,7 @@ test("threads loading: the tree's spinner never takes a tap from the files under
 	const p = await setup(pr, { hold: ["threads"] });
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	const sheet = page.getByRole("button", { name: "Files", exact: true });
-	if (await sheet.isVisible()) await sheet.click();
+	if (isMobile) await tapFilesButton(page);
 	const tree = page.getByTestId("file-tree");
 	const pill = tree.getByRole("status", { name: "Loading comments" });
 	await expect(pill).toBeVisible();

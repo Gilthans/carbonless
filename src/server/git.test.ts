@@ -21,17 +21,25 @@ const alive = (pid: number) => {
 };
 
 describe("runGit timeoutMs", () => {
-	// A shell alias stands in for a fetch that hangs.
-	const slow = ["-c", "alias.slow=!sleep 5", "slow"];
+	// A shell alias stands in for a fetch that hangs: held until the test
+	// releases it (so a run that waited for it fails on the test's timeout),
+	// and gone within 50 ms of its git or its dir (nothing outlives the test).
 	const dir = mkdtempSync(join(tmpdir(), "crb-git-test-"));
-	afterAll(() => rmSync(dir, { recursive: true, force: true }));
+	const released = join(dir, "released");
+	const slow = [
+		"-c",
+		`alias.slow=!while [ -d '${dir}' ] && [ ! -e '${released}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.05; done`,
+		"slow",
+	];
+	afterAll(() => {
+		writeFileSync(released, "");
+		rmSync(dir, { recursive: true, force: true });
+	});
 
 	it("kills git after the timeout and fails", async () => {
-		const start = Date.now();
 		await expect(runGit(".", slow, { timeoutMs: 200 })).rejects.toThrow(
 			/timed out/,
 		);
-		expect(Date.now() - start).toBeLessThan(3000);
 	});
 
 	it("resolves empty with allowFailure", async () => {
@@ -115,11 +123,9 @@ const wait = setInterval(() => {
 
 	it("stops git when aborted, and never starts it once aborted", async () => {
 		const stop = new AbortController();
-		const started = Date.now();
 		const run = runGit(".", slow, { signal: stop.signal });
 		setTimeout(() => stop.abort(), 100);
 		await expect(run).rejects.toThrow(/stopped/);
-		expect(Date.now() - started).toBeLessThan(3000);
 		await expect(
 			runGit(".", ["rev-parse", "HEAD"], { signal: stop.signal }),
 		).rejects.toThrow(/stopped/);

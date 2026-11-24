@@ -529,7 +529,7 @@ class CommentsBatcher {
 	): Promise<ThreadComments> {
 		if (this.#gone.has(readId)) return Promise.reject(this.#gone.get(readId));
 		const sent = this.#sent.get(keyOf(readId, threadId));
-		if (sent) return sent;
+		if (sent !== undefined) return sent;
 		const queued = this.#queue.find(
 			(w) => w.readId === readId && w.threadId === threadId,
 		);
@@ -909,9 +909,74 @@ export const rereviewQuery = (from: number, to: RereviewTo) =>
 	});
 
 /**
+ * Failed asks in a row before the placements read as failed (CAR-271),
+ * counted across the server's job restarts (each starts `pending`).
+ */
+export const PLACEMENTS_TRIES = 3;
+/** The longest wait between two asks after placements failures. */
+export const PLACEMENTS_BACKOFF_MAX_MS = 30_000;
+
+/**
+ * The wait before asking for the placements again after `failures`
+ * failures in a row: 1 s, 2 s, 4 s … up to PLACEMENTS_BACKOFF_MAX_MS.
+ */
+export const placementsBackoff = (failures: number) =>
+	Math.min(PLACEMENTS_BACKOFF_MAX_MS, 1000 * 2 ** Math.max(0, failures - 1));
+
+/** A failed placements ask, with the failures in a row it ends (placementsQuery). */
+type PlacementsFailure = Error & { inARow?: number };
+
+/** The failures in a row a failed ask ends; `fallback` for one that doesn't say. */
+const inARow = (error: unknown, fallback = 1) =>
+	(error as PlacementsFailure | null)?.inARow ?? fallback;
+
+/**
+ * Whether a failed placements ask is tried again at once: until
+ * PLACEMENTS_TRIES failures in a row (a pending answer between them, a job
+ * the server started anew, doesn't end the run: only an answer does). A
+ * server or network failure is; a refusal (a 4xx: a bad ask, a read gone)
+ * never.
+ */
+export const retryPlacements = (failureCount: number, error: Error) =>
+	inARow(error, failureCount + 1) < PLACEMENTS_TRIES && !refusal(error);
+
+/** A 4xx: asking again the same way gets the same answer. */
+const refusal = (error: unknown) =>
+	error instanceof ApiError && error.status >= 400 && error.status < 500;
+
+/**
+ * When to ask for the placements again by itself: every REREVIEW_POLL_MS
+ * while pending or still completing; after a failure, with backoff by the
+ * failures in a row (the third: 4 s, then 8 s, 16 s, then every 30 s),
+ * until an answer lands; never after a refusal (a 4xx), nor once in.
+ */
+export function placementsPoll(state: {
+	status: "pending" | "error" | "success";
+	error: unknown;
+	data: PlacementsAnswer | { pending: true } | undefined;
+}): number | false {
+	if (state.status === "error")
+		return refusal(state.error)
+			? false
+			: placementsBackoff(Math.max(PLACEMENTS_TRIES, inARow(state.error)));
+	return state.data &&
+		("pending" in state.data || state.data.complete === false)
+		? REREVIEW_POLL_MS
+		: false;
+}
+
+/** Each placements query's failures in a row (by its key), until an answer. */
+const failuresInARow = new Map<string, number>();
+
+/**
  * The threads' placements in a snapshot for one read: polled every
  * REREVIEW_POLL_MS while `pending`, then kept (a placement write updates
- * it; a new read is another key).
+ * it; a new read is another key). A failure is tried again, and reads as
+ * failed after PLACEMENTS_TRIES in a row (pending answers between them
+ * included: the server answers a failed job's error for a while, then
+ * starts it anew); it is then asked again by itself with backoff, and on
+ * window focus or reconnect, so a passing failure clears without a Retry
+ * (CAR-271).
  */
 export const placementsQuery = (readId: string, to: RereviewTo) =>
 	queryOptions({
@@ -921,7 +986,18 @@ export const placementsQuery = (readId: string, to: RereviewTo) =>
 			...("patchset" in to ? ["ps", to.patchset] : ["head", to.head]),
 		],
 		queryFn: async ({ client, queryKey }) => {
-			const next = await fetchPlacements(readId, to);
+			const id = JSON.stringify(queryKey);
+			let next: PlacementsAnswer | { pending: true };
+			try {
+				next = await fetchPlacements(readId, to);
+			} catch (error) {
+				const n = (failuresInARow.get(id) ?? 0) + 1;
+				failuresInARow.set(id, n);
+				if (error instanceof Error) (error as PlacementsFailure).inARow = n;
+				throw error;
+			}
+			// Only an answer ends a run of failures, never "still placing".
+			if (!("pending" in next)) failuresInARow.delete(id);
 			// Placements once shown never go back to spinners (a job the
 			// server started again answers pending for a while).
 			if ("pending" in next) {
@@ -936,14 +1012,23 @@ export const placementsQuery = (readId: string, to: RereviewTo) =>
 			return next;
 		},
 		staleTime: Number.POSITIVE_INFINITY,
-		// Asked again while pending, and while the resolved threads are
-		// still joining (the unresolved ones are in already).
-		// Never after an error: the last data would keep it going.
+		retry: retryPlacements,
+		retryDelay: (failureCount, error) =>
+			placementsBackoff(inARow(error, failureCount + 1)),
 		refetchInterval: (query) =>
-			query.state.status !== "error" &&
-			query.state.data &&
-			("pending" in query.state.data || query.state.data.complete === false)
-				? REREVIEW_POLL_MS
+			placementsPoll({
+				status: query.state.status,
+				error: query.state.error,
+				data: query.state.data,
+			}),
+		// Only after a failure: an answer in is kept (staleTime).
+		refetchOnWindowFocus: (query) =>
+			query.state.status === "error" && !refusal(query.state.error)
+				? "always"
+				: false,
+		refetchOnReconnect: (query) =>
+			query.state.status === "error" && !refusal(query.state.error)
+				? "always"
 				: false,
 	});
 

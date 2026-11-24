@@ -20,11 +20,80 @@
 		"enabled": true,
 		"indentStyle": "tab"
 	},
-	"plugins": ["./biome-plugins/no-static-private-method.grit"],
+	"plugins": [
+		"./biome-plugins/no-static-private-method.grit",
+		{
+			"path": "./biome-plugins/no-wait-for-timeout.grit",
+			"includes": [
+				"**/e2e/*.ts",
+				"**/e2e/*.tsx",
+				"**/e2e/*.mts",
+				"**/e2e/*.mjs",
+				"**/test/*.ts",
+				"**/test/*.tsx",
+				"**/test/*.mts",
+				"**/test/*.mjs"
+			]
+		},
+		{
+			"path": "./biome-plugins/no-test-retries.grit",
+			"includes": [
+				"**/playwright*.config.*",
+				"**/vitest*.config.*",
+				"**/*.test.ts",
+				"**/*.test.tsx",
+				"**/*.test.mts",
+				"**/*.test.mjs",
+				"**/e2e/*.ts",
+				"**/e2e/*.tsx",
+				"**/e2e/*.mts",
+				"**/e2e/*.mjs"
+			]
+		},
+		{
+			"path": "./biome-plugins/no-wall-clock-assert.grit",
+			"includes": [
+				"**/*.test.ts",
+				"**/*.test.tsx",
+				"**/*.test.mts",
+				"**/*.test.mjs",
+				"**/e2e/*.ts",
+				"**/e2e/*.tsx",
+				"**/e2e/*.mts",
+				"**/e2e/*.mjs",
+				"**/test/*.ts",
+				"**/test/*.tsx",
+				"**/test/*.mts",
+				"**/test/*.mjs"
+			]
+		},
+		{
+			"path": "./biome-plugins/no-sleep-in-tests.grit",
+			"includes": [
+				"**/*.test.ts",
+				"**/*.test.tsx",
+				"**/*.test.mts",
+				"**/*.test.mjs",
+				"**/e2e/*.ts",
+				"**/e2e/*.tsx",
+				"**/e2e/*.mts",
+				"**/e2e/*.mjs",
+				"**/test/*.ts",
+				"**/test/*.tsx",
+				"**/test/*.mts",
+				"**/test/*.mjs"
+			]
+		}
+	],
 	"linter": {
 		"enabled": true,
 		"rules": {
-			"preset": "recommended"
+			"preset": "recommended",
+			"nursery": {
+				"noFloatingPromises": "error",
+				"noMisusedPromises": "error",
+				"useExhaustiveSwitchCases": "error"
+			}
 		}
 	},
 	"css": {

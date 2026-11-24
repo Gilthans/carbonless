@@ -13,6 +13,7 @@ import {
 	fileThreads,
 	type LineKey,
 	lineKey,
+	madeOnHead,
 	onSinceRows,
 	outsideThreads,
 	type Placements,
@@ -468,7 +469,13 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 	it("a whole-file gap: a LEFT line the full diff deleted goes to the header, never onto the row with its number", () => {
 		const gone = thread({ side: "LEFT", line: 30 });
 		const p = sincePlace([gone], whole, [ctx(30, 30), ctx(31, 31)]);
-		expect(p.header).toEqual([{ thread: gone, reason: "unplaced" }]);
+		expect(p.header).toEqual([
+			{
+				thread: gone,
+				reason: "unplaced",
+				notHere: { why: "unchanged", side: "LEFT", line: 30 },
+			},
+		]);
 		expect(p.end.size).toBe(0);
 		expect(p.gaps.size).toBe(0);
 		expect(p.covered.size).toBe(0);
@@ -582,8 +589,80 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 			loadedContext: [],
 			sinceLeft: sinceLeft(fullGone, removedSince.hunks),
 		});
-		expect(p.header).toEqual([{ thread: t, reason: "unplaced" }]);
+		expect(p.header).toEqual([
+			{
+				thread: t,
+				reason: "unplaced",
+				notHere: { why: "deleted-before", side: "LEFT", line: 41 },
+			},
+		]);
 		expect(p.end.size).toBe(0);
+	});
+
+	it("says why a LEFT line has no row: deleted before the compared patch set, the file unchanged since, or unknown when a removed row's base line isn't (CAR-255)", () => {
+		const fullGone = [
+			...clusters,
+			{
+				kind: "lines" as const,
+				oldStart: 41,
+				oldCount: 1,
+				newStart: 49,
+				newCount: 0,
+			},
+		];
+		const why = (hunks: FileHunks) => {
+			const t = thread({ side: "LEFT", startLine: 40, line: 41 });
+			const p = placeThreads({
+				threads: [t],
+				path: PATH,
+				snapshotHead: HEAD,
+				hunks,
+				loadedContext: [],
+				sinceLeft: sinceLeft(fullGone, hunks.hunks),
+			});
+			expect(p.end.size).toBe(0);
+			expect(p.header.map((h) => h.reason)).toEqual(["unplaced"]);
+			return p.header[0]?.notHere;
+		};
+		// Every removed row is a known base line (or none), and none is 41.
+		expect(why(removedSince)).toEqual({
+			why: "deleted-before",
+			side: "LEFT",
+			line: 41,
+		});
+		// The interdiff doesn't touch the file.
+		expect(why(whole)?.why).toBe("unchanged");
+		// A removed row whose base line isn't known could be it: never
+		// claimed deleted before.
+		const unmapped: FileHunks = {
+			hunks: [hunk([ctx(39, 38), del(40), ctx(41, 39)])],
+			newLineCount: 49,
+		};
+		expect(why(unmapped)?.why).toBe("unknown");
+	});
+
+	it("a LEFT line no row shows waits for the hunks before it goes to the header (which removed rows are base lines isn't known yet) (CAR-255)", () => {
+		const t = thread({ side: "LEFT", line: 30 });
+		const p = placeThreads({
+			threads: [t],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: null,
+			loadedContext: [],
+			sinceLeft: sinceLeft(clusters, null),
+		});
+		expect(everywhere(p)).toEqual([]);
+		// A file with no lines to show (binary): the header, as before.
+		const binary = placeThreads({
+			threads: [t],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: null,
+			loadedContext: [],
+			noLines: true,
+			sinceLeft: sinceLeft(clusters, null),
+		});
+		expect(binary.header).toEqual([{ thread: t, reason: "unplaced" }]);
 	});
 
 	it("twins: a base line the full diff keeps is its head line in the since view too, never a removed twin's row that names it (CAR-139)", () => {
@@ -616,6 +695,41 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 		// Where the full diff shows it (head line 2), not the removed row.
 		expect([...p.end]).toEqual([["RIGHT:2", [t]]]);
 		expect(p.end.has("LEFT:1")).toBe(false);
+	});
+
+	it("twins: the two diffs pair a deleted twin otherwise; never claimed deleted before the compared patch set (CAR-255)", () => {
+		// Base "}\n}\nb"; PS1 keeps both; head "}\nb". The full diff deletes
+		// base 1, the interdiff removes PS1's *second* "}" (base 2, which the
+		// full diff keeps as head 1): PS1 did have base 1.
+		const full = [
+			{
+				kind: "lines" as const,
+				oldStart: 1,
+				oldCount: 1,
+				newStart: 0,
+				newCount: 0,
+			},
+		];
+		const twins: FileHunks = {
+			hunks: [hunk([ctx(1, 1), { ...del(2), baseNo: 2 }, ctx(3, 2)])],
+			newLineCount: 2,
+		};
+		const t = thread({ side: "LEFT", line: 1 });
+		const p = placeThreads({
+			threads: [t],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: twins,
+			loadedContext: [],
+			sinceLeft: sinceLeft(full, twins.hunks),
+		});
+		expect(p.header).toEqual([
+			{
+				thread: t,
+				reason: "unplaced",
+				notHere: { why: "unknown", side: "LEFT", line: 1 },
+			},
+		]);
 	});
 
 	/** CAR-233: PS1 41 is its commit's line 51 (an added line of its diff). */
@@ -715,6 +829,10 @@ describe("the since view: LEFT anchors go through the full diff", () => {
 		const pending = earlierPending([t], HEAD, empty, PS1);
 		expect(pending).toHaveLength(1);
 		expect(earlierPending([t], HEAD, empty, PS1)[0]).toBe(pending[0]);
+		// Shown on the head, made on PS1's: its place is unknown when the
+		// placements fail (CAR-271), never "made on the head".
+		expect(pending[0]?.madeOn).toBe(PS1);
+		expect(madeOnHead(pending[0] as ReviewThread, HEAD)).toBe(false);
 		const p = placeThreads({
 			threads: [],
 			path: PATH,
@@ -782,6 +900,20 @@ describe("shownThreads (no placements: the head's own)", () => {
 		const none = thread(null, { commit: "" });
 		expect(shownThreads([a, other, b, none], HEAD, null)).toEqual([a, b]);
 		expect(shownThreads([none], "", null)).toEqual([]);
+	});
+});
+
+describe("madeOnHead (CAR-271)", () => {
+	it("a thread made on the viewed head needs no placing: it is shown at its own line", () => {
+		const own = thread({ side: "RIGHT", line: 32 });
+		expect(madeOnHead(own, HEAD)).toBe(true);
+		expect(shownThread(own, HEAD, null)).toBe(own);
+		expect(madeOnHead(thread({ commit: "e".repeat(40) }), HEAD)).toBe(false);
+		expect(madeOnHead(thread(null, { commit: "" }), "")).toBe(false);
+		expect(madeOnHead(own, null)).toBe(false);
+		expect(madeOnHead(own, undefined)).toBe(false);
+		// A copy shown on the head but made elsewhere (earlierPending's).
+		expect(madeOnHead({ ...own, madeOn: "e".repeat(40) }, HEAD)).toBe(false);
 	});
 });
 

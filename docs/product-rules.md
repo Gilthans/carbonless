@@ -878,7 +878,14 @@ question would be on someone else's behalf, or about a past moment.
   is no base line (only the earlier patch set had it) is no drop target and Place
   here is off on it, never stored under the interdiff's own number. A
   thread on a removed base line shows on that removed row in the since
-  view when it shows one.
+  view when it shows one. When it shows none (the compared patch set had
+  already deleted the line), the thread stays in the file's header and
+  its card says why, never as a tracer fate: "deleted before PSn" (its
+  tooltip adds when the file is unchanged since PSn), or "not in this
+  comparison" when that can't be told (a removed row's base line isn't
+  known, or the two diffs pair twin lines differently); a link opens the
+  full diff on its line with its card open (CAR-255). Agent threads the
+  same.
 - **The agent opens conversations only while answering, and they answer
   nothing (spec 2026-11-15, CAR-80).** While it holds a question `next`
   handed it, the agent may call MCP `open` to put a conversation on the

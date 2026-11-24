@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
-import { fileSection, openFiles } from "./files-ui";
+import { fileSection, openFiles, tapFilesButton } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
 
 /*
@@ -236,7 +236,7 @@ test("design screenshots", async ({ page, pr, startCrb, isMobile }) => {
 	await page.keyboard.press("Escape");
 
 	if (isMobile) {
-		await page.getByRole("button", { name: "Files", exact: true }).click();
+		await tapFilesButton(page);
 		await expect(page.getByRole("dialog", { name: "Files" })).toBeVisible();
 		await shot(page, "tree-sheet", isMobile);
 	}

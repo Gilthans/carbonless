@@ -9,6 +9,22 @@ import type { RereviewAnswer, Shape } from "../../shared/types";
 /** What the engine found to read, and the reviewed clusters it found gone. */
 export type ToRead = RereviewAnswer["toRead"] & { gone?: number };
 
+/**
+ * The engine's count as the reviewer reads it: with "Ignore whitespace"
+ * on, without the whitespace-only clusters (the engine's
+ * withoutWhitespaceOnly, absent when it is the same).
+ */
+export function toReadCounts(
+	toRead: RereviewAnswer["toRead"],
+	ignoreWs: boolean,
+): { files: number; clusters: number } {
+	const { files, clusters } =
+		ignoreWs && toRead.withoutWhitespaceOnly
+			? toRead.withoutWhitespaceOnly
+			: toRead;
+	return { files, clusters };
+}
+
 const plural = (n: number, word: string) =>
 	`${n} ${n === 1 ? word : `${word}s`}`;
 

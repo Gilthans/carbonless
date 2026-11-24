@@ -49,7 +49,7 @@ import type {
 	VerdictRequest,
 } from "../shared/types.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
-import { AgentThreadStore } from "./agent/store.js";
+import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import { contextLines } from "./diff/hunks.js";
 import {
@@ -76,7 +76,7 @@ import {
 	type PrRef,
 	resolvePrRef,
 } from "./gh.js";
-import { runGit, runGitBuffer } from "./git.js";
+import { GitError, runGit, runGitBuffer } from "./git.js";
 import {
 	type NewThreadTarget,
 	type StartedRecord,
@@ -204,9 +204,22 @@ export const placingHooks: {
 	afterRead:
 		| ((job: { revision: string; readId: string }) => Promise<void>)
 		| null;
+	/**
+	 * Test hook (POST /api/_test/placing): every placement job fails with a
+	 * GitError of this message once it has read its threads. Null: none.
+	 */
+	fail: string | null;
 } = {
 	afterRead: null,
+	fail: null,
 };
+
+/**
+ * How long a failed placement job's error is answered again before an ask
+ * starts a new job (CAR-271): a page asking again and again reruns the
+ * job (git work) at most this often, per target and read.
+ */
+export const PLACING_FAILURE_KEPT_MS = 30_000;
 
 /** crb --head and the hidden dev options (--as-of, --viewer). */
 export interface SessionOptions {
@@ -246,6 +259,8 @@ interface Endpoints {
 interface RereviewJob {
 	done: { target: Snapshot; traced: Traced } | null;
 	error: Error | null;
+	/** When it failed (Date.now()): its error is answered until PLACING_FAILURE_KEPT_MS later. */
+	failedAt?: number;
 	settled: Promise<void>;
 }
 
@@ -260,6 +275,8 @@ interface PlacingJob {
 	 */
 	done: { target: Snapshot; inputs: ThreadInput[]; complete: boolean } | null;
 	error: Error | null;
+	/** When it failed (Date.now()): its error is answered until PLACING_FAILURE_KEPT_MS later. */
+	failedAt?: number;
 	settled: Promise<void>;
 	/**
 	 * Started before a thread on another commit joined the read (CAR-233):
@@ -537,7 +554,7 @@ export class Session {
 		read: OverviewRead;
 		threads: ReviewThread[];
 	}> {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		// A recent or running read is reused (#pickRead): a burst reads once.
 		const read = this.#pickRead(maxAgeMs);
 		return { read, threads: (await read.threads("summary")).threads };
@@ -848,7 +865,7 @@ export class Session {
 		from: number,
 		to: { patchset: number } | { head: string },
 	): Promise<RereviewAnswer | { pending: true }> {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		const since = this.#patchsets.find((p) => p.number === from);
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		let key: string;
@@ -925,7 +942,7 @@ export class Session {
 		to: { patchset: number } | { head: string },
 		readId: string,
 	): Promise<PlacementsAnswer | { pending: true }> {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		if (!this.#reads.some((r) => r.id === readId)) {
 			throw new UnknownReadError(`No read ${readId}`);
 		}
@@ -941,11 +958,16 @@ export class Session {
 			key = `head:${head}`;
 			snapshot = () => this.#headSnapshot(head);
 		}
-		const job = this.#placingJob(key, snapshot, readId);
+		let job = this.#placingJob(key, snapshot, readId);
 		if (job.error) {
+			// Answered again for a while, never rerun on every ask (CAR-271);
+			// then dropped: the next ask starts it anew.
+			if (Date.now() - (job.failedAt ?? 0) < PLACING_FAILURE_KEPT_MS) {
+				throw job.error;
+			}
 			for (const [k, j] of this.#placing)
 				if (j === job) this.#placing.delete(k);
-			throw job.error;
+			job = this.#placingJob(key, snapshot, readId);
 		}
 		if (!job.done) return { pending: true };
 		const { complete } = job.done;
@@ -973,7 +995,7 @@ export class Session {
 		to: { patchset: number } | { head: string },
 		agent: AgentHost | null = this.#agent,
 	): Promise<AgentPlacementsAnswer> {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		const progress = await this.#progress();
 		let target: Snapshot;
 		let record: PatchsetRecord | undefined;
@@ -1026,6 +1048,7 @@ export class Session {
 				const unresolvedThreads = view.threads.filter((t) => !t.resolved);
 				const resolvedThreads = view.threads.filter((t) => t.resolved);
 				await placingHooks.afterRead?.({ revision: target.revision, readId });
+				if (placingHooks.fail !== null) throw new GitError(placingHooks.fail);
 				// Filed under its snapshot id too: a head and its patch set share it.
 				if (!job.stale) this.#placing.set(`${target.revision}|${readId}`, job);
 				// When GitHub gave the threads' current lines (each with the
@@ -1045,6 +1068,7 @@ export class Session {
 					.catch(() => []);
 				job.done = { target, inputs: [...open, ...resolved], complete: true };
 			} catch (error) {
+				job.failedAt = Date.now();
 				job.error = error as Error;
 			}
 		})();
@@ -1195,14 +1219,20 @@ export class Session {
 		return this.#exclusive(async () => {
 			const progress = await this.#progress();
 			const { target, patchset } = await this.#moveTarget(req.to, progress);
-			const live =
-				(await this.#foldedMoves(progress)).get(threadKey(req.thread))
-					?.length ?? 0;
-			if (live >= MAX_MOVES_PER_THREAD) {
-				throw new MoveCapError(
-					`This thread has been moved ${MAX_MOVES_PER_THREAD} times: undo a move first`,
-				);
-			}
+			// Checked again on the write's every try: another server may move
+			// the thread in between (CAR-245).
+			const underCap: MovesCheck = ({ moves, undos }) => {
+				const live =
+					foldMoves([...moves, ...legacyMoves(progress)], undos).get(
+						threadKey(req.thread),
+					)?.length ?? 0;
+				if (live >= MAX_MOVES_PER_THREAD) {
+					throw new MoveCapError(
+						`This thread has been moved ${MAX_MOVES_PER_THREAD} times: undo a move first`,
+					);
+				}
+			};
+			underCap(await this.#threadStore.moves());
 			const { anchor } = req;
 			const counts = new Map<string, number | null>();
 			for (const side of ["LEFT", "RIGHT"] as const) {
@@ -1222,15 +1252,18 @@ export class Session {
 			}
 			const { path, startSide, startLine, side, line } = anchor;
 			const clean = { path, startSide, startLine, side, line };
-			const move = await this.#threadStore.move({
-				thread: req.thread,
-				on: {
-					base: target.base,
-					head: target.head,
-					...(patchset !== null ? { patchset } : {}),
+			const move = await this.#threadStore.move(
+				{
+					thread: req.thread,
+					on: {
+						base: target.base,
+						head: target.head,
+						...(patchset !== null ? { patchset } : {}),
+					},
+					anchor: clean,
 				},
-				anchor: clean,
-			});
+				underCap,
+			);
 			return {
 				move: move.id,
 				thread: req.thread,
@@ -1254,9 +1287,18 @@ export class Session {
 		const move = await this.#exclusive(async () => {
 			const progress = await this.#progress();
 			await this.#moveTarget(to, progress);
+			const isLive: MovesCheck = ({ moves, undos }) => {
+				const live = liveMove(
+					foldMoves([...moves, ...legacyMoves(progress)], undos),
+					id,
+				);
+				if (!live) throw new DeadMoveError(`No live move ${id}`);
+			};
 			const live = liveMove(await this.#foldedMoves(progress), id);
 			if (!live) throw new DeadMoveError(`No live move ${id}`);
-			await this.#threadStore.undoMove(live.thread, id);
+			// Checked again on the write's every try: another server may undo
+			// it in between (CAR-245).
+			await this.#threadStore.undoMove(live.thread, id, isLive);
 			return live;
 		});
 		// The thread's place now, after the lock: a trace of the review's
@@ -1443,10 +1485,21 @@ export class Session {
 					index,
 					sources,
 				);
-				if (hunks.hunks.length > 0) return hunks;
+				if (hunks.hunks.length > 0 && hunks.newLineCount > 0) return hunks;
 				// A file the interdiff doesn't change (or only renames): its
 				// lines are one gap, so they and the threads on them can be opened.
 				const context = interdiffFileContext(traced, answer, index, 1, 1);
+				if (hunks.hunks.length > 0) {
+					// Lines no piece shows of a file the interdiff doesn't touch
+					// (CAR-216): their hunks, the rest gaps around them.
+					return context === "untouched"
+						? {
+								...hunks,
+								newLineCount: (await loadNewText(this.repo, snapshot, index))
+									.newLines.length,
+							}
+						: hunks;
+				}
 				if (context === "none") return hunks;
 				const newLineCount =
 					context === "untouched"
@@ -1745,7 +1798,7 @@ export class Session {
 		/** The page asks (its route): the read is kept while newer ones come. */
 		forPage = false,
 	): Promise<Omit<PrOverview, "servedAt">> {
-		if (this.#closed) {
+		if (this.closed) {
 			return Promise.reject(new SessionClosedError("The session is closed"));
 		}
 		// Asked at once, never waited for: it is in by the time GitHub's
@@ -1883,7 +1936,7 @@ export class Session {
 	 * failed read isn't kept.
 	 */
 	verdict(maxAgeMs = Number.POSITIVE_INFINITY): Promise<VerdictFacts> {
-		if (this.#closed) {
+		if (this.closed) {
 			return Promise.reject(new SessionClosedError("The session is closed"));
 		}
 		return this.#verdictFacts(maxAgeMs).then((facts) => this.#withSince(facts));
@@ -2095,7 +2148,7 @@ export class Session {
 
 	/** commentLeft as known now, asking GitHub if no one has: true until it says. */
 	#commentLeftNow(): boolean {
-		if (this.writes() !== "on" || this.#closed) return true;
+		if (this.writes() !== "on" || this.closed) return true;
 		return this.#askCommentLeft(this.#snapshot).known ?? true;
 	}
 
@@ -2117,7 +2170,7 @@ export class Session {
 	}
 
 	#writeTarget(): ThreadWriteTarget {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		const kept = () => [...this.#reads].reverse();
 		return {
 			ref: this.#ref(),
@@ -2236,7 +2289,7 @@ export class Session {
 	 * moving the snapshot) to know the diff base.
 	 */
 	#read(ready?: Promise<unknown>): OverviewRead {
-		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (this.closed) throw new SessionClosedError("The session is closed");
 		// Opt-in ($CRB_TRACE_DIR): the read until its overview is in.
 		const traced = tracer();
 		if (!traced.enabled) return this.#newRead(ready);
@@ -2286,7 +2339,7 @@ export class Session {
 
 	/** Reads GitHub again (after `ready`); older reads aren't served any more. */
 	#rereadOverview(ready?: Promise<unknown>): void {
-		if (this.#closed) return;
+		if (this.closed) return;
 		for (const read of this.#reads) this.#superseded.add(read);
 		this.#read(ready);
 	}

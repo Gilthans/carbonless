@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { quietFor } from "../../../test/sleep";
 import type { HomeRow, PeopleResult } from "../../shared/home";
 import { HomePage } from "./HomePage";
 import { repoKey } from "./homeApi";
@@ -424,7 +425,7 @@ describe("RowActions", () => {
 		await screen.findByRole("img", { name: "Note: kept" });
 		await act(async () => {
 			release(undefined);
-			await new Promise((r) => setTimeout(r, 20));
+			await quietFor(20, "the refetch wiping the saved note");
 		});
 		expect(screen.getByRole("img", { name: "Note: kept" })).toBeInTheDocument();
 	});

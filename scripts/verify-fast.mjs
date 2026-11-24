@@ -258,6 +258,8 @@ const E2E_MAP = [
 	],
 	[/^src\/web\/pageActive\.ts$/, ["keepalive"]],
 	[/^src\/server\/access\.ts$|^src\/web\/accessKey\.ts$/, ["cli", "keepalive"]],
+	// The server log's failure line (CAR-271): placements failing.
+	[/^src\/server\/errorLog\.ts$/, ["thread-placement"]],
 	[/^test\/methodology-fixture\.ts$/, ["methodology"]],
 	// Only src/cli.test.ts preloads it.
 	[/^test\/module-log\.mjs$/, []],

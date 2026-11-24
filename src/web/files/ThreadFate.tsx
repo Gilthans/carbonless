@@ -20,6 +20,7 @@ import {
 	type ReactNode,
 	useCallback,
 	useContext,
+	useEffect,
 	useId,
 	useMemo,
 	useRef,
@@ -55,6 +56,7 @@ import {
 } from "../threads/Conversation";
 import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
 import { Avatar, usePerson } from "../threads/people";
+import { FullDiffLink } from "./FullDiffLink";
 import { type ThreadFocus, useFocusCard } from "./threadFocus";
 import {
 	firstWords,
@@ -64,7 +66,7 @@ import {
 	movesOf,
 	useMovable,
 } from "./threadMove";
-import type { Placements } from "./threadPlacement";
+import { madeOnHead, type NotHere, type Placements } from "./threadPlacement";
 
 /**
  * What the page knows of the threads' places in the viewed snapshot
@@ -223,7 +225,14 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 function FateChip({ thread }: { thread: ReviewThread }) {
 	const info = usePlacementInfo();
 	const placement = info.placements?.get(thread.id);
-	if (!placement && info.error && !thread.resolved) {
+	// Made on the viewed head, it is shown where it was made: nothing to
+	// place, so never unknown (CAR-271).
+	if (
+		!placement &&
+		info.error &&
+		!thread.resolved &&
+		!madeOnHead(thread, info.viewedHead)
+	) {
 		return (
 			<Chip
 				tone="red"
@@ -985,6 +994,18 @@ export function useSessionPlacements(
 	});
 	const answer =
 		asked && query.data && !("pending" in query.data) ? query.data : null;
+	// A failure stays shown while the query asks again by itself (a refetch
+	// clears its error), until an answer lands (CAR-271).
+	const key = asked ? JSON.stringify([readId, to]) : "";
+	const [held, setHeld] = useState<{ key: string; error: Error } | null>(null);
+	useEffect(() => {
+		if (query.error) setHeld({ key, error: query.error });
+		else if (answer) setHeld(null);
+	}, [query.error, answer, key]);
+	const error =
+		asked && answer === null
+			? (query.error ?? (held?.key === key ? held.error : null))
+			: null;
 	const placements = usePlacementMap(answer);
 	const moves = useMemo(() => movesOf(answer), [answer]);
 	const patchsets = session?.patchsets;
@@ -993,8 +1014,8 @@ export function useSessionPlacements(
 	return useMemo(
 		() => ({
 			placements,
-			pending: asked && answer === null && !query.error,
-			error: asked && answer === null ? query.error : null,
+			pending: asked && answer === null && error === null,
+			error,
 			retry: () => void query.refetch(),
 			readId: readId ?? null,
 			to,
@@ -1010,6 +1031,7 @@ export function useSessionPlacements(
 			moves,
 			asked,
 			answer,
+			error,
 			query,
 			readId,
 			toKey,
@@ -1030,5 +1052,73 @@ export function usePlacementMap(
 		() =>
 			answer ? new Map(answer.threads.map((t) => [t.id, t.placement])) : null,
 		[answer],
+	);
+}
+
+/**
+ * NotHere's word and tooltip, by why (since: the compared patch set). A
+ * file unchanged since is the same fact (the line was deleted before),
+ * said in the tooltip only. One wording wherever the since view says why
+ * a line isn't in it (CAR-255; CAR-253's landing hint).
+ */
+export function notHereText(
+	why: NotHere["why"],
+	since: number | undefined,
+): { label: string; tip: string } {
+	const ps = since === undefined ? "the compared patch set" : `PS${since}`;
+	switch (why) {
+		case "deleted-before":
+			return {
+				label: `deleted before ${ps}`,
+				tip: `Its line was deleted before ${ps}: not in this comparison`,
+			};
+		case "unchanged":
+			return {
+				label: `deleted before ${ps}`,
+				tip: `Its line was deleted before ${ps}, and the file is unchanged since ${ps}`,
+			};
+		default:
+			return {
+				label: "not in this comparison",
+				tip: "Its line isn't in this comparison",
+			};
+	}
+}
+
+/**
+ * The since view's word on a thread whose line it has no row for
+ * (CAR-255): why (NotHere, never a tracer fate: the line is where the
+ * thread says), and a link to the full diff on that line, its card opened
+ * there (FullDiffLink). Muted once resolved.
+ */
+export function NotHereNote(props: {
+	notHere: NotHere;
+	path: string;
+	since?: number;
+	resolved?: boolean;
+	/** The card to open there: a review thread's id, or an agent conversation's. */
+	open: { thread: string } | { conversation: string };
+}) {
+	const { label, tip } = notHereText(props.notHere.why, props.since);
+	return (
+		<span data-testid="not-here" className="inline-flex items-center gap-1">
+			<Chip
+				tone={props.resolved ? "gray" : "yellow"}
+				icon={CircleSlashIcon}
+				tip={tip}
+				testId="not-here-why"
+			>
+				{label}
+			</Chip>
+			<FullDiffLink
+				testId="not-here-full-diff"
+				target={{
+					path: props.path,
+					line: props.notHere.line,
+					side: props.notHere.side,
+					open: props.open,
+				}}
+			/>
+		</span>
 	);
 }

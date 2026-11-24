@@ -2653,6 +2653,7 @@ esac
 		).filter((f) => f.endsWith(".yml"));
 		expect(files.sort()).toEqual([
 			"ci.yml",
+			"codeql.yml",
 			"flake-report.yml",
 			"release-finish.yml",
 			"release-gate.yml",
@@ -2705,6 +2706,30 @@ esac
 			"environment: release-note",
 		]);
 		onPr.push("release-note.yml");
+		// CodeQL (CAR-259) runs on every PR (a fork's too) on the PR's code.
+		// Its one write is `security-events` (uploading its results), on its
+		// job alone; GitHub makes a fork PR's token read-only whatever the
+		// workflow asks, so a fork's run can't upload and reaches no write. No
+		// OIDC, no environment, no secret (above), and the checkout keeps no
+		// token for the PR's code.
+		const codeql = code(workflow("codeql.yml"));
+		expect(triggers(codeql).match(/^ {2}\w+:$/gm)).toEqual([
+			"  pull_request:",
+			"  push:",
+			"  schedule:",
+		]);
+		expect(codeql).toMatch(/^permissions:\n {2}contents: read\n(?! )/m);
+		expect(codeql.match(/^ +[\w-]+: write$/gm)).toEqual([
+			"      security-events: write",
+		]);
+		expect(codeql).toMatch(
+			/^ {4}permissions:\n {6}actions: read\n {6}contents: read\n {6}security-events: write\n(?! {6})/m,
+		);
+		expect(codeql).not.toMatch(/id-token|environment:|token:/);
+		expect(codeql).toContain(
+			"      - uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n",
+		);
+		onPr.push("codeql.yml");
 		for (const file of files) {
 			if (onPr.includes(file)) continue;
 			expect(triggers(workflow(file)), file).not.toMatch(/pull_request/);

@@ -510,9 +510,10 @@ export async function loadFileHunks(
 		3,
 		text.noNewlineAtEnd,
 	);
-	const headings = headingRun
-		? await within(headingRun, options.headingWaitMs ?? HEADING_WAIT_MS)
-		: null;
+	const headings =
+		headingRun !== null
+			? await within(headingRun, options.headingWaitMs ?? HEADING_WAIT_MS)
+			: null;
 	return {
 		hunks: headings
 			? withHeadings(hunks, headings[index] ?? [], text.encoding)

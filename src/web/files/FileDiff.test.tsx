@@ -12,6 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../test/in-router";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
+import { fakeDelay, quietFor } from "../../../test/sleep";
 import type { AgentThread } from "../../shared/agent";
 import type { SincePiece } from "../../shared/pieces";
 import type {
@@ -435,7 +436,7 @@ describe("FileDiff", () => {
 		expect(alert).toHaveTextContent("git exploded");
 		expect(alert).toHaveTextContent("Reviewed · src/a.ts");
 		// The reread server view doesn't roll it back.
-		await new Promise((r) => setTimeout(r, 20));
+		await quietFor(20, "the reread view rolling the box back");
 		expect(box).toBeChecked();
 		expect(sync().stale).toBeNull();
 		fail = false;
@@ -751,7 +752,7 @@ describe("FileDiff", () => {
 		const { posts, user } = setup(f, async () => {
 			inFlight++;
 			maxInFlight = Math.max(maxInFlight, inFlight);
-			await new Promise((r) => setTimeout(r, 5));
+			await fakeDelay(5);
 			inFlight--;
 			return { status: 200, body: view(f) };
 		});
@@ -1156,7 +1157,7 @@ describe("FileDiff", () => {
 		await waitFor(() => expect(undo).toBeEnabled());
 		// Right after it swaps in, a click (a double click's second) does nothing.
 		await user.click(undo);
-		await new Promise((r) => setTimeout(r, 50));
+		await quietFor(50, "a post from the click right after the swap");
 		expect(posts()).toHaveLength(1);
 		tick();
 		await confirmClick(user, undo);
@@ -1172,6 +1173,90 @@ describe("FileDiff", () => {
 		).toHaveAttribute("aria-pressed", "false");
 		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
 	});
+
+	it("takes a cross-off at once when it comes back right after the undo swapped in (CAR-257)", async () => {
+		const before = file([cluster("k1", { state: "reviewed" }), cluster("k2")]);
+		const crossedOff = file([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { state: "crossed-off" }),
+		]);
+		const { posts, rerender, user } = setup(before, () => ({
+			status: 200,
+			body: view(before),
+		}));
+		const cross = screen.getByRole("button", { name: "Cross off file" });
+		await user.click(cross);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+		await rerender(crossedOff);
+		expect(cross).toHaveAccessibleName("Undo cross-off");
+		// Undone elsewhere (the cluster's own box) within the undo's guard: the
+		// cross-off is back, and the guard went with the undo it was for.
+		await rerender(before);
+		expect(cross).toHaveAccessibleName("Cross off file");
+		expect(cross).not.toHaveAttribute("data-clicks-from");
+		await user.click(cross);
+		await waitFor(() =>
+			expect(posts()[1]?.body.changes).toEqual([
+				{ key: "k2", state: "crossed-off" },
+			]),
+		);
+	});
+
+	it.each([
+		{
+			undo: "Undo cross-off",
+			back: "Cross off file",
+			finished: [
+				cluster("k1", { state: "reviewed" }),
+				cluster("k2", { state: "crossed-off" }),
+			],
+			reset: [cluster("k1", { state: "reviewed" }), cluster("k2")],
+			resetChanges: [{ key: "k2", state: "unreviewed" }],
+			markChanges: [{ key: "k2", state: "crossed-off" }],
+		},
+		{
+			undo: "Unmark reviewed",
+			back: "Mark remaining reviewed",
+			finished: [cluster("k1", { state: "reviewed" })],
+			reset: [cluster("k1")],
+			resetChanges: [{ key: "k1", state: "unreviewed" }],
+			markChanges: [{ key: "k1", state: "reviewed" }],
+		},
+	])(
+		"a double click on $undo's confirm leaves the file reset; $back takes a click after the wait (CAR-272)",
+		async ({ undo, back, finished, reset, resetChanges, markChanges }) => {
+			// The server answers the reset, then the mark.
+			let answered = 0;
+			const { posts, user } = setup(file(finished), () => ({
+				status: 200,
+				body: view(file(answered++ === 0 ? reset : finished)),
+			}));
+			const button = screen.getByRole("button", { name: undo });
+			await confirmClick(user, button);
+			await waitFor(() =>
+				expect(posts()[0]?.body.changes).toEqual(resetChanges),
+			);
+			// The action the reset's own click brought back, in the same place.
+			expect(button).toHaveAccessibleName(back);
+			expect(button).toHaveAttribute(
+				"data-clicks-from",
+				String(clock + UNDO_ARM_MS),
+			);
+			// The double click's second click: nothing happens.
+			await user.click(button);
+			expect(button).toHaveAccessibleName(back);
+			expect(button).toHaveAttribute("aria-pressed", "false");
+			expect(posts()).toHaveLength(1);
+			// Once the wait is over, a click marks again.
+			tick();
+			await user.click(button);
+			await waitFor(() =>
+				expect(posts()[1]?.body.changes).toEqual(markChanges),
+			);
+			await waitFor(() => expect(button).toHaveAccessibleName(undo));
+			expect(posts()).toHaveLength(2);
+		},
+	);
 
 	it("disables cross off once all is reviewed; mark flips to unmark", () => {
 		setup(
@@ -2026,7 +2111,7 @@ describe("FileDiff", () => {
 			expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(after),
 		);
 		answerRead?.();
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await quietFor(20, "the late read overwriting the mark");
 		expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(after);
 	});
 
@@ -2369,6 +2454,110 @@ describe("FileDiff: agent threads asked on an earlier head", () => {
 				.getAllByTestId("agent-bubble")
 				.some((b) => b.getAttribute("aria-label")?.includes("on this file")),
 		).toBe(true);
+	});
+});
+
+describe("FileDiff: the since view's word on an agent thread whose line it has no row for (CAR-255)", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	it("its card says deleted before PS1 and links to the full diff, its conversation opened there", async () => {
+		const NOW = "f".repeat(40);
+		// The full diff changes base 5 and deletes base 30; the interdiff
+		// removes only base 5 again: base 30 was gone before PS1.
+		const since: FileHunks = {
+			newLineCount: 50,
+			hunks: [
+				{
+					oldStart: 4,
+					oldCount: 2,
+					newStart: 4,
+					newCount: 2,
+					lines: [
+						ctx(4, 4),
+						{ kind: "del", oldNo: 5, text: "five", baseNo: 5 },
+						{ kind: "add", newNo: 5, text: "new five" },
+					],
+				},
+			],
+		};
+		const { queryClient, user } = setup(
+			file([
+				cluster("k1"),
+				cluster("k2", {
+					oldStart: 30,
+					oldCount: 1,
+					newStart: 29,
+					newCount: 0,
+					removed: ["thirty"],
+					added: [],
+					lines: 1,
+				}),
+			]),
+			undefined,
+			since,
+			"clusters",
+			{ since: 1, router: true },
+		);
+		const left: AgentThread = {
+			id: "01jagentthread000000000000",
+			anchor: {
+				subject: "line",
+				path: "src/a.ts",
+				commit: NOW,
+				side: "LEFT",
+				line: 30,
+				startSide: "LEFT",
+				startLine: 30,
+			},
+			openedBy: "human",
+			at: "2026-11-07T10:00:00Z",
+			messages: [
+				{ id: "m1", by: "human", at: "2026-11-07T10:00:00Z", text: "Why?" },
+			],
+			resolved: false,
+			waiting: false,
+			unread: false,
+		};
+		await act(async () => {
+			queryClient.setQueryData(sessionQuery.queryKey, {
+				snapshotHead: NOW,
+				patchsets: [{ number: 1, head: "e".repeat(40) }],
+			} as unknown as SessionInfo);
+			queryClient.setQueryData(agentThreadsQuery.queryKey, {
+				threads: [left],
+			});
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		// The closed header counts it; open, the file's lead holds it.
+		await user.click(
+			await screen.findByRole("button", {
+				name: "1 agent thread in this file",
+			}),
+		);
+		await user.click(
+			await screen.findByRole("button", {
+				name: "1 agent thread on this file",
+			}),
+		);
+		const card = await screen.findByTestId("agent-thread");
+		expect((await within(card).findByTestId("not-here-why")).textContent).toBe(
+			"deleted before PS1",
+		);
+		const link = within(card).getByRole("link", {
+			name: "Open in the full diff",
+		});
+		const url = new URL(link.getAttribute("href") ?? "", "http://x");
+		expect(url.searchParams.get("from")).toBe("branch");
+		expect(url.searchParams.get("line")).toBe("30");
+		expect(url.searchParams.get("side")).toBe("LEFT");
+		expect(url.searchParams.get("conversation")).toBe(left.id);
+		// Not the plain flag beside it.
+		expect(
+			within(card).queryByRole("img", { name: "Line not in this diff" }),
+		).toBeNull();
 	});
 });
 
@@ -3217,13 +3406,13 @@ describe("FileDiff: review in the image view", () => {
 		await pick(user, "Image");
 		expect(shown()).toBe("image");
 		// The same landing, still the page's, isn't replayed on the image.
-		await new Promise((r) => setTimeout(r, 20));
+		await quietFor(20, "the landing replayed on the image");
 		expect(screen.queryByTestId("landing-hint")).toBeNull();
 		expect(scrolls).not.toHaveBeenCalled();
 		// Nor after closing and reopening the file there.
 		await user.click(screen.getByRole("button", { name: "Collapse file" }));
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		await new Promise((r) => setTimeout(r, 20));
+		await quietFor(20, "the landing replayed on reopening");
 		expect(screen.queryByTestId("landing-hint")).toBeNull();
 		expect(scrolls).not.toHaveBeenCalled();
 	});

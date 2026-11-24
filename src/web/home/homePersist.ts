@@ -77,7 +77,8 @@ export function reloadedHome(): boolean {
  * each change of them (throttled) and, at once, as Home opens a PR or the
  * page goes or is hidden (a row opened right after an answer came). A page
  * back from the browser's back-forward cache reads Home again. Resolves
- * once restored, to a function that stops it all (tests); never rejects
+ * once restored, to a function that stops it all, a save already timed
+ * included (tests); never rejects
  * (unreadable storage restores nothing).
  */
 export async function persistHome(
@@ -93,7 +94,10 @@ export async function persistHome(
 	// skipped (a review page's own reads change nothing of Home's).
 	let written: string | undefined;
 	let writing: string | undefined;
+	// Once stopped, a throttled save already timed writes nothing.
+	let stopped = false;
 	const write = (value: string) => {
+		if (stopped) return;
 		storage.setItem(HOME_STORAGE_KEY, value);
 		written = writing;
 	};
@@ -170,6 +174,7 @@ export async function persistHome(
 	// Restored answers are read again when Home shows them, however young.
 	void client.invalidateQueries({ queryKey: ["home"], refetchType: "none" });
 	return () => {
+		stopped = true;
 		unsubscribe();
 		window.removeEventListener("pagehide", flush);
 		window.removeEventListener("pageshow", shown);

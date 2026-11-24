@@ -15,9 +15,12 @@ import type { Fate } from "../../shared/rereview/placement";
 import type { PrOverview, ReviewThread } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
 import { overviewQuery } from "../api";
+import { fullDiffSearch } from "./FullDiffLink";
 import { NotInComparison } from "./NotInComparison";
 import {
 	ChangedSince,
+	NotHereNote,
+	notHereText,
 	PlacementChip,
 	type PlacementInfo,
 	PlacementProvider,
@@ -266,6 +269,39 @@ describe("when the placements fail", () => {
 			"place unknown",
 		);
 		expect(screen.queryByRole("status")).toBeNull();
+	});
+
+	it("a thread made on the viewed head, shown at its own line, never reads 'place unknown' (CAR-271)", () => {
+		const onHead = thread();
+		const { rerender } = render(
+			wrap(
+				info({ error: new Error("git failed"), viewedHead: onHead.commit }),
+				<PlacementChip thread={onHead} />,
+			),
+		);
+		expect(screen.queryByTestId("placement-error")).toBeNull();
+		expect(screen.queryByRole("status")).toBeNull();
+		// One made on another commit still says so: its place is unknown.
+		rerender(
+			wrap(
+				info({ error: new Error("git failed"), viewedHead: "b".repeat(40) }),
+				<PlacementChip thread={onHead} />,
+			),
+		);
+		expect(screen.getByTestId("placement-error").textContent).toContain(
+			"place unknown",
+		);
+		// Shown on the head but made on an earlier patch set's (the since
+		// view's earlierPending copy): its place is unknown.
+		rerender(
+			wrap(
+				info({ error: new Error("git failed"), viewedHead: onHead.commit }),
+				<PlacementChip thread={{ ...onHead, madeOn: "c".repeat(40) }} />,
+			),
+		);
+		expect(screen.getByTestId("placement-error").textContent).toContain(
+			"place unknown",
+		);
 	});
 });
 
@@ -975,5 +1011,81 @@ describe("the per-file unplaced list", () => {
 			/unplaced/,
 		);
 		expect(screen.getByTestId("unplaced-collapsed")).toBeTruthy();
+	});
+});
+
+describe("NotHereNote (the since view, CAR-255)", () => {
+	it("says why the line has no row, apart from the tracer's fates, by the compared patch set", () => {
+		expect(notHereText("deleted-before", 2).label).toBe("deleted before PS2");
+		// The file unchanged since is a stronger proof of the same: the line
+		// was deleted before; only the tooltip adds the file's fact.
+		expect(notHereText("unchanged", 2).label).toBe("deleted before PS2");
+		expect(notHereText("unchanged", 2).tip).toContain("unchanged since PS2");
+		expect(notHereText("unknown", 2).label).toBe("not in this comparison");
+		// Never a tracer fate's word.
+		for (const why of ["deleted-before", "unchanged", "unknown"] as const) {
+			const { label } = notHereText(why, 2);
+			expect(label).not.toBe("deleted");
+			expect(label).not.toBe("rewritten");
+		}
+	});
+
+	it("links to the full diff on its base line, the path kept as text", async () => {
+		const path = `src/${HOSTILE}.ts`;
+		render(
+			wrap(
+				info(),
+				inRouter(() => (
+					<NotHereNote
+						notHere={{ why: "deleted-before", side: "LEFT", line: 30 }}
+						path={path}
+						since={1}
+						open={{ thread: "PRRT_kwDOtest" }}
+					/>
+				)),
+			),
+		);
+		const why = await screen.findByTestId("not-here-why");
+		expect(why.textContent).toBe("deleted before PS1");
+		const link = screen.getByRole("link", { name: "Open in the full diff" });
+		const url = new URL(link.getAttribute("href") ?? "", "http://x");
+		expect(url.pathname).toBe("/r/01testreview0000000000000a/files");
+		expect(url.searchParams.get("from")).toBe("branch");
+		expect(url.searchParams.get("side")).toBe("LEFT");
+		expect(url.searchParams.get("line")).toBe("30");
+		expect(url.searchParams.get("path")).toContain(path);
+		// Its card opens there.
+		expect(url.searchParams.get("thread")).toBe("PRRT_kwDOtest");
+		expect(document.querySelector("img[src='x']")).toBeNull();
+	});
+});
+
+describe("fullDiffSearch", () => {
+	it("keeps the viewed dot only, the base on the branch, and adds the landing", () => {
+		expect(
+			fullDiffSearch(
+				{ ps: 3, from: 2, path: "old.ts", conversation: "x" } as never,
+				{ path: "a.ts", line: 30, side: "LEFT", open: { thread: "T" } },
+			),
+		).toEqual({
+			ps: 3,
+			from: "branch",
+			path: "a.ts",
+			line: 30,
+			side: "LEFT",
+			thread: "T",
+		});
+		expect(
+			fullDiffSearch(
+				{ head: "a".repeat(40) },
+				{ path: "a.ts", line: 4, side: "RIGHT" },
+			),
+		).toEqual({
+			head: "a".repeat(40),
+			from: "branch",
+			path: "a.ts",
+			line: 4,
+			side: "RIGHT",
+		});
 	});
 });

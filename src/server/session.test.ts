@@ -24,6 +24,8 @@ import {
 import { ghCallKinds, ghCallsOf } from "../../test/gh-log";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import { quietFor } from "../../test/sleep";
+import { MAX_MOVES_PER_THREAD } from "../shared/rereview/moves";
 import type { Snapshot } from "../shared/types";
 import { agentsDir } from "./agent/checkout";
 import { setServerMcp } from "./agent/host";
@@ -35,6 +37,8 @@ import { registerMcp } from "./mcp/routes";
 import { parseHead } from "./pinnedHead";
 import type { SessionRegistry } from "./registry";
 import { answerRereview, traceRereview } from "./rereview/engine";
+import { DeadMoveError, MoveCapError } from "./rereview/threads";
+import { newEvent } from "./review/events";
 import { RefStore } from "./review/refStore";
 import { ReviewService, StaleSnapshotError } from "./review/reviews";
 import { refusal, Session, UnknownReadError } from "./session";
@@ -825,7 +829,7 @@ describe("Session", () => {
 			release(process.env.CRB_FAKE_GH ?? "", "threads");
 			await expect(s.threads(readId, "full")).rejects.toThrow();
 			const calls = pr.ghLog();
-			await new Promise((r) => setTimeout(r, 200));
+			await quietFor(200, "a gh call after close");
 			expect(pr.ghLog()).toBe(calls);
 			await expect(s.overview(0)).rejects.toThrow(/closed/);
 		});
@@ -855,7 +859,7 @@ describe("Session", () => {
 			// any of them.
 			const calls = pr.ghLog();
 			release(process.env.CRB_FAKE_GH ?? "", "threads");
-			await new Promise((r) => setTimeout(r, 1800));
+			await quietFor(300, "a gh call from a read pushed out or closed");
 			expect(pr.ghLog()).toBe(calls);
 		});
 
@@ -1431,6 +1435,154 @@ describe("Session", () => {
 			expect(pr.ghLog().length).toBe(calls);
 		});
 
+		describe("another server's move or undo between the check and the write (CAR-245)", () => {
+			const anchor = (line: number) => ({
+				path: "a.txt",
+				startSide: "RIGHT" as const,
+				startLine: line,
+				side: "RIGHT" as const,
+				line,
+			});
+			/** This server's session and another's on the same cache, and the GitHub thread both move. */
+			async function twoServers() {
+				const then = pr.head();
+				scenarioAsOf(then, pr.moveHead({ "later.txt": "later\n" }), [
+					reviewThread({ path: "a.txt", line: 2, subjectType: "LINE" }, [
+						threadComment({
+							login: "rev",
+							text: "Why?",
+							commit: then,
+							diffHunk: "",
+						}),
+					]),
+				]);
+				const open = () =>
+					Session.open(pr.arg, process.cwd(), () => {}, { asOf: CUTOFF });
+				const mine = await open();
+				const other = await open();
+				const o = await mine.overview();
+				const { threads } = await mine.threads(o.readId, "summary");
+				const thread = { source: "github" as const, id: threads[0]?.id ?? "" };
+				// The other server knows the thread too.
+				const oo = await other.overview();
+				await other.threads(oo.readId, "summary");
+				return { then, mine, other, thread };
+			}
+			/** Runs `write` with `race` landing just before its first write to the agent threads ref. */
+			async function racing<T>(
+				race: () => Promise<unknown>,
+				write: () => Promise<T>,
+			): Promise<T> {
+				const transaction = RefStore.prototype.transaction;
+				let raced = false;
+				const spy = vi
+					.spyOn(RefStore.prototype, "transaction")
+					.mockImplementation(async function (this: RefStore, updates) {
+						if (
+							!raced &&
+							updates.some((u) => u.ref.endsWith("/agent/threads"))
+						) {
+							raced = true;
+							await race();
+						}
+						return transaction.call(this, updates);
+					});
+				try {
+					return await write();
+				} finally {
+					spy.mockRestore();
+					expect(raced).toBe(true);
+				}
+			}
+
+			it("an undo whose move another server undid after the check is refused as dead, and writes nothing", async () => {
+				const { then, mine, other, thread } = await twoServers();
+				const moved = await mine.moveThread({
+					thread,
+					to: { head: then },
+					anchor: anchor(5),
+				});
+				const clone = clonePath("acme", "widget");
+				const ref = execFileSync(
+					"git",
+					[
+						"for-each-ref",
+						"--format=%(refname)",
+						"refs/crb/reviews/*/reviewers/*/agent/threads",
+					],
+					{ cwd: clone, encoding: "utf8", env: testGitEnv() },
+				).trim();
+				const store = new RefStore(clone);
+				await expect(
+					racing(
+						() => other.undoMove(moved.move, { head: then }),
+						() => mine.undoMove(moved.move, { head: then }),
+					),
+				).rejects.toBeInstanceOf(DeadMoveError);
+				const undos = (await store.readEvents(ref)).filter(
+					(e) => e.type === "thread-move-undone",
+				);
+				expect(undos).toHaveLength(1);
+			});
+
+			it("a move that another server's move took to the cap after the check is refused, and writes nothing", async () => {
+				const { then, mine, other, thread } = await twoServers();
+				await mine.moveThread({
+					thread,
+					to: { head: then },
+					anchor: anchor(5),
+				});
+				const clone = clonePath("acme", "widget");
+				const ref = execFileSync(
+					"git",
+					[
+						"for-each-ref",
+						"--format=%(refname)",
+						"refs/crb/reviews/*/reviewers/*/agent/threads",
+					],
+					{ cwd: clone, encoding: "utf8", env: testGitEnv() },
+				).trim();
+				const store = new RefStore(clone);
+				const [first] = (await store.readEvents(ref)).filter(
+					(e) => e.type === "thread-moved",
+				);
+				if (first?.type !== "thread-moved") throw new Error("no move");
+				// Up to one short of the cap, in one commit.
+				const fill = Array.from({ length: MAX_MOVES_PER_THREAD - 2 }, () =>
+					newEvent("thread-moved", first.actor, {
+						thread: first.thread,
+						on: first.on,
+						anchor: first.anchor,
+						engine: first.engine,
+					}),
+				);
+				await store.appendEvents(ref, "crb: fill", fill, first.actor);
+				await expect(
+					racing(
+						() =>
+							other.moveThread({
+								thread,
+								to: { head: then },
+								anchor: anchor(6),
+							}),
+						() =>
+							mine.moveThread({
+								thread,
+								to: { head: then },
+								anchor: anchor(7),
+							}),
+					),
+				).rejects.toBeInstanceOf(MoveCapError);
+				const moves = (await store.readEvents(ref)).filter(
+					(e) => e.type === "thread-moved",
+				);
+				expect(moves).toHaveLength(MAX_MOVES_PER_THREAD);
+				expect(
+					moves.some((m) => m.type === "thread-moved" && m.anchor.line === 7),
+				).toBe(false);
+			});
+		});
+
 		it("reads anew in four calls with no threads: the snapshot head's checks come in the overview's one query", async () => {
 			const then = pr.head();
 			scenarioAsOf(then, pr.moveHead({ "later.txt": "later\n" }));
@@ -1960,11 +2112,47 @@ describe("Session", () => {
 					},
 				],
 			});
-			// a.txt is untouched since PS1: one whole-file gap.
+			// a.txt is untouched since PS1, but its line-26 cluster was never
+			// reviewed there: its lines alone, a box of their own (CAR-216),
+			// the rest of the file gaps around them.
+			const lineKey = view.files[0]?.clusters[1]?.key;
 			expect(await s.interdiffHunks(1, view.revision, 0)).toEqual({
-				hunks: [],
+				hunks: [
+					{
+						oldStart: 25,
+						oldCount: 0,
+						newStart: 26,
+						newCount: 1,
+						lines: [
+							{
+								kind: "del",
+								text: "line 26",
+								clusterKey: lineKey,
+								baseNo: 26,
+								orphan: true,
+							},
+							{
+								kind: "add",
+								newNo: 26,
+								text: "line 26 changed",
+								clusterKey: lineKey,
+								orphan: true,
+							},
+						],
+					},
+				],
 				newLineCount: 30,
-				wholeGap: true,
+				pieces: [
+					{
+						hunk: 0,
+						line: 0,
+						key: lineKey,
+						orphan: true,
+						owns: [[0, 2]],
+						old: [],
+						new: [[26, 27]],
+					},
+				],
 			});
 
 			// The first mark starts PS2, carrying PS1's mark.
@@ -2027,7 +2215,11 @@ describe("Session", () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const ps1 = s.snapshot();
 			await s.setStates(ps1.revision, [
-				{ key: firstKey(s), state: "reviewed" },
+				...s
+					.snapshot()
+					.files.flatMap((f) =>
+						f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+					),
 			]);
 			// PS2 changes a.txt's line 15 and adds a line after it (the new
 			// side shifts by one below it); new.txt is untouched since PS1.
@@ -2132,9 +2324,13 @@ describe("Session", () => {
 		const sinceAfter = async (push: () => string) => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const ps1 = s.snapshot();
-			await s.setStates(ps1.revision, [
-				{ key: firstKey(s), state: "reviewed" },
-			]);
+			// All of it: a cluster left unreviewed would be shown (CAR-216).
+			await s.setStates(
+				ps1.revision,
+				ps1.files.flatMap((f) =>
+					f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+				),
+			);
 			const newHead = push();
 			await s.checkHead();
 			const answer = await settled(s, 1, { head: newHead });

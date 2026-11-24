@@ -167,12 +167,22 @@ function HeaderIconButton(props: {
 	const tone = tones[props.tone];
 	const button = useRef<HTMLButtonElement | null>(null);
 	// A reset swapped in (under the pointer, on the mark's own click: the UI
-	// doesn't wait for the save): ignore clicks a moment.
+	// doesn't wait for the save): ignore clicks a moment. The wait is the
+	// reset's alone: once another action is back in its place (the reset's
+	// marks undone elsewhere, e.g. a cluster's box), it takes clicks at
+	// once (CAR-257). Likewise the action a reset's own confirming click
+	// brings back: that click's double was meant for the reset (CAR-272).
+	// The button knows its own click (`resetFrom`, the label it reset from);
+	// a reset made elsewhere leaves the action taking clicks at once.
 	const lastLabel = useRef(props.label);
 	const swappedUntil = useRef(0);
+	const resetFrom = useRef<string | null>(null);
 	if (lastLabel.current !== props.label) {
+		const ownReset = resetFrom.current === lastLabel.current;
+		resetFrom.current = null;
 		lastLabel.current = props.label;
-		if (props.pressed) swappedUntil.current = performance.now() + UNDO_ARM_MS;
+		swappedUntil.current =
+			props.pressed || ownReset ? performance.now() + UNDO_ARM_MS : 0;
 	}
 	// The question asked, for this action. Another action in its place, or
 	// none to ask (the file isn't finished, e.g. after another tab's write),
@@ -215,6 +225,7 @@ function HeaderIconButton(props: {
 		}
 		if (now < askedAt.current + UNDO_ARM_MS) return;
 		setAskedFor(null);
+		resetFrom.current = props.label;
 		props.onClick();
 	};
 	return (
@@ -1078,6 +1089,19 @@ export function FileDiff(props: {
 			(f) => [f.thread.thread, f.placement] as const,
 		),
 	);
+	// The since view's word on each one whose line it has no row for (CAR-255).
+	const agentNotHere = new Map(
+		agentHeader.flatMap((h) =>
+			h.notHere
+				? [
+						[
+							h.thread.thread,
+							{ notHere: h.notHere, since: props.since },
+						] as const,
+					]
+				: [],
+		),
+	);
 	const agentGroups = [
 		{ reason: "fate" as const, threads: [...agentFates.keys()] },
 		...(["file", "unplaced"] as const).map((reason) => ({
@@ -1181,7 +1205,12 @@ export function FileDiff(props: {
 					inline
 					file
 					threads={header.map((h) => h.thread)}
-					loading={props.threadsLoading && !props.threads}
+					// Its line threads wait for the hunks (which rows they're on): it
+					// spins till then, never an outline that reads as none.
+					loading={
+						(props.threadsLoading && !props.threads) ||
+						(expanded && hunksPending)
+					}
 					where="on this file"
 					label={
 						fileComment.ok === true
@@ -1232,6 +1261,12 @@ export function FileDiff(props: {
 											readId={props.threads?.readId ?? ""}
 											thread={h.thread}
 											unplaced={h.reason === "unplaced"}
+											notHere={
+												h.notHere && {
+													notHere: h.notHere,
+													since: props.since,
+												}
+											}
 											onResolved={(t, from) =>
 												collapse.resolved({
 													key: "file",
@@ -1267,6 +1302,7 @@ export function FileDiff(props: {
 								place={{ columns }}
 								rail={rail}
 								unplaced={g.reason === "unplaced"}
+								notHere={g.reason === "unplaced" ? agentNotHere : undefined}
 								outdated={g.reason === "outdated"}
 								fates={g.reason === "fate" ? agentFates : undefined}
 							/>
