@@ -1708,7 +1708,8 @@ describe("an added file cut at blank lines, in the since view (CAR-235)", () => 
 		]);
 	});
 	afterAll(() => fx.cleanup());
-	const [b0, p1, p2] = [0, 1, 2].map((i) => () => fx.shas[i] as string);
+	const sha = (i: number) => () => fx.shas[i] as string;
+	const [b0, p1, p2] = [sha(0), sha(1), sha(2)];
 
 	it("a file added since the compared patch set reads as one new unit per block", async () => {
 		const ps1 = await buildSnapshot(fx.path, b0(), p1());
