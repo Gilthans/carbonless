@@ -92,7 +92,7 @@ export type NoLine =
 	| "orphan-split";
 
 /** A line only the compared patch set had, on its commit (CAR-233). */
-export const onEarlier = (c: Pick<CellLine, "base" | "ps">) =>
+const onEarlier = (c: Pick<CellLine, "base" | "ps">) =>
 	c.base === null && c.ps !== undefined;
 
 /** The line GitHub knows a cell's line by: its base number in the since view. */

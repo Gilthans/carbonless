@@ -17,8 +17,7 @@ import { useThreadWrites } from "./threadWrites";
  */
 
 /** "1 reply", "2 replies". */
-export const repliesText = (n: number) =>
-	`${n} ${n === 1 ? "reply" : "replies"}`;
+const repliesText = (n: number) => `${n} ${n === 1 ? "reply" : "replies"}`;
 
 /**
  * How many replies a card has: GitHub's count past the opener, plus the

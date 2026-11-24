@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-export type ContextRange = readonly [from: number, to: number];
+type ContextRange = readonly [from: number, to: number];
 
 const NONE: readonly ContextRange[] = [];
 const NO_FILES: ReadonlyMap<number, readonly ContextRange[]> = new Map();

@@ -321,7 +321,7 @@ export function tabWidthFor(
 }
 
 /** A larger .editorconfig is ignored: no real one comes near. */
-export const MAX_CONFIG_BYTES = 64 * 1024;
+const MAX_CONFIG_BYTES = 64 * 1024;
 
 /**
  * Reads every .editorconfig above `paths` in `commit` (`git cat-file

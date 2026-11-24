@@ -34,7 +34,7 @@ const avatar = (id: number) =>
 	`https://avatars.githubusercontent.com/u/${id}?s=40`;
 
 /** Who speaks: login, avatar (none for some), bot. */
-export const DEMO_PEOPLE = {
+const DEMO_PEOPLE = {
 	badyan: { login: "badyan", avatarUrl: avatar(1) },
 	dima: { login: "dima" },
 	/** Requests changes (the Final Verdict demo); speaks in no thread. */
@@ -176,7 +176,7 @@ const esc = (t: string) =>
 	t.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 /** One comment: plain text, or Markdown (`body`) with its HTML. */
-export interface Said {
+interface Said {
 	who: Person;
 	text: string;
 	html?: string;
@@ -186,7 +186,7 @@ export interface Said {
 }
 
 /** Where a thread is, as GitHub's REST takes it. */
-export interface Place {
+interface Place {
 	path: string;
 	/** The commit it's written on: 1–3 (the head is 3). */
 	commit: number;
@@ -197,7 +197,7 @@ export interface Place {
 }
 
 /** A thread of the showcase: where, when, who said what. */
-export interface DemoThread {
+interface DemoThread {
 	place: Place;
 	/** The opener's time (ISO); the replies follow an hour apart. */
 	start: string;
@@ -232,7 +232,7 @@ const RETRY = "src/util/retry.ts";
  * - on a deleted line: badyan and the author;
  * - a bot's, on the file; and a short resolved one.
  */
-export const DEMO_THREADS: DemoThread[] = [
+const DEMO_THREADS: DemoThread[] = [
 	// Waits on the viewer: badyan asked them last.
 	{
 		place: {

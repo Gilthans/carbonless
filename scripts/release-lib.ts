@@ -65,7 +65,7 @@ export function formatVersion(v: Version): string {
 export const tagOf = (v: Version) => `v${formatVersion(v)}`;
 
 /** The release an RC is a candidate for: `X.Y.Z-rc.N` -> `X.Y.Z`. */
-export const releaseOf = (v: Version): Version => ({
+const releaseOf = (v: Version): Version => ({
 	major: v.major,
 	minor: v.minor,
 	patch: v.patch,
@@ -233,7 +233,7 @@ export type NpmState = {
 } | null;
 
 /** The package's dist-tags and versions on npm; null before its first publish. */
-export async function npmState(io: Io): Promise<NpmState> {
+async function npmState(io: Io): Promise<NpmState> {
 	const r = await io.run("npm", [
 		"view",
 		PACKAGE,
@@ -259,7 +259,7 @@ export async function npmState(io: Io): Promise<NpmState> {
 }
 
 /** master's package.json version on GitHub. */
-export async function masterVersion(io: Io): Promise<string> {
+async function masterVersion(io: Io): Promise<string> {
 	const content = await must(io, "gh", [
 		"api",
 		`repos/${io.repo}/contents/package.json?ref=master`,
@@ -569,7 +569,7 @@ export async function next(
  * to rc.4 on master, their tags local only): their numbers count as used, so
  * no CI-published RC repeats one. Nothing when git can't say.
  */
-export async function historyVersions(io: Io, ref = "HEAD"): Promise<string[]> {
+async function historyVersions(io: Io, ref = "HEAD"): Promise<string[]> {
 	// A shallow history would undercount, and reuse a number.
 	const shallow = await must(io, "git", [
 		"rev-parse",
@@ -817,7 +817,7 @@ export async function publishedIntegrity(
  * version with this very tarball (a publish that ran before), an error when
  * npm has it with another one.
  */
-export async function needsPublish(io: Io, m: Manifest): Promise<boolean> {
+async function needsPublish(io: Io, m: Manifest): Promise<boolean> {
 	const published = await publishedIntegrity(io, m.version);
 	if (published === null) return true;
 	if (published === m.integrity) return false;
@@ -838,7 +838,7 @@ export type PublishIo = Io & {
  * manifest's, its build-info is the release's version at the RC tag's
  * commit, that tag points there on GitHub, and the commit is on master.
  */
-export async function checkedRelease(
+async function checkedRelease(
 	io: Io,
 	dir: string,
 ): Promise<{ manifest: Manifest; tarball: string; notes: unknown }> {
@@ -983,7 +983,7 @@ export async function checkPromoteRun(io: Io, run: string): Promise<void> {
  * 15 s for up to 5 min: "match" when it has this integrity, "missing" when it
  * never showed; an error when npm has another tarball.
  */
-export async function waitForIntegrity(
+async function waitForIntegrity(
 	io: Io,
 	version: string,
 	integrity: string,

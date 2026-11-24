@@ -236,7 +236,7 @@ export interface FileLead {
  * Side by side it sits at the right with the line bubbles, in the first
  * row's right cell when that is code (PairRow).
  */
-export function FileBubbleSlot(props: { children: ReactNode; count?: number }) {
+function FileBubbleSlot(props: { children: ReactNode; count?: number }) {
 	return (
 		<span
 			data-testid="file-bubble-slot"
@@ -351,7 +351,7 @@ function FileLabel(props: { children: ReactNode; bubble?: ReactNode }) {
  * copy), rather than mid-name; a name wider than the line still breaks
  * anywhere (FileLabel). Plain text: React escapes it.
  */
-export function breakablePath(text: string | undefined): ReactNode {
+function breakablePath(text: string | undefined): ReactNode {
 	if (!text) return null;
 	const parts = text.split("/");
 	return parts.map((part, i) =>
@@ -2374,7 +2374,7 @@ const OWN_CONTROLS = "button, a, input, textarea, select, [role=button]";
  * on the row's top half and ↑ on its bottom half. None over the row's other
  * controls (a bubble, Retry), which keep their own clicks.
  */
-export function gapRowTarget(
+function gapRowTarget(
 	e: { target: EventTarget | null; currentTarget: Element; clientY: number },
 	count: number,
 ): number | null {
@@ -4135,7 +4135,7 @@ const landedPhase = (landed: Landed | null, line: RowLine) =>
 		: undefined;
 
 /** A line by its number on one side (a landing's or the find's). */
-export interface LineRef {
+interface LineRef {
 	old: boolean;
 	line: number;
 }

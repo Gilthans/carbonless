@@ -6,7 +6,6 @@ import type {
 	Person,
 	RepoHome,
 } from "../../shared/home.js";
-import { GhError } from "../errors.js";
 import { slugify } from "../slug.js";
 import { ViewerCache } from "../viewerCache.js";
 import {
@@ -80,7 +79,7 @@ export function configAccess<C extends HomeConfig>(
  */
 export const FRESH_MS = 30_000;
 /** A failing repo's cache period doubles per failure, up to this. */
-export const MAX_BACKOFF_MS = 30 * 60_000;
+const MAX_BACKOFF_MS = 30 * 60_000;
 /** A repo out of the view keeps its facts this long (re-added: incremental). */
 export const KEEP_MS = 3_600_000;
 /** The viewer's teams are read again this often. */
@@ -97,7 +96,7 @@ const REPO_URL =
 	/^https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100}?)(?:\.git)?(?:[/?#].*)?$/i;
 
 /** `owner/repo`, lowercased, from that form or a GitHub URL; null otherwise. */
-export function parseRepo(input: string): string | null {
+function parseRepo(input: string): string | null {
 	const text = input.trim();
 	const m = OWNER_REPO.exec(text) ?? REPO_URL.exec(text);
 	if (!m || m[2] === "." || m[2] === "..") return null;
@@ -105,7 +104,7 @@ export function parseRepo(input: string): string | null {
 }
 
 /** Why a read failed, short, for the repo's status. */
-export function refreshReason(error: unknown): string {
+function refreshReason(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	if (/could not resolve to a repository/i.test(message)) {
 		return "Not found on GitHub";
@@ -823,5 +822,3 @@ export class HomeService {
 const viewReposOf = (config: HomeConfig) => [
 	...new Set((config.views[0]?.repos ?? []).map((r) => r.toLowerCase())),
 ];
-
-export { GhError };

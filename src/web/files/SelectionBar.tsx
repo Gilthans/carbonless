@@ -189,7 +189,7 @@ if (typeof document !== "undefined") {
 }
 
 /** Whether the selection was made by touch (or a pen). */
-export function byTouch(): boolean {
+function byTouch(): boolean {
 	if (lastPointer) return lastPointer !== "mouse";
 	return (
 		typeof window.matchMedia === "function" &&

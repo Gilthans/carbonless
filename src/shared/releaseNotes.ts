@@ -25,7 +25,7 @@ export type NoteKind = (typeof NOTE_KINDS)[number];
 /** A note's text: at most this many characters (a sanity bound, not a style limit). */
 export const MAX_NOTE_CHARS = 600;
 /** A `none` reason: at most this many characters. */
-export const MAX_NONE_WHY_CHARS = 120;
+const MAX_NONE_WHY_CHARS = 120;
 /** `crbReleaseNotes` keeps at most this many versions, newest first. */
 export const MAX_SHIPPED_VERSIONS = 10;
 /** ... and at most this many bytes of JSON (oldest versions dropped first). */
@@ -171,7 +171,7 @@ export function noteSummary(text: string): string {
 }
 
 /** The rank of a kind in a list of notes: new, improved, fixed. */
-export function kindRank(kind: NoteKind): number {
+function kindRank(kind: NoteKind): number {
 	return NOTE_KINDS.indexOf(kind);
 }
 
@@ -211,7 +211,7 @@ function prsProblem(v: unknown): string | null {
 }
 
 /** Why `v` isn't a valid note (null: it is). */
-export function releaseNoteProblem(v: unknown): string | null {
+function releaseNoteProblem(v: unknown): string | null {
 	if (!isRecord(v)) return "isn't an object";
 	if (typeof v.id !== "string" || !NOTE_ID.test(v.id))
 		return "id isn't CAR-N or #N";

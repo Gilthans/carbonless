@@ -51,13 +51,13 @@ import {
 } from "./threadAgent";
 
 /** From here up the drawer pushes the page narrower; below, it overlays (a phone: full screen). */
-export const DRAWER_PUSH = "(min-width: 1024px)";
+const DRAWER_PUSH = "(min-width: 1024px)";
 /** The drawer's width beside the page (desktop). */
 export const DRAWER_WIDTH = "clamp(360px, 40vw, 480px)";
 /** The draft store's key for the review conversation's composer (no GitHub thread id looks like it). */
 const DRAFT_KEY = ":review";
 /** The shortcut that toggles the drawer. */
-export const DRAWER_KEYS = "Shift+a";
+const DRAWER_KEYS = "Shift+a";
 
 /** Stands in for a conversation not opened yet (useAnswering wants one). */
 const NONE: AgentThread = {

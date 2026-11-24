@@ -57,7 +57,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-export const ENGINE_VERSION = 7;
+const ENGINE_VERSION = 7;
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {
@@ -1085,7 +1085,7 @@ export interface Orphan {
  * never from matching text. In file order, a place's removed lines
  * before its added ones.
  */
-export function orphanLines(
+function orphanLines(
 	entry: RereviewAnswer["files"][number],
 	targetClusters: readonly Cluster[],
 	pieces: readonly SincePiece[],
@@ -1727,7 +1727,7 @@ export function sinceLineSources(
  * marked then, gets nothing (principle 2: it stays to read). A conflicted
  * file carries nothing.
  */
-export function sinceLineCarries(
+function sinceLineCarries(
 	traced: Traced,
 	target: Snapshot,
 	answer: RereviewAnswer,

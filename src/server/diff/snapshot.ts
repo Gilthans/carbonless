@@ -45,7 +45,7 @@ import { chooseEncoding, decodeLines, type TextEncoding } from "./text.js";
  * two snapshots; the server keeps several reviews open), and bounds the
  * always-on server whatever the files' sizes.
  */
-export const BLOB_CACHE_BYTES = 32 * 1024 * 1024;
+const BLOB_CACHE_BYTES = 32 * 1024 * 1024;
 
 const blobCache = new BlobCache(BLOB_CACHE_BYTES);
 
@@ -57,7 +57,7 @@ const MAX_CACHED_HEADINGS = 8;
  * done long before; a slow or stuck one never holds the hunks up for more
  * (they come without headings).
  */
-export const HEADING_WAIT_MS = 500;
+const HEADING_WAIT_MS = 500;
 
 /**
  * Every file's `-U3` hunk headings, per snapshot (`repo`, base, head), least

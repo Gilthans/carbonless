@@ -15,7 +15,7 @@ import type { FixtureCommit } from "../git-fixture";
 const text = (...lines: string[]) => `${lines.join("\n")}\n`;
 
 /** A solid `size`×`size` RGB PNG of colour `rgb`. */
-export function png(rgb: [number, number, number], size = 8): Uint8Array {
+function png(rgb: [number, number, number], size = 8): Uint8Array {
 	const chunk = (type: string, data: Buffer) => {
 		const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
 		const len = Buffer.alloc(4);
@@ -814,7 +814,7 @@ export const SHOWCASE_COMMITS: FixtureCommit[] = [
 ];
 
 /** A file's text at the base (0) or after commit `n` (1–3). */
-export function showcaseFile(path: string, n: number): string | undefined {
+function showcaseFile(path: string, n: number): string | undefined {
 	let content = SHOWCASE_BASE[path];
 	for (const c of SHOWCASE_COMMITS.slice(0, n)) {
 		for (const [from, to] of Object.entries(c.rename ?? {})) {

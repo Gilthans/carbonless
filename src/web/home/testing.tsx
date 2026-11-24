@@ -17,7 +17,7 @@ import { newQueryClient } from "../queryClient";
 // default second to render Home's first answer.
 configure({ asyncUtilTimeout: 3000 });
 
-export const NOW = Date.now();
+const NOW = Date.now();
 export const ago = (minutes: number) =>
 	new Date(NOW - minutes * 60_000).toISOString();
 
@@ -54,7 +54,7 @@ export function row(over: Partial<HomeRow> = {}): HomeRow {
 	};
 }
 
-export const SECTION_IDS: SectionId[] = [
+const SECTION_IDS: SectionId[] = [
 	"mine",
 	"reviewing",
 	"grabs",

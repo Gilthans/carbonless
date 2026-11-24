@@ -35,7 +35,7 @@ const MAX_ENTRIES = 10_000;
  * so what was dropped is known per version (the modal counts only the
  * versions it shows). Null when `raw` isn't a list.
  */
-export function parseNotes(raw: unknown): ParsedNotes | null {
+function parseNotes(raw: unknown): ParsedNotes | null {
 	if (!Array.isArray(raw)) return null;
 	const out: Required<ParsedNotes> = { entries: [], dropped: 0, droppedIn: {} };
 	for (const item of raw.slice(0, MAX_ENTRIES)) {
@@ -108,7 +108,7 @@ export async function fetchOfferedNotes(
 }
 
 /** The running build's notes file (`dist/release-notes.json` in its package). */
-export const ownNotesFile = (): string =>
+const ownNotesFile = (): string =>
 	fileURLToPath(new URL("../../../dist/release-notes.json", import.meta.url));
 
 /** The running build's own notes; null when it has no file (a local build). */

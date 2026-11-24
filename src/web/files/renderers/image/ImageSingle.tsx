@@ -41,7 +41,7 @@ function stageStyle(
 }
 
 /** An image's place in the stage, in percent of it: pinned top-left. */
-export function placeStyle(
+function placeStyle(
 	geometry: StageGeometry | null,
 	rect: Rect | undefined,
 ): CSSProperties {

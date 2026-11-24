@@ -84,7 +84,7 @@ export interface AcpScenario {
 }
 
 /** One `open` call of the fake agent (AcpScenario.answers[].open). */
-export interface AcpOpenStep {
+interface AcpOpenStep {
 	text: string;
 	key?: string;
 	code?: {

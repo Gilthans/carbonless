@@ -7,7 +7,7 @@ import { extent, type Span } from "./load";
  */
 
 /** The phases of an e2e test, in print order (spans.ts tags them). */
-export const PHASES = [
+const PHASES = [
 	"setup.fixture",
 	"setup.crb_serve",
 	"setup.crb_open",
@@ -20,7 +20,7 @@ export const PHASES = [
 	"teardown.other",
 ] as const;
 
-export interface Calls {
+interface Calls {
 	n: number;
 	ms: number;
 	/** Per test, the median count and time (tests without any count as 0). */
@@ -28,7 +28,7 @@ export interface Calls {
 	medianMs: number;
 }
 
-export interface TestRow {
+interface TestRow {
 	key: string;
 	title: string;
 	file: string;
@@ -37,7 +37,7 @@ export interface TestRow {
 	status: string;
 }
 
-export interface HotSpot {
+interface HotSpot {
 	name: string;
 	n: number;
 	ms: number;
@@ -62,7 +62,7 @@ export interface Summary {
 }
 
 /** Medians over a set of e2e tests; null when there is nothing to take one of. */
-export interface Wave {
+interface Wave {
 	tests: number;
 	/** The test's duration. */
 	testMs: number | null;

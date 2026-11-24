@@ -663,7 +663,7 @@ export function threadsByComment(
  * The threads each list shows first and one "Load more" page: per opener
  * kind (bot or human) and resolution, the first THREADS_FIRST in order.
  */
-export function listedFirst(threads: ReviewThread[]): ReviewThread[] {
+function listedFirst(threads: ReviewThread[]): ReviewThread[] {
 	const taken = new Map<string, number>();
 	return threads.filter((t) => {
 		const list = `${t.bot} ${t.resolved}`;
@@ -674,7 +674,7 @@ export function listedFirst(threads: ReviewThread[]): ReviewThread[] {
 }
 
 /** Runs the tasks given to it at most `max` at a time, in the order given. */
-export function limiter(max: number) {
+function limiter(max: number) {
 	let running = 0;
 	const queue: (() => void)[] = [];
 	const next = () => {

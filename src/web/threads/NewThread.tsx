@@ -98,7 +98,7 @@ const CARRIES = "Carries your agent conversation: ask there";
 export const LOADING = "Loading the PR";
 
 /** The longest first comment: GitHub's limit less room for carbonless's hidden marker. */
-export const MAX_NEW_THREAD = MAX_REPLY - 200;
+const MAX_NEW_THREAD = MAX_REPLY - 200;
 
 /**
  * A new thread under its span's last row (or in a file's header): the span

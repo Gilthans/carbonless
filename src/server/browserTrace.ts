@@ -23,7 +23,7 @@ import {
  */
 
 /** The names the page may send (src/web/trace/collector.ts). */
-export const BROWSER_SPANS: ReadonlySet<string> = new Set([
+const BROWSER_SPANS: ReadonlySet<string> = new Set([
 	"browser.navigation",
 	"browser.page",
 	"browser.fetch",
@@ -45,24 +45,24 @@ export const MAX_SPANS = 200;
 export const MAX_ATTRS = 16;
 export const MAX_STRING = 200;
 /** The route's own body limit (a full batch is ~60 KB). */
-export const BODY_LIMIT = 256 * 1024;
+const BODY_LIMIT = 256 * 1024;
 /** How far from the server's now a span may lie: a day back, a minute on. */
 export const PAST_MS = 24 * 60 * 60 * 1000;
 export const FUTURE_MS = 60 * 1000;
 /** A page clock further off than this is moved onto the server's. */
 export const SKEW_MS = 30;
 /** Pages (documents) whose clock offset is kept, and requests' arrivals. */
-export const CLOCK_PAGES = 256;
-export const CLOCK_ARRIVALS = 4096;
+const CLOCK_PAGES = 256;
+const CLOCK_ARRIVALS = 4096;
 /** How long a page's best clock offset holds before a new one replaces it. */
-export const CLOCK_TTL_MS = 60_000;
+const CLOCK_TTL_MS = 60_000;
 /** The page's spans' own service.name in the trace files. */
 export const BROWSER_SERVICE = "crb-browser";
 /** The most spans a minute the route keeps (several tabs, a page in a loop). */
-export const RATE_SPANS = 3000;
+const RATE_SPANS = 3000;
 /** The most spans a minute from one page load (one tab can't starve the rest). */
-export const RATE_DOC_SPANS = 1500;
-export const RATE_WINDOW_MS = 60_000;
+const RATE_DOC_SPANS = 1500;
+const RATE_WINDOW_MS = 60_000;
 
 const TRACE_ID = /^[0-9a-f]{32}$/;
 const SPAN_ID = /^[0-9a-f]{16}$/;

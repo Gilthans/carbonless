@@ -185,7 +185,7 @@ const reviewerRef = (id: string, slug: string) =>
 const progressRef = (id: string, slug: string) =>
 	`${reviewerRef(id, slug)}/progress`;
 /** The refs pinning patch set `n`'s head and merge base (storage doc, "Ref layout"). */
-export const patchsetRefs = (reviewer: string, n: number) => ({
+const patchsetRefs = (reviewer: string, n: number) => ({
 	head: `${reviewer}/patchsets/${n}`,
 	base: `${reviewer}/patchsets/${n}-base`,
 });

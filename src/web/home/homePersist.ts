@@ -31,7 +31,7 @@ export const HOME_MAX_AGE_MS = REPO_GC_MS;
 const BUSTER = `home-1 ${import.meta.url}`;
 
 /** Home's own reads: the view (["home","view"]) and each repo's rows. */
-export const isHomeRead = (key: readonly unknown[]) =>
+const isHomeRead = (key: readonly unknown[]) =>
 	key[0] === "home" && (key[1] === "view" || key[1] === "repo");
 
 const kept = (query: Query) =>
@@ -48,7 +48,7 @@ const fingerprint = (saved: PersistedClient) =>
 		.join("\n");
 
 /** The tab's sessionStorage; none where it's blocked (nothing is kept). */
-export function tabStorage(): Storage | undefined {
+function tabStorage(): Storage | undefined {
 	try {
 		return window.sessionStorage;
 	} catch {

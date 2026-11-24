@@ -17,7 +17,7 @@ import type { Size } from "./stage";
  *   the file's status says which sides exist, and a 404 is `undecodable`.
  * - `undecodable`: anything else the browser couldn't show.
  */
-export type ImageSideState =
+type ImageSideState =
 	| "waiting-tap"
 	| "loading"
 	| "ready"

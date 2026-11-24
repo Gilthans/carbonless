@@ -47,7 +47,7 @@ const TABS = [
  * too), the rest inert while it is open. The page's shortcuts don't fire under it
  * (they skip `:modal`).
  */
-export function AgentSetup(props: {
+function AgentSetup(props: {
 	open: boolean;
 	onClose(): void;
 	tab?: SetupTab;

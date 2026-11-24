@@ -20,7 +20,7 @@ const send = <T>(method: string, path: string, body: unknown) =>
 		body: JSON.stringify(body),
 	});
 
-export const fetchHome = () => request<HomeView>("/api/home");
+const fetchHome = () => request<HomeView>("/api/home");
 
 /**
  * What a repo's ask says of the answer the page shows: `seen`, a first
@@ -42,7 +42,7 @@ export function askOf(shown: RepoHome | undefined): RepoAsk {
 }
 
 /** One view repo's rows; `fresh`: read from GitHub now (Refresh, Retry). */
-export const fetchRepo = (
+const fetchRepo = (
 	name: string,
 	fresh = false,
 	signal?: AbortSignal,
@@ -65,7 +65,7 @@ export const fetchRepo = (
  * shown stays when the answer is a failed first read's (a cold server
  * whose read failed): its rows are kept, with the failure on them.
  */
-export async function readRepo(
+async function readRepo(
 	name: string,
 	fresh: boolean,
 	signal: AbortSignal | undefined,
@@ -105,7 +105,7 @@ export const putView = (repos: string[]) =>
 	send<HomeView>("PUT", "/api/home/view", { repos });
 
 /** `only: "repos"`: the Repos group alone (the view settings' repo input). */
-export const fetchSearch = (q: string, signal?: AbortSignal, only?: "repos") =>
+const fetchSearch = (q: string, signal?: AbortSignal, only?: "repos") =>
 	request<SearchResult>(
 		`/api/home/search?${new URLSearchParams(only ? { q, only } : { q })}`,
 		{ signal },
@@ -126,7 +126,7 @@ export const homeQuery = queryOptions({
 /** A repo out of the view keeps its rows this long: added back, they show at once. */
 export const REPO_GC_MS = 2 * 3_600_000;
 /** Failing reads back off, doubling, up to this. */
-export const MAX_BACKOFF_MS = 30 * 60_000;
+const MAX_BACKOFF_MS = 30 * 60_000;
 
 export const repoKey = (name: string) =>
 	["home", "repo", name.toLowerCase()] as const;
@@ -197,7 +197,7 @@ export const refetchRepo = async (client: QueryClient, name: string) => {
 };
 
 /** A repo whose reads have all failed: its rows are unknown, not none. */
-export const neverRead = (data: RepoHome) =>
+const neverRead = (data: RepoHome) =>
 	data.error !== null && data.refreshedAt === null;
 
 /** Repos picked in the view settings since their last save, per page. */

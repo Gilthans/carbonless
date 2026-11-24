@@ -33,9 +33,9 @@ import { fixtureGit } from "../test/trace-run";
  */
 
 /** Fields of a `gh pr view --json` object (see test/fixtures/gh/pr-view.json). */
-export type ViewJson = Record<string, unknown>;
+type ViewJson = Record<string, unknown>;
 /** A GraphQL reviewThreads node (see test/fixtures/gh/review-threads.json). */
-export type ThreadJson = ReturnType<typeof reviewThread>;
+type ThreadJson = ReturnType<typeof reviewThread>;
 
 export const OWNER_REPO = "acme/widget";
 export const PR_NUMBER = 7;

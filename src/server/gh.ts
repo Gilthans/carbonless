@@ -66,7 +66,7 @@ interface GhResult {
 }
 
 /** How long a GitHub read may take before gh is killed (0: no limit). */
-export const GH_TIMEOUT_MS = 60_000;
+const GH_TIMEOUT_MS = 60_000;
 
 /** How a gh call is run. */
 interface GhRun {
@@ -1208,7 +1208,7 @@ const TIMELINE_NODE = `__typename
 const TIMELINE_TYPES =
 	"PULL_REQUEST_COMMIT, PULL_REQUEST_REVIEW, ISSUE_COMMENT, HEAD_REF_FORCE_PUSHED_EVENT, BASE_REF_CHANGED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT";
 /** Timeline items per page. */
-export const TIMELINE_PAGE = 100;
+const TIMELINE_PAGE = 100;
 /**
  * A page of the timeline by position (`skip`), so pages after the first are
  * read at once; `filteredCount` is the number of items of these types.
@@ -1621,7 +1621,7 @@ interface WriteAnswer {
 }
 
 /** Reads a failed write's gh output (WriteAnswer). */
-export function writeAnswer(stdout: string, stderr: string): WriteAnswer {
+function writeAnswer(stdout: string, stderr: string): WriteAnswer {
 	let answer: Record<string, unknown> | null = null;
 	try {
 		const parsed = JSON.parse(stdout);
@@ -1667,7 +1667,7 @@ const GITHUB_TROUBLE = /something went wrong|timed? ?out|try again/i;
  * 429 or 5xx, a rate limit, GitHub's own trouble, or no answer at all: a
  * timeout or a network failure); otherwise GitHub refused it for good.
  */
-export function transientWrite(a: WriteAnswer): boolean {
+function transientWrite(a: WriteAnswer): boolean {
 	if (!a.answered) return true;
 	if (a.status === 408 || a.status === 429) return true;
 	if (a.status !== null && a.status >= 500) return true;
@@ -1680,7 +1680,7 @@ export function transientWrite(a: WriteAnswer): boolean {
  * → "forbidden", 404 or NOT_FOUND → "gone", anything else → "invalid",
  * with GitHub's message; null when it is transient (transientWrite).
  */
-export function writeRefusal(
+function writeRefusal(
 	a: WriteAnswer,
 	fallback: string,
 ): WriteRefusedError | null {
@@ -2483,7 +2483,7 @@ export async function postReview(
 }
 
 /** What a dismissal of the reviewer's own opinion says on GitHub. */
-export const DISMISS_MESSAGE = "Changed to a comment";
+const DISMISS_MESSAGE = "Changed to a comment";
 
 /**
  * Dismisses review `restId` of PR `ref` (REST `PUT …/reviews/{id}/dismissals`,

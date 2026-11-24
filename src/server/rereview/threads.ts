@@ -150,7 +150,7 @@ export interface AgentAsked {
 }
 
 /** An agent thread as the tracer reads it: asked on its anchor's commit. */
-export function agentTraceable(t: AgentAsked): TraceableThread {
+function agentTraceable(t: AgentAsked): TraceableThread {
 	const a = t.anchor;
 	return {
 		id: t.id,
@@ -208,7 +208,7 @@ export async function placeAgentThreads(
  * A moved thread as the tracer reads it: on the move's lines, traced from
  * the move's own snapshot (never from GitHub's line).
  */
-export function movedTraceable(id: string, m: ThreadMove): TraceableThread {
+function movedTraceable(id: string, m: ThreadMove): TraceableThread {
 	const at = new Date(m.ts).toISOString();
 	return {
 		id,
@@ -311,10 +311,7 @@ const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
  * numbers that against its own merge base, which can differ from ours
  * (a base merged in since). `at`: when GitHub said so.
  */
-export function githubAnchor(
-	t: TraceableThread,
-	at: string,
-): CodeAnchor | null {
+function githubAnchor(t: TraceableThread, at: string): CodeAnchor | null {
 	const head = t.currentHead;
 	if (typeof head !== "string" || !OID.test(head)) return null;
 	if (!t.anchor) return { ...anchorOf(t), commit: head, at };

@@ -118,7 +118,7 @@ export async function askReviewByApi(url: string, text: string): Promise<void> {
 export const chipName = (tip: string) =>
 	`Review conversation · Your agent: ${tip}`;
 
-export const DEFAULT_SCENARIO: AcpScenario = {
+const DEFAULT_SCENARIO: AcpScenario = {
 	agent: { name: "Fake Agent", version: "9.9.9" },
 	answers: [{ text: "ok" }],
 };

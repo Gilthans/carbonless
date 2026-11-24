@@ -297,7 +297,7 @@ export function detectInstall(
 }
 
 /** The exact package and version an update installs. */
-export const spec = (version: string) => `${PACKAGE}@${version}`;
+const spec = (version: string) => `${PACKAGE}@${version}`;
 
 /** A command; `env` is added to crb's environment. */
 export interface Command {
@@ -390,7 +390,7 @@ export function installCommand(
 }
 
 /** The longest version an update takes (a registry's answer is checked). */
-export const MAX_VERSION = 64;
+const MAX_VERSION = 64;
 
 /** The command as the reviewer would type it. */
 export function showCommand(pm: PackageManager, version: string): string {

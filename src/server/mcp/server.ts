@@ -75,7 +75,7 @@ export interface McpDeps {
 }
 
 /** A tool's refusal, with the code the tools' contract names. */
-export class ToolError extends Error {
+class ToolError extends Error {
 	constructor(
 		readonly code:
 			| "invalid"

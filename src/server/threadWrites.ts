@@ -107,7 +107,7 @@ export interface ThreadWriteTarget {
  * `edit` of a thread's nodes; while a read doesn't have its content yet,
  * of its summary only (the content stays the read's own).
  */
-export const onNodes =
+const onNodes =
 	(edit: (nodes: ThreadNodes) => ThreadNodes) =>
 	(nodes: ThreadNodes): ThreadNodes =>
 		nodes.content === undefined
@@ -118,10 +118,7 @@ export const onNodes =
 			: edit(nodes);
 
 /** `nodes` resolved or not, the viewer's resolve and unresolve as GitHub sets them. */
-export function withResolved(
-	nodes: ThreadNodes,
-	resolved: boolean,
-): ThreadNodes {
+function withResolved(nodes: ThreadNodes, resolved: boolean): ThreadNodes {
 	const s = obj(nodes.summary);
 	// GitHub's own: who can resolve can unresolve, and the other way.
 	const can = s.viewerCanResolve === true || s.viewerCanUnresolve === true;
@@ -271,10 +268,7 @@ export interface Reread {
 }
 
 /** Thread `id`'s summary and content as GitHub has them now (null if gone). */
-export async function reread(
-	target: ThreadWriteTarget,
-	id: string,
-): Promise<Reread> {
+async function reread(target: ThreadWriteTarget, id: string): Promise<Reread> {
 	const seq = target.nextSeq();
 	const startedAt = Date.now();
 	const [summary, contents] = await Promise.all([
@@ -297,10 +291,7 @@ export const lists = (nodes: ThreadNodes, nodeId: string) =>
 	ids(obj(nodes.content).comments).has(nodeId);
 
 /** `nodes` with `posted` added at the end, unless they list it already. */
-export function withPosted(
-	nodes: ThreadNodes,
-	posted: PostedReply,
-): ThreadNodes {
+function withPosted(nodes: ThreadNodes, posted: PostedReply): ThreadNodes {
 	if (lists(nodes, posted.nodeId)) return nodes;
 	const s = obj(nodes.summary);
 	const c = obj(nodes.content);
@@ -592,7 +583,7 @@ function ownOnly(comment: Json): void {
 }
 
 /** `nodes` with comment `nodeId`'s text as an edit's REST answer has it. */
-export function withEdited(
+function withEdited(
 	nodes: ThreadNodes,
 	nodeId: string,
 	edited: EditedComment,

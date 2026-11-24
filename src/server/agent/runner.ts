@@ -134,7 +134,7 @@ const MAX_LIVE_ACTIVITY = 200;
  * waits: then the handed-out question fails, and an agent that ignores
  * the wake-up isn't prompted again until a human asks.
  */
-export const MAX_DRY_TURNS = 2;
+const MAX_DRY_TURNS = 2;
 /** How long a broken connection's process gets to exit before it counts as lingering. */
 const LINGER_MS = 2_000;
 const ACTIVITY_KINDS: readonly string[] = [
@@ -208,7 +208,7 @@ export const WAKE_LINE =
 	"A question waits for you in the review: call crb's next tool, answer it with reply, and call next again until none waits.";
 
 /** The checkout, relative to the agent's working directory (the checkout's dir). */
-export const CHECKOUT_PATH = "tree";
+const CHECKOUT_PATH = "tree";
 
 /** The re-prompt when a turn ends with a question still handed out. */
 export const holdLine = (thread: string): string =>

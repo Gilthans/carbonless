@@ -22,7 +22,7 @@ import {
 type McpId = McpHarness["id"];
 
 /** The last harness picked on Invite (my call: remembered like the tab). */
-export const MCP_HARNESS_KEY = "crb.agentSetup.mcpHarness";
+const MCP_HARNESS_KEY = "crb.agentSetup.mcpHarness";
 
 function storedHarness(): McpId {
 	try {

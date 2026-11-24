@@ -14,7 +14,7 @@
 import type { LineMapper } from "../tracer/index.js";
 import type { Cluster, ClusterState } from "../types.js";
 
-export type CarryRule = "exact" | "rename";
+type CarryRule = "exact" | "rename";
 
 /**
  * A cluster's folded state in a source patch set (the store's StateEntry

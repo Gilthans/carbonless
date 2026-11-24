@@ -4,7 +4,7 @@ import { writeFileAtomic } from "./fake-gh/atomic.mjs";
 import type { Scenario } from "./fake-gh/scenario";
 
 /** How long a fixture's cleanup waits for gh calls still running. */
-export const GH_SETTLE_MS = 8000;
+const GH_SETTLE_MS = 8000;
 
 /**
  * Before a fixture takes the fake gh off PATH: opens every gate the

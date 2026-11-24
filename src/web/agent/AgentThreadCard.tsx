@@ -211,7 +211,7 @@ const AGENT_SURFACE =
  * streamed one's place) fired scroll events that read as the reader
  * leaving the end, and the pin let go (seen on the phone).
  */
-export function AgentScroll(props: {
+function AgentScroll(props: {
 	children: ReactNode;
 	/** Who asked: the floating question's avatar. */
 	viewer: string;
@@ -432,7 +432,7 @@ function QuestionBar(props: {
 	);
 }
 
-export const AGENT_SCROLL =
+const AGENT_SCROLL =
 	"-mx-1 -mt-1 mb-1! max-h-[min(28rem,60vh)] overflow-y-auto scroll-pt-10 p-1 [overflow-anchor:none]";
 
 function Who(props: { children: React.ReactNode }) {
@@ -605,7 +605,7 @@ function AiMessage(props: {
 type Answering = NonNullable<AgentStatus["answering"]>;
 
 /** A thread's state, as its name says it; `answering` is what useAnswering shows. */
-export function agentThreadState(
+function agentThreadState(
 	thread: AgentThread,
 	answering: Answering | undefined,
 ): "waiting" | "answering" | "answered" | "resolved" {

@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
  * scripts/owner.mjs, which the build can't reach.
  */
 
-export const OWNER_ENV = "CRB_OWNER";
+const OWNER_ENV = "CRB_OWNER";
 const POLL_MS = 1000;
 
 /**

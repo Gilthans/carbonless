@@ -566,27 +566,12 @@ export function mapThreads(
 }
 
 /** Most recent activity first; stable for ties. */
-export function sortThreads<T extends { lastActivityAt: string }>(
-	threads: T[],
-): T[] {
+function sortThreads<T extends { lastActivityAt: string }>(threads: T[]): T[] {
 	const time = (t: T) => {
 		const ms = Date.parse(t.lastActivityAt);
 		return Number.isNaN(ms) ? Number.NEGATIVE_INFINITY : ms;
 	};
 	return [...threads].sort((a, b) => time(b) - time(a));
-}
-
-/** The GraphQL connections `fetchOverview` collects, already flattened to node lists. */
-export interface PrGraph {
-	/** The description as GitHub renders it; "" falls back to the plain body. */
-	bodyHTML: string;
-	comments: unknown[];
-	reviews: unknown[];
-	/**
-	 * As-of mode only: the snapshot head's check contexts (its
-	 * statusCheckRollup), in place of the PR's current ones.
-	 */
-	checks?: unknown[];
 }
 
 /**

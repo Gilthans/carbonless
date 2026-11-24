@@ -90,7 +90,7 @@ export const MAX_IN_FLIGHT = 4;
 /** How long a deleted comment can be undone before the delete is sent. */
 export const DELETE_UNDO_MS = 5000;
 
-export type WriteAction = RefusedAction;
+type WriteAction = RefusedAction;
 
 type Op =
 	| {

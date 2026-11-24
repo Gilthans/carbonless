@@ -23,12 +23,12 @@ import { overlayReview, type PendingChange } from "../src/web/files/stateSync";
  * remount reads, as a reload reads the stored marks.
  */
 
-export const REVISION = "r";
+const REVISION = "r";
 
 /** The marks made so far, by key, as the page's pending changes are. */
 export type MarkStore = Map<string, PendingChange>;
 
-export function fileView(path: string, clusters: ClusterView[]): FileView {
+function fileView(path: string, clusters: ClusterView[]): FileView {
 	return {
 		index: 0,
 		path,

@@ -33,8 +33,8 @@ const trivial = (text: string) => /^[\s\p{P}\p{S}]*$/u.test(text);
  * MIN_TELLING of them not trivial. A shorter or emptier run (a `}`, a
  * blank and one `return null;`) can sit once in unrelated code.
  */
-export const MIN_RUN = 3;
-export const MIN_TELLING = 2;
+const MIN_RUN = 3;
+const MIN_TELLING = 2;
 function telling(rows: readonly { text: string }[]): boolean {
 	return (
 		rows.length >= MIN_RUN &&

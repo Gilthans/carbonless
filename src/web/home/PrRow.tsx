@@ -209,7 +209,7 @@ function HeadMoved() {
 }
 
 /** A started review's coverage: a short bar and "37 / 120". */
-export function CoverageCell({ coverage }: { coverage: Coverage }) {
+function CoverageCell({ coverage }: { coverage: Coverage }) {
 	const { done, total, unit } = coverage;
 	const word = UNIT_WORDS[unit][total === 1 ? 0 : 1];
 	const complete = total > 0 && done >= total;
@@ -228,7 +228,7 @@ export function CoverageCell({ coverage }: { coverage: Coverage }) {
 }
 
 /** "Thu" within the week, "Mon 3 Nov" further out: the snooze's date. */
-export function shortDate(iso: string, nowMs = Date.now()): string {
+function shortDate(iso: string, nowMs = Date.now()): string {
 	const date = new Date(iso);
 	const days = (date.getTime() - nowMs) / 86_400_000;
 	return new Intl.DateTimeFormat(
@@ -279,7 +279,7 @@ function mainReview(reviews: RowReview[]): RowReview | undefined {
 	return reviews.find((r) => r.pinnedHead === null);
 }
 
-export const byLastActed = (reviews: RowReview[]) =>
+const byLastActed = (reviews: RowReview[]) =>
 	[...reviews].sort(
 		(a, b) => Date.parse(b.lastActedAt) - Date.parse(a.lastActedAt),
 	);
@@ -342,7 +342,7 @@ function TitleLink({ row }: { row: HomeRow }) {
  * by the rows and the header that names them (ColumnHeader): the last
  * one ends at the row's right edge, the actions float over it.
  */
-export const COLUMNS = {
+const COLUMNS = {
 	repo: "lg:w-32 lg:shrink-0",
 	title: "lg:flex-1",
 	status: "lg:w-32 lg:shrink-0",
@@ -350,7 +350,7 @@ export const COLUMNS = {
 	coverage: "lg:w-36 lg:shrink-0",
 	updated: "lg:w-28 lg:shrink-0 lg:justify-end",
 } as const;
-export type Column = keyof typeof COLUMNS;
+type Column = keyof typeof COLUMNS;
 
 const COLUMN_TITLES: Record<Column, string> = {
 	repo: "Repo",

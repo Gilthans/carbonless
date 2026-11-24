@@ -387,7 +387,7 @@ export interface CodeWindow {
  * rows shown (another old side, other lines changed, other numbers, or the
  * range not in it).
  */
-export type SnapshotReason = "no-host-diff" | "diff-differs";
+type SnapshotReason = "no-host-diff" | "diff-differs";
 
 export type CodeSnapshot =
 	| { same: true }
@@ -591,7 +591,7 @@ export interface ReviewThread {
 }
 
 /** A commenter, as a thread's row shows them. */
-export interface ThreadAuthor {
+interface ThreadAuthor {
 	login: string;
 	/** Their avatar image ("" when the host gave none). */
 	avatarUrl: string;
@@ -987,7 +987,7 @@ export const COMMENTS_BATCH = 50;
 export const HUNKS_BATCH = 25;
 
 /** One file of a batched hunks answer. */
-export interface HunksBatchFile {
+interface HunksBatchFile {
 	index: number;
 	hunks?: FileHunks;
 	/** The file's text couldn't be read: this file only, never the batch. */
@@ -1063,7 +1063,7 @@ export interface TimelineReviewComment {
 }
 
 /** A submitted review with a verdict or text of its own. */
-export interface TimelineReview {
+interface TimelineReview {
 	kind: "review";
 	at: string;
 	state: ReviewVerdict;
@@ -1073,7 +1073,7 @@ export interface TimelineReview {
 }
 
 /** A comment on the PR's conversation (not on the code). */
-export interface TimelineConversationComment {
+interface TimelineConversationComment {
 	kind: "conversation";
 	at: string;
 	text: string;

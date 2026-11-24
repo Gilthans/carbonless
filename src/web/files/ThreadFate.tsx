@@ -125,7 +125,7 @@ export const PlacementProvider = PlacementContext.Provider;
 export const usePlacementInfo = () => useContext(PlacementContext);
 
 /** A fate's word, icon, tone and tooltip. */
-export const FATES: Record<
+const FATES: Record<
 	Fate,
 	{
 		label: string;
@@ -406,7 +406,7 @@ export function ChangedSince({
 }
 
 /** Where a moved thread's original lines are: the move's patch set (none for a head) and file. */
-export const movedOriginalOf = (m: MovedInfo) => ({
+const movedOriginalOf = (m: MovedInfo) => ({
 	ps: "patchset" in m.on ? m.on.patchset : null,
 	path: m.path,
 });
@@ -432,7 +432,7 @@ export type OldLines = Extract<ThreadPlacement, { kind: "changed" }>["old"];
  * commented lines from `fallback` (a changed placement's `old`: the same
  * patch set's lines, never where the thread sits now); else nothing.
  */
-export function OriginalCode({
+function OriginalCode({
 	thread,
 	fallback,
 	moved,

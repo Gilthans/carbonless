@@ -142,7 +142,7 @@ export function marksOf(cluster: ClusterView): {
 }
 
 /** The cluster's reviewed lines. */
-export const reviewedLines = (cluster: ClusterView): LineRanges =>
+const reviewedLines = (cluster: ClusterView): LineRanges =>
 	marksOf(cluster).reviewed;
 
 /** How many of the cluster's lines are reviewed (all, some, or none). */

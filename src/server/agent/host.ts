@@ -111,21 +111,21 @@ import {
 } from "./store.js";
 
 /** No review page request this long ends a spawned agent (the registry's idle time). */
-export const PAGE_IDLE_MS = 30 * 60_000;
+const PAGE_IDLE_MS = 30 * 60_000;
 
 /** The port this server listens on (serve.ts sets it): the claim names it. */
 let listeningPort = 0;
 export const setServerPort = (port: number): void => {
 	listeningPort = port;
 };
-export const serverPort = (): number => listeningPort;
+const serverPort = (): number => listeningPort;
 
 /** crb's own /mcp as this machine reaches it (serve.ts sets it once listening). */
 let selfMcp: SelfMcp | null = null;
 export const setServerMcp = (mcp: SelfMcp | null): void => {
 	selfMcp = mcp;
 };
-export const serverMcp = (): SelfMcp | null => selfMcp;
+const serverMcp = (): SelfMcp | null => selfMcp;
 
 /** What the host asks of its ACP runner (an AgentRunner; a stub in tests). */
 export type HostRunner = Pick<
@@ -224,7 +224,7 @@ export interface OpenResult {
 }
 
 /** The citation token for an agent thread in a reply (the web links it). */
-export const citeOf = (thread: string): string => `crb:c/${thread}`;
+const citeOf = (thread: string): string => `crb:c/${thread}`;
 
 /** What `next` hands a joined session. */
 export interface SessionQuestion {
@@ -281,7 +281,7 @@ export interface SessionReviewFacts {
 }
 
 /** A patch set as `review` lists it. */
-export interface SessionPatchset {
+interface SessionPatchset {
 	number: number;
 	head: string;
 	mergeBase: string;
@@ -289,7 +289,7 @@ export interface SessionPatchset {
 }
 
 /** A GitHub review thread as the `review` tool lists it (bodies sanitised and capped). */
-export interface SessionGithubThread {
+interface SessionGithubThread {
 	id: string;
 	path: string;
 	line: number | null;
@@ -308,12 +308,12 @@ export interface SessionGithubThread {
  * a recent or running read is reused, an older one replaced, so "was it
  * resolved?" is answered from GitHub as of at most this long ago.
  */
-export const AGENT_GITHUB_MAX_AGE_MS = 30_000;
+const AGENT_GITHUB_MAX_AGE_MS = 30_000;
 
 /** At most this many GitHub threads in `review`. */
-export const MAX_SESSION_THREADS = 200;
+const MAX_SESSION_THREADS = 200;
 /** A comment body in `review`, in characters (cut with an ellipsis). */
-export const MAX_SESSION_COMMENT = 2048;
+const MAX_SESSION_COMMENT = 2048;
 
 /** What a joined session's tools read of the review (reviewAgentHost's facts). */
 export interface SessionFacts {
@@ -333,7 +333,7 @@ export interface SessionFacts {
 }
 
 /** The reviewer's patch sets, which one the review's head is, and the PR's head. */
-export interface ReviewPatchsets {
+interface ReviewPatchsets {
 	patchsets: readonly {
 		number: number;
 		head: string;
@@ -346,7 +346,7 @@ export interface ReviewPatchsets {
 }
 
 /** What `file` reads: the lines, or why none. */
-export type FileLinesRead =
+type FileLinesRead =
 	| { lines: string[] }
 	| "missing"
 	| "binary"
@@ -388,7 +388,7 @@ export class BadReadError extends Error {}
 export class NotFoundError extends Error {}
 
 /** One comparison's coverage, as the page reads it (Session.coverage). */
-export interface SessionCoverage {
+interface SessionCoverage {
 	/** The comparison's merge base and head. */
 	base: string;
 	head: string;
@@ -399,13 +399,13 @@ export interface SessionCoverage {
 export class CoverageError extends Error {}
 
 /** Line ranges by side, inclusive: LEFT in the base's numbering, RIGHT in the head's. */
-export interface SideRanges {
+interface SideRanges {
 	LEFT: [number, number][];
 	RIGHT: [number, number][];
 }
 
 /** One changed file's lines in `progress`: each changed line in exactly one of the three. */
-export interface SessionProgressFile {
+interface SessionProgressFile {
 	path: string;
 	oldPath?: string;
 	status: FileStatus;
@@ -445,7 +445,7 @@ export interface PostedSpan {
 }
 
 /** Whether a conversation's span anchor is the posted span (columns aside: GitHub has none). */
-export function sameSpan(a: AgentAnchor, s: PostedSpan): boolean {
+function sameSpan(a: AgentAnchor, s: PostedSpan): boolean {
 	if (a.subject === "thread" || a.subject === "review") return false;
 	if (a.path !== s.path || a.commit !== s.commit || a.subject !== s.subject) {
 		return false;
@@ -2389,7 +2389,7 @@ const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
  * after them all): the page's default since view (defaultBase), what
  * "since your last pass" compares from. Null when none is before it.
  */
-export function sinceOf(
+function sinceOf(
 	patchsets: readonly { number: number }[],
 	head: number | null,
 ): number | null {
@@ -2540,7 +2540,7 @@ export function threadFacts(
 }
 
 /** A code window's rows as unified diff text; null with none (a file thread, pending). */
-export function windowText(code: CodeWindow | null): string | null {
+function windowText(code: CodeWindow | null): string | null {
 	const rows = code?.rows ?? [];
 	if (rows.length === 0) return null;
 	const start = (no: "oldNo" | "newNo") =>

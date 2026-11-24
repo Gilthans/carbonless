@@ -93,7 +93,7 @@ export function readServerSpans(dir: string, sinceMs?: number): Span[] {
 	return spansOf(readServerRequests(dir, sinceMs));
 }
 
-export interface Stat {
+interface Stat {
 	name: string;
 	n: number;
 	ms: number;
@@ -105,7 +105,7 @@ export interface Stat {
 }
 
 /** Spans of one build. */
-export interface Build {
+interface Build {
 	name: string;
 	spans: number;
 	fromMs: number;

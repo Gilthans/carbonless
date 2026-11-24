@@ -254,7 +254,7 @@ export function compactRun(
 }
 
 /** Whether the run's runner (the pid that ends its directory name) still runs. */
-export function runnerAlive(
+function runnerAlive(
 	dir: string,
 	isAlive: (pid: number) => boolean = alive,
 ): boolean {

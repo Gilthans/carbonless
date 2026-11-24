@@ -11,11 +11,11 @@ import { type PrFacts, type StartedReview, sameLogin } from "./facts.js";
 export const RECENTLY_CLOSED_MS = 3 * 86_400_000;
 
 /** Whether the viewer counts as having started it: a patch set, not as of a cutoff. */
-export const countsAsStarted = (reviews: readonly StartedReview[]) =>
+const countsAsStarted = (reviews: readonly StartedReview[]) =>
 	reviews.some((r) => r.asOf === null);
 
 /** Whether a merged or closed PR closed within RECENTLY_CLOSED_MS of `now`. */
-export function recentlyClosed(pr: PrFacts, now: number): boolean {
+function recentlyClosed(pr: PrFacts, now: number): boolean {
 	if (pr.state === "OPEN" || pr.closedAt === null) return false;
 	const at = Date.parse(pr.closedAt);
 	return Number.isFinite(at) && now - at <= RECENTLY_CLOSED_MS;

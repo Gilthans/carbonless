@@ -12,7 +12,7 @@ import {
 	useLinkFacts,
 } from "./conversationLinks";
 
-export const CITATION_LINK_CLASS =
+const CITATION_LINK_CLASS =
 	"rounded-sm text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent";
 
 /**

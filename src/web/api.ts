@@ -160,12 +160,12 @@ const post = <T>(path: string, body?: unknown) =>
 		body: body === undefined ? undefined : JSON.stringify(body),
 	});
 
-export const fetchSession = () => request<SessionInfo>("/api/session");
+const fetchSession = () => request<SessionInfo>("/api/session");
 /**
  * The server's last overview read, or with `maxAge` (ms) one read from
  * GitHub at most that long ago.
  */
-export const fetchOverview = (maxAge?: number, signal?: AbortSignal) =>
+const fetchOverview = (maxAge?: number, signal?: AbortSignal) =>
 	request<PrOverview>(
 		maxAge === undefined
 			? "/api/overview"
@@ -193,11 +193,11 @@ const reviewPath = (target: ReviewTarget) =>
 					: { head: target.oid },
 			)}`;
 
-export const fetchReview = (target: ReviewTarget = CURRENT_REVIEW) =>
+const fetchReview = (target: ReviewTarget = CURRENT_REVIEW) =>
 	request<ReviewView>(reviewPath(target));
 
 /** With `from`, the since view's hunks: the interdiff from patch set `from`. */
-export const fetchHunks = (revision: string, index: number, from?: number) =>
+const fetchHunks = (revision: string, index: number, from?: number) =>
 	request<FileHunks>(
 		`/api/files/${index}/hunks?${new URLSearchParams({
 			revision,
@@ -227,7 +227,7 @@ export const blobUrl = (
 	);
 
 /** The engine's answer for patch set `from` to a patch set or a head (RereviewAnswer). */
-export const fetchRereview = (from: number, to: RereviewTo) =>
+const fetchRereview = (from: number, to: RereviewTo) =>
 	request<RereviewAnswer | { pending: true }>(
 		`/api/rereview?${new URLSearchParams({
 			from: String(from),
@@ -254,7 +254,7 @@ export const fetchHunksBatch = (
 export const HUNKS_KEPT_MS = 60 * 60_000;
 
 /** Every unresolved thread of read `readId` placed into a patch set or a head. */
-export const fetchPlacements = (readId: string, to: RereviewTo) =>
+const fetchPlacements = (readId: string, to: RereviewTo) =>
 	request<PlacementsAnswer | { pending: true }>(
 		`/api/placements?${new URLSearchParams({
 			read: readId,
@@ -279,7 +279,7 @@ export const deleteMove = (id: string, to: RereviewTo) =>
  * Unchanged lines `from..to` of a file; with `since`, the since view's (the
  * interdiff's from that patch set, numbered as its hunks are).
  */
-export const fetchContext = (
+const fetchContext = (
 	revision: string,
 	index: number,
 	from: number,
@@ -348,10 +348,10 @@ export const deleteComment = (threadId: string, commentId: string) =>
 export const postVerdict = (req: VerdictRequest) =>
 	post<VerdictAnswer>("/api/verdict", req);
 
-export const fetchVerdict = () => request<VerdictFacts>("/api/verdict");
+const fetchVerdict = () => request<VerdictFacts>("/api/verdict");
 
 export const postRefresh = () => post<SessionInfo>("/api/refresh");
-export const fetchHead = () => request<SessionInfo>("/api/head");
+const fetchHead = () => request<SessionInfo>("/api/head");
 
 /**
  * Session and overview change only through Refresh (and the head check,
@@ -449,7 +449,7 @@ export const THREAD_STAGES: ThreadsStage[] = [
 	"full",
 ];
 
-export const fetchThreads = (
+const fetchThreads = (
 	readId: string,
 	stage: ThreadsStage,
 	signal?: AbortSignal,
@@ -480,7 +480,7 @@ export const threadsQuery = (readId: string, stage: ThreadsStage) =>
 		staleTime: Number.POSITIVE_INFINITY,
 	});
 
-export const fetchComments = (readId: string, ids: string[]) =>
+const fetchComments = (readId: string, ids: string[]) =>
 	request<CommentsView>(
 		`/api/comments?${new URLSearchParams({ read: readId, ids: ids.join(",") })}`,
 	);
@@ -742,7 +742,7 @@ export const commentsQuery = (
 		gcTime: COMMENTS_KEPT_MS,
 	});
 
-export const fetchTimeline = (readId: string, signal?: AbortSignal) =>
+const fetchTimeline = (readId: string, signal?: AbortSignal) =>
 	request<TimelineView>(
 		`/api/timeline?${new URLSearchParams({ read: readId })}`,
 		{ signal },

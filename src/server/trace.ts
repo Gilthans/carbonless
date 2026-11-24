@@ -67,9 +67,9 @@ export interface RecordedSpan {
 	service?: string;
 }
 
-export type SpanKind = "internal" | "server" | "client";
+type SpanKind = "internal" | "server" | "client";
 
-export interface StartOptions {
+interface StartOptions {
 	/** The parent; null for a new trace. Default: the current span. */
 	parent?: SpanContext | null;
 	/** Epoch milliseconds; default now. */
@@ -185,7 +185,7 @@ export function isServiceFile(service: string, name: string): boolean {
  * one (two crb serves during an update's restart, several in an e2e run):
  * the cap never deletes it.
  */
-export const RECENT_MS = 5 * 60 * 1000;
+const RECENT_MS = 5 * 60 * 1000;
 
 /**
  * Deletes `service`'s trace files in `dir` older than `keepDays`, then the
@@ -291,7 +291,7 @@ export function toNanos(ms: number): string {
 }
 
 /** Now, in epoch milliseconds with sub-millisecond precision. */
-export function nowMs(): number {
+function nowMs(): number {
 	return performance.timeOrigin + performance.now();
 }
 
@@ -365,7 +365,7 @@ const realTimers = {
 };
 
 /** A scheduler for the timed flush (tests pass their own). */
-export interface FlushTimers {
+interface FlushTimers {
 	setTimeout(fn: () => void, ms: number): { unref?(): unknown };
 	clearTimeout(handle: { unref?(): unknown }): void;
 }

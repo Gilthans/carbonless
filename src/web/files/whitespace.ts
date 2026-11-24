@@ -19,7 +19,6 @@ import { hunkPairs, type LinePair } from "./wordBlocks";
 
 export {
 	matchSides,
-	type Side,
 	stripWhitespace,
 	whitespaceEqual,
 } from "../../shared/whitespace";
@@ -149,7 +148,7 @@ export function pairRun(
 }
 
 /** A hunk's run and the rows the view shows for it. */
-export interface ViewRun {
+interface ViewRun {
 	key?: string;
 	/** A run of orphan lines (DiffLine.orphan, CAR-216). */
 	orphan?: true;
