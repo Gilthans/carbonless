@@ -284,6 +284,7 @@ describe("threadFocus", () => {
 		const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
 		const M = 'x"] [data-other="';
 		const centred = vi.fn();
+		const wrong = vi.fn();
 		function WithMessage() {
 			const ref = useRef<HTMLDivElement>(null);
 			const at = useRef<HTMLParagraphElement>(null);
@@ -291,15 +292,20 @@ describe("threadFocus", () => {
 			const lit = useOutlinedMessage([{ id: M }], at);
 			return (
 				<div ref={ref}>
-					<p data-other="" />
+					{/* What the id would select unescaped: `[data-message-id="x"] [data-other=""]`. */}
+					<div data-message-id="x">
+						<p data-other="" />
+					</div>
 					<p ref={at} data-message-id={M} data-lit={lit ?? ""} />
 				</div>
 			);
 		}
 		render(<WithMessage />);
 		const msg = document.querySelector("[data-lit]");
-		if (!(msg instanceof HTMLElement)) throw new Error("no message");
+		const decoy = document.querySelector("[data-other]");
+		if (!(msg instanceof HTMLElement) || !decoy) throw new Error("no message");
 		msg.scrollIntoView = centred;
+		decoy.scrollIntoView = wrong;
 		// Straight to the store: a link checks its ids, the lookup must not rely on it.
 		act(() => {
 			threadFocus.request({ id: A, message: M });
@@ -307,7 +313,36 @@ describe("threadFocus", () => {
 		// Found inside its card (not the card's top scrolled instead), and lit.
 		expect(scrollTo).not.toHaveBeenCalled();
 		expect(centred).toHaveBeenCalledWith({ block: "center" });
+		expect(wrong).not.toHaveBeenCalled();
 		expect(msg.dataset.lit).toBe(M);
+	});
+
+	it("the outline doesn't scroll its own copy while that copy is inert", () => {
+		const A = "01k9e6m2q8x4v7c3n5b0h1j2aa";
+		const M = "01k9e6m2q8x4v7c3n5b0h1j2mm";
+		const scrolled = vi.fn();
+		function Messages() {
+			const ref = useRef<HTMLDivElement>(null);
+			const lit = useOutlinedMessage([{ id: M }], ref);
+			return (
+				<div ref={ref} data-message-id={M} data-mine data-lit={lit ?? ""} />
+			);
+		}
+		render(
+			<>
+				<Card id={A} />
+				{/* A closed sheet: drawn, but not where the reviewer can use it. */}
+				<div inert>
+					<Messages />
+				</div>
+			</>,
+		);
+		const own = document.querySelector("[data-mine]");
+		if (!own) throw new Error("no message");
+		own.scrollIntoView = scrolled;
+		act(() => requestConversationOpen(A, M));
+		expect(own.getAttribute("data-lit")).toBe(M);
+		expect(scrolled).not.toHaveBeenCalled();
 	});
 
 	it("a request is dropped once the reviewer moves to another page", () => {
