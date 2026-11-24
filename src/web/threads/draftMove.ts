@@ -1,5 +1,6 @@
 import { inGitOrder } from "../../shared/diffHunk";
 import type { DiffLine, DisplayHunk } from "../../shared/types";
+import { leftNo } from "../files/orphanLeft";
 import type { SpanRange } from "./spanMarks";
 
 /**
@@ -24,7 +25,7 @@ export function isLineTexts(v: unknown): v is LineTexts {
 }
 
 const numberOn = (l: DiffLine, side: SpanRange["startSide"]) =>
-	side === "RIGHT" ? l.newNo : l.oldNo;
+	side === "RIGHT" ? l.newNo : leftNo(l);
 
 /**
  * The span's lines and their context in the hunks shown, or null when an

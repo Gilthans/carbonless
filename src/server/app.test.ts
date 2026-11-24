@@ -2146,6 +2146,8 @@ describe("API", () => {
 					from: { patchset: 1 },
 					left: ps.head,
 					right: head,
+					// The merge base its old lines name (CAR-276).
+					base: ps.mergeBase,
 				});
 				const bad = await post(`/api/agent/threads/${t.id}/messages`, {
 					clientId: "m2",

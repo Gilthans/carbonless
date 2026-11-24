@@ -799,6 +799,8 @@ describe("agent events", () => {
 			...view,
 			target: { head: "d".repeat(40) },
 			from: { patchset: 1 },
+			// The merge base its LEFT lines name (CAR-276).
+			base: "e".repeat(40),
 		};
 		const openedView = { ...opened, view: headView };
 		expect(parseEventLines(msg([humanMsg, openedView]))).toEqual([
@@ -816,6 +818,15 @@ describe("agent events", () => {
 			{ ...opened, by: "ai", agent, view },
 		];
 		expect(parseEventLines(msg(bad))).toEqual([]);
+	});
+
+	it("a malformed view base drops only the base: the message stays, as one without it (CAR-276)", () => {
+		const humanMsg = newEvent("agent-message", "dan", {
+			thread,
+			text: "q",
+			view: { ...view, base: "abc" },
+		});
+		expect(parseEventLines(msg([humanMsg]))).toEqual([{ ...humanMsg, view }]);
 	});
 
 	it("parses head and suggests on ai messages and drops them on human ones", () => {

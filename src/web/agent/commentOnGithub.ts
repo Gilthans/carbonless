@@ -260,11 +260,16 @@ export function agentCommentAvailable(
 		const asked = ctx.asked;
 		// No question with its comparison (one the agent opened, or older).
 		if (!asked) return "Old lines: not known to be the base branch's";
-		if (!("branch" in asked.from)) {
+		// The base its old lines are numbered in: the base branch's (left),
+		// or recorded (since CAR-276: a since view's too, whose LEFT lines
+		// are base lines since CAR-217). An older since-view question's
+		// may be a patch set's lines: off.
+		const numbered = asked.base ?? ("branch" in asked.from ? asked.left : null);
+		if (numbered === null) {
 			return "Old lines asked against a patch set, not the base branch";
 		}
 		if (ctx.base === undefined && ctx.baseLoading) return LOADING;
-		if (ctx.base === undefined || asked.left !== ctx.base) {
+		if (ctx.base === undefined || numbered !== ctx.base) {
 			return "Old lines asked against an earlier base";
 		}
 	}

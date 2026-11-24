@@ -227,7 +227,7 @@ describe("agentCommentAvailable", () => {
 		expect(agentCommentAvailable(file, { ...on, inDiff: false })).toBe(true);
 	});
 
-	it("old lines only when asked against the base branch at today's merge base", () => {
+	it("old lines only when numbered in today's merge base: asked against the base branch, or recorded with it (CAR-276)", () => {
 		const left = { ...line, side: "LEFT" as const, startSide: "LEFT" as const };
 		const BASE = "b".repeat(40);
 		const asked = (from: AgentView["from"], l = BASE): AgentView => ({
@@ -263,6 +263,21 @@ describe("agentCommentAvailable", () => {
 				asked: asked({ branch: true }),
 			}),
 		).toBe(true);
+		// Asked in a since view with its merge base recorded (CAR-276): its
+		// old lines are base lines (CAR-217), GitHub's at that base.
+		const PS1 = "e".repeat(40);
+		expect(
+			agentCommentAvailable(left, {
+				...branch,
+				asked: { ...asked({ patchset: 1 }, PS1), base: BASE },
+			}),
+		).toBe(true);
+		expect(
+			agentCommentAvailable(left, {
+				...branch,
+				asked: { ...asked({ patchset: 1 }, PS1), base: "c".repeat(40) },
+			}),
+		).toMatch(/earlier base/);
 		// New lines are the head's whatever it was compared against.
 		expect(
 			agentCommentAvailable(line, { ...on, asked: asked({ patchset: 1 }) }),

@@ -1,5 +1,6 @@
 import type { DiffSide } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
+import { type LeftRow, leftNo } from "../files/orphanLeft";
 
 /** A range of diff rows, with the exact characters when both cols are set. */
 export interface SpanRange {
@@ -11,15 +12,17 @@ export interface SpanRange {
 	endCol?: number | null;
 }
 
-/** A row as both the diff and a thread's code window have it. */
-export interface SpanRow {
+/**
+ * A row as both the diff and a thread's code window have it (a since-view
+ * orphan removed row by its LEFT number there, orphanLeft.ts).
+ */
+export interface SpanRow extends LeftRow {
 	text: string;
-	oldNo?: number | null;
 	newNo?: number | null;
 }
 
 const numberOn = (row: SpanRow, side: DiffSide) =>
-	(side === "RIGHT" ? row.newNo : row.oldNo) ?? null;
+	(side === "RIGHT" ? row.newNo : leftNo(row)) ?? null;
 
 /**
  * The characters to paint on each of a range's rows (`rows`: the rows its

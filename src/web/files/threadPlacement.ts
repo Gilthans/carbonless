@@ -11,6 +11,7 @@ import type {
 import type { Mark } from "../code/Invisibles";
 import { type SpanRange, spanMarks } from "../threads/spanMarks";
 import { fileGaps } from "./gaps";
+import { type LeftRow, leftNo } from "./orphanLeft";
 
 /** A diff row by its number on one side: `RIGHT:12` is the row whose new number is 12. */
 export type LineKey = `${DiffSide}:${number}`;
@@ -326,12 +327,12 @@ export function threadOrder(t: ReviewThread, hunks: FileHunks | null): number {
 	return newNumberOf(t.anchor.side, t.anchor.line, hunks?.hunks ?? []);
 }
 
-/** The row a line key names: RIGHT matches `newNo`, LEFT matches `oldNo`. */
+/** The row a line key names: RIGHT matches `newNo`, LEFT matches `leftNo`. */
 export function lineKey(
 	side: DiffSide,
-	line: Pick<DiffLine, "oldNo" | "newNo">,
+	line: Pick<DiffLine, "newNo"> & LeftRow,
 ): LineKey | null {
-	const n = side === "RIGHT" ? line.newNo : line.oldNo;
+	const n = side === "RIGHT" ? line.newNo : leftNo(line);
 	return n === undefined ? null : `${side}:${n}`;
 }
 
@@ -398,7 +399,8 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
  * head): through the full diff's line clusters (base → head), the head
  * line it became, as the full diff shows it; only when the full diff
  * deleted it, the removed row the since view shows it on (its `baseNo`,
- * keyed by its own old number there); null when neither. Never a removed
+ * keyed by its own old number there, an orphan's by leftNo); null when
+ * neither. Never a removed
  * row for a base line the full diff keeps (a twin git aligns otherwise in
  * the interdiff): both views put a thread on the same line.
  */
@@ -416,8 +418,9 @@ export function sinceLeft(
 	const removed = new Map<number, number>();
 	for (const h of hunks ?? []) {
 		for (const l of h.lines) {
-			if (typeof l.baseNo === "number" && l.oldNo !== undefined) {
-				removed.set(l.baseNo, l.oldNo);
+			const n = leftNo(l);
+			if (typeof l.baseNo === "number" && n !== undefined) {
+				removed.set(l.baseNo, n);
 			}
 		}
 	}
@@ -593,7 +596,7 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 		let startRow = endRow;
 		for (let i = 0; i < endRow; i++) {
 			const row = rows[i] as DiffLine;
-			const n = range.startSide === "RIGHT" ? row.newNo : row.oldNo;
+			const n = range.startSide === "RIGHT" ? row.newNo : leftNo(row);
 			if (n !== undefined && n >= range.startLine) {
 				startRow = i;
 				break;

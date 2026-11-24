@@ -3648,6 +3648,109 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 	await expect(row61).toHaveAttribute("data-commented", "", GIT_WAIT);
 });
 
+/**
+ * CAR-276: CAR-216's example the other way round (the base is gallery
+ * #58's PS2, PS2 its base): PS2's diff removes base lines 4–10, and the
+ * last, a blank, is PS1's line 6, context there and unchanged since. The
+ * since view shows it removed, an orphan with no old number of PS1's.
+ */
+test("a removed line never reviewed in PS1 takes a comment in the since view: GitHub gets it on its base line, LEFT, and it shows on that row (CAR-276)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [RESULT]: resultPs2 },
+		files: [{ message: "PS1", files: { [RESULT]: resultPs1 } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, RESULT);
+	const ps1 = boxes(first);
+	const n = await ps1.count();
+	for (let i = 0; i < n; i++) await ps1.nth(i).click();
+	await expect(
+		first.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [RESULT]: resultBase } });
+	const head = p.head();
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = await expand(page, RESULT);
+	const orphanRow = (section: Locator) =>
+		section.locator(
+			'tr[data-testid="diff-line"][data-kind="del"][data-base-no="10"]:not([data-old-no])',
+		);
+	await expect(orphanRow(since)).toBeVisible(GIT_WAIT);
+	const run = since.locator("tbody", {
+		has: page.locator('tr[data-base-no="10"]:not([data-old-no])'),
+	});
+	await expect(run.getByTestId("kind-chip")).toHaveText("not reviewed in PS1");
+	// Picked by its base line (no number of PS1's to show).
+	const number = orphanRow(since).getByRole("button", { name: "Base line 10" });
+	if (isMobile) await orphanRow(since).getByTestId("old").tap();
+	else await number.click();
+	await expect(orphanRow(since)).toHaveAttribute("data-picked", "true");
+	const bar = page.getByTestId("selection-bar");
+	await bar.getByRole("button", { name: "Comment" }).click();
+	const composer = since.getByTestId("new-thread");
+	await expect(composer).toContainText("line 10, base");
+	await composer
+		.getByRole("textbox", { name: "Comment" })
+		.fill("Why drop this blank?");
+	if (isMobile) await expectNoPageOverflow(page);
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(since.getByTestId("new-thread")).toHaveCount(0);
+	// GitHub has it on the head, LEFT 10: the base line, as the full diff
+	// shows it.
+	expect(postedThreads(p)).toEqual([
+		expect.objectContaining({
+			line: 10,
+			diffSide: "LEFT",
+			commit: head,
+			body: expect.stringContaining("Why drop this blank?"),
+		}),
+	]);
+	// It shows on the row it was written on.
+	await expect(
+		since
+			.getByTestId("files-thread")
+			.filter({ hasText: "Why drop this blank?" }),
+	).toBeVisible();
+	await expect(orphanRow(since)).toHaveAttribute("data-commented", "");
+	// After a reload too, from GitHub's thread.
+	await page.reload();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible(GIT_WAIT);
+	const again = fileSection(page, RESULT);
+	await again.getByRole("button", { name: "Expand file" }).click();
+	await expect(orphanRow(again)).toHaveAttribute(
+		"data-commented",
+		"",
+		GIT_WAIT,
+	);
+	// The full diff shows it on its removed row, base line 10.
+	await toFullDiff(page);
+	const full = fileSection(page, RESULT);
+	const expandFull = full.getByRole("button", { name: "Expand file" });
+	await expect(
+		full.getByTestId("diff-line").first().or(expandFull),
+	).toBeVisible(GIT_WAIT);
+	if (await expandFull.isVisible()) await expandFull.click();
+	await expect(
+		full.locator(
+			'tr[data-testid="diff-line"][data-kind="del"][data-old-no="10"]',
+		),
+	).toHaveAttribute("data-commented", "", GIT_WAIT);
+});
+
 test("a link to an old line (side=LEFT) lands on that base line's row in the since view, and one the view doesn't show says so with the way to the full diff (CAR-253)", async ({
 	page,
 	pr,

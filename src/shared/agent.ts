@@ -124,6 +124,13 @@ export interface AgentView {
 	from: AgentViewFrom;
 	left: string;
 	right: string;
+	/**
+	 * The merge base of `right` the view's old lines are numbered in: a
+	 * LEFT line names that base's line in every view (the since view's
+	 * removed lines too, CAR-217). Recorded since CAR-276; older views
+	 * lack it (their since-view LEFT lines may be a patch set's).
+	 */
+	base?: string;
 }
 
 /**

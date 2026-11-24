@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { SincePiece } from "../../shared/pieces";
@@ -26,6 +32,7 @@ import { contextRanges } from "./contextRanges";
 import { DiffBody, type DiffThreads } from "./DiffBody";
 import { GoneFile } from "./FileDiff";
 import { FileTree } from "./FileTree";
+import { getPicks, setPicks } from "./linePicks";
 import { ProgressBar } from "./ProgressBar";
 import type { KindEntry } from "./since";
 
@@ -133,12 +140,18 @@ function renderBody(opts: {
 	kinds?: Map<string, KindEntry>;
 	readOnly?: boolean;
 	sinceMarks?: SinceMark[];
+	threads?: DiffThreads;
 }) {
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: RequestInfo | URL) => {
 			const url = new URL(String(input), "http://test");
-			const body = url.pathname === "/api/files/0/hunks" ? opts.hunks : {};
+			const body =
+				url.pathname === "/api/files/0/hunks"
+					? opts.hunks
+					: url.pathname === "/api/comments"
+						? { threads: [] }
+						: {};
 			return new Response(JSON.stringify(body), { status: 200 });
 		}),
 	);
@@ -160,6 +173,7 @@ function renderBody(opts: {
 				readOnly={opts.readOnly}
 				onSinceMark={onSinceMark}
 				sinceMarks={opts.sinceMarks}
+				threads={opts.threads}
 			/>
 		</QueryClientProvider>,
 	);
@@ -1060,7 +1074,7 @@ describe("orphan lines: changed, unchanged since PS1, never reviewed there (CAR-
 		expect(onSinceMark).not.toHaveBeenCalled();
 	});
 
-	it("side by side: each orphan its own row and box, the removed one with no old number to pick; a tick sends its lines alone", async () => {
+	it("side by side: each orphan its own row and box, the removed one picked by its base line; a tick sends its lines alone", async () => {
 		sideBySide.set(true);
 		onTestFinished(() => sideBySide.set(false));
 		const { onToggle } = renderBody({
@@ -1078,10 +1092,13 @@ describe("orphan lines: changed, unchanged since PS1, never reviewed there (CAR-
 			.filter((c) => c.dataset.kind === "unreviewed");
 		expect(chips).toHaveLength(2);
 		const removed = screen.getByText("old").closest("tbody") as HTMLElement;
-		// No number on its old side: nothing to pick or comment on there.
+		// No old number (PS1's) on its old side: its base line picks it (CAR-276).
 		expect(
 			within(removed).queryByRole("button", { name: /^Old line/ }),
 		).toBeNull();
+		expect(
+			within(removed).getByRole("button", { name: "Base line 2" }),
+		).toBeInTheDocument();
 		expect(within(removed).getByTestId("kind-chip")).toHaveTextContent(
 			"not reviewed in PS1",
 		);
@@ -1203,6 +1220,319 @@ describe("orphan lines: changed, unchanged since PS1, never reviewed there (CAR-
 		]);
 	});
 });
+
+describe("a removed orphan row takes comments, on its base line (CAR-276)", () => {
+	const HEAD = "h".repeat(40);
+	/**
+	 * g: PS1's old line 2 ("gone", base 6) removed since PS1. k: base
+	 * lines 2–3 removed and new line 2 added, unchanged since PS1 but never
+	 * reviewed there: the removed lines are orphans, numbered by their
+	 * base lines only. PS1's row 2 and base line 2 are other lines.
+	 */
+	const g: ClusterView = {
+		...cluster("g", "unreviewed"),
+		oldStart: 6,
+		oldCount: 1,
+		newStart: 4,
+		newCount: 0,
+		removed: ["gone"],
+		added: [],
+		lines: 1,
+	};
+	const k: ClusterView = {
+		...cluster("k", "unreviewed"),
+		oldStart: 2,
+		oldCount: 2,
+		newStart: 2,
+		newCount: 1,
+		removed: ["old a", "old b"],
+		added: ["x"],
+		lines: 3,
+	};
+	const orphan = (l: DiffLine, baseNo?: number): DiffLine => ({
+		...l,
+		orphan: true,
+		...(baseNo === undefined ? {} : { baseNo }),
+	});
+	const hunks: FileHunks = {
+		newLineCount: 4,
+		hunks: [
+			{
+				oldStart: 1,
+				oldCount: 3,
+				newStart: 1,
+				newCount: 4,
+				lines: [
+					line("context", 1, 1, "a"),
+					{ ...line("del", 2, undefined, "gone", "g"), baseNo: 6 },
+					orphan(line("del", undefined, undefined, "old a", "k"), 2),
+					orphan(line("del", undefined, undefined, "old b", "k"), 3),
+					orphan(line("add", undefined, 2, "x", "k")),
+					line("context", 3, 3, "d"),
+				],
+			},
+		],
+		pieces: [
+			{ hunk: 0, line: 1, key: "g", owns: [[0, 1]], old: [[2, 3]], new: [] },
+			{
+				hunk: 0,
+				line: 2,
+				key: "k",
+				owns: [[0, 3]],
+				old: [],
+				new: [],
+				orphan: true,
+			},
+		],
+	};
+	const kindsOf = new Map<string, KindEntry>([
+		["g", { key: "g", kind: "new" }],
+		["k", { key: "k", kind: "new" }],
+	]);
+	const threadOnBase = (n: number): ReviewThread => ({
+		id: `T${n}`,
+		loaded: true,
+		path: "src/a.ts",
+		line: n,
+		currentLine: n,
+		excerpt: "why drop it",
+		html: "<p>why drop it</p>",
+		body: "why drop it",
+		createdAt: "2026-01-01T00:00:00Z",
+		lastActivityAt: "2026-01-01T00:00:00Z",
+		author: "rev",
+		avatarUrl: "",
+		participants: [],
+		lastAuthor: { login: "octo", avatarUrl: "", bot: false },
+		bot: false,
+		commentCount: 1,
+		hasReply: false,
+		outdated: false,
+		resolved: false,
+		code: null,
+		anchor: {
+			path: "src/a.ts",
+			commit: HEAD,
+			side: "LEFT",
+			line: n,
+			startSide: "LEFT",
+			startLine: n,
+			at: "2026-01-01T00:00:00Z",
+		},
+		commit: HEAD,
+		subject: "line",
+		attention: [],
+		yourTurn: false,
+		viewerCan: { reply: false, resolve: false, unresolve: false },
+	});
+	async function shown(threads?: ReviewThread[]) {
+		renderBody({
+			clusters: [g, k],
+			hunks,
+			from: 1,
+			kinds: kindsOf,
+			...(threads
+				? { threads: { readId: "r", snapshotHead: HEAD, threads } }
+				: {}),
+		});
+		await screen.findAllByTestId("diff-line");
+		document.body.setAttribute("data-path", "src/a.ts");
+		onTestFinished(() => {
+			document.body.removeAttribute("data-path");
+			setPicks(null);
+		});
+	}
+	const orphanRow = (base: number) =>
+		document.querySelector(
+			`tr[data-kind="del"][data-orphan][data-base-no="${base}"]`,
+		) as HTMLElement;
+	const ps1Row = (oldNo: number) =>
+		document.querySelector(`tr[data-old-no="${oldNo}"]`) as HTMLElement;
+	const press = (el: Element, init: Partial<PointerEventInit> = {}) => {
+		fireEvent.pointerDown(el, {
+			pointerType: "mouse",
+			button: 0,
+			buttons: 1,
+			...init,
+		});
+		fireEvent.pointerUp(window);
+		fireEvent.click(el, { detail: 1, ...init });
+	};
+	const base = (n: number) =>
+		within(orphanRow(n)).getByRole("button", { name: `Base line ${n}` });
+	const picked = () =>
+		[...document.querySelectorAll<HTMLElement>("tr[data-picked]")].map(
+			(r) => r.textContent,
+		);
+	/** The span the picks make, as the selection bar builds it. */
+	const pickedSpan = () => {
+		const p = getPicks();
+		if (!p) return null;
+		const first = p.lines[0];
+		const last = p.lines[p.lines.length - 1];
+		if (!first || !last) return null;
+		return {
+			span: spanOfCells(
+				{ ...first, cell: document.body },
+				{ ...last, cell: document.body },
+				HEAD,
+			),
+			noLine: noLineIn(p.lines),
+		};
+	};
+
+	it("its base line's button picks it alone, never PS1's row of that number; the span is LEFT at the base line on the head", async () => {
+		await shown();
+		// PS1's row 2 is another line: picking base line 2 leaves it be.
+		expect(ps1Row(2)).toHaveTextContent("gone");
+		press(base(2).closest("td") as Element);
+		expect(picked()).toEqual([expect.stringContaining("old a")]);
+		expect(ps1Row(2).hasAttribute("data-picked")).toBe(false);
+		expect(pickedSpan()).toEqual({
+			span: expect.objectContaining({
+				commit: HEAD,
+				startSide: "LEFT",
+				startLine: 2,
+				side: "LEFT",
+				line: 2,
+			}),
+			noLine: null,
+		});
+		// And PS1's row 2 picks itself alone, on its own base line (6).
+		press(
+			within(ps1Row(2))
+				.getByRole("button", { name: "Old line 2" })
+				.closest("td") as Element,
+		);
+		expect(picked()).toEqual([expect.stringContaining("gone")]);
+		expect(pickedSpan()?.span).toMatchObject({ startLine: 6, line: 6 });
+	});
+
+	it("a range within the orphan run goes to GitHub: base lines 2–3, through to the added line", async () => {
+		await shown();
+		press(base(2).closest("td") as Element);
+		press(base(3).closest("td") as Element, { shiftKey: true });
+		expect(picked()).toEqual([
+			expect.stringContaining("old a"),
+			expect.stringContaining("old b"),
+		]);
+		expect(pickedSpan()).toEqual({
+			span: expect.objectContaining({
+				startSide: "LEFT",
+				startLine: 2,
+				side: "LEFT",
+				line: 3,
+			}),
+			noLine: null,
+		});
+		// Its added line too: LEFT 2 to RIGHT 2, as the full diff names it.
+		const added = document.querySelector('tr[data-new-no="2"]') as HTMLElement;
+		press(
+			within(added)
+				.getByRole("button", { name: "Line 2" })
+				.closest("td") as Element,
+			{ shiftKey: true },
+		);
+		expect(pickedSpan()).toEqual({
+			span: expect.objectContaining({
+				startSide: "LEFT",
+				startLine: 2,
+				side: "RIGHT",
+				line: 2,
+			}),
+			noLine: null,
+		});
+	});
+
+	it("a range mixing the orphan run with the since view's other rows is off, with its reason", async () => {
+		await shown();
+		press(base(3).closest("td") as Element);
+		press(
+			within(ps1Row(2))
+				.getByRole("button", { name: "Old line 2" })
+				.closest("td") as Element,
+			{ shiftKey: true },
+		);
+		expect(picked()).toHaveLength(3);
+		expect(pickedSpan()?.noLine).toBe("orphan");
+	});
+
+	it("an added orphan line with a since row outside its run is off too (CAR-276 fix round)", async () => {
+		await shown();
+		const added = document.querySelector('tr[data-new-no="2"]') as HTMLElement;
+		press(
+			within(added)
+				.getByRole("button", { name: "Line 2" })
+				.closest("td") as Element,
+		);
+		press(
+			within(ps1Row(2))
+				.getByRole("button", { name: "Old line 2" })
+				.closest("td") as Element,
+			{ shiftKey: true },
+		);
+		expect(pickedSpan()?.noLine).toBe("orphan");
+		expect(
+			noLineIn([
+				{ side: "RIGHT", base: undefined, orphan: true },
+				{ side: "RIGHT", base: undefined },
+			]),
+		).toBe("orphan");
+	});
+
+	it("orphan removed lines whose base lines aren't one run are off: the range would cover lines the view never showed (CAR-276 fix round)", () => {
+		const left = (base: number) => ({
+			side: "LEFT" as const,
+			base,
+			orphan: true,
+		});
+		expect(noLineIn([left(10), left(13)])).toBe("orphan-split");
+		expect(noLineIn([left(10), left(11)])).toBeNull();
+		// With its added line: the removed ones still one run.
+		expect(
+			noLineIn([left(10), left(11), { side: "RIGHT", orphan: true }]),
+		).toBeNull();
+	});
+
+	it("its blank number button has a tooltip naming it (CAR-276 fix round)", async () => {
+		await shown();
+		fireEvent.focus(base(2));
+		const tip = document.querySelector('[role="tooltip"]:not([hidden])');
+		expect(tip).toHaveTextContent("Base line 2");
+	});
+
+	it("a selection over its text maps to its base line too", async () => {
+		await shown();
+		const cell = orphanRow(3).querySelector(`[${CODE_CELL}]`) as Element;
+		expect(cellLine(cell)).toMatchObject({
+			side: "LEFT",
+			base: 3,
+			orphan: true,
+		});
+		const range = document.createRange();
+		range.setStart(cell, 0);
+		range.setEnd(cell, cell.childNodes.length);
+		const found = spanOfRange(range, HEAD);
+		expect(found?.noLine).toBeNull();
+		expect(found?.span).toMatchObject({ side: "LEFT", line: 3, startLine: 3 });
+	});
+
+	it("a GitHub thread on its base line shows on it, never on PS1's row of that number", async () => {
+		await shown([threadOnBase(2)]);
+		await waitForCommented();
+		expect(orphanRow(2).hasAttribute("data-commented")).toBe(true);
+		expect(ps1Row(2).hasAttribute("data-commented")).toBe(false);
+		expect(orphanRow(3).hasAttribute("data-commented")).toBe(false);
+	});
+});
+
+async function waitForCommented() {
+	await vi.waitFor(() => {
+		if (!document.querySelector("tr[data-commented]")) {
+			throw new Error("no commented row yet");
+		}
+	});
+}
 
 describe("ProgressBar's to-read slot", () => {
 	const sample: Progress = {
