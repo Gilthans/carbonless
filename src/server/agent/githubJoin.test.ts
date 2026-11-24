@@ -223,6 +223,7 @@ describe("resolveView", () => {
 			from: { branch: true },
 			left: H3,
 			right: H2,
+			base: H3,
 		});
 		expect(
 			resolveView(
@@ -235,6 +236,8 @@ describe("resolveView", () => {
 			from: { patchset: 1 },
 			left: H1,
 			right: H2,
+			// LEFT lines name PS2's merge base in the since view too (CAR-276).
+			base: H3,
 		});
 		const head = "4".repeat(40);
 		// A head no patch set holds: the snapshot's merge base.
@@ -245,6 +248,7 @@ describe("resolveView", () => {
 			from: { branch: true },
 			left: MB,
 			right: head,
+			base: MB,
 		});
 		// A head that is a patch set's: that patch set's merge base.
 		expect(
@@ -261,6 +265,7 @@ describe("resolveView", () => {
 			from: { patchset: 1 },
 			left: H1,
 			right: head,
+			base: MB,
 		});
 	});
 

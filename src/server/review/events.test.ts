@@ -799,6 +799,8 @@ describe("agent events", () => {
 			...view,
 			target: { head: "d".repeat(40) },
 			from: { patchset: 1 },
+			// The merge base its LEFT lines name (CAR-276).
+			base: "e".repeat(40),
 		};
 		const openedView = { ...opened, view: headView };
 		expect(parseEventLines(msg([humanMsg, openedView]))).toEqual([
@@ -809,6 +811,7 @@ describe("agent events", () => {
 		const bad = [
 			{ ...reply, view },
 			{ ...humanMsg, view: { ...view, left: "abc" } },
+			{ ...humanMsg, view: { ...view, base: "abc" } },
 			{ ...humanMsg, view: { ...view, target: {} } },
 			{ ...humanMsg, view: { ...view, target: { patchset: 0 } } },
 			{ ...humanMsg, view: { ...view, from: { branch: false } } },

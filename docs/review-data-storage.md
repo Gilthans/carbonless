@@ -598,7 +598,11 @@ tree, slug identities, compare-and-swap). Written by
 
 `view` is the comparison on screen when a human message was sent:
 `target` (`{patchset}` or `{head}`), `from` (`{branch: true}` or
-`{patchset}`), and the resolved `left` and `right` commit OIDs. Readers drop
+`{patchset}`), and the resolved `left` and `right` commit OIDs, and (since
+CAR-276, 2026-11-24) `base`: the merge base of `right` that LEFT line numbers
+name (the since view's too, since CAR-217); a view without it from a patch
+set may name a patch set's lines, so Comment on GitHub stays off for its LEFT
+lines. 41 bytes per human message. Readers drop
 an event whose `view` is malformed, or carried by an ai event; the same
 for `origin` on a human event, `head` and `suggests` on a human message,
 and any `agent-thread-seen` by ai.
