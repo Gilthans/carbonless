@@ -608,14 +608,17 @@ test("phone: side by side shows old and new rendered in two columns, the control
 }) => {
 	test.skip(!isMobile, "the phone's side by side");
 	await page.setViewportSize({ width: 360, height: 780 });
-	const wide = (cell: string) =>
-		`\n| a | b |\n|---|---|\n| ${cell} | 2 |\n\n\`\`\`\n${"long_code_line_".repeat(20)}\n\`\`\`\n\nSee https://example.com/${"very-long-path-segment-".repeat(8)} here.\n`;
+	// A hidden change too: an HTML comment's text, long, shown as source.
+	const note = (n: string) =>
+		`Docs <!-- ${n} ${"hidden-comment-words-".repeat(8)} --> here.`;
+	const wide = (cell: string, n: string) =>
+		`\n${note(n)}\n\n| a | b |\n|---|---|\n| ${cell} | 2 |\n\n\`\`\`\n${"long_code_line_".repeat(20)}\n\`\`\`\n\nSee https://example.com/${"very-long-path-segment-".repeat(8)} here.\n`;
 	const p = await pr({
-		base: { [README]: `${BASE}${wide("short")}` },
+		base: { [README]: `${BASE}${wide("short", "one")}` },
 		files: [
 			{
 				message: "wide",
-				files: { [README]: `${PS1}${wide("wide-cell-".repeat(20))}` },
+				files: { [README]: `${PS1}${wide("wide-cell-".repeat(20), "two")}` },
 			},
 		],
 	});
@@ -662,6 +665,32 @@ test("phone: side by side shows old and new rendered in two columns, the control
 					cols.filter((col) => col.scrollWidth > col.clientWidth + 1).length,
 			);
 		expect(spill).toBe(0);
+		await expect(section.getByTestId("md-hidden-lines").first()).toBeVisible();
+		// Each row's controls sit over their own side's column.
+		const sides = await section.locator(".md-controls").evaluateAll((all) =>
+			all.flatMap((c) => {
+				const row = c.parentElement;
+				const side = c.getAttribute("data-side");
+				const col = row
+					?.querySelector(`.md-body[data-col="${side}"]`)
+					?.getBoundingClientRect();
+				if (!col) return [`${side}: no column`];
+				return [...c.querySelectorAll("button, input, [role=img]")].flatMap(
+					(el) => {
+						const r = el.getBoundingClientRect();
+						return r.left < col.left - 0.5 || r.right > col.right + 0.5
+							? [`${side}: ${Math.round(r.left)}..${Math.round(r.right)}`]
+							: [];
+					},
+				);
+			}),
+		);
+		expect(sides).toEqual([]);
+		// No gutter: the fold row starts at the document's edge.
+		const fold = section.getByTestId("md-fold").first();
+		await fold.scrollIntoViewIfNeeded();
+		const doc = await bounds(section.getByTestId("md-doc"));
+		expect((await bounds(fold)).x - doc.x).toBeLessThanOrEqual(16);
 		await expectNoPageOverflow(page);
 		const box = row.getByRole("checkbox", { name: "Mark cluster reviewed" });
 		await box.click();
@@ -680,7 +709,7 @@ test("phone: side by side shows old and new rendered in two columns, the control
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	p.moveHead({
 		message: "again",
-		files: { [README]: `${PS2}${wide("wide-cell-".repeat(20))}` },
+		files: { [README]: `${PS2}${wide("wide-cell-".repeat(20), "three")}` },
 	});
 	await page.reload();
 	await expect(page.getByTestId("ps-tail")).toHaveAttribute(

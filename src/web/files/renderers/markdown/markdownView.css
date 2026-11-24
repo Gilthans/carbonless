@@ -51,6 +51,15 @@
 	padding: 0 8px;
 }
 
+/* Over the side the controls are for: a removal's on the old, else the new. */
+.md-controls[data-side="old"] {
+	padding-right: calc(50% + 1px);
+}
+
+.md-controls[data-side="new"] {
+	padding-left: calc(50% + 1px);
+}
+
 .md-controls > .md-box {
 	flex-direction: row;
 	gap: 4px;
@@ -360,4 +369,11 @@
 
 .md-row.md-narrow > .md-threads {
 	padding-left: 12px;
+}
+
+/* No gutter to clear: the fold runs the document's width, across both columns. */
+.md-fold-row.md-narrow {
+	grid-column: 1 / -1;
+	padding-left: 6px;
+	padding-right: 6px;
 }

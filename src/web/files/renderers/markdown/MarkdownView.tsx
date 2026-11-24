@@ -1325,6 +1325,20 @@ export function MarkdownView(props: {
 		// Threads on its blocks, or comments being written there: beside it
 		// and under it, never hidden by it.
 		const bubble = bubbleOf(key);
+		if (narrow) {
+			// No gutter: the bubble in a controls row, the fold across the row.
+			return (
+				<div key={key} className="md-row md-split md-narrow" {...rowMarks(key)}>
+					{bubble && (
+						<div className="md-controls" data-col="controls" data-side="new">
+							{bubble}
+						</div>
+					)}
+					<div className="md-fold-row md-narrow">{button}</div>
+					{threadsOf(key)}
+				</div>
+			);
+		}
 		return bubble || hasExtra(key) ? (
 			<div key={key} className="md-row" {...rowMarks(key)}>
 				<div className="md-gutter">{bubble}</div>
