@@ -335,7 +335,8 @@ describe("Home repo filter", () => {
 		);
 		await waitFor(() =>
 			expect(api.calls.map((c) => c.url)).toContain(
-				"/api/home/repos/acme/nowhere?fresh=1",
+				// Rows kept from a read that worked: a whole ask (CAR-290).
+				"/api/home/repos/acme/nowhere?fresh=1&whole=1",
 			),
 		);
 		expect(nowhere).toHaveAttribute("aria-pressed", "false");
