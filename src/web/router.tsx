@@ -8,11 +8,13 @@ import {
 	Link,
 	Outlet,
 	useParams,
+	useRouter,
 } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { App } from "./App";
 import { ApiError, bindReview, sessionQuery } from "./api";
 import { parseFilesSearch } from "./files/landing";
+import { threadFocus } from "./files/threadFocus";
 import { useUnsavedGuard } from "./files/useSetStates";
 import { HomePage } from "./home/HomePage";
 import { OpeningPage, parseOpeningSearch } from "./OpeningPage";
@@ -58,6 +60,10 @@ export function NotFound({ reason }: { reason?: string | null }) {
  */
 function Root() {
 	useUnsavedGuard();
+	// A Threads tab row's or a conversation link's request ends on a move
+	// to another page.
+	const router = useRouter();
+	useEffect(() => threadFocus.follow(router.history), [router]);
 	return (
 		<ShortcutsProvider>
 			<ToastStack>

@@ -1,3 +1,4 @@
+import type { RouterHistory } from "@tanstack/react-router";
 import {
 	type RefObject,
 	useEffect,
@@ -63,8 +64,14 @@ const listeners = new Set<() => void>();
 const notify = () => {
 	for (const l of listeners) l();
 };
+/** The router's history once the app follows it (`threadFocus.follow`). */
+let moves: RouterHistory | null = null;
 const currentPath = () =>
-	typeof window === "undefined" ? "" : window.location.pathname;
+	moves
+		? moves.location.pathname
+		: typeof window === "undefined"
+			? ""
+			: window.location.pathname;
 
 /** Drops the request (and any outline) once the path isn't the request's. */
 function leftPage() {
@@ -94,28 +101,6 @@ function pending(): ThreadFocus | null {
 	}
 	return snapshot;
 }
-
-/**
- * Every move to another page drops the request, whether or not anything
- * reads it while there: the router moves by the history API, and back and
- * forward by popstate. Wrapped once per window.
- */
-function watchMoves() {
-	if (typeof window === "undefined") return;
-	const w = window as Window & { __crbThreadFocusMoves?: true };
-	if (w.__crbThreadFocusMoves) return;
-	w.__crbThreadFocusMoves = true;
-	for (const name of ["pushState", "replaceState"] as const) {
-		const original = history[name];
-		history[name] = function (this: History, ...args) {
-			const result = original.apply(this, args);
-			leftPage();
-			return result;
-		} as History[typeof name];
-	}
-	window.addEventListener("popstate", leftPage);
-}
-watchMoves();
 
 export const threadFocus = {
 	request(target: {
@@ -198,6 +183,20 @@ export const threadFocus = {
 	},
 	/** The newest request's number, pending or taken. */
 	latest: () => lastSeq,
+	/**
+	 * Every move to another page drops the request, whether or not anything
+	 * reads it while there: `history` is the router's, which tells of each
+	 * push and replace, and of back and forward. The app's root follows its
+	 * router while mounted; the returned function stops.
+	 */
+	follow(history: RouterHistory): () => void {
+		moves = history;
+		const stop = history.subscribe(leftPage);
+		return () => {
+			stop();
+			if (moves === history) moves = null;
+		};
+	},
 	/** Forgets everything (tests). */
 	reset() {
 		current = null;
