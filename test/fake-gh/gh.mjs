@@ -19,7 +19,7 @@ import { routeCall } from "./route.mjs";
 const run = promisify(execFile);
 
 /** Thrown by exit(): ends a call with its exit code. */
-export class FakeGhExit extends Error {
+class FakeGhExit extends Error {
 	constructor(code) {
 		super(`fake gh exited ${code}`);
 		this.code = code;

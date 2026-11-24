@@ -22,7 +22,7 @@ import { ErrorMessage } from "./ui";
  * The PR's title as Home last read it: the server's `crb-pr-title` meta on
  * a `/pr/...` page; null when it doesn't know the PR.
  */
-export function prTitleMeta(doc: Document = document): string | null {
+function prTitleMeta(doc: Document = document): string | null {
 	return (
 		doc.querySelector('meta[name="crb-pr-title"]')?.getAttribute("content") ??
 		null

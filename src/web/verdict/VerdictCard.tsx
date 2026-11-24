@@ -70,7 +70,7 @@ const OPINION_NAME = {
  * The viewer's approval or change request standing on GitHub (Comment
  * withdraws it): the verdict read's, else the Overview's opinion.
  */
-export function standingOpinion(
+function standingOpinion(
 	facts: VerdictFacts | undefined,
 	overview: PrOverview,
 ): keyof typeof OPINION_NAME | null {
@@ -266,7 +266,7 @@ export function sinceCounts(c: SinceDone, ignoreWs: boolean): SinceDone {
  * Approve button alike: done counts picked by the switch (sinceCounts),
  * pending and failed as they are.
  */
-export function shownChanges(
+function shownChanges(
 	changes: VerdictSince["changes"],
 	ignoreWs: boolean,
 ): VerdictSince["changes"] {

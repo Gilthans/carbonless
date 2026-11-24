@@ -8,7 +8,7 @@ import { Tooltip } from "../Tooltip";
  * The threads a bubble counts: the unresolved ones (a resolved one is
  * counted nowhere); all resolved, all of them, beside the check.
  */
-export function agentBubbleCount(threads: readonly AgentThread[]): number {
+function agentBubbleCount(threads: readonly AgentThread[]): number {
 	const open = threads.filter((t) => !t.resolved).length;
 	return open > 0 ? open : threads.length;
 }

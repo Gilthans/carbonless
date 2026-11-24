@@ -66,7 +66,7 @@ export interface ReviewCreatedEvent extends EventBase {
 	};
 }
 
-export interface PatchsetStartedEvent extends EventBase {
+interface PatchsetStartedEvent extends EventBase {
 	type: "patchset-started";
 	patchset: number;
 	/** The snapshot id. */
@@ -101,7 +101,7 @@ export interface ClusterStateEvent extends EventBase {
  * for the whole cluster first, then these, in one commit: the cluster's
  * marks, whole. Only `by: "human"`. See docs/review-data-storage.md.
  */
-export interface LinesStateEvent extends EventBase {
+interface LinesStateEvent extends EventBase {
 	type: "lines-state";
 	/** The patch set's snapshot id. */
 	patchset: string;
@@ -120,7 +120,7 @@ export interface LinesStateEvent extends EventBase {
  * this head). The whole set for (since, path): the last one wins. They
  * never change a cluster's state, never carry. Only `by: "human"`.
  */
-export interface SinceLinesStateEvent extends EventBase {
+interface SinceLinesStateEvent extends EventBase {
 	type: "since-lines-state";
 	patchset: string;
 	since: number;
@@ -212,7 +212,7 @@ export interface SplitEntry {
  * entry only when the hunk's key holds that mark at that moment and the
  * piece holds nothing yet (fold.ts).
  */
-export interface SplitCarriedEvent extends EventBase {
+interface SplitCarriedEvent extends EventBase {
 	type: "split-carried";
 	patchset: string;
 	states: SplitEntry[];
@@ -237,7 +237,7 @@ export interface ThreadPlacedEvent extends EventBase {
  * private agent threads ref: `on` is the snapshot (filled in by the
  * server), `anchor` lines of it. Only a human moves a thread.
  */
-export interface ThreadMovedEvent extends EventBase {
+interface ThreadMovedEvent extends EventBase {
 	type: "thread-moved";
 	thread: ThreadRef;
 	on: MoveSnapshot;
@@ -246,14 +246,14 @@ export interface ThreadMovedEvent extends EventBase {
 }
 
 /** The reviewer took back move `move` (a `thread-moved`, or a legacy `thread-placed`) of `thread`. */
-export interface ThreadMoveUndoneEvent extends EventBase {
+interface ThreadMoveUndoneEvent extends EventBase {
 	type: "thread-move-undone";
 	thread: ThreadRef;
 	move: string;
 }
 
 /** Parsed and validated only; not written in this milestone. */
-export interface ReviewClosedEvent extends EventBase {
+interface ReviewClosedEvent extends EventBase {
 	type: "review-closed";
 	outcome: "merged" | "closed";
 	mergeCommit?: string;
@@ -264,7 +264,7 @@ export interface ReviewClosedEvent extends EventBase {
  * the reviewer's own annotations of a PR on Home. Only a human writes them.
  * See docs/review-data-storage.md ("Inbox ref").
  */
-export interface PrSnoozedEvent extends EventBase {
+interface PrSnoozedEvent extends EventBase {
 	type: "pr-snoozed";
 	/** PR number. */
 	pr: number;
@@ -274,21 +274,21 @@ export interface PrSnoozedEvent extends EventBase {
 	wakeOnActivity: boolean;
 }
 
-export interface PrWaitingOnEvent extends EventBase {
+interface PrWaitingOnEvent extends EventBase {
 	type: "pr-waiting-on";
 	pr: number;
 	/** A GitHub login; the reviewer's own means "me". */
 	who: string;
 }
 
-export interface PrNoteEvent extends EventBase {
+interface PrNoteEvent extends EventBase {
 	type: "pr-note";
 	pr: number;
 	/** Empty clears the note. */
 	text: string;
 }
 
-export interface PrClearedEvent extends EventBase {
+interface PrClearedEvent extends EventBase {
 	type: "pr-cleared";
 	pr: number;
 	kind: "snooze" | "waiting";
@@ -307,7 +307,7 @@ export type InboxEvent =
  * events carry `details: { clientId }` (the store's dedupe; the fold ignores
  * it). See docs/review-data-storage.md ("Agent threads ref").
  */
-export interface AgentThreadOpenedEvent extends EventBase {
+interface AgentThreadOpenedEvent extends EventBase {
 	type: "agent-thread-opened";
 	/** Lowercase ULID. */
 	thread: string;
@@ -325,7 +325,7 @@ export interface AgentThreadOpenedEvent extends EventBase {
 	view?: AgentView;
 }
 
-export interface AgentMessageEvent extends EventBase {
+interface AgentMessageEvent extends EventBase {
 	type: "agent-message";
 	thread: string;
 	text: string;
@@ -351,13 +351,13 @@ export interface AgentMessageEvent extends EventBase {
 }
 
 /** The reviewer has seen the thread up to a message (a lowercase ULID). */
-export interface AgentThreadSeenEvent extends EventBase {
+interface AgentThreadSeenEvent extends EventBase {
 	type: "agent-thread-seen";
 	thread: string;
 	upTo: string;
 }
 
-export interface AgentThreadResolvedEvent extends EventBase {
+interface AgentThreadResolvedEvent extends EventBase {
 	type: "agent-thread-resolved";
 	thread: string;
 	resolved: boolean;
@@ -369,7 +369,7 @@ export interface AgentThreadResolvedEvent extends EventBase {
  * `message`, as `text` (what the box held), under the deterministic
  * `clientId` (agentCommentClientId). Human only: the agent can't post.
  */
-export interface AgentCommentPostedEvent extends EventBase {
+interface AgentCommentPostedEvent extends EventBase {
 	type: "agent-comment-posted";
 	thread: string;
 	message: string;
@@ -384,7 +384,7 @@ export interface AgentCommentPostedEvent extends EventBase {
  * The reviewer started a GitHub thread from a span conversation: it becomes
  * that GitHub thread's conversation (`github`, its node id). Human only.
  */
-export interface AgentThreadLinkedEvent extends EventBase {
+interface AgentThreadLinkedEvent extends EventBase {
 	type: "agent-thread-linked";
 	thread: string;
 	github: string;
@@ -429,7 +429,7 @@ const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 /** The latest moment a JS Date holds (ms): later `until`s are skipped on read. */
 const MAX_DATE_MS = 8.64e15;
 /** Longest note a reader keeps (the API's write limit is lower). */
-export const MAX_NOTE_READ = 2000;
+const MAX_NOTE_READ = 2000;
 const INBOX_TYPES: readonly string[] = [
 	"pr-snoozed",
 	"pr-waiting-on",
@@ -604,7 +604,7 @@ const isSide = (value: unknown): value is DiffSide =>
 	value === "LEFT" || value === "RIGHT";
 
 /** `{ old, new }` line ranges, or null. */
-export function parseSides(
+function parseSides(
 	value: unknown,
 ): { old: LineRanges; new: LineRanges } | null {
 	if (!isObj(value)) return null;
@@ -1105,7 +1105,7 @@ function parseAnchor(raw: unknown): AgentAnchor | null {
 const MAX_MACHINE = 80;
 
 /** A GitHub review thread's node id as stored: 1 to 200 characters. */
-export const isGithubThreadId = (value: unknown): value is string =>
+const isGithubThreadId = (value: unknown): value is string =>
 	typeof value === "string" && value !== "" && value.length <= 200;
 
 function parseThreadAnchor(

@@ -448,7 +448,7 @@ export async function fetchPr(
  * one more fetch). Commits still unfetched when it runs out answer false
  * (cached until a Refresh), so the lock is never held longer.
  */
-export const FETCH_COMMIT_TIMEOUT_MS = 60_000;
+const FETCH_COMMIT_TIMEOUT_MS = 60_000;
 
 /**
  * Whether `oid` is a commit in the clone, fetching it by OID from GitHub
@@ -677,7 +677,7 @@ async function fetchCommits(
 const FETCH_OIDS_MAX = 200;
 
 /** The base branch's tip at `cutoff`: its last first-parent commit by then. */
-export async function baseTipAt(
+async function baseTipAt(
 	path: string,
 	baseRef: string,
 	cutoff: string,

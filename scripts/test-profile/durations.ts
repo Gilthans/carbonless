@@ -41,9 +41,9 @@ export function mergeDurations(
 }
 
 /** A run covering less than this share of the listed files is partial. */
-export const MIN_COVERAGE = 0.9;
+const MIN_COVERAGE = 0.9;
 /** A file now under this share of its listed time dropped sharply. */
-export const SHARP_DROP = 1 / 3;
+const SHARP_DROP = 1 / 3;
 /** Listed files shorter than this are noise for the drop check (ms). */
 const DROP_FLOOR_MS = 1000;
 
@@ -95,10 +95,7 @@ export function checkRefresh(
 }
 
 /** The biggest changes, one line each. */
-export function formatChanges(
-	changes: RefreshCheck["changes"],
-	top = 10,
-): string {
+function formatChanges(changes: RefreshCheck["changes"], top = 10): string {
 	const s = (ms: number | undefined) =>
 		ms === undefined ? "new" : `${(ms / 1000).toFixed(1)}s`;
 	return changes

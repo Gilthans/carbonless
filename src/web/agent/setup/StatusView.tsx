@@ -34,7 +34,7 @@ import { closeReviewDrawer, openReviewDrawer } from "../drawerStore";
 import { BUTTON, CloseButton, ErrorLine, Footer, SECTION } from "./parts";
 
 /** Stop current's tooltip for a joined session: carbonless can't interrupt its turn. */
-export const STOP_IN_SESSION = "Stop it in the session";
+const STOP_IN_SESSION = "Stop it in the session";
 
 /** The state pill: its words, colour and whether it spins. */
 function pillOf(status: AgentStatus): {

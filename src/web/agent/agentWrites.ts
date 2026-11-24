@@ -103,11 +103,6 @@ export function agentAsking(clientId: string): boolean {
 export function useUnaskedQuestion(): boolean {
 	const composers = useAgentComposers();
 	const { pending } = useAgentWrites();
-	const replies = useSyncExternalStore(
-		subscribeReplies,
-		getRepliesTyped,
-		getRepliesTyped,
-	);
 	// A card's kept follow-up, while its box can show it again: its
 	// conversation still a span one, not resolved (Resolve drops it).
 	const kept = useSyncExternalStore(
@@ -131,7 +126,6 @@ export function useUnaskedQuestion(): boolean {
 		(id) => (agentDrafts.get(id) ?? "").trim() !== "",
 	);
 	return (
-		replies > 0 ||
 		cardTyped ||
 		movedTyped ||
 		composers.some((c) => {
@@ -144,9 +138,7 @@ export function useUnaskedQuestion(): boolean {
 // --- Follow-ups typed in a conversation's reply box --------------------------
 // Kept in the box only (no draft): the boxes holding text, so leaving asks.
 
-let typedReplies: ReadonlySet<string> = new Set();
 const replyListeners = new Set<() => void>();
-const getRepliesTyped = () => typedReplies.size;
 const subscribeReplies = (l: () => void) => {
 	replyListeners.add(l);
 	return () => {
@@ -154,19 +146,8 @@ const subscribeReplies = (l: () => void) => {
 	};
 };
 
-/** Reply box `box` holds a follow-up not yet sent (`typed`), or not. */
-export function setReplyTyped(box: string, typed: boolean): void {
-	if (typedReplies.has(box) === typed) return;
-	const next = new Set(typedReplies);
-	if (typed) next.add(box);
-	else next.delete(box);
-	typedReplies = next;
-	for (const l of replyListeners) l();
-}
-
 /** Forgets every typed reply (tests). */
 export function resetRepliesTyped(): void {
-	typedReplies = new Set();
 	cardReplies = new Map();
 	movedToThread = new Set();
 	for (const l of replyListeners) l();

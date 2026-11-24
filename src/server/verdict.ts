@@ -181,7 +181,7 @@ function latestReviews(
  * latest of any kind: the opinion, unless it was dismissed and they
  * commented after it (then the comment).
  */
-export function standingOf<T extends { state: string; submittedAt: string }>(
+function standingOf<T extends { state: string; submittedAt: string }>(
 	opinion: T | undefined,
 	latest: T,
 ): T {
@@ -476,7 +476,7 @@ export function verdictBody(req: VerdictRequest): string | undefined {
  * How far GitHub's `submitted_at` (whole seconds, GitHub's clock) may read
  * before this server's first attempt and still be that attempt's.
  */
-export const CLOCK_SLACK_MS = 10_000;
+const CLOCK_SLACK_MS = 10_000;
 /** Without a first attempt of this server's: the client's `attemptedAt` less this. */
 export const ATTEMPT_SLACK_MS = 2 * 60_000;
 

@@ -39,7 +39,7 @@ export interface ThreadFocus {
 }
 
 /** The message a request landed on, outlined once its card took it. */
-export interface Outline {
+interface Outline {
 	message: string;
 	seq: number;
 	/** When its card took it (ms): it lights only for OUTLINE_MS after. */
@@ -236,7 +236,7 @@ export function usePendingFocus(): ThreadFocus | null {
  * not inside a hidden or inert part (a kept page that isn't showing, a
  * closed sheet), nor itself unrendered where the browser can tell.
  */
-export function onScreen(el: Element | null): el is Element {
+function onScreen(el: Element | null): el is Element {
 	if (!el?.isConnected || el.closest("[inert],[hidden]") !== null) return false;
 	const check = (el as { checkVisibility?: () => boolean }).checkVisibility;
 	return typeof check === "function" ? check.call(el) : true;

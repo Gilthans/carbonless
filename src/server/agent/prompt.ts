@@ -55,7 +55,7 @@ export interface PromptPatchset {
 }
 
 /** The GitHub thread in the envelope (kind `github_thread_conversation`). */
-export interface PromptGithub {
+interface PromptGithub {
 	/** The thread's first comment on GitHub. */
 	url: string;
 	path: string;

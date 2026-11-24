@@ -141,7 +141,7 @@ export function splitCluster<C extends LineCluster>(
 }
 
 /** An empty line, or one of only whitespace (a CRLF line's `\r` included). */
-export const isBlankLine = (line: string): boolean => /^\s*$/.test(line);
+const isBlankLine = (line: string): boolean => /^\s*$/.test(line);
 
 /**
  * Lock files, by name (any folder): an added one stays one cluster, never
@@ -321,7 +321,7 @@ export function splitPatch(patch: Buffer): Map<string, Buffer> {
  * must add up to the file's numstat counts (taken with the same diff
  * options and zero context), or this throws: a cluster can never go missing.
  */
-export function clustersFromSection(
+function clustersFromSection(
 	section: Buffer,
 	file: ChangedFile,
 	encoding?: TextEncoding,

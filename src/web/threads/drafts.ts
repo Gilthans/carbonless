@@ -40,7 +40,7 @@ export type NewTarget = Omit<
 >;
 
 /** A new thread being written, or posted and not yet confirmed. */
-export interface NewDraft extends NewTarget {
+interface NewDraft extends NewTarget {
 	clientId: string;
 	/** When it was first typed in (ISO). */
 	createdAt: string;
@@ -59,7 +59,7 @@ export const NEW_THREAD = "new:";
 export const newThreadKey = (clientId: string) => `${NEW_THREAD}${clientId}`;
 
 /** An edit in progress (or saving) of one comment. */
-export interface EditDraft {
+interface EditDraft {
 	commentId: string;
 	/** The body the edit started from: GitHub refuses it if that changed since. */
 	from: string;
@@ -73,7 +73,7 @@ export interface EditDraft {
 }
 
 /** A sent reply's identity for the server's duplicate check, kept across reloads. */
-export interface Sending {
+interface Sending {
 	attemptedAt: string;
 	sentOnce: boolean;
 	/** Made by the client once per reply; the same on every resend. */
@@ -582,12 +582,6 @@ export function useEditDraft(commentId: string): Draft | undefined {
 	const store = draftsFor(useQueryClient());
 	const get = () => (commentId ? store.edit(commentId) : undefined);
 	return useSyncExternalStore(store.subscribe, get, get);
-}
-
-/** Every new thread being written or posted (drafts.ts `create`), oldest first. */
-export function useNewDrafts(): Draft[] {
-	const all = useDrafts();
-	return all.filter((d) => d.create !== undefined);
 }
 
 /** Every draft and unconfirmed reply (the Drafts filter, the leave guard). */

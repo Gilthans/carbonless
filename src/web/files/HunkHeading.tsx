@@ -19,7 +19,7 @@ const isCut = (el: HTMLElement) => el.scrollWidth > el.clientWidth;
  * touch: by dragging it sideways, SWIPE). Plain
  * text: React escapes it, it is never markup.
  */
-export function HunkHeading(props: { text: string }) {
+function HunkHeading(props: { text: string }) {
 	return (
 		<Tooltip
 			content={<span className="font-mono break-all">{props.text}</span>}

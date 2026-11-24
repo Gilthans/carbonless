@@ -64,10 +64,10 @@ export const CHECK_EVERY_MS = 60 * 60_000;
  * page polls /api/update more often than this while an update is on offer
  * (UPDATE_WATCH_MS), so each shows the update and waits to reload.
  */
-export const RESTART_GRACE_MS = 6_000;
+const RESTART_GRACE_MS = 6_000;
 
 /** How long a service's install may run before it counts as failed. */
-export const INSTALL_TIMEOUT_MS = 10 * 60_000;
+const INSTALL_TIMEOUT_MS = 10 * 60_000;
 
 /** How long the helper waits for crb to exit before giving up. */
 const HELPER_WAIT_MS = 60_000;
@@ -76,7 +76,7 @@ const HELPER_WAIT_MS = 60_000;
 export class UpdateRefusedError extends Error {}
 
 /** The package directory this build runs from (dist/server/update/ → root), real. */
-export function packageRoot(): string {
+function packageRoot(): string {
 	const root = fileURLToPath(new URL("../../../", import.meta.url));
 	try {
 		return realpathSync(root);

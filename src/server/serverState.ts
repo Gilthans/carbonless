@@ -40,7 +40,7 @@ export function writeServerState(state: ServerState): Promise<void> {
 }
 
 /** Whether a process with this pid exists (EPERM: someone else's, but alive). */
-export function pidAlive(pid: number): boolean {
+function pidAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
 		return true;

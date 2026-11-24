@@ -8,7 +8,7 @@ import { leftNo } from "../orphanLeft";
 import { hunkView } from "../whitespace";
 
 /** Where a hit is: a path, an old path, or a line on one side. */
-export type HitSide = "path" | "oldPath" | DiffSide;
+type HitSide = "path" | "oldPath" | DiffSide;
 
 /** A hit's place: file index, side, line number (0 for a path), UTF-16 column. */
 export interface HitPos {

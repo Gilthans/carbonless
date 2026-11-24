@@ -68,7 +68,7 @@ export function buildReviewView(
  * of it only when its lines all lie within it (else unreviewed: fail
  * closed).
  */
-export function clusterView(c: Cluster, stored?: StateEntry): ClusterView {
+function clusterView(c: Cluster, stored?: StateEntry): ClusterView {
 	const carried = stored?.carried ? { carried: stored.carried } : {};
 	if (stored?.state === "reviewed") {
 		return { ...c, state: "reviewed", ...carried };
@@ -92,7 +92,7 @@ export function clusterView(c: Cluster, stored?: StateEntry): ClusterView {
  * A view of a cluster marked by lines, with the lines the engine carried
  * (CAR-195): only lines it has, and only while they are marked.
  */
-export function withLinesCarried(
+function withLinesCarried(
 	view: ClusterView,
 	carried: { from: number; lines: LineRanges } | undefined,
 ): ClusterView {

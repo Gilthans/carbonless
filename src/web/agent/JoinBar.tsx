@@ -8,7 +8,7 @@ import { agentStatusQuery, useAgentOn, useHiddenJoinPoll } from "./api";
 import { useAnswerJoin } from "./useAnswerJoin";
 
 /** The hidden tab's title prefix while a session asks to join. */
-export const JOIN_TITLE_PREFIX = "⏚ ";
+const JOIN_TITLE_PREFIX = "⏚ ";
 
 /** `title` with the prefix on or off (never twice). */
 export function withJoinPrefix(title: string, on: boolean): string {
@@ -23,7 +23,7 @@ export function withJoinPrefix(title: string, on: boolean): string {
  * starts with ⏚, so it shows in the tab strip; off once it is answered or
  * the tab is seen.
  */
-export function useJoinTitle(pending: boolean): void {
+function useJoinTitle(pending: boolean): void {
 	useEffect(() => {
 		const apply = () => {
 			const on = pending && document.visibilityState === "hidden";

@@ -21,9 +21,6 @@ export function mayTry(
 	line: { name: string; full: boolean; held: boolean }[],
 	slots: number,
 ): Set<string>;
-export const MANY_UNIT_FILES: number;
-export const MANY_SPECS: number;
-export const MANY_FLAKE_RUNS: number;
 export function isFullRun(
 	cmd: string,
 	args: string[],

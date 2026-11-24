@@ -46,8 +46,8 @@ import {
 	tarballDigests,
 } from "./release-lib.js";
 
-export const NOTES_DIR = "release-notes";
-export const TEAM = "CAR";
+const NOTES_DIR = "release-notes";
+const TEAM = "CAR";
 
 // ---------------------------------------------------------------------------
 // The `Release note` lines (a Linear comment, or a ticket-less PR's description).
@@ -291,7 +291,7 @@ export function titleTickets(title: string): string[] {
 }
 
 /** A release PR's title: `next: X.Y.Z` (release-finish) or `notes: X.Y.Z`. */
-export const isExemptTitle = (title: string) =>
+const isExemptTitle = (title: string) =>
 	/^(next|notes): \d+\.\d+\.\d+$/.test(title.trim());
 
 /**
@@ -300,7 +300,7 @@ export const isExemptTitle = (title: string) =>
  * changes anything else needs a note like any other (the title alone is
  * anyone's to write).
  */
-export const releasePrFiles = (files: readonly string[]) =>
+const releasePrFiles = (files: readonly string[]) =>
 	files.every(
 		(f) =>
 			f === "package.json" ||
@@ -457,7 +457,7 @@ function olderIds(
 }
 
 /** The ids a release's PRs need covered: each ticket, or `#N` for a ticket-less PR. */
-export function neededIds(range: ReleaseRange): Map<string, number[]> {
+function neededIds(range: ReleaseRange): Map<string, number[]> {
 	const ids = new Map<string, number[]>();
 	for (const pr of range.prs) {
 		if (pr.exempt) continue;
@@ -727,7 +727,7 @@ export async function notesFromInput(
  * crbReleaseNotesFile. Null when the package has none (promoted before
  * CAR-242): the caller falls back to the file at the RC's commit.
  */
-export async function publishedNotes(
+async function publishedNotes(
 	io: Io,
 	version: string,
 	dir: string,
@@ -955,7 +955,7 @@ export function mdText(text: string): string {
  * the tags GitHub keeps (`<details>`, `<a>`, ...), to preserve what a
  * reviewer typed; here nothing of the kind is wanted.
  */
-export function mdNoteText(text: string): string {
+function mdNoteText(text: string): string {
 	const parts = text.split("`");
 	if (parts.length % 2 === 0) return mdText(text);
 	return parts.map((p, i) => (i % 2 === 1 ? p : mdText(p))).join("`");
@@ -1076,7 +1076,7 @@ export function linearClient(
 	};
 }
 
-export type LinearIssue = {
+type LinearIssue = {
 	id: string;
 	identifier: string;
 	title: string;
@@ -1114,7 +1114,7 @@ const toIssue = (r: RawIssue): LinearIssue => ({
 });
 
 /** A ticket by its identifier (`CAR-183`); null when Linear has none. */
-export async function linearIssue(
+async function linearIssue(
 	linear: Linear,
 	identifier: string,
 ): Promise<LinearIssue | null> {
@@ -1132,7 +1132,7 @@ export async function linearIssue(
 }
 
 /** The team's tickets completed since `since` (ISO), every page. */
-export async function doneSince(
+async function doneSince(
 	linear: Linear,
 	since: string,
 ): Promise<LinearIssue[]> {
@@ -1593,10 +1593,10 @@ export type PullForNotes = {
 };
 
 /** Whose PRs may have Linear read for them (the rest: description notes only). */
-export const LINEAR_AUTHORS = ["OWNER", "MEMBER", "COLLABORATOR"];
+const LINEAR_AUTHORS = ["OWNER", "MEMBER", "COLLABORATOR"];
 
 /** At most this many tickets read from Linear for one PR. */
-export const MAX_PR_TICKETS = 5;
+const MAX_PR_TICKETS = 5;
 
 /**
  * Refuses (throws) a PR whose tickets have no Release note in Linear nor

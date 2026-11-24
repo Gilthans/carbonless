@@ -76,7 +76,7 @@ export function isTransient(error: unknown): boolean {
 }
 
 /** A 2xx answer that isn't a review view. */
-export class MalformedAnswerError extends Error {
+class MalformedAnswerError extends Error {
 	constructor() {
 		super("The server's answer wasn't a review");
 		this.name = "MalformedAnswerError";

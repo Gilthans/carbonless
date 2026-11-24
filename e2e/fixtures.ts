@@ -44,7 +44,6 @@ import {
 
 export { type CrbClient, clientRequest, NeedsCliError } from "./crb-open";
 export {
-	type CrbExit,
 	CrbExitError,
 	CrbStartTimeout,
 	runCli,
@@ -52,12 +51,7 @@ export {
 	startServe,
 	stopChild,
 } from "./crb-process";
-export type {
-	Pr,
-	PrOptions,
-	ThreadJson,
-	ViewJson,
-} from "./pr-setup";
+export type { Pr, PrOptions } from "./pr-setup";
 export { OWNER_REPO, PR_NUMBER, SharedServer };
 
 /**
@@ -674,7 +668,7 @@ export async function expectEveryUnitMarkable(
  * animation frames, so it isn't meant for a page with a paused clock
  * (`installClock` + `pauseAt`).
  */
-export async function clickPlaced(control: Locator): Promise<void> {
+async function clickPlaced(control: Locator): Promise<void> {
 	await placedBox(control);
 	await control.click();
 }

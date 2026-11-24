@@ -17,7 +17,6 @@ const set = (next: boolean) => {
 /** onClick handlers: take no argument. */
 export const openReviewDrawer = (): void => set(true);
 export const closeReviewDrawer = (): void => set(false);
-export const toggleReviewDrawer = (): void => set(!open);
 
 const subscribe = (l: () => void) => {
 	listeners.add(l);

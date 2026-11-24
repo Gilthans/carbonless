@@ -95,7 +95,7 @@ export function repoOf(args) {
 }
 
 /** Whether `value` is a router file's content. */
-export const isRouter = (value) =>
+const isRouter = (value) =>
 	value !== null && typeof value === "object" && value.router === 1;
 
 /**

@@ -71,16 +71,16 @@ export const NO_GITHUB_LINE = "Can't place this line on GitHub's diff";
 export const RENAMED_SINCE = "Renamed since the earlier patch set";
 
 /** Why nothing can start on an earlier patch set's lines that aren't one run there. */
-export const SPLIT_EARLIER = "Not one range on the earlier patch set";
+const SPLIT_EARLIER = "Not one range on the earlier patch set";
 
 /**
  * Why nothing can start on a since-view orphan removed line (CAR-216)
  * with lines outside its run (CAR-276).
  */
-export const ORPHAN_MIXED = "Mixes lines not reviewed earlier with others";
+const ORPHAN_MIXED = "Mixes lines not reviewed earlier with others";
 
 /** Why nothing can start on orphan removed lines whose base lines aren't one run. */
-export const ORPHAN_SPLIT = "Not one range of base lines";
+const ORPHAN_SPLIT = "Not one range of base lines";
 
 export const noLineReason = (why: NoLine) =>
 	why === "earlier"
@@ -118,7 +118,7 @@ export interface SelectionAction {
  * Whether GitHub takes a comment on a line that only expanded context shows
  * (outside every hunk): it doesn't (422), so Comment is off there.
  */
-export const COMMENT_OUTSIDE_HUNKS = false;
+const COMMENT_OUTSIDE_HUNKS = false;
 
 const sides = (span: CodeSpan): DiffSide[] =>
 	span.subject === "file"

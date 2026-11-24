@@ -13,7 +13,7 @@ import {
 } from "./unit";
 
 /** Crossed off: violet stripes (the `hatch` utility, index.css). */
-export const HATCH = "hatch";
+const HATCH = "hatch";
 
 /** The gap a meter keeps open while anything is unreviewed, in percent. */
 const OPEN_GAP = 6;

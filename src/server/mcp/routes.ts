@@ -42,7 +42,7 @@ export interface McpRouteDeps {
 }
 
 /** This server as the request reached it: a proxy's origin, the Host, else baseUrl. */
-export function originOf(
+function originOf(
 	request: Pick<FastifyRequest, "headers">,
 	deps: Pick<McpRouteDeps, "publicUrl" | "baseUrl">,
 ): string {

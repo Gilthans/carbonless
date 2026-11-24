@@ -66,7 +66,7 @@ export interface AgentThreadFold extends Omit<AgentThread, "code"> {
  * GitHub's id of a review comment, from its link (`…#discussion_r<id>`):
  * increasing with the time GitHub took it. Unknown: last.
  */
-export function discussionId(url: string): number {
+function discussionId(url: string): number {
 	const m = /#discussion_r(\d+)$/.exec(url);
 	return m ? Number(m[1]) : Number.POSITIVE_INFINITY;
 }
@@ -980,7 +980,7 @@ const oneLinePath = (path: string) =>
 	path.replace(/[\r\n]+/g, " ").slice(0, 200);
 
 /** The moves and undos of a ref's events (AgentThreadStore.moves). */
-export function movesOf(events: readonly CrbEvent[]): {
+function movesOf(events: readonly CrbEvent[]): {
 	moves: ThreadMove[];
 	undos: MoveUndo[];
 } {

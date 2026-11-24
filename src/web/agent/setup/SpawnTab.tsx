@@ -34,7 +34,7 @@ const harness = (id: HarnessId | null) =>
 	AGENT_HARNESSES.find((h) => h.id === id);
 
 /** A command's last path part: `/srv/x/node_modules/.bin/claude-agent-acp` → `claude-agent-acp`. */
-export const basename = (command: string): string =>
+const basename = (command: string): string =>
 	command.trim().split(/[\\/]/).pop() ?? "";
 
 /**
@@ -42,7 +42,7 @@ export const basename = (command: string): string =>
  * command or its basename (an absolute path, as under a service), with the
  * same arguments.
  */
-export function presetOf(agent: AgentConfig): AgentHarness | undefined {
+function presetOf(agent: AgentConfig): AgentHarness | undefined {
 	return AGENT_HARNESSES.find(
 		(h) =>
 			h.id !== "other" &&
@@ -71,7 +71,7 @@ const configOf = (
 };
 
 /** What the leash's info says. */
-export const LEASH_TIP =
+const LEASH_TIP =
 	"Allows anything the local session allows. Stricter leashes are coming.";
 
 /** What a Spawn press came to: the check's refusal, or started. */

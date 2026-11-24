@@ -66,7 +66,7 @@ export const MIN_FILE_BUDGET = 1_000;
 /** `file` refuses a blob over this many bytes, before reading it. */
 export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 /** A `file` answer's text budget (characters). */
-export const MAX_FILE_CHARS = 200_000;
+const MAX_FILE_CHARS = 200_000;
 
 /** Inclusive line ranges on one side. */
 export type Ranges = [number, number][];

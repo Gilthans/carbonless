@@ -31,7 +31,7 @@ export function ownerToken(pid) {
 }
 
 /** Whether the process `token` names runs: not ended, a zombie, or its pid reused. */
-export function ownerAlive(token) {
+function ownerAlive(token) {
 	const [pid, start = ""] = token.trim().split(" ");
 	const n = Number(pid);
 	if (!Number.isInteger(n) || n <= 0) return false;

@@ -136,8 +136,8 @@ function traceRight(pos: Position, diffs: TraceDiffs): Placement {
  * next function. Wider runs, or more word lines, measured no better on a
  * real review's threads: they hit the pairing's caps (CAR-95).
  */
-export const REGION_GAP = 5;
-export const REGION_GAP_WORDS = 1;
+const REGION_GAP = 5;
+const REGION_GAP_WORDS = 1;
 
 /**
  * A line the pairing left without a partner still goes to the replacing

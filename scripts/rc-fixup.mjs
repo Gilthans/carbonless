@@ -14,7 +14,7 @@ const NUM = "(0|[1-9]\\d*)";
 const VERSION = new RegExp(`^${NUM}\\.${NUM}\\.${NUM}(?:-rc\\.${NUM})?$`);
 
 /** `X.Y.Z` or `X.Y.Z-rc.N` as numbers, else null. */
-export function parse(text) {
+function parse(text) {
 	const m = VERSION.exec(String(text ?? "").trim());
 	if (!m) return null;
 	return {
@@ -26,7 +26,7 @@ export function parse(text) {
 }
 
 /** Semver order: an RC comes before its release. */
-export function compare(a, b) {
+function compare(a, b) {
 	return (
 		a.major - b.major ||
 		a.minor - b.minor ||

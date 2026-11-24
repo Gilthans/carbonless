@@ -43,7 +43,7 @@ import {
 export type SendView = Omit<AgentView, "left" | "right">;
 
 /** The live conversation of GitHub thread `threadId` in `list` (an orphan is a span thread). */
-export function threadConversation(
+function threadConversation(
 	list: readonly AgentThread[] | undefined,
 	threadId: string,
 ): AgentThread | undefined {
@@ -54,9 +54,7 @@ export function threadConversation(
 }
 
 /** The conversation for a GitHub thread id, from agentThreadsQuery. */
-export function useThreadConversation(
-	threadId: string,
-): AgentThread | undefined {
+function useThreadConversation(threadId: string): AgentThread | undefined {
 	const on = useAgentOn();
 	const list = useQuery({ ...agentThreadsQuery, enabled: on }).data?.threads;
 	return threadConversation(list, threadId);

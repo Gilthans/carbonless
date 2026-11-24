@@ -14,9 +14,9 @@ export interface LineTexts {
 }
 
 /** Context lines kept on each side. */
-export const CONTEXT = 3;
+const CONTEXT = 3;
 
-export function isLineTexts(v: unknown): v is LineTexts {
+function isLineTexts(v: unknown): v is LineTexts {
 	if (typeof v !== "object" || v === null) return false;
 	const t = v as Partial<LineTexts>;
 	const strings = (a: unknown) =>

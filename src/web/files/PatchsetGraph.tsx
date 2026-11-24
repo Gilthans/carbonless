@@ -42,9 +42,6 @@ import {
 } from "./graphCards";
 import { goneCount } from "./since";
 
-/** The rail's last slot is always this wide: "up to date", or the head connector and dot. */
-export const TAIL_WIDTH = { desktop: 150, phone: 84 } as const;
-
 /** A dot of the rail. */
 interface Dot {
 	id: string;
@@ -793,7 +790,7 @@ function countOf(
  * base branch dot, one dot per patch set of the reviewer (before any patch
  * set, a dot for the snapshot being reviewed, even when it is the PR's
  * head: where the PR is, nothing stored for it), and a last slot
- * that is always rendered at one width (TAIL_WIDTH): "up to date" when the
+ * that is always rendered at one width (150px, 84px on a phone): "up to date" when the
  * PR's head is the newest dot, else a dashed connector with its commit
  * count and the hollow head dot (nothing below the rail moves when a push
  * arrives). Two markers set the comparison: viewing and comparison base,

@@ -23,7 +23,7 @@ import {
 } from "./threadAgent";
 
 /** The strip of the comments left uncovered: their avatar column, a tap target. */
-export const AGENT_STRIP_PX = 40;
+const AGENT_STRIP_PX = 40;
 /** The slide, in ms (`transform` only; none under reduced motion). */
 const SLIDE_MS = 250;
 
@@ -126,7 +126,7 @@ function useEntered(open: boolean): boolean {
  * slot while it reads again): never what reads as an empty conversation.
  * Pending writes show under either.
  */
-export function ThreadAgentPanel(props: {
+function ThreadAgentPanel(props: {
 	thread: ReviewThread;
 	conversation: AgentThread | undefined;
 	open: boolean;

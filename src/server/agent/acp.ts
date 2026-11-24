@@ -35,7 +35,7 @@ const loadSdk = (): Promise<Sdk> => {
 };
 
 /** How long spawn + initialize + session/new may take. */
-export const AGENT_START_MS = 60_000;
+const AGENT_START_MS = 60_000;
 /** How long close() waits after SIGTERM before SIGKILL. */
 const KILL_AFTER_MS = 5_000;
 /** How long close() waits for session/close before signalling. */
@@ -43,7 +43,7 @@ const SESSION_CLOSE_MS = 1_000;
 /** The stderr tail an error carries. */
 const STDERR_TAIL = 2048;
 /** Shorter env values aren't redacted: they'd mangle ordinary output. */
-export const MIN_REDACTED = 8;
+const MIN_REDACTED = 8;
 /** A secret's fragment cut at the tail's edge is dropped from this length on. */
 const MIN_FRAGMENT = 4;
 /** An absolute path (`/…`, `C:\…`): not a secret, and what a failed Check most likely needs shown. */
@@ -132,7 +132,7 @@ export class StderrTail {
 }
 
 /** A failed turn's reason, as stored on its reply and shown in the status. */
-export const MAX_TURN_ERROR = 300;
+const MAX_TURN_ERROR = 300;
 
 const WINDOWS = process.platform === "win32";
 
@@ -140,8 +140,9 @@ const WINDOWS = process.platform === "win32";
  * Names never passed to the agent: secrets of the server's environment
  * (GH_TOKEN, GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, ANTHROPIC_API_KEY, …).
  * The agent's harness uses its own login, which lives under HOME.
+ * Any name with TOKEN, SECRET or PASSWORD; KEY only at the end.
  */
-export const SECRET_ENV = /TOKEN|SECRET|PASSWORD|KEY$/i;
+const SECRET_ENV = /TOKEN|SECRET|PASSWORD|(?:KEY$)/i;
 
 /**
  * The agent's environment: the server's (without the GIT_* variables that
@@ -202,14 +203,14 @@ export interface AcpSpawn {
 }
 
 /** Where a spawned agent reaches crb's `/mcp`. */
-export interface McpTarget {
+interface McpTarget {
 	url: string;
 	key: string | null;
 	headers: { name: string; value: string }[];
 }
 
 /** session/new's `crb` server for `mcp`: HTTP when `http`, else the stdio bridge. */
-export function crbMcpServer(
+function crbMcpServer(
 	mcp: McpTarget,
 	http: boolean,
 	bridge: { command: string; args: string[] } = bridgeCommand(),

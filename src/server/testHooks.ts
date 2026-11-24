@@ -44,7 +44,7 @@ export const TEST_HOOK_HEADER = "x-crb-test-hook";
 const TOKEN = /^[0-9a-f]{32}$/;
 
 /** How long a reset waits for gh and git to end before answering with what's left. */
-export const RESET_SETTLE_MS = 5000;
+const RESET_SETTLE_MS = 5000;
 
 /** The token in `value` ($CRB_TEST_HOOKS), or null when it isn't one. */
 export function testHookToken(value: string | undefined): string | null {

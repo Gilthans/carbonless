@@ -12,7 +12,7 @@ export const foldsKey = (pr: { owner: string; repo: string; number: number }) =>
 	`crb:folds:${pr.owner}/${pr.repo}#${pr.number}`;
 
 /** The folded folders' full paths; none when storage is empty, bad or unavailable. */
-export function readFolds(key: string | null): Set<string> {
+function readFolds(key: string | null): Set<string> {
 	if (!key) return new Set();
 	try {
 		const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
@@ -27,7 +27,7 @@ export function readFolds(key: string | null): Set<string> {
 }
 
 /** Remembers the folded folders; silently does nothing without storage. */
-export function writeFolds(key: string | null, folded: ReadonlySet<string>) {
+function writeFolds(key: string | null, folded: ReadonlySet<string>) {
 	if (!key) return;
 	try {
 		if (folded.size === 0) localStorage.removeItem(key);
@@ -38,7 +38,7 @@ export function writeFolds(key: string | null, folded: ReadonlySet<string>) {
 }
 
 /** The folded folders among `folded` that hold `path` (a file's). */
-export const foldedAncestors = (folded: ReadonlySet<string>, path: string) =>
+const foldedAncestors = (folded: ReadonlySet<string>, path: string) =>
 	[...folded].filter((folder) => path.startsWith(`${folder}/`));
 
 export interface Folds {

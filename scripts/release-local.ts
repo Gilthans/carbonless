@@ -19,7 +19,7 @@ import { join, resolve } from "node:path";
 // Everything that runs a command goes through a Runner, so tests drive it
 // without pnpm or tar.
 
-export const PACKAGE = "carbonless-review";
+const PACKAGE = "carbonless-review";
 
 /**
  * pnpm (11+) skips versions published less than a day ago
@@ -29,7 +29,7 @@ export const PACKAGE = "carbonless-review";
 export const NO_DELAY = `--config.minimumReleaseAgeExclude=${PACKAGE}`;
 
 export type RunResult = { code: number; stdout: string; stderr: string };
-export type Runner = (
+type Runner = (
 	cmd: string,
 	args: readonly string[],
 	opts?: { cwd?: string },

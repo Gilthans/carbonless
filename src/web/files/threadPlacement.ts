@@ -17,7 +17,7 @@ import { type LeftRow, leftNo } from "./orphanLeft";
 export type LineKey = `${DiffSide}:${number}`;
 
 /** Where a thread hidden in a gap will show once its lines are loaded. */
-export interface GapTarget {
+interface GapTarget {
 	/** New-side lines `[from, to]` of its range, inside its gap. */
 	show: [number, number];
 	/** The row it ends on, as `FilePlacement.end` will key it. */
@@ -298,7 +298,7 @@ export function outsideThreads(
  * The threads made on the viewed head, in their order. One on no known
  * commit ("") is on no head. Agent threads, never traced, show this way.
  */
-export function threadsOnHead<T extends Placeable>(
+function threadsOnHead<T extends Placeable>(
 	threads: T[],
 	snapshotHead: string,
 ): T[] {

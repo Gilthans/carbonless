@@ -26,7 +26,7 @@ export function cpuOf(run: () => void): number {
 }
 
 /** As `cpuOf`, for work that awaits (only this thread's CPU counts). */
-export async function cpuOfAsync(run: () => Promise<unknown>): Promise<number> {
+async function cpuOfAsync(run: () => Promise<unknown>): Promise<number> {
 	const before = process.threadCpuUsage();
 	await run();
 	const spent = process.threadCpuUsage(before);
