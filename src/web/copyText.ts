@@ -40,7 +40,14 @@ function host(near: Element | null | undefined): HTMLElement {
 	);
 }
 
-/** The last (top-most) open modal dialog, if the browser can tell. */
+/**
+ * The last open modal dialog in document order, if the browser can tell.
+ * The top layer's order can't be read, so with two modals open this may
+ * pick the lower one; that one is inert under the top one, the textarea
+ * can't take the focus there, and `held` reports a failed copy: it can
+ * only err toward "Copy failed", never a false check. It is only the last
+ * resort anyway, after the dialog of the field and of the focus.
+ */
 function topModal(): HTMLDialogElement | null {
 	const open = [...document.querySelectorAll("dialog[open]")].reverse();
 	for (const d of open) {
@@ -66,10 +73,10 @@ function legacyCopy(text: string, near?: Element | null): boolean {
 	area.focus({ preventScroll: true });
 	area.select();
 	// iOS selects nothing with select() alone.
-	area.setSelectionRange(0, text.length);
+	area.setSelectionRange(0, area.value.length);
 	let ok = false;
 	try {
-		ok = held(area, text) && document.execCommand("copy") && held(area, text);
+		ok = held(area) && document.execCommand("copy") && held(area);
 	} catch {
 		ok = false;
 	}
@@ -80,13 +87,14 @@ function legacyCopy(text: string, near?: Element | null): boolean {
 
 /**
  * Whether `area` has the focus and its whole text selected: what "copy"
- * copies. `execCommand`'s own answer isn't proof (it is true with nothing
+ * copies. Measured on `area.value`, not the text given: a textarea turns
+ * "\r\n" (GitHub bodies) into "\n", so the lengths differ. `execCommand`'s own answer isn't proof (it is true with nothing
  * selected).
  */
-function held(area: HTMLTextAreaElement, text: string): boolean {
+function held(area: HTMLTextAreaElement): boolean {
 	return (
 		document.activeElement === area &&
 		area.selectionStart === 0 &&
-		area.selectionEnd === text.length
+		area.selectionEnd === area.value.length
 	);
 }

@@ -162,4 +162,17 @@ describe("copyText", () => {
 		fakeExecCommand(true);
 		expect(await copyText("some text")).toBe(false);
 	});
+
+	it.each([
+		["CRLF", "a\r\nb"],
+		["a lone CR", "a\rb"],
+	])(
+		"copies text with %s line ends (the textarea makes them \\n)",
+		async (_, text) => {
+			setContext(false);
+			const { seen } = fakeExecCommand(true);
+			expect(await copyText(text)).toBe(true);
+			expect(seen).toEqual(["a\nb"]);
+		},
+	);
 });
