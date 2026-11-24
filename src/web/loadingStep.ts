@@ -34,7 +34,7 @@ const out = new Map<string, OutRequest>();
 export const outRequests = (): ReadonlyMap<string, OutRequest> => out;
 
 /** A fresh request id (crypto.getRandomValues: also on plain http). */
-export function newRequestId(): string {
+function newRequestId(): string {
 	const bytes = new Uint8Array(12);
 	crypto.getRandomValues(bytes);
 	return btoa(String.fromCharCode(...bytes))
