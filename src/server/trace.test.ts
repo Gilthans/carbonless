@@ -23,6 +23,7 @@ import {
 	toNanos,
 	traceparent,
 } from "./trace";
+import { BUILD } from "./version";
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -76,8 +77,20 @@ describe("createTracer", () => {
 			expect.arrayContaining([
 				{ key: "service.name", value: { stringValue: "svc" } },
 				{ key: "crb.run", value: { stringValue: "r1" } },
+				{ key: "service.version", value: { stringValue: BUILD.version } },
+				{ key: "service.commit", value: { stringValue: BUILD.commit } },
 			]),
 		);
+		// From source (tests): package.json's version, the checkout's HEAD.
+		expect(BUILD.version).toBe(
+			JSON.parse(
+				readFileSync(
+					resolve(import.meta.dirname, "../../package.json"),
+					"utf8",
+				),
+			).version,
+		);
+		expect(BUILD.commit).toMatch(/^([0-9a-f]{40}|unknown)$/);
 		const [a, b] = rs.scopeSpans[0].spans;
 		expect(a).toMatchObject({
 			traceId: expect.stringMatching(/^[0-9a-f]{32}$/),
@@ -509,6 +522,47 @@ describe("a long-running process's files", () => {
 		);
 		expect(deleted).toEqual(["crb-2-bbbbbb.20261123.000000.jsonl"]);
 		expect(readdirSync(dir)).toEqual(["crb-1-aaaaaa.20261124.000000.jsonl"]);
+	});
+});
+
+describe("the build on every file", () => {
+	it("is read only when tracing is on, once, and never through version.ts", async () => {
+		const readBuild = vi.fn(() => ({
+			version: "9.9.9",
+			commit: "c".repeat(40),
+		}));
+		vi.resetModules();
+		vi.doMock("./buildInfo", () => ({ readBuild }));
+		// version.ts reads the build (git, from source) at import: the tracer
+		// must not load it, or every unit file pays a git spawn.
+		vi.doMock("./version", () => {
+			throw new Error("trace.ts imported version.ts");
+		});
+		try {
+			const fresh = await import("./trace");
+			fresh.createTracer({ dir: undefined, service: "x" });
+			expect(readBuild).not.toHaveBeenCalled();
+			const dir = tempDir();
+			for (const service of ["a", "b"]) {
+				const t = fresh.createTracer({ dir, service, flushOnExit: false });
+				t.start("s").end();
+				t.flush();
+			}
+			expect(readBuild).toHaveBeenCalledTimes(1);
+			const versions = readRequests(dir).map((r) =>
+				r.resourceSpans[0]?.resource?.attributes?.find(
+					(x) => x.key === "service.version",
+				),
+			);
+			expect(versions).toEqual([
+				{ key: "service.version", value: { stringValue: "9.9.9" } },
+				{ key: "service.version", value: { stringValue: "9.9.9" } },
+			]);
+		} finally {
+			vi.doUnmock("./buildInfo");
+			vi.doUnmock("./version");
+			vi.resetModules();
+		}
 	});
 });
 
