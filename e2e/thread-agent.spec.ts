@@ -236,18 +236,25 @@ test("a failed read: the panel keeps the error with a spinner in Retry's slot wh
 	const held: Route[] = [];
 	const fail = (route: Route) =>
 		route.fulfill({ status: 500, body: '{"error":"boom"}' });
-	await page.route(/\/agent\/threads(\?.*)?$/, (route) => {
+	await page.route(/\/agent\/threads(\?.*)?$/, async (route) => {
 		if (route.request().method() !== "GET" || mode === "pass") {
-			return route.continue();
+			await route.continue();
+			return;
 		}
-		if (mode === "fail") return fail(route);
+		if (mode === "fail") {
+			await fail(route);
+			return;
+		}
 		held.push(route);
 	});
 	// The status reads held too: a status that moves refetches the threads
 	// (useAgentSync), and only the presses below may ask for them.
 	const statusHeld: Route[] = [];
-	await page.route(/\/agent(\?.*)?$/, (route) => {
-		if (route.request().method() !== "GET") return route.continue();
+	await page.route(/\/agent(\?.*)?$/, async (route) => {
+		if (route.request().method() !== "GET") {
+			await route.continue();
+			return;
+		}
 		statusHeld.push(route);
 	});
 	try {
