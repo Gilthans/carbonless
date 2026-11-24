@@ -16,12 +16,16 @@ import {
 	writeAcpScenario,
 } from "../../../test/fake-acp/scenario.js";
 import { GIT_TEST_TIMEOUTS } from "../../../test/git-fixture.js";
+import { AGENT_ENV_MASK } from "../../shared/agent.js";
 import {
 	AcpAgent,
 	type AcpSpawn,
 	AgentStartError,
 	agentEnv,
 	checkAgent,
+	redactSecrets,
+	StderrTail,
+	turnError,
 } from "./acp.js";
 
 // spawn as it is, watched: a start stopped in time spawns nothing.
@@ -416,6 +420,19 @@ describe("checkAgent", () => {
 		expect(check.ok === false && check.stderr).toContain("not logged in");
 	});
 
+	it("the config's env values are masked in its stderr (CAR-59)", async () => {
+		const secret = "sk-ant-api03-leaked-token";
+		scenario({ initializeError: "not logged in", stderrEnv: "MY_KEY" });
+		const check = await withFake(() =>
+			checkAgent({ ...cfg(), env: { MY_KEY: secret } }, dir),
+		);
+		expect(check).toMatchObject({ ok: false });
+		expect(JSON.stringify(check)).not.toContain(secret);
+		expect(check.ok === false && check.stderr).toContain(
+			`MY_KEY=${AGENT_ENV_MASK}`,
+		);
+	});
+
 	it("a missing command is not found", async () => {
 		scenario();
 		const check = await withFake(() => checkAgent(cfg("crb-no-such"), dir));
@@ -423,6 +440,81 @@ describe("checkAgent", () => {
 			ok: false,
 			error: "crb-no-such was not found on PATH",
 		});
+	});
+});
+
+describe("redactSecrets (CAR-59)", () => {
+	const KEY = "sk-ant-api03-abcdefgh";
+	it("masks each value of 8 or more characters, every time; shorter ones stay", () => {
+		expect(
+			redactSecrets(`bad key ${KEY}; again ${KEY} (x=short)`, [KEY, "short"]),
+		).toBe(`bad key ${AGENT_ENV_MASK}; again ${AGENT_ENV_MASK} (x=short)`);
+	});
+	it("a value cut at the tail's start or end is dropped, the cut by `max` too", () => {
+		expect(redactSecrets(`${KEY.slice(5)} then`, [KEY], { cut: true })).toBe(
+			" then",
+		);
+		expect(redactSecrets(`key: ${KEY.slice(0, 9)}`, [KEY])).toBe("key: ");
+		// The last 15 characters cut what was left of KEY: none of it stays.
+		const text = `${KEY.slice(3)}${"y".repeat(10)}`;
+		expect(redactSecrets(text, [KEY], { max: 15 })).toBe("y".repeat(10));
+		expect(redactSecrets(`${KEY}ok`, [KEY], { max: 9 })).toBe(
+			`${AGENT_ENV_MASK.slice(-7)}ok`,
+		);
+	});
+	it("an uncut start that is a value's end stays whole", () => {
+		// A relative command path (absolute ones aren't masked at all).
+		const exe = "node_modules/.bin/claude";
+		expect(redactSecrets("claude: not logged in", [exe])).toBe(
+			"claude: not logged in",
+		);
+		expect(redactSecrets("claude: not logged in", [exe], { max: 100 })).toBe(
+			"claude: not logged in",
+		);
+	});
+	it("absolute paths aren't masked: a wrong one is what Check must show", () => {
+		for (const path of ["/home/u/.local/bin/claude", "C:\\tools\\claude.exe"]) {
+			expect(redactSecrets(`spawn ${path} ENOENT`, [path])).toBe(
+				`spawn ${path} ENOENT`,
+			);
+		}
+		expect(redactSecrets(`key ${KEY}`, ["/home/u/bin", KEY])).toBe(
+			`key ${AGENT_ENV_MASK}`,
+		);
+	});
+	it("a longer value is masked before one it contains", () => {
+		const long = `${KEY}-more`;
+		expect(redactSecrets(`[${long}]`, [KEY, long])).toBe(`[${AGENT_ENV_MASK}]`);
+	});
+});
+
+describe("StderrTail (CAR-59)", () => {
+	it("a non-ASCII value split between two chunks is still masked", () => {
+		const secret = "пароль-секрет-42";
+		const bytes = Buffer.from(`key ${secret}\n`, "utf8");
+		// Inside the second letter's two bytes.
+		const at = Buffer.byteLength("key п", "utf8") + 1;
+		const tail = new StderrTail([secret]);
+		tail.push(bytes.subarray(0, at));
+		tail.push(bytes.subarray(at));
+		expect(tail.text()).toBe(`key ${AGENT_ENV_MASK}\n`);
+	});
+	it("an uncut stderr that starts with a value's end stays whole", () => {
+		const tail = new StderrTail(["node_modules/.bin/claude"]);
+		tail.push(Buffer.from("claude: not logged in"));
+		expect(tail.text()).toBe("claude: not logged in");
+	});
+});
+
+describe("turnError (CAR-59)", () => {
+	it("masks the config's env values before the cut", () => {
+		const secret = "sk-ant-api03-abcdefgh";
+		const error = Object.assign(new Error("Internal error"), {
+			data: { details: `401 for key ${secret}${" pad".repeat(100)}` },
+		});
+		const reason = turnError(error, (t) => redactSecrets(t, [secret]));
+		expect(reason).toContain(`401 for key ${AGENT_ENV_MASK}`);
+		expect(reason).not.toContain(secret.slice(0, 8));
 	});
 });
 

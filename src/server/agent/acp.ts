@@ -2,6 +2,7 @@ import { type ChildProcess, spawnSync } from "node:child_process";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Readable, Writable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import type {
 	ActiveSession,
 	ClientConnection,
@@ -11,11 +12,12 @@ import type {
 	SessionUpdate,
 } from "@agentclientprotocol/sdk";
 import spawn from "cross-spawn";
-import type {
-	AgentCheck,
-	AgentConfig,
-	AgentIdentity,
-	AgentStop,
+import {
+	AGENT_ENV_MASK,
+	type AgentCheck,
+	type AgentConfig,
+	type AgentIdentity,
+	type AgentStop,
 } from "../../shared/agent.js";
 import { inheritedEnv } from "../git.js";
 import { bridgeCommand } from "../mcp/bridge.js";
@@ -40,6 +42,95 @@ const KILL_AFTER_MS = 5_000;
 const SESSION_CLOSE_MS = 1_000;
 /** The stderr tail an error carries. */
 const STDERR_TAIL = 2048;
+/** Shorter env values aren't redacted: they'd mangle ordinary output. */
+export const MIN_REDACTED = 8;
+/** A secret's fragment cut at the tail's edge is dropped from this length on. */
+const MIN_FRAGMENT = 4;
+/** An absolute path (`/…`, `C:\…`): not a secret, and what a failed Check most likely needs shown. */
+const ABSOLUTE_PATH = /^(?:\/|[A-Za-z]:[\\/])/;
+
+/** The env values redactSecrets masks: 8 or more characters, not a path. */
+const redacted = (secrets: readonly string[]): string[] =>
+	[...new Set(secrets)]
+		.filter((v) => v.length >= MIN_REDACTED && !ABSOLUTE_PATH.test(v))
+		.sort((a, b) => b.length - a.length);
+
+/**
+ * `text` with each of the config's env values (CAR-59: tokens) of
+ * MIN_REDACTED or more characters, absolute paths aside, replaced by
+ * AGENT_ENV_MASK; then at most the last `max` characters. A value's
+ * fragment at the end is dropped (a tail read mid-write), and one at the
+ * start only when the start was cut (`cut`: the text is a tail of more, or
+ * `max` cut it). Values that overlap in the text are masked one after
+ * another, so the second may stay partly visible (unlikely with real env
+ * values). For the agent's stderr tail and error text, which reach the
+ * page (Check, the status) and a stopped thread's ref.
+ */
+export function redactSecrets(
+	text: string,
+	secrets: readonly string[],
+	opts: { max?: number; cut?: boolean } = {},
+): string {
+	const values = redacted(secrets);
+	let out = text;
+	for (const v of values) out = out.split(v).join(AGENT_ENV_MASK);
+	let cut = opts.cut === true;
+	// Cut to `max` before the edges are looked at: the cut is an edge too.
+	if (opts.max !== undefined && out.length > opts.max) {
+		out = out.slice(-opts.max);
+		cut = true;
+	}
+	for (const v of values) {
+		for (let k = v.length - 1; cut && k >= MIN_FRAGMENT; k--) {
+			if (out.startsWith(v.slice(-k))) {
+				out = out.slice(k);
+				break;
+			}
+		}
+		for (let k = v.length - 1; k >= MIN_FRAGMENT; k--) {
+			if (out.endsWith(v.slice(0, k))) {
+				out = out.slice(0, -k);
+				break;
+			}
+		}
+	}
+	return out;
+}
+
+/**
+ * The last STDERR_TAIL characters an agent wrote to stderr, redacted
+ * (redactSecrets). Chunks are decoded as one stream: a character split
+ * between two chunks (a non-ASCII value) stays whole.
+ */
+export class StderrTail {
+	#tail = "";
+	#cut = false;
+	readonly #decoder = new StringDecoder("utf8");
+	readonly #keep: number;
+
+	constructor(
+		private readonly secrets: readonly string[],
+		private readonly max = STDERR_TAIL,
+	) {
+		// Long enough that a value cut at the raw tail's start is cut whole
+		// once redacted (or dropped as a fragment).
+		this.#keep = max + Math.max(0, ...secrets.map((v) => v.length));
+	}
+
+	push(chunk: Buffer): void {
+		const joined = this.#tail + this.#decoder.write(chunk);
+		if (joined.length > this.#keep) this.#cut = true;
+		this.#tail = joined.slice(-this.#keep);
+	}
+
+	text(): string {
+		return redactSecrets(this.#tail, this.secrets, {
+			max: this.max,
+			cut: this.#cut,
+		});
+	}
+}
+
 /** A failed turn's reason, as stored on its reply and shown in the status. */
 export const MAX_TURN_ERROR = 300;
 
@@ -87,6 +178,11 @@ export interface AcpSpawn {
 	command: string;
 	args: string[];
 	env: Record<string, string>;
+	/**
+	 * The config's own env values: redacted from the stderr tail every
+	 * error, Check and status carry (redactSecrets). The log file keeps them.
+	 */
+	secrets?: readonly string[];
 	cwd: string;
 	stderrFile: string;
 	onUpdate(update: SessionUpdate): void;
@@ -206,6 +302,8 @@ interface Started {
 	mcpHttp: boolean;
 	exited: Promise<{ code: number | null; signal: string | null }>;
 	stderr: () => string;
+	/** The config's env values masked in the agent's own text (redactSecrets). */
+	redact: (text: string) => string;
 }
 
 /**
@@ -234,8 +332,10 @@ async function start(
 		});
 		file = stream;
 	}
-	let tail = "";
-	const stderr = () => tail;
+	const secrets = opts.secrets ?? [];
+	const tail = new StderrTail(secrets);
+	const stderr = () => tail.text();
+	const redact = (text: string) => redactSecrets(text, secrets);
 	const child = spawn(opts.command, opts.args, {
 		cwd: opts.cwd,
 		env: opts.env,
@@ -247,7 +347,7 @@ async function start(
 	track(child);
 	child.stderr?.on("data", (chunk: Buffer) => {
 		file?.write(chunk);
-		tail = (tail + chunk.toString("utf8")).slice(-STDERR_TAIL);
+		tail.push(chunk);
 	});
 	child.stdin?.on("error", () => {});
 	const exited = new Promise<{ code: number | null; signal: string | null }>(
@@ -328,7 +428,7 @@ async function start(
 						terminal: false,
 					},
 				})
-				.catch((error: unknown) => afterBreak(conn, error, stderr));
+				.catch((error: unknown) => afterBreak(conn, error, stderr, redact));
 			// A nameless agent goes by its command's name (a stored reply
 			// must name its agent).
 			const named = init.agentInfo?.name;
@@ -347,6 +447,7 @@ async function start(
 				mcpHttp: init.agentCapabilities?.mcpCapabilities?.http === true,
 				exited,
 				stderr,
+				redact,
 			};
 			await then(started);
 			return started;
@@ -372,15 +473,20 @@ function afterBreak(
 	conn: ClientConnection,
 	error: unknown,
 	stderr: () => string,
+	redact: (text: string) => string,
 ): Promise<never> {
 	if (conn.signal.aborted) return new Promise<never>(() => {});
-	return Promise.reject(protocolError(error, stderr));
+	return Promise.reject(protocolError(error, stderr, redact));
 }
 
-function protocolError(error: unknown, stderr: () => string): AgentStartError {
+function protocolError(
+	error: unknown,
+	stderr: () => string,
+	redact: (text: string) => string,
+): AgentStartError {
 	const message = error instanceof Error ? error.message : String(error);
 	return new AgentStartError(
-		`The agent answered with an error: ${message}`,
+		`The agent answered with an error: ${redact(message)}`,
 		"protocol",
 		stderr(),
 	);
@@ -416,7 +522,9 @@ export class AcpAgent {
 			session = await s.conn.agent
 				.buildSession({ cwd: opts.cwd, mcpServers })
 				.start()
-				.catch((error: unknown) => afterBreak(s.conn, error, s.stderr));
+				.catch((error: unknown) =>
+					afterBreak(s.conn, error, s.stderr, s.redact),
+				);
 		});
 		if (!session) throw new Error("no session");
 		const agent = new AcpAgent(started, session, opts.onUpdate);
@@ -492,7 +600,7 @@ export class AcpAgent {
 		} catch (error) {
 			// The connection broke (an exit): the exit says why.
 			if (this.started.conn.signal.aborted) return { text, stop: "error" };
-			const reason = turnError(error);
+			const reason = turnError(error, this.started.redact);
 			return reason
 				? { text, stop: "error", error: reason }
 				: { text, stop: "error" };
@@ -538,10 +646,14 @@ export class AcpAgent {
 
 /**
  * A JSON-RPC error's message (with its `data.details` or `data.message`)
- * on one line: control characters out, whitespace collapsed, cut at
- * MAX_TURN_ERROR. The agent's text, never trusted: shown as plain text.
+ * on one line: the config's env values masked (`redact`), control
+ * characters out, whitespace collapsed, cut at MAX_TURN_ERROR. The
+ * agent's text, never trusted: shown as plain text.
  */
-export function turnError(error: unknown): string | undefined {
+export function turnError(
+	error: unknown,
+	redact: (text: string) => string = (t) => t,
+): string | undefined {
 	if (!(error instanceof Error)) return undefined;
 	const data = (error as { data?: unknown }).data;
 	const extra =
@@ -553,7 +665,8 @@ export function turnError(error: unknown): string | undefined {
 			: typeof data === "string"
 				? data
 				: undefined;
-	const raw = [error.message, extra].filter(Boolean).join(": ");
+	// Redacted before the cut: a cut value would no longer match.
+	const raw = redact([error.message, extra].filter(Boolean).join(": "));
 	const line = raw
 		.replace(/\p{Cc}+/gu, " ")
 		.replace(/\s+/g, " ")
@@ -586,6 +699,7 @@ export async function checkAgent(
 				command: cfg.command,
 				args: cfg.args,
 				env: agentEnv(cfg.env),
+				secrets: Object.values(cfg.env),
 				cwd,
 				onUpdate: () => {},
 				onPermission: () => ({ outcome: { outcome: "cancelled" } }),

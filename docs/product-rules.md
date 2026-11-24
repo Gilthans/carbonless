@@ -795,6 +795,18 @@ question would be on someone else's behalf, or about a past moment.
 - **Setting the agent is running a command.** `PUT /api/config/agent` and
   its Check run any command as the server's user, for whoever holds the
   access key (on a loopback bind with no key, any local process).
+- **The agent's env never reaches the page (CAR-59).** It holds tokens.
+  `GET /api/config/agent` (and the PUT's answer) gives each env name with
+  a mask (`AGENT_ENV_MASK`), never its value. A Save or Check carrying the
+  mask, or no `env` at all, keeps the stored value; a mask with nothing
+  stored under its name is refused (400), so the mask is never run or
+  written to `config.json`. Only for the stored command: another command
+  starts with no env, and a mask for it is refused. The agent's own text
+  (its stderr tail and JSON-RPC errors, in Check, the status and a failed
+  turn's stored stop) has each env value of 8 or more characters masked
+  too, except absolute paths (not secrets, and a wrong one is what a
+  failed Check must show); its log file keeps them. Env is edited in
+  `config.json` by hand.
 - **One agent per review per machine.** Another server with the review
   open shows `elsewhere` and leaves the answering to the holder.
 - **Agent threads are traced like comments (owner, 2026-11-09).** One

@@ -491,6 +491,8 @@ and carbonless strips every `…TOKEN` variable from the agent's
 environment. Put it in the agent's own `env` in `config.json`
 (`"env": { "CLAUDE_CODE_OAUTH_TOKEN": "…" }`), which is passed as written,
 or log in with `claude` interactively (the login under `HOME` is used).
+The page never sees those values: carbonless sends it the names only, and
+a Save in the setup modal keeps them.
 
 **The agent is "not found on PATH" under the service.** A systemd service
 gets the `PATH` of its unit, which may lack nvm's global bin where

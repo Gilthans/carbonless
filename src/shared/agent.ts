@@ -382,6 +382,14 @@ export interface AgentConfig {
 	leash: "open";
 }
 
+/**
+ * Each env value as the page gets it (GET /api/config/agent, CAR-59): the
+ * names show, a value never does (tokens live there). A Save or Check
+ * carrying it keeps the stored value; it never reaches config.json.
+ */
+export const AGENT_ENV_MASK =
+	"\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
+
 export type AgentCheck =
 	| { ok: true; agent: AgentIdentity }
 	| { ok: false; error: string; stderr: string };

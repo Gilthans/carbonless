@@ -17,6 +17,8 @@ export interface AcpScenario {
 	agent: { name: string; version: string };
 	/** Print to stderr and exit 1 instead of answering initialize. */
 	initializeError?: string;
+	/** Writes `NAME=<value>` of this env variable to stderr at start (a leaky agent, CAR-59). */
+	stderrEnv?: string;
 	/**
 	 * Answers to prompts: the first whose `match` is a substring of the
 	 * latest message's text, else the last; by default one "ok". `chunks`
