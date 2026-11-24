@@ -38,9 +38,17 @@ const spin = "animate-spin motion-reduce:animate-none";
 
 type RepoResult = UseQueryResult<RepoHome>;
 
-/** Why a repo shows nothing new: its GET failed, or its GitHub read did. */
+/**
+ * Why a repo shows nothing new: its GET failed, or its GitHub read did.
+ * A first read still landing has no failure yet (a retry's answers never
+ * carry the last one's): it spins.
+ */
 const failureOf = (q: RepoResult): string | null =>
-	q.isError ? q.error.message : (q.data?.error ?? null);
+	q.isError
+		? q.error.message
+		: incomplete(q.data)
+			? null
+			: (q.data?.error ?? null);
 
 /**
  * Where a view repo is: "saving" (added by a save the server hasn't
@@ -56,8 +64,10 @@ function stateOf(query: RepoResult, saved: boolean): RepoState {
 		if (query.isError) return "unread";
 		return saved ? "loading" : "saving";
 	}
+	// Still landing (a retry of a failed first read too): it spins.
+	if (incomplete(query.data) && !query.isError) return "loading";
 	if (failed) return query.data.refreshedAt === null ? "unread" : "failed";
-	return incomplete(query.data) ? "loading" : "ready";
+	return "ready";
 }
 
 /**

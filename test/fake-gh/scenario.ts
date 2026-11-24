@@ -201,6 +201,8 @@ export interface Scenario {
 	homeListSkip?: Record<string, number[]>;
 	/** PRs whose details GitHub answers null, with an error (partial data). */
 	homeDetailsNull?: Record<string, number[]>;
+	/** A details query reading any of these PR numbers fails as a 502 does (no data). */
+	homeDetailsFail?: number[];
 	/**
 	 * The viewer's teams (`org/slug`); null: reading them fails as with a
 	 * token missing `read:org`. Absent: no teams.

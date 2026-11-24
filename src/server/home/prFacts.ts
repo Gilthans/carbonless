@@ -434,11 +434,19 @@ export async function fetchPrDetails(
 	const results: (PrFacts[] | undefined)[] = batches.map(() => undefined);
 	let published = 0;
 	let next = 0;
+	// One batch failed: the read has, so the others take no more batches and
+	// a batch landing after it shows nothing (the caller has its answer).
+	let failed = false;
 	const worker = async () => {
-		while (next < batches.length) {
+		while (next < batches.length && !failed) {
 			const at = next++;
-			results[at] = await fetchBatch(batches[at] ?? [], cost, signal);
-			if (!onProgress || results[published] === undefined) continue;
+			try {
+				results[at] = await fetchBatch(batches[at] ?? [], cost, signal);
+			} catch (error) {
+				failed = true;
+				throw error;
+			}
+			if (failed || !onProgress || results[published] === undefined) continue;
 			while (results[published] !== undefined) published++;
 			// The last one is the answer itself.
 			if (published < batches.length) {
@@ -591,7 +599,17 @@ export async function fetchRepoPrs(
 		stale.map(({ owner, repo, number }) => ({ owner, repo, number })),
 		cost,
 		signal,
-		onProgress && ((got) => onProgress([...kept, ...got.filter(recent)])),
+		onProgress &&
+			((got) => {
+				// Known facts of PRs not read yet stay meanwhile (a retry of a
+				// first read that failed keeps the rows it had).
+				const read = new Set(got.map((pr) => pr.number));
+				const waiting = stale.flatMap(({ number }) => {
+					const k = read.has(number) ? undefined : known.get(number);
+					return k ? [k.facts] : [];
+				});
+				onProgress([...kept, ...waiting, ...got.filter(recent)]);
+			}),
 	);
 	const got = new Set(read.map((pr) => pr.number));
 	// Details GitHub didn't give (a null node in partial data): the known

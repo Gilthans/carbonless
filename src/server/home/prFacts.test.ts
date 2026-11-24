@@ -414,6 +414,61 @@ describe("fetchRepoPrs, progressively (CAR-290)", () => {
 		expect(cost).toMatchObject({ calls: 6, points: 6 });
 	});
 
+	it("a read that failed shows no batch that lands after (fix round 1)", async () => {
+		// Batches: 10 (#1-10, held), 20 (#11-30), 20 (#31-50, fails).
+		fx = createHomeFixture({
+			repos: {
+				"acme/api": { prs: Array.from({ length: 50 }, (_, i) => open(i + 1)) },
+			},
+			hold: ["homePr:1"],
+			homeDetailsFail: [31],
+		});
+		const cost = newCost();
+		const shown: number[][] = [];
+		await expect(
+			fetchRepoPrs("acme", "api", SINCE, {
+				now: NOW,
+				cost,
+				onProgress: (prs) => shown.push(prs.map((p) => p.number)),
+			}),
+		).rejects.toThrow(/502/);
+		// The second batch has answered; the first lands only now.
+		await vi.waitFor(() => expect(cost.calls).toBe(2), { timeout: 20_000 });
+		release(fx.path, "homePr:1");
+		await vi.waitFor(() => expect(cost.calls).toBe(3), { timeout: 20_000 });
+		expect(shown).toEqual([]);
+	});
+
+	it("known rows not read yet stay in the progress (a retry keeps its rows)", async () => {
+		fx = createHomeFixture({
+			repos: {
+				"acme/api": { prs: Array.from({ length: 30 }, (_, i) => open(i + 1)) },
+			},
+		});
+		const first = await fetchRepoPrs("acme", "api", SINCE, { now: NOW });
+		// #21-30 known but old: read again, in the held second batch.
+		const known = new Map<number, Known>(
+			first
+				.filter((f) => f.number > 20)
+				.map((f) => [f.number, { facts: f, readAt: NOW - DETAILS_MAX_AGE_MS }]),
+		);
+		fx.scenario({ hold: ["homePr:11"] });
+		const shown: number[][] = [];
+		const reading = fetchRepoPrs("acme", "api", SINCE, {
+			now: NOW,
+			known,
+			onProgress: (prs) =>
+				shown.push(prs.map((p) => p.number).sort((a, b) => a - b)),
+		});
+		await vi.waitFor(() => expect(shown).toHaveLength(1), { timeout: 20_000 });
+		expect(shown[0]).toEqual([
+			...Array.from({ length: 10 }, (_, i) => i + 1),
+			...Array.from({ length: 10 }, (_, i) => i + 21),
+		]);
+		release(fx.path, "homePr:11");
+		expect(await reading).toHaveLength(30);
+	});
+
 	it("without onProgress, batches stay DETAILS_BATCH (no extra call)", async () => {
 		fx = createHomeFixture({
 			repos: {

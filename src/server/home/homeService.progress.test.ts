@@ -230,6 +230,83 @@ describe("a repo's first read answers as it lands", () => {
 		expect(numbers(r)).toHaveLength(6);
 	});
 
+	it("an ask that holds a whole list waits for the whole read, never a partial one (fix round 1)", async () => {
+		// A cold server (restarted, or the repo evicted) while the page shows
+		// every row: the page says so, and its rows are never cut to a batch.
+		const { home } = service();
+		const whole = home.repo("acme", "api", { whole: true });
+		const read = await current();
+		read.progress(prs(1, 10));
+		// A first ask without rows gets the batch; the whole one still waits.
+		expect(await home.repo("acme", "api")).toMatchObject({ complete: false });
+		expect(await settled(whole)).toBe(false);
+		read.progress(prs(1, 30));
+		expect(await settled(whole)).toBe(false);
+		read.finish(prs(1, 35));
+		const r = await whole;
+		expect(r).toMatchObject({ complete: true });
+		expect(numbers(r)).toHaveLength(35);
+	});
+
+	it("a batch of a read that failed, landing late, changes nothing (fix round 1)", async () => {
+		const { home } = service();
+		const first = home.repo("acme", "api");
+		const failed = await current();
+		failed.progress(prs(1, 10));
+		await first;
+		failed.fail(new Error("gh: boom"));
+		await vi.waitFor(async () =>
+			expect(await home.repo("acme", "api")).toMatchObject({ complete: true }),
+		);
+		// Late: no new progress, no new rows.
+		failed.progress(prs(1, 30));
+		const after = await home.repo("acme", "api");
+		expect(after).toMatchObject({ complete: true, progress: 1 });
+		expect(numbers(after)).toHaveLength(10);
+		// A retry that ends whole: the old read's late batch never cuts it.
+		const retry = home.repo("acme", "api", { fresh: true, whole: true });
+		await vi.waitFor(() => expect(reads).toHaveLength(2));
+		(reads[1] as Driven).finish(prs(1, 40));
+		expect(numbers(await retry)).toHaveLength(40);
+		failed.progress(prs(1, 20));
+		const last = await home.repo("acme", "api");
+		expect(last).toMatchObject({ complete: true, error: null });
+		expect(numbers(last)).toHaveLength(40);
+	});
+
+	it("a retry of a failed first read spins, not the old error, while it lands (fix round 1)", async () => {
+		const { home } = service();
+		const first = home.repo("acme", "api");
+		const failed = await current();
+		failed.progress(prs(1, 10));
+		await first;
+		failed.fail(new Error("gh: API rate limit exceeded for user ID 1."));
+		await vi.waitFor(async () =>
+			expect(await home.repo("acme", "api")).toMatchObject({
+				complete: true,
+				error: "Rate limited by GitHub",
+			}),
+		);
+		const retry = home.repo("acme", "api", { fresh: true, seen: 1 });
+		await vi.waitFor(() => expect(reads).toHaveLength(2));
+		(reads[1] as Driven).progress(prs(1, 20));
+		expect(await retry).toMatchObject({ complete: false, error: null });
+		(reads[1] as Driven).finish(prs(1, 25));
+	});
+
+	it("reset() answers the asks held on a first read at once (fix round 1)", async () => {
+		const { home } = service();
+		const first = home.repo("acme", "api");
+		const read = await current();
+		read.progress(prs(1, 10));
+		await first;
+		const held = home.repo("acme", "api", { seen: 1 });
+		expect(await settled(held)).toBe(false);
+		home.reset();
+		expect(await settled(held)).toBe(true);
+		read.finish(prs(1, 12));
+	});
+
 	it("an ask that has seen everything answers after PROGRESS_WAIT_MS with what there is", async () => {
 		const { home } = service();
 		const first = home.repo("acme", "api");

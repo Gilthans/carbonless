@@ -252,6 +252,9 @@ export class HomeService {
 	 */
 	reset(): void {
 		this.#generation++;
+		// Asks held on a first read's progress answer now (from state no
+		// longer kept), not at that read's end.
+		for (const state of this.#repos.values()) state.bump();
 		this.#viewer = null;
 		this.#viewers.forget();
 		this.#teams = null;
@@ -334,12 +337,14 @@ export class HomeService {
 	 * batch of facts after the `seen` one (RepoHome.progress; none: the
 	 * first), or its end, or PROGRESS_WAIT_MS on, `complete` false until
 	 * the read ends. A repo read before keeps its rows and answers once the
-	 * read is done, as a whole.
+	 * read is done, as a whole; so does an ask that says it holds a whole
+	 * list (`whole`: the page already shows every row, from before a
+	 * restart or an eviction): it never trades them for a partial one.
 	 */
 	async repo(
 		owner: string,
 		repo: string,
-		opts: { fresh?: boolean; seen?: number } = {},
+		opts: { fresh?: boolean; seen?: number; whole?: boolean } = {},
 	): Promise<RepoHome> {
 		const name = `${owner}/${repo}`.toLowerCase();
 		const { config } = await this.#config.read();
@@ -366,7 +371,7 @@ export class HomeService {
 				state.reading = null;
 				state.bump();
 			});
-			if (state.listedAt !== undefined) await state.reading;
+			if (state.listedAt !== undefined || opts.whole) await state.reading;
 			else if (state.progress === (opts.seen ?? 0)) {
 				let timer: ReturnType<typeof setTimeout> | undefined;
 				await Promise.race([
@@ -393,6 +398,9 @@ export class HomeService {
 		// before keeps its last facts whole until the read is done.
 		const progressive = state.listedAt === undefined;
 		const known = state.facts;
+		// This read's progress only, and only while it runs: a batch landing
+		// after it ended (failed) never shows.
+		let live = true;
 		// A gate the last read's end left open: this read's asks wait anew.
 		Object.assign(state, progressGate());
 		try {
@@ -407,6 +415,7 @@ export class HomeService {
 				missing,
 				...(progressive && {
 					onProgress: (so: PrFacts[]) => {
+						if (!live || generation !== this.#generation) return;
 						state.facts = this.#known(so, known, begun);
 						state.progress++;
 						const { bump } = state;
@@ -431,6 +440,7 @@ export class HomeService {
 			state.failures++;
 			state.error = refreshReason(error);
 		} finally {
+			live = false;
 			state.checkedAt = begun;
 			if (generation === this.#generation) this.lastCost = cost;
 		}
@@ -489,15 +499,18 @@ export class HomeService {
 			if (row) rows.push(row);
 		}
 		const refreshedAt = state.listedAt;
+		const landing = state.reading !== null && state.listedAt === undefined;
 		return {
 			repo: name,
 			rows,
 			refreshedAt:
 				refreshedAt === undefined ? null : new Date(refreshedAt).toISOString(),
-			error: state.error,
+			// A first read landing again (a retry): the last one's failure is
+			// not its answer; the spinner shows, not the alert.
+			error: landing ? null : state.error,
 			failures: state.failures,
 			// Never read in full and a read out: more rows are coming.
-			complete: !(state.reading && state.listedAt === undefined),
+			complete: !landing,
 			progress: state.progress,
 		};
 	}

@@ -1681,6 +1681,14 @@ async function call(io) {
 					}
 					print({ data: { rateLimit, repository } });
 				}
+				if (
+					homeDetails &&
+					[...f.query.matchAll(/\bp(\d+): pullRequest\(number: \d+\)/g)].some(([, n]) =>
+						(s.homeDetailsFail ?? []).includes(Number(n)),
+					)
+				) {
+					fail("gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)");
+				}
 				// r<i>: repository(owner: "o", name: "n") { p<n>: pullRequest(number: <n>) { ...F } … }
 				const data = { rateLimit };
 				const errors = [];

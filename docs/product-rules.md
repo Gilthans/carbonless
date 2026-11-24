@@ -752,9 +752,12 @@ and each batch shows once those before it are in, so later rows are older
 and land below the ones shown. Until the last batch the repo's chip spins
 and Home counts nothing (the same spinners, placeholders and no "none" as
 above). A read that fails mid-way keeps the rows so far and says why; the
-spinner stops. A refresh of a repo read before keeps its rows whole until
-it is done (`RepoHome.complete`, `progress`; the page's next ask sends
-`seen` and the server answers at the next batch).
+spinner stops; a retry spins again (never the last read's alert) as its
+rows land. A refresh of a repo read before keeps its rows whole until it
+is done (`RepoHome.complete`, `progress`; the page's next ask sends
+`seen` and the server answers at the next batch). A page that already
+shows a whole list (the server restarted, or forgot the repo) asks with
+`whole` and gets only a whole answer: a list never shrinks to a batch.
 
 ## "Side by side" is a view
 

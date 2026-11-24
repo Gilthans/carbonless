@@ -96,10 +96,11 @@ export async function registerHomeRoutes(
 		scope.get("/api/home", () => home.view());
 		// A repo's rows (in the view, or picked in its settings: any repo);
 		// `fresh=1` reads GitHub now (Refresh, Retry, a save after a failed pick);
-		// `seen=N`: a first read's answer after its Nth batch (RepoHome.progress).
+		// `seen=N`: a first read's answer after its Nth batch (RepoHome.progress);
+		// `whole=1`: the page shows a whole list, so only a whole one answers.
 		scope.get<{
 			Params: { owner: string; repo: string };
-			Querystring: { fresh?: unknown; seen?: unknown };
+			Querystring: { fresh?: unknown; seen?: unknown; whole?: unknown };
 		}>("/api/home/repos/:owner/:repo", (request) => {
 			const { owner, repo } = request.params;
 			if (!validOwnerRepo(owner, repo)) {
@@ -114,6 +115,7 @@ export async function registerHomeRoutes(
 			}
 			return home.repo(owner, repo, {
 				fresh: request.query.fresh === "1",
+				whole: request.query.whole === "1",
 				...(seen === undefined ? {} : { seen: Number(seen) }),
 			});
 		});

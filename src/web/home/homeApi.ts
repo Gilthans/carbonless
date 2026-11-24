@@ -23,20 +23,36 @@ const send = <T>(method: string, path: string, body: unknown) =>
 export const fetchHome = () => request<HomeView>("/api/home");
 
 /**
- * One view repo's rows; `fresh`: read from GitHub now (Refresh, Retry).
- * `seen`: a first read's progress already shown; the server answers at
- * its next batch (RepoHome.progress).
+ * What a repo's ask says of the answer the page shows: `seen`, a first
+ * read's progress already shown (the server answers at its next batch,
+ * RepoHome.progress); `whole`, the page shows a whole list (the server
+ * answers only with a whole one, never trading it for a partial one).
  */
+export interface RepoAsk {
+	seen?: number;
+	whole?: boolean;
+}
+
+/** The ask for a repo whose shown answer is `shown` (none: a first ask). */
+export function askOf(shown: RepoHome | undefined): RepoAsk {
+	if (!shown) return {};
+	if (incomplete(shown)) return { seen: shown.progress ?? 0 };
+	// Rows never read whole (a first read that failed): partial is better.
+	return neverRead(shown) ? {} : { whole: true };
+}
+
+/** One view repo's rows; `fresh`: read from GitHub now (Refresh, Retry). */
 export const fetchRepo = (
 	name: string,
 	fresh = false,
 	signal?: AbortSignal,
-	seen?: number,
+	ask: RepoAsk = {},
 ) => {
 	const [owner = "", repo = ""] = name.split("/");
 	const query = new URLSearchParams({
 		...(fresh ? { fresh: "1" } : {}),
-		...(seen === undefined ? {} : { seen: String(seen) }),
+		...(ask.seen === undefined ? {} : { seen: String(ask.seen) }),
+		...(ask.whole ? { whole: "1" } : {}),
 	}).toString();
 	return request<RepoHome>(
 		`/api/home/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${query ? `?${query}` : ""}`,
@@ -50,10 +66,12 @@ export const incomplete = (data: RepoHome | undefined) =>
 
 /**
  * While a repo's first read lands, it is asked again this soon: the
- * server holds each ask until the next batch is in, so this is the gap
- * between an answer and the next ask, not a poll's period.
+ * server holds each ask that sends `seen` until the next batch is in (or
+ * 20 s), so this is mostly the gap between an answer and the next ask.
  */
 export const PROGRESS_POLL_MS = 100;
+/** A first read's ask that failed (crb restarting, unreachable): asked again this late. */
+export const PROGRESS_ERROR_MS = 5_000;
 
 /** Where a row's PR is in the API and in the cache. */
 export type RowKey = Pick<HomeRow, "owner" | "repo" | "number">;
@@ -115,34 +133,46 @@ export function repoInterval(minutes: number, data: RepoHome | undefined) {
 export const repoQuery = (name: string, minutes: number) =>
 	queryOptions({
 		queryKey: repoKey(name),
-		queryFn: ({ client }) => {
-			const shown = client.getQueryData<RepoHome>(repoKey(name));
-			return fetchRepo(
+		// The signal: a cancelled ask (Refresh, Home left) isn't held on.
+		queryFn: ({ client, signal }) =>
+			fetchRepo(
 				name,
 				false,
-				undefined,
-				incomplete(shown) ? (shown?.progress ?? 0) : undefined,
-			);
-		},
+				signal,
+				askOf(client.getQueryData<RepoHome>(repoKey(name))),
+			),
 		staleTime: Math.max(1, minutes) * 60_000,
 		gcTime: REPO_GC_MS,
-		refetchInterval: (query) =>
-			incomplete(query.state.data)
-				? PROGRESS_POLL_MS
-				: repoInterval(minutes, query.state.data),
+		refetchInterval: (query) => repoRefetchInterval(minutes, query.state),
 		// Back on the page once that old: read again (the app's default is off).
 		refetchOnWindowFocus: true,
 	});
 
 /**
+ * When a repo's query asks again: refresh.minutes (backing off, repoInterval)
+ * once its answer is whole; at once for the next batch while a first read
+ * lands, but PROGRESS_ERROR_MS after a failed ask (never a tight loop
+ * against a server that's down or refusing).
+ */
+export function repoRefetchInterval(
+	minutes: number,
+	state: { status: string; data: RepoHome | undefined },
+): number {
+	if (!incomplete(state.data)) return repoInterval(minutes, state.data);
+	return state.status === "error" ? PROGRESS_ERROR_MS : PROGRESS_POLL_MS;
+}
+
+/**
  * Reads a repo from GitHub now, into its query (Refresh, Retry): a timed
- * read already out is dropped, not joined, so the answer is fresh.
+ * read already out is dropped, not joined, so the answer is fresh. A
+ * whole list shown stays until a whole one comes (askOf).
  */
 export const refetchRepo = async (client: QueryClient, name: string) => {
 	await client.cancelQueries({ queryKey: repoKey(name) });
+	const ask = askOf(client.getQueryData<RepoHome>(repoKey(name)));
 	return client.fetchQuery({
 		queryKey: repoKey(name),
-		queryFn: () => fetchRepo(name, true),
+		queryFn: ({ signal }) => fetchRepo(name, true, signal, ask),
 		staleTime: 0,
 		gcTime: REPO_GC_MS,
 	});
@@ -182,12 +212,14 @@ export function prefetchRepo(
 	picksOf(client).add(key);
 	const saved = () =>
 		client.getQueryData(homeQuery.queryKey)?.view.repos.includes(key) ?? false;
+	// A whole list it already holds (a repo added back) stays whole.
+	const ask = askOf(client.getQueryData<RepoHome>(repoKey(key)));
 	void client.prefetchQuery({
 		...repoQuery(name, minutes),
 		staleTime: 0,
 		queryFn: async ({ signal }) => {
 			try {
-				const answer = await fetchRepo(name, false, signal);
+				const answer = await fetchRepo(name, false, signal, ask);
 				return neverRead(answer) && saved()
 					? fetchRepo(name, true, signal)
 					: answer;
