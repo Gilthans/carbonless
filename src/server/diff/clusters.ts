@@ -144,6 +144,43 @@ export function splitCluster<C extends LineCluster>(
 export const isBlankLine = (line: string): boolean => /^\s*$/.test(line);
 
 /**
+ * Lock files, by name (any folder): an added one stays one cluster, never
+ * cut at its blank lines (owner 2026-11-24: "skip the custom split on a
+ * blocklist of files (like lock)"). One cluster a file keeps a whole-file
+ * mark one event: cut, a 4,000-line lockfile was 916 clusters and a 51 KB
+ * commit for one "Mark all reviewed" (docs/review-data-storage.md).
+ */
+const LOCK_FILES: ReadonlySet<string> = new Set([
+	".terraform.lock.hcl",
+	"Cargo.lock",
+	"Gemfile.lock",
+	"Package.resolved",
+	"Pipfile.lock",
+	"Podfile.lock",
+	"bun.lock",
+	"composer.lock",
+	"conan.lock",
+	"deno.lock",
+	"flake.lock",
+	"go.sum",
+	"gradle.lockfile",
+	"mix.lock",
+	"npm-shrinkwrap.json",
+	"package-lock.json",
+	"packages.lock.json",
+	"pdm.lock",
+	"pnpm-lock.yaml",
+	"poetry.lock",
+	"pubspec.lock",
+	"uv.lock",
+	"yarn.lock",
+]);
+
+/** Whether an added file at `path` is cut at its blank lines (not a lock file). */
+export const cutsAtBlankLines = (path: string): boolean =>
+	!LOCK_FILES.has(path.slice(path.lastIndexOf("/") + 1));
+
+/**
  * A pure addition (an added file's hunk) cut at its blank lines (CAR-235,
  * owner 2026-11-22: "each cluster should end when reaching a line of only
  * whitespace"): a blank line ends its cluster and stays in it, as does a

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { hunkCut } from "../../shared/whitespace.js";
 import type { LineCluster } from "./clusters.js";
 import {
+	cutsAtBlankLines,
 	fileLevelCluster,
 	parseU0Patch,
 	splitAtBlankLines,
@@ -400,6 +401,37 @@ describe("splitAtBlankLines (CAR-235)", () => {
 			expect(lines.slice(p.addedAt, p.addedAt + p.cluster.lines)).toEqual(
 				p.cluster.added,
 			);
+		}
+	});
+});
+
+describe("cutsAtBlankLines: lock files stay whole (CAR-235, owner 2026-11-24)", () => {
+	it("refuses known lock files by name, in any folder", () => {
+		for (const path of [
+			"pnpm-lock.yaml",
+			"web/package-lock.json",
+			"yarn.lock",
+			"crates/x/Cargo.lock",
+			"go.sum",
+			"poetry.lock",
+			"Gemfile.lock",
+			"composer.lock",
+			"Pipfile.lock",
+			"uv.lock",
+		]) {
+			expect(cutsAtBlankLines(path), path).toBe(false);
+		}
+	});
+
+	it("cuts every other file, names that only look alike included", () => {
+		for (const path of [
+			"src/a.ts",
+			"README.md",
+			"docs/pnpm-lock.yaml.md",
+			"my-yarn.lock",
+			"lock/index.ts",
+		]) {
+			expect(cutsAtBlankLines(path), path).toBe(true);
 		}
 	});
 });

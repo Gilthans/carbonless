@@ -977,6 +977,7 @@ describe("added files cut at blank lines (CAR-235)", () => {
 					"edit.ts": `${edited}\nmore\n\nand more\n`,
 					"new.ts": added,
 					"blank.txt": "\n \n",
+					"deps/pnpm-lock.yaml": "a:\n  b: 1\n\nc:\n  d: 2\n",
 				},
 			},
 		]);
@@ -1036,6 +1037,13 @@ describe("added files cut at blank lines (CAR-235)", () => {
 			{ key: whole, removedAt: 0, addedAt: 2, removed: 0 },
 			{ key: whole, removedAt: 0, addedAt: 7, removed: 0 },
 		]);
+	});
+
+	it("leaves an added lock file whole, as before (owner 2026-11-24)", () => {
+		const lock = fileOf("deps/pnpm-lock.yaml");
+		expect(lock.clusters).toHaveLength(1);
+		expect(lock.clusters[0]?.split).toBeUndefined();
+		expect(lock.clusters[0]?.lines).toBe(5);
 	});
 
 	it("leaves an added file of only blank lines whole, and an edited file's hunks as git cuts them", () => {

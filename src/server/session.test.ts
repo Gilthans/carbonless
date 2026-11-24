@@ -2175,6 +2175,28 @@ describe("Session", () => {
 			expect(await placed(h3)).toEqual(on(25));
 		});
 
+		it("an added lock file stays one cluster; one mark finishes it, beside a cut source file (CAR-235)", async () => {
+			pr.moveHead({
+				"web/pnpm-lock.yaml": "a:\n  b: 1\n\nc:\n  d: 2\n",
+				"web/src/x.ts": "one\n\ntwo\n",
+			});
+			const s = await Session.open(pr.arg, process.cwd());
+			const fileOf = (path: string) =>
+				s.snapshot().files.find((f) => f.path === path);
+			expect(fileOf("web/src/x.ts")?.clusters).toHaveLength(2);
+			const lock = fileOf("web/pnpm-lock.yaml");
+			expect(lock?.clusters).toHaveLength(1);
+			const key = lock?.clusters[0]?.key as string;
+			const view = await s.setStates(s.snapshot().revision, [
+				{ key, state: "crossed-off", reason: "generated" },
+			]);
+			expect(
+				view.files
+					.find((f) => f.path === "web/pnpm-lock.yaml")
+					?.clusters.map((c) => c.state),
+			).toEqual(["crossed-off"]);
+		});
+
 		it("an added file reviewed whole before the blank-line cut (one cluster, an older crb) reads reviewed on every piece, and its next patch set carries every piece and nothing more (CAR-235)", async () => {
 			pr.moveHead({ "blocks.txt": "one\n\ntwo\n\nthree\n" });
 			const s = await Session.open(pr.arg, process.cwd());

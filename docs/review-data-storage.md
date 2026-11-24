@@ -929,7 +929,11 @@ after a run of blank (empty or whitespace-only) lines, the blank lines
 staying with the piece before them, and blank lines at the top joining the
 first piece (`splitAtBlankLines` in `src/server/diff/clusters.ts`, called by
 `cutClusters` for files of status `added`). Edited files are not cut this
-way. The pieces carry `Cluster.split` like any other, so a review marked
+way, nor are added lock files (`LOCK_FILES`, by name: `pnpm-lock.yaml`,
+`package-lock.json`, `Cargo.lock`, `go.sum` and the like), which stay one
+cluster, so a whole-file mark on one stays one event (see "Measurements").
+Files `.gitattributes` marks `linguist-generated` are cut like any other:
+nothing reads that attribute yet. The pieces carry `Cluster.split` like any other, so a review marked
 before (the whole file one cluster) keeps its marks: the split carry puts a
 whole mark on every piece and line marks on the lines they marked. No new
 event and no new stored field. The since view needs nothing of its own: its
@@ -1168,14 +1172,18 @@ KB raw, 0.3 KB deflated).
 | `splitCarry.ts` (typical) | 120 | 5 | 1.8 KB | 0.6 KB |
 | `snapshot.ts` | 611 | 30 | 9.7 KB | 2.0 KB |
 | `session.ts` | 2,733 | 117 | 36.3 KB | 6.8 KB |
-| `pnpm-lock.yaml` (worst case) | 4,084 | 916 | 276.6 KB | 51.3 KB |
+| `pnpm-lock.yaml`, cut (before the blocklist) | 4,084 | 916 | 276.6 KB | 51.3 KB |
+| `pnpm-lock.yaml`, blocklisted (now) | 4,084 | 1 | 0.5 KB | 0.3 KB |
 
 A cross-off with a reason is about the same (298 KB raw, 50 KB deflated for
 the lockfile). Each later patch set start then carries every piece: about
 90 bytes raw an entry, so about 80 KB raw for the lockfile per reviewer per
-start. One click on a big generated or lock file thus takes a review past
-the 50 KiB target above. Whether to cap the cut or store a whole-file
-action compactly is the owner's call (CAR-235).
+start. Cut, one click on a big lock file took a review past the 50 KiB
+target above, so lock files are not cut (owner, 2026-11-24: "skip the
+custom split on a blocklist of files (like lock), and accept the size for
+the rest"). A compact whole-file entry was considered and declined: it
+would tie stored marks to how a file is cut, and a later change to the cut
+could have unforeseen consequences.
 
 **Everyday git** (ms, median of 5) on a 3,000-commit, 2,000-file repo, with the
 review refs on the remote and the clone using the default refspec:

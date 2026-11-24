@@ -15,6 +15,7 @@ import { GitError, runGit, runGitBuffer } from "../git.js";
 import { BlobCache } from "./blobCache.js";
 import {
 	buildAllClusters,
+	cutsAtBlankLines,
 	splitAtBlankLines,
 	splitCluster,
 } from "./clusters.js";
@@ -318,7 +319,9 @@ export async function buildSnapshot(
 				newLines: text?.newLines ?? [],
 				noNewlineAtEnd: text?.noNewlineAtEnd ?? false,
 			},
-			{ blankLines: file.status === "added" },
+			{
+				blankLines: file.status === "added" && cutsAtBlankLines(file.path),
+			},
 		);
 		const tabWidth = tabWidths[index];
 		const oldSize = sizeOf(oldOid);
