@@ -796,7 +796,10 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 			// The engine's answer and the page's hunks agree on the pieces.
 			expect(pieces).toEqual(f.pieces ?? []);
 			// No removed line shows twice: a shown row and an orphan of the
-			// same cluster, base line and text (CAR-277).
+			// same cluster, base line and text (CAR-277). A guard rail: no
+			// update here edits a line the base changed, so this never
+			// reaches the githubLeft fallback (engine.test.ts covers that
+			// per method: rebase, merge-base-in, squash).
 			const removed = hunks
 				.flatMap((h) => h.lines)
 				.filter((l) => l.kind === "del" && l.clusterKey !== undefined);

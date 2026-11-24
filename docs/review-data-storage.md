@@ -373,13 +373,15 @@ engine computes it for the since view's hunks, `interdiffFileHunks`):
   found by position: the since view numbers it in the earlier head (or its
   virtual rebase), and the engine maps it back through that patch set's
   own diff and the bases' diff (`lineKeys.baseLine`); its text must match
-  as a guard. A line the bases' diff changed (a rebase onto a base that
-  edited that very line) has no place that way; its GitHub LEFT line on
-  the head (`lineKeys.githubLeft`, the virtual rebase against the new
-  base) places it instead, only when the file has a `baseLine` map and
-  the earlier patch set didn't add the line, with the same text guard
-  (CAR-277; otherwise the cluster's line is also an orphan row, shown
-  twice). Never by text alone: a twin elsewhere (a blank line, a `}`)
+  as a guard. A line the base move brought or changed (a rebase onto a
+  base that edited that very line) has no place that way; its GitHub
+  LEFT line on the head (`lineKeys.githubLeft`, the virtual rebase
+  against the new base) places it instead, only when the tracer names it
+  the base move's (`lineKeys.baseMoved`: not placed, not the earlier
+  patch set's own, in a file whose head file pairs with it), the earlier
+  patch set didn't add it, no row `baseLine` places claims that base
+  line, and with the same text guard (CAR-277; otherwise the cluster's
+  line is also an orphan row, shown twice). Never by text alone: a twin elsewhere (a blank line, a `}`)
   is another line. A line the earlier patch set added, or one that can't
   be mapped, is none of the cluster's.
 - A cluster line no piece shows is unchanged since the earlier patch set.

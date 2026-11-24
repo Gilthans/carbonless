@@ -1169,74 +1169,108 @@ describe("the engine", () => {
 	});
 });
 
-describe("a line the base move changed, shown removed in the since view (CAR-277)", () => {
-	// PS1 changes line 5 on B1; master changes lines 30 and 35 (B2); PS2,
-	// rebased on B2, drops master's line 30 and edits its line 35. PS1 was
-	// reviewed, so line 5 carries and shows nothing. The since view shows that removal; the
-	// old base can't place it (baseLine), GitHub's LEFT line can.
+/**
+ * PS1 (two commits: lines 5 and 8) on B1; master changes lines 30 and 35
+ * (B2); PS2 updates onto B2 per `method`, then drops master's line 30
+ * and edits its line 35. PS1 was reviewed, so lines 5 and 8 carry and
+ * show nothing; the since view shows the drop and the edit, whose
+ * removed lines the old base can't place (baseLine), GitHub's LEFT line
+ * can (CAR-277). Every method ends on the same tree (principle 7).
+ */
+async function baseChangedLine(method: "rebase" | "merge-base-in" | "squash") {
 	const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
 	const text = (ls: string[]) => `${ls.join("\n")}\n`;
+	const fx = createGitFixture([
+		{ message: "base", files: { "a.txt": text(lines) } },
+	]);
+	const git = (...args: string[]) =>
+		execFileSync("git", args, {
+			cwd: fx.path,
+			encoding: "utf8",
+			stdio: "pipe",
+			env: testGitEnv(),
+		}).trim();
+	const commit = (message: string, content: string[]) => {
+		writeFileSync(join(fx.path, "a.txt"), text(content));
+		git("commit", "--quiet", "-am", message);
+		return git("rev-parse", "HEAD");
+	};
+	const pr = (ls: string[], upTo: 5 | 8) =>
+		ls.map((l) =>
+			l === "line 5" ? "five" : upTo === 8 && l === "line 8" ? "eight" : l,
+		);
+	const b1 = fx.shas[0] as string;
+	commit("PR: five", pr(lines, 5));
+	const h1 = commit("PR: eight", pr(lines, 8));
+	git("checkout", "--quiet", "--detach", b1);
+	const masterLines = lines.map((l) =>
+		l === "line 30"
+			? "thirty on master"
+			: l === "line 35"
+				? "thirty-five on master"
+				: l,
+	);
+	const b2 = commit("base: lines 30 and 35", masterLines);
+	const final = pr(masterLines, 8)
+		.map((l) => (l === "thirty-five on master" ? "thirty-five, PR" : l))
+		.filter((l) => l !== "thirty on master");
+	if (method === "rebase") {
+		commit("PR: five, rebased", pr(masterLines, 5));
+		commit("PR: eight, rebased", pr(masterLines, 8));
+	} else if (method === "merge-base-in") {
+		git("checkout", "--quiet", "--detach", h1);
+		git("merge", "--quiet", "--no-edit", b2);
+	}
+	const h2 = commit("PR: line 30 dropped, line 35 edited", final);
+	const ps1 = await buildSnapshot(fx.path, b1, h1);
+	const r = await buildSnapshot(fx.path, b2, h2);
+	const traced = await traceRereview(
+		fx.path,
+		since(1, ps1, marked(ps1)),
+		[],
+		targetOf(r),
+	);
+	const { answer } = answerRereview(
+		traced,
+		since(1, ps1, marked(ps1)),
+		[],
+		targetOf(r),
+	);
+	return { traced, answer, r, cleanup: fx.cleanup };
+}
+
+describe.each(["merge-base-in", "squash"] as const)(
+	"a line the base move changed, PS2 by %s (CAR-277)",
+	(method) => {
+		it("shows once: no orphan twin, one unit each", async () => {
+			const { traced, answer, r, cleanup } = await baseChangedLine(method);
+			try {
+				const rows = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
+					(h) => h.lines,
+				);
+				expect(rows.filter((l) => l.orphan)).toEqual([]);
+				expect(
+					rows.filter((l) => l.kind !== "context").map((l) => l.text),
+				).toEqual([
+					"thirty on master",
+					"thirty-five on master",
+					"thirty-five, PR",
+				]);
+				expect(answer.toRead).toEqual({ files: 1, clusters: 2 });
+			} finally {
+				cleanup();
+			}
+		});
+	},
+);
+
+describe("a line the base move changed, shown removed in the since view (CAR-277)", () => {
 	let cleanup = () => {};
 	let traced: Traced;
 	let answer: RereviewAnswer;
 	let r: Snapshot;
 	beforeAll(async () => {
-		const fx = createGitFixture([
-			{ message: "base", files: { "a.txt": text(lines) } },
-		]);
-		cleanup = fx.cleanup;
-		const git = (...args: string[]) =>
-			execFileSync("git", args, {
-				cwd: fx.path,
-				encoding: "utf8",
-				stdio: "pipe",
-				env: testGitEnv(),
-			}).trim();
-		const commit = (message: string, content: string[]) => {
-			writeFileSync(join(fx.path, "a.txt"), text(content));
-			git("commit", "--quiet", "-am", message);
-			return git("rev-parse", "HEAD");
-		};
-		const b1 = fx.shas[0] as string;
-		const h1 = commit(
-			"PR: five",
-			lines.map((l) => (l === "line 5" ? "five" : l)),
-		);
-		git("checkout", "--quiet", "--detach", b1);
-		const masterLines = lines.map((l) =>
-			l === "line 30"
-				? "thirty on master"
-				: l === "line 35"
-					? "thirty-five on master"
-					: l,
-		);
-		const b2 = commit("base: lines 30 and 35", masterLines);
-		const h2 = commit(
-			"PR: five, rebased; line 30 dropped, line 35 edited",
-			masterLines
-				.map((l) =>
-					l === "line 5"
-						? "five"
-						: l === "thirty-five on master"
-							? "thirty-five, PR"
-							: l,
-				)
-				.filter((l) => l !== "thirty on master"),
-		);
-		const ps1 = await buildSnapshot(fx.path, b1, h1);
-		r = await buildSnapshot(fx.path, b2, h2);
-		traced = await traceRereview(
-			fx.path,
-			since(1, ps1, marked(ps1)),
-			[],
-			targetOf(r),
-		);
-		answer = answerRereview(
-			traced,
-			since(1, ps1, marked(ps1)),
-			[],
-			targetOf(r),
-		).answer;
+		({ traced, answer, r, cleanup } = await baseChangedLine("rebase"));
 	});
 	afterAll(() => cleanup());
 
@@ -1284,6 +1318,8 @@ describe("a line the base move changed, shown removed in the since view (CAR-277
 		const oldNo = shownOldNo();
 		expect(traced.lineKeys.baseLine?.["a.txt"]?.[oldNo]).toBeUndefined();
 		expect(traced.lineKeys.githubLeft?.["a.txt"]?.[oldNo]).toBe(30);
+		// The tracer names it (and the edited line 35's) as the base move's.
+		expect(traced.lineKeys.baseMoved?.["a.txt"]).toEqual([oldNo, oldNo + 5]);
 		expect(view()).toEqual({ rows: ["shown"], pieces: [[false, [[0, 1]]]] });
 		// The edited line 35 too: no orphan row anywhere in the file.
 		const rows = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
@@ -1293,7 +1329,7 @@ describe("a line the base move changed, shown removed in the since view (CAR-277
 		expect(rows.filter((l) => l.kind !== "context").map((l) => l.text)).toEqual(
 			["thirty on master", "thirty-five on master", "thirty-five, PR"],
 		);
-		// One unit to read for each of lines 30 and 35, not two (line 5 carries).
+		// One unit to read for each of lines 30 and 35, not two (lines 5 and 8 carry).
 		expect(answer.toRead).toEqual({ files: 1, clusters: 2 });
 	});
 
@@ -1306,6 +1342,9 @@ describe("a line the base move changed, shown removed in the since view (CAR-277
 	});
 
 	it("the fallback places it elsewhere: both rows stay", () => {
+		// Outside the cluster here. A same-text line elsewhere in the same
+		// cluster would be accepted, by design: the text guard is the check,
+		// and the cluster's true line then shows as an orphan (over-count).
 		const t = tampered((keys, oldNo) => {
 			(keys.githubLeft?.["a.txt"] as Record<number, number>)[oldNo] = 29;
 		});
@@ -1328,6 +1367,31 @@ describe("a line the base move changed, shown removed in the since view (CAR-277
 	it("a line the compared patch set added never takes the fallback: both rows stay", () => {
 		const t = tampered((keys, oldNo) => {
 			keys.old["a.txt"] = { ...keys.old["a.txt"], [oldNo]: "ps1-cluster" };
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("a base line the old base already places for another row: the fallback never takes it, both rows stay", () => {
+		// Repeated lines, two diffs: the old base places another row at base
+		// line 30 while GitHub's LEFT line puts this one there too. The
+		// positive placement wins; this row owns nothing.
+		const t = tampered((keys) => {
+			(keys.baseLine?.["a.txt"] as Record<number, number>)[1] = 30;
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("an empty placement map (no head file pairs with the patch set's) turns no fallback on: both rows stay", () => {
+		const t = tampered((keys) => {
+			(keys.baseLine as Record<string, Record<number, number>>)["a.txt"] = {};
+			delete keys.baseMoved?.["a.txt"];
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("a line the tracer doesn't name as the base move's (an older cache entry) takes no fallback: both rows stay", () => {
+		const t = tampered((keys) => {
+			delete keys.baseMoved;
 		});
 		expect(view(t).rows).toEqual(["shown", "orphan"]);
 	});
