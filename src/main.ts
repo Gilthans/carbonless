@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { runClient } from "./client.js";
 import { killDetachedGits } from "./server/git.js";
 import { watchOwner } from "./server/owner.js";
-import { tracer } from "./server/trace.js";
+import { rotationFromEnv, tracer } from "./server/trace.js";
 import { BUILD, formatVersion } from "./server/version.js";
 
 const USAGE = `Usage: crb <pr> [options]
@@ -79,6 +79,9 @@ async function main(): Promise<void> {
 	// Opt-in ($CRB_TRACE_DIR): this process's span, from its start to its exit.
 	const traced = tracer(first === "serve" ? "crb" : "crb-client");
 	traced.root(first === "serve" ? "crb serve" : "crb <pr>");
+	// A server runs for weeks: its files roll and old ones go
+	// ($CRB_TRACE_FILE_MB, $CRB_TRACE_KEEP_DAYS, $CRB_TRACE_MAX_MB).
+	if (first === "serve") traced.rotate(rotationFromEnv());
 	if (first === "serve") {
 		if (extra.length > 0) throw new Error("crb serve takes no arguments");
 		for (const option of CLIENT_ONLY) {

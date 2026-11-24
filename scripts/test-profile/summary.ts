@@ -1,4 +1,4 @@
-import type { Span } from "./load";
+import { extent, type Span } from "./load";
 
 /*
  * What `pnpm test-profile` prints: a run's spans summed into wall and test
@@ -260,7 +260,8 @@ export function summarize(spans: Span[], top = 8): Summary {
 			if (t && !listen.has(key(t))) listen.set(key(t), dur(s));
 		}
 		const ran = tests.filter((t) => t.attrs["test.status"] !== "skipped");
-		const firstEnd = Math.min(...ran.map((t) => t.endMs));
+		const firstEnd =
+			extent(ran.map((t) => t.endMs))?.[0] ?? Number.POSITIVE_INFINITY;
 		const wave = (list: Span[]): Wave => ({
 			tests: list.length,
 			testMs: orNull(list.map(dur)),
@@ -294,7 +295,7 @@ export function summarize(spans: Span[], top = 8): Summary {
 				n: d.length,
 				ms: d.reduce((a, b) => a + b, 0),
 				p50: median(d),
-				max: Math.max(...d),
+				max: extent(d)?.[1] ?? 0,
 			}))
 			.sort((a, b) => b.ms - a.ms)
 			.slice(0, 12),
