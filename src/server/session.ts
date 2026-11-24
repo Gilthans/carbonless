@@ -2630,11 +2630,9 @@ export class Session {
 			base: async () => {
 				// The Refresh's move (shared): the code shows its step meanwhile,
 				// never another part's (activity.ts).
-				if (ready) {
-					await waitOn(
-						ready.catch(() => {}),
-						() => workOf(ready),
-					);
+				const moving = ready?.catch(() => {});
+				if (moving !== undefined) {
+					await waitOn(moving, () => ready && workOf(ready));
 				}
 				return {
 					snapshot: this.#snapshot.base,
