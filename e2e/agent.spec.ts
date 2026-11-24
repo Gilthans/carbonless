@@ -311,6 +311,7 @@ test("a reply goes on the same thread and is answered", async ({
 	page,
 	pr,
 	agentCrb,
+	isMobile,
 }) => {
 	await pr(fixture);
 	const s = await agentCrb({
@@ -336,6 +337,7 @@ test("a reply goes on the same thread and is answered", async ({
 		"Why?",
 		"A follow-up",
 	]);
+	await shot(page, "agent-reply", isMobile);
 });
 
 test("a long conversation scrolls in its capped box, opens at its end and keeps there for a new answer; scrolled up, it stays put (CAR-246)", async ({

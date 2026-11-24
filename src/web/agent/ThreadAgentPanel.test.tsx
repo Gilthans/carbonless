@@ -335,6 +335,9 @@ describe("ThreadAgentPanel", () => {
 		expect(inside).toHaveLength(1);
 		expect(replies.length).toBeGreaterThan(1);
 		expect(inside[0]).toBe(replies[replies.length - 1]);
+		// The agent's railed box, as on the card (CAR-270).
+		for (const r of replies)
+			expect(r.className).toContain("border-l-agent-ink");
 		// Nothing is written until a human presses it.
 		expect(calls).toEqual([]);
 		await userEvent.click(buttons[0] as HTMLElement);

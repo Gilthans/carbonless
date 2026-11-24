@@ -6,7 +6,7 @@ import {
 	type Scenario,
 	threadComment,
 } from "../test/fake-gh/scenario";
-import { CALC, expect, fixture, openFile, row, test } from "./agent-ui";
+import { ask, CALC, expect, fixture, openFile, row, test } from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
 import type { Pr, PrOptions } from "./fixtures";
 
@@ -23,6 +23,14 @@ test.use({ crbServer: "own" });
 
 const QUESTION = "Is total right?";
 const AGENT = { name: "Fake Agent", version: "9.9.9" };
+
+const shots = process.env.DESIGN_SHOTS;
+async function shot(page: Page, name: string, isMobile: boolean) {
+	if (!shots) return;
+	await page.screenshot({
+		path: `${shots}/${name}-${isMobile ? "phone" : "desktop"}.png`,
+	});
+}
 
 async function setup(pr: (opts?: PrOptions) => Promise<Pr>): Promise<Pr> {
 	const p = await pr(fixture);
@@ -173,7 +181,50 @@ test("open a conversation from an Overview thread, get an answer, see the counte
 	);
 });
 
-test("the same from Files changed", async ({ page, pr, agentCrb }) => {
+test("on code, with the viewer on the second tint (after rev1), the agent's answers stand apart from their messages (CAR-270)", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	// rev1 spoke first: the viewer gets person-2, once the teal next to
+	// the agent's.
+	await setup(pr);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "Only v1 and v2." }] },
+	});
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 2, "What does total add?");
+	const reply = card.getByTestId("agent-message-ai");
+	await expect(reply).toHaveText("Only v1 and v2.");
+	await shot(page, "agent-card-person-2", isMobile);
+	const mine = card.getByTestId("agent-message-human");
+	await expect(mine).toHaveClass(/\bbg-person-2\b/);
+	const look = (l: typeof reply) =>
+		l.evaluate((el) => {
+			const st = getComputedStyle(el);
+			return {
+				bg: st.backgroundColor,
+				left: st.borderLeftWidth,
+				leftColor: st.borderLeftColor,
+				top: st.borderTopColor,
+			};
+		});
+	const [answer, human] = [await look(reply), await look(mine)];
+	// The answer: a railed box, its own ground and edge, never the viewer's.
+	expect(answer.left).toBe("3px");
+	expect(answer.leftColor).not.toBe(answer.top);
+	expect(human.left).toBe("1px");
+	expect(answer.bg).not.toBe(human.bg);
+	expect(answer.top).not.toBe(human.top);
+});
+
+test("the same from Files changed", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
 	const p = await setup(pr);
 	const s = await agentCrb({
 		scenario: { agent: AGENT, answers: [{ text: "Only v1 and v2." }] },
@@ -193,6 +244,7 @@ test("the same from Files changed", async ({ page, pr, agentCrb }) => {
 	await expect(panel(thread).getByTestId("agent-view-chip")).toHaveText(
 		p.head().slice(0, 7),
 	);
+	await shot(page, "thread-agent-panel", isMobile);
 	await agentButton(thread).click();
 	await expectClosed(thread);
 	// Its seen mark held: the answer is still new.

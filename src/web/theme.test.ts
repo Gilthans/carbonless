@@ -445,12 +445,22 @@ describe("color tokens", () => {
 				).toBeGreaterThanOrEqual(floor);
 			}
 		}
-		// Not anyone's tint either.
+		// Its own colour, not anyone's (CAR-270): every hued person tint at
+		// least 25° of hue from the agent's teal, so a reviewer's messages
+		// never pass for its answers; a near-grey has no hue to be taken
+		// for it.
 		for (const p of Object.keys(TOKENS).filter((n) =>
 			/^person-\d+(-edge)?$/.test(n),
 		)) {
 			expect(token(p), p).not.toBe(token("agent"));
 			expect(token(p), p).not.toBe(token("agent-edge"));
+			if (chroma(token(p)) < 0.1) continue;
+			for (const c of ["agent", "agent-edge", "agent-ink"]) {
+				expect(
+					hueGap(token(p), token(c)),
+					`${p} hue vs ${c}`,
+				).toBeGreaterThanOrEqual(25);
+			}
 		}
 	});
 

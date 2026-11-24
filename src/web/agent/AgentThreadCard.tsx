@@ -181,9 +181,14 @@ export function ActivityLine(props: { activity: readonly AgentActivity[] }) {
 	);
 }
 
-/** The agent's box: its tint, the text as GitHub-flavored Markdown. */
+/**
+ * The agent's box, the text as GitHub-flavored Markdown: a neutral raised
+ * box inside the agent's edge with a teal rail on its left (CAR-270). Told
+ * apart from a person's message by its shape, not only its hue: theirs is
+ * a filled wash of their tint, never railed.
+ */
 const AGENT_SURFACE =
-	"min-w-0 rounded-md border border-agent-edge bg-agent px-3 py-2";
+	"min-w-0 rounded-md border border-agent-edge border-l-3 border-l-agent-ink bg-raised px-3 py-2";
 
 /**
  * The card's messages in their own capped box with its own scroll bar,

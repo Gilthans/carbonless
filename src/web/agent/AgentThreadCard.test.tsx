@@ -297,12 +297,13 @@ describe("AgentThreadCard", () => {
 		expect(screen.queryByTestId("agent-stop")).toBeNull();
 	});
 
-	it("answered: the reply as Markdown in the agent tint, its activity, a reply box", () => {
+	it("answered: the reply as Markdown in the agent's railed box, its activity, a reply box", () => {
 		show(answered(), status());
 		const card = screen.getByTestId("agent-thread");
 		expect(card.getAttribute("aria-label")).toBe("Agent thread, answered");
 		const reply = within(card).getByTestId("agent-message-ai");
-		expect(reply.className).toContain("bg-agent");
+		expect(reply.className).toContain("border-agent-edge");
+		expect(reply.className).toContain("border-l-agent-ink");
 		expect(reply.querySelector("strong")?.textContent).toBe("skips");
 		expect(within(card).getByTestId("agent-message-human").className).toMatch(
 			/bg-person-\d/,
@@ -317,6 +318,25 @@ describe("AgentThreadCard", () => {
 			"Resolve",
 		);
 		expect(screen.queryByTestId("agent-stop-chip")).toBeNull();
+	});
+
+	it("the agent's answers stand apart (CAR-270): a neutral ground, the answer railed, the reviewer's on their filled tint", () => {
+		show(answered(), status());
+		const card = screen.getByTestId("agent-thread");
+		// The open card's ground is neutral, not the agent's wash...
+		expect(card.className).toContain("bg-surface");
+		expect(card.className).not.toMatch(/\bbg-agent\b/);
+		// ...the answer a raised box in the agent's edge with its teal rail...
+		const reply = within(card).getByTestId("agent-message-ai");
+		expect(reply.className).toContain("bg-raised");
+		expect(reply.className).toMatch(/\bborder-l-3\b/);
+		expect(reply.className).toContain("border-l-agent-ink");
+		expect(reply.className).not.toMatch(/\bbg-person-\d/);
+		// ...and the reviewer's a filled person wash, never railed.
+		const mine = within(card).getByTestId("agent-message-human");
+		expect(mine.className).toMatch(/\bbg-person-\d/);
+		expect(mine.className).not.toContain("border-l-");
+		expect(mine.className).not.toMatch(/\bbg-agent\b/);
 	});
 
 	it("the messages scroll in a capped box; the reply row, header and Stop stay outside it", () => {
