@@ -79,6 +79,7 @@ import {
 import { useFocusCard } from "../files/threadFocus";
 import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
+import { useMessageCopy } from "../messageCopy";
 import { usePageActive } from "../pageActive";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
@@ -1550,6 +1551,8 @@ function ThreadItem({
 	const commentId = useId();
 	const codeId = useId();
 	const repliesId = useId();
+	// A long press on a phone: Copy message (its Markdown, as written).
+	const copy = useMessageCopy(thread.body || thread.excerpt);
 	// The span's exact characters painted on its lines, when they fit.
 	const rows = useMemo(
 		() => withSpanMarks(thread.code?.rows ?? [], thread.anchor),
@@ -1658,6 +1661,7 @@ function ThreadItem({
 			data-testid="thread-body"
 			data-tint={opener.tint}
 			className={`relative ${commentSurface(opener.tint)} ${open ? "" : "max-h-32 overflow-hidden"}`}
+			{...copy.press}
 		>
 			<CommentBody
 				html={thread.html}
@@ -1680,6 +1684,7 @@ function ThreadItem({
 			data-testid="thread-body"
 			data-tint={opener.tint}
 			className={`${commentSurface(opener.tint)} text-sm break-words`}
+			{...copy.press}
 		>
 			{thread.excerpt}
 		</p>
@@ -1707,10 +1712,14 @@ function ThreadItem({
 	const commentCell = openerBar ? (
 		<div className="min-w-0 space-y-1">
 			{comment}
+			{copy.menu}
 			{openerBar}
 		</div>
 	) : (
-		comment
+		<>
+			{comment}
+			{copy.menu}
+		</>
 	);
 	const repliesEl =
 		open && !thread.unavailable && replies.n > 0 ? (

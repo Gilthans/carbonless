@@ -273,6 +273,35 @@ table[data-selecting="new"] td[data-side="LEFT"] {
 }
 
 /*
+ * A message under a resting finger (longPress.ts, CAR-280): the browser's
+ * own long press can't select a word or show its callout there, so the
+ * long press opens the message's menu alone.
+ */
+[data-pressing] {
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+}
+
+/*
+ * On touch, a text selection begun in a card under a line (DiffBody's
+ * `data-card-selecting`) stays in the cards: the table's own cells can't be
+ * selected, the cards' contents can. Dragging a handle past the card no
+ * longer reaches the wide code lines, so the diff never scrolls sideways
+ * under the sticky card mid-selection (CAR-280).
+ */
+@media (pointer: coarse) {
+	table[data-card-selecting] > tbody > tr > td {
+		-webkit-user-select: none;
+		user-select: none;
+	}
+	table[data-card-selecting] [data-tail-card] {
+		-webkit-user-select: text;
+		user-select: text;
+	}
+}
+
+/*
  * A thread's exact span over its characters: the `span` navy behind them
  * (every code color keeps 4.5:1 on it, theme.test.ts) and a 2px accent
  * underline, over thread-mark's lines.

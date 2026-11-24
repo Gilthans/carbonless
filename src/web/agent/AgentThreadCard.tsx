@@ -39,6 +39,7 @@ import {
 	useFocusCard,
 	useOutlinedMessage,
 } from "../files/threadFocus";
+import { useMessageCopy } from "../messageCopy";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
@@ -444,6 +445,8 @@ function Who(props: { children: React.ReactNode }) {
 
 function HumanMessage(props: { message: AgentMessage; viewer: string }) {
 	const me = usePerson(props.viewer);
+	// A long press on a phone: Copy message.
+	const copy = useMessageCopy(props.message.text);
 	return (
 		<div className="min-w-0 space-y-1">
 			<Who>
@@ -455,9 +458,11 @@ function HumanMessage(props: { message: AgentMessage; viewer: string }) {
 			<p
 				data-testid="agent-message-human"
 				className={`${commentSurface(me.tint)} text-sm whitespace-pre-wrap break-words`}
+				{...copy.press}
 			>
 				{props.message.text}
 			</p>
+			{copy.menu}
 			{props.message.truncated && <TruncatedChip />}
 		</div>
 	);
@@ -530,6 +535,8 @@ function AiMessage(props: {
 			? { ...known, tip: `${known.tip}: ${message.error}` }
 			: known;
 	const reason = message.stop === "error" ? message.error : undefined;
+	// A long press on a phone: Copy message (its Markdown, as written).
+	const copy = useMessageCopy(message.text || reason || "");
 	return (
 		<div className="min-w-0 space-y-1">
 			<Who>
@@ -561,6 +568,7 @@ function AiMessage(props: {
 			<div
 				data-testid="agent-message-ai"
 				className={`${AGENT_SURFACE} text-sm`}
+				{...copy.press}
 			>
 				{message.text || !reason ? (
 					<AgentMarkdown
@@ -589,6 +597,7 @@ function AiMessage(props: {
 				)}
 			</div>
 			{message.activity && <ActivityLine activity={message.activity} />}
+			{copy.menu}
 		</div>
 	);
 }

@@ -236,6 +236,7 @@ export function TailRow(props: {
 				>
 					<div
 						ref={floatCard}
+						data-tail-card=""
 						className={`sticky left-0 w-[var(--diff-w,100%)] max-w-full pr-2 pl-3 pointer-coarse:[tr:has([data-sticky-slot])+tr>td>&]:mt-2.5 ${clear ? "pointer-coarse:left-[calc(0.25rem+var(--controls-w))] pointer-coarse:w-[calc(var(--diff-w,100%)-0.25rem-var(--controls-w))]" : ""} ${CARD}`}
 					>
 						{props.rail && (
@@ -262,7 +263,7 @@ export function TailRow(props: {
 			<td />
 			{place.side === "RIGHT" && blank}
 			<td colSpan={2} className="p-0">
-				<div ref={floatCard} className={`px-2 ${CARD}`}>
+				<div ref={floatCard} data-tail-card="" className={`px-2 ${CARD}`}>
 					{props.children}
 				</div>
 			</td>
