@@ -17,7 +17,11 @@ import type {
 	AgentView,
 } from "../../shared/agent";
 import { useUnsavedGuard } from "../files/useSetStates";
-import { AgentThreadCard, activitySummary } from "./AgentThreadCard";
+import {
+	AgentThreadCard,
+	activitySummary,
+	floatingTurn,
+} from "./AgentThreadCard";
 import { resetAgentWrites, resetRepliesTyped } from "./agentWrites";
 import { agentThreadsQuery } from "./api";
 import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
@@ -313,6 +317,44 @@ describe("AgentThreadCard", () => {
 			"Resolve",
 		);
 		expect(screen.queryByTestId("agent-stop-chip")).toBeNull();
+	});
+
+	it("the messages scroll in a capped box; the reply row, header and Stop stay outside it", () => {
+		show(
+			answered(),
+			status({
+				state: "busy",
+				answering: { thread: "T1", text: "", activity: [] },
+			}),
+		);
+		const card = screen.getByTestId("agent-thread");
+		const scroller = within(card).getByTestId("agent-thread-scroll");
+		for (const c of [
+			"max-h-[min(28rem,60vh)]",
+			"overflow-y-auto",
+			// No anchoring jumps: the pin to the end is its own (AgentScroll).
+			"[overflow-anchor:none]",
+		]) {
+			expect(scroller.className).toContain(c);
+		}
+		// A swipe at its end hands on to the page (a phone's diff).
+		expect(scroller.className).not.toContain("overscroll-contain");
+		// Every message, the turn under way, inside it.
+		for (const id of [
+			"agent-message-human",
+			"agent-message-ai",
+			"agent-answering",
+		]) {
+			expect(scroller.contains(within(card).getByTestId(id))).toBe(true);
+		}
+		// The reply box, Resolve and Stop outside it, always in sight.
+		for (const el of [
+			within(card).getByRole("textbox", { name: "Reply to your agent" }),
+			within(card).getByTestId("agent-resolve"),
+			within(card).getByTestId("agent-stop"),
+		]) {
+			expect(scroller.contains(el)).toBe(false);
+		}
 	});
 
 	it("joined to a GitHub thread that couldn't be read (CAR-236): the reply box is off, nothing sent", async () => {
@@ -618,5 +660,26 @@ describe("activitySummary", () => {
 		);
 		const chips = screen.getAllByTestId("agent-view-chip");
 		expect(chips.map((c) => c.textContent)).toEqual(["PS 3", "abcdef1"]);
+	});
+});
+
+describe("floatingTurn", () => {
+	// Questions at 0, 500 and 1200 in the box's content; a 40px bar.
+	const tops = [0, 500, 1200];
+	it("none at the very top, or while no question is above the box's top", () => {
+		expect(floatingTurn(tops, 0)).toBe(-1);
+		expect(floatingTurn([100, 500], 50)).toBe(-1);
+	});
+	it("the last question above the box's top, partly or wholly", () => {
+		expect(floatingTurn(tops, 10)).toBe(0);
+		expect(floatingTurn(tops, 499 - 40)).toBe(0);
+		expect(floatingTurn(tops, 600)).toBe(1);
+		expect(floatingTurn(tops, 5000)).toBe(2);
+	});
+	it("none while a question is reaching the top, under where the bar would be", () => {
+		expect(floatingTurn(tops, 470)).toBe(-1);
+		expect(floatingTurn(tops, 500)).toBe(-1);
+		// Jumped to (its top one bar below the box's top): the one before.
+		expect(floatingTurn(tops, 500 - 40)).toBe(0);
 	});
 });
