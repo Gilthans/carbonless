@@ -115,11 +115,16 @@ result should always be easily distinguishable for a still loading result."
   "git fetch · 12s", "Fetching dropped commits", "GitHub: PR details 3 of
   13". A fast load looks as before: the page asks nothing until then. The
   line sits in a kept slot or is laid over the skeleton (nothing moves),
-  in an `aria-live="polite"` region outside the `aria-busy` one. Where:
-  the opening page (under its spinner; the first clone keeps its own
-  wording), a thread's code still being built (over its frame's foot),
-  and Home's repo chips (in the spinner's tooltip and accessible name: a
-  chip has no room for a line; a tap opens the tooltip). `crb <pr>`
+  in an `aria-live="polite"` region outside the `aria-busy` one; only the
+  label is read out (the seconds are `aria-hidden`), and many panes of one
+  wait have one live region. A line whose requests are gone for two asks
+  in a row clears, though the load is still pending: a step that ended
+  never stays. Where: the opening page (under its spinner; the first
+  clone keeps its own wording), the overview's frames (over the first
+  one), a thread's code still being built (over its frame's foot), and
+  Home's repo chips (in the spinner's tooltip and accessible name, every
+  repo in one ask: a chip has no room for a line; the spinner's tap
+  target is 40px around it, so a tap opens the tooltip). `crb <pr>`
   prints each new step on stderr once an open has taken 2 s.
   How: every API request of the page (`src/web/loadingStep.ts`) and of
   `crb <pr>` carries an id (`x-crb-req`); the server keeps each tagged
@@ -127,8 +132,11 @@ result should always be easily distinguishable for a still loading result."
   git call, and named phases); `GET /api/activity?req=<id>,…` (at most 16,
   checked) answers each one's innermost step and never waits. A request
   waiting on work another started (an open, an overview read, a commit
-  batch, a Home repo read, the repo lock) shows that work's step; a wait
-  whose work shows nothing reads "Working…", never another step. The
+  batch, a Home repo read, the repo lock) shows that work's step; work in
+  parts side by side (an overview read's overview, summaries, texts, code
+  and timeline; the lock's work beside its holder's other calls) keeps
+  each part apart, so a wait shows a part it waits on. A wait whose work
+  shows nothing reads "Working…", never another step. The
   labels are crb's words, mapped from the span names
   ([test-profiling.md](test-profiling.md), "Loading steps"): no paths,
   OIDs, branches or logins.

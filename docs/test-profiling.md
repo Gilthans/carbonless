@@ -119,7 +119,12 @@ kept whether tracing is on or not (`src/server/activity.ts`).
 A named phase (`crb: …`) hides the gh and git calls under it; the
 innermost step shown is the newest phase or wait, else the newest call.
 The `crb: …` phases are spans too while tracing, the calls under them
-nested.
+nested. Since CAR-296, `crb: clone` spans only a first clone (it used to
+wrap every open's `ensureClone`, its lock and checks included: an open
+of a cloned repo now has no `crb: clone` span), and `crb: fetch pr` is
+fetchPr's own, under the repo lock, so a head check's fetch has one too.
+Compare runs from before that change by `git fetch` rather than by
+these spans.
 
 ### Browser spans (CAR-288)
 

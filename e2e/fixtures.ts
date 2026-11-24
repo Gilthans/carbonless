@@ -115,7 +115,10 @@ export async function installClock(page: Page): Promise<void> {
  * fetches answer in real time; what follows them may wait on a timer, as
  * TanStack Query's notifications do). Fails once `maxMs` of page time has
  * passed: a test that must stay short of an app timer (CAR-296's step
- * line) bounds the page time it spends here.
+ * line) bounds the page time it spends here. Each move first gives the
+ * page up to 150 ms of real time (a short expect, not a sleep), so the
+ * real time spent is at most `maxMs / stepMs × 150 ms` (15 s at the
+ * defaults) before it throws.
  */
 export async function advanceUntilVisible(
 	page: Page,

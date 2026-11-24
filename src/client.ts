@@ -296,10 +296,18 @@ function watchSteps(
 	const stopped = new AbortController();
 	const loop = (async () => {
 		await pause(deps.stepAfterMs ?? STEP_AFTER_MS, stopped.signal);
-		const headers = {
-			[VERSION_HEADER]: JSON.stringify(deps.build ?? BUILD),
-			...(await authHeaders(server)),
-		};
+		// A fast open: nothing to read (not even the key), nothing to say.
+		if (stopped.signal.aborted) return;
+		let headers: Record<string, string>;
+		try {
+			headers = {
+				[VERSION_HEADER]: JSON.stringify(deps.build ?? BUILD),
+				...(await authHeaders(server)),
+			};
+		} catch {
+			// No key to ask with: the open itself says what went wrong.
+			return;
+		}
 		let last = "";
 		while (!stopped.signal.aborted) {
 			try {

@@ -13,7 +13,7 @@ import {
 } from "../shared/firstClone";
 import { ApiError, fetchJson } from "./api";
 import { Logo } from "./brand/Brand";
-import { useLoadingStep } from "./loadingStep";
+import { StepText, useLoadingStep } from "./loadingStep";
 import { NotFound, notFoundReason } from "./router";
 import { Spinner } from "./Spinner";
 import { Tooltip } from "./Tooltip";
@@ -86,7 +86,7 @@ export function OpeningPage() {
 	});
 	const cloning = waiting && clone.data?.cloning === true;
 	// Once it is slow: what the open waits on (CAR-296).
-	const step = useLoadingStep(
+	const { step } = useLoadingStep(
 		"open",
 		(r) => r.method === "POST" && r.path === "/api/reviews",
 		waiting,
@@ -164,7 +164,11 @@ export function OpeningPage() {
 							data-testid="first-clone"
 							className="mt-2 text-sm break-words text-muted"
 						>
-							{cloning ? firstCloneMessage(`${owner}/${repo}`) : step}
+							{cloning ? (
+								firstCloneMessage(`${owner}/${repo}`)
+							) : step ? (
+								<StepText step={step} />
+							) : null}
 						</p>
 					</>
 				)}

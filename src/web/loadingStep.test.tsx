@@ -67,13 +67,18 @@ describe("tagFetch (CAR-296)", () => {
 	});
 });
 
-function Probe(props: { active: boolean; testId?: string }) {
-	const step = useLoadingStep(
+function Probe(props: { active: boolean; testId?: string; path?: string }) {
+	const prefix = props.path ?? "/api/slow";
+	const { step, live } = useLoadingStep(
 		"probe",
-		(r) => r.path.startsWith("/api/slow"),
+		(r) => r.path.startsWith(prefix),
 		props.active,
 	);
-	return <p data-testid={props.testId ?? "line"}>{step}</p>;
+	return (
+		<p data-testid={props.testId ?? "line"} data-live={String(live)}>
+			{step?.text}
+		</p>
+	);
 }
 
 describe("useLoadingStep (CAR-296)", () => {
@@ -135,6 +140,42 @@ describe("useLoadingStep (CAR-296)", () => {
 		await act(() => vi.advanceTimersByTimeAsync(5 * LOADING_STEP_EVERY_MS));
 		expect(asks).toHaveLength(2);
 		expect(activePolls()).toBe(0);
+	});
+
+	it("clears the line once its requests are gone for two asks, the load still pending (a step that ended never stays)", async () => {
+		const slow = tagFetch(fetch)("/api/slow");
+		render(<Probe active />);
+		await act(() => vi.advanceTimersByTimeAsync(LOADING_STEP_AFTER_MS + 10));
+		expect(screen.getByTestId("line")).toHaveTextContent("GitHub: pr view");
+		releaseSlow();
+		await act(async () => {
+			await slow;
+		});
+		// One ask with nothing out: kept (a gap between two asks).
+		await act(() => vi.advanceTimersByTimeAsync(LOADING_STEP_EVERY_MS));
+		expect(screen.getByTestId("line")).toHaveTextContent("GitHub: pr view");
+		// Two: gone, though the hook is still active.
+		await act(() => vi.advanceTimersByTimeAsync(LOADING_STEP_EVERY_MS));
+		expect(screen.getByTestId("line")).toHaveTextContent("");
+	});
+
+	it("hooks of one key share one ask, each showing its own requests' step; the first is the one read out", async () => {
+		const other = tagFetch(fetch)("/api/other");
+		render(
+			<>
+				<Probe active testId="mine" path="/api/other" />
+				<Probe active testId="none" path="/api/nothing" />
+			</>,
+		);
+		await act(() => vi.advanceTimersByTimeAsync(LOADING_STEP_AFTER_MS + 10));
+		expect(asks).toHaveLength(1);
+		expect(screen.getByTestId("mine")).toHaveTextContent("GitHub: pr view");
+		expect(screen.getByTestId("none")).toHaveTextContent("");
+		expect(screen.getByTestId("mine")).toHaveAttribute("data-live", "true");
+		expect(screen.getByTestId("none")).toHaveAttribute("data-live", "false");
+		cleanup();
+		releaseSlow();
+		await other;
 	});
 
 	it("hooks of one key share one ask", async () => {

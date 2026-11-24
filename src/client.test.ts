@@ -14,6 +14,7 @@ import { release } from "../test/fake-gh/scenario";
 import { createPrFixture, type PrFixture } from "../test/pr-fixture";
 import { fakeDelay } from "../test/sleep";
 import { ClientError, ensureServer, runClient, trimLog } from "./client";
+import { activityOf } from "./server/activity";
 import { type StartedServer, startServer } from "./server/serve";
 import { readLiveServerState, writeServerState } from "./server/serverState";
 import { BUILD } from "./server/version";
@@ -114,15 +115,23 @@ describe("the client", () => {
 				err: (l) => again.push(l),
 			},
 		);
-		await vi.waitFor(
-			() =>
-				expect(
-					polls.mock.calls.filter(([u]) => String(u).includes("/api/clones/"))
-						.length,
-				).toBeGreaterThanOrEqual(3),
-			{ timeout: 10_000 },
-		);
-		release(scenarioFile, "prView");
+		const openId = await vi.waitFor(() => {
+			const call = polls.mock.calls.find(([u]) =>
+				String(u).endsWith("/api/reviews"),
+			);
+			const id = new Headers(call?.[1]?.headers).get("x-crb-req");
+			expect(id).toMatch(/^[\w-]{8,32}$/);
+			return id as string;
+		});
+		try {
+			await vi.waitFor(
+				() =>
+					expect(activityOf([openId])[openId]?.label).toBe("GitHub: pr view"),
+				{ timeout: 10_000 },
+			);
+		} finally {
+			release(scenarioFile, "prView");
+		}
 		await second;
 		polls.mockRestore();
 		expect(again).toEqual([]);
@@ -135,18 +144,24 @@ describe("the client", () => {
 		// GitHub's PR view is held until the client has printed its step.
 		pr.scenario({ hold: ["prView"] });
 		const err: string[] = [];
-		const url = await runClient(
+		const open = runClient(
 			{ pr: pr.arg, cwd: process.cwd() },
 			{
 				out: () => {},
 				stepAfterMs: 0,
 				stepPollMs: 5,
-				err: (line) => {
-					err.push(line);
-					if (line === "GitHub: pr view") release(scenarioFile, "prView");
-				},
+				err: (line) => err.push(line),
 			},
 		);
+		try {
+			// Fails here, not at the test's timeout, when no step is printed.
+			await vi.waitFor(() => expect(err).toContain("GitHub: pr view"), {
+				timeout: 10_000,
+			});
+		} finally {
+			release(scenarioFile, "prView");
+		}
+		const url = await open;
 		expect(url).toMatch(/\/r\//);
 		expect(err).toContain("GitHub: pr view");
 		// One line per step: never the same twice in a row.
@@ -158,8 +173,8 @@ describe("the client", () => {
 			);
 		}
 
-		// Before the threshold: nothing, however long GitHub holds it. The
-		// server is asked directly until it says the step.
+		// Before the threshold: nothing, though the server has a step to
+		// say (asked directly, by the open's own id, until it says it).
 		pr.scenario({ hold: ["prView"] });
 		const quiet: string[] = [];
 		const polls = vi.spyOn(globalThis, "fetch");
@@ -172,15 +187,23 @@ describe("the client", () => {
 				err: (l) => quiet.push(l),
 			},
 		);
-		await vi.waitFor(
-			() =>
-				expect(
-					polls.mock.calls.filter(([u]) => String(u).includes("/api/clones/"))
-						.length,
-				).toBeGreaterThanOrEqual(3),
-			{ timeout: 10_000 },
-		);
-		release(scenarioFile, "prView");
+		const openId = await vi.waitFor(() => {
+			const call = polls.mock.calls.find(([u]) =>
+				String(u).endsWith("/api/reviews"),
+			);
+			const id = new Headers(call?.[1]?.headers).get("x-crb-req");
+			expect(id).toMatch(/^[\w-]{8,32}$/);
+			return id as string;
+		});
+		try {
+			await vi.waitFor(
+				() =>
+					expect(activityOf([openId])[openId]?.label).toBe("GitHub: pr view"),
+				{ timeout: 10_000 },
+			);
+		} finally {
+			release(scenarioFile, "prView");
+		}
 		await second;
 		expect(
 			polls.mock.calls.filter(([u]) => String(u).includes("/api/activity")),

@@ -79,7 +79,7 @@ import {
 import { useFocusCard } from "../files/threadFocus";
 import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
-import { useLoadingStep } from "../loadingStep";
+import { StepText, useLoadingStep } from "../loadingStep";
 import { useMessageCopy } from "../messageCopy";
 import { usePageActive } from "../pageActive";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
@@ -320,7 +320,7 @@ function OverviewSkeleton() {
 	const bar = (width: string) => <SkeletonBar className={width} />;
 	// Once slow: what the overview's read waits on (CAR-296), laid over
 	// the first frame's bars (nothing moves as it comes and goes).
-	const step = useLoadingStep(
+	const { step } = useLoadingStep(
 		"overview",
 		(r) => r.method === "GET" && /\/overview(?:\?|$)/.test(r.path),
 		true,
@@ -332,7 +332,7 @@ function OverviewSkeleton() {
 				data-testid="overview-step"
 				className="absolute inset-x-px top-12 z-10 bg-surface px-4 py-1.5 text-xs break-words text-muted empty:p-0"
 			>
-				{step}
+				{step && <StepText step={step} />}
 			</p>
 			<OverviewFrames bar={bar} />
 		</div>
@@ -1979,17 +1979,17 @@ function ThreadItem({
 	);
 }
 
-/** A changed thread's fate line ("Line rewritten since PS1 · See on PS1"). */
 /** A threads request that brings the threads' code. */
 const CODE_STAGES = /\/threads\?(?:.*&)?stage=(?:firstCode|full)(?:&|$)/;
 
 /**
  * A thread's code still being built: the pane's frame, and once that is
  * slow, what it waits on (CAR-296) laid over the frame's foot: nothing
- * moves as it comes and goes. Every pane shares one ask (its key).
+ * moves as it comes and goes. Every pane shares one ask (its key), and
+ * only the first pane's line is read out: one announcement for one wait.
  */
 function ThreadCodeLoading() {
-	const step = useLoadingStep(
+	const { step, live } = useLoadingStep(
 		"thread-code",
 		(r) => CODE_STAGES.test(r.path),
 		true,
@@ -2006,18 +2006,21 @@ function ThreadCodeLoading() {
 					<SkeletonBar key={w} className={w} />
 				))}
 			</div>
-			{/* Outside the busy frame, so a screen reader reads it out. */}
+			{/* Outside the busy frame, so a screen reader reads it out (the
+			    first pane's; the others' are the same words, hidden). */}
 			<p
-				aria-live="polite"
+				aria-live={live ? "polite" : undefined}
+				aria-hidden={live ? undefined : true}
 				data-testid="thread-code-step"
 				className="absolute inset-x-px bottom-px rounded-b-md bg-code px-3 py-1.5 text-xs break-words text-muted empty:p-0"
 			>
-				{step}
+				{step && <StepText step={step} />}
 			</p>
 		</div>
 	);
 }
 
+/** A changed thread's fate line ("Line rewritten since PS1 · See on PS1"). */
 function ThreadFateLine({ thread }: { thread: Thread }) {
 	const placement = usePlacementInfo().placements?.get(thread.id);
 	if (placement?.kind !== "changed") return null;

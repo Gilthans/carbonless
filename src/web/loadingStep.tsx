@@ -104,58 +104,85 @@ export function installRequestIds(): void {
 	window.fetch = tagFetch(window.fetch.bind(window));
 }
 
+/** A step as a load shows it. */
+export interface LoadingStep {
+	/** The label ("GitHub: pr view"). */
+	label: string;
+	/** Whole seconds on it, once past one; else null. */
+	seconds: number | null;
+	/** The label with its seconds ("GitHub: pr view · 4s"). */
+	text: string;
+}
+
+/** One hook of an ask loop: what it matches, what it shows. */
+interface User {
+	match: (request: OutRequest) => boolean;
+	step: ActivityStep | null;
+	/** Asks in a row that found none of its requests out. */
+	empties: number;
+	notify: () => void;
+}
+
 /** One ask loop, shared by every hook of the same key. */
 interface Poll {
-	match: (request: OutRequest) => boolean;
-	users: number;
-	step: ActivityStep | null;
-	listeners: Set<() => void>;
+	/** Its hooks, the first active one first. */
+	users: Set<User>;
 	stop: AbortController;
 	timer: ReturnType<typeof setTimeout> | undefined;
 }
+
+/**
+ * A hook whose requests are all gone for this many asks in a row shows
+ * nothing: a gap between two asks (a Home repo's next one not yet sent)
+ * keeps the line, a load whose requests ended clears it.
+ */
+const EMPTY_ASKS_CLEAR = 2;
 
 const polls = new Map<string, Poll>();
 
 /** Ask loops running now (tests). */
 export const activePolls = (): number => polls.size;
 
-function startPoll(match: Poll["match"]): Poll {
+function startPoll(): Poll {
 	const poll: Poll = {
-		match,
-		users: 0,
-		step: null,
-		listeners: new Set(),
+		users: new Set(),
 		stop: new AbortController(),
 		timer: undefined,
 	};
-	const set = (step: ActivityStep | null) => {
-		poll.step = step;
-		for (const listener of poll.listeners) listener();
-	};
 	const ask = async () => {
-		const ids = [...out]
-			.filter(([, request]) => poll.match(request))
-			.map(([id]) => id)
+		const users = [...poll.users];
+		// The requests out now, any hook's: one ask for all of them.
+		const wanted = [...out]
+			.filter(([, request]) => users.some((u) => u.match(request)))
 			.slice(0, MAX_ACTIVITY_IDS);
-		// None out for a moment (a Home repo's next ask not yet sent): the
-		// last step stays until the next one says.
-		if (ids.length > 0) {
+		let steps: ActivityAnswer["steps"] | null = {};
+		if (wanted.length > 0) {
 			try {
-				const res = await fetch(activityPathOf(ids), {
+				const res = await fetch(activityPathOf(wanted.map(([id]) => id)), {
 					signal: poll.stop.signal,
 				});
-				if (res.ok) {
-					const { steps } = (await res.json()) as ActivityAnswer;
-					if (poll.stop.signal.aborted) return;
-					set(ids.map((id) => steps?.[id]).find((s) => s) ?? null);
-				}
+				steps = res.ok
+					? (((await res.json()) as ActivityAnswer).steps ?? {})
+					: null;
 			} catch {
 				// Stopped, or the server is busy: the load says the rest.
+				steps = null;
 			}
 		}
-		if (!poll.stop.signal.aborted) {
-			poll.timer = setTimeout(ask, LOADING_STEP_EVERY_MS);
+		if (poll.stop.signal.aborted) return;
+		for (const user of users) {
+			const mine = wanted.filter(([, request]) => user.match(request));
+			if (mine.length === 0) {
+				user.empties++;
+				if (user.empties >= EMPTY_ASKS_CLEAR) user.step = null;
+			} else if (steps) {
+				user.empties = 0;
+				// The oldest of its requests with a step.
+				user.step = mine.map(([id]) => steps?.[id]).find((s) => s) ?? null;
+			}
+			user.notify();
 		}
+		poll.timer = setTimeout(ask, LOADING_STEP_EVERY_MS);
 	};
 	poll.timer = setTimeout(ask, LOADING_STEP_AFTER_MS);
 	return poll;
@@ -164,40 +191,82 @@ function startPoll(match: Poll["match"]): Poll {
 /**
  * While `active` (a load pending) and past LOADING_STEP_AFTER_MS: the
  * step its requests (those `match` picks, the oldest with a step first)
- * wait on, as the line to show ("GitHub: pr view · 4s"); else null. Hooks
- * of the same `key` (the same requests: every pane of one threads read)
- * share one ask loop, from the first one active to the last. A failed ask
- * shows nothing new.
+ * wait on (`step`; else null), and whether this hook's line is the one
+ * read out (`live`: the first active hook of its key, so many panes of
+ * one wait make one live region). Hooks of the same `key` share one ask loop (one
+ * request for all of theirs: every pane of a threads read, every Home
+ * repo), from the first one active to the last; each shows its own
+ * requests' step. A failed ask shows nothing new; a hook whose requests
+ * are gone for EMPTY_ASKS_CLEAR asks shows nothing.
  */
 export function useLoadingStep(
 	key: string,
 	match: (request: OutRequest) => boolean,
 	active: boolean,
-): string | null {
+): { step: LoadingStep | null; live: boolean } {
 	const matchRef = useRef(match);
 	matchRef.current = match;
-	const [step, setStep] = useState<ActivityStep | null>(null);
+	const [shown, setShown] = useState<{
+		step: ActivityStep | null;
+		live: boolean;
+	}>({ step: null, live: false });
 	useEffect(() => {
 		if (!active) return;
 		let poll = polls.get(key);
 		if (!poll) {
-			poll = startPoll((r) => matchRef.current(r));
+			poll = startPoll();
 			polls.set(key, poll);
 		}
 		const mine = poll;
-		mine.users++;
-		const listener = () => setStep(mine.step);
-		mine.listeners.add(listener);
-		listener();
+		const user: User = {
+			match: (r) => matchRef.current(r),
+			step: null,
+			empties: 0,
+			notify: () =>
+				setShown({
+					step: user.step,
+					live: mine.users.values().next().value === user,
+				}),
+		};
+		mine.users.add(user);
+		user.notify();
 		return () => {
-			mine.listeners.delete(listener);
-			if (--mine.users === 0) {
+			const wasFirst = mine.users.values().next().value === user;
+			mine.users.delete(user);
+			if (mine.users.size === 0) {
 				mine.stop.abort();
 				clearTimeout(mine.timer);
 				if (polls.get(key) === mine) polls.delete(key);
+			} else if (wasFirst) {
+				// The next one is read out now.
+				mine.users.values().next().value?.notify();
 			}
-			setStep(null);
+			setShown({ step: null, live: false });
 		};
 	}, [key, active]);
-	return active && step ? stepText(step) : null;
+	if (!active || !shown.step) return { step: null, live: active && shown.live };
+	const s = Math.floor(shown.step.ms / 1000);
+	return {
+		step: {
+			label: shown.step.label,
+			seconds: s >= 1 ? s : null,
+			text: stepText(shown.step),
+		},
+		live: shown.live,
+	};
+}
+
+/**
+ * A step's line: the label read out (aria-live), the seconds beside it
+ * not (they change every second; only a new step is news).
+ */
+export function StepText({ step }: { step: LoadingStep }) {
+	return (
+		<>
+			{step.label}
+			{step.seconds !== null && (
+				<span aria-hidden="true"> · {step.seconds}s</span>
+			)}
+		</>
+	);
 }

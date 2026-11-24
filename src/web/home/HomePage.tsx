@@ -126,10 +126,11 @@ function RepoChip(props: {
 	const failed = failureOf(query);
 	const retry = useMutation({ mutationFn: () => refetchRepo(client, name) });
 	// Once its read is slow: what it waits on (CAR-296), in the spinner's
-	// name and tooltip (the chip has no room for a line).
+	// name and tooltip (the chip has no room for a line). Every repo's in
+	// one ask (the key), each chip its own requests' step.
 	const repoPath = `/api/home/repos/${name.split("/").map(encodeURIComponent).join("/")}`;
-	const step = useLoadingStep(
-		`home:${name}`,
+	const { step } = useLoadingStep(
+		"home-repos",
 		(r) => r.path === repoPath || r.path.startsWith(`${repoPath}?`),
 		state === "loading",
 	);
@@ -152,10 +153,11 @@ function RepoChip(props: {
 					</Sign>
 				) : state === "loading" ? (
 					<Sign
-						label={step ? `Loading ${name}: ${step}` : `Loading ${name}`}
-						className="text-faint"
+						label={step ? `Loading ${name}: ${step.text}` : `Loading ${name}`}
+						// With a step: a 40px target around the 12px icon (laid
+						// over the chip's start), so a tap opens its tooltip.
+						className={`text-faint ${step ? "after:absolute after:-inset-[14px] after:content-['']" : ""}`}
 						testId="repo-loading"
-						// A tap opens the tooltip with the step.
 						focusable={step !== null}
 					>
 						<SyncIcon size={12} aria-hidden className={spin} />

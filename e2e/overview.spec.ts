@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
-import { LOADING_STEP_AFTER_MS } from "../src/web/loadingStep";
+import {
+	LOADING_STEP_AFTER_MS,
+	LOADING_STEP_EVERY_MS,
+} from "../src/web/loadingStep";
 import {
 	release,
 	reviewThread,
@@ -952,16 +955,17 @@ test("a thread's code still on its way says, once slow, what it waits on over it
 	pr,
 	startCrb,
 }) => {
+	// Two threads: two panes wait on the same read.
 	const p = await pr({
-		threads: [
-			reviewThread({ path: "src/f.ts", line: 1 }, [
+		threads: ["src/f.ts", "src/g.ts"].map((path, i) =>
+			reviewThread({ path, line: 1 }, [
 				threadComment({
 					login: "rev1",
-					text: "Point",
+					text: `Point ${i}`,
 					diffHunk: "@@ -0,0 +1 @@\n+x",
 				}),
 			]),
-		],
+		),
 	});
 	// The comments' text is held: the code waits for it.
 	p.editScenario((s) => {
@@ -980,12 +984,31 @@ test("a thread's code still on its way says, once slow, what it waits on over it
 	const frame = humans.getByTestId("thread-code-loading");
 	const step = humans.getByTestId("thread-code-step");
 	await advanceUntilVisible(page, frame);
-	await expect(step).toBeEmpty();
-	// The step's live region is outside the busy frame.
-	await expect(frame.getByTestId("thread-code-step")).toHaveCount(0);
+	await expect(frame).toHaveCount(2);
+	await expect(step.first()).toBeEmpty();
+	// The step's line is outside every busy region (a Refresh's list too).
+	await expect(
+		page.locator('[aria-busy="true"] [data-testid="thread-code-step"]'),
+	).toHaveCount(0);
+	// One live region for the two panes: the other line is hidden.
+	await expect(step.and(page.locator('[aria-live="polite"]'))).toHaveCount(1);
+	await expect(step.and(page.locator('[aria-hidden="true"]'))).toHaveCount(1);
 	expect(asks).toEqual([]);
 	await page.clock.fastForward(LOADING_STEP_AFTER_MS);
-	await expect(step).toHaveText(/^GitHub: api graphql/);
+	await expect(step.first()).toHaveText(/^GitHub: api graphql/);
+	await expect(step.nth(1)).toHaveText(/^GitHub: api graphql/);
+	// Once it counts seconds, they are hidden from the live region: only a
+	// new step is read out, never each second.
+	const live = step.and(page.locator('[aria-live="polite"]'));
+	// (The server counts real time: each look moves the page to its next ask.)
+	await expect
+		.poll(async () => {
+			await page.clock.fastForward(LOADING_STEP_EVERY_MS);
+			return live.textContent();
+		})
+		.toContain("·");
+	await expect(live).toHaveText(/^GitHub: api graphql · \d+s$/);
+	await expect(live.locator('[aria-hidden="true"]')).toHaveText(/^ · \d+s$/);
 	await expectNoPageOverflow(page);
 	await page.clock.resume();
 	release(p.scenarioPath, "threadContent");
