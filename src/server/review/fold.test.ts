@@ -246,6 +246,14 @@ describe("foldProgress", () => {
 		}
 	});
 
+	it("orders two different events sharing an id and a timestamp (forged) the same, whatever order they come in", () => {
+		const a = state(K1, "reviewed");
+		const b = { ...state(K1, "crossed-off"), id: a.id, ts: a.ts };
+		expect(foldProgress([started(), a, b]).states.get(K1)).toEqual(
+			foldProgress([started(), b, a]).states.get(K1),
+		);
+	});
+
 	it("last event per cluster wins", () => {
 		const progress = foldProgress([
 			started(),
@@ -472,11 +480,15 @@ describe("foldProgress", () => {
 		});
 
 		it("are ignored unless the engine wrote them, even past the parser", () => {
+			const before = twoSets();
 			const human = {
 				...carried([entry(K4, K1, "reviewed")]),
 				by: "human" as const,
 			};
-			expect(statesOf([...twoSets(), human], OTHER_REV)).toEqual({});
+			expect(statesOf([...before, human], OTHER_REV)).toEqual({});
+			// The same event by the engine carries.
+			const auto = carried([entry(K4, K1, "reviewed")]);
+			expect(statesOf([...before, auto], OTHER_REV)).toHaveProperty(K4);
 		});
 
 		it("apply entry by entry: a bad entry doesn't take the good ones with it", () => {
@@ -1056,6 +1068,14 @@ describe("lines-carried (CAR-195)", () => {
 			[state(K2, "crossed-off", { patchset: OTHER_REV }), hop(1, 2, K2, K1)],
 		);
 		expect(states.get(K2)).toEqual({ state: "crossed-off" });
+	});
+
+	it("never over a human unmark either: a cluster the reviewer left unreviewed stays so", () => {
+		const states = fold(
+			[state(K1, "reviewed")],
+			[state(K2, "unreviewed", { patchset: OTHER_REV }), hop(1, 2, K2, K1)],
+		);
+		expect(states.get(K2)).toEqual({ state: "unreviewed" });
 	});
 
 	it("fails closed on a forged entry or event: lines not matching their source's, an unknown patch set, a hop not forward, a human's", () => {

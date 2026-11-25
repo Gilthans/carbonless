@@ -22,6 +22,7 @@ import {
 	sinceProgress,
 	toReadClusters,
 	toReadCount,
+	unitsFile,
 	unitsFinish,
 	unitsOf,
 } from "./since";
@@ -250,6 +251,36 @@ describe("toReadClusters", () => {
 		expect(toReadClusters(a, marks, "lines", false)).toBe(2 + 1);
 		expect(toReadClusters(a, marks, "clusters", false)).toBe(2);
 		expect(toReadClusters(a, marks, "files", false)).toBe(2);
+	});
+});
+
+describe("unitsFile", () => {
+	it("is the file as its units count it: done only when every unit is marked", () => {
+		const base = {
+			index: 0,
+			path: "core.ts",
+			kind: "reworked" as const,
+			open: 0,
+		};
+		const f = file(0, "core.ts", [cluster("a", "reviewed")]);
+		const open = unitsFile(f, [
+			{ ...base, lines: 2, state: "reviewed" },
+			{ ...base, lines: 3, state: "unreviewed", open: 3 },
+		]);
+		expect(open.clusters.map((c) => [c.lines, c.state])).toEqual([
+			[2, "reviewed"],
+			[3, "unreviewed"],
+		]);
+		expect(open).toMatchObject({ path: "core.ts", done: false });
+		const done = unitsFile(f, [
+			{ ...base, lines: 2, state: "reviewed" },
+			{ ...base, lines: 3, state: "crossed-off" },
+		]);
+		expect(done).toMatchObject({
+			done: true,
+			reviewed: true,
+			crossedOff: false,
+		});
 	});
 });
 
@@ -751,7 +782,7 @@ describe("nothingSince", () => {
 			const some = answer(quietFiles, toRead);
 			expect(nothingSince(some, sinceByFile(some, v))).toBe(false);
 		}
-		// Gone only in the second file.
+		// Gone only in the second file, beside a carried cluster.
 		const goneLater = answer(
 			[
 				...quietFiles,
@@ -759,12 +790,33 @@ describe("nothingSince", () => {
 					index: 1,
 					path: "util.ts",
 					conflict: false,
-					clusters: [{ key: "x", kind: "gone", from: 1 }],
+					clusters: [
+						{
+							key: "c",
+							kind: "carried",
+							from: 1,
+							state: "reviewed",
+							rule: "exact",
+						},
+						{ key: "x", kind: "gone", from: 1 },
+					],
 				},
 			],
 			{ files: 0, clusters: 0 },
 		);
 		expect(nothingSince(goneLater, sinceByFile(goneLater, v))).toBe(false);
+		// A conflicted file, however quiet.
+		const quiet = answer(quietFiles, { files: 0, clusters: 0 });
+		const since = sinceByFile(quiet, v);
+		expect(nothingSince(quiet, since)).toBe(true);
+		expect(
+			nothingSince(
+				quiet,
+				new Map(
+					[...since].map(([i, s]) => [i, { ...s, conflict: true }] as const),
+				),
+			),
+		).toBe(false);
 	});
 });
 

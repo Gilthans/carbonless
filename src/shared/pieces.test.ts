@@ -770,6 +770,35 @@ describe("the since view's pieces cut at whitespace runs (CAR-218)", () => {
 		}
 	});
 
+	it("the rest of a cluster is reviewed once its own lines are, whatever its pieces' state", () => {
+		// A piece owns lines 0–1 (unmarked); lines 2–11, the rest, reviewed.
+		const piece = {
+			hunk: 0,
+			line: 0,
+			key: cluster.key,
+			owns: [[0, 2]] as [number, number][],
+			old: [[10, 12]] as [number, number][],
+			new: [],
+		};
+		const units = sinceUnits(
+			[
+				{
+					index: 0,
+					path: "a.ts",
+					clusters: [{ key: cluster.key, kind: "reworked" }],
+					pieces: [piece],
+				},
+			],
+			1,
+			() => [view({ reviewedLines: [[2, 12]] })],
+			undefined,
+		);
+		expect(units.map(({ rest, state }) => [rest === true, state])).toEqual([
+			[false, "unreviewed"],
+			[true, "reviewed"],
+		]);
+	});
+
 	it("the rest of a cluster counts only its unmarked lines open", () => {
 		// Lines 0–4 reviewed, 5 crossed off, 6–11 unmarked: six open.
 		const units = sinceUnits(
