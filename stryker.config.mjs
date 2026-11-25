@@ -11,7 +11,7 @@ import { queuedWorkers } from "./scripts/queue-guard.mjs";
 // run's queue ticket; the child runners then mustn't rewrite it (each loads
 // vitest.config.ts, whose queuedWorkers would), so the ticket's path stays
 // with this process only. Stryker runs each child with one Vitest worker.
-const concurrency = queuedWorkers(availableParallelism()) ?? 1;
+const concurrency = queuedWorkers(availableParallelism());
 delete process.env.CRB_QUEUE_MY_TICKET;
 
 export default {
@@ -19,7 +19,8 @@ export default {
 	plugins: ["@stryker-mutator/vitest-runner"],
 	vitest: { configFile: "vitest.config.ts", related: false },
 	coverageAnalysis: "perTest",
-	concurrency,
+	// Outside a queue: Stryker's own default.
+	...(concurrency === undefined ? {} : { concurrency }),
 	// Module-level mutants (constants) would rerun every test file each;
 	// the logic under test is in functions.
 	ignoreStatic: true,
@@ -67,7 +68,17 @@ export default {
 		"src/web/files/{fileFinish,since,unit,stateSync}.test.ts",
 		"src/web/files/{useSetStates,sinceView,markable,markable.property}.test.tsx",
 	],
-	ignorePatterns: [".crb-dev", "test-results", "playwright-report", "reports"],
+	// Stryker doesn't read .gitignore: what the sandbox copy must skip (a
+	// run in the main checkout would otherwise copy every worktree).
+	ignorePatterns: [
+		".worktrees",
+		".claude",
+		"dist",
+		".crb-dev",
+		"test-results",
+		"playwright-report",
+		"reports",
+	],
 	reporters: ["clear-text", "progress", "html", "json"],
 	htmlReporter: { fileName: "reports/mutation/mutation.html" },
 	jsonReporter: { fileName: "reports/mutation/mutation.json" },
