@@ -139,6 +139,8 @@ describe("agent writes", () => {
 		expect(new Set(bodies().map((b) => b.body.clientId))).toEqual(
 			new Set(["c1"]),
 		);
+		// The pending row goes with the list's notify, a tick after it lands.
+		await vi.runAllTimersAsync();
 		expect(getAgentWrites().pending.size).toBe(0);
 		expect(client.getQueryData(agentThreadsQuery.queryKey)).toEqual({
 			threads: [thread("T1", "why?")],
@@ -211,6 +213,8 @@ describe("agent writes", () => {
 		expect(getAgentWrites().pending.get("c1")?.error).toBeUndefined();
 		await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0] ?? 0);
 		expect(fetchMock).toHaveBeenCalledTimes(2);
+		// The pending row goes with the list's notify, a tick after it lands.
+		await vi.runAllTimersAsync();
 		expect(getAgentWrites().pending.size).toBe(0);
 	});
 
@@ -377,6 +381,8 @@ describe("agent writes", () => {
 		expect(client.getQueryData(agentThreadsQuery.queryKey)).toEqual({
 			threads: [existing],
 		});
+		// The pending row goes with the list's notify, a tick after it lands.
+		await vi.runAllTimersAsync();
 		expect(getAgentWrites().pending.size).toBe(0);
 	});
 });
