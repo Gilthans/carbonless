@@ -207,10 +207,11 @@ export const rowTop = async (row: Locator) =>
  * Sets a Settings switch (by its label) and closes Settings again. By
  * keyboard (Enter on the focused button), not a click: a click lands where
  * the button was when Playwright found it stable, and the header can still
- * reflow under it (a mark's patch set landing undocks the agent chip and
- * moves Settings 30px), so press and release hit different elements and
- * Settings never opens (CAR-304). The gear's own click is covered by
- * shortcuts.spec.ts and inlineDiff.spec.ts.
+ * reflow under it (a mark's patch set landing shortens the page: the header
+ * expands and the agent chip moves into the title row, taking Settings
+ * about 48px right and 24px down), so press and release hit different
+ * elements and Settings never opens (CAR-304). The gear's own click is
+ * covered by settings.spec.ts (desktop and phone) and inlineDiff.spec.ts.
  */
 export async function setSwitch(page: Page, label: string, on: boolean) {
 	const gear = page.getByRole("button", { name: "Settings", exact: true });
