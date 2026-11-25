@@ -203,13 +203,24 @@ export async function underStack(row: Locator) {
 export const rowTop = async (row: Locator) =>
 	(await row.boundingBox())?.y ?? Number.NaN;
 
-/** Sets a Settings switch (by its label) and closes Settings again. */
+/**
+ * Sets a Settings switch (by its label) and closes Settings again. By
+ * keyboard (Enter on the focused button), not a click: a click lands where
+ * the button was when Playwright found it stable, and the header can still
+ * reflow under it (a mark's patch set landing undocks the agent chip and
+ * moves Settings 30px), so press and release hit different elements and
+ * Settings never opens (CAR-304). The gear's own click is covered by
+ * shortcuts.spec.ts and inlineDiff.spec.ts.
+ */
 export async function setSwitch(page: Page, label: string, on: boolean) {
 	const gear = page.getByRole("button", { name: "Settings", exact: true });
-	if ((await gear.getAttribute("aria-expanded")) !== "true") await gear.click();
+	if ((await gear.getAttribute("aria-expanded")) !== "true") {
+		await gear.press("Enter");
+	}
+	await expect(gear).toHaveAttribute("aria-expanded", "true");
 	const toggle = page.getByRole("switch", { name: label });
 	if ((await toggle.getAttribute("aria-checked")) !== String(on)) {
-		await toggle.click();
+		await toggle.press("Enter");
 	}
 	await expect(toggle).toHaveAttribute("aria-checked", String(on));
 	await page.keyboard.press("Escape");
