@@ -17,7 +17,7 @@
  * comment). The others keep 2. Where linear itself reads well above 1x
  * (more rows cost more each, in memory), the check grows to 8x, so the
  * limit can sit between them with room on both sides (placeOrphans:
- * limit 3, CAR-300).
+ * limit 3.5, CAR-300).
  */
 
 /** CPU µs (user + system) this thread spends in `run`. */

@@ -122,13 +122,17 @@ describe("placing orphans (CAR-216)", () => {
 		const place = (size: number) => () =>
 			placeOrphans([contextHunk(size)], orphansOf(size));
 		const { ratio } = bestCpuRatio(place(8 * n), repeat(8, place(n)));
-		console.log(`placeOrphans: 8x the orphans in ${ratio.toFixed(2)}x the CPU`);
+		console.info(
+			`placeOrphans: 8x the orphans in ${ratio.toFixed(2)}x the CPU`,
+		);
 		// 8x, not test/cpu.ts's 4x: linear isn't 1x here (more rows cost
 		// more each, in memory), so 4x left too little room. At 4x, 4000
 		// read 1.1-1.4x on the dev machine and 2.14x on CI (CAR-300),
 		// against 3.6x for a scan of the rows per orphan, under a limit of
-		// 2. At 8x the same 16,000 rows read 1.05-1.44x, the scan 5.8-6.6x:
-		// a limit of 3 sits between, with room on both sides.
-		expect(ratio).toBeLessThan(3);
+		// 2. At 8x the same 16,000 rows read 1.05-1.44x on the dev machine
+		// and 1.16x on CI (a runner that read 2.14x at 4x may read 2.1-2.5x
+		// here), the scan 5.8-6.6x: a limit of 3.5 sits about midway, with
+		// room on both sides.
+		expect(ratio).toBeLessThan(3.5);
 	});
 });

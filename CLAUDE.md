@@ -217,7 +217,8 @@ loading never looking empty, interdiffs first-class, checking against a real PR)
   wait" (a timeout of 0, a hold), never as wall-clock time. CPU time is
   checked against a reference measured in the same test (a ratio to a
   reference workload, or a scaling check: the input 4x as large against
-  four runs of the quarter; `test/cpu.ts`), never against an absolute
+  four runs of the quarter, or 8x against eight eighths where linear
+  itself reads well above 1x; `test/cpu.ts`), never against an absolute
   budget measured on the devbox alone, because CI runners' CPUs are slower
   and contended. The exception: a cost the ratio can't see (such as a
   fixed per-run cost both sides pay) may get one generous absolute
