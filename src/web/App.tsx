@@ -5,12 +5,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import {
-	Link,
-	Outlet,
-	useNavigate,
-	useRouterState,
-} from "@tanstack/react-router";
+import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import {
 	type RefObject,
 	useEffect,
@@ -44,7 +39,6 @@ import { FindButton } from "./files/find/FindButton";
 import { findFloat, findState } from "./files/find/findState";
 import { HeadToast } from "./files/HeadToast";
 import { SyncNotices } from "./files/SyncNotices";
-import { useHoldPageEnd } from "./holdPageEnd";
 import { KeptPages, useActivePage } from "./pages";
 import { fullDate } from "./RelativeTime";
 import {
@@ -439,22 +433,6 @@ export function App() {
 		stuck,
 	} = useStickyHeader(header, row, yieldToFind, above);
 	const chip = useChipDock(yieldToFind, above, !!session.data?.asOf);
-	// The page getting shorter under the reader keeps its scroll: the header
-	// and its buttons never move on their own (CAR-310).
-	const main = useRef<HTMLElement>(null);
-	const pageEnd = useRef<HTMLDivElement>(null);
-	// Another page starts afresh; the same page's address changing (a
-	// comparison landing in it as a mark starts a patch set) holds on.
-	const path = useRouterState({ select: (state) => state.location.pathname });
-	// The header sticks once its top reaches above - offset.
-	const stickAt = useRef<() => number>(() => 0);
-	stickAt.current = () => {
-		const h = header.current;
-		return h
-			? h.getBoundingClientRect().top + window.scrollY + offset - above
-			: 0;
-	};
-	useHoldPageEnd(main, pageEnd, () => stickAt.current(), [header, main], path);
 	// The review conversation's drawer, open on a wide desktop: the whole
 	// page, header included, narrows beside it (it pushes, never covers).
 	const drawerPush = useDrawerPush();
@@ -778,7 +756,6 @@ export function App() {
 					</header>
 					{/* The diff gets the whole window; the overview stays readable. */}
 					<main
-						ref={main}
 						// A phone's find bar, in the header's place, meets the page.
 						className={`mx-auto px-3 sm:px-6 sm:py-6 ${yieldToFind ? "pt-0 pb-4" : "py-4"} ${wide ? "max-w-screen-2xl" : "max-w-5xl"}`}
 					>
@@ -799,8 +776,6 @@ export function App() {
 						<Mark className="h-4 w-4" />
 						<Wordmark className="text-sm" />
 					</footer>
-					{/* The room a shorter page gave up under the reader (useHoldPageEnd). */}
-					<div ref={pageEnd} aria-hidden data-testid="page-end" />
 					<SyncNotices />
 					{pr && <JoinToast />}
 					{/* New commits: a toast, never a banner (nothing above the page moves). */}

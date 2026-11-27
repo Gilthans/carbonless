@@ -849,7 +849,7 @@ test("every sticky layer is opaque: the diff never shows through", async ({
 });
 
 const JUMP = "src/jump.ts";
-const jumpLines = Array.from({ length: 6 }, (_, i) => `jump ${i + 1}`);
+const jumpLines = Array.from({ length: 16 }, (_, i) => `jump ${i + 1}`);
 /** Waits two frames: what a scroll or resize sets off has run. */
 const frames = (page: Page) =>
 	page.evaluate(
@@ -889,12 +889,15 @@ test("a mark that shortens the page never moves the header's buttons under the f
 		.click();
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 	// A push: the verdict says it goes on an older commit, until a mark at
-	// the new head starts PS2 and the line goes.
+	// the new head starts PS2 and the line goes. Two changes far apart: the
+	// mark leaves the file open (only the line goes).
 	p.moveHead({
 		message: "Line 5",
 		files: {
 			[JUMP]: text(
-				jumpLines.map((l, i) => (i === 1 ? `${l} x` : i === 4 ? `${l} y` : l)),
+				jumpLines.map((l, i) =>
+					i === 1 ? `${l} x` : i === 4 || i === 14 ? `${l} y` : l,
+				),
 			),
 		},
 	});
@@ -919,6 +922,8 @@ test("a mark that shortens the page never moves the header's buttons under the f
 		.first();
 	await expect(mark).toBeVisible();
 	await marksReady(page, section);
+	// Everything else on the page in: only the mark changes it.
+	await expect(page.getByTestId("not-in-comparison-loading")).toHaveCount(0);
 
 	// A window just short of the page by less than the line takes: at the
 	// bottom the header is partly scrolled away and the chip docked; with
@@ -966,5 +971,110 @@ test("a mark that shortens the page never moves the header's buttons under the f
 		scroll: await page.evaluate(() => window.scrollY),
 	}).toEqual(before);
 	expect(await appRow(page).locator(chip).count()).toBe(docked);
+	// The line's room stays, empty, until the reader's own scroll.
+	await expect(page.getByTestId("verdict-older-kept")).toHaveCount(1);
+	await page.mouse.wheel(0, -100);
+	await expect(page.getByTestId("verdict-older-kept")).toHaveCount(0);
 	await expectNoPageOverflow(page);
+});
+
+/** How much of the page's main content shows in the window, in px. */
+const mainInView = (page: Page) =>
+	page.locator("main").evaluate((main) => {
+		const r = main.getBoundingClientRect();
+		return Math.max(
+			0,
+			Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0),
+		);
+	});
+
+test("closing a lone long file from deep inside it brings its header into view, never a blank page (CAR-310 review)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({
+		base: { [JUMP]: text(long) },
+		files: [
+			{
+				message: "Change it all",
+				files: { [JUMP]: text(long.map((l) => `${l} changed`)) },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, JUMP);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await section
+		.getByTestId("diff-line")
+		.filter({ hasText: /long 250 changed$/ })
+		.scrollIntoViewIfNeeded();
+	await frames(page);
+	await section.getByRole("button", { name: "Collapse file" }).click();
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	await frames(page);
+	await expect(
+		section.getByRole("button", { name: "Expand file" }),
+	).toBeInViewport();
+	expect(await mainInView(page)).toBeGreaterThan(100);
+});
+
+test("View on the new-commits toast from deep in the full diff shows the since view, never a blank page (CAR-310 review)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	const p = await pr({
+		base: { "a.ts": text(["a1", "a2", "a3"]), [JUMP]: text(long) },
+		files: [
+			{
+				message: "PS1",
+				files: {
+					"a.ts": text(["a1", "a2 x", "a3"]),
+					[JUMP]: text(long.map((l) => `${l} changed`)),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const a = fileSection(page, "a.ts");
+	await a.getByRole("button", { name: "Expand file" }).click();
+	await a
+		.getByRole("checkbox", { name: /cluster reviewed$/ })
+		.first()
+		.click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", /^[1-9]/);
+	p.moveHead({
+		message: "PS2",
+		files: {
+			"a.ts": text(["a1 y", "a2 x", "a3"]),
+			[JUMP]: text(long.map((l) => `${l} changed`)),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		{ timeout: 30_000 },
+	);
+	const deep = fileSection(page, JUMP);
+	const expand = deep.getByRole("button", { name: "Expand file" });
+	if (await expand.isVisible()) await expand.click();
+	await deep
+		.getByTestId("diff-line")
+		.filter({ hasText: /long 280 changed$/ })
+		.scrollIntoViewIfNeeded();
+	await frames(page);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	await expect(fileSection(page, "a.ts")).toBeVisible();
+	await frames(page);
+	expect(await mainInView(page)).toBeGreaterThan(100);
 });

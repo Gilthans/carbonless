@@ -48,6 +48,7 @@ import { useThreadWriter, useThreadWrites } from "../threads/threadWrites";
 import { safeHref } from "../ui";
 import { ignoreWhitespace } from "../viewSettings";
 import { isViewer } from "./blockers";
+import { useKeptSlot } from "./keptSlot";
 import { verdictCommitOf } from "./verdictCommit";
 import { useVerdictDraft, verdictDraftFor } from "./verdictDraft";
 
@@ -567,6 +568,8 @@ export function VerdictCard(props: {
 		!since &&
 		session.snapshotHead !== "" &&
 		session.snapshotHead !== session.currentHead;
+	// Gone on its own (a mark starts a patch set): its room stays a while.
+	const olderSlot = useKeptSlot<HTMLParagraphElement>(older);
 	const early = () => performance.now() < (props.ignoreClicksUntil ?? 0);
 	const press = (event: VerdictEvent) => {
 		if (early() || reasonOf(event)) return;
@@ -688,12 +691,20 @@ export function VerdictCard(props: {
 			)}
 			{older && (
 				<p
+					ref={olderSlot.ref}
 					data-testid="verdict-older"
 					className="flex items-center gap-1.5 text-sm text-warn"
 				>
 					<InfoIcon size={16} aria-hidden />
 					On {commit.slice(0, 7)}, an older commit
 				</p>
+			)}
+			{!older && olderSlot.kept !== null && (
+				<div
+					aria-hidden
+					data-testid="verdict-older-kept"
+					style={{ height: olderSlot.kept }}
+				/>
 			)}
 			{movedBack !== null && (
 				<p
