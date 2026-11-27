@@ -1383,7 +1383,13 @@ function sinceFileHunks(
 		return { hunks, newLineCount: 0, pieces };
 	}
 	if (orphans.length === 0 && file.clusters.every((c) => c.kind !== "lines")) {
-		return { hunks: [], newLineCount: file.newLines.length };
+		// No line changed since (a file-level change alone, CAR-297): still
+		// Rendered for a Markdown file, its row above the document (CAR-318).
+		return {
+			hunks: [],
+			newLineCount: file.newLines.length,
+			...(file.markdown ? { markdownBlocks: true as const } : {}),
+		};
 	}
 	const byNew = new Map<number, string>();
 	const byOld = new Map<number, string>();

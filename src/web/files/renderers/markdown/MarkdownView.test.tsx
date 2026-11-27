@@ -1096,6 +1096,41 @@ describe("MarkdownView, since view", () => {
 		expect(screen.queryByTestId("since-empty")).toBeNull();
 	});
 
+	it("a file-level piece (a mode reverted since, CAR-297) leaves the document Rendered, its pieces boxed, never Nothing to read (CAR-318)", async () => {
+		const fx = docFixture(OLD, NEW, EDITS, { since: true });
+		const pieces = fx.hunks.pieces ?? [];
+		const level: SincePiece = {
+			hunk: -1,
+			line: 0,
+			owns: null,
+			old: [[0, 1]],
+			new: [],
+			kind: "reverted",
+			file: "Mode changed 100755 → 100644",
+		};
+		const onShowText = vi.fn();
+		show(
+			{ ...fx, hunks: { ...fx.hunks, pieces: [level, ...pieces] } },
+			{ from: 1, onShowText },
+		);
+		const root = await doc();
+		expectCoverage(
+			root,
+			pieces.map((p) => `p:${p.hunk}:${p.line}`),
+		);
+		expect(onShowText).not.toHaveBeenCalled();
+		// Only the file-level change since: the document, never "nothing".
+		cleanup();
+		const alone = docFixture(NEW, NEW, [], { since: true });
+		show(
+			{ ...alone, hunks: { ...alone.hunks, hunks: [], pieces: [level] } },
+			{ from: 1, onShowText },
+		);
+		await doc();
+		expect(screen.queryByTestId("since-empty")).toBeNull();
+		expect(onShowText).not.toHaveBeenCalled();
+	});
+
 	it("a file the author left alone since says so", async () => {
 		const fx = docFixture(NEW, NEW, [], { since: true });
 		show({ ...fx, hunks: { ...fx.hunks, hunks: [], pieces: [] } }, { from: 1 });
