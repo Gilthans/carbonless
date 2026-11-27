@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { groupMarks } from "../src/web/files/wordDiff";
+import { LONG_PRESS_MS } from "../src/web/longPress";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import {
 	expectNoPageOverflow,
@@ -11,6 +12,7 @@ import {
 import {
 	expect,
 	expectEveryUnitMarkable,
+	installClock,
 	type PrOptions,
 	test,
 } from "./fixtures";
@@ -181,25 +183,28 @@ async function expand(section: Locator) {
 	return section;
 }
 
-/** The number cells named by `label`: in their accessible name and their title. */
-/** The number cells named by a group label. */
+/** The number cells named by a group label (in their text, shown or not). */
 const labelledCells = (section: Locator, label: string | RegExp) =>
 	section
 		.locator('td[data-testid="old"], td[data-testid="new"]')
 		.filter({ hasText: label });
 
 /**
- * The number cells named by `label`: in their accessible name, and in
- * their pick button's accessible description (what focus announces).
+ * The number cells named by `label`: their pick button's accessible
+ * description (what focus announces), read once: not in the cell's name
+ * too. A cell without a button has it in its name.
  */
 async function expectLabelled(section: Locator, label: string, count: number) {
 	const cells = labelledCells(section, label);
 	await expect(cells).toHaveCount(count);
 	for (const cell of await cells.all()) {
-		await expect(cell).toHaveAccessibleName(new RegExp(label));
-		await expect(cell.locator("button[data-pick]")).toHaveAccessibleDescription(
-			label,
-		);
+		const button = cell.locator("button[data-pick]");
+		if ((await button.count()) > 0) {
+			await expect(button).toHaveAccessibleDescription(label);
+			await expect(cell).not.toHaveAccessibleName(new RegExp(label));
+		} else {
+			await expect(cell).toHaveAccessibleName(new RegExp(label));
+		}
 	}
 	// Every piece of the bracket says it too, and is hidden from readers.
 	const pieces = section.getByTestId("group-bracket");
@@ -267,6 +272,33 @@ const phone = async (page: Page, isMobile: boolean) => {
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 };
 
+/**
+ * A finger resting on `target`'s middle LONG_PRESS_MS on the page's clock
+ * (paused for it, then running again), then lifted: real touch events, as
+ * iOS sends them (no contextmenu).
+ */
+async function longPress(page: Page, target: Locator) {
+	await target.scrollIntoViewIfNeeded();
+	const box = await target.boundingBox();
+	if (!box) throw new Error("no box");
+	const x = Math.round(box.x + box.width / 2);
+	const y = Math.round(box.y + box.height / 2);
+	const now = await page.evaluate(() => Date.now());
+	await page.clock.pauseAt(now + 1000);
+	const cdp = await page.context().newCDPSession(page);
+	await cdp.send("Input.dispatchTouchEvent", {
+		type: "touchStart",
+		touchPoints: [{ x, y }],
+	});
+	await page.clock.fastForward(LONG_PRESS_MS);
+	await cdp.send("Input.dispatchTouchEvent", {
+		type: "touchEnd",
+		touchPoints: [],
+	});
+	await cdp.detach();
+	await page.clock.resume();
+}
+
 for (const view of ["unified", "side-by-side"] as const) {
 	const sbs = view === "side-by-side";
 	test(`a split or joined line reads as one group under a bracket, only real changes marked (${view})`, async ({
@@ -276,6 +308,8 @@ for (const view of ["unified", "side-by-side"] as const) {
 		isMobile,
 	}) => {
 		await phone(page, isMobile);
+		// The phone's long press is timed on the page's clock.
+		if (isMobile) await installClock(page);
 		const p = await pr(fixture);
 		const head = p.repo.shas.at(-1) ?? "";
 		// A thread on the middle of the split's run (new line 5).
@@ -317,8 +351,9 @@ for (const view of ["unified", "side-by-side"] as const) {
 		for (const xs of Object.values(await codeLefts(split)))
 			expect(xs).toHaveLength(1);
 		// The label on the number: a tooltip on keyboard focus (desktop);
-		// on a phone a tap picks the line and a long press (Android's
-		// contextmenu) shows the label without picking.
+		// on a phone a tap picks the line and a long press (timed, as iOS
+		// sends no contextmenu; Android's also shows it) shows the label
+		// without picking.
 		const four = split
 			.locator(
 				'tr[data-testid="diff-line"][data-new-no="4"] td[data-testid="new"]',
@@ -331,7 +366,14 @@ for (const view of ["unified", "side-by-side"] as const) {
 			await expect(four).toHaveAttribute("aria-pressed", "true");
 			await four.tap();
 			await expect(four).toHaveAttribute("aria-pressed", "false");
+			// Android's contextmenu (after the taps: a finger's) shows it.
 			await four.dispatchEvent("contextmenu");
+			await expect(tip).toHaveText("Line 3 split into 3–7");
+			await expect(four).toHaveAttribute("aria-pressed", "false");
+			await page.keyboard.press("Escape");
+			await expect(tip).toHaveCount(0);
+			// iOS sends none: the press is timed.
+			await longPress(page, four);
 			await expect(tip).toHaveText("Line 3 split into 3–7");
 			await expect(four).toHaveAttribute("aria-pressed", "false");
 		} else {
@@ -481,7 +523,7 @@ const bigMarks = (() => {
 			one: g.one,
 			run: g.run,
 			oneIsOld: true,
-			markdown: false,
+			prose: false,
 		});
 		const cut = (t: string, ms: readonly (readonly [number, number])[]) =>
 			ms.map(([from, to]) => t.slice(from, to)).join("");

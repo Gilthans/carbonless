@@ -617,7 +617,7 @@ describe("groups (CAR-130)", () => {
 			one: g.one.text,
 			run: g.run.map((l) => l.text),
 			oneIsOld: true,
-			markdown: false,
+			prose: false,
 		});
 
 	it("holds every line of a group pending, and the group in later", () => {
@@ -653,7 +653,7 @@ describe("groups (CAR-130)", () => {
 		});
 	});
 
-	it("sends the group's texts and markdown flag, counted as one job", async () => {
+	it("sends the group's texts and prose flag, counted as one job", async () => {
 		const held = heldRunner();
 		configureWordWork({ budgetMs: 0, runner: held.runner });
 		const g = split();
@@ -663,7 +663,7 @@ describe("groups (CAR-130)", () => {
 				one: g.one.text,
 				run: g.run.map((l) => l.text),
 				oneIsOld: true,
-				markdown: true,
+				prose: true,
 			},
 		]);
 		held.jobs[0]?.release();
@@ -772,7 +772,7 @@ describe("groups (CAR-130)", () => {
 	it("markJobs runs each job's own marker", () => {
 		const jobs: MarkJob[] = [
 			["a = 1", "a = 2"],
-			{ one: "x y", run: ["x", "y"], oneIsOld: true, markdown: false },
+			{ one: "x y", run: ["x", "y"], oneIsOld: true, prose: false },
 		];
 		const out: JobMarks[] = markPairs(jobs);
 		expect(out[0]).toEqual(wordMarks("a = 1", "a = 2"));
@@ -781,7 +781,7 @@ describe("groups (CAR-130)", () => {
 				one: "x y",
 				run: ["x", "y"],
 				oneIsOld: true,
-				markdown: false,
+				prose: false,
 			}),
 		);
 	});

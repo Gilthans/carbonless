@@ -251,6 +251,23 @@ describe("orderRun with groups (CAR-130)", () => {
 			side.flatMap((r) => (r.kind === "pair" && r.add ? [r.add] : [])),
 		).toEqual([ja, s1, s2]);
 	});
+	it("a removed line after an added one starts a new stretch: the group before it still reads together", () => {
+		const one = del("f(a, b)");
+		const x = del("x");
+		const r = [add("f("), add("a, b)")];
+		const x2 = add("x'");
+		const y = del("y");
+		const rows = plain(one, x, ...r, x2, y);
+		const got = items({ pairs: [[x, x2]], groups: [{ one, run: r }] });
+		expect(texts(orderRun(rows, got))).toEqual([
+			"-f(a, b)",
+			"+f(",
+			"+a, b)",
+			"-x",
+			"+x'",
+			"-y",
+		]);
+	});
 	it("a group with a line outside the stretch leaves it as it is", () => {
 		const one = del("f(a, b)");
 		const r = [add("f("), add("a, b)")];

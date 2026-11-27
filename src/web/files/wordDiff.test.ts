@@ -1,6 +1,7 @@
 import DiffMatchPatch from "diff-match-patch";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { proseFile } from "../../shared/proseFile";
 import type { Mark } from "../code/Invisibles";
 import {
 	commentLeader,
@@ -803,8 +804,8 @@ describe("wordMarks", () => {
 });
 
 describe("groupMarks", () => {
-	const split = (one: string, run: string[], markdown = false) =>
-		groupMarks({ one, run, oneIsOld: true, markdown });
+	const split = (one: string, run: string[], prose = false) =>
+		groupMarks({ one, run, oneIsOld: true, prose });
 	/** The range of `part` in `text` (its first occurrence from `from`). */
 	const at = (text: string, part: string, from = 0): Mark => {
 		const i = text.indexOf(part, from);
@@ -823,7 +824,7 @@ describe("groupMarks", () => {
 		];
 		expect(split(def, run)).toEqual({ one: [], run: [[], [], [], [], []] });
 		expect(
-			groupMarks({ one: def, run, oneIsOld: false, markdown: false }),
+			groupMarks({ one: def, run, oneIsOld: false, prose: false }),
 		).toEqual({ one: [], run: [[], [], [], [], []] });
 	});
 	it("marks only a new trailing comma, on its line", () => {
@@ -855,7 +856,7 @@ describe("groupMarks", () => {
 	it("marks only the changed number of a join, on each side", () => {
 		const run = ["items", "  .map(price)", "  .reduce(sum, 0);"];
 		const one = "items.map(price).reduce(sum, 1);";
-		expect(groupMarks({ one, run, oneIsOld: false, markdown: false })).toEqual({
+		expect(groupMarks({ one, run, oneIsOld: false, prose: false })).toEqual({
 			one: [at(one, "1")],
 			run: [[], [], [at(run[2] as string, "0")]],
 		});
@@ -904,6 +905,15 @@ describe("groupMarks", () => {
 			one: [],
 			run: [[], [[0, 1]]],
 		});
+	});
+	it("marks a new bullet in any prose file, by its path (proseFile)", () => {
+		const bullet = (path: string) =>
+			split("* first second", ["* first", "* second"], proseFile(path));
+		expect(bullet("docs/page.mdx")).toEqual({ one: [], run: [[], [[0, 1]]] });
+		expect(bullet("pkg/README")).toEqual({ one: [], run: [[], [[0, 1]]] });
+		expect(bullet("notes.txt")).toEqual({ one: [], run: [[], [[0, 1]]] });
+		// A C file has no grammar, yet `*` is a comment leader there.
+		expect(bullet("lib/a.c")).toEqual({ one: [], run: [[], []] });
 	});
 	it("keeps a code comment's leader plain", () => {
 		expect(split("// A long comment", ["// A long", "// comment"])).toEqual({
@@ -982,7 +992,7 @@ describe("groupMarks", () => {
 				one: "  foo",
 				run: ["@ ", "foo"],
 				oneIsOld: false,
-				markdown: false,
+				prose: false,
 			}),
 		).toEqual({ one: [], run: [[[0, 1]], []] });
 	});
@@ -1050,9 +1060,9 @@ describe("groupMarks", () => {
 				fc.array(fc.boolean(), { minLength: 9, maxLength: 9 }),
 				fc.boolean(),
 			)
-			.map(([pieces, cuts, indents, keep, leaders, markdown]) => {
+			.map(([pieces, cuts, indents, keep, leaders, prose]) => {
 				const one = pieces.join("");
-				const leader = markdown ? undefined : commentLeader(one);
+				const leader = prose ? undefined : commentLeader(one);
 				const tokens = tokenize(one);
 				const at = [
 					...new Set(cuts.map((c) => 1 + (c % Math.max(1, tokens.length)))),
@@ -1086,7 +1096,7 @@ describe("groupMarks", () => {
 				for (const [k, text] of run.entries()) {
 					starts[k] = Math.min(starts[k] as number, text.length);
 				}
-				return { one, run, starts, markdown, leader, added };
+				return { one, run, starts, prose, leader, added };
 			})
 			.filter(({ run, leader, added }) =>
 				run.every(
@@ -1099,8 +1109,8 @@ describe("groupMarks", () => {
 			);
 		it("marks nothing in a pure split or join", () => {
 			fc.assert(
-				fc.property(splitLine, fc.boolean(), ({ one, run, markdown }, old) => {
-					expect(groupMarks({ one, run, oneIsOld: old, markdown })).toEqual({
+				fc.property(splitLine, fc.boolean(), ({ one, run, prose }, old) => {
+					expect(groupMarks({ one, run, oneIsOld: old, prose })).toEqual({
 						one: [],
 						run: run.map(() => []),
 					});
@@ -1115,7 +1125,7 @@ describe("groupMarks", () => {
 					fc.nat(),
 					fc.constantFrom("@", "!", "?"),
 					fc.boolean(),
-					({ one, run, starts, markdown }, line, pos, token, old) => {
+					({ one, run, starts, prose }, line, pos, token, old) => {
 						const k = line % run.length;
 						const text = run[k] as string;
 						const start = starts[k] as number;
@@ -1128,7 +1138,7 @@ describe("groupMarks", () => {
 						const want = run.map((): Mark[] => []);
 						want[k] = [[p, p + 1]];
 						expect(
-							groupMarks({ one, run: changed, oneIsOld: old, markdown }),
+							groupMarks({ one, run: changed, oneIsOld: old, prose }),
 						).toEqual({ one: [], run: want });
 					},
 				),

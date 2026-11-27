@@ -39,6 +39,7 @@ const { hunkView } = await load("../src/web/files/whitespace.ts");
 const { layoutRows } = await load("../src/web/files/sideBySide.ts");
 const { lineSimilarity } = await load("../src/shared/linePairing.ts");
 const { wordMarks, groupMarks } = await load("../src/web/files/wordDiff.ts");
+const { proseFile } = await load("../src/shared/proseFile.ts");
 const lib = await load("./pairing-compare-lib.ts");
 const { esc, markup } = lib;
 
@@ -166,14 +167,14 @@ for (const lang of readdirSync(corpus, { withFileTypes: true })) {
 								),
 							);
 							const gMarks = new Map();
-							const markdown = /\.(md|markdown|mdx)$/i.test(file.path);
+							const prose = proseFile(file.path);
 							for (const g of groups) {
 								const oneIsOld = gitLines[g.one].kind === "del";
 								const m = groupMarks({
 									one: gitLines[g.one].text,
 									run: g.run.map((i) => gitLines[i].text),
 									oneIsOld,
-									markdown,
+									prose,
 								});
 								gMarks.set(g.one, m.one);
 								g.run.forEach((i, k) => {

@@ -26,13 +26,13 @@ import { type GroupMarkJob, groupMarks, wordMarks } from "./wordDiff";
  */
 
 /** A pair's marks: its removed line's (`old`) and its added line's (`new`). */
-export interface PairMarks {
+interface PairMarks {
 	old: Mark[];
 	new: Mark[];
 }
 
 /** A group's marks: its one line's, and each line of its run's. */
-export interface GroupJobMarks {
+interface GroupJobMarks {
 	one: Mark[];
 	run: Mark[][];
 }
@@ -94,10 +94,10 @@ type GroupOutcome = GroupJobMarks | typeof FAILED;
 export type Later = LinePair | LineGroup;
 const isGroup = (item: Later): item is LineGroup => "run" in item;
 
-/** What a chunk marks: an item, and whether its file is Markdown. */
+/** What a chunk marks: an item, and whether its file is prose (`proseFile`). */
 interface Entry {
 	item: Later;
-	markdown: boolean;
+	prose: boolean;
 }
 
 /** Pairs and groups off the render path, sent (or to be sent) together. */
@@ -186,11 +186,11 @@ const realNow = () => performance.now();
 let now: () => number = realNow;
 
 /** The job that marks a group. */
-const groupJob = (g: LineGroup, markdown: boolean): GroupMarkJob => ({
+const groupJob = (g: LineGroup, prose: boolean): GroupMarkJob => ({
 	one: g.one.text,
 	run: g.run.map((l) => l.text),
 	oneIsOld: g.one.kind === "del",
-	markdown,
+	prose,
 });
 
 /**
@@ -407,9 +407,9 @@ function pump() {
 	try {
 		attempt = run(
 			job.entries.map(
-				({ item, markdown }): MarkJob =>
+				({ item, prose }): MarkJob =>
 					isGroup(item)
-						? groupJob(item, markdown)
+						? groupJob(item, prose)
 						: ([item[0].text, item[1].text] as const),
 			),
 			() => job.wanted.size > 0,
@@ -457,10 +457,10 @@ const NONE: ReadonlySet<DiffLine> = new Set();
 /**
  * The word marks of a hunk's pairs and groups (hunkView's): every one done
  * before, and new ones while the task's render budget lasts; the rest are
- * `later`, for `requestMarks`. `markdown`: the file is Markdown (a comment
+ * `later`, for `requestMarks`. `prose`: the file is prose (`proseFile`: a comment
  * leader is no part of a group's break).
  */
-export function hunkWords(items: HunkItems, markdown: boolean): HunkWords {
+export function hunkWords(items: HunkItems, prose: boolean): HunkWords {
 	const marks = new Map<DiffLine, readonly Mark[]>();
 	const pending = new Set<DiffLine>();
 	const failed = new Set<DiffLine>();
@@ -488,7 +488,7 @@ export function hunkWords(items: HunkItems, markdown: boolean): HunkWords {
 		const lines = [group.one, ...group.run];
 		let result = lookup3(groupDone, keyOf(group));
 		if (!result) {
-			result = markNow(() => groupMarks(groupJob(group, markdown)));
+			result = markNow(() => groupMarks(groupJob(group, prose)));
 			if (result) store3(groupDone, keyOf(group), result);
 		}
 		if (!result) {
@@ -523,7 +523,7 @@ export function hunkWords(items: HunkItems, markdown: boolean): HunkWords {
  */
 export function requestMarks(
 	later: readonly Later[],
-	markdown: boolean,
+	prose: boolean,
 	progress: () => void,
 ): () => void {
 	// Its own identity: one caller can ask twice.
@@ -557,7 +557,7 @@ export function requestMarks(
 			queue.push(fresh);
 			mine.add(fresh);
 		}
-		fresh.entries.push({ item, markdown });
+		fresh.entries.push({ item, prose });
 		if (isGroup(item)) store3(groupWaiting, keyOf(item), fresh);
 		else store(waiting, item[0], item[1], fresh);
 	}

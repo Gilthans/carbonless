@@ -196,6 +196,12 @@ export function ThreadBlock(props: {
  */
 export type CardPlace = { columns: number } | { side: DiffSide };
 
+/**
+ * The diff table's columns side by side (rail, controls, old number, old
+ * code, new number, new code); unified has one code column, so one fewer.
+ */
+export const SIDE_BY_SIDE_COLUMNS = 6;
+
 /** The card's box: a conversation's font and wrapping, on the canvas. */
 const CARD =
 	"space-y-2 border-y border-line bg-canvas py-2 font-sans text-sm leading-normal whitespace-normal text-ink";
@@ -241,7 +247,8 @@ export function TailRow(props: {
 		<GroupThrough.Provider value={null}>{props.children}</GroupThrough.Provider>
 	);
 	if ("columns" in place) {
-		const view = place.columns === 6 ? "side-by-side" : "unified";
+		const view =
+			place.columns === SIDE_BY_SIDE_COLUMNS ? "side-by-side" : "unified";
 		const at = through ? throughLeft(view, through.side, "rail") : null;
 		// Where the card starts, past the bracket, when the diff has room:
 		// cramped (a phone, `data-tight`) the card keeps the row's width,

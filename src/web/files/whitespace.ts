@@ -219,7 +219,13 @@ export function hunkView(
 				: run.lines.map((line): DiffRow => ({ kind: "line", line })),
 	}));
 	const gitRows = git.flatMap((run) => run.rows);
-	const items = hunkItems(git.map((run) => run.rows));
+	// Groups only in the runs orderRun reorders (a cluster's): elsewhere
+	// their rows could sit apart.
+	const items = hunkItems(
+		git.map((run) => run.rows),
+		undefined,
+		(r) => git[r]?.key !== undefined,
+	);
 	const partners = partnersOf(items);
 	const view: HunkView = {
 		runs: git.map((run) =>

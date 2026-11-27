@@ -853,7 +853,7 @@ there is no group and the lines pair as before.
 - **The bracket.** In the gutter, in unified and side by side, on desktop and
   phone; it runs on past rows inserted inside the group (a thread, a
   comment box). It is not interactive. Its label ("Line 12 split into
-  12-16", "Lines 7-9 joined into 7"; "A line" / "N lines" for a line without
+  12–16", "Lines 7–9 joined into 7"; "A line" / "N lines" for a line without
   a number) is in the line-number button's accessible description and the
   shared Tooltip (hover, focus, long-press).
 - **Cuts end a group.** Whitespace-only lines are their own clusters, so a

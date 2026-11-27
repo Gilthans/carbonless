@@ -34,6 +34,7 @@ import {
 	marksOf as lineMarksOf,
 	type SincePiece,
 } from "../../shared/pieces";
+import { proseFile } from "../../shared/proseFile";
 import type {
 	ClusterView,
 	DiffLine,
@@ -84,8 +85,14 @@ import {
 	type Words,
 } from "../code/Invisibles";
 import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
+import { useLongPress } from "../longPress";
 import { Spinner, SpinnerIcon } from "../Spinner";
-import { clickPointer, isTap, Tooltip } from "../Tooltip";
+import {
+	clickPointer,
+	isTap,
+	Tooltip,
+	type TooltipTriggerProps,
+} from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
 import { type LineTexts, useDrafts } from "../threads/drafts";
 import { NewThread, quoteOf } from "../threads/NewThread";
@@ -148,6 +155,7 @@ import { notHereText } from "./ThreadFate";
 import {
 	AgentThreadRow,
 	type CardPlace,
+	SIDE_BY_SIDE_COLUMNS,
 	TailRow,
 	ThreadRow,
 } from "./ThreadRow";
@@ -548,7 +556,8 @@ type View = "unified" | "side-by-side";
  * by side, rail, controls, old number, old code, new number, new code. Every
  * row that spans the table takes this.
  */
-const columnsOf = (view: View) => (view === "side-by-side" ? 6 : 5);
+const columnsOf = (view: View) =>
+	view === "side-by-side" ? SIDE_BY_SIDE_COLUMNS : SIDE_BY_SIDE_COLUMNS - 1;
 
 /** The table's shape, the same for every row. */
 interface Shape {
@@ -1048,9 +1057,10 @@ function NumberCell(props: {
 	picker?: Picker;
 	pick?: NumberPick;
 	/**
-	 * Its line's group label (a split or joined line, CAR-130): in the
-	 * cell's accessible name and its pick button's description, and the
-	 * button's tooltip (hover, focus, a tap); a cell without a button
+	 * Its line's group label (a split or joined line, CAR-130): its pick
+	 * button's description (from a `hidden` span, so it's read once) and
+	 * tooltip (hover, focus, a long press); a cell without a button has it
+	 * in its accessible name, and
 	 * shows it as its own `title`.
 	 */
 	group?: string;
@@ -1060,8 +1070,12 @@ function NumberCell(props: {
 	const picks = Boolean(picker && pick?.button);
 	// A finger's long press on a group line's number holds its label open
 	// (a tap picks the line, and the bar that brings can move the number,
-	// closing a tap's tip); the next press anywhere closes it.
+	// closing a tap's tip); the next press anywhere closes it. The press is
+	// timed (useLongPress: iOS sends no contextmenu for a finger), and
+	// Android's contextmenu, when it comes first, holds it at once. The
+	// click a fired press may leave is swallowed: a long press never picks.
 	const [held, setHeld] = useState(false);
+	const press = useLongPress(() => setHeld(true));
 	useEffect(() => {
 		if (!held) return;
 		const close = () => setHeld(false);
@@ -1089,17 +1103,23 @@ function NumberCell(props: {
 					trigger?.onFocus(e);
 					picker.onFocus(stop);
 				}}
-				onContextMenu={
-					group
-						? (e) => {
+				{...(group
+					? {
+							onPointerDown: press.onPointerDown,
+							onPointerMove: press.onPointerMove,
+							onPointerUp: press.onPointerUp,
+							onPointerCancel: press.onPointerCancel,
+							onClickCapture: press.onClickCapture,
+							onContextMenu: (e: MouseEvent<HTMLElement>) => {
 								// A finger's long press (Android's contextmenu): the
 								// label, no menu. A mouse's right click keeps its menu.
-								if (!isTap(clickPointer(e))) return;
+								press.onContextMenu(e);
+								if (e.defaultPrevented || !isTap(clickPointer(e))) return;
 								e.preventDefault();
 								setHeld(true);
-							}
-						: undefined
-				}
+							},
+						}
+					: {})}
 				className={NUMBER_BUTTON}
 			>
 				{shown}
@@ -1148,11 +1168,17 @@ function NumberCell(props: {
 							),
 						)
 					: n}
-			{group && (
-				<span id={groupId} className="sr-only">
-					{group}
-				</span>
-			)}
+			{group &&
+				(picks ? (
+					// The button's description: read with it, once (hidden, a
+					// description still).
+					<span id={groupId} hidden>
+						{group}
+					</span>
+				) : (
+					// No button: the cell's own name says it.
+					<span className="sr-only">{group}</span>
+				))}
 		</td>
 	);
 }
@@ -2508,6 +2534,7 @@ export function DiffBody(props: {
 		),
 	});
 	const lang = languageFor(file.path);
+	const prose = proseFile(file.path);
 	const clusters = new Map(file.clusters.map((c) => [c.key, c]));
 	// The since view: every run of changed lines is a piece (pieces.ts,
 	// the engine's), marked on its own, by the run's first line.
@@ -3533,6 +3560,7 @@ export function DiffBody(props: {
 				clusters={clusters}
 				kinds={props.kinds}
 				lang={lang}
+				prose={prose}
 				tabWidth={file.tabWidth}
 				checkbox={checkbox}
 				pieces={pieces}
@@ -4336,6 +4364,8 @@ function HunkRows(props: {
 	/** The since view: what happened to each cluster (DiffBody `kinds`). */
 	kinds?: Map<string, KindEntry>;
 	lang: string | null;
+	/** A prose file (`proseFile`): no comment leader in a group's break. */
+	prose: boolean;
 	tabWidth?: number;
 	checkbox: (cluster: ClusterView, marker?: Marker) => ReactNode;
 	/** The since view's pieces, by their run's first line; null in the full diff. */
@@ -4401,9 +4431,9 @@ function HunkRows(props: {
 			groups: groupSpans(shown.items, view),
 		};
 	}, [hunk, ignoreWhitespace, view, sincePieces]);
-	// Markdown keeps a leader (`*`, `#`) in a group's marks: a new item.
-	// The file's language never changes under a hunk.
-	const markdown = props.lang === "markdown";
+	// A prose file keeps a leader (`*`, `#`) in a group's marks: a new
+	// item (proseFile). The file's path never changes under a hunk.
+	const prose = props.prose;
 	// The word marks of the hunk's pairs and groups: those done before and those the
 	// render budget allows now; the rest are marked off the render path and
 	// come in with `marked`, chunk by chunk (wordWork.ts, CAR-135). Their
@@ -4412,16 +4442,14 @@ function HunkRows(props: {
 	const [marked, setMarked] = useState(0);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `marked` says more pairs are done.
 	const hunkMarks = useMemo(
-		() => hunkWords(items, markdown),
-		[items, markdown, marked],
+		() => hunkWords(items, prose),
+		[items, prose, marked],
 	);
 	const words = hunkMarks.marks;
 	useEffect(() => {
 		if (hunkMarks.later.length === 0) return;
-		return requestMarks(hunkMarks.later, markdown, () =>
-			setMarked((n) => n + 1),
-		);
-	}, [hunkMarks, markdown]);
+		return requestMarks(hunkMarks.later, prose, () => setMarked((n) => n + 1));
+	}, [hunkMarks, prose]);
 	// The lines whose change doesn't show with hidden characters off (none
 	// to look for while they show).
 	const showHidden = useShowInvisibles();

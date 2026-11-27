@@ -74,10 +74,16 @@ export type HunkItems = { pairs: LinePair[]; groups: LineGroup[] };
  * from what the pairs left of the budget: once a stretch's don't fit, it
  * and every later stretch keep their pairs alone. A group's lines are all
  * in one view run; an equal stretch keeps its i-th-with-i-th pairs.
+ * `grouped(r)`: whether run `r` may hold a group (default: every run).
+ * The view puts a group's rows together only in the runs it reorders (a
+ * cluster's, orderRun): in another run a group's rows could sit apart, an
+ * unrelated row breaking its bracket, so a stretch with a line in such a
+ * run keeps its pairs alone.
  */
 export function hunkItems(
 	runs: readonly (readonly DiffRow[])[],
 	budget = HUNK_ALIGN_WORD_OPS,
+	grouped: (run: number) => boolean = () => true,
 ): HunkItems {
 	const work: AlignBudget = { left: budget };
 	const stretches = stretchesOf(runs);
@@ -87,7 +93,10 @@ export function hunkItems(
 	stretches.forEach((s, k) => {
 		const pairs = found[k];
 		if (!pairs) return;
-		const unequal = s.dels.length !== s.adds.length;
+		const unequal =
+			s.dels.length !== s.adds.length &&
+			s.delRuns.every(grouped) &&
+			s.addRuns.every(grouped);
 		const { pairs: kept, groups } = unequal
 			? alignGroups(
 					s.dels.map((l) => l.text),

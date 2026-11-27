@@ -371,8 +371,9 @@ export type GroupMarkJob = {
 	run: readonly string[];
 	/** A split (the one line removed, the run added); else a join. */
 	oneIsOld: boolean;
-	/** A Markdown file: no comment leader is part of a break. */
-	markdown: boolean;
+	/** A prose file (`proseFile`: Markdown, text, extensionless): no comment
+	 * leader is part of a break. */
+	prose: boolean;
 };
 
 /** A side's tokens, each with its line and range in that line. */
@@ -398,7 +399,7 @@ function encodeParts(
 	for (const [k, { text, from, to }] of parts.entries()) {
 		const n = ends.length;
 		if (k > 0) breaks.push(n);
-		const t = encode(text.slice(from, to));
+		const t = encode(text.slice(from, to), lineTokens);
 		chars += t.chars;
 		words += t.words;
 		for (const i of t.at) at.push(n + i);
@@ -507,7 +508,7 @@ function takeBreaks(
  * gaps between anchors with spaces included; nothing folds.
  *
  * A break stands for the line end, the next line's indentation (spaces and
- * tabs) and, outside Markdown, a comment leader the next line starts with
+ * tabs) and, outside prose (`proseFile`), a comment leader the next line starts with
  * when the one line starts with the same one (`commentLeader`), with the
  * spaces and tabs after it. It is never marked. It matches one run of
  * spaces and tabs on the one line, or nothing (`takeBreaks`): that run is
@@ -525,12 +526,12 @@ function takeBreaks(
  * joined run (`joinedLength`) is `WORD_DIFF_MAX` long or more.
  */
 export function groupMarks(job: GroupMarkJob): { one: Mark[]; run: Mark[][] } {
-	const { one, run, oneIsOld, markdown } = job;
+	const { one, run, oneIsOld, prose } = job;
 	if (one.length >= WORD_DIFF_MAX || joinedLength(run) >= WORD_DIFF_MAX) {
 		return { one: [], run: run.map(() => []) };
 	}
 	const oneCr = one.endsWith("\r");
-	const leader = markdown ? undefined : commentLeader(one);
+	const leader = prose ? undefined : commentLeader(one);
 	codes.clear();
 	blanks.clear();
 	const ones = encodeParts([

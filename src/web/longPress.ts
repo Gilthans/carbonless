@@ -104,9 +104,12 @@ export function useLongPress(onPress: (p: Press) => void): PressHandlers {
 			// A second finger: a pinch, not a press.
 			if (press.current) return end();
 			if (e.pointerType !== "touch") return;
-			const target = e.target instanceof Element ? e.target : null;
-			if (target?.closest(OWN_PRESS)) return;
 			const el = e.currentTarget;
+			// A control inside keeps its own press; a control that takes the
+			// handlers itself (a line number's button) is the press's.
+			const target = e.target instanceof Element ? e.target : null;
+			const own = target?.closest(OWN_PRESS);
+			if (own && own !== el) return;
 			if (selectedIn(el)) return;
 			// While the finger rests, the browser's own long press can't
 			// select a word or bring its callout here (index.css); back on

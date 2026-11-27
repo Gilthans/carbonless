@@ -760,7 +760,7 @@ describe("hunkView's groups (CAR-130)", () => {
 				one: one.text,
 				run: run.map((l) => l.text),
 				oneIsOld: true,
-				markdown: false,
+				prose: false,
 			});
 			expect(marks.one.map(([f, t]) => one.text.slice(f, t))).toEqual([");"]);
 			expect(marks.run.flat()).toEqual([]);
@@ -783,6 +783,38 @@ describe("hunkView's groups (CAR-130)", () => {
 		expect(hunkView(hunk.lines, false).items.groups).toHaveLength(1);
 		expect(changed(true)).toEqual(changed(false));
 		expect(changed(true).find(([k]) => k !== undefined)?.[1]).toBe(5);
+	});
+
+	it("no group in a run the view doesn't reorder (no cluster key): its rows would sit apart", () => {
+		const lines = (key?: string) => {
+			const over = { clusterKey: key };
+			return [
+				ctx(0, 0, "a"),
+				del(1, "const total = price * count;", over),
+				del(2, "load(path, retries, timeout)", over),
+				add(1, "const total = price * amount;", over),
+				add(2, "load(path,", over),
+				add(3, "  retries, timeout)", over),
+				ctx(3, 4, "b"),
+			];
+		};
+		// In a cluster's run: a group, read together (orderRun).
+		const keyed = lines("k");
+		const v = hunkView(keyed, false);
+		expect(v.items.groups).toEqual([
+			{ one: keyed[2], run: [keyed[4], keyed[5]] },
+		]);
+		// Unkeyed, the rows keep git's order, the pair's new line between
+		// the one line and its run: pairs alone, no broken bracket.
+		const unkeyed = lines(undefined);
+		for (const ws of [false, true]) {
+			const u = hunkView(unkeyed, ws);
+			expect(
+				u.runs.some((r) => r.key === undefined && r.lines.length > 1),
+			).toBe(true);
+			expect(u.items.groups).toEqual([]);
+			expect(u.items.pairs.length).toBeGreaterThan(0);
+		}
 	});
 
 	it("the since view: no group across a piece's start", () => {

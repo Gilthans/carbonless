@@ -8,8 +8,7 @@ import type { DiffRow } from "./whitespace";
  */
 export type Partners = ReadonlyMap<DiffLine, LinePair | LineGroup>;
 
-export const isGroup = (x: LinePair | LineGroup): x is LineGroup =>
-	!Array.isArray(x);
+const isGroup = (x: LinePair | LineGroup): x is LineGroup => !Array.isArray(x);
 
 /** The partners of a hunk's items. */
 export function partnersOf(items: HunkItems): Partners {
