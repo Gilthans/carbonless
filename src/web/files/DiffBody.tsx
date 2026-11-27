@@ -2655,8 +2655,9 @@ export function DiffBody(props: {
 				agentHeadNow ?? "",
 				agentPlacing,
 				earlierHead,
+				props.gone === true,
 			),
-		[agentThreads, agentHeadNow, agentPlacing, earlierHead],
+		[agentThreads, agentHeadNow, agentPlacing, earlierHead, props.gone],
 	);
 	const agentMine = agentComposerList.filter(
 		(c) => c.span.path === file.path && c.span.subject === "line",

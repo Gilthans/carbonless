@@ -165,6 +165,29 @@ describe("tracedAgentPlaceables", () => {
 		});
 		expect([...placed.end.keys()]).toEqual(["LEFT:12"]);
 		expect(placed.fates).toEqual([]);
+		// Not traced yet: it waits (placing.pending), never on a row it may
+		// leave once traced (a rewritten line goes to the head's: CAR-264).
+		expect(
+			earlierAgentPending(
+				threads,
+				H2,
+				{ placements: new Map(), until: null, pending: true },
+				H1,
+			),
+		).toEqual([]);
+		expect(
+			earlierAgentPending(threads, H2, { placements: null, until: null }, H1),
+		).toEqual([]);
+		// A gone file's can only be outside: on its row at once.
+		expect(
+			earlierAgentPending(
+				threads,
+				H2,
+				{ placements: null, until: null, pending: true },
+				H1,
+				true,
+			).map((p) => p.id),
+		).toEqual(["A1"]);
 		// Outside the since view (no compared head): with its fate, as before.
 		expect(earlierAgentPending(threads, H2, placing, undefined)).toEqual([]);
 		// Unplaced by another path (a rename since): not this row.

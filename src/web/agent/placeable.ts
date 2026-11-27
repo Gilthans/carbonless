@@ -234,8 +234,8 @@ export function shownAgentPlaceables(
 
 /**
  * The since view's agent threads asked on its compared patch set's head
- * (`earlierHead`) on RIGHT lines that the tracer hasn't placed yet, left
- * unplaced in their file (a line only that patch set had, whose fate
+ * (`earlierHead`) on RIGHT lines that the tracer (a gone file's: or not
+ * yet) left unplaced in their file (a line only that patch set had, whose fate
  * placeThreads then drops once it lands on a row), or put outside the
  * comparison by their own path (a gone file's, CAR-256), as
  * review threads are (earlierPending): as asked on the viewed head, their
@@ -248,6 +248,8 @@ export function earlierAgentPending(
 	snapshotHead: string,
 	placing: AgentPlacing,
 	earlierHead: string | undefined,
+	/** The file is gone from the full diff (GoneFile): the tracer can only put it outside. */
+	gone = false,
 ): AgentPlaceable[] {
 	if (earlierHead === undefined || earlierHead === snapshotHead) return [];
 	const { until } = placing;
@@ -264,6 +266,12 @@ export function earlierAgentPending(
 			) {
 				return [];
 			}
+			// Not traced yet: in a file the full diff has, it waits for its
+			// place (pending), as every agent thread asked on another head
+			// does, never on this row first and then moved where the tracer
+			// puts it (a rewritten line goes to the head's, CAR-264). A gone
+			// file's can only be outside: on its row at once.
+			if (!gone && placing.placements?.get(t.id) === undefined) return [];
 			const own = agentPlaceable(t);
 			if (!own.anchor) return [];
 			if (!earlierUnplaced(own, placing.placements, placing.moves, true)) {
