@@ -455,9 +455,17 @@ How it differs from a joined session:
 - **The chip** says it was spawned, not joined.
 
 The agent runs with the server's environment minus variables whose name
-contains `TOKEN`, `SECRET` or `PASSWORD` or ends in `KEY` (so `GH_TOKEN`
-and `ANTHROPIC_API_KEY` are not passed; Claude Code uses its own login
-under `HOME`), plus the config's `env`. Its stderr goes to
+looks like a secret, plus the config's `env` (passed as written). A name
+is dropped when it contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`,
+`PASSPHRASE`, `CREDENTIAL`, `APIKEY`, `ACCESSKEY` or `PRIVATEKEY`
+anywhere, or has `KEY`, `KEYS`, `PAT`, `PASS`, `PWD`, `AUTH`, `CREDS`,
+`COOKIE`, `COOKIES` or `DSN` as a whole part (split on `_`, other
+separators and camelCase), or names a connection string (`DATABASE_URL`,
+`DB_URL`, `…CONNECTION_STRING`). So `GH_TOKEN`, `ANTHROPIC_API_KEY`,
+`API_KEY_ID`, `GH_PAT` and `NPM_CONFIG__AUTH` are not passed, while
+`KEYBOARD`, `MONKEY` and `XAUTHORITY` are; `HOME`, `PATH`, `PWD` and
+`OLDPWD` always are. `SSH_AUTH_SOCK` is dropped too: the agent can't use
+your SSH agent. Claude Code uses its own login under `HOME`. Its stderr goes to
 `<cache>/agents/<review-id>/agent.stderr.log`.
 
 **What `open` allows.** Everything your harness lets the agent do: read,

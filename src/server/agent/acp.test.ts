@@ -373,6 +373,95 @@ describe("agentEnv", () => {
 	});
 });
 
+describe("agentEnv secret names", () => {
+	// Names that look like a key, token, password or credential, in any
+	// part (split on `_`, other separators and camelCase).
+	const dropped = [
+		"GH_TOKEN",
+		"GITHUB_TOKEN",
+		"CLAUDE_CODE_OAUTH_TOKEN",
+		"AWS_SECRET_ACCESS_KEY",
+		"AWS_ACCESS_KEY_ID",
+		"ANTHROPIC_API_KEY",
+		"OPENAI_APIKEY",
+		"API_KEY_ID",
+		"API_KEYS",
+		"STRIPE_KEY_LIVE",
+		"DB_PASSWORD",
+		"MYSQL_PWD",
+		"SSH_AUTH_SOCK",
+		"DB_PASSWD",
+		"REDIS_PASS",
+		"SSH_PASSPHRASE",
+		"GH_PAT",
+		"MY_GITHUB_PAT",
+		"REGISTRY_AUTH",
+		"BASIC_AUTH_HEADER",
+		"NPM_CONFIG__AUTH",
+		"npm_config__auth",
+		"npm_config_//registry.npmjs.org/:_authToken",
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"AZURE_CREDENTIAL",
+		"DOCKER_CREDS",
+		"SESSION_COOKIE",
+		"AUTH_COOKIES",
+		"DATABASE_URL",
+		"DB_URL",
+		"SENTRY_DSN",
+		"PG_CONNECTION_STRING",
+		"SIGNING_PRIVATE_KEY",
+		"GITHUBTOKEN",
+		"clientSecret",
+		"apiKey",
+	];
+	const kept = [
+		"HOME",
+		"PATH",
+		"PWD",
+		"OLDPWD",
+		"USER",
+		"SHELL",
+		"LANG",
+		"TERM",
+		"TMPDIR",
+		"KEYBOARD",
+		"KEYBOARD_LAYOUT",
+		"MONKEY",
+		"XKB_DEFAULT_KEYMAP",
+		"LESSKEY",
+		"XAUTHORITY",
+		"AUTHOR_NAME",
+		"AUTHOR_EMAIL",
+		"PASSENGER_ENV",
+		"PATHEXT",
+		"NODE_OPTIONS",
+		"XDG_SESSION_ID",
+		"DBUS_SESSION_BUS_ADDRESS",
+		"HTTP_PROXY",
+		"URL_BASE",
+	];
+
+	it("drops every secret-looking name and keeps the rest", () => {
+		const saved = { ...process.env };
+		try {
+			for (const name of [...dropped, ...kept]) process.env[name] = "v";
+			const env = agentEnv({});
+			expect(dropped.filter((n) => n in env)).toEqual([]);
+			expect(kept.filter((n) => !(n in env))).toEqual([]);
+		} finally {
+			for (const k of Object.keys(process.env))
+				if (!(k in saved)) delete process.env[k];
+			Object.assign(process.env, saved);
+		}
+	});
+
+	it("the config's own env passes as written, secret names too", () => {
+		const env = agentEnv({ CLAUDE_CODE_OAUTH_TOKEN: "t", MY_PAT: "p" });
+		expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("t");
+		expect(env.MY_PAT).toBe("p");
+	});
+});
+
 describe("agentEnv PATH", () => {
 	it("the config's PATH is the only PATH (Windows names ignore case)", () => {
 		const env = agentEnv({ PATH: "/only" });
