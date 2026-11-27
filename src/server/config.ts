@@ -347,7 +347,8 @@ export function updateConfig(
 ): Promise<CrbConfig> {
 	const run = updates.then(async () => {
 		const { raw } = await readRaw();
-		const next = change(validate(raw).config);
+		const before = validate(raw).config;
+		const next = change(before);
 		const checked = validate(next as unknown as Json);
 		if (checked.problems.length > 0) {
 			throw new Error(checked.problems.join("; "));
@@ -364,7 +365,14 @@ export function updateConfig(
 			const i = unused.findIndex((u) => u.name === name);
 			return i < 0 ? {} : (unused.splice(i, 1)[0]?.v ?? {});
 		};
-		const { telemetry: _oldTelemetry, ...rest } = raw ?? {};
+		const { telemetry: oldTelemetry, ...rest } = raw ?? {};
+		// A section that doesn't read (hand-edited, a typo) stays as written
+		// through an unrelated update: it was off already, and a fix to it
+		// shouldn't be lost. Only turning a valid one off removes it.
+		const keptBad =
+			!c.telemetry && !before.telemetry && oldTelemetry !== undefined
+				? { telemetry: oldTelemetry }
+				: {};
 		const out = {
 			...rest,
 			serve: { ...keep(raw?.serve), ...c.serve },
@@ -375,7 +383,7 @@ export function updateConfig(
 			// Off is no section at all.
 			...(c.telemetry
 				? { telemetry: { ...keep(raw?.telemetry), ...c.telemetry } }
-				: {}),
+				: keptBad),
 		};
 		await writeFileAtomic(configFile(), `${JSON.stringify(out, null, "\t")}\n`);
 		return c;

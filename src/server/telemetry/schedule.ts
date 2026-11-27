@@ -14,8 +14,12 @@ const TICK_MS = 60_000;
 export interface MailboxTimer {
 	/** One look: pushes when due. Resolves once that push ends. */
 	tick(): Promise<void>;
-	stop(): void;
+	/** Stops the timer and a push under way (its gits killed), waiting a little for it. */
+	stop(): Promise<void>;
 }
+
+/** How long stop() waits for a stopped push to wind down. */
+const STOP_WAIT_MS = 5000;
 
 /**
  * crb serve's mailbox: every TICK_MS it reads the config (so `crb telemetry
@@ -39,8 +43,19 @@ export function startMailboxTimer(opts: {
 	let running: Promise<void> | null = null;
 	let lastOutcome: string | null = null;
 	let wasOn = false;
+	let lastTookOver = false;
+	const stopping = new AbortController();
 
 	const report = (status: MailboxStatus) => {
+		// Once per run of takeovers (two crbs sharing a device name take
+		// turns every interval; both would otherwise read "ok").
+		const tookOver = status.tookOver === true;
+		if (tookOver && !lastTookOver) {
+			opts.log(
+				`telemetry: device/${status.device} had been written by another crb since this device's last push (another machine with this device name, or a reinstall); taken over`,
+			);
+		}
+		if (status.ok) lastTookOver = tookOver;
 		const outcome = status.ok ? "ok" : `failed: ${status.error ?? "?"}`;
 		if (outcome === lastOutcome) return;
 		lastOutcome = outcome;
@@ -64,15 +79,19 @@ export function startMailboxTimer(opts: {
 		const last = await readStatus();
 		const sameTarget =
 			last?.device === t.device && last.mailbox === shownRemote(t.mailbox);
-		if (last && sameTarget && now() - Date.parse(last.at) < t.every * 60_000) {
+		const since = now() - Date.parse(last?.at ?? "");
+		// A clock set back (since < 0) makes it due, not stuck until then.
+		if (last && sameTarget && since >= 0 && since < t.every * 60_000) {
 			return;
 		}
+		if (stopping.signal.aborted) return;
 		const result = await push({
 			telemetry: t,
 			config,
 			traceDir: opts.traceDir(),
 			by: "serve",
 			now: new Date(now()),
+			signal: stopping.signal,
 		});
 		if (result.status) report(result.status);
 	};
@@ -80,6 +99,7 @@ export function startMailboxTimer(opts: {
 	const tick = () => {
 		running ??= once()
 			.catch((error: unknown) => {
+				if (stopping.signal.aborted) return;
 				// Never into serving: said once, like a failed push.
 				const outcome = `error: ${(error as Error).message}`;
 				if (outcome !== lastOutcome) {
@@ -98,8 +118,20 @@ export function startMailboxTimer(opts: {
 	handle?.unref();
 	return {
 		tick,
-		stop: () => {
+		stop: async () => {
 			if (handle) clearInterval(handle);
+			stopping.abort();
+			const pending = running;
+			if (!pending) return;
+			let timer: NodeJS.Timeout | undefined;
+			await Promise.race([
+				pending,
+				new Promise<void>((done) => {
+					timer = setTimeout(done, STOP_WAIT_MS);
+					timer.unref();
+				}),
+			]);
+			clearTimeout(timer);
 		},
 	};
 }

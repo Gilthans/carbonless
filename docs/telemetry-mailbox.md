@@ -12,12 +12,12 @@ write access to it, through the device's own git credentials.
 Under `devices/<device>/` on the branch `device/<device>`:
 
 - `traces/`: crb serve's trace files (`crb-<pid>-…jsonl`,
-  [test-profiling.md](test-profiling.md), "crb outside tests"), newest
-  first, up to 50 MB a push (older files left out first; `crb telemetry
-  status` says how many). The file being written is cut at its last whole
-  line.
+  [test-profiling.md](test-profiling.md), "crb outside tests") of the last
+  7 days, up to 300 MB in all (beyond that the oldest are left out). The
+  file being written is sent up to its last whole line.
 - `logs/`: `serve.log`, `serve.log.1` and the updater's `update.log`, each
-  its last 5 MB.
+  its last 5 MB, as text (bytes that aren't UTF-8, e.g. a Windows console
+  code page, become U+FFFD).
 - `state.json`: crb's version and commit, OS and arch, node and git
   versions, the server's pid and uptime, the config, the trace directory's
   size, and for each clone in crb's cache: owner/repo, size on disk, refs
@@ -28,33 +28,61 @@ Under `devices/<device>/` on the branch `device/<device>`:
 Repo names, paths and hosts stay (it's your private repo). What
 authenticates never leaves: the access key (also scrubbed from logs and
 traces), anything named like a key, token, secret, password, credential,
-auth, cookie or session, an agent's `env` values, URLs' userinfo, and
-GitHub tokens or API keys wherever they appear.
+auth, cookie or session, an agent's `env` values, a command-line option's
+value named so (`--api-key=…`, `--token …`), URLs' userinfo, and GitHub
+tokens or API keys wherever they appear. The key is scrubbed as its current
+value and as any `?key=…`: a log line with a key rotated away since
+(`crb serve --new-key`) is caught by the latter only.
 
 ## How it's stored
 
 Each push is **one parentless commit**, a full snapshot, force-pushed with
-a lease over the device's last one. A snapshot already holds every trace
-file kept, so history would only repeat them: the branch stays one
-snapshot (≤ ~50 MB) however long crb runs, and the state's history rides
-inside it (`state-history.jsonl`). Git still sends only what changed (the
-remote's last snapshot is the thin pack's base: the growing trace file goes
-as a delta). crb writes only `device/<device>`, never another branch or a
-tag; when that branch moved (a reinstall, two devices with one name) it
-takes it over, still with a lease on what it saw.
+a lease over the device's last one: the branch never grows a history, and
+its size is the window's (≤ 300 MB of traces, a few MB of logs and state;
+JSON Lines pack about tenfold). A trace file stays in every snapshot as
+the same blob until it is 7 days old, so a file is sent once; the state's
+history rides inside the snapshot (`state-history.jsonl`). Git sends only
+what changed (the remote's last snapshot is the thin pack's base).
+
+What one push **adds** is capped (50 MB): on a backlog (the first push of
+a busy device) the newest trace files go first, and the older ones follow
+on the next pushes; a newer file is never skipped for an older one.
+`crb telemetry status` says how many wait.
+
+Copies are incremental: a trace file only grows, so each push reads and
+scrubs just the lines added since the last one (in 4 MB chunks, letting
+crb serve's requests through between them).
+
+crb writes only `device/<device>`, never another branch or a tag. When
+that branch moved since its last push (a reinstall, or two machines with
+one device name), it takes the branch over, still with a lease on what it
+saw, and says so: in `crb telemetry status`, and once in `serve.log`.
+`state.json` names the machine (`machine.hostname`, `machine.stateDir`),
+so the reader can tell two apart. Give each machine its own `--device`.
 
 Locally: `<state dir>/telemetry/` (`mailbox.git`, the `outbox/` work tree,
 `status.json`), separate from the review clones; no `refs/crb/` involved.
+The user's global git settings don't change what's stored: no global
+ignores (a `*.log` rule), attributes, hooks, autocrlf or signing apply.
 
 crb serve looks once a minute whether a push is due (the config is read
 each time: `on`/`off` apply without a restart) and pushes once `every`
 minutes (default 15) have passed since the last attempt, failed or not:
 a failing remote (auth, network) is tried again an interval later, logged
 in `serve.log` once per change of outcome, and never stops serving. One
-push at a time across crb serve and `crb telemetry send` (a lock file).
-crb serve never prompts for credentials (`GIT_TERMINAL_PROMPT=0`); the
-remote URL goes to git through the environment, never argv (so not into
-traces).
+push at a time across crb serve and `crb telemetry send` (a lock file);
+stopping crb serve stops a push under way.
+
+**Nothing prompts in the background.** crb serve's pushes run with no
+terminal prompt, no askpass program (`GIT_ASKPASS`, `core.askPass`,
+`SSH_ASKPASS`), no Git Credential Manager UI (`GCM_INTERACTIVE=never`,
+`credential.interactive=false`) and ssh in batch mode (`-o
+BatchMode=yes`, appended to your `GIT_SSH_COMMAND` or `core.sshCommand`
+when it is OpenSSH's; another client, or a `$GIT_SSH` program, is left as
+is). Credentials that need a login fail the push, and `status` says so.
+`crb telemetry on` and `send`, run in a terminal, may prompt: that's your
+own action, and how a first login happens. The remote URL reaches git
+through the environment, never argv (so not into traces or process lists).
 
 **Tracing follows**: with the mailbox on and `$CRB_TRACE_DIR` unset, crb
 serve traces into `<state dir>/traces` (the same rotation and retention).
@@ -63,7 +91,9 @@ pushes logs and state at once, and traces from its next restart.
 
 ## Setting up a device
 
-1. Create a private repo (GitHub or any git host), e.g. `crb-mailbox`.
+1. Create a private repo (GitHub or any git host), e.g. `crb-mailbox`. Don't
+   put a token in its URL (`https://user:token@…`): it would sit in
+   `config.json` (it's scrubbed from what's sent, not from there).
 2. On the device, check `git push` to it works without a prompt there
    (Windows: Git Credential Manager; elsewhere `gh auth setup-git`, SSH
    keys…). crb never stores or asks for credentials.

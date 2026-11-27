@@ -160,7 +160,7 @@ export async function startServer(opts: {
 		close: () => {
 			closed ??= (async () => {
 				updater.stop();
-				mailbox.stop();
+				await mailbox.stop();
 				await removeServerState();
 				await app.close();
 				// Their background reads of GitHub and the clones stop with them.

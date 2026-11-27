@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
+	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -7,8 +9,10 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { hostname, tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createBareRepo,
@@ -19,10 +23,12 @@ import { type CrbConfig, DEFAULT_CONFIG } from "../config";
 import { cacheDir, stateDir } from "../paths";
 import { sanitize, scrubText } from "./collect";
 import {
+	gitEnv,
 	type MailboxStatus,
 	type PushOptions,
 	pushMailbox,
 	readStatus,
+	scrubbed,
 } from "./mailbox";
 import { startMailboxTimer } from "./schedule";
 
@@ -64,15 +70,92 @@ describe.concurrent("scrubbing what is sent", () => {
 				every: 15,
 			},
 			nested: { apiToken: "t", password: "p", Secret: "s", authHeader: "a" },
+			args: ["--api-key=abcdef123", "--token", "tok98765", "--verbose"],
 		};
 		const out = JSON.stringify(sanitize(config, [KEY]));
-		for (const secret of ["sk-ant-xyz", "hunter2", "abc123", '"t"', '"p"']) {
+		expect(out).toContain("--verbose");
+		for (const secret of [
+			"sk-ant-xyz",
+			"hunter2",
+			"abc123",
+			'"t"',
+			'"p"',
+			"abcdef123",
+			"tok98765",
+		]) {
 			expect(out).not.toContain(secret);
 		}
 		expect(out).toContain("ANTHROPIC_API_KEY");
 		expect(out).toContain("github.com/me/m.git");
 		expect(out).toContain('"device":"laptop"');
 		expect(out).toContain('"host":"0.0.0.0"');
+	});
+});
+
+describe.concurrent("the mailbox's git environment", () => {
+	const config = (env: Record<string, string>) => {
+		const out: Record<string, string> = {};
+		for (let i = 0; i < Number(env.GIT_CONFIG_COUNT); i++) {
+			out[env[`GIT_CONFIG_KEY_${i}`] as string] = env[
+				`GIT_CONFIG_VALUE_${i}`
+			] as string;
+		}
+		return out;
+	};
+
+	it("a background push can't prompt: no terminal, askpass, GCM UI or ssh questions", () => {
+		const env = gitEnv({
+			mailbox: "https://h/m.git",
+			interactive: false,
+			env: {},
+		});
+		expect(env).toMatchObject({
+			GIT_TERMINAL_PROMPT: "0",
+			GCM_INTERACTIVE: "never",
+			SSH_ASKPASS_REQUIRE: "never",
+			GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
+		});
+		expect(env.GIT_ASKPASS).toMatch(/no-askpass$/);
+		expect(env.SSH_ASKPASS).toBe(env.GIT_ASKPASS);
+		expect(config(env)).toMatchObject({
+			"remote.mailbox.url": "https://h/m.git",
+			"remote.mailbox.pushurl": "https://h/m.git",
+			"credential.interactive": "false",
+			"core.autocrlf": "false",
+			"protocol.ext.allow": "never",
+			"push.gpgSign": "false",
+		});
+	});
+
+	it("keeps the user's ssh command, in batch mode when it's OpenSSH's", () => {
+		const bg = (env: NodeJS.ProcessEnv, sshCommand?: string) =>
+			gitEnv({ mailbox: "m", interactive: false, env, sshCommand })
+				.GIT_SSH_COMMAND;
+		expect(bg({ GIT_SSH_COMMAND: "ssh -i ~/.ssh/k" })).toBe(
+			"ssh -i ~/.ssh/k -o BatchMode=yes",
+		);
+		expect(bg({}, "/usr/bin/ssh -F cfg")).toBe(
+			"/usr/bin/ssh -F cfg -o BatchMode=yes",
+		);
+		expect(bg({}, '"C:/Program Files/OpenSSH/ssh.exe"')).toBe(
+			'"C:/Program Files/OpenSSH/ssh.exe" -o BatchMode=yes',
+		);
+		// Another client's options are its own; $GIT_SSH is a bare program.
+		expect(bg({}, "plink -batch")).toBeUndefined();
+		expect(bg({ GIT_SSH: "/opt/my-ssh" })).toBeUndefined();
+	});
+
+	it("crb telemetry on|send in a terminal may prompt (the reviewer's own action)", () => {
+		const env = gitEnv({ mailbox: "m", interactive: true, env: {} });
+		for (const k of [
+			"GIT_TERMINAL_PROMPT",
+			"GIT_ASKPASS",
+			"GCM_INTERACTIVE",
+			"GIT_SSH_COMMAND",
+		]) {
+			expect(env[k]).toBeUndefined();
+		}
+		expect(config(env)["credential.interactive"]).toBeUndefined();
 	});
 });
 
@@ -84,6 +167,7 @@ describe("the telemetry mailbox", () => {
 		execFileSync("git", ["--git-dir", remote.path, ...args], {
 			encoding: "utf8",
 			input: "",
+			maxBuffer: 64 * 1024 * 1024,
 			env: testGitEnv({
 				GIT_AUTHOR_NAME: "Someone",
 				GIT_AUTHOR_EMAIL: "someone@example.com",
@@ -212,39 +296,148 @@ describe("the telemetry mailbox", () => {
 		expect(state.traces.dir).toBe(traces);
 	});
 
-	it("keeps the branch one snapshot whatever the number of pushes; old traces leave", async () => {
+	it("keeps the branch one commit over many pushes; traces stay for 7 days, then leave", async () => {
+		const name = (i: number) => `crb-1-abc.20261127.00000${i}.jsonl`;
 		for (let i = 0; i < 6; i++) {
-			traceFile(`crb-1-abc.20261127.00000${i}.jsonl`, `{"push":${i}}\n`);
-			if (i >= 2)
-				rmSync(join(traces, `crb-1-abc.20261127.00000${i - 2}.jsonl`));
+			// Rotated: each push finds one more closed file.
+			traceFile(name(i), `{"push":${i}}\n`, (6 - i) * 60_000);
 			expect((await pushed()).ok).toBe(true);
 		}
 		expect(remoteGit("rev-list", "--count", "device/laptop")).toBe("1");
-		const files = tree().filter((p) => p.includes("/traces/"));
-		expect(files).toEqual([
-			"devices/laptop/traces/crb-1-abc.20261127.000004.jsonl",
-			"devices/laptop/traces/crb-1-abc.20261127.000005.jsonl",
-		]);
+		const traced = () =>
+			tree()
+				.filter((p) => p.includes("/traces/"))
+				.map((p) => p.split("/").at(-1));
+		expect(traced()).toEqual([0, 1, 2, 3, 4, 5].map(name));
 		// The state's history carries every push.
 		expect(show("state-history.jsonl").split("\n")).toHaveLength(6);
 		expect(remoteGit("tag")).toBe("");
+
+		// Past the window: gone from the next snapshot.
+		const old = (Date.now() - 8 * 24 * 60 * 60_000) / 1000;
+		for (const i of [0, 1]) utimesSync(join(traces, name(i)), old, old);
+		expect((await pushed()).ok).toBe(true);
+		expect(traced()).toEqual([2, 3, 4, 5].map(name));
 	});
 
-	it("leaves the oldest traces out past the cap", async () => {
+	it("caps new data per push, newest first; what was sent stays; the rest follows", async () => {
 		const big = (c: string) => `${c.repeat(199_999)}\n`;
-		traceFile("crb-1-a.20261125.000000.jsonl", big("o"), 3000);
-		traceFile("crb-1-a.20261126.000000.jsonl", big("m"), 2000);
-		traceFile("crb-1-a.20261127.000000.jsonl", big("n"), 1000);
-		// The state, its history and the log take a few KB; two traces fit.
-		const status = await pushed({ maxBytes: 450_000 });
-		expect(status.ok).toBe(true);
-		expect(status.tracesLeftOut).toBe(1);
-		const files = tree().filter((p) => p.includes("/traces/"));
-		expect(files).toEqual([
-			"devices/laptop/traces/crb-1-a.20261126.000000.jsonl",
-			"devices/laptop/traces/crb-1-a.20261127.000000.jsonl",
+		const day = 24 * 60 * 60_000;
+		traceFile("crb-1-a.20261124.000000.jsonl", big("o"), 3 * day);
+		expect((await pushed({ newCap: 300_000 })).ok).toBe(true);
+		traceFile("crb-1-a.20261125.000000.jsonl", big("m"), 2 * day);
+		traceFile("crb-1-a.20261126.000000.jsonl", big("n"), day);
+		const traced = () =>
+			tree()
+				.filter((p) => p.includes("/traces/"))
+				.map((p) => p.split("/").at(-1));
+
+		// The newest fits; the next one waits; the one sent before stays.
+		const second = await pushed({ newCap: 300_000 });
+		expect(second).toMatchObject({ ok: true, tracesWaiting: 1 });
+		expect(traced()).toEqual([
+			"crb-1-a.20261124.000000.jsonl",
+			"crb-1-a.20261126.000000.jsonl",
 		]);
+		// The next push brings it.
+		const third = await pushed({ newCap: 300_000 });
+		expect(third.ok).toBe(true);
+		expect(third.tracesWaiting).toBeUndefined();
+		expect(traced()).toEqual([
+			"crb-1-a.20261124.000000.jsonl",
+			"crb-1-a.20261125.000000.jsonl",
+			"crb-1-a.20261126.000000.jsonl",
+		]);
+		expect(show("traces/crb-1-a.20261124.000000.jsonl")).toBe(
+			"o".repeat(199_999),
+		);
 	});
+
+	it("reads and scrubs only what a trace file added since the last push", async () => {
+		// Over one read chunk (4 MiB), a secret on lines across it.
+		const line = `{"k":"${KEY}","pad":"${"x".repeat(1000)}"}\n`;
+		const count = Math.ceil((5 * 1024 * 1024) / line.length);
+		const body = line.repeat(count);
+		traceFile("crb-1-b19.20261127.000000.jsonl", body);
+		scrubbed.bytes = 0;
+		expect((await pushed()).ok).toBe(true);
+		const first = scrubbed.bytes;
+		expect(first).toBeGreaterThanOrEqual(body.length);
+
+		// Unchanged: nothing read again.
+		scrubbed.bytes = 0;
+		expect((await pushed()).ok).toBe(true);
+		expect(scrubbed.bytes).toBe(0);
+
+		// Grown by one line: that line only.
+		writeFileSync(join(traces, "crb-1-b19.20261127.000000.jsonl"), line, {
+			flag: "a",
+		});
+		scrubbed.bytes = 0;
+		expect((await pushed()).ok).toBe(true);
+		expect(scrubbed.bytes).toBe(line.length);
+
+		const sent = remoteGit(
+			"cat-file",
+			"blob",
+			"device/laptop:devices/laptop/traces/crb-1-b19.20261127.000000.jsonl",
+		);
+		expect(sent).not.toContain(KEY);
+		expect(sent.split("\n")).toHaveLength(count + 1);
+	});
+
+	it("sends logs and traces a global gitignore would skip", async () => {
+		traceFile("crb-1-abc.20261127.000000.jsonl", "{}\n");
+		const global = join(work, "global.gitconfig");
+		const ignores = join(work, "global.ignore");
+		writeFileSync(ignores, "*.log\n*.jsonl\n*.json\n");
+		writeFileSync(
+			global,
+			`[core]\n\texcludesFile = ${ignores.replaceAll("\\", "/")}\n`,
+		);
+		const saved = process.env.GIT_CONFIG_GLOBAL;
+		process.env.GIT_CONFIG_GLOBAL = global;
+		try {
+			expect((await pushed()).ok).toBe(true);
+		} finally {
+			if (saved === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+			else process.env.GIT_CONFIG_GLOBAL = saved;
+		}
+		expect(tree()).toEqual(
+			expect.arrayContaining([
+				"devices/laptop/logs/serve.log",
+				"devices/laptop/state.json",
+				"devices/laptop/traces/crb-1-abc.20261127.000000.jsonl",
+			]),
+		);
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"never puts the remote in git's argv",
+		async () => {
+			const shim = join(work, "shim");
+			mkdirSync(shim);
+			const log = join(work, "argv.log");
+			const real = execFileSync("sh", ["-c", "command -v git"], {
+				encoding: "utf8",
+			}).trim();
+			writeFileSync(
+				join(shim, "git"),
+				`#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${real}' "$@"\n`,
+			);
+			chmodSync(join(shim, "git"), 0o755);
+			const saved = process.env.PATH;
+			process.env.PATH = `${shim}${delimiter}${saved}`;
+			try {
+				expect((await pushed()).ok).toBe(true);
+			} finally {
+				process.env.PATH = saved;
+			}
+			const argv = readFileSync(log, "utf8");
+			expect(argv).toMatch(/push --quiet --no-verify --force-with-lease/);
+			expect(argv).not.toContain(remote.path);
+		},
+	);
 
 	it("writes only its own branch, taking it over with a lease when it moved", async () => {
 		expect((await pushed()).ok).toBe(true);
@@ -260,11 +453,19 @@ describe("the telemetry mailbox", () => {
 		remoteGit("update-ref", "refs/heads/main", other);
 		remoteGit("update-ref", "refs/heads/device/laptop", other);
 
-		expect((await pushed()).ok).toBe(true);
+		const took = await pushed();
+		expect(took).toMatchObject({ ok: true, tookOver: true });
 		expect(remoteGit("rev-parse", "device/desktop")).toBe(other);
 		expect(remoteGit("rev-parse", "main")).toBe(other);
 		expect(remoteGit("rev-parse", "device/laptop")).not.toBe(other);
 		expect(tree()).toContain("devices/laptop/state.json");
+		// Which machine pushed, for the reader to tell two apart.
+		expect(JSON.parse(show("state.json")).machine).toEqual({
+			hostname: hostname(),
+			stateDir: stateDir(),
+		});
+		// Its own branch again: no takeover the next time.
+		expect((await pushed()).tookOver).toBeUndefined();
 	});
 
 	it("a missing remote fails quietly: status says so, nothing throws", async () => {
@@ -290,6 +491,57 @@ describe("the telemetry mailbox", () => {
 		expect(status.error).toMatch(/non-fast-forward|rejected/);
 		expect(status.lastOkAt).toBe(lastOk);
 	});
+
+	it.skipIf(process.platform === "win32")(
+		"a background push to a remote that wants a login fails without asking anyone",
+		async () => {
+			const server = createServer((_req, res) => {
+				res.writeHead(401, { "WWW-Authenticate": 'Basic realm="mailbox"' });
+				res.end();
+			});
+			await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+			const { port } = server.address() as AddressInfo;
+			// An askpass that would record being asked, as a desktop's would.
+			const asked = join(work, "asked");
+			const askpass = join(work, "askpass.sh");
+			writeFileSync(
+				askpass,
+				`#!/bin/sh\necho asked >> '${asked}'\necho secret\n`,
+			);
+			chmodSync(askpass, 0o755);
+			const empty = join(work, "empty.gitconfig");
+			writeFileSync(empty, "");
+			const saved = { ...process.env };
+			Object.assign(process.env, {
+				GIT_ASKPASS: askpass,
+				SSH_ASKPASS: askpass,
+				GIT_CONFIG_GLOBAL: empty,
+				GIT_CONFIG_NOSYSTEM: "1",
+			});
+			try {
+				const status = await pushed({
+					telemetry: {
+						mailbox: `http://127.0.0.1:${port}/m.git`,
+						device: "laptop",
+						every: 15,
+					},
+				});
+				expect(status.ok).toBe(false);
+				expect(existsSync(asked)).toBe(false);
+			} finally {
+				for (const k of [
+					"GIT_ASKPASS",
+					"SSH_ASKPASS",
+					"GIT_CONFIG_GLOBAL",
+					"GIT_CONFIG_NOSYSTEM",
+				]) {
+					if (saved[k] === undefined) delete process.env[k];
+					else process.env[k] = saved[k];
+				}
+				await new Promise((done) => server.close(done));
+			}
+		},
+	);
 
 	describe("crb serve's timer", () => {
 		const statusOf = (ok: boolean, at: number): MailboxStatus => ({
@@ -346,7 +598,7 @@ describe("the telemetry mailbox", () => {
 			on = false;
 			await t.tick();
 			expect(logs.at(-1)).toBe("telemetry: off");
-			t.stop();
+			await t.stop();
 		});
 
 		it("never throws into serving, and runs one push at a time", async () => {
@@ -373,7 +625,56 @@ describe("the telemetry mailbox", () => {
 			await first;
 			expect(calls).toBe(1);
 			expect(logs).toEqual(["telemetry: error: disk full"]);
-			t.stop();
+			await t.stop();
+		});
+
+		it("a clock set back makes a push due, not stuck", async () => {
+			let calls = 0;
+			const now = Date.parse("2026-11-27T10:00:00Z");
+			mkdirSync(join(stateDir(), "telemetry"), { recursive: true });
+			// The last attempt "in the future": the clock went back an hour.
+			writeFileSync(
+				join(stateDir(), "telemetry", "status.json"),
+				JSON.stringify(statusOf(true, now + 3600_000)),
+			);
+			const t = startMailboxTimer({
+				readConfig: async () => ({ config: config(), problems: [] }),
+				traceDir: () => null,
+				log: () => {},
+				now: () => now,
+				timer: false,
+				push: async () => {
+					calls++;
+					return { status: statusOf(true, now) };
+				},
+			});
+			await t.tick();
+			expect(calls).toBe(1);
+			await t.stop();
+		});
+
+		it("stop() stops a push under way and waits for it", async () => {
+			let aborted = false;
+			let started = false;
+			const t = startMailboxTimer({
+				readConfig: async () => ({ config: config(), problems: [] }),
+				traceDir: () => null,
+				log: () => {},
+				timer: false,
+				push: (o) =>
+					new Promise((_, reject) => {
+						started = true;
+						o.signal?.addEventListener("abort", () => {
+							aborted = true;
+							reject(new Error("git was stopped"));
+						});
+					}),
+			});
+			const ticking = t.tick();
+			await vi.waitFor(() => expect(started).toBe(true));
+			await t.stop();
+			expect(aborted).toBe(true);
+			await ticking;
 		});
 
 		it("pushes for real through the timer", async () => {
@@ -389,7 +690,7 @@ describe("the telemetry mailbox", () => {
 				readFileSync(join(stateDir(), "telemetry", "status.json"), "utf8"),
 			);
 			expect(status).toMatchObject({ ok: true, by: "serve" });
-			t.stop();
+			await t.stop();
 		});
 	});
 });

@@ -62,9 +62,24 @@ function describe(status: MailboxStatus): string[] {
 			`last ok: ${status.lastOkAt ? `${status.lastOkAt} (${ago(status.lastOkAt)})` : "never"}`,
 		);
 	}
+	if (status.tookOver) {
+		lines.push(
+			`${deviceBranch(status.device)} had been written by another crb since this device's last push (another machine with this device name, or a reinstall): taken over`,
+		);
+	}
 	if (status.bytes !== undefined) {
 		lines.push(
-			`snapshot: ${status.files ?? 0} files, ${mb(status.bytes)}${status.tracesLeftOut ? ` (${status.tracesLeftOut} older trace files left out: over the cap)` : ""}`,
+			`snapshot: ${status.files ?? 0} files, ${mb(status.bytes)}${status.newBytes !== undefined ? `, ${mb(status.newBytes)} new` : ""}`,
+		);
+	}
+	if (status.tracesWaiting) {
+		lines.push(
+			`  ${status.tracesWaiting} older trace files wait for the next pushes (new data per push is capped)`,
+		);
+	}
+	if (status.tracesOverCap) {
+		lines.push(
+			`  ${status.tracesOverCap} oldest trace files left out: the window's total cap`,
 		);
 	}
 	return lines;
@@ -136,6 +151,9 @@ export async function telemetryCli(
 		}
 		const every =
 			values.every === undefined ? TELEMETRY_EVERY : Number(values.every);
+		if (!(every >= 1 && every <= 1440)) {
+			throw new Error("--every takes minutes, from 1 to 1440");
+		}
 		await updateConfig((c) => ({
 			...c,
 			telemetry: { mailbox, device, every },
@@ -144,15 +162,13 @@ export async function telemetryCli(
 			`Telemetry on: ${shownRemote(mailbox)}, branch ${deviceBranch(device)}, every ${every} min.`,
 		);
 		const server = await readLiveServerState().catch(() => null);
-		if (server) {
-			print(
-				server.traceDir
-					? "crb serve pushes within a minute."
-					: "crb serve pushes within a minute; it traces from its next restart.",
-			);
+		if (server && !server.traceDir) {
+			print("The running crb serve traces from its next restart.");
 		}
-		if (values["no-send"]) return 0;
-		return send(print);
+		// Pushed here, crb serve's next is an interval later.
+		if (!values["no-send"]) return send(print);
+		if (server) print("crb serve pushes within a minute.");
+		return 0;
 	}
 	if (values.device !== undefined || values.every !== undefined) {
 		throw new Error("--device and --every belong to crb telemetry on");

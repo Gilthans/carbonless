@@ -445,6 +445,14 @@ describe("config", () => {
 			expect(read.problems).toEqual([expect.stringMatching(/every/)]);
 		});
 
+		it("an unreadable section stays as written through other updates", async () => {
+			const typo = { mailbox: "/m.git", device: "My Laptop" };
+			write(JSON.stringify({ telemetry: typo }));
+			await updateConfig((c) => ({ ...c, refresh: { minutes: 5 } }));
+			expect(onDisk().telemetry).toEqual(typo);
+			expect(onDisk().refresh).toEqual({ minutes: 5 });
+		});
+
 		it("updateConfig turns it on and off, keeping its unknown keys while on", async () => {
 			write(
 				JSON.stringify({

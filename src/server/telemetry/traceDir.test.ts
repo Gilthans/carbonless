@@ -1,5 +1,6 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { configDir, stateDir } from "../paths";
 import { createTracer, setDefaultTraceDir, tracer } from "../trace";
@@ -52,13 +53,13 @@ describe("tracing follows the mailbox", () => {
 		const g = globalThis as { [KEY]?: unknown };
 		const saved = { tracer: g[KEY], env: process.env.CRB_TRACE_DIR };
 		try {
-			setDefaultTraceDir("/default-traces");
+			setDefaultTraceDir(join(stateDir(), "default-traces"));
 			delete g[KEY];
 			delete process.env.CRB_TRACE_DIR;
-			expect(tracer("crb").dir).toBe("/default-traces");
+			expect(tracer("crb").dir).toBe(join(stateDir(), "default-traces"));
 			delete g[KEY];
-			process.env.CRB_TRACE_DIR = "/env-traces";
-			expect(tracer("crb").dir).toBe("/env-traces");
+			process.env.CRB_TRACE_DIR = join(stateDir(), "env-traces");
+			expect(tracer("crb").dir).toBe(join(stateDir(), "env-traces"));
 		} finally {
 			g[KEY] = saved.tracer;
 			if (saved.env === undefined) delete process.env.CRB_TRACE_DIR;
@@ -71,5 +72,47 @@ describe("tracing follows the mailbox", () => {
 		expect(
 			createTracer({ dir: "/t", service: "x", flushOnExit: false }).dir,
 		).toBe("/t");
+	});
+
+	// crb serve's tracer is made at the first tracer() call; git.ts makes it
+	// at import. The default dir must be set before that: src/cli.ts loads
+	// only this chain before main.js, statically. A new import here that
+	// reaches git.ts (or any module calling tracer() at load) would make
+	// the tracer first, and the mailbox's tracing would silently stay off.
+	it("src/cli.ts reaches nothing that makes the tracer before the default dir is set", () => {
+		const src = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+		const seen = new Set<string>();
+		const visit = (file: string, dynamicToo: boolean) => {
+			if (seen.has(file)) return;
+			seen.add(file);
+			const text = readFileSync(file, "utf8");
+			const specs = [
+				...text.matchAll(/^(?:import|export)[^;]*?from\s+"(\.[^"]+)"/gms),
+				...(dynamicToo
+					? text.matchAll(/await import\(\s*"(\.[^"]+telemetry[^"]+)"/g)
+					: []),
+			]
+				.filter((m) => !/^import type/.test(m[0]))
+				.map((m) => m[1] as string);
+			for (const spec of specs) {
+				visit(resolve(dirname(file), spec.replace(/\.js$/, ".ts")), false);
+			}
+		};
+		visit(join(src, "cli.ts"), true);
+		const files = [...seen].map((f) => relative(src, f).replaceAll("\\", "/"));
+		expect(files.sort()).toEqual(
+			[
+				"cli.ts",
+				"server/atomicFile.ts",
+				"server/buildInfo.ts",
+				"server/config.ts",
+				"server/paths.ts",
+				"server/telemetry/traceDir.ts",
+				"server/trace.ts",
+			].sort(),
+		);
+		for (const f of seen) {
+			expect(readFileSync(f, "utf8")).not.toMatch(/^const \w+ = tracer\(/m);
+		}
 	});
 });

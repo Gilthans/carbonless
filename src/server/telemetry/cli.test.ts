@@ -80,6 +80,35 @@ describe("crb telemetry", () => {
 		expect(out.join("\n")).toMatch(/FAILED[\s\S]*last ok: never/);
 	});
 
+	it("status says when another crb wrote this device's branch", async () => {
+		expect(await run("on", remote.path, "--device", "twin")).toBe(0);
+		// The other twin pushes meanwhile.
+		const env = testGitEnv({
+			GIT_AUTHOR_NAME: "Other",
+			GIT_AUTHOR_EMAIL: "other@example.com",
+			GIT_COMMITTER_NAME: "Other",
+			GIT_COMMITTER_EMAIL: "other@example.com",
+		});
+		const git = (...args: string[]) =>
+			execFileSync("git", ["--git-dir", remote.path, ...args], {
+				encoding: "utf8",
+				input: "",
+				env,
+			}).trim();
+		const empty = git("hash-object", "-t", "tree", "-w", "--stdin");
+		git(
+			"update-ref",
+			"refs/heads/device/twin",
+			git("commit-tree", empty, "-m", "x"),
+		);
+		expect(await run("send")).toBe(0);
+		expect(out.join("\n")).toMatch(
+			/device\/twin had been written by another crb since this device's last push/,
+		);
+		expect(await run("status")).toBe(0);
+		expect(out.join("\n")).toMatch(/had been written by another crb/);
+	});
+
 	it("--no-send only turns it on; bad input is refused", async () => {
 		expect(await run("on", remote.path, "--no-send", "--every", "5")).toBe(0);
 		expect(config().telemetry.every).toBe(5);
@@ -88,6 +117,9 @@ describe("crb telemetry", () => {
 			run("on", remote.path, "--device", "Not Valid"),
 		).rejects.toThrow(/--device/);
 		await expect(run("on")).rejects.toThrow(/git remote/);
+		await expect(run("on", remote.path, "--every", "abc")).rejects.toThrow(
+			/--every takes minutes/,
+		);
 		await expect(run("off", "extra")).rejects.toThrow(/too many/);
 		await expect(run("bogus")).rejects.toThrow(/unknown command/);
 		expect(await run("--help")).toBe(0);

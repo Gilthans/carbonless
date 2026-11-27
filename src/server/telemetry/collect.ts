@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { arch, platform, release } from "node:os";
+import { arch, hostname, platform, release } from "node:os";
 import { join } from "node:path";
 import type { CrbConfig } from "../config.js";
 import { runGit } from "../git.js";
@@ -20,6 +20,9 @@ const REMOVED = "[removed]";
 /** A config key whose value is a secret, whatever it holds. */
 const SECRET_NAME = /key|token|secret|passw|credential|auth|cookie|session/i;
 
+/** An option naming a secret, its value apart (`--token`, `-api-key`). */
+const SECRET_OPTION = /^-{1,2}[\w-]*(?:key|token|secret|passw)[\w-]*$/i;
+
 /** Text that is a secret wherever it appears. */
 const SECRET_TEXT: [RegExp, string][] = [
 	// scheme://user:pass@host → scheme://[removed]@host
@@ -31,7 +34,12 @@ const SECRET_TEXT: [RegExp, string][] = [
 	[/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, REMOVED],
 	[/\bsk-[A-Za-z0-9_-]{20,}\b/g, REMOVED],
 	[/\bxox[abposr]-[A-Za-z0-9-]{10,}\b/g, REMOVED],
-	[/\b(Bearer|token)\s+[A-Za-z0-9._~+/=-]{16,}/g, `$1 ${REMOVED}`],
+	[/\b(Bearer|token)\s+[A-Za-z0-9._~+/=-]{16,}/gi, `$1 ${REMOVED}`],
+	// A command-line option carrying one: --api-key=…, -token …, --password x
+	[
+		/(-{1,2}[\w-]*(?:key|token|secret|passw)[\w-]*)(=|[ \t]+)[^\s"'\\]+/gi,
+		`$1$2${REMOVED}`,
+	],
 ];
 
 /**
@@ -54,7 +62,17 @@ export function scrubText(text: string, secrets: readonly string[]): string {
  */
 export function sanitize(value: unknown, secrets: readonly string[]): unknown {
 	if (typeof value === "string") return scrubText(value, secrets);
-	if (Array.isArray(value)) return value.map((v) => sanitize(v, secrets));
+	if (Array.isArray(value)) {
+		// argv: `--token`, then its value as the next element.
+		return value.map((v, i) =>
+			i > 0 &&
+			typeof v === "string" &&
+			typeof value[i - 1] === "string" &&
+			SECRET_OPTION.test(value[i - 1] as string)
+				? REMOVED
+				: sanitize(v, secrets),
+		);
+	}
 	if (typeof value === "object" && value !== null) {
 		const out: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(value)) {
@@ -187,6 +205,9 @@ export async function collectState(opts: StateOptions): Promise<unknown> {
 		by: opts.by,
 		crb: { version: BUILD.version, commit: BUILD.commit },
 		os: { platform: platform(), arch: arch(), release: release() },
+		// Which machine and install pushed it: two crbs sharing a device
+		// name, or a reinstall, read apart.
+		machine: { hostname: hostname(), stateDir: stateDir() },
 		node: process.version,
 		git: gitVersion || null,
 		server: server
