@@ -801,13 +801,17 @@ test('the since view renders "not reviewed in PS1" rows: on their blocks, as sou
 }) => {
 	const OTHER = "docs/other.md";
 	const p = await pr({
-		base: { ...fixture.base, [OTHER]: "# Other\n" },
+		base: {
+			...fixture.base,
+			[OTHER]: "Top line.\n\n# Other\n\nMid para.\n\nGone para.\n\n## Keep\n",
+		},
 		files: [
 			{
 				message: "docs",
 				files: {
 					...fixture.files[0]?.files,
-					[OTHER]: "# Other\n\nAdded in PS1.\n",
+					// Removals at the top and mid-file, a paragraph added.
+					[OTHER]: "# Other\n\nMid para.\n\n## Keep\n\nAdded in PS1.\n",
 				},
 			},
 		],
@@ -894,9 +898,26 @@ test('the since view renders "not reviewed in PS1" rows: on their blocks, as sou
 	if (await expandOther.isVisible()) await expandOther.click();
 	await expect(otherDoc).toBeVisible(GIT_WAIT);
 	await shownAs(other, "markdown");
-	await expect(
-		other.getByTestId("md-orphan").getByTestId("md-hidden-line"),
-	).toHaveText(["+", "+Added in PS1."]);
+	const otherRow = (text: string) =>
+		other.getByTestId("md-block").filter({
+			has: page
+				.getByTestId("md-orphan")
+				.getByTestId("md-hidden-line")
+				.filter({ hasText: text }),
+		});
+	// The top removal on the first block; the mid-file one on the block
+	// it followed; the added paragraph on its own.
+	await expect(otherRow("Top line.").getByRole("heading")).toHaveText("Other");
+	await expect(otherRow("Gone para.")).toContainText("Mid para.");
+	await expect(otherRow("Added in PS1.")).toHaveCount(1);
+	// Every box of Text is in Rendered.
+	const otherBoxes = other.getByRole("checkbox", {
+		name: "Mark cluster reviewed",
+	});
+	const m = await otherBoxes.count();
+	await viewButton(other, "Text").click();
+	await shownAs(other, "text");
+	await expect(otherBoxes).toHaveCount(m);
 	await expectNoPageOverflow(page);
 });
 

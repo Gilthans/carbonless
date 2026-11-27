@@ -357,7 +357,9 @@ describe("orphanSource (CAR-328)", () => {
 			clusterKey: "o",
 			orphan: true,
 		};
-		const hunks = [{ newStart: 1, lines: [ctx(1), del("old"), add, ctx(3)] }];
+		const hunks = [
+			{ newStart: 1, newCount: 3, lines: [ctx(1), del("old"), add, ctx(3)] },
+		];
 		expect(orphanSource(hunks, { hunk: 0, line: 1, key: "o" })).toEqual({
 			del: ["old"],
 			add: ["new"],
@@ -367,7 +369,7 @@ describe("orphanSource (CAR-328)", () => {
 		const lines = [ctx(4), del("a"), ctx(5)];
 		expect(
 			orphanSource(
-				[{ newStart: 4, lines }],
+				[{ newStart: 4, newCount: 2, lines }],
 				{ hunk: 0, line: 1, key: "o" },
 				{
 					newStart: 9,
@@ -380,7 +382,11 @@ describe("orphanSource (CAR-328)", () => {
 		const blank = (n: number): DiffLine => ({ ...ctx(n), text: "" });
 		const removal = { newStart: 0, newCount: 0 };
 		const of = (newStart: number, lines: DiffLine[], line: number) =>
-			orphanSource([{ newStart, lines }], { hunk: 0, line, key: "o" }, removal);
+			orphanSource(
+				[{ newStart, newCount: lines.filter((l) => l.newNo).length, lines }],
+				{ hunk: 0, line, key: "o" },
+				removal,
+			);
 		expect(
 			of(4, [ctx(4), blank(5), del("a"), del("b"), del("c", "p"), ctx(6)], 2),
 		).toEqual({
@@ -399,10 +405,34 @@ describe("orphanSource (CAR-328)", () => {
 			place: 2,
 		});
 	});
+	it("an untouched file's removal-only hunk (orphanHunks: no new line, newStart the line above): that line, the top of the file as 0 (CAR-328 fix round 1)", () => {
+		const removal = { newStart: 0, newCount: 0 };
+		const of = (newStart: number) =>
+			orphanSource(
+				[{ newStart, newCount: 0, lines: [del("gone")] }],
+				{ hunk: 0, line: 0, key: "o" },
+				removal,
+			)?.place;
+		// Mid-file: after line 4, not line 3 (one block too high).
+		expect(of(4)).toBe(4);
+		// After the first line, and at the very top: no Text fallback.
+		expect(of(1)).toBe(1);
+		expect(of(0)).toBe(0);
+	});
+	it("null when no place is (a hunk with no new row before or after it): the view shows Text", () => {
+		expect(
+			orphanSource(
+				// Malformed: claims new lines, has none.
+				[{ newStart: 0, newCount: 2, lines: [del("gone")] }],
+				{ hunk: 0, line: 0, key: "o" },
+				{ newStart: 0, newCount: 0 },
+			),
+		).toBeNull();
+	});
 	it("null when its row isn't an orphan's (the view shows Text)", () => {
 		expect(orphanSource([], { hunk: 0, line: 0, key: "o" })).toBeNull();
 		expect(
-			orphanSource([{ newStart: 1, lines: [ctx(1)] }], {
+			orphanSource([{ newStart: 1, newCount: 1, lines: [ctx(1)] }], {
 				hunk: 0,
 				line: 0,
 				key: "o",

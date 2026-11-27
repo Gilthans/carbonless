@@ -214,7 +214,7 @@ export function buildDoc(opts: {
 		// A unit of no line here sits by its place, as a line added there.
 		const news =
 			olds.length === 0 && size(u.new) === 0 && u.place !== undefined
-				? [u.place]
+				? [Math.max(u.place, 1)]
 				: linesOf(u.new);
 		// A blank line goes with the block before it, unless the unit has
 		// lines of its own text: then those say where it is (a removed
@@ -604,11 +604,16 @@ export function lineAnchor(
  * since view's hunks: the base's removed lines (no number here) and the
  * added ones, which the Rendered view shows as source under the piece's
  * block (CAR-328: rendered, its block reads as unchanged since). `place`:
- * the new line it sits by when it has no added line. Null when its row
- * isn't there (the view then shows Text: principle 2).
+ * the new line it sits by when it has no added line (0: the file's top,
+ * its first block). Null when its row isn't there, or no place is (the
+ * view then shows Text: principle 2).
  */
 export function orphanSource(
-	hunks: readonly { newStart: number; lines: readonly DiffLine[] }[],
+	hunks: readonly {
+		newStart: number;
+		newCount: number;
+		lines: readonly DiffLine[];
+	}[],
 	piece: { hunk: number; line: number; key?: string },
 	/** The piece's cluster (the viewed snapshot's, against the base). */
 	cluster?: { newStart: number; newCount: number },
@@ -641,11 +646,20 @@ export function orphanSource(
 		}
 		return undefined;
 	};
-	const top = (hunks[piece.hunk]?.newStart ?? 0) - 1;
+	// The line above the hunk: a hunk with no new line (a run of removals
+	// only: an untouched file's orphan hunk, engine.ts orphanHunks) starts
+	// after it, as git numbers one; 0 is the file's top.
+	const hunk = hunks[piece.hunk];
+	const top = hunk
+		? hunk.newCount === 0
+			? hunk.newStart
+			: hunk.newStart - 1
+		: -1;
 	const place =
 		pick(piece.line - 1, -1, true) ??
 		(top >= 1 ? top : undefined) ??
 		pick(i, 1, true) ??
-		pick(i, 1, false);
+		pick(i, 1, false) ??
+		(top === 0 ? 0 : undefined);
 	return place === undefined ? null : { del, add, place };
 }

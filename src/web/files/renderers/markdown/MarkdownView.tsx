@@ -1247,18 +1247,24 @@ export function MarkdownView(props: {
 		// Orphan runs (CAR-216/328): changed against the base, unchanged since
 		// the compared patch set, so the rendering shows no change of theirs;
 		// their lines as source, as the line view shows them (principle 2).
-		const orphans = controls.flatMap(({ u }) => (u.orphan ? [u.orphan] : []));
+		// Each run on its own, in order: its removed lines, then its added.
+		const orphans = controls.flatMap(({ key, u }) =>
+			u.orphan ? [{ key, ...u.orphan }] : [],
+		);
 		if (orphans.length > 0) {
-			const dels = orphans.flatMap((o) => o.del);
-			const adds = orphans.flatMap((o) => o.add);
 			const label = `Not reviewed in PS${from}`;
-			const rows = (del: boolean, add: boolean) => (
-				<HiddenChange
-					del={del ? dels : []}
-					add={add ? adds : []}
-					label={label}
-					testId="md-orphan"
-				/>
+			const rows = (
+				<>
+					{orphans.map((o) => (
+						<HiddenChange
+							key={o.key}
+							del={o.del}
+							add={o.add}
+							label={label}
+							testId="md-orphan"
+						/>
+					))}
+				</>
 			);
 			const under = (cell: ReactNode, more: ReactNode) => (
 				<>
@@ -1266,9 +1272,9 @@ export function MarkdownView(props: {
 					{more}
 				</>
 			);
-			unified = under(unified, rows(true, true));
+			unified = under(unified, rows);
 			// Base lines aren't the compared patch set's: all on the new side.
-			right = under(right, rows(true, true));
+			right = under(right, rows);
 		}
 		const chips = controls.flatMap(({ key, u }) => {
 			const chip = unitChips(u, from);

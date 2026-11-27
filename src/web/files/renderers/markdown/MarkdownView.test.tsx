@@ -1238,6 +1238,178 @@ describe("MarkdownView, since view", () => {
 			);
 			await waitFor(() => expect(onShowText).toHaveBeenCalled());
 		});
+
+		/**
+		 * A file the interdiff doesn't touch (fix round 1): its rows are
+		 * orphans only, in engine.ts orphanHunks' hunks (no context; a
+		 * removal-only hunk's newStart is the line above it, 0 at the top).
+		 */
+		const UNTOUCHED = [
+			"# Other", // 1
+			"",
+			"Para one.", // 3
+			"",
+			"## Keep", // 5
+			"",
+			"End.", // 7
+		];
+		const IMG = "<img src=x onerror=alert(1)>";
+		const SCRIPT = "<script>alert(1)</script>";
+		const orphanDel = (key: string, text: string): DiffLine => ({
+			kind: "del",
+			text,
+			clusterKey: key,
+			baseNo: 1,
+			orphan: true,
+		});
+		const untouchedFixture = (): DocFixture => {
+			const fx = docFixture(UNTOUCHED, UNTOUCHED, [], { since: true });
+			const hunk = (newStart: number, newCount: number, lines: DiffLine[]) => ({
+				oldStart: newStart,
+				oldCount: 0,
+				newStart,
+				newCount,
+				lines,
+			});
+			return {
+				file: {
+					...fx.file,
+					clusters: [
+						// A removal at the very top of the file.
+						cluster("k0", { removed: ["Top line."], added: [] }),
+						// A replaced line and, under it, a removal: two runs, one block.
+						cluster("k2", {
+							oldStart: 4,
+							newStart: 3,
+							removed: ["Para 1."],
+							added: ["Para one."],
+						}),
+						cluster("k1", {
+							oldStart: 5,
+							newStart: 3,
+							removed: ["Para 1b."],
+							added: [],
+						}),
+						// A removal mid-file, after "## Keep" (markup as text).
+						cluster("k3", {
+							oldStart: 8,
+							newStart: 5,
+							removed: [IMG, SCRIPT],
+							added: [],
+						}),
+					],
+				},
+				hunks: {
+					hunks: [
+						hunk(0, 0, [orphanDel("k0", "Top line.")]),
+						hunk(3, 1, [
+							orphanDel("k2", "Para 1."),
+							{
+								kind: "add",
+								newNo: 3,
+								text: "Para one.",
+								clusterKey: "k2",
+								orphan: true,
+							},
+							orphanDel("k1", "Para 1b."),
+						]),
+						hunk(5, 0, [orphanDel("k3", IMG), orphanDel("k3", SCRIPT)]),
+					],
+					newLineCount: UNTOUCHED.length,
+					pieces: [
+						{
+							hunk: 0,
+							line: 0,
+							key: "k0",
+							orphan: true,
+							owns: [[0, 1]],
+							old: [],
+							new: [],
+						},
+						{
+							hunk: 1,
+							line: 0,
+							key: "k2",
+							orphan: true,
+							owns: [[0, 2]],
+							old: [],
+							new: [[3, 4]],
+						},
+						{
+							hunk: 1,
+							line: 2,
+							key: "k1",
+							orphan: true,
+							owns: [[0, 1]],
+							old: [],
+							new: [],
+						},
+						{
+							hunk: 2,
+							line: 0,
+							key: "k3",
+							orphan: true,
+							owns: [[0, 2]],
+							old: [],
+							new: [],
+						},
+					],
+					markdownBlocks: true,
+				},
+				// The context route of an untouched file: every line, old = new.
+				context: UNTOUCHED.map((text, i) => ({
+					kind: "context",
+					oldNo: i + 1,
+					newNo: i + 1,
+					text,
+				})),
+			};
+		};
+
+		it("an untouched file's removals: the top one on the first block, a mid-file one on the block it follows; runs of one block each in order; markup as text (fix round 1)", async () => {
+			const onShowText = vi.fn();
+			show(untouchedFixture(), {
+				from: 1,
+				kinds,
+				onShowText,
+				sideBySide: true,
+			});
+			const root = await doc();
+			expect(onShowText).not.toHaveBeenCalled();
+			expectCoverage(root, ["p:0:0", "p:1:0", "p:1:2", "p:2:0"]);
+			expect(rowOf(root, "p:0:0")).toHaveAttribute("data-block", "0");
+			// After "## Keep" (block 2), not on the blank line above it.
+			const keep = rowOf(root, "p:2:0") as HTMLElement;
+			expect(keep).toHaveAttribute("data-block", "2");
+			// Two runs on "Para one.": each its own rows, in order.
+			const para = rowOf(root, "p:1:0") as HTMLElement;
+			expect(rowOf(root, "p:1:2")).toBe(para);
+			expect(para).toHaveAttribute("data-block", "1");
+			const runs = [
+				...para.querySelectorAll<HTMLElement>('[data-testid="md-orphan"]'),
+			].map((run) =>
+				[
+					...run.querySelectorAll<HTMLElement>(
+						'[data-testid="md-hidden-line"]',
+					),
+				].map((l) => `${l.dataset.kind}:${l.textContent?.slice(1)}`),
+			);
+			expect(runs).toEqual([
+				["del:Para 1.", "add:Para one."],
+				["del:Para 1b."],
+			]);
+			// Markup in a source row is text, never an element.
+			const source = keep.querySelector('[data-testid="md-orphan"]');
+			expect(source?.querySelector("img, script")).toBeNull();
+			expect(
+				[
+					...(source?.querySelectorAll<HTMLElement>(
+						'[data-testid="md-hidden-line"]',
+					) ?? []),
+				].map((l) => l.textContent?.slice(1)),
+			).toEqual([IMG, SCRIPT]);
+			expect(document.querySelector('img[src="x"]')).toBeNull();
+		});
 	});
 
 	it("a file the author left alone since says so", async () => {
