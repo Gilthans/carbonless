@@ -185,7 +185,7 @@ const COMMENT_LEFT_RETRY_MS = 30_000;
  * (CAR-53): its follow-ups answer at once with the notice, not after the
  * fetch's timeout each time; a later one tries again.
  */
-export const UNFETCHABLE_MS = 5 * 60_000;
+const UNFETCHABLE_MS = 5 * 60_000;
 
 /** The write queue new threads share (one PR's: one at a time). */
 const NEW_THREADS = "new-threads";
