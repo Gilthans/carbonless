@@ -9,12 +9,12 @@ import { isImagePath } from "../../../shared/imageTypes";
 import type { FileSummary } from "../../../shared/types";
 import { mapSetting } from "../../viewSettings";
 
-export type RendererId = "text" | "binary" | "image";
+export type RendererId = "text" | "binary" | "image" | "markdown";
 
 /** What a renderer reads of a file to claim it. */
 export type RendererFile = Pick<
 	FileSummary,
-	"path" | "binary" | "submodule" | "lfs"
+	"path" | "binary" | "submodule" | "lfs" | "markdownBlocks"
 >;
 
 export interface Renderer {
@@ -36,6 +36,14 @@ export interface Renderer {
 const drawable = (file: RendererFile) =>
 	isImagePath(file.path) && !file.lfs && !file.submodule;
 
+/**
+ * A Markdown file whose clusters the server cut at its blocks
+ * (`markdownBlocks`: a Markdown path, both sides text under the cap; in the
+ * since view, the since answer's flag): the Rendered view can box them.
+ */
+const renderable = (file: RendererFile) =>
+	file.markdownBlocks === true && !file.binary && !file.lfs && !file.submodule;
+
 /** In claim order: the first that claims a file shows it. */
 export const RENDERERS: readonly Renderer[] = [
 	{
@@ -43,6 +51,12 @@ export const RENDERERS: readonly Renderer[] = [
 		claims: drawable,
 		units: "whole-file",
 		anchors: ["file"],
+	},
+	{
+		id: "markdown",
+		claims: renderable,
+		units: "lines",
+		anchors: ["file", "lines"],
 	},
 	{
 		id: "binary",
@@ -67,6 +81,7 @@ export const RENDERERS: readonly Renderer[] = [
 export function rendererChoices(file: RendererFile): RendererId[] {
 	const plain: RendererId = file.binary ? "binary" : "text";
 	if (file.lfs || file.submodule) return [plain];
+	if (renderable(file)) return ["markdown", "text"];
 	if (isImagePath(file.path)) return ["image", plain];
 	// An unknown binary may be an image (the server checks its bytes).
 	return file.binary ? ["binary", "image"] : ["text"];
@@ -92,4 +107,21 @@ export const rendererPicks = mapSetting<RendererId>("crb.files.renderer", [
 	"text",
 	"binary",
 	"image",
+	"markdown",
 ]);
+
+/**
+ * The file as the renderers read it in the view shown: in the since view
+ * (`since`: the since answer's entry for it, once in), Rendered is offered
+ * by the since answer's `markdownBlocks` (its pieces are cut at blocks),
+ * not the full diff's: a patch set over the cap is cut on one side only.
+ * Until the answer is in, the full diff's flag stands in.
+ */
+export function rendererFileIn(
+	file: RendererFile,
+	since: { markdownBlocks?: true } | undefined,
+): RendererFile {
+	if (since === undefined) return file;
+	const { markdownBlocks: _, ...rest } = file;
+	return since.markdownBlocks ? { ...rest, markdownBlocks: true } : rest;
+}

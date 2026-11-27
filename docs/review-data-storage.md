@@ -936,6 +936,58 @@ about 4 ms of CPU at the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on
 the server as the snapshot is built. Should a file's hunks not fit its
 text (the display hunks refuse them), each hunk is matched on its own.
 
+**Markdown blocks** (CAR-167, 2026-11-22). A Markdown file's pieces
+(`.md`, `.markdown`, both sides under `MARKDOWN_CUT_MAX_BYTES`, neither a
+symlink nor an LFS pointer, `src/server/diff/snapshot.ts`) are cut again
+at its rendered blocks (`cutAtBlocks`, `src/shared/blockCut.ts`), so no
+cluster mixes lines of two blocks on either side. The block cut is part
+of cluster identity as the whitespace cut is: `markdownBlocks` (the
+parser, its limits), the block pairing and the size cap decide which
+clusters exist. A file growing past the cap, or a changed cap, changes
+the cut, and marks on the pieces reset (the safe direction). Each block
+piece's `split` points at the **git hunk's** key, with its places in the
+git hunk (its CAR-156 piece's place plus its own in that piece), as when
+the whitespace cut alone splits a hunk, so marks on the uncut hunk carry
+onto the block pieces. A CAR-156 piece (whitespace-only or change) the
+block cut leaves whole keeps its key, and so its marks. Any CAR-156 piece
+the block cut splits again loses its own marks (the safe direction): the
+split carry maps whole-hunk keys only, and a chained carry would change
+the `split-carried` format. Its block pieces name it (`split.piece`, set
+only when the hunk had several CAR-156 pieces): when that key holds any
+state (reviewed, crossed off, line marks, or unreviewed after an untick),
+the reviewer's later word on those lines, they take no carry and read
+unreviewed; else they take what the git hunk's key itself holds (a hunk
+marked before CAR-156), as any piece does. That reaches only Markdown
+files marked between CAR-156 (2026-11-15) and this cut. A file the cut
+skips keeps the whitespace cut alone (and isn't offered the Rendered
+view); `FileSummary.markdownBlocks` says which files were cut. The block
+cut runs after CAR-218's whitespace cut, on its pieces: a block piece of a
+whitespace-only piece stays whitespace-only where the view draws all its
+lines as `~` rows. Under the cap the view matches the display hunk whole,
+so every part of a whitespace-only piece is `~`; over `SPLIT_CELLS` it
+matches each cluster alone, so a pair the block cut parted would draw as
+plain lines. `cutClusters` checks those block pieces against the view's
+matching over the clusters as they stand and cuts them again where the
+view's `~` rows start and end (`fitViewWhitespace`, repeated until nothing
+is cut): the parted pair counts (the safe direction), the rest stays
+whitespace-only. When the display hunks don't fit the text, nothing is cut
+again: every such block piece loses its whitespace-only flag and counts,
+as does one the view draws no line of (unknown, so the safe direction). So the
+clusters agree with the view's `~` rows line for line
+(`src/server/diff/cut.test.ts`, Markdown included). The since view cuts
+the other way round, on its own diff: each run is grouped at the blocks
+(`cutRunsAtBlocks`), then the whitespace cut (`sincePieces`) cuts the
+groups at whitespace-only runs. The grouping keeps each side's lines in
+order, so the whitespace-only lines are the same as without it, and both
+cuts' invariants hold (each piece in one block group, all `~` or none);
+the pieces' shapes are not those a whitespace-first cut would make. Its
+pieces are marked by line, so neither moves a mark; the cached since
+answer is recomputed (`ENGINE_VERSION` 8: CAR-235 took 7, and the
+block cut changes the pieces either way). An added Markdown file is cut
+both ways: its block pieces are then cut at blank lines (below), each
+piece pointing at the git hunk's key as the block pieces do; the since
+view's orphan runs (CAR-216) are left whole by the block cut.
+
 **Added files cut at blank lines.** Since CAR-235 (2026-11-24; owner:
 "each cluster should end when reaching a line of only whitespace") a file
 the comparison adds is cut further: each piece with no removed lines ends

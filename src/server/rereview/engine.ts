@@ -6,8 +6,10 @@ import {
 	subtract,
 	union,
 } from "../../shared/lineRanges.js";
+import { markdownBlocks } from "../../shared/markdownBlocks.js";
 import {
 	clusterAt,
+	cutRunsAtBlocks,
 	fileLevelSides,
 	lineRuns,
 	type SincePiece,
@@ -58,7 +60,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-const ENGINE_VERSION = 7;
+const ENGINE_VERSION = 8;
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {
@@ -731,7 +733,7 @@ export function answerRereview(
 			if (!targetAt.has(t.index)) targetAt.set(t.index, t);
 		}
 		for (const f of files) {
-			const { pieces = [] } = interdiffFileHunks(
+			const { pieces = [], markdownBlocks: cut } = interdiffFileHunks(
 				traced,
 				target,
 				answer,
@@ -740,6 +742,7 @@ export function answerRereview(
 				false,
 			);
 			if (pieces.length > 0) f.pieces = pieces;
+			if (cut) f.markdownBlocks = true;
 			const carries = sinceLineCarries(
 				traced,
 				target,
@@ -1515,15 +1518,28 @@ function sinceFileHunks(
 	// a line the patch set added. A line no piece shows is unchanged since
 	// the compared patch set: it takes its mark there, if any, as a carry
 	// (sinceLineCarries), never through a piece.
-	// The orphans are placed first and the keys are final here: the view
-	// matches these same arrays (its `~` rows), so the pieces' cut and its
-	// rows agree, the cap's per-run fallback included.
+	// The orphans are placed first (CAR-216). A Markdown file's runs are
+	// then cut at its blocks (CAR-167), each side's blocks from the since
+	// view's own lines (no other read); an orphan run is left whole. The
+	// whitespace cut (CAR-218) then cuts those runs again. The block cut
+	// only regroups a run's lines, each side keeping its order, so the
+	// whitespace matching over `shown` is the one over `hunks`; and `shown`
+	// is what the view gets, so its `~` rows and the pieces agree.
 	placeOrphans(hunks, orphans);
+	const shown = file.markdown
+		? cutRunsAtBlocks(hunks, {
+				old: markdownBlocks(file.oldLines),
+				new: markdownBlocks(file.newLines),
+			})
+		: hunks;
+	// The keys are final here: the view matches these same arrays (its `~`
+	// rows), so the pieces' cut and its rows agree, the cap's per-run
+	// fallback included.
 	const pieces = sincePieces(
-		hunks,
+		shown,
 		targetClusters,
 		() => ({ baseNo: baseOf }),
-		sinceWhitespace(traced, entry.path, file, hunks, sources),
+		sinceWhitespace(traced, entry.path, file, shown, sources),
 	);
 	// A removed line's GitHub line on the head (LEFT, in the base): what a
 	// comment on it posts with, never its number here (CAR-217). A
@@ -1538,7 +1554,7 @@ function sinceFileHunks(
 			? []
 			: (traced.lineKeys.earlierMoved?.[file.oldPath ?? file.path] ?? []),
 	);
-	for (const hunk of hunks) {
+	for (const hunk of shown) {
 		for (const line of hunk.lines) {
 			if (line.kind !== "del" || line.oldNo === undefined) continue;
 			if (file.conflict) line.baseNo = line.oldNo;
@@ -1557,7 +1573,7 @@ function sinceFileHunks(
 	// An added or context line GitHub's diff (the head's, against its
 	// merge base: the target's clusters, with their context) hasn't: it
 	// reads as the base there, so GitHub refuses a comment on it (CAR-293).
-	for (const hunk of hunks) {
+	for (const hunk of shown) {
 		for (const line of hunk.lines) {
 			if (line.newNo === undefined) continue;
 			if (!inDiffHunks(targetClusters, line.newNo, file.newLines.length)) {
@@ -1565,7 +1581,12 @@ function sinceFileHunks(
 			}
 		}
 	}
-	return { hunks, newLineCount: file.newLines.length, pieces };
+	return {
+		hunks: shown,
+		newLineCount: file.newLines.length,
+		pieces,
+		...(file.markdown ? { markdownBlocks: true as const } : {}),
+	};
 }
 
 /**

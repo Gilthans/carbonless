@@ -301,15 +301,9 @@ export function ThreadRow(props: {
 	);
 }
 
-/**
- * The agent threads of an agent bubble, opened under their line, after the
- * line's comment threads. The status comes from the chip's poll.
- */
-export function AgentThreadRow(props: {
+/** What an agent bubble's opened threads show (AgentThreadCards). */
+interface AgentCardsProps {
 	threads: SpanAgentThread[];
-	id?: string;
-	place: CardPlace;
-	rail?: string;
 	/** Their line isn't in this diff (the file's header). */
 	unplaced?: boolean;
 	/** The since view: why each one's line has no row here (CAR-255). */
@@ -318,9 +312,15 @@ export function AgentThreadRow(props: {
 	outdated?: boolean;
 	/** Traced and not placed in this file: each with its fate. */
 	fates?: ReadonlyMap<SpanAgentThread, UnplacedPlacement>;
-}) {
-	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
-	const { placements } = useAgentPlacing();
+}
+
+/**
+ * The agent threads of an agent bubble, opened under their line, after the
+ * line's comment threads. The status comes from the chip's poll.
+ */
+export function AgentThreadRow(
+	props: AgentCardsProps & { id?: string; place: CardPlace; rail?: string },
+) {
 	return (
 		<TailRow
 			testId="agent-thread-row"
@@ -328,6 +328,26 @@ export function AgentThreadRow(props: {
 			place={props.place}
 			rail={props.rail}
 		>
+			<AgentThreadCards
+				threads={props.threads}
+				unplaced={props.unplaced}
+				notHere={props.notHere}
+				outdated={props.outdated}
+				fates={props.fates}
+			/>
+		</TailRow>
+	);
+}
+
+/**
+ * An agent bubble's opened threads, wherever they are drawn: under a line
+ * (AgentThreadRow), or under a rendered block (MarkdownView).
+ */
+export function AgentThreadCards(props: AgentCardsProps) {
+	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
+	const { placements } = useAgentPlacing();
+	return (
+		<>
 			{props.fates ? (
 				<ul className="space-y-1.5">
 					{props.threads.map((t) => {
@@ -374,7 +394,7 @@ export function AgentThreadRow(props: {
 					);
 				})
 			)}
-		</TailRow>
+		</>
 	);
 }
 

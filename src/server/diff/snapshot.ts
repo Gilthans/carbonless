@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
+import { cutAtBlocks } from "../../shared/blockCut.js";
 import { isImagePath } from "../../shared/imageTypes.js";
+import { HUNK_ALIGN_WORD_OPS } from "../../shared/linePairing.js";
+import { isMarkdownPath, markdownBlocks } from "../../shared/markdownBlocks.js";
 import type {
 	Cluster,
 	ClusterSplit,
@@ -10,7 +13,13 @@ import type {
 	HunksBatch,
 	Snapshot,
 } from "../../shared/types.js";
-import { type HunkCut, hunkCut, hunkCuts } from "../../shared/whitespace.js";
+import {
+	type HunkCut,
+	hunkCut,
+	hunkCuts,
+	matchDisplayHunk,
+	whitespaceLines,
+} from "../../shared/whitespace.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
 import { BlobCache } from "./blobCache.js";
 import {
@@ -353,6 +362,11 @@ async function summarize(
 						? [oldOid, newOid]
 						: undefined,
 			});
+		// A Markdown file's clusters are cut at its blocks too (CAR-167), when
+		// both sides are text under the cap, neither a symlink nor an LFS
+		// pointer (not Markdown); the Rendered view needs the cut.
+		const markdown =
+			text !== null && cutsMarkdown(file, bytesOf(oldOid), bytesOf(newOid));
 		const clusters = cutClusters(
 			hunks,
 			keysOf,
@@ -363,6 +377,7 @@ async function summarize(
 			},
 			{
 				blankLines: file.status === "added" && cutsAtBlankLines(file.path),
+				markdown,
 			},
 		);
 		const tabWidth = tabWidths[index];
@@ -375,6 +390,7 @@ async function summarize(
 			...(oldSize === undefined ? {} : { oldSize }),
 			...(newSize === undefined ? {} : { newSize }),
 			...(lfs(file) ? { lfs: true as const } : {}),
+			...(markdown ? { markdownBlocks: true as const } : {}),
 			...(oldOid === newOid && !file.submodule
 				? { sameBlob: true as const }
 				: {}),
@@ -384,18 +400,70 @@ async function summarize(
 }
 
 /**
+ * The largest Markdown blob (either side, bytes) whose clusters are cut at
+ * its blocks (CAR-167); a larger file keeps the whitespace cut alone and
+ * isn't offered the Rendered view. The cap is part of cluster identity: a
+ * file growing past it, or a changed cap, changes the cut (marks on the
+ * pieces reset: the safe direction). Its cost is per file, linear in the
+ * file's size, on the server as the snapshot is built (a review's first
+ * open).
+ * Measured on the devbox (2026-11-22, CPU of `markdownBlocks` of both sides
+ * plus `cutClusters`, best of 3), generated READMEs of headings,
+ * paragraphs, lists, tables and fences: at 300 KiB 100 ms with every 7th
+ * line edited, 220 ms with most lines edited; at 512 KiB 155 and 340 ms.
+ * Costlier shapes: every section one hunk across three list items and a
+ * table row, edited (the CPU test's, snapshot.test.ts), 330 ms at 300 KiB;
+ * runs of 50 changed list items of ~190 words (each piece's pairing at its
+ * budget), 285 ms at 300 KiB and 430 ms at 512 KiB.
+ * 512 KiB also stays under `markdownBlocks`' 1,000,000-character lex limit,
+ * so a cut file is always cut at its real blocks.
+ */
+export const MARKDOWN_CUT_MAX_BYTES = 512 * 1024;
+
+/** A symlink's mode: its blob is a target path, not Markdown. */
+const SYMLINK_MODE = "120000";
+
+/**
+ * Whether a text file's lines are cut at its Markdown blocks (CAR-167):
+ * a Markdown path, neither side a symlink or an LFS pointer, both sides'
+ * bytes (empty for a missing side) under MARKDOWN_CUT_MAX_BYTES. The full
+ * diff's clusters and the since view's pieces both ask it.
+ */
+export function cutsMarkdown(
+	file: Pick<ChangedFile, "path" | "oldMode" | "newMode">,
+	oldBytes: Buffer,
+	newBytes: Buffer,
+): boolean {
+	return (
+		isMarkdownPath(file.path) &&
+		file.oldMode !== SYMLINK_MODE &&
+		file.newMode !== SYMLINK_MODE &&
+		!isLfsPointer(oldBytes) &&
+		!isLfsPointer(newBytes) &&
+		oldBytes.length <= MARKDOWN_CUT_MAX_BYTES &&
+		newBytes.length <= MARKDOWN_CUT_MAX_BYTES
+	);
+}
+
+/**
  * One file's git hunks (and its file-level cluster) as its clusters: each
- * hunk cut at its whitespace-only runs (splitCluster, CAR-156), keyed by
- * `keysOf` (clusterKeys over the file's clusters). Which lines are
- * whitespace-only comes from one matching per display hunk (built from the
- * uncut hunks over `text`, as the view builds them from the cut ones: the
- * same lines on each side, so the same matching; hunkCuts, CAR-218), so a
- * cluster is whitespace-only exactly where the view draws `~` rows. Should
- * the display hunks fail to build (the hunks not fitting `text`), each hunk
- * is matched on its own (hunkCut), as before CAR-218. A piece of a hunk
- * that split remembers the key the whole hunk had (`keysOf` over the
- * hunks, as before the cut) and where its lines sit in it, so marks on the
- * hunk carry onto the pieces (splitCarry.ts).
+ * hunk cut at its whitespace-only runs (splitCluster, CAR-156), and for a
+ * Markdown file (`markdown`) each piece cut again at its blocks (cutAtBlocks,
+ * CAR-167, over `text`'s old and new lines), keyed by `keysOf` (clusterKeys
+ * over the file's clusters). Which lines are whitespace-only comes from one
+ * matching per display hunk (built from the uncut hunks over `text`, as the
+ * view builds them from the cut ones: the same lines on each side, so the
+ * same matching; hunkCuts, CAR-218), so a cluster is whitespace-only exactly
+ * where the view draws `~` rows; the block cut keeps that (a block piece of a
+ * whitespace-only piece holds only lines the matching gave twins). Should the
+ * display hunks fail to build (the hunks not fitting `text`), each hunk is
+ * matched on its own (hunkCut), as before CAR-218. A piece of a hunk that
+ * split, by either cut, remembers the key the whole git hunk had (`keysOf`
+ * over the hunks, as before any cut) and where its lines sit in it, so marks
+ * on the hunk carry onto the pieces (splitCarry.ts). A piece the block cut
+ * leaves whole keeps the key it had with the whitespace cut alone; one it
+ * splits names that CAR-156 piece's key (`split.piece`) when the hunk had
+ * several.
  *
  * With `blankLines` (an added file, CAR-235), each piece with no removed
  * lines is cut further after its blank lines (splitAtBlankLines), the same
@@ -412,13 +480,26 @@ export function cutClusters(
 	hunks: Omit<Cluster, "key">[],
 	keysOf: (clusters: Omit<Cluster, "key">[]) => string[],
 	text: { oldLines: string[]; newLines: string[]; noNewlineAtEnd: boolean },
-	opts: { blankLines?: boolean } = {},
+	opts: { blankLines?: boolean; markdown?: boolean } = {},
 ): Cluster[] {
 	const cuts = displayCuts(hunks, text);
+	// Parsed once per side, and only with lines to cut (not a pure rename).
+	const blocks =
+		opts.markdown && hunks.some((h) => h.kind === "lines")
+			? {
+					old: markdownBlocks(text.oldLines),
+					new: markdownBlocks(text.newLines),
+				}
+			: undefined;
 	const clusters: Omit<Cluster, "key">[] = [];
-	const parts: { hunk: number; removedAt: number; addedAt: number }[] = [];
+	const parts: CutPart[] = [];
+	// The file's clusters as the whitespace cut alone makes them (CAR-156),
+	// keyed only when a block piece needs its CAR-156 piece's key.
+	const wsClusters: Omit<Cluster, "key">[] = [];
+	// Indexes in `clusters` of block pieces of a whitespace-only piece.
+	const recheck = new Set<number>();
 	hunks.forEach((hunk, h) => {
-		let pieces =
+		const ws =
 			hunk.kind === "lines"
 				? splitCluster(
 						hunk,
@@ -431,9 +512,36 @@ export function cutClusters(
 							),
 					)
 				: [{ cluster: hunk, removedAt: 0, addedAt: 0 }];
+		let pieces = ws.flatMap((p) => {
+			const at = wsClusters.push(p.cluster) - 1;
+			if (!blocks || hunk.kind !== "lines") {
+				return [{ ...p, piece: -1, split: false }];
+			}
+			// Each CAR-156 piece cut at the blocks with its own pairing budget
+			// (a piece's cut, and so its keys, never depends on another's
+			// cost), its pieces' places made the git hunk's.
+			const cut = cutAtBlocks(p.cluster, blocks.old, blocks.new, {
+				left: HUNK_ALIGN_WORD_OPS,
+			});
+			const piece = cut.length > 1 && ws.length > 1 ? at : -1;
+			// A whitespace-only piece the block cut splits: checked against
+			// the view's matching below (recheck).
+			const split = cut.length > 1 && p.cluster.whitespaceOnly === true;
+			return cut.map((q) => ({
+				cluster: q.cluster,
+				removedAt: p.removedAt + q.removedAt,
+				addedAt: p.addedAt + q.addedAt,
+				piece,
+				split,
+			}));
+		});
+		// An added file (CAR-235): each piece, a Markdown block's included,
+		// ends after its blank lines. Its pieces stay the git hunk's, with
+		// their places in it, as the block cut's are.
 		if (opts.blankLines && hunk.kind === "lines") {
 			pieces = pieces.flatMap((piece) =>
 				splitAtBlankLines(piece.cluster).map((p) => ({
+					...piece,
 					cluster: p.cluster,
 					removedAt: piece.removedAt + p.removedAt,
 					addedAt: piece.addedAt + p.addedAt,
@@ -441,16 +549,20 @@ export function cutClusters(
 			);
 		}
 		for (const piece of pieces) {
+			if (piece.split) recheck.add(clusters.length);
 			clusters.push(piece.cluster);
 			parts.push({
 				hunk: pieces.length > 1 ? h : -1,
 				removedAt: piece.removedAt,
 				addedAt: piece.addedAt,
+				piece: piece.piece,
 			});
 		}
 	});
+	if (recheck.size > 0) fitViewWhitespace(clusters, parts, recheck, text);
 	const keys = keysOf(clusters);
 	const hunkKeys = parts.some((p) => p.hunk >= 0) ? keysOf(hunks) : [];
+	const wsKeys = parts.some((p) => p.piece >= 0) ? keysOf(wsClusters) : [];
 	return clusters.map((c, i) => {
 		const part = parts[i];
 		const split: ClusterSplit | undefined =
@@ -460,10 +572,125 @@ export function cutClusters(
 						removedAt: part.removedAt,
 						addedAt: part.addedAt,
 						removed: (hunks[part.hunk] as Omit<Cluster, "key">).removed.length,
+						...(part.piece >= 0 ? { piece: wsKeys[part.piece] as string } : {}),
 					}
 				: undefined;
 		return { ...c, key: keys[i] as string, ...(split ? { split } : {}) };
 	});
+}
+
+/** Where a cluster of `cutClusters` sits in its git hunk (see there). */
+interface CutPart {
+	hunk: number;
+	removedAt: number;
+	addedAt: number;
+	/** Its CAR-156 piece's index in `wsClusters`, when the block cut split that piece of a split hunk. */
+	piece: number;
+}
+
+/**
+ * The block pieces of a whitespace-only piece (`recheck`, indexes in
+ * `clusters`) made to agree with the view's `~` rows line for line
+ * (CAR-167, principle 2). Under the cap the view matches the display hunk
+ * whole, so every part of a whitespace-only piece is `~` and nothing
+ * changes. Over SPLIT_CELLS (or on the per-hunk fallback) it matches each
+ * cluster alone, so a pair the block cut parted would draw as plain lines
+ * in a cluster left out as whitespace: such a piece is cut again where the
+ * view's `~` rows start and end (splitCluster by the view's matching over
+ * the clusters as they stand, its pairs inside the piece), each part
+ * flagged by that, and the check runs again over the new clusters until
+ * nothing is cut (each round only cuts or clears, so it ends). Display
+ * hunks that don't build, or a piece they draw no lines for: every such
+ * piece counts (the safe direction). Exported for its tests.
+ * The parts keep their piece's place in the git hunk.
+ */
+export function fitViewWhitespace(
+	clusters: Omit<Cluster, "key">[],
+	parts: CutPart[],
+	recheck: Set<number>,
+	text: { oldLines: string[]; newLines: string[]; noNewlineAtEnd: boolean },
+): void {
+	for (;;) {
+		const keyed = clusters.flatMap((c, i) =>
+			c.kind === "lines" ? [{ ...c, key: String(i) } as Cluster] : [],
+		);
+		let displays: DisplayHunk[];
+		try {
+			displays = buildDisplayHunks(
+				text.oldLines,
+				text.newLines,
+				keyed,
+				3,
+				text.noNewlineAtEnd,
+			);
+		} catch (error) {
+			if (!(error instanceof HunksMismatchError)) throw error;
+			for (const i of recheck) delete clusters[i]?.whitespaceOnly;
+			return;
+		}
+		// Each rechecked cluster's lines as the view matches them.
+		const seen = new Map<number, { dels: DiffLine[]; adds: DiffLine[] }>();
+		const ws = new Set<DiffLine>();
+		const twins = new Map<DiffLine, DiffLine>();
+		for (const display of displays) {
+			for (const l of whitespaceLines(display.lines)) ws.add(l);
+			for (const [l, t] of matchDisplayHunk(display.lines)) twins.set(l, t);
+			for (const l of display.lines) {
+				if (l.kind === "context" || l.clusterKey === undefined) continue;
+				const i = Number(l.clusterKey);
+				if (!recheck.has(i)) continue;
+				let lines = seen.get(i);
+				if (!lines) {
+					lines = { dels: [], adds: [] };
+					seen.set(i, lines);
+				}
+				(l.kind === "del" ? lines.dels : lines.adds).push(l);
+			}
+		}
+		const nextClusters: Omit<Cluster, "key">[] = [];
+		const nextParts: CutPart[] = [];
+		const nextRecheck = new Set<number>();
+		let cutAgain = false;
+		clusters.forEach((c, i) => {
+			const part = parts[i] as CutPart;
+			const lines = seen.get(i);
+			// A rechecked piece the view draws no lines for: unknown, so it
+			// counts (never left out as whitespace on a guess).
+			if (recheck.has(i) && !lines) delete c.whitespaceOnly;
+			if (!recheck.has(i) || !lines || c.whitespaceOnly !== true) {
+				nextClusters.push(c);
+				nextParts.push(part);
+				return;
+			}
+			const addAt = new Map(lines.adds.map((l, k) => [l, k]));
+			const pairs: [number, number][] = [];
+			lines.dels.forEach((d, k) => {
+				const twin = twins.get(d);
+				const at = twin && addAt.get(twin);
+				if (at !== undefined) pairs.push([k, at]);
+			});
+			const cut = splitCluster(c, {
+				removedWs: lines.dels.map((l) => ws.has(l)),
+				addedWs: lines.adds.map((l) => ws.has(l)),
+				pairs,
+			});
+			if (cut.length > 1) cutAgain = true;
+			for (const q of cut) {
+				if (q.cluster.whitespaceOnly) nextRecheck.add(nextClusters.length);
+				nextClusters.push(q.cluster);
+				nextParts.push({
+					...part,
+					removedAt: part.removedAt + q.removedAt,
+					addedAt: part.addedAt + q.addedAt,
+				});
+			}
+		});
+		clusters.splice(0, clusters.length, ...nextClusters);
+		parts.splice(0, parts.length, ...nextParts);
+		recheck.clear();
+		for (const i of nextRecheck) recheck.add(i);
+		if (!cutAgain) return;
+	}
 }
 
 /**

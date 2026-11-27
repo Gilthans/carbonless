@@ -86,14 +86,55 @@ function u0Hunks(old: string[], young: string[]): Omit<Cluster, "key">[] {
 	return hunks;
 }
 
-const cut = (old: string[], young: string[]) => {
+const cut = (old: string[], young: string[], markdown = false) => {
 	const hunks = u0Hunks(old, young);
-	return cutClusters(hunks, (cs) => clusterKeys("cut.ts", cs, young), {
-		oldLines: old,
-		newLines: young,
-		noNewlineAtEnd: false,
-	});
+	const path = markdown ? "cut.md" : "cut.ts";
+	return cutClusters(
+		hunks,
+		(cs) => clusterKeys(path, cs, young),
+		{ oldLines: old, newLines: young, noNewlineAtEnd: false },
+		{ markdown },
+	);
 };
+
+/**
+ * The cut against the view's `~` rows (hunkView, the switch on) over the
+ * display hunks of the cut clusters, as the page builds them: a `~` row
+ * exactly where the line's cluster is whitespace-only. Counts the lines
+ * checked and the display hunks over SPLIT_CELLS.
+ */
+function expectRowsAgree(old: string[], young: string[], markdown = false) {
+	let checked = 0;
+	let overCap = 0;
+	const clusters = cut(old, young, markdown);
+	const byKey = new Map(clusters.map((c) => [c.key, c]));
+	for (const display of buildDisplayHunks(old, young, clusters, 3)) {
+		const sides =
+			display.lines.filter((l) => l.kind !== "add").length *
+			display.lines.filter((l) => l.kind !== "del").length;
+		if (sides > SPLIT_CELLS) overCap++;
+		const ws = new Set<DiffLine>();
+		for (const run of hunkView(display.lines, true).runs) {
+			for (const row of run.rows) {
+				if (row.kind !== "ws") continue;
+				if (row.del) ws.add(row.del);
+				if (row.add) ws.add(row.add);
+			}
+		}
+		for (const l of display.lines) {
+			if (l.kind === "context") continue;
+			const cluster = byKey.get(l.clusterKey as string);
+			expect(cluster).toBeDefined();
+			// A `~` row exactly where the cluster is whitespace-only.
+			expect(
+				{ line: l.text, ws: ws.has(l) },
+				`${l.kind} ${l.oldNo ?? l.newNo}`,
+			).toEqual({ line: l.text, ws: cluster?.whitespaceOnly === true });
+			checked++;
+		}
+	}
+	return { checked, overCap };
+}
 
 describe("the snapshot's cut (CAR-218)", () => {
 	it("doesn't fall back to the per-hunk cut when the matching throws", () => {
@@ -143,33 +184,9 @@ describe("the snapshot's cut (CAR-218)", () => {
 		let checked = 0;
 		let overCap = 0;
 		const check = (old: string[], young: string[]) => {
-			const clusters = cut(old, young);
-			const byKey = new Map(clusters.map((c) => [c.key, c]));
-			for (const display of buildDisplayHunks(old, young, clusters, 3)) {
-				const sides =
-					display.lines.filter((l) => l.kind !== "add").length *
-					display.lines.filter((l) => l.kind !== "del").length;
-				if (sides > SPLIT_CELLS) overCap++;
-				const ws = new Set<DiffLine>();
-				for (const run of hunkView(display.lines, true).runs) {
-					for (const row of run.rows) {
-						if (row.kind !== "ws") continue;
-						if (row.del) ws.add(row.del);
-						if (row.add) ws.add(row.add);
-					}
-				}
-				for (const l of display.lines) {
-					if (l.kind === "context") continue;
-					const cluster = byKey.get(l.clusterKey as string);
-					expect(cluster).toBeDefined();
-					// A `~` row exactly where the cluster is whitespace-only.
-					expect(
-						{ line: l.text, ws: ws.has(l) },
-						`${l.kind} ${l.oldNo ?? l.newNo}`,
-					).toEqual({ line: l.text, ws: cluster?.whitespaceOnly === true });
-					checked++;
-				}
-			}
+			const seen = expectRowsAgree(old, young);
+			checked += seen.checked;
+			overCap += seen.overCap;
 		};
 		for (let k = 0; k < 400; k++) {
 			const old = Array.from({ length: 4 + rand(40) }, line);
@@ -183,5 +200,84 @@ describe("the snapshot's cut (CAR-218)", () => {
 		}
 		expect(checked).toBeGreaterThan(5000);
 		expect(overCap).toBeGreaterThan(0);
+	});
+
+	it("agrees with the view's `~` rows for Markdown files too, cut at their blocks, over the cap too (CAR-167)", () => {
+		let seed = 167218;
+		const rand = (k: number) => {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			return (seed >>> 16) % k;
+		};
+		// Markdown lines whose indent changes their block (a nested item, a
+		// code block), so a re-indent's pair may land in two blocks.
+		const words = [
+			"- one",
+			"- two",
+			"- nested",
+			"# Head",
+			"| a | b |",
+			"",
+			"Some text.",
+			"1. first",
+			"> quote",
+		];
+		const pad = ["", "  ", "    "];
+		const line = () => `${pad[rand(pad.length)]}${words[rand(words.length)]}`;
+		const indent = (l: string) => (l === "" ? l : `  ${l}`);
+		const edit = (old: string[], rate: number) =>
+			old.flatMap((l) => {
+				const r = rand(rate * 2);
+				if (r === 0) return [];
+				if (r === 1) return [line()];
+				if (r === 2) return [l, line()];
+				if (r < 6) return [indent(l)];
+				return [l];
+			});
+		let checked = 0;
+		let overCap = 0;
+		const check = (old: string[], young: string[]) => {
+			const seen = expectRowsAgree(old, young, true);
+			checked += seen.checked;
+			overCap += seen.overCap;
+		};
+		for (let k = 0; k < 300; k++) {
+			const old = Array.from({ length: 4 + rand(40) }, line);
+			check(old, edit(old, 3 + rand(5)));
+		}
+		for (let k = 0; k < 2; k++) {
+			const old = Array.from({ length: 560 }, line);
+			check(old, edit(old, 2));
+		}
+		expect(checked).toBeGreaterThan(4000);
+		expect(overCap).toBeGreaterThan(0);
+	});
+
+	it("cuts again the block pieces of a whitespace-only piece whose pairs the view can't draw over the cap (CAR-167)", () => {
+		// A re-indent (the list item's lazy line becomes a heading in it) and
+		// a line added before it, under paragraphs: the whitespace cut makes
+		// one whitespace-only piece the block cut parts across a pair. Under
+		// the cap the view matches the display hunk whole, so the parts stay
+		// `~`; over it, each cluster alone, so the parted pair would draw
+		// plain: the piece is cut again there and that pair counts, the rest
+		// stays whitespace-only (rows and clusters agree line for line).
+		const doc = (n: number, part: string[]) =>
+			Array.from({ length: n }, (_, i) => [
+				`Para ${i}.`,
+				"",
+				...part,
+				"",
+			]).flat();
+		const old = ["1. first", "    # Head"];
+		const young = ["text", "  1. first", "  # Head"];
+		const wsLines = (cs: Cluster[]) =>
+			cs.filter((c) => c.whitespaceOnly).reduce((n, c) => n + c.lines, 0);
+		const under = [doc(5, old), doc(5, young)] as const;
+		expect(expectRowsAgree(...under, true).overCap).toBe(0);
+		expect(wsLines(cut(...under, true))).toBe(wsLines(cut(...under)));
+		expect(wsLines(cut(...under, true))).toBeGreaterThan(0);
+		const over = [doc(120, old), doc(120, young)] as const;
+		expect(expectRowsAgree(...over, true).overCap).toBeGreaterThan(0);
+		expect(wsLines(cut(...over))).toBeGreaterThan(0);
+		expect(wsLines(cut(...over, true))).toBeLessThan(wsLines(cut(...over)));
 	});
 });

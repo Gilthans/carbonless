@@ -340,6 +340,7 @@ describe("splitCarries, for any hunk and any marks on it (principle 2)", () => {
 		added: string[],
 		whole: "reviewed" | "crossed-off" | null,
 		lineMarks: Mark[],
+		markdown = false,
 	): boolean {
 		const n = removed.length;
 		const hunk: Omit<Cluster, "key"> = {
@@ -353,7 +354,9 @@ describe("splitCarries, for any hunk and any marks on it (principle 2)", () => {
 			lines: n + added.length,
 		};
 		// As buildSnapshot cuts and keys them; the hunk alone keys as H.
-		// Unchanged lines around the hunk that match none of its lines.
+		// Unchanged lines around the hunk that match none of its lines; for
+		// the Markdown cut, lines 1-9 above it only, as the file's.
+		const above = Array.from({ length: 9 }, (_, i) => `para ${i}`);
 		const around = (side: string[]) => [
 			...Array.from({ length: 9 }, (_, i) => `ctx ${i}`),
 			...side,
@@ -363,11 +366,18 @@ describe("splitCarries, for any hunk and any marks on it (principle 2)", () => {
 			[hunk],
 			(cs) =>
 				cs.length === 1 && cs[0] === hunk ? [H] : cs.map((_, i) => keyOf(i)),
-			{
-				oldLines: around(removed),
-				newLines: around(added),
-				noNewlineAtEnd: false,
-			},
+			markdown
+				? {
+						oldLines: [...above, ...removed],
+						newLines: [...above, ...added],
+						noNewlineAtEnd: false,
+					}
+				: {
+						oldLines: around(removed),
+						newLines: around(added),
+						noNewlineAtEnd: false,
+					},
+			{ markdown },
 		);
 		if (clusters.length < 2) return true;
 		const snap = snapshot();
@@ -431,6 +441,21 @@ describe("splitCarries, for any hunk and any marks on it (principle 2)", () => {
 		);
 	});
 
+	it("the same with the Markdown block cut too (CAR-167)", () => {
+		const prefix = fc.constantFrom("", "- ", "  - ", "# ", "| ");
+		const mdLine = fc.tuple(prefix, spaced).map(([p, l]) => `${p}${l}`);
+		fc.assert(
+			fc.property(
+				fc.array(mdLine, { minLength: 1, maxLength: 7 }),
+				fc.array(mdLine, { minLength: 1, maxLength: 7 }),
+				hunkArb,
+				(removed, added, { whole, marks }) =>
+					check(removed, added, whole, marks, true),
+			),
+			{ numRuns: 3000 },
+		);
+	});
+
 	it("a deletion-only piece before a whitespace-only one: only the lines marked", () => {
 		// Pieces: -gone | ~ b1,b2 | +new: removedAt 0,1,3 / addedAt 0,0,2.
 		const removed = ["gone", "  b1", "  b2"];
@@ -439,6 +464,313 @@ describe("splitCarries, for any hunk and any marks on it (principle 2)", () => {
 		const marks: Mark[] = ["-", "r", "-", "x", "r", "r"];
 		expect(check(removed, added, null, marks)).toBe(true);
 		expect(check(removed, added, "crossed-off", marks)).toBe(true);
+	});
+});
+
+describe("splitCarries onto Markdown block pieces (CAR-167)", () => {
+	const keyOf = (i: number) => (i + 2).toString(16).padStart(64, "0");
+	/** A snapshot of `clusters` as its only file's. */
+	const snapOf = (clusters: Cluster[]) => {
+		const snap = snapshot();
+		(snap.files[0] as Snapshot["files"][number]).clusters = clusters;
+		return snap;
+	};
+
+	describe("a hunk across three list items, marked before the block cut", () => {
+		const oldLines = ["- a", "- b", "- c"];
+		const newLines = ["- A", "- B", "- C"];
+		const hunk: Omit<Cluster, "key"> = {
+			kind: "lines",
+			oldStart: 1,
+			oldCount: 3,
+			newStart: 1,
+			newCount: 3,
+			removed: oldLines,
+			added: newLines,
+			lines: 6,
+		};
+		// Keyed as buildSnapshot keys them: the hunk alone keys as H.
+		const keysOf = (cs: Omit<Cluster, "key">[]) =>
+			cs.length === 1 && cs[0] === hunk ? [H] : cs.map((_, i) => keyOf(i));
+		const pieces = () =>
+			cutClusters(
+				[hunk],
+				keysOf,
+				{ oldLines, newLines, noNewlineAtEnd: false },
+				{ markdown: true },
+			);
+
+		it("is cut into one piece per item, each pointing at the hunk", () => {
+			expect(pieces().map((c) => [c.key, c.removed, c.added, c.split])).toEqual(
+				[0, 1, 2].map((i) => [
+					keyOf(i),
+					[oldLines[i]],
+					[newLines[i]],
+					{ key: H, removedAt: i, addedAt: i, removed: 3 },
+				]),
+			);
+		});
+
+		it("carries a reviewed or crossed-off hunk onto every piece", () => {
+			const reviewed = carry(
+				[started(), mark(H, "reviewed")],
+				snapOf(pieces()),
+			);
+			expect(states(reviewed.view)).toEqual(
+				Array(3).fill({ state: "reviewed" }),
+			);
+			expect(reviewed.again).toEqual([]);
+			const crossed = carry(
+				[started(), mark(H, "crossed-off", "generated")],
+				snapOf(pieces()),
+			);
+			expect(states(crossed.view)).toEqual(
+				Array(3).fill({ state: "crossed-off", reason: "generated" }),
+			);
+		});
+
+		it("carries a partly reviewed hunk's lines onto the pieces they fall in", () => {
+			// Hunk lines: 0-2 removed a b c, 3-5 added A B C. Item a whole, B only.
+			const { view, again } = carry(
+				[
+					started(),
+					lines(H, "reviewed", [
+						[0, 1],
+						[3, 5],
+					]),
+				],
+				snapOf(pieces()),
+			);
+			expect(states(view)).toEqual([
+				{ state: "reviewed" },
+				{ state: "unreviewed", reviewedLines: [[1, 2]] },
+				{ state: "unreviewed" },
+			]);
+			expect(view.progress.clusters).toEqual({
+				total: 3,
+				reviewed: 1,
+				crossedOff: 0,
+			});
+			expect(again).toEqual([]);
+		});
+	});
+
+	describe("CAR-156 pieces marked before the block cut", () => {
+		// change / whitespace only across two items / change, in one hunk.
+		const oldLines = ["- x", "- a ", "- b ", "- y"];
+		const newLines = ["- X", "- a", "- b", "- Y"];
+		const hunk: Omit<Cluster, "key"> = {
+			kind: "lines",
+			oldStart: 1,
+			oldCount: 4,
+			newStart: 1,
+			newCount: 4,
+			removed: oldLines,
+			added: newLines,
+			lines: 8,
+		};
+		const keysOf = (cs: Omit<Cluster, "key">[]) =>
+			clusterKeys("src/a.ts", cs, newLines);
+		const ws = cutClusters([hunk], keysOf, {
+			oldLines,
+			newLines,
+			noNewlineAtEnd: false,
+		});
+		const md = cutClusters(
+			[hunk],
+			keysOf,
+			{ oldLines, newLines, noNewlineAtEnd: false },
+			{ markdown: true },
+		);
+
+		it("reads a CAR-156 piece the block cut splits again unreviewed, and keeps the marks of pieces it leaves whole", () => {
+			expect(ws.map((c) => c.whitespaceOnly ?? false)).toEqual([
+				false,
+				true,
+				false,
+			]);
+			expect(md).toHaveLength(4);
+			const [x, w, y] = ws as [Cluster, Cluster, Cluster];
+			const { entries, view } = carry(
+				[
+					started(),
+					mark(x.key, "reviewed"),
+					mark(w.key, "reviewed"),
+					mark(y.key, "crossed-off", "generated"),
+				],
+				snapOf(md),
+			);
+			expect(entries).toEqual([]);
+			expect(states(view)).toEqual([
+				{ state: "reviewed" },
+				{ state: "unreviewed" },
+				{ state: "unreviewed" },
+				{ state: "crossed-off", reason: "generated" },
+			]);
+			expect(view.progress.clusters).toEqual({
+				total: 4,
+				reviewed: 1,
+				crossedOff: 1,
+			});
+		});
+
+		it("keeps the mark of a CAR-156 piece the block cut leaves whole", () => {
+			// The same hunk with the whitespace run inside one item: nothing to cut again.
+			const oneOld = ["- x", "- a ", "  b ", "- y"];
+			const oneNew = ["- X", "- a", "  b", "- Y"];
+			const one = { ...hunk, removed: oneOld, added: oneNew };
+			const keys = (cs: Omit<Cluster, "key">[]) =>
+				clusterKeys("src/a.ts", cs, oneNew);
+			const before = cutClusters([one], keys, {
+				oldLines: oneOld,
+				newLines: oneNew,
+				noNewlineAtEnd: false,
+			});
+			const after = cutClusters(
+				[one],
+				keys,
+				{ oldLines: oneOld, newLines: oneNew, noNewlineAtEnd: false },
+				{ markdown: true },
+			);
+			expect(after.map((c) => c.key)).toEqual(before.map((c) => c.key));
+			const w = before[1] as Cluster;
+			expect(w.whitespaceOnly).toBe(true);
+			const { view } = carry(
+				[started(), mark(w.key, "reviewed")],
+				snapOf(after),
+			);
+			expect(states(view)).toEqual([
+				{ state: "unreviewed" },
+				{ state: "reviewed" },
+				{ state: "unreviewed" },
+			]);
+		});
+	});
+
+	describe("a hunk marked before CAR-156, a CAR-156 piece the block cut splits again", () => {
+		/** One hunk of `oldLines` → `newLines` from line 1, cut both ways. */
+		const cuts = (oldLines: string[], newLines: string[]) => {
+			const hunk: Omit<Cluster, "key"> = {
+				kind: "lines",
+				oldStart: 1,
+				oldCount: oldLines.length,
+				newStart: 1,
+				newCount: newLines.length,
+				removed: oldLines,
+				added: newLines,
+				lines: oldLines.length + newLines.length,
+			};
+			const keysOf = (cs: Omit<Cluster, "key">[]) =>
+				clusterKeys("src/a.ts", cs, newLines);
+			return {
+				hunkKey: keysOf([hunk])[0] as string,
+				ws: cutClusters([hunk], keysOf, {
+					oldLines,
+					newLines,
+					noNewlineAtEnd: false,
+				}),
+				md: cutClusters(
+					[hunk],
+					keysOf,
+					{ oldLines, newLines, noNewlineAtEnd: false },
+					{ markdown: true },
+				),
+			};
+		};
+		// A whitespace-only piece across two items: [x] [a␠ b␠] [y].
+		const wsCase = cuts(
+			["- x", "- a ", "- b ", "- y"],
+			["- X", "- a", "- b", "- Y"],
+		);
+		// The review's case: a change piece across two items, then a
+		// whitespace-only one: [x y] [a␠].
+		const changeCase = cuts(["- x", "- y", "- a "], ["- X", "- Y", "- a"]);
+
+		it("cuts the CAR-156 piece again, its block pieces naming it", () => {
+			expect(wsCase.md.map((c) => c.split?.piece)).toEqual([
+				undefined,
+				wsCase.ws[1]?.key,
+				wsCase.ws[1]?.key,
+				undefined,
+			]);
+			expect(changeCase.ws.map((c) => c.whitespaceOnly ?? false)).toEqual([
+				false,
+				true,
+			]);
+			expect(changeCase.md.map((c) => [c.removed, c.split?.piece])).toEqual([
+				[["- x"], changeCase.ws[0]?.key],
+				[["- y"], changeCase.ws[0]?.key],
+				[["- a "], undefined],
+			]);
+		});
+
+		it("gives the block pieces of an unticked whitespace piece no carry from the hunk", () => {
+			const { hunkKey, ws, md } = wsCase;
+			const { entries, view } = carry(
+				[
+					started(),
+					mark(hunkKey, "reviewed"),
+					mark((ws[1] as Cluster).key, "unreviewed"),
+				],
+				snapOf(md),
+			);
+			// x and y hold nothing of their own: they take the hunk's mark.
+			expect(entries.map((e) => e.key)).toEqual([md[0]?.key, md[3]?.key]);
+			expect(states(view)).toEqual([
+				{ state: "reviewed" },
+				{ state: "unreviewed" },
+				{ state: "unreviewed" },
+				{ state: "reviewed" },
+			]);
+		});
+
+		it("gives the block pieces of an unticked change piece no carry from the hunk", () => {
+			const { hunkKey, ws, md } = changeCase;
+			const { entries, view } = carry(
+				[
+					started(),
+					mark(hunkKey, "reviewed"),
+					mark((ws[0] as Cluster).key, "unreviewed"),
+				],
+				snapOf(md),
+			);
+			expect(entries.map((e) => e.key)).toEqual([md[2]?.key]);
+			expect(states(view)).toEqual([
+				{ state: "unreviewed" },
+				{ state: "unreviewed" },
+				{ state: "reviewed" },
+			]);
+			expect(view.progress.clusters.reviewed).toBe(1);
+		});
+
+		it("gives none for any state on the CAR-156 piece: reviewed, crossed off, line marks", () => {
+			const { hunkKey, ws, md } = changeCase;
+			const piece = (ws[0] as Cluster).key;
+			for (const own of [
+				mark(piece, "reviewed"),
+				mark(piece, "crossed-off", "generated"),
+				lines(piece, "reviewed", [[0, 1]]),
+			]) {
+				const { entries } = carry(
+					[started(), mark(hunkKey, "crossed-off", "old"), own],
+					snapOf(md),
+				);
+				expect(entries.map((e) => e.key)).toEqual([md[2]?.key]);
+			}
+		});
+
+		it("carries the hunk's mark as before while the CAR-156 piece holds nothing", () => {
+			for (const { hunkKey, md } of [wsCase, changeCase]) {
+				const { entries, view } = carry(
+					[started(), mark(hunkKey, "reviewed")],
+					snapOf(md),
+				);
+				expect(entries).toHaveLength(md.length);
+				expect(states(view)).toEqual(
+					Array(md.length).fill({ state: "reviewed" }),
+				);
+			}
+		});
 	});
 });
 

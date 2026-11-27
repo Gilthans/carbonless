@@ -135,6 +135,42 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("the Rendered view's own strikethrough reads on the word marks and the page (CAR-167)", () => {
+		// markdownView.css: content ~~x~~ in its own color, inside an added
+		// or removed word mark, or on the document.
+		const view = readFileSync(
+			resolve(import.meta.dirname, "files/renderers/markdown/markdownView.css"),
+			"utf8",
+		);
+		const rule =
+			/del:not\(\.md-del\), s, strike\) \{[^}]*?color: var\(--color-([a-z0-9-]+)\)/.exec(
+				view,
+			);
+		const text = rule?.[1] ?? "missing";
+		for (const bg of ["add-word", "del-word", "surface"]) {
+			expect(
+				contrast(token(text), token(bg)),
+				`${text} on ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+	});
+
+	it("the Rendered view fades a removed picture, never a placeholder's words (CAR-167)", () => {
+		// markdownView.css: a faded placeholder's alt and path would read
+		// below 4.5:1; only an img may take an opacity.
+		const view = readFileSync(
+			resolve(import.meta.dirname, "files/renderers/markdown/markdownView.css"),
+			"utf8",
+		).replace(/\/\*[\s\S]*?\*\//g, "");
+		const faded = [...view.matchAll(/([^{}]+)\{[^}]*\bopacity:/g)].map((m) =>
+			(m[1] ?? "").trim(),
+		);
+		expect(faded.length).toBeGreaterThan(0);
+		for (const selector of faded) {
+			expect(selector).not.toMatch(/md-local-image|md-remote-image|md-image/);
+		}
+	});
+
 	it("the thread band sits between the surface and the raised comment", () => {
 		// Thread-group bands and card headers: a step up from the surface,
 		// below the comment's raised surface and the section's title band.
