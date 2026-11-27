@@ -78,6 +78,7 @@ import {
 import { agentPlacementsOnHeadQuery } from "./api";
 import { spanOfAnchor } from "./askAgentAction";
 import { useCommentScope } from "./commentOnGithub";
+import { resizeKeepingScroll, scrolledAncestors } from "./keepScroll";
 
 /** Where an agent message's comment blocks post from. */
 export interface CommentAt {
@@ -503,24 +504,6 @@ function CommentBox(props: {
 	);
 }
 
-/**
- * The element scroll boxes around `el` that are scrolled, with their
- * scrollTop (not the page's: body and html are left out).
- */
-function scrolledAncestors(el: Element): [Element, number][] {
-	const kept: [Element, number][] = [];
-	for (
-		let a = el.parentElement;
-		a && a !== document.body && a !== document.documentElement;
-		a = a.parentElement
-	) {
-		if (a.scrollTop <= 0) continue;
-		const y = getComputedStyle(a).overflowY;
-		if (y === "auto" || y === "scroll") kept.push([a, a.scrollTop]);
-	}
-	return kept;
-}
-
 /** The box: monospace like the reply box, growing to about 12 lines, then scrolling. */
 function CommentText(props: {
 	box: RefObject<HTMLTextAreaElement | null>;
@@ -538,22 +521,12 @@ function CommentText(props: {
 		if (!el || props.hidden) return;
 		// Collapsing it to measure shrinks a scroll box it sits in (the agent
 		// card's), which clamps that box's scrollTop: kept across the
-		// measurement, so typing never moves the comment (CAR-246). The page
-		// itself is left as it was.
-		// Its top scrolled out of such a box (the line typed on in sight
-		// below it), it grows upward there: what is below it stays put
-		// (CAR-316).
-		const kept = scrolledAncestors(el);
-		const was = el.offsetHeight;
-		el.style.height = "auto";
-		el.style.height = `${el.scrollHeight + 2}px`;
-		const grew = el.offsetHeight - was;
-		for (const [a, top] of kept) {
-			const above =
-				el.getBoundingClientRect().top < a.getBoundingClientRect().top;
-			const want = above ? top + grew : top;
-			if (a.scrollTop !== want) a.scrollTop = want;
-		}
+		// measurement, so typing never moves the comment (CAR-246); its top
+		// scrolled out of such a box, it grows upward (CAR-316).
+		resizeKeepingScroll(el, () => {
+			el.style.height = "auto";
+			el.style.height = `${el.scrollHeight + 2}px`;
+		});
 	}, [props.value, props.hidden]);
 	return (
 		<textarea

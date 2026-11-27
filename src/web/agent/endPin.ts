@@ -153,7 +153,7 @@ interface Anchor {
  * top is scrolled out, the line typed on being below), else the deepest
  * element across the box's middle, by its top. Null when there is none.
  */
-export function readingAnchor(box: Element, content: Element): Anchor | null {
+function readingAnchor(box: Element, content: Element): Anchor | null {
 	const b = box.getBoundingClientRect();
 	const focused = document.activeElement;
 	if (focused && focused !== content && content.contains(focused)) {
